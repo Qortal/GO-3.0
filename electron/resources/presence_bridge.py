@@ -161,6 +161,9 @@ _QCHAT_FILE_CHUNK_SIZE = (1024 * 1024) - 1
 _QCHAT_FILE_PARALLEL_LINKS = 8
 _QCHAT_FILE_SUCCESS_LINK_CLOSE_GRACE_SECONDS = 15.0
 _QCHAT_FILE_CHUNK_ACK_TIMEOUT_SECONDS = 90.0
+# A receiver-side link that dies mid-transfer is reopened (the receiver is the
+# link initiator); bounded so a dead peer cannot make us reconnect forever.
+_QCHAT_FILE_RECEIVER_MAX_LINK_REOPENS = 64
 _TRANSPORT_MONITOR_INTERVAL_SECONDS = 5.0
 _OVERLAY_PENDING_PACKET_LIMIT = 24
 
@@ -5500,6 +5503,40 @@ def on_qchat_file_link_closed(link) -> None:
             receive_pending = _qchat_file_accepts_by_peer.get(peer_hash)
             send_pending = _qchat_file_pending_sends_by_transfer.get(transfer_id)
         if receive_pending is not None and str(receive_pending.get("transferId") or "") == transfer_id:
+            # We are the receiving side and the transfer is still pending: we
+            # initiated this link, so reopen a replacement. Without this, a
+            # sender-side ACK-timeout teardown permanently halved the link
+            # pool until the whole transfer starved.
+            reopen_count = int(receive_pending.get("link_reopen_count") or 0)
+            if reopen_count < _QCHAT_FILE_RECEIVER_MAX_LINK_REOPENS:
+                receive_pending["link_reopen_count"] = reopen_count + 1
+                replacement_state = {
+                    "peerPresenceHash": peer_hash,
+                    "peerDestinationHash": "",
+                    "incoming": False,
+                    "established": False,
+                    "transferId": transfer_id,
+                    "fileName": receive_pending.get("fileName") or "",
+                    "size": int(receive_pending.get("size") or 0),
+                    "sha256": receive_pending.get("sha256") or "",
+                    "peerIdentity": receive_pending.get("peerIdentity"),
+                    "authMessage": receive_pending.get("authMessage"),
+                    "created_at": time.time(),
+                }
+
+                def reopen() -> None:
+                    _enqueue_scheduler_task(
+                        "file-transfer",
+                        "qchat-file-receiver-reopen",
+                        _run_qchat_file_open_task,
+                        replacement_state,
+                    )
+
+                reopen_timer = threading.Timer(
+                    _QCHAT_FILE_LINK_RETRY_DELAY_SECONDS, reopen
+                )
+                reopen_timer.daemon = True
+                reopen_timer.start()
             return
         if send_pending is not None:
             return
@@ -5933,13 +5970,26 @@ def _start_qchat_file_resource_for_state(state: Dict[str, Any]) -> bool:
     root = state.get("send_root") if isinstance(state.get("send_root"), dict) else state
     chunk_count = _qchat_file_chunk_count(size)
     with _state_lock:
-        next_chunk = int(root.get("next_chunk_index") or 0)
-        if next_chunk >= chunk_count:
-            _qchat_file_close_success_link_after_grace(link, state)
-            return False
-        chunk_index = next_chunk
+        # Chunks whose ACK timed out or whose link died are queued for resend
+        # and take priority over fresh chunks; without this a single lost ACK
+        # left a permanent hole in the file (next_chunk_index had already
+        # advanced past it).
+        retry_chunks = root.setdefault("retry_chunks", [])
+        completed_chunks = root.get("completed_chunks")
+        chunk_index = None
+        while retry_chunks:
+            candidate = int(retry_chunks.pop(0))
+            if not (isinstance(completed_chunks, set) and candidate in completed_chunks):
+                chunk_index = candidate
+                break
+        if chunk_index is None:
+            next_chunk = int(root.get("next_chunk_index") or 0)
+            if next_chunk >= chunk_count:
+                _qchat_file_close_success_link_after_grace(link, state)
+                return False
+            chunk_index = next_chunk
+            root["next_chunk_index"] = next_chunk + 1
         chunk_offset, chunk_size = _qchat_file_chunk_bounds(size, chunk_index)
-        root["next_chunk_index"] = next_chunk + 1
         root["transferId"] = transfer_id
         root["peerPresenceHash"] = peer_hash
         root["fileName"] = file_name
@@ -5973,8 +6023,14 @@ def _start_qchat_file_resource_for_state(state: Dict[str, Any]) -> bool:
                         return
                     if root.get("completed") is True or state.get("completed") is True:
                         return
+                    # Don't fail the whole transfer over one lost ACK: requeue
+                    # the chunk for resend on another (or reopened) link and
+                    # drop only this suspect link.
+                    current_active.pop(chunk_index, None)
+                    with _state_lock:
+                        root.setdefault("retry_chunks", []).append(chunk_index)
                     _qchat_file_emit(
-                        "failed",
+                        "retrying",
                         {
                             "transferId": transfer_id,
                             "peerPresenceHash": peer_hash,
@@ -6000,8 +6056,16 @@ def _start_qchat_file_resource_for_state(state: Dict[str, Any]) -> bool:
             _qchat_file_update_sent_progress(root)
             return
         else:
+            # The resource failed on this link (link died mid-chunk, etc.).
+            # Requeue the chunk for another link instead of failing the
+            # transfer outright.
+            active = root.get("active_chunks")
+            if isinstance(active, dict):
+                active.pop(chunk_index, None)
+            with _state_lock:
+                root.setdefault("retry_chunks", []).append(chunk_index)
             _qchat_file_emit(
-                "failed",
+                "retrying",
                 {
                     "transferId": transfer_id,
                     "peerPresenceHash": peer_hash,
@@ -6350,6 +6414,13 @@ def on_qchat_file_resource_concluded(resource) -> None:
                     _write_chunk_to_part_file(source_path, save_path, chunk_offset)
                     completed_chunks.add(chunk_index)
                     pending["received_bytes"] = int(pending.get("received_bytes") or 0) + chunk_size
+                    _qchat_file_save_resume_state(
+                        save_path,
+                        transfer_id,
+                        int(pending.get("size") or 0),
+                        str(pending.get("sha256") or "").lower(),
+                        completed_chunks,
+                    )
                 size = int(pending.get("size") or 0)
                 progress = min(1.0, max(0.0, int(pending.get("received_bytes") or 0) / float(size))) if size > 0 else 0.0
                 if _should_emit_qchat_file_progress(pending, progress, force=progress >= 1.0):
@@ -6386,6 +6457,13 @@ def on_qchat_file_resource_concluded(resource) -> None:
             if expected_hash and actual_hash.lower() != expected_hash:
                 if state is not None:
                     state["completed"] = True
+                # Corrupted assembly: discard the partial data + resume meta so
+                # the next attempt starts from a clean slate.
+                _qchat_file_clear_resume_state(save_path)
+                try:
+                    os.remove(part_path)
+                except Exception:
+                    pass
                 _qchat_file_emit(
                     "failed",
                     {
@@ -6398,6 +6476,7 @@ def on_qchat_file_resource_concluded(resource) -> None:
                 )
                 return
             os.replace(part_path, save_path)
+            _qchat_file_clear_resume_state(save_path)
             if not _send_qchat_file_chunk_ack(link, transfer_id, chunk_index, chunk_size):
                 if state is not None:
                     state["completed"] = True
@@ -8169,6 +8248,67 @@ def handle_send_call(req_id: str, payload: Dict[str, Any]) -> None:
     except Exception as exc:
         emit_resp(req_id, False, error=str(exc))
 
+def _qchat_file_resume_meta_path(save_path: str) -> str:
+    return save_path + ".part.meta"
+
+
+def _qchat_file_load_resume_state(
+    save_path: str, transfer_id: str, size: int, sha256: str
+) -> Tuple[set, int]:
+    """Reload completed chunks from a previous interrupted attempt so a
+    re-accept resumes instead of starting from zero."""
+    try:
+        part_path = save_path + ".part"
+        meta_path = _qchat_file_resume_meta_path(save_path)
+        if not (os.path.isfile(part_path) and os.path.isfile(meta_path)):
+            return set(), 0
+        with open(meta_path, "r", encoding="utf-8") as f:
+            meta = json.load(f)
+        if (
+            str(meta.get("transferId") or "") != transfer_id
+            or int(meta.get("size") or 0) != size
+            or str(meta.get("sha256") or "").lower() != (sha256 or "")
+        ):
+            return set(), 0
+        chunks = {int(c) for c in (meta.get("completedChunks") or [])}
+        received = 0
+        for chunk_index in chunks:
+            _, chunk_size = _qchat_file_chunk_bounds(size, chunk_index)
+            received += chunk_size
+        return chunks, received
+    except Exception:
+        return set(), 0
+
+
+def _qchat_file_save_resume_state(
+    save_path: str,
+    transfer_id: str,
+    size: int,
+    sha256: str,
+    completed_chunks,
+) -> None:
+    try:
+        with open(_qchat_file_resume_meta_path(save_path), "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "transferId": transfer_id,
+                    "size": size,
+                    "sha256": sha256,
+                    "completedChunks": sorted(int(c) for c in completed_chunks),
+                },
+                f,
+            )
+    except Exception:
+        pass
+
+
+def _qchat_file_clear_resume_state(save_path: str) -> None:
+    try:
+        os.remove(_qchat_file_resume_meta_path(save_path))
+    except Exception:
+        pass
+
+
 def handle_accept_qchat_file_resource(req_id: str, payload: Dict[str, Any]) -> None:
     peer_hash = str(payload.get("peerPresenceHash") or "").strip().lower()
     pk_b64 = payload.get("reticulumIdentityPublicKeyBase64")
@@ -8200,6 +8340,9 @@ def handle_accept_qchat_file_resource(req_id: str, payload: Dict[str, Any]) -> N
             error=str(exc),
         )
         return
+    resumed_chunks, resumed_bytes = _qchat_file_load_resume_state(
+        save_path, transfer_id, size, sha256
+    )
     with _state_lock:
         _qchat_file_accepts_by_peer[peer_hash] = {
             "transferId": transfer_id,
@@ -8209,9 +8352,9 @@ def handle_accept_qchat_file_resource(req_id: str, payload: Dict[str, Any]) -> N
             "sha256": sha256,
             "peerIdentity": peer_identity,
             "authMessage": auth_message,
-            "received_bytes": 0,
+            "received_bytes": resumed_bytes,
             "active_chunks": {},
-            "completed_chunks": set(),
+            "completed_chunks": resumed_chunks,
             "chunk_lock": threading.RLock(),
             "expires_at": time.time() + 15 * 60,
         }

@@ -44,6 +44,8 @@ import { executeEvent } from '../../utils/events';
 import PhraseWallet from '../../utils/generateWallet/phrase-wallet';
 import ThemeManager from '../Theme/ThemeManager';
 import { isDisabledLegacy } from '../../constants/featureFlags';
+import { isCapacitor } from '../../utils/platform';
+import { MobileNodeConnectionSettings } from '../Mobile/MobileNodeConnectionSettings';
 
 export const LocalNodeSwitch = styled(Switch)(({ theme }) => ({
   padding: 8,
@@ -417,7 +419,12 @@ export const Settings = ({ open, setOpen, rawWallet }) => {
           transition: TransitionUp,
         }}
       >
-        <AppBar sx={{ position: 'relative' }}>
+        <AppBar
+          sx={{
+            position: 'relative',
+            paddingTop: 'env(safe-area-inset-top, 0px)',
+          }}
+        >
           <Toolbar>
             <Typography sx={{ ml: 2, flex: 1 }} variant="h4" component="div">
               {t('core:general_settings', {
@@ -451,6 +458,7 @@ export const Settings = ({ open, setOpen, rawWallet }) => {
             flexGrow: 1,
             overflowY: 'auto',
             p: 2,
+            paddingBottom: 'calc(16px + env(safe-area-inset-bottom, 0px))',
           }}
         >
           <Box sx={{ maxWidth: 760, mx: 'auto', py: 3, px: 1, width: '100%' }}>
@@ -482,6 +490,22 @@ export const Settings = ({ open, setOpen, rawWallet }) => {
                 <LocalNodeSwitch checked={checked} onChange={handleChange} />
               </Box>
             </Box>
+
+            {isCapacitor() && (
+              <Box
+                sx={{
+                  borderRadius: 2,
+                  overflow: 'hidden',
+                  border: 1,
+                  borderColor: alpha(theme.palette.divider, 0.4),
+                  bgcolor: alpha(theme.palette.background.default, 0.5),
+                  mb: 3,
+                  p: 2,
+                }}
+              >
+                <MobileNodeConnectionSettings />
+              </Box>
+            )}
 
             {/* Electron-only app settings */}
             {window?.electronAPI && (
@@ -595,7 +619,7 @@ export const Settings = ({ open, setOpen, rawWallet }) => {
                       Managed Reticulum config
                     </Typography>
                     <Typography variant="caption" color="text.disabled">
-                      Allow Qortal Hub to write its managed rnsd config on
+                      Allow Qortal Go to write its managed rnsd config on
                       startup.
                     </Typography>
                   </Box>
@@ -841,7 +865,7 @@ export const Settings = ({ open, setOpen, rawWallet }) => {
                           : ' · listen disabled'}
                         {reticulumMeshStatus.upnpMapped ? ' · UPnP mapped' : ''}
                         {reticulumMeshStatus.meshDiscoveryClient
-                          ? ' · RNS interface discovery + autoconnect (LXMF included with the Hub Reticulum runtime; see Reticulum manual)'
+                          ? ' · RNS interface discovery + autoconnect (LXMF included with the GO Reticulum runtime; see Reticulum manual)'
                           : ''}
                         {reticulumMeshStatus.meshPrivateGateway
                           ? ' · encrypted private gateway on mesh listen'

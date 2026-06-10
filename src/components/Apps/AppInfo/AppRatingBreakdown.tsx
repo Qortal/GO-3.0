@@ -1,5 +1,14 @@
-import { useMemo } from 'react';
-import { Box, LinearProgress, Rating, styled, Typography } from '@mui/material';
+import { useMemo, useState } from 'react';
+import {
+  Box,
+  LinearProgress,
+  Rating,
+  alpha,
+  styled,
+  Typography,
+  useMediaQuery,
+  useTheme,
+} from '@mui/material';
 import { useTranslation } from 'react-i18next';
 import { StarFilledIcon } from '../../../assets/Icons/StarFilled';
 import { StarEmptyIcon } from '../../../assets/Icons/StarEmpty';
@@ -17,12 +26,12 @@ interface AppRatingBreakdownProps {
   onRate?: (rating: number) => void;
 }
 
-const BreakdownContainer = styled(Box)(({ theme }) => ({
+const BreakdownContainer = styled(Box)({
   display: 'flex',
   flexDirection: 'column',
   gap: '16px',
   width: '100%',
-}));
+});
 
 const SummaryRow = styled(Box)({
   display: 'flex',
@@ -90,19 +99,49 @@ const CountLabel = styled(Typography)(({ theme }) => ({
 }));
 
 const RateSection = styled(Box)(({ theme }) => ({
-  display: 'flex',
   alignItems: 'center',
+  backgroundColor: alpha(theme.palette.warning.main, 0.08),
+  border: `1px solid ${alpha(theme.palette.warning.main, 0.35)}`,
+  borderRadius: '16px',
+  display: 'flex',
+  flexDirection: 'column',
   gap: '12px',
-  padding: '16px',
-  backgroundColor: theme.palette.action.hover,
-  borderRadius: '8px',
-  marginTop: '8px',
+  marginTop: '12px',
+  padding: '20px 16px 24px',
+  width: '100%',
 }));
 
-const RateLabel = styled(Typography)(({ theme }) => ({
-  fontSize: '14px',
-  color: theme.palette.text.secondary,
+const RateTitle = styled(Typography)(({ theme }) => ({
+  color: theme.palette.text.primary,
+  fontSize: '17px',
+  fontWeight: 600,
+  textAlign: 'center',
 }));
+
+const RateHint = styled(Typography)(({ theme }) => ({
+  color: theme.palette.text.secondary,
+  fontSize: '13px',
+  fontWeight: 500,
+  minHeight: '20px',
+  textAlign: 'center',
+  transition: 'color 0.15s ease',
+}));
+
+const RATE_HINT_KEYS: Record<number, string> = {
+  1: 'core:app_detail.rate_hint_1',
+  2: 'core:app_detail.rate_hint_2',
+  3: 'core:app_detail.rate_hint_3',
+  4: 'core:app_detail.rate_hint_4',
+  5: 'core:app_detail.rate_hint_5',
+};
+
+const RATE_HINT_DEFAULTS: Record<number, string> = {
+  1: 'Poor',
+  2: 'Fair',
+  3: 'Good',
+  4: 'Great',
+  5: 'Excellent',
+};
 
 export const AppRatingBreakdown = ({
   app,
@@ -110,23 +149,20 @@ export const AppRatingBreakdown = ({
   onRate,
 }: AppRatingBreakdownProps) => {
   const { t } = useTranslation(['core']);
+  const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down('md'));
+  const [hoverValue, setHoverValue] = useState<number | null>(null);
 
-  // Use centralized rating store
   const { rating, isLoading } = useAppRating(app?.name, app?.service);
 
-  // Compute distribution from voteCounts
   const { averageRating, totalVotes, distribution } = useMemo(() => {
     if (!rating) {
       return { averageRating: 0, totalVotes: 0, distribution: [] };
     }
 
     const voteCounts = rating.voteCounts || [];
-
-    // Build counts for ratings 1-5
     const counts: Record<number, number> = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
 
-    // Process regular votes first, then add initial value on top
-    // (order matters: initialValue uses +=, regular uses =)
     voteCounts.forEach((vote) => {
       if (!vote.optionName.startsWith('initialValue-')) {
         const ratingValue = parseInt(vote.optionName, 10);
@@ -144,13 +180,11 @@ export const AppRatingBreakdown = ({
       }
     });
 
-    // Calculate total
     let total = 0;
     Object.values(counts).forEach((count) => {
       total += count;
     });
 
-    // Build distribution array (sorted 5 to 1)
     const dist: RatingDistribution[] = [5, 4, 3, 2, 1].map((r) => ({
       rating: r,
       count: counts[r],
@@ -163,6 +197,18 @@ export const AppRatingBreakdown = ({
       distribution: dist,
     };
   }, [rating]);
+
+  const starSize = isMobile ? '3.25rem' : '2.75rem';
+
+  const hintText = hoverValue
+    ? t(RATE_HINT_KEYS[hoverValue], {
+        postProcess: 'capitalizeFirstChar',
+        defaultValue: RATE_HINT_DEFAULTS[hoverValue],
+      })
+    : t('core:app_detail.rate_tap_hint', {
+        postProcess: 'capitalizeFirstChar',
+        defaultValue: 'Tap a star to rate this app',
+      });
 
   if (isLoading) {
     return (
@@ -209,28 +255,61 @@ export const AppRatingBreakdown = ({
 
       {onRate && (
         <RateSection>
-          <RateLabel>
+          <RateTitle>
             {t('core:app_detail.rate_this_app', {
               postProcess: 'capitalizeFirstChar',
             })}
-            :
-          </RateLabel>
+          </RateTitle>
+
           <Rating
             value={0}
-            onChange={(_, value) => value && onRate(value)}
+            onChange={(_, value) => {
+              if (value != null) {
+                onRate(value);
+              }
+            }}
+            onChangeActive={(_, value) => setHoverValue(value)}
             precision={1}
             size="large"
             icon={<StarFilledIcon />}
             emptyIcon={<StarEmptyIcon />}
             sx={{
-              '& .MuiRating-iconHover svg path': {
-                fill: '#FFD700',
+              '& .MuiRating-icon': {
+                margin: isMobile ? '0 6px' : '0 4px',
+                padding: '6px',
+                transition:
+                  'transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1), filter 0.15s ease',
+              },
+              '& .MuiRating-iconActive': {
+                filter: 'drop-shadow(0 2px 8px rgba(255, 180, 0, 0.45))',
+                transform: 'scale(1.08)',
+              },
+              '& .MuiRating-iconEmpty svg path': {
+                fill: `${alpha(theme.palette.text.secondary, 0.35)} !important`,
+              },
+              '& .MuiRating-iconFilled svg path': {
+                fill: '#FFB400 !important',
               },
               '& .MuiRating-iconHover': {
-                transform: 'scale(1.3)',
+                filter: 'drop-shadow(0 4px 10px rgba(255, 215, 0, 0.55))',
+                transform: 'scale(1.18)',
               },
+              '& .MuiRating-iconHover svg path': {
+                fill: '#FFD700 !important',
+              },
+              fontSize: starSize,
             }}
           />
+
+          <RateHint
+            sx={{
+              color: hoverValue
+                ? theme.palette.warning.dark
+                : theme.palette.text.secondary,
+            }}
+          >
+            {hintText}
+          </RateHint>
         </RateSection>
       )}
     </BreakdownContainer>

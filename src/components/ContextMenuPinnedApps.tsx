@@ -5,6 +5,7 @@ import {
   MenuItem,
   Typography,
   styled,
+  useMediaQuery,
   useTheme,
 } from '@mui/material';
 import PushPinIcon from '@mui/icons-material/PushPin';
@@ -38,6 +39,7 @@ export const ContextMenuPinnedApps = ({ children, app, isMine }) => {
   const setSortablePinnedApps = useSetAtom(sortablePinnedAppsAtom);
 
   const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down('md'));
 
   const handleContextMenu = (event) => {
     if (isMine) return;
@@ -114,7 +116,7 @@ export const ContextMenuPinnedApps = ({ children, app, isMine }) => {
       onTouchStart={handleTouchStart}
       onTouchMove={handleTouchMove}
       onTouchEnd={handleTouchEnd}
-      style={{ touchAction: 'none' }}
+      style={{ touchAction: isMobile ? 'pan-y' : 'none' }}
     >
       {children}
       <CustomStyledMenu

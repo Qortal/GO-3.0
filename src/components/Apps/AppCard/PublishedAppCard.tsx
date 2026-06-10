@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Avatar, Box, Button, Rating, styled, Typography } from '@mui/material';
+import { Avatar, Box, Button, Rating, Typography, alpha, styled } from '@mui/material';
 import { useTranslation } from 'react-i18next';
 import { getBaseApiReact } from '../../../App';
 import LogoSelected from '../../../assets/svgs/LogoSelected.svg';
@@ -12,6 +12,7 @@ interface PublishedAppCardProps {
   app: any;
   onUpdate: () => void;
   onViewStats?: () => void;
+  variant?: 'card' | 'list';
 }
 
 const CardContainer = styled(Box)(({ theme }) => ({
@@ -112,10 +113,59 @@ const ActionButton = styled(Button)({
   borderRadius: '8px',
 });
 
+const ListItemContainer = styled(Box)(({ theme }) => ({
+  display: 'flex',
+  alignItems: 'center',
+  gap: '12px',
+  padding: '10px 2px',
+  width: '100%',
+  borderBottom: `1px solid ${alpha(theme.palette.divider, 0.45)}`,
+  backgroundColor: 'transparent',
+  '&:last-of-type': {
+    borderBottom: 'none',
+  },
+}));
+
+const ListAppIcon = styled(Box)(({ theme }) => ({
+  width: '48px',
+  height: '48px',
+  borderRadius: '12px',
+  backgroundColor: alpha(theme.palette.background.paper, 0.5),
+  border: `1px solid ${alpha(theme.palette.divider, 0.4)}`,
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  overflow: 'hidden',
+  flexShrink: 0,
+}));
+
+const ListContent = styled(Box)({
+  display: 'flex',
+  flexDirection: 'column',
+  flex: 1,
+  minWidth: 0,
+  gap: '2px',
+});
+
+const ListTitle = styled(Typography)(({ theme }) => ({
+  fontSize: '15px',
+  fontWeight: 600,
+  color: theme.palette.text.primary,
+  whiteSpace: 'nowrap',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+}));
+
+const ListMeta = styled(Typography)(({ theme }) => ({
+  fontSize: '12px',
+  color: theme.palette.text.secondary,
+}));
+
 export const PublishedAppCard = ({
   app,
   onUpdate,
   onViewStats,
+  variant = 'card',
 }: PublishedAppCardProps) => {
   const { t } = useTranslation(['core']);
   const [rating, setRating] = useState(0);
@@ -200,6 +250,72 @@ export const PublishedAppCard = ({
       month: 'short',
     });
   };
+
+  if (variant === 'list') {
+    return (
+      <ListItemContainer>
+        <ListAppIcon>
+          <Avatar
+            sx={{
+              height: '36px',
+              width: '36px',
+              '& img': { objectFit: 'fill' },
+            }}
+            alt={app?.name}
+            src={`${getBaseApiReact()}/arbitrary/THUMBNAIL/${app?.name}/qortal_avatar?async=true`}
+          >
+            <img
+              style={{ width: '24px', height: 'auto' }}
+              src={LogoSelected}
+              alt="app-icon"
+            />
+          </Avatar>
+        </ListAppIcon>
+
+        <ListContent>
+          <Box sx={{ alignItems: 'center', display: 'flex', gap: '8px' }}>
+            <ListTitle>{app?.metadata?.title || app?.name}</ListTitle>
+            <ServiceBadge serviceType={serviceType}>
+              {isWebsite ? (
+                <LanguageIcon sx={{ fontSize: '14px' }} />
+              ) : (
+                <AppsIcon sx={{ fontSize: '14px' }} />
+              )}
+              {isWebsite
+                ? t('core:website', { postProcess: 'capitalizeFirstChar' })
+                : t('core:app', { postProcess: 'capitalizeFirstChar' })}
+            </ServiceBadge>
+          </Box>
+          <Box sx={{ alignItems: 'center', display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+            <ListMeta>@{app?.name}</ListMeta>
+            {app?.created && (
+              <ListMeta>{formatDate(app.created)}</ListMeta>
+            )}
+            <Rating
+              value={rating}
+              precision={0.1}
+              readOnly
+              size="small"
+              icon={<StarFilledIcon />}
+              emptyIcon={<StarEmptyIcon />}
+              sx={{ fontSize: '14px' }}
+            />
+          </Box>
+        </ListContent>
+
+        <ActionButton
+          variant="contained"
+          color="primary"
+          onClick={onUpdate}
+          sx={{ flexShrink: 0, fontSize: '12px', minWidth: '72px', padding: '4px 10px' }}
+        >
+          {t('core:developer.update', {
+            postProcess: 'capitalizeFirstChar',
+          })}
+        </ActionButton>
+      </ListItemContainer>
+    );
+  }
 
   return (
     <CardContainer>

@@ -1,4 +1,4 @@
-import { Box, ButtonBase, Typography, styled, useTheme } from '@mui/material';
+import { Box, ButtonBase, Typography, alpha, styled } from '@mui/material';
 import { useTranslation } from 'react-i18next';
 import { getCategoryIcon } from '../config/categoryIcons';
 
@@ -18,16 +18,17 @@ const CardContainer = styled(Box)(({ theme }) => ({
   flexDirection: 'column',
   alignItems: 'center',
   justifyContent: 'center',
-  padding: '24px 16px',
+  padding: '20px 12px',
   borderRadius: '12px',
-  backgroundColor: theme.palette.background.paper,
-  border: `1px solid ${theme.palette.divider}`,
+  backgroundColor: alpha(theme.palette.background.paper, 0.55),
+  border: `1px solid ${alpha(theme.palette.divider, 0.5)}`,
   cursor: 'pointer',
   transition: 'all 0.2s ease',
-  minWidth: '140px',
-  minHeight: '120px',
+  width: '100%',
+  aspectRatio: '1 / 1',
+  minHeight: 0,
   '&:hover': {
-    backgroundColor: theme.palette.action.hover,
+    backgroundColor: alpha(theme.palette.action.hover, 0.5),
     borderColor: theme.palette.primary.main,
     transform: 'translateY(-2px)',
     boxShadow: theme.shadows[2],

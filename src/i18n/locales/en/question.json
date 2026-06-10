@@ -153,7 +153,7 @@
     "kick": "do you give this application permission to kick {{ partecipant }} from the group?",
     "leave_group": "do you give this application permission to leave the following group?",
     "list_hosted_data": "do you give this application permission to get a list of your hosted data?",
-    "notification": "allow this app to send you Hub notifications?",
+    "notification": "allow this app to send you GO notifications?",
     "notification_allow": "allow",
     "notification_dont_allow": "don't allow",
     "notification_title": "{{ appName }} notifications",

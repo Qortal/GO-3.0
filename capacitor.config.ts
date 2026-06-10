@@ -1,21 +1,29 @@
 import type { CapacitorConfig } from '@capacitor/cli';
 
-const config: CapacitorConfig & {
-  electron?: {
-    trayIconAndMenuEnabled?: boolean;
-  };
-} = {
-  appId: 'org.Qortal.Qortal-Hub',
-  appName: 'Qortal-Hub',
+const config: CapacitorConfig = {
+  appId: 'com.github.Qortal.qortalGo2',
+  appName: 'Qortal GO 2.0',
   webDir: 'dist',
+  server: {
+    androidScheme: 'http',
+  },
   plugins: {
     LocalNotifications: {
-      smallIcon: 'qort',
-      iconColor: '#09b6e8',
+      smallIcon: 'ic_stat_qortal',
+      iconColor: '#09B6E8',
     },
-  },
-  electron: {
-    trayIconAndMenuEnabled: true,
+    SplashScreen: {
+      launchShowDuration: 0,
+      launchAutoHide: true,
+      backgroundColor: '#0E0F14',
+      androidScaleType: 'CENTER_INSIDE',
+      showSpinner: false,
+      splashFullScreen: true,
+      splashImmersive: true,
+    },
+    CapacitorHttp: {
+      enabled: false,
+    },
   },
 };
 

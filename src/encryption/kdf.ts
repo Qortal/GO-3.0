@@ -3,7 +3,10 @@
 import { bytes_to_base64 as bytesToBase64, Sha512 } from 'asmcrypto.js';
 import utils from '../utils/utils';
 import { crypto as crypto2 } from '../constants/decryptWallet';
-import BcryptWorker from './bcryptworker.worker.js?worker';
+// WASM bcrypt (hash-wasm): byte-for-byte identical output to the old
+// bcryptjs worker (verified against the wallet KDF salt), but meaningfully
+// faster on mobile JS engines where the pure-JS implementation crawls.
+import BcryptWorker from './bcryptworkerwasm.worker.js?worker';
 
 const stringtoUTF8Array = (message) => {
   if (typeof message === 'string') {

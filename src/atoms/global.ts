@@ -44,10 +44,19 @@ export const groupsOwnerNamesAtom = atomWithReset({});
 export const groupsPropertiesAtom = atomWithReset({});
 export const hasSettingsChangedAtom = atomWithReset(false);
 export const isDisabledEditorEnterAtom = atomWithReset(false);
+
+/** True while mobile chat compose keyboard mode is active (hides tab bar, swaps top bar). */
+export const mobileChatComposeActiveAtom = atomWithReset(false);
 export const isOpenBlockedModalAtom = atomWithReset(false);
 export const isRunningPublicNodeAtom = atomWithReset(false);
+/** Pre-login Login settings modal (shared between Enter Qortal screen and footer). */
+export const mobileLoginSettingsOpenAtom = atom(false);
+export const mobileLoginSettingsWalletsAtom = atom<
+  Array<{ address0?: string; name?: string; filename?: string; [key: string]: unknown }>
+>([]);
 export const isUsingImportExportSettingsAtom = atomWithReset(null);
 export const memberGroupsAtom = atomWithReset([]);
+export const memberDirectsAtom = atomWithReset<any[]>([]);
 export const mutedGroupsAtom = atomWithReset([]);
 export const myGroupsWhereIAmAdminAtom = atomWithReset([]);
 
@@ -699,6 +708,8 @@ export const infoSnackGlobalAtom = atomWithReset<{
   compact?: boolean;
   dismissible?: boolean;
   sourceId?: string;
+  actionLabel?: string;
+  actionEvent?: string;
 } | null>(null);
 
 // Tutorial state (reduces context re-renders for tutorial UI)
@@ -753,6 +764,45 @@ export const groupsAnnHasUnreadAtom = atom((get) => {
 /** Combined: groups tab has any unread (chat or announcements). */
 export const hasUnreadGroupsAtom = atom((get) => {
   return get(groupChatHasUnreadAtom) || get(groupsAnnHasUnreadAtom);
+});
+
+/** Derived: any direct message chat has unread. */
+export const directChatHasUnreadAtom = atom((get) => {
+  const directs = get(memberDirectsAtom);
+  const myAddress = get(userInfoAtom)?.address;
+  const timestampEnterData = get(timestampEnterDataAtom) || {};
+  if (!directs?.length || !myAddress) return false;
+  return directs.some(
+    (direct: any) =>
+      direct?.sender !== myAddress &&
+      direct?.timestamp &&
+      ((!timestampEnterData[direct?.address] &&
+        Date.now() - direct.timestamp < TIME_DIFF_UNREAD_CHATS_MS) ||
+        timestampEnterData[direct?.address] < direct.timestamp)
+  );
+});
+
+/** Derived: any non-muted group chat has unread (respects push mute list). */
+export const groupChatHasUnreadExcludingMutedAtom = atom((get) => {
+  const groups = get(memberGroupsAtom);
+  const myAddress = get(userInfoAtom)?.address;
+  const groupChatTimestamps = get(groupChatTimestampsAtom);
+  const timestampEnterData = get(timestampEnterDataAtom) || {};
+  const mutedGroups = get(mutedGroupsAtom) || [];
+  const mutedSet = new Set([...mutedGroups, '0']);
+  if (!groups?.length || !myAddress) return false;
+  return groups.some(
+    (group: any) =>
+      !mutedSet.has(group?.groupId) &&
+      group?.groupId !== '0' &&
+      group?.data &&
+      group?.sender !== myAddress &&
+      group?.timestamp &&
+      groupChatTimestamps[group?.groupId] &&
+      ((!timestampEnterData[group?.groupId] &&
+        Date.now() - group?.timestamp < TIME_DIFF_UNREAD_CHATS_MS) ||
+        timestampEnterData[group?.groupId] < group.timestamp)
+  );
 });
 
 /** Derived: is the selected group's chat unread? Key: selectedGroupId (string) or empty. */

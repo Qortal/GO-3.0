@@ -67,14 +67,17 @@ export const AppsLibraryContainer = styled(Box)(({ theme }) => ({
   width: '100%',
 }));
 
-export const AppsWidthLimiter = styled(Box)(({ theme }) => ({
+export const AppsWidthLimiter = styled(Box, {
+  shouldForwardProp: (prop) => prop !== 'isMobile',
+})<{ isMobile?: boolean }>(({ isMobile }) => ({
   alignItems: 'flex-start',
-  backgroundColor: theme.palette.background.default,
-  color: theme.palette.text.primary,
+  backgroundColor: 'transparent',
+  color: 'inherit',
   display: 'flex',
   flexDirection: 'column',
   justifyContent: 'flex-start',
-  width: '90%',
+  maxWidth: '100%',
+  width: isMobile ? '100%' : '90%',
 }));
 
 export const AppsSearchContainer = styled(Box)(({ theme }) => ({
@@ -655,5 +658,11 @@ export const AppCardsGrid = styled(Box)({
   display: 'grid',
   gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))',
   gap: '16px',
+  width: '100%',
+});
+
+export const AppsList = styled(Box)({
+  display: 'flex',
+  flexDirection: 'column',
   width: '100%',
 });

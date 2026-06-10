@@ -275,13 +275,19 @@ export const MessageDisplay = ({ htmlContent, isReply = false }) => {
         '--code-block-accent': theme.palette.primary.main,
         '--code-block-border': theme.palette.divider,
         '--primary-main': theme.palette.primary.main,
+        maxWidth: '100%',
+        minWidth: 0,
+        width: '100%',
       }}
     >
       {embedLink && <Embed embedLink={embedData} />}
       <Box
         ref={contentRef}
         sx={{
+          maxWidth: '100%',
+          minWidth: 0,
           position: 'relative',
+          width: '100%',
           '&:hover .message-copy-code-btn': { opacity: 1 },
         }}
       >

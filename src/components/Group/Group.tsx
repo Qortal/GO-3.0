@@ -1,4 +1,4 @@
-import { Box, Paper, Typography, useTheme } from '@mui/material';
+import { Box, Paper, Typography, useMediaQuery, useTheme } from '@mui/material';
 import {
   lazy,
   Profiler,
@@ -32,6 +32,7 @@ import {
   subscribeToEvent,
   unsubscribeFromEvent,
 } from '../../utils/events';
+import { useAndroidBack, BACK_PRIORITY } from '../../utils/androidBack';
 import { WebSocketActive } from './WebsocketActive';
 import { WebSocketNotifications } from './WebsocketNotifications';
 import {
@@ -63,6 +64,7 @@ import {
   isOpenBlockedModalAtom,
   isRunningPublicNodeAtom,
   memberGroupsAtom,
+  memberDirectsAtom,
   mutedGroupsAtom,
   myGroupsWhereIAmAdminAtom,
   selectedGroupIdAtom,
@@ -90,6 +92,7 @@ import { useWebsocketStatus } from './useWebsocketStatus';
 import { DirectsSidebar } from './DirectsSidebar';
 import { GlobalChatWidget } from './GlobalChatWidget';
 import { openQChatTab, QCHAT_INTERNAL_TAB_ID } from '../../utils/openQChatTab';
+import { mobileAppsShellSx } from '../Mobile/mobileLayout';
 import {
   AdminRowBox,
   CenterBox,
@@ -223,6 +226,7 @@ export const Group = ({
   const [openAddGroupTab, setOpenAddGroupTab] = useState<0 | 1 | 2>(0);
   const [openManageMembers, setOpenManageMembers] = useState(false);
   const setMemberGroups = useSetAtom(memberGroupsAtom);
+  const setMemberDirects = useSetAtom(memberDirectsAtom);
   const [timestampEnterData, setTimestampEnterData] = useAtom(
     timestampEnterDataAtom
   );
@@ -241,6 +245,7 @@ export const Group = ({
     groupAnnouncementsAtom
   );
   const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down('md'));
 
   const [defaultThread, setDefaultThread] = useState(null);
   const [, setIsOpenDrawer] = useState(false);
@@ -516,6 +521,11 @@ export const Group = ({
     qChatTabActiveRef.current = isQChatTabActive;
   }, [isQChatTabActive]);
 
+  useEffect(() => {
+    if (!isMobile) return;
+    setIsQChatTabActive(desktopViewMode === 'chat');
+  }, [desktopViewMode, isMobile]);
+
   // Track previous view mode to detect when user returns to chat
   const prevDesktopViewModeRef = useRef(desktopViewMode);
   const prevMobileViewModeRef = useRef(mobileViewMode);
@@ -526,7 +536,10 @@ export const Group = ({
     const wasInChatMode =
       prevQChatTabActiveRef.current || prevMobileViewModeRef.current === 'chat';
 
-    const isNowInChatMode = isQChatTabActive || mobileViewMode === 'chat';
+    const isNowInChatMode =
+      isQChatTabActive ||
+      mobileViewMode === 'chat' ||
+      (isMobile && desktopViewMode === 'chat');
 
     // Only update timestamp when user RETURNS to chat (wasn't in chat, now is in chat)
     if (!wasInChatMode && isNowInChatMode) {
@@ -577,7 +590,7 @@ export const Group = ({
     prevDesktopViewModeRef.current = desktopViewMode;
     prevMobileViewModeRef.current = mobileViewMode;
     prevQChatTabActiveRef.current = isQChatTabActive;
-  }, [desktopViewMode, isQChatTabActive, mobileViewMode]);
+  }, [desktopViewMode, isMobile, isQChatTabActive, mobileViewMode]);
 
   const getUserSettings = useCallback(async () => {
     try {
@@ -1164,8 +1177,8 @@ export const Group = ({
       }
 
       if (message?.action === 'SET_DIRECTS') {
-        // Update the component state with the received 'sendqort' state
         setDirects(message.payload);
+        setMemberDirects(message.payload ?? []);
       } else if (message?.action === 'PLAY_NOTIFICATION_SOUND') {
         // audio.play();
       }
@@ -1327,7 +1340,15 @@ export const Group = ({
           isLoadingOpenSectionFromNotification.current = false;
         }, 200);
       } else {
-        isLoadingOpenSectionFromNotification.current = false;
+        openQChatTab();
+        setDesktopSideView('directs');
+        setNewChat(true);
+        setTimeout(() => {
+          executeEvent('setDirectToValueNewChat', {
+            directToValue: directAddress,
+          });
+          isLoadingOpenSectionFromNotification.current = false;
+        }, 500);
       }
     },
     [displayDirects, selectedDirect?.address, getTimestampEnterChat]
@@ -1497,6 +1518,7 @@ export const Group = ({
     setMemberGroups([]);
     memberGroupsRef.current = [];
     setDirects([]);
+    setMemberDirects([]);
     setAdmins([]);
     setAdminsWithNames([]);
     setMembers([]);
@@ -1567,6 +1589,68 @@ export const Group = ({
       unsubscribeFromEvent('open-home-mode', openHomeMode);
     };
   }, [openHomeMode]);
+
+  const openChatMode = useCallback(() => {
+    setDesktopViewMode('chat');
+    setMobileViewMode('chat');
+  }, [setDesktopViewMode]);
+
+  useEffect(() => {
+    subscribeToEvent('open-chat-mode', openChatMode);
+
+    return () => {
+      unsubscribeFromEvent('open-chat-mode', openChatMode);
+    };
+  }, [openChatMode]);
+
+  // Mobile bottom-tab bar switches the Q-Chat side view (Chat = directs,
+  // Groups = group list) without exposing the desktop hover sidebar.
+  const setChatSideViewFromMobile = useCallback((e: CustomEvent) => {
+    const view = e?.detail?.data?.view;
+    // On mobile the list and an open chat occupy the same single column, so we
+    // must clear any open group/DM/new-chat detail when switching the side view;
+    // otherwise the open detail keeps covering the screen and the user is stuck
+    // inside (e.g. a group) with no way back to the list.
+    if (view === 'directs') {
+      setSelectedGroup(null);
+      setSelectedDirect(null);
+      setNewChat(false);
+      setDesktopSideView('directs');
+    } else if (view === 'groups') {
+      setSelectedGroup(null);
+      setSelectedDirect(null);
+      setNewChat(false);
+      setChatMode('groups');
+      setDesktopSideView('groups');
+    }
+  }, []);
+
+  useEffect(() => {
+    subscribeToEvent('mobile-chat-side-view', setChatSideViewFromMobile);
+
+    return () => {
+      unsubscribeFromEvent('mobile-chat-side-view', setChatSideViewFromMobile);
+    };
+  }, [setChatSideViewFromMobile]);
+
+  // Android back inside Q-Chat: if a thread (group / DM / new chat) is open in
+  // the single mobile column, collapse back to the list instead of leaving the
+  // section. Runs above the App-level "return to Home" handler.
+  useAndroidBack(
+    () => {
+      if (selectedGroup || selectedDirect || newChat) {
+        setSelectedGroup(null);
+        setSelectedDirect(null);
+        setNewChat(false);
+        return true;
+      }
+      return false;
+    },
+    {
+      priority: BACK_PRIORITY.detail,
+      enabled: isMobile && desktopViewMode !== 'home',
+    }
+  );
 
   const returnFromAppsMode = useCallback(() => {
     setDesktopViewMode(lastNonQappDesktopViewModeRef.current || 'home');
@@ -1986,6 +2070,13 @@ export const Group = ({
     isSelected: boolean;
   }) => {
     const isVisible = isSelected && !hide;
+    const isInQChatSurface =
+      desktopViewMode === 'apps' ||
+      desktopViewMode === 'dev' ||
+      desktopViewMode === 'chat';
+    // On mobile the list and the open chat can't sit side-by-side; switch to a
+    // single column (list OR chat detail) so the chat pane is actually visible.
+    const inChatDetail = !!(selectedDirect || selectedGroup || newChat);
 
     return (
       <Box
@@ -1999,6 +2090,14 @@ export const Group = ({
           width: '100%',
         }}
       >
+        <Box
+          sx={{
+            display: isMobile && inChatDetail ? 'none' : 'flex',
+            flexShrink: 0,
+            minHeight: 0,
+            ...(isMobile ? { width: '100%' } : {}),
+          }}
+        >
         {desktopSideView !== 'directs' ? (
           <GroupList
             selectGroupFunc={selectGroupFunc}
@@ -2039,6 +2138,7 @@ export const Group = ({
             setIsOpenBlockedUserModal={setIsOpenBlockedUserModal}
           />
         )}
+        </Box>
 
         <Box
           sx={{
@@ -2048,6 +2148,8 @@ export const Group = ({
             minWidth: 0,
             overflow: 'hidden',
             position: 'relative',
+            display: isMobile && !inChatDetail ? 'none' : 'block',
+            ...(isMobile ? { width: '100%' } : {}),
           }}
         >
           {newChat && (
@@ -2077,6 +2179,12 @@ export const Group = ({
 
           <SelectedGroupWrapper isVisible={isVisible && !!selectedGroup}>
             <DesktopHeader
+              isMobile={isMobile}
+              onMobileBack={() => {
+                setSelectedGroup(null);
+                setSelectedDirect(null);
+                setNewChat(false);
+              }}
               isPrivate={isPrivate}
               selectedGroup={selectedGroup}
               groupSection={groupSection}
@@ -2139,8 +2247,7 @@ export const Group = ({
                   handleNewEncryptionNotification={setNewEncryptionNotification}
                   hide={groupSection !== 'chat' || !!selectedDirect || newChat}
                   hideView={
-                    !(isVisible && selectedGroup) ||
-                    (desktopViewMode !== 'apps' && desktopViewMode !== 'dev')
+                    !(isVisible && selectedGroup) || !isInQChatSurface
                   }
                   handleSecretKeyCreationInProgress={
                     handleSecretKeyCreationInProgress
@@ -2392,22 +2499,24 @@ export const Group = ({
           groupsPropertiesRef={groupsPropertiesRef}
           hasInitializedWebsocketRef={hasInitializedWebsocket}
         />
-        <DesktopSideBar
-          desktopViewMode={desktopViewMode}
-          toggleSideViewGroups={toggleSideViewGroups}
-          toggleSideViewDirects={toggleSideViewDirects}
-          goToHome={goToHome}
-          mode={appsMode}
-          setMode={setAppsMode}
-          setDesktopSideView={setDesktopSideView}
-          hasUnreadDirects={directChatHasUnread}
-          isApps={desktopViewMode === 'apps'}
-          isGroups={isOpenSideViewGroups}
-          isDirects={isOpenSideViewDirects}
-          setDesktopViewMode={setDesktopViewMode}
-          lastQappViewMode={lastQappViewMode}
-          setAppsModeDev={setAppsModeDev}
-        />
+        {!isMobile && (
+          <DesktopSideBar
+            desktopViewMode={desktopViewMode}
+            toggleSideViewGroups={toggleSideViewGroups}
+            toggleSideViewDirects={toggleSideViewDirects}
+            goToHome={goToHome}
+            mode={appsMode}
+            setMode={setAppsMode}
+            setDesktopSideView={setDesktopSideView}
+            hasUnreadDirects={directChatHasUnread}
+            isApps={desktopViewMode === 'apps'}
+            isGroups={isOpenSideViewGroups}
+            isDirects={isOpenSideViewDirects}
+            setDesktopViewMode={setDesktopViewMode}
+            lastQappViewMode={lastQappViewMode}
+            setAppsModeDev={setAppsModeDev}
+          />
+        )}
 
         <MainContentBox>
           {openAddGroup && (
@@ -2429,6 +2538,7 @@ export const Group = ({
             mode={appsMode}
             setMode={setAppsMode}
             onInternalTabVisibilityChange={({ isVisible, tab }) => {
+              if (isMobile) return;
               setIsQChatTabActive(
                 isVisible && tab?.internal === QCHAT_INTERNAL_TAB_ID
               );
@@ -2440,6 +2550,19 @@ export const Group = ({
             }
             show={desktopViewMode === 'apps' || desktopViewMode === 'dev'}
           />
+
+          {isMobile && desktopViewMode === 'chat' ? (
+            <Box
+              sx={{
+                ...mobileAppsShellSx,
+                display: 'flex',
+                flexDirection: 'column',
+                overflow: 'hidden',
+              }}
+            >
+              {renderQChatTabContent({ hide: false, isSelected: true })}
+            </Box>
+          ) : null}
 
           <HomeDesktop
             refreshHomeDataFunc={refreshHomeDataFunc}
@@ -2469,7 +2592,7 @@ export const Group = ({
         />
         <WalletsAppWrapper />
 
-        {!chatWidgetClosed && (
+        {!chatWidgetClosed && !isMobile && (
           <GlobalChatWidget
             directs={displayDirects}
             getUserAvatarUrl={getUserAvatarUrl}

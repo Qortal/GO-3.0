@@ -16,7 +16,7 @@ import { useAtomValue, useSetAtom } from 'jotai';
 import { userInfoAtom } from '../../../atoms/global';
 import { publishEditTargetAtom } from '../../../atoms/appsAtoms';
 import { getBaseApiReact } from '../../../App';
-import { AppsWidthLimiter } from '../Apps-styles';
+import { AppsWidthLimiter, AppsList } from '../Apps-styles';
 import { Spacer } from '../../../common/Spacer';
 import { PublishedAppCard } from '../AppCard';
 
@@ -25,6 +25,7 @@ interface MyAppsTabProps {
   availableQapps: any[];
   setMode: (mode: string) => void;
   searchValue?: string;
+  isMobile?: boolean;
 }
 
 const SectionContainer = styled(Box)({
@@ -90,6 +91,7 @@ export const MyAppsTab = ({
   availableQapps,
   setMode,
   searchValue = '',
+  isMobile = false,
 }: MyAppsTabProps) => {
   const theme = useTheme();
   const { t } = useTranslation(['core']);
@@ -174,7 +176,7 @@ export const MyAppsTab = ({
 
   if (isLoadingNames) {
     return (
-      <AppsWidthLimiter>
+      <AppsWidthLimiter isMobile={isMobile}>
         <EmptyStateBox>
           <CircularProgress sx={{ mb: 2 }} />
           <Typography
@@ -194,7 +196,7 @@ export const MyAppsTab = ({
 
   if (!myAddress || hasNoNames) {
     return (
-      <AppsWidthLimiter>
+      <AppsWidthLimiter isMobile={isMobile}>
         <EmptyStateBox>
           <Typography
             sx={{
@@ -223,7 +225,7 @@ export const MyAppsTab = ({
   }
 
   return (
-    <AppsWidthLimiter>
+    <AppsWidthLimiter isMobile={isMobile}>
       <SectionContainer>
         {/* Published Apps Section */}
         {myApps.length > 0 && (
@@ -235,25 +237,48 @@ export const MyAppsTab = ({
               })}
             </SectionTitle>
             <Spacer height="16px" />
-            <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: '16px' }}>
-              {myApps.map((app) => (
-                <PublishedAppCard
-                  key={`${app.service}-${app.name}`}
-                  app={app}
-                  onUpdate={() => {
-                    setPublishEditTarget({
-                      name: app.name,
-                      service:
-                        app.service === 'WEBSITE' ||
-                        app.service?.includes?.('WEBSITE')
-                          ? 'WEBSITE'
-                          : 'APP',
-                    });
-                    setMode('publish');
-                  }}
-                />
-              ))}
-            </Box>
+            {isMobile ? (
+              <AppsList>
+                {myApps.map((app) => (
+                  <PublishedAppCard
+                    key={`${app.service}-${app.name}`}
+                    app={app}
+                    variant="list"
+                    onUpdate={() => {
+                      setPublishEditTarget({
+                        name: app.name,
+                        service:
+                          app.service === 'WEBSITE' ||
+                          app.service?.includes?.('WEBSITE')
+                            ? 'WEBSITE'
+                            : 'APP',
+                      });
+                      setMode('publish');
+                    }}
+                  />
+                ))}
+              </AppsList>
+            ) : (
+              <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: '16px' }}>
+                {myApps.map((app) => (
+                  <PublishedAppCard
+                    key={`${app.service}-${app.name}`}
+                    app={app}
+                    onUpdate={() => {
+                      setPublishEditTarget({
+                        name: app.name,
+                        service:
+                          app.service === 'WEBSITE' ||
+                          app.service?.includes?.('WEBSITE')
+                            ? 'WEBSITE'
+                            : 'APP',
+                      });
+                      setMode('publish');
+                    }}
+                  />
+                ))}
+              </Box>
+            )}
           </Box>
         )}
 
@@ -267,25 +292,48 @@ export const MyAppsTab = ({
               })}
             </SectionTitle>
             <Spacer height="16px" />
-            <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: '16px' }}>
-              {myWebsites.map((site) => (
-                <PublishedAppCard
-                  key={`${site.service}-${site.name}`}
-                  app={site}
-                  onUpdate={() => {
-                    setPublishEditTarget({
-                      name: site.name,
-                      service:
-                        site.service === 'WEBSITE' ||
-                        site.service?.includes?.('WEBSITE')
-                          ? 'WEBSITE'
-                          : 'APP',
-                    });
-                    setMode('publish');
-                  }}
-                />
-              ))}
-            </Box>
+            {isMobile ? (
+              <AppsList>
+                {myWebsites.map((site) => (
+                  <PublishedAppCard
+                    key={`${site.service}-${site.name}`}
+                    app={site}
+                    variant="list"
+                    onUpdate={() => {
+                      setPublishEditTarget({
+                        name: site.name,
+                        service:
+                          site.service === 'WEBSITE' ||
+                          site.service?.includes?.('WEBSITE')
+                            ? 'WEBSITE'
+                            : 'APP',
+                      });
+                      setMode('publish');
+                    }}
+                  />
+                ))}
+              </AppsList>
+            ) : (
+              <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: '16px' }}>
+                {myWebsites.map((site) => (
+                  <PublishedAppCard
+                    key={`${site.service}-${site.name}`}
+                    app={site}
+                    onUpdate={() => {
+                      setPublishEditTarget({
+                        name: site.name,
+                        service:
+                          site.service === 'WEBSITE' ||
+                          site.service?.includes?.('WEBSITE')
+                            ? 'WEBSITE'
+                            : 'APP',
+                      });
+                      setMode('publish');
+                    }}
+                  />
+                ))}
+              </Box>
+            )}
           </Box>
         )}
 

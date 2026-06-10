@@ -53,6 +53,7 @@ import {
   Portal,
   Tooltip,
   Typography,
+  useMediaQuery,
   useTheme,
 } from '@mui/material';
 import { alpha } from '@mui/material/styles';
@@ -67,6 +68,7 @@ import CloseIcon from '@mui/icons-material/Close';
 import { throttle } from 'lodash';
 import ImageIcon from '@mui/icons-material/Image';
 import SendIcon from '@mui/icons-material/Send';
+import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import { messageHasImage } from '../../utils/chat';
 import { useTranslation } from 'react-i18next';
 
@@ -98,6 +100,8 @@ export const ChatGroup = ({
     groupQManagerPopupSizeAtom
   );
   const myName = userInfo?.name;
+  const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down('md'));
   const { show } = useContext(QORTAL_APP_CONTEXT);
   const jotaiStore = useStore();
   const isChatSenderBlocked = useCallback(
@@ -971,6 +975,12 @@ export const ChatGroup = ({
     }
   };
 
+  const closeMobileCompose = useCallback(() => {
+    if (!isMobile) return;
+    setIsFocusedParent(false);
+    editorRef.current?.commands.blur();
+  }, [isMobile]);
+
   const sendMessage = async () => {
     try {
       if (messageSize > MAX_SIZE_MESSAGE) return;
@@ -1153,6 +1163,7 @@ export const ChatGroup = ({
         setOnEditMessage(null);
         setIsDeleteImage(false);
         setChatImagesToSave([]);
+        closeMobileCompose();
       }
       // send chat message
     } catch (error) {
@@ -1220,7 +1231,10 @@ export const ChatGroup = ({
       setOnEditMessage(null);
       setIsDeleteImage(false);
       setChatImagesToSave([]);
-      editorRef?.current?.chain().focus();
+      setIsFocusedParent(true);
+      setTimeout(() => {
+        editorRef?.current?.chain().focus();
+      }, 250);
     },
     [onEditMessage]
   );
@@ -1228,15 +1242,14 @@ export const ChatGroup = ({
   const onEdit = useCallback((message) => {
     setOnEditMessage(message);
     setReplyMessage(null);
-    try {
+    setIsFocusedParent(true);
+    setTimeout(() => {
       editorRef.current
-        .chain()
+        ?.chain()
         .focus()
         .setContent(message?.messageText || message?.text || '<p></p>')
         .run();
-    } catch (error) {
-      console.error(error);
-    }
+    }, 250);
   }, []);
 
   const handleReaction = useCallback(
@@ -1317,8 +1330,6 @@ export const ChatGroup = ({
     setIsOpenQManager(true);
   }, []);
 
-  const theme = useTheme();
-
   const insertImage = useCallback(
     (img) => {
       if (
@@ -1354,52 +1365,55 @@ export const ChatGroup = ({
         width: '100%',
       }}
     >
-      <ChatList
-        chatId={selectedGroup}
-        chatReferences={chatReferences}
-        enableMentions
-        handleReaction={handleReaction}
-        hasSecretKey={!!secretKey}
-        initialMessages={messages}
-        isPrivate={isPrivate}
-        members={members}
-        myAddress={myAddress}
-        myName={myName}
-        onEdit={onEdit}
-        onReply={onReply}
-        openQManager={openQManager}
-        selectedGroup={selectedGroup}
-        tempChatReferences={tempChatReferences}
-        tempMessages={tempMessages}
-      />
+      <Box sx={{ flex: 1, minHeight: 0, overflow: 'hidden', width: '100%' }}>
+        <ChatList
+          chatId={selectedGroup}
+          chatReferences={chatReferences}
+          enableMentions
+          handleReaction={handleReaction}
+          hasSecretKey={!!secretKey}
+          initialMessages={messages}
+          isPrivate={isPrivate}
+          members={members}
+          myAddress={myAddress}
+          myName={myName}
+          onEdit={onEdit}
+          onReply={onReply}
+          openQManager={openQManager}
+          selectedGroup={selectedGroup}
+          tempChatReferences={tempChatReferences}
+          tempMessages={tempMessages}
+        />
+      </Box>
 
       {(!!secretKey || isPrivate === false) && (
         <Box
           sx={{
-            alignItems: 'flex-end',
+            alignItems: isMobile ? 'stretch' : 'flex-end',
             backgroundColor: theme.palette.background.default,
             border: `1px solid ${theme.palette.divider}`,
             borderRadius: '8px',
-            bottom: isFocusedParent ? '0px' : 'unset',
             boxSizing: 'border-box',
             display: 'flex',
-            flexDirection: 'row',
+            flexDirection: isMobile ? 'column' : 'row',
             flexShrink: 0,
-            gap: '12px',
-            minHeight: '150px',
+            gap: isMobile ? '8px' : '12px',
+            maxHeight: isFocusedParent && isMobile ? 'min(40vh, 280px)' : undefined,
+            minHeight: isMobile ? 0 : '150px',
             overflow: 'hidden',
-            padding: '16px 20px 20px',
-            position: isFocusedParent ? 'fixed' : 'relative',
-            top: isFocusedParent ? '0px' : 'unset',
+            padding: isMobile ? '10px' : '16px 20px 20px',
+            paddingBottom: isMobile
+              ? 'max(10px, env(safe-area-inset-bottom, 0px))'
+              : undefined,
+            position: 'relative',
             width: '100%',
-            zIndex: isFocusedParent ? 5 : 'unset',
           }}
         >
           <Box
             sx={{
               display: 'flex',
-              flexDirection: 'column',
               flex: 1,
+              flexDirection: 'column',
               flexShrink: 0,
               justifyContent: 'flex-end',
               minWidth: 0,
@@ -1570,17 +1584,82 @@ export const ChatGroup = ({
               </Box>
             )}
 
+            <Box
+              className={isMobile ? 'mobile-chat-compose-row' : undefined}
+              sx={{
+                alignItems: 'flex-end',
+                display: 'flex',
+                gap: '6px',
+                width: '100%',
+              }}
+            >
+              <Box sx={{ flex: 1, minWidth: 0 }}>
             <Tiptap
               enableMentions
               setEditorRef={setEditorRef}
               onEnter={sendMessage}
               isChat
-              disableEnter={false}
+              disableEnter={isMobile}
               isFocusedParent={isFocusedParent}
+              isReply={Boolean(replyMessage || onEditMessage)}
               setIsFocusedParent={setIsFocusedParent}
               membersWithNames={members}
               insertImage={insertImage}
             />
+              </Box>
+              {isMobile && isFocusedParent && (
+                <>
+                  <IconButton
+                    aria-label={t('core:action.close', {
+                      postProcess: 'capitalizeFirstChar',
+                    })}
+                    disabled={isSending}
+                    onClick={() => {
+                      setIsFocusedParent(false);
+                      editorRef.current?.commands.blur();
+                    }}
+                    sx={{
+                      border: `1px solid ${theme.palette.divider}`,
+                      flexShrink: 0,
+                      height: 44,
+                      width: 44,
+                    }}
+                  >
+                    <CloseRoundedIcon sx={{ fontSize: 22 }} />
+                  </IconButton>
+                  <IconButton
+                    aria-label={t('core:action.send', {
+                      postProcess: 'capitalizeFirstChar',
+                    })}
+                    disabled={isSending || messageSize > MAX_SIZE_MESSAGE}
+                    onClick={() => {
+                      if (isSending || messageSize > MAX_SIZE_MESSAGE) return;
+                      sendMessage();
+                    }}
+                    sx={{
+                      bgcolor: theme.palette.primary.main,
+                      color: theme.palette.primary.contrastText,
+                      flexShrink: 0,
+                      height: 44,
+                      width: 44,
+                      '&:hover': {
+                        bgcolor: theme.palette.primary.dark,
+                      },
+                      '&.Mui-disabled': {
+                        bgcolor: theme.palette.action.disabledBackground,
+                        color: theme.palette.action.disabled,
+                      },
+                    }}
+                  >
+                    {isSending ? (
+                      <CircularProgress size={20} sx={{ color: 'inherit' }} />
+                    ) : (
+                      <SendIcon sx={{ fontSize: 22 }} />
+                    )}
+                  </IconButton>
+                </>
+              )}
+            </Box>
             {messageSize > MESSAGE_LIMIT_WARNING && (
               <Box
                 sx={{
@@ -1609,12 +1688,21 @@ export const ChatGroup = ({
             )}
           </Box>
 
+          {!isMobile && (
           <Box
             sx={{
               flexShrink: 0,
               paddingBottom: '2px',
             }}
           >
+            <Box
+              sx={{
+                alignItems: 'center',
+                display: 'flex',
+                gap: '8px',
+                justifyContent: 'flex-start',
+              }}
+            >
             <CustomButton
               onClick={() => {
                 if (isSending) return;
@@ -1661,7 +1749,9 @@ export const ChatGroup = ({
                 </>
               )}
             </CustomButton>
+            </Box>
           </Box>
+          )}
         </Box>
       )}
 

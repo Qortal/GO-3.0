@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import { DndContext, closestCenter } from '@dnd-kit/core';
 import {
   arrayMove,
@@ -14,10 +14,8 @@ import {
   useSensors,
 } from '@dnd-kit/core';
 import { CSS } from '@dnd-kit/utilities';
-import { Avatar, ButtonBase } from '@mui/material';
+import { ButtonBase } from '@mui/material';
 import { AppCircle, AppCircleContainer, AppCircleLabel } from './Apps-styles';
-import { getBaseApiReact } from '../../App';
-import LogoSelected from '../../assets/svgs/LogoSelected.svg';
 import { executeEvent } from '../../utils/events';
 import {
   settingsLocalLastUpdatedAtom,
@@ -29,26 +27,18 @@ import LockIcon from '@mui/icons-material/Lock';
 import { useHandlePrivateApps } from '../../hooks/useHandlePrivateApps';
 import { useAtom, useSetAtom } from 'jotai';
 import { useTranslation } from 'react-i18next';
+import { AppThumbnailAvatar } from './AppThumbnailAvatar';
 
-const SortableItem = ({ id, name, app, isDesktop }) => {
+const PinnedAppTile = ({
+  app,
+  isDesktop,
+  setNodeRef,
+  attributes,
+  listeners,
+  transform,
+  transition,
+}) => {
   const { openApp } = useHandlePrivateApps();
-  const [avatarError, setAvatarError] = useState(false);
-
-  const { attributes, listeners, setNodeRef, transform, transition } =
-    useSortable({ id });
-
-  const style = {
-    backgroundColor: '#f9f9f9',
-    border: '1px solid #ccc',
-    borderRadius: '4px',
-    color: 'black',
-    cursor: 'grab',
-    marginBottom: '5px',
-    padding: '10px',
-    transform: CSS.Transform.toString(transform),
-    transition,
-  };
-
   const { t } = useTranslation([
     'auth',
     'core',
@@ -61,12 +51,12 @@ const SortableItem = ({ id, name, app, isDesktop }) => {
     <ContextMenuPinnedApps app={app} isMine={!!app?.isMine}>
       <ButtonBase
         ref={setNodeRef}
-        {...attributes}
-        {...listeners}
+        {...(isDesktop ? { ...attributes, ...listeners } : {})}
         sx={{
           width: '80px',
-          transform: CSS.Transform.toString(transform),
+          transform: transform ? CSS.Transform.toString(transform) : undefined,
           transition,
+          touchAction: isDesktop ? undefined : 'manipulation',
         }}
         onClick={async () => {
           if (app?.isPrivate) {
@@ -88,48 +78,16 @@ const SortableItem = ({ id, name, app, isDesktop }) => {
             gap: isDesktop ? '10px' : '5px',
           }}
         >
-          <AppCircle
-            sx={{
-              border: 'none',
-            }}
-          >
+          <AppCircle sx={{ border: 'none' }}>
             {app?.isPrivate && !app?.privateAppProperties?.logo ? (
-              <LockIcon
-                sx={{
-                  height: '42px',
-                  width: '42px',
-                }}
-              />
+              <LockIcon sx={{ height: '42px', width: '42px' }} />
             ) : (
-              <Avatar
-                sx={{
-                  height: '42px',
-                  width: '42px',
-                  '& img': {
-                    objectFit: 'fill',
-                  },
-                }}
+              <AppThumbnailAvatar
+                appName={app?.isPrivate ? undefined : app?.name}
+                privateLogo={app?.privateAppProperties?.logo}
                 alt={app?.metadata?.title || app?.name}
-                src={
-                  avatarError
-                    ? LogoSelected
-                    : app?.privateAppProperties?.logo
-                      ? app?.privateAppProperties?.logo
-                      : `${getBaseApiReact()}/arbitrary/THUMBNAIL/${
-                          app?.name
-                        }/qortal_avatar?async=true`
-                }
-                imgProps={{ onError: () => setAvatarError(true) }}
-              >
-                <img
-                  style={{
-                    width: '31px',
-                    height: 'auto',
-                  }}
-                  src={LogoSelected}
-                  alt=""
-                />
-              </Avatar>
+                sx={{ height: '42px', width: '42px' }}
+              />
             )}
           </AppCircle>
           {app?.isPrivate ? (
@@ -150,6 +108,35 @@ const SortableItem = ({ id, name, app, isDesktop }) => {
   );
 };
 
+const SortableItem = ({ id, app, isDesktop }) => {
+  const { attributes, listeners, setNodeRef, transform, transition } =
+    useSortable({ id, disabled: !isDesktop });
+
+  return (
+    <PinnedAppTile
+      app={app}
+      attributes={attributes}
+      isDesktop={isDesktop}
+      listeners={listeners}
+      setNodeRef={setNodeRef}
+      transform={transform}
+      transition={transition}
+    />
+  );
+};
+
+const StaticPinnedItem = ({ app, isDesktop }) => (
+  <PinnedAppTile
+    app={app}
+    attributes={undefined}
+    isDesktop={isDesktop}
+    listeners={undefined}
+    setNodeRef={undefined}
+    transform={null}
+    transition={undefined}
+  />
+);
+
 export const SortablePinnedApps = ({
   isDesktop,
   myWebsite,
@@ -160,10 +147,8 @@ export const SortablePinnedApps = ({
   const setSettingsLocalLastUpdated = useSetAtom(settingsLocalLastUpdatedAtom);
 
   const transformPinnedApps = useMemo(() => {
-    // Clone the existing pinned apps list
     let pinned = [...pinnedApps];
 
-    // Function to add or update `isMine` property
     const addOrUpdateIsMine = (pinnedList, appToCheck) => {
       if (!appToCheck) return pinnedList;
 
@@ -174,24 +159,20 @@ export const SortablePinnedApps = ({
       );
 
       if (existingIndex !== -1) {
-        // If the app is already in the list, update it with `isMine: true`
         pinnedList[existingIndex] = {
           ...pinnedList[existingIndex],
           isMine: true,
         };
       } else {
-        // If not in the list, add it with `isMine: true` at the beginning
         pinnedList.unshift({ ...appToCheck, isMine: true });
       }
 
       return pinnedList;
     };
 
-    // Update or add `myWebsite` and `myApp` while preserving their positions
     pinned = addOrUpdateIsMine(pinned, myWebsite);
     pinned = addOrUpdateIsMine(pinned, myApp);
 
-    // Update pinned list based on availableQapps
     pinned = pinned.map((pin) => {
       const findIndex = availableQapps?.findIndex(
         (item) => item?.service === pin?.service && item?.name === pin?.name
@@ -211,12 +192,12 @@ export const SortablePinnedApps = ({
   const sensors = useSensors(
     useSensor(PointerSensor, {
       activationConstraint: {
-        distance: 10, // Set a distance to avoid triggering drag on small movements
+        distance: 10,
       },
     }),
     useSensor(TouchSensor, {
       activationConstraint: {
-        distance: 10, // Also apply to touch
+        distance: 10,
       },
     }),
     useSensor(KeyboardSensor, {
@@ -227,7 +208,7 @@ export const SortablePinnedApps = ({
   const handleDragEnd = (event) => {
     const { active, over } = event;
 
-    if (!over) return; // Make sure the drop target exists
+    if (!over) return;
 
     if (active.id !== over.id) {
       const oldIndex = transformPinnedApps.findIndex(
@@ -244,6 +225,20 @@ export const SortablePinnedApps = ({
     }
   };
 
+  if (!isDesktop) {
+    return (
+      <>
+        {transformPinnedApps.map((app) => (
+          <StaticPinnedItem
+            app={app}
+            isDesktop={isDesktop}
+            key={`${app?.service}-${app?.name}`}
+          />
+        ))}
+      </>
+    );
+  }
+
   return (
     <DndContext
       sensors={sensors}
@@ -259,7 +254,6 @@ export const SortablePinnedApps = ({
             id={`${app?.service}-${app?.name}`}
             isDesktop={isDesktop}
             key={`${app?.service}-${app?.name}`}
-            name={app?.name}
           />
         ))}
       </SortableContext>

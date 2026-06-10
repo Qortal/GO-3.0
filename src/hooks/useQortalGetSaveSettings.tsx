@@ -8,7 +8,10 @@ import {
   sortablePinnedAppsAtom,
 } from '../atoms/global';
 import { getArbitraryEndpointReact, getBaseApiReact } from '../App';
-import { decryptResource } from '../components/Group/Group';
+// Import from the small util module, not Group.tsx: this hook is in the eager
+// pre-login bundle and a Group.tsx import would drag the whole authenticated
+// tree into it.
+import { decryptResource } from '../components/Group/groupDataPublishes';
 import {
   base64ToUint8Array,
   uint8ArrayToObject,

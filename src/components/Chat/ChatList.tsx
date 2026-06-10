@@ -492,8 +492,10 @@ export const ChatList = ({
             display: 'flex',
             flexGrow: 1,
             height: '0px',
-            overflow: 'auto',
+            overflowY: 'auto',
+            overflowX: 'hidden',
             position: 'relative',
+            width: '100%',
           }}
         >
           <Box
@@ -588,7 +590,10 @@ export const ChatList = ({
                       position: 'absolute',
                       top: 0,
                       transform: `translateY(${virtualRow.start}px) translateX(-50%)`, // Adjust for centering
-                      width: '100%', // Control width (90% of the parent)
+                      width: '100%',
+                      maxWidth: '100%',
+                      minWidth: 0,
+                      boxSizing: 'border-box',
                     }}
                   >
                     <ErrorBoundary

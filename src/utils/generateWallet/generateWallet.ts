@@ -6,6 +6,8 @@ import PhraseWallet from './phrase-wallet';
 import * as WORDLISTS from './wordlists';
 import FileSaver from 'file-saver';
 import { mimeToExtensionMap } from '../memeTypes';
+import { isCapacitor } from '../platform';
+import { saveTextToMobileDocuments, saveBlobToMobileDocuments, buildQortalBackupFileName } from '../mobileFileSave';
 
 export function generateRandomSentence(
   template = 'adverb verb noun adjective noun adverb verb noun adjective noun adjective verbed adjective noun',
@@ -102,7 +104,13 @@ const hasExtension = (filename) => {
 
 export const saveFileToDisk = async (data, qortAddress) => {
   const dataString = JSON.stringify(data);
-  const fileName = 'qortal_backup_' + qortAddress + '.json';
+  const fileName = buildQortalBackupFileName(qortAddress);
+
+  // Capacitor Android/iOS: write to user-visible Documents/Qortal Go/
+  if (isCapacitor()) {
+    await saveTextToMobileDocuments(fileName, dataString);
+    return true;
+  }
 
   // Electron: native save dialog then write file via IPC
   if (typeof window !== 'undefined' && window.electron?.startStreamSave) {
@@ -155,12 +163,22 @@ export const saveFileToDiskGeneric = async (blob, filename) => {
   let fileName = filename || 'qortal_file_' + timestamp + '.' + fileExtension;
   fileName = hasExtension(fileName) ? fileName : fileName + '.' + fileExtension;
 
+  if (isCapacitor()) {
+    await saveBlobToMobileDocuments(fileName, blob);
+    return;
+  }
+
   await FileSaver.saveAs(blob, fileName);
 };
 
 export const saveSeedPhraseToDisk = async (data) => {
-  const blob = new Blob([data], { type: 'text/plain;charset=utf-8' });
   const fileName = 'qortal_seedphrase.txt';
 
+  if (isCapacitor()) {
+    await saveTextToMobileDocuments(fileName, data);
+    return;
+  }
+
+  const blob = new Blob([data], { type: 'text/plain;charset=utf-8' });
   await FileSaver.saveAs(blob, fileName);
 };

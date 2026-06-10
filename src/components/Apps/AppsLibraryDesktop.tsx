@@ -1,8 +1,9 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useMemo, useTransition } from 'react';
 import {
   AppsDesktopLibraryBody,
   AppsDesktopLibraryHeader,
   AppsLibraryContainer,
+  AppsList,
   AppsWidthLimiter,
 } from './Apps-styles';
 import {
@@ -41,7 +42,8 @@ import {
   MyAppsTab,
   PrivateTab,
 } from './AppsLibrary';
-import { AppCardEnhanced } from './AppCard';
+import { LibraryTabPanel } from './AppsLibrary/LibraryTabPanel';
+import { AppCardEnhanced, AppCardListItem } from './AppCard';
 
 const SearchContainer = styled(Box)(({ theme }) => ({
   display: 'flex',
@@ -60,12 +62,18 @@ export const AppsLibraryDesktop = ({
   myName,
   myAddress,
   isShow,
+  isMobile = false,
   categories,
   getQapps,
   externalSearchRequest,
   contentHeight,
 }) => {
   const [currentTab, setCurrentTab] = useState<AppsLibraryTabValue>('official');
+  const [mountedTabs, setMountedTabs] = useState<Set<AppsLibraryTabValue>>(
+    () => new Set(['official'])
+  );
+  const [scrollParent, setScrollParent] = useState<HTMLElement | null>(null);
+  const [, startTabTransition] = useTransition();
   const [searchValue, setSearchValue] = useState('');
   const [debouncedSearchValue, setDebouncedSearchValue] = useState('');
   const [sortOption, setSortOption] = useAtom(appSortAtom);
@@ -93,21 +101,38 @@ export const AppsLibraryDesktop = ({
     setDebouncedSearchValue(externalSearchRequest?.query || '');
   }, [externalSearchRequest?.nonce]);
 
-  const handleTabChange = (tab: AppsLibraryTabValue) => {
-    setCurrentTab(tab);
-  };
+  const handleTabChange = useCallback((tab: AppsLibraryTabValue) => {
+    startTabTransition(() => {
+      setCurrentTab(tab);
+      setMountedTabs((prev) => {
+        if (prev.has(tab)) return prev;
+        const next = new Set(prev);
+        next.add(tab);
+        return next;
+      });
+    });
+  }, []);
+
+  const bindScrollContainer = useCallback((node: HTMLDivElement | null) => {
+    setScrollParent(node);
+  }, []);
+
+  const isSearchResultsActive = debouncedSearchValue.trim().length > 0;
+
+  const searchResults = useMemo(() => {
+    if (!isSearchResultsActive) return [];
+    return filterAndSortApps(availableQapps, {
+      sort: sortOption,
+      category: 'all',
+      status: 'all',
+      search: debouncedSearchValue,
+    });
+  }, [availableQapps, debouncedSearchValue, isSearchResultsActive, sortOption]);
 
   const renderTabContent = () => {
-    if (debouncedSearchValue.trim()) {
-      const combinedResults = filterAndSortApps(availableQapps, {
-        sort: sortOption,
-        category: 'all',
-        status: 'all',
-        search: debouncedSearchValue,
-      });
-
+    if (isSearchResultsActive) {
       return (
-        <AppsWidthLimiter>
+        <AppsWidthLimiter isMobile={isMobile}>
           <Box
             sx={{
               alignItems: 'center',
@@ -126,79 +151,124 @@ export const AppsLibraryDesktop = ({
               {t('core:action.search_apps', {
                 postProcess: 'capitalizeFirstChar',
               })}{' '}
-              ({combinedResults.length})
+              ({searchResults.length})
             </Box>
           </Box>
 
-          <Box
-            sx={{
-              display: 'grid',
-              gap: '16px',
-              gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))',
-              width: '100%',
-            }}
-          >
-            {combinedResults.map((app) => (
-              <AppCardEnhanced
-                key={`${app?.service}-${app?.name}`}
-                app={app}
-                myName={myName}
-              />
-            ))}
-          </Box>
+          {isMobile ? (
+            <AppsList>
+              {searchResults.map((app) => (
+                <AppCardListItem
+                  key={`${app?.service}-${app?.name}`}
+                  app={app}
+                  myName={myName}
+                />
+              ))}
+            </AppsList>
+          ) : (
+            <Box
+              sx={{
+                display: 'grid',
+                gap: '16px',
+                gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))',
+                width: '100%',
+              }}
+            >
+              {searchResults.map((app) => (
+                <AppCardEnhanced
+                  key={`${app?.service}-${app?.name}`}
+                  app={app}
+                  myName={myName}
+                />
+              ))}
+            </Box>
+          )}
         </AppsWidthLimiter>
       );
     }
 
-    switch (currentTab) {
-      case 'official':
-        return (
+    const isTabActive = (tab: AppsLibraryTabValue) => currentTab === tab;
+
+    return (
+      <>
+        <LibraryTabPanel
+          activeTab={currentTab}
+          isMounted={mountedTabs.has('official')}
+          isSearchActive={isSearchResultsActive}
+          tab="official"
+        >
           <OfficialAppsTab
             availableQapps={availableQapps}
+            isActive={isTabActive('official')}
+            isMobile={isMobile}
             myName={myName}
             searchValue={debouncedSearchValue}
           />
-        );
-      case 'community':
-        return (
+        </LibraryTabPanel>
+
+        <LibraryTabPanel
+          activeTab={currentTab}
+          isMounted={mountedTabs.has('community')}
+          isSearchActive={isSearchResultsActive}
+          tab="community"
+        >
           <CommunityAppsTab
             availableQapps={availableQapps}
+            categories={categories}
+            categoryValue={categoryFilter}
+            isActive={isTabActive('community')}
+            isMobile={isMobile}
             myName={myName}
+            onCategoryChange={setCategoryFilter}
+            onSortChange={setSortOption}
+            onStatusChange={setStatusFilter}
+            scrollParent={scrollParent}
             searchValue={debouncedSearchValue}
             sortValue={sortOption}
-            categoryValue={categoryFilter}
             statusValue={statusFilter}
           />
-        );
-      case 'categories':
-        return (
+        </LibraryTabPanel>
+
+        <LibraryTabPanel
+          activeTab={currentTab}
+          isMounted={mountedTabs.has('categories')}
+          isSearchActive={isSearchResultsActive}
+          tab="categories"
+        >
           <CategoriesTab
+            availableQapps={availableQapps}
             categories={categories}
-            availableQapps={availableQapps}
+            isMobile={isMobile}
             myName={myName}
             searchValue={debouncedSearchValue}
           />
-        );
-      case 'my-apps':
-        return (
+        </LibraryTabPanel>
+
+        <LibraryTabPanel
+          activeTab={currentTab}
+          isMounted={mountedTabs.has('my-apps')}
+          isSearchActive={isSearchResultsActive}
+          tab="my-apps"
+        >
           <MyAppsTab
-            myName={myName}
             availableQapps={availableQapps}
+            isMobile={isMobile}
+            myName={myName}
+            searchValue={debouncedSearchValue}
             setMode={setMode}
-            searchValue={debouncedSearchValue}
           />
-        );
-      case 'private':
-        return <PrivateTab myName={myName} myAddress={myAddress} />;
-      default:
-        return (
-          <OfficialAppsTab
-            availableQapps={availableQapps}
-            myName={myName}
-            searchValue={debouncedSearchValue}
-          />
-        );
-    }
+        </LibraryTabPanel>
+
+        <LibraryTabPanel
+          activeTab={currentTab}
+          isMounted={mountedTabs.has('private')}
+          isSearchActive={isSearchResultsActive}
+          tab="private"
+        >
+          <PrivateTab myAddress={myAddress} myName={myName} />
+        </LibraryTabPanel>
+      </>
+    );
   };
 
   return (
@@ -208,7 +278,7 @@ export const AppsLibraryDesktop = ({
         padding: '0px',
         height: contentHeight || '100%',
         overflow: 'hidden',
-        paddingTop: '30px',
+        paddingTop: isMobile ? 0 : '30px',
       }}
     >
       {/* Fixed Header Section */}
@@ -227,46 +297,81 @@ export const AppsLibraryDesktop = ({
         <AppsDesktopLibraryHeader
           sx={{
             maxWidth: '1500px',
-            width: '90%',
+            width: isMobile ? '100%' : '90%',
+            px: isMobile ? 1.5 : 0,
+            mb: isMobile ? 0 : 0,
           }}
         >
-          <AppsWidthLimiter>
+          {isMobile ? (
             <Box
               sx={{
                 alignItems: 'center',
                 display: 'flex',
-                justifyContent: 'flex-start',
+                justifyContent: 'center',
+                pb: 2.5,
+                pt: 3.5,
                 width: '100%',
               }}
             >
-              <QappLibraryText />
+              <Box
+                sx={{
+                  display: 'flex',
+                  justifyContent: 'center',
+                  lineHeight: 0,
+                  width: '100%',
+                  '& svg': {
+                    display: 'block',
+                    height: 'auto',
+                    margin: '0 auto',
+                    maxWidth: 'min(100%, 301px)',
+                  },
+                }}
+              >
+                <QappLibraryText />
+              </Box>
             </Box>
-          </AppsWidthLimiter>
+          ) : (
+            <AppsWidthLimiter isMobile={isMobile}>
+              <Box
+                sx={{
+                  alignItems: 'center',
+                  display: 'flex',
+                  justifyContent: 'flex-start',
+                  width: '100%',
+                }}
+              >
+                <QappLibraryText />
+              </Box>
+            </AppsWidthLimiter>
+          )}
         </AppsDesktopLibraryHeader>
 
         <Box
           sx={{
             maxWidth: '1500px',
-            width: '90%',
+            width: isMobile ? '100%' : '90%',
+            px: isMobile ? 1.5 : 0,
           }}
         >
-          <Spacer height="20px" />
+          {!isMobile ? <Spacer height="20px" /> : null}
 
-          <ShowMessageReturnButton
-            sx={{ padding: '2px' }}
-            onClick={() => {
-              executeEvent('navigateBack', {});
-            }}
-          >
-            <ReturnIcon />
-            <ComposeP sx={{ fontSize: '18px' }}>
-              {t('core:action.return_apps_dashboard', {
-                postProcess: 'capitalizeFirstChar',
-              })}
-            </ComposeP>
-          </ShowMessageReturnButton>
+          {!isMobile ? (
+            <ShowMessageReturnButton
+              sx={{ padding: '2px' }}
+              onClick={() => {
+                executeEvent('navigateBack', {});
+              }}
+            >
+              <ReturnIcon />
+              <ComposeP sx={{ fontSize: '18px' }}>
+                {t('core:action.return_apps_dashboard', {
+                  postProcess: 'capitalizeFirstChar',
+                })}
+              </ComposeP>
+            </ShowMessageReturnButton>
+          ) : null}
 
-          <Spacer height="20px" />
+          {!isMobile ? <Spacer height="20px" /> : null}
 
           {/* Tabs + Search/Filter — single column, shared center axis */}
           <Box
@@ -274,12 +379,13 @@ export const AppsLibraryDesktop = ({
               alignItems: 'center',
               display: 'flex',
               flexDirection: 'column',
-              gap: '12px',
+              gap: isMobile ? '12px' : '12px',
               width: '100%',
             }}
           >
             <AppsTabs
               currentTab={currentTab}
+              isMobile={isMobile}
               isSearchActive={isSearchActive}
               onTabChange={handleTabChange}
             />
@@ -290,10 +396,11 @@ export const AppsLibraryDesktop = ({
                 display: 'flex',
                 flexWrap: 'wrap',
                 gap: '12px',
-                justifyContent: 'center',
+                justifyContent: isMobile ? 'flex-start' : 'center',
+                width: '100%',
               }}
             >
-              {currentTab !== 'private' && (
+              {!isMobile && currentTab !== 'private' && (
                 <>
                   <SearchContainer>
                     <SearchIcon sx={{ color: theme.palette.text.secondary }} />
@@ -335,8 +442,17 @@ export const AppsLibraryDesktop = ({
                 </>
               )}
 
-              {currentTab === 'community' && (
-                <>
+              {currentTab === 'community' && !isMobile ? (
+                <Box
+                  sx={{
+                    alignItems: 'center',
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    gap: '12px',
+                    justifyContent: 'center',
+                    width: '100%',
+                  }}
+                >
                   <SortDropdown value={sortOption} onChange={setSortOption} />
                   <CategoryFilter
                     value={categoryFilter}
@@ -347,12 +463,12 @@ export const AppsLibraryDesktop = ({
                     value={statusFilter}
                     onChange={setStatusFilter}
                   />
-                </>
-              )}
+                </Box>
+              ) : null}
             </Box>
           </Box>
 
-          <Spacer height="20px" />
+          <Spacer height={isMobile ? '16px' : '20px'} />
         </Box>
       </Box>
 
@@ -366,6 +482,7 @@ export const AppsLibraryDesktop = ({
         }}
       >
         <AppsDesktopLibraryBody
+          ref={bindScrollContainer}
           sx={{
             alignItems: 'center',
             flex: 1,
@@ -373,8 +490,18 @@ export const AppsLibraryDesktop = ({
             minHeight: 0,
             msOverflowStyle: 'none',
             overflow: 'auto',
+            px: isMobile ? 1.5 : 0,
+            pb: isMobile
+              ? 'calc(32px + env(safe-area-inset-bottom, 0px))'
+              : 0,
             scrollbarWidth: 'none',
-            width: '90%',
+            width: isMobile ? '100%' : '90%',
+            '& > *': isMobile
+              ? {
+                  maxWidth: '100%',
+                  width: '100%',
+                }
+              : undefined,
             '&::-webkit-scrollbar': {
               display: 'none',
             },

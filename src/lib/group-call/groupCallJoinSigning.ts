@@ -1,3 +1,5 @@
+import { isRnsIdentityPublicKeyBase64 } from '../../bridge/groupCallWire';
+
 type ElectronGcallProxy = {
   gcallProxySignPresenceMessage?: (
     payload: Record<string, unknown>
@@ -149,6 +151,14 @@ export async function signReticulumJoinSplit(params: {
   reticulumDestinationHash: string;
   reticulumIdentityPublicKeyBase64: string | null;
 }): Promise<{ joinSig: string; joinRkSig?: string } | null> {
+  // The GJ wire carries `rk` inline and the Hub's buildGcJoinSignedFields
+  // INCLUDES reticulumIdentityPublicKeyBase64 in the signed payload when the
+  // wire has a valid `rk`. The GC_JOIN signature must cover the same rk verbatim
+  // or the Hub's verify fails and the audio link is never verified (GC_KEY then
+  // gets dropped). Mirror the wire's rk-inclusion exactly.
+  const rkForWire = params.reticulumIdentityPublicKeyBase64;
+  const includeRk =
+    typeof rkForWire === 'string' && isRnsIdentityPublicKeyBase64(rkForWire);
   const joinSig = await signGroupCallFields({
     type: 'GC_JOIN',
     roomId: params.roomId,
@@ -158,6 +168,7 @@ export async function signReticulumJoinSplit(params: {
     timestamp: params.timestamp,
     joinGeneration: params.joinGeneration,
     reticulumDestinationHash: params.reticulumDestinationHash,
+    ...(includeRk ? { reticulumIdentityPublicKeyBase64: rkForWire } : {}),
   }).catch(() => '');
   if (!joinSig) return null;
   if (!params.reticulumIdentityPublicKeyBase64) {

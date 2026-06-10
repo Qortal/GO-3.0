@@ -1,9 +1,9 @@
 import { useMemo } from 'react';
 import { Box, styled } from '@mui/material';
-import { AppsWidthLimiter } from '../Apps-styles';
+import { AppsList, AppsWidthLimiter } from '../Apps-styles';
 import { executeEvent } from '../../../utils/events';
 import { CategoryCard } from '../Categories';
-import { AppCardEnhanced } from '../AppCard';
+import { AppCardEnhanced, AppCardListItem } from '../AppCard';
 import { officialAppList } from '../config/officialApps';
 
 interface Category {
@@ -14,27 +14,37 @@ interface Category {
 interface CategoriesTabProps {
   categories: Category[];
   availableQapps: any[];
+  isMobile?: boolean;
   myName?: string;
   searchValue?: string;
 }
 
-const CategoriesGrid = styled(Box)({
+const CategoriesGrid = styled(Box, {
+  shouldForwardProp: (prop) => prop !== 'isMobile',
+})<{ isMobile?: boolean }>(({ isMobile }) => ({
   display: 'grid',
-  gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))',
-  gap: '16px',
+  gridTemplateColumns: isMobile
+    ? 'repeat(2, 1fr)'
+    : 'repeat(auto-fill, minmax(140px, 1fr))',
+  gap: isMobile ? '12px' : '16px',
   width: '100%',
-});
+}));
 
-const AppsGrid = styled(Box)({
+const AppsGrid = styled(Box, {
+  shouldForwardProp: (prop) => prop !== 'isMobile',
+})<{ isMobile?: boolean }>(({ isMobile }) => ({
   display: 'grid',
-  gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))',
+  gridTemplateColumns: isMobile
+    ? 'repeat(auto-fill, minmax(160px, 1fr))'
+    : 'repeat(auto-fill, minmax(320px, 1fr))',
   gap: '16px',
   width: '100%',
-});
+}));
 
 export const CategoriesTab = ({
   categories,
   availableQapps,
+  isMobile = false,
   myName = '',
   searchValue = '',
 }: CategoriesTabProps) => {
@@ -73,23 +83,35 @@ export const CategoriesTab = ({
 
   if (searchValue) {
     return (
-      <AppsWidthLimiter>
-        <AppsGrid>
-          {filteredCommunityApps.map((app) => (
-            <AppCardEnhanced
-              key={`${app?.service}-${app?.name}`}
-              app={app}
-              myName={myName}
-            />
-          ))}
-        </AppsGrid>
+      <AppsWidthLimiter isMobile={isMobile}>
+        {isMobile ? (
+          <AppsList>
+            {filteredCommunityApps.map((app) => (
+              <AppCardListItem
+                key={`${app?.service}-${app?.name}`}
+                app={app}
+                myName={myName}
+              />
+            ))}
+          </AppsList>
+        ) : (
+          <AppsGrid isMobile={isMobile}>
+            {filteredCommunityApps.map((app) => (
+              <AppCardEnhanced
+                key={`${app?.service}-${app?.name}`}
+                app={app}
+                myName={myName}
+              />
+            ))}
+          </AppsGrid>
+        )}
       </AppsWidthLimiter>
     );
   }
 
   return (
-    <AppsWidthLimiter>
-      <CategoriesGrid>
+    <AppsWidthLimiter isMobile={isMobile}>
+      <CategoriesGrid isMobile={isMobile}>
         {/* All category */}
         <CategoryCard
           category={{ id: 'all', name: 'All' }}

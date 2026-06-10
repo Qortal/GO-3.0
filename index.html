@@ -3,11 +3,87 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.ico" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Qortal Hub</title>
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content"
+    />
+    <title>Qortal Go</title>
+    <style>
+      /* Dark base so the WebView never flashes white before the overlay or app
+         paints (matches the native launch window + splash overlay). */
+      html,
+      body {
+        margin: 0;
+        background: #0e0f14;
+      }
+      /* Instant branded startup overlay. Painted before the JS bundle loads so
+         users never see a blank WebView or the stretched native logo. Removed
+         by src/main.tsx once React has mounted (see hideAppSplash). */
+      #app-splash {
+        position: fixed;
+        inset: 0;
+        z-index: 2147483647;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 22px;
+        background:
+          radial-gradient(120% 120% at 50% 20%, #1a2030 0%, #0e0f14 60%, #090a0e 100%);
+        font-family: 'Inter', system-ui, -apple-system, sans-serif;
+        transition: opacity 360ms ease;
+      }
+      #app-splash.app-splash--hide {
+        opacity: 0;
+        pointer-events: none;
+      }
+      #app-splash .app-splash__logo {
+        width: 92px;
+        height: 92px;
+        object-fit: contain;
+        animation: appSplashPulse 1.6s ease-in-out infinite;
+        filter: drop-shadow(0 6px 24px rgba(9, 182, 232, 0.35));
+      }
+      #app-splash .app-splash__name {
+        color: #f3f6fb;
+        font-size: 22px;
+        font-weight: 700;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+      }
+      #app-splash .app-splash__bar {
+        width: 132px;
+        height: 3px;
+        border-radius: 3px;
+        background: rgba(255, 255, 255, 0.12);
+        overflow: hidden;
+      }
+      #app-splash .app-splash__bar::after {
+        content: '';
+        display: block;
+        width: 40%;
+        height: 100%;
+        border-radius: 3px;
+        background: linear-gradient(90deg, #09b6e8, #5b8def);
+        animation: appSplashSlide 1.1s ease-in-out infinite;
+      }
+      @keyframes appSplashPulse {
+        0%, 100% { transform: scale(1); opacity: 0.92; }
+        50% { transform: scale(1.06); opacity: 1; }
+      }
+      @keyframes appSplashSlide {
+        0% { transform: translateX(-120%); }
+        100% { transform: translateX(360%); }
+      }
+    </style>
   </head>
   <body>
     <div id="root"></div>
+    <div id="app-splash" aria-hidden="true">
+      <img class="app-splash__logo" src="qortal.png" alt="Qortal" />
+      <div class="app-splash__name">Qortal&nbsp;Go</div>
+      <div class="app-splash__bar"></div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

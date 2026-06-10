@@ -2,6 +2,28 @@
   margin-top: 0;
   color: var(--text-primary);
   width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.tiptap p,
+.tiptap li,
+.tiptap blockquote,
+.tiptap h1,
+.tiptap h2,
+.tiptap h3,
+.tiptap h4,
+.tiptap h5,
+.tiptap h6,
+.tiptap td,
+.tiptap th,
+.tiptap a,
+.tiptap .qortal-link,
+.tiptap span[data-url^='qortal://'] {
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .tiptap ul,
@@ -77,7 +99,10 @@
   margin: 0.75rem 0;
   padding: 0.75rem 1rem;
   outline: none;
+  max-width: 100%;
   overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
   text-wrap: wrap;
 }
 
@@ -135,7 +160,11 @@
 .tiptap table {
   border-collapse: collapse;
   border-spacing: 0;
+  display: block;
   margin: 0.75rem 0;
+  max-width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
   width: 100%;
   table-layout: auto;
   color: var(--text-primary);
@@ -330,6 +359,78 @@
   border-top: 1px solid var(--composer-border);
   min-height: 72px;
   padding: 14px 16px;
+}
+
+.tiptap-chat-composer--mobile-compose {
+  flex-shrink: 0;
+}
+
+.tiptap-chat-composer--mobile-compose .chat-format-toolbar-shell {
+  flex-shrink: 0;
+}
+
+.tiptap-chat-composer--mobile-compose .tiptap-prosemirror {
+  border-top: 1px solid var(--composer-border);
+  min-height: 40px;
+  max-height: 120px;
+  padding: 8px 12px;
+}
+
+.mobile-chat-compose-row .tiptap-chat-composer {
+  border-radius: 10px;
+  flex: 1;
+  min-width: 0;
+}
+
+.mobile-chat-compose-row .tiptap-chat-composer .tiptap-prosemirror {
+  min-height: 40px;
+  max-height: 120px;
+}
+
+.chat-format-toolbar--two-rows {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+}
+
+.chat-format-toolbar-row {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  justify-content: center;
+  width: 100%;
+}
+
+.tiptap-chat-composer--mobile-focus {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.tiptap-chat-composer--mobile-focus .chat-format-toolbar-shell {
+  flex-shrink: 0;
+}
+
+.tiptap-chat-composer--mobile-focus .tiptap-prosemirror {
+  border-top: none;
+  flex: 1;
+  min-height: 120px;
+  padding: 12px 14px;
+}
+
+.chat-format-toolbar {
+  width: 100%;
+}
+
+@media (max-width: 900px) {
+  .tiptap-chat-composer:not(.tiptap-chat-composer--mobile-focus) .tiptap-prosemirror {
+    min-height: 44px;
+    padding: 10px 12px;
+  }
 }
 
 .tiptap-chat-composer .tiptap-prosemirror:focus,

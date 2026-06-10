@@ -37,7 +37,9 @@ import { ReactionPicker } from '../ReactionPicker';
 import KeyOffIcon from '@mui/icons-material/KeyOff';
 import EditIcon from '@mui/icons-material/Edit';
 import DownloadRoundedIcon from '@mui/icons-material/DownloadRounded';
+import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded';
 import InsertDriveFileRoundedIcon from '@mui/icons-material/InsertDriveFileRounded';
+import { getQchatFileApi } from '../../utils/qchatFileApi';
 import TextStyle from '@tiptap/extension-text-style';
 import level0Img from '../../assets/badges/level-0.png';
 import level1Img from '../../assets/badges/level-1.png';
@@ -329,6 +331,30 @@ export const MessageItemComponent = ({
   const qchatDownloaded =
     !!qchatFileData?.transferId &&
     !!qchatCompletedTransfers?.[qchatFileData.transferId];
+  const qchatCompletedRecord = qchatFileData?.transferId
+    ? qchatCompletedTransfers?.[qchatFileData.transferId]
+    : null;
+  const qchatOpenUri =
+    qchatCompletedRecord?.downloadsUri || qchatCompletedRecord?.path || '';
+  const qchatCanOpenFile =
+    qchatDownloaded &&
+    !!qchatOpenUri &&
+    typeof getQchatFileApi()?.qchatFileOpen === 'function';
+  const handleOpenQchatFile = useCallback(() => {
+    if (!qchatOpenUri) return;
+    void getQchatFileApi()
+      ?.qchatFileOpen?.({
+        uri: qchatOpenUri,
+        fileName:
+          qchatCompletedRecord?.fileName || qchatFileData?.fileName || undefined,
+      })
+      .then((res) => {
+        if (res && res.ok === false) {
+          console.error('[QchatFile] open failed:', res.error);
+        }
+      })
+      .catch((err) => console.error('[QchatFile] open failed:', err));
+  }, [qchatCompletedRecord?.fileName, qchatFileData?.fileName, qchatOpenUri]);
   const qchatDisplayStatus = qchatDownloaded
     ? 'received'
     : qchatTransferState?.status || qchatFileData?.status || 'offer';
@@ -468,6 +494,9 @@ export const MessageItemComponent = ({
             position: 'relative',
             transition: 'background-color 0.1s ease',
             width: '100%',
+            maxWidth: '100%',
+            minWidth: 0,
+            boxSizing: 'border-box',
             ...(isOwn &&
               !isScrollTarget && {
                 borderLeft: `2px solid ${alpha(theme.palette.primary.main, 0.5)}`,
@@ -993,26 +1022,39 @@ export const MessageItemComponent = ({
                     />
                   )}
                 </Box>
-                {!isOwn && isQchatFileOffer && onAcceptQchatFileTransfer && (
-                  <Button
-                    size="small"
-                    variant="contained"
-                    startIcon={<DownloadRoundedIcon />}
-                    disabled={
-                      qchatTransferBusy ||
-                      qchatTransferDone ||
-                      qchatOfferExpired
-                    }
-                    onClick={() => onAcceptQchatFileTransfer(message)}
-                    sx={{ flexShrink: 0, textTransform: 'none' }}
-                  >
-                    {qchatDownloaded
-                      ? 'Downloaded'
-                      : qchatOfferExpired
-                        ? 'Expired'
-                        : 'Accept'}
-                  </Button>
-                )}
+                {!isOwn &&
+                  isQchatFileOffer &&
+                  onAcceptQchatFileTransfer &&
+                  (qchatCanOpenFile ? (
+                    <Button
+                      size="small"
+                      variant="contained"
+                      startIcon={<OpenInNewRoundedIcon />}
+                      onClick={handleOpenQchatFile}
+                      sx={{ flexShrink: 0, textTransform: 'none' }}
+                    >
+                      Open
+                    </Button>
+                  ) : (
+                    <Button
+                      size="small"
+                      variant="contained"
+                      startIcon={<DownloadRoundedIcon />}
+                      disabled={
+                        qchatTransferBusy ||
+                        qchatTransferDone ||
+                        qchatOfferExpired
+                      }
+                      onClick={() => onAcceptQchatFileTransfer(message)}
+                      sx={{ flexShrink: 0, textTransform: 'none' }}
+                    >
+                      {qchatDownloaded
+                        ? 'Downloaded'
+                        : qchatOfferExpired
+                          ? 'Expired'
+                          : 'Accept'}
+                    </Button>
+                  ))}
               </Box>
             ) : message?.decryptedData?.type === 'notification' ? (
               <MessageDisplay
@@ -1519,6 +1561,8 @@ const WatchComponent = ({ onSeen, isLast, children }) => {
         display: 'flex',
         justifyContent: 'center',
         width: '100%',
+        maxWidth: '100%',
+        minWidth: 0,
       }}
     >
       {children}

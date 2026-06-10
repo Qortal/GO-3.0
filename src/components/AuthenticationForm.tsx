@@ -1,10 +1,11 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   Avatar,
   Box,
   ButtonBase,
   Divider,
+  IconButton,
   Typography,
   useTheme,
 } from '@mui/material';
@@ -13,20 +14,37 @@ import PersonIcon from '@mui/icons-material/Person';
 import ArrowBackRoundedIcon from '@mui/icons-material/ArrowBackRounded';
 import CheckCircleRoundedIcon from '@mui/icons-material/CheckCircleRounded';
 import SettingsEthernetRoundedIcon from '@mui/icons-material/SettingsEthernetRounded';
+import FingerprintRoundedIcon from '@mui/icons-material/FingerprintRounded';
+import TuneRoundedIcon from '@mui/icons-material/TuneRounded';
 import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded';
+import EditRoundedIcon from '@mui/icons-material/EditRounded';
 import ChevronRightRoundedIcon from '@mui/icons-material/ChevronRightRounded';
-import { useAtom } from 'jotai';
-import { authenticatePasswordAtom } from '../atoms/global';
+import { useAtom, useStore } from 'jotai';
+import { authenticatePasswordAtom, mobileLoginSettingsOpenAtom } from '../atoms/global';
 import { PasswordField, ErrorText } from './index';
 import type { ApiKey } from '../types/auth';
-import { getBaseApiReactForAvatar } from '../App';
 import { getPrimaryNameForAvatar } from './Group/groupApi';
+import { QortalUserAvatar } from './QortalUserAvatar';
+import {
+  getWalletAvatarCache,
+  resolveWalletAvatarSrc,
+  type WalletAvatarCacheEntry,
+} from '../utils/walletAvatarCache';
 import { AuthButton, AuthFrame, authPasswordFieldSx } from './Auth/AuthShell';
 import {
   HTTPS_EXT_NODE_QORTAL_LINK,
   isLocalNodeUrl,
 } from '../constants/constants';
 import { ConnectionModeModal } from './Auth/ConnectionModeModal';
+import { MobileLoginSettingsModal } from './Auth/MobileLoginSettingsModal';
+import { WalletAccountEditDialog } from './Auth/WalletAccountEditDialog';
+import { isCapacitor } from '../utils/platform';
+import { getWallets, storeWallets } from '../background/background.ts';
+import {
+  isBiometricHardwareAvailable,
+  isBiometricUnlockConfigured,
+  unlockPasswordWithBiometric,
+} from '../utils/walletBiometricAuth';
 import type {
   AuthUnlockTransitionSnapshot,
   SharedElementRect,
@@ -34,6 +52,7 @@ import type {
 
 type RawWallet = {
   name?: string;
+  note?: string;
   filename?: string;
   address0?: string;
 };
@@ -43,15 +62,19 @@ type AuthenticationFormProps = {
   selectedNode: ApiKey | null;
   walletToBeDecryptedError: string;
   unlockTransition?: AuthUnlockTransitionSnapshot | null;
+  /** When true, show the password field instead of the fingerprint prompt (e.g. after a failed list scan). */
+  initialPasswordFallback?: boolean;
   onBack: () => void;
   onAuthenticate: () => Promise<void>;
   onUnlockTransitionComplete?: () => void;
+  onWalletUpdated?: (wallet: RawWallet) => void;
+  onWalletRemoved?: () => void;
 };
 
 const shortenAddress = (address?: string) => {
   if (!address) return '';
-  if (address.length <= 20) return address;
-  return `${address.slice(0, 8)}...${address.slice(-8)}`;
+  if (address.length <= 8) return address;
+  return `${address.slice(0, 4)}…${address.slice(-4)}`;
 };
 
 const isAddressLikeLabel = (value?: string, walletAddress?: string) => {
@@ -72,9 +95,12 @@ export const AuthenticationForm = ({
   selectedNode,
   walletToBeDecryptedError,
   unlockTransition,
+  initialPasswordFallback = false,
   onBack,
   onAuthenticate,
   onUnlockTransitionComplete,
+  onWalletUpdated,
+  onWalletRemoved,
 }: AuthenticationFormProps) => {
   const theme = useTheme();
   const isLight = theme.palette.mode === 'light';
@@ -82,6 +108,7 @@ export const AuthenticationForm = ({
   const [authenticatePassword, setAuthenticatePassword] = useAtom(
     authenticatePasswordAtom
   );
+  const store = useStore();
   const passwordRef = useRef<HTMLInputElement>(null);
   const avatarRef = useRef<HTMLDivElement | null>(null);
   const initialPrimaryNameRef = useRef({
@@ -93,7 +120,24 @@ export const AuthenticationForm = ({
       ? initialPrimaryNameRef.current.name
       : null
   );
+  const [cachedAvatarEntry, setCachedAvatarEntry] =
+    useState<WalletAvatarCacheEntry | null>(null);
   const [isConnectionModeOpen, setIsConnectionModeOpen] = useState(false);
+  const [isLoginSettingsOpen, setIsLoginSettingsOpen] = useAtom(
+    mobileLoginSettingsOpenAtom
+  );
+  const [biometricUnlockReady, setBiometricUnlockReady] = useState(false);
+  const [biometricUnlockBusy, setBiometricUnlockBusy] = useState(false);
+  const [biometricStateResolved, setBiometricStateResolved] = useState(false);
+  const [showPasswordFallback, setShowPasswordFallback] = useState(
+    initialPasswordFallback
+  );
+  const [editOpen, setEditOpen] = useState(false);
+  const didAutoAuthenticateRef = useRef(false);
+  const prefilledPasswordRef = useRef(
+    Boolean(store.get(authenticatePasswordAtom).trim())
+  );
+  const nativeShell = isCapacitor();
   const [sharedTransition, setSharedTransition] = useState<{
     isRunning: boolean;
     snapshot: AuthUnlockTransitionSnapshot;
@@ -132,13 +176,127 @@ export const AuthenticationForm = ({
   }, [rawWallet?.address0]);
 
   useEffect(() => {
-    passwordRef.current?.focus();
+    setCachedAvatarEntry(null);
+    const address = rawWallet?.address0?.trim();
+    if (!address) {
+      return;
+    }
+
+    let isMounted = true;
+    getWalletAvatarCache(address, primaryName)
+      .then((entry) => {
+        if (isMounted) setCachedAvatarEntry(entry);
+      })
+      .catch(() => {
+        if (isMounted) setCachedAvatarEntry(null);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [rawWallet?.address0, primaryName]);
+
+  const walletAddress = rawWallet?.address0?.trim() || '';
+  const effectivePrimaryName =
+    primaryName?.trim() || rawWallet?.name?.trim() || '';
+
+  const dismissKeyboard = useCallback(() => {
+    passwordRef.current?.blur();
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && active !== document.body) {
+      active.blur();
+    }
   }, []);
 
-  const avatarSrc = primaryName
-    ? `${getBaseApiReactForAvatar()}/arbitrary/THUMBNAIL/${primaryName}/qortal_avatar?async=true`
-    : undefined;
-  const walletAddress = rawWallet?.address0?.trim() || '';
+  const refreshBiometricUnlockState = useCallback(async () => {
+    if (!nativeShell || !walletAddress) {
+      setBiometricUnlockReady(false);
+      setBiometricStateResolved(true);
+      return;
+    }
+
+    try {
+      const [hardware, enabled] = await Promise.all([
+        isBiometricHardwareAvailable(),
+        isBiometricUnlockConfigured(walletAddress),
+      ]);
+      const ready = hardware && enabled;
+      setBiometricUnlockReady(ready);
+      setShowPasswordFallback(!ready);
+    } finally {
+      setBiometricStateResolved(true);
+    }
+  }, [nativeShell, walletAddress]);
+
+  useEffect(() => {
+    setBiometricStateResolved(false);
+    prefilledPasswordRef.current = Boolean(
+      store.get(authenticatePasswordAtom).trim()
+    );
+  }, [store, walletAddress]);
+
+  useEffect(() => {
+    void refreshBiometricUnlockState();
+  }, [refreshBiometricUnlockState]);
+
+  useEffect(() => {
+    if (isLoginSettingsOpen) return;
+    void refreshBiometricUnlockState();
+  }, [isLoginSettingsOpen, refreshBiometricUnlockState]);
+
+  const showBiometricPrimary =
+    biometricUnlockReady &&
+    !showPasswordFallback &&
+    !authenticatePassword.trim();
+
+  useEffect(() => {
+    if (!biometricStateResolved) return;
+    if (showBiometricPrimary) return;
+    if (authenticatePassword.trim()) return;
+    if (biometricUnlockBusy) return;
+    passwordRef.current?.focus();
+  }, [
+    authenticatePassword,
+    biometricStateResolved,
+    biometricUnlockBusy,
+    showBiometricPrimary,
+  ]);
+
+  useEffect(() => {
+    if (!prefilledPasswordRef.current) return;
+    dismissKeyboard();
+  }, [dismissKeyboard]);
+
+  useEffect(() => {
+    if (didAutoAuthenticateRef.current) return;
+    const password = store.get(authenticatePasswordAtom).trim();
+    if (!password) return;
+    didAutoAuthenticateRef.current = true;
+    void onAuthenticate();
+  }, [onAuthenticate, store]);
+
+  const handleBiometricUnlock = async () => {
+    if (!walletAddress || biometricUnlockBusy) return;
+    setBiometricUnlockBusy(true);
+    try {
+      const password = await unlockPasswordWithBiometric(walletAddress);
+      store.set(authenticatePasswordAtom, password);
+      setAuthenticatePassword(password);
+      dismissKeyboard();
+      await onAuthenticate();
+    } catch {
+      setShowPasswordFallback(true);
+      window.setTimeout(() => passwordRef.current?.focus(), 120);
+    } finally {
+      setBiometricUnlockBusy(false);
+    }
+  };
+
+  const avatarSrc = resolveWalletAvatarSrc({
+    primaryName: effectivePrimaryName,
+    walletAddress,
+    cachedAvatarEntry,
+  });
   const addressLabel = shortenAddress(walletAddress);
   const parsedFilenameLabel = parsefilenameQortal(rawWallet?.filename).trim();
   const preferredIdentityLabel =
@@ -151,6 +309,40 @@ export const AuthenticationForm = ({
   const titleLabel = isAddressLikeLabel(displayLabel, walletAddress)
     ? addressLabel || unnamedAccountLabel
     : displayLabel;
+  const canEditAccountName = !primaryName && !rawWallet?.filename;
+
+  const handleSaveWalletEdit = useCallback(
+    async ({ name, note }: { name?: string; note: string }) => {
+      const wallets = await getWallets();
+      const idx = wallets.findIndex(
+        (wallet) => wallet?.address0 === walletAddress
+      );
+      if (idx < 0) return;
+
+      const updated = {
+        ...wallets[idx],
+        ...(canEditAccountName && name != null ? { name } : {}),
+        note,
+      };
+      wallets[idx] = updated;
+      await storeWallets(wallets);
+      onWalletUpdated?.(updated);
+    },
+    [canEditAccountName, onWalletUpdated, walletAddress]
+  );
+
+  const handleRemoveWallet = useCallback(async () => {
+    const wallets = await getWallets();
+    const idx = wallets.findIndex(
+      (wallet) => wallet?.address0 === walletAddress
+    );
+    if (idx >= 0) {
+      wallets.splice(idx, 1);
+      await storeWallets(wallets);
+    }
+    onWalletRemoved?.();
+  }, [onWalletRemoved, walletAddress]);
+
   const usingLocalNode = isLocalNodeUrl(selectedNode?.url);
   const customNodeStatusLabel =
     selectedNode?.name?.trim() || selectedNode?.url?.trim() || '';
@@ -289,33 +481,65 @@ export const AuthenticationForm = ({
               textAlign: 'center',
             }}
           >
-            <Avatar
+            <QortalUserAvatar
+              key={walletAddress || 'wallet-avatar'}
               ref={avatarRef}
               alt={displayLabel}
-              src={avatarSrc}
+              primaryName={effectivePrimaryName}
+              walletAddress={walletAddress}
+              cachedAvatarEntry={cachedAvatarEntry}
+              fallbackIconSize={42}
               sx={{ height: 84, width: 84, ...avatarSharedOpacitySx }}
-            >
-              <PersonIcon sx={{ fontSize: 42 }} />
-            </Avatar>
-            <Typography
+            />
+            <Box
               sx={{
-                color: theme.palette.text.primary,
-                fontSize: '1.95rem',
-                fontWeight: 700,
-                letterSpacing: '-0.04em',
-                lineHeight: 1.04,
                 maxWidth: '100%',
                 mt: 1.25,
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                textShadow: isLight
-                  ? 'none'
-                  : '0 1px 8px rgba(0,0,0,0.16)',
-                whiteSpace: 'nowrap',
+                position: 'relative',
+                px: 3.5,
+                width: '100%',
               }}
             >
-              {titleLabel}
-            </Typography>
+              <Typography
+                sx={{
+                  color: theme.palette.text.primary,
+                  fontSize: '1.95rem',
+                  fontWeight: 700,
+                  letterSpacing: '-0.04em',
+                  lineHeight: 1.04,
+                  maxWidth: '100%',
+                  overflow: 'hidden',
+                  pr: 3.5,
+                  textAlign: 'center',
+                  textOverflow: 'ellipsis',
+                  textShadow: isLight
+                    ? 'none'
+                    : '0 1px 8px rgba(0,0,0,0.16)',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {titleLabel}
+              </Typography>
+              <IconButton
+                aria-label={t('auth:entry.wallet_edit_aria_label')}
+                onClick={() => setEditOpen(true)}
+                size="small"
+                sx={{
+                  color: isLight
+                    ? alpha(theme.palette.text.secondary, 0.72)
+                    : 'rgba(214,221,233,0.52)',
+                  position: 'absolute',
+                  right: 0,
+                  top: '50%',
+                  transform: 'translateY(-50%)',
+                  '&:hover': {
+                    color: theme.palette.primary.main,
+                  },
+                }}
+              >
+                <EditRoundedIcon sx={{ fontSize: 20 }} />
+              </IconButton>
+            </Box>
             <Box
               sx={{
                 alignItems: 'center',
@@ -381,51 +605,149 @@ export const AuthenticationForm = ({
               mt: 2.15,
             }}
           >
-            <Box>
-              <Typography
+            {showBiometricPrimary ? (
+              <Box
                 sx={{
-                  color: isLight
-                    ? theme.palette.text.secondary
-                    : 'rgba(214,221,233,0.62)',
-                  fontSize: '0.74rem',
-                  fontWeight: 700,
-                  letterSpacing: '0.08em',
-                  mb: 0.9,
-                  textTransform: 'uppercase',
+                  alignItems: 'center',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 1.1,
+                  py: 0.5,
                 }}
               >
-                {t('auth:wallet.password', { postProcess: 'capitalizeFirstChar' })}
-              </Typography>
-              <PasswordField
-                id="wallet-unlock-password"
-                value={authenticatePassword}
-                onChange={(e) => setAuthenticatePassword(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    onAuthenticate();
-                  }
-                }}
-                ref={passwordRef}
-                placeholder={t('auth:authentication_form.password_placeholder', {
-                  postProcess: 'capitalizeFirstChar',
-                })}
-                sx={authPasswordFieldSx(theme)}
-              />
-            </Box>
+                <Typography
+                  sx={{
+                    color: isLight
+                      ? theme.palette.text.secondary
+                      : 'rgba(214,221,233,0.62)',
+                    fontSize: '0.74rem',
+                    fontWeight: 700,
+                    letterSpacing: '0.08em',
+                    textTransform: 'uppercase',
+                  }}
+                >
+                  {t('auth:mobile_login_settings.biometric_unlock')}
+                </Typography>
+                <ButtonBase
+                  onClick={() => void handleBiometricUnlock()}
+                  disabled={biometricUnlockBusy}
+                  aria-label={t('auth:mobile_login_settings.biometric_unlock')}
+                  sx={{
+                    alignItems: 'center',
+                    animation: biometricUnlockBusy
+                      ? 'none'
+                      : 'fingerprintPulse 2.4s ease-in-out infinite',
+                    background: isLight
+                      ? alpha(theme.palette.primary.main, 0.1)
+                      : 'rgba(118,164,255,0.12)',
+                    border: isLight
+                      ? `1px solid ${alpha(theme.palette.primary.main, 0.28)}`
+                      : '1px solid rgba(118,164,255,0.28)',
+                    borderRadius: '50%',
+                    color: theme.palette.primary.main,
+                    display: 'flex',
+                    height: 88,
+                    justifyContent: 'center',
+                    width: 88,
+                    '@keyframes fingerprintPulse': {
+                      '0%, 100%': {
+                        boxShadow: isLight
+                          ? `0 0 0 0 ${alpha(theme.palette.primary.main, 0.22)}`
+                          : '0 0 0 0 rgba(118,164,255,0.18)',
+                        transform: 'scale(1)',
+                      },
+                      '50%': {
+                        boxShadow: isLight
+                          ? `0 0 0 10px ${alpha(theme.palette.primary.main, 0)}`
+                          : '0 0 0 10px rgba(118,164,255,0)',
+                        transform: 'scale(1.045)',
+                      },
+                    },
+                    '&:hover': {
+                      background: isLight
+                        ? alpha(theme.palette.primary.main, 0.16)
+                        : 'rgba(118,164,255,0.18)',
+                    },
+                    '&:disabled': {
+                      animation: 'none',
+                      opacity: 0.55,
+                    },
+                  }}
+                >
+                  <FingerprintRoundedIcon sx={{ fontSize: 44 }} />
+                </ButtonBase>
+                <Typography
+                  sx={{
+                    color: theme.palette.text.secondary,
+                    fontSize: '0.76rem',
+                    lineHeight: 1.4,
+                    textAlign: 'center',
+                  }}
+                >
+                  {t('auth:mobile_login_settings.biometric_place_finger')}
+                </Typography>
+              </Box>
+            ) : (
+              <>
+                <Box>
+                  <Typography
+                    sx={{
+                      color: isLight
+                        ? theme.palette.text.secondary
+                        : 'rgba(214,221,233,0.62)',
+                      fontSize: '0.74rem',
+                      fontWeight: 700,
+                      letterSpacing: '0.08em',
+                      mb: 0.9,
+                      textTransform: 'uppercase',
+                    }}
+                  >
+                    {t('auth:wallet.password', { postProcess: 'capitalizeFirstChar' })}
+                  </Typography>
+                  <PasswordField
+                    id="wallet-unlock-password"
+                    value={authenticatePassword}
+                    onChange={(e) => setAuthenticatePassword(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        onAuthenticate();
+                      }
+                    }}
+                    ref={passwordRef}
+                    placeholder={t('auth:authentication_form.password_placeholder', {
+                      postProcess: 'capitalizeFirstChar',
+                    })}
+                    sx={authPasswordFieldSx(theme)}
+                  />
+                </Box>
 
-            <Box sx={{ minHeight: 16, mt: -0.1 }}>
-              <ErrorText>{walletToBeDecryptedError}</ErrorText>
-            </Box>
+                {showPasswordFallback && biometricUnlockReady && (
+                  <Typography
+                    sx={{
+                      color: theme.palette.text.secondary,
+                      fontSize: '0.74rem',
+                      lineHeight: 1.4,
+                    }}
+                  >
+                    {t('auth:mobile_login_settings.biometric_failed')}
+                  </Typography>
+                )}
 
-            <AuthButton
-              onClick={onAuthenticate}
-              disabled={!authenticatePassword}
-              sx={walletUnlockSubmitButtonSx(theme)}
-            >
-              {t('auth:authentication_form.unlock', {
-                postProcess: 'capitalizeFirstChar',
-              })}
-            </AuthButton>
+                <Box sx={{ minHeight: 16, mt: -0.1 }}>
+                  <ErrorText>{walletToBeDecryptedError}</ErrorText>
+                </Box>
+
+                <AuthButton
+                  onClick={onAuthenticate}
+                  disabled={!authenticatePassword}
+                  sx={walletUnlockSubmitButtonSx(theme)}
+                >
+                  {t('auth:authentication_form.unlock', {
+                    postProcess: 'capitalizeFirstChar',
+                  })}
+                </AuthButton>
+              </>
+            )}
           </Box>
 
           <Box
@@ -490,42 +812,48 @@ export const AuthenticationForm = ({
                 width: '100%',
               }}
             >
-              <Box
-                sx={{
-                  alignItems: 'center',
-                  display: 'inline-flex',
-                  gap: 0.38,
-                  justifyContent: 'center',
-                  width: '100%',
-                }}
-              >
-                <CheckCircleRoundedIcon
+              {!nativeShell && (
+                <Box
                   sx={{
-                    color: usingLocalNode
-                      ? isLight
-                        ? theme.palette.other.positive
-                        : 'rgba(116,208,138,0.62)'
-                      : isLight
-                        ? theme.palette.primary.main
-                        : 'rgba(118,164,255,0.66)',
-                    fontSize: 11,
-                  }}
-                />
-                <Typography
-                  sx={{
-                    color: isLight
-                      ? theme.palette.text.secondary
-                      : 'rgba(214,221,233,0.5)',
-                    fontSize: '0.76rem',
-                    fontWeight: 400,
-                    lineHeight: 1,
+                    alignItems: 'center',
+                    display: 'inline-flex',
+                    gap: 0.38,
+                    justifyContent: 'center',
+                    width: '100%',
                   }}
                 >
-                  {connectionLabel}
-                </Typography>
-              </Box>
+                  <CheckCircleRoundedIcon
+                    sx={{
+                      color: usingLocalNode
+                        ? isLight
+                          ? theme.palette.other.positive
+                          : 'rgba(116,208,138,0.62)'
+                        : isLight
+                          ? theme.palette.primary.main
+                          : 'rgba(118,164,255,0.66)',
+                      fontSize: 11,
+                    }}
+                  />
+                  <Typography
+                    sx={{
+                      color: isLight
+                        ? theme.palette.text.secondary
+                        : 'rgba(214,221,233,0.5)',
+                      fontSize: '0.76rem',
+                      fontWeight: 400,
+                      lineHeight: 1,
+                    }}
+                  >
+                    {connectionLabel}
+                  </Typography>
+                </Box>
+              )}
               <ButtonBase
-                onClick={() => setIsConnectionModeOpen(true)}
+                onClick={() =>
+                  nativeShell
+                    ? setIsLoginSettingsOpen(true)
+                    : setIsConnectionModeOpen(true)
+                }
                 sx={{
                   alignItems: 'center',
                   color: isLight
@@ -546,9 +874,15 @@ export const AuthenticationForm = ({
                   },
                 }}
               >
-                <SettingsEthernetRoundedIcon sx={{ fontSize: 11 }} />
+                {nativeShell ? (
+                  <TuneRoundedIcon sx={{ fontSize: 11 }} />
+                ) : (
+                  <SettingsEthernetRoundedIcon sx={{ fontSize: 11 }} />
+                )}
                 <Typography sx={{ fontSize: '0.76rem', fontWeight: 500 }}>
-                  {t('auth:connection_mode.title')}
+                  {nativeShell
+                    ? t('auth:mobile_login_settings.link')
+                    : t('auth:connection_mode.title')}
                 </Typography>
               </ButtonBase>
             </Box>
@@ -556,9 +890,32 @@ export const AuthenticationForm = ({
         </Box>
       </AuthFrame>
 
-      <ConnectionModeModal
-        open={isConnectionModeOpen}
-        onClose={() => setIsConnectionModeOpen(false)}
+      {nativeShell ? (
+        <MobileLoginSettingsModal
+          open={isLoginSettingsOpen}
+          onClose={() => {
+            setIsLoginSettingsOpen(false);
+            void refreshBiometricUnlockState();
+          }}
+          walletAddress={walletAddress}
+          rawWallet={rawWallet}
+        />
+      ) : (
+        <ConnectionModeModal
+          open={isConnectionModeOpen}
+          onClose={() => setIsConnectionModeOpen(false)}
+        />
+      )}
+      <WalletAccountEditDialog
+        open={editOpen}
+        onClose={() => setEditOpen(false)}
+        wallet={rawWallet}
+        displayName={displayLabel}
+        addressLabel={addressLabel}
+        avatarSrc={avatarSrc}
+        canEditAccountName={canEditAccountName}
+        onSave={(values) => void handleSaveWalletEdit(values)}
+        onRemove={() => void handleRemoveWallet()}
       />
       {sharedTransition && (
         <SharedUnlockTransitionOverlay transition={sharedTransition} />

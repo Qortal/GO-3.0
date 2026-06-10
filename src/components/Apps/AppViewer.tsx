@@ -395,12 +395,14 @@ export const AppViewer = forwardRef<HTMLIFrameElement, AppViewerProps>(
       <Box
         sx={{
           display: 'flex',
+          flex: 1,
           flexDirection: 'column',
-          height: '100vh',
+          height: '100%',
           minHeight: 0,
           overflow: 'hidden',
           overflowAnchor: 'none',
           overscrollBehavior: 'none',
+          position: 'relative',
           width: '100%',
         }}
       >
@@ -410,13 +412,14 @@ export const AppViewer = forwardRef<HTMLIFrameElement, AppViewerProps>(
             border: 'none',
             contain: 'layout paint style',
             display: 'block',
-            flex: '0 0 auto',
-            height: '100vh',
+            height: '100%',
+            inset: 0,
             isolation: 'isolate',
             minHeight: 0,
             overflow: 'hidden',
             overflowAnchor: 'none',
             overscrollBehavior: 'none',
+            position: 'absolute',
             width: '100%',
           }}
           id="browser-iframe"
@@ -424,7 +427,7 @@ export const AppViewer = forwardRef<HTMLIFrameElement, AppViewerProps>(
           src={defaultUrl}
           sandbox="allow-scripts allow-same-origin allow-forms allow-downloads allow-modals"
           allow="fullscreen; clipboard-read; clipboard-write; screen-wake-lock"
-        ></iframe>
+        />
       </Box>
     );
   }

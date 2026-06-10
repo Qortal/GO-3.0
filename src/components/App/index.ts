@@ -1,4 +1,7 @@
-export { AuthenticatedShell } from './AuthenticatedShell';
+// NOTE: AuthenticatedShell is deliberately NOT re-exported here. It must only
+// be reachable through LazyAuthenticatedShell's dynamic import — a static
+// re-export from this barrel pulls the entire authenticated tree (Group, chat,
+// apps, home) into the eager pre-login bundle.
 export { SendQortOverlay } from './SendQortOverlay';
 export { ReceiveQortOverlay } from './ReceiveQortOverlay';
 export { SuccessOverlay } from './SuccessOverlay';

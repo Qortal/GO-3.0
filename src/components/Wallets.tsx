@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
   type DragEvent as ReactDragEvent,
+  type MouseEvent as ReactMouseEvent,
 } from 'react';
 import {
   Avatar,
@@ -13,7 +14,6 @@ import {
   Box,
   ButtonBase,
   IconButton,
-  Input,
   InputAdornment,
   TextField,
   Tooltip,
@@ -23,7 +23,7 @@ import {
 import { alpha } from '@mui/material/styles';
 import { useDropzone } from 'react-dropzone';
 import { useTranslation } from 'react-i18next';
-import EditIcon from '@mui/icons-material/Edit';
+import { useAtomValue } from 'jotai';
 import PersonIcon from '@mui/icons-material/Person';
 import ArrowBackRoundedIcon from '@mui/icons-material/ArrowBackRounded';
 import VisibilityOffIcon from '@mui/icons-material/VisibilityOff';
@@ -34,6 +34,7 @@ import LoginRoundedIcon from '@mui/icons-material/LoginRounded';
 import ArrowForwardRoundedIcon from '@mui/icons-material/ArrowForwardRounded';
 import ChevronRightRoundedIcon from '@mui/icons-material/ChevronRightRounded';
 import ClearRoundedIcon from '@mui/icons-material/ClearRounded';
+import FingerprintRoundedIcon from '@mui/icons-material/FingerprintRounded';
 import ManageSearchRoundedIcon from '@mui/icons-material/ManageSearchRounded';
 import {
   getWallets,
@@ -41,7 +42,13 @@ import {
   walletVersion,
 } from '../background/background.ts';
 import { getPrimaryNamesForAddresses } from './Group/groupApi';
-import { getBaseApiReactForAvatar } from '../App';
+import {
+  getWalletAvatarCacheEntries,
+  syncWalletAvatarCachesForAddresses,
+  resolveWalletAvatarSrc,
+  type WalletAvatarCacheEntry,
+} from '../utils/walletAvatarCache';
+import { QortalUserAvatar } from './QortalUserAvatar';
 import PhraseWallet from '../utils/generateWallet/phrase-wallet.ts';
 import { decryptStoredWalletFromSeedPhrase } from '../utils/decryptWallet.ts';
 import { crypto } from '../constants/decryptWallet.ts';
@@ -54,6 +61,9 @@ import {
   hasAttemptedLastWalletAutoSelectThisSession,
   markLastWalletAutoSelectAttemptedThisSession,
 } from '../utils/lastAuthenticatedWallet';
+import { mobileLoginSettingsOpenAtom } from '../atoms/global';
+import { isCapacitor } from '../utils/platform';
+import { getBiometricEnabledAddresses, getBiometricEnabledAddressesSync } from '../utils/walletBiometricAuth';
 
 const parsefilenameQortal = (filename) => {
   return filename.startsWith('qortal_backup_') ? filename.slice(14) : filename;
@@ -61,8 +71,8 @@ const parsefilenameQortal = (filename) => {
 
 const shortenAddress = (address?: string) => {
   if (!address) return '';
-  if (address.length <= 18) return address;
-  return `${address.slice(0, 8)}...${address.slice(-8)}`;
+  if (address.length <= 8) return address;
+  return `${address.slice(0, 4)}…${address.slice(-4)}`;
 };
 
 /** Keeps Enter Qortal list height stable while filtering/scrolling */
@@ -76,6 +86,15 @@ type WalletsProps = {
   onImportViewChange?: (view: ImportView) => void;
   onReady?: () => void;
   onWalletUnlockStart?: (snapshot: AuthUnlockTransitionSnapshot) => void;
+  /** Fired whenever the saved wallet list changes (for login settings on entry). */
+  onWalletsChange?: (wallets: any[]) => void;
+  /** Scan fingerprint from the account list and unlock without an extra prompt on the unlock screen. */
+  onBiometricWalletUnlock?: (
+    wallet: any,
+    transitionSnapshot?: AuthUnlockTransitionSnapshot
+  ) => Promise<boolean>;
+  /** Called before navigating to the password unlock screen after a failed list fingerprint scan. */
+  onWalletPasswordFallbackUnlock?: () => void;
 };
 
 type ImportView = 'choice' | 'backup' | 'seedphrase' | 'authenticate';
@@ -87,8 +106,16 @@ export const Wallets = ({
   onImportViewChange,
   onReady,
   onWalletUnlockStart,
+  onWalletsChange,
+  onBiometricWalletUnlock,
+  onWalletPasswordFallbackUnlock,
 }: WalletsProps) => {
   const { t } = useTranslation(['auth']);
+  const nativeShell = isCapacitor();
+  const isLoginSettingsOpen = useAtomValue(mobileLoginSettingsOpenAtom);
+  const [biometricEnabledAddresses, setBiometricEnabledAddresses] = useState<
+    Set<string>
+  >(() => new Set());
   const [wallets, setWallets] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [seedValue, setSeedValue] = useState('');
@@ -105,11 +132,15 @@ export const Wallets = ({
   /** Row being dragged — dim original while reordering */
   const [walletReorderDragSourceIndex, setWalletReorderDragSourceIndex] =
     useState<number | null>(null);
-  const [editingWalletIndex, setEditingWalletIndex] = useState<number | null>(
-    null
-  );
   const [primaryNamesByAddress, setPrimaryNamesByAddress] = useState<
     Record<string, string>
+  >({});
+  const [primaryNamesLoaded, setPrimaryNamesLoaded] = useState(false);
+  const [walletAvatarsByAddress, setWalletAvatarsByAddress] = useState<
+    Record<string, WalletAvatarCacheEntry>
+  >({});
+  const [qortalAvatarsByAddress, setQortalAvatarsByAddress] = useState<
+    Record<string, boolean | null | undefined>
   >({});
   const [walletEntrySearchOpen, setWalletEntrySearchOpen] = useState(false);
   const [walletEntryFilterQuery, setWalletEntryFilterQuery] = useState('');
@@ -120,20 +151,14 @@ export const Wallets = ({
     hasAttemptedLastWalletAutoSelectThisSession()
   );
   const entryModeRef = useRef(mode);
-  const editingWalletIndexRef = useRef(editingWalletIndex);
   entryModeRef.current = mode;
-  editingWalletIndexRef.current = editingWalletIndex;
   const theme = useTheme();
 
   /** HTML5 drag: scroll only when cursor is above/below the list clip (header/footer overlap), never from inside */
   useEffect(() => {
     const onDocumentDragOver = (event: globalThis.DragEvent) => {
       if (!walletReorderDragActiveRef.current) return;
-      if (
-        entryModeRef.current !== 'entry' ||
-        editingWalletIndexRef.current !== null
-      )
-        return;
+      if (entryModeRef.current !== 'entry') return;
       const el = accountsScrollRef.current;
       if (!el || el.scrollHeight <= el.clientHeight) return;
 
@@ -235,25 +260,96 @@ export const Wallets = ({
   useEffect(() => {
     if (walletAddresses.length === 0) {
       setPrimaryNamesByAddress({});
+      setPrimaryNamesLoaded(false);
+      setWalletAvatarsByAddress({});
       return;
     }
 
     let canceled = false;
+    setPrimaryNamesLoaded(false);
 
     getPrimaryNamesForAddresses(walletAddresses)
       .then((namesByAddress) => {
         if (!canceled) {
           setPrimaryNamesByAddress(namesByAddress);
+          setPrimaryNamesLoaded(true);
         }
       })
       .catch((error) => {
         console.error('Unable to fetch wallet primary names:', error);
+        if (!canceled) {
+          setPrimaryNamesLoaded(true);
+        }
+      });
+
+    getWalletAvatarCacheEntries()
+      .then((avatarsByAddress) => {
+        if (!canceled) {
+          setWalletAvatarsByAddress(avatarsByAddress);
+        }
+      })
+      .catch((error) => {
+        console.error('Unable to load cached wallet avatars:', error);
       });
 
     return () => {
       canceled = true;
     };
   }, [walletAddresses]);
+
+  useEffect(() => {
+    if (walletAddresses.length === 0) {
+      setQortalAvatarsByAddress({});
+      return;
+    }
+
+    let canceled = false;
+
+    void (async () => {
+      const { hasAvatarByAddress, entriesByAddress } =
+        await syncWalletAvatarCachesForAddresses(
+          walletAddresses,
+          primaryNamesByAddress,
+          { namesLoaded: primaryNamesLoaded }
+        );
+
+      if (!canceled) {
+        setQortalAvatarsByAddress(hasAvatarByAddress);
+        setWalletAvatarsByAddress(entriesByAddress);
+      }
+    })();
+
+    return () => {
+      canceled = true;
+    };
+  }, [walletAddresses, primaryNamesByAddress, primaryNamesLoaded]);
+
+  useEffect(() => {
+    if (mode !== 'entry' || !nativeShell || walletAddresses.length === 0) {
+      setBiometricEnabledAddresses(new Set());
+      return;
+    }
+
+    setBiometricEnabledAddresses(
+      new Set(getBiometricEnabledAddressesSync(walletAddresses))
+    );
+
+    let canceled = false;
+
+    getBiometricEnabledAddresses(walletAddresses)
+      .then((addresses) => {
+        if (!canceled) {
+          setBiometricEnabledAddresses(new Set(addresses));
+        }
+      })
+      .catch((error) => {
+        console.error('Unable to load fingerprint unlock settings:', error);
+      });
+
+    return () => {
+      canceled = true;
+    };
+  }, [isLoginSettingsOpen, mode, nativeShell, walletAddresses]);
 
   const persistWallets = useCallback(async (nextWallets: any[]) => {
     setWallets(nextWallets);
@@ -273,6 +369,14 @@ export const Wallets = ({
       .then((res) => {
         if (res && Array.isArray(res)) {
           setWallets(res);
+          if (mode === 'entry' && nativeShell) {
+            const addresses = res
+              .map((wallet) => wallet?.address0)
+              .filter(Boolean) as string[];
+            setBiometricEnabledAddresses(
+              new Set(getBiometricEnabledAddressesSync(addresses))
+            );
+          }
           if (mode === 'entry' && !attemptedLastWalletAutoSelectRef.current) {
             const lastAddress = getLastAuthenticatedWalletAddress();
             if (lastAddress) {
@@ -297,13 +401,19 @@ export const Wallets = ({
         console.error(error);
         setIsLoading(false);
       });
-  }, [mode, setExtState, setRawWallet]);
+  }, [mode, nativeShell, setExtState, setRawWallet]);
 
   useEffect(() => {
     if (!isLoading) {
       onReady?.();
     }
   }, [isLoading, onReady]);
+
+  useEffect(() => {
+    if (!isLoading) {
+      onWalletsChange?.(wallets);
+    }
+  }, [isLoading, onWalletsChange, wallets]);
 
   useEffect(() => {
     if (wallets.length <= 8) {
@@ -314,8 +424,13 @@ export const Wallets = ({
 
   const selectedWalletFunc = (
     wallet,
-    transitionSnapshot?: AuthUnlockTransitionSnapshot
+    transitionSnapshot?: AuthUnlockTransitionSnapshot,
+    options?: { startWithPasswordFallback?: boolean }
   ) => {
+    if (options?.startWithPasswordFallback) {
+      onWalletPasswordFallbackUnlock?.();
+    }
+
     if (transitionSnapshot && mode === 'entry') {
       onWalletUnlockStart?.(transitionSnapshot);
       window.setTimeout(() => {
@@ -329,22 +444,22 @@ export const Wallets = ({
     setExtState('wallet-dropped');
   };
 
-  const updateWalletItem = (idx, wallet) => {
-    if (wallet === null) {
-      setEditingWalletIndex(null);
-    }
+  const handleBiometricUnlock = useCallback(
+    async (
+      wallet: any,
+      transitionSnapshot?: AuthUnlockTransitionSnapshot
+    ): Promise<boolean> => {
+      if (!onBiometricWalletUnlock) return false;
 
-    const nextWallets = [...wallets];
-    if (wallet === null) {
-      nextWallets.splice(idx, 1);
-    } else {
-      nextWallets[idx] = wallet;
-    }
+      const unlocked = await onBiometricWalletUnlock(wallet, transitionSnapshot);
+      if (unlocked && transitionSnapshot && mode === 'entry') {
+        onWalletUnlockStart?.(transitionSnapshot);
+      }
+      return unlocked;
+    },
+    [mode, onBiometricWalletUnlock, onWalletUnlockStart]
+  );
 
-    void persistWallets(nextWallets).catch(console.error);
-  };
-
-  /** `gapBeforeIndex` is visual slot index in the pre-move ordering (0..wallets.length) */
   const finalizeWalletReorder = useCallback(
     (fromIndex: number, gapBeforeIndex: number) => {
       const n = wallets.length;
@@ -524,18 +639,9 @@ export const Wallets = ({
   });
 
   const displayedWallets = useMemo(() => {
-    const base =
-      editingWalletIndex === null
-        ? wallets.map((wallet, idx) => ({ wallet, idx }))
-        : wallets
-            .map((wallet, idx) => ({ wallet, idx }))
-            .filter(({ idx: rowIdx }) => rowIdx === editingWalletIndex);
+    const base = wallets.map((wallet, idx) => ({ wallet, idx }));
 
-    if (
-      mode !== 'entry' ||
-      editingWalletIndex !== null ||
-      wallets.length <= 8
-    ) {
+    if (mode !== 'entry' || wallets.length <= 8) {
       return base;
     }
 
@@ -561,26 +667,19 @@ export const Wallets = ({
         fileLabel.includes(q)
       );
     });
-  }, [
-    editingWalletIndex,
-    mode,
-    primaryNamesByAddress,
-    walletEntryFilterQuery,
-    wallets,
-  ]);
+  }, [mode, primaryNamesByAddress, walletEntryFilterQuery, wallets]);
 
   if (isLoading) return null;
 
   const showsEntryWalletFilter =
-    mode === 'entry' && editingWalletIndex === null && wallets.length > 8;
+    mode === 'entry' && wallets.length > 8;
 
   const entryFilteredNoMatches =
     showsEntryWalletFilter &&
     walletEntryFilterQuery.trim().length > 0 &&
     displayedWallets.length === 0;
 
-  const entryListFixedViewport =
-    mode === 'entry' && editingWalletIndex === null;
+  const entryListFixedViewport = mode === 'entry';
 
   const accountsList = (
     <Box
@@ -652,9 +751,16 @@ export const Wallets = ({
                 )}
               <WalletRow
                 idx={idx}
-                editingWalletIndex={editingWalletIndex}
+                biometricUnlockEnabled={
+                  mode === 'entry' &&
+                  Boolean(
+                    wallet?.address0 &&
+                      biometricEnabledAddresses.has(wallet.address0)
+                  )
+                }
                 finalizeWalletReorder={finalizeWalletReorder}
                 mode={mode}
+                onBiometricUnlock={handleBiometricUnlock}
                 onReorderDragEnd={handleWalletReorderDragEnd}
                 onReorderDragStart={handleWalletReorderDragStart}
                 primaryName={
@@ -662,18 +768,24 @@ export const Wallets = ({
                     ? primaryNamesByAddress[wallet.address0]
                     : undefined
                 }
+                cachedAvatarEntry={
+                  wallet?.address0
+                    ? walletAvatarsByAddress[wallet.address0]
+                    : undefined
+                }
+                hasQortalAvatar={
+                  wallet?.address0
+                    ? qortalAvatarsByAddress[wallet.address0]
+                    : false
+                }
                 registerCardRef={registerCardRef}
                 registerReorderDragActive={
-                  mode === 'entry' && editingWalletIndex === null
-                    ? registerReorderDragActive
-                    : undefined
+                  mode === 'entry' ? registerReorderDragActive : undefined
                 }
                 reorderDragHover={handleWalletReorderHover}
                 reorderDragHoverLeave={handleWalletReorderHoverLeave}
                 reorderDragSourceIndex={walletReorderDragSourceIndex}
-                setEditingWalletIndex={setEditingWalletIndex}
                 setSelectedWallet={selectedWalletFunc}
-                updateWalletItem={updateWalletItem}
                 wallet={wallet}
               />
             </Fragment>
@@ -1122,10 +1234,11 @@ const InlineReturn = ({ onClick }: { onClick: () => void }) => {
 
 const WalletRow = ({
   wallet,
-  updateWalletItem,
   idx,
   setSelectedWallet,
   primaryName,
+  cachedAvatarEntry,
+  hasQortalAvatar,
   registerCardRef,
   finalizeWalletReorder,
   registerReorderDragActive,
@@ -1134,88 +1247,31 @@ const WalletRow = ({
   reorderDragHoverLeave,
   onReorderDragStart,
   onReorderDragEnd,
-  editingWalletIndex,
   mode,
-  setEditingWalletIndex,
+  biometricUnlockEnabled = false,
+  onBiometricUnlock,
 }) => {
   const { t } = useTranslation(['auth', 'core']);
-  const [accountName, setAccountName] = useState('');
-  const [note, setNote] = useState('');
-  const isEdit = editingWalletIndex === idx;
+  const [biometricUnlockBusy, setBiometricUnlockBusy] = useState(false);
   const addressRef = useRef<HTMLParagraphElement | null>(null);
   const avatarRef = useRef<HTMLDivElement | null>(null);
-  const editButtonRef = useRef<HTMLButtonElement | null>(null);
-  const editPanelRef = useRef<HTMLDivElement | null>(null);
   const nameRef = useRef<HTMLParagraphElement | null>(null);
   const rowRef = useRef<HTMLDivElement | null>(null);
   const isDraggingRef = useRef(false);
   const theme = useTheme();
-
-  useEffect(() => {
-    setAccountName(wallet?.name || '');
-    setNote(wallet?.note || '');
-  }, [wallet]);
-
-  useEffect(() => {
-    if (!isEdit) return;
-
-    const closeEditPanel = () => {
-      setNote(wallet?.note || '');
-      setAccountName(wallet?.name || '');
-      setEditingWalletIndex(null);
-    };
-
-    const closeOnOutsidePointer = (event: MouseEvent | TouchEvent) => {
-      const target = event.target as Node | null;
-
-      if (
-        target &&
-        (editButtonRef.current?.contains(target) ||
-          editPanelRef.current?.contains(target))
-      ) {
-        return;
-      }
-
-      closeEditPanel();
-    };
-
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
-      event.preventDefault();
-      closeEditPanel();
-    };
-
-    document.addEventListener('mousedown', closeOnOutsidePointer);
-    document.addEventListener('touchstart', closeOnOutsidePointer);
-    document.addEventListener('keydown', closeOnEscape);
-
-    return () => {
-      document.removeEventListener('mousedown', closeOnOutsidePointer);
-      document.removeEventListener('touchstart', closeOnOutsidePointer);
-      document.removeEventListener('keydown', closeOnEscape);
-    };
-  }, [isEdit, setEditingWalletIndex, wallet]);
-
-  const qortalAvatarSrc =
-    primaryName &&
-    `${getBaseApiReactForAvatar()}/arbitrary/THUMBNAIL/${primaryName}/qortal_avatar?async=true`;
+  const effectivePrimaryName =
+    primaryName?.trim() || wallet?.name?.trim() || '';
+  const resolvedAvatarSrc = resolveWalletAvatarSrc({
+    primaryName: effectivePrimaryName,
+    walletAddress: wallet?.address0,
+    cachedAvatarEntry,
+  });
   const displayName =
-    primaryName ||
+    effectivePrimaryName ||
     wallet?.name ||
     (wallet?.filename ? parsefilenameQortal(wallet.filename) : null) ||
     t('auth:authentication_form.unnamed_account');
   const addressLabel = shortenAddress(wallet?.address0);
-  const canEditAccountName = !primaryName && !wallet?.filename;
-
-  const handleSaveEdit = () => {
-    updateWalletItem(idx, {
-      ...wallet,
-      ...(canEditAccountName ? { name: accountName.trim() } : {}),
-      note,
-    });
-    setEditingWalletIndex(null);
-  };
-
   const getTransitionSnapshot = ():
     | AuthUnlockTransitionSnapshot
     | undefined => {
@@ -1239,18 +1295,37 @@ const WalletRow = ({
       addressLabel,
       addressRect: rectToObject(addressRef.current.getBoundingClientRect()),
       avatarRect: rectToObject(avatarRef.current.getBoundingClientRect()),
-      avatarSrc: qortalAvatarSrc || undefined,
+      avatarSrc: resolvedAvatarSrc,
       displayName,
       nameRect: rectToObject(nameRef.current.getBoundingClientRect()),
-      primaryName: primaryName || undefined,
+      primaryName: effectivePrimaryName || undefined,
       walletAddress: wallet?.address0,
     };
   };
 
   const handleSelectWallet = () => {
-    if (isEdit || isDraggingRef.current) return;
+    if (isDraggingRef.current) return;
     setSelectedWallet(wallet, getTransitionSnapshot());
   };
+
+  const handleBiometricUnlockClick = async (event: ReactMouseEvent) => {
+    event.stopPropagation();
+    if (isDraggingRef.current || biometricUnlockBusy || !onBiometricUnlock) {
+      return;
+    }
+
+    setBiometricUnlockBusy(true);
+    try {
+      const snapshot = getTransitionSnapshot();
+      const unlocked = await onBiometricUnlock(wallet, snapshot);
+      if (!unlocked) {
+        setSelectedWallet(wallet, snapshot, { startWithPasswordFallback: true });
+      }
+    } finally {
+      setBiometricUnlockBusy(false);
+    }
+  };
+
   const isLight = theme.palette.mode === 'light';
   const entryRowBackground = isLight
     ? 'linear-gradient(180deg, rgba(255,255,255,0.94), rgba(246,249,253,0.98))'
@@ -1258,9 +1333,6 @@ const WalletRow = ({
   const entryRowHoverBackground = isLight
     ? 'linear-gradient(180deg, rgba(255,255,255,0.99), rgba(239,245,252,0.99))'
     : 'linear-gradient(180deg, rgba(8,14,24,0.93), rgba(5,8,14,0.96))';
-  const entryEditBackground = isLight
-    ? 'linear-gradient(180deg, rgba(252,253,255,0.98), rgba(244,248,252,0.99))'
-    : 'linear-gradient(180deg, rgba(13,19,31,0.92), rgba(7,11,18,0.94))';
 
   return (
     <Box
@@ -1270,13 +1342,8 @@ const WalletRow = ({
           registerCardRef(wallet.address0)(element);
         }
       }}
-      draggable={!isEdit}
+      draggable
       onDragStart={(event) => {
-        if (isEdit) {
-          event.preventDefault();
-          return;
-        }
-
         isDraggingRef.current = true;
         registerReorderDragActive?.(true);
         onReorderDragStart?.(idx);
@@ -1284,7 +1351,6 @@ const WalletRow = ({
         event.dataTransfer.setData('text/plain', String(idx));
       }}
       onDragOver={(event) => {
-        if (isEdit) return;
         event.preventDefault();
         event.dataTransfer.dropEffect = 'move';
         reorderDragHover?.(idx, event);
@@ -1321,7 +1387,7 @@ const WalletRow = ({
           reorderDragSourceIndex !== null && reorderDragSourceIndex === idx
             ? 0.46
             : 1,
-        pb: mode === 'entry' ? 0 : isEdit ? 1.2 : 0,
+        pb: mode === 'entry' ? 0 : 0,
         pt: mode === 'entry' ? 0 : 0.2,
         transition: 'opacity 160ms ease',
       }}
@@ -1330,13 +1396,7 @@ const WalletRow = ({
         sx={{
           alignItems: 'center',
           background:
-            mode === 'entry'
-              ? isEdit
-                ? entryEditBackground
-                : entryRowBackground
-              : isEdit
-                ? 'rgba(255,255,255,0.03)'
-                : 'transparent',
+            mode === 'entry' ? entryRowBackground : 'transparent',
           border:
             mode === 'entry'
               ? isLight
@@ -1344,7 +1404,7 @@ const WalletRow = ({
                 : '1px solid rgba(123,145,174,0.2)'
               : 'none',
           borderRadius: mode === 'entry' ? '8px' : '7px',
-          cursor: isEdit ? 'default' : 'grab',
+          cursor: 'grab',
           display: 'grid',
           gap: mode === 'entry' ? 1.3 : 1,
           gridTemplateColumns:
@@ -1357,13 +1417,8 @@ const WalletRow = ({
           transition:
             'background 160ms ease, border-color 160ms ease, box-shadow 160ms ease',
           '&:hover': {
-            background: isEdit
-              ? mode === 'entry'
-                ? entryEditBackground
-                : 'rgba(255,255,255,0.03)'
-              : mode === 'entry'
-                ? entryRowHoverBackground
-                : 'rgba(255,255,255,0.03)',
+            background:
+              mode === 'entry' ? entryRowHoverBackground : 'rgba(255,255,255,0.03)',
             borderColor:
               mode === 'entry'
                 ? isLight
@@ -1371,41 +1426,43 @@ const WalletRow = ({
                   : 'rgba(188,213,246,0.34)'
                 : undefined,
             boxShadow:
-              mode === 'entry' && !isEdit
+              mode === 'entry'
                 ? isLight
                   ? '0 2px 12px rgba(45, 72, 112, 0.06)'
                   : '0 0 0 1px rgba(70,120,210,0.04)'
                 : 'none',
           },
           '&:active': {
-            cursor: isEdit ? 'default' : 'grabbing',
+            cursor: 'grabbing',
           },
         }}
-        onClick={() => {
-          handleSelectWallet();
-        }}
+        onClick={handleSelectWallet}
       >
-        <Box sx={{ width: mode === 'entry' ? 46 : 34 }}>
-          <Avatar
-            ref={avatarRef}
-            alt={displayName}
-            src={qortalAvatarSrc || undefined}
-            sx={{
-              height: mode === 'entry' ? 46 : 34,
-              width: mode === 'entry' ? 46 : 34,
-            }}
-          >
-            <PersonIcon sx={{ fontSize: mode === 'entry' ? 27 : 22 }} />
-          </Avatar>
-        </Box>
+        <QortalUserAvatar
+          key={`${wallet?.address0 || idx}-${resolvedAvatarSrc ?? 'none'}`}
+          ref={avatarRef}
+          alt={displayName}
+          primaryName={effectivePrimaryName}
+          walletAddress={wallet?.address0}
+          cachedAvatarEntry={cachedAvatarEntry}
+          fallbackIconSize={mode === 'entry' ? 27 : 22}
+          sx={{
+            alignSelf: 'center',
+            flexShrink: 0,
+            height: mode === 'entry' ? 46 : 34,
+            width: mode === 'entry' ? 46 : 34,
+          }}
+        />
 
         <Box sx={{ minWidth: 0 }}>
           <Box
             sx={{
               alignItems: 'baseline',
               display: 'inline-flex',
+              flexWrap: 'wrap',
               gap: 0.35,
               maxWidth: '100%',
+              minWidth: 0,
             }}
           >
             <Typography
@@ -1414,37 +1471,16 @@ const WalletRow = ({
                 color: theme.palette.text.primary,
                 fontSize: mode === 'entry' ? '1rem' : '0.95rem',
                 fontWeight: 700,
+                display: '-webkit-box',
+                WebkitBoxOrient: 'vertical',
+                WebkitLineClamp: 2,
                 overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
+                overflowWrap: 'anywhere',
+                lineHeight: 1.2,
               }}
             >
               {displayName}
             </Typography>
-            <IconButton
-              ref={editButtonRef}
-              aria-label={
-                isEdit
-                  ? t('core:action.close', {
-                      postProcess: 'capitalizeFirstChar',
-                    })
-                  : t('auth:entry.wallet_edit_aria_label')
-              }
-              sx={{
-                color:
-                  mode === 'entry'
-                    ? alpha(theme.palette.text.secondary, 0.62)
-                    : 'rgba(214,221,233,0.48)',
-                ml: 0.1,
-                p: 0.35,
-              }}
-              onClick={(event) => {
-                event.stopPropagation();
-                setEditingWalletIndex(isEdit ? null : idx);
-              }}
-            >
-              <EditIcon sx={{ fontSize: 15 }} />
-            </IconButton>
             {wallet?.note && (
               <Typography
                 sx={{
@@ -1476,6 +1512,9 @@ const WalletRow = ({
               fontSize: mode === 'entry' ? '0.84rem' : '0.79rem',
               lineHeight: 1.35,
               mt: 0.05,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
             }}
           >
             {addressLabel}
@@ -1483,101 +1522,54 @@ const WalletRow = ({
         </Box>
 
         <Box onClick={(event) => event.stopPropagation()}>
-          <AuthButton
-            fullWidth={false}
-            prominence="subtle"
-            onClick={handleSelectWallet}
-          >
-            {t('auth:authentication_form.unlock')}
-          </AuthButton>
+          {mode === 'entry' && biometricUnlockEnabled ? (
+            <IconButton
+              aria-label={t('auth:mobile_login_settings.biometric_unlock')}
+              disabled={biometricUnlockBusy}
+              onClick={(event) => void handleBiometricUnlockClick(event)}
+              sx={{
+                background: isLight
+                  ? alpha(theme.palette.primary.main, 0.1)
+                  : 'rgba(118,164,255,0.12)',
+                border: isLight
+                  ? `1px solid ${alpha(theme.palette.primary.main, 0.28)}`
+                  : '1px solid rgba(118,164,255,0.28)',
+                borderRadius: '50%',
+                color: theme.palette.primary.main,
+                height: 46,
+                width: 46,
+                '&:hover': {
+                  background: isLight
+                    ? alpha(theme.palette.primary.main, 0.16)
+                    : 'rgba(118,164,255,0.18)',
+                },
+                '&:disabled': {
+                  opacity: 0.55,
+                },
+              }}
+            >
+              <FingerprintRoundedIcon sx={{ fontSize: 26 }} />
+            </IconButton>
+          ) : (
+            <AuthButton
+              fullWidth={false}
+              prominence="subtle"
+              onClick={handleSelectWallet}
+            >
+              {t('auth:authentication_form.unlock')}
+            </AuthButton>
+          )}
         </Box>
         {mode === 'entry' && (
           <ChevronRightRoundedIcon
             sx={{
-              color:
-                mode === 'entry'
-                  ? alpha(theme.palette.text.secondary, 0.65)
-                  : 'rgba(214,221,233,0.42)',
+              color: alpha(theme.palette.text.secondary, 0.65),
               fontSize: 24,
               opacity: 0.82,
             }}
           />
         )}
       </Box>
-
-      {isEdit && (
-        <Box
-          ref={editPanelRef}
-          sx={{
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 0.9,
-            pl: { xs: 0.7, sm: 6.2 },
-            pr: 0.7,
-            pt: 1,
-          }}
-          onClick={(event) => event.stopPropagation()}
-        >
-          {canEditAccountName && (
-            <>
-              <Typography sx={inlineFieldLabelSx}>
-                {t('auth:entry.wallet_edit_name_label')}
-              </Typography>
-              <Input
-                autoFocus
-                placeholder={t(
-                  'auth:entry.wallet_edit_account_name_placeholder'
-                )}
-                value={accountName}
-                onChange={(event) => setAccountName(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') {
-                    event.preventDefault();
-                    handleSaveEdit();
-                  }
-                }}
-                inputProps={{ maxLength: 48 }}
-                sx={inlineInputSx}
-              />
-            </>
-          )}
-          <Typography sx={inlineFieldLabelSx}>
-            {t('auth:entry.wallet_edit_note_label')}
-          </Typography>
-          <Input
-            placeholder={t('auth:entry.wallet_edit_note_placeholder')}
-            value={note}
-            onChange={(event) => setNote(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter') {
-                event.preventDefault();
-                handleSaveEdit();
-              }
-            }}
-            inputProps={{ maxLength: 100 }}
-            sx={inlineInputSx}
-          />
-
-          <Box
-            sx={{
-              display: 'flex',
-              gap: 0.8,
-              justifyContent: 'flex-end',
-              mt: 0.4,
-            }}
-          >
-            <ButtonBase
-              onClick={() => updateWalletItem(idx, null)}
-              sx={inlineActionSx(true)}
-            >
-              {t('auth:entry.wallet_edit_remove')}
-            </ButtonBase>
-            <ButtonBase onClick={handleSaveEdit} sx={inlineActionSx(false)}>
-              {t('auth:entry.wallet_edit_save')}
-            </ButtonBase>
-          </Box>
-        </Box>
-      )}
     </Box>
   );
 };
@@ -1603,38 +1595,4 @@ const seedTextFieldSx = (theme, isVisible: boolean) => ({
     fontSize: '0.95rem',
     lineHeight: 1.6,
   },
-});
-
-const inlineFieldLabelSx = {
-  color: 'rgba(214,221,233,0.56)',
-  fontSize: '0.74rem',
-  fontWeight: 700,
-  letterSpacing: '0.08em',
-  textTransform: 'uppercase',
-};
-
-const inlineInputSx = {
-  color: 'rgba(230,236,247,0.92)',
-  fontSize: '0.92rem',
-  '&:before': {
-    borderBottom: '1px solid rgba(255,255,255,0.08)',
-  },
-  '&:after': {
-    borderBottom: '1px solid rgba(90,136,243,0.42)',
-  },
-};
-
-const inlineActionSx = (danger: boolean) => ({
-  alignItems: 'center',
-  backgroundColor: danger ? 'rgba(160,56,56,0.12)' : 'rgba(255,255,255,0.03)',
-  border: `1px solid ${danger ? 'rgba(213,92,92,0.18)' : 'rgba(255,255,255,0.08)'}`,
-  borderRadius: '8px',
-  color: danger ? 'rgba(240,165,165,0.92)' : 'rgba(230,236,247,0.88)',
-  display: 'inline-flex',
-  fontSize: '0.84rem',
-  fontWeight: 700,
-  height: 34,
-  justifyContent: 'center',
-  minWidth: 82,
-  px: 1.4,
 });

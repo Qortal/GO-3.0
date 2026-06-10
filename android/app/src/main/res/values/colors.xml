@@ -1,0 +1,8 @@
+<resources>
+    <color name="white">#FFFFFF</color>
+    <!-- Startup background; matches the in-app HTML splash so the launch
+         window blends into it instead of flashing the old logo. -->
+    <color name="splashBackground">#0E0F14</color>
+    <color name="qortal_brand">#09B6E8</color>
+    <!-- Define any additional colors here -->
+</resources>

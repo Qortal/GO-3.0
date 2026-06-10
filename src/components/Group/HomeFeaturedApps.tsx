@@ -11,15 +11,12 @@ import {
   Box,
   Button,
   ButtonBase,
-  Tooltip,
   Typography,
   useTheme,
 } from '@mui/material';
-import VisibilityOffRoundedIcon from '@mui/icons-material/VisibilityOffRounded';
-import VisibilityRoundedIcon from '@mui/icons-material/VisibilityRounded';
 import { useTranslation } from 'react-i18next';
 import { executeEvent } from '../../utils/events';
-import { getBaseApiReactForAvatar } from '../../utils/globalApi';
+import { buildAppThumbnailUrl } from '../../utils/walletAvatarCache';
 import BorderGlow from '../common/BorderGlow';
 import { getBlueTier1ButtonSx } from '../../styles/blueMaterial';
 import {
@@ -41,7 +38,6 @@ export const FEATURED_INTRO_TOTAL_DURATION_MS =
 const FEATURED_STRIP_HOVER_DURATION_MS = 190;
 const FEATURED_INITIAL_PREVIEW_SESSION_KEY =
   'dashboard-featured-subwire-preview-seen';
-const FEATURED_CALM_MODE_STORAGE_KEY = 'dashboard-featured-apps-calm-mode';
 const FEATURED_TEASER_FADE_DURATION_MS = 300;
 const SUBWIRE_APP_NAME = 'SubWire';
 const Q_TUBE_APP_NAME = 'Q-Tube';
@@ -136,15 +132,6 @@ export const HomeFeaturedApps = ({ panelBoxRef = undefined }) => {
   const [expandedPreviewApp, setExpandedPreviewApp] =
     useState<PreviewAppName | null>(null);
   const [autoPreviewActive, setAutoPreviewActive] = useState(false);
-  const [isCalmMode, setIsCalmMode] = useState(() => {
-    try {
-      return (
-        window.localStorage.getItem(FEATURED_CALM_MODE_STORAGE_KEY) === '1'
-      );
-    } catch {
-      return false;
-    }
-  });
   const featuredFooterStripBackground =
     theme.palette.mode === 'dark'
       ? `radial-gradient(140% 252% at 50% 54%, ${alpha(GROUP_ACTIVITY_BLUE.gradientTop, 0.225)} 0%, ${alpha(
@@ -220,18 +207,6 @@ export const HomeFeaturedApps = ({ panelBoxRef = undefined }) => {
   });
 
   useEffect(() => {
-    if (isCalmMode) {
-      setAutoPreviewActive(false);
-      setExpandedPreviewApp(null);
-      return () => {
-        if (previewExpandTimerRef.current)
-          clearTimeout(previewExpandTimerRef.current);
-        if (previewCollapseTimerRef.current)
-          clearTimeout(previewCollapseTimerRef.current);
-        clearInitialPreviewTimers();
-      };
-    }
-
     let shouldRunInitialPreview = true;
 
     try {
@@ -281,7 +256,7 @@ export const HomeFeaturedApps = ({ panelBoxRef = undefined }) => {
         clearTimeout(previewCollapseTimerRef.current);
       clearInitialPreviewTimers();
     };
-  }, [clearInitialPreviewTimers, isCalmMode]);
+  }, [clearInitialPreviewTimers]);
 
   const clearPirateTimers = () => {
     if (previewExpandTimerRef.current) {
@@ -299,25 +274,7 @@ export const HomeFeaturedApps = ({ panelBoxRef = undefined }) => {
     setAutoPreviewActive(false);
   };
 
-  useEffect(() => {
-    try {
-      window.localStorage.setItem(
-        FEATURED_CALM_MODE_STORAGE_KEY,
-        isCalmMode ? '1' : '0'
-      );
-    } catch {
-      // Ignore storage failures and keep the preference local-only.
-    }
-
-    if (isCalmMode) {
-      clearPirateTimers();
-      stopInitialPreview();
-      setExpandedPreviewApp(null);
-    }
-  }, [isCalmMode]);
-
   const schedulePreviewExpand = (appName: PreviewAppName) => {
-    if (isCalmMode) return;
     if (autoPreviewActive) {
       stopInitialPreview();
     }
@@ -338,7 +295,6 @@ export const HomeFeaturedApps = ({ panelBoxRef = undefined }) => {
   };
 
   const schedulePreviewCollapse = () => {
-    if (isCalmMode) return;
     if (autoPreviewActive) return;
     if (previewExpandTimerRef.current) {
       clearTimeout(previewExpandTimerRef.current);
@@ -376,61 +332,10 @@ export const HomeFeaturedApps = ({ panelBoxRef = undefined }) => {
           display: 'flex',
           justifyContent: 'center',
           minHeight: '42px',
-          position: 'relative',
           textAlign: 'center',
           width: '100%',
         }}
       >
-        <Tooltip enterDelay={320} title={td('reduce_motion', 'Reduce motion')}>
-          <ButtonBase
-            aria-label={td('reduce_motion', 'Reduce motion')}
-            aria-pressed={isCalmMode}
-            onClick={() => setIsCalmMode((current) => !current)}
-            sx={{
-              alignItems: 'center',
-              borderRadius: '9px',
-              color: alpha(
-                theme.palette.text.secondary,
-                isCalmMode ? 0.9 : 0.68
-              ),
-              display: 'inline-flex',
-              height: 30,
-              justifyContent: 'center',
-              position: 'absolute',
-              right: 0,
-              top: '50%',
-              transform: 'translateY(-50%)',
-              transition:
-                'background-color 160ms ease, color 160ms ease, box-shadow 180ms ease, opacity 160ms ease',
-              width: 30,
-              '&:hover': {
-                backgroundColor:
-                  theme.palette.mode === 'dark'
-                    ? 'rgba(255,255,255,0.042)'
-                    : 'rgba(24,29,36,0.05)',
-                color: theme.palette.text.primary,
-              },
-              ...(isCalmMode
-                ? {
-                    backgroundColor:
-                      theme.palette.mode === 'dark'
-                        ? 'rgba(255,255,255,0.03)'
-                        : 'rgba(24,29,36,0.042)',
-                    boxShadow:
-                      theme.palette.mode === 'dark'
-                        ? 'inset 0 0 0 1px rgba(255,255,255,0.05)'
-                        : 'inset 0 0 0 1px rgba(24,29,36,0.06)',
-                  }
-                : null),
-            }}
-          >
-            {isCalmMode ? (
-              <VisibilityOffRoundedIcon sx={{ fontSize: '1rem' }} />
-            ) : (
-              <VisibilityRoundedIcon sx={{ fontSize: '1rem' }} />
-            )}
-          </ButtonBase>
-        </Tooltip>
         <Box
           sx={{
             alignItems: 'center',
@@ -507,7 +412,6 @@ export const HomeFeaturedApps = ({ panelBoxRef = undefined }) => {
                 <AppTile
                   key={appName}
                   appName={appName}
-                  calmMode={isCalmMode}
                   theme={theme}
                   expandedPreviewApp={expandedPreviewApp}
                   onPreviewExpandStart={schedulePreviewExpand}
@@ -526,20 +430,18 @@ export const HomeFeaturedApps = ({ panelBoxRef = undefined }) => {
               )
             )}
           </Box>
-          {!isCalmMode ? (
-            <FeaturedExpandedPreview
-              appName={expandedPreviewApp}
-              theme={theme}
-              visible={!!expandedPreviewApp}
-              teaserMode={
-                autoPreviewActive && expandedPreviewApp === SUBWIRE_APP_NAME
-              }
-              onMouseEnter={() => {
-                clearPirateTimers();
-              }}
-              onMouseLeave={schedulePreviewCollapse}
-            />
-          ) : null}
+          <FeaturedExpandedPreview
+            appName={expandedPreviewApp}
+            theme={theme}
+            visible={!!expandedPreviewApp}
+            teaserMode={
+              autoPreviewActive && expandedPreviewApp === SUBWIRE_APP_NAME
+            }
+            onMouseEnter={() => {
+              clearPirateTimers();
+            }}
+            onMouseLeave={schedulePreviewCollapse}
+          />
         </Box>
 
         <Box
@@ -730,7 +632,6 @@ export const HomeFeaturedApps = ({ panelBoxRef = undefined }) => {
 
 interface AppTileProps {
   appName: string;
-  calmMode: boolean;
   theme: any;
   expandedPreviewApp: PreviewAppName | null;
   onPreviewExpandStart: (appName: PreviewAppName) => void;
@@ -739,13 +640,12 @@ interface AppTileProps {
 
 const AppTile = ({
   appName,
-  calmMode,
   theme,
   expandedPreviewApp,
   onPreviewExpandStart,
   onPreviewExpandEnd,
 }: AppTileProps) => {
-  const baseAvatarUrl = `${getBaseApiReactForAvatar()}/arbitrary/THUMBNAIL/${appName}/qortal_avatar?async=true`;
+  const baseAvatarUrl = buildAppThumbnailUrl(appName);
   const [imageSrc, setImageSrc] = useState(baseAvatarUrl);
   const [hasTileVideoError, setHasTileVideoError] = useState(false);
   const hasRetriedRef = useRef(false);
@@ -759,10 +659,10 @@ const AppTile = ({
       ? FEATURED_TILE_VIDEO_SRC[appName as keyof typeof FEATURED_TILE_VIDEO_SRC]
       : null;
   const fadeOutForPreview =
-    !calmMode && !!expandedPreviewApp && expandedPreviewApp !== appName;
+    !!expandedPreviewApp && expandedPreviewApp !== appName;
   const hideBasePreviewTile =
-    !calmMode && !!expandedPreviewApp && expandedPreviewApp === appName;
-  const allowTileHover = !expandedPreviewApp && !calmMode;
+    !!expandedPreviewApp && expandedPreviewApp === appName;
+  const allowTileHover = !expandedPreviewApp;
   const hiddenTileStyles = {
     opacity: fadeOutForPreview ? 0 : hideBasePreviewTile ? 0 : 1,
     pointerEvents: fadeOutForPreview || hideBasePreviewTile ? 'none' : 'auto',
@@ -825,16 +725,16 @@ const AppTile = ({
       disableRipple
       onClick={() => openApp(appName)}
       onMouseEnter={
-        isPreviewableTile && !calmMode
+        isPreviewableTile
           ? () => onPreviewExpandStart(appName as PreviewAppName)
           : undefined
       }
       onMouseLeave={
-        isPreviewableTile && !calmMode ? onPreviewExpandEnd : undefined
+        isPreviewableTile ? onPreviewExpandEnd : undefined
       }
       sx={{
         alignItems: isWideLeftTile
-          ? 'flex-start'
+          ? 'center'
           : isWideRightTile
             ? 'flex-end'
             : 'center',
@@ -845,17 +745,18 @@ const AppTile = ({
         border: `1px solid ${theme.palette.border.subtle}`,
         borderRadius: '10px',
         display: 'flex',
-        flexDirection: 'column',
-        gap: '8px',
-        justifyContent: 'center',
+        flexDirection: isWideLeftTile ? 'row' : 'column',
+        gap: isWideLeftTile ? '6px' : '8px',
+        justifyContent: isWideLeftTile ? 'flex-start' : 'center',
         height: '100%',
         minHeight: 0,
-        padding: '12px 10px',
+        padding: isWideLeftTile ? '10px 8px 10px 6px' : '12px 10px',
         transition:
           'background-color 140ms ease, border-color 140ms ease, box-shadow 140ms ease, opacity 160ms ease',
         overflow: 'hidden',
         position: 'relative',
         width: '100%',
+        ...(isWideLeftTile ? { containerType: 'inline-size' } : null),
         gridColumn: isWideTile ? 'span 2' : 'span 1',
         ...(!isWideTile ? hiddenTileStyles : null),
         transform: 'translateY(0)',
@@ -902,7 +803,7 @@ const AppTile = ({
           }}
         />
       ) : null}
-      {tileVideoSrc && !hasTileVideoError && !calmMode ? (
+      {tileVideoSrc && !hasTileVideoError ? (
         <Box
           aria-hidden="true"
           sx={{
@@ -946,9 +847,9 @@ const AppTile = ({
           alignItems: 'center',
           display: 'flex',
           flexDirection: 'column',
-          gap: '8px',
+          gap: isWideLeftTile ? '4px' : '8px',
           position: 'relative',
-          width: isWideTile ? 'clamp(72px, 32%, 104px)' : '100%',
+          width: isWideLeftTile ? '48px' : isWideRightTile ? 'clamp(72px, 32%, 104px)' : '100%',
           flexShrink: isWideTile ? 0 : undefined,
           alignSelf: isWideRightTile ? 'flex-end' : 'auto',
           zIndex: 1,
@@ -958,7 +859,7 @@ const AppTile = ({
           src={imageSrc}
           variant="rounded"
           onError={handleImageError}
-          sx={{ height: 52, width: 52 }}
+          sx={{ height: isWideLeftTile ? 44 : 52, width: isWideLeftTile ? 44 : 52 }}
         >
           {appName.charAt(0)}
         </Avatar>
@@ -966,13 +867,14 @@ const AppTile = ({
         <Typography
           sx={{
             color: theme.palette.text.primary,
-            fontSize: '0.8rem',
+            fontSize: isWideLeftTile ? '0.68rem' : '0.8rem',
             fontWeight: 600,
-            maxWidth: '100px',
+            maxWidth: isWideLeftTile ? '48px' : '100px',
             overflow: 'hidden',
             textAlign: 'center',
             textOverflow: 'ellipsis',
             whiteSpace: 'nowrap',
+            width: '100%',
           }}
         >
           {appName}
@@ -984,11 +886,11 @@ const AppTile = ({
           sx={{
             alignItems: 'center',
             display: 'flex',
-            inset: '0 16px 0 124px',
-            justifyContent: 'center',
-            pointerEvents: 'none',
-            position: 'absolute',
-            transform: 'translateX(-20px)',
+            flex: '1 1 auto',
+            justifyContent: 'flex-end',
+            minWidth: 0,
+            pl: 0.25,
+            pr: 0.5,
             zIndex: 1,
           }}
         >
@@ -996,7 +898,9 @@ const AppTile = ({
             sx={{
               alignItems: 'stretch',
               display: 'inline-flex',
-              gap: '6px',
+              gap: '5px',
+              maxWidth: '100%',
+              minWidth: 0,
             }}
           >
             <Box
@@ -1017,24 +921,26 @@ const AppTile = ({
                   theme.palette.mode === 'dark'
                     ? 'rgba(239,243,250,0.9)'
                     : 'rgba(20,28,40,0.84)',
-                display: 'inline-flex',
+                display: 'flex',
                 flexDirection: 'column',
-                fontSize: '0.8rem',
+                fontSize: 'clamp(0.58rem, 2.6cqi, 0.72rem)',
                 fontWeight: 800,
-                letterSpacing: '0.004em',
-                lineHeight: 0.98,
+                letterSpacing: '0.002em',
+                lineHeight: 1.02,
+                minWidth: 0,
                 textAlign: 'left',
                 textShadow:
                   theme.palette.mode === 'dark'
                     ? '0 1px 10px rgba(0,0,0,0.28)'
                     : '0 1px 6px rgba(255,255,255,0.16)',
+                whiteSpace: 'nowrap',
               }}
             >
               <Box component="span" sx={{ display: 'block' }}>
                 decentralized.
               </Box>
               <Box component="span" sx={{ display: 'block' }}>
-                cat. videos.
+                videos.
               </Box>
               <Box component="span" sx={{ display: 'block' }}>
                 platform.
@@ -1114,10 +1020,6 @@ const AppTile = ({
   );
 
   if (!isWideTile) {
-    return tileButton;
-  }
-
-  if (calmMode) {
     return tileButton;
   }
 

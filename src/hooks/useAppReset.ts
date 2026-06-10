@@ -23,6 +23,8 @@ import {
   managedSubscriptionsAtom,
   managedSubscriptionsLoadingAtom,
   memberGroupsAtom,
+  memberDirectsAtom,
+  mobileChatComposeActiveAtom,
   mutedGroupsAtom,
   myGroupsWhereIAmAdminAtom,
   myMemberGroupsAtom,
@@ -91,10 +93,12 @@ export function useAppReset() {
   const resetGroupsOwnerNamesAtom = useResetAtom(groupsOwnerNamesAtom);
   const resetGroupAnnouncementsAtom = useResetAtom(groupAnnouncementsAtom);
   const resetMutedGroupsAtom = useResetAtom(mutedGroupsAtom);
+  const resetMobileChatComposeActiveAtom = useResetAtom(mobileChatComposeActiveAtom);
   const resetGroupChatTimestampsAtom = useResetAtom(groupChatTimestampsAtom);
   const resetTimestampEnterAtom = useResetAtom(timestampEnterDataAtom);
   const resettxListAtomAtom = useResetAtom(txListAtom);
   const resetmemberGroupsAtomAtom = useResetAtom(memberGroupsAtom);
+  const resetMemberDirectsAtom = useResetAtom(memberDirectsAtom);
   const resetMyGroupsWhereIAmAdminAtom = useResetAtom(
     myGroupsWhereIAmAdminAtom
   );
@@ -168,10 +172,12 @@ export function useAppReset() {
     resetGroupsOwnerNamesAtom();
     resetGroupAnnouncementsAtom();
     resetMutedGroupsAtom();
+    resetMobileChatComposeActiveAtom();
     resetGroupChatTimestampsAtom();
     resetTimestampEnterAtom();
     resettxListAtomAtom();
     resetmemberGroupsAtomAtom();
+    resetMemberDirectsAtom();
     resetMyGroupsWhereIAmAdminAtom();
     resetMyMemberGroupsAtom();
     resetMyMemberGroupsLastFetchedAtom();
@@ -218,10 +224,12 @@ export function useAppReset() {
     resetGroupsOwnerNamesAtom,
     resetGroupAnnouncementsAtom,
     resetMutedGroupsAtom,
+    resetMobileChatComposeActiveAtom,
     resetGroupChatTimestampsAtom,
     resetTimestampEnterAtom,
     resettxListAtomAtom,
     resetmemberGroupsAtomAtom,
+    resetMemberDirectsAtom,
     resetMyGroupsWhereIAmAdminAtom,
     resetMyMemberGroupsAtom,
     resetMyMemberGroupsLastFetchedAtom,

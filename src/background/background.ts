@@ -12,6 +12,13 @@ import {
   objectToBase64,
 } from '../qdn/encryption/group-encryption';
 import ChatComputePowWorker from '../chatComputePow.worker.js?worker';
+import { Capacitor } from '@capacitor/core';
+import NativePOW from '../utils/nativepow';
+import { showOsNotification } from '../utils/mobileOsNotifications';
+import { buildChatUserAvatarNotificationUrl } from '../utils/chatAvatarUrl';
+
+/** True inside the native Capacitor WebView (Android/iOS). */
+export const isNative = Capacitor?.isNativePlatform?.() === true;
 import { reusableGet } from '../qdn/publish/publish.ts';
 import { signChat } from '../transactions/signChat';
 import { createTransaction } from '../transactions/transactions';
@@ -222,6 +229,53 @@ function handleNotificationClick(notificationId) {
       );
     }
   }
+}
+
+/** Single, in-place-updating notification for all direct messages. */
+const DIRECT_PM_NOTIFICATION_ID = encodeURIComponent(
+  'chat_notification_direct_pm_summary'
+);
+
+/** Unseen direct messages per sender address since the app was last opened. */
+const directPmUnseen = new Map<string, { name: string; count: number }>();
+
+function showBackgroundOsNotification(
+  title,
+  body,
+  notificationId,
+  icon,
+  fromAddress?: string
+) {
+  if (isNative) {
+    void showOsNotification({
+      title,
+      body,
+      id: notificationId,
+      iconUrl: icon,
+      fromAddress,
+      notificationType: fromAddress ? 'direct' : undefined,
+    });
+    return;
+  }
+
+  if (typeof window.Notification === 'undefined') {
+    return;
+  }
+
+  const notification = new window.Notification(title, {
+    body,
+    icon: icon || window.location.origin + '/qortal192.png',
+    data: { id: notificationId },
+  });
+
+  notification.onclick = () => {
+    handleNotificationClick(notificationId);
+    notification.close();
+  };
+
+  setTimeout(() => {
+    notification.close();
+  }, 10000);
 }
 
 const allQueues = {
@@ -451,7 +505,7 @@ async function checkWebviewFocus() {
 
 const worker = new ChatComputePowWorker();
 
-export async function performPowTask(chatBytes, difficulty) {
+export async function performPowTaskWeb(chatBytes, difficulty) {
   return new Promise((resolve, reject) => {
     worker.onmessage = (e) => {
       if (e.data.error) {
@@ -474,6 +528,18 @@ export async function performPowTask(chatBytes, difficulty) {
   });
 }
 
+// On native (Capacitor) route Qortal chat MemoryPoW to the NativePOW plugin —
+// the JVM/native compute2 is far faster than the WASM web worker on a phone.
+// Falls back to the web worker on desktop/web.
+export async function performPowTask(chatBytes, difficulty) {
+  if (isNative) {
+    const chatBytesArray = Uint8Array.from(Object.values(chatBytes));
+    const result = await NativePOW.computeProofOfWork({ chatBytes, difficulty });
+    return { nonce: result.nonce, chatBytesArray };
+  }
+  return performPowTaskWeb(chatBytes, difficulty);
+}
+
 const handleNotificationDirect = async (directs) => {
   let isFocused;
   const wallet = await getSaveWallet();
@@ -486,7 +552,11 @@ const handleNotificationDirect = async (directs) => {
     if (!dataDirects || dataDirects?.length === 0) return;
     isFocused = await checkWebviewFocus();
 
-    if (isFocused) {
+    // The user is looking at the app: restart the PM summary so the next
+    // background notification counts only messages they haven't seen.
+    if (isFocused) directPmUnseen.clear();
+
+    if (isFocused && !isNative) {
       throw new Error('isFocused');
     }
     const newActiveChats = dataDirects;
@@ -494,60 +564,86 @@ const handleNotificationDirect = async (directs) => {
 
     if (newActiveChats?.length === 0) return;
 
-    let newestLatestTimestamp = null;
-    let oldestLatestTimestamp = null;
-    // Find the latest timestamp from newActiveChats
-    newActiveChats?.forEach((newChat) => {
-      if (
-        !newestLatestTimestamp ||
-        newChat?.timestamp > newestLatestTimestamp?.timestamp
-      ) {
-        newestLatestTimestamp = newChat;
-      }
-    });
-
-    // Find the latest timestamp from oldActiveChats
+    // Every chat head with new activity since the last poll (not just the
+    // newest one) so a multi-sender burst is summarized correctly.
+    const oldByAddress = new Map<string, any>();
     oldActiveChats?.forEach((oldChat) => {
-      if (
-        !oldestLatestTimestamp ||
-        oldChat?.timestamp > oldestLatestTimestamp?.timestamp
-      ) {
-        oldestLatestTimestamp = oldChat;
-      }
+      if (oldChat?.address) oldByAddress.set(oldChat.address, oldChat);
+    });
+    const updatedChats = (newActiveChats || []).filter((newChat) => {
+      if (!newChat?.timestamp) return false;
+      const oldChat = oldByAddress.get(newChat.address);
+      if (oldChat?.timestamp) return newChat.timestamp > oldChat.timestamp;
+      return checkDifference(newChat.timestamp);
     });
 
-    if (
-      (checkDifference(newestLatestTimestamp.timestamp) &&
-        !oldestLatestTimestamp) ||
-      (newestLatestTimestamp &&
-        newestLatestTimestamp?.timestamp > oldestLatestTimestamp?.timestamp)
-    ) {
-      // Create the notification and assign the onclick handler
-      const title = `New Direct message! ${
-        newestLatestTimestamp?.name ? `from ${newestLatestTimestamp.name}` : ''
-      }`;
-      const body = 'You have received a new direct message';
-      const notificationId = encodeURIComponent(
-        'chat_notification_' +
-          Date.now() +
-          '_type=direct' +
-          `_from=${newestLatestTimestamp.address}`
-      );
-      const notification = new window.Notification(title, {
-        body,
-        icon: window.location.origin + '/qortal192.png',
-        data: { id: notificationId },
+    if (updatedChats.length > 0) {
+      let newestLatestTimestamp = null;
+      updatedChats.forEach((chat) => {
+        if (
+          !newestLatestTimestamp ||
+          chat?.timestamp > newestLatestTimestamp?.timestamp
+        ) {
+          newestLatestTimestamp = chat;
+        }
       });
 
-      // Set up the onclick event to call the handler function
-      notification.onclick = () => {
-        handleNotificationClick(notificationId);
-        notification.close();
-      };
+      // Accumulate unseen counts per sender (cleared once the app is opened).
+      for (const chat of updatedChats) {
+        const key = chat?.address || 'unknown';
+        const existing = directPmUnseen.get(key);
+        directPmUnseen.set(key, {
+          name: chat?.name?.trim() || existing?.name || '',
+          count: (existing?.count || 0) + 1,
+        });
+      }
 
-      setTimeout(() => {
-        notification.close();
-      }, 10000);
+      const senderLabels: string[] = [];
+      let totalCount = 0;
+      for (const [addr, info] of directPmUnseen) {
+        totalCount += info.count;
+        senderLabels.push(
+          info.name ||
+            (addr && addr !== 'unknown' ? `${addr.slice(0, 8)}…` : 'someone')
+        );
+      }
+      const senderText =
+        senderLabels.length <= 1
+          ? senderLabels[0] || ''
+          : `${senderLabels.slice(0, -1).join(', ')} and ${senderLabels[senderLabels.length - 1]}`;
+
+      const title =
+        totalCount <= 1
+          ? `New Direct message! ${senderText ? `from ${senderText}` : ''}`.trim()
+          : 'New Direct messages!';
+      const body =
+        totalCount <= 1
+          ? 'You have received a new direct message'
+          : `You got ${totalCount} messages from ${senderText}`;
+
+      // Stable id: PMs collapse into a single notification that updates in
+      // place instead of stacking one entry per message.
+      const notificationId = DIRECT_PM_NOTIFICATION_ID;
+
+      let senderName = newestLatestTimestamp?.name?.trim() || '';
+      if (!senderName && newestLatestTimestamp?.address) {
+        senderName =
+          (await getNameInfoForOthers(newestLatestTimestamp.address)) || '';
+      }
+      const iconUrl = senderName
+        ? await buildChatUserAvatarNotificationUrl(
+            createEndpoint,
+            senderName,
+            newestLatestTimestamp?.address
+          )
+        : '';
+      showBackgroundOsNotification(
+        title,
+        body,
+        notificationId,
+        iconUrl || undefined,
+        newestLatestTimestamp?.address
+      );
     }
   } catch (error) {
     if (!isFocused) {
@@ -565,30 +661,10 @@ const handleNotificationDirect = async (directs) => {
           );
         });
 
-      // Create a unique notification ID with type and sender information
-      const notificationId = encodeURIComponent(
-        'chat_notification_' + Date.now() + '_type=direct' + `_from=""`
-      );
-
       const title = 'New Direct message!';
       const body = 'You have received a new direct message';
 
-      const notification = new window.Notification(title, {
-        body,
-        icon: window.location.origin + '/qortal192.png',
-        data: { id: notificationId },
-      });
-
-      // Handle notification click with specific actions based on `notificationId`
-      notification.onclick = () => {
-        handleNotificationClick(notificationId);
-        notification.close(); // Clean up the notification on click
-      };
-
-      // Automatically close the notification after 5 seconds if not clicked
-      setTimeout(() => {
-        notification.close();
-      }, 10000); // Close after 5 seconds
+      showBackgroundOsNotification(title, body, DIRECT_PM_NOTIFICATION_ID);
     }
   } finally {
     setChatHeadsDirect(dataDirects);
@@ -705,7 +781,7 @@ const handleNotification = async (groups) => {
     if (!data || data?.length === 0) return;
     isFocused = await checkWebviewFocus();
 
-    if (isFocused) {
+    if (isFocused && !isNative) {
       throw new Error('isFocused');
     }
     const newActiveChats = data;
@@ -756,22 +832,7 @@ const handleNotification = async (groups) => {
         const title = 'New Group Message!';
         const body = `You have received a new message from ${newestLatestTimestamp?.groupName}`;
 
-        const notification = new window.Notification(title, {
-          body,
-          icon: window.location.origin + '/qortal192.png',
-          data: { id: notificationId },
-        });
-
-        // Handle notification click with specific actions based on `notificationId`
-        notification.onclick = () => {
-          handleNotificationClick(notificationId);
-          notification.close(); // Clean up the notification on click
-        };
-
-        // Automatically close the notification after 5 seconds if not clicked
-        setTimeout(() => {
-          notification.close();
-        }, 10000); // Close after 5 seconds
+        showBackgroundOsNotification(title, body, notificationId);
 
         lastGroupNotification = Date.now();
       }
@@ -800,23 +861,7 @@ const handleNotification = async (groups) => {
       const title = 'New Group Message!';
       const body = 'You have received a new message from one of your groups';
 
-      // Create and show the notification immediately
-      const notification = new window.Notification(title, {
-        body,
-        icon: window.location.origin + '/qortal192.png',
-        data: { id: notificationId },
-      });
-
-      // Handle notification click, allowing specific actions based on `notificationId`
-      notification.onclick = () => {
-        handleNotificationClick(notificationId);
-        notification.close(); // Clean up the notification on click
-      };
-
-      // Automatically close the notification after 5 seconds if it’s not clicked
-      setTimeout(() => {
-        notification.close();
-      }, 10000); // Close after 5 seconds
+      showBackgroundOsNotification(title, body, notificationId);
 
       lastGroupNotification = Date.now();
     }
@@ -3639,23 +3684,7 @@ export const checkNewMessages = async () => {
       const title = 'New group announcement!';
       const body = `You have received a new announcement from ${newAnnouncements[0]?.groupName}`;
 
-      // Create and show the notification
-      const notification = new window.Notification(title, {
-        body,
-        icon: window.location.origin + '/qortal192.png',
-        data: { id: notificationId },
-      });
-
-      // Handle notification click with specific actions based on `notificationId`
-      notification.onclick = () => {
-        handleNotificationClick(notificationId);
-        notification.close(); // Clean up the notification on click
-      };
-
-      // Automatically close the notification after 5 seconds if it’s not clicked
-      setTimeout(() => {
-        notification.close();
-      }, 10000); // Close after 5 seconds
+      showBackgroundOsNotification(title, body, notificationId);
     }
     const savedtimestampAfter = await getTimestampGroupAnnouncement();
     const targetOrigin = window.location.origin;
@@ -3703,20 +3732,10 @@ export const fireOsNotificationPayment = async (
       qortalLink ? { link: qortalLink } : { openWallets: true }
     );
 
-    const notification = new window.Notification(title, {
-      body: messageBody,
-      icon,
-      data: { id: notificationId },
-    });
-
-    notification.onclick = () => {
-      handleNotificationClick(notificationId);
-      notification.close();
-    };
+    showBackgroundOsNotification(title, messageBody, notificationId, icon);
 
     setTimeout(() => {
       generalNotificationPayloadById.delete(notificationId);
-      notification.close();
     }, 10000);
   } catch (error) {
     console.error(error);
@@ -3854,23 +3873,7 @@ export const checkThreads = async (bringBack) => {
           const title = 'New thread post!';
           const body = `New post in ${newAnnouncements[0]?.thread?.threadData?.title}`;
 
-          // Create and show the notification
-          const notification = new window.Notification(title, {
-            body,
-            icon: window.location.origin + '/qortal192.png',
-            data: { id: notificationId },
-          });
-
-          // Handle notification click with specific actions based on `notificationId`
-          notification.onclick = () => {
-            handleNotificationClick(notificationId);
-            notification.close(); // Clean up the notification on click
-          };
-
-          // Automatically close the notification after 5 seconds if it’s not clicked
-          setTimeout(() => {
-            notification.close();
-          }, 10000); // Close after 5 seconds
+          showBackgroundOsNotification(title, body, notificationId);
         }
       }
     }

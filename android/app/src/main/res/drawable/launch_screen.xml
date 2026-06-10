@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Solid background only (no logo). The branded startup view is the in-app
+     HTML splash, so the native launch window just shows a matching dark color
+     and blends straight into it. -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@color/splashBackground" />
+</layer-list>

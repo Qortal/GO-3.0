@@ -3543,7 +3543,7 @@ export const HomeQortinoWorkspaceCard = ({
         return 'We start with 6 QORT. Pick any route above and IÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ll queue the next step.';
       }
       if (currentStep.key === 'register_name') {
-        return 'Name next. That unlocks your identity across the hub.';
+        return 'Name next. That unlocks your identity across GO.';
       }
       return 'One last move. Give your profile a face and this bay becomes yours.';
     }
@@ -4191,7 +4191,7 @@ export const HomeQortinoWorkspaceCard = ({
     };
 
     const handleRegisterName = () => {
-      pushReaction('Name flow open. This is where the hub starts recognizing you.');
+      pushReaction('Name flow open. This is where GO starts recognizing you.');
     };
 
     const handleReceive = () => {
@@ -4365,7 +4365,7 @@ export const HomeQortinoWorkspaceCard = ({
       pushReaction(
         qw(
           'reaction_name_flow',
-          'Name flow open. This is where the hub starts recognizing you.'
+          'Name flow open. This is where GO starts recognizing you.'
         )
       );
     } else if (currentStep.key === 'load_avatar') {
@@ -5803,7 +5803,7 @@ export const HomeQortinoWorkspaceCard = ({
             <QortinoSectionRuntimeFallback
               body={qw(
                 'runtime_workspace_bay_body',
-                'QORTINO below is still safe. Refresh the Hub and if this keeps happening we will trace the exact crash from here.'
+                'QORTINO below is still safe. Refresh GO and if this keeps happening we will trace the exact crash from here.'
               )}
               theme={theme}
               title={qw(
@@ -5822,7 +5822,7 @@ export const HomeQortinoWorkspaceCard = ({
             <QortinoSectionRuntimeFallback
               body={qw(
                 'runtime_qortino_body',
-                'The workspace bay above is still safe. Refresh the Hub and if this keeps happening we will trace the exact crash from here.'
+                'The workspace bay above is still safe. Refresh GO and if this keeps happening we will trace the exact crash from here.'
               )}
               theme={theme}
               title={qw('runtime_qortino_title', 'QORTINO hit a runtime snag.')}
@@ -6862,11 +6862,11 @@ const GettingStartedPrimaryAction = ({
           theme.palette.mode === 'dark' ? 0.08 : 0.22
         )}`,
         color: alpha('#FFFFFF', 0.98),
-        justifyContent: 'flex-start',
-        minHeight: '32px',
-        px: 1.1,
+        justifyContent: 'center',
+        minHeight: '34px',
+        px: 1.5,
         py: 0.5,
-        textAlign: 'left',
+        textAlign: 'center',
         transition:
           'transform 120ms ease, filter 140ms ease, background 160ms ease, border-color 160ms ease',
         width: '100%',

@@ -1,5 +1,5 @@
 import { Box, ButtonBase, Typography, useTheme } from '@mui/material';
-import CodeRoundedIcon from '@mui/icons-material/CodeRounded';
+import TuneRoundedIcon from '@mui/icons-material/TuneRounded';
 import AddRoundedIcon from '@mui/icons-material/AddRounded';
 import DownloadRoundedIcon from '@mui/icons-material/DownloadRounded';
 import AccountCircleRoundedIcon from '@mui/icons-material/AccountCircleRounded';
@@ -8,8 +8,8 @@ import HubRoundedIcon from '@mui/icons-material/HubRounded';
 import SecurityRoundedIcon from '@mui/icons-material/SecurityRounded';
 import authIntroAudioSrc from '../assets/audio/light-transition-351939.mp3';
 import Logo1Dark from '../assets/svgs/Logo1Dark.svg';
-import { useAtomValue } from 'jotai';
-import { selectedNodeInfoAtom } from '../atoms/global';
+import { useAtom, useAtomValue, useSetAtom } from 'jotai';
+import { selectedNodeInfoAtom, mobileLoginSettingsOpenAtom, mobileLoginSettingsWalletsAtom } from '../atoms/global';
 import {
   HTTPS_EXT_NODE_QORTAL_LINK,
   isLocalNodeUrl,
@@ -17,6 +17,8 @@ import {
 import { Wallets } from './Wallets';
 import { AuthButton, AuthFrame } from './Auth/AuthShell';
 import { ConnectionModeModal } from './Auth/ConnectionModeModal';
+import { MobileLoginSettingsModal } from './Auth/MobileLoginSettingsModal';
+import { isCapacitor } from '../utils/platform';
 import { hasAttemptedLastWalletAutoSelectThisSession } from '../utils/lastAuthenticatedWallet';
 import {
   useCallback,
@@ -128,12 +130,20 @@ export const NotAuthenticated = ({
   setRawWallet,
   rawWallet,
   onWalletUnlockStart,
+  onBiometricWalletUnlock,
+  onWalletPasswordFallbackUnlock,
 }) => {
   const theme = useTheme();
   const isLight = theme.palette.mode === 'light';
   const { t } = useTranslation(['auth']);
   const selectedNode = useAtomValue(selectedNodeInfoAtom);
   const [isConnectionModeOpen, setIsConnectionModeOpen] = useState(false);
+  const [isLoginSettingsOpen, setIsLoginSettingsOpen] = useAtom(
+    mobileLoginSettingsOpenAtom
+  );
+  const setLoginSettingsWallets = useSetAtom(mobileLoginSettingsWalletsAtom);
+  const [entryWallets, setEntryWallets] = useState<any[]>([]);
+  const nativeShell = isCapacitor();
   const [isEntryAccountsReady, setIsEntryAccountsReady] = useState(false);
   const [isStartupAudioPreferenceLoaded, setIsStartupAudioPreferenceLoaded] =
     useState(
@@ -235,8 +245,16 @@ export const NotAuthenticated = ({
       rawWallet={rawWallet}
       onReady={handleEntryAccountsReady}
       onWalletUnlockStart={handleWalletUnlockStart}
+      onWalletsChange={setEntryWallets}
+      onBiometricWalletUnlock={onBiometricWalletUnlock}
+      onWalletPasswordFallbackUnlock={onWalletPasswordFallbackUnlock}
     />
   );
+
+  useEffect(() => {
+    setLoginSettingsWallets(entryWallets);
+  }, [entryWallets, setLoginSettingsWallets]);
+
   const introComplete = introStage === 'complete';
   const introCardGlowOpacity = introComplete
     ? 1
@@ -321,6 +339,31 @@ export const NotAuthenticated = ({
       // Some media backends reject seeking before metadata is ready.
     }
   }, []);
+
+  useEffect(() => {
+    const handleStartupSoundPreferenceChanged = (
+      event: Event
+    ) => {
+      const disabled = (event as CustomEvent<{ disabled?: boolean }>).detail
+        ?.disabled;
+      if (disabled) {
+        stopIntroAudio();
+      }
+    };
+
+    window.addEventListener(
+      'qortal-startup-sound-preference-changed',
+      handleStartupSoundPreferenceChanged
+    );
+
+    return () => {
+      window.removeEventListener(
+        'qortal-startup-sound-preference-changed',
+        handleStartupSoundPreferenceChanged
+      );
+    };
+  }, [stopIntroAudio]);
+
   const playIntroAudio = useCallback(() => {
     if (!areAuthAnimationsEnabled()) return;
     if (!isAuthStartupAudioEnabled()) return;
@@ -936,7 +979,7 @@ export const NotAuthenticated = ({
                 ...revealSx(1230),
                 alignItems: 'center',
                 color: theme.palette.text.secondary,
-                display: 'flex',
+                display: nativeShell ? 'none' : 'flex',
                 flexDirection: { xs: 'column', sm: 'row' },
                 gap: { xs: 0.7, sm: 3.1 },
                 justifyContent: 'center',
@@ -983,7 +1026,11 @@ export const NotAuthenticated = ({
                 }}
               />
               <ButtonBase
-                onClick={() => setIsConnectionModeOpen(true)}
+                onClick={() =>
+                  nativeShell
+                    ? setIsLoginSettingsOpen(true)
+                    : setIsConnectionModeOpen(true)
+                }
                 sx={{
                   alignItems: 'center',
                   color: theme.palette.text.secondary,
@@ -996,7 +1043,11 @@ export const NotAuthenticated = ({
                   },
                 }}
               >
-                <CodeRoundedIcon sx={{ fontSize: 14 }} />
+                {nativeShell ? (
+                  <TuneRoundedIcon sx={{ fontSize: 14 }} />
+                ) : (
+                  <CodeRoundedIcon sx={{ fontSize: 14 }} />
+                )}
                 <Typography
                   sx={{
                     fontSize: '0.8rem',
@@ -1004,7 +1055,9 @@ export const NotAuthenticated = ({
                     lineHeight: 1,
                   }}
                 >
-                  {t('auth:connection_mode.title')}
+                  {nativeShell
+                    ? t('auth:mobile_login_settings.link')
+                    : t('auth:connection_mode.title')}
                 </Typography>
               </ButtonBase>
             </Box>
@@ -1123,10 +1176,18 @@ export const NotAuthenticated = ({
         </Box>
       )}
 
-      <ConnectionModeModal
-        open={isConnectionModeOpen}
-        onClose={() => setIsConnectionModeOpen(false)}
-      />
+      {nativeShell ? (
+        <MobileLoginSettingsModal
+          open={isLoginSettingsOpen}
+          onClose={() => setIsLoginSettingsOpen(false)}
+          wallets={entryWallets}
+        />
+      ) : (
+        <ConnectionModeModal
+          open={isConnectionModeOpen}
+          onClose={() => setIsConnectionModeOpen(false)}
+        />
+      )}
     </>
   );
 };

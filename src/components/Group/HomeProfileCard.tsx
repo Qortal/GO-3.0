@@ -24,6 +24,7 @@ import {
   TextField,
   Tooltip,
   Typography,
+  useMediaQuery,
   useTheme,
 } from '@mui/material';
 import { alpha } from '@mui/material/styles';
@@ -53,6 +54,7 @@ import {
   blockedNamesAtom,
   enabledDevModeAtom,
   rawWalletAtom,
+  selectedNodeInfoAtom,
   userInfoAtom,
   openSnackGlobalAtom,
   infoSnackGlobalAtom,
@@ -66,9 +68,17 @@ import { QORTAL_APP_CONTEXT } from '../../App';
 import { getFee, walletVersion } from '../../background/background.ts';
 import Base58 from '../../encryption/Base58';
 import ImageUploader from '../../common/ImageUploader';
-import { MAX_SIZE_AVATAR } from '../../constants/constants.ts';
+import AvatarCropper from './AvatarCropper';
+import {
+  HTTPS_EXT_NODE_QORTAL_LINK,
+  isPublicGatewayNodeUrl,
+  MAX_SIZE_AVATAR,
+} from '../../constants/constants.ts';
 import { decryptStoredWallet } from '../../utils/decryptWallet';
 import { fileToBase64 } from '../../utils/fileReading';
+import { setWalletAvatarCache, getWalletAvatarCache, buildQortalAvatarUrl } from '../../utils/walletAvatarCache';
+import { QortalUserAvatar } from '../QortalUserAvatar';
+import { getPrimaryNameForAvatar } from './groupApi';
 import PhraseWallet from '../../utils/generateWallet/phrase-wallet';
 import {
   executeEvent,
@@ -100,6 +110,12 @@ import {
 
 type HomeProfileCardProps = {
   onOpenReceive?: (anchorEl: HTMLElement) => void;
+};
+
+const shortenWalletAddress = (value: string, head = 6, tail = 6) => {
+  const trimmed = value.trim();
+  if (trimmed.length <= head + tail + 1) return trimmed;
+  return `${trimmed.slice(0, head)}…${trimmed.slice(-tail)}`;
 };
 
 type PresenceDisplayStatus = SelectableStatus | 'idle';
@@ -164,11 +180,13 @@ const readStoredBoolean = (key: string, fallback: boolean) => {
 export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
   const { t } = useTranslation(['tutorial', 'core', 'group']);
   const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down('md'));
   const { show } = useContext(QORTAL_APP_CONTEXT);
   const userInfo = useAtomValue(userInfoAtom);
   const rawWallet = useAtomValue(rawWalletAtom);
   const blockedAddresses = useAtomValue(blockedAddressesAtom);
   const blockedNames = useAtomValue(blockedNamesAtom);
+  const selectedNode = useAtomValue(selectedNodeInfoAtom);
   const setUserInfo = useSetAtom(userInfoAtom);
   const setOpenSnack = useSetAtom(openSnackGlobalAtom);
   const setInfoSnack = useSetAtom(infoSnackGlobalAtom);
@@ -176,10 +194,14 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
 
   const avatarAnchorRef = useRef<HTMLButtonElement | null>(null);
   const avatarPanelRef = useRef<HTMLDivElement | null>(null);
-  const [avatarError, setAvatarError] = useState(false);
   const [tempAvatar, setTempAvatar] = useState<string | null>(null);
-  const [avatarFile, setAvatarFile] = useState<File | null>(null);
+  const [avatarFile, setAvatarFile] = useState<
+    (Blob & { name?: string }) | null
+  >(null);
   const [avatarPreviewUrl, setAvatarPreviewUrl] = useState<string | null>(null);
+  // Image the user just picked, awaiting crop/zoom before it becomes the avatar.
+  const [avatarCropFile, setAvatarCropFile] = useState<File | null>(null);
+  const [avatarCropSrc, setAvatarCropSrc] = useState<string | null>(null);
   const [avatarAnchorEl, setAvatarAnchorEl] = useState<HTMLElement | null>(
     null
   );
@@ -189,6 +211,8 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
   const [isAvatarLoading, setIsAvatarLoading] = useState(false);
   const avatarPanelWasOpenRef = useRef(false);
   const [isAddressFieldHovered, setIsAddressFieldHovered] = useState(false);
+  const [isAddressFieldRevealed, setIsAddressFieldRevealed] = useState(false);
+  const [addressRevealAnimationKey, setAddressRevealAnimationKey] = useState(0);
   const [isAvatarGlowHovered, setIsAvatarGlowHovered] = useState(false);
   const [isAccountSettingsOpen, setIsAccountSettingsOpen] = useState(false);
   const [activeSettingsTab, setActiveSettingsTab] =
@@ -456,6 +480,72 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
   }, [avatarFile]);
 
   useEffect(() => {
+    if (!avatarCropFile || !(avatarCropFile instanceof Blob)) {
+      setAvatarCropSrc(null);
+      return;
+    }
+    const url = URL.createObjectURL(avatarCropFile);
+    setAvatarCropSrc(url);
+    return () => URL.revokeObjectURL(url);
+  }, [avatarCropFile]);
+
+  // Backfill local avatar cache from QDN when missing (login screen reads this).
+  useEffect(() => {
+    const registeredName = userInfo?.name?.trim();
+    const walletAddress = rawWallet?.address0 || userInfo?.address;
+    if (!walletAddress || !registeredName) return;
+
+    let cancelled = false;
+
+    void (async () => {
+      try {
+        const primaryNameForAddress = (
+          await getPrimaryNameForAvatar(walletAddress)
+        ).trim();
+        if (
+          !primaryNameForAddress ||
+          primaryNameForAddress.toLowerCase() !== registeredName.toLowerCase()
+        ) {
+          return;
+        }
+
+        const existing = await getWalletAvatarCache(
+          walletAddress,
+          primaryNameForAddress
+        );
+        if (existing || cancelled) return;
+
+        const url = buildQortalAvatarUrl(registeredName);
+        const res = await fetch(url);
+        if (!res.ok || cancelled) return;
+
+        const blob = await res.blob();
+        if (!blob.size || cancelled) return;
+
+        const dataUrl = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result ?? ''));
+          reader.onerror = () => reject(reader.error);
+          reader.readAsDataURL(blob);
+        });
+
+        if (cancelled || !dataUrl.startsWith('data:')) return;
+        await setWalletAvatarCache(
+          walletAddress,
+          dataUrl,
+          primaryNameForAddress
+        );
+      } catch {
+        /* best-effort cache warm-up */
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [rawWallet?.address0, userInfo?.address, userInfo?.name]);
+
+  useEffect(() => {
     const openFromEvent = () => {
       if (avatarAnchorRef.current) {
         openAvatarPanel(avatarAnchorRef.current);
@@ -509,6 +599,7 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
   const shouldRevealAddressOnHover = hasRegisteredName && Boolean(address);
   const showAnimatedAddress =
     shouldRevealAddressOnHover && isAddressFieldHovered;
+  const showAddressReveal = showAnimatedAddress || isAddressFieldRevealed;
   const blockedAddressEntries = useMemo(
     () => Object.keys(blockedAddresses || {}),
     [blockedAddresses]
@@ -518,6 +609,10 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
     [blockedNames]
   );
   const blockedCount = blockedAddressEntries.length + blockedNameEntries.length;
+  const isPublicNode = useMemo(
+    () => isPublicGatewayNodeUrl(selectedNode?.url),
+    [selectedNode?.url]
+  );
   const addressFieldActionButtonSizePx = 26;
   const addressFieldActionGapPx = 1;
   const addressFieldActionBaseColor = isDarkMode
@@ -752,8 +847,8 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
     }
   }, [td]);
 
-  const closeAccountSettingsModal = useCallback(() => {
-    if (isChangeNameLoading) return;
+  const closeAccountSettingsModal = useCallback((force = false) => {
+    if (force !== true && isChangeNameLoading) return;
     setIsAccountSettingsOpen(false);
     setChangeNameValue('');
     setChangeNameAvailability('null');
@@ -765,6 +860,14 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
     setPrivateKeyError(null);
     setRevealedPrivateKey('');
   }, [isChangeNameLoading]);
+
+  useEffect(() => {
+    const closeFromEvent = () => {
+      closeAccountSettingsModal(true);
+    };
+    subscribeToEvent('close-account-settings', closeFromEvent);
+    return () => unsubscribeFromEvent('close-account-settings', closeFromEvent);
+  }, [closeAccountSettingsModal]);
 
   const openAccountSettingsModal = useCallback(
     (event: MouseEvent<HTMLElement>) => {
@@ -996,7 +1099,7 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
         type: 'success',
         message: td(
           'reticulum_config_saved',
-          'Reticulum config saved. Restart Reticulum or restart the Hub for changes to take effect.'
+          'Reticulum config saved. Restart Reticulum or restart GO for changes to take effect.'
         ),
       });
       setOpenSnack(true);
@@ -1044,7 +1147,7 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
         type: 'info',
         message: td(
           'reticulum_config_default_loaded',
-          'Default Hub Reticulum config loaded. Review it, then save to apply it.'
+          'Default GO Reticulum config loaded. Review it, then save to apply it.'
         ),
       });
       setOpenSnack(true);
@@ -1166,11 +1269,6 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
     setOpenSnack(true);
   }, [revealedPrivateKey, setInfoSnack, setOpenSnack, td]);
 
-  const avatarUrl =
-    tempAvatar ??
-    (name && !avatarError
-      ? `${getBaseApiReactForAvatar()}/arbitrary/THUMBNAIL/${name}/qortal_avatar?async=true`
-      : null);
 
   const handleCopyAddress = () => {
     if (!address) return;
@@ -1185,6 +1283,108 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
     });
     setOpenSnack(true);
   };
+
+  const handleAddressFieldClick = useCallback(() => {
+    if (!address) return;
+    setIsAddressFieldRevealed(true);
+    setAddressRevealAnimationKey((key) => key + 1);
+  }, [address]);
+
+  const handleCopyBlockedAddress = useCallback(
+    (blockedAddress: string) => {
+      navigator.clipboard.writeText(blockedAddress);
+      setInfoSnack({
+        compact: true,
+        duration: 3000,
+        type: 'info',
+        message: t('tutorial:home.address_copied', {
+          postProcess: 'capitalizeFirstChar',
+        }),
+      });
+      setOpenSnack(true);
+    },
+    [setInfoSnack, setOpenSnack, t]
+  );
+
+  const showBlockedAccountsPublicNodeNotice = useCallback(() => {
+    closeAccountSettingsModal(true);
+    window.setTimeout(() => {
+      setInfoSnack({
+        actionEvent: 'openCustomNodeGuideWebsite',
+        actionLabel: td('view_private_node_guide', 'View guide'),
+        dismissible: true,
+        duration: 12000,
+        message: td(
+          'blocked_public_node_notice',
+          'In order to be in full control of the blocked accounts you need to connect to your private node.'
+        ),
+        type: 'warning',
+      });
+      setOpenSnack(true);
+    }, 120);
+  }, [closeAccountSettingsModal, setInfoSnack, setOpenSnack, td]);
+
+  const showBlockedUnblockFailedNotice = useCallback(() => {
+    setInfoSnack({
+      dismissible: true,
+      duration: 8000,
+      message: td(
+        'blocked_unblock_failed',
+        'Unable to unblock this account. Please try again.'
+      ),
+      type: 'error',
+    });
+    setOpenSnack(true);
+  }, [setInfoSnack, setOpenSnack, td]);
+
+  const handleUnblockBlockedName = useCallback(
+    async (blockedName: string) => {
+      if (isPublicNode) {
+        showBlockedAccountsPublicNodeNotice();
+        return;
+      }
+
+      try {
+        await removeBlockFromList(undefined, blockedName);
+      } catch (error) {
+        console.error(error);
+        showBlockedUnblockFailedNotice();
+      }
+    },
+    [
+      isPublicNode,
+      removeBlockFromList,
+      showBlockedAccountsPublicNodeNotice,
+      showBlockedUnblockFailedNotice,
+    ]
+  );
+
+  const handleUnblockBlockedAddress = useCallback(
+    async (blockedAddress: string) => {
+      if (isPublicNode) {
+        showBlockedAccountsPublicNodeNotice();
+        return;
+      }
+
+      try {
+        await removeBlockFromList(blockedAddress, undefined);
+      } catch (error) {
+        console.error(error);
+        showBlockedUnblockFailedNotice();
+      }
+    },
+    [
+      isPublicNode,
+      removeBlockFromList,
+      showBlockedAccountsPublicNodeNotice,
+      showBlockedUnblockFailedNotice,
+    ]
+  );
+
+  useEffect(() => {
+    setIsAddressFieldRevealed(false);
+    setAddressRevealAnimationKey(0);
+  }, [address]);
 
   const checkIfNameExists = useCallback(
     async (candidateName: string) => {
@@ -1539,8 +1739,19 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
         );
       }
 
+      const previewMime = avatarFile?.type || 'image/webp';
+      const previewDataUrl = `data:${previewMime};base64,${avatarBase64}`;
+      const walletAddress = rawWallet?.address0 || userInfo?.address;
+      const registeredName = userInfo?.name?.trim() || '';
+      if (walletAddress) {
+        await setWalletAvatarCache(
+          walletAddress,
+          previewDataUrl,
+          registeredName
+        );
+      }
       setAvatarFile(null);
-      setTempAvatar(`data:image/webp;base64,${avatarBase64}`);
+      setTempAvatar(previewDataUrl);
       setAvatarAnchorEl(null);
       executeEvent('avatarUploaded', {});
     } catch (error) {
@@ -1588,37 +1799,25 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
       typeof window !== 'undefined' ? window.innerWidth : avatarPanelWidth + 32;
     const viewportHeight =
       typeof window !== 'undefined' ? window.innerHeight : 800;
-    const fallbackLeft = Math.max(16, (viewportWidth - avatarPanelWidth) / 2);
-    const fallbackTop = 140;
-
-    if (!avatarPanelOriginRect) {
-      return {
-        left: fallbackLeft,
-        top: fallbackTop,
-        width: avatarPanelWidth,
-        height: avatarPanelHeight,
-      };
-    }
-
-    const preferredLeft = avatarPanelOriginRect.left;
-    const left = Math.min(
-      Math.max(16, preferredLeft),
-      Math.max(16, viewportWidth - avatarPanelWidth - 16)
-    );
-
-    const preferredTop = avatarPanelOriginRect.top;
-    const top = Math.min(
-      Math.max(16, preferredTop),
-      Math.max(16, viewportHeight - avatarPanelHeight - 16)
-    );
+    // Never trust the (possibly stale) measured height to exceed the viewport.
+    const safeHeight = Math.min(avatarPanelHeight, viewportHeight - 32);
+    // Always present the avatar panel centered on the screen. Anchoring it to
+    // the avatar button placed it half off-screen on first open (before its
+    // real height was known), so centering is both simpler and reliable.
+    const left = Math.max(16, (viewportWidth - avatarPanelWidth) / 2);
+    const top = Math.max(16, (viewportHeight - safeHeight) / 2);
+    // Hard cap so the panel can never extend past the bottom of the screen,
+    // even on the very first open before its real height has been measured.
+    const maxHeight = Math.max(220, viewportHeight - top - 16);
 
     return {
       left,
       top,
       width: avatarPanelWidth,
-      height: avatarPanelHeight,
+      height: safeHeight,
+      maxHeight,
     };
-  }, [avatarPanelHeight, avatarPanelOriginRect, avatarPanelWidth]);
+  }, [avatarPanelHeight, avatarPanelWidth]);
 
   const avatarPanelAnimation = useMemo(() => {
     if (!avatarPanelOriginRect) {
@@ -1848,8 +2047,14 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
           xs: '1fr',
           lg: '104px minmax(0, 1fr)',
         },
-        minHeight: '164px',
-        padding: '22px 24px',
+        minHeight: {
+          xs: 'auto',
+          lg: '164px',
+        },
+        padding: {
+          xs: '16px 14px',
+          lg: '22px 24px',
+        },
         width: '100%',
       }}
       onMouseMove={handleDashboardPanelPointerMove}
@@ -1876,7 +2081,10 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
             xs: 'center',
             lg: 'stretch',
           },
-          width: '104px',
+          width: {
+            xs: '96px',
+            lg: '104px',
+          },
         }}
       >
         <TiltedCard scaleOnHover={1.1} rotateAmplitude={18}>
@@ -1936,25 +2144,18 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                 },
               }}
             >
-              <Avatar
-                src={avatarUrl ?? undefined}
-                onError={() => setAvatarError(true)}
+              <QortalUserAvatar
+                srcOverride={tempAvatar}
+                primaryName={name}
+                walletAddress={address}
+                fallbackIconSize={44}
                 sx={{
                   bgcolor: isDarkMode ? '#636772' : '#E7DED0',
                   borderRadius: '22px',
-                  height: 88,
-                  width: 88,
+                  height: { xs: 80, lg: 88 },
+                  width: { xs: 80, lg: 88 },
                 }}
-              >
-                <PersonIcon
-                  sx={{
-                    color: isDarkMode
-                      ? '#1D2126'
-                      : theme.palette.text.secondary,
-                    fontSize: 44,
-                  }}
-                />
-              </Avatar>
+              />
             </ButtonBase>
           </BorderGlow>
         </TiltedCard>
@@ -2082,6 +2283,7 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
             sx={{
               alignItems: 'center',
               display: 'flex',
+              flexDirection: 'row',
               gap: '8px',
               width: '100%',
             }}
@@ -2107,6 +2309,7 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                 minWidth: 0,
                 px: '11px',
                 py: '5px',
+                width: 'auto',
                 transition:
                   'background-color 160ms ease, border-color 160ms ease, box-shadow 160ms ease',
                 '&:hover': address
@@ -2121,7 +2324,7 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                     }
                   : undefined,
               }}
-              onClick={address ? handleCopyAddress : undefined}
+              onClick={address ? handleAddressFieldClick : undefined}
               onMouseEnter={
                 shouldRevealAddressOnHover
                   ? () => setIsAddressFieldHovered(true)
@@ -2137,7 +2340,7 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                   ? (event) => {
                       if (event.key === 'Enter' || event.key === ' ') {
                         event.preventDefault();
-                        handleCopyAddress();
+                        handleAddressFieldClick();
                       }
                     }
                   : undefined
@@ -2165,27 +2368,18 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                 }}
               >
                 {shouldRevealAddressOnHover ? (
-                  showAnimatedAddress ? (
-                    <Box
-                      sx={{
-                        maxWidth: '100%',
-                        overflow: 'hidden',
-                        pointerEvents: 'auto',
-                        textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap',
-                      }}
-                    >
-                      <DecryptedText
-                        text={accountIdentitySecondaryText}
-                        animateOn="hover"
-                        active={showAnimatedAddress}
-                        speed={35}
-                        maxIterations={12}
-                        sequential={true}
-                        revealDirection="start"
-                        useOriginalCharsOnly={true}
-                      />
-                    </Box>
+                  showAddressReveal ? (
+                    <DecryptedText
+                      key={addressRevealAnimationKey}
+                      text={accountIdentitySecondaryText}
+                      animateOn="hover"
+                      active={showAddressReveal}
+                      speed={35}
+                      maxIterations={12}
+                      sequential={true}
+                      revealDirection="start"
+                      useOriginalCharsOnly={true}
+                    />
                   ) : (
                     <Box
                       sx={{
@@ -2456,8 +2650,12 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
       <Dialog
         open={isAccountSettingsOpen}
         onClose={closeAccountSettingsModal}
+        disableRestoreFocus
+        disableScrollLock={isMobile}
+        scroll="paper"
         aria-labelledby="account-settings-dialog-title"
         aria-describedby="account-settings-dialog-description"
+        fullScreen={isMobile}
         maxWidth={false}
         fullWidth
         slotProps={{
@@ -2477,17 +2675,26 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
           paper: {
             sx: {
               background: avatarModalSurface,
-              border: isDarkMode
-                ? '1px solid rgba(255,255,255,0.08)'
-                : '1px solid rgba(24,29,36,0.09)',
-              borderRadius: '16px',
-              boxShadow: isDarkMode
-                ? '0 34px 120px rgba(0,0,0,0.46)'
-                : '0 28px 88px rgba(18,28,45,0.16)',
-              clipPath: 'inset(0 round 16px)',
+              border: isMobile
+                ? 'none'
+                : isDarkMode
+                  ? '1px solid rgba(255,255,255,0.08)'
+                  : '1px solid rgba(24,29,36,0.09)',
+              borderRadius: isMobile ? 0 : '16px',
+              boxShadow: isMobile
+                ? 'none'
+                : isDarkMode
+                  ? '0 34px 120px rgba(0,0,0,0.46)'
+                  : '0 28px 88px rgba(18,28,45,0.16)',
+              clipPath: isMobile ? 'none' : 'inset(0 round 16px)',
+              display: isMobile ? 'flex' : undefined,
+              flexDirection: isMobile ? 'column' : undefined,
+              height: isMobile ? '100dvh' : undefined,
               isolation: 'isolate',
+              margin: isMobile ? 0 : undefined,
+              maxHeight: isMobile ? '100dvh' : undefined,
               overflow: 'hidden',
-              width: 'min(840px, calc(100vw - 32px))',
+              width: isMobile ? '100%' : 'min(840px, calc(100vw - 32px))',
             },
           },
         }}
@@ -2496,10 +2703,159 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
           sx={{
             background: avatarModalSurface,
             display: 'flex',
-            minHeight: 530,
+            flex: isMobile ? 1 : undefined,
+            flexDirection: 'column',
+            height: isMobile ? '100%' : 'auto',
+            maxHeight: isMobile ? '100%' : 'none',
+            minHeight: isMobile ? 0 : 530,
+            overflow: isMobile ? 'hidden' : 'visible',
             width: '100%',
           }}
         >
+          {isMobile ? (
+            <Box
+              sx={{
+                alignItems: 'center',
+                borderBottom: `1px solid ${avatarSectionDivider}`,
+                display: 'flex',
+                flexShrink: 0,
+                gap: 1,
+                justifyContent: 'space-between',
+                px: 1.5,
+                py: 1.25,
+                pt: 'calc(12px + env(safe-area-inset-top, 0px))',
+              }}
+            >
+              <Typography
+                sx={{
+                  color: theme.palette.text.primary,
+                  fontSize: '1rem',
+                  fontWeight: 700,
+                  letterSpacing: '-0.02em',
+                }}
+              >
+                {td('account_settings', 'Account settings')}
+              </Typography>
+              <Box sx={{ alignItems: 'center', display: 'flex', gap: 0.5 }}>
+                <Tooltip
+                  title={td(
+                    'privacy_mode_tooltip',
+                    'Privacy Mode: Blurs sensitive info for screen sharing'
+                  )}
+                >
+                  <ButtonBase
+                    onClick={handleTogglePrivacyMode}
+                    aria-label={td('toggle_privacy_mode', 'Toggle privacy mode')}
+                    sx={{
+                      borderRadius: '999px',
+                      color: isPrivacyModeActive
+                        ? theme.palette.text.primary
+                        : alpha(theme.palette.text.secondary, 0.78),
+                      height: 36,
+                      width: 36,
+                    }}
+                  >
+                    {isPrivacyModeActive ? (
+                      <VisibilityOffOutlinedIcon sx={{ fontSize: 20 }} />
+                    ) : (
+                      <VisibilityOutlinedIcon sx={{ fontSize: 20 }} />
+                    )}
+                  </ButtonBase>
+                </Tooltip>
+                <ButtonBase
+                  onClick={closeAccountSettingsModal}
+                  disabled={isChangeNameLoading}
+                  sx={{
+                    borderRadius: '8px',
+                    color: theme.palette.text.secondary,
+                    height: 36,
+                    width: 36,
+                  }}
+                >
+                  <CloseIcon sx={{ fontSize: 20 }} />
+                </ButtonBase>
+              </Box>
+            </Box>
+          ) : null}
+
+          {isMobile ? (
+            <Box
+              sx={{
+                borderBottom: `1px solid ${avatarSectionDivider}`,
+                display: 'flex',
+                flexShrink: 0,
+                gap: 0.75,
+                overflowX: 'auto',
+                px: 1.25,
+                py: 1,
+                scrollbarWidth: 'none',
+                WebkitOverflowScrolling: 'touch',
+                '&::-webkit-scrollbar': { display: 'none' },
+              }}
+            >
+              {accountSettingsTabs.map((tab) => {
+                const TabIcon = tab.icon;
+                const isActive = activeSettingsTab === tab.key;
+
+                return (
+                  <ButtonBase
+                    key={tab.key}
+                    onClick={() => setActiveSettingsTab(tab.key)}
+                    sx={{
+                      alignItems: 'center',
+                      background: isActive
+                        ? settingsSidebarActiveSurface
+                        : alpha(
+                            theme.palette.common.white,
+                            isDarkMode ? 0.03 : 0.5
+                          ),
+                      border: `1px solid ${
+                        isActive
+                          ? alpha(
+                              theme.palette.primary.main,
+                              isDarkMode ? 0.35 : 0.25
+                            )
+                          : alpha(theme.palette.divider, 0.35)
+                      }`,
+                      borderRadius: '999px',
+                      color: isActive
+                        ? theme.palette.text.primary
+                        : alpha(theme.palette.text.secondary, 0.92),
+                      display: 'inline-flex',
+                      flexShrink: 0,
+                      gap: 0.65,
+                      minHeight: 40,
+                      px: 1.35,
+                      py: 0.75,
+                    }}
+                  >
+                    <TabIcon sx={{ fontSize: 18 }} />
+                    <Typography
+                      sx={{
+                        fontSize: '0.78rem',
+                        fontWeight: isActive ? 700 : 600,
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {tab.label}
+                    </Typography>
+                  </ButtonBase>
+                );
+              })}
+            </Box>
+          ) : null}
+
+          <Box
+            sx={{
+              display: 'flex',
+              flex: 1,
+              flexDirection: isMobile ? 'column' : 'row',
+              minHeight: 0,
+              overflow: isMobile ? 'hidden' : 'visible',
+              width: '100%',
+            }}
+          >
+          {!isMobile ? (
           <Box
             sx={{
               background: settingsSidebarSurface,
@@ -2615,15 +2971,19 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
               </Tooltip>
             </Box>
           </Box>
+          ) : null}
 
           <Box
             sx={{
               display: 'flex',
               flex: 1,
               flexDirection: 'column',
+              minHeight: 0,
               minWidth: 0,
+              overflow: 'hidden',
             }}
           >
+            {!isMobile ? (
             <Box
               sx={{
                 alignItems: 'flex-start',
@@ -2687,18 +3047,64 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                 <CloseIcon sx={{ fontSize: 17 }} />
               </ButtonBase>
             </Box>
+            ) : (
+              <Box
+                sx={{
+                  borderBottom: `1px solid ${avatarSectionDivider}`,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  flexShrink: 0,
+                  gap: '4px',
+                  px: 1.75,
+                  py: 1.35,
+                }}
+              >
+                <Typography
+                  id="account-settings-dialog-title"
+                  sx={{
+                    color: theme.palette.text.primary,
+                    fontSize: '0.92rem',
+                    fontWeight: 700,
+                    letterSpacing: '-0.02em',
+                  }}
+                >
+                  {activeSettingsMeta.title}
+                </Typography>
+                <Typography
+                  id="account-settings-dialog-description"
+                  sx={{
+                    color: theme.palette.text.secondary,
+                    fontSize: '0.76rem',
+                    lineHeight: 1.45,
+                  }}
+                >
+                  {activeSettingsMeta.description}
+                </Typography>
+              </Box>
+            )}
 
             <Box
               sx={{
-                borderTop: `1px solid ${avatarSectionDivider}`,
+                borderTop: isMobile ? 'none' : `1px solid ${avatarSectionDivider}`,
                 display: 'flex',
                 flex: 1,
                 flexDirection: 'column',
                 gap: 1.25,
-                overflowY: 'auto',
-                px: 2.3,
-                pb: 2.2,
-                pt: 1.9,
+                minHeight: 0,
+                overflowX: 'hidden',
+                overflowY: isMobile && activeSettingsTab === 'blocked' ? 'hidden' : 'auto',
+                overscrollBehavior: 'contain',
+                px: {
+                  xs: 1.75,
+                  md: 2.3,
+                },
+                pb: 'calc(16px + env(safe-area-inset-bottom, 0px))',
+                pt: {
+                  xs: 1.35,
+                  md: 1.9,
+                },
+                touchAction: 'pan-y',
+                WebkitOverflowScrolling: 'touch',
               }}
             >
               {activeSettingsTab === 'profile' ? (
@@ -3147,7 +3553,7 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                       >
                         {td(
                           'enable_dev_mode_desc',
-                          'Unlock local developer surfaces, diagnostics, and testing tools across the Hub.'
+                          'Unlock local developer surfaces, diagnostics, and testing tools across GO.'
                         )}
                       </Typography>
                     </Box>
@@ -3199,24 +3605,51 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                     background: avatarModalSurfaceSoft,
                     border: `1px solid ${avatarFieldBorder}`,
                     borderRadius: '12px',
+                    boxSizing: 'border-box',
+                    display: isMobile ? 'flex' : 'block',
+                    flex: isMobile ? 1 : undefined,
+                    flexDirection: isMobile ? 'column' : undefined,
+                    maxWidth: '100%',
+                    minHeight: isMobile ? 0 : undefined,
+                    minWidth: 0,
                     overflow: 'hidden',
+                    width: '100%',
                   }}
                 >
                   <Box
                     sx={{
                       display: 'flex',
                       flexDirection: 'column',
+                      flex: isMobile ? 1 : undefined,
                       gap: 1,
-                      px: 1.35,
+                      maxWidth: '100%',
+                      minHeight: isMobile ? 0 : undefined,
+                      minWidth: 0,
+                      px: {
+                        xs: 1,
+                        sm: 1.35,
+                      },
                       py: 1.2,
                     }}
                   >
                     <Box
                       sx={{
-                        alignItems: 'flex-start',
+                        alignItems: {
+                          xs: 'stretch',
+                          sm: 'flex-start',
+                        },
                         display: 'flex',
-                        gap: 1.2,
+                        flexDirection: {
+                          xs: 'column',
+                          sm: 'row',
+                        },
+                        flexShrink: 0,
+                        gap: {
+                          xs: 0.75,
+                          sm: 1.2,
+                        },
                         justifyContent: 'space-between',
+                        minWidth: 0,
                       }}
                     >
                       <Box sx={{ minWidth: 0 }}>
@@ -3246,6 +3679,10 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                       </Box>
                       <Typography
                         sx={{
+                          alignSelf: {
+                            xs: 'flex-start',
+                            sm: 'auto',
+                          },
                           color: theme.palette.text.secondary,
                           flexShrink: 0,
                           fontSize: '0.73rem',
@@ -3260,7 +3697,18 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                     </Box>
 
                     {blockedCount > 0 ? (
-                      <Box sx={{ display: 'grid', gap: 1 }}>
+                      <Box
+                        sx={{
+                          display: 'grid',
+                          flex: isMobile ? 1 : undefined,
+                          gap: 1,
+                          minHeight: isMobile ? 0 : undefined,
+                          overflowX: 'hidden',
+                          overflowY: isMobile ? 'auto' : 'visible',
+                          touchAction: isMobile ? 'pan-y' : undefined,
+                          WebkitOverflowScrolling: 'touch',
+                        }}
+                      >
                         {blockedNameEntries.length > 0 ? (
                           <Box sx={{ display: 'grid', gap: 0.7 }}>
                             <Typography
@@ -3281,8 +3729,11 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                                   alignItems: 'center',
                                   borderRadius: '10px',
                                   display: 'flex',
-                                  gap: 1,
+                                  flexDirection: 'row',
+                                  gap: 0.75,
                                   justifyContent: 'space-between',
+                                  maxWidth: '100%',
+                                  minWidth: 0,
                                   px: 0.85,
                                   py: 0.55,
                                   transition: 'background-color 0.14s ease',
@@ -3298,6 +3749,7 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                                   className={privacyBlurClassName}
                                   sx={{
                                     color: theme.palette.text.primary,
+                                    flex: '1 1 auto',
                                     fontSize: '0.8rem',
                                     fontWeight: 600,
                                     minWidth: 0,
@@ -3310,7 +3762,7 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                                 </Typography>
                                 <ButtonBase
                                   onClick={() =>
-                                    removeBlockFromList(undefined, blockedName)
+                                    void handleUnblockBlockedName(blockedName)
                                   }
                                   sx={{
                                     borderRadius: '8px',
@@ -3318,6 +3770,7 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                                     flexShrink: 0,
                                     fontSize: '0.74rem',
                                     fontWeight: 700,
+                                    minHeight: 32,
                                     px: 0.9,
                                     py: 0.55,
                                     '&:hover': {
@@ -3355,8 +3808,11 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                                   alignItems: 'center',
                                   borderRadius: '10px',
                                   display: 'flex',
-                                  gap: 1,
+                                  flexDirection: 'row',
+                                  gap: 0.75,
                                   justifyContent: 'space-between',
+                                  maxWidth: '100%',
+                                  minWidth: 0,
                                   px: 0.85,
                                   py: 0.55,
                                   transition: 'background-color 0.14s ease',
@@ -3372,41 +3828,84 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                                   className={privacyBlurClassName}
                                   sx={{
                                     color: theme.palette.text.primary,
-                                    fontSize: '0.8rem',
+                                    flex: '1 1 auto',
+                                    fontFamily: 'monospace',
+                                    fontSize: '0.78rem',
                                     fontWeight: 600,
+                                    lineHeight: 1.45,
                                     minWidth: 0,
                                     overflow: 'hidden',
                                     textOverflow: 'ellipsis',
                                     whiteSpace: 'nowrap',
                                   }}
                                 >
-                                  {blockedAddress}
+                                  {shortenWalletAddress(blockedAddress)}
                                 </Typography>
-                                <ButtonBase
-                                  onClick={() =>
-                                    removeBlockFromList(
-                                      blockedAddress,
-                                      undefined
-                                    )
-                                  }
+                                <Box
                                   sx={{
-                                    borderRadius: '8px',
-                                    color: theme.palette.primary.light,
+                                    alignItems: 'center',
+                                    display: 'flex',
                                     flexShrink: 0,
-                                    fontSize: '0.74rem',
-                                    fontWeight: 700,
-                                    px: 0.9,
-                                    py: 0.55,
-                                    '&:hover': {
-                                      backgroundColor: alpha(
-                                        theme.palette.primary.main,
-                                        0.1
-                                      ),
-                                    },
+                                    gap: 0.25,
                                   }}
                                 >
-                                  {td('unblock', 'Unblock')}
-                                </ButtonBase>
+                                  <Tooltip
+                                    title={td('copy_address', 'Copy address')}
+                                  >
+                                    <ButtonBase
+                                      aria-label={td(
+                                        'copy_address',
+                                        'Copy address'
+                                      )}
+                                      onClick={() =>
+                                        handleCopyBlockedAddress(blockedAddress)
+                                      }
+                                      sx={{
+                                        alignItems: 'center',
+                                        borderRadius: '8px',
+                                        color: addressFieldActionBaseColor,
+                                        display: 'inline-flex',
+                                        height: 32,
+                                        justifyContent: 'center',
+                                        width: 32,
+                                        '&:hover': {
+                                          backgroundColor:
+                                            addressFieldActionHoverBackground,
+                                          color: addressFieldActionHoverColor,
+                                        },
+                                      }}
+                                    >
+                                      <ContentCopyIcon
+                                        sx={{ fontSize: '0.92rem' }}
+                                      />
+                                    </ButtonBase>
+                                  </Tooltip>
+                                  <ButtonBase
+                                    onClick={() =>
+                                      void handleUnblockBlockedAddress(
+                                        blockedAddress
+                                      )
+                                    }
+                                    sx={{
+                                      borderRadius: '8px',
+                                      color: theme.palette.primary.light,
+                                      flexShrink: 0,
+                                      fontSize: '0.74rem',
+                                      fontWeight: 700,
+                                      minHeight: 32,
+                                      px: 0.9,
+                                      py: 0.55,
+                                      '&:hover': {
+                                        backgroundColor: alpha(
+                                          theme.palette.primary.main,
+                                          0.1
+                                        ),
+                                      },
+                                    }}
+                                  >
+                                    {td('unblock', 'Unblock')}
+                                  </ButtonBase>
+                                </Box>
                               </Box>
                             ))}
                           </Box>
@@ -3471,7 +3970,7 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                         >
                           {td(
                             'reduce_app_notifications_desc',
-                            'Turn on to mute desktop push notifications. Leave off for normal Hub alerts.'
+                            'Turn on to mute desktop push notifications. Leave off for normal GO alerts.'
                           )}
                         </Typography>
                       </Box>
@@ -3590,7 +4089,7 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                       >
                         {td(
                           'disable_startup_sound_desc',
-                          'Turn on to mute the intro audio played when the Hub starts.'
+                          'Turn on to mute the intro audio played when GO starts.'
                         )}
                       </Typography>
                     </Box>
@@ -3639,7 +4138,7 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                       >
                         {td(
                           'reduce_ui_animations_desc',
-                          'Turn on to minimize motion throughout the Hub. Leave off for the normal animated interface.'
+                          'Turn on to minimize motion throughout GO. Leave off for the normal animated interface.'
                         )}
                       </Typography>
                     </Box>
@@ -3876,7 +4375,7 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                         >
                           {td(
                             'managed_reticulum_config_desc',
-                            'Allow Qortal Hub to write its managed rnsd config on startup for all instances.'
+                            'Allow Qortal Go to write its managed rnsd config on startup for all instances.'
                           )}
                         </Typography>
                       </Box>
@@ -3942,7 +4441,7 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                           .{' '}
                           {td(
                             'reticulum_config_shared_path_suffix',
-                            'Changes affect local Hub instances that use this shared daemon and take effect after Reticulum restarts.'
+                            'Changes affect local GO instances that use this shared daemon and take effect after Reticulum restarts.'
                           )}
                         </Typography>
 
@@ -4033,7 +4532,7 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                             >
                               {td(
                                 'reset_reticulum_default',
-                                'Reset to Hub default'
+                                'Reset to GO default'
                               )}
                             </Button>
                             <LoadingButton
@@ -4064,6 +4563,7 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                 </Box>
               ) : null}
             </Box>
+          </Box>
           </Box>
         </Box>
       </Dialog>
@@ -4153,7 +4653,9 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                       : '0 28px 88px rgba(18,28,45,0.16)',
                     clipPath: 'inset(0 round 14px)',
                     isolation: 'isolate',
-                    overflow: 'hidden',
+                    maxHeight: `${avatarPanelLayout.maxHeight}px`,
+                    overflowX: 'hidden',
+                    overflowY: 'auto',
                   }}
                 >
                   <Box
@@ -4288,7 +4790,10 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                         </Box>
                       </Box>
 
-                      <ImageUploader onPick={(file) => setAvatarFile(file)}>
+                      <ImageUploader
+                        skipCompression
+                        onPick={(file) => setAvatarCropFile(file)}
+                      >
                         <ButtonBase
                           sx={{
                             alignItems: 'center',
@@ -4452,6 +4957,19 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
             </>
           )}
         </AnimatePresence>
+      </Portal>
+
+      <Portal>
+        <AvatarCropper
+          open={Boolean(avatarCropSrc)}
+          imageSrc={avatarCropSrc}
+          fileName={avatarCropFile?.name}
+          onCancel={() => setAvatarCropFile(null)}
+          onCropped={(file) => {
+            setAvatarFile(file);
+            setAvatarCropFile(null);
+          }}
+        />
       </Portal>
     </Box>
   );

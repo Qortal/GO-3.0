@@ -25,21 +25,49 @@ export const supportedLanguages = {
 
 const supportedLngs = Object.keys(supportedLanguages);
 
-const modules = import.meta.glob('./locales/*/*.json', {
+// English (the fallback) stays in the main bundle; every other language is a
+// lazy chunk loaded only when it's the active language. Previously ALL 12
+// languages × 6 namespaces were parsed at startup.
+const eagerEnModules = import.meta.glob('./locales/en/*.json', {
   eager: true,
 }) as Record<string, { default: Record<string, unknown> }>;
 
-const resources: Record<string, Record<string, unknown>> = {};
+const lazyLocaleModules = import.meta.glob('./locales/*/*.json') as Record<
+  string,
+  () => Promise<{ default: Record<string, unknown> }>
+>;
 
-for (const path of Object.keys(modules)) {
-  const match = path.match(/\.\/locales\/([^/]+)\/([^/]+)\.json$/);
+const resources: Record<string, Record<string, unknown>> = { en: {} };
+
+for (const path of Object.keys(eagerEnModules)) {
+  const match = path.match(/\.\/locales\/en\/([^/]+)\.json$/);
   if (!match) continue;
+  resources.en[match[1]] = eagerEnModules[path].default;
+}
 
-  const [, lng, ns] = match;
-  if (!supportedLngs.includes(lng)) continue;
+const loadedLanguages = new Set<string>(['en']);
 
-  if (!resources[lng]) resources[lng] = {};
-  resources[lng][ns] = modules[path].default;
+export async function ensureLanguageLoaded(lng: string): Promise<void> {
+  const base = (lng || '').split('-')[0];
+  if (!base || loadedLanguages.has(base) || !supportedLngs.includes(base)) {
+    return;
+  }
+  loadedLanguages.add(base);
+  const loads = Object.keys(lazyLocaleModules)
+    .map((path) => {
+      const match = path.match(/\.\/locales\/([^/]+)\/([^/]+)\.json$/);
+      if (!match || match[1] !== base) return null;
+      return lazyLocaleModules[path]().then((mod) => {
+        i18n.addResourceBundle(base, match[2], mod.default, true, true);
+      });
+    })
+    .filter(Boolean);
+  try {
+    await Promise.all(loads);
+  } catch (error) {
+    loadedLanguages.delete(base);
+    console.error(`[i18n] failed to load locale ${base}:`, error);
+  }
 }
 
 function getInitialLanguage(): string {
@@ -77,10 +105,19 @@ i18n
     ns: [...namespaces],
     defaultNS: 'core',
     interpolation: { escapeValue: false },
-    react: { useSuspense: false },
+    // bindI18nStore 'added' re-renders translated components when a lazily
+    // loaded language bundle arrives.
+    react: { useSuspense: false, bindI18n: 'languageChanged loaded', bindI18nStore: 'added' },
     returnEmptyString: false,
     returnNull: false,
     debug: import.meta.env.MODE === 'development',
   });
+
+// Pull in the active language's bundles (no-op for English) and keep future
+// language switches working.
+void ensureLanguageLoaded(i18n.language);
+i18n.on('languageChanged', (lng) => {
+  void ensureLanguageLoaded(lng);
+});
 
 export default i18n;

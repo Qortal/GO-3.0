@@ -1,6 +1,6 @@
 {
   "setup": {
-    "title": "Local setup: Hub and Core run on the same system",
+    "title": "Local setup: GO and Core run on the same system",
     "advancedOptions": "advanced options",
     "pickPath": "pick a custom Qortal installation path if your Core is installed in a non-default location.",
     "removePath": "remove custom Qortal path"

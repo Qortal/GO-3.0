@@ -1,78 +1,94 @@
-import { useMemo, forwardRef } from 'react';
+import { forwardRef, memo, useMemo } from 'react';
 import { useAtomValue } from 'jotai';
-import { Box, Typography, useTheme } from '@mui/material';
+import { Box, Typography, styled, useTheme } from '@mui/material';
 import { useTranslation } from 'react-i18next';
-import { VirtuosoGrid, GridComponents } from 'react-virtuoso';
-import { AppsWidthLimiter } from '../Apps-styles';
-import { AppCardEnhanced } from '../AppCard';
-import { SortOption, StatusFilterOption } from '../Filters';
+import { Virtuoso, VirtuosoGrid, GridComponents } from 'react-virtuoso';
+import { AppLibrarySubTitle, AppsList, AppsWidthLimiter } from '../Apps-styles';
+import { AppCardEnhanced, AppCardListItem } from '../AppCard';
+import { FilterBar, SortOption, StatusFilterOption } from '../Filters';
 import { officialAppList } from '../config/officialApps';
 import { filterAndSortApps } from '../../../atoms/appsAtoms';
 import { ratingsStoreAtom } from '../../../hooks/useAppRatings';
 
-const CARD_MIN_WIDTH = 320;
 const GRID_GAP = 16;
+
+const SectionHeader = styled(Box)({
+  alignItems: 'center',
+  display: 'flex',
+  justifyContent: 'space-between',
+  marginBottom: '20px',
+  width: '100%',
+});
 
 interface CommunityAppsTabProps {
   availableQapps: any[];
+  isMobile?: boolean;
+  isActive?: boolean;
   myName: string;
   searchValue: string;
   sortValue: SortOption;
   categoryValue: string;
   statusValue: StatusFilterOption;
+  categories: Array<{ id: string; name: string }>;
+  scrollParent?: HTMLElement | null;
+  onSortChange: (value: SortOption) => void;
+  onCategoryChange: (value: string) => void;
+  onStatusChange: (value: StatusFilterOption) => void;
 }
 
-// Virtuoso grid components
-const gridComponents: GridComponents = {
-  List: forwardRef(({ style, children, ...props }, ref) => (
-    <Box
-      ref={ref}
-      {...props}
-      style={{
-        display: 'grid',
-        gridTemplateColumns: `repeat(auto-fill, minmax(${CARD_MIN_WIDTH}px, 1fr))`,
-        gap: `${GRID_GAP}px`,
-        width: '100%',
-        paddingBottom: '20px',
-        ...style,
-      }}
-    >
-      {children}
-    </Box>
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  )) as any,
-  Item: ({ children, ...props }) => (
-    <Box
-      {...props}
-      style={{
-        width: '100%',
-      }}
-    >
-      {children}
-    </Box>
-  ),
-};
-
-export const CommunityAppsTab = ({
+const CommunityAppsTabInner = ({
   availableQapps,
+  isMobile = false,
   myName,
   searchValue,
   sortValue,
   categoryValue,
   statusValue,
+  categories,
+  scrollParent = null,
+  onSortChange,
+  onCategoryChange,
+  onStatusChange,
 }: CommunityAppsTabProps) => {
+  const cardMinWidth = isMobile ? 160 : 320;
+
+  const gridComponents: GridComponents = useMemo(
+    () => ({
+      List: forwardRef(({ style, children, ...props }, ref) => (
+        <Box
+          ref={ref}
+          {...props}
+          style={{
+            display: 'grid',
+            gridTemplateColumns: `repeat(auto-fill, minmax(${cardMinWidth}px, 1fr))`,
+            gap: `${GRID_GAP}px`,
+            width: '100%',
+            ...style,
+          }}
+        >
+          {children}
+        </Box>
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      )) as any,
+      Item: ({ children, ...props }) => (
+        <Box {...props} style={{ width: '100%' }}>
+          {children}
+        </Box>
+      ),
+    }),
+    [cardMinWidth]
+  );
+
   const theme = useTheme();
   const { t } = useTranslation(['core']);
   const ratingsStore = useAtomValue(ratingsStoreAtom);
 
-  // Filter out official apps to show only community apps
   const communityApps = useMemo(() => {
     return availableQapps.filter(
       (app) => !officialAppList.includes(app?.name?.toLowerCase())
     );
   }, [availableQapps]);
 
-  // Apply all filters and sorting (ratings-aware)
   const filteredAndSortedApps = useMemo(() => {
     return filterAndSortApps(communityApps, {
       sort: sortValue,
@@ -81,34 +97,107 @@ export const CommunityAppsTab = ({
       search: searchValue,
       ratingsMap: ratingsStore,
     });
-  }, [communityApps, searchValue, categoryValue, statusValue, sortValue, ratingsStore]);
+  }, [
+    communityApps,
+    searchValue,
+    categoryValue,
+    statusValue,
+    sortValue,
+    ratingsStore,
+  ]);
+
+  const useExternalScroll = isMobile && Boolean(scrollParent);
 
   return (
-    <AppsWidthLimiter sx={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
-      {filteredAndSortedApps.length > 0 ? (
-        <VirtuosoGrid
-          style={{
-            flex: 1,
-            minHeight: 0,
-            width: '100%',
-            msOverflowStyle: 'none',
-            overflow: 'auto',
-            scrollbarWidth: 'auto',
-          }}
-          totalCount={filteredAndSortedApps.length}
-          components={gridComponents}
-          itemContent={(index) => {
-            const app = filteredAndSortedApps[index];
-            return (
-              <AppCardEnhanced
-                key={`${app?.service}-${app?.name}`}
-                app={app}
-                myName={myName}
-              />
-            );
-          }}
-          overscan={20}
+    <AppsWidthLimiter
+      isMobile={isMobile}
+      sx={
+        isMobile
+          ? undefined
+          : {
+              flex: 1,
+              minHeight: 0,
+              overflow: 'hidden',
+            }
+      }
+    >
+      {isMobile ? (
+        <FilterBar
+          isMobile
+          categories={categories}
+          categoryValue={categoryValue}
+          onCategoryChange={onCategoryChange}
+          onSortChange={onSortChange}
+          onStatusChange={onStatusChange}
+          sortValue={sortValue}
+          statusValue={statusValue}
         />
+      ) : null}
+
+      <SectionHeader>
+        <AppLibrarySubTitle sx={{ fontSize: '20px' }}>
+          {t('core:tabs.community_apps', {
+            postProcess: 'capitalizeFirstChar',
+          })}{' '}
+          <Typography
+            component="span"
+            sx={{
+              color: theme.palette.text.secondary,
+              fontSize: '16px',
+              fontWeight: 400,
+            }}
+          >
+            ({filteredAndSortedApps.length})
+          </Typography>
+        </AppLibrarySubTitle>
+      </SectionHeader>
+
+      {filteredAndSortedApps.length > 0 ? (
+        isMobile ? (
+          <Virtuoso
+            customScrollParent={useExternalScroll ? scrollParent ?? undefined : undefined}
+            itemContent={(index) => {
+              const app = filteredAndSortedApps[index];
+              return (
+                <AppCardListItem
+                  key={`${app?.service}-${app?.name}`}
+                  app={app}
+                  myName={myName}
+                />
+              );
+            }}
+            overscan={6}
+            style={{ width: '100%' }}
+            totalCount={filteredAndSortedApps.length}
+            components={{
+              List: AppsList,
+            }}
+          />
+        ) : (
+          <VirtuosoGrid
+            components={gridComponents}
+            itemContent={(index) => {
+              const app = filteredAndSortedApps[index];
+              return (
+                <AppCardEnhanced
+                  key={`${app?.service}-${app?.name}`}
+                  app={app}
+                  myName={myName}
+                />
+              );
+            }}
+            overscan={20}
+            style={{
+              flex: 1,
+              minHeight: 0,
+              msOverflowStyle: 'none',
+              overflow: 'auto',
+              scrollbarWidth: 'auto',
+              width: '100%',
+            }}
+            totalCount={filteredAndSortedApps.length}
+          />
+        )
       ) : (
         <Box
           sx={{
@@ -127,3 +216,30 @@ export const CommunityAppsTab = ({
     </AppsWidthLimiter>
   );
 };
+
+const communityTabPropsAreEqual = (
+  prev: CommunityAppsTabProps,
+  next: CommunityAppsTabProps
+) => {
+  if (!next.isActive && !prev.isActive) {
+    return true;
+  }
+
+  return (
+    prev.isActive === next.isActive &&
+    prev.isMobile === next.isMobile &&
+    prev.myName === next.myName &&
+    prev.searchValue === next.searchValue &&
+    prev.sortValue === next.sortValue &&
+    prev.categoryValue === next.categoryValue &&
+    prev.statusValue === next.statusValue &&
+    prev.scrollParent === next.scrollParent &&
+    prev.availableQapps === next.availableQapps &&
+    prev.categories === next.categories &&
+    prev.onSortChange === next.onSortChange &&
+    prev.onCategoryChange === next.onCategoryChange &&
+    prev.onStatusChange === next.onStatusChange
+  );
+};
+
+export const CommunityAppsTab = memo(CommunityAppsTabInner, communityTabPropsAreEqual);

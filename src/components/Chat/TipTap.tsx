@@ -1,4 +1,14 @@
-import { memo, useCallback, useEffect, useMemo, useRef } from 'react';
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
+import { createPortal } from 'react-dom';
 import { Editor, EditorProvider, useCurrentEditor } from '@tiptap/react';
 import { Fragment, Slice } from '@tiptap/pm/model';
 import StarterKit from '@tiptap/starter-kit';
@@ -29,8 +39,10 @@ import 'tippy.js/dist/tippy.css';
 import { ReactRenderer } from '@tiptap/react';
 import MentionList from './MentionList.jsx';
 import { isDisabledEditorEnterAtom } from '../../atoms/global.js';
-import { Box, Checkbox, Typography, useTheme } from '@mui/material';
-import { useAtom } from 'jotai';
+import { Box, Checkbox, Typography, useMediaQuery, useTheme } from '@mui/material';
+import { useAtom, useSetAtom } from 'jotai';
+import { mobileChatComposeActiveAtom } from '../../atoms/global.js';
+import { MOBILE_CHAT_TOOLBAR_SLOT_ID } from '../Mobile/mobileChatCompose';
 import { fileToBase64 } from '../../utils/fileReading/index.js';
 import { useTranslation } from 'react-i18next';
 import i18n from 'i18next';
@@ -42,6 +54,18 @@ const MenuBar = memo(
     isDisabledEditorEnter,
     setIsDisabledEditorEnter,
     toolbarStyle = 'default',
+    isMobile = false,
+    toolbarInTopBar = false,
+    topBarExtraActions = null,
+  }: {
+    setEditorRef: (editor: Editor | null) => void;
+    isChat: boolean;
+    isDisabledEditorEnter: boolean;
+    setIsDisabledEditorEnter: (val: boolean) => void;
+    toolbarStyle?: string;
+    isMobile?: boolean;
+    toolbarInTopBar?: boolean;
+    topBarExtraActions?: ReactNode;
   }) => {
     const { editor } = useCurrentEditor();
     const fileInputRef = useRef(null);
@@ -59,6 +83,28 @@ const MenuBar = memo(
         setEditorRef(editor);
       }
     }, [editor, setEditorRef]);
+
+    const [portalHost, setPortalHost] = useState<HTMLElement | null>(null);
+
+    useLayoutEffect(() => {
+      if (!toolbarInTopBar) {
+        setPortalHost(null);
+        return;
+      }
+
+      const host = document.getElementById(MOBILE_CHAT_TOOLBAR_SLOT_ID);
+      if (host) {
+        setPortalHost(host);
+        return;
+      }
+
+      const frame = requestAnimationFrame(() => {
+        setPortalHost(
+          document.getElementById(MOBILE_CHAT_TOOLBAR_SLOT_ID)
+        );
+      });
+      return () => cancelAnimationFrame(frame);
+    }, [toolbarInTopBar]);
 
     if (!editor) {
       return null;
@@ -124,256 +170,311 @@ const MenuBar = memo(
       }
     }, [editor, isChat]);
 
-    return (
-      <Box
-        sx={{
-          backgroundColor: isChat
-            ? 'transparent'
-            : theme.palette.background.paper,
-          border: isChat ? 'none' : '1px solid',
-          borderBottom: isChat ? '1px solid' : undefined,
-          borderColor: theme.palette.divider,
-          borderRadius: isChat ? '8px 8px 0 0' : '10px 10px 0 0',
-          padding: isChat ? '8px 10px 10px' : '6px 10px 8px',
-        }}
-      >
-        <Box
-          sx={{
-            alignItems: 'center',
-            display: 'flex',
-            flexWrap: 'wrap',
-            gap: '2px',
-          }}
+    const iconButtonSx = (isActive: boolean) => ({
+      color: isActive
+        ? theme.palette.text.primary
+        : theme.palette.text.secondary,
+      flexShrink: 0,
+      padding: isMobile && isChat ? '6px' : isMobile ? '3px' : '4px',
+      minWidth: isMobile && isChat ? 40 : undefined,
+      minHeight: isMobile && isChat ? 40 : undefined,
+      '&:hover': {
+        backgroundColor: theme.palette.action.hover,
+        color: theme.palette.text.primary,
+      },
+    });
+
+    const iconSize = isMobile && isChat ? '22px' : isMobile ? '18px' : '20px';
+
+    const toolbarButtons = (
+      <>
+        <IconButton
+          size={isMobile && isChat ? 'medium' : 'small'}
+          onClick={() => editor.chain().focus().toggleBold().run()}
+          disabled={!editor.can().chain().focus().toggleBold().run()}
+          sx={iconButtonSx(editor.isActive('bold'))}
         >
+          <FormatBoldIcon sx={{ fontSize: iconSize }} />
+        </IconButton>
+
+        <IconButton
+          size={isMobile && isChat ? 'medium' : 'small'}
+          onClick={() => editor.chain().focus().toggleItalic().run()}
+          disabled={!editor.can().chain().focus().toggleItalic().run()}
+          sx={iconButtonSx(editor.isActive('italic'))}
+        >
+          <FormatItalicIcon sx={{ fontSize: iconSize }} />
+        </IconButton>
+
+        <IconButton
+          size={isMobile && isChat ? 'medium' : 'small'}
+          onClick={() => editor.chain().focus().toggleStrike().run()}
+          disabled={!editor.can().chain().focus().toggleStrike().run()}
+          sx={iconButtonSx(editor.isActive('strike'))}
+        >
+          <StrikethroughSIcon sx={{ fontSize: iconSize }} />
+        </IconButton>
+
+        <IconButton
+          size={isMobile && isChat ? 'medium' : 'small'}
+          onClick={() => editor.chain().focus().toggleCode().run()}
+          disabled={!editor.can().chain().focus().toggleCode().run()}
+          sx={iconButtonSx(editor.isActive('code'))}
+        >
+          <CodeIcon sx={{ fontSize: iconSize }} />
+        </IconButton>
+
+        <IconButton
+          size={isMobile && isChat ? 'medium' : 'small'}
+          onClick={() => editor.chain().focus().unsetAllMarks().run()}
+          sx={iconButtonSx(
+            editor.isActive('bold') ||
+              editor.isActive('italic') ||
+              editor.isActive('strike') ||
+              editor.isActive('code')
+          )}
+        >
+          <FormatClearIcon sx={{ fontSize: iconSize }} />
+        </IconButton>
+
+        <IconButton
+          size={isMobile && isChat ? 'medium' : 'small'}
+          onClick={() => editor.chain().focus().toggleBulletList().run()}
+          sx={iconButtonSx(editor.isActive('bulletList'))}
+        >
+          <FormatListBulletedIcon sx={{ fontSize: iconSize }} />
+        </IconButton>
+
+        <IconButton
+          size={isMobile && isChat ? 'medium' : 'small'}
+          onClick={() => editor.chain().focus().toggleOrderedList().run()}
+          sx={iconButtonSx(editor.isActive('orderedList'))}
+        >
+          <FormatListNumberedIcon sx={{ fontSize: iconSize }} />
+        </IconButton>
+
+        <IconButton
+          size={isMobile && isChat ? 'medium' : 'small'}
+          onClick={() => editor.chain().focus().toggleCodeBlock().run()}
+          sx={iconButtonSx(editor.isActive('codeBlock'))}
+        >
+          <DeveloperModeIcon sx={{ fontSize: iconSize }} />
+        </IconButton>
+
+        <IconButton
+          size={isMobile && isChat ? 'medium' : 'small'}
+          onClick={() => editor.chain().focus().toggleBlockquote().run()}
+          sx={iconButtonSx(editor.isActive('blockquote'))}
+        >
+          <FormatQuoteIcon sx={{ fontSize: iconSize }} />
+        </IconButton>
+
+        <IconButton
+          size={isMobile && isChat ? 'medium' : 'small'}
+          onClick={() => editor.chain().focus().setHorizontalRule().run()}
+          disabled={!editor.can().chain().focus().setHorizontalRule().run()}
+          sx={iconButtonSx(false)}
+        >
+          <HorizontalRuleIcon sx={{ fontSize: iconSize }} />
+        </IconButton>
+
+        <IconButton
+          size={isMobile && isChat ? 'medium' : 'small'}
+          onClick={() =>
+            editor.chain().focus().toggleHeading({ level: 1 }).run()
+          }
+          sx={iconButtonSx(editor.isActive('heading', { level: 1 }))}
+        >
+          <FormatHeadingIcon sx={{ fontSize: iconSize }} />
+        </IconButton>
+
+        <IconButton
+          size={isMobile && isChat ? 'medium' : 'small'}
+          onClick={() => editor.chain().focus().undo().run()}
+          disabled={!editor.can().chain().focus().undo().run()}
+          sx={iconButtonSx(false)}
+        >
+          <UndoIcon sx={{ fontSize: iconSize }} />
+        </IconButton>
+
+        <IconButton
+          size={isMobile && isChat ? 'medium' : 'small'}
+          onClick={() => editor.chain().focus().redo().run()}
+          disabled={!editor.can().chain().focus().redo().run()}
+          sx={iconButtonSx(false)}
+        >
+          <RedoIcon sx={{ fontSize: iconSize }} />
+        </IconButton>
+      </>
+    );
+
+    const mobileChatToolbarRows = isMobile && isChat && (
+      <Box className="chat-format-toolbar chat-format-toolbar--two-rows">
+        <Box className="chat-format-toolbar-row">
           <IconButton
-            size="small"
+            size="medium"
             onClick={() => editor.chain().focus().toggleBold().run()}
             disabled={!editor.can().chain().focus().toggleBold().run()}
-            sx={{
-              color: editor.isActive('bold')
-                ? theme.palette.text.primary
-                : theme.palette.text.secondary,
-              padding: '4px',
-              '&:hover': {
-                backgroundColor: theme.palette.action.hover,
-                color: theme.palette.text.primary,
-              },
-            }}
+            sx={iconButtonSx(editor.isActive('bold'))}
           >
-            <FormatBoldIcon sx={{ fontSize: '20px' }} />
+            <FormatBoldIcon sx={{ fontSize: iconSize }} />
           </IconButton>
-
           <IconButton
-            size="small"
+            size="medium"
             onClick={() => editor.chain().focus().toggleItalic().run()}
             disabled={!editor.can().chain().focus().toggleItalic().run()}
-            sx={{
-              color: editor.isActive('italic')
-                ? theme.palette.text.primary
-                : theme.palette.text.secondary,
-              padding: '4px',
-              '&:hover': {
-                backgroundColor: theme.palette.action.hover,
-                color: theme.palette.text.primary,
-              },
-            }}
+            sx={iconButtonSx(editor.isActive('italic'))}
           >
-            <FormatItalicIcon sx={{ fontSize: '20px' }} />
+            <FormatItalicIcon sx={{ fontSize: iconSize }} />
           </IconButton>
-
           <IconButton
-            size="small"
+            size="medium"
             onClick={() => editor.chain().focus().toggleStrike().run()}
             disabled={!editor.can().chain().focus().toggleStrike().run()}
-            sx={{
-              color: editor.isActive('strike')
-                ? theme.palette.text.primary
-                : theme.palette.text.secondary,
-              padding: '4px',
-              '&:hover': {
-                backgroundColor: theme.palette.action.hover,
-                color: theme.palette.text.primary,
-              },
-            }}
+            sx={iconButtonSx(editor.isActive('strike'))}
           >
-            <StrikethroughSIcon sx={{ fontSize: '20px' }} />
+            <StrikethroughSIcon sx={{ fontSize: iconSize }} />
           </IconButton>
-
           <IconButton
-            size="small"
+            size="medium"
             onClick={() => editor.chain().focus().toggleCode().run()}
             disabled={!editor.can().chain().focus().toggleCode().run()}
-            sx={{
-              color: editor.isActive('code')
-                ? theme.palette.text.primary
-                : theme.palette.text.secondary,
-              padding: '4px',
-              '&:hover': {
-                backgroundColor: theme.palette.action.hover,
-                color: theme.palette.text.primary,
-              },
-            }}
+            sx={iconButtonSx(editor.isActive('code'))}
           >
-            <CodeIcon sx={{ fontSize: '20px' }} />
+            <CodeIcon sx={{ fontSize: iconSize }} />
           </IconButton>
-
           <IconButton
-            size="small"
+            size="medium"
             onClick={() => editor.chain().focus().unsetAllMarks().run()}
-            sx={{
-              color:
-                editor.isActive('bold') ||
+            sx={iconButtonSx(
+              editor.isActive('bold') ||
                 editor.isActive('italic') ||
                 editor.isActive('strike') ||
                 editor.isActive('code')
-                  ? theme.palette.text.primary
-                  : theme.palette.text.secondary,
-              padding: '4px',
-              '&:hover': {
-                backgroundColor: theme.palette.action.hover,
-                color: theme.palette.text.primary,
-              },
-            }}
+            )}
           >
-            <FormatClearIcon sx={{ fontSize: '20px' }} />
+            <FormatClearIcon sx={{ fontSize: iconSize }} />
           </IconButton>
-
           <IconButton
-            size="small"
+            size="medium"
             onClick={() => editor.chain().focus().toggleBulletList().run()}
-            sx={{
-              color: editor.isActive('bulletList')
-                ? theme.palette.text.primary
-                : theme.palette.text.secondary,
-              padding: '4px',
-              '&:hover': {
-                backgroundColor: theme.palette.action.hover,
-                color: theme.palette.text.primary,
-              },
-            }}
+            sx={iconButtonSx(editor.isActive('bulletList'))}
           >
-            <FormatListBulletedIcon sx={{ fontSize: '20px' }} />
+            <FormatListBulletedIcon sx={{ fontSize: iconSize }} />
           </IconButton>
-
           <IconButton
-            size="small"
+            size="medium"
             onClick={() => editor.chain().focus().toggleOrderedList().run()}
-            sx={{
-              color: editor.isActive('orderedList')
-                ? theme.palette.text.primary
-                : theme.palette.text.secondary,
-              padding: '4px',
-              '&:hover': {
-                backgroundColor: theme.palette.action.hover,
-                color: theme.palette.text.primary,
-              },
-            }}
+            sx={iconButtonSx(editor.isActive('orderedList'))}
           >
-            <FormatListNumberedIcon sx={{ fontSize: '20px' }} />
+            <FormatListNumberedIcon sx={{ fontSize: iconSize }} />
           </IconButton>
-
+        </Box>
+        <Box className="chat-format-toolbar-row">
           <IconButton
-            size="small"
+            size="medium"
             onClick={() => editor.chain().focus().toggleCodeBlock().run()}
-            sx={{
-              color: editor.isActive('codeBlock')
-                ? theme.palette.text.primary
-                : theme.palette.text.secondary,
-              padding: '4px',
-              '&:hover': {
-                backgroundColor: theme.palette.action.hover,
-                color: theme.palette.text.primary,
-              },
-            }}
+            sx={iconButtonSx(editor.isActive('codeBlock'))}
           >
-            <DeveloperModeIcon sx={{ fontSize: '20px' }} />
+            <DeveloperModeIcon sx={{ fontSize: iconSize }} />
           </IconButton>
-
           <IconButton
-            size="small"
+            size="medium"
             onClick={() => editor.chain().focus().toggleBlockquote().run()}
-            sx={{
-              color: editor.isActive('blockquote')
-                ? theme.palette.text.primary
-                : theme.palette.text.secondary,
-              padding: '4px',
-              '&:hover': {
-                backgroundColor: theme.palette.action.hover,
-                color: theme.palette.text.primary,
-              },
-            }}
+            sx={iconButtonSx(editor.isActive('blockquote'))}
           >
-            <FormatQuoteIcon sx={{ fontSize: '20px' }} />
+            <FormatQuoteIcon sx={{ fontSize: iconSize }} />
           </IconButton>
-
           <IconButton
-            size="small"
+            size="medium"
             onClick={() => editor.chain().focus().setHorizontalRule().run()}
             disabled={!editor.can().chain().focus().setHorizontalRule().run()}
-            sx={{
-              color: theme.palette.text.secondary,
-              padding: '4px',
-              '&:hover': {
-                backgroundColor: theme.palette.action.hover,
-                color: theme.palette.text.primary,
-              },
-            }}
+            sx={iconButtonSx(false)}
           >
-            <HorizontalRuleIcon sx={{ fontSize: '20px' }} />
+            <HorizontalRuleIcon sx={{ fontSize: iconSize }} />
           </IconButton>
-
           <IconButton
-            size="small"
+            size="medium"
             onClick={() =>
               editor.chain().focus().toggleHeading({ level: 1 }).run()
             }
-            sx={{
-              color: editor.isActive('heading', { level: 1 })
-                ? theme.palette.text.primary
-                : theme.palette.text.secondary,
-              padding: '4px',
-              '&:hover': {
-                backgroundColor: theme.palette.action.hover,
-                color: theme.palette.text.primary,
-              },
-            }}
+            sx={iconButtonSx(editor.isActive('heading', { level: 1 }))}
           >
-            <FormatHeadingIcon sx={{ fontSize: '20px' }} />
+            <FormatHeadingIcon sx={{ fontSize: iconSize }} />
           </IconButton>
-
           <IconButton
-            size="small"
+            size="medium"
             onClick={() => editor.chain().focus().undo().run()}
             disabled={!editor.can().chain().focus().undo().run()}
-            sx={{
-              color: theme.palette.text.secondary,
-              padding: '4px',
-              '&:hover': {
-                backgroundColor: theme.palette.action.hover,
-                color: theme.palette.text.primary,
-              },
-            }}
+            sx={iconButtonSx(false)}
           >
-            <UndoIcon sx={{ fontSize: '20px' }} />
+            <UndoIcon sx={{ fontSize: iconSize }} />
           </IconButton>
-
           <IconButton
-            size="small"
+            size="medium"
             onClick={() => editor.chain().focus().redo().run()}
             disabled={!editor.can().chain().focus().redo().run()}
-            sx={{
-              color: theme.palette.text.secondary,
-              padding: '4px',
-              '&:hover': {
-                backgroundColor: theme.palette.action.hover,
-                color: theme.palette.text.primary,
-              },
-            }}
+            sx={iconButtonSx(false)}
           >
-            <RedoIcon sx={{ fontSize: '20px' }} />
+            <RedoIcon sx={{ fontSize: iconSize }} />
           </IconButton>
+          {topBarExtraActions}
+        </Box>
+      </Box>
+    );
 
-          {isChat && (
+    const toolbarShell = (
+      <Box
+        className={isMobile && isChat ? 'chat-format-toolbar-shell' : undefined}
+        sx={{
+          backgroundColor: isChat
+            ? toolbarInTopBar
+              ? 'transparent'
+              : isMobile
+                ? theme.palette.background.paper
+                : 'transparent'
+            : theme.palette.background.paper,
+          border: isChat || toolbarInTopBar ? 'none' : '1px solid',
+          borderBottom: isChat && !toolbarInTopBar ? '1px solid' : undefined,
+          borderColor: theme.palette.divider,
+          borderRadius: isChat
+            ? isMobile && !toolbarInTopBar
+              ? 0
+              : '8px 8px 0 0'
+            : '10px 10px 0 0',
+          flexShrink: 0,
+          padding:
+            toolbarInTopBar
+              ? '4px 6px 2px'
+              : isMobile && isChat
+                ? '8px 6px 6px'
+                : isMobile
+                  ? '6px 4px'
+                  : isChat
+                    ? '8px 10px 10px'
+                    : '6px 10px 8px',
+          width: '100%',
+        }}
+      >
+        {mobileChatToolbarRows || (
+        <Box
+          className={isMobile && isChat ? 'chat-format-toolbar' : undefined}
+          sx={{
+            alignItems: 'center',
+            display: 'flex',
+            flexWrap: isMobile ? 'nowrap' : 'wrap',
+            gap: isMobile ? 0 : '2px',
+            overflowX: isMobile ? 'auto' : 'visible',
+            scrollbarWidth: isMobile ? 'none' : undefined,
+            WebkitOverflowScrolling: 'touch',
+            '&::-webkit-scrollbar': {
+              display: isMobile ? 'none' : undefined,
+            },
+          }}
+        >
+          {toolbarButtons}
+
+          {isChat && !isMobile && (
             <Box
               sx={{
                 alignItems: 'center',
@@ -443,8 +544,18 @@ const MenuBar = memo(
             </>
           )}
         </Box>
+        )}
       </Box>
     );
+
+    if (toolbarInTopBar) {
+      if (portalHost) {
+        return createPortal(toolbarShell, portalHost);
+      }
+      return null;
+    }
+
+    return toolbarShell;
   }
 );
 
@@ -481,11 +592,13 @@ type TiptapProps = {
   maxHeightOffset?: number;
   overrideMobile?: boolean;
   customEditorHeight?: number | null;
-  setIsFocusedParent: React.Dispatch<React.SetStateAction<boolean>>;
-  isFocusedParent: boolean;
+  setIsFocusedParent?: React.Dispatch<React.SetStateAction<boolean>>;
+  isFocusedParent?: boolean;
+  isReply?: boolean;
   membersWithNames?: unknown[];
   enableMentions?: boolean;
   insertImage?: (image: any) => void;
+  mobileTopBarActions?: ReactNode;
 };
 
 const Tiptap = ({
@@ -499,14 +612,31 @@ const Tiptap = ({
   isFocusedParent,
   overrideMobile,
   customEditorHeight,
+  isReply = false,
   membersWithNames = [],
   enableMentions,
   insertImage,
+  mobileTopBarActions,
 }: TiptapProps) => {
   const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down('md'));
+  const setMobileComposeActive = useSetAtom(mobileChatComposeActiveAtom);
   const [isDisabledEditorEnter, setIsDisabledEditorEnter] = useAtom(
     isDisabledEditorEnterAtom
   );
+
+  useLayoutEffect(() => {
+    if (!isMobile || !isChat) return;
+    setMobileComposeActive(Boolean(isFocusedParent));
+  }, [isFocusedParent, isMobile, isChat, setMobileComposeActive]);
+
+  useEffect(() => {
+    return () => {
+      if (isMobile && isChat) {
+        setMobileComposeActive(false);
+      }
+    };
+  }, [isMobile, isChat, setMobileComposeActive]);
 
   const handleImageUpload = useCallback(
     async (file) => {
@@ -563,6 +693,15 @@ const Tiptap = ({
   useEffect(() => {
     usersRef.current = users; // Keep users up-to-date
   }, [users]);
+
+  const handleFocus = useCallback(() => {
+    if (isMobile && setIsFocusedParent) {
+      if (isChat) {
+        setMobileComposeActive(true);
+      }
+      setIsFocusedParent(true);
+    }
+  }, [isMobile, isChat, setIsFocusedParent, setMobileComposeActive]);
 
   const handleBlur = () => {
     const htmlContent = editorRef.current.getHTML();
@@ -650,9 +789,33 @@ const Tiptap = ({
   }, []);
 
   const useComposerLook = isChat || composerStyle;
+  const showToolbar =
+    isFocusedParent || !isMobile || overrideMobile || !isChat;
+  const mobileChatCompose = isMobile && isChat && isFocusedParent;
+
+  const editorMaxHeight = mobileChatCompose
+    ? '120px'
+    : isMobile
+      ? `calc(100svh - ${customEditorHeight || isReply ? '230px' : '190px'})`
+      : customEditorHeight
+        ? `${customEditorHeight}px`
+        : '250px';
+
+  const editorInlineStyle = mobileChatCompose
+    ? 'overflow: auto; min-height: 40px; max-height: 120px'
+    : isMobile
+      ? `overflow: auto; min-height: ${customEditorHeight ? '200px' : '0px'}; max-height: ${editorMaxHeight}`
+      : `overflow: auto; max-height: ${editorMaxHeight}`;
+
   return (
     <Box
-      className={useComposerLook ? 'tiptap-chat-composer' : undefined}
+      className={
+        useComposerLook
+          ? mobileChatCompose
+            ? 'tiptap-chat-composer tiptap-chat-composer--mobile-compose'
+            : 'tiptap-chat-composer'
+          : undefined
+      }
       sx={{
         display: 'flex',
         flexDirection: 'column',
@@ -673,26 +836,33 @@ const Tiptap = ({
     >
       <EditorProvider
         slotBefore={
-          <MenuBar
-            setEditorRef={setEditorRefFunc}
-            isChat={isChat}
-            isDisabledEditorEnter={isDisabledEditorEnter}
-            setIsDisabledEditorEnter={handleSetIsDisabledEditorEnter}
-            toolbarStyle={useComposerLook ? 'chat' : 'default'}
-          />
+          showToolbar ? (
+            <MenuBar
+              setEditorRef={setEditorRefFunc}
+              isChat={isChat}
+              isDisabledEditorEnter={isDisabledEditorEnter}
+              setIsDisabledEditorEnter={handleSetIsDisabledEditorEnter}
+              toolbarStyle={useComposerLook ? 'chat' : 'default'}
+              isMobile={isMobile}
+              toolbarInTopBar={mobileChatCompose}
+              topBarExtraActions={mobileTopBarActions}
+            />
+          ) : null
         }
         extensions={[...extensionsFiltered, ...additionalExtensions]}
         content={content}
         onCreate={({ editor }) => {
-          editor.on('blur', handleBlur); // Listen for blur event
+          editor.on('focus', handleFocus);
+          editor.on('blur', handleBlur);
         }}
         onUpdate={({ editor }) => {
-          editor.on('blur', handleBlur); // Ensure blur is updated
+          editor.on('focus', handleFocus);
+          editor.on('blur', handleBlur);
         }}
         editorProps={{
           attributes: {
             class: 'tiptap-prosemirror',
-            style: `overflow: auto; max-height: 250px`,
+            style: editorInlineStyle,
           },
           handleKeyDown(view, event) {
             if (

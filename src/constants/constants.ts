@@ -220,6 +220,13 @@ export const getDefaultLocalNodeUrl = (): string => {
 /** True if the URL is the local node (either http or https). */
 export const isLocalNodeUrl = (url: string | undefined): boolean =>
   url === HTTP_LOCALHOST_12391 || url === HTTPS_LOCALHOST_12391;
+
+/** True when connected to the shared public gateway (not local or custom private node). */
+export const isPublicGatewayNodeUrl = (url: string | undefined): boolean => {
+  const nodeUrl = url?.trim() || HTTPS_EXT_NODE_QORTAL_LINK;
+  if (isLocalNodeUrl(nodeUrl)) return false;
+  return nodeUrl === HTTPS_EXT_NODE_QORTAL_LINK;
+};
 export const MESSAGE_LIMIT_WARNING: number = 750; // bytes
 export const QORTAL_PROTOCOL: string = 'qortal://';
 

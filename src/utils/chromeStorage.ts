@@ -79,8 +79,52 @@ function base64ToJson(base64) {
   return JSON.parse(new TextDecoder().decode(bytes));
 }
 
+/**
+ * Write-through in-memory cache for hot keys.
+ *
+ * Every SecureStoragePlugin call crosses the native bridge and hits encrypted
+ * preferences; profiling showed the same keys re-read constantly (walletInfo
+ * 76x, apiKey 38x, userSettings 27x in a few minutes). All app writes go
+ * through storeData/removeKeysAndLogout in this module, so a write-through
+ * cache stays coherent.
+ */
+const HOT_KEY_EXACT = new Set([
+  'walletInfo',
+  'apiKey',
+  'keyPair',
+  'customNodes',
+  'qortalRequestPermissions',
+  'walletAvatarByAddress',
+  'wallets',
+  'active-groups-directs',
+]);
+const HOT_KEY_PATTERNS = [
+  /-userSettings$/,
+  /^enter-chat-timestamp-/,
+  /^group-announcement-/,
+  /^chatheads-/,
+  /^threadactivity-/,
+];
+
+const isHotKey = (key: string): boolean =>
+  HOT_KEY_EXACT.has(key) || HOT_KEY_PATTERNS.some((re) => re.test(key));
+
+const memoryCache = new Map<string, unknown>();
+
+export const invalidateStorageCache = (key?: string): void => {
+  if (key === undefined) {
+    memoryCache.clear();
+  } else {
+    memoryCache.delete(key);
+  }
+};
+
 export const storeData = async (key: string, payload: any): Promise<string> => {
   await initializeKeyAndIV();
+
+  if (isHotKey(key)) {
+    memoryCache.set(key, payload);
+  }
 
   const base64Data = jsonToBase64(payload);
 
@@ -104,6 +148,10 @@ export const storeData = async (key: string, payload: any): Promise<string> => {
 };
 
 export const getData = async <T = any>(key: string): Promise<T | null> => {
+  if (memoryCache.has(key)) {
+    return memoryCache.get(key) as T;
+  }
+
   await initializeKeyAndIV();
 
   try {
@@ -124,10 +172,14 @@ export const getData = async <T = any>(key: string): Promise<T | null> => {
           inMemoryKey,
           iv
         );
-        return base64ToJson(decryptedBase64Data);
+        const decrypted = base64ToJson(decryptedBase64Data);
+        if (isHotKey(key)) memoryCache.set(key, decrypted);
+        return decrypted;
       } else {
         // Decode non-encrypted data
-        return base64ToJson(storedDataBase64.value);
+        const parsed = base64ToJson(storedDataBase64.value);
+        if (isHotKey(key)) memoryCache.set(key, parsed);
+        return parsed;
       }
     } else {
       return null;
@@ -144,6 +196,7 @@ export async function removeKeysAndLogout(
   request: any
 ) {
   try {
+    invalidateStorageCache();
     for (const key of keys) {
       try {
         await SecureStoragePlugin.remove({ key });

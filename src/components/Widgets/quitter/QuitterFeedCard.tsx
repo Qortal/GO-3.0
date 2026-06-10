@@ -398,7 +398,7 @@ export const QuitterFeedCard = ({
                 }}
               >
                 {t('dashboard.quitter_video_preview_hub', {
-                  defaultValue: 'Preview stays read-only in Hub',
+                  defaultValue: 'Preview stays read-only in GO',
                 })}
               </Typography>
             </Box>

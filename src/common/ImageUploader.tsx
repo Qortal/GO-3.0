@@ -20,9 +20,20 @@ const toBase64 = (file: File): Promise<string | ArrayBuffer | null> =>
 interface ImageUploaderProps {
   children: React.ReactNode;
   onPick: (file: File) => void;
+  /**
+   * Skip the CompressorJS pass and hand back the originally-picked file. Use
+   * this when a downstream step (e.g. an avatar cropper) re-encodes the image
+   * itself; CompressorJS can emit an invalid 0-byte blob on some Android
+   * WebViews, which then crashes URL.createObjectURL.
+   */
+  skipCompression?: boolean;
 }
 
-const ImageUploader: React.FC<ImageUploaderProps> = ({ children, onPick }) => {
+const ImageUploader: React.FC<ImageUploaderProps> = ({
+  children,
+  onPick,
+  skipCompression = false,
+}) => {
   const onDrop = useCallback(
     async (acceptedFiles: File[]) => {
       if (acceptedFiles.length > 1) {
@@ -30,6 +41,16 @@ const ImageUploader: React.FC<ImageUploaderProps> = ({ children, onPick }) => {
       }
 
       const image = acceptedFiles[0];
+      if (!image) {
+        return;
+      }
+
+      // Hand back the raw file untouched; the caller will process it.
+      if (skipCompression) {
+        onPick(image);
+        return;
+      }
+
       let compressedFile: File | undefined;
 
       try {
@@ -65,15 +86,27 @@ const ImageUploader: React.FC<ImageUploaderProps> = ({ children, onPick }) => {
           });
         }
 
-        if (!compressedFile) return;
+        // Guard against CompressorJS emitting an invalid/empty blob.
+        if (
+          !compressedFile ||
+          !(compressedFile instanceof Blob) ||
+          compressedFile.size === 0
+        ) {
+          // Fall back to the original file rather than crashing downstream.
+          onPick(image);
+          return;
+        }
 
         onPick(compressedFile);
       } catch (error) {
-        console.error('File processing error:', error);
+        console.error('[ImageUploader] File processing error:', error);
+        onPick(image);
       }
     },
-    [onPick]
+    [onPick, skipCompression]
   );
+
+  const onDropRejected = useCallback(() => {}, []);
 
   const {
     getRootProps,
@@ -85,6 +118,7 @@ const ImageUploader: React.FC<ImageUploaderProps> = ({ children, onPick }) => {
     isDragActive: boolean;
   } = useDropzone({
     onDrop,
+    onDropRejected,
     accept: {
       'image/*': [],
     },

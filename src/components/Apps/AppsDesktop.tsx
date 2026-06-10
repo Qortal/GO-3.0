@@ -42,6 +42,7 @@ import {
   AppsHorizontalTabScroller,
   AppsParent,
 } from './Apps-styles';
+import { mobileAppsShellSx } from '../Mobile/mobileLayout';
 import AppViewerContainer from './AppViewerContainer';
 import TabComponent from './TabComponent';
 import ShortUniqueId from 'short-unique-id';
@@ -62,6 +63,7 @@ import {
   DialogContent,
   DialogContentText,
   DialogTitle,
+  useMediaQuery,
   useTheme,
 } from '@mui/material';
 import { alpha } from '@mui/material/styles';
@@ -70,7 +72,18 @@ import {
   isNewTabWindowAtom,
   userInfoAtom,
 } from '../../atoms/global';
-import { publishEditTargetAtom } from '../../atoms/appsAtoms';
+import { publishEditTargetAtom, availableQappsAtom, appOpenCountsAtom } from '../../atoms/appsAtoms';
+import {
+  incrementAppOpenCount,
+  loadAppOpenCounts,
+  saveAppOpenCounts,
+} from '../Mobile/mobileAppOpenCounts';
+import {
+  loadMobileOpenTabsSession,
+  saveMobileOpenTabsSession,
+  serializeTabForSession,
+  type PersistedOpenTab,
+} from '../Mobile/mobileOpenTabsSession';
 import { useAtom, useAtomValue, useSetAtom } from 'jotai';
 import { useTranslation } from 'react-i18next';
 import {
@@ -211,14 +224,39 @@ export const AppsDesktop = ({
   show,
 }: AppsDesktopProps) => {
   const theme = useTheme();
+  // On mobile the open-tabs strip is redundant: the top-bar "Tabs" button opens
+  // the full-screen tab grid instead, so we hide the horizontal strip entirely.
+  const isMobile = useMediaQuery(theme.breakpoints.down('md'));
   const navigationController = useAtomValue(navigationControllerAtom);
   const userInfo = useAtomValue(userInfoAtom);
   const publishEditTarget = useAtomValue(publishEditTargetAtom);
   const setPublishEditTarget = useSetAtom(publishEditTargetAtom);
+  const setAvailableQappsAtom = useSetAtom(availableQappsAtom);
+  const setAppOpenCounts = useSetAtom(appOpenCountsAtom);
+  const isRestoringSessionRef = useRef(false);
+  const tabsSessionReadyRef = useRef(!isMobile);
+  const saveSessionTimeoutRef = useRef<number | null>(null);
   const myName = userInfo?.name;
   const myAddress = userInfo?.address;
   const [availableQapps, setAvailableQapps] = useState([]);
   const availableQappsCountRef = useRef(0);
+
+  useEffect(() => {
+    setAvailableQappsAtom(availableQapps);
+  }, [availableQapps, setAvailableQappsAtom]);
+
+  const recordMobileAppOpen = useCallback(
+    (tab: Record<string, unknown> | null | undefined) => {
+      if (!isMobile || !myAddress || isRestoringSessionRef.current || !tab) return;
+      setAppOpenCounts((prev) => {
+        const next = incrementAppOpenCount(prev, tab);
+        void saveAppOpenCounts(myAddress, next);
+        return next;
+      });
+    },
+    [isMobile, myAddress, setAppOpenCounts]
+  );
+
   const [selectedAppInfo, setSelectedAppInfo] = useState(null);
   const [selectedCategory, setSelectedCategory] = useState(null);
   const [tabs, setTabs] = useState([]);
@@ -279,6 +317,95 @@ export const AppsDesktop = ({
     'question',
     'tutorial',
   ]);
+
+  useEffect(() => {
+    if (!isMobile || !myAddress) return;
+    void loadAppOpenCounts(myAddress).then((counts) => setAppOpenCounts(counts));
+  }, [isMobile, myAddress, setAppOpenCounts]);
+
+  useEffect(() => {
+    if (!isMobile || !myAddress || tabsSessionReadyRef.current) return;
+
+    let cancelled = false;
+    isRestoringSessionRef.current = true;
+
+    void loadMobileOpenTabsSession(myAddress).then((session) => {
+      if (cancelled) return;
+
+      if (session?.tabs.length) {
+        const restoredTabs = session.tabs.slice(0, MAX_OPEN_APP_TABS);
+        const tabIds = new Set(restoredTabs.map((tab) => tab.tabId));
+        const restoredOrder = session.viewerTabOrder.filter((tabId) =>
+          tabIds.has(tabId)
+        );
+        const order =
+          restoredOrder.length > 0
+            ? restoredOrder
+            : restoredTabs.map((tab) => tab.tabId);
+        setTabs(restoredTabs);
+        setViewerTabOrder(order);
+        setSelectedTab(null);
+        setIsNewTabWindow(false);
+      }
+
+      isRestoringSessionRef.current = false;
+      tabsSessionReadyRef.current = true;
+    });
+
+    return () => {
+      cancelled = true;
+      isRestoringSessionRef.current = false;
+    };
+  }, [isMobile, myAddress, setIsNewTabWindow]);
+
+  useEffect(() => {
+    if (!isMobile || !myAddress) {
+      tabsSessionReadyRef.current = true;
+      return;
+    }
+    if (!tabsSessionReadyRef.current) return;
+
+    if (saveSessionTimeoutRef.current !== null) {
+      window.clearTimeout(saveSessionTimeoutRef.current);
+    }
+
+    saveSessionTimeoutRef.current = window.setTimeout(() => {
+      const serializedTabs = tabs
+        .map((tab) => serializeTabForSession(tab))
+        .filter(Boolean) as PersistedOpenTab[];
+
+      void saveMobileOpenTabsSession(myAddress, {
+        tabs: serializedTabs,
+        selectedTabId: selectedTab?.tabId ?? null,
+        viewerTabOrder,
+        desktopViewMode: desktopViewMode === 'apps' ? 'apps' : 'home',
+        appsMode: mode,
+      });
+    }, 400);
+
+    return () => {
+      if (saveSessionTimeoutRef.current !== null) {
+        window.clearTimeout(saveSessionTimeoutRef.current);
+        saveSessionTimeoutRef.current = null;
+      }
+    };
+  }, [
+    desktopViewMode,
+    isMobile,
+    mode,
+    myAddress,
+    selectedTab,
+    tabs,
+    viewerTabOrder,
+  ]);
+
+  useEffect(() => {
+    const recordAppOpenFunc = (event: CustomEvent) => {
+      recordMobileAppOpen(event.detail?.data);
+    };
+    subscribeToEvent('recordAppOpen', recordAppOpenFunc);
+    return () => unsubscribeFromEvent('recordAppOpen', recordAppOpenFunc);
+  }, [recordMobileAppOpen]);
 
   const myApp = useMemo(() => {
     return availableQapps.find(
@@ -555,6 +682,13 @@ export const AppsDesktop = ({
     }
   }, []);
 
+  useEffect(() => {
+    if (!isMobile || desktopViewMode !== 'apps' || mode !== 'home' || selectedTab) {
+      return;
+    }
+    setMode('library');
+  }, [desktopViewMode, isMobile, mode, selectedTab, setMode]);
+
   const getQapps = useCallback(async () => {
     try {
       let apps = [];
@@ -729,6 +863,9 @@ export const AppsDesktop = ({
       } else if (mode === 'library') {
         if (isNewTabWindow) {
           setMode('viewer');
+        } else if (isMobile) {
+          setDesktopViewMode('home');
+          executeEvent('open-home-mode', {});
         } else {
           setMode('home');
         }
@@ -746,9 +883,11 @@ export const AppsDesktop = ({
   }, [
     desktopViewMode,
     devMode,
+    isMobile,
     isNewTabWindow,
     mode,
     selectedTab?.tabId,
+    setDesktopViewMode,
     setDevMode,
     setMode,
     setPublishEditTarget,
@@ -772,6 +911,10 @@ export const AppsDesktop = ({
 
   const addTabFunc = (e) => {
     const data = e.detail?.data;
+    if (isMobile && data?.internal === QCHAT_INTERNAL_TAB_ID) {
+      executeEvent('open-chat-mode', {});
+      return;
+    }
     if (data?.internal) {
       const existingInternalTab = tabs.find(
         (tab) => tab?.internal === data.internal
@@ -812,6 +955,7 @@ export const AppsDesktop = ({
       );
 
       if (existingTab) {
+        recordMobileAppOpen(existingTab);
         flushSync(() => {
           setDesktopViewMode('apps');
           setSelectedTab(existingTab);
@@ -857,6 +1001,7 @@ export const AppsDesktop = ({
     setMode('viewer');
     setDesktopViewMode('apps');
     setIsNewTabWindow(false);
+    recordMobileAppOpen(newTab);
     if (shouldUseSmoothHandoff) {
       scheduleVisualTabActivation(newTab.tabId);
     } else {
@@ -874,6 +1019,16 @@ export const AppsDesktop = ({
       unsubscribeFromEvent('addTab', addTabFunc);
     };
   }, [tabs]);
+
+  // Q-Chat belongs on the mobile bottom panel, not in the Apps tab strip.
+  useEffect(() => {
+    if (!isMobile) return;
+    tabs
+      .filter((tab) => tab?.internal === QCHAT_INTERNAL_TAB_ID && tab?.tabId)
+      .forEach((tab) => {
+        performTabRemoval(tab.tabId);
+      });
+  }, [isMobile, tabs]);
 
   const addDevTabFunc = (e) => {
     const data = e.detail?.data;
@@ -948,6 +1103,7 @@ export const AppsDesktop = ({
     } else {
       setDesktopViewMode('apps');
       setMode('viewer');
+      recordMobileAppOpen(data);
     }
     tabsTokenRef.current += 1;
     const tabsToken = tabsTokenRef.current;
@@ -1011,6 +1167,39 @@ export const AppsDesktop = ({
 
     return () => {
       unsubscribeFromEvent('removeLock', removeLockFunc);
+    };
+  }, []);
+
+  const updateOpenTabFunc = (e) => {
+    const data = e.detail?.data;
+    const tabId = data?.tabId;
+    if (!tabId) return;
+
+    setTabs((prevTabs) =>
+      prevTabs.map((tab) => {
+        if (tab?.tabId !== tabId) return tab;
+        const next = { ...tab, ...data };
+        if (data.label === undefined) {
+          delete next.label;
+        }
+        return next;
+      })
+    );
+    setSelectedTab((prev) => {
+      if (prev?.tabId !== tabId) return prev;
+      const next = { ...prev, ...data };
+      if (data.label === undefined) {
+        delete next.label;
+      }
+      return next;
+    });
+  };
+
+  useEffect(() => {
+    subscribeToEvent('updateOpenTab', updateOpenTabFunc);
+
+    return () => {
+      unsubscribeFromEvent('updateOpenTab', updateOpenTabFunc);
     };
   }, []);
 
@@ -1137,11 +1326,12 @@ export const AppsDesktop = ({
     };
   }, [tabs]);
 
-  const setNewTabWindowFunc = (e) => {
+  const setNewTabWindowFunc = () => {
     setIsNewTabWindow(true);
     setIsAddTabFocused(true);
     setSelectedTab(null);
     setDesktopViewMode('apps');
+    setMode(isMobile ? 'library' : 'home');
   };
 
   useEffect(() => {
@@ -1150,7 +1340,7 @@ export const AppsDesktop = ({
     return () => {
       unsubscribeFromEvent('newTabWindow', setNewTabWindowFunc);
     };
-  }, [tabs]);
+  }, [isMobile]);
 
   const devModeNewTabWindowFunc = () => {
     setIsNewTabWindow(true);
@@ -1211,7 +1401,9 @@ export const AppsDesktop = ({
     };
   }, []);
 
-  const appsContentHeight = `calc(100vh - ${appChromeOffsetPx} - ${APPS_HORIZONTAL_TAB_HEIGHT_PX}px)`;
+  const appsContentHeight = isMobile
+    ? '100%'
+    : `calc(100vh - ${appChromeOffsetPx} - ${APPS_HORIZONTAL_TAB_HEIGHT_PX}px)`;
 
   const openDashboardFromTabs = useCallback(() => {
     setIsAddTabFocused(true);
@@ -1431,36 +1623,53 @@ export const AppsDesktop = ({
   const hideAppsShellOffScreen = !show && hasOpenTabs;
   const appsShellPosition = hideAppsShellOffScreen ? 'absolute' : 'relative';
 
+  const mobileAppsActive = isMobile && show && !hideAppsShellOffScreen;
+
   return (
     <AppsParent
       aria-hidden={!show}
       sx={{
+        alignItems: isMobile ? 'stretch' : undefined,
         display: hideAppsShellOffScreen || show ? 'flex' : 'none',
-        flexDirection: 'row',
-        height: '100%',
-        left: hideAppsShellOffScreen ? '-200vw' : 0,
+        flexDirection: isMobile ? 'column' : 'row',
         maxWidth: '100vw',
         overflow: 'hidden',
         pointerEvents: show ? 'auto' : 'none',
-        position: appsShellPosition,
-        top: 0,
         width: '100%',
         ...(hideAppsShellOffScreen
           ? {
+              height: '100%',
+              left: '-200vw',
+              position: 'absolute',
+              top: 0,
               zIndex: -1,
             }
-          : {}),
+          : mobileAppsActive
+            ? {
+                ...mobileAppsShellSx,
+                overflow: 'hidden',
+              }
+            : {
+                height: '100%',
+                left: 0,
+                position: appsShellPosition,
+                top: 0,
+              }),
       }}
     >
       <RatingsCacheInitializer />
       <Box
         sx={{
           display: 'flex',
+          flex: 1,
           flexDirection: 'column',
+          height: '100%',
+          minHeight: 0,
           minWidth: 0,
           width: '100%',
         }}
       >
+        {!isMobile && (
         <AppsHorizontalTabBar
           sx={{
             transition: `opacity ${show ? '200ms ease-out' : '140ms ease-in'}, transform ${show ? '200ms ease-out' : '140ms ease-in'}`,
@@ -1588,23 +1797,34 @@ export const AppsDesktop = ({
             </AppsHorizontalTabAddButton>
           </AppsHorizontalTabScroller>
         </AppsHorizontalTabBar>
+        )}
 
         <Box
           sx={{
-            height: appsContentHeight,
+            display: 'flex',
+            flex: 1,
+            flexDirection: 'column',
             minHeight: 0,
             overflow: 'hidden',
             position: 'relative',
             width: '100%',
+            ...(isMobile
+              ? { flex: 1, minHeight: 0 }
+              : {
+                  height: appsContentHeight,
+                }),
           }}
         >
-          {desktopViewMode === 'apps' && mode === 'home' && (
+          {desktopViewMode === 'apps' && mode === 'home' && !isMobile && (
             <Box
               sx={{
                 display: 'flex',
+                flex: isMobile ? 1 : undefined,
                 flexDirection: 'column',
-                height: appsContentHeight,
-                overflow: 'auto',
+                height: isMobile ? undefined : appsContentHeight,
+                minHeight: isMobile ? 0 : undefined,
+                overflowY: 'auto',
+                WebkitOverflowScrolling: 'touch',
                 width: '100%',
               }}
             >
@@ -1617,6 +1837,7 @@ export const AppsDesktop = ({
                 myApp={myApp}
                 myWebsite={myWebsite}
                 myAddress={myAddress}
+                isMobile={isMobile}
               />
             </Box>
           )}
@@ -1661,6 +1882,7 @@ export const AppsDesktop = ({
             isShow={
               desktopViewMode === 'apps' && mode === 'library' && !selectedTab
             }
+            isMobile={isMobile}
             myName={myName}
             myAddress={myAddress}
             setMode={setMode}
@@ -1748,41 +1970,76 @@ export const AppsDesktop = ({
                 !isNewTabWindow &&
                 !hideContentForDevHome;
               return (
-                <Box
-                  key={tab?.tabId}
-                  sx={{
-                    display: 'flex',
-                    flexDirection: 'column',
-                    height: '100%',
-                    minHeight: 0,
-                    overflow: 'hidden',
-                    width: '100%',
-                    ...(!isInternalTabActive
-                      ? {
-                          left: '-200vw',
-                          position: 'absolute',
-                          top: 0,
-                        }
-                      : {}),
-                  }}
-                >
-                  {internalTabContent}
-                </Box>
-              );
+              <Box
+                key={tab?.tabId}
+                sx={{
+                  display: isInternalTabActive ? 'flex' : 'none',
+                  flex: 1,
+                  flexDirection: 'column',
+                  height: '100%',
+                  minHeight: 0,
+                  overflow: 'hidden',
+                  width: '100%',
+                  ...(!isInternalTabActive
+                    ? {
+                        left: '-200vw',
+                        position: 'absolute',
+                        top: 0,
+                      }
+                    : {}),
+                }}
+              >
+                {internalTabContent}
+              </Box>
+            );
             }
             if (!iframeRefs.current[tab.tabId]) {
               iframeRefs.current[tab.tabId] = createRef();
             }
+            const isTabActive =
+              tab?.tabId === selectedTab?.tabId &&
+              !isNewTabWindow &&
+              !hideContentForDevHome;
             return (
-              <AppViewerContainer
-                app={tab}
-                customHeight="100%"
-                hide={isNewTabWindow || hideContentForDevHome}
-                isDevMode={isLocalDevTab(tab)}
-                isSelected={tab?.tabId === selectedTab?.tabId}
+              <Box
                 key={tab?.tabId}
-                ref={iframeRefs.current[tab.tabId]}
-              />
+                sx={{
+                  display: isTabActive ? 'flex' : 'none',
+                  flex: isTabActive && !isMobile ? 1 : undefined,
+                  flexDirection: 'column',
+                  minHeight: 0,
+                  overflow: 'hidden',
+                  width: '100%',
+                  ...(isMobile && isTabActive
+                    ? {
+                        bottom: 0,
+                        left: 0,
+                        position: 'absolute',
+                        right: 0,
+                        top: 0,
+                      }
+                    : {
+                        height: isTabActive ? '100%' : 0,
+                        ...(!isTabActive
+                          ? {
+                              left: '-200vw',
+                              position: 'absolute',
+                              top: 0,
+                            }
+                          : {}),
+                      }),
+                }}
+              >
+                <AppViewerContainer
+                  app={tab}
+                  customHeight="100%"
+                  fillParent={isMobile}
+                  hide={isNewTabWindow || hideContentForDevHome}
+                  isDevMode={isLocalDevTab(tab)}
+                  isSelected={isTabActive}
+                  ref={iframeRefs.current[tab.tabId]}
+                />
+              </Box>
             );
           })}
 

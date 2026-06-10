@@ -100,12 +100,12 @@ export function NotificationPermissionSlideDown() {
         borderRadius: 0,
         boxShadow: `0 18px 44px ${alpha('#000', 0.42)}`,
         left: '50%',
-        maxWidth: 520,
+        maxWidth: 400,
         overflow: 'hidden',
         position: 'fixed',
         top: 0,
         transform: 'translateX(-50%)',
-        width: 'min(calc(100vw - 32px), 520px)',
+        width: 'min(calc(100vw - 24px), 400px)',
         zIndex: theme.zIndex.modal + 10,
       }}
     >
@@ -113,7 +113,7 @@ export function NotificationPermissionSlideDown() {
         sx={{
           bgcolor: theme.palette.primary.main,
           bottom: 0,
-          height: 3,
+          height: 2,
           left: 0,
           opacity: 0.72,
           position: 'absolute',
@@ -121,54 +121,89 @@ export function NotificationPermissionSlideDown() {
           width: `${Math.max(0, Math.min(1, progress)) * 100}%`,
         }}
       />
-      <Box sx={{ display: 'flex', gap: 2, p: 2.25 }}>
+      <Box sx={{ display: 'flex', gap: 1.25, p: 1.25 }}>
         <Box
           sx={{
             alignItems: 'center',
             bgcolor: alpha(theme.palette.primary.main, 0.16),
-            borderRadius: '12px',
+            borderRadius: '10px',
             color: theme.palette.primary.light,
             display: 'flex',
             flexShrink: 0,
-            height: 42,
+            height: 30,
             justifyContent: 'center',
-            width: 42,
+            width: 30,
           }}
         >
-          <NotificationsActiveIcon sx={{ fontSize: 24 }} />
+          <NotificationsActiveIcon sx={{ fontSize: 17 }} />
         </Box>
         <Box sx={{ flex: 1, minWidth: 0 }}>
-          <Typography sx={{ fontSize: '0.98rem', fontWeight: 650, mb: 0.5 }}>
-            {t('permission.notification_title', {
-              appName: current.appInfo?.name || 'App',
-              defaultValue: '{{appName}} notifications',
-              postProcess: 'capitalizeFirstChar',
-            })}
-          </Typography>
+          <Box
+            sx={{
+              alignItems: 'baseline',
+              display: 'flex',
+              gap: 1,
+              justifyContent: 'space-between',
+            }}
+          >
+            <Typography
+              sx={{
+                fontSize: '0.82rem',
+                fontWeight: 650,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {t('permission.notification_title', {
+                appName: current.appInfo?.name || 'App',
+                defaultValue: '{{appName}} notifications',
+                postProcess: 'capitalizeFirstChar',
+              })}
+            </Typography>
+            <Typography
+              sx={{
+                color: alpha(theme.palette.text.secondary, 0.62),
+                flexShrink: 0,
+                fontSize: '0.68rem',
+                fontWeight: 600,
+              }}
+            >
+              {secondsLeft}s
+            </Typography>
+          </Box>
           <Typography
             sx={{
               color: alpha(theme.palette.text.secondary, 0.9),
-              fontSize: '0.84rem',
-              lineHeight: 1.45,
+              fontSize: '0.74rem',
+              lineHeight: 1.35,
+              mt: 0.25,
             }}
           >
             {current.payload?.text1 ||
               t('permission.notification', {
-                defaultValue: 'Allow this app to send you Hub notifications?',
+                defaultValue: 'Allow this app to send you GO notifications?',
                 postProcess: 'capitalizeFirstChar',
               })}
           </Typography>
           <Box
             sx={{
               display: 'flex',
-              gap: 1,
+              gap: 0.5,
               justifyContent: 'flex-end',
-              mt: 1.7,
+              mt: 0.75,
             }}
           >
             <Button
+              size="small"
               onClick={() => dismissCurrent(false)}
-              sx={{ color: 'text.secondary', fontWeight: 600 }}
+              sx={{
+                color: 'text.secondary',
+                fontWeight: 600,
+                fontSize: '0.72rem',
+                minWidth: 0,
+                px: 1,
+              }}
             >
               {t('permission.notification_dont_allow', {
                 defaultValue: "Don't allow",
@@ -176,8 +211,9 @@ export function NotificationPermissionSlideDown() {
               })}
             </Button>
             <Button
+              size="small"
               onClick={() => dismissCurrent(true)}
-              sx={{ fontWeight: 600 }}
+              sx={{ fontWeight: 600, fontSize: '0.72rem', minWidth: 0, px: 1.5 }}
               variant="contained"
             >
               {t('permission.notification_allow', {
@@ -187,16 +223,6 @@ export function NotificationPermissionSlideDown() {
             </Button>
           </Box>
         </Box>
-        <Typography
-          sx={{
-            color: alpha(theme.palette.text.secondary, 0.62),
-            fontSize: '0.75rem',
-            fontWeight: 600,
-            pt: 0.25,
-          }}
-        >
-          {secondsLeft}s
-        </Typography>
       </Box>
     </Paper>
   );

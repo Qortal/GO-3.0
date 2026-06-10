@@ -30,7 +30,6 @@ import {
 import { getBaseApiReact } from '../../../App';
 import { executeEvent } from '../../../utils/events';
 import { openQChatTab } from '../../../utils/openQChatTab';
-import { useOnlineAddresses } from '../../../hooks/usePresence';
 import {
   dashboardPanelSx,
   useDashboardPanelMouseLight,
@@ -140,8 +139,6 @@ export const HomeDesktop = ({
     [t]
   );
   const theme = useTheme();
-  const onlineAddresses = useOnlineAddresses();
-  const onlineUserCount = onlineAddresses.size;
   const isSplitDashboardLayout = useMediaQuery(theme.breakpoints.up('md'));
   const isWideDashboardLayout = useMediaQuery(
     theme.breakpoints.up(HOME_WIDE_DASHBOARD_MIN_WIDTH_PX)
@@ -545,7 +542,7 @@ export const HomeDesktop = ({
       >
         {td(
           'qortino_runtime_body',
-          'The rest of the dashboard is still safe. Refresh the Hub and if this keeps happening report it to the team.'
+          'The rest of the dashboard is still safe. Refresh GO and if this keeps happening report it to the team.'
         )}
       </Typography>
     </Box>
@@ -583,7 +580,8 @@ export const HomeDesktop = ({
             display: desktopViewMode === 'home' ? 'flex' : 'none',
             flexDirection: 'column',
             height: '100%',
-            overflow: 'auto',
+            overflowX: 'hidden',
+            overflowY: 'auto',
             scrollbarGutter: 'stable',
             width: '100%',
             willChange: 'opacity',
@@ -599,7 +597,7 @@ export const HomeDesktop = ({
                 flexDirection: 'column',
                 gap: `${HOME_DASHBOARD_VERTICAL_GAP_PX}px`,
                 maxWidth: '1320px',
-                padding: '0 20px',
+                padding: { xs: '0 12px', sm: '0 20px' },
                 position: 'relative',
                 width: '100%',
                 [theme.breakpoints.up(HOME_WIDE_DASHBOARD_MIN_WIDTH_PX)]: {
@@ -637,59 +635,6 @@ export const HomeDesktop = ({
                       width: '100%',
                     }}
                   >
-                    <Box
-                      sx={{
-                        alignItems: 'center',
-                        color: theme.palette.text.secondary,
-                        display: 'flex',
-                        fontSize: '0.74rem',
-                        fontWeight: 700,
-                        justifyContent: 'space-between',
-                        letterSpacing: '0.0605em',
-                        minWidth: 0,
-                        textTransform: 'uppercase',
-                      }}
-                    >
-                      <Box component="span">Qortal Hub</Box>
-                      <Box
-                        component="span"
-                        sx={{
-                          alignItems: 'center',
-                          bgcolor: alpha(theme.palette.success.main, 0.08),
-                          border: `1px solid ${alpha(theme.palette.success.main, 0.16)}`,
-                          borderRadius: '999px',
-                          color: alpha(theme.palette.text.primary, 0.72),
-                          display: 'inline-flex',
-                          flexShrink: 0,
-                          fontSize: '0.68rem',
-                          fontWeight: 700,
-                          gap: '6px',
-                          letterSpacing: '0.045em',
-                          lineHeight: 1,
-                          px: '8px',
-                          py: '5px',
-                        }}
-                        title={td('online_users_count', 'Online users')}
-                      >
-                        <Box
-                          component="span"
-                          sx={{
-                            bgcolor: theme.palette.success.main,
-                            borderRadius: '50%',
-                            boxShadow: `0 0 0 3px ${alpha(
-                              theme.palette.success.main,
-                              0.14
-                            )}`,
-                            height: 6,
-                            width: 6,
-                          }}
-                        />
-                        {t('group:dashboard.online_users_count_value', {
-                          count: onlineUserCount,
-                          defaultValue: '{{count}} online',
-                        })}
-                      </Box>
-                    </Box>
                     {isWideDashboardLayout ? (
                       <Box
                         sx={{

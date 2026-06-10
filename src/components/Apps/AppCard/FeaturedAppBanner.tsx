@@ -4,12 +4,14 @@ import {
   Box,
   IconButton,
   Typography,
+  alpha,
   styled,
   useMediaQuery,
   useTheme,
 } from '@mui/material';
 import ChevronLeftIcon from '@mui/icons-material/ChevronLeft';
 import ChevronRightIcon from '@mui/icons-material/ChevronRight';
+import SwipeIcon from '@mui/icons-material/Swipe';
 import { useTranslation } from 'react-i18next';
 import { getBaseApiReact } from '../../../App';
 import LogoSelected from '../../../assets/svgs/LogoSelected.svg';
@@ -40,8 +42,8 @@ const FeaturedCard = styled(Box)(({ theme }) => ({
   gap: '8px',
   padding: '12px',
   borderRadius: '12px',
-  backgroundColor: theme.palette.background.paper,
-  border: `1px solid ${theme.palette.divider}`,
+  backgroundColor: alpha(theme.palette.background.paper, 0.55),
+  border: `1px solid ${alpha(theme.palette.divider, 0.5)}`,
   width: '170px',
   minWidth: '140px',
   maxWidth: '170px',
@@ -121,13 +123,16 @@ const NavButton = styled(IconButton)(({ theme }) => ({
 
 interface FeaturedAppBannerProps {
   featuredApps: any[];
+  isMobile?: boolean;
 }
 
 function featuredAppsAreEqual(
   prev: FeaturedAppBannerProps,
   next: FeaturedAppBannerProps
 ): boolean {
-  if (prev.featuredApps === next.featuredApps) return true;
+  if (prev.featuredApps === next.featuredApps && prev.isMobile === next.isMobile) {
+    return true;
+  }
   const a = prev.featuredApps;
   const b = next.featuredApps;
   if (!a || !b || a.length !== b.length) return false;
@@ -137,7 +142,10 @@ function featuredAppsAreEqual(
   );
 }
 
-const FeaturedAppBannerInner = ({ featuredApps }: FeaturedAppBannerProps) => {
+const FeaturedAppBannerInner = ({
+  featuredApps,
+  isMobile = false,
+}: FeaturedAppBannerProps) => {
   const [startIndex, setStartIndex] = useState(0);
   const theme = useTheme();
   const { t } = useTranslation(['core']);
@@ -195,6 +203,148 @@ const FeaturedAppBannerInner = ({ featuredApps }: FeaturedAppBannerProps) => {
     executeEvent('selectedAppInfo', { data: app });
   }, []);
 
+  const renderFeaturedCard = (app: any, index: number) => {
+    const isInstalled = app?.status?.status === 'READY';
+
+    return (
+      <FeaturedCard
+        key={`${app?.name}-${index}`}
+        onClick={() => handleViewDetails(app)}
+        sx={
+          isMobile
+            ? {
+                flex: '0 0 72vw',
+                maxWidth: 280,
+                minWidth: 220,
+                scrollSnapAlign: 'start',
+                width: '72vw',
+              }
+            : undefined
+        }
+      >
+        <CardAvatar>
+          <Avatar
+            sx={{
+              height: { xs: '36px', sm: '42px' },
+              width: { xs: '36px', sm: '42px' },
+              '& img': {
+                objectFit: 'fill',
+              },
+            }}
+            alt={app?.name}
+            src={`${getBaseApiReact()}/arbitrary/THUMBNAIL/${app?.name}/qortal_avatar?async=true`}
+          >
+            <img
+              style={{
+                width: '35px',
+                height: 'auto',
+              }}
+              src={LogoSelected}
+              alt="app-icon"
+            />
+          </Avatar>
+        </CardAvatar>
+
+        <CardTitle>{app?.metadata?.title || app?.name}</CardTitle>
+
+        <CardDescription>
+          {app?.metadata?.description ||
+            t('core:message.generic.no_description', {
+              postProcess: 'capitalizeFirstChar',
+            })}
+        </CardDescription>
+
+        <AppButton
+          onClick={(e) => handleOpenApp(app, e)}
+          sx={{
+            backgroundColor: isInstalled
+              ? theme.palette.primary.main
+              : theme.palette.background.default,
+            color: isInstalled
+              ? theme.palette.primary.contrastText
+              : theme.palette.text.primary,
+            marginTop: 'auto',
+          }}
+        >
+          <AppButtonText>
+            {isInstalled
+              ? t('core:action.open', {
+                  postProcess: 'capitalizeFirstChar',
+                })
+              : t('core:action.download', {
+                  postProcess: 'capitalizeFirstChar',
+                })}
+          </AppButtonText>
+        </AppButton>
+      </FeaturedCard>
+    );
+  };
+
+  if (isMobile) {
+    const showScrollHint = featuredApps.length > 1;
+
+    return (
+      <Box sx={{ position: 'relative', width: '100%' }}>
+        {showScrollHint && (
+          <Box
+            sx={{
+              alignItems: 'center',
+              color: 'text.secondary',
+              display: 'flex',
+              fontSize: '12px',
+              gap: 0.5,
+              justifyContent: 'flex-end',
+              mb: 0.75,
+              opacity: 0.75,
+            }}
+          >
+            <SwipeIcon sx={{ fontSize: '16px' }} />
+            <Typography component="span" sx={{ fontSize: '12px' }}>
+              {t('core:action.swipe_to_browse', {
+                postProcess: 'capitalizeFirstChar',
+                defaultValue: 'Swipe to browse',
+              })}
+            </Typography>
+          </Box>
+        )}
+
+        <Box
+          sx={{
+            display: 'flex',
+            gap: 1.5,
+            overflowX: 'auto',
+            pb: 0.5,
+            position: 'relative',
+            scrollSnapType: 'x mandatory',
+            WebkitOverflowScrolling: 'touch',
+            width: '100%',
+            scrollbarWidth: 'none',
+            '&::-webkit-scrollbar': {
+              display: 'none',
+            },
+          }}
+        >
+          {featuredApps.map((app, index) => renderFeaturedCard(app, index))}
+        </Box>
+
+        {showScrollHint && (
+          <Box
+            sx={{
+              background: (theme) =>
+                `linear-gradient(to left, ${alpha(theme.palette.background.default, 0.85)}, transparent)`,
+              bottom: 0,
+              pointerEvents: 'none',
+              position: 'absolute',
+              right: 0,
+              top: showScrollHint ? 28 : 0,
+              width: 32,
+            }}
+          />
+        )}
+      </Box>
+    );
+  }
+
   return (
     <CarouselContainer>
       <NavButton
@@ -210,71 +360,7 @@ const FeaturedAppBannerInner = ({ featuredApps }: FeaturedAppBannerProps) => {
       </NavButton>
 
       <CardsContainer>
-        {displayApps.map((app, index) => {
-          const isInstalled = app?.status?.status === 'READY';
-
-          return (
-            <FeaturedCard
-              key={`${app?.name}-${index}`}
-              onClick={() => handleViewDetails(app)}
-            >
-              <CardAvatar>
-                <Avatar
-                  sx={{
-                    height: { xs: '36px', sm: '42px' },
-                    width: { xs: '36px', sm: '42px' },
-                    '& img': {
-                      objectFit: 'fill',
-                    },
-                  }}
-                  alt={app?.name}
-                  src={`${getBaseApiReact()}/arbitrary/THUMBNAIL/${app?.name}/qortal_avatar?async=true`}
-                >
-                  <img
-                    style={{
-                      width: '35px',
-                      height: 'auto',
-                    }}
-                    src={LogoSelected}
-                    alt="app-icon"
-                  />
-                </Avatar>
-              </CardAvatar>
-
-              <CardTitle>{app?.metadata?.title || app?.name}</CardTitle>
-
-              <CardDescription>
-                {app?.metadata?.description ||
-                  t('core:message.generic.no_description', {
-                    postProcess: 'capitalizeFirstChar',
-                  })}
-              </CardDescription>
-
-              <AppButton
-                onClick={(e) => handleOpenApp(app, e)}
-                sx={{
-                  backgroundColor: isInstalled
-                    ? theme.palette.primary.main
-                    : theme.palette.background.default,
-                  color: isInstalled
-                    ? theme.palette.primary.contrastText
-                    : theme.palette.text.primary,
-                  marginTop: 'auto',
-                }}
-              >
-                <AppButtonText>
-                  {isInstalled
-                    ? t('core:action.open', {
-                        postProcess: 'capitalizeFirstChar',
-                      })
-                    : t('core:action.download', {
-                        postProcess: 'capitalizeFirstChar',
-                      })}
-                </AppButtonText>
-              </AppButton>
-            </FeaturedCard>
-          );
-        })}
+        {displayApps.map((app, index) => renderFeaturedCard(app, index))}
       </CardsContainer>
 
       <NavButton

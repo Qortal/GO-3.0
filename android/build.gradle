@@ -1,0 +1,57 @@
+// Top-level build file where you can add configuration options common to all sub-projects/modules.
+
+buildscript {
+    
+    repositories {
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        classpath 'com.android.tools.build:gradle:8.13.0'
+        classpath 'org.jetbrains.kotlin:kotlin-gradle-plugin:2.3.0'
+        classpath 'com.google.gms:google-services:4.4.2'
+        // Chaquopy: embeds CPython so the proven Qortal RNS presence bridge
+        // (electron/resources/presence_bridge.py) runs natively on Android.
+        classpath 'com.chaquo.python:gradle:17.0.0'
+
+        // NOTE: Do not place your application dependencies here; they belong
+        // in the individual module build.gradle files
+    }
+}
+
+apply from: "variables.gradle"
+
+allprojects {
+    repositories {
+        google()
+        mavenCentral()
+        mavenLocal()
+        maven {
+         // capacitor-background-fetch
+         url("${project(':transistorsoft-capacitor-background-fetch').projectDir}/libs")
+      }
+    }
+}
+
+task clean(type: Delete) {
+    delete rootProject.buildDir
+}
+
+/** Patch capgo AuthActivity so BiometricPrompt works with under-display sensors. */
+tasks.register('patchCapgoBiometricAuthActivity') {
+    doLast {
+        def patch = file("${rootDir}/biometric-patch/AuthActivity.java")
+        def target = file("${rootDir}/../node_modules/@capgo/capacitor-native-biometric/android/src/main/java/ee/forgr/biometric/AuthActivity.java")
+        if (patch.exists() && target.parentFile.exists()) {
+            ant.copy(file: patch, tofile: target, overwrite: true)
+        }
+    }
+}
+
+gradle.projectsEvaluated {
+    project(':capgo-capacitor-native-biometric').tasks.matching {
+        it.name.contains('compile') && it.name.contains('Java')
+    }.configureEach {
+        dependsOn rootProject.tasks.named('patchCapgoBiometricAuthActivity')
+    }
+}

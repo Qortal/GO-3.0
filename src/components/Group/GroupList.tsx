@@ -86,7 +86,8 @@ const GroupListInner = ({
         flexDirection: 'column',
         height: '100%',
         padding: '0',
-        width: '400px',
+        width: { xs: '100%', sm: '400px' },
+        flexShrink: 0,
       }}
     >
       <Box

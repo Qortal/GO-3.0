@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import syncedImg from '../assets/syncStatus/synced.webp';
 import syncedMintingImg from '../assets/syncStatus/synced_minting.webp';
 import syncingImg from '../assets/syncStatus/syncing.webp';
 import '../styles/CoreSyncStatus.css';
-import { Box, useTheme } from '@mui/material';
+import { Box, Typography, useTheme } from '@mui/material';
+import { alpha } from '@mui/material/styles';
 import { useTranslation } from 'react-i18next';
 import { manifestData } from './NotAuthenticated';
 import { useAtomValue, useSetAtom } from 'jotai';
@@ -14,16 +15,78 @@ import {
 } from '../atoms/global';
 import { nodeDisplay } from '../utils/helpers';
 import { computeP2pHealth, type P2pHealthLevel } from '../lib/p2pHealth';
+import {
+  getMobileReticulumStatus,
+  onMobileReticulumStatus,
+} from '../bridge/capacitorBridge';
 
 export type { P2pHealthLevel };
 import {
   HTTPS_EXT_NODE_QORTAL_LINK,
   isLocalNodeUrl,
 } from '../constants/constants';
+import { getDialogInfoCardSx } from './App/dialogSurface';
 
 type ReticulumStatusSnapshot = {
   onlineRemoteHubInterfaces?: number;
   p2pActiveOverlayPeers?: number;
+};
+
+const CoreInfoStatRow = ({
+  label,
+  value,
+  valueColor,
+}: {
+  label: string;
+  value: ReactNode;
+  valueColor?: string;
+}) => {
+  const theme = useTheme();
+  const isLight = theme.palette.mode === 'light';
+
+  return (
+    <Box
+      sx={{
+        alignItems: 'start',
+        borderBottom: `1px solid ${
+          isLight
+            ? alpha(theme.palette.divider, 0.85)
+            : alpha(theme.palette.common.white, 0.08)
+        }`,
+        columnGap: 2,
+        display: 'grid',
+        gridTemplateColumns: 'minmax(0, 1.15fr) minmax(0, 0.85fr)',
+        py: 1.25,
+        '&:last-child': { borderBottom: 'none', pb: 0 },
+        '&:first-of-type': { pt: 0 },
+      }}
+    >
+      <Typography
+        sx={{
+          color: theme.palette.text.secondary,
+          fontSize: '0.8125rem',
+          fontWeight: 500,
+          lineHeight: 1.45,
+          textAlign: 'left',
+        }}
+      >
+        {label}
+      </Typography>
+      <Typography
+        component="div"
+        sx={{
+          color: valueColor ?? theme.palette.primary.main,
+          fontSize: '0.8125rem',
+          fontWeight: 600,
+          lineHeight: 1.45,
+          textAlign: 'right',
+          wordBreak: 'break-word',
+        }}
+      >
+        {value}
+      </Typography>
+    </Box>
+  );
 };
 
 export const CoreSyncStatus = ({
@@ -122,8 +185,19 @@ export const CoreSyncStatus = ({
     let canceled = false;
     const api = window.electronAPI as any;
     if (typeof api?.reticulumGetStatus !== 'function') {
-      applyReticulumStatus(null);
-      return;
+      // Mobile (Capacitor): the native Reticulum presence bridge publishes the
+      // same {onlineRemoteHubInterfaces, p2pActiveOverlayPeers} snapshot. Use it
+      // so the core P2P-health indicator (and the voice-call gate) reflect the
+      // real overlay state instead of staying 'unknown'.
+      const snapshot = getMobileReticulumStatus();
+      if (snapshot) applyReticulumStatus(snapshot);
+      const unsub = onMobileReticulumStatus((s) => {
+        if (!canceled) applyReticulumStatus(s);
+      });
+      return () => {
+        canceled = true;
+        unsub();
+      };
     }
 
     void api
@@ -210,6 +284,102 @@ export const CoreSyncStatus = ({
       />
     );
 
+    const p2pHealthColor =
+      p2pHealth === 'bad'
+        ? theme.palette.error.main
+        : p2pHealth === 'low'
+          ? theme.palette.warning.main
+          : theme.palette.success.main;
+
+    const mobilePanelNode = (
+      <Box sx={{ width: '100%' }}>
+        <Typography
+          sx={{
+            color: theme.palette.text.primary,
+            fontSize: '0.9375rem',
+            fontWeight: 700,
+            letterSpacing: '-0.01em',
+            mb: 1.25,
+            textAlign: 'left',
+          }}
+        >
+          {t('core:core.information', { postProcess: 'capitalizeFirstChar' })}
+        </Typography>
+        <Box sx={getDialogInfoCardSx(theme)}>
+          <CoreInfoStatRow
+            label={t('core:core.version', { postProcess: 'capitalizeFirstChar' })}
+            value={buildVersion || '—'}
+          />
+          <CoreInfoStatRow
+            label={t('core:minting.sync_status', { defaultValue: 'Sync status' })}
+            value={message || '—'}
+          />
+          <CoreInfoStatRow
+            label={t('core:core.block_height', {
+              postProcess: 'capitalizeFirstChar',
+            })}
+            value={height ? String(height) : '—'}
+          />
+          <CoreInfoStatRow
+            label={t('core:core.peers', { postProcess: 'capitalizeFirstChar' })}
+            value={
+              numberOfConnections != null ? String(numberOfConnections) : '—'
+            }
+          />
+          <CoreInfoStatRow
+            label={t('core:core.data_peers', {
+              postProcess: 'capitalizeFirstChar',
+            })}
+            value={
+              numberOfDataConnections != null
+                ? String(numberOfDataConnections)
+                : '—'
+            }
+          />
+          {connectedRemoteInterfaces !== null && (
+            <CoreInfoStatRow
+              label={t('core:core.connected_remote_interfaces', {
+                postProcess: 'capitalizeFirstChar',
+              })}
+              value={String(connectedRemoteInterfaces)}
+            />
+          )}
+          {p2pActiveOverlayPeers !== null && (
+            <CoreInfoStatRow
+              label={t('core:core.p2p_active_overlay_peers', {
+                postProcess: 'capitalizeFirstChar',
+              })}
+              value={String(p2pActiveOverlayPeers)}
+            />
+          )}
+          {p2pHealth !== null && (
+            <CoreInfoStatRow
+              label={t('core:core.p2p_health', {
+                postProcess: 'capitalizeFirstChar',
+              })}
+              value={t(`core:core.p2p_health_${p2pHealth}`, {
+                postProcess: 'capitalizeFirstChar',
+              })}
+              valueColor={p2pHealthColor}
+            />
+          )}
+          <CoreInfoStatRow
+            label={t('auth:node.using', { postProcess: 'capitalizeFirstChar' })}
+            value={nodeDisplay(nodeBase)}
+            valueColor={
+              isLocalNodeUrl(nodeBase)
+                ? theme.palette.other.positive
+                : theme.palette.primary.main
+            }
+          />
+          <CoreInfoStatRow
+            label={t('core:ui.version', { postProcess: 'capitalizeFirstChar' })}
+            value={manifestData.version || '—'}
+          />
+        </Box>
+      </Box>
+    );
+
     const panelNode = (
       <Box
         className="core-panel"
@@ -225,7 +395,7 @@ export const CoreSyncStatus = ({
 
         <h4 className="lineHeight">
           {t('core:core.version', { postProcess: 'capitalizeFirstChar' })}:{' '}
-          <span style={{ color: '#03a9f4' }}>{buildVersion}</span>
+          <span style={{ color: theme.palette.primary.main }}>{buildVersion}</span>
         </h4>
 
         <h4 className="lineHeight">{message}</h4>
@@ -234,17 +404,17 @@ export const CoreSyncStatus = ({
           {t('core:core.block_height', {
             postProcess: 'capitalizeFirstChar',
           })}
-          : <span style={{ color: '#03a9f4' }}>{height || ''}</span>
+          : <span style={{ color: theme.palette.primary.main }}>{height || ''}</span>
         </h4>
 
         <h4 className="lineHeight">
           {t('core:core.peers', { postProcess: 'capitalizeFirstChar' })}:{' '}
-          <span style={{ color: '#03a9f4' }}>{numberOfConnections || ''}</span>
+          <span style={{ color: theme.palette.primary.main }}>{numberOfConnections || ''}</span>
         </h4>
 
         <h4 className="lineHeight">
           {t('core:core.data_peers', { postProcess: 'capitalizeFirstChar' })}:{' '}
-          <span style={{ color: '#03a9f4' }}>
+          <span style={{ color: theme.palette.primary.main }}>
             {numberOfDataConnections || ''}
           </span>
         </h4>
@@ -255,7 +425,7 @@ export const CoreSyncStatus = ({
               postProcess: 'capitalizeFirstChar',
             })}
             :{' '}
-            <span style={{ color: '#03a9f4' }}>
+            <span style={{ color: theme.palette.primary.main }}>
               {connectedRemoteInterfaces}
             </span>
           </h4>
@@ -266,7 +436,7 @@ export const CoreSyncStatus = ({
             {t('core:core.p2p_active_overlay_peers', {
               postProcess: 'capitalizeFirstChar',
             })}
-            : <span style={{ color: '#03a9f4' }}>{p2pActiveOverlayPeers}</span>
+            : <span style={{ color: theme.palette.primary.main }}>{p2pActiveOverlayPeers}</span>
           </h4>
         )}
 
@@ -298,7 +468,7 @@ export const CoreSyncStatus = ({
           :{' '}
           <span
             style={{
-              color: '#03a9f4',
+              color: theme.palette.primary.main,
               ...(isLocalNodeUrl(nodeBase) && {
                 fontWeight: 'bold',
                 color: theme.palette.other.positive,
@@ -311,17 +481,25 @@ export const CoreSyncStatus = ({
 
         <h4 className="lineHeight">
           {t('core:ui.version', { postProcess: 'capitalizeFirstChar' })}:{' '}
-          <span style={{ color: '#03a9f4' }}>{manifestData.version}</span>
+          <span style={{ color: theme.palette.primary.main }}>{manifestData.version}</span>
         </h4>
       </Box>
     );
 
     if (useExternalTooltip) {
       return (
-        <>
-          <span>{iconNode}</span>
-          {panelNode}
-        </>
+        <Box
+          sx={{
+            alignItems: 'center',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 1.5,
+            width: '100%',
+          }}
+        >
+          <Box sx={{ display: 'flex', justifyContent: 'center' }}>{iconNode}</Box>
+          {mobilePanelNode}
+        </Box>
       );
     }
 

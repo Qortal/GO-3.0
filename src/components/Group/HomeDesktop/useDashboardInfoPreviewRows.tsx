@@ -168,7 +168,11 @@ export function useDashboardInfoPreviewRows({
     };
 
     loadMinterProgress();
-    const interval = window.setInterval(loadMinterProgress, 30000);
+    const interval = window.setInterval(() => {
+      // Skip the poll while the app is backgrounded (battery).
+      if (document.hidden) return;
+      loadMinterProgress();
+    }, 30000);
 
     return () => {
       active = false;
@@ -200,7 +204,12 @@ export function useDashboardInfoPreviewRows({
     };
 
     loadCoreInfo();
-    const interval = window.setInterval(loadCoreInfo, 30000);
+    const interval = window.setInterval(() => {
+      // Skip the poll while the app is backgrounded (battery). The core
+      // version effectively never changes mid-session anyway.
+      if (document.hidden) return;
+      loadCoreInfo();
+    }, 120000);
 
     return () => {
       active = false;
@@ -373,7 +382,7 @@ export function useDashboardInfoPreviewRows({
       },
       {
         accent: 'violet',
-        label: td('hub', 'Hub'),
+        label: td('hub', 'GO'),
         value: hubVersionLabel,
       },
     ],

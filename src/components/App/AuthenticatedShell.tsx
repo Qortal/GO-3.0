@@ -86,14 +86,16 @@ export function AuthenticatedShell({
         },
       })}
     >
-      <Group
-        desktopViewMode={desktopViewMode}
-        isMain={isMain}
-        logoutFunc={logoutFunc}
-        myAddress={myAddress}
-        onOpenSettings={onOpenSettings}
-        setDesktopViewMode={setDesktopViewMode}
-      />
+      <Box sx={{ display: 'flex', flex: 1, minHeight: 0, minWidth: 0 }}>
+        <Group
+          desktopViewMode={desktopViewMode}
+          isMain={isMain}
+          logoutFunc={logoutFunc}
+          myAddress={myAddress}
+          onOpenSettings={onOpenSettings}
+          setDesktopViewMode={setDesktopViewMode}
+        />
+      </Box>
       <AuthenticatedProfile
         userInfo={userInfo}
         balance={balance}

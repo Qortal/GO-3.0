@@ -11,7 +11,12 @@ import { useTranslation } from 'react-i18next';
 import { TIME_MINUTES_1_IN_MILLISECONDS } from '../../constants/constants.ts';
 import { useAppRating } from '../../hooks/useAppRatings';
 
-const AppRatingInner = ({ app, myName, ratingCountPosition = 'right' }) => {
+const AppRatingInner = ({
+  app,
+  myName,
+  ratingCountPosition = 'right',
+  readOnly = true,
+}) => {
   const { show } = useContext(QORTAL_APP_CONTEXT);
   const [openSnack, setOpenSnack] = useState(false);
   const [infoSnack, setInfoSnack] = useState(null);
@@ -43,9 +48,11 @@ const AppRatingInner = ({ app, myName, ratingCountPosition = 'right' }) => {
   );
 
   const rateFunc = useCallback(
-    async (event, chosenValue, currentValue) => {
+    async (event, chosenValue) => {
+      if (chosenValue == null) return;
+
       try {
-        const newValue = chosenValue || currentValue;
+        const newValue = chosenValue;
         if (!myName)
           throw new Error(
             t('core:message.generic.name_rate', {
@@ -199,18 +206,30 @@ const AppRatingInner = ({ app, myName, ratingCountPosition = 'right' }) => {
           </>
         )}
 
-        <Rating
-          value={value}
-          onChange={(event, rating) => rateFunc(event, rating, value)}
-          precision={1}
-          size="small"
-          icon={<StarFilledIcon />}
-          emptyIcon={<StarEmptyIcon />}
-          sx={{
-            display: 'flex',
-            gap: '2px',
-          }}
-        />
+        <Box
+          onClick={readOnly ? undefined : (e) => e.stopPropagation()}
+          onPointerDown={readOnly ? undefined : (e) => e.stopPropagation()}
+          sx={{ display: 'inline-flex' }}
+        >
+          <Rating
+            value={value}
+            readOnly={readOnly}
+            onChange={
+              readOnly
+                ? undefined
+                : (event, rating) => rateFunc(event, rating)
+            }
+            precision={1}
+            size="small"
+            icon={<StarFilledIcon />}
+            emptyIcon={<StarEmptyIcon />}
+            sx={{
+              display: 'flex',
+              gap: '2px',
+              pointerEvents: readOnly ? 'none' : 'auto',
+            }}
+          />
+        </Box>
         {ratingCountPosition === 'right' && (
           <AppInfoUserName>{votesInfo?.totalVotes ?? 0}</AppInfoUserName>
         )}

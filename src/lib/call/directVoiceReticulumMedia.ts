@@ -12,6 +12,7 @@ import {
   compactDmVoiceJoinWireChatId,
   DM_VOICE_ROOM_PREFIX,
 } from './dmVoiceWire';
+import { isRnsIdentityPublicKeyBase64 } from '../../bridge/groupCallWire';
 import { buildMediaKeyCommitmentHex } from '../group-call/mediaKeyCommitment';
 
 export { DM_VOICE_ROOM_PREFIX };
@@ -49,6 +50,22 @@ export async function buildGcKeyDigest(
   return sha256Hex(JSON.stringify({ encryptedKey, toAddress }));
 }
 
+/** Mobile fallback: bridge-reported local Reticulum identity (no electronAPI on mobile). */
+function mobileReticulumInfo(): {
+  destinationHash: string | null;
+  identityPublicKeyBase64: string | null;
+} | null {
+  const info = (
+    window as Window & {
+      __qortalMobileReticulum?: {
+        destinationHash: string | null;
+        identityPublicKeyBase64: string | null;
+      };
+    }
+  ).__qortalMobileReticulum;
+  return info ?? null;
+}
+
 /** Local hub Reticulum destination hash (32 hex) from bridge; required for GC_JOIN. */
 export async function fetchLocalReticulumDestinationHash(): Promise<string | null> {
   const fn = (
@@ -61,6 +78,19 @@ export async function fetchLocalReticulumDestinationHash(): Promise<string | nul
     }
   ).electronAPI?.reticulumGetLocalDestinationHash;
   if (typeof fn !== 'function') {
+    // Mobile: poll the bridge-reported destination hash (set on the `ready` event).
+    const maxAttempts = 35;
+    const delayMs = 200;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      const raw = mobileReticulumInfo()?.destinationHash;
+      if (typeof raw === 'string') {
+        const h = raw.replace(/\s/g, '').trim().toLowerCase();
+        if (/^[0-9a-f]{32}$/.test(h)) return h;
+      }
+      if (attempt < maxAttempts - 1) {
+        await new Promise((r) => setTimeout(r, delayMs));
+      }
+    }
     return null;
   }
   const maxAttempts = 35;
@@ -99,7 +129,9 @@ export async function fetchLocalReticulumIdentityPublicKeyBase64(): Promise<
     }
   ).electronAPI?.reticulumGetLocalIdentityPublicKeyBase64;
   if (typeof fn !== 'function') {
-    return null;
+    // Mobile: bridge-reported identity public key (set on the `ready` event).
+    const raw = mobileReticulumInfo()?.identityPublicKeyBase64;
+    return typeof raw === 'string' && raw.length > 0 ? raw : null;
   }
   try {
     const j = await fn();
@@ -188,6 +220,15 @@ export async function signGcJoin(params: {
 }): Promise<{ joinSig: string; joinRkSig?: string } | null> {
   const wireChatId = compactDmVoiceJoinWireChatId(params.roomId, params.chatId);
   const jg = params.joinGeneration;
+  // The GJ wire carries `rk` (our RNS identity key) inline, and the Hub's
+  // buildGcJoinSignedFields INCLUDES reticulumIdentityPublicKeyBase64 in the
+  // signed payload whenever the wire has a valid `rk`. So the GC_JOIN signature
+  // MUST cover the same rk (verbatim, as it appears on the wire) or the Hub's
+  // Ed25519 verify fails → the audio link is never verified → GC_KEY is dropped
+  // and the call never gets audio. Mirror the wire's rk-inclusion exactly.
+  const rkForWire = params.reticulumIdentityPublicKeyBase64;
+  const includeRk =
+    typeof rkForWire === 'string' && isRnsIdentityPublicKeyBase64(rkForWire);
   const joinSig = await signGroupCallFields({
     type: 'GC_JOIN',
     roomId: params.roomId,
@@ -196,6 +237,7 @@ export async function signGcJoin(params: {
     fromPublicKey: params.fromPublicKey,
     timestamp: params.timestamp,
     reticulumDestinationHash: params.reticulumDestinationHash,
+    ...(includeRk ? { reticulumIdentityPublicKeyBase64: rkForWire } : {}),
     ...(typeof jg === 'number' && Number.isFinite(jg) ? { joinGeneration: jg } : {}),
   }).catch(() => '');
   if (!joinSig) return null;

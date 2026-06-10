@@ -3,17 +3,20 @@ import { useAtomValue } from 'jotai';
 import {
   ButtonBase,
   CircularProgress,
+  IconButton,
   Tooltip,
   Typography,
   useTheme,
 } from '@mui/material';
 import CallIcon from '@mui/icons-material/Call';
 import CallEndRoundedIcon from '@mui/icons-material/CallEndRounded';
+import ArrowBackIosNewRoundedIcon from '@mui/icons-material/ArrowBackIosNewRounded';
 import {
   groupChatHasUnreadAtom,
   groupsAnnHasUnreadAtom,
   hasUnreadGroupsAtom,
   isUnreadChatAtomFamily,
+  mobileChatComposeActiveAtom,
   p2pHealthAtom,
 } from '../../atoms/global';
 import Box from '@mui/material/Box';
@@ -109,6 +112,8 @@ export const DesktopHeader = ({
   groupCallJoining = false,
   groupCallDisabled = false,
   groupCallTooltip = '',
+  isMobile = false,
+  onMobileBack,
 }) => {
   const [value, setValue] = useState(0);
   const p2pHealth = useAtomValue(p2pHealthAtom);
@@ -137,6 +142,224 @@ export const DesktopHeader = ({
     groupCallDisabled || groupCallJoining || p2pBlocked;
   const effectiveGroupCallTooltip =
     groupCallTooltip || (p2pBlocked ? p2pHealthBadTooltip : '');
+
+  const chatComposeActive = useAtomValue(mobileChatComposeActiveAtom);
+
+  if (isMobile) {
+    if (chatComposeActive) {
+      return null;
+    }
+    const isGeneral = selectedGroup?.groupId === '0';
+    const sections: Array<{
+      key: string;
+      label: string;
+      selected: boolean;
+      onClick: () => void;
+      unread?: boolean;
+      render: (color: string) => ReactNode;
+    }> = [
+      {
+        key: 'announcement',
+        label: t('core:announcement', { postProcess: 'capitalizeFirstChar' }),
+        selected: isAnnouncement,
+        onClick: goToAnnouncements,
+        unread: isUnread,
+        render: (c) => <NotificationIcon2 height={22} width={18} color={c} />,
+      },
+      {
+        key: 'chat',
+        label: t('core:chat', { postProcess: 'capitalizeFirstChar' }),
+        selected: isChat,
+        onClick: goToChat,
+        unread: hasUnreadChat,
+        render: (c) => <ChatIcon height={22} width={18} color={c} />,
+      },
+      {
+        key: 'forum',
+        label: t('core:thread_other', { postProcess: 'capitalizeFirstChar' }),
+        selected: isForum,
+        onClick: () => setGroupSection('forum'),
+        render: (c) => <ThreadsIcon height={22} width={18} color={c} />,
+      },
+      {
+        key: 'members',
+        label: t('group:group.member_other', {
+          postProcess: 'capitalizeFirstChar',
+        }),
+        selected: false,
+        onClick: () => setOpenManageMembers(true),
+        render: (c) => <MembersIcon height={22} width={18} color={c} />,
+      },
+      {
+        key: 'adminSpace',
+        label: t('core:admin_other', { postProcess: 'capitalizeFirstChar' }),
+        selected: groupSection === 'adminSpace',
+        onClick: () => setGroupSection('adminSpace'),
+        render: (c) => <AdminsIcon height={22} width={18} color={c} />,
+      },
+    ];
+
+    return (
+      <Box
+        sx={{
+          borderBottom: '1px solid',
+          borderColor: 'divider',
+          display: 'flex',
+          flexDirection: 'column',
+          width: '100%',
+          flexShrink: 0,
+          zIndex: 1,
+        }}
+      >
+        <Box
+          sx={{
+            alignItems: 'center',
+            display: 'flex',
+            gap: '6px',
+            height: '50px',
+            padding: '0 6px 0 2px',
+            width: '100%',
+          }}
+        >
+          <IconButton
+            aria-label="Back to chats"
+            onClick={() => onMobileBack?.()}
+            sx={{ flexShrink: 0 }}
+          >
+            <ArrowBackIosNewRoundedIcon sx={{ fontSize: 20 }} />
+          </IconButton>
+
+          {isPrivate && (
+            <LockIcon
+              sx={{ color: theme.palette.other.positive, fontSize: '18px' }}
+            />
+          )}
+          {isPrivate === false && (
+            <NoEncryptionGmailerrorredIcon
+              sx={{ color: theme.palette.other.danger, fontSize: '18px' }}
+            />
+          )}
+
+          <Typography
+            sx={{
+              flex: 1,
+              minWidth: 0,
+              fontSize: '16px',
+              fontWeight: 700,
+              letterSpacing: '0.01em',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {isGeneral
+              ? t('core:general', { postProcess: 'capitalizeFirstChar' })
+              : selectedGroup?.groupName}
+          </Typography>
+
+          {!isGeneral && typeof onGroupCallClick === 'function' && (
+            <Tooltip
+              title={effectiveGroupCallTooltip}
+              disableHoverListener={!effectiveGroupCallTooltip}
+            >
+              <span style={{ display: 'inline-flex', flexShrink: 0 }}>
+                <IconButton
+                  aria-label={t('core:group_call', {
+                    postProcess: 'capitalizeFirstChar',
+                  })}
+                  disabled={effectiveGroupCallDisabled}
+                  onClick={onGroupCallClick}
+                  sx={{
+                    backgroundColor:
+                      groupCallInCall || groupCallJoining
+                        ? theme.palette.action.selected
+                        : 'transparent',
+                  }}
+                >
+                  {groupCallJoining ? (
+                    <CircularProgress
+                      size={20}
+                      sx={{ color: theme.palette.text.secondary }}
+                    />
+                  ) : groupCallInCall ? (
+                    <CallEndRoundedIcon
+                      sx={{ fontSize: 22, color: theme.palette.error.light }}
+                    />
+                  ) : (
+                    <CallIcon
+                      sx={{ fontSize: 22, color: theme.palette.text.secondary }}
+                    />
+                  )}
+                </IconButton>
+              </span>
+            </Tooltip>
+          )}
+        </Box>
+
+        {!isGeneral && (
+          <Box
+            sx={{
+              display: 'flex',
+              alignItems: 'stretch',
+              gap: '6px',
+              padding: '0 8px 8px',
+              overflowX: 'auto',
+              overflowY: 'hidden',
+              WebkitOverflowScrolling: 'touch',
+              scrollbarWidth: 'none',
+              '&::-webkit-scrollbar': { display: 'none' },
+            }}
+          >
+            {sections.map((section) => {
+              const color = section.selected
+                ? theme.palette.primary.main
+                : theme.palette.text.secondary;
+              const iconColor = section.unread
+                ? theme.palette.other.unread
+                : color;
+              return (
+                <ButtonBase
+                  key={section.key}
+                  onClick={section.onClick}
+                  aria-label={section.label}
+                  aria-current={section.selected ? 'true' : undefined}
+                  sx={{
+                    flex: '1 0 auto',
+                    minWidth: 64,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '4px',
+                    padding: '7px 10px',
+                    borderRadius: '12px',
+                    backgroundColor: section.selected
+                      ? theme.palette.action.selected
+                      : 'transparent',
+                    transition: 'background-color 0.15s ease, transform 120ms ease',
+                    '&:active': { transform: 'scale(0.94)' },
+                  }}
+                >
+                  {section.render(iconColor)}
+                  <Typography
+                    sx={{
+                      color,
+                      fontSize: '11px',
+                      fontWeight: section.selected ? 700 : 500,
+                      lineHeight: 1.1,
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {section.label}
+                  </Typography>
+                </ButtonBase>
+              );
+            })}
+          </Box>
+        )}
+      </Box>
+    );
+  }
 
   return (
     <Box

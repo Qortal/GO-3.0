@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { memo, useEffect, useMemo, useRef } from 'react';
 import { useAtomValue } from 'jotai';
 import { Box, Typography, styled, useTheme } from '@mui/material';
 import { useTranslation } from 'react-i18next';
-import { AppLibrarySubTitle, AppsWidthLimiter } from '../Apps-styles';
+import { AppLibrarySubTitle, AppsList, AppsWidthLimiter } from '../Apps-styles';
 import { Spacer } from '../../../common/Spacer';
-import { AppCardEnhanced, FeaturedAppBanner } from '../AppCard';
+import { AppCardEnhanced, AppCardListItem, FeaturedAppBanner } from '../AppCard';
 import { isFeaturedApp, officialAppList } from '../config/officialApps';
 import {
   featuredRatingsMapAtomFamily,
@@ -12,12 +12,16 @@ import {
   useAppRatings,
 } from '../../../hooks/useAppRatings';
 
-const AppsGrid = styled(Box)({
+const AppsGrid = styled(Box, {
+  shouldForwardProp: (prop) => prop !== 'isMobile',
+})<{ isMobile?: boolean }>(({ isMobile }) => ({
   display: 'grid',
-  gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))',
+  gridTemplateColumns: isMobile
+    ? 'repeat(auto-fill, minmax(160px, 1fr))'
+    : 'repeat(auto-fill, minmax(320px, 1fr))',
   gap: '16px',
   width: '100%',
-});
+}));
 
 const SectionHeader = styled(Box)({
   display: 'flex',
@@ -29,12 +33,16 @@ const SectionHeader = styled(Box)({
 
 interface OfficialAppsTabProps {
   availableQapps: any[];
+  isMobile?: boolean;
+  isActive?: boolean;
   myName?: string;
   searchValue?: string;
 }
 
-export const OfficialAppsTab = ({
+const OfficialAppsTabInner = ({
   availableQapps,
+  isMobile = false,
+  isActive = true,
   myName = '',
   searchValue = '',
 }: OfficialAppsTabProps) => {
@@ -87,6 +95,7 @@ export const OfficialAppsTab = ({
 
   // Fetch ratings for official apps (limited set ~17 apps) - only once per app
   useEffect(() => {
+    if (!isActive) return;
     officialApps.forEach((app) => {
       const key = getCacheKey(app.name, app.service);
       if (!fetchedAppsRef.current.has(key)) {
@@ -94,7 +103,7 @@ export const OfficialAppsTab = ({
         fetchRating(app.name, app.service);
       }
     });
-  }, [officialApps, fetchRating]);
+  }, [isActive, officialApps, fetchRating]);
 
   // Get featured apps sorted by rating (depends only on featured ratings map)
   const featuredApps = useMemo(() => {
@@ -118,7 +127,7 @@ export const OfficialAppsTab = ({
   }, [featuredAppsBase, ratingsForFeaturedMap]);
 
   return (
-    <AppsWidthLimiter>
+    <AppsWidthLimiter isMobile={isMobile}>
       {/* Featured Apps Carousel - Top 4 by rating */}
       {featuredApps.length > 0 && (
         <>
@@ -134,9 +143,9 @@ export const OfficialAppsTab = ({
             })}
           </AppLibrarySubTitle>
 
-          <FeaturedAppBanner featuredApps={featuredApps} />
+          <FeaturedAppBanner featuredApps={featuredApps} isMobile={isMobile} />
 
-          <Spacer height="40px" />
+          <Spacer height={isMobile ? '24px' : '40px'} />
         </>
       )}
 
@@ -163,15 +172,46 @@ export const OfficialAppsTab = ({
         </AppLibrarySubTitle>
       </SectionHeader>
 
-      <AppsGrid>
-        {officialApps.map((app) => (
-          <AppCardEnhanced
-            key={`${app?.service}-${app?.name}`}
-            app={app}
-            myName={myName}
-          />
-        ))}
-      </AppsGrid>
+      {isMobile ? (
+        <AppsList>
+          {officialApps.map((app) => (
+            <AppCardListItem
+              key={`${app?.service}-${app?.name}`}
+              app={app}
+              myName={myName}
+            />
+          ))}
+        </AppsList>
+      ) : (
+        <AppsGrid isMobile={isMobile}>
+          {officialApps.map((app) => (
+            <AppCardEnhanced
+              key={`${app?.service}-${app?.name}`}
+              app={app}
+              myName={myName}
+            />
+          ))}
+        </AppsGrid>
+      )}
     </AppsWidthLimiter>
   );
 };
+
+const officialTabPropsAreEqual = (
+  prev: OfficialAppsTabProps,
+  next: OfficialAppsTabProps
+) => {
+  if (!next.isActive && !prev.isActive) {
+    return true;
+  }
+
+  return (
+    prev.isActive === next.isActive &&
+    prev.isMobile === next.isMobile &&
+    prev.myName === next.myName &&
+    prev.searchValue === next.searchValue &&
+    prev.availableQapps === next.availableQapps
+  );
+};
+
+export const OfficialAppsTab = memo(OfficialAppsTabInner, officialTabPropsAreEqual);

@@ -13,6 +13,12 @@ export const appCategoryFilterAtom = atomWithReset<string>('all');
 export const appStatusFilterAtom = atomWithReset<StatusFilterOption>('all');
 export const appSearchQueryAtom = atomWithReset<string>('');
 
+/** Cached app/website list from AppsDesktop for mobile top-bar search. */
+export const availableQappsAtom = atom<any[]>([]);
+
+/** Per-wallet app open frequency for mobile search ranking. */
+export const appOpenCountsAtom = atom<Record<string, number>>({});
+
 
 // Current tab atom
 export type AppsLibraryTab =

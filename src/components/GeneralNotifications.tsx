@@ -23,12 +23,11 @@ import {
   useTheme,
 } from '@mui/material';
 import { useAtomValue, useSetAtom } from 'jotai';
-import { useEffect, useMemo, useState } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { getBaseApiReact } from '../App';
 import {
   customWebsocketSubscriptionsAtom,
-  isNotificationSeenInAppFromKeyTimes,
   lastPaymentSeenTimestampAtom,
   notificationSeenInAppKeyTimesAtom,
   notificationSeenInAppKeysAtom,
@@ -49,6 +48,11 @@ import {
   unsubscribeFromEvent,
 } from '../utils/events';
 import { formatDate } from '../utils/time';
+import { useUnseenNotificationCount } from '../hooks/useUnseenNotificationCount';
+
+export type GeneralNotificationsHandle = {
+  open: () => void;
+};
 
 const RESOURCE_EVENT = 'RESOURCE_PUBLISHED';
 
@@ -76,12 +80,26 @@ function getNotificationMessage(messageObj, currentLang, fallback) {
   );
 }
 
-export const GeneralNotifications = ({
-  tooltipPlacement = 'left',
-  compact = false,
-  buttonSx = undefined,
-  iconSx = undefined,
-}) => {
+export const GeneralNotifications = forwardRef<
+  GeneralNotificationsHandle,
+  {
+    tooltipPlacement?: 'left' | 'bottom' | 'right' | 'top';
+    compact?: boolean;
+    buttonSx?: object;
+    iconSx?: object;
+    hideTrigger?: boolean;
+  }
+>(function GeneralNotifications(
+  {
+    tooltipPlacement = 'left',
+    compact = false,
+    buttonSx = undefined,
+    iconSx = undefined,
+    hideTrigger = false,
+  },
+  ref
+) {
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const [anchorEl, setAnchorEl] = useState(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsApps, setSettingsApps] = useState<string[]>([]);
@@ -112,25 +130,21 @@ export const GeneralNotifications = ({
       unsubscribeFromEvent('notification-seen-in-app-updated', handler);
   }, [setSeenKeys]);
 
+  const { hasNewNotifications, unseenCount } = useUnseenNotificationCount();
   const resourceNotifications = useMemo(
     () =>
       (notifications ?? []).filter((item) => item?.event === RESOURCE_EVENT),
     [notifications]
   );
-  const unseenCount = useMemo(() => {
-    return resourceNotifications.filter((notification) => {
-      const timestamp = getNotificationTimestamp(notification);
-      if (timestamp == null) return false;
-      if (isNotificationSeenInAppFromKeyTimes(notification, seenInAppKeyTimes))
-        return false;
-      return !lastSeenTimestamp || timestamp > lastSeenTimestamp;
-    }).length;
-  }, [resourceNotifications, seenInAppKeyTimes, lastSeenTimestamp]);
-
-  const hasNewNotifications = unseenCount > 0;
   const NotificationIcon = hasNewNotifications
     ? NotificationsActiveRoundedIcon
     : NotificationsRoundedIcon;
+
+  useImperativeHandle(ref, () => ({
+    open: () => {
+      if (triggerRef.current) setAnchorEl(triggerRef.current);
+    },
+  }));
 
   const openSettings = () => {
     setSettingsOpen(true);
@@ -149,13 +163,23 @@ export const GeneralNotifications = ({
   return (
     <>
       <ButtonBase
+        ref={triggerRef}
         aria-label="Notifications"
+        aria-hidden={hideTrigger || undefined}
+        tabIndex={hideTrigger ? -1 : undefined}
         onClick={(event) => {
           event.stopPropagation();
           setAnchorEl(event.currentTarget);
         }}
         sx={{
           position: 'relative',
+          ...(hideTrigger
+            ? {
+                opacity: 0,
+                overflow: 'hidden',
+                pointerEvents: 'none',
+              }
+            : {}),
           ...(buttonSx || {}),
         }}
       >
@@ -557,7 +581,7 @@ export const GeneralNotifications = ({
           >
             {t('message.generic.notification_settings_desc', {
               defaultValue:
-                'Choose which apps can send desktop alerts while keeping in-Hub activity visible.',
+                'Choose which apps can send desktop alerts while keeping in-GO activity visible.',
             })}
           </Box>
           {settingsLoading ? (
@@ -641,7 +665,7 @@ export const GeneralNotifications = ({
                       >
                         {t('message.generic.disable_os_push_desc', {
                           defaultValue:
-                            'Mute desktop alerts for this app while keeping in-Hub activity visible.',
+                            'Mute desktop alerts for this app while keeping in-GO activity visible.',
                         })}
                       </Typography>
                     </Box>
@@ -734,4 +758,4 @@ export const GeneralNotifications = ({
       </Dialog>
     </>
   );
-};
+});

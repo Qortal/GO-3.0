@@ -6,9 +6,12 @@ import { resolve } from 'node:path';
 import fixReactVirtualized from 'esbuild-plugin-react-virtualized';
 import wasm from 'vite-plugin-wasm';
 import topLevelAwait from 'vite-plugin-top-level-await';
-import { VitePWA } from 'vite-plugin-pwa';
 
 export default defineConfig({
+  server: {
+    host: true,
+    allowedHosts: true,
+  },
   resolve: {
     alias:
       process.env.VITEST === 'true'
@@ -42,19 +45,23 @@ export default defineConfig({
           }
         : {},
   },
+  // Capacitor serves the bundle from the WebView's local http origin, so relative
+  // asset URLs are the most robust. Single entry (the desktop-only audio-surface
+  // window is dropped on mobile).
+  base: './',
   build: {
+    // Emit sourcemaps so runtime crashes inside the Android WebView can be
+    // mapped back to exact source locations during the mobile bring-up.
+    sourcemap: true,
     rollupOptions: {
       input: {
         main: resolve(__dirname, 'index.html'),
-        audioSurface: resolve(__dirname, 'audio-surface.html'),
       },
-      output: {
-        manualChunks(id) {
-          if (id.includes('node_modules')) {
-            return 'vendor';
-          }
-        },
-      },
+      // No blanket "vendor" chunk: it forced every node_modules dependency —
+      // including ones only used by lazily-loaded views (editor, virtualized
+      // lists, emoji data, ...) — into one eager multi-MB file parsed before
+      // first paint. Rollup's default chunking follows the dynamic-import
+      // boundaries (e.g. AuthenticatedShell) instead.
     },
   },
   // The audio-decrypt worker dynamically imports `libsodium-wrappers-sumo` (WASM) to
@@ -80,60 +87,7 @@ export default defineConfig({
     environmentMatchGlobs: [['electron/**', 'node']],
   } as any,
   assetsInclude: ['**/*.wasm'],
-  plugins: [
-    react(),
-    wasm(),
-    topLevelAwait(),
-    VitePWA({
-      registerType: 'prompt',
-      manifest: {
-        name: 'Qortal Hub',
-        short_name: 'Hub',
-        description: 'Your easy access to the Qortal blockchain',
-        start_url: '/',
-        display: 'standalone',
-        theme_color: '#ffffff',
-        background_color: '#ffffff',
-        icons: [
-          {
-            src: '/qortal192.png',
-            sizes: '192x192',
-            type: 'image/png',
-          },
-          {
-            src: '/qortal.png',
-            sizes: '512x512',
-            type: 'image/png',
-          },
-        ],
-      },
-      workbox: {
-        maximumFileSizeToCacheInBytes: 10 * 1024 * 1024, // 10MB limit
-        disableDevLogs: true, // Suppresses logs in development
-      },
-    }),
-    {
-      name: 'electron-strip-pwa-injection',
-      enforce: 'post',
-      transformIndexHtml: {
-        order: 'post',
-        handler(html, ctx) {
-          const isDesktopHtmlEntry =
-            ctx.filename.endsWith('audio-surface.html') ||
-            ctx.filename.endsWith('index.html');
-          if (!isDesktopHtmlEntry) {
-            return html;
-          }
-          return html
-            .replace(/<link\s+rel="manifest"[^>]*>\s*/gi, '')
-            .replace(
-              /<script[^>]*id="vite-plugin-pwa:register-sw"[^>]*><\/script>\s*/gi,
-              ''
-            );
-        },
-      },
-    },
-  ],
+  plugins: [react(), wasm(), topLevelAwait()],
   optimizeDeps: {
     esbuildOptions: {
       plugins: [fixReactVirtualized],

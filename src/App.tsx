@@ -7,7 +7,7 @@ import {
   Suspense,
 } from 'react';
 import { useDropzone } from 'react-dropzone';
-import { Box, ButtonBase, Typography, useTheme } from '@mui/material';
+import { Box, ButtonBase, Typography, useMediaQuery, useTheme } from '@mui/material';
 import { AnimatePresence } from 'framer-motion';
 import { decryptStoredWallet } from './utils/decryptWallet';
 import {
@@ -50,6 +50,13 @@ import {
 } from './components/App';
 
 import { LazyAuthenticatedShell } from './components/App/LazyAuthenticatedShell';
+import { MobileTabBar, MOBILE_TAB_BAR_HEIGHT_PX } from './components/Mobile/MobileTabBar';
+import { MobileTopBar } from './components/Mobile/MobileTopBar';
+import { MobileTabsOverlay } from './components/Mobile/MobileTabsOverlay';
+import { MobileBackgroundSetup } from './components/Mobile/MobileBackgroundSetup';
+import { MobileIncomingCallBridge } from './components/Mobile/MobileIncomingCallBridge';
+import { MobileAlertNotificationBridge } from './components/Mobile/MobileAlertNotificationBridge';
+import { MintingPublicNodeDialog } from './components/Mobile/MintingPublicNodeDialog';
 import { SupportChat, SUPPORT_ADDRESSES } from './components/Chat/SupportChat';
 import { VoiceCallProvider } from './context/VoiceCallContext';
 import { DirectVoiceCallGlobalOverlay } from './components/Chat/DirectVoiceCallGlobalOverlay';
@@ -74,6 +81,7 @@ import {
   subscribeToEvent,
   unsubscribeFromEvent,
 } from './utils/events';
+import { useAndroidBack, BACK_PRIORITY } from './utils/androidBack';
 import { stopSharedEarbumpPlayback } from './components/Group/earbumpSharedAudio';
 import { Settings } from './components/Group/Settings';
 import { useRetrieveDataLocalStorage } from './hooks/useRetrieveDataLocalStorage.tsx';
@@ -96,6 +104,7 @@ import {
   selectedNodeInfoAtom,
   userInfoAtom,
   walletToBeDecryptedErrorAtom,
+  mobileChatComposeActiveAtom,
 } from './atoms/global';
 import { NotAuthenticated } from './components/NotAuthenticated.tsx';
 import { useFetchResources } from './hooks/useFetchResources.tsx';
@@ -112,7 +121,7 @@ import { PdfViewer } from './common/PdfViewer';
 import { useTranslation } from 'react-i18next';
 import { DownloadWallet } from './components/Auth/DownloadWallet.tsx';
 import { BackupWalletModal } from './components/Auth/BackupWalletModal.tsx';
-import { useAtom, useSetAtom } from 'jotai';
+import { useAtom, useSetAtom, useAtomValue } from 'jotai';
 import {
   HTTP_LOCALHOST_12391,
   HTTPS_EXT_NODE_QORTAL_LINK,
@@ -137,6 +146,8 @@ import { GlobalQortalNavBar } from './components/Desktop/GlobalQortalNavBar.tsx'
 import type { AuthUnlockTransitionSnapshot } from './types/authTransition';
 import { openQWalletsTab } from './utils/openQWalletsTab';
 import { clearLastAuthenticatedWalletAddress } from './utils/lastAuthenticatedWallet';
+import { unlockPasswordWithBiometric } from './utils/walletBiometricAuth';
+import { isCapacitor } from './utils/platform';
 
 const MINTING_LOCAL_DEBUG_STORAGE_KEY = 'hub.mintingLocalDebug';
 const LOCAL_CORE_READY_SYNC_PERCENT = 99.95;
@@ -289,6 +300,8 @@ function App() {
   } | null>(null);
   const [authUnlockTransition, setAuthUnlockTransition] =
     useState<AuthUnlockTransitionSnapshot | null>(null);
+  const [unlockInitialPasswordFallback, setUnlockInitialPasswordFallback] =
+    useState(false);
   const [walletToBeDownloaded, setWalletToBeDownloaded] = useState<any>(null);
   const [isBackupWalletModalOpen, setIsBackupWalletModalOpen] = useState(false);
   const [walletToBeDownloadedPassword, setWalletToBeDownloadedPassword] =
@@ -308,6 +321,9 @@ function App() {
     'tutorial',
   ]);
   const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down('md'));
+  const mobileChatComposeActive = useAtomValue(mobileChatComposeActiveAtom);
+  const [tabsGridOpen, setTabsGridOpen] = useState(false);
 
   const [
     walletToBeDownloadedPasswordConfirm,
@@ -421,7 +437,67 @@ function App() {
   const setEnableAuthWhenSyncing = useSetAtom(enableAuthWhenSyncingAtom);
 
   const [isOpenMinting, setIsOpenMinting] = useState(false);
+  const [mintingPublicNodeDialogOpen, setMintingPublicNodeDialogOpen] =
+    useState(false);
   const generatorRef = useRef(null);
+
+  // Android hardware back: collapse open overlays in priority order, then fall
+  // back to navigating toward Home before the OS minimizes the app. Section /
+  // detail level back (open chat thread, groups<->DMs) is handled closer to the
+  // chat components at higher priority bands.
+  useAndroidBack(
+    () => {
+      if (isSettingsOpen) {
+        setIsSettingsOpen(false);
+        return true;
+      }
+      return false;
+    },
+    {
+      priority: BACK_PRIORITY.dialog,
+      enabled: isMobile && isAuthenticated,
+    }
+  );
+  useAndroidBack(
+    () => {
+      if (tabsGridOpen) {
+        setTabsGridOpen(false);
+        return true;
+      }
+      if (isOpenDrawerLookup) {
+        setIsOpenDrawerLookup(false);
+        return true;
+      }
+      if (mintingPublicNodeDialogOpen) {
+        setMintingPublicNodeDialogOpen(false);
+        return true;
+      }
+      if (isOpenMinting) {
+        setIsOpenMinting(false);
+        return true;
+      }
+      return false;
+    },
+    {
+      priority: BACK_PRIORITY.overlay,
+      enabled: isMobile && isAuthenticated,
+    }
+  );
+  useAndroidBack(
+    () => {
+      // Any non-Home view returns to Home before the app minimizes.
+      if (desktopViewMode !== 'home') {
+        setDesktopViewMode('home');
+        executeEvent('open-home-mode', {});
+        return true;
+      }
+      return false;
+    },
+    {
+      priority: BACK_PRIORITY.root,
+      enabled: isMobile && isAuthenticated,
+    }
+  );
 
   const ensureGeneratedSeedphrase = useCallback(() => {
     const currentPhrase = generatorRef.current?.parsedString;
@@ -837,6 +913,15 @@ function App() {
         walletToBeDownloaded.wallet,
         walletToBeDownloaded.qortAddress
       );
+      if (saved && isCapacitor()) {
+        executeEvent('openGlobalSnackBar', {
+          message: t('auth:create_wallet.backup_saved_to_documents', {
+            postProcess: 'capitalizeFirstChar',
+          }),
+          type: 'success',
+          duration: 5600,
+        });
+      }
       return Boolean(saved);
     } catch (error: any) {
       setWalletToBeDownloadedError(
@@ -1089,6 +1174,42 @@ function App() {
     }
   };
 
+  const handleBiometricWalletUnlock = useCallback(
+    async (
+      wallet: any,
+      transitionSnapshot?: AuthUnlockTransitionSnapshot
+    ): Promise<boolean> => {
+      const address = wallet?.address0?.trim();
+      if (!address) return false;
+
+      try {
+        const password = await unlockPasswordWithBiometric(address);
+        setAuthenticatePassword(password);
+        setUnlockInitialPasswordFallback(false);
+
+        if (transitionSnapshot) {
+          setAuthUnlockTransition(transitionSnapshot);
+          window.setTimeout(() => {
+            setRawWallet(wallet);
+            setExtstate('wallet-dropped');
+          }, 130);
+        } else {
+          setRawWallet(wallet);
+          setExtstate('wallet-dropped');
+        }
+
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    [setAuthenticatePassword, setExtstate, setRawWallet]
+  );
+
+  const handleWalletPasswordFallbackUnlock = useCallback(() => {
+    setUnlockInitialPasswordFallback(true);
+  }, []);
+
   useEffect(() => {
     if (!isMainWindow) return;
     // Handler for when the window gains focus
@@ -1212,6 +1333,12 @@ function App() {
         typeof window !== 'undefined' &&
         (localStorage.getItem(MINTING_LOCAL_DEBUG_STORAGE_KEY) === 'true' ||
           localStorage.getItem(MINTING_LOCAL_DEBUG_STORAGE_KEY) === '1');
+      const selectedUrl = selectedNode?.url || HTTPS_EXT_NODE_QORTAL_LINK;
+      const isPublicNode = selectedUrl === HTTPS_EXT_NODE_QORTAL_LINK;
+      if (isPublicNode && !forceLocalMintingPreview) {
+        setMintingPublicNodeDialogOpen(true);
+        return;
+      }
       const res = await isRunningGateway();
       if (res && !forceLocalMintingPreview)
         throw new Error(
@@ -1227,7 +1354,7 @@ function App() {
         message: error?.message,
       });
     }
-  }, [t]);
+  }, [selectedNode?.url, t]);
   const onBackupWallet = useCallback(() => {
     if (extState === 'authenticated' && rawWallet) {
       setIsBackupWalletModalOpen(true);
@@ -1298,6 +1425,7 @@ function App() {
     holdRefExtState.current = 'not-authenticated';
     clearLastAuthenticatedWalletAddress();
     setRawWallet(null);
+    setUnlockInitialPasswordFallback(false);
     setExtstate('not-authenticated');
     setAuthenticatePassword('');
     logoutFunc();
@@ -1472,6 +1600,8 @@ function App() {
         {extState === 'not-authenticated' && (
           <NotAuthenticated
             onWalletUnlockStart={setAuthUnlockTransition}
+            onBiometricWalletUnlock={handleBiometricWalletUnlock}
+            onWalletPasswordFallbackUnlock={handleWalletPasswordFallbackUnlock}
             setExtstate={setExtstate}
             setRawWallet={setRawWallet}
             rawWallet={rawWallet}
@@ -1505,7 +1635,7 @@ function App() {
                   }}
                 >
                   <Typography sx={{ fontSize: '1.05rem', fontWeight: 800 }}>
-                    Hub runtime error
+                    GO runtime error
                   </Typography>
                   <Typography
                     sx={{
@@ -1601,6 +1731,8 @@ function App() {
                     <DirectVoiceCallNavWidget />
                     <QortalGroupVoiceCallStage />
                     <DirectVoiceCallGlobalOverlay />
+                    <MobileIncomingCallBridge />
+                    <MobileAlertNotificationBridge />
                   </CallSwitchGuardProvider>
                 </VoiceCallProvider>
               </GroupCallProvider>
@@ -1717,10 +1849,13 @@ function App() {
             rawWallet={rawWallet}
             selectedNode={selectedNode}
             unlockTransition={authUnlockTransition}
+            initialPasswordFallback={unlockInitialPasswordFallback}
             walletToBeDecryptedError={walletToBeDecryptedError}
             onBack={onAuthenticationFormBack}
             onAuthenticate={authenticateWallet}
             onUnlockTransitionComplete={() => setAuthUnlockTransition(null)}
+            onWalletUpdated={(wallet) => setRawWallet(wallet)}
+            onWalletRemoved={onAuthenticationFormBack}
           />
         )}
         {extState === 'download-wallet' && (
@@ -1871,6 +2006,11 @@ function App() {
         />
       )}
 
+      <MintingPublicNodeDialog
+        open={mintingPublicNodeDialogOpen}
+        onClose={() => setMintingPublicNodeDialogOpen(false)}
+      />
+
       {!isAuthenticated && (
         <NotAuthenticatedFooter
           showCoreSetup
@@ -1905,14 +2045,36 @@ function App() {
         display: 'flex',
         flexDirection: 'column',
         alignItems: 'stretch',
-        ['--electron-title-bar-height' as string]: `${CUSTOM_TITLE_BAR_HEIGHT}px`,
+        ['--electron-title-bar-height' as string]: isMobile
+          ? '0px'
+          : `${CUSTOM_TITLE_BAR_HEIGHT}px`,
       }}
     >
-      <CustomTitleBar rightNav={titleBarRightNav} />
-      {extState === 'authenticated' && isMainWindow && (
+      {!isMobile && <CustomTitleBar rightNav={titleBarRightNav} />}
+      {!isMobile && extState === 'authenticated' && isMainWindow && (
         <GlobalQortalNavBar
           desktopViewMode={desktopViewMode}
           utilityNav={titleBarRightNav}
+        />
+      )}
+      {isMobile && extState === 'authenticated' && isMainWindow && (
+        <MobileTopBar
+          userInfo={userInfo}
+          onOpenWalletsApp={onOpenWalletsApp}
+          onOpenSendQort={onOpenSendQort}
+          onOpenDrawerLookup={onOpenDrawerLookup}
+          onOpenMinting={onOpenMinting}
+          onOpenSettings={onOpenSettings}
+          onLogout={logoutFunc}
+          onOpenTabs={() => setTabsGridOpen((open) => !open)}
+          tabsOverlayOpen={tabsGridOpen}
+          desktopViewMode={desktopViewMode}
+        />
+      )}
+      {isMobile && extState === 'authenticated' && isMainWindow && (
+        <MobileTabsOverlay
+          open={tabsGridOpen}
+          onClose={() => setTabsGridOpen(false)}
         />
       )}
 
@@ -1922,8 +2084,20 @@ function App() {
           minHeight: 0,
           display: 'flex',
           flexDirection: 'column',
-          alignItems: 'center',
           overflow: 'hidden',
+          ...(isMobile &&
+            extState === 'authenticated' &&
+            isMainWindow && {
+              alignItems: 'stretch',
+              pb: mobileChatComposeActive
+                ? 'env(safe-area-inset-bottom, 0px)'
+                : `calc(${MOBILE_TAB_BAR_HEIGHT_PX}px + env(safe-area-inset-bottom, 0px))`,
+            }),
+          ...(!isMobile ||
+          extState !== 'authenticated' ||
+          !isMainWindow
+            ? { alignItems: 'center' }
+            : {}),
         }}
       >
         {globalRuntimeFault && extState === 'authenticated' && isMainWindow ? (
@@ -1959,7 +2133,7 @@ function App() {
               }}
             >
               <Typography sx={{ fontSize: '1.05rem', fontWeight: 800 }}>
-                Hub runtime error
+                GO runtime error
               </Typography>
               <Typography
                 sx={{
@@ -2007,6 +2181,15 @@ function App() {
           mainContent
         )}
       </Box>
+      {isMobile && extState === 'authenticated' && isMainWindow && !mobileChatComposeActive && (
+        <MobileTabBar
+          desktopViewMode={desktopViewMode}
+          setDesktopViewMode={setDesktopViewMode}
+        />
+      )}
+      {isMobile && extState === 'authenticated' && isMainWindow && (
+        <MobileBackgroundSetup enabled />
+      )}
     </AppContainer>
   );
 }

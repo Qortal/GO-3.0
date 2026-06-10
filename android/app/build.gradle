@@ -1,0 +1,103 @@
+apply plugin: 'com.android.application'
+apply plugin: 'org.jetbrains.kotlin.android'
+apply plugin: 'com.chaquo.python'
+
+android {
+    namespace "com.github.Qortal.qortalMobile"
+    compileSdk rootProject.ext.compileSdkVersion
+    defaultConfig {
+        applicationId "com.github.Qortal.qortalGo2"
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+        versionCode 1
+        versionName "2.0.0"
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        // Chaquopy ships the CPython interpreter as native code, so the app must
+        // declare which ABIs to package. arm64 = real devices, x86_64 = emulator.
+        ndk {
+            abiFilters "arm64-v8a", "x86_64"
+        }
+    }
+
+    // Python presence/transport bridge (Reticulum). Python 3.13 is the sweet
+    // spot: Chaquopy ships cryptography/pynacl wheels for it AND it supports
+    // 16 KB-page devices (Android 15+).
+    chaquopy {
+        defaultConfig {
+            version "3.13"
+            pip {
+                // RNS itself is vendored from the Qortal Reticulum fork
+                // (src/main/python/RNS) so the on-wire protocol matches the
+                // live Qortal mesh exactly. Only its native/runtime deps come
+                // from pip: cryptography is a Chaquopy prebuilt wheel; pyserial
+                // is pure-python (serial interfaces are unused on Android).
+                install "cryptography"
+                install "pyserial"
+            }
+        }
+    }
+    androidResources {
+        // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
+        // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
+        ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
+    }
+    buildFeatures {
+        buildConfig true
+    }
+    kotlinOptions {
+        jvmTarget = '17'
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+}
+
+repositories {
+    flatDir{
+        dirs '../capacitor-cordova-android-plugins/src/main/libs', 'libs'
+    }
+}
+
+dependencies {
+    implementation fileTree(include: ['*.jar'], dir: 'libs')
+    implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
+    implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
+    implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
+    implementation project(':capacitor-android')
+    implementation 'androidx.biometric:biometric:1.1.0'
+    implementation "org.mindrot:jbcrypt:0.4"
+    implementation "at.favre.lib:bcrypt:0.10.2"
+    implementation 'com.password4j:password4j:1.8.2'
+    implementation 'com.dylibso.chicory:runtime:1.0.0-M1'
+    implementation 'commons-net:commons-net:3.6'
+    implementation 'org.bouncycastle:bcprov-jdk15to18:1.76'
+    implementation 'com.google.guava:guava:32.1.2-jre'
+    implementation 'org.nanohttpd:nanohttpd:2.3.1'
+    implementation 'com.google.android.gms:play-services-cast-framework:21.4.0'
+    implementation 'androidx.mediarouter:mediarouter:1.6.0'
+    implementation 'androidx.localbroadcastmanager:localbroadcastmanager:1.1.0'
+    // Native Reticulum transport (Kotlin/JVM RNS stack + Android foreground service).
+    // BouncyCastle is excluded to avoid duplicate classes with the app's existing
+    // bcprov-jdk15to18:1.76 (reticulum-kt pulls bcprov 1.77).
+    implementation('com.github.torlando-tech.reticulum-kt:rns-android:0.1.0-SNAPSHOT') {
+        exclude group: 'org.bouncycastle'
+    }
+    testImplementation "junit:junit:$junitVersion"
+    androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
+    androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
+    implementation project(':capacitor-cordova-android-plugins')
+}
+
+apply from: 'capacitor.build.gradle'
+
+try {
+    def servicesJSON = file('google-services.json')
+    if (servicesJSON.text) {
+        apply plugin: 'com.google.gms.google-services'
+    }
+} catch(Exception e) {
+    logger.info("google-services.json not found, google-services plugin not applied. Push Notifications won't work")
+}

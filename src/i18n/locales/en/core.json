@@ -292,7 +292,7 @@
       "created_by": "created by {{ owner }}",
       "devmode_local_node": "please use your local node for dev mode! Logout and use Local node.",
       "disable_os_push": "Disable OS push",
-      "disable_os_push_desc": "Mute desktop alerts for this app while keeping in-Hub activity visible.",
+      "disable_os_push_desc": "Mute desktop alerts for this app while keeping in-GO activity visible.",
       "downloading_decrypting_app": "downloading and decrypting private app.",
       "downloading": "downloading",
       "edited": "edited",
@@ -332,7 +332,7 @@
       "no_notification_apps": "No apps have notification permission yet.",
       "no_notifications": "no new notifications",
       "notification_settings": "Notification settings",
-      "notification_settings_desc": "Choose which apps can send desktop alerts while keeping in-Hub activity visible.",
+      "notification_settings_desc": "Choose which apps can send desktop alerts while keeping in-GO activity visible.",
       "notifications": "Notifications",
       "no_payments": "no payments",
       "no_pinned_changes": "you currently do not have any changes to your pinned apps",
@@ -457,6 +457,11 @@
       "rewards_info_subtitle_selected": "(selected minter — rewards for this key)",
       "network_details": "Network details",
       "loading_spinner_aria": "Loading"
+    },
+    "public_node_dialog": {
+      "title": "Minting requires a private node",
+      "body": "Minting is only available when connected to your own private node. You are currently on a public node. Open Q-Minter to read the detailed guide on becoming a minter.",
+      "open_q_minter": "Open Q-Minter guide"
     }
   },
   "name": "name",
@@ -718,15 +723,15 @@
     "reaction_onboarding_route": "Onboarding route open. I'll keep the next step warm.",
     "reaction_support_chat": "Support chat is open. Ask for the 6 QORT and I'll queue step two.",
     "reaction_q_trade_open": "Q-Trade is up. If you grab QORT there, I'll take you forward.",
-    "reaction_name_flow": "Name flow open. This is where the hub starts recognizing you.",
+    "reaction_name_flow": "Name flow open. This is where GO starts recognizing you.",
     "reaction_avatar_flow": "Avatar flow ready. Let's give this place a face.",
     "track_meta_separator": "·",
     "a11y_clear_hotkey_slot": "Clear slot {{n}}",
     "hotkey_slot_number": "Slot {{n}}",
     "runtime_workspace_bay_title": "Workspace bay hit a runtime snag.",
-    "runtime_workspace_bay_body": "QORTINO below is still safe. Refresh the Hub and if this keeps happening we will trace the exact crash from here.",
+    "runtime_workspace_bay_body": "QORTINO below is still safe. Refresh GO and if this keeps happening we will trace the exact crash from here.",
     "runtime_qortino_title": "QORTINO hit a runtime snag.",
-    "runtime_qortino_body": "The workspace bay above is still safe. Refresh the Hub and if this keeps happening we will trace the exact crash from here."
+    "runtime_qortino_body": "The workspace bay above is still safe. Refresh GO and if this keeps happening we will trace the exact crash from here."
   },
   "quick_tools_pad": {
     "user_search": "User Search",
@@ -738,7 +743,7 @@
     "notifications_mute": "Mute Notifications",
     "apps": "Apps",
     "extras": "Extras",
-    "hint_notifications_desktop_only": "This only mutes desktop alerts. In-Hub notifications still continue.",
+    "hint_notifications_desktop_only": "This only mutes desktop alerts. In-GO notifications still continue.",
     "hint_minting_panel": "This panel unlocks once you're a minter. Swing by Q-Mintership to get started!",
     "snackbar_backup_wallet": "Download your wallet file. This is required to access your account"
   },

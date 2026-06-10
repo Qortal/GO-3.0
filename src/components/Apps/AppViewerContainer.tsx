@@ -1,4 +1,5 @@
 import { forwardRef } from 'react';
+import { Box } from '@mui/material';
 import { AppViewer } from './AppViewer';
 import Frame from 'react-frame-component';
 import { appChromeOffsetPx } from '../Desktop/CustomTitleBar';
@@ -9,21 +10,44 @@ type AppViewerContainerProps = {
   hide: boolean;
   isDevMode: boolean;
   customHeight?: string;
+  fillParent?: boolean;
 };
 
 const AppViewerContainer = forwardRef<
   HTMLIFrameElement,
   AppViewerContainerProps
->(({ app, isSelected, hide, isDevMode, customHeight }, ref) => {
+>(({ app, isSelected, hide, isDevMode, customHeight, fillParent = false }, ref) => {
   const isHidden = !isSelected || hide;
+  const frameHeight =
+    customHeight || `calc(100vh - ${appChromeOffsetPx})`;
+  const fillShell = fillParent;
 
   return (
-    <Frame
-      id={`browser-iframe-${app?.tabId}`}
-      head={
-        <>
-          <style>
-            {`
+    <Box
+      sx={{
+        display: isHidden ? 'none' : 'flex',
+        flex: fillShell ? 1 : undefined,
+        flexDirection: 'column',
+        height: fillShell ? '100%' : frameHeight,
+        minHeight: 0,
+        overflow: 'hidden',
+        position: 'relative',
+        width: '100%',
+        ...(!fillShell && isHidden
+          ? {
+              left: '-200vw',
+              position: 'absolute',
+              top: 0,
+            }
+          : {}),
+      }}
+    >
+      <Frame
+        id={`browser-iframe-${app?.tabId}`}
+        head={
+          <>
+            <style>
+              {`
               html,
               body {
                 height: 100%;
@@ -49,40 +73,39 @@ const AppViewerContainer = forwardRef<
               }
               * {
                 box-sizing: border-box;
-                -ms-overflow-style: none; /* IE and Edge */
-                scrollbar-width: none;  /* Firefox */
+                -ms-overflow-style: none;
+                scrollbar-width: none;
               }
               *::-webkit-scrollbar {
-                display: none;  /* Chrome, Safari, Opera */
+                display: none;
               }
             `}
-          </style>
-        </>
-      }
-      style={{
-        border: 'none',
-        contain: 'layout paint style',
-        display: 'block',
-        height: customHeight || `calc(100vh - ${appChromeOffsetPx})`,
-        isolation: 'isolate',
-        left: isHidden ? '-200vw' : '0',
-        minHeight: 0,
-        overflow: 'hidden',
-        overflowAnchor: 'none',
-        overscrollBehavior: 'none',
-        position: isHidden ? 'absolute' : 'relative',
-        top: 0,
-        width: '100%',
-      }}
-      tabIndex={-1}
-    >
-      <AppViewer
-        app={app}
-        hide={!isSelected || hide}
-        isDevMode={isDevMode}
-        ref={ref}
-      />
-    </Frame>
+            </style>
+          </>
+        }
+        style={{
+          border: 'none',
+          contain: 'layout paint style',
+          display: 'block',
+          flex: fillShell ? '1 1 auto' : undefined,
+          height: fillShell ? '100%' : frameHeight,
+          isolation: 'isolate',
+          minHeight: fillShell ? 0 : undefined,
+          overflow: 'hidden',
+          overflowAnchor: 'none',
+          overscrollBehavior: 'none',
+          width: '100%',
+        }}
+        tabIndex={-1}
+      >
+        <AppViewer
+          app={app}
+          hide={!isSelected || hide}
+          isDevMode={isDevMode}
+          ref={ref}
+        />
+      </Frame>
+    </Box>
   );
 });
 

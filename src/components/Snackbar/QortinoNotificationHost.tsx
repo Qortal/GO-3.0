@@ -1,14 +1,16 @@
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
-import { Box, IconButton, Typography, useTheme } from '@mui/material';
+import { Box, Button, IconButton, Typography, useMediaQuery, useTheme } from '@mui/material';
 import { alpha } from '@mui/material/styles';
 import { AnimatePresence, motion } from 'framer-motion';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react';
+import { MOBILE_TOP_BAR_HEIGHT_PX } from '../Mobile/MobileTopBar';
 import { DEFAULT_QORTINO_LOOK_DEBUG_SETTINGS } from '../Group/qortinoLookDebug';
 import {
   DEFAULT_QORTINO_INLET_DEBUG_SETTINGS,
   type QortinoInletDebugSettings,
 } from './qortinoInletDebug';
 import { subscribeToEvent, unsubscribeFromEvent } from '../../utils/events';
+import { openCustomNodeGuideWebsite } from '../../utils/openCustomNodeGuideWebsite';
 
 type NotificationType = 'error' | 'info' | 'success' | 'warning';
 
@@ -19,6 +21,8 @@ type NotificationInfo = {
   message?: string;
   sourceId?: string;
   type?: string;
+  actionLabel?: string;
+  actionEvent?: string;
 } | null;
 
 type QortinoNotificationHostProps = {
@@ -35,10 +39,273 @@ type NotificationPayload = {
   message?: string;
   sourceId?: string;
   type?: string;
+  actionLabel?: string;
+  actionEvent?: string;
+};
+
+const runNotificationAction = (actionEvent?: string) => {
+  if (actionEvent === 'openCustomNodeGuideWebsite') {
+    openCustomNodeGuideWebsite();
+  }
 };
 
 const DEFAULT_NOTIFICATION_DURATION_MS = 5200;
 const ERROR_NOTIFICATION_DURATION_MS = 7200;
+
+const resolveNotificationDurationMs = (
+  duration: number | null | undefined,
+  type?: string
+): number | null => {
+  if (duration === null) return null;
+  if (typeof duration === 'number') return duration;
+  return normalizeNotificationType(type) === 'error'
+    ? ERROR_NOTIFICATION_DURATION_MS
+    : DEFAULT_NOTIFICATION_DURATION_MS;
+};
+
+const useNotificationDismissCountdown = (
+  open: boolean,
+  durationMs: number | null
+) => {
+  const [remainingSeconds, setRemainingSeconds] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (!open || durationMs === null) {
+      setRemainingSeconds(null);
+      return;
+    }
+
+    const endAt = Date.now() + durationMs;
+    const tick = () => {
+      const leftMs = endAt - Date.now();
+      setRemainingSeconds(
+        leftMs <= 0 ? 0 : Math.max(1, Math.ceil(leftMs / 1000))
+      );
+    };
+
+    tick();
+    const intervalId = window.setInterval(tick, 200);
+    return () => window.clearInterval(intervalId);
+  }, [durationMs, open]);
+
+  return remainingSeconds;
+};
+
+const DISMISS_BUTTON_SIZE_PX = 34;
+const DISMISS_BUTTON_RIGHT_PX = 4;
+const COUNTDOWN_HEIGHT_PX = 22;
+const COUNTDOWN_MIN_WIDTH_PX = 32;
+const CONTROLS_GAP_PX = 6;
+const STACKED_GAP_PX = 4;
+
+type DismissLayoutMode = 'inline' | 'stacked';
+
+const useNotificationDismissLayout = ({
+  bannerRef,
+  hasAction,
+  isDismissible,
+  message,
+  messageRef,
+  remainingSeconds,
+}: {
+  bannerRef: RefObject<HTMLElement | null>;
+  hasAction: boolean;
+  isDismissible: boolean;
+  message: string;
+  messageRef: RefObject<HTMLElement | null>;
+  remainingSeconds: number | null;
+}) => {
+  const [layoutMode, setLayoutMode] = useState<DismissLayoutMode>('inline');
+
+  useLayoutEffect(() => {
+    const banner = bannerRef.current;
+    if (!banner || !remainingSeconds || !isDismissible) {
+      setLayoutMode('inline');
+      return;
+    }
+
+    const measure = () => {
+      const bannerHeight = banner.clientHeight;
+      const dismissTop = hasAction
+        ? 8
+        : Math.max(0, bannerHeight / 2 - DISMISS_BUTTON_SIZE_PX / 2);
+      const stackedBottom =
+        dismissTop +
+        DISMISS_BUTTON_SIZE_PX +
+        STACKED_GAP_PX +
+        COUNTDOWN_HEIGHT_PX;
+      const stackedFits = stackedBottom <= bannerHeight - 5;
+
+      const messageEl = messageRef.current;
+      let inlineClear = true;
+      if (messageEl) {
+        const bannerRect = banner.getBoundingClientRect();
+        const messageRect = messageEl.getBoundingClientRect();
+        const inlineControlsWidth =
+          DISMISS_BUTTON_SIZE_PX + CONTROLS_GAP_PX + COUNTDOWN_MIN_WIDTH_PX + 8;
+        const inlineControlsLeft =
+          bannerRect.right - DISMISS_BUTTON_RIGHT_PX - inlineControlsWidth;
+        const firstLineOverlap =
+          messageRect.height <= DISMISS_BUTTON_SIZE_PX + 8 &&
+          messageRect.right > inlineControlsLeft;
+        inlineClear = !firstLineOverlap;
+      }
+
+      if (inlineClear || !stackedFits) {
+        setLayoutMode('inline');
+        return;
+      }
+
+      setLayoutMode('stacked');
+    };
+
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(banner);
+    return () => observer.disconnect();
+  }, [bannerRef, hasAction, isDismissible, message, messageRef, remainingSeconds]);
+
+  const paddingRight = useMemo(() => {
+    if (!isDismissible && remainingSeconds) return 42;
+    if (!isDismissible) return 11;
+    if (!remainingSeconds) return DISMISS_BUTTON_RIGHT_PX + DISMISS_BUTTON_SIZE_PX + 8;
+    if (layoutMode === 'inline') {
+      return (
+        DISMISS_BUTTON_RIGHT_PX +
+        DISMISS_BUTTON_SIZE_PX +
+        CONTROLS_GAP_PX +
+        COUNTDOWN_MIN_WIDTH_PX +
+        8
+      );
+    }
+    return DISMISS_BUTTON_RIGHT_PX + DISMISS_BUTTON_SIZE_PX + 8;
+  }, [isDismissible, layoutMode, remainingSeconds]);
+
+  const paddingBottomExtra = useMemo(() => {
+    if (!remainingSeconds || !isDismissible || layoutMode !== 'stacked') return 0;
+    return COUNTDOWN_HEIGHT_PX + STACKED_GAP_PX + 8;
+  }, [isDismissible, layoutMode, remainingSeconds]);
+
+  return { layoutMode, paddingBottomExtra, paddingRight };
+};
+
+const NotificationCountdownPill = ({
+  accent,
+  isDarkMode,
+  remainingSeconds,
+}: {
+  accent: string;
+  isDarkMode: boolean;
+  remainingSeconds: number;
+}) => (
+  <Box
+    aria-hidden
+    component="span"
+    sx={{
+      alignItems: 'center',
+      backgroundColor: isDarkMode ? alpha(accent, 0.16) : alpha(accent, 0.1),
+      border: `1px solid ${alpha(accent, isDarkMode ? 0.34 : 0.4)}`,
+      borderRadius: '999px',
+      boxShadow: isDarkMode
+        ? `inset 0 1px 0 ${alpha('#FFFFFF', 0.06)}`
+        : `inset 0 1px 0 ${alpha('#FFFFFF', 0.65)}`,
+      color: isDarkMode ? alpha('#EAF1FF', 0.9) : alpha(accent, 0.95),
+      display: 'inline-flex',
+      flexShrink: 0,
+      fontFamily: 'Inter, system-ui, sans-serif',
+      fontFeatureSettings: '"tnum"',
+      fontSize: '0.6875rem',
+      fontWeight: 700,
+      height: COUNTDOWN_HEIGHT_PX,
+      justifyContent: 'center',
+      letterSpacing: '0.03em',
+      lineHeight: 1,
+      minWidth: COUNTDOWN_MIN_WIDTH_PX,
+      paddingX: '7px',
+      pointerEvents: 'none',
+    }}
+  >
+    {remainingSeconds}s
+  </Box>
+);
+
+const NotificationDismissControls = ({
+  accent,
+  closeNotification,
+  hasAction,
+  isDarkMode,
+  isDismissible,
+  layoutMode,
+  remainingSeconds,
+  theme,
+}: {
+  accent: string;
+  closeNotification: () => void;
+  hasAction?: boolean;
+  isDarkMode: boolean;
+  isDismissible: boolean;
+  layoutMode: DismissLayoutMode;
+  remainingSeconds: number | null;
+  theme: ReturnType<typeof useTheme>;
+}) => {
+  const hasCountdown = remainingSeconds !== null && remainingSeconds > 0;
+  if (!isDismissible && !hasCountdown) return null;
+
+  return (
+    <Box
+      sx={{
+        alignItems: 'center',
+        display: 'flex',
+        flexDirection: layoutMode === 'stacked' ? 'column' : 'row-reverse',
+        gap:
+          layoutMode === 'stacked'
+            ? `${STACKED_GAP_PX}px`
+            : `${CONTROLS_GAP_PX}px`,
+        pointerEvents: 'auto',
+        position: 'absolute',
+        right: DISMISS_BUTTON_RIGHT_PX,
+        top: hasAction ? 8 : '50%',
+        transform: hasAction ? 'none' : 'translateY(-50%)',
+        zIndex: 6,
+      }}
+    >
+      {isDismissible ? (
+        <IconButton
+          aria-label="Dismiss notification"
+          onClick={closeNotification}
+          size="small"
+          sx={{
+            backgroundColor: isDarkMode
+              ? alpha('#FFFFFF', 0.06)
+              : alpha('#000000', 0.04),
+            color: isDarkMode
+              ? alpha('#F1F5FF', 0.92)
+              : alpha(theme.palette.text.secondary, 0.95),
+            height: DISMISS_BUTTON_SIZE_PX,
+            minWidth: DISMISS_BUTTON_SIZE_PX,
+            '&:hover': {
+              backgroundColor: isDarkMode
+                ? alpha('#FFFFFF', 0.12)
+                : alpha(theme.palette.primary.main, 0.1),
+              color: isDarkMode
+                ? alpha('#FFFFFF', 0.98)
+                : theme.palette.text.primary,
+            },
+          }}
+        >
+          <CloseRoundedIcon sx={{ fontSize: 18 }} />
+        </IconButton>
+      ) : null}
+      {hasCountdown ? (
+        <NotificationCountdownPill
+          accent={accent}
+          isDarkMode={isDarkMode}
+          remainingSeconds={remainingSeconds}
+        />
+      ) : null}
+    </Box>
+  );
+};
 
 const QORTINO_INLET_LOOK = DEFAULT_QORTINO_LOOK_DEBUG_SETTINGS;
 const QORTINO_INLET_BAR_START_PX = 12;
@@ -158,6 +425,18 @@ const getNotificationPalette = (type: NotificationType) => {
 };
 
 /** Visible frame + outer ring — especially for success/error in dark and light UI */
+const getNotificationTextMaxWidthCh = (
+  message: string,
+  compact?: boolean,
+  hasAction?: boolean
+) => {
+  const ceiling = compact ? 28 : 44;
+  const floor = compact ? 14 : 18;
+  const dynamic = Math.ceil(message.length * 0.74);
+  const actionBoost = hasAction ? 6 : 0;
+  return `${Math.min(ceiling, Math.max(floor + actionBoost, dynamic))}ch`;
+};
+
 const getNotificationFrameChrome = (
   type: NotificationType,
   isDarkMode: boolean
@@ -355,6 +634,267 @@ const QortinoNotificationHead = ({
   );
 };
 
+const MobileNotificationBanner = ({
+  actionLabel,
+  closeNotification,
+  dismissCountdownSeconds,
+  frameChrome,
+  inletGeometry,
+  isDarkMode,
+  isDismissible,
+  maxTextWidthCh,
+  message,
+  notificationType,
+  onAction,
+  palette,
+  theme,
+}: {
+  actionLabel?: string;
+  closeNotification: () => void;
+  dismissCountdownSeconds: number | null;
+  frameChrome: ReturnType<typeof getNotificationFrameChrome>;
+  inletGeometry: QortinoInletHeadGeometry;
+  isDarkMode: boolean;
+  isDismissible: boolean;
+  maxTextWidthCh: string;
+  message: string;
+  notificationType: NotificationType;
+  onAction?: () => void;
+  palette: ReturnType<typeof getNotificationPalette>;
+  theme: ReturnType<typeof useTheme>;
+}) => {
+  const bannerRef = useRef<HTMLDivElement>(null);
+  const messageRef = useRef<HTMLElement>(null);
+  const hasAction = Boolean(actionLabel);
+  const { layoutMode, paddingBottomExtra, paddingRight } =
+    useNotificationDismissLayout({
+      bannerRef,
+      hasAction,
+      isDismissible,
+      message,
+      messageRef,
+      remainingSeconds: dismissCountdownSeconds,
+    });
+
+  return (
+  <Box
+    sx={{
+      maxWidth: '100%',
+      minHeight: Math.max(56, inletGeometry.stageHeight + 8),
+      overflow: 'visible',
+      position: 'relative',
+      width: 'fit-content',
+    }}
+  >
+    <Box
+      sx={{
+        background: isDarkMode
+          ? `radial-gradient(ellipse at center, ${alpha('#05070C', 0.28)} 0%, ${alpha('#05070C', 0)} 72%)`
+          : `radial-gradient(ellipse at center, ${alpha('#3A5370', 0.14)} 0%, ${alpha('#3A5370', 0)} 72%)`,
+        bottom: -7,
+        filter: 'blur(14px)',
+        height: '13px',
+        left: '50%',
+        position: 'absolute',
+        transform: 'translateX(-50%)',
+        width: 'calc(100% - 20px)',
+        zIndex: 0,
+      }}
+    />
+    <Box
+      sx={{
+        background: isDarkMode
+          ? `linear-gradient(90deg, ${alpha('#F3F8FF', 0.7)} 0%, ${alpha('#D9E7FF', 0.28)} 36%, ${alpha('#FFFFFF', 0.12)} 74%, ${alpha('#FFFFFF', 0)} 100%)`
+          : `linear-gradient(90deg, ${alpha('#FFFFFF', 0.92)} 0%, ${alpha('#C5D5EB', 0.42)} 38%, ${alpha('#FFFFFF', 0.2)} 72%, ${alpha('#FFFFFF', 0)} 100%)`,
+        borderRadius: '999px',
+        height: '1px',
+        left: `${QORTINO_INLET_BAR_START_PX + 10}px`,
+        pointerEvents: 'none',
+        position: 'absolute',
+        right: '12px',
+        top: '1px',
+        zIndex: 2,
+      }}
+    />
+    <Box
+      sx={{
+        background: isDarkMode
+          ? `radial-gradient(ellipse at center, ${alpha('#05070C', 0.34)} 0%, ${alpha('#05070C', 0)} 74%)`
+          : `radial-gradient(ellipse at center, ${alpha('#5A7394', 0.2)} 0%, ${alpha('#5A7394', 0)} 74%)`,
+        filter: 'blur(6px)',
+        height: '12px',
+        left: `${QORTINO_INLET_BAR_START_PX + 7 + inletGeometry.headOffsetX}px`,
+        position: 'absolute',
+        top: `${28 + inletGeometry.headOffsetY}px`,
+        width: '36px',
+        zIndex: 1,
+      }}
+    />
+    <Box
+      sx={{
+        background: isDarkMode
+          ? `linear-gradient(90deg, ${alpha('#05070C', 0.34)} 0%, ${alpha('#05070C', 0.08)} 72%, transparent 100%)`
+          : `linear-gradient(90deg, ${alpha('#8FA9CC', 0.28)} 0%, ${alpha('#8FA9CC', 0.06)} 72%, transparent 100%)`,
+        borderRadius: '9px',
+        boxShadow: isDarkMode
+          ? `inset 12px 0 18px ${alpha('#000000', 0.22)}`
+          : `inset 10px 0 14px ${alpha('#2A405C', 0.07)}`,
+        height: '25px',
+        left: `${QORTINO_INLET_BAR_START_PX + 6 + inletGeometry.headOffsetX}px`,
+        pointerEvents: 'none',
+        position: 'absolute',
+        top: `${13 + inletGeometry.headOffsetY}px`,
+        width: `${Math.round(inletGeometry.headWidth * 0.56)}px`,
+        zIndex: 2,
+      }}
+    />
+    <Box
+      sx={{
+        background: isDarkMode
+          ? `linear-gradient(180deg, ${alpha('#252D3C', 0.66)} 0%, ${alpha('#171C26', 0.86)} 100%)`
+          : `linear-gradient(180deg, ${alpha('#D8E3F2', 0.88)} 0%, ${alpha('#C4D3E8', 0.94)} 100%)`,
+        border: isDarkMode
+          ? `1px solid ${alpha('#D6E5FF', 0.05)}`
+          : `1px solid ${alpha('#9DB2D4', 0.45)}`,
+        borderRadius: '10px',
+        boxShadow: isDarkMode
+          ? `0 8px 16px ${alpha('#000000', 0.18)}`
+          : `0 6px 14px ${alpha('#2A405C', 0.12)}`,
+        height: '29px',
+        left: `${QORTINO_INLET_BAR_START_PX + 6 + inletGeometry.headOffsetX}px`,
+        pointerEvents: 'none',
+        position: 'absolute',
+        top: `${9 + inletGeometry.headOffsetY}px`,
+        width: `${Math.round(inletGeometry.headWidth * 0.46)}px`,
+        zIndex: 1,
+      }}
+    />
+    <Box
+      ref={bannerRef}
+      role={notificationType === 'error' ? 'alert' : 'status'}
+      aria-live={notificationType === 'error' ? 'assertive' : 'polite'}
+      sx={{
+        backdropFilter: 'blur(16px)',
+        background: isDarkMode
+          ? `linear-gradient(180deg, ${alpha('#262E3D', 0.82)} 0%, ${alpha('#171C26', 0.94)} 58%, ${alpha('#121823', 0.96)} 100%)`
+          : `linear-gradient(180deg, ${alpha('#FBFCFE', 0.98)} 0%, ${alpha('#EEF3FA', 0.99)} 48%, ${alpha('#E3EBF5', 1)} 100%)`,
+        border: `${
+          notificationType === 'success' || notificationType === 'error'
+            ? '1.5px'
+            : '1px'
+        } solid ${alpha(palette.accent, frameChrome.borderAlpha)}`,
+        borderLeft: `${frameChrome.leftBarPx}px solid ${palette.accent}`,
+        borderRadius: '13px',
+        boxShadow: isDarkMode
+          ? `0 14px 26px ${alpha('#000000', 0.24)}, inset 0 1px 0 ${alpha('#FFFFFF', 0.03)}, 0 0 32px ${alpha(palette.accent, frameChrome.glowAlpha)}, 0 0 0 ${frameChrome.outerRingWidth}px ${alpha(palette.accent, frameChrome.outerRingAlpha)}`
+          : `0 14px 28px ${alpha('#2A405C', 0.11)}, inset 0 1px 0 ${alpha('#FFFFFF', 0.92)}, 0 0 28px ${alpha(palette.accent, frameChrome.glowAlpha + 0.04)}, 0 0 0 ${frameChrome.outerRingWidth}px ${alpha(palette.accent, frameChrome.outerRingAlpha)}`,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: actionLabel ? 0.75 : 0,
+        marginLeft: `${QORTINO_INLET_BAR_START_PX}px`,
+        maxWidth: '100%',
+        minHeight: actionLabel ? 'auto' : '43px',
+        minWidth: `min(168px, 100%)`,
+        overflow: 'hidden',
+        paddingBottom: `${(actionLabel ? 9 : 7) + paddingBottomExtra}px`,
+        paddingLeft: `${inletGeometry.stageWidth - QORTINO_INLET_BAR_START_PX + 10 + Math.max(0, inletGeometry.headOffsetX)}px`,
+        paddingRight: `${paddingRight}px`,
+        paddingTop: actionLabel ? '9px' : '7px',
+        position: 'relative',
+        width: 'fit-content',
+        '&::before': {
+          background: isDarkMode
+            ? `linear-gradient(180deg, ${alpha('#FFFFFF', 0.02)} 0%, transparent 100%)`
+            : `linear-gradient(180deg, ${alpha('#FFFFFF', 0.72)} 0%, transparent 55%)`,
+          content: '""',
+          inset: 0,
+          pointerEvents: 'none',
+          position: 'absolute',
+        },
+        '&::after': {
+          background: isDarkMode
+            ? `radial-gradient(circle at 0% 50%, ${alpha(palette.accent, 0.34)} 0%, ${palette.tint} 38%, transparent 72%)`
+            : `radial-gradient(circle at 0% 50%, ${alpha(palette.accent, 0.28)} 0%, ${alpha(palette.accent, 0.12)} 36%, transparent 68%)`,
+          content: '""',
+          inset: 0,
+          pointerEvents: 'none',
+          position: 'absolute',
+        },
+      }}
+    >
+      <Typography
+        ref={messageRef}
+        sx={{
+          color:
+            notificationType === 'error'
+              ? isDarkMode
+                ? alpha('#FFE8EA', 0.98)
+                : alpha('#5C2128', 0.94)
+              : notificationType === 'success'
+                ? isDarkMode
+                  ? alpha('#EAF6EE', 0.98)
+                  : alpha('#1E3D2C', 0.92)
+                : notificationType === 'warning'
+                  ? isDarkMode
+                    ? alpha('#FFF2E0', 0.98)
+                    : alpha('#4D3514', 0.92)
+                  : isDarkMode
+                    ? alpha('#E8F0FF', 0.98)
+                    : alpha(theme.palette.text.primary, 0.94),
+          fontFamily: 'Inter',
+          fontSize: '0.875rem',
+          fontWeight: 600,
+          letterSpacing: '-0.01em',
+          lineHeight: 1.4,
+          maxWidth: maxTextWidthCh,
+          minHeight: '21px',
+          position: 'relative',
+          textWrap: 'pretty',
+          zIndex: 0,
+        }}
+      >
+        {message}
+      </Typography>
+      {actionLabel && onAction ? (
+        <Button
+          onClick={onAction}
+          size="small"
+          sx={{
+            alignSelf: 'flex-start',
+            borderRadius: '10px',
+            fontSize: '0.78rem',
+            fontWeight: 700,
+            minHeight: 36,
+            px: 1.5,
+            position: 'relative',
+            textTransform: 'none',
+            zIndex: 1,
+          }}
+          variant="contained"
+        >
+          {actionLabel}
+        </Button>
+      ) : null}
+      <NotificationDismissControls
+        accent={palette.accent}
+        closeNotification={closeNotification}
+        hasAction={hasAction}
+        isDarkMode={isDarkMode}
+        isDismissible={isDismissible}
+        layoutMode={layoutMode}
+        remainingSeconds={dismissCountdownSeconds}
+        theme={theme}
+      />
+    </Box>
+    <QortinoNotificationHead
+      accent={palette.accent}
+      geometry={inletGeometry}
+      isDarkMode={isDarkMode}
+    />
+  </Box>
+  );
+};
+
 export const QortinoNotificationHost = ({
   info,
   open,
@@ -362,6 +902,7 @@ export const QortinoNotificationHost = ({
   setOpen,
 }: QortinoNotificationHostProps) => {
   const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down('md'));
   const infoRef = useRef<NotificationInfo>(info);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const inletDebugSettings: QortinoInletDebugSettings =
@@ -388,12 +929,8 @@ export const QortinoNotificationHost = ({
     const duration = info?.duration;
     if (duration === null) return;
 
-    const resolvedDuration =
-      typeof duration === 'number'
-        ? duration
-        : normalizeNotificationType(info?.type) === 'error'
-          ? ERROR_NOTIFICATION_DURATION_MS
-          : DEFAULT_NOTIFICATION_DURATION_MS;
+    const resolvedDuration = resolveNotificationDurationMs(duration, info?.type);
+    if (resolvedDuration === null) return;
 
     timeoutRef.current = window.setTimeout(() => {
       closeNotification();
@@ -431,6 +968,8 @@ export const QortinoNotificationHost = ({
         message,
         sourceId: payload.sourceId,
         type: normalizeNotificationType(payload.type),
+        actionLabel: payload.actionLabel,
+        actionEvent: payload.actionEvent,
       });
       setOpen(true);
     };
@@ -471,6 +1010,19 @@ export const QortinoNotificationHost = ({
   const notificationType = normalizeNotificationType(info?.type);
   const palette = getNotificationPalette(notificationType);
   const isDismissible = info?.dismissible !== false;
+  const actionLabel = info?.actionLabel?.trim();
+  const handleNotificationAction = useCallback(() => {
+    const actionEvent = info?.actionEvent;
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && active !== document.body) {
+      active.blur();
+    }
+    closeNotification();
+    if (!actionEvent) return;
+    window.requestAnimationFrame(() => {
+      runNotificationAction(actionEvent);
+    });
+  }, [closeNotification, info?.actionEvent]);
   const isDarkMode = theme.palette.mode === 'dark';
   const frameChrome = useMemo(
     () => getNotificationFrameChrome(notificationType, isDarkMode),
@@ -481,40 +1033,91 @@ export const QortinoNotificationHost = ({
     [inletDebugSettings]
   );
   const maxTextWidthCh = useMemo(() => {
-    const ceiling = info?.compact === true ? 26 : 40;
-    const floor = info?.compact === true ? 13 : 16;
-    const dynamic = Math.ceil(message.length * 0.74);
-    return `${Math.min(ceiling, Math.max(floor, dynamic))}ch`;
-  }, [info?.compact, message.length]);
+    const chWidth = getNotificationTextMaxWidthCh(
+      message,
+      info?.compact === true,
+      Boolean(actionLabel)
+    );
+    return isMobile ? `min(100%, ${chWidth})` : chWidth;
+  }, [actionLabel, info?.compact, isMobile, message]);
+  const notificationDurationMs = useMemo(
+    () => resolveNotificationDurationMs(info?.duration, info?.type),
+    [info?.duration, info?.type]
+  );
+  const dismissCountdownSeconds = useNotificationDismissCountdown(
+    open,
+    notificationDurationMs
+  );
+  const desktopBannerRef = useRef<HTMLDivElement>(null);
+  const desktopMessageRef = useRef<HTMLElement>(null);
+  const {
+    layoutMode: desktopLayoutMode,
+    paddingBottomExtra: desktopPaddingBottomExtra,
+    paddingRight: desktopPaddingRight,
+  } = useNotificationDismissLayout({
+    bannerRef: desktopBannerRef,
+    hasAction: false,
+    isDismissible,
+    message,
+    messageRef: desktopMessageRef,
+    remainingSeconds: dismissCountdownSeconds,
+  });
+
+  const notificationTop = isMobile
+    ? `calc(${MOBILE_TOP_BAR_HEIGHT_PX}px + env(safe-area-inset-top, 0px) + 8px)`
+    : `calc(var(--electron-title-bar-height, 0px) + 12px)`;
 
   if (!open || !message) return null;
 
   return (
     <Box
       sx={{
-        bottom: { xs: 14, sm: 22 },
-        left: '50%',
-        maxWidth: 'calc(100vw - 20px)',
+        left: isMobile
+          ? 'max(12px, env(safe-area-inset-left, 0px))'
+          : '50%',
+        maxWidth: isMobile ? 'none' : 'calc(100vw - 20px)',
         pointerEvents: 'none',
         position: 'fixed',
-        transform: 'translateX(-50%)',
-        width: 'fit-content',
-        zIndex: 2400,
+        right: isMobile
+          ? 'max(12px, env(safe-area-inset-right, 0px))'
+          : 'auto',
+        top: notificationTop,
+        transform: isMobile ? 'none' : 'translateX(-50%)',
+        width: isMobile ? 'auto' : 'fit-content',
+        zIndex: 2500,
       }}
     >
       <AnimatePresence initial={false} mode="wait">
         <motion.div
           key={`${notificationType}:${message}`}
-          initial={{ opacity: 0, y: 14, scale: 0.986 }}
+          initial={{ opacity: 0, y: isMobile ? -12 : -14, scale: 0.988 }}
           animate={{ opacity: 1, y: 0, scale: 1 }}
-          exit={{ opacity: 0, y: 12, scale: 0.99 }}
-          transition={{ duration: 0.2, ease: 'easeOut' }}
+          exit={{ opacity: 0, y: isMobile ? -10 : -12, scale: 0.99 }}
+          transition={{ duration: 0.22, ease: 'easeOut' }}
           style={{
+            maxWidth: '100%',
             pointerEvents: 'auto',
             position: 'relative',
             width: 'fit-content',
           }}
         >
+          {isMobile ? (
+            <MobileNotificationBanner
+              actionLabel={actionLabel}
+              closeNotification={closeNotification}
+              dismissCountdownSeconds={dismissCountdownSeconds}
+              frameChrome={frameChrome}
+              inletGeometry={inletGeometry}
+              isDarkMode={isDarkMode}
+              isDismissible={isDismissible}
+              maxTextWidthCh={maxTextWidthCh}
+              message={message}
+              notificationType={notificationType}
+              onAction={actionLabel ? handleNotificationAction : undefined}
+              palette={palette}
+              theme={theme}
+            />
+          ) : (
           <Box
             role={notificationType === 'error' ? 'alert' : 'status'}
             aria-live={notificationType === 'error' ? 'assertive' : 'polite'}
@@ -608,6 +1211,7 @@ export const QortinoNotificationHost = ({
               }}
             />
             <Box
+              ref={desktopBannerRef}
               sx={{
                 background: isDarkMode
                   ? `linear-gradient(180deg, ${alpha('#262E3D', 0.82)} 0%, ${alpha('#171C26', 0.94)} 58%, ${alpha('#121823', 0.96)} 100%)`
@@ -627,11 +1231,11 @@ export const QortinoNotificationHost = ({
                 marginLeft: `${QORTINO_INLET_BAR_START_PX}px`,
                 maxWidth: 'min(500px, calc(100vw - 20px))',
                 minHeight: '43px',
-                minWidth: 'min(184px, calc(100vw - 20px))',
+                minWidth: `min(168px, calc(100vw - 20px))`,
                 overflow: 'hidden',
-                paddingBottom: '7px',
+                paddingBottom: `${7 + desktopPaddingBottomExtra}px`,
                 paddingLeft: `${inletGeometry.stageWidth - QORTINO_INLET_BAR_START_PX + 10 + Math.max(0, inletGeometry.headOffsetX)}px`,
-                paddingRight: isDismissible ? '40px' : '11px',
+                paddingRight: `${desktopPaddingRight}px`,
                 paddingTop: '7px',
                 position: 'relative',
                 width: 'fit-content',
@@ -656,6 +1260,7 @@ export const QortinoNotificationHost = ({
               }}
             >
               <Typography
+                ref={desktopMessageRef}
                 sx={{
                   alignItems: 'center',
                   color:
@@ -689,38 +1294,15 @@ export const QortinoNotificationHost = ({
               >
                 {message}
               </Typography>
-              {isDismissible ? (
-                <IconButton
-                  aria-label="Dismiss notification"
-                  onClick={closeNotification}
-                  size="small"
-                  sx={{
-                    backgroundColor: isDarkMode
-                      ? alpha('#FFFFFF', 0.06)
-                      : alpha('#000000', 0.04),
-                    color: isDarkMode
-                      ? alpha('#F1F5FF', 0.92)
-                      : alpha(theme.palette.text.secondary, 0.95),
-                    height: 34,
-                    minWidth: 34,
-                    position: 'absolute',
-                    right: 4,
-                    top: '50%',
-                    transform: 'translateY(-50%)',
-                    zIndex: 6,
-                    '&:hover': {
-                      backgroundColor: isDarkMode
-                        ? alpha('#FFFFFF', 0.12)
-                        : alpha(theme.palette.primary.main, 0.1),
-                      color: isDarkMode
-                        ? alpha('#FFFFFF', 0.98)
-                        : theme.palette.text.primary,
-                    },
-                  }}
-                >
-                  <CloseRoundedIcon sx={{ fontSize: 18 }} />
-                </IconButton>
-              ) : null}
+              <NotificationDismissControls
+                accent={palette.accent}
+                closeNotification={closeNotification}
+                isDarkMode={isDarkMode}
+                isDismissible={isDismissible}
+                layoutMode={desktopLayoutMode}
+                remainingSeconds={dismissCountdownSeconds}
+                theme={theme}
+              />
             </Box>
             <QortinoNotificationHead
               accent={palette.accent}
@@ -728,6 +1310,7 @@ export const QortinoNotificationHost = ({
               isDarkMode={isDarkMode}
             />
           </Box>
+          )}
         </motion.div>
       </AnimatePresence>
     </Box>

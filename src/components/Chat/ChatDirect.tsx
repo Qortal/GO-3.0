@@ -32,6 +32,7 @@ import {
   TextField,
   Tooltip,
   Typography,
+  useMediaQuery,
   useTheme,
 } from '@mui/material';
 import CallEndRoundedIcon from '@mui/icons-material/CallEndRounded';
@@ -61,12 +62,14 @@ import {
   unsubscribeFromEvent,
 } from '../../utils/events';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
+import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import ShortUniqueId from 'short-unique-id';
 import { ExitIcon } from '../../assets/Icons/ExitIcon';
 import { ReplyPreview } from './MessageItem';
 import { useTranslation } from 'react-i18next';
 import { useNameSearch } from '../../hooks/useNameSearch';
 import { validateAddress } from '../../utils/validateAddress';
+import { getQchatFileApi } from '../../utils/qchatFileApi';
 import {
   MAX_SIZE_MESSAGE,
   MESSAGE_LIMIT_WARNING,
@@ -237,6 +240,7 @@ export const ChatDirect = ({
   );
   const myName = userInfo?.name;
   const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down('md'));
   const p2pHealth = useAtomValue(p2pHealthAtom);
 
   const {
@@ -1088,7 +1092,7 @@ export const ChatDirect = ({
   };
 
   const getLocalReticulumIdentityForQchatFile = useCallback(async () => {
-    const api = (window as any).electronAPI;
+    const api = getQchatFileApi();
     const [hashResult, keyResult] = await Promise.all([
       api?.reticulumGetLocalDestinationHash?.(),
       api?.reticulumGetLocalIdentityPublicKeyBase64?.(),
@@ -1116,7 +1120,7 @@ export const ChatDirect = ({
           })
         );
       }
-      const api = (window as any).electronAPI;
+      const api = getQchatFileApi();
       if (!api?.qchatFileSelect) {
         throw new Error('Reticulum file transfer is unavailable');
       }
@@ -1146,7 +1150,7 @@ export const ChatDirect = ({
           })
         );
       }
-      const api = (window as any).electronAPI;
+      const api = getQchatFileApi();
       if (!api?.qchatFileSend) {
         throw new Error('Reticulum file transfer is unavailable');
       }
@@ -1300,9 +1304,9 @@ export const ChatDirect = ({
           });
           throw new Error('File offer is not addressed to this account');
         }
-        const api = (window as any).electronAPI;
+        const api = getQchatFileApi();
         if (!api?.qchatFileChooseSavePath || !api?.qchatFileAccept) {
-          console.error('[QchatFileTransfer] accept aborted: electron API unavailable', {
+          console.error('[QchatFileTransfer] accept aborted: transfer API unavailable', {
             transferId: data.transferId,
             hasChooseSavePath: Boolean(api?.qchatFileChooseSavePath),
             hasAccept: Boolean(api?.qchatFileAccept),
@@ -1430,7 +1434,7 @@ export const ChatDirect = ({
   );
 
   useEffect(() => {
-    const unsubscribe = (window as any).electronAPI?.onQchatFileTransferEvent?.(
+    const unsubscribe = getQchatFileApi()?.onQchatFileTransferEvent?.(
       (payload) => {
         if (!payload?.status || !payload?.transferId) return;
         const incomingFailure =
@@ -1491,6 +1495,7 @@ export const ChatDirect = ({
                   transferId: payload.transferId,
                   fileName: payload.fileName || '',
                   path: payload.path || '',
+                  downloadsUri: payload.downloadsUri || '',
                   sha256: payload.sha256 || '',
                   expiresAt: Number(offerMeta?.expiresAt || 0),
                   completedAt: Date.now(),
@@ -1544,6 +1549,12 @@ export const ChatDirect = ({
     };
   }, [editorRef?.current]);
 
+  const closeMobileCompose = useCallback(() => {
+    if (!isMobile) return;
+    setIsFocusedParent(false);
+    editorRef.current?.commands.blur();
+  }, [isMobile]);
+
   const sendMessage = async () => {
     try {
       if (messageSize > MAX_SIZE_MESSAGE) return;
@@ -1565,6 +1576,8 @@ export const ChatDirect = ({
 
         if (isNewChat) {
           await sendChatDirect({ messageText: htmlContent }, null, null, true);
+          clearEditorContent();
+          closeMobileCompose();
           return;
         }
         let repliedTo = replyMessage?.signature;
@@ -1612,6 +1625,7 @@ export const ChatDirect = ({
         clearEditorContent();
         setReplyMessage(null);
         setOnEditMessage(null);
+        closeMobileCompose();
       }
       // send chat message
     } catch (error) {
@@ -1641,7 +1655,10 @@ export const ChatDirect = ({
       }
       setReplyMessage(message);
       setOnEditMessage(null);
-      editorRef?.current?.chain().focus();
+      setIsFocusedParent(true);
+      setTimeout(() => {
+        editorRef?.current?.chain().focus();
+      }, 250);
     },
     [onEditMessage]
   );
@@ -1649,7 +1666,10 @@ export const ChatDirect = ({
   const onEdit = useCallback((message) => {
     setOnEditMessage(message);
     setReplyMessage(null);
-    editorRef.current.chain().focus().setContent(message?.text).run();
+    setIsFocusedParent(true);
+    setTimeout(() => {
+      editorRef.current?.chain().focus().setContent(message?.text).run();
+    }, 250);
   }, []);
 
   return (
@@ -1667,6 +1687,7 @@ export const ChatDirect = ({
       }}
     >
       {/* Header: back button + optional new-chat title */}
+      {!(isMobile && isFocusedParent) && (
       <Box
         sx={{
           alignItems: 'center',
@@ -1853,6 +1874,7 @@ export const ChatDirect = ({
           </Box>
         )}
       </Box>
+      )}
 
       {!isNewChat && callMatchesThisDirect && callState === 'calling' && (
         <Box
@@ -2458,30 +2480,31 @@ export const ChatDirect = ({
 
       <Box
         sx={{
-          alignItems: 'flex-end',
+          alignItems: isMobile ? 'stretch' : 'flex-end',
           backgroundColor: theme.palette.background.default,
           border: `1px solid ${theme.palette.divider}`,
           borderRadius: '8px',
-          bottom: isFocusedParent ? '0px' : 'unset',
           boxSizing: 'border-box',
           display: 'flex',
-          flexDirection: 'row',
+          flexDirection: isMobile ? 'column' : 'row',
           flexShrink: 0,
-          gap: '12px',
-          minHeight: '150px',
+          gap: isMobile ? '8px' : '12px',
+          maxHeight: isFocusedParent && isMobile ? 'min(40vh, 280px)' : undefined,
+          minHeight: isMobile ? 0 : '150px',
           overflow: 'hidden',
-          padding: '16px 20px 20px',
-          position: isFocusedParent ? 'fixed' : 'relative',
-          top: isFocusedParent ? '0px' : 'unset',
+          padding: isMobile ? '10px' : '16px 20px 20px',
+          paddingBottom: isMobile
+            ? 'max(10px, env(safe-area-inset-bottom, 0px))'
+            : undefined,
+          position: 'relative',
           width: '100%',
-          zIndex: isFocusedParent ? 5 : 'unset',
         }}
       >
         <Box
           sx={{
             display: 'flex',
-            flexDirection: 'column',
             flex: 1,
+            flexDirection: 'column',
             flexShrink: 0,
             justifyContent: 'flex-end',
             minWidth: 0,
@@ -2533,14 +2556,120 @@ export const ChatDirect = ({
             </Box>
           )}
 
+          <Box
+            className={isMobile ? 'mobile-chat-compose-row' : undefined}
+            sx={{
+              alignItems: 'flex-end',
+              display: 'flex',
+              gap: '6px',
+              width: '100%',
+            }}
+          >
+            <Box sx={{ flex: 1, minWidth: 0 }}>
           <Tiptap
             isFocusedParent={isFocusedParent}
+            isReply={Boolean(replyMessage || onEditMessage)}
             setEditorRef={setEditorRef}
             onEnter={sendMessage}
             isChat
-            disableEnter={false}
+            disableEnter={isMobile}
             setIsFocusedParent={setIsFocusedParent}
+            mobileTopBarActions={
+              isMobile ? (
+                <Tooltip title="Transfer file with Reticulum">
+                  <span>
+                    <IconButton
+                      size="medium"
+                      onClick={handleSendQchatFileOffer}
+                      disabled={
+                        isSending || isNewChat || !selectedDirect?.address
+                      }
+                      sx={{
+                        color: theme.palette.text.secondary,
+                        flexShrink: 0,
+                        minHeight: 40,
+                        minWidth: 40,
+                      }}
+                    >
+                      <ReticulumFileTransferIcon sx={{ fontSize: 22 }} />
+                    </IconButton>
+                  </span>
+                </Tooltip>
+              ) : null
+            }
           />
+            </Box>
+            {isMobile && !isFocusedParent && (
+              <Tooltip title="Transfer file with Reticulum">
+                <span>
+                  <IconButton
+                    onClick={handleSendQchatFileOffer}
+                    disabled={isSending || isNewChat || !selectedDirect?.address}
+                    sx={{
+                      border: `1px solid ${theme.palette.divider}`,
+                      flexShrink: 0,
+                      height: 44,
+                      width: 44,
+                    }}
+                  >
+                    <ReticulumFileTransferIcon sx={{ fontSize: 22 }} />
+                  </IconButton>
+                </span>
+              </Tooltip>
+            )}
+            {isMobile && isFocusedParent && (
+              <>
+                <IconButton
+                  aria-label={t('core:action.close', {
+                    postProcess: 'capitalizeFirstChar',
+                  })}
+                  disabled={isSending}
+                  onClick={() => {
+                    setIsFocusedParent(false);
+                    editorRef.current?.commands.blur();
+                  }}
+                  sx={{
+                    border: `1px solid ${theme.palette.divider}`,
+                    flexShrink: 0,
+                    height: 44,
+                    width: 44,
+                  }}
+                >
+                  <CloseRoundedIcon sx={{ fontSize: 22 }} />
+                </IconButton>
+                <IconButton
+                  aria-label={t('core:action.send', {
+                    postProcess: 'capitalizeFirstChar',
+                  })}
+                  disabled={isSending || messageSize > MAX_SIZE_MESSAGE}
+                  onClick={() => {
+                    if (isSending || messageSize > MAX_SIZE_MESSAGE) return;
+                    sendMessage();
+                  }}
+                  sx={{
+                    bgcolor: theme.palette.primary.main,
+                    color: theme.palette.primary.contrastText,
+                    flexShrink: 0,
+                    height: 44,
+                    width: 44,
+                    '&:hover': {
+                      bgcolor: theme.palette.primary.dark,
+                    },
+                    '&.Mui-disabled': {
+                      bgcolor: theme.palette.action.disabledBackground,
+                      color: theme.palette.action.disabled,
+                    },
+                  }}
+                >
+                  {isSending ? (
+                    <CircularProgress size={20} sx={{ color: 'inherit' }} />
+                  ) : (
+                    <SendIcon sx={{ fontSize: 22 }} />
+                  )}
+                </IconButton>
+              </>
+            )}
+          </Box>
           {messageSize > MESSAGE_LIMIT_WARNING && (
             <Box
               sx={{
@@ -2569,12 +2698,14 @@ export const ChatDirect = ({
           )}
         </Box>
 
+        {!isMobile && (
         <Box
           sx={{
             alignItems: 'center',
             display: 'flex',
-            gap: '8px',
             flexShrink: 0,
+            gap: '8px',
+            justifyContent: 'flex-start',
             paddingBottom: '2px',
           }}
         >
@@ -2641,6 +2772,7 @@ export const ChatDirect = ({
             )}
           </CustomButton>
         </Box>
+        )}
       </Box>
 
       <LoadingSnackbar

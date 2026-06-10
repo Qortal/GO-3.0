@@ -10,10 +10,10 @@ import {
   validateStoredWalletForDecrypt,
 } from './walletErrorMessages';
 
-export const decryptStoredWallet = async (password, wallet) => {
+export const decryptStoredWallet = async (password, wallet, threadCount) => {
   validateStoredWalletForDecrypt(wallet);
 
-  const threads = doInitWorkers(crypto.kdfThreads);
+  const threads = doInitWorkers(threadCount ?? crypto.kdfThreads);
   let encryptedSeedBytes;
   let iv;
   let salt;

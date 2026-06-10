@@ -11,17 +11,44 @@ export const getDialogPaperSx = (
     maxWidth?: number;
     radius?: number;
   }
-) => ({
-  backgroundColor: '#0C1118',
-  backgroundImage: 'linear-gradient(180deg, #121821 0%, #0C1118 100%)',
-  border: `1px solid ${alpha('#A9BCD8', 0.18)}`,
-  borderRadius: `${options?.radius ?? 18}px`,
-  boxShadow: '0 26px 56px rgba(0,0,0,0.44)',
-  color: theme.palette.text.primary,
-  maxWidth: options?.maxWidth,
-  overflow: 'hidden',
-  width: 'calc(100% - 40px)',
-});
+) => {
+  const isLight = theme.palette.mode === 'light';
+
+  return {
+    backgroundColor: isLight ? theme.palette.background.paper : '#0C1118',
+    backgroundImage: isLight
+      ? `linear-gradient(180deg, ${theme.palette.background.paper} 0%, ${alpha(theme.palette.background.default, 0.98)} 100%)`
+      : 'linear-gradient(180deg, #121821 0%, #0C1118 100%)',
+    border: isLight
+      ? `1px solid ${alpha(theme.palette.divider, 0.9)}`
+      : `1px solid ${alpha('#A9BCD8', 0.18)}`,
+    borderRadius: `${options?.radius ?? 18}px`,
+    boxShadow: isLight
+      ? '0 18px 40px rgba(15, 23, 42, 0.12)'
+      : '0 26px 56px rgba(0,0,0,0.44)',
+    color: theme.palette.text.primary,
+    maxWidth: options?.maxWidth,
+    overflow: 'hidden',
+    width: 'calc(100% - 40px)',
+  };
+};
+
+export const getDialogInfoCardSx = (theme: Theme) => {
+  const isLight = theme.palette.mode === 'light';
+
+  return {
+    backgroundColor: isLight
+      ? alpha(theme.palette.common.white, 0.82)
+      : alpha(theme.palette.common.white, 0.04),
+    border: isLight
+      ? `1px solid ${alpha(theme.palette.divider, 0.9)}`
+      : '1px solid rgba(255,255,255,0.08)',
+    borderRadius: '14px',
+    px: 1.75,
+    py: 1.25,
+    width: '100%',
+  };
+};
 
 export const dialogTitleSx = {
   borderBottom: '1px solid rgba(169,188,216,0.1)',

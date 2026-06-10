@@ -636,7 +636,7 @@ export const getNotificationPermission = async ({ appInfo }) => {
             appInfo,
             payload: {
               text1: i18n.t('question:permission.notification', {
-                defaultValue: 'Allow this app to send you Hub notifications?',
+                defaultValue: 'Allow this app to send you GO notifications?',
                 postProcess: 'capitalizeFirstChar',
               }),
             },

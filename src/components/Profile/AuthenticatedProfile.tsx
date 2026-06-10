@@ -1,8 +1,4 @@
 import { memo } from 'react';
-import { useTheme } from '@mui/material';
-import {
-  AuthenticatedContainer,
-} from '../../styles/App-styles.ts';
 import { ProfileLeft, ProfileLeftProps } from './ProfileLeft';
 
 export type AuthenticatedProfileProps = ProfileLeftProps & {
@@ -31,48 +27,31 @@ export const AuthenticatedProfile = ({
   onOpenRegisterName,
   onCloseDrawer,
   desktopViewMode,
-  extState,
-  isMainWindow,
-  onLogout,
-  onOpenSettings,
-  onOpenDrawerLookup,
-  onOpenWalletsApp,
-  getUserInfo,
-  onOpenMinting,
-  showTutorial,
-  onBackupWallet,
 }: AuthenticatedProfileProps) => {
-  const theme = useTheme();
-
   const showLeftColumn =
     desktopViewMode !== 'apps' &&
     desktopViewMode !== 'dev' &&
     desktopViewMode !== 'chat' &&
     desktopViewMode !== 'home';
 
+  if (!showLeftColumn) {
+    return null;
+  }
+
   return (
-    <AuthenticatedContainer
-      sx={{
-        backgroundColor: theme.palette.background.paper,
-        display: 'flex',
-        justifyContent: 'flex-end',
-        width: 'auto',
-      }}
-    >
-      {showLeftColumn && (
-        <ProfileLeft
-          userInfo={userInfo}
-          balance={balance}
-          rawWallet={rawWallet}
-          qortBalanceLoading={qortBalanceLoading}
-          setOpenSnack={setOpenSnack}
-          setInfoSnack={setInfoSnack}
-          onRefreshBalance={onRefreshBalance}
-          onOpenSendQort={onOpenSendQort}
-          onOpenRegisterName={onOpenRegisterName}
-          onCloseDrawer={onCloseDrawer}
-        />
-      )}
-    </AuthenticatedContainer>
+    <ProfileLeft
+      userInfo={userInfo}
+      balance={balance}
+      rawWallet={rawWallet}
+      qortBalanceLoading={qortBalanceLoading}
+      setOpenSnack={setOpenSnack}
+      setInfoSnack={setInfoSnack}
+      onRefreshBalance={onRefreshBalance}
+      onOpenSendQort={onOpenSendQort}
+      onOpenRegisterName={onOpenRegisterName}
+      onCloseDrawer={onCloseDrawer}
+    />
   );
 };
+
+export default memo(AuthenticatedProfile);

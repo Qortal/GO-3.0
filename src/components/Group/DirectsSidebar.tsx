@@ -123,7 +123,8 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
         display: 'flex',
         flexDirection: 'column',
         height: '100%',
-        width: '400px',
+        width: { xs: '100%', sm: '400px' },
+        flexShrink: 0,
         padding: '0 2px 0 0',
       }}
     >

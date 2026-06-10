@@ -17,6 +17,9 @@ import MicOffRoundedIcon from '@mui/icons-material/MicOffRounded';
 import SettingsRoundedIcon from '@mui/icons-material/SettingsRounded';
 import VolumeOffRoundedIcon from '@mui/icons-material/VolumeOffRounded';
 import VolumeUpRoundedIcon from '@mui/icons-material/VolumeUpRounded';
+import SpeakerPhoneRoundedIcon from '@mui/icons-material/SpeakerPhoneRounded';
+import PhoneInTalkRoundedIcon from '@mui/icons-material/PhoneInTalkRounded';
+import { Capacitor } from '@capacitor/core';
 import { useAtomValue } from 'jotai';
 import { useTranslation } from 'react-i18next';
 import { userInfoAtom } from '../../atoms/global';
@@ -27,6 +30,7 @@ import {
 } from '../../lib/call/directVoiceCallChatId';
 import { DIRECT_VOICE_CALL_NAV_SLOT_ID } from '../Desktop/GlobalQortalNavBar';
 import { CallAudioSettingsButton } from '../Chat/CallAudioDeviceSelectors';
+import { setCallSpeaker, isCallSpeakerOn } from '../../bridge/mobileAudioSurface';
 import { DirectVoiceDebugPanel } from './DirectVoiceDebugPanel';
 import { getPrimaryNameForAvatar } from './groupApi';
 import {
@@ -57,6 +61,8 @@ export function DirectVoiceCallNavWidget() {
     toggleMute,
   } = useVoiceCallContext();
   const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(null);
+  const isNative = Capacitor.isNativePlatform();
+  const [speakerOn, setSpeakerOn] = useState(isCallSpeakerOn());
 
   useEffect(() => {
     setPortalTarget(document.getElementById(DIRECT_VOICE_CALL_NAV_SLOT_ID));
@@ -306,6 +312,38 @@ export function DirectVoiceCallNavWidget() {
             </IconButton>
           </span>
         </Tooltip>
+
+        {isNative ? (
+          <Tooltip title={speakerOn ? 'Loudspeaker on' : 'Earpiece'} arrow>
+            <span>
+              <IconButton
+                disabled={callState !== 'connected' || !callMediaReady}
+                size="small"
+                onClick={() => {
+                  const next = !speakerOn;
+                  setSpeakerOn(next);
+                  void setCallSpeaker(next).then((applied) =>
+                    setSpeakerOn(applied)
+                  );
+                }}
+                sx={{
+                  color: speakerOn
+                    ? theme.palette.primary.main
+                    : theme.palette.text.secondary,
+                  flexShrink: 0,
+                  height: 28,
+                  width: 28,
+                }}
+              >
+                {speakerOn ? (
+                  <SpeakerPhoneRoundedIcon sx={{ fontSize: 17 }} />
+                ) : (
+                  <PhoneInTalkRoundedIcon sx={{ fontSize: 17 }} />
+                )}
+              </IconButton>
+            </span>
+          </Tooltip>
+        ) : null}
 
         <Tooltip title="Hang up" arrow>
           <IconButton

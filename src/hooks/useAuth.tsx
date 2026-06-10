@@ -345,6 +345,7 @@ export const useAuth = () => {
       let isCalling = false;
       balanceSetIntervalRef = setInterval(async () => {
         if (isCalling) return;
+        if (document.hidden) return; // skip while backgrounded (battery)
         isCalling = true;
         window
           .sendMessage('balance')
@@ -422,10 +423,11 @@ export const useAuth = () => {
       }
       setIsLoading(true);
       setWalletToBeDecryptedError('');
+      // One frame for the spinner to paint before the KDF saturates the CPU.
       await new Promise<void>((res) => {
         setTimeout(() => {
           res();
-        }, 250);
+        }, 50);
       });
       const password = store.get(authenticatePasswordAtom);
       window

@@ -78,7 +78,12 @@ const DM_ROOM_KEY_REPLAY_RETRY_MS = 750;
 const DM_ROOM_KEY_REPLAY_MAX_ATTEMPTS = 6;
 const DM_ROOM_KEY_REQUEST_RETRY_MS = 1_000;
 const DM_ROOM_KEY_REQUEST_MAX_ATTEMPTS = 30;
-const DM_MEDIA_READINESS_TIMEOUT_MS = 12_000;
+// The Reticulum audio-link handshake (GJ fanout → path discovery → Hub GAC →
+// link established) is genuinely slow over the gossip overlay: captures show it
+// landing at ~9–14 s. A 12 s budget loses the race by ~1 s on slower setups and
+// the caller bails with voice_call.failed even though the link is about to come
+// up. Give it real headroom while staying under the Hub's own ~30 s patience.
+const DM_MEDIA_READINESS_TIMEOUT_MS = 28_000;
 const DM_MEDIA_READINESS_POLL_MS = 500;
 const DM_MEDIA_READINESS_WARMUP_MS = 1_000;
 const CALL_LOCAL_ADDRESS_REASSERT_MS = 2_500;
@@ -188,7 +193,14 @@ async function signPresenceFields(
 async function isSystemReadyForCall(
   showError: (message: string) => void
 ): Promise<boolean> {
-  const readiness = await window.electronAPI?.getSystemCallReadiness?.();
+  const getReadiness = window.electronAPI?.getSystemCallReadiness;
+  if (typeof getReadiness !== 'function') {
+    // Mobile (no Electron host): there is no system-readiness probe to consult,
+    // so don't block calls on it — the desktop-only CPU/memory/event-loop gate
+    // would otherwise fail-closed and make every call impossible on Capacitor.
+    return true;
+  }
+  const readiness = await getReadiness();
   if (!readiness || readiness.status !== 'good') {
     showError(
       'Your system is too busy for calls right now. Close other apps and try again.'
@@ -259,6 +271,11 @@ export function useVoiceCall(): UseVoiceCallReturn {
   const peerAddressRef = useRef<string | null>(null);
   const callSessionIdRef = useRef<string | null>(null);
   const mediaGenRef = useRef(1);
+  // Signature (`callSessionId:gen:commitment`) of the room key currently being
+  // applied or already applied, so the Hub's ~1.5 s GC_KEY re-sends are dropped
+  // before the expensive decrypt + media restart instead of churning the
+  // session. Cleared on call teardown so a fresh call always re-applies.
+  const dmAppliedKeySigRef = useRef<string | null>(null);
   const roomKeyRef = useRef<Uint8Array | null>(null);
   const audioSeqRef = useRef(0);
   const durationTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -880,6 +897,7 @@ export function useVoiceCall(): UseVoiceCallReturn {
     pendingDmVoiceGcallKeyRef.current = null;
     peerAddressRef.current = null;
     callSessionIdRef.current = null;
+    dmAppliedKeySigRef.current = null;
     syncDecryptWorkerRoomKey(null);
     if (decryptWorkerRef.current) {
       try {
@@ -1216,6 +1234,24 @@ export function useVoiceCall(): UseVoiceCallReturn {
         return;
       }
 
+      // The Hub re-sends GC_KEY every ~1.5 s for the entire call. Re-running the
+      // full reset → readiness → startMedia path for each duplicate churns the
+      // audio session: it disposes the in-flight mic-capture worklet ("session
+      // disposed") and tears down the very media we just brought up, so the Hub
+      // never gets a stable mic stream. If this key matches the session/gen we
+      // already have live, it's a duplicate — ignore it and keep media running.
+      if (
+        callSessionIdRef.current === payload.callSessionId &&
+        mediaGenRef.current === (payload.mediaSessionGeneration >>> 0) &&
+        roomKeyRef.current?.length === 32 &&
+        dmMediaOnAudioSurfaceRef.current
+      ) {
+        pushDirectVoiceUiLog('log', 'room key duplicate — media live, skip', {
+          sessionTrunc: String(payload.callSessionId).slice(0, 8),
+        });
+        return;
+      }
+
       resetDmVoiceMediaSession();
       roomKeyRef.current = keyBytes;
       callSessionIdRef.current = payload.callSessionId;
@@ -1394,6 +1430,23 @@ export function useVoiceCall(): UseVoiceCallReturn {
         return;
       }
 
+      // Drop the Hub's periodic GC_KEY re-sends before the (10 s-timeout)
+      // decrypt + media restart. The Hub fires GC_KEY every ~1.5 s and several
+      // copies arrive within a few hundred ms — i.e. WHILE the first one is
+      // still in its async decrypt (before callSessionId / media flags are
+      // set). We must therefore dedupe purely on the key signature, set
+      // SYNCHRONOUSLY here, so concurrent in-flight copies are dropped too;
+      // otherwise each one runs resetDmVoiceMediaSession + startMedia and
+      // disposes the mic-capture session the previous copy just brought up
+      // ("session disposed" → capture dies after 1 frame → peer hears nothing).
+      // On a transient failure we clear the signature below so the next
+      // re-send retries.
+      const keySig = `${p.callSessionId}:${p.mediaSessionGeneration ?? 1}:${p.keyCommitment}`;
+      if (dmAppliedKeySigRef.current === keySig) {
+        return;
+      }
+      dmAppliedKeySigRef.current = keySig;
+
       pushDirectVoiceUiLog('log', 'gcall:key decrypt…', {
         fromTrunc: (p.fromAddress ?? '').slice(0, 8),
         sessionTrunc: String(p.callSessionId).slice(0, 8),
@@ -1431,12 +1484,16 @@ export function useVoiceCall(): UseVoiceCallReturn {
             await startReticulumCaptureRef.current();
           }
         } else {
+          // Transient: let the Hub's next re-send retry this key.
+          dmAppliedKeySigRef.current = null;
           pushDirectVoiceUiLog(
             'warn',
             'decryptBoxWithMyKey returned no decryptedKey'
           );
         }
       } catch (e) {
+        // Transient (e.g. decrypt RPC timeout): clear so a re-send retries.
+        dmAppliedKeySigRef.current = null;
         console.error('[DM voice] key decrypt failed', e);
         pushDirectVoiceUiLog('warn', 'decryptBoxWithMyKey failed', {
           err: String(e),
@@ -1494,6 +1551,19 @@ export function useVoiceCall(): UseVoiceCallReturn {
         }
       );
       endCall(false);
+      return;
+    }
+
+    // Mobile (Capacitor) currently ships call *signaling* over Reticulum but not
+    // yet the media stack (window.groupCall + window.audioSurface). When those
+    // bridges are absent, stay in the 'connected' signaling state instead of
+    // tearing the call down, so answering/placing a call works end-to-end while
+    // audio transport is built. (Desktop always has both, so this never trips.)
+    if (!window.groupCall || !window.audioSurface) {
+      pushDirectVoiceUiLog(
+        'warn',
+        'media bridges unavailable — staying connected without audio (mobile)'
+      );
       return;
     }
 

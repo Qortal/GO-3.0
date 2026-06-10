@@ -7,7 +7,6 @@ import {
   AppsContainer,
 } from './Apps-styles';
 import {
-  Avatar,
   Box,
   ButtonBase,
   ClickAwayListener,
@@ -28,9 +27,8 @@ import { extractComponents } from '../Chat/MessageDisplay';
 import { useTranslation } from 'react-i18next';
 import { QORTAL_PROTOCOL } from '../../constants/constants';
 import IconClearInput from '../../assets/svgs/ClearInput.svg';
-import LogoSelected from '../../assets/svgs/LogoSelected.svg';
-import { getBaseApiReact } from '../../App';
 import { officialAppList } from './config/officialApps';
+import { AppThumbnailAvatar } from './AppThumbnailAvatar';
 
 const MAX_SUGGESTIONS = 8;
 const MAX_DEFAULT_APPS = 16;
@@ -48,6 +46,7 @@ export const AppsHomeDesktop = ({
   myWebsite,
   availableQapps = [],
   myName,
+  isMobile = false,
   myAddress,
 }) => {
   const [query, setQuery] = useState('');
@@ -392,26 +391,14 @@ export const AppsHomeDesktop = ({
                         mx: 0.5,
                       }}
                     >
-                      <Avatar
+                      <AppThumbnailAvatar
                         variant="rounded"
-                        sx={{
-                          width: 36,
-                          height: 36,
-                          '& img': { objectFit: 'fill' },
-                        }}
+                        appName={app?.privateAppProperties?.logo ? undefined : app?.name}
+                        privateLogo={app?.privateAppProperties?.logo}
                         alt={title}
-                        src={
-                          app?.privateAppProperties?.logo
-                            ? app.privateAppProperties.logo
-                            : `${getBaseApiReact()}/arbitrary/THUMBNAIL/${app?.name}/qortal_avatar?async=true`
-                        }
-                      >
-                        <img
-                          style={{ width: 24, height: 'auto' }}
-                          src={LogoSelected}
-                          alt=""
-                        />
-                      </Avatar>
+                        fallbackSize={24}
+                        sx={{ width: 36, height: 36 }}
+                      />
                       <Box sx={{ flex: 1, minWidth: 0, overflow: 'hidden' }}>
                         <Box
                           sx={{
@@ -497,7 +484,7 @@ export const AppsHomeDesktop = ({
         </ButtonBase>
 
         <SortablePinnedApps
-          isDesktop={true}
+          isDesktop={!isMobile}
           availableQapps={availableQapps}
           myWebsite={myWebsite}
           myApp={myApp}
