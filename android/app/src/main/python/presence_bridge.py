@@ -88,6 +88,16 @@ _rns_auth_announced: bool = False
 _rns_periodic_announce_timer: Optional[threading.Timer] = None
 _last_no_verified_peers_announce_at: float = 0.0
 
+# Python-side presence re-fanout: Android throttles WebView timers in the
+# background, starving the JS 25 s heartbeat. Re-send the last signed presence
+# wire from this (unthrottled) Python process so overlay neighbor leases (30 s)
+# stay warm and remote sessions stay fresh while the WebView sleeps. Receivers
+# drop envelopes older than 60 s, so this bridges short JS gaps and — more
+# importantly — keeps the fanout list populated for the next real heartbeat.
+PRESENCE_REFANOUT_INTERVAL_SEC = 20.0
+_presence_refanout_timer: Optional[threading.Timer] = None
+_last_presence_publish_at: float = 0.0
+
 
 def qortal_base58_decode(s: str) -> bytes:
     """Decode Qortal Base58 (same algorithm as presence.ts base58Decode)."""
@@ -6831,10 +6841,66 @@ def _schedule_rns_periodic_announce_timer() -> None:
 
 
 def _rns_announce_on_auth_session_end() -> None:
-    global _rns_auth_announced, _last_no_verified_peers_announce_at
+    global _rns_auth_announced, _last_no_verified_peers_announce_at, _last_presence_wire
     _rns_auth_announced = False
     _last_no_verified_peers_announce_at = 0.0
     _cancel_rns_periodic_announce_timer()
+    _cancel_presence_refanout_timer()
+    _last_presence_wire = None
+
+
+def _cancel_presence_refanout_timer() -> None:
+    global _presence_refanout_timer
+    t = _presence_refanout_timer
+    _presence_refanout_timer = None
+    if t is not None:
+        t.cancel()
+
+
+def _presence_refanout_fire() -> None:
+    global _presence_refanout_timer
+    _presence_refanout_timer = None
+    if _shutdown.is_set():
+        return
+    with _state_lock:
+        wire_bytes = _last_presence_wire
+        should_run = (
+            _destination is not None and wire_bytes is not None and _rns_auth_announced
+        )
+    if not should_run:
+        return
+
+    def run() -> None:
+        try:
+            # Skip the duplicate send when the JS layer published recently, but
+            # still resolve neighbors so their 30 s leases stay warm either way.
+            js_recent = (time.time() - _last_presence_publish_at) < (
+                PRESENCE_REFANOUT_INTERVAL_SEC * 0.75
+            )
+            _sync_overlay_links()
+            peer_hashes = _resolve_overlay_neighbor_hashes()
+            if js_recent:
+                return
+            for peer_hash in peer_hashes:
+                _send_wire_to_overlay_peer(peer_hash, wire_bytes, "presence_refanout")
+            log(
+                "[presence_bridge] target=presence-reticulum publish_refanout "
+                f"peers={len(peer_hashes)}"
+            )
+        except Exception as exc:
+            log(f"[presence_bridge] presence refanout failed: {exc}")
+
+    _enqueue_scheduler_task("control-send", "presence-refanout", run)
+    _schedule_presence_refanout_timer()
+
+
+def _schedule_presence_refanout_timer() -> None:
+    global _presence_refanout_timer
+    _cancel_presence_refanout_timer()
+    t = threading.Timer(PRESENCE_REFANOUT_INTERVAL_SEC, _presence_refanout_fire)
+    t.daemon = True
+    _presence_refanout_timer = t
+    t.start()
 
 
 def send_presence_wire_to_peer(peer_hash: str, peer_identity, wire_bytes: bytes) -> None:
@@ -8071,10 +8137,14 @@ def handle_publish_presence(req_id: str, payload: Dict[str, Any]) -> None:
 
     try:
         global _last_presence_wire, _rns_auth_announced, _last_no_verified_peers_announce_at
+        global _last_presence_publish_at
         env_type = envelope.get("type") if isinstance(envelope.get("type"), str) else ""
         if env_type == "PRESENCE_OFFLINE":
             _rns_announce_on_auth_session_end()
-        elif env_type == "PRESENCE_ANNOUNCE":
+        elif env_type in ("PRESENCE_ANNOUNCE", "PRESENCE_HEARTBEAT"):
+            # Heartbeats also qualify: if the initial ANNOUNCE was lost (race,
+            # resumed session), the RNS announce must still go out or remote
+            # peers may never learn a path to this destination.
             if not _rns_auth_announced:
                 announce_local_destination("authenticated_initial")
                 _rns_auth_announced = True
@@ -8083,6 +8153,9 @@ def handle_publish_presence(req_id: str, payload: Dict[str, Any]) -> None:
 
         wire_bytes = make_presence_wire(envelope, _OVERLAY_DEFAULT_HOPS)
         _last_presence_wire = wire_bytes
+        if env_type != "PRESENCE_OFFLINE":
+            _last_presence_publish_at = time.time()
+            _schedule_presence_refanout_timer()
         for ph in list(_recent_presence_senders):
             ensure_known_peer_from_recall(ph)
         extra = payload.get("overlayNeighborHashes")

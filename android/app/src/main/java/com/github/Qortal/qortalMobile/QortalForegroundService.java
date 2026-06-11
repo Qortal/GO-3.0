@@ -67,6 +67,15 @@ public class QortalForegroundService extends Service {
 
     public static final String BROADCAST_INCOMING_CALL_ACTION =
         "com.github.Qortal.qortalMobile.BROADCAST_INCOMING_CALL_ACTION";
+    /**
+     * Periodic tick relayed to the WebView so presence heartbeats keep firing
+     * while Android throttles JS timers in the background. Native Handler
+     * callbacks are not throttled, and delivering a Capacitor event executes
+     * JS immediately even when setInterval is suspended.
+     */
+    public static final String BROADCAST_PRESENCE_TICK =
+        "com.github.Qortal.qortalMobile.BROADCAST_PRESENCE_TICK";
+    private static final long PRESENCE_TICK_INTERVAL_MS = 25_000L;
 
     public static final String EXTRA_STATUS_TITLE = "status_title";
     public static final String EXTRA_STATUS_DETAIL = "status_detail";
@@ -100,6 +109,25 @@ public class QortalForegroundService extends Service {
     private String statusPeersLabel = "0 connected peers";
     private boolean isRunning = false;
 
+    private final Handler presenceTickHandler = new Handler(Looper.getMainLooper());
+    private final Runnable presenceTickRunnable = new Runnable() {
+        @Override
+        public void run() {
+            LocalBroadcastManager.getInstance(QortalForegroundService.this)
+                .sendBroadcast(new Intent(BROADCAST_PRESENCE_TICK));
+            presenceTickHandler.postDelayed(this, PRESENCE_TICK_INTERVAL_MS);
+        }
+    };
+
+    private void startPresenceTicker() {
+        presenceTickHandler.removeCallbacks(presenceTickRunnable);
+        presenceTickHandler.postDelayed(presenceTickRunnable, PRESENCE_TICK_INTERVAL_MS);
+    }
+
+    private void stopPresenceTicker() {
+        presenceTickHandler.removeCallbacks(presenceTickRunnable);
+    }
+
     @Override
     public void onCreate() {
         super.onCreate();
@@ -130,6 +158,7 @@ public class QortalForegroundService extends Service {
                 }
                 break;
             case ACTION_STOP:
+                stopPresenceTicker();
                 stopForeground(true);
                 stopSelf();
                 isRunning = false;
@@ -190,6 +219,7 @@ public class QortalForegroundService extends Service {
 
     @Override
     public void onDestroy() {
+        stopPresenceTicker();
         isRunning = false;
         super.onDestroy();
     }
@@ -203,6 +233,7 @@ public class QortalForegroundService extends Service {
         Notification notification = buildStatusNotification();
         startForeground(NOTIFICATION_ID_STATUS, notification);
         isRunning = true;
+        startPresenceTicker();
         Log.d(TAG, "Status foreground service started");
     }
 

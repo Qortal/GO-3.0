@@ -82,6 +82,16 @@ export interface QortalBackgroundPlugin {
     eventName: 'alertNotificationAction',
     listenerFunc: (event: AlertNotificationActionEvent) => void
   ): Promise<PluginListenerHandle>;
+
+  /**
+   * Fired every 25 s by the foreground service. Android throttles WebView
+   * timers in the background; this native tick keeps presence heartbeats
+   * flowing while the app is backgrounded.
+   */
+  addListener(
+    eventName: 'presenceTick',
+    listenerFunc: () => void
+  ): Promise<PluginListenerHandle>;
 }
 
 export const QortalBackground = registerPlugin<QortalBackgroundPlugin>(

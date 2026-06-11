@@ -22,6 +22,7 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 public class QortalBackgroundPlugin extends Plugin {
     private static final String TAG = "QortalBackgroundPlugin";
     private BroadcastReceiver incomingCallReceiver;
+    private BroadcastReceiver presenceTickReceiver;
     private String pendingAlertFromAddress;
     private String pendingAlertType;
 
@@ -42,6 +43,19 @@ public class QortalBackgroundPlugin extends Plugin {
         IntentFilter filter = new IntentFilter(QortalForegroundService.BROADCAST_INCOMING_CALL_ACTION);
         LocalBroadcastManager.getInstance(getContext()).registerReceiver(incomingCallReceiver, filter);
         Log.d(TAG, "Incoming call broadcast receiver registered");
+
+        // Native-driven presence tick: keeps JS presence heartbeats firing
+        // while the WebView's own timers are throttled in the background.
+        presenceTickReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                notifyListeners("presenceTick", new JSObject());
+            }
+        };
+        LocalBroadcastManager.getInstance(getContext()).registerReceiver(
+            presenceTickReceiver,
+            new IntentFilter(QortalForegroundService.BROADCAST_PRESENCE_TICK)
+        );
 
         consumeLaunchIntent(getActivity() != null ? getActivity().getIntent() : null);
     }
@@ -85,6 +99,9 @@ public class QortalBackgroundPlugin extends Plugin {
     protected void handleOnDestroy() {
         if (incomingCallReceiver != null) {
             LocalBroadcastManager.getInstance(getContext()).unregisterReceiver(incomingCallReceiver);
+        }
+        if (presenceTickReceiver != null) {
+            LocalBroadcastManager.getInstance(getContext()).unregisterReceiver(presenceTickReceiver);
         }
         super.handleOnDestroy();
     }

@@ -1431,11 +1431,18 @@ export function installReticulumBridges(): void {
     envelope: PresenceEnvelope
   ): Promise<{ success: boolean }> => {
     try {
-      await ensureBridgeStarted();
-      await Reticulum.presenceCommand({
-        action: 'publish_presence',
-        payload: { envelope, overlayNeighborHashes: neighborList() },
+      // Wait for the bridge's resp frame instead of fire-and-forget: a publish
+      // that Python rejects ("Bridge not started", wire build failure, …) must
+      // surface as success:false so usePresence retries the announce instead
+      // of believing it is online while nothing ever reaches the network.
+      const resp = await presenceCommandWithResult('publish_presence', {
+        envelope,
+        overlayNeighborHashes: neighborList(),
       });
+      if (resp.ok === false) {
+        console.warn('[Presence] publish rejected by bridge:', resp.error ?? resp);
+        return { success: false };
+      }
       return { success: true };
     } catch (err) {
       console.error('[Presence] publish failed:', err);

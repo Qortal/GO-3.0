@@ -12,10 +12,16 @@ import {
   statusMapAtom,
   UserStatus,
 } from '../atoms/presence';
+import { QortalBackground } from '../plugins/QortalBackground';
+import { isCapacitor } from '../utils/platform';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const HEARTBEAT_INTERVAL_MS = 25_000;
+/** Retry a failed announce this often until it succeeds (transport may still be booting). */
+const ANNOUNCE_RETRY_MS = 15_000;
+/** Consecutive heartbeat publish failures before falling back to a fresh announce. */
+const HEARTBEAT_FAIL_REANNOUNCE_THRESHOLD = 2;
 const IDLE_TIMEOUT_MS = 30 * 60 * 1_000; // 30 minutes
 const IDLE_CHECK_INTERVAL_MS = 60_000;    // check once per minute
 const CLIENT_VERSION = '1.0.0';
@@ -164,6 +170,15 @@ export function usePresence(): { sendOfflineBeforeLogout: () => Promise<void> } 
   const hasAnnouncedRef = useRef(false);
   // Ref-only idle tracking — no state, no re-renders for the timer itself.
   const lastActivityRef = useRef<number>(Date.now());
+  // When the last heartbeat actually went out — lets the native presence tick
+  // skip redundant sends while the in-page interval is still running.
+  const lastHeartbeatAtRef = useRef<number>(0);
+  // Announce retry machinery: a failed announce (transport still booting,
+  // signing busy, bridge command rejected, …) must never silently kill
+  // outbound presence for the rest of the session.
+  const announceRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const ensureAnnouncedRef = useRef<() => void>(() => {});
+  const heartbeatFailStreakRef = useRef(0);
   const isIdleRef = useRef<boolean>(false);
   // Stable refs so all callbacks always read current values.
   const userInfoRef = useRef(userInfo);
@@ -252,10 +267,17 @@ export function usePresence(): { sendOfflineBeforeLogout: () => Promise<void> } 
         sessionId,
         status,
       };
-      await window.presence?.announce(
+      const result = await window.presence?.announce(
         buildEnvelope('PRESENCE_ANNOUNCE', payload, timestamp, signature)
       );
+      // The bridge swallows transport errors and reports { success: false } —
+      // treat that as a real failure so the retry loop can re-announce.
+      if (!result?.success) {
+        console.warn('[Presence] Announce publish reported failure');
+        return false;
+      }
       hasAnnouncedRef.current = true;
+      heartbeatFailStreakRef.current = 0;
       return true;
     } catch (err) {
       console.error('[Presence] Announce failed:', err);
@@ -288,15 +310,31 @@ export function usePresence(): { sendOfflineBeforeLogout: () => Promise<void> } 
         sessionId,
         status,
       };
-      await window.presence.heartbeat(
+      const result = await window.presence.heartbeat(
         buildEnvelope('PRESENCE_HEARTBEAT', payload, timestamp, signature)
       );
+      if (!result?.success) {
+        heartbeatFailStreakRef.current += 1;
+        console.warn(
+          `[Presence] Heartbeat publish reported failure (streak=${heartbeatFailStreakRef.current})`
+        );
+        if (heartbeatFailStreakRef.current >= HEARTBEAT_FAIL_REANNOUNCE_THRESHOLD) {
+          // The transport is rejecting publishes — drop back to the announce
+          // path so the retry loop can re-establish the session end to end.
+          hasAnnouncedRef.current = false;
+          stopHeartbeat();
+          ensureAnnouncedRef.current();
+        }
+        return false;
+      }
+      heartbeatFailStreakRef.current = 0;
+      lastHeartbeatAtRef.current = Date.now();
       return true;
     } catch (err) {
       console.error('[Presence] Heartbeat failed:', err);
       return false;
     }
-  }, [getEffectiveStatus]);
+  }, [getEffectiveStatus, stopHeartbeat]);
 
   const announceWhenRemoteHubsReady = useCallback(
     (shouldCancel: () => boolean): Promise<boolean> => {
@@ -327,6 +365,46 @@ export function usePresence(): { sendOfflineBeforeLogout: () => Promise<void> } 
     },
     [getEffectiveStatus, sendAnnounce, sendHeartbeat, stopHeartbeat]
   );
+
+  const clearAnnounceRetry = useCallback(() => {
+    if (announceRetryTimerRef.current !== null) {
+      clearTimeout(announceRetryTimerRef.current);
+      announceRetryTimerRef.current = null;
+    }
+  }, []);
+
+  /**
+   * Announce with retries. A single failed announce (Reticulum bridge still
+   * booting, signing worker busy right after unlock, native command rejected)
+   * used to permanently disable outbound presence for the whole session —
+   * peers could see us only if the very first attempt happened to succeed.
+   * Keep retrying every ANNOUNCE_RETRY_MS until it works or we log out.
+   */
+  const ensureAnnounced = useCallback((): void => {
+    if (!isAuthenticatedRef.current) return;
+    if (hasAnnouncedRef.current) return;
+    if (myStatusRef.current === 'offline') return;
+    void (async () => {
+      const ok = await announceWhenRemoteHubsReady(
+        () => !isAuthenticatedRef.current || myStatusRef.current === 'offline'
+      );
+      if (ok || !isAuthenticatedRef.current || myStatusRef.current === 'offline') {
+        return;
+      }
+      console.warn(
+        `[Presence] Announce attempt failed; retrying in ${ANNOUNCE_RETRY_MS / 1000}s`
+      );
+      clearAnnounceRetry();
+      announceRetryTimerRef.current = setTimeout(() => {
+        announceRetryTimerRef.current = null;
+        ensureAnnouncedRef.current();
+      }, ANNOUNCE_RETRY_MS);
+    })();
+  }, [announceWhenRemoteHubsReady, clearAnnounceRetry]);
+
+  useEffect(() => {
+    ensureAnnouncedRef.current = ensureAnnounced;
+  }, [ensureAnnounced]);
 
   // ── Idle detection ────────────────────────────────────────────────────────
   //
@@ -391,6 +469,33 @@ export function usePresence(): { sendOfflineBeforeLogout: () => Promise<void> } 
     };
   }, [isAuthenticated, sendHeartbeat, setIsIdle]);
 
+  // ── Native presence tick (Android) ────────────────────────────────────────
+  //
+  // Android throttles WebView timers while the app is backgrounded, which
+  // starves the 25 s heartbeat interval and makes this account go stale for
+  // remote peers ("inbound still works, outbound presence dies"). The
+  // foreground service emits a reliable native tick every 25 s; re-send the
+  // heartbeat from it whenever the in-page interval has fallen behind.
+  useEffect(() => {
+    if (!isAuthenticated || !isCapacitor()) return undefined;
+    const handlePromise = QortalBackground.addListener('presenceTick', () => {
+      if (!isAuthenticatedRef.current) return;
+      if (!hasAnnouncedRef.current) {
+        // Announce never succeeded (or was demoted after repeated heartbeat
+        // failures) — use the reliable native tick to keep retrying it.
+        ensureAnnouncedRef.current();
+        return;
+      }
+      if (Date.now() - lastHeartbeatAtRef.current < HEARTBEAT_INTERVAL_MS - 5_000) {
+        return;
+      }
+      void sendHeartbeat();
+    });
+    return () => {
+      void handlePromise.then((handle) => handle.remove()).catch(() => {});
+    };
+  }, [isAuthenticated, sendHeartbeat]);
+
   // ── Announce / offline lifecycle ──────────────────────────────────────────
 
   useEffect(() => {
@@ -439,13 +544,12 @@ export function usePresence(): { sendOfflineBeforeLogout: () => Promise<void> } 
       }
 
       isAppearedOfflineRef.current = false;
-      void announceWhenRemoteHubsReady(
-        () => cancelled || myStatusRef.current === 'offline'
-      );
+      ensureAnnounced();
     })();
 
     return () => {
       cancelled = true;
+      clearAnnounceRetry();
       stopHeartbeat();
       sendOfflineCallback();
     };
@@ -461,18 +565,13 @@ export function usePresence(): { sendOfflineBeforeLogout: () => Promise<void> } 
       if (!isAppearedOfflineRef.current) {
         isAppearedOfflineRef.current = true;
         hasAnnouncedRef.current = false;
+        clearAnnounceRetry();
         stopHeartbeat();
         sendOfflineCallback();
       }
     } else if (isAppearedOfflineRef.current) {
-      void (async () => {
-        const announced = await announceWhenRemoteHubsReady(
-          () =>
-            !isAuthenticatedRef.current || myStatusRef.current === 'offline'
-        );
-        if (!announced) return;
-        isAppearedOfflineRef.current = false;
-      })();
+      isAppearedOfflineRef.current = false;
+      ensureAnnounced();
     } else {
       const timer = setTimeout(sendHeartbeat, 300);
       return () => clearTimeout(timer);
