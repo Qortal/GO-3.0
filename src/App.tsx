@@ -61,6 +61,7 @@ import { SupportChat, SUPPORT_ADDRESSES } from './components/Chat/SupportChat';
 import { VoiceCallProvider } from './context/VoiceCallContext';
 import { DirectVoiceCallGlobalOverlay } from './components/Chat/DirectVoiceCallGlobalOverlay';
 import { DirectVoiceCallNavWidget } from './components/Group/DirectVoiceCallNavWidget';
+import { MobileVoiceCallBar } from './components/Mobile/MobileVoiceCallBar';
 import { AgentSupportDashboard } from './components/Chat/AgentSupportDashboard';
 import {
   GroupSupportChat,
@@ -1760,6 +1761,7 @@ function App() {
                     </Box>
                     <QortalGroupVoiceCallNavWidget />
                     <DirectVoiceCallNavWidget />
+                    <MobileVoiceCallBar />
                     <QortalGroupVoiceCallStage />
                     <DirectVoiceCallGlobalOverlay />
                     <MobileIncomingCallBridge />

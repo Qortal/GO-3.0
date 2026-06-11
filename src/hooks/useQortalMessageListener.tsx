@@ -9,6 +9,11 @@ import { Filesystem, Directory } from '@capacitor/filesystem';
 import { saveFile } from '../qortal/get';
 import { mimeToExtensionMap } from '../utils/memeTypes';
 import FileSaver from 'file-saver';
+import { isCapacitor } from '../utils/platform';
+import {
+  MOBILE_SAVE_LOCATION_LABEL,
+  saveBlobToMobileDocuments,
+} from '../utils/mobileFileSave';
 import { useAtomValue, useSetAtom } from 'jotai';
 import {
   QORTAL_PROTOCOL,
@@ -449,6 +454,18 @@ export const showSaveFilePicker = async (
     });
 
     setOpenSnackGlobal(true);
+
+    if (isCapacitor()) {
+      // FileSaver's anchor-tag download does nothing inside the Capacitor
+      // WebView — write to Documents/Qortal Go via the native plugin instead.
+      await saveBlobToMobileDocuments(filename, blob);
+      setInfoSnackCustom({
+        type: 'success',
+        message: `Saved to ${MOBILE_SAVE_LOCATION_LABEL}`,
+      });
+      setOpenSnackGlobal(true);
+      return;
+    }
 
     FileSaver.saveAs(blob, filename);
 

@@ -488,24 +488,35 @@ export function useVoiceCall(): UseVoiceCallReturn {
       dmMediaOnAudioSurfaceRef.current = false;
       return false;
     }
-    const keyBuffer = roomKey.slice().buffer as ArrayBuffer;
-    const response = await window.audioSurface
-      .sendCommand({
-        type: 'start-direct-voice-media',
-        roomId,
-        peerAddress: peer,
-        localAddress,
-        roomKey: keyBuffer,
-        inputDeviceId: callAudioPrefsRef.current.inputDeviceId ?? null,
-        outputDeviceId: callAudioPrefsRef.current.outputDeviceId ?? null,
-        muted: isMutedRef.current,
-        hearCall: hearCallRef.current,
-        profile: readGroupCallAudioProfile(),
-      })
-      .catch((error) => ({
-        ok: false as const,
-        error: error instanceof Error ? error.message : String(error),
-      }));
+    const sendStart = async () => {
+      const keyBuffer = roomKey.slice().buffer as ArrayBuffer;
+      return window.audioSurface!
+        .sendCommand({
+          type: 'start-direct-voice-media',
+          roomId,
+          peerAddress: peer,
+          localAddress,
+          roomKey: keyBuffer,
+          inputDeviceId: callAudioPrefsRef.current.inputDeviceId ?? null,
+          outputDeviceId: callAudioPrefsRef.current.outputDeviceId ?? null,
+          muted: isMutedRef.current,
+          hearCall: hearCallRef.current,
+          profile: readGroupCallAudioProfile(),
+        })
+        .catch((error) => ({
+          ok: false as const,
+          error: error instanceof Error ? error.message : String(error),
+        }));
+    };
+    let response = await sendStart();
+    if (!response.ok && /session disposed/i.test(response.error ?? '')) {
+      // A stale teardown from the previous call raced our start (rapid
+      // redial into the same DM room). The disposer has finished by now —
+      // one retry brings media up instead of failing the whole call.
+      pushDirectVoiceUiLog('warn', 'media start raced teardown — retrying once');
+      await new Promise((r) => setTimeout(r, 350));
+      response = await sendStart();
+    }
     dmMediaOnAudioSurfaceRef.current = response.ok === true;
     dmReceiveOnAudioSurfaceRef.current = response.ok === true;
     if (!response.ok) {
@@ -1917,6 +1928,20 @@ export function useVoiceCall(): UseVoiceCallReturn {
       }
 
       case 'call:accepted': {
+        // The CALL_ACCEPT floods the overlay, so every device of the callee
+        // account sees it. If WE are still ringing for this same call, another
+        // device of ours answered it — stop ringing here instead of letting
+        // the phone ring forever.
+        if (
+          callStateRef.current === 'ringing' &&
+          incomingCallRef.current?.callId === p.callId
+        ) {
+          pushDirectVoiceUiLog('log', 'call answered on another device', {
+            callIdTrunc: String(p.callId ?? '').slice(0, 8),
+          });
+          endCall(false);
+          break;
+        }
         if (
           callIdRef.current !== p.callId ||
           callStateRef.current !== 'calling'

@@ -10,13 +10,19 @@ export interface FileWriterPlugin {
 
 const FileWriter = registerPlugin<FileWriterPlugin>('FileWriter');
 
-function utf8ToBase64(text: string): string {
-  const bytes = new TextEncoder().encode(text);
+function bytesToBase64(bytes: Uint8Array): string {
   let binary = '';
-  for (const byte of bytes) {
-    binary += String.fromCharCode(byte);
+  // Convert in 32 KiB slices: String.fromCharCode(...whole) overflows the
+  // argument limit for large files.
+  const SLICE = 0x8000;
+  for (let i = 0; i < bytes.length; i += SLICE) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + SLICE));
   }
   return btoa(binary);
+}
+
+function utf8ToBase64(text: string): string {
+  return bytesToBase64(new TextEncoder().encode(text));
 }
 
 async function blobToBase64(blob: Blob): Promise<string> {
@@ -60,6 +66,22 @@ export async function writeNativeDocumentBlob(
   return FileWriter.writeChunk({
     filename,
     dataBase64: await blobToBase64(blob),
+    append,
+  });
+}
+
+export async function writeNativeDocumentBytes(
+  filename: string,
+  bytes: Uint8Array,
+  append = false
+): Promise<{ path: string; uri: string }> {
+  if (!Capacitor.isNativePlatform()) {
+    throw new Error('Native file writer is only available on the mobile app.');
+  }
+
+  return FileWriter.writeChunk({
+    filename,
+    dataBase64: bytesToBase64(bytes),
     append,
   });
 }

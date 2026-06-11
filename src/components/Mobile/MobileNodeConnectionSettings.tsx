@@ -16,7 +16,7 @@ import { useTranslation } from 'react-i18next';
 import { selectedNodeInfoAtom } from '../../atoms/global';
 import {
   HTTPS_EXT_NODE_QORTAL_LINK,
-  isLocalNodeUrl,
+  isPublicGatewayNodeUrl,
 } from '../../constants/constants';
 import { useAuth } from '../../hooks/useAuth';
 import { AuthButton } from '../Auth/AuthShell';
@@ -28,10 +28,7 @@ function normalizeNodeUrl(url: string) {
 }
 
 function resolveNodeMode(url?: string | null): NodeMode {
-  if (!url || url === HTTPS_EXT_NODE_QORTAL_LINK || isLocalNodeUrl(url)) {
-    return 'public';
-  }
-  return 'private';
+  return isPublicGatewayNodeUrl(url) ? 'public' : 'private';
 }
 
 type MobileNodeConnectionSettingsProps = {

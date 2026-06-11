@@ -1719,6 +1719,25 @@ export function installReticulumBridges(): void {
     return false;
   };
 
+  // Hub relays group-call overlay wires ONLY when they carry overlay meta
+  // (`X` dedupe id + `L` hopsRemaining — parseReticulumOverlayMeta). Without it
+  // the frame dies at the first hub, so two mobiles that aren't direct overlay
+  // neighbors never exchange GJ/GK and a mobile↔mobile call hangs on
+  // "Connecting" with establishedLinks=0. Call signaling (CR/CA) already
+  // attaches this meta, which is why ringing worked while media setup didn't.
+  // 13 chars: exactly the X placeholder width reserved by the size budget in
+  // groupCallWire.ts (byteLengthUtf8JsonWithBridgeSender), so fragments built
+  // against RT_RETICULUM_MAX_WIRE_JSON_BYTES still fit after meta is attached.
+  const attachGcOverlayMeta = (
+    wire: Record<string, unknown>
+  ): Record<string, unknown> => {
+    const overlayId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`.slice(0, 13);
+    // Mark our own id as seen so relayed echoes of our wires are dropped
+    // instead of being processed as if a peer sent them (e.g. our own GJ).
+    seenGcOverlayId(overlayId);
+    return { ...wire, X: overlayId, L: CALL_MAX_HOPS };
+  };
+
   const fanoutGroupCall = async (
     messages: Record<string, unknown>[]
   ): Promise<void> => {
@@ -1727,7 +1746,10 @@ export function installReticulumBridges(): void {
     try {
       const res = await Reticulum.presenceCommand({
         action: 'fanout_group_call',
-        payload: { messages, overlayNeighborHashes: neighborList() },
+        payload: {
+          messages: messages.map(attachGcOverlayMeta),
+          overlayNeighborHashes: neighborList(),
+        },
       });
       console.log(
         '[GCall] fanout t=%s neighbors=%d ->',
@@ -1957,6 +1979,13 @@ export function installReticulumBridges(): void {
       byAddr = new Map();
       gcPeersByRoom.set(roomId, byAddr);
     }
+    // GJ is authoritative: drop address-less destination stashes from earlier
+    // learning so a stale dest can't shadow the fresh one in peerDestForRoomAny.
+    for (const [k, p] of [...byAddr]) {
+      if (!p.address && p.destinationHash !== peer.destinationHash) {
+        byAddr.delete(k);
+      }
+    }
     byAddr.set(peer.address, peer);
     const hash = (peerPresenceHash || peer.destinationHash).toLowerCase();
     if (peer.identityPublicKeyBase64) {
@@ -1994,7 +2023,11 @@ export function installReticulumBridges(): void {
     byAddr.set(address, { address, destinationHash: dest });
   };
 
-  const noteDmPeerDestination = (roomId: string, destHash: string): void => {
+  const noteDmPeerDestination = (
+    roomId: string,
+    destHash: string,
+    authoritative = false
+  ): void => {
     if (!roomId.startsWith(DM_ROOM_PREFIX)) return;
     const hash = (destHash || '').trim().toLowerCase();
     if (!DEST_HASH_RE.test(hash)) return;
@@ -2011,7 +2044,25 @@ export function installReticulumBridges(): void {
       break;
     }
     if (existing) {
-      if (!existing.destinationHash) existing.destinationHash = hash;
+      if (!existing.destinationHash) {
+        existing.destinationHash = hash;
+      } else if (authoritative && existing.destinationHash !== hash) {
+        // The peer's audio destination CHANGES between calls (per-session RNS
+        // destination). The room id doesn't, so a destination learned in a
+        // previous call goes stale and every key/audio send to it dies in the
+        // void while the peer keeps re-requesting the key. A frame that names
+        // its own sender destination is authoritative — adopt it and drop the
+        // stale link mapping.
+        const old = existing.destinationHash.toLowerCase();
+        console.log(
+          '[GCall] peer dest updated room=%s old=%s new=%s',
+          roomId.slice(0, 12),
+          old.slice(0, 8),
+          hash.slice(0, 8)
+        );
+        existing.destinationHash = hash;
+        establishedLinkIdByPeer.delete(old);
+      }
     } else {
       byAddr.set(hash, { address: '', destinationHash: hash });
     }
@@ -2139,12 +2190,16 @@ export function installReticulumBridges(): void {
       // so the peer becomes routable and link-auth can ride this link. Without
       // this, peerDest stays empty → sendControlFramesOverLinks bails → no
       // link-auth is ever sent and readiness times out with establishedLinks=0.
-      const learnedLinkDest =
+      const explicitLinkDest =
         asString(payload.senderDestinationHash) ||
         asString(payload.peerDestinationHash) ||
-        peerPresenceHash ||
         '';
-      if (learnedLinkDest) noteDmPeerDestination(inRoom, learnedLinkDest);
+      const learnedLinkDest = explicitLinkDest || peerPresenceHash || '';
+      if (learnedLinkDest) {
+        // Frames that name their sender's destination are authoritative and may
+        // replace a stale destination from a previous call to the same room.
+        noteDmPeerDestination(inRoom, learnedLinkDest, !!explicitLinkDest);
+      }
       // Kick off (idempotent) link-auth over this newly-known link so the Hub
       // verifies us and flips from "connecting" to connected. No-op if we never
       // joined this room (gcJoinWireByRoom empty).
@@ -2225,11 +2280,12 @@ export function installReticulumBridges(): void {
     // the caller could never open an outbound link, leaving establishedLinks=0
     // and timing out media readiness). This opens our link back to the right
     // audio dest (which differs from the presence hash).
+    const explicitDestEarly = asString(payload.peerDestinationHash) || '';
     const learnedDestEarly =
-      asString(payload.peerDestinationHash) ||
-      asString(payload.peerPresenceHash) ||
-      '';
-    if (roomId && learnedDestEarly) noteDmPeerDestination(roomId, learnedDestEarly);
+      explicitDestEarly || asString(payload.peerPresenceHash) || '';
+    if (roomId && learnedDestEarly) {
+      noteDmPeerDestination(roomId, learnedDestEarly, !!explicitDestEarly);
+    }
     if (!dataB64) return;
     let bytes: Uint8Array;
     try {
@@ -2270,11 +2326,12 @@ export function installReticulumBridges(): void {
     // Learn the peer's Reticulum destination from the (reliable) audio data-plane
     // so readiness can pass and outbound audio can be routed even when the
     // overlay GJ never arrived.
+    const explicitDest = asString(payload.peerDestinationHash) || '';
     const learnedDest =
-      asString(payload.peerDestinationHash) ||
-      asString(payload.peerPresenceHash) ||
-      '';
-    if (roomId && learnedDest) noteDmPeerDestination(roomId, learnedDest);
+      explicitDest || asString(payload.peerPresenceHash) || '';
+    if (roomId && learnedDest) {
+      noteDmPeerDestination(roomId, learnedDest, !!explicitDest);
+    }
     emitGc('gcall:audio', {
       roomId,
       data: bytes,
@@ -2317,6 +2374,26 @@ export function installReticulumBridges(): void {
         gcRooms.set(roomId, room);
         gcLocalAddresses.add(fromAddress);
         const isDm = roomId.startsWith('dmv:');
+        // The DM room id is stable across calls (derived from the address
+        // pair), so per-room link/peer state from a previous call is stale by
+        // definition when a NEW call session starts: the inbound link is dead
+        // and the peer's audio destination has likely rotated. Keeping them
+        // makes key/audio sends ride dead routes. Drop them and re-learn from
+        // this call's live frames.
+        if (isDm && !existing) {
+          inboundAudioLinkIdByRoom.delete(roomId);
+          const byAddr = gcPeersByRoom.get(roomId);
+          if (byAddr) {
+            for (const [k, p] of [...byAddr]) {
+              if (!p.address) {
+                byAddr.delete(k);
+              } else if (p.destinationHash) {
+                establishedLinkIdByPeer.delete(p.destinationHash.toLowerCase());
+                p.destinationHash = '';
+              }
+            }
+          }
+        }
         const wireChatId = compactDmVoiceJoinWireChatId(roomId, chatId);
         const gj = encodeJoinWire({
           roomId,

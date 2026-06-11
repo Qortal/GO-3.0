@@ -124,6 +124,11 @@ import i18n from 'i18next';
 import aesjs from 'aes-js';
 import { roundUpToDecimals } from '../utils/numberFunctions.ts';
 import { normalizeFilename } from '../utils/downloadFromLocation.ts';
+import { isCapacitor } from '../utils/platform.ts';
+import {
+  MOBILE_SAVE_LOCATION_LABEL,
+  saveStreamToMobileDocuments,
+} from '../utils/mobileFileSave.ts';
 import { getElectronPersistentStorage } from '../utils/electronPersistentStorage.ts';
 
 const uid = new ShortUniqueId({ length: 6 });
@@ -3022,6 +3027,53 @@ async function saveFileFromLocation(data, isFromExtension, snackMethods) {
   let locationUrl = `/arbitrary/${service}/${name}`;
   if (identifier) {
     locationUrl += `/${identifier}`;
+  }
+
+  // Capacitor Android/iOS: no File System Access API and anchor-tag downloads
+  // do nothing in the WebView — stream into Documents/Qortal Go natively.
+  if (isCapacitor()) {
+    const endpoint = isEncrypted
+      ? await createEndpoint(locationUrl)
+      : await createEndpoint(
+          locationUrl +
+            `?attachment=true&attachmentFilename=${encodeURIComponent(normalizeFilename(filename))}`
+        );
+    const response = await fetch(endpoint);
+    if (!response.ok) {
+      throw new Error('Failed to download file');
+    }
+    if (!response.body) {
+      throw new Error('Response body is empty');
+    }
+
+    const reader = response.body.getReader();
+    const decryptedChunks = async function* () {
+      let bytesProcessed = 0;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!value || value.length === 0) continue;
+        if (isEncrypted) {
+          const blockOffset = BigInt(bytesProcessed >> 4);
+          yield await decryptAesCtrChunk(keyBytes, ivBytes, blockOffset, value);
+        } else {
+          yield value;
+        }
+        bytesProcessed += value.length;
+      }
+    };
+
+    await saveStreamToMobileDocuments(filename, decryptedChunks());
+
+    if (snackMethods?.setOpenSnackGlobal && snackMethods?.setInfoSnackCustom) {
+      snackMethods.setInfoSnackCustom({
+        type: 'success',
+        message: `Saved to ${MOBILE_SAVE_LOCATION_LABEL}`,
+      });
+      snackMethods.setOpenSnackGlobal(true);
+    }
+
+    return true;
   }
 
   // Check if we're in Electron

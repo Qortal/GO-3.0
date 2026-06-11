@@ -1,5 +1,7 @@
 import aesjs from 'aes-js';
 import { createEndpoint } from '../background/background.ts';
+import { isCapacitor } from './platform';
+import { saveStreamToMobileDocuments } from './mobileFileSave';
 
 export function normalizeFilename(
   input: string,
@@ -128,6 +130,53 @@ export async function downloadFromLocation(
     let locationUrl = `/arbitrary/${service}/${name}`;
     if (identifier) {
       locationUrl += `/${identifier}`;
+    }
+
+    // Capacitor Android/iOS: the WebView has neither the File System Access
+    // API nor working anchor-tag downloads, so both browser fallbacks below
+    // silently do nothing. Stream into Documents/Qortal Go via the native
+    // FileWriter plugin instead (decrypting on the fly when needed).
+    if (isCapacitor()) {
+      const endpoint = isEncrypted
+        ? await createEndpoint(locationUrl)
+        : await createEndpoint(
+            locationUrl +
+              `?attachment=true&attachmentFilename=${encodeURIComponent(normalizeFilename(filename))}`
+          );
+      const response = await fetch(endpoint);
+      if (!response.ok) {
+        throw new Error('Failed to download file');
+      }
+      if (!response.body) {
+        throw new Error('Response body is empty');
+      }
+
+      const reader = response.body.getReader();
+      const decryptedChunks = async function* (): AsyncGenerator<Uint8Array> {
+        let bytesProcessed = 0;
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (!value || value.length === 0) continue;
+          if (isEncrypted && keyBytes && ivBytes) {
+            const blockOffset = BigInt(bytesProcessed >> 4);
+            yield await decryptAesCtrChunk(keyBytes, ivBytes, blockOffset, value);
+          } else {
+            yield value;
+          }
+          bytesProcessed += value.length;
+        }
+      };
+
+      const saved = await saveStreamToMobileDocuments(
+        filename,
+        decryptedChunks()
+      );
+      return {
+        success: true,
+        filePath: saved.path,
+        bytesWritten: saved.bytesWritten,
+      };
     }
 
     // Check if we're in Electron

@@ -763,18 +763,28 @@ export function installMobileAudioSurface(): void {
     }
   };
 
+  // Commands must run one at a time: a concurrent stop (from the previous
+  // call's teardown) grabs the `session` variable and disposes the session a
+  // racing start just created — start-direct-voice-media then dies with
+  // "session disposed" and the caller hangs up before sending the room key.
+  let commandChain: Promise<unknown> = Promise.resolve();
+
   window.audioSurface = {
     isReady: async () => true,
     ensureReady: async () => ({ success: true }),
     sendCommand: async (command: AudioSurfaceCommand) => {
-      try {
-        return await handleCommand(command);
-      } catch (error) {
-        return {
-          ok: false,
-          error: error instanceof Error ? error.message : String(error),
-        };
-      }
+      const run = commandChain.then(async () => {
+        try {
+          return await handleCommand(command);
+        } catch (error) {
+          return {
+            ok: false,
+            error: error instanceof Error ? error.message : String(error),
+          };
+        }
+      });
+      commandChain = run.catch(() => {});
+      return run as Promise<AudioSurfaceResponse>;
     },
     onEvent: (cb: (event: AudioSurfaceEvent) => void) => {
       eventCbs.add(cb);

@@ -788,14 +788,19 @@ export class CallManager extends EventEmitter {
       if (this.hasSeenReticulumOverlayId(overlayMeta.overlayId)) return;
       this.rememberReticulumOverlayId(overlayMeta.overlayId);
       const targetIsLocal = this.localAddresses.has(overlayMeta.targetAddress);
+      // Always keep the flood going while hops remain — even when the target
+      // address is local. The same account can be logged in on several devices
+      // (Hub + mobile); consuming the wire here without relaying would make
+      // this Hub a black hole and the user's other devices would never ring.
+      // Loops are prevented by the overlay-id dedupe above.
+      if (overlayMeta.hopsRemaining > 0) {
+        const forwarded = {
+          ...wire,
+          L: overlayMeta.hopsRemaining - 1,
+        };
+        this.broadcastReticulumOverlayWire(forwarded, [peerPresenceHash]);
+      }
       if (!targetIsLocal) {
-        if (overlayMeta.hopsRemaining > 0) {
-          const forwarded = {
-            ...wire,
-            L: overlayMeta.hopsRemaining - 1,
-          };
-          this.broadcastReticulumOverlayWire(forwarded, [peerPresenceHash]);
-        }
         if (this.localAddresses.size > 0) {
           return;
         }
