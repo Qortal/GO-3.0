@@ -474,6 +474,8 @@ export const ChatList = ({
       sx={{
         display: 'flex',
         height: '100%',
+        // Anchor for the mobile ChatOptions overlay (floating strip + panels).
+        position: 'relative',
         width: '100%',
       }}
     >
@@ -482,6 +484,7 @@ export const ChatList = ({
           display: 'flex',
           flexDirection: 'column',
           height: '100%',
+          minWidth: 0,
           position: 'relative',
           width: '100%',
         }}

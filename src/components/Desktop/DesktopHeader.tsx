@@ -301,13 +301,11 @@ export const DesktopHeader = ({
             sx={{
               display: 'flex',
               alignItems: 'stretch',
-              gap: '6px',
-              padding: '0 8px 8px',
-              overflowX: 'auto',
+              gap: '4px',
+              padding: '0 6px 8px',
+              // Fixed row: all sections share the width, no horizontal swipe.
+              overflowX: 'hidden',
               overflowY: 'hidden',
-              WebkitOverflowScrolling: 'touch',
-              scrollbarWidth: 'none',
-              '&::-webkit-scrollbar': { display: 'none' },
             }}
           >
             {sections.map((section) => {
@@ -324,14 +322,14 @@ export const DesktopHeader = ({
                   aria-label={section.label}
                   aria-current={section.selected ? 'true' : undefined}
                   sx={{
-                    flex: '1 0 auto',
-                    minWidth: 64,
+                    flex: '1 1 0',
+                    minWidth: 0,
                     display: 'flex',
                     flexDirection: 'column',
                     alignItems: 'center',
                     justifyContent: 'center',
                     gap: '4px',
-                    padding: '7px 10px',
+                    padding: '7px 4px',
                     borderRadius: '12px',
                     backgroundColor: section.selected
                       ? theme.palette.action.selected
@@ -347,6 +345,9 @@ export const DesktopHeader = ({
                       fontSize: '11px',
                       fontWeight: section.selected ? 700 : 500,
                       lineHeight: 1.1,
+                      maxWidth: '100%',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
                       whiteSpace: 'nowrap',
                     }}
                   >

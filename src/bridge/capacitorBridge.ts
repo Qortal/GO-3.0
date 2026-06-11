@@ -396,6 +396,19 @@ export const onMobileQchatFileTransferEvent = (
   };
 };
 
+/**
+ * Look up an outgoing (sender-side) pending share by transferId. Used by the
+ * transfer notification layer to detect direction and show time remaining.
+ */
+export const getQchatPendingSendInfo = (
+  transferId: string
+): { fileName: string; size: number; expiresAt: number } | null => {
+  loadQchatPendingSends();
+  const rec = qchatPendingSends.get(transferId);
+  if (!rec) return null;
+  return { fileName: rec.fileName, size: rec.size, expiresAt: rec.expiresAt };
+};
+
 const rejectQchatFileAuth = (
   linkId: string,
   transferId: string,

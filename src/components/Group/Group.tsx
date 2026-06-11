@@ -39,6 +39,7 @@ import {
   getGroupAdmins,
   getGroupMembers,
   getNameInfo,
+  getPrimaryNamesForAddresses,
   getPublishesFromAdmins,
 } from './groupApi';
 import { timeDifferenceForNotificationChats } from './groupConstants';
@@ -1050,22 +1051,50 @@ export const Group = ({
       }, {});
       setGroupsProperties(transformToObject);
 
-      // Use ownerPrimaryName from API when present (no fallback — missing means no primary name)
       const ownerNamesFromApi: Record<string, string> = {};
+      const addressesToResolve: string[] = [];
+
       Object.keys(transformToObject).forEach((key) => {
         const item = transformToObject[key];
-        if (item?.ownerPrimaryName) {
-          ownerNamesFromApi[key] = item.ownerPrimaryName;
-          groupsOwnerNamesRef.current[key] = item.ownerPrimaryName;
+        const primary = item?.ownerPrimaryName?.trim();
+        if (primary) {
+          ownerNamesFromApi[key] = primary;
+          groupsOwnerNamesRef.current[key] = primary;
+          return;
+        }
+        const ownerAddress =
+          typeof item?.owner === 'string' ? item.owner.trim() : '';
+        if (ownerAddress) {
+          addressesToResolve.push(ownerAddress);
         }
       });
+
+      if (addressesToResolve.length > 0) {
+        try {
+          const namesByAddress = await getPrimaryNamesForAddresses(
+            addressesToResolve
+          );
+          Object.keys(transformToObject).forEach((key) => {
+            if (ownerNamesFromApi[key]) return;
+            const ownerAddress = transformToObject[key]?.owner;
+            const resolved = namesByAddress[ownerAddress]?.trim();
+            if (resolved) {
+              ownerNamesFromApi[key] = resolved;
+              groupsOwnerNamesRef.current[key] = resolved;
+            }
+          });
+        } catch (resolveError) {
+          console.log(resolveError);
+        }
+      }
+
       if (Object.keys(ownerNamesFromApi).length > 0) {
         setGroupsOwnerNames((prev) => ({ ...prev, ...ownerNamesFromApi }));
       }
     } catch (error) {
       console.log(error);
     }
-  }, []);
+  }, [setGroupsOwnerNames, setGroupsProperties]);
 
   const getGroupsWhereIAmAMember = useCallback(
     async (_groups) => {

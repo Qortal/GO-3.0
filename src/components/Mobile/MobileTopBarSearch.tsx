@@ -8,6 +8,7 @@ import {
   Paper,
   useTheme,
 } from '@mui/material';
+import { alpha } from '@mui/material/styles';
 import SearchIcon from '@mui/icons-material/Search';
 import ArrowOutwardIcon from '@mui/icons-material/ArrowOutward';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
@@ -19,6 +20,11 @@ import { AppThumbnailAvatar } from '../Apps/AppThumbnailAvatar';
 import IconClearInput from '../../assets/svgs/ClearInput.svg';
 import { MOBILE_TOP_BAR_HEIGHT_PX } from './MobileTopBar';
 import { MOBILE_TABS_OVERLAY_Z } from './mobileLayout';
+import {
+  SAFE_AREA_LEFT,
+  SAFE_AREA_RIGHT,
+  SAFE_AREA_TOP,
+} from '../../utils/mobileSafeArea';
 import {
   MOBILE_APPS_SEARCH_PLACEHOLDER,
   buildAppsSearchSuggestions,
@@ -302,28 +308,50 @@ export const MobileTopBarSearch = ({
     </Paper>
   );
 
-  const resultsTop = `calc(${MOBILE_TOP_BAR_HEIGHT_PX}px + env(safe-area-inset-top, 0px))`;
+  const resultsTop = `calc(${MOBILE_TOP_BAR_HEIGHT_PX}px + ${SAFE_AREA_TOP})`;
 
   const resultsPanel = showDropdown ? (
     <Box
       sx={{
-        left: 'max(10px, env(safe-area-inset-left, 0px))',
+        left: `max(10px, ${SAFE_AREA_LEFT})`,
         position: 'fixed',
-        right: 'max(10px, env(safe-area-inset-right, 0px))',
-        top: resultsTop,
+        right: `max(10px, ${SAFE_AREA_RIGHT})`,
+        top: `calc(${resultsTop} + 6px)`,
         zIndex: (tabsOverlayOpen ? MOBILE_TABS_OVERLAY_Z : 0) + 3,
       }}
     >
       <Paper
-        elevation={8}
+        elevation={0}
         sx={{
+          '@keyframes searchPanelIn': {
+            from: {
+              opacity: 0,
+              transform: 'scale(0.96) translateY(-10px)',
+            },
+            to: {
+              opacity: 1,
+              transform: 'scale(1) translateY(0)',
+            },
+          },
+          animation:
+            'searchPanelIn 220ms cubic-bezier(0.22, 1, 0.36, 1) forwards',
+          backgroundColor:
+            theme.palette.mode === 'dark'
+              ? 'rgb(34, 36, 42)'
+              : theme.palette.background.paper,
+          backgroundImage: 'none',
           border: `1px solid ${theme.palette.divider}`,
           borderRadius: '16px',
+          boxShadow:
+            theme.palette.mode === 'dark'
+              ? `0 16px 40px ${alpha('#000', 0.45)}`
+              : `0 14px 36px ${alpha('#1E3248', 0.14)}`,
           boxSizing: 'border-box',
-          maxHeight: `calc(100vh - ${MOBILE_TOP_BAR_HEIGHT_PX}px - env(safe-area-inset-top, 0px) - 72px)`,
+          maxHeight: `calc(100vh - ${MOBILE_TOP_BAR_HEIGHT_PX}px - ${SAFE_AREA_TOP} - 72px)`,
           overflowX: 'hidden',
           overflowY: 'auto',
           py: 0.5,
+          transformOrigin: 'top center',
           width: '100%',
         }}
       >
@@ -333,30 +361,73 @@ export const MobileTopBarSearch = ({
           </Box>
         ) : null}
         {suggestions.map((item, index) => {
+          // Stagger the first rows like the account menu; cap so long lists
+          // don't take forever to settle.
+          const itemAnimationSx = {
+            '@keyframes searchItemIn': {
+              from: {
+                opacity: 0,
+                transform: 'translateY(-10px)',
+              },
+              to: {
+                opacity: 1,
+                transform: 'translateY(0)',
+              },
+            },
+            animation: `searchItemIn 200ms cubic-bezier(0.22, 1, 0.36, 1) ${
+              40 + Math.min(index, 8) * 35
+            }ms forwards`,
+            opacity: 0,
+          };
+
           if (item.type === 'link') {
             return (
               <ButtonBase
                 key="qortal-link"
                 onClick={openAsLink}
                 sx={{
+                  ...itemAnimationSx,
                   backgroundColor:
                     highlightedIndex === index
                       ? theme.palette.action.hover
                       : 'transparent',
-                  borderRadius: '8px',
+                  borderRadius: '12px',
                   gap: 1.25,
                   justifyContent: 'flex-start',
-                  mx: 0.5,
-                  px: 2,
-                  py: 1.35,
+                  mx: 0.75,
+                  px: 1.25,
+                  py: 1.1,
                   textAlign: 'left',
-                  width: 'calc(100% - 8px)',
+                  transition: 'background-color 120ms ease',
+                  width: 'calc(100% - 12px)',
+                  '&:active': {
+                    backgroundColor: alpha(theme.palette.text.primary, 0.08),
+                  },
                 }}
               >
-                <LinkIcon
-                  sx={{ color: theme.palette.primary.main, flexShrink: 0, fontSize: 20 }}
-                />
-                <Box sx={{ color: theme.palette.text.primary, flexShrink: 0, fontSize: 14 }}>
+                <Box
+                  sx={{
+                    alignItems: 'center',
+                    backgroundColor: alpha(theme.palette.primary.main, 0.1),
+                    borderRadius: '10px',
+                    color: theme.palette.primary.main,
+                    display: 'flex',
+                    flexShrink: 0,
+                    height: 36,
+                    justifyContent: 'center',
+                    width: 36,
+                  }}
+                >
+                  <LinkIcon sx={{ fontSize: 20 }} />
+                </Box>
+                <Box
+                  sx={{
+                    color: theme.palette.text.primary,
+                    flexShrink: 0,
+                    fontSize: 14,
+                    fontWeight: 600,
+                  }}
+                >
                   {item.label}
                 </Box>
                 <Box
@@ -382,19 +453,24 @@ export const MobileTopBarSearch = ({
               key={`${app?.service}-${app?.name}`}
               onClick={() => openApp(app)}
               sx={{
+                ...itemAnimationSx,
                 alignItems: 'center',
                 backgroundColor:
                   highlightedIndex === index
                     ? theme.palette.action.hover
                     : 'transparent',
-                borderRadius: '8px',
+                borderRadius: '12px',
                 gap: 1.25,
                 justifyContent: 'flex-start',
-                mx: 0.5,
-                px: 2,
-                py: 1.1,
+                mx: 0.75,
+                px: 1.25,
+                py: 0.9,
                 textAlign: 'left',
-                width: 'calc(100% - 8px)',
+                transition: 'background-color 120ms ease',
+                width: 'calc(100% - 12px)',
+                '&:active': {
+                  backgroundColor: alpha(theme.palette.text.primary, 0.08),
+                },
               }}
             >
               <AppThumbnailAvatar
@@ -445,7 +521,19 @@ export const MobileTopBarSearch = ({
         <Box
           ref={searchContainerRef}
           sx={{
+            '@keyframes searchOverlayIn': {
+              from: {
+                opacity: 0,
+                transform: 'scaleX(0.92)',
+              },
+              to: {
+                opacity: 1,
+                transform: 'scaleX(1)',
+              },
+            },
             alignItems: 'center',
+            animation:
+              'searchOverlayIn 220ms cubic-bezier(0.22, 1, 0.36, 1) forwards',
             backgroundColor:
               theme.palette.mode === 'dark'
                 ? 'rgb(28, 30, 36)'
@@ -453,9 +541,13 @@ export const MobileTopBarSearch = ({
             display: 'flex',
             gap: 0.75,
             inset: 0,
-            paddingLeft: 'max(10px, env(safe-area-inset-left, 0px))',
-            paddingRight: 'max(10px, env(safe-area-inset-right, 0px))',
+            paddingLeft: `max(10px, ${SAFE_AREA_LEFT})`,
+            paddingRight: `max(10px, ${SAFE_AREA_RIGHT})`,
+            // The overlay covers the whole top bar, including the status-bar
+            // safe-area band — keep the controls below the notification area.
+            paddingTop: SAFE_AREA_TOP,
             position: 'absolute',
+            transformOrigin: 'center right',
             zIndex: 2,
           }}
         >

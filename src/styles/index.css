@@ -34,6 +34,16 @@
   font-display: swap;
 }
 
+:root {
+  --safe-area-inset-left: 0px;
+  --safe-area-inset-right: 0px;
+}
+
+/* App-like UI: suppress the WebView's blue tap/long-press highlight box. */
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
 /* * {    // TODO restore and check
   margin: 0;
   padding: 0;

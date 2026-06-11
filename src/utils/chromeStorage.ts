@@ -1,12 +1,205 @@
 import { SecureStoragePlugin } from '@evva/capacitor-secure-storage-plugin';
+import { Preferences } from '@capacitor/preferences';
 
 let inMemoryKey: CryptoKey | null = null;
+let keyInitPromise: Promise<void> | null = null;
 
 const keysToEncrypt = ['keyPair'];
+const PERSISTED_STORAGE_KEY = 'storageSessionAesKey';
+// Mirrors ENABLED_LS_KEY in walletBiometricAuth (not imported: circular dep).
+const BIOMETRIC_ENABLED_LS_KEY = 'walletBiometricEnabledAddresses';
+
+/**
+ * Envelope ("vault") encryption for all stored data.
+ *
+ * The SecureStorage plugin RSA-decrypts every value in the hardware keystore
+ * 256 bytes at a time; large values (wallet list, avatar map) take hundreds
+ * of sequential TEE round-trips — ~10s on some devices, on EVERY cold start.
+ *
+ * Instead we keep a single 32-byte AES-256 vault key in SecureStorage (one
+ * RSA block — milliseconds) and encrypt the actual payloads with AES-GCM in
+ * JS, storing the ciphertext in plain Preferences. Same hardware-backed
+ * protection at rest, without the per-value TEE cost. Legacy values are
+ * migrated off SecureStorage lazily on first read.
+ */
+const VAULT_KEY_STORAGE_KEY = 'storageVaultKey';
+const VAULT_PREFIX = 'vault_';
+
+let vaultKey: CryptoKey | null = null;
+let vaultKeyInitPromise: Promise<void> | null = null;
+
+async function initializeVaultKey(): Promise<void> {
+  if (vaultKey) return;
+  if (!vaultKeyInitPromise) {
+    vaultKeyInitPromise = (async () => {
+      try {
+        const stored = await SecureStoragePlugin.get({
+          key: VAULT_KEY_STORAGE_KEY,
+        });
+        if (stored?.value) {
+          vaultKey = await crypto.subtle.importKey(
+            'raw',
+            base64ToBytes(stored.value) as BufferSource,
+            { name: 'AES-GCM' },
+            true,
+            ['encrypt', 'decrypt']
+          );
+          return;
+        }
+      } catch {
+        /* no vault key yet */
+      }
+
+      const generated = await generateKey();
+      try {
+        const raw = await crypto.subtle.exportKey('raw', generated);
+        await SecureStoragePlugin.set({
+          key: VAULT_KEY_STORAGE_KEY,
+          value: bytesToBase64(new Uint8Array(raw)),
+        });
+        vaultKey = generated;
+      } catch {
+        // Without a persistable vault key, leave vaultKey null: data keeps
+        // using the legacy SecureStorage path so nothing becomes unreadable.
+        vaultKey = null;
+      }
+    })();
+    vaultKeyInitPromise.catch(() => {
+      vaultKeyInitPromise = null;
+    });
+  }
+  await vaultKeyInitPromise;
+}
+
+async function vaultEncrypt(plaintext: string): Promise<string | null> {
+  if (!vaultKey) return null;
+  try {
+    const { iv, encryptedData } = await encryptData(plaintext, vaultKey);
+    const combined = new Uint8Array(iv.length + encryptedData.byteLength);
+    combined.set(iv, 0);
+    combined.set(new Uint8Array(encryptedData), iv.length);
+    return bytesToBase64(combined);
+  } catch {
+    return null;
+  }
+}
+
+async function vaultDecrypt(payload: string): Promise<string | null> {
+  if (!vaultKey) return null;
+  try {
+    const combined = base64ToBytes(payload);
+    const iv = combined.slice(0, 12);
+    const encrypted = combined.slice(12).buffer;
+    return await decryptData(encrypted, vaultKey, iv);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Persist the storage AES key only for biometric-unlock users. Their wallet
+ * password is already stored on-device for the fingerprint flow, so keeping
+ * the storage key adds no new exposure — and it lets `tryResumeWalletSession`
+ * succeed across cold starts, skipping the ~10s PhraseWallet re-derivation
+ * after a fingerprint scan. Password-only users keep the ephemeral key (their
+ * stored session becomes unreadable once the app process dies).
+ */
+function shouldPersistStorageKey(): boolean {
+  try {
+    const raw = localStorage.getItem(BIOMETRIC_ENABLED_LS_KEY);
+    if (!raw) return false;
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) && parsed.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = '';
+  bytes.forEach((b) => (binary += String.fromCharCode(b)));
+  return btoa(binary);
+}
+
+function base64ToBytes(base64: string): Uint8Array {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
 
 async function initializeKeyAndIV() {
-  if (!inMemoryKey) {
-    inMemoryKey = await generateKey(); // Generates the key in memory
+  if (inMemoryKey) return;
+  if (!keyInitPromise) {
+    keyInitPromise = (async () => {
+      const persist = shouldPersistStorageKey();
+
+      if (persist) {
+        try {
+          const stored = await SecureStoragePlugin.get({
+            key: PERSISTED_STORAGE_KEY,
+          });
+          if (stored?.value) {
+            inMemoryKey = await crypto.subtle.importKey(
+              'raw',
+              base64ToBytes(stored.value) as BufferSource,
+              { name: 'AES-GCM' },
+              true,
+              ['encrypt', 'decrypt']
+            );
+            return;
+          }
+        } catch {
+          /* no persisted key yet */
+        }
+      }
+
+      inMemoryKey = await generateKey();
+
+      if (persist) {
+        try {
+          const raw = await crypto.subtle.exportKey('raw', inMemoryKey);
+          await SecureStoragePlugin.set({
+            key: PERSISTED_STORAGE_KEY,
+            value: bytesToBase64(new Uint8Array(raw)),
+          });
+        } catch {
+          /* fall back to session-only key */
+        }
+      }
+    })();
+    keyInitPromise.catch(() => {
+      keyInitPromise = null;
+    });
+  }
+  await keyInitPromise;
+}
+
+/** Drop the persisted storage key (logout / biometric disabled). */
+export async function discardPersistedStorageKey(): Promise<void> {
+  try {
+    await SecureStoragePlugin.remove({ key: PERSISTED_STORAGE_KEY });
+  } catch {
+    /* not present */
+  }
+}
+
+/**
+ * Persist the current storage key immediately (called when biometric unlock
+ * is first enabled, so data written earlier this session stays readable on
+ * the next cold start without waiting for a slow self-healing re-encrypt).
+ */
+export async function persistStorageKeyNow(): Promise<void> {
+  await initializeKeyAndIV();
+  if (!inMemoryKey) return;
+  try {
+    const raw = await crypto.subtle.exportKey('raw', inMemoryKey);
+    await SecureStoragePlugin.set({
+      key: PERSISTED_STORAGE_KEY,
+      value: bytesToBase64(new Uint8Array(raw)),
+    });
+  } catch {
+    /* session-only fallback */
   }
 }
 
@@ -51,7 +244,7 @@ async function decryptData(
   const decryptedData = await crypto.subtle.decrypt(
     {
       name: 'AES-GCM',
-      iv: iv,
+      iv: iv as BufferSource,
     },
     key,
     encryptedData
@@ -119,29 +312,60 @@ export const invalidateStorageCache = (key?: string): void => {
   }
 };
 
+/** Apply the extra per-session AES layer for keys like keyPair. */
+async function encodePayload(key: string, payload: any): Promise<string> {
+  const base64Data = jsonToBase64(payload);
+  if (keysToEncrypt.includes(key) && inMemoryKey) {
+    const { iv, encryptedData } = await encryptData(base64Data, inMemoryKey);
+    const combinedData = new Uint8Array([
+      ...iv,
+      ...new Uint8Array(encryptedData),
+    ]);
+    return btoa(String.fromCharCode(...combinedData));
+  }
+  return base64Data;
+}
+
+/** Reverse encodePayload. Returns null if undecodable (e.g. lost session key). */
+async function decodePayload(key: string, value: string): Promise<any | null> {
+  try {
+    if (keysToEncrypt.includes(key) && inMemoryKey) {
+      const combinedData = atob(value)
+        .split('')
+        .map((c) => c.charCodeAt(0));
+      const iv = new Uint8Array(combinedData.slice(0, 12));
+      const encryptedData = new Uint8Array(combinedData.slice(12)).buffer;
+      const decryptedBase64Data = await decryptData(
+        encryptedData,
+        inMemoryKey,
+        iv
+      );
+      return base64ToJson(decryptedBase64Data);
+    }
+    return base64ToJson(value);
+  } catch {
+    return null;
+  }
+}
+
 export const storeData = async (key: string, payload: any): Promise<string> => {
   await initializeKeyAndIV();
+  await initializeVaultKey();
 
   if (isHotKey(key)) {
     memoryCache.set(key, payload);
   }
 
-  const base64Data = jsonToBase64(payload);
+  const encoded = await encodePayload(key, payload);
 
-  if (keysToEncrypt.includes(key) && inMemoryKey) {
-    // Encrypt the Base64-encoded payload
-    const { iv, encryptedData } = await encryptData(base64Data, inMemoryKey);
-
-    // Combine IV and encrypted data into a single Uint8Array
-    const combinedData = new Uint8Array([
-      ...iv,
-      ...new Uint8Array(encryptedData),
-    ]);
-    const encryptedBase64Data = btoa(String.fromCharCode(...combinedData));
-    await SecureStoragePlugin.set({ key, value: encryptedBase64Data });
+  const vaultValue = await vaultEncrypt(encoded);
+  if (vaultValue !== null) {
+    await Preferences.set({ key: VAULT_PREFIX + key, value: vaultValue });
+    // Drop any legacy copy so the slow RSA path never runs for this key again.
+    void SecureStoragePlugin.remove({ key }).catch(() => {});
   } else {
-    // Store Base64-encoded data in plain text if not in keysToEncrypt
-    await SecureStoragePlugin.set({ key, value: base64Data });
+    // Vault unavailable: legacy slow-but-safe path.
+    await SecureStoragePlugin.set({ key, value: encoded });
   }
 
   return 'Data saved successfully';
@@ -153,39 +377,63 @@ export const getData = async <T = any>(key: string): Promise<T | null> => {
   }
 
   await initializeKeyAndIV();
+  await initializeVaultKey();
 
+  // Fast path: AES vault in Preferences.
+  try {
+    const { value } = await Preferences.get({ key: VAULT_PREFIX + key });
+    if (value) {
+      const decoded = await vaultDecrypt(value);
+      if (decoded !== null) {
+        const parsed = await decodePayload(key, decoded);
+        if (parsed !== null) {
+          if (isHotKey(key)) memoryCache.set(key, parsed);
+          return parsed;
+        }
+      }
+    }
+  } catch {
+    /* fall through to legacy */
+  }
+
+  // Legacy path: value still lives in SecureStorage (slow RSA). Read once,
+  // migrate into the vault so future cold starts skip the TEE round-trips.
   try {
     const storedDataBase64 = await SecureStoragePlugin.get({ key });
+    if (!storedDataBase64.value) return null;
 
-    if (storedDataBase64.value) {
-      if (keysToEncrypt.includes(key) && inMemoryKey) {
-        // Decode the Base64-encoded encrypted data
-        const combinedData = atob(storedDataBase64.value)
-          .split('')
-          .map((c) => c.charCodeAt(0));
+    const parsed = await decodePayload(key, storedDataBase64.value);
+    if (parsed === null) return null;
 
-        const iv = new Uint8Array(combinedData.slice(0, 12)); // First 12 bytes are the IV
-        const encryptedData = new Uint8Array(combinedData.slice(12)).buffer;
+    if (isHotKey(key)) memoryCache.set(key, parsed);
 
-        const decryptedBase64Data = await decryptData(
-          encryptedData,
-          inMemoryKey,
-          iv
-        );
-        const decrypted = base64ToJson(decryptedBase64Data);
-        if (isHotKey(key)) memoryCache.set(key, decrypted);
-        return decrypted;
-      } else {
-        // Decode non-encrypted data
-        const parsed = base64ToJson(storedDataBase64.value);
-        if (isHotKey(key)) memoryCache.set(key, parsed);
-        return parsed;
+    const vaultValue = await vaultEncrypt(storedDataBase64.value);
+    if (vaultValue !== null) {
+      try {
+        await Preferences.set({ key: VAULT_PREFIX + key, value: vaultValue });
+        await SecureStoragePlugin.remove({ key });
+      } catch {
+        /* keep legacy copy until migration succeeds */
       }
-    } else {
-      return null;
     }
+    return parsed;
   } catch (error) {
     return null;
+  }
+};
+
+/** Remove a stored value from the vault, legacy storage and memory cache. */
+export const removeData = async (key: string): Promise<void> => {
+  memoryCache.delete(key);
+  try {
+    await Preferences.remove({ key: VAULT_PREFIX + key });
+  } catch {
+    /* ignore */
+  }
+  try {
+    await SecureStoragePlugin.remove({ key });
+  } catch {
+    /* ignore */
   }
 };
 
@@ -199,6 +447,7 @@ export async function removeKeysAndLogout(
     invalidateStorageCache();
     for (const key of keys) {
       try {
+        await Preferences.remove({ key: VAULT_PREFIX + key });
         await SecureStoragePlugin.remove({ key });
         await SecureStoragePlugin.remove({ key: `${key}_iv` }); // Remove associated IV
       } catch (error) {

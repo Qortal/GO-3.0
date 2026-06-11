@@ -5417,6 +5417,10 @@ export const HomeQortinoWorkspaceCard = ({
                   overflow: 'visible',
                   touchAction: 'none',
                   transform: `translateY(${qortinoMascotCenteredOffsetY}px)`,
+                  // Long-press would select/highlight the mascot (blue frame).
+                  userSelect: 'none',
+                  WebkitTouchCallout: 'none',
+                  WebkitUserSelect: 'none',
                   width: `${qortinoMascotStageWidth}px`,
                 }}
                 onDragOver={onMascotDragOver}

@@ -19,6 +19,7 @@ import { AuthButton, AuthFrame } from './Auth/AuthShell';
 import { ConnectionModeModal } from './Auth/ConnectionModeModal';
 import { MobileLoginSettingsModal } from './Auth/MobileLoginSettingsModal';
 import { isCapacitor } from '../utils/platform';
+import { getBiometricEnabledAddressesSync } from '../utils/walletBiometricAuth';
 import { hasAttemptedLastWalletAutoSelectThisSession } from '../utils/lastAuthenticatedWallet';
 import {
   useCallback,
@@ -155,6 +156,9 @@ export const NotAuthenticated = ({
   const [isLogoRingDownActive, setIsLogoRingDownActive] = useState(false);
   const logoRef = useRef<HTMLImageElement | null>(null);
   const introAudioRef = useRef<HTMLAudioElement | null>(null);
+  // Set once a biometric scan starts: the auto-prompt can fire before the
+  // intro animation reaches its play() call, so a one-time stop isn't enough.
+  const introAudioSuppressedRef = useRef(false);
   const globalMotionOverrideRef = useRef<{
     element: HTMLStyleElement;
     wasDisabled?: boolean;
@@ -332,12 +336,16 @@ export const NotAuthenticated = ({
     if (!audio) return;
 
     audio.pause();
-    audio.volume = AUTH_INTRO_AUDIO_VOLUME;
+    // Fully release the media element: a paused-but-loaded element keeps the
+    // WebView's AudioTrack sink active for ~10s, which delays Vivo's
+    // under-display fingerprint overlay until the sink closes.
     try {
-      audio.currentTime = 0;
+      audio.removeAttribute('src');
+      audio.load();
     } catch {
-      // Some media backends reject seeking before metadata is ready.
+      /* ignore */
     }
+    introAudioRef.current = null;
   }, []);
 
   useEffect(() => {
@@ -351,9 +359,20 @@ export const NotAuthenticated = ({
       }
     };
 
+    // The startup sound's media surface delays Vivo's under-display
+    // fingerprint overlay; silence it the moment a biometric scan starts.
+    const handleBiometricVerifyStart = () => {
+      introAudioSuppressedRef.current = true;
+      stopIntroAudio();
+    };
+
     window.addEventListener(
       'qortal-startup-sound-preference-changed',
       handleStartupSoundPreferenceChanged
+    );
+    window.addEventListener(
+      'qortal-biometric-verify-start',
+      handleBiometricVerifyStart
     );
 
     return () => {
@@ -361,12 +380,23 @@ export const NotAuthenticated = ({
         'qortal-startup-sound-preference-changed',
         handleStartupSoundPreferenceChanged
       );
+      window.removeEventListener(
+        'qortal-biometric-verify-start',
+        handleBiometricVerifyStart
+      );
     };
   }, [stopIntroAudio]);
 
   const playIntroAudio = useCallback(() => {
+    if (introAudioSuppressedRef.current) return;
     if (!areAuthAnimationsEnabled()) return;
     if (!isAuthStartupAudioEnabled()) return;
+    // A biometric auto-prompt is about to fire on this screen; the clip's
+    // active audio sink delays the under-display fingerprint UI on Vivo/OPPO,
+    // so skip the sound entirely when fingerprint unlock is configured.
+    if (isCapacitor() && getBiometricEnabledAddressesSync().length > 0) {
+      return;
+    }
 
     const audio = introAudioRef.current ?? new Audio(authIntroAudioSrc);
     introAudioRef.current = audio;

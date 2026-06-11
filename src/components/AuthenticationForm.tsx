@@ -43,8 +43,14 @@ import { getWallets, storeWallets } from '../background/background.ts';
 import {
   isBiometricHardwareAvailable,
   isBiometricUnlockConfigured,
-  unlockPasswordWithBiometric,
+  biometricUnlockWallet,
+  prefetchWalletSessionProbe,
+  prewarmBiometricUnlockKdf,
+  syncBiometricAutoPromptFlag,
+  warmUpBiometricHardware,
+  wasEarlyBiometricPromptCancelled,
 } from '../utils/walletBiometricAuth';
+import { prewarmKdfWorkers } from '../encryption/kdf';
 import type {
   AuthUnlockTransitionSnapshot,
   SharedElementRect,
@@ -65,7 +71,10 @@ type AuthenticationFormProps = {
   /** When true, show the password field instead of the fingerprint prompt (e.g. after a failed list scan). */
   initialPasswordFallback?: boolean;
   onBack: () => void;
-  onAuthenticate: () => Promise<void>;
+  onAuthenticate: (options?: {
+    skipNodeCheck?: boolean;
+    skipLocalCheck?: boolean;
+  }) => Promise<void>;
   onUnlockTransitionComplete?: () => void;
   onWalletUpdated?: (wallet: RawWallet) => void;
   onWalletRemoved?: () => void;
@@ -134,6 +143,7 @@ export const AuthenticationForm = ({
   );
   const [editOpen, setEditOpen] = useState(false);
   const didAutoAuthenticateRef = useRef(false);
+  const didAutoBiometricRef = useRef(false);
   const prefilledPasswordRef = useRef(
     Boolean(store.get(authenticatePasswordAtom).trim())
   );
@@ -240,6 +250,15 @@ export const AuthenticationForm = ({
   }, [refreshBiometricUnlockState]);
 
   useEffect(() => {
+    if (!biometricUnlockReady || !walletAddress) return;
+    prewarmKdfWorkers();
+    void warmUpBiometricHardware();
+    syncBiometricAutoPromptFlag();
+    prefetchWalletSessionProbe(walletAddress);
+    void prewarmBiometricUnlockKdf(walletAddress, rawWallet);
+  }, [biometricUnlockReady, rawWallet, walletAddress]);
+
+  useEffect(() => {
     if (isLoginSettingsOpen) return;
     void refreshBiometricUnlockState();
   }, [isLoginSettingsOpen, refreshBiometricUnlockState]);
@@ -275,22 +294,56 @@ export const AuthenticationForm = ({
     void onAuthenticate();
   }, [onAuthenticate, store]);
 
-  const handleBiometricUnlock = async () => {
+  const handleBiometricUnlock = useCallback(async () => {
     if (!walletAddress || biometricUnlockBusy) return;
     setBiometricUnlockBusy(true);
     try {
-      const password = await unlockPasswordWithBiometric(walletAddress);
-      store.set(authenticatePasswordAtom, password);
-      setAuthenticatePassword(password);
+      const unlockResult = await biometricUnlockWallet(walletAddress, rawWallet);
+      if (unlockResult !== 'resume') {
+        didAutoAuthenticateRef.current = true;
+        store.set(authenticatePasswordAtom, unlockResult);
+        setAuthenticatePassword(unlockResult);
+      } else {
+        didAutoAuthenticateRef.current = true;
+      }
       dismissKeyboard();
-      await onAuthenticate();
-    } catch {
+      await onAuthenticate({ skipNodeCheck: true, skipLocalCheck: true });
+    } catch (err) {
+      console.error('Biometric unlock failed:', err);
       setShowPasswordFallback(true);
       window.setTimeout(() => passwordRef.current?.focus(), 120);
     } finally {
       setBiometricUnlockBusy(false);
     }
-  };
+  }, [
+    biometricUnlockBusy,
+    dismissKeyboard,
+    onAuthenticate,
+    rawWallet,
+    setAuthenticatePassword,
+    store,
+    walletAddress,
+  ]);
+
+  useEffect(() => {
+    didAutoBiometricRef.current = false;
+  }, [walletAddress]);
+
+  useEffect(() => {
+    if (!showBiometricPrimary || biometricUnlockBusy) return;
+    if (didAutoBiometricRef.current) return;
+    didAutoBiometricRef.current = true;
+    void (async () => {
+      // If the user dismissed the launch-time fingerprint sheet, don't shove
+      // it back in their face — drop to the password form instead.
+      if (await wasEarlyBiometricPromptCancelled()) {
+        setShowPasswordFallback(true);
+        window.setTimeout(() => passwordRef.current?.focus(), 120);
+        return;
+      }
+      void handleBiometricUnlock();
+    })();
+  }, [biometricUnlockBusy, handleBiometricUnlock, showBiometricPrimary]);
 
   const avatarSrc = resolveWalletAvatarSrc({
     primaryName: effectivePrimaryName,

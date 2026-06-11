@@ -22,6 +22,7 @@ import { LoadingButton } from '@mui/lab';
 import ErrorIcon from '@mui/icons-material/Error';
 import { useTranslation } from 'react-i18next';
 import { MAX_SIZE_AVATAR } from '../../constants/constants.ts';
+import { buildGroupAvatarUrl } from '../../utils/groupAvatarUrl';
 import { AvatarPreviewModal } from '../Chat/AvatarPreviewModal';
 import { getClickableAvatarSx } from './clickableAvatarStyles';
 
@@ -87,10 +88,10 @@ export const GroupAvatar = ({
     checkIfAvatarExists(myName, groupId);
   }, [myName, groupId, checkIfAvatarExists]);
 
-  const groupAvatarUrl = useMemo(() => {
-    if (!myName || !groupId) return null;
-    return `${getBaseApiReact()}/arbitrary/THUMBNAIL/${myName}/qortal_group_avatar_${groupId}?async=true`;
-  }, [myName, groupId]);
+  const groupAvatarUrl = useMemo(
+    () => buildGroupAvatarUrl(myName, groupId),
+    [myName, groupId]
+  );
 
   const handleAvatarPreview = useCallback(
     (src) => {

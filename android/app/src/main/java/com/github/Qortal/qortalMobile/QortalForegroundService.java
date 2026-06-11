@@ -34,14 +34,18 @@ public class QortalForegroundService extends Service {
     public static final String CHANNEL_STATUS_ID = "qortal_status";
     public static final String CHANNEL_ALERTS_ID = "qortal_alerts";
     public static final String CHANNEL_CALLS_ID = "qortal_calls";
+    public static final String CHANNEL_TRANSFERS_ID = "qortal_transfers";
 
     private static final String CHANNEL_STATUS_NAME = "Qortal status";
     private static final String CHANNEL_ALERTS_NAME = "Qortal alerts";
     private static final String CHANNEL_CALLS_NAME = "Incoming calls";
+    private static final String CHANNEL_TRANSFERS_NAME = "File transfers";
 
     public static final int NOTIFICATION_ID_STATUS = 2001;
     public static final int NOTIFICATION_ID_INCOMING_CALL = 2002;
     private static final int NOTIFICATION_ID_ALERT_BASE = 3000;
+    // Alerts occupy 3000..12999 (base + id % 10000); keep transfers clear of that.
+    private static final int NOTIFICATION_ID_TRANSFER_BASE = 20000;
 
     public static final String ACTION_START = "com.github.Qortal.qortalMobile.QORTAL_FGS_START";
     public static final String ACTION_UPDATE = "com.github.Qortal.qortalMobile.QORTAL_FGS_UPDATE";
@@ -56,6 +60,10 @@ public class QortalForegroundService extends Service {
         "com.github.Qortal.qortalMobile.QORTAL_INCOMING_CALL_ACCEPT";
     public static final String ACTION_INCOMING_CALL_DECLINE =
         "com.github.Qortal.qortalMobile.QORTAL_INCOMING_CALL_DECLINE";
+    public static final String ACTION_UPDATE_TRANSFER =
+        "com.github.Qortal.qortalMobile.QORTAL_FGS_UPDATE_TRANSFER";
+    public static final String ACTION_DISMISS_TRANSFER =
+        "com.github.Qortal.qortalMobile.QORTAL_FGS_DISMISS_TRANSFER";
 
     public static final String BROADCAST_INCOMING_CALL_ACTION =
         "com.github.Qortal.qortalMobile.BROADCAST_INCOMING_CALL_ACTION";
@@ -76,6 +84,12 @@ public class QortalForegroundService extends Service {
     public static final String EXTRA_CALL_FROM = "call_from";
     public static final String EXTRA_CALL_FROM_NAME = "call_from_name";
     public static final String EXTRA_CALL_ACTION = "call_action";
+    public static final String EXTRA_TRANSFER_ID = "transfer_id";
+    public static final String EXTRA_TRANSFER_TITLE = "transfer_title";
+    public static final String EXTRA_TRANSFER_TEXT = "transfer_text";
+    /** 0-100 for a determinate bar, -1 for indeterminate, -2 for no bar. */
+    public static final String EXTRA_TRANSFER_PROGRESS = "transfer_progress";
+    public static final String EXTRA_TRANSFER_ONGOING = "transfer_ongoing";
 
     private static final String GROUP_STATUS = "qortal_connection_status";
     private static final String GROUP_ALERTS = "qortal_message_alerts";
@@ -146,6 +160,23 @@ public class QortalForegroundService extends Service {
             case ACTION_DISMISS_INCOMING_CALL:
                 dismissIncomingCallNotification();
                 break;
+            case ACTION_UPDATE_TRANSFER:
+                showTransferNotification(
+                    safeString(intent.getStringExtra(EXTRA_TRANSFER_ID), ""),
+                    safeString(intent.getStringExtra(EXTRA_TRANSFER_TITLE), "File transfer"),
+                    safeString(intent.getStringExtra(EXTRA_TRANSFER_TEXT), ""),
+                    intent.getIntExtra(EXTRA_TRANSFER_PROGRESS, -2),
+                    intent.getBooleanExtra(EXTRA_TRANSFER_ONGOING, false)
+                );
+                if (!isRunning) {
+                    startStatusForeground();
+                }
+                break;
+            case ACTION_DISMISS_TRANSFER:
+                dismissTransferNotification(
+                    safeString(intent.getStringExtra(EXTRA_TRANSFER_ID), "")
+                );
+                break;
             case ACTION_INCOMING_CALL_ACCEPT:
             case ACTION_INCOMING_CALL_DECLINE:
                 handleIncomingCallAction(intent);
@@ -189,11 +220,11 @@ public class QortalForegroundService extends Service {
             .setColor(brandColor);
     }
 
-    /** Blue Q in the status bar; the shade uses the transparent large icon. */
+    /** Blank status-bar icon; the shade shows only the big logo from custom content. */
     private NotificationCompat.Builder statusNotificationBuilder() {
         int brandColor = getResources().getColor(R.color.qortal_brand, getTheme());
         return new NotificationCompat.Builder(this, CHANNEL_STATUS_ID)
-            .setSmallIcon(R.drawable.ic_stat_qortal)
+            .setSmallIcon(R.drawable.ic_notification_blank)
             .setColor(brandColor);
     }
 
@@ -207,34 +238,49 @@ public class QortalForegroundService extends Service {
             + statusPeersLabel;
     }
 
-    private static Boolean isMiuiCached;
+    private static Boolean skinInjectsAppIconCached;
 
     /**
-     * MIUI injects the app icon at the left of every notification card, so
-     * drawing our own logo there duplicates it. Other skins (AOSP/Pixel,
-     * One UI, ...) leave the custom content alone, where we want the big
-     * Qortal logo on the left ourselves.
+     * MIUI, Vivo (OriginOS/Funtouch) and other Chinese OEM skins inject the
+     * app icon at the left of every notification card, so drawing our own
+     * logo there duplicates it. Other skins (AOSP/Pixel, One UI, ...) leave
+     * the custom content alone, where we want the big Qortal logo on the
+     * left ourselves.
      */
-    private static boolean isMiuiDevice() {
-        if (isMiuiCached != null) return isMiuiCached;
+    private static boolean skinInjectsAppIcon() {
+        if (skinInjectsAppIconCached != null) return skinInjectsAppIconCached;
+
+        String manufacturer = Build.MANUFACTURER == null
+            ? ""
+            : Build.MANUFACTURER.toLowerCase(java.util.Locale.ROOT);
+        if (
+            manufacturer.contains("vivo")
+                || manufacturer.contains("oppo")
+                || manufacturer.contains("realme")
+                || manufacturer.contains("iqoo")
+        ) {
+            skinInjectsAppIconCached = true;
+            return true;
+        }
+
         try {
             @SuppressWarnings("PrivateApi")
             Class<?> systemProperties = Class.forName("android.os.SystemProperties");
             String version = (String) systemProperties
                 .getMethod("get", String.class)
                 .invoke(null, "ro.miui.ui.version.name");
-            isMiuiCached = version != null && !version.trim().isEmpty();
+            skinInjectsAppIconCached = version != null && !version.trim().isEmpty();
         } catch (Throwable t) {
-            isMiuiCached = false;
+            skinInjectsAppIconCached = false;
         }
-        return isMiuiCached;
+        return skinInjectsAppIconCached;
     }
 
     /** Hide the in-layout logo on skins that already inject the app icon. */
     private void applyLogoVisibility(RemoteViews views) {
         views.setViewVisibility(
             R.id.notification_logo,
-            isMiuiDevice() ? android.view.View.GONE : android.view.View.VISIBLE
+            skinInjectsAppIcon() ? android.view.View.GONE : android.view.View.VISIBLE
         );
     }
 
@@ -591,6 +637,69 @@ public class QortalForegroundService extends Service {
         }
     }
 
+    /**
+     * Stable per-transfer notification id derived from the transfer id, so
+     * progress updates replace in place and the mapping survives process
+     * restarts (transfers are hydrated and re-announced after a relaunch).
+     */
+    private static int notificationIdForTransfer(String transferId) {
+        return NOTIFICATION_ID_TRANSFER_BASE + Math.abs(transferId.hashCode() % 900);
+    }
+
+    private void showTransferNotification(
+        String transferId,
+        String title,
+        String text,
+        int progress,
+        boolean ongoing
+    ) {
+        if (transferId == null || transferId.isEmpty()) return;
+        NotificationManager manager = getSystemService(NotificationManager.class);
+        if (manager == null) return;
+
+        Intent openIntent = new Intent(this, MainActivity.class);
+        openIntent.setFlags(
+            Intent.FLAG_ACTIVITY_SINGLE_TOP |
+            Intent.FLAG_ACTIVITY_CLEAR_TOP |
+            Intent.FLAG_ACTIVITY_NEW_TASK
+        );
+        int notificationId = notificationIdForTransfer(transferId);
+        PendingIntent pendingIntent = PendingIntent.getActivity(
+            this,
+            notificationId,
+            openIntent,
+            PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT
+        );
+
+        NotificationCompat.Builder builder = baseNotificationBuilder(CHANNEL_TRANSFERS_ID)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setStyle(new NotificationCompat.BigTextStyle().bigText(text))
+            .setContentIntent(pendingIntent)
+            .setOngoing(ongoing)
+            .setAutoCancel(!ongoing)
+            .setOnlyAlertOnce(true)
+            .setSilent(true)
+            .setShowWhen(false)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setCategory(NotificationCompat.CATEGORY_PROGRESS);
+
+        if (progress >= 0) {
+            builder.setProgress(100, Math.min(progress, 100), false);
+        } else if (progress == -1) {
+            builder.setProgress(0, 0, true);
+        }
+
+        manager.notify(notificationId, builder.build());
+    }
+
+    private void dismissTransferNotification(String transferId) {
+        if (transferId == null || transferId.isEmpty()) return;
+        NotificationManager manager = getSystemService(NotificationManager.class);
+        if (manager == null) return;
+        manager.cancel(notificationIdForTransfer(transferId));
+    }
+
     private void handleIncomingCallAction(Intent intent) {
         String callId = safeString(intent.getStringExtra(EXTRA_CALL_ID), "");
         String action = ACTION_INCOMING_CALL_ACCEPT.equals(intent.getAction()) ? "accept" : "decline";
@@ -638,9 +747,18 @@ public class QortalForegroundService extends Service {
         callsChannel.setDescription("Incoming voice calls");
         callsChannel.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
 
+        NotificationChannel transfersChannel = new NotificationChannel(
+            CHANNEL_TRANSFERS_ID,
+            CHANNEL_TRANSFERS_NAME,
+            NotificationManager.IMPORTANCE_LOW
+        );
+        transfersChannel.setDescription("Reticulum file uploads, downloads and shared files");
+        transfersChannel.setShowBadge(false);
+
         manager.createNotificationChannel(statusChannel);
         manager.createNotificationChannel(alertsChannel);
         manager.createNotificationChannel(callsChannel);
+        manager.createNotificationChannel(transfersChannel);
     }
 
     private static String safeString(String value, String fallback) {
@@ -722,6 +840,31 @@ public class QortalForegroundService extends Service {
     public static void dismissIncomingCall(Context context) {
         Intent intent = new Intent(context, QortalForegroundService.class);
         intent.setAction(ACTION_DISMISS_INCOMING_CALL);
+        context.startService(intent);
+    }
+
+    public static void updateTransfer(
+        Context context,
+        String transferId,
+        String title,
+        String text,
+        int progress,
+        boolean ongoing
+    ) {
+        Intent intent = new Intent(context, QortalForegroundService.class);
+        intent.setAction(ACTION_UPDATE_TRANSFER);
+        intent.putExtra(EXTRA_TRANSFER_ID, transferId);
+        intent.putExtra(EXTRA_TRANSFER_TITLE, title);
+        intent.putExtra(EXTRA_TRANSFER_TEXT, text);
+        intent.putExtra(EXTRA_TRANSFER_PROGRESS, progress);
+        intent.putExtra(EXTRA_TRANSFER_ONGOING, ongoing);
+        startServiceCompat(context, intent);
+    }
+
+    public static void dismissTransfer(Context context, String transferId) {
+        Intent intent = new Intent(context, QortalForegroundService.class);
+        intent.setAction(ACTION_DISMISS_TRANSFER);
+        intent.putExtra(EXTRA_TRANSFER_ID, transferId);
         context.startService(intent);
     }
 

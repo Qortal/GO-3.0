@@ -32,6 +32,7 @@ import { CustomizedSnackbars } from '../Snackbar/Snackbar';
 import { getFee } from '../../background/background.ts';
 import { QORTAL_APP_CONTEXT } from '../../App';
 import { subscribeToEvent, unsubscribeFromEvent } from '../../utils/events';
+import { SAFE_AREA_TOP } from '../../utils/mobileSafeArea';
 import { useTranslation } from 'react-i18next';
 import { useSetAtom } from 'jotai';
 import { txListAtom } from '../../atoms/global';
@@ -236,6 +237,7 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
           sx={{
             bgcolor: theme.palette.background.paper,
             borderBottom: `1px solid ${theme.palette.divider}`,
+            paddingTop: SAFE_AREA_TOP,
           }}
         >
           <Toolbar sx={{ minHeight: { xs: 56, sm: 64 }, px: { xs: 1, sm: 2 } }}>

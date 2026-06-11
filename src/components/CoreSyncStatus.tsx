@@ -36,13 +36,16 @@ const CoreInfoStatRow = ({
   label,
   value,
   valueColor,
+  dense = false,
 }: {
   label: string;
   value: ReactNode;
   valueColor?: string;
+  dense?: boolean;
 }) => {
   const theme = useTheme();
   const isLight = theme.palette.mode === 'light';
+  const fontSize = dense ? '0.78rem' : '0.8125rem';
 
   return (
     <Box
@@ -56,7 +59,7 @@ const CoreInfoStatRow = ({
         columnGap: 2,
         display: 'grid',
         gridTemplateColumns: 'minmax(0, 1.15fr) minmax(0, 0.85fr)',
-        py: 1.25,
+        py: dense ? 0.6 : 1.25,
         '&:last-child': { borderBottom: 'none', pb: 0 },
         '&:first-of-type': { pt: 0 },
       }}
@@ -64,9 +67,9 @@ const CoreInfoStatRow = ({
       <Typography
         sx={{
           color: theme.palette.text.secondary,
-          fontSize: '0.8125rem',
+          fontSize,
           fontWeight: 500,
-          lineHeight: 1.45,
+          lineHeight: 1.4,
           textAlign: 'left',
         }}
       >
@@ -76,9 +79,9 @@ const CoreInfoStatRow = ({
         component="div"
         sx={{
           color: valueColor ?? theme.palette.primary.main,
-          fontSize: '0.8125rem',
+          fontSize,
           fontWeight: 600,
-          lineHeight: 1.45,
+          lineHeight: 1.4,
           textAlign: 'right',
           wordBreak: 'break-word',
         }}
@@ -92,9 +95,12 @@ const CoreInfoStatRow = ({
 export const CoreSyncStatus = ({
   renderIcon,
   useExternalTooltip = false,
+  compact = false,
 }: {
   renderIcon?: React.ReactNode;
   useExternalTooltip?: boolean;
+  /** Dense layout so the whole panel fits a small phone dialog unscrolled. */
+  compact?: boolean;
 }) => {
   const nodeInfos = useAtomValue(nodeInfosAtom);
   const selectedNode = useAtomValue(selectedNodeInfoAtom);
@@ -279,7 +285,7 @@ export const CoreSyncStatus = ({
     const iconNode = renderIcon || (
       <img
         src={imagePath}
-        style={{ height: 'auto', width: '35px' }}
+        style={{ height: 'auto', width: compact ? '26px' : '35px' }}
         alt="sync status"
       />
     );
@@ -293,40 +299,47 @@ export const CoreSyncStatus = ({
 
     const mobilePanelNode = (
       <Box sx={{ width: '100%' }}>
-        <Typography
-          sx={{
-            color: theme.palette.text.primary,
-            fontSize: '0.9375rem',
-            fontWeight: 700,
-            letterSpacing: '-0.01em',
-            mb: 1.25,
-            textAlign: 'left',
-          }}
-        >
-          {t('core:core.information', { postProcess: 'capitalizeFirstChar' })}
-        </Typography>
+        {!compact && (
+          <Typography
+            sx={{
+              color: theme.palette.text.primary,
+              fontSize: '0.9375rem',
+              fontWeight: 700,
+              letterSpacing: '-0.01em',
+              mb: 1.25,
+              textAlign: 'left',
+            }}
+          >
+            {t('core:core.information', { postProcess: 'capitalizeFirstChar' })}
+          </Typography>
+        )}
         <Box sx={getDialogInfoCardSx(theme)}>
           <CoreInfoStatRow
+            dense={compact}
             label={t('core:core.version', { postProcess: 'capitalizeFirstChar' })}
             value={buildVersion || '—'}
           />
           <CoreInfoStatRow
+            dense={compact}
             label={t('core:minting.sync_status', { defaultValue: 'Sync status' })}
             value={message || '—'}
           />
           <CoreInfoStatRow
+            dense={compact}
             label={t('core:core.block_height', {
               postProcess: 'capitalizeFirstChar',
             })}
             value={height ? String(height) : '—'}
           />
           <CoreInfoStatRow
+            dense={compact}
             label={t('core:core.peers', { postProcess: 'capitalizeFirstChar' })}
             value={
               numberOfConnections != null ? String(numberOfConnections) : '—'
             }
           />
           <CoreInfoStatRow
+            dense={compact}
             label={t('core:core.data_peers', {
               postProcess: 'capitalizeFirstChar',
             })}
@@ -338,6 +351,7 @@ export const CoreSyncStatus = ({
           />
           {connectedRemoteInterfaces !== null && (
             <CoreInfoStatRow
+              dense={compact}
               label={t('core:core.connected_remote_interfaces', {
                 postProcess: 'capitalizeFirstChar',
               })}
@@ -346,6 +360,7 @@ export const CoreSyncStatus = ({
           )}
           {p2pActiveOverlayPeers !== null && (
             <CoreInfoStatRow
+              dense={compact}
               label={t('core:core.p2p_active_overlay_peers', {
                 postProcess: 'capitalizeFirstChar',
               })}
@@ -354,6 +369,7 @@ export const CoreSyncStatus = ({
           )}
           {p2pHealth !== null && (
             <CoreInfoStatRow
+              dense={compact}
               label={t('core:core.p2p_health', {
                 postProcess: 'capitalizeFirstChar',
               })}
@@ -364,6 +380,7 @@ export const CoreSyncStatus = ({
             />
           )}
           <CoreInfoStatRow
+            dense={compact}
             label={t('auth:node.using', { postProcess: 'capitalizeFirstChar' })}
             value={nodeDisplay(nodeBase)}
             valueColor={
@@ -373,6 +390,7 @@ export const CoreSyncStatus = ({
             }
           />
           <CoreInfoStatRow
+            dense={compact}
             label={t('core:ui.version', { postProcess: 'capitalizeFirstChar' })}
             value={manifestData.version || '—'}
           />
@@ -493,7 +511,7 @@ export const CoreSyncStatus = ({
             alignItems: 'center',
             display: 'flex',
             flexDirection: 'column',
-            gap: 1.5,
+            gap: compact ? 0.75 : 1.5,
             width: '100%',
           }}
         >

@@ -39,6 +39,19 @@ export interface QortalBackgroundPlugin {
     notificationType?: 'direct' | 'group' | 'general';
   }): Promise<{ success: boolean }>;
 
+  showTransferNotification(options: {
+    transferId: string;
+    title?: string;
+    text?: string;
+    /** 0-100 for a determinate bar, -1 for indeterminate, -2 (default) for no bar. */
+    progress?: number;
+    ongoing?: boolean;
+  }): Promise<{ success: boolean }>;
+
+  dismissTransferNotification(options: {
+    transferId: string;
+  }): Promise<{ success: boolean }>;
+
   getPendingAlertNotification(): Promise<{
     fromAddress?: string;
     type?: string;

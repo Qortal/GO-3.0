@@ -28,6 +28,7 @@ import { useTranslation } from 'react-i18next';
 import { getBaseApiReact } from '../App';
 import {
   customWebsocketSubscriptionsAtom,
+  isNotificationSeenInAppFromKeyTimes,
   lastPaymentSeenTimestampAtom,
   notificationSeenInAppKeyTimesAtom,
   notificationSeenInAppKeysAtom,

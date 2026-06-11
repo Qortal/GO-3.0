@@ -14,7 +14,10 @@ import PhoneInTalkIcon from '@mui/icons-material/PhoneInTalk';
 import { HubsIcon } from '../../assets/Icons/HubsIcon';
 import { MessagingIcon } from '../../assets/Icons/MessagingIcon';
 import { ContextMenu } from '../ContextMenu';
-import { getBaseApiReact } from '../../App';
+import {
+  buildGroupAvatarUrl,
+  buildGroupAvatarUrlAsyncFallback,
+} from '../../utils/groupAvatarUrl';
 import { formatEmailDate } from './qmailUtils';
 import CampaignIcon from '@mui/icons-material/Campaign';
 import MarkChatUnreadIcon from '@mui/icons-material/MarkChatUnread';
@@ -394,11 +397,13 @@ const GroupItem = memo(
     const [isPreviewOpen, setIsPreviewOpen] = useState(false);
     const [previewSrc, setPreviewSrc] = useState(null);
     const [isAvatarLoaded, setIsAvatarLoaded] = useState(false);
-    const avatarUrl = useMemo(() => {
-      if (!ownerName) return null;
-      return `${getBaseApiReact()}/arbitrary/THUMBNAIL/${ownerName}/qortal_group_avatar_${group?.groupId}?async=true`;
-    }, [ownerName, group?.groupId]);
+    const [avatarSrc, setAvatarSrc] = useState<string | null>(null);
+    const avatarUrl = useMemo(
+      () => buildGroupAvatarUrl(ownerName, group?.groupId),
+      [ownerName, group?.groupId]
+    );
     useEffect(() => {
+      setAvatarSrc(avatarUrl);
       setIsAvatarLoaded(false);
     }, [avatarUrl]);
 
@@ -494,7 +499,7 @@ const GroupItem = memo(
                     ...getClickableAvatarSx(theme, isAvatarLoaded),
                   }}
                   alt={group?.groupName?.charAt(0)}
-                  src={avatarUrl || undefined}
+                  src={avatarSrc || undefined}
                   onClick={handleAvatarClick}
                   onMouseDown={(event) => {
                     if (isAvatarLoaded) {
@@ -511,6 +516,11 @@ const GroupItem = memo(
                       setIsAvatarLoaded(true);
                     },
                     onError: () => {
+                      const fallback = buildGroupAvatarUrlAsyncFallback(avatarUrl);
+                      if (fallback && avatarSrc !== fallback) {
+                        setAvatarSrc(fallback);
+                        return;
+                      }
                       setIsAvatarLoaded(false);
                     },
                   }}

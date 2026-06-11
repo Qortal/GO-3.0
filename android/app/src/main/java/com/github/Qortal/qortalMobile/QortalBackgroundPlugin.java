@@ -166,6 +166,59 @@ public class QortalBackgroundPlugin extends Plugin {
     }
 
     @PluginMethod
+    public void showTransferNotification(PluginCall call) {
+        Context context = getContext();
+        if (context == null) {
+            call.reject("Context not available");
+            return;
+        }
+
+        String transferId = call.getString("transferId", "");
+        if (transferId == null || transferId.trim().isEmpty()) {
+            call.reject("Missing transferId");
+            return;
+        }
+
+        String title = call.getString("title", "File transfer");
+        String text = call.getString("text", "");
+        int progress = call.getInt("progress", -2);
+        boolean ongoing = Boolean.TRUE.equals(call.getBoolean("ongoing", false));
+        QortalForegroundService.updateTransfer(
+            context,
+            transferId.trim(),
+            title,
+            text,
+            progress,
+            ongoing
+        );
+
+        JSObject ret = new JSObject();
+        ret.put("success", true);
+        call.resolve(ret);
+    }
+
+    @PluginMethod
+    public void dismissTransferNotification(PluginCall call) {
+        Context context = getContext();
+        if (context == null) {
+            call.reject("Context not available");
+            return;
+        }
+
+        String transferId = call.getString("transferId", "");
+        if (transferId == null || transferId.trim().isEmpty()) {
+            call.reject("Missing transferId");
+            return;
+        }
+
+        QortalForegroundService.dismissTransfer(context, transferId.trim());
+
+        JSObject ret = new JSObject();
+        ret.put("success", true);
+        call.resolve(ret);
+    }
+
+    @PluginMethod
     public void getPendingAlertNotification(PluginCall call) {
         JSObject ret = new JSObject();
         if (pendingAlertFromAddress != null && !pendingAlertFromAddress.isEmpty()) {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import {
   getDefaultLocalNodeUrl,
   EXT_NODE_QORTAL_LINK,
@@ -41,6 +41,7 @@ import {
 import { ApiKey } from '../types/auth';
 import { useModalGlobal } from './useModalGlobal';
 import { getWalletErrorMessage } from '../utils/walletErrorMessages';
+import { markWalletUnlockedInSession } from '../utils/walletUnlockSession';
 import { saveLastAuthenticatedWalletAddress } from '../utils/lastAuthenticatedWallet';
 
 let balanceSetIntervalRef: null | NodeJS.Timeout = null;
@@ -82,6 +83,7 @@ export const useAuth = () => {
   const setAuthenticatePassword = useSetAtom(authenticatePasswordAtom);
   const store = useStore();
   const [rawWallet, setRawWallet] = useAtom(rawWalletAtom);
+  const authenticateInFlightRef = useRef(false);
 
   const useLocalNode = isLocalNodeUrl(selectedNode?.url);
 
@@ -414,74 +416,128 @@ export const useAuth = () => {
   }, [store, setIsOpenSyncingDialog, enableAuthWhenSyncing]);
 
   const authenticate = useCallback(
-    async (skipToPublic?: boolean, skipLocalCheck?: boolean) => {
+    async (
+      skipToPublic?: boolean,
+      skipLocalCheck?: boolean
+    ): Promise<boolean> => {
+      if (authenticateInFlightRef.current) {
+        return false;
+      }
       if (!skipToPublic && !skipLocalCheck) {
         const isInSync = await isSyncedLocal();
         if (!isInSync) {
-          return;
+          return false;
         }
       }
-      setIsLoading(true);
+      authenticateInFlightRef.current = true;
+      if (!skipLocalCheck) {
+        setIsLoading(true);
+      }
       setWalletToBeDecryptedError('');
-      // One frame for the spinner to paint before the KDF saturates the CPU.
-      await new Promise<void>((res) => {
-        setTimeout(() => {
-          res();
-        }, 50);
-      });
       const password = store.get(authenticatePasswordAtom);
-      window
-        .sendMessage(
-          'decryptWallet',
-          {
-            password,
-            wallet: rawWallet,
-          },
-          TIME_MINUTES_2_IN_MILLISECONDS
-        )
-        .then((response) => {
-          if (response && !response.error) {
-            saveLastAuthenticatedWalletAddress(rawWallet?.address0);
+      const wallet = store.get(rawWalletAtom) ?? rawWallet;
+
+      try {
+        const walletAddress = wallet?.address0?.trim();
+
+        if (skipLocalCheck && walletAddress) {
+          const resumeResponse = await window.sendMessage(
+            'tryResumeWalletSession',
+            { address: walletAddress }
+          );
+          if (resumeResponse?.ok) {
+            saveLastAuthenticatedWalletAddress(walletAddress);
+            markWalletUnlockedInSession(walletAddress);
             setAuthenticatePassword('');
             setExtstate('authenticated');
             setWalletToBeDecryptedError('');
-            window.sendMessage('startNotificationCheck').catch(() => {});
+            setIsLoading(false);
 
+            window.sendMessage('startNotificationCheck').catch(() => {});
             window
               .sendMessage('userInfo')
-              .then((response) => {
-                setIsLoading(false);
-                if (response && !response.error) {
-                  setUserInfo(response);
+              .then((userResponse) => {
+                if (userResponse && !userResponse.error) {
+                  setUserInfo(userResponse);
                 }
               })
               .catch((error) => {
-                setIsLoading(false);
                 console.error('Failed to get user info:', error);
               });
-
             getBalanceFunc();
-
             window
               .sendMessage('getWalletInfo')
-              .then((response) => {
-                if (response && response.walletInfo) {
-                  setRawWallet(response.walletInfo);
+              .then((walletResponse) => {
+                if (walletResponse && walletResponse.walletInfo) {
+                  setRawWallet(walletResponse.walletInfo);
                 }
               })
               .catch((error) => {
                 console.error('Failed to get wallet info:', error);
               });
-          } else if (response?.error) {
-            setIsLoading(false);
-            setWalletToBeDecryptedError(getWalletErrorMessage(response.error));
+            return true;
           }
-        })
-        .catch((error) => {
+        }
+
+        const response = await window.sendMessage(
+          'decryptWallet',
+          {
+            password,
+            wallet,
+          },
+          TIME_MINUTES_2_IN_MILLISECONDS
+        );
+
+        if (response && !response.error) {
+          saveLastAuthenticatedWalletAddress(wallet?.address0);
+          markWalletUnlockedInSession(wallet?.address0);
+          setAuthenticatePassword('');
+          setExtstate('authenticated');
+          setWalletToBeDecryptedError('');
           setIsLoading(false);
-          setWalletToBeDecryptedError(getWalletErrorMessage(error));
-          console.error('Failed to decrypt wallet:', error);
-        });
+
+          window.sendMessage('startNotificationCheck').catch(() => {});
+
+          window
+            .sendMessage('userInfo')
+            .then((userResponse) => {
+              if (userResponse && !userResponse.error) {
+                setUserInfo(userResponse);
+              }
+            })
+            .catch((error) => {
+              console.error('Failed to get user info:', error);
+            });
+
+          getBalanceFunc();
+
+          window
+            .sendMessage('getWalletInfo')
+            .then((walletResponse) => {
+              if (walletResponse && walletResponse.walletInfo) {
+                setRawWallet(walletResponse.walletInfo);
+              }
+            })
+            .catch((error) => {
+              console.error('Failed to get wallet info:', error);
+            });
+
+          return true;
+        }
+
+        setIsLoading(false);
+        if (response?.error) {
+          setWalletToBeDecryptedError(getWalletErrorMessage(response.error));
+        }
+        return false;
+      } catch (error) {
+        setIsLoading(false);
+        setWalletToBeDecryptedError(getWalletErrorMessage(error));
+        console.error('Failed to decrypt wallet:', error);
+        return false;
+      } finally {
+        authenticateInFlightRef.current = false;
+      }
     },
     [
       store,
@@ -493,6 +549,7 @@ export const useAuth = () => {
       setWalletToBeDecryptedError,
       rawWallet,
       getBalanceFunc,
+      isSyncedLocal,
     ]
   );
 

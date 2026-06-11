@@ -26,6 +26,7 @@ import {
   subscribeMobilePersistentStatusUpdates,
   updateMobilePersistentStatus,
 } from '../../utils/mobileBackgroundService';
+import { initMobileTransferNotifications } from '../../utils/mobileTransferNotifications';
 import { isCapacitor } from '../../utils/platform';
 import {
   dialogContentSx,
@@ -62,6 +63,8 @@ export const MobileBackgroundSetup = ({
 
   useEffect(() => {
     if (!enabled || !isCapacitor()) return undefined;
+
+    initMobileTransferNotifications();
 
     let cancelled = false;
 

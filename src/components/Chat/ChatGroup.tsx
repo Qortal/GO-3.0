@@ -70,6 +70,7 @@ import ImageIcon from '@mui/icons-material/Image';
 import SendIcon from '@mui/icons-material/Send';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import { messageHasImage } from '../../utils/chat';
+import { SAFE_AREA_BOTTOM, SAFE_AREA_TOP } from '../../utils/mobileSafeArea';
 import { useTranslation } from 'react-i18next';
 
 const uid = new ShortUniqueId({ length: 5 });
@@ -1772,16 +1773,20 @@ export const ChatGroup = ({
 
           {isOpenQManager !== null && (
             <Rnd
-              position={qManagerPosition}
-              size={qManagerSize}
-              minWidth={Q_MANAGER_MIN_WIDTH}
-              minHeight={Q_MANAGER_MIN_HEIGHT}
-              maxWidth={maxQManagerWidth}
-              maxHeight={maxQManagerHeight}
+              position={isMobile ? { x: 0, y: 0 } : qManagerPosition}
+              size={
+                isMobile
+                  ? { width: windowSize.width, height: windowSize.height }
+                  : qManagerSize
+              }
+              minWidth={isMobile ? 0 : Q_MANAGER_MIN_WIDTH}
+              minHeight={isMobile ? 0 : Q_MANAGER_MIN_HEIGHT}
+              maxWidth={isMobile ? windowSize.width : maxQManagerWidth}
+              maxHeight={isMobile ? windowSize.height : maxQManagerHeight}
               bounds="window"
               disableDragging
               enableResizing={
-                isOpenQManager === true && !hideView
+                !isMobile && isOpenQManager === true && !hideView
                   ? {
                       top: true,
                       left: true,
@@ -1819,23 +1824,32 @@ export const ChatGroup = ({
               <Box
                 sx={{
                   backgroundColor: theme.palette.background.surface,
-                  border: `1px solid ${alpha(theme.palette.divider, 0.82)}`,
-                  borderBottom: 'none',
-                  borderRadius: '8px 8px 0 0',
-                  boxShadow:
-                    theme.palette.mode === 'dark'
-                      ? `0 -18px 46px ${alpha(theme.palette.common.black, 0.46)}, 0 -1px 0 ${alpha(theme.palette.common.white, 0.05)}`
-                      : `0 -14px 36px ${alpha(theme.palette.common.black, 0.16)}, 0 -1px 0 ${alpha(theme.palette.common.white, 0.72)}`,
                   display: 'flex',
                   flexDirection: 'column',
                   height: '100%',
-                  maxHeight: `calc(100vh - ${appHeighOffsetPx})`,
                   maxWidth: '100vw',
-                  minHeight: Q_MANAGER_MIN_HEIGHT,
-                  minWidth: Q_MANAGER_MIN_WIDTH,
                   overflow: 'hidden',
                   position: 'relative',
                   width: '100%',
+                  ...(isMobile
+                    ? {
+                        // Full-screen on mobile: square edges, keep the
+                        // header clear of the status bar / cutout.
+                        paddingTop: SAFE_AREA_TOP,
+                        paddingBottom: SAFE_AREA_BOTTOM,
+                      }
+                    : {
+                        border: `1px solid ${alpha(theme.palette.divider, 0.82)}`,
+                        borderBottom: 'none',
+                        borderRadius: '8px 8px 0 0',
+                        boxShadow:
+                          theme.palette.mode === 'dark'
+                            ? `0 -18px 46px ${alpha(theme.palette.common.black, 0.46)}, 0 -1px 0 ${alpha(theme.palette.common.white, 0.05)}`
+                            : `0 -14px 36px ${alpha(theme.palette.common.black, 0.16)}, 0 -1px 0 ${alpha(theme.palette.common.white, 0.72)}`,
+                        maxHeight: `calc(100vh - ${appHeighOffsetPx})`,
+                        minHeight: Q_MANAGER_MIN_HEIGHT,
+                        minWidth: Q_MANAGER_MIN_WIDTH,
+                      }),
                 }}
               >
                 <Box

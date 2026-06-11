@@ -27,6 +27,7 @@ import {
   TouchSensor,
   closestCenter,
   pointerWithin,
+  rectIntersection,
   useDndContext,
   useDroppable,
   useSensor,
@@ -67,7 +68,12 @@ import { buildTabQortalUrl } from './tabQortalLink';
 import { filterAppTabsForMobile, isQChatOpenTab } from '../../utils/openQChatTab';
 import { MOBILE_TAB_BAR_HEIGHT_PX } from './MobileTabBar';
 import { MOBILE_TOP_BAR_HEIGHT_PX } from './MobileTopBar';
-import { MOBILE_TABS_DIALOG_Z, MOBILE_TABS_OVERLAY_Z } from './mobileLayout';
+import {
+  MOBILE_TABS_DIALOG_Z,
+  MOBILE_TABS_OVERLAY_Z,
+  SAFE_AREA_BOTTOM,
+  SAFE_AREA_TOP,
+} from './mobileLayout';
 
 type MobileTabsOverlayProps = {
   open: boolean;
@@ -93,10 +99,12 @@ const noTextSelectionSx = {
 } as const;
 const TAB_DRAG_PREFIX = 'tab:';
 const FOLDER_DRAG_PREFIX = 'folder:';
+const FOLDER_DROP_PREFIX = 'folder-drop:';
 const ROW_DROP_PREFIX = 'row:drop:';
 
 const tabDragId = (tab: OpenTab) => `${TAB_DRAG_PREFIX}${getOpenTabKey(tab)}`;
 const folderDragId = (folderId: string) => `${FOLDER_DRAG_PREFIX}${folderId}`;
+const folderDropId = (folderId: string) => `${FOLDER_DROP_PREFIX}${folderId}`;
 const rowDropId = (rowIndex: number) => `${ROW_DROP_PREFIX}${rowIndex}`;
 
 type TabDropTarget = { type: 'folder'; folderId: string };
@@ -121,12 +129,36 @@ const parseRowDropId = (id: string | number) => {
 };
 
 const parseTabDropTarget = (id: string | number): TabDropTarget | null => {
-  const folderId = parseFolderDragId(String(id));
-  if (folderId) return { type: 'folder', folderId };
+  const value = String(id);
+  if (value.startsWith(FOLDER_DROP_PREFIX)) {
+    return { type: 'folder', folderId: value.slice(FOLDER_DROP_PREFIX.length) };
+  }
   return null;
 };
 
 const tabGridCollisionDetection: CollisionDetection = (args) => {
+  const activeId = String(args.active.id);
+
+  if (activeId.startsWith(TAB_DRAG_PREFIX)) {
+    const folderDropContainers = args.droppableContainers.filter((container) =>
+      String(container.id).startsWith(FOLDER_DROP_PREFIX)
+    );
+    const folderHits = rectIntersection({
+      ...args,
+      droppableContainers: folderDropContainers,
+    });
+    if (folderHits.length > 0) {
+      return folderHits;
+    }
+
+    const tabPointerHits = pointerWithin(args).filter((collision) =>
+      String(collision.id).startsWith(TAB_DRAG_PREFIX)
+    );
+    if (tabPointerHits.length > 0) {
+      return tabPointerHits;
+    }
+  }
+
   const pointerCollisions = pointerWithin(args);
   if (pointerCollisions.length > 0) {
     return pointerCollisions;
@@ -378,6 +410,7 @@ const SortableFolderChip = memo(function SortableFolderChip({
   const theme = useTheme();
   const { active } = useDndContext();
   const sortableId = folderDragId(folderId);
+  const dropTargetId = folderDropId(folderId);
   const skipClickRef = useRef(false);
   const wasDraggingRef = useRef(false);
   const {
@@ -388,12 +421,7 @@ const SortableFolderChip = memo(function SortableFolderChip({
     transition,
     isDragging,
   } = useSortable({ id: sortableId, disabled: !editMode });
-  const { setNodeRef: setDropRef, isOver } = useDroppable({ id: sortableId });
-
-  const setNodeRef = (node: HTMLElement | null) => {
-    setSortableRef(node);
-    setDropRef(node);
-  };
+  const { setNodeRef: setDropRef, isOver } = useDroppable({ id: dropTargetId });
 
   useEffect(() => {
     if (isDragging) {
@@ -419,53 +447,60 @@ const SortableFolderChip = memo(function SortableFolderChip({
 
   return (
     <Box
-      ref={setNodeRef}
-      {...(editMode ? listeners : {})}
-      {...(editMode ? attributes : {})}
-      onClick={handleClick}
-      style={{
-        transform: CSS.Transform.toString(transform),
-        transition:
-          transition ||
-          'transform 220ms cubic-bezier(0.2, 0, 0, 1), opacity 180ms ease',
-        opacity: isDragging ? 0.35 : 1,
-      }}
+      ref={setDropRef}
       sx={{
-        alignItems: 'center',
-        backgroundColor: isTabDropTarget
-          ? `${theme.palette.primary.main}28`
-          : editMode
-            ? `${theme.palette.primary.main}10`
-            : selected
-              ? `${theme.palette.primary.main}18`
-              : theme.palette.background.paper,
-        border: isTabDropTarget
-          ? `2px solid ${theme.palette.primary.main}`
-          : editMode
-            ? `1px dashed ${theme.palette.primary.main}`
-            : selected
-              ? `1.5px solid ${theme.palette.primary.main}`
-              : `1px solid ${theme.palette.divider}`,
-        borderRadius: 2,
-        boxShadow: isTabDropTarget
-          ? `0 0 0 3px ${theme.palette.primary.main}22`
-          : 'none',
-        cursor: editMode ? (isDragging ? 'grabbing' : 'grab') : 'pointer',
-        display: 'flex',
-        flexDirection: 'column',
         flexShrink: 0,
-        gap: 0.5,
-        minWidth: 84,
-        position: 'relative',
-        px: 1,
-        py: 0.85,
-        touchAction: editMode ? 'none' : 'pan-x',
-        userSelect: 'none',
-        willChange: 'transform',
-        transition:
-          'background-color 140ms ease, border-color 140ms ease, box-shadow 140ms ease',
+        pb: 0.25,
+        pt: 0.25,
       }}
     >
+      <Box
+        ref={setSortableRef}
+        {...(editMode ? listeners : {})}
+        {...(editMode ? attributes : {})}
+        onClick={handleClick}
+        style={{
+          transform: CSS.Transform.toString(transform),
+          transition:
+            transition ||
+            'transform 220ms cubic-bezier(0.2, 0, 0, 1), opacity 180ms ease',
+          opacity: isDragging ? 0.35 : 1,
+        }}
+        sx={{
+          alignItems: 'center',
+          backgroundColor: isTabDropTarget
+            ? `${theme.palette.primary.main}28`
+            : editMode
+              ? `${theme.palette.primary.main}10`
+              : selected
+                ? `${theme.palette.primary.main}18`
+                : theme.palette.background.paper,
+          border: isTabDropTarget
+            ? `2px solid ${theme.palette.primary.main}`
+            : editMode
+              ? `1px dashed ${theme.palette.primary.main}`
+              : selected
+                ? `1.5px solid ${theme.palette.primary.main}`
+                : `1px solid ${theme.palette.divider}`,
+          borderRadius: 2,
+          boxShadow: isTabDropTarget
+            ? `0 0 0 3px ${theme.palette.primary.main}22`
+            : 'none',
+          cursor: editMode ? (isDragging ? 'grabbing' : 'grab') : 'pointer',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 0.5,
+          minWidth: 84,
+          position: 'relative',
+          px: 1,
+          py: 0.85,
+          touchAction: editMode ? 'none' : 'pan-x',
+          userSelect: 'none',
+          willChange: 'transform',
+          transition:
+            'background-color 140ms ease, border-color 140ms ease, box-shadow 140ms ease',
+        }}
+      >
       {editMode ? (
         <IconButton
           aria-label="Remove folder"
@@ -503,6 +538,7 @@ const SortableFolderChip = memo(function SortableFolderChip({
       >
         {name}
       </Typography>
+      </Box>
     </Box>
   );
 });
@@ -1042,24 +1078,27 @@ export const MobileTabsOverlay = ({ open, onClose }: MobileTabsOverlayProps) => 
 
     const tabKey = parseTabDragId(active.id);
     if (tabKey) {
+      const tab = resolveTabByKey(tabKey);
+      if (!tab) return;
+
+      const folderTarget = parseTabDropTarget(over.id);
+      if (folderTarget) {
+        const currentFolder = org.getFolderForTab(tab);
+        if (currentFolder?.id !== folderTarget.folderId) {
+          void org.addTabToFolder(tab, folderTarget.folderId);
+        }
+        return;
+      }
+
       const overTabKey = parseTabDragId(over.id);
       if (overTabKey && overTabKey !== tabKey) {
-        const activeTab = resolveTabByKey(tabKey);
         const folderId =
-          selectedFolderId ?? org.getFolderForTab(activeTab!)?.id ?? null;
+          selectedFolderId ?? org.getFolderForTab(tab)?.id ?? null;
         if (folderId) {
           void org.reorderTabsInFolder(folderId, tabKey, overTabKey);
         }
         return;
       }
-
-      const tab = resolveTabByKey(tabKey);
-      const target = parseTabDropTarget(over.id);
-      if (!tab || !target) return;
-
-      const currentFolder = org.getFolderForTab(tab);
-      if (currentFolder?.id === target.folderId) return;
-      void org.addTabToFolder(tab, target.folderId);
       return;
     }
 
@@ -1234,8 +1273,8 @@ export const MobileTabsOverlay = ({ open, onClose }: MobileTabsOverlayProps) => 
     void commitFolderHeaderName();
   };
 
-  const tabsPanelTop = `calc(${MOBILE_TOP_BAR_HEIGHT_PX}px + env(safe-area-inset-top, 0px))`;
-  const tabsPanelMaxHeight = `calc(100vh - ${MOBILE_TOP_BAR_HEIGHT_PX}px - env(safe-area-inset-top, 0px) - ${MOBILE_TAB_BAR_HEIGHT_PX}px - env(safe-area-inset-bottom, 0px) - 24px)`;
+  const tabsPanelTop = `calc(${MOBILE_TOP_BAR_HEIGHT_PX}px + ${SAFE_AREA_TOP})`;
+  const tabsPanelMaxHeight = `calc(100vh - ${MOBILE_TOP_BAR_HEIGHT_PX}px - ${SAFE_AREA_TOP} - ${MOBILE_TAB_BAR_HEIGHT_PX}px - ${SAFE_AREA_BOTTOM} - 24px)`;
 
   return (
     <>
@@ -1690,7 +1729,12 @@ export const MobileTabsOverlay = ({ open, onClose }: MobileTabsOverlayProps) => 
         onClose={() => setRenameOpen(false)}
         fullWidth
         maxWidth="xs"
-        sx={{ zIndex: MOBILE_TABS_DIALOG_Z }}
+        sx={{
+          zIndex: MOBILE_TABS_DIALOG_Z,
+          '& .MuiDialog-container': {
+            alignItems: 'flex-start',
+          },
+        }}
       >
         <DialogTitle>Rename tab</DialogTitle>
         <DialogContent>
@@ -1722,7 +1766,12 @@ export const MobileTabsOverlay = ({ open, onClose }: MobileTabsOverlayProps) => 
         onClose={() => setAddressOpen(false)}
         fullWidth
         maxWidth="sm"
-        sx={{ zIndex: MOBILE_TABS_DIALOG_Z }}
+        sx={{
+          zIndex: MOBILE_TABS_DIALOG_Z,
+          '& .MuiDialog-container': {
+            alignItems: 'flex-start',
+          },
+        }}
       >
         <DialogTitle>Change qortal:// address</DialogTitle>
         <DialogContent>

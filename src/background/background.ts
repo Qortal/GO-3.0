@@ -86,6 +86,7 @@ import {
   getTimestampMentionCase,
   getUserSettingsCase,
   getWalletInfoCase,
+  tryResumeWalletSessionCase,
   handleActiveGroupDataFromSocketCase,
   inviteToGroupCase,
   joinGroupCase,
@@ -3292,6 +3293,9 @@ function setupMessageListener() {
 
       case 'getWalletInfo':
         getWalletInfoCase(request, event);
+        break;
+      case 'tryResumeWalletSession':
+        tryResumeWalletSessionCase(request, event);
         break;
       case 'validApi':
         validApiCase(request, event);

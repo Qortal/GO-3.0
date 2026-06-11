@@ -21,6 +21,9 @@ import android.webkit.WebView;
 
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowCompat;
+import androidx.core.view.WindowInsetsCompat;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -42,7 +45,16 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(ReticulumPlugin.class);
         registerPlugin(AudioRoutingPlugin.class);
         registerPlugin(QortalBiometricPlugin.class);
+        registerPlugin(SafeAreaPlugin.class);
         super.onCreate(savedInstanceState);
+        // Edge-to-edge: WebView draws under system bars; CSS safe-area vars pad content.
+        WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
+
+        // Bank-app unlock: if fingerprint unlock is configured, show the system
+        // prompt immediately so the scan runs while the WebView boots.
+        if (savedInstanceState == null) {
+            QortalBiometricPlugin.maybeShowEarlyPrompt(this);
+        }
 
         // ✅ Enable mixed content mode for WebView
         if (this.bridge != null) {
@@ -51,6 +63,7 @@ public class MainActivity extends BridgeActivity {
                 WebSettings webSettings = webView.getSettings();
                 webSettings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
                 webSettings.setMediaPlaybackRequiresUserGesture(false);
+                installSafeAreaInsetBridge(webView);
             }
         }
 
@@ -78,5 +91,58 @@ public class MainActivity extends BridgeActivity {
                 CALL_PERMISSIONS_REQUEST_CODE
             );
         }
+    }
+
+    /** Push status/navigation bar insets into CSS variables for the WebView. */
+    private void installSafeAreaInsetBridge(WebView webView) {
+        Runnable apply = () -> applySafeAreaInsets(webView);
+        webView.post(apply);
+        ViewCompat.setOnApplyWindowInsetsListener(webView, (v, insets) -> {
+            // Edge-to-edge windows ignore adjustResize, so the keyboard would
+            // cover the page (e.g. the chat input). Shrink the WebView by the
+            // IME overlap ourselves so the page resizes like adjustResize.
+            // NOTE: must be a layout margin — WebView ignores padding for
+            // content layout.
+            int imeBottom = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom;
+            int margin = Math.max(0, imeBottom);
+            android.view.ViewGroup.LayoutParams rawParams = v.getLayoutParams();
+            if (rawParams instanceof android.view.ViewGroup.MarginLayoutParams) {
+                android.view.ViewGroup.MarginLayoutParams params =
+                    (android.view.ViewGroup.MarginLayoutParams) rawParams;
+                if (params.bottomMargin != margin) {
+                    params.bottomMargin = margin;
+                    v.setLayoutParams(params);
+                }
+            }
+            applySafeAreaInsets(webView);
+            return insets;
+        });
+    }
+
+    private void applySafeAreaInsets(WebView webView) {
+        WindowInsetsCompat insets = ViewCompat.getRootWindowInsets(webView);
+        if (insets == null) {
+            return;
+        }
+        // WindowInsets are physical pixels; CSS needs density-independent px.
+        float density = getResources().getDisplayMetrics().density;
+        if (density <= 0) density = 1f;
+        boolean imeVisible = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom > 0;
+        int top = Math.round(insets.getInsets(WindowInsetsCompat.Type.statusBars()).top / density);
+        // With the keyboard open the WebView already ends above it (IME
+        // padding) — the nav bar sits below the keyboard, so no bottom inset.
+        int bottom = imeVisible
+            ? 0
+            : Math.round(insets.getInsets(WindowInsetsCompat.Type.navigationBars()).bottom / density);
+        int left = Math.round(insets.getInsets(WindowInsetsCompat.Type.displayCutout()).left / density);
+        int right = Math.round(insets.getInsets(WindowInsetsCompat.Type.displayCutout()).right / density);
+        String js = String.format(
+            "document.documentElement.style.setProperty('--safe-area-inset-top','%dpx');"
+                + "document.documentElement.style.setProperty('--safe-area-inset-bottom','%dpx');"
+                + "document.documentElement.style.setProperty('--safe-area-inset-left','%dpx');"
+                + "document.documentElement.style.setProperty('--safe-area-inset-right','%dpx');",
+            top, bottom, left, right
+        );
+        webView.evaluateJavascript(js, null);
     }
 }

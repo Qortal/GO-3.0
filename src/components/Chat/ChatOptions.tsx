@@ -7,8 +7,10 @@ import {
   Select,
   Typography,
   Tooltip,
+  useMediaQuery,
   useTheme,
 } from '@mui/material';
+import { alpha } from '@mui/material/styles';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import SearchIcon from '@mui/icons-material/Search';
 import { Spacer } from '../../common/Spacer';
@@ -56,6 +58,7 @@ export const ChatOptions = ({
   const [searchValue, setSearchValue] = useState('');
   const [selectedMember, setSelectedMember] = useState(0);
   const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down('md'));
   const { t } = useTranslation([
     'auth',
     'core',
@@ -239,33 +242,69 @@ export const ChatOptions = ({
       <Box
         sx={{
           backgroundColor: theme.palette.background.default,
-          borderBottomLeftRadius: '20px',
-          borderTopLeftRadius: '20px',
           display: 'flex',
           flexDirection: 'column',
-          flexGrow: 0,
-          flexShrink: 0,
-          height: '100%',
           overflow: 'auto',
-          width: '300px',
+          ...(isMobile
+            ? {
+                bottom: 0,
+                height: '100%',
+                left: 0,
+                position: 'absolute',
+                right: 0,
+                top: 0,
+                width: '100%',
+                zIndex: 8,
+              }
+            : {
+                borderBottomLeftRadius: '20px',
+                borderTopLeftRadius: '20px',
+                flexGrow: 0,
+                flexShrink: 0,
+                height: '100%',
+                width: '300px',
+              }),
         }}
       >
         <Box
           sx={{
+            alignItems: 'center',
             display: 'flex',
-            justifyContent: 'flex-end',
-            padding: '10px',
+            justifyContent: 'space-between',
+            padding: isMobile ? '12px 16px' : '10px',
           }}
         >
-          <CloseIcon
+          {isMobile ? (
+            <Typography
+              sx={{
+                color: theme.palette.text.primary,
+                fontSize: '1rem',
+                fontWeight: 700,
+              }}
+            >
+              {t('core:message.generic.mentioned', {
+                postProcess: 'capitalizeFirstChar',
+              })}
+            </Typography>
+          ) : (
+            <Box />
+          )}
+
+          <ButtonBase
             onClick={() => {
               setMode('default');
             }}
             sx={{
-              cursor: 'pointer',
-              color: theme.palette.text.primary,
+              borderRadius: '50%',
+              padding: isMobile ? '6px' : 0,
             }}
-          />
+          >
+            <CloseIcon
+              sx={{
+                color: theme.palette.text.primary,
+              }}
+            />
+          </ButtonBase>
         </Box>
 
         <Box
@@ -379,33 +418,69 @@ export const ChatOptions = ({
       <Box
         sx={{
           backgroundColor: theme.palette.background.paper,
-          borderBottomLeftRadius: '20px',
-          borderTopLeftRadius: '20px',
           display: 'flex',
           flexDirection: 'column',
-          flexGrow: 0,
-          flexShrink: 0,
-          height: '98%',
           overflow: 'auto',
-          width: '300px',
+          ...(isMobile
+            ? {
+                bottom: 0,
+                height: '100%',
+                left: 0,
+                position: 'absolute',
+                right: 0,
+                top: 0,
+                width: '100%',
+                zIndex: 8,
+              }
+            : {
+                borderBottomLeftRadius: '20px',
+                borderTopLeftRadius: '20px',
+                flexGrow: 0,
+                flexShrink: 0,
+                height: '98%',
+                width: '300px',
+              }),
         }}
       >
         <Box
           sx={{
+            alignItems: 'center',
             display: 'flex',
-            justifyContent: 'flex-end',
-            padding: '10px',
+            justifyContent: 'space-between',
+            padding: isMobile ? '12px 16px' : '10px',
           }}
         >
-          <CloseIcon
+          {isMobile ? (
+            <Typography
+              sx={{
+                color: theme.palette.text.primary,
+                fontSize: '1rem',
+                fontWeight: 700,
+              }}
+            >
+              {t('core:action.search_chat_text', {
+                postProcess: 'capitalizeFirstChar',
+              })}
+            </Typography>
+          ) : (
+            <Box />
+          )}
+
+          <ButtonBase
             onClick={() => {
               setMode('default');
             }}
             sx={{
-              cursor: 'pointer',
-              color: theme.palette.text.primary,
+              borderRadius: '50%',
+              padding: isMobile ? '6px' : 0,
             }}
-          />
+          >
+            <CloseIcon
+              sx={{
+                color: theme.palette.text.primary,
+              }}
+            />
+          </ButtonBase>
         </Box>
 
         <Box
@@ -458,8 +533,10 @@ export const ChatOptions = ({
             sx={{
               alignItems: 'center',
               display: 'flex',
+              gap: '8px',
               justifyContent: 'space-between',
               padding: '10px',
+              width: isMobile ? '90%' : undefined,
             }}
           >
             <Select
@@ -471,6 +548,7 @@ export const ChatOptions = ({
               onChange={(e) => setSelectedMember(e.target.value)}
               size="small"
               value={selectedMember}
+              sx={isMobile ? { flex: 1 } : undefined}
             >
               <MenuItem value={0}>
                 <em>
@@ -612,24 +690,52 @@ export const ChatOptions = ({
       sx={{
         alignItems: 'center',
         display: 'flex',
-        flexDirection: 'column',
-        gap: '20px',
-        height: '100%',
-        width: '50px',
+        ...(isMobile
+          ? {
+              // Floating overlay strip: the message list keeps its full width.
+              flexDirection: 'row',
+              position: 'absolute',
+              right: 0,
+              top: 0,
+              width: 'auto',
+              zIndex: 5,
+            }
+          : {
+              flexDirection: 'column',
+              gap: '20px',
+              height: '100%',
+              width: '50px',
+            }),
       }}
     >
       <Box
         sx={{
           alignItems: 'center',
-          backgroundColor: theme.palette.background.paper,
-          borderBottomLeftRadius: '20px',
-          borderTopLeftRadius: '20px',
           display: 'flex',
-          flexDirection: 'column',
-          gap: '20px',
-          minHeight: '200px',
-          padding: '10px',
           width: '100%',
+          ...(isMobile
+            ? {
+                backdropFilter: 'blur(10px)',
+                backgroundColor: alpha(theme.palette.background.paper, 0.72),
+                border: `1px solid ${alpha(theme.palette.text.primary, 0.08)}`,
+                borderTop: 'none',
+                borderRight: 'none',
+                borderBottomLeftRadius: '18px',
+                boxShadow: '0 6px 18px rgba(0,0,0,0.28)',
+                flexDirection: 'row',
+                gap: '22px',
+                padding: '9px 14px',
+                WebkitBackdropFilter: 'blur(10px)',
+              }
+            : {
+                backgroundColor: theme.palette.background.paper,
+                borderBottomLeftRadius: '20px',
+                borderTopLeftRadius: '20px',
+                flexDirection: 'column',
+                gap: '20px',
+                minHeight: '200px',
+                padding: '10px',
+              }),
         }}
       >
         <ButtonBase

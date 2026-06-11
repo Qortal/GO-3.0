@@ -39,6 +39,7 @@ import {
 } from '../../atoms/global';
 import { sortArrayByTimestampAndGroupName } from '../../utils/time';
 import { getBaseApiReact } from '../../App';
+import { buildGroupAvatarUrl } from '../../utils/groupAvatarUrl';
 import { executeEvent } from '../../utils/events';
 import { formatEmailDate } from './qmailUtils';
 import { getClickableAvatarSx } from '../Chat/clickableAvatarStyles';
@@ -1293,10 +1294,10 @@ export function GlobalChatWidget({
                           groupsOwnerNames[group?.groupId] ??
                           group?.ownerName ??
                           group?.name;
-                        const avatarUrl =
-                          ownerName && group?.groupId
-                            ? `${getBaseApiReact()}/arbitrary/THUMBNAIL/${ownerName}/qortal_group_avatar_${group?.groupId}?async=true`
-                            : null;
+                        const avatarUrl = buildGroupAvatarUrl(
+                          ownerName,
+                          group?.groupId
+                        );
                         const isSelected =
                           selectedGroup?.groupId === group?.groupId;
                         const groupChatTimestamp =

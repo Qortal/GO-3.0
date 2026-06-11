@@ -10,6 +10,7 @@ import {
   directChatHasUnreadAtom,
   groupChatHasUnreadExcludingMutedAtom,
 } from '../../atoms/global';
+import { SAFE_AREA_BOTTOM } from '../../utils/mobileSafeArea';
 
 export const MOBILE_TAB_BAR_HEIGHT_PX = 60;
 
@@ -101,8 +102,8 @@ export const MobileTabBar = ({
         zIndex: 1200,
         display: 'flex',
         alignItems: 'stretch',
-        height: `calc(${MOBILE_TAB_BAR_HEIGHT_PX}px + env(safe-area-inset-bottom, 0px))`,
-        paddingBottom: 'env(safe-area-inset-bottom, 0px)',
+        height: `calc(${MOBILE_TAB_BAR_HEIGHT_PX}px + ${SAFE_AREA_BOTTOM})`,
+        paddingBottom: SAFE_AREA_BOTTOM,
         backgroundColor:
           theme.palette.mode === 'dark'
             ? 'rgb(28, 30, 36)'

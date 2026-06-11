@@ -146,7 +146,19 @@ import { GlobalQortalNavBar } from './components/Desktop/GlobalQortalNavBar.tsx'
 import type { AuthUnlockTransitionSnapshot } from './types/authTransition';
 import { openQWalletsTab } from './utils/openQWalletsTab';
 import { clearLastAuthenticatedWalletAddress } from './utils/lastAuthenticatedWallet';
-import { unlockPasswordWithBiometric } from './utils/walletBiometricAuth';
+import { clearWalletKdfSessionCache } from './utils/walletKdfSessionCache';
+import { clearWalletUnlockSession } from './utils/walletUnlockSession';
+import {
+  initMobileSafeAreaInsets,
+  SAFE_AREA_BOTTOM,
+} from './utils/mobileSafeArea';
+
+// Make sure the CSS safe-area vars exist before anything renders: the native
+// injection can land on the splash document and be lost, leaving the top bar
+// under the status bar.
+initMobileSafeAreaInsets();
+import { biometricUnlockWallet } from './utils/walletBiometricAuth';
+import { allowReticulumStart } from './components/Reticulum/reticulumStatus';
 import { isCapacitor } from './utils/platform';
 
 const MINTING_LOCAL_DEBUG_STORAGE_KEY = 'hub.mintingLocalDebug';
@@ -1134,6 +1146,8 @@ function App() {
   }, []);
 
   const resetAllStates = () => {
+    clearWalletKdfSessionCache();
+    clearWalletUnlockSession();
     suppressWalletInfoRestoreRef.current = true;
     holdRefExtState.current = 'not-authenticated';
     setExtstate('not-authenticated');
@@ -1158,13 +1172,18 @@ function App() {
     resetAllRecoil();
   };
 
-  const authenticateWallet = async () => {
+  const authenticateWallet = async (options?: {
+    skipNodeCheck?: boolean;
+    skipLocalCheck?: boolean;
+  }) => {
     try {
-      const isValid = await isNodeValid();
-      if (!isValid) {
-        return;
+      if (!options?.skipNodeCheck) {
+        const isValid = await isNodeValid();
+        if (!isValid) {
+          return;
+        }
       }
-      await authenticate();
+      await authenticate(undefined, options?.skipLocalCheck);
     } catch (error) {
       setWalletToBeDecryptedError(
         t('core:message.error.password_wrong', {
@@ -1182,28 +1201,31 @@ function App() {
       const address = wallet?.address0?.trim();
       if (!address) return false;
 
-      try {
-        const password = await unlockPasswordWithBiometric(address);
-        setAuthenticatePassword(password);
-        setUnlockInitialPasswordFallback(false);
+      const unlockPromise = biometricUnlockWallet(address, wallet);
 
-        if (transitionSnapshot) {
-          setAuthUnlockTransition(transitionSnapshot);
-          window.setTimeout(() => {
-            setRawWallet(wallet);
-            setExtstate('wallet-dropped');
-          }, 130);
-        } else {
-          setRawWallet(wallet);
-          setExtstate('wallet-dropped');
+      if (transitionSnapshot) {
+        setAuthUnlockTransition(transitionSnapshot);
+      }
+      setRawWallet(wallet);
+      setUnlockInitialPasswordFallback(false);
+
+      try {
+        const unlockResult = await unlockPromise;
+        if (unlockResult !== 'resume') {
+          setAuthenticatePassword(unlockResult);
         }
 
-        return true;
+        return await authenticate(undefined, true);
       } catch {
         return false;
       }
     },
-    [setAuthenticatePassword, setExtstate, setRawWallet]
+    [
+      authenticate,
+      setAuthUnlockTransition,
+      setAuthenticatePassword,
+      setRawWallet,
+    ]
   );
 
   const handleWalletPasswordFallbackUnlock = useCallback(() => {
@@ -1363,6 +1385,15 @@ function App() {
 
     setExtstate('download-wallet');
   }, [extState, rawWallet, setExtstate]);
+
+  // Defer the Python/Reticulum transport until after login: booting it on the
+  // unlock screen saturates the CPU and the JS bridge, delaying the biometric
+  // prompt and the wallet decrypt by many seconds on mid-range devices.
+  useEffect(() => {
+    if (extState !== 'authenticated') return;
+    const idleStart = window.setTimeout(() => allowReticulumStart(), 400);
+    return () => window.clearTimeout(idleStart);
+  }, [extState]);
 
   const closeBackupWalletModal = useCallback(() => {
     setIsBackupWalletModalOpen(false);
@@ -2090,8 +2121,8 @@ function App() {
             isMainWindow && {
               alignItems: 'stretch',
               pb: mobileChatComposeActive
-                ? 'env(safe-area-inset-bottom, 0px)'
-                : `calc(${MOBILE_TAB_BAR_HEIGHT_PX}px + env(safe-area-inset-bottom, 0px))`,
+                ? SAFE_AREA_BOTTOM
+                : `calc(${MOBILE_TAB_BAR_HEIGHT_PX}px + ${SAFE_AREA_BOTTOM})`,
             }),
           ...(!isMobile ||
           extState !== 'authenticated' ||

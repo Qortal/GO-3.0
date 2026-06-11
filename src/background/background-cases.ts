@@ -87,6 +87,43 @@ export function versionCase(request, event) {
   );
 }
 
+export async function tryResumeWalletSessionCase(request, event) {
+  try {
+    const requestedAddress = request.payload?.address?.trim?.() || '';
+    const keyPair = await getData('keyPair').catch(() => null);
+    const walletInfo = await getData('walletInfo').catch(() => null);
+    const storedAddress = walletInfo?.address0?.trim?.() || '';
+    const canResume =
+      Boolean(keyPair) &&
+      Boolean(walletInfo) &&
+      (!requestedAddress || storedAddress === requestedAddress);
+
+    event.source.postMessage(
+      {
+        requestId: request.requestId,
+        action: 'tryResumeWalletSession',
+        payload: {
+          ok: canResume,
+          address: storedAddress || null,
+          hasKeyPair: Boolean(keyPair),
+        },
+        type: 'backgroundMessageResponse',
+      },
+      event.origin
+    );
+  } catch {
+    event.source.postMessage(
+      {
+        requestId: request.requestId,
+        action: 'tryResumeWalletSession',
+        payload: { ok: false, hasKeyPair: false, address: null },
+        type: 'backgroundMessageResponse',
+      },
+      event.origin
+    );
+  }
+}
+
 export async function getWalletInfoCase(request, event) {
   try {
     const response = await getKeyPair();

@@ -11,6 +11,11 @@ import {
 } from './qortinoInletDebug';
 import { subscribeToEvent, unsubscribeFromEvent } from '../../utils/events';
 import { openCustomNodeGuideWebsite } from '../../utils/openCustomNodeGuideWebsite';
+import {
+  SAFE_AREA_LEFT,
+  SAFE_AREA_RIGHT,
+  SAFE_AREA_TOP,
+} from '../../utils/mobileSafeArea';
 
 type NotificationType = 'error' | 'info' | 'success' | 'warning';
 
@@ -849,7 +854,9 @@ const MobileNotificationBanner = ({
           maxWidth: maxTextWidthCh,
           minHeight: '21px',
           position: 'relative',
-          textWrap: 'pretty',
+          // Balance wraps multi-line messages into even lines so the bubble
+          // hugs the text instead of leaving a long first line + orphan word.
+          textWrap: 'balance',
           zIndex: 0,
         }}
       >
@@ -1048,6 +1055,7 @@ export const QortinoNotificationHost = ({
     open,
     notificationDurationMs
   );
+  const dragAreaRef = useRef<HTMLDivElement>(null);
   const desktopBannerRef = useRef<HTMLDivElement>(null);
   const desktopMessageRef = useRef<HTMLElement>(null);
   const {
@@ -1064,40 +1072,50 @@ export const QortinoNotificationHost = ({
   });
 
   const notificationTop = isMobile
-    ? `calc(${MOBILE_TOP_BAR_HEIGHT_PX}px + env(safe-area-inset-top, 0px) + 8px)`
+    ? `calc(${MOBILE_TOP_BAR_HEIGHT_PX}px + ${SAFE_AREA_TOP} + 8px)`
     : `calc(var(--electron-title-bar-height, 0px) + 12px)`;
 
   if (!open || !message) return null;
 
   return (
     <Box
+      ref={dragAreaRef}
       sx={{
-        left: isMobile
-          ? 'max(12px, env(safe-area-inset-left, 0px))'
-          : '50%',
-        maxWidth: isMobile ? 'none' : 'calc(100vw - 20px)',
+        // Full-screen layer: the banner starts top-center and can be dragged
+        // anywhere within it (the layer itself never blocks taps).
+        alignItems: 'flex-start',
+        display: 'flex',
+        inset: 0,
+        justifyContent: 'center',
+        paddingBottom: '16px',
+        paddingLeft: `max(12px, ${SAFE_AREA_LEFT})`,
+        paddingRight: `max(12px, ${SAFE_AREA_RIGHT})`,
+        paddingTop: notificationTop,
         pointerEvents: 'none',
         position: 'fixed',
-        right: isMobile
-          ? 'max(12px, env(safe-area-inset-right, 0px))'
-          : 'auto',
-        top: notificationTop,
-        transform: isMobile ? 'none' : 'translateX(-50%)',
-        width: isMobile ? 'auto' : 'fit-content',
         zIndex: 2500,
       }}
     >
       <AnimatePresence initial={false} mode="wait">
         <motion.div
           key={`${notificationType}:${message}`}
+          drag
+          dragConstraints={dragAreaRef}
+          dragElastic={0.06}
+          dragMomentum={false}
+          whileDrag={{ scale: 1.02 }}
           initial={{ opacity: 0, y: isMobile ? -12 : -14, scale: 0.988 }}
           animate={{ opacity: 1, y: 0, scale: 1 }}
           exit={{ opacity: 0, y: isMobile ? -10 : -12, scale: 0.99 }}
           transition={{ duration: 0.22, ease: 'easeOut' }}
           style={{
+            cursor: 'grab',
             maxWidth: '100%',
             pointerEvents: 'auto',
             position: 'relative',
+            // Without this, mobile browsers treat a vertical drag as a page
+            // scroll gesture and the banner never moves.
+            touchAction: 'none',
             width: 'fit-content',
           }}
         >
@@ -1288,7 +1306,7 @@ export const QortinoNotificationHost = ({
                   maxWidth: maxTextWidthCh,
                   minHeight: '21px',
                   position: 'relative',
-                  textWrap: 'pretty',
+                  textWrap: 'balance',
                   zIndex: 0,
                 }}
               >

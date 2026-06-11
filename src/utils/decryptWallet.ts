@@ -9,6 +9,33 @@ import {
   getWalletErrorMessage,
   validateStoredWalletForDecrypt,
 } from './walletErrorMessages';
+import {
+  getCachedWalletKdfKey,
+  setCachedWalletKdfKey,
+} from './walletKdfSessionCache';
+
+/** Run KDF only and cache the derived key (used during biometric scan). */
+export async function precomputeWalletKdfKey(password, wallet) {
+  const walletAddress = wallet?.address0?.trim();
+  if (walletAddress && getCachedWalletKdfKey(walletAddress, password)) {
+    return;
+  }
+
+  validateStoredWalletForDecrypt(wallet);
+
+  let salt;
+  try {
+    salt = Base58.decode(wallet.salt);
+  } catch (error) {
+    throw new Error(getWalletErrorMessage(error));
+  }
+
+  const threads = doInitWorkers(wallet.kdfThreads ?? crypto.kdfThreads);
+  const key = await kdf(password, salt, threads);
+  if (walletAddress) {
+    setCachedWalletKdfKey(walletAddress, password, key);
+  }
+}
 
 export const decryptStoredWallet = async (password, wallet, threadCount) => {
   validateStoredWalletForDecrypt(wallet);
@@ -26,7 +53,12 @@ export const decryptStoredWallet = async (password, wallet, threadCount) => {
     throw new Error(getWalletErrorMessage(error));
   }
 
-  const key = await kdf(password, salt, threads);
+  const walletAddress = wallet.address0?.trim();
+  let key =
+    walletAddress && getCachedWalletKdfKey(walletAddress, password);
+  if (!key) {
+    key = await kdf(password, salt, threads);
+  }
   const encryptionKey = key.slice(0, 32);
   const macKey = key.slice(32, 63);
   const mac = new HmacSha512(macKey)
@@ -34,6 +66,9 @@ export const decryptStoredWallet = async (password, wallet, threadCount) => {
     .finish().result;
   if (Base58.encode(mac) !== wallet.mac) {
     throw new Error(i18n.t('auth:message.error.incorrect_password'));
+  }
+  if (walletAddress) {
+    setCachedWalletKdfKey(walletAddress, password, key);
   }
   const decryptedBytes = AES_CBC.decrypt(
     encryptedSeedBytes,

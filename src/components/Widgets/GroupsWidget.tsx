@@ -53,6 +53,7 @@ import {
   userInfoAtom,
 } from '../../atoms/global';
 import { getFee } from '../../background/background';
+import { buildGroupAvatarUrl } from '../../utils/groupAvatarUrl';
 import { TIME_WEEKS_1_IN_MILLISECONDS } from '../../constants/constants';
 import { executeEvent } from '../../utils/events';
 import { hasInvisibleCharacters } from '../../utils/hasInvisibleCharacters';
@@ -298,10 +299,7 @@ const buildJoinRequestItems = (
 const getGroupAvatarUrl = (
   ownerName: string | null,
   groupId: string | number
-) =>
-  ownerName
-    ? `${getBaseApiReact()}/arbitrary/THUMBNAIL/${encodeURIComponent(ownerName)}/qortal_group_avatar_${groupId}?async=true`
-    : null;
+) => buildGroupAvatarUrl(ownerName, groupId);
 
 const normalizeSnippet = (value: unknown, fallback: string) => {
   if (typeof value !== 'string') {

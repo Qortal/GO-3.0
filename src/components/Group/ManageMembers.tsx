@@ -36,6 +36,7 @@ import InsertLinkIcon from '@mui/icons-material/InsertLink';
 import { useSetAtom } from 'jotai';
 import { txListAtom } from '../../atoms/global';
 import { useTranslation } from 'react-i18next';
+import { SAFE_AREA_TOP } from '../../utils/mobileSafeArea';
 import { QORTAL_PROTOCOL } from '../../constants/constants.ts';
 
 function a11yProps(index: number) {
@@ -202,6 +203,7 @@ export const ManageMembers = ({
           sx={{
             position: 'relative',
             bgcolor: theme.palette.background.default,
+            paddingTop: SAFE_AREA_TOP,
           }}
         >
           <Toolbar>

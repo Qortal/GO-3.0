@@ -456,7 +456,31 @@ const MenuBar = memo(
           width: '100%',
         }}
       >
-        {mobileChatToolbarRows || (
+        {toolbarInTopBar ? (
+          // Two rows so every formatting action is visible without scrolling
+          // (the single scrollable row hid half the buttons off-screen).
+          mobileChatToolbarRows || (
+            <Box
+              className="chat-format-toolbar chat-format-toolbar--top-bar"
+              sx={{
+                alignItems: 'center',
+                display: 'flex',
+                flexWrap: 'nowrap',
+                gap: 0,
+                justifyContent: 'flex-start',
+                overflowX: 'auto',
+                scrollbarWidth: 'none',
+                WebkitOverflowScrolling: 'touch',
+                width: '100%',
+                '&::-webkit-scrollbar': { display: 'none' },
+              }}
+            >
+              {toolbarButtons}
+              {topBarExtraActions}
+            </Box>
+          )
+        ) : (
+          mobileChatToolbarRows || (
         <Box
           className={isMobile && isChat ? 'chat-format-toolbar' : undefined}
           sx={{
@@ -544,7 +568,7 @@ const MenuBar = memo(
             </>
           )}
         </Box>
-        )}
+        ))}
       </Box>
     );
 

@@ -47,7 +47,10 @@ import {
   getDialogPaperSx,
 } from '../App/dialogSurface';
 import { MOBILE_CHAT_TOOLBAR_SLOT_ID } from './mobileChatCompose';
+import { SAFE_AREA_LEFT, SAFE_AREA_RIGHT, SAFE_AREA_TOP } from '../../utils/mobileSafeArea';
 
+// Tall enough for the two-row formatting toolbar (2 × 40px buttons + gap +
+// shell padding) so every action is visible without horizontal scrolling.
 const MOBILE_TOP_BAR_COMPOSE_HEIGHT_PX = 96;
 
 const MINTING_LOCAL_DEBUG_STORAGE_KEY = 'hub.mintingLocalDebug';
@@ -331,26 +334,29 @@ export const MobileTopBar = ({
     <Box
       sx={{
         flexShrink: 0,
+        boxSizing: 'content-box',
         height: chatComposeActive
-          ? `calc(${MOBILE_TOP_BAR_COMPOSE_HEIGHT_PX}px + env(safe-area-inset-top, 0px))`
-          : `calc(${MOBILE_TOP_BAR_HEIGHT_PX}px + env(safe-area-inset-top, 0px))`,
+          ? MOBILE_TOP_BAR_COMPOSE_HEIGHT_PX
+          : MOBILE_TOP_BAR_HEIGHT_PX,
         minHeight: chatComposeActive
-          ? `calc(${MOBILE_TOP_BAR_COMPOSE_HEIGHT_PX}px + env(safe-area-inset-top, 0px))`
-          : `calc(${MOBILE_TOP_BAR_HEIGHT_PX}px + env(safe-area-inset-top, 0px))`,
-        paddingTop: 'env(safe-area-inset-top, 0px)',
-        paddingLeft: 'max(10px, env(safe-area-inset-left, 0px))',
-        paddingRight: 'max(10px, env(safe-area-inset-right, 0px))',
+          ? MOBILE_TOP_BAR_COMPOSE_HEIGHT_PX
+          : MOBILE_TOP_BAR_HEIGHT_PX,
+        paddingTop: SAFE_AREA_TOP,
+        paddingLeft: `max(10px, ${SAFE_AREA_LEFT})`,
+        paddingRight: `max(10px, ${SAFE_AREA_RIGHT})`,
         display: 'flex',
-        alignItems: chatComposeActive ? 'stretch' : 'center',
+        alignItems: chatComposeActive ? 'center' : 'center',
         justifyContent: 'flex-start',
         gap: 0.5,
-        position: 'relative',
+        position: chatComposeActive ? 'sticky' : 'relative',
+        top: chatComposeActive ? 0 : undefined,
         zIndex: chatComposeActive ? 1400 : tabsOverlayOpen ? MOBILE_TOP_BAR_TABS_OPEN_Z : undefined,
         backgroundColor:
           theme.palette.mode === 'dark'
             ? 'rgb(28, 30, 36)'
             : theme.palette.background.paper,
         borderBottom: `1px solid ${theme.palette.border?.subtle ?? 'rgba(255,255,255,0.08)'}`,
+        overflow: chatComposeActive ? 'hidden' : undefined,
       }}
     >
       <Box
@@ -360,7 +366,9 @@ export const MobileTopBar = ({
           display: chatComposeActive ? 'flex' : 'none',
           flex: chatComposeActive ? 1 : undefined,
           justifyContent: 'center',
+          minHeight: 0,
           minWidth: 0,
+          overflow: 'hidden',
           width: '100%',
         }}
       />
@@ -630,8 +638,8 @@ export const MobileTopBar = ({
             fontWeight: 700,
             justifyContent: 'space-between',
             letterSpacing: '-0.01em',
-            pb: 1.5,
-            pt: 2,
+            pb: 1,
+            pt: 1.25,
             px: 2.5,
           }}
         >
@@ -644,28 +652,16 @@ export const MobileTopBar = ({
             <CloseRoundedIcon />
           </IconButton>
         </DialogTitle>
-        <DialogContent sx={{ ...dialogContentSx, px: 2.5, pt: 2 }}>
+        <DialogContent sx={{ ...dialogContentSx, px: 2.5, pt: 1.25, pb: 2 }}>
           <Box
             sx={{
               display: 'flex',
               flexDirection: 'column',
-              gap: 2,
+              gap: 1.25,
               width: '100%',
             }}
           >
-            <Typography
-              sx={{
-                color: theme.palette.text.secondary,
-                fontSize: '0.6875rem',
-                fontWeight: 700,
-                letterSpacing: '0.08em',
-                textAlign: 'center',
-                textTransform: 'uppercase',
-              }}
-            >
-              Core connection
-            </Typography>
-            <CoreSyncStatus useExternalTooltip />
+            <CoreSyncStatus useExternalTooltip compact />
             <Divider
               flexItem
               sx={{

@@ -30,6 +30,7 @@ import Typography from '@mui/material/Typography';
 import { useAtom } from 'jotai';
 import { ChangeEvent, Fragment, useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { SAFE_AREA_TOP } from '../../utils/mobileSafeArea';
 import { useSetAtom } from 'jotai';
 import {
   enabledDevModeAtom,
@@ -422,7 +423,7 @@ export const Settings = ({ open, setOpen, rawWallet }) => {
         <AppBar
           sx={{
             position: 'relative',
-            paddingTop: 'env(safe-area-inset-top, 0px)',
+            paddingTop: SAFE_AREA_TOP,
           }}
         >
           <Toolbar>

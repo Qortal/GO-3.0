@@ -387,6 +387,10 @@
   max-height: 120px;
 }
 
+.chat-format-toolbar--top-bar {
+  max-height: 44px;
+}
+
 .chat-format-toolbar--two-rows {
   align-items: center;
   display: flex;

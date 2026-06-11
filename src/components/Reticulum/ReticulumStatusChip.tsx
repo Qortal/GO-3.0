@@ -19,6 +19,8 @@ export const ReticulumStatusChip = () => {
   // shared transport alive.
   if (mobile) return null;
   if (phase === 'error' && !status) return null;
+  // Transport start is deferred until after login; don't show a stale chip.
+  if (phase === 'idle' && !status) return null;
 
   const color = reticulumPhaseColor(phase);
 

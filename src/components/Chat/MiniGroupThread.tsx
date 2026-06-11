@@ -32,6 +32,9 @@ import {
   objectToBase64,
 } from '../../qdn/encryption/group-encryption';
 import { executeEvent } from '../../utils/events';
+import { buildGroupAvatarUrl } from '../../utils/groupAvatarUrl';
+import { groupsOwnerNamesSelector } from '../../atoms/global';
+import { useAtomValue } from 'jotai';
 import { ChatList } from './ChatList';
 import {
   RESOURCE_TYPE_NUMBER_GROUP_CHAT_REACTIONS,
@@ -207,6 +210,7 @@ export function MiniGroupThread({
   const [keyError, setKeyError] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const groupId = group?.groupId;
+  const resolvedOwnerName = useAtomValue(groupsOwnerNamesSelector(groupId));
   /** From parent (groupsProperties), same as Group.tsx; open group when false */
   const isPrivate = isPrivateProp ?? group?.isOpen === false;
   const socketRef = useRef<WebSocket | null>(null);
@@ -749,10 +753,12 @@ export function MiniGroupThread({
 
   const groupName =
     group?.groupName || group?.name || `Group ${group?.groupId}`;
-  const ownerName = group?.ownerName || group?.name;
-  const avatarUrl = ownerName
-    ? `${getBaseApiReact()}/arbitrary/THUMBNAIL/${ownerName}/qortal_group_avatar_${groupId}?async=true`
-    : null;
+  const ownerName =
+    resolvedOwnerName ||
+    group?.ownerPrimaryName ||
+    group?.ownerName ||
+    null;
+  const avatarUrl = buildGroupAvatarUrl(ownerName, groupId);
 
   if (keyError && isPrivate !== false) {
     return (

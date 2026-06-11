@@ -52,6 +52,7 @@ import { QortalUserAvatar } from './QortalUserAvatar';
 import PhraseWallet from '../utils/generateWallet/phrase-wallet.ts';
 import { decryptStoredWalletFromSeedPhrase } from '../utils/decryptWallet.ts';
 import { crypto } from '../constants/decryptWallet.ts';
+import { prewarmKdfWorkers } from '../encryption/kdf';
 import { PasswordField } from './index.ts';
 import { AuthButton, AuthSectionLabel } from './Auth/AuthShell';
 import type { AuthUnlockTransitionSnapshot } from '../types/authTransition';
@@ -63,7 +64,8 @@ import {
 } from '../utils/lastAuthenticatedWallet';
 import { mobileLoginSettingsOpenAtom } from '../atoms/global';
 import { isCapacitor } from '../utils/platform';
-import { getBiometricEnabledAddresses, getBiometricEnabledAddressesSync } from '../utils/walletBiometricAuth';
+import { getBiometricEnabledAddresses, getBiometricEnabledAddressesSync, prefetchWalletSessionProbe, prewarmBiometricUnlockKdf, syncBiometricAutoPromptFlag, syncBiometricPasswordCache, warmUpBiometricHardware } from '../utils/walletBiometricAuth';
+import { isQortalBiometricHardwareAvailable } from '../plugins/QortalBiometric';
 
 const parsefilenameQortal = (filename) => {
   return filename.startsWith('qortal_backup_') ? filename.slice(14) : filename;
@@ -350,6 +352,43 @@ export const Wallets = ({
       canceled = true;
     };
   }, [isLoginSettingsOpen, mode, nativeShell, walletAddresses]);
+
+  useEffect(() => {
+    if (mode !== 'entry' || !nativeShell || biometricEnabledAddresses.size === 0) {
+      return;
+    }
+    void prewarmKdfWorkers();
+    void warmUpBiometricHardware();
+    void isQortalBiometricHardwareAvailable();
+    syncBiometricAutoPromptFlag();
+
+    const enabledList = [...biometricEnabledAddresses];
+    void syncBiometricPasswordCache(enabledList);
+
+    const lastAddress = getLastAuthenticatedWalletAddress();
+    const prewarmTargets = wallets.filter(
+      (wallet) =>
+        wallet?.address0 &&
+        biometricEnabledAddresses.has(wallet.address0.trim())
+    );
+    prewarmTargets.sort((a, b) => {
+      if (a.address0 === lastAddress) return -1;
+      if (b.address0 === lastAddress) return 1;
+      return 0;
+    });
+
+    // KDF for one wallet already saturates the worker pool; prewarming the
+    // whole list burns CPU the unlock tap is about to need. Two most likely
+    // wallets, sequentially.
+    (async () => {
+      for (const wallet of prewarmTargets.slice(0, 2)) {
+        prefetchWalletSessionProbe(wallet.address0);
+        await prewarmBiometricUnlockKdf(wallet.address0, wallet).catch(
+          () => {}
+        );
+      }
+    })();
+  }, [biometricEnabledAddresses, mode, nativeShell, wallets]);
 
   const persistWallets = useCallback(async (nextWallets: any[]) => {
     setWallets(nextWallets);
@@ -755,7 +794,7 @@ export const Wallets = ({
                   mode === 'entry' &&
                   Boolean(
                     wallet?.address0 &&
-                      biometricEnabledAddresses.has(wallet.address0)
+                      biometricEnabledAddresses.has(wallet.address0.trim())
                   )
                 }
                 finalizeWalletReorder={finalizeWalletReorder}
@@ -1272,6 +1311,16 @@ const WalletRow = ({
     (wallet?.filename ? parsefilenameQortal(wallet.filename) : null) ||
     t('auth:authentication_form.unnamed_account');
   const addressLabel = shortenAddress(wallet?.address0);
+
+  // KDF prewarm runs once at list level (top targets only); per-row we only
+  // prefetch the cheap session probe so resume-unlocks skip the KDF entirely.
+  useEffect(() => {
+    if (mode !== 'entry' || !biometricUnlockEnabled || !wallet?.address0) {
+      return;
+    }
+    prefetchWalletSessionProbe(wallet.address0);
+  }, [biometricUnlockEnabled, mode, wallet]);
+
   const getTransitionSnapshot = ():
     | AuthUnlockTransitionSnapshot
     | undefined => {
@@ -1335,7 +1384,42 @@ const WalletRow = ({
     : 'linear-gradient(180deg, rgba(8,14,24,0.93), rgba(5,8,14,0.96))';
 
   return (
-    <Box
+    <>
+      {biometricUnlockBusy && (
+        <Box
+          sx={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 1400,
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 2,
+            bgcolor: 'rgba(0,0,0,0.88)',
+            pointerEvents: 'none',
+          }}
+        >
+          <FingerprintRoundedIcon
+            sx={{
+              fontSize: 80,
+              color: theme.palette.primary.main,
+              animation: 'biometricPulse 1.2s ease-in-out infinite',
+              '@keyframes biometricPulse': {
+                '0%, 100%': { opacity: 0.55, transform: 'scale(1)' },
+                '50%': { opacity: 1, transform: 'scale(1.08)' },
+              },
+            }}
+          />
+          <Typography
+            variant="h6"
+            sx={{ color: '#fff', fontWeight: 600, px: 3, textAlign: 'center' }}
+          >
+            {t('auth:mobile_login_settings.biometric_place_finger')}
+          </Typography>
+        </Box>
+      )}
+      <Box
       ref={(element: HTMLDivElement | null) => {
         rowRef.current = element;
         if (wallet?.address0) {
@@ -1571,6 +1655,7 @@ const WalletRow = ({
         )}
       </Box>
     </Box>
+    </>
   );
 };
 

@@ -7,6 +7,10 @@ import { crypto as crypto2 } from '../constants/decryptWallet';
 // bcryptjs worker (verified against the wallet KDF salt), but meaningfully
 // faster on mobile JS engines where the pure-JS implementation crawls.
 import BcryptWorker from './bcryptworkerwasm.worker.js?worker';
+import {
+  canUseNativeBcrypt,
+  nativeBcryptHashBatch,
+} from '../utils/nativeBcrypt';
 
 const stringtoUTF8Array = (message) => {
   if (typeof message === 'string') {
@@ -19,34 +23,8 @@ const stringtoUTF8Array = (message) => {
   return message;
 };
 
-const bcryptInWorker = (hashBase64, salt) => {
-  return new Promise((resolve, reject) => {
-    const worker = new BcryptWorker();
-    worker.onmessage = (e) => {
-      const { result, error } = e.data;
-      if (error) {
-        reject(error);
-      } else {
-        resolve(result);
-      }
-      worker.terminate();
-    };
-    worker.onerror = (err) => {
-      reject(err.message);
-      worker.terminate();
-    };
-    worker.postMessage({ hashBase64, salt });
-  });
-};
-
-const stringToUTF8Array = (message) => {
-  if (typeof message !== 'string') return message; // Assuming you still want to pass through non-string inputs unchanged
-  const encoder = new TextEncoder(); // TextEncoder defaults to UTF-8
-  return encoder.encode(message);
-};
-
-const computekdf = async (req) => {
-  const { salt, key, nonce, staticSalt, staticBcryptSalt } = req;
+const buildKdfBcryptJob = (req) => {
+  const { key, nonce, staticSalt, staticBcryptSalt } = req;
   const combinedBytes = utils.appendBuffer(
     new Uint8Array([]),
     stringToUTF8Array(`${staticSalt}${key}${nonce}`)
@@ -55,11 +33,110 @@ const computekdf = async (req) => {
   const sha512Hash = new Sha512().process(combinedBytes).finish().result;
   const sha512HashBase64 = bytesToBase64(sha512Hash);
 
-  const result = await bcryptInWorker(
-    sha512HashBase64.substring(0, 72),
-    staticBcryptSalt
+  return {
+    hashBase64: sha512HashBase64.substring(0, 72),
+    salt: staticBcryptSalt,
+  };
+};
+
+/** Reused worker pool — avoids WASM re-init on every unlock. */
+let persistentWorkers = null;
+let persistentPoolSize = 0;
+
+function ensurePersistentWorkers(poolSize) {
+  if (persistentWorkers && persistentPoolSize === poolSize) {
+    return persistentWorkers;
+  }
+  for (const w of persistentWorkers || []) {
+    try {
+      w.terminate();
+    } catch (e) {}
+  }
+  persistentWorkers = [];
+  for (let i = 0; i < poolSize; i += 1) {
+    persistentWorkers.push(new BcryptWorker());
+  }
+  persistentPoolSize = poolSize;
+  return persistentWorkers;
+}
+
+/** Serialize bcrypt batches — concurrent prewarm + unlock corrupts shared workers. */
+let bcryptBatchChain = Promise.resolve();
+
+function runBcryptBatchInWorkers(jobs) {
+  return new Promise((resolve, reject) => {
+    const cores =
+      (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 4;
+    const poolSize = Math.max(1, Math.min(jobs.length, cores));
+    const workers = ensurePersistentWorkers(poolSize);
+    const results = new Array(jobs.length);
+    let nextJob = 0;
+    let completed = 0;
+    let failed = false;
+
+    const fail = (error) => {
+      if (failed) return;
+      failed = true;
+      reject(error);
+    };
+
+    const assign = (worker) => {
+      if (failed) return;
+      if (nextJob >= jobs.length) {
+        return;
+      }
+      const jobIndex = nextJob;
+      nextJob += 1;
+      worker.onmessage = (e) => {
+        const { result, error } = e.data;
+        if (error) {
+          fail(error);
+          return;
+        }
+        results[jobIndex] = result;
+        completed += 1;
+        if (completed === jobs.length) {
+          resolve(results);
+        } else {
+          assign(worker);
+        }
+      };
+      worker.onerror = (err) => fail(err.message);
+      worker.postMessage({
+        hashBase64: jobs[jobIndex].hashBase64,
+        salt: jobs[jobIndex].salt,
+      });
+    };
+
+    workers.forEach(assign);
+  });
+}
+
+/**
+ * Runs a batch of bcrypt jobs on a worker pool sized to the device's cores.
+ *
+ * Workers are kept alive between unlocks so hash-wasm WASM stays loaded.
+ */
+const bcryptBatchInWorkers = (jobs) => {
+  const batch = bcryptBatchChain.then(
+    () => runBcryptBatchInWorkers(jobs),
+    () => runBcryptBatchInWorkers(jobs)
   );
-  return { key, nonce, result };
+  bcryptBatchChain = batch.catch(() => {});
+  return batch;
+};
+
+async function bcryptBatch(jobs) {
+  if (canUseNativeBcrypt()) {
+    return nativeBcryptHashBatch(jobs);
+  }
+  return bcryptBatchInWorkers(jobs);
+}
+
+const stringToUTF8Array = (message) => {
+  if (typeof message !== 'string') return message;
+  const encoder = new TextEncoder();
+  return encoder.encode(message);
 };
 
 export const doInitWorkers = (numberOfWorkers) => {
@@ -75,33 +152,16 @@ export const doInitWorkers = (numberOfWorkers) => {
 };
 
 export const kdf = async (seed, salt, threads) => {
-  const workers = threads;
-  const salt2 = new Uint8Array(salt);
-
-  salt = new Uint8Array(salt);
-  const seedParts = await Promise.all(
-    workers.map((worker, index) => {
-      const nonce = index;
-      return computekdf({
-        key: seed,
-        salt,
-        nonce,
-        staticSalt: crypto2.staticSalt,
-        staticBcryptSalt: crypto2.staticBcryptSalt,
-      }).then((data) => {
-        let jsonData;
-        try {
-          jsonData = JSON.parse(data);
-          data = jsonData;
-        } catch (e) {
-          // ...
-        }
-        // if (seed !== data.key) throw new Error(kst3 + seed + ' !== ' + data.key)
-        // if (nonce !== data.nonce) throw new Error(kst4)
-        return data.result;
-      });
+  const jobs = threads.map((worker, index) =>
+    buildKdfBcryptJob({
+      key: seed,
+      nonce: index,
+      staticSalt: crypto2.staticSalt,
+      staticBcryptSalt: crypto2.staticBcryptSalt,
     })
   );
+
+  const seedParts = await bcryptBatch(jobs);
 
   const result = new Sha512()
     .process(
@@ -111,3 +171,10 @@ export const kdf = async (seed, salt, threads) => {
 
   return result;
 };
+
+/** Spawn bcrypt workers without running a hash (must stay instant for UI paths). */
+export function prewarmKdfWorkers(): Promise<void> {
+  if (typeof window === 'undefined') return Promise.resolve();
+  ensurePersistentWorkers(1);
+  return Promise.resolve();
+}

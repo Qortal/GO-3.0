@@ -19,6 +19,10 @@ export interface ReticulumState {
 // badge, diagnostic chip) subscribe, Reticulum.start() + polling happens once.
 let current: ReticulumState = { phase: 'idle', status: null, error: null };
 let started = false;
+// Booting Python/RNS is CPU-heavy and floods the JS bridge with events; doing
+// it before login starves the biometric prompt and wallet decrypt. Hold the
+// transport until the app says it's safe (post-authentication).
+let startAllowed = false;
 const listeners = new Set<(s: ReticulumState) => void>();
 
 function set(next: Partial<ReticulumState>) {
@@ -26,8 +30,17 @@ function set(next: Partial<ReticulumState>) {
   listeners.forEach((l) => l(current));
 }
 
+/** Unblock the transport (call after authentication). Starts it if UI already subscribed. */
+export function allowReticulumStart() {
+  if (startAllowed) return;
+  startAllowed = true;
+  if (listeners.size > 0) {
+    void ensureStarted();
+  }
+}
+
 async function ensureStarted() {
-  if (started) return;
+  if (started || !startAllowed) return;
   started = true;
   try {
     await Reticulum.addListener('status', (s) => set({ status: s }));
