@@ -25,6 +25,8 @@ import {
 import { getGroupAdmins, getGroupMembers } from './groupApi';
 import { AvatarPreviewModal } from '../Chat/AvatarPreviewModal';
 import { getDialogPaperSx } from '../App/dialogSurface';
+import { QortalUserAvatar } from '../QortalUserAvatar';
+import { SAFE_AREA_TOP } from '../../utils/mobileSafeArea';
 
 type GroupDetailsDialogProps = {
   open: boolean;
@@ -137,7 +139,10 @@ export const GroupDetailsDialog = ({
         py: 0.6,
       }}
     >
-      <Avatar
+      <QortalUserAvatar
+        primaryName={name || undefined}
+        walletAddress={address}
+        fallbackIconSize={16}
         sx={{
           bgcolor: alpha(theme.palette.primary.main, 0.16),
           color: theme.palette.primary.main,
@@ -146,9 +151,7 @@ export const GroupDetailsDialog = ({
           height: 26,
           width: 26,
         }}
-      >
-        {(name || address || '?').trim().charAt(0).toUpperCase()}
-      </Avatar>
+      />
       <Typography
         sx={{
           color: name ? theme.palette.text.primary : theme.palette.text.secondary,
@@ -171,7 +174,20 @@ export const GroupDetailsDialog = ({
         onClose={onClose}
         fullWidth
         maxWidth="xs"
-        PaperProps={{ sx: getDialogPaperSx(theme, { maxWidth: 440, radius: 20 }) }}
+        sx={{
+          // Keep the dialog clear of the status bar / camera notch at the top.
+          '& .MuiDialog-container': { alignItems: 'flex-start' },
+        }}
+        PaperProps={{
+          sx: {
+            ...getDialogPaperSx(theme, { maxWidth: 440, radius: 20 }),
+            display: 'flex',
+            flexDirection: 'column',
+            marginTop: `calc(${SAFE_AREA_TOP} + 16px)`,
+            marginBottom: '16px',
+            maxHeight: `calc(100dvh - ${SAFE_AREA_TOP} - 40px)`,
+          },
+        }}
       >
         <IconButton
           aria-label={t('core:action.close', {
@@ -190,7 +206,9 @@ export const GroupDetailsDialog = ({
           <CloseRoundedIcon fontSize="small" />
         </IconButton>
 
-        <DialogContent sx={{ px: 2.5, py: 3 }}>
+        <DialogContent
+          sx={{ px: 2.5, py: 3, overflowY: 'auto', flex: 1, minHeight: 0 }}
+        >
           <Box
             sx={{
               alignItems: 'center',
@@ -411,13 +429,7 @@ export const GroupDetailsDialog = ({
                   <Typography sx={{ ...sectionLabelSx, mb: 0.4 }}>
                     {t('core:member_other', { defaultValue: 'Members' })}
                   </Typography>
-                  <Box
-                    sx={{
-                      maxHeight: 260,
-                      overflowY: 'auto',
-                      pr: 0.5,
-                    }}
-                  >
+                  <Box sx={{ pr: 0.5 }}>
                     {nonAdminMembers
                       .slice(0, MAX_LISTED)
                       .map((m) => renderPerson(m.primaryName, m.member))}
