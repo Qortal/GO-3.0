@@ -570,6 +570,10 @@ export const AppCardDeveloper = styled(Typography)(({ theme }) => ({
   fontWeight: 400,
   color: theme.palette.text.secondary,
   lineHeight: 1.2,
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+  maxWidth: '100%',
 }));
 
 export const AppCardRatingRow = styled(Box)({

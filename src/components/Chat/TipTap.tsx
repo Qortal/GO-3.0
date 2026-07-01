@@ -44,6 +44,7 @@ import { useAtom, useSetAtom } from 'jotai';
 import { mobileChatComposeActiveAtom } from '../../atoms/global.js';
 import { MOBILE_CHAT_TOOLBAR_SLOT_ID } from '../Mobile/mobileChatCompose';
 import { fileToBase64 } from '../../utils/fileReading/index.js';
+import { useSoftKeyboardOpen } from '../../hooks/useSoftKeyboardOpen';
 import { useTranslation } from 'react-i18next';
 import i18n from 'i18next';
 
@@ -649,10 +650,31 @@ const Tiptap = ({
     isDisabledEditorEnterAtom
   );
 
+  const isLandscape = useMediaQuery('(orientation: landscape)');
+  const keyboardOpen = useSoftKeyboardOpen();
+  // Whether the *expanded* mobile compose layout should be shown: the formatting
+  // toolbar moves into the top bar and the app's top/bottom panels hide. In
+  // portrait this tracks the soft keyboard, so dismissing the keyboard drops
+  // back to a compact composer (the text and the send/close/share buttons stay)
+  // and restores the normal panels — without clearing focus or the draft.
+  const [keyboardActive, setKeyboardActive] = useState(false);
+  const keyboardWasOpenRef = useRef(false);
+
+  const mobileChatCompose =
+    isMobile &&
+    isChat &&
+    Boolean(isFocusedParent) &&
+    (isLandscape || keyboardActive);
+
+  // A focused composer in portrait with the keyboard dismissed: keep it visible
+  // and compact (text + action buttons) rather than expanding to full compose.
+  const mobileChatCompact =
+    isMobile && isChat && Boolean(isFocusedParent) && !mobileChatCompose;
+
   useLayoutEffect(() => {
     if (!isMobile || !isChat) return;
-    setMobileComposeActive(Boolean(isFocusedParent));
-  }, [isFocusedParent, isMobile, isChat, setMobileComposeActive]);
+    setMobileComposeActive(mobileChatCompose);
+  }, [mobileChatCompose, isMobile, isChat, setMobileComposeActive]);
 
   useEffect(() => {
     return () => {
@@ -661,6 +683,49 @@ const Tiptap = ({
       }
     };
   }, [isMobile, isChat, setMobileComposeActive]);
+
+  // Once the composer is fully dismissed, drop the expanded keyboard layout too.
+  useEffect(() => {
+    if (!isFocusedParent) setKeyboardActive(false);
+  }, [isFocusedParent]);
+
+  useEffect(() => {
+    if (!isMobile || !isChat) return;
+    if (keyboardOpen) {
+      keyboardWasOpenRef.current = true;
+      setKeyboardActive(true);
+      return;
+    }
+    if (!keyboardWasOpenRef.current) return;
+    keyboardWasOpenRef.current = false;
+    if (isLandscape) {
+      setKeyboardActive(false);
+      return;
+    }
+
+    // Portrait keyboard dismissed: blur FIRST so ProseMirror is no longer
+    // focused, then collapse the expanded layout on the next tick. Changing the
+    // toolbar/editor DOM while the editor still holds a (possibly stale)
+    // selection can make ProseMirror throw while syncing the DOM selection
+    // ("Failed to execute 'collapse' on 'Selection'"). The composer itself
+    // stays open (isFocusedParent is untouched) so the typed text and the
+    // send/close/share buttons remain visible.
+    try {
+      editorRef.current?.commands?.blur?.();
+    } catch {
+      /* ignore */
+    }
+    try {
+      const active = document.activeElement as HTMLElement | null;
+      active?.blur?.();
+    } catch {
+      /* ignore */
+    }
+    const timer = window.setTimeout(() => {
+      setKeyboardActive(false);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [keyboardOpen, isLandscape, isMobile, isChat]);
 
   const handleImageUpload = useCallback(
     async (file) => {
@@ -721,11 +786,11 @@ const Tiptap = ({
   const handleFocus = useCallback(() => {
     if (isMobile && setIsFocusedParent) {
       if (isChat) {
-        setMobileComposeActive(true);
+        setKeyboardActive(true);
       }
       setIsFocusedParent(true);
     }
-  }, [isMobile, isChat, setIsFocusedParent, setMobileComposeActive]);
+  }, [isMobile, isChat, setIsFocusedParent]);
 
   const handleBlur = () => {
     const htmlContent = editorRef.current.getHTML();
@@ -813,23 +878,27 @@ const Tiptap = ({
   }, []);
 
   const useComposerLook = isChat || composerStyle;
+  // The formatting toolbar only belongs in the expanded (keyboard-open) compose
+  // layout on mobile chat; in the compact state we hide it so the normal app
+  // panels can return.
   const showToolbar =
-    isFocusedParent || !isMobile || overrideMobile || !isChat;
-  const mobileChatCompose = isMobile && isChat && isFocusedParent;
+    mobileChatCompose || !isMobile || overrideMobile || !isChat;
 
-  const editorMaxHeight = mobileChatCompose
-    ? '120px'
-    : isMobile
-      ? `calc(100svh - ${customEditorHeight || isReply ? '230px' : '190px'})`
-      : customEditorHeight
-        ? `${customEditorHeight}px`
-        : '250px';
+  const editorMaxHeight =
+    mobileChatCompose || mobileChatCompact
+      ? '120px'
+      : isMobile
+        ? `calc(100svh - ${customEditorHeight || isReply ? '230px' : '190px'})`
+        : customEditorHeight
+          ? `${customEditorHeight}px`
+          : '250px';
 
-  const editorInlineStyle = mobileChatCompose
-    ? 'overflow: auto; min-height: 40px; max-height: 120px'
-    : isMobile
-      ? `overflow: auto; min-height: ${customEditorHeight ? '200px' : '0px'}; max-height: ${editorMaxHeight}`
-      : `overflow: auto; max-height: ${editorMaxHeight}`;
+  const editorInlineStyle =
+    mobileChatCompose || mobileChatCompact
+      ? 'overflow: auto; min-height: 40px; max-height: 120px'
+      : isMobile
+        ? `overflow: auto; min-height: ${customEditorHeight ? '200px' : '0px'}; max-height: ${editorMaxHeight}`
+        : `overflow: auto; max-height: ${editorMaxHeight}`;
 
   return (
     <Box
@@ -876,6 +945,7 @@ const Tiptap = ({
         extensions={[...extensionsFiltered, ...additionalExtensions]}
         content={content}
         onCreate={({ editor }) => {
+          setEditorRefFunc(editor);
           editor.on('focus', handleFocus);
           editor.on('blur', handleBlur);
         }}

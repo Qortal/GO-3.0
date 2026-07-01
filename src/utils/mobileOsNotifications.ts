@@ -26,6 +26,20 @@ const ensureNotificationChannels = async (): Promise<void> => {
     visibility: 1,
   });
   await LocalNotifications.createChannel({
+    id: 'qortal_alerts_pm',
+    name: 'Private messages',
+    description: 'Private (direct) chat messages',
+    importance: 4,
+    visibility: 1,
+  });
+  await LocalNotifications.createChannel({
+    id: 'qortal_alerts_group',
+    name: 'Group messages',
+    description: 'Group chat messages and mentions',
+    importance: 4,
+    visibility: 1,
+  });
+  await LocalNotifications.createChannel({
     id: 'qortal_calls',
     name: 'Incoming calls',
     description: 'Incoming voice calls',

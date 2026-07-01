@@ -39,6 +39,7 @@ import {
 } from '../../atoms/global';
 import { sortArrayByTimestampAndGroupName } from '../../utils/time';
 import { getBaseApiReact } from '../../App';
+import { buildChatUserAvatarUrl } from '../../utils/chatAvatarUrl';
 import { buildGroupAvatarUrl } from '../../utils/groupAvatarUrl';
 import { executeEvent } from '../../utils/events';
 import { formatEmailDate } from './qmailUtils';
@@ -620,7 +621,7 @@ export function GlobalChatWidget({
                   height: widgetHeight,
                   minHeight: WIDGET_MIN_HEIGHT,
                   maxHeight:
-                    `min(800px, calc(100vh - ${appChromeOffsetPx} - 120px))`,
+                    `min(800px, calc(100dvh - ${appChromeOffsetPx} - 120px))`,
                   overflow: 'hidden',
                   visibility: 'visible',
                   opacity: 1,
@@ -1016,6 +1017,19 @@ export function GlobalChatWidget({
                                       const initial = (label || '?')
                                         .charAt(0)
                                         .toUpperCase();
+                                      const optName =
+                                        typeof opt === 'string'
+                                          ? opt
+                                          : opt.name;
+                                      const optAddress =
+                                        typeof opt === 'string'
+                                          ? undefined
+                                          : opt.address;
+                                      const avatarUrl = buildChatUserAvatarUrl(
+                                        getBaseApiReact(),
+                                        optName,
+                                        optAddress
+                                      );
                                       return (
                                         <ListItem
                                           key={key}
@@ -1043,6 +1057,8 @@ export function GlobalChatWidget({
                                             }}
                                           >
                                             <Avatar
+                                              src={avatarUrl || undefined}
+                                              alt={label}
                                               sx={{
                                                 width: 32,
                                                 height: 32,

@@ -13,6 +13,7 @@ import {
   InputBase,
   Tooltip,
   styled,
+  useMediaQuery,
   useTheme,
 } from '@mui/material';
 import RefreshIcon from '@mui/icons-material/Refresh';
@@ -80,6 +81,10 @@ export const AppsLibraryDesktop = ({
   const [categoryFilter, setCategoryFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState<StatusFilterOption>('all');
   const theme = useTheme();
+  // In landscape the big library logo wastes scarce vertical space, so hide it
+  // and let the app grid start higher.
+  const isLandscape = useMediaQuery('(orientation: landscape)');
+  const compactHeader = isMobile && isLandscape;
   const isSearchActive = searchValue.trim().length > 0;
   const { t } = useTranslation([
     'auth',
@@ -303,33 +308,35 @@ export const AppsLibraryDesktop = ({
           }}
         >
           {isMobile ? (
-            <Box
-              sx={{
-                alignItems: 'center',
-                display: 'flex',
-                justifyContent: 'center',
-                pb: 2.5,
-                pt: 3.5,
-                width: '100%',
-              }}
-            >
+            compactHeader ? null : (
               <Box
                 sx={{
+                  alignItems: 'center',
                   display: 'flex',
                   justifyContent: 'center',
-                  lineHeight: 0,
+                  pb: 2.5,
+                  pt: 3.5,
                   width: '100%',
-                  '& svg': {
-                    display: 'block',
-                    height: 'auto',
-                    margin: '0 auto',
-                    maxWidth: 'min(100%, 301px)',
-                  },
                 }}
               >
-                <QappLibraryText />
+                <Box
+                  sx={{
+                    display: 'flex',
+                    justifyContent: 'center',
+                    lineHeight: 0,
+                    width: '100%',
+                    '& svg': {
+                      display: 'block',
+                      height: 'auto',
+                      margin: '0 auto',
+                      maxWidth: 'min(100%, 301px)',
+                    },
+                  }}
+                >
+                  <QappLibraryText />
+                </Box>
               </Box>
-            </Box>
+            )
           ) : (
             <AppsWidthLimiter isMobile={isMobile}>
               <Box
@@ -350,7 +357,7 @@ export const AppsLibraryDesktop = ({
           sx={{
             maxWidth: '1500px',
             width: isMobile ? '100%' : '90%',
-            px: isMobile ? 1.5 : 0,
+            px: isMobile ? (compactHeader ? 3 : 1.5) : 0,
           }}
         >
           {!isMobile ? <Spacer height="20px" /> : null}
@@ -485,12 +492,18 @@ export const AppsLibraryDesktop = ({
           ref={bindScrollContainer}
           sx={{
             alignItems: 'center',
+            boxSizing: 'border-box',
             flex: 1,
             maxWidth: '1500px',
             minHeight: 0,
             msOverflowStyle: 'none',
-            overflow: 'auto',
-            px: isMobile ? 1.5 : 0,
+            // Only scroll vertically; clipping horizontal overflow keeps app
+            // cards inside the padded area (no spill past the right edge) and
+            // stops the width jitter that made the community grid glitch.
+            overflowX: 'hidden',
+            overflowY: 'auto',
+            // Landscape has spare width; pull the content in from the edges.
+            px: isMobile ? (compactHeader ? 3 : 2) : 0,
             pb: isMobile
               ? 'calc(32px + env(safe-area-inset-bottom, 0px))'
               : 0,

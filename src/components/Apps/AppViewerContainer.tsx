@@ -19,7 +19,7 @@ const AppViewerContainer = forwardRef<
 >(({ app, isSelected, hide, isDevMode, customHeight, fillParent = false }, ref) => {
   const isHidden = !isSelected || hide;
   const frameHeight =
-    customHeight || `calc(100vh - ${appChromeOffsetPx})`;
+    customHeight || `calc(100dvh - ${appChromeOffsetPx})`;
   const fillShell = fillParent;
 
   return (

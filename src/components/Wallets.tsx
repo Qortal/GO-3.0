@@ -7,6 +7,7 @@ import {
   useState,
   type DragEvent as ReactDragEvent,
   type MouseEvent as ReactMouseEvent,
+  type TouchEvent as ReactTouchEvent,
 } from 'react';
 import {
   Avatar,
@@ -57,14 +58,12 @@ import { PasswordField } from './index.ts';
 import { AuthButton, AuthSectionLabel } from './Auth/AuthShell';
 import type { AuthUnlockTransitionSnapshot } from '../types/authTransition';
 import {
-  clearLastAuthenticatedWalletAddress,
-  getLastAuthenticatedWalletAddress,
   hasAttemptedLastWalletAutoSelectThisSession,
   markLastWalletAutoSelectAttemptedThisSession,
 } from '../utils/lastAuthenticatedWallet';
 import { mobileLoginSettingsOpenAtom } from '../atoms/global';
 import { isCapacitor } from '../utils/platform';
-import { getBiometricEnabledAddresses, getBiometricEnabledAddressesSync, prefetchWalletSessionProbe, prewarmBiometricUnlockKdf, syncBiometricAutoPromptFlag, syncBiometricPasswordCache, warmUpBiometricHardware } from '../utils/walletBiometricAuth';
+import { getBiometricEnabledAddresses, getBiometricEnabledAddressesSync, prefetchWalletSessionProbe, prewarmBiometricUnlockKdf, syncBiometricAutoPromptFlag, syncBiometricPasswordCache, updateEarlyBiometricPromptForTopWallet, warmUpBiometricHardware } from '../utils/walletBiometricAuth';
 import { isQortalBiometricHardwareAvailable } from '../plugins/QortalBiometric';
 
 const parsefilenameQortal = (filename) => {
@@ -149,6 +148,35 @@ export const Wallets = ({
   const accountsScrollRef = useRef<HTMLDivElement | null>(null);
   /** True while reordering wallets; dragover hits header/footer/etc. unless we listen on document */
   const walletReorderDragActiveRef = useRef(false);
+  /** Entry-mode pointer drag: index of the row lifted, and how far it follows the finger */
+  const [walletDragActiveIndex, setWalletDragActiveIndex] = useState<
+    number | null
+  >(null);
+  const [walletDragTranslateY, setWalletDragTranslateY] = useState(0);
+  /** Distance between adjacent rows (measured live) — drives neighbour shifts. */
+  const [walletDragRowStride, setWalletDragRowStride] = useState(0);
+  const walletDragSessionRef = useRef<{
+    sourceIdx: number;
+    startY: number;
+    lastClientY: number;
+    pointerId: number;
+    activated: boolean;
+    longPressTimer: number | null;
+    gapBeforeIndex: number;
+    el: HTMLElement | null;
+    // Original (pre-transform) row geometry snapshot + scroll baseline, so the
+    // drop target is computed against stable positions — not the live rects
+    // that shift as neighbours animate (which would feed back and jitter).
+    rowSnapshot: { top: number; height: number }[];
+    scrollTop0: number;
+    rowStride: number;
+  } | null>(null);
+  const walletDragAutoScrollRef = useRef<{ raf: number | null; dir: number }>({
+    raf: null,
+    dir: 0,
+  });
+  /** Removes the active-drag document touch listeners when the drag ends. */
+  const walletDragListenerCleanupRef = useRef<null | (() => void)>(null);
   const attemptedLastWalletAutoSelectRef = useRef(
     hasAttemptedLastWalletAutoSelectThisSession()
   );
@@ -365,15 +393,16 @@ export const Wallets = ({
     const enabledList = [...biometricEnabledAddresses];
     void syncBiometricPasswordCache(enabledList);
 
-    const lastAddress = getLastAuthenticatedWalletAddress();
+    // The top wallet is auto-opened on reopen, so warm its KDF first.
+    const topAddress = wallets[0]?.address0;
     const prewarmTargets = wallets.filter(
       (wallet) =>
         wallet?.address0 &&
         biometricEnabledAddresses.has(wallet.address0.trim())
     );
     prewarmTargets.sort((a, b) => {
-      if (a.address0 === lastAddress) return -1;
-      if (b.address0 === lastAddress) return 1;
+      if (a.address0 === topAddress) return -1;
+      if (b.address0 === topAddress) return 1;
       return 0;
     });
 
@@ -388,6 +417,14 @@ export const Wallets = ({
         );
       }
     })();
+  }, [biometricEnabledAddresses, mode, nativeShell, wallets]);
+
+  // Arm the native launch-time fingerprint sheet only when the TOP wallet (the
+  // one auto-opened on reopen) has biometric — re-runs on load and after every
+  // reorder so the flag always follows whichever account sits at the top.
+  useEffect(() => {
+    if (mode !== 'entry' || !nativeShell) return;
+    updateEarlyBiometricPromptForTopWallet(wallets[0]?.address0);
   }, [biometricEnabledAddresses, mode, nativeShell, wallets]);
 
   const persistWallets = useCallback(async (nextWallets: any[]) => {
@@ -417,20 +454,17 @@ export const Wallets = ({
             );
           }
           if (mode === 'entry' && !attemptedLastWalletAutoSelectRef.current) {
-            const lastAddress = getLastAuthenticatedWalletAddress();
-            if (lastAddress) {
-              const lastWallet = res.find(
-                (wallet) => wallet?.address0 === lastAddress
-              );
-
-              if (lastWallet) {
-                attemptedLastWalletAutoSelectRef.current = true;
-                markLastWalletAutoSelectAttemptedThisSession();
-                setRawWallet(lastWallet);
-                setExtState('wallet-dropped');
-              } else {
-                clearLastAuthenticatedWalletAddress(lastAddress);
-              }
+            // On reopen, auto-open the account at the TOP of the (user-ordered)
+            // list: its unlock screen shows the biometric prompt if configured,
+            // otherwise the password field. Reorder to choose which account this
+            // is; tapping back to the picker won't re-trap you here (guarded to
+            // once per session).
+            const topWallet = res[0];
+            if (topWallet?.address0) {
+              attemptedLastWalletAutoSelectRef.current = true;
+              markLastWalletAutoSelectAttemptedThisSession();
+              setRawWallet(topWallet);
+              setExtState('wallet-dropped');
             }
           }
         }
@@ -531,6 +565,230 @@ export const Wallets = ({
     },
     [persistWallets, wallets]
   );
+
+  // ---- Entry-mode pointer-based reorder ---------------------------------
+  // HTML5 drag-and-drop is janky inside the Android WebView (screenshot ghost,
+  // no live tracking). For the Enter Qortal list we instead long-press to lift
+  // a row, translate it under the finger, and commit on release — smooth and
+  // touch-native. (Settings keeps the HTML5 path.)
+  // Declared after finalizeWalletReorder so the callbacks can reference it
+  // without hitting a temporal-dead-zone during render.
+
+  /**
+   * Drop slot for a given finger Y, measured against the snapshot taken when the
+   * drag started (adjusted for any scrolling since). Using the snapshot — not
+   * live rects — keeps the target stable while neighbours animate.
+   */
+  const computeReorderGapBeforeIndex = useCallback((clientY: number): number => {
+    const session = walletDragSessionRef.current;
+    if (!session) return 0;
+    const snapshot = session.rowSnapshot;
+    if (!snapshot.length) return session.sourceIdx;
+    const container = accountsScrollRef.current;
+    const scrollDelta = (container?.scrollTop ?? 0) - session.scrollTop0;
+    for (let i = 0; i < snapshot.length; i += 1) {
+      const midpoint = snapshot[i].top - scrollDelta + snapshot[i].height / 2;
+      if (clientY < midpoint) return i;
+    }
+    return snapshot.length;
+  }, []);
+
+  const stopReorderAutoScroll = useCallback(() => {
+    const state = walletDragAutoScrollRef.current;
+    if (state.raf !== null) {
+      cancelAnimationFrame(state.raf);
+      state.raf = null;
+    }
+    state.dir = 0;
+  }, []);
+
+  const runReorderAutoScroll = useCallback(
+    (clientY: number) => {
+      const el = accountsScrollRef.current;
+      const state = walletDragAutoScrollRef.current;
+      if (!el || el.scrollHeight <= el.clientHeight) {
+        stopReorderAutoScroll();
+        return;
+      }
+      const rect = el.getBoundingClientRect();
+      const edge = 56;
+      if (clientY < rect.top + edge) state.dir = -1;
+      else if (clientY > rect.bottom - edge) state.dir = 1;
+      else state.dir = 0;
+
+      if (state.dir === 0) {
+        stopReorderAutoScroll();
+        return;
+      }
+      if (state.raf !== null) return;
+      const step = () => {
+        const cur = walletDragAutoScrollRef.current;
+        const node = accountsScrollRef.current;
+        const session = walletDragSessionRef.current;
+        if (!node || cur.dir === 0 || !session?.activated) {
+          cur.raf = null;
+          return;
+        }
+        const max = Math.max(0, node.scrollHeight - node.clientHeight);
+        node.scrollTop = Math.min(
+          max,
+          Math.max(0, node.scrollTop + cur.dir * 10)
+        );
+        const gap = computeReorderGapBeforeIndex(session.lastClientY);
+        session.gapBeforeIndex = gap;
+        setWalletDropGapBeforeIndex(gap);
+        cur.raf = requestAnimationFrame(step);
+      };
+      state.raf = requestAnimationFrame(step);
+    },
+    [computeReorderGapBeforeIndex, stopReorderAutoScroll]
+  );
+
+  const endWalletRowDrag = useCallback(
+    (commit: boolean) => {
+      const session = walletDragSessionRef.current;
+      walletDragSessionRef.current = null;
+      if (walletDragListenerCleanupRef.current) {
+        walletDragListenerCleanupRef.current();
+        walletDragListenerCleanupRef.current = null;
+      }
+      stopReorderAutoScroll();
+      if (session?.longPressTimer != null) {
+        window.clearTimeout(session.longPressTimer);
+      }
+      if (session?.activated && commit) {
+        finalizeWalletReorder(session.sourceIdx, session.gapBeforeIndex);
+      }
+      setWalletDragActiveIndex(null);
+      setWalletReorderDragSourceIndex(null);
+      setWalletDropGapBeforeIndex(null);
+      setWalletDragTranslateY(0);
+      setWalletDragRowStride(0);
+      walletReorderDragActiveRef.current = false;
+    },
+    [finalizeWalletReorder, stopReorderAutoScroll]
+  );
+
+  // Long-press to lift a row, then drag. Movement while active is driven by a
+  // NATIVE non-passive touchmove listener: for touch-originated gestures only
+  // touch-event preventDefault() stops the WebView from scroll-stealing the
+  // pointer (which otherwise fires pointercancel and aborts the drag).
+  const handleWalletRowTouchStart = useCallback(
+    (sourceIdx: number, event: ReactTouchEvent<HTMLElement>) => {
+      const touch = event.touches[0];
+      if (!touch) return;
+      const target = event.target as HTMLElement | null;
+      // Never start a drag from an interactive control (fingerprint / unlock).
+      if (target && target.closest('button, [data-no-drag]')) return;
+
+      const startY = touch.clientY;
+      const session = {
+        sourceIdx,
+        startY,
+        lastClientY: startY,
+        pointerId: -1,
+        activated: false,
+        longPressTimer: null as number | null,
+        gapBeforeIndex: sourceIdx,
+        el: event.currentTarget as HTMLElement,
+        rowSnapshot: [] as { top: number; height: number }[],
+        scrollTop0: 0,
+        rowStride: 0,
+      };
+      walletDragSessionRef.current = session;
+      session.longPressTimer = window.setTimeout(() => {
+        const current = walletDragSessionRef.current;
+        if (!current || current.activated) return;
+        current.activated = true;
+        current.longPressTimer = null;
+
+        // Snapshot the untransformed row geometry now (before we apply any
+        // transforms). Measured live so it adapts to any device size, density,
+        // tablet layout or orientation — nothing here is hard-coded.
+        const container = accountsScrollRef.current;
+        const rowEls = container
+          ? (Array.from(
+              container.querySelectorAll('[data-address]')
+            ) as HTMLElement[])
+          : [];
+        const snapshot = rowEls.map((el) => {
+          const rect = el.getBoundingClientRect();
+          return { top: rect.top, height: rect.height };
+        });
+        current.rowSnapshot = snapshot;
+        current.scrollTop0 = container?.scrollTop ?? 0;
+        current.rowStride =
+          snapshot.length >= 2
+            ? snapshot[1].top - snapshot[0].top
+            : snapshot[0]?.height ?? 0;
+        setWalletDragRowStride(current.rowStride);
+
+        try {
+          navigator.vibrate?.(12);
+        } catch {
+          /* no haptics */
+        }
+
+        const onMove = (nativeEvent: globalThis.TouchEvent) => {
+          const active = walletDragSessionRef.current;
+          if (!active || !active.activated) return;
+          if (nativeEvent.cancelable) nativeEvent.preventDefault();
+          const point = nativeEvent.touches[0];
+          if (!point) return;
+          active.lastClientY = point.clientY;
+          setWalletDragTranslateY(point.clientY - active.startY);
+          const gap = computeReorderGapBeforeIndex(point.clientY);
+          active.gapBeforeIndex = gap;
+          setWalletDropGapBeforeIndex(gap);
+          runReorderAutoScroll(point.clientY);
+        };
+        const onEnd = () => endWalletRowDrag(true);
+        document.addEventListener('touchmove', onMove, { passive: false });
+        document.addEventListener('touchend', onEnd);
+        document.addEventListener('touchcancel', onEnd);
+        walletDragListenerCleanupRef.current = () => {
+          document.removeEventListener('touchmove', onMove);
+          document.removeEventListener('touchend', onEnd);
+          document.removeEventListener('touchcancel', onEnd);
+        };
+
+        walletReorderDragActiveRef.current = true;
+        setWalletReorderDragSourceIndex(sourceIdx);
+        setWalletDragActiveIndex(sourceIdx);
+        setWalletDropGapBeforeIndex(sourceIdx);
+        setWalletDragTranslateY(0);
+      }, 200);
+    },
+    [computeReorderGapBeforeIndex, runReorderAutoScroll, endWalletRowDrag]
+  );
+
+  /** Pre-activation only: a real move means scroll/tap, so drop the pending lift. */
+  const handleWalletRowTouchMove = useCallback(
+    (event: ReactTouchEvent<HTMLElement>) => {
+      const session = walletDragSessionRef.current;
+      if (!session || session.activated) return;
+      const touch = event.touches[0];
+      if (!touch) return;
+      if (Math.abs(touch.clientY - session.startY) > 9) {
+        if (session.longPressTimer != null) {
+          window.clearTimeout(session.longPressTimer);
+        }
+        walletDragSessionRef.current = null;
+      }
+    },
+    []
+  );
+
+  /** Pre-activation tap release: clear the pending lift (active drags end via the native listener). */
+  const handleWalletRowTouchEnd = useCallback(() => {
+    const session = walletDragSessionRef.current;
+    if (session && !session.activated) {
+      if (session.longPressTimer != null) {
+        window.clearTimeout(session.longPressTimer);
+      }
+      walletDragSessionRef.current = null;
+    }
+  }, []);
 
   const importSeedphrase = async () => {
     try {
@@ -720,6 +978,15 @@ export const Wallets = ({
 
   const entryListFixedViewport = mode === 'entry';
 
+  // Pointer reorder is only coherent when the rendered rows match the stored
+  // wallet order 1:1 — i.e. entry mode, more than one account, and no active
+  // filter narrowing the list.
+  const entryReorderEnabled =
+    mode === 'entry' &&
+    wallets.length > 1 &&
+    displayedWallets.length === wallets.length &&
+    !walletEntryFilterQuery.trim();
+
   const accountsList = (
     <Box
       ref={accountsScrollRef}
@@ -769,7 +1036,8 @@ export const Wallets = ({
         <>
           {displayedWallets.map(({ wallet, idx }) => (
             <Fragment key={wallet?.address0}>
-              {walletDropGapBeforeIndex !== null &&
+              {mode !== 'entry' &&
+                walletDropGapBeforeIndex !== null &&
                 walletReorderDragSourceIndex !== null &&
                 walletDropGapBeforeIndex === idx && (
                   <Box
@@ -824,12 +1092,22 @@ export const Wallets = ({
                 reorderDragHover={handleWalletReorderHover}
                 reorderDragHoverLeave={handleWalletReorderHoverLeave}
                 reorderDragSourceIndex={walletReorderDragSourceIndex}
+                pointerReorderEnabled={entryReorderEnabled}
+                pointerDragActive={walletDragActiveIndex === idx}
+                pointerDragTranslateY={walletDragTranslateY}
+                reorderActiveSourceIndex={walletDragActiveIndex}
+                reorderGapIndex={walletDropGapBeforeIndex}
+                reorderRowStride={walletDragRowStride}
+                onRowTouchStart={handleWalletRowTouchStart}
+                onRowTouchMove={handleWalletRowTouchMove}
+                onRowTouchEnd={handleWalletRowTouchEnd}
                 setSelectedWallet={selectedWalletFunc}
                 wallet={wallet}
               />
             </Fragment>
           ))}
-          {walletDropGapBeforeIndex !== null &&
+          {mode !== 'entry' &&
+            walletDropGapBeforeIndex !== null &&
             walletReorderDragSourceIndex !== null &&
             walletDropGapBeforeIndex === wallets.length && (
               <Box
@@ -1286,6 +1564,15 @@ const WalletRow = ({
   reorderDragHoverLeave,
   onReorderDragStart,
   onReorderDragEnd,
+  pointerReorderEnabled = false,
+  pointerDragActive = false,
+  pointerDragTranslateY = 0,
+  reorderActiveSourceIndex = null,
+  reorderGapIndex = null,
+  reorderRowStride = 0,
+  onRowTouchStart,
+  onRowTouchMove,
+  onRowTouchEnd,
   mode,
   biometricUnlockEnabled = false,
   onBiometricUnlock,
@@ -1297,6 +1584,9 @@ const WalletRow = ({
   const nameRef = useRef<HTMLParagraphElement | null>(null);
   const rowRef = useRef<HTMLDivElement | null>(null);
   const isDraggingRef = useRef(false);
+  // Set when a pointer drag actually lifted this row, so the click fired on
+  // release doesn't also select/unlock the account.
+  const pointerDraggedRef = useRef(false);
   const theme = useTheme();
   const effectivePrimaryName =
     primaryName?.trim() || wallet?.name?.trim() || '';
@@ -1312,6 +1602,25 @@ const WalletRow = ({
     t('auth:authentication_form.unnamed_account');
   const addressLabel = shortenAddress(wallet?.address0);
 
+  // While another row is being dragged, this row slides up/down by exactly one
+  // slot to open a gap at the drop target and close the one the dragged row
+  // left behind — the iOS-style "make room" animation. Stride is measured live
+  // so it's correct on any device size, density, tablet or orientation.
+  let neighbourShiftPx = 0;
+  if (
+    !pointerDragActive &&
+    reorderActiveSourceIndex !== null &&
+    reorderGapIndex !== null &&
+    reorderRowStride > 0 &&
+    idx !== reorderActiveSourceIndex
+  ) {
+    const source = reorderActiveSourceIndex;
+    const landing = reorderGapIndex > source ? reorderGapIndex - 1 : reorderGapIndex;
+    const reduced = idx < source ? idx : idx - 1;
+    const finalSlot = reduced + (reduced >= landing ? 1 : 0);
+    neighbourShiftPx = (finalSlot - idx) * reorderRowStride;
+  }
+
   // KDF prewarm runs once at list level (top targets only); per-row we only
   // prefetch the cheap session probe so resume-unlocks skip the KDF entirely.
   useEffect(() => {
@@ -1320,6 +1629,12 @@ const WalletRow = ({
     }
     prefetchWalletSessionProbe(wallet.address0);
   }, [biometricUnlockEnabled, mode, wallet]);
+
+  // Remember that this row was lifted so the click synthesized on release is
+  // swallowed by handleSelectWallet instead of opening the account.
+  useEffect(() => {
+    if (pointerDragActive) pointerDraggedRef.current = true;
+  }, [pointerDragActive]);
 
   const getTransitionSnapshot = ():
     | AuthUnlockTransitionSnapshot
@@ -1354,6 +1669,10 @@ const WalletRow = ({
 
   const handleSelectWallet = () => {
     if (isDraggingRef.current) return;
+    if (pointerDraggedRef.current) {
+      pointerDraggedRef.current = false;
+      return;
+    }
     setSelectedWallet(wallet, getTransitionSnapshot());
   };
 
@@ -1387,6 +1706,12 @@ const WalletRow = ({
     <>
       {biometricUnlockBusy && (
         <Box
+          // Swallow taps while the native fingerprint prompt is being armed —
+          // otherwise (e.g. during the brief window before the system dialog
+          // appears) a tap falls through to the account row behind and can
+          // navigate away mid-unlock.
+          onClick={(event) => event.stopPropagation()}
+          onMouseDown={(event) => event.stopPropagation()}
           sx={{
             position: 'fixed',
             inset: 0,
@@ -1397,7 +1722,7 @@ const WalletRow = ({
             justifyContent: 'center',
             gap: 2,
             bgcolor: 'rgba(0,0,0,0.88)',
-            pointerEvents: 'none',
+            pointerEvents: 'auto',
           }}
         >
           <FingerprintRoundedIcon
@@ -1426,54 +1751,129 @@ const WalletRow = ({
           registerCardRef(wallet.address0)(element);
         }
       }}
-      draggable
-      onDragStart={(event) => {
-        isDraggingRef.current = true;
-        registerReorderDragActive?.(true);
-        onReorderDragStart?.(idx);
-        event.dataTransfer.effectAllowed = 'move';
-        event.dataTransfer.setData('text/plain', String(idx));
-      }}
-      onDragOver={(event) => {
-        event.preventDefault();
-        event.dataTransfer.dropEffect = 'move';
-        reorderDragHover?.(idx, event);
-      }}
-      onDragLeave={(event) => {
-        reorderDragHoverLeave?.(event);
-      }}
-      onDrop={(event) => {
-        event.preventDefault();
-        const fromIndex = Number(event.dataTransfer.getData('text/plain'));
+      draggable={mode !== 'entry'}
+      onDragStart={
+        mode !== 'entry'
+          ? (event) => {
+              isDraggingRef.current = true;
+              registerReorderDragActive?.(true);
+              onReorderDragStart?.(idx);
+              event.dataTransfer.effectAllowed = 'move';
+              event.dataTransfer.setData('text/plain', String(idx));
+            }
+          : undefined
+      }
+      onDragOver={
+        mode !== 'entry'
+          ? (event) => {
+              event.preventDefault();
+              event.dataTransfer.dropEffect = 'move';
+              reorderDragHover?.(idx, event);
+            }
+          : undefined
+      }
+      onDragLeave={
+        mode !== 'entry'
+          ? (event) => {
+              reorderDragHoverLeave?.(event);
+            }
+          : undefined
+      }
+      onDrop={
+        mode !== 'entry'
+          ? (event) => {
+              event.preventDefault();
+              const fromIndex = Number(
+                event.dataTransfer.getData('text/plain')
+              );
 
-        const bounds = (
-          event.currentTarget as HTMLElement
-        ).getBoundingClientRect();
-        const gapBeforeIndex =
-          event.clientY < bounds.top + bounds.height / 2 ? idx : idx + 1;
+              const bounds = (
+                event.currentTarget as HTMLElement
+              ).getBoundingClientRect();
+              const gapBeforeIndex =
+                event.clientY < bounds.top + bounds.height / 2 ? idx : idx + 1;
 
-        if (Number.isInteger(fromIndex)) {
-          finalizeWalletReorder(fromIndex, gapBeforeIndex);
-        }
-        onReorderDragEnd?.();
-      }}
-      onDragEnd={() => {
-        registerReorderDragActive?.(false);
-        onReorderDragEnd?.();
-        window.setTimeout(() => {
-          isDraggingRef.current = false;
-        }, 0);
-      }}
+              if (Number.isInteger(fromIndex)) {
+                finalizeWalletReorder(fromIndex, gapBeforeIndex);
+              }
+              onReorderDragEnd?.();
+            }
+          : undefined
+      }
+      onDragEnd={
+        mode !== 'entry'
+          ? () => {
+              registerReorderDragActive?.(false);
+              onReorderDragEnd?.();
+              window.setTimeout(() => {
+                isDraggingRef.current = false;
+              }, 0);
+            }
+          : undefined
+      }
+      onTouchStart={
+        pointerReorderEnabled
+          ? (event) => {
+              pointerDraggedRef.current = false;
+              onRowTouchStart?.(idx, event);
+            }
+          : undefined
+      }
+      onTouchMove={
+        pointerReorderEnabled
+          ? (event) => onRowTouchMove?.(event)
+          : undefined
+      }
+      onTouchEnd={
+        pointerReorderEnabled
+          ? (event) => onRowTouchEnd?.(event)
+          : undefined
+      }
+      onContextMenu={
+        pointerReorderEnabled
+          ? (event) => event.preventDefault()
+          : undefined
+      }
       sx={{
         borderBottom:
           mode === 'entry' ? 'none' : '1px solid rgba(255,255,255,0.06)',
-        opacity:
-          reorderDragSourceIndex !== null && reorderDragSourceIndex === idx
+        opacity: pointerDragActive
+          ? 0.98
+          : reorderDragSourceIndex !== null && reorderDragSourceIndex === idx
             ? 0.46
             : 1,
         pb: mode === 'entry' ? 0 : 0,
         pt: mode === 'entry' ? 0 : 0.2,
-        transition: 'opacity 160ms ease',
+        transition: pointerDragActive
+          ? 'none'
+          : 'transform 190ms cubic-bezier(0.2,0,0,1), opacity 160ms ease',
+        // Long-press must lift the row, not start native text selection or the
+        // context/callout menu, which would steal the gesture and cancel the
+        // pointer capture (leaving you unable to drag).
+        ...(mode === 'entry'
+          ? {
+              userSelect: 'none',
+              WebkitUserSelect: 'none',
+              WebkitTouchCallout: 'none',
+            }
+          : {}),
+        ...(pointerDragActive
+          ? {
+              transform: `translateY(${pointerDragTranslateY}px) scale(1.04)`,
+              zIndex: 60,
+              position: 'relative',
+              touchAction: 'none',
+              filter: 'brightness(1.03)',
+              boxShadow:
+                theme.palette.mode === 'light'
+                  ? '0 20px 44px rgba(45,72,112,0.34)'
+                  : '0 20px 44px rgba(0,0,0,0.72)',
+              cursor: 'grabbing',
+            }
+          : {
+              transform: `translateY(${neighbourShiftPx}px)`,
+              willChange: neighbourShiftPx !== 0 ? 'transform' : undefined,
+            }),
       }}
     >
       <Box
@@ -1605,7 +2005,7 @@ const WalletRow = ({
           </Typography>
         </Box>
 
-        <Box onClick={(event) => event.stopPropagation()}>
+        <Box data-no-drag onClick={(event) => event.stopPropagation()}>
           {mode === 'entry' && biometricUnlockEnabled ? (
             <IconButton
               aria-label={t('auth:mobile_login_settings.biometric_unlock')}

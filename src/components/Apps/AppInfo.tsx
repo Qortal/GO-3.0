@@ -91,7 +91,7 @@ export const AppInfo = ({ app, myName }) => {
   );
   const setSettingsLocalLastUpdated = useSetAtom(settingsLocalLastUpdatedAtom);
 
-  const handleRate = async (rating: number) => {
+  const handleRate = async (rating: number): Promise<boolean> => {
     try {
       if (!myName) {
         throw new Error(
@@ -100,7 +100,7 @@ export const AppInfo = ({ app, myName }) => {
           })
         );
       }
-      if (!app?.name) return;
+      if (!app?.name) return false;
 
       const fee = await getFee('CREATE_POLL');
 
@@ -198,6 +198,7 @@ export const AppInfo = ({ app, myName }) => {
             });
         });
       }
+      return true;
     } catch (error: any) {
       const errorMessage =
         typeof error === 'string' ? error : error?.message || '';
@@ -218,6 +219,7 @@ export const AppInfo = ({ app, myName }) => {
         message: snackMessage,
       });
       setOpenSnack(true);
+      return false;
     }
   };
 

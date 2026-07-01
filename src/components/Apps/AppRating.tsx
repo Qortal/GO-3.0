@@ -20,6 +20,10 @@ const AppRatingInner = ({
   const { show } = useContext(QORTAL_APP_CONTEXT);
   const [openSnack, setOpenSnack] = useState(false);
   const [infoSnack, setInfoSnack] = useState(null);
+  // Optimistic selection so the stars highlight the moment the user taps,
+  // instead of waiting for the on-chain vote + refresh. Cleared in `finally`
+  // (rollback to the real average on failure / cancel, refreshed on success).
+  const [optimisticValue, setOptimisticValue] = useState<number | null>(null);
   const { t } = useTranslation([
     'auth',
     'core',
@@ -51,6 +55,7 @@ const AppRatingInner = ({
     async (event, chosenValue) => {
       if (chosenValue == null) return;
 
+      setOptimisticValue(chosenValue);
       try {
         const newValue = chosenValue;
         if (!myName)
@@ -177,10 +182,16 @@ const AppRatingInner = ({
           message: snackMessage,
         });
         setOpenSnack(true);
+      } finally {
+        // Drop the optimistic highlight: on success refresh() has the real
+        // average, on failure/cancel this rolls back to it.
+        setOptimisticValue(null);
       }
     },
     [app, myName, show, t, refresh, hasPublishedRating, pollInfo]
   );
+
+  const displayedValue = optimisticValue ?? value;
 
   return (
     <div ref={containerRef}>
@@ -212,7 +223,7 @@ const AppRatingInner = ({
           sx={{ display: 'inline-flex' }}
         >
           <Rating
-            value={value}
+            value={displayedValue}
             readOnly={readOnly}
             onChange={
               readOnly

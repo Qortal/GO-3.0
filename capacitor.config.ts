@@ -4,6 +4,14 @@ const config: CapacitorConfig = {
   appId: 'com.github.Qortal.qortalGo2',
   appName: 'Qortal GO 2.0',
   webDir: 'dist',
+  // Top-level backgroundColor is what Capacitor applies to the native WebView
+  // (the SplashScreen-nested key is ignored for this). Matching the app's dark
+  // base means a stalled/blank compositor surface shows the app color instead
+  // of an off-tone gray.
+  backgroundColor: '#0E0F14',
+  android: {
+    backgroundColor: '#0E0F14',
+  },
   server: {
     androidScheme: 'http',
   },

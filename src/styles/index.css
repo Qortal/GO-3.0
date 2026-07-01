@@ -94,3 +94,10 @@ body {
   overscroll-behavior: none !important;
   overflow: hidden;
 }
+
+/* Prevent the WebView's pull-down overscroll (at scrollTop 0) from chaining up
+ * to the viewport and triggering a full app refresh. The native WebView also
+ * sets OVER_SCROLL_NEVER; this is the CSS backstop for inner scrollers. */
+#root {
+  overscroll-behavior: none;
+}

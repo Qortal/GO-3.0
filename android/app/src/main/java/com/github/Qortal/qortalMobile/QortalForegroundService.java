@@ -33,11 +33,17 @@ public class QortalForegroundService extends Service {
 
     public static final String CHANNEL_STATUS_ID = "qortal_status";
     public static final String CHANNEL_ALERTS_ID = "qortal_alerts";
+    // Separate alert channels so users can tune sound/vibration independently
+    // for private messages vs group chat (and mute one without the other).
+    public static final String CHANNEL_ALERTS_PM_ID = "qortal_alerts_pm";
+    public static final String CHANNEL_ALERTS_GROUP_ID = "qortal_alerts_group";
     public static final String CHANNEL_CALLS_ID = "qortal_calls";
     public static final String CHANNEL_TRANSFERS_ID = "qortal_transfers";
 
     private static final String CHANNEL_STATUS_NAME = "Qortal status";
     private static final String CHANNEL_ALERTS_NAME = "Qortal alerts";
+    private static final String CHANNEL_ALERTS_PM_NAME = "Private messages";
+    private static final String CHANNEL_ALERTS_GROUP_NAME = "Group messages";
     private static final String CHANNEL_CALLS_NAME = "Incoming calls";
     private static final String CHANNEL_TRANSFERS_NAME = "File transfers";
 
@@ -570,7 +576,16 @@ public class QortalForegroundService extends Service {
             PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT
         );
 
-        NotificationCompat.Builder builder = baseNotificationBuilder(CHANNEL_ALERTS_ID)
+        // Route to the per-kind channel so PM and group alerts can be tuned
+        // independently. Falls back to the general alerts channel.
+        String channelId = CHANNEL_ALERTS_ID;
+        if ("direct".equalsIgnoreCase(alertType)) {
+            channelId = CHANNEL_ALERTS_PM_ID;
+        } else if ("group".equalsIgnoreCase(alertType)) {
+            channelId = CHANNEL_ALERTS_GROUP_ID;
+        }
+
+        NotificationCompat.Builder builder = baseNotificationBuilder(channelId)
             .setContentTitle(title)
             .setContentText(body)
             .setContentIntent(pendingIntent)
@@ -770,6 +785,20 @@ public class QortalForegroundService extends Service {
         );
         alertsChannel.setDescription("New messages and Qortal alerts");
 
+        NotificationChannel alertsPmChannel = new NotificationChannel(
+            CHANNEL_ALERTS_PM_ID,
+            CHANNEL_ALERTS_PM_NAME,
+            NotificationManager.IMPORTANCE_HIGH
+        );
+        alertsPmChannel.setDescription("Private (direct) chat messages");
+
+        NotificationChannel alertsGroupChannel = new NotificationChannel(
+            CHANNEL_ALERTS_GROUP_ID,
+            CHANNEL_ALERTS_GROUP_NAME,
+            NotificationManager.IMPORTANCE_HIGH
+        );
+        alertsGroupChannel.setDescription("Group chat messages and mentions");
+
         NotificationChannel callsChannel = new NotificationChannel(
             CHANNEL_CALLS_ID,
             CHANNEL_CALLS_NAME,
@@ -788,6 +817,8 @@ public class QortalForegroundService extends Service {
 
         manager.createNotificationChannel(statusChannel);
         manager.createNotificationChannel(alertsChannel);
+        manager.createNotificationChannel(alertsPmChannel);
+        manager.createNotificationChannel(alertsGroupChannel);
         manager.createNotificationChannel(callsChannel);
         manager.createNotificationChannel(transfersChannel);
     }

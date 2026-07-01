@@ -7,6 +7,7 @@ import {
   Divider,
   IconButton,
   Typography,
+  useMediaQuery,
   useTheme,
 } from '@mui/material';
 import { alpha } from '@mui/material/styles';
@@ -42,6 +43,7 @@ import { useUnseenNotificationCount } from '../../hooks/useUnseenNotificationCou
 import { HTTPS_EXT_NODE_QORTAL_LINK } from '../../constants/constants';
 import { MintingPublicNodeDialog } from './MintingPublicNodeDialog';
 import { MobileTopBarSearch } from './MobileTopBarSearch';
+import { MobileTabBar } from './MobileTabBar';
 import {
   dialogContentSx,
   getDialogPaperSx,
@@ -74,6 +76,7 @@ type MobileTopBarProps = {
   onOpenTabs: () => void;
   tabsOverlayOpen?: boolean;
   desktopViewMode?: string;
+  setDesktopViewMode?: (mode: string) => void;
 };
 
 type AccountAction = {
@@ -103,8 +106,17 @@ export const MobileTopBar = ({
   onOpenTabs,
   tabsOverlayOpen = false,
   desktopViewMode = 'home',
+  setDesktopViewMode,
 }: MobileTopBarProps) => {
   const theme = useTheme();
+  // In landscape the bottom Home/Apps/Chat bar is hidden (vertical room is
+  // scarce); we surface those controls inline here, left of the avatar.
+  const isLandscape = useMediaQuery('(orientation: landscape)');
+  // Landscape compose collapses the formatting toolbar to a single row, so the
+  // top bar only needs one row of height instead of two.
+  const composeBarHeight = isLandscape
+    ? 56
+    : MOBILE_TOP_BAR_COMPOSE_HEIGHT_PX;
   const [accountOpen, setAccountOpen] = useState(false);
   const [coreOpen, setCoreOpen] = useState(false);
   const [searchExpanded, setSearchExpanded] = useState(false);
@@ -177,7 +189,9 @@ export const MobileTopBar = ({
     return () => {
       cancelled = true;
     };
-  }, [address]);
+    // Re-resolve when the connected node changes: a private->public switch must
+    // re-query the name against the new node instead of showing the stale one.
+  }, [address, selectedNode?.url]);
 
   useEffect(() => {
     setCachedAvatarEntry(null);
@@ -259,6 +273,27 @@ export const MobileTopBar = ({
     }
     openAccount();
   };
+
+  // Re-anchor the account panel on resize/rotation; otherwise it stays pinned
+  // to the avatar's pre-rotation position and floats off-target in landscape.
+  useEffect(() => {
+    if (!accountOpen) return;
+    const recompute = () => {
+      const rect = avatarButtonRef.current?.getBoundingClientRect();
+      if (rect) {
+        setPanelAnchor({
+          top: rect.bottom,
+          right: Math.max(10, window.innerWidth - rect.right),
+        });
+      }
+    };
+    window.addEventListener('resize', recompute);
+    window.addEventListener('orientationchange', recompute);
+    return () => {
+      window.removeEventListener('resize', recompute);
+      window.removeEventListener('orientationchange', recompute);
+    };
+  }, [accountOpen]);
   const run = (fn: () => void) => () => {
     closeAccount();
     fn();
@@ -336,10 +371,10 @@ export const MobileTopBar = ({
         flexShrink: 0,
         boxSizing: 'content-box',
         height: chatComposeActive
-          ? MOBILE_TOP_BAR_COMPOSE_HEIGHT_PX
+          ? composeBarHeight
           : MOBILE_TOP_BAR_HEIGHT_PX,
         minHeight: chatComposeActive
-          ? MOBILE_TOP_BAR_COMPOSE_HEIGHT_PX
+          ? composeBarHeight
           : MOBILE_TOP_BAR_HEIGHT_PX,
         paddingTop: SAFE_AREA_TOP,
         paddingLeft: `max(10px, ${SAFE_AREA_LEFT})`,
@@ -462,6 +497,13 @@ export const MobileTopBar = ({
           transition: 'opacity 160ms ease',
         }}
       >
+        {isLandscape && setDesktopViewMode && (
+          <MobileTabBar
+            variant="inline"
+            desktopViewMode={desktopViewMode}
+            setDesktopViewMode={setDesktopViewMode}
+          />
+        )}
         <Box
           onClick={onOpenTabs}
           role="button"
@@ -759,6 +801,11 @@ export const MobileTopBar = ({
                   : `0 14px 36px ${alpha('#1E3248', 0.14)}`,
               maxWidth: 'min(300px, calc(100vw - 20px))',
               minWidth: 248,
+              // Cap to the viewport so the full action list (incl. Logout) is
+              // reachable on short landscape screens; actions scroll if needed.
+              maxHeight: `calc(100dvh - ${panelAnchor.top + 8}px - 12px)`,
+              display: 'flex',
+              flexDirection: 'column',
               overflow: 'hidden',
               position: 'fixed',
               right: panelAnchor.right,
@@ -773,6 +820,7 @@ export const MobileTopBar = ({
                 animation: 'accountItemIn 180ms ease 40ms forwards',
                 borderBottom: `1px solid ${theme.palette.divider}`,
                 display: 'flex',
+                flexShrink: 0,
                 gap: 1,
                 opacity: 0,
                 px: 1.25,
@@ -825,7 +873,18 @@ export const MobileTopBar = ({
               </Box>
             </Box>
 
-            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.35, p: 0.75 }}>
+            <Box
+              sx={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 0.35,
+                p: 0.75,
+                minHeight: 0,
+                overflowY: 'auto',
+                WebkitOverflowScrolling: 'touch',
+                overscrollBehavior: 'contain',
+              }}
+            >
               {accountActions.map(({ icon: Icon, label, onClick, accent, badge }, index) => (
                 <Box
                   key={label}

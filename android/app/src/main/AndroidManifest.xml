@@ -27,6 +27,22 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
+            <!-- Qortal payment / resource deep links. Lets scanned QR codes and
+                 external links such as qortal://pay?recipient=Q...&amount=5 ,
+                 qortal://<address> or qort:<address>?amount=5 open Qortal GO. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="qortal" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="qort" />
+            </intent-filter>
+
         </activity>
 
         <activity
@@ -77,6 +93,11 @@
          WebView audio resource after these runtime permissions are held). -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <!-- In-app QR scanner: WebView getUserMedia camera capture (Capacitor grants
+         the WebView video resource after this runtime permission is held). Uses
+         jsQR entirely offline — no Google Play Services / ML Kit. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"/>
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />

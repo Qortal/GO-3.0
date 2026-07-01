@@ -93,6 +93,10 @@ import { useWebsocketStatus } from './useWebsocketStatus';
 import { DirectsSidebar } from './DirectsSidebar';
 import { GlobalChatWidget } from './GlobalChatWidget';
 import { openQChatTab, QCHAT_INTERNAL_TAB_ID } from '../../utils/openQChatTab';
+import {
+  getLastOpenChat,
+  setLastOpenChat,
+} from '../../utils/chatPersistence';
 import { mobileAppsShellSx } from '../Mobile/mobileLayout';
 import {
   AdminRowBox,
@@ -196,6 +200,9 @@ function MemberGroupsEffects({
   return null;
 }
 
+/** Persists the last-used mobile chat side view (groups vs directs/PM). */
+const CHAT_SIDE_VIEW_STORAGE_KEY = 'qortal-chat-side-view';
+
 export const Group = ({
   myAddress,
   setDesktopViewMode,
@@ -262,10 +269,17 @@ export const Group = ({
   const timestampEnterDataRef = useRef({});
   const selectedGroupRef = useRef(null);
   const selectedDirectRef = useRef(null);
+  const newChatRef = useRef(false);
+  const chatSessionInitializedRef = useRef(false);
+  // selectGroupFunc is declared further down; keep a ref so callbacks defined
+  // before it (e.g. restoreLastOpenChat) can call it without a TDZ reference.
+  const selectGroupFuncRef = useRef<((group: any) => void) | null>(null);
   const groupSectionRef = useRef(null);
   const isLoadingOpenSectionFromNotification = useRef(false);
   const settimeoutForRefetchSecretKey = useRef(null);
   const secretKeyRef = useRef(null);
+  // Bounded quick-retry counter for the first-launch wallet/keyPair race.
+  const secretKeyAuthRetriesRef = useRef(0);
   const { clearStatesMessageQueueProvider } = useMessageQueue();
   const initiatedGetMembers = useRef(false);
   const [groupChatTimestamps, setGroupChatTimestamps] = useAtom(
@@ -492,6 +506,9 @@ export const Group = ({
   useEffect(() => {
     selectedDirectRef.current = selectedDirect;
   }, [selectedDirect]);
+  useEffect(() => {
+    newChatRef.current = newChat;
+  }, [newChat]);
 
   useEffect(() => {
     secretKeyRef.current = secretKey;
@@ -804,6 +821,31 @@ export const Group = ({
 
         setSecretKeyPublishDate(publish?.updated || publish?.created);
 
+        // Skip the (slow) encryption-key download when our persisted copy
+        // matches the latest published key. Fixes re-entering a group always
+        // re-downloading keys, and lets the chat paint immediately. The publish
+        // metadata comparison keeps us correct across key rotations. Only for
+        // the display path — sending always uses a freshly fetched key.
+        if (!secretKeyToPublish && publish) {
+          const cached: any = await window
+            .sendMessage('getGroupDataSingle', {
+              groupId: selectedGroup?.groupId,
+            })
+            .catch(() => null);
+          const cachedPublish = cached?.secretKeyResource;
+          if (
+            cached?.secretKeyData &&
+            !cached?.error &&
+            cachedPublish &&
+            cachedPublish.identifier === publish.identifier &&
+            cachedPublish.name === publish.name &&
+            (cachedPublish.updated || cachedPublish.created) ===
+              (publish.updated || publish.created)
+          ) {
+            dataFromStorage = cached.secretKeyData;
+          }
+        }
+
         let data;
         if (dataFromStorage) {
           data = dataFromStorage;
@@ -847,6 +889,7 @@ export const Group = ({
           });
 
         if (decryptedKeyToObject) {
+          secretKeyAuthRetriesRef.current = 0;
           setTriedToFetchSecretKey(true);
           setFirstSecretKeyInCreation(false);
           return decryptedKeyToObject;
@@ -854,6 +897,10 @@ export const Group = ({
           setTriedToFetchSecretKey(true);
         }
       } catch (error) {
+        const errStr =
+          typeof error === 'string'
+            ? error
+            : (error as { message?: string })?.message || '';
         if (
           error === 'Unable to decrypt data' ||
           error === 'Unable to decrypt'
@@ -862,6 +909,19 @@ export const Group = ({
           settimeoutForRefetchSecretKey.current = setTimeout(() => {
             getSecretKey();
           }, TIME_MINUTES_2_IN_MILLISECONDS);
+        } else if (/not authenticated|wallet|keypair|key pair/i.test(errStr)) {
+          // First-launch race: the wallet keyPair may not be stored yet when
+          // the group view mounts (decrypt needs it). Retry quickly a few
+          // times instead of leaving the chat permanently empty until the user
+          // restarts the app.
+          if (secretKeyAuthRetriesRef.current < 6) {
+            secretKeyAuthRetriesRef.current += 1;
+            settimeoutForRefetchSecretKey.current = setTimeout(() => {
+              getSecretKey();
+            }, 1500);
+          } else {
+            setTriedToFetchSecretKey(true);
+          }
         }
       } finally {
         setIsLoadingGroup(false);
@@ -1574,6 +1634,8 @@ export const Group = ({
     hasInitializedWebsocket.current = false;
     selectedGroupRef.current = null;
     selectedDirectRef.current = null;
+    newChatRef.current = false;
+    chatSessionInitializedRef.current = false;
     groupSectionRef.current = null;
     qChatTabActiveRef.current = false;
     isLoadingOpenSectionFromNotification.current = false;
@@ -1635,7 +1697,18 @@ export const Group = ({
   // Mobile bottom-tab bar switches the Q-Chat side view (Chat = directs,
   // Groups = group list) without exposing the desktop hover sidebar.
   const setChatSideViewFromMobile = useCallback((e: CustomEvent) => {
-    const view = e?.detail?.data?.view;
+    let view = e?.detail?.data?.view;
+    // The bottom Chat tab asks for the last-used view so Chat remembers whether
+    // Groups or PM was open last (persisted in localStorage on change below).
+    if (view === 'last') {
+      let stored: string | null = null;
+      try {
+        stored = localStorage.getItem(CHAT_SIDE_VIEW_STORAGE_KEY);
+      } catch {
+        /* ignore */
+      }
+      view = stored === 'groups' ? 'groups' : 'directs';
+    }
     // On mobile the list and an open chat occupy the same single column, so we
     // must clear any open group/DM/new-chat detail when switching the side view;
     // otherwise the open detail keeps covering the screen and the user is stuck
@@ -1661,6 +1734,131 @@ export const Group = ({
       unsubscribeFromEvent('mobile-chat-side-view', setChatSideViewFromMobile);
     };
   }, [setChatSideViewFromMobile]);
+
+  // Remember whether Groups or PM (directs) was the last-used chat view so the
+  // bottom Chat tab can restore it (see view === 'last' above).
+  useEffect(() => {
+    if (desktopSideView === 'groups' || desktopSideView === 'directs') {
+      try {
+        localStorage.setItem(CHAT_SIDE_VIEW_STORAGE_KEY, desktopSideView);
+      } catch {
+        /* ignore */
+      }
+    }
+  }, [desktopSideView]);
+
+  // Remember the most-recently opened conversation so the bottom Chat tab can
+  // resume it later — even after the app was minimised or killed by the OS.
+  useEffect(() => {
+    if (selectedGroup?.groupId != null) {
+      setLastOpenChat(myAddress, {
+        kind: 'group',
+        id: String(selectedGroup.groupId),
+      });
+    } else if (selectedDirect?.address) {
+      setLastOpenChat(myAddress, {
+        kind: 'direct',
+        id: selectedDirect.address,
+      });
+    }
+  }, [selectedGroup?.groupId, selectedDirect?.address, myAddress]);
+
+  // Reopen the last conversation persisted above (used on a cold start when the
+  // in-memory selection is gone). Best-effort: silently no-ops if the relevant
+  // list hasn't loaded yet.
+  const restoreLastOpenChat = useCallback(() => {
+    // Restore which list (Groups vs PM) was last used so the fallback view is
+    // correct even when there is no conversation to resume.
+    try {
+      const storedSide = localStorage.getItem(CHAT_SIDE_VIEW_STORAGE_KEY);
+      if (storedSide === 'groups' || storedSide === 'directs') {
+        setDesktopSideView(storedSide);
+      }
+    } catch {
+      /* ignore */
+    }
+
+    const last = getLastOpenChat(myAddress);
+    if (!last) return;
+
+    if (last.kind === 'group') {
+      const group = memberGroupsRef.current?.find(
+        (g) => String(g?.groupId) === String(last.id)
+      );
+      if (group) {
+        setDesktopSideView('groups');
+        selectGroupFuncRef.current?.(group);
+      }
+    } else if (last.kind === 'direct') {
+      const direct = displayDirects?.find((d) => d?.address === last.id);
+      if (direct) {
+        setDesktopSideView('directs');
+        setSelectedDirect(null);
+        setNewChat(false);
+        window
+          .sendMessage('addTimestampEnterChat', {
+            timestamp: Date.now(),
+            groupId: direct.address,
+          })
+          .catch(() => {});
+        setTimeout(() => {
+          setSelectedDirect(direct);
+          getTimestampEnterChat();
+        }, 200);
+      }
+    }
+  }, [myAddress, displayDirects, getTimestampEnterChat]);
+
+  // Bottom Chat tab cycle:
+  //  - first tap (arriving from another section): resume the open conversation
+  //    if one is still in memory, otherwise restore the last one persisted;
+  //  - second tap (already viewing a conversation): collapse back to its list
+  //    (Groups or PM depending on what was open).
+  const handleMobileChatTab = useCallback(
+    (e: CustomEvent) => {
+      const reEntry = e?.detail?.data?.reEntry;
+      const inDetail = !!(
+        selectedGroupRef.current ||
+        selectedDirectRef.current ||
+        newChatRef.current
+      );
+
+      if (reEntry) {
+        if (inDetail) {
+          if (selectedDirectRef.current || newChatRef.current) {
+            setDesktopSideView('directs');
+          } else {
+            setDesktopSideView('groups');
+          }
+          setSelectedGroup(null);
+          setSelectedDirect(null);
+          setNewChat(false);
+        }
+        return;
+      }
+
+      // First tap: if a conversation is still in memory, keep it (continue where
+      // left off). Otherwise, only on the first Chat entry of the session (e.g.
+      // a cold start after the OS killed the app) restore the last persisted
+      // conversation; afterwards respect whatever list/thread state is live.
+      if (inDetail) {
+        chatSessionInitializedRef.current = true;
+        return;
+      }
+      if (chatSessionInitializedRef.current) return;
+      chatSessionInitializedRef.current = true;
+      restoreLastOpenChat();
+    },
+    [restoreLastOpenChat]
+  );
+
+  useEffect(() => {
+    subscribeToEvent('mobile-chat-tab', handleMobileChatTab);
+
+    return () => {
+      unsubscribeFromEvent('mobile-chat-tab', handleMobileChatTab);
+    };
+  }, [handleMobileChatTab]);
 
   // Android back inside Q-Chat: if a thread (group / DM / new chat) is open in
   // the single mobile column, collapse back to the list instead of leaving the
@@ -2074,6 +2272,7 @@ export const Group = ({
     setSecretKey(null);
     secretKeyRef.current = null;
     lastFetchedSecretKey.current = null;
+    secretKeyAuthRetriesRef.current = 0;
     setSecretKeyPublishDate(null);
     setAdmins([]);
     setSecretKeyDetails(null);
@@ -2090,6 +2289,12 @@ export const Group = ({
       setSelectedGroup(group);
     }, 200);
   }, []);
+
+  // Keep a ref to selectGroupFunc so earlier-defined callbacks can invoke it
+  // (avoids a temporal-dead-zone reference to the const above).
+  useEffect(() => {
+    selectGroupFuncRef.current = selectGroupFunc;
+  }, [selectGroupFunc]);
 
   const renderQChatTabContent = ({
     hide = false,

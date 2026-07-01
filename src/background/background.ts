@@ -244,8 +244,9 @@ function showBackgroundOsNotification(
   title,
   body,
   notificationId,
-  icon,
-  fromAddress?: string
+  icon?,
+  fromAddress?: string,
+  notificationType?: 'direct' | 'group' | 'general'
 ) {
   if (isNative) {
     void showOsNotification({
@@ -254,7 +255,9 @@ function showBackgroundOsNotification(
       id: notificationId,
       iconUrl: icon,
       fromAddress,
-      notificationType: fromAddress ? 'direct' : undefined,
+      // Explicit type routes to the per-kind Android channel (PM vs group);
+      // fall back to inferring direct from a sender address.
+      notificationType: notificationType ?? (fromAddress ? 'direct' : undefined),
     });
     return;
   }
@@ -643,7 +646,8 @@ const handleNotificationDirect = async (directs) => {
         body,
         notificationId,
         iconUrl || undefined,
-        newestLatestTimestamp?.address
+        newestLatestTimestamp?.address,
+        'direct'
       );
     }
   } catch (error) {
@@ -665,7 +669,14 @@ const handleNotificationDirect = async (directs) => {
       const title = 'New Direct message!';
       const body = 'You have received a new direct message';
 
-      showBackgroundOsNotification(title, body, DIRECT_PM_NOTIFICATION_ID);
+      showBackgroundOsNotification(
+        title,
+        body,
+        DIRECT_PM_NOTIFICATION_ID,
+        undefined,
+        undefined,
+        'direct'
+      );
     }
   } finally {
     setChatHeadsDirect(dataDirects);
@@ -833,7 +844,14 @@ const handleNotification = async (groups) => {
         const title = 'New Group Message!';
         const body = `You have received a new message from ${newestLatestTimestamp?.groupName}`;
 
-        showBackgroundOsNotification(title, body, notificationId);
+        showBackgroundOsNotification(
+        title,
+        body,
+        notificationId,
+        undefined,
+        undefined,
+        'group'
+      );
 
         lastGroupNotification = Date.now();
       }
@@ -862,7 +880,14 @@ const handleNotification = async (groups) => {
       const title = 'New Group Message!';
       const body = 'You have received a new message from one of your groups';
 
-      showBackgroundOsNotification(title, body, notificationId);
+      showBackgroundOsNotification(
+        title,
+        body,
+        notificationId,
+        undefined,
+        undefined,
+        'group'
+      );
 
       lastGroupNotification = Date.now();
     }
@@ -3688,7 +3713,14 @@ export const checkNewMessages = async () => {
       const title = 'New group announcement!';
       const body = `You have received a new announcement from ${newAnnouncements[0]?.groupName}`;
 
-      showBackgroundOsNotification(title, body, notificationId);
+      showBackgroundOsNotification(
+        title,
+        body,
+        notificationId,
+        undefined,
+        undefined,
+        'group'
+      );
     }
     const savedtimestampAfter = await getTimestampGroupAnnouncement();
     const targetOrigin = window.location.origin;
@@ -3877,7 +3909,14 @@ export const checkThreads = async (bringBack) => {
           const title = 'New thread post!';
           const body = `New post in ${newAnnouncements[0]?.thread?.threadData?.title}`;
 
-          showBackgroundOsNotification(title, body, notificationId);
+          showBackgroundOsNotification(
+        title,
+        body,
+        notificationId,
+        undefined,
+        undefined,
+        'group'
+      );
         }
       }
     }

@@ -27,6 +27,13 @@ function hideAppSplash() {
   window.setTimeout(() => el.remove(), 420);
 }
 
+// Safety-net watchdog scheduled at module load (independent of React render):
+// if anything stalls the normal reveal path, never leave the user staring at
+// the branded splash. Cold boot on mid-range devices can be slow, so the
+// timeout is generous; the normal requestAnimationFrame path below hides it
+// much sooner on a healthy launch.
+window.setTimeout(hideAppSplash, 8000);
+
 createRoot(document.getElementById('root')!).render(
   <>
     <ThemeProvider>

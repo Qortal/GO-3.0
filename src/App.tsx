@@ -7,7 +7,7 @@ import {
   Suspense,
 } from 'react';
 import { useDropzone } from 'react-dropzone';
-import { Box, ButtonBase, Typography, useMediaQuery, useTheme } from '@mui/material';
+import { Box, Button, ButtonBase, Typography, useMediaQuery, useTheme } from '@mui/material';
 import { AnimatePresence } from 'framer-motion';
 import { decryptStoredWallet } from './utils/decryptWallet';
 import {
@@ -82,6 +82,10 @@ import {
   subscribeToEvent,
   unsubscribeFromEvent,
 } from './utils/events';
+import {
+  getPendingPaymentRequest,
+  clearPendingPaymentRequest,
+} from './utils/paymentLink';
 import { useAndroidBack, BACK_PRIORITY } from './utils/androidBack';
 import { stopSharedEarbumpPlayback } from './components/Group/earbumpSharedAudio';
 import { Settings } from './components/Group/Settings';
@@ -245,6 +249,34 @@ const formatRuntimeFaultMessage = (
 const RESIZE_OBSERVER_LOOP_MESSAGE =
   /ResizeObserver loop completed with undelivered notifications/i;
 
+/**
+ * Transient / recoverable conditions that must NOT trip the full-screen runtime
+ * fault overlay. These are background bridge, presence and network hiccups that
+ * the app already retries — surfacing them as a fatal "GO runtime error" was a
+ * dead-end for users (reported community feedback). Genuine render crashes are
+ * still caught by the authenticated ErrorBoundary.
+ */
+const IGNORABLE_RUNTIME_FAULT_MESSAGES: RegExp[] = [
+  RESIZE_OBSERVER_LOOP_MESSAGE,
+  /ResizeObserver loop limit exceeded/i,
+  // Background message bridge / Reticulum bridge timeouts (retried elsewhere).
+  /Request timed out after \d+ ms\b/i,
+  /Reticulum command timed out/i,
+  /Reticulum bridge is not installed/i,
+  /presence command/i,
+  /publish_presence/i,
+  // Transient network failures while fetching from a node / gateway.
+  /Failed to fetch/i,
+  /Load failed/i,
+  /NetworkError\b/i,
+  /network request failed/i,
+  /The user aborted a request/i,
+  // Benign ProseMirror/TipTap DOM selection-sync hiccup during focus/blur or
+  // content swaps on mobile — the editor recovers on the next render.
+  /Failed to execute 'collapse' on 'Selection'/i,
+  /The offset \d+ is larger than the node's length/i,
+];
+
 const isIgnorableRuntimeFault = (value: unknown): boolean => {
   const extractMessage = (): string => {
     if (typeof value === 'string') return value;
@@ -260,23 +292,19 @@ const isIgnorableRuntimeFault = (value: unknown): boolean => {
     return '';
   };
 
-  const message = extractMessage().trim();
-  if (RESIZE_OBSERVER_LOOP_MESSAGE.test(message)) {
+  // AbortError surfaces as a DOMException with no useful message; treat the
+  // name as transient (request cancelled during navigation/unmount).
+  if (
+    value &&
+    typeof value === 'object' &&
+    'name' in value &&
+    (value as { name?: unknown }).name === 'AbortError'
+  ) {
     return true;
   }
 
-  const errorCode =
-    value &&
-    typeof value === 'object' &&
-    'error' in value &&
-    typeof (value as { error?: unknown }).error === 'string'
-      ? (value as { error: string }).error
-      : '';
-
-  return (
-    errorCode === 'timeout' &&
-    /^Request timed out after \d+ ms\b/i.test(message)
-  );
+  const message = extractMessage().trim();
+  return IGNORABLE_RUNTIME_FAULT_MESSAGES.some((re) => re.test(message));
 };
 
 function App() {
@@ -305,6 +333,9 @@ function App() {
   }, [userInfo?.address]);
   const [balance, setBalance] = useAtom(balanceAtom);
   const [paymentTo, setPaymentTo] = useState<string>('');
+  const [paymentAmount, setPaymentAmount] = useState<number | undefined>(
+    undefined
+  );
   const [sendPaymentError, setSendPaymentError] = useState<string>('');
   const [countdown, setCountdown] = useState<null | number>(null);
   const [globalRuntimeFault, setGlobalRuntimeFault] = useState<{
@@ -335,6 +366,10 @@ function App() {
   ]);
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
+  // In landscape we move the Home/Apps/Chat nav into the top bar and drop the
+  // bottom bar so the conversation/app content gets the vertical space back.
+  const isLandscape = useMediaQuery('(orientation: landscape)');
+  const showMobileBottomBar = isMobile && !isLandscape;
   const mobileChatComposeActive = useAtomValue(mobileChatComposeActiveAtom);
   const [tabsGridOpen, setTabsGridOpen] = useState(false);
 
@@ -1295,6 +1330,8 @@ function App() {
     );
     setIsOpenSendQort(true);
     setPaymentTo(name || directAddress || '');
+    const amount = Number(e.detail?.amount);
+    setPaymentAmount(Number.isFinite(amount) && amount > 0 ? amount : undefined);
   };
 
   const openReceiveQortInternal = (e) => {
@@ -1327,6 +1364,18 @@ function App() {
   useEffect(() => {
     subscribeToEvent('openPaymentInternal', openPaymentInternal);
     subscribeToEvent('openReceiveQortInternal', openReceiveQortInternal);
+
+    // Replay a payment deep link / scanned QR that arrived before the
+    // authenticated app UI was mounted (cold launch from an external scanner).
+    if (address) {
+      const pending = getPendingPaymentRequest();
+      if (pending?.recipient) {
+        clearPendingPaymentRequest();
+        openPaymentInternal({
+          detail: { address: pending.recipient, amount: pending.amount },
+        });
+      }
+    }
 
     return () => {
       unsubscribeFromEvent('openPaymentInternal', openPaymentInternal);
@@ -1643,6 +1692,7 @@ function App() {
         {extState === 'authenticated' && isMainWindow && (
           <Suspense fallback={<Loader />}>
             <ErrorBoundary
+              isRecoverable={isIgnorableRuntimeFault}
               fallback={({ error, componentStack }) => (
                 <Box
                   sx={{
@@ -1788,6 +1838,7 @@ function App() {
               originRect={sendQortOriginRect}
               targetRect={sendQortTargetRect}
               paymentTo={paymentTo}
+              paymentAmount={paymentAmount}
               onReturn={returnToMain}
               onSuccess={() => {
                 setIsOpenSendQort(false);
@@ -2074,7 +2125,9 @@ function App() {
   return (
     <AppContainer
       sx={{
-        height: '100vh',
+        // dvh tracks the dynamic viewport so the shell re-fits on rotation and
+        // when mobile browser/system chrome changes height.
+        height: '100dvh',
         display: 'flex',
         flexDirection: 'column',
         alignItems: 'stretch',
@@ -2102,6 +2155,7 @@ function App() {
           onOpenTabs={() => setTabsGridOpen((open) => !open)}
           tabsOverlayOpen={tabsGridOpen}
           desktopViewMode={desktopViewMode}
+          setDesktopViewMode={setDesktopViewMode}
         />
       )}
       {isMobile && extState === 'authenticated' && isMainWindow && (
@@ -2122,9 +2176,10 @@ function App() {
             extState === 'authenticated' &&
             isMainWindow && {
               alignItems: 'stretch',
-              pb: mobileChatComposeActive
-                ? SAFE_AREA_BOTTOM
-                : `calc(${MOBILE_TAB_BAR_HEIGHT_PX}px + ${SAFE_AREA_BOTTOM})`,
+              pb:
+                mobileChatComposeActive || !showMobileBottomBar
+                  ? SAFE_AREA_BOTTOM
+                  : `calc(${MOBILE_TAB_BAR_HEIGHT_PX}px + ${SAFE_AREA_BOTTOM})`,
             }),
           ...(!isMobile ||
           extState !== 'authenticated' ||
@@ -2208,13 +2263,37 @@ function App() {
                   {globalRuntimeFault.message}
                 </Typography>
               </Box>
+              <Box
+                sx={{
+                  display: 'flex',
+                  gap: '10px',
+                  justifyContent: 'flex-end',
+                  mt: '4px',
+                  width: '100%',
+                }}
+              >
+                <Button
+                  variant="outlined"
+                  size="small"
+                  onClick={() => setGlobalRuntimeFault(null)}
+                >
+                  Dismiss
+                </Button>
+                <Button
+                  variant="contained"
+                  size="small"
+                  onClick={() => window.location.reload()}
+                >
+                  Reload app
+                </Button>
+              </Box>
             </Box>
           </Box>
         ) : (
           mainContent
         )}
       </Box>
-      {isMobile && extState === 'authenticated' && isMainWindow && !mobileChatComposeActive && (
+      {showMobileBottomBar && extState === 'authenticated' && isMainWindow && !mobileChatComposeActive && (
         <MobileTabBar
           desktopViewMode={desktopViewMode}
           setDesktopViewMode={setDesktopViewMode}

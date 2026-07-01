@@ -39,6 +39,7 @@ import {
   countRewardDay,
 } from './MintingStats.tsx';
 import { CustomizedSnackbars } from '../Snackbar/Snackbar';
+import { SAFE_AREA_TOP } from '../../utils/mobileSafeArea';
 
 export type AddressLevelEntry = {
   level: number;
@@ -948,20 +949,23 @@ export const Minting = ({ setIsOpenMinting, myAddress, show }) => {
                 ? 'linear-gradient(180deg, rgba(20,23,30,0.985) 0%, rgba(15,17,23,0.99) 100%)'
                 : 'linear-gradient(180deg, rgba(251,253,255,0.985) 0%, rgba(244,247,251,0.99) 100%)',
             border: `1px solid ${alpha(theme.palette.divider, 0.42)}`,
-            borderRadius: '14px',
+            // Full-bleed on mobile so the header can sit below the status bar
+            // (the previous 16px margin was less than the status-bar inset and
+            // the title/close button were covered).
+            borderRadius: { xs: 0, md: '14px' },
             boxShadow:
               theme.palette.mode === 'dark'
                 ? '0 34px 120px rgba(0,0,0,0.46)'
                 : '0 28px 88px rgba(18,28,45,0.16)',
             display: 'flex',
             flexDirection: 'column',
-            height: { xs: 'calc(100vh - 32px)', md: 'min(86vh, 920px)' },
-            margin: { xs: 2, md: 3 },
-            maxHeight: 'calc(100vh - 24px)',
+            height: { xs: '100dvh', md: 'min(86vh, 920px)' },
+            margin: { xs: 0, md: 3 },
+            maxHeight: { xs: '100dvh', md: 'calc(100vh - 24px)' },
             maxWidth: 'none',
             overflow: 'hidden',
             width: {
-              xs: 'calc(100vw - 24px)',
+              xs: '100vw',
               md: 'min(1180px, calc(100vw - 48px))',
             },
           },
@@ -976,6 +980,8 @@ export const Minting = ({ setIsOpenMinting, myAddress, show }) => {
             minHeight: 60,
             px: { xs: 2, md: 2.75 },
             py: 1.1,
+            // Keep the header below the Android status bar in edge-to-edge mode.
+            paddingTop: { xs: `calc(${SAFE_AREA_TOP} + 8px)`, md: 1.1 },
           }}
         >
           <Box sx={{ minWidth: 0 }}>

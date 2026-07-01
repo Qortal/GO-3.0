@@ -515,6 +515,7 @@ export function usePresence(): { sendOfflineBeforeLogout: () => Promise<void> } 
     sessionIdRef.current = crypto.randomUUID();
     hasAnnouncedRef.current = false;
     let cancelled = false;
+    let staggerTimer: ReturnType<typeof setTimeout> | null = null;
 
     // Read any persisted 'offline' preference for this address before deciding
     // whether to announce.  All other statuses are ephemeral and default back
@@ -544,11 +545,24 @@ export function usePresence(): { sendOfflineBeforeLogout: () => Promise<void> } 
       }
 
       isAppearedOfflineRef.current = false;
-      ensureAnnounced();
+      // Stagger the first announce: it boots the embedded Python/RNS presence
+      // bridge, and doing that at the same instant as the Kotlin transport
+      // cold-boot (allowReticulumStart fires +400ms after auth) saturates the
+      // CPU/JS bridge on mid-range devices — a cause of the first-launch ANR /
+      // "stuck at splash" reports. Give the Kotlin transport a head start.
+      staggerTimer = window.setTimeout(() => {
+        staggerTimer = null;
+        if (cancelled) return;
+        ensureAnnounced();
+      }, 2000);
     })();
 
     return () => {
       cancelled = true;
+      if (staggerTimer) {
+        window.clearTimeout(staggerTimer);
+        staggerTimer = null;
+      }
       clearAnnounceRetry();
       stopHeartbeat();
       sendOfflineCallback();

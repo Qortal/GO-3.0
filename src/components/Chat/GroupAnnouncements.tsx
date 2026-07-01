@@ -143,6 +143,12 @@ export const GroupAnnouncements = ({
   const [messages, setMessages] = useState([]);
   const [isSending, setIsSending] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  // The "Loading announcements" toast should disappear quickly and let the
+  // list fill in in the background instead of blocking on the network fetch.
+  const [loadingSnackVisible, setLoadingSnackVisible] = useState(false);
+  const loadingSnackTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null
+  );
   const [announcements, setAnnouncements] = useState([]);
   const [tempPublishedList, setTempPublishedList] = useState([]);
   const [announcementData, setAnnouncementData] = useState({});
@@ -228,8 +234,25 @@ export const GroupAnnouncements = ({
     )
       return;
     setIsLoading(true);
+    // Show the toast briefly, then hide it regardless of fetch state so it
+    // never lingers; the announcements still populate when the fetch resolves.
+    setLoadingSnackVisible(true);
+    if (loadingSnackTimeoutRef.current) {
+      clearTimeout(loadingSnackTimeoutRef.current);
+    }
+    loadingSnackTimeoutRef.current = setTimeout(() => {
+      setLoadingSnackVisible(false);
+    }, 1500);
     hasInitializedWebsocket.current = true;
   }, [secretKey, isPrivate]);
+
+  useEffect(() => {
+    return () => {
+      if (loadingSnackTimeoutRef.current) {
+        clearTimeout(loadingSnackTimeoutRef.current);
+      }
+    };
+  }, []);
 
   const encryptChatMessage = async (data: string, secretKeyObject: any) => {
     try {
@@ -393,6 +416,10 @@ export const GroupAnnouncements = ({
         setTempData(selectedGroup);
         setAnnouncements(responseData);
         setIsLoading(false);
+        setLoadingSnackVisible(false);
+        if (loadingSnackTimeoutRef.current) {
+          clearTimeout(loadingSnackTimeoutRef.current);
+        }
         for (const data of responseData) {
           getAnnouncementData(
             {
@@ -804,7 +831,7 @@ export const GroupAnnouncements = ({
       />
 
       <LoadingSnackbar
-        open={isLoading}
+        open={loadingSnackVisible}
         info={{
           message: t('core:loading.announcements', {
             postProcess: 'capitalizeFirstChar',

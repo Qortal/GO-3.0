@@ -14,6 +14,7 @@ import com.github.Qortal.qortalMobile.ReticulumPlugin;
 import com.github.Qortal.qortalMobile.AudioRoutingPlugin;
 import android.Manifest;
 import android.content.pm.PackageManager;
+import android.content.res.Configuration;
 import android.os.Build;
 import android.os.Bundle;
 import android.webkit.WebSettings;
@@ -63,6 +64,16 @@ public class MainActivity extends BridgeActivity {
                 WebSettings webSettings = webView.getSettings();
                 webSettings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
                 webSettings.setMediaPlaybackRequiresUserGesture(false);
+                // Kill the overscroll gesture so pulling down at the top of a
+                // scroll view can't refresh/reload the whole app.
+                webView.setOverScrollMode(WebView.OVER_SCROLL_NEVER);
+                // Capacitor's default chrome client refuses HTML5 fullscreen
+                // video; swap in ours so videos go truly fullscreen + immersive.
+                webView.setWebChromeClient(new QortalWebChromeClient(this.bridge));
+                // The WebView drops in-page downloads (anchor `download`, data
+                // URLs, Content-Disposition: attachment) with no listener — catch
+                // them and save to Documents/Qortal Go like the desktop Hub does.
+                webView.setDownloadListener(new QortalDownloadListener(this.bridge));
                 installSafeAreaInsetBridge(webView);
             }
         }
@@ -71,6 +82,43 @@ public class MainActivity extends BridgeActivity {
         // is allowed during a call. Android grants the WebView mic access only when
         // the host app already holds RECORD_AUDIO at runtime.
         requestCallPermissions();
+    }
+
+    @Override
+    public void onResume() {
+        super.onResume();
+        // The WebView/Chromium compositor surface can stall after the screen
+        // turns off/on or the app returns from background, leaving a blank
+        // (dark base color) view until the user touches it. Force a repaint.
+        forceWebViewRedraw();
+    }
+
+    @Override
+    public void onConfigurationChanged(Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        // Rotation keeps this activity alive (configChanges in the manifest), so
+        // re-apply insets and force the WebView to re-measure for the new size.
+        forceWebViewRedraw();
+    }
+
+    /**
+     * Re-apply safe-area insets and force an invalidate + relayout so the
+     * WebView content repaints immediately instead of showing the gray base
+     * color after a resume or rotation.
+     */
+    private void forceWebViewRedraw() {
+        if (this.bridge == null) {
+            return;
+        }
+        final WebView webView = this.bridge.getWebView();
+        if (webView == null) {
+            return;
+        }
+        webView.post(() -> {
+            webView.invalidate();
+            webView.requestLayout();
+            applySafeAreaInsets(webView);
+        });
     }
 
     private void requestCallPermissions() {

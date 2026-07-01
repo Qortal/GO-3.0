@@ -11,6 +11,7 @@ import {
 import AddRoundedIcon from '@mui/icons-material/AddRounded';
 import RemoveRoundedIcon from '@mui/icons-material/RemoveRounded';
 import { useTranslation } from 'react-i18next';
+import { SAFE_AREA_TOP, SAFE_AREA_BOTTOM } from '../../utils/mobileSafeArea';
 
 /**
  * Crops the chosen region of `src` into a square `outputSize`×`outputSize` WEBP
@@ -140,8 +141,8 @@ export default function AvatarCropper({
         display: 'flex',
         flexDirection: 'column',
         backgroundColor: 'rgba(6, 8, 12, 0.96)',
-        paddingTop: 'env(safe-area-inset-top, 0px)',
-        paddingBottom: 'env(safe-area-inset-bottom, 0px)',
+        paddingTop: SAFE_AREA_TOP,
+        paddingBottom: SAFE_AREA_BOTTOM,
       }}
     >
       <Box

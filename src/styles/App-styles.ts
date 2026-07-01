@@ -7,7 +7,7 @@ export const AppContainer = styled(Box)(({ theme }) => ({
   color: theme.palette.text.primary,
   display: 'flex',
   flexDirection: 'column',
-  height: '100vh',
+  height: '100dvh',
   overflow: 'hidden',
   radius: '15px',
   width: '100%',

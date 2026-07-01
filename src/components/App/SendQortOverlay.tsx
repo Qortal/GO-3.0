@@ -22,6 +22,7 @@ type SendQortOriginRect = {
 type SendQortOverlayProps = {
   balance: number;
   paymentTo: string;
+  paymentAmount?: number;
   originRect?: SendQortOriginRect;
   targetRect?: SendQortOriginRect;
   onReturn: () => void;
@@ -32,6 +33,7 @@ type SendQortOverlayProps = {
 export function SendQortOverlay({
   balance,
   paymentTo,
+  paymentAmount,
   originRect = null,
   targetRect = null,
   onReturn,
@@ -284,6 +286,7 @@ export function SendQortOverlay({
                 show={show}
                 onSuccess={onSuccess}
                 defaultPaymentTo={paymentTo}
+                defaultPaymentAmount={paymentAmount}
                 compact
               />
             </Box>

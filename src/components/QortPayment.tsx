@@ -11,7 +11,8 @@ import {
 } from '@mui/material';
 import VisibilityOffIcon from '@mui/icons-material/VisibilityOff';
 import VisibilityIcon from '@mui/icons-material/Visibility';
-import { useEffect, useState } from 'react';
+import QrCodeScannerIcon from '@mui/icons-material/QrCodeScanner';
+import { useEffect, useRef, useState } from 'react';
 import { getFee } from '../background/background.ts';
 import { useTranslation } from 'react-i18next';
 import BoundedNumericTextField from '../common/BoundedNumericTextField.tsx';
@@ -19,12 +20,19 @@ import { ErrorText } from './ErrorText/ErrorText.tsx';
 import { getBlueTier1ButtonSx } from '../styles/blueMaterial';
 import { executeEvent } from '../utils/events';
 import { QORTINO_DONATION_COMPLETED_EVENT } from './Group/qortinoDonationEasterEgg';
+import { isQrScannerAvailable } from '../utils/qrScanner';
+import { parsePaymentTarget } from '../utils/paymentLink';
+import { QrScannerOverlay } from './QrScannerOverlay';
+import { useAutoFitInputFont } from './common/AutoFitText';
+import { validateAddress } from '../utils/validateAddress';
+import { getPrimaryNameForAvatar } from './Group/groupApi';
 
 export const QortPayment = ({
   balance,
   show,
   onSuccess,
   defaultPaymentTo,
+  defaultPaymentAmount,
   compact = false,
 }) => {
   const theme = useTheme();
@@ -36,7 +44,22 @@ export const QortPayment = ({
     'tutorial',
   ]);
   const [paymentTo, setPaymentTo] = useState<string>(defaultPaymentTo);
-  const [paymentAmount, setPaymentAmount] = useState<number>(0);
+  const [paymentAmount, setPaymentAmount] = useState<number>(
+    defaultPaymentAmount || 0
+  );
+  // Seed used to (re)mount the uncontrolled amount field when a prefilled /
+  // scanned amount arrives, so its displayed value updates.
+  const [amountSeed, setAmountSeed] = useState<number>(defaultPaymentAmount || 0);
+  const [isScannerOpen, setIsScannerOpen] = useState(false);
+  // Primary registered name of a *scanned* recipient address (shown in green
+  // next to "To" so the sender can confirm who they're paying).
+  const [scannedRecipientName, setScannedRecipientName] = useState<string>('');
+  const canScan = isQrScannerAvailable();
+  const paymentToInputRef = useRef<HTMLInputElement | null>(null);
+  useAutoFitInputFont(paymentToInputRef, paymentTo, {
+    maxFontPx: compact ? 15 : 15,
+    minFontPx: 8,
+  });
   const [paymentPassword, setPaymentPassword] = useState<string>('');
   const [isPaymentPasswordEditable, setIsPaymentPasswordEditable] =
     useState(false);
@@ -58,6 +81,57 @@ export const QortPayment = ({
   useEffect(() => {
     setPaymentTo(defaultPaymentTo || '');
   }, [defaultPaymentTo]);
+
+  useEffect(() => {
+    if (defaultPaymentAmount && defaultPaymentAmount > 0) {
+      setPaymentAmount(defaultPaymentAmount);
+      setAmountSeed(defaultPaymentAmount);
+    }
+  }, [defaultPaymentAmount]);
+
+  // Resolve and show the primary registered name for a scanned recipient
+  // address (only when it's a valid Qortal address).
+  const scannedNameRequestRef = useRef(0);
+  const resolveScannedRecipientName = (recipient: string) => {
+    const value = (recipient || '').trim();
+    setScannedRecipientName('');
+    if (!value || !validateAddress(value)) return;
+    const token = ++scannedNameRequestRef.current;
+    getPrimaryNameForAvatar(value)
+      .then((name) => {
+        // Ignore stale responses if a newer scan started meanwhile.
+        if (token !== scannedNameRequestRef.current) return;
+        if (name) setScannedRecipientName(name);
+      })
+      .catch(() => {});
+  };
+
+  const handleScanResult = (scanned: string) => {
+    setIsScannerOpen(false);
+    if (!scanned) return;
+    setSendPaymentError('');
+    const parsed = parsePaymentTarget(scanned);
+    if (parsed.kind === 'payment') {
+      setPaymentTo(parsed.recipient);
+      resolveScannedRecipientName(parsed.recipient);
+      if (parsed.amount && parsed.amount > 0) {
+        setPaymentAmount(parsed.amount);
+        setAmountSeed(parsed.amount);
+      }
+    } else if (!scanned.includes('?') && !/^[a-z][a-z0-9+.-]*:/i.test(scanned)) {
+      // Not a recognized payment/link, but a plain token (address or name):
+      // populate the recipient field directly.
+      setPaymentTo(scanned);
+      resolveScannedRecipientName(scanned);
+    } else {
+      setSendPaymentError(
+        t('core:message.error.unrecognized_qr', {
+          defaultValue: 'This QR code is not a Qortal payment code.',
+          postProcess: 'capitalizeFirstChar',
+        })
+      );
+    }
+  };
 
   const fieldLabelSx = {
     color: secondaryTextColor,
@@ -195,6 +269,14 @@ export const QortPayment = ({
   };
 
   return (
+    <>
+    {canScan && (
+      <QrScannerOverlay
+        open={isScannerOpen}
+        onClose={() => setIsScannerOpen(false)}
+        onResult={handleScanResult}
+      />
+    )}
     <Box
       sx={{
         display: 'flex',
@@ -236,17 +318,76 @@ export const QortPayment = ({
       </Box>
 
       <Box sx={fieldGroupSx}>
-        <Typography component="label" htmlFor="payment-to" sx={fieldLabelSx}>
-          {t('core:to', { postProcess: 'capitalizeFirstChar' })}
-        </Typography>
+        <Box
+          sx={{
+            alignItems: 'baseline',
+            display: 'flex',
+            flexWrap: 'wrap',
+            gap: '8px',
+          }}
+        >
+          <Typography component="label" htmlFor="payment-to" sx={fieldLabelSx}>
+            {t('core:to', { postProcess: 'capitalizeFirstChar' })}
+          </Typography>
+          {scannedRecipientName && (
+            <Typography
+              sx={{
+                color: theme.palette.success.main,
+                fontSize: compact ? '0.75rem' : '0.77rem',
+                fontWeight: 600,
+                letterSpacing: '0.01em',
+                lineHeight: 1.2,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {scannedRecipientName}
+            </Typography>
+          )}
+        </Box>
         <TextField
           id="payment-to"
           value={paymentTo}
-          onChange={(e) => setPaymentTo(e.target.value)}
+          onChange={(e) => {
+            setPaymentTo(e.target.value);
+            // Manual edits invalidate the scanned-name badge.
+            if (scannedRecipientName) setScannedRecipientName('');
+          }}
           autoComplete="off"
           placeholder={t('group:dashboard.qortal_address_or_name')}
           fullWidth
-          sx={textFieldSurfaceSx}
+          inputRef={paymentToInputRef}
+          sx={{
+            ...textFieldSurfaceSx,
+            '& .MuiOutlinedInput-input': {
+              ...(textFieldSurfaceSx['& .MuiOutlinedInput-input'] as object),
+              letterSpacing: '-0.01em',
+              // Font size is auto-fit via useAutoFitInputFont so a full Qortal
+              // address always fits on one line.
+            },
+          }}
+          InputProps={
+            canScan
+              ? {
+                  endAdornment: (
+                    <InputAdornment position="end">
+                      <IconButton
+                        onClick={() => setIsScannerOpen(true)}
+                        edge="end"
+                        aria-label={t('core:action.scan_qr_code', {
+                          defaultValue: 'Scan QR code',
+                          postProcess: 'capitalizeFirstChar',
+                        })}
+                        sx={{ color: theme.palette.text.secondary }}
+                      >
+                        <QrCodeScannerIcon fontSize="small" />
+                      </IconButton>
+                    </InputAdornment>
+                  ),
+                }
+              : undefined
+          }
         />
       </Box>
 
@@ -259,11 +400,12 @@ export const QortPayment = ({
           {t('core:amount', { postProcess: 'capitalizeFirstChar' })}
         </Typography>
         <BoundedNumericTextField
+          key={`payment-amount-${amountSeed}`}
           value={paymentAmount}
           minValue={0}
           maxValue={+balance}
           allowDecimals={true}
-          initialValue={'0'}
+          initialValue={amountSeed ? String(amountSeed) : '0'}
           allowNegatives={false}
           addIconButtons={false}
           afterChange={(e: string) => setPaymentAmount(+e)}
@@ -399,5 +541,6 @@ export const QortPayment = ({
         {t('core:action.send', { postProcess: 'capitalizeFirstChar' })}
       </Button>
     </Box>
+    </>
   );
 };

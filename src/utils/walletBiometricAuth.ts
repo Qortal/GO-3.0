@@ -185,9 +185,30 @@ async function saveEnabledSet(addresses: Set<string>): Promise<void> {
     /* ignore */
   }
 
-  // Keep the native launch-time prompt flag in sync so the next cold start
-  // shows the fingerprint sheet while the WebView is still booting.
-  void setQortalBiometricAutoPrompt(addresses.size > 0).catch(() => {});
+  // Disarm the native launch-time sheet on any enable/disable. The flag is only
+  // safe to arm for the account the app auto-opens on reopen — the TOP wallet in
+  // the Enter Qortal list — and this function has no wallet-order context to know
+  // if that's still true. The entry screen re-arms it correctly for the top
+  // wallet on its next mount (updateEarlyBiometricPromptForTopWallet); disarming
+  // here just avoids an orphaned early scan in the meantime.
+  void setQortalBiometricAutoPrompt(false).catch(() => {});
+}
+
+/**
+ * Arm the native launch-time biometric sheet only when the account the app
+ * auto-opens on reopen — the TOP wallet in the Enter Qortal list — has biometric
+ * unlock enabled. That wallet's unlock screen consumes the early scan; arming it
+ * for anything else would orphan the scan (user left on the account picker) and
+ * can stack a second prompt. Called by the Enter Qortal list on mount and after
+ * every reorder so the flag always tracks the current top wallet.
+ */
+export function updateEarlyBiometricPromptForTopWallet(
+  topAddress: string | null | undefined
+): void {
+  if (!isCapacitor()) return;
+  const trimmed = normalizeAddress(topAddress);
+  const enabled = Boolean(trimmed) && loadEnabledSetSync().has(trimmed);
+  void setQortalBiometricAutoPrompt(enabled).catch(() => {});
 }
 
 export async function waitForNativeBiometricPrompt(
@@ -628,9 +649,9 @@ export async function warmUpBiometricHardware(): Promise<void> {
 /** Sync the native launch-prompt flag with the enabled set (call at boot). */
 export function syncBiometricAutoPromptFlag(): void {
   if (!isCapacitor()) return;
-  void setQortalBiometricAutoPrompt(loadEnabledSetSync().size > 0).catch(
-    () => {}
-  );
+  // The launch-time prompt flag is owned by the Enter Qortal list, which arms it
+  // only for the TOP wallet (the account auto-opened on reopen) via
+  // updateEarlyBiometricPromptForTopWallet. Nothing to set here.
 
   // One-time scrub: builds before the SecureStorage migration wrote plaintext
   // passwords to localStorage; even after removal the bytes linger in the

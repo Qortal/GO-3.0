@@ -1,14 +1,20 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Box, ButtonBase, Typography, useTheme, alpha } from '@mui/material';
 import HomeRoundedIcon from '@mui/icons-material/HomeRounded';
 import AppsRoundedIcon from '@mui/icons-material/AppsRounded';
 import ChatRoundedIcon from '@mui/icons-material/ChatRounded';
 import { useAtomValue } from 'jotai';
 import { executeEvent } from '../../utils/events';
-import { openMobileChatPanel } from '../../utils/openQChatTab';
+import {
+  filterAppTabsForMobile,
+  isQChatOpenTab,
+  openMobileChatPanel,
+} from '../../utils/openQChatTab';
+import { useOpenTabs, OpenTab } from './useOpenTabs';
 import {
   directChatHasUnreadAtom,
   groupChatHasUnreadExcludingMutedAtom,
+  isNewTabWindowAtom,
 } from '../../atoms/global';
 import { SAFE_AREA_BOTTOM } from '../../utils/mobileSafeArea';
 
@@ -19,6 +25,12 @@ type TabKey = 'home' | 'apps' | 'chat';
 type MobileTabBarProps = {
   desktopViewMode: string;
   setDesktopViewMode: (mode: string) => void;
+  /**
+   * 'bottom' (default): the fixed bottom navigation bar.
+   * 'inline': a compact icon-only row meant to be embedded in the top bar
+   * (used in landscape where the bottom bar is hidden to save vertical space).
+   */
+  variant?: 'bottom' | 'inline';
 };
 
 const chatUnreadDotPulse = (dotColor: string, ringColor: string) => ({
@@ -48,11 +60,23 @@ const chatUnreadDotPulse = (dotColor: string, ringColor: string) => ({
 export const MobileTabBar = ({
   desktopViewMode,
   setDesktopViewMode,
+  variant = 'bottom',
 }: MobileTabBarProps) => {
   const theme = useTheme();
   const [active, setActive] = useState<TabKey>('home');
   const hasPmUnread = useAtomValue(directChatHasUnreadAtom);
   const hasGroupUnread = useAtomValue(groupChatHasUnreadExcludingMutedAtom);
+  const isNewTabWindow = useAtomValue(isNewTabWindowAtom);
+  const { tabs, selectedTab } = useOpenTabs();
+  // Remember the last real app the user viewed so a later Apps tap can return
+  // to it after the Explore/library window has been shown.
+  const lastAppTabRef = useRef<OpenTab | null>(null);
+
+  useEffect(() => {
+    if (selectedTab && !isQChatOpenTab(selectedTab)) {
+      lastAppTabRef.current = selectedTab;
+    }
+  }, [selectedTab]);
 
   useEffect(() => {
     if (desktopViewMode === 'home') setActive('home');
@@ -68,15 +92,64 @@ export const MobileTabBar = ({
         setDesktopViewMode('home');
         executeEvent('open-home-mode', {});
         break;
-      case 'apps':
-        executeEvent('newTabWindow', {});
+      case 'apps': {
+        // Cycle behaviour:
+        //  - arriving from another section: show the last-used app (or the
+        //    Explore/library window if nothing is open yet);
+        //  - already on an app: tap opens the Explore/library window;
+        //  - already on the library: tap returns to the most-recent app.
+        const appTabs = filterAppTabsForMobile(tabs);
+        const hasOpenApp =
+          appTabs.length > 0 ||
+          Boolean(selectedTab && !isQChatOpenTab(selectedTab));
+        const alreadyOnApps =
+          active === 'apps' ||
+          desktopViewMode === 'apps' ||
+          desktopViewMode === 'dev';
+
+        if (!alreadyOnApps) {
+          // Restore the last-used app (AppsDesktop keeps its selected tab),
+          // falling back to the library when there's nothing open.
+          setDesktopViewMode('apps');
+          if (!hasOpenApp) {
+            executeEvent('newTabWindow', {});
+          }
+          break;
+        }
+
+        if (isNewTabWindow) {
+          // Showing the library → go back to the most-recently opened app.
+          const recentApp =
+            (lastAppTabRef.current &&
+              appTabs.find(
+                (tab) => tab.tabId === lastAppTabRef.current?.tabId
+              )) ||
+            appTabs[appTabs.length - 1] ||
+            null;
+          if (recentApp) {
+            executeEvent('setSelectedTab', { data: recentApp });
+          } else {
+            executeEvent('newTabWindow', {});
+          }
+        } else {
+          // Showing an app → open the Explore/library window.
+          executeEvent('newTabWindow', {});
+        }
         setDesktopViewMode('apps');
         break;
-      case 'chat':
+      }
+      case 'chat': {
+        // Cycle behaviour (handled in Group.tsx via 'mobile-chat-tab'):
+        //  - arriving from another section: resume the most-recently opened
+        //    conversation (or show the last-used Groups/PM list if none);
+        //  - already on a conversation: tap returns to its list (Groups or PM).
+        const reEntry =
+          active === 'chat' || desktopViewMode === 'chat';
         setDesktopViewMode('chat');
         openMobileChatPanel();
-        executeEvent('mobile-chat-side-view', { data: { view: 'directs' } });
+        executeEvent('mobile-chat-tab', { data: { reEntry } });
         break;
+      }
     }
   };
 
@@ -91,6 +164,89 @@ export const MobileTabBar = ({
     theme.palette.mode === 'dark'
       ? 'rgb(28, 30, 36)'
       : theme.palette.background.paper;
+
+  if (variant === 'inline') {
+    return (
+      <Box
+        sx={{
+          alignItems: 'center',
+          display: 'flex',
+          flexShrink: 0,
+          gap: 0.25,
+        }}
+      >
+        {items.map(({ key, label, Icon }) => {
+          const isActive = active === key;
+          const color = isActive
+            ? theme.palette.primary.main
+            : theme.palette.text.secondary;
+          const showGroupDot = key === 'chat' && hasGroupUnread;
+          const showPmDot = key === 'chat' && hasPmUnread;
+          return (
+            <ButtonBase
+              key={key}
+              focusRipple
+              onClick={() => go(key)}
+              aria-label={label}
+              aria-current={isActive ? 'page' : undefined}
+              sx={{
+                borderRadius: 999,
+                p: 0.25,
+                transition: 'transform 120ms ease',
+                '&:active': { transform: 'scale(0.92)' },
+              }}
+            >
+              <Box
+                sx={{
+                  position: 'relative',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  width: 36,
+                  height: 30,
+                  borderRadius: 999,
+                  transition: 'background-color 160ms ease',
+                  backgroundColor: isActive
+                    ? alpha(theme.palette.primary.main, 0.16)
+                    : 'transparent',
+                }}
+              >
+                <Icon sx={{ fontSize: 21, color }} />
+                {showGroupDot && (
+                  <Box
+                    aria-hidden
+                    sx={{
+                      position: 'absolute',
+                      top: 1,
+                      left: 5,
+                      ...chatUnreadDotPulse(
+                        theme.palette.primary.main,
+                        dotRingColor
+                      ),
+                    }}
+                  />
+                )}
+                {showPmDot && (
+                  <Box
+                    aria-hidden
+                    sx={{
+                      position: 'absolute',
+                      top: 1,
+                      right: 5,
+                      ...chatUnreadDotPulse(
+                        theme.palette.success.main,
+                        dotRingColor
+                      ),
+                    }}
+                  />
+                )}
+              </Box>
+            </ButtonBase>
+          );
+        })}
+      </Box>
+    );
+  }
 
   return (
     <Box

@@ -9,7 +9,7 @@ import {
   useState,
 } from 'react';
 import ReactDOM from 'react-dom';
-import { Box, Button, IconButton, Slider } from '@mui/material';
+import { Box, Button, IconButton, Slider, Menu, MenuItem } from '@mui/material';
 import { CircularProgress, Typography } from '@mui/material';
 import { Key } from 'ts-key-enum';
 import {
@@ -17,6 +17,9 @@ import {
   Pause,
   VolumeUp,
   Fullscreen,
+  FullscreenExit,
+  Replay10,
+  Forward10,
   VolumeOff,
 } from '@mui/icons-material';
 import { styled } from '@mui/system';
@@ -105,6 +108,9 @@ export const VideoPlayer: FC<VideoPlayerProps> = ({
   const download = useAtomValue(resourceKeySelector(keyIdentifier));
   const { downloadResource } = useContext(QORTAL_APP_CONTEXT);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const controlsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [showControls, setShowControls] = useState(true);
   const [playing, setPlaying] = useState(false);
   const [volume, setVolume] = useState(1);
   const [mutedVolume, setMutedVolume] = useState(1);
@@ -229,8 +235,15 @@ export const VideoPlayer: FC<VideoPlayerProps> = ({
   const [isFullscreen, setIsFullscreen] = useState(false);
 
   const enterFullscreen = () => {
-    if (!videoRef.current) return;
-    if (videoRef.current.requestFullscreen) {
+    // Fullscreen the whole container (not the bare <video>) so our own
+    // controls stay on top instead of the WebView's native fullscreen UI.
+    const el: any = containerRef.current || videoRef.current;
+    if (!el) return;
+    if (el.requestFullscreen) {
+      el.requestFullscreen();
+    } else if (el.webkitRequestFullscreen) {
+      el.webkitRequestFullscreen();
+    } else if (videoRef.current?.requestFullscreen) {
       videoRef.current.requestFullscreen();
     }
   };
@@ -238,6 +251,8 @@ export const VideoPlayer: FC<VideoPlayerProps> = ({
   const exitFullscreen = () => {
     if (document.exitFullscreen) {
       document.exitFullscreen();
+    } else if ((document as any).webkitExitFullscreen) {
+      (document as any).webkitExitFullscreen();
     }
   };
 
@@ -247,12 +262,93 @@ export const VideoPlayer: FC<VideoPlayerProps> = ({
 
   useEffect(() => {
     const handleFullscreenChange = () => {
-      setIsFullscreen(!!document.fullscreenElement);
+      setIsFullscreen(
+        !!(document.fullscreenElement || (document as any).webkitFullscreenElement)
+      );
     };
 
     document.addEventListener('fullscreenchange', handleFullscreenChange);
+    document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
     return () => {
       document.removeEventListener('fullscreenchange', handleFullscreenChange);
+      document.removeEventListener(
+        'webkitfullscreenchange',
+        handleFullscreenChange
+      );
+    };
+  }, []);
+
+  // Auto-hide the controls while playing in fullscreen; always show them when
+  // paused or when not in fullscreen.
+  const scheduleHideControls = useCallback(() => {
+    if (controlsTimerRef.current) clearTimeout(controlsTimerRef.current);
+    controlsTimerRef.current = setTimeout(() => setShowControls(false), 3200);
+  }, []);
+
+  useEffect(() => {
+    if (controlsTimerRef.current) clearTimeout(controlsTimerRef.current);
+    if (!isFullscreen) {
+      setShowControls(true);
+      return;
+    }
+    if (playing) {
+      setShowControls(true);
+      scheduleHideControls();
+    } else {
+      setShowControls(true);
+    }
+    return () => {
+      if (controlsTimerRef.current) clearTimeout(controlsTimerRef.current);
+    };
+  }, [isFullscreen, playing, scheduleHideControls]);
+
+  const revealControls = () => {
+    setShowControls(true);
+    if (isFullscreen && playing) scheduleHideControls();
+  };
+
+  // Double-tap (anywhere on the video) exits fullscreen. A single tap still
+  // toggles the controls overlay, so we briefly defer the single-tap action
+  // to see whether a second tap arrives.
+  const lastTapRef = useRef(0);
+  const singleTapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const DOUBLE_TAP_MS = 300;
+
+  const handleVideoSurfaceClick = () => {
+    if (!isFullscreen) {
+      togglePlay();
+      return;
+    }
+
+    const now = Date.now();
+    if (now - lastTapRef.current < DOUBLE_TAP_MS) {
+      // Second tap of a double-tap: cancel the pending single-tap and minimize.
+      if (singleTapTimerRef.current) {
+        clearTimeout(singleTapTimerRef.current);
+        singleTapTimerRef.current = null;
+      }
+      lastTapRef.current = 0;
+      exitFullscreen();
+      return;
+    }
+
+    lastTapRef.current = now;
+    if (singleTapTimerRef.current) clearTimeout(singleTapTimerRef.current);
+    singleTapTimerRef.current = setTimeout(() => {
+      singleTapTimerRef.current = null;
+      // In fullscreen, a single tap toggles the controls overlay rather than
+      // pausing, so users can scrub without losing their place.
+      setShowControls((prev) => {
+        if (prev) return false;
+        if (playing) scheduleHideControls();
+        return true;
+      });
+    }, DOUBLE_TAP_MS);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (singleTapTimerRef.current) clearTimeout(singleTapTimerRef.current);
     };
   }, []);
 
@@ -505,8 +601,11 @@ export const VideoPlayer: FC<VideoPlayerProps> = ({
     });
   };
 
+  const speedOptions = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
+
   return (
     <VideoContainer
+      ref={containerRef}
       tabIndex={0}
       onKeyUp={keyboardShortcutsUp}
       onKeyDown={keyboardShortcutsDown}
@@ -514,6 +613,8 @@ export const VideoPlayer: FC<VideoPlayerProps> = ({
         padding: from === 'create' ? '8px' : 0,
         width: '100%',
         height: '100%',
+        background: isFullscreen ? '#000' : undefined,
+        justifyContent: isFullscreen ? 'center' : undefined,
       }}
     >
       {isLoading && (
@@ -629,7 +730,10 @@ export const VideoPlayer: FC<VideoPlayerProps> = ({
           display: 'flex',
           flexGrow: 1,
           width: '100%',
-          height: 'calc(100% - 60px)',
+          height: isFullscreen ? '100%' : 'calc(100% - 60px)',
+          position: isFullscreen ? 'absolute' : 'relative',
+          inset: isFullscreen ? 0 : 'auto',
+          backgroundColor: isFullscreen ? '#000' : 'transparent',
         }}
       >
         <VideoElement
@@ -641,31 +745,123 @@ export const VideoPlayer: FC<VideoPlayerProps> = ({
           poster={!startPlay ? poster : ''}
           onTimeUpdate={updateProgress}
           autoPlay={autoplay}
-          onClick={togglePlay}
+          onClick={handleVideoSurfaceClick}
           onEnded={handleEnded}
           onCanPlay={handleCanPlay}
           preload="metadata"
           style={{
             width: '100%',
             height: '100%',
+            objectFit: isFullscreen ? 'cover' : 'contain',
+            // The styled VideoElement caps max-height for the inline layout;
+            // in fullscreen that cap leaves black bars, so lift it.
+            maxHeight: isFullscreen ? '100%' : undefined,
+            maxWidth: isFullscreen ? '100%' : undefined,
             ...customStyle,
           }}
         />
       </Box>
 
+      {/* Fullscreen tap overlay: big play/pause + 10s skip controls. */}
+      {isFullscreen && canPlay && showControls && (
+        <Box
+          sx={{
+            position: 'absolute',
+            inset: 0,
+            zIndex: 15,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: '36px',
+            pointerEvents: 'none',
+          }}
+        >
+          <IconButton
+            onClick={() => {
+              setProgressRelative(-10);
+              revealControls();
+            }}
+            sx={{
+              color: '#fff',
+              backgroundColor: 'rgba(0,0,0,0.35)',
+              pointerEvents: 'auto',
+              '&:hover': { backgroundColor: 'rgba(0,0,0,0.5)' },
+            }}
+          >
+            <Replay10 sx={{ fontSize: 34 }} />
+          </IconButton>
+
+          <IconButton
+            onClick={() => {
+              togglePlay();
+              revealControls();
+            }}
+            sx={{
+              color: '#fff',
+              backgroundColor: 'rgba(0,0,0,0.45)',
+              width: 72,
+              height: 72,
+              pointerEvents: 'auto',
+              '&:hover': { backgroundColor: 'rgba(0,0,0,0.6)' },
+            }}
+          >
+            {playing ? (
+              <Pause sx={{ fontSize: 44 }} />
+            ) : (
+              <PlayArrow sx={{ fontSize: 44 }} />
+            )}
+          </IconButton>
+
+          <IconButton
+            onClick={() => {
+              setProgressRelative(10);
+              revealControls();
+            }}
+            sx={{
+              color: '#fff',
+              backgroundColor: 'rgba(0,0,0,0.35)',
+              pointerEvents: 'auto',
+              '&:hover': { backgroundColor: 'rgba(0,0,0,0.5)' },
+            }}
+          >
+            <Forward10 sx={{ fontSize: 34 }} />
+          </IconButton>
+        </Box>
+      )}
+
       <ControlsContainer
+        onClick={revealControls}
         sx={{
-          position: 'relative',
-          background: 'var(--videoplayer-bg)',
+          position: isFullscreen ? 'absolute' : 'relative',
+          bottom: 0,
+          left: 0,
+          right: 0,
+          background: isFullscreen
+            ? 'linear-gradient(to top, rgba(0,0,0,0.85), rgba(0,0,0,0.0))'
+            : 'var(--videoplayer-bg)',
           width: '100%',
           flexShrink: 0,
+          flexWrap: isFullscreen ? 'wrap' : 'nowrap',
+          zIndex: 20,
+          paddingBottom: isFullscreen
+            ? 'calc(10px + var(--safe-area-inset-bottom, 0px))'
+            : undefined,
+          paddingLeft: isFullscreen
+            ? 'calc(8px + var(--safe-area-inset-left, 0px))'
+            : undefined,
+          paddingRight: isFullscreen
+            ? 'calc(8px + var(--safe-area-inset-right, 0px))'
+            : undefined,
+          opacity: isFullscreen && !showControls ? 0 : 1,
+          pointerEvents: isFullscreen && !showControls ? 'none' : 'auto',
+          transition: 'opacity 0.25s ease',
         }}
       >
         {canPlay ? (
           <>
             <IconButton
               sx={{
-                color: 'rgba(255, 255, 255, 0.7)',
+                color: 'rgba(255, 255, 255, 0.85)',
               }}
               onClick={togglePlay}
             >
@@ -674,7 +870,7 @@ export const VideoPlayer: FC<VideoPlayerProps> = ({
             <IconButton
               sx={{
                 color: 'rgba(255, 255, 255, 0.7)',
-                marginLeft: '15px',
+                marginLeft: '8px',
               }}
               onClick={reloadVideo}
             >
@@ -683,22 +879,35 @@ export const VideoPlayer: FC<VideoPlayerProps> = ({
 
             <Slider
               value={progress}
-              onChange={onProgressChange}
+              onChange={(e, v) => {
+                onProgressChange(e, v);
+                revealControls();
+              }}
               min={0}
               max={videoRef.current?.duration || 100}
-              sx={{ flexGrow: 1, mx: 2, color: 'var(--Mail-Background)' }}
+              sx={{
+                flexGrow: 1,
+                mx: 2,
+                color: 'var(--Mail-Background)',
+                '& .MuiSlider-thumb': {
+                  width: isFullscreen ? 16 : 12,
+                  height: isFullscreen ? 16 : 12,
+                },
+                '& .MuiSlider-rail': { opacity: 0.4 },
+              }}
             />
 
             <Typography
               sx={{
                 fontSize: '14px',
                 marginRight: '5px',
-                color: 'rgba(255, 255, 255, 0.7)',
+                color: 'rgba(255, 255, 255, 0.85)',
                 visibility:
                   !videoRef.current?.duration || !progress
                     ? 'hidden'
                     : 'visible',
                 flexShrink: 0,
+                whiteSpace: 'nowrap',
               }}
             >
               {progress && videoRef.current?.duration && formatTime(progress)}/
@@ -710,7 +919,7 @@ export const VideoPlayer: FC<VideoPlayerProps> = ({
             <IconButton
               sx={{
                 color: 'rgba(255, 255, 255, 0.7)',
-                marginRight: '10px',
+                marginRight: '4px',
               }}
               onClick={toggleMute}
             >
@@ -724,28 +933,64 @@ export const VideoPlayer: FC<VideoPlayerProps> = ({
               max={1}
               step={0.01}
               sx={{
-                maxWidth: '100px',
+                maxWidth: '90px',
                 color: 'var(--Mail-Background)',
               }}
             />
             <IconButton
               sx={{
-                color: 'rgba(255, 255, 255, 0.7)',
-                fontSize: '14px',
+                color: 'rgba(255, 255, 255, 0.85)',
+                fontSize: '13px',
                 marginLeft: '5px',
+                borderRadius: '8px',
+                padding: '6px 8px',
               }}
-              onClick={(e) => increaseSpeed()}
+              onClick={handleMenuOpen}
             >
-              Speed: {playbackRate}x
+              {playbackRate}x
             </IconButton>
+            <Menu
+              anchorEl={anchorEl}
+              open={Boolean(anchorEl)}
+              onClose={handleMenuClose}
+              anchorOrigin={{ vertical: 'top', horizontal: 'center' }}
+              transformOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+            >
+              {speedOptions.map((speedOption) => (
+                <MenuItem
+                  key={speedOption}
+                  selected={speedOption === playbackRate}
+                  onClick={() => {
+                    updatePlaybackRate(speedOption);
+                    handleMenuClose();
+                    revealControls();
+                  }}
+                >
+                  {speedOption}x
+                </MenuItem>
+              ))}
+            </Menu>
 
             <IconButton
+              aria-label={
+                isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'
+              }
               sx={{
-                color: 'rgba(255, 255, 255, 0.7)',
+                color: 'rgba(255, 255, 255, 0.85)',
+                // Generous, forgiving touch target so the (un)maximize button
+                // doesn't need a pixel-precise tap in fullscreen.
+                padding: isFullscreen ? '16px' : '12px',
+                margin: isFullscreen ? '-4px' : 0,
+                '& svg': {
+                  fontSize: isFullscreen ? 30 : 24,
+                },
+                '&:hover': {
+                  backgroundColor: 'rgba(255,255,255,0.12)',
+                },
               }}
               onClick={toggleFullscreen}
             >
-              <Fullscreen />
+              {isFullscreen ? <FullscreenExit /> : <Fullscreen />}
             </IconButton>
           </>
         ) : null}

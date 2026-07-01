@@ -12,6 +12,7 @@ import {
 } from '@mui/material';
 import { alpha } from '@mui/material/styles';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useSetAtom } from 'jotai';
 import SearchIcon from '@mui/icons-material/Search';
 import { Spacer } from '../../common/Spacer';
 import AlternateEmailIcon from '@mui/icons-material/AlternateEmail';
@@ -38,6 +39,14 @@ import ErrorBoundary from '../../common/ErrorBoundary';
 import { useTranslation } from 'react-i18next';
 import { isHtmlString } from '../../utils/chat';
 import TextStyle from '@tiptap/extension-text-style';
+import { subscribeToEvent, unsubscribeFromEvent } from '../../utils/events';
+import { chatMentionUnreadAtom } from '../../atoms/global';
+
+/** Event names used by the mobile chat header to drive these options remotely
+ *  (the trigger buttons live in the header; the panels render here). */
+export const CHAT_OPTION_SEARCH_EVENT = 'open-chat-search';
+export const CHAT_OPTION_MENTIONS_EVENT = 'open-chat-mentions';
+export const CHAT_OPTION_QMANAGER_EVENT = 'open-chat-qmanager';
 
 const extractTextFromHTML = (htmlString = '') => {
   return convert(htmlString, {
@@ -53,10 +62,12 @@ export const ChatOptions = ({
   selectedGroup,
   openQManager,
   isPrivate,
+  hideTriggers = false,
 }) => {
   const [mode, setMode] = useState('default');
   const [searchValue, setSearchValue] = useState('');
   const [selectedMember, setSelectedMember] = useState(0);
+  const setMentionUnread = useSetAtom(chatMentionUnreadAtom);
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
   const { t } = useTranslation([
@@ -214,6 +225,45 @@ export const ChatOptions = ({
       )
       ?.sort((a, b) => b?.timestamp - a?.timestamp);
   }, [messages, myName, isPrivate]);
+
+  // Triggers may live in the mobile chat header instead of the floating strip;
+  // listen for their events and open the matching panel.
+  useEffect(() => {
+    const openSearch = () => {
+      setSearchValue('');
+      setSelectedMember(0);
+      setMode('search');
+    };
+    const openMentions = () => {
+      setSearchValue('');
+      setSelectedMember(0);
+      setMode('mentions');
+    };
+    const openQManagerEvent = () => {
+      setMode('default');
+      setSearchValue('');
+      setSelectedMember(0);
+      openQManager?.();
+    };
+    subscribeToEvent(CHAT_OPTION_SEARCH_EVENT, openSearch);
+    subscribeToEvent(CHAT_OPTION_MENTIONS_EVENT, openMentions);
+    subscribeToEvent(CHAT_OPTION_QMANAGER_EVENT, openQManagerEvent);
+    return () => {
+      unsubscribeFromEvent(CHAT_OPTION_SEARCH_EVENT, openSearch);
+      unsubscribeFromEvent(CHAT_OPTION_MENTIONS_EVENT, openMentions);
+      unsubscribeFromEvent(CHAT_OPTION_QMANAGER_EVENT, openQManagerEvent);
+    };
+  }, [openQManager]);
+
+  // Publish whether there are unread @mentions so the header trigger can show
+  // the unread accent even when the floating strip is hidden.
+  const hasUnreadMentions =
+    mentionList?.length > 0 &&
+    (!lastMentionTimestamp || lastMentionTimestamp < mentionList[0]?.timestamp);
+  useEffect(() => {
+    setMentionUnread(hasUnreadMentions);
+    return () => setMentionUnread(false);
+  }, [hasUnreadMentions, setMentionUnread]);
 
   const rowVirtualizer = useVirtualizer({
     count: searchedList.length,
@@ -399,6 +449,7 @@ export const ChatOptions = ({
                               messages={messages}
                               goToMessage={goToMessage}
                               message={message}
+                              onSelect={() => setMode('default')}
                             />
                           </div>
                         );
@@ -670,6 +721,7 @@ export const ChatOptions = ({
                               message={message}
                               goToMessage={goToMessage}
                               messages={messages}
+                              onSelect={() => setMode('default')}
                             />
                           </ErrorBoundary>
                         </div>
@@ -683,6 +735,12 @@ export const ChatOptions = ({
         </Box>
       </Box>
     );
+  }
+
+  if (hideTriggers) {
+    // Triggers are rendered elsewhere (mobile chat header); only the panels
+    // (search/mentions) above are owned by this component.
+    return null;
   }
 
   return (
@@ -861,12 +919,9 @@ export const ChatOptions = ({
             >
               <AlternateEmailIcon
                 sx={{
-                  color:
-                    mentionList?.length > 0 &&
-                    (!lastMentionTimestamp ||
-                      lastMentionTimestamp < mentionList[0]?.timestamp)
-                      ? theme.palette.other.unread
-                      : theme.palette.text.primary,
+                  color: hasUnreadMentions
+                    ? theme.palette.other.unread
+                    : theme.palette.text.primary,
                 }}
               />
             </Tooltip>
@@ -877,7 +932,7 @@ export const ChatOptions = ({
   );
 };
 
-const ShowMessage = ({ message, goToMessage, messages }) => {
+const ShowMessage = ({ message, goToMessage, messages, onSelect }) => {
   const theme = useTheme();
 
   return (
@@ -952,6 +1007,9 @@ const ShowMessage = ({ message, goToMessage, messages }) => {
           if (findMsgIndex !== -1) {
             goToMessage(findMsgIndex);
           }
+          // Close the search/mentions panel so the selected message is
+          // visible and gets scrolled to in the chat.
+          onSelect?.();
         }}
       >
         {message?.messageText && (

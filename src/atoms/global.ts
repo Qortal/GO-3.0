@@ -47,6 +47,12 @@ export const isDisabledEditorEnterAtom = atomWithReset(false);
 
 /** True while mobile chat compose keyboard mode is active (hides tab bar, swaps top bar). */
 export const mobileChatComposeActiveAtom = atomWithReset(false);
+/** True when the chat message list has been scrolled down, so the group section
+ *  tabs collapse (landscape) to give the conversation more vertical room. */
+export const mobileChatHeaderCollapsedAtom = atomWithReset(false);
+/** True when the open group chat has unread @mentions for the local user, so
+ *  the header @ trigger (mobile) can highlight it. Set by ChatOptions. */
+export const chatMentionUnreadAtom = atomWithReset(false);
 export const isOpenBlockedModalAtom = atomWithReset(false);
 export const isRunningPublicNodeAtom = atomWithReset(false);
 /** Pre-login Login settings modal (shared between Enter Qortal screen and footer). */

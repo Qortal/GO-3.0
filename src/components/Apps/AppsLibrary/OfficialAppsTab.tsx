@@ -1,6 +1,6 @@
 import { memo, useEffect, useMemo, useRef } from 'react';
 import { useAtomValue } from 'jotai';
-import { Box, Typography, styled, useTheme } from '@mui/material';
+import { Box, Typography, styled, useMediaQuery, useTheme } from '@mui/material';
 import { useTranslation } from 'react-i18next';
 import { AppLibrarySubTitle, AppsList, AppsWidthLimiter } from '../Apps-styles';
 import { Spacer } from '../../../common/Spacer';
@@ -47,6 +47,9 @@ const OfficialAppsTabInner = ({
   searchValue = '',
 }: OfficialAppsTabProps) => {
   const theme = useTheme();
+  // Tablet tier (600-900px): show the app list in two columns to use the
+  // extra width instead of a single narrow column.
+  const isTablet = useMediaQuery(theme.breakpoints.between('sm', 'md'));
   const { t } = useTranslation(['core']);
   const { fetchRating } = useAppRatings();
   const fetchedAppsRef = useRef<Set<string>>(new Set());
@@ -173,7 +176,17 @@ const OfficialAppsTabInner = ({
       </SectionHeader>
 
       {isMobile ? (
-        <AppsList>
+        <AppsList
+          sx={
+            isTablet
+              ? {
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(2, 1fr)',
+                  gap: '12px',
+                }
+              : undefined
+          }
+        >
           {officialApps.map((app) => (
             <AppCardListItem
               key={`${app?.service}-${app?.name}`}

@@ -1,8 +1,18 @@
 import NotificationsActiveIcon from '@mui/icons-material/NotificationsActive';
-import { Box, Button, Paper, Typography, alpha, useTheme } from '@mui/material';
+import {
+  Box,
+  Button,
+  Paper,
+  Typography,
+  alpha,
+  useMediaQuery,
+  useTheme,
+} from '@mui/material';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { subscribeToEvent, unsubscribeFromEvent } from '../../utils/events';
+import { SAFE_AREA_TOP } from '../../utils/mobileSafeArea';
+import { MOBILE_TOP_BAR_HEIGHT_PX } from '../Mobile/MobileTopBar';
 
 const TIMEOUT_MS = 60_000;
 const TIMEOUT_S = TIMEOUT_MS / 1000;
@@ -28,6 +38,7 @@ function sendResponse(requestId: string, accepted: boolean) {
 export function NotificationPermissionSlideDown() {
   const { t } = useTranslation('question');
   const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down('md'));
   const [queue, setQueue] = useState<PendingRequest[]>([]);
   const [secondsLeft, setSecondsLeft] = useState(TIMEOUT_S);
   const autoTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -103,7 +114,11 @@ export function NotificationPermissionSlideDown() {
         maxWidth: 400,
         overflow: 'hidden',
         position: 'fixed',
-        top: 0,
+        // On the mobile shell the app's top bar sits above the status-bar
+        // inset, so clear both — otherwise the banner hides behind the top bar.
+        top: isMobile
+          ? `calc(${MOBILE_TOP_BAR_HEIGHT_PX}px + ${SAFE_AREA_TOP} + 8px)`
+          : SAFE_AREA_TOP,
         transform: 'translateX(-50%)',
         width: 'min(calc(100vw - 24px), 400px)',
         zIndex: theme.zIndex.modal + 10,

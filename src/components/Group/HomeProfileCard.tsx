@@ -76,6 +76,7 @@ import {
 } from '../../constants/constants.ts';
 import { decryptStoredWallet } from '../../utils/decryptWallet';
 import { fileToBase64 } from '../../utils/fileReading';
+import { SAFE_AREA_TOP, SAFE_AREA_BOTTOM } from '../../utils/mobileSafeArea';
 import { setWalletAvatarCache, getWalletAvatarCache, buildQortalAvatarUrl } from '../../utils/walletAvatarCache';
 import { QortalUserAvatar } from '../QortalUserAvatar';
 import { getPrimaryNameForAvatar } from './groupApi';
@@ -96,6 +97,7 @@ import {
   useDashboardPanelMouseLight,
 } from './dashboardPanelEffects';
 import { DecryptedText } from '../common/DecryptedText';
+import { AutoFitText, useAutoFitFontPx } from '../common/AutoFitText';
 import { getBlueTier1ButtonSx } from '../../styles/blueMaterial';
 import BorderGlow from '../common/BorderGlow';
 import TiltedCard from '../common/TiltedCard';
@@ -600,6 +602,14 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
   const showAnimatedAddress =
     shouldRevealAddressOnHover && isAddressFieldHovered;
   const showAddressReveal = showAnimatedAddress || isAddressFieldRevealed;
+  // Auto-fit the revealed address so the full 34-char string fits the overlay
+  // width on one line (scaling the font instead of truncating with an ellipsis).
+  const addressOverlayRef = useRef<HTMLDivElement | null>(null);
+  const revealedAddressFontPx = useAutoFitFontPx(
+    addressOverlayRef,
+    accountIdentitySecondaryText,
+    { maxFontPx: 13.4, minFontPx: 6 }
+  );
   const blockedAddressEntries = useMemo(
     () => Object.keys(blockedAddresses || {}),
     [blockedAddresses]
@@ -2349,6 +2359,7 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
               tabIndex={address ? 0 : undefined}
             >
               <Box
+                ref={addressOverlayRef}
                 className="wallet-address-overlay"
                 sx={{
                   alignItems: 'center',
@@ -2379,6 +2390,7 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                       sequential={true}
                       revealDirection="start"
                       useOriginalCharsOnly={true}
+                      fontSizePx={revealedAddressFontPx}
                     />
                   ) : (
                     <Box
@@ -2393,16 +2405,12 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                     </Box>
                   )
                 ) : (
-                  <Box
-                    sx={{
-                      maxWidth: '100%',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap',
-                    }}
-                  >
-                    {accountIdentityPrimaryText}
-                  </Box>
+                  <AutoFitText
+                    text={accountIdentityPrimaryText}
+                    maxFontPx={14}
+                    minFontPx={6}
+                    sx={{ flex: '1 1 0' }}
+                  />
                 )}
               </Box>
               <Box
@@ -2723,7 +2731,7 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                 justifyContent: 'space-between',
                 px: 1.5,
                 py: 1.25,
-                pt: 'calc(12px + env(safe-area-inset-top, 0px))',
+                pt: `calc(12px + ${SAFE_AREA_TOP})`,
               }}
             >
               <Typography
@@ -3098,7 +3106,7 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                   xs: 1.75,
                   md: 2.3,
                 },
-                pb: 'calc(16px + env(safe-area-inset-bottom, 0px))',
+                pb: `calc(16px + ${SAFE_AREA_BOTTOM})`,
                 pt: {
                   xs: 1.35,
                   md: 1.9,

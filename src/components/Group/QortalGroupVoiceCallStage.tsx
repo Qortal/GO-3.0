@@ -40,6 +40,7 @@ import {
   qortalGroupVoiceCallMinimizedAtom,
   qortalGroupCallPrimaryNamesAtom,
 } from '../../atoms/global';
+import { SAFE_AREA_TOP } from '../../utils/mobileSafeArea';
 import { useGroupCallContext } from '../../contexts/GroupCallContext';
 import {
   addrHue,
@@ -311,6 +312,8 @@ export function QortalGroupVoiceCallStage() {
       <Box
         sx={{
           height: 52,
+          boxSizing: 'content-box',
+          paddingTop: SAFE_AREA_TOP,
           flexShrink: 0,
           display: 'flex',
           flexWrap: 'nowrap',

@@ -10,6 +10,7 @@ import {
   Slide,
   TextField,
   Typography,
+  useMediaQuery,
   useTheme,
 } from '@mui/material';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
@@ -711,6 +712,7 @@ const SortableTabCard = ({
 
 export const MobileTabsOverlay = ({ open, onClose }: MobileTabsOverlayProps) => {
   const theme = useTheme();
+  const isLandscape = useMediaQuery('(orientation: landscape)');
   const { tabs: rawTabs, selectedTab: rawSelectedTab } = useOpenTabs();
   const tabs = useMemo(() => filterAppTabsForMobile(rawTabs), [rawTabs]);
   const selectedTab = useMemo(
@@ -919,6 +921,10 @@ export const MobileTabsOverlay = ({ open, onClose }: MobileTabsOverlayProps) => 
     if (!open) return;
     if (detailsOpen || tabOptionsOpen || renameOpen || addressOpen) return;
     if (draggedTab || draggedFolderId) return;
+    // While arranging tabs/folders the @dnd-kit TouchSensor has a 180ms
+    // activation delay; during it draggedTab is still null, so an early
+    // touchmove would otherwise background-close the overlay mid-drag.
+    if (tabsEditMode) return;
 
     const panel = tabsPanelRef.current;
     const isInsideTabsPanel = (target: EventTarget | null) =>
@@ -959,6 +965,7 @@ export const MobileTabsOverlay = ({ open, onClose }: MobileTabsOverlayProps) => 
     open,
     renameOpen,
     tabOptionsOpen,
+    tabsEditMode,
   ]);
 
   useEffect(() => {
@@ -1274,7 +1281,7 @@ export const MobileTabsOverlay = ({ open, onClose }: MobileTabsOverlayProps) => 
   };
 
   const tabsPanelTop = `calc(${MOBILE_TOP_BAR_HEIGHT_PX}px + ${SAFE_AREA_TOP})`;
-  const tabsPanelMaxHeight = `calc(100vh - ${MOBILE_TOP_BAR_HEIGHT_PX}px - ${SAFE_AREA_TOP} - ${MOBILE_TAB_BAR_HEIGHT_PX}px - ${SAFE_AREA_BOTTOM} - 24px)`;
+  const tabsPanelMaxHeight = `calc(100dvh - ${MOBILE_TOP_BAR_HEIGHT_PX}px - ${SAFE_AREA_TOP} - ${MOBILE_TAB_BAR_HEIGHT_PX}px - ${SAFE_AREA_BOTTOM} - 24px)`;
 
   return (
     <>
@@ -1597,7 +1604,9 @@ export const MobileTabsOverlay = ({ open, onClose }: MobileTabsOverlayProps) => 
                 <Box
                   sx={{
                     display: 'grid',
-                    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+                    gridTemplateColumns: isLandscape
+                      ? 'repeat(4, minmax(0, 1fr))'
+                      : 'repeat(2, minmax(0, 1fr))',
                     gap: 1,
                     minWidth: 0,
                     width: '100%',
@@ -1666,7 +1675,12 @@ export const MobileTabsOverlay = ({ open, onClose }: MobileTabsOverlayProps) => 
             <Box
               aria-label="Close tabs"
               onClick={onClose}
-              onTouchMove={onClose}
+              onTouchMove={() => {
+                // Don't close while arranging tabs: a drag toward a folder can
+                // move the finger into this backdrop before the drop lands.
+                if (tabsEditMode || draggedTab || draggedFolderId) return;
+                onClose();
+              }}
               sx={{
                 flex: 1,
                 minHeight: 0,

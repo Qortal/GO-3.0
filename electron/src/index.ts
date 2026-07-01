@@ -78,8 +78,22 @@ app.commandLine.appendSwitch(
 
 // app.commandLine.appendSwitch('ignore-certificate-errors');
 
-// Graceful handling of unhandled errors.
-unhandled();
+// Graceful handling of unhandled errors. Ignore benign stdio pipe errors
+// (EPIPE/EIO) when Hub is launched without a terminal; they are not actionable.
+unhandled({
+  logger: (error: Error) => {
+    const code = (error as NodeJS.ErrnoException)?.code;
+    if (
+      code === 'EPIPE' ||
+      code === 'EIO' ||
+      code === 'ENOTCONN' ||
+      code === 'EBADF'
+    ) {
+      return;
+    }
+    loggerError(error);
+  },
+});
 
 // Flag to track if the app is quitting
 export let isQuitting = false;

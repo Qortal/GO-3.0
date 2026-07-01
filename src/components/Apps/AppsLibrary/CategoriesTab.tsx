@@ -28,6 +28,16 @@ const CategoriesGrid = styled(Box, {
     : 'repeat(auto-fill, minmax(140px, 1fr))',
   gap: isMobile ? '12px' : '16px',
   width: '100%',
+  // Landscape has plenty of width; two columns make each card huge, so pack
+  // them into compact auto-filled columns instead.
+  ...(isMobile
+    ? {
+        '@media (orientation: landscape)': {
+          gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))',
+          gap: '12px',
+        },
+      }
+    : {}),
 }));
 
 const AppsGrid = styled(Box, {

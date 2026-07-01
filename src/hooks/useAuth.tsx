@@ -299,8 +299,20 @@ export const useAuth = () => {
       } catch (error) {
         console.error(error);
       }
+      // Re-resolve the account name/info against the NEWLY selected node.
+      // Without this the cached name from the previous node persists, and
+      // chain interactions that require a registered name fail after a
+      // private->public switch ("a registered name is needed").
+      try {
+        const userResponse = await window.sendMessage('userInfo');
+        if (userResponse && !userResponse.error) {
+          setUserInfo(userResponse);
+        }
+      } catch (error) {
+        console.error('Failed to refresh user info after node switch:', error);
+      }
     },
-    [setIsRunningPublicNode, setSelectedNode]
+    [setIsRunningPublicNode, setSelectedNode, setUserInfo]
   );
 
   const isNodeValid = useCallback(async (): Promise<boolean> => {

@@ -148,7 +148,13 @@ Hub → mobile transfers of large files only become reliable once the Hub ships 
   fetch outcome caching.
 - **Mobile UX:** tab bar + tabs overlay with folders, app library list layouts, biometric unlock
   flow (no keyboard pop on autofill), blocked-accounts flows for public/private nodes, Android
-  back-button handling, DM voice call UI.
+  back-button handling, DM voice call UI, drag-to-reorder accounts (long-press lift with
+  neighbour slide animation, portrait + landscape, phones + tablets).
+- **Payments:** `qortal://pay?…` / `qort:` deep links and payment QR codes open the app straight
+  to a pre-filled Send screen; a de-Googled in-app QR scanner (`getUserMedia` + `jsQR`, no Play
+  Services) reads payment and address QRs. See [`docs/PAYMENT_QR_CODES.md`](docs/PAYMENT_QR_CODES.md).
+
+See [`CHANGELOG.md`](CHANGELOG.md) for a version-by-version summary of changes.
 
 ## Upstream
 

@@ -8,6 +8,7 @@ import {
   ListItemText,
   Tooltip,
   Typography,
+  useMediaQuery,
   useTheme,
 } from '@mui/material';
 import StarRoundedIcon from '@mui/icons-material/StarRounded';
@@ -34,6 +35,9 @@ import { isOnlineAtomFamily, statusAtomFamily } from '../../atoms/presence';
 import type { DmFriendStored } from '../../atoms/global';
 import { PresenceStatusBadge } from '../common/PresenceStatusBadge';
 import { hasInvisibleCharacters } from '../../utils/hasInvisibleCharacters';
+import { useChatDraftKeys } from '../../hooks/useChatDraftKeys';
+import { directDraftKey } from '../../utils/chatPersistence';
+import { DraftBadge } from '../Chat/DraftBadge';
 
 /** Renders only the presence badge for a single DM address.
  * Subscribes to per-address atoms so a change to any other peer
@@ -111,19 +115,33 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
   } = props;
 
   const theme = useTheme();
+  // Compact the Groups/DM toggle on landscape phones (matches GroupList).
+  const isMobileWidth = useMediaQuery(theme.breakpoints.down('md'));
+  const isLandscape = useMediaQuery('(orientation: landscape)');
+  const compactToggle = isMobileWidth && isLandscape;
   const { t } = useTranslation();
+  const draftKeys = useChatDraftKeys(myAddress);
 
   return (
     <Box
       sx={{
-        alignItems: 'flex-start',
+        // In landscape the layout is a row (list + right rail); children must
+        // stretch to full height so the list can scroll. In portrait keep the
+        // original top-aligned column.
+        alignItems: compactToggle ? 'stretch' : 'flex-start',
         background: theme.palette.background.surface,
         borderRadius: '0 15px 15px 0',
         boxShadow: '6px 0 20px rgba(0,0,0,0.18), 2px 0 8px rgba(0,0,0,0.08)',
         display: 'flex',
-        flexDirection: 'column',
-        height: '100%',
-        width: { xs: '100%', sm: '400px' },
+        // Landscape: list on the left, a vertical toggle/action rail on the
+        // right (no wasted top band).
+        flexDirection: compactToggle ? 'row' : 'column',
+        minHeight: 0,
+        position: 'relative',
+        // Fixed 400px rail only on real desktop (md+); below that (incl.
+        // landscape phones) it fills the width so the list isn't stuck on
+        // the left with empty space beside it.
+        width: { xs: '100%', md: '400px' },
         flexShrink: 0,
         padding: '0 2px 0 0',
       }}
@@ -131,13 +149,18 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
       <Box
         sx={{
           alignItems: 'stretch',
-          borderBottom: '1px solid',
+          borderBottom: compactToggle ? 'none' : '1px solid',
+          borderLeft: compactToggle ? '1px solid' : 'none',
           borderColor: 'divider',
           display: 'flex',
-          gap: '10px',
-          justifyContent: 'center',
-          padding: '14px 12px',
-          width: '100%',
+          flexDirection: compactToggle ? 'column' : 'row',
+          flexShrink: 0,
+          gap: compactToggle ? '8px' : '10px',
+          justifyContent: compactToggle ? 'flex-start' : 'center',
+          order: compactToggle ? 2 : 0,
+          overflowY: compactToggle ? 'auto' : undefined,
+          padding: compactToggle ? '10px 8px' : '14px 12px',
+          width: compactToggle ? '92px' : '100%',
         }}
       >
         <ButtonBase
@@ -147,9 +170,9 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
           sx={{
             position: 'relative',
             borderRadius: '12px',
-            flex: 1,
+            flex: compactToggle ? '0 0 auto' : 1,
             minWidth: 0,
-            padding: '14px 12px',
+            padding: compactToggle ? '7px 10px' : '14px 12px',
             backgroundColor:
               desktopSideView === 'groups'
                 ? theme.palette.action.selected
@@ -167,10 +190,10 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
             <Box
               sx={{
                 position: 'absolute',
-                top: 8,
-                right: 8,
-                width: 14,
-                height: 14,
+                top: compactToggle ? 4 : 8,
+                right: compactToggle ? 4 : 8,
+                width: compactToggle ? 11 : 14,
+                height: compactToggle ? 11 : 14,
                 borderRadius: '50%',
                 backgroundColor: theme.palette.primary.main,
                 border: `2px solid ${theme.palette.background.paper}`,
@@ -183,14 +206,14 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
               alignItems: 'center',
               display: 'flex',
               flexDirection: 'column',
-              gap: '10px',
+              gap: compactToggle ? '4px' : '10px',
               justifyContent: 'center',
               width: '100%',
             }}
           >
             <HubsIcon
-              height={26}
-              width={26}
+              height={compactToggle ? 20 : 26}
+              width={compactToggle ? 20 : 26}
               color={
                 groupChatHasUnread || groupsAnnHasUnread
                   ? theme.palette.primary.main
@@ -227,9 +250,9 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
           sx={{
             position: 'relative',
             borderRadius: '12px',
-            flex: 1,
+            flex: compactToggle ? '0 0 auto' : 1,
             minWidth: 0,
-            padding: '14px 12px',
+            padding: compactToggle ? '7px 10px' : '14px 12px',
             backgroundColor:
               desktopSideView === 'directs'
                 ? theme.palette.action.selected
@@ -247,10 +270,10 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
             <Box
               sx={{
                 position: 'absolute',
-                top: 8,
-                right: 8,
-                width: 14,
-                height: 14,
+                top: compactToggle ? 4 : 8,
+                right: compactToggle ? 4 : 8,
+                width: compactToggle ? 11 : 14,
+                height: compactToggle ? 11 : 14,
                 borderRadius: '50%',
                 backgroundColor: theme.palette.primary.main,
                 border: `2px solid ${theme.palette.background.paper}`,
@@ -263,14 +286,14 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
               alignItems: 'center',
               display: 'flex',
               flexDirection: 'column',
-              gap: '10px',
+              gap: compactToggle ? '4px' : '10px',
               justifyContent: 'center',
               width: '100%',
             }}
           >
             <MessagingIcon
-              height={26}
-              width={26}
+              height={compactToggle ? 20 : 26}
+              width={compactToggle ? 20 : 26}
               color={
                 directChatHasUnread
                   ? theme.palette.primary.main
@@ -298,6 +321,47 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
             </Typography>
           </Box>
         </ButtonBase>
+
+        {compactToggle && (
+          <>
+            <CustomButton
+              onClick={() => {
+                setNewChat(true);
+                setSelectedDirect(null);
+                setIsOpenDrawer(false);
+              }}
+              sx={{
+                flex: '0 0 auto',
+                flexDirection: 'column',
+                fontSize: '11px',
+                gap: '4px',
+                lineHeight: 1.1,
+                minWidth: 'unset',
+                padding: '8px 4px',
+                textAlign: 'center',
+                width: '100%',
+              }}
+            >
+              <CreateIcon
+                sx={{ color: theme.palette.text.primary, fontSize: '20px' }}
+              />
+              {t('core:action.new.chat', { postProcess: 'capitalizeFirstChar' })}
+            </CustomButton>
+
+            {!isRunningPublicNode && (
+              <CustomButton
+                onClick={() => {
+                  setIsOpenBlockedUserModal(true);
+                }}
+                sx={{ flex: '0 0 auto', minWidth: 'unset', padding: '8px', width: '100%' }}
+              >
+                <PersonOffIcon
+                  sx={{ color: theme.palette.text.secondary, fontSize: '20px' }}
+                />
+              </CustomButton>
+            )}
+          </>
+        )}
       </Box>
 
       <Box
@@ -306,9 +370,12 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
           display: 'flex',
           flexDirection: 'column',
           flexGrow: 1,
+          minHeight: 0,
+          minWidth: compactToggle ? 0 : undefined,
+          order: compactToggle ? 1 : 0,
           overflowY: 'auto',
           padding: '12px 8px',
-          width: '100%',
+          width: compactToggle ? 'auto' : '100%',
         }}
       >
         <List
@@ -342,6 +409,9 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
             const directName = direct?.name || direct?.address;
             const hasUnsafeName = Boolean(
               direct?.name && hasInvisibleCharacters(direct.name)
+            );
+            const hasDraft = Boolean(
+              direct?.address && draftKeys.has(directDraftKey(direct.address))
             );
 
             return (
@@ -453,7 +523,39 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
                   </ListItemAvatar>
 
                   <ListItemText
-                    primary={directName}
+                    primary={
+                      <Box
+                        component="span"
+                        sx={{
+                          alignItems: 'flex-start',
+                          display: 'flex',
+                          gap: '6px',
+                          minWidth: 0,
+                          width: '100%',
+                        }}
+                      >
+                        <Box
+                          component="span"
+                          sx={{
+                            flex: 1,
+                            minWidth: 0,
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                            ...(hasUnsafeName
+                              ? {
+                                  textDecorationLine: 'line-through',
+                                  textDecorationThickness: '2px',
+                                  textDecorationColor: theme.palette.error.main,
+                                }
+                              : {}),
+                          }}
+                        >
+                          {directName}
+                        </Box>
+                        {hasDraft && <DraftBadge />}
+                      </Box>
+                    }
                     secondary={
                       !direct?.timestamp
                         ? t('core:message.generic.no_messages', {
@@ -465,6 +567,7 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
                           })
                     }
                     primaryTypographyProps={{
+                      component: 'div',
                       sx: {
                         color: hasUnread
                           ? theme.palette.primary.main
@@ -473,13 +576,6 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
                         fontSize: '15px',
                         fontWeight: 600,
                         lineHeight: 1.3,
-                        ...(hasUnsafeName
-                          ? {
-                              textDecorationLine: 'line-through',
-                              textDecorationThickness: '2px',
-                              textDecorationColor: theme.palette.error.main,
-                            }
-                          : {}),
                       },
                     }}
                     secondaryTypographyProps={{
@@ -529,59 +625,61 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
         </List>
       </Box>
 
-      <Box
-        sx={{
-          borderTop: '1px solid',
-          borderColor: 'divider',
-          display: 'flex',
-          width: '100%',
-          gap: '10px',
-          justifyContent: 'center',
-          padding: '16px 12px',
-        }}
-      >
-        <CustomButton
-          onClick={() => {
-            setNewChat(true);
-            setSelectedDirect(null);
-            setIsOpenDrawer(false);
-          }}
+      {!compactToggle && (
+        <Box
           sx={{
-            flex: 1,
-            gap: '8px',
-            padding: '10px 16px',
+            borderTop: '1px solid',
+            borderColor: 'divider',
+            display: 'flex',
+            width: '100%',
+            gap: '10px',
+            justifyContent: 'center',
+            padding: '16px 12px',
           }}
         >
-          <CreateIcon
-            sx={{
-              color: theme.palette.text.primary,
-              fontSize: '20px',
-            }}
-          />
-          {t('core:action.new.chat', {
-            postProcess: 'capitalizeFirstChar',
-          })}
-        </CustomButton>
-
-        {!isRunningPublicNode && (
           <CustomButton
             onClick={() => {
-              setIsOpenBlockedUserModal(true);
+              setNewChat(true);
+              setSelectedDirect(null);
+              setIsOpenDrawer(false);
             }}
             sx={{
-              minWidth: 'unset',
-              padding: '10px',
+              flex: 1,
+              gap: '8px',
+              padding: '10px 16px',
             }}
           >
-            <PersonOffIcon
+            <CreateIcon
               sx={{
-                color: theme.palette.text.secondary,
-                fontSize: '22px',
+                color: theme.palette.text.primary,
+                fontSize: '20px',
               }}
             />
+            {t('core:action.new.chat', {
+              postProcess: 'capitalizeFirstChar',
+            })}
           </CustomButton>
-        )}
-      </Box>
+
+          {!isRunningPublicNode && (
+            <CustomButton
+              onClick={() => {
+                setIsOpenBlockedUserModal(true);
+              }}
+              sx={{
+                minWidth: 'unset',
+                padding: '10px',
+              }}
+            >
+              <PersonOffIcon
+                sx={{
+                  color: theme.palette.text.secondary,
+                  fontSize: '22px',
+                }}
+              />
+            </CustomButton>
+          )}
+        </Box>
+      )}
 
       <AvatarPreviewModal
         open={Boolean(avatarPreviewData)}

@@ -10,6 +10,12 @@ type DecryptedTextProps = {
   sequential?: boolean;
   revealDirection?: 'start' | 'end';
   useOriginalCharsOnly?: boolean;
+  /**
+   * Optional explicit font size (px). When provided the text is scaled to this
+   * size and shown in full (no ellipsis) so a long value like a Qortal address
+   * fits its container on a single line.
+   */
+  fontSizePx?: number;
 };
 
 const getScrambledChar = (
@@ -31,6 +37,7 @@ export const DecryptedText = ({
   sequential = true,
   revealDirection = 'start',
   useOriginalCharsOnly = true,
+  fontSizePx,
 }: DecryptedTextProps) => {
   const [displayText, setDisplayText] = useState(text);
   const timeoutRef = useRef<number | null>(null);
@@ -127,9 +134,15 @@ export const DecryptedText = ({
       sx={{
         display: 'block',
         overflow: 'hidden',
-        textOverflow: 'ellipsis',
         whiteSpace: 'nowrap',
         width: '100%',
+        ...(fontSizePx
+          ? {
+              fontSize: `${fontSizePx}px`,
+              letterSpacing: '-0.02em',
+              lineHeight: 1.25,
+            }
+          : { textOverflow: 'ellipsis' }),
       }}
     >
       {displayText}

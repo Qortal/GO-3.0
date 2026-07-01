@@ -48,11 +48,32 @@ public class QortalBiometricPlugin extends Plugin {
   private static volatile long earlySuccessAt = 0;
   private static volatile long earlyCancelAt = 0;
   private static volatile boolean earlyPromptPending = false;
+  // True only once the early launch prompt is actually on screen. Distinguishes
+  // "prompt visible, waiting on the user" from "stalled before it ever showed"
+  // (some OEMs stall canAuthenticate/HAL), so verify() can recover from a stall.
+  private static volatile boolean earlyPromptVisible = false;
   private static volatile Runnable earlyResultListener = null;
   private static boolean earlyPromptShown = false;
+  // The BiometricPrompt currently on screen (early or verify). Cancelled before
+  // a new one is shown so two system dialogs can never stack (which would look
+  // like the prompt "reopening" after tapping Cancel).
+  private static volatile BiometricPrompt activeBiometricPrompt = null;
+
+  private static void cancelActiveBiometricPrompt() {
+    BiometricPrompt prompt = activeBiometricPrompt;
+    activeBiometricPrompt = null;
+    if (prompt != null) {
+      try {
+        prompt.cancelAuthentication();
+      } catch (Exception ignored) {
+        /* already gone */
+      }
+    }
+  }
 
   private static void settleEarlyPrompt() {
     earlyPromptPending = false;
+    earlyPromptVisible = false;
     Runnable listener = earlyResultListener;
     earlyResultListener = null;
     if (listener != null) {
@@ -103,6 +124,11 @@ public class QortalBiometricPlugin extends Plugin {
   }
 
   private static void showEarlyPrompt(FragmentActivity activity) {
+    // verify()'s watchdog may have already abandoned the early prompt (stall
+    // recovery); don't stack a second system prompt in that case.
+    if (!earlyPromptPending) {
+      return;
+    }
     if (activity.isFinishing() || activity.isDestroyed()) {
       settleEarlyPrompt();
       return;
@@ -141,6 +167,9 @@ public class QortalBiometricPlugin extends Plugin {
             }
           }
         );
+        cancelActiveBiometricPrompt();
+        activeBiometricPrompt = prompt;
+        earlyPromptVisible = true;
         prompt.authenticate(
           staticPromptInfo(
             "Biometric unlock",
@@ -306,12 +335,17 @@ public class QortalBiometricPlugin extends Plugin {
       return;
     }
 
-    // The launch-time prompt is still on screen: wait for its result instead
-    // of stacking a second prompt on top of it.
+    // The launch-time prompt is still pending: normally we wait for its result
+    // instead of stacking a second prompt. But if it stalled before ever
+    // becoming visible (some OEMs hang the HAL/canAuthenticate check), a plain
+    // wait would hang the unlock forever with no prompt — so a watchdog takes
+    // over and shows a fresh prompt for this call.
     if (earlyPromptPending) {
       call.setKeepAlive(true);
       android.util.Log.i("QortalBiometric", "verify waiting on early prompt");
+      final AtomicBoolean handled = new AtomicBoolean(false);
       earlyResultListener = () -> {
+        if (!handled.compareAndSet(false, true)) return;
         long settled = SystemClock.uptimeMillis();
         if (
           earlySuccessAt != 0 && settled - earlySuccessAt < EARLY_RESULT_TTL_MS
@@ -327,7 +361,46 @@ public class QortalBiometricPlugin extends Plugin {
         Runnable listener = earlyResultListener;
         earlyResultListener = null;
         listener.run();
+        return;
       }
+      mainHandler.postDelayed(
+        new Runnable() {
+          @Override
+          public void run() {
+            if (handled.get()) return;
+            if (earlyPromptVisible) {
+              // The early prompt is genuinely on screen; keep waiting for the
+              // user to scan/cancel rather than stacking a second prompt.
+              mainHandler.postDelayed(this, 1000);
+              return;
+            }
+            if (!handled.compareAndSet(false, true)) return;
+            // Stalled before showing: abandon it and prompt fresh for this call.
+            earlyResultListener = null;
+            earlyPromptPending = false;
+            android.util.Log.i(
+              "QortalBiometric",
+              "early prompt stalled; showing fresh prompt"
+            );
+            final AtomicBoolean settled = new AtomicBoolean(false);
+            if (activity.isFinishing()) {
+              safeReject(call, settled, "Activity is not available");
+              return;
+            }
+            showBiometricOverlay(activity, title, description);
+            verifyWithBiometricPrompt(
+              call,
+              activity,
+              settled,
+              title,
+              subtitle,
+              description,
+              negativeButtonText
+            );
+          }
+        },
+        1500
+      );
       return;
     }
 
@@ -516,6 +589,8 @@ public class QortalBiometricPlugin extends Plugin {
         }
       );
 
+      cancelActiveBiometricPrompt();
+      activeBiometricPrompt = biometricPrompt;
       android.util.Log.i("QortalBiometric", "calling authenticate t=" + android.os.SystemClock.uptimeMillis());
       biometricPrompt.authenticate(promptInfo);
       android.util.Log.i("QortalBiometric", "authenticate returned t=" + android.os.SystemClock.uptimeMillis());

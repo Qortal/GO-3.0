@@ -23,7 +23,8 @@ interface RatingDistribution {
 interface AppRatingBreakdownProps {
   app: any;
   myName: string;
-  onRate?: (rating: number) => void;
+  // Returns a success flag so we can roll back the optimistic highlight.
+  onRate?: (rating: number) => void | Promise<boolean | void>;
 }
 
 const BreakdownContainer = styled(Box)({
@@ -152,6 +153,8 @@ export const AppRatingBreakdown = ({
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
   const [hoverValue, setHoverValue] = useState<number | null>(null);
+  // Optimistic selection so the chosen stars stay lit immediately on tap.
+  const [selectedValue, setSelectedValue] = useState(0);
 
   const { rating, isLoading } = useAppRating(app?.name, app?.service);
 
@@ -262,10 +265,16 @@ export const AppRatingBreakdown = ({
           </RateTitle>
 
           <Rating
-            value={0}
+            value={selectedValue}
             onChange={(_, value) => {
               if (value != null) {
-                onRate(value);
+                // Highlight immediately, then roll back if the vote fails.
+                setSelectedValue(value);
+                Promise.resolve(onRate(value))
+                  .then((ok) => {
+                    if (ok === false) setSelectedValue(0);
+                  })
+                  .catch(() => setSelectedValue(0));
               }
             }}
             onChangeActive={(_, value) => setHoverValue(value)}

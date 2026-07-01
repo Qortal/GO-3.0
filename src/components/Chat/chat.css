@@ -402,10 +402,43 @@
 .chat-format-toolbar-row {
   align-items: center;
   display: flex;
-  flex-wrap: wrap;
+  /* Keep each row on a single line. With flex-wrap: wrap + center justify, a
+     momentary narrow width (while the toolbar is portaled into the top bar and
+     the keyboard/viewport is still settling) made the buttons wrap and appear
+     to "split" down the middle for a frame. nowrap + scroll avoids that. */
+  flex-wrap: nowrap;
   gap: 2px;
   justify-content: center;
+  overflow-x: auto;
+  scrollbar-width: none;
   width: 100%;
+}
+
+.chat-format-toolbar-row::-webkit-scrollbar {
+  display: none;
+}
+
+/* Landscape: vertical room is scarce, so collapse the two formatting rows into
+   a single horizontally-scrollable row. */
+@media (orientation: landscape) {
+  .chat-format-toolbar--two-rows {
+    flex-direction: row;
+    flex-wrap: nowrap;
+    gap: 2px;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .chat-format-toolbar--two-rows::-webkit-scrollbar {
+    display: none;
+  }
+
+  .chat-format-toolbar--two-rows .chat-format-toolbar-row {
+    flex: 0 0 auto;
+    flex-wrap: nowrap;
+    justify-content: flex-start;
+    width: auto;
+  }
 }
 
 .tiptap-chat-composer--mobile-focus {

@@ -2,11 +2,13 @@ import { useCallback, useState, useEffect, useRef, useMemo } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { MessageItem } from './MessageItem';
 import { subscribeToEvent, unsubscribeFromEvent } from '../../utils/events';
-import { Box, Button, Typography, useTheme } from '@mui/material';
+import { Box, Button, Typography, useMediaQuery, useTheme } from '@mui/material';
 import KeyboardArrowDownRoundedIcon from '@mui/icons-material/KeyboardArrowDownRounded';
+import { useSetAtom } from 'jotai';
 import { ChatOptions } from './ChatOptions';
 import ErrorBoundary from '../../common/ErrorBoundary';
 import { useTranslation } from 'react-i18next';
+import { mobileChatHeaderCollapsedAtom } from '../../atoms/global';
 
 type ReactionItem = {
   sender: string;
@@ -39,6 +41,9 @@ type ChatListProps = {
   isPrivate?: any;
   compactScrollButton?: boolean;
   chatId?: any;
+  /** Hide the floating ChatOptions trigger strip (triggers live in the mobile
+   *  chat header instead). The search/mention panels still render. */
+  chatOptionsHideTriggers?: boolean;
 };
 
 export const ChatList = ({
@@ -62,12 +67,49 @@ export const ChatList = ({
   isPrivate,
   compactScrollButton = false,
   chatId,
+  chatOptionsHideTriggers = false,
 }: ChatListProps) => {
   const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down('md'));
+  const isLandscape = useMediaQuery('(orientation: landscape)');
+  // Extra scroll room at the bottom so the last (possibly long) message can be
+  // scrolled clear of the floating landscape composer / pen FAB.
+  const landscapeBottomPad = isMobile && isLandscape ? 96 : 0;
   const parentRef = useRef(null);
   const [messages, setMessages] = useState(initialMessages);
   const [showScrollButton, setShowScrollButton] = useState(false);
   const [showScrollDownButton, setShowScrollDownButton] = useState(false);
+  const setHeaderCollapsed = useSetAtom(mobileChatHeaderCollapsedAtom);
+  const headerCollapsedRef = useRef(false);
+
+  // Collapse the group section tabs once the user scrolls into the
+  // conversation; reveal them again near the top. Position-based with a wide
+  // hysteresis band (collapse past 90px, expand under 24px) so it can't
+  // flicker on momentum/elastic scrolling. The header only acts on this in
+  // landscape, where vertical room is scarce.
+  const handleListScroll = useCallback(
+    (e: React.UIEvent<HTMLDivElement>) => {
+      const top = e.currentTarget.scrollTop;
+      if (!headerCollapsedRef.current && top > 90) {
+        headerCollapsedRef.current = true;
+        setHeaderCollapsed(true);
+      } else if (headerCollapsedRef.current && top < 24) {
+        headerCollapsedRef.current = false;
+        setHeaderCollapsed(false);
+      }
+    },
+    [setHeaderCollapsed]
+  );
+
+  useEffect(() => {
+    // Always start expanded when (re)entering a chat.
+    headerCollapsedRef.current = false;
+    setHeaderCollapsed(false);
+    return () => {
+      headerCollapsedRef.current = false;
+      setHeaderCollapsed(false);
+    };
+  }, [chatId, setHeaderCollapsed]);
   const [highlightedMessageIndex, setHighlightedMessageIndex] = useState<
     number | null
   >(null);
@@ -100,7 +142,8 @@ export const ChatList = ({
     () => ({
       position: 'absolute' as const,
       right: 20,
-      bottom: 20,
+      // Anchored to the top of the chat window per user request (was bottom).
+      top: 12,
       zIndex: 10,
       borderRadius: '24px',
       textTransform: 'none' as const,
@@ -134,7 +177,7 @@ export const ChatList = ({
     () => ({
       ...scrollButtonSx,
       right: 16,
-      bottom: 16,
+      top: 12,
       borderRadius: '50%',
       px: 0,
       py: 0,
@@ -204,7 +247,8 @@ export const ChatList = ({
   const isAtBottom = useMemo(() => {
     if (parentRef.current && rowVirtualizer?.isScrolling !== undefined) {
       const { scrollTop, scrollHeight, clientHeight } = parentRef.current;
-      const atBottom = scrollTop + clientHeight >= scrollHeight - 10; // Adjust threshold as needed
+      const atBottom =
+        scrollTop + clientHeight >= scrollHeight - 10 - landscapeBottomPad; // Adjust threshold as needed
       return atBottom;
     }
 
@@ -285,7 +329,8 @@ export const ChatList = ({
 
       if (parentRef.current) {
         const { scrollTop, scrollHeight, clientHeight } = parentRef.current;
-        const atBottom = scrollTop + clientHeight >= scrollHeight - 10; // Adjust threshold as needed
+        const atBottom =
+          scrollTop + clientHeight >= scrollHeight - 10 - landscapeBottomPad; // Adjust threshold as needed
         if (!atBottom && hasUnreadMessages) {
           setShowScrollButton(hasUnreadMessages);
           setShowScrollDownButton(false);
@@ -491,6 +536,7 @@ export const ChatList = ({
       >
         <Box
           ref={parentRef}
+          onScroll={handleListScroll}
           style={{
             display: 'flex',
             flexGrow: 1,
@@ -503,7 +549,7 @@ export const ChatList = ({
         >
           <Box
             sx={{
-              height: rowVirtualizer.getTotalSize(),
+              height: rowVirtualizer.getTotalSize() + landscapeBottomPad,
               width: '100%',
             }}
           >
@@ -697,6 +743,7 @@ export const ChatList = ({
           myName={myName}
           openQManager={openQManager}
           selectedGroup={selectedGroup}
+          hideTriggers={chatOptionsHideTriggers}
         />
       )}
     </Box>

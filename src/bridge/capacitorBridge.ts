@@ -87,6 +87,30 @@ export function installCapacitorBridge(): void {
   // the app (never silently exit on a single back press).
   void import('@capacitor/app')
     .then(({ App }) => {
+      // Payment / resource deep links (qortal:// , qort:) opened via a scanned
+      // QR code or an external link. Handle both the cold-launch URL and any
+      // link received while the app is already running.
+      const routeDeepLink = (url?: string | null) => {
+        if (!url) return;
+        void import('../utils/paymentLink')
+          .then(({ handleQortalDeepLink }) => {
+            try {
+              handleQortalDeepLink(url);
+            } catch {
+              /* ignore malformed link */
+            }
+          })
+          .catch(() => {});
+      };
+
+      App.getLaunchUrl()
+        .then((res) => routeDeepLink(res?.url))
+        .catch(() => {});
+
+      App.addListener('appUrlOpen', (event) => {
+        routeDeepLink(event?.url);
+      });
+
       App.addListener('backButton', () => {
         const ev = new CustomEvent(ANDROID_BACK_EVENT, { cancelable: true });
         const notPrevented = window.dispatchEvent(ev);
@@ -96,8 +120,40 @@ export function installCapacitorBridge(): void {
           });
         }
       });
+
+      // Resume repaint: when the app comes back to the foreground (screen
+      // off/on, returned from background) the WebView compositor can stay blank
+      // until a touch. Nudge a reflow so the page repaints immediately. The
+      // native onResume also forces a redraw; this covers the JS layout side.
+      App.addListener('appStateChange', ({ isActive }) => {
+        if (isActive) forceWebViewReflow();
+      });
     })
     .catch(() => {});
+
+  // Backstop for WebViews that don't reliably deliver appStateChange.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') forceWebViewReflow();
+  });
+}
+
+/**
+ * Force a layout/repaint pass after the app resumes. A reflow read + a 0px
+ * scroll nudge reliably wakes a stalled WebView compositor without altering
+ * the user's scroll position.
+ */
+function forceWebViewReflow(): void {
+  try {
+    const root = document.documentElement;
+    // Touch a layout property to force reflow.
+    void root.offsetHeight;
+    const x = window.scrollX;
+    const y = window.scrollY;
+    window.scrollTo(x, y === 0 ? 0 : y);
+    window.dispatchEvent(new Event('resize'));
+  } catch {
+    /* best-effort */
+  }
 }
 
 let reticulumBridgesInstalled = false;
@@ -216,7 +272,24 @@ export const fetchMobileReticulumIdentity = async (): Promise<{
   destinationHash: string | null;
   identityPublicKeyBase64: string | null;
 }> => {
-  const maxAttempts = 35;
+  const immediate = getMobileReticulumInfo();
+  if (immediate.destinationHash && immediate.identityPublicKeyBase64) {
+    return { ...immediate };
+  }
+  // The local identity is only populated when the Python bridge emits its
+  // `ready` frame. A file send can be attempted before presence has booted the
+  // bridge (the first announce is deferred ~2s after login, and may never run
+  // if the user appears offline), so kick the bridge here instead of failing
+  // with "Reticulum identity is unavailable". ensureBridgeStarted itself waits
+  // for `ready`, after which the identity is set.
+  if (ensureBridgeStartedRef) {
+    try {
+      await ensureBridgeStartedRef();
+    } catch {
+      /* fall through to polling below */
+    }
+  }
+  const maxAttempts = 50; // ~10s of additional polling after the ready gate
   const delayMs = 200;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const info = getMobileReticulumInfo();
@@ -746,6 +819,11 @@ export function installReticulumBridges(): void {
   let bridgeReady = false;
   let bridgeStartPromise: Promise<void> | null = null;
   let frameListenerAttached = false;
+  // Resolvers waiting for the Python bridge `ready` frame. ensureBridgeStarted
+  // gates the first command (publish_presence / file send / call) on this so we
+  // don't fire into a half-booted bridge and trip the command timeout.
+  const bridgeReadyResolvers = new Set<() => void>();
+  let firstPublishDone = false;
 
   // ── Overlay coordinator state (minimal mobile port of presence.ts) ──────
   const neighborHashes = new Set<string>();
@@ -1293,6 +1371,15 @@ export function installReticulumBridges(): void {
     switch (frame.event) {
       case 'ready': {
         bridgeReady = true;
+        // Release anyone awaiting ensureBridgeStarted's readiness gate.
+        [...bridgeReadyResolvers].forEach((resolve) => {
+          try {
+            resolve();
+          } catch {
+            /* ignore */
+          }
+        });
+        bridgeReadyResolvers.clear();
         const readyPayload = asObject(frame.payload);
         const readyHash = asString(readyPayload?.destinationHash);
         if (readyHash && DEST_HASH_RE.test(readyHash.toLowerCase())) {
@@ -1403,6 +1490,23 @@ export function installReticulumBridges(): void {
   // Start it LAZILY (first announce, i.e. after login) rather than at app
   // launch, and keep every failure contained so it can never regress the
   // stability of the login / core app.
+  // Resolves once the Python bridge emits `ready`, or after a bounded wait so a
+  // bridge that never reports ready can't deadlock the first command forever.
+  const waitForBridgeReady = (timeoutMs: number): Promise<void> => {
+    if (bridgeReady) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        bridgeReadyResolvers.delete(finish);
+        resolve();
+      };
+      bridgeReadyResolvers.add(finish);
+      window.setTimeout(finish, timeoutMs);
+    });
+  };
+
   const ensureBridgeStarted = (): Promise<void> => {
     if (bridgeStartPromise) return bridgeStartPromise;
     bridgeStartPromise = (async () => {
@@ -1418,6 +1522,13 @@ export function installReticulumBridges(): void {
       }
       try {
         await Reticulum.presenceStart();
+        // presenceStart() resolves as soon as Kotlin queues the start command;
+        // the embedded CPython/RNS boot (identity load, hub TCP connects) is
+        // still in flight. Block here until the bridge reports `ready` so the
+        // first publish_presence / file send doesn't race a half-booted bridge
+        // and time out. Bounded so a stalled boot degrades to a retry instead
+        // of hanging.
+        await waitForBridgeReady(30_000);
       } catch (err) {
         console.error('[Presence] presenceStart failed:', err);
         bridgeStartPromise = null; // allow retry on next announce
@@ -1435,14 +1546,23 @@ export function installReticulumBridges(): void {
       // that Python rejects ("Bridge not started", wire build failure, …) must
       // surface as success:false so usePresence retries the announce instead
       // of believing it is online while nothing ever reaches the network.
-      const resp = await presenceCommandWithResult('publish_presence', {
-        envelope,
-        overlayNeighborHashes: neighborList(),
-      });
+      // First publish after a cold boot can still be slow even once `ready`
+      // fires (overlay sync + path nudges + fan-out), so give it extra headroom
+      // before falling back to usePresence's retry loop.
+      const timeoutMs = firstPublishDone ? 20_000 : 35_000;
+      const resp = await presenceCommandWithResult(
+        'publish_presence',
+        {
+          envelope,
+          overlayNeighborHashes: neighborList(),
+        },
+        timeoutMs
+      );
       if (resp.ok === false) {
         console.warn('[Presence] publish rejected by bridge:', resp.error ?? resp);
         return { success: false };
       }
+      firstPublishDone = true;
       return { success: true };
     } catch (err) {
       console.error('[Presence] publish failed:', err);

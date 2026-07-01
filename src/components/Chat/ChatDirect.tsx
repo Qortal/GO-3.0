@@ -61,8 +61,16 @@ import {
   subscribeToEvent,
   unsubscribeFromEvent,
 } from '../../utils/events';
+import {
+  getChatDraft,
+  setChatDraft,
+  clearChatDraft,
+  directDraftKey,
+} from '../../utils/chatPersistence';
+import { buildChatUserAvatarUrl } from '../../utils/chatAvatarUrl';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
+import CreateRoundedIcon from '@mui/icons-material/CreateRounded';
 import ShortUniqueId from 'short-unique-id';
 import { ExitIcon } from '../../assets/Icons/ExitIcon';
 import { ReplyPreview } from './MessageItem';
@@ -81,6 +89,7 @@ import { useCallSwitchGuard } from '../../contexts/CallSwitchGuardContext';
 import { buildDirectVoiceCallChatId } from '../../lib/call/directVoiceCallChatId';
 import { CallAudioSettingsButton } from './CallAudioDeviceSelectors';
 import { useIsOnline } from '../../hooks/usePresence';
+import { useSoftKeyboardOpen } from '../../hooks/useSoftKeyboardOpen';
 import { hasInvisibleCharacters } from '../../utils/hasInvisibleCharacters';
 
 const uid = new ShortUniqueId({ length: 5 });
@@ -241,6 +250,12 @@ export const ChatDirect = ({
   const myName = userInfo?.name;
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
+  const isLandscape = useMediaQuery('(orientation: landscape)');
+  // In landscape the composer is hidden behind a pen FAB so it never covers
+  // the last messages; tapping the FAB expands it from the corner.
+  const composerFabMode = isMobile && isLandscape;
+  const [composerOpenLandscape, setComposerOpenLandscape] = useState(false);
+  const keyboardOpen = useSoftKeyboardOpen();
   const p2pHealth = useAtomValue(p2pHealthAtom);
 
   const {
@@ -353,6 +368,10 @@ export const ChatDirect = ({
   const p2pHealthBadTooltip = t('core:p2p_health_bad_call_tooltip');
   const { queueChats, addToQueue, processWithNewMessages } = useMessageQueue();
   const [isFocusedParent, setIsFocusedParent] = useState(false);
+  // Composer is focused but the soft keyboard is dismissed in portrait: keep it
+  // compact and show the send/close/share buttons alongside the retained text.
+  const composerCompact =
+    isMobile && !composerFabMode && isFocusedParent && !keyboardOpen;
   const [onEditMessage, setOnEditMessage] = useState(null);
   const [messages, setMessages] = useState([]);
   const [isSending, setIsSending] = useState(false);
@@ -371,6 +390,35 @@ export const ChatDirect = ({
   const hasInitializedWebsocket = useRef(false);
   const [chatReferences, setChatReferences] = useState({});
   const editorRef = useRef(null);
+  // Mirrors editorRef as state so listener effects (draft saving, message-size
+  // calc) re-run as soon as the editor instance is created.
+  const [editorInstance, setEditorInstance] = useState(null);
+
+  const openLandscapeComposer = useCallback(() => {
+    setComposerOpenLandscape(true);
+    setIsFocusedParent(true);
+    setTimeout(() => {
+      try {
+        editorRef.current?.chain().focus().run();
+      } catch {
+        /* editor may not be ready yet */
+      }
+    }, 80);
+  }, []);
+
+  const closeLandscapeComposer = useCallback(() => {
+    setComposerOpenLandscape(false);
+    setIsFocusedParent(false);
+    editorRef.current?.commands.blur();
+  }, []);
+
+  // Collapse the landscape composer back to the pen FAB only when switching
+  // to a different conversation — NOT on focus/keyboard changes, so closing
+  // the keyboard keeps the composer (and any typed text) open.
+  useEffect(() => {
+    setComposerOpenLandscape(false);
+  }, [selectedDirect?.address]);
+
   const socketRef = useRef(null);
   const timeoutIdRef = useRef(null);
   const [messageSize, setMessageSize] = useState(0);
@@ -387,6 +435,7 @@ export const ChatDirect = ({
   const qchatTerminalTransferIdsRef = useRef(new Set<string>());
   const setEditorRef = (editorInstance) => {
     editorRef.current = editorInstance;
+    setEditorInstance(editorInstance);
   };
   const publicKeyOfRecipientRef = useRef(null);
 
@@ -1088,6 +1137,9 @@ export const ChatDirect = ({
     if (editorRef.current) {
       setMessageSize(0);
       editorRef.current.chain().focus().clearContent().run();
+      if (myAddress && !isNewChat && selectedDirect?.address) {
+        clearChatDraft(myAddress, directDraftKey(selectedDirect.address));
+      }
     }
   };
 
@@ -1100,7 +1152,9 @@ export const ChatDirect = ({
     const destinationHash = hashResult?.destinationHash;
     const identityPublicKeyBase64 = keyResult?.publicKeyBase64;
     if (!destinationHash || !identityPublicKeyBase64) {
-      throw new Error('Reticulum identity is unavailable');
+      throw new Error(
+        'Reticulum is still starting up. Please wait a few seconds and try sending the file again.'
+      );
     }
     return {
       destinationHash,
@@ -1532,12 +1586,24 @@ export const ChatDirect = ({
   }, []);
 
   useEffect(() => {
-    if (!editorRef?.current) return;
+    if (!editorInstance) return;
     const handleUpdate = () => {
       const htmlContent = editorRef?.current.getHTML();
       const stringified = JSON.stringify(htmlContent);
       const size = new Blob([stringified]).size;
       setMessageSize(size + 200);
+      // Persist the unsent draft per-DM so it survives leaving and returning.
+      if (myAddress && !isNewChat && selectedDirect?.address) {
+        try {
+          setChatDraft(
+            myAddress,
+            directDraftKey(selectedDirect.address),
+            htmlContent
+          );
+        } catch {
+          /* ignore */
+        }
+      }
     };
 
     // Add a listener for the editorRef?.current's content updates
@@ -1547,11 +1613,51 @@ export const ChatDirect = ({
     return () => {
       editorRef?.current.off('update', handleUpdate);
     };
-  }, [editorRef?.current]);
+  }, [editorInstance, myAddress, isNewChat, selectedDirect?.address]);
+
+  // Restore a previously saved draft for this DM once the editor is ready.
+  const draftRestoredRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (isNewChat || !selectedDirect?.address || !myAddress) return;
+    const key = directDraftKey(selectedDirect.address);
+    const token = `${myAddress}:${key}`;
+    if (draftRestoredRef.current === token) return;
+
+    const draft = getChatDraft(myAddress, key);
+    if (!draft) {
+      draftRestoredRef.current = token;
+      return;
+    }
+
+    let tries = 0;
+    let cancelled = false;
+    const restore = () => {
+      if (cancelled) return;
+      if (editorRef.current) {
+        draftRestoredRef.current = token;
+        editorRef.current.commands.setContent(draft);
+        try {
+          setMessageSize(new Blob([JSON.stringify(draft)]).size + 200);
+        } catch {
+          /* ignore */
+        }
+        setIsFocusedParent(true);
+        setComposerOpenLandscape(true);
+      } else if (tries++ < 30) {
+        setTimeout(restore, 100);
+      }
+    };
+    const timer = setTimeout(restore, 200);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [isNewChat, selectedDirect?.address, myAddress]);
 
   const closeMobileCompose = useCallback(() => {
     if (!isMobile) return;
     setIsFocusedParent(false);
+    setComposerOpenLandscape(false);
     editorRef.current?.commands.blur();
   }, [isMobile]);
 
@@ -1683,6 +1789,7 @@ export const ChatDirect = ({
         height: '100%',
         minHeight: 0,
         padding: '10px',
+        position: 'relative',
         width: '100%',
       }}
     >
@@ -2100,6 +2207,15 @@ export const ChatDirect = ({
                           const initial = (label || '?')
                             .charAt(0)
                             .toUpperCase();
+                          const optName =
+                            typeof opt === 'string' ? opt : opt.name;
+                          const optAddress =
+                            typeof opt === 'string' ? undefined : opt.address;
+                          const avatarUrl = buildChatUserAvatarUrl(
+                            getBaseApiReact(),
+                            optName,
+                            optAddress
+                          );
                           return (
                             <ListItem key={key} disablePadding sx={{ px: 1 }}>
                               <ListItemButton
@@ -2121,6 +2237,8 @@ export const ChatDirect = ({
                                 }}
                               >
                                 <Avatar
+                                  src={avatarUrl || undefined}
+                                  alt={label}
                                   sx={{
                                     width: 36,
                                     height: 36,
@@ -2498,6 +2616,31 @@ export const ChatDirect = ({
             : undefined,
           position: 'relative',
           width: '100%',
+          // In landscape float the composer as a compact card at the
+          // bottom-right so the message list fills the area behind it.
+          ...(composerFabMode
+            ? {
+                position: 'absolute',
+                right: 8,
+                bottom: 8,
+                left: 'auto',
+                width: 'min(480px, calc(100% - 16px))',
+                maxWidth: 480,
+                zIndex: 6,
+                boxShadow:
+                  theme.palette.mode === 'dark'
+                    ? '0 10px 28px rgba(0,0,0,0.55)'
+                    : '0 10px 28px rgba(15,20,30,0.22)',
+                transformOrigin: 'bottom right',
+                transition:
+                  'transform 260ms cubic-bezier(0.2, 0, 0, 1), opacity 200ms ease',
+                transform: composerOpenLandscape
+                  ? 'translateY(0) scale(1)'
+                  : 'translateY(12px) scale(0.3)',
+                opacity: composerOpenLandscape ? 1 : 0,
+                pointerEvents: composerOpenLandscape ? 'auto' : 'none',
+              }
+            : {}),
         }}
       >
         <Box
@@ -2599,7 +2742,7 @@ export const ChatDirect = ({
             }
           />
             </Box>
-            {isMobile && !isFocusedParent && (
+            {isMobile && (!isFocusedParent || composerCompact) && (
               <Tooltip title="Transfer file with Reticulum">
                 <span>
                   <IconButton
@@ -2625,6 +2768,12 @@ export const ChatDirect = ({
                   })}
                   disabled={isSending}
                   onClick={() => {
+                    // Discard whatever was typed when dismissing the composer.
+                    clearEditorContent();
+                    if (composerFabMode) {
+                      closeLandscapeComposer();
+                      return;
+                    }
                     setIsFocusedParent(false);
                     editorRef.current?.commands.blur();
                   }}
@@ -2774,6 +2923,44 @@ export const ChatDirect = ({
         </Box>
         )}
       </Box>
+
+      {composerFabMode && !composerOpenLandscape && (
+        <Tooltip
+          title={t('core:action.send_message', {
+            postProcess: 'capitalizeFirstChar',
+            defaultValue: 'Write a message',
+          })}
+        >
+          <IconButton
+            aria-label="Write a message"
+            onClick={openLandscapeComposer}
+            sx={{
+              position: 'absolute',
+              right: 14,
+              bottom: 14,
+              zIndex: 6,
+              width: 52,
+              height: 52,
+              backgroundColor: theme.palette.primary.main,
+              color: theme.palette.primary.contrastText,
+              boxShadow:
+                theme.palette.mode === 'dark'
+                  ? '0 8px 22px rgba(0,0,0,0.55)'
+                  : '0 8px 22px rgba(15,20,30,0.30)',
+              '@keyframes composerFabIn': {
+                from: { transform: 'scale(0.4)', opacity: 0 },
+                to: { transform: 'scale(1)', opacity: 1 },
+              },
+              animation: 'composerFabIn 220ms cubic-bezier(0.2, 0, 0, 1)',
+              '&:hover': {
+                backgroundColor: theme.palette.primary.dark,
+              },
+            }}
+          >
+            <CreateRoundedIcon sx={{ fontSize: 24 }} />
+          </IconButton>
+        </Tooltip>
+      )}
 
       <LoadingSnackbar
         open={isLoading}

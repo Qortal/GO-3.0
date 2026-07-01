@@ -6,6 +6,7 @@ import {
   IconButton,
   InputBase,
   Paper,
+  useMediaQuery,
   useTheme,
 } from '@mui/material';
 import { alpha } from '@mui/material/styles';
@@ -50,6 +51,8 @@ export const MobileTopBarSearch = ({
   tabsOverlayOpen = false,
 }: MobileTopBarSearchProps) => {
   const theme = useTheme();
+  // Tablet tier (600-900px): give the collapsed search more room.
+  const isTablet = useMediaQuery(theme.breakpoints.between('sm', 'md'));
   const availableQapps = useAtomValue(availableQappsAtom);
   const openCounts = useAtomValue(appOpenCountsAtom);
   const [query, setQuery] = useState('');
@@ -347,7 +350,7 @@ export const MobileTopBarSearch = ({
               ? `0 16px 40px ${alpha('#000', 0.45)}`
               : `0 14px 36px ${alpha('#1E3248', 0.14)}`,
           boxSizing: 'border-box',
-          maxHeight: `calc(100vh - ${MOBILE_TOP_BAR_HEIGHT_PX}px - ${SAFE_AREA_TOP} - 72px)`,
+          maxHeight: `calc(100dvh - ${MOBILE_TOP_BAR_HEIGHT_PX}px - ${SAFE_AREA_TOP} - 72px)`,
           overflowX: 'hidden',
           overflowY: 'auto',
           py: 0.5,
@@ -583,7 +586,13 @@ export const MobileTopBarSearch = ({
         sx={{
           cursor: 'text',
           flex: 1,
-          maxWidth: showActiveTabUrl ? '100%' : expanded ? '100%' : 240,
+          maxWidth: showActiveTabUrl
+            ? '100%'
+            : expanded
+              ? '100%'
+              : isTablet
+                ? 420
+                : 240,
           minWidth: showActiveTabUrl ? 0 : 64,
           mx: showActiveTabUrl ? 0 : 0.25,
           transition: 'max-width 220ms ease, margin 220ms ease',

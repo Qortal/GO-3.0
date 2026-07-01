@@ -1,6 +1,6 @@
 import { forwardRef, memo, useMemo } from 'react';
 import { useAtomValue } from 'jotai';
-import { Box, Typography, styled, useTheme } from '@mui/material';
+import { Box, Typography, styled, useMediaQuery, useTheme } from '@mui/material';
 import { useTranslation } from 'react-i18next';
 import { Virtuoso, VirtuosoGrid, GridComponents } from 'react-virtuoso';
 import { AppLibrarySubTitle, AppsList, AppsWidthLimiter } from '../Apps-styles';
@@ -61,7 +61,10 @@ const CommunityAppsTabInner = ({
           style={{
             display: 'grid',
             gridTemplateColumns: `repeat(auto-fill, minmax(${cardMinWidth}px, 1fr))`,
-            gap: `${GRID_GAP}px`,
+            // Only a column gap on the container; row spacing lives inside the
+            // measured Item so VirtuosoGrid's height math stays correct and the
+            // scroll doesn't drift/jump mid-scroll.
+            columnGap: `${GRID_GAP}px`,
             width: '100%',
             ...style,
           }}
@@ -71,7 +74,17 @@ const CommunityAppsTabInner = ({
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       )) as any,
       Item: ({ children, ...props }) => (
-        <Box {...props} style={{ width: '100%' }}>
+        <Box
+          {...props}
+          style={{
+            width: '100%',
+            minWidth: 0,
+            maxWidth: '100%',
+            boxSizing: 'border-box',
+            overflow: 'hidden',
+            paddingBottom: `${GRID_GAP}px`,
+          }}
+        >
           {children}
         </Box>
       ),
@@ -80,6 +93,47 @@ const CommunityAppsTabInner = ({
   );
 
   const theme = useTheme();
+  // Tablet tier (600-900px): two columns of list items instead of one.
+  const isTablet = useMediaQuery(theme.breakpoints.between('sm', 'md'));
+  const tabletGridComponents: GridComponents = useMemo(
+    () => ({
+      List: forwardRef(({ style, children, ...props }, ref) => (
+        <Box
+          ref={ref}
+          {...props}
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(2, 1fr)',
+            // Only a column gap; row spacing lives inside the measured Item so
+            // VirtuosoGrid's height math stays correct and the scroll doesn't
+            // drift/jump mid-scroll.
+            columnGap: `${GRID_GAP}px`,
+            width: '100%',
+            ...style,
+          }}
+        >
+          {children}
+        </Box>
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      )) as any,
+      Item: ({ children, ...props }) => (
+        <Box
+          {...props}
+          style={{
+            width: '100%',
+            minWidth: 0,
+            maxWidth: '100%',
+            boxSizing: 'border-box',
+            overflow: 'hidden',
+            paddingBottom: `${GRID_GAP}px`,
+          }}
+        >
+          {children}
+        </Box>
+      ),
+    }),
+    []
+  );
   const { t } = useTranslation(['core']);
   const ratingsStore = useAtomValue(ratingsStoreAtom);
 
@@ -153,7 +207,25 @@ const CommunityAppsTabInner = ({
       </SectionHeader>
 
       {filteredAndSortedApps.length > 0 ? (
-        isMobile ? (
+        isMobile && isTablet ? (
+          <VirtuosoGrid
+            customScrollParent={useExternalScroll ? scrollParent ?? undefined : undefined}
+            components={tabletGridComponents}
+            itemContent={(index) => {
+              const app = filteredAndSortedApps[index];
+              return (
+                <AppCardListItem
+                  key={`${app?.service}-${app?.name}`}
+                  app={app}
+                  myName={myName}
+                />
+              );
+            }}
+            overscan={12}
+            style={{ width: '100%' }}
+            totalCount={filteredAndSortedApps.length}
+          />
+        ) : isMobile ? (
           <Virtuoso
             customScrollParent={useExternalScroll ? scrollParent ?? undefined : undefined}
             itemContent={(index) => {

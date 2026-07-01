@@ -47,6 +47,12 @@ import {
   unsubscribeFromEvent,
 } from '../../utils/events';
 import {
+  getChatDraft,
+  setChatDraft,
+  clearChatDraft,
+  groupDraftKey,
+} from '../../utils/chatPersistence';
+import {
   Box,
   ButtonBase,
   IconButton,
@@ -69,6 +75,7 @@ import { throttle } from 'lodash';
 import ImageIcon from '@mui/icons-material/Image';
 import SendIcon from '@mui/icons-material/Send';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
+import CreateRoundedIcon from '@mui/icons-material/CreateRounded';
 import { messageHasImage } from '../../utils/chat';
 import { SAFE_AREA_BOTTOM, SAFE_AREA_TOP } from '../../utils/mobileSafeArea';
 import { useTranslation } from 'react-i18next';
@@ -103,6 +110,11 @@ export const ChatGroup = ({
   const myName = userInfo?.name;
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
+  const isLandscape = useMediaQuery('(orientation: landscape)');
+  // In landscape the composer is hidden behind a pen FAB so it never covers
+  // the last messages; tapping the FAB expands it from the corner.
+  const composerFabMode = isMobile && isLandscape;
+  const [composerOpenLandscape, setComposerOpenLandscape] = useState(false);
   const { show } = useContext(QORTAL_APP_CONTEXT);
   const jotaiStore = useStore();
   const isChatSenderBlocked = useCallback(
@@ -133,6 +145,35 @@ export const ChatGroup = ({
   const timeoutIdRef = useRef(null); // Timeout ID reference
   const groupSocketTimeoutRef = useRef(null); // Group Socket Timeout reference
   const editorRef = useRef(null);
+  // Mirrors editorRef as state so effects that wire up listeners (draft saving,
+  // message-size calc) re-run as soon as the editor instance is created.
+  const [editorInstance, setEditorInstance] = useState(null);
+
+  const openLandscapeComposer = useCallback(() => {
+    setComposerOpenLandscape(true);
+    setIsFocusedParent(true);
+    setTimeout(() => {
+      try {
+        editorRef.current?.chain().focus().run();
+      } catch {
+        /* editor may not be ready yet */
+      }
+    }, 80);
+  }, []);
+
+  const closeLandscapeComposer = useCallback(() => {
+    setComposerOpenLandscape(false);
+    setIsFocusedParent(false);
+    editorRef.current?.commands.blur();
+  }, []);
+
+  // Collapse the landscape composer back to the pen FAB only when switching
+  // to a different group — NOT on focus/keyboard changes, so closing the
+  // keyboard keeps the composer (and any typed text) open.
+  useEffect(() => {
+    setComposerOpenLandscape(false);
+  }, [selectedGroup]);
+
   const { queueChats, addToQueue, processWithNewMessages } = useMessageQueue();
   const [, forceUpdate] = useReducer((x) => x + 1, 0);
   const lastReadTimestamp = useRef(null);
@@ -339,6 +380,7 @@ export const ChatGroup = ({
 
   const setEditorRef = (editorInstance) => {
     editorRef.current = editorInstance;
+    setEditorInstance(editorInstance);
   };
 
   const tempMessages = useMemo(() => {
@@ -849,13 +891,26 @@ export const ChatGroup = ({
     };
   };
 
+  // Reset the per-room init guards when the selected group changes. ChatGroup
+  // is usually remounted on a group switch, but open<->open switches can reuse
+  // the instance; without this the new room would never load its history.
+  useEffect(() => {
+    hasInitialized.current = false;
+    hasInitializedWebsocket.current = false;
+  }, [selectedGroup]);
+
   useEffect(() => {
     if (hasInitializedWebsocket.current) return;
     if (triedToFetchSecretKey && !secretKey) {
       forceCloseWebSocket();
       setMessages([]);
+      hasInitialized.current = false;
       setIsLoading(true);
       initWebsocketMessageGroup();
+      // Don't rely on the socket delivering the first batch — some public
+      // gateway sockets only emit pongs, leaving the chat empty. Load history
+      // over REST explicitly (open groups / pre-key state).
+      void middletierFunc(null, selectedGroup);
     }
   }, [triedToFetchSecretKey, secretKey, isPrivate]);
 
@@ -865,12 +920,19 @@ export const ChatGroup = ({
       return;
     forceCloseWebSocket();
     setMessages([]);
+    // The key may have arrived AFTER a keyless socket already ran the initial
+    // history fetch (which couldn't decrypt). Reset so we re-fetch and decrypt
+    // the full history now that the secret key is available.
+    hasInitialized.current = false;
     setIsLoading(true);
     pauseAllQueues();
     setTimeout(() => {
       resumeAllQueues();
     }, 6000);
     initWebsocketMessageGroup();
+    // Explicit REST history load so private-group messages appear even if the
+    // socket is slow or only sends pongs (observed on public gateway nodes).
+    void middletierFunc(null, selectedGroup);
     hasInitializedWebsocket.current = true;
   }, [secretKey, isPrivate]);
 
@@ -973,12 +1035,16 @@ export const ChatGroup = ({
     if (editorRef.current) {
       setMessageSize(0);
       editorRef.current.chain().focus().clearContent().run();
+      if (myAddress && selectedGroup != null) {
+        clearChatDraft(myAddress, groupDraftKey(selectedGroup));
+      }
     }
   };
 
   const closeMobileCompose = useCallback(() => {
     if (!isMobile) return;
     setIsFocusedParent(false);
+    setComposerOpenLandscape(false);
     editorRef.current?.commands.blur();
   }, [isMobile]);
 
@@ -1182,7 +1248,7 @@ export const ChatGroup = ({
   };
 
   useEffect(() => {
-    if (!editorRef?.current) return;
+    if (!editorInstance) return;
 
     handleUpdateRef.current = throttle(async () => {
       try {
@@ -1210,10 +1276,68 @@ export const ChatGroup = ({
 
     currentEditor.on('update', handleUpdateRef.current);
 
+    // Persist whatever is typed (but not sent) so it survives leaving and
+    // returning to this group, keyed per-group and per-account.
+    const saveDraft = () => {
+      if (!myAddress || selectedGroup == null) return;
+      try {
+        setChatDraft(
+          myAddress,
+          groupDraftKey(selectedGroup),
+          currentEditor.getHTML()
+        );
+      } catch {
+        /* ignore */
+      }
+    };
+    currentEditor.on('update', saveDraft);
+
     return () => {
       currentEditor.off('update', handleUpdateRef.current);
+      currentEditor.off('update', saveDraft);
     };
-  }, [editorRef, setMessageSize, isPrivate]);
+  }, [editorInstance, setMessageSize, isPrivate, myAddress, selectedGroup]);
+
+  // Restore a previously saved draft for this group once the editor is ready.
+  const draftRestoredRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (selectedGroup == null || !myAddress) return;
+    const key = groupDraftKey(selectedGroup);
+    const token = `${myAddress}:${key}`;
+    if (draftRestoredRef.current === token) return;
+
+    const draft = getChatDraft(myAddress, key);
+    if (!draft) {
+      draftRestoredRef.current = token;
+      return;
+    }
+
+    let tries = 0;
+    let cancelled = false;
+    const restore = () => {
+      if (cancelled) return;
+      if (editorRef.current) {
+        draftRestoredRef.current = token;
+        editorRef.current.commands.setContent(draft);
+        try {
+          setMessageSize(new Blob([JSON.stringify(draft)]).size + 300);
+        } catch {
+          /* ignore */
+        }
+        // Surface the composer (and the restored text) so the user can keep
+        // typing right away, without forcing the keyboard open.
+        setIsFocusedParent(true);
+        setComposerOpenLandscape(true);
+      } else if (tries++ < 30) {
+        setTimeout(restore, 100);
+      }
+    };
+    const timer = setTimeout(restore, 200);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [selectedGroup, myAddress]);
 
   useEffect(() => {
     if (hide) {
@@ -1384,6 +1508,7 @@ export const ChatGroup = ({
           selectedGroup={selectedGroup}
           tempChatReferences={tempChatReferences}
           tempMessages={tempMessages}
+          chatOptionsHideTriggers={isMobile}
         />
       </Box>
 
@@ -1408,6 +1533,32 @@ export const ChatGroup = ({
               : undefined,
             position: 'relative',
             width: '100%',
+            // In landscape the full-width composer wastes the space to its
+            // left; float it as a compact card at the bottom-right so the
+            // message list fills the whole area behind it.
+            ...(composerFabMode
+              ? {
+                  position: 'absolute',
+                  right: 8,
+                  bottom: 8,
+                  left: 'auto',
+                  width: 'min(480px, calc(100% - 16px))',
+                  maxWidth: 480,
+                  zIndex: 6,
+                  boxShadow:
+                    theme.palette.mode === 'dark'
+                      ? '0 10px 28px rgba(0,0,0,0.55)'
+                      : '0 10px 28px rgba(15,20,30,0.22)',
+                  transformOrigin: 'bottom right',
+                  transition:
+                    'transform 260ms cubic-bezier(0.2, 0, 0, 1), opacity 200ms ease',
+                  transform: composerOpenLandscape
+                    ? 'translateY(0) scale(1)'
+                    : 'translateY(12px) scale(0.3)',
+                  opacity: composerOpenLandscape ? 1 : 0,
+                  pointerEvents: composerOpenLandscape ? 'auto' : 'none',
+                }
+              : {}),
           }}
         >
           <Box
@@ -1616,6 +1767,14 @@ export const ChatGroup = ({
                     })}
                     disabled={isSending}
                     onClick={() => {
+                      // Discard whatever was typed when dismissing the composer.
+                      clearEditorContent();
+                      setReplyMessage(null);
+                      setOnEditMessage(null);
+                      if (composerFabMode) {
+                        closeLandscapeComposer();
+                        return;
+                      }
                       setIsFocusedParent(false);
                       editorRef.current?.commands.blur();
                     }}
@@ -1756,6 +1915,46 @@ export const ChatGroup = ({
         </Box>
       )}
 
+      {composerFabMode &&
+        !composerOpenLandscape &&
+        (!!secretKey || isPrivate === false) && (
+          <Tooltip
+            title={t('core:action.send_message', {
+              postProcess: 'capitalizeFirstChar',
+              defaultValue: 'Write a message',
+            })}
+          >
+            <IconButton
+              aria-label="Write a message"
+              onClick={openLandscapeComposer}
+              sx={{
+                position: 'absolute',
+                right: 14,
+                bottom: 14,
+                zIndex: 6,
+                width: 52,
+                height: 52,
+                backgroundColor: theme.palette.primary.main,
+                color: theme.palette.primary.contrastText,
+                boxShadow:
+                  theme.palette.mode === 'dark'
+                    ? '0 8px 22px rgba(0,0,0,0.55)'
+                    : '0 8px 22px rgba(15,20,30,0.30)',
+                '@keyframes composerFabIn': {
+                  from: { transform: 'scale(0.4)', opacity: 0 },
+                  to: { transform: 'scale(1)', opacity: 1 },
+                },
+                animation: 'composerFabIn 220ms cubic-bezier(0.2, 0, 0, 1)',
+                '&:hover': {
+                  backgroundColor: theme.palette.primary.dark,
+                },
+              }}
+            >
+              <CreateRoundedIcon sx={{ fontSize: 24 }} />
+            </IconButton>
+          </Tooltip>
+        )}
+
       {(isResizingQManager || isOpenQManager !== null) && (
         <Portal>
           {isResizingQManager && (
@@ -1846,7 +2045,7 @@ export const ChatGroup = ({
                           theme.palette.mode === 'dark'
                             ? `0 -18px 46px ${alpha(theme.palette.common.black, 0.46)}, 0 -1px 0 ${alpha(theme.palette.common.white, 0.05)}`
                             : `0 -14px 36px ${alpha(theme.palette.common.black, 0.16)}, 0 -1px 0 ${alpha(theme.palette.common.white, 0.72)}`,
-                        maxHeight: `calc(100vh - ${appHeighOffsetPx})`,
+                        maxHeight: `calc(100dvh - ${appHeighOffsetPx})`,
                         minHeight: Q_MANAGER_MIN_HEIGHT,
                         minWidth: Q_MANAGER_MIN_WIDTH,
                       }),

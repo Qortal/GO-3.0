@@ -30,6 +30,12 @@ const ListItemContainer = styled(Box)(({ theme }) => ({
   gap: '12px',
   padding: '10px 2px',
   width: '100%',
+  // Fixed height keeps every row uniform so the virtualized grids (community
+  // tab) don't jump/glitch when an app has an unusually long name, and the
+  // multi-column grids line up evenly.
+  height: '72px',
+  boxSizing: 'border-box',
+  overflow: 'hidden',
   cursor: 'pointer',
   borderBottom: `1px solid ${alpha(theme.palette.divider, 0.45)}`,
   backgroundColor: 'transparent',
@@ -75,6 +81,10 @@ const AppTitle = styled(Typography)(({ theme }) => ({
 const DeveloperName = styled(Typography)(({ theme }) => ({
   fontSize: '12px',
   color: theme.palette.text.secondary,
+  whiteSpace: 'nowrap',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  minWidth: 0,
 }));
 
 const ActionsContainer = styled(Box)({
@@ -170,7 +180,7 @@ const AppCardListItemInner = ({
 
       <ContentContainer>
         <AppTitle>{app?.metadata?.title || app?.name}</AppTitle>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'nowrap', minWidth: 0 }}>
           <DeveloperName>
             {t('core:app_detail.by_developer', {
               developer: app?.name,

@@ -6,19 +6,31 @@ import {
   IconButton,
   Tooltip,
   Typography,
+  useMediaQuery,
   useTheme,
 } from '@mui/material';
 import CallIcon from '@mui/icons-material/Call';
 import CallEndRoundedIcon from '@mui/icons-material/CallEndRounded';
 import ArrowBackIosNewRoundedIcon from '@mui/icons-material/ArrowBackIosNewRounded';
+import SearchIcon from '@mui/icons-material/Search';
+import InsertLinkIcon from '@mui/icons-material/InsertLink';
+import AlternateEmailIcon from '@mui/icons-material/AlternateEmail';
 import {
   groupChatHasUnreadAtom,
   groupsAnnHasUnreadAtom,
   hasUnreadGroupsAtom,
   isUnreadChatAtomFamily,
+  chatMentionUnreadAtom,
   mobileChatComposeActiveAtom,
+  mobileChatHeaderCollapsedAtom,
   p2pHealthAtom,
 } from '../../atoms/global';
+import { executeEvent } from '../../utils/events';
+import {
+  CHAT_OPTION_SEARCH_EVENT,
+  CHAT_OPTION_MENTIONS_EVENT,
+  CHAT_OPTION_QMANAGER_EVENT,
+} from '../Chat/ChatOptions';
 import Box from '@mui/material/Box';
 import { NotificationIcon2 } from '../../assets/Icons/NotificationIcon2';
 import { ChatIcon } from '../../assets/Icons/ChatIcon';
@@ -144,6 +156,12 @@ export const DesktopHeader = ({
     groupCallTooltip || (p2pBlocked ? p2pHealthBadTooltip : '');
 
   const chatComposeActive = useAtomValue(mobileChatComposeActiveAtom);
+  const headerCollapsed = useAtomValue(mobileChatHeaderCollapsedAtom);
+  const mentionUnread = useAtomValue(chatMentionUnreadAtom);
+  // Only reclaim header space by collapsing the section tabs in landscape,
+  // where vertical room is scarce.
+  const isLandscape = useMediaQuery('(orientation: landscape)');
+  const collapseSectionTabs = isMobile && isLandscape && headerCollapsed;
 
   if (isMobile) {
     if (chatComposeActive) {
@@ -257,6 +275,49 @@ export const DesktopHeader = ({
               : selectedGroup?.groupName}
           </Typography>
 
+          {isChat && (
+            <Box sx={{ alignItems: 'center', display: 'flex', flexShrink: 0 }}>
+              <IconButton
+                aria-label={t('core:action.search', {
+                  postProcess: 'capitalizeFirstChar',
+                })}
+                onClick={() => executeEvent(CHAT_OPTION_SEARCH_EVENT, {})}
+                size="small"
+              >
+                <SearchIcon
+                  sx={{ fontSize: 21, color: theme.palette.text.secondary }}
+                />
+              </IconButton>
+              <IconButton
+                aria-label={t('core:q_apps.q_manager', {
+                  postProcess: 'capitalizeFirstChar',
+                })}
+                onClick={() => executeEvent(CHAT_OPTION_QMANAGER_EVENT, {})}
+                size="small"
+              >
+                <InsertLinkIcon
+                  sx={{ fontSize: 21, color: theme.palette.text.secondary }}
+                />
+              </IconButton>
+              <IconButton
+                aria-label={t('core:message.generic.mentioned', {
+                  postProcess: 'capitalizeFirstChar',
+                })}
+                onClick={() => executeEvent(CHAT_OPTION_MENTIONS_EVENT, {})}
+                size="small"
+              >
+                <AlternateEmailIcon
+                  sx={{
+                    fontSize: 21,
+                    color: mentionUnread
+                      ? theme.palette.other.unread
+                      : theme.palette.text.secondary,
+                  }}
+                />
+              </IconButton>
+            </Box>
+          )}
+
           {!isGeneral && typeof onGroupCallClick === 'function' && (
             <Tooltip
               title={effectiveGroupCallTooltip}
@@ -302,10 +363,17 @@ export const DesktopHeader = ({
               display: 'flex',
               alignItems: 'stretch',
               gap: '4px',
-              padding: '0 6px 8px',
+              padding: collapseSectionTabs ? '0 6px' : '0 6px 8px',
               // Fixed row: all sections share the width, no horizontal swipe.
               overflowX: 'hidden',
               overflowY: 'hidden',
+              // Collapse out of the way once the conversation is scrolled
+              // (landscape only) so messages get the vertical space back.
+              maxHeight: collapseSectionTabs ? 0 : 80,
+              opacity: collapseSectionTabs ? 0 : 1,
+              pointerEvents: collapseSectionTabs ? 'none' : 'auto',
+              transition:
+                'max-height 0.22s ease, opacity 0.18s ease, padding 0.22s ease',
             }}
           >
             {sections.map((section) => {
