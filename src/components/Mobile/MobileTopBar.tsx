@@ -20,6 +20,7 @@ import LogoutRoundedIcon from '@mui/icons-material/LogoutRounded';
 import LayersRoundedIcon from '@mui/icons-material/LayersRounded';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import NotificationsActiveRoundedIcon from '@mui/icons-material/NotificationsActiveRounded';
+import NotificationsRoundedIcon from '@mui/icons-material/NotificationsRounded';
 import ChevronRightRoundedIcon from '@mui/icons-material/ChevronRightRounded';
 import { useAtomValue, useSetAtom } from 'jotai';
 import { nodeInfosAtom, p2pHealthAtom, rawWalletAtom, selectedNodeInfoAtom, mobileChatComposeActiveAtom } from '../../atoms/global';
@@ -322,17 +323,17 @@ export const MobileTopBar = ({
   };
 
   const accountActions: AccountAction[] = [
-    ...(hasNewNotifications
-      ? [
-          {
-            icon: NotificationsActiveRoundedIcon,
-            label: 'Notifications',
-            onClick: () => notifRef.current?.open(),
-            accent: true,
-            badge: unseenCount,
-          } satisfies AccountAction,
-        ]
-      : []),
+    // Always present so the notifications window is reachable even with no new
+    // notifications (the popover shows its own "no notifications yet" state).
+    {
+      icon: hasNewNotifications
+        ? NotificationsActiveRoundedIcon
+        : NotificationsRoundedIcon,
+      label: 'Notifications',
+      onClick: () => notifRef.current?.open(),
+      accent: hasNewNotifications,
+      ...(hasNewNotifications ? { badge: unseenCount } : {}),
+    },
     {
       icon: AccountBalanceWalletRoundedIcon,
       label: 'Wallets',
