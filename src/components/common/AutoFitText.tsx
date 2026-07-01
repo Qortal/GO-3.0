@@ -88,6 +88,57 @@ export function AutoFitText({
   );
 }
 
+/**
+ * Single-line text that first shrinks its font to fit the available width (down
+ * to `minFontPx`) and, if it still doesn't fit at that floor, truncates with an
+ * ellipsis. Good for titles/names where you want them as large as possible but
+ * never overflowing.
+ */
+export function AutoFitEllipsisText({
+  text,
+  maxFontPx = 16,
+  minFontPx = 11,
+  fontWeight = 600,
+  sx,
+}: {
+  text: string;
+  maxFontPx?: number;
+  minFontPx?: number;
+  fontWeight?: number | string;
+  sx?: SxProps<Theme>;
+}) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const fontPx = useAutoFitFontPx(containerRef, text, { maxFontPx, minFontPx });
+
+  return (
+    <Box
+      ref={containerRef}
+      sx={{
+        minWidth: 0,
+        overflow: 'hidden',
+        width: '100%',
+        fontWeight,
+        ...sx,
+      }}
+    >
+      <Box
+        component="span"
+        sx={{
+          display: 'block',
+          fontSize: `${fontPx}px`,
+          fontWeight,
+          lineHeight: 1.25,
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+        }}
+      >
+        {text}
+      </Box>
+    </Box>
+  );
+}
+
 let fitCanvas: HTMLCanvasElement | null = null;
 
 /**

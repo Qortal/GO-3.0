@@ -29,6 +29,8 @@ import {
   groupsOwnerNamesSelector,
 } from '../../atoms/global';
 import { buildGroupAvatarUrl } from '../../utils/groupAvatarUrl';
+import { GroupDetailsDialog } from '../Group/GroupDetailsDialog';
+import { AutoFitEllipsisText } from '../common/AutoFitText';
 import { executeEvent } from '../../utils/events';
 import {
   CHAT_OPTION_SEARCH_EVENT,
@@ -152,6 +154,22 @@ export const DesktopHeader = ({
     .trim()
     .charAt(0)
     .toUpperCase();
+  const [groupDetailsOpen, setGroupDetailsOpen] = useState(false);
+  const openGroupDetails = () => {
+    if (!isGeneralGroup && selectedGroup?.groupId != null) {
+      setGroupDetailsOpen(true);
+    }
+  };
+  const groupDetailsDialog = (
+    <GroupDetailsDialog
+      open={groupDetailsOpen}
+      onClose={() => setGroupDetailsOpen(false)}
+      groupId={selectedGroup?.groupId}
+      groupName={selectedGroup?.groupName}
+      ownerName={groupOwnerName}
+      isPrivate={isPrivate}
+    />
+  );
   const { t } = useTranslation([
     'auth',
     'core',
@@ -233,6 +251,7 @@ export const DesktopHeader = ({
     ];
 
     return (
+      <>
       <Box
         sx={{
           borderBottom: '1px solid',
@@ -277,12 +296,14 @@ export const DesktopHeader = ({
             <Avatar
               src={groupAvatarUrl || undefined}
               alt={selectedGroup?.groupName || 'Group'}
+              onClick={openGroupDetails}
               sx={{
                 width: 26,
                 height: 26,
                 flexShrink: 0,
                 fontSize: 13,
                 fontWeight: 700,
+                cursor: 'pointer',
                 bgcolor: alpha(theme.palette.primary.main, 0.16),
                 color: theme.palette.primary.main,
               }}
@@ -291,22 +312,36 @@ export const DesktopHeader = ({
             </Avatar>
           )}
 
-          <Typography
+          <Box
+            onClick={isGeneral ? undefined : openGroupDetails}
             sx={{
               flex: 1,
               minWidth: 0,
-              fontSize: '16px',
-              fontWeight: 700,
-              letterSpacing: '0.01em',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
+              cursor: isGeneral ? 'default' : 'pointer',
             }}
           >
-            {isGeneral
-              ? t('core:general', { postProcess: 'capitalizeFirstChar' })
-              : selectedGroup?.groupName}
-          </Typography>
+            {isGeneral ? (
+              <Typography
+                sx={{
+                  fontSize: '16px',
+                  fontWeight: 700,
+                  letterSpacing: '0.01em',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {t('core:general', { postProcess: 'capitalizeFirstChar' })}
+              </Typography>
+            ) : (
+              <AutoFitEllipsisText
+                text={selectedGroup?.groupName || ''}
+                maxFontPx={16}
+                minFontPx={11}
+                fontWeight={700}
+              />
+            )}
+          </Box>
 
           {isChat && (
             <Box sx={{ alignItems: 'center', display: 'flex', flexShrink: 0 }}>
@@ -460,10 +495,13 @@ export const DesktopHeader = ({
           </Box>
         )}
       </Box>
+      {groupDetailsDialog}
+      </>
     );
   }
 
   return (
+    <>
     <Box
       sx={{
         alignItems: 'center',
@@ -506,12 +544,14 @@ export const DesktopHeader = ({
           <Avatar
             src={groupAvatarUrl || undefined}
             alt={selectedGroup?.groupName || 'Group'}
+            onClick={openGroupDetails}
             sx={{
               width: 28,
               height: 28,
               flexShrink: 0,
               fontSize: 14,
               fontWeight: 700,
+              cursor: 'pointer',
               bgcolor: alpha(theme.palette.primary.main, 0.16),
               color: theme.palette.primary.main,
             }}
@@ -521,10 +561,12 @@ export const DesktopHeader = ({
         )}
 
         <Typography
+          onClick={isGeneralGroup ? undefined : openGroupDetails}
           sx={{
             fontSize: '16px',
             fontWeight: 600,
             letterSpacing: '0.01em',
+            cursor: isGeneralGroup ? 'default' : 'pointer',
           }}
         >
           {selectedGroup?.groupId === '0'
@@ -774,5 +816,7 @@ export const DesktopHeader = ({
         </ButtonBase>
       </Box>
     </Box>
+    {groupDetailsDialog}
+    </>
   );
 };
