@@ -225,11 +225,16 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
             return ts == null || ts >= cutoff;
           }) as T[];
         };
-        socketRef.current = new WebSocket(socketLink);
+        const socket = new WebSocket(socketLink);
+        socketRef.current = socket;
 
-        socketRef.current.onopen = () => {
+        socket.onopen = () => {
+          // A reconnect may have swapped socketRef to a newer (still
+          // CONNECTING) socket; only act if this exact socket is current+open.
+          if (socketRef.current !== socket || socket.readyState !== WebSocket.OPEN)
+            return;
           setSocketOpen(true);
-          socketRef.current.send(
+          socket.send(
             JSON.stringify({
               action: 'subscribe',
               subscriptions: [
@@ -261,10 +266,10 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
           );
           historyRequestTimeoutRef.current = setTimeout(() => {
             historyRequestTimeoutRef.current = null;
-            const ws = socketRef.current;
-            if (ws?.readyState !== WebSocket.OPEN) return;
+            if (socketRef.current !== socket || socket.readyState !== WebSocket.OPEN)
+              return;
             const after = Date.now() - 3 * 24 * 60 * 60 * 1000; // 3 days ago (ms)
-            ws.send(
+            socket.send(
               JSON.stringify({
                 action: 'notification-history',
                 paymentReceivedLimit: 5,
@@ -275,7 +280,8 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
           setTimeout(pingHeads, 50);
         };
 
-        socketRef.current.onmessage = (e) => {
+        socket.onmessage = (e) => {
+          if (socketRef.current !== socket) return;
           try {
             if (e.data === 'pong') {
               clearTimeout(timeoutIdRef.current);
@@ -345,7 +351,8 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
           }
         };
 
-        socketRef.current.onclose = (event) => {
+        socket.onclose = (event) => {
+          if (socketRef.current !== socket) return;
           setSocketOpen(false);
           clearTimeout(historyRequestTimeoutRef.current);
           historyRequestTimeoutRef.current = null;
@@ -360,13 +367,12 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
           }
         };
 
-        socketRef.current.onerror = (error) => {
+        socket.onerror = (error) => {
+          if (socketRef.current !== socket) return;
           console.error('Notifications WebSocket error:', error);
           clearTimeout(pingTimeoutRef.current);
           clearTimeout(timeoutIdRef.current);
-          if (socketRef.current) {
-            socketRef.current.close();
-          }
+          socket.close();
         };
       } catch (error) {
         console.error('Error initializing notifications WebSocket:', error);

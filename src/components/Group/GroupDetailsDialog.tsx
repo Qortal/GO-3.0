@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useReducer, useState } from 'react';
 import {
   alpha,
   Avatar,
@@ -27,6 +27,11 @@ import { AvatarPreviewModal } from '../Chat/AvatarPreviewModal';
 import { getDialogPaperSx } from '../App/dialogSurface';
 import { QortalUserAvatar } from '../QortalUserAvatar';
 import { SAFE_AREA_TOP } from '../../utils/mobileSafeArea';
+import {
+  ensureAvatarPresence,
+  isAvatarKnownPresent,
+} from '../../utils/groupMemberAvatars';
+import { executeEvent } from '../../utils/events';
 
 type GroupDetailsDialogProps = {
   open: boolean;
@@ -49,8 +54,6 @@ const shortenAddress = (address?: string) =>
   address && address.length > 12
     ? `${address.slice(0, 6)}…${address.slice(-4)}`
     : address || '';
-
-const MAX_LISTED = 200;
 
 export const GroupDetailsDialog = ({
   open,
@@ -120,6 +123,28 @@ export const GroupDetailsDialog = ({
     [members, adminAddresses]
   );
 
+  // Render the full lists — every member/admin name should show. Avatar images
+  // are only loaded for users confirmed to have one (see ensureAvatarPresence),
+  // and the browser self-throttles concurrent image requests, so even large
+  // groups stay light.
+  const renderedAdmins = admins;
+  const renderedMembers = nonAdminMembers;
+
+  // Bulk-detect which listed users actually have a published avatar so only
+  // those load an image (avatar-less users render an instant local fallback
+  // with zero network). Re-render as each detection batch streams in.
+  const [, refreshAvatars] = useReducer((x: number) => x + 1, 0);
+  useEffect(() => {
+    if (!open) return;
+    ensureAvatarPresence(
+      [
+        ...renderedAdmins.map((a) => a.name),
+        ...renderedMembers.map((m) => m.primaryName),
+      ],
+      refreshAvatars
+    );
+  }, [open, renderedAdmins, renderedMembers]);
+
   const isLight = theme.palette.mode === 'light';
   const sectionLabelSx = {
     color: theme.palette.text.secondary,
@@ -129,29 +154,61 @@ export const GroupDetailsDialog = ({
     textTransform: 'uppercase' as const,
   };
 
-  const renderPerson = (name: string | undefined, address: string) => (
+  const openUserProfile = (name: string | undefined, address: string) => {
+    const target = name?.trim() || address?.trim();
+    if (!target) return;
+    // Close the group panel first so the profile lookup sits cleanly on top.
+    onClose();
+    executeEvent('openUserLookupDrawer', { addressOrName: target });
+  };
+
+  const renderPerson = (name: string | undefined, address: string) => {
+    const avatarSx = {
+      bgcolor: alpha(theme.palette.primary.main, 0.16),
+      color: theme.palette.primary.main,
+      fontSize: 12,
+      fontWeight: 700,
+      height: 26,
+      width: 26,
+    };
+    // Only mount an image-loading avatar for users confirmed to have one.
+    const showImageAvatar = isAvatarKnownPresent(name);
+    return (
     <Box
       key={address}
+      onClick={() => openUserProfile(name, address)}
+      role="button"
+      tabIndex={0}
       sx={{
         alignItems: 'center',
+        borderRadius: '10px',
+        cursor: 'pointer',
         display: 'flex',
         gap: 1,
+        mx: -0.75,
+        px: 0.75,
         py: 0.6,
+        transition: 'background-color 0.15s ease',
+        '&:hover': {
+          backgroundColor: alpha(theme.palette.primary.main, 0.08),
+        },
+        '&:active': {
+          backgroundColor: alpha(theme.palette.primary.main, 0.14),
+        },
       }}
     >
-      <QortalUserAvatar
-        primaryName={name || undefined}
-        walletAddress={address}
-        fallbackIconSize={16}
-        sx={{
-          bgcolor: alpha(theme.palette.primary.main, 0.16),
-          color: theme.palette.primary.main,
-          fontSize: 12,
-          fontWeight: 700,
-          height: 26,
-          width: 26,
-        }}
-      />
+      {showImageAvatar ? (
+        <QortalUserAvatar
+          primaryName={name || undefined}
+          walletAddress={address}
+          fallbackIconSize={16}
+          sx={avatarSx}
+        />
+      ) : (
+        <Avatar sx={avatarSx}>
+          {(name || address || '?').trim().charAt(0).toUpperCase()}
+        </Avatar>
+      )}
       <Typography
         sx={{
           color: name ? theme.palette.text.primary : theme.palette.text.secondary,
@@ -165,7 +222,8 @@ export const GroupDetailsDialog = ({
         {name || shortenAddress(address)}
       </Typography>
     </Box>
-  );
+    );
+  };
 
   return (
     <>
@@ -417,9 +475,9 @@ export const GroupDetailsDialog = ({
                     {t('core:admin_other', { defaultValue: 'Admins' })}
                   </Typography>
                   <Box>
-                    {admins
-                      .slice(0, MAX_LISTED)
-                      .map((a) => renderPerson(a.name, a.address))}
+                    {renderedAdmins.map((a) =>
+                      renderPerson(a.name, a.address)
+                    )}
                   </Box>
                 </Box>
               )}
@@ -430,22 +488,8 @@ export const GroupDetailsDialog = ({
                     {t('core:member_other', { defaultValue: 'Members' })}
                   </Typography>
                   <Box sx={{ pr: 0.5 }}>
-                    {nonAdminMembers
-                      .slice(0, MAX_LISTED)
-                      .map((m) => renderPerson(m.primaryName, m.member))}
-                    {nonAdminMembers.length > MAX_LISTED && (
-                      <Typography
-                        sx={{
-                          color: theme.palette.text.secondary,
-                          fontSize: '0.8rem',
-                          mt: 0.8,
-                        }}
-                      >
-                        {t('core:and_more', {
-                          count: nonAdminMembers.length - MAX_LISTED,
-                          defaultValue: `+${nonAdminMembers.length - MAX_LISTED} more`,
-                        })}
-                      </Typography>
+                    {renderedMembers.map((m) =>
+                      renderPerson(m.primaryName, m.member)
                     )}
                   </Box>
                 </Box>

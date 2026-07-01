@@ -62,6 +62,7 @@ import {
   unsubscribeFromEvent,
 } from '../../utils/events';
 import { formatTimestamp } from '../../utils/time';
+import { SAFE_AREA_BOTTOM, SAFE_AREA_TOP } from '../../utils/mobileSafeArea';
 import magnifierSvg from '../../assets/user-search/magnifier.svg?raw';
 import qortalLogo512 from '../../assets/user-search/qortal-logo-512.png';
 
@@ -1044,6 +1045,13 @@ export const UserLookup = ({
       onClose={closeLookup}
       fullWidth
       maxWidth={false}
+      sx={(muiTheme) => ({
+        // On mobile pin below the status bar / camera notch; keep desktop centered.
+        '& .MuiDialog-container': {
+          alignItems: 'flex-start',
+          [muiTheme.breakpoints.up('md')]: { alignItems: 'center' },
+        },
+      })}
       slotProps={{
         backdrop: {
           sx: {
@@ -1064,12 +1072,17 @@ export const UserLookup = ({
                 ? '0 34px 120px rgba(0,0,0,0.46)'
                 : '0 28px 88px rgba(18,28,45,0.16)',
             height: {
-              xs: 'calc(100vh - 32px)',
+              xs: `calc(100dvh - ${SAFE_AREA_TOP} - ${SAFE_AREA_BOTTOM} - 28px)`,
               md: 'min(78vh, 860px)',
               lg: 'min(74vh, 820px)',
             },
-            margin: { xs: 2, md: 3 },
-            maxHeight: 'calc(100vh - 24px)',
+            mx: { xs: 2, md: 3 },
+            mt: { xs: `calc(${SAFE_AREA_TOP} + 14px)`, md: 3 },
+            mb: { xs: `calc(${SAFE_AREA_BOTTOM} + 14px)`, md: 3 },
+            maxHeight: {
+              xs: `calc(100dvh - ${SAFE_AREA_TOP} - 20px)`,
+              md: 'calc(100vh - 24px)',
+            },
             overflow: 'hidden',
             width: 'min(1140px, calc(100vw - 48px))',
           },
