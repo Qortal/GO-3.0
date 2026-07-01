@@ -1,6 +1,8 @@
 import { useState, type ReactNode } from 'react';
 import { useAtomValue } from 'jotai';
 import {
+  alpha,
+  Avatar,
   ButtonBase,
   CircularProgress,
   IconButton,
@@ -24,7 +26,9 @@ import {
   mobileChatComposeActiveAtom,
   mobileChatHeaderCollapsedAtom,
   p2pHealthAtom,
+  groupsOwnerNamesSelector,
 } from '../../atoms/global';
+import { buildGroupAvatarUrl } from '../../utils/groupAvatarUrl';
 import { executeEvent } from '../../utils/events';
 import {
   CHAT_OPTION_SEARCH_EVENT,
@@ -137,6 +141,17 @@ export const DesktopHeader = ({
     isUnreadChatAtomFamily(selectedGroup?.groupId ?? '')
   );
   const hasUnreadChat = isUnreadChat;
+  const groupOwnerName = useAtomValue(
+    groupsOwnerNamesSelector(selectedGroup?.groupId ?? '')
+  );
+  const isGeneralGroup = selectedGroup?.groupId === '0';
+  const groupAvatarUrl = isGeneralGroup
+    ? null
+    : buildGroupAvatarUrl(groupOwnerName, selectedGroup?.groupId);
+  const groupAvatarFallback = (selectedGroup?.groupName || '?')
+    .trim()
+    .charAt(0)
+    .toUpperCase();
   const { t } = useTranslation([
     'auth',
     'core',
@@ -256,6 +271,24 @@ export const DesktopHeader = ({
             <NoEncryptionGmailerrorredIcon
               sx={{ color: theme.palette.other.danger, fontSize: '18px' }}
             />
+          )}
+
+          {!isGeneral && (
+            <Avatar
+              src={groupAvatarUrl || undefined}
+              alt={selectedGroup?.groupName || 'Group'}
+              sx={{
+                width: 26,
+                height: 26,
+                flexShrink: 0,
+                fontSize: 13,
+                fontWeight: 700,
+                bgcolor: alpha(theme.palette.primary.main, 0.16),
+                color: theme.palette.primary.main,
+              }}
+            >
+              {groupAvatarFallback}
+            </Avatar>
           )}
 
           <Typography
@@ -467,6 +500,24 @@ export const DesktopHeader = ({
               fontSize: '20px',
             }}
           />
+        )}
+
+        {!isGeneralGroup && (
+          <Avatar
+            src={groupAvatarUrl || undefined}
+            alt={selectedGroup?.groupName || 'Group'}
+            sx={{
+              width: 28,
+              height: 28,
+              flexShrink: 0,
+              fontSize: 14,
+              fontWeight: 700,
+              bgcolor: alpha(theme.palette.primary.main, 0.16),
+              color: theme.palette.primary.main,
+            }}
+          >
+            {groupAvatarFallback}
+          </Avatar>
         )}
 
         <Typography

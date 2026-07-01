@@ -2,8 +2,9 @@ import { useCallback, useState, useEffect, useRef, useMemo } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { MessageItem } from './MessageItem';
 import { subscribeToEvent, unsubscribeFromEvent } from '../../utils/events';
-import { Box, Button, Typography, useMediaQuery, useTheme } from '@mui/material';
+import { alpha, Box, Button, Typography, useMediaQuery, useTheme } from '@mui/material';
 import KeyboardArrowDownRoundedIcon from '@mui/icons-material/KeyboardArrowDownRounded';
+import ChatBubbleRoundedIcon from '@mui/icons-material/ChatBubbleRounded';
 import { useSetAtom } from 'jotai';
 import { ChatOptions } from './ChatOptions';
 import ErrorBoundary from '../../common/ErrorBoundary';
@@ -132,43 +133,6 @@ export const ChatList = ({
     if (selectedGroup?.id != null) return `group:${selectedGroup.id}`;
     return 'chat';
   }, [chatId, selectedGroup?.groupId, selectedGroup?.id]);
-
-  // Shared scroll button styling (memoized so Button sx refs stay stable)
-  const scrollButtonSx = useMemo(
-    () => ({
-      position: 'absolute' as const,
-      right: 20,
-      // Anchored to the top of the chat window per user request (was bottom).
-      top: 12,
-      zIndex: 10,
-      borderRadius: '24px',
-      textTransform: 'none' as const,
-      fontWeight: 600,
-      fontSize: '0.875rem',
-      px: 2,
-      py: 1.25,
-      boxShadow:
-        theme.palette.mode === 'dark'
-          ? '0 4px 20px rgba(0,0,0,0.4), 0 0 0 1px rgba(255,255,255,0.08)'
-          : '0 4px 14px rgba(0,0,0,0.12), 0 0 0 1px rgba(0,0,0,0.06)',
-      backgroundColor: theme.palette.background.paper,
-      color: theme.palette.text.primary,
-      border: `1px solid ${theme.palette.divider}`,
-      transition:
-        'box-shadow 0.2s ease, transform 0.15s ease, background-color 0.2s ease',
-      '&:hover': {
-        backgroundColor: theme.palette.action.hover,
-        boxShadow:
-          theme.palette.mode === 'dark'
-            ? `0 6px 24px rgba(0,0,0,0.5), 0 0 0 1px ${theme.palette.primary.main}40`
-            : `0 6px 20px rgba(0,0,0,0.15), 0 0 0 1px ${theme.palette.primary.light}60`,
-      },
-      '&:active': {
-        transform: 'scale(0.98)',
-      },
-    }),
-    [theme]
-  );
 
   // Initialize the virtualizer
   const rowVirtualizer = useVirtualizer({
@@ -633,22 +597,36 @@ export const ChatList = ({
         {showScrollButton && (
           <Button
             onClick={() => scrollToBottom()}
-            startIcon={<KeyboardArrowDownRoundedIcon sx={{ fontSize: 20 }} />}
-            sx={{
-              ...scrollButtonSx,
-              backgroundColor: theme.palette.primary.dark,
-              color: theme.palette.primary.contrastText,
-              border: `1px solid ${theme.palette.primary.main}`,
-              '&:hover': {
-                ...scrollButtonSx['&:hover'],
-                backgroundColor: theme.palette.primary.main,
-                color: theme.palette.primary.contrastText,
-              },
-            }}
-          >
-            {t('group:action.scroll_unread_messages', {
+            aria-label={t('group:action.scroll_unread_messages', {
               postProcess: 'capitalizeFirstChar',
             })}
+            startIcon={<ChatBubbleRoundedIcon sx={{ fontSize: 13 }} />}
+            endIcon={<KeyboardArrowDownRoundedIcon sx={{ fontSize: 16 }} />}
+            sx={{
+              position: 'absolute',
+              right: 16,
+              top: 12,
+              zIndex: 10,
+              minWidth: 0,
+              gap: 0.25,
+              px: 1,
+              py: 0.4,
+              borderRadius: '999px',
+              textTransform: 'none',
+              fontSize: '0.72rem',
+              fontWeight: 700,
+              lineHeight: 1,
+              backgroundColor: theme.palette.success.main,
+              color: '#fff',
+              boxShadow: `0 2px 10px ${alpha(theme.palette.success.main, 0.5)}`,
+              transition: 'transform 0.15s ease, background-color 0.2s ease',
+              '& .MuiButton-startIcon': { mr: 0.35, ml: 0 },
+              '& .MuiButton-endIcon': { ml: 0.1, mr: 0 },
+              '&:hover': { backgroundColor: theme.palette.success.dark },
+              '&:active': { transform: 'scale(0.96)' },
+            }}
+          >
+            {t('core:new', { defaultValue: 'New' })}
           </Button>
         )}
 
