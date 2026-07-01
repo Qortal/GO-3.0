@@ -566,7 +566,6 @@ export function MiniDirectThread({
         ) : (
           <ChatList
             chatReferences={chatReferences}
-            compactScrollButton
             enableMentions={false}
             handleReaction={handleReaction}
             hasSecretKey={true}

@@ -39,7 +39,6 @@ type ChatListProps = {
   qchatCompletedTransfers?: Record<string, any>;
   hasSecretKey?: any;
   isPrivate?: any;
-  compactScrollButton?: boolean;
   chatId?: any;
   /** Hide the floating ChatOptions trigger strip (triggers live in the mobile
    *  chat header instead). The search/mention panels still render. */
@@ -65,7 +64,6 @@ export const ChatList = ({
   qchatCompletedTransfers,
   hasSecretKey,
   isPrivate,
-  compactScrollButton = false,
   chatId,
   chatOptionsHideTriggers = false,
 }: ChatListProps) => {
@@ -78,7 +76,6 @@ export const ChatList = ({
   const parentRef = useRef(null);
   const [messages, setMessages] = useState(initialMessages);
   const [showScrollButton, setShowScrollButton] = useState(false);
-  const [showScrollDownButton, setShowScrollDownButton] = useState(false);
   const setHeaderCollapsed = useSetAtom(mobileChatHeaderCollapsedAtom);
   const headerCollapsedRef = useRef(false);
 
@@ -114,7 +111,6 @@ export const ChatList = ({
     number | null
   >(null);
   const hasLoadedInitialRef = useRef(false);
-  const scrollingIntervalRef = useRef(null);
   const highlightTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
     null
   );
@@ -173,21 +169,6 @@ export const ChatList = ({
     }),
     [theme]
   );
-  const scrollButtonCompactSx = useMemo(
-    () => ({
-      ...scrollButtonSx,
-      right: 16,
-      top: 12,
-      borderRadius: '50%',
-      px: 0,
-      py: 0,
-      minWidth: 40,
-      width: 40,
-      height: 40,
-      '& .MuiButton-startIcon': { margin: 0 },
-    }),
-    [scrollButtonSx]
-  );
 
   // Initialize the virtualizer
   const rowVirtualizer = useVirtualizer({
@@ -244,43 +225,6 @@ export const ChatList = ({
     };
   }, [clearScrollRetries]);
 
-  const isAtBottom = useMemo(() => {
-    if (parentRef.current && rowVirtualizer?.isScrolling !== undefined) {
-      const { scrollTop, scrollHeight, clientHeight } = parentRef.current;
-      const atBottom =
-        scrollTop + clientHeight >= scrollHeight - 10 - landscapeBottomPad; // Adjust threshold as needed
-      return atBottom;
-    }
-
-    return false;
-  }, [rowVirtualizer?.isScrolling]);
-
-  useEffect(() => {
-    if (!parentRef.current || rowVirtualizer?.isScrolling === undefined) return;
-    if (isAtBottom) {
-      if (scrollingIntervalRef.current) {
-        clearTimeout(scrollingIntervalRef.current);
-      }
-      setShowScrollDownButton(false);
-      return;
-    } else if (rowVirtualizer?.isScrolling) {
-      if (scrollingIntervalRef.current) {
-        clearTimeout(scrollingIntervalRef.current);
-      }
-      setShowScrollDownButton(false);
-      return;
-    }
-    const { scrollTop, scrollHeight, clientHeight } = parentRef.current;
-    const atBottom = scrollHeight - scrollTop - clientHeight <= 300;
-    if (!atBottom) {
-      scrollingIntervalRef.current = setTimeout(() => {
-        setShowScrollDownButton(true);
-      }, 250);
-    } else {
-      setShowScrollDownButton(false);
-    }
-  }, [rowVirtualizer?.isScrolling, isAtBottom]);
-
   // Update message list with unique signatures and tempMessages
   useEffect(() => {
     const uniqueInitialMessagesMap = new Map();
@@ -333,7 +277,6 @@ export const ChatList = ({
           scrollTop + clientHeight >= scrollHeight - 10 - landscapeBottomPad; // Adjust threshold as needed
         if (!atBottom && hasUnreadMessages) {
           setShowScrollButton(hasUnreadMessages);
-          setShowScrollDownButton(false);
         } else {
           handleMessageSeen();
         }
@@ -709,29 +652,6 @@ export const ChatList = ({
           </Button>
         )}
 
-        {showScrollDownButton &&
-          !showScrollButton &&
-          (compactScrollButton ? (
-            <Button
-              onClick={() => scrollToBottom()}
-              aria-label={t('group:action.scroll_bottom', {
-                postProcess: 'capitalizeFirstChar',
-              })}
-              sx={scrollButtonCompactSx}
-            >
-              <KeyboardArrowDownRoundedIcon sx={{ fontSize: 22 }} />
-            </Button>
-          ) : (
-            <Button
-              onClick={() => scrollToBottom()}
-              startIcon={<KeyboardArrowDownRoundedIcon sx={{ fontSize: 20 }} />}
-              sx={scrollButtonSx}
-            >
-              {t('group:action.scroll_bottom', {
-                postProcess: 'capitalizeFirstChar',
-              })}
-            </Button>
-          ))}
       </Box>
 
       {enableMentions && (hasSecretKey || isPrivate === false) && (
