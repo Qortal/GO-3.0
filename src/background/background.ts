@@ -103,6 +103,7 @@ import {
   publishOnQDNCase,
   registerNameCase,
   removeAdminCase,
+  sendPrivateQmailCase,
   removeRewardShareCase,
   resumeAllQueuesCase,
   saveTempPublishCase,
@@ -3459,6 +3460,9 @@ function setupMessageListener() {
         break;
       case 'publishOnQDN':
         publishOnQDNCase(request, event);
+        break;
+      case 'sendPrivateQmail':
+        sendPrivateQmailCase(request, event);
         break;
       case 'getUserSettings':
         getUserSettingsCase(request, event);

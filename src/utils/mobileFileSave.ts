@@ -1,5 +1,6 @@
 import { Capacitor } from '@capacitor/core';
 import {
+  pruneNativeDocumentFolder,
   writeNativeDocumentFile,
   writeNativeDocumentBlob,
   writeNativeDocumentBytes,
@@ -10,52 +11,162 @@ const QORTAL_DOCUMENTS_FOLDER = 'Qortal Go';
  *  the output stream per call, so per-fetch-chunk writes would be very slow). */
 const STREAM_WRITE_BUFFER_BYTES = 1024 * 1024;
 
+/**
+ * Per-type folders under Documents/Qortal Go. Mirrors SaveCategory.java —
+ * keep both in sync so a file lands in the same place however it was saved.
+ */
+export const SAVE_CATEGORY_FOLDERS = {
+  images: 'Images',
+  videos: 'Videos',
+  audio: 'Audio',
+  documents: 'Documents',
+  apps: 'Apps',
+  goState: 'GO state',
+  qortino: 'Qortino AI',
+} as const;
+
+const EXTENSION_CATEGORY: Record<string, string> = {
+  apk: SAVE_CATEGORY_FOLDERS.apps,
+  aab: SAVE_CATEGORY_FOLDERS.apps,
+  apks: SAVE_CATEGORY_FOLDERS.apps,
+  bin: SAVE_CATEGORY_FOLDERS.goState,
+  gguf: SAVE_CATEGORY_FOLDERS.qortino,
+  jpg: SAVE_CATEGORY_FOLDERS.images,
+  jpeg: SAVE_CATEGORY_FOLDERS.images,
+  png: SAVE_CATEGORY_FOLDERS.images,
+  gif: SAVE_CATEGORY_FOLDERS.images,
+  webp: SAVE_CATEGORY_FOLDERS.images,
+  bmp: SAVE_CATEGORY_FOLDERS.images,
+  heic: SAVE_CATEGORY_FOLDERS.images,
+  heif: SAVE_CATEGORY_FOLDERS.images,
+  svg: SAVE_CATEGORY_FOLDERS.images,
+  avif: SAVE_CATEGORY_FOLDERS.images,
+  tif: SAVE_CATEGORY_FOLDERS.images,
+  tiff: SAVE_CATEGORY_FOLDERS.images,
+  mp4: SAVE_CATEGORY_FOLDERS.videos,
+  mov: SAVE_CATEGORY_FOLDERS.videos,
+  webm: SAVE_CATEGORY_FOLDERS.videos,
+  mkv: SAVE_CATEGORY_FOLDERS.videos,
+  avi: SAVE_CATEGORY_FOLDERS.videos,
+  m4v: SAVE_CATEGORY_FOLDERS.videos,
+  '3gp': SAVE_CATEGORY_FOLDERS.videos,
+  mpg: SAVE_CATEGORY_FOLDERS.videos,
+  mpeg: SAVE_CATEGORY_FOLDERS.videos,
+  ts: SAVE_CATEGORY_FOLDERS.videos,
+  mp3: SAVE_CATEGORY_FOLDERS.audio,
+  m4a: SAVE_CATEGORY_FOLDERS.audio,
+  wav: SAVE_CATEGORY_FOLDERS.audio,
+  ogg: SAVE_CATEGORY_FOLDERS.audio,
+  oga: SAVE_CATEGORY_FOLDERS.audio,
+  opus: SAVE_CATEGORY_FOLDERS.audio,
+  flac: SAVE_CATEGORY_FOLDERS.audio,
+  aac: SAVE_CATEGORY_FOLDERS.audio,
+  wma: SAVE_CATEGORY_FOLDERS.audio,
+  mid: SAVE_CATEGORY_FOLDERS.audio,
+  midi: SAVE_CATEGORY_FOLDERS.audio,
+};
+
+function extensionOf(filename: string): string {
+  const base = String(filename || '').split('/').pop() || '';
+  const dot = base.lastIndexOf('.');
+  if (dot < 0 || dot === base.length - 1) return '';
+  return base.slice(dot + 1).toLowerCase();
+}
+
+/** Folder name a file will be saved into, e.g. "Images". */
+export function categorizeSaveFile(filename: string, mimeType?: string): string {
+  const ext = extensionOf(filename);
+  const byExt = EXTENSION_CATEGORY[ext];
+  if (byExt) return byExt;
+  const mime = String(mimeType || '').toLowerCase();
+  if (mime.includes('android.package-archive')) return SAVE_CATEGORY_FOLDERS.apps;
+  if (mime.startsWith('image/')) return SAVE_CATEGORY_FOLDERS.images;
+  if (mime.startsWith('video/')) return SAVE_CATEGORY_FOLDERS.videos;
+  if (mime.startsWith('audio/')) return SAVE_CATEGORY_FOLDERS.audio;
+  return SAVE_CATEGORY_FOLDERS.documents;
+}
+
 /** User-facing location of saved files, for snackbars/dialogs. */
 export const MOBILE_SAVE_LOCATION_LABEL = `Documents/${QORTAL_DOCUMENTS_FOLDER}`;
 
+/** Where a specific file will end up, e.g. "Documents/Qortal Go/Images". */
+export function mobileSaveLocationLabelFor(
+  filename: string,
+  mimeType?: string
+): string {
+  return `${MOBILE_SAVE_LOCATION_LABEL}/${categorizeSaveFile(filename, mimeType)}`;
+}
+
 export function buildQortalBackupFileName(qortAddress: string): string {
   return `qortal_backup_${qortAddress}.json`;
+}
+
+function assertNative() {
+  if (!Capacitor.isNativePlatform()) {
+    throw new Error('Mobile document save is only available on the native app.');
+  }
+}
+
+const sanitizeName = (filename: string) =>
+  filename.replace(/[/\\?%*:|"<>]/g, '_');
+
+/**
+ * Only one GO state should exist at a time — drop older .bin files once the
+ * replacement has been written.
+ */
+async function pruneReplacedGoState(safeName: string): Promise<void> {
+  if (extensionOf(safeName) !== 'bin') return;
+  await pruneNativeDocumentFolder({
+    subFolder: `${QORTAL_DOCUMENTS_FOLDER}/${SAVE_CATEGORY_FOLDERS.goState}`,
+    extension: 'bin',
+    keepName: safeName,
+  });
 }
 
 export async function saveTextToMobileDocuments(
   filename: string,
   contents: string
 ): Promise<{ path: string; uri: string }> {
-  if (!Capacitor.isNativePlatform()) {
-    throw new Error('Mobile document save is only available on the native app.');
-  }
-
-  const safeName = filename.replace(/[/\\?%*:|"<>]/g, '_');
-  return writeNativeDocumentFile(`${QORTAL_DOCUMENTS_FOLDER}/${safeName}`, contents);
+  assertNative();
+  const safeName = sanitizeName(filename);
+  const result = await writeNativeDocumentFile(
+    `${QORTAL_DOCUMENTS_FOLDER}/${safeName}`,
+    contents,
+    { categorize: true }
+  );
+  await pruneReplacedGoState(safeName);
+  return result;
 }
 
 export async function saveBlobToMobileDocuments(
   filename: string,
   blob: Blob
 ): Promise<{ path: string; uri: string }> {
-  if (!Capacitor.isNativePlatform()) {
-    throw new Error('Mobile document save is only available on the native app.');
-  }
-
-  const safeName = filename.replace(/[/\\?%*:|"<>]/g, '_');
-  return writeNativeDocumentBlob(`${QORTAL_DOCUMENTS_FOLDER}/${safeName}`, blob);
+  assertNative();
+  const safeName = sanitizeName(filename);
+  const result = await writeNativeDocumentBlob(
+    `${QORTAL_DOCUMENTS_FOLDER}/${safeName}`,
+    blob,
+    { categorize: true, mimeType: blob.type || undefined }
+  );
+  await pruneReplacedGoState(safeName);
+  return result;
 }
 
 /**
- * Streams chunks into Documents/Qortal Go/<filename> without buffering the
- * whole file in memory. Used by QDN downloads on Android, where neither the
- * File System Access API nor anchor-tag downloads work inside the Capacitor
- * WebView.
+ * Streams chunks into Documents/Qortal Go/<category>/<filename> without
+ * buffering the whole file in memory. Used by QDN downloads on Android, where
+ * neither the File System Access API nor anchor-tag downloads work inside the
+ * Capacitor WebView.
  */
 export async function saveStreamToMobileDocuments(
   filename: string,
-  chunks: AsyncIterable<Uint8Array>
+  chunks: AsyncIterable<Uint8Array>,
+  mimeType?: string
 ): Promise<{ path: string; uri: string; bytesWritten: number }> {
-  if (!Capacitor.isNativePlatform()) {
-    throw new Error('Mobile document save is only available on the native app.');
-  }
+  assertNative();
 
-  const safeName = filename.replace(/[/\\?%*:|"<>]/g, '_');
+  const safeName = sanitizeName(filename);
   const target = `${QORTAL_DOCUMENTS_FOLDER}/${safeName}`;
 
   let buffer: Uint8Array[] = [];
@@ -74,7 +185,11 @@ export async function saveStreamToMobileDocuments(
     }
     buffer = [];
     buffered = 0;
-    lastResult = await writeNativeDocumentBytes(target, merged, firstWriteDone);
+    lastResult = await writeNativeDocumentBytes(target, merged, {
+      append: firstWriteDone,
+      categorize: true,
+      mimeType,
+    });
     firstWriteDone = true;
     bytesWritten += merged.length;
   };
@@ -92,6 +207,8 @@ export async function saveStreamToMobileDocuments(
   if (!lastResult) {
     throw new Error('Download produced no data');
   }
+
+  await pruneReplacedGoState(safeName);
 
   return { ...(lastResult as { path: string; uri: string }), bytesWritten };
 }

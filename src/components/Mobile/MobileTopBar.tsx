@@ -35,6 +35,7 @@ import {
   type GeneralNotificationsHandle,
 } from '../GeneralNotifications';
 import { filterAppTabsForMobile, isQChatOpenTab } from '../../utils/openQChatTab';
+import { executeEvent } from '../../utils/events';
 import { useOpenTabs } from './useOpenTabs';
 import { buildTabQortalUrl } from './tabQortalLink';
 import { QortalUserAvatar } from '../QortalUserAvatar';
@@ -356,7 +357,7 @@ export const MobileTopBar = ({
     },
     {
       icon: SettingsRoundedIcon,
-      label: 'Settings',
+      label: 'Node',
       onClick: onOpenSettings,
     },
     {
@@ -481,6 +482,33 @@ export const MobileTopBar = ({
 
       <MobileTopBarSearch
         activeTabUrl={desktopViewMode === 'apps' ? activeTabUrl : ''}
+        activeTabTitle={
+          activeAppTab
+            ? String(
+                activeAppTab.label ||
+                  (activeAppTab as { metadata?: { title?: string } }).metadata
+                    ?.title ||
+                  activeAppTab.name ||
+                  ''
+              )
+            : ''
+        }
+        activeTabId={activeAppTab?.tabId ? String(activeAppTab.tabId) : ''}
+        onRefreshActiveTab={
+          activeAppTab?.tabId
+            ? () => {
+                const tab = activeAppTab as {
+                  tabId?: string;
+                  refreshFunc?: (tabId?: string) => void;
+                };
+                if (tab.refreshFunc) {
+                  tab.refreshFunc(tab.tabId);
+                  return;
+                }
+                executeEvent('refreshApp', { tabId: tab.tabId });
+              }
+            : undefined
+        }
         expanded={searchExpanded}
         onExpandedChange={setSearchExpanded}
         showActiveTabUrl={showActiveTabUrl}

@@ -361,6 +361,96 @@ export const publishOnQDN = async ({
   }
 };
 
+/**
+ * Publish a Q-Mail compatible MAIL_PRIVATE message straight from the Hub —
+ * no Q-Mail iframe. Mirrors q-mail's NewMessage payload + identifier scheme
+ * so the recipient's normal inbox (and the sender's Sent box) pick it up.
+ */
+export const sendPrivateQmail = async ({
+  recipientName,
+  subject,
+  htmlBody,
+}: {
+  recipientName: string;
+  subject: string;
+  htmlBody: string;
+}) => {
+  const [balance, fee] = await Promise.all([
+    getQortBalanceInfo(),
+    getArbitraryPublishFee(),
+  ]);
+  if (+balance < fee) {
+    throw new Error(
+      i18n.t('question:message.error.insufficient_balance_qort', {
+        postProcess: 'capitalizeFirstChar',
+      })
+    );
+  }
+
+  const senderName = await getNameInfo();
+  if (!senderName) {
+    throw new Error('A registered Qortal name is required to send Q-Mail.');
+  }
+
+  const validApi = await getBaseApi();
+  const nameRes = await fetch(
+    `${validApi}/names/${encodeURIComponent(recipientName)}`
+  );
+  if (!nameRes.ok) throw new Error('Recipient name was not found');
+  const nameData = await nameRes.json();
+  const recipientAddress =
+    typeof nameData?.owner === 'string' ? nameData.owner : '';
+  if (!recipientAddress) throw new Error('Recipient name was not found');
+
+  const pubRes = await fetch(
+    `${validApi}/addresses/publickey/${recipientAddress}`
+  );
+  const recipientPublicKey = pubRes.ok ? (await pubRes.text()).trim() : '';
+  if (!recipientPublicKey || recipientPublicKey === 'false') {
+    throw new Error(
+      'The recipient does not have a public key on chain yet (no outgoing transactions).'
+    );
+  }
+
+  const keyPair = await getKeyPair();
+  const mailObject = {
+    subject,
+    createdAt: Date.now(),
+    version: 1,
+    attachments: [],
+    textContentV2: htmlBody,
+    generalData: { thread: [], threadV2: [] },
+    recipient: recipientName,
+  };
+  const data64 = await objectToBase64(mailObject);
+  const encrypted = encryptDataGroup({
+    data64,
+    publicKeys: [recipientPublicKey],
+    privateKey: keyPair.privateKey,
+    userPublicKey: keyPair.publicKey,
+  });
+  if (!encrypted) throw new Error('Failed to encrypt the message');
+
+  const sendId = `${Date.now().toString(36)}${Math.random()
+    .toString(36)
+    .slice(2, 9)}`;
+  const identifier = `_mail_qortal_qmail_${recipientName.slice(
+    0,
+    20
+  )}_${recipientAddress.slice(-6)}_mail_${sendId}`;
+
+  const res = await publishData({
+    registeredName: senderName,
+    data: encrypted,
+    file: encrypted,
+    identifier,
+    service: 'MAIL_PRIVATE',
+    uploadType: 'base64',
+    withFee: true,
+  });
+  return { identifier, recipientAddress, recipientName, result: res };
+};
+
 export function uint8ArrayToBase64(uint8Array: any) {
   const length = uint8Array.length;
   let binaryString = '';

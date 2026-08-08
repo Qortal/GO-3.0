@@ -61,6 +61,8 @@ public class QortalForegroundService extends Service {
         "com.github.Qortal.qortalMobile.QORTAL_FGS_SHOW_INCOMING_CALL";
     public static final String ACTION_DISMISS_INCOMING_CALL =
         "com.github.Qortal.qortalMobile.QORTAL_FGS_DISMISS_INCOMING_CALL";
+    public static final String ACTION_DISMISS_CHAT_ALERTS =
+        "com.github.Qortal.qortalMobile.QORTAL_FGS_DISMISS_CHAT_ALERTS";
 
     public static final String ACTION_INCOMING_CALL_ACCEPT =
         "com.github.Qortal.qortalMobile.QORTAL_INCOMING_CALL_ACCEPT";
@@ -194,6 +196,9 @@ public class QortalForegroundService extends Service {
                 break;
             case ACTION_DISMISS_INCOMING_CALL:
                 dismissIncomingCallNotification();
+                break;
+            case ACTION_DISMISS_CHAT_ALERTS:
+                dismissChatAlertNotifications();
                 break;
             case ACTION_UPDATE_TRANSFER:
                 showTransferNotification(
@@ -683,6 +688,25 @@ public class QortalForegroundService extends Service {
         }
     }
 
+    /** Clear tray notifications for Groups / DMs (not the persistent status or transfers). */
+    private void dismissChatAlertNotifications() {
+        NotificationManager manager = getSystemService(NotificationManager.class);
+        if (manager == null) return;
+        try {
+            for (android.service.notification.StatusBarNotification sbn :
+                    manager.getActiveNotifications()) {
+                String channelId = sbn.getNotification().getChannelId();
+                if (CHANNEL_ALERTS_PM_ID.equals(channelId)
+                        || CHANNEL_ALERTS_GROUP_ID.equals(channelId)
+                        || CHANNEL_ALERTS_ID.equals(channelId)) {
+                    manager.cancel(sbn.getTag(), sbn.getId());
+                }
+            }
+        } catch (Exception ignored) {
+            /* older devices / race — best effort */
+        }
+    }
+
     /**
      * Stable per-transfer notification id derived from the transfer id, so
      * progress updates replace in place and the mapping survives process
@@ -897,6 +921,12 @@ public class QortalForegroundService extends Service {
         intent.putExtra(EXTRA_CALL_FROM, fromAddress);
         intent.putExtra(EXTRA_CALL_FROM_NAME, fromName);
         startServiceCompat(context, intent);
+    }
+
+    public static void dismissChatAlerts(Context context) {
+        Intent intent = new Intent(context, QortalForegroundService.class);
+        intent.setAction(ACTION_DISMISS_CHAT_ALERTS);
+        context.startService(intent);
     }
 
     public static void dismissIncomingCall(Context context) {

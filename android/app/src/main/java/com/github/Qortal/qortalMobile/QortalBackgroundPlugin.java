@@ -288,6 +288,21 @@ public class QortalBackgroundPlugin extends Plugin {
     }
 
     @PluginMethod
+    public void dismissChatAlertNotifications(PluginCall call) {
+        Context context = getContext();
+        if (context == null) {
+            call.reject("Context not available");
+            return;
+        }
+
+        QortalForegroundService.dismissChatAlerts(context);
+
+        JSObject ret = new JSObject();
+        ret.put("success", true);
+        call.resolve(ret);
+    }
+
+    @PluginMethod
     public void isIgnoringBatteryOptimizations(PluginCall call) {
         Context context = getContext();
         if (context == null) {

@@ -67,6 +67,9 @@ export interface QortalBackgroundPlugin {
 
   dismissIncomingCallNotification(): Promise<{ success: boolean }>;
 
+  /** Clear Group/DM alert notifications from the Android tray. */
+  dismissChatAlertNotifications(): Promise<{ success: boolean }>;
+
   isIgnoringBatteryOptimizations(): Promise<{ ignoring: boolean }>;
 
   requestIgnoreBatteryOptimizations(): Promise<{ success: boolean }>;

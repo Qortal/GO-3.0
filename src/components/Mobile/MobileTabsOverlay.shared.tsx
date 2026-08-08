@@ -41,8 +41,17 @@ export const TabAvatar = ({
   size?: number;
 }) => {
   const [failed, setFailed] = useState(false);
-  const avatarUrl =
-    !tab.internal && tab.name ? buildAppThumbnailUrl(String(tab.name)) : null;
+  const privateLogo =
+    typeof (tab as any)?.privateAppProperties?.logo === 'string'
+      ? String((tab as any).privateAppProperties.logo)
+      : typeof (tab as any)?.logo === 'string'
+        ? String((tab as any).logo)
+        : null;
+  const avatarUrl = privateLogo
+    ? privateLogo
+    : !tab.internal && tab.name
+      ? buildAppThumbnailUrl(String(tab.name))
+      : null;
 
   const fallback = (
     <Box

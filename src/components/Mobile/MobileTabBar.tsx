@@ -15,7 +15,13 @@ import {
   directChatHasUnreadAtom,
   groupChatHasUnreadExcludingMutedAtom,
   isNewTabWindowAtom,
+  qortinoAgentOpenAtom,
+  qortinoAgentParkedAtom,
 } from '../../atoms/global';
+import {
+  closeQortinoAgentSheet,
+  restoreQortinoAgentSheet,
+} from '../../qortinoAgent/qortinoSheetNav';
 import { SAFE_AREA_BOTTOM } from '../../utils/mobileSafeArea';
 
 export const MOBILE_TAB_BAR_HEIGHT_PX = 60;
@@ -67,6 +73,8 @@ export const MobileTabBar = ({
   const hasPmUnread = useAtomValue(directChatHasUnreadAtom);
   const hasGroupUnread = useAtomValue(groupChatHasUnreadExcludingMutedAtom);
   const isNewTabWindow = useAtomValue(isNewTabWindowAtom);
+  const qortinoOpen = useAtomValue(qortinoAgentOpenAtom);
+  const qortinoParked = useAtomValue(qortinoAgentParkedAtom);
   const { tabs, selectedTab } = useOpenTabs();
   // Remember the last real app the user viewed so a later Apps tap can return
   // to it after the Explore/library window has been shown.
@@ -89,6 +97,19 @@ export const MobileTabBar = ({
     setActive(tab);
     switch (tab) {
       case 'home':
+        // Qortino loop: parked after Q-App → restore sheet; sheet open on home → dismiss.
+        if (qortinoParked) {
+          restoreQortinoAgentSheet();
+          setDesktopViewMode('home');
+          executeEvent('open-home-mode', {});
+          break;
+        }
+        if (qortinoOpen) {
+          closeQortinoAgentSheet();
+          setDesktopViewMode('home');
+          executeEvent('open-home-mode', {});
+          break;
+        }
         setDesktopViewMode('home');
         executeEvent('open-home-mode', {});
         break;

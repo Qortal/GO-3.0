@@ -6,6 +6,7 @@ import {
   DropzoneInputProps,
 } from 'react-dropzone';
 import Compressor from 'compressorjs';
+import { createNamedFile } from '../utils/namedFile';
 
 const toBase64 = (file: File): Promise<string | ArrayBuffer | null> =>
   new Promise((resolve, reject) => {
@@ -72,7 +73,7 @@ const ImageUploader: React.FC<ImageUploaderProps> = ({
               maxWidth: 1200,
               mimeType: 'image/webp',
               success(result) {
-                const file = new File([result], image.name, {
+                const file = createNamedFile([result], image.name, {
                   type: 'image/webp',
                 });
                 compressedFile = file;

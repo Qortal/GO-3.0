@@ -32,6 +32,7 @@ import {
   isAvatarKnownPresent,
 } from '../../utils/groupMemberAvatars';
 import { executeEvent } from '../../utils/events';
+import { formatTimestamp } from '../../utils/time';
 
 type GroupDetailsDialogProps = {
   open: boolean;
@@ -50,10 +51,19 @@ type GroupInfo = {
   created?: number;
 };
 
+type ListedPerson = {
+  name?: string;
+  address: string;
+  joined?: number;
+};
+
 const shortenAddress = (address?: string) =>
   address && address.length > 12
     ? `${address.slice(0, 6)}…${address.slice(-4)}`
     : address || '';
+
+const sortNewestJoinedFirst = (a: ListedPerson, b: ListedPerson) =>
+  (b.joined || 0) - (a.joined || 0);
 
 export const GroupDetailsDialog = ({
   open,
@@ -68,9 +78,11 @@ export const GroupDetailsDialog = ({
   const [loading, setLoading] = useState(false);
   const [info, setInfo] = useState<GroupInfo | null>(null);
   const [members, setMembers] = useState<
-    { member: string; primaryName?: string }[]
+    { member: string; primaryName?: string; joined?: number }[]
   >([]);
-  const [admins, setAdmins] = useState<{ name: string; address: string }[]>([]);
+  const [admins, setAdmins] = useState<
+    { name: string; address: string; joined?: number }[]
+  >([]);
   const [previewOpen, setPreviewOpen] = useState(false);
 
   const avatarUrl = useMemo(
@@ -114,21 +126,55 @@ export const GroupDetailsDialog = ({
   }, [open, groupId]);
 
   const memberCount = info?.memberCount ?? members.length;
+  const ownerAddress = info?.owner?.trim() || '';
+
+  const ownerPerson = useMemo<ListedPerson | null>(() => {
+    if (!ownerAddress && !ownerName) return null;
+    const fromMembers = members.find((m) => m.member === ownerAddress);
+    return {
+      address: ownerAddress || fromMembers?.member || '',
+      name: ownerName || fromMembers?.primaryName || undefined,
+      joined: fromMembers?.joined,
+    };
+  }, [ownerAddress, ownerName, members]);
+
   const adminAddresses = useMemo(
     () => new Set(admins.map((a) => a.address)),
     [admins]
   );
-  const nonAdminMembers = useMemo(
-    () => members.filter((m) => !adminAddresses.has(m.member)),
-    [members, adminAddresses]
+
+  const renderedAdmins = useMemo(
+    () =>
+      admins
+        .filter((a) => a.address !== ownerAddress)
+        .map(
+          (a): ListedPerson => ({
+            address: a.address,
+            name: a.name || undefined,
+            joined: a.joined,
+          })
+        )
+        .sort(sortNewestJoinedFirst),
+    [admins, ownerAddress]
   );
 
-  // Render the full lists — every member/admin name should show. Avatar images
-  // are only loaded for users confirmed to have one (see ensureAvatarPresence),
-  // and the browser self-throttles concurrent image requests, so even large
-  // groups stay light.
-  const renderedAdmins = admins;
-  const renderedMembers = nonAdminMembers;
+  const renderedMembers = useMemo(
+    () =>
+      members
+        .filter(
+          (m) =>
+            !adminAddresses.has(m.member) && m.member !== ownerAddress
+        )
+        .map(
+          (m): ListedPerson => ({
+            address: m.member,
+            name: m.primaryName,
+            joined: m.joined,
+          })
+        )
+        .sort(sortNewestJoinedFirst),
+    [members, adminAddresses, ownerAddress]
+  );
 
   // Bulk-detect which listed users actually have a published avatar so only
   // those load an image (avatar-less users render an instant local fallback
@@ -138,12 +184,13 @@ export const GroupDetailsDialog = ({
     if (!open) return;
     ensureAvatarPresence(
       [
+        ownerPerson?.name,
         ...renderedAdmins.map((a) => a.name),
-        ...renderedMembers.map((m) => m.primaryName),
+        ...renderedMembers.map((m) => m.name),
       ],
       refreshAvatars
     );
-  }, [open, renderedAdmins, renderedMembers]);
+  }, [open, ownerPerson?.name, renderedAdmins, renderedMembers]);
 
   const isLight = theme.palette.mode === 'light';
   const sectionLabelSx = {
@@ -162,7 +209,11 @@ export const GroupDetailsDialog = ({
     executeEvent('openUserLookupDrawer', { addressOrName: target });
   };
 
-  const renderPerson = (name: string | undefined, address: string) => {
+  const renderPerson = (
+    person: ListedPerson,
+    options?: { roleLabel?: string }
+  ) => {
+    const { name, address, joined } = person;
     const avatarSx = {
       bgcolor: alpha(theme.palette.primary.main, 0.16),
       color: theme.palette.primary.main,
@@ -174,54 +225,96 @@ export const GroupDetailsDialog = ({
     // Only mount an image-loading avatar for users confirmed to have one.
     const showImageAvatar = isAvatarKnownPresent(name);
     return (
-    <Box
-      key={address}
-      onClick={() => openUserProfile(name, address)}
-      role="button"
-      tabIndex={0}
-      sx={{
-        alignItems: 'center',
-        borderRadius: '10px',
-        cursor: 'pointer',
-        display: 'flex',
-        gap: 1,
-        mx: -0.75,
-        px: 0.75,
-        py: 0.6,
-        transition: 'background-color 0.15s ease',
-        '&:hover': {
-          backgroundColor: alpha(theme.palette.primary.main, 0.08),
-        },
-        '&:active': {
-          backgroundColor: alpha(theme.palette.primary.main, 0.14),
-        },
-      }}
-    >
-      {showImageAvatar ? (
-        <QortalUserAvatar
-          primaryName={name || undefined}
-          walletAddress={address}
-          fallbackIconSize={16}
-          sx={avatarSx}
-        />
-      ) : (
-        <Avatar sx={avatarSx}>
-          {(name || address || '?').trim().charAt(0).toUpperCase()}
-        </Avatar>
-      )}
-      <Typography
+      <Box
+        key={address || name || options?.roleLabel}
+        onClick={() => openUserProfile(name, address)}
+        role="button"
+        tabIndex={0}
         sx={{
-          color: name ? theme.palette.text.primary : theme.palette.text.secondary,
-          fontSize: '0.86rem',
-          fontWeight: name ? 600 : 500,
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap',
+          alignItems: 'center',
+          borderRadius: '10px',
+          cursor: 'pointer',
+          display: 'flex',
+          gap: 1,
+          mx: -0.75,
+          px: 0.75,
+          py: 0.6,
+          transition: 'background-color 0.15s ease',
+          '&:hover': {
+            backgroundColor: alpha(theme.palette.primary.main, 0.08),
+          },
+          '&:active': {
+            backgroundColor: alpha(theme.palette.primary.main, 0.14),
+          },
         }}
       >
-        {name || shortenAddress(address)}
-      </Typography>
-    </Box>
+        {showImageAvatar ? (
+          <QortalUserAvatar
+            primaryName={name || undefined}
+            walletAddress={address}
+            fallbackIconSize={16}
+            sx={avatarSx}
+          />
+        ) : (
+          <Avatar sx={avatarSx}>
+            {(name || address || '?').trim().charAt(0).toUpperCase()}
+          </Avatar>
+        )}
+        <Box sx={{ flex: 1, minWidth: 0 }}>
+          <Box
+            sx={{
+              alignItems: 'baseline',
+              display: 'flex',
+              gap: 0.75,
+              minWidth: 0,
+            }}
+          >
+            <Typography
+              sx={{
+                color: name
+                  ? theme.palette.text.primary
+                  : theme.palette.text.secondary,
+                fontSize: '0.86rem',
+                fontWeight: name ? 600 : 500,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {name || shortenAddress(address)}
+            </Typography>
+            {options?.roleLabel ? (
+              <Typography
+                sx={{
+                  color: theme.palette.text.secondary,
+                  flexShrink: 0,
+                  fontSize: '0.68rem',
+                  fontWeight: 700,
+                  letterSpacing: '0.04em',
+                  textTransform: 'uppercase',
+                }}
+              >
+                {options.roleLabel}
+              </Typography>
+            ) : null}
+          </Box>
+          {joined ? (
+            <Typography
+              sx={{
+                color: theme.palette.text.secondary,
+                fontSize: '0.72rem',
+                lineHeight: 1.2,
+                mt: 0.15,
+              }}
+            >
+              {t('group:joined', {
+                defaultValue: 'Joined',
+              })}{' '}
+              {formatTimestamp(joined)}
+            </Typography>
+          ) : null}
+        </Box>
+      </Box>
     );
   };
 
@@ -469,28 +562,37 @@ export const GroupDetailsDialog = ({
                 </Box>
               )}
 
-              {admins.length > 0 && (
+              {ownerPerson && (ownerPerson.address || ownerPerson.name) && (
+                <Box sx={{ mt: 2 }}>
+                  <Typography sx={{ ...sectionLabelSx, mb: 0.4 }}>
+                    {t('core:owner', { defaultValue: 'Owner' })}
+                  </Typography>
+                  <Box>
+                    {renderPerson(ownerPerson, {
+                      roleLabel: t('core:owner', { defaultValue: 'Owner' }),
+                    })}
+                  </Box>
+                </Box>
+              )}
+
+              {renderedAdmins.length > 0 && (
                 <Box sx={{ mt: 2 }}>
                   <Typography sx={{ ...sectionLabelSx, mb: 0.4 }}>
                     {t('core:admin_other', { defaultValue: 'Admins' })}
                   </Typography>
                   <Box>
-                    {renderedAdmins.map((a) =>
-                      renderPerson(a.name, a.address)
-                    )}
+                    {renderedAdmins.map((a) => renderPerson(a))}
                   </Box>
                 </Box>
               )}
 
-              {nonAdminMembers.length > 0 && (
+              {renderedMembers.length > 0 && (
                 <Box sx={{ mt: 2 }}>
                   <Typography sx={{ ...sectionLabelSx, mb: 0.4 }}>
                     {t('core:member_other', { defaultValue: 'Members' })}
                   </Typography>
                   <Box sx={{ pr: 0.5 }}>
-                    {renderedMembers.map((m) =>
-                      renderPerson(m.primaryName, m.member)
-                    )}
+                    {renderedMembers.map((m) => renderPerson(m))}
                   </Box>
                 </Box>
               )}

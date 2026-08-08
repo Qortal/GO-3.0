@@ -163,8 +163,14 @@ export const getGroupAdminsAddress = async (
   return members;
 };
 
+export type GroupMemberEntry = {
+  member: string;
+  primaryName?: string;
+  joined?: number;
+};
+
 export const getGroupMembers = async (groupNumber: number): Promise<{
-  members?: { member: string; primaryName?: string }[];
+  members?: GroupMemberEntry[];
   memberCount?: number;
   [key: string]: unknown;
 }> => {
@@ -180,7 +186,7 @@ export const getGroupAdmins = async (
 ): Promise<{
   names: string[];
   addresses: string[];
-  both: { name: string; address: string }[];
+  both: { name: string; address: string; joined?: number }[];
 }> => {
   const response = await fetch(
     `${getBaseApiReact()}/groups/members/${groupNumber}?limit=0&onlyAdmins=true`
@@ -188,17 +194,23 @@ export const getGroupAdmins = async (
   const groupData = await response.json();
   const names: string[] = [];
   const membersAddresses: string[] = [];
-  const both: { name: string; address: string }[] = [];
+  const both: { name: string; address: string; joined?: number }[] = [];
 
-  groupData?.members?.forEach((member: { member?: string; primaryName?: string }) => {
-    if (member?.member) {
-      membersAddresses.push(member.member);
-      if (member.primaryName) {
-        names.push(member.primaryName);
-        both.push({ name: member.primaryName, address: member.member });
+  groupData?.members?.forEach(
+    (member: { member?: string; primaryName?: string; joined?: number }) => {
+      if (member?.member) {
+        membersAddresses.push(member.member);
+        if (member.primaryName) {
+          names.push(member.primaryName);
+        }
+        both.push({
+          name: member.primaryName || '',
+          address: member.member,
+          joined: member.joined,
+        });
       }
     }
-  });
+  );
 
   return { names, addresses: membersAddresses, both };
 };

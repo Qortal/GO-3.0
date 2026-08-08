@@ -19,6 +19,10 @@ import {
   isPublicGatewayNodeUrl,
 } from '../../constants/constants';
 import { useAuth } from '../../hooks/useAuth';
+import {
+  loadPrivateNodeDraft,
+  savePrivateNodeDraft,
+} from '../../utils/privateNodeDraft';
 import { AuthButton } from '../Auth/AuthShell';
 
 type NodeMode = 'public' | 'private';
@@ -53,13 +57,36 @@ export function MobileNodeConnectionSettings({
   const [error, setError] = useState('');
   const [savedHint, setSavedHint] = useState('');
 
+  // Keep the last private node draft even while public is active, so switching
+  // back (and pre-login → post-login Settings) restores the saved fields.
   useEffect(() => {
+    let cancelled = false;
     const nextMode = resolveNodeMode(selectedNode?.url);
     setMode(nextMode);
-    if (nextMode === 'private' && selectedNode?.url) {
-      setPrivateUrl(normalizeNodeUrl(selectedNode.url));
-      setPrivateApiKey(selectedNode.apikey || '');
-    }
+
+    const hydrate = async () => {
+      if (nextMode === 'private' && selectedNode?.url) {
+        const url = normalizeNodeUrl(selectedNode.url);
+        const apikey = selectedNode.apikey || '';
+        if (!cancelled) {
+          setPrivateUrl(url);
+          setPrivateApiKey(apikey);
+        }
+        await savePrivateNodeDraft({ url, apikey });
+        return;
+      }
+
+      const draft = await loadPrivateNodeDraft();
+      if (!cancelled && draft) {
+        setPrivateUrl(draft.url);
+        setPrivateApiKey(draft.apikey);
+      }
+    };
+
+    void hydrate();
+    return () => {
+      cancelled = true;
+    };
   }, [selectedNode?.apikey, selectedNode?.url]);
 
   const cardSx = useMemo(
@@ -89,6 +116,13 @@ export function MobileNodeConnectionSettings({
     setError('');
     setSavedHint('');
     try {
+      // Persist any typed private fields before overwriting the active node.
+      if (privateUrl.trim()) {
+        await savePrivateNodeDraft({
+          url: normalizeNodeUrl(privateUrl),
+          apikey: privateApiKey.trim(),
+        });
+      }
       await handleSaveNodeInfo({
         url: HTTPS_EXT_NODE_QORTAL_LINK,
         apikey: '',
@@ -104,7 +138,7 @@ export function MobileNodeConnectionSettings({
     } finally {
       setBusy(false);
     }
-  }, [handleSaveNodeInfo, t]);
+  }, [handleSaveNodeInfo, privateApiKey, privateUrl, t]);
 
   const savePrivate = useCallback(async () => {
     const url = normalizeNodeUrl(privateUrl);
@@ -117,9 +151,11 @@ export function MobileNodeConnectionSettings({
     setError('');
     setSavedHint('');
     try {
+      const apikey = privateApiKey.trim();
+      await savePrivateNodeDraft({ url, apikey });
       await handleSaveNodeInfo({
         url,
-        apikey: privateApiKey.trim(),
+        apikey,
         name: t('auth:mobile_node_settings.private_title'),
       });
       setMode('private');
@@ -141,6 +177,13 @@ export function MobileNodeConnectionSettings({
     setMode(nextMode);
     if (nextMode === 'public') {
       await savePublic();
+      return;
+    }
+    // Switching back to private: restore staged draft fields into the form.
+    const draft = await loadPrivateNodeDraft();
+    if (draft) {
+      setPrivateUrl(draft.url);
+      setPrivateApiKey(draft.apikey);
     }
   };
 

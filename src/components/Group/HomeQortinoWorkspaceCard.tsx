@@ -15,7 +15,7 @@ import {
 } from '@mui/material';
 import { alpha } from '@mui/material/styles';
 import { AnimatePresence, motion } from 'framer-motion';
-import { useAtomValue } from 'jotai';
+import { useAtom, useAtomValue } from 'jotai';
 import {
   type DragEvent as ReactDragEvent,
   type PointerEvent as ReactPointerEvent,
@@ -52,6 +52,8 @@ import TuneRoundedIcon from '@mui/icons-material/TuneRounded';
 import SchoolRoundedIcon from '@mui/icons-material/SchoolRounded';
 import {
   balanceAtom,
+  qortinoAgentOpenAtom,
+  qortinoAgentParkedAtom,
   resourceKeySelector,
   txListAtom,
   userInfoAtom,
@@ -1945,6 +1947,9 @@ export const HomeQortinoWorkspaceCard = ({
     setShowOnboardingCompletionConfetti,
   ] = useState(false);
   const [isQortinoTickled, setIsQortinoTickled] = useState(false);
+  const [, setQortinoAgentOpen] = useAtom(qortinoAgentOpenAtom);
+  const [, setQortinoAgentParked] = useAtom(qortinoAgentParkedAtom);
+  const qortinoPointerDownAtRef = useRef<number | null>(null);
   const [qortinoGratefulState, setQortinoGratefulState] =
     useState<QortinoGratefulState | null>(null);
   const [qortinoDonationOverlayState, setQortinoDonationOverlayState] =
@@ -2166,6 +2171,7 @@ export const HomeQortinoWorkspaceCard = ({
   const handleQortinoPointerDown = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
       event.currentTarget.setPointerCapture?.(event.pointerId);
+      qortinoPointerDownAtRef.current = Date.now();
       setIsQortinoTickled(true);
     },
     []
@@ -2173,7 +2179,14 @@ export const HomeQortinoWorkspaceCard = ({
 
   const handleQortinoPointerRelease = useCallback(() => {
     setIsQortinoTickled(false);
-  }, []);
+    const startedAt = qortinoPointerDownAtRef.current;
+    qortinoPointerDownAtRef.current = null;
+    // Short press opens the offline agent; longer holds stay a playful tickle.
+    if (startedAt != null && Date.now() - startedAt < 420) {
+      setQortinoAgentParked(false);
+      setQortinoAgentOpen(true);
+    }
+  }, [setQortinoAgentOpen, setQortinoAgentParked]);
 
   const showQortinoDonationOverlay = useCallback(
     ({

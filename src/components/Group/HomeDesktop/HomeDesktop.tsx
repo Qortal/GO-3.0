@@ -20,6 +20,7 @@ import {
 } from '../HomeQortinoWorkspaceCard';
 import { HomeQuickToolsPad } from '../HomeQuickToolsPad';
 import { HomeFeaturedApps } from '../HomeFeaturedApps';
+import { HomeQuitterComposer } from '../../Widgets/quitter/HomeQuitterComposer';
 import { useTranslation } from 'react-i18next';
 import {
   LazyMotion,
@@ -668,6 +669,7 @@ export const HomeDesktop = ({
                               '& > *': { height: '100%' },
                             }}
                           >
+                            {/* Sheet lives on Group; workspace card only needed on home. */}
                             {desktopViewMode === 'home' ? (
                               <ErrorBoundary
                                 fallback={qortinoWorkspaceShellFallback}
@@ -719,6 +721,19 @@ export const HomeDesktop = ({
                           >
                             <HomeProfileCard
                               onOpenReceive={handleOpenReceiveQort}
+                            />
+                          </Box>
+                          <Box
+                            sx={{
+                              display: 'block',
+                              minWidth: 0,
+                              position: 'relative',
+                              width: '100%',
+                              '& > *': { width: '100%' },
+                            }}
+                          >
+                            <HomeQuitterComposer
+                              onPublished={handleRefreshQuitterWidget}
                             />
                           </Box>
                           <Box
@@ -800,51 +815,73 @@ export const HomeDesktop = ({
                         </Box>
                         <Box
                           sx={{
-                            display: 'grid',
+                            display: 'flex',
+                            flexDirection: 'column',
                             gap: `${HOME_DASHBOARD_VERTICAL_GAP_PX}px`,
-                            gridTemplateColumns:
-                              HOME_LEFT_CENTER_LOWER_ROW_GRID_TEMPLATE_COLUMNS,
-                            alignItems: 'stretch',
                             width: '100%',
                           }}
                         >
                           <Box
-                            ref={toolsDebugRef}
                             sx={{
                               display: 'block',
                               minWidth: 0,
                               position: 'relative',
                               width: '100%',
+                              '& > *': { width: '100%' },
                             }}
                           >
-                            <HomeQuickToolsPad
-                              fillHeight={false}
-                              onOpenApps={handleOpenAppsPanel}
-                              onOpenChat={handleOpenQChatPanel}
-                              onOpenSettings={onOpenSettings}
+                            <HomeQuitterComposer
+                              onPublished={handleRefreshQuitterWidget}
                             />
                           </Box>
                           <Box
-                            ref={featuredAppsDebugRef}
                             sx={{
-                              display: 'flex',
-                              height:
-                                resolvedWideLeftLowerRowPanelHeightPx != null
-                                  ? `${resolvedWideLeftLowerRowPanelHeightPx}px`
-                                  : undefined,
-                              minWidth: 0,
-                              overflow: 'visible',
-                              position: 'relative',
+                              display: 'grid',
+                              gap: `${HOME_DASHBOARD_VERTICAL_GAP_PX}px`,
+                              gridTemplateColumns:
+                                HOME_LEFT_CENTER_LOWER_ROW_GRID_TEMPLATE_COLUMNS,
+                              alignItems: 'stretch',
                               width: '100%',
-                              '& > *': {
-                                height: '100%',
-                                position: 'relative',
-                                width: '100%',
-                                zIndex: 1,
-                              },
                             }}
                           >
-                            <HomeFeaturedApps />
+                            <Box
+                              ref={toolsDebugRef}
+                              sx={{
+                                display: 'block',
+                                minWidth: 0,
+                                position: 'relative',
+                                width: '100%',
+                              }}
+                            >
+                              <HomeQuickToolsPad
+                                fillHeight={false}
+                                onOpenApps={handleOpenAppsPanel}
+                                onOpenChat={handleOpenQChatPanel}
+                                onOpenSettings={onOpenSettings}
+                              />
+                            </Box>
+                            <Box
+                              ref={featuredAppsDebugRef}
+                              sx={{
+                                display: 'flex',
+                                height:
+                                  resolvedWideLeftLowerRowPanelHeightPx != null
+                                    ? `${resolvedWideLeftLowerRowPanelHeightPx}px`
+                                    : undefined,
+                                minWidth: 0,
+                                overflow: 'visible',
+                                position: 'relative',
+                                width: '100%',
+                                '& > *': {
+                                  height: '100%',
+                                  position: 'relative',
+                                  width: '100%',
+                                  zIndex: 1,
+                                },
+                              }}
+                            >
+                              <HomeFeaturedApps />
+                            </Box>
                           </Box>
                         </Box>
                       </>

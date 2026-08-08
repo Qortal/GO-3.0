@@ -14,11 +14,17 @@ import SearchIcon from '@mui/icons-material/Search';
 import ArrowOutwardIcon from '@mui/icons-material/ArrowOutward';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import LinkIcon from '@mui/icons-material/Link';
+import ShareRoundedIcon from '@mui/icons-material/ShareRounded';
+import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded';
+import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded';
+import { Capacitor } from '@capacitor/core';
+import { Share } from '@capacitor/share';
 import { useAtomValue } from 'jotai';
 import { useTranslation } from 'react-i18next';
 import { availableQappsAtom, appOpenCountsAtom } from '../../atoms/appsAtoms';
 import { AppThumbnailAvatar } from '../Apps/AppThumbnailAvatar';
 import IconClearInput from '../../assets/svgs/ClearInput.svg';
+import { executeEvent } from '../../utils/events';
 import { MOBILE_TOP_BAR_HEIGHT_PX } from './MobileTopBar';
 import { MOBILE_TABS_OVERLAY_Z } from './mobileLayout';
 import {
@@ -37,6 +43,9 @@ import {
 
 type MobileTopBarSearchProps = {
   activeTabUrl?: string;
+  activeTabTitle?: string;
+  activeTabId?: string;
+  onRefreshActiveTab?: () => void;
   expanded: boolean;
   onExpandedChange: (expanded: boolean) => void;
   showActiveTabUrl?: boolean;
@@ -45,6 +54,9 @@ type MobileTopBarSearchProps = {
 
 export const MobileTopBarSearch = ({
   activeTabUrl = '',
+  activeTabTitle = '',
+  activeTabId = '',
+  onRefreshActiveTab,
   expanded,
   onExpandedChange,
   showActiveTabUrl = false,
@@ -82,6 +94,7 @@ export const MobileTopBarSearch = ({
     expanded &&
     dropdownOpen &&
     !showActiveTabUrl &&
+    !(activeTabUrl && !draftTouched) &&
     (query.trim().length > 0 || suggestions.length > 0);
 
   useEffect(() => {
@@ -112,15 +125,22 @@ export const MobileTopBarSearch = ({
       setDropdownOpen(false);
       return;
     }
-    if (showActiveTabUrl) {
+    // Active-tab address editing: show the Share/Copy/Edit/Refresh card first;
+    // open suggestions only once the user starts changing the draft.
+    if (showActiveTabUrl || (activeTabUrl && !draftTouched)) {
       setDropdownOpen(false);
-      const timer = window.setTimeout(() => inputRef.current?.focus(), 60);
+      const timer = window.setTimeout(() => {
+        inputRef.current?.focus();
+        if (activeTabUrl && !draftTouched) {
+          inputRef.current?.select();
+        }
+      }, 60);
       return () => window.clearTimeout(timer);
     }
     setDropdownOpen(true);
     const timer = window.setTimeout(() => inputRef.current?.focus(), 60);
     return () => window.clearTimeout(timer);
-  }, [expanded, showActiveTabUrl]);
+  }, [activeTabUrl, draftTouched, expanded, showActiveTabUrl]);
 
   const collapse = useCallback(() => {
     setDraftTouched(false);
@@ -128,6 +148,106 @@ export const MobileTopBarSearch = ({
     setDropdownOpen(false);
     onExpandedChange(false);
   }, [activeTabUrl, onExpandedChange, showActiveTabUrl]);
+
+  const currentUrl = (query.trim() || activeTabUrl).trim();
+  // Only while the address field is open for editing — never while browsing.
+  const showUrlActions = expanded && Boolean(activeTabUrl);
+  const displayTitle =
+    activeTabTitle.trim() ||
+    (activeTabUrl ? activeTabUrl.replace(/^qortal:\/\//i, '') : '');
+
+  const handleCopyUrl = useCallback(async () => {
+    if (!currentUrl) return;
+    try {
+      await navigator.clipboard.writeText(currentUrl);
+    } catch {
+      // Clipboard can fail in locked WebViews; ignore quietly.
+    }
+  }, [currentUrl]);
+
+  const handleShareUrl = useCallback(async () => {
+    if (!currentUrl) return;
+    try {
+      // Native Android/iOS share sheet (chooser). Prefer Capacitor over
+      // navigator.share — WebView often lacks a real OS share target list.
+      if (Capacitor.isNativePlatform()) {
+        await Share.share({
+          title: displayTitle || 'Qortal',
+          text: currentUrl,
+          dialogTitle: 'Share link',
+        });
+        return;
+      }
+      if (typeof navigator.share === 'function') {
+        await navigator.share({
+          title: displayTitle || 'Qortal',
+          text: currentUrl,
+        });
+      }
+    } catch {
+      // User cancelled the share sheet — do nothing.
+    }
+  }, [currentUrl, displayTitle]);
+
+  const handleRefresh = useCallback(() => {
+    if (onRefreshActiveTab) {
+      onRefreshActiveTab();
+      return;
+    }
+    if (!activeTabId) return;
+    executeEvent('refreshApp', { tabId: activeTabId });
+  }, [activeTabId, onRefreshActiveTab]);
+
+  const urlActionButtonSx = {
+    borderRadius: '50%',
+    color: theme.palette.text.secondary,
+    flexShrink: 0,
+    p: 0.85,
+    '&:active': {
+      backgroundColor: alpha(theme.palette.text.primary, 0.08),
+      color: theme.palette.text.primary,
+    },
+  } as const;
+
+  const urlActions = showUrlActions ? (
+    <Box
+      sx={{
+        alignItems: 'center',
+        display: 'inline-flex',
+        flexShrink: 0,
+        gap: 0.25,
+        width: 'auto',
+      }}
+      onClick={(event) => event.stopPropagation()}
+      onMouseDown={(event) => event.stopPropagation()}
+    >
+      <IconButton
+        aria-label="Share link"
+        size="medium"
+        onClick={() => void handleShareUrl()}
+        sx={urlActionButtonSx}
+      >
+        <ShareRoundedIcon sx={{ fontSize: 24 }} />
+      </IconButton>
+      <IconButton
+        aria-label="Copy link"
+        size="medium"
+        onClick={() => void handleCopyUrl()}
+        sx={urlActionButtonSx}
+      >
+        <ContentCopyRoundedIcon sx={{ fontSize: 24 }} />
+      </IconButton>
+      <IconButton
+        aria-label="Refresh"
+        size="medium"
+        onClick={handleRefresh}
+        disabled={!activeTabId && !onRefreshActiveTab}
+        sx={urlActionButtonSx}
+      >
+        <RefreshRoundedIcon sx={{ fontSize: 24 }} />
+      </IconButton>
+    </Box>
+  ) : null;
 
   const openAsLink = useCallback(() => {
     if (openAppsSearchLink(query)) {
@@ -311,7 +431,10 @@ export const MobileTopBarSearch = ({
     </Paper>
   );
 
-  const resultsTop = `calc(${MOBILE_TOP_BAR_HEIGHT_PX}px + ${SAFE_AREA_TOP})`;
+  const searchChromeZ = (tabsOverlayOpen ? MOBILE_TABS_OVERLAY_Z : 1300) + 4;
+  const resultsTop = showUrlActions
+    ? `calc(${MOBILE_TOP_BAR_HEIGHT_PX}px + ${SAFE_AREA_TOP} + 48px)`
+    : `calc(${MOBILE_TOP_BAR_HEIGHT_PX}px + ${SAFE_AREA_TOP})`;
 
   const resultsPanel = showDropdown ? (
     <Box
@@ -320,7 +443,7 @@ export const MobileTopBarSearch = ({
         position: 'fixed',
         right: `max(10px, ${SAFE_AREA_RIGHT})`,
         top: `calc(${resultsTop} + 6px)`,
-        zIndex: (tabsOverlayOpen ? MOBILE_TABS_OVERLAY_Z : 0) + 3,
+        zIndex: searchChromeZ + 2,
       }}
     >
       <Paper
@@ -518,55 +641,113 @@ export const MobileTopBarSearch = ({
     </Box>
   ) : null;
 
+  const actionsBarBackground =
+    theme.palette.mode === 'dark'
+      ? 'rgb(34, 36, 42)'
+      : theme.palette.background.paper;
+
+  const urlActionsCard = showUrlActions ? (
+    <Paper
+      elevation={0}
+      sx={{
+        alignItems: 'center',
+        backgroundColor: actionsBarBackground,
+        backgroundImage: 'none',
+        border: `1px solid ${theme.palette.divider}`,
+        borderRadius: '999px',
+        display: 'inline-flex',
+        mt: 0.75,
+        px: 0.5,
+        py: 0.2,
+        position: 'absolute',
+        right: 0,
+        top: `calc(100% + 2px)`,
+        width: 'fit-content',
+        zIndex: 2,
+      }}
+    >
+      {urlActions}
+    </Paper>
+  ) : null;
+
   if (expanded) {
     return (
-      <ClickAwayListener onClickAway={collapse}>
+      <>
+        {/* Covers the open app/page below so scroll/touch dismisses search. */}
         <Box
-          ref={searchContainerRef}
+          aria-hidden
+          onClick={collapse}
+          onWheel={collapse}
+          onTouchMove={collapse}
           sx={{
-            '@keyframes searchOverlayIn': {
-              from: {
-                opacity: 0,
-                transform: 'scaleX(0.92)',
-              },
-              to: {
-                opacity: 1,
-                transform: 'scaleX(1)',
-              },
-            },
-            alignItems: 'center',
-            animation:
-              'searchOverlayIn 220ms cubic-bezier(0.22, 1, 0.36, 1) forwards',
-            backgroundColor:
-              theme.palette.mode === 'dark'
-                ? 'rgb(28, 30, 36)'
-                : theme.palette.background.paper,
-            display: 'flex',
-            gap: 0.75,
-            inset: 0,
-            paddingLeft: `max(10px, ${SAFE_AREA_LEFT})`,
-            paddingRight: `max(10px, ${SAFE_AREA_RIGHT})`,
-            // The overlay covers the whole top bar, including the status-bar
-            // safe-area band — keep the controls below the notification area.
-            paddingTop: SAFE_AREA_TOP,
-            position: 'absolute',
-            transformOrigin: 'center right',
-            zIndex: 2,
+            backgroundColor: 'transparent',
+            bottom: 0,
+            left: 0,
+            position: 'fixed',
+            right: 0,
+            top: `calc(${MOBILE_TOP_BAR_HEIGHT_PX}px + ${SAFE_AREA_TOP})`,
+            zIndex: searchChromeZ,
           }}
-        >
-          <IconButton
-            aria-label="Close search"
-            edge="start"
-            onClick={collapse}
-            size="small"
-            sx={{ flexShrink: 0 }}
+        />
+        <ClickAwayListener onClickAway={collapse}>
+          <Box
+            ref={searchContainerRef}
+            sx={{
+              '@keyframes searchOverlayIn': {
+                from: {
+                  opacity: 0,
+                  transform: 'scaleX(0.92)',
+                },
+                to: {
+                  opacity: 1,
+                  transform: 'scaleX(1)',
+                },
+              },
+              animation:
+                'searchOverlayIn 220ms cubic-bezier(0.22, 1, 0.36, 1) forwards',
+              backgroundColor:
+                theme.palette.mode === 'dark'
+                  ? 'rgb(28, 30, 36)'
+                  : theme.palette.background.paper,
+              // Fixed chrome so the action strip stays above the dismiss layer
+              // (absolute-inside-top-bar was stacking under the fixed backdrop).
+              left: 0,
+              paddingLeft: `max(10px, ${SAFE_AREA_LEFT})`,
+              paddingRight: `max(10px, ${SAFE_AREA_RIGHT})`,
+              paddingTop: SAFE_AREA_TOP,
+              position: 'fixed',
+              right: 0,
+              top: 0,
+              transformOrigin: 'center right',
+              zIndex: searchChromeZ + 1,
+            }}
           >
-            <CloseRoundedIcon sx={{ fontSize: 20 }} />
-          </IconButton>
-          <Box sx={{ flex: 1, minWidth: 0 }}>{searchField}</Box>
-          {resultsPanel}
-        </Box>
-      </ClickAwayListener>
+            <Box
+              sx={{
+                alignItems: 'center',
+                display: 'flex',
+                gap: 0.75,
+                minHeight: MOBILE_TOP_BAR_HEIGHT_PX,
+                position: 'relative',
+                width: '100%',
+              }}
+            >
+              <IconButton
+                aria-label="Close search"
+                edge="start"
+                onClick={collapse}
+                size="small"
+                sx={{ flexShrink: 0 }}
+              >
+                <CloseRoundedIcon sx={{ fontSize: 20 }} />
+              </IconButton>
+              <Box sx={{ flex: 1, minWidth: 0 }}>{searchField}</Box>
+              {urlActionsCard}
+            </Box>
+            {resultsPanel}
+          </Box>
+        </ClickAwayListener>
+      </>
     );
   }
 

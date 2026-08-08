@@ -4,6 +4,7 @@ import {
   subscribeToEvent,
   unsubscribeFromEvent,
 } from '../../utils/events';
+import { getPrivateAppIdentity } from './privateAppTabIdentity';
 
 export type OpenTab = {
   tabId?: string;
@@ -55,8 +56,38 @@ export function closeOpenTab(tabId?: string) {
   executeEvent('removeTab', { data: { tabId } });
 }
 
+/** Close every open tab (mirrors desktop AppsDesktop closeAllTabs). */
+export function closeAllOpenTabs() {
+  executeEvent('closeAllTabs', {});
+}
+
+/**
+ * Select a live tab, or reopen a saved/restored private app with Name+Identifier
+ * via the private decrypt/preview path (never public qortal://APP/).
+ */
 export function openOrSelectTab(tab: OpenTab) {
-  if (tab.tabId && !String(tab.tabId).startsWith('saved:')) {
+  const privateIdentity = getPrivateAppIdentity(tab);
+  const isSavedShell = String(tab.tabId || '').startsWith('saved:');
+  const hasLivePreview =
+    tab.isPreview === true && typeof tab.url === 'string' && Boolean(tab.url);
+
+  if (privateIdentity) {
+    // Restored session tabs keep identity but lose the preview URL / decrypt
+    // binding — re-open through useHandlePrivateApps instead of selecting a dead shell.
+    if (!hasLivePreview || isSavedShell) {
+      if (tab.tabId && !isSavedShell) {
+        closeOpenTab(tab.tabId);
+      }
+      executeEvent('openPrivateApp', {
+        data: privateIdentity,
+      });
+      return;
+    }
+    selectOpenTab(tab);
+    return;
+  }
+
+  if (tab.tabId && !isSavedShell) {
     selectOpenTab(tab);
     return;
   }

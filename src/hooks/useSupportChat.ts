@@ -40,6 +40,7 @@ import { useAtomValue } from 'jotai';
 import { userInfoAtom } from '../atoms/global';
 import { useP2PChat, UseP2PChatReturn } from './useP2PChat';
 import { useOnlineAddresses } from './usePresence';
+import { createNamedFile } from '../utils/namedFile';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -540,7 +541,9 @@ export function useSupportChat(hasStarted = false): UseSupportChatReturn {
             maxWidth: 1200,
             mimeType: 'image/webp',
             success(result) {
-              resolve(new File([result], file.name, { type: 'image/webp' }));
+              resolve(
+                createNamedFile([result], file.name, { type: 'image/webp' })
+              );
             },
             error: reject,
           });

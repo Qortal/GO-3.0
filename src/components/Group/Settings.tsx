@@ -474,22 +474,25 @@ export const Settings = ({ open, setOpen, rawWallet }) => {
                 mb: 3,
               }}
             >
-              <Box
-                sx={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  px: 2,
-                  py: 1.25,
-                }}
-              >
-                <Typography variant="body2" color="text.secondary">
-                  {t('group:action.disable_push_notifications', {
-                    postProcess: 'capitalizeFirstChar',
-                  })}
-                </Typography>
-                <LocalNodeSwitch checked={checked} onChange={handleChange} />
-              </Box>
+              {/* On mobile, push mute lives in the Notifications panel (avatar menu). */}
+              {!isCapacitor() && (
+                <Box
+                  sx={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    px: 2,
+                    py: 1.25,
+                  }}
+                >
+                  <Typography variant="body2" color="text.secondary">
+                    {t('group:action.disable_push_notifications', {
+                      postProcess: 'capitalizeFirstChar',
+                    })}
+                  </Typography>
+                  <LocalNodeSwitch checked={checked} onChange={handleChange} />
+                </Box>
+              )}
             </Box>
 
             {isCapacitor() && (

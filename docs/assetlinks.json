@@ -1,0 +1,12 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.github.Qortal.qortalGo2",
+      "sha256_cert_fingerprints": [
+        "DE:8E:72:35:7E:98:D2:55:5F:84:B6:D0:C9:4C:49:0B:CC:92:44:2A:32:29:02:F8:4A:AB:9E:54:D6:80:B7:E4"
+      ]
+    }
+  }
+]

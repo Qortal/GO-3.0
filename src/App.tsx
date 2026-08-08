@@ -85,6 +85,8 @@ import {
 import {
   getPendingPaymentRequest,
   clearPendingPaymentRequest,
+  getPendingJoinGroupRequest,
+  clearPendingJoinGroupRequest,
 } from './utils/paymentLink';
 import { useAndroidBack, BACK_PRIORITY } from './utils/androidBack';
 import { stopSharedEarbumpPlayback } from './components/Group/earbumpSharedAudio';
@@ -1365,7 +1367,7 @@ function App() {
     subscribeToEvent('openPaymentInternal', openPaymentInternal);
     subscribeToEvent('openReceiveQortInternal', openReceiveQortInternal);
 
-    // Replay a payment deep link / scanned QR that arrived before the
+    // Replay a payment / join-group deep link that arrived before the
     // authenticated app UI was mounted (cold launch from an external scanner).
     if (address) {
       const pending = getPendingPaymentRequest();
@@ -1375,6 +1377,16 @@ function App() {
           detail: { address: pending.recipient, amount: pending.amount },
         });
       }
+      const pendingJoinGroupId = getPendingJoinGroupRequest();
+      if (pendingJoinGroupId) {
+        clearPendingJoinGroupRequest();
+        executeEvent('globalActionJoinGroup', { groupId: pendingJoinGroupId });
+      }
+      // Photos/videos shared from other apps via the "Quitter" share-sheet
+      // target (Android). Idempotent — safe to call on every auth.
+      void import('./components/Widgets/quitter/quitterShareIntake')
+        .then(({ initQuitterShareIntake }) => initQuitterShareIntake())
+        .catch(() => undefined);
     }
 
     return () => {

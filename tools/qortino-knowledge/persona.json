@@ -1,0 +1,7 @@
+{
+  "name": "qortino-persona",
+  "version": 1,
+  "qdn": { "name": "Qortino", "service": "DOCUMENT", "identifier": "qortino_persona_v1" },
+  "system_prompt_file": "qortino-persona.md",
+  "notes": "Inject qortino-persona.md as the system prompt. Retrieved RAG chunks are appended after it, each labeled [Source: <file> — <section>]. Keep persona + chunks + history within the model's context budget (see pack README)."
+}

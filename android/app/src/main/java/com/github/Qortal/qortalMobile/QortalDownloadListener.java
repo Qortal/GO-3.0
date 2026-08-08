@@ -101,10 +101,11 @@ public class QortalDownloadListener implements DownloadListener {
             }
 
             String mime = !TextUtils.isEmpty(mimeHint) ? mimeHint : conn.getContentType();
+            String folder = SaveCategory.folderFor(FOLDER, filename, mime);
             try (InputStream in = conn.getInputStream()) {
-                DocumentSaver.saveStream(getContext(), FOLDER, filename, mime, in);
+                DocumentSaver.saveStream(getContext(), folder, filename, mime, in);
             }
-            toast("Saved to Documents/" + FOLDER);
+            toast("Saved to Documents/" + folder);
         } catch (Exception e) {
             Log.e(TAG, "Failed HTTP download " + url, e);
             toast("Couldn't save file: " + e.getMessage());
@@ -136,10 +137,11 @@ public class QortalDownloadListener implements DownloadListener {
             } else {
                 bytes = Uri.decode(data).getBytes("UTF-8");
             }
+            String folder = SaveCategory.folderFor(FOLDER, filename, mime);
             try (InputStream in = new ByteArrayInputStream(bytes)) {
-                DocumentSaver.saveStream(getContext(), FOLDER, filename, mime, in);
+                DocumentSaver.saveStream(getContext(), folder, filename, mime, in);
             }
-            toast("Saved to Documents/" + FOLDER);
+            toast("Saved to Documents/" + folder);
         } catch (Exception e) {
             Log.e(TAG, "Failed data: download", e);
             toast("Couldn't save file: " + e.getMessage());

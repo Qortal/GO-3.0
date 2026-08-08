@@ -872,6 +872,14 @@ export function useGetResourceStatus() {
   });
 }
 
+/**
+ * Qortino agent sheet visibility.
+ * - open: Dialog is shown
+ * - parked: session kept alive while user browses a Q-App; first Home restores it
+ */
+export const qortinoAgentOpenAtom = atom(false);
+export const qortinoAgentParkedAtom = atom(false);
+
 /** Controls visibility of the support chat panel (toggled via sidebar icon). */
 export const supportChatOpenAtom = atom(false);
 

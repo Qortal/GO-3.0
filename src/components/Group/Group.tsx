@@ -74,9 +74,18 @@ import {
   qortalGroupVoiceCallMinimizedAtom,
   qortalGroupCallPrimaryNamesAtom,
   dmFriendsByAddressAtom,
+  qortinoAgentOpenAtom,
 } from '../../atoms/global';
+import { closeQortinoAgentSheet } from '../../qortinoAgent/qortinoSheetNav';
+import { QortinoAgentSheet } from './QortinoAgent/QortinoAgentSheet';
 import { mergeDirectsWithFriends } from '../../lib/dm/mergeDirectsWithFriends';
 import { sortArrayByTimestampAndGroupName } from '../../utils/time';
+import { dismissChatOsNotifications } from '../../utils/mobileOsNotifications';
+import {
+  applyPinnedGroupOrder,
+  loadPinnedGroupIds,
+  subscribePinnedGroups,
+} from '../../utils/pinnedGroups';
 import { WalletsAppWrapper } from './WalletsAppWrapper';
 import { useTranslation } from 'react-i18next';
 import { GroupList } from './GroupList';
@@ -345,6 +354,7 @@ export const Group = ({
   const setGroupsOwnerNames = useSetAtom(groupsOwnerNamesAtom);
   const userInfo = useAtomValue(userInfoAtom);
   const dmFriendsByAddress = useAtomValue(dmFriendsByAddressAtom);
+  const qortinoAgentOpen = useAtomValue(qortinoAgentOpenAtom);
 
   const {
     roomState: gcallRoomState,
@@ -561,6 +571,7 @@ export const Group = ({
 
     // Only update timestamp when user RETURNS to chat (wasn't in chat, now is in chat)
     if (!wasInChatMode && isNowInChatMode) {
+      void dismissChatOsNotifications();
       // Update timestamp for selected group chat
       if (selectedGroupRef.current && groupSectionRef.current === 'chat') {
         window
@@ -1182,9 +1193,11 @@ export const Group = ({
       }
       const message = event.data;
       if (message?.action === 'SET_GROUPS') {
-        const sortedFiltered = sortArrayByTimestampAndGroupName(
-          message.payload || []
-        ).filter((item: any) => item?.groupId !== '0');
+        const sortedFiltered = applyPinnedGroupOrder(
+          sortArrayByTimestampAndGroupName(message.payload || []).filter(
+            (item: any) => item?.groupId !== '0'
+          )
+        );
         setMemberGroups(sortedFiltered);
         memberGroupsRef.current = sortedFiltered;
         getLatestRegularChat(sortedFiltered);
@@ -1515,6 +1528,7 @@ export const Group = ({
   const handleMarkAsRead = useCallback(
     (e) => {
       const { groupId } = e.detail;
+      void dismissChatOsNotifications();
       window
         .sendMessage('addTimestampEnterChat', {
           timestamp: Date.now(),
@@ -1553,6 +1567,8 @@ export const Group = ({
       .filter((id) => id != null && id !== '');
     if (!ids.length) return;
 
+    void dismissChatOsNotifications();
+
     window
       .sendMessage('markAllMemberGroupsRead', { groupIds: ids })
       .then((response) => {
@@ -1572,6 +1588,18 @@ export const Group = ({
       getTimestampEnterChat();
     }, 200);
   }, [getGroupAnnouncements, getTimestampEnterChat]);
+
+  useEffect(() => {
+    void loadPinnedGroupIds();
+    const reapplyPins = () => {
+      const current = memberGroupsRef.current || [];
+      if (!current.length) return;
+      const next = applyPinnedGroupOrder(current);
+      setMemberGroups(next);
+      memberGroupsRef.current = next;
+    };
+    return subscribePinnedGroups(reapplyPins);
+  }, [setMemberGroups]);
 
   useEffect(() => {
     subscribeToEvent('markAsRead', handleMarkAsRead);
@@ -2844,6 +2872,11 @@ export const Group = ({
           />
         )}
       </RootBox>
+      {/* Mounted at Group level so park/restore survives Home Activity hide / Q-App navigation. */}
+      <QortinoAgentSheet
+        open={qortinoAgentOpen}
+        onClose={() => closeQortinoAgentSheet()}
+      />
     </>
   );
 };

@@ -11,7 +11,7 @@ import { mimeToExtensionMap } from '../utils/memeTypes';
 import FileSaver from 'file-saver';
 import { isCapacitor } from '../utils/platform';
 import {
-  MOBILE_SAVE_LOCATION_LABEL,
+  mobileSaveLocationLabelFor,
   saveBlobToMobileDocuments,
 } from '../utils/mobileFileSave';
 import { useAtomValue, useSetAtom } from 'jotai';
@@ -461,7 +461,7 @@ export const showSaveFilePicker = async (
       await saveBlobToMobileDocuments(filename, blob);
       setInfoSnackCustom({
         type: 'success',
-        message: `Saved to ${MOBILE_SAVE_LOCATION_LABEL}`,
+        message: `Saved to ${mobileSaveLocationLabelFor(filename, mimeType || blob?.type)}`,
       });
       setOpenSnackGlobal(true);
       return;

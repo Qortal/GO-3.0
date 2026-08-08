@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useTransition, memo 
 import {
   Box,
   Button,
+  ButtonBase,
   Dialog,
   DialogActions,
   DialogContent,
@@ -21,6 +22,7 @@ import CreateNewFolderRoundedIcon from '@mui/icons-material/CreateNewFolderRound
 import TuneRoundedIcon from '@mui/icons-material/TuneRounded';
 import ArrowBackRoundedIcon from '@mui/icons-material/ArrowBackRounded';
 import CheckRoundedIcon from '@mui/icons-material/CheckRounded';
+import ClearAllRoundedIcon from '@mui/icons-material/ClearAllRounded';
 import {
   DndContext,
   DragOverlay,
@@ -60,6 +62,7 @@ import {
   shortenTabDisplayTitle,
 } from './MobileTabsOverlay.shared';
 import {
+  closeAllOpenTabs,
   closeOpenTab,
   openOrSelectTab,
   useOpenTabs,
@@ -1445,7 +1448,34 @@ export const MobileTabsOverlay = ({ open, onClose }: MobileTabsOverlayProps) => 
                 Tabs{tabs.length ? ` (${tabs.length})` : ''}
               </Typography>
             )}
-            <Box sx={{ display: 'flex', gap: 0.5, flexShrink: 0 }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexShrink: 0 }}>
+              {tabs.length > 0 ? (
+                <ButtonBase
+                  aria-label="Close all tabs"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    closeAllOpenTabs();
+                    onClose();
+                  }}
+                  sx={{
+                    alignItems: 'center',
+                    borderRadius: '999px',
+                    color: theme.palette.error.main,
+                    display: 'inline-flex',
+                    fontSize: 13,
+                    fontWeight: 600,
+                    gap: 0.35,
+                    px: 1,
+                    py: 0.45,
+                    '&:active': {
+                      backgroundColor: alpha(theme.palette.error.main, 0.12),
+                    },
+                  }}
+                >
+                  <ClearAllRoundedIcon sx={{ fontSize: 18 }} />
+                  Close all
+                </ButtonBase>
+              ) : null}
               {!selectedFolder ? tabsEditButton : null}
               {tabsEditMode ? (
                 <IconButton

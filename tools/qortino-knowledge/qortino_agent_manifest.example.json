@@ -1,0 +1,71 @@
+{
+  "schemaVersion": 1,
+  "agentId": "qortino",
+  "displayName": "Qortino",
+  "personaVersion": "1",
+  "minAppVersion": "2.0.1",
+  "publishedAt": "2026-07-29T18:49:54.000Z",
+  "packs": [
+    {
+      "id": "small",
+      "label": "Qortino Lite",
+      "description": "Qwen2.5-1.5B Q4 \u2014 best for ~6 GB devices / tight storage.",
+      "minRamBytes": 5368709120,
+      "approxDownloadBytes": 988093746,
+      "packZipFileId": "qortino_pack_lite",
+      "llmRelativePath": "models/qwen25-1.5b-instruct-q4.gguf",
+      "embedderRelativePath": "models/all-minilm-l6-v2-q8.gguf",
+      "knowledgeRelativePath": "knowledge/qortino-knowledge-v2.json"
+    },
+    {
+      "id": "medium",
+      "label": "Qortino Standard",
+      "description": "Qwen2.5-3B Q4 \u2014 stronger Qortal / coding help on ~8 GB phones.",
+      "minRamBytes": 7516192768,
+      "approxDownloadBytes": 1910730222,
+      "packZipFileId": "qortino_pack_standard",
+      "llmRelativePath": "models/qwen25-3b-instruct-q4.gguf",
+      "embedderRelativePath": "models/all-minilm-l6-v2-q8.gguf",
+      "knowledgeRelativePath": "knowledge/qortino-knowledge-v2.json"
+    }
+  ],
+  "files": [
+    {
+      "id": "qortino_pack_lite",
+      "service": "FILE",
+      "name": "Qortino AI",
+      "identifier": "qortino_pack_lite",
+      "relativePath": "packs/qortino-lite.zip",
+      "sizeBytes": 988093746,
+      "sha256": "b03a106a181d8b714ad1de8275a054e696e1333dce5ac4f460df3439bb96452d",
+      "role": "pack",
+      "packIds": [
+        "small"
+      ]
+    },
+    {
+      "id": "qortino_pack_standard",
+      "service": "FILE",
+      "name": "Qortino AI",
+      "identifier": "qortino_pack_standard",
+      "relativePath": "packs/qortino-standard.zip",
+      "sizeBytes": 1910730222,
+      "sha256": "365155e1588dc69c4e275b8eaaae561e09f5ee9ac951ae8f0424cda74484a929",
+      "role": "pack",
+      "packIds": [
+        "medium"
+      ]
+    }
+  ],
+  "knowledge": {
+    "currentIdentifier": "qortino_knowledge_v2",
+    "version": "v2",
+    "chunkCount": 1851,
+    "builtAt": "2026-07-27T13:04:46.116Z"
+  },
+  "licenses": {
+    "llm": "Apache-2.0 (Qwen2.5)",
+    "embedder": "Apache-2.0 (all-MiniLM-L6-v2)"
+  },
+  "safetyDisclaimer": "Educational companion only. Not a substitute for professional medical, legal, or emergency advice. Qortino can be wrong \u2014 double-check anything important."
+}

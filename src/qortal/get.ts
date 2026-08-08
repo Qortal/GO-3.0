@@ -94,6 +94,10 @@ import {
 } from '../qdn/encryption/group-encryption.ts';
 import { publishData } from '../qdn/publish/publish.ts';
 import {
+  isPublishAborted,
+  PublishAbortedError,
+} from '../utils/publishAbort.ts';
+import {
   getNotificationPermissionKey,
   getPermission,
   isRunningGateway,
@@ -126,7 +130,7 @@ import { roundUpToDecimals } from '../utils/numberFunctions.ts';
 import { normalizeFilename } from '../utils/downloadFromLocation.ts';
 import { isCapacitor } from '../utils/platform.ts';
 import {
-  MOBILE_SAVE_LOCATION_LABEL,
+  mobileSaveLocationLabelFor,
   saveStreamToMobileDocuments,
 } from '../utils/mobileFileSave.ts';
 import { getElectronPersistentStorage } from '../utils/electronPersistentStorage.ts';
@@ -1949,7 +1953,9 @@ export const publishMultipleQDNResources = async (
   if (isPublicNode) {
     const hasOversizedFilePublicNode = resources.some((resource) => {
       const file = resource?.file;
-      return file instanceof File && file.size > MAX_SIZE_PUBLIC_NODE;
+      // `instanceof File` is unreliable: cordova-plugin-file replaces the
+      // global File constructor, so real files fail the check.
+      return file instanceof Blob && file.size > MAX_SIZE_PUBLIC_NODE;
     });
 
     if (hasOversizedFilePublicNode) {
@@ -1964,7 +1970,7 @@ export const publishMultipleQDNResources = async (
 
   const hasOversizedFile = resources.some((resource) => {
     const file = resource?.file;
-    return file instanceof File && file.size > MAX_SIZE_PUBLISH;
+    return file instanceof Blob && file.size > MAX_SIZE_PUBLISH;
   });
 
   if (hasOversizedFile) {
@@ -2164,7 +2170,33 @@ export const publishMultipleQDNResources = async (
 
   const failedPublishesIdentifiers: FailedPublish[] = [];
   const publishedResponses = [];
+  const publishedResources: {
+    service: string;
+    name: string;
+    identifier: string;
+  }[] = [];
+  let aborted = false;
+
+  const cleanupPublishedOnAbort = async () => {
+    // Best-effort: remove anything already finalized in this batch so cancel
+    // does not leave orphan Q-Tube metadata / broken VIDEO entries.
+    for (const item of publishedResources) {
+      try {
+        const url = await createEndpoint(
+          `/arbitrary/resource/${encodeURIComponent(item.service)}/${encodeURIComponent(item.name)}/${encodeURIComponent(item.identifier)}`
+        );
+        await fetch(url, { method: 'DELETE' });
+      } catch (err) {
+        console.warn('[publish] failed to delete after cancel', item, err);
+      }
+    }
+  };
+
   for (const resource of resources) {
+    if (isPublishAborted() || aborted) {
+      aborted = true;
+      break;
+    }
     try {
       const requiredFields = ['service'];
       const missingFields: string[] = [];
@@ -2186,6 +2218,18 @@ export const publishMultipleQDNResources = async (
           name: resource?.name || name,
         });
         continue;
+      }
+      // Resolve stashed files (avoids cloning large Blobs through postMessage).
+      if (resource.fileId && !resource.file) {
+        try {
+          const { takePublishFile } = await import('../utils/publishFileStash');
+          const stashed = takePublishFile(String(resource.fileId));
+          if (stashed) {
+            resource.file = stashed;
+          }
+        } catch {
+          // fall through to missing-file error below
+        }
       }
       if (!resource.file && !resource.data64 && !resource?.base64) {
         const errorMsg = i18n.t(
@@ -2284,6 +2328,10 @@ export const publishMultipleQDNResources = async (
       }
 
       try {
+        if (isPublishAborted()) {
+          aborted = true;
+          break;
+        }
         const preEncryption = resource?.encryption;
         let encryption: any = null;
         if (preEncryption) {
@@ -2324,6 +2372,11 @@ export const publishMultipleQDNResources = async (
         });
         if (response?.signature) {
           publishedResponses.push(response);
+          publishedResources.push({
+            service,
+            name: resource?.name || name,
+            identifier,
+          });
         }
         await new Promise((res) => {
           setTimeout(() => {
@@ -2331,6 +2384,20 @@ export const publishMultipleQDNResources = async (
           }, TIME_SECONDS_1_IN_MILLISECONDS);
         });
       } catch (error) {
+        if (
+          error instanceof PublishAbortedError ||
+          error?.name === 'PublishAbortedError' ||
+          isPublishAborted()
+        ) {
+          aborted = true;
+          failedPublishesIdentifiers.push({
+            reason: 'Publish cancelled',
+            identifier: resource.identifier,
+            service: resource.service,
+            name: resource?.name || name,
+          });
+          break;
+        }
         const errorMsg =
           error.message ||
           i18n.t('question:message.error.upload', {
@@ -2344,6 +2411,20 @@ export const publishMultipleQDNResources = async (
         });
       }
     } catch (error) {
+      if (
+        error instanceof PublishAbortedError ||
+        error?.name === 'PublishAbortedError' ||
+        isPublishAborted()
+      ) {
+        aborted = true;
+        failedPublishesIdentifiers.push({
+          reason: 'Publish cancelled',
+          identifier: resource.identifier,
+          service: resource.service,
+          name: resource?.name || name,
+        });
+        break;
+      }
       failedPublishesIdentifiers.push({
         reason:
           error?.message ||
@@ -2356,6 +2437,19 @@ export const publishMultipleQDNResources = async (
       });
     }
   }
+
+  if (aborted || isPublishAborted()) {
+    await cleanupPublishedOnAbort();
+    const obj = {
+      message: 'Publish cancelled',
+      error: {
+        cancelled: true,
+        unsuccessfulPublishes: failedPublishesIdentifiers,
+      },
+    };
+    return obj;
+  }
+
   if (failedPublishesIdentifiers.length > 0) {
     const obj = {
       message: i18n.t('question:message.error.resources_publish', {
@@ -3068,7 +3162,7 @@ async function saveFileFromLocation(data, isFromExtension, snackMethods) {
     if (snackMethods?.setOpenSnackGlobal && snackMethods?.setInfoSnackCustom) {
       snackMethods.setInfoSnackCustom({
         type: 'success',
-        message: `Saved to ${MOBILE_SAVE_LOCATION_LABEL}`,
+        message: `Saved to ${mobileSaveLocationLabelFor(filename)}`,
       });
       snackMethods.setOpenSnackGlobal(true);
     }

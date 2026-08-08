@@ -16,6 +16,7 @@ import { Color } from '@tiptap/extension-color';
 import ListItem from '@tiptap/extension-list-item';
 import TextStyle from '@tiptap/extension-text-style';
 import Placeholder from '@tiptap/extension-placeholder';
+import { createNamedFile } from '../../utils/namedFile';
 import IconButton from '@mui/material/IconButton';
 import FormatBoldIcon from '@mui/icons-material/FormatBold';
 import FormatItalicIcon from '@mui/icons-material/FormatItalic';
@@ -119,7 +120,7 @@ const MenuBar = memo(
           maxWidth: 1200,
           mimeType: 'image/webp',
           success(result) {
-            compressedFile = new File([result], 'image.webp', {
+            compressedFile = createNamedFile([result], 'image.webp', {
               type: 'image/webp',
             });
             resolve();

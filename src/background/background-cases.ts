@@ -66,6 +66,7 @@ import {
   encryptAndPublishSymmetricKeyGroupChatForAdmins,
   publishGroupEncryptedResource,
   publishOnQDN,
+  sendPrivateQmail,
 } from '../encryption/encryption.ts';
 import { PUBLIC_NOTIFICATION_CODE_FIRST_SECRET_KEY } from '../constants/constants';
 import Base58 from '../encryption/Base58.ts';
@@ -1685,6 +1686,36 @@ export async function publishOnQDNCase(request, event) {
         requestId: request.requestId,
         action: 'publishOnQDN',
         error: error?.message || 'Unable to publish',
+        type: 'backgroundMessageResponse',
+      },
+      event.origin
+    );
+  }
+}
+
+export async function sendPrivateQmailCase(request, event) {
+  try {
+    const { recipientName, subject, htmlBody } = request.payload;
+    const response = await sendPrivateQmail({
+      recipientName,
+      subject,
+      htmlBody,
+    });
+    event.source.postMessage(
+      {
+        requestId: request.requestId,
+        action: 'sendPrivateQmail',
+        payload: response,
+        type: 'backgroundMessageResponse',
+      },
+      event.origin
+    );
+  } catch (error) {
+    event.source.postMessage(
+      {
+        requestId: request.requestId,
+        action: 'sendPrivateQmail',
+        error: error?.message || 'Unable to send the Q-Mail',
         type: 'backgroundMessageResponse',
       },
       event.origin

@@ -8,6 +8,10 @@ import { createEndpoint, getBaseApi } from '../../background/background';
 import { getData } from '../../utils/chromeStorage';
 import { executeEvent } from '../../utils/events';
 import { fileToBase64 } from '../../utils/fileReading';
+import {
+  PublishAbortedError,
+  throwIfPublishAborted,
+} from '../../utils/publishAbort';
 import aesjs from 'aes-js';
 
 async function encryptAesCtrChunkWithFallback(
@@ -523,6 +527,7 @@ export const publishData = async ({
     let bytesProcessed = 0;
 
     for (let index = 0; index < totalChunks; index++) {
+      throwIfPublishAborted();
       const start = index * chunkSize;
       const end = Math.min(start + chunkSize, file.size);
 
@@ -556,6 +561,7 @@ export const publishData = async ({
       formData.append('index', index);
 
       await uploadChunkWithRetry(chunkUrl, formData, index);
+      throwIfPublishAborted();
 
       if (appInfo?.tabId) {
         executeEvent('receiveChunks', {
@@ -566,6 +572,7 @@ export const publishData = async ({
         });
       }
     }
+    throwIfPublishAborted();
     const finalizeUrl = uploadDataUrl + `/finalize` + paramQueries;
 
     const finalizeEndpoint = await createEndpoint(finalizeUrl);
@@ -587,6 +594,12 @@ export const publishData = async ({
   try {
     return await validate();
   } catch (error: any) {
+    if (
+      error instanceof PublishAbortedError ||
+      error?.name === 'PublishAbortedError'
+    ) {
+      throw error;
+    }
     throw new Error(error?.message);
   }
 };

@@ -25,7 +25,7 @@ import { useTranslation } from 'react-i18next';
 import { appHeighOffsetPx } from '../Desktop/CustomTitleBar';
 import { isCapacitor } from '../../utils/platform';
 import {
-  MOBILE_SAVE_LOCATION_LABEL,
+  mobileSaveLocationLabelFor,
   saveBlobToMobileDocuments,
 } from '../../utils/mobileFileSave';
 
@@ -488,7 +488,7 @@ export function ImageViewer({ src = null, alt = '' }) {
         setSnack({
           open: true,
           type: 'success',
-          message: `Saved to ${MOBILE_SAVE_LOCATION_LABEL}`,
+          message: `Saved to ${mobileSaveLocationLabelFor(filename, blob.type)}`,
         });
       } else {
         FileSaver.saveAs(blob, filename);

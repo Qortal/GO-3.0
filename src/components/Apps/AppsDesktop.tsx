@@ -84,6 +84,8 @@ import {
   serializeTabForSession,
   type PersistedOpenTab,
 } from '../Mobile/mobileOpenTabsSession';
+import { getPrivateAppIdentity } from '../Mobile/privateAppTabIdentity';
+import { useHandlePrivateApps } from '../../hooks/useHandlePrivateApps';
 import { useAtom, useAtomValue, useSetAtom } from 'jotai';
 import { useTranslation } from 'react-i18next';
 import {
@@ -262,6 +264,9 @@ export const AppsDesktop = ({
   const [tabs, setTabs] = useState([]);
   const [viewerTabOrder, setViewerTabOrder] = useState<string[]>([]);
   const [selectedTab, setSelectedTab] = useState(null);
+  const { openApp: openPrivateApp } = useHandlePrivateApps();
+  const openPrivateAppRef = useRef(openPrivateApp);
+  openPrivateAppRef.current = openPrivateApp;
   const [isNewTabWindow, setIsNewTabWindow] = useAtom(isNewTabWindowAtom);
   const [categories, setCategories] = useState([]);
   const iframeRefs = useRef({});
@@ -1090,6 +1095,21 @@ export const AppsDesktop = ({
     const data = e.detail?.data;
     const isDev = e.detail?.isDevMode;
 
+    // Restored private tabs keep Name/Identifier but lose the preview URL.
+    // Re-open through decrypt/preview instead of selecting a dead public shell.
+    const privateIdentity = getPrivateAppIdentity(data);
+    const hasLivePreview =
+      data?.isPreview === true &&
+      typeof data?.url === 'string' &&
+      Boolean(data.url);
+    if (privateIdentity && !hasLivePreview) {
+      if (data?.tabId) {
+        executeEvent('removeTab', { data: { tabId: data.tabId } });
+      }
+      void openPrivateAppRef.current?.(privateIdentity);
+      return;
+    }
+
     setPendingVisualTabActivationId(null);
     setDelayedVisualActiveTabId(null);
     setEnteringTabIds((prev) => prev.filter((id) => id !== data?.tabId));
@@ -1119,6 +1139,18 @@ export const AppsDesktop = ({
     }, 100);
     setIsNewTabWindow(false);
   };
+
+  useEffect(() => {
+    const openPrivateAppFunc = (e: CustomEvent) => {
+      const data = e.detail?.data;
+      if (!data) return;
+      void openPrivateAppRef.current?.(data);
+    };
+    subscribeToEvent('openPrivateApp', openPrivateAppFunc);
+    return () => {
+      unsubscribeFromEvent('openPrivateApp', openPrivateAppFunc);
+    };
+  }, []);
 
   useEffect(() => {
     subscribeToEvent('setSelectedTab', setSelectedTabFunc);
@@ -1487,6 +1519,16 @@ export const AppsDesktop = ({
       setDevMode('home');
     }, 0);
   }, [tabs, returnFromAppsMode, setIsNewTabWindow, setMode, setDevMode]);
+
+  useEffect(() => {
+    const closeAllTabsFunc = () => {
+      closeAllTabs();
+    };
+    subscribeToEvent('closeAllTabs', closeAllTabsFunc);
+    return () => {
+      unsubscribeFromEvent('closeAllTabs', closeAllTabsFunc);
+    };
+  }, [closeAllTabs]);
 
   useEffect(() => {
     if (!show) {

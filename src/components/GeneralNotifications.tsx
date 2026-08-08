@@ -108,6 +108,8 @@ export const GeneralNotifications = forwardRef<
   const [osPushDisabledMap, setOsPushDisabledMap] = useState<
     Record<string, boolean>
   >({});
+  const [disablePushNotifications, setDisablePushNotifications] =
+    useState(false);
   const notifications = useAtomValue(paymentNotificationsAtom);
   const customSubscriptions = useAtomValue(customWebsocketSubscriptionsAtom);
   const setCustomSubscriptions = useSetAtom(customWebsocketSubscriptionsAtom);
@@ -117,7 +119,7 @@ export const GeneralNotifications = forwardRef<
   const setSeenKeys = useSetAtom(notificationSeenInAppKeysAtom);
   const theme = useTheme();
   const isDarkMode = theme.palette.mode === 'dark';
-  const { t, i18n } = useTranslation(['core']);
+  const { t, i18n } = useTranslation(['core', 'group']);
 
   useEffect(() => {
     const handler = (event) => {
@@ -146,6 +148,41 @@ export const GeneralNotifications = forwardRef<
       if (triggerRef.current) setAnchorEl(triggerRef.current);
     },
   }));
+
+  useEffect(() => {
+    window
+      .sendMessage?.('getUserSettings', {
+        key: 'disable-push-notifications',
+      })
+      .then((response) => {
+        if (!response?.error) {
+          setDisablePushNotifications(Boolean(response));
+        }
+      })
+      .catch(() => {
+        /* ignore */
+      });
+  }, []);
+
+  const handleDisablePushChange = (
+    event: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const next = event.target.checked;
+    setDisablePushNotifications(next);
+    window
+      .sendMessage?.('addUserSettings', {
+        keyValue: {
+          key: 'disable-push-notifications',
+          value: next,
+        },
+      })
+      .catch((error) => {
+        console.error(
+          'Failed to update push notification setting:',
+          error?.message || error
+        );
+      });
+  };
 
   const openSettings = () => {
     setSettingsOpen(true);
@@ -313,6 +350,43 @@ export const GeneralNotifications = forwardRef<
           >
             <SettingsIcon fontSize="small" />
           </IconButton>
+
+          <Box
+            sx={{
+              alignItems: 'center',
+              border: `1px solid ${alpha(theme.palette.divider, 0.5)}`,
+              borderRadius: '12px',
+              display: 'flex',
+              gap: 1,
+              justifyContent: 'space-between',
+              mt: resourceNotifications.length ? 0 : 1.5,
+              px: 1.25,
+              py: 0.75,
+              width: '100%',
+            }}
+          >
+            <Typography
+              sx={{
+                color: theme.palette.text.secondary,
+                fontSize: '0.78rem',
+                fontWeight: 600,
+                lineHeight: 1.3,
+                pr: 1,
+              }}
+            >
+              {t('group:action.disable_push_notifications', {
+                ns: 'group',
+                defaultValue: 'Disable push notifications',
+                postProcess: 'capitalizeFirstChar',
+              })}
+            </Typography>
+            <Switch
+              checked={disablePushNotifications}
+              onChange={handleDisablePushChange}
+              size="small"
+              onClick={(event) => event.stopPropagation()}
+            />
+          </Box>
 
           {!resourceNotifications.length && (
             <>

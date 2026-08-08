@@ -1,4 +1,4 @@
-import { useState, useRef, useMemo } from 'react';
+import { useState, useRef, useMemo, useEffect } from 'react';
 import {
   Divider,
   ListItemIcon,
@@ -11,10 +11,17 @@ import {
 import MailOutlineIcon from '@mui/icons-material/MailOutline';
 import NotificationsOffIcon from '@mui/icons-material/NotificationsOff';
 import DoneAllRoundedIcon from '@mui/icons-material/DoneAllRounded';
+import PushPinRoundedIcon from '@mui/icons-material/PushPinRounded';
 import { useTranslation } from 'react-i18next';
 import { executeEvent } from '../utils/events';
 import { mutedGroupsAtom } from '../atoms/global';
 import { useAtom } from 'jotai';
+import {
+  isGroupPinned,
+  loadPinnedGroupIds,
+  subscribePinnedGroups,
+  togglePinnedGroup,
+} from '../utils/pinnedGroups';
 
 const CustomStyledMenu = styled(Menu)(({ theme }) => ({
   '& .MuiPaper-root': {
@@ -42,6 +49,12 @@ export const ContextMenu = ({ children, groupId, getUserSettings }) => {
   const isMuted = useMemo(() => {
     return mutedGroups.includes(groupId);
   }, [mutedGroups, groupId]);
+
+  const [pinned, setPinned] = useState(() => isGroupPinned(groupId));
+  useEffect(() => {
+    void loadPinnedGroupIds().then(() => setPinned(isGroupPinned(groupId)));
+    return subscribePinnedGroups(() => setPinned(isGroupPinned(groupId)));
+  }, [groupId]);
 
   const handleContextMenu = (event) => {
     event.preventDefault();
@@ -156,6 +169,36 @@ export const ContextMenu = ({ children, groupId, getUserSettings }) => {
           </ListItemIcon>
           <Typography variant="inherit" sx={{ fontSize: '14px' }}>
             {t('group:context_menu.mark_as_read')}
+          </Typography>
+        </MenuItem>
+        <MenuItem
+          onClick={(e) => {
+            handleClose(e);
+            void togglePinnedGroup(groupId).then(setPinned);
+          }}
+        >
+          <ListItemIcon sx={{ minWidth: '32px' }}>
+            <PushPinRoundedIcon
+              fontSize="small"
+              sx={{
+                color: pinned ? theme.palette.primary.main : theme.palette.text.primary,
+              }}
+            />
+          </ListItemIcon>
+          <Typography
+            variant="inherit"
+            sx={{
+              fontSize: '14px',
+              color: pinned ? theme.palette.primary.main : undefined,
+            }}
+          >
+            {pinned
+              ? t('group:context_menu.unpin_group', {
+                  defaultValue: 'Unpin group',
+                })
+              : t('group:context_menu.pin_group', {
+                  defaultValue: 'Pin group',
+                })}
           </Typography>
         </MenuItem>
         <MenuItem

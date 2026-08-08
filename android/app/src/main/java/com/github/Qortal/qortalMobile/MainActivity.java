@@ -13,6 +13,7 @@ import com.github.Qortal.qortalMobile.ForegroundServicePlugin;
 import com.github.Qortal.qortalMobile.ReticulumPlugin;
 import com.github.Qortal.qortalMobile.AudioRoutingPlugin;
 import android.Manifest;
+import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.res.Configuration;
 import android.os.Build;
@@ -47,7 +48,12 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(AudioRoutingPlugin.class);
         registerPlugin(QortalBiometricPlugin.class);
         registerPlugin(SafeAreaPlugin.class);
+        registerPlugin(VideoCompressPlugin.class);
+        registerPlugin(QortinoLlmPlugin.class);
+        registerPlugin(ShareReceiverPlugin.class);
         super.onCreate(savedInstanceState);
+        // "Share to Quitter": photos/videos shared from other apps (cold start).
+        ShareReceiverPlugin.handleSendIntent(this, getIntent());
         // Edge-to-edge: WebView draws under system bars; CSS safe-area vars pad content.
         WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
 
@@ -82,6 +88,13 @@ public class MainActivity extends BridgeActivity {
         // is allowed during a call. Android grants the WebView mic access only when
         // the host app already holds RECORD_AUDIO at runtime.
         requestCallPermissions();
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        // "Share to Quitter" while the app is already running (singleTask).
+        ShareReceiverPlugin.handleSendIntent(this, intent);
     }
 
     @Override

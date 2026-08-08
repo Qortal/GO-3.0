@@ -1,4 +1,9 @@
 import { getData, storeData } from '../../utils/chromeStorage';
+import {
+  getTabAppIdentity,
+  isPrivateAppTab,
+  serializePrivateAppProperties,
+} from './privateAppTabIdentity';
 
 export type PersistedOpenTab = {
   tabId: string;
@@ -8,6 +13,10 @@ export type PersistedOpenTab = {
   identifier?: string;
   path?: string;
   label?: string;
+  isPrivate?: boolean;
+  /** Private-app logo as data URL (for tab avatar after restore). */
+  logo?: string;
+  privateAppProperties?: Record<string, unknown>;
 };
 
 export type MobileOpenTabsSession = {
@@ -30,14 +39,25 @@ export function serializeTabForSession(tab: Record<string, unknown>): PersistedO
   const tabId = typeof tab.tabId === 'string' ? tab.tabId : '';
   if (!tabId) return null;
 
+  const identity = getTabAppIdentity(tab);
+  const privateAppProperties = serializePrivateAppProperties(tab);
+  const isPrivate = isPrivateAppTab(tab) || privateAppProperties != null;
+  const logo =
+    typeof privateAppProperties?.logo === 'string'
+      ? privateAppProperties.logo
+      : undefined;
+
   return {
     tabId,
-    service: tab.service != null ? String(tab.service) : undefined,
-    name: tab.name != null ? String(tab.name) : undefined,
+    service: identity.service || undefined,
+    name: identity.name || undefined,
     internal: tab.internal != null ? String(tab.internal) : undefined,
-    identifier: tab.identifier != null ? String(tab.identifier) : undefined,
-    path: tab.path != null ? String(tab.path) : undefined,
-    label: tab.label != null ? String(tab.label) : undefined,
+    identifier: identity.identifier,
+    path: identity.path,
+    label: identity.label || undefined,
+    isPrivate: isPrivate ? true : undefined,
+    logo,
+    ...(privateAppProperties ? { privateAppProperties } : {}),
   };
 }
 

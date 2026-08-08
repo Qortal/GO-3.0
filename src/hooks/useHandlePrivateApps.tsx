@@ -205,6 +205,12 @@ export const useHandlePrivateApps = () => {
             url: await createEndpoint(previewPath),
             isPreview: true,
             isPrivate: true,
+            // Lift identity to top-level so session restore, tab keys, and
+            // qortal:// URLs survive APK refresh without privateAppProperties-only lookups.
+            service: privateAppProperties?.service || 'APP',
+            name: privateAppProperties?.name,
+            identifier: privateAppProperties?.identifier,
+            label: appName || privateAppProperties?.name,
             privateAppProperties: { ...privateAppProperties, logo, appName },
             filePath: '',
             refreshFunc: (tabId) => {

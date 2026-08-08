@@ -56,6 +56,7 @@ export default defineConfig({
     rollupOptions: {
       input: {
         main: resolve(__dirname, 'index.html'),
+        qortinoDebug: resolve(__dirname, 'qortino-debug.html'),
       },
       // No blanket "vendor" chunk: it forced every node_modules dependency —
       // including ones only used by lazily-loaded views (editor, virtualized

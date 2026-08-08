@@ -158,3 +158,14 @@ export const dismissIncomingCallOsNotification = async (): Promise<void> => {
     console.error('[mobileOsNotifications] Failed to dismiss incoming call notification', error);
   }
 };
+
+/** Remove Group/DM OS tray notifications (e.g. after opening a chat or mark-all-read). */
+export const dismissChatOsNotifications = async (): Promise<void> => {
+  if (!isCapacitor()) return;
+
+  try {
+    await QortalBackground.dismissChatAlertNotifications();
+  } catch (error) {
+    console.error('[mobileOsNotifications] Failed to dismiss chat alert notifications', error);
+  }
+};

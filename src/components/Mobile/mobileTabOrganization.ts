@@ -1,4 +1,9 @@
 import { getData, storeData } from '../../utils/chromeStorage';
+import {
+  getTabAppIdentity,
+  isPrivateAppTab,
+  serializePrivateAppProperties,
+} from './privateAppTabIdentity';
 import type { OpenTab } from './useOpenTabs';
 
 export type TabFolder = {
@@ -18,6 +23,8 @@ export type SavedTabSnapshot = {
   identifier?: string;
   path?: string;
   label?: string;
+  isPrivate?: boolean;
+  privateAppProperties?: Record<string, unknown>;
 };
 
 export type TabOverride = {
@@ -41,13 +48,12 @@ export const getOpenTabKey = (tab: OpenTab): string => {
   if (tab.internal) {
     return `internal:${String(tab.internal)}`;
   }
-  const service = String(tab.service || 'APP').toUpperCase();
-  const name = String(tab.name || '');
-  const identifier = tab.identifier ? String(tab.identifier) : '';
+  const { service, name, identifier } = getTabAppIdentity(tab);
+  const serviceKey = service.toUpperCase();
   if (identifier) {
-    return `${service}|${name}|${identifier}`;
+    return `${serviceKey}|${name}|${identifier}`;
   }
-  return `${service}|${name}`;
+  return `${serviceKey}|${name}`;
 };
 
 export const getOpenTabDisplayTitle = (
@@ -59,11 +65,8 @@ export const getOpenTabDisplayTitle = (
   if (override?.customLabel?.trim()) {
     return override.customLabel.trim();
   }
-  return (
-    tab.label ||
-    tab.name ||
-    (tab.service ? String(tab.service) : 'Tab')
-  );
+  const { label, name, service } = getTabAppIdentity(tab);
+  return label || name || service || 'Tab';
 };
 
 const emptyOrganization = (): MobileTabOrganization => ({
@@ -98,13 +101,18 @@ export function groupFoldersByRow(
 }
 
 export function snapshotFromTab(tab: OpenTab): SavedTabSnapshot {
+  const identity = getTabAppIdentity(tab);
+  const privateAppProperties = serializePrivateAppProperties(tab);
   return {
-    service: tab.service != null ? String(tab.service) : undefined,
-    name: tab.name != null ? String(tab.name) : undefined,
+    service: identity.service || undefined,
+    name: identity.name || undefined,
     internal: tab.internal != null ? String(tab.internal) : undefined,
-    identifier: tab.identifier != null ? String(tab.identifier) : undefined,
-    path: tab.path != null ? String(tab.path) : undefined,
-    label: tab.label != null ? String(tab.label) : undefined,
+    identifier: identity.identifier,
+    path: identity.path,
+    label: identity.label || undefined,
+    isPrivate:
+      isPrivateAppTab(tab) || privateAppProperties != null ? true : undefined,
+    ...(privateAppProperties ? { privateAppProperties } : {}),
   };
 }
 

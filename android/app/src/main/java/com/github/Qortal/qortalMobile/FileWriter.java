@@ -32,6 +32,10 @@ public class FileWriter extends Plugin {
         String filename = call.getString("filename");
         String dataBase64 = call.getString("dataBase64");
         Boolean append = call.getBoolean("append", false);
+        // When set, the file is filed under a per-type folder
+        // (Images / Videos / Audio / Documents / Apps / GO state).
+        Boolean categorize = call.getBoolean("categorize", false);
+        String mimeHint = call.getString("mimeType");
 
         if (filename == null || filename.isEmpty()) {
             call.reject("Filename is required");
@@ -54,6 +58,11 @@ public class FileWriter extends Plugin {
                 displayName = filename.substring(slash + 1);
             }
 
+            if (Boolean.TRUE.equals(categorize)) {
+                subFolder = SaveCategory.folderFor(subFolder, displayName, mimeHint);
+                filename = subFolder + "/" + displayName;
+            }
+
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 writeWithMediaStore(call, displayName, subFolder, bytes, append);
             } else {
@@ -66,6 +75,93 @@ public class FileWriter extends Plugin {
         } catch (Exception e) {
             call.reject("Unexpected error: " + e.getMessage());
         }
+    }
+
+    /**
+     * Delete stale files of one extension from a folder, keeping `keepName`.
+     * Used when a new GO state (.bin) replaces the previous one.
+     */
+    @PluginMethod
+    public void pruneFolder(PluginCall call) {
+        String subFolder = call.getString("subFolder");
+        String extension = call.getString("extension");
+        String keepName = call.getString("keepName");
+
+        if (subFolder == null || subFolder.isEmpty()) {
+            call.reject("subFolder is required");
+            return;
+        }
+        if (extension == null || extension.isEmpty()) {
+            call.reject("extension is required");
+            return;
+        }
+        String suffix = extension.startsWith(".")
+            ? extension.toLowerCase()
+            : "." + extension.toLowerCase();
+
+        try {
+            int deleted = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+                ? pruneWithMediaStore(subFolder, suffix, keepName)
+                : pruneLegacy(subFolder, suffix, keepName);
+            JSObject ret = new JSObject();
+            ret.put("deleted", deleted);
+            call.resolve(ret);
+        } catch (Exception e) {
+            call.reject("Failed to prune folder: " + e.getMessage());
+        }
+    }
+
+    private int pruneWithMediaStore(String subFolder, String suffix, String keepName) {
+        ContentResolver resolver = getContext().getContentResolver();
+        String relativePath = Environment.DIRECTORY_DOCUMENTS + "/" + subFolder;
+        if (!relativePath.endsWith("/")) {
+            relativePath = relativePath + "/";
+        }
+        Uri collection = MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY);
+        String selection = MediaStore.MediaColumns.RELATIVE_PATH + "=?";
+        String[] args = { relativePath };
+        int deleted = 0;
+
+        try (Cursor cursor = resolver.query(
+            collection,
+            new String[] { MediaStore.MediaColumns._ID, MediaStore.MediaColumns.DISPLAY_NAME },
+            selection,
+            args,
+            null
+        )) {
+            if (cursor == null) return 0;
+            while (cursor.moveToNext()) {
+                String name = cursor.getString(1);
+                if (name == null) continue;
+                if (!name.toLowerCase().endsWith(suffix)) continue;
+                if (keepName != null && keepName.equals(name)) continue;
+                Uri uri = ContentUris.withAppendedId(collection, cursor.getLong(0));
+                try {
+                    deleted += resolver.delete(uri, null, null);
+                } catch (Exception ignored) {
+                    // Another app may own the row — skip it.
+                }
+            }
+        }
+        return deleted;
+    }
+
+    private int pruneLegacy(String subFolder, String suffix, String keepName) {
+        File dir = new File(
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS),
+            subFolder
+        );
+        File[] entries = dir.listFiles();
+        if (entries == null) return 0;
+        int deleted = 0;
+        for (File entry : entries) {
+            if (!entry.isFile()) continue;
+            String name = entry.getName();
+            if (!name.toLowerCase().endsWith(suffix)) continue;
+            if (keepName != null && keepName.equals(name)) continue;
+            if (entry.delete()) deleted++;
+        }
+        return deleted;
     }
 
     private void writeLegacy(PluginCall call, String filename, byte[] bytes, boolean append)

@@ -72,6 +72,26 @@ export const handleImportClick = async () => {
   });
 };
 
+const serializePinnedAppForSave = (item: any) => {
+  if (item?.isPrivate || item?.privateAppProperties) {
+    const props = item?.privateAppProperties || {};
+    return {
+      isPrivate: true,
+      privateAppProperties: {
+        service: props?.service || item?.service || 'APP',
+        name: props?.name || item?.name,
+        identifier: props?.identifier || item?.identifier,
+        groupId: props?.groupId,
+        appName: props?.appName || item?.label || item?.name,
+      },
+    };
+  }
+  return {
+    name: item?.name,
+    service: item?.service,
+  };
+};
+
 export const Save = ({
   isDesktop,
   disableWidth,
@@ -108,20 +128,10 @@ export const Save = ({
 
   const hasChanged = useMemo(() => {
     const newChanges = {
-      sortablePinnedApps: pinnedApps.map((item) => {
-        return {
-          name: item?.name,
-          service: item?.service,
-        };
-      }),
+      sortablePinnedApps: pinnedApps.map(serializePinnedAppForSave),
     };
     const oldChanges = {
-      sortablePinnedApps: oldPinnedApps.map((item) => {
-        return {
-          name: item?.name,
-          service: item?.service,
-        };
-      }),
+      sortablePinnedApps: oldPinnedApps.map(serializePinnedAppForSave),
     };
     if (settingsQdnLastUpdated === -100) return false;
     return (
@@ -143,12 +153,7 @@ export const Save = ({
     try {
       setIsLoading(true);
       const data64 = await objectToBase64({
-        sortablePinnedApps: pinnedApps.map((item) => {
-          return {
-            name: item?.name,
-            service: item?.service,
-          };
-        }),
+        sortablePinnedApps: pinnedApps.map(serializePinnedAppForSave),
       });
       const encryptData = await new Promise((res, rej) => {
         window

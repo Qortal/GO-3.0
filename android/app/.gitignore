@@ -1,2 +1,5 @@
 /build/*
 !/build/.npmkeep
+
+# llama.cpp sources are fetched via src/main/cpp/fetch-llama.sh (large tree).
+/src/main/cpp/llama.cpp/

@@ -43,7 +43,65 @@
                 <data android:scheme="qort" />
             </intent-filter>
 
+            <!-- Qortal gateway web links (App Links). Makes Qortal GO appear in
+                 Android's "Opening links" list for the QDN gateway hosts and,
+                 once each domain hosts /.well-known/assetlinks.json for this
+                 app's signing cert, lets verified https links auto-open. The
+                 https(s) URL is translated to the equivalent qortal:// deep link
+                 in paymentLink.ts (gatewayHttpsToQortalLink) and routed in-app:
+                 e.g. https://qortal.link/WEBSITE/REON -> qortal://WEBSITE/REON.
+                 NOTE: verification requires the RELEASE signing SHA-256 in the
+                 published assetlinks.json (the debug cert differs). -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" />
+                <data android:host="qortal.link" />
+                <data android:host="www.qortal.link" />
+                <data android:host="hub.qortal.link" />
+                <data android:host="go.qortal.link" />
+                <data android:host="ext-node.qortal.link" />
+            </intent-filter>
+            <!-- Same hosts over http (cleartext). Not autoVerify (App Links
+                 verification only applies to https) but still lets plain http
+                 gateway links open Qortal GO. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="http" />
+                <data android:host="qortal.link" />
+                <data android:host="www.qortal.link" />
+                <data android:host="hub.qortal.link" />
+                <data android:host="go.qortal.link" />
+                <data android:host="ext-node.qortal.link" />
+            </intent-filter>
+
         </activity>
+
+        <!-- "Quitter" entry in the Android share sheet: sharing a photo or a
+             video from any app shows Quitter, which opens Qortal GO with the
+             media pre-attached in the Quitter composer. -->
+        <activity-alias
+            android:name=".QuitterShareActivity"
+            android:targetActivity=".MainActivity"
+            android:label="Quitter"
+            android:icon="@mipmap/ic_launcher"
+            android:exported="true">
+            <intent-filter android:label="Quitter">
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
+                <data android:mimeType="video/*" />
+            </intent-filter>
+            <intent-filter android:label="Quitter">
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
+                <data android:mimeType="video/*" />
+            </intent-filter>
+        </activity-alias>
 
         <activity
             android:name="ee.forgr.biometric.AuthActivity"

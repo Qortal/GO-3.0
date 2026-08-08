@@ -5,7 +5,16 @@ export interface FileWriterPlugin {
     filename: string;
     dataBase64: string;
     append?: boolean;
+    /** File under a per-type folder (Images / Videos / Audio / …). */
+    categorize?: boolean;
+    mimeType?: string;
   }): Promise<{ path: string; uri: string }>;
+  /** Remove stale files of one extension from a folder. */
+  pruneFolder(options: {
+    subFolder: string;
+    extension: string;
+    keepName?: string;
+  }): Promise<{ deleted: number }>;
 }
 
 const FileWriter = registerPlugin<FileWriterPlugin>('FileWriter');
@@ -38,10 +47,24 @@ async function blobToBase64(blob: Blob): Promise<string> {
   });
 }
 
+export type NativeWriteOptions = {
+  append?: boolean;
+  /** Sort into Images / Videos / Audio / Documents / Apps / GO state. */
+  categorize?: boolean;
+  mimeType?: string;
+};
+
+function toWriteOptions(
+  options: boolean | NativeWriteOptions | undefined
+): NativeWriteOptions {
+  if (typeof options === 'boolean') return { append: options };
+  return options || {};
+}
+
 export async function writeNativeDocumentFile(
   filename: string,
   contents: string,
-  append = false
+  options: boolean | NativeWriteOptions = false
 ): Promise<{ path: string; uri: string }> {
   if (!Capacitor.isNativePlatform()) {
     throw new Error('Native file writer is only available on the mobile app.');
@@ -50,30 +73,32 @@ export async function writeNativeDocumentFile(
   return FileWriter.writeChunk({
     filename,
     dataBase64: utf8ToBase64(contents),
-    append,
+    ...toWriteOptions(options),
   });
 }
 
 export async function writeNativeDocumentBlob(
   filename: string,
   blob: Blob,
-  append = false
+  options: boolean | NativeWriteOptions = false
 ): Promise<{ path: string; uri: string }> {
   if (!Capacitor.isNativePlatform()) {
     throw new Error('Native file writer is only available on the mobile app.');
   }
 
+  const opts = toWriteOptions(options);
   return FileWriter.writeChunk({
     filename,
     dataBase64: await blobToBase64(blob),
-    append,
+    mimeType: opts.mimeType || blob.type || undefined,
+    ...opts,
   });
 }
 
 export async function writeNativeDocumentBytes(
   filename: string,
   bytes: Uint8Array,
-  append = false
+  options: boolean | NativeWriteOptions = false
 ): Promise<{ path: string; uri: string }> {
   if (!Capacitor.isNativePlatform()) {
     throw new Error('Native file writer is only available on the mobile app.');
@@ -82,6 +107,21 @@ export async function writeNativeDocumentBytes(
   return FileWriter.writeChunk({
     filename,
     dataBase64: bytesToBase64(bytes),
-    append,
+    ...toWriteOptions(options),
   });
+}
+
+/** Delete older files of one extension in a Documents subfolder. */
+export async function pruneNativeDocumentFolder(options: {
+  subFolder: string;
+  extension: string;
+  keepName?: string;
+}): Promise<number> {
+  if (!Capacitor.isNativePlatform()) return 0;
+  try {
+    const res = await FileWriter.pruneFolder(options);
+    return res?.deleted ?? 0;
+  } catch {
+    return 0;
+  }
 }
