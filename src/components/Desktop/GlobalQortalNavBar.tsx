@@ -20,6 +20,7 @@ import PushPinRoundedIcon from '@mui/icons-material/PushPinRounded';
 import ArrowBackIosNewRoundedIcon from '@mui/icons-material/ArrowBackIosNewRounded';
 import HomeRoundedIcon from '@mui/icons-material/HomeRounded';
 import LogoutRoundedIcon from '@mui/icons-material/LogoutRounded';
+import LockRoundedIcon from '@mui/icons-material/LockRounded';
 import PersonRoundedIcon from '@mui/icons-material/PersonRounded';
 import SendRoundedIcon from '@mui/icons-material/SendRounded';
 import { useAtomValue, useSetAtom } from 'jotai';
@@ -52,7 +53,6 @@ import { QMailStatus } from '../QMailStatus';
 import { GeneralNotifications } from '../GeneralNotifications';
 import { TaskManager } from '../TaskManager/TaskManager';
 import { GlobalActions } from '../GlobalActions/GlobalActions';
-import { ChatWidgetReopenIcon } from '../Profile/ChatWidgetReopenIcon';
 import { SubscriptionsStatus } from './SubscriptionsStatus';
 import { AppBookmarksButton } from '../Apps/AppBookmarks';
 import { saveToLocalStorage } from '../Apps/AppsNavBarDesktop';
@@ -70,11 +70,21 @@ const INTERNAL_TAB_SERVICE = 'INTERNAL';
 
 type SelectedTab = {
   tabId: string;
-  name: string;
-  service: string;
+  name?: string;
+  service?: string;
   identifier?: string;
   path?: string;
   internal?: string;
+  isPrivate?: boolean;
+  isPreview?: boolean;
+  privateAppProperties?: {
+    appName?: string;
+    groupId?: number;
+    identifier?: string;
+    logo?: string | null;
+    name?: string;
+    service?: string;
+  };
   refreshFunc?: (tabId?: string) => void;
 } | null;
 
@@ -135,6 +145,27 @@ function formatQortBalance(balance: unknown) {
     maximumFractionDigits: 2,
     minimumFractionDigits: 2,
   });
+}
+
+function isSamePinnedApp(item: any, candidate: any) {
+  if (!item || !candidate) return false;
+
+  if (candidate?.isPrivate) {
+    const itemProperties = item?.privateAppProperties;
+    const candidateProperties = candidate?.privateAppProperties;
+
+    return (
+      !!item?.isPrivate &&
+      itemProperties?.name === candidateProperties?.name &&
+      itemProperties?.service === candidateProperties?.service &&
+      itemProperties?.identifier === candidateProperties?.identifier
+    );
+  }
+
+  return (
+    item?.name?.toLowerCase() === candidate.name.toLowerCase() &&
+    item?.service?.toUpperCase() === candidate.service
+  );
 }
 
 function AuthenticatedUserAvatar({
@@ -626,6 +657,8 @@ export function GlobalQortalNavBar({
   const { t } = useTranslation(['core', 'question']);
   const [selectedTab, setSelectedTab] = useState<SelectedTab>(null);
   const [inputValue, setInputValue] = useState('');
+  const [sessionMenuAnchor, setSessionMenuAnchor] =
+    useState<HTMLElement | null>(null);
   const [isInputHovered, setIsInputHovered] = useState(false);
   const [isInputFocused, setIsInputFocused] = useState(false);
   const isInputFocusedRef = useRef(false);
@@ -720,6 +753,29 @@ export function GlobalQortalNavBar({
     };
   }, [currentLink, selectedTab]);
   const pinnedCandidate = useMemo(() => {
+    if (selectedTab?.isPrivate || selectedTab?.privateAppProperties) {
+      const privateAppProperties = selectedTab?.privateAppProperties || {};
+      const name = privateAppProperties.name || selectedTab?.name;
+      const service = privateAppProperties.service || selectedTab?.service;
+      const identifier =
+        privateAppProperties.identifier || selectedTab?.identifier;
+
+      if (!name || !service || !identifier) {
+        return null;
+      }
+
+      return {
+        isPrivate: true,
+        isPreview: selectedTab.isPreview ?? true,
+        privateAppProperties: {
+          ...privateAppProperties,
+          name,
+          service,
+          identifier,
+        },
+      };
+    }
+
     if (!bookmarkSelectedTab?.service || !bookmarkSelectedTab?.name) {
       return null;
     }
@@ -734,13 +790,11 @@ export function GlobalQortalNavBar({
       name: bookmarkSelectedTab.name,
       service: bookmarkSelectedTab.service.toUpperCase(),
     };
-  }, [bookmarkSelectedTab]);
+  }, [bookmarkSelectedTab, selectedTab]);
   const isCurrentAppPinned = useMemo(() => {
     if (!pinnedCandidate) return false;
-    return !!sortablePinnedApps?.some(
-      (item) =>
-        item?.name?.toLowerCase() === pinnedCandidate.name.toLowerCase() &&
-        item?.service?.toUpperCase() === pinnedCandidate.service
+    return !!sortablePinnedApps?.some((item) =>
+      isSamePinnedApp(item, pinnedCandidate)
     );
   }, [pinnedCandidate, sortablePinnedApps]);
 
@@ -781,7 +835,8 @@ export function GlobalQortalNavBar({
   }, [inputValue]);
 
   const canCopyCurrentLink = Boolean(currentLink);
-  const canPinCurrentApp = Boolean(pinnedCandidate);
+  const canPinCurrentApp =
+    desktopViewMode === 'apps' && Boolean(pinnedCandidate);
   const handleCopyCurrentLink = useCallback(() => {
     if (!currentLink) return;
     if (!navigator.clipboard?.writeText) {
@@ -828,20 +883,11 @@ export function GlobalQortalNavBar({
     if (!pinnedCandidate) return;
 
     setSortablePinnedApps((prev) => {
-      const isPinned = prev?.some(
-        (item) =>
-          item?.name?.toLowerCase() === pinnedCandidate.name.toLowerCase() &&
-          item?.service?.toUpperCase() === pinnedCandidate.service
+      const isPinned = prev?.some((item) =>
+        isSamePinnedApp(item, pinnedCandidate)
       );
       const updatedApps = isPinned
-        ? prev.filter(
-            (item) =>
-              !(
-                item?.name?.toLowerCase() ===
-                  pinnedCandidate.name.toLowerCase() &&
-                item?.service?.toUpperCase() === pinnedCandidate.service
-              )
-          )
+        ? prev.filter((item) => !isSamePinnedApp(item, pinnedCandidate))
         : [...prev, pinnedCandidate];
 
       saveToLocalStorage(
@@ -1653,18 +1699,6 @@ export function GlobalQortalNavBar({
                 transition={utilityLayoutTransition}
                 sx={{ display: 'inline-flex', flexShrink: 0 }}
               >
-                <ChatWidgetReopenIcon
-                  inTitleBar
-                  buttonSx={utilityModuleButtonSx}
-                  iconSx={utilityModuleIconSx}
-                />
-              </Box>
-              <Box
-                component={motion.span}
-                layout
-                transition={utilityLayoutTransition}
-                sx={{ display: 'inline-flex', flexShrink: 0 }}
-              >
                 <QMailStatus
                   compact
                   buttonSx={utilityModuleButtonSx}
@@ -1696,6 +1730,7 @@ export function GlobalQortalNavBar({
                 >
                   <GeneralNotifications
                     address={utilityNav.userInfo?.address}
+                    badgeOutlineColor={chromeBackground}
                     tooltipPlacement="bottom"
                     compact
                     buttonSx={utilityModuleButtonSx}
@@ -1741,7 +1776,7 @@ export function GlobalQortalNavBar({
                 </Box>
               )}
               <Tooltip
-                title={tooltipTitle(t('core:action.logout'))}
+                title={tooltipTitle('Lock or log out')}
                 placement="bottom"
                 arrow
                 slotProps={tooltipSlotProps}
@@ -1754,14 +1789,91 @@ export function GlobalQortalNavBar({
                 >
                   <IconButton
                     size="small"
-                    onClick={utilityNav.onLogout}
+                    onClick={(event) =>
+                      setSessionMenuAnchor(event.currentTarget)
+                    }
                     sx={utilityModuleButtonSx}
-                    aria-label={t('core:action.logout')}
+                    aria-label="Lock or log out"
+                    aria-haspopup="menu"
+                    aria-expanded={Boolean(sessionMenuAnchor)}
                   >
                     <LogoutRoundedIcon sx={utilityModuleIconSx} />
                   </IconButton>
                 </Box>
               </Tooltip>
+              <Popover
+                open={Boolean(sessionMenuAnchor)}
+                anchorEl={sessionMenuAnchor}
+                onClose={() => setSessionMenuAnchor(null)}
+                anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+                transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+                slotProps={{
+                  root: { role: 'menu', 'aria-label': 'Session options' },
+                  paper: {
+                    sx: {
+                      mt: 1,
+                      p: 0.75,
+                      width: 250,
+                      borderRadius: '14px',
+                      border: `1px solid ${alpha(theme.palette.divider, 0.8)}`,
+                      boxShadow: '0 16px 46px rgba(0, 0, 0, 0.34)',
+                    },
+                  },
+                }}
+              >
+                <ButtonBase
+                  role="menuitem"
+                  onClick={() => {
+                    setSessionMenuAnchor(null);
+                    utilityNav.onLock();
+                  }}
+                  sx={{
+                    width: '100%',
+                    gap: 1.5,
+                    p: 1.25,
+                    borderRadius: '10px',
+                    justifyContent: 'flex-start',
+                    textAlign: 'left',
+                    '&:hover': {
+                      bgcolor: alpha(theme.palette.primary.main, 0.1),
+                    },
+                  }}
+                >
+                  <LockRoundedIcon color="primary" />
+                  <Box>
+                    <Typography fontWeight={700}>Lock</Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      Keep chats and calls connected
+                    </Typography>
+                  </Box>
+                </ButtonBase>
+                <ButtonBase
+                  role="menuitem"
+                  onClick={() => {
+                    setSessionMenuAnchor(null);
+                    void utilityNav.onLogout();
+                  }}
+                  sx={{
+                    width: '100%',
+                    gap: 1.5,
+                    p: 1.25,
+                    borderRadius: '10px',
+                    justifyContent: 'flex-start',
+                    textAlign: 'left',
+                    '&:hover': {
+                      bgcolor: alpha(theme.palette.error.main, 0.1),
+                    },
+                  }}
+                >
+                  <LogoutRoundedIcon color="error" />
+                  <Box>
+                    <Typography fontWeight={700}>Log out</Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      End this signed-in session
+                    </Typography>
+                  </Box>
+                </ButtonBase>
+              </Popover>
             </Box>
           )}
         </Box>

@@ -67,6 +67,7 @@ export const Minting = ({ setIsOpenMinting, myAddress, show }) => {
   const [tier4Online, setTier4Online] = useState(0);
   const [openSnack, setOpenSnack] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [isRewardSharesLoading, setIsRewardSharesLoading] = useState(false);
   const [nodeHeightBlock, setNodeHeightBlock] = useState({});
   const { isShow: isShowNext, onOk, show: showNext } = useModal();
   const [info, setInfo] = useState(null);
@@ -247,6 +248,7 @@ export const Minting = ({ setIsOpenMinting, myAddress, show }) => {
 
   const getRewardShares = useCallback(async (address) => {
     try {
+      setIsRewardSharesLoading(true);
       const url = `${getBaseApiReact()}/addresses/rewardshares?involving=${address}`;
       const response = await fetch(url);
       if (!response.ok) {
@@ -257,6 +259,8 @@ export const Minting = ({ setIsOpenMinting, myAddress, show }) => {
       return data;
     } catch (error) {
       console.log(error);
+    } finally {
+      setIsRewardSharesLoading(false);
     }
   }, []);
 
@@ -470,13 +474,21 @@ export const Minting = ({ setIsOpenMinting, myAddress, show }) => {
     );
   };
 
+  const findSelfRewardShare = useCallback(
+    (shares = []) =>
+      shares?.find(
+        (item) =>
+          item?.recipient === myAddress && item?.mintingAccount === myAddress
+      ),
+    [myAddress]
+  );
+
   const startMinting = async () => {
     try {
       setIsLoading(true);
-      const findRewardShare = rewardShares?.find(
-        (item) =>
-          item?.recipient === myAddress && item?.mintingAccount === myAddress
-      );
+      const latestRewardShares = await getRewardShares(myAddress);
+      const rewardSharesToCheck = latestRewardShares || rewardShares;
+      const findRewardShare = findSelfRewardShare(rewardSharesToCheck);
       if (findRewardShare) {
         const privateRewardShare = await getRewardSharePrivateKey(
           accountInfo?.publicKey
@@ -531,9 +543,8 @@ export const Minting = ({ setIsOpenMinting, myAddress, show }) => {
 
   useEffect(() => {
     if (!myAddress) return;
-    getRewardShares(myAddress);
     getAccountInfo(myAddress);
-  }, [myAddress, getRewardShares]);
+  }, [myAddress]);
 
   const effectiveSelectedMintingKey = useMemo(() => {
     if (!mintingAccounts?.length) return null;
@@ -1038,15 +1049,19 @@ export const Minting = ({ setIsOpenMinting, myAddress, show }) => {
             position: 'relative',
           }}
         >
-          {isLoading && (
+          {(isLoading || isRewardSharesLoading) && (
             <Box
               sx={{
                 alignItems: 'center',
-                backgroundColor: alpha(theme.palette.background.default, 0.42),
+                backdropFilter: 'blur(3px)',
+                backgroundColor: alpha(theme.palette.background.default, 0.72),
                 bottom: 0,
                 display: 'flex',
+                flexDirection: 'column',
+                gap: 1.5,
                 justifyContent: 'center',
                 left: 0,
+                px: 2,
                 position: 'absolute',
                 right: 0,
                 top: 0,
@@ -1061,6 +1076,37 @@ export const Minting = ({ setIsOpenMinting, myAddress, show }) => {
                 wrapperClass="fidget-spinner-wrapper"
                 wrapperStyle={{}}
               />
+              {isRewardSharesLoading ? (
+                <Box
+                  sx={{
+                    backgroundColor:
+                      theme.palette.mode === 'dark'
+                        ? alpha('#05070B', 0.86)
+                        : alpha('#FFFFFF', 0.94),
+                    border: `1px solid ${alpha(theme.palette.divider, 0.42)}`,
+                    borderRadius: '10px',
+                    boxShadow:
+                      theme.palette.mode === 'dark'
+                        ? '0 16px 42px rgba(0,0,0,0.42)'
+                        : '0 14px 34px rgba(20,31,48,0.16)',
+                    maxWidth: 420,
+                    px: 2,
+                    py: 1.25,
+                  }}
+                >
+                  <Typography
+                    sx={{
+                      color: theme.palette.text.primary,
+                      fontSize: '0.96rem',
+                      fontWeight: 800,
+                      lineHeight: 1.35,
+                      textAlign: 'center',
+                    }}
+                  >
+                    {t('core:minting.panel.rewardshares_loading')}
+                  </Typography>
+                </Box>
+              ) : null}
             </Box>
           )}
 
@@ -1287,7 +1333,9 @@ export const Minting = ({ setIsOpenMinting, myAddress, show }) => {
                           size="small"
                           onClick={startMinting}
                           disabled={
-                            mintingAccounts?.length > 1 || isNodeSynchronizing
+                            mintingAccounts?.length > 1 ||
+                            isNodeSynchronizing ||
+                            isRewardSharesLoading
                           }
                           variant="contained"
                           sx={silkyPrimaryButtonSx}
@@ -1296,6 +1344,19 @@ export const Minting = ({ setIsOpenMinting, myAddress, show }) => {
                             postProcess: 'capitalizeFirstChar',
                           })}
                         </Button>
+                        {isRewardSharesLoading ? (
+                          <Typography
+                            variant="body2"
+                            color="text.secondary"
+                            sx={{
+                              lineHeight: 1.45,
+                              overflowWrap: 'anywhere',
+                              wordBreak: 'break-word',
+                            }}
+                          >
+                            {t('core:minting.panel.rewardshares_loading')}
+                          </Typography>
+                        ) : null}
                         {mintingAccounts?.length > 1 ? (
                           <Typography
                             variant="body2"

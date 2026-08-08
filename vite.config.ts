@@ -57,6 +57,19 @@ export default defineConfig({
       input: {
         main: resolve(__dirname, 'index.html'),
         qortinoDebug: resolve(__dirname, 'qortino-debug.html'),
+        audioSurface: resolve(__dirname, 'audio-surface.html'),
+      },
+      output: {
+        // Split only phaser (QortalLand's game engine, multi-MB, lazily used)
+        // into its own chunk; everything else keeps Rollup's default
+        // dynamic-import chunking so mobile first paint stays lean (no
+        // eager blanket "vendor" chunk).
+        manualChunks(id: string) {
+          if (id.includes('/node_modules/phaser/')) {
+            return 'phaser';
+          }
+          return undefined;
+        },
       },
       // No blanket "vendor" chunk: it forced every node_modules dependency —
       // including ones only used by lazily-loaded views (editor, virtualized

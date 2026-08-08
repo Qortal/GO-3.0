@@ -13,11 +13,7 @@
  * @see https://reticulum.network/manual/using.html
  */
 
-import {
-  spawn,
-  spawnSync,
-  type ChildProcessWithoutNullStreams,
-} from 'child_process';
+import { spawn, spawnSync, type ChildProcess } from 'child_process';
 import crypto from 'crypto';
 import {
   app,
@@ -32,7 +28,11 @@ import fs from 'fs';
 import net from 'net';
 import os from 'os';
 import path from 'path';
-import { log as loggerLog, error as loggerError } from './logger';
+import {
+  log as loggerLog,
+  warn as loggerWarn,
+  error as loggerError,
+} from './logger';
 import type { ReticulumMeshConfigSlice } from './reticulum-mesh-store';
 import type { ReticulumBridge } from './reticulum-bridge';
 import {
@@ -44,11 +44,17 @@ import {
   meshConfigSliceFromState,
 } from './reticulum-mesh-store';
 import { runEd25519VerifySync } from './ed25519-verify-common';
+import { sendToRenderer } from './renderer-delivery';
+import {
+  isReticulumRuntimeEnabled,
+  subscribeToReticulumRuntimeState,
+} from './reticulum-runtime-state';
 
 /**
  * Reticulum hub mesh: listen on the mesh port with optional private-gateway discovery.
  * RNS BackboneInterface is Linux-only; Windows/macOS use TCPServerInterface for the same section.
- * Bootstrap hubs as TCPClient rows; AutoInterface discover/autoconnect (no gossip-driven outbound).
+ * Bootstrap hubs as TCPClient rows; network interface discovery is enabled, but
+ * LAN AutoInterface discovery is not emitted in managed configs.
  */
 
 /** Mesh listen / private gateway: Backbone on Linux; TCPServer on Windows/macOS (no epoll). */
@@ -64,17 +70,20 @@ const RNS_MODULE = 'RNS.Utilities.rnsd';
 const FROZEN_DIR_NAME = 'reticulum';
 const RUNTIME_DIR_NAME = 'reticulum-runtime';
 const NESTED_VENV = 'venv';
+const DEV_RETICULUM_SOURCE_DIR = '/home/qortal/Desktop/Reticulum';
 const RETICULUM_SHARED_INSTANCE_BASE_PORT = 37428;
 const RETICULUM_CONTROL_BASE_PORT = 37429;
 const RETICULUM_CONFIG_FILENAME = 'config';
 const MANAGED_CONFIG_MARKER = '# Managed by Qortal Hub';
 const DEFAULT_CONFIG_SENTINEL = '# This is the default Reticulum config file.';
+const RETICULUM_AUTOCONNECT_DISCOVERED_INTERFACES = 8;
 const APP_SETTINGS_FILENAME = 'app-settings.json';
 const RETICULUM_SHARED_INSTANCE_NAME = 'qortal-hub-shared';
 const RETICULUM_SHARED_STATE_DIRNAME = 'qortal-shared';
 const RETICULUM_APP_INSTANCE_REGISTRY_FILENAME = 'reticulum-app-instances.json';
 const RETICULUM_SHARED_DAEMON_STATE_FILENAME = 'reticulum-daemon-state.json';
-const RETICULUM_SHARED_TRANSPORT_STATE_FILENAME = 'reticulum-transport-state.json';
+const RETICULUM_SHARED_TRANSPORT_STATE_FILENAME =
+  'reticulum-transport-state.json';
 const RETICULUM_DAEMON_LOCK_DIRNAME = 'reticulum-daemon.lock';
 const RETICULUM_SHARED_RPC_KEY_FILENAME = 'reticulum-rpc-key.hex';
 const RETICULUM_PRESENCE_BRIDGE_IDENTITY_FILENAME = 'presence-bridge.identity';
@@ -84,19 +93,52 @@ const RETICULUM_RPC_KEY_BYTES = 32;
 const RETICULUM_QORTAL_HUB_NETWORK_NAME = 'qortal-hub';
 const RETICULUM_DISCOVERY_ANNOUNCE_INTERVAL_MINUTES = 5;
 const RETICULUM_DAEMON_STOP_TIMEOUT_MS = 10_000;
+const RETICULUM_DAEMON_FORCE_STOP_TIMEOUT_MS = 3_000;
+const RETICULUM_ORPHAN_BRIDGE_STOP_TIMEOUT_MS = 1_000;
+const RETICULUM_ORPHAN_BRIDGE_FORCE_STOP_TIMEOUT_MS = 1_000;
 const RETICULUM_SHARED_INSTANCE_READY_TIMEOUT_MS = 10_000;
 const RETICULUM_SHARED_INSTANCE_READY_POLL_MS = 150;
 const RETICULUM_DAEMON_LOCK_STALE_MS = 120_000;
 const RETICULUM_DAEMON_LOCK_WAIT_MS = 2_000;
 const RETICULUM_DAEMON_LOCK_POLL_MS = 50;
 const RETICULUM_CONFIG_EDITOR_MAX_BYTES = 256 * 1024;
-const RETICULUM_PRIORITY_NICE_DEFAULT = -7;
 const RETICULUM_LOOPBACK_HOST = '127.0.0.1';
 const QCHAT_FILE_OFFER_TTL_MS = 2 * 60 * 60 * 1000;
 const QCHAT_FILE_COMPLETED_CACHE_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
 const QCHAT_FILE_SIGNATURE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const QCHAT_FILE_SIGNATURE_MAX_FUTURE_SKEW_MS = 2 * 60 * 1000;
 const QCHAT_FILE_BRIDGE_ATTACH_RETRY_MS = 3_000;
+
+export function getReticulumSourceEnvExtra(): Record<string, string> {
+  const sourceDir = String(
+    process.env.QORTAL_RETICULUM_SOURCE_DIR ??
+      (!app.isPackaged ? DEV_RETICULUM_SOURCE_DIR : '')
+  ).trim();
+  if (!sourceDir) return {};
+  if (!fs.existsSync(path.join(sourceDir, 'RNS', '__init__.py'))) return {};
+  const existingPythonPath = process.env.PYTHONPATH
+    ? path.delimiter + process.env.PYTHONPATH
+    : '';
+  const extra: Record<string, string> = {
+    PYTHONPATH: `${sourceDir}${existingPythonPath}`,
+    QORTAL_RNS_LOCAL_TRACE: process.env.QORTAL_RNS_LOCAL_TRACE ?? '0',
+    QORTAL_RNS_LOCAL_TRACE_GAP_MS:
+      process.env.QORTAL_RNS_LOCAL_TRACE_GAP_MS ?? '320',
+    QORTAL_RNS_LOCAL_TRACE_DELAY_MS:
+      process.env.QORTAL_RNS_LOCAL_TRACE_DELAY_MS ?? '80',
+    QORTAL_RNS_LOCAL_TRACE_FRAMES:
+      process.env.QORTAL_RNS_LOCAL_TRACE_FRAMES ?? '0',
+    QORTAL_RNS_LOCAL_TRACE_DEST_GAPS:
+      process.env.QORTAL_RNS_LOCAL_TRACE_DEST_GAPS ?? '0',
+    QORTAL_RNS_LOCAL_RX_QUEUE_WARN_AGE_MS:
+      process.env.QORTAL_RNS_LOCAL_RX_QUEUE_WARN_AGE_MS ?? '100',
+    QORTAL_RNS_LOCAL_RX_QUEUE_ERROR_AGE_MS:
+      process.env.QORTAL_RNS_LOCAL_RX_QUEUE_ERROR_AGE_MS ?? '500',
+    QORTAL_RNS_LOCAL_RX_INLINE_WARN_MS:
+      process.env.QORTAL_RNS_LOCAL_RX_INLINE_WARN_MS ?? '50',
+  };
+  return extra;
+}
 
 export type ReticulumDaemonMode = 'frozen' | 'venv' | 'system' | null;
 export type ReticulumAppInstanceRecord = {
@@ -190,13 +232,36 @@ export const DEFAULT_RETICULUM_HUBS: readonly ReticulumHubEndpoint[] =
       interfaceType: 'BackboneInterface',
       networkName: RETICULUM_QORTAL_HUB_NETWORK_NAME,
     },
+    {
+      name: 'Crowetic Reticulum Hub 3',
+      host: 'reticulum3.qortal.link',
+      port: 4444,
+      interfaceType: 'BackboneInterface',
+      networkName: RETICULUM_QORTAL_HUB_NETWORK_NAME,
+    },
+    {
+      name: 'Crowetic Reticulum Hub 4',
+      host: 'reticulum4.qortal.link',
+      port: 4444,
+      interfaceType: 'BackboneInterface',
+      networkName: RETICULUM_QORTAL_HUB_NETWORK_NAME,
+    },
+    {
+      name: 'Crowetic Reticulum Hub 5',
+      host: 'reticulum5.qortal.link',
+      port: 4444,
+      interfaceType: 'BackboneInterface',
+      networkName: RETICULUM_QORTAL_HUB_NETWORK_NAME,
+    },
   ]);
 
-let child: ChildProcessWithoutNullStreams | null = null;
+let child: ChildProcess | null = null;
 let lastStartMode: ReticulumDaemonMode = null;
 let reticulumInstanceIndex = 0;
 let qchatFileAttachedBridge: unknown = null;
 let qchatFileAttachRetryTimer: ReturnType<typeof setTimeout> | null = null;
+let qchatFileHydrationPromise: Promise<void> | null = null;
+let qchatFileHydrationBridge: unknown = null;
 
 type QchatFilePendingSendRecord = {
   transferId: string;
@@ -217,8 +282,9 @@ const qchatFileCompletedSends = new Map<string, number>();
 function parseReticulumPriorityNice(): number | null {
   const raw = String(process.env.QORTAL_RETICULUM_PRIORITY_NICE ?? '').trim();
   if (raw.toLowerCase() === 'off' || raw === '0') return null;
-  const requested = raw ? Number(raw) : RETICULUM_PRIORITY_NICE_DEFAULT;
-  if (!Number.isFinite(requested)) return RETICULUM_PRIORITY_NICE_DEFAULT;
+  if (!raw) return null;
+  const requested = Number(raw);
+  if (!Number.isFinite(requested)) return null;
   return Math.max(-20, Math.min(19, Math.trunc(requested)));
 }
 
@@ -236,10 +302,9 @@ function tryRaiseReticulumProcessPriority(pid: number): void {
     loggerLog(message);
     appendReticulumFileLog(message);
   } catch (err) {
-    const message =
-      `[ReticulumPriority] rnsd: pid=${pid} requested=${requested} failed=${String(
-        err instanceof Error ? err.message : err
-      )}`;
+    const message = `[ReticulumPriority] rnsd: pid=${pid} requested=${requested} failed=${String(
+      err instanceof Error ? err.message : err
+    )}`;
     loggerLog(message);
     appendReticulumFileLog(message);
   }
@@ -310,7 +375,9 @@ function normalizeQchatFilePendingSendRecord(
   const filePath = String(record.filePath || '').trim();
   const fileName = String(record.fileName || '').trim();
   const size = Number(record.size || 0);
-  const sha256 = String(record.sha256 || '').trim().toLowerCase();
+  const sha256 = String(record.sha256 || '')
+    .trim()
+    .toLowerCase();
   const createdAt = Number(record.createdAt || 0);
   const expiresAt = Number(record.expiresAt || 0);
   if (
@@ -353,7 +420,9 @@ function loadQchatFilePendingSendRecords(): QchatFilePendingSendRecord[] {
         : [];
     return records
       .map(normalizeQchatFilePendingSendRecord)
-      .filter((record): record is QchatFilePendingSendRecord => record !== null);
+      .filter(
+        (record): record is QchatFilePendingSendRecord => record !== null
+      );
   } catch (error) {
     loggerError('[Reticulum] failed to load qchat pending file sends:', error);
     return [];
@@ -470,7 +539,10 @@ function getReticulumSharedRpcKeyHex(): string {
       mode: 0o600,
     });
   } catch (err) {
-    loggerError(`[Reticulum] Failed to persist shared RPC key ${filePath}:`, err);
+    loggerError(
+      `[Reticulum] Failed to persist shared RPC key ${filePath}:`,
+      err
+    );
   }
   return generated;
 }
@@ -547,8 +619,304 @@ function readProcParentPid(pid: number): number | null {
   }
 }
 
-function cleanupOrphanedReticulumBridgeProcessesForConfig(): number {
-  if (process.platform !== 'linux') return 0;
+type ReticulumProcessInfo = {
+  pid: number;
+  parentPid: number | null;
+  command: string;
+};
+
+function commandLooksLikeReticulumDaemon(command: string): boolean {
+  const commandForCompare =
+    process.platform === 'win32' ? command.toLowerCase() : command;
+  return (
+    commandForCompare.includes('rnsd') || commandForCompare.includes(RNS_MODULE)
+  );
+}
+
+function commandUsesReticulumConfig(
+  command: string,
+  configDir: string
+): boolean {
+  const commandForCompare =
+    process.platform === 'win32' ? command.toLowerCase() : command;
+  const configDirForCompare =
+    process.platform === 'win32' ? configDir.toLowerCase() : configDir;
+  return (
+    commandForCompare.includes('--config') &&
+    commandForCompare.includes(configDirForCompare)
+  );
+}
+
+function waitForPidExitSync(pid: number, timeoutMs: number): boolean {
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  while (Date.now() <= deadline) {
+    if (!isPidAlive(pid)) {
+      return true;
+    }
+    sleepSync(Math.min(RETICULUM_DAEMON_LOCK_POLL_MS, deadline - Date.now()));
+  }
+  return !isPidAlive(pid);
+}
+
+function signalReticulumUnixProcessGroupOrPid(
+  pid: number,
+  signal: NodeJS.Signals | undefined
+): void {
+  const effectiveSignal = signal ?? 'SIGTERM';
+  try {
+    process.kill(-pid, effectiveSignal);
+  } catch (groupError) {
+    const code =
+      typeof groupError === 'object' && groupError && 'code' in groupError
+        ? String((groupError as { code?: unknown }).code ?? '')
+        : '';
+    if (code !== 'ESRCH') {
+      throw groupError;
+    }
+    process.kill(pid, effectiveSignal);
+  }
+}
+
+function stopOrphanedReticulumBridgeProcess(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 1 || pid === process.pid) {
+    return false;
+  }
+  if (!isPidAlive(pid)) {
+    return true;
+  }
+
+  const stopSignal = process.platform === 'win32' ? undefined : 'SIGTERM';
+  if (
+    signalReticulumPid(pid, stopSignal, 'startup-recovery-orphan-bridge') &&
+    waitForPidExitSync(pid, RETICULUM_ORPHAN_BRIDGE_STOP_TIMEOUT_MS)
+  ) {
+    return true;
+  }
+  if (!isPidAlive(pid)) {
+    return true;
+  }
+
+  loggerLog(
+    `[Reticulum] Orphaned presence bridge pid=${pid} survived graceful stop; forcing stop`
+  );
+  const forceSignal = process.platform === 'win32' ? undefined : 'SIGKILL';
+  if (
+    signalReticulumPid(
+      pid,
+      forceSignal,
+      'startup-recovery-orphan-bridge-force'
+    ) &&
+    waitForPidExitSync(pid, RETICULUM_ORPHAN_BRIDGE_FORCE_STOP_TIMEOUT_MS)
+  ) {
+    return true;
+  }
+
+  loggerError(
+    `[Reticulum] Orphaned presence bridge pid=${pid} did not exit after force stop`
+  );
+  return false;
+}
+
+function stopOrphanedReticulumDaemonProcess(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 1 || pid === process.pid) {
+    return false;
+  }
+  if (!isPidAlive(pid)) {
+    return true;
+  }
+
+  const stopSignal = process.platform === 'win32' ? undefined : 'SIGTERM';
+  if (
+    signalReticulumPid(pid, stopSignal, 'startup-recovery-orphan-daemon') &&
+    waitForPidExitSync(pid, RETICULUM_DAEMON_STOP_TIMEOUT_MS)
+  ) {
+    clearReticulumSharedDaemonState(pid);
+    return true;
+  }
+  if (!isPidAlive(pid)) {
+    clearReticulumSharedDaemonState(pid);
+    return true;
+  }
+
+  loggerLog(
+    `[Reticulum] Orphaned rnsd pid=${pid} survived graceful stop; forcing stop`
+  );
+  const forceSignal = process.platform === 'win32' ? undefined : 'SIGKILL';
+  if (
+    signalReticulumPid(
+      pid,
+      forceSignal,
+      'startup-recovery-orphan-daemon-force'
+    ) &&
+    waitForPidExitSync(pid, RETICULUM_DAEMON_FORCE_STOP_TIMEOUT_MS)
+  ) {
+    clearReticulumSharedDaemonState(pid);
+    return true;
+  }
+
+  loggerError(
+    `[Reticulum] Orphaned rnsd pid=${pid} did not exit after force stop`
+  );
+  return false;
+}
+
+export function processHasActiveReticulumAppAncestor(
+  pid: number,
+  parentPidByPid: Map<number, number | null>,
+  activeAppPids: Set<number>
+): boolean {
+  let current = parentPidByPid.get(pid) ?? null;
+  const seen = new Set<number>([pid]);
+  while (current && current > 1 && !seen.has(current)) {
+    if (activeAppPids.has(current)) {
+      return true;
+    }
+    seen.add(current);
+    current = parentPidByPid.get(current) ?? null;
+  }
+  return false;
+}
+
+function normalizeWindowsProcessInfo(
+  raw: unknown
+): ReticulumProcessInfo | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const record = raw as {
+    ProcessId?: unknown;
+    ParentProcessId?: unknown;
+    CommandLine?: unknown;
+  };
+  const pid = Number(record.ProcessId);
+  const parentPid = Number(record.ParentProcessId);
+  const command =
+    typeof record.CommandLine === 'string' ? record.CommandLine : '';
+  if (!Number.isInteger(pid) || pid <= 0 || !command) return null;
+  return {
+    pid,
+    parentPid: Number.isInteger(parentPid) ? parentPid : null,
+    command,
+  };
+}
+
+function readWindowsProcesses(): ReticulumProcessInfo[] {
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    'Get-CimInstance Win32_Process | Where-Object { $_.CommandLine } | Select-Object ProcessId,ParentProcessId,CommandLine | ConvertTo-Json -Compress',
+  ].join('; ');
+  const result = spawnSync(
+    'powershell.exe',
+    [
+      '-NoProfile',
+      '-NonInteractive',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-Command',
+      script,
+    ],
+    {
+      encoding: 'utf8',
+      windowsHide: true,
+    }
+  );
+  if (result.error || result.status !== 0) return [];
+
+  const stdout = result.stdout.trim();
+  if (!stdout) return [];
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    return [];
+  }
+
+  const records = Array.isArray(parsed) ? parsed : [parsed];
+  return records
+    .map(normalizeWindowsProcessInfo)
+    .filter((record): record is ReticulumProcessInfo => record !== null);
+}
+
+function cleanupOrphanedReticulumDaemonProcessesForConfig(
+  activeAppPids = new Set<number>()
+): number {
+  const configDir = getReticulumConfigDir();
+  if (process.platform !== 'linux') {
+    if (process.platform === 'win32') {
+      let stopped = 0;
+      const processInfos = readWindowsProcesses();
+      const parentPidByPid = new Map(
+        processInfos.map((info) => [info.pid, info.parentPid])
+      );
+      for (const processInfo of processInfos) {
+        const { pid, parentPid, command } = processInfo;
+        if (!Number.isInteger(pid) || pid <= 1 || pid === process.pid) continue;
+        if (!commandLooksLikeReticulumDaemon(command)) continue;
+        if (!commandUsesReticulumConfig(command, configDir)) continue;
+        if (
+          (parentPid && activeAppPids.has(parentPid)) ||
+          processHasActiveReticulumAppAncestor(
+            pid,
+            parentPidByPid,
+            activeAppPids
+          )
+        ) {
+          continue;
+        }
+        if (stopOrphanedReticulumDaemonProcess(pid)) {
+          stopped += 1;
+        }
+      }
+      if (stopped > 0) {
+        loggerLog(
+          `[Reticulum] Stopped ${stopped} orphaned rnsd process(es) for shared config ${configDir}`
+        );
+      }
+      return stopped;
+    }
+
+    const result = spawnSync('ps', ['-axo', 'pid=,ppid=,command='], {
+      encoding: 'utf8',
+    });
+    if (result.error || result.status !== 0) return 0;
+
+    let stopped = 0;
+    const lines = result.stdout.split(/\r?\n/);
+    const parentPidByPid = new Map<number, number | null>();
+    for (const line of lines) {
+      const match = line.match(/^\s*(\d+)\s+(\d+)\s+(.+)$/);
+      if (!match) continue;
+      const pid = Number(match[1]);
+      const parentPid = Number(match[2]);
+      if (!Number.isInteger(pid) || pid <= 0) continue;
+      parentPidByPid.set(pid, Number.isInteger(parentPid) ? parentPid : null);
+    }
+    for (const line of lines) {
+      const match = line.match(/^\s*(\d+)\s+(\d+)\s+(.+)$/);
+      if (!match) continue;
+      const pid = Number(match[1]);
+      const parentPid = Number(match[2]);
+      const command = match[3] ?? '';
+      if (!Number.isInteger(pid) || pid <= 1 || pid === process.pid) continue;
+      if (!commandLooksLikeReticulumDaemon(command)) continue;
+      if (!commandUsesReticulumConfig(command, configDir)) continue;
+      if (
+        activeAppPids.has(parentPid) ||
+        processHasActiveReticulumAppAncestor(pid, parentPidByPid, activeAppPids)
+      ) {
+        continue;
+      }
+      if (stopOrphanedReticulumDaemonProcess(pid)) {
+        stopped += 1;
+      }
+    }
+    if (stopped > 0) {
+      loggerLog(
+        `[Reticulum] Stopped ${stopped} orphaned rnsd process(es) for shared config ${configDir}`
+      );
+    }
+    return stopped;
+  }
+
   let entries: string[];
   try {
     entries = fs.readdirSync('/proc');
@@ -556,7 +924,144 @@ function cleanupOrphanedReticulumBridgeProcessesForConfig(): number {
     return 0;
   }
 
+  const parentPidByPid = new Map<number, number | null>();
+  for (const entry of entries) {
+    if (!/^\d+$/.test(entry)) continue;
+    const pid = Number(entry);
+    if (!Number.isInteger(pid) || pid <= 0) continue;
+    parentPidByPid.set(pid, readProcParentPid(pid));
+  }
+
+  let stopped = 0;
+  for (const entry of entries) {
+    if (!/^\d+$/.test(entry)) continue;
+    const pid = Number(entry);
+    if (!Number.isInteger(pid) || pid <= 1 || pid === process.pid) continue;
+
+    const cmdline = readProcText(pid, 'cmdline');
+    if (!commandLooksLikeReticulumDaemon(cmdline)) continue;
+    const environ = readProcText(pid, 'environ');
+    const usesSharedConfig =
+      environ.includes(`QORTAL_RETICULUM_CONFIG_DIR=${configDir}`) ||
+      cmdline.includes(`--config\n${configDir}`) ||
+      cmdline.includes(`--config ${configDir}`);
+    if (!usesSharedConfig) continue;
+
+    const parentPid = readProcParentPid(pid);
+    if (
+      (parentPid && activeAppPids.has(parentPid)) ||
+      processHasActiveReticulumAppAncestor(pid, parentPidByPid, activeAppPids)
+    ) {
+      continue;
+    }
+
+    if (stopOrphanedReticulumDaemonProcess(pid)) {
+      stopped += 1;
+    }
+  }
+  if (stopped > 0) {
+    loggerLog(
+      `[Reticulum] Stopped ${stopped} orphaned rnsd process(es) for shared config ${configDir}`
+    );
+  }
+  return stopped;
+}
+
+function cleanupOrphanedReticulumBridgeProcessesForConfig(
+  activeAppPids = new Set<number>()
+): number {
   const configDir = getReticulumConfigDir();
+  if (process.platform !== 'linux') {
+    if (process.platform === 'win32') {
+      let stopped = 0;
+      const processInfos = readWindowsProcesses();
+      const parentPidByPid = new Map(
+        processInfos.map((info) => [info.pid, info.parentPid])
+      );
+      for (const processInfo of processInfos) {
+        const { pid, parentPid, command } = processInfo;
+        if (!Number.isInteger(pid) || pid <= 1 || pid === process.pid) continue;
+        if (!command.includes('presence_bridge')) continue;
+        if (!commandUsesReticulumConfig(command, configDir)) continue;
+        if (
+          (parentPid && activeAppPids.has(parentPid)) ||
+          processHasActiveReticulumAppAncestor(
+            pid,
+            parentPidByPid,
+            activeAppPids
+          )
+        ) {
+          continue;
+        }
+        if (stopOrphanedReticulumBridgeProcess(pid)) {
+          stopped += 1;
+        }
+      }
+      if (stopped > 0) {
+        loggerLog(
+          `[Reticulum] Stopped ${stopped} orphaned presence bridge process(es) for shared config ${configDir}`
+        );
+      }
+      return stopped;
+    }
+
+    const result = spawnSync('ps', ['-axo', 'pid=,ppid=,command='], {
+      encoding: 'utf8',
+    });
+    if (result.error || result.status !== 0) return 0;
+
+    let stopped = 0;
+    const lines = result.stdout.split(/\r?\n/);
+    const parentPidByPid = new Map<number, number | null>();
+    for (const line of lines) {
+      const match = line.match(/^\s*(\d+)\s+(\d+)\s+(.+)$/);
+      if (!match) continue;
+      const pid = Number(match[1]);
+      const parentPid = Number(match[2]);
+      if (!Number.isInteger(pid) || pid <= 0) continue;
+      parentPidByPid.set(pid, Number.isInteger(parentPid) ? parentPid : null);
+    }
+    for (const line of lines) {
+      const match = line.match(/^\s*(\d+)\s+(\d+)\s+(.+)$/);
+      if (!match) continue;
+      const pid = Number(match[1]);
+      const parentPid = Number(match[2]);
+      const command = match[3] ?? '';
+      if (!Number.isInteger(pid) || pid <= 1 || pid === process.pid) continue;
+      if (!command.includes('presence_bridge')) continue;
+      if (!commandUsesReticulumConfig(command, configDir)) continue;
+      if (
+        activeAppPids.has(parentPid) ||
+        processHasActiveReticulumAppAncestor(pid, parentPidByPid, activeAppPids)
+      ) {
+        continue;
+      }
+      if (stopOrphanedReticulumBridgeProcess(pid)) {
+        stopped += 1;
+      }
+    }
+    if (stopped > 0) {
+      loggerLog(
+        `[Reticulum] Stopped ${stopped} orphaned presence bridge process(es) for shared config ${configDir}`
+      );
+    }
+    return stopped;
+  }
+  let entries: string[];
+  try {
+    entries = fs.readdirSync('/proc');
+  } catch {
+    return 0;
+  }
+
+  const parentPidByPid = new Map<number, number | null>();
+  for (const entry of entries) {
+    if (!/^\d+$/.test(entry)) continue;
+    const pid = Number(entry);
+    if (!Number.isInteger(pid) || pid <= 0) continue;
+    parentPidByPid.set(pid, readProcParentPid(pid));
+  }
+
   let stopped = 0;
   for (const entry of entries) {
     if (!/^\d+$/.test(entry)) continue;
@@ -573,15 +1078,14 @@ function cleanupOrphanedReticulumBridgeProcessesForConfig(): number {
     if (!usesSharedConfig) continue;
 
     const parentPid = readProcParentPid(pid);
-    if (parentPid && parentPid > 1 && isPidAlive(parentPid)) continue;
-
     if (
-      signalReticulumPid(
-        pid,
-        'SIGTERM',
-        'startup-recovery-orphan-bridge'
-      )
+      (parentPid && activeAppPids.has(parentPid)) ||
+      processHasActiveReticulumAppAncestor(pid, parentPidByPid, activeAppPids)
     ) {
+      continue;
+    }
+
+    if (stopOrphanedReticulumBridgeProcess(pid)) {
       stopped += 1;
     }
   }
@@ -621,9 +1125,7 @@ function normalizeReticulumDaemonLockRecord(
   };
 }
 
-function readReticulumDaemonLockRecord():
-  | ReticulumDaemonLockRecord
-  | null {
+function readReticulumDaemonLockRecord(): ReticulumDaemonLockRecord | null {
   return normalizeReticulumDaemonLockRecord(
     readJsonFile<unknown>(getReticulumDaemonLockOwnerPath())
   );
@@ -681,9 +1183,7 @@ function reticulumDaemonLockIsStale(now = Date.now()): boolean {
   return !isPidAlive(lock.appPid);
 }
 
-function acquireReticulumDaemonLock(
-  context: string
-): (() => void) | null {
+function acquireReticulumDaemonLock(context: string): (() => void) | null {
   const deadline = Date.now() + RETICULUM_DAEMON_LOCK_WAIT_MS;
   const lockDir = getReticulumDaemonLockDir();
   const ownerPath = getReticulumDaemonLockOwnerPath();
@@ -812,7 +1312,9 @@ export function registerReticulumAppInstance(
   instanceIndex = reticulumInstanceIndex,
   appPid = process.pid
 ): ReticulumAppInstanceRecord[] {
-  const entries = pruneReticulumAppInstances(readReticulumAppInstanceRegistry());
+  const entries = pruneReticulumAppInstances(
+    readReticulumAppInstanceRegistry()
+  );
   const next = entries.filter((entry) => entry.appPid !== appPid);
   next.push({
     appPid,
@@ -827,13 +1329,17 @@ export function registerReticulumAppInstance(
 export function unregisterReticulumAppInstance(
   appPid = process.pid
 ): ReticulumAppInstanceRecord[] {
-  const entries = pruneReticulumAppInstances(readReticulumAppInstanceRegistry());
+  const entries = pruneReticulumAppInstances(
+    readReticulumAppInstanceRegistry()
+  );
   const next = entries.filter((entry) => entry.appPid !== appPid);
   writeReticulumAppInstanceRegistry(next);
   return next;
 }
 
-export function planReticulumAppQuit(appPid = process.pid): ReticulumAppQuitPlan {
+export function planReticulumAppQuit(
+  appPid = process.pid
+): ReticulumAppQuitPlan {
   const remaining = unregisterReticulumAppInstance(appPid);
   return {
     otherActiveInstances: remaining.length,
@@ -886,6 +1392,23 @@ function readReticulumSharedDaemonState(): ReticulumSharedDaemonState | null {
   return normalizeReticulumSharedDaemonState(
     readJsonFile<unknown>(getReticulumSharedDaemonStatePath())
   );
+}
+
+export function isReticulumSharedDaemonOwnedByAnotherLiveInstance(): boolean {
+  const anotherLiveAppInstance = getReticulumActiveAppInstances().some(
+    (entry) => entry.appPid !== process.pid
+  );
+  const state = readReticulumSharedDaemonState();
+  if (!state) {
+    return anotherLiveAppInstance;
+  }
+  if (!isPidAlive(state.pid)) {
+    return anotherLiveAppInstance;
+  }
+  if (state.ownerAppPid !== process.pid && isPidAlive(state.ownerAppPid)) {
+    return true;
+  }
+  return anotherLiveAppInstance;
 }
 
 function clearReticulumSharedDaemonState(expectedPid?: number): void {
@@ -969,16 +1492,17 @@ function normalizeReticulumSharedTransportState(
   return out;
 }
 
-export function readReticulumSharedTransportState():
-  | ReticulumSharedTransportState
-  | null {
+export function readReticulumSharedTransportState(): ReticulumSharedTransportState | null {
   return normalizeReticulumSharedTransportState(
     readJsonFile<unknown>(getReticulumSharedTransportStatePath())
   );
 }
 
 export function persistReticulumSharedTransportState(
-  state: Omit<ReticulumSharedTransportState, 'updatedAt' | 'sourceInstanceIndex'>
+  state: Omit<
+    ReticulumSharedTransportState,
+    'updatedAt' | 'sourceInstanceIndex'
+  >
 ): void {
   writeJsonFile(getReticulumSharedTransportStatePath(), {
     ...state,
@@ -1014,16 +1538,34 @@ function signalReticulumPid(
 ): boolean {
   try {
     if (process.platform === 'win32') {
-      process.kill(pid);
-    } else if (signal) {
-      process.kill(pid, signal);
+      const result = spawnSync(
+        'taskkill.exe',
+        ['/PID', String(pid), '/T', '/F'],
+        {
+          encoding: 'utf8',
+          windowsHide: true,
+        }
+      );
+      if (result.error) {
+        throw result.error;
+      }
+      if (result.status !== 0 && isPidAlive(pid)) {
+        throw new Error(
+          `taskkill exited with status ${result.status}: ${(
+            result.stderr || result.stdout
+          ).trim()}`
+        );
+      }
     } else {
-      process.kill(pid);
+      signalReticulumUnixProcessGroupOrPid(pid, signal);
     }
     loggerLog(`[Reticulum] Signaled rnsd pid=${pid} context=${context}`);
     return true;
   } catch (err) {
-    loggerError(`[Reticulum] Failed to signal rnsd pid=${pid} context=${context}:`, err);
+    loggerError(
+      `[Reticulum] Failed to signal rnsd pid=${pid} context=${context}:`,
+      err
+    );
     return false;
   }
 }
@@ -1033,7 +1575,9 @@ export function recoverReticulumStateForAppLaunch(
 ): ReticulumAppLaunchRecovery {
   const releaseLock = acquireReticulumDaemonLock('startup-recovery');
   if (!releaseLock) {
-    loggerLog('[Reticulum] Skipping startup recovery because daemon lock is held.');
+    loggerLog(
+      '[Reticulum] Skipping startup recovery because daemon lock is held.'
+    );
     return {
       activeInstances: getReticulumActiveAppInstances().length,
       orphanedDaemonFound: false,
@@ -1051,12 +1595,34 @@ export function recoverReticulumStateForAppLaunch(
 function recoverReticulumStateForAppLaunchLocked(
   instanceIndex = reticulumInstanceIndex
 ): ReticulumAppLaunchRecovery {
-  cleanupOrphanedReticulumBridgeProcessesForConfig();
   const activeInstances = getReticulumActiveAppInstances();
-  const state = readReticulumSharedDaemonState();
+  const activeAppPids = new Set(
+    activeInstances.map((instance) => instance.appPid)
+  );
   let orphanedDaemonFound = false;
   let orphanedDaemonStopped = false;
   let daemonStateCleared = false;
+
+  // A bridge belongs to one Electron process, unlike the shared rnsd daemon.
+  // It is therefore safe (and necessary) to remove bridges which have no live
+  // registered app ancestor even while other Hub instances are running.
+  // Previously all bridge cleanup was skipped in that case, allowing one
+  // abnormal exit per launch to accumulate detached bridge processes.
+  cleanupOrphanedReticulumBridgeProcessesForConfig(activeAppPids);
+
+  if (activeInstances.length === 0) {
+    const stoppedDaemonProcesses =
+      cleanupOrphanedReticulumDaemonProcessesForConfig();
+    if (stoppedDaemonProcesses > 0) {
+      orphanedDaemonFound = true;
+      orphanedDaemonStopped = true;
+    }
+  } else {
+    loggerLog(
+      `[Reticulum] Preserving shared daemon because ${activeInstances.length} app instance(s) are active.`
+    );
+  }
+  const state = readReticulumSharedDaemonState();
 
   if (!state) {
     return {
@@ -1175,7 +1741,9 @@ function readReticulumConfigEditorInfo(): ReticulumConfigEditorInfo {
   };
 }
 
-function writeReticulumConfigFromEditor(contents: string): ReticulumConfigEditorInfo {
+function writeReticulumConfigFromEditor(
+  contents: string
+): ReticulumConfigEditorInfo {
   if (isManagedReticulumConfigEnabled()) {
     return {
       ...readReticulumConfigEditorInfo(),
@@ -1274,17 +1842,6 @@ function renderManagedHubInterfaces(
     .join('\n\n');
 }
 
-/** Keep local link discovery available on LANs; RNS interface discovery is configured in `[reticulum]`. */
-function renderDefaultAutoInterface(
-  slice: ReticulumMeshConfigSlice | null | undefined
-): string {
-  void slice;
-  return `  [[Default Interface]]
-  type = AutoInterface
-  enabled = yes
-`;
-}
-
 function renderMeshInterfaces(
   slice: ReticulumMeshConfigSlice | null | undefined
 ): string {
@@ -1359,12 +1916,9 @@ instance_name = ${getReticulumInstanceName()}
 shared_instance_port = ${getReticulumSharedInstancePort()}
 instance_control_port = ${getReticulumControlPort()}
 rpc_key = ${rpcKeyHex}
+discover_interfaces = Yes
+autoconnect_discovered_interfaces = ${RETICULUM_AUTOCONNECT_DISCOVERED_INTERFACES}
 `;
-  if (meshSlice?.meshDiscoveryClient) {
-    block += `discover_interfaces = yes
-autoconnect_discovered_interfaces = ${meshSlice.autoconnectDiscoveredMax}
-`;
-  }
   if (hasNetworkIdentity) {
     block += `network_identity = ${meshSlice.networkIdentityPath}
 `;
@@ -1398,7 +1952,6 @@ export function buildManagedReticulumConfig(
 ): string {
   const slice = meshSlice ?? null;
   const ifaceParts = [
-    renderDefaultAutoInterface(slice),
     renderManagedHubInterfaces(hubs),
     renderMeshInterfaces(slice),
   ].filter((s) => s.length > 0);
@@ -1583,10 +2136,9 @@ function scheduleReticulumLogFlush(): void {
   reticulumLogFlushScheduled = true;
   setImmediate(() => {
     reticulumLogFlushScheduled = false;
-    const chunk = reticulumLogPendingLines.splice(
-      0,
-      reticulumLogPendingLines.length
-    ).join('');
+    const chunk = reticulumLogPendingLines
+      .splice(0, reticulumLogPendingLines.length)
+      .join('');
     if (!chunk || !reticulumLogFilePath) return;
     reticulumLogIoChain = reticulumLogIoChain
       .then(async () => {
@@ -1610,9 +2162,7 @@ function scheduleReticulumLogFlush(): void {
 
 function queueReticulumFileLine(line: string): void {
   if (!resolveReticulumLogFilePath()) return;
-  reticulumLogPendingLines.push(
-    `[${new Date().toISOString()}] ${line}\n`
-  );
+  reticulumLogPendingLines.push(`[${new Date().toISOString()}] ${line}\n`);
   scheduleReticulumLogFlush();
 }
 
@@ -1622,14 +2172,6 @@ function appendReticulumFileLog(line: string): void {
   } catch {
     // ignore
   }
-}
-
-function emitReticulumLog(source: 'stdout' | 'stderr', chunk: Buffer): void {
-  const text = chunk.toString().replace(/\r?\n$/, '');
-  if (!text) return;
-  const prefixed = `[Reticulum/${source}] ${text}`;
-  loggerLog(prefixed);
-  appendReticulumFileLog(prefixed);
 }
 
 /** Directory containing the frozen PyInstaller rnsd binary. */
@@ -1724,8 +2266,16 @@ export type ReticulumDaemonStatus = {
   hubSummary?: string;
   /** Established overlay (presence/signaling) RNS.Link count from the Python bridge. */
   overlayLinksConnected?: number;
+  /** Established outbound overlay peers this node can send fanout to. */
+  p2pOutboundOverlayPeers?: number;
+  /** Recently receiving inbound overlay peers feeding this node data. */
+  p2pInboundOverlayPeers?: number;
   /** Distinct peers with an established overlay link (deduped). */
   p2pActiveOverlayPeers?: number;
+  /** Distinct overlay peers received from inside the health window. */
+  p2pReceivingOverlayPeers?: number;
+  /** How long receiving peer count has continuously met the health threshold. */
+  p2pReceivingOverlayPeersStableMs?: number;
   /** Identity-verified Reticulum overlay peers (signed presence). */
   verifiedOverlayPeerCount?: number;
 };
@@ -1736,7 +2286,13 @@ export type ReticulumOverlayPeerStatus = {
   /** True if the remote peer initiated this overlay link. */
   incoming?: boolean;
   address?: string;
+  addresses?: string[];
   connectedAt: number;
+};
+
+export type ReticulumDetailsSnapshot = {
+  destinationHash: string | null;
+  overlayPeers: ReticulumOverlayPeerStatus[];
 };
 
 export type ReticulumConfigEditorInfo = {
@@ -1778,12 +2334,10 @@ function probeReticulumVersion(
   plan: Extract<LaunchPlan, { cmd: string }>
 ): string | null {
   try {
-    const env = {
+    const env: NodeJS.ProcessEnv = {
       ...process.env,
       ...(plan.envExtra ?? {}),
-      QORTAL_RNS_LINK_TRACE: app.isPackaged
-        ? process.env.QORTAL_RNS_LINK_TRACE ?? '0'
-        : '1',
+      QORTAL_RNS_LINK_TRACE: process.env.QORTAL_RNS_LINK_TRACE ?? '0',
     };
     if (plan.mode === 'frozen') {
       const result = spawnSync(plan.cmd, ['--version'], {
@@ -1835,17 +2389,27 @@ function resolveLaunchPlan(): LaunchPlan {
 
   const runtimeDir = getReticulumRuntimeSearchDir();
   const venvRoot = resolveVenvRoot(runtimeDir);
+  const reticulumSourceEnv = getReticulumSourceEnvExtra();
 
   if (venvRoot) {
     const rnsd = resolveRnsdScript(venvRoot);
     const py = resolvePythonExecutable(venvRoot);
+    if (reticulumSourceEnv.PYTHONPATH && py && canImportRNS(py, venvRoot)) {
+      return {
+        cmd: py,
+        args: ['-m', RNS_MODULE, ...extraArgs],
+        cwd: venvRoot,
+        mode: 'venv',
+        envExtra: { ...reticulumSourceEnv, PYTHONNOUSERSITE: '1' },
+      };
+    }
     if (rnsd) {
       return {
         cmd: rnsd,
         args: [...extraArgs],
         cwd: venvRoot,
         mode: 'venv',
-        envExtra: { PYTHONNOUSERSITE: '1' },
+        envExtra: { ...reticulumSourceEnv, PYTHONNOUSERSITE: '1' },
       };
     }
     if (py && canImportRNS(py, venvRoot)) {
@@ -1854,7 +2418,7 @@ function resolveLaunchPlan(): LaunchPlan {
         args: ['-m', RNS_MODULE, ...extraArgs],
         cwd: venvRoot,
         mode: 'venv',
-        envExtra: { PYTHONNOUSERSITE: '1' },
+        envExtra: { ...reticulumSourceEnv, PYTHONNOUSERSITE: '1' },
       };
     }
     loggerLog(
@@ -1890,6 +2454,7 @@ function resolveLaunchPlan(): LaunchPlan {
       args: ['-m', RNS_MODULE, ...extraArgs],
       cwd: process.cwd(),
       mode: 'system',
+      envExtra: getReticulumSourceEnvExtra(),
     };
   }
 
@@ -1916,7 +2481,7 @@ export function resolveReticulumPythonLaunch(
         args: [scriptPath, ...scriptArgs],
         cwd: venvRoot,
         mode: 'venv',
-        envExtra: { PYTHONNOUSERSITE: '1' },
+        envExtra: { ...getReticulumSourceEnvExtra(), PYTHONNOUSERSITE: '1' },
       };
     }
   }
@@ -1948,6 +2513,7 @@ export function resolveReticulumPythonLaunch(
       args: [scriptPath, ...scriptArgs],
       cwd: process.cwd(),
       mode: 'system',
+      envExtra: getReticulumSourceEnvExtra(),
     };
   }
 
@@ -2073,21 +2639,17 @@ export async function collectReticulumStatusSnapshot(): Promise<ReticulumDaemonS
     }
   }
   try {
-    const [{ getReticulumBridge }, { getPresenceManager }] =
-      (await Promise.all([
-        import('./reticulum-bridge'),
-        import('./presence'),
-      ])) as [
-        typeof import('./reticulum-bridge'),
-        typeof import('./presence'),
-      ];
+    const [{ getReticulumBridge }, { getPresenceManager }] = (await Promise.all(
+      [import('./reticulum-bridge'), import('./presence')]
+    )) as [typeof import('./reticulum-bridge'), typeof import('./presence')];
     const bridge = getReticulumBridge();
     attachReticulumStatusBridgeEvents(bridge);
     const bridgeStatus = bridge?.getConnectivitySnapshot();
     if (!bridgeStatus) return base;
     const verifiedOverlayPeerCount =
-      getPresenceManager()?.getReticulumVerifiedPeers().length ?? 0;
-    const localHash = bridge.getLocalDestinationHash()?.trim().toLowerCase() ?? '';
+      getPresenceManager()?.getReticulumVerifiedTransportPeers().length ?? 0;
+    const localHash =
+      bridge.getLocalDestinationHash()?.trim().toLowerCase() ?? '';
     const activePeerHashes = new Set<string>();
     for (const peer of bridge.getOverlayLinkSnapshots()) {
       const peerKey = peer.peerPresenceHash.trim().toLowerCase();
@@ -2096,6 +2658,14 @@ export async function collectReticulumStatusSnapshot(): Promise<ReticulumDaemonS
       activePeerHashes.add(peerKey);
     }
     const p2pActiveOverlayPeers = activePeerHashes.size;
+    const p2pOutboundOverlayPeers =
+      bridgeStatus.overlayLinksOutboundConnected ?? 0;
+    const p2pInboundOverlayPeers =
+      bridgeStatus.overlayLinksInboundConnected ?? 0;
+    const p2pReceivingOverlayPeers =
+      bridgeStatus.overlayLinksReceivingConnected ?? 0;
+    const p2pReceivingOverlayPeersStableMs =
+      bridgeStatus.overlayLinksReceivingStableMs ?? 0;
     const transportFallback =
       getReticulumInstanceIndex() > 0 &&
       shouldFallbackToSharedTransportState({
@@ -2121,7 +2691,8 @@ export async function collectReticulumStatusSnapshot(): Promise<ReticulumDaemonS
         transportFallback?.configuredHubInterfaces ??
         bridgeStatus.configuredHubInterfaces,
       onlineHubInterfaces:
-        transportFallback?.onlineHubInterfaces ?? bridgeStatus.onlineHubInterfaces,
+        transportFallback?.onlineHubInterfaces ??
+        bridgeStatus.onlineHubInterfaces,
       configuredRemoteHubInterfaces:
         transportFallback?.configuredRemoteHubInterfaces ??
         bridgeStatus.configuredRemoteHubInterfaces,
@@ -2130,7 +2701,11 @@ export async function collectReticulumStatusSnapshot(): Promise<ReticulumDaemonS
         bridgeStatus.onlineRemoteHubInterfaces,
       hubSummary: transportFallback?.hubSummary ?? bridgeStatus.hubSummary,
       verifiedOverlayPeerCount,
+      p2pOutboundOverlayPeers,
+      p2pInboundOverlayPeers,
       p2pActiveOverlayPeers,
+      p2pReceivingOverlayPeers,
+      p2pReceivingOverlayPeersStableMs,
       ...(typeof bridgeStatus.overlayLinksConnected === 'number'
         ? { overlayLinksConnected: bridgeStatus.overlayLinksConnected }
         : {}),
@@ -2151,11 +2726,9 @@ async function broadcastReticulumStatusSnapshot(): Promise<void> {
   if (reticulumStatusSubscribers.size === 0) return;
   const status = await collectReticulumStatusSnapshot();
   for (const wc of reticulumStatusSubscribers) {
-    if (wc.isDestroyed()) {
+    if (sendToRenderer(wc, RETICULUM_STATUS_CHANNEL, status) === 'destroyed') {
       reticulumStatusSubscribers.delete(wc);
-      continue;
     }
-    wc.send(RETICULUM_STATUS_CHANNEL, status);
   }
 }
 
@@ -2189,7 +2762,10 @@ export function attachReticulumStatusBridgeEvents(
       'transport-state',
       scheduleReticulumStatusBroadcast
     );
-    reticulumStatusAttachedBridge.off('ready', scheduleReticulumStatusBroadcast);
+    reticulumStatusAttachedBridge.off(
+      'ready',
+      scheduleReticulumStatusBroadcast
+    );
     reticulumStatusAttachedBridge.off(
       'degraded',
       scheduleReticulumStatusBroadcast
@@ -2226,7 +2802,9 @@ export function resolveReticulumDaemonStartupAction():
 export function stopBundledReticulumDaemon(): void {
   const releaseLock = acquireReticulumDaemonLock('stop-local');
   if (!releaseLock) {
-    loggerLog('[Reticulum] Skipping local rnsd stop because daemon lock is held.');
+    loggerLog(
+      '[Reticulum] Skipping local rnsd stop because daemon lock is held.'
+    );
     return;
   }
   try {
@@ -2247,9 +2825,17 @@ function stopBundledReticulumDaemonLocked(): void {
   const childPid = child.pid;
   try {
     if (process.platform === 'win32') {
-      child.kill();
+      if (Number.isInteger(childPid) && Number(childPid) > 0) {
+        signalReticulumPid(Number(childPid), undefined, 'stop-local');
+      } else {
+        child.kill();
+      }
     } else {
-      child.kill('SIGTERM');
+      if (Number.isInteger(childPid) && Number(childPid) > 0) {
+        signalReticulumPid(Number(childPid), 'SIGTERM', 'stop-local');
+      } else {
+        child.kill('SIGTERM');
+      }
     }
   } catch (e) {
     loggerError('[Reticulum] Failed to signal child:', e);
@@ -2262,7 +2848,9 @@ function stopBundledReticulumDaemonLocked(): void {
 export function stopSharedReticulumDaemon(): void {
   const releaseLock = acquireReticulumDaemonLock('stop-shared');
   if (!releaseLock) {
-    loggerLog('[Reticulum] Skipping shared rnsd stop because daemon lock is held.');
+    loggerLog(
+      '[Reticulum] Skipping shared rnsd stop because daemon lock is held.'
+    );
     return;
   }
   try {
@@ -2299,7 +2887,7 @@ function sleep(ms: number): Promise<void> {
 }
 
 function waitForChildExit(
-  subprocess: ChildProcessWithoutNullStreams,
+  subprocess: ChildProcess,
   timeoutMs: number
 ): Promise<void> {
   if (subprocess.exitCode !== null) {
@@ -2334,6 +2922,42 @@ function waitForChildExit(
     subprocess.once('exit', onExit);
     subprocess.once('error', onError);
   });
+}
+
+async function waitForPidExit(pid: number, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() <= deadline) {
+    if (!isPidAlive(pid)) {
+      return;
+    }
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) break;
+    await sleep(Math.min(RETICULUM_DAEMON_LOCK_POLL_MS, remainingMs));
+  }
+  throw new Error(
+    `Timed out waiting for Reticulum daemon pid=${pid} to exit after ${timeoutMs}ms`
+  );
+}
+
+async function forceStopReticulumPidAndWait(
+  pid: number | undefined,
+  context: string
+): Promise<void> {
+  if (!Number.isInteger(pid) || Number(pid) <= 0) {
+    return;
+  }
+  const targetPid = Number(pid);
+  if (!isPidAlive(targetPid)) {
+    clearReticulumSharedDaemonState(targetPid);
+    return;
+  }
+  signalReticulumPid(
+    targetPid,
+    process.platform === 'win32' ? undefined : 'SIGKILL',
+    context
+  );
+  await waitForPidExit(targetPid, RETICULUM_DAEMON_FORCE_STOP_TIMEOUT_MS);
+  clearReticulumSharedDaemonState(targetPid);
 }
 
 function canConnectToSharedInstance(port: number): Promise<boolean> {
@@ -2400,17 +3024,68 @@ export async function waitForReticulumSharedInstanceReady(
 }
 
 export async function restartBundledReticulumDaemonAndWaitReady(
-  timeoutMs = RETICULUM_SHARED_INSTANCE_READY_TIMEOUT_MS
+  timeoutMs = RETICULUM_SHARED_INSTANCE_READY_TIMEOUT_MS,
+  options?: { forceKillOnStopTimeout?: boolean }
 ): Promise<void> {
+  if (!isReticulumRuntimeEnabled()) {
+    throw new Error('Reticulum is disabled');
+  }
   const releaseLock = acquireReticulumDaemonLock('restart');
   if (!releaseLock) {
     throw new Error('Timed out waiting for Reticulum daemon restart lock');
   }
   try {
     const subprocess = child;
+    const sharedState = readReticulumSharedDaemonState();
     stopBundledReticulumDaemonLocked();
     if (subprocess && subprocess.exitCode === null) {
-      await waitForChildExit(subprocess, RETICULUM_DAEMON_STOP_TIMEOUT_MS);
+      try {
+        await waitForChildExit(subprocess, RETICULUM_DAEMON_STOP_TIMEOUT_MS);
+      } catch (error) {
+        if (!options?.forceKillOnStopTimeout) {
+          throw error;
+        }
+        loggerError(
+          '[Reticulum] Daemon did not exit after SIGTERM; forcing stop before restart:',
+          error
+        );
+        await forceStopReticulumPidAndWait(
+          subprocess.pid,
+          'restart-force-stop-local'
+        );
+      }
+    } else if (sharedState && isPidAlive(sharedState.pid)) {
+      signalReticulumPid(
+        sharedState.pid,
+        process.platform === 'win32' ? undefined : 'SIGTERM',
+        'restart-shared-state'
+      );
+      try {
+        await waitForPidExit(sharedState.pid, RETICULUM_DAEMON_STOP_TIMEOUT_MS);
+        clearReticulumSharedDaemonState(sharedState.pid);
+      } catch (error) {
+        if (!options?.forceKillOnStopTimeout) {
+          throw error;
+        }
+        loggerError(
+          '[Reticulum] Shared daemon state pid did not exit after SIGTERM; forcing stop before restart:',
+          error
+        );
+        await forceStopReticulumPidAndWait(
+          sharedState.pid,
+          'restart-force-stop-shared-state'
+        );
+      }
+    } else {
+      const activeAppPids = new Set(
+        getReticulumActiveAppInstances()
+          .map((entry) => entry.appPid)
+          .filter((appPid) => appPid !== process.pid)
+      );
+      cleanupOrphanedReticulumDaemonProcessesForConfig(activeAppPids);
+    }
+    if (!isReticulumRuntimeEnabled()) {
+      throw new Error('Reticulum was disabled during restart');
     }
     fs.mkdirSync(getReticulumConfigDir(), { recursive: true });
     ensureManagedReticulumConfig();
@@ -2428,6 +3103,10 @@ export async function restartBundledReticulumDaemonAndWaitReady(
  * Starts rnsd (frozen binary preferred). Disabled if QORTAL_RETICULUM_DISABLE=1.
  */
 export function startBundledReticulumDaemon(): void {
+  if (!isReticulumRuntimeEnabled()) {
+    loggerLog('[Reticulum] Skipped because Reticulum is disabled.');
+    return;
+  }
   if (process.env.QORTAL_RETICULUM_DISABLE === '1') {
     loggerLog('[Reticulum] Skipped (QORTAL_RETICULUM_DISABLE=1).');
     return;
@@ -2458,6 +3137,7 @@ export function startBundledReticulumDaemon(): void {
 }
 
 function startBundledReticulumDaemonLocked(): void {
+  if (!isReticulumRuntimeEnabled()) return;
   const startupAction = resolveReticulumDaemonStartupAction();
   if (startupAction === 'reuse-local') {
     return;
@@ -2492,31 +3172,32 @@ function startBundledReticulumDaemonLocked(): void {
   }
 
   try {
-    const env = {
+    const env: NodeJS.ProcessEnv = {
       ...process.env,
       ...(plan.envExtra ?? {}),
-      QORTAL_RNS_LINK_TRACE: app.isPackaged
-        ? process.env.QORTAL_RNS_LINK_TRACE ?? '0'
-        : '1',
+      QORTAL_RNS_LINK_TRACE: process.env.QORTAL_RNS_LINK_TRACE ?? '0',
     };
+    const launchArgs = plan.args.includes('--service')
+      ? plan.args
+      : [...plan.args, '--service'];
     loggerLog(
-      `[Reticulum] Launch env QORTAL_RNS_LINK_TRACE=${env.QORTAL_RNS_LINK_TRACE}`
+      `[Reticulum] Launch env QORTAL_RNS_LINK_TRACE=${env.QORTAL_RNS_LINK_TRACE} QORTAL_RNS_LOCAL_TRACE=${env.QORTAL_RNS_LOCAL_TRACE ?? '0'} QORTAL_RNS_LOCAL_TRACE_FRAMES=${env.QORTAL_RNS_LOCAL_TRACE_FRAMES ?? '0'} QORTAL_RNS_LOCAL_RX_QUEUE_WARN_AGE_MS=${env.QORTAL_RNS_LOCAL_RX_QUEUE_WARN_AGE_MS ?? 'n/a'} QORTAL_RNS_LOCAL_RX_INLINE_WARN_MS=${env.QORTAL_RNS_LOCAL_RX_INLINE_WARN_MS ?? 'n/a'} PYTHONPATH=${env.PYTHONPATH ?? ''}`
     );
-    const subprocess = spawn(plan.cmd, plan.args, {
+    const subprocess = spawn(plan.cmd, launchArgs, {
       cwd: plan.cwd,
       env,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      detached: true,
+      stdio: 'ignore',
       windowsHide: true,
     });
     child = subprocess;
+    subprocess.unref();
     lastStartMode = plan.mode;
     if (typeof subprocess.pid === 'number') {
       persistReticulumSharedDaemonState(subprocess.pid);
       tryRaiseReticulumProcessPriority(subprocess.pid);
     }
 
-    subprocess.stdout.on('data', (d) => emitReticulumLog('stdout', d));
-    subprocess.stderr.on('data', (d) => emitReticulumLog('stderr', d));
     subprocess.on('error', (err) => {
       loggerError('[Reticulum] Process error:', err);
       appendReticulumFileLog(`Process error: ${String(err)}`);
@@ -2599,49 +3280,88 @@ export function registerReticulumIpcHandlers(): void {
       expiresAt?: number;
     }) => Promise<{ ok: boolean; error?: string; reason?: string }>;
   }): Promise<void> => {
+    if (!isReticulumRuntimeEnabled()) return;
     if (qchatFileHydratedBridge === bridge) return;
-    const now = Date.now();
-    let changed = false;
-    let hadError = false;
-    for (const record of loadQchatFilePendingSendRecords()) {
-      if (record.expiresAt <= now || !fs.existsSync(record.filePath)) {
-        changed = true;
-        continue;
+    while (qchatFileHydrationPromise) {
+      const hydratingBridge = qchatFileHydrationBridge;
+      await qchatFileHydrationPromise;
+      if (hydratingBridge === bridge || qchatFileHydratedBridge === bridge) {
+        return;
       }
-      qchatFilePendingSends.set(record.transferId, record);
-      try {
-        const result = await bridge.sendQchatFileResource({
-          allowedRecipientAddress: record.allowedRecipientAddress,
-          transferId: record.transferId,
-          filePath: record.filePath,
-          fileName: record.fileName,
-          size: record.size,
-          sha256: record.sha256,
-          expiresAt: record.expiresAt,
-        });
-        if (!result.ok) {
-          loggerError(
-            `[Reticulum] failed to hydrate qchat file send ${record.transferId}: ${
-              result.error || result.reason || 'unknown error'
+    }
+    if (qchatFileHydratedBridge === bridge) return;
+    qchatFileHydrationBridge = bridge;
+    qchatFileHydrationPromise = (async () => {
+      const now = Date.now();
+      let changed = false;
+      let hadError = false;
+      const records = loadQchatFilePendingSendRecords();
+      loggerLog(
+        `[Reticulum] qchat file hydration start pending=${records.length}`
+      );
+      for (const record of records) {
+        if (!isReticulumRuntimeEnabled()) return;
+        if (record.expiresAt <= now || !fs.existsSync(record.filePath)) {
+          changed = true;
+          loggerWarn(
+            `[Reticulum] qchat file hydration pruned transfer=${record.transferId} reason=${
+              record.expiresAt <= now ? 'expired' : 'file_missing'
             }`
           );
-          hadError = true;
+          continue;
         }
-      } catch (error) {
-        hadError = true;
-        loggerError(
-          `[Reticulum] failed to hydrate qchat file send ${record.transferId}:`,
-          error
-        );
+        qchatFilePendingSends.set(record.transferId, record);
+        try {
+          const result = await bridge.sendQchatFileResource({
+            allowedRecipientAddress: record.allowedRecipientAddress,
+            transferId: record.transferId,
+            filePath: record.filePath,
+            fileName: record.fileName,
+            size: record.size,
+            sha256: record.sha256,
+            expiresAt: record.expiresAt,
+          });
+          if (!result.ok) {
+            loggerWarn(
+              `[Reticulum] qchat file hydration failed transfer=${record.transferId} reason=${
+                result.error || result.reason || 'unknown_error'
+              }`
+            );
+            hadError = true;
+          } else {
+            loggerLog(
+              `[Reticulum] qchat file hydration registered transfer=${record.transferId} size=${record.size}`
+            );
+          }
+        } catch (error) {
+          hadError = true;
+          loggerWarn(
+            `[Reticulum] qchat file hydration failed transfer=${record.transferId}:`,
+            error
+          );
+        }
+      }
+      if (changed) {
+        pruneAndPersistQchatFilePendingSends();
+      }
+      if (hadError) {
+        loggerWarn('[Reticulum] qchat file hydration incomplete; will retry');
+        scheduleQchatFileBridgeAttachRetry();
+        return;
+      }
+      qchatFileHydratedBridge = bridge;
+      loggerLog(
+        `[Reticulum] qchat file hydration complete pending=${qchatFilePendingSends.size}`
+      );
+    })();
+    try {
+      await qchatFileHydrationPromise;
+    } finally {
+      if (qchatFileHydrationBridge === bridge) {
+        qchatFileHydrationPromise = null;
+        qchatFileHydrationBridge = null;
       }
     }
-    if (changed) {
-      pruneAndPersistQchatFilePendingSends();
-    }
-    if (hadError) {
-      throw new Error('qchat file send hydration failed');
-    }
-    qchatFileHydratedBridge = bridge;
   };
 
   const verifyQchatFileAuthTimestamp = (timestamp: number): string | null => {
@@ -2700,7 +3420,12 @@ export function registerReticulumIpcHandlers(): void {
     ).trim();
     const timestamp = Number(auth.timestamp || 0);
     const signature = String(auth.signature || '').trim();
-    if (!transferId || !senderAddress || !downloaderAddress || !downloaderPublicKey) {
+    if (
+      !transferId ||
+      !senderAddress ||
+      !downloaderAddress ||
+      !downloaderPublicKey
+    ) {
       return 'Missing Reticulum link auth identity fields';
     }
     if (downloaderAddress !== pending.allowedRecipientAddress) {
@@ -2746,27 +3471,50 @@ export function registerReticulumIpcHandlers(): void {
     });
 
   const attachQchatFileBridgeEvents = async (): Promise<void> => {
+    if (!isReticulumRuntimeEnabled()) return;
     const { getReticulumBridge } =
       (await import('./reticulum-bridge')) as typeof import('./reticulum-bridge');
+    if (!isReticulumRuntimeEnabled()) return;
     const bridge = getReticulumBridge();
     if (!bridge) {
       scheduleQchatFileBridgeAttachRetry();
       return;
     }
-    await hydrateQchatFilePendingSends(bridge);
-    if (qchatFileAttachedBridge === bridge) return;
+    if (qchatFileAttachedBridge === bridge) {
+      void hydrateQchatFilePendingSends(bridge).catch((error) => {
+        loggerWarn('[Reticulum] qchat file hydration retry failed:', error);
+      });
+      return;
+    }
     bridge.on('qchat-file-transfer', (payload: any) => {
       const broadcastQchatFileTransfer = (eventPayload: any): void => {
-        for (const wc of BrowserWindow.getAllWindows().map((w) => w.webContents)) {
+        for (const wc of BrowserWindow.getAllWindows().map(
+          (w) => w.webContents
+        )) {
           if (!wc.isDestroyed()) {
             wc.send('reticulum:qchatFileTransferEvent', eventPayload);
           }
         }
       };
+      const status = String(payload?.status || '').trim();
+      if (
+        status &&
+        status !== 'sending' &&
+        status !== 'receiving' &&
+        status !== 'registered'
+      ) {
+        loggerWarn(
+          `[Reticulum] qchat file event status=${status} transfer=${String(
+            payload?.transferId || ''
+          )} reason=${String(payload?.reason || '')} link=${String(
+            payload?.linkId || ''
+          )}`
+        );
+      }
       if (payload?.status === 'auth' && payload?.auth && payload?.linkId) {
         const transferId = String(payload.transferId || '').trim();
         const rejectAuth = (reason: string): void => {
-          loggerError(`[Reticulum] qchat file auth rejected: ${reason}`);
+          loggerWarn(`[Reticulum] qchat file auth rejected: ${reason}`);
           broadcastQchatFileTransfer({
             status: 'failed',
             transferId,
@@ -2786,7 +3534,9 @@ export function registerReticulumIpcHandlers(): void {
                 );
               }
             })
-            .catch((err) => loggerError('[Reticulum] qchat file reject failed:', err));
+            .catch((err) =>
+              loggerError('[Reticulum] qchat file reject failed:', err)
+            );
         };
         const pending = qchatFilePendingSends.get(transferId);
         if (!pending) {
@@ -2828,32 +3578,64 @@ export function registerReticulumIpcHandlers(): void {
               );
               return;
             }
+            loggerWarn(
+              `[Reticulum] qchat file authorize ok transfer=${transferId} link=${String(payload.linkId)}`
+            );
           })
-          .catch((err) => loggerError('[Reticulum] qchat file authorize failed:', err));
+          .catch((err) =>
+            loggerError('[Reticulum] qchat file authorize failed:', err)
+          );
       } else if (payload?.status === 'sent' && payload?.transferId) {
         markQchatFileSendCompleted(String(payload.transferId));
       }
       broadcastQchatFileTransfer(payload);
     });
     qchatFileAttachedBridge = bridge;
+    loggerLog('[Reticulum] qchat file bridge events attached');
+    void hydrateQchatFilePendingSends(bridge).catch((error) => {
+      loggerWarn('[Reticulum] qchat file hydration failed:', error);
+      scheduleQchatFileBridgeAttachRetry();
+    });
   };
 
   const scheduleQchatFileBridgeAttachRetry = (): void => {
-    if (qchatFileAttachRetryTimer) return;
+    if (!isReticulumRuntimeEnabled() || qchatFileAttachRetryTimer) return;
     qchatFileAttachRetryTimer = setTimeout(() => {
       qchatFileAttachRetryTimer = null;
+      if (!isReticulumRuntimeEnabled()) return;
       void attachQchatFileBridgeEvents().catch((error) => {
-        loggerError('[Reticulum] qchat file bridge event attach retry failed:', error);
+        loggerWarn(
+          '[Reticulum] qchat file bridge event attach retry failed:',
+          error
+        );
         scheduleQchatFileBridgeAttachRetry();
       });
     }, QCHAT_FILE_BRIDGE_ATTACH_RETRY_MS);
     qchatFileAttachRetryTimer.unref?.();
   };
 
-  void attachQchatFileBridgeEvents().catch((error) => {
-    loggerError('[Reticulum] qchat file bridge event attach failed:', error);
-    scheduleQchatFileBridgeAttachRetry();
+  subscribeToReticulumRuntimeState((enabled) => {
+    if (!enabled) {
+      if (qchatFileAttachRetryTimer) {
+        clearTimeout(qchatFileAttachRetryTimer);
+        qchatFileAttachRetryTimer = null;
+      }
+      qchatFileAttachedBridge = null;
+      qchatFileHydratedBridge = null;
+      return;
+    }
+    void attachQchatFileBridgeEvents().catch((error) => {
+      loggerWarn('[Reticulum] qchat file bridge reattach failed:', error);
+      scheduleQchatFileBridgeAttachRetry();
+    });
   });
+
+  if (isReticulumRuntimeEnabled()) {
+    void attachQchatFileBridgeEvents().catch((error) => {
+      loggerWarn('[Reticulum] qchat file bridge event attach failed:', error);
+      scheduleQchatFileBridgeAttachRetry();
+    });
+  }
 
   ipcMain.handle(
     'reticulum:getStatus',
@@ -2872,28 +3654,38 @@ export function registerReticulumIpcHandlers(): void {
   ipcMain.handle(
     'reticulum:saveConfigEditorContents',
     async (_event, contents: string): Promise<ReticulumConfigEditorInfo> => {
+      if (!isReticulumRuntimeEnabled()) {
+        return {
+          ...(await readReticulumConfigEditorInfo()),
+          ok: false,
+          error: 'Reticulum is disabled',
+        };
+      }
       return writeReticulumConfigFromEditor(contents);
     }
   );
 
-  ipcMain.handle('reticulum:getGeneratedDefaultConfig', async (): Promise<{
-    ok: boolean;
-    contents: string;
-    error?: string;
-  }> => {
-    try {
-      return {
-        ok: true,
-        contents: buildCurrentManagedReticulumConfig(),
-      };
-    } catch (error) {
-      return {
-        ok: false,
-        contents: '',
-        error: error instanceof Error ? error.message : String(error),
-      };
+  ipcMain.handle(
+    'reticulum:getGeneratedDefaultConfig',
+    async (): Promise<{
+      ok: boolean;
+      contents: string;
+      error?: string;
+    }> => {
+      try {
+        return {
+          ok: true,
+          contents: buildCurrentManagedReticulumConfig(),
+        };
+      } catch (error) {
+        return {
+          ok: false,
+          contents: '',
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
     }
-  });
+  );
 
   ipcMain.handle(
     'reticulum:revealConfigInFileExplorer',
@@ -2911,12 +3703,18 @@ export function registerReticulumIpcHandlers(): void {
     reticulumStatusSubscribers.add(event.sender);
     void collectReticulumStatusSnapshot()
       .then((status) => {
-        if (!event.sender.isDestroyed()) {
-          event.sender.send(RETICULUM_STATUS_CHANNEL, status);
+        if (
+          sendToRenderer(event.sender, RETICULUM_STATUS_CHANNEL, status) ===
+          'destroyed'
+        ) {
+          reticulumStatusSubscribers.delete(event.sender);
         }
       })
       .catch((error) => {
-        loggerError('[Reticulum] Failed to send initial status snapshot:', error);
+        loggerError(
+          '[Reticulum] Failed to send initial status snapshot:',
+          error
+        );
       });
   });
 
@@ -2938,12 +3736,16 @@ export function registerReticulumIpcHandlers(): void {
           ];
         const bridge = getReticulumBridge();
         if (!bridge) return [];
-        const localHash = bridge.getLocalDestinationHash()?.trim().toLowerCase() ?? '';
-        const peersByHash = new Map(
-          (getPresenceManager()?.getReticulumVerifiedPeers() ?? []).map(
-            (peer) => [peer.destinationHash.toLowerCase(), peer.address]
-          )
-        );
+        const localHash =
+          bridge.getLocalDestinationHash()?.trim().toLowerCase() ?? '';
+        const addressesByHash = new Map<string, string[]>();
+        for (const lease of getPresenceManager()?.getReticulumAccountEndpointLeases() ??
+          []) {
+          const key = lease.destinationHash.toLowerCase();
+          const addresses = addressesByHash.get(key) ?? [];
+          if (!addresses.includes(lease.address)) addresses.push(lease.address);
+          addressesByHash.set(key, addresses);
+        }
         const uniqueByHash = new Map<string, ReticulumOverlayPeerStatus>();
         for (const peer of bridge.getOverlayLinkSnapshots()) {
           const peerHash = peer.peerPresenceHash.trim();
@@ -2952,13 +3754,15 @@ export function registerReticulumIpcHandlers(): void {
           if (localHash && peerKey === localHash) continue;
           const current = uniqueByHash.get(peerKey);
           if (current && current.connectedAt <= peer.connectedAt) continue;
+          const addresses = addressesByHash.get(peerKey) ?? [];
           uniqueByHash.set(peerKey, {
             linkId: peer.linkId,
             peerPresenceHash: peer.peerPresenceHash,
             incoming: peer.incoming,
-            ...(peersByHash.get(peerKey)
+            ...(addresses.length > 0
               ? {
-                  address: peersByHash.get(peerKey),
+                  address: addresses[0],
+                  addresses,
                 }
               : {}),
             connectedAt: peer.connectedAt,
@@ -2977,47 +3781,119 @@ export function registerReticulumIpcHandlers(): void {
     }
   );
 
-  ipcMain.handle('reticulum:qchatFileSelect', async (): Promise<{
-    ok: boolean;
-    canceled?: boolean;
-    error?: string;
-    file?: { path: string; name: string; size: number; sha256: string };
-  }> => {
-    try {
-      const result = await dialog.showOpenDialog({
-        properties: ['openFile'],
-      });
-      if (result.canceled || result.filePaths.length === 0) {
-        return { ok: false, canceled: true };
+  ipcMain.handle(
+    'reticulum:getDetails',
+    async (): Promise<ReticulumDetailsSnapshot> => {
+      try {
+        const [{ getReticulumBridge }, { getPresenceManager }] =
+          (await Promise.all([
+            import('./reticulum-bridge'),
+            import('./presence'),
+          ])) as [
+            typeof import('./reticulum-bridge'),
+            typeof import('./presence'),
+          ];
+        const bridge = getReticulumBridge();
+        if (!bridge) return { destinationHash: null, overlayPeers: [] };
+        const destinationHash =
+          bridge.getLocalDestinationHash()?.trim().toLowerCase() || null;
+        const addressesByHash = new Map<string, string[]>();
+        for (const lease of getPresenceManager()?.getReticulumAccountEndpointLeases() ??
+          []) {
+          const key = lease.destinationHash.toLowerCase();
+          const addresses = addressesByHash.get(key) ?? [];
+          if (!addresses.includes(lease.address)) addresses.push(lease.address);
+          addressesByHash.set(key, addresses);
+        }
+        const uniqueByHash = new Map<string, ReticulumOverlayPeerStatus>();
+        for (const peer of bridge.getOverlayLinkSnapshots()) {
+          const peerHash = peer.peerPresenceHash.trim();
+          if (!peerHash) continue;
+          const peerKey = peerHash.toLowerCase();
+          if (destinationHash && peerKey === destinationHash) continue;
+          const current = uniqueByHash.get(peerKey);
+          if (current && current.connectedAt <= peer.connectedAt) continue;
+          const addresses = addressesByHash.get(peerKey) ?? [];
+          uniqueByHash.set(peerKey, {
+            linkId: peer.linkId,
+            peerPresenceHash: peer.peerPresenceHash,
+            incoming: peer.incoming,
+            ...(addresses.length > 0
+              ? {
+                  address: addresses[0],
+                  addresses,
+                }
+              : {}),
+            connectedAt: peer.connectedAt,
+          });
+        }
+        return {
+          destinationHash,
+          overlayPeers: [...uniqueByHash.values()].sort(
+            (a, b) => a.connectedAt - b.connectedAt
+          ),
+        };
+      } catch (error) {
+        loggerError('[Reticulum] Failed to collect details snapshot:', error);
+        return { destinationHash: null, overlayPeers: [] };
       }
-      const filePath = result.filePaths[0]!;
-      const stat = await fs.promises.stat(filePath);
-      if (!stat.isFile()) return { ok: false, error: 'Selected path is not a file' };
-      const sha256 = await sha256File(filePath);
-      return {
-        ok: true,
-        file: {
-          path: filePath,
-          name: path.basename(filePath),
-          size: stat.size,
-          sha256,
-        },
-      };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      loggerError('[Reticulum] qchatFileSelect failed:', error);
-      return { ok: false, error: message };
     }
-  });
+  );
+
+  ipcMain.handle(
+    'reticulum:qchatFileSelect',
+    async (): Promise<{
+      ok: boolean;
+      canceled?: boolean;
+      error?: string;
+      file?: { path: string; name: string; size: number; sha256: string };
+    }> => {
+      if (!isReticulumRuntimeEnabled()) {
+        return { ok: false, error: 'Reticulum is disabled' };
+      }
+      try {
+        const result = await dialog.showOpenDialog({
+          properties: ['openFile'],
+        });
+        if (result.canceled || result.filePaths.length === 0) {
+          return { ok: false, canceled: true };
+        }
+        const filePath = result.filePaths[0]!;
+        const stat = await fs.promises.stat(filePath);
+        if (!stat.isFile())
+          return { ok: false, error: 'Selected path is not a file' };
+        const sha256 = await sha256File(filePath);
+        return {
+          ok: true,
+          file: {
+            path: filePath,
+            name: path.basename(filePath),
+            size: stat.size,
+            sha256,
+          },
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        loggerError('[Reticulum] qchatFileSelect failed:', error);
+        return { ok: false, error: message };
+      }
+    }
+  );
 
   ipcMain.handle(
     'reticulum:qchatFileChooseSavePath',
-    async (_event, fileName: string): Promise<{
+    async (
+      _event,
+      fileName: string
+    ): Promise<{
       ok: boolean;
       canceled?: boolean;
       error?: string;
       path?: string;
     }> => {
+      if (!isReticulumRuntimeEnabled()) {
+        return { ok: false, error: 'Reticulum is disabled' };
+      }
       try {
         const safeName = path.basename(String(fileName || 'received-file'));
         const result = await dialog.showSaveDialog({
@@ -3052,6 +3928,9 @@ export function registerReticulumIpcHandlers(): void {
         senderReticulumIdentityPublicKeyBase64?: string;
       }
     ): Promise<{ ok: boolean; error?: string }> => {
+      if (!isReticulumRuntimeEnabled()) {
+        return { ok: false, error: 'Reticulum is disabled' };
+      }
       try {
         const peerPresenceHash = String(
           payload?.senderReticulumDestinationHash || ''
@@ -3082,10 +3961,15 @@ export function registerReticulumIpcHandlers(): void {
         if (!payload?.authMessage || typeof payload.authMessage !== 'object') {
           return { ok: false, error: 'Missing Reticulum link auth message' };
         }
-        await attachQchatFileBridgeEvents();
         const { getReticulumBridge, startReticulumBridge } =
           (await import('./reticulum-bridge')) as typeof import('./reticulum-bridge');
         const bridge = getReticulumBridge() ?? (await startReticulumBridge());
+        await attachQchatFileBridgeEvents();
+        loggerWarn(
+          `[Reticulum] qchat file accept start transfer=${String(
+            payload?.transferId || ''
+          )} peer=${peerPresenceHash} size=${Number(payload?.size || 0)}`
+        );
         const result = await bridge.acceptQchatFileResource({
           peerPresenceHash,
           reticulumIdentityPublicKeyBase64,
@@ -3097,7 +3981,23 @@ export function registerReticulumIpcHandlers(): void {
           sha256:
             typeof payload?.sha256 === 'string' ? payload.sha256 : undefined,
         });
-        if (result.ok) return { ok: true };
+        if (result.ok) {
+          loggerWarn(
+            `[Reticulum] qchat file accept registered transfer=${String(
+              payload?.transferId || ''
+            )}`
+          );
+          return { ok: true };
+        }
+        loggerWarn(
+          `[Reticulum] qchat file accept failed transfer=${String(
+            payload?.transferId || ''
+          )} reason=${
+            'reason' in result
+              ? result.error || result.reason
+              : 'Reticulum transfer accept failed'
+          }`
+        );
         return {
           ok: false,
           error:
@@ -3129,6 +4029,9 @@ export function registerReticulumIpcHandlers(): void {
         expiresAt?: number;
       }
     ): Promise<{ ok: boolean; error?: string }> => {
+      if (!isReticulumRuntimeEnabled()) {
+        return { ok: false, error: 'Reticulum is disabled' };
+      }
       try {
         const allowedRecipientAddress = String(
           payload?.allowedRecipientAddress || payload?.recipientAddress || ''
@@ -3146,10 +4049,10 @@ export function registerReticulumIpcHandlers(): void {
             error: 'Missing sender address for file transfer',
           };
         }
-        await attachQchatFileBridgeEvents();
         const { getReticulumBridge, startReticulumBridge } =
           (await import('./reticulum-bridge')) as typeof import('./reticulum-bridge');
         const bridge = getReticulumBridge() ?? (await startReticulumBridge());
+        await attachQchatFileBridgeEvents();
         const transferId = String(payload?.transferId || '');
         const filePath = String(payload?.filePath || '');
         const fileName = String(payload?.fileName || '');
@@ -3192,8 +4095,18 @@ export function registerReticulumIpcHandlers(): void {
         });
         if (result.ok) {
           persistQchatFilePendingSend(pendingRecord);
+          loggerWarn(
+            `[Reticulum] qchat file send registered transfer=${transferId} recipient=${allowedRecipientAddress} size=${size}`
+          );
           return { ok: true };
         }
+        loggerWarn(
+          `[Reticulum] qchat file send failed transfer=${transferId} reason=${
+            'reason' in result
+              ? result.error || result.reason
+              : 'Reticulum transfer send failed'
+          }`
+        );
         return {
           ok: false,
           error:
@@ -3214,6 +4127,9 @@ export function registerReticulumIpcHandlers(): void {
     async (): Promise<{
       destinationHash: string | null;
     }> => {
+      if (!isReticulumRuntimeEnabled()) {
+        return { destinationHash: null };
+      }
       try {
         const { getReticulumBridge, startReticulumBridge } =
           (await import('./reticulum-bridge')) as typeof import('./reticulum-bridge');
@@ -3250,6 +4166,9 @@ export function registerReticulumIpcHandlers(): void {
     async (): Promise<{
       publicKeyBase64: string | null;
     }> => {
+      if (!isReticulumRuntimeEnabled()) {
+        return { publicKeyBase64: null };
+      }
       try {
         const { getReticulumBridge, startReticulumBridge } =
           (await import('./reticulum-bridge')) as typeof import('./reticulum-bridge');

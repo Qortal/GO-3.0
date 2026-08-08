@@ -22,3 +22,4 @@ export { QortalRequestExtensionDialog } from './QortalRequestExtensionDialog';
 export type { MessageQortalRequestExtension } from './QortalRequestExtensionDialog';
 export { NotificationPermissionSlideDown } from './NotificationPermissionSlideDown';
 export { ElectronPersistentStorageHydration } from './ElectronPersistentStorageHydration';
+export { AuthenticatedLockScreen } from './AuthenticatedLockScreen';

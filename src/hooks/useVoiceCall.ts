@@ -72,21 +72,25 @@ import {
   type GroupCallAudioSenderFrame,
 } from '../lib/group-call/groupCallAudioSenderEngine';
 import AudioDecryptWorker from '../workers/audio-decrypt.worker?worker';
+import { createRouteBoundId } from '../lib/reticulum/routeBoundId';
 
 const DM_MEDIA_RECOVERY_REQUEST_COOLDOWN_MS = 4_000;
 const DM_ROOM_KEY_REPLAY_RETRY_MS = 750;
 const DM_ROOM_KEY_REPLAY_MAX_ATTEMPTS = 6;
 const DM_ROOM_KEY_REQUEST_RETRY_MS = 1_000;
 const DM_ROOM_KEY_REQUEST_MAX_ATTEMPTS = 30;
-// The Reticulum audio-link handshake (GJ fanout → path discovery → Hub GAC →
-// link established) is genuinely slow over the gossip overlay: captures show it
-// landing at ~9–14 s. A 12 s budget loses the race by ~1 s on slower setups and
-// the caller bails with voice_call.failed even though the link is about to come
-// up. Give it real headroom while staying under the Hub's own ~30 s patience.
-const DM_MEDIA_READINESS_TIMEOUT_MS = 28_000;
+// The callee-owned Reticulum link can use four 12-second establish attempts
+// plus retry backoff. Do not let the renderer abandon the call first.
+const DM_MEDIA_READINESS_TIMEOUT_MS = 60_000;
 const DM_MEDIA_READINESS_POLL_MS = 500;
 const DM_MEDIA_READINESS_WARMUP_MS = 1_000;
 const CALL_LOCAL_ADDRESS_REASSERT_MS = 2_500;
+
+function shortenCallPeerAddress(address: string | null): string {
+  const normalized = address?.trim() ?? '';
+  if (normalized.length <= 16) return normalized || 'The other person';
+  return `${normalized.slice(0, 8)}…${normalized.slice(-6)}`;
+}
 
 type DmDecryptWorkerDecoded = {
   sourceAddr: string;
@@ -159,16 +163,73 @@ export interface UseVoiceCallReturn {
   initiateCall: (
     targetAddress: string,
     chatId: string,
-    sign: (
+    sign?: (
       fields: Record<string, unknown>
-    ) => Promise<{ signature: string; publicKey: string }>
+    ) => Promise<{ signature: string; publicKey: string }>,
+    targetDisplayName?: string
   ) => void;
   acceptCall: () => Promise<void>;
-  rejectCall: () => void;
+  rejectCall: () => Promise<void>;
   hangUp: () => Promise<void>;
   toggleMute: () => void;
   setHearCall: (hear: boolean) => void;
   toggleHearCall: () => void;
+}
+
+export type VoiceCallApi = {
+  initiate?: (
+    targetAddress: string,
+    chatId: string,
+    localAddress: string,
+    signature: string,
+    publicKey: string,
+    callId: string,
+    timestamp: number,
+    cancellationSignature?: string,
+    cancellationPublicKey?: string,
+    cancellationTimestamp?: number
+  ) => Promise<{ success: boolean; callId?: string; error?: string }>;
+  accept?: (
+    callId: string,
+    signature: string,
+    publicKey: string,
+    timestamp: number
+  ) => Promise<{ success: boolean; error?: string }>;
+  reject?: (
+    callId: string,
+    reason?: string,
+    signature?: string,
+    publicKey?: string,
+    timestamp?: number,
+    reasonSignature?: string
+  ) => Promise<{ success: boolean; error?: string }>;
+  hangup?: (
+    callId: string,
+    signature: string,
+    publicKey: string,
+    timestamp: number
+  ) => Promise<{ success: boolean; error?: string }>;
+  setLocalAddresses?: (
+    addresses: string[]
+  ) => Promise<{ success: boolean; error?: string }>;
+  onEvent?: (cb: (event: string, payload: unknown) => void) => () => void;
+};
+
+export interface UseVoiceCallOptions {
+  callApi?: VoiceCallApi;
+  /**
+   * The custom API signs the complete transport envelope itself. This is used
+   * by QortalLand V2, whose main-process signature binds both Land sessions
+   * and both Reticulum destinations. Legacy renderer signatures are neither
+   * authoritative nor consumed by that protocol.
+   */
+  callApiSignsSignals?: boolean;
+  skipSystemReadiness?: boolean;
+  skipDirectFriendValidation?: boolean;
+  getPeerPublicKey?: (address: string) => string | undefined;
+  getPeerDestinationHash?: (address: string) => string | undefined;
+  createCallId?: () => string;
+  suppressGlobalSnackbars?: boolean;
 }
 
 async function signPresenceFields(
@@ -190,17 +251,23 @@ async function signPresenceFields(
   }
 }
 
+async function createDirectCallId(): Promise<string | null> {
+  const getLocalDestinationHash =
+    window.electronAPI?.reticulumGetLocalDestinationHash;
+  if (typeof getLocalDestinationHash !== 'function') return null;
+  try {
+    const result = await getLocalDestinationHash();
+    const destinationHash = result?.destinationHash?.trim().toLowerCase();
+    return destinationHash ? createRouteBoundId('call', destinationHash) : null;
+  } catch {
+    return null;
+  }
+}
+
 async function isSystemReadyForCall(
   showError: (message: string) => void
 ): Promise<boolean> {
-  const getReadiness = window.electronAPI?.getSystemCallReadiness;
-  if (typeof getReadiness !== 'function') {
-    // Mobile (no Electron host): there is no system-readiness probe to consult,
-    // so don't block calls on it — the desktop-only CPU/memory/event-loop gate
-    // would otherwise fail-closed and make every call impossible on Capacitor.
-    return true;
-  }
-  const readiness = await getReadiness();
+  const readiness = await window.electronAPI?.getSystemCallReadiness?.();
   if (!readiness || readiness.status !== 'good') {
     showError(
       'Your system is too busy for calls right now. Close other apps and try again.'
@@ -217,12 +284,21 @@ async function isSystemReadyForCall(
   return true;
 }
 
-export function useVoiceCall(): UseVoiceCallReturn {
+export function useVoiceCall(
+  options: UseVoiceCallOptions = {}
+): UseVoiceCallReturn {
   const userInfo = useAtomValue(userInfoAtom);
   const blockedAddresses = useAtomValue(blockedAddressesAtom);
   const dmFriendsByAddress = useAtomValue(dmFriendsByAddressAtom);
   const setInfoSnackGlobal = useSetAtom(infoSnackGlobalAtom);
   const setOpenSnackGlobal = useSetAtom(openSnackGlobalAtom);
+  const optionsRef = useRef(options);
+  optionsRef.current = options;
+  const callApiRef = useRef<VoiceCallApi | null>(null);
+  callApiRef.current =
+    options.callApi ??
+    ((window as any).call as VoiceCallApi | undefined) ??
+    null;
 
   const [callState, setCallState] = useState<CallState>('idle');
   const [audioMode, setAudioMode] = useState<AudioMode>(null);
@@ -242,12 +318,20 @@ export function useVoiceCall(): UseVoiceCallReturn {
   const setCallAudioDevicesRef = useRef(setCallAudioDevices);
   setCallAudioDevicesRef.current = setCallAudioDevices;
 
-  const showSystemNotReadyForCall = useCallback(
-    (message: string) => {
-      setInfoSnackGlobal({ type: 'error', message });
+  const showGlobalCallSnack = useCallback(
+    (type: 'error' | 'info', message: string) => {
+      if (optionsRef.current.suppressGlobalSnackbars === true) return;
+      setInfoSnackGlobal({ type, message });
       setOpenSnackGlobal(true);
     },
     [setInfoSnackGlobal, setOpenSnackGlobal]
+  );
+
+  const showSystemNotReadyForCall = useCallback(
+    (message: string) => {
+      showGlobalCallSnack('error', message);
+    },
+    [showGlobalCallSnack]
   );
 
   const callIdRef = useRef<string | null>(null);
@@ -262,6 +346,16 @@ export function useVoiceCall(): UseVoiceCallReturn {
   useEffect(() => {
     publicKeyRef.current = userInfo?.publicKey ?? '';
   }, [userInfo?.publicKey]);
+  const authorizeCallSignal = useCallback(
+    (fields: Record<string, unknown>) =>
+      optionsRef.current.callApiSignsSignals === true
+        ? Promise.resolve({
+            signature: '',
+            publicKey: publicKeyRef.current,
+          })
+        : signPresenceFields(fields, publicKeyRef.current),
+    []
+  );
 
   const isOutboundCallRef = useRef(false);
   const registeredCallLocalAddressRef = useRef<string | null>(null);
@@ -269,13 +363,9 @@ export function useVoiceCall(): UseVoiceCallReturn {
   /** If `gcall:key` arrives before `dmRoomIdRef` is set (should be rare after room precompute). */
   const pendingDmVoiceGcallKeyRef = useRef<GcallKeyEventPayload | null>(null);
   const peerAddressRef = useRef<string | null>(null);
+  const peerDisplayNameRef = useRef<string>('');
   const callSessionIdRef = useRef<string | null>(null);
   const mediaGenRef = useRef(1);
-  // Signature (`callSessionId:gen:commitment`) of the room key currently being
-  // applied or already applied, so the Hub's ~1.5 s GC_KEY re-sends are dropped
-  // before the expensive decrypt + media restart instead of churning the
-  // session. Cleared on call teardown so a fresh call always re-applies.
-  const dmAppliedKeySigRef = useRef<string | null>(null);
   const roomKeyRef = useRef<Uint8Array | null>(null);
   const audioSeqRef = useRef(0);
   const durationTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -341,6 +431,7 @@ export function useVoiceCall(): UseVoiceCallReturn {
   const callIpcHandlerRef = useRef<
     (event: string, payload: unknown) => Promise<void>
   >(async () => {});
+  const unmountVoiceCallCleanupRef = useRef<() => void>(() => {});
   const applyDecryptedRoomKeyRef = useRef<
     (
       payload: {
@@ -488,35 +579,24 @@ export function useVoiceCall(): UseVoiceCallReturn {
       dmMediaOnAudioSurfaceRef.current = false;
       return false;
     }
-    const sendStart = async () => {
-      const keyBuffer = roomKey.slice().buffer as ArrayBuffer;
-      return window.audioSurface!
-        .sendCommand({
-          type: 'start-direct-voice-media',
-          roomId,
-          peerAddress: peer,
-          localAddress,
-          roomKey: keyBuffer,
-          inputDeviceId: callAudioPrefsRef.current.inputDeviceId ?? null,
-          outputDeviceId: callAudioPrefsRef.current.outputDeviceId ?? null,
-          muted: isMutedRef.current,
-          hearCall: hearCallRef.current,
-          profile: readGroupCallAudioProfile(),
-        })
-        .catch((error) => ({
-          ok: false as const,
-          error: error instanceof Error ? error.message : String(error),
-        }));
-    };
-    let response = await sendStart();
-    if (!response.ok && /session disposed/i.test(response.error ?? '')) {
-      // A stale teardown from the previous call raced our start (rapid
-      // redial into the same DM room). The disposer has finished by now —
-      // one retry brings media up instead of failing the whole call.
-      pushDirectVoiceUiLog('warn', 'media start raced teardown — retrying once');
-      await new Promise((r) => setTimeout(r, 350));
-      response = await sendStart();
-    }
+    const keyBuffer = roomKey.slice().buffer as ArrayBuffer;
+    const response = await window.audioSurface
+      .sendCommand({
+        type: 'start-direct-voice-media',
+        roomId,
+        peerAddress: peer,
+        localAddress,
+        roomKey: keyBuffer,
+        inputDeviceId: callAudioPrefsRef.current.inputDeviceId ?? null,
+        outputDeviceId: callAudioPrefsRef.current.outputDeviceId ?? null,
+        muted: isMutedRef.current,
+        hearCall: hearCallRef.current,
+        profile: readGroupCallAudioProfile(),
+      })
+      .catch((error) => ({
+        ok: false as const,
+        error: error instanceof Error ? error.message : String(error),
+      }));
     dmMediaOnAudioSurfaceRef.current = response.ok === true;
     dmReceiveOnAudioSurfaceRef.current = response.ok === true;
     if (!response.ok) {
@@ -635,9 +715,27 @@ export function useVoiceCall(): UseVoiceCallReturn {
       let lastWarmupAt = 0;
       let lastLogAt = 0;
 
-      while (Date.now() < deadline) {
+      let deadlineReached = false;
+      do {
+        if (
+          callStateRef.current !== 'connected' ||
+          !reticulumSessionActiveRef.current ||
+          dmRoomIdRef.current !== roomId ||
+          peerAddressRef.current !== peer
+        ) {
+          pushDirectVoiceUiLog('log', 'DM media readiness cancelled', {
+            reason,
+            peerTrunc: peer.slice(0, 8),
+          });
+          return false;
+        }
+
         const now = Date.now();
-        if (now - lastWarmupAt >= DM_MEDIA_READINESS_WARMUP_MS) {
+        deadlineReached = now >= deadline;
+        if (
+          !deadlineReached &&
+          now - lastWarmupAt >= DM_MEDIA_READINESS_WARMUP_MS
+        ) {
           lastWarmupAt = now;
           if (typeof gc?.requestPeerMediaRecovery === 'function') {
             void gc
@@ -695,7 +793,9 @@ export function useVoiceCall(): UseVoiceCallReturn {
           return true;
         }
 
-        if (now - lastLogAt >= 2_000) {
+        // The query above is the final readiness check at the deadline. This
+        // avoids rejecting a link that became active during the last poll.
+        if (!deadlineReached && now - lastLogAt >= 2_000) {
           lastLogAt = now;
           pushDirectVoiceUiLog('log', 'waiting for DM media readiness', {
             reason,
@@ -706,10 +806,18 @@ export function useVoiceCall(): UseVoiceCallReturn {
           });
         }
 
-        await new Promise((resolve) =>
-          setTimeout(resolve, DM_MEDIA_READINESS_POLL_MS)
-        );
-      }
+        if (!deadlineReached) {
+          await new Promise((resolve) =>
+            setTimeout(
+              resolve,
+              Math.max(
+                0,
+                Math.min(DM_MEDIA_READINESS_POLL_MS, deadline - Date.now())
+              )
+            )
+          );
+        }
+      } while (!deadlineReached);
 
       pushDirectVoiceUiLog('warn', 'DM media readiness timed out', {
         reason,
@@ -748,7 +856,10 @@ export function useVoiceCall(): UseVoiceCallReturn {
       if (!roomId || !peer || !roomKey || !callSessionId || !myAddr) {
         return false;
       }
-      const friendPk = dmFriendsByAddressRef.current[peer]?.publicKey ?? '';
+      const friendPk =
+        dmFriendsByAddressRef.current[peer]?.publicKey ??
+        optionsRef.current.getPeerPublicKey?.(peer) ??
+        '';
       if (!friendPk) {
         pushDirectVoiceUiLog(
           'warn',
@@ -908,7 +1019,6 @@ export function useVoiceCall(): UseVoiceCallReturn {
     pendingDmVoiceGcallKeyRef.current = null;
     peerAddressRef.current = null;
     callSessionIdRef.current = null;
-    dmAppliedKeySigRef.current = null;
     syncDecryptWorkerRoomKey(null);
     if (decryptWorkerRef.current) {
       try {
@@ -949,6 +1059,30 @@ export function useVoiceCall(): UseVoiceCallReturn {
     return reticulumTeardownChainRef.current;
   }, [teardownReticulumMediaInner]);
 
+  useEffect(() => {
+    unmountVoiceCallCleanupRef.current = () => {
+      clearDurationTimer();
+      const id = callIdRef.current;
+      const state = callStateRef.current;
+      const needsHangup =
+        Boolean(id) &&
+        (state === 'connected' || state === 'calling' || state === 'ringing');
+      if (needsHangup && id) {
+        const timestamp = Date.now();
+        void authorizeCallSignal({ type: 'CALL_HANGUP', callId: id, timestamp })
+          .then(({ signature, publicKey }) =>
+            callApiRef.current?.hangup?.(id, signature, publicKey, timestamp)
+          )
+          .catch(() => {})
+          .finally(() => {
+            enqueueTeardownReticulumMedia();
+          });
+        return;
+      }
+      enqueueTeardownReticulumMedia();
+    };
+  }, [authorizeCallSignal, clearDurationTimer, enqueueTeardownReticulumMedia]);
+
   const endCall = useCallback(
     async (sendHangup = false) => {
       const id = callIdRef.current;
@@ -981,11 +1115,12 @@ export function useVoiceCall(): UseVoiceCallReturn {
         const timestamp = Date.now();
         applyLocalCallEnd();
         try {
-          const { signature, publicKey } = await signPresenceFields(
-            { type: 'CALL_HANGUP', callId: id, timestamp },
-            publicKeyRef.current
-          );
-          await (window as any).call?.hangup(
+          const { signature, publicKey } = await authorizeCallSignal({
+            type: 'CALL_HANGUP',
+            callId: id,
+            timestamp,
+          });
+          await callApiRef.current?.hangup?.(
             id,
             signature,
             publicKey,
@@ -1004,6 +1139,7 @@ export function useVoiceCall(): UseVoiceCallReturn {
     [
       clearDurationTimer,
       enqueueTeardownReticulumMedia,
+      authorizeCallSignal,
       updateCallState,
       updateIncomingCall,
     ]
@@ -1245,24 +1381,6 @@ export function useVoiceCall(): UseVoiceCallReturn {
         return;
       }
 
-      // The Hub re-sends GC_KEY every ~1.5 s for the entire call. Re-running the
-      // full reset → readiness → startMedia path for each duplicate churns the
-      // audio session: it disposes the in-flight mic-capture worklet ("session
-      // disposed") and tears down the very media we just brought up, so the Hub
-      // never gets a stable mic stream. If this key matches the session/gen we
-      // already have live, it's a duplicate — ignore it and keep media running.
-      if (
-        callSessionIdRef.current === payload.callSessionId &&
-        mediaGenRef.current === (payload.mediaSessionGeneration >>> 0) &&
-        roomKeyRef.current?.length === 32 &&
-        dmMediaOnAudioSurfaceRef.current
-      ) {
-        pushDirectVoiceUiLog('log', 'room key duplicate — media live, skip', {
-          sessionTrunc: String(payload.callSessionId).slice(0, 8),
-        });
-        return;
-      }
-
       resetDmVoiceMediaSession();
       roomKeyRef.current = keyBytes;
       callSessionIdRef.current = payload.callSessionId;
@@ -1273,25 +1391,21 @@ export function useVoiceCall(): UseVoiceCallReturn {
         'key-applied'
       );
       if (!ready) {
-        setInfoSnackGlobal({
-          type: 'info',
-          message:
-            i18n.t('core:voice_call.failed') ??
-            'Voice call failed (Reticulum route not ready)',
-        });
-        setOpenSnackGlobal(true);
+        showGlobalCallSnack(
+          'info',
+          i18n.t('core:voice_call.failed') ??
+            'Voice call failed (Reticulum route not ready)'
+        );
         endCall(true);
         return;
       }
       const mediaStarted = await startDirectVoiceMediaOnAudioSurface();
       if (!mediaStarted) {
-        setInfoSnackGlobal({
-          type: 'info',
-          message:
-            i18n.t('core:voice_call.failed') ??
-            'Voice call failed (audio surface unavailable)',
-        });
-        setOpenSnackGlobal(true);
+        showGlobalCallSnack(
+          'info',
+          i18n.t('core:voice_call.failed') ??
+            'Voice call failed (audio surface unavailable)'
+        );
         endCall(true);
         return;
       }
@@ -1307,8 +1421,7 @@ export function useVoiceCall(): UseVoiceCallReturn {
       clearDmRoomKeyRequestTimers,
       endCall,
       resetDmVoiceMediaSession,
-      setInfoSnackGlobal,
-      setOpenSnackGlobal,
+      showGlobalCallSnack,
       startDirectVoiceMediaOnAudioSurface,
       waitForDmPeerMediaReadiness,
     ]
@@ -1441,23 +1554,6 @@ export function useVoiceCall(): UseVoiceCallReturn {
         return;
       }
 
-      // Drop the Hub's periodic GC_KEY re-sends before the (10 s-timeout)
-      // decrypt + media restart. The Hub fires GC_KEY every ~1.5 s and several
-      // copies arrive within a few hundred ms — i.e. WHILE the first one is
-      // still in its async decrypt (before callSessionId / media flags are
-      // set). We must therefore dedupe purely on the key signature, set
-      // SYNCHRONOUSLY here, so concurrent in-flight copies are dropped too;
-      // otherwise each one runs resetDmVoiceMediaSession + startMedia and
-      // disposes the mic-capture session the previous copy just brought up
-      // ("session disposed" → capture dies after 1 frame → peer hears nothing).
-      // On a transient failure we clear the signature below so the next
-      // re-send retries.
-      const keySig = `${p.callSessionId}:${p.mediaSessionGeneration ?? 1}:${p.keyCommitment}`;
-      if (dmAppliedKeySigRef.current === keySig) {
-        return;
-      }
-      dmAppliedKeySigRef.current = keySig;
-
       pushDirectVoiceUiLog('log', 'gcall:key decrypt…', {
         fromTrunc: (p.fromAddress ?? '').slice(0, 8),
         sessionTrunc: String(p.callSessionId).slice(0, 8),
@@ -1495,16 +1591,12 @@ export function useVoiceCall(): UseVoiceCallReturn {
             await startReticulumCaptureRef.current();
           }
         } else {
-          // Transient: let the Hub's next re-send retry this key.
-          dmAppliedKeySigRef.current = null;
           pushDirectVoiceUiLog(
             'warn',
             'decryptBoxWithMyKey returned no decryptedKey'
           );
         }
       } catch (e) {
-        // Transient (e.g. decrypt RPC timeout): clear so a re-send retries.
-        dmAppliedKeySigRef.current = null;
         console.error('[DM voice] key decrypt failed', e);
         pushDirectVoiceUiLog('warn', 'decryptBoxWithMyKey failed', {
           err: String(e),
@@ -1565,19 +1657,6 @@ export function useVoiceCall(): UseVoiceCallReturn {
       return;
     }
 
-    // Mobile (Capacitor) currently ships call *signaling* over Reticulum but not
-    // yet the media stack (window.groupCall + window.audioSurface). When those
-    // bridges are absent, stay in the 'connected' signaling state instead of
-    // tearing the call down, so answering/placing a call works end-to-end while
-    // audio transport is built. (Desktop always has both, so this never trips.)
-    if (!window.groupCall || !window.audioSurface) {
-      pushDirectVoiceUiLog(
-        'warn',
-        'media bridges unavailable — staying connected without audio (mobile)'
-      );
-      return;
-    }
-
     const roomId = await buildDmVoiceRoomId(chatId);
     if (dmRoomIdRef.current && dmRoomIdRef.current !== roomId) {
       pushDirectVoiceUiLog(
@@ -1601,13 +1680,11 @@ export function useVoiceCall(): UseVoiceCallReturn {
     const retHash = await fetchLocalReticulumDestinationHash();
     if (!retHash) {
       pushDirectVoiceUiLog('warn', 'Reticulum destination hash unavailable');
-      setInfoSnackGlobal({
-        type: 'info',
-        message:
-          i18n.t('core:voice_call.failed') ??
-          'Voice call failed (Reticulum not ready)',
-      });
-      setOpenSnackGlobal(true);
+      showGlobalCallSnack(
+        'info',
+        i18n.t('core:voice_call.failed') ??
+          'Voice call failed (Reticulum not ready)'
+      );
       endCall(true);
       return;
     }
@@ -1633,6 +1710,9 @@ export function useVoiceCall(): UseVoiceCallReturn {
       publicKey: myPk,
       reticulumDestinationHash: retHash,
       reticulumIdentityPublicKeyBase64,
+      dmVoiceAudioLinkRole: isOutboundCallRef.current ? 'waiter' : 'opener',
+      peerDestinationHash: optionsRef.current.getPeerDestinationHash?.(peer),
+      callId: callIdRef.current ?? undefined,
     });
 
     if (!joinRes.success || !joinRes.callSessionId) {
@@ -1640,13 +1720,11 @@ export function useVoiceCall(): UseVoiceCallReturn {
         error: joinRes.error ?? 'unknown',
         success: joinRes.success,
       });
-      setInfoSnackGlobal({
-        type: 'info',
-        message:
-          i18n.t('core:voice_call.failed') ??
-          'Voice call failed (could not join media room)',
-      });
-      setOpenSnackGlobal(true);
+      showGlobalCallSnack(
+        'info',
+        i18n.t('core:voice_call.failed') ??
+          'Voice call failed (could not join media room)'
+      );
       endCall(true);
       return;
     }
@@ -1668,42 +1746,40 @@ export function useVoiceCall(): UseVoiceCallReturn {
       const roomKey = new Uint8Array(32);
       crypto.getRandomValues(roomKey);
       roomKeyRef.current = roomKey;
+      void sendCurrentDmRoomKey('dm-call-start').catch(() => {});
+      scheduleDmRoomKeyReplays('dm-call-start');
       const ready = await waitForDmPeerMediaReadiness(
         roomId,
         peer,
         'caller-start'
       );
+      if (
+        callStateRef.current !== 'connected' ||
+        !reticulumSessionActiveRef.current ||
+        dmRoomIdRef.current !== roomId ||
+        peerAddressRef.current !== peer
+      ) {
+        return;
+      }
       if (!ready) {
-        setInfoSnackGlobal({
-          type: 'info',
-          message:
-            i18n.t('core:voice_call.failed') ??
-            'Voice call failed (Reticulum route not ready)',
-        });
-        setOpenSnackGlobal(true);
+        showGlobalCallSnack(
+          'info',
+          i18n.t('core:voice_call.failed') ??
+            'Voice call failed (Reticulum route not ready)'
+        );
         endCall(true);
         return;
       }
       const mediaStarted = await startDirectVoiceMediaOnAudioSurface();
       if (!mediaStarted) {
-        setInfoSnackGlobal({
-          type: 'info',
-          message:
-            i18n.t('core:voice_call.failed') ??
-            'Voice call failed (audio surface unavailable)',
-        });
-        setOpenSnackGlobal(true);
+        showGlobalCallSnack(
+          'info',
+          i18n.t('core:voice_call.failed') ??
+            'Voice call failed (audio surface unavailable)'
+        );
         endCall(true);
         return;
       }
-
-      const ok = await sendCurrentDmRoomKey('dm-call-start');
-      if (!ok) {
-        pushDirectVoiceUiLog('warn', 'sendDirectVoiceRoomKey failed');
-        endCall(true);
-        return;
-      }
-      scheduleDmRoomKeyReplays('dm-call-start');
       await startReticulumCapture();
     } else {
       /* Callee: request the room key until caller/link timing delivers it. */
@@ -1724,8 +1800,7 @@ export function useVoiceCall(): UseVoiceCallReturn {
     scheduleDmRoomKeyReplays,
     scheduleDmRoomKeyRequests,
     sendCurrentDmRoomKey,
-    setInfoSnackGlobal,
-    setOpenSnackGlobal,
+    showGlobalCallSnack,
     startDirectVoiceMediaOnAudioSurface,
     startReticulumCapture,
     waitForDmPeerMediaReadiness,
@@ -1833,7 +1908,8 @@ export function useVoiceCall(): UseVoiceCallReturn {
       const p = payload as {
         roomId?: string;
       };
-      if (!isDmVoiceRoomId(p.roomId) || p.roomId !== dmRoomIdRef.current) return;
+      if (!isDmVoiceRoomId(p.roomId) || p.roomId !== dmRoomIdRef.current)
+        return;
       dmVoiceAudioPacketCountRef.current += 1;
       const now = Date.now();
       if (now - dmVoiceLastAudioUiLogAtRef.current >= 2500) {
@@ -1893,16 +1969,24 @@ export function useVoiceCall(): UseVoiceCallReturn {
 
         const rejectIncoming = async (reason: string) => {
           const rejectTs = Date.now();
-          const { signature, publicKey } = await signPresenceFields(
-            { type: 'CALL_REJECT', callId: incCallId, timestamp: rejectTs },
-            publicKeyRef.current
-          );
-          await (window as any).call?.reject(
+          const { signature, publicKey } = await authorizeCallSignal({
+            type: 'CALL_REJECT',
+            callId: incCallId,
+            timestamp: rejectTs,
+          });
+          const reasonAuthorization = await authorizeCallSignal({
+            type: 'CALL_REJECT',
+            callId: incCallId,
+            timestamp: rejectTs,
+            reason,
+          });
+          await callApiRef.current?.reject?.(
             incCallId,
             reason,
             signature,
             publicKey,
-            rejectTs
+            rejectTs,
+            reasonAuthorization.signature
           );
         };
 
@@ -1911,7 +1995,10 @@ export function useVoiceCall(): UseVoiceCallReturn {
             await rejectIncoming('blocked');
             break;
           }
-          if (!dmFriendsByAddressRef.current[incFrom]) {
+          if (
+            optionsRef.current.skipDirectFriendValidation !== true &&
+            !dmFriendsByAddressRef.current[incFrom]
+          ) {
             await rejectIncoming('not_friend');
             break;
           }
@@ -1928,20 +2015,6 @@ export function useVoiceCall(): UseVoiceCallReturn {
       }
 
       case 'call:accepted': {
-        // The CALL_ACCEPT floods the overlay, so every device of the callee
-        // account sees it. If WE are still ringing for this same call, another
-        // device of ours answered it — stop ringing here instead of letting
-        // the phone ring forever.
-        if (
-          callStateRef.current === 'ringing' &&
-          incomingCallRef.current?.callId === p.callId
-        ) {
-          pushDirectVoiceUiLog('log', 'call answered on another device', {
-            callIdTrunc: String(p.callId ?? '').slice(0, 8),
-          });
-          endCall(false);
-          break;
-        }
         if (
           callIdRef.current !== p.callId ||
           callStateRef.current !== 'calling'
@@ -1995,11 +2068,16 @@ export function useVoiceCall(): UseVoiceCallReturn {
         const rejectReason =
           typeof p.reason === 'string' ? p.reason.trim() : '';
         const message =
-          rejectReason === 'media unavailable'
-            ? i18n.t('core:voice_call.rejected_media')
-            : i18n.t('core:voice_call.rejected_declined');
-        setInfoSnackGlobal({ type: 'info', message });
-        setOpenSnackGlobal(true);
+          rejectReason === 'not_friend'
+            ? i18n.t('core:voice_call.rejected_not_friend', {
+                name:
+                  peerDisplayNameRef.current ||
+                  shortenCallPeerAddress(peerAddressRef.current),
+              })
+            : rejectReason === 'media unavailable'
+              ? i18n.t('core:voice_call.rejected_media')
+              : i18n.t('core:voice_call.rejected_declined');
+        showGlobalCallSnack('info', message);
         endCall(false);
         break;
       }
@@ -2018,7 +2096,7 @@ export function useVoiceCall(): UseVoiceCallReturn {
   };
 
   useEffect(() => {
-    const callAPI = (window as any).call;
+    const callAPI = callApiRef.current;
     if (!callAPI?.onEvent) {
       console.warn(
         '[DM voice] window.call is undefined — call IPC unavailable'
@@ -2061,7 +2139,7 @@ export function useVoiceCall(): UseVoiceCallReturn {
   const reassertCallLocalAddress = useCallback(
     async (reason: string, opts?: { requireReticulumReady?: boolean }) => {
       const addr = userInfo?.address;
-      const callApi = (window as any).call;
+      const callApi = callApiRef.current;
       if (!addr) {
         if (
           registeredCallLocalAddressRef.current &&
@@ -2124,45 +2202,114 @@ export function useVoiceCall(): UseVoiceCallReturn {
     async (
       targetAddress: string,
       chatId: string,
-      sign: (
+      sign?: (
         fields: Record<string, unknown>
-      ) => Promise<{ signature: string; publicKey: string }>
+      ) => Promise<{ signature: string; publicKey: string }>,
+      targetDisplayName?: string
     ) => {
       if (callStateRef.current !== 'idle') return;
       const localAddress = userInfo?.address;
       if (!localAddress) return;
-      if (!(await isSystemReadyForCall(showSystemNotReadyForCall))) return;
+      if (
+        optionsRef.current.skipSystemReadiness !== true &&
+        !(await isSystemReadyForCall(showSystemNotReadyForCall))
+      ) {
+        return;
+      }
 
-      const callId = crypto.randomUUID();
+      const apiOwnsSignatures = optionsRef.current.callApiSignsSignals === true;
+      const callId =
+        optionsRef.current.createCallId?.() ||
+        (apiOwnsSignatures ? crypto.randomUUID() : await createDirectCallId());
+      if (!callId) {
+        pushDirectVoiceUiLog('warn', 'local Reticulum call route unavailable');
+        showGlobalCallSnack(
+          'error',
+          i18n.t('core:voice_call.failed') ?? 'Voice call failed'
+        );
+        return;
+      }
       const timestamp = Date.now();
       const myPublicKey = userInfo?.publicKey ?? '';
 
-      const { signature, publicKey } = await sign({
+      const requestFields = {
         type: 'CALL_REQUEST',
         callId,
         chatId,
         fromAddress: localAddress,
         fromPublicKey: myPublicKey,
         timestamp,
-      });
+      };
+      let authorization: { signature: string; publicKey: string };
+      let cancellation: { signature: string; publicKey: string };
+      const cancellationTimestamp = timestamp;
+      try {
+        if (!apiOwnsSignatures && !sign) {
+          throw new Error('Call signaling signer is unavailable');
+        }
+        authorization = apiOwnsSignatures
+          ? await authorizeCallSignal(requestFields)
+          : await sign!(requestFields);
+        const cancellationFields = {
+          type: 'CALL_HANGUP',
+          callId,
+          timestamp: cancellationTimestamp,
+        };
+        cancellation = apiOwnsSignatures
+          ? await authorizeCallSignal(cancellationFields)
+          : await sign!(cancellationFields);
+      } catch (error) {
+        pushDirectVoiceUiLog('warn', 'call authorization failed', {
+          error: String(error),
+        });
+        showGlobalCallSnack(
+          'error',
+          i18n.t('core:voice_call.failed') ?? 'Voice call failed'
+        );
+        return;
+      }
+      const { signature, publicKey } = authorization;
 
       isOutboundCallRef.current = true;
       peerAddressRef.current = targetAddress;
+      const requestedDisplayName = targetDisplayName?.trim() ?? '';
+      const friendDisplayName =
+        dmFriendsByAddressRef.current[targetAddress]?.name?.trim() ?? '';
+      const normalizedDisplayName =
+        requestedDisplayName && requestedDisplayName !== targetAddress
+          ? requestedDisplayName
+          : friendDisplayName && friendDisplayName !== targetAddress
+            ? friendDisplayName
+            : '';
+      peerDisplayNameRef.current =
+        normalizedDisplayName.length > 0 && normalizedDisplayName.length <= 100
+          ? normalizedDisplayName
+          : shortenCallPeerAddress(targetAddress);
       callIdRef.current = callId;
       activeCallChatIdRef.current = chatId;
       setActiveCallChatId(chatId);
       setCallMediaReady(false);
       updateCallState('calling');
 
-      const result = await (window as any).call?.initiate(
-        targetAddress,
-        chatId,
-        localAddress,
-        signature,
-        publicKey,
-        callId,
-        timestamp
-      );
+      let result:
+        | { success: boolean; callId?: string; error?: string }
+        | undefined;
+      try {
+        result = await callApiRef.current?.initiate?.(
+          targetAddress,
+          chatId,
+          localAddress,
+          signature,
+          publicKey,
+          callId,
+          timestamp,
+          cancellation.signature,
+          cancellation.publicKey,
+          cancellationTimestamp
+        );
+      } catch (error) {
+        result = { success: false, error: String(error) };
+      }
 
       if (!result?.success) {
         pushDirectVoiceUiLog('warn', 'call.initiate failed', {
@@ -2174,6 +2321,11 @@ export function useVoiceCall(): UseVoiceCallReturn {
         activeCallChatIdRef.current = null;
         setActiveCallChatId(null);
         updateCallState('idle');
+        showGlobalCallSnack(
+          'error',
+          result?.error ||
+            (i18n.t('core:voice_call.failed') ?? 'Voice call failed')
+        );
       } else {
         pushDirectVoiceUiLog('log', 'call.initiate ok (waiting for peer)', {
           callIdTrunc: callId.slice(0, 8),
@@ -2183,6 +2335,8 @@ export function useVoiceCall(): UseVoiceCallReturn {
     },
     [
       showSystemNotReadyForCall,
+      authorizeCallSignal,
+      showGlobalCallSnack,
       updateCallState,
       userInfo?.address,
       userInfo?.publicKey,
@@ -2192,7 +2346,12 @@ export function useVoiceCall(): UseVoiceCallReturn {
   const acceptCall = useCallback(async () => {
     const incoming = incomingCallRef.current;
     if (!incoming || callStateRef.current !== 'ringing') return;
-    if (!(await isSystemReadyForCall(showSystemNotReadyForCall))) return;
+    if (
+      optionsRef.current.skipSystemReadiness !== true &&
+      !(await isSystemReadyForCall(showSystemNotReadyForCall))
+    ) {
+      return;
+    }
 
     await reticulumTeardownChainRef.current.catch(() => {});
     isOutboundCallRef.current = false;
@@ -2226,11 +2385,12 @@ export function useVoiceCall(): UseVoiceCallReturn {
     startDurationTimer();
 
     const acceptTs = Date.now();
-    const { signature, publicKey } = await signPresenceFields(
-      { type: 'CALL_ACCEPT', callId: incoming.callId, timestamp: acceptTs },
-      publicKeyRef.current
-    );
-    const acceptResult = await (window as any).call?.accept(
+    const { signature, publicKey } = await authorizeCallSignal({
+      type: 'CALL_ACCEPT',
+      callId: incoming.callId,
+      timestamp: acceptTs,
+    });
+    const acceptResult = await callApiRef.current?.accept?.(
       incoming.callId,
       signature,
       publicKey,
@@ -2255,6 +2415,7 @@ export function useVoiceCall(): UseVoiceCallReturn {
     });
   }, [
     endCall,
+    authorizeCallSignal,
     flushPendingDmVoiceGcallKey,
     startDurationTimer,
     startReticulumMediaSession,
@@ -2266,22 +2427,46 @@ export function useVoiceCall(): UseVoiceCallReturn {
   const rejectCall = useCallback(async () => {
     const incoming = incomingCallRef.current;
     if (!incoming) return;
+
+    try {
+      const rejectTs = Date.now();
+      const { signature, publicKey } = await authorizeCallSignal({
+        type: 'CALL_REJECT',
+        callId: incoming.callId,
+        timestamp: rejectTs,
+      });
+      const reasonAuthorization = await authorizeCallSignal({
+        type: 'CALL_REJECT',
+        callId: incoming.callId,
+        timestamp: rejectTs,
+        reason: 'rejected',
+      });
+      const rejectResult = await callApiRef.current?.reject?.(
+        incoming.callId,
+        'rejected',
+        signature,
+        publicKey,
+        rejectTs,
+        reasonAuthorization.signature
+      );
+      if (!rejectResult?.success) {
+        pushDirectVoiceUiLog('warn', 'call.reject failed', {
+          result: rejectResult ?? null,
+        });
+        return;
+      }
+    } catch (error) {
+      pushDirectVoiceUiLog('warn', 'call.reject failed', {
+        error: String(error),
+      });
+      return;
+    }
+
+    // Keep the call in ringing state until rejection succeeds. Entering idle
+    // earlier lets QortalLand cleanup discard the caller route before send.
     updateIncomingCall(null);
     updateCallState('idle');
-
-    const rejectTs = Date.now();
-    const { signature, publicKey } = await signPresenceFields(
-      { type: 'CALL_REJECT', callId: incoming.callId, timestamp: rejectTs },
-      publicKeyRef.current
-    );
-    await (window as any).call?.reject(
-      incoming.callId,
-      'rejected',
-      signature,
-      publicKey,
-      rejectTs
-    );
-  }, [updateCallState, updateIncomingCall]);
+  }, [authorizeCallSignal, updateCallState, updateIncomingCall]);
 
   const hangUp = useCallback(async () => {
     await endCall(true);
@@ -2438,30 +2623,9 @@ export function useVoiceCall(): UseVoiceCallReturn {
 
   useEffect(() => {
     return () => {
-      clearDurationTimer();
-      const id = callIdRef.current;
-      const state = callStateRef.current;
-      const needsHangup =
-        Boolean(id) &&
-        (state === 'connected' || state === 'calling' || state === 'ringing');
-      if (needsHangup && id) {
-        const timestamp = Date.now();
-        void signPresenceFields(
-          { type: 'CALL_HANGUP', callId: id, timestamp },
-          publicKeyRef.current
-        )
-          .then(({ signature, publicKey }) =>
-            (window as any).call?.hangup(id, signature, publicKey, timestamp)
-          )
-          .catch(() => {})
-          .finally(() => {
-            enqueueTeardownReticulumMedia();
-          });
-        return;
-      }
-      enqueueTeardownReticulumMedia();
+      unmountVoiceCallCleanupRef.current();
     };
-  }, [clearDurationTimer, enqueueTeardownReticulumMedia]);
+  }, []);
 
   const startupStageKey =
     callState === 'connected'

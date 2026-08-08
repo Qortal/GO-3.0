@@ -73,19 +73,20 @@ export const AppsLibraryDesktop = ({
   const [mountedTabs, setMountedTabs] = useState<Set<AppsLibraryTabValue>>(
     () => new Set(['official'])
   );
-  const [scrollParent, setScrollParent] = useState<HTMLElement | null>(null);
   const [, startTabTransition] = useTransition();
   const [searchValue, setSearchValue] = useState('');
   const [debouncedSearchValue, setDebouncedSearchValue] = useState('');
   const [sortOption, setSortOption] = useAtom(appSortAtom);
   const [categoryFilter, setCategoryFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState<StatusFilterOption>('all');
+  const [scrollParent, setScrollParent] = useState<HTMLDivElement | null>(null);
   const theme = useTheme();
   // In landscape the big library logo wastes scarce vertical space, so hide it
   // and let the app grid start higher.
   const isLandscape = useMediaQuery('(orientation: landscape)');
   const compactHeader = isMobile && isLandscape;
   const isSearchActive = searchValue.trim().length > 0;
+  const showLibraryScrollbar = currentTab === 'community' && !isSearchActive;
   const { t } = useTranslation([
     'auth',
     'core',
@@ -507,7 +508,7 @@ export const AppsLibraryDesktop = ({
             pb: isMobile
               ? 'calc(32px + env(safe-area-inset-bottom, 0px))'
               : 0,
-            scrollbarWidth: 'none',
+            scrollbarWidth: showLibraryScrollbar ? 'auto' : 'none',
             width: isMobile ? '100%' : '90%',
             '& > *': isMobile
               ? {
@@ -516,7 +517,7 @@ export const AppsLibraryDesktop = ({
                 }
               : undefined,
             '&::-webkit-scrollbar': {
-              display: 'none',
+              display: showLibraryScrollbar ? 'initial' : 'none',
             },
           }}
         >

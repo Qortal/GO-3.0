@@ -1,4 +1,5 @@
 import CampaignRoundedIcon from '@mui/icons-material/CampaignRounded';
+import AlternateEmailRoundedIcon from '@mui/icons-material/AlternateEmailRounded';
 import ForumRoundedIcon from '@mui/icons-material/ForumRounded';
 import GroupAddRoundedIcon from '@mui/icons-material/GroupAddRounded';
 import LockRoundedIcon from '@mui/icons-material/LockRounded';
@@ -35,6 +36,7 @@ import {
   type ReactElement,
 } from 'react';
 import { useTranslation } from 'react-i18next';
+import chatBubbleDots from '../../assets/qchat/caught-up-chat-dots.webp';
 import {
   QORTAL_APP_CONTEXT,
   getArbitraryEndpointReact,
@@ -47,8 +49,9 @@ import {
   groupsOwnerNamesAtom,
   groupsPropertiesAtom,
   joinRequestsCacheAtom,
-  memberGroupsAtom,
+  memberGroupsWithReticulumChatAtom,
   myGroupsWhereIAmAdminAtom,
+  reticulumChatEnabledAtom,
   timestampEnterDataAtom,
   userInfoAtom,
 } from '../../atoms/global';
@@ -64,6 +67,11 @@ import {
   getBlueTier1PillSurface,
 } from '../Group/groupActivityColorSystem';
 import { GroupActivityEmptyStateGraphic } from '../Group/GroupActivityEmptyStateGraphic';
+import {
+  orderReticulumGroups,
+  readReticulumGroupOrder,
+  subscribeToReticulumGroupOrder,
+} from '../Group/reticulumGroupRail';
 import { QAppWidgetContainer } from './QAppWidgetContainer';
 import type { WidgetDisplayMode } from './DashboardWidgetFrame';
 
@@ -84,6 +92,9 @@ type GroupNotificationItem = {
   isEncryptedLike: boolean;
   isGenericMessage: boolean;
   isUnread: boolean;
+  hasUnreadMention: boolean;
+  mentionCount: number;
+  newMessageCount: number;
   openedAt: number;
   senderLabel: string;
   snippet: string;
@@ -148,6 +159,7 @@ type PromotionActionState = 'connecting' | 'processing' | 'request_sent';
 const GROUP_PROMOTION_IDENTIFIER_PREFIX = 'group-promotions-ui24-';
 const GROUP_PROMOTION_MAX_ITEMS = 8;
 const GROUP_NOTIFICATION_PREVIEW_LIMIT = 20;
+const RETICULUM_NOTIFICATION_GRID_SLOT_COUNT = 12;
 const GROUP_ACTIVITY_MISC_STORAGE_PREFIX = 'group_activity_dismissed';
 /** Latest chat payload to omit from Group Activity list + unread count (system/meta). */
 const GROUP_ACTIVITY_EXCLUDED_MESSAGE_DATA = 'NDAwMQ==';
@@ -632,6 +644,164 @@ const IllustratedEmptyState = ({
   );
 };
 
+const ReticulumNotificationsEmptyState = ({
+  displayName,
+  onBrowse,
+}: {
+  displayName?: string;
+  onBrowse: () => void;
+}) => {
+  const theme = useTheme();
+  const bubbleRef = useRef<HTMLImageElement | null>(null);
+  const glowRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const bubble = bubbleRef.current;
+    const glow = glowRef.current;
+    if (!bubble || !glow) return;
+
+    const animations = [
+      bubble.animate(
+        [
+          { transform: 'translate(0, 0) rotate(-2deg)' },
+          { transform: 'translate(3px, -8px) rotate(1deg)' },
+          { transform: 'translate(0, 0) rotate(-2deg)' },
+        ],
+        { duration: 4300, easing: 'ease-in-out', iterations: Infinity }
+      ),
+      glow.animate(
+        [
+          { opacity: 0.42, transform: 'translate(-50%, -50%) scale(0.96)' },
+          { opacity: 0.68, transform: 'translate(-50%, -50%) scale(1.04)' },
+          { opacity: 0.42, transform: 'translate(-50%, -50%) scale(0.96)' },
+        ],
+        { duration: 6000, easing: 'ease-in-out', iterations: Infinity }
+      ),
+    ];
+
+    return () => animations.forEach((animation) => animation.cancel());
+  }, []);
+
+  return (
+    <Box
+      sx={{
+        alignItems: 'center',
+        display: 'flex',
+        flex: '1 1 auto',
+        flexDirection: 'column',
+        justifyContent: 'center',
+        minHeight: 0,
+        px: 2,
+        py: 2.25,
+        textAlign: 'center',
+      }}
+    >
+      <Typography
+        sx={{
+          color: theme.palette.text.primary,
+          fontSize: '0.95rem',
+          fontWeight: 600,
+          letterSpacing: '-0.01em',
+          lineHeight: 1.35,
+        }}
+      >
+        {displayName ? `Welcome back, ${displayName}!` : 'Welcome back!'}
+      </Typography>
+      <Typography
+        sx={{
+          color: theme.palette.text.secondary,
+          fontSize: '0.8rem',
+          lineHeight: 1.5,
+          mt: '5px',
+        }}
+      >
+        You're all caught up. No new messages right now.
+      </Typography>
+
+      <Box
+        aria-hidden
+        sx={{
+          height: 104,
+          my: '13px',
+          position: 'relative',
+          width: 140,
+        }}
+      >
+        <Box
+          ref={glowRef}
+          sx={{
+            background:
+              'radial-gradient(circle, rgba(0, 143, 255, 0.23) 0%, rgba(0, 106, 255, 0.09) 44%, transparent 73%)',
+            borderRadius: '50%',
+            height: 100,
+            left: '50%',
+            position: 'absolute',
+            top: '46%',
+            transform: 'translate(-50%, -50%)',
+            width: 100,
+          }}
+        />
+        <Box
+          alt=""
+          component="img"
+          ref={bubbleRef}
+          src={chatBubbleDots}
+          sx={{
+            filter: 'drop-shadow(0 7px 12px rgba(0, 105, 210, 0.24))',
+            left: 'calc(50% - 32px)',
+            opacity: 0.78,
+            position: 'absolute',
+            top: 18,
+            width: 64,
+            zIndex: 2,
+          }}
+        />
+      </Box>
+
+      <ButtonBase
+        onClick={onBrowse}
+        sx={{
+          alignItems: 'center',
+          border: `1px solid ${alpha(theme.palette.primary.light, 0.42)}`,
+          borderRadius: '8px',
+          color: theme.palette.text.primary,
+          display: 'inline-flex',
+          fontSize: '0.75rem',
+          fontWeight: 600,
+          gap: '7px',
+          height: 34,
+          justifyContent: 'center',
+          px: 2,
+          transition:
+            'background-color 150ms ease, border-color 150ms ease, box-shadow 150ms ease, transform 120ms ease',
+          '&:hover': {
+            backgroundColor:
+              theme.palette.mode === 'dark'
+                ? 'rgba(38, 48, 64, 0.62)'
+                : alpha(theme.palette.primary.main, 0.07),
+            borderColor: alpha(theme.palette.primary.main, 0.72),
+            boxShadow: '0 6px 15px rgba(0, 0, 0, 0.18)',
+            transform: 'translateY(-1px)',
+          },
+        }}
+      >
+        <GroupAddRoundedIcon sx={{ fontSize: '0.95rem' }} />
+        Browse Communities
+      </ButtonBase>
+      <Typography
+        sx={{
+          color: theme.palette.text.secondary,
+          fontSize: '0.8rem',
+          lineHeight: 1.5,
+          mt: '9px',
+        }}
+      >
+        Looking for something new? Discover more communities.
+      </Typography>
+    </Box>
+  );
+};
+
 const InlineFeedback = ({
   message,
   tone,
@@ -680,7 +850,8 @@ export const GroupsWidget = ({
   const theme = useTheme();
   const { t } = useTranslation('group');
   const { show } = useContext(QORTAL_APP_CONTEXT);
-  const memberGroups = useAtomValue(memberGroupsAtom);
+  const reticulumChatEnabled = useAtomValue(reticulumChatEnabledAtom);
+  const memberGroups = useAtomValue(memberGroupsWithReticulumChatAtom);
   const myGroupsWhereIAmAdmin = useAtomValue(myGroupsWhereIAmAdminAtom);
   const ownerNamesByGroupId = useAtomValue(groupsOwnerNamesAtom) as Record<
     string,
@@ -709,6 +880,9 @@ export const GroupsWidget = ({
   const joinRequestsCacheRef = useRef(joinRequestsCache);
   const dismissedIdsMutationVersionRef = useRef(0);
   const [activeTab, setActiveTab] = useState<GroupsWidgetTab>('notifications');
+  const [manualGroupOrder, setManualGroupOrder] = useState(
+    readReticulumGroupOrder
+  );
   const [actionFeedback, setActionFeedback] = useState<{
     message: string;
     tone: 'error' | 'success';
@@ -758,7 +932,17 @@ export const GroupsWidget = ({
   const bodyGap = isCompact ? '10px' : '13px';
   const messageLineClamp = isCompact ? 1 : 2;
   const currentAddress = userInfo?.address;
-  const isAnyLoading = invitesLoading || requestsLoading || promotionsLoading;
+  const reticulumWelcomeDisplayName =
+    typeof userInfo?.name === 'string' &&
+    userInfo.name.trim() &&
+    userInfo.name.trim() !== currentAddress &&
+    userInfo.name.trim() !== myAddress
+      ? userInfo.name.trim()
+      : undefined;
+  const isAnyLoading =
+    invitesLoading ||
+    requestsLoading ||
+    (!reticulumChatEnabled && promotionsLoading);
   const memberGroupIds = useMemo(
     () =>
       new Set(
@@ -778,6 +962,9 @@ export const GroupsWidget = ({
   }, [joinRequestsCache]);
 
   useEffect(() => {
+    if (reticulumChatEnabled) {
+      return;
+    }
     let isMounted = true;
 
     void (async () => {
@@ -795,7 +982,20 @@ export const GroupsWidget = ({
     return () => {
       isMounted = false;
     };
-  }, []);
+  }, [reticulumChatEnabled]);
+
+  useEffect(() => {
+    if (!reticulumChatEnabled) return;
+    if (activeTab === 'promoted') {
+      setActiveTab('notifications');
+    }
+    setPromotionDialogOpen(false);
+  }, [activeTab, reticulumChatEnabled]);
+
+  useEffect(
+    () => subscribeToReticulumGroupOrder(setManualGroupOrder),
+    []
+  );
 
   useEffect(() => {
     onRefreshStateChange?.(isAnyLoading);
@@ -806,6 +1006,59 @@ export const GroupsWidget = ({
   }, [isAnyLoading, onRefreshStateChange]);
 
   const notificationItems = useMemo<GroupNotificationItem[]>(() => {
+    if (reticulumChatEnabled) {
+      return orderReticulumGroups(
+        [...(memberGroups ?? [])],
+        manualGroupOrder
+      )
+        .map((group: any): GroupNotificationItem | null => {
+          const numericGroupId = Number(group?.groupId);
+          if (!Number.isInteger(numericGroupId) || numericGroupId <= 0) {
+            return null;
+          }
+          const groupId = String(numericGroupId);
+          const summary = group?.reticulumChatSummary;
+          const newMessageCount = Math.max(
+            0,
+            Math.trunc(Number(summary?.unreadCount) || 0)
+          );
+          const mentionCount = Math.max(
+            0,
+            Math.trunc(Number(summary?.mentionCount) || 0)
+          );
+          if (newMessageCount === 0 && mentionCount === 0) return null;
+
+          const timestamp =
+            typeof summary?.updatedAt === 'number'
+              ? summary.updatedAt
+              : typeof summary?.lastEvent?.timestamp === 'number'
+                ? summary.lastEvent.timestamp
+                : 0;
+          const groupName =
+            group?.groupName || t('groups_widget.group_named', { id: groupId });
+          const ownerName = ownerNamesByGroupId?.[groupId] ?? null;
+
+          return {
+            avatarUrl: getGroupAvatarUrl(ownerName, groupId),
+            groupId,
+            groupName,
+            id: `reticulum:${groupId}`,
+            isEncryptedLike: false,
+            isGenericMessage: false,
+            isUnread: true,
+            hasUnreadMention:
+              mentionCount > 0 || summary?.hasUnreadMention === true,
+            mentionCount,
+            newMessageCount,
+            openedAt: 0,
+            senderLabel: '',
+            snippet: '',
+            timestamp,
+          };
+        })
+        .filter((item): item is GroupNotificationItem => Boolean(item));
+    }
+
     return [...(memberGroups ?? [])]
       .filter(
         (group: any) =>
@@ -835,13 +1088,18 @@ export const GroupsWidget = ({
         const isPublicGroup =
           group?.isOpen === true || groupsProperties[groupId]?.isOpen === true;
         const isEncryptedLike = isLikelyEncryptedSnippet(group.data);
+        const hasUnreadMention =
+          group?.reticulumChatSummary?.hasUnreadMention === true ||
+          (group?.reticulumChatSummary?.mentionCount ?? 0) > 0;
         const isUnread =
-          !!group.data &&
-          !!groupChatTimestamps[groupId] &&
-          group.sender !== currentAddress &&
-          !!timestamp &&
-          ((!timestampEnterData[groupId] && Date.now() - timestamp < 900000) ||
-            (timestampEnterData[groupId] ?? 0) < timestamp);
+          hasUnreadMention ||
+          (group?.reticulumChatSummary?.unreadCount ?? 0) > 0 ||
+          (!!group.data &&
+            !!groupChatTimestamps[groupId] &&
+            group.sender !== currentAddress &&
+            !!timestamp &&
+            ((!timestampEnterData[groupId] && Date.now() - timestamp < 900000) ||
+              (timestampEnterData[groupId] ?? 0) < timestamp));
         const ownerName = ownerNamesByGroupId?.[groupId] ?? null;
 
         return {
@@ -852,6 +1110,9 @@ export const GroupsWidget = ({
           isEncryptedLike: !isPublicGroup && isEncryptedLike,
           isGenericMessage: isPublicGroup && isEncryptedLike,
           isUnread,
+          hasUnreadMention,
+          mentionCount: 0,
+          newMessageCount: 0,
           openedAt: timestampEnterData[groupId] ?? 0,
           senderLabel,
           snippet,
@@ -865,8 +1126,10 @@ export const GroupsWidget = ({
     currentAddress,
     groupChatTimestamps,
     groupsProperties,
+    manualGroupOrder,
     memberGroups,
     ownerNamesByGroupId,
+    reticulumChatEnabled,
     t,
     timestampEnterData,
   ]);
@@ -1249,11 +1512,11 @@ export const GroupsWidget = ({
   }, [fetchInvites, fetchJoinRequests, refreshToken]);
 
   useEffect(() => {
-    if (activeTab !== 'promoted') {
+    if (reticulumChatEnabled || activeTab !== 'promoted') {
       return;
     }
     void fetchPromotions();
-  }, [activeTab, fetchPromotions, refreshToken]);
+  }, [activeTab, fetchPromotions, refreshToken, reticulumChatEnabled]);
 
   const visibleInvites = useMemo(
     () => invites.filter((invite) => !dismissedInviteIds.includes(invite.id)),
@@ -1289,8 +1552,10 @@ export const GroupsWidget = ({
   }, []);
 
   const handleOpenGroupDiscovery = useCallback(() => {
-    executeEvent('open-group-discovery', {});
-  }, []);
+    executeEvent('open-group-discovery', {
+      modalOnly: reticulumChatEnabled,
+    });
+  }, [reticulumChatEnabled]);
 
   const handleAcceptInvite = useCallback(
     async (invite: GroupInviteItem) => {
@@ -1755,19 +2020,22 @@ export const GroupsWidget = ({
   const unreadNotificationSurfaceColor =
     theme.palette.mode === 'dark'
       ? `linear-gradient(180deg, ${alpha(theme.palette.primary.main, 0.14)} 0%, rgba(40, 49, 63, 0.94) 20%, rgba(34, 40, 50, 0.98) 100%)`
-      : alpha(theme.palette.primary.main, 0.03);
+      : alpha(theme.palette.primary.main, 0.095);
   const unreadNotificationHoverSurfaceColor =
     theme.palette.mode === 'dark'
       ? `linear-gradient(180deg, ${alpha(theme.palette.primary.main, 0.18)} 0%, rgba(44, 53, 68, 0.97) 22%, rgba(37, 43, 54, 1) 100%)`
-      : alpha(theme.palette.primary.main, 0.04);
+      : alpha(theme.palette.primary.main, 0.14);
   const unreadNotificationBorderColor =
     theme.palette.mode === 'dark'
       ? alpha(theme.palette.primary.main, 0.16)
-      : alpha(theme.palette.primary.main, 0.085);
+      : alpha(theme.palette.primary.main, 0.22);
 
   const effectiveNotificationItems = useMemo(
-    () => [...notificationItems].sort(sortGroupNotificationItems),
-    [notificationItems]
+    () =>
+      reticulumChatEnabled
+        ? notificationItems
+        : [...notificationItems].sort(sortGroupNotificationItems),
+    [notificationItems, reticulumChatEnabled]
   );
   const effectiveInvites = showIgnoredInvites ? ignoredInvites : visibleInvites;
   const effectiveRequests = showIgnoredRequests
@@ -1775,6 +2043,10 @@ export const GroupsWidget = ({
     : visibleRequests;
   const effectivePromotions = promotions;
   const effectiveUnreadNotificationCount = unreadNotificationCount;
+  const effectiveActiveTab: GroupsWidgetTab =
+    reticulumChatEnabled && activeTab === 'promoted'
+      ? 'notifications'
+      : activeTab;
 
   const getPromotionVisualState = useCallback(
     (
@@ -1801,11 +2073,11 @@ export const GroupsWidget = ({
   const bodyGapPx = isCompact ? 10 : 13;
 
   const virtualListLength =
-    activeTab === 'notifications'
+    effectiveActiveTab === 'notifications'
       ? effectiveNotificationItems.length
-      : activeTab === 'invites'
+      : effectiveActiveTab === 'invites'
         ? effectiveInvites.length
-        : activeTab === 'requests'
+        : effectiveActiveTab === 'requests'
           ? effectiveRequests.length
           : effectivePromotions.length;
 
@@ -1813,9 +2085,15 @@ export const GroupsWidget = ({
     count: virtualListLength,
     getScrollElement: () => groupsListScrollRef.current,
     estimateSize: useCallback(() => {
-      switch (activeTab) {
+      switch (effectiveActiveTab) {
         case 'notifications':
-          return isCompact ? 132 : 152;
+          return reticulumChatEnabled
+            ? isCompact
+              ? 96
+              : 112
+            : isCompact
+              ? 132
+              : 152;
         case 'invites':
           return isCompact ? 168 : 182;
         case 'requests':
@@ -1825,10 +2103,10 @@ export const GroupsWidget = ({
         default:
           return 160;
       }
-    }, [activeTab, isCompact]),
+    }, [effectiveActiveTab, isCompact, reticulumChatEnabled]),
     getItemKey: useCallback(
       (index: number) => {
-        switch (activeTab) {
+        switch (effectiveActiveTab) {
           case 'notifications':
             return `n:${effectiveNotificationItems[index]?.id ?? index}`;
           case 'invites':
@@ -1842,7 +2120,7 @@ export const GroupsWidget = ({
         }
       },
       [
-        activeTab,
+        effectiveActiveTab,
         effectiveNotificationItems,
         effectiveInvites,
         effectiveRequests,
@@ -1908,12 +2186,224 @@ export const GroupsWidget = ({
     </Box>
   );
 
+  const reticulumNotificationPlaceholderCount = Math.max(
+    0,
+    RETICULUM_NOTIFICATION_GRID_SLOT_COUNT -
+      effectiveNotificationItems.length
+  );
+
+  const renderReticulumNotificationGrid = () => (
+    <Box
+      sx={{
+        alignContent: 'start',
+        display: 'grid',
+        flex: '1 1 auto',
+        gap: '12px',
+        gridAutoRows: isCompact ? '98px' : '104px',
+        gridTemplateColumns: {
+          xs: 'repeat(2, minmax(0, 1fr))',
+          sm: 'repeat(3, minmax(0, 1fr))',
+        },
+        minHeight: 0,
+        overflowY: 'auto',
+        pr: '2px',
+        scrollbarWidth: 'none',
+        '&::-webkit-scrollbar': {
+          display: 'none',
+        },
+      }}
+    >
+      {effectiveNotificationItems.map((item) => (
+        <ButtonBase
+          aria-label={`${item.groupName}. ${
+            item.newMessageCount > 0
+              ? t('groups_widget.reticulum_new_messages', {
+                  count: item.newMessageCount,
+                })
+              : ''
+          } ${
+            item.mentionCount > 0
+              ? t('groups_widget.reticulum_mentions', {
+                  count: item.mentionCount,
+                })
+              : ''
+          }`}
+          key={item.id}
+          onClick={() => handleOpenGroupChat(item.groupId)}
+          sx={{
+            alignItems: 'center',
+            background: unreadNotificationSurfaceColor,
+            border: `1px solid ${unreadNotificationBorderColor}`,
+            borderRadius: GROUP_WIDGET_CARD_RADIUS,
+            boxShadow: widgetItemInsetShadow,
+            display: 'flex',
+            gap: isCompact ? '10px' : '12px',
+            justifyContent: 'flex-start',
+            minWidth: 0,
+            overflow: 'hidden',
+            p: isCompact ? '11px' : '12px',
+            position: 'relative',
+            textAlign: 'left',
+            transition:
+              'background 140ms ease, border-color 140ms ease, transform 120ms ease, box-shadow 140ms ease',
+            width: '100%',
+            '&:hover': {
+              background: unreadNotificationHoverSurfaceColor,
+              borderColor: alpha(
+                theme.palette.primary.main,
+                theme.palette.mode === 'dark' ? 0.22 : 0.15
+              ),
+              boxShadow:
+                theme.palette.mode === 'dark'
+                  ? `0 12px 24px rgba(0,0,0,0.22), inset 0 1px 0 ${alpha(theme.palette.common.white, 0.05)}`
+                  : widgetItemInsetShadow,
+              transform: 'translateY(-1px)',
+            },
+          }}
+        >
+          <Avatar
+            alt={item.groupName}
+            src={item.avatarUrl ?? undefined}
+            sx={{
+              bgcolor: alpha(theme.palette.primary.main, 0.12),
+              color: theme.palette.text.primary,
+              flexShrink: 0,
+              height: isCompact ? 40 : 44,
+              width: isCompact ? 40 : 44,
+            }}
+          >
+            {item.groupName.charAt(0).toUpperCase()}
+          </Avatar>
+
+          <Box
+            sx={{
+              display: 'flex',
+              flex: '1 1 auto',
+              flexDirection: 'column',
+              gap: '3px',
+              minWidth: 0,
+            }}
+          >
+            <Typography
+              sx={{
+                color: theme.palette.text.primary,
+                fontSize: isCompact ? '0.78rem' : '0.82rem',
+                fontWeight: 760,
+                lineHeight: 1.35,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {item.groupName}
+            </Typography>
+            {item.newMessageCount > 0 ? (
+              <Typography
+                sx={{
+                  color: theme.palette.text.secondary,
+                  fontSize: isCompact ? '0.69rem' : '0.72rem',
+                  lineHeight: 1.35,
+                }}
+              >
+                {t('groups_widget.reticulum_new_messages', {
+                  count: item.newMessageCount,
+                })}
+              </Typography>
+            ) : null}
+            {item.mentionCount > 0 ? (
+              <Box
+                sx={{
+                  alignItems: 'center',
+                  display: 'flex',
+                  gap: '5px',
+                  minWidth: 0,
+                }}
+              >
+                <Typography
+                  sx={{
+                    color: theme.palette.text.secondary,
+                    fontSize: isCompact ? '0.69rem' : '0.72rem',
+                    lineHeight: 1.35,
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {t('groups_widget.reticulum_mentions', {
+                    count: item.mentionCount,
+                  })}
+                </Typography>
+                <Box
+                  component="span"
+                  sx={{
+                    backgroundColor: '#f23f42',
+                    borderRadius: '6px',
+                    color: theme.palette.common.white,
+                    flexShrink: 0,
+                    fontSize: '0.62rem',
+                    fontWeight: 750,
+                    lineHeight: '17px',
+                    minWidth: '26px',
+                    px: '4px',
+                    textAlign: 'center',
+                  }}
+                >
+                  @ {item.mentionCount}
+                </Box>
+              </Box>
+            ) : null}
+          </Box>
+
+          <Box
+            aria-hidden
+            sx={{
+              backgroundColor: '#168bff',
+              borderRadius: '50%',
+              boxShadow: '0 0 8px rgba(22, 139, 255, 0.58)',
+              height: '8px',
+              position: 'absolute',
+              right: '11px',
+              top: '11px',
+              width: '8px',
+            }}
+          />
+        </ButtonBase>
+      ))}
+
+      {Array.from(
+        { length: reticulumNotificationPlaceholderCount },
+        (_, index) => (
+          <Box
+            aria-hidden
+            key={`reticulum-notification-placeholder-${index}`}
+            sx={{
+              backgroundColor:
+                theme.palette.mode === 'dark'
+                  ? 'rgba(13, 16, 22, 0.5)'
+                  : alpha(theme.palette.text.primary, 0.025),
+              border: `1px solid ${
+                theme.palette.mode === 'dark'
+                  ? 'rgba(255, 255, 255, 0.025)'
+                  : alpha(theme.palette.border.main, 0.1)
+              }`,
+              borderRadius: GROUP_WIDGET_CARD_RADIUS,
+              minWidth: 0,
+              pointerEvents: 'none',
+            }}
+          />
+        )
+      )}
+    </Box>
+  );
+
   const renderNotificationList = () => (
     <QAppWidgetContainer
       emptyMessage={t('groups_widget.notifications_empty_message')}
       emptyTitle={t('groups_widget.notifications_empty_title')}
-      hasContent={effectiveNotificationItems.length > 0}
-      isEmpty={effectiveNotificationItems.length === 0}
+      hasContent={
+        reticulumChatEnabled || effectiveNotificationItems.length > 0
+      }
+      isEmpty={
+        !reticulumChatEnabled && effectiveNotificationItems.length === 0
+      }
       isLoading={false}
       loadingLabel={t('groups_widget.loading_notifications')}
       onSecondaryAction={handleOpenGroupDiscovery}
@@ -1936,7 +2426,17 @@ export const GroupsWidget = ({
             tone={actionFeedback.tone}
           />
         ) : null}
-        {renderVirtualizedList(effectiveNotificationItems.length, (index) => {
+        {reticulumChatEnabled ? (
+          effectiveNotificationItems.length > 0 ? (
+            renderReticulumNotificationGrid()
+          ) : (
+            <ReticulumNotificationsEmptyState
+              displayName={reticulumWelcomeDisplayName}
+              onBrowse={handleOpenGroupDiscovery}
+            />
+          )
+        ) : (
+          renderVirtualizedList(effectiveNotificationItems.length, (index) => {
           const item = effectiveNotificationItems[index];
           if (!item) return null;
 
@@ -2052,129 +2552,210 @@ export const GroupsWidget = ({
                     >
                       {item.groupName}
                     </Typography>
-                    {item.isUnread ? (
-                      <MarkChatUnreadRoundedIcon
-                        sx={{
-                          color: theme.palette.primary.main,
-                          flexShrink: 0,
-                          fontSize: '0.95rem',
-                        }}
-                      />
-                    ) : null}
+                    {!reticulumChatEnabled &&
+                      (item.hasUnreadMention ? (
+                        <AlternateEmailRoundedIcon
+                          sx={{
+                            color: theme.palette.warning.main,
+                            flexShrink: 0,
+                            fontSize: '0.95rem',
+                          }}
+                        />
+                      ) : item.isUnread ? (
+                        <MarkChatUnreadRoundedIcon
+                          sx={{
+                            color: theme.palette.primary.main,
+                            flexShrink: 0,
+                            fontSize: '0.95rem',
+                          }}
+                        />
+                      ) : null)}
                   </Box>
-                  <Typography
-                    sx={{
-                      color: theme.palette.text.secondary,
-                      flexShrink: 0,
-                      fontSize: '0.67rem',
-                      fontWeight: 600,
-                    }}
-                  >
-                    {formatTimestamp(item.timestamp)}
-                  </Typography>
-                </Box>
-                <Box
-                  sx={{
-                    alignItems: 'baseline',
-                    display: 'inline-flex',
-                    fontSize: '0.7rem',
-                    gap: '4px',
-                  }}
-                >
-                  <Typography
-                    component="span"
-                    sx={{
-                      color: alpha(theme.palette.text.secondary, 0.72),
-                      fontSize: 'inherit',
-                      fontWeight: 600,
-                      lineHeight: 1.3,
-                    }}
-                  >
-                    {t('groups_widget.from_label')}
-                  </Typography>
-                  <Typography
-                    component="span"
-                    sx={{
-                      color: theme.palette.primary.main,
-                      fontSize: 'inherit',
-                      fontWeight: 700,
-                      lineHeight: 1.3,
-                    }}
-                  >
-                    {item.senderLabel}
-                  </Typography>
-                </Box>
-                <Box
-                  sx={{
-                    color: theme.palette.text.secondary,
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: item.isEncryptedLike || item.isGenericMessage ? '4px' : 0,
-                    minWidth: 0,
-                    pb: item.isEncryptedLike || item.isGenericMessage ? '4px' : 0,
-                  }}
-                >
-                  {item.isGenericMessage ? (
-                    <Typography
-                      component="span"
-                      sx={{
-                        color: alpha(theme.palette.text.secondary, 0.82),
-                        fontSize: '0.68rem',
-                        fontWeight: 600,
-                        lineHeight: 1.25,
-                      }}
-                    >
-                      {t('groups_widget.new_message', {
-                        defaultValue: 'New message',
-                      })}
-                    </Typography>
-                  ) : item.isEncryptedLike ? (
-                    <Box
-                      sx={{
-                        alignItems: 'baseline',
-                        color: alpha(theme.palette.text.secondary, 0.82),
-                        display: 'inline-flex',
-                        gap: '5px',
-                        minWidth: 0,
-                      }}
-                    >
-                      <LockRoundedIcon
-                        sx={{
-                          fontSize: '0.8rem',
-                          transform: 'translateY(1px)',
-                        }}
-                      />
-                      <Typography
-                        component="span"
-                        sx={{
-                          color: 'inherit',
-                          fontSize: '0.68rem',
-                          fontWeight: 600,
-                          lineHeight: 1.25,
-                        }}
-                      >
-                        {t('groups_widget.new_encrypted_message')}
-                      </Typography>
-                    </Box>
-                  ) : (
+                  {!reticulumChatEnabled ? (
                     <Typography
                       sx={{
                         color: theme.palette.text.secondary,
-                        display: '-webkit-box',
-                        flex: '1 1 auto',
-                        fontSize: isCompact ? '0.73rem' : '0.76rem',
-                        lineHeight: 1.5,
-                        minWidth: 0,
-                        overflow: 'hidden',
-                        WebkitBoxOrient: 'vertical',
-                        WebkitLineClamp: messageLineClamp,
-                        wordBreak: 'break-word',
+                        flexShrink: 0,
+                        fontSize: '0.67rem',
+                        fontWeight: 600,
                       }}
                     >
-                      {item.snippet}
+                      {formatTimestamp(item.timestamp)}
                     </Typography>
-                  )}
+                  ) : null}
                 </Box>
+                {reticulumChatEnabled ? (
+                  <Box
+                    sx={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '4px',
+                      minWidth: 0,
+                    }}
+                  >
+                    {item.newMessageCount > 0 ? (
+                      <Typography
+                        sx={{
+                          color: theme.palette.text.secondary,
+                          fontSize: isCompact ? '0.72rem' : '0.75rem',
+                          lineHeight: 1.35,
+                        }}
+                      >
+                        {t('groups_widget.reticulum_new_messages', {
+                          count: item.newMessageCount,
+                        })}
+                      </Typography>
+                    ) : null}
+                    {item.mentionCount > 0 ? (
+                      <Box
+                        sx={{
+                          alignItems: 'center',
+                          display: 'flex',
+                          gap: '6px',
+                        }}
+                      >
+                        <Typography
+                          sx={{
+                            color: theme.palette.text.secondary,
+                            fontSize: isCompact ? '0.72rem' : '0.75rem',
+                            lineHeight: 1.35,
+                          }}
+                        >
+                          {t('groups_widget.reticulum_mentions', {
+                            count: item.mentionCount,
+                          })}
+                        </Typography>
+                        <Box
+                          component="span"
+                          sx={{
+                            backgroundColor: '#f23f42',
+                            borderRadius: '6px',
+                            color: theme.palette.common.white,
+                            fontSize: '0.65rem',
+                            fontWeight: 750,
+                            lineHeight: '18px',
+                            minWidth: '28px',
+                            px: '5px',
+                            textAlign: 'center',
+                          }}
+                        >
+                          @ {item.mentionCount}
+                        </Box>
+                      </Box>
+                    ) : null}
+                  </Box>
+                ) : (
+                  <>
+                    <Box
+                      sx={{
+                        alignItems: 'baseline',
+                        display: 'inline-flex',
+                        fontSize: '0.7rem',
+                        gap: '4px',
+                      }}
+                    >
+                      <Typography
+                        component="span"
+                        sx={{
+                          color: alpha(theme.palette.text.secondary, 0.72),
+                          fontSize: 'inherit',
+                          fontWeight: 600,
+                          lineHeight: 1.3,
+                        }}
+                      >
+                        {t('groups_widget.from_label')}
+                      </Typography>
+                      <Typography
+                        component="span"
+                        sx={{
+                          color: theme.palette.primary.main,
+                          fontSize: 'inherit',
+                          fontWeight: 700,
+                          lineHeight: 1.3,
+                        }}
+                      >
+                        {item.senderLabel}
+                      </Typography>
+                    </Box>
+                    <Box
+                      sx={{
+                        color: theme.palette.text.secondary,
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap:
+                          item.isEncryptedLike || item.isGenericMessage
+                            ? '4px'
+                            : 0,
+                        minWidth: 0,
+                        pb:
+                          item.isEncryptedLike || item.isGenericMessage
+                            ? '4px'
+                            : 0,
+                      }}
+                    >
+                      {item.isGenericMessage ? (
+                        <Typography
+                          component="span"
+                          sx={{
+                            color: alpha(theme.palette.text.secondary, 0.82),
+                            fontSize: '0.68rem',
+                            fontWeight: 600,
+                            lineHeight: 1.25,
+                          }}
+                        >
+                          {t('groups_widget.new_message', {
+                            defaultValue: 'New message',
+                          })}
+                        </Typography>
+                      ) : item.isEncryptedLike ? (
+                        <Box
+                          sx={{
+                            alignItems: 'baseline',
+                            color: alpha(theme.palette.text.secondary, 0.82),
+                            display: 'inline-flex',
+                            gap: '5px',
+                            minWidth: 0,
+                          }}
+                        >
+                          <LockRoundedIcon
+                            sx={{
+                              fontSize: '0.8rem',
+                              transform: 'translateY(1px)',
+                            }}
+                          />
+                          <Typography
+                            component="span"
+                            sx={{
+                              color: 'inherit',
+                              fontSize: '0.68rem',
+                              fontWeight: 600,
+                              lineHeight: 1.25,
+                            }}
+                          >
+                            {t('groups_widget.new_encrypted_message')}
+                          </Typography>
+                        </Box>
+                      ) : (
+                        <Typography
+                          sx={{
+                            color: theme.palette.text.secondary,
+                            display: '-webkit-box',
+                            flex: '1 1 auto',
+                            fontSize: isCompact ? '0.73rem' : '0.76rem',
+                            lineHeight: 1.5,
+                            minWidth: 0,
+                            overflow: 'hidden',
+                            WebkitBoxOrient: 'vertical',
+                            WebkitLineClamp: messageLineClamp,
+                            wordBreak: 'break-word',
+                          }}
+                        >
+                          {item.snippet}
+                        </Typography>
+                      )}
+                    </Box>
+                  </>
+                )}
                 <Box
                   sx={{
                     alignItems: 'center',
@@ -2187,14 +2768,15 @@ export const GroupsWidget = ({
                   }}
                 >
                   <OpenInNewRoundedIcon sx={{ fontSize: '0.82rem' }} />
-                  {item.isEncryptedLike
+                  {!reticulumChatEnabled && item.isEncryptedLike
                     ? t('groups_widget.view_conversation')
                     : t('groups_widget.open_conversation')}
                 </Box>
               </Box>
             </ButtonBase>
           );
-        })}
+          })
+        )}
       </Box>
     </QAppWidgetContainer>
   );
@@ -2911,7 +3493,7 @@ export const GroupsWidget = ({
           }}
         >
           <TabButton
-            active={activeTab === 'notifications'}
+            active={effectiveActiveTab === 'notifications'}
             count={effectiveUnreadNotificationCount}
             label={t('groups_widget.tab_notifications')}
             onClick={() => {
@@ -2937,15 +3519,17 @@ export const GroupsWidget = ({
             }}
             tabId="requests"
           />
-          <TabButton
-            active={activeTab === 'promoted'}
-            label={t('groups_widget.tab_promoted')}
-            onClick={() => {
-              setActiveTab('promoted');
-            }}
-            tabId="promoted"
-            subtle
-          />
+          {!reticulumChatEnabled ? (
+            <TabButton
+              active={effectiveActiveTab === 'promoted'}
+              label={t('groups_widget.tab_promoted')}
+              onClick={() => {
+                setActiveTab('promoted');
+              }}
+              tabId="promoted"
+              subtle
+            />
+          ) : null}
         </Box>
         <Box
           sx={{
@@ -2964,7 +3548,7 @@ export const GroupsWidget = ({
             <SearchRoundedIcon sx={{ fontSize: '0.9rem' }} />
             {t('groups_widget.discover_groups')}
           </ButtonBase>
-          {activeTab === 'promoted' ? (
+          {!reticulumChatEnabled && effectiveActiveTab === 'promoted' ? (
             <Tooltip
               disableHoverListener={hasPromotionAdminAccess}
               placement="top"
@@ -2999,11 +3583,11 @@ export const GroupsWidget = ({
           overflow: 'hidden',
         }}
       >
-        {activeTab === 'notifications'
+        {effectiveActiveTab === 'notifications'
           ? renderNotificationList()
-          : activeTab === 'invites'
+          : effectiveActiveTab === 'invites'
             ? renderInvitesList()
-            : activeTab === 'requests'
+            : effectiveActiveTab === 'requests'
               ? renderRequestsList()
               : renderPromotionsList()}
       </Box>
@@ -3011,7 +3595,7 @@ export const GroupsWidget = ({
       <Dialog
         fullWidth
         maxWidth="xs"
-        open={promotionDialogOpen}
+        open={promotionDialogOpen && !reticulumChatEnabled}
         onClose={() => {
           if (!publishingPromotion) {
             setPromotionDialogOpen(false);

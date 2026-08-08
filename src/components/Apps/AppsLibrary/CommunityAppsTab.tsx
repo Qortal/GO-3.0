@@ -9,8 +9,12 @@ import { FilterBar, SortOption, StatusFilterOption } from '../Filters';
 import { officialAppList } from '../config/officialApps';
 import { filterAndSortApps } from '../../../atoms/appsAtoms';
 import { ratingsStoreAtom } from '../../../hooks/useAppRatings';
+import type { AppRatingData } from '../../../types/ratings';
 
 const GRID_GAP = 16;
+const CARD_HEIGHT = 220;
+const ROW_HEIGHT = CARD_HEIGHT + GRID_GAP;
+const EMPTY_RATINGS_MAP = new Map<string, AppRatingData>();
 
 const SectionHeader = styled(Box)({
   alignItems: 'center',
@@ -135,7 +139,18 @@ const CommunityAppsTabInner = ({
     []
   );
   const { t } = useTranslation(['core']);
-  const ratingsStore = useAtomValue(ratingsStoreAtom);
+  const isRatingSort =
+    sortValue === 'highest_rated' || sortValue === 'most_rated';
+  const ratingsForSortAtom = useMemo(
+    () =>
+      atom((get) =>
+        isRatingSort ? get(ratingsStoreAtom) : EMPTY_RATINGS_MAP
+      ),
+    [isRatingSort]
+  );
+  const ratingsStore = useAtomValue(ratingsForSortAtom);
+  const gridRef = useRef<HTMLDivElement | null>(null);
+  const [gridWidth, setGridWidth] = useState(0);
 
   const communityApps = useMemo(() => {
     return availableQapps.filter(
@@ -161,6 +176,44 @@ const CommunityAppsTabInner = ({
   ]);
 
   const useExternalScroll = isMobile && Boolean(scrollParent);
+
+  useEffect(() => {
+    const element = gridRef.current;
+    if (!element) return;
+
+    const updateWidth = () => {
+      setGridWidth(element.getBoundingClientRect().width);
+    };
+
+    updateWidth();
+    const observer = new ResizeObserver(updateWidth);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
+  const columnCount = useMemo(() => {
+    if (gridWidth <= 0) return 1;
+    return Math.max(
+      1,
+      Math.floor((gridWidth + GRID_GAP) / (CARD_MIN_WIDTH + GRID_GAP))
+    );
+  }, [gridWidth]);
+
+  const rowCount = Math.ceil(filteredAndSortedApps.length / columnCount);
+
+  const rowVirtualizer = useVirtualizer({
+    count: rowCount,
+    getScrollElement: () => scrollParent ?? null,
+    estimateSize: useCallback(() => ROW_HEIGHT, []),
+    getItemKey: useCallback(
+      (index: number) => {
+        const firstApp = filteredAndSortedApps[index * columnCount];
+        return `${columnCount}-${firstApp?.service ?? ''}-${firstApp?.name ?? index}`;
+      },
+      [columnCount, filteredAndSortedApps]
+    ),
+    overscan: 5,
+  });
 
   return (
     <AppsWidthLimiter

@@ -37,6 +37,8 @@ import {
   promotionsAtom,
   qMailLastEnteredTimestampAtom,
   quitterDashboardFeedCacheAtom,
+  reticulumChatSummariesAtom,
+  reticulumDirectSummariesAtom,
   resourceDownloadControllerAtom,
   selectedGroupIdAtom,
   settingsLocalLastUpdatedAtom,
@@ -95,6 +97,12 @@ export function useAppReset() {
   const resetMutedGroupsAtom = useResetAtom(mutedGroupsAtom);
   const resetMobileChatComposeActiveAtom = useResetAtom(mobileChatComposeActiveAtom);
   const resetGroupChatTimestampsAtom = useResetAtom(groupChatTimestampsAtom);
+  const resetReticulumChatSummariesAtom = useResetAtom(
+    reticulumChatSummariesAtom
+  );
+  const resetReticulumDirectSummariesAtom = useResetAtom(
+    reticulumDirectSummariesAtom
+  );
   const resetTimestampEnterAtom = useResetAtom(timestampEnterDataAtom);
   const resettxListAtomAtom = useResetAtom(txListAtom);
   const resetmemberGroupsAtomAtom = useResetAtom(memberGroupsAtom);
@@ -174,6 +182,8 @@ export function useAppReset() {
     resetMutedGroupsAtom();
     resetMobileChatComposeActiveAtom();
     resetGroupChatTimestampsAtom();
+    resetReticulumChatSummariesAtom();
+    resetReticulumDirectSummariesAtom();
     resetTimestampEnterAtom();
     resettxListAtomAtom();
     resetmemberGroupsAtomAtom();
@@ -226,6 +236,8 @@ export function useAppReset() {
     resetMutedGroupsAtom,
     resetMobileChatComposeActiveAtom,
     resetGroupChatTimestampsAtom,
+    resetReticulumChatSummariesAtom,
+    resetReticulumDirectSummariesAtom,
     resetTimestampEnterAtom,
     resettxListAtomAtom,
     resetmemberGroupsAtomAtom,

@@ -75,6 +75,7 @@ import {
   getGroupNotificationTimestampCase,
   getRewardSharePrivateKeyCase,
   signPresenceMessageCase,
+  signReticulumChatEventCase,
   decryptBoxWithMyKeyCase,
   encryptSupportMessageCase,
   decryptSupportMessageCase,
@@ -118,6 +119,8 @@ import {
   updateNameCase,
   userInfoCase,
   validApiCase,
+  validateGroupAdminsCase,
+  validateGroupMembersCase,
   versionCase,
   voteOnPollCase,
 } from '../background/background-cases';
@@ -146,7 +149,6 @@ export function getProtocol(url) {
 
 export const gateways = [EXT_NODE_QORTAL_LINK];
 
-let lastGroupNotification;
 export const groupApi = 'https://' + EXT_NODE_QORTAL_LINK;
 export const groupApiSocket = 'wss://' + EXT_NODE_QORTAL_LINK;
 export const groupApiLocal = getDefaultLocalNodeUrl();
@@ -480,32 +482,6 @@ export function isUpdateMsg(data) {
   }
 
   return isUpdateMessage;
-}
-
-async function checkWebviewFocus() {
-  return new Promise((resolve) => {
-    const timeout = setTimeout(() => {
-      resolve(false); // No response within 1 second, assume not focused
-    }, 1000);
-    const targetOrigin = window.location.origin;
-    // Send a message to check focus
-    window.postMessage({ action: 'CHECK_FOCUS' }, targetOrigin);
-
-    // Listen for the response
-    const handleMessage = (event) => {
-      if (event.origin !== window.location.origin || event.source !== window) {
-        return;
-      }
-
-      if (event.data?.action === 'CHECK_FOCUS_RESPONSE') {
-        clearTimeout(timeout);
-        window.removeEventListener('message', handleMessage); // Clean up listener
-        resolve(event.data.isFocused); // Resolve with the response
-      }
-    };
-
-    window.addEventListener('message', handleMessage);
-  });
 }
 
 const worker = new ChatComputePowWorker();
@@ -1587,8 +1563,6 @@ export async function handleActiveGroupDataFromSocket({ groups, directs }) {
       targetOrigin
     );
 
-    groups = groups;
-    directs = directs;
     const activeData = {
       groups: groups || [], // Your groups data here
       directs: directs || [], // Your directs data here
@@ -1597,13 +1571,6 @@ export async function handleActiveGroupDataFromSocket({ groups, directs }) {
     storeData('active-groups-directs', activeData).catch((error) => {
       console.error('Error saving data:', error);
     });
-
-    try {
-      handleNotification(groups);
-      handleNotificationDirect(directs);
-    } catch (error) {
-      console.log(error);
-    }
   } catch (error) {
     console.log(error);
   }
@@ -2940,18 +2907,6 @@ export function removeDuplicateWindow(popupUrl) {
   // );
 }
 
-export async function setChatHeads(data) {
-  const wallet = await getSaveWallet();
-  const address = wallet.address0;
-  return await new Promise((resolve, reject) => {
-    storeData(`chatheads-${address}`, data)
-      .then(() => resolve(true))
-      .catch((error) => {
-        reject(new Error(error.message || 'Error saving data'));
-      });
-  });
-}
-
 export async function checkLocalFunc() {
   const apiKey = await getApiKeyFromStorage();
   return !!apiKey;
@@ -3010,18 +2965,6 @@ export async function saveTempPublish({ data, key }) {
   return await new Promise((resolve, reject) => {
     storeData(`tempPublish-${address}`, newTemp)
       .then(() => resolve(newTemp[key]))
-      .catch((error) => {
-        reject(new Error(error.message || 'Error saving data'));
-      });
-  });
-}
-
-async function setChatHeadsDirect(data) {
-  const wallet = await getSaveWallet();
-  const address = wallet.address0;
-  return await new Promise((resolve, reject) => {
-    storeData(`chatheads-direct-${address}`, data)
-      .then(() => resolve(true))
       .catch((error) => {
         reject(new Error(error.message || 'Error saving data'));
       });
@@ -3272,32 +3215,6 @@ export async function notifyAdminRegenerateSecretKey({
   return true;
 }
 
-async function getChatHeads() {
-  const wallet = await getSaveWallet();
-  const address = wallet.address0;
-  const key = `chatheads-${address}`;
-  const res = await getData<any>(key).catch(() => null);
-  if (res) {
-    const parsedData = res;
-    return parsedData;
-  } else {
-    throw new Error('No Chatheads saved');
-  }
-}
-
-async function getChatHeadsDirect() {
-  const wallet = await getSaveWallet();
-  const address = wallet.address0;
-  const key = `chatheads-direct-${address}`;
-  const res = await getData<any>(key).catch(() => null);
-  if (res) {
-    const parsedData = res;
-    return parsedData;
-  } else {
-    throw new Error('No Chatheads saved');
-  }
-}
-
 function setupMessageListener() {
   window.addEventListener('message', async (event) => {
     if (event.origin !== window.location.origin || event.source !== window) {
@@ -3325,6 +3242,12 @@ function setupMessageListener() {
         break;
       case 'validApi':
         validApiCase(request, event);
+        break;
+      case 'validateGroupMembers':
+        validateGroupMembersCase(request, event);
+        break;
+      case 'validateGroupAdmins':
+        validateGroupAdminsCase(request, event);
         break;
       case 'name':
         nameCase(request, event);
@@ -3517,6 +3440,9 @@ function setupMessageListener() {
         break;
       case 'signPresenceMessage':
         signPresenceMessageCase(request, event);
+        break;
+      case 'signReticulumChatEvent':
+        signReticulumChatEventCase(request, event);
         break;
       case 'decryptBoxWithMyKey':
         decryptBoxWithMyKeyCase(request, event);
@@ -3746,7 +3672,8 @@ export const fireOsNotificationPayment = async (
   title,
   messageBody,
   icon,
-  qortalLink
+  qortalLink,
+  internalPayload
 ) => {
   try {
     const isDisableNotifications =
@@ -3769,7 +3696,8 @@ export const fireOsNotificationPayment = async (
 
     generalNotificationPayloadById.set(
       notificationId,
-      qortalLink ? { link: qortalLink } : { openWallets: true }
+      internalPayload ||
+        (qortalLink ? { link: qortalLink } : { openWallets: true })
     );
 
     showBackgroundOsNotification(title, messageBody, notificationId, icon);

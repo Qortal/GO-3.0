@@ -6,6 +6,7 @@ import {
 import type { MenuItemConstructorOptions } from 'electron';
 import {
   app,
+  BrowserWindow,
   MenuItem,
   dialog,
   powerMonitor,
@@ -22,7 +23,12 @@ import {
   installLocalNodeHttpsBlock,
   loadPersistedLocalNodeCa,
 } from './local-https-cert';
-import { log as loggerLog, error as loggerError } from './logger';
+import {
+  log as loggerLog,
+  error as loggerError,
+  warn as loggerWarn,
+  debug as loggerDebug,
+} from './logger';
 import {
   ElectronCapacitorApp,
   flushMiscPersistentStore,
@@ -34,6 +40,10 @@ import {
   attachChatListeners,
   ensureReticulumManagersStarted,
   notifyPresenceTransportReady,
+  replayReticulumCachedPresence,
+  startAppSettingsWatcher,
+  stopReticulumManagers,
+  subscribeToAppSettingsChanges,
   setLastP2POptions,
   startDecentralizedStunAfterP2P,
 } from './setup';
@@ -45,6 +55,7 @@ import {
 import { startChatManager, flushChatStore } from './chat';
 import { readAppSettings } from './setup';
 import {
+  isReticulumSharedDaemonOwnedByAnotherLiveInstance,
   planReticulumAppQuit,
   recoverReticulumStateForAppLaunch,
   registerReticulumAppInstance,
@@ -53,23 +64,53 @@ import {
   restartBundledReticulumDaemonAndWaitReady,
   stopSharedReticulumDaemon,
 } from './reticulum-daemon';
-import {
-  registerReticulumMeshIpcHandlers,
-  startReticulumMeshCoordinator,
-  stopReticulumMeshCoordinator,
-} from './reticulum-mesh';
+import { registerReticulumMeshIpcHandlers } from './reticulum-mesh';
 import { startReticulumForAppLaunch } from './reticulum-launch';
 import { runDevReticulumEnsureIfNeeded } from './reticulum-dev-ensure-loader';
-import { getReticulumBridge, stopReticulumBridge } from './reticulum-bridge';
+import {
+  getReticulumBridge,
+  restartReticulumBridge,
+  stopReticulumBridgeAndWait,
+} from './reticulum-bridge';
 import { getPresenceManager } from './presence';
 import { isDisabledLegacy } from './feature-flags';
 import { buildAudioSurfaceScheme } from './audio-window-policy';
 import { setAudioSurfaceHttpsInstanceIndex } from './audio-surface-https';
+import { isReticulumRuntimeEnabled } from './reticulum-runtime-state';
 
 import * as net from 'net';
 
 registerReticulumIpcHandlers();
 registerReticulumMeshIpcHandlers();
+
+function isBenignStdioWriteError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException)?.code;
+  return (
+    code === 'EPIPE' ||
+    code === 'EIO' ||
+    code === 'ENOTCONN' ||
+    code === 'EBADF'
+  );
+}
+
+function installStdioErrorGuards(): void {
+  for (const stream of [process.stdout, process.stderr]) {
+    stream.on('error', (error) => {
+      if (!isBenignStdioWriteError(error)) {
+        throw error;
+      }
+    });
+  }
+}
+
+installStdioErrorGuards();
+
+autoUpdater.logger = {
+  info: (...args: unknown[]) => loggerLog('[Updater]', ...args),
+  warn: (...args: unknown[]) => loggerWarn('[Updater]', ...args),
+  error: (...args: unknown[]) => loggerError('[Updater]', ...args),
+  debug: (...args: unknown[]) => loggerDebug('[Updater]', ...args),
+};
 
 app.commandLine.appendSwitch(
   'disable-features',
@@ -78,21 +119,11 @@ app.commandLine.appendSwitch(
 
 // app.commandLine.appendSwitch('ignore-certificate-errors');
 
-// Graceful handling of unhandled errors. Ignore benign stdio pipe errors
-// (EPIPE/EIO) when Hub is launched without a terminal; they are not actionable.
+// Graceful handling of unhandled errors. Route electron-unhandled logging
+// through our guarded logger so closed AppImage stdio pipes cannot crash while
+// reporting the original error.
 unhandled({
-  logger: (error: Error) => {
-    const code = (error as NodeJS.ErrnoException)?.code;
-    if (
-      code === 'EPIPE' ||
-      code === 'EIO' ||
-      code === 'ENOTCONN' ||
-      code === 'EBADF'
-    ) {
-      return;
-    }
-    loggerError(error);
-  },
+  logger: (error) => loggerError('[Unhandled]', error),
 });
 
 // Flag to track if the app is quitting
@@ -103,34 +134,209 @@ export function setIsQuitting(value: boolean) {
   isQuitting = value;
 }
 
-let shutdownHandled = false;
+let shutdownPromise: Promise<void> | null = null;
+let shutdownComplete = false;
+let shutdownExitScheduled = false;
 let reticulumWakeRecovery: Promise<void> | null = null;
 let lastReticulumWakeRecoveryAt = 0;
+let reticulumGloballyEnabled = true;
+let reticulumGlobalTransition: Promise<void> = Promise.resolve();
+let reticulumGlobalTransitionFailed = false;
+let automaticAppLockDisabled = false;
 
 const RETICULUM_WAKE_RECOVERY_DEBOUNCE_MS = 15_000;
+const RETICULUM_WAKE_RECOVERY_BRIDGE_ATTACH_WAIT_MS = 20_000;
+const RETICULUM_WAKE_RECOVERY_SHARED_READY_WAIT_MS = 60_000;
+const RETICULUM_WAKE_RECOVERY_BRIDGE_RETRY_MS = 1_000;
 
-function performAppShutdown(reason: string): void {
-  if (shutdownHandled) {
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function requestAuthenticatedRendererLock(): void {
+  if (automaticAppLockDisabled) return;
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (window.isDestroyed() || window.webContents.isDestroyed()) continue;
+    window.webContents.send('system:lock-requested');
+  }
+}
+
+function applyGlobalReticulumSetting(enabled: boolean): Promise<void> {
+  reticulumGlobalTransition = reticulumGlobalTransition
+    .catch(() => undefined)
+    .then(async () => {
+      if (
+        enabled === reticulumGloballyEnabled &&
+        !reticulumGlobalTransitionFailed
+      ) {
+        return;
+      }
+      reticulumGloballyEnabled = enabled;
+      if (!enabled) {
+        loggerLog('[Reticulum] Global setting disabled; stopping managers.');
+        stopReticulumManagers();
+        myCapacitorApp.updateReticulumChatMentionBadge(0);
+        await stopReticulumBridgeAndWait();
+        // Give other local Hub instances time to observe the shared setting
+        // and stop their per-instance bridges before the shared daemon exits.
+        await delay(1_000);
+        if (isReticulumRuntimeEnabled()) {
+          loggerLog(
+            '[Reticulum] Global shutdown was superseded; preserving shared daemon.'
+          );
+        } else {
+          stopSharedReticulumDaemon();
+        }
+        reticulumGlobalTransitionFailed = false;
+        loggerLog('[Reticulum] Global disable transition complete.');
+        return;
+      }
+
+      loggerLog('[Reticulum] Global setting enabled; starting Reticulum.');
+      await startReticulumForAppLaunch();
+      await ensureReticulumManagersStarted();
+      notifyPresenceTransportReady();
+      reticulumGlobalTransitionFailed = false;
+      loggerLog('[Reticulum] Global startup complete.');
+    })
+    .catch((error) => {
+      reticulumGlobalTransitionFailed = true;
+      loggerError('[Reticulum] Global lifecycle transition failed:', error);
+    });
+  return reticulumGlobalTransition;
+}
+
+function isReticulumDaemonRestartLockError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    error.message === 'Timed out waiting for Reticulum daemon restart lock'
+  );
+}
+
+function isReticulumSharedInstanceProbeTimeout(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    error.message.startsWith('Timed out waiting for Reticulum shared instance')
+  );
+}
+
+async function waitForReticulumBridgeReady(timeoutMs: number): Promise<void> {
+  const bridge = getReticulumBridge();
+  if (!bridge) {
+    throw new Error('Reticulum bridge is not started');
+  }
+  if (bridge.getState() === 'ready') {
     return;
   }
-  shutdownHandled = true;
-  loggerLog(`[App] Shutdown reason=${reason}`);
-  stopReticulumMeshCoordinator();
-  stopReticulumBridge();
-  const quitPlan = planReticulumAppQuit();
-  if (quitPlan.shouldStopSharedDaemon) {
-    stopSharedReticulumDaemon();
-  } else {
-    loggerLog(
-      `[Reticulum] Preserving shared rnsd because ${quitPlan.otherActiveInstances} other app instance(s) remain active`
-    );
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      bridge.off('ready', onReady);
+      reject(
+        new Error(
+          `Timed out waiting for Reticulum bridge ready after ${timeoutMs}ms`
+        )
+      );
+    }, timeoutMs);
+    const onReady = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    bridge.once('ready', onReady);
+  });
+}
+
+async function restartReticulumBridgeAndWaitReady(
+  timeoutMs: number
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  let lastError: unknown = null;
+
+  while (Date.now() <= deadline) {
+    try {
+      await restartReticulumBridge();
+      await waitForReticulumBridgeReady(Math.max(1, deadline - Date.now()));
+      return;
+    } catch (error) {
+      lastError = error;
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) {
+        break;
+      }
+      await delay(
+        Math.min(RETICULUM_WAKE_RECOVERY_BRIDGE_RETRY_MS, remainingMs)
+      );
+    }
   }
-  flushPersistentStore();
-  flushChatStore();
+
+  const message =
+    lastError instanceof Error
+      ? lastError.message
+      : String(lastError ?? 'unknown');
+  throw new Error(
+    `Timed out waiting for Reticulum bridge attach readiness after ${timeoutMs}ms: ${message}`
+  );
+}
+
+function performAppShutdown(reason: string): Promise<void> {
+  if (shutdownPromise) {
+    return shutdownPromise;
+  }
+  shutdownPromise = (async () => {
+    loggerLog(`[App] Shutdown reason=${reason}`);
+    try {
+      stopReticulumManagers();
+    } catch (error) {
+      loggerError('[Reticulum] Manager shutdown failed:', error);
+    }
+    try {
+      // Do not let Electron disappear after merely sending SIGTERM. Waiting
+      // here gives the bridge a bounded graceful exit and stopAndWait applies
+      // SIGKILL if it does not comply.
+      await stopReticulumBridgeAndWait();
+    } catch (error) {
+      loggerError('[Reticulum] Bridge shutdown failed:', error);
+    }
+    try {
+      const quitPlan = planReticulumAppQuit();
+      if (quitPlan.shouldStopSharedDaemon) {
+        stopSharedReticulumDaemon();
+      } else {
+        loggerLog(
+          `[Reticulum] Preserving shared rnsd because ${quitPlan.otherActiveInstances} other app instance(s) remain active`
+        );
+      }
+    } catch (error) {
+      loggerError('[Reticulum] Shared daemon shutdown planning failed:', error);
+    }
+    try {
+      flushPersistentStore();
+    } catch (error) {
+      loggerError(
+        '[App] Persistent store flush failed during shutdown:',
+        error
+      );
+    }
+    try {
+      flushChatStore();
+    } catch (error) {
+      loggerError('[App] Chat store flush failed during shutdown:', error);
+    }
+    shutdownComplete = true;
+  })();
+  return shutdownPromise;
+}
+
+function exitAfterAppShutdown(reason: string): void {
+  if (shutdownExitScheduled) return;
+  shutdownExitScheduled = true;
+  void performAppShutdown(reason).finally(() => {
+    shutdownComplete = true;
+    app.exit(0);
+  });
 }
 
 async function recoverReticulumAfterWake(source: string): Promise<void> {
-  if (isQuitting) {
+  if (isQuitting || !reticulumGloballyEnabled) {
     return;
   }
 
@@ -159,19 +365,54 @@ async function recoverReticulumAfterWake(source: string): Promise<void> {
     );
 
     try {
-      stopReticulumBridge();
-
       try {
-        await restartBundledReticulumDaemonAndWaitReady();
+        await restartReticulumBridgeAndWaitReady(
+          RETICULUM_WAKE_RECOVERY_BRIDGE_ATTACH_WAIT_MS
+        );
+        loggerLog(
+          '[Reticulum] Wake recovery bridge attach succeeded without daemon restart'
+        );
       } catch (error) {
         loggerError(
-          '[Reticulum] Wake recovery daemon restart failed; retrying bridge startup anyway:',
+          '[Reticulum] Wake recovery bridge attach failed; escalating to shared daemon restart:',
           error
+        );
+
+        if (isReticulumSharedDaemonOwnedByAnotherLiveInstance()) {
+          loggerLog(
+            '[Reticulum] Wake recovery skipped shared daemon restart because another app instance is active; retrying bridge attach only'
+          );
+        } else {
+          try {
+            await restartBundledReticulumDaemonAndWaitReady(
+              RETICULUM_WAKE_RECOVERY_SHARED_READY_WAIT_MS,
+              {
+                forceKillOnStopTimeout: true,
+              }
+            );
+          } catch (restartError) {
+            if (isReticulumSharedInstanceProbeTimeout(restartError)) {
+              loggerLog(
+                '[Reticulum] Wake recovery shared TCP probe timed out; continuing with bridge attach readiness'
+              );
+            } else if (!isReticulumDaemonRestartLockError(restartError)) {
+              throw restartError;
+            } else {
+              loggerLog(
+                '[Reticulum] Wake recovery restart lock held by another instance; waiting through bridge attach readiness'
+              );
+            }
+          }
+        }
+
+        await restartReticulumBridgeAndWaitReady(
+          RETICULUM_WAKE_RECOVERY_SHARED_READY_WAIT_MS
         );
       }
 
       await ensureReticulumManagersStarted();
       notifyPresenceTransportReady();
+      await replayReticulumCachedPresence(`wake:${source}`, true);
 
       const bridgeState = getReticulumBridge()?.getState() ?? 'stopped';
       loggerLog(
@@ -267,6 +508,16 @@ protocol.registerSchemesAsPrivileged([
       codeCache: true,
     },
   },
+  {
+    scheme: 'qortal-reticulum-resource',
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      corsEnabled: true,
+      stream: true,
+    },
+  },
 ]);
 
 // Initialize our app. You can pass menu templates into the app here.
@@ -356,8 +607,19 @@ async function setupMultiInstanceUserData(
   registerReticulumAppInstance(instanceIndex);
 
   await app.whenReady();
+  const initialAppSettings = await readAppSettings();
+  reticulumGloballyEnabled = initialAppSettings.reticulumEnabled !== false;
+  automaticAppLockDisabled =
+    initialAppSettings.autoLockTimeoutMinutes === 0;
+  subscribeToAppSettingsChanges((settings) => {
+    automaticAppLockDisabled = settings.autoLockTimeoutMinutes === 0;
+    return applyGlobalReticulumSetting(settings.reticulumEnabled !== false);
+  });
+  await startAppSettingsWatcher();
   loadPersistedAllowedDomainsAtStartup();
-  const reticulumDevEnsureOk = await runDevReticulumEnsureIfNeeded();
+  const reticulumDevEnsureOk = reticulumGloballyEnabled
+    ? await runDevReticulumEnsureIfNeeded()
+    : true;
   if (!reticulumDevEnsureOk) {
     return;
   }
@@ -391,18 +653,20 @@ async function setupMultiInstanceUserData(
 
   await myCapacitorApp.init(HUB_P2P_BOOTSTRAP_SEEDS);
 
-  try {
-    await startReticulumForAppLaunch();
-  } catch (error) {
-    loggerError(
-      '[Reticulum] Launch readiness wait failed; continuing with bridge startup:',
-      error
-    );
-  }
+  if (reticulumGloballyEnabled) {
+    try {
+      await startReticulumForAppLaunch();
+    } catch (error) {
+      loggerError(
+        '[Reticulum] Launch readiness wait failed; continuing with bridge startup:',
+        error
+      );
+    }
 
-  // Presence, direct calls, group calls, and the Reticulum bridge are no longer
-  // gated by the legacy P2P mesh setting.
-  await ensureReticulumManagersStarted();
+    await ensureReticulumManagersStarted();
+  } else {
+    loggerLog('[Reticulum] Global setting is disabled; startup skipped.');
+  }
 
   if (!isDisabledLegacy) {
     // Each instance gets a unique P2P and API port derived from its index so
@@ -463,22 +727,31 @@ async function setupMultiInstanceUserData(
 
   powerMonitor.on('resume', () => {
     void recoverReticulumAfterWake('powerMonitor:resume');
+    requestAuthenticatedRendererLock();
   });
+
+  // When automatic locking is enabled, lock before sleep where the platform
+  // exposes suspend, then repeat on resume in case the renderer was frozen
+  // before it received the first IPC.
+  powerMonitor.on('suspend', requestAuthenticatedRendererLock);
+  powerMonitor.on('lock-screen', requestAuthenticatedRendererLock);
 })();
 
 // Set isQuitting flag before the app quits
-app.on('before-quit', () => {
+app.on('before-quit', (event) => {
   setIsQuitting(true);
-  performAppShutdown('before-quit');
-  flushPersistentStore();
+  if (shutdownComplete) return;
+  // Electron does not await async event handlers. Hold the quit until the
+  // per-instance bridge has actually exited (or has been force-stopped).
+  event.preventDefault();
   flushMiscPersistentStore();
+  exitAfterAppShutdown('before-quit');
 });
 
-for (const signal of ['SIGTERM', 'SIGINT'] as const) {
+for (const signal of ['SIGHUP', 'SIGTERM', 'SIGINT'] as const) {
   process.once(signal, () => {
     setIsQuitting(true);
-    performAppShutdown(signal);
-    app.exit(0);
+    exitAfterAppShutdown(signal);
   });
 }
 
