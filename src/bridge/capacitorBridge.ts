@@ -64,6 +64,42 @@ export const ANDROID_BACK_EVENT = 'qortal-android-back';
 
 let installed = false;
 
+/**
+ * Inert `window.reticulumChat` for mobile.
+ *
+ * The Hub 2.0 chat engine lives in Electron's main process (better-sqlite3 +
+ * Node), which does not exist inside the Android WebView yet. The renderer
+ * mostly optional-chains `window.reticulumChat?.…`, but a dozen call sites
+ * invoke it bare and would throw. This Proxy makes every method exist and
+ * answer with a safe inert value; `isEnabled()` resolves false, so the whole
+ * UI stays on the legacy chat until the mobile engine bridge replaces this
+ * stub (at which point Reticulum chat lights up with no renderer changes).
+ */
+function installReticulumChatStub(): void {
+  if ((window as any).reticulumChat) return;
+  const inert = new Proxy(
+    {},
+    {
+      get(_target, prop: string | symbol) {
+        if (typeof prop !== 'string') return undefined;
+        if (prop === 'isEnabled') {
+          return () => Promise.resolve(false);
+        }
+        // Listener registrations (`onResource`, `onEvents`, …) must return an
+        // unsubscribe function synchronously.
+        if (/^on[A-Z]/.test(prop)) {
+          return () => () => {};
+        }
+        return () => Promise.resolve(undefined);
+      },
+      has() {
+        return true;
+      },
+    }
+  );
+  (window as any).reticulumChat = inert;
+}
+
 export function installCapacitorBridge(): void {
   if (installed) return;
   installed = true;
@@ -73,6 +109,8 @@ export function installCapacitorBridge(): void {
     // Electron preload bridges both work without this shim.
     return;
   }
+
+  installReticulumChatStub();
 
   // Hide the native splash immediately. The launch window is just a solid dark
   // color (no logo), and the in-app HTML splash already covers the WebView, so

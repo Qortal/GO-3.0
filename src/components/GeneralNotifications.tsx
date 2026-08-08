@@ -61,6 +61,7 @@ import {
   setQChatMentionNotificationsEnabled,
 } from '../utils/qChatMentionNotifications';
 import { ReticulumUnreadCountBadge } from './common/ReticulumUnreadCountBadge';
+import NotificationsActiveRoundedIcon from '@mui/icons-material/NotificationsActiveRounded';
 
 const RESOURCE_EVENT = 'RESOURCE_PUBLISHED';
 
@@ -173,7 +174,6 @@ export const GeneralNotifications = forwardRef<
       unsubscribeFromEvent('notification-seen-in-app-updated', handler);
   }, [setSeenKeys]);
 
-  const { hasNewNotifications, unseenCount } = useUnseenNotificationCount();
   const resourceNotifications = useMemo(
     () =>
       (notifications ?? []).filter(
@@ -459,7 +459,6 @@ export const GeneralNotifications = forwardRef<
             />
           </Box>
 
-          {!resourceNotifications.length && (
           {!hasAnyNotifications && (
             <>
               <NotificationsRoundedIcon

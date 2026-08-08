@@ -153,6 +153,7 @@ import {
   setLastOpenChat,
 } from '../../utils/chatPersistence';
 import { mobileAppsShellSx } from '../Mobile/mobileLayout';
+import {
   orderReticulumGroups,
   readReticulumGroupOrder,
 } from './reticulumGroupRail';
@@ -1367,6 +1368,7 @@ export const Group = ({
   useEffect(() => {
     newChatRef.current = newChat;
   }, [newChat]);
+  useEffect(() => {
     activeReticulumChannelIdRef.current = activeReticulumChannelId || 'general';
   }, [activeReticulumChannelId]);
 
@@ -3699,7 +3701,6 @@ export const Group = ({
     setIsLoadingThreadKey(false);
     setFirstSecretKeyInCreation(false);
     setMountedLandGroupId(null);
-    setReticulumMountedGroupSections({});
     setNotificationReticulumChannelId('');
     setNotificationReticulumMessageId('');
     setGroupSection('home');

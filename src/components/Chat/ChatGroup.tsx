@@ -88,6 +88,7 @@ import {
   Typography,
   useMediaQuery,
   useTheme,
+  SvgIcon,
 } from '@mui/material';
 import { alpha } from '@mui/material/styles';
 import ShortUniqueId from 'short-unique-id';

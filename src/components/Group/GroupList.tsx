@@ -2053,7 +2053,7 @@ const GroupItem = memo(
                     ...getClickableAvatarSx(theme, isAvatarLoaded),
                   }}
                   alt={group?.groupName?.charAt(0)}
-                  src={avatarSrc || undefined}
+                  src={avatarUrl || undefined}
                   onClick={handleAvatarClick}
                   onMouseDown={(event) => {
                     if (isAvatarLoaded) {

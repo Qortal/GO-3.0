@@ -4144,6 +4144,7 @@ export const ChatDirect = ({
               </Typography>
             </Box>
           )}
+          </Box>
         </Box>
 
         {!isMobile && (
@@ -4318,6 +4319,7 @@ export const ChatDirect = ({
           </Box>
         </Box>
         )}
+      </Box>
       </Box>
 
       {composerFabMode && !composerOpenLandscape && (

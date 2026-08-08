@@ -208,6 +208,8 @@ export const ChatList = ({
   const appliedTempMessagesRef = useRef(tempMessages);
   const reticulumMessageInputsReadyRef = useRef(true);
   const [showScrollButton, setShowScrollButton] = useState(false);
+  const [showScrollDownButton, setShowScrollDownButton] = useState(false);
+  const scrollingIntervalRef = useRef<number | null>(null);
   const setHeaderCollapsed = useSetAtom(mobileChatHeaderCollapsedAtom);
   const headerCollapsedRef = useRef(false);
 

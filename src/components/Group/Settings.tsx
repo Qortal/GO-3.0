@@ -1164,6 +1164,8 @@ export const Settings = ({ open, setOpen, rawWallet }) => {
 };
 
 const ExportPrivateKey = ({ rawWallet }) => {
+  const [isPrivateKeyPasswordEditable, setIsPrivateKeyPasswordEditable] =
+    useState(false);
   const [password, setPassword] = useState('');
   const [privateKey, setPrivateKey] = useState('');
   const [isOpen, setIsOpen] = useState(false);
