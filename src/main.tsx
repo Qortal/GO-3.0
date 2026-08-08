@@ -3,6 +3,7 @@ import {
   installCapacitorBridge,
   installReticulumBridges,
 } from './bridge/capacitorBridge';
+import { installMobileReticulumChat } from './reticulumChat/mobile';
 import './utils/configureDomPurify';
 
 // Install the Capacitor mobile-shell bridge before any feature module reads
@@ -11,6 +12,9 @@ installCapacitorBridge();
 // Wire window.presence to the native Reticulum presence bridge so the account
 // is visible online to Qortal peers (Phase 3a). No-op off-Capacitor.
 installReticulumBridges();
+// Install window.reticulumChat backed by the in-app chat engine worker so the
+// mobile app runs the new Reticulum chat (no legacy). No-op off-Capacitor.
+installMobileReticulumChat();
 import App from './App.tsx';
 import '../src/styles/index.css';
 import './messaging/MessagesToBackground.tsx';

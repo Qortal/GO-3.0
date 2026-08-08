@@ -64,42 +64,6 @@ export const ANDROID_BACK_EVENT = 'qortal-android-back';
 
 let installed = false;
 
-/**
- * Inert `window.reticulumChat` for mobile.
- *
- * The Hub 2.0 chat engine lives in Electron's main process (better-sqlite3 +
- * Node), which does not exist inside the Android WebView yet. The renderer
- * mostly optional-chains `window.reticulumChat?.…`, but a dozen call sites
- * invoke it bare and would throw. This Proxy makes every method exist and
- * answer with a safe inert value; `isEnabled()` resolves false, so the whole
- * UI stays on the legacy chat until the mobile engine bridge replaces this
- * stub (at which point Reticulum chat lights up with no renderer changes).
- */
-function installReticulumChatStub(): void {
-  if ((window as any).reticulumChat) return;
-  const inert = new Proxy(
-    {},
-    {
-      get(_target, prop: string | symbol) {
-        if (typeof prop !== 'string') return undefined;
-        if (prop === 'isEnabled') {
-          return () => Promise.resolve(false);
-        }
-        // Listener registrations (`onResource`, `onEvents`, …) must return an
-        // unsubscribe function synchronously.
-        if (/^on[A-Z]/.test(prop)) {
-          return () => () => {};
-        }
-        return () => Promise.resolve(undefined);
-      },
-      has() {
-        return true;
-      },
-    }
-  );
-  (window as any).reticulumChat = inert;
-}
-
 export function installCapacitorBridge(): void {
   if (installed) return;
   installed = true;
@@ -109,8 +73,6 @@ export function installCapacitorBridge(): void {
     // Electron preload bridges both work without this shim.
     return;
   }
-
-  installReticulumChatStub();
 
   // Hide the native splash immediately. The launch window is just a solid dark
   // color (no logo), and the in-app HTML splash already covers the WebView, so
@@ -348,6 +310,54 @@ export const fetchMobileReticulumIdentity = async (): Promise<{
 // pending-promise map keyed by the command id we pass to the native plugin.
 
 let ensureBridgeStartedRef: (() => Promise<void>) | null = null;
+
+/**
+ * Frame taps for the mobile Reticulum chat engine: every python event frame
+ * (chat messages, resource sessions, ready, …) is fanned out so the engine
+ * worker sees the same event stream the desktop daemon's stdio pump provides.
+ */
+type PythonEventTap = (frame: Record<string, unknown>) => void;
+const pythonEventTaps = new Set<PythonEventTap>();
+
+export const registerPythonEventTap = (tap: PythonEventTap): (() => void) => {
+  pythonEventTaps.add(tap);
+  return () => {
+    pythonEventTaps.delete(tap);
+  };
+};
+
+export const ensureReticulumBridgeStarted = (): Promise<void> => {
+  if (!ensureBridgeStartedRef) {
+    return Promise.reject(new Error('Reticulum bridge is not installed'));
+  }
+  return ensureBridgeStartedRef();
+};
+
+/** Presence snapshot for the chat engine (peers / leases / overlay health). */
+export type ReticulumChatPresenceSnapshot = {
+  peers: Array<{ destinationHash: string; lastSeen: number }>;
+  leases: Array<{
+    destinationHash: string;
+    address: string;
+    sessionId: string;
+    lastSeen: number;
+    expiresAt: number;
+    verification: string;
+  }>;
+  healthy: boolean;
+};
+
+let reticulumChatPresenceSnapshotRef:
+  | (() => ReticulumChatPresenceSnapshot)
+  | null = null;
+
+export const getReticulumChatPresenceSnapshot =
+  (): ReticulumChatPresenceSnapshot => {
+    if (reticulumChatPresenceSnapshotRef) {
+      return reticulumChatPresenceSnapshotRef();
+    }
+    return { peers: [], leases: [], healthy: false };
+  };
 
 const pendingCommandResps = new Map<
   string,
@@ -1406,6 +1416,15 @@ export function installReticulumBridges(): void {
       return;
     }
     if (frame.type !== 'event') return;
+    // The chat engine worker consumes python events the switch below does not
+    // handle (reticulum_chat_message, resource sessions, ready, …).
+    for (const tap of pythonEventTaps) {
+      try {
+        tap(frame);
+      } catch (err) {
+        console.warn('[Presence] python event tap failed:', err);
+      }
+    }
     switch (frame.event) {
       case 'ready': {
         bridgeReady = true;
@@ -1575,6 +1594,50 @@ export function installReticulumBridges(): void {
     return bridgeStartPromise;
   };
   ensureBridgeStartedRef = ensureBridgeStarted;
+
+  // Presence snapshot for the mobile chat engine. Mirrors the desktop
+  // PresenceManager accessors: verified transport peers ({destinationHash,
+  // lastSeen}), account endpoint leases, and an overlay-health boolean.
+  reticulumChatPresenceSnapshotRef = () => {
+    const now = Date.now();
+    const sessions = liveSessions();
+    const peers: Array<{ destinationHash: string; lastSeen: number }> = [];
+    const seenPeerHashes = new Set<string>();
+    const leases: ReturnType<
+      typeof getReticulumChatPresenceSnapshot
+    >['leases'] = [];
+    for (const session of sessions) {
+      const origin = String(session.originNodeId || '').toLowerCase();
+      if (!/^[0-9a-f]{32}$/.test(origin)) continue;
+      if (!seenPeerHashes.has(origin)) {
+        seenPeerHashes.add(origin);
+        peers.push({ destinationHash: origin, lastSeen: session.lastSeen });
+      }
+      leases.push({
+        destinationHash: origin,
+        address: session.address,
+        sessionId: session.sessionId,
+        lastSeen: session.lastSeen,
+        expiresAt: session.lastSeen + PRESENCE_TTL_MS,
+        verification: 'relayed-bound',
+      });
+    }
+    for (const neighbor of neighborList()) {
+      const hash = String(neighbor || '').toLowerCase();
+      if (/^[0-9a-f]{32}$/.test(hash) && !seenPeerHashes.has(hash)) {
+        seenPeerHashes.add(hash);
+        peers.push({ destinationHash: hash, lastSeen: now });
+      }
+    }
+    return {
+      peers,
+      leases,
+      healthy:
+        peers.length > 0 ||
+        sessions.length > 0 ||
+        onlineRemoteHubInterfaces > 0,
+    };
+  };
 
   const publish = async (
     envelope: PresenceEnvelope
