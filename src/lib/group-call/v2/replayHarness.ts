@@ -311,7 +311,8 @@ export class ReplayHarness {
     const policy = new ReceivePolicyEngine(
       streamId,
       {
-        targetBufferMs: Math.max(120, sourceCount >= 2 ? 160 : 120),
+        // The harness replays a single sender, so the single-source target applies.
+        targetBufferMs: 120,
         backlogDrainTriggerRatio: 1.0,
         transportDegradedHardTtlMs: 8_000,
       },

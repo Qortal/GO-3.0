@@ -14,7 +14,7 @@ import { CustomButtonAccept } from '../../styles/App-styles';
 import { getBaseApiReact, QORTAL_APP_CONTEXT } from '../../App';
 import { getFee } from '../../background/background.ts';
 import { CustomizedSnackbars } from '../Snackbar/Snackbar';
-import { FidgetSpinner } from 'react-loader-spinner';
+import { LazyFidgetSpinner as FidgetSpinner } from '../../common/LazyFidgetSpinner';
 import { useAtom, useSetAtom } from 'jotai';
 import { memberGroupsAtom, txListAtom } from '../../atoms/global';
 import { useTranslation } from 'react-i18next';

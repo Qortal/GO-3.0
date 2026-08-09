@@ -21,6 +21,7 @@ import {
   registerPythonEventTap,
 } from '../../bridge/capacitorBridge';
 import { getBaseApiReact } from '../../App';
+import { Reticulum } from '../../plugins/Reticulum';
 
 type ReadinessState = 'idle' | 'starting' | 'ready' | 'failed';
 type ReadinessStatus = {
@@ -122,6 +123,7 @@ const PY_EVENTS_FOR_WORKER = new Set([
   'reticulum_chat_resource',
   'reticulum_resource',
   'reticulum_resource_session',
+  'qchat_file_transfer',
 ]);
 
 let worker: Worker | null = null;
@@ -174,11 +176,24 @@ async function answerSignRequest(id: number, fields: Record<string, unknown>) {
       fields,
       10_000
     );
-    if (!(response && typeof response === 'object' && response.error)) {
+    const failure =
+      response && typeof response === 'object'
+        ? (response as { error?: unknown }).error
+        : null;
+    if (failure) {
+      // Every sync primitive (history pages, state heads, group key requests,
+      // DM discovery) is signed; a silent failure here looks like a dead
+      // network, so make the reason visible.
+      console.error(
+        '[MobileChat] control signing rejected',
+        failure,
+        typeof fields.type === 'string' ? fields.type : ''
+      );
+    } else {
       result = response;
     }
   } catch (err) {
-    console.warn('[MobileChat] signReticulumChatEvent failed', err);
+    console.error('[MobileChat] signReticulumChatEvent failed', err);
   }
   worker?.postMessage({ t: 'signres', id, result });
 }
@@ -201,6 +216,49 @@ async function answerCommandRequest(
   worker?.postMessage({ t: 'cmdres', id, frame });
 }
 
+/**
+ * Resource payloads have to cross between the worker's OPFS filesystem and the
+ * real files the python bridge reads and writes. The worker cannot reach the
+ * native plugin directly, so it asks the main thread to do the staging I/O.
+ */
+async function answerNativeFsRequest(
+  id: number,
+  op: string,
+  args: Record<string, unknown>
+) {
+  let result: unknown = null;
+  let error = '';
+  try {
+    switch (op) {
+      case 'path':
+        result = await Reticulum.chatResourcePath({
+          name: String(args.name ?? 'blob'),
+        });
+        break;
+      case 'read':
+        result = await Reticulum.chatResourceRead({
+          path: String(args.path ?? ''),
+        });
+        break;
+      case 'write':
+        result = await Reticulum.chatResourceWrite({
+          path: String(args.path ?? ''),
+          dataBase64: String(args.dataBase64 ?? ''),
+        });
+        break;
+      case 'delete':
+        await Reticulum.chatResourceDelete({ path: String(args.path ?? '') });
+        result = {};
+        break;
+      default:
+        error = `unknown native fs op: ${op}`;
+    }
+  } catch (err) {
+    error = err instanceof Error ? err.message : String(err);
+  }
+  worker?.postMessage({ t: 'nativefsres', id, result, error });
+}
+
 function pushPresenceState(): void {
   if (!worker) return;
   const snapshot = getReticulumChatPresenceSnapshot();
@@ -210,6 +268,46 @@ function pushPresenceState(): void {
     leases: snapshot.leases,
     healthy: snapshot.healthy,
   });
+  pushNodeApiConfig();
+  pushLocalIdentity();
+}
+
+let lastPushedApiBase = '';
+let lastPushedIdentityKey = '';
+
+/**
+ * The engine's bridge learns its own peer hash from the python `ready` payload,
+ * but the worker can attach after that frame has already been consumed. The
+ * main thread caches it, so mirror it in until the worker has it.
+ */
+function pushLocalIdentity(): void {
+  if (!worker) return;
+  const info = window.__qortalMobileReticulum;
+  const destinationHash = info?.destinationHash || '';
+  const identityPublicKeyBase64 = info?.identityPublicKeyBase64 || null;
+  if (!destinationHash) return;
+  const identityKey = `${destinationHash}:${identityPublicKeyBase64 ?? ''}`;
+  if (identityKey === lastPushedIdentityKey) return;
+  lastPushedIdentityKey = identityKey;
+  worker.postMessage({
+    t: 'local-identity',
+    destinationHash,
+    identityPublicKeyBase64,
+  });
+}
+
+/**
+ * The engine validates group membership against the Core API. The base API can
+ * still be resolving when the worker boots, and it changes when the user
+ * switches nodes — without a refresh the engine keeps a stale (or empty) URL
+ * and every membership check comes back unavailable.
+ */
+function pushNodeApiConfig(): void {
+  if (!worker) return;
+  const apiBase = getBaseApiReact();
+  if (!apiBase || apiBase === lastPushedApiBase) return;
+  lastPushedApiBase = apiBase;
+  worker.postMessage({ t: 'config', config: { apiBase } });
 }
 
 function handleWorkerMessage(event: MessageEvent): void {
@@ -233,6 +331,9 @@ function handleWorkerMessage(event: MessageEvent): void {
       break;
     case 'sign':
       void answerSignRequest(data.id, data.fields);
+      break;
+    case 'nativefs':
+      void answerNativeFsRequest(data.id, data.op, data.args);
       break;
     case 'engine-ready':
       setReadiness('ready');
@@ -303,6 +404,7 @@ function ensureStarted(): Promise<void> {
     };
 
     const config = await getNodeApiConfig();
+    lastPushedApiBase = config.apiBase;
     worker.postMessage({ t: 'boot', config });
 
     untapPython = registerPythonEventTap((frame) => {
@@ -319,7 +421,15 @@ function ensureStarted(): Promise<void> {
     // re-emit a synthetic ready so the engine's transport goes live.
     void presenceCommandWithResult('get_transport_state', {}, 8_000)
       .then(() => {
-        worker?.postMessage({ t: 'pyevent', event: 'ready', payload: {} });
+        const info = window.__qortalMobileReticulum;
+        worker?.postMessage({
+          t: 'pyevent',
+          event: 'ready',
+          payload: {
+            destinationHash: info?.destinationHash || undefined,
+            identityPublicKeyBase64: info?.identityPublicKeyBase64 || undefined,
+          },
+        });
       })
       .catch(() => {
         /* the real ready event will arrive through the tap */
@@ -421,4 +531,132 @@ export function installMobileReticulumChat(): void {
   }
 
   (window as any).reticulumChat = api;
+  installMobileReticulumResources();
+}
+
+/**
+ * `window.reticulumResources` twin.
+ *
+ * Desktop serves assembled files over a custom `qortal-reticulum-resource://`
+ * protocol registered in the Electron main process. The WebView has no such
+ * protocol, so `getUrl` pulls the bytes out of the worker and hands back a
+ * `blob:` URL instead. Everything else is a thin RPC.
+ */
+function installMobileReticulumResources(): void {
+  const blobUrls = new Map<string, string>();
+  // WebView-picked files have no filesystem path, but the resource sender
+  // streams non-image attachments from disk rather than buffering base64. So
+  // copy the picked bytes into the native staging dir once and hand callers
+  // that path.
+  const stagedPaths = new WeakMap<File, string>();
+
+  const resources = {
+    getPathForFile: (file?: unknown) =>
+      (file instanceof Blob && stagedPaths.get(file as File)) || '',
+
+    stageFileForPath: async (file: File): Promise<string> => {
+      const existing = stagedPaths.get(file);
+      if (existing) return existing;
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      let binary = '';
+      for (let i = 0; i < bytes.length; i += 0x8000) {
+        binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+      }
+      const { path } = await Reticulum.chatResourcePath({
+        name: file.name || 'attachment.bin',
+      });
+      await Reticulum.chatResourceWrite({ path, dataBase64: btoa(binary) });
+      stagedPaths.set(file, path);
+      return path;
+    },
+
+    importBase64: (payload: unknown) => rpc('resource:importBase64', [payload]),
+
+    // No path-based import on mobile: the caller has no real filesystem path.
+    importFilePath: async () => ({
+      success: false,
+      error: 'File path import is not available on mobile',
+    }),
+
+    getUrl: async (fileHash: string) => {
+      const hash = String(fileHash ?? '').trim();
+      if (!hash) return { success: false, error: 'Invalid file hash' };
+      const cached = blobUrls.get(hash);
+      if (cached) {
+        const status = (await rpc('resource:getStatus', [hash]).catch(
+          () => null
+        )) as { manifest?: unknown } | null;
+        return { success: true, url: cached, manifest: status?.manifest };
+      }
+      const res = (await rpc('resource:bytes', [hash])) as {
+        success: boolean;
+        bytes?: Uint8Array;
+        manifest?: { mimeType?: string };
+        error?: string;
+      };
+      if (!res?.success || !res.bytes) {
+        return { success: false, error: res?.error || 'Resource unavailable' };
+      }
+      const url = URL.createObjectURL(
+        new Blob([res.bytes], {
+          type: res.manifest?.mimeType || 'application/octet-stream',
+        })
+      );
+      blobUrls.set(hash, url);
+      return { success: true, url, manifest: res.manifest };
+    },
+
+    getStatus: (fileHash: string) => rpc('resource:getStatus', [fileHash]),
+    getStorageStatus: () => rpc('resource:getStorageStatus', []),
+    cleanupStorage: () => rpc('resource:cleanupStorage', []),
+
+    saveAs: async (fileHash: string, suggestedFileName?: string) => {
+      const res = (await rpc('resource:bytes', [fileHash])) as {
+        success: boolean;
+        bytes?: Uint8Array;
+        manifest?: { fileName?: string; mimeType?: string };
+        error?: string;
+      };
+      if (!res?.success || !res.bytes) {
+        return { success: false, error: res?.error || 'Resource unavailable' };
+      }
+      try {
+        const { saveBlobToMobileDocuments } = await import(
+          '../../utils/mobileFileSave'
+        );
+        const saved = await saveBlobToMobileDocuments(
+          suggestedFileName || res.manifest?.fileName || 'qortal-file',
+          new Blob([res.bytes], {
+            type: res.manifest?.mimeType || 'application/octet-stream',
+          })
+        );
+        return { success: true, path: saved.path };
+      } catch (err) {
+        return {
+          success: false,
+          error: err instanceof Error ? err.message : 'Save failed',
+        };
+      }
+    },
+
+    open: async (fileHash: string, suggestedFileName?: string) => {
+      const opened = await resources.getUrl(fileHash);
+      if (!opened.success || !opened.url) {
+        return { success: false, error: opened.error || 'Resource unavailable' };
+      }
+      window.open(opened.url, '_blank');
+      void suggestedFileName;
+      return { success: true };
+    },
+
+    // Needs native image tooling the WebView doesn't have; callers treat a
+    // failure here as "send the GIF as-is".
+    convertGifToWebp: async () => ({
+      success: false,
+      error: 'GIF conversion is not available on mobile',
+    }),
+    releaseConvertedMedia: async () => ({ success: true }),
+  };
+
+  (window as any).reticulumResources = resources;
 }

@@ -26,8 +26,38 @@ type Watcher = {
 
 const POOL_DIR = 'qgo-chat-fs';
 const META_FILE = '__index__.json';
-const SPARE_TARGET = 24;
-const SPARE_MIN = 6;
+/**
+ * The engine allocates temp blobs in synchronous bursts — one file per
+ * recipient peer when broadcasting an event — and handles can only be opened
+ * asynchronously, so the pool has to be deep enough to absorb a whole burst
+ * before the background top-up gets a turn. A group with a hundred subscribed
+ * peers is normal, and running dry surfaces as EMFILE to the engine.
+ */
+const SPARE_TARGET = 256;
+const SPARE_MIN = 64;
+/** Slots kept open beyond the target are closed and returned to disk reuse. */
+const SPARE_CEILING = SPARE_TARGET * 2;
+const INDEX_FLUSH_DEBOUNCE_MS = 200;
+
+/**
+ * OPFS synchronous access handles. Declared here because the TypeScript DOM lib
+ * this project builds against predates them; the runtime (Android WebView in a
+ * worker) provides them.
+ */
+declare global {
+  interface FileSystemSyncAccessHandle {
+    close(): void;
+    flush(): void;
+    getSize(): number;
+    read(buffer: ArrayBufferView | ArrayBuffer, options?: { at?: number }): number;
+    truncate(newSize: number): void;
+    write(buffer: ArrayBufferView | ArrayBuffer, options?: { at?: number }): number;
+  }
+
+  interface FileSystemFileHandle {
+    createSyncAccessHandle(): Promise<FileSystemSyncAccessHandle>;
+  }
+}
 
 let rootDir: FileSystemDirectoryHandle | null = null;
 let metaHandle: FileSystemSyncAccessHandle | null = null;
@@ -36,6 +66,8 @@ const files = new Map<string, IndexEntry>();
 const dirs = new Set<string>(['/']);
 const slotHandles = new Map<number, FileSystemSyncAccessHandle>();
 const spareSlots: number[] = [];
+/** Slot files that exist on disk with no open handle — reused before minting. */
+const reclaimableSlots: number[] = [];
 let nextSlot = 1;
 let topUpInFlight = false;
 
@@ -68,8 +100,9 @@ function slotName(slot: number): string {
   return `slot-${slot}.bin`;
 }
 
-function persistIndex(): void {
+function writeIndexNow(): void {
   if (!metaHandle) return;
+  indexDirty = false;
   const payload = new TextEncoder().encode(
     JSON.stringify({
       nextSlot,
@@ -84,6 +117,25 @@ function persistIndex(): void {
   } catch (err) {
     console.warn('[mobile-fs] failed to persist index', err);
   }
+}
+
+let indexDirty = false;
+let indexFlushTimer: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * Serializing the whole index costs O(files) per call, and the engine writes
+ * hundreds of small blobs in a burst — doing it inline made writes quadratic.
+ * Coalesce instead; the worst case on an abrupt kill is losing the last few
+ * hundred milliseconds of metadata.
+ */
+function persistIndex(): void {
+  if (!metaHandle) return;
+  indexDirty = true;
+  if (indexFlushTimer) return;
+  indexFlushTimer = setTimeout(() => {
+    indexFlushTimer = null;
+    if (indexDirty) writeIndexNow();
+  }, INDEX_FLUSH_DEBOUNCE_MS);
 }
 
 function notifyWatchers(path: string): void {
@@ -107,16 +159,52 @@ async function openSlotHandle(
   return fh.createSyncAccessHandle();
 }
 
+/** Opens handles in parallel batches; one-at-a-time is far too slow at boot. */
+async function openSlots(slots: number[]): Promise<number[]> {
+  const opened: number[] = [];
+  const BATCH = 32;
+  for (let i = 0; i < slots.length; i += BATCH) {
+    const batch = slots.slice(i, i + BATCH);
+    const handles = await Promise.all(
+      batch.map((slot) =>
+        openSlotHandle(slot).then(
+          (handle) => ({ slot, handle }),
+          (err) => {
+            console.warn(`[mobile-fs] could not open slot ${slot}`, err);
+            return null;
+          }
+        )
+      )
+    );
+    for (const entry of handles) {
+      if (!entry) continue;
+      slotHandles.set(entry.slot, entry.handle);
+      opened.push(entry.slot);
+    }
+  }
+  return opened;
+}
+
+/** Prefers slot files already on disk so the pool does not grow unbounded. */
+function nextFreeSlots(count: number): number[] {
+  const slots: number[] = [];
+  while (slots.length < count) {
+    const reclaimed = reclaimableSlots.pop();
+    slots.push(reclaimed ?? nextSlot++);
+  }
+  return slots;
+}
+
 function scheduleTopUp(): void {
   if (topUpInFlight || spareSlots.length >= SPARE_MIN) return;
   topUpInFlight = true;
   void (async () => {
     try {
       while (spareSlots.length < SPARE_TARGET) {
-        const slot = nextSlot++;
-        const handle = await openSlotHandle(slot);
-        slotHandles.set(slot, handle);
-        spareSlots.push(slot);
+        const wanted = SPARE_TARGET - spareSlots.length;
+        const opened = await openSlots(nextFreeSlots(wanted));
+        if (opened.length === 0) break;
+        spareSlots.push(...opened);
       }
       persistIndex();
     } catch (err) {
@@ -202,21 +290,34 @@ export async function initMobileFs(): Promise<void> {
   }
 
   // Open handles for every indexed file up-front (sync APIs cannot await).
-  for (const [p, entry] of files) {
-    try {
-      slotHandles.set(entry.slot, await openSlotHandle(entry.slot));
-    } catch (err) {
-      console.warn(`[mobile-fs] dropping unopenable file ${p}`, err);
-      files.delete(p);
+  const referenced = new Map<number, string>();
+  for (const [p, entry] of files) referenced.set(entry.slot, p);
+  const opened = new Set(await openSlots([...referenced.keys()]));
+  for (const [slot, p] of referenced) {
+    if (!opened.has(slot)) files.delete(p);
+  }
+
+  // Slot files left behind by a previous run (their owning path was deleted
+  // before the in-memory spare list could be persisted) are reused rather than
+  // leaked — otherwise the pool grows by a whole spare set on every launch.
+  try {
+    for await (const name of (
+      rootDir as unknown as { keys(): AsyncIterable<string> }
+    ).keys()) {
+      const match = /^slot-(\d+)\.bin$/.exec(name);
+      if (!match) continue;
+      const slot = Number(match[1]);
+      if (referenced.has(slot)) continue;
+      reclaimableSlots.push(slot);
+      if (slot >= nextSlot) nextSlot = slot + 1;
     }
+  } catch (err) {
+    console.warn('[mobile-fs] could not enumerate slot files', err);
   }
-  // Pre-provision spares synchronously with init so first writes never fail.
-  while (spareSlots.length < SPARE_TARGET) {
-    const slot = nextSlot++;
-    slotHandles.set(slot, await openSlotHandle(slot));
-    spareSlots.push(slot);
-  }
-  persistIndex();
+
+  // Pre-provision spares with init so the first burst of writes never fails.
+  spareSlots.push(...(await openSlots(nextFreeSlots(SPARE_TARGET))));
+  writeIndexNow();
 }
 
 // ── sync API ─────────────────────────────────────────────────────────────────
@@ -294,7 +395,15 @@ function removePath(n: string): void {
       const h = handleFor(entry.slot);
       h.truncate(0);
       h.flush();
-      spareSlots.push(entry.slot);
+      if (spareSlots.length < SPARE_CEILING) {
+        spareSlots.push(entry.slot);
+      } else {
+        // Deep idle pool: hand the slot back to disk reuse instead of holding
+        // an open handle for it indefinitely.
+        h.close();
+        slotHandles.delete(entry.slot);
+        reclaimableSlots.push(entry.slot);
+      }
     } catch {
       /* handle already unusable — drop the slot */
     }

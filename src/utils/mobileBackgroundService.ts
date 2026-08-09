@@ -66,7 +66,7 @@ export const buildPersistentStatusPayload = ({
   syncLabel,
   peersLabel,
 }: PersistentStatusSnapshot) => ({
-  title: 'Qortal GO 2.0',
+  title: 'GO 3.0',
   detail: `${reticulumLabel} · ${onlineCount} online`,
   nodeLabel,
   syncLabel,

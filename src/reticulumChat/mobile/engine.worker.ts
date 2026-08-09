@@ -26,6 +26,42 @@ if (typeof (globalThis as any).setImmediate !== 'function') {
   (globalThis as any).clearImmediate = (id: number) => clearTimeout(id);
 }
 
+/**
+ * Every console call in here is marshalled to the main thread and on to
+ * logcat. The engine logs per-peer and per-group, so one repeating fault (a
+ * storage error, an unreachable peer) turns into thousands of messages a
+ * minute and saturates the JS bridge badly enough to stop the UI painting.
+ * Collapse repeats of the same message into a periodic summary.
+ */
+function throttleWorkerConsole(): void {
+  const WINDOW_MS = 10_000;
+  const LIMIT = 5;
+  const seen = new Map<string, { count: number; windowStart: number }>();
+  for (const level of ['log', 'warn', 'error'] as const) {
+    const original = console[level].bind(console);
+    console[level] = (...args: unknown[]) => {
+      const key = `${level}:${String(args[0] ?? '').slice(0, 120)}`;
+      const now = Date.now();
+      const entry = seen.get(key);
+      if (!entry || now - entry.windowStart > WINDOW_MS) {
+        if (entry && entry.count > LIMIT) {
+          original(
+            `[MobileChat] (${entry.count - LIMIT} further repeats suppressed)`,
+            args[0]
+          );
+        }
+        seen.set(key, { count: 1, windowStart: now });
+        original(...args);
+        return;
+      }
+      entry.count += 1;
+      if (entry.count <= LIMIT) original(...args);
+    };
+  }
+}
+
+throttleWorkerConsole();
+
 type BootMessage = {
   t: 'boot';
   config: { apiBase: string; apiKey?: string };

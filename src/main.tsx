@@ -23,6 +23,7 @@ import { ThemeProvider } from './components/Theme/ThemeContext.tsx';
 import { CssBaseline } from '@mui/material';
 import './i18n/i18n.js';
 import ReticulumStatusChip from './components/Reticulum/ReticulumStatusChip.tsx';
+import { prefetchAuthenticatedShell } from './components/App/LazyAuthenticatedShell.tsx';
 
 function hideAppSplash() {
   const el = document.getElementById('app-splash');
@@ -54,4 +55,5 @@ createRoot(document.getElementById('root')!).render(
 // branded intro doesn't flash. The native splash hides on its own timer.
 requestAnimationFrame(() => {
   window.setTimeout(hideAppSplash, 650);
+  prefetchAuthenticatedShell();
 });

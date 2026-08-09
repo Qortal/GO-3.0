@@ -103,6 +103,22 @@ export interface ReticulumPlugin {
     fileName?: string;
   }): Promise<{ ok: boolean }>;
 
+  /**
+   * Chat-engine resource staging. The engine's filesystem is OPFS inside a
+   * worker, which the python bridge cannot read or write, so resource payloads
+   * are handed over through real files in a private cache directory. All four
+   * calls are confined to that directory.
+   */
+  chatResourcePath(options: { name?: string }): Promise<{ path: string }>;
+  chatResourceWrite(options: {
+    path: string;
+    dataBase64: string;
+  }): Promise<{ path: string; size: number }>;
+  chatResourceRead(options: {
+    path: string;
+  }): Promise<{ dataBase64: string; size: number }>;
+  chatResourceDelete(options: { path: string }): Promise<void>;
+
   /** Fired for every announce received from the Reticulum network. */
   addListener(
     eventName: 'announce',

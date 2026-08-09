@@ -124,6 +124,30 @@ export class Database {
   private db: any;
   public open = true;
   public readonly name: string;
+  /**
+   * Nesting depth of the connection's active transaction.
+   *
+   * SQLite allows one transaction per connection, so this has to be tracked
+   * per Database rather than per transaction function: the engine routinely
+   * calls one wrapped transaction from inside another, and each of those would
+   * otherwise issue its own BEGIN.
+   */
+  private txDepth = 0;
+
+  /**
+   * True while the connection has an open transaction.
+   *
+   * Read from SQLite's autocommit flag rather than the depth counter so the
+   * shim stays correct even when a transaction was opened by raw SQL that
+   * never went through transaction().
+   */
+  get inTransaction(): boolean {
+    try {
+      return sqlite3.capi.sqlite3_get_autocommit(this.db.pointer) === 0;
+    } catch {
+      return this.txDepth > 0;
+    }
+  }
 
   constructor(filename: string, _options?: Record<string, unknown>) {
     if (!poolUtil) {
@@ -177,11 +201,12 @@ export class Database {
     exclusive: TransactionFn<T, R>;
   } {
     const db = this.db;
+    const self = this;
     const wrapped = (mode: string) =>
       (...args: T): R => {
         // better-sqlite3 supports nesting via savepoints — mirror that.
-        if (txDepth > 0) {
-          const sp = `qgo_sp_${++txDepth}`;
+        if (self.inTransaction) {
+          const sp = `qgo_sp_${++self.txDepth}`;
           db.exec(`SAVEPOINT ${sp}`);
           try {
             const result = fn(...args);
@@ -192,11 +217,16 @@ export class Database {
             db.exec(`RELEASE ${sp}`);
             throw err;
           } finally {
-            txDepth--;
+            self.txDepth--;
           }
         }
-        txDepth++;
-        db.exec(`BEGIN ${mode}`);
+        self.txDepth++;
+        try {
+          db.exec(`BEGIN ${mode}`);
+        } catch (err) {
+          self.txDepth--;
+          throw err;
+        }
         try {
           const result = fn(...args);
           db.exec('COMMIT');
@@ -209,10 +239,9 @@ export class Database {
           }
           throw err;
         } finally {
-          txDepth--;
+          self.txDepth--;
         }
       };
-    let txDepth = 0;
     const main = wrapped('') as TransactionFn<T, R> & {
       deferred: TransactionFn<T, R>;
       immediate: TransactionFn<T, R>;

@@ -21,13 +21,18 @@ import {
   SelectChangeEvent,
   TextField,
   Tooltip,
+  useMediaQuery,
+  useTheme,
 } from '@mui/material';
 import { UserListOfInvites } from './UserListOfInvites';
 import { CustomizedSnackbars } from '../Snackbar/Snackbar';
 import { getFee } from '../../background/background.ts';
 import { QORTAL_APP_CONTEXT } from '../../App';
 import { subscribeToEvent, unsubscribeFromEvent } from '../../utils/events';
-import { SAFE_AREA_TOP } from '../../utils/mobileSafeArea';
+import {
+  SAFE_AREA_BOTTOM,
+  SAFE_AREA_TOP,
+} from '../../utils/mobileSafeArea';
 import { useTranslation } from 'react-i18next';
 import { useSetAtom } from 'jotai';
 import { txListAtom } from '../../atoms/global';
@@ -55,6 +60,8 @@ const GROUP_MODAL_CONTROL_SX = {
 export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
   const { show } = useContext(QORTAL_APP_CONTEXT);
   const setTxList = useSetAtom(txListAtom);
+  const theme = useTheme();
+  const isNarrow = useMediaQuery(theme.breakpoints.down('sm'));
 
   const [openAdvance, setOpenAdvance] = useState(false);
   const [name, setName] = useState('');
@@ -253,36 +260,52 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
       <Dialog
         open={open}
         onClose={handleDialogClose}
+        fullScreen={isNarrow}
         fullWidth
         maxWidth={false}
         PaperProps={{
           sx: {
             backgroundColor: 'background.paper',
             backgroundImage: 'none',
-            border: '1px solid',
-            borderColor: 'divider',
-            borderRadius: '12px',
-            boxShadow: '0 24px 70px rgba(0, 0, 0, 0.45)',
             display: 'flex',
             flexDirection: 'column',
-            height: 'min(680px, calc(100vh - 32px))',
-            m: 2,
-            maxHeight: 'min(720px, calc(100vh - 32px))',
-            maxWidth: 'calc(100vw - 32px)',
             overflow: 'hidden',
-            width: 680,
+            ...(isNarrow
+              ? {
+                  border: 'none',
+                  borderRadius: 0,
+                  height: '100%',
+                  m: 0,
+                  maxHeight: '100%',
+                  maxWidth: '100%',
+                  // Full-screen on phones starts under the system bars.
+                  paddingBottom: SAFE_AREA_BOTTOM,
+                  paddingTop: SAFE_AREA_TOP,
+                  width: '100%',
+                }
+              : {
+                  border: '1px solid',
+                  borderColor: 'divider',
+                  borderRadius: '12px',
+                  boxShadow: '0 24px 70px rgba(0, 0, 0, 0.45)',
+                  height: 'min(680px, calc(100vh - 32px))',
+                  m: 2,
+                  maxHeight: 'min(720px, calc(100vh - 32px))',
+                  maxWidth: 'calc(100vw - 32px)',
+                  width: 680,
+                }),
           },
         }}
       >
         <Box
           component="header"
           sx={{
-            alignItems: 'flex-start',
+            alignItems: isNarrow ? 'center' : 'flex-start',
             display: 'flex',
-            gap: 2,
+            gap: isNarrow ? 1 : 2,
             justifyContent: 'space-between',
-            px: { xs: 2.5, sm: 4 },
-            pt: { xs: 2.5, sm: 3.5 },
+            px: { xs: 2, sm: 4 },
+            pt: { xs: 1.75, sm: 3.5 },
           }}
         >
           <Box sx={{ minWidth: 0 }}>
@@ -290,23 +313,29 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
               component="h2"
               sx={{
                 color: 'text.primary',
-                fontSize: { xs: 25, sm: 28 },
+                fontSize: { xs: 20, sm: 28 },
                 fontWeight: 800,
                 lineHeight: 1.15,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: isNarrow ? 'nowrap' : 'normal',
               }}
             >
               {modeTitle}
             </Typography>
-            <Typography
-              sx={{
-                color: 'text.secondary',
-                fontSize: 14,
-                lineHeight: '20px',
-                mt: 0.75,
-              }}
-            >
-              {modeDescription}
-            </Typography>
+            {/* The blurb costs a third of a phone screen above the form. */}
+            {!isNarrow && (
+              <Typography
+                sx={{
+                  color: 'text.secondary',
+                  fontSize: 14,
+                  lineHeight: '20px',
+                  mt: 0.75,
+                }}
+              >
+                {modeDescription}
+              </Typography>
+            )}
           </Box>
           <Box
             aria-label="Group management modes"
@@ -326,8 +355,8 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
                         : 'transparent',
                       borderRadius: '8px',
                       color: selected ? 'common.white' : 'text.secondary',
-                      height: 40,
-                      width: 40,
+                      height: isNarrow ? 34 : 40,
+                      width: isNarrow ? 34 : 40,
                       '&:hover': {
                         backgroundColor: selected
                           ? RETICULUM_ACTIVE_BLUE

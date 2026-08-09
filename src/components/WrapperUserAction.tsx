@@ -17,6 +17,7 @@ import PersonSearchRoundedIcon from '@mui/icons-material/PersonSearchRounded';
 import BlockRoundedIcon from '@mui/icons-material/BlockRounded';
 import { executeEvent } from '../utils/events';
 import { useBlockedAddresses } from '../hooks/useBlockUsers';
+import { useLongPress } from '../hooks/useLongPress';
 import { useAtom } from 'jotai';
 import { isRunningPublicNodeAtom } from '../atoms/global';
 import { useTranslation } from 'react-i18next';
@@ -76,6 +77,15 @@ export const WrapperUserAction = ({
     setCardAnchorEl(null);
   }, []);
 
+  const wrapperRef = useRef<HTMLElement | null>(null);
+  // The context-menu variant is unreachable by touch, so holding opens it.
+  const longPress = useLongPress(
+    () => {
+      if (wrapperRef.current) setAnchorEl(wrapperRef.current);
+    },
+    { enabled: trigger === 'contextMenu', stopPropagation: true }
+  );
+
   useEffect(() => {
     const closeOtherUserCards = (event: Event) => {
       if ((event as CustomEvent<string>).detail !== cardInstanceId.current) {
@@ -103,6 +113,8 @@ export const WrapperUserAction = ({
   return (
     <>
       <Box
+        ref={wrapperRef}
+        {...(trigger === 'contextMenu' ? longPress : {})}
         onClick={
           reticulumUserCard && trigger !== 'hover'
             ? handleCardOpen

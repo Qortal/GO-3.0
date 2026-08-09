@@ -9,12 +9,6 @@ export interface FileWriterPlugin {
     categorize?: boolean;
     mimeType?: string;
   }): Promise<{ path: string; uri: string }>;
-  /** Remove stale files of one extension from a folder. */
-  pruneFolder(options: {
-    subFolder: string;
-    extension: string;
-    keepName?: string;
-  }): Promise<{ deleted: number }>;
 }
 
 const FileWriter = registerPlugin<FileWriterPlugin>('FileWriter');
@@ -49,7 +43,7 @@ async function blobToBase64(blob: Blob): Promise<string> {
 
 export type NativeWriteOptions = {
   append?: boolean;
-  /** Sort into Images / Videos / Audio / Documents / Apps / GO state. */
+  /** Sort into Images / Videos / Audio / Documents / Apps / Qortino AI. */
   categorize?: boolean;
   mimeType?: string;
 };
@@ -109,19 +103,4 @@ export async function writeNativeDocumentBytes(
     dataBase64: bytesToBase64(bytes),
     ...toWriteOptions(options),
   });
-}
-
-/** Delete older files of one extension in a Documents subfolder. */
-export async function pruneNativeDocumentFolder(options: {
-  subFolder: string;
-  extension: string;
-  keepName?: string;
-}): Promise<number> {
-  if (!Capacitor.isNativePlatform()) return 0;
-  try {
-    const res = await FileWriter.pruneFolder(options);
-    return res?.deleted ?? 0;
-  } catch {
-    return 0;
-  }
 }

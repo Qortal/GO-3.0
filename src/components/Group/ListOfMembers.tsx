@@ -398,6 +398,57 @@ const ListOfMembers = ({
     setOpenPopoverIndex(null);
   };
 
+  // Owners right-click a member row for the admin actions; touch gets the same
+  // menu by holding. One timer is enough because only one finger can hold.
+  const memberHold = useRef<{
+    timer: number | null;
+    origin: { x: number; y: number } | null;
+    fired: boolean;
+  }>({ timer: null, origin: null, fired: false });
+  const cancelMemberHold = () => {
+    if (memberHold.current.timer !== null) {
+      window.clearTimeout(memberHold.current.timer);
+      memberHold.current.timer = null;
+    }
+  };
+  const memberLongPressProps = (index: number) => ({
+    onTouchStart: (event: React.TouchEvent<HTMLElement>) => {
+      const touch = event.touches[0];
+      if (!touch) return;
+      const target = event.currentTarget;
+      memberHold.current.origin = { x: touch.clientX, y: touch.clientY };
+      memberHold.current.fired = false;
+      cancelMemberHold();
+      memberHold.current.timer = window.setTimeout(() => {
+        memberHold.current.timer = null;
+        memberHold.current.fired = true;
+        setPopoverAnchor(target);
+        setOpenPopoverIndex(index);
+      }, 450);
+    },
+    onTouchMove: (event: React.TouchEvent<HTMLElement>) => {
+      if (memberHold.current.timer === null) return;
+      const touch = event.touches[0];
+      const origin = memberHold.current.origin;
+      if (!touch || !origin) return;
+      if (
+        Math.abs(touch.clientX - origin.x) > 10 ||
+        Math.abs(touch.clientY - origin.y) > 10
+      ) {
+        cancelMemberHold();
+      }
+    },
+    onTouchEnd: (event: React.TouchEvent<HTMLElement>) => {
+      cancelMemberHold();
+      if (memberHold.current.fired) {
+        memberHold.current.fired = false;
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    },
+    onTouchCancel: () => cancelMemberHold(),
+  });
+
   const handleKick = async (address) => {
     try {
       const fee = await getFee('GROUP_KICK');
@@ -950,6 +1001,7 @@ const ListOfMembers = ({
               reticulumSilenceContext={reticulumSilenceContext}
             >
               <ListItemButton
+                {...(isOwner ? memberLongPressProps(index) : {})}
                 onContextMenu={
                   isOwner
                     ? (event) => {

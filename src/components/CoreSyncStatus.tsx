@@ -118,6 +118,9 @@ export const CoreSyncStatus = ({
   const [p2pInboundOverlayPeers, setP2pInboundOverlayPeers] = useState<
     number | null
   >(null);
+  const [p2pActiveOverlayPeers, setP2pActiveOverlayPeers] = useState<
+    number | null
+  >(null);
   const [connectedRemoteInterfaces, setConnectedRemoteInterfaces] = useState<
     number | null
   >(null);
@@ -139,6 +142,7 @@ export const CoreSyncStatus = ({
       if (!reticulumEnabled) {
         setP2pOutboundOverlayPeers(null);
         setP2pInboundOverlayPeers(null);
+        setP2pActiveOverlayPeers(null);
         setConnectedRemoteInterfaces(null);
         setP2pHealth(null);
         setSharedP2pHealth('unknown');
@@ -152,6 +156,11 @@ export const CoreSyncStatus = ({
       setP2pInboundOverlayPeers(
         typeof status?.p2pInboundOverlayPeers === 'number'
           ? status.p2pInboundOverlayPeers
+          : null
+      );
+      setP2pActiveOverlayPeers(
+        typeof status?.p2pActiveOverlayPeers === 'number'
+          ? status.p2pActiveOverlayPeers
           : null
       );
       setConnectedRemoteInterfaces(

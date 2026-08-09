@@ -1,7 +1,7 @@
 // @ts-nocheck
 import '../qortal/qortal-requests.ts';
 import { getNotificationOsPushDisabled } from '../qortal/qortal-requests';
-import { isArray } from 'lodash';
+import isArray from 'lodash/isArray';
 import { uint8ArrayToObject } from '../encryption/encryption.ts';
 import Base58 from '../encryption/Base58';
 import axios from 'axios';

@@ -374,6 +374,14 @@ const rchatSchemas: Readonly<Record<string, SigningSchema>> = {
     'limit',
     'timestamp',
   ]),
+  RCHAT_RANGE_REQ: schema([
+    'type',
+    'groupId',
+    'ranges',
+    'limit',
+    'sourcePeerHash',
+    'timestamp',
+  ]),
   RCHAT_EVENT_REQ: schema(['type', 'eventId', 'groupId', 'timestamp']),
   RCHAT_RESOURCE_AUTH: schema(['type', 'groupId', 'timestamp', 'transferId']),
   RCHAT_GROUP_KEY_DIGEST: schema([
@@ -437,6 +445,27 @@ const rchatSchemas: Readonly<Record<string, SigningSchema>> = {
     'byteRanges',
     'requestId',
     'requesterPeerHash',
+    'timestamp',
+  ]),
+  // Sent after a download completes so the mesh knows this node now holds a
+  // replica. Without these the device downloads fine but never advertises.
+  RCHAT_RESOURCE_RECEIPT: schema([
+    'type',
+    'groupId',
+    'fileHash',
+    'sizeBytes',
+    'providerPeerHash',
+    'retentionUntil',
+    'timestamp',
+  ]),
+  RCHAT_DM_RESOURCE_RECEIPT: schema([
+    'type',
+    'conversationId',
+    'peerAddress',
+    'fileHash',
+    'sizeBytes',
+    'providerPeerHash',
+    'retentionUntil',
     'timestamp',
   ]),
 };

@@ -304,6 +304,22 @@ const isHotKey = (key: string): boolean =>
 
 const memoryCache = new Map<string, unknown>();
 
+/**
+ * Keys whose cached value must never be handed out by reference. Consumers of
+ * the keypair wipe its secret fields after use (see wipeTemporaryKeyPairSecrets
+ * in background-cases); handing back the cached instance would let the first
+ * signature blank the private key for the rest of the session, breaking every
+ * later signature, presence announce and transaction.
+ */
+const CLONE_ON_ACCESS = new Set(['keyPair']);
+
+const cacheSafeCopy = <T>(key: string, value: T): T => {
+  if (!CLONE_ON_ACCESS.has(key) || !value || typeof value !== 'object') {
+    return value;
+  }
+  return { ...(value as Record<string, unknown>) } as T;
+};
+
 export const invalidateStorageCache = (key?: string): void => {
   if (key === undefined) {
     memoryCache.clear();
@@ -353,7 +369,7 @@ export const storeData = async (key: string, payload: any): Promise<string> => {
   await initializeVaultKey();
 
   if (isHotKey(key)) {
-    memoryCache.set(key, payload);
+    memoryCache.set(key, cacheSafeCopy(key, payload));
   }
 
   const encoded = await encodePayload(key, payload);
@@ -373,7 +389,7 @@ export const storeData = async (key: string, payload: any): Promise<string> => {
 
 export const getData = async <T = any>(key: string): Promise<T | null> => {
   if (memoryCache.has(key)) {
-    return memoryCache.get(key) as T;
+    return cacheSafeCopy(key, memoryCache.get(key) as T);
   }
 
   await initializeKeyAndIV();
@@ -388,7 +404,7 @@ export const getData = async <T = any>(key: string): Promise<T | null> => {
         const parsed = await decodePayload(key, decoded);
         if (parsed !== null) {
           if (isHotKey(key)) memoryCache.set(key, parsed);
-          return parsed;
+          return cacheSafeCopy(key, parsed);
         }
       }
     }
@@ -416,7 +432,7 @@ export const getData = async <T = any>(key: string): Promise<T | null> => {
         /* keep legacy copy until migration succeeds */
       }
     }
-    return parsed;
+    return cacheSafeCopy(key, parsed);
   } catch (error) {
     return null;
   }

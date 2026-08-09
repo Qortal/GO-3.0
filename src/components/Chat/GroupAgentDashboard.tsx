@@ -71,7 +71,7 @@ const ROLE_COLORS: Record<GroupCallRole, string> = {
   'participant':       'transparent',
 };
 
-const ROLE_LABELS: Record<MyRole, string> = {
+const ROLE_LABELS: Record<GroupCallRole, string> = {
   'root-forwarder':    'Root Forwarder',
   'cluster-forwarder': 'Cluster Forwarder',
   'standby-forwarder': 'Standby',

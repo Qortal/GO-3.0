@@ -30,6 +30,7 @@ import FormatQuoteIcon from '@mui/icons-material/FormatQuote';
 import HorizontalRuleIcon from '@mui/icons-material/HorizontalRule';
 import UndoIcon from '@mui/icons-material/Undo';
 import RedoIcon from '@mui/icons-material/Redo';
+import KeyboardReturnRoundedIcon from '@mui/icons-material/KeyboardReturnRounded';
 import AddRoundedIcon from '@mui/icons-material/AddRounded';
 import FormatHeadingIcon from '@mui/icons-material/FormatSize';
 import DeveloperModeIcon from '@mui/icons-material/DeveloperMode';
@@ -42,6 +43,7 @@ import { ReactRenderer } from '@tiptap/react';
 import MentionList from './MentionList';
 import { isDisabledEditorEnterAtom } from '../../atoms/global.js';
 import {
+  alpha,
   Box,
   Checkbox,
   Tooltip,
@@ -52,6 +54,8 @@ import {
 import { useAtom, useSetAtom } from 'jotai';
 import { mobileChatComposeActiveAtom } from '../../atoms/global.js';
 import { MOBILE_CHAT_TOOLBAR_SLOT_ID } from '../Mobile/mobileChatCompose';
+import { MOBILE_TOP_BAR_HEIGHT_PX } from '../Mobile/MobileTopBar';
+import { SAFE_AREA_TOP } from '../../utils/mobileSafeArea';
 import { fileToBase64 } from '../../utils/fileReading/index.js';
 import { useSoftKeyboardOpen } from '../../hooks/useSoftKeyboardOpen';
 import { useTranslation } from 'react-i18next';
@@ -189,17 +193,28 @@ const MenuBar = memo(
       }
     }, [editor, isChat]);
 
+    // An enabled mark reads as blue on a tinted pill; a plain brightness shift
+    // was too subtle to tell on/off apart at a glance.
     const iconButtonSx = (isActive: boolean) => ({
+      backgroundColor: isActive
+        ? alpha(theme.palette.primary.main, 0.16)
+        : 'transparent',
+      borderRadius: '8px',
       color: isActive
-        ? theme.palette.text.primary
+        ? theme.palette.primary.main
         : theme.palette.text.secondary,
       flexShrink: 0,
       padding: isMobile && isChat ? '6px' : isMobile ? '3px' : '4px',
       minWidth: isMobile && isChat ? 40 : undefined,
       minHeight: isMobile && isChat ? 40 : undefined,
+      transition: 'background-color 120ms ease, color 120ms ease',
       '&:hover': {
-        backgroundColor: theme.palette.action.hover,
-        color: theme.palette.text.primary,
+        backgroundColor: isActive
+          ? alpha(theme.palette.primary.main, 0.24)
+          : theme.palette.action.hover,
+        color: isActive
+          ? theme.palette.primary.main
+          : theme.palette.text.primary,
       },
     });
 
@@ -437,6 +452,44 @@ const MenuBar = memo(
           >
             <RedoIcon sx={{ fontSize: iconSize }} />
           </IconButton>
+          {/* Which way the toggle currently sits matters more than saving a
+              few pixels here, so the state is spelled out rather than implied
+              by an icon tint. */}
+          <Box
+            component="button"
+            type="button"
+            onClick={() => setIsDisabledEditorEnter(!isDisabledEditorEnter)}
+            sx={{
+              alignItems: 'center',
+              backgroundColor: isDisabledEditorEnter
+                ? 'transparent'
+                : alpha(theme.palette.primary.main, 0.16),
+              border: `1px solid ${
+                isDisabledEditorEnter
+                  ? theme.palette.divider
+                  : alpha(theme.palette.primary.main, 0.55)
+              }`,
+              borderRadius: '8px',
+              color: isDisabledEditorEnter
+                ? theme.palette.text.secondary
+                : theme.palette.primary.main,
+              cursor: 'pointer',
+              display: 'inline-flex',
+              flexShrink: 0,
+              fontFamily: 'Inter',
+              fontSize: 11,
+              fontWeight: 700,
+              gap: '4px',
+              marginLeft: '6px',
+              minHeight: 34,
+              padding: '0 8px',
+              transition: 'background-color 120ms ease, color 120ms ease',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            <KeyboardReturnRoundedIcon sx={{ fontSize: 16 }} />
+            {isDisabledEditorEnter ? 'Enter: new line' : 'Enter: send'}
+          </Box>
           {topBarExtraActions}
         </Box>
       </Box>
@@ -651,6 +704,8 @@ type TiptapProps = {
   setIsFocusedParent?: React.Dispatch<React.SetStateAction<boolean>>;
   isFocusedParent?: boolean;
   isReply?: boolean;
+  /** Composer lives inside a modal, so it must not take over the app top bar. */
+  inOverlay?: boolean;
   membersWithNames?: unknown[];
   mentionSuggestions?: MentionSuggestionItem[];
   enableMentions?: boolean;
@@ -692,6 +747,7 @@ const Tiptap = ({
   overrideMobile,
   customEditorHeight,
   isReply = false,
+  inOverlay = false,
   membersWithNames = [],
   mentionSuggestions,
   enableMentions,
@@ -728,9 +784,13 @@ const Tiptap = ({
   const [keyboardActive, setKeyboardActive] = useState(false);
   const keyboardWasOpenRef = useRef(false);
 
+  // The expanded layout takes over the app's top bar, which only makes sense
+  // for the main chat composer. Inside a modal the bar is covered by the
+  // dialog, so it would just leave an empty strip peeking out above it.
   const mobileChatCompose =
     isMobile &&
     isChat &&
+    !inOverlay &&
     Boolean(isFocusedParent) &&
     (isLandscape || keyboardActive);
 
@@ -1046,35 +1106,73 @@ const Tiptap = ({
     <MenuBar
       setEditorRef={setEditorRefFunc}
       isChat={isChat}
+      // The compact chat tray uses the two-row phone layout; every other
+      // surface keeps the single wrapping toolbar it already had.
+      isMobile={isMobile && compactChat}
       isDisabledEditorEnter={isDisabledEditorEnter}
       setIsDisabledEditorEnter={handleSetIsDisabledEditorEnter}
       toolbarStyle={useComposerLook ? 'chat' : 'default'}
       insertFiles={insertFiles}
     />
   );
-  // This must render inside EditorProvider so useCurrentEditor can resolve it.
-  const slotBefore = compactChat ? (
-    showFormattingTray ? (
+  // On phones the composer sits against the keyboard, so a tray anchored above
+  // it lands under the thumbs. Portal it to the top of the viewport instead,
+  // clear of both the keyboard and the chat header.
+  const formattingTrayPanel = isMobile ? (
+    createPortal(
       <Box
         sx={{
           backgroundColor: theme.palette.background.paper,
           border: `1px solid ${theme.palette.divider}`,
-          borderRadius: '8px',
-          bottom: 'calc(100% + 8px)',
-          boxShadow: '0 10px 28px rgba(0, 0, 0, 0.28)',
-          left: 0,
+          borderRadius: '12px',
+          boxShadow: '0 12px 32px rgba(0, 0, 0, 0.38)',
+          left: '50%',
+          maxWidth: 'calc(100vw - 24px)',
           p: 0.5,
-          position: 'absolute',
-          right: 0,
-          zIndex: 3,
+          position: 'fixed',
+          // Sit below the app top bar rather than on top of the search field.
+          top: `calc(${SAFE_AREA_TOP} + ${MOBILE_TOP_BAR_HEIGHT_PX}px + 8px)`,
+          transform: 'translateX(-50%)',
+          width: 'max-content',
+          zIndex: 1500,
+          // The panel is the surface now, so drop the toolbar's own chrome and
+          // avoid a card-inside-a-card.
+          '& .chat-format-toolbar-shell': {
+            backgroundColor: 'transparent',
+            border: 'none',
+            borderRadius: 0,
+            padding: 0,
+          },
         }}
       >
         {formattingTray}
-      </Box>
-    ) : null
+      </Box>,
+      document.body
+    )
   ) : (
-    formattingTray
+    <Box
+      sx={{
+        backgroundColor: theme.palette.background.paper,
+        border: `1px solid ${theme.palette.divider}`,
+        borderRadius: '8px',
+        bottom: 'calc(100% + 8px)',
+        boxShadow: '0 10px 28px rgba(0, 0, 0, 0.28)',
+        left: 0,
+        p: 0.5,
+        position: 'absolute',
+        right: 0,
+        zIndex: 3,
+      }}
+    >
+      {formattingTray}
+    </Box>
   );
+  // This must render inside EditorProvider so useCurrentEditor can resolve it.
+  const slotBefore = compactChat
+    ? showFormattingTray
+      ? formattingTrayPanel
+      : null
+    : formattingTray;
   const editorProvider = (
     <EditorProvider
       editable={!readOnly}
@@ -1254,74 +1352,17 @@ const Tiptap = ({
       >
         <Box
           sx={{
-            alignItems: 'flex-start',
+            // Controls sit on the input's centre line rather than its baseline,
+            // which keeps the row balanced as the editor grows.
+            alignItems: 'center',
             display: 'flex',
             gap: 0.5,
-            minHeight: 44,
+            minHeight: 42,
             width: '100%',
           }}
         >
-          <Tooltip title="Add attachment">
-            <span>
-              <IconButton
-                disabled={readOnly || disableEnter || typeof insertFiles !== 'function'}
-                onClick={() => compactFileInputRef.current?.click()}
-                size="small"
-                sx={{
-                  backgroundColor: 'transparent',
-                  border: `1px solid ${theme.palette.divider}`,
-                  borderRadius: '8px',
-                  color: theme.palette.text.secondary,
-                  flexShrink: 0,
-                  height: 34,
-                  mt: '5px',
-                  width: 34,
-                }}
-              >
-                <AddRoundedIcon sx={{ fontSize: 20 }} />
-              </IconButton>
-            </span>
-          </Tooltip>
-          <input
-            multiple
-            ref={compactFileInputRef}
-            style={{ display: 'none' }}
-            type="file"
-            onChange={(event) => {
-              const files = Array.from(event.target.files || []);
-              if (files.length > 0 && typeof insertFiles === 'function') {
-                void insertFiles(files);
-              }
-              event.currentTarget.value = '';
-            }}
-          />
-          <Tooltip title="Formatting">
-            <IconButton
-              disabled={readOnly}
-              onClick={() => setShowFormattingTray((show) => !show)}
-              size="small"
-              sx={{
-                backgroundColor: showFormattingTray
-                  ? theme.palette.action.selected
-                  : 'transparent',
-                border: `1px solid ${theme.palette.divider}`,
-                borderRadius: '8px',
-                color: showFormattingTray
-                  ? theme.palette.text.primary
-                  : theme.palette.text.secondary,
-                flexShrink: 0,
-                fontFamily: 'Inter',
-                fontSize: 14,
-                fontWeight: 700,
-                height: 34,
-                mt: '5px',
-                width: 34,
-              }}
-            >
-              Aa
-            </IconButton>
-          </Tooltip>
-          {compactActions}
+          {/* Editor leads the row so the typing area gets the full width; the
+              attach/format/send controls are grouped at the trailing edge. */}
           <Box
             aria-disabled={readOnly}
             sx={{
@@ -1329,7 +1370,6 @@ const Tiptap = ({
               flex: 1,
               pointerEvents: readOnly ? 'none' : undefined,
               minWidth: 0,
-              mt: '5px',
               opacity: readOnly ? 0.68 : 1,
               position: 'relative',
               '& .tiptap p.is-editor-empty:first-child::before': {
@@ -1360,6 +1400,74 @@ const Tiptap = ({
               </Typography>
             )}
             {editorProvider}
+          </Box>
+          <Box
+            sx={{
+              alignItems: 'center',
+              display: 'flex',
+              flexShrink: 0,
+              gap: 0.5,
+            }}
+          >
+            <Tooltip title="Add attachment">
+              <span>
+                <IconButton
+                  disabled={readOnly || typeof insertFiles !== 'function'}
+                  onClick={() => compactFileInputRef.current?.click()}
+                  size="small"
+                  sx={{
+                    backgroundColor: 'transparent',
+                    border: `1px solid ${theme.palette.divider}`,
+                    borderRadius: '8px',
+                    color: theme.palette.text.secondary,
+                    flexShrink: 0,
+                    height: 32,
+                    width: 32,
+                  }}
+                >
+                  <AddRoundedIcon sx={{ fontSize: 19 }} />
+                </IconButton>
+              </span>
+            </Tooltip>
+            <input
+              multiple
+              ref={compactFileInputRef}
+              style={{ display: 'none' }}
+              type="file"
+              onChange={(event) => {
+                const files = Array.from(event.target.files || []);
+                if (files.length > 0 && typeof insertFiles === 'function') {
+                  void insertFiles(files);
+                }
+                event.currentTarget.value = '';
+              }}
+            />
+            <Tooltip title="Formatting">
+              <IconButton
+                disabled={readOnly}
+                onClick={() => setShowFormattingTray((show) => !show)}
+                size="small"
+                sx={{
+                  backgroundColor: showFormattingTray
+                    ? theme.palette.action.selected
+                    : 'transparent',
+                  border: `1px solid ${theme.palette.divider}`,
+                  borderRadius: '8px',
+                  color: showFormattingTray
+                    ? theme.palette.text.primary
+                    : theme.palette.text.secondary,
+                  flexShrink: 0,
+                  fontFamily: 'Inter',
+                  fontSize: 13,
+                  fontWeight: 700,
+                  height: 32,
+                  width: 32,
+                }}
+              >
+                Aa
+              </IconButton>
+            </Tooltip>
+            {compactActions}
           </Box>
         </Box>
       </Box>

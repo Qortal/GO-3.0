@@ -6,7 +6,7 @@ import java.util.Locale;
 
 /**
  * Sorts saved files into per-type folders under Documents/Qortal Go:
- * Images, Videos, Audio, Documents, Apps (.apk) and "GO state" (.bin).
+ * Images, Videos, Audio, Documents, Apps (.apk) and Qortino AI (.gguf).
  *
  * Single source of truth for both the WebView download listener and the
  * FileWriter plugin, so a file lands in the same place however it was saved.
@@ -20,7 +20,6 @@ public final class SaveCategory {
     public static final String AUDIO = "Audio";
     public static final String DOCUMENTS = "Documents";
     public static final String APPS = "Apps";
-    public static final String GO_STATE = "GO state";
     /** Qortino AI model packs / knowledge. */
     public static final String QORTINO = "Qortino AI";
 
@@ -45,9 +44,6 @@ public final class SaveCategory {
         if (ext.equals("apk") || ext.equals("aab") || ext.equals("apks")
             || mime.contains("android.package-archive")) {
             return APPS;
-        }
-        if (ext.equals("bin")) {
-            return GO_STATE;
         }
         if (ext.equals("gguf")) {
             return QORTINO;

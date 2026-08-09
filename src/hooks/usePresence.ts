@@ -75,6 +75,22 @@ async function waitForOnlineRemoteReticulumHub(
   return 'timeout';
 }
 
+/**
+ * Local Reticulum destination hash, used to bind the presence session to the
+ * route peers will answer on. Desktop exposes it over `electronAPI`; mobile
+ * deliberately leaves that bridge undefined and caches the value the python
+ * bridge reports on its `ready` frame instead.
+ */
+async function resolveLocalDestinationHash(): Promise<string | null> {
+  const getLocalDestinationHash =
+    window.electronAPI?.reticulumGetLocalDestinationHash;
+  if (typeof getLocalDestinationHash === 'function') {
+    const result = await getLocalDestinationHash();
+    return result?.destinationHash ?? null;
+  }
+  return window.__qortalMobileReticulum?.destinationHash ?? null;
+}
+
 async function signPresenceFields(
   fields: Record<string, unknown>
 ): Promise<string> {
@@ -247,12 +263,10 @@ export function usePresence(): {
   const ensureRouteBoundSessionId = useCallback(async (): Promise<
     string | null
   > => {
-    const getLocalDestinationHash =
-      window.electronAPI?.reticulumGetLocalDestinationHash;
-    if (typeof getLocalDestinationHash !== 'function') return null;
     try {
-      const result = await getLocalDestinationHash();
-      const destinationHash = result?.destinationHash?.trim().toLowerCase();
+      const destinationHash = (await resolveLocalDestinationHash())
+        ?.trim()
+        .toLowerCase();
       if (!destinationHash || !/^[0-9a-f]{32}$/.test(destinationHash)) {
         return null;
       }
@@ -330,8 +344,14 @@ export function usePresence(): {
     const sessionId = await ensureRouteBoundSessionId();
     const statusVal = getEffectiveStatus();
     if (statusVal === 'offline') return false;
-    if (!ui?.address || !ui?.publicKey || !sessionId || !window.presence)
+    if (!ui?.address || !ui?.publicKey || !sessionId || !window.presence) {
+      // Capacitor's console bridge flattens objects to "[object Object]", so
+      // the individual flags have to be inlined to survive the trip to logcat.
+      console.warn(
+        `[Presence] Announce preconditions unmet address=${Boolean(ui?.address)} publicKey=${Boolean(ui?.publicKey)} sessionId=${Boolean(sessionId)} bridge=${Boolean(window.presence)}`
+      );
       return false;
+    }
     const status = statusVal;
     try {
       const timestamp = Date.now();
@@ -448,6 +468,13 @@ export function usePresence(): {
         stopHeartbeat();
         const startScheduler = window.presence?.startHeartbeatScheduler;
         if (typeof startScheduler !== 'function') {
+          // Mobile has no main-process scheduler: the native `presenceTick`
+          // listener below drives heartbeats instead, so the bootstrap is
+          // complete once the announce lands.
+          if (isCapacitor()) {
+            heartbeatActiveRef.current = true;
+            return true;
+          }
           console.error('[Presence] Heartbeat scheduler API is unavailable.');
           heartbeatActiveRef.current = false;
           return false;

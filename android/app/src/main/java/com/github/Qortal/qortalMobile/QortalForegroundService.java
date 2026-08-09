@@ -110,7 +110,7 @@ public class QortalForegroundService extends Service {
 
     private static final String GROUP_STATUS = "qortal_connection_status";
     private static final String GROUP_ALERTS = "qortal_message_alerts";
-    private String statusTitle = "Qortal GO 2.0";
+    private String statusTitle = "GO 3.0";
     private String statusDetail = "Connecting…";
     private String statusNodeLabel = "Public node";
     private String statusSyncLabel = "Sync status unknown";
@@ -174,7 +174,7 @@ public class QortalForegroundService extends Service {
             case ACTION_SHOW_ALERT:
                 showAlertNotification(
                     intent.getIntExtra(EXTRA_ALERT_ID, (int) (System.currentTimeMillis() % 100000)),
-                    safeString(intent.getStringExtra(EXTRA_ALERT_TITLE), "Qortal GO 2.0"),
+                    safeString(intent.getStringExtra(EXTRA_ALERT_TITLE), "GO 3.0"),
                     safeString(intent.getStringExtra(EXTRA_ALERT_BODY), ""),
                     safeString(intent.getStringExtra(EXTRA_ALERT_ICON_URL), ""),
                     safeString(intent.getStringExtra(EXTRA_ALERT_FROM_ADDRESS), ""),

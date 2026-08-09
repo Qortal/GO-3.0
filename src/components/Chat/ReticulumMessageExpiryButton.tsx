@@ -127,6 +127,12 @@ export function ReticulumMessageExpiryButton({
             }
             size="small"
             sx={{
+              alignItems: 'center',
+              display: 'inline-flex',
+              justifyContent: 'center',
+              // MUI's default padding plus the segment divider pull the short
+              // label ("1M") off-centre inside the button.
+              padding: 0,
               backgroundColor: segmented
                 ? theme.palette.background.default
                 : value !== undefined
@@ -169,12 +175,18 @@ export function ReticulumMessageExpiryButton({
               <Box
                 component="span"
                 sx={{
+                  alignItems: 'center',
+                  display: 'flex',
                   fontFamily: 'Inter, system-ui, sans-serif',
                   fontSize: '11px',
                   fontVariantNumeric: 'tabular-nums',
                   fontWeight: 800,
+                  height: '100%',
+                  justifyContent: 'center',
                   letterSpacing: '-0.02em',
                   lineHeight: 1,
+                  textAlign: 'center',
+                  width: '100%',
                 }}
               >
                 {indicatorLabel}

@@ -1,4 +1,5 @@
 import {
+  alpha,
   Avatar,
   Box,
   ButtonBase,
@@ -6,6 +7,7 @@ import {
   DialogContent,
   DialogTitle,
   GlobalStyles,
+  IconButton,
   List,
   ListItem,
   ListItemAvatar,
@@ -78,7 +80,7 @@ import {
   reticulumChatTextScaleAtom,
   timestampEnterDataSelector,
 } from '../../atoms/global';
-import { timeDifferenceForNotificationChats } from './Group';
+import { timeDifferenceForNotificationChats } from './groupConstants';
 import { useChatDraftKeys } from '../../hooks/useChatDraftKeys';
 import { groupDraftKey } from '../../utils/chatPersistence';
 import { DraftBadge } from '../Chat/DraftBadge';
@@ -107,6 +109,18 @@ import {
   ReticulumUnreadCountBadge,
   RETICULUM_NOTIFICATION_RED,
 } from '../common/ReticulumUnreadCountBadge';
+import { ChatScopeSwitch } from './ChatScopeSwitch';
+import CloseIcon from '@mui/icons-material/Close';
+import PushPinRoundedIcon from '@mui/icons-material/PushPinRounded';
+import {
+  applyPinnedGroupOrder,
+  movePinnedGroup,
+  usePinnedGroupIds,
+} from '../../utils/pinnedGroups';
+import {
+  SAFE_AREA_BOTTOM,
+  SAFE_AREA_TOP,
+} from '../../utils/mobileSafeArea';
 
 const RETICULUM_ACTIVE_BLUE = '#2563eb';
 const RETICULUM_CALL_GREEN = '#22c55e';
@@ -125,12 +139,18 @@ const ReticulumChatSettingsDialog = ({
   onClose: () => void;
 }) => {
   const theme = useTheme();
+  const isNarrow = useMediaQuery(theme.breakpoints.down('sm'));
   const [activeSection, setActiveSection] = useState<
     'text-size' | 'messages' | 'notifications' | 'legacy-threads'
   >('text-size');
-  const [accessibilityExpanded, setAccessibilityExpanded] = useState(true);
-  const [notificationsExpanded, setNotificationsExpanded] = useState(true);
-  const [legacyExpanded, setLegacyExpanded] = useState(true);
+  const [accessibilityOpen, setAccessibilityExpanded] = useState(true);
+  const [notificationsOpen, setNotificationsExpanded] = useState(true);
+  const [legacyOpen, setLegacyExpanded] = useState(true);
+  // Section groups are always expanded in the phone nav, where the collapsible
+  // headers are hidden.
+  const accessibilityExpanded = isNarrow || accessibilityOpen;
+  const notificationsExpanded = isNarrow || notificationsOpen;
+  const legacyExpanded = isNarrow || legacyOpen;
   const [textScale, setTextScale] = useAtom(reticulumChatTextScaleAtom);
   const [highlightOwnMessages, setHighlightOwnMessages] = useAtom(
     reticulumHighlightOwnMessagesAtom
@@ -193,7 +213,9 @@ const ReticulumChatSettingsDialog = ({
   const categoryButtonSx = {
     alignItems: 'center',
     color: 'text.secondary',
-    display: 'flex',
+    // The horizontal phone nav has no room for collapsible group headers, so
+    // every section button is shown directly instead.
+    display: isNarrow ? 'none' : 'flex',
     fontSize: 11,
     fontWeight: 650,
     height: 32,
@@ -210,6 +232,7 @@ const ReticulumChatSettingsDialog = ({
 
   return (
     <Dialog
+      fullScreen={isNarrow}
       fullWidth
       maxWidth={false}
       open={open}
@@ -218,49 +241,88 @@ const ReticulumChatSettingsDialog = ({
         sx: {
           fontFamily: 'Inter, system-ui, Segoe UI, sans-serif',
           backgroundImage: 'none',
-          border: `1px solid ${theme.palette.divider}`,
-          borderRadius: '10px',
-          boxShadow: '0 24px 70px rgba(0,0,0,0.45)',
-          maxWidth: 'calc(100vw - 32px)',
-          height: 'min(530px, calc(100vh - 32px))',
-          width: 700,
+          border: isNarrow ? 'none' : `1px solid ${theme.palette.divider}`,
+          borderRadius: isNarrow ? 0 : '10px',
+          boxShadow: isNarrow ? 'none' : '0 24px 70px rgba(0,0,0,0.45)',
+          maxWidth: isNarrow ? '100%' : 'calc(100vw - 32px)',
+          height: isNarrow ? '100%' : 'min(530px, calc(100vh - 32px))',
+          width: isNarrow ? '100%' : 700,
+          // Full-screen on phones starts under the system bars.
+          ...(isNarrow
+            ? {
+                paddingBottom: SAFE_AREA_BOTTOM,
+                paddingTop: SAFE_AREA_TOP,
+              }
+            : {}),
           '& button, & input, & textarea': {
             fontFamily: 'inherit',
           },
         },
       }}
     >
-      <DialogTitle
+      <Box
         sx={{
-          color: 'text.primary',
-          fontFamily: 'Inter',
-          fontSize: 30,
-          fontWeight: 750,
-          lineHeight: '36px',
-          pb: 1.5,
-          pt: { xs: 2.5, sm: 3.5 },
-          px: { xs: 2.5, sm: 4 },
+          alignItems: 'center',
+          display: 'flex',
+          justifyContent: 'space-between',
+          pr: isNarrow ? 1 : 2,
         }}
       >
-        Settings
-      </DialogTitle>
+        <DialogTitle
+          sx={{
+            color: 'text.primary',
+            fontFamily: 'Inter',
+            fontSize: isNarrow ? 22 : 30,
+            fontWeight: 750,
+            lineHeight: isNarrow ? '28px' : '36px',
+            pb: isNarrow ? 1 : 1.5,
+            pt: { xs: 1.75, sm: 3.5 },
+            px: { xs: 2, sm: 4 },
+          }}
+        >
+          Settings
+        </DialogTitle>
+        {isNarrow && (
+          <IconButton aria-label="Close" onClick={onClose} size="small">
+            <CloseIcon />
+          </IconButton>
+        )}
+      </Box>
       <Box
         sx={{
           borderTop: `1px solid ${theme.palette.divider}`,
           display: 'flex',
           flex: 1,
+          flexDirection: isNarrow ? 'column' : 'row',
           minHeight: 0,
         }}
       >
         <Box
           sx={{
-            borderRight: `1px solid ${theme.palette.divider}`,
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 0.75,
             backgroundColor: 'rgba(255,255,255,0.018)',
-            p: '20px',
-            width: 220,
+            display: 'flex',
+            gap: 0.75,
+            // The section nav becomes a scrollable strip above the content on
+            // phones; a 220px column would leave nothing for the settings.
+            ...(isNarrow
+              ? {
+                  alignItems: 'center',
+                  borderBottom: `1px solid ${theme.palette.divider}`,
+                  flexDirection: 'row',
+                  flexShrink: 0,
+                  overflowX: 'auto',
+                  p: '10px 12px',
+                  scrollbarWidth: 'none',
+                  width: '100%',
+                  '&::-webkit-scrollbar': { display: 'none' },
+                  '& > *': { flexShrink: 0, width: 'auto !important' },
+                }
+              : {
+                  borderRight: `1px solid ${theme.palette.divider}`,
+                  flexDirection: 'column',
+                  p: '20px',
+                  width: 220,
+                }),
           }}
         >
           <ButtonBase
@@ -848,6 +910,10 @@ const GroupListInner = ({
   const groupsAnnHasUnread = useAtomValue(groupsAnnHasUnreadAtom);
   const draftKeys = useChatDraftKeys(myAddress);
   const railMode = Boolean(reticulumChatEnabled);
+  // On phones the rail alone gives no readable group names, so pair it with a
+  // list panel unless the DM list already owns that space.
+  const showMobileGroupPanel =
+    railMode && isMobileWidth && desktopSideView !== 'directs';
   const [manualGroupOrder, setManualGroupOrder] = useState<string[]>(
     readReticulumGroupOrder
   );
@@ -858,10 +924,52 @@ const GroupListInner = ({
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
   );
+  const pinnedGroupIds = usePinnedGroupIds();
   const orderedGroups = useMemo(() => {
     if (!railMode) return groups;
-    return orderReticulumGroups(groups, manualGroupOrder);
-  }, [groups, manualGroupOrder, railMode]);
+    return applyPinnedGroupOrder(
+      orderReticulumGroups(groups, manualGroupOrder),
+      pinnedGroupIds
+    );
+  }, [groups, manualGroupOrder, pinnedGroupIds, railMode]);
+  const pinnedIdSet = useMemo(
+    () => new Set(pinnedGroupIds),
+    [pinnedGroupIds]
+  );
+  const pinnedGroups = useMemo(
+    () =>
+      orderedGroups.filter((group: any) =>
+        pinnedIdSet.has(String(group?.groupId))
+      ),
+    [orderedGroups, pinnedIdSet]
+  );
+  const unpinnedGroups = useMemo(
+    () =>
+      orderedGroups.filter(
+        (group: any) => !pinnedIdSet.has(String(group?.groupId))
+      ),
+    [orderedGroups, pinnedIdSet]
+  );
+  const [pinnedReorderMode, setPinnedReorderMode] = useState(false);
+  useEffect(() => {
+    if (pinnedGroups.length < 2) setPinnedReorderMode(false);
+  }, [pinnedGroups.length]);
+  const pinnedDragSensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
+  );
+  const handlePinnedDragEnd = useCallback(
+    (event: DragEndEvent) => {
+      const { active, over } = event;
+      if (!over || active.id === over.id) return;
+      const ids = pinnedGroups.map((group: any) => String(group?.groupId));
+      const from = ids.indexOf(String(active.id));
+      const to = ids.indexOf(String(over.id));
+      if (from === -1 || to === -1) return;
+      void movePinnedGroup(from, to);
+    },
+    [pinnedGroups]
+  );
   const orderedGroupIds = useMemo(
     () => orderedGroups.map((group: any) => String(group?.groupId)),
     [orderedGroups]
@@ -923,7 +1031,7 @@ const GroupListInner = ({
   );
 
   if (railMode) {
-    return (
+    const rail = (
       <Box
         sx={{
           alignItems: 'center',
@@ -1210,6 +1318,179 @@ const GroupListInner = ({
           onClose={() => setReticulumWhatsNewOpen(false)}
           open={reticulumWhatsNewOpen}
         />
+      </Box>
+    );
+
+    if (!showMobileGroupPanel) return rail;
+
+    // Phones get a single full-width list of named groups instead of the
+    // avatar rail plus a second panel. The rail stays mounted but hidden
+    // because it owns the settings and what's-new dialogs, which render into
+    // portals and so are unaffected by the hidden wrapper.
+    return (
+      <Box
+        sx={{
+          display: 'flex',
+          height: '100%',
+          minHeight: 0,
+          width: '100%',
+        }}
+      >
+        <Box sx={{ display: 'none' }}>{rail}</Box>
+        <Box
+          sx={{
+            background: theme.palette.background.default,
+            display: 'flex',
+            flex: 1,
+            flexDirection: 'column',
+            minHeight: 0,
+            minWidth: 0,
+          }}
+        >
+          <Box
+            sx={{
+              alignItems: 'center',
+              borderBottom: '1px solid',
+              borderColor: 'divider',
+              display: 'flex',
+              gap: 1,
+              justifyContent: 'space-between',
+              minHeight: 62,
+              px: '12px',
+              py: '10px',
+            }}
+          >
+            <ChatScopeSwitch
+              directHasUnread={directChatHasUnread}
+              directUnreadCount={directChatUnreadCount}
+              onChange={setDesktopSideView}
+              value="groups"
+            />
+            <Box sx={{ alignItems: 'center', display: 'flex', gap: 0.25 }}>
+              <IconButton
+                aria-label="Find Groups"
+                onClick={() => setOpenFindGroup(true)}
+                size="small"
+                sx={{ color: 'text.secondary' }}
+              >
+                <SearchRoundedIcon sx={{ fontSize: 19 }} />
+              </IconButton>
+              <IconButton
+                aria-label="Create Group"
+                onClick={() => setOpenAddGroup(true)}
+                size="small"
+                sx={{ color: 'text.secondary' }}
+              >
+                <AddCircleOutlineIcon sx={{ fontSize: 19 }} />
+              </IconButton>
+              <IconButton
+                aria-label="Group Settings"
+                onClick={() => setReticulumSettingsOpen(true)}
+                size="small"
+                sx={{ color: 'text.secondary' }}
+              >
+                <SettingsOutlinedIcon sx={{ fontSize: 19 }} />
+              </IconButton>
+            </Box>
+          </Box>
+          <Box
+            sx={{
+              flex: 1,
+              minHeight: 0,
+              overflowY: 'auto',
+              px: '8px',
+              py: '10px',
+            }}
+          >
+            {orderedGroups.length === 0 && (
+              <Box sx={{ px: 1.5, py: 3, textAlign: 'center' }}>
+                <Typography
+                  sx={{ color: 'text.secondary', fontSize: 13, mb: 1.5 }}
+                >
+                  You have not joined any Q-Chat communities yet.
+                </Typography>
+                <CustomButton
+                  onClick={() => setOpenFindGroup(true)}
+                  sx={{ gap: '8px', padding: '9px 14px' }}
+                >
+                  <SearchRoundedIcon sx={{ fontSize: 18 }} />
+                  Find communities
+                </CustomButton>
+              </Box>
+            )}
+            {pinnedReorderMode && (
+              <Box
+                sx={{
+                  alignItems: 'center',
+                  backgroundColor: alpha(theme.palette.primary.main, 0.14),
+                  border: `1px solid ${alpha(theme.palette.primary.main, 0.45)}`,
+                  borderRadius: '10px',
+                  display: 'flex',
+                  gap: 1,
+                  justifyContent: 'space-between',
+                  mb: '8px',
+                  px: 1.25,
+                  py: 0.75,
+                }}
+              >
+                <Typography sx={{ fontSize: 12, fontWeight: 600 }}>
+                  Drag pinned groups to reorder
+                </Typography>
+                <CustomButton
+                  onClick={() => setPinnedReorderMode(false)}
+                  sx={{ fontSize: 12, padding: '4px 12px' }}
+                >
+                  Done
+                </CustomButton>
+              </Box>
+            )}
+            <List className="group-list" dense={false} sx={{ p: 0 }}>
+              {pinnedGroups.length > 0 && (
+                <DndContext
+                  collisionDetection={closestCenter}
+                  onDragEnd={handlePinnedDragEnd}
+                  sensors={pinnedDragSensors}
+                >
+                  <SortableContext
+                    items={pinnedGroups.map((group: any) =>
+                      String(group.groupId)
+                    )}
+                    strategy={verticalListSortingStrategy}
+                  >
+                    {pinnedGroups.map((group: any) => (
+                      <GroupItem
+                        selectGroupFunc={selectGroupFunc}
+                        key={group.groupId}
+                        group={group}
+                        selectedGroupId={selectedGroup?.groupId ?? null}
+                        getUserSettings={getUserSettings}
+                        myAddress={myAddress}
+                        hasDraft={draftKeys.has(groupDraftKey(group.groupId))}
+                        reticulumChatEnabled={reticulumChatEnabled}
+                        isPinned
+                        canReorderPins={pinnedGroups.length > 1}
+                        pinDragEnabled={pinnedReorderMode}
+                        onRequestPinReorder={() => setPinnedReorderMode(true)}
+                      />
+                    ))}
+                  </SortableContext>
+                </DndContext>
+              )}
+              {unpinnedGroups.map((group: any) => (
+                <GroupItem
+                  selectGroupFunc={selectGroupFunc}
+                  key={group.groupId}
+                  group={group}
+                  selectedGroupId={selectedGroup?.groupId ?? null}
+                  getUserSettings={getUserSettings}
+                  myAddress={myAddress}
+                  hasDraft={draftKeys.has(groupDraftKey(group.groupId))}
+                  reticulumChatEnabled={reticulumChatEnabled}
+                />
+              ))}
+            </List>
+          </Box>
+        </Box>
       </Box>
     );
   }
@@ -1564,6 +1845,10 @@ interface GroupItemProps {
   hasDraft?: boolean;
   reticulumChatEnabled?: boolean;
   railMode?: boolean;
+  isPinned?: boolean;
+  canReorderPins?: boolean;
+  pinDragEnabled?: boolean;
+  onRequestPinReorder?: () => void;
 }
 
 const GroupItem = memo(
@@ -1577,12 +1862,23 @@ const GroupItem = memo(
     hasDraft,
     reticulumChatEnabled = false,
     railMode = false,
+    isPinned = false,
+    canReorderPins = false,
+    pinDragEnabled = false,
+    onRequestPinReorder,
   }: GroupItemProps) => {
     const theme = useTheme();
     const { t } = useTranslation(['core', 'group']);
-    const { attributes, listeners, setNodeRef, isDragging } = useSortable({
+    const {
+      attributes,
+      listeners,
+      setNodeRef,
+      isDragging,
+      transform,
+      transition,
+    } = useSortable({
       id: String(group?.groupId),
-      disabled: !railMode,
+      disabled: !railMode && !pinDragEnabled,
     });
     const ownerName = useAtomValue(groupsOwnerNamesSelector(group?.groupId));
     const announcement = useAtomValue(
@@ -1645,6 +1941,25 @@ const GroupItem = memo(
       setIsPreviewOpen(false);
       setPreviewSrc(null);
     }, [setIsPreviewOpen, setPreviewSrc]);
+
+    // Holding the pin itself is what unlocks reordering, so a stray tap on the
+    // row still just opens the group.
+    const pinHoldTimer = useRef<number | null>(null);
+    const cancelPinHold = useCallback(() => {
+      if (pinHoldTimer.current !== null) {
+        clearTimeout(pinHoldTimer.current);
+        pinHoldTimer.current = null;
+      }
+    }, []);
+    const startPinHold = useCallback(() => {
+      if (!canReorderPins || pinDragEnabled) return;
+      cancelPinHold();
+      pinHoldTimer.current = window.setTimeout(() => {
+        pinHoldTimer.current = null;
+        onRequestPinReorder?.();
+      }, 450);
+    }, [cancelPinHold, canReorderPins, onRequestPinReorder, pinDragEnabled]);
+    useEffect(() => cancelPinHold, [cancelPinHold]);
 
     const isSelected = group?.groupId === selectedGroupId;
     const reticulumUnreadCount = Math.max(
@@ -1897,6 +2212,11 @@ const GroupItem = memo(
                         timeDifferenceForNotificationChats) ||
                       timestampEnterData < group?.timestamp))) && (
                   <ReticulumUnreadCountBadge
+                    color={
+                      hasReticulumMention
+                        ? RETICULUM_NOTIFICATION_RED
+                        : theme.palette.primary.main
+                    }
                     count={reticulumReplyCount > 0 ? reticulumReplyCount : null}
                     outlineColor={theme.palette.background.surface}
                     size={reticulumReplyCount > 0 ? 18 : 8}
@@ -2012,14 +2332,30 @@ const GroupItem = memo(
 
     return (
       <ListItem
-        onClick={selectGroupHandler}
+        ref={pinDragEnabled ? setNodeRef : undefined}
+        {...(pinDragEnabled ? attributes : {})}
+        {...(pinDragEnabled ? listeners : {})}
+        onClick={pinDragEnabled ? undefined : selectGroupHandler}
+        style={
+          pinDragEnabled
+            ? {
+                transform: transform
+                  ? `translate3d(${transform.x}px, ${transform.y}px, 0) scale(${
+                      isDragging ? 1.03 : 1
+                    })`
+                  : undefined,
+                transition,
+              }
+            : undefined
+        }
         sx={{
           borderRadius: '10px',
-          cursor: 'pointer',
+          cursor: pinDragEnabled ? 'grab' : 'pointer',
           display: 'flex',
           flexDirection: 'column',
           marginBottom: '6px',
           padding: '12px 14px',
+          touchAction: pinDragEnabled ? 'none' : undefined,
           width: '100%',
           backgroundColor: isSelected
             ? theme.palette.action.selected
@@ -2027,6 +2363,11 @@ const GroupItem = memo(
           borderLeft: isSelected
             ? `3px solid ${theme.palette.primary.main}`
             : '3px solid transparent',
+          boxShadow: isDragging
+            ? `0 10px 26px ${alpha('#000', 0.45)}`
+            : undefined,
+          opacity: isDragging ? 0.92 : 1,
+          zIndex: isDragging ? 4 : undefined,
           transition: 'background-color 0.15s ease, border-color 0.15s ease',
           '&:hover': {
             backgroundColor: isSelected
@@ -2035,7 +2376,14 @@ const GroupItem = memo(
           },
         }}
       >
-        <ContextMenu getUserSettings={getUserSettings} groupId={group.groupId}>
+        <ContextMenu
+          disabled={pinDragEnabled}
+          getUserSettings={getUserSettings}
+          groupId={group.groupId}
+          myAddress={myAddress}
+          onMenuOpenChange={setIsGroupContextMenuOpen}
+          reticulumGroup={reticulumChatEnabled ? group : null}
+        >
           <Box
             sx={{
               alignItems: 'center',
@@ -2186,9 +2534,13 @@ const GroupItem = memo(
                     timestampEnterData < group?.timestamp))) && (
                 <MarkChatUnreadIcon
                   sx={{
-                    color: hasReticulumUnread
+                    // Mentions keep the red; ordinary unread traffic matches
+                    // the accent dot on the Chat tab.
+                    color: hasReticulumMention
                       ? RETICULUM_NOTIFICATION_RED
-                      : theme.palette.other.unread,
+                      : hasReticulumUnread
+                        ? theme.palette.primary.main
+                        : theme.palette.other.unread,
                     fontSize: '18px',
                   }}
                 />
@@ -2259,6 +2611,61 @@ const GroupItem = memo(
                 </Box>
               )}
             </Box>
+
+            {/* The pin owns a fixed slot at the row edge, past the badge
+                column, so pins line up no matter how long the group name is
+                or which badges a row happens to show. */}
+            {isPinned && (
+              <Tooltip
+                title={
+                  canReorderPins
+                    ? 'Hold to rearrange pinned groups'
+                    : 'Pinned'
+                }
+              >
+                <Box
+                  component="span"
+                  onClick={(event) => {
+                    if (!canReorderPins) return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                  }}
+                  onContextMenu={(event) => {
+                    if (!canReorderPins) return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    onRequestPinReorder?.();
+                  }}
+                  onPointerDown={(event) => {
+                    event.stopPropagation();
+                    startPinHold();
+                  }}
+                  onPointerUp={cancelPinHold}
+                  onPointerLeave={cancelPinHold}
+                  onPointerCancel={cancelPinHold}
+                  sx={{
+                    alignItems: 'center',
+                    display: 'inline-flex',
+                    flexShrink: 0,
+                    justifyContent: 'center',
+                    marginLeft: '6px',
+                    touchAction: 'none',
+                    width: 18,
+                  }}
+                >
+                  <PushPinRoundedIcon
+                    sx={{
+                      color: pinDragEnabled
+                        ? theme.palette.primary.main
+                        : theme.palette.text.secondary,
+                      fontSize: 15,
+                      transform: 'rotate(35deg)',
+                      transition: 'color 140ms ease',
+                    }}
+                  />
+                </Box>
+              </Tooltip>
+            )}
           </Box>
         </ContextMenu>
 

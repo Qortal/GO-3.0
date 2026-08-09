@@ -9,8 +9,8 @@ android {
         applicationId "com.github.Qortal.qortalGo2"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 2
-        versionName "2.0.1"
+        versionCode 3
+        versionName "3.0.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         // Chaquopy ships the CPython interpreter as native code, so the app must
         // declare which ABIs to package. arm64 = real devices, x86_64 = emulator.

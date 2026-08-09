@@ -8,6 +8,7 @@ import {
   useMediaQuery,
   useTheme,
 } from '@mui/material';
+import { alpha } from '@mui/material/styles';
 import {
   lazy,
   memo,
@@ -116,7 +117,16 @@ import {
   qortinoAgentOpenAtom,
 } from '../../atoms/global';
 import { closeQortinoAgentSheet } from '../../qortinoAgent/qortinoSheetNav';
-import { QortinoAgentSheet } from './QortinoAgent/QortinoAgentSheet';
+/**
+ * Qortino carries several megabytes of bundled knowledge and golden answers as
+ * JSON. Importing it statically put that parse on the critical path of every
+ * launch, even for users who never open the assistant, so it loads on demand.
+ */
+const LazyQortinoAgentSheet = lazy(() =>
+  import('./QortinoAgent/QortinoAgentSheet').then((m) => ({
+    default: m.QortinoAgentSheet,
+  }))
+);
 import { mergeDirectsWithFriends } from '../../lib/dm/mergeDirectsWithFriends';
 import { validateAddress } from '../../utils/validateAddress';
 import { sortArrayByTimestampAndGroupName } from '../../utils/time';
@@ -129,7 +139,6 @@ import {
 import { WalletsAppWrapper } from './WalletsAppWrapper';
 import { useTranslation } from 'react-i18next';
 import { GroupList } from './GroupList';
-import { ReticulumGroupAboutModal } from './ReticulumGroupAbout';
 import { FirstTimeQChatEmptyState } from './FirstTimeQChatEmptyState';
 import { ReturningUserActivityDashboard } from './ReturningUserActivityDashboard';
 import { ReturningUserCaughtUpState } from './ReturningUserCaughtUpState';
@@ -180,6 +189,10 @@ import {
 } from './Group.styles';
 
 const RETICULUM_ACTIVE_BLUE = '#2563eb';
+/** Width of the left screen edge that starts a swipe to the chat list. */
+const EDGE_SWIPE_ZONE_PX = 24;
+/** Horizontal travel from that edge before the list panel opens. */
+const EDGE_SWIPE_OPEN_PX = 44;
 
 // Keeps the Reticulum chat tree out of unrelated Group-shell re-renders. The
 // legacy ChatGroup instance below deliberately retains its existing behavior.
@@ -207,29 +220,12 @@ const LazyQortalLand = lazy(() =>
   loadQortalLandModule().then((m) => ({ default: m.QortalLand }))
 );
 
-// Re-export for backward compatibility with existing imports from Group.tsx
-export {
-  getAllPublishesFromAdmins,
-  getGroupAdmins,
-  getGroupAdminsAddress,
-  getNameInfo,
-  getNames,
-  getNamesForAdmins,
-  getGroupMembers,
-  getPublishesFromAdmins,
-} from './groupApi';
-export { timeDifferenceForNotificationChats } from './groupConstants';
-export {
-  addDataPublishesFunc,
-  decryptResource,
-  getDataPublishesFunc,
-} from './groupDataPublishes';
-export {
-  requestQueueAdminMemberNames,
-  requestQueueMemberNames,
-} from './groupQueues';
+// Helpers deliberately are NOT re-exported from here. This module is only
+// reachable through AuthenticatedShell's dynamic import, and a re-export makes
+// any consumer of a helper drag the whole chat UI back into the entry chunk.
+// Import from ./groupApi, ./groupConstants, ./groupDataPublishes,
+// ./groupQueues or ./groupValidation instead.
 export type { GroupProps } from './groupTypes';
-export { validateSecretKey } from './groupValidation';
 
 type ReticulumBackgroundEvent = {
   authorAddress?: string;
@@ -698,6 +694,8 @@ function ReticulumGroupSectionHeader({
     );
   };
 
+  const isLandSection = activeSection === 'land';
+
   return (
     <Box
       sx={{
@@ -706,24 +704,56 @@ function ReticulumGroupSectionHeader({
         display: 'flex',
         flexShrink: 0,
         gap: 0.75,
-        minHeight: 50,
+        minHeight: isLandSection ? 56 : 50,
         overflow: 'hidden',
         px: 1.5,
       }}
     >
-      <Typography
-        sx={{
-          flex: 1,
-          fontSize: 17,
-          fontWeight: 700,
-          minWidth: 0,
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap',
-        }}
-      >
-        {sectionLabel}
-      </Typography>
+      {isLandSection ? (
+        <Box sx={{ flex: 1, minWidth: 0, pr: 1 }}>
+          <Typography
+            sx={{
+              color: 'text.secondary',
+              fontSize: 11,
+              fontWeight: 700,
+              letterSpacing: '0.06em',
+              lineHeight: 1.2,
+              textTransform: 'uppercase',
+            }}
+          >
+            Qortal Land
+          </Typography>
+          <Typography
+            title={sectionLabel}
+            sx={{
+              fontSize: 18,
+              fontWeight: 750,
+              letterSpacing: '-0.01em',
+              lineHeight: 1.25,
+              minWidth: 0,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {sectionLabel}
+          </Typography>
+        </Box>
+      ) : (
+        <Typography
+          sx={{
+            flex: 1,
+            fontSize: 17,
+            fontWeight: 700,
+            minWidth: 0,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {sectionLabel}
+        </Typography>
+      )}
       <Box
         sx={{
           alignItems: 'center',
@@ -738,16 +768,18 @@ function ReticulumGroupSectionHeader({
         {typeof onModeSwitchClick === 'function' && (
           <>
             <ReticulumModePill label="Chat" onClick={onModeSwitchClick} />
-            <Box
-              aria-hidden
-              sx={{
-                backgroundColor: theme.palette.divider,
-                flexShrink: 0,
-                height: 22,
-                mx: 0.5,
-                width: '1px',
-              }}
-            />
+            {!isLandSection && (
+              <Box
+                aria-hidden
+                sx={{
+                  backgroundColor: theme.palette.divider,
+                  flexShrink: 0,
+                  height: 22,
+                  mx: 0.5,
+                  width: '1px',
+                }}
+              />
+            )}
           </>
         )}
         {renderAction({
@@ -767,20 +799,23 @@ function ReticulumGroupSectionHeader({
           disabled: groupCallDisabled || groupCallJoining,
           tooltip: groupCallTooltip || 'Group Call',
         })}
-        {renderAction({
-          active: calendarOpen,
-          label: 'Group Calendar',
-          icon: <CalendarMonthRoundedIcon sx={{ fontSize: 19 }} />,
-          onClick: onCalendarClick,
-        })}
-        {legacyThreadsEnabled &&
+        {!isLandSection &&
+          renderAction({
+            active: calendarOpen,
+            label: 'Group Calendar',
+            icon: <CalendarMonthRoundedIcon sx={{ fontSize: 19 }} />,
+            onClick: onCalendarClick,
+          })}
+        {!isLandSection &&
+          legacyThreadsEnabled &&
           renderAction({
             active: activeSection === 'forum',
             label: 'Threads',
             icon: <ForumRoundedIcon sx={{ fontSize: 19 }} />,
             onClick: onThreadsClick,
           })}
-        {legacyThreadsEnabled &&
+        {!isLandSection &&
+          legacyThreadsEnabled &&
           canManageReticulumGroup &&
           renderAction({
             active: isAdminMenuOpen,
@@ -801,90 +836,93 @@ function ReticulumGroupSectionHeader({
               });
             },
           })}
-        {renderAction({
-          active: isQManagerOpen,
-          label: 'Q-Manager',
-          icon: <FolderRoundedIcon sx={{ fontSize: 19 }} />,
-          onClick: (event) => {
-            const rect = event.currentTarget.getBoundingClientRect();
-            executeEvent('openReticulumQManager', {
-              anchorRect: {
-                bottom: rect.bottom,
-                height: rect.height,
-                left: rect.left,
-                right: rect.right,
-                top: rect.top,
-                width: rect.width,
-              },
-              toggle: true,
-            });
-          },
-        })}
-        <Tooltip title={membersPanelOpen ? 'Hide Members' : 'Members'}>
-          <Box
-            component="span"
-            sx={{
-              display: 'inline-flex',
-              flexShrink: 0,
-              overflow: 'visible',
-              position: 'relative',
-            }}
-          >
-            <IconButton
-              aria-label={
-                membersNotificationCount && membersNotificationCount > 0
-                  ? `Members, ${membersNotificationCount} pending join ${
-                      membersNotificationCount === 1 ? 'request' : 'requests'
-                    }`
-                  : 'Members'
-              }
-              onClick={onMembersClick}
-              size="small"
-              sx={{
-                backgroundColor: membersPanelOpen
-                  ? RETICULUM_ACTIVE_BLUE
-                  : 'transparent',
-                borderRadius: '8px',
-                color: membersPanelOpen ? 'common.white' : 'text.secondary',
-                flexShrink: 0,
-                height: 36,
-                width: 36,
-                '&:hover': {
-                  backgroundColor: membersPanelOpen
-                    ? RETICULUM_ACTIVE_BLUE
-                    : theme.palette.action.hover,
-                  color: membersPanelOpen
-                    ? 'common.white'
-                    : theme.palette.text.primary,
+        {!isLandSection &&
+          renderAction({
+            active: isQManagerOpen,
+            label: 'Q-Manager',
+            icon: <FolderRoundedIcon sx={{ fontSize: 19 }} />,
+            onClick: (event) => {
+              const rect = event.currentTarget.getBoundingClientRect();
+              executeEvent('openReticulumQManager', {
+                anchorRect: {
+                  bottom: rect.bottom,
+                  height: rect.height,
+                  left: rect.left,
+                  right: rect.right,
+                  top: rect.top,
+                  width: rect.width,
                 },
+                toggle: true,
+              });
+            },
+          })}
+        {!isLandSection && (
+          <Tooltip title={membersPanelOpen ? 'Hide Members' : 'Members'}>
+            <Box
+              component="span"
+              sx={{
+                display: 'inline-flex',
+                flexShrink: 0,
+                overflow: 'visible',
+                position: 'relative',
               }}
             >
-              <PeopleAltRoundedIcon sx={{ fontSize: 19 }} />
-            </IconButton>
-            {!!membersNotificationCount && membersNotificationCount > 0 && (
-              <ReticulumUnreadCountBadge
-                count={membersNotificationCount}
-                outlineColor={theme.palette.background.surface}
-                size={13}
-                fontSize={8}
+              <IconButton
+                aria-label={
+                  membersNotificationCount && membersNotificationCount > 0
+                    ? `Members, ${membersNotificationCount} pending join ${
+                        membersNotificationCount === 1 ? 'request' : 'requests'
+                      }`
+                    : 'Members'
+                }
+                onClick={onMembersClick}
+                size="small"
                 sx={{
-                  position: 'absolute',
-                  right: -4,
-                  top: -4,
-                  zIndex: 2,
+                  backgroundColor: membersPanelOpen
+                    ? RETICULUM_ACTIVE_BLUE
+                    : 'transparent',
+                  borderRadius: '8px',
+                  color: membersPanelOpen ? 'common.white' : 'text.secondary',
+                  flexShrink: 0,
+                  height: 36,
+                  width: 36,
+                  '&:hover': {
+                    backgroundColor: membersPanelOpen
+                      ? RETICULUM_ACTIVE_BLUE
+                      : theme.palette.action.hover,
+                    color: membersPanelOpen
+                      ? 'common.white'
+                      : theme.palette.text.primary,
+                  },
                 }}
-              />
-            )}
-          </Box>
-        </Tooltip>
-        {renderAction({
-          active: activeSection !== 'land' && isSearchOpen,
-          disabled: activeSection === 'land',
-          label: 'Search Chat',
-          icon: <SearchRoundedIcon sx={{ fontSize: 18 }} />,
-          onClick: () =>
-            executeEvent('openReticulumChatSearch', { toggle: true }),
-        })}
+              >
+                <PeopleAltRoundedIcon sx={{ fontSize: 19 }} />
+              </IconButton>
+              {!!membersNotificationCount && membersNotificationCount > 0 && (
+                <ReticulumUnreadCountBadge
+                  count={membersNotificationCount}
+                  outlineColor={theme.palette.background.surface}
+                  size={13}
+                  fontSize={8}
+                  sx={{
+                    position: 'absolute',
+                    right: -4,
+                    top: -4,
+                    zIndex: 2,
+                  }}
+                />
+              )}
+            </Box>
+          </Tooltip>
+        )}
+        {!isLandSection &&
+          renderAction({
+            active: isSearchOpen,
+            label: 'Search Chat',
+            icon: <SearchRoundedIcon sx={{ fontSize: 18 }} />,
+            onClick: () =>
+              executeEvent('openReticulumChatSearch', { toggle: true }),
+          })}
       </Box>
     </Box>
   );
@@ -979,10 +1017,16 @@ export const Group = ({
   const [mountedLandGroupId, setMountedLandGroupId] = useState<string | null>(
     null
   );
+  // On phones the members panel is a full-width overlay, so opening it by
+  // default would hide the conversation the user just tapped into.
   const [reticulumChatMembersPanelOpen, setReticulumChatMembersPanelOpen] =
-    useState(true);
+    useState(!isMobile);
   const [reticulumLandMembersPanelOpen, setReticulumLandMembersPanelOpen] =
     useState(false);
+  // Lets the group/DM list slide in over an open conversation on phones.
+  const [mobileListPanelOpen, setMobileListPanelOpen] = useState(false);
+  const mobileEdgeSwipeRef = useRef<{ x: number; y: number } | null>(null);
+  const mobilePanelSwipeRef = useRef<{ x: number; y: number } | null>(null);
   const [reticulumSearchOverlayOpen, setReticulumSearchOverlayOpen] =
     useState(false);
   const [reticulumJoinRequestCount, setReticulumJoinRequestCount] = useState(0);
@@ -1182,6 +1226,12 @@ export const Group = ({
   const userInfo = useAtomValue(userInfoAtom);
   const dmFriendsByAddress = useAtomValue(dmFriendsByAddressAtom);
   const qortinoAgentOpen = useAtomValue(qortinoAgentOpenAtom);
+  // Keep the sheet mounted once summoned so park/restore still holds the
+  // session, but never pay for it before the first open.
+  const [qortinoEverOpened, setQortinoEverOpened] = useState(false);
+  useEffect(() => {
+    if (qortinoAgentOpen) setQortinoEverOpened(true);
+  }, [qortinoAgentOpen]);
 
   const {
     roomState: gcallRoomState,
@@ -2396,6 +2446,10 @@ export const Group = ({
 
   useEffect(() => {
     if (!reticulumChatEnabled || desktopSideView !== 'directs') return;
+    // Desktop keeps a conversation open next to the DM list. On phones the
+    // conversation replaces the list, so auto-selecting would make the list —
+    // and the back gesture out of a thread — unreachable.
+    if (isMobile) return;
     if (selectedDirect || newChat) return;
     const firstDirect = displayDirects[0];
     if (!firstDirect?.address) {
@@ -2418,6 +2472,7 @@ export const Group = ({
     desktopSideView,
     displayDirects,
     getTimestampEnterChat,
+    isMobile,
     newChat,
     reticulumChatEnabled,
     selectedDirect,
@@ -3940,15 +3995,50 @@ export const Group = ({
     };
   }, [handleMobileChatTab]);
 
+  // Leaving a conversation on mobile returns to the list it came from, so a
+  // group never drops the user into the DM list (or vice versa).
+  const closeMobileChatDetail = useCallback(() => {
+    if (selectedGroupRef.current) {
+      setDesktopSideView('groups');
+    } else if (selectedDirectRef.current || newChatRef.current) {
+      setDesktopSideView('directs');
+    }
+    setSelectedGroup(null);
+    setSelectedDirect(null);
+    setNewChat(false);
+    setMobileListPanelOpen(false);
+  }, []);
+
+  // The slide-in list sits above the conversation, so back dismisses it before
+  // the thread underneath.
+  useAndroidBack(
+    () => {
+      if (!mobileListPanelOpen) return false;
+      setMobileListPanelOpen(false);
+      return true;
+    },
+    {
+      priority: BACK_PRIORITY.overlay,
+      enabled: isMobile && mobileListPanelOpen,
+    }
+  );
+
+  // About Group is opened from the long-press menu on this panel — tuck the
+  // panel away so the dialog is not obscured by the slide-over surface.
+  useEffect(() => {
+    const hideListForAbout = () => setMobileListPanelOpen(false);
+    subscribeToEvent('openReticulumGroupAbout', hideListForAbout);
+    return () =>
+      unsubscribeFromEvent('openReticulumGroupAbout', hideListForAbout);
+  }, []);
+
   // Android back inside Q-Chat: if a thread (group / DM / new chat) is open in
   // the single mobile column, collapse back to the list instead of leaving the
   // section. Runs above the App-level "return to Home" handler.
   useAndroidBack(
     () => {
       if (selectedGroup || selectedDirect || newChat) {
-        setSelectedGroup(null);
-        setSelectedDirect(null);
-        setNewChat(false);
+        closeMobileChatDetail();
         return true;
       }
       return false;
@@ -4418,10 +4508,38 @@ export const Group = ({
       : reticulumChatMembersPanelOpen;
   const toggleReticulumMembersPanel = useCallback(() => {
     if (groupSection === 'land') {
-      setReticulumLandMembersPanelOpen((open) => !open);
+      const next = !reticulumLandMembersPanelOpen;
+      if (next) {
+        executeEvent('closeReticulumGroupOverlays', { except: 'members' });
+      }
+      setReticulumLandMembersPanelOpen(next);
       return;
     }
-    setReticulumChatMembersPanelOpen((open) => !open);
+    const next = !reticulumChatMembersPanelOpen;
+    if (next) {
+      executeEvent('closeReticulumGroupOverlays', { except: 'members' });
+    }
+    setReticulumChatMembersPanelOpen(next);
+  }, [
+    groupSection,
+    reticulumChatMembersPanelOpen,
+    reticulumLandMembersPanelOpen,
+  ]);
+
+  // Switching groups (or leaving chat/land) should tuck away members sheets.
+  useEffect(() => {
+    setReticulumChatMembersPanelOpen(false);
+    setReticulumLandMembersPanelOpen(false);
+  }, [selectedGroup?.groupId]);
+
+  useEffect(() => {
+    if (groupSection !== 'chat') {
+      setReticulumChatMembersPanelOpen(false);
+      executeEvent('closeReticulumGroupOverlays', { except: 'members' });
+    }
+    if (groupSection !== 'land') {
+      setReticulumLandMembersPanelOpen(false);
+    }
   }, [groupSection]);
 
   const handleReticulumChannelSelected = useCallback(
@@ -4452,14 +4570,13 @@ export const Group = ({
   useEffect(() => {
     if (!reticulumChatEnabled) return;
     const closeMembersPanel = () => {
-      if (groupSection === 'land') {
-        setReticulumLandMembersPanelOpen(false);
-      }
+      setReticulumChatMembersPanelOpen(false);
+      setReticulumLandMembersPanelOpen(false);
     };
     subscribeToEvent('closeReticulumMembersPanel', closeMembersPanel);
     return () =>
       unsubscribeFromEvent('closeReticulumMembersPanel', closeMembersPanel);
-  }, [groupSection, reticulumChatEnabled]);
+  }, [reticulumChatEnabled]);
 
   useEffect(() => {
     const syncSearchOverlayState = (event: any) => {
@@ -4514,8 +4631,17 @@ export const Group = ({
   }, []);
   const getNoReticulumGroupSecretKey = useCallback(async () => null, []);
 
+  // Phones run the new chat as a single column: the DM list sits beside the
+  // group rail and the conversation replaces it, so the desktop side-by-side
+  // overlay would only hide both.
+  const reticulumDirectsInline = reticulumChatEnabled && isMobile;
   const isReticulumDirectOverlayOpen =
-    reticulumChatEnabled && desktopSideView === 'directs';
+    reticulumChatEnabled && !isMobile && desktopSideView === 'directs';
+  const showDirectsList =
+    desktopSideView === 'directs' &&
+    (!reticulumChatEnabled || reticulumDirectsInline);
+  const mobileDirectConversationOpen =
+    reticulumDirectsInline && Boolean(selectedDirect || newChat);
 
   const setDesktopSideViewFromRail = useCallback(
     (view: 'groups' | 'directs') => {
@@ -4530,6 +4656,25 @@ export const Group = ({
     [reticulumChatEnabled]
   );
 
+  // The chat header's back arrow slides the list over the conversation rather
+  // than tearing it down, so switching channels keeps the thread warm.
+  const openMobileListPanel = useCallback(() => {
+    setDesktopSideView(selectedGroupRef.current ? 'groups' : 'directs');
+    setMobileListPanelOpen(true);
+  }, []);
+
+  // Picking a conversation from the slide-in list dismisses the panel so the
+  // thread underneath becomes visible.
+  const selectDirectFromList = useCallback((direct) => {
+    setMobileListPanelOpen(false);
+    setSelectedDirect(direct);
+  }, []);
+
+  const startNewChatFromList = useCallback((value) => {
+    setMobileListPanelOpen(false);
+    setNewChat(value);
+  }, []);
+
   const handleNotifyAdminClick = useCallback(
     (e: { currentTarget: HTMLElement | null }) => {
       const address = e.currentTarget?.getAttribute('data-admin-address');
@@ -4543,6 +4688,7 @@ export const Group = ({
     (group) => {
       setMobileViewMode('group');
       setDesktopSideView('groups');
+      setMobileListPanelOpen(false);
       initiatedGetMembers.current = false;
       clearAllQueues();
       setSelectedDirect(null);
@@ -4729,17 +4875,47 @@ export const Group = ({
     // On mobile the list and the open chat can't sit side-by-side; switch to a
     // single column (list OR chat detail) so the chat pane is actually visible.
     const inChatDetail = !!(selectedDirect || selectedGroup || newChat);
+    const showMobileListPanel = !inChatDetail || mobileListPanelOpen;
     const isGroupContentVisible =
       isVisible &&
       !isReticulumDirectOverlayOpen &&
       !(
-        !reticulumChatEnabled &&
+        (!reticulumChatEnabled || reticulumDirectsInline) &&
         desktopSideView === 'directs' &&
         (newChat || selectedDirect)
       );
 
     return (
       <Box
+        onTouchStart={
+          isMobile && inChatDetail && !mobileListPanelOpen
+            ? (event) => {
+                const touch = event.touches[0];
+                mobileEdgeSwipeRef.current =
+                  touch && touch.clientX <= EDGE_SWIPE_ZONE_PX
+                    ? { x: touch.clientX, y: touch.clientY }
+                    : null;
+              }
+            : undefined
+        }
+        onTouchMove={
+          isMobile && inChatDetail && !mobileListPanelOpen
+            ? (event) => {
+                const start = mobileEdgeSwipeRef.current;
+                const touch = event.touches[0];
+                if (!start || !touch) return;
+                const dx = touch.clientX - start.x;
+                const dy = Math.abs(touch.clientY - start.y);
+                if (dx > EDGE_SWIPE_OPEN_PX && dy < dx) {
+                  mobileEdgeSwipeRef.current = null;
+                  setMobileListPanelOpen(true);
+                }
+              }
+            : undefined
+        }
+        onTouchEnd={
+          isMobile ? () => (mobileEdgeSwipeRef.current = null) : undefined
+        }
         sx={{
           backgroundColor: 'background.default',
           display: 'flex',
@@ -4750,21 +4926,107 @@ export const Group = ({
           width: '100%',
         }}
       >
-        {reticulumChatEnabled && <ReticulumGroupAboutModal />}
         {reticulumChatEnabled && (
           <Suspense fallback={null}>
             <LazyFindGroupOverviewModal />
           </Suspense>
         )}
+        {isMobile && inChatDetail && mobileListPanelOpen && (
+          <Box
+            onClick={() => setMobileListPanelOpen(false)}
+            onTouchStart={(event) => {
+              const touch = event.touches[0];
+              mobilePanelSwipeRef.current = touch
+                ? { x: touch.clientX, y: touch.clientY }
+                : null;
+            }}
+            onTouchMove={(event) => {
+              const start = mobilePanelSwipeRef.current;
+              const touch = event.touches[0];
+              if (!start || !touch) return;
+              const dx = start.x - touch.clientX;
+              const dy = Math.abs(touch.clientY - start.y);
+              if (dx > EDGE_SWIPE_OPEN_PX && dy < dx) {
+                mobilePanelSwipeRef.current = null;
+                setMobileListPanelOpen(false);
+              }
+            }}
+            onTouchEnd={() => (mobilePanelSwipeRef.current = null)}
+            sx={{
+              backgroundColor: alpha(theme.palette.common.black, 0.45),
+              inset: 0,
+              position: 'absolute',
+              zIndex: 39,
+            }}
+          />
+        )}
         <Box
+          onTouchStart={
+            isMobile && inChatDetail && mobileListPanelOpen
+              ? (event) => {
+                  const touch = event.touches[0];
+                  mobilePanelSwipeRef.current = touch
+                    ? { x: touch.clientX, y: touch.clientY }
+                    : null;
+                }
+              : undefined
+          }
+          onTouchMove={
+            isMobile && inChatDetail && mobileListPanelOpen
+              ? (event) => {
+                  const start = mobilePanelSwipeRef.current;
+                  const touch = event.touches[0];
+                  if (!start || !touch) return;
+                  const dx = start.x - touch.clientX;
+                  const dy = Math.abs(touch.clientY - start.y);
+                  if (dx > EDGE_SWIPE_OPEN_PX && dy < dx) {
+                    mobilePanelSwipeRef.current = null;
+                    setMobileListPanelOpen(false);
+                  }
+                }
+              : undefined
+          }
+          onTouchEnd={
+            isMobile ? () => (mobilePanelSwipeRef.current = null) : undefined
+          }
           sx={{
-            display: isMobile && inChatDetail ? 'none' : 'flex',
+            display: 'flex',
             flexShrink: 0,
             minHeight: 0,
-            ...(isMobile ? { width: '100%' } : {}),
+            // On phones the list is a panel that slides in from the left: it
+            // fills the screen when no chat is open and overlays the
+            // conversation when swiped in from the edge.
+            ...(isMobile
+              ? {
+                  bottom: 0,
+                  boxShadow: mobileListPanelOpen
+                    ? `0 0 28px ${alpha(theme.palette.common.black, 0.45)}`
+                    : 'none',
+                  left: 0,
+                  maxWidth: inChatDetail ? 400 : 'none',
+                  pointerEvents: showMobileListPanel ? 'auto' : 'none',
+                  position: 'absolute',
+                  top: 0,
+                  transform: showMobileListPanel
+                    ? 'translateX(0)'
+                    : 'translateX(-100%)',
+                  transition: 'transform 220ms cubic-bezier(0.2, 0, 0, 1)',
+                  width: inChatDetail ? '86%' : '100%',
+                  zIndex: 40,
+                }
+              : {}),
           }}
         >
-        {reticulumChatEnabled || desktopSideView !== 'directs' ? (
+        {!showDirectsList || reticulumChatEnabled ? (
+          // The DM list owns the whole column on phones; the group rail would
+          // only steal 72px from it. Hidden rather than unmounted so the list
+          // keeps its order, avatars and unread state.
+          <Box
+            sx={{
+              display:
+                isMobile && showDirectsList ? 'none' : 'contents',
+            }}
+          >
           <GroupList
             selectGroupFunc={selectGroupFunc}
             setDesktopSideView={setDesktopSideViewFromRail}
@@ -4780,8 +5042,9 @@ export const Group = ({
             myAddress={myAddress}
             reticulumChatEnabled={reticulumChatEnabled}
           />
+          </Box>
         ) : null}
-        {!reticulumChatEnabled && desktopSideView === 'directs' && (
+        {showDirectsList && (
           <DirectsSidebar
             setDesktopSideView={setDesktopSideViewFromRail}
             desktopSideView={desktopSideView}
@@ -4791,8 +5054,8 @@ export const Group = ({
             getUserAvatarUrl={getUserAvatarUrl}
             directAvatarLoaded={directAvatarLoaded}
             setDirectAvatarLoaded={setDirectAvatarLoaded}
-            setSelectedDirect={setSelectedDirect}
-            setNewChat={setNewChat}
+            setSelectedDirect={selectDirectFromList}
+            setNewChat={startNewChatFromList}
             setIsOpenDrawer={setIsOpenDrawer}
             getTimestampEnterChat={getTimestampEnterChat}
             selectedDirect={selectedDirect}
@@ -4823,7 +5086,7 @@ export const Group = ({
             ...(isMobile ? { width: '100%' } : {}),
           }}
         >
-          {newChat && !reticulumChatEnabled && (
+          {newChat && (!reticulumChatEnabled || reticulumDirectsInline) && (
             <NewChatOverlay isChatMode={isVisible}>
               <ChatDirect
                 myAddress={myAddress}
@@ -4834,6 +5097,7 @@ export const Group = ({
                 getTimestampEnterChat={getTimestampEnterChat}
                 close={closeChatDirect}
                 setMobileViewModeKeepOpen={setMobileViewModeKeepOpen}
+                isActive={isVisible}
                 reticulumEnabled={reticulumEnabled}
                 reticulumChatEnabled={reticulumChatEnabled}
               />
@@ -4883,7 +5147,8 @@ export const Group = ({
             isVisible={
               isVisible &&
               !!selectedGroup &&
-              (reticulumChatEnabled ||
+              ((reticulumChatEnabled &&
+                !(reticulumDirectsInline && (selectedDirect || newChat))) ||
                 (desktopSideView !== 'directs' && !selectedDirect && !newChat))
             }
           >
@@ -4906,7 +5171,7 @@ export const Group = ({
                   canManageReticulumGroup={canManageReticulumGroup}
                   sectionLabel={
                     groupSection === 'land'
-                      ? `QortalLand - ${selectedGroup?.groupName || 'Group'}`
+                      ? selectedGroup?.groupName || 'Group'
                       : groupSection === 'forum'
                         ? 'Threads'
                         : groupSection === 'members'
@@ -5027,7 +5292,8 @@ export const Group = ({
                     isActive={
                       isVisible &&
                       groupSection === 'chat' &&
-                      !isReticulumDirectOverlayOpen
+                      !isReticulumDirectOverlayOpen &&
+                      !mobileDirectConversationOpen
                     }
                     handleNewEncryptionNotification={
                       setNewEncryptionNotification
@@ -5055,6 +5321,9 @@ export const Group = ({
                     }
                     onQortalLandClick={goToQortalLand}
                     onThreadsClick={goToThreads}
+                    onMobileBack={
+                      isMobile ? openMobileListPanel : undefined
+                    }
                     onMembersClick={toggleReticulumMembersPanel}
                     membersPanelOpen={reticulumMembersPanelOpen}
                     membersNotificationCount={reticulumJoinRequestCount}
@@ -5472,7 +5741,9 @@ export const Group = ({
                     position: 'absolute',
                     right: 0,
                     top: 50,
-                    width: 280,
+                    // Phones show the member list as a full-width sheet; a
+                    // 280px rail would leave the chat unusably narrow.
+                    width: { xs: '100%', md: 280 },
                     zIndex: reticulumSearchOverlayOpen ? 0 : 8,
                   }}
                 >
@@ -5608,7 +5879,7 @@ export const Group = ({
           {selectedDirect &&
             !newChat &&
             desktopSideView === 'directs' &&
-            !reticulumChatEnabled && (
+            (!reticulumChatEnabled || reticulumDirectsInline) && (
               <SelectedDirectOverlay isChatMode={isVisible}>
                 <InnerChatBox>
                   <ChatDirect
@@ -5780,10 +6051,14 @@ export const Group = ({
         )}
       </RootBox>
       {/* Mounted at Group level so park/restore survives Home Activity hide / Q-App navigation. */}
-      <QortinoAgentSheet
-        open={qortinoAgentOpen}
-        onClose={() => closeQortinoAgentSheet()}
-      />
+      {qortinoEverOpened && (
+        <Suspense fallback={null}>
+          <LazyQortinoAgentSheet
+            open={qortinoAgentOpen}
+            onClose={() => closeQortinoAgentSheet()}
+          />
+        </Suspense>
+      )}
     </>
   );
 };

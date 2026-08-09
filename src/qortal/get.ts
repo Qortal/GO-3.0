@@ -49,12 +49,12 @@ import {
 import { showSaveFilePicker } from '../hooks/useQortalMessageListener.tsx';
 import { getPublishesFromAdminsAdminSpace } from '../components/Chat/AdminSpaceInner.tsx';
 import { extractComponents } from '../components/Chat/MessageDisplay.tsx';
+import { decryptResource } from '../components/Group/groupDataPublishes.ts';
 import {
-  decryptResource,
   getGroupAdmins,
   getPublishesFromAdmins,
-  validateSecretKey,
-} from '../components/Group/Group.tsx';
+} from '../components/Group/groupApi.ts';
+import { validateSecretKey } from '../components/Group/groupValidation.ts';
 import {
   BTC_FEE_PER_BYTE,
   DGB_FEE_PER_BYTE,
@@ -130,6 +130,7 @@ import { roundUpToDecimals } from '../utils/numberFunctions.ts';
 import { normalizeFilename } from '../utils/downloadFromLocation.ts';
 import { isCapacitor } from '../utils/platform.ts';
 import {
+  isSilentSaveFile,
   mobileSaveLocationLabelFor,
   saveStreamToMobileDocuments,
 } from '../utils/mobileFileSave.ts';
@@ -3159,7 +3160,11 @@ async function saveFileFromLocation(data, isFromExtension, snackMethods) {
 
     await saveStreamToMobileDocuments(filename, decryptedChunks());
 
-    if (snackMethods?.setOpenSnackGlobal && snackMethods?.setInfoSnackCustom) {
+    if (
+      snackMethods?.setOpenSnackGlobal &&
+      snackMethods?.setInfoSnackCustom &&
+      !isSilentSaveFile(filename)
+    ) {
       snackMethods.setInfoSnackCustom({
         type: 'success',
         message: `Saved to ${mobileSaveLocationLabelFor(filename)}`,

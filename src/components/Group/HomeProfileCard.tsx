@@ -76,6 +76,12 @@ import {
 } from '../../constants/constants.ts';
 import { decryptStoredWallet } from '../../utils/decryptWallet';
 import { fileToBase64 } from '../../utils/fileReading';
+import {
+  readAutoLockDisabledFromStorage,
+  resolveAutoLockTimeoutMinutes,
+  timeoutMinutesForAutoLockDisabled,
+  writeAutoLockDisabledToStorage,
+} from '../../lib/autoLock';
 import { SAFE_AREA_TOP, SAFE_AREA_BOTTOM } from '../../utils/mobileSafeArea';
 import { setWalletAvatarCache, getWalletAvatarCache, buildQortalAvatarUrl } from '../../utils/walletAvatarCache';
 import { QortalUserAvatar } from '../QortalUserAvatar';
@@ -255,6 +261,9 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
   });
   const [areUiAnimationsEnabled, setAreUiAnimationsEnabled] = useState(() =>
     readStoredBoolean(ACCOUNT_SETTINGS_UI_ANIMATIONS_STORAGE_KEY, true)
+  );
+  const [isAutoLockDisabled, setIsAutoLockDisabled] = useState(() =>
+    readAutoLockDisabledFromStorage()
   );
   const [isGroupActivityModuleVisible, setIsGroupActivityModuleVisible] =
     useState(() =>
@@ -815,6 +824,13 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
         settings?.reticulumManagedConfigEnabled === false ? false : true
       );
       if (settings?.closeAction) setCloseAction(settings.closeAction);
+      const autoLockTimeout = resolveAutoLockTimeoutMinutes(
+        settings?.autoLockTimeoutMinutes,
+        settings?.disableAutoLockOnIdle === true
+      );
+      const shouldDisableAutoLock = autoLockTimeout === 0;
+      setIsAutoLockDisabled(shouldDisableAutoLock);
+      writeAutoLockDisabledToStorage(shouldDisableAutoLock, { notify: false });
       window.localStorage.setItem(
         ACCOUNT_SETTINGS_STARTUP_AUDIO_DISABLED_STORAGE_KEY,
         shouldDisableStartupSound ? 'true' : 'false'
@@ -1047,6 +1063,34 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
       setAreUiAnimationsEnabled(!checked);
     },
     []
+  );
+
+  const handleToggleAutoLock = useCallback(
+    async (_event: ChangeEvent<HTMLInputElement>, checked: boolean) => {
+      // Checked = auto-lock is disabled (matches "Disable Startup Sound").
+      setIsAutoLockDisabled(checked);
+      writeAutoLockDisabledToStorage(checked);
+
+      try {
+        if (typeof window.electronAPI?.setAppSettings === 'function') {
+          await window.electronAPI.setAppSettings({
+            autoLockTimeoutMinutes: timeoutMinutesForAutoLockDisabled(checked),
+          });
+        }
+      } catch (error) {
+        setIsAutoLockDisabled(!checked);
+        writeAutoLockDisabledToStorage(!checked);
+        setInfoSnack({
+          type: 'error',
+          message: td(
+            'auto_lock_update_error',
+            'We could not update auto lock right now.'
+          ),
+        });
+        setOpenSnack(true);
+      }
+    },
+    [setInfoSnack, setOpenSnack, td]
   );
 
   const handleToggleReticulumManagedConfig = useCallback(
@@ -4153,6 +4197,55 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                     <Switch
                       checked={!areUiAnimationsEnabled}
                       onChange={handleToggleUiAnimations}
+                      sx={settingsSwitchSx}
+                    />
+                  </Box>
+
+                  <Box
+                    sx={{
+                      borderTop: `1px solid ${avatarSectionDivider}`,
+                      mx: 1.35,
+                    }}
+                  />
+
+                  <Box
+                    sx={{
+                      alignItems: 'center',
+                      display: 'flex',
+                      gap: 1.2,
+                      justifyContent: 'space-between',
+                      px: 1.35,
+                      py: 1.2,
+                    }}
+                  >
+                    <Box sx={{ minWidth: 0 }}>
+                      <Typography
+                        sx={{
+                          color: theme.palette.text.primary,
+                          fontSize: '0.82rem',
+                          fontWeight: 700,
+                          letterSpacing: '0.01em',
+                        }}
+                      >
+                        {td('disable_auto_lock', 'Disable Auto Lock')}
+                      </Typography>
+                      <Typography
+                        sx={{
+                          color: theme.palette.text.secondary,
+                          fontSize: '0.75rem',
+                          lineHeight: 1.45,
+                          mt: 0.4,
+                        }}
+                      >
+                        {td(
+                          'disable_auto_lock_desc',
+                          'Turn on to keep GO unlocked when idle. Leave off to lock after 30 minutes of inactivity.'
+                        )}
+                      </Typography>
+                    </Box>
+                    <Switch
+                      checked={isAutoLockDisabled}
+                      onChange={handleToggleAutoLock}
                       sx={settingsSwitchSx}
                     />
                   </Box>

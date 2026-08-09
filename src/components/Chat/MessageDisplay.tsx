@@ -244,6 +244,7 @@ const decorateStaticReticulumMentions = (
 };
 
 export const MessageDisplay = ({
+  fitContent = false,
   htmlContent,
   hiddenQortalUrls,
   isReply = false,
@@ -255,6 +256,9 @@ export const MessageDisplay = ({
   textColor,
   trailingContent,
 }: {
+  /** Shrink to the text width instead of filling the row, so the caller can
+   *  align the whole block (used for your own messages on phones). */
+  fitContent?: boolean;
   htmlContent: unknown;
   hiddenQortalUrls?: string[];
   isReply?: boolean;
@@ -716,9 +720,11 @@ export const MessageDisplay = ({
         '& .tiptap:not(.isReply) .reticulum-user-mention': {
           cursor: 'pointer',
         },
-        maxWidth: '100%',
+        // Own messages leave a gutter on the opposite edge so the thread still
+        // reads as two sides even when the text wraps.
+        maxWidth: fitContent ? '88%' : '100%',
         minWidth: 0,
-        width: '100%',
+        width: fitContent ? 'auto' : '100%',
       }}
     >
       {embedLink && <Embed embedLink={embedData} />}

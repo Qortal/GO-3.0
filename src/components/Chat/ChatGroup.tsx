@@ -66,6 +66,7 @@ import {
   groupDraftKey,
 } from '../../utils/chatPersistence';
 import {
+  Avatar,
   Box,
   Button,
   ButtonBase,
@@ -99,7 +100,7 @@ import { getFee, isExtMsg } from '../../background/background.ts';
 import { appHeighOffset, appHeighOffsetPx } from '../Desktop/CustomTitleBar';
 import AppViewerContainer from '../Apps/AppViewerContainer';
 import CloseIcon from '@mui/icons-material/Close';
-import { throttle } from 'lodash';
+import throttle from 'lodash/throttle';
 import AddIcon from '@mui/icons-material/Add';
 import ArrowBackRoundedIcon from '@mui/icons-material/ArrowBackRounded';
 import CallIcon from '@mui/icons-material/Call';
@@ -107,6 +108,7 @@ import CallEndRoundedIcon from '@mui/icons-material/CallEndRounded';
 import ChevronRightRoundedIcon from '@mui/icons-material/ChevronRightRounded';
 import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded';
 import ExpandMoreRoundedIcon from '@mui/icons-material/ExpandMoreRounded';
+import { buildGroupAvatarUrl } from '../../utils/groupAvatarUrl';
 import EmojiEmotionsRoundedIcon from '@mui/icons-material/EmojiEmotionsRounded';
 import ForumRoundedIcon from '@mui/icons-material/ForumRounded';
 import ImageIcon from '@mui/icons-material/Image';
@@ -115,6 +117,7 @@ import FolderRoundedIcon from '@mui/icons-material/FolderRounded';
 import CheckCircleRoundedIcon from '@mui/icons-material/CheckCircleRounded';
 import LockRoundedIcon from '@mui/icons-material/LockRounded';
 import PeopleAltRoundedIcon from '@mui/icons-material/PeopleAltRounded';
+import MoreVertRoundedIcon from '@mui/icons-material/MoreVertRounded';
 import PublicRoundedIcon from '@mui/icons-material/PublicRounded';
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
 import CalendarMonthRoundedIcon from '@mui/icons-material/CalendarMonthRounded';
@@ -156,6 +159,7 @@ import {
   isReticulumCompressibleImage,
   isReticulumGifFile,
 } from './reticulumImagePreparation';
+import { stageReticulumFilePath } from './reticulumFileStaging';
 import { ReticulumLargeImageDialog } from './ReticulumLargeImageDialog';
 import { ReticulumGroupCalendarDialog } from './ReticulumGroupCalendarDialog';
 import {
@@ -1343,6 +1347,7 @@ export const ChatGroup = ({
   onGroupCallClick,
   onQortalLandClick,
   onThreadsClick,
+  onMobileBack,
   onMembersClick,
   membersPanelOpen = false,
   membersNotificationCount = 0,
@@ -1515,6 +1520,31 @@ export const ChatGroup = ({
   );
   const [reticulumChannelSidebarOpen, setReticulumChannelSidebarOpen] =
     useState(false);
+  const channelPanelSwipeRef = useRef<{ x: number; y: number } | null>(null);
+  // Shared by the panel and its scrim so the dismiss drag can start anywhere,
+  // including to the right of the panel.
+  const beginChannelPanelSwipe = useCallback((event: React.TouchEvent) => {
+    const touch = event.touches[0];
+    channelPanelSwipeRef.current = touch
+      ? { x: touch.clientX, y: touch.clientY }
+      : null;
+  }, []);
+  const trackChannelPanelSwipe = useCallback((event: React.TouchEvent) => {
+    const start = channelPanelSwipeRef.current;
+    const touch = event.touches[0];
+    if (!start || !touch) return;
+    const dx = start.x - touch.clientX;
+    const dy = Math.abs(touch.clientY - start.y);
+    if (dx > 44 && dy < dx) {
+      channelPanelSwipeRef.current = null;
+      setReticulumChannelSidebarOpen(false);
+    }
+  }, []);
+  const endChannelPanelSwipe = useCallback(() => {
+    channelPanelSwipeRef.current = null;
+  }, []);
+  const [reticulumMobileMenuAnchor, setReticulumMobileMenuAnchor] =
+    useState<HTMLElement | null>(null);
   const [reticulumChannelSidebarWidth, setReticulumChannelSidebarWidth] =
     useState(242);
   const reticulumChannelSidebarResizeCleanupRef = useRef<(() => void) | null>(
@@ -1571,6 +1601,12 @@ export const ChatGroup = ({
     setIsGroupAvatarDialogOpen(false);
     setReticulumCalendarOpen(false);
     setActiveReticulumCalendarTarget(null);
+    setReticulumSearchOpen(false);
+    setReticulumAdminAnchorEl(null);
+    setReticulumAdminAnchorPosition(null);
+    setIsOpenQManager(false);
+    setReticulumMobileMenuAnchor(null);
+    executeEvent('closeReticulumMembersPanel');
   }, [selectedGroup]);
   useEffect(() => {
     if (
@@ -1579,6 +1615,11 @@ export const ChatGroup = ({
       Number(reticulumCalendarTarget?.groupId) === Number(selectedGroup)
     ) {
       handledReticulumCalendarRequestRef.current = reticulumCalendarOpenRequest;
+      setReticulumSearchOpen(false);
+      setReticulumAdminAnchorEl(null);
+      setReticulumAdminAnchorPosition(null);
+      setIsOpenQManager(false);
+      executeEvent('closeReticulumMembersPanel');
       setActiveReticulumCalendarTarget(reticulumCalendarTarget);
       setReticulumCalendarOpen(true);
     }
@@ -6944,6 +6985,26 @@ export const ChatGroup = ({
     ]
   );
 
+  const dismissReticulumOverlays = useCallback(
+    (except?: 'search' | 'admin' | 'qmanager' | 'members' | 'calendar') => {
+      if (except !== 'search') setReticulumSearchOpen(false);
+      if (except !== 'admin') {
+        setReticulumAdminAnchorEl(null);
+        setReticulumAdminAnchorPosition(null);
+      }
+      if (except !== 'qmanager') setIsOpenQManager(false);
+      if (except !== 'calendar') {
+        setReticulumCalendarOpen(false);
+        setActiveReticulumCalendarTarget(null);
+      }
+      if (except !== 'members') {
+        executeEvent('closeReticulumMembersPanel');
+      }
+      setReticulumMobileMenuAnchor(null);
+    },
+    []
+  );
+
   const openQManager = useCallback(
     (eventOrRect?: any) => {
       const shouldToggle = Boolean(
@@ -6953,9 +7014,7 @@ export const ChatGroup = ({
         setIsOpenQManager(false);
         return;
       }
-      setReticulumAdminAnchorEl(null);
-      setReticulumAdminAnchorPosition(null);
-      executeEvent('closeReticulumMembersPanel');
+      dismissReticulumOverlays('qmanager');
       const targetRect =
         eventOrRect?.currentTarget?.getBoundingClientRect?.() ?? null;
       const possibleRect =
@@ -6979,11 +7038,11 @@ export const ChatGroup = ({
       }
       setIsOpenQManager(true);
     },
-    [isOpenQManager]
+    [dismissReticulumOverlays, isOpenQManager]
   );
 
   const toggleQManager = useCallback(
-    (event: ReactMouseEvent<HTMLElement>) => {
+    (event?: ReactMouseEvent<HTMLElement>) => {
       if (isOpenQManager === true) {
         setIsOpenQManager(false);
         return;
@@ -7026,11 +7085,11 @@ export const ChatGroup = ({
         setReticulumAdminAnchorPosition(null);
         return;
       }
-      setIsOpenQManager(false);
-      executeEvent('closeReticulumMembersPanel');
+      dismissReticulumOverlays('admin');
       setReticulumAdminAnchorEl(event.currentTarget);
     },
     [
+      dismissReticulumOverlays,
       isReticulumChannelAdmin,
       reticulumAdminAnchorEl,
       reticulumAdminAnchorPosition,
@@ -7058,8 +7117,7 @@ export const ChatGroup = ({
       const anchorRect =
         eventOrRect?.detail?.anchorRect ?? eventOrRect?.anchorRect ?? null;
       if (anchorRect && typeof anchorRect.left === 'number') {
-        setIsOpenQManager(false);
-        executeEvent('closeReticulumMembersPanel');
+        dismissReticulumOverlays('admin');
         setReticulumAdminAnchorEl(null);
         setReticulumAdminAnchorPosition({
           left: anchorRect.left + (anchorRect.width ?? 0) / 2,
@@ -7068,21 +7126,58 @@ export const ChatGroup = ({
       }
     },
     [
+      dismissReticulumOverlays,
       isReticulumChannelAdmin,
       reticulumAdminAnchorEl,
       reticulumAdminAnchorPosition,
     ]
   );
 
+  const reticulumSearchOpenRef = useRef(false);
+  useEffect(() => {
+    reticulumSearchOpenRef.current = reticulumSearchOpen;
+  }, [reticulumSearchOpen]);
+
+  const toggleReticulumSearch = useCallback(
+    (forceOpen?: boolean) => {
+      const currentlyOpen = reticulumSearchOpenRef.current;
+      const next =
+        forceOpen === true
+          ? true
+          : forceOpen === false
+            ? false
+            : !currentlyOpen;
+      if (next) dismissReticulumOverlays('search');
+      setReticulumSearchOpen(next);
+    },
+    [dismissReticulumOverlays]
+  );
+
   useEffect(() => {
     if (!reticulumChatEnabled) return;
     const openSearch = (event: any) => {
       const shouldToggle = Boolean(event?.detail?.toggle ?? event?.toggle);
-      setReticulumSearchOpen((open) => (shouldToggle ? !open : true));
+      if (shouldToggle) {
+        toggleReticulumSearch();
+        return;
+      }
+      dismissReticulumOverlays('search');
+      setReticulumSearchOpen(true);
+    };
+    const closeOverlays = (event: any) => {
+      const except = event?.detail?.except as
+        | 'search'
+        | 'admin'
+        | 'qmanager'
+        | 'members'
+        | 'calendar'
+        | undefined;
+      dismissReticulumOverlays(except);
     };
     subscribeToEvent('openReticulumChatSearch', openSearch);
     subscribeToEvent('openReticulumQManager', openQManager);
     subscribeToEvent('toggleReticulumAdminKeys', toggleReticulumAdminFromEvent);
+    subscribeToEvent('closeReticulumGroupOverlays', closeOverlays);
     return () => {
       unsubscribeFromEvent('openReticulumChatSearch', openSearch);
       unsubscribeFromEvent('openReticulumQManager', openQManager);
@@ -7090,8 +7185,15 @@ export const ChatGroup = ({
         'toggleReticulumAdminKeys',
         toggleReticulumAdminFromEvent
       );
+      unsubscribeFromEvent('closeReticulumGroupOverlays', closeOverlays);
     };
-  }, [openQManager, reticulumChatEnabled, toggleReticulumAdminFromEvent]);
+  }, [
+    dismissReticulumOverlays,
+    openQManager,
+    reticulumChatEnabled,
+    toggleReticulumAdminFromEvent,
+    toggleReticulumSearch,
+  ]);
 
   useEffect(() => {
     if (!reticulumAdminAnchorEl && !reticulumAdminAnchorPosition) return;
@@ -7155,15 +7257,16 @@ export const ChatGroup = ({
       file: File,
       options: { asAttachment?: boolean; filePathOverride?: string } = {}
     ) => {
+      const isImage =
+        file.type?.startsWith('image/') === true &&
+        options.asAttachment !== true;
       const filePath =
         options.filePathOverride ||
         window.reticulumResources?.getPathForFile?.(file) ||
         (typeof (file as File & { path?: unknown }).path === 'string'
           ? String((file as File & { path?: unknown }).path)
-          : '');
-      const isImage =
-        file.type?.startsWith('image/') === true &&
-        options.asAttachment !== true;
+          : '') ||
+        (!isImage ? await stageReticulumFilePath(file).catch(() => '') : '');
       if (options.asAttachment && !filePath) {
         setInfoSnack({
           type: 'error',
@@ -7559,6 +7662,13 @@ export const ChatGroup = ({
         await addPendingReticulumFile(compressed);
       }
       setReticulumLargeImageChoice(null);
+    } catch (error) {
+      console.error('Reticulum image compression failed', error);
+      setInfoSnack({
+        type: 'error',
+        message: 'Could not prepare that image. Try sending it as a file.',
+      });
+      setOpenSnack(true);
     } finally {
       setIsCompressingReticulumImage(false);
       if (choice.target === 'discussion') {
@@ -8563,6 +8673,9 @@ export const ChatGroup = ({
         mentionCount={mentionCount}
         onContextMenu={openReticulumChannelContextMenu}
         onSelect={(channelId) => {
+          // On phones the list is an overlay, so picking a channel should
+          // reveal the conversation rather than leave the panel covering it.
+          if (isMobile) setReticulumChannelSidebarOpen(false);
           if (channelId === selectedReticulumChannelId) return;
           setSelectedReticulumChannelId(channelId);
           setMessages([]);
@@ -8665,6 +8778,9 @@ export const ChatGroup = ({
       document.getElementById(`${elementIdPrefix}-${nextIndex}`)?.focus();
     });
   };
+  // Phones need a comfortable touch target, so the header actions grow there.
+  const reticulumHeaderActionSize = isMobile ? 44 : 36;
+  const reticulumHeaderIconSize = isMobile ? 23 : 19;
   const reticulumHeaderActionSx = (active?: boolean, showLabel?: boolean) =>
     ({
       alignItems: 'center',
@@ -8677,14 +8793,15 @@ export const ChatGroup = ({
       fontSize: 12,
       fontWeight: 600,
       gap: showLabel ? 0.6 : 0,
-      height: 36,
+      height: reticulumHeaderActionSize,
       justifyContent: 'center',
-      minWidth: showLabel ? 0 : 36,
+      minWidth: showLabel ? 0 : reticulumHeaderActionSize,
       overflow: 'hidden',
       px: showLabel ? 1 : 0,
       textAlign: 'center',
       transition: 'background-color 140ms ease, color 140ms ease',
-      width: showLabel ? 'auto' : 36,
+      width: showLabel ? 'auto' : reticulumHeaderActionSize,
+      '& .MuiSvgIcon-root': { fontSize: reticulumHeaderIconSize },
       '&:hover': {
         backgroundColor: active
           ? RETICULUM_ACTIVE_BLUE
@@ -8700,6 +8817,7 @@ export const ChatGroup = ({
     disabled = false,
     showLabel = false,
     tooltip = '',
+    secondary = false,
   }: {
     active?: boolean;
     label: string;
@@ -8708,10 +8826,19 @@ export const ChatGroup = ({
     disabled?: boolean;
     showLabel?: boolean;
     tooltip?: string;
+    /** Moved into the channel overflow menu on phones to keep the name legible. */
+    secondary?: boolean;
   }) => {
     if (typeof onClick !== 'function') return null;
     const button = (
-      <span style={{ display: 'inline-flex' }}>
+      <Box
+        component="span"
+        sx={{
+          display: secondary
+            ? { xs: 'none', md: 'inline-flex' }
+            : 'inline-flex',
+        }}
+      >
         <ButtonBase
           disabled={disabled}
           onClick={onClick}
@@ -8735,7 +8862,7 @@ export const ChatGroup = ({
             </Box>
           )}
         </ButtonBase>
-      </span>
+      </Box>
     );
     return (
       <Tooltip key={label} title={tooltip || label}>
@@ -8805,24 +8932,64 @@ export const ChatGroup = ({
           width: '100%',
         }}
       >
+        {reticulumChatEnabled && isMobile && reticulumChannelSidebarOpen && (
+          <Box
+            onClick={() => setReticulumChannelSidebarOpen(false)}
+            onTouchStart={beginChannelPanelSwipe}
+            onTouchMove={trackChannelPanelSwipe}
+            onTouchEnd={endChannelPanelSwipe}
+            sx={{
+              backgroundColor: alpha(theme.palette.common.black, 0.45),
+              inset: 0,
+              position: 'absolute',
+              zIndex: 8,
+            }}
+          />
+        )}
         {reticulumChatEnabled && (
           <Box
             onContextMenu={openReticulumChannelAreaContextMenu}
+            onTouchStart={
+              isMobile && reticulumChannelSidebarOpen
+                ? beginChannelPanelSwipe
+                : undefined
+            }
+            onTouchMove={
+              isMobile && reticulumChannelSidebarOpen
+                ? trackChannelPanelSwipe
+                : undefined
+            }
+            onTouchEnd={isMobile ? endChannelPanelSwipe : undefined}
             sx={{
               backgroundColor: theme.palette.background.surface,
               borderRight: `1px solid ${theme.palette.divider}`,
               flexShrink: 0,
               height: '100%',
-              left: { xs: reticulumChannelSidebarOpen ? 0 : '-240px', md: 0 },
+              boxShadow: {
+                xs: reticulumChannelSidebarOpen
+                  ? `0 0 30px ${alpha(theme.palette.common.black, 0.5)}`
+                  : 'none',
+                md: 'none',
+              },
+              left: 0,
               overflowY: 'auto',
               p: 0,
               position: { xs: 'absolute', md: 'relative' },
               scrollbarWidth: 'none',
               top: 0,
-              transition: { xs: 'left 0.18s ease', md: 'none' },
-              width: { xs: 224, md: reticulumChannelSidebarWidth },
-              minWidth: { xs: 224, md: 220 },
-              maxWidth: { xs: 224, md: 264 },
+              transform: {
+                xs: reticulumChannelSidebarOpen
+                  ? 'translateX(0)'
+                  : 'translateX(-100%)',
+                md: 'none',
+              },
+              transition: {
+                xs: 'transform 240ms cubic-bezier(0.2, 0, 0, 1), box-shadow 240ms ease',
+                md: 'none',
+              },
+              width: { xs: 264, md: reticulumChannelSidebarWidth },
+              minWidth: { xs: 264, md: 220 },
+              maxWidth: { xs: '80%', md: 264 },
               zIndex: { xs: 9, md: 'auto' },
               '&::-webkit-scrollbar': {
                 display: 'none',
@@ -8918,6 +9085,27 @@ export const ChatGroup = ({
                       px: 0.25,
                     }}
                   >
+                    <Avatar
+                      alt={selectedGroupName || 'Group'}
+                      src={
+                        buildGroupAvatarUrl(
+                          reticulumGroupOwnerName,
+                          selectedGroup
+                        ) ?? undefined
+                      }
+                      sx={{
+                        bgcolor: alpha(theme.palette.text.primary, 0.08),
+                        color: theme.palette.text.primary,
+                        flexShrink: 0,
+                        fontSize: 12,
+                        fontWeight: 700,
+                        height: 26,
+                        mr: 0.25,
+                        width: 26,
+                      }}
+                    >
+                      {(selectedGroupName || 'G').charAt(0).toUpperCase()}
+                    </Avatar>
                     {isPrivate && (
                       <Tooltip title="Private Encrypted Group">
                         <LockRoundedIcon
@@ -9383,7 +9571,8 @@ export const ChatGroup = ({
           <Box
             onClick={() => setReticulumChannelSidebarOpen(false)}
             sx={{
-              backgroundColor: alpha(theme.palette.common.black, 0.38),
+              animation: 'reticulumChannelScrimIn 200ms ease both',
+              backgroundColor: alpha(theme.palette.common.black, 0.45),
               bottom: 0,
               display: { xs: 'block', md: 'none' },
               left: 0,
@@ -9391,6 +9580,10 @@ export const ChatGroup = ({
               right: 0,
               top: 0,
               zIndex: 8,
+              '@keyframes reticulumChannelScrimIn': {
+                from: { opacity: 0 },
+                to: { opacity: 1 },
+              },
             }}
           />
         )}
@@ -9418,25 +9611,119 @@ export const ChatGroup = ({
                 px: 1.5,
               }}
             >
-              <Tooltip title="Channels">
-                <IconButton
-                  onClick={() =>
-                    setReticulumChannelSidebarOpen((open) => !open)
+              {typeof onMobileBack === 'function' && (
+                <Tooltip title="Back to groups">
+                  <IconButton
+                    aria-label="Back to groups"
+                    onClick={onMobileBack}
+                    size="small"
+                    sx={{
+                      color: 'text.secondary',
+                      display: { xs: 'inline-flex', md: 'none' },
+                      flexShrink: 0,
+                      ml: -0.5,
+                    }}
+                  >
+                    <ArrowBackRoundedIcon sx={{ fontSize: 20 }} />
+                  </IconButton>
+                </Tooltip>
+              )}
+              {/* Phones lead with the group identity and put the active
+                  channel underneath; the whole block opens the channel list. */}
+              <ButtonBase
+                aria-label="Show channels"
+                onClick={() => setReticulumChannelSidebarOpen((open) => !open)}
+                sx={{
+                  alignItems: 'center',
+                  borderRadius: '10px',
+                  display: { xs: 'flex', md: 'none' },
+                  flex: 1,
+                  gap: 1,
+                  // ButtonBase centres its content by default, which floats the
+                  // group name away from the edge when the header has room.
+                  justifyContent: 'flex-start',
+                  minWidth: 0,
+                  ml: -0.5,
+                  px: 0.5,
+                  py: 0.5,
+                  textAlign: 'left',
+                }}
+              >
+                <Avatar
+                  alt={selectedGroupName || 'Group'}
+                  src={
+                    buildGroupAvatarUrl(
+                      reticulumGroupOwnerName,
+                      selectedGroup
+                    ) ?? undefined
                   }
-                  size="small"
                   sx={{
-                    color: 'text.secondary',
-                    display: { xs: 'inline-flex', md: 'none' },
+                    bgcolor: alpha(theme.palette.text.primary, 0.08),
+                    color: theme.palette.text.primary,
                     flexShrink: 0,
+                    fontSize: 14,
+                    fontWeight: 700,
+                    height: 34,
+                    width: 34,
                   }}
                 >
-                  <TagRoundedIcon sx={{ fontSize: 20 }} />
-                </IconButton>
-              </Tooltip>
+                  {(selectedGroupName || 'G').charAt(0).toUpperCase()}
+                </Avatar>
+                <Box sx={{ minWidth: 0, textAlign: 'left' }}>
+                  <Box
+                    sx={{
+                      color: theme.palette.text.primary,
+                      fontSize: 15,
+                      fontWeight: 700,
+                      lineHeight: 1.2,
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {selectedGroupName || 'Group'}
+                  </Box>
+                  <Box
+                    sx={{
+                      alignItems: 'center',
+                      color: theme.palette.text.secondary,
+                      display: 'flex',
+                      fontSize: 12,
+                      fontWeight: 600,
+                      gap: '2px',
+                      lineHeight: 1.25,
+                      mt: '1px',
+                      overflow: 'hidden',
+                    }}
+                  >
+                    <TagRoundedIcon sx={{ fontSize: 13, flexShrink: 0 }} />
+                    <Box
+                      component="span"
+                      sx={{
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {selectedReticulumChannelName}
+                    </Box>
+                    <ExpandMoreRoundedIcon
+                      sx={{
+                        fontSize: 15,
+                        flexShrink: 0,
+                        transform: reticulumChannelSidebarOpen
+                          ? 'rotate(180deg)'
+                          : 'none',
+                        transition: 'transform 200ms ease',
+                      }}
+                    />
+                  </Box>
+                </Box>
+              </ButtonBase>
               <Box
                 sx={{
                   alignItems: 'center',
-                  display: 'flex',
+                  display: { xs: 'none', md: 'flex' },
                   flex: 1,
                   gap: 0.75,
                   fontSize: 17,
@@ -9486,15 +9773,21 @@ export const ChatGroup = ({
                 }}
               >
                 {typeof onQortalLandClick === 'function' && (
-                  <ReticulumModePill
-                    label="Qortal Land"
-                    onClick={onQortalLandClick}
-                  />
+                  <Box
+                    component="span"
+                    sx={{ display: { xs: 'none', md: 'inline-flex' } }}
+                  >
+                    <ReticulumModePill
+                      label="Qortal Land"
+                      onClick={onQortalLandClick}
+                    />
+                  </Box>
                 )}
                 <Box
                   aria-hidden
                   sx={{
                     backgroundColor: theme.palette.divider,
+                    display: { xs: 'none', md: 'block' },
                     flexShrink: 0,
                     height: 22,
                     mx: 0.5,
@@ -9524,8 +9817,14 @@ export const ChatGroup = ({
                   icon: <CalendarMonthRoundedIcon sx={{ fontSize: 19 }} />,
                   onClick: () => {
                     setActiveReticulumCalendarTarget(null);
-                    setReticulumCalendarOpen((current) => !current);
+                    if (reticulumCalendarOpen) {
+                      setReticulumCalendarOpen(false);
+                    } else {
+                      dismissReticulumOverlays('calendar');
+                      setReticulumCalendarOpen(true);
+                    }
                   },
+                  secondary: true,
                 })}
                 {legacyThreadsEnabled && (
                   <>
@@ -9533,12 +9832,14 @@ export const ChatGroup = ({
                       label: 'Threads',
                       icon: <ForumRoundedIcon sx={{ fontSize: 19 }} />,
                       onClick: onThreadsClick,
+                      secondary: true,
                     })}
                     {renderReticulumHeaderAction({
                       active: Boolean(reticulumAdminAnchorEl),
                       label: 'Admins',
                       icon: <SecurityRoundedIcon sx={{ fontSize: 19 }} />,
                       onClick: toggleReticulumAdminPopover,
+                      secondary: true,
                     })}
                   </>
                 )}
@@ -9547,12 +9848,14 @@ export const ChatGroup = ({
                   label: 'Q-Manager',
                   icon: <FolderRoundedIcon sx={{ fontSize: 19 }} />,
                   onClick: toggleQManager,
+                  secondary: true,
                 })}
                 <Tooltip title={membersPanelOpen ? 'Hide Members' : 'Members'}>
                   <Box
                     component="span"
                     sx={{
-                      display: 'inline-flex',
+                      // Lives in the overflow menu on phones.
+                      display: { xs: 'none', md: 'inline-flex' },
                       flexShrink: 0,
                       overflow: 'visible',
                       position: 'relative',
@@ -9613,9 +9916,197 @@ export const ChatGroup = ({
                   active: reticulumSearchOpen,
                   label: 'Search Chat',
                   icon: <SearchRoundedIcon sx={{ fontSize: 18 }} />,
-                  onClick: () => setReticulumSearchOpen((open) => !open),
+                  onClick: () => toggleReticulumSearch(),
                 })}
+                <IconButton
+                  aria-label="More group actions"
+                  onClick={(event) =>
+                    setReticulumMobileMenuAnchor(event.currentTarget)
+                  }
+                  size="small"
+                  sx={{
+                    color: 'text.secondary',
+                    display: { xs: 'inline-flex', md: 'none' },
+                    flexShrink: 0,
+                    height: reticulumHeaderActionSize,
+                    width: reticulumHeaderActionSize,
+                  }}
+                >
+                  <MoreVertRoundedIcon
+                    sx={{ fontSize: reticulumHeaderIconSize }}
+                  />
+                </IconButton>
               </Box>
+              <Popover
+                open={Boolean(reticulumMobileMenuAnchor)}
+                anchorEl={reticulumMobileMenuAnchor}
+                onClose={() => setReticulumMobileMenuAnchor(null)}
+                anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+                transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+                slotProps={{
+                  paper: {
+                    sx: {
+                      backgroundColor: theme.palette.background.surface,
+                      backgroundImage: 'none',
+                      border: `1px solid ${theme.palette.divider}`,
+                      borderRadius: '12px',
+                      boxShadow: `0 12px 28px ${alpha(
+                        theme.palette.common.black,
+                        0.28
+                      )}`,
+                      mt: 0.75,
+                      p: 1,
+                    },
+                  },
+                }}
+              >
+                {/*
+                  Same square header actions as Qortal Land — not a text menu —
+                  so Calendar / Files / Members match the land toolbar look.
+                */}
+                <Box
+                  sx={{
+                    display: 'grid',
+                    gap: 0.75,
+                    gridTemplateColumns: 'repeat(3, minmax(64px, 1fr))',
+                    maxWidth: 240,
+                  }}
+                >
+                  {[
+                    {
+                      key: 'members',
+                      active: membersPanelOpen,
+                      badge: membersNotificationCount,
+                      icon: <PeopleAltRoundedIcon />,
+                      label: membersPanelOpen ? 'Hide' : 'Members',
+                      onClick: () => onMembersClick?.(),
+                      show: true,
+                    },
+                    {
+                      key: 'calendar',
+                      active: reticulumCalendarOpen,
+                      icon: <CalendarMonthRoundedIcon />,
+                      label: 'Calendar',
+                      onClick: () => {
+                        setActiveReticulumCalendarTarget(null);
+                        if (reticulumCalendarOpen) {
+                          setReticulumCalendarOpen(false);
+                        } else {
+                          dismissReticulumOverlays('calendar');
+                          setReticulumCalendarOpen(true);
+                        }
+                      },
+                      show: true,
+                    },
+                    {
+                      key: 'files',
+                      active: isOpenQManager === true,
+                      icon: <FolderRoundedIcon />,
+                      label: 'Files',
+                      onClick: () => toggleQManager(),
+                      show: true,
+                    },
+                    {
+                      key: 'admins',
+                      active: Boolean(reticulumAdminAnchorEl),
+                      icon: <SecurityRoundedIcon />,
+                      label: 'Admins',
+                      onClick: () => {
+                        const anchorRect =
+                          reticulumMobileMenuAnchor?.getBoundingClientRect();
+                        toggleReticulumAdminFromEvent({ anchorRect });
+                      },
+                      show: isReticulumChannelAdmin,
+                    },
+                    {
+                      key: 'land',
+                      icon: <PublicRoundedIcon />,
+                      label: 'Land',
+                      onClick: () => onQortalLandClick?.(),
+                      show: typeof onQortalLandClick === 'function',
+                    },
+                    {
+                      key: 'threads',
+                      icon: <ForumRoundedIcon />,
+                      label: 'Threads',
+                      onClick: () => onThreadsClick?.(),
+                      show:
+                        legacyThreadsEnabled &&
+                        typeof onThreadsClick === 'function',
+                    },
+                  ]
+                    .filter((action) => action.show)
+                    .map((action) => (
+                      <ButtonBase
+                        key={action.key}
+                        aria-label={action.label}
+                        onClick={() => {
+                          setReticulumMobileMenuAnchor(null);
+                          action.onClick();
+                        }}
+                        sx={{
+                          alignItems: 'center',
+                          borderRadius: '10px',
+                          color: action.active
+                            ? theme.palette.common.white
+                            : theme.palette.text.secondary,
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: 0.45,
+                          justifyContent: 'center',
+                          minHeight: 64,
+                          px: 0.5,
+                          py: 0.75,
+                          position: 'relative',
+                          transition:
+                            'background-color 140ms ease, color 140ms ease',
+                          backgroundColor: action.active
+                            ? RETICULUM_ACTIVE_BLUE
+                            : 'transparent',
+                          '&:hover': {
+                            backgroundColor: action.active
+                              ? RETICULUM_ACTIVE_BLUE
+                              : theme.palette.action.hover,
+                            color: action.active
+                              ? theme.palette.common.white
+                              : theme.palette.text.primary,
+                          },
+                          '& .MuiSvgIcon-root': {
+                            fontSize: reticulumHeaderIconSize,
+                          },
+                        }}
+                      >
+                        {action.icon}
+                        <Box
+                          component="span"
+                          sx={{
+                            fontFamily: 'Inter, system-ui, sans-serif',
+                            fontSize: 11,
+                            fontWeight: 650,
+                            lineHeight: 1.15,
+                            textAlign: 'center',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          {action.label}
+                        </Box>
+                        {!!action.badge && action.badge > 0 && (
+                          <ReticulumUnreadCountBadge
+                            count={action.badge}
+                            outlineColor={theme.palette.background.surface}
+                            size={14}
+                            fontSize={8}
+                            sx={{
+                              position: 'absolute',
+                              right: 6,
+                              top: 4,
+                            }}
+                          />
+                        )}
+                      </ButtonBase>
+                    ))}
+                </Box>
+              </Popover>
             </Box>
           )}
           <Box
@@ -9627,7 +10118,10 @@ export const ChatGroup = ({
               display: 'flex',
               flex: 1,
               flexDirection: 'column',
-              mr: reticulumChatEnabled && membersPanelOpen ? '280px' : 0,
+              mr:
+                reticulumChatEnabled && membersPanelOpen && !isMobile
+                  ? '280px'
+                  : 0,
               minHeight: 0,
               minWidth: 0,
               position: 'relative',
@@ -9774,7 +10268,9 @@ export const ChatGroup = ({
               (reticulumChatEnabled || !!secretKey || isPrivate === false) && (
                 <Box
                   sx={{
-                    alignItems: 'flex-end',
+                    // Centre the send/expiry cluster on the input's midline so
+                    // the whole composer row reads as one balanced control.
+                    alignItems: reticulumChatEnabled ? 'center' : 'flex-end',
                     backgroundColor: reticulumChatEnabled
                       ? alpha(theme.palette.background.paper, 0.72)
                       : theme.palette.background.default,
@@ -9783,21 +10279,34 @@ export const ChatGroup = ({
                     borderLeft: reticulumChatEnabled ? 'none' : undefined,
                     borderRight: reticulumChatEnabled ? 'none' : undefined,
                     borderBottom: reticulumChatEnabled ? 'none' : undefined,
-                    bottom: isFocusedParent ? '0px' : 'unset',
+                    // See ChatDirect: the pinned "focused" composer is desktop
+                    // only, otherwise it floats over the message list on phones.
+                    bottom: isFocusedParent && !isMobile ? '0px' : 'unset',
                     boxSizing: 'border-box',
                     display: 'flex',
                     flexDirection: 'row',
                     flexShrink: 0,
-                    gap: reticulumChatEnabled ? '8px' : '12px',
-                    minHeight: reticulumChatEnabled ? '58px' : '150px',
+                    gap: reticulumChatEnabled ? (isMobile ? '6px' : '8px') : '12px',
+                    minHeight: reticulumChatEnabled
+                      ? isMobile
+                        ? '52px'
+                        : '58px'
+                      : '150px',
                     overflow: reticulumChatEnabled ? 'visible' : 'hidden',
                     padding: reticulumChatEnabled
-                      ? '8px 12px'
+                      ? isMobile
+                        ? '6px 8px'
+                        : '8px 12px'
                       : '16px 20px 20px',
-                    position: isFocusedParent ? 'fixed' : 'relative',
-                    top: isFocusedParent ? '0px' : 'unset',
+                    paddingBottom:
+                      reticulumChatEnabled && isMobile
+                        ? 'max(6px, env(safe-area-inset-bottom, 0px))'
+                        : undefined,
+                    position:
+                      isFocusedParent && !isMobile ? 'fixed' : 'relative',
+                    top: isFocusedParent && !isMobile ? '0px' : 'unset',
                     width: '100%',
-                    zIndex: isFocusedParent ? 5 : 'unset',
+                    zIndex: isFocusedParent && !isMobile ? 5 : 'unset',
                   }}
                 >
                   {reticulumChatEnabled && (
@@ -10170,12 +10679,18 @@ export const ChatGroup = ({
                       alignItems: 'center',
                       display: 'flex',
                       flexShrink: 0,
-                      gap: '8px',
-                      minHeight: reticulumChatEnabled ? '44px' : undefined,
+                      gap: isMobile && reticulumChatEnabled ? '6px' : '8px',
+                      minHeight: reticulumChatEnabled
+                        ? isMobile
+                          ? '36px'
+                          : '44px'
+                        : undefined,
                       paddingBottom: reticulumChatEnabled ? 0 : '2px',
                     }}
                   >
-                    {reticulumChatEnabled && (
+                    {/* Phone keyboards already carry an emoji key, so the
+                        picker only costs composer width here. */}
+                    {reticulumChatEnabled && !isMobile && (
                       <>
                         <Tooltip title="Choose Emoji">
                           <Box
@@ -10209,7 +10724,7 @@ export const ChatGroup = ({
                               borderRadius: '10px',
                               display: 'inline-flex',
                               flexShrink: 0,
-                              height: '38px',
+                              height: isMobile ? '34px' : '38px',
                               overflow: 'hidden',
                             }
                           : { display: 'contents' }
@@ -10276,11 +10791,25 @@ export const ChatGroup = ({
                           fontSize: '14px',
                           fontWeight: 500,
                           justifyContent: 'center',
-                          height: reticulumChatEnabled ? '38px' : undefined,
-                          minHeight: reticulumChatEnabled ? '38px' : '44px',
-                          minWidth: reticulumChatEnabled ? '74px' : '88px',
+                          height: reticulumChatEnabled
+                            ? isMobile
+                              ? '34px'
+                              : '38px'
+                            : undefined,
+                          minHeight: reticulumChatEnabled
+                            ? isMobile
+                              ? '34px'
+                              : '38px'
+                            : '44px',
+                          minWidth: reticulumChatEnabled
+                            ? isMobile
+                              ? '40px'
+                              : '74px'
+                            : '88px',
                           padding: reticulumChatEnabled
-                            ? '8px 14px'
+                            ? isMobile
+                              ? '6px 10px'
+                              : '8px 14px'
                             : '10px 16px',
                           position: 'relative',
                           transition:
@@ -10320,7 +10849,12 @@ export const ChatGroup = ({
                         ) : (
                           <>
                             <SendIcon sx={{ fontSize: '18px' }} />
-                            Send
+                            <Box
+                              component="span"
+                              sx={{ display: { xs: 'none', md: 'inline' } }}
+                            >
+                              Send
+                            </Box>
                           </>
                         )}
                       </CustomButton>
@@ -12827,7 +13361,13 @@ export const ChatGroup = ({
               onResize={handleQManagerResize}
               onResizeStop={handleQManagerResizeStop}
               style={{
-                display: hideView || isOpenQManager !== true ? 'none' : 'block',
+                // On GO mobile, chat runs with desktopViewMode="chat" so
+                // hideView is always true — that must not hide an explicitly
+                // opened Files / Q-Manager sheet.
+                display:
+                  isOpenQManager === true && (!hideView || isMobile)
+                    ? 'block'
+                    : 'none',
                 position: 'fixed',
                 zIndex: 1400,
               }}

@@ -91,10 +91,16 @@ export const messageDisplayFactory = () => ({
   extractComponents: vi.fn(),
 });
 
-export const groupFactory = () => ({
-  decryptResource: vi.fn(),
+export const groupApiFactory = () => ({
   getGroupAdmins: vi.fn(),
   getPublishesFromAdmins: vi.fn(),
+});
+
+export const groupDataPublishesFactory = () => ({
+  decryptResource: vi.fn(),
+});
+
+export const groupValidationFactory = () => ({
   validateSecretKey: vi.fn(),
 });
 

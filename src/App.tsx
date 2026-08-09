@@ -171,10 +171,13 @@ import { allowReticulumStart } from './components/Reticulum/reticulumStatus';
 import { isCapacitor } from './utils/platform';
 import { appLockedAtom, isIdleAtom } from './atoms/presence';
 import {
-  DEFAULT_AUTO_LOCK_TIMEOUT_MINUTES,
+  AUTO_LOCK_PREFERENCE_CHANGE_EVENT,
   isAutoLockDue,
+  readAutoLockDisabledFromStorage,
   resolveAutoLockTimeoutMinutes,
+  timeoutMinutesForAutoLockDisabled,
   type AutoLockTimeoutMinutes,
+  writeAutoLockDisabledToStorage,
 } from './lib/autoLock';
 
 const MINTING_LOCAL_DEBUG_STORAGE_KEY = 'hub.mintingLocalDebug';
@@ -330,7 +333,9 @@ function App() {
   const [isAppLocked, setIsAppLocked] = useAtom(appLockedAtom);
   const setIsIdle = useSetAtom(isIdleAtom);
   const [autoLockTimeoutMinutes, setAutoLockTimeoutMinutes] =
-    useState<AutoLockTimeoutMinutes>(DEFAULT_AUTO_LOCK_TIMEOUT_MINUTES);
+    useState<AutoLockTimeoutMinutes>(() =>
+      timeoutMinutesForAutoLockDisabled(readAutoLockDisabledFromStorage())
+    );
   const [reticulumEnabled, setReticulumEnabled] = useAtom(reticulumEnabledAtom);
   const [desktopViewMode, setDesktopViewMode] = useState('home');
   const [rawWallet, setRawWallet] = useAtom(rawWalletAtom);
@@ -350,13 +355,24 @@ function App() {
     }) => {
       if (cancelled) return;
       setReticulumEnabled(settings?.reticulumEnabled !== false);
-      setAutoLockTimeoutMinutes(
-        resolveAutoLockTimeoutMinutes(
-          settings?.autoLockTimeoutMinutes,
-          settings?.disableAutoLockOnIdle === true
-        )
+      const nextTimeout = resolveAutoLockTimeoutMinutes(
+        settings?.autoLockTimeoutMinutes,
+        settings?.disableAutoLockOnIdle === true
       );
+      setAutoLockTimeoutMinutes(nextTimeout);
+      // Keep the mobile/localStorage toggle in sync with Electron settings.
+      writeAutoLockDisabledToStorage(nextTimeout === 0, { notify: false });
     };
+    const onLocalPreference = (event: Event) => {
+      const disabled = Boolean(
+        (event as CustomEvent<{ disabled?: boolean }>).detail?.disabled
+      );
+      setAutoLockTimeoutMinutes(timeoutMinutesForAutoLockDisabled(disabled));
+    };
+    window.addEventListener(
+      AUTO_LOCK_PREFERENCE_CHANGE_EVENT,
+      onLocalPreference
+    );
     const unsubscribe = window.electronAPI?.onAppSettingsChanged?.(
       (settings) => {
         settingsChangeReceived = true;
@@ -369,6 +385,10 @@ function App() {
     return () => {
       cancelled = true;
       unsubscribe?.();
+      window.removeEventListener(
+        AUTO_LOCK_PREFERENCE_CHANGE_EVENT,
+        onLocalPreference
+      );
     };
   }, [setReticulumEnabled]);
   useEffect(() => {
@@ -2470,6 +2490,7 @@ function App() {
       {isAuthenticated && isMainWindow && isAppLocked && (
         <AuthenticatedLockScreen
           accountLabel={userInfo?.name || address || null}
+          walletAddress={rawWallet?.address0 || address || null}
           onUnlock={unlockApp}
         />
       )}

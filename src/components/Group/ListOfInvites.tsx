@@ -17,7 +17,7 @@ import {
   CellMeasurerCache,
   List,
 } from 'react-virtualized';
-import { getNameInfo } from './Group';
+import { getNameInfo } from './groupApi';
 import { getFee } from '../../background/background.ts';
 import { LoadingButton } from '@mui/lab';
 import { getBaseApiReact } from '../../App';

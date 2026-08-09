@@ -67,6 +67,23 @@ export async function decryptBoxWithMyKeyForGroupCall(payload: {
   )) as { decryptedKey?: string; error?: string };
 }
 
+/** Mobile fallback: bridge-reported local Reticulum identity (no electronAPI on mobile). */
+function mobileReticulumInfo(): {
+  destinationHash: string | null;
+  identityPublicKeyBase64: string | null;
+} | null {
+  return (
+    (
+      window as Window & {
+        __qortalMobileReticulum?: {
+          destinationHash: string | null;
+          identityPublicKeyBase64: string | null;
+        };
+      }
+    ).__qortalMobileReticulum ?? null
+  );
+}
+
 export async function fetchLocalReticulumDestinationHash(): Promise<
   string | null
 > {
@@ -79,7 +96,19 @@ export async function fetchLocalReticulumDestinationHash(): Promise<
       };
     }
   ).electronAPI?.reticulumGetLocalDestinationHash;
-  if (typeof fn !== 'function') return null;
+  if (typeof fn !== 'function') {
+    // Mobile: the bridge publishes the hash on its `ready` event, which can
+    // land after the user taps call, so poll rather than failing outright.
+    for (let attempt = 0; attempt < 35; attempt++) {
+      const raw = mobileReticulumInfo()?.destinationHash;
+      if (typeof raw === 'string') {
+        const normalized = raw.replace(/\s/g, '').trim().toLowerCase();
+        if (/^[0-9a-f]{32}$/.test(normalized)) return normalized;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    return null;
+  }
   const maxAttempts = 35;
   const delayMs = 200;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
@@ -112,7 +141,10 @@ export async function fetchLocalReticulumIdentityPublicKeyBase64(): Promise<
       };
     }
   ).electronAPI?.reticulumGetLocalIdentityPublicKeyBase64;
-  if (typeof fn !== 'function') return null;
+  if (typeof fn !== 'function') {
+    const raw = mobileReticulumInfo()?.identityPublicKeyBase64;
+    return typeof raw === 'string' && raw.length > 0 ? raw : null;
+  }
   const maxAttempts = 35;
   const delayMs = 200;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {

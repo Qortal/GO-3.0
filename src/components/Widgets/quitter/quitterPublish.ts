@@ -1,6 +1,10 @@
 import Compressor from 'compressorjs';
 import ShortUniqueId from 'short-unique-id';
 import { createNamedFile, nameBlob } from '../../../utils/namedFile';
+import {
+  blobToNamedImageFile,
+  compressImageFile,
+} from '../../../utils/imageCompression';
 import { objectToBase64 } from '../../../qdn/encryption/group-encryption';
 import {
   discardPublishFile,
@@ -118,84 +122,19 @@ const fileToRawBase64 = (file: Blob): Promise<string> =>
 
 const IMAGE_COMPRESS_THRESHOLD_BYTES = 5 * 1024 * 1024;
 
-function blobToPublishFile(blob: Blob, fileName: string, mimeType: string): File {
-  const type = mimeType || blob.type || 'image/webp';
-  const name = fileName.replace(/\.\w+$/, '') + (type.includes('webp') ? '.webp' : '.jpg');
-  const file = createNamedFile([blob], name, { type });
-  if (file.size === blob.size && file.size > 0) return file;
-  return nameBlob(blob, name);
-}
-
-const runImageCompressor = (
-  file: Blob,
-  opts: { quality: number; maxWidth: number; mimeType: string }
-): Promise<Blob> =>
-  new Promise((resolve, reject) => {
-    new Compressor(file, {
-      quality: opts.quality,
-      maxWidth: opts.maxWidth,
-      mimeType: opts.mimeType,
-      checkOrientation: true,
-      success(result) {
-        if (!result || result.size < 32) {
-          reject(new Error('Compressed image is empty'));
-          return;
-        }
-        resolve(result);
-      },
-      error(err) {
-        reject(err);
-      },
-    });
-  });
+const blobToPublishFile = blobToNamedImageFile;
 
 /**
  * Only compress Quitter images above 5 MB. Smaller images publish as-is.
  * When compressing, retry harder if the first pass stays over the threshold.
  */
 async function compressImageForQuitter(file: File): Promise<File> {
-  if (file.type === 'image/gif') return file;
-  if (!file.type.startsWith('image/')) return file;
-  if (file.size <= IMAGE_COMPRESS_THRESHOLD_BYTES) return file;
-
-  try {
-    let result = await runImageCompressor(file, {
-      quality: 0.72,
-      maxWidth: 1920,
-      mimeType: 'image/webp',
-    });
-
-    // Still huge — second pass with smaller dimensions / lower quality.
-    if (result.size > IMAGE_COMPRESS_THRESHOLD_BYTES) {
-      result = await runImageCompressor(result, {
-        quality: 0.6,
-        maxWidth: 1280,
-        mimeType: 'image/webp',
-      });
-    }
-
-    // Prefer compressed only when it actually shrinks and is valid.
-    if (result.size > 0 && result.size < file.size) {
-      return blobToPublishFile(result, file.name, 'image/webp');
-    }
-    return file;
-  } catch (err) {
-    console.warn('[Quitter] image compress failed, using original', err);
-    // Last resort: try JPEG encode (some WebViews struggle with webp output).
-    try {
-      const jpeg = await runImageCompressor(file, {
-        quality: 0.65,
-        maxWidth: 1600,
-        mimeType: 'image/jpeg',
-      });
-      if (jpeg.size > 0 && jpeg.size < file.size) {
-        return blobToPublishFile(jpeg, file.name, 'image/jpeg');
-      }
-    } catch {
-      // ignore
-    }
-    return file;
-  }
+  return compressImageFile(file, {
+    thresholdBytes: IMAGE_COMPRESS_THRESHOLD_BYTES,
+    first: { quality: 0.72, maxWidth: 1920, mimeType: 'image/webp' },
+    second: { quality: 0.6, maxWidth: 1280, mimeType: 'image/webp' },
+    fallback: { quality: 0.65, maxWidth: 1600, mimeType: 'image/jpeg' },
+  });
 }
 
 const publishMultipleResources = async (

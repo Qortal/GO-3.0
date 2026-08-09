@@ -22,8 +22,10 @@ import {
   TextField,
   Typography,
   alpha,
+  useMediaQuery,
   useTheme,
 } from '@mui/material';
+import { LandTouchJoystick } from './LandTouchJoystick';
 import { useAtomValue } from 'jotai';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { balanceAtom, userInfoAtom } from '../../atoms/global';
@@ -2800,6 +2802,8 @@ export function QortalLand({
   isActive = true,
 }: QortalLandProps) {
   const theme = useTheme();
+  // Movement is keyboard-driven, so touch-only devices need an on-screen pad.
+  const isTouchLayout = useMediaQuery('(pointer: coarse)');
   const groupCall = useGroupCallContext();
   const balance = useAtomValue(balanceAtom);
   const userInfo = useAtomValue(userInfoAtom);
@@ -2891,6 +2895,10 @@ export function QortalLand({
   const [activeChatTab, setActiveChatTab] = useState<LandChatTab>('local');
   const [chatPanelGeometry, setChatPanelGeometry] =
     useState<LandChatPanelGeometry | null>(null);
+  // Free drag/resize needs a mouse: on touch the small handles get hit while
+  // scrolling the log, which is what makes the panel jump around. Phones keep
+  // it docked to the bottom-left instead.
+  const landChatPanelGeometry = isTouchLayout ? null : chatPanelGeometry;
   const [lastChatActivityAt, setLastChatActivityAt] = useState(() => Date.now());
   const [, setPrimaryNameLookupVersion] = useState(0);
   const [actionTarget, setActionTarget] = useState<LandActionTarget | null>(null);
@@ -2906,6 +2914,8 @@ export function QortalLand({
   const [landCallPresenceVersion, setLandCallPresenceVersion] = useState(0);
   const [landGamePresenceVersion, setLandGamePresenceVersion] = useState(0);
   const [landAvailabilityVersion, setLandAvailabilityVersion] = useState(0);
+  // Mirrors landGameActiveRef for render paths (the touch pad hides in games).
+  const [landGameActive, setLandGameActive] = useState(false);
   const [isAssetDevPanelOpen, setIsAssetDevPanelOpen] = useState(false);
   const [selectedDevRoomId, setSelectedDevRoomId] = useState<LandRoomId>(
     QORTAL_LAND_PARK_ROOM_ID
@@ -3192,6 +3202,7 @@ export function QortalLand({
 
   const handleLandGameActiveChange = useCallback((active: boolean) => {
     landGameActiveRef.current = active;
+    setLandGameActive(active);
     if (active) {
       movementKeysRef.current.clear();
       localStateRef.current = { ...localStateRef.current, movement: 'idle' };
@@ -9520,6 +9531,9 @@ export function QortalLand({
             </Typography>
           </Box>
         )}
+        {isTouchLayout && reticulumReady === true && !landGameActive && (
+          <LandTouchJoystick keysRef={movementKeysRef} />
+        )}
         {reticulumReady === true && (
           <ClickAwayListener
             onClickAway={() => {
@@ -9535,81 +9549,97 @@ export function QortalLand({
                   'linear-gradient(180deg, rgba(7, 12, 20, 0.96), rgba(5, 8, 15, 0.9))',
                 border: '1px solid rgba(44, 248, 255, 0.52)',
                 borderRadius: '14px',
-                bottom: chatPanelGeometry ? 'auto' : { xs: 12, md: 18 },
+                bottom: landChatPanelGeometry
+                  ? 'auto'
+                  : {
+                      xs: 'max(12px, env(safe-area-inset-bottom, 0px))',
+                      md: 18,
+                    },
                 boxSizing: 'border-box',
                 boxShadow:
                   '0 18px 42px rgba(0, 0, 0, 0.52), inset 0 0 0 1px rgba(255, 43, 214, 0.28), inset 0 0 28px rgba(44, 248, 255, 0.04)',
                 color: '#f8fbff',
                 display: 'flex',
                 flexDirection: 'column',
-                height: chatPanelGeometry ? chatPanelGeometry.height : 'auto',
-                left: chatPanelGeometry ? chatPanelGeometry.x : { xs: 12, md: 22 },
+                height: landChatPanelGeometry
+                  ? landChatPanelGeometry.height
+                  : 'auto',
+                left: landChatPanelGeometry
+                  ? landChatPanelGeometry.x
+                  : { xs: 12, md: 22 },
                 opacity: landChatOpacity,
-                padding: '14px 14px 16px',
+                padding: isTouchLayout ? '10px 10px 12px' : '14px 14px 16px',
                 pointerEvents: 'auto',
                 position: 'absolute',
-                top: chatPanelGeometry ? chatPanelGeometry.y : 'auto',
+                top: landChatPanelGeometry ? landChatPanelGeometry.y : 'auto',
                 transition: 'opacity 180ms ease, border-color 180ms ease, background 180ms ease',
-                width: chatPanelGeometry
-                  ? chatPanelGeometry.width
-                  : 'min(468px, calc(100% - 24px))',
+                width: landChatPanelGeometry
+                  ? landChatPanelGeometry.width
+                  : isTouchLayout
+                    ? 'calc(100% - 160px)'
+                    : 'min(468px, calc(100% - 24px))',
                 zIndex: 4,
                 '&:hover': {
                   opacity: 0.9,
                 },
               }}
             >
-              <Box
-                aria-hidden="true"
-                onPointerDown={(event) => {
-                  if (event.button !== 0) return;
-                  event.preventDefault();
-                  event.stopPropagation();
-                  beginChatPanelInteraction(
-                    'resize-top-right',
-                    event.pointerId,
-                    event.clientX,
-                    event.clientY
-                  );
-                }}
-                sx={{
-                  cursor: 'nesw-resize',
-                  height: 18,
-                  position: 'absolute',
-                  right: 0,
-                  top: 0,
-                  touchAction: 'none',
-                  width: 18,
-                  zIndex: 3,
-                }}
-              />
-              <Box
-                aria-hidden="true"
-                onPointerDown={(event) => {
-                  if (event.button !== 0) return;
-                  event.preventDefault();
-                  event.stopPropagation();
-                  beginChatPanelInteraction(
-                    'resize-bottom-right',
-                    event.pointerId,
-                    event.clientX,
-                    event.clientY
-                  );
-                }}
-                sx={{
-                  bottom: 0,
-                  cursor: 'nwse-resize',
-                  height: 18,
-                  position: 'absolute',
-                  right: 0,
-                  touchAction: 'none',
-                  width: 18,
-                  zIndex: 3,
-                }}
-              />
+              {!isTouchLayout && (
+                <Box
+                  aria-hidden="true"
+                  onPointerDown={(event) => {
+                    if (event.button !== 0) return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    beginChatPanelInteraction(
+                      'resize-top-right',
+                      event.pointerId,
+                      event.clientX,
+                      event.clientY
+                    );
+                  }}
+                  sx={{
+                    cursor: 'nesw-resize',
+                    height: 18,
+                    position: 'absolute',
+                    right: 0,
+                    top: 0,
+                    touchAction: 'none',
+                    width: 18,
+                    zIndex: 3,
+                  }}
+                />
+              )}
+              {!isTouchLayout && (
+                <Box
+                  aria-hidden="true"
+                  onPointerDown={(event) => {
+                    if (event.button !== 0) return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    beginChatPanelInteraction(
+                      'resize-bottom-right',
+                      event.pointerId,
+                      event.clientX,
+                      event.clientY
+                    );
+                  }}
+                  sx={{
+                    bottom: 0,
+                    cursor: 'nwse-resize',
+                    height: 18,
+                    position: 'absolute',
+                    right: 0,
+                    touchAction: 'none',
+                    width: 18,
+                    zIndex: 3,
+                  }}
+                />
+              )}
               <Box
                 onPointerDown={(event) => {
                   if (
+                    isTouchLayout ||
                     event.button !== 0 ||
                     (event.target instanceof Element &&
                       event.target.closest('[data-land-chat-no-drag="true"]'))

@@ -282,13 +282,21 @@ export function useAudioSurfaceGroupCallController(
         chatId,
       });
       const electronApi = window.electronAPI as any;
-      const cachedReadiness = await electronApi?.getSystemCallReadiness?.();
-      const readiness =
-        cachedReadiness?.status === 'good'
+      // Readiness is sampled by the Electron main process. Where it does not
+      // exist (mobile) there is nothing to consult, so do not treat the absent
+      // reading as "busy" — that would block every call.
+      const readinessSupported =
+        typeof electronApi?.getSystemCallReadiness === 'function';
+      const cachedReadiness = readinessSupported
+        ? await electronApi.getSystemCallReadiness()
+        : null;
+      const readiness = !readinessSupported
+        ? null
+        : cachedReadiness?.status === 'good'
           ? cachedReadiness
           : ((await electronApi?.refreshSystemCallReadiness?.()) ??
             cachedReadiness);
-      if (!readiness || readiness.status !== 'good') {
+      if (readinessSupported && (!readiness || readiness.status !== 'good')) {
         traceGcallAudioSurface(
           'controller.joinGroupCall: blocked by system readiness',
           {
@@ -319,6 +327,16 @@ export function useAudioSurfaceGroupCallController(
         traceGcallAudioSurface('controller.joinGroupCall: sendCommand failed', {
           error: response.error,
         });
+        // Without this the join silently dies and the user is left staring at
+        // a call that never connects.
+        setInfoSnackGlobal({
+          type: 'error',
+          message:
+            response.error === 'group-calls-unavailable'
+              ? 'The call engine could not start on this device.'
+              : 'Could not join the group call. Please try again.',
+        });
+        setOpenSnackGlobal(true);
       }
     },
     [sendCommand, setInfoSnackGlobal, setOpenSnackGlobal]

@@ -96,12 +96,16 @@ class CaptureProcessor extends AudioWorkletProcessor {
       } else if (e.data?.type === 'set-frame-port') {
         this._framePort = e.ports?.[0] || null;
         this._framePortGeneration = (e.data.generation >>> 0) || 0;
+        // Bare `instanceof SharedArrayBuffer` throws where the global is
+        // absent (any WebView that isn't cross-origin isolated), which kills
+        // the whole worklet. Without shared memory we fall back to postMessage.
+        const hasSab = typeof SharedArrayBuffer !== 'undefined';
         this._sharedSamples =
-          e.data.sharedSamples instanceof SharedArrayBuffer
+          hasSab && e.data.sharedSamples instanceof SharedArrayBuffer
             ? new Float32Array(e.data.sharedSamples)
             : null;
         this._sharedState =
-          e.data.sharedState instanceof SharedArrayBuffer
+          hasSab && e.data.sharedState instanceof SharedArrayBuffer
             ? new Int32Array(e.data.sharedState)
             : null;
         this._sharedSlotCount = Math.max(0, e.data.sharedSlotCount >>> 0);

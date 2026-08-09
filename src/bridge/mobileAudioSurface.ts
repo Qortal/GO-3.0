@@ -205,22 +205,44 @@ const getGroupCall = (): GroupCallLike | null => {
   return gc?.sendAudio && gc?.onEvent ? gc : null;
 };
 
-/** One full-duplex DM voice session bound to a (roomId, peer, roomKey). */
-class MobileDirectVoiceSession {
+/**
+ * One inbound speaker: its own Opus decoder and jitter-buffered playback node.
+ * Group calls need one of these per participant — a single decoder fed by
+ * interleaved streams from several speakers produces garbage — and the
+ * AudioContext graph mixes them for free because they share a destination.
+ */
+type SourcePipeline = {
+  decoder: AudioDecoder;
+  playbackNode: AudioWorkletNode;
+};
+
+/** Frames held while a new speaker's pipeline is still being constructed. */
+const MAX_PENDING_FRAMES_PER_SOURCE = 25;
+
+/**
+ * Full-duplex voice session bound to a (roomId, roomKey). Sends one encoded
+ * stream to every target address and plays back each inbound speaker
+ * separately, which covers both 1:1 DMs (a single target) and group calls.
+ */
+class MobileVoiceSession {
   roomId: string;
-  peerAddress: string;
   localAddress: string;
   roomKey: Uint8Array;
   muted = false;
   hearCall = true;
 
+  /** Addresses our encoded audio is fanned out to. */
+  private sendTargets: string[];
+  private sources = new Map<string, SourcePipeline>();
+  private sourceBuilds = new Map<string, Promise<SourcePipeline | null>>();
+  private pendingBySource = new Map<string, Uint8Array[]>();
+  private playbackStarted = false;
+
   private ctx: AudioContext | null = null;
   private ctxPromise: Promise<AudioContext> | null = null;
   private micStream: MediaStream | null = null;
   private captureNode: AudioWorkletNode | null = null;
-  private playbackNode: AudioWorkletNode | null = null;
   private encoder: AudioEncoder | null = null;
-  private decoder: AudioDecoder | null = null;
   private gcUnsub: (() => void) | null = null;
   private seq = 0;
   private frameIndex = 0;
@@ -257,14 +279,14 @@ class MobileDirectVoiceSession {
 
   constructor(opts: {
     roomId: string;
-    peerAddress: string;
+    sendTargets: string[];
     localAddress: string;
     roomKey: Uint8Array;
     muted?: boolean;
     hearCall?: boolean;
   }) {
     this.roomId = opts.roomId;
-    this.peerAddress = opts.peerAddress;
+    this.sendTargets = [...opts.sendTargets];
     this.localAddress = opts.localAddress;
     this.roomKey = opts.roomKey;
     this.muted = opts.muted === true;
@@ -273,6 +295,11 @@ class MobileDirectVoiceSession {
 
   setRoomKey(k: Uint8Array): void {
     this.roomKey = k;
+  }
+
+  /** Replace the fan-out list as participants join or leave a group call. */
+  setSendTargets(targets: string[]): void {
+    this.sendTargets = [...new Set(targets.filter(Boolean))];
   }
 
   private async ensureContext(): Promise<AudioContext> {
@@ -340,71 +367,137 @@ class MobileDirectVoiceSession {
 
   /** Start decode + playback of inbound audio (callee receive / full media). */
   async startPlayback(): Promise<void> {
-    if (this.playbackNode || this.disposed) return;
-    const ctx = await this.ensureContext();
-    const playback = await this.makeWorkletNode('pcm-playback', {
-      numberOfInputs: 0,
-      numberOfOutputs: 1,
-      outputChannelCount: [1],
-    });
-    if (this.disposed) {
-      playback.disconnect();
-      return;
-    }
-    playback.connect(ctx.destination);
-    playback.port.onmessage = (e: MessageEvent) => {
-      const d = e.data as { t?: string; peakQ?: number; q?: number };
-      if (d && d.t === 'q') {
-        this.rxPlaybackPeakQ = d.peakQ ?? 0;
-        this.rxPlaybackQ = d.q ?? 0;
-      }
-    };
-    this.playbackNode = playback;
-
-    const decoder = new AudioDecoder({
-      output: (data: AudioData) => {
-        try {
-          if (!this.hearCall || !this.playbackNode) {
-            data.close();
-            return;
-          }
-          const n = data.numberOfFrames;
-          const pcm = new Float32Array(n);
-          data.copyTo(pcm, { planeIndex: 0, format: 'f32-planar' });
-          this.rxDecodedFrames += 1;
-          let sumSq = 0;
-          for (let i = 0; i < n; i++) sumSq += pcm[i]! * pcm[i]!;
-          const rms = n > 0 ? Math.sqrt(sumSq / n) : 0;
-          if (rms > this.rxPeakRms) this.rxPeakRms = rms;
-          this.playbackNode.port.postMessage(pcm, [pcm.buffer]);
-        } catch {
-          /* drop frame */
-        } finally {
-          data.close();
-        }
-      },
-      error: () => {
-        /* decoder reset on next packet */
-      },
-    });
-    decoder.configure({
-      codec: 'opus',
-      sampleRate: SAMPLE_RATE,
-      numberOfChannels: 1,
-    });
-    this.decoder = decoder;
+    if (this.playbackStarted || this.disposed) return;
+    this.playbackStarted = true;
+    // Build the context up front so the first speaker's pipeline comes up
+    // quickly, then attach per-speaker pipelines lazily as audio arrives.
+    await this.ensureContext();
+    if (this.disposed) return;
 
     const gc = getGroupCall();
     if (gc) {
       this.gcUnsub = gc.onEvent((event, payload) => {
         if (event !== 'gcall:audio') return;
-        this.onInboundAudio(payload as { roomId?: string; data?: unknown });
+        this.onInboundAudio(
+          payload as {
+            roomId?: string;
+            data?: unknown;
+            peerPresenceHash?: string;
+          }
+        );
       });
     }
   }
 
-  private onInboundAudio(payload: { roomId?: string; data?: unknown }): void {
-    if (payload.roomId !== this.roomId || !this.decoder) return;
+  /** Build (or reuse) the decode + playback chain for one inbound speaker. */
+  private getSource(sourceKey: string): SourcePipeline | null {
+    const existing = this.sources.get(sourceKey);
+    if (existing) return existing;
+    if (this.sourceBuilds.has(sourceKey) || this.disposed) return null;
+
+    const build = (async (): Promise<SourcePipeline | null> => {
+      try {
+        const ctx = await this.ensureContext();
+        const playbackNode = await this.makeWorkletNode('pcm-playback', {
+          numberOfInputs: 0,
+          numberOfOutputs: 1,
+          outputChannelCount: [1],
+        });
+        if (this.disposed) {
+          playbackNode.disconnect();
+          return null;
+        }
+        playbackNode.connect(ctx.destination);
+        playbackNode.port.onmessage = (e: MessageEvent) => {
+          const d = e.data as { t?: string; peakQ?: number; q?: number };
+          if (d && d.t === 'q') {
+            this.rxPlaybackPeakQ = d.peakQ ?? 0;
+            this.rxPlaybackQ = d.q ?? 0;
+          }
+        };
+
+        const decoder = new AudioDecoder({
+          output: (data: AudioData) => {
+            try {
+              if (!this.hearCall) {
+                data.close();
+                return;
+              }
+              const n = data.numberOfFrames;
+              const pcm = new Float32Array(n);
+              data.copyTo(pcm, { planeIndex: 0, format: 'f32-planar' });
+              this.rxDecodedFrames += 1;
+              let sumSq = 0;
+              for (let i = 0; i < n; i++) sumSq += pcm[i]! * pcm[i]!;
+              const rms = n > 0 ? Math.sqrt(sumSq / n) : 0;
+              if (rms > this.rxPeakRms) this.rxPeakRms = rms;
+              playbackNode.port.postMessage(pcm, [pcm.buffer]);
+            } catch {
+              /* drop frame */
+            } finally {
+              data.close();
+            }
+          },
+          error: () => {
+            /* decoder reset on next packet */
+          },
+        });
+        decoder.configure({
+          codec: 'opus',
+          sampleRate: SAMPLE_RATE,
+          numberOfChannels: 1,
+        });
+
+        const pipeline: SourcePipeline = { decoder, playbackNode };
+        this.sources.set(sourceKey, pipeline);
+        this.flushPending(sourceKey, pipeline);
+        return pipeline;
+      } catch {
+        return null;
+      } finally {
+        this.sourceBuilds.delete(sourceKey);
+      }
+    })();
+
+    this.sourceBuilds.set(sourceKey, build);
+    return null;
+  }
+
+  /** Replay frames that arrived while this speaker's pipeline was building. */
+  private flushPending(sourceKey: string, pipeline: SourcePipeline): void {
+    const pending = this.pendingBySource.get(sourceKey);
+    this.pendingBySource.delete(sourceKey);
+    if (!pending) return;
+    for (const frame of pending) {
+      this.decodeInto(pipeline, frame, Date.now());
+    }
+  }
+
+  private decodeInto(
+    pipeline: SourcePipeline,
+    opusFrame: Uint8Array,
+    timestampMs: number
+  ): void {
+    if (pipeline.decoder.state !== 'configured') return;
+    try {
+      pipeline.decoder.decode(
+        new EncodedAudioChunk({
+          type: 'key',
+          timestamp: timestampMs * 1000,
+          data: opusFrame,
+        })
+      );
+    } catch {
+      /* skip malformed */
+    }
+  }
+
+  private onInboundAudio(payload: {
+    roomId?: string;
+    data?: unknown;
+    peerPresenceHash?: string;
+  }): void {
+    if (payload.roomId !== this.roomId || this.disposed) return;
     let bytes: Uint8Array | null = null;
     const d = payload.data;
     if (d instanceof Uint8Array) bytes = d;
@@ -414,20 +507,29 @@ class MobileDirectVoiceSession {
     this.rxEvents += 1;
     const packets = decodeAudioPackets(bytes, this.roomKey);
     this.rxDecryptedPackets += packets.length;
+    if (packets.length === 0) return;
+
     const nowMs = Date.now();
     for (const pkt of packets) {
       const offset = nowMs - pkt.timestampMs;
       if (offset < this.rxOffsetBaseline) this.rxOffsetBaseline = offset;
       this.rxLatencyMs = offset - this.rxOffsetBaseline;
-      try {
-        const chunk = new EncodedAudioChunk({
-          type: 'key',
-          timestamp: pkt.timestampMs * 1000,
-          data: pkt.opusFrame,
-        });
-        this.decoder.decode(chunk);
-      } catch {
-        /* skip malformed */
+      // The packet's own sender address is the most precise split; fall back to
+      // the transport's peer hash, and finally to a single shared pipeline.
+      const sourceKey =
+        pkt.sourceAddr || payload.peerPresenceHash || 'default';
+      const pipeline = this.getSource(sourceKey);
+      if (pipeline) {
+        this.decodeInto(pipeline, pkt.opusFrame, pkt.timestampMs);
+        continue;
+      }
+      let pending = this.pendingBySource.get(sourceKey);
+      if (!pending) {
+        pending = [];
+        this.pendingBySource.set(sourceKey, pending);
+      }
+      if (pending.length < MAX_PENDING_FRAMES_PER_SOURCE) {
+        pending.push(pkt.opusFrame);
       }
     }
     const now = Date.now();
@@ -436,13 +538,18 @@ class MobileDirectVoiceSession {
       // events = inbound gcall:audio batches; decryptedPackets = passed roomKey
       // auth (0 ⇒ key mismatch / no shared key); decodedFrames = Opus→PCM output
       // (>0 ⇒ pipeline producing audio); ctx = AudioContext state (must be running).
+      let decodeQueue = 0;
+      for (const pipeline of this.sources.values()) {
+        decodeQueue += pipeline.decoder.decodeQueueSize ?? 0;
+      }
       console.log(
-        '[audioSurface] rx events=%d decryptedPackets=%d decodedFrames=%d peakRms=%s decodeQ=%d playQ=%d/%d latencyMs=%d hear=%s ctx=%s',
+        '[audioSurface] rx sources=%d events=%d decryptedPackets=%d decodedFrames=%d peakRms=%s decodeQ=%d playQ=%d/%d latencyMs=%d hear=%s ctx=%s',
+        this.sources.size,
         this.rxEvents,
         this.rxDecryptedPackets,
         this.rxDecodedFrames,
         this.rxPeakRms.toFixed(4),
-        this.decoder?.decodeQueueSize ?? -1,
+        decodeQueue,
         this.rxPlaybackQ,
         this.rxPlaybackPeakQ,
         Math.round(this.rxLatencyMs),
@@ -575,21 +682,23 @@ class MobileDirectVoiceSession {
     this.txEncodedChunks += 1;
     const gc = getGroupCall();
     if (!gc) return;
-    void gc
-      .sendAudio(this.roomId, this.peerAddress, packet)
-      .then((r) => {
-        // sendAudio resolves { sent, reason }; count a real send vs a drop
-        // (no_peer / link error) so we can see whether audio actually leaves.
-        const sent =
-          r && typeof r === 'object' && 'sent' in r
-            ? Number((r as { sent?: number }).sent) || 0
-            : 1;
-        if (sent > 0) this.txSentPackets += 1;
-        else this.txSendFailures += 1;
-      })
-      .catch(() => {
-        this.txSendFailures += 1;
-      });
+    for (const target of this.sendTargets) {
+      void gc
+        .sendAudio(this.roomId, target, packet)
+        .then((r) => {
+          // sendAudio resolves { sent, reason }; count a real send vs a drop
+          // (no_peer / link error) so we can see whether audio actually leaves.
+          const sent =
+            r && typeof r === 'object' && 'sent' in r
+              ? Number((r as { sent?: number }).sent) || 0
+              : 1;
+          if (sent > 0) this.txSentPackets += 1;
+          else this.txSendFailures += 1;
+        })
+        .catch(() => {
+          this.txSendFailures += 1;
+        });
+    }
   }
 
   private maybeLogTx(): void {
@@ -632,11 +741,21 @@ class MobileDirectVoiceSession {
     } catch {
       /* ignore */
     }
-    try {
-      this.playbackNode?.disconnect();
-    } catch {
-      /* ignore */
+    for (const pipeline of this.sources.values()) {
+      try {
+        pipeline.playbackNode.disconnect();
+      } catch {
+        /* ignore */
+      }
+      try {
+        if (pipeline.decoder.state !== 'closed') pipeline.decoder.close();
+      } catch {
+        /* ignore */
+      }
     }
+    this.sources.clear();
+    this.sourceBuilds.clear();
+    this.pendingBySource.clear();
     this.micStream?.getTracks().forEach((t) => t.stop());
     this.micStream = null;
     try {
@@ -644,15 +763,8 @@ class MobileDirectVoiceSession {
     } catch {
       /* ignore */
     }
-    try {
-      if (this.decoder && this.decoder.state !== 'closed') this.decoder.close();
-    } catch {
-      /* ignore */
-    }
     this.encoder = null;
-    this.decoder = null;
     this.captureNode = null;
-    this.playbackNode = null;
     try {
       await this.ctx?.close();
     } catch {
@@ -677,7 +789,7 @@ export function installMobileAudioSurface(): void {
   }
   installed = true;
 
-  let session: MobileDirectVoiceSession | null = null;
+  let session: MobileVoiceSession | null = null;
   const eventCbs = new Set<(event: AudioSurfaceEvent) => void>();
   const emit = (event: AudioSurfaceEvent): void => {
     eventCbs.forEach((cb) => {
@@ -693,18 +805,101 @@ export function installMobileAudioSurface(): void {
     const s = session;
     session = null;
     await s?.dispose();
+    // A DM call and a group call would fight over the mic, so starting either
+    // one ends the other.
+    if (groupCallActive) {
+      groupCallActive = false;
+      try {
+        await groupRuntime?.handleCommand({ type: 'leave-group-call' });
+      } catch {
+        /* ignore */
+      }
+    }
     await leaveCallAudioRoute();
   };
+
+  // Multi-party calls need the real engine: membership, epoch keying and
+  // topology all live in GroupCallAudioEngineRuntime, and reimplementing them
+  // would put mobile on a different wire protocol than every desktop peer.
+  // It is plain web code (WebCodecs + AudioWorklet + window.groupCall), so we
+  // load it lazily on the first group command rather than at startup.
+  type GroupRuntime = {
+    handleCommand: (c: AudioSurfaceCommand) => Promise<AudioSurfaceResponse>;
+    onEvent: (cb: (e: AudioSurfaceEvent) => void) => void;
+    start: () => void;
+    dispose: () => void;
+  };
+  let groupRuntime: GroupRuntime | null = null;
+  let groupRuntimeLoad: Promise<GroupRuntime | null> | null = null;
+  let groupCallActive = false;
+
+  // `set-user` and friends arrive long before the first call. Because the
+  // engine is created lazily it would otherwise join without an identity, so
+  // keep the latest of each and replay them on construction.
+  const STICKY_COMMANDS = new Set<AudioSurfaceCommand['type']>([
+    'set-user',
+    'set-ui-active',
+    'set-device-preferences',
+    'set-audio-quality-profile',
+  ]);
+  const stickyCommands = new Map<string, AudioSurfaceCommand>();
+
+  const ensureGroupRuntime = async (): Promise<GroupRuntime | null> => {
+    if (groupRuntime) return groupRuntime;
+    if (!groupRuntimeLoad) {
+      groupRuntimeLoad = (async () => {
+        try {
+          const { GroupCallAudioEngineRuntime } = await import(
+            '../lib/group-call/groupCallAudioEngineRuntime'
+          );
+          const rt = new GroupCallAudioEngineRuntime() as unknown as GroupRuntime;
+          rt.onEvent(emit);
+          rt.start();
+          for (const c of stickyCommands.values()) {
+            try {
+              await rt.handleCommand(c);
+            } catch (e) {
+              console.warn('[audioSurface] replay failed', c.type, e);
+            }
+          }
+          groupRuntime = rt;
+          return rt;
+        } catch (e) {
+          console.warn('[audioSurface] group call engine failed to load', e);
+          groupRuntimeLoad = null;
+          return null;
+        }
+      })();
+    }
+    return groupRuntimeLoad;
+  };
+
+  const GROUP_COMMANDS = new Set<AudioSurfaceCommand['type']>([
+    'join-group-call',
+    'leave-group-call',
+    'set-muted',
+    'set-hear-call',
+    'set-audio-quality-profile',
+    'export-diagnostics',
+    'list-audio-devices',
+    'set-device-preferences',
+    'set-user',
+    'set-ui-active',
+    'logout-cleanup',
+  ]);
 
   const handleCommand = async (
     command: AudioSurfaceCommand
   ): Promise<AudioSurfaceResponse> => {
+    if (STICKY_COMMANDS.has(command.type)) {
+      stickyCommands.set(command.type, command);
+    }
     switch (command.type) {
       case 'start-direct-voice-receive': {
         await teardown();
-        session = new MobileDirectVoiceSession({
+        session = new MobileVoiceSession({
           roomId: command.roomId,
-          peerAddress: command.peerAddress,
+          sendTargets: [command.peerAddress],
           localAddress: '',
           roomKey: toUint8(command.roomKey),
           hearCall: command.hearCall,
@@ -725,9 +920,9 @@ export function installMobileAudioSurface(): void {
       }
       case 'start-direct-voice-media': {
         await teardown();
-        session = new MobileDirectVoiceSession({
+        session = new MobileVoiceSession({
           roomId: command.roomId,
-          peerAddress: command.peerAddress,
+          sendTargets: [command.peerAddress],
           localAddress: command.localAddress,
           roomKey: toUint8(command.roomKey),
           muted: command.muted,
@@ -757,9 +952,43 @@ export function installMobileAudioSurface(): void {
         await teardown();
         return { ok: true };
       }
-      default:
-        // Group-call / device commands are not supported on mobile yet.
+      case 'join-group-call': {
+        // A group call and a DM call cannot share the mic or the room key.
+        await teardown();
+        const rt = await ensureGroupRuntime();
+        if (!rt) return { ok: false, error: 'group-calls-unavailable' };
+        await enterCallAudioRoute();
+        const res = await rt.handleCommand(command);
+        if (!res.ok) {
+          await leaveCallAudioRoute();
+          return res;
+        }
+        groupCallActive = true;
+        // The engine's getUserMedia grabs the comm device and drops us back to
+        // the earpiece, same as the DM path.
+        await reassertCallAudioRoute();
+        return res;
+      }
+      case 'leave-group-call': {
+        const res = groupRuntime
+          ? await groupRuntime.handleCommand(command)
+          : { ok: true as const };
+        if (groupCallActive) {
+          groupCallActive = false;
+          await leaveCallAudioRoute();
+        }
+        return res;
+      }
+      default: {
+        if (GROUP_COMMANDS.has(command.type)) {
+          // Only wake the engine for state it needs to remember; muting with
+          // no call in progress shouldn't pull in the whole runtime.
+          const rt = groupRuntime ?? (groupCallActive ? await ensureGroupRuntime() : null);
+          if (rt) return rt.handleCommand(command);
+        }
+        // Remaining device commands are inert on mobile.
         return { ok: true };
+      }
     }
   };
 

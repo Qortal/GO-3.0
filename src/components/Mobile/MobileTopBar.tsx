@@ -164,6 +164,8 @@ export const MobileTopBar = ({
         computeP2pHealth({
           onlineRemoteHubInterfaces: s.onlineRemoteHubInterfaces,
           p2pActiveOverlayPeers: s.p2pActiveOverlayPeers,
+          p2pReceivingOverlayPeers: s.p2pReceivingOverlayPeers,
+          p2pReceivingOverlayPeersStableMs: s.p2pReceivingOverlayPeersStableMs,
         })
       );
     });

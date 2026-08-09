@@ -34,21 +34,21 @@ import {
   pauseAllQueues,
   resumeAllQueues,
 } from '../../App';
-import { RequestQueueWithPromise } from '../../utils/queue/queue';
+import {
+  requestQueueCommentCount,
+  requestQueuePublishedAccouncements,
+} from '../../utils/queue/announcementQueues';
 import { CustomizedSnackbars } from '../Snackbar/Snackbar';
-import { addDataPublishesFunc, getDataPublishesFunc } from '../Group/Group';
+import {
+  addDataPublishesFunc,
+  getDataPublishesFunc,
+} from '../Group/groupDataPublishes';
 import { useTranslation } from 'react-i18next';
 import { TIME_SECONDS_20_IN_MILLISECONDS } from '../../constants/constants.ts';
 
 const uid = new ShortUniqueId({ length: 8 });
 const RETICULUM_ACTIVE_BLUE = '#2563eb';
 const RETICULUM_ACTIVE_BLUE_HOVER = '#1e40af';
-
-export const requestQueueCommentCount = new RequestQueueWithPromise(3);
-
-export const requestQueuePublishedAccouncements = new RequestQueueWithPromise(
-  3
-);
 
 export const saveTempPublish = async ({ data, key }: any) => {
   return new Promise((res, rej) => {

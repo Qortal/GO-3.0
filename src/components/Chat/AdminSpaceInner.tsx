@@ -17,12 +17,12 @@ import {
   ListItemText,
   Typography,
 } from '@mui/material';
+import { decryptResource } from '../Group/groupDataPublishes';
 import {
-  decryptResource,
   getAllPublishesFromAdmins,
   getPublishesFromAdmins,
-  validateSecretKey,
-} from '../Group/Group';
+} from '../Group/groupApi';
+import { validateSecretKey } from '../Group/groupValidation';
 import { getFee } from '../../background/background.ts';
 import { base64ToUint8Array } from '../../qdn/encryption/group-encryption';
 import { uint8ArrayToObject } from '../../encryption/encryption.ts';

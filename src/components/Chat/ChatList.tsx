@@ -355,6 +355,8 @@ export const ChatList = ({
     }),
     [scrollButtonSx]
   );
+  // Phones don't have room for a labelled pill floating over the thread.
+  const useCompactScrollButton = compactScrollButton || isMobile;
   const getMessageKey = useCallback(
     (message: any, index: number) =>
       message?.tempSignature ||
@@ -1969,38 +1971,62 @@ export const ChatList = ({
           </Box>
         </Box>
 
-        {(showScrollButton || hasNewerMessages) && (
-          <Button
-            onClick={() => void handleGoToLatest()}
-            disabled={hasNewerMessages && isLoadingNewerMessages}
-            startIcon={<KeyboardArrowDownRoundedIcon sx={{ fontSize: 20 }} />}
-            sx={{
-              ...scrollButtonSx,
-              backgroundColor: theme.palette.primary.dark,
-              color: theme.palette.primary.contrastText,
-              border: `1px solid ${theme.palette.primary.main}`,
-              '&:hover': {
-                ...scrollButtonSx['&:hover'],
-                backgroundColor: theme.palette.primary.main,
+        {(showScrollButton || hasNewerMessages) &&
+          (useCompactScrollButton ? (
+            <Button
+              onClick={() => void handleGoToLatest()}
+              disabled={hasNewerMessages && isLoadingNewerMessages}
+              aria-label={
+                hasNewerMessages
+                  ? t('group:action.jump_latest', {
+                      defaultValue: 'Jump to latest',
+                      postProcess: 'capitalizeFirstChar',
+                    })
+                  : t('group:action.scroll_unread_messages', {
+                      postProcess: 'capitalizeFirstChar',
+                    })
+              }
+              sx={{
+                ...scrollButtonCompactSx,
+                backgroundColor: theme.palette.primary.dark,
                 color: theme.palette.primary.contrastText,
-              },
-            }}
-          >
-            {hasNewerMessages
-              ? t('group:action.jump_latest', {
-                  defaultValue: 'Jump to latest',
-                  postProcess: 'capitalizeFirstChar',
-                })
-              : t('group:action.scroll_unread_messages', {
-                  postProcess: 'capitalizeFirstChar',
-                })}
-          </Button>
-        )}
+                border: `1px solid ${theme.palette.primary.main}`,
+              }}
+            >
+              <KeyboardArrowDownRoundedIcon sx={{ fontSize: 22 }} />
+            </Button>
+          ) : (
+            <Button
+              onClick={() => void handleGoToLatest()}
+              disabled={hasNewerMessages && isLoadingNewerMessages}
+              startIcon={<KeyboardArrowDownRoundedIcon sx={{ fontSize: 20 }} />}
+              sx={{
+                ...scrollButtonSx,
+                backgroundColor: theme.palette.primary.dark,
+                color: theme.palette.primary.contrastText,
+                border: `1px solid ${theme.palette.primary.main}`,
+                '&:hover': {
+                  ...scrollButtonSx['&:hover'],
+                  backgroundColor: theme.palette.primary.main,
+                  color: theme.palette.primary.contrastText,
+                },
+              }}
+            >
+              {hasNewerMessages
+                ? t('group:action.jump_latest', {
+                    defaultValue: 'Jump to latest',
+                    postProcess: 'capitalizeFirstChar',
+                  })
+                : t('group:action.scroll_unread_messages', {
+                    postProcess: 'capitalizeFirstChar',
+                  })}
+            </Button>
+          ))}
 
         {showScrollDownButton &&
           !showScrollButton &&
           !hasNewerMessages &&
-          (compactScrollButton ? (
+          (useCompactScrollButton ? (
             <Button
               onClick={() => void handleGoToLatest()}
               aria-label={t('group:action.scroll_bottom', {

@@ -9,8 +9,10 @@ import {
   IconButton,
   Tooltip,
   Typography,
+  useMediaQuery,
 } from '@mui/material';
 import { alpha, useTheme } from '@mui/material/styles';
+import { SAFE_AREA_BOTTOM, SAFE_AREA_TOP } from '../../utils/mobileSafeArea';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import ForumRoundedIcon from '@mui/icons-material/ForumRounded';
 import ImageRoundedIcon from '@mui/icons-material/ImageRounded';
@@ -106,6 +108,7 @@ export const ReticulumDiscussionDialog = ({
   selectedGroup,
 }: ReticulumDiscussionDialogProps) => {
   const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down('md'));
   const [editor, setEditor] = useState<Editor | null>(null);
   const [expiryDurationMs, setExpiryDurationMs] = useState<
     number | undefined
@@ -200,6 +203,7 @@ export const ReticulumDiscussionDialog = ({
           backgroundColor: 'rgba(3, 6, 12, 0.76)',
         },
       }}
+      fullScreen={isMobile}
       fullWidth
       maxWidth={false}
       onClose={closeDisabled ? undefined : onClose}
@@ -210,21 +214,36 @@ export const ReticulumDiscussionDialog = ({
             theme.palette.mode === 'dark'
               ? 'linear-gradient(180deg, rgba(15, 19, 27, 0.98) 0%, rgba(9, 12, 18, 0.98) 100%)'
               : 'linear-gradient(180deg, rgba(250, 251, 253, 0.98) 0%, rgba(242, 245, 249, 0.98) 100%)',
-          border: '1px solid',
-          borderColor:
-            theme.palette.mode === 'dark'
-              ? 'rgba(126, 139, 166, 0.2)'
-              : 'rgba(38, 52, 74, 0.16)',
-          borderRadius: '14px',
-          boxShadow:
-            theme.palette.mode === 'dark'
-              ? '0 22px 70px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.02)'
-              : '0 22px 70px rgba(27, 39, 58, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.72)',
-          height: 'min(782px, calc(100vh - 24px))',
-          m: { xs: 1, sm: 1.5 },
-          maxWidth: 935,
           overflow: 'hidden',
-          width: 'min(935px, calc(100vw - 32px))',
+          // A floating card on a phone wastes the height the thread and the
+          // composer need, so take the whole screen instead.
+          ...(isMobile
+            ? {
+                border: 'none',
+                borderRadius: 0,
+                boxShadow: 'none',
+                height: '100%',
+                m: 0,
+                maxWidth: '100%',
+                paddingTop: `calc(4px + ${SAFE_AREA_TOP})`,
+                width: '100%',
+              }
+            : {
+                border: '1px solid',
+                borderColor:
+                  theme.palette.mode === 'dark'
+                    ? 'rgba(126, 139, 166, 0.2)'
+                    : 'rgba(38, 52, 74, 0.16)',
+                borderRadius: '14px',
+                boxShadow:
+                  theme.palette.mode === 'dark'
+                    ? '0 22px 70px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.02)'
+                    : '0 22px 70px rgba(27, 39, 58, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.72)',
+                height: 'min(782px, calc(100vh - 24px))',
+                m: { xs: 1, sm: 1.5 },
+                maxWidth: 935,
+                width: 'min(935px, calc(100vw - 32px))',
+              }),
         },
       }}
     >
@@ -235,36 +254,42 @@ export const ReticulumDiscussionDialog = ({
           borderColor: 'divider',
           display: 'flex',
           justifyContent: 'space-between',
-          minHeight: 92,
-          px: '22px',
-          pb: '15px',
-          pt: '18px',
+          minHeight: isMobile ? 56 : 92,
+          px: isMobile ? '12px' : '22px',
+          pb: isMobile ? '8px' : '15px',
+          pt: isMobile ? '8px' : '18px',
         }}
       >
-        <Box sx={{ alignItems: 'center', display: 'flex', gap: 2 }}>
+        <Box
+          sx={{
+            alignItems: 'center',
+            display: 'flex',
+            gap: isMobile ? 1.25 : 2,
+          }}
+        >
           <Box
             sx={{
               alignItems: 'center',
               backgroundColor: alpha(theme.palette.text.primary, 0.06),
               border: `1px solid ${alpha(theme.palette.text.primary, 0.12)}`,
-              borderRadius: '12px',
+              borderRadius: isMobile ? '9px' : '12px',
               color: alpha(theme.palette.text.primary, 0.58),
               display: 'flex',
-              height: 42,
+              height: isMobile ? 32 : 42,
               justifyContent: 'center',
-              width: 42,
+              width: isMobile ? 32 : 42,
             }}
           >
-            <ForumRoundedIcon sx={{ fontSize: 22 }} />
+            <ForumRoundedIcon sx={{ fontSize: isMobile ? 18 : 22 }} />
           </Box>
           <Box>
             <Typography
               sx={{
                 color: 'text.primary',
-                fontSize: 24,
+                fontSize: isMobile ? 17 : 24,
                 fontWeight: 700,
                 letterSpacing: '-0.025em',
-                lineHeight: '30px',
+                lineHeight: isMobile ? '21px' : '30px',
               }}
             >
               Discussion
@@ -272,9 +297,9 @@ export const ReticulumDiscussionDialog = ({
             <Typography
               sx={{
                 color: 'text.secondary',
-                fontSize: 14,
+                fontSize: isMobile ? 12 : 14,
                 fontWeight: 500,
-                lineHeight: '18px',
+                lineHeight: isMobile ? '15px' : '18px',
                 mt: '2px',
               }}
             >
@@ -291,8 +316,8 @@ export const ReticulumDiscussionDialog = ({
             backgroundColor: alpha(theme.palette.text.primary, 0.025),
             border: `1px solid ${alpha(theme.palette.text.primary, 0.14)}`,
             color: 'text.primary',
-            height: 40,
-            width: 40,
+            height: isMobile ? 34 : 40,
+            width: isMobile ? 34 : 40,
             '&:hover': {
               backgroundColor: alpha(theme.palette.text.primary, 0.07),
             },
@@ -348,9 +373,9 @@ export const ReticulumDiscussionDialog = ({
                     left: 0,
                     maxWidth: '100%',
                     overflow: 'hidden',
-                    px: '22px',
-                    pb: index === 0 ? '24px' : '10px',
-                    pt: index === 0 ? '20px' : 0,
+                    px: isMobile ? '10px' : '22px',
+                    pb: index === 0 ? (isMobile ? '14px' : '24px') : '10px',
+                    pt: index === 0 ? (isMobile ? '12px' : '20px') : 0,
                     position: 'absolute',
                     top: 0,
                     transform: `translateY(${virtualRow.start}px)`,
@@ -463,7 +488,10 @@ export const ReticulumDiscussionDialog = ({
               : 'rgba(247, 249, 252, 0.94)',
           borderTop: '1px solid',
           borderColor: 'divider',
-          p: '16px 18px',
+          p: isMobile ? '8px 10px' : '16px 18px',
+          ...(isMobile
+            ? { paddingBottom: `calc(8px + ${SAFE_AREA_BOTTOM})` }
+            : {}),
         }}
       >
         <Box sx={{ mb: messageSize > MAX_SIZE_MESSAGE ? 1.25 : 0 }}>
@@ -557,15 +585,19 @@ export const ReticulumDiscussionDialog = ({
           sx={{
             alignItems: 'center',
             display: 'flex',
-            gap: 1,
-            minHeight: 44,
+            gap: isMobile ? 0.5 : 1,
+            minHeight: isMobile ? 40 : 44,
           }}
         >
+          {/* Without this the editor is just another flex item and the fixed
+              width controls beside it squeeze the typing area to nothing. */}
+          <Box sx={{ flex: 1, minWidth: 0 }}>
           <Tiptap
             collapseFormattingTraySignal={formattingResetKey}
             compactChat
             disableEnter={!canWrite || loading || closeDisabled}
             enableMentions
+            inOverlay
             insertFiles={onSelectFiles}
             isChat
             isFocusedParent={focused}
@@ -576,28 +608,33 @@ export const ReticulumDiscussionDialog = ({
               onTypingChange(Boolean(nextEditor.getText().trim()));
             }}
             onEnter={send}
-            placeholder="Reply to discussion..."
+            placeholder={isMobile ? 'Reply...' : 'Reply to discussion...'}
             setEditorRef={setEditor}
             setIsFocusedParent={setFocused}
           />
-          <Tooltip title="Choose Emoji">
-            <Box
-              sx={{
-                alignItems: 'center',
-                display: 'inline-flex',
-                flexShrink: 0,
-                justifyContent: 'center',
-              }}
-            >
-              <ReactionPicker
-                compactComposer
-                neutralIcon
-                onReaction={(emoji: string) => {
-                  editor?.chain().focus().insertContent(emoji).run();
+          </Box>
+          {/* The tray already carries an emoji button on phones, and the row
+              has no width to spare. */}
+          {!isMobile && (
+            <Tooltip title="Choose Emoji">
+              <Box
+                sx={{
+                  alignItems: 'center',
+                  display: 'inline-flex',
+                  flexShrink: 0,
+                  justifyContent: 'center',
                 }}
-              />
-            </Box>
-          </Tooltip>
+              >
+                <ReactionPicker
+                  compactComposer
+                  neutralIcon
+                  onReaction={(emoji: string) => {
+                    editor?.chain().focus().insertContent(emoji).run();
+                  }}
+                />
+              </Box>
+            </Tooltip>
+          )}
           <Box
             sx={{
               alignItems: 'stretch',
@@ -606,7 +643,7 @@ export const ReticulumDiscussionDialog = ({
               borderRadius: '10px',
               display: 'inline-flex',
               flexShrink: 0,
-              height: 38,
+              height: isMobile ? 34 : 38,
               overflow: 'hidden',
             }}
           >
@@ -634,10 +671,13 @@ export const ReticulumDiscussionDialog = ({
                 color: 'common.white',
                 flexShrink: 0,
                 fontWeight: 650,
-                height: 38,
-                minWidth: 82,
-                px: '14px',
+                height: isMobile ? 34 : 38,
+                minWidth: isMobile ? 44 : 82,
+                px: isMobile ? '10px' : '14px',
                 textTransform: 'none',
+                '& .MuiButton-startIcon': isMobile
+                  ? { margin: 0 }
+                  : undefined,
                 '&:hover': { backgroundColor: '#1e40af' },
                 '&.Mui-focusVisible': {
                   boxShadow: (theme) =>
@@ -646,7 +686,7 @@ export const ReticulumDiscussionDialog = ({
               }}
               variant="contained"
             >
-              Send
+              {isMobile ? '' : 'Send'}
             </Button>
           </Box>
         </Box>

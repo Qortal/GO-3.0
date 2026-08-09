@@ -1,3 +1,4 @@
+import { Box, Button, Typography } from '@mui/material';
 import { openHttpUrlExternally } from '../utils/openExternalHttp';
 import { useAtomValue } from 'jotai';
 import { balanceAtom } from '../atoms/global';

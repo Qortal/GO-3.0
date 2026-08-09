@@ -16,7 +16,7 @@ import {
   Divider,
   useTheme,
 } from '@mui/material';
-import { getNameInfo } from '../Group/Group';
+import { getNameInfo } from '../Group/groupApi';
 import PollIcon from '@mui/icons-material/Poll';
 import { getFee } from '../../background/background.ts';
 import RefreshIcon from '@mui/icons-material/Refresh';

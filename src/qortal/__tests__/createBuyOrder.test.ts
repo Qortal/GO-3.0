@@ -19,8 +19,14 @@ vi.mock('../../components/Chat/AdminSpaceInner', async () =>
 vi.mock('../../components/Chat/MessageDisplay', async () =>
   (await import('./common')).messageDisplayFactory()
 );
-vi.mock('../../components/Group/Group', async () =>
-  (await import('./common')).groupFactory()
+vi.mock('../../components/Group/groupApi', async () =>
+  (await import('./common')).groupApiFactory()
+);
+vi.mock('../../components/Group/groupDataPublishes', async () =>
+  (await import('./common')).groupDataPublishesFactory()
+);
+vi.mock('../../components/Group/groupValidation', async () =>
+  (await import('./common')).groupValidationFactory()
 );
 vi.mock('../../qdn/encryption/group-encryption', async () =>
   (await import('./common')).groupEncryptionFactory()

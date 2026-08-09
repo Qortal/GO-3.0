@@ -5,8 +5,43 @@ type MinterAvatarOrnamentProps = {
   accentColor?: string;
   children: ReactNode;
   level: number;
-  size?: 'card' | 'message';
+  size?: 'card' | 'message' | 'message-compact';
 };
+
+/**
+ * The ornament reserves layout space for the level plate that hangs below the
+ * avatar, so its box has to shrink with the avatar or it leaves a tall gap
+ * between the sender header and the message body on phones.
+ */
+const ORNAMENT_METRICS = {
+  card: {
+    boxHeight: 104,
+    frameSize: 90,
+    ornamentWidth: 98,
+    plateHeight: 34,
+    plateTop: 82,
+    plateWidth: 40,
+    childPaddingTop: '4px',
+  },
+  message: {
+    boxHeight: 60,
+    frameSize: 42,
+    ornamentWidth: 44,
+    plateHeight: 20,
+    plateTop: 40,
+    plateWidth: 24,
+    childPaddingTop: '2px',
+  },
+  'message-compact': {
+    boxHeight: 46,
+    frameSize: 34,
+    ornamentWidth: 36,
+    plateHeight: 16,
+    plateTop: 30,
+    plateWidth: 19,
+    childPaddingTop: '2px',
+  },
+} as const;
 
 export const MinterAvatarOrnament = ({
   accentColor,
@@ -15,17 +50,20 @@ export const MinterAvatarOrnament = ({
   size = 'message',
 }: MinterAvatarOrnamentProps) => {
   const theme = useTheme();
-  const isCard = size === 'card';
   const isDarkMode = theme.palette.mode === 'dark';
   const neutral = isDarkMode ? '#56606d' : '#6b7280';
   const accent = accentColor || neutral;
   const plateFill = isDarkMode ? '#10141b' : '#f4f7fb';
   const plateText = isDarkMode ? '#f5f7fa' : '#171b22';
-  const frameSize = isCard ? 90 : 42;
-  const ornamentWidth = isCard ? 98 : 44;
-  const plateWidth = isCard ? 40 : 24;
-  const plateHeight = isCard ? 34 : 20;
-  const plateTop = isCard ? 82 : 40;
+  const {
+    boxHeight,
+    childPaddingTop,
+    frameSize,
+    ornamentWidth,
+    plateHeight,
+    plateTop,
+    plateWidth,
+  } = ORNAMENT_METRICS[size];
 
   return (
     <Tooltip arrow title={`Minter Level ${level}`}>
@@ -36,7 +74,7 @@ export const MinterAvatarOrnament = ({
         sx={{
           display: 'flex',
           flexShrink: 0,
-          height: isCard ? 104 : 60,
+          height: boxHeight,
           justifyContent: 'center',
           outline: 'none',
           position: 'relative',
@@ -106,7 +144,7 @@ export const MinterAvatarOrnament = ({
         </Box>
         <Box
           sx={{
-            pt: isCard ? '4px' : '2px',
+            pt: childPaddingTop,
             position: 'relative',
             zIndex: 3,
           }}

@@ -40,6 +40,15 @@ export class ReticulumChatWorkerPool {
     // Null signals "worker unavailable"; callers use their inline fallbacks.
     return Promise.resolve(null);
   }
+
+  stats(): {
+    pending: number;
+    workers: number;
+    fallbackCount: number;
+    crashCount: number;
+  } {
+    return { pending: 0, workers: 0, fallbackCount: 0, crashCount: 0 };
+  }
 }
 
 export default ReticulumChatWorkerPool;

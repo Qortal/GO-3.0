@@ -3,7 +3,9 @@ import {
   Alert,
   Box,
   Button,
+  ButtonBase,
   CircularProgress,
+  Divider,
   IconButton,
   InputAdornment,
   Modal,
@@ -12,14 +14,24 @@ import {
 } from '@mui/material';
 import { alpha, useTheme } from '@mui/material/styles';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
+import FingerprintRoundedIcon from '@mui/icons-material/FingerprintRounded';
 import LockRoundedIcon from '@mui/icons-material/LockRounded';
 import KeyRoundedIcon from '@mui/icons-material/KeyRounded';
 import RemoveRoundedIcon from '@mui/icons-material/RemoveRounded';
 import QortalLogo from '../../assets/svgs/Logo1Dark.svg';
 import { CUSTOM_TITLE_BAR_HEIGHT } from '../Desktop/CustomTitleBar';
+import { isCapacitor } from '../../utils/platform';
+import {
+  isBiometricHardwareAvailable,
+  isBiometricUnlockConfigured,
+  readBiometricUnlockPassword,
+  verifyBiometricUnlock,
+} from '../../utils/walletBiometricAuth';
 
 type AuthenticatedLockScreenProps = {
   accountLabel?: string | null;
+  /** Wallet address, used to look up this account's fingerprint credential. */
+  walletAddress?: string | null;
   onUnlock: (password: string) => Promise<void>;
 };
 
@@ -140,6 +152,7 @@ function LockScreenTitleBar() {
 
 export function AuthenticatedLockScreen({
   accountLabel,
+  walletAddress,
   onUnlock,
 }: AuthenticatedLockScreenProps) {
   const theme = useTheme();
@@ -151,6 +164,8 @@ export function AuthenticatedLockScreen({
   const [failedAttempts, setFailedAttempts] = useState(0);
   const [blockedUntil, setBlockedUntil] = useState(0);
   const [secondsRemaining, setSecondsRemaining] = useState(0);
+  const [biometricReady, setBiometricReady] = useState(false);
+  const [isScanning, setIsScanning] = useState(false);
 
   useEffect(() => {
     if (!blockedUntil) return;
@@ -166,6 +181,52 @@ export function AuthenticatedLockScreen({
     const timer = window.setInterval(update, 250);
     return () => window.clearInterval(timer);
   }, [blockedUntil]);
+
+  // Offer the fingerprint route only when this account actually has a
+  // credential enrolled, so the button never appears just to fail on tap.
+  useEffect(() => {
+    if (!isCapacitor() || !walletAddress) return undefined;
+    let cancelled = false;
+    void (async () => {
+      const [hardware, configured] = await Promise.all([
+        isBiometricHardwareAvailable(),
+        isBiometricUnlockConfigured(walletAddress),
+      ]);
+      if (!cancelled) setBiometricReady(hardware && configured);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [walletAddress]);
+
+  const handleBiometricUnlock = async () => {
+    if (!walletAddress || checkingRef.current || blockedUntil > Date.now()) {
+      return;
+    }
+
+    checkingRef.current = true;
+    setIsScanning(true);
+    setError('');
+    try {
+      await verifyBiometricUnlock();
+      // Unlock through the same password check as the form below, so a
+      // fingerprint is never a weaker proof than typing the password.
+      const stored = await readBiometricUnlockPassword(walletAddress);
+      await onUnlock(stored);
+      setPassword('');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setError(
+        /cancel/i.test(message)
+          ? 'Fingerprint unlock was cancelled.'
+          : 'Fingerprint unlock failed. Enter your password instead.'
+      );
+      requestAnimationFrame(() => inputRef.current?.focus());
+    } finally {
+      checkingRef.current = false;
+      setIsScanning(false);
+    }
+  };
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
@@ -193,6 +254,7 @@ export function AuthenticatedLockScreen({
   };
 
   const isBlocked = blockedUntil > Date.now();
+  const isBusy = isChecking || isScanning;
 
   return (
     <Modal
@@ -268,14 +330,81 @@ export function AuthenticatedLockScreen({
             </Typography>
           </Box>
 
+          {biometricReady && (
+            <Box
+              sx={{
+                alignItems: 'center',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 1.1,
+                mb: 1,
+              }}
+            >
+              <ButtonBase
+                onClick={() => void handleBiometricUnlock()}
+                disabled={isBusy || isBlocked}
+                aria-label="Unlock with fingerprint"
+                sx={{
+                  alignItems: 'center',
+                  animation:
+                    isBusy || isBlocked
+                      ? 'none'
+                      : 'lockFingerprintPulse 2.4s ease-in-out infinite',
+                  bgcolor: alpha(theme.palette.primary.main, 0.12),
+                  border: `1px solid ${alpha(theme.palette.primary.main, 0.28)}`,
+                  borderRadius: '50%',
+                  color: theme.palette.primary.main,
+                  display: 'flex',
+                  height: 88,
+                  justifyContent: 'center',
+                  width: 88,
+                  '@keyframes lockFingerprintPulse': {
+                    '0%, 100%': {
+                      boxShadow: `0 0 0 0 ${alpha(theme.palette.primary.main, 0.22)}`,
+                      transform: 'scale(1)',
+                    },
+                    '50%': {
+                      boxShadow: `0 0 0 10px ${alpha(theme.palette.primary.main, 0)}`,
+                      transform: 'scale(1.045)',
+                    },
+                  },
+                  '&:hover': {
+                    bgcolor: alpha(theme.palette.primary.main, 0.18),
+                  },
+                  '&:disabled': { animation: 'none', opacity: 0.55 },
+                }}
+              >
+                {isScanning ? (
+                  <CircularProgress size={34} color="inherit" />
+                ) : (
+                  <FingerprintRoundedIcon sx={{ fontSize: 44 }} />
+                )}
+              </ButtonBase>
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                sx={{ textAlign: 'center' }}
+              >
+                {isScanning
+                  ? 'Waiting for your fingerprint…'
+                  : 'Tap to unlock with your fingerprint'}
+              </Typography>
+              <Divider flexItem sx={{ my: 0.5 }}>
+                <Typography variant="caption" color="text.secondary">
+                  or
+                </Typography>
+              </Divider>
+            </Box>
+          )}
+
           <TextField
             fullWidth
-            autoFocus
+            autoFocus={!biometricReady}
             inputRef={inputRef}
             type="password"
             label="Qortal account password"
             value={password}
-            disabled={isChecking || isBlocked}
+            disabled={isBusy || isBlocked}
             autoComplete="current-password"
             onChange={(event) => {
               setPassword(event.target.value);
@@ -305,7 +434,7 @@ export function AuthenticatedLockScreen({
             size="large"
             variant="contained"
             type="submit"
-            disabled={!password || isChecking || isBlocked}
+            disabled={!password || isBusy || isBlocked}
             startIcon={
               isChecking ? (
                 <CircularProgress size={18} color="inherit" />

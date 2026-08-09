@@ -12,6 +12,7 @@ import {
   useMediaQuery,
   useTheme,
 } from '@mui/material';
+import { ChatScopeSwitch } from './ChatScopeSwitch';
 import GroupRoundedIcon from '@mui/icons-material/GroupRounded';
 import GroupOutlinedIcon from '@mui/icons-material/GroupOutlined';
 import CreateIcon from '@mui/icons-material/Create';
@@ -153,8 +154,11 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
         position: 'relative',
         height: '100%',
         width: reticulumChatEnabled
-          ? { xs: 234, md: 286 }
+          ? { xs: '100%', md: 286 }
           : { xs: '100%', md: '400px' },
+        // Phones give the DM list the whole surface beside the group rail.
+        flex: reticulumChatEnabled ? { xs: 1, md: '0 0 auto' } : undefined,
+        minWidth: 0,
         flexShrink: 0,
         padding: reticulumChatEnabled ? 0 : '0 2px 0 0',
       }}
@@ -352,7 +356,19 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
             width: '100%',
           }}
         >
-          <Box sx={{ minWidth: 0 }}>
+          <Box sx={{ display: { xs: 'block', md: 'none' }, flexShrink: 0 }}>
+            <ChatScopeSwitch
+              onChange={setDesktopSideView}
+              value="directs"
+            />
+          </Box>
+          <Box
+            sx={{
+              display: { xs: 'none', md: 'block' },
+              flex: 1,
+              minWidth: 0,
+            }}
+          >
             <Typography
               sx={{
                 color: 'text.primary',

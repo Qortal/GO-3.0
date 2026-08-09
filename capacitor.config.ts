@@ -2,7 +2,7 @@ import type { CapacitorConfig } from '@capacitor/cli';
 
 const config: CapacitorConfig = {
   appId: 'com.github.Qortal.qortalGo2',
-  appName: 'Qortal GO 2.0',
+  appName: 'GO 3.0',
   webDir: 'dist',
   // Top-level backgroundColor is what Capacitor applies to the native WebView
   // (the SplashScreen-nested key is ignored for this). Matching the app's dark

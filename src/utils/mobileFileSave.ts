@@ -1,6 +1,5 @@
 import { Capacitor } from '@capacitor/core';
 import {
-  pruneNativeDocumentFolder,
   writeNativeDocumentFile,
   writeNativeDocumentBlob,
   writeNativeDocumentBytes,
@@ -21,7 +20,6 @@ export const SAVE_CATEGORY_FOLDERS = {
   audio: 'Audio',
   documents: 'Documents',
   apps: 'Apps',
-  goState: 'GO state',
   qortino: 'Qortino AI',
 } as const;
 
@@ -29,7 +27,6 @@ const EXTENSION_CATEGORY: Record<string, string> = {
   apk: SAVE_CATEGORY_FOLDERS.apps,
   aab: SAVE_CATEGORY_FOLDERS.apps,
   apks: SAVE_CATEGORY_FOLDERS.apps,
-  bin: SAVE_CATEGORY_FOLDERS.goState,
   gguf: SAVE_CATEGORY_FOLDERS.qortino,
   jpg: SAVE_CATEGORY_FOLDERS.images,
   jpeg: SAVE_CATEGORY_FOLDERS.images,
@@ -97,6 +94,14 @@ export function mobileSaveLocationLabelFor(
   return `${MOBILE_SAVE_LOCATION_LABEL}/${categorizeSaveFile(filename, mimeType)}`;
 }
 
+/**
+ * .bin files are written as a side effect of other work rather than as a
+ * download the user asked for, so announcing them is just noise.
+ */
+export function isSilentSaveFile(filename: string): boolean {
+  return extensionOf(filename) === 'bin';
+}
+
 export function buildQortalBackupFileName(qortAddress: string): string {
   return `qortal_backup_${qortAddress}.json`;
 }
@@ -110,19 +115,6 @@ function assertNative() {
 const sanitizeName = (filename: string) =>
   filename.replace(/[/\\?%*:|"<>]/g, '_');
 
-/**
- * Only one GO state should exist at a time — drop older .bin files once the
- * replacement has been written.
- */
-async function pruneReplacedGoState(safeName: string): Promise<void> {
-  if (extensionOf(safeName) !== 'bin') return;
-  await pruneNativeDocumentFolder({
-    subFolder: `${QORTAL_DOCUMENTS_FOLDER}/${SAVE_CATEGORY_FOLDERS.goState}`,
-    extension: 'bin',
-    keepName: safeName,
-  });
-}
-
 export async function saveTextToMobileDocuments(
   filename: string,
   contents: string
@@ -134,7 +126,6 @@ export async function saveTextToMobileDocuments(
     contents,
     { categorize: true }
   );
-  await pruneReplacedGoState(safeName);
   return result;
 }
 
@@ -149,7 +140,6 @@ export async function saveBlobToMobileDocuments(
     blob,
     { categorize: true, mimeType: blob.type || undefined }
   );
-  await pruneReplacedGoState(safeName);
   return result;
 }
 
@@ -207,8 +197,6 @@ export async function saveStreamToMobileDocuments(
   if (!lastResult) {
     throw new Error('Download produced no data');
   }
-
-  await pruneReplacedGoState(safeName);
 
   return { ...(lastResult as { path: string; uri: string }), bytesWritten };
 }

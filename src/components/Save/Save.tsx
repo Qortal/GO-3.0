@@ -219,7 +219,6 @@ export const Save = ({
             }),
           });
           setOpenSnack(true);
-          setAnchorEl(null);
         }
       }
     } catch (error) {

@@ -5,7 +5,7 @@ import { Avatar, Box, Typography, useTheme } from '@mui/material';
 import { formatTimestamp } from '../../utils/time';
 import ChatBubbleIcon from '@mui/icons-material/ChatBubble';
 import ArrowForwardIosIcon from '@mui/icons-material/ArrowForwardIos';
-import { requestQueueCommentCount } from './GroupAnnouncements';
+import { requestQueueCommentCount } from '../../utils/queue/announcementQueues';
 import { CustomLoader } from '../../common/CustomLoader';
 import { getArbitraryEndpointReact, getBaseApiReact } from '../../App';
 import { WrapperUserAction } from '../WrapperUserAction';

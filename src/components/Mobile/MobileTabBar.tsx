@@ -39,13 +39,21 @@ type MobileTabBarProps = {
   variant?: 'bottom' | 'inline';
 };
 
-const chatUnreadDotPulse = (dotColor: string, ringColor: string) => ({
+const chatUnreadDot = (dotColor: string, ringColor: string) => ({
   width: 9,
   height: 9,
   borderRadius: '50%',
   backgroundColor: dotColor,
   border: `2px solid ${ringColor}`,
   flexShrink: 0,
+});
+
+/**
+ * Only direct messages pulse. Group traffic is constant enough that an
+ * animated dot for it just reads as noise.
+ */
+const chatUnreadDotPulse = (dotColor: string, ringColor: string) => ({
+  ...chatUnreadDot(dotColor, ringColor),
   animation: 'mobile-chat-unread-pulse 1.5s ease-in-out infinite',
   '@keyframes mobile-chat-unread-pulse': {
     '0%, 100%': {
@@ -358,7 +366,7 @@ export const MobileTabBar = ({
                     position: 'absolute',
                     top: 0,
                     left: 4,
-                    ...chatUnreadDotPulse(theme.palette.primary.main, dotRingColor),
+                    ...chatUnreadDot(theme.palette.primary.main, dotRingColor),
                   }}
                 />
               )}

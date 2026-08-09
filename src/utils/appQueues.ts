@@ -1,6 +1,8 @@
-import { requestQueueCommentCount } from '../components/Chat/GroupAnnouncements';
-import { requestQueuePublishedAccouncements } from '../components/Chat/GroupAnnouncements';
-import { requestQueueGroupJoinRequests } from '../components/Group/GroupJoinRequests';
+import {
+  requestQueueCommentCount,
+  requestQueuePublishedAccouncements,
+} from './queue/announcementQueues';
+import { requestQueueGroupJoinRequests } from './queue/requestQueueGroupJoinRequests';
 import { requestQueueMemberNames } from './queue/requestQueueMemberNames';
 
 export const allQueues = {

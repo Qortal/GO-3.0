@@ -10,6 +10,8 @@ type ReticulumUnreadCountBadgeProps = {
   outlineColor: string;
   size?: number;
   fontSize?: number;
+  /** Defaults to the mention red; plain unread traffic passes the accent blue. */
+  color?: string;
   sx?: SxProps<Theme>;
 };
 
@@ -18,6 +20,7 @@ export const ReticulumUnreadCountBadge = ({
   outlineColor,
   size = 18,
   fontSize = 10,
+  color = RETICULUM_NOTIFICATION_RED,
   sx,
 }: ReticulumUnreadCountBadgeProps) => {
   const normalizedCount =
@@ -32,7 +35,7 @@ export const ReticulumUnreadCountBadge = ({
       sx={[
         {
           alignItems: 'center',
-          backgroundColor: RETICULUM_NOTIFICATION_RED,
+          backgroundColor: color,
           border: `2px solid ${outlineColor}`,
           borderRadius: '999px',
           boxSizing: 'content-box',

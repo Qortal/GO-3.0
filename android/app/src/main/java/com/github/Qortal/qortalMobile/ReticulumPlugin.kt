@@ -334,6 +334,104 @@ class ReticulumPlugin : Plugin() {
         }
     }
 
+    /**
+     * Staging area for chat-engine resource transfers.
+     *
+     * The engine runs in a WebView worker whose filesystem is OPFS, which the
+     * python bridge cannot see. Resource payloads therefore have to be handed
+     * over through real files: the engine stages outbound blobs here for python
+     * to read, and hands python a path in here to write inbound blobs to.
+     * Everything is confined to this directory so the bridge never turns into
+     * an arbitrary-path read primitive.
+     */
+    private fun chatResourceStageDir(): File =
+        File(context.cacheDir, "reticulum-chat-resources").apply { mkdirs() }
+
+    /** Rejects paths outside the staging directory. */
+    private fun resolveStagedFile(path: String): File? {
+        val dir = chatResourceStageDir().canonicalFile
+        val file = File(path).canonicalFile
+        return if (file.parentFile == dir) file else null
+    }
+
+    @PluginMethod
+    fun chatResourcePath(call: PluginCall) {
+        try {
+            val requested = sanitizeFileName(call.getString("name") ?: "blob")
+            val file = File(chatResourceStageDir(), "${UUID.randomUUID()}-$requested")
+            call.resolve(JSObject().put("path", file.absolutePath))
+        } catch (t: Throwable) {
+            call.reject("chatResourcePath failed: ${t.message}", t as? Exception)
+        }
+    }
+
+    @PluginMethod
+    fun chatResourceWrite(call: PluginCall) {
+        val path = call.getString("path")
+        val dataBase64 = call.getString("dataBase64")
+        if (path.isNullOrBlank() || dataBase64 == null) {
+            call.reject("Missing path or dataBase64")
+            return
+        }
+        fileWorker.execute {
+            try {
+                val file = resolveStagedFile(path)
+                if (file == null) {
+                    call.reject("Path is outside the chat resource staging directory")
+                    return@execute
+                }
+                val bytes = android.util.Base64.decode(dataBase64, android.util.Base64.DEFAULT)
+                file.writeBytes(bytes)
+                call.resolve(JSObject().put("path", file.absolutePath).put("size", bytes.size))
+            } catch (t: Throwable) {
+                call.reject("chatResourceWrite failed: ${t.message}", t as? Exception)
+            }
+        }
+    }
+
+    @PluginMethod
+    fun chatResourceRead(call: PluginCall) {
+        val path = call.getString("path")
+        if (path.isNullOrBlank()) {
+            call.reject("Missing path")
+            return
+        }
+        fileWorker.execute {
+            try {
+                val file = resolveStagedFile(path)
+                if (file == null || !file.isFile) {
+                    call.reject("Chat resource file is unavailable")
+                    return@execute
+                }
+                val bytes = file.readBytes()
+                call.resolve(
+                    JSObject()
+                        .put("dataBase64", android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP))
+                        .put("size", bytes.size)
+                )
+            } catch (t: Throwable) {
+                call.reject("chatResourceRead failed: ${t.message}", t as? Exception)
+            }
+        }
+    }
+
+    @PluginMethod
+    fun chatResourceDelete(call: PluginCall) {
+        val path = call.getString("path")
+        if (path.isNullOrBlank()) {
+            call.reject("Missing path")
+            return
+        }
+        fileWorker.execute {
+            try {
+                resolveStagedFile(path)?.delete()
+                call.resolve()
+            } catch (t: Throwable) {
+                call.reject("chatResourceDelete failed: ${t.message}", t as? Exception)
+            }
+        }
+    }
+
     /** Existence/size probe used to prune stale pending sends after restart. */
     @PluginMethod
     fun qchatFileStat(call: PluginCall) {

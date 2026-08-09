@@ -16,11 +16,9 @@ import {
   pauseAllQueues,
 } from '../../App';
 import { getFee } from '../../background/background.ts';
-import {
-  decryptResource,
-  getGroupAdmins,
-  validateSecretKey,
-} from '../Group/Group';
+import { decryptResource } from '../Group/groupDataPublishes';
+import { getGroupAdmins } from '../Group/groupApi';
+import { validateSecretKey } from '../Group/groupValidation';
 import { base64ToUint8Array } from '../../qdn/encryption/group-encryption';
 import { uint8ArrayToObject } from '../../encryption/encryption.ts';
 import { useAtomValue, useSetAtom } from 'jotai';

@@ -1,5 +1,5 @@
 import { useContext, useEffect, useMemo, useState } from 'react';
-import { RequestQueueWithPromise } from '../../utils/queue/queue';
+import { requestQueueGroupJoinRequests } from '../../utils/queue/requestQueueGroupJoinRequests';
 import VisibilityIcon from '@mui/icons-material/Visibility';
 import CloseIcon from '@mui/icons-material/Close';
 import { Box, Button, ButtonBase, Collapse, Dialog, DialogContent, DialogTitle, IconButton, Typography, useTheme } from '@mui/material';
@@ -18,8 +18,6 @@ import ExpandLessIcon from '@mui/icons-material/ExpandLess';
 import { useTranslation } from 'react-i18next';
 import { useAtom, useSetAtom } from 'jotai';
 import { GroupActivityEmptyState } from './GroupActivityEmptyState';
-export const requestQueueGroupJoinRequests = new RequestQueueWithPromise(2);
-
 export const GroupJoinRequests = ({
   myAddress,
   groups,

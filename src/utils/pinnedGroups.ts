@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { getData, storeData } from './chromeStorage';
 
 const STORAGE_KEY = 'qortalGoPinnedGroupIds';
@@ -43,6 +44,28 @@ export async function togglePinnedGroup(
   return !isPinned;
 }
 
+/** Reorders the pinned block itself, used by the drag handle on phones. */
+export async function movePinnedGroup(
+  fromIndex: number,
+  toIndex: number
+): Promise<string[]> {
+  const current = await loadPinnedGroupIds();
+  if (
+    fromIndex === toIndex ||
+    fromIndex < 0 ||
+    toIndex < 0 ||
+    fromIndex >= current.length ||
+    toIndex >= current.length
+  ) {
+    return current;
+  }
+  const next = [...current];
+  const [moved] = next.splice(fromIndex, 1);
+  next.splice(toIndex, 0, moved);
+  await setPinnedGroupIds(next);
+  return next;
+}
+
 export function isGroupPinned(groupId: string | number | null | undefined): boolean {
   const id = normalizeId(groupId);
   return !!id && (cachedPinnedIds || []).includes(id);
@@ -64,6 +87,25 @@ export function applyPinnedGroupOrder<T extends { groupId?: string | number }>(
   }
   const unpinned = groups.filter((g) => !pinSet.has(normalizeId(g.groupId)));
   return [...pinned, ...unpinned];
+}
+
+/** Live view of the pinned ids that re-renders whenever the pin set changes. */
+export function usePinnedGroupIds(): string[] {
+  const [ids, setIds] = useState<string[]>(getPinnedGroupIdsSync);
+  useEffect(() => {
+    let cancelled = false;
+    void loadPinnedGroupIds().then(() => {
+      if (!cancelled) setIds(getPinnedGroupIdsSync());
+    });
+    const unsubscribe = subscribePinnedGroups(() =>
+      setIds(getPinnedGroupIdsSync())
+    );
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, []);
+  return ids;
 }
 
 export function subscribePinnedGroups(listener: () => void): () => void {

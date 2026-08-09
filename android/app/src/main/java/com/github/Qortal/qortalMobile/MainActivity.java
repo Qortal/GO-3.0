@@ -18,6 +18,7 @@ import android.content.pm.PackageManager;
 import android.content.res.Configuration;
 import android.os.Build;
 import android.os.Bundle;
+import android.view.View;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 
@@ -107,6 +108,16 @@ public class MainActivity extends BridgeActivity {
     }
 
     @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        // Returning from the lock screen or the recents switcher can regain
+        // focus without another onResume, and that path blanks just as often.
+        if (hasFocus) {
+            forceWebViewRedraw();
+        }
+    }
+
+    @Override
     public void onConfigurationChanged(Configuration newConfig) {
         super.onConfigurationChanged(newConfig);
         // Rotation keeps this activity alive (configChanges in the manifest), so
@@ -115,9 +126,14 @@ public class MainActivity extends BridgeActivity {
     }
 
     /**
-     * Re-apply safe-area insets and force an invalidate + relayout so the
-     * WebView content repaints immediately instead of showing the gray base
-     * color after a resume or rotation.
+     * Re-apply safe-area insets and force the WebView to produce a fresh frame
+     * so it does not sit on the gray base color after a resume or rotation.
+     *
+     * invalidate()/requestLayout() alone is not enough: when the process is
+     * backgrounded the Chromium compositor can drop its surface, and it only
+     * rebuilds one when the view's visibility actually changes (which is why a
+     * stray touch "fixes" it). Toggling visibility forces that rebuild, and the
+     * second pass covers OEMs that restore the window a few frames late.
      */
     private void forceWebViewRedraw() {
         if (this.bridge == null) {
@@ -128,10 +144,18 @@ public class MainActivity extends BridgeActivity {
             return;
         }
         webView.post(() -> {
+            if (webView.getVisibility() == View.VISIBLE) {
+                webView.setVisibility(View.INVISIBLE);
+                webView.setVisibility(View.VISIBLE);
+            }
             webView.invalidate();
             webView.requestLayout();
             applySafeAreaInsets(webView);
         });
+        webView.postDelayed(() -> {
+            webView.invalidate();
+            applySafeAreaInsets(webView);
+        }, 250);
     }
 
     private void requestCallPermissions() {
@@ -197,11 +221,14 @@ public class MainActivity extends BridgeActivity {
             : Math.round(insets.getInsets(WindowInsetsCompat.Type.navigationBars()).bottom / density);
         int left = Math.round(insets.getInsets(WindowInsetsCompat.Type.displayCutout()).left / density);
         int right = Math.round(insets.getInsets(WindowInsetsCompat.Type.displayCutout()).right / density);
+        // Redraw and focus callbacks can land before the WebView has a document,
+        // so bail out rather than throwing on a null documentElement.
         String js = String.format(
-            "document.documentElement.style.setProperty('--safe-area-inset-top','%dpx');"
-                + "document.documentElement.style.setProperty('--safe-area-inset-bottom','%dpx');"
-                + "document.documentElement.style.setProperty('--safe-area-inset-left','%dpx');"
-                + "document.documentElement.style.setProperty('--safe-area-inset-right','%dpx');",
+            "(function(){var r=document.documentElement;if(!r)return;"
+                + "r.style.setProperty('--safe-area-inset-top','%dpx');"
+                + "r.style.setProperty('--safe-area-inset-bottom','%dpx');"
+                + "r.style.setProperty('--safe-area-inset-left','%dpx');"
+                + "r.style.setProperty('--safe-area-inset-right','%dpx');})();",
             top, bottom, left, right
         );
         webView.evaluateJavascript(js, null);

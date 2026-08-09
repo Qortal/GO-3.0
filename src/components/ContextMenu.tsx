@@ -21,12 +21,14 @@ import ForumRoundedIcon from '@mui/icons-material/ForumRounded';
 import VisibilityOffRoundedIcon from '@mui/icons-material/VisibilityOffRounded';
 import { useTranslation } from 'react-i18next';
 import { executeEvent } from '../utils/events';
+import { BACK_PRIORITY, useAndroidBack } from '../utils/androidBack';
 import { mutedGroupsAtom, txListAtom } from '../atoms/global';
 import { useAtom, useSetAtom } from 'jotai';
 import { getBaseApiReact, QORTAL_APP_CONTEXT } from '../App';
 import { getFee } from '../background/background.ts';
 import { QORTAL_PROTOCOL } from '../constants/constants.ts';
 import { CustomizedSnackbars } from './Snackbar/Snackbar';
+import { openReticulumGroupAbout } from './Group/ReticulumGroupAbout';
 import { GroupScoreBadge } from './Group/ReticulumGroupLevel';
 import { useReticulumGroupScore } from './Group/reticulumGroupScore';
 import PushPinRoundedIcon from '@mui/icons-material/PushPinRounded';
@@ -97,6 +99,7 @@ export const ContextMenu = ({
   myAddress = '',
   onMenuOpenChange,
   openOnClick = false,
+  disabled = false,
   reticulumGroup = null,
   onChangeAvatar,
   onCreateCategory,
@@ -110,7 +113,10 @@ export const ContextMenu = ({
   const [openSnack, setOpenSnack] = useState(false);
   const [infoSnack, setInfoSnack] = useState(null);
   const longPressTimeout = useRef(null);
+  const touchOrigin = useRef<{ x: number; y: number } | null>(null);
   const preventClick = useRef(false);
+  const suppressContextMenuUntil = useRef(0);
+  const menuOpenedAt = useRef(0);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const menuInstanceIdRef = useRef(
     crypto.randomUUID?.() || `group-menu-${Math.random()}`
@@ -121,6 +127,49 @@ export const ContextMenu = ({
   const { show } = useContext(QORTAL_APP_CONTEXT);
   const { t } = useTranslation(['core', 'group']);
   const isMenuOpen = Boolean(menuPosition);
+
+  /**
+   * The menu pops up directly under the finger, so the click that fires when
+   * the long press is released lands on whichever row happens to be there —
+   * silently running a menu action and closing the menu again. Keep the whole
+   * popup inert until that stray click has come and gone.
+   */
+  const [menuArmed, setMenuArmed] = useState(false);
+  useEffect(() => {
+    if (!isMenuOpen) {
+      setMenuArmed(false);
+      return;
+    }
+    const timer = setTimeout(() => setMenuArmed(true), 400);
+    return () => clearTimeout(timer);
+  }, [isMenuOpen]);
+
+  /**
+   * The popup's own backdrop does not reliably register taps in the Android
+   * WebView, which left the menu stuck open. Watch for a pointer landing
+   * outside the menu surface instead.
+   */
+  useEffect(() => {
+    if (!isMenuOpen || !menuArmed) return undefined;
+    const dismissOnOutsidePointer = (event: PointerEvent) => {
+      const target = event.target as HTMLElement | null;
+      // Menu paper, or the About Group body portal (not MUI Paper).
+      if (
+        target?.closest('.MuiPaper-root') ||
+        target?.closest('[data-reticulum-group-about]')
+      ) {
+        return;
+      }
+      setMenuPosition(null);
+    };
+    document.addEventListener('pointerdown', dismissOnOutsidePointer, true);
+    return () =>
+      document.removeEventListener(
+        'pointerdown',
+        dismissOnOutsidePointer,
+        true
+      );
+  }, [isMenuOpen, menuArmed]);
 
   const isMuted = useMemo(() => {
     return mutedGroups.includes(groupId);
@@ -133,11 +182,18 @@ export const ContextMenu = ({
   }, [groupId]);
 
   const handleContextMenu = (event) => {
+    if (disabled) return;
     if (!wrapperRef.current?.contains(event.target)) return;
     event.preventDefault();
     event.stopPropagation();
 
     preventClick.current = true;
+
+    // Android fires its own `contextmenu` a moment after our long-press timer
+    // already opened the menu. Without this window that native event lands on
+    // the toggle below and snaps the menu shut again, which reads as "long
+    // press only works sometimes".
+    if (Date.now() < suppressContextMenuUntil.current) return;
 
     if (menuPosition) {
       setMenuPosition(null);
@@ -148,6 +204,7 @@ export const ContextMenu = ({
       instanceId: menuInstanceIdRef.current,
     });
 
+    menuOpenedAt.current = Date.now();
     setMenuPosition({
       mouseX: event.clientX,
       mouseY: event.clientY,
@@ -155,13 +212,14 @@ export const ContextMenu = ({
   };
 
   const handleClick = (event) => {
-    if (!openOnClick) return;
+    if (disabled || !openOnClick) return;
     event.preventDefault();
     event.stopPropagation();
     const bounds = event.currentTarget.getBoundingClientRect();
     executeEvent('reticulumGroupContextMenuOpened', {
       instanceId: menuInstanceIdRef.current,
     });
+    menuOpenedAt.current = Date.now();
     setMenuPosition({
       mouseX: bounds.left,
       mouseY: bounds.bottom + 4,
@@ -169,24 +227,63 @@ export const ContextMenu = ({
   };
 
   const handleTouchStart = (event) => {
+    if (disabled) return;
+    const touch = event.touches[0];
+    if (!touch) return;
+    touchOrigin.current = { x: touch.clientX, y: touch.clientY };
     longPressTimeout.current = setTimeout(() => {
+      longPressTimeout.current = null;
       preventClick.current = true;
-      event.stopPropagation();
-      setMenuPosition({
-        mouseX: event.touches[0].clientX,
-        mouseY: event.touches[0].clientY,
+      suppressContextMenuUntil.current = Date.now() + 1200;
+      executeEvent('reticulumGroupContextMenuOpened', {
+        instanceId: menuInstanceIdRef.current,
       });
-    }, 500);
+      menuOpenedAt.current = Date.now();
+      setMenuPosition({
+        mouseX: touchOrigin.current?.x ?? touch.clientX,
+        mouseY: touchOrigin.current?.y ?? touch.clientY,
+      });
+    }, 450);
+  };
+
+  // Scrolling a list must not arm the menu, so bail as soon as the finger
+  // travels beyond a small slop radius.
+  const handleTouchMove = (event) => {
+    if (!longPressTimeout.current) return;
+    const touch = event.touches[0];
+    const origin = touchOrigin.current;
+    if (!touch || !origin) return;
+    if (
+      Math.abs(touch.clientX - origin.x) > 10 ||
+      Math.abs(touch.clientY - origin.y) > 10
+    ) {
+      clearTimeout(longPressTimeout.current);
+      longPressTimeout.current = null;
+    }
   };
 
   const handleTouchEnd = (event) => {
     clearTimeout(longPressTimeout.current);
+    longPressTimeout.current = null;
+    touchOrigin.current = null;
 
     if (preventClick.current) {
       event.preventDefault();
       event.stopPropagation();
-      preventClick.current = false;
     }
+  };
+
+  /**
+   * `preventDefault` on touchend is not enough to stop the synthetic click on
+   * every Android WebView, and letting it through activates whatever the row
+   * does on tap — which closes the list and takes the just-opened menu with it.
+   * Swallowing the click in the capture phase is the reliable guard.
+   */
+  const handleClickCapture = (event) => {
+    if (!preventClick.current) return;
+    preventClick.current = false;
+    event.preventDefault();
+    event.stopPropagation();
   };
 
   const handleSetGroupMute = () => {
@@ -224,18 +321,50 @@ export const ContextMenu = ({
     }
   };
 
+  /**
+   * Lifting the finger after a long press dispatches a synthetic click, and by
+   * then the menu's own backdrop is what sits under that point — so the menu
+   * dismisses itself the instant it appears. Ignore a backdrop dismiss that
+   * arrives before the user could plausibly have aimed at it.
+   */
+  const handleMenuClose = (event?, reason?: string) => {
+    if (
+      reason === 'backdropClick' &&
+      Date.now() - menuOpenedAt.current < 500
+    ) {
+      return;
+    }
+    handleClose(event);
+  };
+
   const handleClose = (e?) => {
     e?.preventDefault?.();
     e?.stopPropagation?.();
+    // A backdrop dismiss never reaches the wrapper, so the guard armed by the
+    // long press would otherwise stay latched and eat the next real tap.
+    preventClick.current = false;
+    suppressContextMenuUntil.current = 0;
     setMenuPosition(null);
   };
+
+  useAndroidBack(
+    () => {
+      handleClose();
+      return true;
+    },
+    { priority: BACK_PRIORITY.dialog, enabled: isMenuOpen }
+  );
 
   useEffect(() => {
     if (!reticulumGroup) return undefined;
     const closeOtherGroupMenu = (event: CustomEvent) => {
-      if (event.detail?.instanceId !== menuInstanceIdRef.current) {
-        setMenuPosition(null);
-      }
+      if (event.detail?.instanceId === menuInstanceIdRef.current) return;
+      // Each group row is wrapped by more than one menu instance (the rail and
+      // the list both stay mounted), so the "close the others" broadcast can
+      // land on the menu that is in the middle of opening. Never let a stray
+      // broadcast close a menu the user just summoned.
+      if (Date.now() - menuOpenedAt.current < 600) return;
+      setMenuPosition(null);
     };
     document.addEventListener(
       'reticulumGroupContextMenuOpened',
@@ -381,15 +510,32 @@ export const ContextMenu = ({
   };
 
   return (
-    <div
-      ref={wrapperRef}
-      onContextMenu={handleContextMenu}
-      onClick={handleClick}
-      onTouchStart={handleTouchStart}
-      onTouchEnd={handleTouchEnd}
-      style={{ width: '100%', height: '100%' }}
-    >
-      {children}
+    <>
+      {/*
+        Click-capture must NOT wrap the Menu. Menu content is portaled to
+        document.body but still a React child — a capture handler on a common
+        ancestor swallows the first tap on every MenuItem (including About).
+      */}
+      <div
+        ref={wrapperRef}
+        onContextMenu={handleContextMenu}
+        onClick={handleClick}
+        onClickCapture={handleClickCapture}
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
+        onTouchCancel={handleTouchEnd}
+        style={{
+          width: '100%',
+          height: '100%',
+          // Android's own selection callout hijacks the hold otherwise.
+          WebkitTouchCallout: 'none',
+          WebkitUserSelect: 'none',
+          userSelect: 'none',
+        }}
+      >
+        {children}
+      </div>
 
       <CustomStyledMenu
         reticulumMenu={Boolean(reticulumGroup)}
@@ -398,7 +544,8 @@ export const ContextMenu = ({
         disableEnforceFocus
         disableRestoreFocus
         open={!!menuPosition}
-        onClose={handleClose}
+        onClose={handleMenuClose}
+        sx={{ pointerEvents: menuArmed ? 'auto' : 'none' }}
         anchorReference="anchorPosition"
         anchorPosition={
           menuPosition
@@ -585,10 +732,12 @@ export const ContextMenu = ({
         {reticulumGroup && (
           <MenuItem
             onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              const group = displayedGroupInfo;
               handleClose(event);
-              executeEvent('openReticulumGroupAbout', {
-                group: displayedGroupInfo,
-              });
+              // Jotai + event — does not rely on a listener that may remount.
+              openReticulumGroupAbout(group);
             }}
             sx={{
               backgroundColor:
@@ -689,6 +838,6 @@ export const ContextMenu = ({
         info={infoSnack}
         setInfo={setInfoSnack}
       />
-    </div>
+    </>
   );
 };

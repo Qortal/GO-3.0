@@ -27,7 +27,8 @@ import {
   unsubscribeFromEvent,
 } from '../../utils/events';
 import { validateAddress } from '../../utils/validateAddress';
-import { getNameInfo, requestQueueMemberNames } from './Group';
+import { getNameInfo } from './groupApi';
+import { requestQueueMemberNames } from './groupQueues';
 import { useModal } from '../../hooks/useModal';
 import { useBlockedAddresses } from '../../hooks/useBlockUsers';
 import {

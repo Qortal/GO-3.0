@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useAtomValue } from 'jotai';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { getDefaultStore, useAtom, useAtomValue } from 'jotai';
 import {
   Avatar,
   Box,
   Button,
-  Dialog,
-  DialogContent,
+  IconButton,
   Skeleton,
   Tooltip,
   Typography,
@@ -13,13 +13,15 @@ import {
 } from '@mui/material';
 import { alpha } from '@mui/material/styles';
 import CheckRoundedIcon from '@mui/icons-material/CheckRounded';
+import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded';
 import LockRoundedIcon from '@mui/icons-material/LockRounded';
 import PublicRoundedIcon from '@mui/icons-material/PublicRounded';
 import { getBaseApiReact } from '../../App';
-import { userInfoAtom } from '../../atoms/global';
+import { reticulumGroupAboutAtom, userInfoAtom } from '../../atoms/global';
 import { QORTAL_PROTOCOL } from '../../constants/constants';
-import { subscribeToEvent, unsubscribeFromEvent } from '../../utils/events';
+import { BACK_PRIORITY, useAndroidBack } from '../../utils/androidBack';
+import { executeEvent, subscribeToEvent, unsubscribeFromEvent } from '../../utils/events';
 import { WrapperUserAction } from '../WrapperUserAction';
 import { getNameInfo } from './groupApi';
 import { GroupScoreBadge } from './ReticulumGroupLevel';
@@ -76,13 +78,20 @@ export const prefetchReticulumGroupAboutMetadata = (group: any) => {
   void getMetadata(group);
 };
 
+/** Open About Group from anywhere (menu, deep link, etc.). */
+export const openReticulumGroupAbout = (group: any) => {
+  if (!group) return;
+  getDefaultStore().set(reticulumGroupAboutAtom, group);
+  // Lets Group.tsx tuck away the mobile slide panel so it isn't under the finger.
+  executeEvent('openReticulumGroupAbout', { group });
+};
+
+export const closeReticulumGroupAbout = () => {
+  getDefaultStore().set(reticulumGroupAboutAtom, null);
+};
+
 const truncateInvite = (value: string) =>
   value.length > 34 ? `${value.slice(0, 18)}...${value.slice(-12)}` : value;
-
-const yearsAgo = (timestamp?: number | string) => {
-  const years = getLegacyLevel(timestamp);
-  return years == null ? null : years;
-};
 
 const formatCreatedDate = (timestamp?: number | string) => {
   const value = Number(timestamp);
@@ -97,19 +106,24 @@ const formatCreatedDate = (timestamp?: number | string) => {
 export const ReticulumGroupAboutModal = () => {
   const theme = useTheme();
   const userInfo = useAtomValue(userInfoAtom);
-  const [requestedGroup, setRequestedGroup] = useState<any>(null);
+  const [requestedGroup, setRequestedGroup] = useAtom(reticulumGroupAboutAtom);
   const [details, setDetails] = useState<any>(null);
   const [ownerName, setOwnerName] = useState('');
   const [avatarLoaded, setAvatarLoaded] = useState(false);
   const [copied, setCopied] = useState(false);
   const descriptionRef = useRef<HTMLParagraphElement | null>(null);
   const [descriptionOverflowing, setDescriptionOverflowing] = useState(false);
+  const isOpen = Boolean(requestedGroup?.groupId ?? requestedGroup);
 
+  // Keep event bridge for any older callers that only dispatch the CustomEvent.
   useEffect(() => {
-    const open = (event: CustomEvent) => setRequestedGroup(event.detail?.group ?? null);
+    const open = (event: CustomEvent) => {
+      const group = event.detail?.group ?? null;
+      if (group) setRequestedGroup(group);
+    };
     subscribeToEvent('openReticulumGroupAbout', open);
     return () => unsubscribeFromEvent('openReticulumGroupAbout', open);
-  }, []);
+  }, [setRequestedGroup]);
 
   useEffect(() => {
     let active = true;
@@ -121,11 +135,27 @@ export const ReticulumGroupAboutModal = () => {
     getMetadata(requestedGroup).then(async (next) => {
       if (!active) return;
       setDetails(next);
-      const resolvedOwnerName = next?.ownerPrimaryName || (next?.owner ? await getNameInfo(next.owner).catch(() => '') : '');
+      const resolvedOwnerName =
+        next?.ownerPrimaryName ||
+        (next?.owner ? await getNameInfo(next.owner).catch(() => '') : '');
       if (active) setOwnerName(resolvedOwnerName || '');
     });
-    return () => { active = false; };
+    return () => {
+      active = false;
+    };
   }, [requestedGroup]);
+
+  const close = useCallback(() => {
+    setRequestedGroup(null);
+  }, [setRequestedGroup]);
+
+  useAndroidBack(
+    () => {
+      close();
+      return true;
+    },
+    { priority: BACK_PRIORITY.dialog, enabled: isOpen }
+  );
 
   const data = details || requestedGroup;
   const ownerAddress = String(data?.owner || '').trim();
@@ -133,15 +163,17 @@ export const ReticulumGroupAboutModal = () => {
   const groupName = data?.groupName || data?.name || 'Group';
   const memberCount = data?.memberCount;
   const created = data?.created ?? data?.creationTimestamp ?? data?.createdAt;
-  const legacyLevel = getLegacyLevel(created);
-  const communityLevel = getCommunityLevel(memberCount);
-  const inviteLink = groupId ? `${QORTAL_PROTOCOL}use-group/action-join/groupid-${groupId}` : '';
+  const inviteLink = groupId
+    ? `${QORTAL_PROTOCOL}use-group/action-join/groupid-${groupId}`
+    : '';
   const description = data?.description ?? data?.groupDescription ?? '';
-  const isOpen = data?.isOpen === true || data?.groupType === 0 || data?.groupType === 'OPEN';
-  const groupScore = useReticulumGroupScore(groupId, isOpen);
-  const avatarUrl = ownerName && groupId
-    ? `${getBaseApiReact()}/arbitrary/THUMBNAIL/${ownerName}/qortal_group_avatar_${groupId}?async=true`
-    : undefined;
+  const groupIsOpen =
+    data?.isOpen === true || data?.groupType === 0 || data?.groupType === 'OPEN';
+  const groupScore = useReticulumGroupScore(groupId, groupIsOpen);
+  const avatarUrl =
+    ownerName && groupId
+      ? `${getBaseApiReact()}/arbitrary/THUMBNAIL/${ownerName}/qortal_group_avatar_${groupId}?async=true`
+      : undefined;
 
   const measureDescription = useCallback(() => {
     const element = descriptionRef.current;
@@ -151,10 +183,13 @@ export const ReticulumGroupAboutModal = () => {
 
   useEffect(() => {
     measureDescription();
-    const observer = typeof ResizeObserver === 'undefined' || !descriptionRef.current
-      ? null
-      : new ResizeObserver(measureDescription);
-    if (observer && descriptionRef.current) observer.observe(descriptionRef.current);
+    const observer =
+      typeof ResizeObserver === 'undefined' || !descriptionRef.current
+        ? null
+        : new ResizeObserver(measureDescription);
+    if (observer && descriptionRef.current) {
+      observer.observe(descriptionRef.current);
+    }
     return () => observer?.disconnect();
   }, [description, measureDescription]);
 
@@ -165,29 +200,57 @@ export const ReticulumGroupAboutModal = () => {
     window.setTimeout(() => setCopied(false), 1500);
   }, [inviteLink]);
 
-  const close = () => setRequestedGroup(null);
+  useEffect(() => {
+    if (!isOpen) return undefined;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [isOpen]);
+
+  if (!isOpen || typeof document === 'undefined') return null;
+
   const statRows = [
     ['Owner', ownerName || data?.owner || 'Unknown'],
-    ['Group type', isOpen ? 'Open' : 'Closed'],
+    ['Group type', groupIsOpen ? 'Open' : 'Closed'],
     ['Created', formatCreatedDate(created)],
   ];
 
-  return (
-    <Dialog
-      open={Boolean(requestedGroup)}
-      onClose={close}
-      maxWidth={false}
-      PaperProps={{
-        sx: {
+  const paperBorder =
+    theme.palette.mode === 'dark'
+      ? '#343a44'
+      : alpha(theme.palette.text.primary, 0.2);
+  const sectionBorder =
+    theme.palette.mode === 'dark'
+      ? 'rgba(255,255,255,0.085)'
+      : alpha(theme.palette.text.primary, 0.16);
+
+  return createPortal(
+    <Box
+      aria-modal="true"
+      data-reticulum-group-about=""
+      role="dialog"
+      onClick={close}
+      sx={{
+        alignItems: 'center',
+        backgroundColor: 'rgba(3, 5, 12, 0.72)',
+        display: 'flex',
+        inset: 0,
+        justifyContent: 'center',
+        position: 'fixed',
+        // Just under the startup splash (2147483647); above every app modal.
+        zIndex: 2147483646,
+      }}
+    >
+      <Box
+        onClick={(event) => event.stopPropagation()}
+        sx={{
           background:
             theme.palette.mode === 'dark'
               ? 'linear-gradient(180deg, #1b1e23 0%, #15181d 100%)'
               : theme.palette.background.paper,
-          border: `1px solid ${
-            theme.palette.mode === 'dark'
-              ? '#343a44'
-              : alpha(theme.palette.text.primary, 0.2)
-          }`,
+          border: `1px solid ${paperBorder}`,
           borderRadius: '12px',
           boxShadow:
             theme.palette.mode === 'dark'
@@ -195,107 +258,289 @@ export const ReticulumGroupAboutModal = () => {
               : '0 22px 56px rgba(0, 0, 0, 0.22)',
           maxHeight: 'calc(100vh - 32px)',
           m: 2,
+          overflow: 'auto',
+          position: 'relative',
           width: 'min(480px, calc(100vw - 32px))',
-        },
-      }}
-    >
-      <DialogContent sx={{ p: 3 }}>
-        {!details ? (
-          <Box sx={{ display: 'grid', gap: 1.5 }}>
-            <Skeleton height={76} variant="circular" width={76} />
-            <Skeleton height={30} width="54%" />
-            <Skeleton height={20} width="34%" />
-            <Skeleton height={90} />
-          </Box>
-        ) : (
-          <>
-            <Box sx={{ alignItems: 'center', display: 'flex', flexDirection: 'column', textAlign: 'center' }}>
-              <Avatar
-                alt={groupName}
-                imgProps={{ onError: () => setAvatarLoaded(false), onLoad: () => setAvatarLoaded(true) }}
-                src={avatarUrl}
-                sx={{ backgroundColor: 'rgba(255,255,255,0.045)', fontSize: 28, fontWeight: 800, height: 82, mb: 1.25, width: 82 }}
+        }}
+      >
+        <IconButton
+          aria-label="Close"
+          onClick={close}
+          size="small"
+          sx={{
+            color: 'text.secondary',
+            position: 'absolute',
+            right: 8,
+            top: 8,
+            zIndex: 2,
+          }}
+        >
+          <CloseRoundedIcon fontSize="small" />
+        </IconButton>
+        <Box sx={{ p: 3 }}>
+          {!details ? (
+            <Box sx={{ display: 'grid', gap: 1.5 }}>
+              <Skeleton height={76} variant="circular" width={76} />
+              <Skeleton height={30} width="54%" />
+              <Skeleton height={20} width="34%" />
+              <Skeleton height={90} />
+            </Box>
+          ) : (
+            <>
+              <Box
+                sx={{
+                  alignItems: 'center',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  textAlign: 'center',
+                }}
               >
-                {!avatarLoaded ? <Box alt="" aria-hidden component="img" src={qortalWhiteLogo} sx={{ height: '42%', objectFit: 'contain', opacity: 0.15, width: '42%' }} /> : null}
-              </Avatar>
-              <Typography sx={{ fontSize: 24, fontWeight: 750, lineHeight: 1.2 }}>{groupName}</Typography>
-              <Box sx={{ mt: 1.15 }}>
-                <GroupScoreBadge
-                  popoverAlign="center"
-                  score={groupScore}
-                  size="full"
-                />
-              </Box>
-              <Box sx={{ alignItems: 'center', color: 'text.secondary', display: 'inline-flex', gap: 0.75, mt: 0.85 }}>
-                {isOpen ? <PublicRoundedIcon sx={{ fontSize: 17 }} /> : <LockRoundedIcon sx={{ fontSize: 17 }} />}
-                <Typography sx={{ fontSize: 13 }}>{isOpen ? 'Open group' : 'Closed group'}</Typography>
-              </Box>
-            </Box>
-
-            {description && (
-              <Tooltip arrow disableHoverListener={!descriptionOverflowing} title={description}>
-                <Typography ref={descriptionRef} sx={{ WebkitBoxOrient: 'vertical', WebkitLineClamp: 3, color: 'text.secondary', display: '-webkit-box', fontSize: 14, lineHeight: 1.45, mt: 2, overflow: 'hidden', textAlign: 'center' }}>
-                  {description}
+                <Avatar
+                  alt={groupName}
+                  imgProps={{
+                    onError: () => setAvatarLoaded(false),
+                    onLoad: () => setAvatarLoaded(true),
+                  }}
+                  src={avatarUrl}
+                  sx={{
+                    backgroundColor: 'rgba(255,255,255,0.045)',
+                    fontSize: 28,
+                    fontWeight: 800,
+                    height: 82,
+                    mb: 1.25,
+                    width: 82,
+                  }}
+                >
+                  {!avatarLoaded ? (
+                    <Box
+                      alt=""
+                      aria-hidden
+                      component="img"
+                      src={qortalWhiteLogo}
+                      sx={{
+                        height: '42%',
+                        objectFit: 'contain',
+                        opacity: 0.15,
+                        width: '42%',
+                      }}
+                    />
+                  ) : null}
+                </Avatar>
+                <Typography
+                  sx={{ fontSize: 24, fontWeight: 750, lineHeight: 1.2 }}
+                >
+                  {groupName}
                 </Typography>
-              </Tooltip>
-            )}
-
-            <Box sx={{ borderTop: `1px solid ${theme.palette.mode === 'dark' ? 'rgba(255,255,255,0.085)' : alpha(theme.palette.text.primary, 0.16)}`, display: 'grid', gap: 1.1, mt: 2, pt: 1.75 }}>
-              {statRows.map(([label, value]) => (
-                <Box key={label} sx={{ display: 'flex', justifyContent: 'space-between', gap: 2 }}>
-                  <Typography sx={{ color: 'text.secondary', fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase' }}>{label}</Typography>
-                  {label === 'Owner' && ownerAddress ? (
-                    <Box sx={{ maxWidth: '58%', minWidth: 0 }}>
-                      <WrapperUserAction
-                        address={ownerAddress}
-                        name={ownerName || ownerAddress}
-                        reticulumUserCard={{
-                          address: ownerAddress,
-                          isMinterResolved: false,
-                          isOwn: ownerAddress === userInfo?.address,
-                          name: ownerName || undefined,
-                          role: 'owner',
-                          roleColor: '#FFB35D',
-                          status: null,
-                        }}
-                        trigger="hover"
-                      >
-                        <Typography
-                          sx={{
-                            color: '#FFB35D',
-                            fontSize: 13,
-                            fontWeight: 600,
-                            maxWidth: '100%',
-                            overflow: 'hidden',
-                            textOverflow: 'ellipsis',
-                            whiteSpace: 'nowrap',
-                          }}
-                        >
-                          {value}
-                        </Typography>
-                      </WrapperUserAction>
-                    </Box>
-                  ) : (
-                    <Typography sx={{ color: label === 'Owner' ? '#FFB35D' : 'text.primary', fontSize: 13, fontWeight: 600, maxWidth: '58%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{value}</Typography>
-                  )}
+                <Box sx={{ mt: 1.15 }}>
+                  <GroupScoreBadge
+                    popoverAlign="center"
+                    score={groupScore}
+                    size="full"
+                  />
                 </Box>
-              ))}
-            </Box>
-
-            <Box sx={{ alignItems: 'center', borderTop: `1px solid ${theme.palette.mode === 'dark' ? 'rgba(255,255,255,0.085)' : alpha(theme.palette.text.primary, 0.16)}`, display: 'flex', gap: 1, justifyContent: 'space-between', mt: 2, pt: 1.75 }}>
-              <Box sx={{ minWidth: 0 }}>
-                <Typography sx={{ color: 'text.secondary', fontSize: 10, fontWeight: 800, letterSpacing: '0.08em' }}>GROUP INVITE LINK</Typography>
-                <Typography title={inviteLink} sx={{ fontSize: 12, mt: 0.2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{truncateInvite(inviteLink)}</Typography>
+                <Box
+                  sx={{
+                    alignItems: 'center',
+                    color: 'text.secondary',
+                    display: 'inline-flex',
+                    gap: 0.75,
+                    mt: 0.85,
+                  }}
+                >
+                  {groupIsOpen ? (
+                    <PublicRoundedIcon sx={{ fontSize: 17 }} />
+                  ) : (
+                    <LockRoundedIcon sx={{ fontSize: 17 }} />
+                  )}
+                  <Typography sx={{ fontSize: 13 }}>
+                    {groupIsOpen ? 'Open group' : 'Closed group'}
+                  </Typography>
+                </Box>
               </Box>
-              <Tooltip title={copied ? 'Copied' : 'Copy invite link'}>
-                <Button onClick={copyInvite} size="small" sx={{ flexShrink: 0, minWidth: 36, mt: 0.35, p: 0.75 }}>
-                  {copied ? <CheckRoundedIcon fontSize="small" /> : <ContentCopyRoundedIcon fontSize="small" />}
-                </Button>
-              </Tooltip>
-            </Box>
-          </>
-        )}
-      </DialogContent>
-    </Dialog>
+
+              {description ? (
+                <Tooltip
+                  arrow
+                  disableHoverListener={!descriptionOverflowing}
+                  title={description}
+                >
+                  <Typography
+                    ref={descriptionRef}
+                    sx={{
+                      WebkitBoxOrient: 'vertical',
+                      WebkitLineClamp: 3,
+                      color: 'text.secondary',
+                      display: '-webkit-box',
+                      fontSize: 14,
+                      lineHeight: 1.45,
+                      mt: 2,
+                      overflow: 'hidden',
+                      textAlign: 'center',
+                    }}
+                  >
+                    {description}
+                  </Typography>
+                </Tooltip>
+              ) : null}
+
+              <Box
+                sx={{
+                  borderTop: `1px solid ${sectionBorder}`,
+                  display: 'grid',
+                  gap: 1.1,
+                  mt: 2,
+                  pt: 1.75,
+                }}
+              >
+                {statRows.map(([label, value]) => (
+                  <Box
+                    key={label}
+                    sx={{
+                      display: 'flex',
+                      gap: 2,
+                      justifyContent: 'space-between',
+                    }}
+                  >
+                    <Typography
+                      sx={{
+                        color: 'text.secondary',
+                        fontSize: 11,
+                        fontWeight: 700,
+                        letterSpacing: '0.08em',
+                        textTransform: 'uppercase',
+                      }}
+                    >
+                      {label}
+                    </Typography>
+                    {label === 'Owner' && ownerAddress ? (
+                      <Box sx={{ maxWidth: '58%', minWidth: 0 }}>
+                        <WrapperUserAction
+                          address={ownerAddress}
+                          name={ownerName || ownerAddress}
+                          reticulumUserCard={{
+                            address: ownerAddress,
+                            isMinterResolved: false,
+                            isOwn: ownerAddress === userInfo?.address,
+                            name: ownerName || undefined,
+                            role: 'owner',
+                            roleColor: '#FFB35D',
+                            status: null,
+                          }}
+                          trigger="hover"
+                        >
+                          <Typography
+                            sx={{
+                              color: '#FFB35D',
+                              fontSize: 13,
+                              fontWeight: 600,
+                              maxWidth: '100%',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            {value}
+                          </Typography>
+                        </WrapperUserAction>
+                      </Box>
+                    ) : (
+                      <Typography
+                        sx={{
+                          color:
+                            label === 'Owner' ? '#FFB35D' : 'text.primary',
+                          fontSize: 13,
+                          fontWeight: 600,
+                          maxWidth: '58%',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {value}
+                      </Typography>
+                    )}
+                  </Box>
+                ))}
+                {memberCount != null ? (
+                  <Box
+                    sx={{
+                      display: 'flex',
+                      gap: 2,
+                      justifyContent: 'space-between',
+                    }}
+                  >
+                    <Typography
+                      sx={{
+                        color: 'text.secondary',
+                        fontSize: 11,
+                        fontWeight: 700,
+                        letterSpacing: '0.08em',
+                        textTransform: 'uppercase',
+                      }}
+                    >
+                      Members
+                    </Typography>
+                    <Typography sx={{ fontSize: 13, fontWeight: 600 }}>
+                      {memberCount}
+                    </Typography>
+                  </Box>
+                ) : null}
+              </Box>
+
+              <Box
+                sx={{
+                  alignItems: 'center',
+                  borderTop: `1px solid ${sectionBorder}`,
+                  display: 'flex',
+                  gap: 1,
+                  justifyContent: 'space-between',
+                  mt: 2,
+                  pt: 1.75,
+                }}
+              >
+                <Box sx={{ minWidth: 0 }}>
+                  <Typography
+                    sx={{
+                      color: 'text.secondary',
+                      fontSize: 10,
+                      fontWeight: 800,
+                      letterSpacing: '0.08em',
+                    }}
+                  >
+                    GROUP INVITE LINK
+                  </Typography>
+                  <Typography
+                    title={inviteLink}
+                    sx={{
+                      fontSize: 12,
+                      mt: 0.2,
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {truncateInvite(inviteLink)}
+                  </Typography>
+                </Box>
+                <Tooltip title={copied ? 'Copied' : 'Copy invite link'}>
+                  <Button
+                    onClick={copyInvite}
+                    size="small"
+                    sx={{ flexShrink: 0, minWidth: 36, mt: 0.35, p: 0.75 }}
+                  >
+                    {copied ? (
+                      <CheckRoundedIcon fontSize="small" />
+                    ) : (
+                      <ContentCopyRoundedIcon fontSize="small" />
+                    )}
+                  </Button>
+                </Tooltip>
+              </Box>
+            </>
+          )}
+        </Box>
+      </Box>
+    </Box>,
+    document.body
   );
 };

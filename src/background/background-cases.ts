@@ -96,6 +96,23 @@ function wipeTemporaryKeyPairSecrets(keyPair: unknown): void {
   }
 }
 
+const ED25519_SECRET_KEY_BYTES = 64;
+
+/**
+ * Decodes the signing key and fails with an actionable message instead of
+ * nacl's opaque "bad secret key size" when the stored session key is missing
+ * or has already been wiped.
+ */
+function decodeSigningPrivateKey(keyPair: unknown): Uint8Array {
+  const encoded = (keyPair as { privateKey?: unknown })?.privateKey;
+  const bytes =
+    typeof encoded === 'string' && encoded ? Base58.decode(encoded) : null;
+  if (!bytes || bytes.length !== ED25519_SECRET_KEY_BYTES) {
+    throw new Error('Wallet signing key is unavailable; unlock the wallet again');
+  }
+  return bytes;
+}
+
 function isPublicValidationNode(apiUrl: string): boolean {
   return String(apiUrl || '')
     .toLowerCase()
@@ -2468,7 +2485,7 @@ export async function signPresenceMessageCase(request, event) {
   try {
     assertAllowedPresenceSigningPayload(request.payload);
     resKeyPair = await getKeyPair();
-    privateKeyBytes = Base58.decode(resKeyPair.privateKey);
+    privateKeyBytes = decodeSigningPrivateKey(resKeyPair);
 
     // Build canonical signed data — keys sorted alphabetically, then
     // JSON-stringify and UTF-8 encode. Must match canonicalizeForSigning()
@@ -2515,7 +2532,7 @@ export async function signReticulumChatEventCase(request, event) {
   try {
     assertAllowedReticulumSigningPayload(request.payload);
     resKeyPair = await getKeyPair();
-    privateKeyBytes = Base58.decode(resKeyPair.privateKey);
+    privateKeyBytes = decodeSigningPrivateKey(resKeyPair);
     const publicKey = resKeyPair.publicKey;
     const authorAddress = publicKeyToAddress(Base58.decode(publicKey));
     const fields = {

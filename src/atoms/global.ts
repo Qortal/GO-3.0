@@ -65,6 +65,8 @@ export const reticulumDirectSummariesAtom = atomWithReset<Record<string, any>>(
 );
 export const reticulumChatEnabledAtom = atomWithReset(true);
 export const reticulumEnabledAtom = atomWithReset(true);
+/** Group payload for the About Group overlay; null when closed. */
+export const reticulumGroupAboutAtom = atom<any>(null);
 export const groupsOwnerNamesAtom = atomWithReset({});
 export const groupsPropertiesAtom = atomWithReset({});
 export const hasSettingsChangedAtom = atomWithReset(false);

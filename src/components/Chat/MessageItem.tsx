@@ -33,6 +33,7 @@ import {
   Popper,
   Tooltip,
   Typography,
+  useMediaQuery,
   useTheme,
 } from '@mui/material';
 import { alpha } from '@mui/material/styles';
@@ -83,6 +84,7 @@ import { useTranslation } from 'react-i18next';
 import { ReactionsMap } from './ChatList';
 import { AvatarPreviewModal } from '../Chat/AvatarPreviewModal';
 import { useStatus } from '../../hooks/usePresence';
+import { useLongPress } from '../../hooks/useLongPress';
 import {
   getClickableAvatarSx,
   getFallbackAvatarOutlineSx,
@@ -104,6 +106,11 @@ import { CustomStyledMenu } from '../ContextMenu';
 import FormatQuoteRoundedIcon from '@mui/icons-material/FormatQuoteRounded';
 import { ReticulumRoleBadge } from './ReticulumRoleBadge';
 import { createReticulumImageRequestGate } from './reticulumImageRequestGate';
+import {
+  executeEvent,
+  subscribeToEvent,
+  unsubscribeFromEvent,
+} from '../../utils/events';
 import { useAtomValue } from 'jotai';
 import { reticulumHighlightOwnMessagesAtom } from '../../atoms/global';
 
@@ -139,6 +146,7 @@ const formatReticulumExpiry = (value: number | null): string => {
   return `${monthAndDay} | ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 };
 const RETICULUM_QUICK_REACTIONS = ['👍', '💯', '😂', '❤️'] as const;
+const MESSAGE_ACTIONS_OPENED_EVENT = 'reticulumMessageActionsOpened';
 
 const reticulumImageRequestGate = createReticulumImageRequestGate(
   RETICULUM_IMAGE_REQUEST_BACKOFF_MS,
@@ -418,6 +426,112 @@ export const MessageItemComponent = ({
   const [expiryClockMs, setExpiryClockMs] = useState(Date.now());
   const [reticulumMessageMenuPosition, setReticulumMessageMenuPosition] =
     useState<{ mouseX: number; mouseY: number } | null>(null);
+  // Touch equivalent of right-clicking a reaction chip to see who reacted.
+  // A single set of refs is enough since only one finger can hold at a time.
+  const reactionHold = useRef<{
+    timer: number | null;
+    origin: { x: number; y: number } | null;
+    fired: boolean;
+  }>({ timer: null, origin: null, fired: false });
+  const messageRowLongPress = useLongPress(
+    ({ clientX, clientY }) => {
+      setReticulumMessageMenuPosition({
+        mouseX: clientX + 2,
+        mouseY: clientY - 6,
+      });
+    },
+    { enabled: reticulumChatEnabled }
+  );
+  // Phones have no hover, so the quick-action bar is an explicit toggle. It is
+  // unmounted while closed so it claims no row height.
+  const [mobileActionsOpen, setMobileActionsOpen] = useState(false);
+  const messageActionsKey = message?.signature;
+  const handleMobileActionsTap = useCallback(
+    (event: React.MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      // Never steal a tap meant for a link, control, or the bar's own buttons.
+      if (
+        target?.closest(
+          'a, button, input, textarea, [role="button"], .message-item-toolbar'
+        )
+      ) {
+        return;
+      }
+      setMobileActionsOpen((open) => {
+        if (!open) {
+          executeEvent(MESSAGE_ACTIONS_OPENED_EVENT, {
+            signature: messageActionsKey,
+          });
+        }
+        return !open;
+      });
+    },
+    [messageActionsKey]
+  );
+  // Leaving a trail of open bars down the conversation is noise, so opening one
+  // closes the rest.
+  useEffect(() => {
+    if (!mobileActionsOpen) return;
+    const onOtherOpened = (event: CustomEvent) => {
+      if (event?.detail?.signature !== messageActionsKey) {
+        setMobileActionsOpen(false);
+      }
+    };
+    subscribeToEvent(MESSAGE_ACTIONS_OPENED_EVENT, onOtherOpened);
+    return () =>
+      unsubscribeFromEvent(MESSAGE_ACTIONS_OPENED_EVENT, onOtherOpened);
+  }, [mobileActionsOpen, messageActionsKey]);
+  const cancelReactionHold = useCallback(() => {
+    if (reactionHold.current.timer !== null) {
+      window.clearTimeout(reactionHold.current.timer);
+      reactionHold.current.timer = null;
+    }
+  }, []);
+  const startReactionHold = useCallback(
+    (event: React.TouchEvent<HTMLElement>, reaction: string) => {
+      const touch = event.touches[0];
+      if (!touch) return;
+      // Keep the row-level hold (which opens the message menu) from arming too.
+      event.stopPropagation();
+      const target = event.currentTarget;
+      reactionHold.current.origin = { x: touch.clientX, y: touch.clientY };
+      reactionHold.current.fired = false;
+      cancelReactionHold();
+      reactionHold.current.timer = window.setTimeout(() => {
+        reactionHold.current.timer = null;
+        reactionHold.current.fired = true;
+        setAnchorEl(target);
+        setSelectedReaction(reaction);
+      }, 450);
+    },
+    [cancelReactionHold]
+  );
+  const moveReactionHold = useCallback(
+    (event: React.TouchEvent<HTMLElement>) => {
+      if (reactionHold.current.timer === null) return;
+      const touch = event.touches[0];
+      const origin = reactionHold.current.origin;
+      if (!touch || !origin) return;
+      if (
+        Math.abs(touch.clientX - origin.x) > 10 ||
+        Math.abs(touch.clientY - origin.y) > 10
+      ) {
+        cancelReactionHold();
+      }
+    },
+    [cancelReactionHold]
+  );
+  const endReactionHold = useCallback(
+    (event: React.TouchEvent<HTMLElement>) => {
+      cancelReactionHold();
+      if (reactionHold.current.fired) {
+        reactionHold.current.fired = false;
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    },
+    [cancelReactionHold]
+  );
   const signedGroupWelcomeSystem =
     message?.qchatSystem?.type === 'group-welcome'
       ? message.qchatSystem
@@ -647,6 +761,7 @@ export const MessageItemComponent = ({
   }, [message?.id]);
 
   const theme = useTheme();
+  const isMobileLayout = useMediaQuery(theme.breakpoints.down('md'));
   const reticulumMemberRole = reticulumChatEnabled
     ? reticulumMemberRolesByAddress?.[message?.sender]
     : undefined;
@@ -1907,6 +2022,41 @@ export const MessageItemComponent = ({
     (!message?.text || message?.text === '<p></p>');
 
   const isOwn = message?.sender === myAddress;
+  // Phones get the familiar messenger layout where your own messages sit on the
+  // right. Reply previews and system posts stay left so they read as context.
+  const ownAligned =
+    isOwn &&
+    reticulumChatEnabled &&
+    isMobileLayout &&
+    !isShowingAsReply &&
+    !isOfficialGroupSystem;
+  // On phones the avatar joins the name/timestamp line instead of owning a
+  // column, so the body can use the full row width underneath it.
+  const mobileStackedLayout =
+    reticulumChatEnabled && isMobileLayout && !isShowingAsReply;
+  const avatarSizePx = mobileStackedLayout ? '30px' : '38px';
+  // Name + role badge on one line, timestamp tucked underneath. `display:
+  // contents` leaves the desktop header as the single flat row it was.
+  const headerMetaColumnSx = mobileStackedLayout
+    ? {
+        alignItems: ownAligned ? 'flex-end' : 'flex-start',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '1px',
+        minWidth: 0,
+      }
+    : { display: 'contents' };
+  const headerInlineRowSx = mobileStackedLayout
+    ? {
+        alignItems: 'center',
+        display: 'flex',
+        flexDirection: ownAligned ? 'row-reverse' : 'row',
+        gap: '6px',
+        minWidth: 0,
+      }
+    : { display: 'contents' };
+  const headerNameRowSx = headerInlineRowSx;
+  const headerTimeRowSx = headerInlineRowSx;
   const mentionedAddresses = [
     ...(Array.isArray(message?.mentionedAddresses)
       ? message.mentionedAddresses
@@ -2133,6 +2283,276 @@ export const MessageItemComponent = ({
 
   if (shouldSuppressUnvalidatedGroupWelcome) return null;
 
+  const avatarBlock = (
+    <Box
+      sx={{
+        alignItems: 'center',
+        display: 'flex',
+        flexDirection: 'column',
+        flexShrink: 0,
+        gap: '4px',
+        paddingTop: mobileStackedLayout ? 0 : '2px',
+      }}
+    >
+      <WrapperUserAction
+        disabled={
+          isOfficialGroupSystem ||
+          (!reticulumChatEnabled && myAddress === message?.sender)
+        }
+        address={message?.sender}
+        name={message?.senderName}
+        reticulumMenu={reticulumChatEnabled}
+        reticulumSilenceContext={reticulumSilenceContext}
+        reticulumUserCard={reticulumUserCard}
+        trigger={reticulumChatEnabled ? 'contextMenu' : 'click'}
+      >
+        {isOfficialGroupSystem ? (
+          <Avatar
+            alt={displaySenderName}
+            src={userAvatarUrl}
+            sx={{
+              backgroundColor: 'transparent',
+              border: 'none',
+              borderRadius: 0,
+              boxShadow: 'none',
+              color:
+                theme.palette.mode === 'light'
+                  ? theme.palette.primary.dark
+                  : theme.palette.primary.light,
+              fontSize: '15px',
+              fontWeight: 700,
+              height: avatarSizePx,
+              overflow: 'visible',
+              width: avatarSizePx,
+              '& .MuiAvatar-img': {
+                borderRadius: 0,
+                objectFit: 'contain',
+              },
+            }}
+          >
+            {(officialGroupSystem?.groupName || 'G').charAt(0)}
+          </Avatar>
+        ) : reticulumMinterLevel !== null ? (
+          <MinterAvatarOrnament
+            accentColor={
+              reticulumMemberRole ? reticulumMemberRoleColor : undefined
+            }
+            level={reticulumMinterLevel}
+            size={mobileStackedLayout ? 'message-compact' : 'message'}
+          >
+            <PresenceStatusBadge
+              online={Boolean(senderStatus)}
+              status={senderStatus}
+            >
+              <Avatar
+                sx={{
+                  backgroundColor: alpha(theme.palette.text.primary, 0.06),
+                  color: theme.palette.text.primary,
+                  height: avatarSizePx,
+                  width: avatarSizePx,
+                  fontSize: '15px',
+                  fontWeight: 600,
+                  ...(!isAvatarLoaded ? getFallbackAvatarOutlineSx(theme) : {}),
+                  ...getClickableAvatarSx(theme, isAvatarLoaded),
+                }}
+                alt={message?.senderName}
+                src={userAvatarUrl}
+                onClick={reticulumChatEnabled ? undefined : handleAvatarPreview}
+                imgProps={{
+                  onLoad: () => {
+                    setIsAvatarLoaded(true);
+                  },
+                  onError: () => {
+                    setIsAvatarLoaded(false);
+                  },
+                }}
+              >
+                {message?.senderName?.charAt(0)}
+              </Avatar>
+            </PresenceStatusBadge>
+          </MinterAvatarOrnament>
+        ) : (
+          <PresenceStatusBadge
+            online={Boolean(senderStatus)}
+            status={senderStatus}
+          >
+            <Avatar
+              sx={{
+                backgroundColor: alpha(theme.palette.text.primary, 0.06),
+                color: theme.palette.text.primary,
+                height: avatarSizePx,
+                width: avatarSizePx,
+                fontSize: '15px',
+                fontWeight: 600,
+                ...(!isAvatarLoaded ? getFallbackAvatarOutlineSx(theme) : {}),
+                ...getClickableAvatarSx(theme, isAvatarLoaded),
+              }}
+              alt={message?.senderName}
+              src={userAvatarUrl}
+              onClick={reticulumChatEnabled ? undefined : handleAvatarPreview}
+              imgProps={{
+                onLoad: () => {
+                  setIsAvatarLoaded(true);
+                },
+                onError: () => {
+                  setIsAvatarLoaded(false);
+                },
+              }}
+            >
+              {message?.senderName?.charAt(0)}
+            </Avatar>
+          </PresenceStatusBadge>
+        )}
+      </WrapperUserAction>
+      {!reticulumChatEnabled && <UserBadge userInfo={userInfo} />}
+    </Box>
+  );
+
+  const renderMessageActionToolbar = (placement: 'header' | 'below') => (
+    <Box
+      className="message-item-toolbar"
+      sx={{
+        alignItems: 'center',
+        backgroundColor: theme.palette.background.paper,
+        border: '1px solid',
+        borderColor: theme.palette.divider,
+        borderRadius: '8px',
+        boxShadow: theme.shadows[2],
+        display: 'flex',
+        flexShrink: 0,
+        gap: '2px',
+        padding: '3px 6px',
+        transition: 'opacity 0.15s ease',
+        zIndex: 2,
+        ...(placement === 'below'
+          ? {
+              // Hug the reaction/action chips instead of stretching across the
+              // full message column (column flex defaults to stretch).
+              alignSelf: ownAligned ? 'flex-end' : 'flex-start',
+              animation: 'messageActionsIn 160ms ease-out',
+              marginTop: '6px',
+              transformOrigin: ownAligned ? 'right top' : 'left top',
+              width: 'fit-content',
+              '@keyframes messageActionsIn': {
+                from: { opacity: 0, transform: 'translateY(-4px) scale(0.96)' },
+                to: { opacity: 1, transform: 'translateY(0) scale(1)' },
+              },
+            }
+          : {}),
+      }}
+    >
+      {reticulumChatEnabled &&
+        RETICULUM_QUICK_REACTIONS.map((emoji) => (
+          <Tooltip
+            key={emoji}
+            title={`React with ${emoji}`}
+            disableFocusListener
+          >
+            <ButtonBase
+              aria-label={`React with ${emoji}`}
+              sx={{
+                borderRadius: '6px',
+                fontSize: '18px',
+                lineHeight: 1,
+                padding: '4px',
+                '&:hover': {
+                  backgroundColor: theme.palette.action.hover,
+                },
+              }}
+              onClick={() => {
+                const hasReacted = reactions?.[emoji]?.some(
+                  (item) => item?.sender === myAddress
+                );
+                handleReaction(emoji, message, !hasReacted);
+                setMobileActionsOpen(false);
+              }}
+            >
+              {emoji}
+            </ButtonBase>
+          </Tooltip>
+        ))}
+
+      {handleReaction && (
+        <ReactionPicker
+          neutralIcon={reticulumChatEnabled}
+          onReaction={(val) => {
+            if (
+              reactions &&
+              reactions[val] &&
+              reactions[val]?.find((item) => item?.sender === myAddress)
+            ) {
+              handleReaction(val, message, false);
+            } else {
+              handleReaction(val, message, true);
+            }
+            setMobileActionsOpen(false);
+          }}
+        />
+      )}
+
+      {isOwnReticulumEditable && (
+        <Tooltip title="Edit" disableFocusListener>
+          <ButtonBase
+            sx={{
+              borderRadius: '6px',
+              color: theme.palette.text.secondary,
+              padding: '4px',
+              '&:hover': {
+                backgroundColor: theme.palette.action.hover,
+                color: theme.palette.text.primary,
+              },
+            }}
+            onClick={() => {
+              onEdit(message);
+            }}
+          >
+            <EditIcon sx={{ fontSize: '18px' }} />
+          </ButtonBase>
+        </Tooltip>
+      )}
+
+      <Tooltip title="Reply" disableFocusListener>
+        <ButtonBase
+          sx={{
+            borderRadius: '6px',
+            color: theme.palette.text.secondary,
+            padding: '4px',
+            '&:hover': {
+              backgroundColor: theme.palette.action.hover,
+              color: theme.palette.text.primary,
+            },
+          }}
+          onClick={() => {
+            onReply(message);
+          }}
+        >
+          <ReplyIcon sx={{ fontSize: '18px' }} />
+        </ButtonBase>
+      </Tooltip>
+
+      {isOwnReticulumDeletable && (
+        <Tooltip title="Delete (shift+del)" disableFocusListener>
+          <ButtonBase
+            sx={{
+              borderRadius: '6px',
+              color: theme.palette.error.main,
+              padding: '4px',
+              '&:hover': {
+                backgroundColor: theme.palette.action.hover,
+                color: theme.palette.error.light,
+              },
+            }}
+            onClick={() => {
+              onDelete(message);
+            }}
+          >
+            <DeleteOutlineIcon sx={{ fontSize: '18px' }} />
+          </ButtonBase>
+        </Tooltip>
+      )}
+    </Box>
+  );
+
   return (
     <>
       {message?.divide && (
@@ -2167,6 +2587,12 @@ export const MessageItemComponent = ({
                 }
               : undefined
           }
+          {...(reticulumChatEnabled ? messageRowLongPress : {})}
+          onClick={
+            reticulumChatEnabled && isMobileLayout && !isShowingAsReply
+              ? handleMobileActionsTap
+              : undefined
+          }
           onMouseEnter={
             isOwnReticulumDeletable
               ? () => setIsOwnReticulumMessageHovered(true)
@@ -2179,8 +2605,12 @@ export const MessageItemComponent = ({
           }
           sx={{
             display: 'flex',
-            flexDirection: 'row',
-            gap: reticulumChatEnabled ? '10px' : '12px',
+            flexDirection: mobileStackedLayout
+              ? 'column'
+              : ownAligned
+                ? 'row-reverse'
+                : 'row',
+            gap: mobileStackedLayout ? 0 : reticulumChatEnabled ? '10px' : '12px',
             opacity: isTemp || isUpdating ? 0.5 : 1,
             padding: isShowingAsReply
               ? '2px 8px'
@@ -2250,10 +2680,20 @@ export const MessageItemComponent = ({
                 : {}),
             }),
             ...(!isShowingAsReply && {
-              '& .message-item-toolbar': {
-                opacity: 0,
-                pointerEvents: 'none',
-              },
+              // Touch devices toggle the bar explicitly; emulated hover would
+              // otherwise leave it stuck open after the first tap.
+              ...(isMobileLayout
+                ? {}
+                : {
+                    '& .message-item-toolbar': {
+                      opacity: 0,
+                      pointerEvents: 'none',
+                    },
+                    '&:hover .message-item-toolbar': {
+                      opacity: 1,
+                      pointerEvents: 'auto',
+                    },
+                  }),
               '&:hover': {
                 backgroundColor: reticulumChatEnabled
                   ? isOfficialGroupSystem || isCurrentUserMentioned
@@ -2270,15 +2710,11 @@ export const MessageItemComponent = ({
                     : alpha(theme.palette.text.primary, 0.035)
                   : undefined,
               },
-              '&:hover .message-item-toolbar': {
-                opacity: 1,
-                pointerEvents: 'auto',
-              },
             }),
           }}
           id={message?.signature}
         >
-          {/* Left column: avatar + badge */}
+          {/* Left column: avatar + badge (phones move this into the header) */}
           {isShowingAsReply ? (
             <ReplyIcon
               sx={{
@@ -2288,7 +2724,7 @@ export const MessageItemComponent = ({
                 mt: '2px',
               }}
             />
-          ) : isGroupedWithPrevious ? (
+          ) : mobileStackedLayout ? null : isGroupedWithPrevious ? (
             <Box
               sx={{
                 flexShrink: 0,
@@ -2296,141 +2732,7 @@ export const MessageItemComponent = ({
               }}
             />
           ) : (
-            <Box
-              sx={{
-                alignItems: 'center',
-                display: 'flex',
-                flexDirection: 'column',
-                flexShrink: 0,
-                gap: '4px',
-                paddingTop: '2px',
-              }}
-            >
-              <WrapperUserAction
-                disabled={
-                  isOfficialGroupSystem ||
-                  (!reticulumChatEnabled && myAddress === message?.sender)
-                }
-                address={message?.sender}
-                name={message?.senderName}
-                reticulumMenu={reticulumChatEnabled}
-                reticulumSilenceContext={reticulumSilenceContext}
-                reticulumUserCard={reticulumUserCard}
-                trigger={reticulumChatEnabled ? 'contextMenu' : 'click'}
-              >
-                {isOfficialGroupSystem ? (
-                  <Avatar
-                    alt={displaySenderName}
-                    src={userAvatarUrl}
-                    sx={{
-                      backgroundColor: 'transparent',
-                      border: 'none',
-                      borderRadius: 0,
-                      boxShadow: 'none',
-                      color:
-                        theme.palette.mode === 'light'
-                          ? theme.palette.primary.dark
-                          : theme.palette.primary.light,
-                      fontSize: '15px',
-                      fontWeight: 700,
-                      height: '38px',
-                      overflow: 'visible',
-                      width: '38px',
-                      '& .MuiAvatar-img': {
-                        borderRadius: 0,
-                        objectFit: 'contain',
-                      },
-                    }}
-                  >
-                    {(officialGroupSystem?.groupName || 'G').charAt(0)}
-                  </Avatar>
-                ) : reticulumMinterLevel !== null ? (
-                  <MinterAvatarOrnament
-                    accentColor={
-                      reticulumMemberRole ? reticulumMemberRoleColor : undefined
-                    }
-                    level={reticulumMinterLevel}
-                  >
-                    <PresenceStatusBadge
-                      online={Boolean(senderStatus)}
-                      status={senderStatus}
-                    >
-                      <Avatar
-                        sx={{
-                          backgroundColor: alpha(
-                            theme.palette.text.primary,
-                            0.06
-                          ),
-                          color: theme.palette.text.primary,
-                          height: '38px',
-                          width: '38px',
-                          fontSize: '15px',
-                          fontWeight: 600,
-                          ...(!isAvatarLoaded
-                            ? getFallbackAvatarOutlineSx(theme)
-                            : {}),
-                          ...getClickableAvatarSx(theme, isAvatarLoaded),
-                        }}
-                        alt={message?.senderName}
-                        src={userAvatarUrl}
-                        onClick={
-                          reticulumChatEnabled ? undefined : handleAvatarPreview
-                        }
-                        imgProps={{
-                          onLoad: () => {
-                            setIsAvatarLoaded(true);
-                          },
-                          onError: () => {
-                            setIsAvatarLoaded(false);
-                          },
-                        }}
-                      >
-                        {message?.senderName?.charAt(0)}
-                      </Avatar>
-                    </PresenceStatusBadge>
-                  </MinterAvatarOrnament>
-                ) : (
-                  <PresenceStatusBadge
-                    online={Boolean(senderStatus)}
-                    status={senderStatus}
-                  >
-                    <Avatar
-                      sx={{
-                        backgroundColor: alpha(
-                          theme.palette.text.primary,
-                          0.06
-                        ),
-                        color: theme.palette.text.primary,
-                        height: '38px',
-                        width: '38px',
-                        fontSize: '15px',
-                        fontWeight: 600,
-                        ...(!isAvatarLoaded
-                          ? getFallbackAvatarOutlineSx(theme)
-                          : {}),
-                        ...getClickableAvatarSx(theme, isAvatarLoaded),
-                      }}
-                      alt={message?.senderName}
-                      src={userAvatarUrl}
-                      onClick={
-                        reticulumChatEnabled ? undefined : handleAvatarPreview
-                      }
-                      imgProps={{
-                        onLoad: () => {
-                          setIsAvatarLoaded(true);
-                        },
-                        onError: () => {
-                          setIsAvatarLoaded(false);
-                        },
-                      }}
-                    >
-                      {message?.senderName?.charAt(0)}
-                    </Avatar>
-                  </PresenceStatusBadge>
-                )}
-              </WrapperUserAction>
-              {!reticulumChatEnabled && <UserBadge userInfo={userInfo} />}
-            </Box>
+            avatarBlock
           )}
 
           {/* Right column: header + body + reactions */}
@@ -2438,10 +2740,13 @@ export const MessageItemComponent = ({
             sx={{
               display: 'flex',
               flexDirection: 'column',
-              gap: isGroupedWithPrevious ? 0 : '4px',
+              gap: isGroupedWithPrevious ? 0 : mobileStackedLayout ? '2px' : '4px',
               height: isShowingAsReply ? '40px' : undefined,
               minWidth: 0,
               width: '100%',
+              // Blocks hug the right edge, but text inside them stays
+              // left-aligned so long messages remain readable.
+              ...(ownAligned ? { alignItems: 'flex-end' } : {}),
             }}
           >
             {/* Header: sender name + timestamp + edited label inline, toolbar on the right */}
@@ -2453,13 +2758,23 @@ export const MessageItemComponent = ({
                 gap: '8px',
                 justifyContent: 'space-between',
                 height: collapseGroupedHeader ? 0 : undefined,
-                minHeight: collapseGroupedHeader ? 0 : '32px',
+                minHeight: collapseGroupedHeader
+                  ? 0
+                  : mobileStackedLayout
+                    ? '26px'
+                    : '32px',
                 overflow: collapseGroupedHeader ? 'visible' : undefined,
+                ...(ownAligned
+                  ? {
+                      flexDirection: 'row-reverse',
+                      width: '100%',
+                    }
+                  : {}),
                 ...(collapseGroupedHeader
                   ? {
-                      alignSelf: 'flex-end',
+                      alignSelf: ownAligned ? 'flex-start' : 'flex-end',
                       position: 'absolute',
-                      right: '14px',
+                      ...(ownAligned ? { left: '14px' } : { right: '14px' }),
                       top: '1px',
                       width: 'auto',
                       zIndex: 3,
@@ -2471,11 +2786,19 @@ export const MessageItemComponent = ({
                 sx={{
                   alignItems: 'center',
                   flexWrap: 'wrap',
-                  gap: '8px',
+                  gap: mobileStackedLayout ? '7px' : '8px',
                   minWidth: 0,
                   display: collapseGroupedHeader ? 'none' : 'flex',
+                  // Own messages put the avatar on the outer right edge.
+                  ...(ownAligned ? { flexDirection: 'row-reverse' } : {}),
                 }}
               >
+                {mobileStackedLayout && !isGroupedWithPrevious && avatarBlock}
+                {/* On phones the name and its role badge sit on one line with
+                    the timestamp tucked underneath; `display: contents` keeps
+                    the desktop header a single flat row. */}
+                <Box sx={headerMetaColumnSx}>
+                  <Box sx={headerNameRowSx}>
                 <WrapperUserAction
                   disabled={
                     isOfficialGroupSystem ||
@@ -2536,7 +2859,8 @@ export const MessageItemComponent = ({
                       size={reticulumDiscussionView ? 'card' : 'message'}
                     />
                   )}
-
+                  </Box>
+                  <Box sx={headerTimeRowSx}>
                 {!isUpdating && !isTemp && (
                   <Typography
                     sx={{
@@ -2571,138 +2895,16 @@ export const MessageItemComponent = ({
                     })}
                   </Typography>
                 )}
+                  </Box>
+                </Box>
               </Box>
 
-              {/* Action toolbar in header row so it never overlaps message body */}
-              {!isShowingAsReply && !reticulumDiscussionView && (
-                <Box
-                  className="message-item-toolbar"
-                  sx={{
-                    alignItems: 'center',
-                    backgroundColor: theme.palette.background.paper,
-                    border: '1px solid',
-                    borderColor: theme.palette.divider,
-                    borderRadius: '8px',
-                    boxShadow: theme.shadows[2],
-                    display: 'flex',
-                    flexShrink: 0,
-                    gap: '2px',
-                    padding: '3px 6px',
-                    transition: 'opacity 0.15s ease',
-                    zIndex: 2,
-                  }}
-                >
-                  {reticulumChatEnabled &&
-                    RETICULUM_QUICK_REACTIONS.map((emoji) => (
-                      <Tooltip
-                        key={emoji}
-                        title={`React with ${emoji}`}
-                        disableFocusListener
-                      >
-                        <ButtonBase
-                          aria-label={`React with ${emoji}`}
-                          sx={{
-                            borderRadius: '6px',
-                            fontSize: '18px',
-                            lineHeight: 1,
-                            padding: '4px',
-                            '&:hover': {
-                              backgroundColor: theme.palette.action.hover,
-                            },
-                          }}
-                          onClick={() => {
-                            const hasReacted = reactions?.[emoji]?.some(
-                              (item) => item?.sender === myAddress
-                            );
-                            handleReaction(emoji, message, !hasReacted);
-                          }}
-                        >
-                          {emoji}
-                        </ButtonBase>
-                      </Tooltip>
-                    ))}
-
-                  {handleReaction && (
-                    <ReactionPicker
-                      neutralIcon={reticulumChatEnabled}
-                      onReaction={(val) => {
-                        if (
-                          reactions &&
-                          reactions[val] &&
-                          reactions[val]?.find(
-                            (item) => item?.sender === myAddress
-                          )
-                        ) {
-                          handleReaction(val, message, false);
-                        } else {
-                          handleReaction(val, message, true);
-                        }
-                      }}
-                    />
-                  )}
-
-                  {isOwnReticulumEditable && (
-                    <Tooltip title="Edit" disableFocusListener>
-                      <ButtonBase
-                        sx={{
-                          borderRadius: '6px',
-                          color: theme.palette.text.secondary,
-                          padding: '4px',
-                          '&:hover': {
-                            backgroundColor: theme.palette.action.hover,
-                            color: theme.palette.text.primary,
-                          },
-                        }}
-                        onClick={() => {
-                          onEdit(message);
-                        }}
-                      >
-                        <EditIcon sx={{ fontSize: '18px' }} />
-                      </ButtonBase>
-                    </Tooltip>
-                  )}
-
-                  <Tooltip title="Reply" disableFocusListener>
-                    <ButtonBase
-                      sx={{
-                        borderRadius: '6px',
-                        color: theme.palette.text.secondary,
-                        padding: '4px',
-                        '&:hover': {
-                          backgroundColor: theme.palette.action.hover,
-                          color: theme.palette.text.primary,
-                        },
-                      }}
-                      onClick={() => {
-                        onReply(message);
-                      }}
-                    >
-                      <ReplyIcon sx={{ fontSize: '18px' }} />
-                    </ButtonBase>
-                  </Tooltip>
-
-                  {isOwnReticulumDeletable && (
-                    <Tooltip title="Delete (shift+del)" disableFocusListener>
-                      <ButtonBase
-                        sx={{
-                          borderRadius: '6px',
-                          color: theme.palette.error.main,
-                          padding: '4px',
-                          '&:hover': {
-                            backgroundColor: theme.palette.action.hover,
-                            color: theme.palette.error.light,
-                          },
-                        }}
-                        onClick={() => {
-                          onDelete(message);
-                        }}
-                      >
-                        <DeleteOutlineIcon sx={{ fontSize: '18px' }} />
-                      </ButtonBase>
-                    </Tooltip>
-                  )}
-                </Box>
-              )}
+              {/* Desktop hover toolbar stays in the header row. On mobile the
+                  tap toolbar is rendered below the message body instead. */}
+              {!isShowingAsReply &&
+                !reticulumDiscussionView &&
+                !isMobileLayout &&
+                renderMessageActionToolbar('header')}
             </Box>
 
             {/* Reply preview - active reply */}
@@ -3151,6 +3353,7 @@ export const MessageItemComponent = ({
               </Box>
             ) : message?.decryptedData?.type === 'notification' ? (
               <MessageDisplay
+                fitContent={ownAligned}
                 htmlContent={message.decryptedData?.data?.message}
                 trailingContent={
                   collapseGroupedHeader ? reticulumExpiringSoonLabel : null
@@ -3165,6 +3368,7 @@ export const MessageItemComponent = ({
               />
             ) : hasNoMessage ? null : htmlText ? (
               <MessageDisplay
+                fitContent={ownAligned}
                 htmlContent={htmlText}
                 trailingContent={
                   collapseGroupedHeader ? reticulumExpiringSoonLabel : null
@@ -3187,6 +3391,7 @@ export const MessageItemComponent = ({
               />
             ) : (
               <MessageDisplay
+                fitContent={ownAligned}
                 htmlContent={message.text}
                 trailingContent={
                   collapseGroupedHeader ? reticulumExpiringSoonLabel : null
@@ -3237,7 +3442,7 @@ export const MessageItemComponent = ({
                 <Box
                   sx={{
                     aspectRatio: imageResourceAspectRatio,
-                    alignSelf: 'flex-start',
+                    alignSelf: ownAligned ? 'flex-end' : 'flex-start',
                     borderRadius: '8px',
                     contain: 'layout paint',
                     isolation: 'isolate',
@@ -3935,6 +4140,12 @@ export const MessageItemComponent = ({
                           setAnchorEl(event.currentTarget);
                           setSelectedReaction(reaction);
                         }}
+                        onTouchStart={(event) =>
+                          startReactionHold(event, reaction)
+                        }
+                        onTouchMove={moveReactionHold}
+                        onTouchEnd={endReactionHold}
+                        onTouchCancel={endReactionHold}
                       >
                         <span style={{ fontSize: '14px', lineHeight: 1 }}>
                           {reaction}
@@ -3981,7 +4192,17 @@ export const MessageItemComponent = ({
                 </Tooltip>
               )}
 
-            {/* Reaction popover — zIndex 1400 so it appears above GlobalChatWidget (1300) */}
+            {/* Mobile tap toolbar sits under the message body and any existing
+                reaction chips, so it never covers the text. */}
+            {!isShowingAsReply &&
+              !reticulumDiscussionView &&
+              isMobileLayout &&
+              mobileActionsOpen &&
+              renderMessageActionToolbar('below')}
+
+            {/* Reaction popover — zIndex 1400 so it appears above GlobalChatWidget (1300).
+                Own (right-aligned) messages use top-end so the panel opens left of
+                the chip instead of spilling past the right edge of the screen. */}
             {selectedReaction && (
               <Popper
                 open={Boolean(anchorEl)}
@@ -4003,12 +4224,14 @@ export const MessageItemComponent = ({
                     name: 'preventOverflow',
                     options: {
                       altAxis: true,
-                      mainAxis: false,
-                      padding: 10,
+                      boundary: 'viewport',
+                      mainAxis: true,
+                      padding: 12,
+                      tether: false,
                     },
                   },
                 ]}
-                placement="top-start"
+                placement={ownAligned ? 'top-end' : 'top-start'}
                 popperOptions={{ strategy: 'fixed' }}
                 sx={{ zIndex: 1400 }}
               >
@@ -4035,8 +4258,10 @@ export const MessageItemComponent = ({
                       theme.palette.mode === 'dark'
                         ? '0 14px 32px rgba(0, 0, 0, 0.42)'
                         : theme.shadows[8],
-                    maxWidth: '320px',
-                    minWidth: '260px',
+                    // Cap width to the viewport so preventOverflow can keep the
+                    // whole panel on-screen even on narrow phones.
+                    maxWidth: 'min(320px, calc(100vw - 24px))',
+                    minWidth: 'min(260px, calc(100vw - 24px))',
                     padding: '16px 16px 12px',
                   }}
                 >

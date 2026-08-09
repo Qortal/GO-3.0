@@ -1,4 +1,4 @@
-import Compressor from 'compressorjs';
+import { compressImageFile } from '../../utils/imageCompression';
 
 export const isReticulumCompressibleImage = (file: File) =>
   file.type?.startsWith('image/') === true && file.type !== 'image/gif';
@@ -50,27 +50,13 @@ export const convertReticulumGifFile = async (
   });
 };
 
+/**
+ * The user asked for this explicitly via the attach dialog, so there is no size
+ * threshold — always shrink. Chat images ride the Reticulum overlay, so the
+ * targets are tighter than Quitter's.
+ */
 export const compressReticulumImageFile = (file: File): Promise<File> =>
-  new Promise((resolve) => {
-    new Compressor(file, {
-      quality: 0.6,
-      maxWidth: 1200,
-      mimeType: 'image/webp',
-      success(result) {
-        resolve(
-          new File(
-            [result],
-            `${file.name.replace(/\.[^.]+$/, '') || 'image'}.webp`,
-            {
-              type: 'image/webp',
-              lastModified: Date.now(),
-            }
-          )
-        );
-      },
-      error(error) {
-        console.error('Reticulum image compression error:', error);
-        resolve(file);
-      },
-    });
+  compressImageFile(file, {
+    first: { quality: 0.6, maxWidth: 1200, mimeType: 'image/webp' },
+    fallback: { quality: 0.6, maxWidth: 1200, mimeType: 'image/jpeg' },
   });

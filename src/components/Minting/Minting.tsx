@@ -20,7 +20,7 @@ import {
   unsubscribeFromEvent,
 } from '../../utils/events';
 import { getFee } from '../../background/background.ts';
-import { FidgetSpinner } from 'react-loader-spinner';
+import { LazyFidgetSpinner as FidgetSpinner } from '../../common/LazyFidgetSpinner';
 import { useModal } from '../../hooks/useModal.tsx';
 import { useAtom, useSetAtom } from 'jotai';
 import { memberGroupsAtom, txListAtom } from '../../atoms/global';

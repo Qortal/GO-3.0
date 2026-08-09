@@ -44,7 +44,7 @@ import VisibilityRoundedIcon from '@mui/icons-material/VisibilityRounded';
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
 import SendIcon from '@mui/icons-material/Send';
 import { LoadingSnackbar } from '../Snackbar/LoadingSnackbar';
-import { getNameInfo } from '../Group/Group';
+import { getNameInfo } from '../Group/groupApi';
 import { CustomizedSnackbars } from '../Snackbar/Snackbar';
 import {
   getBaseApiReact,
@@ -100,6 +100,7 @@ import {
   isReticulumCompressibleImage,
   isReticulumGifFile,
 } from './reticulumImagePreparation';
+import { stageReticulumFilePath } from './reticulumFileStaging';
 import { ReticulumLargeImageDialog } from './ReticulumLargeImageDialog';
 import { shouldBlockChatForLowBalance } from './chatTransportBalance';
 import { ReticulumMessageExpiryButton } from './ReticulumMessageExpiryButton';
@@ -2403,14 +2404,17 @@ export const ChatDirect = ({
         setOpenSnack(true);
         return false;
       }
+      const sourceIsImage = file.type?.startsWith('image/') === true;
+      const isImage = sourceIsImage && options.asAttachment !== true;
       const filePath =
         options.filePathOverride ||
         window.reticulumResources?.getPathForFile?.(file) ||
         (typeof (file as File & { path?: unknown }).path === 'string'
           ? String((file as File & { path?: unknown }).path)
+          : '') ||
+        (!sourceIsImage
+          ? await stageReticulumFilePath(file).catch(() => '')
           : '');
-      const sourceIsImage = file.type?.startsWith('image/') === true;
-      const isImage = sourceIsImage && options.asAttachment !== true;
       if (!sourceIsImage && !filePath) {
         setInfoSnack({
           type: 'error',
@@ -2565,6 +2569,13 @@ export const ChatDirect = ({
       }
       const added = await addPendingReticulumFile(compressed);
       if (added) setReticulumImageChoice(null);
+    } catch (error) {
+      console.error('Reticulum image compression failed', error);
+      setInfoSnack({
+        type: 'error',
+        message: 'Could not prepare that image. Try sending it as a file.',
+      });
+      setOpenSnack(true);
     } finally {
       if (
         reticulumImagePreparationSequenceRef.current === preparationSequence
@@ -2986,7 +2997,7 @@ export const ChatDirect = ({
       }}
     >
       {/* Header: back button + optional new-chat title */}
-      {!(isMobile && isFocusedParent) && (
+      {(reticulumDirectUiEnabled || !(isMobile && isFocusedParent)) && (
       <Box
         sx={{
           alignItems: 'center',
@@ -2999,7 +3010,7 @@ export const ChatDirect = ({
           width: '100%',
         }}
       >
-        {!reticulumDirectUiEnabled && (
+        {(!reticulumDirectUiEnabled || isMobile) && (
           <ButtonBase
             onClick={close}
             sx={{
@@ -3008,7 +3019,7 @@ export const ChatDirect = ({
               color: theme.palette.text.secondary,
               display: 'flex',
               gap: '6px',
-              padding: '6px 10px',
+              padding: reticulumDirectUiEnabled ? '6px' : '6px 10px',
               transition: 'background-color 0.15s ease, color 0.15s ease',
               '&:hover': {
                 backgroundColor: theme.palette.action.hover,
@@ -3017,11 +3028,13 @@ export const ChatDirect = ({
             }}
           >
             <ArrowBackIcon sx={{ fontSize: '20px' }} />
-            <Typography sx={{ fontSize: '14px', fontWeight: 500 }}>
-              {t('core:action.close_chat', {
-                postProcess: 'capitalizeFirstChar',
-              })}
-            </Typography>
+            {!reticulumDirectUiEnabled && (
+              <Typography sx={{ fontSize: '14px', fontWeight: 500 }}>
+                {t('core:action.close_chat', {
+                  postProcess: 'capitalizeFirstChar',
+                })}
+              </Typography>
+            )}
           </ButtonBase>
         )}
         {isNewChat ? (
@@ -3052,7 +3065,8 @@ export const ChatDirect = ({
                 selectedDirect?.address ||
                 'Direct Message'}
             </Typography>
-            {!isSelfDirect &&
+            {!isMobile &&
+              !isSelfDirect &&
               selectedDirect?.name &&
               selectedDirect?.address && (
                 <Typography
@@ -3746,11 +3760,18 @@ export const ChatDirect = ({
           borderBottom: reticulumDirectUiEnabled ? 'none' : undefined,
           borderLeft: reticulumDirectUiEnabled ? 'none' : undefined,
           borderRight: reticulumDirectUiEnabled ? 'none' : undefined,
+          // Phones keep the composer in normal flow; the desktop "focused"
+          // treatment pins it to the viewport, which on mobile turned into a
+          // floating band covering the whole conversation.
           bottom:
-            reticulumDirectUiEnabled && isFocusedParent ? '0px' : 'unset',
+            reticulumDirectUiEnabled && isFocusedParent && !isMobile
+              ? '0px'
+              : 'unset',
           boxSizing: 'border-box',
           display: 'flex',
-          flexDirection: isMobile ? 'column' : 'row',
+          // The new DM composer is a single compact row on every width, like
+          // the group composer; only the legacy one stacks on phones.
+          flexDirection: reticulumDirectUiEnabled || !isMobile ? 'row' : 'column',
           flexShrink: 0,
           gap: isMobile ? '8px' : reticulumDirectUiEnabled ? '8px' : '12px',
           maxHeight:
@@ -3772,8 +3793,13 @@ export const ChatDirect = ({
               ? 'max(10px, env(safe-area-inset-bottom, 0px))'
               : undefined,
           position:
-            reticulumDirectUiEnabled && isFocusedParent ? 'fixed' : 'relative',
-          top: reticulumDirectUiEnabled && isFocusedParent ? '0px' : 'unset',
+            reticulumDirectUiEnabled && isFocusedParent && !isMobile
+              ? 'fixed'
+              : 'relative',
+          top:
+            reticulumDirectUiEnabled && isFocusedParent && !isMobile
+              ? '0px'
+              : 'unset',
           width: '100%',
           // In landscape float the composer as a compact card at the
           // bottom-right so the message list fills the area behind it.
@@ -3912,7 +3938,7 @@ export const ChatDirect = ({
           <Box
             className={isMobile ? 'mobile-chat-compose-row' : undefined}
             sx={{
-              alignItems: 'flex-end',
+              alignItems: 'center',
               display: 'flex',
               gap: '6px',
               width: '100%',
@@ -3925,7 +3951,6 @@ export const ChatDirect = ({
             setEditorRef={setEditorRef}
             onEnter={sendMessage}
             isChat
-            disableEnter={isMobile}
             setIsFocusedParent={setIsFocusedParent}
             insertFiles={insertFiles}
             compactChat={reticulumDirectUiEnabled}

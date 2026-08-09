@@ -5,6 +5,7 @@ import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded';
 import DownloadRoundedIcon from '@mui/icons-material/DownloadRounded';
 import ZoomInRoundedIcon from '@mui/icons-material/ZoomInRounded';
 import ZoomOutRoundedIcon from '@mui/icons-material/ZoomOutRounded';
+import { Capacitor } from '@capacitor/core';
 
 type ReticulumImageViewerProps = {
   alt?: string;
@@ -17,8 +18,18 @@ type ReticulumImageViewerProps = {
 };
 
 const MIN_ZOOM = 1;
-const MAX_ZOOM = 4;
+const MAX_ZOOM = 6;
 const ZOOM_STEP = 0.5;
+const DOUBLE_TAP_MS = 300;
+
+const clampZoom = (value: number) =>
+  Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, value));
+
+const touchDistance = (touches: React.TouchList) => {
+  const [a, b] = [touches[0], touches[1]];
+  if (!a || !b) return 0;
+  return Math.hypot(b.clientX - a.clientX, b.clientY - a.clientY);
+};
 
 const getDownloadFileName = (fileName?: string, mimeType?: string) => {
   if (fileName?.trim()) return fileName.trim();
@@ -74,6 +85,12 @@ export const ReticulumImageViewer = ({
   } | null>(null);
   const dragRef = useRef({ startX: 0, startY: 0, panX: 0, panY: 0, moved: false });
   const suppressClickRef = useRef(false);
+  const pinchRef = useRef({ active: false, startDistance: 0, startZoom: 1 });
+  const lastTapRef = useRef(0);
+  const isTouchDevice = useRef(
+    typeof window !== 'undefined' &&
+      Boolean(window.matchMedia?.('(pointer: coarse)').matches)
+  );
 
   const resetView = useCallback(() => {
     setZoom(MIN_ZOOM);
@@ -131,8 +148,64 @@ export const ReticulumImageViewer = ({
     resetView();
   }, [resetView, updateZoom, zoom]);
 
+  const handleTouchStart = useCallback(
+    (event: React.TouchEvent<HTMLImageElement>) => {
+      if (event.touches.length !== 2) return;
+      pinchRef.current = {
+        active: true,
+        startDistance: touchDistance(event.touches),
+        startZoom: zoom,
+      };
+      setIsDragging(false);
+    },
+    [zoom]
+  );
+
+  const handleTouchMove = useCallback(
+    (event: React.TouchEvent<HTMLImageElement>) => {
+      const pinch = pinchRef.current;
+      if (!pinch.active || event.touches.length < 2 || !pinch.startDistance) {
+        return;
+      }
+      const nextZoom = clampZoom(
+        pinch.startZoom * (touchDistance(event.touches) / pinch.startDistance)
+      );
+      setZoom(nextZoom);
+      if (nextZoom <= MIN_ZOOM) setPan({ x: 0, y: 0 });
+    },
+    []
+  );
+
+  const handleTouchEnd = useCallback(
+    (event: React.TouchEvent<HTMLImageElement>) => {
+      if (pinchRef.current.active) {
+        if (event.touches.length < 2) {
+          pinchRef.current.active = false;
+          // The lifted fingers would otherwise land as a tap-to-zoom.
+          suppressClickRef.current = true;
+          window.setTimeout(() => {
+            suppressClickRef.current = false;
+          }, 250);
+          lastTapRef.current = 0;
+        }
+        return;
+      }
+      if (event.touches.length > 0 || dragRef.current.moved) return;
+      const now = Date.now();
+      if (now - lastTapRef.current < DOUBLE_TAP_MS) {
+        lastTapRef.current = 0;
+        if (zoom === MIN_ZOOM) updateZoom(2.5);
+        else resetView();
+      } else {
+        lastTapRef.current = now;
+      }
+    },
+    [resetView, updateZoom, zoom]
+  );
+
   const handlePointerDown = useCallback(
     (event: React.PointerEvent<HTMLImageElement>) => {
+      if (pinchRef.current.active) return;
       if (zoom <= MIN_ZOOM) return;
       event.currentTarget.setPointerCapture(event.pointerId);
       dragRef.current = {
@@ -149,7 +222,7 @@ export const ReticulumImageViewer = ({
 
   const handlePointerMove = useCallback(
     (event: React.PointerEvent<HTMLImageElement>) => {
-      if (!isDragging) return;
+      if (!isDragging || pinchRef.current.active) return;
       const deltaX = event.clientX - dragRef.current.startX;
       const deltaY = event.clientY - dragRef.current.startY;
       if (Math.abs(deltaX) > 3 || Math.abs(deltaY) > 3) {
@@ -206,6 +279,18 @@ export const ReticulumImageViewer = ({
   const handleDownload = useCallback(async () => {
     try {
       const blob = await getImageBlob();
+      // Anchor downloads are a no-op inside the Capacitor WebView, so on
+      // Android the bytes go straight into the shared Documents folder.
+      if (Capacitor.isNativePlatform()) {
+        const name = getDownloadFileName(fileName, blob.type || mimeType);
+        const { saveBlobToMobileDocuments, mobileSaveLocationLabelFor } =
+          await import('../../utils/mobileFileSave');
+        await saveBlobToMobileDocuments(name, blob);
+        setActionStatus(
+          `Saved to ${mobileSaveLocationLabelFor(name, blob.type || mimeType)}`
+        );
+        return;
+      }
       const downloadUrl = URL.createObjectURL(blob);
       const anchor = document.createElement('a');
       anchor.href = downloadUrl;
@@ -216,7 +301,7 @@ export const ReticulumImageViewer = ({
       anchor.remove();
       window.setTimeout(() => URL.revokeObjectURL(downloadUrl), 0);
     } catch {
-      setActionStatus('Unable to download image');
+      setActionStatus('Unable to save image');
     }
   }, [fileName, getImageBlob, mimeType]);
 
@@ -299,9 +384,12 @@ export const ReticulumImageViewer = ({
               </IconButton>
             </span>
           </Tooltip>
-          <Tooltip title="Download Image" disableFocusListener>
+          <Tooltip
+            title={Capacitor.isNativePlatform() ? 'Save Image' : 'Download Image'}
+            disableFocusListener
+          >
             <IconButton
-              aria-label="Download image"
+              aria-label="Save image"
               onClick={() => void handleDownload()}
               sx={controlSx}
             >
@@ -347,7 +435,8 @@ export const ReticulumImageViewer = ({
             onClick={(event) => {
               event.stopPropagation();
               setContextMenuPosition(null);
-              handleToggleZoom();
+              // Touch uses double-tap so a stray tap doesn't zoom the image.
+              if (!isTouchDevice.current) handleToggleZoom();
             }}
             onContextMenu={(event) => {
               event.preventDefault();
@@ -361,6 +450,10 @@ export const ReticulumImageViewer = ({
             onPointerMove={handlePointerMove}
             onPointerUp={handlePointerUp}
             onPointerCancel={handlePointerUp}
+            onTouchStart={handleTouchStart}
+            onTouchMove={handleTouchMove}
+            onTouchEnd={handleTouchEnd}
+            onTouchCancel={handleTouchEnd}
             sx={{
               cursor: zoom > MIN_ZOOM ? (isDragging ? 'grabbing' : 'grab') : 'zoom-in',
               maxHeight: 'calc(100% - 64px)',

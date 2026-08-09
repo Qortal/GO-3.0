@@ -29,6 +29,7 @@ import EventRoundedIcon from '@mui/icons-material/EventRounded';
 import LaunchRoundedIcon from '@mui/icons-material/LaunchRounded';
 import ShareRoundedIcon from '@mui/icons-material/ShareRounded';
 import { buildQortalGroupCalendarLink } from '../../utils/qortalGroupLinks';
+import { SAFE_AREA_BOTTOM, SAFE_AREA_TOP } from '../../utils/mobileSafeArea';
 import CheckRoundedIcon from '@mui/icons-material/CheckRounded';
 import UploadRoundedIcon from '@mui/icons-material/UploadRounded';
 import moment from 'moment-timezone';
@@ -693,18 +694,39 @@ export function ReticulumGroupCalendarDialog({
           bgcolor: 'background.paper',
           backgroundImage: 'none',
           height: narrow ? '100%' : 'min(860px, calc(100vh - 12px))',
+          // Full-screen on phones means the paper starts under the status bar,
+          // so inset it by the system bars.
+          ...(narrow
+            ? {
+                paddingBottom: SAFE_AREA_BOTTOM,
+                paddingTop: SAFE_AREA_TOP,
+              }
+            : {}),
         },
       }}
     >
-      <DialogTitle sx={{ alignItems: 'center', display: 'flex', gap: 1 }}>
+      <DialogTitle
+        sx={{
+          alignItems: 'center',
+          display: 'flex',
+          gap: 1,
+          ...(narrow ? { px: 1.5, py: 1 } : {}),
+        }}
+      >
         <EventRoundedIcon color="primary" />
-        <Box sx={{ flex: 1 }}>
-          <Typography component="div" fontSize={18} fontWeight={700}>
+        <Box sx={{ flex: 1, minWidth: 0 }}>
+          <Typography
+            component="div"
+            fontSize={narrow ? 16 : 18}
+            fontWeight={700}
+          >
             {t('calendar.title', 'Group Calendar')}
           </Typography>
-          <Typography color="text.secondary" fontSize={12}>
-            {t('calendar.subtitle', 'Events shared with this group')}
-          </Typography>
+          {!narrow && (
+            <Typography color="text.secondary" fontSize={12}>
+              {t('calendar.subtitle', 'Events shared with this group')}
+            </Typography>
+          )}
         </Box>
         {canManage && (
           <Button
@@ -758,44 +780,69 @@ export function ReticulumGroupCalendarDialog({
         )}
         <Box
           sx={{
-            display: 'grid',
             flex: 1,
-            gridTemplateColumns: narrow
-              ? '1fr'
-              : 'minmax(480px, 1.4fr) minmax(300px, .8fr)',
             minHeight: 0,
+            // Phones: keep the month grid fixed and scroll only the agenda so
+            // an empty week still fits in the viewport (no window below the fold).
+            ...(narrow
+              ? {
+                  display: 'flex',
+                  flexDirection: 'column',
+                  overflow: 'hidden',
+                }
+              : {
+                  display: 'grid',
+                  gridTemplateColumns:
+                    'minmax(480px, 1.4fr) minmax(300px, .8fr)',
+                }),
           }}
         >
           <Box
             sx={{
-              border: `1px solid ${alpha(theme.palette.text.primary, 0.08)}`,
-              borderRadius: 2,
-              boxShadow: `0 8px 24px ${alpha(
-                theme.palette.common.black,
-                theme.palette.mode === 'dark' ? 0.16 : 0.08
-              )}, inset 0 1px 0 ${alpha(
-                theme.palette.common.white,
-                theme.palette.mode === 'dark' ? 0.025 : 0.42
-              )}`,
+              // On phones the dialog is already the window; a second bordered,
+              // shadowed card inside it just reads as a duplicate frame.
+              ...(narrow
+                ? {
+                    flexShrink: 0,
+                    m: 0,
+                    p: 1,
+                    pb: 0.5,
+                  }
+                : {
+                    border: `1px solid ${alpha(theme.palette.text.primary, 0.08)}`,
+                    borderRadius: 2,
+                    boxShadow: `0 8px 24px ${alpha(
+                      theme.palette.common.black,
+                      theme.palette.mode === 'dark' ? 0.16 : 0.08
+                    )}, inset 0 1px 0 ${alpha(
+                      theme.palette.common.white,
+                      theme.palette.mode === 'dark' ? 0.025 : 0.42
+                    )}`,
+                    m: 1.5,
+                    mr: 0.75,
+                    p: 2,
+                  }),
               display: 'flex',
               flexDirection: 'column',
-              m: 1.5,
-              mb: narrow ? 0.75 : 1.5,
-              mr: narrow ? 1.5 : 0.75,
               minHeight: 0,
-              p: 2,
             }}
           >
-            <Box sx={{ alignItems: 'center', display: 'flex', mb: 1 }}>
+            <Box
+              sx={{
+                alignItems: 'center',
+                display: 'flex',
+                mb: narrow ? 0.5 : 1,
+              }}
+            >
               <IconButton
                 aria-label="Previous month"
                 onClick={() => moveMonth(-1)}
                 sx={{
                   bgcolor: alpha(theme.palette.text.primary, 0.045),
                   borderRadius: 2,
-                  height: 40,
+                  height: narrow ? 34 : 40,
                   transition: 'background-color 0.18s ease, color 0.18s ease',
-                  width: 40,
+                  width: narrow ? 34 : 40,
                   '&:hover': {
                     bgcolor: alpha(theme.palette.text.primary, 0.095),
                   },
@@ -806,7 +853,7 @@ export function ReticulumGroupCalendarDialog({
               <Typography
                 sx={{
                   flex: 1,
-                  fontSize: 18,
+                  fontSize: narrow ? 16 : 18,
                   fontWeight: 700,
                   textAlign: 'center',
                 }}
@@ -831,9 +878,9 @@ export function ReticulumGroupCalendarDialog({
                 sx={{
                   bgcolor: alpha(theme.palette.text.primary, 0.045),
                   borderRadius: 2,
-                  height: 40,
+                  height: narrow ? 34 : 40,
                   transition: 'background-color 0.18s ease, color 0.18s ease',
-                  width: 40,
+                  width: narrow ? 34 : 40,
                   '&:hover': {
                     bgcolor: alpha(theme.palette.text.primary, 0.095),
                   },
@@ -853,11 +900,11 @@ export function ReticulumGroupCalendarDialog({
               {days.slice(0, 7).map((day) => (
                 <Typography
                   color="text.secondary"
-                  fontSize={11}
+                  fontSize={narrow ? 10 : 11}
                   fontWeight={700}
                   key={day.valueOf()}
                   sx={{
-                    py: 1,
+                    py: narrow ? 0.35 : 1,
                     textAlign: 'center',
                     textTransform: 'uppercase',
                   }}
@@ -879,7 +926,7 @@ export function ReticulumGroupCalendarDialog({
                     aria-label={day.format('LL')}
                     onClick={() => setSelectedDate(key)}
                     sx={{
-                      alignItems: 'stretch',
+                      alignItems: narrow ? 'center' : 'stretch',
                       border: `1px solid ${active ? theme.palette.primary.main : theme.palette.divider}`,
                       borderRadius: 0,
                       color:
@@ -888,11 +935,13 @@ export function ReticulumGroupCalendarDialog({
                           : 'text.disabled',
                       display: 'flex',
                       flexDirection: 'column',
-                      justifyContent: 'flex-start',
-                      height: { xs: 82, md: 90 },
-                      minHeight: { xs: 82, md: 90 },
+                      justifyContent: narrow ? 'center' : 'flex-start',
+                      // Compact day cells on phones so the empty agenda still
+                      // fits below the month grid without scrolling the window.
+                      height: { xs: 38, md: 90 },
+                      minHeight: { xs: 38, md: 90 },
                       minWidth: 0,
-                      p: 0.75,
+                      p: narrow ? 0.25 : 0.75,
                       textAlign: 'left',
                       textTransform: 'none',
                     }}
@@ -905,45 +954,74 @@ export function ReticulumGroupCalendarDialog({
                         borderRadius: '50%',
                         color: today ? 'primary.contrastText' : 'inherit',
                         display: 'inline-flex',
-                        height: 24,
+                        fontSize: narrow ? 13 : undefined,
+                        height: narrow ? 22 : 24,
                         justifyContent: 'center',
-                        width: 24,
+                        width: narrow ? 22 : 24,
                       }}
                     >
                       {day.date()}
                     </Box>
-                    <Stack
-                      spacing={0.35}
-                      sx={{ mt: 0.5, overflow: 'hidden', width: '100%' }}
-                    >
-                      {dayEvents.slice(0, 2).map((event) => (
+                    {narrow ? (
+                      dayEvents.length > 0 && (
                         <Box
-                          component="span"
-                          key={event.occurrenceId}
+                          aria-hidden
                           sx={{
-                            bgcolor: 'action.selected',
-                            borderLeft: `2px solid ${eventAccentColor(event.creatorAddress)}`,
-                            borderRadius: 0.5,
-                            fontSize: 10,
-                            overflow: 'hidden',
-                            px: 0.5,
-                            textOverflow: 'ellipsis',
-                            whiteSpace: 'nowrap',
+                            display: 'flex',
+                            gap: 0.25,
+                            justifyContent: 'center',
+                            mt: 0.15,
+                            minHeight: 4,
                           }}
                         >
-                          {event.title}
+                          {dayEvents.slice(0, 3).map((event) => (
+                            <Box
+                              component="span"
+                              key={event.occurrenceId}
+                              sx={{
+                                bgcolor: eventAccentColor(event.creatorAddress),
+                                borderRadius: '50%',
+                                height: 3,
+                                width: 3,
+                              }}
+                            />
+                          ))}
                         </Box>
-                      ))}
-                      {dayEvents.length > 2 && (
-                        <Typography
-                          component="span"
-                          color="text.secondary"
-                          fontSize={10}
-                        >
-                          +{dayEvents.length - 2}
-                        </Typography>
-                      )}
-                    </Stack>
+                      )
+                    ) : (
+                      <Stack
+                        spacing={0.35}
+                        sx={{ mt: 0.5, overflow: 'hidden', width: '100%' }}
+                      >
+                        {dayEvents.slice(0, 2).map((event) => (
+                          <Box
+                            component="span"
+                            key={event.occurrenceId}
+                            sx={{
+                              bgcolor: 'action.selected',
+                              borderLeft: `2px solid ${eventAccentColor(event.creatorAddress)}`,
+                              borderRadius: 0.5,
+                              fontSize: 10,
+                              overflow: 'hidden',
+                              px: 0.5,
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            {event.title}
+                          </Box>
+                        ))}
+                        {dayEvents.length > 2 && (
+                          <Typography
+                            component="span"
+                            color="text.secondary"
+                            fontSize={10}
+                          >
+                            +{dayEvents.length - 2}
+                          </Typography>
+                        )}
+                      </Stack>
+                    )}
                   </Button>
                 );
               })}
@@ -951,25 +1029,35 @@ export function ReticulumGroupCalendarDialog({
           </Box>
           <Box
             sx={{
-              border: `1px solid ${alpha(theme.palette.text.primary, 0.08)}`,
-              borderRadius: 2,
-              boxShadow: `0 8px 24px ${alpha(
-                theme.palette.common.black,
-                theme.palette.mode === 'dark' ? 0.14 : 0.07
-              )}, inset 0 1px 0 ${alpha(
-                theme.palette.common.white,
-                theme.palette.mode === 'dark' ? 0.022 : 0.4
-              )}`,
               display: 'flex',
               flexDirection: 'column',
-              m: 1.5,
-              mb: 1.5,
-              ml: narrow ? 1.5 : 0.75,
-              mt: narrow ? 0.75 : 1.5,
-              minHeight: 280,
               overflowX: 'hidden',
-              overflowY: 'auto',
-              p: 2,
+              ...(narrow
+                ? {
+                    borderTop: `1px solid ${theme.palette.divider}`,
+                    flex: 1,
+                    minHeight: 0,
+                    mt: 0.5,
+                    overflowY: 'auto',
+                    p: 1.25,
+                    pt: 1,
+                  }
+                : {
+                    border: `1px solid ${alpha(theme.palette.text.primary, 0.08)}`,
+                    borderRadius: 2,
+                    boxShadow: `0 8px 24px ${alpha(
+                      theme.palette.common.black,
+                      theme.palette.mode === 'dark' ? 0.14 : 0.07
+                    )}, inset 0 1px 0 ${alpha(
+                      theme.palette.common.white,
+                      theme.palette.mode === 'dark' ? 0.022 : 0.4
+                    )}`,
+                    m: 1.5,
+                    ml: 0.75,
+                    minHeight: 280,
+                    overflowY: 'auto',
+                    p: 2,
+                  }),
             }}
           >
             {loading ? (
@@ -978,7 +1066,21 @@ export function ReticulumGroupCalendarDialog({
               </Box>
             ) : (
               visibleAgendaDays.map((day, dayIndex) => (
-                <Box key={day.key} sx={{ mb: dayIndex === 0 ? 2.5 : 2 }}>
+                <Box
+                  key={day.key}
+                  sx={{
+                    ...(narrow &&
+                    dayIndex === 0 &&
+                    weeklyAgendaEmpty
+                      ? {
+                          display: 'flex',
+                          flex: 1,
+                          flexDirection: 'column',
+                          minHeight: 0,
+                        }
+                      : { mb: dayIndex === 0 ? 2.5 : 2 }),
+                  }}
+                >
                   {dayIndex === 1 && (
                     <Typography
                       fontSize={16}
@@ -1083,26 +1185,31 @@ export function ReticulumGroupCalendarDialog({
                       sx={{
                         alignItems: 'center',
                         display: 'flex',
+                        flex: narrow ? 1 : undefined,
                         flexDirection: 'column',
+                        justifyContent: 'center',
                         px: 2,
-                        py: 5,
+                        py: narrow ? 1.5 : 5,
                         textAlign: 'center',
                       }}
                     >
                       <EventBusyRoundedIcon
                         sx={{
                           color: alpha(theme.palette.text.secondary, 0.52),
-                          fontSize: 72,
-                          mb: 2,
+                          fontSize: narrow ? 40 : 72,
+                          mb: narrow ? 1 : 2,
                         }}
                       />
-                      <Typography fontSize={16} fontWeight={650}>
+                      <Typography
+                        fontSize={narrow ? 15 : 16}
+                        fontWeight={650}
+                      >
                         {t('calendar.noEventsScheduled', 'No events scheduled')}
                       </Typography>
                       <Typography
                         color="text.secondary"
-                        fontSize={13}
-                        sx={{ mt: 0.75 }}
+                        fontSize={narrow ? 12 : 13}
+                        sx={{ mt: 0.5 }}
                       >
                         {t(
                           'calendar.nothingElseScheduledThisWeek',
@@ -1127,7 +1234,7 @@ export function ReticulumGroupCalendarDialog({
                             borderRadius: '8px',
                             color: 'text.secondary',
                             fontWeight: 600,
-                            mt: 2.5,
+                            mt: narrow ? 1.5 : 2.5,
                             px: 2,
                             textTransform: 'none',
                             transition:

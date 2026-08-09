@@ -16,14 +16,18 @@ import {
   stopReticulumChatManager,
   getReticulumChatManager,
 } from '../../../electron/src/reticulum-chat';
+import * as fs from 'fs';
 import { ReticulumResourceStore } from '../../../electron/src/reticulum-resource-store';
 import { MobileReticulumBridge } from './wireBridge';
+import { ReticulumResourceStaging } from './resourceStaging';
+import type { NativeFsFn } from './resourceStaging';
 
 type WorkerOut =
   | { t: 'evt'; channel: string; payload: unknown }
   | { t: 'rpcres'; id: number; ok: boolean; value?: unknown; error?: string }
   | { t: 'cmd'; id: number; action: string; payload: Record<string, unknown>; timeoutMs?: number }
   | { t: 'sign'; id: number; fields: Record<string, unknown> }
+  | { t: 'nativefs'; id: number; op: string; args: Record<string, unknown> }
   | { t: 'engine-ready' }
   | { t: 'engine-failed'; error: string };
 
@@ -40,7 +44,10 @@ const pendingOut = new Map<
 >();
 
 function requestMain<T>(
-  msg: Omit<Extract<WorkerOut, { t: 'cmd' }>, 'id'> | Omit<Extract<WorkerOut, { t: 'sign' }>, 'id'>,
+  msg:
+    | Omit<Extract<WorkerOut, { t: 'cmd' }>, 'id'>
+    | Omit<Extract<WorkerOut, { t: 'sign' }>, 'id'>
+    | Omit<Extract<WorkerOut, { t: 'nativefs' }>, 'id'>,
   timeoutMs = 30_000
 ): Promise<T> {
   const id = nextOutId++;
@@ -73,6 +80,9 @@ const sendPythonCommand = (
     timeoutMs + 5_000
   );
 
+const nativeFs = (op: string, args: Record<string, unknown>) =>
+  requestMain<Record<string, unknown>>({ t: 'nativefs', op, args }, 30_000);
+
 // ── environment fed from the main thread ─────────────────────────────────────
 
 type EngineConfig = {
@@ -87,62 +97,108 @@ let overlayHealthy = false;
 
 // ── Qortal group validation (port of setup.ts validateQortalGroupMember) ────
 
-async function fetchCoreJson(path: string): Promise<unknown | null> {
+const GROUP_VALIDATION_TTL_MS = 5 * 60_000;
+const GROUP_VALIDATION_NEGATIVE_TTL_MS = 30_000;
+
+type GroupValidationRow = { isMember: boolean; isAdmin: boolean };
+
+const groupValidationCache = new Map<
+  string,
+  { row: GroupValidationRow; expiresAt: number }
+>();
+const groupValidationInFlight = new Map<
+  string,
+  Promise<GroupValidationRow | null>
+>();
+
+/**
+ * Core's bulk endpoint answers a single address directly. Walking the whole
+ * member list instead (the obvious `/groups/members/{id}?limit=0`) downloads
+ * megabytes for large groups and routinely times out, which reads as
+ * "membership unavailable" and silently stops this device from advertising
+ * the attachments it already holds.
+ */
+async function fetchGroupValidationRow(
+  groupId: number,
+  address: string
+): Promise<GroupValidationRow | null> {
   if (!config.apiBase) return null;
-  const sep = path.includes('?') ? '&' : '?';
-  const url =
-    config.apiBase.replace(/\/$/, '') +
-    path +
-    (config.apiKey ? `${sep}apiKey=${config.apiKey}` : '');
+  const base = config.apiBase.replace(/\/$/, '');
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 12_000);
   try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 12_000);
-    try {
-      const res = await fetch(url, { signal: controller.signal });
-      if (!res.ok) return null;
-      return await res.json();
-    } finally {
-      clearTimeout(timer);
-    }
+    const res = await fetch(`${base}/groups/members/${groupId}/validate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify([address]),
+      signal: controller.signal,
+    });
+    if (!res.ok) return null;
+    const rows = await res.json();
+    if (!Array.isArray(rows)) return null;
+    const row = rows.find(
+      (item: any) => String(item?.address || '').trim() === address
+    );
+    return {
+      isAdmin: row?.isAdmin === true,
+      isMember: row?.isMember === true,
+    };
   } catch {
     return null;
+  } finally {
+    clearTimeout(timer);
   }
+}
+
+async function validateGroupRole(
+  groupId: number,
+  address: string,
+  role: 'member' | 'admin'
+): Promise<boolean | null> {
+  const normalized = address.trim();
+  if (!Number.isInteger(groupId) || groupId <= 0 || !normalized) return false;
+  const key = `${groupId}:${normalized}`;
+  const read = (row: GroupValidationRow) =>
+    role === 'admin' ? row.isAdmin : row.isMember;
+  const cached = groupValidationCache.get(key);
+  if (cached && cached.expiresAt > Date.now()) return read(cached.row);
+  let request = groupValidationInFlight.get(key);
+  if (!request) {
+    request = fetchGroupValidationRow(groupId, normalized)
+      .then((row) => {
+        if (row) {
+          groupValidationCache.set(key, {
+            row,
+            expiresAt:
+              Date.now() +
+              (row.isMember
+                ? GROUP_VALIDATION_TTL_MS
+                : GROUP_VALIDATION_NEGATIVE_TTL_MS),
+          });
+        }
+        return row;
+      })
+      .finally(() => {
+        groupValidationInFlight.delete(key);
+      });
+    groupValidationInFlight.set(key, request);
+  }
+  const row = await request;
+  return row ? read(row) : null;
 }
 
 async function validateGroupMember(
   groupId: number,
   address: string
 ): Promise<boolean | null> {
-  const normalized = address.trim();
-  if (!Number.isInteger(groupId) || groupId <= 0 || !normalized) return false;
-  const rows = await fetchCoreJson(
-    `/groups/members/${groupId}?limit=0`
-  );
-  if (!rows || typeof rows !== 'object') return null;
-  const members = Array.isArray((rows as any).members)
-    ? (rows as any).members
-    : [];
-  return members.some(
-    (m: any) => String(m?.member || '').trim() === normalized
-  );
+  return validateGroupRole(groupId, address, 'member');
 }
 
 async function validateGroupAdmin(
   groupId: number,
   address: string
 ): Promise<boolean | null> {
-  const normalized = address.trim();
-  if (!Number.isInteger(groupId) || groupId <= 0 || !normalized) return false;
-  const rows = await fetchCoreJson(
-    `/groups/members/${groupId}?onlyAdmins=true&limit=0`
-  );
-  if (!rows || typeof rows !== 'object') return null;
-  const members = Array.isArray((rows as any).members)
-    ? (rows as any).members
-    : [];
-  return members.some(
-    (m: any) => String(m?.member || '').trim() === normalized
-  );
+  return validateGroupRole(groupId, address, 'admin');
 }
 
 async function signLocalFields(fields: Record<string, unknown>): Promise<{
@@ -184,7 +240,10 @@ function readGroupState<T>(fallback: T, read: () => T): T {
 
 export function startEngine(initial: EngineConfig): void {
   config = initial;
-  bridge = new MobileReticulumBridge(sendPythonCommand);
+  bridge = new MobileReticulumBridge(
+    sendPythonCommand,
+    new ReticulumResourceStaging(nativeFs as NativeFsFn)
+  );
   resourceStore = new ReticulumResourceStore();
   const manager = startReticulumChatManager(bridge as any, undefined, {
     signLocalFields,
@@ -857,6 +916,174 @@ const handlers: Record<string, Handler> = {
   updateMentionBadge: () => ({ success: true }),
 };
 
+// ── reticulumResource:* handlers ─────────────────────────────────────────────
+// Desktop serves these from setup.ts over a custom protocol. Mobile has no
+// custom protocol, so `resource:bytes` hands the raw bytes to the main thread
+// and the twin turns them into a blob: URL.
+
+// Must match the desktop allowlist in electron/src/setup.ts exactly; DMs send
+// `reticulum-dm-resource`.
+const RESOURCE_NAMESPACES = new Set([
+  'reticulum-group-resource',
+  'reticulum-dm-resource',
+]);
+
+function decodeBase64(base64: string): Uint8Array {
+  const clean = base64.includes(',') ? base64.slice(base64.indexOf(',') + 1) : base64;
+  const bin = atob(clean.replace(/\s/g, ''));
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+const resourceHandlers: Record<string, Handler> = {
+  'resource:importBase64': async (payload: any) => {
+    const store = resourceStore;
+    if (!store) return { success: false, error: 'Resource store not running' };
+    const namespace = String(payload?.namespace ?? '');
+    if (!RESOURCE_NAMESPACES.has(namespace)) {
+      return { success: false, error: 'Invalid chat resource namespace' };
+    }
+    const fileName = String(payload?.fileName || 'resource.bin').trim();
+    const mimeType =
+      String(payload?.mimeType || '').trim() || 'application/octet-stream';
+    let bytes: Uint8Array;
+    try {
+      bytes = decodeBase64(String(payload?.base64 ?? ''));
+    } catch {
+      return { success: false, error: 'Invalid base64 resource data' };
+    }
+    if (bytes.byteLength === 0) {
+      return { success: false, error: 'Invalid base64 resource data' };
+    }
+    // importLocalFileAsync wants a path, so stage the bytes in the shim fs.
+    const tempDir = '/tmp/reticulum-resource-imports';
+    const tempPath = `${tempDir}/${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    try {
+      fs.mkdirSync(tempDir, { recursive: true });
+      fs.writeFileSync(tempPath, bytes);
+      const manifest = await store.importLocalFileAsync({
+        sourcePath: tempPath,
+        namespace,
+        ownerId: String(payload?.ownerId || '').trim() || undefined,
+        fileName,
+        mimeType,
+        encrypted: payload?.encrypted === true,
+        metadata:
+          payload?.metadata && typeof payload.metadata === 'object'
+            ? payload.metadata
+            : undefined,
+      });
+      return { success: true, manifest };
+    } catch (err) {
+      return {
+        success: false,
+        error: err instanceof Error ? err.message : 'Resource import failed',
+      };
+    } finally {
+      try {
+        fs.unlinkSync(tempPath);
+      } catch {
+        /* already gone */
+      }
+    }
+  },
+  'resource:bytes': async (fileHash: string) => {
+    const store = resourceStore;
+    if (!store) return { success: false, error: 'Resource store not running' };
+    const hash = String(fileHash ?? '').trim();
+    if (!hash) return { success: false, error: 'Invalid file hash' };
+    try {
+      const manifest = store.getManifest(hash);
+      if (!manifest) return { success: false, error: 'Unknown resource' };
+      const assembled =
+        store.getVerifiedAssembledPath(hash) ??
+        (await store.assembleResourceAsync(hash));
+      if (!assembled) return { success: false, error: 'Resource not assembled' };
+      const buf = fs.readFileSync(assembled);
+      const bytes = new Uint8Array(
+        buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength)
+      );
+      return { success: true, bytes, manifest };
+    } catch (err) {
+      return {
+        success: false,
+        error: err instanceof Error ? err.message : 'Resource read failed',
+      };
+    }
+  },
+  'resource:getStatus': (fileHash: string) => {
+    const store = resourceStore;
+    if (!store) return { success: false, error: 'Resource store not running' };
+    const hash = String(fileHash ?? '').trim();
+    if (!hash) return { success: false, error: 'Invalid file hash' };
+    try {
+      const manifest = store.getManifest(hash);
+      if (!manifest) return { success: false, error: 'Unknown resource' };
+      const complete = Boolean(store.getVerifiedAssembledPath(hash));
+      const completedBytes = complete
+        ? manifest.sizeBytes
+        : store.getCompletedBytes(hash);
+      const totalBytes = Math.max(0, Number(manifest.sizeBytes || 0));
+      const runtime = manager()?.getResourceDownloadStatus?.(hash) ?? null;
+      const runtimeProgress =
+        runtime && typeof runtime.progress === 'number'
+          ? Math.max(0, Math.min(1, runtime.progress))
+          : null;
+      const runtimeBytes =
+        runtime && typeof runtime.bytesTransferred === 'number'
+          ? Math.max(0, Math.min(totalBytes, runtime.bytesTransferred))
+          : null;
+      return {
+        success: true,
+        manifest,
+        bytesTransferred: runtimeBytes ?? completedBytes,
+        totalBytes,
+        progress: Math.max(
+          totalBytes > 0 ? Math.min(1, completedBytes / totalBytes) : 0,
+          runtimeProgress ?? 0
+        ),
+        complete,
+        latestRangeUpdatedAt: store.getLatestRangeUpdatedAt(hash) || null,
+        checkedAt: Date.now(),
+        runtime,
+      };
+    } catch (err) {
+      return {
+        success: false,
+        error: err instanceof Error ? err.message : 'Resource status failed',
+      };
+    }
+  },
+  'resource:getStorageStatus': () => {
+    const store = resourceStore;
+    if (!store) return { success: false, error: 'Resource store not running' };
+    try {
+      return { success: true, status: store.getStorageStatus() };
+    } catch (err) {
+      return {
+        success: false,
+        error: err instanceof Error ? err.message : 'Storage status failed',
+      };
+    }
+  },
+  'resource:cleanupStorage': async () => {
+    const store = resourceStore;
+    if (!store) return { success: false, error: 'Resource store not running' };
+    try {
+      const result = await store.cleanupStorage('manual');
+      return { success: true, result, status: store.getStorageStatus() };
+    } catch (err) {
+      return {
+        success: false,
+        error: err instanceof Error ? err.message : 'Storage cleanup failed',
+      };
+    }
+  },
+};
+
+Object.assign(handlers, resourceHandlers);
+
 // ── worker message pump ──────────────────────────────────────────────────────
 
 export function handleMainMessage(data: any): void {
@@ -889,6 +1116,15 @@ export function handleMainMessage(data: any): void {
     }
     return;
   }
+  if (data.t === 'nativefsres') {
+    const pending = pendingOut.get(data.id);
+    if (pending) {
+      pendingOut.delete(data.id);
+      if (data.error) pending.reject(new Error(String(data.error)));
+      else pending.resolve(data.result ?? {});
+    }
+    return;
+  }
   if (data.t === 'pyevent') {
     if (data.event === 'ready') {
       bridge?.markReady(data.payload ?? {});
@@ -905,6 +1141,13 @@ export function handleMainMessage(data: any): void {
   }
   if (data.t === 'config') {
     config = { ...config, ...data.config };
+    return;
+  }
+  if (data.t === 'local-identity') {
+    bridge?.setLocalIdentity(data.destinationHash, data.identityPublicKeyBase64);
+    console.log(
+      `[MobileChat] local_identity_applied hash=${bridge?.getLocalDestinationHash() ?? 'none'} identityKey=${Boolean(data.identityPublicKeyBase64)}`
+    );
     return;
   }
   if (data.t === 'stop') {

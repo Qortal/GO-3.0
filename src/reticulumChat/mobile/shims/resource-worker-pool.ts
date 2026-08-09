@@ -227,6 +227,22 @@ export class ReticulumResourceWorkerPool {
     await Promise.resolve();
     return runTask(task);
   }
+
+  stats(): {
+    queued: number;
+    waiting: number;
+    active: number;
+    crashCount: number;
+    fallbackCount: number;
+  } {
+    return {
+      queued: 0,
+      waiting: 0,
+      active: 0,
+      crashCount: 0,
+      fallbackCount: 0,
+    };
+  }
 }
 
 export default ReticulumResourceWorkerPool;

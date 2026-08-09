@@ -252,12 +252,12 @@ async function signPresenceFields(
 }
 
 async function createDirectCallId(): Promise<string | null> {
-  const getLocalDestinationHash =
-    window.electronAPI?.reticulumGetLocalDestinationHash;
-  if (typeof getLocalDestinationHash !== 'function') return null;
   try {
-    const result = await getLocalDestinationHash();
-    const destinationHash = result?.destinationHash?.trim().toLowerCase();
+    // Resolves over electronAPI on desktop and the bridge-reported identity on
+    // mobile, where electronAPI is intentionally absent.
+    const destinationHash = (
+      await fetchLocalReticulumDestinationHash()
+    )?.trim().toLowerCase();
     return destinationHash ? createRouteBoundId('call', destinationHash) : null;
   } catch {
     return null;
@@ -267,7 +267,12 @@ async function createDirectCallId(): Promise<string | null> {
 async function isSystemReadyForCall(
   showError: (message: string) => void
 ): Promise<boolean> {
-  const readiness = await window.electronAPI?.getSystemCallReadiness?.();
+  const getReadiness = window.electronAPI?.getSystemCallReadiness;
+  // The readiness probe samples the Electron main process (CPU load, event
+  // loop lag). There is no such process on mobile, and treating its absence as
+  // "too busy" blocked every call outright.
+  if (typeof getReadiness !== 'function') return true;
+  const readiness = await getReadiness();
   if (!readiness || readiness.status !== 'good') {
     showError(
       'Your system is too busy for calls right now. Close other apps and try again.'

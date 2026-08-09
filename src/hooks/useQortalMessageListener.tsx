@@ -11,6 +11,7 @@ import { mimeToExtensionMap } from '../utils/memeTypes';
 import FileSaver from 'file-saver';
 import { isCapacitor } from '../utils/platform';
 import {
+  isSilentSaveFile,
   mobileSaveLocationLabelFor,
   saveBlobToMobileDocuments,
 } from '../utils/mobileFileSave';
@@ -447,18 +448,22 @@ export const showSaveFilePicker = async (
 ) => {
   try {
     const { filename, mimeType, blob, fileHandleOptions } = data;
+    const silent = isSilentSaveFile(filename);
 
-    setInfoSnackCustom({
-      type: 'info',
-      message: 'Saving file...',
-    });
+    if (!silent) {
+      setInfoSnackCustom({
+        type: 'info',
+        message: 'Saving file...',
+      });
 
-    setOpenSnackGlobal(true);
+      setOpenSnackGlobal(true);
+    }
 
     if (isCapacitor()) {
       // FileSaver's anchor-tag download does nothing inside the Capacitor
       // WebView — write to Documents/Qortal Go via the native plugin instead.
       await saveBlobToMobileDocuments(filename, blob);
+      if (silent) return;
       setInfoSnackCustom({
         type: 'success',
         message: `Saved to ${mobileSaveLocationLabelFor(filename, mimeType || blob?.type)}`,
@@ -468,6 +473,8 @@ export const showSaveFilePicker = async (
     }
 
     FileSaver.saveAs(blob, filename);
+
+    if (silent) return;
 
     setInfoSnackCustom({
       type: 'success',

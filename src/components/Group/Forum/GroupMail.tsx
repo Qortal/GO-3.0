@@ -45,7 +45,11 @@ import { LoadingSnackbar } from '../../Snackbar/LoadingSnackbar';
 import { executeEvent } from '../../../utils/events';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import { getArbitraryEndpointReact, getBaseApiReact } from '../../../App';
-import { addDataPublishesFunc, getDataPublishesFunc } from '../Group';
+import { getNameInfo } from '../groupApi';
+import {
+  addDataPublishesFunc,
+  getDataPublishesFunc,
+} from '../groupDataPublishes';
 import { useTranslation } from 'react-i18next';
 import { SortIcon } from '../../../assets/Icons/SortIcon';
 import { CustomButton } from '../../../styles/App-styles';
@@ -422,22 +426,25 @@ export const GroupMail = ({
 
   const getGroupMembers = useCallback(async (groupNumber: string) => {
     try {
-      const response = await fetch(`/groups/members/${groupNumber}?limit=0`);
+      const response = await fetch(
+        `${getBaseApiReact()}/groups/members/${groupNumber}?limit=0`
+      );
       const groupData = await response.json();
 
       const members: any = {};
       if (groupData && Array.isArray(groupData?.members)) {
         for (const member of groupData.members) {
-          if (member.member) {
-            const name = res;
-            const publicKey = resAddress.publicKey;
-            if (name) {
-              members[name] = {
-                publicKey,
-                address: member.member,
-              };
-            }
-          }
+          if (!member.member) continue;
+          const name = await getNameInfo(member.member);
+          if (!name) continue;
+          const accountResponse = await fetch(
+            `${getBaseApiReact()}/addresses/${member.member}`
+          );
+          const accountData = await accountResponse.json();
+          members[name] = {
+            publicKey: accountData?.publicKey,
+            address: member.member,
+          };
         }
       }
       setMembers(members);

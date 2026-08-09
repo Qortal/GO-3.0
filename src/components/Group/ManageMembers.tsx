@@ -35,7 +35,7 @@ import {
 } from '@mui/material';
 import { CustomizedSnackbars } from '../Snackbar/Snackbar';
 import { QORTAL_APP_CONTEXT, getBaseApiReact } from '../../App';
-import { getGroupMembers, getNames } from './Group';
+import { getGroupMembers, getNames } from './groupApi';
 import { LoadingSnackbar } from '../Snackbar/LoadingSnackbar';
 import { getFee } from '../../background/background.ts';
 import { LoadingButton } from '@mui/lab';

@@ -38,7 +38,10 @@ import {
   ArrowDownward as ArrowDownwardIcon,
   ArrowUpward as ArrowUpwardIcon,
 } from '@mui/icons-material';
-import { addDataPublishesFunc, getDataPublishesFunc } from '../Group';
+import {
+  addDataPublishesFunc,
+  getDataPublishesFunc,
+} from '../groupDataPublishes';
 import { RequestQueueWithPromise } from '../../../utils/queue/queue';
 import { CustomLoader } from '../../../common/CustomLoader';
 import { WrapperUserAction } from '../../WrapperUserAction';

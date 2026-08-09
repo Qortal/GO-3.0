@@ -24,6 +24,7 @@ import { Reticulum } from '../plugins/Reticulum';
 import { compactDmVoiceJoinWireChatId } from '../lib/call/dmVoiceWire';
 import { installMobileAudioSurface } from './mobileAudioSurface';
 import { verifyQchatFileLinkAuth } from '../utils/qchatFileAuthVerify';
+import { P2P_HEALTH_RECEIVING_STABLE_MS } from '../lib/p2pHealth';
 import {
   encodeJoinWire,
   encodeJoinIdentityWire,
@@ -171,6 +172,8 @@ const PRESENCE_TTL_MS = 90_000;
 const MAX_NEIGHBORS = 24;
 /** 16-byte Reticulum destination hash, hex. */
 const DEST_HASH_RE = /^[0-9a-f]{32}$/;
+/** A peer counts as "receiving" while we saw traffic from it this recently. */
+const RECEIVING_PEER_TTL_MS = 90_000;
 
 const asString = (v: unknown): string | undefined =>
   typeof v === 'string' ? v : undefined;
@@ -191,6 +194,10 @@ const asUserStatus = (v: unknown): UserStatus | null =>
 export type MobileReticulumStatus = {
   onlineRemoteHubInterfaces: number;
   p2pActiveOverlayPeers: number;
+  /** Peers we have actually received overlay traffic from recently. */
+  p2pReceivingOverlayPeers: number;
+  /** How long that set has been continuously non-empty. */
+  p2pReceivingOverlayPeersStableMs: number;
   bridgeState: 'starting' | 'ready';
 };
 
@@ -216,10 +223,16 @@ export const onMobileReticulumStatus = (
 
 const publishMobileReticulumStatus = (next: MobileReticulumStatus): void => {
   const prev = mobileReticulumStatus;
+  // Stability is a continuously rising number, so compare the threshold
+  // crossing instead — that is the only part of it health depends on.
+  const settled = (s: MobileReticulumStatus) =>
+    s.p2pReceivingOverlayPeersStableMs >= P2P_HEALTH_RECEIVING_STABLE_MS;
   if (
     prev &&
     prev.onlineRemoteHubInterfaces === next.onlineRemoteHubInterfaces &&
     prev.p2pActiveOverlayPeers === next.p2pActiveOverlayPeers &&
+    prev.p2pReceivingOverlayPeers === next.p2pReceivingOverlayPeers &&
+    settled(prev) === settled(next) &&
     prev.bridgeState === next.bridgeState
   ) {
     return;
@@ -876,6 +889,67 @@ export function installReticulumBridges(): void {
   // ── Overlay coordinator state (minimal mobile port of presence.ts) ──────
   const neighborHashes = new Set<string>();
   const onlineByAddress = new Map<string, PresenceSession>();
+  /**
+   * `onlineByAddress` keeps one session per account, which is enough for the
+   * online dot but loses every endpoint after the first. Account endpoint
+   * leases must enumerate *all* live destination hashes for an address —
+   * otherwise a second device signed into the same account is invisible and
+   * Saved Messages cannot sync between them.
+   */
+  const accountEndpoints = new Map<
+    string,
+    Map<string, { sessionId: string; lastSeen: number }>
+  >();
+  const rememberAccountEndpoint = (
+    address: string,
+    destinationHash: unknown,
+    sessionId: string
+  ): void => {
+    const hash = String(destinationHash || '').toLowerCase();
+    if (!address || !DEST_HASH_RE.test(hash)) return;
+    let endpoints = accountEndpoints.get(address);
+    if (!endpoints) {
+      endpoints = new Map();
+      accountEndpoints.set(address, endpoints);
+    }
+    endpoints.set(hash, { sessionId, lastSeen: Date.now() });
+  };
+  const liveAccountEndpoints = (): Array<{
+    address: string;
+    destinationHash: string;
+    sessionId: string;
+    lastSeen: number;
+  }> => {
+    const now = Date.now();
+    const localHash = (
+      getMobileReticulumInfo().destinationHash || ''
+    ).toLowerCase();
+    const out: Array<{
+      address: string;
+      destinationHash: string;
+      sessionId: string;
+      lastSeen: number;
+    }> = [];
+    for (const [address, endpoints] of [...accountEndpoints]) {
+      for (const [hash, entry] of [...endpoints]) {
+        if (now - entry.lastSeen > PRESENCE_TTL_MS) {
+          endpoints.delete(hash);
+          continue;
+        }
+        // A looped-back announce of our own endpoint would otherwise look like
+        // a peer device to route to.
+        if (hash === localHash) continue;
+        out.push({
+          address,
+          destinationHash: hash,
+          sessionId: entry.sessionId,
+          lastSeen: entry.lastSeen,
+        });
+      }
+      if (endpoints.size === 0) accountEndpoints.delete(address);
+    }
+    return out;
+  };
   type UpdatePayload = {
     address: string;
     online: boolean;
@@ -893,10 +967,38 @@ export function installReticulumBridges(): void {
 
   // Mirror the desktop reticulumGetStatus snapshot for CoreSyncStatus/p2pHealth.
   let onlineRemoteHubInterfaces = 0;
+
+  // Peers we have actually received overlay traffic from, and since when the
+  // set has been continuously non-empty. p2pHealth gates the call buttons on
+  // these, so without them mobile would sit permanently on 'bad'.
+  const receivingPeerLastSeen = new Map<string, number>();
+  let receivingSinceMs: number | null = null;
+
+  const markReceivingPeer = (raw: unknown): void => {
+    const hash = asString(raw)?.trim().toLowerCase();
+    if (!hash || !DEST_HASH_RE.test(hash)) return;
+    receivingPeerLastSeen.set(hash, Date.now());
+  };
+
   const refreshMobileStatus = (): void => {
+    const now = Date.now();
+    for (const [hash, lastSeen] of [...receivingPeerLastSeen]) {
+      if (now - lastSeen > RECEIVING_PEER_TTL_MS) {
+        receivingPeerLastSeen.delete(hash);
+      }
+    }
+    if (receivingPeerLastSeen.size === 0) {
+      receivingSinceMs = null;
+    } else if (receivingSinceMs === null) {
+      receivingSinceMs = now;
+    }
     publishMobileReticulumStatus({
       onlineRemoteHubInterfaces,
       p2pActiveOverlayPeers: neighborHashes.size,
+      p2pReceivingOverlayPeers: receivingPeerLastSeen.size,
+      p2pReceivingOverlayPeersStableMs: receivingSinceMs
+        ? now - receivingSinceMs
+        : 0,
       bridgeState: bridgeReady ? 'ready' : 'starting',
     });
   };
@@ -985,6 +1087,7 @@ export function installReticulumBridges(): void {
     if (route) {
       addNeighbor(route.destinationHash);
       addNeighbor(route.viaDestinationHash);
+      markReceivingPeer(route.destinationHash);
     }
     const env = asObject(payload.envelope);
     if (!env) return;
@@ -996,6 +1099,14 @@ export function installReticulumBridges(): void {
 
     if (type === 'PRESENCE_OFFLINE') {
       onlineByAddress.delete(address);
+      const endpoints = accountEndpoints.get(address);
+      const goneHash = String(route?.destinationHash || '').toLowerCase();
+      if (endpoints && goneHash) {
+        endpoints.delete(goneHash);
+        if (endpoints.size === 0) accountEndpoints.delete(address);
+      } else {
+        accountEndpoints.delete(address);
+      }
       emitUpdate(address, false, null);
       return;
     }
@@ -1003,6 +1114,11 @@ export function installReticulumBridges(): void {
     const status = asUserStatus(envPayload.status) ?? 'online';
     const now = Date.now();
     const existing = onlineByAddress.get(address);
+    rememberAccountEndpoint(
+      address,
+      route?.destinationHash,
+      asString(envPayload.sessionId) ?? existing?.sessionId ?? ''
+    );
     onlineByAddress.set(address, {
       address,
       publicKey: asString(envPayload.publicKey) ?? existing?.publicKey ?? '',
@@ -1600,25 +1716,25 @@ export function installReticulumBridges(): void {
   // lastSeen}), account endpoint leases, and an overlay-health boolean.
   reticulumChatPresenceSnapshotRef = () => {
     const now = Date.now();
-    const sessions = liveSessions();
     const peers: Array<{ destinationHash: string; lastSeen: number }> = [];
     const seenPeerHashes = new Set<string>();
     const leases: ReturnType<
       typeof getReticulumChatPresenceSnapshot
     >['leases'] = [];
-    for (const session of sessions) {
-      const origin = String(session.originNodeId || '').toLowerCase();
-      if (!/^[0-9a-f]{32}$/.test(origin)) continue;
-      if (!seenPeerHashes.has(origin)) {
-        seenPeerHashes.add(origin);
-        peers.push({ destinationHash: origin, lastSeen: session.lastSeen });
+    for (const endpoint of liveAccountEndpoints()) {
+      if (!seenPeerHashes.has(endpoint.destinationHash)) {
+        seenPeerHashes.add(endpoint.destinationHash);
+        peers.push({
+          destinationHash: endpoint.destinationHash,
+          lastSeen: endpoint.lastSeen,
+        });
       }
       leases.push({
-        destinationHash: origin,
-        address: session.address,
-        sessionId: session.sessionId,
-        lastSeen: session.lastSeen,
-        expiresAt: session.lastSeen + PRESENCE_TTL_MS,
+        destinationHash: endpoint.destinationHash,
+        address: endpoint.address,
+        sessionId: endpoint.sessionId,
+        lastSeen: endpoint.lastSeen,
+        expiresAt: endpoint.lastSeen + PRESENCE_TTL_MS,
         verification: 'relayed-bound',
       });
     }
@@ -1634,7 +1750,7 @@ export function installReticulumBridges(): void {
       leases,
       healthy:
         peers.length > 0 ||
-        sessions.length > 0 ||
+        liveSessions().length > 0 ||
         onlineRemoteHubInterfaces > 0,
     };
   };
@@ -2873,6 +2989,11 @@ export function installReticulumBridges(): void {
   // rides on the window.groupCall transport above (installed only when the
   // WebView supports WebCodecs; otherwise the call stays connected but silent).
   installMobileAudioSurface();
+
+  // p2pHealth only flips to 'good' once the receiving-peer set has been stable
+  // for 30 s, so republish on a tighter cadence than the lease sweep below or
+  // the call buttons stay disabled far longer than they need to.
+  setInterval(refreshMobileStatus, 5_000);
 
   // Keep the bridge's neighbour leases warm (30 s grace window) and prune
   // expired online entries so the UI doesn't show stale peers.

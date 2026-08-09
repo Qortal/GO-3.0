@@ -114,7 +114,7 @@ public class QortalBackgroundPlugin extends Plugin {
             return;
         }
 
-        String title = call.getString("title", "Qortal GO 2.0");
+        String title = call.getString("title", "GO 3.0");
         String detail = call.getString("detail", "Connected");
         String nodeLabel = call.getString("nodeLabel", "Public node");
         String syncLabel = call.getString("syncLabel", "Sync status unknown");
@@ -162,7 +162,7 @@ public class QortalBackgroundPlugin extends Plugin {
         }
 
         int alertId = call.getInt("alertId", (int) (System.currentTimeMillis() % 100000));
-        String title = call.getString("title", "Qortal GO 2.0");
+        String title = call.getString("title", "GO 3.0");
         String body = call.getString("body", "");
         String iconUrl = call.getString("iconUrl", "");
         String fromAddress = call.getString("fromAddress", "");

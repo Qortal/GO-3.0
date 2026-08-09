@@ -1,5 +1,6 @@
 import { Box } from '@mui/material';
 import { Group } from '../Group/Group';
+import { ReticulumGroupAboutModal } from '../Group/ReticulumGroupAbout';
 import { AuthenticatedProfile } from '../Profile';
 
 /**
@@ -118,6 +119,8 @@ export function AuthenticatedShell({
         showTutorial={showTutorial}
         onBackupWallet={onBackupWallet}
       />
+      {/* Hosted at shell root so About Group never depends on Q-Chat remounts. */}
+      <ReticulumGroupAboutModal />
     </Box>
   );
 }
