@@ -1,11 +1,13 @@
-# Qortal GO 2.0 — Native Mobile Qortal Client
+# GO 3.0 — Native Mobile Qortal Client
 
-**Qortal GO 2.0** is the native Android port of [Qortal Hub](https://github.com/Qortal/Qortal-Hub)
-(this repo is a fork of `Qortal/Qortal-Hub`, branch `feature/qortal-go-mobilize`). It wraps the Hub's
+**GO 3.0** (Qortal GO) is the native Android port of [Qortal Hub](https://github.com/Qortal/Qortal-Hub)
+(this repo tracks Hub with the mobile shell on branch `feature/chat-v2-merge`). It wraps the Hub's
 React UI in a Capacitor/Android shell and adds a **native Reticulum (RNS) stack on the phone**, giving
 mobile users the Hub 2.0 P2P feature set: presence, voice calls, and direct file transfer over
 Reticulum — plus a mobile-first UI, OS notifications, biometric login, and battery-conscious
 background behavior.
+
+**Repository:** https://gitea.qortal.link/simon/GO-3.0
 
 > **For Hub developers:** two small Hub-side changes are needed for full mobile ↔ Hub interop.
 > Both are described in [Required Hub changes](#required-hub-changes) below. Everything else is

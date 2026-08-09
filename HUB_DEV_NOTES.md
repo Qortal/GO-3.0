@@ -1,6 +1,6 @@
-# Hub developer notes — Qortal GO 2.0 upstream merge
+# Hub developer notes — GO 3.0 upstream merge
 
-This document lists changes in the `simon/qortal-go-2.0` fork that **must be ported into upstream Qortal Hub** (Electron) for voice calls and multi-device ringing to work correctly with Qortal GO on Android.
+This document lists changes in the GO mobile fork that **must be ported into upstream Qortal Hub** (Electron) for voice calls and multi-device ringing to work correctly with GO 3.0 on Android.
 
 Mobile-only changes (Capacitor UI, FileWriter, biometric, etc.) do **not** require Hub merges unless noted.
 
@@ -8,7 +8,8 @@ Mobile-only changes (Capacitor UI, FileWriter, biometric, etc.) do **not** requi
 
 ## Repo state reference
 
-**Remote:** https://gitea.qortal.link/simon/qortal-go-2.0 (`simon/main`)
+**Remote:** https://gitea.qortal.link/simon/GO-3.0 (`go3` / `main`)  
+*(Earlier field builds lived at https://gitea.qortal.link/simon/qortal-go-2.0.)*
 
 **Already pushed (before the pending voice/QDN commit):**
 
@@ -175,6 +176,6 @@ git diff 0a475a37..simon/main -- electron/resources/presence_bridge.py
 
 ## Contact / context
 
-These notes correspond to Qortal GO 2.0 field testing: mobile↔Hub voice (working after bridge + call.ts fixes), mobile↔mobile (requires overlay meta + stale-dest rotation on GO side), dual-device ringing (requires Section 1 on Hub).
+These notes correspond to GO 3.0 field testing: mobile↔Hub voice (working after bridge + call.ts fixes), mobile↔mobile (requires overlay meta + stale-dest rotation on GO side), dual-device ringing (requires Section 1 on Hub).
 
 Update this file when new Hub-facing changes land on `simon/main`.

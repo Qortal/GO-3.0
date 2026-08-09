@@ -9,7 +9,10 @@ desktop Hub. The format is based on
 
 ---
 
-## [Unreleased]
+## [3.0.0] — Unreleased (GO 3.0)
+
+Current Android product line branded **GO 3.0** (`versionName` 3.0.0). Continues the Qortal Hub
+mobile fork with Reticulum chat, group UI, calendar, and branding updates.
 
 ### Added
 
@@ -59,7 +62,7 @@ desktop Hub. The format is based on
 
 ## [2.0] — 2026-06-11 (Qortal GO mobilization)
 
-The initial Qortal GO 2.0 line: turning Qortal Hub into a fully-featured Android
+The earlier GO 2.0 line (superseded by GO 3.0): turning Qortal Hub into a fully-featured Android
 app while keeping the desktop Hub in sync. Highlights, newest first:
 
 ### Added
