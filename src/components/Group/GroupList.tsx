@@ -1307,7 +1307,7 @@ const GroupListInner = ({
               },
             }}
           >
-            v3.0.0
+            v0.0.2
           </ButtonBase>
         </Box>
         <ReticulumChatSettingsDialog

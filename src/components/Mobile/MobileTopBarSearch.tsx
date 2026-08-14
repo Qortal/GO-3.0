@@ -19,12 +19,13 @@ import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded';
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded';
 import { Capacitor } from '@capacitor/core';
 import { Share } from '@capacitor/share';
-import { useAtomValue } from 'jotai';
+import { useAtom, useAtomValue } from 'jotai';
 import { useTranslation } from 'react-i18next';
 import { availableQappsAtom, appOpenCountsAtom } from '../../atoms/appsAtoms';
 import { AppThumbnailAvatar } from '../Apps/AppThumbnailAvatar';
 import IconClearInput from '../../assets/svgs/ClearInput.svg';
 import { executeEvent } from '../../utils/events';
+import { getBaseApiReact } from '../../utils/globalApi';
 import { MOBILE_TOP_BAR_HEIGHT_PX } from './MobileTopBar';
 import { MOBILE_TABS_OVERLAY_Z } from './mobileLayout';
 import {
@@ -65,7 +66,7 @@ export const MobileTopBarSearch = ({
   const theme = useTheme();
   // Tablet tier (600-900px): give the collapsed search more room.
   const isTablet = useMediaQuery(theme.breakpoints.between('sm', 'md'));
-  const availableQapps = useAtomValue(availableQappsAtom);
+  const [availableQapps, setAvailableQapps] = useAtom(availableQappsAtom);
   const openCounts = useAtomValue(appOpenCountsAtom);
   const [query, setQuery] = useState('');
   const [draftTouched, setDraftTouched] = useState(false);
@@ -73,7 +74,51 @@ export const MobileTopBarSearch = ({
   const [highlightedIndex, setHighlightedIndex] = useState(0);
   const searchContainerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const appsCatalogFetchStartedRef = useRef(false);
   const { t } = useTranslation(['core']);
+
+  // Top-bar search can open before the Apps library has filled the catalog.
+  // Fetch once so queries like "QWB" can match published apps.
+  useEffect(() => {
+    if (!expanded || availableQapps.length > 0 || appsCatalogFetchStartedRef.current) {
+      return;
+    }
+    appsCatalogFetchStartedRef.current = true;
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        const base = getBaseApiReact();
+        const [appsRes, websitesRes] = await Promise.all([
+          fetch(
+            `${base}/arbitrary/resources/search?service=APP&default=true&mode=ALL&limit=0&includestatus=true&includemetadata=true`,
+            { signal: controller.signal }
+          ),
+          fetch(
+            `${base}/arbitrary/resources/search?service=WEBSITE&default=true&mode=ALL&limit=0&includestatus=true&includemetadata=true`,
+            { signal: controller.signal }
+          ),
+        ]);
+        if (!appsRes.ok || !websitesRes.ok) return;
+        const [apps, websites] = await Promise.all([
+          appsRes.json(),
+          websitesRes.json(),
+        ]);
+        if (controller.signal.aborted) return;
+        const combined = [...(apps || []), ...(websites || [])].filter(
+          (res) => !res?.identifier
+        );
+        if (combined.length > 0) {
+          setAvailableQapps(combined);
+        }
+      } catch {
+        /* network / abort — AppsDesktop poll may still fill the atom later */
+        appsCatalogFetchStartedRef.current = false;
+      }
+    })();
+    return () => {
+      controller.abort();
+    };
+  }, [availableQapps.length, expanded, setAvailableQapps]);
 
   const openAsLinkLabel = t('core:action.open_as_qortal_link', {
     postProcess: 'capitalizeFirstChar',
@@ -250,11 +295,11 @@ export const MobileTopBarSearch = ({
   ) : null;
 
   const openAsLink = useCallback(() => {
-    if (openAppsSearchLink(query)) {
+    if (openAppsSearchLink(query, availableQapps)) {
       setQuery('');
       collapse();
     }
-  }, [collapse, query]);
+  }, [availableQapps, collapse, query]);
 
   const openApp = useCallback(
     (app: any) => {

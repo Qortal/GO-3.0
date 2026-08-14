@@ -25,7 +25,12 @@ export function ChatScopeSwitch({
 }) {
   const theme = useTheme();
 
-  const segment = (scope: ChatScope, label: string, icon: ReactNode) => {
+  const segment = (
+    scope: ChatScope,
+    label: string,
+    icon: ReactNode,
+    badge?: ReactNode
+  ) => {
     const active = value === scope;
     return (
       <ButtonBase
@@ -49,6 +54,7 @@ export function ChatScopeSwitch({
           fontWeight: 700,
           height: 30,
           justifyContent: 'center',
+          overflow: 'visible',
           position: 'relative',
           px: 1.1,
           transition: 'background-color 160ms ease, color 160ms ease',
@@ -56,6 +62,7 @@ export function ChatScopeSwitch({
       >
         {icon}
         {label}
+        {badge}
       </ButtonBase>
     );
   };
@@ -69,6 +76,7 @@ export function ChatScopeSwitch({
         display: 'flex',
         flexShrink: 0,
         gap: '2px',
+        overflow: 'visible',
         p: '2px',
       }}
     >
@@ -80,16 +88,23 @@ export function ChatScopeSwitch({
       {segment(
         'directs',
         'DMs',
-        <Box sx={{ display: 'inline-flex', position: 'relative' }}>
-          <ChatBubbleOutlineRoundedIcon sx={{ fontSize: 16 }} />
-          {directHasUnread && (
-            <ReticulumUnreadCountBadge
-              count={directUnreadCount}
-              outlineColor={theme.palette.background.default}
-              sx={{ bottom: -5, position: 'absolute', right: -7, zIndex: 2 }}
-            />
-          )}
-        </Box>
+        <ChatBubbleOutlineRoundedIcon sx={{ fontSize: 16 }} />,
+        directHasUnread ? (
+          <ReticulumUnreadCountBadge
+            count={directUnreadCount}
+            outlineColor={
+              value === 'directs'
+                ? theme.palette.background.paper
+                : theme.palette.action.hover
+            }
+            sx={{
+              position: 'absolute',
+              right: -5,
+              top: -6,
+              zIndex: 2,
+            }}
+          />
+        ) : null
       )}
     </Box>
   );

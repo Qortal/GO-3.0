@@ -23,7 +23,7 @@ import NotificationsActiveRoundedIcon from '@mui/icons-material/NotificationsAct
 import NotificationsRoundedIcon from '@mui/icons-material/NotificationsRounded';
 import ChevronRightRoundedIcon from '@mui/icons-material/ChevronRightRounded';
 import { useAtomValue, useSetAtom } from 'jotai';
-import { nodeInfosAtom, p2pHealthAtom, rawWalletAtom, selectedNodeInfoAtom, mobileChatComposeActiveAtom } from '../../atoms/global';
+import { nodeInfosAtom, p2pHealthAtom, rawWalletAtom, selectedNodeInfoAtom, mobileChatComposeActiveAtom, mobileFullscreenComposerActiveAtom } from '../../atoms/global';
 import { computeP2pHealth } from '../../lib/p2pHealth';
 import { onMobileReticulumStatus } from '../../bridge/capacitorBridge';
 import { CoreSyncStatus } from '../CoreSyncStatus';
@@ -157,6 +157,9 @@ export const MobileTopBar = ({
   const setP2pHealth = useSetAtom(p2pHealthAtom);
   const { hasNewNotifications, unseenCount } = useUnseenNotificationCount();
   const chatComposeActive = useAtomValue(mobileChatComposeActiveAtom);
+  const fullscreenComposerActive = useAtomValue(
+    mobileFullscreenComposerActiveAtom
+  );
 
   useEffect(() => {
     return onMobileReticulumStatus((s) => {
@@ -368,6 +371,10 @@ export const MobileTopBar = ({
       onClick: onLogout,
     },
   ];
+
+  // The full-screen composer draws its own safe-area padding, so leaving even
+  // the slim compose strip behind would show as a grey band above it.
+  if (fullscreenComposerActive) return null;
 
   return (
     <Box

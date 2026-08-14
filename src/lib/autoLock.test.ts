@@ -1,18 +1,23 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   AUTO_LOCK_DISABLED_STORAGE_KEY,
+  AUTO_LOCK_LAST_ACTIVITY_STORAGE_KEY,
   AUTO_LOCK_PREFERENCE_CHANGE_EVENT,
+  clearAutoLockLastActivityAt,
   isAutoLockDue,
   normalizeAutoLockTimeoutMinutes,
   readAutoLockDisabledFromStorage,
+  readAutoLockLastActivityAt,
   resolveAutoLockTimeoutMinutes,
   timeoutMinutesForAutoLockDisabled,
   writeAutoLockDisabledToStorage,
+  writeAutoLockLastActivityAt,
 } from './autoLock';
 
 describe('auto-lock settings', () => {
   afterEach(() => {
     window.localStorage.removeItem(AUTO_LOCK_DISABLED_STORAGE_KEY);
+    window.sessionStorage.removeItem(AUTO_LOCK_LAST_ACTIVITY_STORAGE_KEY);
   });
 
   it('defaults invalid or missing values to 30 minutes', () => {
@@ -56,5 +61,12 @@ describe('auto-lock settings', () => {
     expect(readAutoLockDisabledFromStorage()).toBe(false);
     expect(listener).toHaveBeenCalledTimes(1);
     window.removeEventListener(AUTO_LOCK_PREFERENCE_CHANGE_EVENT, listener);
+  });
+
+  it('persists last-activity timestamps across watcher remounts', () => {
+    writeAutoLockLastActivityAt(1_700_000_000_000);
+    expect(readAutoLockLastActivityAt()).toBe(1_700_000_000_000);
+    clearAutoLockLastActivityAt();
+    expect(readAutoLockLastActivityAt(42)).toBe(42);
   });
 });

@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import { createPortal } from 'react-dom';
 import { useAtom, useAtomValue } from 'jotai';
 import {
   userInfoAtom,
@@ -7,7 +15,13 @@ import {
   p2pHealthAtom,
 } from '../../atoms/global';
 import { ChatList } from './ChatList';
-import Tiptap from './TipTap';
+import { useFullscreenComposerAttachmentSlot } from './composerSlots';
+import { restoreComposerTyping } from './composerKeyboard';
+import Tiptap, { composerHasSendableText } from './TipTap';
+import { toChatImagePointer, type LibraryGif } from './gifs/libraryGifs';
+import { GifImage } from './gifs/GifImage';
+import ErrorBoundary from '../../common/ErrorBoundary';
+import throttle from 'lodash/throttle';
 import './chat.css';
 import { CustomButton } from '../../styles/App-styles';
 import CircularProgress from '@mui/material/CircularProgress';
@@ -72,6 +86,7 @@ import CreateRoundedIcon from '@mui/icons-material/CreateRounded';
 import ShortUniqueId from 'short-unique-id';
 import { ExitIcon } from '../../assets/Icons/ExitIcon';
 import { ReplyPreview } from './MessageItem';
+import { ComposerReplyPreview } from './ComposerReplyPreview';
 import { useTranslation } from 'react-i18next';
 import { useNameSearch } from '../../hooks/useNameSearch';
 import { validateAddress } from '../../utils/validateAddress';
@@ -464,6 +479,11 @@ export const ChatDirect = ({
   const [onEditMessage, setOnEditMessage] = useState(null);
   const [messages, setMessages] = useState([]);
   const [isSending, setIsSending] = useState(false);
+  // React state alone cannot block double-taps / Enter+Send in the same tick.
+  const isSendingRef = useRef(false);
+  const lastSentFingerprintRef = useRef<{ key: string; at: number } | null>(
+    null
+  );
   const [directToValue, setDirectToValue] = useState('');
   const [suggestionsOpen, setSuggestionsOpen] = useState(false);
   const nameSearchInputRef = useRef<HTMLDivElement>(null);
@@ -506,9 +526,12 @@ export const ChatDirect = ({
   // the keyboard keeps the composer (and any typed text) open.
   useEffect(() => {
     setComposerOpenLandscape(false);
+    setPendingLibraryGif(null);
   }, [selectedDirect?.address]);
 
   const [formattingTrayResetKey, setFormattingTrayResetKey] = useState(0);
+  // Drives the send button, which stays hidden until there is something to send.
+  const [composerHasText, setComposerHasText] = useState(false);
   const socketRef = useRef(null);
   const timeoutIdRef = useRef(null);
   const [messageSize, setMessageSize] = useState(0);
@@ -521,6 +544,22 @@ export const ChatDirect = ({
   const [pendingReticulumFiles, setPendingReticulumFiles] = useState<
     PendingReticulumDirectFile[]
   >([]);
+  const [pendingLibraryGif, setPendingLibraryGif] = useState<LibraryGif | null>(
+    null
+  );
+  // Android drops the keyboard the moment the editor loses focus, so nothing in
+  // the composer card may take it on the way to being tapped.
+  const preventComposerBlur = useCallback(
+    (event: { preventDefault: () => void }) => {
+      event.preventDefault();
+    },
+    []
+  );
+  // The full-screen composer covers this card, attachments and all, so while it
+  // is up the chip is rendered inside it instead.
+  const composerAttachmentSlot = useFullscreenComposerAttachmentSlot();
+  const renderComposerAttachments = (node: ReactNode) =>
+    composerAttachmentSlot ? createPortal(node, composerAttachmentSlot) : node;
   const [isCompressingReticulumGif, setIsCompressingReticulumGif] =
     useState(false);
   const [reticulumImageChoice, setReticulumImageChoice] = useState<{
@@ -1839,9 +1878,18 @@ export const ChatDirect = ({
       }
     }
   };
+  const directComposerHasContent =
+    composerHasText ||
+    pendingReticulumFiles.length > 0 ||
+    Boolean(pendingLibraryGif) ||
+    Boolean(onEditMessage);
+
   const clearEditorContent = () => {
     if (editorRef.current) {
       setMessageSize(0);
+      setComposerHasText(false);
+      // Sending closes the formatting tray and the full-screen composer too.
+      setFormattingTrayResetKey((key) => key + 1);
       editorRef.current.chain().focus().clearContent().run();
       if (myAddress && !isNewChat && selectedDirect?.address) {
         clearChatDraft(myAddress, directDraftKey(selectedDirect.address));
@@ -2093,11 +2141,14 @@ export const ChatDirect = ({
         }
         const api = getQchatFileApi();
         if (!api?.qchatFileChooseSavePath || !api?.qchatFileAccept) {
-          console.error('[QchatFileTransfer] accept aborted: transfer API unavailable', {
-            transferId: data.transferId,
-            hasChooseSavePath: Boolean(api?.qchatFileChooseSavePath),
-            hasAccept: Boolean(api?.qchatFileAccept),
-          });
+          console.error(
+            '[QchatFileTransfer] accept aborted: transfer API unavailable',
+            {
+              transferId: data.transferId,
+              hasChooseSavePath: Boolean(api?.qchatFileChooseSavePath),
+              hasAccept: Boolean(api?.qchatFileAccept),
+            }
+          );
           throw new Error('Reticulum file transfer is unavailable');
         }
         console.log('[QchatFileTransfer] choosing save path', {
@@ -2471,7 +2522,7 @@ export const ChatDirect = ({
         setOpenSnack(true);
         return;
       }
-      if (pendingReticulumFiles.length > 0) {
+      if (pendingReticulumFiles.length > 0 || pendingLibraryGif) {
         setInfoSnack({
           type: 'error',
           message: 'Send or remove the current attachment first',
@@ -2543,9 +2594,25 @@ export const ChatDirect = ({
       clearPendingReticulumFiles,
       isCompressingReticulumGif,
       isCompressingReticulumImage,
+      pendingLibraryGif,
       pendingReticulumFiles.length,
       reticulumDirectEnabled,
     ]
+  );
+
+  const insertLibraryGif = useCallback(
+    (gif: LibraryGif) => {
+      if (pendingReticulumFiles.length > 0 || pendingLibraryGif) {
+        setInfoSnack({
+          type: 'error',
+          message: 'Send or remove the current attachment first',
+        });
+        setOpenSnack(true);
+        return;
+      }
+      setPendingLibraryGif(gif);
+    },
+    [pendingLibraryGif, pendingReticulumFiles.length]
   );
 
   const closeReticulumImageChoice = useCallback(() => {
@@ -2676,57 +2743,73 @@ export const ChatDirect = ({
     selectedDirect?.address,
   ]);
 
+  // Active DM draft target. Null while switching conversations so an editor
+  // update cannot persist chat A's text under chat B's draft key.
+  const draftRestoredRef = useRef<string | null>(null);
+  const draftContextRef = useRef<{ account: string; key: string } | null>(null);
+
   useEffect(() => {
     if (!editorInstance) return;
-    const handleUpdate = () => {
+    const persistDraftAndSize = throttle(() => {
       const htmlContent = editorRef?.current.getHTML();
       const stringified = JSON.stringify(htmlContent);
       const size = new Blob([stringified]).size;
       setMessageSize(size + 200);
-      // Persist the unsent draft per-DM so it survives leaving and returning.
-      if (myAddress && !isNewChat && selectedDirect?.address) {
-        try {
-          setChatDraft(
-            myAddress,
-            directDraftKey(selectedDirect.address),
-            htmlContent
-          );
-        } catch {
-          /* ignore */
-        }
+      const ctx = draftContextRef.current;
+      if (!ctx) return;
+      try {
+        setChatDraft(ctx.account, ctx.key, htmlContent);
+      } catch {
+        /* ignore */
       }
+    }, 400);
+    const handleUpdate = () => {
+      setComposerHasText((prev) => {
+        const hasText = composerHasSendableText(editorRef.current?.getText());
+        return prev === hasText ? prev : hasText;
+      });
+      persistDraftAndSize();
     };
 
-    // Add a listener for the editorRef?.current's content updates
     editorRef?.current.on('update', handleUpdate);
 
-    // Cleanup the listener on unmount
     return () => {
       editorRef?.current.off('update', handleUpdate);
+      persistDraftAndSize.cancel();
     };
   }, [editorInstance, myAddress, isNewChat, selectedDirect?.address]);
 
   // Restore a previously saved draft for this DM once the editor is ready.
-  const draftRestoredRef = useRef<string | null>(null);
+  // Always replace editor contents on conversation change — including clearing
+  // when there is no draft — so one DM's typed text cannot leak into another.
   useEffect(() => {
-    if (isNewChat || !selectedDirect?.address || !myAddress) return;
+    if (isNewChat || !selectedDirect?.address || !myAddress) {
+      draftContextRef.current = null;
+      return;
+    }
     const key = directDraftKey(selectedDirect.address);
     const token = `${myAddress}:${key}`;
     if (draftRestoredRef.current === token) return;
 
+    draftContextRef.current = null;
     const draft = getChatDraft(myAddress, key);
-    if (!draft) {
-      draftRestoredRef.current = token;
-      return;
-    }
 
     let tries = 0;
     let cancelled = false;
-    const restore = () => {
+    const applyConversationDraft = () => {
       if (cancelled) return;
-      if (editorRef.current) {
-        draftRestoredRef.current = token;
+      if (!editorRef.current) {
+        if (tries++ < 30) setTimeout(applyConversationDraft, 100);
+        return;
+      }
+      draftRestoredRef.current = token;
+      if (draft) {
         editorRef.current.commands.setContent(draft);
+        // setContent does not emit an update, so the send button would stay
+        // hidden over a restored draft unless we mirror the state here.
+        setComposerHasText(
+          composerHasSendableText(editorRef.current.getText())
+        );
         try {
           setMessageSize(new Blob([JSON.stringify(draft)]).size + 200);
         } catch {
@@ -2734,14 +2817,16 @@ export const ChatDirect = ({
         }
         setIsFocusedParent(true);
         setComposerOpenLandscape(true);
-      } else if (tries++ < 30) {
-        setTimeout(restore, 100);
+      } else {
+        editorRef.current.commands.clearContent(true);
+        setMessageSize(0);
+        setComposerHasText(false);
       }
+      draftContextRef.current = { account: myAddress, key };
     };
-    const timer = setTimeout(restore, 200);
+    applyConversationDraft();
     return () => {
       cancelled = true;
-      clearTimeout(timer);
     };
   }, [isNewChat, selectedDirect?.address, myAddress]);
 
@@ -2801,6 +2886,7 @@ export const ChatDirect = ({
   ]);
 
   const sendMessage = async () => {
+    let ownsSendingState = false;
     try {
       if (messageSize > MAX_SIZE_MESSAGE) {
         setMessageSizeLimitShakeKey((key) => key + 1);
@@ -2825,7 +2911,7 @@ export const ChatDirect = ({
             postProcess: 'capitalizeFirstChar',
           })
         );
-      if (isSending) return;
+      if (isSendingRef.current || isSending) return;
       if (editorRef.current) {
         const htmlContent = editorRef.current.getHTML();
         const hasPendingReticulumResources =
@@ -2833,15 +2919,41 @@ export const ChatDirect = ({
 
         if (
           (!htmlContent?.trim() || htmlContent?.trim() === '<p></p>') &&
-          !hasPendingReticulumResources
+          !hasPendingReticulumResources &&
+          !pendingLibraryGif
         )
           return;
+
+        let repliedTo = replyMessage?.signature;
+        if (replyMessage?.chatReference) {
+          repliedTo = replyMessage?.chatReference;
+        }
+        const chatReference = onEditMessage?.signature;
+        const sendFingerprint = [
+          String(selectedDirect?.address || ''),
+          String(repliedTo || ''),
+          String(chatReference || ''),
+          htmlContent || '',
+          pendingLibraryGif
+            ? `${pendingLibraryGif.name}:${pendingLibraryGif.identifier}`
+            : '',
+        ].join('\u0001');
+        const lastSent = lastSentFingerprintRef.current;
+        if (
+          lastSent &&
+          lastSent.key === sendFingerprint &&
+          Date.now() - lastSent.at < 4_000
+        ) {
+          return;
+        }
+
         if (reticulumDirectUiEnabled) {
           setFormattingTrayResetKey((key) => key + 1);
         }
+        isSendingRef.current = true;
         setIsSending(true);
+        ownsSendingState = true;
         pauseAllQueues();
-        const message = JSON.stringify(htmlContent);
 
         if (isNewChat) {
           await sendChatDirect(
@@ -2855,47 +2967,60 @@ export const ChatDirect = ({
             null,
             true
           );
+          lastSentFingerprintRef.current = {
+            key: sendFingerprint,
+            at: Date.now(),
+          };
           clearEditorContent();
           closeMobileCompose();
           return;
         }
-        let repliedTo = replyMessage?.signature;
-
-        if (replyMessage?.chatReference) {
-          repliedTo = replyMessage?.chatReference;
-        }
-        const chatReference = onEditMessage?.signature;
 
         const reticulumResources = hasPendingReticulumResources
           ? await buildReticulumDirectResourcePayload()
           : { images: [], attachments: [] };
+        const images = pendingLibraryGif
+          ? [toChatImagePointer(pendingLibraryGif)]
+          : reticulumResources.images;
 
         const otherData = {
           ...(onEditMessage?.decryptedData || {}),
           specialId: uid.rnd(),
           repliedTo: onEditMessage ? onEditMessage?.repliedTo : repliedTo,
           type: chatReference ? 'edit' : '',
-          ...(reticulumResources.images.length > 0
-            ? { images: reticulumResources.images }
-            : {}),
+          ...(images.length > 0 ? { images } : {}),
           ...(reticulumResources.attachments.length > 0
             ? { attachments: reticulumResources.attachments }
             : {}),
         };
+        // Reticulum mints a new eventId per publish — guard queue retries.
+        let reticulumPublishCompleted = false;
         const sendMessageFunc = async () => {
-          return await sendChatDirect(
-            {
-              chatReference,
-              messageText: htmlContent,
-              otherData,
-              ...(reticulumDirectEnabled && !onEditMessage
-                ? { expiryDurationMs: reticulumDirectExpiryDurationMs }
-                : {}),
-            },
-            selectedDirect?.address,
-            publicKeyOfRecipient,
-            false
-          );
+          try {
+            if (reticulumDirectEnabled && reticulumPublishCompleted) {
+              return { success: true, clearQueueOnSuccess: true };
+            }
+            const result = await sendChatDirect(
+              {
+                chatReference,
+                messageText: htmlContent,
+                otherData,
+                ...(reticulumDirectEnabled && !onEditMessage
+                  ? { expiryDurationMs: reticulumDirectExpiryDurationMs }
+                  : {}),
+              },
+              selectedDirect?.address,
+              publicKeyOfRecipient,
+              false
+            );
+            if (reticulumDirectEnabled) {
+              reticulumPublishCompleted = true;
+            }
+            return result;
+          } finally {
+            isSendingRef.current = false;
+            setIsSending(false);
+          }
         };
 
         // Add the function to the queue
@@ -2909,8 +3034,27 @@ export const ChatDirect = ({
           },
           chatReference,
         };
+        lastSentFingerprintRef.current = {
+          key: sendFingerprint,
+          at: Date.now(),
+        };
         if (reticulumDirectEnabled) {
-          await sendMessageFunc();
+          // The DM hook renders the event optimistically, so the composer can
+          // be handed back now instead of after the publish round-trip. Errors
+          // are surfaced here because nothing is awaiting this call any more.
+          void sendMessageFunc().catch((error) => {
+            setInfoSnack({
+              type: 'error',
+              message:
+                error?.message ||
+                String(error) ||
+                t('core:message.error.generic', {
+                  postProcess: 'capitalizeFirstChar',
+                }),
+            });
+            setOpenSnack(true);
+          });
+          ownsSendingState = false;
         } else {
           addToQueue(
             sendMessageFunc,
@@ -2918,9 +3062,14 @@ export const ChatDirect = ({
             'chat-direct',
             selectedDirect?.address
           );
+          ownsSendingState = false;
         }
         setTimeout(() => {
-          executeEvent('sent-new-message-group', {});
+          // Scope must match the chatId given to this thread's ChatList so only
+          // this thread scrolls down.
+          executeEvent('sent-new-message-group', {
+            data: { scope: selectedDirect?.address },
+          });
         }, 150);
         clearReticulumDirectTypingStopTimer();
         if (reticulumDirectTypingActiveRef.current) {
@@ -2928,6 +3077,7 @@ export const ChatDirect = ({
         }
         clearEditorContent();
         clearPendingReticulumFiles();
+        setPendingLibraryGif(null);
         setReplyMessage(null);
         setOnEditMessage(null);
         closeMobileCompose();
@@ -2948,7 +3098,10 @@ export const ChatDirect = ({
       setOpenSnack(true);
       console.error(error);
     } finally {
-      setIsSending(false);
+      if (ownsSendingState) {
+        isSendingRef.current = false;
+        setIsSending(false);
+      }
       resumeAllQueues();
     }
   };
@@ -2998,259 +3151,261 @@ export const ChatDirect = ({
     >
       {/* Header: back button + optional new-chat title */}
       {(reticulumDirectUiEnabled || !(isMobile && isFocusedParent)) && (
-      <Box
-        sx={{
-          alignItems: 'center',
-          borderBottom: '1px solid',
-          borderColor: 'divider',
-          display: 'flex',
-          flexShrink: 0,
-          gap: '8px',
-          padding: '12px 16px',
-          width: '100%',
-        }}
-      >
-        {(!reticulumDirectUiEnabled || isMobile) && (
-          <ButtonBase
-            onClick={close}
-            sx={{
-              alignItems: 'center',
-              borderRadius: '8px',
-              color: theme.palette.text.secondary,
-              display: 'flex',
-              gap: '6px',
-              padding: reticulumDirectUiEnabled ? '6px' : '6px 10px',
-              transition: 'background-color 0.15s ease, color 0.15s ease',
-              '&:hover': {
-                backgroundColor: theme.palette.action.hover,
-                color: theme.palette.text.primary,
-              },
-            }}
-          >
-            <ArrowBackIcon sx={{ fontSize: '20px' }} />
-            {!reticulumDirectUiEnabled && (
-              <Typography sx={{ fontSize: '14px', fontWeight: 500 }}>
-                {t('core:action.close_chat', {
-                  postProcess: 'capitalizeFirstChar',
-                })}
-              </Typography>
-            )}
-          </ButtonBase>
-        )}
-        {isNewChat ? (
-          <Typography
-            sx={{
-              color: theme.palette.text.secondary,
-              fontSize: '13px',
-              fontWeight: 500,
-              marginLeft: '8px',
-            }}
-          >
-            {t('core:action.new.chat', { postProcess: 'capitalizeFirstChar' })}
-          </Typography>
-        ) : (
-          <Box sx={{ minWidth: 0 }}>
-            <Typography
+        <Box
+          sx={{
+            alignItems: 'center',
+            borderBottom: '1px solid',
+            borderColor: 'divider',
+            display: 'flex',
+            flexShrink: 0,
+            gap: '8px',
+            padding: '12px 16px',
+            width: '100%',
+          }}
+        >
+          {(!reticulumDirectUiEnabled || isMobile) && (
+            <ButtonBase
+              onClick={close}
               sx={{
-                color: theme.palette.text.primary,
-                fontSize: 17,
-                fontWeight: 700,
-                lineHeight: 1.2,
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
+                alignItems: 'center',
+                borderRadius: '8px',
+                color: theme.palette.text.secondary,
+                display: 'flex',
+                gap: '6px',
+                padding: reticulumDirectUiEnabled ? '6px' : '6px 10px',
+                transition: 'background-color 0.15s ease, color 0.15s ease',
+                '&:hover': {
+                  backgroundColor: theme.palette.action.hover,
+                  color: theme.palette.text.primary,
+                },
               }}
             >
-              {selectedDirect?.name ||
-                selectedDirect?.address ||
-                'Direct Message'}
-            </Typography>
-            {!isMobile &&
-              !isSelfDirect &&
-              selectedDirect?.name &&
-              selectedDirect?.address && (
-                <Typography
-                  sx={{
-                    color: theme.palette.text.secondary,
-                    fontSize: 11,
-                    lineHeight: 1.3,
-                    mt: 0.25,
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    whiteSpace: 'nowrap',
-                  }}
-                >
-                  {selectedDirect.address}
+              <ArrowBackIcon sx={{ fontSize: '20px' }} />
+              {!reticulumDirectUiEnabled && (
+                <Typography sx={{ fontSize: '14px', fontWeight: 500 }}>
+                  {t('core:action.close_chat', {
+                    postProcess: 'capitalizeFirstChar',
+                  })}
                 </Typography>
               )}
-          </Box>
-        )}
-        {!isNewChat && selectedDirect?.address && !isSelfDirect && (
-          <Box
-            sx={{
-              alignItems: 'center',
-              display: 'flex',
-              flexShrink: 0,
-              gap: 1,
-              marginLeft: 'auto',
-            }}
-          >
-            {reticulumDirectUiEnabled && reticulumPeerSilence?.active && (
-              <Tooltip title="Unhide user">
-                <span>
-                  <IconButton
-                    aria-label="Unhide user"
-                    disabled={reticulumSilenceBusy}
-                    onClick={() => void unsilenceReticulumDirectPeer()}
-                    size="small"
+            </ButtonBase>
+          )}
+          {isNewChat ? (
+            <Typography
+              sx={{
+                color: theme.palette.text.secondary,
+                fontSize: '13px',
+                fontWeight: 500,
+                marginLeft: '8px',
+              }}
+            >
+              {t('core:action.new.chat', {
+                postProcess: 'capitalizeFirstChar',
+              })}
+            </Typography>
+          ) : (
+            <Box sx={{ minWidth: 0 }}>
+              <Typography
+                sx={{
+                  color: theme.palette.text.primary,
+                  fontSize: 17,
+                  fontWeight: 700,
+                  lineHeight: 1.2,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {selectedDirect?.name ||
+                  selectedDirect?.address ||
+                  'Direct Message'}
+              </Typography>
+              {!isMobile &&
+                !isSelfDirect &&
+                selectedDirect?.name &&
+                selectedDirect?.address && (
+                  <Typography
                     sx={{
-                      color: 'warning.main',
-                      '&:hover': { color: 'warning.dark' },
+                      color: theme.palette.text.secondary,
+                      fontSize: 11,
+                      lineHeight: 1.3,
+                      mt: 0.25,
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
                     }}
                   >
-                    {reticulumSilenceBusy ? (
-                      <CircularProgress size={18} />
-                    ) : (
-                      <VisibilityRoundedIcon sx={{ fontSize: 20 }} />
-                    )}
-                  </IconButton>
-                </span>
-              </Tooltip>
-            )}
-            <Tooltip
-              title={
-                peerOnline
-                  ? t('core:presence.peer_online_hint')
-                  : t('core:presence.peer_offline_hint')
-              }
+                    {selectedDirect.address}
+                  </Typography>
+                )}
+            </Box>
+          )}
+          {!isNewChat && selectedDirect?.address && !isSelfDirect && (
+            <Box
+              sx={{
+                alignItems: 'center',
+                display: 'flex',
+                flexShrink: 0,
+                gap: 1,
+                marginLeft: 'auto',
+              }}
             >
-              <Box
-                sx={{
-                  alignItems: 'center',
-                  display: 'flex',
-                  flexShrink: 0,
-                  gap: 0.5,
-                }}
+              {reticulumDirectUiEnabled && reticulumPeerSilence?.active && (
+                <Tooltip title="Unhide user">
+                  <span>
+                    <IconButton
+                      aria-label="Unhide user"
+                      disabled={reticulumSilenceBusy}
+                      onClick={() => void unsilenceReticulumDirectPeer()}
+                      size="small"
+                      sx={{
+                        color: 'warning.main',
+                        '&:hover': { color: 'warning.dark' },
+                      }}
+                    >
+                      {reticulumSilenceBusy ? (
+                        <CircularProgress size={18} />
+                      ) : (
+                        <VisibilityRoundedIcon sx={{ fontSize: 20 }} />
+                      )}
+                    </IconButton>
+                  </span>
+                </Tooltip>
+              )}
+              <Tooltip
+                title={
+                  peerOnline
+                    ? t('core:presence.peer_online_hint')
+                    : t('core:presence.peer_offline_hint')
+                }
               >
                 <Box
                   sx={{
-                    backgroundColor: peerOnline
-                      ? '#44b700'
-                      : theme.palette.action.disabled,
-                    borderRadius: '50%',
+                    alignItems: 'center',
+                    display: 'flex',
                     flexShrink: 0,
-                    height: 8,
-                    width: 8,
-                  }}
-                />
-                <Typography
-                  variant="caption"
-                  sx={{
-                    color: peerOnline ? 'success.main' : 'text.disabled',
-                    fontSize: 11,
-                    fontWeight: 600,
-                    letterSpacing: 0.2,
+                    gap: 0.5,
                   }}
                 >
-                  {peerOnline
-                    ? t('core:presence.online')
-                    : t('core:presence.offline')}
-                </Typography>
-              </Box>
-            </Tooltip>
-            <Tooltip
-              title={
-                dmFriendsByAddress[selectedDirect.address]
-                  ? t('core:dm_friends.remove_friend', {
-                      postProcess: 'capitalizeFirstChar',
-                    })
-                  : t('core:dm_friends.add_friend', {
-                      postProcess: 'capitalizeFirstChar',
-                    })
-              }
-            >
-              <span>
-                <IconButton
-                  size="small"
-                  disabled={friendActionBusy}
-                  onClick={() =>
-                    handleToggleDmFriend(
-                      selectedDirect.address,
-                      selectedDirect.name,
-                      Boolean(dmFriendsByAddress[selectedDirect.address])
-                    )
-                  }
-                  sx={{ color: 'text.secondary' }}
-                >
-                  {dmFriendsByAddress[selectedDirect.address] ? (
-                    <PersonRemoveRoundedIcon sx={{ fontSize: 20 }} />
-                  ) : (
-                    <PersonAddRoundedIcon sx={{ fontSize: 20 }} />
-                  )}
-                </IconButton>
-              </span>
-            </Tooltip>
-            {reticulumEnabled && (
+                  <Box
+                    sx={{
+                      backgroundColor: peerOnline
+                        ? '#44b700'
+                        : theme.palette.action.disabled,
+                      borderRadius: '50%',
+                      flexShrink: 0,
+                      height: 8,
+                      width: 8,
+                    }}
+                  />
+                  <Typography
+                    variant="caption"
+                    sx={{
+                      color: peerOnline ? 'success.main' : 'text.disabled',
+                      fontSize: 11,
+                      fontWeight: 600,
+                      letterSpacing: 0.2,
+                    }}
+                  >
+                    {peerOnline
+                      ? t('core:presence.online')
+                      : t('core:presence.offline')}
+                  </Typography>
+                </Box>
+              </Tooltip>
               <Tooltip
                 title={
-                  callMatchesThisDirect && callState === 'connected'
-                    ? 'In call'
-                    : callMatchesThisDirect && callState === 'calling'
-                      ? ''
-                      : !peerOnline
-                        ? t('core:presence.call_offline_tooltip')
-                        : directVoiceBlockedByFriend
-                          ? 'Add this user as a friend before calling'
-                          : directVoiceBlockedByP2p
-                            ? p2pHealthBadTooltip
-                            : 'Start voice call'
+                  dmFriendsByAddress[selectedDirect.address]
+                    ? t('core:dm_friends.remove_friend', {
+                        postProcess: 'capitalizeFirstChar',
+                      })
+                    : t('core:dm_friends.add_friend', {
+                        postProcess: 'capitalizeFirstChar',
+                      })
                 }
               >
                 <span>
                   <IconButton
                     size="small"
-                    disabled={
-                      !(
-                        (peerOnline &&
-                          !callMatchesThisDirect &&
-                          !directVoiceBlockedByFriend &&
-                          !directVoiceBlockedByP2p) ||
-                        (callMatchesThisDirect && callState === 'connected')
+                    disabled={friendActionBusy}
+                    onClick={() =>
+                      handleToggleDmFriend(
+                        selectedDirect.address,
+                        selectedDirect.name,
+                        Boolean(dmFriendsByAddress[selectedDirect.address])
                       )
                     }
-                    onClick={
-                      callMatchesThisDirect && callState === 'connected'
-                        ? hangUp
-                        : handleStartDirectVoiceCall
-                    }
-                    sx={{
-                      color:
-                        callMatchesThisDirect && callState === 'connected'
-                          ? '#ef4444'
-                          : 'text.secondary',
-                      '&:hover': {
-                        color:
-                          callMatchesThisDirect && callState === 'connected'
-                            ? '#dc2626'
-                            : 'text.primary',
-                      },
-                      '&.Mui-disabled': {
-                        color: theme.palette.action.disabled,
-                      },
-                    }}
+                    sx={{ color: 'text.secondary' }}
                   >
-                    {callMatchesThisDirect && callState === 'connected' ? (
-                      <CallEndRoundedIcon sx={{ fontSize: 20 }} />
+                    {dmFriendsByAddress[selectedDirect.address] ? (
+                      <PersonRemoveRoundedIcon sx={{ fontSize: 20 }} />
                     ) : (
-                      <CallRoundedIcon sx={{ fontSize: 20 }} />
+                      <PersonAddRoundedIcon sx={{ fontSize: 20 }} />
                     )}
                   </IconButton>
                 </span>
               </Tooltip>
-            )}
-          </Box>
-        )}
-      </Box>
+              {reticulumEnabled && (
+                <Tooltip
+                  title={
+                    callMatchesThisDirect && callState === 'connected'
+                      ? 'In call'
+                      : callMatchesThisDirect && callState === 'calling'
+                        ? ''
+                        : !peerOnline
+                          ? t('core:presence.call_offline_tooltip')
+                          : directVoiceBlockedByFriend
+                            ? 'Add this user as a friend before calling'
+                            : directVoiceBlockedByP2p
+                              ? p2pHealthBadTooltip
+                              : 'Start voice call'
+                  }
+                >
+                  <span>
+                    <IconButton
+                      size="small"
+                      disabled={
+                        !(
+                          (peerOnline &&
+                            !callMatchesThisDirect &&
+                            !directVoiceBlockedByFriend &&
+                            !directVoiceBlockedByP2p) ||
+                          (callMatchesThisDirect && callState === 'connected')
+                        )
+                      }
+                      onClick={
+                        callMatchesThisDirect && callState === 'connected'
+                          ? hangUp
+                          : handleStartDirectVoiceCall
+                      }
+                      sx={{
+                        color:
+                          callMatchesThisDirect && callState === 'connected'
+                            ? '#ef4444'
+                            : 'text.secondary',
+                        '&:hover': {
+                          color:
+                            callMatchesThisDirect && callState === 'connected'
+                              ? '#dc2626'
+                              : 'text.primary',
+                        },
+                        '&.Mui-disabled': {
+                          color: theme.palette.action.disabled,
+                        },
+                      }}
+                    >
+                      {callMatchesThisDirect && callState === 'connected' ? (
+                        <CallEndRoundedIcon sx={{ fontSize: 20 }} />
+                      ) : (
+                        <CallRoundedIcon sx={{ fontSize: 20 }} />
+                      )}
+                    </IconButton>
+                  </span>
+                </Tooltip>
+              )}
+            </Box>
+          )}
+        </Box>
       )}
 
       {isNewChat && (
@@ -3545,6 +3700,7 @@ export const ChatDirect = ({
           flexDirection: 'column',
           minHeight: 0,
           overflow: 'hidden',
+          position: 'relative',
           width: '100%',
         }}
       >
@@ -3583,25 +3739,29 @@ export const ChatDirect = ({
             reticulumDirectCallHistoryReady
           }
         />
-        {reticulumDirectUiEnabled && (
+        {reticulumDirectUiEnabled && reticulumDirectTypingUsers.size > 0 && (
           <Typography
             variant="caption"
             sx={{
+              background: `linear-gradient(180deg, transparent 0%, ${theme.palette.background.default} 45%)`,
+              bottom: 0,
               color: 'text.secondary',
-              flexShrink: 0,
+              fontSize: '12px',
               fontStyle: 'italic',
-              height: '24px',
-              lineHeight: '20px',
+              left: 0,
+              lineHeight: '18px',
               overflow: 'hidden',
+              pointerEvents: 'none',
+              position: 'absolute',
               px: 2.25,
-              pt: '2px',
+              py: '4px',
+              right: 0,
               textOverflow: 'ellipsis',
               whiteSpace: 'nowrap',
+              zIndex: 2,
             }}
           >
-            {reticulumDirectTypingUsers.size > 0
-              ? `${selectedDirect?.name || selectedDirect?.address} is typing...`
-              : ''}
+            {`${selectedDirect?.name || selectedDirect?.address} is typing...`}
           </Typography>
         )}
       </Box>
@@ -3747,15 +3907,26 @@ export const ChatDirect = ({
 
       <Box
         sx={{
-          alignItems: reticulumDirectUiEnabled
-            ? 'center'
-            : isMobile
+          alignItems:
+            reticulumDirectUiEnabled && isMobile
               ? 'stretch'
-              : 'flex-end',
-          backgroundColor: reticulumDirectUiEnabled
-            ? alpha(theme.palette.background.paper, 0.72)
-            : theme.palette.background.default,
-          border: `1px solid ${theme.palette.divider}`,
+              : reticulumDirectUiEnabled
+                ? 'center'
+                : isMobile
+                  ? 'stretch'
+                  : 'flex-end',
+          backgroundColor:
+            reticulumDirectUiEnabled && isMobile
+              ? 'transparent'
+              : reticulumDirectUiEnabled
+                ? alpha(theme.palette.background.paper, 0.72)
+                : theme.palette.background.default,
+          // Phones get the rounded bubble instead (see below), so the band
+          // itself stays an invisible strip.
+          border:
+            reticulumDirectUiEnabled && isMobile
+              ? 'none'
+              : `1px solid ${theme.palette.divider}`,
           borderRadius: reticulumDirectUiEnabled ? 0 : '8px',
           borderBottom: reticulumDirectUiEnabled ? 'none' : undefined,
           borderLeft: reticulumDirectUiEnabled ? 'none' : undefined,
@@ -3771,24 +3942,43 @@ export const ChatDirect = ({
           display: 'flex',
           // The new DM composer is a single compact row on every width, like
           // the group composer; only the legacy one stacks on phones.
-          flexDirection: reticulumDirectUiEnabled || !isMobile ? 'row' : 'column',
+          flexDirection:
+            reticulumDirectUiEnabled || !isMobile ? 'row' : 'column',
           flexShrink: 0,
           gap: isMobile ? '8px' : reticulumDirectUiEnabled ? '8px' : '12px',
+          // Attachments and the formatting tray stack above the typing area
+          // inside this card, and a flat cap spent on them left the text a
+          // sliver. It grows for them instead, up to half the screen, and the
+          // composer measures what is left for itself.
           maxHeight:
-            isFocusedParent && isMobile ? 'min(40vh, 280px)' : undefined,
+            reticulumDirectUiEnabled && isMobile
+              ? 'min(50vh, 320px)'
+              : isFocusedParent && isMobile
+                ? 'min(40vh, 280px)'
+                : undefined,
           minHeight: reticulumDirectUiEnabled
-            ? '58px'
+            ? isMobile
+              ? 0
+              : '58px'
             : isMobile
               ? 0
               : '150px',
-          overflow: reticulumDirectUiEnabled ? 'visible' : 'hidden',
+          overflow: reticulumDirectUiEnabled
+            ? isMobile
+              ? 'hidden'
+              : 'visible'
+            : 'hidden',
           padding: reticulumDirectUiEnabled
-            ? '8px 12px'
+            ? isMobile
+              ? '6px 8px'
+              : '8px 12px'
             : isMobile
               ? '10px'
               : '16px 20px 20px',
           paddingBottom: reticulumDirectUiEnabled
-            ? 'max(8px, env(safe-area-inset-bottom, 0px))'
+            ? isMobile
+              ? 'max(6px, env(safe-area-inset-bottom, 0px))'
+              : 'max(8px, env(safe-area-inset-bottom, 0px))'
             : isMobile
               ? 'max(10px, env(safe-area-inset-bottom, 0px))'
               : undefined,
@@ -3849,10 +4039,9 @@ export const ChatDirect = ({
             }}
           >
             <Typography sx={{ color: 'inherit', flex: 1, fontSize: 12.5 }}>
-              <strong>DMs expire after 1 month by default</strong> to
-              reduce local storage use. You can change
-              this setting, but only for new messages. Existing messages will
-              keep their current expiry period.
+              <strong>DMs expire after 1 month by default</strong> to reduce
+              local storage use. You can change this setting, but only for new
+              messages. Existing messages will keep their current expiry period.
             </Typography>
             <IconButton
               aria-label="Dismiss direct message expiry notice"
@@ -3877,36 +4066,37 @@ export const ChatDirect = ({
             display: 'flex',
             flex: 1,
             flexDirection: 'column',
-            flexShrink: 0,
-            justifyContent: reticulumDirectUiEnabled ? 'center' : 'flex-end',
+            justifyContent:
+              reticulumDirectUiEnabled && isMobile
+                ? 'flex-start'
+                : reticulumDirectUiEnabled
+                  ? 'center'
+                  : 'flex-end',
+            minHeight: 0,
             minWidth: 0,
-            overflow: reticulumDirectUiEnabled ? 'visible' : 'auto',
+            overflow: reticulumDirectUiEnabled ? 'hidden' : 'auto',
+            // The composer reads as one rounded card on phones, with the reply
+            // strip and attachments living inside it.
+            ...(reticulumDirectUiEnabled &&
+              isMobile && {
+                backgroundColor: alpha(theme.palette.text.primary, 0.06),
+                border: `1px solid ${theme.palette.divider}`,
+                borderRadius: '22px',
+                gap: '2px',
+                overflow: 'hidden',
+                padding: '3px 5px',
+              }),
           }}
         >
           {replyMessage && (
-            <Box
-              sx={{
-                alignItems: 'flex-start',
-                display: 'flex',
-                gap: '5px',
-                justifyContent: 'flex-end',
-                width: '100%',
+            <ComposerReplyPreview
+              message={replyMessage}
+              onCancel={() => {
+                setReplyMessage(null);
+                setOnEditMessage(null);
               }}
-            >
-              <ReplyPreview
-                message={replyMessage}
-                reticulumOnlyContent={reticulumDirectUiEnabled}
-              />
-
-              <ButtonBase
-                onClick={() => {
-                  setReplyMessage(null);
-                  setOnEditMessage(null);
-                }}
-              >
-                <ExitIcon />
-              </ButtonBase>
-            </Box>
+              rounded={reticulumDirectUiEnabled && isMobile}
+            />
           )}
           {onEditMessage && (
             <Box
@@ -3945,133 +4135,245 @@ export const ChatDirect = ({
             }}
           >
             <Box sx={{ flex: 1, minWidth: 0 }}>
-          <Tiptap
-            isFocusedParent={isFocusedParent}
-            isReply={Boolean(replyMessage || onEditMessage)}
-            setEditorRef={setEditorRef}
-            onEnter={sendMessage}
-            isChat
-            setIsFocusedParent={setIsFocusedParent}
-            insertFiles={insertFiles}
-            compactChat={reticulumDirectUiEnabled}
-            collapseFormattingTraySignal={formattingTrayResetKey}
-            placeholder={
-              reticulumDirectUiEnabled ? 'Send message...' : undefined
-            }
-            compactActions={
-              isMobile && reticulumDirectUiEnabled ? (
-                <IconButton
-                  aria-label="Send"
-                  disabled={isSending || messageSize > MAX_SIZE_MESSAGE}
-                  onClick={() => {
-                    if (isSending || messageSize > MAX_SIZE_MESSAGE) return;
-                    sendMessage();
-                  }}
-                  size="small"
-                  sx={{
-                    bgcolor: theme.palette.primary.main,
-                    borderRadius: '8px',
-                    color: theme.palette.primary.contrastText,
-                    flexShrink: 0,
-                    height: 34,
-                    mt: '5px',
-                    width: 34,
-                    '&:hover': { bgcolor: theme.palette.primary.dark },
-                    '&.Mui-disabled': {
-                      bgcolor: theme.palette.action.disabledBackground,
-                      color: theme.palette.action.disabled,
-                    },
-                  }}
-                >
-                  {isSending ? (
-                    <CircularProgress size={18} sx={{ color: 'inherit' }} />
-                  ) : (
-                    <SendIcon sx={{ fontSize: 18 }} />
-                  )}
-                </IconButton>
-              ) : undefined
-            }
-            mobileTopBarActions={
-              isMobile ? (
-                <Tooltip title="Transfer file with Reticulum">
-                  <span>
-                    <IconButton
-                      size="medium"
-                      onClick={handleSendQchatFileOffer}
-                      disabled={
-                        isSending || isNewChat || !selectedDirect?.address
-                      }
-                      sx={{
-                        color: theme.palette.text.secondary,
-                        flexShrink: 0,
-                        minHeight: 40,
-                        minWidth: 40,
-                      }}
-                    >
-                      <ReticulumFileTransferIcon sx={{ fontSize: 22 }} />
-                    </IconButton>
-                  </span>
-                </Tooltip>
-              ) : null
-            }
-          />
-          {isCompressingReticulumGif && <ReticulumGifCompressionStatus />}
-          {pendingReticulumFiles.length > 0 && (
-            <Box
-              sx={{
-                alignItems: 'center',
-                border: `1px solid ${theme.palette.divider}`,
-                borderRadius: '8px',
-                display: 'flex',
-                gap: '10px',
-                maxWidth: '100%',
-                padding: '8px 10px',
-                width: 'fit-content',
-              }}
-            >
-              {pendingReticulumFiles[0].previewUrl ? (
-                <Box
-                  component="img"
-                  src={pendingReticulumFiles[0].previewUrl}
-                  sx={{
-                    borderRadius: '6px',
-                    height: 38,
-                    objectFit: 'cover',
-                    width: 38,
-                  }}
+              <ErrorBoundary
+                fallback={
+                  <Typography sx={{ fontSize: 13, px: 1, py: 0.5 }}>
+                    Composer failed to load. Close and reopen this chat.
+                  </Typography>
+                }
+              >
+                <Tiptap
+                  isFocusedParent={isFocusedParent}
+                  isReply={Boolean(replyMessage || onEditMessage)}
+                  setEditorRef={setEditorRef}
+                  onEnter={sendMessage}
+                  isChat
+                  setIsFocusedParent={setIsFocusedParent}
+                  insertFiles={insertFiles}
+                  insertGif={insertLibraryGif}
+                  compactChat={reticulumDirectUiEnabled}
+                  collapseFormattingTraySignal={formattingTrayResetKey}
+                  placeholder={
+                    reticulumDirectUiEnabled ? 'Send message...' : undefined
+                  }
+                  compactActions={
+                    isMobile && reticulumDirectUiEnabled
+                      ? () => (
+                          // Kept mounted while the composer is empty so the
+                          // rail CSS can fade it in and out; unmounting it
+                          // would make it pop.
+                          <IconButton
+                            aria-label="Send"
+                            className="compact-composer-send"
+                            data-idle={
+                              directComposerHasContent ? undefined : ''
+                            }
+                            disabled={
+                              isSending || messageSize > MAX_SIZE_MESSAGE
+                            }
+                            onClick={() => {
+                              if (!directComposerHasContent) return;
+                              if (isSending || messageSize > MAX_SIZE_MESSAGE)
+                                return;
+                              sendMessage();
+                            }}
+                            size="small"
+                            sx={{
+                              bgcolor: theme.palette.primary.main,
+                              borderRadius: '50%',
+                              color: theme.palette.primary.contrastText,
+                              flexShrink: 0,
+                              height: 34,
+                              width: 34,
+                              '&:hover': {
+                                bgcolor: theme.palette.primary.dark,
+                              },
+                              '&.Mui-disabled': {
+                                bgcolor:
+                                  theme.palette.action.disabledBackground,
+                                color: theme.palette.action.disabled,
+                              },
+                            }}
+                          >
+                            {isSending ? (
+                              <CircularProgress
+                                size={18}
+                                sx={{ color: 'inherit' }}
+                              />
+                            ) : (
+                              <SendIcon sx={{ fontSize: 18 }} />
+                            )}
+                          </IconButton>
+                        )
+                      : undefined
+                  }
+                  mobileTopBarActions={
+                    isMobile ? (
+                      <Tooltip title="Transfer file with Reticulum">
+                        <span>
+                          <IconButton
+                            size="medium"
+                            onClick={handleSendQchatFileOffer}
+                            disabled={
+                              isSending || isNewChat || !selectedDirect?.address
+                            }
+                            sx={{
+                              color: theme.palette.text.secondary,
+                              flexShrink: 0,
+                              minHeight: 40,
+                              minWidth: 40,
+                            }}
+                          >
+                            <ReticulumFileTransferIcon sx={{ fontSize: 22 }} />
+                          </IconButton>
+                        </span>
+                      </Tooltip>
+                    ) : null
+                  }
                 />
-              ) : (
-                <ReticulumFileTransferIcon sx={{ fontSize: 26 }} />
-              )}
-              <Box sx={{ minWidth: 0 }}>
-                <Typography
-                  sx={{
-                    fontSize: 13,
-                    fontWeight: 600,
-                    maxWidth: 260,
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    whiteSpace: 'nowrap',
-                  }}
-                >
-                  {pendingReticulumFiles[0].fileName}
-                </Typography>
-                <Typography sx={{ color: 'text.secondary', fontSize: 12 }}>
-                  {formatQchatFileSize(pendingReticulumFiles[0].sizeBytes)}
-                </Typography>
-              </Box>
-              <IconButton size="small" onClick={clearPendingReticulumFiles}>
-                <ExitIcon />
-              </IconButton>
-            </Box>
-          )}          {!reticulumDirectUiEnabled &&
-            isMobile &&
-            (!isFocusedParent || composerCompact) && (
-              <Tooltip title="Transfer file with Reticulum">
-                <span>
+              </ErrorBoundary>
+              {isCompressingReticulumGif && <ReticulumGifCompressionStatus />}
+              {pendingLibraryGif &&
+                renderComposerAttachments(
+                  <Box
+                    sx={{
+                      alignItems: 'center',
+                      border: `1px solid ${theme.palette.divider}`,
+                      borderRadius: '8px',
+                      display: 'flex',
+                      gap: '10px',
+                      maxWidth: '100%',
+                      padding: '8px 10px',
+                      width: 'fit-content',
+                    }}
+                  >
+                    <GifImage
+                      eager
+                      fill
+                      fit="cover"
+                      gif={pendingLibraryGif}
+                      spinnerSize={14}
+                      sx={{
+                        borderRadius: '6px',
+                        flexShrink: 0,
+                        height: 38,
+                        width: 38,
+                      }}
+                    />
+                    <Typography sx={{ fontSize: 13, fontWeight: 600 }}>
+                      GIF
+                    </Typography>
+                    <IconButton
+                      size="small"
+                      onClick={() => setPendingLibraryGif(null)}
+                      onMouseDown={preventComposerBlur}
+                      onPointerDown={preventComposerBlur}
+                    >
+                      <ExitIcon />
+                    </IconButton>
+                  </Box>
+                )}
+              {pendingReticulumFiles.length > 0 &&
+                renderComposerAttachments(
+                  <Box
+                    sx={{
+                      alignItems: 'center',
+                      border: `1px solid ${theme.palette.divider}`,
+                      borderRadius: '8px',
+                      display: 'flex',
+                      gap: '10px',
+                      maxWidth: '100%',
+                      padding: '8px 10px',
+                      width: 'fit-content',
+                    }}
+                  >
+                    {pendingReticulumFiles[0].previewUrl ? (
+                      <Box
+                        component="img"
+                        src={pendingReticulumFiles[0].previewUrl}
+                        sx={{
+                          borderRadius: '6px',
+                          height: 38,
+                          objectFit: 'cover',
+                          width: 38,
+                        }}
+                      />
+                    ) : (
+                      <ReticulumFileTransferIcon sx={{ fontSize: 26 }} />
+                    )}
+                    <Box sx={{ minWidth: 0 }}>
+                      <Typography
+                        sx={{
+                          fontSize: 13,
+                          fontWeight: 600,
+                          maxWidth: 260,
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {pendingReticulumFiles[0].fileName}
+                      </Typography>
+                      <Typography
+                        sx={{ color: 'text.secondary', fontSize: 12 }}
+                      >
+                        {formatQchatFileSize(
+                          pendingReticulumFiles[0].sizeBytes
+                        )}
+                      </Typography>
+                    </Box>
+                    <IconButton
+                      size="small"
+                      onClick={() => {
+                        clearPendingReticulumFiles();
+                        restoreComposerTyping(editorRef.current);
+                      }}
+                      onMouseDown={preventComposerBlur}
+                      onPointerDown={preventComposerBlur}
+                    >
+                      <ExitIcon />
+                    </IconButton>
+                  </Box>
+                )}{' '}
+              {!reticulumDirectUiEnabled &&
+                isMobile &&
+                (!isFocusedParent || composerCompact) && (
+                  <Tooltip title="Transfer file with Reticulum">
+                    <span>
+                      <IconButton
+                        onClick={handleSendQchatFileOffer}
+                        disabled={
+                          isSending || isNewChat || !selectedDirect?.address
+                        }
+                        sx={{
+                          border: `1px solid ${theme.palette.divider}`,
+                          flexShrink: 0,
+                          height: 44,
+                          width: 44,
+                        }}
+                      >
+                        <ReticulumFileTransferIcon sx={{ fontSize: 22 }} />
+                      </IconButton>
+                    </span>
+                  </Tooltip>
+                )}
+              {!reticulumDirectUiEnabled && isMobile && isFocusedParent && (
+                <>
                   <IconButton
-                    onClick={handleSendQchatFileOffer}
-                    disabled={isSending || isNewChat || !selectedDirect?.address}
+                    aria-label={t('core:action.close', {
+                      postProcess: 'capitalizeFirstChar',
+                    })}
+                    disabled={isSending}
+                    onClick={() => {
+                      // Discard whatever was typed when dismissing the composer.
+                      clearEditorContent();
+                      if (composerFabMode) {
+                        closeLandscapeComposer();
+                        return;
+                      }
+                      setIsFocusedParent(false);
+                      editorRef.current?.commands.blur();
+                    }}
                     sx={{
                       border: `1px solid ${theme.palette.divider}`,
                       flexShrink: 0,
@@ -4079,272 +4381,251 @@ export const ChatDirect = ({
                       width: 44,
                     }}
                   >
-                    <ReticulumFileTransferIcon sx={{ fontSize: 22 }} />
+                    <CloseRoundedIcon sx={{ fontSize: 22 }} />
                   </IconButton>
-                </span>
-              </Tooltip>
-            )}
-          {!reticulumDirectUiEnabled && isMobile && isFocusedParent && (
-            <>
-              <IconButton
-                aria-label={t('core:action.close', {
-                  postProcess: 'capitalizeFirstChar',
-                })}
-                disabled={isSending}
-                onClick={() => {
-                  // Discard whatever was typed when dismissing the composer.
-                  clearEditorContent();
-                  if (composerFabMode) {
-                    closeLandscapeComposer();
-                    return;
-                  }
-                  setIsFocusedParent(false);
-                  editorRef.current?.commands.blur();
-                }}
-                sx={{
-                  border: `1px solid ${theme.palette.divider}`,
-                  flexShrink: 0,
-                  height: 44,
-                  width: 44,
-                }}
-              >
-                <CloseRoundedIcon sx={{ fontSize: 22 }} />
-              </IconButton>
-              <IconButton
-                aria-label={t('core:action.send', {
-                  postProcess: 'capitalizeFirstChar',
-                })}
-                disabled={isSending || messageSize > MAX_SIZE_MESSAGE}
-                onClick={() => {
-                  if (isSending || messageSize > MAX_SIZE_MESSAGE) return;
-                  sendMessage();
-                }}
-                sx={{
-                  bgcolor: theme.palette.primary.main,
-                  color: theme.palette.primary.contrastText,
-                  flexShrink: 0,
-                  height: 44,
-                  width: 44,
-                  '&:hover': {
-                    bgcolor: theme.palette.primary.dark,
-                  },
-                  '&.Mui-disabled': {
-                    bgcolor: theme.palette.action.disabledBackground,
-                    color: theme.palette.action.disabled,
-                  },
-                }}
-              >
-                {isSending ? (
-                  <CircularProgress size={20} sx={{ color: 'inherit' }} />
-                ) : (
-                  <SendIcon sx={{ fontSize: 22 }} />
-                )}
-              </IconButton>
-            </>
-          )}
-
-          {messageSize > MESSAGE_LIMIT_WARNING && (
-            <Box
-              sx={{
-                display: 'flex',
-                justifyContent: 'flex-start',
-                position: 'relative',
-                width: '100%',
-              }}
-            >
-              <Typography
-                sx={{
-                  fontSize: '12px',
-                  color:
-                    messageSize > MAX_SIZE_MESSAGE
-                      ? theme.palette.other.danger
-                      : 'unset',
-                }}
-              >
-                {t('core:message.error.message_size', {
-                  maximum: MAX_SIZE_MESSAGE,
-                  size: messageSize,
-                  postProcess: 'capitalizeFirstChar',
-                })}
-              </Typography>
-            </Box>
-          )}
-          </Box>
-        </Box>
-
-        {!isMobile && (
-        <Box
-          sx={{
-            alignItems: 'center',
-            display: 'flex',
-            flexShrink: 0,
-            gap: '8px',
-            justifyContent: 'flex-start',
-            paddingBottom: reticulumDirectUiEnabled ? 0 : '2px',
-          }}
-        >
-          {!reticulumDirectUiEnabled && (
-            <Tooltip title="Transfer file with Reticulum">
-              <span>
-                <IconButton
-                  onClick={handleSendQchatFileOffer}
-                  disabled={isSending || isNewChat || !selectedDirect?.address}
-                  sx={{
-                    border: '1px solid',
-                    borderColor: theme.palette.divider,
-                    borderRadius: '8px',
-                    height: 44,
-                    width: 44,
-                  }}
-                >
-                  <ReticulumFileTransferIcon sx={{ fontSize: 22 }} />
-                </IconButton>
-              </span>
-            </Tooltip>
-          )}
-          {reticulumDirectUiEnabled && (
-            <ReactionPicker
-              compactComposer
-              neutralIcon
-              onReaction={(emoji) =>
-                editorRef.current?.chain().focus().insertContent(emoji).run()
-              }
-            />
-          )}
-          <Box
-            sx={{
-              alignItems: 'stretch',
-              border: reticulumDirectUiEnabled ? '1px solid' : 'none',
-              borderColor: 'divider',
-              borderRadius: reticulumDirectUiEnabled ? '10px' : 0,
-              display: 'flex',
-              height: reticulumDirectUiEnabled ? 38 : 'auto',
-              overflow: 'hidden',
-              position: 'relative',
-            }}
-          >
-            {reticulumDirectUiEnabled && (
-              <>
-                <ReticulumMessageExpiryButton
-                  direct
-                  segmented
-                  disabled={
-                    Boolean(onEditMessage) ||
-                    reticulumDirectPending ||
-                    reticulumDirectExpiryLoading
-                  }
-                  disabledReason={
-                    onEditMessage
-                      ? 'Expiry cannot be changed while editing'
-                      : 'Message expiry is unavailable while chat loads'
-                  }
-                  onChange={changeReticulumDirectExpiry}
-                  value={reticulumDirectExpiryDurationMs}
-                />
-                <Box
-                  aria-hidden
-                  sx={{
-                    alignSelf: 'center',
-                    backgroundColor: 'divider',
-                    height: 20,
-                    width: '1px',
-                  }}
-                />
-              </>
-            )}
-            <CustomButton
-              onClick={() => {
-                if (
-                  isSending ||
-                  isCompressingReticulumGif ||
-                  isCompressingReticulumImage ||
-                  reticulumDirectPending ||
-                  reticulumDirectExpiryLoading
-                )
-                  return;
-                sendMessage();
-              }}
-              sx={{
-                alignItems: 'center',
-                backgroundColor:
-                  isSending ||
-                  isCompressingReticulumGif ||
-                  isCompressingReticulumImage
-                    ? theme.palette.action.disabledBackground
-                    : reticulumDirectUiEnabled
-                      ? RETICULUM_ACTIVE_BLUE
-                      : theme.palette.background.paper,
-                border: reticulumDirectUiEnabled ? 'none' : '1px solid',
-                borderColor: reticulumDirectUiEnabled
-                  ? RETICULUM_ACTIVE_BLUE
-                  : theme.palette.divider,
-                borderRadius: reticulumDirectUiEnabled ? 0 : '8px',
-                color: reticulumDirectUiEnabled
-                  ? theme.palette.common.white
-                  : theme.palette.text.primary,
-                cursor:
-                  isSending ||
-                  isCompressingReticulumGif ||
-                  isCompressingReticulumImage ||
-                  reticulumDirectPending ||
-                  reticulumDirectExpiryLoading
-                    ? 'default'
-                    : 'pointer',
-                display: 'inline-flex',
-                gap: '6px',
-                fontSize: '14px',
-                fontWeight: 500,
-                justifyContent: 'center',
-                minHeight: reticulumDirectUiEnabled ? '38px' : '44px',
-                minWidth: reticulumDirectUiEnabled ? '74px' : '88px',
-                padding: reticulumDirectUiEnabled ? '8px 14px' : '10px 16px',
-                position: 'relative',
-                transition:
-                  'background-color 0.2s ease, border-color 0.2s ease',
-                '&:hover':
-                  isSending ||
-                  isCompressingReticulumGif ||
-                  isCompressingReticulumImage ||
-                  reticulumDirectPending ||
-                  reticulumDirectExpiryLoading
-                    ? {}
-                    : {
-                        backgroundColor: reticulumDirectUiEnabled
-                          ? '#1e40af'
-                          : theme.palette.action.hover,
-                        borderColor: reticulumDirectUiEnabled
-                          ? '#1e40af'
-                          : theme.palette.divider,
+                  <IconButton
+                    aria-label={t('core:action.send', {
+                      postProcess: 'capitalizeFirstChar',
+                    })}
+                    disabled={isSending || messageSize > MAX_SIZE_MESSAGE}
+                    onClick={() => {
+                      if (isSending || messageSize > MAX_SIZE_MESSAGE) return;
+                      sendMessage();
+                    }}
+                    sx={{
+                      bgcolor: theme.palette.primary.main,
+                      color: theme.palette.primary.contrastText,
+                      flexShrink: 0,
+                      height: 44,
+                      width: 44,
+                      '&:hover': {
+                        bgcolor: theme.palette.primary.dark,
                       },
-                '& .MuiSvgIcon-root': {
-                  color: reticulumDirectUiEnabled
-                    ? theme.palette.common.white
-                    : 'inherit',
-                },
-              }}
-            >
-              {isSending ||
-              isCompressingReticulumGif ||
-              isCompressingReticulumImage ? (
-                <CircularProgress
-                  size={18}
-                  sx={{
-                    color: reticulumDirectUiEnabled
-                      ? theme.palette.common.white
-                      : theme.palette.text.secondary,
-                  }}
-                />
-              ) : (
-                <>
-                  <SendIcon sx={{ fontSize: '18px' }} />
-                  Send
+                      '&.Mui-disabled': {
+                        bgcolor: theme.palette.action.disabledBackground,
+                        color: theme.palette.action.disabled,
+                      },
+                    }}
+                  >
+                    {isSending ? (
+                      <CircularProgress size={20} sx={{ color: 'inherit' }} />
+                    ) : (
+                      <SendIcon sx={{ fontSize: 22 }} />
+                    )}
+                  </IconButton>
                 </>
               )}
-            </CustomButton>
+              {messageSize > MESSAGE_LIMIT_WARNING && (
+                <Box
+                  sx={{
+                    display: 'flex',
+                    justifyContent: 'flex-start',
+                    position: 'relative',
+                    width: '100%',
+                  }}
+                >
+                  <Typography
+                    sx={{
+                      fontSize: '12px',
+                      color:
+                        messageSize > MAX_SIZE_MESSAGE
+                          ? theme.palette.other.danger
+                          : 'unset',
+                    }}
+                  >
+                    {t('core:message.error.message_size', {
+                      maximum: MAX_SIZE_MESSAGE,
+                      size: messageSize,
+                      postProcess: 'capitalizeFirstChar',
+                    })}
+                  </Typography>
+                </Box>
+              )}
+            </Box>
           </Box>
+
+          {!isMobile && (
+            <Box
+              sx={{
+                alignItems: 'center',
+                display: 'flex',
+                flexShrink: 0,
+                gap: '8px',
+                justifyContent: 'flex-start',
+                paddingBottom: reticulumDirectUiEnabled ? 0 : '2px',
+              }}
+            >
+              {!reticulumDirectUiEnabled && (
+                <Tooltip title="Transfer file with Reticulum">
+                  <span>
+                    <IconButton
+                      onClick={handleSendQchatFileOffer}
+                      disabled={
+                        isSending || isNewChat || !selectedDirect?.address
+                      }
+                      sx={{
+                        border: '1px solid',
+                        borderColor: theme.palette.divider,
+                        borderRadius: '8px',
+                        height: 44,
+                        width: 44,
+                      }}
+                    >
+                      <ReticulumFileTransferIcon sx={{ fontSize: 22 }} />
+                    </IconButton>
+                  </span>
+                </Tooltip>
+              )}
+              {reticulumDirectUiEnabled && (
+                <ReactionPicker
+                  compactComposer
+                  neutralIcon
+                  onGifSelect={insertLibraryGif}
+                  onReaction={(emoji) =>
+                    editorRef.current
+                      ?.chain()
+                      .focus()
+                      .insertContent(emoji)
+                      .run()
+                  }
+                />
+              )}
+              <Box
+                sx={{
+                  alignItems: 'stretch',
+                  border: reticulumDirectUiEnabled ? '1px solid' : 'none',
+                  borderColor: 'divider',
+                  borderRadius: reticulumDirectUiEnabled ? '10px' : 0,
+                  display: 'flex',
+                  height: reticulumDirectUiEnabled ? 38 : 'auto',
+                  overflow: 'hidden',
+                  position: 'relative',
+                }}
+              >
+                {reticulumDirectUiEnabled && (
+                  <>
+                    <ReticulumMessageExpiryButton
+                      direct
+                      segmented
+                      disabled={
+                        Boolean(onEditMessage) ||
+                        reticulumDirectPending ||
+                        reticulumDirectExpiryLoading
+                      }
+                      disabledReason={
+                        onEditMessage
+                          ? 'Expiry cannot be changed while editing'
+                          : 'Message expiry is unavailable while chat loads'
+                      }
+                      onChange={changeReticulumDirectExpiry}
+                      value={reticulumDirectExpiryDurationMs}
+                    />
+                    <Box
+                      aria-hidden
+                      sx={{
+                        alignSelf: 'center',
+                        backgroundColor: 'divider',
+                        height: 20,
+                        width: '1px',
+                      }}
+                    />
+                  </>
+                )}
+                <CustomButton
+                  onClick={() => {
+                    if (
+                      isSending ||
+                      isCompressingReticulumGif ||
+                      isCompressingReticulumImage ||
+                      reticulumDirectPending ||
+                      reticulumDirectExpiryLoading
+                    )
+                      return;
+                    sendMessage();
+                  }}
+                  sx={{
+                    alignItems: 'center',
+                    backgroundColor:
+                      isSending ||
+                      isCompressingReticulumGif ||
+                      isCompressingReticulumImage
+                        ? theme.palette.action.disabledBackground
+                        : reticulumDirectUiEnabled
+                          ? RETICULUM_ACTIVE_BLUE
+                          : theme.palette.background.paper,
+                    border: reticulumDirectUiEnabled ? 'none' : '1px solid',
+                    borderColor: reticulumDirectUiEnabled
+                      ? RETICULUM_ACTIVE_BLUE
+                      : theme.palette.divider,
+                    borderRadius: reticulumDirectUiEnabled ? 0 : '8px',
+                    color: reticulumDirectUiEnabled
+                      ? theme.palette.common.white
+                      : theme.palette.text.primary,
+                    cursor:
+                      isSending ||
+                      isCompressingReticulumGif ||
+                      isCompressingReticulumImage ||
+                      reticulumDirectPending ||
+                      reticulumDirectExpiryLoading
+                        ? 'default'
+                        : 'pointer',
+                    display: 'inline-flex',
+                    gap: '6px',
+                    fontSize: '14px',
+                    fontWeight: 500,
+                    justifyContent: 'center',
+                    minHeight: reticulumDirectUiEnabled ? '38px' : '44px',
+                    minWidth: reticulumDirectUiEnabled ? '74px' : '88px',
+                    padding: reticulumDirectUiEnabled
+                      ? '8px 14px'
+                      : '10px 16px',
+                    position: 'relative',
+                    transition:
+                      'background-color 0.2s ease, border-color 0.2s ease',
+                    '&:hover':
+                      isSending ||
+                      isCompressingReticulumGif ||
+                      isCompressingReticulumImage ||
+                      reticulumDirectPending ||
+                      reticulumDirectExpiryLoading
+                        ? {}
+                        : {
+                            backgroundColor: reticulumDirectUiEnabled
+                              ? '#1e40af'
+                              : theme.palette.action.hover,
+                            borderColor: reticulumDirectUiEnabled
+                              ? '#1e40af'
+                              : theme.palette.divider,
+                          },
+                    '& .MuiSvgIcon-root': {
+                      color: reticulumDirectUiEnabled
+                        ? theme.palette.common.white
+                        : 'inherit',
+                    },
+                  }}
+                >
+                  {isSending ||
+                  isCompressingReticulumGif ||
+                  isCompressingReticulumImage ? (
+                    <CircularProgress
+                      size={18}
+                      sx={{
+                        color: reticulumDirectUiEnabled
+                          ? theme.palette.common.white
+                          : theme.palette.text.secondary,
+                      }}
+                    />
+                  ) : (
+                    <>
+                      <SendIcon sx={{ fontSize: '18px' }} />
+                      Send
+                    </>
+                  )}
+                </CustomButton>
+              </Box>
+            </Box>
+          )}
         </Box>
-        )}
-      </Box>
       </Box>
 
       {composerFabMode && !composerOpenLandscape && (

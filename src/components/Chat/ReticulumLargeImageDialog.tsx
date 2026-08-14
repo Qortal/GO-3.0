@@ -11,6 +11,7 @@ import {
   useTheme,
 } from '@mui/material';
 import { alpha } from '@mui/material/styles';
+import { useEffect } from 'react';
 
 type ReticulumLargeImageDialogProps = {
   fileSize: string;
@@ -30,11 +31,17 @@ export const ReticulumLargeImageDialog = ({
   open,
 }: ReticulumLargeImageDialogProps) => {
   const theme = useTheme();
+  // The file picker hands the keyboard back to the composer on its way out, and
+  // on a phone that leaves it covering half of this question. Whatever holds
+  // focus when the question arrives gives it up.
+  useEffect(() => {
+    if (!open) return;
+    const focused = document.activeElement;
+    if (focused instanceof HTMLElement) focused.blur();
+  }, [open]);
   const isDark = theme.palette.mode === 'dark';
   const surfaceColor = isDark ? '#171a22' : theme.palette.background.paper;
-  const borderColor = isDark
-    ? alpha('#91a4bf', 0.28)
-    : theme.palette.divider;
+  const borderColor = isDark ? alpha('#91a4bf', 0.28) : theme.palette.divider;
   const mutedColor = isDark
     ? alpha('#d9e2ef', 0.66)
     : theme.palette.text.secondary;
@@ -249,11 +256,7 @@ export const ReticulumLargeImageDialog = ({
           >
             {loading ? (
               <>
-                <CircularProgress
-                  color="inherit"
-                  size={15}
-                  sx={{ mr: 1 }}
-                />
+                <CircularProgress color="inherit" size={15} sx={{ mr: 1 }} />
                 Compressing
               </>
             ) : (

@@ -28,6 +28,29 @@ export async function initMobileSqlite(): Promise<void> {
   });
 }
 
+/**
+ * The engine worker runs SQLite synchronously, so a slow statement blocks
+ * every other request queued behind it. Anything past this threshold is worth
+ * seeing in the log.
+ */
+const SLOW_STATEMENT_MS = 150;
+
+function trackStatement<T>(sql: string, run: () => T): T {
+  const startedAt = Date.now();
+  try {
+    return run();
+  } finally {
+    const elapsed = Date.now() - startedAt;
+    if (elapsed >= SLOW_STATEMENT_MS) {
+      console.warn(
+        `[sqlite-wasm] slow_statement ms=${elapsed} sql=${sql
+          .replace(/\s+/g, ' ')
+          .slice(0, 200)}`
+      );
+    }
+  }
+}
+
 function toBindValue(value: unknown): unknown {
   if (value === undefined) return null;
   if (typeof value === 'boolean') return value ? 1 : 0;
@@ -41,17 +64,16 @@ class Statement {
     private readonly sql: string
   ) {}
 
-  private withStmt<T>(
-    params: unknown[],
-    fn: (stmt: any) => T
-  ): T {
-    const stmt = this.db.prepare(this.sql);
-    try {
-      this.bindParams(stmt, params);
-      return fn(stmt);
-    } finally {
-      stmt.finalize();
-    }
+  private withStmt<T>(params: unknown[], fn: (stmt: any) => T): T {
+    return trackStatement(this.sql, () => {
+      const stmt = this.db.prepare(this.sql);
+      try {
+        this.bindParams(stmt, params);
+        return fn(stmt);
+      } finally {
+        stmt.finalize();
+      }
+    });
   }
 
   private bindParams(stmt: any, params: unknown[]): void {
@@ -157,8 +179,7 @@ export class Database {
     }
     // The SAH pool VFS namespaces by filename only; flatten the virtual path.
     this.name = filename;
-    const flat =
-      '/' + filename.replace(/^\/+/, '').replace(/[/\\]/g, '__');
+    const flat = '/' + filename.replace(/^\/+/, '').replace(/[/\\]/g, '__');
     this.db = new poolUtil.OpfsSAHPoolDb(flat);
   }
 
@@ -167,7 +188,7 @@ export class Database {
   }
 
   exec(sql: string): this {
-    this.db.exec(sql);
+    trackStatement(sql, () => this.db.exec(sql));
     return this;
   }
 
@@ -202,7 +223,8 @@ export class Database {
   } {
     const db = this.db;
     const self = this;
-    const wrapped = (mode: string) =>
+    const wrapped =
+      (mode: string) =>
       (...args: T): R => {
         // better-sqlite3 supports nesting via savepoints — mirror that.
         if (self.inTransaction) {

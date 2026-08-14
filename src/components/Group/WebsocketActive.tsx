@@ -7,6 +7,7 @@ import {
 import { subscribeToEvent, unsubscribeFromEvent } from '../../utils/events';
 import { useAtomValue } from 'jotai';
 import { extStateAtom, selectedNodeInfoAtom } from '../../atoms/global';
+import { getData } from '../../utils/chromeStorage';
 
 export const WebSocketActive = ({ myAddress, setIsLoadingGroups }) => {
   const extState = useAtomValue(extStateAtom);
@@ -17,6 +18,7 @@ export const WebSocketActive = ({ myAddress, setIsLoadingGroups }) => {
   myAddressRef.current = myAddress;
 
   const socketRef = useRef(null); // WebSocket reference
+  const hydratedFromCacheRef = useRef(false);
   const connectionIdRef = useRef(0);
   const timeoutIdRef = useRef(null); // Timeout ID reference
   const groupSocketTimeoutRef = useRef(null); // Group Socket Timeout reference
@@ -48,6 +50,43 @@ export const WebSocketActive = ({ myAddress, setIsLoadingGroups }) => {
       unsubscribeFromEvent('logout-event', logoutEventFunc);
     };
   }, []);
+
+  // The chat list has nothing to draw until the active-chat socket delivers its
+  // first payload, which on a cold mobile start can be many seconds behind the
+  // rest of the UI. The previous session's groups are already on disk, so paint
+  // those immediately and let the socket correct them when it lands.
+  useEffect(() => {
+    if (!myAddress || extState === 'not-authenticated') return;
+    if (hydratedFromCacheRef.current) return;
+    hydratedFromCacheRef.current = true;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const cached = await getData<{ groups?: unknown[]; directs?: unknown[] }>(
+          'active-groups-directs'
+        );
+        if (cancelled || !cached) return;
+        const targetOrigin = window.location.origin;
+        if (Array.isArray(cached.groups) && cached.groups.length > 0) {
+          window.postMessage(
+            { action: 'SET_GROUPS', payload: cached.groups },
+            targetOrigin
+          );
+        }
+        if (Array.isArray(cached.directs) && cached.directs.length > 0) {
+          window.postMessage(
+            { action: 'SET_DIRECTS', payload: cached.directs },
+            targetOrigin
+          );
+        }
+      } catch (error) {
+        console.log('Failed to hydrate cached chat list:', error);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [extState, myAddress]);
 
   useEffect(() => {
     if (!myAddress || extState === 'not-authenticated') return; // Only proceed when authenticated with address

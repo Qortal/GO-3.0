@@ -32,7 +32,10 @@ import {
 } from '../../constants/constants';
 import { useAuth } from '../../hooks/useAuth';
 import type { ApiKey } from '../../types/auth';
-import { ensureElectronCertIfLocalPrivateHttps } from '../../utils/helpers';
+import {
+  ensureElectronCertIfLocalPrivateHttps,
+  preferHttpForLocalPrivateUrl,
+} from '../../utils/helpers';
 
 type ConnectionModeModalProps = {
   open: boolean;
@@ -49,7 +52,8 @@ function isManualNode(url?: string | null) {
 }
 
 function normalizeNodeUrl(url: string) {
-  return url.trim().replace(/\/+$/, '');
+  const trimmed = url.trim().replace(/\/+$/, '');
+  return preferHttpForLocalPrivateUrl(trimmed) || trimmed;
 }
 
 function normalizeCustomNodes(nodes: unknown): ApiKey[] {

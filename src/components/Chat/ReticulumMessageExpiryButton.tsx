@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type MouseEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
 import {
   Box,
   IconButton,
@@ -22,6 +22,8 @@ type ReticulumMessageExpiryButtonProps = {
   direct?: boolean;
   disabled?: boolean;
   disabledReason?: string;
+  /** Keep the chat composer focused so the Android keyboard stays up. */
+  keepFocus?: () => void;
   onChange: (durationMs: number | undefined) => void;
   segmented?: boolean;
   value?: number | null;
@@ -65,12 +67,15 @@ export function ReticulumMessageExpiryButton({
   direct = false,
   disabled = false,
   disabledReason,
+  keepFocus,
   onChange,
   segmented = false,
   value,
 }: ReticulumMessageExpiryButtonProps) {
   const theme = useTheme();
   const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
+  const keepFocusRef = useRef(keepFocus);
+  keepFocusRef.current = keepFocus;
   const effectiveExpiryDurationMs =
     value === null ? undefined : (value ?? channelExpiryDurationMs);
   const indicatorLabel = expiryIndicatorLabel(effectiveExpiryDurationMs);
@@ -98,9 +103,15 @@ export function ReticulumMessageExpiryButton({
     if (disabled) setAnchorEl(null);
   }, [disabled]);
 
+  useEffect(() => {
+    if (!anchorEl) return;
+    keepFocusRef.current?.();
+  }, [anchorEl]);
+
   const select = (durationMs: number | undefined) => {
     onChange(durationMs);
     setAnchorEl(null);
+    keepFocusRef.current?.();
   };
 
   return (
@@ -122,10 +133,14 @@ export function ReticulumMessageExpiryButton({
             aria-haspopup="menu"
             aria-expanded={anchorEl ? 'true' : undefined}
             disabled={disabled}
-            onClick={(event: MouseEvent<HTMLElement>) =>
-              setAnchorEl(event.currentTarget)
-            }
+            onClick={(event: MouseEvent<HTMLElement>) => {
+              setAnchorEl(event.currentTarget);
+              keepFocusRef.current?.();
+            }}
+            onMouseDown={(event) => event.preventDefault()}
+            onPointerDown={(event) => event.preventDefault()}
             size="small"
+            tabIndex={-1}
             sx={{
               alignItems: 'center',
               display: 'inline-flex',
@@ -145,7 +160,10 @@ export function ReticulumMessageExpiryButton({
                   ? theme.palette.text.primary
                   : theme.palette.text.secondary,
               flexShrink: 0,
-              height: segmented ? 38 : 34,
+              // Fill the segmented container rather than assuming its height:
+              // a fixed 38px inside the 34px mobile group clipped the label and
+              // pushed it off centre.
+              height: segmented ? '100%' : 34,
               position: 'relative',
               width: segmented ? 40 : 34,
               '&::after': segmented
@@ -185,6 +203,9 @@ export function ReticulumMessageExpiryButton({
                   justifyContent: 'center',
                   letterSpacing: '-0.02em',
                   lineHeight: 1,
+                  // The segment divider eats the right edge; offset the label by
+                  // its width so it reads as centred in the visible area.
+                  paddingRight: segmented ? '1px' : 0,
                   textAlign: 'center',
                   width: '100%',
                 }}
@@ -203,12 +224,21 @@ export function ReticulumMessageExpiryButton({
       <CustomStyledMenu
         reticulumMenu
         anchorEl={anchorEl}
-        onClose={() => setAnchorEl(null)}
+        disableAutoFocus
+        disableAutoFocusItem
+        disableEnforceFocus
+        disableRestoreFocus
+        disableScrollLock
+        onClose={() => {
+          setAnchorEl(null);
+          keepFocusRef.current?.();
+        }}
         open={Boolean(anchorEl)}
         anchorOrigin={{ vertical: 'top', horizontal: 'left' }}
         transformOrigin={{ vertical: 'bottom', horizontal: 'left' }}
         slotProps={{
           paper: {
+            onMouseDown: (event) => event.preventDefault(),
             sx: {
               backgroundColor: `${theme.palette.background.paper} !important`,
               overflow: 'hidden',
@@ -220,6 +250,7 @@ export function ReticulumMessageExpiryButton({
           <MenuItem
             selected={direct ? value === null : value === undefined}
             onClick={() => select(undefined)}
+            onMouseDown={(event) => event.preventDefault()}
             sx={expiryMenuItemSx}
           >
             <ListItemIcon>
@@ -247,6 +278,7 @@ export function ReticulumMessageExpiryButton({
                 key={option.durationMs}
                 selected={value === option.durationMs}
                 onClick={() => select(option.durationMs)}
+                onMouseDown={(event) => event.preventDefault()}
                 sx={expiryMenuItemSx}
               >
                 <ListItemIcon>

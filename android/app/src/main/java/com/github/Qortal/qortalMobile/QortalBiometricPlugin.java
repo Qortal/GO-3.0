@@ -58,6 +58,12 @@ public class QortalBiometricPlugin extends Plugin {
   // a new one is shown so two system dialogs can never stack (which would look
   // like the prompt "reopening" after tapping Cancel).
   private static volatile BiometricPrompt activeBiometricPrompt = null;
+  // Rejects the verify() call that owns the scan overlay. Held so the plugin
+  // can tear the scan down itself when the app leaves the screen, instead of
+  // trusting the system to deliver an error it does not always send.
+  private static volatile Runnable activeVerifyAbort = null;
+  /** Reason the JS side sees when the app, not the user, ended the scan. */
+  private static final String BACKGROUND_CANCEL = "cancelled: app left the screen";
 
   private static void cancelActiveBiometricPrompt() {
     BiometricPrompt prompt = activeBiometricPrompt;
@@ -591,6 +597,7 @@ public class QortalBiometricPlugin extends Plugin {
 
       cancelActiveBiometricPrompt();
       activeBiometricPrompt = biometricPrompt;
+      activeVerifyAbort = () -> safeReject(call, settled, BACKGROUND_CANCEL);
       android.util.Log.i("QortalBiometric", "calling authenticate t=" + android.os.SystemClock.uptimeMillis());
       biometricPrompt.authenticate(promptInfo);
       android.util.Log.i("QortalBiometric", "authenticate returned t=" + android.os.SystemClock.uptimeMillis());
@@ -633,6 +640,50 @@ public class QortalBiometricPlugin extends Plugin {
     return builder.build();
   }
 
+  /**
+   * The activity going off screen (phone locked, app switched away) takes the
+   * system prompt with it, but the error that would tell us so is not always
+   * delivered — which used to leave the opaque scan overlay sitting over a dead
+   * WebView until the app was killed. End the scan here instead: the JS side
+   * gets a cancellation it can act on, and comes back to its unlock screen.
+   */
+  @Override
+  protected void handleOnStop() {
+    abortActiveVerify();
+    super.handleOnStop();
+  }
+
+  @Override
+  protected void handleOnResume() {
+    super.handleOnResume();
+    // Nothing should be able to strand the overlay now, but coming back to a
+    // black screen with no way out is bad enough to be worth the double check.
+    if (activeVerifyAbort == null) {
+      FragmentActivity activity = getActivity() instanceof FragmentActivity
+        ? (FragmentActivity) getActivity()
+        : null;
+      if (activity != null) {
+        hideBiometricOverlay(activity);
+      }
+    }
+  }
+
+  private void abortActiveVerify() {
+    Runnable abort = activeVerifyAbort;
+    activeVerifyAbort = null;
+    cancelActiveBiometricPrompt();
+    if (abort != null) {
+      abort.run();
+      return;
+    }
+    FragmentActivity activity = getActivity() instanceof FragmentActivity
+      ? (FragmentActivity) getActivity()
+      : null;
+    if (activity != null) {
+      hideBiometricOverlay(activity);
+    }
+  }
+
   @Override
   protected void handleOnDestroy() {
     FragmentActivity activity = getActivity() instanceof FragmentActivity
@@ -646,6 +697,7 @@ public class QortalBiometricPlugin extends Plugin {
 
   private void safeResolve(PluginCall call, AtomicBoolean settled) {
     if (settled.compareAndSet(false, true)) {
+      activeVerifyAbort = null;
       FragmentActivity activity = getActivity() instanceof FragmentActivity
         ? (FragmentActivity) getActivity()
         : null;
@@ -662,6 +714,7 @@ public class QortalBiometricPlugin extends Plugin {
     String message
   ) {
     if (settled.compareAndSet(false, true)) {
+      activeVerifyAbort = null;
       FragmentActivity activity = getActivity() instanceof FragmentActivity
         ? (FragmentActivity) getActivity()
         : null;

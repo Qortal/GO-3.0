@@ -11,6 +11,10 @@ Mobile-only changes (Capacitor UI, FileWriter, biometric, etc.) do **not** requi
 **Remote:** https://gitea.qortal.link/simon/GO-3.0 (`go3` / `main`)  
 *(Earlier field builds lived at https://gitea.qortal.link/simon/qortal-go-2.0.)*
 
+**Chat GIF picker (v0.0.5, Hub-portable):** see [`HUB_GIF_PICKER.md`](HUB_GIF_PICKER.md).
+Copy `src/components/Chat/gifs/` and wire `ReactionPicker` / send / `MessageItem`.
+Do not port the Android keyboard panel.
+
 **Already pushed (before the pending voice/QDN commit):**
 
 | Commit     | Summary |

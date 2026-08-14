@@ -35,6 +35,20 @@ const writeStoredChannels = (key: string, channelIds: Set<string>) => {
   }
 };
 
+const JOINED_AT_CACHE_PREFIX = 'qchat-reticulum-joined-at-v1';
+
+const joinedAtCacheKey = (groupId: number, address: string) =>
+  `${JOINED_AT_CACHE_PREFIX}:${groupId}:${address}`;
+
+const readCachedJoinedAt = (key: string): number | null => {
+  try {
+    const value = Number(window.localStorage.getItem(key));
+    return Number.isFinite(value) && value > 0 ? value : null;
+  } catch {
+    return null;
+  }
+};
+
 export const resolveReticulumMembershipJoinedAt = async (
   groupId: number,
   address: string
@@ -47,6 +61,12 @@ export const resolveReticulumMembershipJoinedAt = async (
   ) {
     return null;
   }
+  // `?limit=0` returns the group's entire member list — megabytes for large
+  // groups, fetched per group on every launch. The join time never changes
+  // while membership lasts, so resolve it once and keep it.
+  const cacheKey = joinedAtCacheKey(groupId, normalizedAddress);
+  const cachedJoinedAt = readCachedJoinedAt(cacheKey);
+  if (cachedJoinedAt) return cachedJoinedAt;
   const response = await fetch(
     `${getBaseApiReact()}/groups/members/${groupId}?limit=0`
   );
@@ -59,7 +79,13 @@ export const resolveReticulumMembershipJoinedAt = async (
       )
     : null;
   const joinedAt = Number(member?.joined);
-  return Number.isFinite(joinedAt) && joinedAt > 0 ? joinedAt : null;
+  if (!Number.isFinite(joinedAt) || joinedAt <= 0) return null;
+  try {
+    window.localStorage.setItem(cacheKey, String(joinedAt));
+  } catch {
+    // A storage failure only costs us the fetch again next launch.
+  }
+  return joinedAt;
 };
 
 export const applyReticulumJoinUnreadBaseline = async ({

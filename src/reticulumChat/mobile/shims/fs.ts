@@ -38,6 +38,21 @@ const SPARE_MIN = 64;
 /** Slots kept open beyond the target are closed and returned to disk reuse. */
 const SPARE_CEILING = SPARE_TARGET * 2;
 const INDEX_FLUSH_DEBOUNCE_MS = 200;
+/**
+ * A sync access handle can only be opened asynchronously, so every indexed
+ * file has to hold one open for the whole session — and Chromium charges
+ * roughly 16 KB of renderer memory per handle. Left unbounded, an attachment
+ * cache that had grown to ~32k blobs cost half a gigabyte of native memory
+ * and a boot-time handle storm that stalled the UI thread for hundreds of
+ * milliseconds at a time. Keep the most recently touched blobs; the resource
+ * store reconciles anything missing on startup and re-fetches on demand.
+ */
+const MAX_INDEXED_FILES = 2048;
+/** Orphan slot files kept for reuse; the surplus is deleted in the background. */
+const MAX_RECLAIMABLE_SLOTS = 512;
+/** Slot deletions and handle opens run in batches so neither blocks a frame. */
+const SLOT_BATCH = 32;
+const QUOTA_REFRESH_MS = 30_000;
 
 /**
  * OPFS synchronous access handles. Declared here because the TypeScript DOM lib
@@ -49,9 +64,15 @@ declare global {
     close(): void;
     flush(): void;
     getSize(): number;
-    read(buffer: ArrayBufferView | ArrayBuffer, options?: { at?: number }): number;
+    read(
+      buffer: ArrayBufferView | ArrayBuffer,
+      options?: { at?: number }
+    ): number;
     truncate(newSize: number): void;
-    write(buffer: ArrayBufferView | ArrayBuffer, options?: { at?: number }): number;
+    write(
+      buffer: ArrayBufferView | ArrayBuffer,
+      options?: { at?: number }
+    ): number;
   }
 
   interface FileSystemFileHandle {
@@ -162,9 +183,8 @@ async function openSlotHandle(
 /** Opens handles in parallel batches; one-at-a-time is far too slow at boot. */
 async function openSlots(slots: number[]): Promise<number[]> {
   const opened: number[] = [];
-  const BATCH = 32;
-  for (let i = 0; i < slots.length; i += BATCH) {
-    const batch = slots.slice(i, i + BATCH);
+  for (let i = 0; i < slots.length; i += SLOT_BATCH) {
+    const batch = slots.slice(i, i + SLOT_BATCH);
     const handles = await Promise.all(
       batch.map((slot) =>
         openSlotHandle(slot).then(
@@ -183,6 +203,86 @@ async function openSlots(slots: number[]): Promise<number[]> {
     }
   }
   return opened;
+}
+
+/**
+ * How hard a file fights to keep its handle. Staging temp files are recreated
+ * on the next import, and a resource's range map or half-finished download can
+ * be re-derived by downloading again — but an assembled blob may be the only
+ * copy of something this device published, so it is evicted last.
+ */
+function keepRank(path: string): number {
+  if (path.startsWith('/tmp/')) return 0;
+  if (path.endsWith('/ranges.json') || path.endsWith('/download.partial')) {
+    return 1;
+  }
+  return 2;
+}
+
+/**
+ * Drops the most disposable blobs from the index so the pool of open handles
+ * stays bounded. Runs before any handle is opened, so nothing has to be
+ * closed. The orphaned slot files are deliberately left for the disk scan
+ * below to collect — pushing them onto the reuse list here as well would let
+ * the same slot back two different paths.
+ */
+function evictOldestBeyondCap(): number {
+  if (files.size <= MAX_INDEXED_FILES) return 0;
+  const keepFirst = [...files.entries()].sort((a, b) => {
+    const rank = keepRank(b[0]) - keepRank(a[0]);
+    return rank !== 0 ? rank : b[1].mtimeMs - a[1].mtimeMs;
+  });
+  const surplus = keepFirst.slice(MAX_INDEXED_FILES);
+  for (const [path] of surplus) files.delete(path);
+  return surplus.length;
+}
+
+/**
+ * Slot files past the reuse pool are dead weight: they inflate origin storage
+ * and make every OPFS directory enumeration slower. Removing them is pure I/O,
+ * so it happens after boot in small batches. The surplus is spliced out of the
+ * reuse list first, so a slot can never be handed out and deleted at once.
+ */
+function scheduleOrphanSlotCleanup(): void {
+  if (reclaimableSlots.length <= MAX_RECLAIMABLE_SLOTS) return;
+  const surplus = reclaimableSlots.splice(MAX_RECLAIMABLE_SLOTS);
+  void (async () => {
+    for (let i = 0; i < surplus.length; i += SLOT_BATCH) {
+      const dir = rootDir;
+      if (!dir) return;
+      await Promise.all(
+        surplus.slice(i, i + SLOT_BATCH).map((slot) =>
+          dir.removeEntry(slotName(slot)).catch(() => {
+            /* already gone, or still held by a previous run */
+          })
+        )
+      );
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  })();
+}
+
+let quotaSnapshot = { usage: 0, quota: 0, at: 0 };
+let quotaRefreshInFlight = false;
+
+function refreshQuotaSnapshot(): void {
+  if (quotaRefreshInFlight || !navigator.storage?.estimate) return;
+  quotaRefreshInFlight = true;
+  void navigator.storage
+    .estimate()
+    .then(({ usage, quota }) => {
+      quotaSnapshot = {
+        usage: Number(usage) || 0,
+        quota: Number(quota) || 0,
+        at: Date.now(),
+      };
+    })
+    .catch(() => {
+      /* keep the previous snapshot */
+    })
+    .finally(() => {
+      quotaRefreshInFlight = false;
+    });
 }
 
 /** Prefers slot files already on disk so the pool does not grow unbounded. */
@@ -289,6 +389,13 @@ export async function initMobileFs(): Promise<void> {
     }
   }
 
+  const evicted = evictOldestBeyondCap();
+  if (evicted > 0) {
+    console.warn(
+      `[mobile-fs] dropped ${evicted} stale blobs to stay under ${MAX_INDEXED_FILES} open handles`
+    );
+  }
+
   // Open handles for every indexed file up-front (sync APIs cannot await).
   const referenced = new Map<number, string>();
   for (const [p, entry] of files) referenced.set(entry.slot, p);
@@ -318,6 +425,8 @@ export async function initMobileFs(): Promise<void> {
   // Pre-provision spares with init so the first burst of writes never fails.
   spareSlots.push(...(await openSlots(nextFreeSlots(SPARE_TARGET))));
   writeIndexNow();
+  refreshQuotaSnapshot();
+  scheduleOrphanSlotCleanup();
 }
 
 // ── sync API ─────────────────────────────────────────────────────────────────
@@ -371,10 +480,7 @@ export function readFileSync(p: string, encoding?: string): Buffer | string {
   return globalThis.Buffer.from(out);
 }
 
-export function writeFileSync(
-  p: string,
-  data: string | Uint8Array
-): void {
+export function writeFileSync(p: string, data: string | Uint8Array): void {
   const entry = ensureFileEntry(p, true);
   const bytes =
     typeof data === 'string' ? new TextEncoder().encode(data) : data;
@@ -507,9 +613,30 @@ export function statfsSync(_p: string): {
   bfree: number;
   blocks: number;
 } {
-  // OPFS quota is opaque synchronously; report ample space and let the
-  // resource store's own byte-budget policy be the real limiter.
-  return { bavail: 8 * 1024 * 1024, bsize: 4096, bfree: 8 * 1024 * 1024, blocks: 16 * 1024 * 1024 };
+  // navigator.storage.estimate() is async, so serve the last snapshot and
+  // refresh in the background. Reporting a fixed "plenty free" here used to
+  // disable the resource store's free-space guard entirely, which is how the
+  // attachment cache reached gigabytes on a phone.
+  if (Date.now() - quotaSnapshot.at > QUOTA_REFRESH_MS) refreshQuotaSnapshot();
+  const bsize = 4096;
+  const quota = quotaSnapshot.quota;
+  if (quota <= 0) {
+    // No estimate yet — stay permissive rather than blocking the first write.
+    return {
+      bavail: 8 * 1024 * 1024,
+      bsize,
+      bfree: 8 * 1024 * 1024,
+      blocks: 16 * 1024 * 1024,
+    };
+  }
+  const free = Math.max(0, quota - quotaSnapshot.usage);
+  const freeBlocks = Math.floor(free / bsize);
+  return {
+    bavail: freeBlocks,
+    bsize,
+    bfree: freeBlocks,
+    blocks: Math.floor(quota / bsize),
+  };
 }
 
 export function openSync(p: string, flags: string): number {

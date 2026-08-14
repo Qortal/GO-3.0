@@ -158,6 +158,7 @@ export function AuthenticatedLockScreen({
   const theme = useTheme();
   const inputRef = useRef<HTMLInputElement | null>(null);
   const checkingRef = useRef(false);
+  const scanLeftScreenRef = useRef(false);
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [isChecking, setIsChecking] = useState(false);
@@ -207,6 +208,11 @@ export function AuthenticatedLockScreen({
     checkingRef.current = true;
     setIsScanning(true);
     setError('');
+    let leftScreen = document.hidden;
+    const watchVisibility = () => {
+      if (document.hidden) leftScreen = true;
+    };
+    document.addEventListener('visibilitychange', watchVisibility);
     try {
       await verifyBiometricUnlock();
       // Unlock through the same password check as the form below, so a
@@ -215,6 +221,13 @@ export function AuthenticatedLockScreen({
       await onUnlock(stored);
       setPassword('');
     } catch (err) {
+      if (leftScreen) {
+        // The phone locking or the app being switched away ends the scan; that
+        // is not the user declining it, so ask again on the way back rather
+        // than reporting a cancellation they did not make.
+        scanLeftScreenRef.current = true;
+        return;
+      }
       const message = err instanceof Error ? err.message : String(err);
       setError(
         /cancel/i.test(message)
@@ -223,10 +236,27 @@ export function AuthenticatedLockScreen({
       );
       requestAnimationFrame(() => inputRef.current?.focus());
     } finally {
+      document.removeEventListener('visibilitychange', watchVisibility);
       checkingRef.current = false;
       setIsScanning(false);
     }
   };
+
+  const biometricUnlockRef = useRef(handleBiometricUnlock);
+  useEffect(() => {
+    biometricUnlockRef.current = handleBiometricUnlock;
+  });
+
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      if (document.hidden || !scanLeftScreenRef.current) return;
+      scanLeftScreenRef.current = false;
+      void biometricUnlockRef.current();
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () =>
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+  }, []);
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();

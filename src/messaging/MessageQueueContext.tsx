@@ -51,6 +51,7 @@ export const MessageQueueProvider = ({ children }) => {
         identifier: tempId,
         groupDirectId,
         specialId: messageObj?.message?.specialId,
+        attempts: 0,
       });
 
       // Start processing the queue
@@ -66,6 +67,25 @@ export const MessageQueueProvider = ({ children }) => {
       .catch((err) => console.error('Error in processQueue:', err));
   }, []);
 
+  /**
+   * Change the display row for a message that is still being sent.
+   *
+   * The row can be gone by the time the send finishes: the chat was left, the
+   * queue was cleared, or a poll already matched the confirmed message. That
+   * is normal, so a missing row is left alone rather than written through.
+   */
+  const patchQueuedChat = useCallback((groupDirectId, identifier, patch) => {
+    setQueueChats((prev) => {
+      const chats = prev[groupDirectId];
+      if (!chats) return prev;
+      const index = chats.findIndex((item) => item.identifier === identifier);
+      if (index === -1) return prev;
+      const updated = chats.slice();
+      updated[index] = { ...updated[index], ...patch };
+      return { ...prev, [groupDirectId]: updated };
+    });
+  }, []);
+
   // Internal function to handle queue processing
   const processQueueInternal = async (newMessages, groupDirectId) => {
     // Remove any messages from the queue that match the specialId from newMessages
@@ -77,19 +97,12 @@ export const MessageQueueProvider = ({ children }) => {
     while (messageQueueRef.current.length > 0) {
       const currentMessage = messageQueueRef.current[0]; // Get the first message in the queue
       const { groupDirectId, identifier } = currentMessage;
+      currentMessage.attempts = (currentMessage.attempts || 0) + 1;
 
       // Update the chat status to 'sending'
-      setQueueChats((prev) => {
-        const updatedChats = { ...prev };
-        if (updatedChats[groupDirectId]) {
-          const chatIndex = updatedChats[groupDirectId].findIndex(
-            (item) => item.identifier === identifier
-          );
-          if (chatIndex !== -1) {
-            updatedChats[groupDirectId][chatIndex].status = 'sending';
-          }
-        }
-        return updatedChats;
+      patchQueuedChat(groupDirectId, identifier, {
+        status: 'sending',
+        retries: Math.max(0, currentMessage.attempts - 1),
       });
 
       try {
@@ -120,33 +133,24 @@ export const MessageQueueProvider = ({ children }) => {
       } catch (error) {
         console.error('Message sending failed', error);
 
-        // Retry logic
-        setQueueChats((prev) => {
-          const updatedChats = { ...prev };
-          const chatIndex = updatedChats[groupDirectId]?.findIndex(
-            (item) => item.identifier === identifier
-          );
-          if (chatIndex !== -1) {
-            const retries = updatedChats[groupDirectId][chatIndex].retries;
-            if (retries < maxRetries) {
-              // Increment retry count and set status to 'failed'
-              updatedChats[groupDirectId][chatIndex].retries += 1;
-              updatedChats[groupDirectId][chatIndex].status = 'failed';
-            } else {
-              // Max retries reached, set status to 'failed-permanent'
-              updatedChats[groupDirectId][chatIndex].status =
-                'failed-permanent';
+        const attempts = currentMessage.attempts || 1;
+        if (attempts <= maxRetries) {
+          patchQueuedChat(groupDirectId, identifier, {
+            retries: attempts,
+            status: 'failed',
+          });
+          // Avoid a tight retry loop that can publish the same chat reply
+          // multiple times when the first attempt partially succeeds.
+          await new Promise((resolve) => setTimeout(resolve, 750));
+          continue;
+        }
 
-              // Remove the message from the queue after max retries
-              messageQueueRef.current.shift();
-            }
-          }
-          return updatedChats;
+        patchQueuedChat(groupDirectId, identifier, {
+          retries: attempts,
+          status: 'failed-permanent',
         });
+        messageQueueRef.current.shift();
       }
-
-      // Optional delay between processing messages
-      // await new Promise((res) => setTimeout(res, 5000));
     }
   };
 
@@ -194,22 +198,9 @@ export const MessageQueueProvider = ({ children }) => {
         return updatedChats;
       });
     }
-    setTimeout(() => {
-      if (
-        !messageQueueRef.current.find(
-          (msg) => msg?.groupDirectId === groupDirectId
-        )
-      ) {
-        setQueueChats((prev) => {
-          const updatedChats = { ...prev };
-          if (updatedChats[groupDirectId]) {
-            delete updatedChats[groupDirectId];
-          }
-
-          return updatedChats;
-        });
-      }
-    }, 300);
+    // Do not wipe the whole group queue on a timer. That raced with in-flight
+    // or unmatched optimistic rows and made reply/link sends vanish on the
+    // sender (especially mobile) while Hub still showed the confirmed thread.
 
     return updatedNewMessages;
   }, []);

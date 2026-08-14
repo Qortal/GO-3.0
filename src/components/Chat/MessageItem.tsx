@@ -47,6 +47,7 @@ import Underline from '@tiptap/extension-underline';
 import { WrapperUserAction } from '../WrapperUserAction';
 import ReplyIcon from '@mui/icons-material/Reply';
 import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded';
+import TextFieldsRoundedIcon from '@mui/icons-material/TextFieldsRounded';
 import { ReactionPicker } from '../ReactionPicker';
 import KeyOffIcon from '@mui/icons-material/KeyOff';
 import EditIcon from '@mui/icons-material/Edit';
@@ -80,6 +81,8 @@ import {
   isHtmlString,
   messageHasImage,
 } from '../../utils/chat';
+import { isLibraryGifImage } from './gifs/libraryGifs';
+import { GifImage } from './gifs/GifImage';
 import { useTranslation } from 'react-i18next';
 import { ReactionsMap } from './ChatList';
 import { AvatarPreviewModal } from '../Chat/AvatarPreviewModal';
@@ -217,6 +220,22 @@ const getReticulumMintership = (address: string): Promise<boolean> => {
   reticulumMintershipRequests.set(normalizedAddress, request);
   return request;
 };
+
+// Block boundaries have to survive as line breaks, otherwise a copied multi
+// paragraph message comes back as one run-on line.
+const messageHtmlToPlainText = (html: string): string =>
+  html
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(p|div|li|h[1-6]|blockquote|pre)>/gi, '\n')
+    .replace(/<[^>]*>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 
 const normalizeMessageHtmlContent = (raw: unknown): string | null => {
   if (raw == null) return null;
@@ -645,32 +664,29 @@ export const MessageItemComponent = ({
     }
   }, [deferredMessage?.messageText, deferredMessage?.editTimestamp]);
 
-  const reticulumInviteSource = useMemo(
-    () => {
-      const candidates = reticulumChatEnabled
-        ? [
-            deferredMessage?.messageText,
-            deferredMessage?.text,
-            message?.decryptedData?.data?.message,
-          ]
-        : [
-            deferredMessage?.text,
-            message?.decryptedData?.data?.message,
-            deferredMessage?.messageText,
-          ];
-      for (const candidate of candidates) {
-        const normalized = normalizeMessageHtmlContent(candidate);
-        if (normalized) return normalized;
-      }
-      return '';
-    },
-    [
-      deferredMessage?.messageText,
-      deferredMessage?.text,
-      message?.decryptedData?.data?.message,
-      reticulumChatEnabled,
-    ]
-  );
+  const reticulumInviteSource = useMemo(() => {
+    const candidates = reticulumChatEnabled
+      ? [
+          deferredMessage?.messageText,
+          deferredMessage?.text,
+          message?.decryptedData?.data?.message,
+        ]
+      : [
+          deferredMessage?.text,
+          message?.decryptedData?.data?.message,
+          deferredMessage?.messageText,
+        ];
+    for (const candidate of candidates) {
+      const normalized = normalizeMessageHtmlContent(candidate);
+      if (normalized) return normalized;
+    }
+    return '';
+  }, [
+    deferredMessage?.messageText,
+    deferredMessage?.text,
+    message?.decryptedData?.data?.message,
+    reticulumChatEnabled,
+  ]);
   const reticulumQAppPreviewLinks = useMemo(
     () =>
       reticulumChatEnabled
@@ -693,13 +709,13 @@ export const MessageItemComponent = ({
   );
 
   const htmlReply = useMemo(() => {
-    const source = reply?.messageText;
+    const source = reply?.messageText || reply?.text;
     if (source) {
       const isHtml = isHtmlString(source);
       if (isHtml) return source;
       return normalizeMessageHtmlContent(source);
     }
-  }, [reply?.messageText, reply?.editTimestamp]);
+  }, [reply?.messageText, reply?.text, reply?.editTimestamp]);
 
   const htmlReplyExpired = useMemo(() => {
     if (!replyExpiredMeta) return null;
@@ -720,7 +736,8 @@ export const MessageItemComponent = ({
       officialGroupSystem?.groupId
     ) {
       return `${getBaseApiReact()}/arbitrary/THUMBNAIL/${encodeURIComponent(
-        reticulumGroupAvatarOwnerName || officialGroupSystem.groupAvatarOwnerName
+        reticulumGroupAvatarOwnerName ||
+          officialGroupSystem.groupAvatarOwnerName
       )}/qortal_group_avatar_${officialGroupSystem.groupId}?async=true`;
     }
     return message?.senderName
@@ -959,6 +976,9 @@ export const MessageItemComponent = ({
       : typeof message?.tempSignature === 'string'
         ? message.tempSignature
         : '';
+  const libraryGifImage = isLibraryGifImage(message?.images?.[0])
+    ? message.images[0]
+    : null;
   const imageEmbedLink = messageHasImage(message)
     ? buildImageEmbedLink(message.images[0])
     : null;
@@ -1084,6 +1104,7 @@ export const MessageItemComponent = ({
   const [isFileOpenWarningOpen, setIsFileOpenWarningOpen] = useState(false);
   const [isOpeningFile, setIsOpeningFile] = useState(false);
   const [fileOpenError, setFileOpenError] = useState<string | null>(null);
+  const [savedFileUri, setSavedFileUri] = useState<string | null>(null);
   useEffect(() => {
     if (
       !isReticulumResourceImage ||
@@ -1278,7 +1299,9 @@ export const MessageItemComponent = ({
       ?.qchatFileOpen?.({
         uri: qchatOpenUri,
         fileName:
-          qchatCompletedRecord?.fileName || qchatFileData?.fileName || undefined,
+          qchatCompletedRecord?.fileName ||
+          qchatFileData?.fileName ||
+          undefined,
       })
       .then((res) => {
         if (res && res.ok === false) {
@@ -1740,6 +1763,7 @@ export const MessageItemComponent = ({
       reticulumFileName
     );
     if (saved?.success) {
+      if (saved.uri) setSavedFileUri(saved.uri);
       setFileResourceStatus('ready');
       return;
     }
@@ -1756,6 +1780,16 @@ export const MessageItemComponent = ({
     setIsOpeningFile(true);
     setFileOpenError(null);
     try {
+      // Once it is on disk, hand the file to a real viewer app rather than
+      // reloading every byte into the WebView to build a blob url.
+      if (savedFileUri) {
+        const { openSavedMobileFile } =
+          await import('../../utils/mobileFileSave');
+        if (await openSavedMobileFile(savedFileUri, reticulumFileName)) {
+          setIsFileOpenWarningOpen(false);
+          return;
+        }
+      }
       const result = await window.reticulumResources?.open?.(
         reticulumFileResourceId,
         reticulumFileName
@@ -1776,7 +1810,12 @@ export const MessageItemComponent = ({
     } finally {
       setIsOpeningFile(false);
     }
-  }, [fileResourceStatus, reticulumFileName, reticulumFileResourceId]);
+  }, [
+    fileResourceStatus,
+    reticulumFileName,
+    reticulumFileResourceId,
+    savedFileUri,
+  ]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2088,20 +2127,52 @@ export const MessageItemComponent = ({
     message,
     myAddress,
   });
+  const reticulumMessagePlainText = useMemo(
+    () =>
+      messageHtmlToPlainText(
+        String(
+          message?.decryptedData?.data?.message ??
+            message?.messageText ??
+            message?.text ??
+            ''
+        )
+      ),
+    [message]
+  );
   const copyReticulumMessage = useCallback(async () => {
-    const html = String(
-      message?.decryptedData?.data?.message ??
-        message?.messageText ??
-        message?.text ??
-        ''
-    );
-    const text = html
-      .replace(/<[^>]*>/g, ' ')
-      .replace(/&nbsp;/g, ' ')
-      .trim();
+    if (!reticulumMessagePlainText || !navigator.clipboard?.writeText) return;
+    await navigator.clipboard.writeText(reticulumMessagePlainText);
+  }, [reticulumMessagePlainText]);
+  const [isSelectTextOpen, setIsSelectTextOpen] = useState(false);
+  const [selectTextCopied, setSelectTextCopied] = useState(false);
+  const selectTextBodyRef = useRef<HTMLDivElement | null>(null);
+
+  // Copy whatever the reader highlighted; if they highlighted nothing, fall
+  // back to the whole message so the button is never a dead end.
+  const copySelectedMessageText = useCallback(async () => {
+    const selected = String(window.getSelection?.() ?? '').trim();
+    const text = selected || reticulumMessagePlainText;
     if (!text || !navigator.clipboard?.writeText) return;
     await navigator.clipboard.writeText(text);
-  }, [message]);
+    setSelectTextCopied(true);
+    window.setTimeout(() => setSelectTextCopied(false), 1500);
+  }, [reticulumMessagePlainText]);
+
+  // Pre-select the whole message so a reader only has to drag the handles in.
+  useEffect(() => {
+    if (!isSelectTextOpen) return;
+    const node = selectTextBodyRef.current;
+    if (!node) return;
+    const frame = window.requestAnimationFrame(() => {
+      const selection = window.getSelection?.();
+      if (!selection) return;
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [isSelectTextOpen]);
   const [isOwnReticulumMessageHovered, setIsOwnReticulumMessageHovered] =
     useState(false);
 
@@ -2188,8 +2259,8 @@ export const MessageItemComponent = ({
   const hasReticulumExpiry = Boolean(reticulumExpiryMs);
   const isReticulumExpiringSoon = Boolean(
     reticulumExpiryMs &&
-      reticulumExpiryMs > expiryClockMs &&
-      reticulumExpiryMs - expiryClockMs < RETICULUM_EXPIRING_SOON_MS
+    reticulumExpiryMs > expiryClockMs &&
+    reticulumExpiryMs - expiryClockMs < RETICULUM_EXPIRING_SOON_MS
   );
   const reticulumExpiringSoonLabel = isReticulumExpiringSoon ? (
     <Tooltip title={`Message Expiry: ${reticulumExpiryText}`}>
@@ -2610,7 +2681,11 @@ export const MessageItemComponent = ({
               : ownAligned
                 ? 'row-reverse'
                 : 'row',
-            gap: mobileStackedLayout ? 0 : reticulumChatEnabled ? '10px' : '12px',
+            gap: mobileStackedLayout
+              ? 0
+              : reticulumChatEnabled
+                ? '10px'
+                : '12px',
             opacity: isTemp || isUpdating ? 0.5 : 1,
             padding: isShowingAsReply
               ? '2px 8px'
@@ -2652,6 +2727,7 @@ export const MessageItemComponent = ({
                     : theme.palette.common.black,
                   theme.palette.mode === 'dark' ? 0.028 : 0.025
                 ),
+                borderRadius: '18px',
               }),
             ...(isOwn &&
               !reticulumChatEnabled &&
@@ -2672,6 +2748,9 @@ export const MessageItemComponent = ({
               }),
             ...(isScrollTarget && {
               backgroundColor: alpha(theme.palette.primary.main, 0.07),
+              ...(isOwn && reticulumChatEnabled
+                ? { borderRadius: '18px' }
+                : {}),
               ...(!reticulumChatEnabled
                 ? {
                     borderLeft: `2px solid ${theme.palette.primary.main}`,
@@ -2707,7 +2786,7 @@ export const MessageItemComponent = ({
                             : theme.palette.common.black,
                           theme.palette.mode === 'dark' ? 0.045 : 0.04
                         )
-                    : alpha(theme.palette.text.primary, 0.035)
+                      : alpha(theme.palette.text.primary, 0.035)
                   : undefined,
               },
             }),
@@ -2740,7 +2819,11 @@ export const MessageItemComponent = ({
             sx={{
               display: 'flex',
               flexDirection: 'column',
-              gap: isGroupedWithPrevious ? 0 : mobileStackedLayout ? '2px' : '4px',
+              gap: isGroupedWithPrevious
+                ? 0
+                : mobileStackedLayout
+                  ? '2px'
+                  : '4px',
               height: isShowingAsReply ? '40px' : undefined,
               minWidth: 0,
               width: '100%',
@@ -2799,102 +2882,104 @@ export const MessageItemComponent = ({
                     the desktop header a single flat row. */}
                 <Box sx={headerMetaColumnSx}>
                   <Box sx={headerNameRowSx}>
-                <WrapperUserAction
-                  disabled={
-                    isOfficialGroupSystem ||
-                    (!reticulumChatEnabled && myAddress === message?.sender)
-                  }
-                  address={message?.sender}
-                  name={message?.senderName}
-                  reticulumMenu={reticulumChatEnabled}
-                  reticulumSilenceContext={reticulumSilenceContext}
-                  reticulumUserCard={reticulumUserCard}
-                  trigger={reticulumChatEnabled ? 'contextMenu' : 'click'}
-                >
-                  <Typography
-                    sx={{
-                      color: reticulumChatEnabled
-                        ? isOfficialGroupSystem
-                          ? theme.palette.mode === 'light'
-                            ? theme.palette.primary.dark
-                            : theme.palette.primary.light
-                          : reticulumMemberRoleColor
-                        : isOwn
-                          ? theme.palette.primary.main
-                          : theme.palette.text.primary,
-                      fontFamily: 'Inter',
-                      fontSize: reticulumDiscussionView ? '18px' : '15.5px',
-                      fontWeight: reticulumDiscussionView ? 700 : 600,
-                      lineHeight: reticulumDiscussionView ? '22px' : 1.3,
-                      letterSpacing: reticulumDiscussionView
-                        ? '-0.015em'
-                        : undefined,
-                      maxWidth: reticulumChatEnabled
-                        ? { xs: 170, sm: 260, md: 360 }
-                        : undefined,
-                      overflow: reticulumChatEnabled ? 'hidden' : undefined,
-                      textOverflow: reticulumChatEnabled
-                        ? 'ellipsis'
-                        : undefined,
-                      whiteSpace: reticulumChatEnabled ? 'nowrap' : undefined,
-                      ...(hasUnsafeSenderName
-                        ? {
-                            textDecorationLine: 'line-through',
-                            textDecorationThickness: '2px',
-                            textDecorationColor: theme.palette.error.main,
-                          }
-                        : {}),
-                    }}
-                  >
-                    {displaySenderName}
-                  </Typography>
-                </WrapperUserAction>
+                    <WrapperUserAction
+                      disabled={
+                        isOfficialGroupSystem ||
+                        (!reticulumChatEnabled && myAddress === message?.sender)
+                      }
+                      address={message?.sender}
+                      name={message?.senderName}
+                      reticulumMenu={reticulumChatEnabled}
+                      reticulumSilenceContext={reticulumSilenceContext}
+                      reticulumUserCard={reticulumUserCard}
+                      trigger={reticulumChatEnabled ? 'contextMenu' : 'click'}
+                    >
+                      <Typography
+                        sx={{
+                          color: reticulumChatEnabled
+                            ? isOfficialGroupSystem
+                              ? theme.palette.mode === 'light'
+                                ? theme.palette.primary.dark
+                                : theme.palette.primary.light
+                              : reticulumMemberRoleColor
+                            : isOwn
+                              ? theme.palette.primary.main
+                              : theme.palette.text.primary,
+                          fontFamily: 'Inter',
+                          fontSize: reticulumDiscussionView ? '18px' : '15.5px',
+                          fontWeight: reticulumDiscussionView ? 700 : 600,
+                          lineHeight: reticulumDiscussionView ? '22px' : 1.3,
+                          letterSpacing: reticulumDiscussionView
+                            ? '-0.015em'
+                            : undefined,
+                          maxWidth: reticulumChatEnabled
+                            ? { xs: 170, sm: 260, md: 360 }
+                            : undefined,
+                          overflow: reticulumChatEnabled ? 'hidden' : undefined,
+                          textOverflow: reticulumChatEnabled
+                            ? 'ellipsis'
+                            : undefined,
+                          whiteSpace: reticulumChatEnabled
+                            ? 'nowrap'
+                            : undefined,
+                          ...(hasUnsafeSenderName
+                            ? {
+                                textDecorationLine: 'line-through',
+                                textDecorationThickness: '2px',
+                                textDecorationColor: theme.palette.error.main,
+                              }
+                            : {}),
+                        }}
+                      >
+                        {displaySenderName}
+                      </Typography>
+                    </WrapperUserAction>
 
-                {reticulumChatEnabled &&
-                  !isOfficialGroupSystem &&
-                  reticulumMemberRole && (
-                    <ReticulumRoleBadge
-                      color={reticulumMemberRoleColor}
-                      role={reticulumMemberRole}
-                      size={reticulumDiscussionView ? 'card' : 'message'}
-                    />
-                  )}
+                    {reticulumChatEnabled &&
+                      !isOfficialGroupSystem &&
+                      reticulumMemberRole && (
+                        <ReticulumRoleBadge
+                          color={reticulumMemberRoleColor}
+                          role={reticulumMemberRole}
+                          size={reticulumDiscussionView ? 'card' : 'message'}
+                        />
+                      )}
                   </Box>
                   <Box sx={headerTimeRowSx}>
-                {!isUpdating && !isTemp && (
-                  <Typography
-                    sx={{
-                      color: theme.palette.text.secondary,
-                      flexShrink: 0,
-                      fontFamily: 'Inter',
-                      fontSize: reticulumDiscussionView ? '13px' : '11px',
-                      fontWeight: reticulumDiscussionView ? 400 : undefined,
-                      lineHeight: reticulumDiscussionView ? '18px' : 1,
-                    }}
-                  >
-                    {displayTimestamp}
-                  </Typography>
-                )}
+                    {!isUpdating && !isTemp && (
+                      <Typography
+                        sx={{
+                          color: theme.palette.text.secondary,
+                          flexShrink: 0,
+                          fontFamily: 'Inter',
+                          fontSize: reticulumDiscussionView ? '13px' : '11px',
+                          fontWeight: reticulumDiscussionView ? 400 : undefined,
+                          lineHeight: reticulumDiscussionView ? '18px' : 1,
+                        }}
+                      >
+                        {displayTimestamp}
+                      </Typography>
+                    )}
 
-                {!collapseGroupedHeader && reticulumExpiringSoonLabel}
+                    {!collapseGroupedHeader && reticulumExpiringSoonLabel}
 
-                {!collapseGroupedHeader && reticulumDiscussionButton}
+                    {!collapseGroupedHeader && reticulumDiscussionButton}
 
-                {message?.isEdit && !isUpdating && !isTemp && (
-                  <Typography
-                    sx={{
-                      color: theme.palette.text.secondary,
-                      fontFamily: 'Inter',
-                      fontSize: '11px',
-                      fontStyle: 'italic',
-                      lineHeight: 1,
-                    }}
-                  >
-                    {t('core:message.generic.edited', {
-                      postProcess: 'capitalizeFirstChar',
-                    })}
-                  </Typography>
-                )}
+                    {message?.isEdit && !isUpdating && !isTemp && (
+                      <Typography
+                        sx={{
+                          color: theme.palette.text.secondary,
+                          fontFamily: 'Inter',
+                          fontSize: '11px',
+                          fontStyle: 'italic',
+                          lineHeight: 1,
+                        }}
+                      >
+                        {t('core:message.generic.edited', {
+                          postProcess: 'capitalizeFirstChar',
+                        })}
+                      </Typography>
+                    )}
                   </Box>
                 </Box>
               </Box>
@@ -3054,50 +3139,34 @@ export const MessageItemComponent = ({
                     </Typography>
                   </Box>
 
-                  {reticulumChatEnabled ? (
-                    htmlReply ? (
-                      <MessageDisplay
-                        isReply
-                        htmlContent={htmlReply}
-                        privilegedMentionAuthorized={
-                          reply?.privilegedMentionAuthorized === true
-                        }
-                        reticulumChannelLinkAccess={reticulumChannelLinkAccess}
-                      />
-                    ) : reply?.decryptedData?.type === 'notification' ? (
-                      <MessageDisplay
-                        isReply
-                        htmlContent={reply.decryptedData?.data?.message}
-                        privilegedMentionAuthorized={
-                          reply?.privilegedMentionAuthorized === true
-                        }
-                        reticulumChannelLinkAccess={reticulumChannelLinkAccess}
-                      />
-                    ) : reply?.text ? (
-                      <MessageDisplay
-                        isReply
-                        htmlContent={reply.text}
-                        privilegedMentionAuthorized={
-                          reply?.privilegedMentionAuthorized === true
-                        }
-                        reticulumChannelLinkAccess={reticulumChannelLinkAccess}
-                      />
-                    ) : null
-                  ) : (
-                    <>
-                      {reply?.messageText && (
-                        <MessageDisplay isReply htmlContent={htmlReply} />
-                      )}
-                      {reply?.decryptedData?.type === 'notification' ? (
-                        <MessageDisplay
-                          isReply
-                          htmlContent={reply.decryptedData?.data?.message}
-                        />
-                      ) : (
-                        <MessageDisplay isReply htmlContent={reply.text} />
-                      )}
-                    </>
-                  )}
+                  {htmlReply ? (
+                    <MessageDisplay
+                      isReply
+                      htmlContent={htmlReply}
+                      privilegedMentionAuthorized={
+                        reply?.privilegedMentionAuthorized === true
+                      }
+                      reticulumChannelLinkAccess={reticulumChannelLinkAccess}
+                    />
+                  ) : reply?.decryptedData?.type === 'notification' ? (
+                    <MessageDisplay
+                      isReply
+                      htmlContent={reply.decryptedData?.data?.message}
+                      privilegedMentionAuthorized={
+                        reply?.privilegedMentionAuthorized === true
+                      }
+                      reticulumChannelLinkAccess={reticulumChannelLinkAccess}
+                    />
+                  ) : reply?.text ? (
+                    <MessageDisplay
+                      isReply
+                      htmlContent={reply.text}
+                      privilegedMentionAuthorized={
+                        reply?.privilegedMentionAuthorized === true
+                      }
+                      reticulumChannelLinkAccess={reticulumChannelLinkAccess}
+                    />
+                  ) : null}
                 </Box>
               </ButtonBase>
             )}
@@ -3195,40 +3264,19 @@ export const MessageItemComponent = ({
                       </Typography>
                     </Box>
 
-                    {reticulumChatEnabled ? (
-                      htmlReplyExpired ? (
-                        <MessageDisplay
-                          isReply
-                          htmlContent={htmlReplyExpired}
-                          reticulumChannelLinkAccess={
-                            reticulumChannelLinkAccess
-                          }
-                        />
-                      ) : replyExpiredMeta?.text ? (
-                        <MessageDisplay
-                          isReply
-                          htmlContent={replyExpiredMeta.text}
-                          reticulumChannelLinkAccess={
-                            reticulumChannelLinkAccess
-                          }
-                        />
-                      ) : null
-                    ) : (
-                      <>
-                        {replyExpiredMeta?.messageText && (
-                          <MessageDisplay
-                            isReply
-                            htmlContent={htmlReplyExpired}
-                          />
-                        )}
-                        {replyExpiredMeta?.text && (
-                          <MessageDisplay
-                            isReply
-                            htmlContent={replyExpiredMeta.text}
-                          />
-                        )}
-                      </>
-                    )}
+                    {htmlReplyExpired ? (
+                      <MessageDisplay
+                        isReply
+                        htmlContent={htmlReplyExpired}
+                        reticulumChannelLinkAccess={reticulumChannelLinkAccess}
+                      />
+                    ) : replyExpiredMeta?.text ? (
+                      <MessageDisplay
+                        isReply
+                        htmlContent={replyExpiredMeta.text}
+                        reticulumChannelLinkAccess={reticulumChannelLinkAccess}
+                      />
+                    ) : null}
                   </Box>
                 </Box>
               )}
@@ -3434,7 +3482,20 @@ export const MessageItemComponent = ({
               </Box>
             )}
 
-            {(displayImageUrl ||
+            {libraryGifImage ? (
+              <GifImage
+                fit="contain"
+                gif={libraryGifImage}
+                spinnerSize={20}
+                sx={{
+                  alignSelf: ownAligned ? 'flex-end' : 'flex-start',
+                  borderRadius: '8px',
+                  margin: '8px 0 0',
+                  maxHeight: 280,
+                  maxWidth: 'min(100%, 240px)',
+                }}
+              />
+            ) : (displayImageUrl ||
               (isReticulumResourceImage && shouldAutoDownloadReticulumImage)) &&
               (displayImageUrl &&
               (localResourceImageUrl ||
@@ -4048,32 +4109,32 @@ export const MessageItemComponent = ({
             {(isUpdating || isTemp) &&
               (!reticulumChatEnabled ||
                 message?.status === 'failed-permanent') && (
-              <Typography
-                sx={{
-                  color: theme.palette.text.secondary,
-                  fontFamily: 'Inter',
-                  fontSize: '12px',
-                  fontStyle: 'italic',
-                  marginTop: '2px',
-                }}
-              >
-                {!isTemp
-                  ? message?.status === 'failed-permanent'
-                    ? t('core:message.error.update_failed', {
-                        postProcess: 'capitalizeFirstChar',
-                      })
-                    : t('core:message.generic.updating', {
-                        postProcess: 'capitalizeFirstChar',
-                      })
-                  : message?.status === 'failed-permanent'
-                    ? t('core:message.error.send_failed', {
-                        postProcess: 'capitalizeFirstChar',
-                      })
-                    : t('core:message.generic.sending', {
-                        postProcess: 'capitalizeFirstChar',
-                      })}
-              </Typography>
-            )}
+                <Typography
+                  sx={{
+                    color: theme.palette.text.secondary,
+                    fontFamily: 'Inter',
+                    fontSize: '12px',
+                    fontStyle: 'italic',
+                    marginTop: '2px',
+                  }}
+                >
+                  {!isTemp
+                    ? message?.status === 'failed-permanent'
+                      ? t('core:message.error.update_failed', {
+                          postProcess: 'capitalizeFirstChar',
+                        })
+                      : t('core:message.generic.updating', {
+                          postProcess: 'capitalizeFirstChar',
+                        })
+                    : message?.status === 'failed-permanent'
+                      ? t('core:message.error.send_failed', {
+                          postProcess: 'capitalizeFirstChar',
+                        })
+                      : t('core:message.generic.sending', {
+                          postProcess: 'capitalizeFirstChar',
+                        })}
+                </Typography>
+              )}
 
             {/* Reactions row */}
             {reactions &&
@@ -4241,117 +4302,117 @@ export const MessageItemComponent = ({
                     setSelectedReaction(null);
                   }}
                 >
-                <Box
-                  sx={{
-                    backgroundColor:
-                      theme.palette.mode === 'dark'
-                        ? '#1e2027'
-                        : theme.palette.background.paper,
-                    backgroundImage: 'none',
-                    border: '1px solid',
-                    borderColor:
-                      theme.palette.mode === 'dark'
-                        ? '#3a414d'
-                        : theme.palette.divider,
-                    borderRadius: '10px',
-                    boxShadow:
-                      theme.palette.mode === 'dark'
-                        ? '0 14px 32px rgba(0, 0, 0, 0.42)'
-                        : theme.shadows[8],
-                    // Cap width to the viewport so preventOverflow can keep the
-                    // whole panel on-screen even on narrow phones.
-                    maxWidth: 'min(320px, calc(100vw - 24px))',
-                    minWidth: 'min(260px, calc(100vw - 24px))',
-                    padding: '16px 16px 12px',
-                  }}
-                >
                   <Box
                     sx={{
-                      alignItems: 'center',
-                      display: 'flex',
-                      gap: '8px',
-                      marginBottom: '12px',
+                      backgroundColor:
+                        theme.palette.mode === 'dark'
+                          ? '#1e2027'
+                          : theme.palette.background.paper,
+                      backgroundImage: 'none',
+                      border: '1px solid',
+                      borderColor:
+                        theme.palette.mode === 'dark'
+                          ? '#3a414d'
+                          : theme.palette.divider,
+                      borderRadius: '10px',
+                      boxShadow:
+                        theme.palette.mode === 'dark'
+                          ? '0 14px 32px rgba(0, 0, 0, 0.42)'
+                          : theme.shadows[8],
+                      // Cap width to the viewport so preventOverflow can keep the
+                      // whole panel on-screen even on narrow phones.
+                      maxWidth: 'min(320px, calc(100vw - 24px))',
+                      minWidth: 'min(260px, calc(100vw - 24px))',
+                      padding: '16px 16px 12px',
                     }}
                   >
                     <Box
                       sx={{
                         alignItems: 'center',
-                        backgroundColor: theme.palette.action.hover,
-                        borderRadius: '8px',
                         display: 'flex',
-                        fontSize: '18px',
-                        height: '36px',
-                        justifyContent: 'center',
-                        width: '36px',
+                        gap: '8px',
+                        marginBottom: '12px',
                       }}
                     >
-                      {selectedReaction}
+                      <Box
+                        sx={{
+                          alignItems: 'center',
+                          backgroundColor: theme.palette.action.hover,
+                          borderRadius: '8px',
+                          display: 'flex',
+                          fontSize: '18px',
+                          height: '36px',
+                          justifyContent: 'center',
+                          width: '36px',
+                        }}
+                      >
+                        {selectedReaction}
+                      </Box>
+                      <Typography
+                        sx={{
+                          fontSize: '14px',
+                          fontWeight: 600,
+                          color: theme.palette.text.primary,
+                        }}
+                      >
+                        {t('core:message.generic.people_reaction', {
+                          reaction: selectedReaction,
+                          postProcess: 'capitalizeFirstChar',
+                        })}
+                      </Typography>
                     </Box>
-                    <Typography
+
+                    <List
+                      disablePadding
                       sx={{
-                        fontSize: '14px',
-                        fontWeight: 600,
-                        color: theme.palette.text.primary,
+                        maxHeight: '240px',
+                        overflow: 'auto',
                       }}
                     >
-                      {t('core:message.generic.people_reaction', {
-                        reaction: selectedReaction,
-                        postProcess: 'capitalizeFirstChar',
-                      })}
-                    </Typography>
-                  </Box>
+                      {reactions[selectedReaction]?.map((reactionItem) => {
+                        const hasUnsafeReactionName = Boolean(
+                          reactionItem.senderName &&
+                          hasInvisibleCharacters(reactionItem.senderName)
+                        );
 
-                  <List
-                    disablePadding
-                    sx={{
-                      maxHeight: '240px',
-                      overflow: 'auto',
-                    }}
-                  >
-                    {reactions[selectedReaction]?.map((reactionItem) => {
-                      const hasUnsafeReactionName = Boolean(
-                        reactionItem.senderName &&
-                        hasInvisibleCharacters(reactionItem.senderName)
-                      );
-
-                      return (
-                        <ListItem
-                          key={reactionItem.sender}
-                          disablePadding
-                          sx={{
-                            borderRadius: '8px',
-                            marginBottom: '2px',
-                            '&:last-of-type': { marginBottom: 0 },
-                            '&:hover': {
-                              backgroundColor: theme.palette.action.hover,
-                            },
-                          }}
-                        >
-                          <ListItemText
-                            primary={
-                              reactionItem.senderName || reactionItem.sender
-                            }
-                            primaryTypographyProps={{
-                              sx: {
-                                fontSize: '14px',
-                                fontWeight: 500,
-                                ...(hasUnsafeReactionName
-                                  ? {
-                                      textDecorationLine: 'line-through',
-                                      textDecorationThickness: '2px',
-                                      textDecorationColor:
-                                        theme.palette.error.main,
-                                    }
-                                  : {}),
+                        return (
+                          <ListItem
+                            key={reactionItem.sender}
+                            disablePadding
+                            sx={{
+                              borderRadius: '8px',
+                              marginBottom: '2px',
+                              '&:last-of-type': { marginBottom: 0 },
+                              '&:hover': {
+                                backgroundColor: theme.palette.action.hover,
                               },
                             }}
-                            sx={{ py: '8px', px: '12px' }}
-                          />
-                        </ListItem>
-                      );
-                    })}
-                  </List>
-                </Box>
+                          >
+                            <ListItemText
+                              primary={
+                                reactionItem.senderName || reactionItem.sender
+                              }
+                              primaryTypographyProps={{
+                                sx: {
+                                  fontSize: '14px',
+                                  fontWeight: 500,
+                                  ...(hasUnsafeReactionName
+                                    ? {
+                                        textDecorationLine: 'line-through',
+                                        textDecorationThickness: '2px',
+                                        textDecorationColor:
+                                          theme.palette.error.main,
+                                      }
+                                    : {}),
+                                },
+                              }}
+                              sx={{ py: '8px', px: '12px' }}
+                            />
+                          </ListItem>
+                        );
+                      })}
+                    </List>
+                  </Box>
                 </ClickAwayListener>
               </Popper>
             )}
@@ -4378,6 +4439,91 @@ export const MessageItemComponent = ({
           />
         )}
       </MessageWragger>
+      <Dialog
+        aria-labelledby="reticulum-select-text-title"
+        fullWidth
+        maxWidth="sm"
+        open={isSelectTextOpen}
+        onClose={() => setIsSelectTextOpen(false)}
+        slotProps={{
+          backdrop: {
+            sx: {
+              backdropFilter: 'blur(2px)',
+              backgroundColor: 'rgba(3, 6, 12, 0.78)',
+            },
+          },
+          paper: {
+            sx: {
+              backgroundColor: theme.palette.background.paper,
+              backgroundImage: 'none',
+              border: '1px solid',
+              borderColor: alpha(theme.palette.text.secondary, 0.22),
+              borderRadius: '16px',
+              boxShadow: '0 24px 70px rgba(0, 0, 0, 0.48)',
+            },
+          },
+        }}
+      >
+        <DialogTitle
+          id="reticulum-select-text-title"
+          sx={{
+            fontSize: '17px',
+            fontWeight: 750,
+            padding: '18px 22px 10px',
+          }}
+        >
+          Select text
+        </DialogTitle>
+        <DialogContent sx={{ padding: '0 22px 8px' }}>
+          <Typography
+            sx={{
+              color: theme.palette.text.secondary,
+              fontSize: '12.5px',
+              marginBottom: '10px',
+            }}
+          >
+            Drag the handles to keep only the part you want, then copy.
+          </Typography>
+          <Box
+            ref={selectTextBodyRef}
+            sx={{
+              backgroundColor: alpha(theme.palette.text.primary, 0.06),
+              border: '1px solid',
+              borderColor: theme.palette.divider,
+              borderRadius: '10px',
+              cursor: 'text',
+              fontSize: '15px',
+              lineHeight: 1.45,
+              maxHeight: '52vh',
+              overflowY: 'auto',
+              padding: '12px 14px',
+              userSelect: 'text',
+              WebkitUserSelect: 'text',
+              WebkitTouchCallout: 'default',
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word',
+            }}
+          >
+            {reticulumMessagePlainText}
+          </Box>
+        </DialogContent>
+        <DialogActions sx={{ padding: '8px 18px 16px' }}>
+          <Button
+            onClick={() => setIsSelectTextOpen(false)}
+            sx={{ borderRadius: '9px', fontWeight: 650, textTransform: 'none' }}
+          >
+            Close
+          </Button>
+          <Button
+            onClick={() => void copySelectedMessageText()}
+            startIcon={<ContentCopyRoundedIcon sx={{ fontSize: 16 }} />}
+            variant="contained"
+            sx={{ borderRadius: '9px', fontWeight: 750, textTransform: 'none' }}
+          >
+            {selectTextCopied ? 'Copied' : 'Copy selection'}
+          </Button>
+        </DialogActions>
+      </Dialog>
       <Dialog
         aria-describedby="reticulum-file-open-warning-description"
         aria-labelledby="reticulum-file-open-warning-title"
@@ -4686,6 +4832,21 @@ export const MessageItemComponent = ({
             </Typography>
           </MenuItem>
           <MenuItem
+            disabled={!reticulumMessagePlainText}
+            onClick={() => {
+              setReticulumMessageMenuPosition(null);
+              setSelectTextCopied(false);
+              setIsSelectTextOpen(true);
+            }}
+          >
+            <ListItemIcon sx={{ minWidth: '32px' }}>
+              <TextFieldsRoundedIcon fontSize="small" />
+            </ListItemIcon>
+            <Typography variant="inherit" sx={{ fontSize: '14px' }}>
+              Select Text
+            </Typography>
+          </MenuItem>
+          <MenuItem
             onClick={() => {
               setReticulumMessageMenuPosition(null);
               onReply(message);
@@ -4858,7 +5019,8 @@ export const MessageItem = MemoizedMessageItem;
 export const ReplyPreview = ({
   message,
   isEdit = false,
-  reticulumOnlyContent = false,
+  // Kept for callers; reply body rendering is always exclusive now.
+  reticulumOnlyContent: _reticulumOnlyContent = false,
 }) => {
   const theme = useTheme();
   const { t } = useTranslation([
@@ -4968,32 +5130,16 @@ export const ReplyPreview = ({
           </Typography>
         </Box>
 
-        {reticulumOnlyContent ? (
-          replyMessageText ? (
-            <MessageDisplay isReply htmlContent={replyMessageText} />
-          ) : message?.decryptedData?.type === 'notification' ? (
-            <MessageDisplay
-              isReply
-              htmlContent={message.decryptedData?.data?.message}
-            />
-          ) : message?.text ? (
-            <MessageDisplay isReply htmlContent={message.text} />
-          ) : null
-        ) : (
-          <>
-            {replyMessageText && (
-              <MessageDisplay isReply htmlContent={replyMessageText} />
-            )}
-            {message?.decryptedData?.type === 'notification' ? (
-              <MessageDisplay
-                isReply
-                htmlContent={message.decryptedData?.data?.message}
-              />
-            ) : (
-              <MessageDisplay isReply htmlContent={message.text} />
-            )}
-          </>
-        )}
+        {replyMessageText ? (
+          <MessageDisplay isReply htmlContent={replyMessageText} />
+        ) : message?.decryptedData?.type === 'notification' ? (
+          <MessageDisplay
+            isReply
+            htmlContent={message.decryptedData?.data?.message}
+          />
+        ) : message?.text ? (
+          <MessageDisplay isReply htmlContent={message.text} />
+        ) : null}
       </Box>
     </Box>
   );

@@ -9,9 +9,118 @@ desktop Hub. The format is based on
 
 ---
 
-## [3.0.0] — Unreleased (GO 3.0)
+## [0.0.5] — 2026-08-14 (GO 3.0)
 
-Current Android product line branded **GO 3.0** (`versionName` 3.0.0). Continues the Qortal Hub
+Field / Q-Share build **GO 3.0 v0.0.5** (`versionName` 0.0.5, `versionCode` 8). First
+Gitea push of everything since v0.0.1 (`0bb0c74a`, 2026-08-09).
+
+### Added
+
+- **Chat GIF library** _(shared)_ — emoji picker gains an Emojis / GIFs switch. GIFs
+  come from the community QDN library (`IMAGE` / `gif-` prefix, `qortal://APP/GIFs/`).
+  Search and tag chips filter a cached catalog; a most-used row is stored on device;
+  the grid is a 3-column masonry that keeps each GIF's real shape. Selecting a GIF
+  attaches a QDN pointer (`libraryGif: true`), not a file over the mesh. Hub port:
+  [`HUB_GIF_PICKER.md`](HUB_GIF_PICKER.md).
+- **Queued GIF media cache** _(shared)_ — at most two concurrent node fetches, memory
+  + IndexedDB, in-view lazy load, prefetch of most-used tiles.
+- **GO version in Core & settings** _(mobile)_ — the old “UI version” label is now
+  **GO version** and reads `GO_VERSION` from `src/appVersion.ts`, kept identical to
+  Android `versionName`.
+
+### Fixed
+
+- **GIF search stall** _(shared)_ — long result lists no longer stop fetching after
+  two or three tiles.
+- **Emoji / GIF keyboard handoff** _(mobile)_ — switching tabs does not open the
+  keyboard by itself; tapping the composer after GIF search closes the panel instead
+  of leaving it behind the keyboard.
+- **GIF load crash** _(mobile)_ — cancelled off-screen fetches no longer surface as
+  an unhandled rejection / full-screen runtime error.
+
+---
+
+## [0.0.4] — 2026-08-13 (GO 3.0)
+
+Field / Q-Share build **GO 3.0 v0.0.4** (`versionName` 0.0.4, `versionCode` 7).
+
+### Added
+
+- **In-app updates end to end** _(mobile)_ — a newer `GO 3.0` APK on Q-Share appears
+  in the notification bell, downloads over QDN with live progress, and opens
+  Android's installer. Checks on startup and every six hours.
+- **QDN download progress notifications** _(mobile)_ — “Gathering from QDN” then
+  “Saving” with a megabyte count, for Q-Share, chat attachments, and other QDN saves.
+
+### Fixed
+
+- **Install permission handoff** _(mobile)_ — after Android's “allow installs from
+  GO” toggle, returning to the app continues the installer instead of staying on
+  “Open settings”.
+- **Large Q-Share / QDN saves** _(mobile)_ — big files are streamed to storage
+  instead of being base64-chunked through the WebView (that path could OOM and
+  close the app).
+- **Leave-chat mid-send crash** _(mobile)_ — navigating away while a send was still
+  in flight no longer crashed if that send then failed.
+
+---
+
+## [0.0.3] — 2026-08-13 (GO 3.0)
+
+Field / Q-Share build **GO 3.0 v0.0.3** (`versionName` 0.0.3, `versionCode` 6).
+
+### Added
+
+- **Compact chat composer** _(mobile)_ — staged height growth, fade-in send button,
+  full-width expanded composer, emoji panel in the soft-keyboard slot (smiley
+  swaps the two keyboards instead of stacking them).
+- **In-app update watcher** _(mobile)_ — first version that can notice a newer
+  Q-Share build and download/install it.
+
+### Fixed
+
+- **Composer keyboard** _(mobile)_ — scrolling a chat, removing an attachment, or
+  changing expiry no longer dismisses the keyboard; it returns after a file pick.
+- **Unlock after screen-off** _(mobile)_ — turning the screen on during a fingerprint
+  scan no longer left a blank window.
+- **Launch freeze / long-session black screen** _(mobile)_ — background loop that
+  was burning CPU after a minute or two.
+
+---
+
+## [0.0.2] — 2026-08-10 (GO 3.0)
+
+Internal field build **GO 3.0 v0.0.2** (`versionName` 0.0.2, `versionCode` 4). Follows the
+v0.0.1 Gitea / desktop APK baseline with chat reliability and mobile UX fixes.
+
+### Fixed
+
+- **Group reply sends** _(mobile)_ — replies no longer publish multiple times from double-taps
+  or aggressive queue retries; reply quote previews render once.
+- **Reply composer top bar** _(mobile)_ — Reticulum compose no longer steals the search bar and
+  leaves a blank grey strip while replying.
+- **Chat draft leakage** _(mobile)_ — unsent drafts stay in their own group/DM; switching chats
+  clears or restores the correct composer text.
+- **Q-Manager / chat file save** _(mobile)_ — saving shared chat files no longer fails silently
+  on null filenames or large writes.
+- **Long-open chat runtime fault** _(mobile)_ — `reticulumChat:getHistory` timeouts no longer
+  surface as a full-screen “GO runtime error”.
+- **SSH-tunneled local nodes** _(mobile)_ — `https://localhost:port` is normalized to HTTP outside
+  Electron so plain-HTTP tunnels work without a TLS handshake failure.
+- **Group overlays / About Group / calendar empty state** _(mobile)_ — About Group opens reliably;
+  exclusive Search/Admins/Members/Files/Calendar overlays; calendar empty weeks fit the viewport.
+
+---
+
+## [0.0.1] — 2026-08-09 (GO 3.0)
+
+Internal baseline pushed to Gitea as **GO 3.0 v0.0.1** and packaged as the desktop `GO-3.0.apk`.
+
+---
+
+## [3.0.0] — Unreleased (GO 3.0 product line)
+
+Current Android product line branded **GO 3.0**. Continues the Qortal Hub
 mobile fork with Reticulum chat, group UI, calendar, and branding updates.
 
 ### Added

@@ -319,7 +319,8 @@ function handleWorkerMessage(event: MessageEvent): void {
       if (pending) {
         pendingRpc.delete(data.id);
         if (data.ok) pending.resolve(data.value);
-        else pending.reject(new Error(data.error || 'reticulumChat RPC failed'));
+        else
+          pending.reject(new Error(data.error || 'reticulumChat RPC failed'));
       }
       break;
     }
@@ -327,7 +328,12 @@ function handleWorkerMessage(event: MessageEvent): void {
       emitEvent(data.channel, data.payload);
       break;
     case 'cmd':
-      void answerCommandRequest(data.id, data.action, data.payload, data.timeoutMs);
+      void answerCommandRequest(
+        data.id,
+        data.action,
+        data.payload,
+        data.timeoutMs
+      );
       break;
     case 'sign':
       void answerSignRequest(data.id, data.fields);
@@ -346,7 +352,11 @@ function handleWorkerMessage(event: MessageEvent): void {
   }
 }
 
-function rpc(method: string, args: unknown[], timeoutMs = 45_000): Promise<unknown> {
+function rpc(
+  method: string,
+  args: unknown[],
+  timeoutMs = 45_000
+): Promise<unknown> {
   return ensureStarted().then(
     () =>
       new Promise((resolve, reject) => {
@@ -374,11 +384,17 @@ function rpc(method: string, args: unknown[], timeoutMs = 45_000): Promise<unkno
   );
 }
 
-async function getNodeApiConfig(): Promise<{ apiBase: string; apiKey?: string }> {
+async function getNodeApiConfig(): Promise<{
+  apiBase: string;
+  apiKey?: string;
+}> {
   try {
     const apiKey = await window.sendMessage('getApiKey');
     if (apiKey && typeof apiKey === 'object' && apiKey.url) {
-      return { apiBase: String(apiKey.url), apiKey: String(apiKey.apikey || '') };
+      return {
+        apiBase: String(apiKey.url),
+        apiKey: String(apiKey.apikey || ''),
+      };
     }
   } catch {
     /* fall through to the public/base API */
@@ -621,16 +637,24 @@ function installMobileReticulumResources(): void {
         return { success: false, error: res?.error || 'Resource unavailable' };
       }
       try {
-        const { saveBlobToMobileDocuments } = await import(
-          '../../utils/mobileFileSave'
-        );
-        const saved = await saveBlobToMobileDocuments(
+        const { saveStreamToMobileDocuments } =
+          await import('../../utils/mobileFileSave');
+        // Base64-ing the whole transfer for a single bridge call stalls the
+        // WebView (and can run it out of memory) on anything large, so hand it
+        // over in slices instead.
+        const bytes = res.bytes;
+        const SLICE_BYTES = 384 * 1024;
+        const slices = (async function* () {
+          for (let offset = 0; offset < bytes.length; offset += SLICE_BYTES) {
+            yield bytes.subarray(offset, offset + SLICE_BYTES);
+          }
+        })();
+        const saved = await saveStreamToMobileDocuments(
           suggestedFileName || res.manifest?.fileName || 'qortal-file',
-          new Blob([res.bytes], {
-            type: res.manifest?.mimeType || 'application/octet-stream',
-          })
+          slices,
+          res.manifest?.mimeType || 'application/octet-stream'
         );
-        return { success: true, path: saved.path };
+        return { success: true, path: saved.path, uri: saved.uri };
       } catch (err) {
         return {
           success: false,
@@ -642,7 +666,10 @@ function installMobileReticulumResources(): void {
     open: async (fileHash: string, suggestedFileName?: string) => {
       const opened = await resources.getUrl(fileHash);
       if (!opened.success || !opened.url) {
-        return { success: false, error: opened.error || 'Resource unavailable' };
+        return {
+          success: false,
+          error: opened.error || 'Resource unavailable',
+        };
       }
       window.open(opened.url, '_blank');
       void suggestedFileName;

@@ -1,7 +1,20 @@
 import aesjs from 'aes-js';
 import { createEndpoint } from '../background/background.ts';
 import { isCapacitor } from './platform';
-import { saveStreamToMobileDocuments } from './mobileFileSave';
+import {
+  downloadUrlToMobileDocuments,
+  isSilentSaveFile,
+  mobileSaveLocationLabelFor,
+  saveStreamToMobileDocuments,
+} from './mobileFileSave';
+import {
+  beginQdnSaveNotification,
+  failQdnSaveNotification,
+  finishQdnSaveNotification,
+  reportQdnGatherProgress,
+  reportQdnTransferProgress,
+} from './qdnDownloadNotifications';
+import { waitForQdnResource } from './qdnResourceFetch';
 
 export function normalizeFilename(
   input: string,
@@ -64,13 +77,17 @@ interface DownloadFromLocationParams {
 interface DownloadResult {
   success: boolean;
   filePath?: string;
+  /** Openable location of the saved file, when the platform provides one. */
+  fileUri?: string;
   bytesWritten?: number;
   error?: string;
 }
 
 /**
  * Downloads and optionally decrypts a file from QDN location
- * No permissions, no UI notifications - just pure download logic
+ * Asks for nothing: permission is the caller's business. On mobile the wait is
+ * reported to the notification tray, since a QDN save outlives the screen that
+ * started it.
  *
  * @param params - Download parameters
  * @returns Promise with download result
@@ -137,46 +154,122 @@ export async function downloadFromLocation(
     // silently do nothing. Stream into Documents/Qortal Go via the native
     // FileWriter plugin instead (decrypting on the fly when needed).
     if (isCapacitor()) {
-      const endpoint = isEncrypted
-        ? await createEndpoint(locationUrl)
-        : await createEndpoint(
-            locationUrl +
-              `?attachment=true&attachmentFilename=${encodeURIComponent(normalizeFilename(filename))}`
+      const safeFilename = normalizeFilename(filename || 'download');
+      const notificationId = `qdn-save:${service}/${name}/${identifier ?? ''}`;
+      const announce =
+        !isSilentSaveFile(safeFilename) &&
+        beginQdnSaveNotification(notificationId, safeFilename);
+
+      try {
+        // Nothing can be downloaded until the node holds every chunk, and for
+        // a large file that is most of the wait. Watching it turns a dead
+        // progress bar into a moving one.
+        if (announce) {
+          await waitForQdnResource({ service, name, identifier }, (gather) =>
+            reportQdnGatherProgress(notificationId, gather.percent, gather)
           );
-      const response = await fetch(endpoint);
-      if (!response.ok) {
-        throw new Error('Failed to download file');
-      }
-      if (!response.body) {
-        throw new Error('Response body is empty');
-      }
-
-      const reader = response.body.getReader();
-      const decryptedChunks = async function* (): AsyncGenerator<Uint8Array> {
-        let bytesProcessed = 0;
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          if (!value || value.length === 0) continue;
-          if (isEncrypted && keyBytes && ivBytes) {
-            const blockOffset = BigInt(bytesProcessed >> 4);
-            yield await decryptAesCtrChunk(keyBytes, ivBytes, blockOffset, value);
-          } else {
-            yield value;
-          }
-          bytesProcessed += value.length;
         }
-      };
 
-      const saved = await saveStreamToMobileDocuments(
-        filename,
-        decryptedChunks()
-      );
-      return {
-        success: true,
-        filePath: saved.path,
-        bytesWritten: saved.bytesWritten,
-      };
+        const endpoint = isEncrypted
+          ? await createEndpoint(locationUrl)
+          : await createEndpoint(
+              locationUrl +
+                `?attachment=true&attachmentFilename=${encodeURIComponent(safeFilename)}`
+            );
+
+        // Unencrypted content needs nothing from the WebView, so let the native
+        // side fetch and write it in one pass rather than shuttling every chunk
+        // across the bridge as base64.
+        if (!isEncrypted) {
+          const saved = await downloadUrlToMobileDocuments(
+            safeFilename,
+            endpoint,
+            mimeType,
+            announce
+              ? (event) =>
+                  reportQdnTransferProgress(
+                    notificationId,
+                    event.bytesWritten,
+                    event.totalBytes
+                  )
+              : undefined
+          );
+          if (announce) {
+            finishQdnSaveNotification(
+              notificationId,
+              mobileSaveLocationLabelFor(safeFilename, mimeType)
+            );
+          }
+          return {
+            success: true,
+            filePath: saved.path,
+            fileUri: saved.uri,
+            bytesWritten: saved.bytesWritten,
+          };
+        }
+
+        const response = await fetch(endpoint);
+        if (!response.ok) {
+          throw new Error('Failed to download file');
+        }
+        if (!response.body) {
+          throw new Error('Response body is empty');
+        }
+
+        const expectedSize =
+          Number(response.headers.get('Content-Length')) || 0;
+        const reader = response.body.getReader();
+        const decryptedChunks = async function* (): AsyncGenerator<Uint8Array> {
+          let bytesProcessed = 0;
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            if (!value || value.length === 0) continue;
+            if (isEncrypted && keyBytes && ivBytes) {
+              const blockOffset = BigInt(bytesProcessed >> 4);
+              yield await decryptAesCtrChunk(
+                keyBytes,
+                ivBytes,
+                blockOffset,
+                value
+              );
+            } else {
+              yield value;
+            }
+            bytesProcessed += value.length;
+            if (announce) {
+              reportQdnTransferProgress(
+                notificationId,
+                bytesProcessed,
+                expectedSize
+              );
+            }
+          }
+        };
+
+        const saved = await saveStreamToMobileDocuments(
+          safeFilename,
+          decryptedChunks(),
+          mimeType
+        );
+        if (announce) {
+          finishQdnSaveNotification(
+            notificationId,
+            mobileSaveLocationLabelFor(safeFilename, mimeType)
+          );
+        }
+        return {
+          success: true,
+          filePath: saved.path,
+          fileUri: saved.uri,
+          bytesWritten: saved.bytesWritten,
+        };
+      } catch (error: any) {
+        if (announce) {
+          failQdnSaveNotification(notificationId, error?.message);
+        }
+        throw error;
+      }
     }
 
     // Check if we're in Electron

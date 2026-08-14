@@ -12,7 +12,11 @@
     <style name="AppTheme.NoActionBar" parent="Theme.AppCompat.DayNight.NoActionBar">
         <item name="windowActionBar">false</item>
         <item name="windowNoTitle">true</item>
+        <!-- Match the in-app dark shell so a stalled WebView resume never
+             flashes the DayNight theme's light-grey window background. -->
+        <item name="android:windowBackground">@color/splashBackground</item>
         <item name="android:background">@null</item>
+        <item name="android:colorBackground">@color/splashBackground</item>
     </style>
 
 

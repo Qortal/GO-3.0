@@ -16,6 +16,12 @@ installReticulumBridges();
 // mobile app runs the new Reticulum chat (no legacy). No-op off-Capacitor.
 installMobileReticulumChat();
 import App from './App.tsx';
+import ErrorBoundary from './common/ErrorBoundary';
+import RootCrashFallback from './common/RootCrashFallback';
+import {
+  installFatalErrorRecorder,
+  recordFatalError,
+} from './common/fatalErrorLog';
 import '../src/styles/index.css';
 import './messaging/MessagesToBackground.tsx';
 import { MessageQueueProvider } from './messaging/MessageQueueContext.tsx';
@@ -39,8 +45,18 @@ function hideAppSplash() {
 // much sooner on a healthy launch.
 window.setTimeout(hideAppSplash, 8000);
 
+installFatalErrorRecorder();
+
+// React 18 unmounts the entire tree when a render error reaches the root, so
+// without a boundary here any uncaught fault anywhere above the authenticated
+// shell leaves the user staring at a blank page with no way back.
 createRoot(document.getElementById('root')!).render(
-  <>
+  <ErrorBoundary
+    fallback={({ error }) => <RootCrashFallback error={error} />}
+    onCatch={(error, componentStack) =>
+      recordFatalError('render', error, componentStack)
+    }
+  >
     <ThemeProvider>
       <CssBaseline />
       <MessageQueueProvider>
@@ -48,7 +64,7 @@ createRoot(document.getElementById('root')!).render(
         <ReticulumStatusChip />
       </MessageQueueProvider>
     </ThemeProvider>
-  </>
+  </ErrorBoundary>
 );
 
 // Reveal the app once React has painted, keeping a short minimum so the

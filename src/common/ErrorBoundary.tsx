@@ -2,7 +2,9 @@ import { Component, ReactNode } from 'react';
 
 interface ErrorBoundaryProps {
   children: ReactNode;
-  fallback: ReactNode | ((args: { error: Error | null; componentStack?: string }) => ReactNode);
+  fallback:
+    | ReactNode
+    | ((args: { error: Error | null; componentStack?: string }) => ReactNode);
   /**
    * Optional predicate. When it returns true for a caught error, the boundary
    * treats the error as transient/benign and automatically re-renders its
@@ -11,6 +13,8 @@ interface ErrorBoundaryProps {
    * dead-end the whole authenticated shell.
    */
   isRecoverable?: (error: Error | null) => boolean;
+  /** Notified for every caught error, before any auto-recovery is attempted. */
+  onCatch?: (error: Error, componentStack?: string) => void;
 }
 
 interface ErrorBoundaryState {
@@ -41,6 +45,11 @@ class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
       error,
     });
     console.error('Error caught in ErrorBoundary:', error, errorInfo);
+    try {
+      this.props.onCatch?.(error, errorInfo.componentStack ?? undefined);
+    } catch {
+      /* reporting must never mask the original error */
+    }
 
     const recoverable = this.props.isRecoverable?.(error) ?? false;
     if (recoverable && this.recoveryAttempts < MAX_AUTO_RECOVERIES) {

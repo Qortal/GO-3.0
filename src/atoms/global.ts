@@ -74,6 +74,14 @@ export const isDisabledEditorEnterAtom = atomWithReset(false);
 
 /** True while mobile chat compose keyboard mode is active (hides tab bar, swaps top bar). */
 export const mobileChatComposeActiveAtom = atomWithReset(false);
+/** True while the in-app emoji keyboard occupies the soft keyboard's slot. */
+export const mobileEmojiPanelOpenAtom = atomWithReset(false);
+/**
+ * True while the chat composer is expanded to full screen. The composer cannot
+ * simply out-stack the top bar — it lives inside a section layer that owns its
+ * own stacking context — so the bar steps aside instead.
+ */
+export const mobileFullscreenComposerActiveAtom = atomWithReset(false);
 /** True when the chat message list has been scrolled down, so the group section
  *  tabs collapse (landscape) to give the conversation more vertical room. */
 export const mobileChatHeaderCollapsedAtom = atomWithReset(false);
@@ -85,7 +93,12 @@ export const isRunningPublicNodeAtom = atomWithReset(false);
 /** Pre-login Login settings modal (shared between Enter Qortal screen and footer). */
 export const mobileLoginSettingsOpenAtom = atom(false);
 export const mobileLoginSettingsWalletsAtom = atom<
-  Array<{ address0?: string; name?: string; filename?: string; [key: string]: unknown }>
+  Array<{
+    address0?: string;
+    name?: string;
+    filename?: string;
+    [key: string]: unknown;
+  }>
 >([]);
 export const isUsingImportExportSettingsAtom = atomWithReset(null);
 export const memberGroupsAtom = atomWithReset([]);
@@ -898,8 +911,17 @@ export const hasUnreadGroupsAtom = atom((get) => {
 
 /** Derived: any direct message chat has unread. */
 export const directChatHasUnreadAtom = atom((get) => {
-  const directs = get(memberDirectsAtom);
   const myAddress = get(userInfoAtom)?.address;
+  if (get(reticulumChatEnabledAtom)) {
+    const summaries = get(reticulumDirectSummariesAtom) || {};
+    return Object.entries(summaries).some(([peerAddress, summary]) => {
+      if (myAddress && peerAddress === myAddress) return false;
+      return (
+        Number((summary as { unreadCount?: number })?.unreadCount || 0) > 0
+      );
+    });
+  }
+  const directs = get(memberDirectsAtom);
   const timestampEnterData = get(timestampEnterDataAtom) || {};
   if (!directs?.length || !myAddress) return false;
   return directs.some(

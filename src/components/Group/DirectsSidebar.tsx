@@ -130,6 +130,10 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
   const compactToggle = isMobileWidth && isLandscape;
   const { t } = useTranslation();
   const draftKeys = useChatDraftKeys(myAddress);
+  const directUnreadCount = directs.reduce(
+    (total, direct) => total + Math.max(0, Number(direct?.unreadCount || 0)),
+    0
+  );
 
   return (
     <Box
@@ -358,6 +362,8 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
         >
           <Box sx={{ display: { xs: 'block', md: 'none' }, flexShrink: 0 }}>
             <ChatScopeSwitch
+              directHasUnread={directChatHasUnread}
+              directUnreadCount={directUnreadCount}
               onChange={setDesktopSideView}
               value="directs"
             />

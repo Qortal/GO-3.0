@@ -169,9 +169,9 @@ export const MobileTabBar = ({
       }
       case 'chat': {
         // Cycle behaviour (handled in Group.tsx via 'mobile-chat-tab'):
-        //  - arriving from another section: resume the most-recently opened
-        //    conversation (or show the last-used Groups/PM list if none);
-        //  - already on a conversation: tap returns to its list (Groups or PM).
+        //  - first entry after launch: the Groups/PM list, never a conversation;
+        //  - arriving from another section: resume the conversation left open;
+        //  - already on Chat: toggle between that conversation and its list.
         const reEntry =
           active === 'chat' || desktopViewMode === 'chat';
         setDesktopViewMode('chat');

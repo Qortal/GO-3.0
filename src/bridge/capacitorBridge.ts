@@ -122,36 +122,47 @@ export function installCapacitorBridge(): void {
         }
       });
 
-      // Resume repaint: when the app comes back to the foreground (screen
-      // off/on, returned from background) the WebView compositor can stay blank
-      // until a touch. Nudge a reflow so the page repaints immediately. The
-      // native onResume also forces a redraw; this covers the JS layout side.
+      // Resume repaint: soft layout nudge only. Native onResume owns the
+      // heavier wake; repeating body display toggles here caused unlock flicker.
       App.addListener('appStateChange', ({ isActive }) => {
-        if (isActive) forceWebViewReflow();
+        if (isActive) scheduleWebViewReflow();
       });
     })
     .catch(() => {});
 
   // Backstop for WebViews that don't reliably deliver appStateChange.
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') forceWebViewReflow();
+    if (document.visibilityState === 'visible') scheduleWebViewReflow();
   });
 }
 
+const WEBVIEW_REFLOW_DEBOUNCE_MS = 400;
+let lastWebViewReflowAt = 0;
+let webViewReflowFollowUpTimer: number | null = null;
+
+/** Debounced soft reflow — coalesces appStateChange + visibilitychange. */
+function scheduleWebViewReflow(): void {
+  const now = Date.now();
+  if (now - lastWebViewReflowAt < WEBVIEW_REFLOW_DEBOUNCE_MS) return;
+  lastWebViewReflowAt = now;
+  forceWebViewReflow();
+  if (webViewReflowFollowUpTimer != null) {
+    window.clearTimeout(webViewReflowFollowUpTimer);
+  }
+  // One quiet follow-up if the OEM window lands a beat late.
+  webViewReflowFollowUpTimer = window.setTimeout(() => {
+    webViewReflowFollowUpTimer = null;
+    forceWebViewReflow();
+  }, 250);
+}
+
 /**
- * Force a layout/repaint pass after the app resumes. A reflow read + a 0px
- * scroll nudge reliably wakes a stalled WebView compositor without altering
- * the user's scroll position.
+ * Soft layout/repaint pass after resume. Avoid display:none — hiding the whole
+ * document for a reflow read visibly glitches for as long as wake handlers fire.
  */
 function forceWebViewReflow(): void {
   try {
-    const root = document.documentElement;
-    // Touch a layout property to force reflow.
-    void root.offsetHeight;
-    const x = window.scrollX;
-    const y = window.scrollY;
-    window.scrollTo(x, y === 0 ? 0 : y);
-    window.dispatchEvent(new Event('resize'));
+    void document.documentElement.offsetHeight;
   } catch {
     /* best-effort */
   }
@@ -2994,6 +3005,16 @@ export function installReticulumBridges(): void {
   // for 30 s, so republish on a tighter cadence than the lease sweep below or
   // the call buttons stay disabled far longer than they need to.
   setInterval(refreshMobileStatus, 5_000);
+
+  // Android throttles WebView timers while backgrounded, so after a wake the
+  // bridge can be running on a neighbour list the sweep below won't refresh for
+  // another 20 s. Chat subscription fanouts fail outright with no route in that
+  // window, so re-sync the overlay as soon as the app is in front again.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return;
+    refreshMobileStatus();
+    if (bridgeReady) void pushOverlaySync();
+  });
 
   // Keep the bridge's neighbour leases warm (30 s grace window) and prune
   // expired online entries so the UI doesn't show stale peers.

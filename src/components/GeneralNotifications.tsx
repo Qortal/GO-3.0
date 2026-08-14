@@ -21,8 +21,15 @@ import {
   alpha,
   useTheme,
 } from '@mui/material';
-import { useAtomValue, useSetAtom } from 'jotai';
-import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
+import { useAtom, useAtomValue, useSetAtom } from 'jotai';
+import {
+  forwardRef,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { useTranslation } from 'react-i18next';
 import { getBaseApiReact } from '../App';
 import {
@@ -35,6 +42,11 @@ import {
   reticulumEnabledAtom,
 } from '../atoms/global';
 import LogoSelected from '../assets/svgs/LogoSelected.svg';
+import {
+  appUpdateReleaseAtom,
+  appUpdateSeenVersionAtom,
+} from '../appUpdate/appUpdateAtoms';
+import { AppUpdateNotice } from './AppUpdate/AppUpdateNotice';
 import {
   getAppsWithNotificationPermission,
   getNotificationOsPushDisabledMap,
@@ -186,6 +198,13 @@ export const GeneralNotifications = forwardRef<
       ),
     [notifications, reticulumEnabled]
   );
+  const updateRelease = useAtomValue(appUpdateReleaseAtom);
+  const [updateSeenVersion, setUpdateSeenVersion] = useAtom(
+    appUpdateSeenVersionAtom
+  );
+  const updateUnseen = Boolean(
+    updateRelease && updateSeenVersion !== updateRelease.version
+  );
   const unseenCount = useMemo(() => {
     return resourceNotifications.reduce((count, notification) => {
       const timestamp = getNotificationTimestamp(notification);
@@ -201,14 +220,18 @@ export const GeneralNotifications = forwardRef<
       );
     }, 0);
   }, [resourceNotifications, seenInAppKeyTimes, lastSeenTimestamp]);
-  const hasAnyNotifications = resourceNotifications.length > 0;
+  // A pending app update sits at the top of the list and counts towards the
+  // badge like any other unread thing.
+  const totalUnseenCount = unseenCount + (updateUnseen ? 1 : 0);
+  const hasAnyNotifications =
+    resourceNotifications.length > 0 || Boolean(updateRelease);
 
-  const hasNewNotifications = unseenCount > 0;
+  const hasNewNotifications = totalUnseenCount > 0;
   const notificationsLabel = t('message.generic.notifications', {
     defaultValue: 'Notifications',
   });
   const notificationsAriaLabel = hasNewNotifications
-    ? `${notificationsLabel}, ${unseenCount} unread`
+    ? `${notificationsLabel}, ${totalUnseenCount} unread`
     : `${notificationsLabel}, no unread notifications`;
   const NotificationIcon = hasNewNotifications
     ? NotificationsActiveRoundedIcon
@@ -299,6 +322,7 @@ export const GeneralNotifications = forwardRef<
           onClick={(event) => {
             event.stopPropagation();
             setAnchorEl(event.currentTarget);
+            if (updateRelease) setUpdateSeenVersion(updateRelease.version);
           }}
           sx={{
             ...(buttonSx || {}),
@@ -340,7 +364,7 @@ export const GeneralNotifications = forwardRef<
         </ButtonBase>
         {hasNewNotifications && (
           <ReticulumUnreadCountBadge
-            count={unseenCount}
+            count={totalUnseenCount}
             fontSize={9}
             outlineColor={badgeOutlineColor || theme.palette.background.surface}
             size={15}
@@ -458,6 +482,8 @@ export const GeneralNotifications = forwardRef<
               onClick={(event) => event.stopPropagation()}
             />
           </Box>
+
+          <AppUpdateNotice onOpen={() => setAnchorEl(null)} />
 
           {!hasAnyNotifications && (
             <>

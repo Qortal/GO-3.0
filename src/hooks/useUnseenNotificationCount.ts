@@ -6,6 +6,10 @@ import {
   notificationSeenInAppKeyTimesAtom,
   paymentNotificationsAtom,
 } from '../atoms/global';
+import {
+  appUpdateReleaseAtom,
+  appUpdateSeenVersionAtom,
+} from '../appUpdate/appUpdateAtoms';
 
 const RESOURCE_EVENT = 'RESOURCE_PUBLISHED';
 
@@ -29,6 +33,12 @@ export function useUnseenNotificationCount() {
   const notifications = useAtomValue(paymentNotificationsAtom);
   const lastSeenTimestamp = useAtomValue(lastPaymentSeenTimestampAtom);
   const seenInAppKeyTimes = useAtomValue(notificationSeenInAppKeyTimesAtom);
+  const updateRelease = useAtomValue(appUpdateReleaseAtom);
+  const updateSeenVersion = useAtomValue(appUpdateSeenVersionAtom);
+  // A published app update is unread until the panel holding it is opened.
+  const updateUnseen = Boolean(
+    updateRelease && updateSeenVersion !== updateRelease.version
+  );
 
   const resourceNotifications = useMemo(
     () =>
@@ -40,15 +50,19 @@ export function useUnseenNotificationCount() {
     return resourceNotifications.filter((notification) => {
       const timestamp = getNotificationTimestamp(notification);
       if (timestamp == null) return false;
-      if (isNotificationSeenInAppFromKeyTimes(notification, seenInAppKeyTimes)) {
+      if (
+        isNotificationSeenInAppFromKeyTimes(notification, seenInAppKeyTimes)
+      ) {
         return false;
       }
       return !lastSeenTimestamp || timestamp > lastSeenTimestamp;
     }).length;
   }, [resourceNotifications, seenInAppKeyTimes, lastSeenTimestamp]);
 
+  const total = unseenCount + (updateUnseen ? 1 : 0);
+
   return {
-    hasNewNotifications: unseenCount > 0,
-    unseenCount,
+    hasNewNotifications: total > 0,
+    unseenCount: total,
   };
 }

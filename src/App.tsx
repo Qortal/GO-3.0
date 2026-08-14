@@ -7,7 +7,14 @@ import {
   Suspense,
 } from 'react';
 import { useDropzone } from 'react-dropzone';
-import { Box, Button, ButtonBase, Typography, useMediaQuery, useTheme } from '@mui/material';
+import {
+  Box,
+  Button,
+  ButtonBase,
+  Typography,
+  useMediaQuery,
+  useTheme,
+} from '@mui/material';
 import { AnimatePresence } from 'framer-motion';
 import { decryptStoredWallet } from './utils/decryptWallet';
 import {
@@ -51,7 +58,15 @@ import {
 } from './components/App';
 
 import { LazyAuthenticatedShell } from './components/App/LazyAuthenticatedShell';
-import { MobileTabBar, MOBILE_TAB_BAR_HEIGHT_PX } from './components/Mobile/MobileTabBar';
+import {
+  MobileTabBar,
+  MOBILE_TAB_BAR_HEIGHT_PX,
+} from './components/Mobile/MobileTabBar';
+import { MobileEmojiPanel } from './components/Mobile/MobileEmojiPanel';
+import {
+  useLastSoftKeyboardHeight,
+  useSoftKeyboardInset,
+} from './hooks/useSoftKeyboardInset';
 import { MobileTopBar } from './components/Mobile/MobileTopBar';
 import { MobileTabsOverlay } from './components/Mobile/MobileTabsOverlay';
 import { MobileBackgroundSetup } from './components/Mobile/MobileBackgroundSetup';
@@ -77,6 +92,8 @@ import { useAppModals } from './hooks/useAppModals';
 import { useAppReset } from './hooks/useAppReset';
 import { useAppMessageHandler } from './hooks/useAppMessageHandler';
 import { QortinoNotificationHost } from './components/Snackbar/QortinoNotificationHost';
+import { AppUpdateWindow } from './components/AppUpdate/AppUpdateWindow';
+import { useAppUpdateWatcher } from './appUpdate/useAppUpdateWatcher';
 import { getWallets, storeWallets } from './background/background.ts';
 import {
   executeEvent,
@@ -114,6 +131,7 @@ import {
   userInfoAtom,
   walletToBeDecryptedErrorAtom,
   mobileChatComposeActiveAtom,
+  mobileEmojiPanelOpenAtom,
 } from './atoms/global';
 import { NotAuthenticated } from './components/NotAuthenticated.tsx';
 import { useFetchResources } from './hooks/useFetchResources.tsx';
@@ -172,12 +190,15 @@ import { isCapacitor } from './utils/platform';
 import { appLockedAtom, isIdleAtom } from './atoms/presence';
 import {
   AUTO_LOCK_PREFERENCE_CHANGE_EVENT,
+  clearAutoLockLastActivityAt,
   isAutoLockDue,
   readAutoLockDisabledFromStorage,
+  readAutoLockLastActivityAt,
   resolveAutoLockTimeoutMinutes,
   timeoutMinutesForAutoLockDisabled,
   type AutoLockTimeoutMinutes,
   writeAutoLockDisabledToStorage,
+  writeAutoLockLastActivityAt,
 } from './lib/autoLock';
 
 const MINTING_LOCAL_DEBUG_STORAGE_KEY = 'hub.mintingLocalDebug';
@@ -277,6 +298,11 @@ const IGNORABLE_RUNTIME_FAULT_MESSAGES: RegExp[] = [
   /Request timed out after \d+ ms\b/i,
   /Reticulum command timed out/i,
   /Reticulum bridge is not installed/i,
+  // Mobile chat-engine RPC timeouts (history/summaries/etc.). Callers already
+  // retry or degrade; they must not become a full-screen "GO runtime error".
+  /reticulumChat:\w+ timed out/i,
+  /Chat engine start timed out/i,
+  /worker->main request timed out/i,
   /presence command/i,
   /publish_presence/i,
   // Transient network failures while fetching from a node / gateway.
@@ -312,7 +338,8 @@ const isIgnorableRuntimeFault = (value: unknown): boolean => {
     value &&
     typeof value === 'object' &&
     'name' in value &&
-    (value as { name?: unknown }).name === 'AbortError'
+    ((value as { name?: unknown }).name === 'AbortError' ||
+      (value as { name?: unknown }).name === 'GifLoadCancelled')
   ) {
     return true;
   }
@@ -345,6 +372,7 @@ function App() {
   const [requestConnection, setRequestConnection] = useState<any>(null);
   const [requestBuyOrder, setRequestBuyOrder] = useState<any>(null);
   const [userInfo, setUserInfo] = useAtom(userInfoAtom);
+  useAppUpdateWatcher();
   useEffect(() => {
     let cancelled = false;
     let settingsChangeReceived = false;
@@ -439,7 +467,58 @@ function App() {
   const showMobileBottomBar = isMobile && !isLandscape;
   const mobileChatComposeActive = useAtomValue(mobileChatComposeActiveAtom);
   const [tabsGridOpen, setTabsGridOpen] = useState(false);
-
+  // The in-app emoji keyboard replaces the soft keyboard *and* the tab bar it
+  // was sitting above, so the composer above it does not move when they swap.
+  const emojiPanelOpen = useAtomValue(mobileEmojiPanelOpenAtom);
+  const lastKeyboardHeight = useLastSoftKeyboardHeight();
+  const keyboardInset = useSoftKeyboardInset();
+  const showEmojiPanel =
+    emojiPanelOpen && isMobile && isAuthenticated && isMainWindow;
+  const [emojiSearchFocused, setEmojiSearchFocused] = useState(false);
+  useEffect(() => {
+    if (!showEmojiPanel) {
+      setEmojiSearchFocused(false);
+      return;
+    }
+    const sync = () => {
+      const active = document.activeElement as HTMLElement | null;
+      setEmojiSearchFocused(Boolean(active?.closest('[data-emoji-panel]')));
+    };
+    const onFocusOut = () => {
+      window.requestAnimationFrame(sync);
+    };
+    document.addEventListener('focusin', sync);
+    document.addEventListener('focusout', onFocusOut);
+    sync();
+    return () => {
+      document.removeEventListener('focusin', sync);
+      document.removeEventListener('focusout', onFocusOut);
+    };
+  }, [showEmojiPanel]);
+  // Search field focused with the OS keyboard up: lift the picker above the
+  // keyboard so results stay visible (Telegram-style), instead of sitting in
+  // the keyboard's slot underneath it.
+  const emojiSearchLifted =
+    showEmojiPanel && keyboardInset > 120 && emojiSearchFocused;
+  const emojiSearchPanelPx = 208;
+  const emojiPanelHeightPx = showEmojiPanel
+    ? emojiSearchLifted
+      ? emojiSearchPanelPx
+      : lastKeyboardHeight +
+        (showMobileBottomBar && !mobileChatComposeActive
+          ? MOBILE_TAB_BAR_HEIGHT_PX
+          : 0)
+    : 0;
+  // While the OS keyboard is still retracting, only reserve the gap it has
+  // already given back. Adding the full panel height on top of a still-open
+  // keyboard would shove the composer up; tracking the inset keeps it still.
+  // Search-lifted is the opposite: the keyboard is open on purpose, so reserve
+  // the picker band above it.
+  const emojiPanelReservePx = showEmojiPanel
+    ? emojiSearchLifted
+      ? emojiSearchPanelPx
+      : Math.max(0, emojiPanelHeightPx - keyboardInset)
+    : 0;
   const [
     walletToBeDownloadedPasswordConfirm,
     setWalletToBeDownloadedPasswordConfirm,
@@ -554,6 +633,8 @@ function App() {
       await decryptStoredWallet(password, structuredClone(rawWallet));
       // Clear idle before releasing the latch so the idle watcher cannot lock
       // the app again between these state updates.
+      const unlockedAt = Date.now();
+      writeAutoLockLastActivityAt(unlockedAt);
       setIsIdle(false);
       setIsAppLocked(false);
     },
@@ -564,6 +645,7 @@ function App() {
     if (extState !== 'authenticated') {
       setIsIdle(false);
       setIsAppLocked(false);
+      clearAutoLockLastActivityAt();
     }
   }, [extState, setIsAppLocked, setIsIdle]);
 
@@ -577,7 +659,9 @@ function App() {
       return;
     }
 
-    let lastActivityAt = Date.now();
+    // Prefer the persisted stamp so a remount mid-idle does not reset the clock
+    // (otherwise a long screen-off can look "fresh" until the next interval).
+    let lastActivityAt = readAutoLockLastActivityAt(Date.now());
     const recordActivity = () => {
       const now = Date.now();
       if (isAutoLockDue(lastActivityAt, now, autoLockTimeoutMinutes)) {
@@ -585,6 +669,7 @@ function App() {
         return;
       }
       lastActivityAt = now;
+      writeAutoLockLastActivityAt(now);
     };
     const checkAutoLock = () => {
       if (isAutoLockDue(lastActivityAt, Date.now(), autoLockTimeoutMinutes)) {
@@ -603,16 +688,43 @@ function App() {
       document.addEventListener(eventName, recordActivity, { passive: true })
     );
     window.addEventListener('focus', checkAutoLock);
+    // Fire on both hide and show: locking while the screen is already off means
+    // the lock modal is mounted before wake, so it paints as soon as the WebView
+    // compositor recovers instead of waiting for the next 15s interval.
     document.addEventListener('visibilitychange', checkAutoLock);
     const intervalId = window.setInterval(checkAutoLock, 15_000);
+    checkAutoLock();
+
+    let appStateListenerCancelled = false;
+    let removeAppStateListener: (() => void) | undefined;
+    if (isCapacitor()) {
+      void import('@capacitor/app')
+        .then(({ App }) =>
+          App.addListener('appStateChange', ({ isActive }) => {
+            if (isActive) checkAutoLock();
+          })
+        )
+        .then((handle) => {
+          if (appStateListenerCancelled) {
+            void handle?.remove();
+            return;
+          }
+          removeAppStateListener = () => {
+            void handle?.remove();
+          };
+        })
+        .catch(() => {});
+    }
 
     return () => {
+      appStateListenerCancelled = true;
       window.clearInterval(intervalId);
       activityEvents.forEach((eventName) =>
         document.removeEventListener(eventName, recordActivity)
       );
       window.removeEventListener('focus', checkAutoLock);
       document.removeEventListener('visibilitychange', checkAutoLock);
+      removeAppStateListener?.();
     };
   }, [autoLockTimeoutMinutes, extState, isAppLocked, lockApp]);
 
@@ -1499,7 +1611,9 @@ function App() {
     setIsOpenSendQort(true);
     setPaymentTo(name || directAddress || '');
     const amount = Number(e.detail?.amount);
-    setPaymentAmount(Number.isFinite(amount) && amount > 0 ? amount : undefined);
+    setPaymentAmount(
+      Number.isFinite(amount) && amount > 0 ? amount : undefined
+    );
   };
 
   const openReceiveQortInternal = (e) => {
@@ -1619,9 +1733,25 @@ function App() {
   // prompt and the wallet decrypt by many seconds on mid-range devices.
   useEffect(() => {
     if (extState !== 'authenticated') return;
-    const idleStart = window.setTimeout(() => allowReticulumStart(), 400);
+    const idleStart = window.setTimeout(() => {
+      allowReticulumStart();
+      if (!reticulumEnabled) return;
+      // Warm the chat engine here instead of waiting for the chat UI to mount
+      // and ask for it. The worker has to open OPFS and sqlite-wasm before it
+      // can answer anything, so starting it now overlaps that cost with the
+      // authenticated shell chunk and the group websocket's first payload.
+      void (async () => {
+        try {
+          const chatEnabled = await window.reticulumChat?.isEnabled?.();
+          if (chatEnabled === false) return;
+          await window.reticulumChat?.getReadinessStatus?.();
+        } catch {
+          /* best effort: the chat UI starts the engine itself if this fails */
+        }
+      })();
+    }, 400);
     return () => window.clearTimeout(idleStart);
-  }, [extState]);
+  }, [extState, reticulumEnabled]);
 
   const closeBackupWalletModal = useCallback(() => {
     setIsBackupWalletModalOpen(false);
@@ -2247,6 +2377,8 @@ function App() {
           setInfo={setInfoSnack}
         />
 
+        <AppUpdateWindow />
+
         <UserLookup
           isOpenDrawerLookup={isOpenDrawerLookup}
           setIsOpenDrawerLookup={setIsOpenDrawerLookup}
@@ -2361,14 +2493,13 @@ function App() {
             extState === 'authenticated' &&
             isMainWindow && {
               alignItems: 'stretch',
-              pb:
-                mobileChatComposeActive || !showMobileBottomBar
+              pb: showEmojiPanel
+                ? `calc(${emojiPanelReservePx}px + ${SAFE_AREA_BOTTOM})`
+                : mobileChatComposeActive || !showMobileBottomBar
                   ? SAFE_AREA_BOTTOM
                   : `calc(${MOBILE_TAB_BAR_HEIGHT_PX}px + ${SAFE_AREA_BOTTOM})`,
             }),
-          ...(!isMobile ||
-          extState !== 'authenticated' ||
-          !isMainWindow
+          ...(!isMobile || extState !== 'authenticated' || !isMainWindow
             ? { alignItems: 'center' }
             : {}),
         }}
@@ -2478,10 +2609,21 @@ function App() {
           mainContent
         )}
       </Box>
-      {showMobileBottomBar && extState === 'authenticated' && isMainWindow && !mobileChatComposeActive && (
-        <MobileTabBar
-          desktopViewMode={desktopViewMode}
-          setDesktopViewMode={setDesktopViewMode}
+      {showMobileBottomBar &&
+        extState === 'authenticated' &&
+        isMainWindow &&
+        !mobileChatComposeActive &&
+        !showEmojiPanel && (
+          <MobileTabBar
+            desktopViewMode={desktopViewMode}
+            setDesktopViewMode={setDesktopViewMode}
+          />
+        )}
+      {showEmojiPanel && (
+        <MobileEmojiPanel
+          heightPx={emojiPanelHeightPx}
+          keyboardInsetPx={keyboardInset}
+          searchLifted={emojiSearchLifted}
         />
       )}
       {isMobile && extState === 'authenticated' && isMainWindow && (

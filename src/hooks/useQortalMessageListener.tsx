@@ -15,6 +15,12 @@ import {
   mobileSaveLocationLabelFor,
   saveBlobToMobileDocuments,
 } from '../utils/mobileFileSave';
+import {
+  beginQdnSaveNotification,
+  failQdnSaveNotification,
+  finishQdnSaveNotification,
+  reportQdnTransferProgress,
+} from '../utils/qdnDownloadNotifications';
 import { useAtomValue, useSetAtom } from 'jotai';
 import {
   QORTAL_PROTOCOL,
@@ -23,6 +29,9 @@ import {
   TIME_SECONDS_30_IN_MILLISECONDS,
 } from '../constants/constants';
 import { buildQortalResourceLink } from '../utils/qortalLink';
+
+/** Below this a save is over before a notification would be read. */
+const NOTIFY_SAVE_MIN_BYTES = 4 * 1024 * 1024;
 
 export const saveFileInChunks = async (
   blob: Blob,
@@ -462,7 +471,33 @@ export const showSaveFilePicker = async (
     if (isCapacitor()) {
       // FileSaver's anchor-tag download does nothing inside the Capacitor
       // WebView — write to Documents/Qortal Go via the native plugin instead.
-      await saveBlobToMobileDocuments(filename, blob);
+      //
+      // A big file takes long enough that the screen it was started from is
+      // usually gone by the time it lands, so the wait goes to the tray.
+      const notificationId = `qdn-save:${filename}:${Date.now()}`;
+      const announce =
+        !silent &&
+        blob?.size > NOTIFY_SAVE_MIN_BYTES &&
+        beginQdnSaveNotification(notificationId, filename);
+      try {
+        await saveBlobToMobileDocuments(
+          filename,
+          blob,
+          announce
+            ? (written, total) =>
+                reportQdnTransferProgress(notificationId, written, total)
+            : undefined
+        );
+      } catch (error: any) {
+        if (announce) failQdnSaveNotification(notificationId, error?.message);
+        throw error;
+      }
+      if (announce) {
+        finishQdnSaveNotification(
+          notificationId,
+          mobileSaveLocationLabelFor(filename, mimeType || blob?.type)
+        );
+      }
       if (silent) return;
       setInfoSnackCustom({
         type: 'success',

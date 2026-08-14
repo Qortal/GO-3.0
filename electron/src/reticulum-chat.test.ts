@@ -4535,6 +4535,127 @@ describe('reticulum chat database', () => {
     });
   });
 
+  it('reuses a cached channel summary instead of rescanning the channel', () => {
+    const db = new ReticulumChatDatabase(tempDbPath());
+    dbs.push(db);
+    const reader = 'Qsummary-cache-reader';
+    expect(
+      db.insertEvent(
+        signedEvent({
+          eventId: 'event-summary-cache-1',
+          groupId: 881,
+          authorAddress: 'Qauthor',
+          timestamp: 1_000,
+        }),
+        true
+      )
+    ).toBe(true);
+
+    const first = db.getChatSummaries(reader);
+    expect(first[0]?.unreadCount).toBe(1);
+
+    const rescan = vi.spyOn(db as any, 'getRecentMessageEvents');
+    const second = db.getChatSummaries(reader);
+    expect(second).toEqual(first);
+    expect(rescan).not.toHaveBeenCalled();
+    rescan.mockRestore();
+  });
+
+  it('recomputes a cached summary when a new message arrives', () => {
+    const db = new ReticulumChatDatabase(tempDbPath());
+    dbs.push(db);
+    const reader = 'Qsummary-cache-ingest';
+    expect(
+      db.insertEvent(
+        signedEvent({
+          eventId: 'event-summary-cache-ingest-1',
+          groupId: 882,
+          authorAddress: 'Qauthor',
+          timestamp: 1_000,
+        }),
+        true
+      )
+    ).toBe(true);
+    expect(db.getChatSummaries(reader)[0]?.unreadCount).toBe(1);
+
+    expect(
+      db.insertEvent(
+        signedEvent({
+          eventId: 'event-summary-cache-ingest-2',
+          groupId: 882,
+          authorAddress: 'Qauthor-two',
+          timestamp: 2_000,
+        }),
+        true
+      )
+    ).toBe(true);
+
+    const summary = db.getChatSummaries(reader)[0];
+    expect(summary?.unreadCount).toBe(2);
+    expect(summary?.lastEvent?.eventId).toBe('event-summary-cache-ingest-2');
+  });
+
+  it('recomputes a cached summary after the channel is marked read', () => {
+    const db = new ReticulumChatDatabase(tempDbPath());
+    dbs.push(db);
+    const reader = 'Qsummary-cache-read';
+    const event = signedEvent({
+      eventId: 'event-summary-cache-read-1',
+      groupId: 883,
+      authorAddress: 'Qauthor',
+      timestamp: 3_000,
+    });
+    expect(db.insertEvent(event, true)).toBe(true);
+    expect(db.getChatSummaries(reader)[0]?.unreadCount).toBe(1);
+
+    db.markRead(883, event.timestamp, reader);
+    expect(db.getChatSummaries(reader)[0]?.unreadCount).toBe(0);
+  });
+
+  it('recomputes a cached summary when the author is silenced', () => {
+    const db = new ReticulumChatDatabase(tempDbPath());
+    dbs.push(db);
+    const reader = 'Qsummary-cache-silence';
+    expect(
+      db.insertEvent(
+        signedEvent({
+          eventId: 'event-summary-cache-silence-1',
+          groupId: 884,
+          authorAddress: 'Qnoisy',
+          timestamp: 4_000,
+        }),
+        true
+      )
+    ).toBe(true);
+    expect(db.getChatSummaries(reader)[0]?.unreadCount).toBe(1);
+
+    db.setSilence(reader, 'Qnoisy', 'group', '884', null, 5_000);
+    expect(db.getChatSummaries(reader)[0]).toBeUndefined();
+
+    // Unsilencing brings the group back but deliberately does not resurrect
+    // unread state for messages sent while the author was muted.
+    db.clearSilence(reader, 'Qnoisy', 'group', '884', 6_000);
+    expect(db.getChatSummaries(reader)[0]?.lastEvent?.eventId).toBe(
+      'event-summary-cache-silence-1'
+    );
+  });
+
+  it('does not serve one account a cached summary computed for another', () => {
+    const db = new ReticulumChatDatabase(tempDbPath());
+    dbs.push(db);
+    const event = signedEvent({
+      eventId: 'event-summary-cache-accounts',
+      groupId: 885,
+      authorAddress: 'Qauthor',
+      timestamp: 7_000,
+    });
+    expect(db.insertEvent(event, true)).toBe(true);
+    db.markRead(885, event.timestamp, 'Qreader-a');
+
+    expect(db.getChatSummaries('Qreader-a')[0]?.unreadCount).toBe(0);
+    expect(db.getChatSummaries('Qreader-b')[0]?.unreadCount).toBe(1);
+  });
+
   it('keeps read watermarks separate for local accounts sharing one db', () => {
     const db = new ReticulumChatDatabase(tempDbPath());
     dbs.push(db);
@@ -9009,6 +9130,24 @@ describe('reticulum chat manager', () => {
     expect(manager.getHistory(52, 10).map((item) => item.eventId)).toContain(
       event.eventId
     );
+    manager.close();
+  });
+
+  it('reports a republished event as success without storing it twice', async () => {
+    const manager = new ReticulumChatManager({ dbPath: tempDbPath() });
+    const event = signedEvent({ groupId: 53 });
+    manager.setLocalGroupMemberships([53]);
+
+    const first = await manager.publishEvent(event);
+    const retry = await manager.publishEvent(event);
+
+    expect(first).toEqual({ ok: true });
+    expect(retry).toEqual({ ok: true, duplicate: true });
+    expect(
+      manager
+        .getHistory(53, 10)
+        .filter((item) => item.eventId === event.eventId)
+    ).toHaveLength(1);
     manager.close();
   });
 

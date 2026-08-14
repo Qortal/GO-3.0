@@ -20,6 +20,7 @@ import { AuthButton, AuthFrame } from './Auth/AuthShell';
 import { ConnectionModeModal } from './Auth/ConnectionModeModal';
 import { MobileLoginSettingsModal } from './Auth/MobileLoginSettingsModal';
 import { isCapacitor } from '../utils/platform';
+import { GO_VERSION } from '../appVersion';
 import { getBiometricEnabledAddressesSync } from '../utils/walletBiometricAuth';
 import { hasAttemptedLastWalletAutoSelectThisSession } from '../utils/lastAuthenticatedWallet';
 import {
@@ -124,7 +125,7 @@ const isAuthStartupAudioEnabled = () => {
 };
 
 export const manifestData = {
-  version: '3.0.0',
+  version: GO_VERSION,
 };
 
 export const NotAuthenticated = ({

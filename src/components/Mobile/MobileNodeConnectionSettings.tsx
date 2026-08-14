@@ -23,12 +23,14 @@ import {
   loadPrivateNodeDraft,
   savePrivateNodeDraft,
 } from '../../utils/privateNodeDraft';
+import { preferHttpForLocalPrivateUrl } from '../../utils/helpers';
 import { AuthButton } from '../Auth/AuthShell';
 
 type NodeMode = 'public' | 'private';
 
 function normalizeNodeUrl(url: string) {
-  return url.trim().replace(/\/+$/, '');
+  const trimmed = url.trim().replace(/\/+$/, '');
+  return preferHttpForLocalPrivateUrl(trimmed) || trimmed;
 }
 
 function resolveNodeMode(url?: string | null): NodeMode {

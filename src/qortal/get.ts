@@ -127,12 +127,14 @@ import { validateAddress } from '../utils/validateAddress.ts';
 import i18n from 'i18next';
 import aesjs from 'aes-js';
 import { roundUpToDecimals } from '../utils/numberFunctions.ts';
-import { normalizeFilename } from '../utils/downloadFromLocation.ts';
+import {
+  downloadFromLocation,
+  normalizeFilename,
+} from '../utils/downloadFromLocation.ts';
 import { isCapacitor } from '../utils/platform.ts';
 import {
   isSilentSaveFile,
   mobileSaveLocationLabelFor,
-  saveStreamToMobileDocuments,
 } from '../utils/mobileFileSave.ts';
 import { getElectronPersistentStorage } from '../utils/electronPersistentStorage.ts';
 
@@ -3125,40 +3127,23 @@ async function saveFileFromLocation(data, isFromExtension, snackMethods) {
   }
 
   // Capacitor Android/iOS: no File System Access API and anchor-tag downloads
-  // do nothing in the WebView — stream into Documents/Qortal Go natively.
+  // do nothing in the WebView — save into Documents/Qortal Go natively.
+  //
+  // Shared with the app's own download paths rather than repeated here: an
+  // unencrypted file must never be pulled through the WebView, which is what
+  // this used to do. A few hundred megabytes of base64 handed over the bridge
+  // a chunk at a time took the whole app down with it.
   if (isCapacitor()) {
-    const endpoint = isEncrypted
-      ? await createEndpoint(locationUrl)
-      : await createEndpoint(
-          locationUrl +
-            `?attachment=true&attachmentFilename=${encodeURIComponent(normalizeFilename(filename))}`
-        );
-    const response = await fetch(endpoint);
-    if (!response.ok) {
-      throw new Error('Failed to download file');
-    }
-    if (!response.body) {
-      throw new Error('Response body is empty');
-    }
+    const result = await downloadFromLocation({
+      filename,
+      location: { service, name, identifier },
+      encryption,
+      mimeType,
+    });
 
-    const reader = response.body.getReader();
-    const decryptedChunks = async function* () {
-      let bytesProcessed = 0;
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        if (!value || value.length === 0) continue;
-        if (isEncrypted) {
-          const blockOffset = BigInt(bytesProcessed >> 4);
-          yield await decryptAesCtrChunk(keyBytes, ivBytes, blockOffset, value);
-        } else {
-          yield value;
-        }
-        bytesProcessed += value.length;
-      }
-    };
-
-    await saveStreamToMobileDocuments(filename, decryptedChunks());
+    if (!result.success) {
+      throw new Error(result.error || 'Failed to download file');
+    }
 
     if (
       snackMethods?.setOpenSnackGlobal &&

@@ -16,7 +16,14 @@ import { DirectCallHistoryRow } from './DirectCallHistoryRow';
 import { DirectFriendEventRow } from './DirectFriendEventRow';
 import type { ReticulumChannelLinkAccess } from './MessageDisplay';
 import { subscribeToEvent, unsubscribeFromEvent } from '../../utils/events';
-import { alpha, Box, Button, Typography, useMediaQuery, useTheme } from '@mui/material';
+import {
+  alpha,
+  Box,
+  Button,
+  Typography,
+  useMediaQuery,
+  useTheme,
+} from '@mui/material';
 import KeyboardArrowDownRoundedIcon from '@mui/icons-material/KeyboardArrowDownRounded';
 import ChatBubbleRoundedIcon from '@mui/icons-material/ChatBubbleRounded';
 import { useSetAtom } from 'jotai';
@@ -35,6 +42,11 @@ export type ReactionsMap = {
 };
 
 const RETICULUM_BOTTOM_PIN_THRESHOLD_PX = 16;
+// How far above the newest message a reader can be parked and still have the
+// end of the thread treated as what they are looking at. Inside this, a
+// growing composer slides the messages up with it instead of eating them;
+// beyond it the reader is somewhere they chose, and nothing moves.
+const COMPOSER_KEEP_BOTTOM_PX = 240;
 
 const getReactionLayoutSignature = (reactions: ReactionsMap | null) => {
   if (!reactions) return '';
@@ -50,6 +62,52 @@ const getMessageTimestampMs = (message: any): number | null => {
   return value < 1_000_000_000_000 ? value * 1000 : value;
 };
 
+const messageHasReplyContext = (message: any): boolean => {
+  const repliedTo =
+    message?.repliedTo ||
+    message?.message?.repliedTo ||
+    message?.replyToEventId;
+  return typeof repliedTo === 'string' && repliedTo.length > 0;
+};
+
+const messageLooksTall = (message: any): boolean => {
+  if (!message || typeof message !== 'object') return false;
+  if (messageHasReplyContext(message)) return true;
+  const text = String(
+    message?.messageText ??
+      message?.text ??
+      message?.message?.messageText ??
+      message?.message?.text ??
+      ''
+  );
+  if (text.includes('qortal://')) return true;
+  if ((message?.images || message?.message?.images || [])?.length > 0)
+    return true;
+  if ((message?.attachments || message?.message?.attachments || [])?.length > 0)
+    return true;
+  return text.length > 180;
+};
+
+const estimateReticulumMessageHeight = (message: any): number => {
+  let height = 72;
+  if (messageHasReplyContext(message)) height += 96;
+  const text = String(
+    message?.messageText ??
+      message?.text ??
+      message?.message?.messageText ??
+      message?.message?.text ??
+      ''
+  );
+  if (text.includes('qortal://')) height += 64;
+  if ((message?.images || message?.message?.images || [])?.length > 0)
+    height += 160;
+  if ((message?.attachments || message?.message?.attachments || [])?.length > 0)
+    height += 72;
+  // Long unbroken qortal links wrap into many lines on narrow phones.
+  height += Math.min(160, Math.floor(text.length / 48) * 18);
+  return height;
+};
+
 const isReticulumMessageContinuation = (
   previousMessage: any,
   message: any
@@ -63,6 +121,16 @@ const isReticulumMessageContinuation = (
     return false;
   }
   if (!previousMessage?.sender || previousMessage.sender !== message?.sender) {
+    return false;
+  }
+  // Keep reply cards and the following text as separate visual blocks. On
+  // phones, grouping buries short follow-ups like "Ok, fixed" under a tall
+  // link/reply bubble so they look missing.
+  if (
+    messageHasReplyContext(previousMessage) ||
+    messageHasReplyContext(message) ||
+    messageLooksTall(previousMessage)
+  ) {
     return false;
   }
   const previousSystemType =
@@ -462,14 +530,24 @@ export const ChatList = ({
     count: messages.length,
     getItemKey: (index) => getMessageKey(messages[index], index),
     getScrollElement: () => parentRef?.current,
-    estimateSize: useCallback(() => 80, []), // Provide an estimated height of items, adjust this as needed
+    // Reply + long qortal:// rows are far taller than a plain chat line.
+    // Under-estimating them on Android WebView causes absolute rows to overlap
+    // (follow-up text looks glued under the link; middle messages vanish).
+    estimateSize: useCallback(
+      (index: number) =>
+        reticulumChatEnabled
+          ? estimateReticulumMessageHeight(messages[index])
+          : 80,
+      [messages, reticulumChatEnabled]
+    ),
     initialOffset:
       reticulumChatEnabled && initialReticulumLandingIndex >= 0
-        ? initialReticulumLandingIndex * 80
+        ? initialReticulumLandingIndex *
+          estimateReticulumMessageHeight(messages[initialReticulumLandingIndex])
         : 0,
     rangeExtractor: extractVirtualRows,
     overscan: reticulumChatEnabled ? 5 : 10,
-    useAnimationFrameWithResizeObserver: reticulumChatEnabled,
+    useAnimationFrameWithResizeObserver: false,
     // Keep the visible Reticulum content anchored when a reply preview or image
     // settles to a different measured height. If the reader was pinned to the
     // end, preserve that anchor even when the final row itself grows (for
@@ -801,13 +879,7 @@ export const ChatList = ({
         reticulumReadingPositionLockedRef.current = false;
         reticulumReaderGestureRef.current = false;
       }
-      const isPinned =
-        distanceFromBottom <= RETICULUM_BOTTOM_PIN_THRESHOLD_PX;
-      const previousMetrics = lastScrollMetricsRef.current;
-      const contentSizeChanged =
-        previousMetrics.scrollHeight !== 0 &&
-        (previousMetrics.scrollHeight !== scrollElement.scrollHeight ||
-          previousMetrics.clientHeight !== scrollElement.clientHeight);
+      const isPinned = distanceFromBottom <= RETICULUM_BOTTOM_PIN_THRESHOLD_PX;
 
       reticulumPinnedToBottomRef.current =
         isPinned && !reticulumReadingPositionLockedRef.current;
@@ -819,19 +891,13 @@ export const ChatList = ({
         reticulumFollowBottomRef.current = true;
       } else if (hasNewerMessages) {
         reticulumFollowBottomRef.current = false;
-      } else if (reticulumFollowBottomRef.current && !contentSizeChanged) {
-        // Dynamic virtual-row correction can emit a second scroll event after
-        // the new height has already been recorded. It is still a layout
-        // movement, not reader intent. User wheel/touch/pointer interaction
-        // disables following before its corresponding scroll event arrives.
+      } else if (reticulumFollowBottomRef.current) {
+        // Keep the last messages in view when the composer grows (more text,
+        // Aa tray) and shrinks this viewport. Layout-only scroll events are
+        // not reader intent; user gestures clear follow before they arrive.
         scrollElement.scrollTop = scrollElement.scrollHeight;
         reticulumPinnedToBottomRef.current = true;
       }
-      lastScrollMetricsRef.current = {
-        clientHeight: scrollElement.clientHeight,
-        scrollHeight: scrollElement.scrollHeight,
-        scrollTop: scrollElement.scrollTop,
-      };
       if (isPinned) {
         setShowScrollButton(false);
         setShowScrollDownButton(false);
@@ -851,6 +917,11 @@ export const ChatList = ({
     ) {
       void loadNewerFromBottom();
     }
+    lastScrollMetricsRef.current = {
+      clientHeight: scrollElement.clientHeight,
+      scrollHeight: scrollElement.scrollHeight,
+      scrollTop: scrollElement.scrollTop,
+    };
   }, [
     hasNewerMessages,
     loadNewerFromBottom,
@@ -879,6 +950,134 @@ export const ChatList = ({
     const frameId = window.requestAnimationFrame(pinToBottom);
     return () => window.cancelAnimationFrame(frameId);
   }, [reticulumChatEnabled, virtualContentHeight]);
+
+  // Composer growth shrinks this viewport without changing message height.
+  // Pin the thread so the last messages move up instead of sitting under the
+  // typing box. Coalesce to one pin per frame so ResizeObserver and the
+  // virtualizer cannot loop and freeze the WebView.
+  useLayoutEffect(() => {
+    const scrollElement = parentRef.current as HTMLDivElement | null;
+    if (!scrollElement) return undefined;
+
+    let pinFrame = 0;
+    const pinIfFollowing = () => {
+      if (pinFrame) return;
+      pinFrame = window.requestAnimationFrame(() => {
+        pinFrame = 0;
+        if (typeof document !== 'undefined' && document.hidden) return;
+        const currentElement = parentRef.current as HTMLDivElement | null;
+        if (
+          !currentElement ||
+          currentElement.clientHeight < 8 ||
+          currentElement.clientWidth < 8
+        ) {
+          return;
+        }
+        const previousMetrics = lastScrollMetricsRef.current;
+        const viewportGrew =
+          previousMetrics.clientHeight > 0 &&
+          currentElement.clientHeight > previousMetrics.clientHeight + 8;
+        const active = document.activeElement;
+        const composerFocused =
+          active instanceof HTMLElement &&
+          Boolean(active.closest('.tiptap-chat-composer'));
+        // Composer collapse grows this viewport and remounts virtualizer rows.
+        // Skip the extra scroll write while the user is still typing.
+        if (composerFocused && viewportGrew) {
+          lastScrollMetricsRef.current = {
+            clientHeight: currentElement.clientHeight,
+            scrollHeight: currentElement.scrollHeight,
+            scrollTop: currentElement.scrollTop,
+          };
+          return;
+        }
+        // A reader parked a little above the newest message is still reading
+        // the end of the thread. The composer taking height off the bottom of
+        // the viewport must not swallow what they were looking at, so hold the
+        // distance to the end instead of the distance from the start and let
+        // the messages slide up with the typing box. Being pinned is handled
+        // below (that jumps to the end); further up the thread is a position
+        // the reader chose, and nothing moves.
+        const previousDistanceFromBottom =
+          previousMetrics.scrollHeight -
+          previousMetrics.scrollTop -
+          previousMetrics.clientHeight;
+        const followingBottom = reticulumChatEnabled
+          ? reticulumFollowBottomRef.current
+          : previousMetrics.clientHeight === 0 ||
+            previousDistanceFromBottom <= RETICULUM_BOTTOM_PIN_THRESHOLD_PX;
+        const shrankBy =
+          previousMetrics.clientHeight > 0
+            ? previousMetrics.clientHeight - currentElement.clientHeight
+            : 0;
+        if (
+          !followingBottom &&
+          shrankBy > 1 &&
+          previousDistanceFromBottom <= COMPOSER_KEEP_BOTTOM_PX
+        ) {
+          currentElement.scrollTop = Math.min(
+            currentElement.scrollHeight - currentElement.clientHeight,
+            currentElement.scrollTop + shrankBy
+          );
+          lastScrollMetricsRef.current = {
+            clientHeight: currentElement.clientHeight,
+            scrollHeight: currentElement.scrollHeight,
+            scrollTop: currentElement.scrollTop,
+          };
+          return;
+        }
+        if (reticulumChatEnabled) {
+          if (!reticulumFollowBottomRef.current) {
+            // Leaving the snapshot behind would measure the next resize
+            // against a viewport two changes old.
+            lastScrollMetricsRef.current = {
+              clientHeight: currentElement.clientHeight,
+              scrollHeight: currentElement.scrollHeight,
+              scrollTop: currentElement.scrollTop,
+            };
+            return;
+          }
+        } else {
+          const previous = lastScrollMetricsRef.current;
+          const wasNearBottom =
+            previous.clientHeight === 0 ||
+            previous.scrollHeight -
+              previous.scrollTop -
+              previous.clientHeight <=
+              16;
+          if (!wasNearBottom) {
+            lastScrollMetricsRef.current = {
+              clientHeight: currentElement.clientHeight,
+              scrollHeight: currentElement.scrollHeight,
+              scrollTop: currentElement.scrollTop,
+            };
+            return;
+          }
+        }
+        const distanceFromBottom =
+          currentElement.scrollHeight -
+          currentElement.scrollTop -
+          currentElement.clientHeight;
+        if (distanceFromBottom <= 4) return;
+        currentElement.scrollTop = currentElement.scrollHeight;
+        if (reticulumChatEnabled) {
+          reticulumPinnedToBottomRef.current = true;
+        }
+        lastScrollMetricsRef.current = {
+          clientHeight: currentElement.clientHeight,
+          scrollHeight: currentElement.scrollHeight,
+          scrollTop: currentElement.scrollTop,
+        };
+      });
+    };
+
+    const observer = new ResizeObserver(pinIfFollowing);
+    observer.observe(scrollElement);
+    return () => {
+      observer.disconnect();
+      if (pinFrame) window.cancelAnimationFrame(pinFrame);
+    };
+  }, [chatIdentity, reticulumChatEnabled]);
 
   const cancelReticulumScrollRetries = useCallback(() => {
     if (!reticulumChatEnabled) return;
@@ -1375,6 +1574,16 @@ export const ChatList = ({
     lastSeenUnreadMessageTimestamp.current = Date.now();
   }, []);
 
+  // Android drops the soft keyboard the moment focus leaves the composer, so
+  // the jump buttons must never take it: catching up with the thread in the
+  // middle of a sentence keeps both the keyboard and the draft.
+  const keepComposerFocus = useCallback(
+    (event: { preventDefault: () => void }) => {
+      event.preventDefault();
+    },
+    []
+  );
+
   const handleGoToLatest = async () => {
     if (hasNewerMessages && onJumpToLatest) {
       if (isLoadingNewerMessages) return;
@@ -1386,19 +1595,41 @@ export const ChatList = ({
     scrollToBottom();
   };
 
-  const sentNewMessageGroupFunc = useCallback(() => {
-    // Reticulum follows locally-authored messages from the state update above.
-    // The legacy event can run before the optimistic row has mounted and pull
-    // the reader back to the previous last message.
-    if (reticulumChatEnabled) return;
-    const { scrollHeight, scrollTop, clientHeight } = parentRef.current;
+  const sentNewMessageGroupFunc = useCallback(
+    (e?: CustomEvent) => {
+      if (!parentRef.current) return;
+      if (reticulumChatEnabled) {
+        // The event is global, so only the thread the message was sent in may
+        // move; other mounted lists must keep the reader where they are.
+        const scope = e?.detail?.data?.scope;
+        if (!scope || String(scope) !== chatIdentity) return;
+        // A search/reply jump that is still positioning owns the viewport (it
+        // is hidden until it lands); pulling it to the bottom now would strand
+        // the reader on a blank list.
+        const pendingTargetKey = reticulumScrollTargetKeyRef.current;
+        if (
+          pendingTargetKey &&
+          lastHandledScrollTargetRef.current !== pendingTargetKey
+        ) {
+          return;
+        }
+        // Sending is an explicit request to be at the end of the thread, even
+        // when the reader had scrolled up to reply to an older message. The
+        // settle pass re-pins while the optimistic row and then the confirmed
+        // one measure taller than estimated — reply quotes especially.
+        scrollToBottom(undefined, undefined, true, true);
+        return;
+      }
+      const { scrollHeight, scrollTop, clientHeight } = parentRef.current;
 
-    // Check if the user is within 200px from the bottom
-    const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
-    if (distanceFromBottom <= 700) {
-      scrollToBottom();
-    }
-  }, [messages, reticulumChatEnabled]);
+      // Check if the user is within 200px from the bottom
+      const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
+      if (distanceFromBottom <= 700) {
+        scrollToBottom();
+      }
+    },
+    [chatIdentity, messages, reticulumChatEnabled]
+  );
 
   useEffect(() => {
     subscribeToEvent('sent-new-message-group', sentNewMessageGroupFunc);
@@ -1526,11 +1757,27 @@ export const ChatList = ({
       let isUpdating = false;
       try {
         if (message) {
+          const outerTempSignature =
+            typeof message?.signature === 'string' ? message.signature : '';
+          const outerTempIdentifier =
+            typeof message?.identifier === 'string' ? message.identifier : '';
           replyIndex = message?.repliedTo
             ? (messageIndexBySignature.get(message.repliedTo) ?? -1)
             : -1;
           if (message?.repliedTo && replyIndex !== -1) {
             reply = { ...(messages[replyIndex] || {}) };
+            // Optimistic queue rows nest the chat payload under `.message`.
+            if (reply?.message && reply?.groupDirectId) {
+              reply = {
+                ...reply.message,
+                messageText:
+                  reply.message?.messageText ||
+                  reply.message?.text ||
+                  undefined,
+                signature: reply.signature || reply.message?.signature,
+                tempSignature: reply.signature,
+              };
+            }
             if (chatReferences?.[reply?.signature]?.edit) {
               const edit = chatReferences[reply?.signature]?.edit;
               reply.decryptedData = edit;
@@ -1570,12 +1817,33 @@ export const ChatList = ({
               : -1;
             if (message?.message?.repliedTo && replyIndex !== -1) {
               reply = messages[replyIndex] || null;
+              if (reply?.message && reply?.groupDirectId) {
+                reply = {
+                  ...reply.message,
+                  messageText:
+                    reply.message?.messageText ||
+                    reply.message?.text ||
+                    undefined,
+                  signature: reply.signature || reply.message?.signature,
+                  tempSignature: reply.signature,
+                };
+              }
             }
             message = {
               ...(message?.message || {}),
+              // Keep HTML body available under messageText so MessageItem's
+              // primary renderer path matches confirmed Reticulum events.
+              messageText:
+                message?.message?.messageText ||
+                message?.message?.text ||
+                undefined,
               isTemp: true,
               unread: false,
               status: message?.status,
+              signature:
+                message?.message?.signature || outerTempSignature || undefined,
+              tempSignature: outerTempSignature || undefined,
+              identifier: outerTempIdentifier || message?.identifier,
             };
           }
           if (chatReferences?.[message.signature]) {
@@ -1697,7 +1965,10 @@ export const ChatList = ({
       data-reticulum-chat-root={reticulumChatEnabled ? 'true' : undefined}
       sx={{
         display: 'flex',
+        flex: 1,
         height: '100%',
+        minHeight: 0,
+        minWidth: 0,
         // Anchor for the mobile ChatOptions overlay (floating strip + panels).
         position: 'relative',
         width: '100%',
@@ -1708,6 +1979,7 @@ export const ChatList = ({
           display: 'flex',
           flexDirection: 'column',
           height: '100%',
+          minHeight: 0,
           minWidth: 0,
           position: 'relative',
           width: '100%',
@@ -1728,6 +2000,7 @@ export const ChatList = ({
             flexGrow: 1,
             height: '0px',
             overflow: 'auto',
+            overflowAnchor: 'none',
             overflowX: reticulumChatEnabled ? 'hidden' : undefined,
             position: 'relative',
             visibility:
@@ -1975,6 +2248,8 @@ export const ChatList = ({
           (useCompactScrollButton ? (
             <Button
               onClick={() => void handleGoToLatest()}
+              onMouseDown={keepComposerFocus}
+              onPointerDown={keepComposerFocus}
               disabled={hasNewerMessages && isLoadingNewerMessages}
               aria-label={
                 hasNewerMessages
@@ -1998,6 +2273,8 @@ export const ChatList = ({
           ) : (
             <Button
               onClick={() => void handleGoToLatest()}
+              onMouseDown={keepComposerFocus}
+              onPointerDown={keepComposerFocus}
               disabled={hasNewerMessages && isLoadingNewerMessages}
               startIcon={<KeyboardArrowDownRoundedIcon sx={{ fontSize: 20 }} />}
               sx={{
@@ -2029,6 +2306,8 @@ export const ChatList = ({
           (useCompactScrollButton ? (
             <Button
               onClick={() => void handleGoToLatest()}
+              onMouseDown={keepComposerFocus}
+              onPointerDown={keepComposerFocus}
               aria-label={t('group:action.scroll_bottom', {
                 postProcess: 'capitalizeFirstChar',
               })}
@@ -2039,6 +2318,8 @@ export const ChatList = ({
           ) : (
             <Button
               onClick={() => void handleGoToLatest()}
+              onMouseDown={keepComposerFocus}
+              onPointerDown={keepComposerFocus}
               startIcon={<KeyboardArrowDownRoundedIcon sx={{ fontSize: 20 }} />}
               sx={scrollButtonSx}
             >

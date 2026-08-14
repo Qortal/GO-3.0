@@ -9,7 +9,28 @@ export interface FileWriterPlugin {
     categorize?: boolean;
     mimeType?: string;
   }): Promise<{ path: string; uri: string }>;
+  /** Fetches the URL natively, so the bytes never cross the bridge. */
+  downloadToDocuments(options: {
+    url: string;
+    filename: string;
+    categorize?: boolean;
+    mimeType?: string;
+    /** Set to receive `downloadProgress` events for this download. */
+    downloadId?: string;
+  }): Promise<{ path: string; uri: string; bytesWritten: number }>;
+  addListener(
+    eventName: 'downloadProgress',
+    listener: (event: DownloadProgressEvent) => void
+  ): Promise<{ remove: () => Promise<void> }>;
 }
+
+export type DownloadProgressEvent = {
+  downloadId: string;
+  bytesWritten: number;
+  /** 0 when the server did not say how big the file is. */
+  totalBytes: number;
+  done: boolean;
+};
 
 const FileWriter = registerPlugin<FileWriterPlugin>('FileWriter');
 
@@ -36,7 +57,8 @@ async function blobToBase64(blob: Blob): Promise<string> {
       const base64 = result.includes(',') ? result.split(',')[1] : result;
       resolve(base64 ?? '');
     };
-    reader.onerror = () => reject(reader.error ?? new Error('Failed to read blob'));
+    reader.onerror = () =>
+      reject(reader.error ?? new Error('Failed to read blob'));
     reader.readAsDataURL(blob);
   });
 }
@@ -87,6 +109,43 @@ export async function writeNativeDocumentBlob(
     mimeType: opts.mimeType || blob.type || undefined,
     ...opts,
   });
+}
+
+/**
+ * Downloads straight to storage on the native side. Sending the bytes through
+ * `writeChunk` instead costs a base64 encode, a bridge crossing and a decode
+ * for every chunk, which dominates the save time for large attachments.
+ */
+export async function downloadNativeDocument(
+  filename: string,
+  url: string,
+  options: NativeWriteOptions = {},
+  onProgress?: (event: DownloadProgressEvent) => void
+): Promise<{ path: string; uri: string; bytesWritten: number }> {
+  if (!Capacitor.isNativePlatform()) {
+    throw new Error('Native file writer is only available on the mobile app.');
+  }
+
+  const downloadId = onProgress
+    ? `dl-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    : undefined;
+  const subscription = downloadId
+    ? await FileWriter.addListener('downloadProgress', (event) => {
+        if (event?.downloadId === downloadId) onProgress?.(event);
+      })
+    : null;
+
+  try {
+    return await FileWriter.downloadToDocuments({
+      url,
+      filename,
+      categorize: options.categorize,
+      mimeType: options.mimeType,
+      ...(downloadId ? { downloadId } : {}),
+    });
+  } finally {
+    await subscription?.remove();
+  }
 }
 
 export async function writeNativeDocumentBytes(

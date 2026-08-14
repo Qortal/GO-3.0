@@ -5,40 +5,38 @@ import {
   groupApiSocket,
 } from '../background/background.ts';
 import { ApiKey } from '../types/auth.ts';
-import { isLocalPrivateHttpsUrl } from './helpers.ts';
+import { preferHttpForLocalPrivateUrl } from './helpers.ts';
 
 export let globalApiKey: ApiKey | null = null;
 
 export const handleSetGlobalApikey = (data: ApiKey | null) => {
-  globalApiKey = data;
+  if (!data?.url) {
+    globalApiKey = data;
+    return;
+  }
+  const preferredUrl = preferHttpForLocalPrivateUrl(data.url) || data.url;
+  globalApiKey =
+    preferredUrl === data.url ? data : { ...data, url: preferredUrl };
 };
 
 export const getBaseApiReact = (customApi?: string): string => {
   if (customApi) {
-    return customApi;
+    return preferHttpForLocalPrivateUrl(customApi) || customApi;
   }
   if (globalApiKey?.url) {
-    return globalApiKey.url;
+    return preferHttpForLocalPrivateUrl(globalApiKey.url) || globalApiKey.url;
   }
-  return groupApi;
+  return preferHttpForLocalPrivateUrl(groupApi) || groupApi;
 };
 
 /** Base API URL for avatar/image requests. Uses HTTP when on local/private HTTPS (same logic as useAuth). */
 export const getBaseApiReactForAvatar = (customApi?: string): string => {
-  let baseUrl = getBaseApiReact(customApi);
-  if (isLocalPrivateHttpsUrl(baseUrl)) {
-    baseUrl = baseUrl.replace(/^https:\/\//i, 'http://');
-  }
-  return baseUrl;
+  return getBaseApiReact(customApi);
 };
 
 /** Base API URL for primary name fetch when used for avatar (wallets/auth). Uses HTTP when on local/private HTTPS. */
 export const getBaseApiReactForPrimaryName = (customApi?: string): string => {
-  let baseUrl = getBaseApiReact(customApi);
-  if (isLocalPrivateHttpsUrl(baseUrl)) {
-    baseUrl = baseUrl.replace(/^https:\/\//i, 'http://');
-  }
-  return baseUrl;
+  return getBaseApiReact(customApi);
 };
 
 export const getArbitraryEndpointReact = (): string => {
@@ -51,12 +49,15 @@ export const getArbitrarySearchSimpleEndpointReact = (): string => {
 
 export const getBaseApiReactSocket = (customApi?: string): string => {
   if (customApi) {
-    return customApi;
+    const preferred = preferHttpForLocalPrivateUrl(customApi) || customApi;
+    const protocol = getProtocol(preferred) === 'http' ? 'ws://' : 'wss://';
+    return `${protocol}${cleanUrl(preferred)}`;
   }
   if (globalApiKey?.url) {
-    const protocol =
-      getProtocol(globalApiKey.url) === 'http' ? 'ws://' : 'wss://';
-    return `${protocol}${cleanUrl(globalApiKey.url)}`;
+    const preferred =
+      preferHttpForLocalPrivateUrl(globalApiKey.url) || globalApiKey.url;
+    const protocol = getProtocol(preferred) === 'http' ? 'ws://' : 'wss://';
+    return `${protocol}${cleanUrl(preferred)}`;
   }
   return groupApiSocket;
 };

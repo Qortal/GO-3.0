@@ -641,21 +641,44 @@ export function useReticulumDirectChat(
         localDeliveryUpdatedAt: Date.now(),
       };
       await window.reticulumChat?.setLocalDmAddresses?.([myAddress]);
-      const result = await window.reticulumChat?.publishDirectEvent?.(event);
-      if (result?.success) {
-        const optimisticEvent: ReticulumDmEvent = {
-          ...event,
-          expiresAt:
-            eventType === 'message' && effectiveExpiryDurationMs != null
-              ? timestamp + effectiveExpiryDurationMs
-              : null,
-        };
-        const enriched = await addPrimaryNamesToDirectEvents(
-          [optimisticEvent],
-          primaryNameCacheRef.current
+
+      const optimisticEvent: ReticulumDmEvent = {
+        ...event,
+        expiresAt:
+          eventType === 'message' && effectiveExpiryDurationMs != null
+            ? timestamp + effectiveExpiryDurationMs
+            : null,
+      };
+      // Show the message before the publish round-trip: fanning it out over
+      // Reticulum can take a while, and the sender should not be left watching
+      // their own text disappear into nothing. Merging is keyed on eventId, so
+      // the confirmed copy replaces this one rather than duplicating it.
+      let optimisticApplied = true;
+      setEvents((prev) => mergeEvents(prev, [optimisticEvent]));
+      const rollbackOptimistic = () => {
+        optimisticApplied = false;
+        setEvents((prev) =>
+          prev.filter((existing) => existing.eventId !== eventId)
         );
-        setEvents((prev) => mergeEvents(prev, enriched));
+      };
+      void addPrimaryNamesToDirectEvents(
+        [optimisticEvent],
+        primaryNameCacheRef.current
+      )
+        .then((enriched) => {
+          if (!optimisticApplied) return;
+          setEvents((prev) => mergeEvents(prev, enriched));
+        })
+        .catch(() => {});
+
+      let result;
+      try {
+        result = await window.reticulumChat?.publishDirectEvent?.(event);
+      } catch (error) {
+        rollbackOptimistic();
+        throw error;
       }
+      if (!result?.success) rollbackOptimistic();
       return result?.success ? { ...result, eventId } : result;
     },
     [enabled, events, myAddress, peerAddress]

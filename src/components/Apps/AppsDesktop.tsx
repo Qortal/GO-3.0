@@ -264,6 +264,12 @@ export const AppsDesktop = ({
   const [tabs, setTabs] = useState([]);
   const [viewerTabOrder, setViewerTabOrder] = useState<string[]>([]);
   const [selectedTab, setSelectedTab] = useState(null);
+  // Tab iframes only mount after the user has opened them once. Restored
+  // session tabs stay in the tab list without kicking off /render or qortal
+  // requests until selected.
+  const [activatedTabIds, setActivatedTabIds] = useState<Set<string>>(
+    () => new Set()
+  );
   const { openApp: openPrivateApp } = useHandlePrivateApps();
   const openPrivateAppRef = useRef(openPrivateApp);
   openPrivateAppRef.current = openPrivateApp;
@@ -350,6 +356,7 @@ export const AppsDesktop = ({
         setTabs(restoredTabs);
         setViewerTabOrder(order);
         setSelectedTab(null);
+        setActivatedTabIds(new Set());
         setIsNewTabWindow(false);
       }
 
@@ -362,6 +369,17 @@ export const AppsDesktop = ({
       isRestoringSessionRef.current = false;
     };
   }, [isMobile, myAddress, setIsNewTabWindow]);
+
+  useEffect(() => {
+    const tabId = selectedTab?.tabId;
+    if (!tabId) return;
+    setActivatedTabIds((prev) => {
+      if (prev.has(tabId)) return prev;
+      const next = new Set(prev);
+      next.add(tabId);
+      return next;
+    });
+  }, [selectedTab?.tabId]);
 
   useEffect(() => {
     if (!isMobile || !myAddress) {
@@ -1250,10 +1268,17 @@ export const AppsDesktop = ({
     setEnteringTabIds((prev) => prev.filter((id) => id !== tabId));
     setPendingVisualTabActivationId((prev) => (prev === tabId ? null : prev));
     setDelayedVisualActiveTabId((prev) => (prev === tabId ? null : prev));
+    setActivatedTabIds((prev) => {
+      if (!prev.has(tabId)) return prev;
+      const next = new Set(prev);
+      next.delete(tabId);
+      return next;
+    });
     setIsAddTabWaitingForPointerMove(false);
     addTabPointerOriginRef.current = null;
     if (copyTabs?.length === 0) {
       recentTabIdsRef.current = [];
+      setActivatedTabIds(new Set());
       setTabs(copyTabs);
       setSelectedTab(null);
       tabsTokenRef.current += 1;
@@ -1492,6 +1517,7 @@ export const AppsDesktop = ({
       }
     });
     recentTabIdsRef.current = [];
+    setActivatedTabIds(new Set());
     setTabs([]);
     setSelectedTab(null);
     setIsAddTabFocused(false);
@@ -2001,6 +2027,12 @@ export const AppsDesktop = ({
               desktopViewMode === 'dev' &&
               devMode === 'home' &&
               !isNewTabWindow;
+            const tabHasBeenOpened = activatedTabIds.has(tab?.tabId);
+            // Skip mounting until the user opens the tab — restored background
+            // tabs must not hit /render or start qortalRequest traffic.
+            if (!tabHasBeenOpened) {
+              return null;
+            }
             const internalTabContent = renderInternalTab?.({
               hide: isNewTabWindow,
               isSelected: tab?.tabId === selectedTab?.tabId,

@@ -9,6 +9,7 @@ export function buildImageEmbedLink(image?: {
   dataUrl?: string;
   base64?: string;
   mimeType?: string;
+  libraryGif?: boolean;
   timestamp?: number;
 }): string | null {
   if (image?.reticulumResource && image?.fileHash) return null;
@@ -18,7 +19,17 @@ export function buildImageEmbedLink(image?: {
   }
   if (!image?.name || !image.identifier || !image.service) return null;
 
-  const base = `${QORTAL_PROTOCOL}use-embed/IMAGE?name=${image.name}&identifier=${image.identifier}&service=${image.service}&mimeType=image%2Fpng&timestamp=${image?.timestamp || ''}`;
+  const isLibraryGif =
+    image.libraryGif === true ||
+    (image.service === 'IMAGE' &&
+      String(image.identifier).startsWith('gif-')) ||
+    image.mimeType === 'image/gif';
+  const mimeType = isLibraryGif
+    ? 'image%2Fgif'
+    : image.mimeType
+      ? encodeURIComponent(image.mimeType)
+      : 'image%2Fpng';
+  const base = `${QORTAL_PROTOCOL}use-embed/IMAGE?name=${image.name}&identifier=${image.identifier}&service=${image.service}&mimeType=${mimeType}&timestamp=${image?.timestamp || ''}`;
 
   const isEncrypted = image.identifier.startsWith('grp-q-manager_0');
   return isEncrypted ? `${base}&encryptionType=group` : base;

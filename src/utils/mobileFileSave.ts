@@ -3,12 +3,15 @@ import {
   writeNativeDocumentFile,
   writeNativeDocumentBlob,
   writeNativeDocumentBytes,
+  downloadNativeDocument,
+  type DownloadProgressEvent,
 } from '../plugins/FileWriter';
 
 const QORTAL_DOCUMENTS_FOLDER = 'Qortal Go';
 /** Coalesce small network chunks before each native write (MediaStore opens
  *  the output stream per call, so per-fetch-chunk writes would be very slow). */
-const STREAM_WRITE_BUFFER_BYTES = 1024 * 1024;
+// Keep under Android Binder's ~1 MiB transaction limit after base64 (~4/3).
+const STREAM_WRITE_BUFFER_BYTES = 384 * 1024;
 
 /**
  * Per-type folders under Documents/Qortal Go. Mirrors SaveCategory.java —
@@ -64,19 +67,26 @@ const EXTENSION_CATEGORY: Record<string, string> = {
 };
 
 function extensionOf(filename: string): string {
-  const base = String(filename || '').split('/').pop() || '';
+  const base =
+    String(filename || '')
+      .split('/')
+      .pop() || '';
   const dot = base.lastIndexOf('.');
   if (dot < 0 || dot === base.length - 1) return '';
   return base.slice(dot + 1).toLowerCase();
 }
 
 /** Folder name a file will be saved into, e.g. "Images". */
-export function categorizeSaveFile(filename: string, mimeType?: string): string {
+export function categorizeSaveFile(
+  filename: string,
+  mimeType?: string
+): string {
   const ext = extensionOf(filename);
   const byExt = EXTENSION_CATEGORY[ext];
   if (byExt) return byExt;
   const mime = String(mimeType || '').toLowerCase();
-  if (mime.includes('android.package-archive')) return SAVE_CATEGORY_FOLDERS.apps;
+  if (mime.includes('android.package-archive'))
+    return SAVE_CATEGORY_FOLDERS.apps;
   if (mime.startsWith('image/')) return SAVE_CATEGORY_FOLDERS.images;
   if (mime.startsWith('video/')) return SAVE_CATEGORY_FOLDERS.videos;
   if (mime.startsWith('audio/')) return SAVE_CATEGORY_FOLDERS.audio;
@@ -108,12 +118,17 @@ export function buildQortalBackupFileName(qortAddress: string): string {
 
 function assertNative() {
   if (!Capacitor.isNativePlatform()) {
-    throw new Error('Mobile document save is only available on the native app.');
+    throw new Error(
+      'Mobile document save is only available on the native app.'
+    );
   }
 }
 
-const sanitizeName = (filename: string) =>
-  filename.replace(/[/\\?%*:|"<>]/g, '_');
+const sanitizeName = (filename: string | null | undefined) => {
+  const raw = String(filename ?? '').trim();
+  const cleaned = (raw || 'download').replace(/[/\\?%*:|"<>]/g, '_');
+  return cleaned || 'download';
+};
 
 export async function saveTextToMobileDocuments(
   filename: string,
@@ -129,18 +144,98 @@ export async function saveTextToMobileDocuments(
   return result;
 }
 
+/**
+ * Reading a blob whole means holding it whole. Past this size it is read a
+ * slice at a time instead, which is the difference between a save that works
+ * and one that takes the app down with it.
+ */
+const BLOB_SINGLE_WRITE_MAX_BYTES = 4 * 1024 * 1024;
+
+async function* readBlobInSlices(
+  blob: Blob,
+  sliceBytes: number
+): AsyncGenerator<Uint8Array> {
+  for (let offset = 0; offset < blob.size; offset += sliceBytes) {
+    const slice = blob.slice(offset, Math.min(offset + sliceBytes, blob.size));
+    yield new Uint8Array(await slice.arrayBuffer());
+  }
+}
+
 export async function saveBlobToMobileDocuments(
   filename: string,
-  blob: Blob
+  blob: Blob,
+  onProgress?: (bytesWritten: number, totalBytes: number) => void
 ): Promise<{ path: string; uri: string }> {
   assertNative();
   const safeName = sanitizeName(filename);
+
+  // A blob crosses to the native side as base64 text, which costs a third
+  // again in size on both sides of the bridge at once. For a file of any real
+  // size that is hundreds of megabytes of string, and Android kills the app
+  // long before the save finishes — so anything large goes over in slices.
+  if (blob.size > BLOB_SINGLE_WRITE_MAX_BYTES) {
+    return await saveStreamToMobileDocuments(
+      safeName,
+      readBlobInSlices(blob, STREAM_WRITE_BUFFER_BYTES),
+      blob.type || undefined,
+      onProgress ? (written) => onProgress(written, blob.size) : undefined
+    );
+  }
+
   const result = await writeNativeDocumentBlob(
     `${QORTAL_DOCUMENTS_FOLDER}/${safeName}`,
     blob,
     { categorize: true, mimeType: blob.type || undefined }
   );
+  onProgress?.(blob.size, blob.size);
   return result;
+}
+
+/**
+ * Hands a saved file to whichever app on the device can display it. Accepts the
+ * `content://` uri MediaStore hands back from a save.
+ */
+export async function openSavedMobileFile(
+  uri: string,
+  filename?: string
+): Promise<boolean> {
+  if (!uri || !Capacitor.isNativePlatform()) return false;
+  try {
+    const { Reticulum } = await import('../plugins/Reticulum');
+    const result = await Reticulum.qchatFileOpen({
+      uri,
+      ...(filename ? { fileName: filename } : {}),
+    });
+    return result?.ok === true;
+  } catch (error) {
+    console.error('[MobileSave] failed to open saved file:', error);
+    return false;
+  }
+}
+
+/**
+ * Downloads a URL directly into Documents/Qortal Go/<category>/<filename>.
+ *
+ * Prefer this over pumping the response through
+ * {@link saveStreamToMobileDocuments}: the bytes stay native, so a large file
+ * costs one storage write instead of a base64 encode/decode and a bridge
+ * crossing per chunk. Only usable when the content needs no in-app processing
+ * (no client-side decryption).
+ */
+export async function downloadUrlToMobileDocuments(
+  filename: string,
+  url: string,
+  mimeType?: string,
+  onProgress?: (event: DownloadProgressEvent) => void
+): Promise<{ path: string; uri: string; bytesWritten: number }> {
+  assertNative();
+  const safeName = sanitizeName(filename);
+  return downloadNativeDocument(
+    `${QORTAL_DOCUMENTS_FOLDER}/${safeName}`,
+    url,
+    { categorize: true, mimeType },
+    onProgress
+  );
 }
 
 /**
@@ -152,7 +247,8 @@ export async function saveBlobToMobileDocuments(
 export async function saveStreamToMobileDocuments(
   filename: string,
   chunks: AsyncIterable<Uint8Array>,
-  mimeType?: string
+  mimeType?: string,
+  onProgress?: (bytesWritten: number) => void
 ): Promise<{ path: string; uri: string; bytesWritten: number }> {
   assertNative();
 
@@ -182,6 +278,7 @@ export async function saveStreamToMobileDocuments(
     });
     firstWriteDone = true;
     bytesWritten += merged.length;
+    onProgress?.(bytesWritten);
   };
 
   for await (const chunk of chunks) {

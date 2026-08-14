@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   Avatar,
@@ -20,7 +26,10 @@ import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded';
 import EditRoundedIcon from '@mui/icons-material/EditRounded';
 import ChevronRightRoundedIcon from '@mui/icons-material/ChevronRightRounded';
 import { useAtom, useStore } from 'jotai';
-import { authenticatePasswordAtom, mobileLoginSettingsOpenAtom } from '../atoms/global';
+import {
+  authenticatePasswordAtom,
+  mobileLoginSettingsOpenAtom,
+} from '../atoms/global';
 import { PasswordField, ErrorText } from './index';
 import type { ApiKey } from '../types/auth';
 import { getPrimaryNameForAvatar } from './Group/groupApi';
@@ -90,8 +99,11 @@ const isAddressLikeLabel = (value?: string, walletAddress?: string) => {
   const trimmedValue = value?.trim();
   const trimmedWalletAddress = walletAddress?.trim();
   if (!trimmedValue) return false;
-  if (trimmedWalletAddress && trimmedValue === trimmedWalletAddress) return true;
-  return /^Q[a-zA-Z0-9]{24,}$/.test(trimmedValue) && !trimmedValue.includes(' ');
+  if (trimmedWalletAddress && trimmedValue === trimmedWalletAddress)
+    return true;
+  return (
+    /^Q[a-zA-Z0-9]{24,}$/.test(trimmedValue) && !trimmedValue.includes(' ')
+  );
 };
 
 const parsefilenameQortal = (filename?: string) => {
@@ -144,6 +156,11 @@ export const AuthenticationForm = ({
   const [editOpen, setEditOpen] = useState(false);
   const didAutoAuthenticateRef = useRef(false);
   const didAutoBiometricRef = useRef(false);
+  // The scan is torn down whenever the app leaves the screen — the phone
+  // locking is the common one. That is not the user declining it, so the
+  // fingerprint is offered again on the way back instead of the password form.
+  const scanLeftScreenRef = useRef(false);
+  const [biometricRetryNonce, setBiometricRetryNonce] = useState(0);
   const prefilledPasswordRef = useRef(
     Boolean(store.get(authenticatePasswordAtom).trim())
   );
@@ -297,8 +314,16 @@ export const AuthenticationForm = ({
   const handleBiometricUnlock = useCallback(async () => {
     if (!walletAddress || biometricUnlockBusy) return;
     setBiometricUnlockBusy(true);
+    let leftScreen = document.hidden;
+    const watchVisibility = () => {
+      if (document.hidden) leftScreen = true;
+    };
+    document.addEventListener('visibilitychange', watchVisibility);
     try {
-      const unlockResult = await biometricUnlockWallet(walletAddress, rawWallet);
+      const unlockResult = await biometricUnlockWallet(
+        walletAddress,
+        rawWallet
+      );
       if (unlockResult !== 'resume') {
         didAutoAuthenticateRef.current = true;
         store.set(authenticatePasswordAtom, unlockResult);
@@ -309,10 +334,17 @@ export const AuthenticationForm = ({
       dismissKeyboard();
       await onAuthenticate({ skipNodeCheck: true, skipLocalCheck: true });
     } catch (err) {
+      if (leftScreen) {
+        // Torn down with the app, not declined. Hold the fingerprint offer and
+        // ask again once the screen comes back.
+        scanLeftScreenRef.current = true;
+        return;
+      }
       console.error('Biometric unlock failed:', err);
       setShowPasswordFallback(true);
       window.setTimeout(() => passwordRef.current?.focus(), 120);
     } finally {
+      document.removeEventListener('visibilitychange', watchVisibility);
       setBiometricUnlockBusy(false);
     }
   }, [
@@ -330,6 +362,18 @@ export const AuthenticationForm = ({
   }, [walletAddress]);
 
   useEffect(() => {
+    const onVisibilityChange = () => {
+      if (document.hidden || !scanLeftScreenRef.current) return;
+      scanLeftScreenRef.current = false;
+      didAutoBiometricRef.current = false;
+      setBiometricRetryNonce((nonce) => nonce + 1);
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () =>
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+  }, []);
+
+  useEffect(() => {
     if (!showBiometricPrimary || biometricUnlockBusy) return;
     if (didAutoBiometricRef.current) return;
     didAutoBiometricRef.current = true;
@@ -343,7 +387,12 @@ export const AuthenticationForm = ({
       }
       void handleBiometricUnlock();
     })();
-  }, [biometricUnlockBusy, handleBiometricUnlock, showBiometricPrimary]);
+  }, [
+    biometricRetryNonce,
+    biometricUnlockBusy,
+    handleBiometricUnlock,
+    showBiometricPrimary,
+  ]);
 
   const avatarSrc = resolveWalletAvatarSrc({
     primaryName: effectivePrimaryName,
@@ -428,11 +477,7 @@ export const AuthenticationForm = ({
         window.matchMedia('(prefers-reduced-motion: reduce)').matches));
 
   useLayoutEffect(() => {
-    if (
-      !unlockTransition ||
-      shouldReduceMotion ||
-      !avatarRef.current
-    ) {
+    if (!unlockTransition || shouldReduceMotion || !avatarRef.current) {
       return;
     }
 
@@ -502,7 +547,13 @@ export const AuthenticationForm = ({
             },
           }}
         >
-          <Box sx={{ display: 'flex', justifyContent: 'flex-start', width: '100%' }}>
+          <Box
+            sx={{
+              display: 'flex',
+              justifyContent: 'flex-start',
+              width: '100%',
+            }}
+          >
             <ButtonBase
               onClick={onBack}
               sx={{
@@ -565,9 +616,7 @@ export const AuthenticationForm = ({
                   pr: 3.5,
                   textAlign: 'center',
                   textOverflow: 'ellipsis',
-                  textShadow: isLight
-                    ? 'none'
-                    : '0 1px 8px rgba(0,0,0,0.16)',
+                  textShadow: isLight ? 'none' : '0 1px 8px rgba(0,0,0,0.16)',
                   whiteSpace: 'nowrap',
                 }}
               >
@@ -619,7 +668,9 @@ export const AuthenticationForm = ({
               <ButtonBase
                 onClick={() => {
                   if (rawWallet?.address0) {
-                    void navigator.clipboard?.writeText(rawWallet.address0).catch(() => {});
+                    void navigator.clipboard
+                      ?.writeText(rawWallet.address0)
+                      .catch(() => {});
                   }
                 }}
                 sx={{
@@ -755,36 +806,78 @@ export const AuthenticationForm = ({
                       textTransform: 'uppercase',
                     }}
                   >
-                    {t('auth:wallet.password', { postProcess: 'capitalizeFirstChar' })}
-                  </Typography>
-                  <PasswordField
-                    id="wallet-unlock-password"
-                    value={authenticatePassword}
-                    onChange={(e) => setAuthenticatePassword(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        onAuthenticate();
-                      }
-                    }}
-                    ref={passwordRef}
-                    placeholder={t('auth:authentication_form.password_placeholder', {
+                    {t('auth:wallet.password', {
                       postProcess: 'capitalizeFirstChar',
                     })}
-                    sx={authPasswordFieldSx(theme)}
-                  />
-                </Box>
-
-                {showPasswordFallback && biometricUnlockReady && (
-                  <Typography
+                  </Typography>
+                  <Box
                     sx={{
-                      color: theme.palette.text.secondary,
-                      fontSize: '0.74rem',
-                      lineHeight: 1.4,
+                      alignItems: 'stretch',
+                      display: 'flex',
+                      gap: 0.75,
+                      width: '100%',
                     }}
                   >
-                    {t('auth:mobile_login_settings.biometric_failed')}
-                  </Typography>
-                )}
+                    <PasswordField
+                      id="wallet-unlock-password"
+                      value={authenticatePassword}
+                      onChange={(e) => setAuthenticatePassword(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          onAuthenticate();
+                        }
+                      }}
+                      ref={passwordRef}
+                      placeholder={t(
+                        'auth:authentication_form.password_placeholder',
+                        {
+                          postProcess: 'capitalizeFirstChar',
+                        }
+                      )}
+                      sx={{
+                        ...authPasswordFieldSx(theme),
+                        flex: 1,
+                        minWidth: 0,
+                      }}
+                    />
+                    {biometricUnlockReady && (
+                      <ButtonBase
+                        onClick={() => void handleBiometricUnlock()}
+                        disabled={biometricUnlockBusy}
+                        aria-label={t(
+                          'auth:mobile_login_settings.biometric_unlock'
+                        )}
+                        title={t('auth:mobile_login_settings.biometric_unlock')}
+                        sx={{
+                          alignItems: 'center',
+                          background: isLight
+                            ? alpha(theme.palette.primary.main, 0.08)
+                            : 'rgba(118,164,255,0.1)',
+                          border: isLight
+                            ? `1px solid ${alpha(theme.palette.primary.main, 0.26)}`
+                            : '1px solid rgba(118,164,255,0.26)',
+                          borderRadius: '10px',
+                          color: theme.palette.primary.main,
+                          display: 'flex',
+                          flexShrink: 0,
+                          height: 50,
+                          justifyContent: 'center',
+                          width: 50,
+                          '&:hover': {
+                            background: isLight
+                              ? alpha(theme.palette.primary.main, 0.14)
+                              : 'rgba(118,164,255,0.16)',
+                          },
+                          '&:disabled': {
+                            opacity: 0.55,
+                          },
+                        }}
+                      >
+                        <FingerprintRoundedIcon sx={{ fontSize: 24 }} />
+                      </ButtonBase>
+                    )}
+                  </Box>
+                </Box>
 
                 <Box sx={{ minHeight: 16, mt: -0.1 }}>
                   <ErrorText>{walletToBeDecryptedError}</ErrorText>
@@ -792,7 +885,7 @@ export const AuthenticationForm = ({
 
                 <AuthButton
                   onClick={onAuthenticate}
-                  disabled={!authenticatePassword}
+                  disabled={!authenticatePassword || biometricUnlockBusy}
                   sx={walletUnlockSubmitButtonSx(theme)}
                 >
                   {t('auth:authentication_form.unlock', {
@@ -834,12 +927,12 @@ export const AuthenticationForm = ({
                     : 'rgba(148,186,255,0.96)',
                 },
               }}
-              >
-                {t('auth:authentication_form.choose_another_account', {
-                  postProcess: 'capitalizeFirstChar',
-                })}
-                <ChevronRightRoundedIcon sx={{ fontSize: 15 }} />
-              </ButtonBase>
+            >
+              {t('auth:authentication_form.choose_another_account', {
+                postProcess: 'capitalizeFirstChar',
+              })}
+              <ChevronRightRoundedIcon sx={{ fontSize: 15 }} />
+            </ButtonBase>
 
             <Divider
               sx={{

@@ -1058,6 +1058,8 @@ export const Group = ({
   const [reticulumChatEnabled, setReticulumChatEnabled] = useAtom(
     reticulumChatEnabledAtom
   );
+  const reticulumChatEnabledRef = useRef(reticulumChatEnabled);
+  reticulumChatEnabledRef.current = reticulumChatEnabled;
   const [reticulumEnabled, setReticulumEnabled] = useAtom(reticulumEnabledAtom);
   const [reticulumDirectSummaries, setReticulumDirectSummaries] = useAtom(
     reticulumDirectSummariesAtom
@@ -2973,37 +2975,83 @@ export const Group = ({
     };
   }, [myAddress, processReticulumBackgroundEvent]);
 
-  useEffect(() => {
-    if (!myAddress) return;
+  const prefetchedReticulumHistoryGroupsRef = useRef<Set<number>>(new Set());
+  const reticulumBackgroundHistoryGroupsKey = useMemo(() => {
     const groupIds = getGroupIdsFromGroupLikeList(memberGroupsForReticulum);
+    // Wait until open/closed is known so indexing does not no-op, but keep the
+    // key stable once membership + readiness settle (groupsProperties object
+    // identity churn must not re-stampede getHistory for every group).
+    return groupIds
+      .filter((groupId) => {
+        const property = groupsProperties?.[String(groupId)] as
+          | { isOpen?: boolean }
+          | undefined;
+        return property?.isOpen === true || property?.isOpen === false;
+      })
+      .sort((left, right) => left - right)
+      .join(',');
+  }, [groupsProperties, memberGroupsForReticulum]);
+
+  useEffect(() => {
+    prefetchedReticulumHistoryGroupsRef.current.clear();
+  }, [myAddress]);
+
+  useEffect(() => {
+    if (!myAddress || !reticulumBackgroundHistoryGroupsKey) return;
+    const groupIds = reticulumBackgroundHistoryGroupsKey
+      .split(',')
+      .map((value) => Number(value))
+      .filter((groupId) => Number.isInteger(groupId) && groupId > 0);
     if (groupIds.length === 0) return;
     let cancelled = false;
     void (async () => {
-      const enabled = await window.reticulumChat?.isEnabled?.();
-      if (cancelled || enabled !== true) return;
-      for (const groupId of groupIds) {
-        if (cancelled) return;
-        const history = await window.reticulumChat?.getHistory?.(
-          groupId,
-          'general',
-          50,
-          { repairNetwork: false }
-        );
-        if (cancelled || !Array.isArray(history)) continue;
-        for (const event of history as ReticulumBackgroundEvent[]) {
+      try {
+        const enabled = await window.reticulumChat?.isEnabled?.();
+        if (cancelled || enabled !== true) return;
+        for (const groupId of groupIds) {
           if (cancelled) return;
-          await processReticulumBackgroundEvent(event);
+          if (prefetchedReticulumHistoryGroupsRef.current.has(groupId)) {
+            continue;
+          }
+          try {
+            const history = await window.reticulumChat?.getHistory?.(
+              groupId,
+              'general',
+              50,
+              { repairNetwork: false }
+            );
+            if (cancelled || !Array.isArray(history)) continue;
+            for (const event of history as ReticulumBackgroundEvent[]) {
+              if (cancelled) return;
+              await processReticulumBackgroundEvent(event);
+            }
+            if (!cancelled) {
+              prefetchedReticulumHistoryGroupsRef.current.add(groupId);
+            }
+          } catch (error) {
+            // Timeouts after a long chat session are recoverable; never let
+            // them become an unhandled rejection / full-screen runtime fault.
+            console.warn(
+              '[ReticulumChat] Background history prefetch failed:',
+              groupId,
+              error
+            );
+          }
         }
+      } catch (error) {
+        console.warn(
+          '[ReticulumChat] Background history prefetch aborted:',
+          error
+        );
       }
     })();
     return () => {
       cancelled = true;
     };
   }, [
-    groupsProperties,
-    memberGroupsForReticulum,
     myAddress,
     processReticulumBackgroundEvent,
+    reticulumBackgroundHistoryGroupsKey,
   ]);
 
   const getAdminsForGroup = useCallback(async (selectedGroup) => {
@@ -3113,6 +3161,10 @@ export const Group = ({
 
   const getLatestRegularChat = useCallback(async (groups) => {
     try {
+      // Reticulum derives unread state from local summaries, so these legacy
+      // per-group `/chat/messages` probes are pure startup cost — one request
+      // per joined group before the chat list can settle.
+      if (reticulumChatEnabledRef.current) return;
       const groupData = {};
 
       const getGroupData = groups.map(async (group) => {
@@ -3898,12 +3950,9 @@ export const Group = ({
     }
   }, [selectedGroup?.groupId, selectedDirect?.address, myAddress]);
 
-  // Reopen the last conversation persisted above (used on a cold start when the
-  // in-memory selection is gone). Best-effort: silently no-ops if the relevant
-  // list hasn't loaded yet.
-  const restoreLastOpenChat = useCallback(() => {
-    // Restore which list (Groups vs PM) was last used so the fallback view is
-    // correct even when there is no conversation to resume.
+  // Restore which list (Groups vs PM) was last used, without opening any
+  // conversation.
+  const restoreChatSideView = useCallback(() => {
     try {
       const storedSide = localStorage.getItem(CHAT_SIDE_VIEW_STORAGE_KEY);
       if (storedSide === 'groups' || storedSide === 'directs') {
@@ -3912,6 +3961,12 @@ export const Group = ({
     } catch {
       /* ignore */
     }
+  }, []);
+
+  // Reopen the conversation persisted above. Best-effort: silently no-ops if
+  // the relevant list hasn't loaded yet.
+  const restoreLastOpenChat = useCallback(() => {
+    restoreChatSideView();
 
     const last = getLastOpenChat(myAddress);
     if (!last) return;
@@ -3942,13 +3997,15 @@ export const Group = ({
         }, 200);
       }
     }
-  }, [myAddress, displayDirects, getTimestampEnterChat]);
+  }, [myAddress, displayDirects, getTimestampEnterChat, restoreChatSideView]);
 
-  // Bottom Chat tab cycle:
-  //  - first tap (arriving from another section): resume the open conversation
-  //    if one is still in memory, otherwise restore the last one persisted;
-  //  - second tap (already viewing a conversation): collapse back to its list
-  //    (Groups or PM depending on what was open).
+  // Bottom Chat tab behaviour:
+  //  - first entry after the app was launched: always the list, never a
+  //    conversation, so a cold start never drops the user straight into a chat;
+  //  - coming back from another section with a conversation still open: resume
+  //    that conversation;
+  //  - tapping Chat while already on Chat: toggle between the open conversation
+  //    and its list (Groups or PM).
   const handleMobileChatTab = useCallback(
     (e: CustomEvent) => {
       const reEntry = e?.detail?.data?.reEntry;
@@ -3959,6 +4016,7 @@ export const Group = ({
       );
 
       if (reEntry) {
+        chatSessionInitializedRef.current = true;
         if (inDetail) {
           if (selectedDirectRef.current || newChatRef.current) {
             setDesktopSideView('directs');
@@ -3968,23 +4026,27 @@ export const Group = ({
           setSelectedGroup(null);
           setSelectedDirect(null);
           setNewChat(false);
+          setMobileListPanelOpen(false);
+          return;
         }
+        // Back into the conversation. The slide-over list would otherwise stay
+        // on top of it and the tap would look like it did nothing.
+        setMobileListPanelOpen(false);
+        restoreLastOpenChat();
         return;
       }
 
-      // First tap: if a conversation is still in memory, keep it (continue where
-      // left off). Otherwise, only on the first Chat entry of the session (e.g.
-      // a cold start after the OS killed the app) restore the last persisted
-      // conversation; afterwards respect whatever list/thread state is live.
+      // Arriving from another section: keep the conversation that is still in
+      // memory so the user continues where they left off.
       if (inDetail) {
         chatSessionInitializedRef.current = true;
         return;
       }
       if (chatSessionInitializedRef.current) return;
       chatSessionInitializedRef.current = true;
-      restoreLastOpenChat();
+      restoreChatSideView();
     },
-    [restoreLastOpenChat]
+    [restoreChatSideView, restoreLastOpenChat]
   );
 
   useEffect(() => {

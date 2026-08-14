@@ -801,6 +801,13 @@ export function useReticulumGroupChat(
             (eventsRef.current as ReticulumChatHookEvent[]).some(
               (visibleEvent) => visibleEvent.eventId === targetEventId
             );
+          // publishEvent is only invoked for this client's own sends. Always
+          // merge them into the visible window — skipping while
+          // anchored+hasNewer drops the optimistic row (clearQueueOnSuccess)
+          // without a replacement, so the message looks missing on the device
+          // that sent it (and the thread can diverge from Hub).
+          mergeEvents([chatEvent], expectedChatKey);
+          void enrichVisibleEvents([chatEvent], expectedChatKey);
           if (
             historyModeRef.current === 'anchored' &&
             hasNewerRef.current &&
@@ -809,9 +816,6 @@ export function useReticulumGroupChat(
               !visibleTarget)
           ) {
             updateHasNewer(true);
-          } else {
-            mergeEvents([chatEvent], expectedChatKey);
-            void enrichVisibleEvents([chatEvent], expectedChatKey);
           }
         }
       }

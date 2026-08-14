@@ -154,7 +154,7 @@
   },
   "domain": "dominio",
   "ui": {
-    "version": "versión de interfaz de usuario"
+    "version": "versión de GO"
   },
   "count": {
     "none": "ninguno",

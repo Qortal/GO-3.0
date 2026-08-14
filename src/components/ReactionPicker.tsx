@@ -4,16 +4,36 @@ import Picker, { EmojiStyle, Theme } from 'emoji-picker-react';
 import '../styles/ReactionPicker.css';
 import { ButtonBase } from '@mui/material';
 import SentimentSatisfiedAltOutlinedIcon from '@mui/icons-material/SentimentSatisfiedAltOutlined';
+import { ChatGifPicker } from './Chat/gifs/ChatGifPicker';
+import { EmojiGifStage } from './Chat/gifs/EmojiGifStage';
+import {
+  EMOJI_GIF_SWITCH_HEIGHT,
+  EmojiGifSwitch,
+  type EmojiGifMode,
+} from './Chat/gifs/EmojiGifSwitch';
+import type { LibraryGif } from './Chat/gifs/libraryGifs';
 
 export const ReactionPicker = ({
   onReaction,
+  onGifSelect,
   neutralIcon = false,
   compactComposer = false,
+}: {
+  onReaction: (emoji: string) => void;
+  onGifSelect?: (gif: LibraryGif) => void;
+  neutralIcon?: boolean;
+  compactComposer?: boolean;
 }) => {
   const [showPicker, setShowPicker] = useState(false);
+  const [mode, setMode] = useState<EmojiGifMode>('emoji');
   const [pickerPosition, setPickerPosition] = useState({ top: 0, left: 0 });
+  const [pickerSize, setPickerSize] = useState({ height: 400, width: 350 });
   const pickerRef = useRef(null);
   const buttonRef = useRef(null);
+  const showGifTab = typeof onGifSelect === 'function';
+  const innerHeight = showGifTab
+    ? Math.max(200, pickerSize.height - EMOJI_GIF_SWITCH_HEIGHT)
+    : pickerSize.height;
 
   const handleReaction = (emojiObject) => {
     onReaction(emojiObject.emoji);
@@ -31,31 +51,47 @@ export const ReactionPicker = ({
 
     if (showPicker) {
       setShowPicker(false);
-    } else {
-      const button = buttonRef.current;
-      if (!button) return;
-
-      const buttonRect = button.getBoundingClientRect();
-      const pickerWidth = 350;
-      const pickerHeight = 400; // Match Picker height prop
-
-      // Initial position (below the button)
-      let top = buttonRect.bottom + window.scrollY;
-      let left = buttonRect.right + window.scrollX - pickerWidth;
-
-      // If picker would overflow bottom, show it above the button
-      const overflowBottom =
-        top + pickerHeight > window.innerHeight + window.scrollY;
-      if (overflowBottom) {
-        top = buttonRect.top + window.scrollY - pickerHeight;
-      }
-
-      // Optional: prevent overflow on the left too
-      if (left < 0) left = 0;
-
-      setPickerPosition({ top, left });
-      setShowPicker(true);
+      return;
     }
+    const button = buttonRef.current;
+    if (!button) return;
+
+    const buttonRect = button.getBoundingClientRect();
+    // Keep the panel inside whatever is actually visible: with the soft
+    // keyboard up the viewport is short, and a fixed 350x400 box anchored to
+    // the button ends up pinned against the top-left corner.
+    const viewport = window.visualViewport;
+    const viewportWidth = viewport?.width ?? window.innerWidth;
+    const viewportHeight = viewport?.height ?? window.innerHeight;
+    const margin = 8;
+    const width = Math.min(350, viewportWidth - margin * 2);
+    const spaceAbove = buttonRect.top - margin * 2;
+    const spaceBelow = viewportHeight - buttonRect.bottom - margin * 2;
+    const above = spaceBelow < spaceAbove;
+    const height = Math.max(
+      240,
+      Math.min(400, Math.floor(above ? spaceAbove : spaceBelow))
+    );
+
+    const top = Math.min(
+      Math.max(
+        margin,
+        above ? buttonRect.top - height - margin : buttonRect.bottom + margin
+      ),
+      Math.max(margin, viewportHeight - height - margin)
+    );
+    const left = Math.min(
+      Math.max(margin, buttonRect.left + buttonRect.width / 2 - width / 2),
+      Math.max(margin, viewportWidth - width - margin)
+    );
+
+    setPickerSize({ height, width });
+    setPickerPosition({
+      top: top + window.scrollY,
+      left: left + window.scrollX,
+    });
+    setMode('emoji');
+    setShowPicker(true);
   };
 
   // Close picker if clicked outside
@@ -100,6 +136,9 @@ export const ReactionPicker = ({
         }}
         ref={buttonRef}
         onClick={togglePicker}
+        // Opening the picker must not blur the composer, or Android takes the
+        // soft keyboard down with it.
+        onMouseDown={(event) => event.preventDefault()}
       >
         {neutralIcon ? (
           <SentimentSatisfiedAltOutlinedIcon
@@ -117,22 +156,60 @@ export const ReactionPicker = ({
             className="emoji-picker"
             ref={pickerRef}
             style={{
+              background: '#1c1e24',
+              borderRadius: 12,
+              display: 'flex',
+              flexDirection: 'column',
+              left: pickerPosition.left,
+              overflow: 'hidden',
               position: 'absolute',
               top: pickerPosition.top,
-              left: pickerPosition.left,
+              width: pickerSize.width,
               zIndex: 1400,
             }}
           >
-            <Picker
-              allowExpandReactions={true}
-              autoFocusSearch={false}
-              emojiStyle={EmojiStyle.NATIVE}
-              height={400}
-              onEmojiClick={handlePicker}
-              onReactionClick={handleReaction}
-              theme={Theme.DARK}
-              width={350}
-            />
+            {showGifTab ? (
+              <EmojiGifStage
+                height={innerHeight}
+                mode={mode}
+                emoji={
+                  <Picker
+                    allowExpandReactions={true}
+                    autoFocusSearch={false}
+                    emojiStyle={EmojiStyle.NATIVE}
+                    height={innerHeight}
+                    onEmojiClick={handlePicker}
+                    onReactionClick={handleReaction}
+                    theme={Theme.DARK}
+                    width={pickerSize.width}
+                  />
+                }
+                gifs={
+                  <ChatGifPicker
+                    height={innerHeight}
+                    onSelect={(gif) => {
+                      onGifSelect(gif);
+                      setShowPicker(false);
+                      setMode('emoji');
+                    }}
+                  />
+                }
+              />
+            ) : (
+              <Picker
+                allowExpandReactions={true}
+                autoFocusSearch={false}
+                emojiStyle={EmojiStyle.NATIVE}
+                height={innerHeight}
+                onEmojiClick={handlePicker}
+                onReactionClick={handleReaction}
+                theme={Theme.DARK}
+                width={pickerSize.width}
+              />
+            )}
+            {showGifTab ? (
+              <EmojiGifSwitch mode={mode} onChange={setMode} />
+            ) : null}
           </div>,
           document.body
         )}

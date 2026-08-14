@@ -154,7 +154,7 @@
   },
   "domain": "verkkotunnus",
   "ui": {
-    "version": "käyttöliittymän versio"
+    "version": "GO-versio"
   },
   "count": {
     "none": "ei mitään",

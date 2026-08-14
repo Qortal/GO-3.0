@@ -17,6 +17,7 @@ type MockStore = {
   reticulumChatAuthorSequenceLeases: ReticulumChatRow[];
   reticulumChatMissingRangePeerObservations: ReticulumChatRow[];
   reticulumChatSilences: ReticulumChatRow[];
+  reticulumChannelSummaryCache: ReticulumChatRow[];
   reticulumPublicGroupActivity: ReticulumChatRow[];
   reticulumCalendarMutations: ReticulumChatRow[];
   reticulumCalendarEvents: ReticulumChatRow[];
@@ -993,6 +994,57 @@ class Statement {
   }
 
   get(...args: any[]) {
+    if (this.sql.includes('AS eventCount')) {
+      const params = (args[0] ?? {}) as Record<string, any>;
+      const { group_id: groupId, channel_id: channelId } = params;
+      const windowLimit = Number(params.window) || 500;
+      const events = this.store.reticulumChatEvents.filter(
+        (row) => row.group_id === groupId && row.channel_id === channelId
+      );
+      const messages = this.store.reticulumChatMessages.filter(
+        (row) =>
+          row.group_id === groupId &&
+          row.channel_id === channelId &&
+          row.deleted_at == null
+      );
+      const expiries = messages
+        .filter((row) => row.expires_at != null)
+        .sort(
+          (left, right) =>
+            Number(right.created_at) - Number(left.created_at) ||
+            String(right.root_event_id).localeCompare(
+              String(left.root_event_id)
+            )
+        )
+        .slice(0, windowLimit)
+        .map((row) => Number(row.expires_at));
+      const maxOf = (rows: ReticulumChatRow[], key: string) =>
+        rows.reduce((max, row) => Math.max(max, Number(row[key]) || 0), 0);
+      return {
+        eventCount: events.length,
+        eventLatest: maxOf(events, 'timestamp'),
+        messageCount: messages.length,
+        messageLatest: maxOf(messages, 'created_at'),
+        expiresNextAt: expiries.length ? Math.min(...expiries) : null,
+      };
+    }
+    if (this.sql.includes('FROM rchat_channel_summary_cache')) {
+      const [ownerAddress, groupId, channelId, onlineSince] = args;
+      const row = this.store.reticulumChannelSummaryCache.find(
+        (existing) =>
+          existing.owner_address === ownerAddress &&
+          existing.group_id === groupId &&
+          existing.channel_id === channelId &&
+          existing.online_since === onlineSince
+      );
+      return row
+        ? {
+            fingerprint: row.fingerprint,
+            expires_next_at: row.expires_next_at,
+            summary_json: row.summary_json,
+          }
+        : undefined;
+    }
     if (
       this.sql.includes('FROM rchat_calendar_events e') &&
       this.sql.includes('JOIN rchat_calendar_mutations m')
@@ -1578,6 +1630,45 @@ class Statement {
   }
 
   run(...args: any[]) {
+    if (this.sql.includes('INSERT INTO rchat_channel_summary_cache')) {
+      const row = (args[0] ?? {}) as Record<string, any>;
+      const index = this.store.reticulumChannelSummaryCache.findIndex(
+        (existing) =>
+          existing.owner_address === row.owner_address &&
+          existing.group_id === row.group_id &&
+          existing.channel_id === row.channel_id &&
+          existing.online_since === row.online_since
+      );
+      if (index >= 0) {
+        this.store.reticulumChannelSummaryCache[index] = { ...row };
+      } else {
+        this.store.reticulumChannelSummaryCache.push({ ...row });
+      }
+      return {
+        changes: 1,
+        lastInsertRowid: this.store.reticulumChannelSummaryCache.length,
+      };
+    }
+    if (this.sql.includes('DELETE FROM rchat_channel_summary_cache')) {
+      const before = this.store.reticulumChannelSummaryCache.length;
+      const matches = (existing: ReticulumChatRow): boolean => {
+        if (this.sql.includes('owner_address = ?')) {
+          return existing.owner_address === args[0];
+        }
+        if (this.sql.includes('channel_id = ?')) {
+          return existing.group_id === args[0] && existing.channel_id === args[1];
+        }
+        return existing.group_id === args[0];
+      };
+      this.store.reticulumChannelSummaryCache =
+        this.store.reticulumChannelSummaryCache.filter(
+          (existing) => !matches(existing)
+        );
+      return {
+        changes: before - this.store.reticulumChannelSummaryCache.length,
+        lastInsertRowid: 0,
+      };
+    }
     if (this.sql.includes('INSERT INTO rchat_calendar_mutations')) {
       const [
         mutationId,
@@ -3262,6 +3353,7 @@ class MockDatabase {
       reticulumChatAuthorSequenceLeases: [],
       reticulumChatMissingRangePeerObservations: [],
       reticulumChatSilences: [],
+      reticulumChannelSummaryCache: [],
       reticulumPublicGroupActivity: [],
       reticulumCalendarMutations: [],
       reticulumCalendarEvents: [],
@@ -3293,6 +3385,10 @@ class MockDatabase {
   }
 
   exec(sql = '') {
+    if (String(sql).includes('DELETE FROM rchat_channel_summary_cache')) {
+      this.store.reticulumChannelSummaryCache = [];
+      return undefined;
+    }
     this.applySchemaSql(String(sql));
     return undefined;
   }

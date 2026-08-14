@@ -36,6 +36,23 @@ export function isLocalPrivateHttpsUrl(url: string | undefined): boolean {
 }
 
 /**
+ * Electron can trust a local node's self-signed HTTPS CA. Capacitor/WebView
+ * cannot — and SSH tunnels to a Qortal API are almost always plain HTTP.
+ * Outside Electron, prefer cleartext HTTP for loopback/LAN HTTPS bases so
+ * `https://localhost:port` over a tunnel does not fail the TLS handshake.
+ */
+export function preferHttpForLocalPrivateUrl(
+  url: string | undefined
+): string | undefined {
+  if (!url || !isLocalPrivateHttpsUrl(url)) return url;
+  const canTrustLocalHttps =
+    typeof window !== 'undefined' &&
+    typeof window.electronAPI?.ensureCertForBase === 'function';
+  if (canTrustLocalHttps) return url;
+  return url.replace(/^https:\/\//i, 'http://');
+}
+
+/**
  * In Electron, fetches and registers the node's CA for private/loopback HTTPS URLs
  * before the renderer talks to that base over TLS (avoids Chromium rejecting self-signed).
  * No-ops on web or when the URL is not HTTPS to a private host.

@@ -19,13 +19,17 @@ import ImageRoundedIcon from '@mui/icons-material/ImageRounded';
 import InsertDriveFileRoundedIcon from '@mui/icons-material/InsertDriveFileRounded';
 import SendRoundedIcon from '@mui/icons-material/SendRounded';
 import { MAX_SIZE_MESSAGE } from '../../constants/constants';
-import Tiptap, { type MentionSuggestionItem } from './TipTap';
+import Tiptap, {
+  composerHasSendableText,
+  type MentionSuggestionItem,
+} from './TipTap';
 import { normalizeExactReticulumMentions } from './reticulumMentionNormalization';
 import { MessageItem } from './MessageItem';
 import type { ReticulumChannelLinkAccess } from './MessageDisplay';
 import { ReticulumGifCompressionStatus } from './ReticulumGifCompressionStatus';
 import { ReticulumMessageExpiryButton } from './ReticulumMessageExpiryButton';
 import { ReactionPicker } from '../ReactionPicker';
+import { fetchLibraryGifFile } from './gifs/libraryGifs';
 import { MessageSizeLimitLip } from './MessageSizeLimitLip';
 
 const RETICULUM_BLUE = '#2563eb';
@@ -161,7 +165,7 @@ export const ReticulumDiscussionDialog = ({
       editor.commands.setContent(normalizedMentions.document, false);
     }
     const htmlContent = editor.getHTML();
-    const hasText = Boolean(editor.getText().trim());
+    const hasText = composerHasSendableText(editor.getText());
     if (!hasText && files.length === 0) return;
     const messageText = editor.getJSON() as Record<string, unknown>;
     const payloadSize = JSON.stringify(messageText).length + 300;
@@ -193,7 +197,7 @@ export const ReticulumDiscussionDialog = ({
     loading ||
     !canWrite ||
     closeDisabled ||
-    (!editor?.getText().trim() && files.length === 0);
+    (!composerHasSendableText(editor?.getText()) && files.length === 0);
 
   return (
     <Dialog
@@ -599,13 +603,17 @@ export const ReticulumDiscussionDialog = ({
             enableMentions
             inOverlay
             insertFiles={onSelectFiles}
+            insertGif={async (gif) => {
+              const file = await fetchLibraryGifFile(gif);
+              if (file) void onSelectFiles([file]);
+            }}
             isChat
             isFocusedParent={focused}
             membersWithNames={membersWithNames}
             mentionSuggestions={mentionSuggestions}
             onContentUpdate={(nextEditor) => {
               setMessageSize(JSON.stringify(nextEditor.getJSON()).length + 300);
-              onTypingChange(Boolean(nextEditor.getText().trim()));
+              onTypingChange(composerHasSendableText(nextEditor.getText()));
             }}
             onEnter={send}
             placeholder={isMobile ? 'Reply...' : 'Reply to discussion...'}
@@ -628,6 +636,10 @@ export const ReticulumDiscussionDialog = ({
                 <ReactionPicker
                   compactComposer
                   neutralIcon
+                  onGifSelect={async (gif) => {
+                    const file = await fetchLibraryGifFile(gif);
+                    if (file) void onSelectFiles([file]);
+                  }}
                   onReaction={(emoji: string) => {
                     editor?.chain().focus().insertContent(emoji).run();
                   }}

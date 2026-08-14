@@ -26,6 +26,12 @@ import SaveIcon from '@mui/icons-material/Save';
 import { decodeIfEncoded } from '../../utils/decode';
 import { useTranslation } from 'react-i18next';
 import { downloadFromLocation } from '../../utils/downloadFromLocation';
+import FolderOpenIcon from '@mui/icons-material/FolderOpen';
+import {
+  isSilentSaveFile,
+  mobileSaveLocationLabelFor,
+  openSavedMobileFile,
+} from '../../utils/mobileFileSave';
 
 const encodeQdnPathSegment = (value) => {
   const rawValue = String(value ?? '');
@@ -47,8 +53,15 @@ export const AttachmentCard = ({
   errorMsg,
   encryptionType,
   selectedGroupId,
+  setInfoSnack,
+  setOpenSnack,
 }) => {
   const [isOpen, setIsOpen] = useState(true);
+  const [isSaving, setIsSaving] = useState(false);
+  const [savedFile, setSavedFile] = useState<{
+    uri: string;
+    filename: string;
+  } | null>(null);
   const { downloadResource } = useContext(QORTAL_APP_CONTEXT);
   const theme = useTheme();
   const { t } = useTranslation([
@@ -75,26 +88,79 @@ export const AttachmentCard = ({
     }
   };
 
-  const saveToDisk = async () => {
-    const { name, service, identifier } = resourceData;
+  const resolveSaveFilename = () => {
+    const fromResource = String(resourceData?.fileName || '').trim();
+    if (fromResource) return fromResource;
+    const identifier = String(resourceData?.identifier || '').trim();
+    if (identifier) return identifier;
+    return 'qortal-file';
+  };
 
-    downloadFromLocation({
-      location: {
-        name,
-        service,
-        identifier,
-      },
-      filename: resourceData?.fileName,
-      mimeType: resourceData?.mimeType,
-    });
+  const notifySaveResult = (ok: boolean, filename: string, error?: unknown) => {
+    if (!setInfoSnack || !setOpenSnack) return;
+    if (ok) {
+      if (isSilentSaveFile(filename)) return;
+      setInfoSnack({
+        type: 'success',
+        message: `Saved to ${mobileSaveLocationLabelFor(
+          filename,
+          resourceData?.mimeType
+        )}`,
+      });
+      setOpenSnack(true);
+      return;
+    }
+    const detail =
+      error instanceof Error
+        ? error.message
+        : typeof error === 'string'
+          ? error
+          : 'Unable to save file';
+    setInfoSnack({ type: 'error', message: detail });
+    setOpenSnack(true);
+  };
+
+  const saveToDisk = async () => {
+    if (isSaving) return;
+    const { name, service, identifier } = resourceData;
+    const filename = resolveSaveFilename();
+    setIsSaving(true);
+    try {
+      const result = await downloadFromLocation({
+        location: {
+          name,
+          service,
+          identifier,
+        },
+        filename,
+        mimeType: resourceData?.mimeType,
+      });
+      if (!result?.success) {
+        notifySaveResult(false, filename, result?.error || 'Save failed');
+        return;
+      }
+      if (result.fileUri) setSavedFile({ uri: result.fileUri, filename });
+      notifySaveResult(true, filename);
+    } catch (error) {
+      console.error(error);
+      notifySaveResult(false, filename, error);
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const saveToDiskEncrypted = async () => {
+    if (isSaving) return;
+    const filename = resolveSaveFilename();
     let blobUrl;
+    setIsSaving(true);
     try {
       const { name, service, identifier, key } = resourceData;
       const url = `${getBaseApiReact()}/arbitrary/${encodeQdnPathSegment(service)}/${encodeQdnPathSegment(name)}/${encodeQdnPathSegment(identifier)}?encoding=base64`;
       const res = await fetch(url);
+      if (!res.ok) {
+        throw new Error('Failed to download encrypted file');
+      }
       const data = await res.text();
       let decryptedData;
 
@@ -135,13 +201,17 @@ export const AttachmentCard = ({
       blobUrl = base64ToBlobUrl(decryptedData, resourceData?.mimeType);
       const response = await fetch(blobUrl);
       const blob = await response.blob();
-      await saveFileToDiskGeneric(blob, resourceData?.fileName);
+      const saved = await saveFileToDiskGeneric(blob, filename);
+      if (saved?.uri) setSavedFile({ uri: saved.uri, filename });
+      notifySaveResult(true, filename);
     } catch (error) {
       console.error(error);
+      notifySaveResult(false, filename, error);
     } finally {
       if (blobUrl) {
         URL.revokeObjectURL(blobUrl);
       }
+      setIsSaving(false);
     }
   };
 
@@ -390,12 +460,17 @@ export const AttachmentCard = ({
               },
             }}
             onClick={() => {
+              if (isSaving) return;
               if (resourceDetails?.status?.status === 'READY') {
-                if (encryptionType) {
-                  saveToDiskEncrypted();
+                if (savedFile) {
+                  void openSavedMobileFile(savedFile.uri, savedFile.filename);
                   return;
                 }
-                saveToDisk();
+                if (encryptionType) {
+                  void saveToDiskEncrypted();
+                  return;
+                }
+                void saveToDisk();
                 return;
               }
               downloadResource(resourceData);
@@ -473,7 +548,30 @@ export const AttachmentCard = ({
                 )}
 
               {resourceDetails &&
-                resourceDetails?.status?.status === 'READY' && (
+                resourceDetails?.status?.status === 'READY' &&
+                (isSaving ? (
+                  <>
+                    <CircularProgress
+                      size={20}
+                      sx={{ color: theme.palette.text.primary }}
+                    />
+                    <FileAttachmentFont>
+                      {t('core:message.generic.saving', {
+                        defaultValue: 'Saving…',
+                        postProcess: 'capitalizeFirstChar',
+                      })}
+                    </FileAttachmentFont>
+                  </>
+                ) : savedFile ? (
+                  <>
+                    <FolderOpenIcon />
+                    <FileAttachmentFont>
+                      {t('core:action.open', {
+                        postProcess: 'capitalizeFirstChar',
+                      })}
+                    </FileAttachmentFont>
+                  </>
+                ) : (
                   <>
                     <SaveIcon />
                     <FileAttachmentFont>
@@ -482,7 +580,7 @@ export const AttachmentCard = ({
                       })}
                     </FileAttachmentFont>
                   </>
-                )}
+                ))}
 
               {resourceDetails &&
                 resourceDetails?.status?.status === 'FAILED_TO_DOWNLOAD' && (

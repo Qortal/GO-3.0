@@ -11191,13 +11191,21 @@ export class ReticulumChatManager extends EventEmitter {
       this.activeChannelSubscriptions.delete(groupId);
   }
 
-  async publishEvent(event: ReticulumChatEvent): Promise<ReticulumSendResult> {
+  async publishEvent(
+    event: ReticulumChatEvent
+  ): Promise<ReticulumSendResult & { duplicate?: boolean }> {
     if (!Number.isInteger(event?.groupId) || event.groupId <= 0) {
       return {
         ok: false,
         reason: 'send-command-failed',
         error: 'Cannot publish Reticulum chat event: invalid group id',
       };
+    }
+    // The sender's queue retries a publish whenever the response is lost, even
+    // though the event was already stored and fanned out. Treat a replay of the
+    // same event as success so the retry cannot become a second message.
+    if (event.eventId && this.db.hasEvent(event.eventId)) {
+      return { ok: true, duplicate: true };
     }
     const channelId = normalizeReticulumChatChannelId(event.channelId);
     if (!CHANNEL_METADATA_EVENT_TYPES.has(event.eventType)) {
@@ -16407,6 +16415,19 @@ export class ReticulumChatManager extends EventEmitter {
 
   private scheduleLandStateForwardingSync(delayMs = 25): void {
     this.landStateForwardingRevision += 1;
+    this.queueLandStateForwardingSync(delayMs);
+  }
+
+  /**
+   * Arms the sync timer without claiming a new state revision.
+   *
+   * Re-running after an in-flight sync is not itself a state change. Counting
+   * it as one kept the revision permanently ahead of the applied revision, so
+   * on a busy mesh — where routes churn constantly — every pass saw a
+   * mismatch, rescheduled itself with no delay, and the snapshot/hash/IPC
+   * cycle ran back-to-back forever.
+   */
+  private queueLandStateForwardingSync(delayMs = 25): void {
     if (this.isClosed || !this.bridge) return;
     if (this.landStateForwardingSyncTimer) return;
     this.landStateForwardingSyncTimer = setTimeout(
@@ -16433,10 +16454,10 @@ export class ReticulumChatManager extends EventEmitter {
         .createHash('sha256')
         .update(JSON.stringify(snapshot), 'utf8')
         .digest('hex');
-      if (
-        appliedKey !== this.landStateForwardingAppliedKey ||
-        revision !== this.landStateForwardingAppliedRevision
-      ) {
+      // Only the content decides whether the bridge needs telling. Including
+      // the revision here meant an unchanged snapshot still triggered the full
+      // configure IPC on every pass.
+      if (appliedKey !== this.landStateForwardingAppliedKey) {
         const result = await bridge.configureLandStateForwarding(
           snapshot.plans,
           snapshot.sessions,
@@ -16462,6 +16483,10 @@ export class ReticulumChatManager extends EventEmitter {
             `[ReticulumChat] land_state_forwarding_config_failed revision=${revision} reason=${failure.reason}${failure.error ? ` error=${failure.error}` : ''}`
           );
         }
+      } else {
+        // The bridge already holds exactly this snapshot; record the revision
+        // as settled so churn that did not change the content stops requeuing.
+        this.landStateForwardingAppliedRevision = revision;
       }
     } catch (err) {
       retry = true;
@@ -16476,13 +16501,16 @@ export class ReticulumChatManager extends EventEmitter {
         // A bridge swap can consume the new bridge's first scheduled sync while
         // this older request is still in flight. Schedule it again now that the
         // shared in-flight guard has been released.
-        this.scheduleLandStateForwardingSync(0);
+        this.queueLandStateForwardingSync(0);
         return;
       }
+      // Re-run through the normal coalescing delay rather than immediately:
+      // route churn arrives faster than a snapshot round-trip completes, so a
+      // zero-delay requeue here never lets the timer batch anything.
       if (revision !== this.landStateForwardingRevision) {
-        this.scheduleLandStateForwardingSync(0);
+        this.queueLandStateForwardingSync();
       } else if (retry) {
-        this.scheduleLandStateForwardingSync(1_000);
+        this.queueLandStateForwardingSync(1_000);
       }
     }
   }

@@ -111,6 +111,8 @@ const RETICULUM_DM_ALLOWED_EXPIRY_MS = new Set([
   RETICULUM_DM_DEFAULT_EXPIRY_MS,
 ]);
 const RETICULUM_CHAT_MAX_EFFECTIVE_MENTION_HASHES = 32;
+/** How far back a channel summary looks when counting unread/mentions. */
+const RETICULUM_CHAT_SUMMARY_EVENT_WINDOW = 500;
 const RETICULUM_CHAT_VISIBLE_EVENT_SQL =
   "(expires_at IS NULL OR expires_at > CAST(strftime('%s','now') AS INTEGER) * 1000)";
 
@@ -1558,6 +1560,7 @@ export class ReticulumChatDatabase {
   >();
   private memoryReadWatermarks = new Map<string, number>();
   private memoryRelayCache: Map<string, ReticulumChatRelayCacheEntry>;
+  private summaryCacheGeneration: number | null = null;
   private generalChannelExpiryPolicyAppliedAt = 0;
   private lastExpiryPruneAt = 0;
   private lastDirectExpiryPruneAt = 0;
@@ -1580,6 +1583,12 @@ export class ReticulumChatDatabase {
   private stmtGetRecentEvents: Statement;
   private stmtGetRecentMessageEvents: Statement;
   private stmtGetRecentMessageEventsAllChannels: Statement;
+  private stmtGetChannelSummaryFingerprint: Statement;
+  private stmtGetChannelSummaryCache: Statement;
+  private stmtUpsertChannelSummaryCache: Statement;
+  private stmtDeleteChannelSummaryCacheForChannel: Statement;
+  private stmtDeleteChannelSummaryCacheForGroup: Statement;
+  private stmtDeleteChannelSummaryCacheForOwner: Statement;
   private stmtUpsertMessageProjection: Statement;
   private stmtGetMessageProjection: Statement;
   private stmtGetMessageProjectionEvents: Statement;
@@ -1787,6 +1796,56 @@ export class ReticulumChatDatabase {
       )
       ORDER BY created_at ASC, root_event_id ASC
     `);
+    // Deliberately aggregates only over indexed columns (and a bounded window
+    // for the expiry probe) so validating a cached summary stays far cheaper
+    // than rebuilding it.
+    this.stmtGetChannelSummaryFingerprint = this.db.prepare(`
+      SELECT
+        (SELECT COUNT(*) FROM reticulum_chat_events
+          WHERE group_id = @group_id AND channel_id = @channel_id) AS eventCount,
+        (SELECT COALESCE(MAX(timestamp), 0) FROM reticulum_chat_events
+          WHERE group_id = @group_id AND channel_id = @channel_id) AS eventLatest,
+        (SELECT COUNT(*) FROM rchat_message_projection
+          WHERE group_id = @group_id AND channel_id = @channel_id
+            AND deleted_at IS NULL) AS messageCount,
+        (SELECT COALESCE(MAX(created_at), 0) FROM rchat_message_projection
+          WHERE group_id = @group_id AND channel_id = @channel_id
+            AND deleted_at IS NULL) AS messageLatest,
+        (SELECT MIN(expires_at) FROM (
+          SELECT expires_at FROM rchat_message_projection
+          WHERE group_id = @group_id AND channel_id = @channel_id
+            AND deleted_at IS NULL AND expires_at IS NOT NULL
+          ORDER BY created_at DESC, root_event_id DESC
+          LIMIT @window
+        )) AS expiresNextAt
+    `);
+    this.stmtGetChannelSummaryCache = this.db.prepare(`
+      SELECT fingerprint, expires_next_at, summary_json
+      FROM rchat_channel_summary_cache
+      WHERE owner_address = ? AND group_id = ? AND channel_id = ? AND online_since = ?
+      LIMIT 1
+    `);
+    this.stmtUpsertChannelSummaryCache = this.db.prepare(`
+      INSERT INTO rchat_channel_summary_cache
+        (owner_address, group_id, channel_id, online_since, fingerprint,
+         expires_next_at, summary_json, computed_at)
+      VALUES (@owner_address, @group_id, @channel_id, @online_since, @fingerprint,
+              @expires_next_at, @summary_json, @computed_at)
+      ON CONFLICT (owner_address, group_id, channel_id, online_since) DO UPDATE SET
+        fingerprint = excluded.fingerprint,
+        expires_next_at = excluded.expires_next_at,
+        summary_json = excluded.summary_json,
+        computed_at = excluded.computed_at
+    `);
+    this.stmtDeleteChannelSummaryCacheForChannel = this.db.prepare(
+      'DELETE FROM rchat_channel_summary_cache WHERE group_id = ? AND channel_id = ?'
+    );
+    this.stmtDeleteChannelSummaryCacheForGroup = this.db.prepare(
+      'DELETE FROM rchat_channel_summary_cache WHERE group_id = ?'
+    );
+    this.stmtDeleteChannelSummaryCacheForOwner = this.db.prepare(
+      'DELETE FROM rchat_channel_summary_cache WHERE owner_address = ?'
+    );
     this.stmtUpsertMessageProjection = this.db.prepare(`
       INSERT INTO rchat_message_projection
         (root_event_id, group_id, channel_id, author_address, author_public_key,
@@ -3100,6 +3159,7 @@ export class ReticulumChatDatabase {
         ignoredThrough,
         createdAt
       );
+    this.invalidateChannelSummaryCacheForOwner(owner);
     return this.getSilence(owner, target, scopeType, normalizedScopeId);
   }
 
@@ -3129,6 +3189,7 @@ export class ReticulumChatDatabase {
         `
       )
       .run(clearedAt, clearedAt, owner, target, scopeType, normalizedScopeId);
+    this.invalidateChannelSummaryCacheForOwner(owner);
     return this.getSilence(owner, target, scopeType, normalizedScopeId);
   }
 
@@ -4125,6 +4186,13 @@ export class ReticulumChatDatabase {
       }
     });
     tx(rootIds);
+    // Pruning spans arbitrary groups and channels; clearing wholesale is
+    // cheaper than tracking which summaries the batch touched.
+    try {
+      this.db.exec('DELETE FROM rchat_channel_summary_cache');
+    } catch {
+      // The fingerprint check still catches the removed events.
+    }
     this.lastExpiryPruneAt = now;
     return rootIds.length;
   }
@@ -4762,6 +4830,7 @@ export class ReticulumChatDatabase {
       this.applyMessageProjectionEvent(event);
       this.refreshMessageProjectionIndexes(event);
       this.applyDeleteScrubForEvent(event);
+      this.invalidateChannelSummaryCache(event.groupId, event.channelId);
     }
     if (!ownEvent) this.enforceRelayCacheLimit();
     return inserted;
@@ -4785,9 +4854,17 @@ export class ReticulumChatDatabase {
   }
 
   updatePrivilegedMentionStatus(eventId: string, status: 0 | 1): boolean {
-    return (
-      this.stmtUpdatePrivilegedMentionStatus.run(status, eventId).changes > 0
-    );
+    const changed =
+      this.stmtUpdatePrivilegedMentionStatus.run(status, eventId).changes > 0;
+    if (changed) {
+      // Authorizing a privileged mention changes the mention count without
+      // touching any of the counters the summary fingerprint watches.
+      const event = this.getEvent(eventId);
+      if (event) {
+        this.invalidateChannelSummaryCache(event.groupId, event.channelId);
+      }
+    }
+    return changed;
   }
 
   getPendingPrivilegedMentionEvents(limit = 500): ReticulumChatEvent[] {
@@ -5115,6 +5192,9 @@ export class ReticulumChatDatabase {
     if (typeof rootEventId !== 'string' || !rootEventId) return;
     const rootEvent = this.getEvent(rootEventId);
     if (!rootEvent) return;
+    // Scrubbing rewrites payloads in place, so the last-message preview can
+    // change while every counter the fingerprint watches stays put.
+    this.invalidateChannelSummaryCache(rootEvent.groupId, rootEvent.channelId);
     const candidates = new Map<string, ReticulumChatEvent>();
     candidates.set(rootEvent.eventId, rootEvent);
     try {
@@ -6178,6 +6258,12 @@ export class ReticulumChatDatabase {
     projection: MessageProjectionRow,
     mentionedAddresses: string[]
   ): void {
+    // Re-resolving who a message mentions moves the mention badge without
+    // adding or removing any event.
+    this.invalidateChannelSummaryCache(
+      projection.group_id,
+      projection.channel_id
+    );
     const rootEventId = projection.root_event_id;
     const mentionTargets = parseMentionTargets(projection.mention_targets);
     const hasPrivilegedTarget =
@@ -6234,6 +6320,10 @@ export class ReticulumChatDatabase {
 
   deleteMentionsForEvent(eventId: string): boolean {
     if (typeof eventId !== 'string' || !eventId) return false;
+    const event = this.getEvent(eventId);
+    if (event) {
+      this.invalidateChannelSummaryCache(event.groupId, event.channelId);
+    }
     this.memoryMentions.delete(eventId);
     this.stmtDeleteMentionsForEvent.run(eventId);
     return true;
@@ -10202,6 +10292,7 @@ export class ReticulumChatDatabase {
     myAddress = '',
     onlineSince = 0
   ): ReticulumGroupChatSummary[] {
+    this.dropForeignSummaryCacheGenerations(onlineSince);
     const groupIds = new Set(this.getKnownGroupIds());
 
     const summaries: ReticulumGroupChatSummary[] = [];
@@ -10227,6 +10318,15 @@ export class ReticulumChatDatabase {
           )
         );
       }
+      // Silences are applied while counting rather than stored, so they have to
+      // take part in the cache key or a mute would not change the badge.
+      const silenceFingerprint = [...ignoredThroughByAuthor.entries()]
+        .map(
+          ([address, ignoredThrough]) =>
+            `${address}:${ignoredThrough}:${activeSilencedAuthors.has(address) ? 1 : 0}`
+        )
+        .sort()
+        .join(',');
       const channelIds = this.getSummaryChannelIds(groupId);
       const channelSummaries = channelIds
         .map((channelId) =>
@@ -10236,7 +10336,8 @@ export class ReticulumChatDatabase {
             myAddress,
             onlineSince,
             activeSilencedAuthors,
-            ignoredThroughByAuthor
+            ignoredThroughByAuthor,
+            silenceFingerprint
           )
         )
         .filter((summary): summary is ReticulumChatSummary => !!summary);
@@ -10599,7 +10700,224 @@ export class ReticulumChatDatabase {
     return replyEventIds.size;
   }
 
+  /**
+   * `onlineSince` scopes `@here` mentions and desktop derives it fresh per
+   * launch, so without this every run would leave behind a full generation of
+   * unreachable cache rows.
+   */
+  private dropForeignSummaryCacheGenerations(onlineSince: number): void {
+    if (this.summaryCacheGeneration === onlineSince) return;
+    this.summaryCacheGeneration = onlineSince;
+    try {
+      this.db
+        .prepare(
+          'DELETE FROM rchat_channel_summary_cache WHERE online_since <> ?'
+        )
+        .run(onlineSince);
+    } catch {
+      // Worst case the table keeps a stale generation nothing will read.
+    }
+  }
+
+  /**
+   * Cheap stand-in for "has anything that could change this channel's summary
+   * happened". Only touches indexed columns, and bounds the expiry probe to the
+   * same window the summary itself considers, so validating a cached row costs
+   * a fraction of rebuilding one. Returns null when the underlying query is
+   * unavailable, which disables caching rather than risking a stale answer.
+   */
+  private buildChannelSummaryFingerprint(
+    groupId: number,
+    channelId: string,
+    watermark: number,
+    silenceFingerprint: string
+  ): { fingerprint: string; expiresNextAt: number | null } | null {
+    let row:
+      | {
+          eventCount?: number;
+          eventLatest?: number;
+          messageCount?: number;
+          messageLatest?: number;
+          expiresNextAt?: number | null;
+        }
+      | undefined;
+    try {
+      row = this.stmtGetChannelSummaryFingerprint.get({
+        group_id: groupId,
+        channel_id: channelId,
+        window: RETICULUM_CHAT_SUMMARY_EVENT_WINDOW,
+      }) as typeof row;
+    } catch {
+      return null;
+    }
+    if (!row || typeof row.eventCount !== 'number') return null;
+    const expiresNextAtRaw = Number(row.expiresNextAt);
+    const expiresNextAt =
+      Number.isFinite(expiresNextAtRaw) && expiresNextAtRaw > 0
+        ? expiresNextAtRaw
+        : null;
+    return {
+      fingerprint: [
+        row.eventCount,
+        row.eventLatest ?? 0,
+        row.messageCount ?? 0,
+        row.messageLatest ?? 0,
+        watermark,
+        // Retention changes rewrite expires_at without adding or removing rows.
+        expiresNextAt ?? 0,
+        silenceFingerprint,
+      ].join('|'),
+      expiresNextAt,
+    };
+  }
+
   private getChannelSummary(
+    groupId: number,
+    channelId: string,
+    myAddress = '',
+    onlineSince = 0,
+    activeSilencedAuthors: ReadonlySet<string> = new Set(),
+    ignoredThroughByAuthor: ReadonlyMap<string, number> = new Map(),
+    silenceFingerprint = ''
+  ): ReticulumChatSummary | null {
+    const normalizedChannelId = normalizeReticulumChatChannelId(channelId);
+    const ownerAddress = myAddress || '';
+    const fingerprint = this.buildChannelSummaryFingerprint(
+      groupId,
+      normalizedChannelId,
+      this.getReadWatermark(groupId, normalizedChannelId, myAddress),
+      silenceFingerprint
+    );
+    if (!fingerprint) {
+      return this.computeChannelSummary(
+        groupId,
+        normalizedChannelId,
+        myAddress,
+        onlineSince,
+        activeSilencedAuthors,
+        ignoredThroughByAuthor
+      );
+    }
+    const now = Date.now();
+    const cached = this.readChannelSummaryCache(
+      ownerAddress,
+      groupId,
+      normalizedChannelId,
+      onlineSince,
+      fingerprint,
+      now
+    );
+    if (cached !== undefined) return cached;
+    const summary = this.computeChannelSummary(
+      groupId,
+      normalizedChannelId,
+      myAddress,
+      onlineSince,
+      activeSilencedAuthors,
+      ignoredThroughByAuthor
+    );
+    this.writeChannelSummaryCache(
+      ownerAddress,
+      groupId,
+      normalizedChannelId,
+      onlineSince,
+      fingerprint,
+      summary,
+      now
+    );
+    return summary;
+  }
+
+  /** `undefined` means "no usable cache entry" — distinct from a cached null. */
+  private readChannelSummaryCache(
+    ownerAddress: string,
+    groupId: number,
+    channelId: string,
+    onlineSince: number,
+    fingerprint: { fingerprint: string; expiresNextAt: number | null },
+    now: number
+  ): ReticulumChatSummary | null | undefined {
+    let row:
+      | {
+          fingerprint?: string;
+          expires_next_at?: number | null;
+          summary_json?: string | null;
+        }
+      | undefined;
+    try {
+      row = this.stmtGetChannelSummaryCache.get(
+        ownerAddress,
+        groupId,
+        channelId,
+        onlineSince
+      ) as typeof row;
+    } catch {
+      return undefined;
+    }
+    if (!row || row.fingerprint !== fingerprint.fingerprint) return undefined;
+    // A pending message expiry changes the answer with no write to observe.
+    const expiresNextAt = Number(row.expires_next_at);
+    if (Number.isFinite(expiresNextAt) && expiresNextAt > 0 && now >= expiresNextAt) {
+      return undefined;
+    }
+    if (row.summary_json == null) return null;
+    try {
+      return JSON.parse(row.summary_json) as ReticulumChatSummary;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private writeChannelSummaryCache(
+    ownerAddress: string,
+    groupId: number,
+    channelId: string,
+    onlineSince: number,
+    fingerprint: { fingerprint: string; expiresNextAt: number | null },
+    summary: ReticulumChatSummary | null,
+    now: number
+  ): void {
+    try {
+      this.stmtUpsertChannelSummaryCache.run({
+        owner_address: ownerAddress,
+        group_id: groupId,
+        channel_id: channelId,
+        online_since: onlineSince,
+        fingerprint: fingerprint.fingerprint,
+        expires_next_at: fingerprint.expiresNextAt,
+        summary_json: summary ? JSON.stringify(summary) : null,
+        computed_at: now,
+      });
+    } catch {
+      // Caching is an optimization; a write failure must not fail the read.
+    }
+  }
+
+  /** Drop cached summaries for a channel (all accounts), or a whole group. */
+  invalidateChannelSummaryCache(groupId: number, channelId?: string): void {
+    try {
+      if (channelId === undefined) {
+        this.stmtDeleteChannelSummaryCacheForGroup.run(groupId);
+        return;
+      }
+      this.stmtDeleteChannelSummaryCacheForChannel.run(
+        groupId,
+        normalizeReticulumChatChannelId(channelId)
+      );
+    } catch {
+      // Falling back to the fingerprint check is still correct.
+    }
+  }
+
+  private invalidateChannelSummaryCacheForOwner(ownerAddress: string): void {
+    try {
+      this.stmtDeleteChannelSummaryCacheForOwner.run(ownerAddress || '');
+    } catch {
+      // As above — the fingerprint check remains the correctness backstop.
+    }
+  }
+
+  private computeChannelSummary(
     groupId: number,
     channelId: string,
     myAddress = '',
@@ -10611,13 +10929,13 @@ export class ReticulumChatDatabase {
     const now = Date.now();
     const events = this.getRecentMessageEvents(
       groupId,
-      500,
+      RETICULUM_CHAT_SUMMARY_EVENT_WINDOW,
       normalizedChannelId,
       [...activeSilencedAuthors]
     );
     const recentEvents = this.getRecentEvents(
       groupId,
-      500,
+      RETICULUM_CHAT_SUMMARY_EVENT_WINDOW,
       normalizedChannelId
     ).filter((event) => !activeSilencedAuthors.has(event.authorAddress));
     const memoryLast = events[events.length - 1] ?? null;
@@ -12222,6 +12540,33 @@ export class ReticulumChatDatabase {
     );
   }
 
+  /**
+   * Memoized output of `getChannelSummary`. Recomputing a channel summary means
+   * reading up to 500 projection rows plus 500 raw events and running several
+   * passes over them in JS; doing that for every channel of every group on each
+   * refresh is what makes the chat list slow to settle, especially on mobile.
+   *
+   * Rows survive restarts so a cold start can paint from the previous session's
+   * numbers, and are keyed by owner because unread state is per-account.
+   */
+  private initChannelSummaryCacheSchema(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS rchat_channel_summary_cache (
+        owner_address TEXT NOT NULL,
+        group_id INTEGER NOT NULL,
+        channel_id TEXT NOT NULL,
+        online_since INTEGER NOT NULL,
+        fingerprint TEXT NOT NULL,
+        expires_next_at INTEGER,
+        summary_json TEXT,
+        computed_at INTEGER NOT NULL,
+        PRIMARY KEY (owner_address, group_id, channel_id, online_since)
+      );
+      CREATE INDEX IF NOT EXISTS idx_rchat_channel_summary_cache_channel
+        ON rchat_channel_summary_cache (group_id, channel_id);
+    `);
+  }
+
   private initSilenceSchema(): void {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS rchat_silences (
@@ -12329,6 +12674,10 @@ export class ReticulumChatDatabase {
         run: () => this.initAuthorGapPeerObservationSchema(),
       },
       { name: 'group-calendar-v1', run: () => this.initCalendarSchema() },
+      {
+        name: 'channel-summary-cache-v1',
+        run: () => this.initChannelSummaryCacheSchema(),
+      },
     ];
     for (const migration of migrations) {
       try {

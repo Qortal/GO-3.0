@@ -25,7 +25,13 @@ import type { NativeFsFn } from './resourceStaging';
 type WorkerOut =
   | { t: 'evt'; channel: string; payload: unknown }
   | { t: 'rpcres'; id: number; ok: boolean; value?: unknown; error?: string }
-  | { t: 'cmd'; id: number; action: string; payload: Record<string, unknown>; timeoutMs?: number }
+  | {
+      t: 'cmd';
+      id: number;
+      action: string;
+      payload: Record<string, unknown>;
+      timeoutMs?: number;
+    }
   | { t: 'sign'; id: number; fields: Record<string, unknown> }
   | { t: 'nativefs'; id: number; op: string; args: Record<string, unknown> }
   | { t: 'engine-ready' }
@@ -54,7 +60,11 @@ function requestMain<T>(
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => {
       pendingOut.delete(id);
-      reject(new Error(`worker->main request timed out: ${(msg as any).action ?? msg.t}`));
+      reject(
+        new Error(
+          `worker->main request timed out: ${(msg as any).action ?? msg.t}`
+        )
+      );
     }, timeoutMs);
     pendingOut.set(id, {
       resolve: (v) => {
@@ -229,6 +239,13 @@ let resourceStore: ReticulumResourceStore | null = null;
 
 const RETICULUM_CHAT_ONLINE_SINCE_MS = 5 * 60_000;
 
+/**
+ * Desktop defaults to a 10 GB attachment cache. A phone cannot carry that: the
+ * blobs live in OPFS, and the worker's sync-fs shim must hold an open handle
+ * per file, so an unbounded cache turns directly into renderer memory.
+ */
+const MOBILE_RESOURCE_LIMIT_BYTES = 512 * 1024 * 1024;
+
 function readGroupState<T>(fallback: T, read: () => T): T {
   try {
     return read();
@@ -238,13 +255,56 @@ function readGroupState<T>(fallback: T, read: () => T): T {
   }
 }
 
+const OVERLAY_RECOVERY_REPLAY_DEBOUNCE_MS = 1_500;
+/** Overlay health can flap; never replay subscriptions faster than this. */
+const OVERLAY_RECOVERY_REPLAY_MIN_INTERVAL_MS = 30_000;
+let overlayRecoveryReplayTimer: ReturnType<typeof setTimeout> | null = null;
+let lastOverlayRecoveryReplayAt = 0;
+
+/**
+ * Group subscription and digest fanouts hard-fail with `no_route` whenever the
+ * overlay has no reachable neighbors, which happens every time the phone sleeps
+ * or loses its hub links. Desktop replays subscriptions as soon as topology
+ * becomes usable again; without the same trigger here the device can sit
+ * unsubscribed indefinitely and simply stops receiving other clients' messages.
+ */
+function onOverlayHealthRecovered(): void {
+  const recovered = getReticulumChatManager() as any;
+  if (!recovered) return;
+  try {
+    recovered.notifyOverlayHealthChanged(true);
+  } catch (err) {
+    console.warn('[MobileChat] overlay health notify failed', err);
+  }
+  const now = Date.now();
+  if (
+    now - lastOverlayRecoveryReplayAt <
+    OVERLAY_RECOVERY_REPLAY_MIN_INTERVAL_MS
+  ) {
+    return;
+  }
+  if (overlayRecoveryReplayTimer) clearTimeout(overlayRecoveryReplayTimer);
+  overlayRecoveryReplayTimer = setTimeout(() => {
+    overlayRecoveryReplayTimer = null;
+    lastOverlayRecoveryReplayAt = Date.now();
+    try {
+      (getReticulumChatManager() as any)?.reannounceSubscriptions();
+      console.log('[MobileChat] overlay_recovered_subscriptions_replayed');
+    } catch (err) {
+      console.warn('[MobileChat] subscription replay failed', err);
+    }
+  }, OVERLAY_RECOVERY_REPLAY_DEBOUNCE_MS);
+}
+
 export function startEngine(initial: EngineConfig): void {
   config = initial;
   bridge = new MobileReticulumBridge(
     sendPythonCommand,
     new ReticulumResourceStaging(nativeFs as NativeFsFn)
   );
-  resourceStore = new ReticulumResourceStore();
+  resourceStore = new ReticulumResourceStore({
+    policy: { limitBytes: MOBILE_RESOURCE_LIMIT_BYTES },
+  });
   const manager = startReticulumChatManager(bridge as any, undefined, {
     signLocalFields,
     validateGroupMember,
@@ -290,7 +350,10 @@ type Handler = (...args: any[]) => unknown | Promise<unknown>;
 
 const manager = () => getReticulumChatManager() as any;
 
-const notRunning = { success: false, error: 'Reticulum chat manager is not running' };
+const notRunning = {
+  success: false,
+  error: 'Reticulum chat manager is not running',
+};
 
 const handlers: Record<string, Handler> = {
   isEnabled: () => true,
@@ -508,7 +571,9 @@ const handlers: Record<string, Handler> = {
       return {
         success: false,
         error:
-          err instanceof Error ? err.message : 'Reticulum chat subscribe failed',
+          err instanceof Error
+            ? err.message
+            : 'Reticulum chat subscribe failed',
       };
     }
   },
@@ -552,7 +617,12 @@ const handlers: Record<string, Handler> = {
     if (!m) throw new Error('Reticulum chat manager is not running');
     return m.reserveAuthorSequence(groupId, authorAddress);
   },
-  releaseAuthorSequence: (groupId, authorAddress, authorStreamId, authorSeq) => {
+  releaseAuthorSequence: (
+    groupId,
+    authorAddress,
+    authorStreamId,
+    authorSeq
+  ) => {
     const m = manager();
     if (!m) return false;
     return m.releaseAuthorSequence(
@@ -562,7 +632,12 @@ const handlers: Record<string, Handler> = {
       authorSeq
     );
   },
-  sendTyping: (groupId, channelIdOrAuthorAddress, authorAddressOrActive, activeMaybe) => {
+  sendTyping: (
+    groupId,
+    channelIdOrAuthorAddress,
+    authorAddressOrActive,
+    activeMaybe
+  ) => {
     const m = manager();
     if (!m) return notRunning;
     try {
@@ -597,7 +672,8 @@ const handlers: Record<string, Handler> = {
     } catch (err) {
       return {
         success: false,
-        error: err instanceof Error ? err.message : 'QortalLand state send failed',
+        error:
+          err instanceof Error ? err.message : 'QortalLand state send failed',
       };
     }
   },
@@ -613,7 +689,8 @@ const handlers: Record<string, Handler> = {
     } catch (err) {
       return {
         success: false,
-        error: err instanceof Error ? err.message : 'QortalLand chat send failed',
+        error:
+          err instanceof Error ? err.message : 'QortalLand chat send failed',
       };
     }
   },
@@ -646,7 +723,8 @@ const handlers: Record<string, Handler> = {
     } catch (err) {
       return {
         success: false,
-        error: err instanceof Error ? err.message : 'QortalLand call send failed',
+        error:
+          err instanceof Error ? err.message : 'QortalLand call send failed',
       };
     }
   },
@@ -719,7 +797,9 @@ const handlers: Record<string, Handler> = {
     const limit =
       typeof channelIdOrLimit === 'number' ? channelIdOrLimit : limitMaybe;
     return m
-      ? readGroupState([], () => m.getHistory(groupId, channelId, limit, optionsMaybe))
+      ? readGroupState([], () =>
+          m.getHistory(groupId, channelId, limit, optionsMaybe)
+        )
       : [];
   },
   getMessageHistory: (groupId, channelIdOrLimit, limitMaybe, optionsMaybe) => {
@@ -746,7 +826,12 @@ const handlers: Record<string, Handler> = {
     };
     return m
       ? readGroupState(fallback, () =>
-          m.getMessageHistoryPage(groupId, channelId || 'general', limit, options)
+          m.getMessageHistoryPage(
+            groupId,
+            channelId || 'general',
+            limit,
+            options
+          )
         )
       : fallback;
   },
@@ -776,7 +861,9 @@ const handlers: Record<string, Handler> = {
   getChannels: (groupId, includeArchived) => {
     const m = manager();
     return m
-      ? readGroupState([], () => m.getChannels(groupId, includeArchived === true))
+      ? readGroupState([], () =>
+          m.getChannels(groupId, includeArchived === true)
+        )
       : [];
   },
   getCategories: (groupId) => {
@@ -823,7 +910,12 @@ const handlers: Record<string, Handler> = {
     const safeOptions = options && typeof options === 'object' ? options : {};
     return m
       ? readGroupState([], () =>
-          m.getMessageWindowAroundEvent(groupId, channelId, eventId, safeOptions)
+          m.getMessageWindowAroundEvent(
+            groupId,
+            channelId,
+            eventId,
+            safeOptions
+          )
         )
       : [];
   },
@@ -866,7 +958,9 @@ const handlers: Record<string, Handler> = {
     }
     const m = manager();
     return {
-      success: m ? m.replaceMentionsForEvent(eventId, mentionedAddresses) : false,
+      success: m
+        ? m.replaceMentionsForEvent(eventId, mentionedAddresses)
+        : false,
     };
   },
   deleteMentions: (eventId) => {
@@ -929,7 +1023,9 @@ const RESOURCE_NAMESPACES = new Set([
 ]);
 
 function decodeBase64(base64: string): Uint8Array {
-  const clean = base64.includes(',') ? base64.slice(base64.indexOf(',') + 1) : base64;
+  const clean = base64.includes(',')
+    ? base64.slice(base64.indexOf(',') + 1)
+    : base64;
   const bin = atob(clean.replace(/\s/g, ''));
   const out = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
@@ -999,7 +1095,8 @@ const resourceHandlers: Record<string, Handler> = {
       const assembled =
         store.getVerifiedAssembledPath(hash) ??
         (await store.assembleResourceAsync(hash));
-      if (!assembled) return { success: false, error: 'Resource not assembled' };
+      if (!assembled)
+        return { success: false, error: 'Resource not assembled' };
       const buf = fs.readFileSync(assembled);
       const bytes = new Uint8Array(
         buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength)
@@ -1093,7 +1190,8 @@ export function handleMainMessage(data: any): void {
     void (async () => {
       try {
         const handler = handlers[method];
-        if (!handler) throw new Error(`Unknown reticulumChat method: ${method}`);
+        if (!handler)
+          throw new Error(`Unknown reticulumChat method: ${method}`);
         const value = await handler(...(Array.isArray(args) ? args : []));
         post({ t: 'rpcres', id, ok: true, value });
       } catch (err) {
@@ -1136,7 +1234,9 @@ export function handleMainMessage(data: any): void {
   if (data.t === 'presence-state') {
     presencePeers = Array.isArray(data.peers) ? data.peers : [];
     presenceLeases = Array.isArray(data.leases) ? data.leases : [];
+    const wasHealthy = overlayHealthy;
     overlayHealthy = data.healthy === true;
+    if (overlayHealthy && !wasHealthy) onOverlayHealthRecovered();
     return;
   }
   if (data.t === 'config') {
@@ -1144,7 +1244,10 @@ export function handleMainMessage(data: any): void {
     return;
   }
   if (data.t === 'local-identity') {
-    bridge?.setLocalIdentity(data.destinationHash, data.identityPublicKeyBase64);
+    bridge?.setLocalIdentity(
+      data.destinationHash,
+      data.identityPublicKeyBase64
+    );
     console.log(
       `[MobileChat] local_identity_applied hash=${bridge?.getLocalDestinationHash() ?? 'none'} identityKey=${Boolean(data.identityPublicKeyBase64)}`
     );

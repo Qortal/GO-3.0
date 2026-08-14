@@ -164,11 +164,11 @@ export const saveFileToDiskGeneric = async (blob, filename) => {
   fileName = hasExtension(fileName) ? fileName : fileName + '.' + fileExtension;
 
   if (isCapacitor()) {
-    await saveBlobToMobileDocuments(fileName, blob);
-    return;
+    return await saveBlobToMobileDocuments(fileName, blob);
   }
 
   await FileSaver.saveAs(blob, fileName);
+  return undefined;
 };
 
 export const saveSeedPhraseToDisk = async (data) => {

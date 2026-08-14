@@ -9,8 +9,12 @@ android {
         applicationId "com.github.Qortal.qortalGo2"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 3
-        versionName "3.0.0"
+        // Published to QDN under the "GO 3.0" name as "GO 3.0 v<versionName>.apk".
+        // The in-app updater reads the version out of that filename and compares
+        // it with versionName here, and Android refuses an install whose
+        // versionCode is not higher — so both go up with every published build.
+        versionCode 8
+        versionName "0.0.5"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         // Chaquopy ships the CPython interpreter as native code, so the app must
         // declare which ABIs to package. arm64 = real devices, x86_64 = emulator.

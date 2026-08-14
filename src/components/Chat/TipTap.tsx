@@ -11,6 +11,7 @@ import {
 import { createPortal } from 'react-dom';
 import { Editor, EditorProvider, useCurrentEditor } from '@tiptap/react';
 import { Fragment, Slice } from '@tiptap/pm/model';
+import type { EditorProps as ProseMirrorEditorProps } from '@tiptap/pm/view';
 import StarterKit from '@tiptap/starter-kit';
 import { Color } from '@tiptap/extension-color';
 import ListItem from '@tiptap/extension-list-item';
@@ -32,6 +33,11 @@ import UndoIcon from '@mui/icons-material/Undo';
 import RedoIcon from '@mui/icons-material/Redo';
 import KeyboardReturnRoundedIcon from '@mui/icons-material/KeyboardReturnRounded';
 import AddRoundedIcon from '@mui/icons-material/AddRounded';
+import OpenInFullRoundedIcon from '@mui/icons-material/OpenInFullRounded';
+import CloseFullscreenRoundedIcon from '@mui/icons-material/CloseFullscreenRounded';
+import KeyboardOutlinedIcon from '@mui/icons-material/KeyboardOutlined';
+import SentimentSatisfiedAltOutlinedIcon from '@mui/icons-material/SentimentSatisfiedAltOutlined';
+import { ReactionPicker } from '../ReactionPicker';
 import FormatHeadingIcon from '@mui/icons-material/FormatSize';
 import DeveloperModeIcon from '@mui/icons-material/DeveloperMode';
 import Compressor from 'compressorjs';
@@ -51,15 +57,36 @@ import {
   useMediaQuery,
   useTheme,
 } from '@mui/material';
-import { useAtom, useSetAtom } from 'jotai';
-import { mobileChatComposeActiveAtom } from '../../atoms/global.js';
+import { useAtom, useAtomValue, useSetAtom } from 'jotai';
+import {
+  mobileChatComposeActiveAtom,
+  mobileEmojiPanelOpenAtom,
+  mobileFullscreenComposerActiveAtom,
+} from '../../atoms/global.js';
 import { MOBILE_CHAT_TOOLBAR_SLOT_ID } from '../Mobile/mobileChatCompose';
-import { MOBILE_TOP_BAR_HEIGHT_PX } from '../Mobile/MobileTopBar';
-import { SAFE_AREA_TOP } from '../../utils/mobileSafeArea';
+import { FULLSCREEN_COMPOSER_ATTACHMENTS_SLOT_ID } from './composerSlots';
+import { restoreComposerTyping } from './composerKeyboard';
+import {
+  isPanelKeyboardSuppressed,
+  setEmojiPanelHandler,
+  setGifPanelHandler,
+} from '../Mobile/emojiPanelBus';
+import type { LibraryGif } from './gifs/libraryGifs';
+import { SAFE_AREA_BOTTOM, SAFE_AREA_TOP } from '../../utils/mobileSafeArea';
 import { fileToBase64 } from '../../utils/fileReading/index.js';
 import { useSoftKeyboardOpen } from '../../hooks/useSoftKeyboardOpen';
+import {
+  getLastSoftKeyboardHeight,
+  useSoftKeyboardInset,
+} from '../../hooks/useSoftKeyboardInset';
+import { useAndroidBack, BACK_PRIORITY } from '../../utils/androidBack';
 import { useTranslation } from 'react-i18next';
 import i18n from 'i18next';
+
+/** True if the composer has anything sendable, including a lone space.
+ *  Empty TipTap docs are "" or newline-only; those stay unsendable. */
+export const composerHasSendableText = (text: string | null | undefined) =>
+  /[^\n]/.test(String(text ?? ''));
 
 const MenuBar = memo(
   ({
@@ -115,9 +142,7 @@ const MenuBar = memo(
       }
 
       const frame = requestAnimationFrame(() => {
-        setPortalHost(
-          document.getElementById(MOBILE_CHAT_TOOLBAR_SLOT_ID)
-        );
+        setPortalHost(document.getElementById(MOBILE_CHAT_TOOLBAR_SLOT_ID));
       });
       return () => cancelAnimationFrame(frame);
     }, [toolbarInTopBar]);
@@ -515,142 +540,146 @@ const MenuBar = memo(
               : '8px 8px 0 0'
             : '10px 10px 0 0',
           flexShrink: 0,
-          padding:
-            toolbarInTopBar
-              ? '4px 6px 2px'
-              : isMobile && isChat
-                ? '8px 6px 6px'
-                : isMobile
-                  ? '6px 4px'
-                  : isChat
-                    ? '8px 10px 10px'
-                    : '6px 10px 8px',
+          padding: toolbarInTopBar
+            ? '4px 6px 2px'
+            : isMobile && isChat
+              ? '8px 6px 6px'
+              : isMobile
+                ? '6px 4px'
+                : isChat
+                  ? '8px 10px 10px'
+                  : '6px 10px 8px',
           width: '100%',
         }}
       >
-        {toolbarInTopBar ? (
-          // Two rows so every formatting action is visible without scrolling
-          // (the single scrollable row hid half the buttons off-screen).
-          mobileChatToolbarRows || (
-            <Box
-              className="chat-format-toolbar chat-format-toolbar--top-bar"
-              sx={{
-                alignItems: 'center',
-                display: 'flex',
-                flexWrap: 'nowrap',
-                gap: 0,
-                justifyContent: 'flex-start',
-                overflowX: 'auto',
-                scrollbarWidth: 'none',
-                WebkitOverflowScrolling: 'touch',
-                width: '100%',
-                '&::-webkit-scrollbar': { display: 'none' },
-              }}
-            >
-              {toolbarButtons}
-              {topBarExtraActions}
-            </Box>
-          )
-        ) : (
-          mobileChatToolbarRows || (
-        <Box
-          className={isMobile && isChat ? 'chat-format-toolbar' : undefined}
-          sx={{
-            alignItems: 'center',
-            display: 'flex',
-            flexWrap: isMobile ? 'nowrap' : 'wrap',
-            gap: isMobile ? 0 : '2px',
-            overflowX: isMobile ? 'auto' : 'visible',
-            scrollbarWidth: isMobile ? 'none' : undefined,
-            WebkitOverflowScrolling: 'touch',
-            '&::-webkit-scrollbar': {
-              display: isMobile ? 'none' : undefined,
-            },
-          }}
-        >
-          {toolbarButtons}
-
-          {isChat && !isMobile && (
-            <Box
-              sx={{
-                alignItems: 'center',
-                borderLeft: '1px solid',
-                borderColor: theme.palette.divider,
-                cursor: 'pointer',
-                display: 'flex',
-                marginLeft: '8px',
-                paddingLeft: '8px',
-              }}
-              onClick={() => {
-                setIsDisabledEditorEnter(!isDisabledEditorEnter);
-              }}
-            >
-              <Checkbox
-                edge="start"
-                tabIndex={-1}
-                disableRipple
-                checked={isDisabledEditorEnter}
-                size="small"
+        {toolbarInTopBar
+          ? // Two rows so every formatting action is visible without scrolling
+            // (the single scrollable row hid half the buttons off-screen).
+            mobileChatToolbarRows || (
+              <Box
+                className="chat-format-toolbar chat-format-toolbar--top-bar"
                 sx={{
-                  '&.Mui-checked': {
-                    color: theme.palette.text.secondary,
-                  },
-                  '& .MuiSvgIcon-root': {
-                    color: theme.palette.text.secondary,
-                  },
-                }}
-              />
-              <Typography
-                sx={{
-                  fontSize: '13px',
-                  color: theme.palette.text.secondary,
+                  alignItems: 'center',
+                  display: 'flex',
+                  flexWrap: 'nowrap',
+                  gap: 0,
+                  justifyContent: 'flex-start',
+                  overflowX: 'auto',
+                  scrollbarWidth: 'none',
+                  WebkitOverflowScrolling: 'touch',
+                  width: '100%',
+                  '&::-webkit-scrollbar': { display: 'none' },
                 }}
               >
-                {t('core:action.disable_enter', {
-                  postProcess: 'capitalizeFirstChar',
-                })}
-              </Typography>
-            </Box>
-          )}
-
-          {!isChat && (
-            <>
-              <IconButton
-                size="small"
-                onClick={triggerImageUpload}
+                {toolbarButtons}
+                {topBarExtraActions}
+              </Box>
+            )
+          : mobileChatToolbarRows || (
+              <Box
+                className={
+                  isMobile && isChat ? 'chat-format-toolbar' : undefined
+                }
                 sx={{
-                  color: theme.palette.text.secondary,
-                  padding: '4px',
-                  '&:hover': {
-                    backgroundColor: theme.palette.action.hover,
-                    color: theme.palette.text.primary,
+                  alignItems: 'center',
+                  display: 'flex',
+                  flexWrap: isMobile ? 'nowrap' : 'wrap',
+                  gap: isMobile ? 0 : '2px',
+                  overflowX: isMobile ? 'auto' : 'visible',
+                  scrollbarWidth: isMobile ? 'none' : undefined,
+                  WebkitOverflowScrolling: 'touch',
+                  '&::-webkit-scrollbar': {
+                    display: isMobile ? 'none' : undefined,
                   },
                 }}
               >
-                <ImageIcon sx={{ fontSize: '20px' }} />
-              </IconButton>
+                {toolbarButtons}
 
-              <input
-                type="file"
-                ref={fileInputRef}
-                style={{ display: 'none' }}
-                onChange={(event) => {
-                  const files = Array.from(event.target.files || []);
-                  if (isChat && files.length > 0 && typeof insertFiles === 'function') {
-                    void insertFiles(files);
-                    if (fileInputRef.current) {
-                      fileInputRef.current.value = '';
-                    }
-                    return;
-                  }
-                  handleImageUpload(files[0]);
-                }}
-                accept="image/*"
-              />
-            </>
-          )}
-        </Box>
-        ))}
+                {isChat && !isMobile && (
+                  <Box
+                    sx={{
+                      alignItems: 'center',
+                      borderLeft: '1px solid',
+                      borderColor: theme.palette.divider,
+                      cursor: 'pointer',
+                      display: 'flex',
+                      marginLeft: '8px',
+                      paddingLeft: '8px',
+                    }}
+                    onClick={() => {
+                      setIsDisabledEditorEnter(!isDisabledEditorEnter);
+                    }}
+                  >
+                    <Checkbox
+                      edge="start"
+                      tabIndex={-1}
+                      disableRipple
+                      checked={isDisabledEditorEnter}
+                      size="small"
+                      sx={{
+                        '&.Mui-checked': {
+                          color: theme.palette.text.secondary,
+                        },
+                        '& .MuiSvgIcon-root': {
+                          color: theme.palette.text.secondary,
+                        },
+                      }}
+                    />
+                    <Typography
+                      sx={{
+                        fontSize: '13px',
+                        color: theme.palette.text.secondary,
+                      }}
+                    >
+                      {t('core:action.disable_enter', {
+                        postProcess: 'capitalizeFirstChar',
+                      })}
+                    </Typography>
+                  </Box>
+                )}
+
+                {!isChat && (
+                  <>
+                    <IconButton
+                      size="small"
+                      onClick={triggerImageUpload}
+                      sx={{
+                        color: theme.palette.text.secondary,
+                        padding: '4px',
+                        '&:hover': {
+                          backgroundColor: theme.palette.action.hover,
+                          color: theme.palette.text.primary,
+                        },
+                      }}
+                    >
+                      <ImageIcon sx={{ fontSize: '20px' }} />
+                    </IconButton>
+
+                    <input
+                      type="file"
+                      ref={fileInputRef}
+                      style={{ display: 'none' }}
+                      onChange={(event) => {
+                        const files = Array.from(event.target.files || []);
+                        if (
+                          isChat &&
+                          files.length > 0 &&
+                          typeof insertFiles === 'function'
+                        ) {
+                          void insertFiles(files);
+                          if (fileInputRef.current) {
+                            fileInputRef.current.value = '';
+                          }
+                          return;
+                        }
+                        handleImageUpload(files[0]);
+                      }}
+                      accept="image/*"
+                    />
+                  </>
+                )}
+              </Box>
+            )}
       </Box>
     );
 
@@ -688,6 +717,285 @@ const extensions = [
 
 const content = ``;
 
+// Shared across editor instances so remounting the composer mid-keystroke
+// cannot let a second Enter through the send debounce.
+let lastEnterSendAt = 0;
+
+const COMPACT_ACTION_GAP = 4;
+const COMPACT_BUTTON_SIZE = 32;
+// Width the text loses to chrome in each stage, mirroring chat.css: 36px of
+// editor padding and 12px of ProseMirror padding on both sides, plus the
+// paragraph indent that clears the buttons (68/36 inline, 32/0 squeezed, none
+// once stacked). Underestimating these would let the text wrap inside a stage
+// sized for fewer lines, which now clips rather than just looking cramped.
+const EDGE_GUTTER = 36 + 12;
+const INLINE_TEXT_GUTTERS = EDGE_GUTTER + 68 + (EDGE_GUTTER + 36);
+const SQUEEZED_TEXT_GUTTERS = EDGE_GUTTER + 32 + EDGE_GUTTER;
+// Canvas metrics and the real line breaker disagree by a hair, so shave the
+// available width: erring towards one line too many only costs a little space,
+// erring the other way hides text.
+const MEASURE_SAFETY_PX = 8;
+const COMPACT_EDITOR_MAX_HEIGHT = 160;
+const COMPACT_MEASURE_FALLBACK_FONT_SIZE = '17px';
+const SQUEEZE_AT_LINES = 2;
+const STACK_AT_LINES = 3;
+// Shortest each stage can be, mirroring the --composer-stage-* floors in
+// chat.css: one row of controls, two stacked, three stacked.
+const COMPOSER_STAGE_ORDER = ['inline', 'squeezed', 'stacked'] as const;
+const COMPOSER_STAGE_MIN_HEIGHT = {
+  inline: 44,
+  squeezed: 72,
+  stacked: 104,
+} as const;
+// Share of the visible viewport the typing area may claim. Landscape, folded
+// phones and small screens with the keyboard up leave so little height that a
+// three-row composer would be most of the conversation, so those stay on a
+// shorter stage and scroll instead.
+const COMPOSER_MAX_VIEWPORT_SHARE = 0.45;
+// Canvas metrics decide the stage; the browser decides the wrapping. Where the
+// two disagree — a font that fell back, a mention chip wider than its text —
+// the stage would clip, so the rendered height is checked once the move has
+// settled and the stage bumped up if the text did not fit after all.
+const COMPOSER_FIT_CHECK_MS = 260;
+// Well under a line of text, well over the rounding a fractional device pixel
+// ratio leaves behind: only a genuinely hidden line should move the stage.
+const COMPOSER_FIT_SLACK_PX = 12;
+
+// Long enough for --composer-chrome-duration (180ms) to have finished, so the
+// caret is read against the height the box ended on rather than a frame of the
+// animation.
+const COMPOSER_CHROME_SETTLE_MS = 220;
+// Breathing room kept under (or over) the caret so the line it sits on is not
+// flush against the edge of the box.
+const CARET_MARGIN_PX = 6;
+
+type ComposerChromeKind = (typeof COMPOSER_STAGE_ORDER)[number];
+
+/** Height the composer has to work in, keyboard and all. */
+const composerViewportHeight = () =>
+  window.visualViewport?.height || window.innerHeight || 0;
+
+/** Never squeeze the typing area below roughly one line plus its padding. */
+const COMPOSER_MIN_SPACE_PX = 40;
+// Rounding, borders and the gap under the typing box. Small enough not to cost
+// a line, big enough that the box never lands a pixel past its container.
+const COMPOSER_SPACE_SLACK_PX = 6;
+
+/**
+ * Room the typing box is allowed to take. The composer bar has a height budget
+ * (its max-height) that everything inside shares: attachment chips, the reply
+ * strip, the formatting tray, then the text. Measuring what is left of that
+ * budget — rather than what the bar happens to be tall right now, which is the
+ * text's own height — is what keeps a bar full of chips and toolbars from
+ * cutting the typing area down to a sliver.
+ */
+const measureComposerSpace = (root: HTMLElement, box: HTMLElement): number => {
+  let budget: HTMLElement | null = null;
+  let cap = 0;
+  for (let node = root.parentElement; node; node = node.parentElement) {
+    const value = parseFloat(getComputedStyle(node).maxHeight);
+    if (Number.isFinite(value)) {
+      budget = node;
+      cap = value;
+      break;
+    }
+  }
+  // Nothing caps the composer here (desktop): it grows with its text as always.
+  if (!budget) return Number.POSITIVE_INFINITY;
+  const style = getComputedStyle(budget);
+  const edges = {
+    bottom:
+      (parseFloat(style.paddingBottom) || 0) +
+      (parseFloat(style.borderBottomWidth) || 0),
+    top:
+      (parseFloat(style.paddingTop) || 0) +
+      (parseFloat(style.borderTopWidth) || 0),
+  };
+  const inner =
+    style.boxSizing === 'border-box' ? cap - edges.top - edges.bottom : cap;
+  // Everything laid out above the typing box inside that budget, whatever it
+  // is nested in; the box's own height is not part of the distance.
+  const above =
+    box.getBoundingClientRect().top -
+    (budget.getBoundingClientRect().top + edges.top);
+  // Direct messages keep their attachment chip below the composer rather than
+  // above it, so what follows wants its share too.
+  let below = 0;
+  for (let node: HTMLElement | null = root; node && node !== budget; ) {
+    for (
+      let sibling = node.nextElementSibling;
+      sibling;
+      sibling = sibling.nextElementSibling
+    ) {
+      const position = getComputedStyle(sibling).position;
+      if (position === 'absolute' || position === 'fixed') continue;
+      below += sibling.getBoundingClientRect().height;
+    }
+    node = node.parentElement;
+  }
+  return inner - above - below - COMPOSER_SPACE_SLACK_PX;
+};
+
+/** Tallest stage that fits both the viewport share and the room left in the bar. */
+const composerStageCeiling = (
+  spacePx = Number.POSITIVE_INFINITY
+): ComposerChromeKind => {
+  const budget = Math.min(
+    composerViewportHeight() * COMPOSER_MAX_VIEWPORT_SHARE,
+    spacePx
+  );
+  if (budget >= COMPOSER_STAGE_MIN_HEIGHT.stacked) return 'stacked';
+  if (budget >= COMPOSER_STAGE_MIN_HEIGHT.squeezed) return 'squeezed';
+  return 'inline';
+};
+
+const composerStageIndex = (kind: ComposerChromeKind) =>
+  COMPOSER_STAGE_ORDER.indexOf(kind);
+
+const clampComposerStage = (
+  kind: ComposerChromeKind,
+  floor: ComposerChromeKind,
+  ceiling: ComposerChromeKind
+): ComposerChromeKind => {
+  const index = Math.min(
+    Math.max(composerStageIndex(kind), composerStageIndex(floor)),
+    composerStageIndex(ceiling)
+  );
+  return COMPOSER_STAGE_ORDER[index];
+};
+const COMPOSER_BLOCK_TYPES = new Set([
+  'blockquote',
+  'bulletList',
+  'codeBlock',
+  'heading',
+  'horizontalRule',
+  'image',
+  'orderedList',
+  'table',
+]);
+
+let composerMeasureCtx: CanvasRenderingContext2D | null = null;
+const getComposerMeasureCtx = () => {
+  if (!composerMeasureCtx) {
+    composerMeasureCtx = document.createElement('canvas').getContext('2d');
+  }
+  return composerMeasureCtx;
+};
+
+const countParagraphWraps = (
+  ctx: CanvasRenderingContext2D,
+  paragraph: string,
+  widthPx: number,
+  stopAfter = Infinity
+) => {
+  if (!paragraph) return 1;
+  const words = paragraph.split(/(\s+)/);
+  let lines = 1;
+  let used = 0;
+  const fits = (text: string) => ctx.measureText(text).width <= widthPx;
+  const takeFittingPrefix = (text: string) => {
+    if (fits(text)) return text.length;
+    let lo = 1;
+    let hi = text.length;
+    while (lo < hi) {
+      const mid = Math.ceil((lo + hi) / 2);
+      if (fits(text.slice(0, mid))) lo = mid;
+      else hi = mid - 1;
+    }
+    return Math.max(1, lo);
+  };
+  for (const word of words) {
+    if (!word || lines >= stopAfter) continue;
+    const wordWidth = ctx.measureText(word).width;
+    if (wordWidth <= widthPx) {
+      if (used > 0 && used + wordWidth > widthPx) {
+        lines += 1;
+        used = wordWidth;
+      } else {
+        used += wordWidth;
+      }
+      continue;
+    }
+    if (used > 0) {
+      lines += 1;
+      used = 0;
+      if (lines >= stopAfter) return lines;
+    }
+    let rest = word;
+    while (rest && !fits(rest)) {
+      rest = rest.slice(takeFittingPrefix(rest));
+      if (rest) {
+        lines += 1;
+        if (lines >= stopAfter) return lines;
+      }
+    }
+    used = rest ? ctx.measureText(rest).width : 0;
+  }
+  return lines;
+};
+
+/** Wrapped lines the document needs at `widthPx`, counted no further than
+ *  `stopAfter`. A block node (list, quote, code…) reports the cap outright:
+ *  none of them belong in a one-line row. */
+const composerLineCount = (
+  editor: Editor,
+  ctx: CanvasRenderingContext2D,
+  widthPx: number,
+  stopAfter: number
+): number => {
+  let lines = 0;
+  let done = false;
+  editor.state.doc.forEach((node) => {
+    if (done) return;
+    if (COMPOSER_BLOCK_TYPES.has(node.type.name)) {
+      lines = stopAfter;
+      done = true;
+      return;
+    }
+    const text = node.textBetween(0, node.content.size, '\n', '\n');
+    for (const paragraph of text.split('\n')) {
+      lines += countParagraphWraps(ctx, paragraph, widthPx, stopAfter - lines);
+      if (lines >= stopAfter) {
+        lines = stopAfter;
+        done = true;
+        return;
+      }
+    }
+  });
+  return lines;
+};
+
+const composerEditorChromeKind = (
+  editor: Editor | null | undefined,
+  font: string,
+  inlineWidthPx: number,
+  squeezedWidthPx: number
+): ComposerChromeKind => {
+  const ctx = getComposerMeasureCtx();
+  if (!editor?.state?.doc || !ctx) return 'inline';
+  if (inlineWidthPx <= 0 || squeezedWidthPx <= 0) return 'inline';
+  ctx.font = font;
+  // Pick the smallest stage that can hold the text *at its own width*. Each
+  // stage hands the text more room than the last, so asking whether the next
+  // stage up would need another line is the wrong question: the answer is
+  // about a width the text is not being laid out at, and the composer can
+  // settle on a stage the text then overflows. Asking whether a stage still
+  // fits what it is showing has one stable answer and cannot clip.
+  if (
+    composerLineCount(editor, ctx, inlineWidthPx, SQUEEZE_AT_LINES) <
+    SQUEEZE_AT_LINES
+  ) {
+    return 'inline';
+  }
+  if (
+    composerLineCount(editor, ctx, squeezedWidthPx, STACK_AT_LINES) <
+    STACK_AT_LINES
+  ) {
+    return 'squeezed';
+  }
+  return 'stacked';
+};
+
 type TiptapProps = {
   setEditorRef: (editorInstance: Editor | null) => void;
   onEnter: () => void | Promise<void>;
@@ -710,11 +1018,21 @@ type TiptapProps = {
   mentionSuggestions?: MentionSuggestionItem[];
   enableMentions?: boolean;
   insertImage?: (image: any) => void;
+  insertGif?: (gif: LibraryGif) => void;
   mobileTopBarActions?: ReactNode;
   insertFiles?: (files: File[]) => void | Promise<void>;
   compactChat?: boolean;
   compactEditorMaxHeight?: number;
-  compactActions?: ReactNode;
+  /** Right-hand cluster: expiry, then send. Both are positioned by the rail
+   *  CSS off `compact-composer-expiry` / `compact-composer-send`, so a
+   *  consumer only has to render them in that order and tag them. */
+  compactActions?:
+    | ReactNode
+    | ((state: {
+        stacked: boolean;
+        squeezed: boolean;
+        showExpiry: boolean;
+      }) => ReactNode);
   placeholder?: string;
   collapseFormattingTraySignal?: number;
 };
@@ -752,6 +1070,7 @@ const Tiptap = ({
   mentionSuggestions,
   enableMentions,
   insertImage,
+  insertGif,
   mobileTopBarActions,
   insertFiles,
   compactChat = false,
@@ -763,19 +1082,340 @@ const Tiptap = ({
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
   const setMobileComposeActive = useSetAtom(mobileChatComposeActiveAtom);
+  const emojiPanelOpen = useAtomValue(mobileEmojiPanelOpenAtom);
+  const setEmojiPanelOpen = useSetAtom(mobileEmojiPanelOpenAtom);
+  const setFullscreenComposerActive = useSetAtom(
+    mobileFullscreenComposerActiveAtom
+  );
   const compactFileInputRef = useRef<HTMLInputElement | null>(null);
+  const attachResumeTypingRef = useRef(false);
   const [showFormattingTray, setShowFormattingTray] = useState(false);
+  const [composerExpanded, setComposerExpanded] = useState(false);
+  const [formattingTrayHost, setFormattingTrayHost] =
+    useState<HTMLDivElement | null>(null);
+  const editorRef = useRef(null);
+  const compactRowRef = useRef<HTMLDivElement | null>(null);
+  const composerRootRef = useRef<HTMLDivElement | null>(null);
+  const composerEditorRef = useRef<HTMLDivElement | null>(null);
+  const chromeKindRef = useRef<ComposerChromeKind>('inline');
+  const stackFrameRef = useRef(0);
+  const composerFitTimerRef = useRef(0);
+  const caretTimerRef = useRef(0);
+  // Stage the rendered text turned out to need, and the document size it
+  // needed it at. Anything that long stays on it instead of being predicted
+  // back down to a stage that clips it once a frame later.
+  const composerFitFloorRef = useRef<{
+    kind: ComposerChromeKind;
+    docSize: number;
+  } | null>(null);
+  const composerRowWidthRef = useRef(0);
+
+  const applyComposerChrome = useCallback(
+    (root: HTMLElement, kind: ComposerChromeKind) => {
+      chromeKindRef.current = kind;
+      root.toggleAttribute('data-composer-stacked', kind === 'stacked');
+      root.toggleAttribute('data-composer-squeezed', kind === 'squeezed');
+      compactRowRef.current?.toggleAttribute(
+        'data-composer-stacked',
+        kind === 'stacked'
+      );
+      compactRowRef.current?.toggleAttribute(
+        'data-composer-squeezed',
+        kind === 'squeezed'
+      );
+    },
+    []
+  );
+  // Only the chat composers hand their send cluster over; the discussion
+  // composer keeps its own bordered field and single trailing button group.
+  const hasCornerActions = compactChat && Boolean(compactActions);
+
+  // Android dismisses the soft keyboard the moment focus leaves the editor, so
+  // the composer's own controls must never take it.
+  const preventFocusSteal = useCallback(
+    (event: { preventDefault: () => void }) => {
+      event.preventDefault();
+    },
+    []
+  );
+
+  /**
+   * The file picker is a separate activity: it takes the keyboard with it and
+   * hands focus back to nothing in particular. Someone who was mid-sentence
+   * when they attached something should not have to tap the composer again to
+   * carry on, so the caret goes back — retried, because the activity is still
+   * coming back when the file arrives and an early focus is dropped.
+   */
+  const resumeTypingAfterPicker = useCallback(() => {
+    restoreComposerTyping(editorRef.current as Editor | null, { force: true });
+    // The activity is still coming back when the file arrives, so the early
+    // asks can be dropped; one more once it has settled.
+    window.setTimeout(
+      () =>
+        restoreComposerTyping(editorRef.current as Editor | null, {
+          force: true,
+        }),
+      700
+    );
+  }, []);
 
   useEffect(() => {
     if (collapseFormattingTraySignal === undefined) return;
     setShowFormattingTray(false);
-  }, [collapseFormattingTraySignal]);
+    setComposerExpanded(false);
+    if (composerRootRef.current) {
+      applyComposerChrome(composerRootRef.current, 'inline');
+    } else {
+      chromeKindRef.current = 'inline';
+    }
+  }, [applyComposerChrome, collapseFormattingTraySignal]);
+
+  /**
+   * Keep the line being typed inside the visible part of the typing box.
+   *
+   * The editor scrolls the caret into view as the text is edited, but the box
+   * around it also changes height on its own: a stage moves, the keyboard comes
+   * up, an attachment chip takes a row. None of that is an edit, so nothing
+   * scrolls, and on a capped box the line under the caret can end up below the
+   * fold with no sign of where it went.
+   */
+  const keepCaretVisible = useCallback(() => {
+    const editor = editorRef.current as Editor | null;
+    const box = composerEditorRef.current;
+    if (!editor || editor.isDestroyed || !editor.isFocused || !box) return;
+    if (box.scrollHeight - box.clientHeight <= 1) return;
+    let caret: { bottom: number; top: number };
+    try {
+      caret = editor.view.coordsAtPos(editor.state.selection.head);
+    } catch {
+      // Selection outlives the DOM it pointed at for a tick after a re-render.
+      return;
+    }
+    const view = box.getBoundingClientRect();
+    if (caret.bottom > view.bottom - CARET_MARGIN_PX) {
+      box.scrollTop += caret.bottom - view.bottom + CARET_MARGIN_PX;
+    } else if (caret.top < view.top + CARET_MARGIN_PX) {
+      box.scrollTop -= view.top + CARET_MARGIN_PX - caret.top;
+    }
+  }, []);
+
+  /** Now, and again once the stage has finished animating into place. */
+  const scheduleCaretCheck = useCallback(() => {
+    keepCaretVisible();
+    window.clearTimeout(caretTimerRef.current);
+    caretTimerRef.current = window.setTimeout(
+      keepCaretVisible,
+      COMPOSER_CHROME_SETTLE_MS
+    );
+  }, [keepCaretVisible]);
+
+  // Canvas metrics are a prediction; this is the correction. Once a stage has
+  // finished moving, whatever the browser actually laid out either fits the
+  // stage or it does not, and a stage the text overflows is one that hides it.
+  const runComposerFitCheck = useCallback(
+    function fitCheck() {
+      composerFitTimerRef.current = 0;
+      if (
+        !hasCornerActions ||
+        readOnly ||
+        composerExpanded ||
+        document.hidden
+      ) {
+        return;
+      }
+      const editor = editorRef.current as Editor | null;
+      const root = composerRootRef.current;
+      const box = composerEditorRef.current;
+      if (!editor?.state?.doc || !root || !box) return;
+      const kind = chromeKindRef.current;
+      const ceiling = composerStageCeiling(measureComposerSpace(root, box));
+      // The tallest stage on this viewport is allowed to scroll: there is
+      // nowhere left to grow into.
+      if (composerStageIndex(kind) >= composerStageIndex(ceiling)) return;
+      if (box.scrollHeight - box.clientHeight <= COMPOSER_FIT_SLACK_PX) return;
+      const next = COMPOSER_STAGE_ORDER[composerStageIndex(kind) + 1];
+      composerFitFloorRef.current = {
+        docSize: editor.state.doc.content.size,
+        kind: next,
+      };
+      applyComposerChrome(root, next);
+      scheduleCaretCheck();
+      composerFitTimerRef.current = window.setTimeout(
+        fitCheck,
+        COMPOSER_FIT_CHECK_MS
+      );
+    },
+    [
+      applyComposerChrome,
+      composerExpanded,
+      hasCornerActions,
+      readOnly,
+      scheduleCaretCheck,
+    ]
+  );
+
+  // 1 line: + 😊 Aa in a row, expiry beside send. 2 lines: + stacks over the
+  // smiley with Aa centred beside them, expiry over send. 3+ lines: both rails
+  // run single-file down the edges. The editor box width stays 36px padded;
+  // only the inner paragraph indent changes.
+  const measureSideChrome = useCallback(() => {
+    if (!hasCornerActions || readOnly || composerExpanded || document.hidden) {
+      return;
+    }
+    const editor = editorRef.current as Editor | null;
+    const row = compactRowRef.current;
+    const root = composerRootRef.current;
+    const box = composerEditorRef.current;
+    if (!editor?.state?.doc || !row || !root || !box) return;
+    const rowWidth = row.clientWidth;
+    // Nothing to measure against while the composer is off-screen or still
+    // being laid out; keeping the stage it has beats guessing a wrong one.
+    if (rowWidth <= 0) return;
+    if (rowWidth !== composerRowWidthRef.current) {
+      // A fold, a rotation or a resized window rewraps everything, so what the
+      // text did or did not fit into at the old width says nothing now.
+      composerRowWidthRef.current = rowWidth;
+      composerFitFloorRef.current = null;
+    }
+    // The accessibility text scales change the composer font, so read the size
+    // the stylesheet settled on rather than assuming the default.
+    const fontSize =
+      getComputedStyle(root).getPropertyValue('--composer-font-size').trim() ||
+      COMPACT_MEASURE_FALLBACK_FONT_SIZE;
+    // A very narrow screen can leave less room than the chrome wants; measure
+    // against a sliver rather than a negative width, which would read as "one
+    // line" and clip everything the user typed.
+    const predicted = composerEditorChromeKind(
+      editor,
+      `400 ${fontSize} Inter, system-ui, sans-serif`,
+      Math.max(32, rowWidth - INLINE_TEXT_GUTTERS - MEASURE_SAFETY_PX),
+      Math.max(32, rowWidth - SQUEEZED_TEXT_GUTTERS - MEASURE_SAFETY_PX)
+    );
+    // Attachments and the formatting tray share the bar with the typing area;
+    // hand the stage — and the stylesheet — the height they left behind.
+    const space = measureComposerSpace(root, box);
+    if (Number.isFinite(space)) {
+      root.style.setProperty(
+        '--composer-space',
+        `${Math.max(COMPOSER_MIN_SPACE_PX, Math.round(space))}px`
+      );
+    } else {
+      root.style.removeProperty('--composer-space');
+    }
+    const floor = composerFitFloorRef.current;
+    const ceiling = composerStageCeiling(space);
+    const kind = clampComposerStage(
+      predicted,
+      floor && editor.state.doc.content.size >= floor.docSize
+        ? floor.kind
+        : 'inline',
+      ceiling
+    );
+    if (kind !== chromeKindRef.current) applyComposerChrome(root, kind);
+    // A bar that cannot reach its tallest stage cannot show the whole message
+    // either, and full screen is the way out of it — so the expand button has
+    // to be reachable from the stage it is stuck on, not only from stage 3.
+    root.toggleAttribute('data-composer-capped', ceiling !== 'stacked');
+    // The box just changed height under the caret, whether the stage moved or
+    // only the room around it did.
+    scheduleCaretCheck();
+    // Verify the choice once the move has settled, whether or not it changed:
+    // the text can outgrow a stage it already sits in.
+    window.clearTimeout(composerFitTimerRef.current);
+    composerFitTimerRef.current = window.setTimeout(
+      runComposerFitCheck,
+      COMPOSER_FIT_CHECK_MS
+    );
+  }, [
+    applyComposerChrome,
+    composerExpanded,
+    hasCornerActions,
+    readOnly,
+    runComposerFitCheck,
+    scheduleCaretCheck,
+  ]);
+
+  useLayoutEffect(() => {
+    const root = composerRootRef.current;
+    if (!root) return;
+    const kind = composerExpanded ? 'inline' : chromeKindRef.current;
+    root.toggleAttribute('data-composer-stacked', kind === 'stacked');
+    root.toggleAttribute('data-composer-squeezed', kind === 'squeezed');
+    compactRowRef.current?.toggleAttribute(
+      'data-composer-stacked',
+      kind === 'stacked'
+    );
+    compactRowRef.current?.toggleAttribute(
+      'data-composer-squeezed',
+      kind === 'squeezed'
+    );
+  });
+
+  const scheduleSideChromeMeasure = useCallback(() => {
+    if (!hasCornerActions || composerExpanded || document.hidden) return;
+    if (stackFrameRef.current) return;
+    stackFrameRef.current = window.requestAnimationFrame(() => {
+      stackFrameRef.current = 0;
+      measureSideChrome();
+    });
+  }, [composerExpanded, hasCornerActions, measureSideChrome]);
+
+  useEffect(() => {
+    return () => {
+      if (stackFrameRef.current) {
+        window.cancelAnimationFrame(stackFrameRef.current);
+        stackFrameRef.current = 0;
+      }
+      window.clearTimeout(composerFitTimerRef.current);
+      composerFitTimerRef.current = 0;
+      window.clearTimeout(caretTimerRef.current);
+      caretTimerRef.current = 0;
+    };
+  }, []);
+
+  // The stage now fixes the height of the typing area, so anything that
+  // rewraps the text without an edit — rotating, unfolding, the soft keyboard
+  // resizing the viewport, returning to a backgrounded tab — has to re-measure
+  // or the text would sit scrolled inside a box sized for the wrong line count
+  // (and, on a viewport that just got shorter, in a box too tall for it).
+  useEffect(() => {
+    if (!hasCornerActions) return undefined;
+    const remeasure = () => scheduleSideChromeMeasure();
+    const viewport = window.visualViewport;
+    window.addEventListener('resize', remeasure);
+    window.addEventListener('orientationchange', remeasure);
+    document.addEventListener('visibilitychange', remeasure);
+    viewport?.addEventListener('resize', remeasure);
+    return () => {
+      window.removeEventListener('resize', remeasure);
+      window.removeEventListener('orientationchange', remeasure);
+      document.removeEventListener('visibilitychange', remeasure);
+      viewport?.removeEventListener('resize', remeasure);
+    };
+  }, [hasCornerActions, scheduleSideChromeMeasure]);
+
+  // Leaving the full-screen composer hands the text back to a bar that has not
+  // measured it: whatever was typed up there decides the stage down here.
+  useEffect(() => {
+    if (composerExpanded) return;
+    scheduleSideChromeMeasure();
+  }, [composerExpanded, scheduleSideChromeMeasure]);
+
+  // Attachment chips and the formatting tray are laid out above the typing box
+  // and neither is the editor's to watch. Any render can have added or removed
+  // one, so the room they left over is re-read after each — the measure itself
+  // is a coalesced frame and touches no state, so this cannot spiral.
+  useEffect(() => {
+    scheduleSideChromeMeasure();
+  });
+
   const [isDisabledEditorEnter, setIsDisabledEditorEnter] = useAtom(
     isDisabledEditorEnterAtom
   );
 
   const isLandscape = useMediaQuery('(orientation: landscape)');
   const keyboardOpen = useSoftKeyboardOpen();
+  const keyboardInset = useSoftKeyboardInset();
   // Whether the *expanded* mobile compose layout should be shown: the formatting
   // toolbar moves into the top bar and the app's top/bottom panels hide. In
   // portrait this tracks the soft keyboard, so dismissing the keyboard drops
@@ -787,9 +1427,13 @@ const Tiptap = ({
   // The expanded layout takes over the app's top bar, which only makes sense
   // for the main chat composer. Inside a modal the bar is covered by the
   // dialog, so it would just leave an empty strip peeking out above it.
+  // Reticulum compactChat uses the Aa formatting tray instead of portaling
+  // controls into the top bar — claiming that slot would hide search and show
+  // a blank grey strip while replying/typing.
   const mobileChatCompose =
     isMobile &&
     isChat &&
+    !compactChat &&
     !inOverlay &&
     Boolean(isFocusedParent) &&
     (isLandscape || keyboardActive);
@@ -801,16 +1445,30 @@ const Tiptap = ({
 
   useLayoutEffect(() => {
     if (!isMobile || !isChat) return;
-    setMobileComposeActive(mobileChatCompose);
-  }, [mobileChatCompose, isMobile, isChat, setMobileComposeActive]);
+    // The full-screen composer wants the app's top and bottom panels out of
+    // the way just as much as the expanded legacy layout does.
+    setMobileComposeActive(mobileChatCompose || composerExpanded);
+    // …and the top bar has to leave entirely: it out-stacks the composer no
+    // matter how high the overlay's z-index goes, because the chat sits in a
+    // section layer that caps its descendants' stacking order.
+    setFullscreenComposerActive(composerExpanded);
+  }, [
+    composerExpanded,
+    mobileChatCompose,
+    isMobile,
+    isChat,
+    setFullscreenComposerActive,
+    setMobileComposeActive,
+  ]);
 
   useEffect(() => {
     return () => {
       if (isMobile && isChat) {
         setMobileComposeActive(false);
+        setFullscreenComposerActive(false);
       }
     };
-  }, [isMobile, isChat, setMobileComposeActive]);
+  }, [isMobile, isChat, setFullscreenComposerActive, setMobileComposeActive]);
 
   // Once the composer is fully dismissed, drop the expanded keyboard layout too.
   useEffect(() => {
@@ -826,6 +1484,7 @@ const Tiptap = ({
     }
     if (!keyboardWasOpenRef.current) return;
     keyboardWasOpenRef.current = false;
+    if (emojiPanelOpen) return;
     if (isLandscape) {
       setKeyboardActive(false);
       return;
@@ -853,7 +1512,7 @@ const Tiptap = ({
       setKeyboardActive(false);
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [keyboardOpen, isLandscape, isMobile, isChat]);
+  }, [emojiPanelOpen, keyboardOpen, isLandscape, isMobile, isChat]);
 
   const handleImageUpload = useCallback(
     async (file) => {
@@ -890,9 +1549,15 @@ const Tiptap = ({
     [insertImage]
   );
 
-  const extensionsFiltered = isChat
-    ? extensions.filter((item) => item?.name !== 'image' && item?.name !== 'placeholder')
-    : extensions.filter((item) => item?.name !== 'placeholder');
+  const extensionsFiltered = useMemo(
+    () =>
+      isChat
+        ? extensions.filter(
+            (item) => item?.name !== 'image' && item?.name !== 'placeholder'
+          )
+        : extensions.filter((item) => item?.name !== 'placeholder'),
+    [isChat]
+  );
   const placeholderExtension = useMemo(
     () =>
       Placeholder.configure({
@@ -905,7 +1570,6 @@ const Tiptap = ({
       }),
     [placeholder]
   );
-  const editorRef = useRef(null);
   const setEditorRefFunc = useCallback(
     (editorInstance) => {
       editorRef.current = editorInstance;
@@ -924,18 +1588,157 @@ const Tiptap = ({
     }
   }, [readOnly]);
 
+  // Mobile chat swaps the popover picker for a panel that takes over the soft
+  // keyboard's slot, so the composer never moves and one button toggles between
+  // the two keyboards — the way Telegram does it.
+  const useEmojiKeyboardPanel = hasCornerActions && isMobile;
+
+  const emojiPanelIntentRef = useRef<'emoji' | 'keyboard' | null>(null);
+
+  const insertEmoji = useCallback((emoji: string) => {
+    const editor = editorRef.current;
+    if (!editor || editor.isDestroyed) return;
+    // Deliberately not focusing: that would summon the soft keyboard on top of
+    // the panel the user is still picking from.
+    editor.chain().insertContent(emoji).run();
+  }, []);
+
+  useEffect(() => {
+    if (!useEmojiKeyboardPanel || !emojiPanelOpen) return;
+    setEmojiPanelHandler(insertEmoji);
+    setGifPanelHandler(
+      insertGif
+        ? (gif) => {
+            insertGif(gif);
+            setEmojiPanelOpen(false);
+          }
+        : null
+    );
+    return () => {
+      setEmojiPanelHandler(null);
+      setGifPanelHandler(null);
+    };
+  }, [insertEmoji, insertGif, setEmojiPanelOpen, useEmojiKeyboardPanel, emojiPanelOpen]);
+
+  // Closing the chat must not strand the panel over the next screen.
+  useEffect(() => {
+    if (!useEmojiKeyboardPanel) return;
+    return () => setEmojiPanelOpen(false);
+  }, [useEmojiKeyboardPanel, setEmojiPanelOpen]);
+
+  // Tapping the text area brings the real keyboard back; the panel hands the
+  // slot over instead of stacking underneath it. The full-screen composer ends
+  // above the slot rather than closing the panel, so the smiley swaps the two
+  // keyboards there exactly as it does in the compact bar.
+  useEffect(() => {
+    if (!emojiPanelOpen) return;
+    if (emojiPanelIntentRef.current === 'emoji') {
+      // We opened the panel on purpose while the keyboard was still up; leave
+      // it there until the keyboard has finished retracting.
+      if (!keyboardOpen) emojiPanelIntentRef.current = null;
+      return;
+    }
+    if (!keyboardOpen) return;
+    if (isPanelKeyboardSuppressed()) return;
+    const active = document.activeElement as HTMLElement | null;
+    if (active?.closest('[data-emoji-panel]')) return;
+    // Keep the panel mounted until the keyboard has covered most of the slot,
+    // otherwise the composer drops into the gap and jumps back up.
+    const covered = keyboardInset;
+    const slot = getLastSoftKeyboardHeight();
+    if (covered < Math.max(160, slot - 32)) return;
+    emojiPanelIntentRef.current = null;
+    setEmojiPanelOpen(false);
+  }, [emojiPanelOpen, keyboardInset, keyboardOpen, setEmojiPanelOpen]);
+
+  // Search-lifted: the keyboard is already up, so the effect above never sees
+  // an open-transition. A tap on the composer must take the slot immediately.
+  useEffect(() => {
+    if (!useEmojiKeyboardPanel || !emojiPanelOpen) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (keyboardInset <= 120 || isPanelKeyboardSuppressed()) return;
+      const target = event.target as HTMLElement | null;
+      if (!target) return;
+      if (target.closest('[data-emoji-panel]')) return;
+      if (target.closest('button')) return;
+      if (
+        !target.closest('.ProseMirror') &&
+        !target.closest('.compact-composer-editor')
+      ) {
+        return;
+      }
+      emojiPanelIntentRef.current = 'keyboard';
+      setEmojiPanelOpen(false);
+    };
+    document.addEventListener('pointerdown', onPointerDown, true);
+    return () => document.removeEventListener('pointerdown', onPointerDown, true);
+  }, [
+    emojiPanelOpen,
+    keyboardInset,
+    setEmojiPanelOpen,
+    useEmojiKeyboardPanel,
+  ]);
+
+  useAndroidBack(
+    () => {
+      if (!emojiPanelOpen) return false;
+      setEmojiPanelOpen(false);
+      return true;
+    },
+    {
+      enabled: useEmojiKeyboardPanel && emojiPanelOpen,
+      priority: BACK_PRIORITY.overlay,
+    }
+  );
+
+  const toggleEmojiPanel = useCallback(() => {
+    if (emojiPanelOpen) {
+      // Focus synchronously: Android only raises the keyboard while the tap
+      // that asked for it is still being handled. The panel stays up until the
+      // keyboard has covered its slot, so the composer does not drop.
+      emojiPanelIntentRef.current = 'keyboard';
+      try {
+        editorRef.current?.commands?.focus?.();
+      } catch {
+        /* editor torn down */
+      }
+      // Search already has the keyboard up, so there is no open-transition
+      // for the slot-handoff effect to watch — close now or the panel sits
+      // behind the keyboard.
+      if (keyboardInset > 120) setEmojiPanelOpen(false);
+      return;
+    }
+    // Open the panel first, then dismiss the keyboard. The shell tracks the
+    // retracting inset so the panel is revealed in the keyboard's place
+    // instead of appearing after a gap.
+    emojiPanelIntentRef.current = 'emoji';
+    setEmojiPanelOpen(true);
+    try {
+      editorRef.current?.commands?.blur?.();
+    } catch {
+      /* editor torn down */
+    }
+    try {
+      (document.activeElement as HTMLElement | null)?.blur?.();
+    } catch {
+      /* ignore */
+    }
+  }, [emojiPanelOpen, keyboardInset, setEmojiPanelOpen]);
+
   const users = useMemo(() => {
     if (mentionSuggestions) return mentionSuggestions;
-    return (membersWithNames || [])?.map((item) => {
-      const label = String(item || '').trim();
-      return {
-        id: label,
-        label,
-        section: 'people' as const,
-        kind: 'person' as const,
-        description: 'Member',
-      };
-    }).filter((item) => item.label);
+    return (membersWithNames || [])
+      ?.map((item) => {
+        const label = String(item || '').trim();
+        return {
+          id: label,
+          label,
+          section: 'people' as const,
+          kind: 'person' as const,
+          description: 'Member',
+        };
+      })
+      .filter((item) => item.label);
   }, [membersWithNames, mentionSuggestions]);
 
   const usersRef = useRef([]);
@@ -944,20 +1747,32 @@ const Tiptap = ({
   }, [users]);
 
   const handleFocus = useCallback(() => {
+    if (isPanelKeyboardSuppressed()) {
+      try {
+        editorRef.current?.commands?.blur?.();
+      } catch {
+        /* ignore */
+      }
+      return;
+    }
+    if (emojiPanelOpen) {
+      emojiPanelIntentRef.current = 'keyboard';
+      if (keyboardInset > 120) setEmojiPanelOpen(false);
+    }
     if (isMobile && setIsFocusedParent) {
       if (isChat) {
         setKeyboardActive(true);
       }
       setIsFocusedParent(true);
     }
-  }, [isMobile, isChat, setIsFocusedParent]);
-
-  const handleBlur = () => {
-    const htmlContent = editorRef.current?.getHTML();
-    if (!htmlContent?.trim() || htmlContent?.trim() === '<p></p>') {
-      // Set focus state based on content
-    }
-  };
+  }, [
+    emojiPanelOpen,
+    isChat,
+    isMobile,
+    keyboardInset,
+    setEmojiPanelOpen,
+    setIsFocusedParent,
+  ]);
 
   const additionalExtensions = useMemo(() => {
     if (!enableMentions) return [];
@@ -972,8 +1787,8 @@ const Tiptap = ({
           options.HTMLAttributes,
           renderMentionLabel(node),
         ],
-          suggestion: {
-            items: ({ query }) => {
+        suggestion: {
+          items: ({ query }) => {
             const normalizedQuery = query.trim().toLowerCase();
             if (!normalizedQuery) return usersRef.current;
             const sectionOrder: Record<
@@ -1074,6 +1889,14 @@ const Tiptap = ({
       }),
     ];
   }, [enableMentions]);
+  const editorExtensions = useMemo(
+    () => [
+      ...extensionsFiltered,
+      placeholderExtension,
+      ...additionalExtensions,
+    ],
+    [additionalExtensions, extensionsFiltered, placeholderExtension]
+  );
 
   const handleSetIsDisabledEditorEnter = useCallback((val) => {
     setIsDisabledEditorEnter(val);
@@ -1115,69 +1938,205 @@ const Tiptap = ({
       insertFiles={insertFiles}
     />
   );
-  // On phones the composer sits against the keyboard, so a tray anchored above
-  // it lands under the thumbs. Portal it to the top of the viewport instead,
-  // clear of both the keyboard and the chat header.
-  const formattingTrayPanel = isMobile ? (
-    createPortal(
-      <Box
-        sx={{
-          backgroundColor: theme.palette.background.paper,
-          border: `1px solid ${theme.palette.divider}`,
-          borderRadius: '12px',
-          boxShadow: '0 12px 32px rgba(0, 0, 0, 0.38)',
-          left: '50%',
-          maxWidth: 'calc(100vw - 24px)',
-          p: 0.5,
-          position: 'fixed',
-          // Sit below the app top bar rather than on top of the search field.
-          top: `calc(${SAFE_AREA_TOP} + ${MOBILE_TOP_BAR_HEIGHT_PX}px + 8px)`,
-          transform: 'translateX(-50%)',
-          width: 'max-content',
-          zIndex: 1500,
-          // The panel is the surface now, so drop the toolbar's own chrome and
-          // avoid a card-inside-a-card.
-          '& .chat-format-toolbar-shell': {
-            backgroundColor: 'transparent',
-            border: 'none',
-            borderRadius: 0,
-            padding: 0,
-          },
-        }}
-      >
-        {formattingTray}
-      </Box>,
-      document.body
-    )
-  ) : (
-    <Box
-      sx={{
-        backgroundColor: theme.palette.background.paper,
-        border: `1px solid ${theme.palette.divider}`,
-        borderRadius: '8px',
-        bottom: 'calc(100% + 8px)',
-        boxShadow: '0 10px 28px rgba(0, 0, 0, 0.28)',
-        left: 0,
-        p: 0.5,
-        position: 'absolute',
-        right: 0,
-        zIndex: 3,
-      }}
-    >
-      {formattingTray}
-    </Box>
-  );
+  // The tray belongs to the composer box, so it renders into a host slot right
+  // above the text. Portalling keeps it inside EditorProvider, which the
+  // toolbar needs to reach the editor.
+  const formattingTrayPanel = formattingTrayHost
+    ? createPortal(
+        <Box
+          // Toolbar buttons must not pull focus, or the keyboard drops away
+          // under the composer as soon as the tray is used.
+          onMouseDown={preventFocusSteal}
+          sx={{
+            borderBottom: `1px solid ${theme.palette.divider}`,
+            pb: '4px',
+            '& .chat-format-toolbar-shell': {
+              backgroundColor: 'transparent',
+              border: 'none',
+              borderRadius: 0,
+              padding: 0,
+            },
+          }}
+        >
+          {formattingTray}
+        </Box>,
+        formattingTrayHost
+      )
+    : null;
   // This must render inside EditorProvider so useCurrentEditor can resolve it.
   const slotBefore = compactChat
     ? showFormattingTray
       ? formattingTrayPanel
       : null
     : formattingTray;
+  // The corner-button composer scrolls from its wrapper so the buttons stay
+  // pinned to the box while the text moves under them.
+  const editorAttributeStyle = hasCornerActions
+    ? ''
+    : compactChat
+      ? `overflow-y: auto; overflow-x: hidden; max-height: ${
+          compactEditorMaxHeight == null
+            ? '50vh'
+            : `${compactEditorMaxHeight}px`
+        }`
+      : `overflow-y: auto; overflow-x: hidden; max-height: 50vh`;
+
+  // ProseMirror view props only reach the running view through
+  // editor.setOptions(), which ends in view.updateState() and a DOM selection
+  // resync. On Android that aborts an in-flight IME composition, so rebuilding
+  // this object on every render made the keyboard drop characters, blank out,
+  // and stall the whole app. The object handed to the editor keeps a fixed
+  // identity; the bodies below are reassigned each render so they still see
+  // current props.
+  const liveEditorHandlersRef = useRef<Pick<
+    ProseMirrorEditorProps,
+    'handleDrop' | 'handleKeyDown' | 'handlePaste'
+  > | null>(null);
+  liveEditorHandlersRef.current = {
+    handleKeyDown(view, event) {
+      const mentionSuggestionActive =
+        mentionSuggestions !== undefined &&
+        Boolean(MentionPluginKey.getState(view.state)?.active);
+      if (
+        mentionSuggestionActive &&
+        ['ArrowDown', 'ArrowUp', 'Enter', 'Escape', 'Tab'].includes(event.key)
+      ) {
+        // Let the mention suggestion plugin navigate, dismiss, or accept
+        // its highlighted row before chat-level shortcuts can send/edit.
+        return false;
+      }
+      if (typeof onKeyDown === 'function') {
+        const editor = editorRef.current;
+        if (editor) {
+          const handled = onKeyDown(event, editor);
+          if (handled) return true;
+        }
+      }
+      if (!disableEnter && !isDisabledEditorEnter && event.key === 'Enter') {
+        // An Enter that closes an IME composition (Android word suggestions,
+        // CJK keyboards) is reported twice: once as a composition keydown
+        // with keyCode 229 and again once the word is committed. Only the
+        // committed one may send.
+        if (event.isComposing || event.keyCode === 229) return false;
+        if (event.shiftKey) {
+          view.dispatch(
+            view.state.tr.replaceSelectionWith(
+              view.state.schema.nodes.hardBreak.create()
+            )
+          );
+          return true;
+        } else {
+          // A held Enter auto-repeats; every repeat would be another send.
+          if (event.repeat) return true;
+          if (typeof onEnter === 'function') {
+            // Mobile keyboards can deliver repeated Enter before React
+            // re-renders the sending latch — debounce the send trigger.
+            // Kept outside the editor so a remount cannot reopen the window.
+            const now = Date.now();
+            if (now - lastEnterSendAt < 500) return true;
+            lastEnterSendAt = now;
+            onEnter();
+          }
+          return true;
+        }
+      }
+      return false;
+    },
+    handlePaste(view, event) {
+      if (!isChat) return false;
+      const items = event.clipboardData?.items;
+      if (!items) return false;
+
+      if (typeof insertFiles === 'function') {
+        const files = Array.from(event.clipboardData?.files || []);
+        if (files.length > 0) {
+          event.preventDefault();
+          void insertFiles(files);
+          return true;
+        }
+      }
+
+      if (typeof insertImage !== 'function') return false;
+
+      for (const item of items) {
+        if (item.type.startsWith('image/')) {
+          const file = item.getAsFile();
+          if (file) {
+            event.preventDefault(); // Block the default paste
+            handleImageUpload(file); // Custom handler
+            return true; // Let ProseMirror know we handled it
+          }
+        }
+      }
+
+      // Preserve paragraph spacing when pasting plain text (double newline = new paragraph)
+      const text = event.clipboardData?.getData('text/plain');
+      if (text != null && text !== '') {
+        event.preventDefault();
+        const schema = view.state.schema;
+        const paragraphs = text.split(/\n\n+/);
+        const paragraphNodes = paragraphs.map((block) => {
+          if (block === '') {
+            return schema.nodes.paragraph.create(null, Fragment.empty);
+          }
+          const parts = block.split('\n');
+          const content = parts.flatMap((t, i) => {
+            // ProseMirror does not allow empty text nodes; skip empty parts
+            if (t === '') {
+              return i === 0 ? [] : [schema.nodes.hardBreak.create()];
+            }
+            return i === 0
+              ? [schema.text(t)]
+              : [schema.nodes.hardBreak.create(), schema.text(t)];
+          });
+          return schema.nodes.paragraph.create(null, Fragment.from(content));
+        });
+        const fragment = Fragment.from(paragraphNodes);
+        const slice = new Slice(fragment, 0, 0);
+        view.dispatch(view.state.tr.replaceSelection(slice));
+        return true;
+      }
+
+      return false; // fallback to default behavior otherwise
+    },
+    handleDrop(_view, event) {
+      if (!isChat) return false;
+      const files = Array.from(event.dataTransfer?.files || []);
+      if (files.length > 0 && typeof insertFiles === 'function') {
+        event.preventDefault();
+        void insertFiles(files);
+        return true;
+      }
+      if (typeof insertImage !== 'function') return false;
+      const image = files.find((file) => file.type.startsWith('image/'));
+      if (!image) return false;
+      event.preventDefault();
+      handleImageUpload(image);
+      return true;
+    },
+  };
+
+  const editorProps = useMemo<ProseMirrorEditorProps>(
+    () => ({
+      attributes: {
+        class: 'tiptap-prosemirror',
+        style: editorAttributeStyle,
+      },
+      handleDrop: (view, event, slice, moved) =>
+        liveEditorHandlersRef.current?.handleDrop?.(view, event, slice, moved),
+      handleKeyDown: (view, event) =>
+        liveEditorHandlersRef.current?.handleKeyDown?.(view, event),
+      handlePaste: (view, event, slice) =>
+        liveEditorHandlersRef.current?.handlePaste?.(view, event, slice),
+    }),
+    [editorAttributeStyle]
+  );
+
   const editorProvider = (
     <EditorProvider
       editable={!readOnly}
       slotBefore={slotBefore}
-      extensions={[...extensionsFiltered, placeholderExtension, ...additionalExtensions]}
+      extensions={editorExtensions}
       content={content}
       onCreate={({ editor }) => {
         setEditorRefFunc(editor);
@@ -1186,159 +2145,223 @@ const Tiptap = ({
           editor.commands.clearContent();
           editor.commands.blur();
         }
-        editor.on('blur', handleBlur); // Listen for blur event
+        scheduleSideChromeMeasure();
+      }}
+      onFocus={() => {
+        handleFocus();
       }}
       onUpdate={({ editor }) => {
-        editor.on('blur', handleBlur); // Ensure blur is updated
         onContentUpdate?.(editor);
+        scheduleSideChromeMeasure();
       }}
-      editorProps={{
-        attributes: {
-          class: 'tiptap-prosemirror',
-          style: compactChat
-            ? `overflow-y: auto; overflow-x: hidden; max-height: ${
-                compactEditorMaxHeight == null
-                  ? '50vh'
-                  : `${compactEditorMaxHeight}px`
-              }`
-            : `overflow-y: auto; overflow-x: hidden; max-height: 50vh`,
-        },
-        handleKeyDown(view, event) {
-          const mentionSuggestionActive =
-            mentionSuggestions !== undefined &&
-            Boolean(MentionPluginKey.getState(view.state)?.active);
-          if (
-            mentionSuggestionActive &&
-            ['ArrowDown', 'ArrowUp', 'Enter', 'Escape', 'Tab'].includes(
-              event.key
-            )
-          ) {
-            // Let the mention suggestion plugin navigate, dismiss, or accept
-            // its highlighted row before chat-level shortcuts can send/edit.
-            return false;
-          }
-          if (typeof onKeyDown === 'function') {
-            const editor = editorRef.current;
-            if (editor) {
-              const handled = onKeyDown(event, editor);
-              if (handled) return true;
-            }
-          }
-          if (
-            !disableEnter &&
-            !isDisabledEditorEnter &&
-            event.key === 'Enter'
-          ) {
-            if (event.shiftKey) {
-              view.dispatch(
-                view.state.tr.replaceSelectionWith(
-                  view.state.schema.nodes.hardBreak.create()
-                )
-              );
-              return true;
-            } else {
-              if (typeof onEnter === 'function') {
-                onEnter();
-              }
-              return true;
-            }
-          }
-          return false;
-        },
-        handlePaste(view, event) {
-          if (!isChat) return false;
-          const items = event.clipboardData?.items;
-          if (!items) return false;
-
-          if (typeof insertFiles === 'function') {
-            const files = Array.from(event.clipboardData?.files || []);
-            if (files.length > 0) {
-              event.preventDefault();
-              void insertFiles(files);
-              return true;
-            }
-          }
-
-          if (typeof insertImage !== 'function') return false;
-
-          for (const item of items) {
-            if (item.type.startsWith('image/')) {
-              const file = item.getAsFile();
-              if (file) {
-                event.preventDefault(); // Block the default paste
-                handleImageUpload(file); // Custom handler
-                return true; // Let ProseMirror know we handled it
-              }
-            }
-          }
-
-          // Preserve paragraph spacing when pasting plain text (double newline = new paragraph)
-          const text = event.clipboardData?.getData('text/plain');
-          if (text != null && text !== '') {
-            event.preventDefault();
-            const schema = view.state.schema;
-            const paragraphs = text.split(/\n\n+/);
-            const paragraphNodes = paragraphs.map((block) => {
-              if (block === '') {
-                return schema.nodes.paragraph.create(null, Fragment.empty);
-              }
-              const parts = block.split('\n');
-              const content = parts.flatMap((t, i) => {
-                // ProseMirror does not allow empty text nodes; skip empty parts
-                if (t === '') {
-                  return i === 0 ? [] : [schema.nodes.hardBreak.create()];
-                }
-                return i === 0
-                  ? [schema.text(t)]
-                  : [
-                      schema.nodes.hardBreak.create(),
-                      schema.text(t),
-                    ];
-              });
-              return schema.nodes.paragraph.create(
-                null,
-                Fragment.from(content)
-              );
-            });
-            const fragment = Fragment.from(paragraphNodes);
-            const slice = new Slice(fragment, 0, 0);
-            view.dispatch(view.state.tr.replaceSelection(slice));
-            return true;
-          }
-
-          return false; // fallback to default behavior otherwise
-        },
-        handleDrop(_view, event) {
-          if (!isChat) return false;
-          const files = Array.from(event.dataTransfer?.files || []);
-          if (files.length > 0 && typeof insertFiles === 'function') {
-            event.preventDefault();
-            void insertFiles(files);
-            return true;
-          }
-          if (typeof insertImage !== 'function') return false;
-          const image = files.find((file) => file.type.startsWith('image/'));
-          if (!image) return false;
-          event.preventDefault();
-          handleImageUpload(image);
-          return true;
-        },
-      }}
+      editorProps={editorProps}
     />
+  );
+
+  const compactActionsNode =
+    typeof compactActions === 'function'
+      ? compactActions({
+          stacked: false,
+          squeezed: false,
+          showExpiry: true,
+        })
+      : compactActions;
+  const cornerButtonPx = COMPACT_BUTTON_SIZE;
+
+  const cornerButtonSx = {
+    borderRadius: '50%',
+    color: theme.palette.text.secondary,
+    flexShrink: 0,
+    height: `${cornerButtonPx}px`,
+    padding: 0,
+    width: `${cornerButtonPx}px`,
+  };
+  // Outside the corner layout the buttons keep the bordered look that matches
+  // the discussion composer's field.
+  const compactButtonSx = hasCornerActions
+    ? cornerButtonSx
+    : {
+        border: `1px solid ${theme.palette.divider}`,
+        borderRadius: '8px',
+        color: theme.palette.text.secondary,
+        flexShrink: 0,
+        height: 34,
+        width: 34,
+      };
+
+  const attachControl = (
+    <>
+      <Tooltip title="Add attachment">
+        <span style={{ display: 'inline-flex' }}>
+          <IconButton
+            disabled={readOnly || typeof insertFiles !== 'function'}
+            onClick={() => {
+              attachResumeTypingRef.current = Boolean(
+                editorRef.current?.isFocused
+              );
+              compactFileInputRef.current?.click();
+            }}
+            onMouseDown={preventFocusSteal}
+            size="small"
+            sx={{ backgroundColor: 'transparent', ...compactButtonSx }}
+          >
+            <AddRoundedIcon sx={{ fontSize: hasCornerActions ? 22 : 19 }} />
+          </IconButton>
+        </span>
+      </Tooltip>
+      <input
+        multiple
+        ref={compactFileInputRef}
+        style={{ display: 'none' }}
+        type="file"
+        onChange={(event) => {
+          const files = Array.from(event.target.files || []);
+          if (files.length > 0 && typeof insertFiles === 'function') {
+            void insertFiles(files);
+          }
+          event.currentTarget.value = '';
+          if (attachResumeTypingRef.current) {
+            attachResumeTypingRef.current = false;
+            resumeTypingAfterPicker();
+          }
+        }}
+      />
+    </>
+  );
+
+  const formatControl = (
+    <Tooltip title="Formatting">
+      <IconButton
+        disabled={readOnly}
+        onClick={() => setShowFormattingTray((show) => !show)}
+        onMouseDown={preventFocusSteal}
+        size="small"
+        sx={{
+          backgroundColor: showFormattingTray
+            ? theme.palette.action.selected
+            : 'transparent',
+          fontFamily: 'Inter',
+          fontSize: 13,
+          fontWeight: 700,
+          ...compactButtonSx,
+          color: showFormattingTray
+            ? theme.palette.text.primary
+            : theme.palette.text.secondary,
+        }}
+      >
+        Aa
+      </IconButton>
+    </Tooltip>
+  );
+
+  const emojiControl = useEmojiKeyboardPanel ? (
+    <Tooltip title={emojiPanelOpen ? 'Keyboard' : 'Emoji'}>
+      <span style={{ display: 'inline-flex' }}>
+        <IconButton
+          disabled={readOnly}
+          onClick={() => {
+            toggleEmojiPanel();
+          }}
+          onMouseDown={preventFocusSteal}
+          onPointerDown={preventFocusSteal}
+          size="small"
+          sx={{ backgroundColor: 'transparent', ...compactButtonSx }}
+        >
+          {emojiPanelOpen ? (
+            <KeyboardOutlinedIcon sx={{ fontSize: 22 }} />
+          ) : (
+            <SentimentSatisfiedAltOutlinedIcon sx={{ fontSize: 22 }} />
+          )}
+        </IconButton>
+      </span>
+    </Tooltip>
+  ) : (
+    <Box
+      sx={{
+        alignItems: 'center',
+        display: 'inline-flex',
+        flexShrink: 0,
+        justifyContent: 'center',
+        opacity: readOnly ? 0.4 : 1,
+        pointerEvents: readOnly ? 'none' : undefined,
+      }}
+    >
+      <ReactionPicker
+        compactComposer
+        neutralIcon
+        onGifSelect={insertGif}
+        onReaction={(emoji: string) => {
+          editorRef.current?.chain().focus().insertContent(emoji).run();
+        }}
+      />
+    </Box>
+  );
+
+  const expandControl = (
+    <Tooltip title={composerExpanded ? 'Shrink' : 'Expand'}>
+      <IconButton
+        onClick={() => setComposerExpanded((expanded) => !expanded)}
+        onMouseDown={preventFocusSteal}
+        size="small"
+        sx={{
+          ...cornerButtonSx,
+          height: `${cornerButtonPx}px`,
+          width: `${cornerButtonPx}px`,
+        }}
+      >
+        {composerExpanded ? (
+          <CloseFullscreenRoundedIcon sx={{ fontSize: 15 }} />
+        ) : (
+          <OpenInFullRoundedIcon sx={{ fontSize: 15 }} />
+        )}
+      </IconButton>
+    </Tooltip>
+  );
+
+  const secondaryCompactActions = (
+    <>
+      {attachControl}
+      {formatControl}
+    </>
   );
 
   if (compactChat) {
     return (
       <Box
-        className="tiptap-chat-composer tiptap-chat-composer--compact"
+        ref={composerRootRef}
+        className={`tiptap-chat-composer tiptap-chat-composer--compact${
+          hasCornerActions ? ' tiptap-chat-composer--corners' : ''
+        }${composerExpanded ? ' tiptap-chat-composer--expanded' : ''}`}
         sx={{
           display: 'flex',
           flex: 1,
           flexDirection: 'column',
+          minHeight: 0,
           minWidth: 0,
-          overflow: 'visible',
+          overflow: composerExpanded ? 'visible' : 'hidden',
           position: 'relative',
           zIndex: 1,
+          backgroundColor: 'transparent',
+          ...(composerExpanded && {
+            backgroundColor: theme.palette.background.default,
+            // "Fixed" here resolves against the shell's content box (ancestors
+            // carry transforms), and the shell already gives the emoji panel
+            // its slot as bottom padding — so this edge follows the panel on
+            // its own, and offsetting it again would take that space twice.
+            bottom: 0,
+            left: 0,
+            padding: `calc(${SAFE_AREA_TOP} + 8px) 10px ${
+              emojiPanelOpen
+                ? '10px'
+                : 'max(10px, env(safe-area-inset-bottom, 0px))'
+            }`,
+            position: 'fixed',
+            right: 0,
+            top: 0,
+            // Above the compose top bar (1400), which would otherwise show as
+            // a grey strip across the top of the full-screen composer.
+            zIndex: 1450,
+          }),
           '--text-primary': theme.palette.text.primary,
           '--text-secondary': theme.palette.text.secondary,
           '--background-default': theme.palette.background.default,
@@ -1346,130 +2369,253 @@ const Tiptap = ({
           '--code-block-bg': theme.palette.background.paper,
           '--code-block-accent': theme.palette.primary.main,
           '--code-block-border': theme.palette.divider,
-          '--composer-bg': theme.palette.background.default,
+          '--composer-bg': 'transparent',
           '--composer-border': theme.palette.divider,
         }}
       >
-        <Box
-          sx={{
-            // Controls sit on the input's centre line rather than its baseline,
-            // which keeps the row balanced as the editor grows.
-            alignItems: 'center',
-            display: 'flex',
-            gap: 0.5,
-            minHeight: 42,
-            width: '100%',
-          }}
-        >
-          {/* Editor leads the row so the typing area gets the full width; the
-              attach/format/send controls are grouped at the trailing edge. */}
-          <Box
-            aria-disabled={readOnly}
-            sx={{
-              cursor: readOnly ? 'not-allowed' : undefined,
-              flex: 1,
-              pointerEvents: readOnly ? 'none' : undefined,
-              minWidth: 0,
-              opacity: readOnly ? 0.68 : 1,
-              position: 'relative',
-              '& .tiptap p.is-editor-empty:first-child::before': {
-                display: readOnly ? 'none' : undefined,
-              },
-            }}
-          >
-            {readOnly && (
-              <Typography
-                aria-hidden="true"
+        {hasCornerActions ? (
+          // Telegram-style box: the controls sit in the corners of a fixed
+          // gutter on each side and the text keeps the full width between them,
+          // so growing the message never reshuffles the buttons.
+          <>
+            {composerExpanded && (
+              <Box
                 sx={{
-                  color: theme.palette.text.secondary,
-                  fontSize: 15,
-                  left: 10,
-                  lineHeight: 1.4,
-                  overflow: 'hidden',
-                  pointerEvents: 'none',
-                  position: 'absolute',
-                  right: 10,
-                  textOverflow: 'ellipsis',
-                  top: '50%',
-                  transform: 'translateY(-50%)',
-                  whiteSpace: 'nowrap',
-                  zIndex: 2,
+                  alignItems: 'center',
+                  display: 'flex',
+                  flexShrink: 0,
+                  gap: 1,
+                  pb: 1,
                 }}
               >
-                Only group admins can write in this channel
-              </Typography>
-            )}
-            {editorProvider}
-          </Box>
-          <Box
-            sx={{
-              alignItems: 'center',
-              display: 'flex',
-              flexShrink: 0,
-              gap: 0.5,
-            }}
-          >
-            <Tooltip title="Add attachment">
-              <span>
-                <IconButton
-                  disabled={readOnly || typeof insertFiles !== 'function'}
-                  onClick={() => compactFileInputRef.current?.click()}
-                  size="small"
+                <Typography
                   sx={{
-                    backgroundColor: 'transparent',
-                    border: `1px solid ${theme.palette.divider}`,
-                    borderRadius: '8px',
                     color: theme.palette.text.secondary,
-                    flexShrink: 0,
-                    height: 32,
-                    width: 32,
+                    fontSize: 13,
+                    fontWeight: 600,
+                    letterSpacing: '0.02em',
+                    textTransform: 'uppercase',
                   }}
                 >
-                  <AddRoundedIcon sx={{ fontSize: 19 }} />
-                </IconButton>
-              </span>
-            </Tooltip>
-            <input
-              multiple
-              ref={compactFileInputRef}
-              style={{ display: 'none' }}
-              type="file"
-              onChange={(event) => {
-                const files = Array.from(event.target.files || []);
-                if (files.length > 0 && typeof insertFiles === 'function') {
-                  void insertFiles(files);
-                }
-                event.currentTarget.value = '';
-              }}
-            />
-            <Tooltip title="Formatting">
-              <IconButton
-                disabled={readOnly}
-                onClick={() => setShowFormattingTray((show) => !show)}
-                size="small"
+                  Compose
+                </Typography>
+                <Box sx={{ ml: 'auto' }}>{expandControl}</Box>
+              </Box>
+            )}
+            {composerExpanded && (
+              <Box
+                id={FULLSCREEN_COMPOSER_ATTACHMENTS_SLOT_ID}
                 sx={{
-                  backgroundColor: showFormattingTray
-                    ? theme.palette.action.selected
-                    : 'transparent',
-                  border: `1px solid ${theme.palette.divider}`,
-                  borderRadius: '8px',
-                  color: showFormattingTray
-                    ? theme.palette.text.primary
-                    : theme.palette.text.secondary,
                   flexShrink: 0,
-                  fontFamily: 'Inter',
-                  fontSize: 13,
-                  fontWeight: 700,
-                  height: 32,
-                  width: 32,
+                  // Enough attachments to fill the screen would leave nowhere
+                  // to type; past a third of it they scroll.
+                  maxHeight: '33vh',
+                  overflowY: 'auto',
+                  width: '100%',
+                }}
+              />
+            )}
+            <Box
+              className="tiptap-format-tray-host"
+              ref={setFormattingTrayHost}
+              sx={{ flexShrink: 0, width: '100%' }}
+            />
+            <Box
+              className="compact-composer-row"
+              ref={compactRowRef}
+              onClick={(event) => {
+                if (readOnly) return;
+                if ((event.target as HTMLElement).closest('button')) return;
+                editorRef.current?.commands?.focus?.();
+              }}
+              sx={{
+                alignItems: 'stretch',
+                display: 'flex',
+                flex: 1,
+                flexDirection: composerExpanded ? 'column' : 'row',
+                gap: `${COMPACT_ACTION_GAP}px`,
+                minHeight: composerExpanded ? 0 : '34px',
+                minWidth: 0,
+                overflow: 'visible',
+                position: 'relative',
+                width: '100%',
+              }}
+            >
+              <Box
+                aria-disabled={readOnly}
+                className="compact-composer-editor"
+                ref={composerEditorRef}
+                sx={{
+                  cursor: readOnly ? 'not-allowed' : undefined,
+                  flex: 1,
+                  maxHeight: composerExpanded
+                    ? 'none'
+                    : compactEditorMaxHeight != null
+                      ? `${compactEditorMaxHeight}px`
+                      : hasCornerActions
+                        ? `${COMPACT_EDITOR_MAX_HEIGHT}px`
+                        : '50vh',
+                  minHeight: 0,
+                  minWidth: 0,
+                  overflowX: 'hidden',
+                  overflowY: 'auto',
+                  pointerEvents: readOnly ? 'none' : undefined,
+                  opacity: readOnly ? 0.68 : 1,
+                  position: 'relative',
+                  '& .tiptap p.is-editor-empty:first-child::before': {
+                    display: readOnly ? 'none' : undefined,
+                  },
+                  '& .tiptap-prosemirror': composerExpanded
+                    ? { minHeight: '100%' }
+                    : undefined,
                 }}
               >
-                Aa
-              </IconButton>
-            </Tooltip>
-            {compactActions}
-          </Box>
-        </Box>
+                {readOnly && (
+                  <Typography
+                    aria-hidden="true"
+                    sx={{
+                      color: theme.palette.text.secondary,
+                      fontSize: 15,
+                      left: 10,
+                      lineHeight: 1.4,
+                      overflow: 'hidden',
+                      pointerEvents: 'none',
+                      position: 'absolute',
+                      right: 4,
+                      textOverflow: 'ellipsis',
+                      top: 7,
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    Only group admins can write in this channel
+                  </Typography>
+                )}
+                {editorProvider}
+              </Box>
+              <Box
+                className="compact-composer-overlay"
+                onMouseDown={preventFocusSteal}
+                sx={
+                  composerExpanded
+                    ? {
+                        alignItems: 'center',
+                        display: 'flex',
+                        flexShrink: 0,
+                        gap: `${COMPACT_ACTION_GAP}px`,
+                        pt: 1,
+                        width: '100%',
+                      }
+                    : {
+                        bottom: 0,
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        left: 0,
+                        pointerEvents: 'none',
+                        position: 'absolute',
+                        right: 0,
+                        top: 0,
+                        zIndex: 2,
+                      }
+                }
+              >
+                <Box className="compact-composer-rail compact-composer-rail--left">
+                  <Box
+                    className="compact-composer-attach"
+                    sx={{ display: 'inline-flex' }}
+                  >
+                    {attachControl}
+                  </Box>
+                  <Box
+                    className="compact-composer-emoji"
+                    sx={{ display: 'inline-flex' }}
+                  >
+                    {emojiControl}
+                  </Box>
+                  <Box
+                    className="compact-composer-format"
+                    sx={{ display: 'inline-flex' }}
+                  >
+                    {formatControl}
+                  </Box>
+                </Box>
+                <Box className="compact-composer-rail compact-composer-rail--right">
+                  <Box className="compact-composer-expand">{expandControl}</Box>
+                  {compactActionsNode}
+                </Box>
+              </Box>
+            </Box>
+          </>
+        ) : (
+          <>
+            <Box
+              className="tiptap-format-tray-host"
+              ref={setFormattingTrayHost}
+              sx={{ flexShrink: 0, width: '100%' }}
+            />
+            <Box
+              sx={{
+                // Controls sit on the input's centre line rather than its
+                // baseline, which keeps the row balanced as the editor grows.
+                alignItems: 'center',
+                display: 'flex',
+                gap: 0.5,
+                minHeight: 42,
+                width: '100%',
+              }}
+            >
+              {/* Editor leads the row so the typing area gets the full width;
+                the attach/format controls are grouped at the trailing edge. */}
+              <Box
+                aria-disabled={readOnly}
+                sx={{
+                  cursor: readOnly ? 'not-allowed' : undefined,
+                  flex: 1,
+                  pointerEvents: readOnly ? 'none' : undefined,
+                  minWidth: 0,
+                  opacity: readOnly ? 0.68 : 1,
+                  position: 'relative',
+                  '& .tiptap p.is-editor-empty:first-child::before': {
+                    display: readOnly ? 'none' : undefined,
+                  },
+                }}
+              >
+                {readOnly && (
+                  <Typography
+                    aria-hidden="true"
+                    sx={{
+                      color: theme.palette.text.secondary,
+                      fontSize: 15,
+                      left: 10,
+                      lineHeight: 1.4,
+                      overflow: 'hidden',
+                      pointerEvents: 'none',
+                      position: 'absolute',
+                      right: 10,
+                      textOverflow: 'ellipsis',
+                      top: '50%',
+                      transform: 'translateY(-50%)',
+                      whiteSpace: 'nowrap',
+                      zIndex: 2,
+                    }}
+                  >
+                    Only group admins can write in this channel
+                  </Typography>
+                )}
+                {editorProvider}
+              </Box>
+              <Box
+                sx={{
+                  alignItems: 'center',
+                  display: 'flex',
+                  flexShrink: 0,
+                  gap: 0.5,
+                }}
+              >
+                {secondaryCompactActions}
+              </Box>
+            </Box>
+          </>
+        )}
       </Box>
     );
   }

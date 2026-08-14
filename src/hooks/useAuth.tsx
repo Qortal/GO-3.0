@@ -11,6 +11,7 @@ import {
 import {
   isLocalPrivateHttpsUrl,
   ensureElectronCertIfLocalPrivateHttps,
+  preferHttpForLocalPrivateUrl,
 } from '../utils/helpers';
 import { useAtom, useAtomValue, useSetAtom, useStore } from 'jotai';
 import {
@@ -130,11 +131,20 @@ export const useAuth = () => {
       const isElectron = !!window?.coreSetup;
       const validatedNodeInfo = currentNode;
 
-      const isLocalPrivateHttps = isLocalPrivateHttpsUrl(
-        validatedNodeInfo?.url
-      );
+      const preferredUrl =
+        preferHttpForLocalPrivateUrl(validatedNodeInfo?.url) ||
+        validatedNodeInfo?.url;
+      if (
+        preferredUrl &&
+        validatedNodeInfo?.url &&
+        preferredUrl !== validatedNodeInfo.url
+      ) {
+        validatedNodeInfo.url = preferredUrl;
+      }
+      // Status/auth probes always use cleartext against local private HTTPS
+      // bases; Electron later re-enables TLS via ensureCertForBase.
       let baseUrl = validatedNodeInfo?.url;
-      if (isLocalPrivateHttps && baseUrl) {
+      if (isLocalPrivateHttpsUrl(baseUrl) && baseUrl) {
         baseUrl = baseUrl.replace(/^https:\/\//i, 'http://');
       }
       try {
@@ -286,10 +296,19 @@ export const useAuth = () => {
 
   const handleSaveNodeInfo = useCallback(
     async (nodeInfo) => {
-      const nextNodeInfo = nodeInfo || {
+      const incoming = nodeInfo || {
         url: HTTPS_EXT_NODE_QORTAL_LINK,
         apikey: '',
       };
+      // Persist the scheme the runtime can actually use. On mobile/web,
+      // https://localhost (e.g. SSH tunnel to a plain HTTP API) is rewritten
+      // to http:// so later fetches do not fail the TLS handshake.
+      const preferredUrl =
+        preferHttpForLocalPrivateUrl(incoming.url) || incoming.url;
+      const nextNodeInfo =
+        preferredUrl === incoming.url
+          ? incoming
+          : { ...incoming, url: preferredUrl };
 
       await window.sendMessage('setApiKey', nextNodeInfo);
       setSelectedNode(nextNodeInfo);
