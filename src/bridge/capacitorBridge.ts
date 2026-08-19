@@ -395,6 +395,40 @@ const resolveCommandResp = (frame: Record<string, unknown>): void => {
   if (resolve) resolve(frame);
 };
 
+const communityIceServers: { urls: string }[] = [];
+
+const iceUrlFromEndpoint = (value: unknown): string => {
+  if (!value || typeof value !== 'object') return '';
+  const endpoint = value as { host?: unknown; port?: unknown; expiresAt?: unknown };
+  const host = typeof endpoint.host === 'string' ? endpoint.host.trim() : '';
+  const port = Number(endpoint.port);
+  if (!host || !Number.isFinite(port) || port < 1 || port > 65535) return '';
+  if (
+    typeof endpoint.expiresAt === 'number' &&
+    endpoint.expiresAt > 0 &&
+    endpoint.expiresAt <= Date.now()
+  ) {
+    return '';
+  }
+  return `stun:${host}:${port}`;
+};
+
+const rememberCommunityIceServers = (endpoints: unknown): { urls: string }[] => {
+  if (!Array.isArray(endpoints)) return communityIceServers;
+  const next: { urls: string }[] = [];
+  const seen = new Set<string>();
+  for (const endpoint of endpoints) {
+    const url = iceUrlFromEndpoint(endpoint);
+    if (!url || seen.has(url)) continue;
+    seen.add(url);
+    next.push({ urls: url });
+  }
+  if (next.length > 0) {
+    communityIceServers.splice(0, communityIceServers.length, ...next);
+  }
+  return communityIceServers;
+};
+
 /**
  * Sends a presence-bridge command and resolves with the bridge's resp frame
  * (`{ok: boolean, error?, reason?, ...}`). Used by flows that need the result
@@ -1581,6 +1615,7 @@ export function installReticulumBridges(): void {
         refreshMobileStatus();
         void pushOverlaySync();
         hydrateQchatPendingSends();
+        void window.hub?.getIceServers?.().catch(() => {});
         break;
       }
       case 'transport_state': {
@@ -1663,6 +1698,10 @@ export function installReticulumBridges(): void {
             breakdown
           );
         }
+        break;
+      }
+      case 'community_stun_endpoint': {
+        rememberCommunityIceServers([asObject(frame.payload)]);
         break;
       }
       default:
@@ -1838,6 +1877,26 @@ export function installReticulumBridges(): void {
       }
       return () => startedCallbacks.delete(cb);
     },
+  };
+
+  window.hub = {
+    getBootstrapIceServers: () => communityIceServers.map((server) => ({ ...server })),
+    getIceServers: async () => {
+      try {
+        const frame = await presenceCommandWithResult(
+          'get_community_stun_endpoints',
+          {}
+        );
+        const payload = asObject(frame.payload);
+        rememberCommunityIceServers(payload?.endpoints);
+      } catch {
+        // Cached community servers (if any) still let WebRTC try; Reticulum
+        // remains the media fallback when ICE is empty.
+      }
+      return communityIceServers.map((server) => ({ ...server }));
+    },
+    reportStunCallOutcome: async () => ({ ok: true }),
+    reportObservedStunSources: async () => ({ ok: true }),
   };
 
   // ── window.call — 1:1 voice call signaling over Reticulum ──────────────

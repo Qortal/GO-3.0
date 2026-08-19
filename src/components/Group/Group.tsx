@@ -595,9 +595,7 @@ function ReticulumGroupSectionHeader({
   sectionLabel: string;
 }) {
   const theme = useTheme();
-  const legacyThreadsEnabled = useAtomValue(
-    reticulumLegacyThreadsEnabledAtom
-  );
+  const legacyThreadsEnabled = useAtomValue(reticulumLegacyThreadsEnabledAtom);
   const [isAdminMenuOpen, setIsAdminMenuOpen] = useState(false);
   const [isQManagerOpen, setIsQManagerOpen] = useState(false);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
@@ -767,7 +765,7 @@ function ReticulumGroupSectionHeader({
       >
         {typeof onModeSwitchClick === 'function' && (
           <>
-            <ReticulumModePill label="Chat" onClick={onModeSwitchClick} />
+            <ReticulumModePill target="chat" onClick={onModeSwitchClick} />
             {!isLandSection && (
               <Box
                 aria-hidden
@@ -1215,13 +1213,7 @@ export const Group = ({
   const [isForceShowCreationKeyPopup, setIsForceShowCreationKeyPopup] =
     useState(false);
   const groupsOwnerNamesRef = useRef({});
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
   useWebsocketStatus();
   const [groupsProperties, setGroupsProperties] = useAtom(groupsPropertiesAtom);
   const setGroupsOwnerNames = useSetAtom(groupsOwnerNamesAtom);
@@ -2002,7 +1994,6 @@ export const Group = ({
         return;
       }
       try {
-        await window.reticulumChat?.setLocalDmAddresses?.([myAddress]);
         const summaries =
           await window.reticulumChat?.getDirectSummaries?.(myAddress);
         if (!Array.isArray(summaries)) {
@@ -2076,10 +2067,8 @@ export const Group = ({
       setReticulumChatEnabled(enabled);
       if (!enabled || !myAddress) {
         setReticulumDirectSummaries({});
-        void window.reticulumChat?.setLocalDmAddresses?.([]);
         return;
       }
-      await window.reticulumChat?.setLocalDmAddresses?.([myAddress]);
       await refreshReticulumDirectSummaries(true);
       for (const delayMs of [750, 2000, 5000]) {
         retryTimers.push(

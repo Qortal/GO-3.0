@@ -121,13 +121,7 @@ export const Thread = ({
   const [isLoading, setIsLoading] = useState(true);
   const [postReply, setPostReply] = useState(null);
   const [hasLastPage, setHasLastPage] = useState(false);
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
   const theme = useTheme();
   // Update: Use a new ref for the scrollable container
   const threadContainerRef = useRef(null);
@@ -140,15 +134,18 @@ export const Thread = ({
   const dataPublishes = useRef({});
 
   const scrollThreadContainer = useCallback((position: 'top' | 'bottom') => {
-    setTimeout(() => {
-      const container = threadContainerRef.current;
-      if (!container) return;
+    setTimeout(
+      () => {
+        const container = threadContainerRef.current;
+        if (!container) return;
 
-      container.scrollTo({
-        top: position === 'bottom' ? container.scrollHeight : 0,
-        behavior: position === 'bottom' ? 'smooth' : 'auto',
-      });
-    }, position === 'bottom' ? 300 : 100);
+        container.scrollTo({
+          top: position === 'bottom' ? container.scrollHeight : 0,
+          behavior: position === 'bottom' ? 'smooth' : 'auto',
+        });
+      },
+      position === 'bottom' ? 300 : 100
+    );
   }, []);
 
   const getSavedData = useCallback(async (groupId) => {
@@ -959,8 +956,7 @@ export const Thread = ({
                               ? {
                                   textDecorationLine: 'line-through',
                                   textDecorationThickness: '2px',
-                                  textDecorationColor:
-                                    theme.palette.error.main,
+                                  textDecorationColor: theme.palette.error.main,
                                 }
                               : {}),
                           }}

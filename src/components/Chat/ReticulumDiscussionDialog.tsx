@@ -11,6 +11,7 @@ import {
   Typography,
   useMediaQuery,
 } from '@mui/material';
+import { useTranslation } from 'react-i18next';
 import { alpha, useTheme } from '@mui/material/styles';
 import { SAFE_AREA_BOTTOM, SAFE_AREA_TOP } from '../../utils/mobileSafeArea';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
@@ -28,6 +29,7 @@ import { MessageItem } from './MessageItem';
 import type { ReticulumChannelLinkAccess } from './MessageDisplay';
 import { ReticulumGifCompressionStatus } from './ReticulumGifCompressionStatus';
 import { ReticulumMessageExpiryButton } from './ReticulumMessageExpiryButton';
+import { resolveReticulumPreferredMessageExpiryDurationMs } from './reticulumMessageExpiry';
 import { ReactionPicker } from '../ReactionPicker';
 import { fetchLibraryGifFile } from './gifs/libraryGifs';
 import { MessageSizeLimitLip } from './MessageSizeLimitLip';
@@ -64,6 +66,7 @@ type ReticulumDiscussionDialogProps = {
   messages: any[];
   myAddress: string;
   onClose: () => void;
+  onPreferredExpiryChange: (durationMs: number | undefined) => void;
   onRemoveFile: (index: number) => void;
   onSelectFiles: (files: File[]) => void | Promise<void>;
   onSend: (draft: ReticulumDiscussionDraft) => Promise<boolean>;
@@ -81,6 +84,7 @@ type ReticulumDiscussionDialogProps = {
   >;
   reticulumChannelLinkAccess?: ReticulumChannelLinkAccess;
   preparingFile: boolean;
+  preferredExpiryDurationMs?: number;
   selectedGroup: number | string;
 };
 
@@ -95,6 +99,7 @@ export const ReticulumDiscussionDialog = ({
   messages,
   myAddress,
   onClose,
+  onPreferredExpiryChange,
   onRemoveFile,
   onSelectFiles,
   onSend,
@@ -109,10 +114,12 @@ export const ReticulumDiscussionDialog = ({
   reticulumMentionUsers,
   reticulumChannelLinkAccess,
   preparingFile,
+  preferredExpiryDurationMs,
   selectedGroup,
 }: ReticulumDiscussionDialogProps) => {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
+  const { t } = useTranslation(['core', 'reticulum']);
   const [editor, setEditor] = useState<Editor | null>(null);
   const [expiryDurationMs, setExpiryDurationMs] = useState<
     number | undefined
@@ -141,12 +148,20 @@ export const ReticulumDiscussionDialog = ({
   });
 
   useEffect(() => {
-    if (open) return;
-    editor?.commands.clearContent();
-    setExpiryDurationMs(undefined);
-    setMessageSize(0);
-    setFormattingResetKey((key) => key + 1);
-  }, [editor, open]);
+    if (!open) {
+      editor?.commands.clearContent();
+      setExpiryDurationMs(undefined);
+      setMessageSize(0);
+      setFormattingResetKey((key) => key + 1);
+      return;
+    }
+    setExpiryDurationMs(
+      resolveReticulumPreferredMessageExpiryDurationMs(
+        preferredExpiryDurationMs,
+        channelExpiryDurationMs
+      )
+    );
+  }, [channelExpiryDurationMs, editor, open, preferredExpiryDurationMs]);
 
   useEffect(() => {
     if (!open || messages.length === 0) return;
@@ -183,7 +198,12 @@ export const ReticulumDiscussionDialog = ({
         })
       ) {
         editor.commands.clearContent();
-        setExpiryDurationMs(undefined);
+        setExpiryDurationMs(
+          resolveReticulumPreferredMessageExpiryDurationMs(
+            preferredExpiryDurationMs,
+            channelExpiryDurationMs
+          )
+        );
         setMessageSize(0);
         setFormattingResetKey((key) => key + 1);
       }
@@ -312,7 +332,9 @@ export const ReticulumDiscussionDialog = ({
           </Box>
         </Box>
         <IconButton
-          aria-label="Close discussion"
+          aria-label={t('reticulum:discussion.close', {
+            postProcess: 'capitalizeFirstChar',
+          })}
           disabled={closeDisabled}
           onClick={closeDisabled ? undefined : onClose}
           size="small"
@@ -398,7 +420,13 @@ export const ReticulumDiscussionDialog = ({
                         textTransform: 'uppercase',
                       }}
                     >
-                      {index === 0 ? 'Initial Post' : 'Replies:'}
+                      {index === 0
+                        ? t('reticulum:discussion.initial_post', {
+                            postProcess: 'capitalizeEachFirstChar',
+                          })
+                        : t('reticulum:discussion.replies', {
+                            postProcess: 'capitalizeFirstChar',
+                          })}
                     </Typography>
                   )}
                   <Box
@@ -571,9 +599,16 @@ export const ReticulumDiscussionDialog = ({
                 >
                   {file.fileName}
                 </Typography>
-                <Tooltip title="Remove attachment">
+                <Tooltip
+                  title={t('reticulum:discussion.remove_attachment', {
+                    postProcess: 'capitalizeFirstChar',
+                  })}
+                >
                   <IconButton
-                    aria-label={`Remove ${file.fileName}`}
+                    aria-label={t('reticulum:discussion.remove_file', {
+                      fileName: file.fileName,
+                      postProcess: 'capitalizeFirstChar',
+                    })}
                     onClick={() => onRemoveFile(index)}
                     size="small"
                   >
@@ -616,7 +651,9 @@ export const ReticulumDiscussionDialog = ({
               onTypingChange(composerHasSendableText(nextEditor.getText()));
             }}
             onEnter={send}
-            placeholder={isMobile ? 'Reply...' : 'Reply to discussion...'}
+            placeholder={t('reticulum:discussion.reply_placeholder', {
+              postProcess: 'capitalizeFirstChar',
+            })}
             setEditorRef={setEditor}
             setIsFocusedParent={setFocused}
           />
@@ -624,7 +661,11 @@ export const ReticulumDiscussionDialog = ({
           {/* The tray already carries an emoji button on phones, and the row
               has no width to spare. */}
           {!isMobile && (
-            <Tooltip title="Choose Emoji">
+            <Tooltip
+              title={t('reticulum:discussion.choose_emoji', {
+                postProcess: 'capitalizeFirstChar',
+              })}
+            >
               <Box
                 sx={{
                   alignItems: 'center',
@@ -662,8 +703,12 @@ export const ReticulumDiscussionDialog = ({
             <ReticulumMessageExpiryButton
               channelExpiryDurationMs={channelExpiryDurationMs}
               disabled={loading || closeDisabled}
-              disabledReason="Wait until the discussion is ready"
+              disabledReason={t('reticulum:discussion.wait_until_ready', {
+                postProcess: 'capitalizeFirstChar',
+              })}
               onChange={setExpiryDurationMs}
+              onPreferredExpiryChange={onPreferredExpiryChange}
+              preferredExpiryDurationMs={preferredExpiryDurationMs}
               segmented
               value={expiryDurationMs}
             />

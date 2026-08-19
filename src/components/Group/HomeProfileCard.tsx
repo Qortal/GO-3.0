@@ -24,7 +24,6 @@ import {
   TextField,
   Tooltip,
   Typography,
-  useMediaQuery,
   useTheme,
 } from '@mui/material';
 import { alpha } from '@mui/material/styles';
@@ -52,40 +51,25 @@ import { useTranslation } from 'react-i18next';
 import {
   blockedAddressesAtom,
   blockedNamesAtom,
+  disableDevLogsAtom,
   enabledDevModeAtom,
   rawWalletAtom,
-  selectedNodeInfoAtom,
   userInfoAtom,
   openSnackGlobalAtom,
   infoSnackGlobalAtom,
 } from '../../atoms/global';
+import { type SelectableStatus } from '../../atoms/presence';
 import {
-  isIdleAtom,
-  type SelectableStatus,
-} from '../../atoms/presence';
-import { statusDotColor, useMyStatus } from '../../hooks/usePresence';
+  useAccountStatusDisplay,
+  useAccountStatusOptions,
+} from '../common/accountStatus';
 import { QORTAL_APP_CONTEXT } from '../../App';
 import { getFee, walletVersion } from '../../background/background.ts';
 import Base58 from '../../encryption/Base58';
 import ImageUploader from '../../common/ImageUploader';
-import AvatarCropper from './AvatarCropper';
-import {
-  HTTPS_EXT_NODE_QORTAL_LINK,
-  isPublicGatewayNodeUrl,
-  MAX_SIZE_AVATAR,
-} from '../../constants/constants.ts';
+import { MAX_SIZE_AVATAR } from '../../constants/constants.ts';
 import { decryptStoredWallet } from '../../utils/decryptWallet';
 import { fileToBase64 } from '../../utils/fileReading';
-import {
-  readAutoLockDisabledFromStorage,
-  resolveAutoLockTimeoutMinutes,
-  timeoutMinutesForAutoLockDisabled,
-  writeAutoLockDisabledToStorage,
-} from '../../lib/autoLock';
-import { SAFE_AREA_TOP, SAFE_AREA_BOTTOM } from '../../utils/mobileSafeArea';
-import { setWalletAvatarCache, getWalletAvatarCache, buildQortalAvatarUrl } from '../../utils/walletAvatarCache';
-import { QortalUserAvatar } from '../QortalUserAvatar';
-import { getPrimaryNameForAvatar } from './groupApi';
 import PhraseWallet from '../../utils/generateWallet/phrase-wallet';
 import {
   executeEvent,
@@ -103,7 +87,6 @@ import {
   useDashboardPanelMouseLight,
 } from './dashboardPanelEffects';
 import { DecryptedText } from '../common/DecryptedText';
-import { AutoFitText, useAutoFitFontPx } from '../common/AutoFitText';
 import { getBlueTier1ButtonSx } from '../../styles/blueMaterial';
 import BorderGlow from '../common/BorderGlow';
 import TiltedCard from '../common/TiltedCard';
@@ -115,18 +98,18 @@ import {
   HOME_GROUP_ACTIVITY_VISIBLE_STORAGE_KEY,
   HOME_QUITTER_FEED_VISIBLE_STORAGE_KEY,
 } from './HomeDesktop/homeDesktopConstants';
+import {
+  AUTO_LOCK_TIMEOUT_OPTIONS,
+  DEFAULT_AUTO_LOCK_TIMEOUT_MINUTES,
+  normalizeAutoLockTimeoutMinutes,
+  resolveAutoLockTimeoutMinutes,
+  type AutoLockTimeoutMinutes,
+} from '../../lib/autoLock';
 
 type HomeProfileCardProps = {
   onOpenReceive?: (anchorEl: HTMLElement) => void;
 };
 
-const shortenWalletAddress = (value: string, head = 6, tail = 6) => {
-  const trimmed = value.trim();
-  if (trimmed.length <= head + tail + 1) return trimmed;
-  return `${trimmed.slice(0, head)}…${trimmed.slice(-tail)}`;
-};
-
-type PresenceDisplayStatus = SelectableStatus | 'idle';
 type NameAvailability = 'available' | 'loading' | 'not-available' | 'null';
 type CloseAction = 'ask' | 'minimizeToTray' | 'quit';
 type AccountSettingsTab =
@@ -150,26 +133,30 @@ type ReticulumConfigEditorInfo = {
   maxBytes: number;
   updatedAt?: number;
 };
+type ReticulumResourceStorageStatus = {
+  limitBytes: number;
+  totalResidentBytes: number;
+  authoredResidentBytes: number;
+  remoteResidentBytes: number;
+  partialResidentBytes: number;
+  reservedBytes: number;
+};
+
+const RETICULUM_RESOURCE_GIB = 1024 * 1024 * 1024;
+const formatStorageBytes = (bytes: number) => {
+  const value = Math.max(0, Number(bytes) || 0);
+  if (value >= RETICULUM_RESOURCE_GIB) {
+    return `${(value / RETICULUM_RESOURCE_GIB).toFixed(value >= 10 * RETICULUM_RESOURCE_GIB ? 0 : 1)} GB`;
+  }
+  if (value >= 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(0)} MB`;
+  return `${Math.round(value / 1024)} KB`;
+};
 
 const ACCOUNT_SETTINGS_PRIVACY_STORAGE_KEY =
   'home_account_settings_privacy_mode';
 const ACCOUNT_SETTINGS_UI_ANIMATIONS_STORAGE_KEY = 'hub_ui_animations_enabled';
 const ACCOUNT_SETTINGS_STARTUP_AUDIO_DISABLED_STORAGE_KEY =
   'hub_startup_audio_disabled';
-const ACCOUNT_STATUS_DEFS: Array<{
-  key: SelectableStatus;
-}> = [
-  {
-    key: 'online',
-  },
-  {
-    key: 'busy',
-  },
-  {
-    key: 'offline',
-  },
-];
-
 const readStoredBoolean = (key: string, fallback: boolean) => {
   if (typeof window === 'undefined') return fallback;
 
@@ -185,31 +172,57 @@ const readStoredBoolean = (key: string, fallback: boolean) => {
   }
 };
 
+type ReticulumDetailsPeer = {
+  linkId: string;
+  peerPresenceHash: string;
+  incoming?: boolean;
+  address?: string;
+  addresses?: string[];
+  connectedAt: number;
+};
+
+type ReticulumDetailsSnapshot = {
+  destinationHash: string | null;
+  overlayPeers: ReticulumDetailsPeer[];
+};
+
+const formatReticulumConnectedDuration = (
+  connectedAt: number,
+  now = Date.now()
+) => {
+  const elapsedMs = Math.max(0, now - connectedAt);
+  const totalSeconds = Math.floor(elapsedMs / 1000);
+  const days = Math.floor(totalSeconds / 86_400);
+  const hours = Math.floor((totalSeconds % 86_400) / 3_600);
+  const minutes = Math.floor((totalSeconds % 3_600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  if (minutes > 0) return `${minutes}m ${seconds}s`;
+  return `${seconds}s`;
+};
+
 export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
-  const { t } = useTranslation(['tutorial', 'core', 'group']);
+  const { t } = useTranslation(['core', 'group']);
   const theme = useTheme();
-  const isMobile = useMediaQuery(theme.breakpoints.down('md'));
   const { show } = useContext(QORTAL_APP_CONTEXT);
   const userInfo = useAtomValue(userInfoAtom);
   const rawWallet = useAtomValue(rawWalletAtom);
   const blockedAddresses = useAtomValue(blockedAddressesAtom);
   const blockedNames = useAtomValue(blockedNamesAtom);
-  const selectedNode = useAtomValue(selectedNodeInfoAtom);
   const setUserInfo = useSetAtom(userInfoAtom);
   const setOpenSnack = useSetAtom(openSnackGlobalAtom);
   const setInfoSnack = useSetAtom(infoSnackGlobalAtom);
   const [isEnabledDevMode, setIsEnabledDevMode] = useAtom(enabledDevModeAtom);
+  const [disableDevLogs, setDisableDevLogs] = useAtom(disableDevLogsAtom);
 
   const avatarAnchorRef = useRef<HTMLButtonElement | null>(null);
   const avatarPanelRef = useRef<HTMLDivElement | null>(null);
+  const [avatarError, setAvatarError] = useState(false);
   const [tempAvatar, setTempAvatar] = useState<string | null>(null);
-  const [avatarFile, setAvatarFile] = useState<
-    (Blob & { name?: string }) | null
-  >(null);
+  const [avatarFile, setAvatarFile] = useState<File | null>(null);
   const [avatarPreviewUrl, setAvatarPreviewUrl] = useState<string | null>(null);
-  // Image the user just picked, awaiting crop/zoom before it becomes the avatar.
-  const [avatarCropFile, setAvatarCropFile] = useState<File | null>(null);
-  const [avatarCropSrc, setAvatarCropSrc] = useState<string | null>(null);
   const [avatarAnchorEl, setAvatarAnchorEl] = useState<HTMLElement | null>(
     null
   );
@@ -219,8 +232,6 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
   const [isAvatarLoading, setIsAvatarLoading] = useState(false);
   const avatarPanelWasOpenRef = useRef(false);
   const [isAddressFieldHovered, setIsAddressFieldHovered] = useState(false);
-  const [isAddressFieldRevealed, setIsAddressFieldRevealed] = useState(false);
-  const [addressRevealAnimationKey, setAddressRevealAnimationKey] = useState(0);
   const [isAvatarGlowHovered, setIsAvatarGlowHovered] = useState(false);
   const [isAccountSettingsOpen, setIsAccountSettingsOpen] = useState(false);
   const [activeSettingsTab, setActiveSettingsTab] =
@@ -259,33 +270,53 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
       return false;
     }
   });
+  const [autoLockTimeoutMinutes, setAutoLockTimeoutMinutes] =
+    useState<AutoLockTimeoutMinutes>(DEFAULT_AUTO_LOCK_TIMEOUT_MINUTES);
   const [areUiAnimationsEnabled, setAreUiAnimationsEnabled] = useState(() =>
     readStoredBoolean(ACCOUNT_SETTINGS_UI_ANIMATIONS_STORAGE_KEY, true)
-  );
-  const [isAutoLockDisabled, setIsAutoLockDisabled] = useState(() =>
-    readAutoLockDisabledFromStorage()
   );
   const [isGroupActivityModuleVisible, setIsGroupActivityModuleVisible] =
     useState(() =>
       readStoredBoolean(HOME_GROUP_ACTIVITY_VISIBLE_STORAGE_KEY, true)
     );
-  const [isQuitterFeedModuleVisible, setIsQuitterFeedModuleVisible] =
-    useState(() =>
-      readStoredBoolean(HOME_QUITTER_FEED_VISIBLE_STORAGE_KEY, true)
-    );
+  const [isQuitterFeedModuleVisible, setIsQuitterFeedModuleVisible] = useState(
+    () => readStoredBoolean(HOME_QUITTER_FEED_VISIBLE_STORAGE_KEY, true)
+  );
   const [closeAction, setCloseAction] = useState<CloseAction>('ask');
   const [reticulumManagedConfigEnabled, setReticulumManagedConfigEnabled] =
     useState(true);
+  const [reticulumEnabled, setReticulumEnabled] = useState(true);
+  const [reticulumDisableConfirmOpen, setReticulumDisableConfirmOpen] =
+    useState(false);
+  const [reticulumTransitionBusy, setReticulumTransitionBusy] = useState(false);
+  const [reticulumChatEnabled, setReticulumChatEnabled] = useState(false);
+  const [
+    communityStunContributionEnabled,
+    setCommunityStunContributionEnabled,
+  ] = useState(true);
+  const [reticulumResourceLimitBytes, setReticulumResourceLimitBytes] =
+    useState(10 * RETICULUM_RESOURCE_GIB);
+  const [reticulumResourceStorage, setReticulumResourceStorage] =
+    useState<ReticulumResourceStorageStatus | null>(null);
   const [reticulumConfigEditorInfo, setReticulumConfigEditorInfo] =
     useState<ReticulumConfigEditorInfo | null>(null);
   const [reticulumConfigDraft, setReticulumConfigDraft] = useState('');
   const [isReticulumConfigLoading, setIsReticulumConfigLoading] =
     useState(false);
-  const [isReticulumConfigSaving, setIsReticulumConfigSaving] =
-    useState(false);
+  const [isReticulumConfigSaving, setIsReticulumConfigSaving] = useState(false);
   const [reticulumConfigError, setReticulumConfigError] = useState<
     string | null
   >(null);
+  const appSettingsRevisionRef = useRef(0);
+  const [isReticulumDetailsOpen, setIsReticulumDetailsOpen] = useState(false);
+  const [isReticulumDetailsLoading, setIsReticulumDetailsLoading] =
+    useState(false);
+  const [reticulumDetails, setReticulumDetails] =
+    useState<ReticulumDetailsSnapshot | null>(null);
+  const [reticulumDetailsError, setReticulumDetailsError] = useState<
+    string | null
+  >(null);
+  const [reticulumDetailsNow, setReticulumDetailsNow] = useState(Date.now());
   const [platform, setPlatform] = useState('');
   const [securityPassword, setSecurityPassword] = useState('');
   const [isSecurityPasswordEditable, setIsSecurityPasswordEditable] =
@@ -295,8 +326,14 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
   const [isRevealingPrivateKey, setIsRevealingPrivateKey] = useState(false);
   const [accountStatusAnchorEl, setAccountStatusAnchorEl] =
     useState<HTMLElement | null>(null);
-  const [myStatus, setMyStatus] = useMyStatus();
-  const isIdle = useAtomValue(isIdleAtom);
+  const {
+    color: accountStatusColor,
+    displayStatus: accountDisplayStatus,
+    label: accountStatusLabel,
+    myStatus,
+    setMyStatus,
+  } = useAccountStatusDisplay();
+  const accountStatusOptions = useAccountStatusOptions();
   const { refreshBlockedUsers, removeBlockFromList } =
     useBlockedAddresses(true);
   const panelRef = useDashboardPanelMouseLight<HTMLDivElement>();
@@ -374,25 +411,6 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
       t(`group:dashboard.${key}`, { defaultValue, ...options }),
     [t]
   );
-  const accountStatusOptions = useMemo(
-    () =>
-      ACCOUNT_STATUS_DEFS.map((def) => ({
-        ...def,
-        color:
-          def.key === 'offline'
-            ? isDarkMode
-              ? alpha(theme.palette.common.white, 0.36)
-              : alpha(theme.palette.text.primary, 0.32)
-            : statusDotColor(def.key),
-        label:
-          def.key === 'online'
-            ? td('account_status_online', 'Online')
-            : def.key === 'busy'
-              ? td('account_status_busy', 'Busy')
-              : td('account_status_offline', 'Offline'),
-      })),
-    [isDarkMode, td, theme.palette.common.white, theme.palette.text.primary]
-  );
   const accountSettingsTabs = useMemo(
     () => [
       {
@@ -469,11 +487,14 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
     [td]
   );
 
-  const openAvatarPanel = useCallback((target: HTMLElement | null) => {
-    if (!target) return;
-    setAvatarPanelOriginRect(target.getBoundingClientRect());
-    setAvatarAnchorEl(target);
-  }, [td]);
+  const openAvatarPanel = useCallback(
+    (target: HTMLElement | null) => {
+      if (!target) return;
+      setAvatarPanelOriginRect(target.getBoundingClientRect());
+      setAvatarAnchorEl(target);
+    },
+    [td]
+  );
 
   const closeAvatarPanel = useCallback(() => {
     setAvatarAnchorEl(null);
@@ -489,72 +510,6 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
     setAvatarPreviewUrl(url);
     return () => URL.revokeObjectURL(url);
   }, [avatarFile]);
-
-  useEffect(() => {
-    if (!avatarCropFile || !(avatarCropFile instanceof Blob)) {
-      setAvatarCropSrc(null);
-      return;
-    }
-    const url = URL.createObjectURL(avatarCropFile);
-    setAvatarCropSrc(url);
-    return () => URL.revokeObjectURL(url);
-  }, [avatarCropFile]);
-
-  // Backfill local avatar cache from QDN when missing (login screen reads this).
-  useEffect(() => {
-    const registeredName = userInfo?.name?.trim();
-    const walletAddress = rawWallet?.address0 || userInfo?.address;
-    if (!walletAddress || !registeredName) return;
-
-    let cancelled = false;
-
-    void (async () => {
-      try {
-        const primaryNameForAddress = (
-          await getPrimaryNameForAvatar(walletAddress)
-        ).trim();
-        if (
-          !primaryNameForAddress ||
-          primaryNameForAddress.toLowerCase() !== registeredName.toLowerCase()
-        ) {
-          return;
-        }
-
-        const existing = await getWalletAvatarCache(
-          walletAddress,
-          primaryNameForAddress
-        );
-        if (existing || cancelled) return;
-
-        const url = buildQortalAvatarUrl(registeredName);
-        const res = await fetch(url);
-        if (!res.ok || cancelled) return;
-
-        const blob = await res.blob();
-        if (!blob.size || cancelled) return;
-
-        const dataUrl = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => resolve(String(reader.result ?? ''));
-          reader.onerror = () => reject(reader.error);
-          reader.readAsDataURL(blob);
-        });
-
-        if (cancelled || !dataUrl.startsWith('data:')) return;
-        await setWalletAvatarCache(
-          walletAddress,
-          dataUrl,
-          primaryNameForAddress
-        );
-      } catch {
-        /* best-effort cache warm-up */
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [rawWallet?.address0, userInfo?.address, userInfo?.name]);
 
   useEffect(() => {
     const openFromEvent = () => {
@@ -610,15 +565,6 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
   const shouldRevealAddressOnHover = hasRegisteredName && Boolean(address);
   const showAnimatedAddress =
     shouldRevealAddressOnHover && isAddressFieldHovered;
-  const showAddressReveal = showAnimatedAddress || isAddressFieldRevealed;
-  // Auto-fit the revealed address so the full 34-char string fits the overlay
-  // width on one line (scaling the font instead of truncating with an ellipsis).
-  const addressOverlayRef = useRef<HTMLDivElement | null>(null);
-  const revealedAddressFontPx = useAutoFitFontPx(
-    addressOverlayRef,
-    accountIdentitySecondaryText,
-    { maxFontPx: 13.4, minFontPx: 6 }
-  );
   const blockedAddressEntries = useMemo(
     () => Object.keys(blockedAddresses || {}),
     [blockedAddresses]
@@ -628,10 +574,6 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
     [blockedNames]
   );
   const blockedCount = blockedAddressEntries.length + blockedNameEntries.length;
-  const isPublicNode = useMemo(
-    () => isPublicGatewayNodeUrl(selectedNode?.url),
-    [selectedNode?.url]
-  );
   const addressFieldActionButtonSizePx = 26;
   const addressFieldActionGapPx = 1;
   const addressFieldActionBaseColor = isDarkMode
@@ -643,44 +585,7 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
   const addressFieldActionHoverBackground = isDarkMode
     ? alpha(theme.palette.common.white, 0.055)
     : alpha(theme.palette.text.primary, 0.06);
-  const accountStatus: PresenceDisplayStatus =
-    isIdle && myStatus !== 'offline' ? 'idle' : myStatus;
   const isAccountStatusMenuOpen = Boolean(accountStatusAnchorEl);
-  const accountStatusMeta = useMemo(() => {
-    if (accountStatus === 'busy') {
-      return {
-        color: statusDotColor('busy'),
-        label: td('account_status_busy', 'Busy'),
-      };
-    }
-
-    if (accountStatus === 'offline') {
-      return {
-        color: isDarkMode
-          ? alpha(theme.palette.common.white, 0.36)
-          : alpha(theme.palette.text.primary, 0.32),
-        label: td('account_status_offline', 'Offline'),
-      };
-    }
-
-    if (accountStatus === 'idle') {
-      return {
-        color: statusDotColor('idle'),
-        label: td('account_status_idle', 'Idle'),
-      };
-    }
-
-    return {
-      color: statusDotColor('online'),
-      label: td('account_status_online', 'Online'),
-    };
-  }, [
-    accountStatus,
-    isDarkMode,
-    td,
-    theme.palette.common.white,
-    theme.palette.text.primary,
-  ]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -750,11 +655,9 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
         html[data-hub-ui-animations="off"] *,
         html[data-hub-ui-animations="off"] *::before,
         html[data-hub-ui-animations="off"] *::after {
-          animation-duration: 0.01ms !important;
-          animation-iteration-count: 1 !important;
+          animation: none !important;
           scroll-behavior: auto !important;
-          transition-delay: 0ms !important;
-          transition-duration: 0.01ms !important;
+          transition: none !important;
         }
       `;
   }, [areUiAnimationsEnabled]);
@@ -816,21 +719,37 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
     }
 
     try {
+      const revision = appSettingsRevisionRef.current;
       const settings = await window.electronAPI.getAppSettings();
-      const shouldDisableStartupSound =
-        settings?.disableStartupSound === true;
+      if (revision !== appSettingsRevisionRef.current) return;
+      const shouldDisableStartupSound = settings?.disableStartupSound === true;
       setIsStartupSoundDisabled(shouldDisableStartupSound);
+      setAutoLockTimeoutMinutes(
+        resolveAutoLockTimeoutMinutes(
+          settings?.autoLockTimeoutMinutes,
+          settings?.disableAutoLockOnIdle === true
+        )
+      );
       setReticulumManagedConfigEnabled(
         settings?.reticulumManagedConfigEnabled === false ? false : true
       );
-      if (settings?.closeAction) setCloseAction(settings.closeAction);
-      const autoLockTimeout = resolveAutoLockTimeoutMinutes(
-        settings?.autoLockTimeoutMinutes,
-        settings?.disableAutoLockOnIdle === true
+      setReticulumEnabled(settings?.reticulumEnabled === false ? false : true);
+      setReticulumChatEnabled(
+        settings?.reticulumChatEnabled === false ? false : true
       );
-      const shouldDisableAutoLock = autoLockTimeout === 0;
-      setIsAutoLockDisabled(shouldDisableAutoLock);
-      writeAutoLockDisabledToStorage(shouldDisableAutoLock, { notify: false });
+      setCommunityStunContributionEnabled(
+        settings?.communityStunContributionEnabled === false ? false : true
+      );
+      setReticulumResourceLimitBytes(
+        Number(settings?.reticulumResourceLimitBytes) ||
+          10 * RETICULUM_RESOURCE_GIB
+      );
+      const storageResponse =
+        await window.reticulumResources?.getStorageStatus?.();
+      if (storageResponse?.success && storageResponse.status) {
+        setReticulumResourceStorage(storageResponse.status);
+      }
+      if (settings?.closeAction) setCloseAction(settings.closeAction);
       window.localStorage.setItem(
         ACCOUNT_SETTINGS_STARTUP_AUDIO_DISABLED_STORAGE_KEY,
         shouldDisableStartupSound ? 'true' : 'false'
@@ -842,6 +761,28 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
     } catch (error) {
       console.error('Unable to load general app settings.', error);
     }
+  }, []);
+
+  useEffect(() => {
+    return window.electronAPI?.onAppSettingsChanged?.((settings) => {
+      appSettingsRevisionRef.current += 1;
+      setAutoLockTimeoutMinutes(
+        resolveAutoLockTimeoutMinutes(
+          settings?.autoLockTimeoutMinutes,
+          settings?.disableAutoLockOnIdle === true
+        )
+      );
+      const enabled = settings?.reticulumEnabled !== false;
+      setReticulumEnabled(enabled);
+      if (!enabled) setIsReticulumDetailsOpen(false);
+      setReticulumManagedConfigEnabled(
+        settings?.reticulumManagedConfigEnabled !== false
+      );
+      setReticulumChatEnabled(settings?.reticulumChatEnabled !== false);
+      setCommunityStunContributionEnabled(
+        settings?.communityStunContributionEnabled !== false
+      );
+    });
   }, []);
 
   const loadReticulumConfigEditorInfo = useCallback(async () => {
@@ -873,9 +814,58 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
     }
   }, [td]);
 
-  const closeAccountSettingsModal = useCallback((force = false) => {
-    if (force !== true && isChangeNameLoading) return;
+  const loadReticulumDetails = useCallback(async () => {
+    if (
+      typeof window === 'undefined' ||
+      typeof window.electronAPI?.reticulumGetDetails !== 'function'
+    ) {
+      setReticulumDetailsError(
+        td(
+          'reticulum_details_unavailable',
+          'Reticulum details are unavailable in this environment.'
+        )
+      );
+      return;
+    }
+
+    setIsReticulumDetailsLoading(true);
+    setReticulumDetailsError(null);
+    try {
+      const details = await window.electronAPI.reticulumGetDetails();
+      setReticulumDetails({
+        destinationHash: details?.destinationHash ?? null,
+        overlayPeers: Array.isArray(details?.overlayPeers)
+          ? details.overlayPeers
+          : [],
+      });
+      setReticulumDetailsNow(Date.now());
+    } catch (error) {
+      setReticulumDetailsError(
+        error instanceof Error
+          ? error.message
+          : td(
+              'reticulum_details_load_error',
+              'Unable to load Reticulum details.'
+            )
+      );
+    } finally {
+      setIsReticulumDetailsLoading(false);
+    }
+  }, [td]);
+
+  const openReticulumDetails = useCallback(() => {
+    setIsReticulumDetailsOpen(true);
+    void loadReticulumDetails();
+  }, [loadReticulumDetails]);
+
+  const closeReticulumDetails = useCallback(() => {
+    setIsReticulumDetailsOpen(false);
+  }, []);
+
+  const closeAccountSettingsModal = useCallback(() => {
+    if (isChangeNameLoading) return;
     setIsAccountSettingsOpen(false);
+    setIsReticulumDetailsOpen(false);
     setChangeNameValue('');
     setChangeNameAvailability('null');
     setCurrentNameMetaError(null);
@@ -886,14 +876,6 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
     setPrivateKeyError(null);
     setRevealedPrivateKey('');
   }, [isChangeNameLoading]);
-
-  useEffect(() => {
-    const closeFromEvent = () => {
-      closeAccountSettingsModal(true);
-    };
-    subscribeToEvent('close-account-settings', closeFromEvent);
-    return () => unsubscribeFromEvent('close-account-settings', closeFromEvent);
-  }, [closeAccountSettingsModal]);
 
   const openAccountSettingsModal = useCallback(
     (event: MouseEvent<HTMLElement>) => {
@@ -927,11 +909,7 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
   useEffect(() => {
     if (!isAccountSettingsOpen || activeSettingsTab !== 'reticulum') return;
     void loadReticulumConfigEditorInfo();
-  }, [
-    activeSettingsTab,
-    isAccountSettingsOpen,
-    loadReticulumConfigEditorInfo,
-  ]);
+  }, [activeSettingsTab, isAccountSettingsOpen, loadReticulumConfigEditorInfo]);
 
   const handleOpenAccountStatusMenu = useCallback(
     (event: MouseEvent<HTMLElement>) => {
@@ -1034,6 +1012,55 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
     [setInfoSnack, setOpenSnack, td]
   );
 
+  const handleAutoLockTimeoutChange = useCallback(
+    async (value: AutoLockTimeoutMinutes) => {
+      const previous = autoLockTimeoutMinutes;
+      setAutoLockTimeoutMinutes(value);
+
+      try {
+        await window.electronAPI?.setAppSettings?.({
+          autoLockTimeoutMinutes: value,
+          disableAutoLockOnIdle: value === 0,
+        });
+      } catch {
+        setAutoLockTimeoutMinutes(previous);
+        setInfoSnack({
+          type: 'error',
+          message: td(
+            'idle_auto_lock_update_error',
+            'We could not update auto-lock right now.'
+          ),
+        });
+        setOpenSnack(true);
+      }
+    },
+    [autoLockTimeoutMinutes, setInfoSnack, setOpenSnack, td]
+  );
+
+  const handleToggleDevLogFiltering = useCallback(
+    async (_event: ChangeEvent<HTMLInputElement>, checked: boolean) => {
+      const previous = disableDevLogs;
+      setDisableDevLogs(checked);
+
+      try {
+        if (typeof window.electronAPI?.setDisableDevLogs === 'function') {
+          await window.electronAPI.setDisableDevLogs(checked);
+        }
+      } catch (error) {
+        setDisableDevLogs(previous);
+        setInfoSnack({
+          type: 'error',
+          message: td(
+            'dev_log_filter_update_error',
+            'We could not update developer log filtering right now.'
+          ),
+        });
+        setOpenSnack(true);
+      }
+    },
+    [disableDevLogs, setDisableDevLogs, setInfoSnack, setOpenSnack, td]
+  );
+
   const handleCloseActionChange = useCallback(
     async (value: CloseAction) => {
       const previousCloseAction = closeAction;
@@ -1063,34 +1090,6 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
       setAreUiAnimationsEnabled(!checked);
     },
     []
-  );
-
-  const handleToggleAutoLock = useCallback(
-    async (_event: ChangeEvent<HTMLInputElement>, checked: boolean) => {
-      // Checked = auto-lock is disabled (matches "Disable Startup Sound").
-      setIsAutoLockDisabled(checked);
-      writeAutoLockDisabledToStorage(checked);
-
-      try {
-        if (typeof window.electronAPI?.setAppSettings === 'function') {
-          await window.electronAPI.setAppSettings({
-            autoLockTimeoutMinutes: timeoutMinutesForAutoLockDisabled(checked),
-          });
-        }
-      } catch (error) {
-        setIsAutoLockDisabled(!checked);
-        writeAutoLockDisabledToStorage(!checked);
-        setInfoSnack({
-          type: 'error',
-          message: td(
-            'auto_lock_update_error',
-            'We could not update auto lock right now.'
-          ),
-        });
-        setOpenSnack(true);
-      }
-    },
-    [setInfoSnack, setOpenSnack, td]
   );
 
   const handleToggleReticulumManagedConfig = useCallback(
@@ -1126,6 +1125,124 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
     ]
   );
 
+  const updateReticulumEnabled = useCallback(
+    async (checked: boolean) => {
+      const previous = reticulumEnabled;
+      setReticulumEnabled(checked);
+      setReticulumTransitionBusy(true);
+      try {
+        await window.electronAPI?.setAppSettings?.({
+          reticulumEnabled: checked,
+        });
+      } catch {
+        setReticulumEnabled(previous);
+        setInfoSnack({
+          type: 'error',
+          message: td(
+            'reticulum_enabled_update_error',
+            'We could not update Reticulum right now.'
+          ),
+        });
+        setOpenSnack(true);
+      } finally {
+        setReticulumTransitionBusy(false);
+      }
+    },
+    [reticulumEnabled, setInfoSnack, setOpenSnack, td]
+  );
+
+  const handleToggleReticulum = useCallback(
+    (_event: ChangeEvent<HTMLInputElement>, checked: boolean) => {
+      if (!checked) {
+        setReticulumDisableConfirmOpen(true);
+        return;
+      }
+      void updateReticulumEnabled(true);
+    },
+    [updateReticulumEnabled]
+  );
+
+  const confirmDisableReticulum = useCallback(() => {
+    setReticulumDisableConfirmOpen(false);
+    void updateReticulumEnabled(false);
+  }, [updateReticulumEnabled]);
+
+  const handleToggleReticulumChat = useCallback(
+    async (_event: ChangeEvent<HTMLInputElement>, checked: boolean) => {
+      const previous = reticulumChatEnabled;
+      setReticulumChatEnabled(checked);
+
+      try {
+        if (typeof window.electronAPI?.setAppSettings === 'function') {
+          await window.electronAPI.setAppSettings({
+            reticulumChatEnabled: checked,
+          });
+        }
+      } catch (error) {
+        setReticulumChatEnabled(previous);
+        setInfoSnack({
+          type: 'error',
+          message: td(
+            'reticulum_chat_update_error',
+            'We could not update Reticulum group chat right now.'
+          ),
+        });
+        setOpenSnack(true);
+      }
+    },
+    [reticulumChatEnabled, setInfoSnack, setOpenSnack, td]
+  );
+
+  const handleToggleCommunityStunContribution = useCallback(
+    async (_event: ChangeEvent<HTMLInputElement>, checked: boolean) => {
+      const previous = communityStunContributionEnabled;
+      setCommunityStunContributionEnabled(checked);
+      try {
+        await window.electronAPI?.setAppSettings?.({
+          communityStunContributionEnabled: checked,
+        });
+      } catch {
+        setCommunityStunContributionEnabled(previous);
+        setInfoSnack({
+          type: 'error',
+          message: td(
+            'community_stun_update_error',
+            'We could not update community call support right now.'
+          ),
+        });
+        setOpenSnack(true);
+      }
+    },
+    [communityStunContributionEnabled, setInfoSnack, setOpenSnack, td]
+  );
+
+  const handleReticulumResourceLimitChange = useCallback(
+    async (limitBytes: number) => {
+      const previous = reticulumResourceLimitBytes;
+      setReticulumResourceLimitBytes(limitBytes);
+      try {
+        await window.electronAPI?.setAppSettings?.({
+          reticulumResourceLimitBytes: limitBytes,
+        });
+        const response = await window.reticulumResources?.getStorageStatus?.();
+        if (response?.success && response.status) {
+          setReticulumResourceStorage(response.status);
+        }
+      } catch {
+        setReticulumResourceLimitBytes(previous);
+        setInfoSnack({
+          type: 'error',
+          message: td(
+            'reticulum_storage_limit_error',
+            'We could not update attachment storage right now.'
+          ),
+        });
+        setOpenSnack(true);
+      }
+    },
+    [reticulumResourceLimitBytes, setInfoSnack, setOpenSnack, td]
+  );
+
   const handleSaveReticulumConfig = useCallback(async () => {
     if (
       typeof window.electronAPI?.reticulumSaveConfigEditorContents !==
@@ -1145,7 +1262,10 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
       if (!info.ok) {
         setReticulumConfigError(
           info.error ||
-            td('reticulum_config_save_error', 'Unable to save Reticulum config.')
+            td(
+              'reticulum_config_save_error',
+              'Unable to save Reticulum config.'
+            )
         );
         return;
       }
@@ -1153,7 +1273,7 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
         type: 'success',
         message: td(
           'reticulum_config_saved',
-          'Reticulum config saved. Restart Reticulum or restart GO for changes to take effect.'
+          'Reticulum config saved. Restart Reticulum or restart the Hub for changes to take effect.'
         ),
       });
       setOpenSnack(true);
@@ -1169,12 +1289,7 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
     } finally {
       setIsReticulumConfigSaving(false);
     }
-  }, [
-    reticulumConfigDraft,
-    setInfoSnack,
-    setOpenSnack,
-    td,
-  ]);
+  }, [reticulumConfigDraft, setInfoSnack, setOpenSnack, td]);
 
   const handleResetReticulumConfigToDefault = useCallback(async () => {
     if (
@@ -1185,7 +1300,8 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
     }
     setReticulumConfigError(null);
     try {
-      const result = await window.electronAPI.reticulumGetGeneratedDefaultConfig();
+      const result =
+        await window.electronAPI.reticulumGetGeneratedDefaultConfig();
       if (!result.ok) {
         setReticulumConfigError(
           result.error ||
@@ -1201,7 +1317,7 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
         type: 'info',
         message: td(
           'reticulum_config_default_loaded',
-          'Default GO Reticulum config loaded. Review it, then save to apply it.'
+          'Default Hub Reticulum config loaded. Review it, then save to apply it.'
         ),
       });
       setOpenSnack(true);
@@ -1323,6 +1439,11 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
     setOpenSnack(true);
   }, [revealedPrivateKey, setInfoSnack, setOpenSnack, td]);
 
+  const avatarUrl =
+    tempAvatar ??
+    (name && !avatarError
+      ? `${getBaseApiReactForAvatar()}/arbitrary/THUMBNAIL/${name}/qortal_avatar?async=true`
+      : null);
 
   const handleCopyAddress = () => {
     if (!address) return;
@@ -1331,114 +1452,12 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
       compact: true,
       duration: 3000,
       type: 'info',
-      message: t('tutorial:home.address_copied', {
+      message: t('group:home.address_copied', {
         postProcess: 'capitalizeFirstChar',
       }),
     });
     setOpenSnack(true);
   };
-
-  const handleAddressFieldClick = useCallback(() => {
-    if (!address) return;
-    setIsAddressFieldRevealed(true);
-    setAddressRevealAnimationKey((key) => key + 1);
-  }, [address]);
-
-  const handleCopyBlockedAddress = useCallback(
-    (blockedAddress: string) => {
-      navigator.clipboard.writeText(blockedAddress);
-      setInfoSnack({
-        compact: true,
-        duration: 3000,
-        type: 'info',
-        message: t('tutorial:home.address_copied', {
-          postProcess: 'capitalizeFirstChar',
-        }),
-      });
-      setOpenSnack(true);
-    },
-    [setInfoSnack, setOpenSnack, t]
-  );
-
-  const showBlockedAccountsPublicNodeNotice = useCallback(() => {
-    closeAccountSettingsModal(true);
-    window.setTimeout(() => {
-      setInfoSnack({
-        actionEvent: 'openCustomNodeGuideWebsite',
-        actionLabel: td('view_private_node_guide', 'View guide'),
-        dismissible: true,
-        duration: 12000,
-        message: td(
-          'blocked_public_node_notice',
-          'In order to be in full control of the blocked accounts you need to connect to your private node.'
-        ),
-        type: 'warning',
-      });
-      setOpenSnack(true);
-    }, 120);
-  }, [closeAccountSettingsModal, setInfoSnack, setOpenSnack, td]);
-
-  const showBlockedUnblockFailedNotice = useCallback(() => {
-    setInfoSnack({
-      dismissible: true,
-      duration: 8000,
-      message: td(
-        'blocked_unblock_failed',
-        'Unable to unblock this account. Please try again.'
-      ),
-      type: 'error',
-    });
-    setOpenSnack(true);
-  }, [setInfoSnack, setOpenSnack, td]);
-
-  const handleUnblockBlockedName = useCallback(
-    async (blockedName: string) => {
-      if (isPublicNode) {
-        showBlockedAccountsPublicNodeNotice();
-        return;
-      }
-
-      try {
-        await removeBlockFromList(undefined, blockedName);
-      } catch (error) {
-        console.error(error);
-        showBlockedUnblockFailedNotice();
-      }
-    },
-    [
-      isPublicNode,
-      removeBlockFromList,
-      showBlockedAccountsPublicNodeNotice,
-      showBlockedUnblockFailedNotice,
-    ]
-  );
-
-  const handleUnblockBlockedAddress = useCallback(
-    async (blockedAddress: string) => {
-      if (isPublicNode) {
-        showBlockedAccountsPublicNodeNotice();
-        return;
-      }
-
-      try {
-        await removeBlockFromList(blockedAddress, undefined);
-      } catch (error) {
-        console.error(error);
-        showBlockedUnblockFailedNotice();
-      }
-    },
-    [
-      isPublicNode,
-      removeBlockFromList,
-      showBlockedAccountsPublicNodeNotice,
-      showBlockedUnblockFailedNotice,
-    ]
-  );
-
-  useEffect(() => {
-    setIsAddressFieldRevealed(false);
-    setAddressRevealAnimationKey(0);
-  }, [address]);
 
   const checkIfNameExists = useCallback(
     async (candidateName: string) => {
@@ -1574,6 +1593,15 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
     loadReticulumConfigEditorInfo,
     reticulumManagedConfigEnabled,
   ]);
+
+  useEffect(() => {
+    if (!isReticulumDetailsOpen) return;
+    setReticulumDetailsNow(Date.now());
+    const timer = window.setInterval(() => {
+      setReticulumDetailsNow(Date.now());
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [isReticulumDetailsOpen]);
 
   const formattedChangeNameFee = useMemo(() => {
     const numericFee = Number(changeNameFee);
@@ -1793,19 +1821,8 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
         );
       }
 
-      const previewMime = avatarFile?.type || 'image/webp';
-      const previewDataUrl = `data:${previewMime};base64,${avatarBase64}`;
-      const walletAddress = rawWallet?.address0 || userInfo?.address;
-      const registeredName = userInfo?.name?.trim() || '';
-      if (walletAddress) {
-        await setWalletAvatarCache(
-          walletAddress,
-          previewDataUrl,
-          registeredName
-        );
-      }
       setAvatarFile(null);
-      setTempAvatar(previewDataUrl);
+      setTempAvatar(`data:image/webp;base64,${avatarBase64}`);
       setAvatarAnchorEl(null);
       executeEvent('avatarUploaded', {});
     } catch (error) {
@@ -1853,25 +1870,37 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
       typeof window !== 'undefined' ? window.innerWidth : avatarPanelWidth + 32;
     const viewportHeight =
       typeof window !== 'undefined' ? window.innerHeight : 800;
-    // Never trust the (possibly stale) measured height to exceed the viewport.
-    const safeHeight = Math.min(avatarPanelHeight, viewportHeight - 32);
-    // Always present the avatar panel centered on the screen. Anchoring it to
-    // the avatar button placed it half off-screen on first open (before its
-    // real height was known), so centering is both simpler and reliable.
-    const left = Math.max(16, (viewportWidth - avatarPanelWidth) / 2);
-    const top = Math.max(16, (viewportHeight - safeHeight) / 2);
-    // Hard cap so the panel can never extend past the bottom of the screen,
-    // even on the very first open before its real height has been measured.
-    const maxHeight = Math.max(220, viewportHeight - top - 16);
+    const fallbackLeft = Math.max(16, (viewportWidth - avatarPanelWidth) / 2);
+    const fallbackTop = 140;
+
+    if (!avatarPanelOriginRect) {
+      return {
+        left: fallbackLeft,
+        top: fallbackTop,
+        width: avatarPanelWidth,
+        height: avatarPanelHeight,
+      };
+    }
+
+    const preferredLeft = avatarPanelOriginRect.left;
+    const left = Math.min(
+      Math.max(16, preferredLeft),
+      Math.max(16, viewportWidth - avatarPanelWidth - 16)
+    );
+
+    const preferredTop = avatarPanelOriginRect.top;
+    const top = Math.min(
+      Math.max(16, preferredTop),
+      Math.max(16, viewportHeight - avatarPanelHeight - 16)
+    );
 
     return {
       left,
       top,
       width: avatarPanelWidth,
-      height: safeHeight,
-      maxHeight,
+      height: avatarPanelHeight,
     };
-  }, [avatarPanelHeight, avatarPanelWidth]);
+  }, [avatarPanelHeight, avatarPanelOriginRect, avatarPanelWidth]);
 
   const avatarPanelAnimation = useMemo(() => {
     if (!avatarPanelOriginRect) {
@@ -2101,14 +2130,8 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
           xs: '1fr',
           lg: '104px minmax(0, 1fr)',
         },
-        minHeight: {
-          xs: 'auto',
-          lg: '164px',
-        },
-        padding: {
-          xs: '16px 14px',
-          lg: '22px 24px',
-        },
+        minHeight: '164px',
+        padding: '22px 24px',
         width: '100%',
       }}
       onMouseMove={handleDashboardPanelPointerMove}
@@ -2135,10 +2158,7 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
             xs: 'center',
             lg: 'stretch',
           },
-          width: {
-            xs: '96px',
-            lg: '104px',
-          },
+          width: '104px',
         }}
       >
         <TiltedCard scaleOnHover={1.1} rotateAmplitude={18}>
@@ -2198,18 +2218,25 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                 },
               }}
             >
-              <QortalUserAvatar
-                srcOverride={tempAvatar}
-                primaryName={name}
-                walletAddress={address}
-                fallbackIconSize={44}
+              <Avatar
+                src={avatarUrl ?? undefined}
+                onError={() => setAvatarError(true)}
                 sx={{
                   bgcolor: isDarkMode ? '#636772' : '#E7DED0',
                   borderRadius: '22px',
-                  height: { xs: 80, lg: 88 },
-                  width: { xs: 80, lg: 88 },
+                  height: 88,
+                  width: 88,
                 }}
-              />
+              >
+                <PersonIcon
+                  sx={{
+                    color: isDarkMode
+                      ? '#1D2126'
+                      : theme.palette.text.secondary,
+                    fontSize: 44,
+                  }}
+                />
+              </Avatar>
             </ButtonBase>
           </BorderGlow>
         </TiltedCard>
@@ -2218,11 +2245,15 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
           onClick={handleOpenAccountStatusMenu}
           aria-haspopup="menu"
           aria-expanded={isAccountStatusMenuOpen ? 'true' : undefined}
-          aria-controls={isAccountStatusMenuOpen ? 'account-status-menu' : undefined}
+          aria-controls={
+            isAccountStatusMenuOpen ? 'account-status-menu' : undefined
+          }
           sx={{
             alignItems: 'center',
             backgroundColor: alpha(
-              isDarkMode ? theme.palette.common.white : theme.palette.text.primary,
+              isDarkMode
+                ? theme.palette.common.white
+                : theme.palette.text.primary,
               isDarkMode ? 0.06 : 0.05
             ),
             borderRadius: '999px',
@@ -2238,12 +2269,17 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
               'background-color 160ms ease, color 160ms ease, transform 120ms ease',
             '&:hover': {
               backgroundColor: alpha(
-                isDarkMode ? theme.palette.common.white : theme.palette.text.primary,
+                isDarkMode
+                  ? theme.palette.common.white
+                  : theme.palette.text.primary,
                 isDarkMode ? 0.1 : 0.08
               ),
             },
             '&:focus-visible': {
-              backgroundColor: alpha(theme.palette.primary.main, isDarkMode ? 0.16 : 0.1),
+              backgroundColor: alpha(
+                theme.palette.primary.main,
+                isDarkMode ? 0.16 : 0.1
+              ),
             },
           }}
         >
@@ -2251,10 +2287,10 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
             aria-hidden="true"
             sx={{
               animation:
-                accountStatus === 'online'
+                accountDisplayStatus === 'online'
                   ? 'homeProfileStatusPulse 3.4s ease-in-out infinite'
                   : undefined,
-              bgcolor: accountStatusMeta.color,
+              bgcolor: accountStatusColor,
               borderRadius: '50%',
               flexShrink: 0,
               height: 7,
@@ -2281,7 +2317,7 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
               textAlign: 'center',
             }}
           >
-            {accountStatusMeta.label}
+            {accountStatusLabel}
           </Typography>
           <KeyboardArrowDownRoundedIcon
             sx={{
@@ -2337,7 +2373,6 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
             sx={{
               alignItems: 'center',
               display: 'flex',
-              flexDirection: 'row',
               gap: '8px',
               width: '100%',
             }}
@@ -2363,7 +2398,6 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                 minWidth: 0,
                 px: '11px',
                 py: '5px',
-                width: 'auto',
                 transition:
                   'background-color 160ms ease, border-color 160ms ease, box-shadow 160ms ease',
                 '&:hover': address
@@ -2378,7 +2412,7 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                     }
                   : undefined,
               }}
-              onClick={address ? handleAddressFieldClick : undefined}
+              onClick={address ? handleCopyAddress : undefined}
               onMouseEnter={
                 shouldRevealAddressOnHover
                   ? () => setIsAddressFieldHovered(true)
@@ -2394,7 +2428,7 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                   ? (event) => {
                       if (event.key === 'Enter' || event.key === ' ') {
                         event.preventDefault();
-                        handleAddressFieldClick();
+                        handleCopyAddress();
                       }
                     }
                   : undefined
@@ -2403,7 +2437,6 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
               tabIndex={address ? 0 : undefined}
             >
               <Box
-                ref={addressOverlayRef}
                 className="wallet-address-overlay"
                 sx={{
                   alignItems: 'center',
@@ -2423,19 +2456,27 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                 }}
               >
                 {shouldRevealAddressOnHover ? (
-                  showAddressReveal ? (
-                    <DecryptedText
-                      key={addressRevealAnimationKey}
-                      text={accountIdentitySecondaryText}
-                      animateOn="hover"
-                      active={showAddressReveal}
-                      speed={35}
-                      maxIterations={12}
-                      sequential={true}
-                      revealDirection="start"
-                      useOriginalCharsOnly={true}
-                      fontSizePx={revealedAddressFontPx}
-                    />
+                  showAnimatedAddress ? (
+                    <Box
+                      sx={{
+                        maxWidth: '100%',
+                        overflow: 'hidden',
+                        pointerEvents: 'auto',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      <DecryptedText
+                        text={accountIdentitySecondaryText}
+                        animateOn="hover"
+                        active={showAnimatedAddress}
+                        speed={35}
+                        maxIterations={12}
+                        sequential={true}
+                        revealDirection="start"
+                        useOriginalCharsOnly={true}
+                      />
+                    </Box>
                   ) : (
                     <Box
                       sx={{
@@ -2449,12 +2490,16 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                     </Box>
                   )
                 ) : (
-                  <AutoFitText
-                    text={accountIdentityPrimaryText}
-                    maxFontPx={14}
-                    minFontPx={6}
-                    sx={{ flex: '1 1 0' }}
-                  />
+                  <Box
+                    sx={{
+                      maxWidth: '100%',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {accountIdentityPrimaryText}
+                  </Box>
                 )}
               </Box>
               <Box
@@ -2639,9 +2684,13 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
           paper: {
             sx: {
               backdropFilter: 'blur(14px)',
-              bgcolor: isDarkMode ? 'rgba(34, 37, 46, 0.94)' : 'rgba(251, 247, 240, 0.94)',
+              bgcolor: isDarkMode
+                ? 'rgba(34, 37, 46, 0.94)'
+                : 'rgba(251, 247, 240, 0.94)',
               border: `1px solid ${alpha(
-                isDarkMode ? theme.palette.common.white : theme.palette.text.primary,
+                isDarkMode
+                  ? theme.palette.common.white
+                  : theme.palette.text.primary,
                 0.07
               )}`,
               borderRadius: '16px',
@@ -2702,12 +2751,8 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
       <Dialog
         open={isAccountSettingsOpen}
         onClose={closeAccountSettingsModal}
-        disableRestoreFocus
-        disableScrollLock={isMobile}
-        scroll="paper"
         aria-labelledby="account-settings-dialog-title"
         aria-describedby="account-settings-dialog-description"
-        fullScreen={isMobile}
         maxWidth={false}
         fullWidth
         slotProps={{
@@ -2727,26 +2772,17 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
           paper: {
             sx: {
               background: avatarModalSurface,
-              border: isMobile
-                ? 'none'
-                : isDarkMode
-                  ? '1px solid rgba(255,255,255,0.08)'
-                  : '1px solid rgba(24,29,36,0.09)',
-              borderRadius: isMobile ? 0 : '16px',
-              boxShadow: isMobile
-                ? 'none'
-                : isDarkMode
-                  ? '0 34px 120px rgba(0,0,0,0.46)'
-                  : '0 28px 88px rgba(18,28,45,0.16)',
-              clipPath: isMobile ? 'none' : 'inset(0 round 16px)',
-              display: isMobile ? 'flex' : undefined,
-              flexDirection: isMobile ? 'column' : undefined,
-              height: isMobile ? '100dvh' : undefined,
+              border: isDarkMode
+                ? '1px solid rgba(255,255,255,0.08)'
+                : '1px solid rgba(24,29,36,0.09)',
+              borderRadius: '16px',
+              boxShadow: isDarkMode
+                ? '0 34px 120px rgba(0,0,0,0.46)'
+                : '0 28px 88px rgba(18,28,45,0.16)',
+              clipPath: 'inset(0 round 16px)',
               isolation: 'isolate',
-              margin: isMobile ? 0 : undefined,
-              maxHeight: isMobile ? '100dvh' : undefined,
               overflow: 'hidden',
-              width: isMobile ? '100%' : 'min(840px, calc(100vw - 32px))',
+              width: 'min(840px, calc(100vw - 32px))',
             },
           },
         }}
@@ -2755,159 +2791,10 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
           sx={{
             background: avatarModalSurface,
             display: 'flex',
-            flex: isMobile ? 1 : undefined,
-            flexDirection: 'column',
-            height: isMobile ? '100%' : 'auto',
-            maxHeight: isMobile ? '100%' : 'none',
-            minHeight: isMobile ? 0 : 530,
-            overflow: isMobile ? 'hidden' : 'visible',
+            minHeight: 530,
             width: '100%',
           }}
         >
-          {isMobile ? (
-            <Box
-              sx={{
-                alignItems: 'center',
-                borderBottom: `1px solid ${avatarSectionDivider}`,
-                display: 'flex',
-                flexShrink: 0,
-                gap: 1,
-                justifyContent: 'space-between',
-                px: 1.5,
-                py: 1.25,
-                pt: `calc(12px + ${SAFE_AREA_TOP})`,
-              }}
-            >
-              <Typography
-                sx={{
-                  color: theme.palette.text.primary,
-                  fontSize: '1rem',
-                  fontWeight: 700,
-                  letterSpacing: '-0.02em',
-                }}
-              >
-                {td('account_settings', 'Account settings')}
-              </Typography>
-              <Box sx={{ alignItems: 'center', display: 'flex', gap: 0.5 }}>
-                <Tooltip
-                  title={td(
-                    'privacy_mode_tooltip',
-                    'Privacy Mode: Blurs sensitive info for screen sharing'
-                  )}
-                >
-                  <ButtonBase
-                    onClick={handleTogglePrivacyMode}
-                    aria-label={td('toggle_privacy_mode', 'Toggle privacy mode')}
-                    sx={{
-                      borderRadius: '999px',
-                      color: isPrivacyModeActive
-                        ? theme.palette.text.primary
-                        : alpha(theme.palette.text.secondary, 0.78),
-                      height: 36,
-                      width: 36,
-                    }}
-                  >
-                    {isPrivacyModeActive ? (
-                      <VisibilityOffOutlinedIcon sx={{ fontSize: 20 }} />
-                    ) : (
-                      <VisibilityOutlinedIcon sx={{ fontSize: 20 }} />
-                    )}
-                  </ButtonBase>
-                </Tooltip>
-                <ButtonBase
-                  onClick={closeAccountSettingsModal}
-                  disabled={isChangeNameLoading}
-                  sx={{
-                    borderRadius: '8px',
-                    color: theme.palette.text.secondary,
-                    height: 36,
-                    width: 36,
-                  }}
-                >
-                  <CloseIcon sx={{ fontSize: 20 }} />
-                </ButtonBase>
-              </Box>
-            </Box>
-          ) : null}
-
-          {isMobile ? (
-            <Box
-              sx={{
-                borderBottom: `1px solid ${avatarSectionDivider}`,
-                display: 'flex',
-                flexShrink: 0,
-                gap: 0.75,
-                overflowX: 'auto',
-                px: 1.25,
-                py: 1,
-                scrollbarWidth: 'none',
-                WebkitOverflowScrolling: 'touch',
-                '&::-webkit-scrollbar': { display: 'none' },
-              }}
-            >
-              {accountSettingsTabs.map((tab) => {
-                const TabIcon = tab.icon;
-                const isActive = activeSettingsTab === tab.key;
-
-                return (
-                  <ButtonBase
-                    key={tab.key}
-                    onClick={() => setActiveSettingsTab(tab.key)}
-                    sx={{
-                      alignItems: 'center',
-                      background: isActive
-                        ? settingsSidebarActiveSurface
-                        : alpha(
-                            theme.palette.common.white,
-                            isDarkMode ? 0.03 : 0.5
-                          ),
-                      border: `1px solid ${
-                        isActive
-                          ? alpha(
-                              theme.palette.primary.main,
-                              isDarkMode ? 0.35 : 0.25
-                            )
-                          : alpha(theme.palette.divider, 0.35)
-                      }`,
-                      borderRadius: '999px',
-                      color: isActive
-                        ? theme.palette.text.primary
-                        : alpha(theme.palette.text.secondary, 0.92),
-                      display: 'inline-flex',
-                      flexShrink: 0,
-                      gap: 0.65,
-                      minHeight: 40,
-                      px: 1.35,
-                      py: 0.75,
-                    }}
-                  >
-                    <TabIcon sx={{ fontSize: 18 }} />
-                    <Typography
-                      sx={{
-                        fontSize: '0.78rem',
-                        fontWeight: isActive ? 700 : 600,
-                        whiteSpace: 'nowrap',
-                      }}
-                    >
-                      {tab.label}
-                    </Typography>
-                  </ButtonBase>
-                );
-              })}
-            </Box>
-          ) : null}
-
-          <Box
-            sx={{
-              display: 'flex',
-              flex: 1,
-              flexDirection: isMobile ? 'column' : 'row',
-              minHeight: 0,
-              overflow: isMobile ? 'hidden' : 'visible',
-              width: '100%',
-            }}
-          >
-          {!isMobile ? (
           <Box
             sx={{
               background: settingsSidebarSurface,
@@ -3023,19 +2910,15 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
               </Tooltip>
             </Box>
           </Box>
-          ) : null}
 
           <Box
             sx={{
               display: 'flex',
               flex: 1,
               flexDirection: 'column',
-              minHeight: 0,
               minWidth: 0,
-              overflow: 'hidden',
             }}
           >
-            {!isMobile ? (
             <Box
               sx={{
                 alignItems: 'flex-start',
@@ -3099,64 +2982,18 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                 <CloseIcon sx={{ fontSize: 17 }} />
               </ButtonBase>
             </Box>
-            ) : (
-              <Box
-                sx={{
-                  borderBottom: `1px solid ${avatarSectionDivider}`,
-                  display: 'flex',
-                  flexDirection: 'column',
-                  flexShrink: 0,
-                  gap: '4px',
-                  px: 1.75,
-                  py: 1.35,
-                }}
-              >
-                <Typography
-                  id="account-settings-dialog-title"
-                  sx={{
-                    color: theme.palette.text.primary,
-                    fontSize: '0.92rem',
-                    fontWeight: 700,
-                    letterSpacing: '-0.02em',
-                  }}
-                >
-                  {activeSettingsMeta.title}
-                </Typography>
-                <Typography
-                  id="account-settings-dialog-description"
-                  sx={{
-                    color: theme.palette.text.secondary,
-                    fontSize: '0.76rem',
-                    lineHeight: 1.45,
-                  }}
-                >
-                  {activeSettingsMeta.description}
-                </Typography>
-              </Box>
-            )}
 
             <Box
               sx={{
-                borderTop: isMobile ? 'none' : `1px solid ${avatarSectionDivider}`,
+                borderTop: `1px solid ${avatarSectionDivider}`,
                 display: 'flex',
                 flex: 1,
                 flexDirection: 'column',
                 gap: 1.25,
-                minHeight: 0,
-                overflowX: 'hidden',
-                overflowY: isMobile && activeSettingsTab === 'blocked' ? 'hidden' : 'auto',
-                overscrollBehavior: 'contain',
-                px: {
-                  xs: 1.75,
-                  md: 2.3,
-                },
-                pb: `calc(16px + ${SAFE_AREA_BOTTOM})`,
-                pt: {
-                  xs: 1.35,
-                  md: 1.9,
-                },
-                touchAction: 'pan-y',
-                WebkitOverflowScrolling: 'touch',
+                overflowY: 'auto',
+                px: 2.3,
+                pb: 2.2,
+                pt: 1.9,
               }}
             >
               {activeSettingsTab === 'profile' ? (
@@ -3605,7 +3442,7 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                       >
                         {td(
                           'enable_dev_mode_desc',
-                          'Unlock local developer surfaces, diagnostics, and testing tools across GO.'
+                          'Unlock local developer surfaces, diagnostics, and testing tools across the Hub.'
                         )}
                       </Typography>
                     </Box>
@@ -3657,51 +3494,24 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                     background: avatarModalSurfaceSoft,
                     border: `1px solid ${avatarFieldBorder}`,
                     borderRadius: '12px',
-                    boxSizing: 'border-box',
-                    display: isMobile ? 'flex' : 'block',
-                    flex: isMobile ? 1 : undefined,
-                    flexDirection: isMobile ? 'column' : undefined,
-                    maxWidth: '100%',
-                    minHeight: isMobile ? 0 : undefined,
-                    minWidth: 0,
                     overflow: 'hidden',
-                    width: '100%',
                   }}
                 >
                   <Box
                     sx={{
                       display: 'flex',
                       flexDirection: 'column',
-                      flex: isMobile ? 1 : undefined,
                       gap: 1,
-                      maxWidth: '100%',
-                      minHeight: isMobile ? 0 : undefined,
-                      minWidth: 0,
-                      px: {
-                        xs: 1,
-                        sm: 1.35,
-                      },
+                      px: 1.35,
                       py: 1.2,
                     }}
                   >
                     <Box
                       sx={{
-                        alignItems: {
-                          xs: 'stretch',
-                          sm: 'flex-start',
-                        },
+                        alignItems: 'flex-start',
                         display: 'flex',
-                        flexDirection: {
-                          xs: 'column',
-                          sm: 'row',
-                        },
-                        flexShrink: 0,
-                        gap: {
-                          xs: 0.75,
-                          sm: 1.2,
-                        },
+                        gap: 1.2,
                         justifyContent: 'space-between',
-                        minWidth: 0,
                       }}
                     >
                       <Box sx={{ minWidth: 0 }}>
@@ -3731,10 +3541,6 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                       </Box>
                       <Typography
                         sx={{
-                          alignSelf: {
-                            xs: 'flex-start',
-                            sm: 'auto',
-                          },
                           color: theme.palette.text.secondary,
                           flexShrink: 0,
                           fontSize: '0.73rem',
@@ -3749,18 +3555,7 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                     </Box>
 
                     {blockedCount > 0 ? (
-                      <Box
-                        sx={{
-                          display: 'grid',
-                          flex: isMobile ? 1 : undefined,
-                          gap: 1,
-                          minHeight: isMobile ? 0 : undefined,
-                          overflowX: 'hidden',
-                          overflowY: isMobile ? 'auto' : 'visible',
-                          touchAction: isMobile ? 'pan-y' : undefined,
-                          WebkitOverflowScrolling: 'touch',
-                        }}
-                      >
+                      <Box sx={{ display: 'grid', gap: 1 }}>
                         {blockedNameEntries.length > 0 ? (
                           <Box sx={{ display: 'grid', gap: 0.7 }}>
                             <Typography
@@ -3781,11 +3576,8 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                                   alignItems: 'center',
                                   borderRadius: '10px',
                                   display: 'flex',
-                                  flexDirection: 'row',
-                                  gap: 0.75,
+                                  gap: 1,
                                   justifyContent: 'space-between',
-                                  maxWidth: '100%',
-                                  minWidth: 0,
                                   px: 0.85,
                                   py: 0.55,
                                   transition: 'background-color 0.14s ease',
@@ -3801,7 +3593,6 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                                   className={privacyBlurClassName}
                                   sx={{
                                     color: theme.palette.text.primary,
-                                    flex: '1 1 auto',
                                     fontSize: '0.8rem',
                                     fontWeight: 600,
                                     minWidth: 0,
@@ -3814,7 +3605,7 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                                 </Typography>
                                 <ButtonBase
                                   onClick={() =>
-                                    void handleUnblockBlockedName(blockedName)
+                                    removeBlockFromList(undefined, blockedName)
                                   }
                                   sx={{
                                     borderRadius: '8px',
@@ -3822,7 +3613,6 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                                     flexShrink: 0,
                                     fontSize: '0.74rem',
                                     fontWeight: 700,
-                                    minHeight: 32,
                                     px: 0.9,
                                     py: 0.55,
                                     '&:hover': {
@@ -3860,11 +3650,8 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                                   alignItems: 'center',
                                   borderRadius: '10px',
                                   display: 'flex',
-                                  flexDirection: 'row',
-                                  gap: 0.75,
+                                  gap: 1,
                                   justifyContent: 'space-between',
-                                  maxWidth: '100%',
-                                  minWidth: 0,
                                   px: 0.85,
                                   py: 0.55,
                                   transition: 'background-color 0.14s ease',
@@ -3880,84 +3667,41 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                                   className={privacyBlurClassName}
                                   sx={{
                                     color: theme.palette.text.primary,
-                                    flex: '1 1 auto',
-                                    fontFamily: 'monospace',
-                                    fontSize: '0.78rem',
+                                    fontSize: '0.8rem',
                                     fontWeight: 600,
-                                    lineHeight: 1.45,
                                     minWidth: 0,
                                     overflow: 'hidden',
                                     textOverflow: 'ellipsis',
                                     whiteSpace: 'nowrap',
                                   }}
                                 >
-                                  {shortenWalletAddress(blockedAddress)}
+                                  {blockedAddress}
                                 </Typography>
-                                <Box
+                                <ButtonBase
+                                  onClick={() =>
+                                    removeBlockFromList(
+                                      blockedAddress,
+                                      undefined
+                                    )
+                                  }
                                   sx={{
-                                    alignItems: 'center',
-                                    display: 'flex',
+                                    borderRadius: '8px',
+                                    color: theme.palette.primary.light,
                                     flexShrink: 0,
-                                    gap: 0.25,
+                                    fontSize: '0.74rem',
+                                    fontWeight: 700,
+                                    px: 0.9,
+                                    py: 0.55,
+                                    '&:hover': {
+                                      backgroundColor: alpha(
+                                        theme.palette.primary.main,
+                                        0.1
+                                      ),
+                                    },
                                   }}
                                 >
-                                  <Tooltip
-                                    title={td('copy_address', 'Copy address')}
-                                  >
-                                    <ButtonBase
-                                      aria-label={td(
-                                        'copy_address',
-                                        'Copy address'
-                                      )}
-                                      onClick={() =>
-                                        handleCopyBlockedAddress(blockedAddress)
-                                      }
-                                      sx={{
-                                        alignItems: 'center',
-                                        borderRadius: '8px',
-                                        color: addressFieldActionBaseColor,
-                                        display: 'inline-flex',
-                                        height: 32,
-                                        justifyContent: 'center',
-                                        width: 32,
-                                        '&:hover': {
-                                          backgroundColor:
-                                            addressFieldActionHoverBackground,
-                                          color: addressFieldActionHoverColor,
-                                        },
-                                      }}
-                                    >
-                                      <ContentCopyIcon
-                                        sx={{ fontSize: '0.92rem' }}
-                                      />
-                                    </ButtonBase>
-                                  </Tooltip>
-                                  <ButtonBase
-                                    onClick={() =>
-                                      void handleUnblockBlockedAddress(
-                                        blockedAddress
-                                      )
-                                    }
-                                    sx={{
-                                      borderRadius: '8px',
-                                      color: theme.palette.primary.light,
-                                      flexShrink: 0,
-                                      fontSize: '0.74rem',
-                                      fontWeight: 700,
-                                      minHeight: 32,
-                                      px: 0.9,
-                                      py: 0.55,
-                                      '&:hover': {
-                                        backgroundColor: alpha(
-                                          theme.palette.primary.main,
-                                          0.1
-                                        ),
-                                      },
-                                    }}
-                                  >
-                                    {td('unblock', 'Unblock')}
-                                  </ButtonBase>
-                                </Box>
+                                  {td('unblock', 'Unblock')}
+                                </ButtonBase>
                               </Box>
                             ))}
                           </Box>
@@ -3988,6 +3732,321 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                       overflow: 'hidden',
                     }}
                   >
+                    {reticulumEnabled ? (
+                      <>
+                        <Box
+                          sx={{
+                            alignItems: 'center',
+                            display: 'flex',
+                            gap: 1.2,
+                            justifyContent: 'space-between',
+                            px: 1.35,
+                            py: 1.2,
+                          }}
+                        >
+                          <Box sx={{ minWidth: 0 }}>
+                            <Typography
+                              sx={{
+                                color: theme.palette.text.primary,
+                                fontSize: '0.82rem',
+                                fontWeight: 700,
+                                letterSpacing: '0.01em',
+                              }}
+                            >
+                              {td(
+                                'reticulum_group_chat',
+                                'Reticulum group chat'
+                              )}
+                            </Typography>
+                            <Typography
+                              sx={{
+                                color: theme.palette.text.secondary,
+                                fontSize: '0.75rem',
+                                lineHeight: 1.45,
+                                mt: 0.4,
+                              }}
+                            >
+                              {td(
+                                'reticulum_group_chat_desc',
+                                'Use the experimental Reticulum transport for group chat messages when available.'
+                              )}
+                            </Typography>
+                          </Box>
+                          <Switch
+                            checked={reticulumChatEnabled}
+                            onChange={handleToggleReticulumChat}
+                            sx={settingsSwitchSx}
+                          />
+                        </Box>
+
+                        <Box
+                          sx={{
+                            borderTop: `1px solid ${avatarSectionDivider}`,
+                            mx: 1.35,
+                          }}
+                        />
+
+                        <Box
+                          sx={{
+                            alignItems: { sm: 'center' },
+                            display: 'flex',
+                            flexDirection: { xs: 'column', sm: 'row' },
+                            gap: 1.2,
+                            justifyContent: 'space-between',
+                            px: 1.35,
+                            py: 1.2,
+                          }}
+                        >
+                          <Box sx={{ minWidth: 0 }}>
+                            <Typography
+                              sx={{
+                                color: theme.palette.text.primary,
+                                fontSize: '0.82rem',
+                                fontWeight: 700,
+                                letterSpacing: '0.01em',
+                              }}
+                            >
+                              {td(
+                                'reticulum_attachment_storage',
+                                'Attachment storage'
+                              )}
+                            </Typography>
+                            <Typography
+                              sx={{
+                                color: theme.palette.text.secondary,
+                                fontSize: '0.75rem',
+                                lineHeight: 1.45,
+                                mt: 0.4,
+                              }}
+                            >
+                              {formatStorageBytes(
+                                reticulumResourceStorage?.totalResidentBytes ||
+                                  0
+                              )}{' '}
+                              /{' '}
+                              {formatStorageBytes(reticulumResourceLimitBytes)}
+                            </Typography>
+                          </Box>
+                          <Box
+                            sx={{
+                              alignItems: 'center',
+                              display: 'flex',
+                              flexShrink: 0,
+                              gap: 0.8,
+                            }}
+                          >
+                            <Select
+                              size="small"
+                              value={reticulumResourceLimitBytes}
+                              onChange={(event) =>
+                                void handleReticulumResourceLimitChange(
+                                  Number(event.target.value)
+                                )
+                              }
+                              sx={{ fontSize: '0.78rem', minWidth: 90 }}
+                            >
+                              {[2, 5, 10, 25, 50].map((gib) => (
+                                <MenuItem
+                                  key={gib}
+                                  value={gib * RETICULUM_RESOURCE_GIB}
+                                >
+                                  {gib} GB
+                                </MenuItem>
+                              ))}
+                            </Select>
+                          </Box>
+                        </Box>
+
+                        <Box
+                          sx={{
+                            borderTop: `1px solid ${avatarSectionDivider}`,
+                            mx: 1.35,
+                          }}
+                        />
+
+                        <Box
+                          sx={{
+                            alignItems: 'center',
+                            display: 'flex',
+                            gap: 1.2,
+                            justifyContent: 'space-between',
+                            px: 1.35,
+                            py: 1.2,
+                          }}
+                        >
+                          <Box sx={{ minWidth: 0 }}>
+                            <Typography
+                              sx={{
+                                color: theme.palette.text.primary,
+                                fontSize: '0.82rem',
+                                fontWeight: 700,
+                                letterSpacing: '0.01em',
+                              }}
+                            >
+                              {td(
+                                'community_stun_contribution',
+                                'Community call support'
+                              )}
+                            </Typography>
+                            <Typography
+                              sx={{
+                                color: theme.palette.text.secondary,
+                                fontSize: '0.75rem',
+                                lineHeight: 1.45,
+                                mt: 0.4,
+                              }}
+                            >
+                              {td(
+                                'community_stun_contribution_desc',
+                                'Help direct calls connect by offering a small network service. Your public IP is shared anonymously with other Hub users.'
+                              )}
+                            </Typography>
+                          </Box>
+                          <Switch
+                            checked={communityStunContributionEnabled}
+                            onChange={handleToggleCommunityStunContribution}
+                            sx={settingsSwitchSx}
+                          />
+                        </Box>
+
+                        <Box
+                          sx={{
+                            borderTop: `1px solid ${avatarSectionDivider}`,
+                            mx: 1.35,
+                          }}
+                        />
+                      </>
+                    ) : null}
+
+                    <Box
+                      sx={{
+                        alignItems: 'center',
+                        display: 'flex',
+                        gap: 1.2,
+                        justifyContent: 'space-between',
+                        px: 1.35,
+                        py: 1.2,
+                      }}
+                    >
+                      <Box sx={{ minWidth: 0 }}>
+                        <Typography
+                          sx={{
+                            color: theme.palette.text.primary,
+                            fontSize: '0.82rem',
+                            fontWeight: 700,
+                            letterSpacing: '0.01em',
+                          }}
+                        >
+                          {td('filter_developer_logs', 'Filter Developer Logs')}
+                        </Typography>
+                        <Typography
+                          sx={{
+                            color: theme.palette.text.secondary,
+                            fontSize: '0.75rem',
+                            lineHeight: 1.45,
+                            mt: 0.4,
+                          }}
+                        >
+                          {td(
+                            'filter_developer_logs_desc',
+                            'Turn on to hide verbose main-process logs while keeping warnings and errors visible.'
+                          )}
+                        </Typography>
+                      </Box>
+                      <Switch
+                        checked={disableDevLogs}
+                        onChange={handleToggleDevLogFiltering}
+                        sx={settingsSwitchSx}
+                      />
+                    </Box>
+
+                    <Box
+                      sx={{
+                        borderTop: `1px solid ${avatarSectionDivider}`,
+                        mx: 1.35,
+                      }}
+                    />
+
+                    <Box
+                      sx={{
+                        alignItems: 'center',
+                        display: 'flex',
+                        gap: 1.2,
+                        justifyContent: 'space-between',
+                        px: 1.35,
+                        py: 1.2,
+                      }}
+                    >
+                      <Box sx={{ minWidth: 0 }}>
+                        <Typography
+                          sx={{
+                            color: theme.palette.text.primary,
+                            fontSize: '0.82rem',
+                            fontWeight: 700,
+                            letterSpacing: '0.01em',
+                          }}
+                        >
+                          {td('idle_auto_lock', 'Auto-Lock When Idle')}
+                        </Typography>
+                        <Typography
+                          sx={{
+                            color: theme.palette.text.secondary,
+                            fontSize: '0.75rem',
+                            lineHeight: 1.45,
+                            mt: 0.4,
+                          }}
+                        >
+                          {td(
+                            'idle_auto_lock_desc',
+                            'Choose how long the Hub waits before locking while you are inactive.'
+                          )}
+                        </Typography>
+                      </Box>
+                      <Select
+                        size="small"
+                        value={autoLockTimeoutMinutes}
+                        onChange={(event) =>
+                          void handleAutoLockTimeoutChange(
+                            normalizeAutoLockTimeoutMinutes(event.target.value)
+                          )
+                        }
+                        sx={{
+                          borderRadius: '10px',
+                          flexShrink: 0,
+                          fontSize: '0.82rem',
+                          minWidth: 122,
+                          '& .MuiSelect-select': { py: 0.85 },
+                        }}
+                      >
+                        {AUTO_LOCK_TIMEOUT_OPTIONS.map((minutes) => (
+                          <MenuItem key={minutes} value={minutes}>
+                            {minutes === 0
+                              ? td('idle_auto_lock_disabled', 'Disabled')
+                              : minutes < 60
+                                ? td(
+                                    'idle_auto_lock_minutes',
+                                    '{{count}} min',
+                                    {
+                                      count: minutes,
+                                    }
+                                  )
+                                : td(
+                                    'idle_auto_lock_hours',
+                                    minutes === 60 ? '1 hour' : '3 hours',
+                                    { count: minutes / 60 }
+                                  )}
+                          </MenuItem>
+                        ))}
+                      </Select>
+                    </Box>
+
+                    <Box
+                      sx={{
+                        borderTop: `1px solid ${avatarSectionDivider}`,
+                        mx: 1.35,
+                      }}
+                    />
+
                     <Box
                       sx={{
                         alignItems: 'center',
@@ -4022,7 +4081,7 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                         >
                           {td(
                             'reduce_app_notifications_desc',
-                            'Turn on to mute desktop push notifications. Leave off for normal GO alerts.'
+                            'Turn on to mute desktop push notifications. Leave off for normal Hub alerts.'
                           )}
                         </Typography>
                       </Box>
@@ -4033,222 +4092,173 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                       />
                     </Box>
 
-                  <Box
-                    sx={{
-                      borderTop: `1px solid ${avatarSectionDivider}`,
-                      mx: 1.35,
-                    }}
-                  />
-
-                  <Box
-                    sx={{
-                      alignItems: 'center',
-                      display: 'flex',
-                      gap: 1.2,
-                      justifyContent: 'space-between',
-                      px: 1.35,
-                      py: 1.2,
-                    }}
-                  >
-                    <Typography
+                    <Box
                       sx={{
-                        color: theme.palette.text.primary,
-                        fontSize: '0.82rem',
-                        fontWeight: 700,
-                        letterSpacing: '0.01em',
-                        minWidth: 0,
+                        borderTop: `1px solid ${avatarSectionDivider}`,
+                        mx: 1.35,
+                      }}
+                    />
+
+                    <Box
+                      sx={{
+                        alignItems: 'center',
+                        display: 'flex',
+                        gap: 1.2,
+                        justifyContent: 'space-between',
+                        px: 1.35,
+                        py: 1.2,
                       }}
                     >
-                      {t('core:close_window_behavior', {
-                        defaultValue: 'When closing the window',
-                      })}
-                    </Typography>
-                    <Select
-                      size="small"
-                      value={closeAction}
-                      onChange={(event) =>
-                        handleCloseActionChange(
-                          event.target.value as CloseAction
-                        )
-                      }
+                      <Typography
+                        sx={{
+                          color: theme.palette.text.primary,
+                          fontSize: '0.82rem',
+                          fontWeight: 700,
+                          letterSpacing: '0.01em',
+                          minWidth: 0,
+                        }}
+                      >
+                        {t('core:close_window_behavior', {
+                          defaultValue: 'When closing the window',
+                        })}
+                      </Typography>
+                      <Select
+                        size="small"
+                        value={closeAction}
+                        onChange={(event) =>
+                          handleCloseActionChange(
+                            event.target.value as CloseAction
+                          )
+                        }
+                        sx={{
+                          borderRadius: '10px',
+                          flexShrink: 0,
+                          fontSize: '0.82rem',
+                          minWidth: 170,
+                          '& .MuiSelect-select': {
+                            py: 0.85,
+                          },
+                        }}
+                      >
+                        <MenuItem value="ask">
+                          {t('core:close_always_ask', {
+                            defaultValue: 'Always ask',
+                          })}
+                        </MenuItem>
+                        <MenuItem value="minimizeToTray">
+                          {platform === 'darwin'
+                            ? t('core:close_minimize_to_dock', {
+                                defaultValue: 'Minimize to dock',
+                              })
+                            : t('core:close_minimize_to_tray', {
+                                defaultValue: 'Minimize to tray',
+                              })}
+                        </MenuItem>
+                        <MenuItem value="quit">
+                          {t('core:close_quit_completely', {
+                            defaultValue: 'Quit completely',
+                          })}
+                        </MenuItem>
+                      </Select>
+                    </Box>
+
+                    <Box
                       sx={{
-                        borderRadius: '10px',
-                        flexShrink: 0,
-                        fontSize: '0.82rem',
-                        minWidth: 170,
-                        '& .MuiSelect-select': {
-                          py: 0.85,
-                        },
+                        borderTop: `1px solid ${avatarSectionDivider}`,
+                        mx: 1.35,
+                      }}
+                    />
+
+                    <Box
+                      sx={{
+                        alignItems: 'center',
+                        display: 'flex',
+                        gap: 1.2,
+                        justifyContent: 'space-between',
+                        px: 1.35,
+                        py: 1.2,
                       }}
                     >
-                      <MenuItem value="ask">
-                        {t('core:close_always_ask', {
-                          defaultValue: 'Always ask',
-                        })}
-                      </MenuItem>
-                      <MenuItem value="minimizeToTray">
-                        {platform === 'darwin'
-                          ? t('core:close_minimize_to_dock', {
-                              defaultValue: 'Minimize to dock',
-                            })
-                          : t('core:close_minimize_to_tray', {
-                              defaultValue: 'Minimize to tray',
-                            })}
-                      </MenuItem>
-                      <MenuItem value="quit">
-                        {t('core:close_quit_completely', {
-                          defaultValue: 'Quit completely',
-                        })}
-                      </MenuItem>
-                    </Select>
-                  </Box>
-
-                  <Box
-                    sx={{
-                      borderTop: `1px solid ${avatarSectionDivider}`,
-                      mx: 1.35,
-                    }}
-                  />
-
-                  <Box
-                    sx={{
-                      alignItems: 'center',
-                      display: 'flex',
-                      gap: 1.2,
-                      justifyContent: 'space-between',
-                      px: 1.35,
-                      py: 1.2,
-                    }}
-                  >
-                    <Box sx={{ minWidth: 0 }}>
-                      <Typography
-                        sx={{
-                          color: theme.palette.text.primary,
-                          fontSize: '0.82rem',
-                          fontWeight: 700,
-                          letterSpacing: '0.01em',
-                        }}
-                      >
-                        {td('disable_startup_sound', 'Disable Startup Sound')}
-                      </Typography>
-                      <Typography
-                        sx={{
-                          color: theme.palette.text.secondary,
-                          fontSize: '0.75rem',
-                          lineHeight: 1.45,
-                          mt: 0.4,
-                        }}
-                      >
-                        {td(
-                          'disable_startup_sound_desc',
-                          'Turn on to mute the intro audio played when GO starts.'
-                        )}
-                      </Typography>
+                      <Box sx={{ minWidth: 0 }}>
+                        <Typography
+                          sx={{
+                            color: theme.palette.text.primary,
+                            fontSize: '0.82rem',
+                            fontWeight: 700,
+                            letterSpacing: '0.01em',
+                          }}
+                        >
+                          {td('disable_startup_sound', 'Disable Startup Sound')}
+                        </Typography>
+                        <Typography
+                          sx={{
+                            color: theme.palette.text.secondary,
+                            fontSize: '0.75rem',
+                            lineHeight: 1.45,
+                            mt: 0.4,
+                          }}
+                        >
+                          {td(
+                            'disable_startup_sound_desc',
+                            'Turn on to mute the intro audio played when the Hub starts.'
+                          )}
+                        </Typography>
+                      </Box>
+                      <Switch
+                        checked={isStartupSoundDisabled}
+                        onChange={handleToggleStartupSound}
+                        sx={settingsSwitchSx}
+                      />
                     </Box>
-                    <Switch
-                      checked={isStartupSoundDisabled}
-                      onChange={handleToggleStartupSound}
-                      sx={settingsSwitchSx}
+
+                    <Box
+                      sx={{
+                        borderTop: `1px solid ${avatarSectionDivider}`,
+                        mx: 1.35,
+                      }}
                     />
-                  </Box>
 
-                  <Box
-                    sx={{
-                      borderTop: `1px solid ${avatarSectionDivider}`,
-                      mx: 1.35,
-                    }}
-                  />
-
-                  <Box
-                    sx={{
-                      alignItems: 'center',
-                      display: 'flex',
-                      gap: 1.2,
-                      justifyContent: 'space-between',
-                      px: 1.35,
-                      py: 1.2,
-                    }}
-                  >
-                    <Box sx={{ minWidth: 0 }}>
-                      <Typography
-                        sx={{
-                          color: theme.palette.text.primary,
-                          fontSize: '0.82rem',
-                          fontWeight: 700,
-                          letterSpacing: '0.01em',
-                        }}
-                      >
-                        {td('reduce_ui_animations', 'Reduce UI Animations')}
-                      </Typography>
-                      <Typography
-                        sx={{
-                          color: theme.palette.text.secondary,
-                          fontSize: '0.75rem',
-                          lineHeight: 1.45,
-                          mt: 0.4,
-                        }}
-                      >
-                        {td(
-                          'reduce_ui_animations_desc',
-                          'Turn on to minimize motion throughout GO. Leave off for the normal animated interface.'
-                        )}
-                      </Typography>
+                    <Box
+                      sx={{
+                        alignItems: 'center',
+                        display: 'flex',
+                        gap: 1.2,
+                        justifyContent: 'space-between',
+                        px: 1.35,
+                        py: 1.2,
+                      }}
+                    >
+                      <Box sx={{ minWidth: 0 }}>
+                        <Typography
+                          sx={{
+                            color: theme.palette.text.primary,
+                            fontSize: '0.82rem',
+                            fontWeight: 700,
+                            letterSpacing: '0.01em',
+                          }}
+                        >
+                          {td('reduce_ui_animations', 'Reduce UI Animations')}
+                        </Typography>
+                        <Typography
+                          sx={{
+                            color: theme.palette.text.secondary,
+                            fontSize: '0.75rem',
+                            lineHeight: 1.45,
+                            mt: 0.4,
+                          }}
+                        >
+                          {td(
+                            'reduce_ui_animations_desc',
+                            'Turn on to minimize motion throughout the Hub. Leave off for the normal animated interface.'
+                          )}
+                        </Typography>
+                      </Box>
+                      <Switch
+                        checked={!areUiAnimationsEnabled}
+                        onChange={handleToggleUiAnimations}
+                        sx={settingsSwitchSx}
+                      />
                     </Box>
-                    <Switch
-                      checked={!areUiAnimationsEnabled}
-                      onChange={handleToggleUiAnimations}
-                      sx={settingsSwitchSx}
-                    />
-                  </Box>
-
-                  <Box
-                    sx={{
-                      borderTop: `1px solid ${avatarSectionDivider}`,
-                      mx: 1.35,
-                    }}
-                  />
-
-                  <Box
-                    sx={{
-                      alignItems: 'center',
-                      display: 'flex',
-                      gap: 1.2,
-                      justifyContent: 'space-between',
-                      px: 1.35,
-                      py: 1.2,
-                    }}
-                  >
-                    <Box sx={{ minWidth: 0 }}>
-                      <Typography
-                        sx={{
-                          color: theme.palette.text.primary,
-                          fontSize: '0.82rem',
-                          fontWeight: 700,
-                          letterSpacing: '0.01em',
-                        }}
-                      >
-                        {td('disable_auto_lock', 'Disable Auto Lock')}
-                      </Typography>
-                      <Typography
-                        sx={{
-                          color: theme.palette.text.secondary,
-                          fontSize: '0.75rem',
-                          lineHeight: 1.45,
-                          mt: 0.4,
-                        }}
-                      >
-                        {td(
-                          'disable_auto_lock_desc',
-                          'Turn on to keep GO unlocked when idle. Leave off to lock after 30 minutes of inactivity.'
-                        )}
-                      </Typography>
-                    </Box>
-                    <Switch
-                      checked={isAutoLockDisabled}
-                      onChange={handleToggleAutoLock}
-                      sx={settingsSwitchSx}
-                    />
-                  </Box>
 
                     <Box
                       sx={{
@@ -4324,7 +4334,6 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                       </Tooltip>
                     </Box>
                   </Box>
-
                 </Box>
               ) : null}
 
@@ -4436,235 +4445,679 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                 <Box sx={{ display: 'grid', gap: 1.4 }}>
                   <Box
                     sx={{
+                      alignItems: 'center',
                       background: avatarModalSurfaceSoft,
                       border: `1px solid ${avatarFieldBorder}`,
                       borderRadius: '12px',
-                      overflow: 'hidden',
+                      display: 'flex',
+                      gap: 1.2,
+                      justifyContent: 'space-between',
+                      px: 1.35,
+                      py: 1.2,
                     }}
                   >
-                    <Box
-                      sx={{
-                        alignItems: 'center',
-                        display: 'flex',
-                        gap: 1.2,
-                        justifyContent: 'space-between',
-                        px: 1.35,
-                        py: 1.2,
-                      }}
-                    >
-                      <Box sx={{ minWidth: 0 }}>
-                        <Typography
-                          sx={{
-                            color: theme.palette.text.primary,
-                            fontSize: '0.82rem',
-                            fontWeight: 700,
-                            letterSpacing: '0.01em',
-                          }}
-                        >
-                          {td(
-                            'managed_reticulum_config',
-                            'Managed Reticulum config'
-                          )}
-                        </Typography>
-                        <Typography
-                          sx={{
-                            color: theme.palette.text.secondary,
-                            fontSize: '0.75rem',
-                            lineHeight: 1.45,
-                            mt: 0.4,
-                          }}
-                        >
-                          {td(
-                            'managed_reticulum_config_desc',
-                            'Allow Qortal Go to write its managed rnsd config on startup for all instances.'
-                          )}
-                        </Typography>
-                      </Box>
-                      <Switch
-                        checked={reticulumManagedConfigEnabled}
-                        onChange={handleToggleReticulumManagedConfig}
-                        sx={settingsSwitchSx}
-                      />
+                    <Box sx={{ minWidth: 0 }}>
+                      <Typography
+                        sx={{
+                          color: theme.palette.text.primary,
+                          fontSize: '0.82rem',
+                          fontWeight: 700,
+                          letterSpacing: '0.01em',
+                        }}
+                      >
+                        {td('enable_reticulum', 'Enable Reticulum')}
+                      </Typography>
+                      <Typography
+                        sx={{
+                          color: theme.palette.text.secondary,
+                          fontSize: '0.75rem',
+                          lineHeight: 1.45,
+                          mt: 0.4,
+                        }}
+                      >
+                        {td(
+                          'enable_reticulum_desc',
+                          'Use Reticulum for chat, calls, Qortal Land, and connected features on this device.'
+                        )}
+                      </Typography>
                     </Box>
+                    <Switch
+                      checked={reticulumEnabled}
+                      disabled={reticulumTransitionBusy}
+                      onChange={handleToggleReticulum}
+                      sx={settingsSwitchSx}
+                    />
                   </Box>
 
-                  {!reticulumManagedConfigEnabled ? (
-                    <Box
-                      sx={{
-                        background: avatarModalSurfaceSoft,
-                        border: `1px solid ${avatarFieldBorder}`,
-                        borderRadius: '12px',
-                        overflow: 'hidden',
-                      }}
-                    >
-                      <Box sx={{ px: 1.35, py: 1.2 }}>
-                        <Typography
-                          sx={{
-                            color: theme.palette.text.primary,
-                            fontSize: '0.82rem',
-                            fontWeight: 700,
-                            letterSpacing: '0.01em',
-                          }}
-                        >
-                          {td('reticulum_config_editor', 'Config editor')}
-                        </Typography>
-                        <Typography
-                          sx={{
-                            color: theme.palette.text.secondary,
-                            fontSize: '0.75rem',
-                            lineHeight: 1.45,
-                            mt: 0.45,
-                          }}
-                        >
-                          {reticulumConfigEditorInfo?.instanceLabel ??
-                            td(
-                              'reticulum_config_instance_fallback',
-                              'This instance'
-                            )}{' '}
-                          {td(
-                            'reticulum_config_shared_path_prefix',
-                            'uses the shared Reticulum daemon config at'
-                          )}{' '}
-                          <Box
-                            component="span"
-                            sx={{
-                              color: theme.palette.text.primary,
-                              fontFamily: 'monospace',
-                              overflowWrap: 'anywhere',
-                            }}
-                          >
-                            {reticulumConfigEditorInfo?.configPath ??
-                              td(
-                                'reticulum_config_path_fallback',
-                                'the Reticulum config path'
-                              )}
-                          </Box>
-                          .{' '}
-                          {td(
-                            'reticulum_config_shared_path_suffix',
-                            'Changes affect local GO instances that use this shared daemon and take effect after Reticulum restarts.'
-                          )}
-                        </Typography>
-
-                        {reticulumConfigError ? (
-                          <Typography
-                            sx={{
-                              color: theme.palette.error.main,
-                              fontSize: '0.75rem',
-                              lineHeight: 1.45,
-                              mt: 1,
-                            }}
-                          >
-                            {reticulumConfigError}
-                          </Typography>
-                        ) : null}
-
-                        <TextField
-                          value={reticulumConfigDraft}
-                          onChange={(event) =>
-                            setReticulumConfigDraft(event.target.value)
-                          }
-                          disabled={isReticulumConfigLoading}
-                          fullWidth
-                          multiline
-                          minRows={12}
-                          maxRows={18}
-                          placeholder="[reticulum]"
-                          spellCheck={false}
-                          sx={{
-                            mt: 1.1,
-                            '& .MuiInputBase-input': {
-                              fontFamily:
-                                'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
-                              fontSize: '0.78rem',
-                              lineHeight: 1.55,
-                            },
-                          }}
-                        />
-
+                  {reticulumEnabled ? (
+                    <>
+                      <Box
+                        sx={{
+                          background: avatarModalSurfaceSoft,
+                          border: `1px solid ${avatarFieldBorder}`,
+                          borderRadius: '12px',
+                          overflow: 'hidden',
+                        }}
+                      >
                         <Box
                           sx={{
                             alignItems: 'center',
                             display: 'flex',
-                            gap: 1,
+                            gap: 1.2,
                             justifyContent: 'space-between',
-                            mt: 1,
+                            px: 1.35,
+                            py: 1.2,
                           }}
                         >
+                          <Box sx={{ minWidth: 0 }}>
+                            <Typography
+                              sx={{
+                                color: theme.palette.text.primary,
+                                fontSize: '0.82rem',
+                                fontWeight: 700,
+                                letterSpacing: '0.01em',
+                              }}
+                            >
+                              {td(
+                                'managed_reticulum_config',
+                                'Managed Reticulum config'
+                              )}
+                            </Typography>
+                            <Typography
+                              sx={{
+                                color: theme.palette.text.secondary,
+                                fontSize: '0.75rem',
+                                lineHeight: 1.45,
+                                mt: 0.4,
+                              }}
+                            >
+                              {td(
+                                'managed_reticulum_config_desc',
+                                'Allow Qortal Hub to write its managed rnsd config on startup for all instances.'
+                              )}
+                            </Typography>
+                          </Box>
+                          <Switch
+                            checked={reticulumManagedConfigEnabled}
+                            onChange={handleToggleReticulumManagedConfig}
+                            sx={settingsSwitchSx}
+                          />
+                        </Box>
+                      </Box>
+
+                      <Box
+                        sx={{
+                          alignItems: 'center',
+                          background: avatarModalSurfaceSoft,
+                          border: `1px solid ${avatarFieldBorder}`,
+                          borderRadius: '12px',
+                          display: 'flex',
+                          gap: 1.2,
+                          justifyContent: 'space-between',
+                          px: 1.35,
+                          py: 1.2,
+                        }}
+                      >
+                        <Box sx={{ minWidth: 0 }}>
+                          <Typography
+                            sx={{
+                              color: theme.palette.text.primary,
+                              fontSize: '0.82rem',
+                              fontWeight: 700,
+                              letterSpacing: '0.01em',
+                            }}
+                          >
+                            {td('reticulum_details', 'Reticulum details')}
+                          </Typography>
                           <Typography
                             sx={{
                               color: theme.palette.text.secondary,
-                              fontSize: '0.72rem',
-                              lineHeight: 1.4,
+                              fontSize: '0.75rem',
+                              lineHeight: 1.45,
+                              mt: 0.4,
                             }}
                           >
-                            {td('reticulum_config_chars_count', '{{count}} chars', {
-                              count: reticulumConfigDraft.length.toLocaleString(),
-                            })}
-                            {reticulumConfigEditorInfo?.maxBytes
-                              ? ` · ${td('reticulum_config_limit_bytes', 'limit {{count}} bytes', {
-                                  count:
-                                    reticulumConfigEditorInfo.maxBytes.toLocaleString(),
-                                })}`
-                              : ''}
+                            {td(
+                              'reticulum_details_desc',
+                              'View this node destination and established overlay links.'
+                            )}
                           </Typography>
-                          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
-                            <Button
-                              disabled={isReticulumConfigLoading}
-                              onClick={() =>
-                                void handleRevealReticulumConfigInFileExplorer()
-                              }
-                              size="small"
-                              startIcon={<FolderOpenRoundedIcon />}
-                              variant="outlined"
+                        </Box>
+                        <Button
+                          onClick={openReticulumDetails}
+                          size="small"
+                          startIcon={<InfoOutlinedIcon />}
+                          variant="outlined"
+                          sx={{ flexShrink: 0 }}
+                        >
+                          {td('reticulum_details_button', 'Reticulum details')}
+                        </Button>
+                      </Box>
+
+                      {!reticulumManagedConfigEnabled ? (
+                        <Box
+                          sx={{
+                            background: avatarModalSurfaceSoft,
+                            border: `1px solid ${avatarFieldBorder}`,
+                            borderRadius: '12px',
+                            overflow: 'hidden',
+                          }}
+                        >
+                          <Box sx={{ px: 1.35, py: 1.2 }}>
+                            <Typography
+                              sx={{
+                                color: theme.palette.text.primary,
+                                fontSize: '0.82rem',
+                                fontWeight: 700,
+                                letterSpacing: '0.01em',
+                              }}
                             >
+                              {td('reticulum_config_editor', 'Config editor')}
+                            </Typography>
+                            <Typography
+                              sx={{
+                                color: theme.palette.text.secondary,
+                                fontSize: '0.75rem',
+                                lineHeight: 1.45,
+                                mt: 0.45,
+                              }}
+                            >
+                              {reticulumConfigEditorInfo?.instanceLabel ??
+                                td(
+                                  'reticulum_config_instance_fallback',
+                                  'This instance'
+                                )}{' '}
                               {td(
-                                'reveal_reticulum_config',
-                                'Reveal in file explorer'
-                              )}
-                            </Button>
-                            <Button
-                              disabled={isReticulumConfigLoading}
-                              onClick={() =>
-                                void handleResetReticulumConfigToDefault()
-                              }
-                              size="small"
-                              variant="outlined"
-                            >
+                                'reticulum_config_shared_path_prefix',
+                                'uses the shared Reticulum daemon config at'
+                              )}{' '}
+                              <Box
+                                component="span"
+                                sx={{
+                                  color: theme.palette.text.primary,
+                                  fontFamily: 'monospace',
+                                  overflowWrap: 'anywhere',
+                                }}
+                              >
+                                {reticulumConfigEditorInfo?.configPath ??
+                                  td(
+                                    'reticulum_config_path_fallback',
+                                    'the Reticulum config path'
+                                  )}
+                              </Box>
+                              .{' '}
                               {td(
-                                'reset_reticulum_default',
-                                'Reset to GO default'
+                                'reticulum_config_shared_path_suffix',
+                                'Changes affect local Hub instances that use this shared daemon and take effect after Reticulum restarts.'
                               )}
-                            </Button>
-                            <LoadingButton
-                              loading={isReticulumConfigLoading}
-                              onClick={() => void loadReticulumConfigEditorInfo()}
-                              size="small"
-                              variant="outlined"
-                            >
-                              {td('reload', 'Reload')}
-                            </LoadingButton>
-                            <LoadingButton
-                              disabled={
-                                reticulumConfigEditorInfo?.contents ===
-                                reticulumConfigDraft
+                            </Typography>
+
+                            {reticulumConfigError ? (
+                              <Typography
+                                sx={{
+                                  color: theme.palette.error.main,
+                                  fontSize: '0.75rem',
+                                  lineHeight: 1.45,
+                                  mt: 1,
+                                }}
+                              >
+                                {reticulumConfigError}
+                              </Typography>
+                            ) : null}
+
+                            <TextField
+                              value={reticulumConfigDraft}
+                              onChange={(event) =>
+                                setReticulumConfigDraft(event.target.value)
                               }
-                              loading={isReticulumConfigSaving}
-                              onClick={() => void handleSaveReticulumConfig()}
-                              size="small"
-                              variant="contained"
+                              disabled={isReticulumConfigLoading}
+                              fullWidth
+                              multiline
+                              minRows={12}
+                              maxRows={18}
+                              placeholder="[reticulum]"
+                              spellCheck={false}
+                              sx={{
+                                mt: 1.1,
+                                '& .MuiInputBase-input': {
+                                  fontFamily:
+                                    'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+                                  fontSize: '0.78rem',
+                                  lineHeight: 1.55,
+                                },
+                              }}
+                            />
+
+                            <Box
+                              sx={{
+                                alignItems: 'center',
+                                display: 'flex',
+                                gap: 1,
+                                justifyContent: 'space-between',
+                                mt: 1,
+                              }}
                             >
-                              {td('save', 'Save')}
-                            </LoadingButton>
+                              <Typography
+                                sx={{
+                                  color: theme.palette.text.secondary,
+                                  fontSize: '0.72rem',
+                                  lineHeight: 1.4,
+                                }}
+                              >
+                                {td(
+                                  'reticulum_config_chars_count',
+                                  '{{count}} chars',
+                                  {
+                                    count:
+                                      reticulumConfigDraft.length.toLocaleString(),
+                                  }
+                                )}
+                                {reticulumConfigEditorInfo?.maxBytes
+                                  ? ` · ${td(
+                                      'reticulum_config_limit_bytes',
+                                      'limit {{count}} bytes',
+                                      {
+                                        count:
+                                          reticulumConfigEditorInfo.maxBytes.toLocaleString(),
+                                      }
+                                    )}`
+                                  : ''}
+                              </Typography>
+                              <Box
+                                sx={{
+                                  display: 'flex',
+                                  flexWrap: 'wrap',
+                                  gap: 1,
+                                }}
+                              >
+                                <Button
+                                  disabled={isReticulumConfigLoading}
+                                  onClick={() =>
+                                    void handleRevealReticulumConfigInFileExplorer()
+                                  }
+                                  size="small"
+                                  startIcon={<FolderOpenRoundedIcon />}
+                                  variant="outlined"
+                                >
+                                  {td(
+                                    'reveal_reticulum_config',
+                                    'Reveal in file explorer'
+                                  )}
+                                </Button>
+                                <Button
+                                  disabled={isReticulumConfigLoading}
+                                  onClick={() =>
+                                    void handleResetReticulumConfigToDefault()
+                                  }
+                                  size="small"
+                                  variant="outlined"
+                                >
+                                  {td(
+                                    'reset_reticulum_default',
+                                    'Reset to Hub default'
+                                  )}
+                                </Button>
+                                <LoadingButton
+                                  loading={isReticulumConfigLoading}
+                                  onClick={() =>
+                                    void loadReticulumConfigEditorInfo()
+                                  }
+                                  size="small"
+                                  variant="outlined"
+                                >
+                                  {td('reload', 'Reload')}
+                                </LoadingButton>
+                                <LoadingButton
+                                  disabled={
+                                    reticulumConfigEditorInfo?.contents ===
+                                    reticulumConfigDraft
+                                  }
+                                  loading={isReticulumConfigSaving}
+                                  onClick={() =>
+                                    void handleSaveReticulumConfig()
+                                  }
+                                  size="small"
+                                  variant="contained"
+                                >
+                                  {td('save', 'Save')}
+                                </LoadingButton>
+                              </Box>
+                            </Box>
                           </Box>
                         </Box>
-                      </Box>
-                    </Box>
+                      ) : null}
+                    </>
                   ) : null}
                 </Box>
               ) : null}
             </Box>
           </Box>
+        </Box>
+      </Dialog>
+
+      <Dialog
+        open={reticulumDisableConfirmOpen}
+        onClose={() => setReticulumDisableConfirmOpen(false)}
+        maxWidth="xs"
+        fullWidth
+      >
+        <Box sx={{ px: 2.5, pt: 2.4, pb: 1.2 }}>
+          <Typography sx={{ fontSize: '1.05rem', fontWeight: 700 }}>
+            {td('disable_reticulum_title', 'Disable Reticulum?')}
+          </Typography>
+          <Typography
+            sx={{ color: 'text.secondary', fontSize: '0.82rem', mt: 0.8 }}
+          >
+            {td(
+              'disable_reticulum_desc',
+              'Q-Chat will use legacy chat. Calls and Qortal Land will be unavailable until Reticulum is enabled again.'
+            )}
+          </Typography>
+        </Box>
+        <Box
+          sx={{
+            display: 'flex',
+            gap: 1,
+            justifyContent: 'flex-end',
+            px: 2.5,
+            pb: 2.2,
+          }}
+        >
+          <Button
+            onClick={() => setReticulumDisableConfirmOpen(false)}
+            variant="outlined"
+          >
+            {td('cancel', 'Cancel')}
+          </Button>
+          <Button
+            color="error"
+            onClick={confirmDisableReticulum}
+            variant="contained"
+          >
+            {td('disable_reticulum', 'Disable Reticulum')}
+          </Button>
+        </Box>
+      </Dialog>
+
+      <Dialog
+        open={isReticulumDetailsOpen}
+        onClose={closeReticulumDetails}
+        aria-labelledby="reticulum-details-dialog-title"
+        maxWidth={false}
+        fullWidth
+        slotProps={{
+          backdrop: {
+            sx: {
+              backdropFilter: isDarkMode
+                ? 'blur(10px) brightness(0.78)'
+                : 'blur(10px) brightness(0.92)',
+              WebkitBackdropFilter: isDarkMode
+                ? 'blur(10px) brightness(0.78)'
+                : 'blur(10px) brightness(0.92)',
+              backgroundColor: isDarkMode
+                ? 'rgba(6, 8, 12, 0.32)'
+                : 'rgba(22, 26, 34, 0.1)',
+            },
+          },
+          paper: {
+            sx: {
+              background: avatarModalSurface,
+              border: isDarkMode
+                ? '1px solid rgba(255,255,255,0.1)'
+                : '1px solid rgba(24,29,36,0.1)',
+              borderRadius: '14px',
+              boxShadow: isDarkMode
+                ? '0 30px 100px rgba(0,0,0,0.52)'
+                : '0 24px 80px rgba(18,28,45,0.18)',
+              overflow: 'hidden',
+              width: 'min(680px, calc(100vw - 40px))',
+            },
+          },
+        }}
+      >
+        <Box sx={{ p: 2.2 }}>
+          <Box
+            sx={{
+              alignItems: 'flex-start',
+              display: 'flex',
+              gap: 1.4,
+              justifyContent: 'space-between',
+            }}
+          >
+            <Box sx={{ minWidth: 0 }}>
+              <Typography
+                id="reticulum-details-dialog-title"
+                sx={{
+                  color: theme.palette.text.primary,
+                  fontSize: '1rem',
+                  fontWeight: 800,
+                  lineHeight: 1.2,
+                }}
+              >
+                {td('reticulum_details', 'Reticulum details')}
+              </Typography>
+              <Typography
+                sx={{
+                  color: theme.palette.text.secondary,
+                  fontSize: '0.78rem',
+                  lineHeight: 1.45,
+                  mt: 0.45,
+                }}
+              >
+                {td(
+                  'reticulum_details_runtime_desc',
+                  'Runtime destination and established overlay links.'
+                )}
+              </Typography>
+            </Box>
+            <ButtonBase
+              onClick={closeReticulumDetails}
+              aria-label="Close Reticulum details"
+              sx={{
+                alignItems: 'center',
+                borderRadius: '50%',
+                color: theme.palette.text.secondary,
+                display: 'inline-flex',
+                flexShrink: 0,
+                height: 34,
+                justifyContent: 'center',
+                width: 34,
+                '&:hover': {
+                  backgroundColor: alpha(theme.palette.common.white, 0.08),
+                  color: theme.palette.text.primary,
+                },
+              }}
+            >
+              <CloseIcon fontSize="small" />
+            </ButtonBase>
+          </Box>
+
+          <Box
+            sx={{
+              background: avatarModalSurfaceSoft,
+              border: `1px solid ${avatarFieldBorder}`,
+              borderRadius: '10px',
+              mt: 1.8,
+              p: 1.35,
+            }}
+          >
+            <Typography
+              sx={{
+                color: theme.palette.text.secondary,
+                fontSize: '0.72rem',
+                fontWeight: 700,
+                textTransform: 'uppercase',
+              }}
+            >
+              {td('reticulum_destination_hash', 'Destination hash')}
+            </Typography>
+            <Typography
+              sx={{
+                color: theme.palette.text.primary,
+                fontFamily:
+                  'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+                fontSize: '0.8rem',
+                lineHeight: 1.55,
+                mt: 0.55,
+                overflowWrap: 'anywhere',
+              }}
+            >
+              {reticulumDetails?.destinationHash ??
+                td('unavailable', 'Unavailable')}
+            </Typography>
+          </Box>
+
+          <Box
+            sx={{
+              alignItems: 'center',
+              display: 'flex',
+              gap: 1,
+              justifyContent: 'space-between',
+              mt: 1.6,
+            }}
+          >
+            <Typography
+              sx={{
+                color: theme.palette.text.primary,
+                fontSize: '0.84rem',
+                fontWeight: 800,
+              }}
+            >
+              {td('reticulum_overlay_peers', 'Established overlay peers')}
+            </Typography>
+            <LoadingButton
+              loading={isReticulumDetailsLoading}
+              onClick={() => void loadReticulumDetails()}
+              size="small"
+              variant="outlined"
+            >
+              {td('refresh', 'Refresh')}
+            </LoadingButton>
+          </Box>
+
+          {reticulumDetailsError ? (
+            <Typography
+              sx={{
+                color: theme.palette.error.main,
+                fontSize: '0.76rem',
+                lineHeight: 1.45,
+                mt: 1,
+              }}
+            >
+              {reticulumDetailsError}
+            </Typography>
+          ) : null}
+
+          <Box
+            sx={{
+              border: `1px solid ${avatarFieldBorder}`,
+              borderRadius: '10px',
+              maxHeight: 'min(360px, 48vh)',
+              mt: 1,
+              overflow: 'auto',
+            }}
+          >
+            {reticulumDetails?.overlayPeers?.length ? (
+              reticulumDetails.overlayPeers.map((peer) => (
+                <Box
+                  key={`${peer.peerPresenceHash}:${peer.linkId}`}
+                  sx={{
+                    borderBottom: `1px solid ${alpha(
+                      theme.palette.divider,
+                      0.65
+                    )}`,
+                    display: 'grid',
+                    gap: 0.75,
+                    p: 1.2,
+                    '&:last-of-type': {
+                      borderBottom: 'none',
+                    },
+                  }}
+                >
+                  <Box
+                    sx={{
+                      alignItems: 'center',
+                      display: 'flex',
+                      gap: 1,
+                      justifyContent: 'space-between',
+                    }}
+                  >
+                    <Typography
+                      sx={{
+                        color: theme.palette.text.secondary,
+                        fontSize: '0.72rem',
+                        fontWeight: 700,
+                        textTransform: 'uppercase',
+                      }}
+                    >
+                      {peer.incoming
+                        ? td('reticulum_link_inbound', 'Inbound')
+                        : td('reticulum_link_outbound', 'Outbound')}
+                    </Typography>
+                    <Typography
+                      sx={{
+                        color: theme.palette.text.secondary,
+                        fontSize: '0.74rem',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {td(
+                        'reticulum_connected_for',
+                        'Connected for {{duration}}',
+                        {
+                          duration: formatReticulumConnectedDuration(
+                            peer.connectedAt,
+                            reticulumDetailsNow
+                          ),
+                        }
+                      )}
+                    </Typography>
+                  </Box>
+                  <Typography
+                    sx={{
+                      color: theme.palette.text.primary,
+                      fontFamily:
+                        'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+                      fontSize: '0.78rem',
+                      lineHeight: 1.5,
+                      overflowWrap: 'anywhere',
+                    }}
+                  >
+                    {peer.peerPresenceHash}
+                  </Typography>
+                  {peer.addresses?.length || peer.address ? (
+                    <Typography
+                      sx={{
+                        color: theme.palette.text.secondary,
+                        fontSize: '0.74rem',
+                        lineHeight: 1.4,
+                        overflowWrap: 'anywhere',
+                      }}
+                    >
+                      {peer.addresses?.length
+                        ? peer.addresses.join(', ')
+                        : peer.address}
+                    </Typography>
+                  ) : null}
+                </Box>
+              ))
+            ) : (
+              <Typography
+                sx={{
+                  color: theme.palette.text.secondary,
+                  fontSize: '0.78rem',
+                  lineHeight: 1.5,
+                  p: 1.4,
+                }}
+              >
+                {isReticulumDetailsLoading
+                  ? td('loading', 'Loading...')
+                  : td(
+                      'reticulum_no_overlay_peers',
+                      'No established overlay peers.'
+                    )}
+              </Typography>
+            )}
           </Box>
         </Box>
       </Dialog>
@@ -4754,9 +5207,7 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                       : '0 28px 88px rgba(18,28,45,0.16)',
                     clipPath: 'inset(0 round 14px)',
                     isolation: 'isolate',
-                    maxHeight: `${avatarPanelLayout.maxHeight}px`,
-                    overflowX: 'hidden',
-                    overflowY: 'auto',
+                    overflow: 'hidden',
                   }}
                 >
                   <Box
@@ -4891,10 +5342,7 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                         </Box>
                       </Box>
 
-                      <ImageUploader
-                        skipCompression
-                        onPick={(file) => setAvatarCropFile(file)}
-                      >
+                      <ImageUploader onPick={(file) => setAvatarFile(file)}>
                         <ButtonBase
                           sx={{
                             alignItems: 'center',
@@ -5058,19 +5506,6 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
             </>
           )}
         </AnimatePresence>
-      </Portal>
-
-      <Portal>
-        <AvatarCropper
-          open={Boolean(avatarCropSrc)}
-          imageSrc={avatarCropSrc}
-          fileName={avatarCropFile?.name}
-          onCancel={() => setAvatarCropFile(null)}
-          onCropped={(file) => {
-            setAvatarFile(file);
-            setAvatarCropFile(null);
-          }}
-        />
       </Portal>
     </Box>
   );

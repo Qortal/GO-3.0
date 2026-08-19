@@ -19,6 +19,7 @@ import VolumeOffRoundedIcon from '@mui/icons-material/VolumeOffRounded';
 import VolumeUpRoundedIcon from '@mui/icons-material/VolumeUpRounded';
 import SpeakerPhoneRoundedIcon from '@mui/icons-material/SpeakerPhoneRounded';
 import PhoneInTalkRoundedIcon from '@mui/icons-material/PhoneInTalkRounded';
+import ScreenShareRoundedIcon from '@mui/icons-material/ScreenShareRounded';
 import { Capacitor } from '@capacitor/core';
 import { useAtomValue, useSetAtom } from 'jotai';
 import { useTranslation } from 'react-i18next';
@@ -70,6 +71,7 @@ export function DirectVoiceCallNavWidget() {
   const { confirmCallSwitch } = useCallSwitchGuard();
   const {
     activeCallChatId,
+    audioMode,
     startupStatus,
     callMediaReady,
     callDuration,
@@ -80,6 +82,10 @@ export function DirectVoiceCallNavWidget() {
     isMuted,
     toggleHearCall,
     toggleMute,
+    screenShareState,
+    screenShareSupported,
+    openScreenSharePicker,
+    setScreenShareViewerOpen,
   } = useVoiceCallContext();
   const isNative = Capacitor.isNativePlatform();
   const [speakerOn, setSpeakerOn] = useState(isCallSpeakerOn());
@@ -222,7 +228,7 @@ export function DirectVoiceCallNavWidget() {
           display: 'flex',
           gap: 0.75,
           height: 36,
-          maxWidth: { xs: 218, sm: 320, md: 382 },
+          maxWidth: { xs: 218, sm: 320, md: 452 },
           minWidth: 0,
           px: 0.75,
         }}
@@ -338,6 +344,62 @@ export function DirectVoiceCallNavWidget() {
             />
           </Box>
         ) : null}
+
+        <Tooltip
+          title={
+            audioMode !== 'webrtc'
+              ? 'Screen sharing requires a direct WebRTC call'
+              : !screenShareSupported
+                ? 'The other person does not support screen sharing'
+                : screenShareState === 'viewing'
+                  ? 'View shared screen'
+                  : screenShareState === 'sharing'
+                    ? 'View your screen share'
+                    : isNative
+                      ? 'Starting a screen share is not available on this device'
+                      : 'Share your screen'
+          }
+          arrow
+        >
+          <span>
+            <IconButton
+              disabled={
+                callState !== 'connected' ||
+                !callMediaReady ||
+                audioMode !== 'webrtc' ||
+                !screenShareSupported ||
+                (isNative &&
+                  screenShareState !== 'sharing' &&
+                  screenShareState !== 'viewing' &&
+                  screenShareState !== 'starting')
+              }
+              size="small"
+              onClick={() => {
+                if (
+                  screenShareState === 'sharing' ||
+                  screenShareState === 'viewing' ||
+                  screenShareState === 'starting'
+                ) {
+                  setScreenShareViewerOpen(true);
+                } else if (!isNative) {
+                  void openScreenSharePicker();
+                }
+              }}
+              sx={{
+                color:
+                  screenShareState === 'sharing' ||
+                  screenShareState === 'viewing'
+                    ? theme.palette.primary.main
+                    : theme.palette.text.secondary,
+                flexShrink: 0,
+                height: 28,
+                width: 28,
+              }}
+            >
+              <ScreenShareRoundedIcon sx={{ fontSize: 17 }} />
+            </IconButton>
+          </span>
+        </Tooltip>
 
         <Tooltip
           title={

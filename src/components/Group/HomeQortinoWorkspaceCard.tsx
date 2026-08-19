@@ -1798,7 +1798,7 @@ export const HomeQortinoWorkspaceCard = ({
   onGettingStartedComplete,
   onOpenAppsPanel,
 }: HomeQortinoWorkspaceCardProps) => {
-  const { t } = useTranslation(['tutorial', 'core']);
+  const { t } = useTranslation(['group', 'core']);
   const qw = useCallback(
     (
       suffix: string,
@@ -2679,50 +2679,47 @@ export const HomeQortinoWorkspaceCard = ({
     () => [
       {
         accent: '#92B8FF',
-        actionLabel: t(
-          'tutorial:home.get_six_qorts_way3_action',
-          'Open Q-Trade'
-        ),
-        ctaLabel: t('tutorial:home.get_six_qorts', 'Get 6 QORT'),
+        actionLabel: t('group:home.get_six_qorts_way3_action', 'Open Q-Trade'),
+        ctaLabel: t('group:home.get_six_qorts', 'Get 6 QORT'),
         done: hasQorts,
         helper: t(
-          'tutorial:home.get_qorts_workspace_hint',
+          'group:home.get_qorts_workspace_hint',
           'Unlock your first 6 QORT to activate the rest of the setup.'
         ),
         icon: ShoppingBagRoundedIcon,
         key: 'get_six_qorts' as const,
-        label: t('tutorial:home.get_six_qorts', 'Get 6 QORT'),
+        label: t('group:home.get_six_qorts', 'Get 6 QORT'),
         onAction: () => setOpenQortsDialog(true),
       },
       {
         accent: '#8DBEFF',
-        actionLabel: t('tutorial:home.open', 'Open'),
-        ctaLabel: t('tutorial:home.register_name', 'Register your name'),
+        actionLabel: t('group:home.open', 'Open'),
+        ctaLabel: t('group:home.register_name', 'Register your name'),
         done: hasName,
         helper: t(
-          'tutorial:home.register_name_workspace_hint',
+          'group:home.register_name_workspace_hint',
           'A registered name turns this account into a recognizable identity.'
         ),
         icon: DriveFileRenameOutlineRoundedIcon,
         key: 'register_name' as const,
         label: hasPendingRegisterName
-          ? t('tutorial:home.confirming', 'Confirming')
-          : t('tutorial:home.register_name', 'Register your name'),
+          ? t('group:home.confirming', 'Confirming')
+          : t('group:home.register_name', 'Register your name'),
         loading: hasPendingRegisterName,
         onAction: () => executeEvent('openRegisterName', {}),
       },
       {
         accent: '#8DBEFF',
-        actionLabel: t('tutorial:home.open', 'Open'),
-        ctaLabel: t('tutorial:home.load_avatar', 'Load your avatar'),
+        actionLabel: t('group:home.open', 'Open'),
+        ctaLabel: t('group:home.load_avatar', 'Load your avatar'),
         done: resolvedHasAvatar,
         helper: t(
-          'tutorial:home.load_avatar_workspace_hint',
+          'group:home.load_avatar_workspace_hint',
           'Give the dashboard a face so the whole space starts to feel like yours.'
         ),
         icon: UploadRoundedIcon,
         key: 'load_avatar' as const,
-        label: t('tutorial:home.load_avatar', 'Load your avatar'),
+        label: t('group:home.load_avatar', 'Load your avatar'),
         loading: checkingAvatar,
         onAction: () => executeEvent('openAvatarUpload', {}),
       },
@@ -2760,13 +2757,13 @@ export const HomeQortinoWorkspaceCard = ({
   const currentStep = isQortsAcquiredAwaitingNext
     ? {
         ...steps[0],
-        ctaLabel: t('tutorial:home.next', 'Next'),
+        ctaLabel: t('group:home.next', 'Next'),
         done: true,
         helper: t(
-          'tutorial:home.qorts_acquired_hint',
+          'group:home.qorts_acquired_hint',
           'The hardest part is over. Press Next when you are ready to register your name.'
         ),
-        label: t('tutorial:home.qorts_acquired', 'QORT acquired'),
+        label: t('group:home.qorts_acquired', 'QORT acquired'),
         loading: false,
       }
     : baseCurrentStep;
@@ -2797,13 +2794,13 @@ export const HomeQortinoWorkspaceCard = ({
     const nextRecognitionMessage =
       previousStepKey === 'get_six_qorts' && currentStep.key === 'register_name'
         ? t(
-            'tutorial:home.onboarding_transition_hard_part_done',
+            'group:home.onboarding_transition_hard_part_done',
             'Nice work. The hardest part is done.'
           )
         : previousStepKey === 'register_name' &&
             currentStep.key === 'load_avatar'
           ? t(
-              'tutorial:home.onboarding_transition_one_more',
+              'group:home.onboarding_transition_one_more',
               'Great. One more to go.'
             )
           : null;
@@ -2910,7 +2907,7 @@ export const HomeQortinoWorkspaceCard = ({
     setOnboardingTransitionMessage(null);
     setPostOnboardingMessage(
       t(
-        'tutorial:home.post_onboarding_workspace_ready',
+        'group:home.post_onboarding_workspace_ready',
         'All set. You can start building your workspace above.'
       )
     );
@@ -3500,7 +3497,7 @@ export const HomeQortinoWorkspaceCard = ({
 
     if (isQortsAcquiredAwaitingNext) {
       return t(
-        'tutorial:home.onboarding_press_next_when_ready',
+        'group:home.onboarding_press_next_when_ready',
         'Nice work. The hardest part is done. Press Next when you are ready.'
       );
     }
@@ -3511,27 +3508,27 @@ export const HomeQortinoWorkspaceCard = ({
       showRegisterNameDelayHint
     ) {
       return t(
-        'tutorial:home.register_name_pending_hint',
+        'group:home.register_name_pending_hint',
         'Saving name on-chain. This can take a moment.'
       );
     }
 
     if (currentStep.key === 'get_six_qorts') {
       return t(
-        'tutorial:home.persistent_guide_get_qorts',
+        'group:home.persistent_guide_get_qorts',
         "Let's start with 6 QORT. Pick any option above."
       );
     }
 
     if (currentStep.key === 'register_name') {
       return t(
-        'tutorial:home.persistent_guide_register_name',
+        'group:home.persistent_guide_register_name',
         'Next, register your name.'
       );
     }
 
     return t(
-      'tutorial:home.persistent_guide_load_avatar',
+      'group:home.persistent_guide_load_avatar',
       'Finally, add your avatar.'
     );
   }, [
@@ -4396,7 +4393,7 @@ export const HomeQortinoWorkspaceCard = ({
   const currentStepPrimaryAction = useMemo(() => {
     if (isQortsAcquiredAwaitingNext) {
       return {
-        label: t('tutorial:home.next', 'Next'),
+        label: t('group:home.next', 'Next'),
         onClick: () => {
           setQortsAcquiredAcknowledged(true);
           if (onboardingMessageTimeoutRef.current) {
@@ -4404,7 +4401,7 @@ export const HomeQortinoWorkspaceCard = ({
           }
           setOnboardingTransitionMessage(
             t(
-              'tutorial:home.onboarding_transition_hard_part_done',
+              'group:home.onboarding_transition_hard_part_done',
               'Nice work. The hardest part is done.'
             )
           );
@@ -4418,7 +4415,7 @@ export const HomeQortinoWorkspaceCard = ({
 
     if (currentStep.key === 'get_six_qorts') {
       return {
-        label: t('tutorial:home.get_six_qorts_way1_action', 'Go to onboarding'),
+        label: t('group:home.get_six_qorts_way1_action', 'Go to onboarding'),
         onClick: () => {
           pushReaction(
             qw(
@@ -4454,10 +4451,7 @@ export const HomeQortinoWorkspaceCard = ({
 
     return [
       {
-        label: t(
-          'tutorial:home.get_six_qorts_way2_action',
-          'Open support chat'
-        ),
+        label: t('group:home.get_six_qorts_way2_action', 'Open support chat'),
         onClick: () => {
           pushReaction(
             qw(
@@ -4469,7 +4463,7 @@ export const HomeQortinoWorkspaceCard = ({
         },
       },
       {
-        label: t('tutorial:home.get_six_qorts_way3_action', 'Open Q-Trade'),
+        label: t('group:home.get_six_qorts_way3_action', 'Open Q-Trade'),
         onClick: () => {
           pushReaction(
             qw(
@@ -4498,7 +4492,7 @@ export const HomeQortinoWorkspaceCard = ({
     return [
       {
         description: t(
-          'tutorial:home.get_six_qorts_way1',
+          'group:home.get_six_qorts_way1',
           'Finish the onboarding instruction on qortal.dev'
         ),
         icon: SchoolRoundedIcon,
@@ -4509,15 +4503,12 @@ export const HomeQortinoWorkspaceCard = ({
       },
       {
         description: t(
-          'tutorial:home.get_six_qorts_way2',
+          'group:home.get_six_qorts_way2',
           'Ask in the Nextcloud support chat for 6 QORT.'
         ),
         icon: SupportAgentRoundedIcon,
         key: 'support',
-        label: t(
-          'tutorial:home.get_six_qorts_way2_action',
-          'Open support chat'
-        ),
+        label: t('group:home.get_six_qorts_way2_action', 'Open support chat'),
         onClick: () => {
           pushReaction(
             qw(
@@ -4531,12 +4522,12 @@ export const HomeQortinoWorkspaceCard = ({
       },
       {
         description: t(
-          'tutorial:home.get_six_qorts_way3',
+          'group:home.get_six_qorts_way3',
           'Buy QORT using Q-Trade'
         ),
         icon: ShoppingBagRoundedIcon,
         key: 'q-trade',
-        label: t('tutorial:home.get_six_qorts_way3_action', 'Open Q-Trade'),
+        label: t('group:home.get_six_qorts_way3_action', 'Open Q-Trade'),
         onClick: () => {
           pushReaction(
             qw(
@@ -4632,7 +4623,7 @@ export const HomeQortinoWorkspaceCard = ({
                 textTransform: 'uppercase',
               }}
             >
-              {t('tutorial:home.getting_started', 'Getting started')}
+              {t('group:home.getting_started', 'Getting started')}
             </Typography>
             <Typography
               sx={{
@@ -4734,7 +4725,7 @@ export const HomeQortinoWorkspaceCard = ({
                     }}
                   >
                     {t(
-                      'tutorial:home.get_qorts_workspace_hint',
+                      'group:home.get_qorts_workspace_hint',
                       'Unlock your first 6 QORT to activate the rest of the setup.'
                     )}
                   </Typography>
@@ -6608,7 +6599,7 @@ export const HomeQortinoWorkspaceCard = ({
         >
           <Box>
             <Typography sx={{ fontSize: '1rem', fontWeight: 700 }}>
-              {t('tutorial:home.get_six_qorts', 'Get 6 QORT')}
+              {t('group:home.get_six_qorts', 'Get 6 QORT')}
             </Typography>
             <Typography
               sx={{
@@ -6618,7 +6609,7 @@ export const HomeQortinoWorkspaceCard = ({
               }}
             >
               {t(
-                'tutorial:home.get_six_qorts_intro',
+                'group:home.get_six_qorts_intro',
                 'There are 3 ways to get your first 6 QORT:'
               )}
             </Typography>
@@ -6633,12 +6624,12 @@ export const HomeQortinoWorkspaceCard = ({
           <QortOptionRow
             icon={SchoolRoundedIcon}
             label={t(
-              'tutorial:home.get_six_qorts_way1',
+              'group:home.get_six_qorts_way1',
               'Finish the onboarding instruction on qortal.dev'
             )}
             onClick={() => openExternalUrl(ONBOARDING_URL)}
             actionLabel={t(
-              'tutorial:home.get_six_qorts_way1_action',
+              'group:home.get_six_qorts_way1_action',
               'Go to onboarding'
             )}
             theme={theme}
@@ -6646,28 +6637,25 @@ export const HomeQortinoWorkspaceCard = ({
           <QortOptionRow
             icon={SupportAgentRoundedIcon}
             label={t(
-              'tutorial:home.get_six_qorts_way2',
+              'group:home.get_six_qorts_way2',
               'Ask in the Nextcloud support chat for 6 QORT.'
             )}
             onClick={() => openExternalUrl(SUPPORT_CHAT_URL)}
             actionLabel={t(
-              'tutorial:home.get_six_qorts_way2_action',
+              'group:home.get_six_qorts_way2_action',
               'Open support chat'
             )}
             theme={theme}
           />
           <QortOptionRow
             icon={ShoppingBagRoundedIcon}
-            label={t(
-              'tutorial:home.get_six_qorts_way3',
-              'Buy QORT using Q-Trade'
-            )}
+            label={t('group:home.get_six_qorts_way3', 'Buy QORT using Q-Trade')}
             onClick={() => {
               openApp('Q-Trade');
               setOpenQortsDialog(false);
             }}
             actionLabel={t(
-              'tutorial:home.get_six_qorts_way3_action',
+              'group:home.get_six_qorts_way3_action',
               'Open Q-Trade'
             )}
             theme={theme}
@@ -6698,7 +6686,7 @@ const GettingStartedMethodRow = ({
   showDivider?: boolean;
 }) => {
   const theme = useTheme();
-  const { t } = useTranslation(['tutorial', 'core']);
+  const { t } = useTranslation(['core']);
   const isDarkMode = theme.palette.mode === 'dark';
 
   return (

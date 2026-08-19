@@ -750,4 +750,31 @@ export class MobileReticulumBridge extends EventEmitter {
       revision,
     });
   }
+
+  async configureCommunityStun(
+    endpoint: { host: string; port: number; expiresAt: number } | null
+  ): Promise<boolean> {
+    if (this.state !== 'ready') return false;
+    const resp = await this.sendCommand('configure_community_stun', {
+      enabled: endpoint !== null,
+      ...(endpoint ?? {}),
+    });
+    return resp.ok;
+  }
+
+  async getCommunityStunEndpoints(): Promise<
+    Array<{ host: string; port: number; expiresAt: number }>
+  > {
+    if (this.state !== 'ready') return [];
+    const resp = await this.sendCommand('get_community_stun_endpoints', {});
+    if (!resp.ok || !Array.isArray(resp.payload?.endpoints)) return [];
+    return resp.payload.endpoints.filter(
+      (value): value is { host: string; port: number; expiresAt: number } =>
+        value != null &&
+        typeof value === 'object' &&
+        typeof (value as { host?: unknown }).host === 'string' &&
+        typeof (value as { port?: unknown }).port === 'number' &&
+        typeof (value as { expiresAt?: unknown }).expiresAt === 'number'
+    );
+  }
 }

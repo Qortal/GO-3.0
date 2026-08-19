@@ -880,6 +880,11 @@ export const ChatList = ({
         reticulumReaderGestureRef.current = false;
       }
       const isPinned = distanceFromBottom <= RETICULUM_BOTTOM_PIN_THRESHOLD_PX;
+      const previousMetrics = lastScrollMetricsRef.current;
+      const contentSizeChanged =
+        previousMetrics.scrollHeight !== 0 &&
+        (previousMetrics.scrollHeight !== scrollElement.scrollHeight ||
+          previousMetrics.clientHeight !== scrollElement.clientHeight);
 
       reticulumPinnedToBottomRef.current =
         isPinned && !reticulumReadingPositionLockedRef.current;
@@ -1952,13 +1957,7 @@ export const ChatList = ({
     tempMessages,
   ]);
 
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
 
   return (
     <Box

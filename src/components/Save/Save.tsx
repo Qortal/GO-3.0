@@ -118,13 +118,7 @@ export const Save = ({
   const [openDialog, setOpenDialog] = useState(false);
   const { show } = useContext(QORTAL_APP_CONTEXT);
   const theme = useTheme();
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
 
   const hasChanged = useMemo(() => {
     const newChanges = {
@@ -455,7 +449,9 @@ export const Save = ({
                               })}
                             </Typography>
                           </Box>
-                          <Box sx={{ display: 'flex', justifyContent: 'center' }}>
+                          <Box
+                            sx={{ display: 'flex', justifyContent: 'center' }}
+                          >
                             <LoadingButton
                               size="small"
                               loading={isLoading}
@@ -487,7 +483,9 @@ export const Save = ({
                               })}
                             </Typography>
                           </Box>
-                          <Box sx={{ display: 'flex', justifyContent: 'center' }}>
+                          <Box
+                            sx={{ display: 'flex', justifyContent: 'center' }}
+                          >
                             <LoadingButton
                               loading={isLoading}
                               onClick={revertChanges}

@@ -19,6 +19,7 @@ import BoundedNumericTextField from '../common/BoundedNumericTextField.tsx';
 import { ErrorText } from './ErrorText/ErrorText.tsx';
 import { getBlueTier1ButtonSx } from '../styles/blueMaterial';
 import { executeEvent } from '../utils/events';
+import { formatQortAmount } from '../utils/numberFunctions';
 import { QORTINO_DONATION_COMPLETED_EVENT } from './Group/qortinoDonationEasterEgg';
 import { isQrScannerAvailable } from '../utils/qrScanner';
 import { parsePaymentTarget } from '../utils/paymentLink';
@@ -36,13 +37,7 @@ export const QortPayment = ({
   compact = false,
 }) => {
   const theme = useTheme();
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { i18n, t } = useTranslation(['auth', 'core', 'group', 'question']);
   const [paymentTo, setPaymentTo] = useState<string>(defaultPaymentTo);
   const [paymentAmount, setPaymentAmount] = useState<number>(
     defaultPaymentAmount || 0
@@ -313,7 +308,7 @@ export const QortPayment = ({
             lineHeight: 1.1,
           }}
         >
-          {balance?.toFixed(2)} QORT
+          {formatQortAmount(balance, i18n.language)} QORT
         </Typography>
       </Box>
 

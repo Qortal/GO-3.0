@@ -104,7 +104,20 @@
     "unpin_from_dashboard": "unpin from dashboard",
     "update": "update",
     "update_app": "update your app",
-    "vote": "vote"
+    "vote": "vote",
+    "add_attachment": "add attachment",
+    "copied": "copied!",
+    "copy_code": "copy code",
+    "delete": "delete",
+    "formatting": "formatting",
+    "full_screen": "full screen",
+    "next": "next",
+    "open_in_new": "open in new window",
+    "react": "react",
+    "reject": "reject",
+    "reply": "reply",
+    "restore": "restore",
+    "unblock": "unblock"
   },
   "address_your": "your address",
   "admin": "admin",
@@ -274,7 +287,8 @@
       "save_qdn": "unable to save to QDN",
       "send_failed": "failed to send",
       "update_failed": "failed to update",
-      "vote": "unable to vote"
+      "vote": "unable to vote",
+      "same_foreign_blockchain": "the address does not belong to the same foreign blockchain"
     },
     "generic": {
       "already_voted": "you've already voted.",
@@ -370,7 +384,15 @@
       "unsaved_changes": "you have unsaved changes to your pinned apps. Save them to QDN.",
       "updating": "updating",
       "wait": "please wait",
-      "open_q_trade_subtitle": "Open Q-Trade and buy QORT from the trade portal."
+      "open_q_trade_subtitle": "Open Q-Trade and buy QORT from the trade portal.",
+      "account_menu_status": "Account menu, status: {{status}}",
+      "address_copied": "address copied to clipboard.",
+      "avatar_publish_fee": "publishing an avatar requires a fee of {{fee}} QORT",
+      "hub_notification_settings_desc": "Choose which Hub features appear in your notification panel.",
+      "link_copied": "link copied to clipboard.",
+      "no_primary_name": "no primary name",
+      "presence_status": "Status: {{status}}",
+      "status": "Status"
     },
     "message": "message",
     "promotion_text": "promotion text",
@@ -769,7 +791,8 @@
   "voice_call": {
     "rejected_declined": "The other person declined the call.",
     "rejected_not_friend": "Call declined — {{name}} does not have you as a friend.",
-    "rejected_media": "The call ended — their microphone may be unavailable."
+    "rejected_media": "The call ended — their microphone may be unavailable.",
+    "failed": "voice call failed"
   },
   "p2p_health_bad_call_tooltip": "P2P health is bad. Connect more Reticulum peers first.",
   "dm_friend_events": {
@@ -856,7 +879,24 @@
     "reminder600000": "10 minutes before",
     "reminder1800000": "30 minutes before",
     "reminder3600000": "1 hour before",
-    "reminder86400000": "1 day before"
+    "reminder86400000": "1 day before",
+    "coverCompressFailed": "The cover image could not be compressed",
+    "coverCompressTooLarge": "The cover image could not be compressed enough",
+    "coverCropLabel": "Event cover crop",
+    "coverInvalid": "The saved cover image is invalid.",
+    "coverSaveFailed": "The compressed cover image could not be saved.",
+    "eventRequiresSourceMembership": "You must be a member of the source group to view this event.",
+    "eventUnavailable": "Event unavailable",
+    "imageProcessingUnavailable": "Image processing is unavailable",
+    "joinSourceGroupQuestion": "Join this group?",
+    "nextMonth": "Next month",
+    "openEvent": "Open event {{title}}",
+    "pending": "Pending",
+    "previousMonth": "Previous month",
+    "request": "Request",
+    "requestSourceGroupQuestion": "Request to join this group?",
+    "sourceGroupJoinError": "Unable to join this group. Please try again.",
+    "viewGroup": "View Group"
   },
   "bookmarks": {
     "title": "Bookmarks",
@@ -888,5 +928,30 @@
     "more": "More",
     "delete_folder_title": "Delete folder?",
     "delete_folder_message": "Bookmarks in this folder will be moved to the top level."
-  }
+  },
+  "call_audio_list_error": "could not list devices",
+  "call_audio_microphone": "microphone",
+  "call_audio_settings": "call audio settings",
+  "call_audio_speaker": "speaker",
+  "call_audio_system_microphone": "System microphone",
+  "call_audio_system_speaker": "System speaker",
+  "group_call_short_label": "Q-Call",
+  "group_call_transport_reticulum": "Reticulum",
+  "group_call_transport_reticulum_tooltip": "Audio is using the Reticulum fallback.",
+  "group_call_transport_webrtc": "WebRTC",
+  "group_call_transport_webrtc_tooltip": "Audio is using WebRTC.",
+  "loading_ellipsis": "loading...",
+  "navbar": {
+    "search_placeholder": "Search Q-Apps or enter qortal://",
+    "session": {
+      "lock_description": "Keep chats and calls connected",
+      "lock_title": "Lock",
+      "logout_description": "End this signed-in session",
+      "logout_title": "Log out",
+      "menu_aria": "Session options",
+      "tooltip": "Lock or log out"
+    }
+  },
+  "not_available": "n/a",
+  "this_user": "This user"
 }

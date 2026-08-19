@@ -8,7 +8,7 @@ Reticulum — plus a mobile-first UI, OS notifications, biometric login, and bat
 background behavior.
 
 **Repository:** https://gitea.qortal.link/simon/GO-3.0  
-**Current APK:** GO 3.0 **v0.0.6** (`versionName` 0.0.6, `versionCode` 9) — shown in-app as **GO version** (Core & settings).
+**Current APK:** GO 3.0 **v0.0.7** (`versionName` 0.0.7, `versionCode` 10) — shown in-app as **GO version** (Core & settings). Hub v3.0.1 is being ported on `feature/hub-3.0.1-go` and is not a new Q-Share release yet.
 
 > **For Hub developers**
 >
@@ -19,6 +19,9 @@ background behavior.
 >    See [Required Hub changes](#required-hub-changes).
 >
 > Everything else is wire-compatible with the existing Hub.
+>
+> Hub v3.0.1 added WebRTC audio (Reticulum fallback), dedicated event links, and
+> status/expiry UI. This tree ports those pieces onto the GO mobile shell.
 
 ---
 
@@ -37,8 +40,8 @@ background behavior.
 | `android/app/src/main/java/.../ReticulumPlugin.kt` | Native plugin: Kotlin RNS transport (reticulum-kt) + Chaquopy host for the Python bridge + file staging helpers |
 | `android/app/src/main/java/.../QortalForegroundService.java` | Foreground service: persistent status notification, alert/call notifications |
 | `android/app/src/main/python/presence_bridge.py` | The full Reticulum protocol bridge (presence, calls, group audio, file transfer) — **shared with desktop**, runs under Chaquopy on Android |
-| `electron/resources/presence_bridge.py` | The **desktop copy** of the same bridge — kept in sync; contains the file-transfer fixes the Hub needs to ship |
-| `electron/` | Desktop Electron shell (unchanged upstream behavior, plus the bridge fix) |
+| `electron/resources/presence_bridge.py` | The **desktop copy** of the same bridge — kept in sync |
+| `electron/` | Desktop Electron shell |
 
 ## Building the Android app
 

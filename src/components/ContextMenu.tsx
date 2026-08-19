@@ -125,7 +125,7 @@ export const ContextMenu = ({
   const [mutedGroups] = useAtom(mutedGroupsAtom);
   const setTxList = useSetAtom(txListAtom);
   const { show } = useContext(QORTAL_APP_CONTEXT);
-  const { t } = useTranslation(['core', 'group']);
+  const { t } = useTranslation(['core', 'group', 'reticulum']);
   const isMenuOpen = Boolean(menuPosition);
 
   /**
@@ -430,34 +430,42 @@ export const ContextMenu = ({
         groupInfo?.groupName ??
         reticulumGroup?.groupName ??
         reticulumGroup?.name ??
-        'Group',
-      memberCount:
-        groupInfo?.memberCount ?? reticulumGroup?.memberCount ?? '-',
+        t('reticulum:group_fallback_name'),
+      memberCount: groupInfo?.memberCount ?? reticulumGroup?.memberCount ?? '-',
     }),
-    [groupId, groupInfo, reticulumGroup]
+    [groupId, groupInfo, reticulumGroup, t]
   );
   const isGroupOwner =
     reticulumGroup?.isOwner === true ||
     Boolean(
       myAddress &&
-        displayedGroupInfo?.owner &&
-        displayedGroupInfo.owner === myAddress
+      displayedGroupInfo?.owner &&
+      displayedGroupInfo.owner === myAddress
     );
   const isClosedGroup =
     displayedGroupInfo?.isOpen === false ||
     Number(displayedGroupInfo?.groupType) === 1 ||
     displayedGroupInfo?.groupType === 'CLOSED';
-  const groupTypeLabel = isClosedGroup ? 'Closed' : 'Open';
+  const groupTypeLabel = t(
+    isClosedGroup ? 'reticulum:group_type.closed' : 'reticulum:group_type.open',
+    { postProcess: 'capitalizeFirstChar' }
+  );
 
   const copyInviteLink = async (event) => {
     handleClose(event);
     try {
       const link = `${QORTAL_PROTOCOL}use-group/action-join/groupid-${displayedGroupInfo.groupId}`;
       await navigator.clipboard.writeText(link);
-      setInfoSnack({ type: 'success', message: 'Invite link copied' });
+      setInfoSnack({
+        type: 'success',
+        message: t('group:context_menu.invite_link_copied'),
+      });
       setOpenSnack(true);
     } catch (error) {
-      setInfoSnack({ type: 'error', message: 'Could not copy invite link' });
+      setInfoSnack({
+        type: 'error',
+        message: t('group:context_menu.invite_link_copy_failed'),
+      });
       setOpenSnack(true);
     }
   };
@@ -655,7 +663,9 @@ export const ContextMenu = ({
               <ContentCopyRoundedIcon fontSize="small" />
             </ListItemIcon>
             <Typography variant="inherit" sx={{ fontSize: '14px' }}>
-              Copy Invite Link
+              {t('reticulum:copy_invite_link', {
+                postProcess: 'capitalizeFirstChar',
+              })}
             </Typography>
           </MenuItem>
         )}
@@ -670,7 +680,7 @@ export const ContextMenu = ({
               <UploadRoundedIcon fontSize="small" />
             </ListItemIcon>
             <Typography variant="inherit" sx={{ fontSize: '14px' }}>
-              Change Group Avatar
+              {t('group:context_menu.change_group_avatar')}
             </Typography>
           </MenuItem>
         )}
@@ -685,7 +695,7 @@ export const ContextMenu = ({
               <ForumRoundedIcon fontSize="small" />
             </ListItemIcon>
             <Typography variant="inherit" sx={{ fontSize: '14px' }}>
-              Create Channel
+              {t('group:context_menu.create_channel')}
             </Typography>
           </MenuItem>
         )}
@@ -700,7 +710,7 @@ export const ContextMenu = ({
               <FolderRoundedIcon fontSize="small" />
             </ListItemIcon>
             <Typography variant="inherit" sx={{ fontSize: '14px' }}>
-              Create Category
+              {t('group:context_menu.create_category')}
             </Typography>
           </MenuItem>
         )}
@@ -715,7 +725,7 @@ export const ContextMenu = ({
               <VisibilityOffRoundedIcon fontSize="small" />
             </ListItemIcon>
             <Typography variant="inherit" sx={{ fontSize: '14px' }}>
-              Hidden Users
+              {t('group:context_menu.hidden_users')}
             </Typography>
           </MenuItem>
         )}
@@ -725,7 +735,7 @@ export const ContextMenu = ({
               <LogoutRoundedIcon fontSize="small" />
             </ListItemIcon>
             <Typography variant="inherit" sx={{ fontSize: '14px' }}>
-              Leave Group
+              {t('group:context_menu.leave_group')}
             </Typography>
           </MenuItem>
         )}
@@ -744,10 +754,7 @@ export const ContextMenu = ({
                 theme.palette.mode === 'dark'
                   ? 'rgba(76, 141, 255, 0.12)'
                   : 'rgba(37, 99, 235, 0.1)',
-              color:
-                theme.palette.mode === 'dark'
-                  ? '#d7e6ff'
-                  : '#1e40af',
+              color: theme.palette.mode === 'dark' ? '#d7e6ff' : '#1e40af',
               '&:hover': {
                 backgroundColor:
                   theme.palette.mode === 'dark'
@@ -758,17 +765,14 @@ export const ContextMenu = ({
           >
             <ListItemIcon
               sx={{
-                color:
-                  theme.palette.mode === 'dark'
-                    ? '#a9c9ff'
-                    : '#1e40af',
+                color: theme.palette.mode === 'dark' ? '#a9c9ff' : '#1e40af',
                 minWidth: '32px',
               }}
             >
               <InfoOutlinedIcon fontSize="small" />
             </ListItemIcon>
             <Typography variant="inherit" sx={{ fontSize: '14px' }}>
-              About Group
+              {t('group:context_menu.about_group')}
             </Typography>
           </MenuItem>
         )}
@@ -787,15 +791,39 @@ export const ContextMenu = ({
                 marginY: 1,
               }}
             />
-            <Box sx={{ display: 'grid', gap: 0.75, minWidth: 230, px: 1.25, py: 0.5 }}>
+            <Box
+              sx={{
+                display: 'grid',
+                gap: 0.75,
+                minWidth: 230,
+                px: 1.25,
+                py: 0.5,
+              }}
+            >
               {[
-                ['Group Name', displayedGroupInfo.groupName],
-                ['Members', displayedGroupInfo.memberCount],
-                ['Group Type', groupTypeLabel],
-                ['Group ID', displayedGroupInfo.groupId],
-              ].map(([label, value]) => (
+                {
+                  id: 'group-name',
+                  label: t('group:group.name'),
+                  value: displayedGroupInfo.groupName,
+                },
+                {
+                  id: 'members',
+                  label: t('group:group.member_other'),
+                  value: displayedGroupInfo.memberCount,
+                },
+                {
+                  id: 'group-type',
+                  label: t('group:group.type'),
+                  value: groupTypeLabel,
+                },
+                {
+                  id: 'group-id',
+                  label: t('group:group.id'),
+                  value: displayedGroupInfo.groupId,
+                },
+              ].map(({ id, label, value }) => (
                 <Box
-                  key={label}
+                  key={id}
                   sx={{
                     alignItems: 'center',
                     display: 'flex',

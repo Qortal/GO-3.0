@@ -105,6 +105,7 @@ import {
   setQChatMentionNotificationsEnabled,
 } from '../../utils/qChatMentionNotifications';
 import { subscribeToEvent, unsubscribeFromEvent } from '../../utils/events';
+import { GO_VERSION } from '../../appVersion';
 import {
   ReticulumUnreadCountBadge,
   RETICULUM_NOTIFICATION_RED,
@@ -1307,7 +1308,7 @@ const GroupListInner = ({
               },
             }}
           >
-            v0.0.2
+            {`v${GO_VERSION}`}
           </ButtonBase>
         </Box>
         <ReticulumChatSettingsDialog

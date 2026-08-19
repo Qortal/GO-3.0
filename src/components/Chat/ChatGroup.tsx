@@ -10094,7 +10094,7 @@ export const ChatGroup = ({
                     sx={{ display: { xs: 'none', md: 'inline-flex' } }}
                   >
                     <ReticulumModePill
-                      label="Qortal Land"
+                      target="qortal_land"
                       onClick={onQortalLandClick}
                     />
                   </Box>

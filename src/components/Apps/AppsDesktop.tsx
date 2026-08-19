@@ -321,13 +321,7 @@ export const AppsDesktop = ({
       },
     })
   );
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
 
   useEffect(() => {
     if (!isMobile || !myAddress) return;
