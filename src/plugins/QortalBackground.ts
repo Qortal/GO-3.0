@@ -18,6 +18,7 @@ export interface QortalBackgroundPlugin {
     nodeLabel?: string;
     syncLabel?: string;
     peersLabel?: string;
+    statusKind?: 'starting' | 'online' | 'offline';
   }): Promise<{ success: boolean }>;
 
   updatePersistentStatus(options: {
@@ -26,6 +27,7 @@ export interface QortalBackgroundPlugin {
     nodeLabel?: string;
     syncLabel?: string;
     peersLabel?: string;
+    statusKind?: 'starting' | 'online' | 'offline';
   }): Promise<{ success: boolean }>;
 
   stopPersistentStatus(): Promise<{ success: boolean }>;
@@ -76,9 +78,17 @@ export interface QortalBackgroundPlugin {
 
   openAppBatterySettings(): Promise<{ success: boolean }>;
 
+  /** Same radio probe as the tray: airplane / no Wi-Fi / no ethernet / no VPN. */
+  getDeviceNetwork(): Promise<{ online: boolean }>;
+
   addListener(
     eventName: 'incomingCallAction',
     listenerFunc: (event: IncomingCallActionEvent) => void
+  ): Promise<PluginListenerHandle>;
+
+  addListener(
+    eventName: 'deviceNetwork',
+    listenerFunc: (event: { online: boolean }) => void
   ): Promise<PluginListenerHandle>;
 
   addListener(

@@ -1429,7 +1429,9 @@ export const MessageItemComponent = ({
       return out;
     };
     const load = async (attempt = 0) => {
-      const result = await window.reticulumResources?.getUrl?.(imageResourceId);
+      const result = await window.reticulumResources
+        ?.getUrl?.(imageResourceId)
+        .catch(() => null);
       if (cancelled) return;
       if (result?.success && result.url) {
         const manifest = result.manifest as
@@ -1758,10 +1760,12 @@ export const MessageItemComponent = ({
       if (requested?.success === false) return;
       return;
     }
-    const saved = await window.reticulumResources?.saveAs?.(
-      reticulumFileResourceId,
-      reticulumFileName
-    );
+    const saved = await window.reticulumResources
+      ?.saveAs?.(reticulumFileResourceId, reticulumFileName)
+      .catch((error: unknown) => ({
+        success: false as const,
+        error: error instanceof Error ? error.message : 'Save failed',
+      }));
     if (saved?.success) {
       if (saved.uri) setSavedFileUri(saved.uri);
       setFileResourceStatus('ready');

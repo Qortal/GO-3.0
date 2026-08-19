@@ -1,12 +1,15 @@
 import { useEffect, useState } from 'react';
 import { Reticulum } from '../../plugins/Reticulum';
 import type { ReticulumStatus } from '../../plugins/Reticulum';
+import { QortalBackground } from '../../plugins/QortalBackground';
+import { isCapacitor } from '../../utils/platform';
 
 export type ReticulumPhase =
   | 'idle'
   | 'starting'
   | 'online'
   | 'connecting'
+  | 'offline'
   | 'error';
 
 export interface ReticulumState {
@@ -42,8 +45,15 @@ export function allowReticulumStart() {
 async function ensureStarted() {
   if (started || !startAllowed) return;
   started = true;
+  const startedAt = Date.now();
+  const phaseFor = (online: boolean): ReticulumPhase => {
+    if (online) return 'online';
+    return Date.now() - startedAt < 30_000 ? 'connecting' : 'offline';
+  };
   try {
-    await Reticulum.addListener('status', (s) => set({ status: s }));
+    await Reticulum.addListener('status', (s) =>
+      set({ status: s, phase: phaseFor(s.online) })
+    );
     await Reticulum.addListener('announce', () =>
       set({
         status: current.status
@@ -57,15 +67,13 @@ async function ensureStarted() {
     set({ status: s, phase: s.online ? 'online' : 'connecting' });
 
     // The `status` listener above already delivers transport changes
-    // event-driven; this poll only reconciles counters. Poll slowly (battery)
-    // and not at all while the app is backgrounded — but poll faster for the
-    // first 30s so the UI reflects the initial connect promptly.
-    const startedAt = Date.now();
+    // event-driven; this poll reconciles counters and flips to offline when
+    // hubs drop (airplane mode / radio loss). Keep polling in the background
+    // so the tray is not stuck on "online".
     const pollStatus = async () => {
-      if (typeof document !== 'undefined' && document.hidden) return;
       try {
         const cur = await Reticulum.getStatus();
-        set({ status: cur, phase: cur.online ? 'online' : 'connecting' });
+        set({ status: cur, phase: phaseFor(cur.online) });
       } catch {
         /* transient */
       }
@@ -120,7 +128,90 @@ export function reticulumPhaseColor(phase: ReticulumPhase): string {
     case 'connecting':
     case 'starting':
       return '#f5a623';
+    case 'offline':
+    case 'error':
+      return '#e53935';
     default:
       return '#888';
   }
+}
+
+/**
+ * What the badge / tray should show. Transport `online` means an RNS
+ * interface is up, not that any Qortal peers have been reached.
+ */
+export function reticulumDisplayPhase(
+  phase: ReticulumPhase,
+  onlineCount: number,
+  deviceOnline: boolean
+): ReticulumPhase {
+  if (!deviceOnline || phase === 'offline' || phase === 'error') {
+    return phase === 'error' ? 'error' : 'offline';
+  }
+  if (onlineCount > 0) return 'online';
+  if (phase === 'idle') return 'idle';
+  return phase === 'starting' ? 'starting' : 'connecting';
+}
+
+export function reticulumDisplayLabel(displayPhase: ReticulumPhase): string {
+  switch (displayPhase) {
+    case 'online':
+      return 'online';
+    case 'offline':
+    case 'error':
+      return 'offline';
+    case 'idle':
+      return 'idle';
+    default:
+      return 'connecting';
+  }
+}
+
+let deviceOnline =
+  typeof navigator === 'undefined' ? true : navigator.onLine !== false;
+const deviceListeners = new Set<(online: boolean) => void>();
+let deviceWatchersBound = false;
+
+function setDeviceOnline(next: boolean) {
+  if (deviceOnline === next) return;
+  deviceOnline = next;
+  deviceListeners.forEach((listener) => listener(deviceOnline));
+}
+
+function bindDeviceOnlineWatchers() {
+  if (deviceWatchersBound || typeof window === 'undefined') return;
+  deviceWatchersBound = true;
+  window.addEventListener('online', () => setDeviceOnline(true));
+  window.addEventListener('offline', () => setDeviceOnline(false));
+  if (!isCapacitor()) return;
+  void QortalBackground.getDeviceNetwork()
+    .then((result) => setDeviceOnline(result.online !== false))
+    .catch(() => {
+      /* plugin missing on web */
+    });
+  void QortalBackground.addListener('deviceNetwork', (event) => {
+    setDeviceOnline(event.online !== false);
+  });
+}
+
+export function getDeviceOnline(): boolean {
+  bindDeviceOnlineWatchers();
+  return deviceOnline;
+}
+
+export function subscribeDeviceOnline(
+  listener: (online: boolean) => void
+): () => void {
+  bindDeviceOnlineWatchers();
+  deviceListeners.add(listener);
+  listener(deviceOnline);
+  return () => {
+    deviceListeners.delete(listener);
+  };
+}
+
+export function useDeviceOnline(): boolean {
+  const [online, setOnline] = useState(deviceOnline);
+  useEffect(() => subscribeDeviceOnline(setOnline), []);
+  return online;
 }

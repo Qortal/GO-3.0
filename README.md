@@ -8,7 +8,7 @@ Reticulum — plus a mobile-first UI, OS notifications, biometric login, and bat
 background behavior.
 
 **Repository:** https://gitea.qortal.link/simon/GO-3.0  
-**Current APK:** GO 3.0 **v0.0.5** (`versionName` 0.0.5, `versionCode` 8) — shown in-app as **GO version** (Core & settings).
+**Current APK:** GO 3.0 **v0.0.6** (`versionName` 0.0.6, `versionCode` 9) — shown in-app as **GO version** (Core & settings).
 
 > **For Hub developers**
 >
@@ -82,11 +82,11 @@ transfer Resources.
 
 ---
 
-## Since the last Gitea push (v0.0.1 → v0.0.5)
+## Since the last Gitea push (v0.0.1 → v0.0.6)
 
 Gitea `main` was last updated **2026-08-09** at `0bb0c74a` (v0.0.1 rebrand). Field
-builds **v0.0.2–v0.0.5** were published to Q-Share but never pushed. This tree is
-that gap. Details are in [`CHANGELOG.md`](CHANGELOG.md).
+builds **v0.0.2–v0.0.6** were published to Q-Share. Details are in
+[`CHANGELOG.md`](CHANGELOG.md).
 
 | Version | What landed |
 |---|---|
@@ -94,6 +94,7 @@ that gap. Details are in [`CHANGELOG.md`](CHANGELOG.md).
 | **v0.0.3** | Compact composer (staged grow, fade-in send, emoji panel in the keyboard slot), unlock/stability fixes, first in-app updater |
 | **v0.0.4** | Updater finishes after the Android install permission; large Q-Share saves no longer crash; QDN download progress notifications |
 | **v0.0.5** | Chat GIF library (search, categories, most-used, masonry, queued cache); settings label is **GO version** and matches the APK |
+| **v0.0.6** | First-session chat sync, faster unlock (HD off the UI thread), QDN downloads on a remote core, login runtime overlay |
 
 ---
 

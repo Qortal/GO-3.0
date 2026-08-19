@@ -26,6 +26,7 @@ import { decryptChatMessage } from '../utils/decryptChatMessage';
 import { decryptStoredWallet } from '../utils/decryptWallet';
 import { getWalletErrorMessage } from '../utils/walletErrorMessages';
 import PhraseWallet from '../utils/generateWallet/phrase-wallet';
+import { deriveAltcoinFieldsInWorker } from '../utils/generateWallet/deriveAltcoinFields';
 import { RequestQueueWithPromise } from '../utils/queue/queue';
 import { validateAddress } from '../utils/validateAddress';
 import { hasInvisibleCharacters } from '../utils/hasInvisibleCharacters';
@@ -314,7 +315,7 @@ export const clearAllQueues = () => {
 };
 
 export const getForeignKey = async (foreignBlockchain) => {
-  const resKeyPair = await getKeyPair();
+  const resKeyPair = await ensureAltcoinKeyPair();
   const parsedData = resKeyPair;
 
   switch (foreignBlockchain) {
@@ -400,9 +401,13 @@ export const createEndpoint = async (endpoint, customApi?: string) => {
   const apiKey = await getApiKeyFromStorage(); // Retrieve apiKey asynchronously
 
   if (apiKey?.url) {
-    // Check if the endpoint already contains a query string
+    const key =
+      typeof apiKey.apikey === 'string' ? apiKey.apikey.trim() : '';
+    if (!key) {
+      return `${apiKey.url}${endpoint}`;
+    }
     const separator = endpoint.includes('?') ? '&' : '?';
-    return `${apiKey?.url}${endpoint}${separator}apiKey=${apiKey?.apikey}`;
+    return `${apiKey.url}${endpoint}${separator}apiKey=${encodeURIComponent(key)}`;
   } else {
     return `${groupApi}${endpoint}`;
   }
@@ -926,6 +931,8 @@ export async function getAddressInfo(address) {
   return data;
 }
 
+let altcoinKeyPairReady: Promise<void> | null = null;
+
 export async function getKeyPair() {
   const res = await getData<any>('keyPair').catch(() => null);
   if (res) {
@@ -933,6 +940,14 @@ export async function getKeyPair() {
   } else {
     throw new Error('Wallet not authenticated');
   }
+}
+
+/** Wait until BTC/LTC/… keys are merged into storage after a fast QORT unlock. */
+export async function ensureAltcoinKeyPair() {
+  if (altcoinKeyPairReady) {
+    await altcoinKeyPairReady.catch(() => {});
+  }
+  return getKeyPair();
 }
 
 export async function getSaveWallet() {
@@ -1402,36 +1417,16 @@ export async function addUserSettings({ keyValue }) {
 
 export async function decryptWallet({ password, wallet, walletVersion }) {
   try {
+    const unlockStarted = performance.now();
     const response = await decryptStoredWallet(password, wallet);
-    const wallet2 = new PhraseWallet(response, walletVersion);
+    const qortStarted = performance.now();
+    const wallet2 = new PhraseWallet(response, walletVersion, {
+      qortOnly: true,
+    });
     const keyPair = wallet2._addresses[0].keyPair;
-    const ltcPrivateKey =
-      wallet2._addresses[0].ltcWallet.derivedMasterPrivateKey;
-    const ltcPublicKey = wallet2._addresses[0].ltcWallet.derivedMasterPublicKey;
-    const ltcAddress = wallet2._addresses[0].ltcWallet.address;
     const toSave = {
       privateKey: Base58.encode(keyPair.privateKey),
       publicKey: Base58.encode(keyPair.publicKey),
-      ltcPrivateKey: ltcPrivateKey,
-      ltcPublicKey: ltcPublicKey,
-      arrrSeed58: wallet2._addresses[0].arrrWallet.seed58,
-      btcAddress: wallet2._addresses[0].btcWallet.address,
-      btcPublicKey: wallet2._addresses[0].btcWallet.derivedMasterPublicKey,
-      btcPrivateKey: wallet2._addresses[0].btcWallet.derivedMasterPrivateKey,
-
-      ltcAddress: wallet2._addresses[0].ltcWallet.address,
-
-      dogeAddress: wallet2._addresses[0].dogeWallet.address,
-      dogePublicKey: wallet2._addresses[0].dogeWallet.derivedMasterPublicKey,
-      dogePrivateKey: wallet2._addresses[0].dogeWallet.derivedMasterPrivateKey,
-
-      dgbAddress: wallet2._addresses[0].dgbWallet.address,
-      dgbPublicKey: wallet2._addresses[0].dgbWallet.derivedMasterPublicKey,
-      dgbPrivateKey: wallet2._addresses[0].dgbWallet.derivedMasterPrivateKey,
-
-      rvnAddress: wallet2._addresses[0].rvnWallet.address,
-      rvnPublicKey: wallet2._addresses[0].rvnWallet.derivedMasterPublicKey,
-      rvnPrivateKey: wallet2._addresses[0].rvnWallet.derivedMasterPrivateKey,
     };
     await new Promise((resolve, reject) => {
       storeData('keyPair', toSave)
@@ -1443,7 +1438,6 @@ export async function decryptWallet({ password, wallet, walletVersion }) {
     const newWallet = {
       ...wallet,
       publicKey: Base58.encode(keyPair.publicKey),
-      ltcAddress: ltcAddress,
     };
     await new Promise((resolve, reject) => {
       storeData('walletInfo', newWallet)
@@ -1451,6 +1445,37 @@ export async function decryptWallet({ password, wallet, walletVersion }) {
         .catch((error) => {
           reject(new Error(error.message || 'Error saving data'));
         });
+    });
+    console.info(
+      `[Unlock] QORT wallet+store ${Math.round(performance.now() - qortStarted)}ms (total ${Math.round(performance.now() - unlockStarted)}ms)`
+    );
+
+    altcoinKeyPairReady = (async () => {
+      const hdStarted = performance.now();
+      const seed =
+        wallet2.seed instanceof Uint8Array
+          ? wallet2.seed
+          : new Uint8Array(response);
+      const extra = await deriveAltcoinFieldsInWorker(
+        seed,
+        walletVersion || wallet2._walletVersion || 2
+      );
+      const existing = await getData('keyPair').catch(() => null);
+      if (!existing) return;
+      await storeData('keyPair', { ...existing, ...extra });
+      const info = await getData('walletInfo').catch(() => null);
+      if (info) {
+        await storeData('walletInfo', {
+          ...info,
+          ltcAddress: extra.ltcAddress,
+        });
+      }
+      console.info(
+        `[Unlock] altcoin HD ${Math.round(performance.now() - hdStarted)}ms (worker)`
+      );
+    })();
+    void altcoinKeyPairReady.catch((error) => {
+      console.error('[Unlock] altcoin HD failed', error);
     });
 
     return true;

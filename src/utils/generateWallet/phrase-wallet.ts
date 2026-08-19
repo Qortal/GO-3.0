@@ -14,8 +14,9 @@ import publicKeyToAddress from './publicKeyToAddress';
 import AltcoinHDWallet from '../../encryption/AltcoinHDWallet.js';
 
 export default class PhraseWallet {
-  constructor(seed, walletVersion) {
+  constructor(seed, walletVersion, options) {
     this._walletVersion = walletVersion || 2;
+    this._deferAltcoins = options?.qortOnly === true;
     this.seed = seed;
 
     this.savedSeedData = {};
@@ -91,6 +92,46 @@ export default class PhraseWallet {
 
     const address = publicKeyToAddress(addrKeyPair.publicKey);
     const qoraAddress = publicKeyToAddress(addrKeyPair.publicKey, true);
+
+    const entry = {
+      address,
+      btcWallet: null,
+      ltcWallet: null,
+      dogeWallet: null,
+      dgbWallet: null,
+      rvnWallet: null,
+      arrrWallet: null,
+      qoraAddress,
+      keyPair: {
+        publicKey: addrKeyPair.publicKey,
+        privateKey: addrKeyPair.secretKey,
+      },
+      base58PublicKey: Base58.encode(addrKeyPair.publicKey),
+      seed: addrSeed,
+      nonce: nonce,
+    };
+
+    if (!this._deferAltcoins) {
+      this.attachAltcoinWallets(entry);
+    }
+
+    this._addresses[nonce] = entry;
+    return entry;
+  }
+
+  ensureAltcoinWallets() {
+    this._deferAltcoins = false;
+    const existing = this._addresses[0];
+    if (existing?.btcWallet) return existing;
+    if (existing) {
+      this.attachAltcoinWallets(existing);
+      return existing;
+    }
+    return this.genAddress(0);
+  }
+
+  attachAltcoinWallets(entry) {
+    const addrSeed = entry.seed;
 
     // Create Bitcoin HD Wallet
     const btcSeed = [...addrSeed];
@@ -182,24 +223,13 @@ export default class PhraseWallet {
       },
     }).createWallet(new Uint8Array(arrrSeed), false, 'ARRR');
 
-    this._addresses[nonce] = {
-      address,
-      btcWallet,
-      ltcWallet,
-      dogeWallet,
-      dgbWallet,
-      rvnWallet,
-      arrrWallet,
-      qoraAddress,
-      keyPair: {
-        publicKey: addrKeyPair.publicKey,
-        privateKey: addrKeyPair.secretKey,
-      },
-      base58PublicKey: Base58.encode(addrKeyPair.publicKey),
-      seed: addrSeed,
-      nonce: nonce,
-    };
-    return this._addresses[nonce];
+    entry.btcWallet = btcWallet;
+    entry.ltcWallet = ltcWallet;
+    entry.dogeWallet = dogeWallet;
+    entry.dgbWallet = dgbWallet;
+    entry.rvnWallet = rvnWallet;
+    entry.arrrWallet = arrrWallet;
+    return entry;
   }
 
   generateSaveWalletData(...args) {

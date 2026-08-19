@@ -226,14 +226,15 @@ export async function downloadUrlToMobileDocuments(
   filename: string,
   url: string,
   mimeType?: string,
-  onProgress?: (event: DownloadProgressEvent) => void
+  onProgress?: (event: DownloadProgressEvent) => void,
+  apiKey?: string
 ): Promise<{ path: string; uri: string; bytesWritten: number }> {
   assertNative();
   const safeName = sanitizeName(filename);
   return downloadNativeDocument(
     `${QORTAL_DOCUMENTS_FOLDER}/${safeName}`,
     url,
-    { categorize: true, mimeType },
+    { categorize: true, mimeType, apiKey },
     onProgress
   );
 }

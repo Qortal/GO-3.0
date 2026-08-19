@@ -5,6 +5,9 @@ import {
   onMobileReticulumStatus,
 } from '../bridge/capacitorBridge';
 import {
+  getDeviceOnline,
+  reticulumDisplayPhase,
+  subscribeDeviceOnline,
   subscribeReticulumStatus,
   type ReticulumPhase,
 } from '../components/Reticulum/reticulumStatus';
@@ -16,8 +19,11 @@ import { isCapacitor } from './platform';
 
 const BATTERY_PROMPT_DISMISSED_KEY = 'hub_mobile_battery_prompt_dismissed';
 
+export type ReticulumStatusKind = 'starting' | 'online' | 'offline';
+
 export type PersistentStatusSnapshot = {
   reticulumLabel: string;
+  reticulumKind: ReticulumStatusKind;
   onlineCount: number;
   nodeLabel: string;
   syncLabel: string;
@@ -26,7 +32,7 @@ export type PersistentStatusSnapshot = {
 
 export type PersistentStatusExtras = Omit<
   PersistentStatusSnapshot,
-  'reticulumLabel'
+  'reticulumLabel' | 'reticulumKind'
 >;
 
 export const buildNodeLabel = (
@@ -61,16 +67,21 @@ export const buildPeersLabel = (onlineCount: number): string => {
 
 export const buildPersistentStatusPayload = ({
   reticulumLabel,
+  reticulumKind,
   onlineCount,
   nodeLabel,
   syncLabel,
   peersLabel,
 }: PersistentStatusSnapshot) => ({
   title: 'GO 3.0',
-  detail: `${reticulumLabel} · ${onlineCount} online`,
+  detail:
+    reticulumKind === 'online'
+      ? `${reticulumLabel} · ${onlineCount} online`
+      : reticulumLabel,
   nodeLabel,
   syncLabel,
   peersLabel,
+  statusKind: reticulumKind,
 });
 
 export const startMobilePersistentStatus = async (
@@ -182,22 +193,39 @@ export const openAppBatterySettings = async (): Promise<void> => {
   await QortalBackground.openAppBatterySettings();
 };
 
+export const reticulumStatusKind = (
+  phase: ReticulumPhase,
+  bridgeReady: boolean,
+  onlineCount = 0,
+  deviceOnline = true
+): ReticulumStatusKind => {
+  const display = reticulumDisplayPhase(phase, onlineCount, deviceOnline);
+  if (display === 'error' || display === 'offline') return 'offline';
+  if (display === 'online' && bridgeReady) return 'online';
+  return 'starting';
+};
+
 export const reticulumPhaseLabel = (
   phase: ReticulumPhase,
-  bridgeReady: boolean
+  bridgeReady: boolean,
+  onlineCount = 0,
+  deviceOnline = true
 ): string => {
+  if (!deviceOnline) return 'Reticulum offline';
   if (!bridgeReady) return 'Reticulum starting';
-  switch (phase) {
+  const display = reticulumDisplayPhase(phase, onlineCount, deviceOnline);
+  switch (display) {
     case 'online':
       return 'Reticulum online';
     case 'connecting':
       return 'Reticulum connecting';
     case 'starting':
       return 'Reticulum starting';
+    case 'offline':
     case 'error':
       return 'Reticulum offline';
     default:
-      return 'Reticulum idle';
+      return 'Reticulum starting';
   }
 };
 
@@ -207,11 +235,25 @@ export const subscribeMobilePersistentStatusUpdates = (
 ): { unsubscribe: () => void; publish: () => void } => {
   let bridgeReady = false;
   let reticulumPhase: ReticulumPhase = 'idle';
+  let deviceOnline = getDeviceOnline();
 
   const publish = (): void => {
     const extras = getExtras();
+    const label = reticulumPhaseLabel(
+      reticulumPhase,
+      bridgeReady,
+      extras.onlineCount,
+      deviceOnline
+    );
+    const kind = reticulumStatusKind(
+      reticulumPhase,
+      bridgeReady,
+      extras.onlineCount,
+      deviceOnline
+    );
     onUpdate({
-      reticulumLabel: reticulumPhaseLabel(reticulumPhase, bridgeReady),
+      reticulumLabel: label,
+      reticulumKind: kind,
       ...extras,
     });
   };
@@ -226,6 +268,11 @@ export const subscribeMobilePersistentStatusUpdates = (
     publish();
   });
 
+  const unsubDevice = subscribeDeviceOnline((online) => {
+    deviceOnline = online;
+    publish();
+  });
+
   publish();
 
   return {
@@ -233,6 +280,7 @@ export const subscribeMobilePersistentStatusUpdates = (
     unsubscribe: () => {
       unsubBridge();
       unsubReticulum();
+      unsubDevice();
     },
   };
 };

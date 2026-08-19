@@ -1,4 +1,6 @@
-import { createEndpoint } from '../background/background.ts';
+import { createEndpoint, getApiKeyFromStorage } from '../background/background.ts';
+import { isCapacitor } from './platform';
+import { qdnResourcePath } from './qdnPath';
 
 /**
  * A QDN download happens in two stages, and only the second one looks like a
@@ -32,8 +34,35 @@ const POLL_INTERVAL_MS = 1500;
 const MAX_WAIT_MS = 15 * 60 * 1000;
 const MAX_CONSECUTIVE_ERRORS = 5;
 
-const resourcePath = ({ service, name, identifier }: QdnResourceLocation) =>
-  identifier ? `${service}/${name}/${identifier}` : `${service}/${name}`;
+const resourcePath = (location: QdnResourceLocation) =>
+  qdnResourcePath(location);
+
+const nativeApiKey = async (): Promise<string | undefined> => {
+  try {
+    const stored = await getApiKeyFromStorage();
+    const key =
+      stored && typeof stored === 'object'
+        ? String((stored as { apikey?: string }).apikey || '').trim()
+        : '';
+    return key || undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+/** Kick the node to start gathering even when WebView CORS blocks fetch. */
+const kickResourceFetch = async (endpoint: string): Promise<void> => {
+  const fetchKick = fetch(endpoint).catch(() => null);
+  if (isCapacitor()) {
+    try {
+      const { probeNativeUrl } = await import('../plugins/FileWriter');
+      await probeNativeUrl(endpoint, await nativeApiKey());
+    } catch {
+      /* fetch below is the fallback */
+    }
+  }
+  await fetchKick;
+};
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -98,7 +127,7 @@ export async function waitForQdnResource(
     if (!requestedFetch) {
       requestedFetch = true;
       void createEndpoint(`/arbitrary/${resourcePath(location)}?async=true`)
-        .then((endpoint) => fetch(endpoint))
+        .then((endpoint) => kickResourceFetch(endpoint))
         .catch(() => {
           /* the poll below is what decides whether this worked */
         });

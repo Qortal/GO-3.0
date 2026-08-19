@@ -300,7 +300,7 @@ const IGNORABLE_RUNTIME_FAULT_MESSAGES: RegExp[] = [
   /Reticulum bridge is not installed/i,
   // Mobile chat-engine RPC timeouts (history/summaries/etc.). Callers already
   // retry or degrade; they must not become a full-screen "GO runtime error".
-  /reticulumChat:\w+ timed out/i,
+  /reticulumChat:[\w:]+ timed out/i,
   /Chat engine start timed out/i,
   /worker->main request timed out/i,
   /presence command/i,

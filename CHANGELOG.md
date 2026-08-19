@@ -9,6 +9,57 @@ desktop Hub. The format is based on
 
 ---
 
+## [0.0.7] — 2026-08-18 (GO 3.0)
+
+Field / Q-Share build **GO 3.0 v0.0.7** (`versionName` 0.0.7, `versionCode` 10).
+
+### Fixed
+
+- **Live group chat catch-up** _(mobile)_ — notices from other people often arrived
+  immediately, but the message body could sit for minutes because GO kept asking
+  only your remembered Hub peer. If that link hung or a history page was treated
+  as in-flight for two minutes, catch-up returned without asking anyone else.
+  GO now fails over after ~20s, treats an active history page as stale after 8s,
+  still sends `feed_req` when a page is backed off, and pulls from the notice
+  source as well as Hub. Other-user messages that took 3–8 minutes now land in
+  a few seconds when a peer can serve them.
+- **Own messages to Hub** _(mobile)_ — a reply sent on GO could take minutes to
+  appear on the same-account Hub because GO announced the message before the
+  body was offered, and Hub then tried to pull the body from the phone. GO now
+  pushes the event page to your other endpoint first, copies it to a few
+  connected peers, and only then announces. Typical delay is under a minute.
+- **Reticulum “online” status** _(mobile)_ — the tray and top badge no longer
+  show online unless at least one Qortal account is actually seen on the mesh
+  (`onlineCount > 0`) and the device has a network path.
+
+---
+
+## [0.0.6] — 2026-08-15 (GO 3.0)
+
+Field / Q-Share build **GO 3.0 v0.0.6** (`versionName` 0.0.6, `versionCode` 9).
+
+### Fixed
+
+- **First-session chat sync** _(mobile)_ — after a password unlock, GO could sit off
+  the live mesh until the APK was killed. Overlay recovery no longer burns its
+  retry on an empty subscription set; memberships reannounce once groups exist;
+  identity/`ready` is pushed until the chat worker acks. Failed mesh fanout is
+  no longer reported as success, so queued sends retry.
+- **Unlock stall** _(mobile)_ — home still appears after QORT keys, but BTC/LTC/
+  DOGE/DGB/RVN/ARRR HD derivation now runs in a Web Worker so subscribe and
+  chat signing are not blocked for 15–30s on the UI thread.
+- **QDN downloads on a remote core** _(mobile)_ — path segments are encoded,
+  empty `apiKey` is omitted, and native download uses `X-API-KEY`. Waiting for
+  a QDN resource no longer depends on a WebView `fetch` that CORS-blocks remote
+  nodes. Tray errors include the HTTP status.
+- **Runtime overlay after login** _(mobile)_ — `reticulumChat:resource:bytes timed
+  out` is ignored (the old regex missed the colon). Chat image `getUrl` failures
+  no longer become an unhandled rejection / white screen.
+- **Remote-core group validate** _(mobile)_ — membership checks send the API key;
+  own publishes fail open to local group IDs if the node does not answer.
+
+---
+
 ## [0.0.5] — 2026-08-14 (GO 3.0)
 
 Field / Q-Share build **GO 3.0 v0.0.5** (`versionName` 0.0.5, `versionCode` 8). First

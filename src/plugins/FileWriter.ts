@@ -17,7 +17,14 @@ export interface FileWriterPlugin {
     mimeType?: string;
     /** Set to receive `downloadProgress` events for this download. */
     downloadId?: string;
+    /** Sent as X-API-KEY when the node requires a key. */
+    apiKey?: string;
   }): Promise<{ path: string; uri: string; bytesWritten: number }>;
+  /** GET a URL natively and drop the body — used to kick QDN `?async=true`. */
+  probeUrl(options: {
+    url: string;
+    apiKey?: string;
+  }): Promise<{ status: number; ok: boolean }>;
   addListener(
     eventName: 'downloadProgress',
     listener: (event: DownloadProgressEvent) => void
@@ -68,6 +75,7 @@ export type NativeWriteOptions = {
   /** Sort into Images / Videos / Audio / Documents / Apps / Qortino AI. */
   categorize?: boolean;
   mimeType?: string;
+  apiKey?: string;
 };
 
 function toWriteOptions(
@@ -116,6 +124,19 @@ export async function writeNativeDocumentBlob(
  * `writeChunk` instead costs a base64 encode, a bridge crossing and a decode
  * for every chunk, which dominates the save time for large attachments.
  */
+export async function probeNativeUrl(
+  url: string,
+  apiKey?: string
+): Promise<{ status: number; ok: boolean }> {
+  if (!Capacitor.isNativePlatform()) {
+    throw new Error('Native HTTP probe is only available on the mobile app.');
+  }
+  return FileWriter.probeUrl({
+    url,
+    ...(apiKey ? { apiKey } : {}),
+  });
+}
+
 export async function downloadNativeDocument(
   filename: string,
   url: string,
@@ -142,6 +163,7 @@ export async function downloadNativeDocument(
       categorize: options.categorize,
       mimeType: options.mimeType,
       ...(downloadId ? { downloadId } : {}),
+      ...(options.apiKey ? { apiKey: options.apiKey } : {}),
     });
   } finally {
     await subscription?.remove();

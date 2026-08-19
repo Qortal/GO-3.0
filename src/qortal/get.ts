@@ -4,6 +4,7 @@ import {
   getBalanceInfo,
   getFee,
   getKeyPair,
+  ensureAltcoinKeyPair,
   getLastRef,
   getSaveWallet,
   processTransactionVersion2,
@@ -40,6 +41,7 @@ import {
   sendChatNotification,
   sendChatGroup,
 } from '../background/background.ts';
+import { qdnResourcePath } from '../utils/qdnPath';
 import {
   encryptAndPublishSymmetricKeyGroupChat,
   getAllUserNames,
@@ -3121,10 +3123,11 @@ async function saveFileFromLocation(data, isFromExtension, snackMethods) {
   }
 
   // Build the download URL
-  let locationUrl = `/arbitrary/${service}/${name}`;
-  if (identifier) {
-    locationUrl += `/${identifier}`;
-  }
+  const locationUrl = `/arbitrary/${qdnResourcePath({
+    service,
+    name,
+    identifier,
+  })}`;
 
   // Capacitor Android/iOS: no File System Access API and anchor-tag downloads
   // do nothing in the WebView — save into Documents/Qortal Go natively.
@@ -3703,7 +3706,8 @@ export const getUserWallet = async (data, isFromExtension, appInfo) => {
     let arrrAddress = '';
     const wallet = await getSaveWallet();
     const address = wallet.address0;
-    const resKeyPair = await getKeyPair();
+    const resKeyPair =
+      coin === 'QORT' ? await getKeyPair() : await ensureAltcoinKeyPair();
     const parsedData = resKeyPair;
     const arrrSeed58 = parsedData.arrrSeed58;
     if (coin === 'ARRR') {
@@ -3850,7 +3854,8 @@ export const getWalletBalance = async (
     let coin = data.coin;
     const wallet = await getSaveWallet();
     const address = wallet.address0;
-    const resKeyPair = await getKeyPair();
+    const resKeyPair =
+      coin === 'QORT' ? await getKeyPair() : await ensureAltcoinKeyPair();
     const parsedData = resKeyPair;
     if (coin === 'QORT') {
       let qortAddress = address;
@@ -3991,7 +3996,10 @@ export const getUserWalletFunc = async (coin) => {
   let userWallet = {};
   const wallet = await getSaveWallet();
   const address = wallet.address0;
-  const resKeyPair = await getKeyPair();
+  const resKeyPair =
+    String(coin || '').toUpperCase() === 'QORT'
+      ? await getKeyPair()
+      : await ensureAltcoinKeyPair();
   const parsedData = resKeyPair;
   switch (coin) {
     case 'QORT':
@@ -5652,7 +5660,8 @@ export const sendCoin = async (data, isFromExtension) => {
   const checkCoin = data.coin;
   const wallet = await getSaveWallet();
   const address = wallet.address0;
-  const resKeyPair = await getKeyPair();
+  const resKeyPair =
+    checkCoin === 'QORT' ? await getKeyPair() : await ensureAltcoinKeyPair();
   const parsedData = resKeyPair;
   const isGateway = await isRunningGateway();
 

@@ -272,27 +272,58 @@ function pushPresenceState(): void {
   pushLocalIdentity();
 }
 
-let lastPushedApiBase = '';
-let lastPushedIdentityKey = '';
+let lastPushedApiConfig = '';
+let lastAckedIdentityKey = '';
+let transportIdentityInFlight = false;
+
+function currentIdentityKey(): string {
+  const info = window.__qortalMobileReticulum;
+  const destinationHash = info?.destinationHash || '';
+  const identityPublicKeyBase64 = info?.identityPublicKeyBase64 || '';
+  if (!destinationHash) return '';
+  return `${destinationHash}:${identityPublicKeyBase64}`;
+}
+
+function refreshTransportIdentity(): void {
+  if (transportIdentityInFlight) return;
+  transportIdentityInFlight = true;
+  void presenceCommandWithResult('get_transport_state', {}, 8_000)
+    .catch(() => null)
+    .finally(() => {
+      transportIdentityInFlight = false;
+      if (worker && currentIdentityKey()) pushLocalIdentity();
+    });
+}
 
 /**
  * The engine's bridge learns its own peer hash from the python `ready` payload,
- * but the worker can attach after that frame has already been consumed. The
- * main thread caches it, so mirror it in until the worker has it.
+ * but the worker can attach after that frame has already been consumed. Keep
+ * pushing until the worker acks the same hash — a one-shot miss isolates GO
+ * until the process is killed.
  */
 function pushLocalIdentity(): void {
   if (!worker) return;
   const info = window.__qortalMobileReticulum;
   const destinationHash = info?.destinationHash || '';
   const identityPublicKeyBase64 = info?.identityPublicKeyBase64 || null;
-  if (!destinationHash) return;
+  if (!destinationHash) {
+    refreshTransportIdentity();
+    return;
+  }
   const identityKey = `${destinationHash}:${identityPublicKeyBase64 ?? ''}`;
-  if (identityKey === lastPushedIdentityKey) return;
-  lastPushedIdentityKey = identityKey;
+  if (identityKey === lastAckedIdentityKey) return;
   worker.postMessage({
     t: 'local-identity',
     destinationHash,
     identityPublicKeyBase64,
+  });
+  worker.postMessage({
+    t: 'pyevent',
+    event: 'ready',
+    payload: {
+      destinationHash,
+      identityPublicKeyBase64: identityPublicKeyBase64 || undefined,
+    },
   });
 }
 
@@ -304,10 +335,13 @@ function pushLocalIdentity(): void {
  */
 function pushNodeApiConfig(): void {
   if (!worker) return;
-  const apiBase = getBaseApiReact();
-  if (!apiBase || apiBase === lastPushedApiBase) return;
-  lastPushedApiBase = apiBase;
-  worker.postMessage({ t: 'config', config: { apiBase } });
+  void getNodeApiConfig().then((config) => {
+    if (!worker || !config.apiBase) return;
+    const next = `${config.apiBase}|${config.apiKey || ''}`;
+    if (next === lastPushedApiConfig) return;
+    lastPushedApiConfig = next;
+    worker.postMessage({ t: 'config', config });
+  });
 }
 
 function handleWorkerMessage(event: MessageEvent): void {
@@ -343,10 +377,18 @@ function handleWorkerMessage(event: MessageEvent): void {
       break;
     case 'engine-ready':
       setReadiness('ready');
+      pushLocalIdentity();
       break;
     case 'engine-failed':
       setReadiness('failed', String(data.error || 'engine failed'));
       break;
+    case 'identity-ack': {
+      const hash = String(data.destinationHash || '').trim();
+      if (hash) {
+        lastAckedIdentityKey = `${hash}:${data.identityPublicKeyBase64 || ''}`;
+      }
+      break;
+    }
     default:
       break;
   }
@@ -420,7 +462,7 @@ function ensureStarted(): Promise<void> {
     };
 
     const config = await getNodeApiConfig();
-    lastPushedApiBase = config.apiBase;
+    lastPushedApiConfig = `${config.apiBase}|${config.apiKey || ''}`;
     worker.postMessage({ t: 'boot', config });
 
     untapPython = registerPythonEventTap((frame) => {
@@ -493,6 +535,8 @@ export function stopMobileReticulumChat(): void {
     worker = null;
   }, 500);
   startPromise = null;
+  lastAckedIdentityKey = '';
+  lastPushedApiConfig = '';
   setReadiness('idle');
 }
 
@@ -604,12 +648,20 @@ function installMobileReticulumResources(): void {
         )) as { manifest?: unknown } | null;
         return { success: true, url: cached, manifest: status?.manifest };
       }
-      const res = (await rpc('resource:bytes', [hash])) as {
+      let res: {
         success: boolean;
         bytes?: Uint8Array;
         manifest?: { mimeType?: string };
         error?: string;
       };
+      try {
+        res = (await rpc('resource:bytes', [hash])) as typeof res;
+      } catch (err) {
+        return {
+          success: false,
+          error: err instanceof Error ? err.message : 'Resource unavailable',
+        };
+      }
       if (!res?.success || !res.bytes) {
         return { success: false, error: res?.error || 'Resource unavailable' };
       }
@@ -627,12 +679,20 @@ function installMobileReticulumResources(): void {
     cleanupStorage: () => rpc('resource:cleanupStorage', []),
 
     saveAs: async (fileHash: string, suggestedFileName?: string) => {
-      const res = (await rpc('resource:bytes', [fileHash])) as {
+      let res: {
         success: boolean;
         bytes?: Uint8Array;
         manifest?: { fileName?: string; mimeType?: string };
         error?: string;
       };
+      try {
+        res = (await rpc('resource:bytes', [fileHash])) as typeof res;
+      } catch (err) {
+        return {
+          success: false,
+          error: err instanceof Error ? err.message : 'Resource unavailable',
+        };
+      }
       if (!res?.success || !res.bytes) {
         return { success: false, error: res?.error || 'Resource unavailable' };
       }

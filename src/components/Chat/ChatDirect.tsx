@@ -3739,32 +3739,26 @@ export const ChatDirect = ({
             reticulumDirectCallHistoryReady
           }
         />
-        {reticulumDirectUiEnabled && reticulumDirectTypingUsers.size > 0 && (
-          <Typography
-            variant="caption"
-            sx={{
-              background: `linear-gradient(180deg, transparent 0%, ${theme.palette.background.default} 45%)`,
-              bottom: 0,
-              color: 'text.secondary',
-              fontSize: '12px',
-              fontStyle: 'italic',
-              left: 0,
-              lineHeight: '18px',
-              overflow: 'hidden',
-              pointerEvents: 'none',
-              position: 'absolute',
-              px: 2.25,
-              py: '4px',
-              right: 0,
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
-              zIndex: 2,
-            }}
-          >
-            {`${selectedDirect?.name || selectedDirect?.address} is typing...`}
-          </Typography>
-        )}
       </Box>
+      {reticulumDirectUiEnabled && reticulumDirectTypingUsers.size > 0 && (
+        <Typography
+          variant="caption"
+          sx={{
+            color: 'text.secondary',
+            flexShrink: 0,
+            fontSize: '12px',
+            fontStyle: 'italic',
+            lineHeight: '18px',
+            overflow: 'hidden',
+            px: 2.25,
+            py: '4px',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {`${selectedDirect?.name || selectedDirect?.address} is typing...`}
+        </Typography>
+      )}
 
       <Dialog
         open={!reticulumDirectUiEnabled && !!pendingQchatFileOffer}

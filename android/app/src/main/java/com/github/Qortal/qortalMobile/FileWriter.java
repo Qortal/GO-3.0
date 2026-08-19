@@ -63,6 +63,8 @@ public class FileWriter extends Plugin {
             return;
         }
 
+        String apiKey = call.getString("apiKey");
+
         downloadWorker.execute(() -> {
             HttpURLConnection connection = null;
             try {
@@ -72,11 +74,14 @@ public class FileWriter extends Plugin {
                 // QDN can stall mid-stream while the node serves a large file;
                 // a short read timeout would abort an otherwise healthy save.
                 connection.setReadTimeout(120_000);
+                if (apiKey != null && !apiKey.isEmpty()) {
+                    connection.setRequestProperty("X-API-KEY", apiKey);
+                }
                 connection.connect();
 
                 int status = connection.getResponseCode();
                 if (status < 200 || status >= 300) {
-                    call.reject("Download failed with status " + status);
+                    call.reject("HTTP " + status + " from node");
                     return;
                 }
 
@@ -124,6 +129,55 @@ public class FileWriter extends Plugin {
                 call.reject("Failed to save file: " + e.getMessage());
             } catch (Exception e) {
                 call.reject("Unexpected error: " + e.getMessage());
+            } finally {
+                if (connection != null) {
+                    connection.disconnect();
+                }
+            }
+        });
+    }
+
+    /**
+     * GET a URL and drop the body. Used to kick {@code /arbitrary/...?async=true}
+     * on a remote core when the WebView fetch is blocked by CORS.
+     */
+    @PluginMethod
+    public void probeUrl(PluginCall call) {
+        String url = call.getString("url");
+        String apiKey = call.getString("apiKey");
+        if (url == null || url.isEmpty()) {
+            call.reject("url is required");
+            return;
+        }
+
+        downloadWorker.execute(() -> {
+            HttpURLConnection connection = null;
+            try {
+                connection = (HttpURLConnection) new URL(url).openConnection();
+                connection.setInstanceFollowRedirects(true);
+                connection.setConnectTimeout(15_000);
+                connection.setReadTimeout(15_000);
+                if (apiKey != null && !apiKey.isEmpty()) {
+                    connection.setRequestProperty("X-API-KEY", apiKey);
+                }
+                connection.connect();
+                int status = connection.getResponseCode();
+                InputStream stream =
+                    status >= 400 ? connection.getErrorStream() : connection.getInputStream();
+                if (stream != null) {
+                    try (InputStream in = stream) {
+                        byte[] buf = new byte[4096];
+                        // One read is enough for async=true; the node has started.
+                        //noinspection ResultOfMethodCallIgnored
+                        in.read(buf);
+                    }
+                }
+                JSObject ret = new JSObject();
+                ret.put("status", status);
+                ret.put("ok", status >= 200 && status < 300);
+                call.resolve(ret);
+            } catch (Exception e) {
+                call.reject("HTTP probe failed: " + e.getMessage());
             } finally {
                 if (connection != null) {
                     connection.disconnect();

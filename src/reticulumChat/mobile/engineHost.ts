@@ -35,7 +35,12 @@ type WorkerOut =
   | { t: 'sign'; id: number; fields: Record<string, unknown> }
   | { t: 'nativefs'; id: number; op: string; args: Record<string, unknown> }
   | { t: 'engine-ready' }
-  | { t: 'engine-failed'; error: string };
+  | { t: 'engine-failed'; error: string }
+  | {
+      t: 'identity-ack';
+      destinationHash: string;
+      identityPublicKeyBase64?: string | null;
+    };
 
 const post = (msg: WorkerOut) => {
   (self as unknown as Worker).postMessage(msg);
@@ -134,12 +139,20 @@ async function fetchGroupValidationRow(
 ): Promise<GroupValidationRow | null> {
   if (!config.apiBase) return null;
   const base = config.apiBase.replace(/\/$/, '');
+  const key = String(config.apiKey || '').trim();
+  const url = key
+    ? `${base}/groups/members/${groupId}/validate?apiKey=${encodeURIComponent(key)}`
+    : `${base}/groups/members/${groupId}/validate`;
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  };
+  if (key) headers['X-API-KEY'] = key;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 12_000);
   try {
-    const res = await fetch(`${base}/groups/members/${groupId}/validate`, {
+    const res = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify([address]),
       signal: controller.signal,
     });
@@ -258,8 +271,40 @@ function readGroupState<T>(fallback: T, read: () => T): T {
 const OVERLAY_RECOVERY_REPLAY_DEBOUNCE_MS = 1_500;
 /** Overlay health can flap; never replay subscriptions faster than this. */
 const OVERLAY_RECOVERY_REPLAY_MIN_INTERVAL_MS = 30_000;
+const MEMBERSHIP_REANNOUNCE_DEBOUNCE_MS = 1_500;
 let overlayRecoveryReplayTimer: ReturnType<typeof setTimeout> | null = null;
 let lastOverlayRecoveryReplayAt = 0;
+let membershipReannounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+function subscribedGroupCount(): number {
+  const m = getReticulumChatManager() as any;
+  const subs = m?.getSubscriptions?.();
+  return Array.isArray(subs) ? subs.length : 0;
+}
+
+/**
+ * First-session attach often marks the overlay healthy before Group.tsx has
+ * called subscribeGroup. A replay then no-ops on an empty set and never runs
+ * again until process death. Debounce until memberships exist, then announce.
+ */
+function scheduleMembershipReannounce(reason: string): void {
+  if (membershipReannounceTimer) clearTimeout(membershipReannounceTimer);
+  membershipReannounceTimer = setTimeout(() => {
+    membershipReannounceTimer = null;
+    const m = getReticulumChatManager() as any;
+    if (!m || !overlayHealthy) return;
+    const count = subscribedGroupCount();
+    if (count === 0) return;
+    try {
+      m.reannounceSubscriptions();
+      console.log(
+        `[MobileChat] membership_reannounce reason=${reason} groups=${count}`
+      );
+    } catch (err) {
+      console.warn('[MobileChat] membership reannounce failed', err);
+    }
+  }, MEMBERSHIP_REANNOUNCE_DEBOUNCE_MS);
+}
 
 /**
  * Group subscription and digest fanouts hard-fail with `no_route` whenever the
@@ -275,6 +320,10 @@ function onOverlayHealthRecovered(): void {
     recovered.notifyOverlayHealthChanged(true);
   } catch (err) {
     console.warn('[MobileChat] overlay health notify failed', err);
+  }
+  if (subscribedGroupCount() === 0) {
+    scheduleMembershipReannounce('overlay_recovered_waiting_memberships');
+    return;
   }
   const now = Date.now();
   if (
@@ -361,6 +410,7 @@ const handlers: Record<string, Handler> = {
     const m = manager();
     if (!m) return notRunning;
     m.setLocalGroupMemberships(Array.isArray(groupIds) ? groupIds : []);
+    if (overlayHealthy) scheduleMembershipReannounce('memberships_applied');
     return { success: true };
   },
   setPublicGroupDirectory: (groupIds) => {
@@ -566,6 +616,7 @@ const handlers: Record<string, Handler> = {
     if (!m) return notRunning;
     try {
       m.subscribeGroup(groupId);
+      if (overlayHealthy) scheduleMembershipReannounce('subscribe_group');
       return { success: true };
     } catch (err) {
       return {
@@ -609,8 +660,14 @@ const handlers: Record<string, Handler> = {
     const m = manager();
     if (!m) return notRunning;
     const result = await m.publishEvent(event);
-    if (result.ok) return { success: true };
-    return { success: false, error: result.error ?? result.reason };
+    if (result.ok) {
+      return { success: true, duplicate: result.duplicate === true };
+    }
+    return {
+      success: false,
+      error: result.error ?? result.reason,
+      stored: result.stored === true,
+    };
   },
   reserveAuthorSequence: async (groupId, authorAddress) => {
     const m = manager();
@@ -1092,9 +1149,11 @@ const resourceHandlers: Record<string, Handler> = {
     try {
       const manifest = store.getManifest(hash);
       if (!manifest) return { success: false, error: 'Unknown resource' };
-      const assembled =
-        store.getVerifiedAssembledPath(hash) ??
-        (await store.assembleResourceAsync(hash));
+      // Do not assemble here: finalize hashes the whole file on this worker
+      // and will miss the 45s RPC window (and starve chat) right after login.
+      // Callers already poll getStatus / requestResource until a verified
+      // assembled path exists.
+      const assembled = store.getVerifiedAssembledPath(hash);
       if (!assembled)
         return { success: false, error: 'Resource not assembled' };
       const buf = fs.readFileSync(assembled);
@@ -1226,6 +1285,18 @@ export function handleMainMessage(data: any): void {
   if (data.t === 'pyevent') {
     if (data.event === 'ready') {
       bridge?.markReady(data.payload ?? {});
+      const readyHash = bridge?.getLocalDestinationHash() ?? '';
+      if (readyHash) {
+        const payload = (data.payload ?? {}) as Record<string, unknown>;
+        post({
+          t: 'identity-ack',
+          destinationHash: readyHash,
+          identityPublicKeyBase64:
+            typeof payload.identityPublicKeyBase64 === 'string'
+              ? payload.identityPublicKeyBase64
+              : null,
+        });
+      }
     } else {
       bridge?.dispatchPythonEvent(data.event, data.payload);
     }
@@ -1248,9 +1319,20 @@ export function handleMainMessage(data: any): void {
       data.destinationHash,
       data.identityPublicKeyBase64
     );
+    const appliedHash = bridge?.getLocalDestinationHash() ?? '';
     console.log(
-      `[MobileChat] local_identity_applied hash=${bridge?.getLocalDestinationHash() ?? 'none'} identityKey=${Boolean(data.identityPublicKeyBase64)}`
+      `[MobileChat] local_identity_applied hash=${appliedHash || 'none'} identityKey=${Boolean(data.identityPublicKeyBase64)}`
     );
+    if (appliedHash) {
+      post({
+        t: 'identity-ack',
+        destinationHash: appliedHash,
+        identityPublicKeyBase64:
+          typeof data.identityPublicKeyBase64 === 'string'
+            ? data.identityPublicKeyBase64
+            : null,
+      });
+    }
     return;
   }
   if (data.t === 'stop') {

@@ -4,6 +4,9 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
 import android.net.Uri;
 import android.os.Build;
 import android.os.PowerManager;
@@ -23,6 +26,10 @@ public class QortalBackgroundPlugin extends Plugin {
     private static final String TAG = "QortalBackgroundPlugin";
     private BroadcastReceiver incomingCallReceiver;
     private BroadcastReceiver presenceTickReceiver;
+    private BroadcastReceiver airplaneModeReceiver;
+    private ConnectivityManager.NetworkCallback networkCallback;
+    private boolean deviceNetworkWatchersRegistered = false;
+    private Boolean lastEmittedDeviceOnline = null;
     private String pendingAlertFromAddress;
     private String pendingAlertType;
 
@@ -56,6 +63,9 @@ public class QortalBackgroundPlugin extends Plugin {
             presenceTickReceiver,
             new IntentFilter(QortalForegroundService.BROADCAST_PRESENCE_TICK)
         );
+
+        registerDeviceNetworkWatchers();
+        emitDeviceNetwork();
 
         consumeLaunchIntent(getActivity() != null ? getActivity().getIntent() : null);
     }
@@ -103,7 +113,99 @@ public class QortalBackgroundPlugin extends Plugin {
         if (presenceTickReceiver != null) {
             LocalBroadcastManager.getInstance(getContext()).unregisterReceiver(presenceTickReceiver);
         }
+        unregisterDeviceNetworkWatchers();
         super.handleOnDestroy();
+    }
+
+    private JSObject deviceNetworkPayload() {
+        JSObject payload = new JSObject();
+        payload.put("online", DeviceNetwork.isAvailable(getContext()));
+        return payload;
+    }
+
+    private void emitDeviceNetwork() {
+        boolean online = DeviceNetwork.isAvailable(getContext());
+        if (lastEmittedDeviceOnline != null && lastEmittedDeviceOnline == online) {
+            return;
+        }
+        lastEmittedDeviceOnline = online;
+        notifyListeners("deviceNetwork", deviceNetworkPayload());
+    }
+
+    private void registerDeviceNetworkWatchers() {
+        if (deviceNetworkWatchersRegistered) return;
+        Context context = getContext();
+        if (context == null) return;
+
+        airplaneModeReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context ctx, Intent intent) {
+                emitDeviceNetwork();
+            }
+        };
+        IntentFilter airplaneFilter = new IntentFilter(Intent.ACTION_AIRPLANE_MODE_CHANGED);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            context.registerReceiver(airplaneModeReceiver, airplaneFilter, Context.RECEIVER_EXPORTED);
+        } else {
+            context.registerReceiver(airplaneModeReceiver, airplaneFilter);
+        }
+
+        ConnectivityManager cm = context.getSystemService(ConnectivityManager.class);
+        if (cm != null) {
+            networkCallback = new ConnectivityManager.NetworkCallback() {
+                @Override
+                public void onAvailable(Network network) {
+                    emitDeviceNetwork();
+                }
+
+                @Override
+                public void onLost(Network network) {
+                    emitDeviceNetwork();
+                }
+
+                @Override
+                public void onCapabilitiesChanged(
+                    Network network,
+                    NetworkCapabilities networkCapabilities
+                ) {
+                    emitDeviceNetwork();
+                }
+            };
+            try {
+                cm.registerDefaultNetworkCallback(networkCallback);
+            } catch (RuntimeException ignored) {
+                networkCallback = null;
+            }
+        }
+        deviceNetworkWatchersRegistered = true;
+    }
+
+    private void unregisterDeviceNetworkWatchers() {
+        if (!deviceNetworkWatchersRegistered) return;
+        Context context = getContext();
+        if (context != null && airplaneModeReceiver != null) {
+            try {
+                context.unregisterReceiver(airplaneModeReceiver);
+            } catch (RuntimeException ignored) {
+            }
+        }
+        if (context != null && networkCallback != null) {
+            ConnectivityManager cm = context.getSystemService(ConnectivityManager.class);
+            if (cm != null) {
+                try {
+                    cm.unregisterNetworkCallback(networkCallback);
+                } catch (RuntimeException ignored) {
+                }
+            }
+        }
+        airplaneModeReceiver = null;
+        networkCallback = null;
+        deviceNetworkWatchersRegistered = false;
+    }
+
+    @PluginMethod
+    public void getDeviceNetwork(PluginCall call) {
+        call.resolve(deviceNetworkPayload());
     }
 
     @PluginMethod
@@ -119,13 +221,15 @@ public class QortalBackgroundPlugin extends Plugin {
         String nodeLabel = call.getString("nodeLabel", "Public node");
         String syncLabel = call.getString("syncLabel", "Sync status unknown");
         String peersLabel = call.getString("peersLabel", "0 connected peers");
+        String statusKind = call.getString("statusKind", "starting");
         QortalForegroundService.startOrUpdate(
             context,
             title,
             detail,
             nodeLabel,
             syncLabel,
-            peersLabel
+            peersLabel,
+            statusKind
         );
 
         JSObject ret = new JSObject();

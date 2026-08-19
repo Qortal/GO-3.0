@@ -13,8 +13,13 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
 import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
@@ -90,6 +95,8 @@ public class QortalForegroundService extends Service {
     public static final String EXTRA_STATUS_NODE = "status_node";
     public static final String EXTRA_STATUS_SYNC = "status_sync";
     public static final String EXTRA_STATUS_PEERS = "status_peers";
+    /** starting | online | offline — JS hint; native network state can override. */
+    public static final String EXTRA_STATUS_KIND = "status_kind";
     public static final String EXTRA_ALERT_ID = "alert_id";
     public static final String EXTRA_ALERT_TITLE = "alert_title";
     public static final String EXTRA_ALERT_BODY = "alert_body";
@@ -115,7 +122,37 @@ public class QortalForegroundService extends Service {
     private String statusNodeLabel = "Public node";
     private String statusSyncLabel = "Sync status unknown";
     private String statusPeersLabel = "0 connected peers";
+    private String statusKind = "starting";
     private boolean isRunning = false;
+    private boolean connectivityWatchersRegistered = false;
+
+    private final BroadcastReceiver airplaneModeReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            if (isRunning) updateStatusNotification();
+        }
+    };
+
+    private final ConnectivityManager.NetworkCallback networkCallback =
+        new ConnectivityManager.NetworkCallback() {
+            @Override
+            public void onAvailable(Network network) {
+                if (isRunning) updateStatusNotification();
+            }
+
+            @Override
+            public void onLost(Network network) {
+                if (isRunning) updateStatusNotification();
+            }
+
+            @Override
+            public void onCapabilitiesChanged(
+                Network network,
+                NetworkCapabilities networkCapabilities
+            ) {
+                if (isRunning) updateStatusNotification();
+            }
+        };
 
     private final Handler presenceTickHandler = new Handler(Looper.getMainLooper());
     private final Runnable presenceTickRunnable = new Runnable() {
@@ -159,6 +196,7 @@ public class QortalForegroundService extends Service {
                 statusNodeLabel = safeString(intent.getStringExtra(EXTRA_STATUS_NODE), statusNodeLabel);
                 statusSyncLabel = safeString(intent.getStringExtra(EXTRA_STATUS_SYNC), statusSyncLabel);
                 statusPeersLabel = safeString(intent.getStringExtra(EXTRA_STATUS_PEERS), statusPeersLabel);
+                statusKind = normalizeStatusKind(intent.getStringExtra(EXTRA_STATUS_KIND));
                 if (!isRunning) {
                     startStatusForeground();
                 } else {
@@ -231,6 +269,7 @@ public class QortalForegroundService extends Service {
     @Override
     public void onDestroy() {
         stopPresenceTicker();
+        unregisterConnectivityWatchers();
         isRunning = false;
         super.onDestroy();
     }
@@ -245,10 +284,18 @@ public class QortalForegroundService extends Service {
         startForeground(NOTIFICATION_ID_STATUS, notification);
         isRunning = true;
         startPresenceTicker();
+        registerConnectivityWatchers();
         Log.d(TAG, "Status foreground service started");
     }
 
+    private String lastPostedStatusKey = "";
+
     private void updateStatusNotification() {
+        String key = resolveDisplayKind() + "|" + resolveDisplayDetail()
+            + "|" + statusTitle + "|" + statusNodeLabel + "|" + statusSyncLabel
+            + "|" + statusPeersLabel;
+        if (key.equals(lastPostedStatusKey)) return;
+        lastPostedStatusKey = key;
         NotificationManager manager = getSystemService(NotificationManager.class);
         if (manager != null) {
             manager.notify(NOTIFICATION_ID_STATUS, buildStatusNotification());
@@ -271,7 +318,7 @@ public class QortalForegroundService extends Service {
     }
 
     private String buildStatusExpandedText() {
-        return statusDetail
+        return resolveDisplayDetail()
             + "\n\nNode: "
             + statusNodeLabel
             + "\nSync: "
@@ -318,6 +365,75 @@ public class QortalForegroundService extends Service {
         return skinInjectsAppIconCached;
     }
 
+    private static String normalizeStatusKind(String kind) {
+        if ("online".equals(kind) || "offline".equals(kind) || "starting".equals(kind)) {
+            return kind;
+        }
+        return "starting";
+    }
+
+    private boolean deviceHasNetwork() {
+        return DeviceNetwork.isAvailable(this);
+    }
+
+    private String resolveDisplayKind() {
+        return deviceHasNetwork() ? statusKind : "offline";
+    }
+
+    private String resolveDisplayDetail() {
+        if (!deviceHasNetwork()) return "Reticulum offline";
+        return statusDetail;
+    }
+
+    private int statusDotColor() {
+        String kind = resolveDisplayKind();
+        if ("online".equals(kind)) {
+            return getResources().getColor(R.color.reticulum_status_online, getTheme());
+        }
+        if ("offline".equals(kind)) {
+            return getResources().getColor(R.color.reticulum_status_offline, getTheme());
+        }
+        return getResources().getColor(R.color.reticulum_status_starting, getTheme());
+    }
+
+    private void applyStatusDot(RemoteViews views) {
+        views.setInt(R.id.notification_status_dot, "setColorFilter", statusDotColor());
+    }
+
+    private void registerConnectivityWatchers() {
+        if (connectivityWatchersRegistered) return;
+        IntentFilter airplaneFilter = new IntentFilter(Intent.ACTION_AIRPLANE_MODE_CHANGED);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(airplaneModeReceiver, airplaneFilter, Context.RECEIVER_EXPORTED);
+        } else {
+            registerReceiver(airplaneModeReceiver, airplaneFilter);
+        }
+        ConnectivityManager cm = getSystemService(ConnectivityManager.class);
+        if (cm != null) {
+            try {
+                cm.registerDefaultNetworkCallback(networkCallback);
+            } catch (RuntimeException ignored) {
+            }
+        }
+        connectivityWatchersRegistered = true;
+    }
+
+    private void unregisterConnectivityWatchers() {
+        if (!connectivityWatchersRegistered) return;
+        try {
+            unregisterReceiver(airplaneModeReceiver);
+        } catch (RuntimeException ignored) {
+        }
+        ConnectivityManager cm = getSystemService(ConnectivityManager.class);
+        if (cm != null) {
+            try {
+                cm.unregisterNetworkCallback(networkCallback);
+            } catch (RuntimeException ignored) {
+            }
+        }
+        connectivityWatchersRegistered = false;
+    }
+
     /** Hide the in-layout logo on skins that already inject the app icon. */
     private void applyLogoVisibility(RemoteViews views) {
         views.setViewVisibility(
@@ -330,6 +446,7 @@ public class QortalForegroundService extends Service {
         RemoteViews views = new RemoteViews(getPackageName(), R.layout.notification_qortal_status);
         views.setTextViewText(R.id.notification_title, title);
         views.setTextViewText(R.id.notification_text, text);
+        applyStatusDot(views);
         applyLogoVisibility(views);
         return views;
     }
@@ -347,6 +464,7 @@ public class QortalForegroundService extends Service {
         );
         views.setTextViewText(R.id.notification_title, title);
         views.setTextViewText(R.id.notification_text, text);
+        applyStatusDot(views);
         views.setTextViewText(R.id.notification_node, "Node: " + nodeLabel);
         views.setTextViewText(R.id.notification_sync, "Sync: " + syncLabel);
         views.setTextViewText(R.id.notification_peers, "Peers: " + peersLabel);
@@ -364,10 +482,11 @@ public class QortalForegroundService extends Service {
             PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT
         );
 
-        RemoteViews collapsedView = buildBrandedContentView(statusTitle, statusDetail);
+        String displayDetail = resolveDisplayDetail();
+        RemoteViews collapsedView = buildBrandedContentView(statusTitle, displayDetail);
         RemoteViews expandedView = buildExpandedStatusContentView(
             statusTitle,
-            statusDetail,
+            displayDetail,
             statusNodeLabel,
             statusSyncLabel,
             statusPeersLabel
@@ -377,7 +496,7 @@ public class QortalForegroundService extends Service {
         // header row; the fully-custom view shows only the big logo on the left.
         NotificationCompat.Builder builder = statusNotificationBuilder()
             .setContentTitle(statusTitle)
-            .setContentText(statusDetail)
+            .setContentText(displayDetail)
             .setCustomContentView(collapsedView)
             .setCustomBigContentView(expandedView)
             .setContentIntent(pendingIntent)
@@ -859,6 +978,26 @@ public class QortalForegroundService extends Service {
         String statusSyncLabel,
         String statusPeersLabel
     ) {
+        startOrUpdate(
+            context,
+            statusTitle,
+            statusDetail,
+            statusNodeLabel,
+            statusSyncLabel,
+            statusPeersLabel,
+            "starting"
+        );
+    }
+
+    public static void startOrUpdate(
+        Context context,
+        String statusTitle,
+        String statusDetail,
+        String statusNodeLabel,
+        String statusSyncLabel,
+        String statusPeersLabel,
+        String statusKind
+    ) {
         Intent intent = new Intent(context, QortalForegroundService.class);
         intent.setAction(ACTION_UPDATE);
         intent.putExtra(EXTRA_STATUS_TITLE, statusTitle);
@@ -866,6 +1005,7 @@ public class QortalForegroundService extends Service {
         intent.putExtra(EXTRA_STATUS_NODE, statusNodeLabel);
         intent.putExtra(EXTRA_STATUS_SYNC, statusSyncLabel);
         intent.putExtra(EXTRA_STATUS_PEERS, statusPeersLabel);
+        intent.putExtra(EXTRA_STATUS_KIND, statusKind);
         startServiceCompat(context, intent);
     }
 

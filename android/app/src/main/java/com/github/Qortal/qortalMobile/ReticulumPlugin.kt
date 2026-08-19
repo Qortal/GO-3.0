@@ -52,23 +52,23 @@ class ReticulumPlugin : Plugin() {
             Triple("Qortal Hub 1", "reticulum.qortal.link", 4444),
             Triple("Qortal Hub 2", "reticulum2.qortal.link", 4444),
         )
+
+        // Process-lifetime transport. MainActivity / the Capacitor plugin are
+        // destroyed on swipe-away; the foreground service keeps this process.
+        // Stopping RNS/Python on that destroy ran on the UI thread and blocked
+        // the next launch until the leftover process died (~1 min).
+        private val worker = Executors.newSingleThreadExecutor()
+        private val interfaces = mutableListOf<TCPClientInterface>()
+        private val announceCount = AtomicInteger(0)
+        @Volatile private var started = false
+        @Volatile private var netname: String = DEFAULT_NETNAME
+        private val presenceWorker = Executors.newSingleThreadExecutor()
+        @Volatile private var presenceHost: PyObject? = null
+        @Volatile private var presenceStarted = false
+        @Volatile private var presenceReaderRunning = false
+        @Volatile private var presenceConfigDir: String = ""
+        private var presenceReader: Thread? = null
     }
-
-    private val worker = Executors.newSingleThreadExecutor()
-    private val interfaces = mutableListOf<TCPClientInterface>()
-    private val announceCount = AtomicInteger(0)
-    @Volatile private var started = false
-    @Volatile private var netname: String = DEFAULT_NETNAME
-
-    // ── Python presence bridge (Chaquopy) ──────────────────────────────────
-    // Runs the proven Qortal RNS presence bridge (presence_bridge.py) in an
-    // embedded CPython interpreter. The web UI's window.presence forwards
-    // signed announce/heartbeat/offline envelopes here via publishPresence().
-    private val presenceWorker = Executors.newSingleThreadExecutor()
-    @Volatile private var presenceHost: PyObject? = null
-    @Volatile private var presenceStarted = false
-    @Volatile private var presenceReaderRunning = false
-    private var presenceReader: Thread? = null
 
     @PluginMethod
     fun start(call: PluginCall) {
@@ -140,7 +140,9 @@ class ReticulumPlugin : Plugin() {
     @PluginMethod
     fun presenceStart(call: PluginCall) {
         if (presenceStarted) {
-            call.resolve(JSObject().put("started", true))
+            if (!presenceReaderRunning) startPresenceReader()
+            reemitPresenceReady()
+            call.resolve(JSObject().put("started", true).put("reused", true))
             return
         }
         presenceWorker.execute {
@@ -153,6 +155,7 @@ class ReticulumPlugin : Plugin() {
                 presenceHost = host
 
                 val configDir = File(context.filesDir, "reticulum-presence").apply { mkdirs() }
+                presenceConfigDir = configDir.absolutePath
                 host.callAttr("start", configDir.absolutePath)
                 presenceStarted = true
 
@@ -629,6 +632,25 @@ class ReticulumPlugin : Plugin() {
         }, "presence-reader").apply { isDaemon = true; start() }
     }
 
+    /** handle_start is idempotent and re-emits `ready` for a new WebView. */
+    private fun reemitPresenceReady() {
+        val host = presenceHost ?: return
+        val configDir = presenceConfigDir
+        if (configDir.isEmpty()) return
+        presenceWorker.execute {
+            try {
+                val startCmd = JSONObject()
+                    .put("type", "cmd")
+                    .put("id", "start-reattach")
+                    .put("action", "start")
+                    .put("payload", JSONObject().put("configDir", configDir))
+                host.callAttr("feed", startCmd.toString())
+            } catch (t: Throwable) {
+                Log.e(TAG, "Presence ready re-emit failed", t)
+            }
+        }
+    }
+
     private fun statusObject(): JSObject {
         val online = interfaces.any { runCatching { it.online.value }.getOrDefault(false) }
         val rx = interfaces.sumOf { runCatching { it.rxBytes.get() }.getOrDefault(0L) }
@@ -645,15 +667,18 @@ class ReticulumPlugin : Plugin() {
             .put("txBytes", tx)
     }
 
+    override fun load() {
+        super.load()
+        if (presenceStarted && !presenceReaderRunning) {
+            startPresenceReader()
+            reemitPresenceReady()
+        }
+    }
+
     override fun handleOnDestroy() {
-        runCatching {
-            presenceReaderRunning = false
-            if (presenceStarted) presenceHost?.callAttr("stop")
-        }
-        runCatching {
-            interfaces.forEach { runCatching { it.detach() } }
-            if (started) Reticulum.stop()
-        }
+        // Detach the JS pump only. Stopping Python/RNS here blocked the UI
+        // thread and left the process unable to start a new Activity.
+        presenceReaderRunning = false
         super.handleOnDestroy()
     }
 }

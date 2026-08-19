@@ -147,6 +147,7 @@
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- Voice calls: WebView getUserMedia mic capture (Capacitor grants the
          WebView audio resource after these runtime permissions are held). -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />

@@ -1,6 +1,10 @@
 import aesjs from 'aes-js';
-import { createEndpoint } from '../background/background.ts';
+import {
+  createEndpoint,
+  getApiKeyFromStorage,
+} from '../background/background.ts';
 import { isCapacitor } from './platform';
+import { qdnResourcePath } from './qdnPath';
 import {
   downloadUrlToMobileDocuments,
   isSilentSaveFile,
@@ -144,10 +148,17 @@ export async function downloadFromLocation(
     }
 
     // Build the download URL
-    let locationUrl = `/arbitrary/${service}/${name}`;
-    if (identifier) {
-      locationUrl += `/${identifier}`;
-    }
+    const locationUrl = `/arbitrary/${qdnResourcePath({
+      service,
+      name,
+      identifier,
+    })}`;
+
+    const storedApiKey = await getApiKeyFromStorage().catch(() => null);
+    const nativeApiKey =
+      storedApiKey && typeof storedApiKey === 'object'
+        ? String((storedApiKey as { apikey?: string }).apikey || '').trim()
+        : '';
 
     // Capacitor Android/iOS: the WebView has neither the File System Access
     // API nor working anchor-tag downloads, so both browser fallbacks below
@@ -164,11 +175,13 @@ export async function downloadFromLocation(
         // Nothing can be downloaded until the node holds every chunk, and for
         // a large file that is most of the wait. Watching it turns a dead
         // progress bar into a moving one.
-        if (announce) {
-          await waitForQdnResource({ service, name, identifier }, (gather) =>
-            reportQdnGatherProgress(notificationId, gather.percent, gather)
-          );
-        }
+        await waitForQdnResource(
+          { service, name, identifier },
+          announce
+            ? (gather) =>
+                reportQdnGatherProgress(notificationId, gather.percent, gather)
+            : undefined
+        );
 
         const endpoint = isEncrypted
           ? await createEndpoint(locationUrl)
@@ -192,7 +205,8 @@ export async function downloadFromLocation(
                     event.bytesWritten,
                     event.totalBytes
                   )
-              : undefined
+              : undefined,
+            nativeApiKey || undefined
           );
           if (announce) {
             finishQdnSaveNotification(
@@ -210,7 +224,7 @@ export async function downloadFromLocation(
 
         const response = await fetch(endpoint);
         if (!response.ok) {
-          throw new Error('Failed to download file');
+          throw new Error(`HTTP ${response.status} from node`);
         }
         if (!response.body) {
           throw new Error('Response body is empty');

@@ -128,7 +128,17 @@ const bcryptBatchInWorkers = (jobs) => {
 
 async function bcryptBatch(jobs) {
   if (canUseNativeBcrypt()) {
-    return nativeBcryptHashBatch(jobs);
+    try {
+      const hashes = await nativeBcryptHashBatch(jobs);
+      if (Array.isArray(hashes) && hashes.length === jobs.length) {
+        return hashes;
+      }
+      console.warn(
+        '[KDF] native bcrypt returned an incomplete batch, using WASM'
+      );
+    } catch (error) {
+      console.warn('[KDF] native bcrypt failed, using WASM', error);
+    }
   }
   return bcryptBatchInWorkers(jobs);
 }

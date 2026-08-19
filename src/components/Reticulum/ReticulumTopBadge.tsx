@@ -1,6 +1,12 @@
 import { useState } from 'react';
 import { alpha, Box, Popover, Typography, useTheme } from '@mui/material';
-import { reticulumPhaseColor, useReticulumStatus } from './reticulumStatus';
+import {
+  reticulumDisplayLabel,
+  reticulumDisplayPhase,
+  reticulumPhaseColor,
+  useDeviceOnline,
+  useReticulumStatus,
+} from './reticulumStatus';
 import { useOnlineAddresses } from '../../hooks/usePresence';
 
 /**
@@ -13,23 +19,16 @@ export const ReticulumTopBadge = () => {
   const theme = useTheme();
   const { phase, status, error } = useReticulumStatus();
   const onlineCount = useOnlineAddresses().size;
+  const deviceOnline = useDeviceOnline();
   const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
+  const displayPhase = reticulumDisplayPhase(phase, onlineCount, deviceOnline);
+  const label = reticulumDisplayLabel(displayPhase);
 
   // Hide when the native plugin isn't present at all.
   if (phase === 'error' && !status) return null;
 
-  const color = reticulumPhaseColor(phase);
-  const isOnline = phase === 'online';
-  const label =
-    phase === 'online'
-      ? 'online'
-      : phase === 'connecting'
-        ? 'connecting'
-        : phase === 'starting'
-          ? 'starting'
-          : phase === 'error'
-            ? 'offline'
-            : 'idle';
+  const color = reticulumPhaseColor(displayPhase);
+  const isOnline = displayPhase === 'online';
 
   return (
     <>
@@ -45,10 +44,18 @@ export const ReticulumTopBadge = () => {
           cursor: 'pointer',
           backgroundColor: isOnline
             ? alpha(theme.palette.success.main, 0.16)
-            : 'rgba(255,255,255,0.06)',
+            : displayPhase === 'connecting' || displayPhase === 'starting'
+              ? alpha('#f5a623', 0.16)
+              : displayPhase === 'offline' || displayPhase === 'error'
+                ? alpha('#e53935', 0.16)
+                : 'rgba(255,255,255,0.06)',
           border: isOnline
             ? `1px solid ${alpha(theme.palette.success.main, 0.28)}`
-            : '1px solid transparent',
+            : displayPhase === 'connecting' || displayPhase === 'starting'
+              ? `1px solid ${alpha('#f5a623', 0.28)}`
+              : displayPhase === 'offline' || displayPhase === 'error'
+                ? `1px solid ${alpha('#e53935', 0.28)}`
+                : '1px solid transparent',
           userSelect: 'none',
         }}
       >
@@ -59,7 +66,7 @@ export const ReticulumTopBadge = () => {
             borderRadius: '50%',
             backgroundColor: color,
             boxShadow:
-              phase === 'online' ? `0 0 6px ${color}` : 'none',
+              displayPhase === 'online' ? `0 0 6px ${color}` : 'none',
             flexShrink: 0,
           }}
         />
@@ -84,7 +91,7 @@ export const ReticulumTopBadge = () => {
             textTransform: 'uppercase',
           }}
         >
-          online
+          {label}
         </Typography>
       </Box>
       <Popover
@@ -109,7 +116,7 @@ export const ReticulumTopBadge = () => {
             <Typography sx={{ fontSize: 12, opacity: 0.7 }}>{label}</Typography>
           </Box>
           <Typography sx={{ fontSize: 11.5, fontWeight: 600, mb: 0.5 }}>
-            {onlineCount} online
+            {onlineCount} {label}
           </Typography>
           {status && (
             <Box sx={{ fontSize: 11, opacity: 0.85, lineHeight: 1.5 }}>

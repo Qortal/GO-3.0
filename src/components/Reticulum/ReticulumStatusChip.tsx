@@ -1,6 +1,13 @@
 import { useState } from 'react';
 import { isMobileViewport } from '../../utils/platform';
-import { reticulumPhaseColor, useReticulumStatus } from './reticulumStatus';
+import {
+  reticulumDisplayLabel,
+  reticulumDisplayPhase,
+  reticulumPhaseColor,
+  useDeviceOnline,
+  useReticulumStatus,
+} from './reticulumStatus';
+import { useOnlineAddresses } from '../../hooks/usePresence';
 
 /**
  * Diagnostic overlay for the native Reticulum transport (desktop/web only).
@@ -11,6 +18,9 @@ import { reticulumPhaseColor, useReticulumStatus } from './reticulumStatus';
  */
 export const ReticulumStatusChip = () => {
   const { phase, status, error } = useReticulumStatus();
+  const onlineCount = useOnlineAddresses().size;
+  const deviceOnline = useDeviceOnline();
+  const displayPhase = reticulumDisplayPhase(phase, onlineCount, deviceOnline);
   const [expanded, setExpanded] = useState(false);
   const mobile = isMobileViewport();
 
@@ -22,7 +32,7 @@ export const ReticulumStatusChip = () => {
   // Transport start is deferred until after login; don't show a stale chip.
   if (phase === 'idle' && !status) return null;
 
-  const color = reticulumPhaseColor(phase);
+  const color = reticulumPhaseColor(displayPhase);
 
   return (
     <div
@@ -56,13 +66,9 @@ export const ReticulumStatusChip = () => {
         />
         <strong style={{ fontSize: 11 }}>Reticulum</strong>
         <span style={{ opacity: 0.7 }}>
-          {phase === 'online'
-            ? 'online'
-            : phase === 'connecting'
-              ? 'connecting…'
-              : phase === 'starting'
-                ? 'starting…'
-                : phase}
+          {displayPhase === 'connecting' || displayPhase === 'starting'
+            ? `${reticulumDisplayLabel(displayPhase)}…`
+            : reticulumDisplayLabel(displayPhase)}
         </span>
       </div>
       {expanded && status && (

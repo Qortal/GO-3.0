@@ -76,6 +76,7 @@ export const MobileBackgroundSetup = ({
 
       await startMobilePersistentStatus({
         reticulumLabel: 'Reticulum starting',
+        reticulumKind: 'starting',
         onlineCount: onlineCountRef.current,
         nodeLabel: buildNodeLabel(selectedNodeRef.current),
         syncLabel: buildSyncLabel(nodeInfosRef.current),

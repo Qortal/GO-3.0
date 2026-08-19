@@ -10576,30 +10576,25 @@ export const ChatGroup = ({
                   />
                 )}
 
-              {reticulumChatEnabled && Boolean(reticulumTypingText) && (
-                <Typography
-                  sx={{
-                    background: `linear-gradient(180deg, transparent 0%, ${theme.palette.background.default} 45%)`,
-                    bottom: 0,
-                    color: theme.palette.text.secondary,
-                    fontSize: '12px',
-                    left: 0,
-                    lineHeight: '18px',
-                    overflow: 'hidden',
-                    pointerEvents: 'none',
-                    position: 'absolute',
-                    px: 2.25,
-                    py: '4px',
-                    right: 0,
-                    textOverflow: 'ellipsis',
-                    whiteSpace: 'nowrap',
-                    zIndex: 2,
-                  }}
-                >
-                  {reticulumTypingText}
-                </Typography>
-              )}
             </Box>
+            {reticulumChatEnabled && Boolean(reticulumTypingText) && (
+              <Typography
+                sx={{
+                  color: theme.palette.text.secondary,
+                  flexShrink: 0,
+                  fontSize: '12px',
+                  fontStyle: 'italic',
+                  lineHeight: '18px',
+                  overflow: 'hidden',
+                  px: 2.25,
+                  py: '4px',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {reticulumTypingText}
+              </Typography>
+            )}
 
             {!shouldSuppressLegacyGroupChat &&
               (reticulumChatEnabled || !!secretKey || isPrivate === false) && (

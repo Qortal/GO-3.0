@@ -525,8 +525,11 @@ export class MobileReticulumBridge extends EventEmitter {
   }): Promise<ReticulumSendResult> {
     const peerPresenceHash = payload.peerPresenceHash.trim().toLowerCase();
     const logicalResourceType = payload.logicalResourceType ?? '';
+    const interactiveHistory =
+      logicalResourceType === 'reticulum_chat_history_page_interactive';
     const lane =
       logicalResourceType === 'reticulum_chat_dm_page' ||
+      interactiveHistory ||
       (![
         'reticulum_chat_history_page',
         'reticulum_chat_metadata_snapshot',
@@ -545,18 +548,35 @@ export class MobileReticulumBridge extends EventEmitter {
     }
     const key = `${peerPresenceHash}:${lane}`;
     const existing = this.resourceSessionPreparations.get(key);
-    if (existing) return existing;
-    const preparation = this.prepareResourceSession(
-      { ...payload, peerPresenceHash },
-      lane
-    );
-    this.resourceSessionPreparations.set(key, preparation);
-    void preparation.finally(() => {
-      if (this.resourceSessionPreparations.get(key) === preparation) {
-        this.resourceSessionPreparations.delete(key);
-      }
-    });
-    return preparation;
+    const preparation =
+      existing ??
+      this.prepareResourceSession(
+        {
+          ...payload,
+          peerPresenceHash,
+          ...(interactiveHistory
+            ? { logicalResourceType: 'reticulum_chat_history_page' }
+            : {}),
+        },
+        lane
+      );
+    if (!existing) {
+      this.resourceSessionPreparations.set(key, preparation);
+      void preparation.finally(() => {
+        if (this.resourceSessionPreparations.get(key) === preparation) {
+          this.resourceSessionPreparations.delete(key);
+        }
+      });
+    }
+    const result = await preparation;
+    if (!result.ok && interactiveHistory) {
+      return this.ensureReticulumResourceSessionDetailed({
+        ...payload,
+        peerPresenceHash,
+        logicalResourceType: 'reticulum_chat_history_page',
+      });
+    }
+    return result;
   }
 
   /**

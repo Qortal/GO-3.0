@@ -57,7 +57,13 @@ export const decryptStoredWallet = async (password, wallet, threadCount) => {
   let key =
     walletAddress && getCachedWalletKdfKey(walletAddress, password);
   if (!key) {
+    const kdfStarted = performance.now();
     key = await kdf(password, salt, threads);
+    console.info(
+      `[Unlock] KDF ${Math.round(performance.now() - kdfStarted)}ms (${threads.length} jobs)`
+    );
+  } else {
+    console.info('[Unlock] KDF cache hit');
   }
   const encryptionKey = key.slice(0, 32);
   const macKey = key.slice(32, 63);
