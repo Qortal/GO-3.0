@@ -193,6 +193,11 @@ import {
 import EmojiPicker, { EmojiStyle, Theme } from 'emoji-picker-react';
 import { ReticulumMessageExpiryButton } from './ReticulumMessageExpiryButton';
 import { applyReticulumJoinUnreadBaseline } from './reticulumJoinUnreadBaseline';
+import {
+  cleanupReticulumSelfWelcomeMarkersOnce,
+  RETICULUM_SELF_WELCOME_RECENT_JOIN_MS,
+  reticulumSelfWelcomeStorageKey,
+} from './reticulumSelfWelcomeStorage';
 import { projectReticulumReactionReferences } from '../../utils/reticulumReactionProjection';
 import {
   buildReticulumEditReference,
@@ -472,8 +477,6 @@ const Q_MANAGER_HEADER_HEIGHT = 40;
 const RETICULUM_INLINE_IMAGE_THRESHOLD_BYTES = 1_000_000;
 const RETICULUM_TYPING_IDLE_STOP_MS = 5_000;
 const RETICULUM_MEMBER_REFRESH_MS = 60_000;
-const RETICULUM_SELF_WELCOME_RECENT_JOIN_MS = 24 * 60 * 60 * 1000;
-const RETICULUM_SELF_WELCOME_STORAGE_PREFIX = 'qchat-reticulum-self-welcome-v1';
 const RETICULUM_CALENDAR_SYSTEM_RANGE_MS = 365 * 24 * 60 * 60 * 1000;
 const RETICULUM_CALENDAR_TEN_MINUTES_MS = 10 * 60 * 1000;
 const RETICULUM_CALENDAR_TIMER_MAX_DELAY_MS = 2_147_000_000;
@@ -4545,7 +4548,9 @@ export const ChatGroup = ({
     if (!member || !Number.isFinite(joinedAt) || joinedAt <= 0) return;
 
     const welcomeKey = `${groupId}:${myAddress}:${joinedAt}`;
-    const storageKey = `${RETICULUM_SELF_WELCOME_STORAGE_PREFIX}:${welcomeKey}`;
+    const welcomeIdentity = { address: myAddress, groupId, joinedAt };
+    cleanupReticulumSelfWelcomeMarkersOnce(welcomeIdentity);
+    const storageKey = reticulumSelfWelcomeStorageKey(welcomeIdentity);
     try {
       if (window.localStorage.getItem(storageKey)) return;
     } catch {
@@ -9258,6 +9263,7 @@ export const ChatGroup = ({
       >
         {reticulumChatEnabled && (
           <Box
+            data-tour="hub-channel-list"
             onContextMenu={openReticulumChannelAreaContextMenu}
             onTouchStart={
               isMobile && reticulumChannelSidebarOpen
@@ -9307,7 +9313,19 @@ export const ChatGroup = ({
             }}
           >
             <Box
-              aria-label="Resize channel list"
+              aria-hidden
+              data-tour="hub-onboarding-channel"
+              sx={{
+                height: 30,
+                left: 16,
+                pointerEvents: 'none',
+                position: 'absolute',
+                right: 16,
+                top: 84,
+              }}
+            />
+            <Box
+              aria-label={t('group:chat_group.resize_channel_list')}
               onPointerDown={handleReticulumChannelSidebarResizeStart}
               role="separator"
               sx={{
@@ -10091,6 +10109,7 @@ export const ChatGroup = ({
                 {typeof onQortalLandClick === 'function' && (
                   <Box
                     component="span"
+                    data-tour="hub-group-qortal-land"
                     sx={{ display: { xs: 'none', md: 'inline-flex' } }}
                   >
                     <ReticulumModePill

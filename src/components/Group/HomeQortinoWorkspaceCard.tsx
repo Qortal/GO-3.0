@@ -127,12 +127,11 @@ import {
   QORTINO_DONATION_PREFILL_NAME,
   QORTINO_DONATION_THANK_YOU_MESSAGE,
 } from './qortinoDonationEasterEgg';
+import { hasRequiredQortinoOnboardingBalance } from './qortinoOnboarding';
 
 const LS_KEY = GETTING_STARTED_LS_KEY;
 const AVATAR_SERVICE = 'THUMBNAIL';
 const AVATAR_IDENTIFIER = 'qortal_avatar';
-/** Advance past step 1 at this balance; labels still say "6 QORT" for onboarding copy. */
-const MIN_BALANCE_FOR_QORTS = 1.25;
 export const QORTINO_WORKSPACE_SETTINGS_KEY = 'home-qortino-workspace-v1';
 const ONBOARDING_URL = 'https://qortal.dev/onboarding';
 const SUPPORT_CHAT_URL = 'https://link.qortal.dev/support';
@@ -2376,8 +2375,7 @@ export const HomeQortinoWorkspaceCard = ({
   useEffect(() => {
     if (dismissed !== false || !userAddress) return;
 
-    const balanceNum = balance != null ? Number(balance) : null;
-    if (balanceNum != null && balanceNum >= MIN_BALANCE_FOR_QORTS) return;
+    if (hasRequiredQortinoOnboardingBalance(balance)) return;
 
     const url = `${getBaseApiReact()}/transactions/payments/between?recipientAddress=${encodeURIComponent(userAddress)}&confirmationStatus=CONFIRMED&limit=20`;
     let cancelled = false;
@@ -2401,10 +2399,10 @@ export const HomeQortinoWorkspaceCard = ({
     };
   }, [balance, dismissed, userAddress]);
 
-  const realHasQorts =
-    (balance != null && Number(balance) >= MIN_BALANCE_FOR_QORTS) ||
-    (paymentsFallbackTotal != null &&
-      paymentsFallbackTotal >= MIN_BALANCE_FOR_QORTS);
+  const realHasQorts = hasRequiredQortinoOnboardingBalance(
+    balance,
+    paymentsFallbackTotal
+  );
   const hasQorts = realHasQorts;
   const hasName = Boolean(name);
   const hasPendingRegisterName =
@@ -2680,15 +2678,15 @@ export const HomeQortinoWorkspaceCard = ({
       {
         accent: '#92B8FF',
         actionLabel: t('group:home.get_six_qorts_way3_action', 'Open Q-Trade'),
-        ctaLabel: t('group:home.get_six_qorts', 'Get 6 QORT'),
+        ctaLabel: t('group:home.get_six_qorts', 'Get 2 QORT'),
         done: hasQorts,
         helper: t(
           'group:home.get_qorts_workspace_hint',
-          'Unlock your first 6 QORT to activate the rest of the setup.'
+          'Unlock your first 2 QORT to activate the rest of the setup.'
         ),
         icon: ShoppingBagRoundedIcon,
         key: 'get_six_qorts' as const,
-        label: t('group:home.get_six_qorts', 'Get 6 QORT'),
+        label: t('group:home.get_six_qorts', 'Get 2 QORT'),
         onAction: () => setOpenQortsDialog(true),
       },
       {
@@ -3516,7 +3514,7 @@ export const HomeQortinoWorkspaceCard = ({
     if (currentStep.key === 'get_six_qorts') {
       return t(
         'group:home.persistent_guide_get_qorts',
-        "Let's start with 6 QORT. Pick any option above."
+        "Let's start with 2 QORT. Pick any option above."
       );
     }
 
@@ -3550,7 +3548,7 @@ export const HomeQortinoWorkspaceCard = ({
   /*
     if (isOnboardingVisible) {
       if (currentStep.key === 'get_six_qorts') {
-        return 'We start with 6 QORT. Pick any route above and IÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ll queue the next step.';
+        return 'We start with 2 QORT. Pick any route above and IÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ll queue the next step.';
       }
       if (currentStep.key === 'register_name') {
         return 'Name next. That unlocks your identity across GO.';
@@ -4456,7 +4454,7 @@ export const HomeQortinoWorkspaceCard = ({
           pushReaction(
             qw(
               'reaction_support_chat',
-              "Support chat is open. Ask for the 6 QORT and I'll queue step two."
+              "Support chat is open. Ask for the 2 QORT and I'll queue step two."
             )
           );
           openExternalUrl(SUPPORT_CHAT_URL);
@@ -4504,7 +4502,7 @@ export const HomeQortinoWorkspaceCard = ({
       {
         description: t(
           'group:home.get_six_qorts_way2',
-          'Ask in the Nextcloud support chat for 6 QORT.'
+          'Ask in the Nextcloud support chat for 2 QORT.'
         ),
         icon: SupportAgentRoundedIcon,
         key: 'support',
@@ -4513,7 +4511,7 @@ export const HomeQortinoWorkspaceCard = ({
           pushReaction(
             qw(
               'reaction_support_chat',
-              "Support chat is open. Ask for the 6 QORT and I'll queue step two."
+              "Support chat is open. Ask for the 2 QORT and I'll queue step two."
             )
           );
           openExternalUrl(SUPPORT_CHAT_URL);
@@ -4726,7 +4724,7 @@ export const HomeQortinoWorkspaceCard = ({
                   >
                     {t(
                       'group:home.get_qorts_workspace_hint',
-                      'Unlock your first 6 QORT to activate the rest of the setup.'
+                      'Unlock your first 2 QORT to activate the rest of the setup.'
                     )}
                   </Typography>
                 </Box>
@@ -6599,7 +6597,7 @@ export const HomeQortinoWorkspaceCard = ({
         >
           <Box>
             <Typography sx={{ fontSize: '1rem', fontWeight: 700 }}>
-              {t('group:home.get_six_qorts', 'Get 6 QORT')}
+              {t('group:home.get_six_qorts', 'Get 2 QORT')}
             </Typography>
             <Typography
               sx={{
@@ -6610,7 +6608,7 @@ export const HomeQortinoWorkspaceCard = ({
             >
               {t(
                 'group:home.get_six_qorts_intro',
-                'There are 3 ways to get your first 6 QORT:'
+                'There are 3 ways to get your first 2 QORT:'
               )}
             </Typography>
           </Box>
@@ -6638,7 +6636,7 @@ export const HomeQortinoWorkspaceCard = ({
             icon={SupportAgentRoundedIcon}
             label={t(
               'group:home.get_six_qorts_way2',
-              'Ask in the Nextcloud support chat for 6 QORT.'
+              'Ask in the Nextcloud support chat for 2 QORT.'
             )}
             onClick={() => openExternalUrl(SUPPORT_CHAT_URL)}
             actionLabel={t(

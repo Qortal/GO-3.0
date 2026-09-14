@@ -101,6 +101,7 @@ function eventPassesAuthorExclusion(
 }
 
 const RETICULUM_CHAT_EXPIRY_PRUNE_INTERVAL_MS = 60 * 1000;
+const RETICULUM_CHAT_CHANNEL_SUMMARY_CACHE_MAX_ENTRIES = 4096;
 const RETICULUM_DM_EXPIRY_DAY_MS = 24 * 60 * 60 * 1000;
 export const RETICULUM_DM_DEFAULT_EXPIRY_MS = 30 * RETICULUM_DM_EXPIRY_DAY_MS;
 const RETICULUM_DM_ALLOWED_EXPIRY_MS = new Set([
@@ -111,8 +112,6 @@ const RETICULUM_DM_ALLOWED_EXPIRY_MS = new Set([
   RETICULUM_DM_DEFAULT_EXPIRY_MS,
 ]);
 const RETICULUM_CHAT_MAX_EFFECTIVE_MENTION_HASHES = 32;
-/** How far back a channel summary looks when counting unread/mentions. */
-const RETICULUM_CHAT_SUMMARY_EVENT_WINDOW = 500;
 const RETICULUM_CHAT_VISIBLE_EVENT_SQL =
   "(expires_at IS NULL OR expires_at > CAST(strftime('%s','now') AS INTEGER) * 1000)";
 
@@ -362,6 +361,15 @@ export type ReticulumGroupChatSummary = {
   channels: ReticulumChatSummary[];
 };
 
+type CachedReticulumChannelSummary = {
+  groupId: number;
+  channelId: string;
+  ownerAddress: string;
+  onlineSince: number;
+  validUntil: number;
+  summary: ReticulumChatSummary | null;
+};
+
 export type ReticulumChatReadTarget = {
   groupId: number;
   channelId: string;
@@ -521,6 +529,17 @@ export type ReticulumChatMissingRangeState = {
   preferredPeer: string;
   attempts: number;
   nextAttemptAt: number;
+};
+
+export type ReticulumChatKnownUnavailableRange = {
+  groupId: number;
+  authorAddress: string;
+  authorStreamId: string;
+  fromSeq: number;
+  toSeq: number;
+  confirmedAt: number;
+  recheckAt: number;
+  peerHashes: string[];
 };
 
 export type ReticulumChatMetadataSnapshotRecord = {
@@ -1578,8 +1597,11 @@ export class ReticulumChatDatabase {
     }>
   >();
   private memoryReadWatermarks = new Map<string, number>();
+  private channelSummaryCache = new Map<
+    string,
+    CachedReticulumChannelSummary
+  >();
   private memoryRelayCache: Map<string, ReticulumChatRelayCacheEntry>;
-  private summaryCacheGeneration: number | null = null;
   private generalChannelExpiryPolicyAppliedAt = 0;
   private lastExpiryPruneAt = 0;
   private lastDirectExpiryPruneAt = 0;
@@ -1602,12 +1624,6 @@ export class ReticulumChatDatabase {
   private stmtGetRecentEvents: Statement;
   private stmtGetRecentMessageEvents: Statement;
   private stmtGetRecentMessageEventsAllChannels: Statement;
-  private stmtGetChannelSummaryFingerprint: Statement;
-  private stmtGetChannelSummaryCache: Statement;
-  private stmtUpsertChannelSummaryCache: Statement;
-  private stmtDeleteChannelSummaryCacheForChannel: Statement;
-  private stmtDeleteChannelSummaryCacheForGroup: Statement;
-  private stmtDeleteChannelSummaryCacheForOwner: Statement;
   private stmtUpsertMessageProjection: Statement;
   private stmtGetMessageProjection: Statement;
   private stmtGetMessageProjectionEvents: Statement;
@@ -1648,6 +1664,7 @@ export class ReticulumChatDatabase {
   private stmtDeleteMentionsForEvent: Statement;
   private stmtGetUnreadMentionRecords: Statement;
   private stmtGetUnreadReplyRecords: Statement;
+  private stmtGetNextMessageExpiry: Statement;
   private stmtMarkMentionsRead: Statement;
   private stmtMarkServed: Statement;
   private stmtTotalCacheBytes: Statement;
@@ -1699,6 +1716,14 @@ export class ReticulumChatDatabase {
   private stmtCountMissingRangePeerUnavailable: Statement;
   private stmtGetMissingRangePeerUnavailable: Statement;
   private stmtClearMissingRangePeerUnavailable: Statement;
+  private stmtUpsertKnownUnavailableRange: Statement;
+  private stmtParkKnownUnavailableRange: Statement;
+  private stmtGetKnownUnavailableRange: Statement;
+  private stmtGetKnownUnavailableRangesForGroup: Statement;
+  private stmtWakeKnownUnavailableRangesForGroup: Statement;
+  private stmtClearKnownUnavailableRange: Statement;
+  private stmtClearKnownUnavailableRangesForGroup: Statement;
+  private stmtPruneKnownUnavailableRanges: Statement;
   private stmtDeleteMissingRange: Statement;
   private stmtInsertMissingRangeRaw: Statement;
   private stmtGetRejectedEventMarker: Statement;
@@ -1829,56 +1854,6 @@ export class ReticulumChatDatabase {
       )
       ORDER BY created_at ASC, root_event_id ASC
     `);
-    // Deliberately aggregates only over indexed columns (and a bounded window
-    // for the expiry probe) so validating a cached summary stays far cheaper
-    // than rebuilding it.
-    this.stmtGetChannelSummaryFingerprint = this.db.prepare(`
-      SELECT
-        (SELECT COUNT(*) FROM reticulum_chat_events
-          WHERE group_id = @group_id AND channel_id = @channel_id) AS eventCount,
-        (SELECT COALESCE(MAX(timestamp), 0) FROM reticulum_chat_events
-          WHERE group_id = @group_id AND channel_id = @channel_id) AS eventLatest,
-        (SELECT COUNT(*) FROM rchat_message_projection
-          WHERE group_id = @group_id AND channel_id = @channel_id
-            AND deleted_at IS NULL) AS messageCount,
-        (SELECT COALESCE(MAX(created_at), 0) FROM rchat_message_projection
-          WHERE group_id = @group_id AND channel_id = @channel_id
-            AND deleted_at IS NULL) AS messageLatest,
-        (SELECT MIN(expires_at) FROM (
-          SELECT expires_at FROM rchat_message_projection
-          WHERE group_id = @group_id AND channel_id = @channel_id
-            AND deleted_at IS NULL AND expires_at IS NOT NULL
-          ORDER BY created_at DESC, root_event_id DESC
-          LIMIT @window
-        )) AS expiresNextAt
-    `);
-    this.stmtGetChannelSummaryCache = this.db.prepare(`
-      SELECT fingerprint, expires_next_at, summary_json
-      FROM rchat_channel_summary_cache
-      WHERE owner_address = ? AND group_id = ? AND channel_id = ? AND online_since = ?
-      LIMIT 1
-    `);
-    this.stmtUpsertChannelSummaryCache = this.db.prepare(`
-      INSERT INTO rchat_channel_summary_cache
-        (owner_address, group_id, channel_id, online_since, fingerprint,
-         expires_next_at, summary_json, computed_at)
-      VALUES (@owner_address, @group_id, @channel_id, @online_since, @fingerprint,
-              @expires_next_at, @summary_json, @computed_at)
-      ON CONFLICT (owner_address, group_id, channel_id, online_since) DO UPDATE SET
-        fingerprint = excluded.fingerprint,
-        expires_next_at = excluded.expires_next_at,
-        summary_json = excluded.summary_json,
-        computed_at = excluded.computed_at
-    `);
-    this.stmtDeleteChannelSummaryCacheForChannel = this.db.prepare(
-      'DELETE FROM rchat_channel_summary_cache WHERE group_id = ? AND channel_id = ?'
-    );
-    this.stmtDeleteChannelSummaryCacheForGroup = this.db.prepare(
-      'DELETE FROM rchat_channel_summary_cache WHERE group_id = ?'
-    );
-    this.stmtDeleteChannelSummaryCacheForOwner = this.db.prepare(
-      'DELETE FROM rchat_channel_summary_cache WHERE owner_address = ?'
-    );
     this.stmtUpsertMessageProjection = this.db.prepare(`
       INSERT INTO rchat_message_projection
         (root_event_id, group_id, channel_id, author_address, author_public_key,
@@ -2306,6 +2281,15 @@ export class ReticulumChatDatabase {
         AND parent.deleted_at IS NULL
         AND (parent.expires_at IS NULL OR parent.expires_at > ?)
     `);
+    this.stmtGetNextMessageExpiry = this.db.prepare(`
+      SELECT MIN(expires_at) AS expires_at
+      FROM reticulum_chat_events
+      WHERE group_id = ?
+        AND channel_id = ?
+        AND event_type IN ('message', 'attachment_manifest')
+        AND expires_at IS NOT NULL
+        AND expires_at > ?
+    `);
     this.stmtMarkMentionsRead = this.db.prepare(`
       UPDATE reticulum_chat_mentions
       SET read_at = ?
@@ -2546,8 +2530,28 @@ export class ReticulumChatDatabase {
       VALUES
         (@group_id, @author_address, @author_stream_id, @from_seq, @to_seq, @preferred_peer, 0, @next_attempt_at)
       ON CONFLICT(group_id, author_address, author_stream_id, from_seq, to_seq) DO UPDATE SET
-        preferred_peer = excluded.preferred_peer,
-        next_attempt_at = MIN(rchat_missing_stream_ranges.next_attempt_at, excluded.next_attempt_at)
+        preferred_peer = CASE
+          WHEN EXISTS (
+            SELECT 1 FROM rchat_known_unavailable_ranges unavailable
+            WHERE unavailable.group_id = excluded.group_id
+              AND unavailable.author_address = excluded.author_address
+              AND unavailable.author_stream_id = excluded.author_stream_id
+              AND unavailable.from_seq = excluded.from_seq
+              AND unavailable.to_seq = excluded.to_seq
+          ) THEN rchat_missing_stream_ranges.preferred_peer
+          ELSE excluded.preferred_peer
+        END,
+        next_attempt_at = CASE
+          WHEN EXISTS (
+            SELECT 1 FROM rchat_known_unavailable_ranges unavailable
+            WHERE unavailable.group_id = excluded.group_id
+              AND unavailable.author_address = excluded.author_address
+              AND unavailable.author_stream_id = excluded.author_stream_id
+              AND unavailable.from_seq = excluded.from_seq
+              AND unavailable.to_seq = excluded.to_seq
+          ) THEN MAX(rchat_missing_stream_ranges.next_attempt_at, excluded.next_attempt_at)
+          ELSE MIN(rchat_missing_stream_ranges.next_attempt_at, excluded.next_attempt_at)
+        END
     `);
     this.stmtEnsureMissingRange = this.db.prepare(`
       INSERT OR IGNORE INTO rchat_missing_stream_ranges
@@ -2693,6 +2697,72 @@ export class ReticulumChatDatabase {
       DELETE FROM rchat_missing_range_peer_observations
       WHERE group_id = ? AND author_address = ? AND author_stream_id = ?
         AND from_seq <= ? AND to_seq >= ?
+    `);
+    this.stmtUpsertKnownUnavailableRange = this.db.prepare(`
+      INSERT INTO rchat_known_unavailable_ranges
+        (group_id, author_address, author_stream_id, from_seq, to_seq,
+         confirmed_at, recheck_at, peer_hashes_json)
+      VALUES
+        (@group_id, @author_address, @author_stream_id, @from_seq, @to_seq,
+         @confirmed_at, @recheck_at, @peer_hashes_json)
+      ON CONFLICT(group_id, author_address, author_stream_id, from_seq, to_seq)
+      DO UPDATE SET
+        confirmed_at = excluded.confirmed_at,
+        recheck_at = excluded.recheck_at,
+        peer_hashes_json = excluded.peer_hashes_json
+    `);
+    this.stmtParkKnownUnavailableRange = this.db.prepare(`
+      UPDATE rchat_missing_stream_ranges
+      SET next_attempt_at = MAX(next_attempt_at, @recheck_at)
+      WHERE group_id = @group_id
+        AND author_address = @author_address
+        AND author_stream_id = @author_stream_id
+        AND from_seq = @from_seq
+        AND to_seq = @to_seq
+    `);
+    this.stmtGetKnownUnavailableRange = this.db.prepare(`
+      SELECT group_id, author_address, author_stream_id, from_seq, to_seq,
+             confirmed_at, recheck_at, peer_hashes_json
+      FROM rchat_known_unavailable_ranges
+      WHERE group_id = ? AND author_address = ? AND author_stream_id = ?
+        AND from_seq = ? AND to_seq = ?
+      LIMIT 1
+    `);
+    this.stmtGetKnownUnavailableRangesForGroup = this.db.prepare(`
+      SELECT group_id, author_address, author_stream_id, from_seq, to_seq,
+             confirmed_at, recheck_at, peer_hashes_json
+      FROM rchat_known_unavailable_ranges
+      WHERE group_id = ?
+    `);
+    this.stmtWakeKnownUnavailableRangesForGroup = this.db.prepare(`
+      UPDATE rchat_missing_stream_ranges
+      SET next_attempt_at = MIN(next_attempt_at, @next_attempt_at)
+      WHERE group_id = @group_id
+        AND EXISTS (
+          SELECT 1 FROM rchat_known_unavailable_ranges unavailable
+          WHERE unavailable.group_id = rchat_missing_stream_ranges.group_id
+            AND unavailable.author_address = rchat_missing_stream_ranges.author_address
+            AND unavailable.author_stream_id = rchat_missing_stream_ranges.author_stream_id
+            AND unavailable.from_seq = rchat_missing_stream_ranges.from_seq
+            AND unavailable.to_seq = rchat_missing_stream_ranges.to_seq
+        )
+    `);
+    this.stmtClearKnownUnavailableRange = this.db.prepare(`
+      DELETE FROM rchat_known_unavailable_ranges
+      WHERE group_id = ? AND author_address = ? AND author_stream_id = ?
+        AND from_seq <= ? AND to_seq >= ?
+    `);
+    this.stmtClearKnownUnavailableRangesForGroup = this.db.prepare(`
+      DELETE FROM rchat_known_unavailable_ranges
+      WHERE group_id = ?
+    `);
+    this.stmtPruneKnownUnavailableRanges = this.db.prepare(`
+      DELETE FROM rchat_known_unavailable_ranges
+      WHERE rowid NOT IN (
+        SELECT rowid FROM rchat_known_unavailable_ranges
+        ORDER BY confirmed_at DESC, rowid DESC
+        LIMIT ?
+      )
     `);
     this.stmtDeleteMissingRange = this.db.prepare(`
       DELETE FROM rchat_missing_stream_ranges
@@ -2922,6 +2992,7 @@ export class ReticulumChatDatabase {
       ReticulumChatDatabase.activeSequenceLeaseOwners.delete(
         this.sequenceLeaseOwnerId
       );
+      this.channelSummaryCache.clear();
       this.db.close();
     }
   }
@@ -3278,7 +3349,12 @@ export class ReticulumChatDatabase {
         ignoredThrough,
         createdAt
       );
-    this.invalidateChannelSummaryCacheForOwner(owner);
+    if (scopeType === 'group') {
+      const groupId = Number(normalizedScopeId);
+      if (Number.isInteger(groupId) && groupId > 0) {
+        this.invalidateChatSummaryCache(groupId, undefined, owner);
+      }
+    }
     return this.getSilence(owner, target, scopeType, normalizedScopeId);
   }
 
@@ -3308,7 +3384,12 @@ export class ReticulumChatDatabase {
         `
       )
       .run(clearedAt, clearedAt, owner, target, scopeType, normalizedScopeId);
-    this.invalidateChannelSummaryCacheForOwner(owner);
+    if (scopeType === 'group') {
+      const groupId = Number(normalizedScopeId);
+      if (Number.isInteger(groupId) && groupId > 0) {
+        this.invalidateChatSummaryCache(groupId, undefined, owner);
+      }
+    }
     return this.getSilence(owner, target, scopeType, normalizedScopeId);
   }
 
@@ -4219,14 +4300,18 @@ export class ReticulumChatDatabase {
     const roots = this.db
       .prepare(
         `
-          SELECT root_event_id
+          SELECT root_event_id, group_id, channel_id
           FROM rchat_message_projection
           WHERE expires_at IS NOT NULL AND expires_at <= ?
           ORDER BY expires_at ASC, root_event_id ASC
           LIMIT ?
         `
       )
-      .all(now, batchLimit) as Array<{ root_event_id?: string }>;
+      .all(now, batchLimit) as Array<{
+      root_event_id?: string;
+      group_id?: number;
+      channel_id?: string;
+    }>;
     if (roots.length === 0) {
       this.lastExpiryPruneAt = now;
       return 0;
@@ -4305,12 +4390,10 @@ export class ReticulumChatDatabase {
       }
     });
     tx(rootIds);
-    // Pruning spans arbitrary groups and channels; clearing wholesale is
-    // cheaper than tracking which summaries the batch touched.
-    try {
-      this.db.exec('DELETE FROM rchat_channel_summary_cache');
-    } catch {
-      // The fingerprint check still catches the removed events.
+    for (const root of roots) {
+      const groupId = Number(root.group_id);
+      if (!Number.isInteger(groupId) || groupId <= 0) continue;
+      this.invalidateChatSummaryCache(groupId, root.channel_id);
     }
     this.lastExpiryPruneAt = now;
     return rootIds.length;
@@ -4771,6 +4854,7 @@ export class ReticulumChatDatabase {
     if (!applied) {
       return { resolutions: [], hasMore, pruned: 0 };
     }
+    this.invalidateChatSummaryCache(groupId, normalizedChannelId);
 
     const resolutionByRoot = new Map(
       resolutions.map((item) => [item.eventId, item] as const)
@@ -4949,7 +5033,7 @@ export class ReticulumChatDatabase {
       this.applyMessageProjectionEvent(event);
       this.refreshMessageProjectionIndexes(event);
       this.applyDeleteScrubForEvent(event);
-      this.invalidateChannelSummaryCache(event.groupId, event.channelId);
+      this.invalidateChatSummaryCache(event.groupId, event.channelId);
     }
     if (!ownEvent) this.enforceRelayCacheLimit();
     return inserted;
@@ -4976,11 +5060,11 @@ export class ReticulumChatDatabase {
     const changed =
       this.stmtUpdatePrivilegedMentionStatus.run(status, eventId).changes > 0;
     if (changed) {
-      // Authorizing a privileged mention changes the mention count without
-      // touching any of the counters the summary fingerprint watches.
       const event = this.getEvent(eventId);
       if (event) {
-        this.invalidateChannelSummaryCache(event.groupId, event.channelId);
+        this.invalidateChatSummaryCache(event.groupId, event.channelId);
+      } else {
+        this.invalidateChatSummaryCache();
       }
     }
     return changed;
@@ -5311,9 +5395,6 @@ export class ReticulumChatDatabase {
     if (typeof rootEventId !== 'string' || !rootEventId) return;
     const rootEvent = this.getEvent(rootEventId);
     if (!rootEvent) return;
-    // Scrubbing rewrites payloads in place, so the last-message preview can
-    // change while every counter the fingerprint watches stays put.
-    this.invalidateChannelSummaryCache(rootEvent.groupId, rootEvent.channelId);
     const candidates = new Map<string, ReticulumChatEvent>();
     candidates.set(rootEvent.eventId, rootEvent);
     try {
@@ -5878,6 +5959,7 @@ export class ReticulumChatDatabase {
     this.stmtDeleteMentionsForEvent.run(eventId);
     this.stmtDeleteEvent.run(eventId);
     if (!event) return;
+    this.invalidateChatSummaryCache(event.groupId, event.channelId);
     if (
       event.eventType === 'message' ||
       event.eventType === 'attachment_manifest'
@@ -6558,12 +6640,6 @@ export class ReticulumChatDatabase {
     projection: MessageProjectionRow,
     mentionedAddresses: string[]
   ): void {
-    // Re-resolving who a message mentions moves the mention badge without
-    // adding or removing any event.
-    this.invalidateChannelSummaryCache(
-      projection.group_id,
-      projection.channel_id
-    );
     const rootEventId = projection.root_event_id;
     const mentionTargets = parseMentionTargets(projection.mention_targets);
     const hasPrivilegedTarget =
@@ -6616,16 +6692,19 @@ export class ReticulumChatDatabase {
       }
     });
     tx();
+    this.invalidateChatSummaryCache(projection.group_id, projection.channel_id);
   }
 
   deleteMentionsForEvent(eventId: string): boolean {
     if (typeof eventId !== 'string' || !eventId) return false;
     const event = this.getEvent(eventId);
-    if (event) {
-      this.invalidateChannelSummaryCache(event.groupId, event.channelId);
-    }
     this.memoryMentions.delete(eventId);
     this.stmtDeleteMentionsForEvent.run(eventId);
+    if (event) {
+      this.invalidateChatSummaryCache(event.groupId, event.channelId);
+    } else {
+      this.invalidateChatSummaryCache();
+    }
     return true;
   }
 
@@ -8580,6 +8659,13 @@ export class ReticulumChatDatabase {
     if (!Number.isInteger(groupId) || groupId <= 0 || !author) return;
     const key = this.missingRangeKey(groupId, author, stream, from, to);
     const alreadyTracked = this.memoryMissingRanges.has(key);
+    const knownUnavailable = this.getMissingRangeKnownUnavailable(
+      groupId,
+      author,
+      stream,
+      from,
+      to
+    );
     this.stmtUpsertMissingRange.run({
       group_id: groupId,
       author_address: author,
@@ -8596,13 +8682,21 @@ export class ReticulumChatDatabase {
       authorStreamId: stream,
       fromSeq: from,
       toSeq: to,
-      preferredPeer: peer || existing?.preferredPeer || '',
+      preferredPeer: knownUnavailable
+        ? existing?.preferredPeer || peer
+        : peer || existing?.preferredPeer || '',
       attempts: existing?.attempts ?? 0,
       nextAttemptAt: existing
-        ? Math.min(
-            existing.nextAttemptAt,
-            Math.max(0, Math.floor(nextAttemptAt))
-          )
+        ? knownUnavailable
+          ? Math.max(
+              existing.nextAttemptAt,
+              knownUnavailable.recheckAt,
+              Math.max(0, Math.floor(nextAttemptAt))
+            )
+          : Math.min(
+              existing.nextAttemptAt,
+              Math.max(0, Math.floor(nextAttemptAt))
+            )
         : Math.max(0, Math.floor(nextAttemptAt)),
     });
     if (!alreadyTracked) {
@@ -8681,8 +8775,21 @@ export class ReticulumChatDatabase {
       toSeq
     );
     if (!current) return null;
-    const peer = preferredPeer.trim().toLowerCase() || current.preferredPeer;
-    const next = Math.max(current.nextAttemptAt, Math.floor(nextAttemptAt));
+    const knownUnavailable = this.getMissingRangeKnownUnavailable(
+      current.groupId,
+      current.authorAddress,
+      current.authorStreamId,
+      current.fromSeq,
+      current.toSeq
+    );
+    const peer = knownUnavailable
+      ? current.preferredPeer
+      : preferredPeer.trim().toLowerCase() || current.preferredPeer;
+    const next = Math.max(
+      current.nextAttemptAt,
+      knownUnavailable?.recheckAt ?? 0,
+      Math.floor(nextAttemptAt)
+    );
     this.stmtUpdateMissingRangeBackoff.run({
       group_id: current.groupId,
       author_address: current.authorAddress,
@@ -8729,8 +8836,20 @@ export class ReticulumChatDatabase {
       toSeq
     );
     if (!current) return null;
-    const peer = preferredPeer.trim().toLowerCase() || current.preferredPeer;
-    const next = Math.max(0, Math.floor(nextAttemptAt));
+    const knownUnavailable = this.getMissingRangeKnownUnavailable(
+      current.groupId,
+      current.authorAddress,
+      current.authorStreamId,
+      current.fromSeq,
+      current.toSeq
+    );
+    const peer = knownUnavailable
+      ? current.preferredPeer
+      : preferredPeer.trim().toLowerCase() || current.preferredPeer;
+    const next = Math.max(
+      knownUnavailable?.recheckAt ?? 0,
+      Math.max(0, Math.floor(nextAttemptAt))
+    );
     const expectedPeer =
       typeof expectedPreferredPeer === 'string'
         ? expectedPreferredPeer.trim().toLowerCase()
@@ -8944,6 +9063,188 @@ export class ReticulumChatDatabase {
     );
   }
 
+  markMissingRangeKnownUnavailable(
+    groupId: number,
+    authorAddress: string,
+    authorStreamId: string | undefined,
+    fromSeq: number,
+    toSeq: number,
+    peerHashes: string[],
+    confirmedAt: number,
+    recheckAt: number,
+    maxRecords = 4_096
+  ): ReticulumChatKnownUnavailableRange | null {
+    const author = String(authorAddress || '').trim();
+    const stream = normalizeReticulumChatAuthorStreamId(authorStreamId);
+    const from = Math.max(1, Math.floor(fromSeq));
+    const to = Math.max(from, Math.floor(toSeq));
+    const peers = [
+      ...new Set(peerHashes.map((peer) => peer.trim().toLowerCase())),
+    ]
+      .filter(Boolean)
+      .sort()
+      .slice(0, 64);
+    if (
+      !Number.isInteger(groupId) ||
+      groupId <= 0 ||
+      !author ||
+      peers.length === 0
+    )
+      return null;
+    const confirmed = Math.max(0, Math.floor(confirmedAt));
+    const recheck = Math.max(confirmed, Math.floor(recheckAt));
+    const params = {
+      group_id: groupId,
+      author_address: author,
+      author_stream_id: stream,
+      from_seq: from,
+      to_seq: to,
+      confirmed_at: confirmed,
+      recheck_at: recheck,
+      peer_hashes_json: JSON.stringify(peers),
+    };
+    const persist = this.db.transaction(() => {
+      const parked = this.stmtParkKnownUnavailableRange.run(params);
+      if (parked.changes === 0) return false;
+      this.stmtUpsertKnownUnavailableRange.run(params);
+      this.stmtPruneKnownUnavailableRanges.run(
+        Math.max(1, Math.floor(maxRecords))
+      );
+      return true;
+    });
+    if (!persist()) return null;
+    const key = this.missingRangeKey(groupId, author, stream, from, to);
+    const memoryRange = this.memoryMissingRanges.get(key);
+    if (memoryRange) {
+      this.memoryMissingRanges.set(key, {
+        ...memoryRange,
+        nextAttemptAt: Math.max(memoryRange.nextAttemptAt, recheck),
+      });
+    }
+    return {
+      groupId,
+      authorAddress: author,
+      authorStreamId: stream,
+      fromSeq: from,
+      toSeq: to,
+      confirmedAt: confirmed,
+      recheckAt: recheck,
+      peerHashes: peers,
+    };
+  }
+
+  getMissingRangeKnownUnavailable(
+    groupId: number,
+    authorAddress: string,
+    authorStreamId: string | undefined,
+    fromSeq: number,
+    toSeq: number
+  ): ReticulumChatKnownUnavailableRange | null {
+    const row = this.stmtGetKnownUnavailableRange.get(
+      groupId,
+      String(authorAddress || '').trim(),
+      normalizeReticulumChatAuthorStreamId(authorStreamId),
+      Math.max(1, Math.floor(fromSeq)),
+      Math.max(Math.max(1, Math.floor(fromSeq)), Math.floor(toSeq))
+    ) as
+      | {
+          group_id: number;
+          author_address: string;
+          author_stream_id: string;
+          from_seq: number;
+          to_seq: number;
+          confirmed_at: number;
+          recheck_at: number;
+          peer_hashes_json: string;
+        }
+      | undefined;
+    if (!row) return null;
+    let peerHashes: string[] = [];
+    try {
+      const parsed = JSON.parse(row.peer_hashes_json);
+      if (Array.isArray(parsed)) {
+        peerHashes = parsed
+          .map((peer) =>
+            String(peer || '')
+              .trim()
+              .toLowerCase()
+          )
+          .filter(Boolean);
+      }
+    } catch {
+      peerHashes = [];
+    }
+    return {
+      groupId: row.group_id,
+      authorAddress: row.author_address,
+      authorStreamId: normalizeReticulumChatAuthorStreamId(
+        row.author_stream_id
+      ),
+      fromSeq: row.from_seq,
+      toSeq: row.to_seq,
+      confirmedAt: row.confirmed_at,
+      recheckAt: row.recheck_at,
+      peerHashes,
+    };
+  }
+
+  clearMissingRangeKnownUnavailable(
+    groupId: number,
+    authorAddress: string,
+    authorStreamId: string | undefined,
+    fromSeq: number,
+    toSeq: number
+  ): void {
+    this.stmtClearKnownUnavailableRange.run(
+      groupId,
+      String(authorAddress || '').trim(),
+      normalizeReticulumChatAuthorStreamId(authorStreamId),
+      Math.max(1, Math.floor(toSeq)),
+      Math.max(1, Math.floor(fromSeq))
+    );
+  }
+
+  wakeKnownUnavailableRangesForGroup(
+    groupId: number,
+    nextAttemptAt = Date.now()
+  ): number {
+    if (!Number.isInteger(groupId) || groupId <= 0) return 0;
+    const markerRows = this.stmtGetKnownUnavailableRangesForGroup.all(
+      groupId
+    ) as Array<{
+      author_address: string;
+      author_stream_id: string;
+      from_seq: number;
+      to_seq: number;
+    }>;
+    if (markerRows.length === 0) return 0;
+    const next = Math.max(0, Math.floor(nextAttemptAt));
+    const wake = this.db.transaction(() => {
+      this.stmtWakeKnownUnavailableRangesForGroup.run({
+        group_id: groupId,
+        next_attempt_at: next,
+      });
+      this.stmtClearKnownUnavailableRangesForGroup.run(groupId);
+    });
+    wake();
+    for (const row of markerRows) {
+      const key = this.missingRangeKey(
+        groupId,
+        row.author_address,
+        row.author_stream_id,
+        row.from_seq,
+        row.to_seq
+      );
+      const range = this.memoryMissingRanges.get(key);
+      if (!range) continue;
+      this.memoryMissingRanges.set(key, {
+        ...range,
+        nextAttemptAt: Math.min(range.nextAttemptAt, next),
+      });
+    }
+    return markerRows.length;
+  }
+
   getMissingRange(
     groupId: number,
     authorAddress: string,
@@ -9054,6 +9355,16 @@ export class ReticulumChatDatabase {
       toSeq
     );
     if (!current) return null;
+    const knownUnavailable = this.getMissingRangeKnownUnavailable(
+      current.groupId,
+      current.authorAddress,
+      current.authorStreamId,
+      current.fromSeq,
+      current.toSeq
+    );
+    const peer = knownUnavailable
+      ? current.preferredPeer
+      : preferredPeer.trim().toLowerCase() || current.preferredPeer;
     const nextAttempts = Math.max(
       Math.max(0, Math.floor(current.attempts || 0)),
       Math.max(1, Math.floor(attempts || 1))
@@ -9064,19 +9375,23 @@ export class ReticulumChatDatabase {
       author_stream_id: current.authorStreamId,
       from_seq: current.fromSeq,
       to_seq: current.toSeq,
-      preferred_peer: preferredPeer.trim().toLowerCase() || null,
+      preferred_peer: peer || null,
       attempts: nextAttempts,
       next_attempt_at: Math.max(
         Math.floor(nextAttemptAt),
+        knownUnavailable?.recheckAt ?? 0,
         current.nextAttemptAt
       ),
     });
     const updated = {
       ...current,
-      preferredPeer:
-        preferredPeer.trim().toLowerCase() || current.preferredPeer,
+      preferredPeer: peer,
       attempts: nextAttempts,
-      nextAttemptAt: Math.max(Math.floor(nextAttemptAt), current.nextAttemptAt),
+      nextAttemptAt: Math.max(
+        Math.floor(nextAttemptAt),
+        knownUnavailable?.recheckAt ?? 0,
+        current.nextAttemptAt
+      ),
     };
     this.memoryMissingRanges.set(
       this.missingRangeKey(
@@ -9136,6 +9451,16 @@ export class ReticulumChatDatabase {
       ),
     ]);
     if (rows.length === 0) return;
+    // Durable markers are created only for persisted missing ranges. Avoid a
+    // marker lookup/delete on the normal event-insert hot path, while still
+    // ensuring a valid late event immediately overrides unavailable evidence.
+    this.clearMissingRangeKnownUnavailable(
+      event.groupId,
+      event.authorAddress,
+      event.authorStreamId,
+      event.authorSeq,
+      event.authorSeq
+    );
     this.clearMissingRangePeerUnavailable(
       event.groupId,
       event.authorAddress,
@@ -9243,6 +9568,13 @@ export class ReticulumChatDatabase {
           const presentSeqs = presentSeqsForRow(row);
           if (presentSeqs.size === 0) continue;
           this.clearMissingRangePeerUnavailable(
+            groupId,
+            authorAddress,
+            authorStreamId,
+            fromSeq,
+            toSeq
+          );
+          this.clearMissingRangeKnownUnavailable(
             groupId,
             authorAddress,
             authorStreamId,
@@ -10613,11 +10945,83 @@ export class ReticulumChatDatabase {
     return result.changes > 0;
   }
 
+  invalidateChatSummaryCache(
+    groupId?: number,
+    channelId?: string,
+    ownerAddress?: string
+  ): void {
+    const normalizedGroupId = Number(groupId);
+    const hasGroup =
+      Number.isInteger(normalizedGroupId) && normalizedGroupId > 0;
+    const normalizedChannelId =
+      channelId == null ? '' : normalizeReticulumChatChannelId(channelId);
+    const normalizedOwner = String(ownerAddress || '').trim();
+    if (!hasGroup && !normalizedChannelId && !normalizedOwner) {
+      this.channelSummaryCache.clear();
+      return;
+    }
+    for (const [key, cached] of this.channelSummaryCache) {
+      if (hasGroup && cached.groupId !== normalizedGroupId) continue;
+      if (normalizedChannelId && cached.channelId !== normalizedChannelId) {
+        continue;
+      }
+      if (normalizedOwner && cached.ownerAddress !== normalizedOwner) continue;
+      this.channelSummaryCache.delete(key);
+    }
+  }
+
+  private channelSummaryCacheKey(
+    groupId: number,
+    channelId: string,
+    ownerAddress: string,
+    onlineSince: number
+  ): string {
+    return JSON.stringify([
+      groupId,
+      channelId,
+      ownerAddress,
+      Math.max(0, Math.floor(onlineSince)),
+    ]);
+  }
+
+  private nextMessageExpiry(
+    groupId: number,
+    channelId: string,
+    now: number
+  ): number {
+    const row = this.stmtGetNextMessageExpiry.get(groupId, channelId, now) as
+      | { expires_at?: number | null }
+      | undefined;
+    const expiresAt = Number(row?.expires_at);
+    return Number.isFinite(expiresAt) && expiresAt > now
+      ? expiresAt
+      : Number.POSITIVE_INFINITY;
+  }
+
+  private rememberChannelSummary(
+    key: string,
+    cached: CachedReticulumChannelSummary
+  ): void {
+    if (this.channelSummaryCache.has(key)) {
+      this.channelSummaryCache.delete(key);
+    }
+    while (
+      this.channelSummaryCache.size >=
+      RETICULUM_CHAT_CHANNEL_SUMMARY_CACHE_MAX_ENTRIES
+    ) {
+      const oldestKey = this.channelSummaryCache.keys().next().value as
+        | string
+        | undefined;
+      if (!oldestKey) break;
+      this.channelSummaryCache.delete(oldestKey);
+    }
+    this.channelSummaryCache.set(key, cached);
+  }
+
   getChatSummaries(
     myAddress = '',
     onlineSince = 0
   ): ReticulumGroupChatSummary[] {
-    this.dropForeignSummaryCacheGenerations(onlineSince);
     const groupIds = new Set(this.getKnownGroupIds());
 
     const summaries: ReticulumGroupChatSummary[] = [];
@@ -10633,6 +11037,13 @@ export class ReticulumChatDatabase {
           )
           .map((record) => record.targetAddress)
       );
+      const nextSilenceExpiry = silenceRecords.reduce(
+        (nextExpiry, record) =>
+          record.expiresAt != null && record.expiresAt > now
+            ? Math.min(nextExpiry, record.expiresAt)
+            : nextExpiry,
+        Number.POSITIVE_INFINITY
+      );
       const ignoredThroughByAuthor = new Map<string, number>();
       for (const record of silenceRecords) {
         ignoredThroughByAuthor.set(
@@ -10643,15 +11054,6 @@ export class ReticulumChatDatabase {
           )
         );
       }
-      // Silences are applied while counting rather than stored, so they have to
-      // take part in the cache key or a mute would not change the badge.
-      const silenceFingerprint = [...ignoredThroughByAuthor.entries()]
-        .map(
-          ([address, ignoredThrough]) =>
-            `${address}:${ignoredThrough}:${activeSilencedAuthors.has(address) ? 1 : 0}`
-        )
-        .sort()
-        .join(',');
       const channelIds = this.getSummaryChannelIds(groupId);
       const channelSummaries = channelIds
         .map((channelId) =>
@@ -10662,7 +11064,7 @@ export class ReticulumChatDatabase {
             onlineSince,
             activeSilencedAuthors,
             ignoredThroughByAuthor,
-            silenceFingerprint
+            nextSilenceExpiry
           )
         )
         .filter((summary): summary is ReticulumChatSummary => !!summary);
@@ -11025,77 +11427,6 @@ export class ReticulumChatDatabase {
     return replyEventIds.size;
   }
 
-  /**
-   * `onlineSince` scopes `@here` mentions and desktop derives it fresh per
-   * launch, so without this every run would leave behind a full generation of
-   * unreachable cache rows.
-   */
-  private dropForeignSummaryCacheGenerations(onlineSince: number): void {
-    if (this.summaryCacheGeneration === onlineSince) return;
-    this.summaryCacheGeneration = onlineSince;
-    try {
-      this.db
-        .prepare(
-          'DELETE FROM rchat_channel_summary_cache WHERE online_since <> ?'
-        )
-        .run(onlineSince);
-    } catch {
-      // Worst case the table keeps a stale generation nothing will read.
-    }
-  }
-
-  /**
-   * Cheap stand-in for "has anything that could change this channel's summary
-   * happened". Only touches indexed columns, and bounds the expiry probe to the
-   * same window the summary itself considers, so validating a cached row costs
-   * a fraction of rebuilding one. Returns null when the underlying query is
-   * unavailable, which disables caching rather than risking a stale answer.
-   */
-  private buildChannelSummaryFingerprint(
-    groupId: number,
-    channelId: string,
-    watermark: number,
-    silenceFingerprint: string
-  ): { fingerprint: string; expiresNextAt: number | null } | null {
-    let row:
-      | {
-          eventCount?: number;
-          eventLatest?: number;
-          messageCount?: number;
-          messageLatest?: number;
-          expiresNextAt?: number | null;
-        }
-      | undefined;
-    try {
-      row = this.stmtGetChannelSummaryFingerprint.get({
-        group_id: groupId,
-        channel_id: channelId,
-        window: RETICULUM_CHAT_SUMMARY_EVENT_WINDOW,
-      }) as typeof row;
-    } catch {
-      return null;
-    }
-    if (!row || typeof row.eventCount !== 'number') return null;
-    const expiresNextAtRaw = Number(row.expiresNextAt);
-    const expiresNextAt =
-      Number.isFinite(expiresNextAtRaw) && expiresNextAtRaw > 0
-        ? expiresNextAtRaw
-        : null;
-    return {
-      fingerprint: [
-        row.eventCount,
-        row.eventLatest ?? 0,
-        row.messageCount ?? 0,
-        row.messageLatest ?? 0,
-        watermark,
-        // Retention changes rewrite expires_at without adding or removing rows.
-        expiresNextAt ?? 0,
-        silenceFingerprint,
-      ].join('|'),
-      expiresNextAt,
-    };
-  }
-
   private getChannelSummary(
     groupId: number,
     channelId: string,
@@ -11103,143 +11434,49 @@ export class ReticulumChatDatabase {
     onlineSince = 0,
     activeSilencedAuthors: ReadonlySet<string> = new Set(),
     ignoredThroughByAuthor: ReadonlyMap<string, number> = new Map(),
-    silenceFingerprint = ''
+    silenceValidUntil = Number.POSITIVE_INFINITY
   ): ReticulumChatSummary | null {
     const normalizedChannelId = normalizeReticulumChatChannelId(channelId);
-    const ownerAddress = myAddress || '';
-    const fingerprint = this.buildChannelSummaryFingerprint(
+    const normalizedOwner = String(myAddress || '').trim();
+    const normalizedOnlineSince = Math.max(0, Math.floor(onlineSince));
+    const key = this.channelSummaryCacheKey(
       groupId,
       normalizedChannelId,
-      this.getReadWatermark(groupId, normalizedChannelId, myAddress),
-      silenceFingerprint
+      normalizedOwner,
+      normalizedOnlineSince
     );
-    if (!fingerprint) {
-      return this.computeChannelSummary(
-        groupId,
-        normalizedChannelId,
-        myAddress,
-        onlineSince,
-        activeSilencedAuthors,
-        ignoredThroughByAuthor
-      );
-    }
     const now = Date.now();
-    const cached = this.readChannelSummaryCache(
-      ownerAddress,
-      groupId,
-      normalizedChannelId,
-      onlineSince,
-      fingerprint,
-      now
-    );
-    if (cached !== undefined) return cached;
+    const cached = this.channelSummaryCache.get(key);
+    if (cached && cached.validUntil > now) {
+      // Refresh insertion order so the bounded cache evicts least-recently-used
+      // entries when accounts or memberships change over a long-running session.
+      this.channelSummaryCache.delete(key);
+      this.channelSummaryCache.set(key, cached);
+      return cached.summary;
+    }
+    if (cached) this.channelSummaryCache.delete(key);
+
     const summary = this.computeChannelSummary(
       groupId,
       normalizedChannelId,
-      myAddress,
-      onlineSince,
+      normalizedOwner,
+      normalizedOnlineSince,
       activeSilencedAuthors,
       ignoredThroughByAuthor
     );
-    this.writeChannelSummaryCache(
-      ownerAddress,
-      groupId,
-      normalizedChannelId,
-      onlineSince,
-      fingerprint,
-      summary,
-      now
+    const validUntil = Math.min(
+      silenceValidUntil,
+      this.nextMessageExpiry(groupId, normalizedChannelId, now)
     );
+    this.rememberChannelSummary(key, {
+      groupId,
+      channelId: normalizedChannelId,
+      ownerAddress: normalizedOwner,
+      onlineSince: normalizedOnlineSince,
+      validUntil,
+      summary,
+    });
     return summary;
-  }
-
-  /** `undefined` means "no usable cache entry" — distinct from a cached null. */
-  private readChannelSummaryCache(
-    ownerAddress: string,
-    groupId: number,
-    channelId: string,
-    onlineSince: number,
-    fingerprint: { fingerprint: string; expiresNextAt: number | null },
-    now: number
-  ): ReticulumChatSummary | null | undefined {
-    let row:
-      | {
-          fingerprint?: string;
-          expires_next_at?: number | null;
-          summary_json?: string | null;
-        }
-      | undefined;
-    try {
-      row = this.stmtGetChannelSummaryCache.get(
-        ownerAddress,
-        groupId,
-        channelId,
-        onlineSince
-      ) as typeof row;
-    } catch {
-      return undefined;
-    }
-    if (!row || row.fingerprint !== fingerprint.fingerprint) return undefined;
-    // A pending message expiry changes the answer with no write to observe.
-    const expiresNextAt = Number(row.expires_next_at);
-    if (Number.isFinite(expiresNextAt) && expiresNextAt > 0 && now >= expiresNextAt) {
-      return undefined;
-    }
-    if (row.summary_json == null) return null;
-    try {
-      return JSON.parse(row.summary_json) as ReticulumChatSummary;
-    } catch {
-      return undefined;
-    }
-  }
-
-  private writeChannelSummaryCache(
-    ownerAddress: string,
-    groupId: number,
-    channelId: string,
-    onlineSince: number,
-    fingerprint: { fingerprint: string; expiresNextAt: number | null },
-    summary: ReticulumChatSummary | null,
-    now: number
-  ): void {
-    try {
-      this.stmtUpsertChannelSummaryCache.run({
-        owner_address: ownerAddress,
-        group_id: groupId,
-        channel_id: channelId,
-        online_since: onlineSince,
-        fingerprint: fingerprint.fingerprint,
-        expires_next_at: fingerprint.expiresNextAt,
-        summary_json: summary ? JSON.stringify(summary) : null,
-        computed_at: now,
-      });
-    } catch {
-      // Caching is an optimization; a write failure must not fail the read.
-    }
-  }
-
-  /** Drop cached summaries for a channel (all accounts), or a whole group. */
-  invalidateChannelSummaryCache(groupId: number, channelId?: string): void {
-    try {
-      if (channelId === undefined) {
-        this.stmtDeleteChannelSummaryCacheForGroup.run(groupId);
-        return;
-      }
-      this.stmtDeleteChannelSummaryCacheForChannel.run(
-        groupId,
-        normalizeReticulumChatChannelId(channelId)
-      );
-    } catch {
-      // Falling back to the fingerprint check is still correct.
-    }
-  }
-
-  private invalidateChannelSummaryCacheForOwner(ownerAddress: string): void {
-    try {
-      this.stmtDeleteChannelSummaryCacheForOwner.run(ownerAddress || '');
-    } catch {
-      // As above — the fingerprint check remains the correctness backstop.
-    }
   }
 
   private computeChannelSummary(
@@ -11254,13 +11491,13 @@ export class ReticulumChatDatabase {
     const now = Date.now();
     const events = this.getRecentMessageEvents(
       groupId,
-      RETICULUM_CHAT_SUMMARY_EVENT_WINDOW,
+      500,
       normalizedChannelId,
       [...activeSilencedAuthors]
     );
     const recentEvents = this.getRecentEvents(
       groupId,
-      RETICULUM_CHAT_SUMMARY_EVENT_WINDOW,
+      500,
       normalizedChannelId
     ).filter((event) => !activeSilencedAuthors.has(event.authorAddress));
     const memoryLast = events[events.length - 1] ?? null;
@@ -11615,6 +11852,9 @@ export class ReticulumChatDatabase {
           }
         }
       }
+    }
+    for (const { groupId, channelId } of normalizedTargets.values()) {
+      this.invalidateChatSummaryCache(groupId, channelId, address);
     }
     return normalizedTargets.size;
   }
@@ -12911,33 +13151,6 @@ export class ReticulumChatDatabase {
     );
   }
 
-  /**
-   * Memoized output of `getChannelSummary`. Recomputing a channel summary means
-   * reading up to 500 projection rows plus 500 raw events and running several
-   * passes over them in JS; doing that for every channel of every group on each
-   * refresh is what makes the chat list slow to settle, especially on mobile.
-   *
-   * Rows survive restarts so a cold start can paint from the previous session's
-   * numbers, and are keyed by owner because unread state is per-account.
-   */
-  private initChannelSummaryCacheSchema(): void {
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS rchat_channel_summary_cache (
-        owner_address TEXT NOT NULL,
-        group_id INTEGER NOT NULL,
-        channel_id TEXT NOT NULL,
-        online_since INTEGER NOT NULL,
-        fingerprint TEXT NOT NULL,
-        expires_next_at INTEGER,
-        summary_json TEXT,
-        computed_at INTEGER NOT NULL,
-        PRIMARY KEY (owner_address, group_id, channel_id, online_since)
-      );
-      CREATE INDEX IF NOT EXISTS idx_rchat_channel_summary_cache_channel
-        ON rchat_channel_summary_cache (group_id, channel_id);
-    `);
-  }
-
   private initSilenceSchema(): void {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS rchat_silences (
@@ -13049,14 +13262,14 @@ export class ReticulumChatDatabase {
         run: () => this.initAuthorGapPeerObservationSchema(),
       },
       {
+        name: 'author-gap-known-unavailable',
+        run: () => this.initAuthorGapKnownUnavailableSchema(),
+      },
+      {
         name: 'rejected-event-author-sequence',
         run: () => this.migrateRejectedEventAuthorSequenceSchema(),
       },
       { name: 'group-calendar-v1', run: () => this.initCalendarSchema() },
-      {
-        name: 'channel-summary-cache-v1',
-        run: () => this.initChannelSummaryCacheSchema(),
-      },
     ];
     for (const migration of migrations) {
       try {
@@ -13891,6 +14104,24 @@ export class ReticulumChatDatabase {
     `);
   }
 
+  private initAuthorGapKnownUnavailableSchema(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS rchat_known_unavailable_ranges (
+        group_id INTEGER NOT NULL,
+        author_address TEXT NOT NULL,
+        author_stream_id TEXT NOT NULL,
+        from_seq INTEGER NOT NULL,
+        to_seq INTEGER NOT NULL,
+        confirmed_at INTEGER NOT NULL,
+        recheck_at INTEGER NOT NULL,
+        peer_hashes_json TEXT NOT NULL,
+        PRIMARY KEY (group_id, author_address, author_stream_id, from_seq, to_seq)
+      );
+      CREATE INDEX IF NOT EXISTS idx_rchat_known_unavailable_recheck
+        ON rchat_known_unavailable_ranges (recheck_at, group_id);
+    `);
+  }
+
   private migrateAuthorGapPeerRetryBackoff(): void {
     const migrationName = 'author-gap-peer-retry-backoff-v1';
     const appliedAt = Date.now();
@@ -14147,6 +14378,19 @@ export class ReticulumChatDatabase {
         ],
       },
       {
+        table: 'rchat_known_unavailable_ranges',
+        columns: [
+          'group_id',
+          'author_address',
+          'author_stream_id',
+          'from_seq',
+          'to_seq',
+          'confirmed_at',
+          'recheck_at',
+          'peer_hashes_json',
+        ],
+      },
+      {
         table: 'rchat_rejected_digest_markers',
         columns: [
           'group_id',
@@ -14367,6 +14611,10 @@ export class ReticulumChatDatabase {
       );
       CREATE INDEX IF NOT EXISTS idx_reticulum_chat_events_expires
         ON reticulum_chat_events (expires_at);
+      CREATE INDEX IF NOT EXISTS idx_reticulum_chat_events_channel_next_expiry
+        ON reticulum_chat_events (group_id, channel_id, expires_at)
+        WHERE event_type IN ('message', 'attachment_manifest')
+          AND expires_at IS NOT NULL;
       CREATE INDEX IF NOT EXISTS idx_rchat_message_projection_expires
         ON rchat_message_projection (expires_at);
       DROP INDEX IF EXISTS idx_reticulum_chat_events_pending_expiry;

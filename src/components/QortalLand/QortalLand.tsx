@@ -9413,6 +9413,7 @@ export function QortalLand({
 
   return (
     <Box
+      data-tour="hub-qortal-land-view"
       onPointerDown={recordLandActivity}
       sx={{
         backgroundColor: '#050811',

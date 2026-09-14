@@ -157,6 +157,9 @@ import { useWebsocketStatus } from './useWebsocketStatus';
 import { DirectsSidebar } from './DirectsSidebar';
 import { GlobalChatWidget } from './GlobalChatWidget';
 import { openQChatTab, QCHAT_INTERNAL_TAB_ID } from '../../utils/openQChatTab';
+import { HubOnboardingTour } from '../Onboarding/HubOnboardingTour';
+import { OnboardingQChatPreview } from '../Onboarding/OnboardingQChatPreview';
+import { QORTAL_PROJECT_GROUP_ID } from './findGroupsPinned';
 import {
   getLastOpenChat,
   setLastOpenChat,
@@ -944,9 +947,12 @@ export const Group = ({
   const [memberCountFromSecretKeyData, setMemberCountFromSecretKeyData] =
     useState(null);
   const [selectedGroup, setSelectedGroup] = useState(null);
+  const [onboardingQChatPreviewOpen, setOnboardingQChatPreviewOpen] =
+    useState(false);
   const [selectedDirect, setSelectedDirect] = useState(null);
   const hasInitializedWebsocket = useRef(false);
   const memberGroupsRef = useRef<any[]>([]);
+  const memberGroupsLoadedAddressRef = useRef('');
   const [directs, setDirects] = useState([]);
   const [admins, setAdmins] = useState([]);
   const [adminsWithNames, setAdminsWithNames] = useState([]);
@@ -996,6 +1002,10 @@ export const Group = ({
   const [memberGroupsLoadedAddress, setMemberGroupsLoadedAddress] = useAtom(
     memberGroupsLoadedAddressAtom
   );
+
+  useEffect(() => {
+    memberGroupsLoadedAddressRef.current = memberGroupsLoadedAddress;
+  }, [memberGroupsLoadedAddress]);
   const [notificationReticulumChannelId, setNotificationReticulumChannelId] =
     useState('');
   const [notificationReticulumMessageId, setNotificationReticulumMessageId] =
@@ -4114,6 +4124,7 @@ export const Group = ({
 
   const openGroupDiscovery = useCallback(
     (event?: CustomEvent<{ modalOnly?: boolean }>) => {
+      setOnboardingQChatPreviewOpen(false);
       if (!event?.detail?.modalOnly) {
         setChatMode('groups');
         setDesktopSideView('groups');
@@ -4136,6 +4147,12 @@ export const Group = ({
     reticulumChatEnabled &&
     memberGroupsLoadedAddress === myAddress &&
     getGroupIdsFromGroupLikeList(memberGroupsForReticulum).length > 0;
+  const qortalProjectMember =
+    memberGroupsLoadedAddress === myAddress
+      ? memberGroupsForReticulum.some(
+          (group) => Number(group?.groupId) === QORTAL_PROJECT_GROUP_ID
+        )
+      : null;
   const reticulumActivityDashboardReady =
     hasConfirmedReticulumGroups &&
     reticulumMembershipsAppliedKey === reticulumMembershipsKey &&
@@ -4543,6 +4560,65 @@ export const Group = ({
       }, 200);
     }
   }, [bumpReticulumReadEntryToken, getTimestampEnterChat]);
+
+  const closeOnboardingGroupDiscovery = useCallback(() => {
+    setOpenFindGroup(false);
+  }, []);
+
+  const navigateOnboardingHome = useCallback(() => {
+    setOnboardingQChatPreviewOpen(false);
+    void goToHome();
+  }, [goToHome]);
+
+  const navigateOnboardingQChat = useCallback(() => {
+    openQChatTab();
+  }, []);
+
+  const showOnboardingQortalProject = useCallback(async () => {
+    const startedAt = Date.now();
+    while (
+      memberGroupsLoadedAddressRef.current !== myAddressRef.current &&
+      Date.now() - startedAt < 10_000
+    ) {
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 80));
+    }
+
+    const qortalProjectGroup = (memberGroupsRef.current || []).find(
+      (group) => Number(group?.groupId) === QORTAL_PROJECT_GROUP_ID
+    );
+
+    setOpenFindGroup(false);
+    setDesktopSideView('groups');
+    setSelectedDirect(null);
+    setNewChat(false);
+    setGroupSection('chat');
+
+    if (
+      memberGroupsLoadedAddressRef.current === myAddressRef.current &&
+      qortalProjectGroup
+    ) {
+      setOnboardingQChatPreviewOpen(false);
+      setSelectedGroup(qortalProjectGroup);
+      return 'member' as const;
+    }
+
+    setSelectedGroup(null);
+    setOnboardingQChatPreviewOpen(true);
+    return 'preview' as const;
+  }, []);
+
+  const closeOnboardingQChatPreview = useCallback(() => {
+    setOnboardingQChatPreviewOpen(false);
+  }, []);
+
+  const showOnboardingDirectMessages = useCallback(() => {
+    setOnboardingQChatPreviewOpen(false);
+    setDesktopSideView('directs');
+    setSelectedGroup(null);
+    setNewChat(false);
+    setSelectedDirect((current) => current ?? displayDirects[0] ?? null);
+    setGroupSection('chat');
+  }, [displayDirects]);
 
   useEffect(() => {
     if (
@@ -5950,6 +6026,7 @@ export const Group = ({
               </SelectedDirectOverlay>
             )}
         </Box>
+        {onboardingQChatPreviewOpen && <OnboardingQChatPreview />}
       </Box>
     );
   };
@@ -6110,6 +6187,16 @@ export const Group = ({
           />
         </Suspense>
       )}
+      <HubOnboardingTour
+        closeGroupDiscovery={closeOnboardingGroupDiscovery}
+        closeQChatPreview={closeOnboardingQChatPreview}
+        navigateHome={navigateOnboardingHome}
+        navigateQChat={navigateOnboardingQChat}
+        openQortalProject={showOnboardingQortalProject}
+        qortalProjectMember={qortalProjectMember}
+        showDirectMessages={showOnboardingDirectMessages}
+        showGroupDiscovery={openGroupDiscovery}
+      />
     </>
   );
 };

@@ -1034,6 +1034,7 @@ const GroupListInner = ({
   if (railMode) {
     const rail = (
       <Box
+        data-tour="hub-group-rail"
         sx={{
           alignItems: 'center',
           background: theme.palette.background.surface,
@@ -1075,6 +1076,7 @@ const GroupListInner = ({
           title={desktopSideView === 'directs' ? 'Groups' : 'Direct Messages'}
         >
           <ButtonBase
+            data-tour="hub-direct-messages"
             onClick={() => {
               setDesktopSideView('directs');
             }}
@@ -1219,7 +1221,8 @@ const GroupListInner = ({
         >
           <Tooltip placement="right" title="Find Groups">
             <ButtonBase
-              aria-label="Find Groups"
+              data-tour="hub-group-discovery"
+              aria-label={t('reticulum:rail.find_groups')}
               onClick={() => {
                 setOpenFindGroup(true);
               }}

@@ -11,14 +11,24 @@ import {
   Box,
   Button,
   ButtonBase,
+  Tooltip,
   Typography,
   useTheme,
 } from '@mui/material';
+import VisibilityOffRoundedIcon from '@mui/icons-material/VisibilityOffRounded';
+import VisibilityRoundedIcon from '@mui/icons-material/VisibilityRounded';
 import { useTranslation } from 'react-i18next';
 import { executeEvent } from '../../utils/events';
 import { buildAppThumbnailUrl } from '../../utils/walletAvatarCache';
+import { openQChatTab } from '../../utils/openQChatTab';
+import { MessagingIconFilled } from '../../assets/Icons/MessagingIconFilled';
+import qTradeLogo from '../../assets/Icons/q-trade-logo.webp';
 import BorderGlow from '../common/BorderGlow';
 import { getBlueTier1ButtonSx } from '../../styles/blueMaterial';
+import {
+  HUB_ONBOARDING_QCHAT_CARD_LOCK_ATTRIBUTE,
+  HUB_ONBOARDING_QCHAT_CARD_LOCK_EVENT,
+} from '../Onboarding/hubOnboarding';
 import {
   dashboardPanelSx,
   handleDashboardPanelPointerLeave,
@@ -37,35 +47,35 @@ export const FEATURED_INTRO_TOTAL_DURATION_MS =
   FEATURED_PREVIEW_EXPAND_DELAY_MS + FEATURED_INITIAL_PREVIEW_DURATION_MS;
 const FEATURED_STRIP_HOVER_DURATION_MS = 190;
 const FEATURED_INITIAL_PREVIEW_SESSION_KEY =
-  'dashboard-featured-subwire-preview-seen';
+  'dashboard-featured-qchat-preview-seen';
+const FEATURED_CALM_MODE_STORAGE_KEY = 'dashboard-featured-apps-calm-mode';
 const FEATURED_TEASER_FADE_DURATION_MS = 300;
 const SUBWIRE_APP_NAME = 'SubWire';
+const Q_CHAT_APP_NAME = 'Q-Chat';
 const Q_TUBE_APP_NAME = 'Q-Tube';
 const SUBWIRE_PREVIEW_VIDEO_SRC = '/subwire-preview.webm';
 const Q_TUBE_PREVIEW_VIDEO_SRC = '/q-tube-preview.webm';
 const FEATURED_TILE_VIDEO_SRC = {
   [Q_TUBE_APP_NAME]: Q_TUBE_PREVIEW_VIDEO_SRC,
-  [SUBWIRE_APP_NAME]: SUBWIRE_PREVIEW_VIDEO_SRC,
+  [Q_CHAT_APP_NAME]: SUBWIRE_PREVIEW_VIDEO_SRC,
 } as const;
 const FEATURED_STRIP_HOVER_TRANSITION = `${FEATURED_STRIP_HOVER_DURATION_MS}ms ease`;
 const FEATURED_PREVIEW_CONFIG = {
   [Q_TUBE_APP_NAME]: {
     accent: '#78AFFF',
     align: 'left',
-    eyebrow: 'Always on',
-    subtitle:
-      'Network-hosted video drops, weird clips, and creator rabbit holes.',
+    eyebrowKey: 'featured_q_tube_eyebrow',
+    subtitleKey: 'featured_q_tube_subtitle',
     title: Q_TUBE_APP_NAME,
     videoSrc: Q_TUBE_PREVIEW_VIDEO_SRC,
     videoPosition: 'center center',
   },
-  [SUBWIRE_APP_NAME]: {
+  [Q_CHAT_APP_NAME]: {
     accent: '#78AFFF',
     align: 'right',
-    eyebrow: 'Creator-owned',
-    subtitle:
-      'Tell your stories without limits. Own your work and earn directly from your subscribers.',
-    title: SUBWIRE_APP_NAME,
+    eyebrowKey: 'featured_q_chat_eyebrow',
+    subtitleKey: 'featured_q_chat_subtitle',
+    title: Q_CHAT_APP_NAME,
     videoSrc: SUBWIRE_PREVIEW_VIDEO_SRC,
     videoPosition: 'center center',
   },
@@ -75,9 +85,9 @@ const FEATURED_APP_GRID = [
   Q_TUBE_APP_NAME,
   'Quitter',
   'Q-Mail',
-  'Q-Blog',
-  'Q-Trade',
   SUBWIRE_APP_NAME,
+  'Q-Trade',
+  Q_CHAT_APP_NAME,
 ] as const;
 const FEATURED_GRID_GAP_PX = 12;
 const FEATURED_GRID_COL_MAX_PX = 124;
@@ -88,6 +98,15 @@ const FEATURED_GRID_MAX_WIDTH_PX =
 const openApp = (appName: string) => {
   executeEvent('addTab', { data: { service: 'APP', name: appName } });
   executeEvent('open-apps-mode', {});
+};
+
+const openFeaturedApp = (appName: string) => {
+  if (appName === Q_CHAT_APP_NAME) {
+    openQChatTab();
+    return;
+  }
+
+  openApp(appName);
 };
 
 const openAppsLibrary = () => {
@@ -102,8 +121,6 @@ const openAppsLibrary = () => {
 export const HomeFeaturedApps = ({ panelBoxRef = undefined }) => {
   const theme = useTheme();
   const { t } = useTranslation(['group']);
-  const td = (key: string, defaultValue: string) =>
-    t(`group:dashboard.${key}`, { defaultValue });
   const panelRef = useDashboardPanelMouseLight<HTMLDivElement>();
   const assignPanelNode = (node) => {
     panelRef.current = node;
@@ -132,6 +149,18 @@ export const HomeFeaturedApps = ({ panelBoxRef = undefined }) => {
   const [expandedPreviewApp, setExpandedPreviewApp] =
     useState<PreviewAppName | null>(null);
   const [autoPreviewActive, setAutoPreviewActive] = useState(false);
+  const [onboardingCardLocked, setOnboardingCardLocked] = useState(() =>
+    document.body.hasAttribute(HUB_ONBOARDING_QCHAT_CARD_LOCK_ATTRIBUTE)
+  );
+  const [isCalmMode, setIsCalmMode] = useState(() => {
+    try {
+      return (
+        window.localStorage.getItem(FEATURED_CALM_MODE_STORAGE_KEY) === '1'
+      );
+    } catch {
+      return false;
+    }
+  });
   const featuredFooterStripBackground =
     theme.palette.mode === 'dark'
       ? `radial-gradient(140% 252% at 50% 54%, ${alpha(GROUP_ACTIVITY_BLUE.gradientTop, 0.225)} 0%, ${alpha(
@@ -207,6 +236,36 @@ export const HomeFeaturedApps = ({ panelBoxRef = undefined }) => {
   });
 
   useEffect(() => {
+    const syncOnboardingCardLock = () => {
+      setOnboardingCardLocked(
+        document.body.hasAttribute(HUB_ONBOARDING_QCHAT_CARD_LOCK_ATTRIBUTE)
+      );
+    };
+    window.addEventListener(
+      HUB_ONBOARDING_QCHAT_CARD_LOCK_EVENT,
+      syncOnboardingCardLock
+    );
+    syncOnboardingCardLock();
+    return () =>
+      window.removeEventListener(
+        HUB_ONBOARDING_QCHAT_CARD_LOCK_EVENT,
+        syncOnboardingCardLock
+      );
+  }, []);
+
+  useEffect(() => {
+    if (isCalmMode) {
+      setAutoPreviewActive(false);
+      setExpandedPreviewApp(null);
+      return () => {
+        if (previewExpandTimerRef.current)
+          clearTimeout(previewExpandTimerRef.current);
+        if (previewCollapseTimerRef.current)
+          clearTimeout(previewCollapseTimerRef.current);
+        clearInitialPreviewTimers();
+      };
+    }
+
     let shouldRunInitialPreview = true;
 
     try {
@@ -238,14 +297,14 @@ export const HomeFeaturedApps = ({ panelBoxRef = undefined }) => {
 
     initialPreviewStartTimerRef.current = setTimeout(() => {
       initialPreviewStartTimerRef.current = null;
-      setExpandedPreviewApp(SUBWIRE_APP_NAME);
+      setExpandedPreviewApp(Q_CHAT_APP_NAME);
     }, FEATURED_PREVIEW_EXPAND_DELAY_MS);
 
     initialPreviewEndTimerRef.current = setTimeout(() => {
       initialPreviewEndTimerRef.current = null;
       setAutoPreviewActive(false);
       setExpandedPreviewApp((current) =>
-        current === SUBWIRE_APP_NAME ? null : current
+        current === Q_CHAT_APP_NAME ? null : current
       );
     }, FEATURED_INTRO_TOTAL_DURATION_MS);
 
@@ -256,7 +315,23 @@ export const HomeFeaturedApps = ({ panelBoxRef = undefined }) => {
         clearTimeout(previewCollapseTimerRef.current);
       clearInitialPreviewTimers();
     };
-  }, [clearInitialPreviewTimers]);
+  }, [clearInitialPreviewTimers, isCalmMode]);
+
+  useEffect(() => {
+    if (!onboardingCardLocked) return;
+
+    if (previewExpandTimerRef.current) {
+      clearTimeout(previewExpandTimerRef.current);
+      previewExpandTimerRef.current = null;
+    }
+    if (previewCollapseTimerRef.current) {
+      clearTimeout(previewCollapseTimerRef.current);
+      previewCollapseTimerRef.current = null;
+    }
+    clearInitialPreviewTimers();
+    setAutoPreviewActive(false);
+    setExpandedPreviewApp(null);
+  }, [clearInitialPreviewTimers, onboardingCardLocked]);
 
   const clearPirateTimers = () => {
     if (previewExpandTimerRef.current) {
@@ -274,7 +349,26 @@ export const HomeFeaturedApps = ({ panelBoxRef = undefined }) => {
     setAutoPreviewActive(false);
   };
 
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        FEATURED_CALM_MODE_STORAGE_KEY,
+        isCalmMode ? '1' : '0'
+      );
+    } catch {
+      // Ignore storage failures and keep the preference local-only.
+    }
+
+    if (isCalmMode) {
+      clearPirateTimers();
+      stopInitialPreview();
+      setExpandedPreviewApp(null);
+    }
+  }, [isCalmMode]);
+
   const schedulePreviewExpand = (appName: PreviewAppName) => {
+    if (onboardingCardLocked) return;
+    if (isCalmMode) return;
     if (autoPreviewActive) {
       stopInitialPreview();
     }
@@ -295,6 +389,8 @@ export const HomeFeaturedApps = ({ panelBoxRef = undefined }) => {
   };
 
   const schedulePreviewCollapse = () => {
+    if (onboardingCardLocked) return;
+    if (isCalmMode) return;
     if (autoPreviewActive) return;
     if (previewExpandTimerRef.current) {
       clearTimeout(previewExpandTimerRef.current);
@@ -309,6 +405,7 @@ export const HomeFeaturedApps = ({ panelBoxRef = undefined }) => {
 
   return (
     <Box
+      data-tour="hub-featured-qapps"
       ref={assignPanelNode}
       sx={{
         ...dashboardPanelSx(theme, 'base'),
@@ -332,10 +429,61 @@ export const HomeFeaturedApps = ({ panelBoxRef = undefined }) => {
           display: 'flex',
           justifyContent: 'center',
           minHeight: '42px',
+          position: 'relative',
           textAlign: 'center',
           width: '100%',
         }}
       >
+        <Tooltip enterDelay={320} title={t('group:dashboard.reduce_motion')}>
+          <ButtonBase
+            aria-label={t('group:dashboard.reduce_motion')}
+            aria-pressed={isCalmMode}
+            onClick={() => setIsCalmMode((current) => !current)}
+            sx={{
+              alignItems: 'center',
+              borderRadius: '9px',
+              color: alpha(
+                theme.palette.text.secondary,
+                isCalmMode ? 0.9 : 0.68
+              ),
+              display: 'inline-flex',
+              height: 30,
+              justifyContent: 'center',
+              position: 'absolute',
+              right: 0,
+              top: '50%',
+              transform: 'translateY(-50%)',
+              transition:
+                'background-color 160ms ease, color 160ms ease, box-shadow 180ms ease, opacity 160ms ease',
+              width: 30,
+              '&:hover': {
+                backgroundColor:
+                  theme.palette.mode === 'dark'
+                    ? 'rgba(255,255,255,0.042)'
+                    : 'rgba(24,29,36,0.05)',
+                color: theme.palette.text.primary,
+              },
+              ...(isCalmMode
+                ? {
+                    backgroundColor:
+                      theme.palette.mode === 'dark'
+                        ? 'rgba(255,255,255,0.03)'
+                        : 'rgba(24,29,36,0.042)',
+                    boxShadow:
+                      theme.palette.mode === 'dark'
+                        ? 'inset 0 0 0 1px rgba(255,255,255,0.05)'
+                        : 'inset 0 0 0 1px rgba(24,29,36,0.06)',
+                  }
+                : null),
+            }}
+          >
+            {isCalmMode ? (
+              <VisibilityOffRoundedIcon sx={{ fontSize: '1rem' }} />
+            ) : (
+              <VisibilityRoundedIcon sx={{ fontSize: '1rem' }} />
+            )}
+          </ButtonBase>
+        </Tooltip>
         <Box
           sx={{
             alignItems: 'center',
@@ -352,7 +500,7 @@ export const HomeFeaturedApps = ({ panelBoxRef = undefined }) => {
               fontWeight: 600,
             }}
           >
-            {td('featured_q_apps', 'Featured Q-Apps')}
+            {t('group:dashboard.featured_q_apps')}
           </Typography>
           <Typography
             sx={{
@@ -363,10 +511,7 @@ export const HomeFeaturedApps = ({ panelBoxRef = undefined }) => {
               maxWidth: '420px',
             }}
           >
-            {td(
-              'featured_q_apps_subtitle',
-              'Launch trusted community apps directly from your dashboard.'
-            )}
+            {t('group:dashboard.featured_q_apps_subtitle')}
           </Typography>
         </Box>
       </Box>
@@ -412,6 +557,7 @@ export const HomeFeaturedApps = ({ panelBoxRef = undefined }) => {
                 <AppTile
                   key={appName}
                   appName={appName}
+                  calmMode={isCalmMode}
                   theme={theme}
                   expandedPreviewApp={expandedPreviewApp}
                   onPreviewExpandStart={schedulePreviewExpand}
@@ -430,18 +576,20 @@ export const HomeFeaturedApps = ({ panelBoxRef = undefined }) => {
               )
             )}
           </Box>
-          <FeaturedExpandedPreview
-            appName={expandedPreviewApp}
-            theme={theme}
-            visible={!!expandedPreviewApp}
-            teaserMode={
-              autoPreviewActive && expandedPreviewApp === SUBWIRE_APP_NAME
-            }
-            onMouseEnter={() => {
-              clearPirateTimers();
-            }}
-            onMouseLeave={schedulePreviewCollapse}
-          />
+          {!isCalmMode ? (
+            <FeaturedExpandedPreview
+              appName={expandedPreviewApp}
+              theme={theme}
+              visible={!!expandedPreviewApp}
+              teaserMode={
+                autoPreviewActive && expandedPreviewApp === Q_CHAT_APP_NAME
+              }
+              onMouseEnter={() => {
+                clearPirateTimers();
+              }}
+              onMouseLeave={schedulePreviewCollapse}
+            />
+          ) : null}
         </Box>
 
         <Box
@@ -488,6 +636,7 @@ export const HomeFeaturedApps = ({ panelBoxRef = undefined }) => {
             }}
           />
           <ButtonBase
+            data-tour="hub-explore-qapps"
             disableRipple
             onClick={openAppsLibrary}
             sx={{
@@ -599,7 +748,7 @@ export const HomeFeaturedApps = ({ panelBoxRef = undefined }) => {
                   transition: `color ${FEATURED_STRIP_HOVER_TRANSITION}, text-shadow ${FEATURED_STRIP_HOVER_TRANSITION}, opacity ${FEATURED_STRIP_HOVER_TRANSITION}`,
                 }}
               >
-                {td('explore_all_q_apps', 'Explore All Q-Apps')}
+                {t('group:dashboard.explore_all_q_apps')}
               </Box>
               <Box
                 component="span"
@@ -632,6 +781,7 @@ export const HomeFeaturedApps = ({ panelBoxRef = undefined }) => {
 
 interface AppTileProps {
   appName: string;
+  calmMode: boolean;
   theme: any;
   expandedPreviewApp: PreviewAppName | null;
   onPreviewExpandStart: (appName: PreviewAppName) => void;
@@ -640,29 +790,37 @@ interface AppTileProps {
 
 const AppTile = ({
   appName,
+  calmMode,
   theme,
   expandedPreviewApp,
   onPreviewExpandStart,
   onPreviewExpandEnd,
 }: AppTileProps) => {
-  const baseAvatarUrl = buildAppThumbnailUrl(appName);
+  const { t } = useTranslation(['group']);
+  const isQChat = appName === Q_CHAT_APP_NAME;
+  const isQTrade = appName === 'Q-Trade';
+  const baseAvatarUrl = isQChat
+    ? undefined
+    : isQTrade
+      ? qTradeLogo
+      : buildAppThumbnailUrl(appName);
   const [imageSrc, setImageSrc] = useState(baseAvatarUrl);
   const [hasTileVideoError, setHasTileVideoError] = useState(false);
   const hasRetriedRef = useRef(false);
   const retryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isPreviewableTile = appName in FEATURED_PREVIEW_CONFIG;
   const isWideLeftTile = appName === Q_TUBE_APP_NAME;
-  const isWideRightTile = appName === SUBWIRE_APP_NAME;
+  const isWideRightTile = appName === Q_CHAT_APP_NAME;
   const isWideTile = isWideLeftTile || isWideRightTile;
   const tileVideoSrc =
     appName in FEATURED_TILE_VIDEO_SRC
       ? FEATURED_TILE_VIDEO_SRC[appName as keyof typeof FEATURED_TILE_VIDEO_SRC]
       : null;
   const fadeOutForPreview =
-    !!expandedPreviewApp && expandedPreviewApp !== appName;
+    !calmMode && !!expandedPreviewApp && expandedPreviewApp !== appName;
   const hideBasePreviewTile =
-    !!expandedPreviewApp && expandedPreviewApp === appName;
-  const allowTileHover = !expandedPreviewApp;
+    !calmMode && !!expandedPreviewApp && expandedPreviewApp === appName;
+  const allowTileHover = !expandedPreviewApp && !calmMode;
   const hiddenTileStyles = {
     opacity: fadeOutForPreview ? 0 : hideBasePreviewTile ? 0 : 1,
     pointerEvents: fadeOutForPreview || hideBasePreviewTile ? 'none' : 'auto',
@@ -712,7 +870,7 @@ const AppTile = ({
   }, []);
 
   const handleImageError = () => {
-    if (hasRetriedRef.current) return;
+    if (!baseAvatarUrl || hasRetriedRef.current) return;
     hasRetriedRef.current = true;
     retryTimeoutRef.current = setTimeout(() => {
       retryTimeoutRef.current = null;
@@ -722,19 +880,20 @@ const AppTile = ({
 
   const tileButton = (
     <ButtonBase
+      data-tour={isQChat ? 'hub-featured-qchat' : undefined}
       disableRipple
-      onClick={() => openApp(appName)}
+      onClick={() => openFeaturedApp(appName)}
       onMouseEnter={
-        isPreviewableTile
+        isPreviewableTile && !calmMode
           ? () => onPreviewExpandStart(appName as PreviewAppName)
           : undefined
       }
       onMouseLeave={
-        isPreviewableTile ? onPreviewExpandEnd : undefined
+        isPreviewableTile && !calmMode ? onPreviewExpandEnd : undefined
       }
       sx={{
         alignItems: isWideLeftTile
-          ? 'center'
+          ? 'flex-start'
           : isWideRightTile
             ? 'flex-end'
             : 'center',
@@ -745,18 +904,17 @@ const AppTile = ({
         border: `1px solid ${theme.palette.border.subtle}`,
         borderRadius: '10px',
         display: 'flex',
-        flexDirection: isWideLeftTile ? 'row' : 'column',
-        gap: isWideLeftTile ? '6px' : '8px',
-        justifyContent: isWideLeftTile ? 'flex-start' : 'center',
+        flexDirection: 'column',
+        gap: '8px',
+        justifyContent: 'center',
         height: '100%',
         minHeight: 0,
-        padding: isWideLeftTile ? '10px 8px 10px 6px' : '12px 10px',
+        padding: '12px 10px',
         transition:
           'background-color 140ms ease, border-color 140ms ease, box-shadow 140ms ease, opacity 160ms ease',
         overflow: 'hidden',
         position: 'relative',
         width: '100%',
-        ...(isWideLeftTile ? { containerType: 'inline-size' } : null),
         gridColumn: isWideTile ? 'span 2' : 'span 1',
         ...(!isWideTile ? hiddenTileStyles : null),
         transform: 'translateY(0)',
@@ -803,7 +961,7 @@ const AppTile = ({
           }}
         />
       ) : null}
-      {tileVideoSrc && !hasTileVideoError ? (
+      {tileVideoSrc && !hasTileVideoError && !calmMode ? (
         <Box
           aria-hidden="true"
           sx={{
@@ -847,9 +1005,9 @@ const AppTile = ({
           alignItems: 'center',
           display: 'flex',
           flexDirection: 'column',
-          gap: isWideLeftTile ? '4px' : '8px',
+          gap: '8px',
           position: 'relative',
-          width: isWideLeftTile ? '48px' : isWideRightTile ? 'clamp(72px, 32%, 104px)' : '100%',
+          width: isWideTile ? 'clamp(72px, 32%, 104px)' : '100%',
           flexShrink: isWideTile ? 0 : undefined,
           alignSelf: isWideRightTile ? 'flex-end' : 'auto',
           zIndex: 1,
@@ -859,22 +1017,39 @@ const AppTile = ({
           src={imageSrc}
           variant="rounded"
           onError={handleImageError}
-          sx={{ height: isWideLeftTile ? 44 : 52, width: isWideLeftTile ? 44 : 52 }}
+          sx={{
+            backgroundColor: isQChat ? 'transparent' : undefined,
+            color: isQChat ? theme.palette.common.white : undefined,
+            height: 52,
+            width: 52,
+            ...(isQTrade
+              ? {
+                  backgroundColor: 'transparent',
+                  '& .MuiAvatar-img': {
+                    mixBlendMode: 'screen',
+                    objectFit: 'contain',
+                  },
+                }
+              : null),
+          }}
         >
-          {appName.charAt(0)}
+          {isQChat ? (
+            <MessagingIconFilled height={31} width={31} color="currentColor" />
+          ) : (
+            appName.charAt(0)
+          )}
         </Avatar>
 
         <Typography
           sx={{
             color: theme.palette.text.primary,
-            fontSize: isWideLeftTile ? '0.68rem' : '0.8rem',
+            fontSize: '0.8rem',
             fontWeight: 600,
-            maxWidth: isWideLeftTile ? '48px' : '100px',
+            maxWidth: '100px',
             overflow: 'hidden',
             textAlign: 'center',
             textOverflow: 'ellipsis',
             whiteSpace: 'nowrap',
-            width: '100%',
           }}
         >
           {appName}
@@ -886,11 +1061,11 @@ const AppTile = ({
           sx={{
             alignItems: 'center',
             display: 'flex',
-            flex: '1 1 auto',
-            justifyContent: 'flex-end',
-            minWidth: 0,
-            pl: 0.25,
-            pr: 0.5,
+            inset: '0 16px 0 124px',
+            justifyContent: 'center',
+            pointerEvents: 'none',
+            position: 'absolute',
+            transform: 'translateX(-20px)',
             zIndex: 1,
           }}
         >
@@ -898,9 +1073,7 @@ const AppTile = ({
             sx={{
               alignItems: 'stretch',
               display: 'inline-flex',
-              gap: '5px',
-              maxWidth: '100%',
-              minWidth: 0,
+              gap: '6px',
             }}
           >
             <Box
@@ -921,29 +1094,27 @@ const AppTile = ({
                   theme.palette.mode === 'dark'
                     ? 'rgba(239,243,250,0.9)'
                     : 'rgba(20,28,40,0.84)',
-                display: 'flex',
+                display: 'inline-flex',
                 flexDirection: 'column',
-                fontSize: 'clamp(0.58rem, 2.6cqi, 0.72rem)',
+                fontSize: '0.8rem',
                 fontWeight: 800,
-                letterSpacing: '0.002em',
-                lineHeight: 1.02,
-                minWidth: 0,
+                letterSpacing: '0.004em',
+                lineHeight: 0.98,
                 textAlign: 'left',
                 textShadow:
                   theme.palette.mode === 'dark'
                     ? '0 1px 10px rgba(0,0,0,0.28)'
                     : '0 1px 6px rgba(255,255,255,0.16)',
-                whiteSpace: 'nowrap',
               }}
             >
               <Box component="span" sx={{ display: 'block' }}>
-                decentralized.
+                {t('group:dashboard.featured_q_tube_keyword_decentralized')}
               </Box>
               <Box component="span" sx={{ display: 'block' }}>
-                videos.
+                {t('group:dashboard.featured_q_tube_keyword_cat_videos')}
               </Box>
               <Box component="span" sx={{ display: 'block' }}>
-                platform.
+                {t('group:dashboard.featured_q_tube_keyword_platform')}
               </Box>
             </Typography>
           </Box>
@@ -1004,13 +1175,13 @@ const AppTile = ({
               }}
             >
               <Box component="span" sx={{ display: 'block' }}>
-                write.
+                {t('group:dashboard.featured_q_chat_keyword_talk')}
               </Box>
               <Box component="span" sx={{ display: 'block' }}>
-                own.
+                {t('group:dashboard.featured_q_chat_keyword_connect')}
               </Box>
               <Box component="span" sx={{ display: 'block' }}>
-                earn.
+                {t('group:dashboard.featured_q_chat_keyword_freely')}
               </Box>
             </Typography>
           </Box>
@@ -1020,6 +1191,10 @@ const AppTile = ({
   );
 
   if (!isWideTile) {
+    return tileButton;
+  }
+
+  if (calmMode) {
     return tileButton;
   }
 
@@ -1072,7 +1247,8 @@ const FeaturedExpandedPreview = ({
   onMouseEnter: () => void;
   onMouseLeave: () => void;
 }) => {
-  const lastResolvedAppRef = useRef<PreviewAppName>(SUBWIRE_APP_NAME);
+  const { t } = useTranslation(['group']);
+  const lastResolvedAppRef = useRef<PreviewAppName>(Q_CHAT_APP_NAME);
   if (appName) {
     lastResolvedAppRef.current = appName;
   }
@@ -1080,6 +1256,7 @@ const FeaturedExpandedPreview = ({
   const previewConfig = FEATURED_PREVIEW_CONFIG[resolvedAppName];
   const [hasVideoError, setHasVideoError] = useState(false);
   const alignRight = previewConfig.align === 'right';
+  const isQChatPreview = resolvedAppName === Q_CHAT_APP_NAME;
 
   useEffect(() => {
     setHasVideoError(false);
@@ -1087,6 +1264,7 @@ const FeaturedExpandedPreview = ({
 
   return (
     <Box
+      aria-hidden={!visible}
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
       sx={{
@@ -1216,7 +1394,7 @@ const FeaturedExpandedPreview = ({
             flexDirection: 'column',
             gap: '12px',
             justifyContent: 'flex-end',
-            maxWidth: 'min(54%, 420px)',
+            maxWidth: isQChatPreview ? 'min(84%, 600px)' : 'min(54%, 420px)',
             textAlign: alignRight ? 'right' : 'left',
           }}
         >
@@ -1247,7 +1425,7 @@ const FeaturedExpandedPreview = ({
               textTransform: 'uppercase',
             }}
           >
-            {previewConfig.eyebrow}
+            {t(`group:dashboard.${previewConfig.eyebrowKey}`)}
           </Box>
           <Typography
             sx={{
@@ -1267,16 +1445,22 @@ const FeaturedExpandedPreview = ({
                 theme.palette.mode === 'dark'
                   ? 'rgba(232,236,244,0.84)'
                   : 'rgba(245,247,250,0.86)',
-              fontSize: '0.95rem',
+              fontSize: isQChatPreview
+                ? 'clamp(0.82rem, 2.25cqi, 0.95rem)'
+                : '0.95rem',
               lineHeight: 1.55,
-              maxWidth: '44ch',
+              maxWidth: isQChatPreview ? 'none' : '44ch',
               textShadow: '0 2px 14px rgba(0,0,0,0.22)',
+              whiteSpace: isQChatPreview ? 'pre' : 'normal',
             }}
           >
-            {previewConfig.subtitle}
+            {t(`group:dashboard.${previewConfig.subtitleKey}`)}
           </Typography>
           <Button
-            onClick={() => openApp(resolvedAppName)}
+            data-tour={
+              visible && isQChatPreview ? 'hub-featured-qchat-open' : undefined
+            }
+            onClick={() => openFeaturedApp(resolvedAppName)}
             variant="contained"
             sx={{
               ...getBlueTier1ButtonSx(),
@@ -1298,7 +1482,9 @@ const FeaturedExpandedPreview = ({
               },
             }}
           >
-            Open Q-App
+            {resolvedAppName === Q_CHAT_APP_NAME
+              ? t('group:dashboard.open_q_chat')
+              : t('group:dashboard.open_q_app')}
           </Button>
         </Box>
       </Box>

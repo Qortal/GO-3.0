@@ -161,6 +161,7 @@ export function ReticulumMessageExpiryButton({
           }
         >
           <IconButton
+            data-tour={direct ? 'hub-dm-expiry' : undefined}
             aria-label={t('reticulum:expiry.set', {
               postProcess: 'capitalizeFirstChar',
             })}
