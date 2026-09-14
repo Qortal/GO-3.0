@@ -9,6 +9,36 @@ desktop Hub. The format is based on
 
 ---
 
+## [0.0.8] — 2026-09-14 (GO 3.0)
+
+Field / Q-Share build **GO 3.0 v0.0.8** (`versionName` 0.0.8, `versionCode` 11).
+
+### Added
+
+- **Hub 3.0.3 chat engine** _(mobile)_ — GO now runs the same Reticulum chat
+  engine as current Hub: author-manifest group history repair, coordinated
+  digest repair, and dedicated DM / group delivery paths instead of the
+  older Hub-push / live-catch-up experiment.
+- **More app tabs** _(mobile)_ — you can keep up to 30 Q-App / browser tabs
+  open (was 10).
+
+### Fixed
+
+- **Direct messages with Hub** _(mobile)_ — DMs sent on the phone now show
+  on your Hub, and Hub DMs sync back. GO introduces itself on overlay
+  links (`hello` + identity), pulls missed pages from your other devices,
+  and no longer drops `dm_notify` when its own peer hash is not ready yet.
+- **Chat radio congestion** _(mobile)_ — DM control and DM page traffic
+  have their own lanes; a full command queue reports back instead of
+  silently stalling the mesh.
+- **“GO runtime error” / SQLite crash** _(mobile)_ — a damaged chat-index
+  (`SQLITE_CORRUPT_INDEX`) no longer paints the full-screen error after
+  login. Indexes are rebuilt in place; if the file is beyond repair it is
+  discarded and chat history is pulled again from peers. Worker faults no
+  longer take down the whole app.
+
+---
+
 ## [0.0.7] — 2026-08-18 (GO 3.0)
 
 Field / Q-Share build **GO 3.0 v0.0.7** (`versionName` 0.0.7, `versionCode` 10).

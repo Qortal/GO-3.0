@@ -51,6 +51,32 @@ function trackStatement<T>(sql: string, run: () => T): T {
   }
 }
 
+/**
+ * SQLite result codes that mean the file itself is inconsistent. Primary code
+ * 11 (SQLITE_CORRUPT) plus its extended forms: 267 (CORRUPT_VTAB), 523
+ * (CORRUPT_SEQUENCE), 779 (CORRUPT_INDEX).
+ */
+function isCorruptionError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const code = Number((err as { resultCode?: unknown }).resultCode);
+  if (Number.isFinite(code) && (code & 0xff) === 11) return true;
+  return /SQLITE_CORRUPT|database disk image is malformed/i.test(
+    String((err as { message?: unknown }).message || '')
+  );
+}
+
+/** How many in-place REINDEX repairs to attempt per session before giving up on the file. */
+const MAX_REINDEX_REPAIRS = 3;
+
+export class DatabaseRebuiltError extends Error {
+  constructor(name: string) {
+    super(
+      `SQLite file ${name} was unrecoverably corrupt and has been discarded; the engine must restart`
+    );
+    this.name = 'DatabaseRebuiltError';
+  }
+}
+
 function toBindValue(value: unknown): unknown {
   if (value === undefined) return null;
   if (typeof value === 'boolean') return value ? 1 : 0;
@@ -60,12 +86,16 @@ function toBindValue(value: unknown): unknown {
 
 class Statement {
   constructor(
-    private readonly db: any,
+    private readonly owner: Database,
     private readonly sql: string
   ) {}
 
+  private get db(): any {
+    return this.owner.handle();
+  }
+
   private withStmt<T>(params: unknown[], fn: (stmt: any) => T): T {
-    return trackStatement(this.sql, () => {
+    return this.owner.guarded(this.sql, () => {
       const stmt = this.db.prepare(this.sql);
       try {
         this.bindParams(stmt, params);
@@ -146,6 +176,107 @@ export class Database {
   private db: any;
   public open = true;
   public readonly name: string;
+  private readonly flat: string;
+  private reindexRepairs = 0;
+  /** Set when corruption surfaced inside a transaction; repaired after rollback. */
+  private repairPending = false;
+  private rebuilt = false;
+
+  /** Raw sqlite-wasm handle; throws once the file has been discarded. */
+  handle(): any {
+    if (this.rebuilt) throw new DatabaseRebuiltError(this.name);
+    return this.db;
+  }
+
+  /**
+   * Runs one statement with corruption self-healing.
+   *
+   * Android kills the WebView freely, and this device's chat DB has already
+   * been left with an index that disagrees with its table
+   * (SQLITE_CORRUPT_INDEX). REINDEX rebuilds every index from table data,
+   * which fixes exactly that class; the statement is then retried once. If
+   * the file is beyond that, it is discarded and the engine is asked to
+   * restart so history re-syncs from peers instead of failing forever.
+   */
+  guarded<T>(sql: string, run: () => T): T {
+    try {
+      return trackStatement(sql, run);
+    } catch (err) {
+      if (!isCorruptionError(err)) throw err;
+      if (this.inTransaction) {
+        // Cannot safely REINDEX mid-transaction; transaction() repairs after
+        // the rollback and the caller's normal retry then succeeds.
+        this.repairPending = true;
+        throw err;
+      }
+      this.repair(err);
+      try {
+        return trackStatement(sql, run);
+      } catch (retryErr) {
+        if (isCorruptionError(retryErr)) this.discardAndRestart(retryErr);
+        throw retryErr;
+      }
+    }
+  }
+
+  private repair(cause: unknown): void {
+    if (this.rebuilt) return;
+    if (this.reindexRepairs >= MAX_REINDEX_REPAIRS) {
+      this.discardAndRestart(cause);
+      return;
+    }
+    this.reindexRepairs += 1;
+    const startedAt = Date.now();
+    console.warn(
+      `[sqlite-wasm] corruption detected in ${this.name} (attempt ${this.reindexRepairs}/${MAX_REINDEX_REPAIRS}); running REINDEX`,
+      cause instanceof Error ? cause.message : cause
+    );
+    try {
+      this.db.exec('REINDEX');
+      console.warn(
+        `[sqlite-wasm] REINDEX of ${this.name} completed in ${Date.now() - startedAt}ms`
+      );
+    } catch (reindexErr) {
+      console.error(`[sqlite-wasm] REINDEX of ${this.name} failed`, reindexErr);
+      this.discardAndRestart(reindexErr);
+    }
+  }
+
+  /**
+   * Last resort: the on-disk file is unrecoverable. Close it, drop it from
+   * the SAH pool, and tell the main thread to restart the engine, which
+   * recreates the schema on a fresh file. Throws DatabaseRebuiltError.
+   */
+  private discardAndRestart(cause: unknown): never {
+    if (!this.rebuilt) {
+      this.rebuilt = true;
+      this.open = false;
+      console.error(
+        `[sqlite-wasm] ${this.name} is unrecoverably corrupt; discarding file and restarting engine`,
+        cause instanceof Error ? cause.message : cause
+      );
+      try {
+        this.db.close();
+      } catch {
+        /* already closed */
+      }
+      try {
+        poolUtil.unlink(this.flat);
+      } catch (unlinkErr) {
+        console.error('[sqlite-wasm] unlink after corruption failed', unlinkErr);
+      }
+      try {
+        (self as unknown as Worker).postMessage({
+          t: 'db-rebuilt',
+          name: this.name,
+          error: cause instanceof Error ? cause.message : String(cause),
+        });
+      } catch {
+        /* not inside a worker (tests) */
+      }
+    }
+    throw new DatabaseRebuiltError(this.name);
+  }
   /**
    * Nesting depth of the connection's active transaction.
    *
@@ -179,16 +310,16 @@ export class Database {
     }
     // The SAH pool VFS namespaces by filename only; flatten the virtual path.
     this.name = filename;
-    const flat = '/' + filename.replace(/^\/+/, '').replace(/[/\\]/g, '__');
-    this.db = new poolUtil.OpfsSAHPoolDb(flat);
+    this.flat = '/' + filename.replace(/^\/+/, '').replace(/[/\\]/g, '__');
+    this.db = new poolUtil.OpfsSAHPoolDb(this.flat);
   }
 
   prepare(sql: string): Statement {
-    return new Statement(this.db, sql);
+    return new Statement(this, sql);
   }
 
   exec(sql: string): this {
-    trackStatement(sql, () => this.db.exec(sql));
+    this.guarded(sql, () => this.handle().exec(sql));
     return this;
   }
 
@@ -221,8 +352,12 @@ export class Database {
     immediate: TransactionFn<T, R>;
     exclusive: TransactionFn<T, R>;
   } {
-    const db = this.db;
     const self = this;
+    // Resolve the handle lazily so a discarded file surfaces as
+    // DatabaseRebuiltError rather than a "closed db" error.
+    const db = {
+      exec: (sql: string) => self.handle().exec(sql),
+    };
     const wrapped =
       (mode: string) =>
       (...args: T): R => {
@@ -258,6 +393,16 @@ export class Database {
             db.exec('ROLLBACK');
           } catch {
             /* already rolled back */
+          }
+          if (self.repairPending || isCorruptionError(err)) {
+            // Now outside the transaction: rebuild indexes so the caller's
+            // next attempt (the engine retries all of these) goes through.
+            self.repairPending = false;
+            try {
+              self.repair(err);
+            } catch (repairErr) {
+              if (repairErr instanceof DatabaseRebuiltError) throw repairErr;
+            }
           }
           throw err;
         } finally {

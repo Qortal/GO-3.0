@@ -107,7 +107,11 @@ import {
 } from '../App/dialogSurface';
 
 const uid = new ShortUniqueId({ length: 8 });
-const MAX_OPEN_APP_TABS = 10;
+/**
+ * Upper bound on simultaneously open app tabs. Visited tabs stay mounted
+ * (hidden) so each one holds a live iframe; keep this bounded on mobile.
+ */
+const MAX_OPEN_APP_TABS = 30;
 const MIN_LIBRARY_APPS_BEFORE_SLOW_POLL = 10;
 /** Bounded MRU stack (tab ids only) for "last visited" after closing the active tab */
 const MAX_TAB_MRU_DEPTH = 64;

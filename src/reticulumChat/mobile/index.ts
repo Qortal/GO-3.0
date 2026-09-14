@@ -142,6 +142,9 @@ const pendingRpc = new Map<
 let startPromise: Promise<void> | null = null;
 let untapPython: (() => void) | null = null;
 let presenceFeedTimer: number | null = null;
+/** Automatic engine restarts after the SQLite shim discarded a corrupt file. */
+let dbRebuildRestarts = 0;
+const MAX_DB_REBUILD_RESTARTS = 2;
 
 function setReadiness(state: ReadinessState, error?: string): void {
   readiness = {
@@ -402,6 +405,24 @@ function handleWorkerMessage(event: MessageEvent): void {
     case 'engine-failed':
       setReadiness('failed', String(data.error || 'engine failed'));
       break;
+    case 'db-rebuilt':
+      // The SQLite shim discarded an unrecoverably corrupt file. Restart the
+      // engine on a fresh DB; history re-syncs from peers.
+      console.error(
+        `[MobileChat] chat database ${data.name} discarded after corruption: ${data.error}`
+      );
+      if (dbRebuildRestarts < MAX_DB_REBUILD_RESTARTS) {
+        dbRebuildRestarts += 1;
+        stopMobileReticulumChat();
+        window.setTimeout(() => {
+          void ensureStarted().catch(() => {
+            /* readiness already reports the failure */
+          });
+        }, 600);
+      } else {
+        setReadiness('failed', 'chat database corrupt; restart the app');
+      }
+      break;
     case 'identity-ack': {
       const hash = String(data.destinationHash || '').trim();
       if (hash) {
@@ -478,8 +499,20 @@ function ensureStarted(): Promise<void> {
     });
     worker.onmessage = handleWorkerMessage;
     worker.onerror = (err) => {
-      console.error('[MobileChat] engine worker error', err);
-      setReadiness('failed', err.message || 'worker error');
+      // An uncaught exception in a worker timer/callback does not stop the
+      // worker; the engine keeps running. Log it, but do not let it bubble to
+      // window.onerror (that shows the "GO runtime error" modal) and do not
+      // demote a running engine to `failed` — boot failures arrive as an
+      // explicit engine-failed message instead.
+      err.preventDefault?.();
+      console.error(
+        '[MobileChat] engine worker error',
+        err.message || err,
+        err.filename ? `${err.filename}:${err.lineno}` : ''
+      );
+      if (readiness.state !== 'ready') {
+        setReadiness('failed', err.message || 'worker error');
+      }
     };
     const rpcChan = new MessageChannel();
     rpcPort = rpcChan.port1;
@@ -548,16 +581,20 @@ export function stopMobileReticulumChat(): void {
     window.clearInterval(presenceFeedTimer);
     presenceFeedTimer = null;
   }
-  worker?.postMessage({ t: 'stop' });
+  // Capture the instances being stopped: ensureStarted() may create a new
+  // worker before the grace timer fires, and that one must not be terminated.
+  const stoppingWorker = worker;
+  const stoppingPort = rpcPort;
+  worker = null;
+  rpcPort = null;
+  stoppingWorker?.postMessage({ t: 'stop' });
   window.setTimeout(() => {
     try {
-      rpcPort?.close();
+      stoppingPort?.close();
     } catch {
       /* already closed */
     }
-    rpcPort = null;
-    worker?.terminate();
-    worker = null;
+    stoppingWorker?.terminate();
   }, 500);
   startPromise = null;
   lastAckedIdentityKey = '';
