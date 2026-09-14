@@ -81,6 +81,27 @@ export class MobileReticulumBridge extends EventEmitter {
     string,
     Promise<ReticulumSendResult>
   >();
+  /**
+   * Number of DM-page link preparations currently in flight. A phone has one
+   * radio path to the mesh, and a DM page pull is the most latency-sensitive
+   * thing it does; while one is being set up, other (group) link
+   * preparations are answered with a local `bridge-overloaded` so the engine
+   * retries them shortly instead of rotating providers.
+   */
+  private dmPagePrepares = 0;
+  /** Established overlay links by link id (desktop: `overlayLinkSnapshots`). */
+  private readonly overlayLinkSnapshots = new Map<
+    string,
+    {
+      linkId: string;
+      peerPresenceHash: string;
+      incoming: boolean;
+      overlayTransportAdmitted: boolean;
+      connectedAt: number;
+      lastRxAt: number;
+      lastActivityAt: number;
+    }
+  >();
 
   constructor(
     private readonly sendCommand: SendCommandFn,
@@ -102,6 +123,74 @@ export class MobileReticulumBridge extends EventEmitter {
 
   markStopped(): void {
     this.state = 'idle';
+    this.overlayLinkSnapshots.clear();
+  }
+
+  getOverlayLinkSnapshots(): Array<{
+    linkId: string;
+    peerPresenceHash: string;
+    incoming: boolean;
+    overlayTransportAdmitted: boolean;
+    connectedAt: number;
+    lastRxAt: number;
+    lastActivityAt: number;
+  }> {
+    return [...this.overlayLinkSnapshots.values()];
+  }
+
+  private hasAdmittedOverlaySnapshotForPeer(peerPresenceHash: string): boolean {
+    for (const snap of this.overlayLinkSnapshots.values()) {
+      if (
+        snap.overlayTransportAdmitted &&
+        snap.peerPresenceHash === peerPresenceHash
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Mirror of the desktop bridge's `overlay_link_state` handling: keep the
+   * established-link table the engine consults for relay ordering, and raise
+   * `overlay-peer-admitted` exactly once per peer admission so the host can
+   * introduce itself (hello_v3 + subscriptions) to the newly authenticated
+   * neighbour — the step that lets a Hub learn this device's features.
+   */
+  private handleOverlayLinkState(payload: unknown): void {
+    const frame = (payload ?? {}) as Record<string, unknown>;
+    const linkId = String(frame.linkId || '');
+    if (!linkId) return;
+    const peerPresenceHash = String(frame.peerPresenceHash || '')
+      .trim()
+      .toLowerCase();
+    const established = frame.established === true;
+    if (!established) {
+      this.overlayLinkSnapshots.delete(linkId);
+      return;
+    }
+    const admittedNow = frame.overlayTransportAdmitted === true;
+    const peerWasAlreadyAdmitted = peerPresenceHash
+      ? this.hasAdmittedOverlaySnapshotForPeer(peerPresenceHash)
+      : false;
+    const existing = this.overlayLinkSnapshots.get(linkId);
+    const now = Date.now();
+    this.overlayLinkSnapshots.set(linkId, {
+      linkId,
+      peerPresenceHash: peerPresenceHash || existing?.peerPresenceHash || '',
+      incoming: frame.incoming === true,
+      overlayTransportAdmitted:
+        admittedNow || existing?.overlayTransportAdmitted === true,
+      connectedAt: existing?.connectedAt ?? now,
+      lastRxAt: now,
+      lastActivityAt: now,
+    });
+    if (admittedNow && peerPresenceHash && !peerWasAlreadyAdmitted) {
+      this.emit('overlay-peer-admitted', {
+        peerHash: peerPresenceHash,
+        source: String(frame.reason || 'overlay-link-state'),
+      });
+    }
   }
 
   /**
@@ -132,6 +221,18 @@ export class MobileReticulumBridge extends EventEmitter {
     try {
       const resp = await this.sendCommand('get_local_identity_public_key', {});
       const publicKey = resp.ok ? resp.payload?.publicKeyBase64 : null;
+      // The reply also carries our RNS destination hash. After an app restart
+      // the worker may attach after Python's `ready` frame was consumed, so
+      // this is the reliable way to learn the local peer hash the engine
+      // needs before it can sign a `dm_notify`.
+      const destinationHash = resp.ok
+        ? String(resp.payload?.destinationHash || '')
+            .trim()
+            .toLowerCase()
+        : '';
+      if (DESTINATION_HASH_RE.test(destinationHash)) {
+        this.localDestinationHash = destinationHash;
+      }
       if (typeof publicKey === 'string' && publicKey) {
         this.localIdentityPublicKeyBase64 = publicKey;
         return publicKey;
@@ -174,6 +275,8 @@ export class MobileReticulumBridge extends EventEmitter {
       this.emitResourceEvent('reticulum-resource', payload);
     } else if (event === 'reticulum_resource_session') {
       this.emit('reticulum-resource-session', payload ?? {});
+    } else if (event === 'overlay_link_state') {
+      this.handleOverlayLinkState(payload);
     } else if (event === 'qchat_file_transfer') {
       // Python reports chat resource progress under the legacy file-transfer
       // event; desktop re-routes it by resourceType.
@@ -235,21 +338,24 @@ export class MobileReticulumBridge extends EventEmitter {
 
   private async sendDetailed(
     action: string,
-    payload: Record<string, unknown>
+    payload: Record<string, unknown>,
+    timeoutMs?: number
   ): Promise<ReticulumSendResult> {
-    return (await this.sendDetailedWithPayload(action, payload)).result;
+    return (await this.sendDetailedWithPayload(action, payload, timeoutMs))
+      .result;
   }
 
   /** Same as {@link sendDetailed} but keeps python's response payload. */
   private async sendDetailedWithPayload(
     action: string,
-    payload: Record<string, unknown>
+    payload: Record<string, unknown>,
+    timeoutMs?: number
   ): Promise<{ result: ReticulumSendResult; payload?: any }> {
     if (this.state !== 'ready') {
       return { result: { ok: false, reason: 'bridge-not-ready' } };
     }
     try {
-      const resp = await this.sendCommand(action, payload);
+      const resp = await this.sendCommand(action, payload, timeoutMs);
       if (resp.ok) return { result: { ok: true }, payload: resp.payload };
       return {
         result: {
@@ -277,10 +383,20 @@ export class MobileReticulumBridge extends EventEmitter {
     peerPresenceHash: string,
     message: Record<string, unknown>
   ): Promise<ReticulumSendResult> {
-    return this.sendDetailed('send_reticulum_chat', {
-      peerPresenceHash,
-      message,
-    });
+    // DM control wires carry a 30 s signed TTL. Waiting the default 20 s for
+    // Python only to learn the send failed leaves no time for the engine's
+    // retry, so fail these fast and let the retry queue re-sign.
+    const kind = String(message?.k || '');
+    const destControl =
+      kind === 'dm_notify' || kind === 'dm_probe' || kind === 'hello_v3';
+    return this.sendDetailed(
+      'send_reticulum_chat',
+      {
+        peerPresenceHash,
+        message,
+      },
+      destControl ? 8_000 : undefined
+    );
   }
 
   async fanoutReticulumChatDetailed(
@@ -525,12 +641,13 @@ export class MobileReticulumBridge extends EventEmitter {
   }): Promise<ReticulumSendResult> {
     const peerPresenceHash = payload.peerPresenceHash.trim().toLowerCase();
     const logicalResourceType = payload.logicalResourceType ?? '';
-    const interactiveHistory =
-      logicalResourceType === 'reticulum_chat_history_page_interactive';
+    // Same lane table as the desktop bridge (reticulum-bridge.ts).
     const lane =
-      logicalResourceType === 'reticulum_chat_dm_page' ||
-      interactiveHistory ||
+      ['reticulum_chat_dm_page', 'reticulum_chat_live_event'].includes(
+        logicalResourceType
+      ) ||
       (![
+        'reticulum_chat_author_range',
         'reticulum_chat_history_page',
         'reticulum_chat_metadata_snapshot',
         'reticulum_chat_event_page',
@@ -546,37 +663,35 @@ export class MobileReticulumBridge extends EventEmitter {
         error: 'Missing peer presence hash',
       };
     }
-    const key = `${peerPresenceHash}:${lane}`;
-    const existing = this.resourceSessionPreparations.get(key);
-    const preparation =
-      existing ??
-      this.prepareResourceSession(
-        {
-          ...payload,
-          peerPresenceHash,
-          ...(interactiveHistory
-            ? { logicalResourceType: 'reticulum_chat_history_page' }
-            : {}),
-        },
-        lane
-      );
-    if (!existing) {
-      this.resourceSessionPreparations.set(key, preparation);
-      void preparation.finally(() => {
-        if (this.resourceSessionPreparations.get(key) === preparation) {
-          this.resourceSessionPreparations.delete(key);
-        }
-      });
+    const isDmPage = logicalResourceType === 'reticulum_chat_dm_page';
+    if (!isDmPage && this.dmPagePrepares > 0) {
+      // Local pressure, not a provider problem: the engine retries after its
+      // overload backoff instead of rotating to another peer.
+      return {
+        ok: false,
+        reason: 'bridge-overloaded',
+        error: 'dm page link preparation in flight',
+      };
     }
-    const result = await preparation;
-    if (!result.ok && interactiveHistory) {
-      return this.ensureReticulumResourceSessionDetailed({
-        ...payload,
-        peerPresenceHash,
-        logicalResourceType: 'reticulum_chat_history_page',
-      });
+    if (isDmPage) this.dmPagePrepares += 1;
+    try {
+      const key = `${peerPresenceHash}:${lane}`;
+      const existing = this.resourceSessionPreparations.get(key);
+      const preparation =
+        existing ??
+        this.prepareResourceSession({ ...payload, peerPresenceHash }, lane);
+      if (!existing) {
+        this.resourceSessionPreparations.set(key, preparation);
+        void preparation.finally(() => {
+          if (this.resourceSessionPreparations.get(key) === preparation) {
+            this.resourceSessionPreparations.delete(key);
+          }
+        });
+      }
+      return await preparation;
+    } finally {
+      if (isDmPage) this.dmPagePrepares = Math.max(0, this.dmPagePrepares - 1);
     }
-    return result;
   }
 
   /**
@@ -592,7 +707,8 @@ export class MobileReticulumBridge extends EventEmitter {
       resourceType: string;
       logicalResourceType?: string;
     },
-    lane: 'fast' | 'bulk'
+    lane: 'fast' | 'bulk',
+    timeoutMs = 32_000
   ): Promise<ReticulumSendResult> {
     return new Promise<ReticulumSendResult>((resolve) => {
       type SessionState = {
@@ -645,7 +761,7 @@ export class MobileReticulumBridge extends EventEmitter {
           reason: 'bridge-timeout',
           error: 'Reticulum resource session preparation timed out',
         });
-      }, 32_000);
+      }, timeoutMs);
       this.on('reticulum-resource-session', onSessionState);
       void this.sendDetailedWithPayload('prepare_reticulum_resource_session', {
         ...payload,
@@ -766,7 +882,10 @@ export class MobileReticulumBridge extends EventEmitter {
     Array<{ host: string; port: number; expiresAt: number }>
   > {
     if (this.state !== 'ready') return [];
-    const resp = await this.sendCommand('get_community_stun_endpoints', {});
+    const resp = await this.sendCommand(
+      'get_community_stun_endpoints',
+      {}
+    );
     if (!resp.ok || !Array.isArray(resp.payload?.endpoints)) return [];
     return resp.payload.endpoints.filter(
       (value): value is { host: string; port: number; expiresAt: number } =>

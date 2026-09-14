@@ -57,6 +57,8 @@ import DownloadRoundedIcon from '@mui/icons-material/DownloadRounded';
 import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded';
 import InsertDriveFileRoundedIcon from '@mui/icons-material/InsertDriveFileRounded';
 import { getQchatFileApi } from '../../utils/qchatFileApi';
+import { buildChatUserAvatarUrlBlocking } from '../../utils/chatAvatarUrl';
+import { buildGroupAvatarUrl } from '../../utils/groupAvatarUrl';
 import CancelRoundedIcon from '@mui/icons-material/CancelRounded';
 import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded';
 import WarningAmberRoundedIcon from '@mui/icons-material/WarningAmberRounded';
@@ -735,18 +737,22 @@ export const MessageItemComponent = ({
         officialGroupSystem?.groupAvatarOwnerName) &&
       officialGroupSystem?.groupId
     ) {
-      return `${getBaseApiReact()}/arbitrary/THUMBNAIL/${encodeURIComponent(
-        reticulumGroupAvatarOwnerName ||
-          officialGroupSystem.groupAvatarOwnerName
-      )}/qortal_group_avatar_${officialGroupSystem.groupId}?async=true`;
+      return (
+        buildGroupAvatarUrl(
+          reticulumGroupAvatarOwnerName ||
+            officialGroupSystem.groupAvatarOwnerName,
+          officialGroupSystem.groupId
+        ) || ''
+      );
     }
-    return message?.senderName
-      ? `${getBaseApiReact()}/arbitrary/THUMBNAIL/${
-          message?.senderName
-        }/qortal_avatar?async=true`
-      : '';
+    return buildChatUserAvatarUrlBlocking(
+      getBaseApiReact(),
+      message?.senderName,
+      message?.sender
+    );
   }, [
     isOfficialGroupSystem,
+    message?.sender,
     message?.senderName,
     officialGroupSystem?.groupAvatarOwnerName,
     officialGroupSystem?.groupId,

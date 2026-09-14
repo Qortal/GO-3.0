@@ -838,8 +838,7 @@ export const ChatDirect = ({
       isSelfDirect ||
       !myAddress ||
       !selectedDirect?.address ||
-      isNewChat ||
-      !peerOnline
+      isNewChat
     ) {
       setReticulumDirectLinkActive(false);
       return;

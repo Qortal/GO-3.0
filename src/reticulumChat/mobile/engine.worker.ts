@@ -79,7 +79,7 @@ async function boot(msg: BootMessage): Promise<void> {
     const host = await import('./engineHost');
     host.startEngine(msg.config);
     handler = host.handleMainMessage;
-    for (const queued of early.splice(0)) handler(queued);
+    for (const queued of early.splice(0)) enqueueWorkerMessage(queued);
   } catch (err) {
     console.error('[MobileChat] engine boot failed', err);
     (self as unknown as Worker).postMessage({
@@ -98,4 +98,55 @@ handler = (data: any) => {
   }
 };
 
-self.onmessage = (event: MessageEvent) => handler(event.data);
+/**
+ * UI RPCs (and the replies the engine is awaiting) are handled immediately;
+ * Python event floods (presence, digests) are drained a few per macrotask so
+ * a burst cannot starve a `getDirectHistory` call for seconds.
+ */
+const PRIORITY_TYPES = new Set([
+  'rpc',
+  'cmdres',
+  'signres',
+  'nativefsres',
+  'boot',
+  'stop',
+]);
+const deferred: unknown[] = [];
+let pumping = false;
+
+function enqueueWorkerMessage(data: any): void {
+  if (data && PRIORITY_TYPES.has(data.t)) {
+    handler(data);
+    return;
+  }
+  deferred.push(data);
+  if (pumping) return;
+  pumping = true;
+  const pump = () => {
+    let n = 0;
+    while (deferred.length && n < 4) {
+      handler(deferred.shift());
+      n += 1;
+    }
+    if (deferred.length) {
+      setTimeout(pump, 0);
+      return;
+    }
+    pumping = false;
+  };
+  pump();
+}
+
+function attachRpcPort(port: MessagePort): void {
+  port.onmessage = (event: MessageEvent) => {
+    handler(event.data);
+  };
+}
+
+self.onmessage = (event: MessageEvent) => {
+  if (event.data?.t === 'rpc-port' && event.ports[0]) {
+    attachRpcPort(event.ports[0]);
+    return;
+  }
+  enqueueWorkerMessage(event.data);
+};

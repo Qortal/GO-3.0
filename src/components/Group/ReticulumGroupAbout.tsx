@@ -21,7 +21,11 @@ import PublicRoundedIcon from '@mui/icons-material/PublicRounded';
 import { getBaseApiReact } from '../../App';
 import { userInfoAtom } from '../../atoms/global';
 import { QORTAL_PROTOCOL } from '../../constants/constants';
-import { subscribeToEvent, unsubscribeFromEvent } from '../../utils/events';
+import {
+  executeEvent,
+  subscribeToEvent,
+  unsubscribeFromEvent,
+} from '../../utils/events';
 import { WrapperUserAction } from '../WrapperUserAction';
 import { getNameInfo } from './groupApi';
 import { GroupScoreBadge } from './ReticulumGroupLevel';
@@ -73,6 +77,11 @@ export const getReticulumGroupMetadata = (groupOrId: any, force = false) =>
 export const prefetchReticulumGroupAboutMetadata = (group: any) => {
   if (!group?.groupId) return;
   void getMetadata(group);
+};
+
+export const openReticulumGroupAbout = (group: any) => {
+  if (!group) return;
+  executeEvent('openReticulumGroupAbout', { group });
 };
 
 const truncateInvite = (value: string) =>

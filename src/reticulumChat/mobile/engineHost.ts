@@ -307,6 +307,54 @@ function scheduleMembershipReannounce(reason: string): void {
 }
 
 /**
+ * The engine worker can attach after python already admitted our own Hub's
+ * overlay link, in which case no `overlay_link_state` transition will arrive
+ * for it. Same-account leases from the presence snapshot are the other way we
+ * learn about own devices; introduce ourselves to each one once, so the Hub
+ * records this device's features and can serve it DM pages.
+ */
+const OWN_DEVICE_INTRODUCTION_MIN_INTERVAL_MS = 10 * 60_000;
+const introducedOwnDevicePeersAt = new Map<string, number>();
+
+function introduceNewOwnDevicePeers(): void {
+  const m = getReticulumChatManager() as
+    | {
+        announceSubscriptionsToPeer?: (peer: string) => void;
+        notifyOwnDevicePeerAdmitted?: (peer: string) => void;
+        getLocalDmAddresses?: () => string[];
+      }
+    | undefined;
+  if (!m) return;
+  const localAddresses = new Set(m.getLocalDmAddresses?.() ?? []);
+  if (localAddresses.size === 0) return;
+  const localHash = String(
+    bridge?.getLocalDestinationHash?.() || ''
+  ).toLowerCase();
+  const now = Date.now();
+  for (const lease of presenceLeases) {
+    const address = String(lease?.address || '');
+    const hash = String(lease?.destinationHash || '').toLowerCase();
+    if (!hash || hash === localHash || !localAddresses.has(address)) continue;
+    const lastAt = introducedOwnDevicePeersAt.get(hash) ?? 0;
+    if (now - lastAt < OWN_DEVICE_INTRODUCTION_MIN_INTERVAL_MS) continue;
+    introducedOwnDevicePeersAt.set(hash, now);
+    try {
+      m.announceSubscriptionsToPeer?.(hash);
+      m.notifyOwnDevicePeerAdmitted?.(hash);
+    } catch (err) {
+      console.warn('[MobileChat] own device introduction failed', err);
+    }
+  }
+  if (introducedOwnDevicePeersAt.size > 64) {
+    for (const [hash, at] of introducedOwnDevicePeersAt) {
+      if (now - at > OWN_DEVICE_INTRODUCTION_MIN_INTERVAL_MS) {
+        introducedOwnDevicePeersAt.delete(hash);
+      }
+    }
+  }
+}
+
+/**
  * Group subscription and digest fanouts hard-fail with `no_route` whenever the
  * overlay has no reachable neighbors, which happens every time the phone sleeps
  * or loses its hub links. Desktop replays subscriptions as soon as topology
@@ -351,6 +399,26 @@ export function startEngine(initial: EngineConfig): void {
     sendPythonCommand,
     new ReticulumResourceStaging(nativeFs as NativeFsFn)
   );
+  // Desktop wires this through PresenceManager's `reticulum-peer-verified`:
+  // every newly admitted overlay neighbour gets a targeted hello_v3 plus our
+  // group subscriptions, so it learns our protocol features (self_dm_v1 is
+  // what lets a same-account Hub serve DM pages to this device). If the
+  // neighbour is one of our own devices, also pull the open conversations.
+  bridge.on('overlay-peer-admitted', ({ peerHash }: { peerHash: string }) => {
+    const m = getReticulumChatManager() as
+      | {
+          announceSubscriptionsToPeer?: (peer: string) => void;
+          notifyOwnDevicePeerAdmitted?: (peer: string) => void;
+        }
+      | undefined;
+    if (!m || !peerHash) return;
+    try {
+      m.announceSubscriptionsToPeer?.(peerHash);
+      m.notifyOwnDevicePeerAdmitted?.(peerHash);
+    } catch (err) {
+      console.warn('[MobileChat] overlay admitted introduction failed', err);
+    }
+  });
   resourceStore = new ReticulumResourceStore({
     policy: { limitBytes: MOBILE_RESOURCE_LIMIT_BYTES },
   });
@@ -1307,7 +1375,10 @@ export function handleMainMessage(data: any): void {
     presenceLeases = Array.isArray(data.leases) ? data.leases : [];
     const wasHealthy = overlayHealthy;
     overlayHealthy = data.healthy === true;
-    if (overlayHealthy && !wasHealthy) onOverlayHealthRecovered();
+    if (overlayHealthy && !wasHealthy) {
+      setTimeout(() => onOverlayHealthRecovered(), 0);
+    }
+    if (overlayHealthy) introduceNewOwnDevicePeers();
     return;
   }
   if (data.t === 'config') {

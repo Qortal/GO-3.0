@@ -109,6 +109,10 @@ export default defineConfig({
               __dirname,
               'src/reticulumChat/mobile/shims/worker_threads.ts'
             ),
+            zlib: resolve(
+              __dirname,
+              'src/reticulumChat/mobile/shims/zlib.ts'
+            ),
             path: 'path-browserify',
           },
   },

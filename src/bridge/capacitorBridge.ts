@@ -179,6 +179,14 @@ const PRESENCE_BRIDGE_ENABLED = true;
 
 /** Online entries expire if not refreshed within this window (heartbeats ~25 s). */
 const PRESENCE_TTL_MS = 90_000;
+/**
+ * Keep same-account device hashes for DM routing after the online dot
+ * expires, and across an app relaunch, so the engine can pull from our own
+ * Hub before its next presence heartbeat arrives. Bounded to an hour: a
+ * longer window feeds the engine stale hashes as "verified" DM peers.
+ */
+const CHAT_ENDPOINT_TTL_MS = 60 * 60 * 1000;
+const ACCOUNT_ENDPOINTS_STORAGE_KEY = 'qortal.go.account-endpoints.v1';
 /** Cap on fan-out neighbours we advertise to the bridge (matches OVERLAY_MAX). */
 const MAX_NEIGHBORS = 24;
 /** 16-byte Reticulum destination hash, hex. */
@@ -334,6 +342,8 @@ export const fetchMobileReticulumIdentity = async (): Promise<{
 // pending-promise map keyed by the command id we pass to the native plugin.
 
 let ensureBridgeStartedRef: (() => Promise<void>) | null = null;
+let waitForBridgeReadyRef: ((timeoutMs: number) => Promise<void>) | null =
+  null;
 
 /**
  * Frame taps for the mobile Reticulum chat engine: every python event frame
@@ -442,7 +452,15 @@ export const presenceCommandWithResult = async (
   if (!ensureBridgeStartedRef) {
     throw new Error('Reticulum bridge is not installed');
   }
-  await ensureBridgeStartedRef();
+  // Kick start, but only wait until the Python `ready` event. Awaiting the
+  // full ensureBridgeStarted() promise deadlocks if that function itself
+  // calls presenceCommandWithResult.
+  void ensureBridgeStartedRef();
+  if (waitForBridgeReadyRef) {
+    await waitForBridgeReadyRef(Math.min(Math.max(timeoutMs, 1_000), 30_000));
+  } else {
+    await ensureBridgeStartedRef();
+  }
   const id = `cmd-${Date.now().toString(36)}-${Math.random()
     .toString(36)
     .slice(2, 10)}`;
@@ -945,6 +963,32 @@ export function installReticulumBridges(): void {
     string,
     Map<string, { sessionId: string; lastSeen: number }>
   >();
+  const persistAccountEndpoints = (): void => {
+    const now = Date.now();
+    const rows: Array<{
+      address: string;
+      destinationHash: string;
+      sessionId: string;
+      lastSeen: number;
+    }> = [];
+    for (const [address, endpoints] of accountEndpoints) {
+      for (const [hash, entry] of endpoints) {
+        if (now - entry.lastSeen > CHAT_ENDPOINT_TTL_MS) continue;
+        rows.push({
+          address,
+          destinationHash: hash,
+          sessionId: entry.sessionId,
+          lastSeen: entry.lastSeen,
+        });
+      }
+    }
+    try {
+      localStorage.setItem(ACCOUNT_ENDPOINTS_STORAGE_KEY, JSON.stringify(rows));
+    } catch {
+      /* storage full; keep in-memory only */
+    }
+  };
+  let persistAccountEndpointsTimer = 0;
   const rememberAccountEndpoint = (
     address: string,
     destinationHash: unknown,
@@ -958,7 +1002,45 @@ export function installReticulumBridges(): void {
       accountEndpoints.set(address, endpoints);
     }
     endpoints.set(hash, { sessionId, lastSeen: Date.now() });
+    if (!persistAccountEndpointsTimer) {
+      persistAccountEndpointsTimer = window.setTimeout(() => {
+        persistAccountEndpointsTimer = 0;
+        persistAccountEndpoints();
+      }, 10_000);
+    }
   };
+  try {
+    const raw = localStorage.getItem(ACCOUNT_ENDPOINTS_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    if (Array.isArray(parsed)) {
+      const now = Date.now();
+      for (const row of parsed) {
+        if (!row || typeof row !== 'object') continue;
+        const address = String(row.address || '').trim();
+        const hash = String(row.destinationHash || '').toLowerCase();
+        const lastSeen = Number(row.lastSeen || 0);
+        if (
+          !address ||
+          !DEST_HASH_RE.test(hash) ||
+          !Number.isFinite(lastSeen) ||
+          now - lastSeen > CHAT_ENDPOINT_TTL_MS
+        ) {
+          continue;
+        }
+        let endpoints = accountEndpoints.get(address);
+        if (!endpoints) {
+          endpoints = new Map();
+          accountEndpoints.set(address, endpoints);
+        }
+        endpoints.set(hash, {
+          sessionId: String(row.sessionId || ''),
+          lastSeen,
+        });
+      }
+    }
+  } catch {
+    /* corrupted store; start empty */
+  }
   const liveAccountEndpoints = (): Array<{
     address: string;
     destinationHash: string;
@@ -994,6 +1076,35 @@ export function installReticulumBridges(): void {
       if (endpoints.size === 0) accountEndpoints.delete(address);
     }
     return out;
+  };
+  const overlaySyncAccountLeases = () => {
+    const now = Date.now();
+    const localHash = (
+      getMobileReticulumInfo().destinationHash || ''
+    ).toLowerCase();
+    const leases: Array<{
+      address: string;
+      destinationHash: string;
+      sessionId: string;
+      lastSeen: number;
+      expiresAt: number;
+      verification: 'relayed-bound';
+    }> = [];
+    for (const [address, endpoints] of accountEndpoints) {
+      for (const [hash, entry] of endpoints) {
+        if (now - entry.lastSeen > CHAT_ENDPOINT_TTL_MS) continue;
+        if (hash === localHash) continue;
+        leases.push({
+          address,
+          destinationHash: hash,
+          sessionId: entry.sessionId || 'account-endpoint',
+          lastSeen: entry.lastSeen,
+          expiresAt: entry.lastSeen + CHAT_ENDPOINT_TTL_MS,
+          verification: 'relayed-bound',
+        });
+      }
+    }
+    return leases;
   };
   type UpdatePayload = {
     address: string;
@@ -1058,9 +1169,14 @@ export function installReticulumBridges(): void {
     }
     syncInFlight = true;
     try {
+      const accountEndpointLeases = overlaySyncAccountLeases();
       await Reticulum.presenceCommand({
         action: 'overlay_sync_state',
-        payload: { verifiedPeers: [], activeNeighborHashes: neighborList() },
+        payload: {
+          verifiedPeers: [],
+          activeNeighborHashes: neighborList(),
+          accountEndpointLeases,
+        },
       });
     } catch (err) {
       console.error('[Presence] overlay_sync_state failed:', err);
@@ -1760,6 +1876,7 @@ export function installReticulumBridges(): void {
     return bridgeStartPromise;
   };
   ensureBridgeStartedRef = ensureBridgeStarted;
+  waitForBridgeReadyRef = waitForBridgeReady;
 
   // Presence snapshot for the mobile chat engine. Mirrors the desktop
   // PresenceManager accessors: verified transport peers ({destinationHash,
@@ -1771,22 +1888,33 @@ export function installReticulumBridges(): void {
     const leases: ReturnType<
       typeof getReticulumChatPresenceSnapshot
     >['leases'] = [];
-    for (const endpoint of liveAccountEndpoints()) {
-      if (!seenPeerHashes.has(endpoint.destinationHash)) {
-        seenPeerHashes.add(endpoint.destinationHash);
-        peers.push({
-          destinationHash: endpoint.destinationHash,
-          lastSeen: endpoint.lastSeen,
+    const localHash = (
+      getMobileReticulumInfo().destinationHash || ''
+    ).toLowerCase();
+    for (const [address, endpoints] of [...accountEndpoints]) {
+      for (const [hash, entry] of [...endpoints]) {
+        if (now - entry.lastSeen > CHAT_ENDPOINT_TTL_MS) {
+          endpoints.delete(hash);
+          continue;
+        }
+        if (hash === localHash) continue;
+        if (!seenPeerHashes.has(hash)) {
+          seenPeerHashes.add(hash);
+          peers.push({
+            destinationHash: hash,
+            lastSeen: entry.lastSeen,
+          });
+        }
+        leases.push({
+          destinationHash: hash,
+          address,
+          sessionId: entry.sessionId,
+          lastSeen: entry.lastSeen,
+          expiresAt: entry.lastSeen + CHAT_ENDPOINT_TTL_MS,
+          verification: 'relayed-bound',
         });
       }
-      leases.push({
-        destinationHash: endpoint.destinationHash,
-        address: endpoint.address,
-        sessionId: endpoint.sessionId,
-        lastSeen: endpoint.lastSeen,
-        expiresAt: endpoint.lastSeen + PRESENCE_TTL_MS,
-        verification: 'relayed-bound',
-      });
+      if (endpoints.size === 0) accountEndpoints.delete(address);
     }
     for (const neighbor of neighborList()) {
       const hash = String(neighbor || '').toLowerCase();

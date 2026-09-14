@@ -398,7 +398,12 @@ _RESOURCE_SESSION_REQUEST_TIMEOUT_SECONDS = 60.0
 # ready, receiving no response progress for this long means the session itself
 # is stale. Retire only that session and let the existing DM pull retry on a
 # fresh Link; bulk history and attachment requests retain their longer timeout.
-_RESOURCE_SESSION_LIVE_DM_INITIAL_RESPONSE_TIMEOUT_SECONDS = 10.0
+#
+# Mobile: a phone usually reaches its Hub over several transport hops and the
+# provider may spend its full authorization budget (15 s) before the first
+# response byte; retiring the session at 10 s made every pull restart from a
+# fresh Link. 30 s still bounds a dead session well below the request timeout.
+_RESOURCE_SESSION_LIVE_DM_INITIAL_RESPONSE_TIMEOUT_SECONDS = 30.0
 # Authorization normally completes from the local cache, but an uncached group
 # membership decision can use Electron's full 10-second Core request budget.
 # Leave bounded scheduling margin so the bridge does not expire the waiter at
@@ -879,6 +884,11 @@ _SCHEDULER_RNS_CLASSIFY_CALLBACK_SHARDS = 2
 _SCHEDULER_SLOW_TASK_LOG_THRESHOLD_MS = 80.0
 _SCHEDULER_QUEUE_MAX_BY_LANE: Dict[str, int] = {
     "control-send": 256,
+    # DM control frames carry a 30 s signed TTL and DM page link setup is the
+    # most latency-sensitive thing a phone does; neither may wait behind a
+    # backlog of group fanout on control-send / resource-control.
+    "dm-control": 32,
+    "dm-page": 16,
     "link-management": 128,
     "overlay-control": 64,
     "overlay-io-0": 32,
@@ -5736,6 +5746,12 @@ def _scheduler_lane_for_command(
     message: Optional[Dict[str, Any]] = None,
 ) -> str:
     action_name = str(action or "")
+    if action_name == "send_reticulum_chat":
+        payload = message.get("payload") if isinstance(message, dict) else None
+        wire = payload.get("message") if isinstance(payload, dict) else None
+        kind = str(wire.get("k") or "") if isinstance(wire, dict) else ""
+        if kind in _DM_CONTROL_WIRE_KINDS:
+            return "dm-control"
     if action_name in {"clear_group_audio_diagnostics"}:
         return "control-send"
     if action_name == "send_group_audio_link_control":
@@ -5771,8 +5787,71 @@ def _scheduler_lane_for_command(
         "reject_reticulum_resource",
         "cancel_reticulum_resource",
     }:
+        payload = message.get("payload") if isinstance(message, dict) else None
+        logical = ""
+        if isinstance(payload, dict):
+            logical = str(payload.get("logicalResourceType") or "")
+            metadata = payload.get("metadata")
+            if not logical and isinstance(metadata, dict):
+                logical = str(metadata.get("logicalResourceType") or "")
+        if logical == "reticulum_chat_dm_page":
+            return "dm-page"
         return "resource-control"
     return "control-send"
+
+
+_DM_CONTROL_WIRE_KINDS = frozenset(
+    {"dm_notify", "dm_req", "dm_page_offer", "dm_probe", "dm_event", "hello_v3"}
+)
+_DIRECT_STDIN_LANES = frozenset({"dm-control", "dm-page"})
+
+
+def _enqueue_stdin_command(message: Dict[str, Any]) -> None:
+    """Hand a stdin command to the RNS owner without ever blocking stdin.
+
+    The desktop bridge caps its own pending commands before writing, so the
+    blocking ``put`` never bites there. The Android host has no such cap; a
+    burst of group traffic fills ``_cmd_queue_bounded`` and the reader thread
+    stalls with every later frame behind it, DM control included. Fail the
+    frame instead (the engine maps ``bridge_command_queue_full`` to a local
+    back-off) and let DM lanes bypass the shared queue entirely.
+    """
+    action = message.get("action")
+    lane = _scheduler_lane_for_command(action, message)
+    if lane in _DIRECT_STDIN_LANES and lane in _scheduler_queues:
+        if _enqueue_scheduler_task(lane, f"cmd:{action or 'unknown'}", handle_command, message):
+            return
+        req_id = str(message.get("id") or "")
+        if req_id:
+            emit_resp(
+                req_id,
+                False,
+                payload={"code": "scheduler_queue_full", "lane": lane},
+                error=f"Reticulum scheduler lane is full: {lane}",
+            )
+        return
+    try:
+        _cmd_queue_bounded.put_nowait(message)
+    except queue.Full:
+        req_id = str(message.get("id") or "")
+        if req_id:
+            emit_resp(
+                req_id,
+                False,
+                payload={"code": "bridge_command_queue_full"},
+                error="Reticulum bridge command queue is full",
+            )
+        else:
+            emit_event(
+                "error",
+                {
+                    "code": "bridge_command_queue_full",
+                    "message": "Reticulum bridge command queue is full",
+                    "action": str(action or ""),
+                },
+            )
+        return
+    _notify_rns_work_available()
 
 
 def _rns_executor_loop() -> None:
@@ -11653,6 +11732,44 @@ def _handle_overlay_transport_control(
         )
         if not isinstance(state.get("hello_sent_at"), (int, float)):
             _send_overlay_transport_control(link, state, _OVERLAY_HELLO_WIRE_TYPE, "hello_reply")
+        # Link identification and HELLO race in both directions. A peer that
+        # processed our identify() before our HELLO could not attribute the
+        # identity to a presence hash and so never cached it; a later attempt
+        # to open a resource Link to us then fails with identity_unavailable.
+        #
+        # Outbound: the peer's HELLO reply proves it now knows our hash, so
+        # identify once more and let it register us.
+        if (
+            state.get("incoming") is not True
+            and state.get("identify_after_hello") is not True
+            and _identity is not None
+        ):
+            state["identify_after_hello"] = True
+            try:
+                link.identify(_identity)
+            except Exception as exc:
+                log(
+                    "[presence_bridge] overlay identify after hello failed "
+                    f"peer={peer_key} link={link_id}: {exc}"
+                )
+        # Inbound: if the remote identified itself before this HELLO named its
+        # presence hash, finish the registration the identity callback skipped.
+        remote_identity = state.get("remoteIdentity")
+        if (
+            state.get("incoming") is True
+            and remote_identity is not None
+            and peer_key not in _known_peers
+        ):
+            try:
+                derived = derive_presence_destination_hash_for_identity(remote_identity)
+            except Exception:
+                derived = ""
+            if derived and derived == peer_key:
+                _register_peer(peer_key, remote_identity, "direct_link_identity")
+                log(
+                    "[presence_bridge] target=presence-reticulum overlay_remote_identified "
+                    f"link={link_id} peer={peer_key} source=hello_after_identity"
+                )
         if (
             state.get("migration_candidate") is True
             and decoded.get("m") == _OVERLAY_ROUTE_MIGRATION_MARKER
@@ -26281,7 +26398,16 @@ def handle_get_local_identity_public_key(req_id: str, payload: Dict[str, Any]) -
             emit_resp(req_id, False, error="Unexpected identity public key length")
             return
         b64 = base64.b64encode(pub).decode("ascii")
-        emit_resp(req_id, True, payload={"publicKeyBase64": b64})
+        # The mobile engine attaches after `ready` may already have been
+        # consumed, so this reply doubles as the way it learns its own hash.
+        emit_resp(
+            req_id,
+            True,
+            payload={
+                "publicKeyBase64": b64,
+                "destinationHash": _local_presence_hash_hex() or "",
+            },
+        )
     except Exception as exc:
         emit_resp(req_id, False, error=str(exc))
 
@@ -26911,8 +27037,7 @@ def stdin_loop() -> None:
             )
             continue
 
-        _cmd_queue_bounded.put(message)
-        _notify_rns_work_available()
+        _enqueue_stdin_command(message)
 
     _cmd_queue_bounded.put(None)
     _notify_rns_work_available()

@@ -438,7 +438,7 @@ export function existsSync(p: string): boolean {
 
 export function mkdirSync(
   p: string,
-  _opts?: { recursive?: boolean }
+  _opts?: { recursive?: boolean; mode?: number | string }
 ): string | undefined {
   let n = normalize(p);
   const created = !dirs.has(n);
@@ -576,8 +576,12 @@ type Stats = {
   size: number;
   mtimeMs: number;
   mtime: Date;
+  mode: number;
+  uid: number;
+  gid: number;
   isFile: () => boolean;
   isDirectory: () => boolean;
+  isSymbolicLink: () => boolean;
 };
 
 function statsFor(n: string): Stats {
@@ -587,8 +591,12 @@ function statsFor(n: string): Stats {
       size: entry.size,
       mtimeMs: entry.mtimeMs,
       mtime: new Date(entry.mtimeMs),
+      mode: 0o100600,
+      uid: 0,
+      gid: 0,
       isFile: () => true,
       isDirectory: () => false,
+      isSymbolicLink: () => false,
     };
   }
   if (dirs.has(n)) {
@@ -596,8 +604,12 @@ function statsFor(n: string): Stats {
       size: 0,
       mtimeMs: 0,
       mtime: new Date(0),
+      mode: 0o040700,
+      uid: 0,
+      gid: 0,
       isFile: () => false,
       isDirectory: () => true,
+      isSymbolicLink: () => false,
     };
   }
   throw enoent(n);
@@ -605,6 +617,18 @@ function statsFor(n: string): Stats {
 
 export function statSync(p: string): Stats {
   return statsFor(normalize(p));
+}
+
+// OPFS has no symlinks, so lstat and stat are the same view.
+export function lstatSync(p: string): Stats {
+  return statsFor(normalize(p));
+}
+
+// OPFS is private to the origin; POSIX modes have no meaning here. Accept
+// the call so the engine's private-temp hardening path stays a no-op.
+export function chmodSync(p: string, _mode: number | string): void {
+  const n = normalize(p);
+  if (!files.has(n) && !dirs.has(n)) throw enoent(n);
 }
 
 export function statfsSync(_p: string): {
@@ -800,6 +824,35 @@ export const promises = {
   async stat(p: string): Promise<Stats> {
     return statSync(p);
   },
+  async lstat(p: string): Promise<Stats> {
+    return lstatSync(p);
+  },
+  async chmod(p: string, mode: number | string): Promise<void> {
+    chmodSync(p, mode);
+  },
+  async mkdir(
+    p: string,
+    opts?: { recursive?: boolean; mode?: number | string }
+  ): Promise<string | undefined> {
+    return mkdirSync(p, opts);
+  },
+  async readdir(p: string): Promise<string[]> {
+    return readdirSync(p);
+  },
+  async readFile(
+    p: string,
+    encoding?: string | { encoding?: string }
+  ): Promise<Buffer | string> {
+    const enc = typeof encoding === 'string' ? encoding : encoding?.encoding;
+    return enc ? readFileSync(p, enc) : readFileSync(p);
+  },
+  async writeFile(
+    p: string,
+    data: string | Uint8Array,
+    _opts?: unknown
+  ): Promise<void> {
+    writeFileSync(p, data);
+  },
   async unlink(p: string): Promise<void> {
     unlinkSync(p);
   },
@@ -816,6 +869,8 @@ export default {
   renameSync,
   copyFileSync,
   statSync,
+  lstatSync,
+  chmodSync,
   statfsSync,
   openSync,
   closeSync,

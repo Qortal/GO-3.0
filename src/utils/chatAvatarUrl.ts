@@ -1,3 +1,12 @@
+/** Drop `async=true` so the node blocks until the thumbnail is actually fetched. */
+export function stripAvatarAsyncQuery(url: string): string {
+  return url
+    .replace(/([?&])async=true(&?)/, (_m, sep, trailing) =>
+      trailing ? sep : ''
+    )
+    .replace(/[?&]$/, '');
+}
+
 /** Thumbnail URL for a Qortal user's chat avatar (works in background + UI). */
 export function buildChatUserAvatarUrl(
   apiBase: string,
@@ -9,6 +18,16 @@ export function buildChatUserAvatarUrl(
   const base = `${apiBase.replace(/\/$/, '')}/arbitrary/THUMBNAIL/${encodeURIComponent(trimmed)}/qortal_avatar?async=true`;
   const addr = address?.trim();
   return addr ? `${base}&_=${encodeURIComponent(addr)}` : base;
+}
+
+/** Blocking chat avatar URL — avoids empty/404 `async=true` replies while the node caches. */
+export function buildChatUserAvatarUrlBlocking(
+  apiBase: string,
+  name?: string | null,
+  address?: string | null
+): string {
+  const url = buildChatUserAvatarUrl(apiBase, name, address);
+  return url ? stripAvatarAsyncQuery(url) : '';
 }
 
 /** Build avatar URL via createEndpoint so apiKey / node base are included. */
@@ -72,11 +91,7 @@ export async function fetchChatAvatarDataUrl(
 
   // Prefer the blocking variant: `async=true` can answer 200 with an empty
   // body while the node is still caching the thumbnail.
-  const withoutAsync = url
-    .replace(/([?&])async=true(&?)/, (_m, sep, trailing) =>
-      trailing ? sep : ''
-    )
-    .replace(/[?&]$/, '');
+  const withoutAsync = stripAvatarAsyncQuery(url);
   const candidates = [...new Set([withoutAsync, url])];
 
   for (const candidate of candidates) {

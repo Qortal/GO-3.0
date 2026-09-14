@@ -4,6 +4,7 @@ import { mergeReticulumPayloadWithVerifiedEnvelope } from '../utils/reticulumEve
 import { TIME_MONTHS_1_IN_MILLISECONDS } from '../constants/constants';
 
 const RETICULUM_DIRECT_EVENT_BATCH_MS = 250;
+const directHistoryCache = new Map<string, ReticulumDmEvent[]>();
 
 export type ReticulumDmEvent = {
   eventId: string;
@@ -84,6 +85,24 @@ const hasPayloadData = (value: unknown): value is Record<string, unknown> =>
     !Array.isArray(value) &&
     Object.keys(value as Record<string, unknown>).length > 0
   );
+
+/** Drop composer-only fields so a short DM can fit a 383-byte Reticulum packet. */
+const compactOtherData = (
+  value: unknown
+): Record<string, unknown> | undefined => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined;
+  }
+  const out: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(
+    value as Record<string, unknown>
+  )) {
+    if (key === 'specialId') continue;
+    if (entry == null || entry === '') continue;
+    out[key] = entry;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+};
 
 const randomDirectEventId = () => {
   const bytes = new Uint8Array(8);
@@ -266,6 +285,7 @@ export function useReticulumDirectChat(
   const pendingRef = useRef<ReticulumDmEvent[]>([]);
   const batchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastSenderSeqRef = useRef(0);
+  const senderStreamIdRef = useRef('');
   const primaryNameCacheRef = useRef<Map<string, string>>(new Map());
   const activeConversationGenerationRef = useRef(0);
   const visibilityRevisionRef = useRef(0);
@@ -329,10 +349,19 @@ export function useReticulumDirectChat(
 
   useEffect(() => {
     if (!enabled || !valid || !myAddress || !peerAddress) {
-      activeConversationGenerationRef.current += 1;
-      setEvents([]);
-      setTypingUsers(new Set());
+      if (!valid) {
+        activeConversationGenerationRef.current += 1;
+        setEvents([]);
+        setLoadedInitialHistoryKey('');
+        setTypingUsers(new Set());
+      }
       return;
+    }
+    const cacheKey = `${myAddress}:${peerAddress}`;
+    const cached = directHistoryCache.get(cacheKey);
+    if (cached?.length) {
+      setEvents(cached);
+      setLoadedInitialHistoryKey(cacheKey);
     }
     const generation = activeConversationGenerationRef.current + 1;
     activeConversationGenerationRef.current = generation;
@@ -345,7 +374,7 @@ export function useReticulumDirectChat(
       if (!cancelled) currentConversationId = conversationId;
       return conversationId;
     });
-    const refreshHistory = (reconcileExpiry = false) => {
+    const refreshHistory = (reconcileExpiry = false, attempt = 0) => {
       const expectedVisibilityRevision = visibilityRevisionRef.current;
       return window.reticulumChat
         ?.getDirectHistory?.(myAddress, peerAddress, 200)
@@ -360,6 +389,11 @@ export function useReticulumDirectChat(
               activeConversationGenerationRef.current === generation &&
               visibilityRevisionRef.current === expectedVisibilityRevision
             ) {
+              const ownStream = enriched.find(
+                (event) =>
+                  event.senderAddress === myAddress && event.senderStreamId
+              )?.senderStreamId;
+              if (ownStream) senderStreamIdRef.current = ownStream;
               if (reconcileExpiry) {
                 const now = Date.now();
                 setEvents((previous) =>
@@ -372,24 +406,40 @@ export function useReticulumDirectChat(
                   )
                 );
               } else {
-                setEvents(enriched);
+                setEvents((previous) => mergeEvents(previous, enriched));
               }
+              directHistoryCache.set(`${myAddress}:${peerAddress}`, enriched);
               setLoadedInitialHistoryKey(`${myAddress}:${peerAddress}`);
             }
           });
         })
-        .catch(() => {
+        .catch((error) => {
+          const timedOut = String(error?.message || error).includes('timed out');
           if (
+            timedOut &&
+            attempt < 2 &&
             !cancelled &&
             activeConversationGenerationRef.current === generation &&
             visibilityRevisionRef.current === expectedVisibilityRevision
           ) {
-            setEvents([]);
-            setLoadedInitialHistoryKey(`${myAddress}:${peerAddress}`);
+            return refreshHistory(reconcileExpiry, attempt + 1);
+          }
+          if (
+            !cancelled &&
+            !timedOut &&
+            activeConversationGenerationRef.current === generation &&
+            visibilityRevisionRef.current === expectedVisibilityRevision
+          ) {
+            setLoadedInitialHistoryKey('');
           }
         });
     };
     void refreshHistory();
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible' || cancelled) return;
+      void refreshHistory(true);
+    };
+    document.addEventListener('visibilitychange', onVisible);
     const off = window.reticulumChat?.onDirectEvent?.(({ event }) => {
       const candidate = event as ReticulumDmEvent;
       if (!candidate) return;
@@ -480,7 +530,7 @@ export function useReticulumDirectChat(
               activeConversationGenerationRef.current === generation &&
               visibilityRevisionRef.current === silenceVisibilityRevision
             ) {
-              setEvents(enriched);
+              setEvents((previous) => mergeEvents(previous, enriched));
             }
           });
         })
@@ -505,6 +555,7 @@ export function useReticulumDirectChat(
     );
     return () => {
       cancelled = true;
+      document.removeEventListener('visibilitychange', onVisible);
       activeConversationGenerationRef.current += 1;
       off?.();
       offTyping?.();
@@ -557,7 +608,8 @@ export function useReticulumDirectChat(
               : type === 'delete'
                 ? 'delete'
                 : 'message';
-      const hasOtherData = hasPayloadData(otherData);
+      const compactOther = compactOtherData(otherData);
+      const hasOtherData = hasPayloadData(compactOther);
       const effectiveExpiryDurationMs =
         eventType === 'message'
           ? expiryDurationMs === null
@@ -571,17 +623,23 @@ export function useReticulumDirectChat(
           : JSON.stringify({
               ...(chatReference ? { chatReference } : {}),
               messageText,
-              ...(hasOtherData ? { otherData } : {}),
+              ...(hasOtherData ? { otherData: compactOther } : {}),
               ...(hasExpiry
                 ? { expiryDurationMs: effectiveExpiryDurationMs ?? 0 }
                 : {}),
             });
       const payloadHash = await sha256Hex(payload);
-      const senderStreamId =
-        await window.reticulumChat?.getDirectAuthorStreamId?.(myAddress);
+      let senderStreamId = senderStreamIdRef.current;
+      if (!senderStreamId) {
+        senderStreamId =
+          (await window.reticulumChat?.getDirectAuthorStreamId?.(
+            myAddress
+          )) || '';
+      }
       if (!senderStreamId) {
         throw new Error('DM author stream is unavailable');
       }
+      senderStreamIdRef.current = senderStreamId;
       const existingSeqs = events
         .filter((event) => event.senderAddress === myAddress)
         .map((event) => Number(event.senderSeq || 0));
@@ -640,7 +698,7 @@ export function useReticulumDirectChat(
           actualPeerAddress === myAddress ? 'sent' : 'pending',
         localDeliveryUpdatedAt: Date.now(),
       };
-      await window.reticulumChat?.setLocalDmAddresses?.([myAddress]);
+      void window.reticulumChat?.setLocalDmAddresses?.([myAddress]);
 
       const optimisticEvent: ReticulumDmEvent = {
         ...event,
@@ -654,7 +712,13 @@ export function useReticulumDirectChat(
       // their own text disappear into nothing. Merging is keyed on eventId, so
       // the confirmed copy replaces this one rather than duplicating it.
       let optimisticApplied = true;
-      setEvents((prev) => mergeEvents(prev, [optimisticEvent]));
+      setEvents((prev) => {
+        const next = mergeEvents(prev, [optimisticEvent]);
+        if (myAddress && actualPeerAddress) {
+          directHistoryCache.set(`${myAddress}:${actualPeerAddress}`, next);
+        }
+        return next;
+      });
       const rollbackOptimistic = () => {
         optimisticApplied = false;
         setEvents((prev) =>

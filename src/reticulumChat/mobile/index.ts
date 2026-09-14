@@ -124,9 +124,11 @@ const PY_EVENTS_FOR_WORKER = new Set([
   'reticulum_resource',
   'reticulum_resource_session',
   'qchat_file_transfer',
+  'overlay_link_state',
 ]);
 
 let worker: Worker | null = null;
+let rpcPort: MessagePort | null = null;
 let readiness: ReadinessStatus = { state: 'idle', revision: 0 };
 const readinessSubscribers = new Set<(status: ReadinessStatus) => void>();
 const eventSubscribers = new Map<string, Set<(payload: unknown) => void>>();
@@ -287,7 +289,25 @@ function currentIdentityKey(): string {
 function refreshTransportIdentity(): void {
   if (transportIdentityInFlight) return;
   transportIdentityInFlight = true;
-  void presenceCommandWithResult('get_transport_state', {}, 8_000)
+  void presenceCommandWithResult('get_local_identity_public_key', {}, 8_000)
+    .then((frame) => {
+      const hash = String(frame?.payload?.destinationHash || '')
+        .trim()
+        .toLowerCase();
+      const publicKey = String(frame?.payload?.publicKeyBase64 || '');
+      if (!/^[0-9a-f]{32}$/.test(hash)) return;
+      if (!window.__qortalMobileReticulum) {
+        window.__qortalMobileReticulum = {
+          destinationHash: null,
+          identityPublicKeyBase64: null,
+        };
+      }
+      window.__qortalMobileReticulum.destinationHash = hash;
+      if (publicKey) {
+        window.__qortalMobileReticulum.identityPublicKeyBase64 = publicKey;
+      }
+      lastAckedIdentityKey = '';
+    })
     .catch(() => null)
     .finally(() => {
       transportIdentityInFlight = false;
@@ -421,7 +441,8 @@ function rpc(
             reject(e);
           },
         });
-        worker.postMessage({ t: 'rpc', id, method, args });
+        const target = rpcPort || worker;
+        target.postMessage({ t: 'rpc', id, method, args });
       })
   );
 }
@@ -448,9 +469,9 @@ function ensureStarted(): Promise<void> {
   if (startPromise) return startPromise;
   setReadiness('starting');
   startPromise = (async () => {
-    // Native Reticulum must be pumping frames before the engine attaches.
-    await ensureReticulumBridgeStarted();
-
+    // Local history lives in the worker SQLite DB. Do not wait for the
+    // Python radio bridge (or Core API key) before booting it — those can
+    // sit for tens of seconds and leave the DM screen empty.
     worker = new Worker(new URL('./engine.worker.ts', import.meta.url), {
       type: 'module',
       name: 'reticulum-chat-engine',
@@ -460,9 +481,13 @@ function ensureStarted(): Promise<void> {
       console.error('[MobileChat] engine worker error', err);
       setReadiness('failed', err.message || 'worker error');
     };
+    const rpcChan = new MessageChannel();
+    rpcPort = rpcChan.port1;
+    rpcPort.onmessage = handleWorkerMessage;
+    worker.postMessage({ t: 'rpc-port' }, [rpcChan.port2]);
 
-    const config = await getNodeApiConfig();
-    lastPushedApiConfig = `${config.apiBase}|${config.apiKey || ''}`;
+    const config = { apiBase: getBaseApiReact() };
+    lastPushedApiConfig = `${config.apiBase}|`;
     worker.postMessage({ t: 'boot', config });
 
     untapPython = registerPythonEventTap((frame) => {
@@ -475,28 +500,22 @@ function ensureStarted(): Promise<void> {
       });
     });
 
-    // The bridge may already be ready (its `ready` fired before our tap):
-    // re-emit a synthetic ready so the engine's transport goes live.
-    void presenceCommandWithResult('get_transport_state', {}, 8_000)
-      .then(() => {
-        const info = window.__qortalMobileReticulum;
-        worker?.postMessage({
-          t: 'pyevent',
-          event: 'ready',
-          payload: {
-            destinationHash: info?.destinationHash || undefined,
-            identityPublicKeyBase64: info?.identityPublicKeyBase64 || undefined,
-          },
-        });
-      })
+    const attachRadio = (): void => {
+      pushLocalIdentity();
+      pushPresenceState();
+      if (presenceFeedTimer == null) {
+        presenceFeedTimer = window.setInterval(pushPresenceState, 5_000);
+      }
+      pushNodeApiConfig();
+    };
+    attachRadio();
+    // Once the Python radio is up, re-push identity/presence so the engine's
+    // transport goes live; the real `ready` also arrives through the tap.
+    void ensureReticulumBridgeStarted()
+      .then(() => attachRadio())
       .catch(() => {
-        /* the real ready event will arrive through the tap */
+        /* readiness listeners re-run ensureStarted on the next attempt */
       });
-
-    pushPresenceState();
-    if (presenceFeedTimer == null) {
-      presenceFeedTimer = window.setInterval(pushPresenceState, 5_000);
-    }
 
     // Readiness flips to `ready` when the worker reports engine-ready.
     await new Promise<void>((resolve, reject) => {
@@ -531,6 +550,12 @@ export function stopMobileReticulumChat(): void {
   }
   worker?.postMessage({ t: 'stop' });
   window.setTimeout(() => {
+    try {
+      rpcPort?.close();
+    } catch {
+      /* already closed */
+    }
+    rpcPort = null;
     worker?.terminate();
     worker = null;
   }, 500);

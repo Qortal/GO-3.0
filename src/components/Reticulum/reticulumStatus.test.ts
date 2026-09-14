@@ -26,4 +26,8 @@ describe('reticulumDisplayPhase', () => {
       'offline'
     );
   });
+
+  it('shows online when peers are live even if transport reports offline', () => {
+    expect(reticulumDisplayPhase('offline', 4, true)).toBe('online');
+  });
 });

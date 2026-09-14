@@ -73,7 +73,8 @@ async function ensureStarted() {
     const pollStatus = async () => {
       try {
         const cur = await Reticulum.getStatus();
-        set({ status: cur, phase: phaseFor(cur.online) });
+        const nextPhase = phaseFor(cur.online);
+        set({ status: cur, phase: nextPhase });
       } catch {
         /* transient */
       }
@@ -145,10 +146,10 @@ export function reticulumDisplayPhase(
   onlineCount: number,
   deviceOnline: boolean
 ): ReticulumPhase {
-  if (!deviceOnline || phase === 'offline' || phase === 'error') {
-    return phase === 'error' ? 'error' : 'offline';
-  }
+  if (phase === 'error') return 'error';
+  if (!deviceOnline) return 'offline';
   if (onlineCount > 0) return 'online';
+  if (phase === 'offline') return 'offline';
   if (phase === 'idle') return 'idle';
   return phase === 'starting' ? 'starting' : 'connecting';
 }

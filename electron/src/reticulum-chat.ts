@@ -2770,6 +2770,8 @@ const RETICULUM_CHAT_DM_DISCOVERY_ROUTE_TTL_MS = 2 * 60_000;
 const RETICULUM_CHAT_DM_DISCOVERY_ROUTE_MAX = 4096;
 const RETICULUM_CHAT_DM_PROBE_REFRESH_MS = 5 * 60_000;
 const RETICULUM_CHAT_DM_PROBE_REFRESH_JITTER_MS = 60_000;
+// Minimum spacing between own-device DM page pulls for one conversation.
+const RETICULUM_CHAT_OWN_DEVICE_CATCHUP_MIN_INTERVAL_MS = 30_000;
 const RETICULUM_CHAT_DM_NOTIFY_GOSSIP_DELAY_MS = 750;
 const RETICULUM_CHAT_DM_NOTIFY_FULL_FALLBACK_MS = 3_000;
 const RETICULUM_CHAT_DM_NOTIFY_PENDING_TTL_MS = 2 * 60_000;
@@ -6994,6 +6996,7 @@ export class ReticulumChatManager extends EventEmitter {
     ReticulumDmActiveLinkPreference
   >();
   private activeDmLinkPruneTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastOwnDeviceCatchupAt = new Map<string, number>();
   private subscribedGroups = new Set<number>();
   private pendingGroupSubscriptions = new Set<number>();
   private peerSubscriptions = new Map<string, Map<number, number>>();
@@ -9629,6 +9632,10 @@ export class ReticulumChatManager extends EventEmitter {
     };
   }
 
+  getLocalDmAddresses(): string[] {
+    return [...this.localDmAddresses];
+  }
+
   setLocalDmAddresses(addresses: string[]): void {
     const nextAddresses = new Set(
       (Array.isArray(addresses) ? addresses : [])
@@ -10132,7 +10139,94 @@ export class ReticulumChatManager extends EventEmitter {
       lastWarmAt: existing?.lastWarmAt ?? 0,
     });
     this.scheduleActiveDmLinkPrune();
-    if (active) void this.warmActiveDirectChatLink(conversationId, 'active-dm');
+    if (active) {
+      void this.warmActiveDirectChatLink(conversationId, 'active-dm');
+      this.scheduleOwnDeviceCatchup(conversationId, local, peer);
+    }
+  }
+
+  /**
+   * Called when the transport reports an authenticated overlay link to a peer.
+   * If that peer is another device of this account, pull the conversations the
+   * user currently has open from it: a DM written on the other device only
+   * reaches us otherwise through `dm_notify` (which needs the sender to know
+   * our hash) or the multi-minute probe cycle.
+   */
+  notifyOwnDevicePeerAdmitted(peerHash: string): void {
+    const peer = this.normalizeResourcePeerHash(peerHash);
+    if (!peer || this.isClosed) return;
+    if (!this.ownDevicePeerHashesForCatchup().includes(peer)) return;
+    const now = this.now();
+    for (const [conversationId, pref] of this.activeDmLinkPreferences) {
+      if (!pref.active || pref.expiresAt <= now) continue;
+      this.scheduleOwnDeviceCatchup(
+        conversationId,
+        pref.localAddress,
+        pref.peerAddress,
+        peer
+      );
+    }
+  }
+
+  /** Same-account devices holding verified endpoint leases, newest first. */
+  private ownDevicePeerHashesForCatchup(): string[] {
+    const local = this.localPeerHash() ?? '';
+    const localResource = this.getLocalResourcePeerHash() ?? '';
+    const seen = new Set<string>();
+    const out: Array<{ hash: string; lastSeen: number }> = [];
+    for (const lease of this.getAccountEndpointLeasesForRouting()) {
+      if (!this.localDmAddresses.has(lease.address)) continue;
+      const hash = this.normalizeResourcePeerHash(lease.destinationHash);
+      if (
+        !hash ||
+        hash === local ||
+        hash === localResource ||
+        seen.has(hash)
+      ) {
+        continue;
+      }
+      seen.add(hash);
+      out.push({ hash, lastSeen: Number(lease.lastSeen || 0) });
+    }
+    out.sort((a, b) => b.lastSeen - a.lastSeen);
+    return out.map((entry) => entry.hash);
+  }
+
+  private scheduleOwnDeviceCatchup(
+    conversationId: string,
+    myAddress: string,
+    peerAddress: string,
+    preferredPeerHash?: string
+  ): void {
+    if (this.isClosed || !this.localDmAddresses.has(myAddress)) return;
+    const now = this.now();
+    const lastAt = this.lastOwnDeviceCatchupAt.get(conversationId) ?? 0;
+    if (lastAt + RETICULUM_CHAT_OWN_DEVICE_CATCHUP_MIN_INTERVAL_MS > now) {
+      return;
+    }
+    const ownPeers = this.ownDevicePeerHashesForCatchup();
+    if (ownPeers.length === 0) return;
+    const sourcePeerHash =
+      preferredPeerHash && ownPeers.includes(preferredPeerHash)
+        ? preferredPeerHash
+        : ownPeers[0];
+    this.lastOwnDeviceCatchupAt.set(conversationId, now);
+    if (this.lastOwnDeviceCatchupAt.size > 256) {
+      for (const [key, at] of this.lastOwnDeviceCatchupAt) {
+        if (now - at > 10 * 60_000) this.lastOwnDeviceCatchupAt.delete(key);
+      }
+    }
+    // `cursor:` with an unbounded timestamp bypasses the "already have"
+    // shortcuts, so the page request is made after our latest own event.
+    this.queueDirectMissingEvents({
+      conversationId,
+      addressA: myAddress,
+      addressB: peerAddress,
+      sourcePeerHash,
+      remoteEventId: 'cursor:own-device-catchup',
+      remoteTimestamp: Number.MAX_SAFE_INTEGER,
+      requestId: nodeCrypto.randomBytes(8).toString('hex'),
+    });
   }
 
   clearActiveDirectChats(): void {
@@ -10151,6 +10245,11 @@ export class ReticulumChatManager extends EventEmitter {
     for (const [conversationId, pref] of this.activeDmLinkPreferences) {
       if (pref.active && pref.expiresAt > this.now()) {
         void this.warmActiveDirectChatLink(conversationId, 'overlay-health');
+        this.scheduleOwnDeviceCatchup(
+          conversationId,
+          pref.localAddress,
+          pref.peerAddress
+        );
       }
     }
   }
@@ -28466,7 +28565,7 @@ export class ReticulumChatManager extends EventEmitter {
     const conversationId = reticulumDmConversationId(addressA, addressB);
     if (!conversationId || latest.conversationId !== conversationId)
       return null;
-    const sourcePeerHash = this.getLocalResourcePeerHash();
+    const sourcePeerHash = await this.ensureLocalResourcePeerHash();
     if (!sourcePeerHash) return null;
     const localAddress = this.localDmAddressForConversation(addressA, addressB);
     if (!localAddress) return null;
@@ -34906,6 +35005,23 @@ export class ReticulumChatManager extends EventEmitter {
     return this.normalizeResourcePeerHash(
       this.bridge?.getLocalDestinationHash?.()
     );
+  }
+
+  /**
+   * Bridges that learn their destination hash asynchronously (the mobile
+   * bridge attaches after python's `ready` frame) can be asked to refresh it
+   * before a signed control frame is built. Without this, `dm_notify` for a
+   * freshly sent DM is silently never constructed.
+   */
+  private async ensureLocalResourcePeerHash(): Promise<string | undefined> {
+    const existing = this.getLocalResourcePeerHash();
+    if (existing) return existing;
+    try {
+      await this.bridge?.getLocalIdentityPublicKeyBase64?.();
+    } catch {
+      /* identity refresh is best-effort */
+    }
+    return this.getLocalResourcePeerHash();
   }
 
   private normalizeResourcePeerHash(value: unknown): string | undefined {
