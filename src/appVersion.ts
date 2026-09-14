@@ -5,4 +5,4 @@
  * new APK is shipped, both go up together — the settings screen is how
  * someone checks which build they are running.
  */
-export const GO_VERSION = '0.0.8';
+export const GO_VERSION = '0.0.9';

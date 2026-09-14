@@ -2766,6 +2766,21 @@ const RETICULUM_CHAT_DM_NOTIFY_TTL_MS = 30_000;
 const RETICULUM_CHAT_DM_NOTIFY_MAX_HOPS = 5;
 const RETICULUM_CHAT_DM_PROBE_TTL_MS = 30_000;
 const RETICULUM_CHAT_DM_PROBE_MAX_HOPS = 5;
+// Local acceptance window for inbound dm_notify / dm_probe. Relaying stays
+// bounded by the 30 s TTL above, but a phone whose bridge stalled for a minute
+// still wants to act on a hint that is merely late: acting on it costs one
+// deduplicated page pull, ignoring it costs a 15 minute wait for the summary
+// safety net.
+const RETICULUM_CHAT_DM_TIMED_WIRE_ACCEPT_TTL_MS = 120_000;
+// Pending own DM events (recipient never pulled them) are re-announced with a
+// freshly signed notify on this backoff until they flip to `sent`.
+const RETICULUM_CHAT_DM_PENDING_SWEEP_MS = 20_000;
+const RETICULUM_CHAT_DM_PENDING_MIN_AGE_MS = 15_000;
+const RETICULUM_CHAT_DM_PENDING_MAX_AGE_MS = 2 * 60 * 60_000;
+const RETICULUM_CHAT_DM_PENDING_BACKOFF_BASE_MS = 20_000;
+const RETICULUM_CHAT_DM_PENDING_BACKOFF_MAX_MS = 5 * 60_000;
+const RETICULUM_CHAT_DM_PENDING_PER_SWEEP_MAX = 4;
+const RETICULUM_CHAT_DM_PENDING_PER_ADDRESS_MAX = 16;
 const RETICULUM_CHAT_DM_DISCOVERY_ROUTE_TTL_MS = 2 * 60_000;
 const RETICULUM_CHAT_DM_DISCOVERY_ROUTE_MAX = 4096;
 const RETICULUM_CHAT_DM_PROBE_REFRESH_MS = 5 * 60_000;
@@ -5819,7 +5834,7 @@ function reticulumDmNotifySignatureMaterial(
   if (!requestId || !sourcePeerHash) return null;
   if (!Number.isFinite(wire.n)) return null;
   if (wire.n > now + RETICULUM_CHAT_CONTROL_MAX_FUTURE_SKEW_MS) return null;
-  if (wire.n < now - RETICULUM_CHAT_DM_NOTIFY_TTL_MS) return null;
+  if (wire.n < now - RETICULUM_CHAT_DM_TIMED_WIRE_ACCEPT_TTL_MS) return null;
   if (latestCursor && !/^[A-Za-z0-9_-]{8,16}$/.test(latestCursor)) return null;
   if (
     !Number.isInteger(maxHops) ||
@@ -5884,7 +5899,7 @@ function reticulumDmProbeSignatureMaterial(
   if (!requestId) return null;
   if (!Number.isFinite(wire.n)) return null;
   if (wire.n > now + RETICULUM_CHAT_CONTROL_MAX_FUTURE_SKEW_MS) return null;
-  if (wire.n < now - RETICULUM_CHAT_DM_PROBE_TTL_MS) return null;
+  if (wire.n < now - RETICULUM_CHAT_DM_TIMED_WIRE_ACCEPT_TTL_MS) return null;
   if (
     !Number.isInteger(maxHops) ||
     maxHops < 0 ||
@@ -7687,6 +7702,11 @@ export class ReticulumChatManager extends EventEmitter {
   private forwardedLandControlKeys = new Map<string, number>();
   private lastForwardedLandControlPruneAt = 0;
   private dmDigestTimer: ReturnType<typeof setTimeout> | null = null;
+  private dmPendingDeliveryTimer: ReturnType<typeof setTimeout> | null = null;
+  private dmPendingDeliveryAttempts = new Map<
+    string,
+    { attempts: number; nextAttemptAt: number }
+  >();
   private dmDiscoveryInFlight = false;
   private pendingInitialDmDiscovery = false;
   private pendingDmNotifyDeliveries = new Map<
@@ -28434,6 +28454,7 @@ export class ReticulumChatManager extends EventEmitter {
   }
 
   private startDmDigestTimer(): void {
+    this.startDmPendingDeliverySweep();
     if (this.dmDigestTimer || this.isClosed) return;
     const jitter = Math.floor(
       Math.random() * RETICULUM_CHAT_DM_PROBE_REFRESH_JITTER_MS
@@ -28448,9 +28469,116 @@ export class ReticulumChatManager extends EventEmitter {
   }
 
   private stopDmDigestTimer(): void {
+    this.stopDmPendingDeliverySweep();
     if (!this.dmDigestTimer) return;
     clearTimeout(this.dmDigestTimer);
     this.dmDigestTimer = null;
+  }
+
+  /**
+   * Pending-delivery sweep.
+   *
+   * The live notify pipeline (direct send, gossip at 750 ms, full fallback at
+   * 3 s) is fire-and-forget: if every copy is lost or arrives past the
+   * receiver's 30 s TTL, nothing re-announces the event until the 15 minute
+   * summary refresh, and that only covers the newest event per conversation.
+   * A phone whose bridge stalls for a minute, or that is closed right after
+   * sending, hits that gap routinely. Delivery status is persisted, so this
+   * sweep re-signs and re-announces every own event still `pending` on an
+   * exponential backoff until the recipient pulls it (which flips it to
+   * `sent`) or it ages out.
+   */
+  private startDmPendingDeliverySweep(): void {
+    if (this.dmPendingDeliveryTimer || this.isClosed) return;
+    this.dmPendingDeliveryTimer = setTimeout(() => {
+      this.dmPendingDeliveryTimer = null;
+      void this.runDmPendingDeliverySweep().finally(() => {
+        if (!this.isClosed && this.localDmAddresses.size > 0) {
+          this.startDmPendingDeliverySweep();
+        }
+      });
+    }, RETICULUM_CHAT_DM_PENDING_SWEEP_MS);
+    this.dmPendingDeliveryTimer.unref?.();
+  }
+
+  private stopDmPendingDeliverySweep(): void {
+    if (this.dmPendingDeliveryTimer) {
+      clearTimeout(this.dmPendingDeliveryTimer);
+      this.dmPendingDeliveryTimer = null;
+    }
+    this.dmPendingDeliveryAttempts.clear();
+  }
+
+  private async runDmPendingDeliverySweep(): Promise<void> {
+    if (this.isClosed || this.localDmAddresses.size === 0) return;
+    if (!this.isOverlayHealthyForDmDiscovery()) return;
+    const now = this.now();
+    const accountGeneration = this.localAccountGeneration;
+    const seen = new Set<string>();
+    let announced = 0;
+    for (const localAddress of this.localDmAddresses) {
+      let pendingEvents: ReticulumDmEvent[];
+      try {
+        pendingEvents = this.db.listPendingOwnDirectEvents(
+          localAddress,
+          now - RETICULUM_CHAT_DM_PENDING_MAX_AGE_MS,
+          RETICULUM_CHAT_DM_PENDING_PER_ADDRESS_MAX,
+          now
+        );
+      } catch (err) {
+        loggerWarn(
+          `[ReticulumChat] dm_pending_sweep_failed reason=${err instanceof Error ? err.message : String(err)}`
+        );
+        return;
+      }
+      for (const event of pendingEvents) {
+        seen.add(event.eventId);
+        if (announced >= RETICULUM_CHAT_DM_PENDING_PER_SWEEP_MAX) continue;
+        // Give the live pipeline (and its bridge round trips) time to finish
+        // before treating a fresh event as undelivered.
+        if (now - event.timestamp < RETICULUM_CHAT_DM_PENDING_MIN_AGE_MS)
+          continue;
+        if (!this.acceptsDirectConversation(event)) continue;
+        const state = this.dmPendingDeliveryAttempts.get(event.eventId) ?? {
+          attempts: 0,
+          nextAttemptAt: 0,
+        };
+        if (state.nextAttemptAt > now) continue;
+        state.attempts += 1;
+        const backoff = Math.min(
+          RETICULUM_CHAT_DM_PENDING_BACKOFF_MAX_MS,
+          RETICULUM_CHAT_DM_PENDING_BACKOFF_BASE_MS *
+            2 ** Math.min(8, state.attempts - 1)
+        );
+        state.nextAttemptAt =
+          now + backoff + Math.floor(Math.random() * (backoff / 4));
+        this.dmPendingDeliveryAttempts.set(event.eventId, state);
+        announced += 1;
+        loggerLog(
+          `[ReticulumChat] dm_pending_redeliver event=${event.eventId.slice(0, 12)} conversation=${event.conversationId.slice(0, 16)} attempt=${state.attempts} age_ms=${now - event.timestamp}`
+        );
+        try {
+          await this.announceDirectNotifyForEvent(
+            event,
+            [],
+            this.getPreferredDirectPeerHashes(
+              event.senderAddress,
+              event.recipientAddress
+            )
+          );
+        } catch (err) {
+          loggerWarn(
+            `[ReticulumChat] dm_pending_redeliver_failed event=${event.eventId.slice(0, 12)} reason=${err instanceof Error ? err.message : String(err)}`
+          );
+        }
+        if (this.isClosed || accountGeneration !== this.localAccountGeneration)
+          return;
+      }
+    }
+    // Forget events that were delivered, expired, or aged out of the window.
+    for (const eventId of [...this.dmPendingDeliveryAttempts.keys()]) {
+      if (!seen.has(eventId)) this.dmPendingDeliveryAttempts.delete(eventId);
+    }
   }
 
   private isOverlayHealthyForDmDiscovery(): boolean {
@@ -43363,6 +43491,13 @@ export class ReticulumChatManager extends EventEmitter {
           this.dropControlRetry(item, false);
           continue;
         }
+        if (this.isTimedControlWireStale(item.wire, now)) {
+          // The receiver rejects notify/probe wires older than their TTL.
+          // Re-sending the same signed copy can only waste radio time; the
+          // pending-delivery sweep re-signs a fresh notify instead.
+          this.dropControlRetry(item, true);
+          continue;
+        }
         const attemptedWire = item.wire;
         const attemptedPayloadHash = this.hashControlPayload(attemptedWire);
         item.attempts += 1;
@@ -43414,6 +43549,29 @@ export class ReticulumChatManager extends EventEmitter {
         this.scheduleControlRetryQueue(RETICULUM_CHAT_CONTROL_RETRY_TICK_MS);
       }
     }
+  }
+
+  private isTimedControlWireStale(
+    wire: ReticulumChatWire,
+    now: number
+  ): boolean {
+    // Leave a few seconds of headroom for bridge queueing and transit.
+    const margin = 5_000;
+    if (wire.k === 'dm_notify') {
+      const stamp = Number(wire.d?.n);
+      return (
+        Number.isFinite(stamp) &&
+        stamp < now - (RETICULUM_CHAT_DM_NOTIFY_TTL_MS - margin)
+      );
+    }
+    if (wire.k === 'dm_probe') {
+      const stamp = Number(wire.q?.n);
+      return (
+        Number.isFinite(stamp) &&
+        stamp < now - (RETICULUM_CHAT_DM_PROBE_TTL_MS - margin)
+      );
+    }
+    return false;
   }
 
   private controlRetryMaxAttempts(wire: ReticulumChatWire): number {

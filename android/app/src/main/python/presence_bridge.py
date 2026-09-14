@@ -5746,11 +5746,22 @@ def _scheduler_lane_for_command(
     message: Optional[Dict[str, Any]] = None,
 ) -> str:
     action_name = str(action or "")
-    if action_name == "send_reticulum_chat":
+    if action_name in {"send_reticulum_chat", "send_reticulum_chat_targets"}:
         payload = message.get("payload") if isinstance(message, dict) else None
         wire = payload.get("message") if isinstance(payload, dict) else None
         kind = str(wire.get("k") or "") if isinstance(wire, dict) else ""
         if kind in _DM_CONTROL_WIRE_KINDS:
+            return "dm-control"
+    if action_name == "fanout_reticulum_chat":
+        # DM notify gossip / probes / full fallback ride the fanout command.
+        # Keep them off the deep control-send lane, whose dwell time on a busy
+        # phone can exceed the 30 s notify TTL enforced by the receiving Hub.
+        payload = message.get("payload") if isinstance(message, dict) else None
+        wires = payload.get("messages") if isinstance(payload, dict) else None
+        if isinstance(wires, list) and wires and all(
+            isinstance(wire, dict) and str(wire.get("k") or "") in _DM_CONTROL_WIRE_KINDS
+            for wire in wires
+        ):
             return "dm-control"
     if action_name in {"clear_group_audio_diagnostics"}:
         return "control-send"
@@ -5798,6 +5809,59 @@ def _scheduler_lane_for_command(
             return "dm-page"
         return "resource-control"
     return "control-send"
+
+
+# Receivers reject dm_notify / dm_probe wires whose signed timestamp is older
+# than 30 s. A wire that already aged past this bound while queued on the
+# phone is dead on arrival; refusing it here lets the engine re-sign a fresh
+# one instead of burning radio time and retry budget on a guaranteed reject.
+_DM_TIMED_WIRE_MAX_AGE_MS = 25_000
+
+
+def _reticulum_chat_wire_signed_timestamp_ms(msg: Any) -> Optional[int]:
+    if not isinstance(msg, dict):
+        return None
+    kind = str(msg.get("k") or "")
+    if kind == "dm_notify":
+        body = msg.get("d")
+    elif kind == "dm_probe":
+        body = msg.get("q")
+    else:
+        return None
+    if not isinstance(body, dict):
+        return None
+    stamp = body.get("n")
+    if isinstance(stamp, bool) or not isinstance(stamp, (int, float)):
+        return None
+    try:
+        value = int(stamp)
+    except Exception:
+        return None
+    return value if value > 0 else None
+
+
+def _reticulum_chat_wire_is_stale(msg: Any, now_ms: Optional[int] = None) -> bool:
+    stamp = _reticulum_chat_wire_signed_timestamp_ms(msg)
+    if stamp is None:
+        return False
+    current = _now_wall_ms() if now_ms is None else int(now_ms)
+    return current - stamp > _DM_TIMED_WIRE_MAX_AGE_MS
+
+
+def _emit_stale_wire_resp(req_id: str, msg: Any) -> None:
+    stamp = _reticulum_chat_wire_signed_timestamp_ms(msg) or 0
+    age_ms = max(0, _now_wall_ms() - stamp) if stamp else 0
+    kind = str(msg.get("k") or "") if isinstance(msg, dict) else ""
+    log(
+        "[presence_bridge] target=reticulum-chat stale_wire_dropped "
+        f"kind={kind} age_ms={age_ms}"
+    )
+    emit_resp(
+        req_id,
+        False,
+        payload={"code": "stale_wire", "kind": kind, "ageMs": age_ms},
+        error="Reticulum chat wire expired before it could be sent",
+    )
 
 
 _DM_CONTROL_WIRE_KINDS = frozenset(
@@ -25857,6 +25921,9 @@ def handle_send_reticulum_chat(req_id: str, payload: Dict[str, Any]) -> None:
         return
 
     peer_key = peer_hash.strip().lower()
+    if _reticulum_chat_wire_is_stale(msg):
+        _emit_stale_wire_resp(req_id, msg)
+        return
     try:
         encoded = _encode_group_signal_wire(msg)
         if not encoded.get("ok"):
@@ -25927,6 +25994,9 @@ def handle_send_reticulum_chat_targets(req_id: str, payload: Dict[str, Any]) -> 
             payload={"code": "bridge_not_started"},
             error="Bridge not started",
         )
+        return
+    if _reticulum_chat_wire_is_stale(msg):
+        _emit_stale_wire_resp(req_id, msg)
         return
     try:
         encoded = _encode_group_signal_wire(msg)
@@ -26001,6 +26071,11 @@ def handle_fanout_reticulum_chat(req_id: str, payload: Dict[str, Any]) -> None:
         if isinstance(exclude_raw, list)
         else []
     )
+
+    if any(_reticulum_chat_wire_is_stale(msg) for msg in messages):
+        stale = next(msg for msg in messages if _reticulum_chat_wire_is_stale(msg))
+        _emit_stale_wire_resp(req_id, stale)
+        return
 
     try:
         encoded_frames = []

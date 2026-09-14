@@ -3466,6 +3466,37 @@ export class ReticulumChatDatabase {
     return row ? rowToDirectEvent(row) : null;
   }
 
+  /**
+   * Own outbound DM events the recipient has not pulled yet. Self-DMs are
+   * excluded: they are marked `sent` at publish time and synced by the
+   * own-device path.
+   */
+  listPendingOwnDirectEvents(
+    senderAddress: string,
+    sinceTimestamp: number,
+    limit = 16,
+    now = Date.now()
+  ): ReticulumDmEvent[] {
+    const sender = String(senderAddress || '').trim();
+    if (!sender) return [];
+    const safeLimit = Math.max(1, Math.min(64, Math.floor(Number(limit) || 16)));
+    const since = Math.max(0, Math.floor(Number(sinceTimestamp) || 0));
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM rchat_dm_events
+         WHERE delivery_status = 'pending'
+           AND sender_address = ?
+           AND recipient_address != sender_address
+           AND own_event = 1
+           AND timestamp >= ?
+           AND (expires_at IS NULL OR expires_at > ?)
+         ORDER BY timestamp DESC, event_id DESC
+         LIMIT ?`
+      )
+      .all(sender, since, now, safeLimit) as DirectEventRow[];
+    return rows.map(rowToDirectEvent);
+  }
+
   isDirectEventDeleted(eventId: string): boolean {
     if (!eventId) return false;
     return !!this.db
@@ -14818,6 +14849,12 @@ export class ReticulumChatDatabase {
         ALTER TABLE rchat_dm_events
           ADD COLUMN delivery_updated_at INTEGER NOT NULL DEFAULT 0
       `
+    );
+    // Backs the pending-delivery sweep; created after the column is
+    // guaranteed to exist so legacy databases migrate cleanly.
+    this.db.exec(
+      `CREATE INDEX IF NOT EXISTS idx_rchat_dm_events_pending_delivery
+         ON rchat_dm_events (delivery_status, sender_address, timestamp)`
     );
   }
 

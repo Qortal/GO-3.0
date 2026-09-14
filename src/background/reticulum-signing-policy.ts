@@ -439,6 +439,19 @@ const rchatSchemas: Readonly<Record<string, SigningSchema>> = {
     'providerPeerHash',
     'timestamp',
   ]),
+  // Hub 3.0.3 manifest-based group history repair. Without this entry the
+  // engine's manifest requests fail to sign and repair falls back to the
+  // slower range path.
+  RCHAT_AUTHOR_MANIFEST_REQUEST: schema([
+    'type',
+    'transferId',
+    'groupId',
+    'root',
+    'baseRoot',
+    'requesterPeerHash',
+    'providerPeerHash',
+    'timestamp',
+  ]),
   RCHAT_RESOURCE_AUTH: schema(['type', 'groupId', 'timestamp', 'transferId']),
   RCHAT_GROUP_KEY_DIGEST: schema([
     'type',

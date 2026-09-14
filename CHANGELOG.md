@@ -9,6 +9,28 @@ desktop Hub. The format is based on
 
 ---
 
+## [0.0.9] — 2026-09-14 (GO 3.0)
+
+Field / Q-Share build **GO 3.0 v0.0.9** (`versionName` 0.0.9, `versionCode` 12).
+
+### Fixed
+
+- **DM delivery when the phone is busy or closed quickly** _(mobile)_ — a
+  message sent from GO could sit for minutes on Hub, or never arrive if you
+  closed the app right after send. The notify packet is only valid for 30
+  seconds; if the phone's radio queue stalled, Hub rejected it as stale and
+  nothing retried. GO now re-announces undelivered DMs with a fresh signature
+  until the other side pulls them (survives restart), drops dead notify
+  copies instead of retrying them, and still acts on a late inbound hint
+  instead of waiting for the 15-minute summary.
+- **DM traffic off the crowded send lane** _(mobile)_ — DM notify / probe
+  fanout no longer waits behind group traffic. Wires that already aged out
+  are refused locally so a new signed copy can go out.
+- **Group history signing** _(mobile)_ — Hub 3.0.3 author-manifest repair
+  requests can be signed again (`RCHAT_AUTHOR_MANIFEST_REQUEST`).
+
+---
+
 ## [0.0.8] — 2026-09-14 (GO 3.0)
 
 Field / Q-Share build **GO 3.0 v0.0.8** (`versionName` 0.0.8, `versionCode` 11).
