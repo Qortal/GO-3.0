@@ -66,6 +66,7 @@ import {
   subscribeToEvent,
   unsubscribeFromEvent,
 } from '../../utils/events';
+import { coreWebsocketPingMs } from '../../utils/coreWebsocketPing';
 import {
   getChatDraft,
   setChatDraft,
@@ -208,6 +209,7 @@ import {
 } from './reticulumInitialHistory';
 import { normalizeReticulumChatHtmlContent } from './reticulumMessageHtml';
 import { mergeReticulumPayloadWithVerifiedEnvelope } from '../../utils/reticulumEventEnvelope';
+import { describeSignerMismatch } from '../../utils/reticulumSignerMismatch';
 import {
   buildReticulumMessageExpiryPayload,
   formatReticulumExpiryDuration,
@@ -4246,7 +4248,10 @@ export const ChatGroup = ({
       try {
         if (e.data === 'pong') {
           clearTimeout(timeoutIdRef.current);
-          groupSocketTimeoutRef.current = setTimeout(pingGroupSocket, 20000); // Ping every 20 seconds
+          groupSocketTimeoutRef.current = setTimeout(
+            pingGroupSocket,
+            coreWebsocketPingMs()
+          );
         } else {
           middletierFunc(JSON.parse(e.data), selectedGroup);
           setIsLoading(false);
@@ -4487,7 +4492,9 @@ export const ChatGroup = ({
           );
         }
         if (signed.authorAddress !== myAddress) {
-          throw new Error('Signed Reticulum chat author mismatch');
+          throw new Error(
+            describeSignerMismatch(signed, myAddress, 'Reticulum chat')
+          );
         }
         const event = {
           ...baseFields,
@@ -6190,7 +6197,7 @@ export const ChatGroup = ({
       }
       if (isPrivate === null)
         throw new Error(
-          t('group:message.error:determine_group_private', {
+          t('group:message.error.unable_determine_group_private', {
             postProcess: 'capitalizeFirstChar',
           })
         );
@@ -7004,7 +7011,7 @@ export const ChatGroup = ({
         if (isSending) return;
         if (isPrivate === null)
           throw new Error(
-            t('group:message.error:determine_group_private', {
+            t('group:message.error.unable_determine_group_private', {
               postProcess: 'capitalizeFirstChar',
             })
           );
@@ -10681,7 +10688,7 @@ export const ChatGroup = ({
                       : '16px 20px 20px',
                     paddingBottom:
                       reticulumChatEnabled && isMobile
-                        ? 'max(6px, env(safe-area-inset-bottom, 0px))'
+                        ? 'max(6px, var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px)))'
                         : undefined,
                     position:
                       isFocusedParent && !isMobile ? 'fixed' : 'relative',

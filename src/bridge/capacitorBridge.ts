@@ -75,6 +75,8 @@ export function installCapacitorBridge(): void {
     return;
   }
 
+  guardBlobWindowOpen();
+
   // Hide the native splash immediately. The launch window is just a solid dark
   // color (no logo), and the in-app HTML splash already covers the WebView, so
   // there's nothing to wait for and no old-logo flash to bridge.
@@ -134,6 +136,30 @@ export function installCapacitorBridge(): void {
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') scheduleWebViewReflow();
   });
+}
+
+/**
+ * `window.open` of a `blob:` / `data:` URL does not open a new window in the
+ * Capacitor WebView: it navigates the app itself to the raw bytes, leaving the
+ * user on a bare page with no close, no share and a dead back button. Route
+ * those to the in-app file viewer instead; everything else is untouched.
+ */
+function guardBlobWindowOpen(): void {
+  const nativeOpen = window.open.bind(window);
+  window.open = ((
+    url?: string | URL,
+    target?: string,
+    features?: string
+  ): Window | null => {
+    const href = url == null ? '' : String(url).trim();
+    if (/^(blob|data):/i.test(href)) {
+      void import('../utils/fileViewerEvents')
+        .then(({ openFileViewer }) => openFileViewer({ url: href }))
+        .catch(() => {});
+      return null;
+    }
+    return nativeOpen(url, target, features);
+  }) as typeof window.open;
 }
 
 const WEBVIEW_REFLOW_DEBOUNCE_MS = 400;
@@ -217,7 +243,16 @@ export type MobileReticulumStatus = {
   p2pReceivingOverlayPeers: number;
   /** How long that set has been continuously non-empty. */
   p2pReceivingOverlayPeersStableMs: number;
-  bridgeState: 'starting' | 'ready';
+  bridgeState: 'starting' | 'ready' | 'failed';
+  /**
+   * Why the Python presence bridge is not running, when it is not. Until this
+   * existed a bridge that failed to boot (Chaquopy could not load a native
+   * module, the host thread died, …) only left a line in logcat while the
+   * badge kept saying "starting"; every chat send then failed with unrelated
+   * looking errors. Shown in the Reticulum badge so a field report carries
+   * the real cause.
+   */
+  bridgeError: string | null;
 };
 
 let mobileReticulumStatus: MobileReticulumStatus | null = null;
@@ -240,6 +275,38 @@ export const onMobileReticulumStatus = (
   return () => mobileReticulumStatusCbs.delete(cb);
 };
 
+/**
+ * Turns a bridge boot failure into the text shown in the Reticulum badge.
+ *
+ * The Python bridge is an embedded CPython whose extension modules (`_ssl`,
+ * `cryptography`'s `_rust.so`, cffi, …) Chaquopy extracts into the app's data
+ * directory and `dlopen`s at import time. Hardened Android builds can forbid
+ * exactly that ("dynamic code loading from storage" on GrapheneOS), and the
+ * loader error is the only trace of it. Recognise those errors so the message
+ * points at the setting instead of leaving the user with a dead chat.
+ */
+const describePresenceBridgeFailure = (raw: unknown): string => {
+  const text =
+    raw instanceof Error
+      ? raw.message
+      : typeof raw === 'string'
+        ? raw
+        : raw && typeof raw === 'object' && 'message' in raw
+          ? String((raw as { message?: unknown }).message ?? '')
+          : String(raw ?? '');
+  const compact = text.replace(/\s+/g, ' ').trim().slice(0, 400);
+  const nativeLoadFailure =
+    /dlopen|cannot locate symbol|library ".*" not found|Permission denied|EACCES|ImportError|No module named|_rust|_cffi_backend|_ssl|chaquopy/i.test(
+      compact
+    );
+  const base = compact
+    ? `Reticulum bridge failed to start: ${compact}`
+    : 'Reticulum bridge failed to start';
+  return nativeLoadFailure
+    ? `${base} — the app could not load its bundled Python/crypto libraries. On GrapheneOS open App info → Exploit protection for Qortal GO and allow "Dynamic code loading" (memory and storage), then restart the app.`
+    : base;
+};
+
 const publishMobileReticulumStatus = (next: MobileReticulumStatus): void => {
   const prev = mobileReticulumStatus;
   // Stability is a continuously rising number, so compare the threshold
@@ -252,7 +319,8 @@ const publishMobileReticulumStatus = (next: MobileReticulumStatus): void => {
     prev.p2pActiveOverlayPeers === next.p2pActiveOverlayPeers &&
     prev.p2pReceivingOverlayPeers === next.p2pReceivingOverlayPeers &&
     settled(prev) === settled(next) &&
-    prev.bridgeState === next.bridgeState
+    prev.bridgeState === next.bridgeState &&
+    prev.bridgeError === next.bridgeError
   ) {
     return;
   }
@@ -941,6 +1009,10 @@ export function installReticulumBridges(): void {
 
   const startedCallbacks = new Set<() => void>();
   let bridgeReady = false;
+  // Last fatal bridge failure (native start rejected, Python host thread
+  // died). Cleared by the next `ready` frame. Surfaced through the status
+  // object so the Reticulum badge can show it.
+  let bridgeError: string | null = null;
   let bridgeStartPromise: Promise<void> | null = null;
   let frameListenerAttached = false;
   // Resolvers waiting for the Python bridge `ready` frame. ensureBridgeStarted
@@ -1155,14 +1227,28 @@ export function installReticulumBridges(): void {
       p2pReceivingOverlayPeersStableMs: receivingSinceMs
         ? now - receivingSinceMs
         : 0,
-      bridgeState: bridgeReady ? 'ready' : 'starting',
+      bridgeState: bridgeReady ? 'ready' : bridgeError ? 'failed' : 'starting',
+      bridgeError: bridgeReady ? null : bridgeError,
     });
   };
 
   // Tell the bridge which discovered peers to fan presence out to. Debounced,
   // single-flight, and re-run if state changed while a sync was in flight.
+  // An unchanged neighbor set is already a no-op on the Python side; skip
+  // the JNI hop unless the list changed or the last push is stale.
+  let lastOverlaySyncKey = '';
+  let lastOverlaySyncAt = 0;
   const pushOverlaySync = async (): Promise<void> => {
     if (!bridgeReady) return;
+    const overlayKey = `${neighborList().join(',')}|${overlaySyncAccountLeases().length}`;
+    const minMs =
+      typeof document !== 'undefined' && document.hidden ? 60_000 : 20_000;
+    if (
+      overlayKey === lastOverlaySyncKey &&
+      Date.now() - lastOverlaySyncAt < minMs
+    ) {
+      return;
+    }
     if (syncInFlight) {
       syncQueuedAgain = true;
       return;
@@ -1178,6 +1264,8 @@ export function installReticulumBridges(): void {
           accountEndpointLeases,
         },
       });
+      lastOverlaySyncKey = overlayKey;
+      lastOverlaySyncAt = Date.now();
     } catch (err) {
       console.error('[Presence] overlay_sync_state failed:', err);
     } finally {
@@ -1703,8 +1791,28 @@ export function installReticulumBridges(): void {
       }
     }
     switch (frame.event) {
+      case 'error': {
+        // qortal_presence_host emits this when presence_bridge.main() dies.
+        // Without it the badge stayed on "starting" forever and every chat
+        // call failed with a generic timeout.
+        const errPayload = asObject(frame.payload);
+        if (asString(errPayload?.code) === 'host_fatal') {
+          bridgeReady = false;
+          bridgeError = describePresenceBridgeFailure(
+            asString(errPayload?.message) || 'Python bridge exited'
+          );
+          console.error(
+            '[Presence] bridge host fatal:',
+            errPayload?.message,
+            errPayload?.detail
+          );
+          refreshMobileStatus();
+        }
+        break;
+      }
       case 'ready': {
         bridgeReady = true;
+        bridgeError = null;
         // Release anyone awaiting ensureBridgeStarted's readiness gate.
         [...bridgeReadyResolvers].forEach((resolve) => {
           try {
@@ -1870,6 +1978,8 @@ export function installReticulumBridges(): void {
         await waitForBridgeReady(30_000);
       } catch (err) {
         console.error('[Presence] presenceStart failed:', err);
+        bridgeError = describePresenceBridgeFailure(err);
+        refreshMobileStatus();
         bridgeStartPromise = null; // allow retry on next announce
       }
     })();
@@ -1963,6 +2073,15 @@ export function installReticulumBridges(): void {
       console.error('[Presence] publish failed:', err);
       return { success: false };
     }
+  };
+
+  // Developer diagnostics reachable from remote devtools (logcat is muted on
+  // some vendor builds): `await __qgoBridgeDiag.threadReport()` returns the
+  // Python bridge's per-thread CPU report, tids matching /proc/<pid>/task.
+  (window as unknown as Record<string, unknown>).__qgoBridgeDiag = {
+    threadReport: () =>
+      presenceCommandWithResult('debug_thread_report', {}, 15_000),
+    wireMix: () => presenceCommandWithResult('debug_wire_mix', {}, 15_000),
   };
 
   window.presence = {
@@ -2146,10 +2265,19 @@ export function installReticulumBridges(): void {
       return { success: true };
     },
     setLocalAddresses: async (addresses: string[]) => {
-      callLocalAddresses.clear();
+      const next = new Set<string>();
       for (const a of addresses) {
-        if (typeof a === 'string' && a) callLocalAddresses.add(a);
+        if (typeof a === 'string' && a) next.add(a);
       }
+      // useVoiceCall re-asserts this every 2.5 s as a bridge-restart guard.
+      // On mobile the set lives in this same JS context, so an unchanged set
+      // needs no work (and no logcat line).
+      const unchanged =
+        next.size === callLocalAddresses.size &&
+        [...next].every((a) => callLocalAddresses.has(a));
+      if (unchanged) return { success: true };
+      callLocalAddresses.clear();
+      for (const a of next) callLocalAddresses.add(a);
       console.log('[Call] setLocalAddresses', [...callLocalAddresses]);
       flushPendingIncoming();
       return { success: true };
@@ -3190,24 +3318,46 @@ export function installReticulumBridges(): void {
 
   // p2pHealth only flips to 'good' once the receiving-peer set has been stable
   // for 30 s, so republish on a tighter cadence than the lease sweep below or
-  // the call buttons stay disabled far longer than they need to.
-  setInterval(refreshMobileStatus, 5_000);
+  // the call buttons stay disabled far longer than they need to. Once settled
+  // (or the screen is off) a slower tick is enough — visibilitychange below
+  // snaps back to fresh numbers the moment the user looks at the app.
+  let statusRefreshTimer: ReturnType<typeof setInterval> | null = null;
+  const armStatusRefresh = (): void => {
+    if (statusRefreshTimer != null) {
+      window.clearInterval(statusRefreshTimer);
+      statusRefreshTimer = null;
+    }
+    if (typeof document !== 'undefined' && document.hidden) return;
+    const settled =
+      receivingSinceMs != null &&
+      Date.now() - receivingSinceMs >= P2P_HEALTH_RECEIVING_STABLE_MS;
+    statusRefreshTimer = window.setInterval(
+      refreshMobileStatus,
+      settled ? 15_000 : 5_000
+    );
+  };
+  armStatusRefresh();
 
   // Android throttles WebView timers while backgrounded, so after a wake the
   // bridge can be running on a neighbour list the sweep below won't refresh for
   // another 20 s. Chat subscription fanouts fail outright with no route in that
   // window, so re-sync the overlay as soon as the app is in front again.
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState !== 'visible') return;
-    refreshMobileStatus();
-    if (bridgeReady) void pushOverlaySync();
+    if (document.visibilityState === 'visible') {
+      refreshMobileStatus();
+      if (bridgeReady) void pushOverlaySync();
+    }
+    armStatusRefresh();
   });
 
-  // Keep the bridge's neighbour leases warm (30 s grace window) and prune
-  // expired online entries so the UI doesn't show stale peers.
+  // Keep the bridge's neighbour leases warm (90 s grace) and prune expired
+  // online entries so the UI doesn't show stale peers. Hidden WebView timers
+  // are already throttled; skip the work — Python keeps the last neighbor set.
   setInterval(() => {
+    if (typeof document !== 'undefined' && document.hidden) return;
     if (bridgeReady && neighborHashes.size > 0) void pushOverlaySync();
     refreshMobileStatus();
+    armStatusRefresh();
     const before = onlineByAddress.size;
     const live = liveSessions();
     if (live.length !== before) {

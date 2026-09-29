@@ -63,6 +63,7 @@ import {
 import { useAndroidBack, BACK_PRIORITY } from '../../utils/androidBack';
 import { WebSocketActive } from './WebsocketActive';
 import { WebSocketNotifications } from './WebsocketNotifications';
+import { NotificationStateSync } from '../App/NotificationStateSync';
 import {
   getGroupAdmins,
   getGroupMembers,
@@ -2146,6 +2147,7 @@ export const Group = ({
   useEffect(() => {
     if (!reticulumChatEnabled || !myAddress) return;
     const timer = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
       scheduleReticulumDirectSummariesRefresh();
     }, 30_000);
     return () => {
@@ -6037,6 +6039,7 @@ export const Group = ({
         myAddress={userInfo?.address || myAddress}
         userName={userInfo?.name}
       />
+      <NotificationStateSync myAddress={userInfo?.address || myAddress} />
       <WebSocketActive
         myAddress={myAddress}
         setIsLoadingGroups={setIsLoadingGroups}

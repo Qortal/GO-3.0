@@ -395,6 +395,26 @@ export type ReticulumChatPendingDeviceReadState = Omit<
   'signedAt' | 'authorPublicKey' | 'signature'
 > & { updatedAt: number };
 
+export type ReticulumChatDeviceStateRecord = {
+  ownerAddress: string;
+  key: string;
+  value: string | null; // null = tombstone
+  signedAt: number;
+  expiresAt: number | null;
+  authorPublicKey: string;
+  signature: string;
+};
+
+export type ReticulumChatPendingDeviceState = {
+  ownerAddress: string;
+  key: string;
+  value: string | null;
+  expiresAt: number | null;
+  updatedAt: number;
+};
+
+const RETICULUM_CHAT_DEVICE_STATE_TOMBSTONE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
 export type ReticulumChatSearchResult = {
   event: ReticulumChatEvent;
   snippet: string;
@@ -3479,7 +3499,10 @@ export class ReticulumChatDatabase {
   ): ReticulumDmEvent[] {
     const sender = String(senderAddress || '').trim();
     if (!sender) return [];
-    const safeLimit = Math.max(1, Math.min(64, Math.floor(Number(limit) || 16)));
+    const safeLimit = Math.max(
+      1,
+      Math.min(64, Math.floor(Number(limit) || 16))
+    );
     const since = Math.max(0, Math.floor(Number(sinceTimestamp) || 0));
     const rows = this.db
       .prepare(
@@ -3578,6 +3601,38 @@ export class ReticulumChatDatabase {
       .all(
         normalized,
         Math.max(0, Math.floor(afterTimestamp || 0)),
+        now,
+        safeLimit
+      ) as DirectEventRow[];
+    return rows.map(rowToDirectEvent);
+  }
+
+  /** Events with fromExclusive < timestamp <= toInclusive, oldest first. */
+  getDirectEventsBetween(
+    conversationId: string,
+    fromExclusive: number,
+    toInclusive: number,
+    limit = 50
+  ): ReticulumDmEvent[] {
+    const normalized = normalizeReticulumDmConversationId(conversationId);
+    if (!normalized) return [];
+    const safeLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+    const now = Date.now();
+    this.pruneExpiredDirectMessagesThrottled(now);
+    const rows = this.db
+      .prepare(
+        `
+        SELECT * FROM rchat_dm_events
+        WHERE conversation_id = ? AND timestamp > ? AND timestamp <= ?
+          AND (expires_at IS NULL OR expires_at > ?)
+        ORDER BY timestamp ASC, event_id ASC
+        LIMIT ?
+      `
+      )
+      .all(
+        normalized,
+        Math.max(0, Math.floor(fromExclusive || 0)),
+        Math.max(0, Math.floor(toInclusive || 0)),
         now,
         safeLimit
       ) as DirectEventRow[];
@@ -4324,6 +4379,424 @@ export class ReticulumChatDatabase {
            AND up_to_timestamp <= ?`
       )
       .run(ownerAddress, scopeType, scopeId, upToTimestamp);
+  }
+
+  private mapDeviceStateRow(row: {
+    owner_address: string;
+    key: string;
+    value?: string | null;
+    signed_at: number;
+    expires_at?: number | null;
+    author_public_key: string;
+    signature: string;
+  }): ReticulumChatDeviceStateRecord {
+    return {
+      ownerAddress: String(row.owner_address),
+      key: String(row.key),
+      value: row.value == null ? null : String(row.value),
+      signedAt: Number(row.signed_at) || 0,
+      expiresAt: row.expires_at == null ? null : Number(row.expires_at) || 0,
+      authorPublicKey: String(row.author_public_key),
+      signature: String(row.signature),
+    };
+  }
+
+  private normalizeDeviceStateExpiresAt(
+    expiresAt: unknown
+  ): number | null | undefined {
+    if (expiresAt == null) return null;
+    const value = Math.floor(Number(expiresAt));
+    if (!Number.isFinite(value) || value <= 0) return undefined;
+    return value;
+  }
+
+  upsertDeviceState(record: ReticulumChatDeviceStateRecord): boolean {
+    const ownerAddress = String(record.ownerAddress || '').trim();
+    const key = String(record.key || '');
+    const signedAt = Math.floor(Number(record.signedAt));
+    const expiresAt = this.normalizeDeviceStateExpiresAt(record.expiresAt);
+    const value = record.value == null ? null : String(record.value);
+    if (
+      !ownerAddress ||
+      !key ||
+      !Number.isFinite(signedAt) ||
+      signedAt <= 0 ||
+      expiresAt === undefined ||
+      !record.authorPublicKey ||
+      !record.signature
+    ) {
+      return false;
+    }
+    const result = this.db
+      .prepare(
+        `
+        INSERT INTO rchat_device_state
+          (owner_address, key, value, signed_at, expires_at,
+           author_public_key, signature)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(owner_address, key) DO UPDATE SET
+          value = excluded.value,
+          signed_at = excluded.signed_at,
+          expires_at = excluded.expires_at,
+          author_public_key = excluded.author_public_key,
+          signature = excluded.signature
+        WHERE excluded.signed_at > rchat_device_state.signed_at
+      `
+      )
+      .run(
+        ownerAddress,
+        key,
+        value,
+        signedAt,
+        expiresAt,
+        record.authorPublicKey,
+        record.signature
+      );
+    return result.changes > 0;
+  }
+
+  getDeviceState(
+    ownerAddress: string,
+    key: string
+  ): ReticulumChatDeviceStateRecord | null {
+    const owner = String(ownerAddress || '').trim();
+    const normalizedKey = String(key || '');
+    if (!owner || !normalizedKey) return null;
+    const row = this.db
+      .prepare(
+        `SELECT * FROM rchat_device_state
+         WHERE owner_address = ? AND key = ?
+         LIMIT 1`
+      )
+      .get(owner, normalizedKey) as
+      | Parameters<ReticulumChatDatabase['mapDeviceStateRow']>[0]
+      | undefined;
+    return row ? this.mapDeviceStateRow(row) : null;
+  }
+
+  getDeviceStates(
+    ownerAddress: string,
+    keyPrefix?: string,
+    limit = 5_000
+  ): ReticulumChatDeviceStateRecord[] {
+    const owner = String(ownerAddress || '').trim();
+    if (!owner) return [];
+    const safeLimit = Math.max(1, Math.min(5_000, Math.floor(limit || 5_000)));
+    // Exact-case prefix match: keys are case-sensitive ASCII and SQLite's
+    // LIKE folds ASCII case by default. `key >= ?` lets the primary key
+    // index seek to the prefix; `substr` (characters) bounds it.
+    const prefix = String(keyPrefix || '');
+    const now = Date.now();
+    const rows = (
+      prefix
+        ? this.db
+            .prepare(
+              `
+              SELECT *
+              FROM rchat_device_state
+              WHERE owner_address = ?
+                AND key >= ?
+                AND substr(key, 1, ?) = ?
+                AND (expires_at IS NULL OR expires_at > ?)
+              ORDER BY signed_at ASC, key ASC
+              LIMIT ?
+            `
+            )
+            .all(owner, prefix, prefix.length, prefix, now, safeLimit)
+        : this.db
+            .prepare(
+              `
+              SELECT *
+              FROM rchat_device_state
+              WHERE owner_address = ?
+                AND (expires_at IS NULL OR expires_at > ?)
+              ORDER BY signed_at ASC, key ASC
+              LIMIT ?
+            `
+            )
+            .all(owner, now, safeLimit)
+    ) as Array<Parameters<ReticulumChatDatabase['mapDeviceStateRow']>[0]>;
+    return rows.map((row) => this.mapDeviceStateRow(row));
+  }
+
+  getDeviceStatesSince(
+    ownerAddress: string,
+    sinceSignedAt: number,
+    limit = 5_000
+  ): ReticulumChatDeviceStateRecord[] {
+    const owner = String(ownerAddress || '').trim();
+    if (!owner) return [];
+    const since = Math.max(0, Math.floor(Number(sinceSignedAt) || 0));
+    const safeLimit = Math.max(1, Math.min(5_000, Math.floor(limit || 5_000)));
+    const rows = this.db
+      .prepare(
+        `
+        SELECT *
+        FROM rchat_device_state
+        WHERE owner_address = ?
+          AND signed_at > ?
+          AND (expires_at IS NULL OR expires_at > ?)
+        ORDER BY signed_at ASC, key ASC
+        LIMIT ?
+      `
+      )
+      .all(owner, since, Date.now(), safeLimit) as Array<
+      Parameters<ReticulumChatDatabase['mapDeviceStateRow']>[0]
+    >;
+    return rows.map((row) => this.mapDeviceStateRow(row));
+  }
+
+  getDeviceStatesForReplay(
+    ownerAddress: string,
+    peerHash: string,
+    limit = 5_000
+  ): ReticulumChatDeviceStateRecord[] {
+    const owner = String(ownerAddress || '').trim();
+    const peer = String(peerHash || '').trim();
+    if (!owner || !peer) return [];
+    const safeLimit = Math.max(1, Math.min(5_000, Math.floor(limit || 5_000)));
+    const rows = this.db
+      .prepare(
+        `
+        SELECT s.*
+        FROM rchat_device_state s
+        LEFT JOIN rchat_device_state_ack a
+          ON a.owner_address = s.owner_address
+         AND a.key = s.key
+         AND a.peer_hash = ?
+        WHERE s.owner_address = ?
+          AND (a.signed_at IS NULL OR a.signed_at < s.signed_at)
+          AND (s.expires_at IS NULL OR s.expires_at > ?)
+        ORDER BY s.signed_at ASC, s.key ASC
+        LIMIT ?
+      `
+      )
+      .all(peer, owner, Date.now(), safeLimit) as Array<
+      Parameters<ReticulumChatDatabase['mapDeviceStateRow']>[0]
+    >;
+    return rows.map((row) => this.mapDeviceStateRow(row));
+  }
+
+  /** Newest signed_at held for an owner (0 when none); uses the owner/time index. */
+  getNewestDeviceStateSignedAt(ownerAddress: string): number {
+    const owner = String(ownerAddress || '').trim();
+    if (!owner) return 0;
+    const row = this.db
+      .prepare(
+        `SELECT signed_at
+         FROM rchat_device_state
+         WHERE owner_address = ?
+         ORDER BY signed_at DESC
+         LIMIT 1`
+      )
+      .get(owner) as { signed_at?: number } | undefined;
+    const newest = Number(row?.signed_at);
+    return Number.isFinite(newest) && newest > 0 ? Math.floor(newest) : 0;
+  }
+
+  countDeviceStates(ownerAddress: string): number {
+    const owner = String(ownerAddress || '').trim();
+    if (!owner) return 0;
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS count
+         FROM rchat_device_state
+         WHERE owner_address = ?`
+      )
+      .get(owner) as { count?: number } | undefined;
+    return Math.max(0, Number(row?.count) || 0);
+  }
+
+  upsertDeviceStateAck(
+    ownerAddress: string,
+    peerHash: string,
+    key: string,
+    signedAt: number
+  ): void {
+    const owner = String(ownerAddress || '').trim();
+    const peer = String(peerHash || '').trim();
+    const normalizedKey = String(key || '');
+    const at = Math.floor(Number(signedAt));
+    if (!owner || !peer || !normalizedKey || !Number.isFinite(at) || at <= 0) {
+      return;
+    }
+    this.db
+      .prepare(
+        `
+        INSERT INTO rchat_device_state_ack
+          (owner_address, peer_hash, key, signed_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(owner_address, peer_hash, key) DO UPDATE SET
+          signed_at = excluded.signed_at
+      `
+      )
+      .run(owner, peer, normalizedKey, at);
+  }
+
+  getDeviceStateAck(
+    ownerAddress: string,
+    peerHash: string,
+    key: string
+  ): number {
+    const owner = String(ownerAddress || '').trim();
+    const peer = String(peerHash || '').trim();
+    const normalizedKey = String(key || '');
+    if (!owner || !peer || !normalizedKey) return 0;
+    const row = this.db
+      .prepare(
+        `SELECT signed_at
+         FROM rchat_device_state_ack
+         WHERE owner_address = ? AND peer_hash = ? AND key = ?
+         LIMIT 1`
+      )
+      .get(owner, peer, normalizedKey) as { signed_at?: number } | undefined;
+    return Math.max(0, Number(row?.signed_at) || 0);
+  }
+
+  upsertPendingDeviceState(state: ReticulumChatPendingDeviceState): void {
+    const owner = String(state.ownerAddress || '').trim();
+    const key = String(state.key || '');
+    const updatedAt = Math.floor(Number(state.updatedAt));
+    const expiresAt = this.normalizeDeviceStateExpiresAt(state.expiresAt);
+    if (
+      !owner ||
+      !key ||
+      !Number.isFinite(updatedAt) ||
+      updatedAt <= 0 ||
+      expiresAt === undefined
+    ) {
+      return;
+    }
+    // Newer updated_at wins; an equal timestamp (two writes in the same
+    // millisecond) keeps the latest write so the pending row never lags the
+    // caller's most recent value.
+    this.db
+      .prepare(
+        `
+        INSERT INTO rchat_pending_device_state
+          (owner_address, key, value, expires_at, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(owner_address, key) DO UPDATE SET
+          value = excluded.value,
+          expires_at = excluded.expires_at,
+          updated_at = excluded.updated_at
+        WHERE excluded.updated_at >= rchat_pending_device_state.updated_at
+      `
+      )
+      .run(
+        owner,
+        key,
+        state.value == null ? null : String(state.value),
+        expiresAt,
+        updatedAt
+      );
+  }
+
+  getPendingDeviceStates(
+    ownerAddress: string,
+    limit = 5_000
+  ): ReticulumChatPendingDeviceState[] {
+    const owner = String(ownerAddress || '').trim();
+    if (!owner) return [];
+    const safeLimit = Math.max(1, Math.min(5_000, Math.floor(limit || 5_000)));
+    const rows = this.db
+      .prepare(
+        `
+        SELECT *
+        FROM rchat_pending_device_state
+        WHERE owner_address = ?
+        ORDER BY updated_at ASC, key ASC
+        LIMIT ?
+      `
+      )
+      .all(owner, safeLimit) as Array<{
+      owner_address: string;
+      key: string;
+      value?: string | null;
+      expires_at?: number | null;
+      updated_at: number;
+    }>;
+    return rows.map((row) => ({
+      ownerAddress: String(row.owner_address),
+      key: String(row.key),
+      value: row.value == null ? null : String(row.value),
+      expiresAt: row.expires_at == null ? null : Number(row.expires_at) || 0,
+      updatedAt: Number(row.updated_at) || 0,
+    }));
+  }
+
+  deletePendingDeviceState(
+    ownerAddress: string,
+    key: string,
+    upToUpdatedAt: number
+  ): void {
+    const owner = String(ownerAddress || '').trim();
+    const normalizedKey = String(key || '');
+    if (!owner || !normalizedKey) return;
+    this.db
+      .prepare(
+        `DELETE FROM rchat_pending_device_state
+         WHERE owner_address = ? AND key = ?
+           AND updated_at <= ?`
+      )
+      .run(owner, normalizedKey, Math.floor(Number(upToUpdatedAt) || 0));
+  }
+
+  pruneDeviceStates(now = Date.now()): {
+    expired: number;
+    tombstones: number;
+  } {
+    const at = Math.floor(Number(now) || Date.now());
+    const tombstoneCutoff = at - RETICULUM_CHAT_DEVICE_STATE_TOMBSTONE_TTL_MS;
+    const tx = this.db.transaction(() => {
+      // Acks first: they reference the rows about to disappear and would
+      // otherwise linger forever (nothing re-acks a deleted key).
+      this.db
+        .prepare(
+          `
+          DELETE FROM rchat_device_state_ack
+          WHERE EXISTS (
+            SELECT 1 FROM rchat_device_state s
+            WHERE s.owner_address = rchat_device_state_ack.owner_address
+              AND s.key = rchat_device_state_ack.key
+              AND s.expires_at IS NOT NULL
+              AND s.expires_at <= ?
+          )
+        `
+        )
+        .run(at);
+      const expired = this.db
+        .prepare(
+          `DELETE FROM rchat_device_state
+           WHERE expires_at IS NOT NULL AND expires_at <= ?`
+        )
+        .run(at).changes;
+      this.db
+        .prepare(
+          `
+          DELETE FROM rchat_device_state_ack
+          WHERE EXISTS (
+            SELECT 1 FROM rchat_device_state s
+            WHERE s.owner_address = rchat_device_state_ack.owner_address
+              AND s.key = rchat_device_state_ack.key
+              AND s.value IS NULL
+              AND s.signed_at < ?
+          )
+        `
+        )
+        .run(tombstoneCutoff);
+      const tombstones = this.db
+        .prepare(
+          `DELETE FROM rchat_device_state
+           WHERE value IS NULL AND signed_at < ?`
+        )
+        .run(tombstoneCutoff).changes;
+      return {
+        expired: Math.max(0, Number(expired) || 0),
+        tombstones: Math.max(0, Number(tombstones) || 0),
+      };
+    });
+    return tx();
   }
 
   pruneExpiredMessages(now = Date.now(), limit = 5000): number {
@@ -12801,6 +13274,33 @@ export class ReticulumChatDatabase {
         updated_at INTEGER NOT NULL,
         PRIMARY KEY (owner_address, scope_type, scope_id)
       );
+      CREATE TABLE IF NOT EXISTS rchat_device_state (
+        owner_address TEXT NOT NULL,
+        key TEXT NOT NULL,
+        value TEXT,
+        signed_at INTEGER NOT NULL,
+        expires_at INTEGER,
+        author_public_key TEXT NOT NULL,
+        signature TEXT NOT NULL,
+        PRIMARY KEY (owner_address, key)
+      );
+      CREATE INDEX IF NOT EXISTS idx_rchat_device_state_owner_time
+        ON rchat_device_state (owner_address, signed_at DESC);
+      CREATE TABLE IF NOT EXISTS rchat_pending_device_state (
+        owner_address TEXT NOT NULL,
+        key TEXT NOT NULL,
+        value TEXT,
+        expires_at INTEGER,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (owner_address, key)
+      );
+      CREATE TABLE IF NOT EXISTS rchat_device_state_ack (
+        owner_address TEXT NOT NULL,
+        peer_hash TEXT NOT NULL,
+        key TEXT NOT NULL,
+        signed_at INTEGER NOT NULL,
+        PRIMARY KEY (owner_address, peer_hash, key)
+      );
       CREATE TABLE IF NOT EXISTS reticulum_chat_mentions (
         event_id TEXT NOT NULL,
         group_id INTEGER NOT NULL,
@@ -14487,6 +14987,26 @@ export class ReticulumChatDatabase {
         ],
       },
       {
+        table: 'rchat_device_state',
+        columns: [
+          'owner_address',
+          'key',
+          'value',
+          'signed_at',
+          'expires_at',
+          'author_public_key',
+          'signature',
+        ],
+      },
+      {
+        table: 'rchat_pending_device_state',
+        columns: ['owner_address', 'key', 'value', 'expires_at', 'updated_at'],
+      },
+      {
+        table: 'rchat_device_state_ack',
+        columns: ['owner_address', 'peer_hash', 'key', 'signed_at'],
+      },
+      {
         table: 'rchat_silences',
         columns: [
           'owner_address',
@@ -14784,15 +15304,39 @@ export class ReticulumChatDatabase {
       CREATE INDEX IF NOT EXISTS idx_rchat_message_projection_attachments
         ON rchat_message_projection (group_id, has_attachment, deleted_at, created_at, root_event_id);
     `);
+    // The backfill scans and rewrites the whole projection table (≈200 ms on a
+    // phone-sized history, far more on an interpreted WebView). Stamp it so it
+    // runs once per database instead of on every open; new rows get their flag
+    // at insert time.
+    const migrationName = 'message-projection-attachments-backfill-v1';
     this.db.exec(`
-      UPDATE rchat_message_projection
-      SET has_attachment = CASE
-        WHEN root_event_type = 'attachment_manifest'
-          OR encrypted_payload LIKE '%"attachments"%'
-        THEN 1
-        ELSE 0
-      END
+      CREATE TABLE IF NOT EXISTS rchat_schema_migrations (
+        name TEXT PRIMARY KEY,
+        applied_at INTEGER NOT NULL
+      );
     `);
+    const applied = this.db
+      .prepare('SELECT 1 FROM rchat_schema_migrations WHERE name = ? LIMIT 1')
+      .get(migrationName);
+    if (applied) return;
+    const appliedAt = Date.now();
+    const tx = this.db.transaction(() => {
+      this.db.exec(`
+        UPDATE rchat_message_projection
+        SET has_attachment = CASE
+          WHEN root_event_type = 'attachment_manifest'
+            OR encrypted_payload LIKE '%"attachments"%'
+          THEN 1
+          ELSE 0
+        END
+      `);
+      this.db
+        .prepare(
+          'INSERT INTO rchat_schema_migrations (name, applied_at) VALUES (?, ?)'
+        )
+        .run(migrationName, appliedAt);
+    });
+    tx();
   }
 
   private migrateEventMentionTargetsSchema(): void {

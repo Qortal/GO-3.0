@@ -62,6 +62,26 @@
     "tooltip_value": "nachrichtenablauf: {{value}}",
     "unavailable": "nachrichtenablauf ist nicht verfügbar"
   },
+  "file_viewer": {
+    "close": "dateiansicht schließen",
+    "file": "datei",
+    "link_unsupported": "dieser link kann von hier aus nicht geöffnet werden",
+    "load_failed": "diese Datei konnte nicht geöffnet werden. Vielleicht wird sie noch heruntergeladen, oder sie ist nicht mehr auf diesem Gerät gespeichert.",
+    "markup_as_source": "webseiten werden als Quelltext angezeigt und nie in der App ausgeführt.",
+    "no_preview": "dieser Dateityp kann hier nicht angezeigt werden. Öffne die Datei in einer anderen App, teile sie oder speichere sie auf deinem Gerät.",
+    "open_with": "mit anderer app öffnen",
+    "open_with_failed": "keine app konnte diese datei öffnen",
+    "opening": "datei wird geöffnet…",
+    "preview_failed": "diese Datei konnte hier nicht angezeigt werden. Öffne sie in einer anderen App, teile sie oder speichere sie auf deinem Gerät.",
+    "save": "auf dem gerät speichern",
+    "save_failed": "die datei konnte nicht gespeichert werden",
+    "saved_to": "gespeichert unter {{location}}",
+    "share": "teilen",
+    "share_failed": "die datei konnte nicht geteilt werden",
+    "show_formatted": "formatiert anzeigen",
+    "show_source": "als reinen text anzeigen",
+    "truncated": "diese Datei ist zu groß, um sie vollständig anzuzeigen. Speichere sie oder öffne sie in einer anderen App, um den Rest zu sehen."
+  },
   "group_fallback_name": "Gruppe",
   "group_type": {
     "closed": "geschlossen",
@@ -94,6 +114,9 @@
     "download_failed": "unable to download image",
     "prepare_failed": "unable to prepare image for clipboard",
     "read_failed": "unable to read image",
+    "save": "bild speichern",
+    "share": "bild teilen",
+    "share_failed": "bild konnte nicht geteilt werden",
     "zoom_in": "zoom in",
     "zoom_out": "zoom out"
   },

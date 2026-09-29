@@ -367,6 +367,14 @@ const rchatSchemas: Readonly<Record<string, SigningSchema>> = {
     ['type', 'scopeType', 'ownerAddress', 'upToTimestamp', 'signedAt'],
     ['groupId', 'channelId', 'conversationId', 'peerAddress']
   ),
+  RCHAT_DEVICE_STATE_V1: schema([
+    'type',
+    'ownerAddress',
+    'key',
+    'value',
+    'signedAt',
+    'expiresAt',
+  ]),
   RCHAT_DIRECT_CALL_HISTORY_V1: schema([
     'type',
     'ownerAddress',

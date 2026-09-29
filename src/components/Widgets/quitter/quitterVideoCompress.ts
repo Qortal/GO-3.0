@@ -30,6 +30,8 @@ export type CompressPlan = {
   label: string;
   /** Soft estimate shown in the UI (bytes). */
   estimatedBytes: number;
+  /** Clip length the estimate assumed; native needs it to derive bitrate. */
+  durationSec: number;
 };
 
 export type CompressPresetOption = {
@@ -59,6 +61,14 @@ export type VideoPrepareJob = {
   cancel: () => void;
   /** @deprecated use cancel */
   cancelProgress?: () => void;
+  /**
+   * Native compression only: follow the file the encoder is writing, so the
+   * finished part can upload before the encode ends. Fires again with a new
+   * path when native retries with safer settings. Returns an unsubscribe.
+   */
+  subscribeOutput: (listener: (path: string) => void) => () => void;
+  /** Latest encoder output path, or null before/after native compression. */
+  getOutputPath: () => string | null;
 };
 
 export function isEfficientQuitterVideoFormat(
@@ -216,6 +226,8 @@ export function planVideoCompression(
   const forceTranscode = !efficient;
   const tinyEfficient = efficient && size > 0 && size < 5 * MB;
 
+  const assumedDurationSec = inferDurationSec(size, durationSec);
+
   if (level === 'none' || tinyEfficient) {
     return {
       shouldCompress: false,
@@ -232,6 +244,7 @@ export function planVideoCompression(
         ? 'Already efficient MP4'
         : 'Compression skipped',
       estimatedBytes: size,
+      durationSec: assumedDurationSec,
     };
   }
 
@@ -258,6 +271,7 @@ export function planVideoCompression(
     passThroughAudio: preset.passThroughAudio,
     label: labelByLevel[preset.level],
     estimatedBytes: preset.estimatedBytes,
+    durationSec: assumedDurationSec,
   };
 }
 
@@ -316,8 +330,10 @@ async function fileFromNativeUri(
   }
 
   const path = pathOrUri.replace(/^file:\/\//, '');
+  let servedUrl = '';
   try {
     const served = await VideoCompress.serveFile({ path });
+    servedUrl = served.url;
     const diskSize = Number(served.size) || 0;
     if (diskSize < 1024) {
       throw new Error(
@@ -391,7 +407,10 @@ async function fileFromNativeUri(
 
     return createPublishFile(buffer, name, mimeType || 'video/mp4');
   } finally {
-    await VideoCompress.stopServe().catch(() => undefined);
+    // Stop only our server: a live upload may be reading another file.
+    if (servedUrl) {
+      await VideoCompress.stopServe({ url: servedUrl }).catch(() => undefined);
+    }
   }
 }
 
@@ -412,6 +431,8 @@ export type PrepareVideoOptions = {
   compressLevel?: CompressLevel;
   /** @deprecated use compressLevel */
   forceCompress?: boolean;
+  /** Clip length from the editor; keeps the bitrate matched to the estimate. */
+  durationSec?: number;
   notificationTitle?: string;
   onProgress?: (message: string, percent?: number) => void;
 };
@@ -433,6 +454,20 @@ export function startBackgroundVideoPrepare(
   let progressHandle: PluginListenerHandle | null = null;
   let cancelled = false;
   let settleCancel: ((error: Error) => void) | null = null;
+  let outputPath: string | null = null;
+  const outputListeners = new Set<(path: string) => void>();
+  const setOutputPath = (next: string | null) => {
+    if (next === outputPath) return;
+    outputPath = next;
+    if (!next) return;
+    outputListeners.forEach((listener) => {
+      try {
+        listener(next);
+      } catch {
+        // a broken listener must not stop compression
+      }
+    });
+  };
 
   const throwIfCancelled = () => {
     if (cancelled) throw new VideoPrepareCancelledError();
@@ -444,7 +479,8 @@ export function startBackgroundVideoPrepare(
       options.size,
       options.mimeType,
       options.name,
-      level
+      level,
+      options.durationSec
     );
     const wantCompress = plan.shouldCompress || plan.forceTranscode;
     const fallbackName =
@@ -507,6 +543,9 @@ export function startBackgroundVideoPrepare(
     options.onProgress?.('Compressing Your Video', 0);
     progressHandle = await VideoCompress.addProgressListener((event) => {
       if (cancelled) return;
+      if (typeof event.path === 'string' && event.path) {
+        setOutputPath(event.path);
+      }
       if (event.progress < 0) {
         options.onProgress?.(
           event.state === 'canceled'
@@ -537,6 +576,7 @@ export function startBackgroundVideoPrepare(
         audioChannels: plan.audioChannels,
         passThroughAudio: plan.passThroughAudio,
         notificationTitle: options.notificationTitle || 'Compressing video',
+        durationSec: plan.durationSec,
       });
       result = await Promise.race([
         compressPromise,
@@ -560,6 +600,7 @@ export function startBackgroundVideoPrepare(
       throw err;
     } finally {
       settleCancel = null;
+      outputPath = null;
       await progressHandle?.remove();
       progressHandle = null;
     }
@@ -601,7 +642,13 @@ export function startBackgroundVideoPrepare(
       );
     }
 
-    if (!plan.forceTranscode && effectiveSize >= options.size * 0.95) {
+    // options.size is 0 when the picker/share sheet did not report a size;
+    // without this guard every such video fell back to the uncompressed original.
+    if (
+      !plan.forceTranscode &&
+      options.size > 0 &&
+      effectiveSize >= options.size * 0.95
+    ) {
       options.onProgress?.('Video ready', 100);
       return {
         file: await ensureFile(),
@@ -626,6 +673,8 @@ export function startBackgroundVideoPrepare(
   const cancel = () => {
     if (cancelled) return;
     cancelled = true;
+    outputPath = null;
+    outputListeners.clear();
     void progressHandle?.remove();
     progressHandle = null;
     settleCancel?.(new VideoPrepareCancelledError());
@@ -633,10 +682,23 @@ export function startBackgroundVideoPrepare(
     void VideoCompress.cancel().catch(() => undefined);
   };
 
+  // Listeners only matter while encoding.
+  void promise.then(
+    () => outputListeners.clear(),
+    () => outputListeners.clear()
+  );
+
   return {
     promise,
     cancel,
     cancelProgress: cancel,
+    subscribeOutput: (listener) => {
+      outputListeners.add(listener);
+      return () => {
+        outputListeners.delete(listener);
+      };
+    },
+    getOutputPath: () => outputPath,
   };
 }
 

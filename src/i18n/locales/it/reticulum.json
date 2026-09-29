@@ -62,6 +62,26 @@
     "tooltip_value": "scadenza del messaggio: {{value}}",
     "unavailable": "la scadenza dei messaggi non è disponibile"
   },
+  "file_viewer": {
+    "close": "chiudi il visualizzatore di file",
+    "file": "file",
+    "link_unsupported": "questo link non può essere aperto da qui",
+    "load_failed": "impossibile aprire questo file. Potrebbe essere ancora in download oppure non è più salvato su questo dispositivo.",
+    "markup_as_source": "le pagine web vengono mostrate come codice sorgente e non vengono mai eseguite nell'app.",
+    "no_preview": "questo tipo di file non può essere mostrato qui. Aprilo in un'altra app, condividilo o salvalo sul dispositivo.",
+    "open_with": "apri con un'altra app",
+    "open_with_failed": "nessuna app è riuscita ad aprire questo file",
+    "opening": "apertura del file…",
+    "preview_failed": "impossibile mostrare questo file qui. Aprilo in un'altra app, condividilo o salvalo sul dispositivo.",
+    "save": "salva sul dispositivo",
+    "save_failed": "impossibile salvare il file",
+    "saved_to": "salvato in {{location}}",
+    "share": "condividi",
+    "share_failed": "impossibile condividere il file",
+    "show_formatted": "mostra formattato",
+    "show_source": "mostra testo semplice",
+    "truncated": "questo file è troppo grande per essere mostrato per intero. Salvalo o aprilo in un'altra app per vedere il resto."
+  },
   "group_fallback_name": "Gruppo",
   "group_type": {
     "closed": "chiuso",
@@ -94,6 +114,9 @@
     "download_failed": "unable to download image",
     "prepare_failed": "unable to prepare image for clipboard",
     "read_failed": "unable to read image",
+    "save": "salva immagine",
+    "share": "condividi immagine",
+    "share_failed": "impossibile condividere l'immagine",
     "zoom_in": "zoom in",
     "zoom_out": "zoom out"
   },

@@ -32,6 +32,11 @@ export type VideoCompressOptions = {
   passThroughAudio?: boolean;
   /** Title shown on the OS progress notification. */
   notificationTitle?: string;
+  /**
+   * Clip length used to turn targetMaxBytes into a bitrate. Pass the same
+   * length the target was sized from, or native guesses it from file size.
+   */
+  durationSec?: number;
 };
 
 export type VideoCompressResult = {
@@ -45,6 +50,8 @@ export type VideoCompressResult = {
 export type VideoCompressProgressEvent = {
   progress: number;
   state: 'starting' | 'compressing' | 'completed' | 'failed' | string;
+  /** Output file the running attempt is writing (present while 0–99%). */
+  path?: string;
 };
 
 export type VideoCompressStatResult = {
@@ -82,7 +89,8 @@ export interface VideoCompressPlugin {
    * bytes (convertFileSrc truncates large videos on Android).
    */
   serveFile(options: { path: string }): Promise<VideoCompressServeResult>;
-  stopServe(): Promise<void>;
+  /** Stop the server behind `url`; with no url, stop every server. */
+  stopServe(options?: { url?: string }): Promise<void>;
   /** Download a remote URL into app cache (for extract/compress). */
   downloadUrlToCache(options: {
     url: string;
@@ -136,9 +144,9 @@ export const VideoCompress = {
     }
     return VideoCompressNative.serveFile(options);
   },
-  stopServe: async (): Promise<void> => {
+  stopServe: async (options?: { url?: string }): Promise<void> => {
     if (!isNativeVideoCompressAvailable()) return;
-    await VideoCompressNative.stopServe();
+    await VideoCompressNative.stopServe(options || {});
   },
   downloadUrlToCache: async (options: {
     url: string;

@@ -77,7 +77,7 @@ export const ReticulumStatusChip = () => {
           <div>
             IFAC: {status.ifacSize}B · ifaces: {status.interfaces}
           </div>
-          <div>announces: {status.announces}</div>
+          <div>known paths: {status.announces}</div>
           <div>
             rx: {status.rxBytes}B · tx: {status.txBytes}B
           </div>

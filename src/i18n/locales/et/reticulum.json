@@ -62,6 +62,26 @@
     "tooltip_value": "sõnumi aegumine: {{value}}",
     "unavailable": "sõnumi aegumine pole saadaval"
   },
+  "file_viewer": {
+    "close": "sulge failivaatur",
+    "file": "fail",
+    "link_unsupported": "seda linki ei saa siit avada",
+    "load_failed": "seda faili ei õnnestunud avada. Võib-olla laaditakse seda veel alla või pole see enam selles seadmes salvestatud.",
+    "markup_as_source": "veebilehti näidatakse lähtekoodina ja neid ei käivitata kunagi rakenduse sees.",
+    "no_preview": "seda failitüüpi ei saa siin näidata. Ava see mõnes teises rakenduses, jaga seda või salvesta see oma seadmesse.",
+    "open_with": "ava teise rakendusega",
+    "open_with_failed": "ükski rakendus ei suutnud seda faili avada",
+    "opening": "faili avamine…",
+    "preview_failed": "seda faili ei õnnestunud siin näidata. Ava see mõnes teises rakenduses, jaga seda või salvesta see oma seadmesse.",
+    "save": "salvesta seadmesse",
+    "save_failed": "faili ei õnnestunud salvestada",
+    "saved_to": "salvestatud asukohta {{location}}",
+    "share": "jaga",
+    "share_failed": "faili ei õnnestunud jagada",
+    "show_formatted": "näita vormindatult",
+    "show_source": "näita lihttekstina",
+    "truncated": "see fail on liiga suur, et seda tervikuna näidata. Ülejäänu nägemiseks salvesta see või ava see teises rakenduses."
+  },
   "group_fallback_name": "Rühm",
   "group_type": {
     "closed": "suletud",
@@ -94,6 +114,9 @@
     "download_failed": "unable to download image",
     "prepare_failed": "unable to prepare image for clipboard",
     "read_failed": "unable to read image",
+    "save": "salvesta pilt",
+    "share": "jaga pilti",
+    "share_failed": "pilti ei õnnestunud jagada",
     "zoom_in": "zoom in",
     "zoom_out": "zoom out"
   },

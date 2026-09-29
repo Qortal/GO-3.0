@@ -3,9 +3,14 @@ import {
   Box,
   Button,
   CircularProgress,
+  Dialog,
+  DialogContent,
+  DialogTitle,
   IconButton,
   LinearProgress,
   TextField,
+  ToggleButton,
+  ToggleButtonGroup,
   Typography,
   useTheme,
 } from '@mui/material';
@@ -16,8 +21,18 @@ import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import SendRoundedIcon from '@mui/icons-material/SendRounded';
 import ExpandMoreRoundedIcon from '@mui/icons-material/ExpandMoreRounded';
 import EditRoundedIcon from '@mui/icons-material/EditRounded';
+import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded';
+import GifBoxOutlinedIcon from '@mui/icons-material/GifBoxOutlined';
+import PollOutlinedIcon from '@mui/icons-material/PollOutlined';
+import AttachFileRoundedIcon from '@mui/icons-material/AttachFileRounded';
+import AudioFileOutlinedIcon from '@mui/icons-material/AudioFileOutlined';
+import InsertDriveFileOutlinedIcon from '@mui/icons-material/InsertDriveFileOutlined';
+import ChevronLeftRoundedIcon from '@mui/icons-material/ChevronLeftRounded';
+import ChevronRightRoundedIcon from '@mui/icons-material/ChevronRightRounded';
+import AutoAwesomeRoundedIcon from '@mui/icons-material/AutoAwesomeRounded';
 import { useAtomValue } from 'jotai';
 import { Capacitor } from '@capacitor/core';
+import { useTranslation } from 'react-i18next';
 import { userInfoAtom } from '../../../atoms/global';
 import { dashboardPanelSx } from '../../Group/dashboardPanelEffects';
 import { AppThumbnailAvatar } from '../../Apps/AppThumbnailAvatar';
@@ -27,12 +42,33 @@ import {
   subscribeToEvent,
   unsubscribeFromEvent,
 } from '../../../utils/events';
+import { detachStreamedChunkUpload } from '../../../utils/streamedChunkUpload';
+import { ChatGifPicker } from '../../Chat/gifs/ChatGifPicker';
+import { GifImage } from '../../Chat/gifs/GifImage';
+import { libraryGifKey, type LibraryGif } from '../../Chat/gifs/libraryGifs';
 import {
+  buildQtubeVideoIdentifier,
   publishQuitterPost,
+  QUITTER_MAX_IMAGES,
   QuitterPublishCancelledError,
   quitterThumbSrc,
 } from './quitterPublish';
-import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded';
+import {
+  normalizeTorqPoll,
+  publishTorqPost,
+  torqFileRejection,
+  TORQ_MAX_GIFS,
+  TORQ_MAX_IMAGES,
+  TORQ_MIN_POLL_OPTIONS,
+} from './torqPublish';
+import {
+  plainTextToTorqDoc,
+  torqDocToPostBody,
+  type TorqDocNode,
+} from './torqRichText';
+import { TorqTextEditor } from './TorqTextEditor';
+import { TorqPollEditor } from './TorqPollEditor';
+import { startLiveVideoUpload } from './quitterStreamedVideo';
 import {
   QuitterVideoEditorDialog,
   type QuitterVideoEditorValue,
@@ -41,6 +77,10 @@ import {
   clearQuitterComposerSession,
   getQuitterComposerSession,
   patchQuitterComposerSession,
+  readComposerTarget,
+  writeComposerTarget,
+  type ComposerTarget,
+  type SessionFileDraft,
   type SessionImageDraft,
   type SessionVideoDraft,
 } from './quitterComposerSession';
@@ -77,14 +117,37 @@ type PendingVideoPick = {
 };
 
 type LastPublishedPost = {
+  app: 'Quitter' | 'Torq';
   author: string;
   postIdentifier: string;
 };
+
+type LiveVideoUpload = NonNullable<ReturnType<typeof startLiveVideoUpload>>;
+
+const isCancelError = (err: any) =>
+  err instanceof QuitterPublishCancelledError ||
+  err instanceof VideoPrepareCancelledError ||
+  err?.name === 'QuitterPublishCancelledError' ||
+  err?.name === 'VideoPrepareCancelledError' ||
+  /cancel/i.test(String(err?.message || err));
+
+const isAudioFile = (file: File) =>
+  (typeof file.type === 'string' && file.type.startsWith('audio/')) ||
+  /\.(mp3|m4a|aac|wav|ogg|oga|opus|flac)$/i.test(file.name);
 
 export const HomeQuitterComposer = ({
   onPublished,
 }: HomeQuitterComposerProps) => {
   const theme = useTheme();
+  const { t } = useTranslation(['group', 'core']);
+  const tc = useCallback(
+    (key: string, options: Record<string, unknown> = {}) =>
+      t(`group:home_composer.${key}`, {
+        postProcess: 'capitalizeFirstChar',
+        ...options,
+      }),
+    [t]
+  );
   const userInfo = useAtomValue(userInfoAtom);
   const userName = String(
     userInfo?.name || userInfo?.primaryName || ''
@@ -92,10 +155,25 @@ export const HomeQuitterComposer = ({
   const hasName = Boolean(userName);
 
   const session = getQuitterComposerSession();
+  const [target, setTarget] = useState<ComposerTarget>(readComposerTarget);
+  const isTorq = target === 'torq';
+  const appName = isTorq ? 'Torq' : 'Quitter';
   const [expanded, setExpanded] = useState(session.expanded);
   const [text, setText] = useState(session.text);
+  const [torqDoc, setTorqDoc] = useState<TorqDocNode>(
+    () => session.torqDoc || plainTextToTorqDoc(session.text)
+  );
+  // Bumped to remount the editor when its content is replaced from outside.
+  const [editorKey, setEditorKey] = useState(0);
   const [images, setImages] = useState<ImageDraft[]>(session.images);
   const [video, setVideo] = useState<VideoDraft | null>(session.video);
+  const [gifs, setGifs] = useState<LibraryGif[]>(session.gifs);
+  const [pollChoices, setPollChoices] = useState<string[] | null>(
+    session.pollChoices
+  );
+  const [pollAnonymous, setPollAnonymous] = useState(session.pollAnonymous);
+  const [files, setFiles] = useState<SessionFileDraft[]>(session.files);
+  const [gifDialogOpen, setGifDialogOpen] = useState(false);
   const [pendingVideo, setPendingVideo] = useState<PendingVideoPick | null>(
     null
   );
@@ -110,15 +188,20 @@ export const HomeQuitterComposer = ({
   const [preparedVideo, setPreparedVideo] = useState<PrepareVideoResult | null>(
     session.preparedVideo
   );
+  const [liveSentBytes, setLiveSentBytes] = useState(0);
   const [lastPublished, setLastPublished] = useState<LastPublishedPost | null>(
     null
   );
   const imageInputRef = useRef<HTMLInputElement>(null);
   const videoInputRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const compressJobRef = useRef<VideoPrepareJob | null>(session.compressJob);
   const publishAbortRef = useRef<AbortController | null>(null);
+  const liveUploadRef = useRef<LiveVideoUpload | null>(null);
   // Prevent the persist effect from writing stale draft back after clear.
   const clearingDraftRef = useRef(false);
+
+  const torqBody = useMemo(() => torqDocToPostBody(torqDoc), [torqDoc]);
 
   // Persist draft + compress job across remounts (layout/node/network changes).
   useEffect(() => {
@@ -137,6 +220,11 @@ export const HomeQuitterComposer = ({
       status,
       error,
       compressJob: compressJobRef.current,
+      torqDoc,
+      gifs,
+      pollChoices,
+      pollAnonymous,
+      files,
     });
   }, [
     text,
@@ -148,6 +236,11 @@ export const HomeQuitterComposer = ({
     expanded,
     status,
     error,
+    torqDoc,
+    gifs,
+    pollChoices,
+    pollAnonymous,
+    files,
   ]);
 
   // Re-attach to an in-flight compress job after remount.
@@ -162,16 +255,28 @@ export const HomeQuitterComposer = ({
         setCompressPercent(100);
         setCompressLabel(
           result.compressed
-            ? `Ready · ${formatBytes(result.file.size)}`
-            : 'Video ready'
+            ? tc('status.ready_size', { size: formatBytes(result.file.size) })
+            : tc('status.video_ready')
         );
         setStatus('');
       })
-      .catch(() => undefined);
+      .catch((err) => {
+        // Failed while this composer was unmounted: show it, and let Publish
+        // start a fresh compression instead of re-awaiting the failed job.
+        if (!active || compressJobRef.current !== job) return;
+        compressJobRef.current = null;
+        const cancelled = isCancelError(err);
+        setCompressPercent(null);
+        setCompressLabel(cancelled ? tc('status.cancelled_retry') : '');
+        setStatus(cancelled ? tc('status.cancelled') : '');
+        if (!cancelled) {
+          setError(err?.message || tc('error.compression_failed'));
+        }
+      });
     return () => {
       active = false;
     };
-  }, [preparedVideo]);
+  }, [preparedVideo, tc]);
 
   const videoPlan = useMemo(
     () =>
@@ -199,6 +304,8 @@ export const HomeQuitterComposer = ({
     });
     publishAbortRef.current?.abort();
     publishAbortRef.current = null;
+    liveUploadRef.current?.upload.cancel();
+    liveUploadRef.current = null;
     compressJobRef.current?.cancel();
     compressJobRef.current = null;
     clearingDraftRef.current = true;
@@ -206,11 +313,18 @@ export const HomeQuitterComposer = ({
     setEditorOpen(false);
     setPublishing(false);
     setText('');
+    setTorqDoc(plainTextToTorqDoc(''));
+    setEditorKey((key) => key + 1);
     setImages([]);
     setVideo(null);
+    setGifs([]);
+    setPollChoices(null);
+    setPollAnonymous(false);
+    setFiles([]);
     setPreparedVideo(null);
     setCompressPercent(null);
     setCompressLabel('');
+    setLiveSentBytes(0);
     setStatus('');
     setError('');
     setExpanded(false);
@@ -221,13 +335,29 @@ export const HomeQuitterComposer = ({
     executeEvent('addTab', {
       data: {
         identifier: '',
-        name: 'Quitter',
+        name: post.app,
         path: `post/${encodeURIComponent(post.author)}/${encodeURIComponent(post.postIdentifier)}`,
         service: 'APP',
       },
     });
     executeEvent('open-apps-mode', {});
   }, []);
+
+  const handleTargetChange = (next: ComposerTarget | null) => {
+    if (!next || next === target || publishing) return;
+    if (next === 'torq') {
+      setTorqDoc(plainTextToTorqDoc(text));
+      setEditorKey((key) => key + 1);
+    } else {
+      // Formatting has no Quitter equivalent; lists stay as "• " lines.
+      setText(torqDocToPostBody(torqDoc).text);
+    }
+    setTarget(next);
+    writeComposerTarget(next);
+    setError('');
+  };
+
+  const maxImages = isTorq ? TORQ_MAX_IMAGES : QUITTER_MAX_IMAGES;
 
   /**
    * Resolve an image mime type without trusting `file.type` — files handed over
@@ -251,14 +381,14 @@ export const HomeQuitterComposer = ({
     currentCount: number
   ) => {
     setError('');
-    const remaining = 2 - currentCount;
+    const remaining = maxImages - currentCount;
     const next: ImageDraft[] = [];
     for (const entry of entries.slice(0, Math.max(0, remaining))) {
       const file = entry?.file;
       if (!file) continue;
       const mime = resolveImageMime(file, entry.mimeType);
       if (mime === 'image/gif') {
-        setError('GIF images are not supported');
+        setError(tc('error.gif_images_unsupported'));
         continue;
       }
       if (!mime) continue;
@@ -268,8 +398,11 @@ export const HomeQuitterComposer = ({
         previewUrl: URL.createObjectURL(file),
       });
     }
+    if (entries.length > remaining) {
+      setError(tc('error.too_many_images', { count: maxImages }));
+    }
     if (next.length) {
-      setImages((prev) => [...prev, ...next].slice(0, 2));
+      setImages((prev) => [...prev, ...next].slice(0, maxImages));
     }
   };
 
@@ -279,6 +412,49 @@ export const HomeQuitterComposer = ({
       Array.from(fileList).map((file) => ({ file })),
       images.length
     );
+  };
+
+  const moveImage = (index: number, delta: number) => {
+    setImages((prev) => {
+      const swapWith = index + delta;
+      if (swapWith < 0 || swapWith >= prev.length) return prev;
+      const next = [...prev];
+      [next[index], next[swapWith]] = [next[swapWith], next[index]];
+      return next;
+    });
+  };
+
+  const handlePickFiles = (fileList: FileList | null) => {
+    if (!fileList?.length) return;
+    setError('');
+    const accepted: SessionFileDraft[] = [];
+    let rejection = '';
+    for (const file of Array.from(fileList)) {
+      const reason = torqFileRejection(file);
+      if (reason) {
+        rejection = reason;
+        continue;
+      }
+      accepted.push({
+        id: `${file.name}-${file.size}-${Date.now()}-${Math.random()}`,
+        file,
+      });
+    }
+    if (accepted.length) setFiles((prev) => [...prev, ...accepted]);
+    if (rejection) setError(rejection);
+  };
+
+  const handleSelectGif = (gif: LibraryGif) => {
+    setGifDialogOpen(false);
+    if (gifs.some((item) => libraryGifKey(item) === libraryGifKey(gif))) {
+      return;
+    }
+    if (gifs.length >= TORQ_MAX_GIFS) {
+      setError(tc('error.too_many_gifs', { count: TORQ_MAX_GIFS }));
+      return;
+    }
+    setError('');
+    setGifs((prev) => [...prev, gif]);
   };
 
   const openVideoEditor = (pick: PendingVideoPick) => {
@@ -339,7 +515,7 @@ export const HomeQuitterComposer = ({
       });
     } catch (err: any) {
       if (!/cancel/i.test(String(err?.message || err))) {
-        setError(err?.message || 'Failed to pick video');
+        setError(err?.message || tc('error.video_pick_failed'));
       }
     }
   };
@@ -348,7 +524,7 @@ export const HomeQuitterComposer = ({
     const file = fileList?.[0];
     if (!file) return;
     if (!file.type.startsWith('video/') && !/\.(mp4|mov|webm|mkv|3gp|m4v|avi)$/i.test(file.name)) {
-      setError('Please choose a video file');
+      setError(tc('error.not_a_video'));
       return;
     }
     openVideoEditor({
@@ -382,20 +558,21 @@ export const HomeQuitterComposer = ({
 
   const handleCancelPublish = () => {
     publishAbortRef.current?.abort();
+    liveUploadRef.current?.upload.cancel();
     compressJobRef.current?.cancel();
     compressJobRef.current = null;
     setError('');
     if (publishing) {
       // Keep publishing=true until the publish loop stops and cleans up
       // any partial Q-Tube VIDEO/metadata resources.
-      setCompressLabel('Cancelling…');
-      setStatus('Cancelling…');
+      setCompressLabel(tc('status.cancelling'));
+      setStatus(tc('status.cancelling'));
       return;
     }
     setPreparedVideo(null);
     setCompressPercent(null);
-    setCompressLabel('Cancelled — publish again to retry');
-    setStatus('Cancelled');
+    setCompressLabel(tc('status.cancelled_retry'));
+    setStatus(tc('status.cancelled'));
   };
 
   const handleEditorCancel = () => {
@@ -406,7 +583,8 @@ export const HomeQuitterComposer = ({
     setEditorOpen(false);
   };
 
-  const startVideoPrepareJob = (draft: VideoDraft) => {
+  /** Start preparing the video in the background; returns the job. */
+  const startVideoPrepareJob = (draft: VideoDraft): VideoPrepareJob => {
     compressJobRef.current?.cancel();
     setPreparedVideo(null);
     const plan = planVideoCompression(
@@ -417,50 +595,36 @@ export const HomeQuitterComposer = ({
       draft.duration || undefined
     );
     const needsWork = plan.shouldCompress || plan.forceTranscode;
-    if (!needsWork) {
+    if (needsWork) {
+      setCompressPercent(0);
+      setCompressLabel(tc('status.compressing'));
+      setStatus(tc('status.compressing_background'));
+    } else {
       setCompressPercent(100);
-      setCompressLabel('Video ready');
-      const job = startBackgroundVideoPrepare({
-        file: draft.file,
-        size: draft.size,
-        name: `${draft.title || 'video'}.mp4`,
-        mimeType: draft.mimeType,
-        nativePath: draft.nativePath,
-        compressLevel: 'none',
-        notificationTitle: draft.title || 'Preparing video',
-      });
-      compressJobRef.current = job;
-      patchQuitterComposerSession({ compressJob: job });
-      void job.promise.then((result) => {
-        setPreparedVideo(result);
-        setCompressPercent(100);
-        setCompressLabel('Video ready');
-      });
-      return;
+      setCompressLabel(tc('status.video_ready'));
     }
-
-    setCompressPercent(0);
-    setCompressLabel('Compressing Your Video');
-    setStatus('Compressing in background — you can keep writing your post');
     const job = startBackgroundVideoPrepare({
       file: draft.file,
       size: draft.size,
       name: `${draft.title || 'video'}.mp4`,
       mimeType: draft.mimeType,
       nativePath: draft.nativePath,
-      compressLevel: draft.compressLevel,
-      notificationTitle: draft.title || 'Compressing video',
-      onProgress: (message, percent) => {
-        setCompressLabel(message);
-        if (typeof percent === 'number') {
-          setCompressPercent(percent < 0 ? null : percent);
-        }
-        patchQuitterComposerSession({
-          compressLabel: message,
-          compressPercent:
-            typeof percent === 'number' && percent >= 0 ? percent : null,
-        });
-      },
+      compressLevel: needsWork ? draft.compressLevel : 'none',
+      durationSec: draft.duration || undefined,
+      notificationTitle: draft.title || tc('status.compressing'),
+      onProgress: needsWork
+        ? (message, percent) => {
+            setCompressLabel(message);
+            if (typeof percent === 'number') {
+              setCompressPercent(percent < 0 ? null : percent);
+            }
+            patchQuitterComposerSession({
+              compressLabel: message,
+              compressPercent:
+                typeof percent === 'number' && percent >= 0 ? percent : null,
+            });
+          }
+        : undefined,
     });
     compressJobRef.current = job;
     patchQuitterComposerSession({ compressJob: job });
@@ -471,26 +635,24 @@ export const HomeQuitterComposer = ({
         setCompressPercent(100);
         setCompressLabel(
           result.compressed
-            ? `Ready · ${formatBytes(result.file.size)}`
-            : 'Video ready'
+            ? tc('status.ready_size', { size: formatBytes(result.file.size) })
+            : tc('status.video_ready')
         );
-        setStatus('');
+        if (needsWork) setStatus('');
       })
       .catch((err: any) => {
         if (compressJobRef.current !== job) return;
-        const cancelled =
-          err instanceof VideoPrepareCancelledError ||
-          err?.name === 'VideoPrepareCancelledError' ||
-          /cancel/i.test(String(err?.message || err));
+        // Let the next Publish start over instead of re-awaiting this failure.
+        compressJobRef.current = null;
+        const cancelled = isCancelError(err);
         setCompressPercent(null);
-        setCompressLabel(
-          cancelled ? 'Cancelled — publish again to retry' : ''
-        );
+        setCompressLabel(cancelled ? tc('status.cancelled_retry') : '');
         if (!cancelled) {
-          setError(err?.message || 'Video compression failed');
+          setError(err?.message || tc('error.compression_failed'));
         }
-        setStatus(cancelled ? 'Cancelled' : '');
+        setStatus(cancelled ? tc('status.cancelled') : '');
       });
+    return job;
   };
 
   const handleEditorConfirm = (value: QuitterVideoEditorValue) => {
@@ -593,10 +755,32 @@ export const HomeQuitterComposer = ({
     compressPercent >= 0 &&
     compressPercent < 100;
 
+  const normalizedPoll = useMemo(
+    () => (pollChoices ? normalizeTorqPoll(pollChoices) : null),
+    [pollChoices]
+  );
+  const torqOnlyContent =
+    gifs.length > 0 || files.length > 0 || pollChoices != null;
+  const quitterBlockedReason = isTorq
+    ? ''
+    : torqOnlyContent
+      ? tc('torq_only_content')
+      : images.length > QUITTER_MAX_IMAGES
+        ? tc('quitter_image_limit', { count: QUITTER_MAX_IMAGES })
+        : '';
+  const pollInvalid = isTorq && pollChoices != null && !normalizedPoll;
+  const hasBody = isTorq ? torqBody.text.length > 0 : text.trim().length > 0;
+  const hasMedia =
+    images.length > 0 ||
+    video != null ||
+    (isTorq && (gifs.length > 0 || files.length > 0 || normalizedPoll != null));
+
   const canPublish =
     hasName &&
     !publishing &&
-    (text.trim().length > 0 || images.length > 0 || video != null) &&
+    !quitterBlockedReason &&
+    !pollInvalid &&
+    (hasBody || hasMedia) &&
     (!video || (video.title.trim().length > 0 && video.category > 0));
 
   const handlePublish = async () => {
@@ -604,65 +788,62 @@ export const HomeQuitterComposer = ({
     publishAbortRef.current?.abort();
     const abort = new AbortController();
     publishAbortRef.current = abort;
+    const publishTarget = target;
     setPublishing(true);
     setError('');
+    setLiveSentBytes(0);
     setStatus(
       videoCompressing || (video && !preparedVideo && compressJobRef.current)
-        ? 'Waiting for video compression…'
-        : 'Preparing…'
+        ? tc('status.waiting_compression')
+        : tc('status.preparing')
     );
+    let live: LiveVideoUpload | null = null;
+    let videoFile: File | null = null;
     try {
-      let videoFile: File | null = null;
+      let videoIdentifier: string | undefined;
       if (video) {
         let prepared = preparedVideo;
-        if (!prepared && compressJobRef.current) {
-          setStatus('Waiting for background compression…');
-          prepared = await compressJobRef.current.promise;
-          if (abort.signal.aborted) {
-            throw new QuitterPublishCancelledError();
-          }
-          setPreparedVideo(prepared);
-        }
         if (!prepared) {
-          // Fallback if job was never started (e.g. re-edit without recompress).
-          const job = startBackgroundVideoPrepare({
-            file: video.file,
-            size: video.size,
-            name: `${video.title || 'video'}.mp4`,
-            mimeType: video.mimeType,
-            nativePath: video.nativePath,
-            compressLevel: video.compressLevel,
-            notificationTitle: video.title || 'Compressing video',
-            onProgress: (message, percent) => {
-              if (abort.signal.aborted) return;
-              setCompressLabel(message);
-              if (typeof percent === 'number') {
-                setCompressPercent(percent < 0 ? null : percent);
-              }
-              setStatus(message);
+          // Nothing running (never started, or it failed): start it now.
+          const job = compressJobRef.current || startVideoPrepareJob(video);
+          // Upload the finished part of the file while the rest compresses.
+          videoIdentifier = buildQtubeVideoIdentifier(video.title);
+          live = startLiveVideoUpload({
+            job,
+            userName,
+            videoIdentifier,
+            onLiveProgress: (sent) => {
+              if (!abort.signal.aborted) setLiveSentBytes(sent);
             },
           });
-          compressJobRef.current = job;
+          liveUploadRef.current = live;
+          setStatus(
+            live
+              ? tc('status.uploading_while_compressing')
+              : tc('status.waiting_compression')
+          );
           prepared = await job.promise;
           if (abort.signal.aborted) {
             throw new QuitterPublishCancelledError();
           }
           setPreparedVideo(prepared);
+          if (live) {
+            // Stop before deciding: a chunk may still be on its way out.
+            live.unfollow();
+            await live.upload.stopLive();
+          }
         }
         videoFile = prepared.file;
         // Drop source File so only the publish buffer stays in WebView memory.
         setVideo((prev) => (prev ? { ...prev, file: null } : prev));
+        const publishingLabel = prepared.compressed
+          ? tc('status.publishing_size', {
+              size: formatBytes(prepared.file.size),
+            })
+          : tc('status.publishing_video');
         setCompressPercent(35);
-        setCompressLabel(
-          prepared.compressed
-            ? `Publishing ${formatBytes(prepared.file.size)}…`
-            : 'Publishing video…'
-        );
-        setStatus(
-          prepared.compressed
-            ? `Publishing ${formatBytes(prepared.file.size)}…`
-            : 'Publishing video…'
-        );
+        setCompressLabel(publishingLabel);
+        setStatus(publishingLabel);
       }
 
       if (abort.signal.aborted) {
@@ -678,45 +859,69 @@ export const HomeQuitterComposer = ({
         if (!Number.isFinite(total) || total <= 0) return;
         const done = Math.max(0, Math.min(total, submitted || 0));
         const pct = 35 + Math.round((done / total) * 55);
+        const label = tc('status.publishing_chunks', { done, total });
         setCompressPercent(pct);
-        setCompressLabel(`Publishing… ${done}/${total}`);
-        setStatus(`Publishing… ${done}/${total}`);
+        setCompressLabel(label);
+        setStatus(label);
       };
       subscribeToEvent('receiveChunks', onChunkProgress);
 
-      let published:
-        | { postIdentifier: string }
-        | undefined;
-      try {
-        published = await publishQuitterPost({
-          // Quitter stores/renders plain text (pre-wrap) — never HTML tags.
-          text,
-          userName,
-          images: images.map((item) => ({ file: item.file })),
-          video:
-            video && videoFile
-              ? {
-                  file: videoFile,
-                  metadata: {
-                    title: video.title.trim(),
-                    description: video.description,
-                    category: video.category,
-                    duration: video.duration,
-                    videoImage: video.videoImage,
-                    extracts: video.extracts,
-                  },
-                }
-              : null,
-          onProgress: (message, percent) => {
-            if (abort.signal.aborted) return;
-            setStatus(message);
-            setCompressLabel(message);
-            if (typeof percent === 'number') {
-              setCompressPercent(Math.max(0, Math.min(100, percent)));
+      const videoInput =
+        video && videoFile
+          ? {
+              file: videoFile,
+              metadata: {
+                title: video.title.trim(),
+                description: video.description,
+                category: video.category,
+                duration: video.duration,
+                videoImage: video.videoImage,
+                extracts: video.extracts,
+              },
+              // Live chunks went to this identifier, so the publish must too.
+              identifier: live ? videoIdentifier : undefined,
+              // Any live chunk on the node must be reconciled by the upload.
+              streamedUpload: live?.upload.touchedNode() ? live.upload : null,
             }
-          },
-          signal: abort.signal,
-        });
+          : null;
+      const onProgress = (message: string, percent?: number) => {
+        if (abort.signal.aborted) return;
+        setStatus(message);
+        setCompressLabel(message);
+        if (typeof percent === 'number') {
+          setCompressPercent(Math.max(0, Math.min(100, percent)));
+        }
+      };
+
+      let published: { postIdentifier: string } | undefined;
+      try {
+        published =
+          publishTarget === 'torq'
+            ? await publishTorqPost({
+                text: torqBody.text,
+                richText: torqBody.richText,
+                userName,
+                images: images.map((item) => ({ file: item.file })),
+                video: videoInput,
+                gifs,
+                poll: pollChoices
+                  ? normalizeTorqPoll(pollChoices, {
+                      anonymous: pollAnonymous,
+                    })
+                  : null,
+                files: files.map((item) => ({ file: item.file })),
+                onProgress,
+                signal: abort.signal,
+              })
+            : await publishQuitterPost({
+                // Quitter stores/renders plain text (pre-wrap) — never HTML tags.
+                text,
+                userName,
+                images: images.map((item) => ({ file: item.file })),
+                video: videoInput,
+                onProgress,
+                signal: abort.signal,
+              });
       } finally {
         unsubscribeFromEvent('receiveChunks', onChunkProgress);
       }
@@ -726,30 +931,34 @@ export const HomeQuitterComposer = ({
       }
 
       const nextPublished: LastPublishedPost | null = published?.postIdentifier
-        ? { author: userName, postIdentifier: published.postIdentifier }
+        ? {
+            app: publishTarget === 'torq' ? 'Torq' : 'Quitter',
+            author: userName,
+            postIdentifier: published.postIdentifier,
+          }
         : null;
       resetDraft();
       setLastPublished(nextPublished);
-      setStatus('Published');
+      setStatus(tc('status.published'));
       onPublished?.();
     } catch (err: any) {
-      const cancelled =
-        err instanceof QuitterPublishCancelledError ||
-        err instanceof VideoPrepareCancelledError ||
-        err?.name === 'QuitterPublishCancelledError' ||
-        err?.name === 'VideoPrepareCancelledError' ||
-        /cancel/i.test(String(err?.message || err));
-      if (cancelled) {
-        setStatus('Cancelled');
+      if (isCancelError(err)) {
+        setStatus(tc('status.cancelled'));
         setError('');
         setCompressPercent(null);
-        setCompressLabel('Cancelled — publish again to retry');
+        setCompressLabel(tc('status.cancelled_retry'));
       } else {
-        setError(err?.message || 'Failed to publish');
+        setError(err?.message || tc('error.publish_failed'));
         setStatus('');
         setCompressPercent(null);
       }
     } finally {
+      live?.unfollow();
+      live?.upload.cancel();
+      if (liveUploadRef.current === live) liveUploadRef.current = null;
+      // A retry uses a new identifier; never reuse this attempt's chunks.
+      detachStreamedChunkUpload(videoFile);
+      setLiveSentBytes(0);
       if (publishAbortRef.current === abort) {
         publishAbortRef.current = null;
       }
@@ -760,7 +969,18 @@ export const HomeQuitterComposer = ({
   const isDark = theme.palette.mode === 'dark';
   const hazeAccent = '#7EB6FF';
   const hazeWarm = '#E8D5C4';
-  const quitterLogoUrl = buildAppThumbnailUrl('Quitter');
+  const appLogoUrl = buildAppThumbnailUrl(appName);
+
+  const thumbButtonSx = {
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    color: '#fff',
+    height: 22,
+    padding: 0,
+    position: 'absolute',
+    width: 22,
+    '&:hover': { backgroundColor: 'rgba(0,0,0,0.7)' },
+    '&.Mui-disabled': { display: 'none' },
+  } as const;
 
   return (
     <Box
@@ -825,7 +1045,7 @@ export const HomeQuitterComposer = ({
             key={logo.anim}
             component="img"
             alt=""
-            src={quitterLogoUrl}
+            src={appLogoUrl}
             sx={{
               animation: `quitterLogoFloat${logo.anim} ${logo.dur} ease-in-out infinite`,
               borderRadius: '14px',
@@ -865,7 +1085,8 @@ export const HomeQuitterComposer = ({
           }}
         >
           <AppThumbnailAvatar
-            appName="Quitter"
+            key={appName}
+            appName={appName}
             fallbackSize={22}
             sx={{
               bgcolor: alpha(theme.palette.common.black, isDark ? 0.25 : 0.06),
@@ -886,7 +1107,7 @@ export const HomeQuitterComposer = ({
                 letterSpacing: '0.01em',
               }}
             >
-              Post to Quitter
+              {tc('post_to', { app: appName })}
             </Typography>
             <Typography
               sx={{
@@ -896,7 +1117,7 @@ export const HomeQuitterComposer = ({
                 mt: 0.15,
               }}
             >
-              Share a quick public update — text, photos, or a video.
+              {isTorq ? tc('subtitle_torq') : tc('subtitle_quitter')}
             </Typography>
           </Box>
         </Box>
@@ -923,7 +1144,9 @@ export const HomeQuitterComposer = ({
             textTransform: 'none',
           }}
         >
-          {expanded ? 'Hide' : 'Compose'}
+          {expanded
+            ? t('core:action.hide', { postProcess: 'capitalizeFirstChar' })
+            : tc('action_compose')}
         </Button>
       </Box>
 
@@ -952,7 +1175,7 @@ export const HomeQuitterComposer = ({
               minWidth: 0,
             }}
           >
-            Published to Quitter
+            {tc('published_to', { app: lastPublished.app })}
           </Typography>
           <Button
             size="small"
@@ -966,7 +1189,7 @@ export const HomeQuitterComposer = ({
               textTransform: 'none',
             }}
           >
-            Open latest post
+            {tc('open_latest_post')}
           </Button>
         </Box>
       ) : null}
@@ -981,6 +1204,95 @@ export const HomeQuitterComposer = ({
             zIndex: 1,
           }}
         >
+          <Box
+            sx={{
+              alignItems: 'center',
+              display: 'flex',
+              flexWrap: 'wrap',
+              gap: 1,
+            }}
+          >
+            <ToggleButtonGroup
+              exclusive
+              size="small"
+              value={target}
+              disabled={publishing}
+              aria-label={tc('target_label')}
+              onChange={(_event, next) => handleTargetChange(next)}
+              sx={{
+                '& .MuiToggleButton-root': {
+                  borderRadius: '999px',
+                  fontSize: 12.5,
+                  fontWeight: 650,
+                  gap: 0.75,
+                  lineHeight: 1.2,
+                  px: 1.5,
+                  py: 0.5,
+                  textTransform: 'none',
+                },
+                '& .MuiToggleButtonGroup-grouped:not(:first-of-type)': {
+                  ml: 0.5,
+                  borderLeft: `1px solid ${theme.palette.divider}`,
+                },
+              }}
+            >
+              {(['quitter', 'torq'] as const).map((option) => {
+                const optionApp = option === 'torq' ? 'Torq' : 'Quitter';
+                return (
+                  <ToggleButton key={option} value={option}>
+                    <AppThumbnailAvatar
+                      appName={optionApp}
+                      fallbackSize={12}
+                      sx={{
+                        height: 18,
+                        width: 18,
+                        '& img': { objectFit: 'cover' },
+                      }}
+                    />
+                    {optionApp}
+                  </ToggleButton>
+                );
+              })}
+            </ToggleButtonGroup>
+            {!isTorq ? (
+              <Box
+                sx={{
+                  alignItems: 'center',
+                  color: theme.palette.text.secondary,
+                  display: 'flex',
+                  flex: '1 1 180px',
+                  gap: 0.5,
+                  minWidth: 0,
+                }}
+              >
+                <AutoAwesomeRoundedIcon
+                  sx={{ color: theme.palette.primary.main, fontSize: 15 }}
+                />
+                <Typography sx={{ fontSize: 12, lineHeight: 1.35 }}>
+                  {tc('try_torq')}{' '}
+                  <Box
+                    component="button"
+                    type="button"
+                    disabled={publishing}
+                    onClick={() => handleTargetChange('torq')}
+                    sx={{
+                      background: 'none',
+                      border: 0,
+                      color: theme.palette.primary.main,
+                      cursor: 'pointer',
+                      font: 'inherit',
+                      fontWeight: 650,
+                      p: 0,
+                      textDecoration: 'underline',
+                    }}
+                  >
+                    {tc('switch_to_torq')}
+                  </Box>
+                </Typography>
+              </Box>
+            ) : null}
+          </Box>
+
           {!hasName ? (
             <Typography
               sx={{
@@ -993,37 +1305,44 @@ export const HomeQuitterComposer = ({
                 py: 1,
               }}
             >
-              Register a Qortal name to publish on Quitter.
+              {tc('register_name', { app: appName })}
             </Typography>
           ) : null}
 
-          <TextField
-            multiline
-            minRows={4}
-            maxRows={10}
-            fullWidth
-            disabled={!hasName || publishing}
-            placeholder={
-              'What are you sharing?\n\nBlank lines create space between paragraphs.'
-            }
-            value={text}
-            onChange={(event) => setText(event.target.value)}
-            sx={{
-              '& .MuiOutlinedInput-root': {
-                backgroundColor:
-                  theme.palette.mode === 'dark'
-                    ? 'rgba(255,255,255,0.03)'
-                    : alpha(theme.palette.common.black, 0.02),
-                borderRadius: '12px',
-                fontSize: 14,
-                lineHeight: 1.55,
-              },
-            }}
-          />
+          {isTorq ? (
+            <TorqTextEditor
+              key={editorKey}
+              initialDoc={torqDoc}
+              disabled={!hasName || publishing}
+              onChange={setTorqDoc}
+            />
+          ) : (
+            <TextField
+              multiline
+              minRows={4}
+              maxRows={10}
+              fullWidth
+              disabled={!hasName || publishing}
+              placeholder={tc('quitter_placeholder')}
+              value={text}
+              onChange={(event) => setText(event.target.value)}
+              sx={{
+                '& .MuiOutlinedInput-root': {
+                  backgroundColor:
+                    theme.palette.mode === 'dark'
+                      ? 'rgba(255,255,255,0.03)'
+                      : alpha(theme.palette.common.black, 0.02),
+                  borderRadius: '12px',
+                  fontSize: 14,
+                  lineHeight: 1.55,
+                },
+              }}
+            />
+          )}
 
-          {(images.length > 0 || video) && (
+          {(images.length > 0 || video || gifs.length > 0) && (
             <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
-              {images.map((img) => (
+              {images.map((img, index) => (
                 <Box
                   key={img.id}
                   sx={{
@@ -1042,17 +1361,61 @@ export const HomeQuitterComposer = ({
                   />
                   <IconButton
                     size="small"
-                    aria-label="Remove image"
+                    aria-label={tc('remove_image')}
                     disabled={publishing}
                     onClick={() => removeImage(img.id)}
-                    sx={{
-                      backgroundColor: 'rgba(0,0,0,0.55)',
-                      color: '#fff',
-                      position: 'absolute',
-                      right: 2,
-                      top: 2,
-                      '&:hover': { backgroundColor: 'rgba(0,0,0,0.7)' },
-                    }}
+                    sx={{ ...thumbButtonSx, right: 2, top: 2 }}
+                  >
+                    <CloseRoundedIcon sx={{ fontSize: 14 }} />
+                  </IconButton>
+                  {isTorq && images.length > 1 ? (
+                    <>
+                      <IconButton
+                        size="small"
+                        aria-label={tc('move_image_earlier')}
+                        disabled={publishing || index === 0}
+                        onClick={() => moveImage(index, -1)}
+                        sx={{ ...thumbButtonSx, bottom: 2, left: 2 }}
+                      >
+                        <ChevronLeftRoundedIcon sx={{ fontSize: 16 }} />
+                      </IconButton>
+                      <IconButton
+                        size="small"
+                        aria-label={tc('move_image_later')}
+                        disabled={publishing || index === images.length - 1}
+                        onClick={() => moveImage(index, 1)}
+                        sx={{ ...thumbButtonSx, bottom: 2, right: 2 }}
+                      >
+                        <ChevronRightRoundedIcon sx={{ fontSize: 16 }} />
+                      </IconButton>
+                    </>
+                  ) : null}
+                </Box>
+              ))}
+              {gifs.map((gif) => (
+                <Box
+                  key={libraryGifKey(gif)}
+                  sx={{
+                    borderRadius: '10px',
+                    height: 72,
+                    overflow: 'hidden',
+                    position: 'relative',
+                    width: 72,
+                  }}
+                >
+                  <GifImage gif={gif} eager fill />
+                  <IconButton
+                    size="small"
+                    aria-label={tc('remove_gif')}
+                    disabled={publishing}
+                    onClick={() =>
+                      setGifs((prev) =>
+                        prev.filter(
+                          (item) => libraryGifKey(item) !== libraryGifKey(gif)
+                        )
+                      )
+                    }
+                    sx={{ ...thumbButtonSx, right: 2, top: 2 }}
                   >
                     <CloseRoundedIcon sx={{ fontSize: 14 }} />
                   </IconButton>
@@ -1107,6 +1470,18 @@ export const HomeQuitterComposer = ({
                           videoPlan ? ` · ${videoPlan.label}` : ''
                         }`}
                     </Typography>
+                    {publishing && liveSentBytes > 0 ? (
+                      <Typography
+                        sx={{
+                          color: theme.palette.text.secondary,
+                          fontSize: 11.5,
+                        }}
+                      >
+                        {tc('status.live_uploaded', {
+                          size: formatBytes(liveSentBytes),
+                        })}
+                      </Typography>
+                    ) : null}
                     {publishing ||
                     videoCompressing ||
                     (compressPercent != null && compressPercent < 100) ? (
@@ -1128,7 +1503,7 @@ export const HomeQuitterComposer = ({
                     <Box sx={{ display: 'flex', gap: 0.25, mt: 0.25 }}>
                       <IconButton
                         size="small"
-                        aria-label="Edit video details"
+                        aria-label={tc('edit_video')}
                         disabled={publishing}
                         onClick={() => {
                           setPendingVideo({
@@ -1146,7 +1521,7 @@ export const HomeQuitterComposer = ({
                       </IconButton>
                       <IconButton
                         size="small"
-                        aria-label="Remove video"
+                        aria-label={tc('remove_video')}
                         disabled={publishing}
                         onClick={clearVideo}
                       >
@@ -1159,6 +1534,82 @@ export const HomeQuitterComposer = ({
             </Box>
           )}
 
+          {files.length > 0 ? (
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75 }}>
+              {files.map((item) => (
+                <Box
+                  key={item.id}
+                  sx={{
+                    alignItems: 'center',
+                    border: `1px solid ${theme.palette.divider}`,
+                    borderRadius: '10px',
+                    display: 'flex',
+                    gap: 1,
+                    minWidth: 0,
+                    pl: 1.25,
+                    pr: 0.5,
+                    py: 0.5,
+                  }}
+                >
+                  {isAudioFile(item.file) ? (
+                    <AudioFileOutlinedIcon
+                      sx={{ color: theme.palette.text.secondary, fontSize: 20 }}
+                    />
+                  ) : (
+                    <InsertDriveFileOutlinedIcon
+                      sx={{ color: theme.palette.text.secondary, fontSize: 20 }}
+                    />
+                  )}
+                  <Typography
+                    sx={{
+                      flex: 1,
+                      fontSize: 13,
+                      minWidth: 0,
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {item.file.name}
+                  </Typography>
+                  <Typography
+                    sx={{
+                      color: theme.palette.text.secondary,
+                      flexShrink: 0,
+                      fontSize: 12,
+                    }}
+                  >
+                    {formatBytes(item.file.size)}
+                  </Typography>
+                  <IconButton
+                    size="small"
+                    aria-label={tc('remove_file', { name: item.file.name })}
+                    disabled={publishing}
+                    onClick={() =>
+                      setFiles((prev) => prev.filter((f) => f.id !== item.id))
+                    }
+                  >
+                    <CloseRoundedIcon sx={{ fontSize: 16 }} />
+                  </IconButton>
+                </Box>
+              ))}
+            </Box>
+          ) : null}
+
+          {isTorq && pollChoices ? (
+            <TorqPollEditor
+              choices={pollChoices}
+              anonymous={pollAnonymous}
+              disabled={publishing}
+              onChoicesChange={setPollChoices}
+              onAnonymousChange={setPollAnonymous}
+              onRemove={() => {
+                setPollChoices(null);
+                setPollAnonymous(false);
+              }}
+            />
+          ) : null}
+
           <Box
             sx={{
               alignItems: 'center',
@@ -1168,7 +1619,7 @@ export const HomeQuitterComposer = ({
               justifyContent: 'space-between',
             }}
           >
-            <Box sx={{ display: 'flex', gap: 0.5 }}>
+            <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.25 }}>
               <input
                 ref={imageInputRef}
                 type="file"
@@ -1190,15 +1641,34 @@ export const HomeQuitterComposer = ({
                   event.target.value = '';
                 }}
               />
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                hidden
+                onChange={(event) => {
+                  handlePickFiles(event.target.files);
+                  event.target.value = '';
+                }}
+              />
               <IconButton
-                aria-label="Add image"
-                disabled={!hasName || publishing || images.length >= 2}
+                aria-label={tc('add_image')}
+                disabled={!hasName || publishing || images.length >= maxImages}
                 onClick={() => imageInputRef.current?.click()}
               >
                 <ImageOutlinedIcon />
               </IconButton>
+              {isTorq ? (
+                <IconButton
+                  aria-label={tc('add_gif')}
+                  disabled={!hasName || publishing || gifs.length >= TORQ_MAX_GIFS}
+                  onClick={() => setGifDialogOpen(true)}
+                >
+                  <GifBoxOutlinedIcon />
+                </IconButton>
+              ) : null}
               <IconButton
-                aria-label="Add video"
+                aria-label={tc('add_video')}
                 disabled={!hasName || publishing || Boolean(video)}
                 onClick={() => {
                   if (isCapacitorAndroid()) {
@@ -1210,6 +1680,45 @@ export const HomeQuitterComposer = ({
               >
                 <VideocamOutlinedIcon />
               </IconButton>
+              {isTorq ? (
+                <>
+                  <IconButton
+                    aria-label={tc('add_files')}
+                    disabled={!hasName || publishing}
+                    onClick={() => fileInputRef.current?.click()}
+                  >
+                    <AttachFileRoundedIcon />
+                  </IconButton>
+                  <IconButton
+                    aria-label={tc('add_poll')}
+                    aria-pressed={pollChoices != null}
+                    disabled={!hasName || publishing}
+                    onClick={() => {
+                      if (pollChoices) {
+                        setPollChoices(null);
+                        setPollAnonymous(false);
+                      } else {
+                        setPollChoices(
+                          Array.from({ length: TORQ_MIN_POLL_OPTIONS }, () => '')
+                        );
+                      }
+                    }}
+                    sx={
+                      pollChoices
+                        ? {
+                            backgroundColor: alpha(
+                              theme.palette.primary.main,
+                              0.12
+                            ),
+                            color: theme.palette.primary.main,
+                          }
+                        : undefined
+                    }
+                  >
+                    <PollOutlinedIcon />
+                  </IconButton>
+                </>
+              ) : null}
             </Box>
             <Box sx={{ display: 'flex', gap: 0.75 }}>
               {publishing || videoCompressing ? (
@@ -1224,7 +1733,9 @@ export const HomeQuitterComposer = ({
                     textTransform: 'none',
                   }}
                 >
-                  Cancel
+                  {t('core:action.cancel', {
+                    postProcess: 'capitalizeFirstChar',
+                  })}
                 </Button>
               ) : null}
               <Button
@@ -1246,14 +1757,30 @@ export const HomeQuitterComposer = ({
                 }}
               >
                 {publishing
-                  ? 'Publishing…'
+                  ? tc('publishing')
                   : videoCompressing
-                    ? 'Publish when ready'
-                    : 'Publish'}
+                    ? tc('publish_when_ready')
+                    : t('core:action.publish', {
+                        postProcess: 'capitalizeFirstChar',
+                      })}
               </Button>
             </Box>
           </Box>
 
+          {quitterBlockedReason ? (
+            <Typography
+              sx={{ color: theme.palette.warning.main, fontSize: 12.5 }}
+            >
+              {quitterBlockedReason}
+            </Typography>
+          ) : null}
+          {pollInvalid ? (
+            <Typography
+              sx={{ color: theme.palette.text.secondary, fontSize: 12 }}
+            >
+              {tc('poll_needs_choices', { count: TORQ_MIN_POLL_OPTIONS })}
+            </Typography>
+          ) : null}
           {status ? (
             <Typography
               sx={{ color: theme.palette.text.secondary, fontSize: 12 }}
@@ -1270,6 +1797,41 @@ export const HomeQuitterComposer = ({
           ) : null}
         </Box>
       ) : null}
+
+      <Dialog
+        open={gifDialogOpen}
+        onClose={() => setGifDialogOpen(false)}
+        fullWidth
+        maxWidth="xs"
+        PaperProps={{ sx: { borderRadius: '16px' } }}
+      >
+        <DialogTitle
+          sx={{
+            alignItems: 'center',
+            display: 'flex',
+            fontSize: 16,
+            fontWeight: 650,
+            justifyContent: 'space-between',
+            pb: 1,
+          }}
+        >
+          {tc('gif_dialog_title')}
+          <IconButton
+            size="small"
+            aria-label={t('core:action.close', {
+              postProcess: 'capitalizeFirstChar',
+            })}
+            onClick={() => setGifDialogOpen(false)}
+          >
+            <CloseRoundedIcon fontSize="small" />
+          </IconButton>
+        </DialogTitle>
+        <DialogContent sx={{ px: 1.5, pb: 1.5 }}>
+          {gifDialogOpen ? (
+            <ChatGifPicker height={420} onSelect={handleSelectGif} />
+          ) : null}
+        </DialogContent>
+      </Dialog>
 
       {editorSource ? (
         <QuitterVideoEditorDialog

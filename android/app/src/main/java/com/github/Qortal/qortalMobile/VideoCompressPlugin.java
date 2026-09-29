@@ -36,9 +36,13 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.RandomAccessFile;
+import java.security.SecureRandom;
 import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -77,7 +81,16 @@ public class VideoCompressPlugin extends Plugin {
     private Future<?> runningJob;
     private Future<Void> transcoderFuture;
     private PluginCall activeCall;
-    @Nullable private LocalFileHttpServer fileServer;
+    /**
+     * Loopback file servers keyed by their random URL token. Several can run at
+     * once: the composer streams the growing compress output while the final
+     * read (or Qortino audio save) serves another file.
+     */
+    private final Map<String, LocalFileHttpServer> fileServers = new LinkedHashMap<>();
+    private static final int MAX_FILE_SERVERS = 4;
+    private final SecureRandom tokenRandom = new SecureRandom();
+    /** File the running transcode attempt is writing (null when idle). */
+    @Nullable private volatile String currentOutputPath;
 
     private static final class Attempt {
         final String label;
@@ -122,6 +135,8 @@ public class VideoCompressPlugin extends Plugin {
         float keyFrameInterval = keyFrameIntervalObj != null ? keyFrameIntervalObj.floatValue() : 3f;
         int audioBitRate = call.getInt("audioBitRate", 96_000);
         int audioChannels = call.getInt("audioChannels", 0); // 0 = as input, 1 = mono
+        Double durationSecObj = call.getDouble("durationSec");
+        double durationSec = durationSecObj != null ? durationSecObj : 0.0;
         String title = call.getString("notificationTitle", "Compressing video");
 
         Uri sourceUri = resolveUri(path);
@@ -136,8 +151,15 @@ public class VideoCompressPlugin extends Plugin {
         final int clampedHeight = align16(Math.max(360, Math.min(720, maxHeight)));
         final int clampedFps = Math.max(15, Math.min(30, frameRate));
         final float clampedGop = Math.max(2f, Math.min(5f, keyFrameInterval));
-        final long bitrate = estimateBitrate(sourceSize, targetMaxBytes, clampedHeight, clampedFps);
         final int safeAudioBitRate = Math.max(64_000, Math.min(128_000, audioBitRate));
+        final long bitrate = estimateBitrate(
+                sourceSize,
+                targetMaxBytes,
+                clampedHeight,
+                clampedFps,
+                durationSec,
+                safeAudioBitRate
+        );
 
         // Build a ladder of increasingly conservative strategies for OEM quirks.
         final List<Attempt> attempts = buildAttempts(
@@ -189,6 +211,9 @@ public class VideoCompressPlugin extends Plugin {
                             "quitter-a" + i + "-" + System.currentTimeMillis() + ".mp4"
                     );
                     Log.i(TAG, "Attempt " + (i + 1) + "/" + attempts.size() + ": " + attempt.label);
+                    // Progress events carry this path so JS can upload the
+                    // finished part of the file while the rest is encoding.
+                    currentOutputPath = outFile.getAbsolutePath();
                     if (i > 0) {
                         showProgressNotification(
                                 title,
@@ -229,6 +254,7 @@ public class VideoCompressPlugin extends Plugin {
                             "Invalid output (" + (outFile.exists() ? outFile.length() : 0) + " bytes)"
                     );
                     Log.w(TAG, "Attempt failed: " + attempt.label + " — " + lastError.getMessage());
+                    currentOutputPath = null;
                     //noinspection ResultOfMethodCallIgnored
                     outFile.delete();
                     outFile = null;
@@ -250,6 +276,7 @@ public class VideoCompressPlugin extends Plugin {
                 );
             } finally {
                 transcoderFuture = null;
+                currentOutputPath = null;
                 if (localSource != null) {
                     //noinspection ResultOfMethodCallIgnored
                     localSource.delete();
@@ -366,13 +393,15 @@ public class VideoCompressPlugin extends Plugin {
             return;
         }
 
+        LocalFileHttpServer server = null;
         try {
-            stopFileServer();
-            fileServer = new LocalFileHttpServer(file);
-            fileServer.start();
-            int port = fileServer.getListeningPort();
-            String url = "http://127.0.0.1:" + port + "/file";
-            Log.i(TAG, "Serving " + file.length() + " bytes at " + url);
+            String token = newServeToken();
+            server = new LocalFileHttpServer(file, token);
+            server.start();
+            registerFileServer(token, server);
+            int port = server.getListeningPort();
+            String url = "http://127.0.0.1:" + port + "/" + token;
+            Log.i(TAG, "Serving " + file.length() + " bytes on port " + port);
             JSObject result = new JSObject();
             result.put("url", url);
             result.put("path", file.getAbsolutePath());
@@ -380,14 +409,25 @@ public class VideoCompressPlugin extends Plugin {
             call.resolve(result);
         } catch (Exception e) {
             Log.e(TAG, "serveFile failed", e);
-            stopFileServer();
+            if (server != null) {
+                try {
+                    server.stop();
+                } catch (Exception ignored) {
+                }
+            }
             call.reject(e.getMessage() != null ? e.getMessage() : "Failed to serve file");
         }
     }
 
+    /** Stop the server behind `url`, or every server when `url` is omitted. */
     @PluginMethod
     public void stopServe(PluginCall call) {
-        stopFileServer();
+        String url = call.getString("url");
+        if (url == null || url.isEmpty()) {
+            stopAllFileServers();
+        } else {
+            stopFileServer(tokenFromUrl(url));
+        }
         call.resolve();
     }
 
@@ -538,26 +578,86 @@ public class VideoCompressPlugin extends Plugin {
         });
     }
 
-    private void stopFileServer() {
-        if (fileServer != null) {
+    private String newServeToken() {
+        byte[] bytes = new byte[16];
+        tokenRandom.nextBytes(bytes);
+        StringBuilder sb = new StringBuilder(bytes.length * 2);
+        for (byte b : bytes) {
+            sb.append(String.format(Locale.US, "%02x", b));
+        }
+        return sb.toString();
+    }
+
+    @Nullable
+    private static String tokenFromUrl(String url) {
+        int slash = url.lastIndexOf('/');
+        if (slash < 0 || slash == url.length() - 1) return null;
+        return url.substring(slash + 1);
+    }
+
+    private void registerFileServer(String token, LocalFileHttpServer server) {
+        LocalFileHttpServer evicted = null;
+        synchronized (fileServers) {
+            fileServers.put(token, server);
+            if (fileServers.size() > MAX_FILE_SERVERS) {
+                // Callers that forget stopServe must not leak threads/ports.
+                Iterator<Map.Entry<String, LocalFileHttpServer>> it =
+                        fileServers.entrySet().iterator();
+                Map.Entry<String, LocalFileHttpServer> oldest = it.next();
+                evicted = oldest.getValue();
+                it.remove();
+            }
+        }
+        if (evicted != null) {
             try {
-                fileServer.stop();
+                evicted.stop();
             } catch (Exception ignored) {
             }
-            fileServer = null;
+        }
+    }
+
+    private void stopFileServer(@Nullable String token) {
+        if (token == null) return;
+        LocalFileHttpServer server;
+        synchronized (fileServers) {
+            server = fileServers.remove(token);
+        }
+        if (server != null) {
+            try {
+                server.stop();
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    private void stopAllFileServers() {
+        List<LocalFileHttpServer> servers;
+        synchronized (fileServers) {
+            servers = new ArrayList<>(fileServers.values());
+            fileServers.clear();
+        }
+        for (LocalFileHttpServer server : servers) {
+            try {
+                server.stop();
+            } catch (Exception ignored) {
+            }
         }
     }
 
     /**
      * Tiny NanoHTTPD that serves one file with CORS + Range support so the
      * Capacitor WebView can fetch large MP4s reliably over loopback HTTP.
+     * Only `/<token>` answers, so other apps probing loopback ports cannot
+     * read the file.
      */
     private static final class LocalFileHttpServer extends NanoHTTPD {
         private final File file;
+        private final String path;
 
-        LocalFileHttpServer(@NonNull File file) {
-            super(0); // ephemeral port
+        LocalFileHttpServer(@NonNull File file, @NonNull String token) {
+            super("127.0.0.1", 0); // loopback only, ephemeral port
             this.file = file;
+            this.path = "/" + token;
         }
 
         @Override
@@ -566,7 +666,7 @@ public class VideoCompressPlugin extends Plugin {
             if ("/favicon.ico".equals(uri)) {
                 return newFixedLengthResponse(Response.Status.NOT_FOUND, MIME_PLAINTEXT, "");
             }
-            if (!"/file".equals(uri) && !"/".equals(uri)) {
+            if (!path.equals(uri)) {
                 return cors(newFixedLengthResponse(
                         Response.Status.NOT_FOUND,
                         MIME_PLAINTEXT,
@@ -1043,6 +1143,10 @@ public class VideoCompressPlugin extends Plugin {
         JSObject data = new JSObject();
         data.put("progress", progress);
         data.put("state", state);
+        String outputPath = currentOutputPath;
+        if (outputPath != null && progress >= 0 && progress < 100) {
+            data.put("path", outputPath);
+        }
         notifyListeners("progress", data);
     }
 
@@ -1124,16 +1228,27 @@ public class VideoCompressPlugin extends Plugin {
             long sourceSize,
             Long targetMaxBytes,
             int maxHeight,
-            int frameRate
+            int frameRate,
+            double durationSec,
+            int audioBitRate
     ) {
         long target = targetMaxBytes != null && targetMaxBytes > 0
                 ? targetMaxBytes
                 : Math.max(16L * 1024L * 1024L, sourceSize / 2);
+        // JS sizes targetMaxBytes from the clip length it passes as durationSec.
+        // Guessing the length here instead (at 5 Mbps) halved the bitrate of
+        // typical 10–16 Mbps phone clips, so High landed at the 1 Mbps floor.
         double assumedSeconds = 120.0;
-        if (sourceSize > 0) {
+        if (durationSec > 0.5) {
+            assumedSeconds = Math.min(1800.0, durationSec);
+        } else if (sourceSize > 0) {
             assumedSeconds = Math.max(15.0, Math.min(1800.0, (sourceSize * 8.0) / 5_000_000.0));
         }
         long bitrate = (long) ((target * 8.0) / assumedSeconds);
+        if (durationSec > 0.5) {
+            // JS sized the target as (video + audio) × seconds × 1.03 mux overhead.
+            bitrate = (long) (bitrate / 1.03) - audioBitRate;
+        }
         long min;
         long max;
         if (maxHeight <= 360) {

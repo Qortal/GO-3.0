@@ -10,9 +10,11 @@ import { useTranslation, type TFunction } from 'react-i18next';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded';
 import DownloadRoundedIcon from '@mui/icons-material/DownloadRounded';
+import ShareRoundedIcon from '@mui/icons-material/ShareRounded';
 import ZoomInRoundedIcon from '@mui/icons-material/ZoomInRounded';
 import ZoomOutRoundedIcon from '@mui/icons-material/ZoomOutRounded';
 import { Capacitor } from '@capacitor/core';
+import { BACK_PRIORITY, useAndroidBack } from '../../utils/androidBack';
 
 type ReticulumImageViewerProps = {
   alt?: string;
@@ -154,6 +156,14 @@ export const ReticulumImageViewer = ({
       window.removeEventListener('scroll', updateBounds, true);
     };
   }, [containerElement, open]);
+
+  useAndroidBack(
+    () => {
+      onClose();
+      return true;
+    },
+    { priority: BACK_PRIORITY.call, enabled: open }
+  );
 
   useEffect(() => {
     if (!open) return;
@@ -356,6 +366,24 @@ export const ReticulumImageViewer = ({
     }
   }, [fileName, getImageBlob, mimeType, t]);
 
+  const handleShare = useCallback(async () => {
+    try {
+      const blob = await getImageBlob();
+      const name = getDownloadFileName(fileName, blob.type || mimeType);
+      const { shareStagedMobileFile, stageMobileFileForSharing } =
+        await import('../../utils/mobileFileShare');
+      const uri = await stageMobileFileForSharing(src, name, blob);
+      await shareStagedMobileFile(uri, name);
+    } catch (error) {
+      console.error('[ReticulumImageViewer] share failed:', error);
+      setActionStatus(
+        t('reticulum:image_viewer.share_failed', {
+          postProcess: 'capitalizeFirstChar',
+        })
+      );
+    }
+  }, [fileName, getImageBlob, mimeType, src, t]);
+
   const controlSx = {
     backgroundColor: 'rgba(21, 24, 29, 0.92)',
     border: '1px solid',
@@ -462,6 +490,24 @@ export const ReticulumImageViewer = ({
               </IconButton>
             </span>
           </Tooltip>
+          {Capacitor.isNativePlatform() && (
+            <Tooltip
+              title={t('reticulum:image_viewer.share', {
+                postProcess: 'capitalizeFirstChar',
+              })}
+              disableFocusListener
+            >
+              <IconButton
+                aria-label={t('reticulum:image_viewer.share', {
+                  postProcess: 'capitalizeFirstChar',
+                })}
+                onClick={() => void handleShare()}
+                sx={controlSx}
+              >
+                <ShareRoundedIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
+          )}
           <Tooltip
             title={
               Capacitor.isNativePlatform()

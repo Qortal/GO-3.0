@@ -20,6 +20,30 @@ import {
   QTUBE_VIDEO_BASE,
   quitterHashString,
 } from './quitterIdentity';
+import {
+  attachStreamedChunkUpload,
+  type StreamedChunkUpload,
+} from '../../../utils/streamedChunkUpload';
+import i18n from '../../../i18n/i18n';
+
+/** Quitter renders at most 2 images per post. */
+export const QUITTER_MAX_IMAGES = 2;
+
+/**
+ * qapp-core lists skip any QDN resource of 5 MiB or more, and Quitter builds
+ * its feed, profiles and replies from those lists — a bigger post never shows.
+ * (Same limit Torq enforces in its publishPost.)
+ */
+export const QUITTER_MAX_POST_BYTES = 5 * 1024 * 1024;
+/** Base64 characters the photos may use, leaving room for text, poll, links. */
+export const POST_IMAGE_BUDGET = QUITTER_MAX_POST_BYTES - 256 * 1024;
+/** Stronger settings, tried in turn, when a post's photos are too big. */
+const IMAGE_FIT_STEPS = [
+  { quality: 0.7, maxSide: 1600 },
+  { quality: 0.6, maxSide: 1280 },
+  { quality: 0.5, maxSide: 1024 },
+  { quality: 0.4, maxSide: 800 },
+];
 
 const videoUid = new ShortUniqueId({ length: 8 });
 const videoCodeUid = new ShortUniqueId({ length: 5 });
@@ -42,6 +66,10 @@ export type QuitterPublishImage = {
 export type QuitterPublishVideo = {
   file: File;
   metadata: QuitterVideoMetadata;
+  /** Pre-chosen VIDEO identifier (needed when chunks upload during compress). */
+  identifier?: string;
+  /** Chunks already sent to `identifier` while the file was compressing. */
+  streamedUpload?: StreamedChunkUpload | null;
 };
 
 export type QuitterPublishInput = {
@@ -88,7 +116,7 @@ export type QuitterPublishResult = {
   postIdentifier: string;
 };
 
-const stripHtmlTags = (html: string): string => {
+export const stripHtmlTags = (html: string): string => {
   if (!html) return '';
   // Prefer regex so we can keep paragraph breaks (textContent collapses them).
   return html
@@ -108,7 +136,7 @@ const stripHtmlTags = (html: string): string => {
 const normalizeKeywords = (keywords: string[]) =>
   keywords.map((tag) => `~${tag}~`).join(',');
 
-const fileToRawBase64 = (file: Blob): Promise<string> =>
+export const fileToRawBase64 = (file: Blob): Promise<string> =>
   new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => {
@@ -137,7 +165,7 @@ async function compressImageForQuitter(file: File): Promise<File> {
   });
 }
 
-const publishMultipleResources = async (
+export const publishMultipleResources = async (
   resources: unknown[],
   signal?: AbortSignal,
   timeoutMs = 240000
@@ -188,7 +216,9 @@ const publishMultipleResources = async (
         reasons ||
         (typeof res.error === 'string' && res.error) ||
         (typeof res.message === 'string' && res.message) ||
-        'Failed to publish to Quitter';
+        i18n.t('group:home_composer.error.publish_failed', {
+          postProcess: 'capitalizeFirstChar',
+        });
       console.error('[Quitter] PUBLISH_MULTIPLE_QDN_RESOURCES failed', res);
       throw new Error(detail);
     }
@@ -231,6 +261,254 @@ async function shrinkVideoImageDataUrl(dataUrl: string): Promise<string> {
   return out.startsWith('data:image/') ? out : dataUrl;
 }
 
+export type QtubeVideoResources = {
+  /** VIDEO then its Q-Tube metadata DOCUMENT — VIDEO must publish first. */
+  resources: Record<string, unknown>[];
+  videoIdentifier: string;
+  metadataIdentifier: string;
+  mimeType: string;
+  stashedFileId: string;
+};
+
+/** Q-Tube VIDEO identifier: `qtube_vid_<title-slug>_<id8>`. */
+export function buildQtubeVideoIdentifier(title: string): string {
+  const slug = title
+    .trim()
+    .replace(/[^a-zA-Z0-9\s-]/g, '')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .trim()
+    .toLowerCase();
+  return `${QTUBE_VIDEO_BASE}${slug.slice(0, 30)}_${videoUid.rnd()}`;
+}
+
+/**
+ * Build the Q-Tube VIDEO + metadata DOCUMENT pair shared by Quitter and Torq
+ * posts. The file is stashed (not cloned through postMessage); a streamed
+ * upload rides along on the same Blob so publishData can finish it.
+ */
+export async function buildQtubeVideoResources({
+  video,
+  userName,
+  onProgress,
+  signal,
+}: {
+  video: QuitterPublishVideo;
+  userName: string;
+  onProgress?: (message: string, percent?: number) => void;
+  signal?: AbortSignal;
+}): Promise<QtubeVideoResources> {
+  throwIfPublishAborted(signal);
+  onProgress?.(
+    i18n.t('group:home_composer.progress.preparing_video', {
+      postProcess: 'capitalizeFirstChar',
+    }),
+    22
+  );
+
+  if (!video.file || video.file.size < 32 * 1024) {
+    throw new Error(
+      i18n.t('group:home_composer.error.video_invalid', {
+        size: video.file?.size || 0,
+        postProcess: 'capitalizeFirstChar',
+      })
+    );
+  }
+
+  const title = video.metadata.title.trim();
+  const videoIdentifier =
+    video.identifier || buildQtubeVideoIdentifier(title);
+  const id = videoIdentifier.slice(videoIdentifier.lastIndexOf('_') + 1);
+  const metadataIdentifier = `${videoIdentifier}_metadata`;
+  const videoCode = videoCodeUid.rnd();
+  const commentsId = `${QTUBE_VIDEO_BASE}_cm_${id}`;
+  // Q-Tube stores rich HTML here; plain description is fine as text content.
+  const htmlDescription = video.metadata.description || '';
+  const fullDescription = stripHtmlTags(htmlDescription) || htmlDescription;
+  const subcategoryStr = video.metadata.subcategory || '';
+  const metadescription =
+    `**category:${video.metadata.category};subcategory:${subcategoryStr};code:${videoCode}**` +
+    fullDescription.slice(0, 150);
+
+  // Quitter/Q-Tube use videoImage as <img src> / poster — must be a data URL.
+  let videoImage = toQuitterVideoImageDataUrl(video.metadata.videoImage);
+  if (!videoImage) {
+    onProgress?.(
+      i18n.t('group:home_composer.progress.creating_thumbnail', {
+        postProcess: 'capitalizeFirstChar',
+      }),
+      28
+    );
+    const extracted = await extractVideoThumbnailBase64(video.file);
+    videoImage = toQuitterVideoImageDataUrl(extracted.videoImage);
+  }
+  if (!videoImage) {
+    throw new Error(
+      i18n.t('group:home_composer.error.video_thumbnail_required', {
+        postProcess: 'capitalizeFirstChar',
+      })
+    );
+  }
+  // Keep metadata small — huge data-URL thumbs can crash the WebView mid-publish.
+  try {
+    videoImage = await shrinkVideoImageDataUrl(videoImage);
+  } catch {
+    // keep original data URL
+  }
+
+  // Q-Tube hover preview: exactly 4 WebP data URLs in `extracts`.
+  // Missing/empty extracts → ResponsiveImage shows DeletedVideo.jpg on hover.
+  onProgress?.(
+    i18n.t('group:home_composer.progress.creating_hover_frames', {
+      postProcess: 'capitalizeFirstChar',
+    }),
+    30
+  );
+  let extracts: string[] = Array.isArray(video.metadata.extracts)
+    ? video.metadata.extracts.filter(
+        (item) => typeof item === 'string' && item.startsWith('data:image/')
+      )
+    : [];
+  if (extracts.length < 4) {
+    try {
+      const generated = await extractVideoHoverFrames(video.file);
+      if (generated.length > extracts.length) extracts = generated;
+    } catch (err) {
+      console.warn('[Quitter] hover frame extract failed', err);
+    }
+  }
+  // Last resort: repeat cover so hover never falls through to DeletedVideo.
+  if (extracts.length === 0 && videoImage) {
+    extracts = [videoImage, videoImage, videoImage, videoImage];
+  } else if (extracts.length > 0 && extracts.length < 4 && videoImage) {
+    while (extracts.length < 4) extracts.push(videoImage);
+  }
+
+  // Match Q-Tube filename sanitization (alphanumeric + underscore + ext).
+  const fileExt =
+    (video.file.name.split('.').pop() || 'mp4').replace(/[^\w]/g, '') ||
+    'mp4';
+  const safeBase = title
+    .slice(0, 15)
+    .replace(/[\s\uFEFF\xA0]+/g, '_')
+    .replace(/[^a-zA-Z0-9_]/g, '');
+  const publishFilename = `${safeBase || 'video'}.${fileExt}`;
+  const mimeType = video.file.type || 'video/mp4';
+
+  const videoMetadataDoc = {
+    title,
+    version: 1,
+    htmlDescription,
+    fullDescription,
+    videoReference: {
+      name: userName,
+      identifier: videoIdentifier,
+      service: 'VIDEO',
+    },
+    commentsId,
+    code: videoCode,
+    videoType: mimeType,
+    filename: publishFilename,
+    fileSize: video.file.size,
+    duration: video.metadata.duration || 0,
+    category: video.metadata.category,
+    videoImage,
+    // Always include — empty extracts make Q-Tube show DeletedVideo on hover.
+    extracts: extracts.slice(0, 4),
+    ...(video.metadata.subcategory
+      ? { subcategory: video.metadata.subcategory }
+      : {}),
+  };
+
+  const metadataBase64 = await objectToBase64(videoMetadataDoc);
+
+  if (video.streamedUpload) {
+    attachStreamedChunkUpload(video.file, video.streamedUpload);
+  }
+  // Stash the video Blob so postMessage does not clone tens of MB (OOM crash).
+  const stashedFileId = stashPublishFile(video.file);
+
+  return {
+    videoIdentifier,
+    metadataIdentifier,
+    mimeType,
+    stashedFileId,
+    resources: [
+      {
+        identifier: videoIdentifier,
+        service: 'VIDEO',
+        fileId: stashedFileId,
+        name: userName,
+        title: title.slice(0, 50),
+        description: metadescription,
+        filename: publishFilename,
+        tag1: QTUBE_VIDEO_BASE,
+      },
+      {
+        identifier: metadataIdentifier,
+        service: 'DOCUMENT',
+        base64: metadataBase64,
+        name: userName,
+        title: title.slice(0, 50),
+        description: metadescription,
+        filename: 'video_metadata.json',
+        tag1: QTUBE_VIDEO_BASE,
+        code: videoCode,
+      },
+    ],
+  };
+}
+
+/** Quitter `~@hash~` keyword for the first @mention, or ''. */
+export async function firstMentionKeyword(text: string): Promise<string> {
+  const mentionMatch = text.match(
+    /@\{([^}]+)\}|(?:^|\s)@([a-zA-Z0-9_-]+)(?=\s|$)/
+  );
+  const mentionedName = mentionMatch?.[1] || mentionMatch?.[2];
+  if (!mentionedName) return '';
+  return `~@${await quitterHashString(mentionedName)}~`;
+}
+
+/** Hub may keep partial successes; a missing VIDEO must fail the post. */
+export function throwIfVideoPublishFailed(
+  publishResult: any,
+  videoIdentifier: string | null
+): void {
+  if (!videoIdentifier) return;
+  const unsuccessful =
+    publishResult?.error?.unsuccessfulPublishes ||
+    publishResult?.unsuccessfulPublishes ||
+    publishResult?.failedPublishes;
+  if (!Array.isArray(unsuccessful)) return;
+  const videoFailed = unsuccessful.some(
+    (item: any) =>
+      item?.identifier === videoIdentifier || item?.service === 'VIDEO'
+  );
+  if (!videoFailed) return;
+  const reason = unsuccessful
+    .map((item: any) => item?.reason)
+    .filter(Boolean)
+    .join('; ');
+  throw new Error(
+    reason ||
+      i18n.t('group:home_composer.error.video_publish_failed', {
+        postProcess: 'capitalizeFirstChar',
+      })
+  );
+}
+
+/** Quitter/Torq posts render `text` as plain pre-wrap; never send HTML there. */
+export function normalizePostText(raw: string): string {
+  const plainText = stripHtmlTags(raw)
+    .replace(/\r\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  // stripHtmlTags would also drop newlines-only markup; keep plain input as-is.
+  return /<\/?[a-z][\s\S]*>/i.test(raw)
+    ? plainText
+    : raw.replace(/\r\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
 /**
  * Publish a public Quitter post (text + up to 2 images + optional 1 video).
  * Matches Quitter's publishPost resource shape so posts appear in the feed.
@@ -240,44 +518,63 @@ export async function publishQuitterPost(
 ): Promise<QuitterPublishResult> {
   const { userName, onProgress, signal } = input;
   if (!userName?.trim()) {
-    throw new Error('A Qortal name is required to publish to Quitter');
+    throw new Error(
+      i18n.t('group:home_composer.error.name_required', {
+        postProcess: 'capitalizeFirstChar',
+      })
+    );
   }
 
   const images = input.images || [];
   const video = input.video || null;
 
-  if (images.length > 2) {
-    throw new Error('Maximum 2 images allowed per post');
+  if (images.length > QUITTER_MAX_IMAGES) {
+    throw new Error(
+      i18n.t('group:home_composer.error.too_many_images', {
+        count: QUITTER_MAX_IMAGES,
+        postProcess: 'capitalizeFirstChar',
+      })
+    );
   }
   if (images.some((item) => item.file.type === 'image/gif')) {
-    throw new Error('GIF images are not supported');
+    throw new Error(
+      i18n.t('group:home_composer.error.gif_images_unsupported', {
+        postProcess: 'capitalizeFirstChar',
+      })
+    );
   }
   if (video && !video.metadata?.title?.trim()) {
-    throw new Error('Video title is required');
+    throw new Error(
+      i18n.t('group:home_composer.error.video_title_required', {
+        postProcess: 'capitalizeFirstChar',
+      })
+    );
   }
   if (video && !video.metadata?.category) {
-    throw new Error('Video category is required');
+    throw new Error(
+      i18n.t('group:home_composer.error.video_category_required', {
+        postProcess: 'capitalizeFirstChar',
+      })
+    );
   }
 
   // Quitter feed renders `text` as plain React children (pre-wrap) — never HTML.
-  // Always strip tags so accidental HTML (or stale callers) cannot leak into the feed.
-  const rawText = input.text ?? input.textHtml ?? '';
-  const plainText = stripHtmlTags(rawText)
-    .replace(/\r\n/g, '\n')
-    // stripHtmlTags collapses to a single line via textContent — restore
-    // paragraphs from common textarea newlines when input was already plain.
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-  // If stripHtmlTags wiped newlines from plain input, prefer the raw plain form.
-  const publishText = /<\/?[a-z][\s\S]*>/i.test(rawText)
-    ? plainText
-    : rawText.replace(/\r\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+  const publishText = normalizePostText(input.text ?? input.textHtml ?? '');
   if (!publishText && images.length === 0 && !video) {
-    throw new Error('Write something or attach media to publish');
+    throw new Error(
+      i18n.t('group:home_composer.error.empty_post', {
+        postProcess: 'capitalizeFirstChar',
+      })
+    );
   }
 
   throwIfPublishAborted(signal);
-  onProgress?.('Preparing post…', 5);
+  onProgress?.(
+    i18n.t('group:home_composer.progress.preparing_post', {
+      postProcess: 'capitalizeFirstChar',
+    }),
+    5
+  );
 
   const postIdentifier = await buildQuitterPostIdentifier();
   throwIfPublishAborted(signal);
@@ -297,174 +594,55 @@ export async function publishQuitterPost(
       attachment.file.size > IMAGE_COMPRESS_THRESHOLD_BYTES &&
       attachment.file.type !== 'image/gif';
     onProgress?.(
-      needsCompress
-        ? `Compressing images… (${imgIdx + 1}/${images.length})`
-        : `Preparing images… (${imgIdx + 1}/${images.length})`,
+      i18n.t(
+        needsCompress
+          ? 'group:home_composer.progress.compressing_images'
+          : 'group:home_composer.progress.preparing_images',
+        {
+          current: imgIdx + 1,
+          total: images.length,
+          postProcess: 'capitalizeFirstChar',
+        }
+      ),
       8 + Math.round((imgIdx / Math.max(1, images.length)) * 10)
     );
     const prepared = await compressImageForQuitter(attachment.file);
     throwIfPublishAborted(signal);
-    if (!prepared || prepared.size < 32) {
-      throw new Error(
-        `Image ${imgIdx + 1} is invalid for publish (${prepared?.size || 0} bytes)`
-      );
-    }
-    const base64 = await fileToRawBase64(prepared);
-    if (!base64) {
-      throw new Error(`Failed to encode image ${imgIdx + 1} for Quitter`);
-    }
+    const base64 = await encodeImageForPost(prepared, imgIdx);
     // Quitter prefixes data:image/jpeg;base64, at render time for images[].src
     postImages.push({ src: base64 });
   }
+  // Two photos just under the 5 MB compress threshold made a post Quitter
+  // never lists; shrink them together to fit.
+  const fitted = await shrinkPostImagesToBudget(
+    images.map((item) => item.file),
+    postImages.map((item) => item.src),
+    POST_IMAGE_BUDGET,
+    signal
+  );
+  fitted.forEach((src, index) => {
+    postImages[index] = { src };
+  });
 
-  let publishedVideoIdentifier: string | null = null;
-  let stashedVideoFileId: string | null = null;
-
+  let videoParts: QtubeVideoResources | null = null;
   if (video) {
-    throwIfPublishAborted(signal);
-    onProgress?.('Preparing video…', 22);
-
-    if (!video.file || video.file.size < 32 * 1024) {
-      throw new Error(
-        `Video file is invalid for publish (${video.file?.size || 0} bytes)`
-      );
-    }
-
-    const title = video.metadata.title.trim();
-    const sanitizeTitle = title
-      .replace(/[^a-zA-Z0-9\s-]/g, '')
-      .replace(/\s+/g, '-')
-      .replace(/-+/g, '-')
-      .trim()
-      .toLowerCase();
-    const id = videoUid.rnd();
-    const videoIdentifier = `${QTUBE_VIDEO_BASE}${sanitizeTitle.slice(0, 30)}_${id}`;
-    publishedVideoIdentifier = videoIdentifier;
-    const metadataIdentifier = `${videoIdentifier}_metadata`;
-    const videoCode = videoCodeUid.rnd();
-    const commentsId = `${QTUBE_VIDEO_BASE}_cm_${id}`;
-    // Q-Tube stores rich HTML here; plain description is fine as text content.
-    const htmlDescription = video.metadata.description || '';
-    const fullDescription = stripHtmlTags(htmlDescription) || htmlDescription;
-    const subcategoryStr = video.metadata.subcategory || '';
-    const metadescription =
-      `**category:${video.metadata.category};subcategory:${subcategoryStr};code:${videoCode}**` +
-      fullDescription.slice(0, 150);
-
-    // Quitter/Q-Tube use videoImage as <img src> / poster — must be a data URL.
-    let videoImage = toQuitterVideoImageDataUrl(video.metadata.videoImage);
-    if (!videoImage) {
-      onProgress?.('Creating video thumbnail…', 28);
-      const extracted = await extractVideoThumbnailBase64(video.file);
-      videoImage = toQuitterVideoImageDataUrl(extracted.videoImage);
-    }
-    if (!videoImage) {
-      throw new Error('A video thumbnail is required for Quitter / Q-Tube');
-    }
-    // Keep metadata small — huge data-URL thumbs can crash the WebView mid-publish.
-    try {
-      videoImage = await shrinkVideoImageDataUrl(videoImage);
-    } catch {
-      // keep original data URL
-    }
-
-    // Q-Tube hover preview: exactly 4 WebP data URLs in `extracts`.
-    // Missing/empty extracts → ResponsiveImage shows DeletedVideo.jpg on hover.
-    onProgress?.('Creating hover snapshots…', 30);
-    let extracts: string[] = Array.isArray(video.metadata.extracts)
-      ? video.metadata.extracts.filter(
-          (item) => typeof item === 'string' && item.startsWith('data:image/')
-        )
-      : [];
-    if (extracts.length < 4) {
-      try {
-        const generated = await extractVideoHoverFrames(video.file);
-        if (generated.length > extracts.length) extracts = generated;
-      } catch (err) {
-        console.warn('[Quitter] hover frame extract failed', err);
-      }
-    }
-    // Last resort: repeat cover so hover never falls through to DeletedVideo.
-    if (extracts.length === 0 && videoImage) {
-      extracts = [videoImage, videoImage, videoImage, videoImage];
-    } else if (extracts.length > 0 && extracts.length < 4 && videoImage) {
-      while (extracts.length < 4) extracts.push(videoImage);
-    }
-
-    // Match Q-Tube filename sanitization (alphanumeric + underscore + ext).
-    const fileExt =
-      (video.file.name.split('.').pop() || 'mp4').replace(/[^\w]/g, '') ||
-      'mp4';
-    const safeBase = title
-      .slice(0, 15)
-      .replace(/[\s\uFEFF\xA0]+/g, '_')
-      .replace(/[^a-zA-Z0-9_]/g, '');
-    const publishFilename = `${safeBase || 'video'}.${fileExt}`;
-
-    const videoMetadataDoc = {
-      title,
-      version: 1,
-      htmlDescription,
-      fullDescription,
-      videoReference: {
-        name: userName,
-        identifier: videoIdentifier,
-        service: 'VIDEO',
-      },
-      commentsId,
-      code: videoCode,
-      videoType: video.file.type || 'video/mp4',
-      filename: publishFilename,
-      fileSize: video.file.size,
-      duration: video.metadata.duration || 0,
-      category: video.metadata.category,
-      videoImage,
-      // Always include — empty extracts make Q-Tube show DeletedVideo on hover.
-      extracts: extracts.slice(0, 4),
-      ...(video.metadata.subcategory
-        ? { subcategory: video.metadata.subcategory }
-        : {}),
-    };
-
-    const metadataBase64 = await objectToBase64(videoMetadataDoc);
-
-    // Stash the video Blob so postMessage does not clone tens of MB (OOM crash).
-    stashedVideoFileId = stashPublishFile(video.file);
-
+    videoParts = await buildQtubeVideoResources({
+      video,
+      userName,
+      onProgress,
+      signal,
+    });
     // VIDEO first — if it fails we must not leave a post pointing at nothing.
-    resources.push({
-      identifier: videoIdentifier,
-      service: 'VIDEO',
-      fileId: stashedVideoFileId,
-      name: userName,
-      title: title.slice(0, 50),
-      description: metadescription,
-      filename: publishFilename,
-      tag1: QTUBE_VIDEO_BASE,
-    });
-
-    resources.push({
-      identifier: metadataIdentifier,
-      service: 'DOCUMENT',
-      base64: metadataBase64,
-      name: userName,
-      title: title.slice(0, 50),
-      description: metadescription,
-      filename: 'video_metadata.json',
-      tag1: QTUBE_VIDEO_BASE,
-      code: videoCode,
-    });
-
+    resources.push(...videoParts.resources);
     postVideos.push({
-      identifier: metadataIdentifier,
+      identifier: videoParts.metadataIdentifier,
       service: 'DOCUMENT',
       name: userName,
-      mimeType: video.file.type || 'video/mp4',
+      mimeType: videoParts.mimeType,
     });
   }
 
   const post = {
-    // Marker kept out of payload — publishText is plain only (no <p> tags).
     text: publishText,
     timestamp: Date.now(),
     name: userName,
@@ -480,20 +658,10 @@ export async function publishQuitterPost(
     );
     keywordString = normalizeKeywords(keywords);
   }
+  const mentionString = await firstMentionKeyword(publishText);
 
-  const mentionMatch = publishText.match(
-    /@\{([^}]+)\}|(?:^|\s)@([a-zA-Z0-9_-]+)(?=\s|$)/
-  );
-  let mentionString = '';
-  if (mentionMatch) {
-    const mentionedName = mentionMatch[1] || mentionMatch[2];
-    if (mentionedName) {
-      const hashedName = await quitterHashString(mentionedName);
-      mentionString = `~@${hashedName}~`;
-    }
-  }
-
-  const postBase64 = await objectToBase64(post);
+  const postBase64 = String(await objectToBase64(post));
+  assertPostFitsQuitter(postBase64);
   const postResource: Record<string, unknown> = {
     identifier: postIdentifier,
     service: 'DOCUMENT',
@@ -512,7 +680,12 @@ export async function publishQuitterPost(
 
   throwIfPublishAborted(signal);
   onProgress?.(
-    video ? 'Publishing video…' : 'Publishing to Quitter…',
+    i18n.t(
+      video
+        ? 'group:home_composer.progress.publishing_video'
+        : 'group:home_composer.progress.publishing_post',
+      { postProcess: 'capitalizeFirstChar' }
+    ),
     video ? 35 : 70
   );
   // Video publishes can take longer on private/public nodes.
@@ -523,36 +696,100 @@ export async function publishQuitterPost(
       signal,
       timeoutMs
     );
-    onProgress?.('Finalizing publish…', 95);
-
-    // Extra guard: Hub may keep partial successes; surface VIDEO failures clearly.
-    const unsuccessful =
-      publishResult?.error?.unsuccessfulPublishes ||
-      publishResult?.unsuccessfulPublishes ||
-      publishResult?.failedPublishes;
-    if (Array.isArray(unsuccessful) && publishedVideoIdentifier) {
-      const videoFailed = unsuccessful.some(
-        (item: any) =>
-          item?.identifier === publishedVideoIdentifier ||
-          item?.service === 'VIDEO'
-      );
-      if (videoFailed) {
-        const reason = unsuccessful
-          .map((item: any) => item?.reason)
-          .filter(Boolean)
-          .join('; ');
-        throw new Error(
-          reason || 'Video resource failed to publish — post was not completed'
-        );
-      }
-    }
-
+    onProgress?.(
+      i18n.t('group:home_composer.progress.finalizing', {
+        postProcess: 'capitalizeFirstChar',
+      }),
+      95
+    );
+    throwIfVideoPublishFailed(
+      publishResult,
+      videoParts?.videoIdentifier || null
+    );
     throwIfPublishAborted(signal);
     return { postIdentifier };
   } catch (err) {
-    if (stashedVideoFileId) discardPublishFile(stashedVideoFileId);
+    if (videoParts) discardPublishFile(videoParts.stashedFileId);
     throw err;
   }
+}
+
+/**
+ * Re-compress the largest photos (from their originals) until all of them fit
+ * `budget` base64 characters together, like Torq's compressPostImages.
+ */
+export async function shrinkPostImagesToBudget(
+  files: File[],
+  encoded: string[],
+  budget: number = POST_IMAGE_BUDGET,
+  signal?: AbortSignal
+): Promise<string[]> {
+  const out = [...encoded];
+  const total = () => out.reduce((sum, src) => sum + src.length, 0);
+  for (const step of IMAGE_FIT_STEPS) {
+    if (total() <= budget) break;
+    const share = budget / Math.max(1, files.length);
+    for (let i = 0; i < files.length; i += 1) {
+      if (out[i].length <= share) continue;
+      throwIfPublishAborted(signal);
+      const pass = {
+        quality: step.quality,
+        maxWidth: step.maxSide,
+        maxHeight: step.maxSide,
+      };
+      const smaller = await compressImageFile(files[i], {
+        first: { ...pass, mimeType: 'image/webp' },
+        fallback: { ...pass, mimeType: 'image/jpeg' },
+      });
+      const src = await fileToRawBase64(smaller);
+      if (src && src.length < out[i].length) out[i] = src;
+    }
+  }
+  if (total() > budget) {
+    throw new Error(
+      i18n.t('group:home_composer.error.images_too_large', {
+        postProcess: 'capitalizeFirstChar',
+      })
+    );
+  }
+  return out;
+}
+
+/** Refuse a post that Quitter would silently leave out of its feed. */
+export function assertPostFitsQuitter(postBase64: string): void {
+  if (Math.ceil((postBase64.length * 3) / 4) >= QUITTER_MAX_POST_BYTES) {
+    throw new Error(
+      i18n.t('group:home_composer.error.post_too_large', {
+        postProcess: 'capitalizeFirstChar',
+      })
+    );
+  }
+}
+
+/** Raw base64 (no data: prefix) for `images[].src`, as Quitter/Torq store it. */
+export async function encodeImageForPost(
+  prepared: File | Blob,
+  index: number
+): Promise<string> {
+  if (!prepared || prepared.size < 32) {
+    throw new Error(
+      i18n.t('group:home_composer.error.image_invalid', {
+        index: index + 1,
+        size: prepared?.size || 0,
+        postProcess: 'capitalizeFirstChar',
+      })
+    );
+  }
+  const base64 = await fileToRawBase64(prepared);
+  if (!base64) {
+    throw new Error(
+      i18n.t('group:home_composer.error.image_encode_failed', {
+        index: index + 1,
+        postProcess: 'capitalizeFirstChar',
+      })
+    );
+  }
+  return base64;
 }
 
 /**

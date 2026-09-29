@@ -62,6 +62,26 @@
     "tooltip_value": "انتهاء الرسالة: {{value}}",
     "unavailable": "انتهاء الرسائل غير متاح"
   },
+  "file_viewer": {
+    "close": "إغلاق عارض الملفات",
+    "file": "ملف",
+    "link_unsupported": "لا يمكن فتح هذا الرابط من هنا",
+    "load_failed": "تعذّر فتح هذا الملف. ربما لا يزال قيد التنزيل، أو لم يعد محفوظًا على هذا الجهاز.",
+    "markup_as_source": "تُعرض صفحات الويب كشيفرة مصدرية ولا تُشغَّل أبدًا داخل التطبيق.",
+    "no_preview": "لا يمكن عرض هذا النوع من الملفات هنا. افتحه في تطبيق آخر أو شاركه أو احفظه على جهازك.",
+    "open_with": "فتح بتطبيق آخر",
+    "open_with_failed": "لم يتمكن أي تطبيق من فتح هذا الملف",
+    "opening": "جارٍ فتح الملف…",
+    "preview_failed": "تعذّر عرض هذا الملف هنا. افتحه في تطبيق آخر أو شاركه أو احفظه على جهازك.",
+    "save": "حفظ على الجهاز",
+    "save_failed": "تعذّر حفظ الملف",
+    "saved_to": "تم الحفظ في {{location}}",
+    "share": "مشاركة",
+    "share_failed": "تعذّرت مشاركة الملف",
+    "show_formatted": "عرض منسّق",
+    "show_source": "عرض كنص عادي",
+    "truncated": "هذا الملف كبير جدًا لعرضه كاملًا. احفظه أو افتحه في تطبيق آخر لرؤية الباقي."
+  },
   "group_fallback_name": "الجروب",
   "group_type": {
     "closed": "مغلق",
@@ -94,6 +114,9 @@
     "download_failed": "unable to download image",
     "prepare_failed": "unable to prepare image for clipboard",
     "read_failed": "unable to read image",
+    "save": "حفظ الصورة",
+    "share": "مشاركة الصورة",
+    "share_failed": "تعذّرت مشاركة الصورة",
     "zoom_in": "zoom in",
     "zoom_out": "zoom out"
   },

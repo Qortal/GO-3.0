@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getPrimaryNamesForAddresses } from '../components/Group/groupApi';
 import { mergeReticulumPayloadWithVerifiedEnvelope } from '../utils/reticulumEventEnvelope';
+import { describeSignerMismatch } from '../utils/reticulumSignerMismatch';
 import { TIME_MONTHS_1_IN_MILLISECONDS } from '../constants/constants';
 
 const RETICULUM_DIRECT_EVENT_BATCH_MS = 250;
@@ -668,7 +669,7 @@ export function useReticulumDirectChat(
       );
       if (signed?.error) throw new Error(signed.error);
       if (signed?.authorAddress !== myAddress) {
-        throw new Error('Signed DM author mismatch');
+        throw new Error(describeSignerMismatch(signed, myAddress, 'DM'));
       }
       const { senderStreamId: _senderStreamId, ...legacyBaseFields } =
         baseFields;

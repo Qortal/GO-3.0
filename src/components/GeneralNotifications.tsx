@@ -1,5 +1,6 @@
 import AppsIcon from '@mui/icons-material/Apps';
 import CloseIcon from '@mui/icons-material/Close';
+import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import MailOutlineIcon from '@mui/icons-material/MailOutline';
 import NotificationsRoundedIcon from '@mui/icons-material/NotificationsRounded';
 import SettingsIcon from '@mui/icons-material/Settings';
@@ -39,8 +40,11 @@ import {
   notificationSeenInAppKeyTimesAtom,
   notificationSeenInAppKeysAtom,
   paymentNotificationsAtom,
+  reticulumChatEnabledAtom,
   reticulumEnabledAtom,
+  userInfoAtom,
 } from '../atoms/global';
+import { revokeAppNotificationRules } from '../qortal/get';
 import LogoSelected from '../assets/svgs/LogoSelected.svg';
 import {
   appUpdateReleaseAtom,
@@ -146,7 +150,13 @@ export const GeneralNotifications = forwardRef<
   const [disablePushNotifications, setDisablePushNotifications] =
     useState(false);
   const [qChatMentionsEnabled, setQChatMentionsEnabled] = useState(true);
+  const [syncEngineReady, setSyncEngineReady] = useState(false);
+  const [syncPeers, setSyncPeers] = useState<
+    Array<{ peerHash: string; supported: boolean; support?: string }>
+  >([]);
   const reticulumEnabled = useAtomValue(reticulumEnabledAtom);
+  const reticulumChatEnabled = useAtomValue(reticulumChatEnabledAtom);
+  const myAddress = useAtomValue(userInfoAtom)?.address as string | undefined;
   const notifications = useAtomValue(paymentNotificationsAtom);
   const setNotifications = useSetAtom(paymentNotificationsAtom);
   const customSubscriptions = useAtomValue(customWebsocketSubscriptionsAtom);
@@ -177,7 +187,12 @@ export const GeneralNotifications = forwardRef<
   useEffect(() => {
     const handler = (event) => {
       const detail = event.detail;
-      if (detail?.address && Array.isArray(detail?.keys)) {
+      if (!detail?.address) return;
+      // Prefer the real mark times (needed for seen keys synced from another
+      // device); fall back to the legacy keys-only payload.
+      if (detail?.keyTimes && typeof detail.keyTimes === 'object') {
+        setSeenKeys({ address: detail.address, keyTimes: detail.keyTimes });
+      } else if (Array.isArray(detail?.keys)) {
         setSeenKeys({ address: detail.address, keys: detail.keys });
       }
     };
@@ -278,26 +293,127 @@ export const GeneralNotifications = forwardRef<
       });
   };
 
-  const openSettings = () => {
-    setSettingsSection('hub');
-    setSettingsOpen(true);
-    setSettingsLoading(true);
+  const loadSettings = () =>
     Promise.all([
       getAppsWithNotificationPermission(),
       getNotificationOsPushDisabledMap(),
       getQChatMentionNotificationsEnabled(),
-    ])
-      .then(([apps, disabledMap, mentionsEnabled]) => {
-        setSettingsApps(
-          apps.filter(
-            (appName) => appName !== QCHAT_MENTION_NOTIFICATION_APP_NAME
-          )
-        );
-        setOsPushDisabledMap(disabledMap || {});
-        setQChatMentionsEnabled(mentionsEnabled);
-      })
+    ]).then(([apps, disabledMap, mentionsEnabled]) => {
+      setSettingsApps(
+        apps.filter(
+          (appName) => appName !== QCHAT_MENTION_NOTIFICATION_APP_NAME
+        )
+      );
+      setOsPushDisabledMap(disabledMap || {});
+      setQChatMentionsEnabled(mentionsEnabled);
+    });
+
+  const openSettings = () => {
+    setSettingsSection('hub');
+    setSettingsOpen(true);
+    setSettingsLoading(true);
+    loadSettings()
+      .catch(() => undefined)
       .finally(() => setSettingsLoading(false));
   };
+
+  // While the dialog is open, changes that arrive from another device (or
+  // from a Q-app in another tab) refresh the lists without reopening.
+  useEffect(() => {
+    if (!settingsOpen) return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const handler = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        timer = null;
+        loadSettings().catch(() => undefined);
+      }, 100);
+    };
+    const events = [
+      'notification-permission-updated',
+      'notification-os-push-updated',
+      QCHAT_MENTION_NOTIFICATIONS_UPDATED_EVENT,
+      'notification-settings-changed',
+    ];
+    events.forEach((name) => subscribeToEvent(name, handler));
+    return () => {
+      if (timer) clearTimeout(timer);
+      events.forEach((name) => unsubscribeFromEvent(name, handler));
+    };
+  }, [settingsOpen]);
+
+  // Cross-device sync status (engine readiness + own devices), refreshed
+  // every 10 s while the dialog is open.
+  useEffect(() => {
+    if (!settingsOpen || !reticulumChatEnabled) {
+      setSyncEngineReady(false);
+      setSyncPeers([]);
+      return;
+    }
+    let cancelled = false;
+    const refresh = async () => {
+      const engine = (
+        window as unknown as {
+          reticulumChat?: {
+            getReadinessStatus?: () => Promise<{ state?: string }>;
+            getDeviceStateSyncPeers?: (
+              ownerAddress: string
+            ) => Promise<
+              Array<{ peerHash: string; supported: boolean; support?: string }>
+            >;
+          };
+        }
+      ).reticulumChat;
+      let ready = false;
+      try {
+        const status = await engine?.getReadinessStatus?.();
+        ready = status?.state === 'ready';
+      } catch {
+        ready = false;
+      }
+      let peers: Array<{
+        peerHash: string;
+        supported: boolean;
+        support?: string;
+      }> = [];
+      if (ready && myAddress) {
+        try {
+          const result = await engine?.getDeviceStateSyncPeers?.(myAddress);
+          peers = Array.isArray(result) ? result : [];
+        } catch {
+          peers = [];
+        }
+      }
+      if (cancelled) return;
+      setSyncEngineReady(ready);
+      setSyncPeers(peers);
+    };
+    void refresh();
+    const interval = setInterval(() => void refresh(), 10000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [settingsOpen, reticulumChatEnabled, myAddress]);
+
+  const syncSupportedCount = syncPeers.filter((peer) => peer?.supported).length;
+  // A leased own device whose hello has not been seen yet in this process
+  // (normal right after a restart) reports `support: 'unknown'`; only a peer
+  // that greeted us WITHOUT ds1 is reported as outdated.
+  const syncUnsupportedCount = syncPeers.filter(
+    (peer) => peer && !peer.supported && peer.support === 'unsupported'
+  ).length;
+  const syncStatusText = !reticulumChatEnabled
+    ? t('core:message.generic.notification_sync_status_off')
+    : !syncEngineReady
+      ? t('core:message.generic.notification_sync_status_waiting')
+      : syncSupportedCount > 0
+        ? t('core:message.generic.notification_sync_status_linked', {
+            count: syncSupportedCount,
+          })
+        : syncUnsupportedCount > 0
+          ? t('core:message.generic.notification_sync_status_unsupported')
+          : t('core:message.generic.notification_sync_status_no_peer');
 
   return (
     <>
@@ -828,6 +944,64 @@ export const GeneralNotifications = forwardRef<
                 })}
           </Box>
           <Box
+            sx={{
+              alignItems: 'flex-start',
+              backgroundColor: isDarkMode
+                ? alpha('#FFFFFF', 0.026)
+                : theme.palette.action.hover,
+              border: `1px solid ${
+                isDarkMode ? alpha('#A9BCD8', 0.12) : theme.palette.divider
+              }`,
+              borderRadius: '14px',
+              display: 'flex',
+              gap: 1.2,
+              px: 1.7,
+              py: 1.4,
+            }}
+          >
+            <InfoOutlinedIcon
+              sx={{
+                color: alpha(theme.palette.primary.light, 0.96),
+                flexShrink: 0,
+                fontSize: 20,
+                mt: 0.2,
+              }}
+            />
+            <Box sx={{ minWidth: 0 }}>
+              <Typography
+                sx={{
+                  color: theme.palette.text.primary,
+                  fontSize: '0.88rem',
+                  fontWeight: 600,
+                }}
+              >
+                {t('core:message.generic.notification_sync_title')}
+              </Typography>
+              <Typography
+                sx={{
+                  color: alpha(theme.palette.text.secondary, 0.76),
+                  fontSize: '0.76rem',
+                  lineHeight: 1.45,
+                  mt: 0.3,
+                }}
+              >
+                {t('core:message.generic.notification_sync_desc')}
+              </Typography>
+              <Typography
+                aria-live="polite"
+                sx={{
+                  color: alpha(theme.palette.text.secondary, 0.92),
+                  fontSize: '0.76rem',
+                  fontWeight: 500,
+                  lineHeight: 1.45,
+                  mt: 0.7,
+                }}
+              >
+                {syncStatusText}
+              </Typography>
+            </Box>
+          </Box>
+          <Box
             role="tablist"
             sx={{
               backgroundColor: isDarkMode
@@ -1121,33 +1295,31 @@ export const GeneralNotifications = forwardRef<
                         />
                         <ButtonBase
                           onClick={async () => {
-                            const notificationIds = (customSubscriptions ?? [])
-                              .filter(
-                                (sub) =>
-                                  sub?.event === RESOURCE_EVENT &&
-                                  sub?.appName === appName
-                              )
-                              .map((sub) => sub?.notificationId)
-                              .filter(Boolean);
-                            await setPermission(
-                              getNotificationPermissionKey(appName),
-                              false
-                            );
+                            // Remove the app's rules through the persisted
+                            // list first (storage + socket + tombstones for
+                            // the other devices), then drop the permission.
+                            try {
+                              await revokeAppNotificationRules(appName);
+                            } catch (error) {
+                              console.error(
+                                'Failed to remove notification rules:',
+                                error
+                              );
+                            }
                             setCustomSubscriptions((prev) =>
                               (prev ?? []).filter(
                                 (sub) =>
                                   !(
                                     sub?.event === RESOURCE_EVENT &&
-                                    sub?.appName === appName
+                                    (sub?.appName ?? '').toLowerCase() ===
+                                      appName.toLowerCase()
                                   )
                               )
                             );
-                            if (notificationIds.length) {
-                              executeEvent(
-                                'custom-ws-unsubscribe',
-                                notificationIds
-                              );
-                            }
+                            await setPermission(
+                              getNotificationPermissionKey(appName),
+                              false
+                            );
                             executeEvent(
                               'notifications-websocket-reconnect',
                               undefined

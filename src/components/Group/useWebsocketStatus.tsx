@@ -9,6 +9,7 @@ import {
   subscribeToEvent,
   unsubscribeFromEvent,
 } from '../../utils/events';
+import { coreWebsocketPingMs } from '../../utils/coreWebsocketPing';
 import { useAtomValue, useSetAtom } from 'jotai';
 import { nodeInfosAtom, selectedNodeInfoAtom } from '../../atoms/global';
 
@@ -112,8 +113,8 @@ export const useWebsocketStatus = () => {
               clearTimeout(timeoutIdRef.current);
               groupSocketTimeoutRef.current = setTimeout(
                 () => pingHeads(socket),
-                20000
-              ); // Ping every 20 seconds
+                coreWebsocketPingMs()
+              );
               return;
             }
             const data = JSON.parse(e.data);

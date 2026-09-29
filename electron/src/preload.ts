@@ -124,6 +124,32 @@ function unsubscribeReticulumChatDirectSummaryChanged(): void {
   }
 }
 
+let reticulumChatDeviceStateChangedRefCount = 0;
+
+function subscribeReticulumChatDeviceStateChanged(): void {
+  reticulumChatDeviceStateChangedRefCount += 1;
+  if (reticulumChatDeviceStateChangedRefCount === 1) {
+    ipcRenderer.send('reticulumChat:deviceStateChanged:subscribe');
+  }
+}
+
+function unsubscribeReticulumChatDeviceStateChanged(): void {
+  reticulumChatDeviceStateChangedRefCount -= 1;
+  if (reticulumChatDeviceStateChangedRefCount <= 0) {
+    reticulumChatDeviceStateChangedRefCount = 0;
+    ipcRenderer.send('reticulumChat:deviceStateChanged:unsubscribe');
+  }
+}
+
+type ReticulumChatDeviceStateChangedPayload = {
+  ownerAddress: string;
+  key: string;
+  value: string | null;
+  signedAt: number;
+  expiresAt: number | null;
+  source: 'local' | 'remote';
+};
+
 type PresenceUpdatePayload = {
   address: string;
   online: boolean;
@@ -1939,6 +1965,30 @@ try {
           peerAddress,
           upToTimestamp
         ) as Promise<{ success: boolean; error?: string }>,
+      setDeviceState: async (
+        ownerAddress: string,
+        key: string,
+        value: string | null,
+        options?: { ttlMs?: number }
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:setDeviceState',
+          ownerAddress,
+          key,
+          value,
+          options
+        ) as Promise<{ success: boolean; error?: string }>,
+      getDeviceStates: async (ownerAddress: string, keyPrefix?: string) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getDeviceStates',
+          ownerAddress,
+          keyPrefix
+        ) as Promise<unknown[]>,
+      getDeviceStateSyncPeers: async (ownerAddress: string) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getDeviceStateSyncPeers',
+          ownerAddress
+        ) as Promise<{ peerHash: string; supported: boolean }[]>,
       sendTyping: async (
         groupId: number,
         channelId: string,
@@ -2369,6 +2419,25 @@ try {
             handler
           );
           unsubscribeReticulumChatDirectSummaryChanged();
+        };
+      },
+      onDeviceStateChanged: (
+        cb: (payload: ReticulumChatDeviceStateChangedPayload) => void
+      ) => {
+        const handler = (_event: unknown, payload: unknown) => {
+          cb(payload as ReticulumChatDeviceStateChangedPayload);
+        };
+        ipcRenderer.on('reticulumChat:deviceStateChanged', handler);
+        subscribeReticulumChatDeviceStateChanged();
+        let active = true;
+        return () => {
+          if (!active) return;
+          active = false;
+          ipcRenderer.removeListener(
+            'reticulumChat:deviceStateChanged',
+            handler
+          );
+          unsubscribeReticulumChatDeviceStateChanged();
         };
       },
       onSilenceChanged: (
@@ -3031,6 +3100,30 @@ try {
           peerAddress,
           upToTimestamp
         ) as Promise<{ success: boolean; error?: string }>,
+      setDeviceState: async (
+        ownerAddress: string,
+        key: string,
+        value: string | null,
+        options?: { ttlMs?: number }
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:setDeviceState',
+          ownerAddress,
+          key,
+          value,
+          options
+        ) as Promise<{ success: boolean; error?: string }>,
+      getDeviceStates: async (ownerAddress: string, keyPrefix?: string) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getDeviceStates',
+          ownerAddress,
+          keyPrefix
+        ) as Promise<unknown[]>,
+      getDeviceStateSyncPeers: async (ownerAddress: string) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getDeviceStateSyncPeers',
+          ownerAddress
+        ) as Promise<{ peerHash: string; supported: boolean }[]>,
       sendTyping: async (
         groupId: number,
         channelId: string,
@@ -3432,6 +3525,25 @@ try {
             handler
           );
           unsubscribeReticulumChatDirectSummaryChanged();
+        };
+      },
+      onDeviceStateChanged: (
+        cb: (payload: ReticulumChatDeviceStateChangedPayload) => void
+      ) => {
+        const handler = (_event: unknown, payload: unknown) => {
+          cb(payload as ReticulumChatDeviceStateChangedPayload);
+        };
+        ipcRenderer.on('reticulumChat:deviceStateChanged', handler);
+        subscribeReticulumChatDeviceStateChanged();
+        let active = true;
+        return () => {
+          if (!active) return;
+          active = false;
+          ipcRenderer.removeListener(
+            'reticulumChat:deviceStateChanged',
+            handler
+          );
+          unsubscribeReticulumChatDeviceStateChanged();
         };
       },
       onSilenceChanged: (

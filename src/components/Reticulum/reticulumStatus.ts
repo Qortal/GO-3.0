@@ -3,6 +3,7 @@ import { Reticulum } from '../../plugins/Reticulum';
 import type { ReticulumStatus } from '../../plugins/Reticulum';
 import { QortalBackground } from '../../plugins/QortalBackground';
 import { isCapacitor } from '../../utils/platform';
+import { onMobileReticulumStatus } from '../../bridge/capacitorBridge';
 
 export type ReticulumPhase =
   | 'idle'
@@ -16,12 +17,30 @@ export interface ReticulumState {
   phase: ReticulumPhase;
   status: ReticulumStatus | null;
   error: string | null;
+  /**
+   * Failure of the Python presence/chat bridge (separate from the Kotlin
+   * transport above). The transport can be online while the bridge that
+   * carries every chat message never booted; this is what tells the user.
+   */
+  bridgeError: string | null;
+  /** Non-fatal chat engine condition (e.g. running on interpreted wasm). */
+  bridgeWarning: string | null;
+  /** Chat engine worker state — independent of the transport badge. */
+  chatEngineState: string | null;
 }
 
 // Single shared transport lifecycle: no matter how many UI surfaces (top-bar
 // badge, diagnostic chip) subscribe, Reticulum.start() + polling happens once.
-let current: ReticulumState = { phase: 'idle', status: null, error: null };
+let current: ReticulumState = {
+  phase: 'idle',
+  status: null,
+  error: null,
+  bridgeError: null,
+  bridgeWarning: null,
+  chatEngineState: null,
+};
 let started = false;
+let bridgeStatusSubscribed = false;
 // Booting Python/RNS is CPU-heavy and floods the JS bridge with events; doing
 // it before login starves the biometric prompt and wallet decrypt. Hold the
 // transport until the app says it's safe (post-authentication).
@@ -42,9 +61,58 @@ export function allowReticulumStart() {
   }
 }
 
+let pythonBridgeError: string | null = null;
+let chatEngineError: string | null = null;
+
+function publishBridgeError() {
+  const next = pythonBridgeError ?? chatEngineError ?? null;
+  if (next !== current.bridgeError) set({ bridgeError: next });
+}
+
+function ensureBridgeStatusSubscribed() {
+  if (bridgeStatusSubscribed || !isCapacitor()) return;
+  bridgeStatusSubscribed = true;
+  onMobileReticulumStatus((s) => {
+    pythonBridgeError = s.bridgeError ?? null;
+    publishBridgeError();
+  });
+  // The chat engine worker (SQLite/OPFS/wasm) can fail independently of the
+  // Python bridge; its failure is otherwise only visible in devtools.
+  const readinessApi = (
+    window as unknown as {
+      reticulumChat?: {
+        onReadinessChanged?: (
+          cb: (status: {
+            state: string;
+            error?: string;
+            warning?: string;
+          }) => void
+        ) => () => void;
+      };
+    }
+  ).reticulumChat;
+  readinessApi?.onReadinessChanged?.((status) => {
+    chatEngineError =
+      status.state === 'failed'
+        ? `Chat engine failed to start: ${status.error || 'unknown error'}`
+        : null;
+    publishBridgeError();
+    const warning = status.warning || null;
+    const nextState = status.state || null;
+    if (
+      warning !== current.bridgeWarning ||
+      nextState !== current.chatEngineState
+    ) {
+      set({ bridgeWarning: warning, chatEngineState: nextState });
+    }
+  });
+}
+
 async function ensureStarted() {
   if (started || !startAllowed) return;
   started = true;
+  // Only after login: subscribing to chat readiness boots the engine worker.
+  ensureBridgeStatusSubscribed();
   const startedAt = Date.now();
   const phaseFor = (online: boolean): ReticulumPhase => {
     if (online) return 'online';
@@ -80,7 +148,16 @@ async function ensureStarted() {
       }
     };
     const scheduleNext = () => {
-      const interval = Date.now() - startedAt < 30_000 ? 3_000 : 20_000;
+      const connecting =
+        Date.now() - startedAt < 30_000 || current.phase !== 'online';
+      const hidden = typeof document !== 'undefined' && document.hidden;
+      const interval = connecting
+        ? Date.now() - startedAt < 30_000
+          ? 3_000
+          : 20_000
+        : hidden
+          ? 90_000
+          : 60_000;
       setTimeout(async () => {
         await pollStatus();
         scheduleNext();

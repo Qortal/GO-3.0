@@ -305,6 +305,12 @@ export const AuthenticationForm = ({
 
   useEffect(() => {
     if (didAutoAuthenticateRef.current) return;
+    // Only a password that was handed to this form already filled in (biometric
+    // unlock, shared-element transition) may submit itself. `onAuthenticate` is
+    // recreated on every parent render, so without this guard the effect fired
+    // as soon as the user had typed the first character and something else in
+    // the app re-rendered, submitting a partial password behind their back.
+    if (!prefilledPasswordRef.current) return;
     const password = store.get(authenticatePasswordAtom).trim();
     if (!password) return;
     didAutoAuthenticateRef.current = true;

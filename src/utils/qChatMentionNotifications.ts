@@ -5,7 +5,8 @@ export const QCHAT_MENTION_NOTIFICATIONS_UPDATED_EVENT =
 export const QCHAT_MENTION_NOTIFICATION_APP_NAME = 'q-chat';
 export const QCHAT_MENTION_NOTIFICATION_EVENT = 'Q_CHAT_MENTION';
 
-const QCHAT_MENTION_NOTIFICATIONS_DISABLED_KEY =
+/** User setting key. Mirrored across devices as the `notif.mentions` device-state record. */
+export const QCHAT_MENTION_NOTIFICATIONS_DISABLED_KEY =
   'q-chat-mention-notifications-disabled';
 
 export async function getQChatMentionNotificationsEnabled(): Promise<boolean> {

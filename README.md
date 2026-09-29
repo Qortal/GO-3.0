@@ -8,7 +8,7 @@ Reticulum — plus a mobile-first UI, OS notifications, biometric login, and bat
 background behavior.
 
 **Repository:** https://gitea.qortal.link/simon/GO-3.0  
-**Current APK:** GO 3.0 **v0.0.9** (`versionName` 0.0.9, `versionCode` 12) — shown in-app as **GO version** (Core & settings). Chat engine matches Hub v3.0.3.
+**Current APK:** GO 3.0 **v0.0.11** (`versionName` 0.0.11, `versionCode` 14) — shown in-app as **GO version** (Core & settings). Chat engine matches Hub v3.0.3.
 
 > **For Hub developers**
 >
@@ -101,6 +101,8 @@ builds **v0.0.2–v0.0.6** were published to Q-Share. Details are in
 | **v0.0.7** | Live group catch-up, own messages to Hub, Reticulum “online” only with real peers |
 | **v0.0.8** | Hub 3.0.3 chat engine, DMs with Hub, SQLite crash recovery, 30 app tabs |
 | **v0.0.9** | Faster / more reliable DMs with Hub (retry undelivered messages, skip stale notifies) |
+| **v0.0.10** | Battery (one Reticulum stack, phone as leaf, idle timers), GrapheneOS chat, group/Saved Messages sync, multiple saved private nodes |
+| **v0.0.11** | Notification sync with Hub, in-app file viewer, Torq posting from Home, upload while compressing, attachment fixes, Saved Messages after restart, safer foreign-coin keys |
 
 ---
 

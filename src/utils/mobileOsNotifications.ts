@@ -2,6 +2,7 @@ import { LocalNotifications } from '@capacitor/local-notifications';
 import { QortalBackground } from '../plugins/QortalBackground';
 import { isCapacitor } from './platform';
 import { fetchChatAvatarDataUrl } from './chatAvatarUrl';
+import { chatAlertIdFromKey, hashNotificationId } from './reticulumChatAlerts';
 
 type OsNotificationOptions = {
   title: string;
@@ -48,14 +49,6 @@ const ensureNotificationChannels = async (): Promise<void> => {
   });
 
   channelsReady = true;
-};
-
-const hashNotificationId = (value: string): number => {
-  let hash = 0;
-  for (let i = 0; i < value.length; i += 1) {
-    hash = (hash * 31 + value.charCodeAt(i)) >>> 0;
-  }
-  return (hash % 90000) + 1000;
 };
 
 export const showOsNotification = async ({
@@ -115,6 +108,10 @@ export const showOsNotification = async ({
 
     await QortalBackground.showAlertNotification({
       alertId,
+      // A stable id doubles as the Android notification tag, so re-showing
+      // the same conversation updates one tray entry and it can be cancelled
+      // later by key (see dismissChatOsNotification).
+      alertTag: id || undefined,
       title,
       body,
       iconUrl: resolvedIconUrl,
@@ -122,7 +119,10 @@ export const showOsNotification = async ({
       notificationType,
     });
   } catch (error) {
-    console.error('[mobileOsNotifications] Failed to show alert notification', error);
+    console.error(
+      '[mobileOsNotifications] Failed to show alert notification',
+      error
+    );
   }
 };
 
@@ -145,7 +145,10 @@ export const showIncomingCallOsNotification = async ({
       fromName,
     });
   } catch (error) {
-    console.error('[mobileOsNotifications] Failed to show incoming call notification', error);
+    console.error(
+      '[mobileOsNotifications] Failed to show incoming call notification',
+      error
+    );
   }
 };
 
@@ -155,7 +158,32 @@ export const dismissIncomingCallOsNotification = async (): Promise<void> => {
   try {
     await QortalBackground.dismissIncomingCallNotification();
   } catch (error) {
-    console.error('[mobileOsNotifications] Failed to dismiss incoming call notification', error);
+    console.error(
+      '[mobileOsNotifications] Failed to dismiss incoming call notification',
+      error
+    );
+  }
+};
+
+/**
+ * Cancel one Group/DM tray notification by its stable alert key (the `id`
+ * it was shown with). Best effort: never throws, no-op off native.
+ */
+export const dismissChatOsNotification = async (
+  alertKey: string
+): Promise<void> => {
+  if (!isCapacitor() || !alertKey) return;
+
+  try {
+    await QortalBackground.dismissChatAlertNotification({
+      alertId: chatAlertIdFromKey(alertKey),
+      alertTag: alertKey,
+    });
+  } catch (error) {
+    console.error(
+      '[mobileOsNotifications] Failed to dismiss chat alert notification',
+      error
+    );
   }
 };
 
@@ -166,6 +194,9 @@ export const dismissChatOsNotifications = async (): Promise<void> => {
   try {
     await QortalBackground.dismissChatAlertNotifications();
   } catch (error) {
-    console.error('[mobileOsNotifications] Failed to dismiss chat alert notifications', error);
+    console.error(
+      '[mobileOsNotifications] Failed to dismiss chat alert notifications',
+      error
+    );
   }
 };

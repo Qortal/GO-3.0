@@ -117,7 +117,9 @@ def _write_reticulum_config(config_dir):
         "  panic_on_interface_error = No",
         "",
         "[logging]",
-        "  loglevel = 4",
+        # NOTICE: RNS reopens and re-stats its log file on every line, and at
+        # INFO it wrote one per inbound announce and link event.
+        "  loglevel = 3",
         "",
         "[interfaces]",
         "",
@@ -240,12 +242,200 @@ def _patch_rns_no_exit():
     RNS.exit = _safe_exit
 
 
+def _tune_rns_for_battery():
+    """Relax RNS transport timers that were sized for a mains-powered desktop.
+
+    The Backbone client keeps every hub socket alive with a kernel TCP probe
+    after 5 s of silence, then every 2 s: across three hubs that is a packet
+    roughly every 1.7 s, which never lets the phone's radio leave its
+    high-power state. Probing after 45 s (15 s apart, four probes) still
+    detects a dead hub in about two minutes; the bridge's own overlay pings
+    and the JS presence heartbeat notice peer loss well before that. RNS's
+    250 ms job loop and 5 s per-link watchdogs are desktop-sized: 1 s / 30 s
+    only add jitter to timeout detection, not to delivery.
+    """
+    try:
+        import RNS
+        from RNS.Interfaces.BackboneInterface import BackboneClientInterface
+
+        BackboneClientInterface.TCP_PROBE_AFTER = 45
+        BackboneClientInterface.TCP_PROBE_INTERVAL = 15
+        BackboneClientInterface.TCP_PROBES = 4
+        BackboneClientInterface.TCP_USER_TIMEOUT = 120
+        _install_reconnect_backoff(BackboneClientInterface)
+        RNS.Transport.job_interval = 1.0
+        RNS.Link.WATCHDOG_MAX_SLEEP = 30
+    except Exception as exc:  # noqa: BLE001 - tuning is best effort
+        try:
+            sys.stderr.write(f"[presence_bridge] rns battery tuning skipped: {exc}\n")
+        except Exception:
+            pass
+
+
+_RECONNECT_BACKOFF_MAX_SECONDS = 60
+
+# Packet mix counters: key -> [count, bytes]. Keys are
+# "<dir>:<packet_type>/<destination_type>/<context>" using RNS' numeric
+# codes (packet: 0 data, 1 announce, 2 linkrequest, 3 proof; destination:
+# 0 single, 1 group, 2 plain, 3 link; context: 0 none, 1 resource,
+# 2 resource_adv, 3 resource_req, 4 resource_hmu, 5 resource_prf, 9 request,
+# 10 response, 11 path_response, 250 keepalive, 253 linkproof, 255 lrproof).
+_packet_mix = {}
+_packet_mix_lock = threading.Lock()
+
+
+def _count_packet(direction, packet_type, destination_type, context, size):
+    key = f"{direction}:{packet_type}/{destination_type}/{context}"
+    with _packet_mix_lock:
+        entry = _packet_mix.get(key)
+        if entry is None:
+            _packet_mix[key] = [1, int(size)]
+        else:
+            entry[0] += 1
+            entry[1] += int(size)
+
+
+def _install_packet_mix_counters():
+    """Tally inbound/outbound RNS packets by type so a field status snapshot
+    can say *what* the hub sockets carry, not just how many bytes."""
+    import RNS
+
+    original_unpack = RNS.Packet.unpack
+
+    def unpack(self):
+        result = original_unpack(self)
+        try:
+            if result is not False and self.raw is not None:
+                _count_packet(
+                    "rx",
+                    self.packet_type,
+                    self.destination_type,
+                    self.context,
+                    len(self.raw),
+                )
+        except Exception:
+            pass
+        return result
+
+    RNS.Packet.unpack = unpack
+
+    original_outbound = RNS.Transport.outbound
+
+    def outbound(packet):
+        result = original_outbound(packet)
+        try:
+            raw = getattr(packet, "raw", None)
+            if raw is not None:
+                _count_packet(
+                    "tx",
+                    packet.packet_type,
+                    getattr(packet.destination, "type", -1),
+                    packet.context,
+                    len(raw),
+                )
+        except Exception:
+            pass
+        return result
+
+    RNS.Transport.outbound = staticmethod(outbound)
+
+
+def _install_reconnect_backoff(client_cls):
+    """Back off reconnect attempts to a hub that stays down.
+
+    Upstream retries every ``RECONNECT_WAIT`` (5 s) forever: a DNS lookup plus
+    a TCP SYN to an offline hub, twelve times a minute, from every phone on the
+    mesh, which keeps the radio out of its low-power state. Double the wait
+    after each failure up to a minute; the other hubs' keepalives already wake
+    the radio at that cadence, and network recovery is still noticed within
+    ``_RECONNECT_BACKOFF_MAX_SECONDS``.
+    """
+    import time
+
+    import RNS
+
+    def reconnect(self):
+        if not self.initiator:
+            RNS.log(
+                "Attempt to reconnect on a non-initiator TCP interface. This should not happen.",
+                RNS.LOG_ERROR,
+            )
+            raise IOError("Attempt to reconnect on a non-initiator TCP interface")
+        if self.reconnecting:
+            return
+        self.reconnecting = True
+        attempts = 0
+        wait = float(client_cls.RECONNECT_WAIT)
+        while not self.online and not self.detached:
+            time.sleep(wait)
+            attempts += 1
+            if self.max_reconnect_tries is not None and attempts > self.max_reconnect_tries:
+                RNS.log("Max reconnection attempts reached for " + str(self), RNS.LOG_WARNING)
+                self.teardown()
+                break
+            try:
+                self.connect()
+            except Exception as exc:  # noqa: BLE001 - mirrors upstream
+                RNS.log(
+                    "Connection attempt for " + str(self) + " failed: " + str(exc),
+                    RNS.LOG_DEBUG,
+                )
+            wait = min(wait * 2.0, float(_RECONNECT_BACKOFF_MAX_SECONDS))
+
+        if not self.online:
+            return
+        if not self.never_connected:
+            RNS.log("Reconnected socket for " + str(self) + ".", RNS.LOG_INFO)
+        self.reconnecting = False
+        RNS.Transport.synthesize_tunnel(self)
+
+    client_cls.reconnect = reconnect
+
+
 def _disable_audio_fd_threads(pb):
     """The call-audio path uses Unix pipe FD3/FD4, absent in embedded CPython."""
     noop = lambda *a, **k: None
     for attr in ("_audio_fd3_reader_loop", "_audio_binary_out_writer_loop"):
         if hasattr(pb, attr):
             setattr(pb, attr, noop)
+
+
+def _apply_mobile_overlay_limits(pb):
+    """Fewer overlay neighbours on a phone.
+
+    The bridge defaults (12 outbound + 8 inbound links) suit an always-on
+    desktop that relays for others. Every overlay link costs a keepalive
+    schedule, an RNS watchdog thread and a copy of every gossiped group digest
+    (measured: ~220 forwarded digests a minute across 11 links). A leaf that
+    no longer relays needs redundancy, not breadth.
+
+    Gossip is flooded: every neighbour forwards every group digest, sub and
+    typing wire to us, so the phone decrypts and JSON-decodes one copy per
+    link and keeps one. Measured with 12 links: 3 250 inbound overlay packets
+    a minute, of which ~440 were new (7.4 copies each), ~10 KB/s downstream
+    around the clock and the single largest Python CPU item. Copies scale
+    with link count, so 6 + 6 takes ~40 % off that against the old 12 + 8
+    while keeping several independent routes for our own sends. The healthy-
+    fanout floor drops with it so the bootstrap does not fight the cap.
+
+    The inbound cap is deliberately not lower: desktops seeking fanout keep
+    dialling an advertised phone, and every refused Link still costs a full
+    handshake on both ends. Measured: 4 inbound slots -> ~150 refused links a
+    minute (2.5/s); 6 slots -> ~18 a minute.
+    """
+    outbound = 6
+    inbound = 6
+    pb._OVERLAY_MAX_OUTBOUND_NEIGHBORS = outbound
+    pb._OVERLAY_MAX_INBOUND_NEIGHBORS = inbound
+    pb._OVERLAY_BOOTSTRAP_MAX_OUTBOUND_NEIGHBORS = outbound
+    pb._OVERLAY_MIN_HEALTHY_FANOUT = min(pb._OVERLAY_MIN_HEALTHY_FANOUT, 4)
+    pb._OVERLAY_MAX_TOTAL_LINKS = (
+        outbound
+        + inbound
+        + pb._OVERLAY_MAX_PINNED_CHAT_PEERS
+        + pb._OVERLAY_MAX_PINNED_CALL_PEERS
+        + 4
+    )
 
 
 def start(config_dir):
@@ -266,11 +456,17 @@ def start(config_dir):
         _patch_signal_main_thread_safe()
         _patch_rns_standalone()
         _patch_rns_no_exit()
+        _tune_rns_for_battery()
+        try:
+            _install_packet_mix_counters()
+        except Exception as exc:  # noqa: BLE001 - diagnostics are best effort
+            sys.stderr.write(f"[presence_bridge] packet mix counters skipped: {exc}\n")
         import presence_bridge as pb
 
         _disable_audio_fd_threads(pb)
         # Route call audio over base64 JSON events/commands instead of FD3/FD4.
         pb._MOBILE_JSON_AUDIO = True
+        _apply_mobile_overlay_limits(pb)
 
         def _run():
             try:
@@ -304,6 +500,69 @@ def poll(timeout_ms=250):
         return _out_queue.get(timeout=max(0, timeout_ms) / 1000.0)
     except queue.Empty:
         return ""
+
+
+def transport_status():
+    """Snapshot of the bridge's own RNS hub interfaces, as a JSON string.
+
+    The Kotlin plugin used to run a second, independent Reticulum stack
+    (reticulum-kt) purely so the status badge had something to report. That
+    stack held two more TCP sockets to the hubs, ran its own keepalives and
+    decrypted every announce on the mesh a second time. Reading the counters
+    off this instance costs one GIL acquisition per poll instead.
+    """
+    import json
+
+    result = {
+        "started": bool(_started),
+        "online": False,
+        "networkName": NETWORK_NAME,
+        "ifacSize": 0,
+        "interfaces": 0,
+        "announces": 0,
+        "rxBytes": 0,
+        "txBytes": 0,
+    }
+    if not _started:
+        return json.dumps(result)
+    try:
+        import RNS
+
+        interfaces = [
+            iface
+            for iface in list(getattr(RNS.Transport, "interfaces", []) or [])
+            if getattr(iface, "IN", False) or getattr(iface, "OUT", False)
+        ]
+        online = [iface for iface in interfaces if getattr(iface, "online", False)]
+        result["interfaces"] = len(online)
+        result["online"] = bool(online)
+        ifac_sizes = [
+            int(getattr(iface, "ifac_size", 0) or 0)
+            for iface in interfaces
+            if getattr(iface, "ifac_size", None)
+        ]
+        result["ifacSize"] = max(ifac_sizes) if ifac_sizes else 0
+        result["rxBytes"] = sum(int(getattr(iface, "rxb", 0) or 0) for iface in interfaces)
+        result["txBytes"] = sum(int(getattr(iface, "txb", 0) or 0) for iface in interfaces)
+        # Destinations learned from announces; RNS keeps no raw announce
+        # counter and adding a handler would spawn a thread per announce.
+        result["announces"] = len(getattr(RNS.Transport, "path_table", {}) or {})
+        try:
+            from RNS.Cryptography import Provider as _crypto_provider
+
+            result["cryptoBackend"] = _crypto_provider.backend()
+        except Exception:
+            pass
+        with _packet_mix_lock:
+            mix = sorted(
+                _packet_mix.items(), key=lambda item: item[1][1], reverse=True
+            )[:24]
+        result["packetMix"] = [
+            {"key": key, "count": count, "bytes": size} for key, (count, size) in mix
+        ]
+    except Exception as exc:  # noqa: BLE001 - status is best effort
+        result["error"] = str(exc)
+    return json.dumps(result)
 
 
 def stop():

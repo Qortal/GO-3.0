@@ -52,6 +52,7 @@ import {
   qortalLandOptimizedAssetRenderScale,
 } from './qortalLandOptimizedAssets';
 import { collectQortalLandRoomAssetIds } from './qortalLandRoomAssetPolicy';
+import { describeSignerMismatch } from '../../utils/reticulumSignerMismatch';
 import {
   publishQortalLandPresence,
   shouldSuspendQortalLandPresence,
@@ -4186,7 +4187,7 @@ export function QortalLand({
         throw new Error(signed?.error || 'Unable to sign QortalLand event');
       }
       if (signed.authorAddress !== myAddress) {
-        throw new Error('Signed QortalLand author mismatch');
+        throw new Error(describeSignerMismatch(signed, myAddress, 'QortalLand'));
       }
       const result = await window.reticulumChat?.publishEvent?.({
         ...baseFields,
@@ -5256,7 +5257,16 @@ export function QortalLand({
 
   useEffect(() => {
     if (reticulumReady !== true || !Number.isInteger(groupId) || groupId <= 0 || !myAddress) return;
-    const interval = window.setInterval(() => {
+    const tickMs = () =>
+      typeof document !== 'undefined' && document.hidden
+        ? LAND_HEARTBEAT_MS
+        : LAND_SEND_INTERVAL_MS;
+    let interval = window.setInterval(runLandSend, tickMs());
+    const restart = () => {
+      window.clearInterval(interval);
+      interval = window.setInterval(runLandSend, tickMs());
+    };
+    function runLandSend() {
       const now = Date.now();
       const current = localStateRef.current;
       if (
@@ -5290,8 +5300,12 @@ export function QortalLand({
       // heartbeat used for network presence. Without this refresh, the local
       // Q-LAND badge can expire even while the player remains in QortalLand.
       publishLandPresenceSnapshot();
-    }, LAND_SEND_INTERVAL_MS);
-    return () => window.clearInterval(interval);
+    }
+    document.addEventListener('visibilitychange', restart);
+    return () => {
+      document.removeEventListener('visibilitychange', restart);
+      window.clearInterval(interval);
+    };
   }, [
     groupId,
     myAddress,
@@ -9563,7 +9577,7 @@ export function QortalLand({
                 bottom: landChatPanelGeometry
                   ? 'auto'
                   : {
-                      xs: 'max(12px, env(safe-area-inset-bottom, 0px))',
+                      xs: 'max(12px, var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px)))',
                       md: 18,
                     },
                 boxSizing: 'border-box',

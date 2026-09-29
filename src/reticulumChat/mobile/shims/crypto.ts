@@ -24,40 +24,46 @@ const PKCS8_PREFIX = Buffer.from(
 
 type HashAlgo = 'sha1' | 'sha256' | 'sha512';
 
-const HASHERS: Record<HashAlgo, (data: Uint8Array) => Uint8Array> = {
-  sha1: (d) => sha1(d),
-  sha256: (d) => sha256(d),
-  sha512: (d) => sha512(d),
+type IncrementalHasher = {
+  update(data: Uint8Array): unknown;
+  digest(): Uint8Array;
 };
 
-class Hash {
-  private chunks: Uint8Array[] = [];
+const HASHERS: Record<HashAlgo, () => IncrementalHasher> = {
+  sha1: () => sha1.create(),
+  sha256: () => sha256.create(),
+  sha512: () => sha512.create(),
+};
 
-  constructor(private readonly algo: HashAlgo) {}
+/**
+ * Node-style streaming hash. Every `update` is folded into the hasher at
+ * once: callers such as the resource store's `hashFile` feed successive
+ * `update` calls from ONE reused read buffer, so keeping references to the
+ * chunks until `digest()` (as an earlier version did) hashed the last chunk
+ * N times and mis-verified every resource larger than one read (1 MiB).
+ */
+class Hash {
+  private readonly hasher: IncrementalHasher;
+
+  constructor(algo: HashAlgo) {
+    this.hasher = HASHERS[algo]();
+  }
 
   update(data: string | Uint8Array | Buffer): this {
-    if (typeof data === 'string') {
-      this.chunks.push(new TextEncoder().encode(data));
-    } else {
-      this.chunks.push(
-        data instanceof Uint8Array ? data : new Uint8Array(data)
-      );
-    }
+    const bytes =
+      typeof data === 'string'
+        ? new TextEncoder().encode(data)
+        : data instanceof Uint8Array
+          ? data
+          : new Uint8Array(data);
+    this.hasher.update(bytes);
     return this;
   }
 
   digest(): Buffer;
   digest(encoding: 'hex' | 'base64'): string;
   digest(encoding?: 'hex' | 'base64'): Buffer | string {
-    let total = 0;
-    for (const c of this.chunks) total += c.length;
-    const merged = new Uint8Array(total);
-    let off = 0;
-    for (const c of this.chunks) {
-      merged.set(c, off);
-      off += c.length;
-    }
-    const out = Buffer.from(HASHERS[this.algo](merged));
+    const out = Buffer.from(this.hasher.digest());
     if (encoding === 'hex') return out.toString('hex');
     if (encoding === 'base64') return out.toString('base64');
     return out;

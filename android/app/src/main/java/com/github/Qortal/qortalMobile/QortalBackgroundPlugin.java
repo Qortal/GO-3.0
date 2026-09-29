@@ -1,5 +1,6 @@
 package com.github.Qortal.qortalMobile;
 
+import android.app.NotificationManager;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
@@ -271,6 +272,7 @@ public class QortalBackgroundPlugin extends Plugin {
         String iconUrl = call.getString("iconUrl", "");
         String fromAddress = call.getString("fromAddress", "");
         String notificationType = call.getString("notificationType", "");
+        String alertTag = call.getString("alertTag", "");
         QortalForegroundService.showAlert(
             context,
             alertId,
@@ -278,7 +280,8 @@ public class QortalBackgroundPlugin extends Plugin {
             body,
             iconUrl,
             fromAddress,
-            notificationType
+            notificationType,
+            alertTag
         );
 
         JSObject ret = new JSObject();
@@ -400,6 +403,43 @@ public class QortalBackgroundPlugin extends Plugin {
         }
 
         QortalForegroundService.dismissChatAlerts(context);
+
+        JSObject ret = new JSObject();
+        ret.put("success", true);
+        call.resolve(ret);
+    }
+
+    /**
+     * Cancel one Group/DM alert by (tag, hashed id). Cancels directly on the
+     * NotificationManager: a startService() from the background throws on
+     * API 26+ and a foreground start is not warranted for a cancel.
+     */
+    @PluginMethod
+    public void dismissChatAlertNotification(PluginCall call) {
+        Context context = getContext();
+        if (context == null) {
+            call.reject("Context not available");
+            return;
+        }
+
+        Integer alertId = call.getInt("alertId");
+        if (alertId == null) {
+            call.reject("alertId is required");
+            return;
+        }
+        String alertTag = call.getString("alertTag");
+        if (alertTag != null && alertTag.isEmpty()) {
+            alertTag = null;
+        }
+
+        try {
+            NotificationManager manager = context.getSystemService(NotificationManager.class);
+            if (manager != null) {
+                manager.cancel(alertTag, QortalForegroundService.alertNotificationId(alertId));
+            }
+        } catch (Exception error) {
+            Log.w(TAG, "Failed to cancel chat alert notification", error);
+        }
 
         JSObject ret = new JSObject();
         ret.put("success", true);

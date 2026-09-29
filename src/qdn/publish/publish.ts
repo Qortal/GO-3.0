@@ -12,6 +12,7 @@ import {
   PublishAbortedError,
   throwIfPublishAborted,
 } from '../../utils/publishAbort';
+import { takeStreamedChunkUpload } from '../../utils/streamedChunkUpload';
 import aesjs from 'aes-js';
 
 async function encryptAesCtrChunkWithFallback(
@@ -468,6 +469,8 @@ export const publishData = async ({
     }
 
     const file = data;
+    // Chunks already sent while the file was still compressing.
+    const streamed = takeStreamedChunkUpload(file);
 
     if (file?.size === 0) {
       postBody = await fileToBase64(file);
@@ -504,6 +507,38 @@ export const publishData = async ({
 
     const chunkUrl = uploadDataUrl + `/chunk`;
     const chunkSize = 5 * 1024 * 1024; // 5MB
+
+    if (streamed && encryption == null) {
+      await streamed.complete({
+        file,
+        chunkPath: chunkUrl,
+        uploadChunk: async (chunk, index) => {
+          const formData = new FormData();
+          formData.append('chunk', chunk, file.name);
+          formData.append('index', index);
+          await uploadChunkWithRetry(chunkUrl, formData, index);
+        },
+        throwIfAborted: throwIfPublishAborted,
+        onProgress: (done, total) => {
+          if (!appInfo?.tabId) return;
+          executeEvent('receiveChunks', {
+            tabId: appInfo.tabId,
+            publishLocation: { name: registeredName, identifier, service },
+            chunksSubmitted: done,
+            totalChunks: total,
+            processed: false,
+            filename:
+              file?.name ||
+              filename ||
+              title ||
+              `${service}-${identifier || ''}`,
+          });
+        },
+      });
+      throwIfPublishAborted();
+      return await finalizeChunkedUpload(uploadDataUrl, paramQueries);
+    }
+    streamed?.cancel();
 
     const totalChunks = Math.ceil(file.size / chunkSize);
     if (appInfo?.tabId) {
@@ -573,6 +608,10 @@ export const publishData = async ({
       }
     }
     throwIfPublishAborted();
+    return await finalizeChunkedUpload(uploadDataUrl, paramQueries);
+  };
+
+  const finalizeChunkedUpload = async (uploadDataUrl, paramQueries) => {
     const finalizeUrl = uploadDataUrl + `/finalize` + paramQueries;
 
     const finalizeEndpoint = await createEndpoint(finalizeUrl);

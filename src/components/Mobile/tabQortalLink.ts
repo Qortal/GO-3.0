@@ -12,3 +12,12 @@ export function buildTabQortalUrl(tab: OpenTab): string {
     : '';
   return `${QORTAL_PROTOCOL}${service}/${encodedName}${pathPart}${identifierPart}`;
 }
+
+/** Prefer the live QDN_RESOURCE_DISPLAYED path Hub already stores on the tab. */
+export function liveTabQortalUrl(
+  tab: OpenTab,
+  currentLink?: string
+): string {
+  const live = typeof currentLink === 'string' ? currentLink.trim() : '';
+  return live || buildTabQortalUrl(tab);
+}

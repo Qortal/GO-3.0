@@ -500,7 +500,7 @@ export const AppsLibraryDesktop = ({
             // Landscape has spare width; pull the content in from the edges.
             px: isMobile ? (compactHeader ? 3 : 2) : 0,
             pb: isMobile
-              ? 'calc(32px + env(safe-area-inset-bottom, 0px))'
+              ? 'calc(32px + var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px)))'
               : 0,
             scrollbarWidth: showLibraryScrollbar ? 'auto' : 'none',
             width: isMobile ? '100%' : '90%',

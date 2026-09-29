@@ -62,6 +62,26 @@
     "tooltip_value": "消息过期时间：{{value}}",
     "unavailable": "消息过期功能不可用"
   },
+  "file_viewer": {
+    "close": "关闭文件查看器",
+    "file": "文件",
+    "link_unsupported": "无法从这里打开此链接",
+    "load_failed": "无法打开此文件。它可能仍在下载，或已不再保存在此设备上。",
+    "markup_as_source": "网页以源代码形式显示，绝不会在应用内运行。",
+    "no_preview": "此类文件无法在这里显示。请用其他应用打开、分享或保存到设备。",
+    "open_with": "用其他应用打开",
+    "open_with_failed": "没有应用能打开此文件",
+    "opening": "正在打开文件…",
+    "preview_failed": "无法在这里显示此文件。请用其他应用打开、分享或保存到设备。",
+    "save": "保存到设备",
+    "save_failed": "无法保存文件",
+    "saved_to": "已保存到 {{location}}",
+    "share": "分享",
+    "share_failed": "无法分享文件",
+    "show_formatted": "显示格式化内容",
+    "show_source": "显示纯文本",
+    "truncated": "此文件太大，无法完整显示。请保存或用其他应用打开以查看其余内容。"
+  },
   "group_fallback_name": "群组",
   "group_type": {
     "closed": "封闭",
@@ -94,6 +114,9 @@
     "download_failed": "unable to download image",
     "prepare_failed": "unable to prepare image for clipboard",
     "read_failed": "unable to read image",
+    "save": "保存图片",
+    "share": "分享图片",
+    "share_failed": "无法分享图片",
     "zoom_in": "zoom in",
     "zoom_out": "zoom out"
   },

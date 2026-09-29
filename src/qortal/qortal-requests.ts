@@ -163,7 +163,8 @@ function buildNotificationPermissionKey(
   )}`;
 }
 
-function parseNotificationPermissionKey(
+/** `qAPPNotification-<address>:<appName>` → its parts (address + lowercased app name), or null. */
+export function parseNotificationPermissionKey(
   key: unknown
 ): { address: string; appName: string } | null {
   if (!isNotificationPermissionKey(key)) return null;
@@ -351,6 +352,12 @@ export async function getNotificationOsPushDisabled(appName) {
   return map[appName] === true;
 }
 
+/**
+ * Note: this map is device-wide (no address dimension). The cross-device
+ * notification sync only publishes/applies it while the owner is the current
+ * account, so a change made under one account can bleed into another account
+ * on the same device exactly as it already does locally.
+ */
 export async function setNotificationOsPushDisabled(appName, disabled) {
   try {
     const map = await getNotificationOsPushDisabledMap();
@@ -358,9 +365,13 @@ export async function setNotificationOsPushDisabled(appName, disabled) {
     const appStorage = getAppStorage();
     if (appStorage) {
       await appStorage.set(QORTAL_NOTIFICATION_OS_PUSH_DISABLED_KEY, map);
-      return;
+    } else {
+      await storeData(QORTAL_NOTIFICATION_OS_PUSH_DISABLED_KEY, map);
     }
-    await storeData(QORTAL_NOTIFICATION_OS_PUSH_DISABLED_KEY, map);
+    executeEvent('notification-os-push-updated', {
+      appName,
+      disabled: !!disabled,
+    });
   } catch (error) {
     console.error('Error setting notification OS push disabled:', error);
   }

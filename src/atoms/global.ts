@@ -427,30 +427,60 @@ export const notificationSeenInAppKeysRecordAtom =
     seenInAppStorage as any
   );
 
-/** Keys for current user (from last 3 days). Set with string[] for current address or { address, keys } to merge for an address. */
+/**
+ * Keys for current user (from last 3 days). Set with string[] for current
+ * address, { address, keys } to merge keys marked "now" for an address, or
+ * { address, keyTimes } to merge keys with their real mark times (the newer
+ * time wins when a key already exists) — used when seen state arrives from
+ * another device.
+ */
 export const notificationSeenInAppKeysAtom = atom(
   (get) =>
     seenInAppRecordToKeysForAddress(
       get(notificationSeenInAppKeysRecordAtom) as SeenInAppRecordByAddress,
       get(userInfoAtom)?.address
     ),
-  (get, set, update: string[] | { address: string; keys: string[] }) => {
+  (
+    get,
+    set,
+    update:
+      | string[]
+      | { address: string; keys: string[] }
+      | { address: string; keyTimes: Record<string, number> }
+  ) => {
     const full = get(
       notificationSeenInAppKeysRecordAtom
     ) as SeenInAppRecordByAddress;
-    const address =
-      typeof update === 'object' && update !== null && 'address' in update
-        ? (update as { address: string; keys: string[] }).address
-        : get(userInfoAtom)?.address;
+    const isObjectUpdate =
+      typeof update === 'object' && update !== null && !Array.isArray(update);
+    const address = isObjectUpdate
+      ? (update as { address: string }).address
+      : get(userInfoAtom)?.address;
+    if (!address) return;
+    const keyTimes =
+      isObjectUpdate && 'keyTimes' in update
+        ? (update as { keyTimes: Record<string, number> }).keyTimes
+        : null;
     const keys =
-      typeof update === 'object' && update !== null && 'keys' in update
-        ? (update as { address: string; keys: string[] }).keys
-        : (update as string[]);
-    if (!address || !Array.isArray(keys)) return;
+      isObjectUpdate && 'keys' in update
+        ? (update as { keys: string[] }).keys
+        : Array.isArray(update)
+          ? update
+          : null;
+    if (!keyTimes && !Array.isArray(keys)) return;
     const record = { ...full };
     record[address] = { ...(record[address] ?? {}) };
     const now = Date.now();
-    for (const k of keys) record[address][k] = now;
+    if (keyTimes && typeof keyTimes === 'object') {
+      for (const [k, t] of Object.entries(keyTimes)) {
+        if (typeof t !== 'number' || !Number.isFinite(t)) continue;
+        const existing = record[address][k];
+        if (typeof existing === 'number' && existing >= t) continue;
+        record[address][k] = Math.min(t, now);
+      }
+    } else if (Array.isArray(keys)) {
+      for (const k of keys) record[address][k] = now;
+    }
     const pruned = filterSeenInAppRecordByAge(record);
     set(notificationSeenInAppKeysRecordAtom, pruned);
   }

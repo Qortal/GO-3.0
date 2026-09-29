@@ -550,7 +550,7 @@ export const Settings = ({ open, setOpen, rawWallet }) => {
             flexGrow: 1,
             overflowY: 'auto',
             p: 2,
-            paddingBottom: 'calc(16px + env(safe-area-inset-bottom, 0px))',
+            paddingBottom: 'calc(16px + var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px)))',
           }}
         >
           <Box sx={{ maxWidth: 760, mx: 'auto', py: 3, px: 1, width: '100%' }}>

@@ -15,11 +15,7 @@ import com.getcapacitor.Plugin
 import com.getcapacitor.PluginCall
 import com.getcapacitor.PluginMethod
 import com.getcapacitor.annotation.CapacitorPlugin
-import network.reticulum.Reticulum
-import network.reticulum.interfaces.tcp.TCPClientInterface
-import network.reticulum.interfaces.toRef
-import network.reticulum.transport.AnnounceHandler
-import network.reticulum.transport.Transport
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.FileInputStream
@@ -27,18 +23,16 @@ import java.io.InputStream
 import java.security.MessageDigest
 import java.util.UUID
 import java.util.concurrent.Executors
-import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * Native Reticulum transport bridge.
+ * Native Reticulum bridge.
  *
- * Runs the Kotlin RNS stack (reticulum-kt) in client-only mode and connects to
- * the Qortal community Reticulum hubs over TCP with IFAC keyed by
- * `network_name = qortal-hub` — the exact parameters Qortal Hub (Electron) uses.
- *
- * This is the transport substrate the v2.0 features (voice calls, direct file
- * transfer, presence) ride on. The web UI talks to it through `window.Reticulum`
- * (see src/plugins/Reticulum.ts).
+ * Hosts the Chaquopy-embedded Python presence bridge (presence_bridge.py),
+ * which owns the single RNS instance connected to the Qortal community hubs
+ * (IFAC `network_name = qortal-hub`, the same parameters Qortal Hub uses).
+ * Chat, presence, calls and file transfer all ride on that instance; the
+ * transport status the badge shows is read from it too. The web UI talks to
+ * this plugin through `window.Reticulum` (see src/plugins/Reticulum.ts).
  */
 @CapacitorPlugin(name = "Reticulum")
 class ReticulumPlugin : Plugin() {
@@ -47,19 +41,10 @@ class ReticulumPlugin : Plugin() {
         private const val TAG = "ReticulumPlugin"
         private const val DEFAULT_NETNAME = "qortal-hub"
 
-        // Qortal community Reticulum hubs (TCPClientInterface; Backbone is Linux-only).
-        private val DEFAULT_HUBS = listOf(
-            Triple("Qortal Hub 1", "reticulum.qortal.link", 4444),
-            Triple("Qortal Hub 2", "reticulum2.qortal.link", 4444),
-        )
-
-        // Process-lifetime transport. MainActivity / the Capacitor plugin are
+        // Process-lifetime state. MainActivity / the Capacitor plugin are
         // destroyed on swipe-away; the foreground service keeps this process.
-        // Stopping RNS/Python on that destroy ran on the UI thread and blocked
+        // Stopping Python on that destroy ran on the UI thread and blocked
         // the next launch until the leftover process died (~1 min).
-        private val worker = Executors.newSingleThreadExecutor()
-        private val interfaces = mutableListOf<TCPClientInterface>()
-        private val announceCount = AtomicInteger(0)
         @Volatile private var started = false
         @Volatile private var netname: String = DEFAULT_NETNAME
         private val presenceWorker = Executors.newSingleThreadExecutor()
@@ -68,50 +53,20 @@ class ReticulumPlugin : Plugin() {
         @Volatile private var presenceReaderRunning = false
         @Volatile private var presenceConfigDir: String = ""
         private var presenceReader: Thread? = null
+        // Direct worker <-> bridge channel; process-lifetime like the reader.
+        @Volatile private var bridgeSocket: BridgeSocketServer? = null
+        private val bridgeSocketLock = Any()
     }
 
     @PluginMethod
     fun start(call: PluginCall) {
-        if (started) {
-            call.resolve(statusObject())
-            return
-        }
+        // Transport lives in the Python presence bridge (see presenceStart);
+        // this used to boot a second reticulum-kt stack with its own hub
+        // sockets, keepalives and announce processing purely to feed the
+        // status badge. The badge now reads the bridge's own interfaces.
         netname = call.getString("networkName", DEFAULT_NETNAME) ?: DEFAULT_NETNAME
-        worker.execute {
-            try {
-                val configDir = File(context.filesDir, "reticulum").apply { mkdirs() }
-                Reticulum.start(configDir = configDir.absolutePath, enableTransport = false)
-
-                Transport.registerAnnounceHandler(handler = AnnounceHandler { destHash, _, _ ->
-                    val hex = destHash.joinToString("") { "%02x".format(it) }
-                    announceCount.incrementAndGet()
-                    val ev = JSObject().put("destinationHash", hex)
-                    notifyListeners("announce", ev)
-                    true
-                })
-
-                for ((name, host, port) in DEFAULT_HUBS) {
-                    val iface = TCPClientInterface(
-                        name = name,
-                        targetHost = host,
-                        targetPort = port,
-                        ifacNetname = netname,
-                    )
-                    iface.onPacketReceived = { data, ifc -> Transport.inbound(data, ifc.toRef()) }
-                    Transport.registerInterface(iface.toRef())
-                    iface.start()
-                    interfaces.add(iface)
-                }
-
-                started = true
-                Log.i(TAG, "Reticulum started: ${interfaces.size} hub interfaces, netname=$netname")
-                notifyListeners("status", statusObject())
-                call.resolve(statusObject())
-            } catch (t: Throwable) {
-                Log.e(TAG, "Reticulum start failed", t)
-                call.reject("Reticulum start failed: ${t.message}", t as? Exception)
-            }
-        }
+        started = true
+        call.resolve(statusObject())
     }
 
     @PluginMethod
@@ -121,18 +76,8 @@ class ReticulumPlugin : Plugin() {
 
     @PluginMethod
     fun stop(call: PluginCall) {
-        worker.execute {
-            try {
-                interfaces.forEach { runCatching { it.detach() } }
-                interfaces.clear()
-                if (started) Reticulum.stop()
-                started = false
-                call.resolve(JSObject().put("stopped", true))
-            } catch (t: Throwable) {
-                Log.e(TAG, "Reticulum stop failed", t)
-                call.reject("Reticulum stop failed: ${t.message}", t as? Exception)
-            }
-        }
+        started = false
+        call.resolve(JSObject().put("stopped", true))
     }
 
     // ── Presence bridge methods ─────────────────────────────────────────────
@@ -247,6 +192,102 @@ class ReticulumPlugin : Plugin() {
         }
     }
 
+    // ── Direct worker bridge socket ─────────────────────────────────────────
+
+    /**
+     * Returns the loopback WebSocket endpoint the chat engine worker uses to
+     * reach the Python bridge without going through the WebView main thread.
+     * Starts the server on first use. See BridgeSocketServer for the protocol.
+     */
+    @PluginMethod
+    fun bridgeSocket(call: PluginCall) {
+        try {
+            val server = ensureBridgeSocket()
+            call.resolve(
+                JSObject()
+                    .put("url", server.url())
+                    .put("token", server.token)
+            )
+        } catch (t: Throwable) {
+            Log.e(TAG, "bridgeSocket failed", t)
+            call.reject("bridgeSocket failed: ${t.message}", t as? Exception)
+        }
+    }
+
+    private fun ensureBridgeSocket(): BridgeSocketServer {
+        bridgeSocket?.let { return it }
+        synchronized(bridgeSocketLock) {
+            bridgeSocket?.let { return it }
+            val origin = try {
+                bridge?.localUrl
+            } catch (_: Throwable) {
+                null
+            }
+            val server = BridgeSocketServer(
+                allowedOrigin = origin,
+                onCommand = { client, frame -> handleSocketCommand(client, frame) },
+                onFsRequest = { client, request -> handleSocketFsRequest(client, request) },
+            )
+            server.startListening()
+            bridgeSocket = server
+            return server
+        }
+    }
+
+    /** A worker command frame: feed to Python on the same executor as plugin calls. */
+    private fun handleSocketCommand(client: BridgeSocketServer.Client, frame: String) {
+        val host = presenceHost
+        if (host == null || !presenceStarted) {
+            val id = try {
+                JSONObject(frame).optString("id")
+            } catch (_: Throwable) {
+                ""
+            }
+            client.enqueue(
+                JSONObject()
+                    .put("type", "resp")
+                    .put("id", id)
+                    .put("ok", false)
+                    .put("error", "Presence bridge not started")
+                    .toString()
+            )
+            return
+        }
+        presenceWorker.execute {
+            try {
+                host.callAttr("feed", frame)
+            } catch (t: Throwable) {
+                Log.e(TAG, "bridge socket feed failed", t)
+            }
+        }
+    }
+
+    /** Chat-resource staging op from the worker; same confinement as the plugin methods. */
+    private fun handleSocketFsRequest(client: BridgeSocketServer.Client, request: JSONObject) {
+        val id = request.optString("id")
+        val op = request.optString("op")
+        val args = request.optJSONObject("args") ?: JSONObject()
+        fileWorker.execute {
+            val reply = JSONObject().put("type", "fsres").put("id", id)
+            try {
+                val result: JSONObject = when (op) {
+                    "path" -> stagedResourcePath(args.optString("name", "blob"))
+                    "read" -> stagedResourceRead(args.optString("path"))
+                    "write" -> stagedResourceWrite(args.optString("path"), args.optString("dataBase64"))
+                    "delete" -> {
+                        stagedResourceDelete(args.optString("path"))
+                        JSONObject()
+                    }
+                    else -> throw IllegalArgumentException("unknown native fs op: $op")
+                }
+                reply.put("result", result)
+            } catch (t: Throwable) {
+                reply.put("error", t.message ?: t.toString())
+            }
+            client.enqueue(reply.toString())
+        }
+    }
+
     // ── Q-Chat Reticulum file transfer helpers ──────────────────────────────
     // The Python bridge reads/writes plain filesystem paths, while Android file
     // pickers hand the WebView opaque content:// URIs. These helpers stage
@@ -357,12 +398,44 @@ class ReticulumPlugin : Plugin() {
         return if (file.parentFile == dir) file else null
     }
 
+    private fun stagedResourcePath(name: String): JSONObject {
+        val requested = sanitizeFileName(name.ifBlank { "blob" })
+        val file = File(chatResourceStageDir(), "${UUID.randomUUID()}-$requested")
+        return JSONObject().put("path", file.absolutePath)
+    }
+
+    private fun stagedResourceWrite(path: String, dataBase64: String?): JSONObject {
+        if (path.isBlank() || dataBase64 == null) {
+            throw IllegalArgumentException("Missing path or dataBase64")
+        }
+        val file = resolveStagedFile(path)
+            ?: throw IllegalArgumentException("Path is outside the chat resource staging directory")
+        val bytes = android.util.Base64.decode(dataBase64, android.util.Base64.DEFAULT)
+        file.writeBytes(bytes)
+        return JSONObject().put("path", file.absolutePath).put("size", bytes.size)
+    }
+
+    private fun stagedResourceRead(path: String): JSONObject {
+        if (path.isBlank()) throw IllegalArgumentException("Missing path")
+        val file = resolveStagedFile(path)
+        if (file == null || !file.isFile) {
+            throw IllegalStateException("Chat resource file is unavailable")
+        }
+        val bytes = file.readBytes()
+        return JSONObject()
+            .put("dataBase64", android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP))
+            .put("size", bytes.size)
+    }
+
+    private fun stagedResourceDelete(path: String) {
+        if (path.isBlank()) throw IllegalArgumentException("Missing path")
+        resolveStagedFile(path)?.delete()
+    }
+
     @PluginMethod
     fun chatResourcePath(call: PluginCall) {
         try {
-            val requested = sanitizeFileName(call.getString("name") ?: "blob")
-            val file = File(chatResourceStageDir(), "${UUID.randomUUID()}-$requested")
-            call.resolve(JSObject().put("path", file.absolutePath))
+            call.resolve(JSObject.fromJSONObject(stagedResourcePath(call.getString("name") ?: "blob")))
         } catch (t: Throwable) {
             call.reject("chatResourcePath failed: ${t.message}", t as? Exception)
         }
@@ -378,14 +451,7 @@ class ReticulumPlugin : Plugin() {
         }
         fileWorker.execute {
             try {
-                val file = resolveStagedFile(path)
-                if (file == null) {
-                    call.reject("Path is outside the chat resource staging directory")
-                    return@execute
-                }
-                val bytes = android.util.Base64.decode(dataBase64, android.util.Base64.DEFAULT)
-                file.writeBytes(bytes)
-                call.resolve(JSObject().put("path", file.absolutePath).put("size", bytes.size))
+                call.resolve(JSObject.fromJSONObject(stagedResourceWrite(path, dataBase64)))
             } catch (t: Throwable) {
                 call.reject("chatResourceWrite failed: ${t.message}", t as? Exception)
             }
@@ -401,17 +467,7 @@ class ReticulumPlugin : Plugin() {
         }
         fileWorker.execute {
             try {
-                val file = resolveStagedFile(path)
-                if (file == null || !file.isFile) {
-                    call.reject("Chat resource file is unavailable")
-                    return@execute
-                }
-                val bytes = file.readBytes()
-                call.resolve(
-                    JSObject()
-                        .put("dataBase64", android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP))
-                        .put("size", bytes.size)
-                )
+                call.resolve(JSObject.fromJSONObject(stagedResourceRead(path)))
             } catch (t: Throwable) {
                 call.reject("chatResourceRead failed: ${t.message}", t as? Exception)
             }
@@ -427,7 +483,7 @@ class ReticulumPlugin : Plugin() {
         }
         fileWorker.execute {
             try {
-                resolveStagedFile(path)?.delete()
+                stagedResourceDelete(path)
                 call.resolve()
             } catch (t: Throwable) {
                 call.reject("chatResourceDelete failed: ${t.message}", t as? Exception)
@@ -512,7 +568,9 @@ class ReticulumPlugin : Plugin() {
     /**
      * Opens a received file in the user's preferred viewer app. Accepts the
      * MediaStore content:// URI returned by qchatFileExportToDownloads or a
-     * plain app-storage path (exposed through the app's FileProvider).
+     * plain app-storage path (exposed through the app's FileProvider). An
+     * optional `mimeType` wins over the extension guess, which knows nothing
+     * about e.g. `.md`.
      */
     @PluginMethod
     fun qchatFileOpen(call: PluginCall) {
@@ -538,8 +596,10 @@ class ReticulumPlugin : Plugin() {
                 )
             }
             val extension = fileName.substringAfterLast('.', "").lowercase()
-            val mimeType = android.webkit.MimeTypeMap.getSingleton()
-                .getMimeTypeFromExtension(extension)
+            val mimeType = call.getString("mimeType")
+                ?.takeIf { it.isNotBlank() && it != "application/octet-stream" }
+                ?: android.webkit.MimeTypeMap.getSingleton()
+                    .getMimeTypeFromExtension(extension)
                 ?: "*/*"
             val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
                 setDataAndType(contentUri, mimeType)
@@ -620,8 +680,17 @@ class ReticulumPlugin : Plugin() {
             val host = presenceHost ?: return@Thread
             while (presenceReaderRunning) {
                 try {
-                    val frame = host.callAttr("poll", 250).toString()
+                    // poll() returns the moment a frame is queued; the timeout
+                    // only bounds how long a stop takes to be noticed. 250 ms
+                    // meant four JNI/GIL hops per idle second; 2 s was 0.5 Hz.
+                    // 5 s is 0.2 Hz when the queue is empty and still wakes
+                    // immediately when a frame arrives.
+                    val frame = host.callAttr("poll", 5000).toString()
                     if (frame.isNotEmpty()) {
+                        // The worker's direct socket gets the frame first: it is
+                        // a queue hand-off, whereas notifyListeners posts to the
+                        // (possibly saturated) WebView main thread.
+                        bridgeSocket?.broadcast(frame)
                         notifyListeners("presence", JSObject().put("frame", frame))
                     }
                 } catch (t: Throwable) {
@@ -652,19 +721,34 @@ class ReticulumPlugin : Plugin() {
     }
 
     private fun statusObject(): JSObject {
-        val online = interfaces.any { runCatching { it.online.value }.getOrDefault(false) }
-        val rx = interfaces.sumOf { runCatching { it.rxBytes.get() }.getOrDefault(0L) }
-        val tx = interfaces.sumOf { runCatching { it.txBytes.get() }.getOrDefault(0L) }
-        val ifacSize = interfaces.firstOrNull()?.let { runCatching { it.ifacSize }.getOrDefault(0) } ?: 0
-        return JSObject()
+        val result = JSObject()
             .put("started", started)
-            .put("online", online)
+            .put("online", false)
             .put("networkName", netname)
-            .put("ifacSize", ifacSize)
-            .put("interfaces", interfaces.size)
-            .put("announces", announceCount.get())
-            .put("rxBytes", rx)
-            .put("txBytes", tx)
+            .put("ifacSize", 0)
+            .put("interfaces", 0)
+            .put("announces", 0)
+            .put("rxBytes", 0L)
+            .put("txBytes", 0L)
+        val host = presenceHost ?: return result
+        if (!presenceStarted) return result
+        return try {
+            val snapshot = JSONObject(host.callAttr("transport_status").toString())
+            result
+                .put("online", snapshot.optBoolean("online", false))
+                .put("ifacSize", snapshot.optInt("ifacSize", 0))
+                .put("interfaces", snapshot.optInt("interfaces", 0))
+                .put("announces", snapshot.optInt("announces", 0))
+                .put("rxBytes", snapshot.optLong("rxBytes", 0L))
+                .put("txBytes", snapshot.optLong("txBytes", 0L))
+                // Per packet-type byte tallies (diagnostics; see
+                // qortal_presence_host._install_packet_mix_counters).
+                .put("packetMix", snapshot.optJSONArray("packetMix") ?: JSONArray())
+                .put("cryptoBackend", snapshot.optString("cryptoBackend", ""))
+        } catch (t: Throwable) {
+            Log.w(TAG, "transport_status failed: ${t.message}")
+            result
+        }
     }
 
     override fun load() {

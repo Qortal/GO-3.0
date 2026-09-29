@@ -7,16 +7,8 @@ import {
   settingsQDNLastUpdatedAtom,
   sortablePinnedAppsAtom,
 } from '../atoms/global';
-import { getArbitraryEndpointReact, getBaseApiReact } from '../App';
-// Import from the small util module, not Group.tsx: this hook is in the eager
-// pre-login bundle and a Group.tsx import would drag the whole authenticated
-// tree into it.
-import { decryptResource } from '../components/Group/groupDataPublishes';
-import {
-  base64ToUint8Array,
-  uint8ArrayToObject,
-} from '../encryption/encryption';
 import { useAtom, useSetAtom } from 'jotai';
+import { getExtSavedSettings, getExtSavedSettingsRecord } from './qdnSavedSettings';
 
 function fetchFromLocalStorage(key) {
   try {
@@ -32,42 +24,6 @@ function fetchFromLocalStorage(key) {
   }
 }
 
-const getPublishRecord = async (myName) => {
-  const url = `${getBaseApiReact()}${getArbitraryEndpointReact()}?mode=ALL&service=DOCUMENT_PRIVATE&identifier=ext_saved_settings&exactmatchnames=true&limit=1&prefix=true&name=${myName}`;
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error('network error');
-  }
-  const publishData = await response.json();
-
-  if (publishData?.length > 0)
-    return {
-      hasPublishRecord: true,
-      timestamp: publishData[0]?.updated || publishData[0].created,
-    };
-
-  return { hasPublishRecord: false };
-};
-
-const getPublish = async (myName) => {
-  try {
-    let data;
-    const res = await fetch(
-      `${getBaseApiReact()}/arbitrary/DOCUMENT_PRIVATE/${myName}/ext_saved_settings?encoding=base64`
-    );
-    data = await res.text();
-
-    if (!data) throw new Error('Unable to fetch publish');
-
-    const decryptedKey: any = await decryptResource(data);
-    const dataint8Array = base64ToUint8Array(decryptedKey.data);
-    const decryptedKeyToObject = uint8ArrayToObject(dataint8Array);
-    return decryptedKeyToObject;
-  } catch (error) {
-    return null;
-  }
-};
-
 export const useQortalGetSaveSettings = (myName, isAuthenticated) => {
   const setSortablePinnedApps = useSetAtom(sortablePinnedAppsAtom);
   const setCanSave = useSetAtom(canSaveSettingToQdnAtom);
@@ -82,9 +38,10 @@ export const useQortalGetSaveSettings = (myName, isAuthenticated) => {
   const getSavedSettings = useCallback(
     async (myName, settingsLocalLastUpdated) => {
       try {
-        const { hasPublishRecord, timestamp } = await getPublishRecord(myName);
+        const { hasPublishRecord, timestamp } =
+          await getExtSavedSettingsRecord(myName);
         if (hasPublishRecord) {
-          const settings = await getPublish(myName);
+          const settings = await getExtSavedSettings(myName);
           if (
             settings?.sortablePinnedApps &&
             timestamp > settingsLocalLastUpdated

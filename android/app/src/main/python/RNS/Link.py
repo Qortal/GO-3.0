@@ -239,6 +239,10 @@ class Link:
         self.establishment_rate = None
         self.expected_rate = None
         self.callbacks = LinkCallbacks()
+        # Qortal patch (mirrors Philreact/Reticulum): applications can route
+        # packet callbacks through their own bounded executor instead of the
+        # historical thread-per-packet behaviour. Unset preserves upstream.
+        self.packet_callback_dispatcher = None
         self.resource_strategy = Link.ACCEPT_NONE
         self.last_resource_window = None
         self.last_resource_eifr = None
@@ -992,9 +996,14 @@ class Link:
                             self.__update_phy_stats(packet, query_shared=True)
 
                             if self.callbacks.packet != None:
-                                thread = threading.Thread(target=self.callbacks.packet, args=(plaintext, packet))
-                                thread.daemon = True
-                                thread.start()
+                                if self.packet_callback_dispatcher != None:
+                                    try:
+                                        self.packet_callback_dispatcher(self.callbacks.packet, plaintext, packet)
+                                    except Exception as e:
+                                        RNS.log("Packet callback dispatcher failed on "+str(self)+": "+str(e)+"; falling back to direct callback thread", RNS.LOG_ERROR)
+                                        threading.Thread(target=self.callbacks.packet, args=(plaintext, packet), daemon=True).start()
+                                else:
+                                    threading.Thread(target=self.callbacks.packet, args=(plaintext, packet), daemon=True).start()
                             
                             if self.destination.proof_strategy == RNS.Destination.PROVE_ALL:
                                 packet.prove()
@@ -1242,6 +1251,18 @@ class Link:
         :param callback: A function or method with the signature *callback(message, packet)* to be called.
         """
         self.callbacks.packet = callback
+
+    def set_packet_callback_dispatcher(self, dispatcher):
+        """
+        Set an optional dispatcher for incoming packet callbacks. The
+        dispatcher is called as ``dispatcher(callback, data, packet)`` and can
+        enqueue work on an application-owned bounded executor.
+
+        Passing ``None`` restores the default thread-per-packet behaviour.
+        """
+        if dispatcher != None and not callable(dispatcher):
+            raise TypeError("Packet callback dispatcher must be callable or None")
+        self.packet_callback_dispatcher = dispatcher
 
     def set_resource_callback(self, callback):
         """

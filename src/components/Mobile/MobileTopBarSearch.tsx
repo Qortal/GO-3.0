@@ -545,10 +545,11 @@ export const MobileTopBarSearch = ({
                 transform: 'translateY(0)',
               },
             },
+            // `both` (not an `opacity: 0` base) so rows stay visible on
+            // WebViews that never run CSS animations.
             animation: `searchItemIn 200ms cubic-bezier(0.22, 1, 0.36, 1) ${
               40 + Math.min(index, 8) * 35
-            }ms forwards`,
-            opacity: 0,
+            }ms both`,
           };
 
           if (item.type === 'link') {

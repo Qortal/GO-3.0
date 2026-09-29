@@ -11,6 +11,7 @@ import select
 import selectors
 from collections import deque
 import queue
+import re
 import secrets
 import shutil
 import socket
@@ -206,7 +207,10 @@ _PEER_TS_SEED_LEASE_SECONDS = 300
 _MAX_KNOWN_PEERS = 256
 _REQUEST_PATH_COOLDOWN_SECONDS = 30.0
 _MAX_PATH_NUDGES_PER_PUBLISH = 8
-_NO_VERIFIED_PEERS_ANNOUNCE_COOLDOWN_SECONDS = 2 * 60
+# A phone with few verified neighbours used to re-announce to the whole mesh
+# every 2 min (7.5x the 15 min schedule); every peer verifies and caches each
+# announce to disk. 5 min still recovers discovery quickly after a reconnect.
+_NO_VERIFIED_PEERS_ANNOUNCE_COOLDOWN_SECONDS = 5 * 60
 # Extra RNS announce while verified overlay peer count is below this (same cooldown as legacy "no peers" path).
 _MIN_VERIFIED_OVERLAY_PEERS_BEFORE_SKIP_EXTRA_ANNOUNCE = 3
 _KR_MISMATCH_LOGGED: set[str] = set()
@@ -247,6 +251,8 @@ _DESTINATION_PATH_REFRESH_LEASE_SECONDS = 3.0
 _OVERLAY_LINK_FAILURE_SUPPRESS_LIMIT = 1
 _OVERLAY_LINK_FAILURE_SUPPRESS_SECONDS = 15.0
 _OVERLAY_LINK_FAILURE_SUPPRESS_MAX_SECONDS = 5 * 60.0
+# Chat-pinned own devices (Saved Messages) retry much sooner than ordinary peers.
+_OVERLAY_OWN_DEVICE_SUPPRESS_MAX_SECONDS = 30.0
 _OVERLAY_LINK_FAILURE_RESET_SECONDS = 30 * 60.0
 _OVERLAY_ZERO_FANOUT_RECOVERY_COOLDOWN_SECONDS = 15.0
 _OVERLAY_REPLACE_UNUSABLE_ACTIVE_MIN_AGE_SECONDS = 2.0
@@ -308,7 +314,12 @@ _RNS_INTERNAL_TIMING_PROBES_ENABLED = (
 # creating excessive maintenance traffic on nodes with many Hub peers.
 _OVERLAY_LINK_RX_IDLE_TIMEOUT_SECONDS = 60.0
 _OVERLAY_TRANSPORT_MAINTENANCE_INTERVAL_SECONDS = 5.0
+# When no call/chat pin and the command queue is empty, 5 s wakeups only
+# burn CPU/radio. 20 s still sits under the 30 s idle ping and 90 s neighbor
+# grace, so dead-peer detection and lease refresh stay correct.
+_OVERLAY_TRANSPORT_MAINTENANCE_IDLE_SECONDS = 20.0
 _OVERLAY_TRANSPORT_PING_INTERVAL_SECONDS = 15.0
+_OVERLAY_TRANSPORT_IDLE_PING_INTERVAL_SECONDS = 30.0
 _OVERLAY_HELLO_WIRE_TYPE = "OVERLAY_HELLO"
 _OVERLAY_PING_WIRE_TYPE = "OVERLAY_PING"
 _OVERLAY_PONG_WIRE_TYPE = "OVERLAY_PONG"
@@ -666,6 +677,58 @@ def _reticulum_chat_prune_digest_fanout_recent(now: float) -> None:
         _reticulum_chat_digest_fanout_recent.pop(key, None)
 
 
+# Peer-directed digests (send_reticulum_chat) had no dedupe at all, unlike
+# fanout. The engine answers every inbound group_sub-with-state-sync and every
+# served event page with a per-peer digest, so a flapping overlay link or a
+# bursty peer makes the phone re-send the identical group state to the same
+# peer several times a second. Each one costs a control-send lane slot on a
+# bridge whose lanes are single-threaded. Suppress exact repeats for a short
+# window; a restarted peer still gets a fresh digest within it.
+_RETICULUM_CHAT_PEER_DIGEST_DEDUPE_TTL_SECONDS = 30.0
+_RETICULUM_CHAT_PEER_DIGEST_DEDUPE_MAX = 4096
+_reticulum_chat_peer_digest_recent: Dict[Tuple[str, str], Tuple[str, float]] = {}
+_reticulum_chat_peer_digest_lock = threading.Lock()
+
+
+def _reticulum_chat_peer_digest_is_duplicate(peer_key: str, msg: Any) -> bool:
+    if not isinstance(msg, dict):
+        return False
+    fingerprint = _reticulum_chat_digest_fingerprint(msg)
+    if fingerprint is None:
+        return False
+    group_id, state_fingerprint = fingerprint
+    now = time.monotonic()
+    with _reticulum_chat_peer_digest_lock:
+        entry = _reticulum_chat_peer_digest_recent.get((peer_key, group_id))
+    if entry is None:
+        return False
+    last_fingerprint, sent_at = entry
+    return (
+        last_fingerprint == state_fingerprint
+        and now - sent_at < _RETICULUM_CHAT_PEER_DIGEST_DEDUPE_TTL_SECONDS
+    )
+
+
+def _reticulum_chat_note_peer_digest_sent(peer_key: str, msg: Any) -> None:
+    if not isinstance(msg, dict):
+        return
+    fingerprint = _reticulum_chat_digest_fingerprint(msg)
+    if fingerprint is None:
+        return
+    group_id, state_fingerprint = fingerprint
+    now = time.monotonic()
+    with _reticulum_chat_peer_digest_lock:
+        _reticulum_chat_peer_digest_recent[(peer_key, group_id)] = (state_fingerprint, now)
+        if len(_reticulum_chat_peer_digest_recent) > _RETICULUM_CHAT_PEER_DIGEST_DEDUPE_MAX:
+            cutoff = now - _RETICULUM_CHAT_PEER_DIGEST_DEDUPE_TTL_SECONDS
+            for key in [
+                key
+                for key, (_fp, sent_at) in _reticulum_chat_peer_digest_recent.items()
+                if sent_at < cutoff
+            ]:
+                _reticulum_chat_peer_digest_recent.pop(key, None)
+
+
 _GROUP_AUDIO_WIRE_TYPE = "GCA"
 _GROUP_AUDIO_HEARTBEAT_WIRE_TYPE = "GAC"
 # Keep RTT controls under the established audio-control type so an older peer
@@ -676,6 +739,11 @@ _GROUP_AUDIO_RTT_ACK_COMMAND = "A"
 _AUDIO_RTT_PROBE_INTERVAL_SECONDS = 5.0
 _AUDIO_RTT_PROBE_TIMEOUT_SECONDS = 4.0
 _AUDIO_RTT_MONITOR_INTERVAL_SECONDS = 0.5
+# Cadence for audio-only monitor threads while no audio link exists. A call
+# start is noticed within this delay, which is far below link setup time.
+# Call start is noticed well before link setup (seconds). 10 s idle is
+# still far below that and avoids a 0.5 Hz wake when no call is up.
+_AUDIO_IDLE_MONITOR_INTERVAL_SECONDS = 10.0
 _AUDIO_RTT_SAMPLE_LIMIT = 16
 _AUDIO_RTT_ACK_MIN_INTERVAL_SECONDS = 0.25
 _GROUP_AUDIO_BINARY_MAGIC = b"QGAU"
@@ -763,6 +831,7 @@ _QCHAT_FILE_CHUNK_DIAG_MIN_DELTA = 0.05
 _STDOUT_RESP_BATCH_MAX = 32
 _STDOUT_EVENT_BATCH_MAX = 128
 _STDOUT_BATCH_MAX_BYTES = 1024 * 1024
+_STDOUT_IDLE_WAIT_SECONDS = 1.0
 
 
 def _qchat_file_is_managed_resource_type(resource_type: str) -> bool:
@@ -815,6 +884,7 @@ _QCHAT_FILE_RESERVED_METADATA_KEYS = {
     "chunkSize",
 }
 _TRANSPORT_MONITOR_INTERVAL_SECONDS = 5.0
+_TRANSPORT_MONITOR_IDLE_SECONDS = 20.0
 _OVERLAY_PENDING_PACKET_LIMIT = 24
 
 # Binary audio IPC (fd 3 parent→child, fd 4 child→parent). Must match electron/src/reticulum-audio-ipc.ts.
@@ -849,6 +919,9 @@ _AUDIO_MAX_BATCHES_PER_EXECUTOR_PASS = 16
 _AUDIO_BACKLOG_BATCH_STEP = 2
 _AUDIO_BACKLOG_CMD_TIMEOUT_SECONDS = 0.005
 _AUDIO_QUEUE_STATE_MIN_INTERVAL_SECONDS = 0.5
+_AUDIO_QUEUE_STATE_IDLE_INTERVAL_SECONDS = 10.0
+_RNS_EXECUTOR_IDLE_AUDIO_TIMEOUT_SECONDS = 0.05
+_RNS_EXECUTOR_IDLE_TIMEOUT_SECONDS = 5.0
 _BRIDGE_PRESSURE_LOG_INTERVAL_SECONDS = 5.0
 _BRIDGE_PRESSURE_RNS_GAP_THRESHOLD_MS = 1000.0
 _PRESENCE_PRESSURE_LOG_INTERVAL_SECONDS = 10.0
@@ -936,6 +1009,10 @@ _json_priority_event_queue: "queue.Queue[Optional[Dict[str, Any]]]" = queue.Queu
     maxsize=_JSON_PRIORITY_EVENT_OUT_QUEUE_MAX
 )
 _json_event_coalesce_lock = threading.Lock()
+# Set by every producer of the three JSON output queues (and the coalesced
+# map) so the stdout writer can block instead of polling two queues with
+# 10 ms / 50 ms timeouts (~33 wakeups/s while idle).
+_json_out_available = threading.Event()
 _json_event_coalesced_by_key: Dict[str, Dict[str, Any]] = {}
 _audio_binary_out_queue: "queue.Queue[Optional[bytes]]" = queue.Queue(
     maxsize=_AUDIO_BINARY_OUT_QUEUE_MAX
@@ -1479,6 +1556,7 @@ def _queue_coalesced_json_event_line(frame: Dict[str, Any], key: str) -> None:
                 _json_event_coalesced_evictions += 1
         _json_event_coalesced_by_key[key] = frame
         _json_event_coalesced_updates += 1
+    _json_out_available.set()
 
 
 def _pop_coalesced_json_event_line() -> Optional[Dict[str, Any]]:
@@ -1516,6 +1594,7 @@ def _queue_json_event_line(frame: Dict[str, Any]) -> None:
                     _queue_coalesced_json_event_line(frame, coalesce_key)
                     return
         target_queue.put_nowait(frame)
+        _json_out_available.set()
     except queue.Full:
         if isinstance(frame, dict):
             coalesce_key = _coalesce_key_for_event(frame)
@@ -1534,6 +1613,7 @@ def _queue_json_resp_line(frame: Dict[str, Any]) -> None:
     while not _shutdown.is_set():
         try:
             _json_resp_queue.put(frame, timeout=0.05)
+            _json_out_available.set()
             return
         except queue.Full:
             continue
@@ -4264,7 +4344,15 @@ def _emit_audio_queue_state(force: bool = False) -> None:
     now = time.monotonic()
     if not force and not _audio_queue_state_dirty:
         return
-    if not force and now - _audio_queue_state_last_emit < _AUDIO_QUEUE_STATE_MIN_INTERVAL_SECONDS:
+    # Every scheduler enqueue marks this dirty, so without a cap the phone
+    # serialised the full 60-lane diagnostics snapshot twice a second, all
+    # day. Sub-second cadence is only useful while audio is flowing.
+    min_interval = (
+        _AUDIO_QUEUE_STATE_MIN_INTERVAL_SECONDS
+        if _audio_links_by_id
+        else _AUDIO_QUEUE_STATE_IDLE_INTERVAL_SECONDS
+    )
+    if not force and now - _audio_queue_state_last_emit < min_interval:
         return
     _audio_queue_state_last_emit = now
     _audio_queue_state_dirty = False
@@ -5211,9 +5299,17 @@ def _stdout_writer_loop() -> None:
             write_lines(event_lines)
             continue
 
+        # Nothing queued anywhere. Block until a producer signals instead of
+        # polling; the timeout only guards against a missed signal. Clearing
+        # after the wait keeps the drain-then-sleep sequence race-free: a
+        # frame queued during the drain above leaves the flag set, so the
+        # wait returns at once and the next pass picks it up.
+        _json_out_available.wait(timeout=_STDOUT_IDLE_WAIT_SECONDS)
+        _json_out_available.clear()
+
         if not resp_closed:
             try:
-                frame = _json_resp_queue.get(timeout=0.01)
+                frame = _json_resp_queue.get_nowait()
             except queue.Empty:
                 frame = None
             else:
@@ -5231,7 +5327,7 @@ def _stdout_writer_loop() -> None:
             except queue.Empty:
                 frame = _pop_coalesced_json_event_line()
                 if frame is None:
-                    frame = _json_event_queue.get(timeout=0.05)
+                    frame = _json_event_queue.get_nowait()
         except queue.Empty:
             continue
         if frame is None:
@@ -5919,6 +6015,32 @@ def _enqueue_stdin_command(message: Dict[str, Any]) -> None:
 
 
 def _rns_executor_loop() -> None:
+    """Run the RNS owner loop, surviving any single bad iteration.
+
+    This thread is the only consumer of ``_cmd_queue_bounded``. An uncaught
+    exception here (a malformed command, a diagnostics helper tripping on odd
+    state) used to end the thread silently; from then on every non-DM command
+    was rejected with ``bridge_command_queue_full`` until the app restarted,
+    which the user experiences as group messages that never leave the phone.
+    """
+    while not _shutdown.is_set():
+        try:
+            _rns_executor_loop_inner()
+            return
+        except Exception as exc:
+            _emit_priority_diagnostic_event(
+                "bridge_executor_recovered",
+                {"error": str(exc), "detail": traceback.format_exc(limit=6)},
+            )
+            log(
+                "[presence_bridge] target=rns-owner executor_iteration_failed "
+                f"err={exc}\n{traceback.format_exc(limit=6)}"
+            )
+            time.sleep(0.05)
+
+
+def _rns_executor_loop_inner() -> None:
+    global _rns_executor_last_loop_at
     last_loop_at: Optional[float] = None
     queued_before_gap = 0
     next_lane = "audio"
@@ -5940,6 +6062,7 @@ def _rns_executor_loop() -> None:
         loop_start = time.monotonic()
         _note_executor_loop_gap(last_loop_at, loop_start, queued_before_gap)
         last_loop_at = loop_start
+        _rns_executor_last_loop_at = loop_start
 
         audio_ready = not _audio_decoded_queue.empty()
         cmd_ready = not _cmd_queue_bounded.empty()
@@ -5951,7 +6074,17 @@ def _rns_executor_loop() -> None:
             _maybe_log_bridge_pressure()
             if selector_enabled:
                 try:
-                    events = selector.select(timeout=0.05)
+                    # Every producer writes the wake pipe, so the timeout is
+                    # only a safety net. 50 ms here meant 20 GIL-holding
+                    # wakeups a second around the clock; keep that only while
+                    # an audio link needs sub-frame scheduling.
+                    events = selector.select(
+                        timeout=(
+                            _RNS_EXECUTOR_IDLE_AUDIO_TIMEOUT_SECONDS
+                            if _audio_links_by_id
+                            else _RNS_EXECUTOR_IDLE_TIMEOUT_SECONDS
+                        )
+                    )
                 except Exception as exc:
                     log(f"[presence_bridge] {_AUDIO_IPC_LOG} stage=rns-owner-selector-error err={exc}")
                     events = []
@@ -5999,8 +6132,412 @@ def _rns_executor_loop() -> None:
             continue
 
 
+# ---------------------------------------------------------------------------
+# Stall watchdog
+#
+# On the phone the bridge has repeatedly frozen for minutes: single lane tasks
+# running 150-300 s, the RNS owner loop silent for 149 s, and the command
+# queue full so every engine command bounced. Logcat is unavailable on some
+# vendor builds, so this watchdog turns a stall into data the JS side can see:
+# an event with the stuck lanes and the Python stacks of the threads involved.
+# It deliberately takes no bridge lock and only uses non-blocking emits, so it
+# keeps working when the stall is a lock convoy.
+# ---------------------------------------------------------------------------
+_rns_executor_last_loop_at: float = 0.0
+_STALL_WATCHDOG_INTERVAL_SECONDS = 5.0
+_STALL_WATCHDOG_IDLE_SECONDS = 15.0
+_STALL_TASK_THRESHOLD_SECONDS = 30.0
+_STALL_EXECUTOR_THRESHOLD_SECONDS = 20.0
+_STALL_DUMP_MIN_INTERVAL_SECONDS = 60.0
+_STALL_DUMP_MAX_THREADS = 40
+_STALL_DUMP_MAX_FRAMES = 14
+_STALL_DUMP_MAX_BYTES = 48_000
+
+
+def _emit_priority_diagnostic_event(event: str, payload: Dict[str, Any]) -> None:
+    """Emit a diagnostics event without ever blocking the caller."""
+    frame: Dict[str, Any] = {"type": "event", "event": event, "payload": payload}
+    try:
+        _json_priority_event_queue.put_nowait(frame)
+    except queue.Full:
+        try:
+            _json_event_queue.put_nowait(frame)
+        except queue.Full:
+            return
+    _json_out_available.set()
+
+
+def _thread_stacks_snapshot(
+    interesting: Callable[[str], bool],
+    max_threads: int = _STALL_DUMP_MAX_THREADS,
+    max_frames: int = _STALL_DUMP_MAX_FRAMES,
+) -> Dict[str, str]:
+    names: Dict[int, str] = {}
+    for thread in threading.enumerate():
+        if thread.ident is not None:
+            names[thread.ident] = thread.name
+    frames = sys._current_frames()
+    ranked: List[Tuple[int, str, Any]] = []
+    for ident, frame in frames.items():
+        name = names.get(ident, f"tid-{ident}")
+        priority = 0 if interesting(name) else 1
+        ranked.append((priority, name, frame))
+    ranked.sort(key=lambda item: (item[0], item[1]))
+    out: Dict[str, str] = {}
+    for _priority, name, frame in ranked[:max_threads]:
+        try:
+            out[name] = "".join(traceback.format_stack(frame, limit=max_frames))
+        except Exception:
+            out[name] = "<unavailable>"
+    return out
+
+
+_THREAD_POPULATION_REPORT_THRESHOLD = 60
+_THREAD_POPULATION_REPORT_MIN_INTERVAL_SECONDS = 120.0
+_THREAD_POPULATION_STACK_GROUPS = 6
+# Also report when the bridge's threads together burned more than this many
+# CPU ticks (1/100 s) since the previous sample: 1200 over the 120 s window is
+# 10 % of one core, which on a phone is already a visible battery cost.
+_THREAD_CPU_REPORT_MIN_TICKS = 1200
+_THREAD_CPU_STACK_SAMPLES = 4
+_THREAD_CPU_STACK_SAMPLE_GAP_SECONDS = 0.15
+
+
+def _thread_group_name(name: str) -> str:
+    """Collapse per-instance suffixes so leaked threads group by origin."""
+    # Python's default names are "Thread-123 (target)"; keep the target.
+    base = re.sub(r"^Thread-\d+", "Thread", name)
+    base = re.sub(r"[-_ ]?[0-9a-f]{6,}(?= |$)", "", base)
+    base = re.sub(r"[-_ ]?\d+$", "", base)
+    return base or name
+
+
+_thread_cpu_ticks_prev: Dict[int, int] = {}
+
+
+def _thread_cpu_ticks(native_id: int) -> int:
+    try:
+        with open(f"/proc/self/task/{native_id}/stat", "rb") as fh:
+            raw = fh.read().decode("ascii", "replace")
+        # comm may contain spaces; fields after the closing paren are stable.
+        rest = raw[raw.rfind(")") + 2 :].split()
+        return int(rest[11]) + int(rest[12])
+    except Exception:
+        return -1
+
+
+def _report_thread_population(*, force: bool = False) -> Optional[Dict[str, Any]]:
+    """Emit which thread families make up a bloated thread population.
+
+    Every inbound Link packet, announce and resource event in RNS runs its
+    callback on a brand-new thread. When a callback blocks (lock convoy,
+    slow consumer) those threads accumulate by the hundreds; the phone then
+    burns CPU in futex/context-switch churn, which users see as battery
+    drain. This turns that state into a per-origin count plus one stack per
+    family so the blocking site can be identified from a field report.
+    """
+    global _thread_cpu_ticks_prev
+    threads = threading.enumerate()
+    counts: Dict[str, int] = {}
+    cpu_delta: Dict[str, int] = {}
+    sample_ident: Dict[str, int] = {}
+    ticks_now: Dict[int, int] = {}
+    # native tid -> (thread name, ticks since last sample); lets a field
+    # report be matched against `/proc/<pid>/task/<tid>` numbers.
+    per_thread: List[Tuple[int, str, int]] = []
+    for thread in threads:
+        group = _thread_group_name(thread.name)
+        counts[group] = counts.get(group, 0) + 1
+        if thread.ident is not None and group not in sample_ident:
+            sample_ident[group] = thread.ident
+        native_id = getattr(thread, "native_id", None)
+        if isinstance(native_id, int):
+            ticks = _thread_cpu_ticks(native_id)
+            if ticks >= 0:
+                ticks_now[native_id] = ticks
+                prev = _thread_cpu_ticks_prev.get(native_id)
+                # Threads first seen this round count in full: short-lived
+                # workers never survive two samples but still cost CPU.
+                delta = ticks - prev if prev is not None else ticks
+                cpu_delta[group] = cpu_delta.get(group, 0) + max(0, delta)
+                per_thread.append((native_id, thread.name, max(0, delta)))
+    first_sample = not _thread_cpu_ticks_prev
+    _thread_cpu_ticks_prev = ticks_now
+    total_cpu_ticks = sum(cpu_delta.values())
+    if (
+        not force
+        and len(threads) < _THREAD_POPULATION_REPORT_THRESHOLD
+        and (first_sample or total_cpu_ticks < _THREAD_CPU_REPORT_MIN_TICKS)
+    ):
+        # Healthy: few threads and little CPU. The sample above still primes
+        # the per-thread tick baseline for the next window.
+        return None
+    ranked = sorted(counts.items(), key=lambda item: item[1], reverse=True)
+    cpu_ranked = sorted(cpu_delta.items(), key=lambda item: item[1], reverse=True)
+    frames = sys._current_frames()
+    stacks: Dict[str, str] = {}
+    stack_groups = [g for g, _c in ranked[:_THREAD_POPULATION_STACK_GROUPS]] + [
+        g for g, _t in cpu_ranked[:_THREAD_POPULATION_STACK_GROUPS]
+    ]
+    for group in stack_groups:
+        if group in stacks:
+            continue
+        frame = frames.get(sample_ident.get(group, -1))
+        if frame is None:
+            continue
+        try:
+            stacks[group] = "".join(traceback.format_stack(frame, limit=12))
+        except Exception:
+            stacks[group] = "<unavailable>"
+    # A single stack rarely explains a CPU hog; take a few more samples of the
+    # busiest families and keep the distinct ones (a poor man's profiler).
+    hot_groups = [g for g, t in cpu_ranked[:3] if t > 0]
+    if hot_groups:
+        hot_idents = {
+            t.ident: _thread_group_name(t.name)
+            for t in threads
+            if t.ident is not None and _thread_group_name(t.name) in hot_groups
+        }
+        seen_stacks: Dict[str, set] = {g: set() for g in hot_groups}
+        for _round in range(_THREAD_CPU_STACK_SAMPLES):
+            time.sleep(_THREAD_CPU_STACK_SAMPLE_GAP_SECONDS)
+            for ident, frame in sys._current_frames().items():
+                group = hot_idents.get(ident)
+                if group is None:
+                    continue
+                try:
+                    text = "".join(traceback.format_stack(frame, limit=8))
+                except Exception:
+                    continue
+                if text in seen_stacks[group] or len(seen_stacks[group]) >= 4:
+                    continue
+                seen_stacks[group].add(text)
+                stacks[f"{group}#cpu{len(seen_stacks[group])}"] = text
+    payload = {
+        "totalCpuTicks": total_cpu_ticks,
+        "threadCount": len(threads),
+        "groups": [{"name": name, "count": count} for name, count in ranked[:25]],
+        # CPU ticks (1/100 s) consumed per thread family since the last report.
+        "cpuTicksByGroup": [
+            {"name": name, "ticks": ticks} for name, ticks in cpu_ranked[:25]
+        ],
+        "stacks": stacks,
+        "threads": [
+            {"tid": tid, "name": name, "ticks": ticks}
+            for tid, name, ticks in sorted(per_thread, key=lambda t: t[2], reverse=True)[:40]
+        ],
+    }
+    _emit_priority_diagnostic_event("bridge_thread_population", payload)
+    summary = ",".join(f"{name}:{count}" for name, count in ranked[:12])
+    cpu_summary = ",".join(f"{name}:{ticks}" for name, ticks in cpu_ranked[:12])
+    log(
+        "[presence_bridge] target=stall-watchdog thread_population "
+        f"total={len(threads)} cpu_total={total_cpu_ticks} groups={summary} cpu_ticks={cpu_summary}"
+    )
+    for group, stack in stacks.items():
+        log(f"[presence_bridge] target=stall-watchdog thread_group={group}\n{stack}")
+    return payload
+
+
+def handle_debug_thread_report(req_id: str) -> None:
+    """On-demand thread population + CPU report (developer diagnostics).
+
+    Deltas are measured since the previous sample, so the first call after a
+    quiet window reports the whole window; call twice a known interval apart
+    to get a rate.
+    """
+    try:
+        payload = _report_thread_population(force=True) or {}
+        emit_resp(req_id, True, payload=payload)
+    except Exception as exc:  # noqa: BLE001 - diagnostics must not raise
+        emit_resp(req_id, False, error=f"thread_report_failed: {exc}")
+
+
+def handle_debug_wire_mix(req_id: str) -> None:
+    """Snapshot of the inbound wire counters kept for `presence_pressure`
+    (source:*, type:*, decoded:*, rejected:*) since the current window began."""
+    with _state_lock:
+        counts = dict(_presence_pressure_counts)
+        elapsed = max(0.0, time.monotonic() - _presence_pressure_window_started_at)
+        links = {
+            "overlay": len(_overlay_links_by_id),
+            "audio": len(_audio_links_by_id),
+            "file": len(_qchat_file_links_by_id),
+            "outbound": len(_active_overlay_neighbors),
+            "inbound": len(_inbound_overlay_neighbors),
+        }
+    emit_resp(
+        req_id,
+        True,
+        payload={"windowSeconds": elapsed, "counts": counts, "links": links},
+    )
+
+
+def _stall_watchdog_loop() -> None:
+    last_dump_at = 0.0
+    last_population_at = 0.0
+    interval = _STALL_WATCHDOG_INTERVAL_SECONDS
+    while not _shutdown.wait(interval):
+        try:
+            now = time.monotonic()
+            if now - last_population_at >= _THREAD_POPULATION_REPORT_MIN_INTERVAL_SECONDS:
+                # Samples every window; only emits on a thread pile-up or a
+                # CPU-hungry window (see _report_thread_population).
+                last_population_at = now
+                try:
+                    _report_thread_population()
+                except Exception as exc:
+                    log(f"[presence_bridge] target=stall-watchdog thread_population_failed err={exc}")
+            stuck_lanes: List[Dict[str, Any]] = []
+            # Read the stats dicts without _state_lock on purpose (see above).
+            for lane, stats in list(_scheduler_stats.items()):
+                try:
+                    started_at = float(stats.get("currentTaskStartedAt") or 0.0)
+                    task = str(stats.get("currentTask") or "")
+                except Exception:
+                    continue
+                if not task or started_at <= 0:
+                    continue
+                running_for = now - started_at
+                if running_for >= _STALL_TASK_THRESHOLD_SECONDS:
+                    q = _scheduler_queues.get(lane)
+                    stuck_lanes.append(
+                        {
+                            "lane": lane,
+                            "task": task[:80],
+                            "seconds": round(running_for, 1),
+                            "queueDepth": q.qsize() if q is not None else 0,
+                        }
+                    )
+            cmd_depth = _cmd_queue_bounded.qsize()
+            executor_idle_for = (
+                now - _rns_executor_last_loop_at if _rns_executor_last_loop_at > 0 else 0.0
+            )
+            executor_stalled = (
+                cmd_depth > 0 and executor_idle_for >= _STALL_EXECUTOR_THRESHOLD_SECONDS
+            )
+            if not stuck_lanes and not executor_stalled:
+                interval = (
+                    _STALL_WATCHDOG_INTERVAL_SECONDS
+                    if (
+                        cmd_depth > 0
+                        or _reticulum_bridge_needs_fast_maintenance()
+                    )
+                    else _STALL_WATCHDOG_IDLE_SECONDS
+                )
+                continue
+            interval = _STALL_WATCHDOG_INTERVAL_SECONDS
+            if now - last_dump_at < _STALL_DUMP_MIN_INTERVAL_SECONDS:
+                continue
+            last_dump_at = now
+            stuck_names = {f"reticulum-{entry['lane']}-0" for entry in stuck_lanes}
+
+            def interesting(name: str) -> bool:
+                return (
+                    name in stuck_names
+                    or name in {"reticulum-rns", "reticulum-json-out", "presence-bridge-main"}
+                    or name.startswith("reticulum-control-packet")
+                    or name.startswith("reticulum-realtime-packet")
+                    or name.startswith("Transport")
+                )
+
+            stacks = _thread_stacks_snapshot(interesting)
+            budget = _STALL_DUMP_MAX_BYTES
+            trimmed: Dict[str, str] = {}
+            for name, stack in stacks.items():
+                if budget <= 0:
+                    break
+                piece = stack[: max(0, min(len(stack), budget))]
+                trimmed[name] = piece
+                budget -= len(piece)
+            payload = {
+                "stuckLanes": stuck_lanes,
+                "executorStalled": executor_stalled,
+                "executorIdleSeconds": round(executor_idle_for, 1),
+                "cmdQueueDepth": cmd_depth,
+                "cmdQueueMax": _CMD_QUEUE_MAX,
+                "threadCount": threading.active_count(),
+                "stacks": trimmed,
+            }
+            # Event first: it is non-blocking. log() goes through the stderr
+            # stream lock and could itself be part of the stall.
+            _emit_priority_diagnostic_event("bridge_stall_diagnostic", payload)
+            summary = ",".join(
+                f"{entry['lane']}:{entry['task']}:{entry['seconds']}s" for entry in stuck_lanes
+            )
+            log(
+                "[presence_bridge] target=stall-watchdog stall_detected "
+                f"executor_stalled={str(executor_stalled).lower()} "
+                f"executor_idle_s={executor_idle_for:.1f} cmd_q={cmd_depth} "
+                f"stuck={summary or 'none'} threads={threading.active_count()}"
+            )
+            for name, stack in trimmed.items():
+                log(f"[presence_bridge] target=stall-watchdog thread={name}\n{stack}")
+        except Exception as exc:
+            try:
+                log(f"[presence_bridge] target=stall-watchdog watchdog_failed err={exc}")
+            except Exception:
+                pass
+
+
+# Diagnostic lines are per-event (one per inbound presence, per fanout, per
+# path request...). On a busy mesh that was ~10 lines/s, each a JNI hop into
+# logcat plus string formatting, all day. Keep the first few of each kind per
+# window, then summarise. Verbose mode disables the limiter.
+_LOG_RATE_LIMIT_WINDOW_SECONDS = 60.0
+_LOG_RATE_LIMIT_PER_KEY = 8
+_LOG_KEY_RE = re.compile(
+    r"^\[presence_bridge\]\s+(?:target=(\S+)\s+)?(?:stage=(\S+)\s+)?(\S+)"
+)
+_log_rate_lock = threading.Lock()
+# key -> [window_started_at, emitted_in_window, suppressed_in_window]
+_log_rate_state: Dict[str, List[float]] = {}
+
+
+def _log_rate_key(message: str) -> str:
+    match = _LOG_KEY_RE.match(message)
+    if match is None:
+        return message[:48]
+    target, stage, head = match.groups()
+    return f"{target or ''}|{stage or ''}|{head}"
+
+
 def log(message: str) -> None:
-    print(message, file=sys.stderr, flush=True)
+    if _PRESENCE_BRIDGE_VERBOSE_LOGS:
+        print(message, file=sys.stderr, flush=True)
+        return
+    key = _log_rate_key(message)
+    now = time.monotonic()
+    summary: Optional[str] = None
+    with _log_rate_lock:
+        state = _log_rate_state.get(key)
+        if state is None or now - state[0] >= _LOG_RATE_LIMIT_WINDOW_SECONDS:
+            if state is not None and state[2] > 0:
+                summary = (
+                    "[presence_bridge] log_suppressed "
+                    f"kind={key} count={int(state[2])} "
+                    f"window_s={int(_LOG_RATE_LIMIT_WINDOW_SECONDS)}"
+                )
+            state = [now, 0.0, 0.0]
+            _log_rate_state[key] = state
+            if len(_log_rate_state) > 512:
+                stale = [
+                    k
+                    for k, v in _log_rate_state.items()
+                    if now - v[0] >= _LOG_RATE_LIMIT_WINDOW_SECONDS
+                ]
+                for k in stale:
+                    _log_rate_state.pop(k, None)
+        if state[1] >= _LOG_RATE_LIMIT_PER_KEY:
+            state[2] += 1
+            emit = False
+        else:
+            state[1] += 1
+            emit = True
+    if summary:
+        print(summary, file=sys.stderr, flush=True)
+    if emit:
+        print(message, file=sys.stderr, flush=True)
 
 
 def verbose_presence_log(message: str) -> None:
@@ -6504,13 +7041,39 @@ def maybe_emit_transport_state(force: bool = False) -> None:
     log(f"[presence_bridge] transport_state {summarize_transport_state(payload)}")
 
 
+def _reticulum_bridge_needs_fast_maintenance() -> bool:
+    """True while a call, pinned chat, or queued command needs the 5 s cadence."""
+    if _audio_links_by_id:
+        return True
+    try:
+        if _cmd_queue_bounded.qsize() > 0:
+            return True
+    except Exception:
+        pass
+    try:
+        if _pinned_chat_overlay_peers or _pinned_call_overlay_peers:
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def transport_monitor_loop() -> None:
-    while True:
+    started_at = time.monotonic()
+    while not _shutdown.is_set():
         try:
             maybe_emit_transport_state()
         except Exception as exc:
             log(f"[presence_bridge] transport monitor error: {exc}")
-        time.sleep(_TRANSPORT_MONITOR_INTERVAL_SECONDS)
+        now = time.monotonic()
+        busy = (now - started_at) < 60.0 or _reticulum_bridge_needs_fast_maintenance()
+        interval = (
+            _TRANSPORT_MONITOR_INTERVAL_SECONDS
+            if busy
+            else _TRANSPORT_MONITOR_IDLE_SECONDS
+        )
+        if _shutdown.wait(interval):
+            return
 
 
 def ensure_transport_monitor_started() -> None:
@@ -6535,6 +7098,13 @@ def rns_callback_scheduler_monitor_loop() -> None:
     interval = _AUDIO_RNS_CALLBACK_SCHEDULER_MONITOR_INTERVAL_SECONDS
     last_at = time.monotonic()
     while True:
+        # This probe only measures GIL scheduling latency for live audio. With
+        # no audio link it woke the CPU 20x a second for nothing; idle at the
+        # slow cadence and rearm as soon as a call starts.
+        if not _audio_links_by_id:
+            _shutdown.wait(_AUDIO_IDLE_MONITOR_INTERVAL_SECONDS)
+            last_at = time.monotonic()
+            continue
         time.sleep(interval)
         now = time.monotonic()
         elapsed_ms = max(0.0, (now - last_at) * 1000.0)
@@ -6571,7 +7141,7 @@ def ensure_rns_callback_scheduler_monitor_started() -> None:
 
 def overlay_transport_maintenance_loop() -> None:
     last_announce_at = 0.0
-    while True:
+    while not _shutdown.is_set():
         try:
             if _destination is not None:
                 now = time.time()
@@ -6603,7 +7173,13 @@ def overlay_transport_maintenance_loop() -> None:
                 "[presence_bridge] target=presence-reticulum overlay_transport_sync_failed "
                 f"err={exc}"
             )
-        time.sleep(_OVERLAY_TRANSPORT_MAINTENANCE_INTERVAL_SECONDS)
+        interval = (
+            _OVERLAY_TRANSPORT_MAINTENANCE_INTERVAL_SECONDS
+            if _reticulum_bridge_needs_fast_maintenance()
+            else _OVERLAY_TRANSPORT_MAINTENANCE_IDLE_SECONDS
+        )
+        if _shutdown.wait(interval):
+            return
 
 
 def ensure_overlay_transport_maintenance_started() -> None:
@@ -6903,9 +7479,14 @@ def _overlay_peer_available_for_new_outbound(peer_key: str) -> bool:
         return False
     if _overlay_peer_is_suppressed(peer_key):
         return False
+    # No Reticulum path yet: the reconcile loop would otherwise re-queue an
+    # open for this peer on every pass (observed at ~10/s).
+    if _overlay_no_path_backoff_active(peer_key, time.time()):
+        return False
     if (
         _overlay_peer_inbound_full(peer_key)
         and not _overlay_peer_is_pinned_for_call(peer_key)
+        and not _overlay_peer_is_pinned_for_chat(peer_key)
         and not _overlay_peer_has_established_link(peer_key)
     ):
         return False
@@ -7001,6 +7582,13 @@ def _note_overlay_peer_failure(peer_key: str, reason: str) -> None:
             )
             jitter_ratio = 0.9 + ((jitter_seed % 2001) / 10000.0)
             suppress_seconds = base_suppress_seconds * jitter_ratio
+            # Own devices are dialled again soon: the failure is almost always
+            # the other side being momentarily full, and every minute without
+            # this link is a minute without Saved Messages sync.
+            if peer_key in _prune_pinned_chat_overlay_peers():
+                suppress_seconds = min(
+                    suppress_seconds, _OVERLAY_OWN_DEVICE_SUPPRESS_MAX_SECONDS
+                )
             suppress_until = now + suppress_seconds
         _overlay_peer_failures[peer_key] = {
             "count": count,
@@ -8853,6 +9441,61 @@ def _request_and_await_destination_path(
     return _await_destination_path(destination_hash, timeout_seconds), requested
 
 
+# A peer with no path (offline, or only reachable through a hub that has not
+# announced it) used to cost every opener a fresh path request plus a blocking
+# 2 s wait, about 14 times a minute per peer. Back off per peer instead; an
+# announce that installs a path short-circuits the backoff on the next call.
+_OVERLAY_NO_PATH_BACKOFF_BASE_SECONDS = 10.0
+_OVERLAY_NO_PATH_BACKOFF_MAX_SECONDS = 300.0
+
+
+def _overlay_no_path_backoff_active(peer_key: str, now: float) -> bool:
+    st = _peer_lifecycle.get(peer_key)
+    if not st:
+        return False
+    until = st.get("no_path_backoff_until")
+    return isinstance(until, (int, float)) and now < float(until)
+
+
+def _overlay_note_no_path(peer_key: str, now: float) -> None:
+    st = _peer_lifecycle.get(peer_key)
+    if st is None:
+        st = _peer_lifecycle[peer_key] = {
+            "last_seen_inbound": None,
+            "last_send_ok": None,
+            "last_request_path_at": None,
+            "ts_seed_until": None,
+        }
+    failures = int(st.get("no_path_failures") or 0) + 1
+    st["no_path_failures"] = failures
+    delay = min(
+        _OVERLAY_NO_PATH_BACKOFF_MAX_SECONDS,
+        _OVERLAY_NO_PATH_BACKOFF_BASE_SECONDS * (2 ** min(failures - 1, 6)),
+    )
+    st["no_path_backoff_until"] = now + delay
+    if failures in (1, 3, 6):
+        log(
+            "[presence_bridge] target=presence-reticulum overlay_link_no_path_backoff "
+            f"peer={peer_key} failures={failures} next_in={delay:.0f}s"
+        )
+
+
+def _overlay_clear_no_path(peer_key: str) -> None:
+    st = _peer_lifecycle.get(peer_key)
+    if st and (st.get("no_path_failures") or st.get("no_path_backoff_until")):
+        st["no_path_failures"] = 0
+        st["no_path_backoff_until"] = None
+
+
+def _overlay_peer_path_now_known(peer_key: str) -> bool:
+    """Cheap local path-table probe for a presence destination hash."""
+    try:
+        destination_hash = bytes.fromhex(peer_key)
+    except ValueError:
+        return False
+    return _reticulum_local_has_path(destination_hash)
+
+
 def _nudge_overlay_link_path(
     peer_key: str,
     destination_hash: bytes,
@@ -8860,6 +9503,30 @@ def _nudge_overlay_link_path(
     await_seconds: float = 0.0,
 ) -> bool:
     peer_key = str(peer_key or "").strip().lower()
+    if _reticulum_local_has_path(destination_hash) or _reticulum_has_path(
+        destination_hash
+    ):
+        _overlay_clear_no_path(peer_key)
+    else:
+        now = time.time()
+        if _overlay_no_path_backoff_active(peer_key, now):
+            return False
+    resolved = _nudge_overlay_link_path_inner(
+        peer_key, destination_hash, await_seconds=await_seconds
+    )
+    if resolved:
+        _overlay_clear_no_path(peer_key)
+    elif await_seconds > 0:
+        _overlay_note_no_path(peer_key, time.time())
+    return resolved
+
+
+def _nudge_overlay_link_path_inner(
+    peer_key: str,
+    destination_hash: bytes,
+    *,
+    await_seconds: float = 0.0,
+) -> bool:
     if _reticulum_local_has_path(destination_hash):
         if _peer_has_recent_direct_activity(peer_key):
             return True
@@ -9800,6 +10467,13 @@ def _overlay_enqueue_open(
     peer_key = str(peer_hash or "").strip().lower()
     if not peer_key:
         return False
+    # Every send to a peer without a Reticulum path used to queue an open job
+    # that could only fail again; skip the queue while the peer is backed off,
+    # unless an announce has installed a path in the meantime.
+    if _overlay_no_path_backoff_active(peer_key, time.time()):
+        if not _overlay_peer_path_now_known(peer_key):
+            return False
+        _overlay_clear_no_path(peer_key)
     with _state_lock:
         existing_id = _active_overlay_link_id_by_peer_hash.get(peer_key) or ""
         existing = _overlay_links_by_id.get(existing_id) if existing_id else None
@@ -10234,6 +10908,11 @@ def remove_overlay_link(link_id: str) -> Optional[Dict[str, Any]]:
         return state
 
 
+_OVERLAY_LINK_STATE_HEARTBEAT_INTERVAL_SECONDS = 15.0
+_overlay_link_state_last_emitted: Dict[str, Tuple[Tuple[Any, ...], float]] = {}
+_overlay_link_state_emit_lock = threading.Lock()
+
+
 def emit_overlay_link_state(
     link_id: str,
     state: Dict[str, Any],
@@ -10242,6 +10921,44 @@ def emit_overlay_link_state(
     closed_by_reticulum: bool = False,
 ) -> None:
     now = time.time()
+    established = state.get("established") is True
+    signature = (
+        established,
+        state.get("incoming") is True,
+        str(state.get("peerPresenceHash") or ""),
+        str(state.get("manager_state") or ""),
+        int(state.get("generation") or 0),
+        state.get("overlay_transport_admitted") is True,
+        closed_by_reticulum,
+    )
+    # replay_pending / pending_packets deliberately excluded: they flip on
+    # every queued send and the JS consumers do not act on them, so they only
+    # defeated the heartbeat thinning (measured ~100 events/min on a phone).
+    # Every inbound presence packet and every send re-emits this event, which
+    # on a busy mesh meant ~25 frames/s serialised by Python, parsed by the
+    # WebView and by the engine worker, without any state change. Transitions
+    # (any field above, or a close) still go out immediately; identical
+    # heartbeats are thinned to one per link per window.
+    with _overlay_link_state_emit_lock:
+        if not established:
+            _overlay_link_state_last_emitted.pop(link_id, None)
+        else:
+            previous = _overlay_link_state_last_emitted.get(link_id)
+            if (
+                previous is not None
+                and previous[0] == signature
+                and now - previous[1] < _OVERLAY_LINK_STATE_HEARTBEAT_INTERVAL_SECONDS
+            ):
+                return
+            _overlay_link_state_last_emitted[link_id] = (signature, now)
+            if len(_overlay_link_state_last_emitted) > 512:
+                stale_cutoff = now - _OVERLAY_LINK_STATE_HEARTBEAT_INTERVAL_SECONDS * 4
+                for stale_id in [
+                    key
+                    for key, (_sig, at) in _overlay_link_state_last_emitted.items()
+                    if at < stale_cutoff
+                ]:
+                    _overlay_link_state_last_emitted.pop(stale_id, None)
     created_at = state.get("created_at")
     established_at = state.get("established_at")
     last_rx_at = state.get("last_rx_at")
@@ -10878,9 +11595,29 @@ def _overlay_link_peer_hash(state: Dict[str, Any]) -> str:
     return str(state.get("peerPresenceHash") or "").strip().lower()
 
 
+def _own_device_link_wanted_locked(chat_pinned: Set[str]) -> bool:
+    """True while a chat-pinned own device (Saved Messages peer) has no link to us."""
+    for peer_key in chat_pinned:
+        if peer_key in _inbound_overlay_neighbors or peer_key in _active_overlay_neighbors:
+            continue
+        return True
+    return False
+
+
 def _overlay_inbound_full_hint() -> bool:
+    # Own devices pinned by the chat engine have their own inbound budget (see
+    # _admit_overlay_peer_if_allowed), so they never make us "full". And while
+    # one of them has no link to us, keep advertising capacity: the desktop
+    # only dials peers that do not claim to be full, and its dial is the only
+    # way the link comes up once its own inbound is saturated.
+    chat_pinned = _prune_pinned_chat_overlay_peers()
     with _state_lock:
-        return len(_inbound_overlay_neighbors) >= _OVERLAY_MAX_INBOUND_NEIGHBORS
+        ordinary = sum(
+            1 for peer in _inbound_overlay_neighbors if peer not in chat_pinned
+        )
+        if ordinary < _OVERLAY_MAX_INBOUND_NEIGHBORS:
+            return False
+        return not _own_device_link_wanted_locked(chat_pinned)
 
 
 def _valid_overlay_correlation_id(value: Any) -> str:
@@ -11941,6 +12678,7 @@ def _ping_established_overlay_links(reason: str) -> int:
     now = time.time()
     with _state_lock:
         link_items = list(_overlay_links_by_id.items())
+        pinned_peers = set(_pinned_chat_overlay_peers) | set(_pinned_call_overlay_peers)
     for link_id, state in link_items:
         if state.get("established") is not True:
             continue
@@ -11949,8 +12687,17 @@ def _ping_established_overlay_links(reason: str) -> int:
         link = state.get("link")
         if link is None or not _overlay_link_is_current(link_id, link):
             continue
+        # Peers we are actively chatting or calling with keep the fast probe;
+        # the remaining neighbours are liveness-only and get half the radio
+        # traffic. Two probes still fit in the 60 s rx-idle window.
+        peer_key = str(state.get("peerPresenceHash") or "").strip().lower()
+        ping_interval = (
+            _OVERLAY_TRANSPORT_PING_INTERVAL_SECONDS
+            if peer_key and peer_key in pinned_peers
+            else _OVERLAY_TRANSPORT_IDLE_PING_INTERVAL_SECONDS
+        )
         last_ping = state.get("last_ping_sent_at")
-        if isinstance(last_ping, (int, float)) and now - float(last_ping) < _OVERLAY_TRANSPORT_PING_INTERVAL_SECONDS:
+        if isinstance(last_ping, (int, float)) and now - float(last_ping) < ping_interval:
             continue
         if _overlay_peer_supports_route_migration(state):
             if _send_overlay_rtt_probe(link_id, reason) is not None:
@@ -12102,14 +12849,27 @@ def _admit_overlay_peer_if_allowed(peer_key: str, reason: str, incoming: bool = 
         return True
     if incoming:
         call_pinned = _prune_pinned_call_overlay_peers()
-        pinned_active = sum(1 for existing in target if existing in call_pinned)
-        ordinary_active = len(target) - pinned_active
-        if peer_key in call_pinned:
-            if pinned_active >= _OVERLAY_MAX_PINNED_CALL_PEERS:
+        # Chat-pinned peers are this account's other devices (the engine pins
+        # them for Saved Messages). Give them their own inbound budget: the
+        # phone's ordinary inbound slots fill within a minute of starting, and
+        # rejecting the desktop's dial here left Saved Messages without a link
+        # for minutes while both sides backed off exponentially.
+        chat_pinned = _prune_pinned_chat_overlay_peers()
+        reserved = call_pinned | chat_pinned
+        reserved_active = sum(1 for existing in target if existing in reserved)
+        ordinary_active = len(target) - reserved_active
+        if peer_key in reserved:
+            if reserved_active >= (
+                _OVERLAY_MAX_PINNED_CALL_PEERS + _OVERLAY_MAX_PINNED_CHAT_PEERS
+            ):
                 return False
         elif ordinary_active >= _OVERLAY_MAX_INBOUND_NEIGHBORS:
             return False
-        limit = _OVERLAY_MAX_INBOUND_NEIGHBORS + _OVERLAY_MAX_PINNED_CALL_PEERS
+        limit = (
+            _OVERLAY_MAX_INBOUND_NEIGHBORS
+            + _OVERLAY_MAX_PINNED_CALL_PEERS
+            + _OVERLAY_MAX_PINNED_CHAT_PEERS
+        )
     else:
         pinned = _prune_pinned_overlay_peers()
         pinned_active = sum(1 for existing in target if existing in pinned)
@@ -12138,10 +12898,19 @@ def _overlay_incoming_probation_allowed(peer_key: str) -> bool:
     """Check capacity without trusting or admitting the claimed peer hash."""
     peer_key = str(peer_key or "").strip().lower()
     call_pinned = _prune_pinned_call_overlay_peers()
+    chat_pinned = _prune_pinned_chat_overlay_peers()
     with _state_lock:
         inbound_limit = _OVERLAY_MAX_INBOUND_NEIGHBORS
         if peer_key and peer_key in call_pinned:
             inbound_limit += _OVERLAY_MAX_PINNED_CALL_PEERS
+        if peer_key and peer_key in chat_pinned:
+            inbound_limit += _OVERLAY_MAX_PINNED_CHAT_PEERS
+        # An incoming link is not identified until its HELLO. Keep one spare
+        # probation slot while an own device is expected, so its link is not
+        # torn down before it can say who it is; ordinary peers are still
+        # rejected at HELLO-time admission.
+        if not peer_key and _own_device_link_wanted_locked(chat_pinned):
+            inbound_limit += 1
         return (
             len(_inbound_overlay_neighbors) < inbound_limit
             and _overlay_mesh_link_count_locked()
@@ -12457,8 +13226,10 @@ def _ensure_overlay_link(
         _overlay_enqueue_close(replaced_link_id, f"replace_unusable_active:{open_reason}")
     if existing is not None:
         return existing
-    if _overlay_peer_inbound_full(peer_key) and not _overlay_peer_is_pinned_for_call(
-        peer_key
+    if (
+        _overlay_peer_inbound_full(peer_key)
+        and not _overlay_peer_is_pinned_for_call(peer_key)
+        and not _overlay_peer_is_pinned_for_chat(peer_key)
     ):
         verbose_presence_log(
             "[presence_bridge] target=presence-reticulum overlay_link_skipped "
@@ -12936,8 +13707,10 @@ def _sync_overlay_links() -> None:
         if open_pending:
             maintained_outbound_links += 1
             continue
-        if _overlay_peer_inbound_full(peer_hash) and not _overlay_peer_is_pinned_for_call(
-            peer_hash
+        if (
+            _overlay_peer_inbound_full(peer_hash)
+            and not _overlay_peer_is_pinned_for_call(peer_hash)
+            and not _overlay_peer_is_pinned_for_chat(peer_hash)
         ):
             _active_overlay_neighbors.pop(peer_hash, None)
             _candidate_peers.pop(peer_hash, None)
@@ -19115,6 +19888,18 @@ def _teardown_reticulum_link_bounded(
 ) -> bool:
     if link is None:
         return True
+    # Count teardown reasons so `debug_wire_mix` can explain link churn: each
+    # inbound Link we prove and then close cost a full handshake on both ends.
+    try:
+        reason_head = " ".join(
+            tok for tok in str(log_target).split()[:3] if not tok.startswith("peer=")
+        )
+        _note_presence_pressure(
+            f"linkclose:{'in' if getattr(link, 'initiator', True) is False else 'out'}:"
+            f"{reason_head[:64]}"
+        )
+    except Exception:
+        pass
     completed, _result, error = _run_with_timeout(
         f"link-teardown-{str(id(link))[-8:]}",
         timeout_seconds,
@@ -19451,7 +20236,12 @@ def audio_rtt_monitor_loop() -> None:
                 if state is not None and int(state.get("generation") or 0) == generation:
                     state["rtt_probe_queued"] = False
                     state["rtt_next_probe_at"] = now + 1.0
-        _shutdown.wait(_AUDIO_RTT_MONITOR_INTERVAL_SECONDS)
+        # Nothing to probe without audio links: sleep long instead of 2 Hz.
+        _shutdown.wait(
+            _AUDIO_RTT_MONITOR_INTERVAL_SECONDS
+            if _audio_links_by_id
+            else _AUDIO_IDLE_MONITOR_INTERVAL_SECONDS
+        )
 
 
 def ensure_audio_rtt_monitor_started() -> None:
@@ -25924,6 +26714,9 @@ def handle_send_reticulum_chat(req_id: str, payload: Dict[str, Any]) -> None:
     if _reticulum_chat_wire_is_stale(msg):
         _emit_stale_wire_resp(req_id, msg)
         return
+    if _reticulum_chat_peer_digest_is_duplicate(peer_key, msg):
+        emit_resp(req_id, True, payload={"deduplicated": True})
+        return
     try:
         encoded = _encode_group_signal_wire(msg)
         if not encoded.get("ok"):
@@ -25963,6 +26756,7 @@ def handle_send_reticulum_chat(req_id: str, payload: Dict[str, Any]) -> None:
                 error=str(failure.get("error") or "Packet send returned False"),
             )
             return
+        _reticulum_chat_note_peer_digest_sent(peer_key, msg)
         emit_resp(req_id, True)
     except Exception as exc:
         emit_resp(req_id, False, error=str(exc))
@@ -26977,6 +27771,10 @@ def handle_command(message: Dict[str, Any]) -> None:
         handle_configure_community_stun(req_id, payload)
     elif action == "get_community_stun_endpoints":
         handle_get_community_stun_endpoints(req_id)
+    elif action == "debug_thread_report":
+        handle_debug_thread_report(req_id)
+    elif action == "debug_wire_mix":
+        handle_debug_wire_mix(req_id)
     elif action == "configure_developer_log_filter":
         handle_configure_developer_log_filter(req_id, payload)
     elif action == "stop":
@@ -27398,6 +28196,11 @@ def main() -> None:
     # startup has not yet reached the stdin/RNS executor setup below.
     _start_packet_send_dispatchers()
     _start_scheduler_workers()
+    threading.Thread(
+        target=_stall_watchdog_loop,
+        name="reticulum-stall-watchdog",
+        daemon=True,
+    ).start()
 
     # Start owner monitoring before attaching to the shared Reticulum daemon.
     # If Electron dies while that attach is blocked, the bounded watchdog must
@@ -27446,6 +28249,7 @@ def main() -> None:
         _json_priority_event_queue.put_nowait(None)
     except queue.Full:
         pass
+    _json_out_available.set()
     stdout_thread.join(timeout=10.0)
     try:
         _audio_binary_out_queue.put_nowait(None)

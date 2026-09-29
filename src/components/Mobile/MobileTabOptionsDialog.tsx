@@ -56,12 +56,14 @@ function OptionRow({
           to: { opacity: 1, transform: 'translateY(0)' },
         },
         alignItems: 'center',
-        animation: `tabOptionIn 220ms cubic-bezier(0.22, 1, 0.36, 1) ${delayMs}ms forwards`,
+        // Resting style stays visible; `both` hides the row only while the
+        // animation is pending, so a WebView that never runs CSS animations
+        // still shows the options.
+        animation: `tabOptionIn 220ms cubic-bezier(0.22, 1, 0.36, 1) ${delayMs}ms both`,
         borderRadius: '12px',
         cursor: 'pointer',
         display: 'flex',
         gap: 1,
-        opacity: 0,
         px: 0.85,
         py: 0.9,
         transition: 'background-color 120ms ease',

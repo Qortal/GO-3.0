@@ -34,6 +34,8 @@ export interface QortalBackgroundPlugin {
 
   showAlertNotification(options: {
     alertId?: number;
+    /** Stable per-conversation tag; identity becomes (tag, id) in the tray. */
+    alertTag?: string;
     title?: string;
     body?: string;
     iconUrl?: string;
@@ -72,6 +74,12 @@ export interface QortalBackgroundPlugin {
   /** Clear Group/DM alert notifications from the Android tray. */
   dismissChatAlertNotifications(): Promise<{ success: boolean }>;
 
+  /** Cancel a single Group/DM alert by (tag, hashed id). */
+  dismissChatAlertNotification(options: {
+    alertId: number;
+    alertTag?: string;
+  }): Promise<{ success: boolean }>;
+
   isIgnoringBatteryOptimizations(): Promise<{ ignoring: boolean }>;
 
   requestIgnoreBatteryOptimizations(): Promise<{ success: boolean }>;
@@ -107,6 +115,5 @@ export interface QortalBackgroundPlugin {
   ): Promise<PluginListenerHandle>;
 }
 
-export const QortalBackground = registerPlugin<QortalBackgroundPlugin>(
-  'QortalBackground'
-);
+export const QortalBackground =
+  registerPlugin<QortalBackgroundPlugin>('QortalBackground');

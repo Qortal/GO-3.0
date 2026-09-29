@@ -23,7 +23,7 @@ import NotificationsActiveRoundedIcon from '@mui/icons-material/NotificationsAct
 import NotificationsRoundedIcon from '@mui/icons-material/NotificationsRounded';
 import ChevronRightRoundedIcon from '@mui/icons-material/ChevronRightRounded';
 import { useAtomValue, useSetAtom } from 'jotai';
-import { nodeInfosAtom, p2pHealthAtom, rawWalletAtom, selectedNodeInfoAtom, mobileChatComposeActiveAtom, mobileFullscreenComposerActiveAtom } from '../../atoms/global';
+import { nodeInfosAtom, p2pHealthAtom, rawWalletAtom, selectedNodeInfoAtom, mobileChatComposeActiveAtom, mobileFullscreenComposerActiveAtom, navigationControllerAtom } from '../../atoms/global';
 import { computeP2pHealth } from '../../lib/p2pHealth';
 import { onMobileReticulumStatus } from '../../bridge/capacitorBridge';
 import { CoreSyncStatus } from '../CoreSyncStatus';
@@ -37,7 +37,7 @@ import {
 import { filterAppTabsForMobile, isQChatOpenTab } from '../../utils/openQChatTab';
 import { executeEvent } from '../../utils/events';
 import { useOpenTabs } from './useOpenTabs';
-import { buildTabQortalUrl } from './tabQortalLink';
+import { liveTabQortalUrl } from './tabQortalLink';
 import { QortalUserAvatar } from '../QortalUserAvatar';
 import { getWalletAvatarCache, fetchWalletAvatarDataUrl, setWalletAvatarCache, type WalletAvatarCacheEntry } from '../../utils/walletAvatarCache';
 import { getPrimaryNameForAvatar } from '../Group/groupApi';
@@ -140,15 +140,21 @@ export const MobileTopBar = ({
     userInfo?.primaryName?.trim() ||
     '';
   const { tabs, selectedTab } = useOpenTabs();
+  const navigationController = useAtomValue(navigationControllerAtom);
   const appTabs = useMemo(() => filterAppTabsForMobile(tabs), [tabs]);
   const activeAppTab = useMemo(
     () => (selectedTab && !isQChatOpenTab(selectedTab) ? selectedTab : null),
     [selectedTab]
   );
-  const activeTabUrl = useMemo(
-    () => (activeAppTab ? buildTabQortalUrl(activeAppTab) : ''),
-    [activeAppTab]
-  );
+  const activeTabUrl = useMemo(() => {
+    if (!activeAppTab) return '';
+    const live = activeAppTab.tabId
+      ? (navigationController as Record<string, { currentLink?: string }>)?.[
+          String(activeAppTab.tabId)
+        ]?.currentLink
+      : '';
+    return liveTabQortalUrl(activeAppTab, live);
+  }, [activeAppTab, navigationController]);
   const showActiveTabUrl =
     desktopViewMode === 'apps' && Boolean(activeTabUrl) && !searchExpanded;
   const hideBrandCluster = searchExpanded || showActiveTabUrl;
@@ -855,12 +861,15 @@ export const MobileTopBar = ({
             <Box
               sx={{
                 alignItems: 'center',
-                animation: 'accountItemIn 180ms ease 40ms forwards',
+                // `both` keeps the row hidden during the delay and settled after,
+                // while the resting style stays visible: on devices where CSS
+                // animations never run (GrapheneOS with animations removed, some
+                // WebViews) an `opacity: 0` base left the whole menu blank.
+                animation: 'accountItemIn 180ms ease 40ms both',
                 borderBottom: `1px solid ${theme.palette.divider}`,
                 display: 'flex',
                 flexShrink: 0,
                 gap: 1,
-                opacity: 0,
                 px: 1.25,
                 py: 1.1,
               }}
@@ -940,12 +949,11 @@ export const MobileTopBar = ({
                       },
                     },
                     alignItems: 'center',
-                    animation: `accountItemIn 200ms cubic-bezier(0.22, 1, 0.36, 1) ${70 + index * 45}ms forwards`,
+                    animation: `accountItemIn 200ms cubic-bezier(0.22, 1, 0.36, 1) ${70 + index * 45}ms both`,
                     borderRadius: '12px',
                     cursor: 'pointer',
                     display: 'flex',
                     gap: 1,
-                    opacity: 0,
                     px: 1,
                     py: 0.95,
                     transition: 'background-color 120ms ease',

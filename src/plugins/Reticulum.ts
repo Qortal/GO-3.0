@@ -7,7 +7,9 @@ export interface ReticulumStatus {
   networkName: string;
   /** IFAC code size in bytes (16 when network_name-derived IFAC is active). */
   ifacSize: number;
+  /** Hub interfaces currently online. */
   interfaces: number;
+  /** Destinations learned from announces (RNS path table size). */
   announces: number;
   rxBytes: number;
   txBytes: number;
@@ -26,13 +28,13 @@ export interface ReticulumPresenceFrameEvent {
 /**
  * Native Reticulum transport bridge.
  *
- * Wraps the Kotlin RNS stack (reticulum-kt) running in client-only mode and
- * connected to the Qortal community hubs (network_name = "qortal-hub").
- * This is the substrate for v2.0 voice calls, direct file transfer, and
- * online presence on mobile.
+ * Hosts the embedded Python presence bridge, which owns the RNS instance
+ * connected to the Qortal community hubs (network_name = "qortal-hub"). Chat,
+ * presence, voice calls and direct file transfer all ride on it; start() /
+ * getStatus() report that instance's hub interfaces for the status badge.
  */
 export interface ReticulumPlugin {
-  /** Start the transport and connect to the Qortal Reticulum hubs. */
+  /** Mark the transport status feed active; the bridge itself is started by presenceStart(). */
   start(options?: { networkName?: string }): Promise<ReticulumStatus>;
 
   /** Current transport status (online, byte counters, announce count). */
@@ -75,6 +77,14 @@ export interface ReticulumPlugin {
   presenceStop(): Promise<{ stopped: boolean }>;
 
   /**
+   * Loopback WebSocket endpoint for the chat engine worker. Commands sent on
+   * it are fed to presence_bridge.py and every bridge frame is mirrored back,
+   * bypassing the WebView main thread that plugin calls and listeners use.
+   * The token must be presented as the `token` query parameter.
+   */
+  bridgeSocket(): Promise<{ url: string; token: string }>;
+
+  /**
    * Stage a picked file (content:// / file:// URI) into app cache for a
    * Reticulum file transfer: copies the bytes and computes SHA-256.
    */
@@ -101,6 +111,8 @@ export interface ReticulumPlugin {
   qchatFileOpen(options: {
     uri: string;
     fileName?: string;
+    /** Overrides the type guessed from the file extension. */
+    mimeType?: string;
   }): Promise<{ ok: boolean }>;
 
   /**

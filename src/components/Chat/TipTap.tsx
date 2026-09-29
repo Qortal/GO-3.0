@@ -2353,7 +2353,7 @@ const Tiptap = ({
             padding: `calc(${SAFE_AREA_TOP} + 8px) 10px ${
               emojiPanelOpen
                 ? '10px'
-                : 'max(10px, env(safe-area-inset-bottom, 0px))'
+                : 'max(10px, var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px)))'
             }`,
             position: 'fixed',
             right: 0,

@@ -22,6 +22,7 @@ import {
 import { getPublicKey } from '../../background/background.ts';
 import { useMessageQueue } from '../../messaging/MessageQueueContext';
 import { executeEvent } from '../../utils/events';
+import { coreWebsocketPingMs } from '../../utils/coreWebsocketPing';
 import { ChatList } from './ChatList';
 import { TIME_MINUTES_2_IN_MILLISECONDS } from '../../constants/constants';
 
@@ -317,7 +318,10 @@ export function MiniDirectThread({
             clearTimeout(timeoutIdRef.current);
             timeoutIdRef.current = null;
           }
-          pingTimeoutRef.current = setTimeout(pingWebSocket, 20000);
+          pingTimeoutRef.current = setTimeout(
+            pingWebSocket,
+            coreWebsocketPingMs()
+          );
         } else {
           const data = JSON.parse(e.data);
           appendIncomingMessagesRef.current(data);

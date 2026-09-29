@@ -5,6 +5,26 @@ import type {
   AudioSurfaceEvent,
 } from '../lib/group-call/audioSurfaceBridge';
 
+/** Mirrors `ReticulumChatDeviceStateRecord` in electron/src/reticulum-chat-db.ts. */
+export type ReticulumChatDeviceStateRecord = {
+  ownerAddress: string;
+  key: string;
+  value: string | null;
+  signedAt: number;
+  expiresAt: number | null;
+  authorPublicKey: string;
+  signature: string;
+};
+
+export type ReticulumChatDeviceStateChangedPayload = {
+  ownerAddress: string;
+  key: string;
+  value: string | null;
+  signedAt: number;
+  expiresAt: number | null;
+  source: 'local' | 'remote';
+};
+
 declare global {
   interface ReticulumCalendarRecurrenceInput {
     frequency: 'daily' | 'weekly' | 'monthly' | 'yearly';
@@ -900,6 +920,24 @@ declare global {
         peerAddress: string,
         upToTimestamp: number
       ) => Promise<{ success: boolean; error?: string }>;
+      setDeviceState: (
+        ownerAddress: string,
+        key: string,
+        value: string | null,
+        options?: { ttlMs?: number }
+      ) => Promise<{ success: boolean; error?: string }>;
+      getDeviceStates: (
+        ownerAddress: string,
+        keyPrefix?: string
+      ) => Promise<ReticulumChatDeviceStateRecord[]>;
+      getDeviceStateSyncPeers: (ownerAddress: string) => Promise<
+        {
+          peerHash: string;
+          supported: boolean;
+          /** 'unknown' until the peer's hello has been seen in this process. */
+          support?: 'supported' | 'unsupported' | 'unknown';
+        }[]
+      >;
       sendTyping: (
         groupId: number,
         channelId: string,
@@ -1129,6 +1167,9 @@ declare global {
           peerAddress?: string;
           reason?: 'expiry' | 'call';
         }) => void
+      ) => () => void;
+      onDeviceStateChanged: (
+        cb: (payload: ReticulumChatDeviceStateChangedPayload) => void
       ) => () => void;
       onSilenceChanged: (
         cb: (payload: {

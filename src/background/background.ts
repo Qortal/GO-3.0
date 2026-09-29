@@ -14,7 +14,14 @@ import {
 import ChatComputePowWorker from '../chatComputePow.worker.js?worker';
 import { Capacitor } from '@capacitor/core';
 import NativePOW from '../utils/nativepow';
-import { showOsNotification } from '../utils/mobileOsNotifications';
+import {
+  dismissChatOsNotification,
+  showOsNotification,
+} from '../utils/mobileOsNotifications';
+import {
+  dismissShownAlert,
+  rememberShownAlert,
+} from '../utils/reticulumChatAlerts';
 import { buildChatUserAvatarNotificationUrl } from '../utils/chatAvatarUrl';
 
 /** True inside the native Capacitor WebView (Android/iOS). */
@@ -24,6 +31,7 @@ import { signChat } from '../transactions/signChat';
 import { createTransaction } from '../transactions/transactions';
 import { decryptChatMessage } from '../utils/decryptChatMessage';
 import { decryptStoredWallet } from '../utils/decryptWallet';
+import { assertForeignKeyEgress } from '../utils/foreignKeyEgress';
 import { getWalletErrorMessage } from '../utils/walletErrorMessages';
 import PhraseWallet from '../utils/generateWallet/phrase-wallet';
 import { deriveAltcoinFieldsInWorker } from '../utils/generateWallet/deriveAltcoinFields';
@@ -244,24 +252,65 @@ const DIRECT_PM_NOTIFICATION_ID = encodeURIComponent(
 /** Unseen direct messages per sender address since the app was last opened. */
 const directPmUnseen = new Map<string, { name: string; count: number }>();
 
+/**
+ * Desktop notifications shown under a stable alert key (Reticulum DM /
+ * mention), so a later read on another device can close them. Keyed by
+ * alertKey only; click routing still goes through `notificationId`.
+ */
+const desktopNotificationsByAlertKey = new Map<string, Notification>();
+
+const closeDesktopNotificationByAlertKey = (alertKey: string) => {
+  const notification = desktopNotificationsByAlertKey.get(alertKey);
+  if (!notification) return;
+  desktopNotificationsByAlertKey.delete(alertKey);
+  try {
+    notification.close();
+  } catch {
+    /* already gone */
+  }
+};
+
+/**
+ * Cancel a tray alert previously shown with `alertKey` (see
+ * `showBackgroundOsNotification`). No-op for keys this device never showed,
+ * so it is cheap to call on every read-state refresh.
+ */
+export const dismissOsNotificationByKey = (alertKey: string): void => {
+  dismissShownAlert(alertKey, {
+    isNative,
+    dismissNative: (key) => {
+      void dismissChatOsNotification(key);
+    },
+    closeDesktop: closeDesktopNotificationByAlertKey,
+  });
+};
+
 function showBackgroundOsNotification(
   title,
   body,
   notificationId,
   icon?,
   fromAddress?: string,
-  notificationType?: 'direct' | 'group' | 'general'
+  notificationType?: 'direct' | 'group' | 'general',
+  alertKey?: string
 ) {
+  if (alertKey) {
+    rememberShownAlert(alertKey);
+  }
+
   if (isNative) {
     void showOsNotification({
       title,
       body,
-      id: notificationId,
+      // A stable key makes Android update the same tray entry per
+      // conversation; the legacy per-event id is kept for everything else.
+      id: alertKey || notificationId,
       iconUrl: icon,
       fromAddress,
       // Explicit type routes to the per-kind Android channel (PM vs group);
       // fall back to inferring direct from a sender address.
-      notificationType: notificationType ?? (fromAddress ? 'direct' : undefined),
+      notificationType:
+        notificationType ?? (fromAddress ? 'direct' : undefined),
     });
     return;
   }
@@ -270,18 +319,37 @@ function showBackgroundOsNotification(
     return;
   }
 
+  if (alertKey) {
+    closeDesktopNotificationByAlertKey(alertKey);
+  }
+
   const notification = new window.Notification(title, {
     body,
     icon: icon || window.location.origin + '/qortal192.png',
     data: { id: notificationId },
   });
 
-  notification.onclick = () => {
-    handleNotificationClick(notificationId);
-    notification.close();
+  if (alertKey) {
+    desktopNotificationsByAlertKey.set(alertKey, notification);
+  }
+  const releaseAlertKey = () => {
+    if (
+      alertKey &&
+      desktopNotificationsByAlertKey.get(alertKey) === notification
+    ) {
+      desktopNotificationsByAlertKey.delete(alertKey);
+    }
   };
 
+  notification.onclick = () => {
+    handleNotificationClick(notificationId);
+    releaseAlertKey();
+    notification.close();
+  };
+  notification.onclose = releaseAlertKey;
+
   setTimeout(() => {
+    releaseAlertKey();
     notification.close();
   }, 10000);
 }
@@ -401,8 +469,7 @@ export const createEndpoint = async (endpoint, customApi?: string) => {
   const apiKey = await getApiKeyFromStorage(); // Retrieve apiKey asynchronously
 
   if (apiKey?.url) {
-    const key =
-      typeof apiKey.apikey === 'string' ? apiKey.apikey.trim() : '';
+    const key = typeof apiKey.apikey === 'string' ? apiKey.apikey.trim() : '';
     if (!key) {
       return `${apiKey.url}${endpoint}`;
     }
@@ -520,7 +587,10 @@ export async function performPowTaskWeb(chatBytes, difficulty) {
 export async function performPowTask(chatBytes, difficulty) {
   if (isNative) {
     const chatBytesArray = Uint8Array.from(Object.values(chatBytes));
-    const result = await NativePOW.computeProofOfWork({ chatBytes, difficulty });
+    const result = await NativePOW.computeProofOfWork({
+      chatBytes,
+      difficulty,
+    });
     return { nonce: result.nonce, chatBytesArray };
   }
   return performPowTaskWeb(chatBytes, difficulty);
@@ -827,13 +897,13 @@ const handleNotification = async (groups) => {
         const body = `You have received a new message from ${newestLatestTimestamp?.groupName}`;
 
         showBackgroundOsNotification(
-        title,
-        body,
-        notificationId,
-        undefined,
-        undefined,
-        'group'
-      );
+          title,
+          body,
+          notificationId,
+          undefined,
+          undefined,
+          'group'
+        );
 
         lastGroupNotification = Date.now();
       }
@@ -1963,6 +2033,7 @@ export async function createBuyOrderTx({
 
         url = await createEndpoint('/crosschain/tradebot/respondmultiple');
       }
+      assertForeignKeyEgress(url, foreignBlockchain);
 
       const responseFetch = await fetch(url, {
         method: 'POST',
@@ -3692,13 +3763,21 @@ export const checkNewMessages = async () => {
   }
 };
 
+export type FireOsNotificationOptions = {
+  /** Stable per-conversation key; enables in-place update and later dismiss. */
+  alertKey?: string;
+  fromAddress?: string;
+  notificationType?: 'direct' | 'group' | 'general';
+};
+
 export const fireOsNotificationPayment = async (
   notificationPayload,
   title,
   messageBody,
   icon,
   qortalLink,
-  internalPayload
+  internalPayload?,
+  osOptions?: FireOsNotificationOptions
 ) => {
   try {
     const isDisableNotifications =
@@ -3725,7 +3804,15 @@ export const fireOsNotificationPayment = async (
         (qortalLink ? { link: qortalLink } : { openWallets: true })
     );
 
-    showBackgroundOsNotification(title, messageBody, notificationId, icon);
+    showBackgroundOsNotification(
+      title,
+      messageBody,
+      notificationId,
+      icon,
+      osOptions?.fromAddress,
+      osOptions?.notificationType,
+      osOptions?.alertKey
+    );
 
     setTimeout(() => {
       generalNotificationPayloadById.delete(notificationId);
@@ -3867,13 +3954,13 @@ export const checkThreads = async (bringBack) => {
           const body = `New post in ${newAnnouncements[0]?.thread?.threadData?.title}`;
 
           showBackgroundOsNotification(
-        title,
-        body,
-        notificationId,
-        undefined,
-        undefined,
-        'group'
-      );
+            title,
+            body,
+            notificationId,
+            undefined,
+            undefined,
+            'group'
+          );
         }
       }
     }

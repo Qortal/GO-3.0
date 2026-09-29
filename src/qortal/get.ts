@@ -125,6 +125,11 @@ import {
   validateAesCtrIvAndKey,
 } from '../utils/decode.ts';
 import { hasInvisibleCharacters } from '../utils/hasInvisibleCharacters';
+import {
+  assertForeignKeyEgress,
+  foreignKeyConsentFields,
+  foreignKeyProxyConsentFields,
+} from '../utils/foreignKeyEgress';
 import { validateAddress } from '../utils/validateAddress.ts';
 import i18n from 'i18next';
 import aesjs from 'aes-js';
@@ -1857,6 +1862,7 @@ export const publishQDNResource = async (
 
 export const checkArrrSyncStatus = async (seed) => {
   const _url = await createEndpoint(`/crosschain/arrr/syncstatus`);
+  assertForeignKeyEgress(_url, 'ARRR');
   let tries = 0; // Track the number of attempts
 
   while (tries < 36) {
@@ -3710,6 +3716,7 @@ export const getUserWallet = async (data, isFromExtension, appInfo) => {
     if (coin === 'ARRR') {
       const bodyToString = arrrSeed58;
       const url = await createEndpoint(`/crosschain/arrr/walletaddress`);
+      assertForeignKeyEgress(url, coin);
       const response = await fetch(url, {
         method: 'POST',
         headers: {
@@ -3908,6 +3915,7 @@ export const getWalletBalance = async (
         case 'ARRR':
           await checkArrrSyncStatus(parsedData.arrrSeed58);
           _url = await createEndpoint(`/crosschain/arrr/walletbalance`);
+          assertForeignKeyEgress(_url, coin);
           _body = parsedData.arrrSeed58;
           break;
         default:
@@ -3970,6 +3978,7 @@ const getPirateWallet = async (arrrSeed58) => {
   const bodyToString = arrrSeed58;
   await checkArrrSyncStatus(bodyToString);
   const url = await createEndpoint(`/crosschain/arrr/walletaddress`);
+  assertForeignKeyEgress(url, 'ARRR');
   const response = await fetch(url, {
     method: 'POST',
     headers: {
@@ -4244,6 +4253,7 @@ export const getUserWalletTransactions = async (
     const _url = await createEndpoint(
       `/crosschain/` + data.coin.toLowerCase() + `/wallettransactions`
     );
+    if (data?.coin === 'ARRR') assertForeignKeyEgress(_url, data.coin);
     const _body = publicKey;
     try {
       const response = await fetch(_url, {
@@ -5191,6 +5201,7 @@ export const getArrrSyncStatus = async () => {
 
   try {
     const endpoint = await createEndpoint(url); // Assuming createEndpoint is available for constructing the full URL
+    assertForeignKeyEgress(endpoint, 'ARRR');
     const response = await fetch(endpoint, {
       method: 'POST',
       headers: {
@@ -5301,7 +5312,51 @@ async function setStoredCustomSubscriptions(list: any[]) {
       );
     }
   }
+  // Legacy shape (the list itself) for the notifications socket listener, plus
+  // an address-tagged event for the cross-device notification state sync.
   executeEvent('custom-ws-subscriptions-updated', list);
+  executeEvent('custom-ws-subscriptions-changed', { address, list });
+}
+
+/**
+ * Every write to the stored subscription list goes through this chain so a
+ * Q-app NOTIFICATION_ADD/NOTIFICATION_REMOVE and a sync apply arriving from
+ * another device can never interleave their read-modify-write.
+ */
+let subscriptionWriteChain: Promise<unknown> = Promise.resolve();
+
+function withSubscriptionWriteLock<T>(task: () => Promise<T>): Promise<T> {
+  const run = subscriptionWriteChain.then(task, task);
+  subscriptionWriteChain = run.catch(() => undefined);
+  return run;
+}
+
+export type NotificationRuleRef = {
+  notificationId: string;
+  appName: string;
+  appService: string;
+};
+
+function subscriptionIdentity(sub: any): string {
+  return `${sub?.notificationId ?? ''}-${(sub?.appName ?? '').toLowerCase()}-${
+    sub?.appService ?? 'APP'
+  }`;
+}
+
+function toNotificationRuleRef(sub: any): NotificationRuleRef {
+  return {
+    notificationId: sub?.notificationId ?? '',
+    appName: sub?.appName ?? '',
+    appService: sub?.appService ?? 'APP',
+  };
+}
+
+function emitSubscriptionsRemoved(
+  address: string | null,
+  items: NotificationRuleRef[]
+) {
+  if (!address || items.length === 0) return;
+  executeEvent('custom-ws-subscriptions-removed', { address, items });
 }
 
 /** Allowed filter keys and their types for notification subscription resourceFilter. */
@@ -5420,14 +5475,52 @@ export const addNotificationSubscriptions = async (payload, appInfo) => {
   };
 
   const transformed = notifications.map(toSubscription);
-  const key = (sub) => `${sub.notificationId}-${sub.appName}-${sub.appService}`;
-  const current = await getStoredCustomSubscriptions();
-  const byKey = new Map(current.map((s) => [key(s), s]));
-  transformed.forEach((s) => byKey.set(key(s), s));
-  const merged = Array.from(byKey.values());
-  await setStoredCustomSubscriptions(merged);
+  await withSubscriptionWriteLock(async () => {
+    const current = await getStoredCustomSubscriptions();
+    const byKey = new Map(current.map((s) => [subscriptionIdentity(s), s]));
+    transformed.forEach((s) => byKey.set(subscriptionIdentity(s), s));
+    const merged = Array.from(byKey.values());
+    await setStoredCustomSubscriptions(merged);
+  });
   return true;
 };
+
+/**
+ * Drops every rule of one app (any service, optionally limited to a set of
+ * notification ids). Emits `custom-ws-subscriptions-removed`, which is the ONLY
+ * source of rule tombstones for the cross-device sync, and unsubscribes the
+ * live socket. Returns the removed rule references.
+ */
+async function removeRulesForApp(
+  appName: string,
+  appService: string | null,
+  idsSet: Set<string> | null
+): Promise<NotificationRuleRef[]> {
+  const normalizedApp = (appName ?? '').toLowerCase();
+  return withSubscriptionWriteLock(async () => {
+    const address = getCurrentAddress();
+    const current = await getStoredCustomSubscriptions();
+    const toUnsubscribe: NotificationRuleRef[] = [];
+    const filtered = current.filter((sub) => {
+      const sameApp =
+        (sub.appName ?? '').toLowerCase() === normalizedApp &&
+        (appService == null || (sub.appService ?? 'APP') === appService);
+      if (!sameApp) return true;
+      if (idsSet != null && !idsSet.has(sub.notificationId ?? '')) return true;
+      toUnsubscribe.push(toNotificationRuleRef(sub));
+      return false;
+    });
+    if (toUnsubscribe.length === 0 && filtered.length === current.length) {
+      return [];
+    }
+    await setStoredCustomSubscriptions(filtered);
+    emitSubscriptionsRemoved(address, toUnsubscribe);
+    if (toUnsubscribe.length > 0) {
+      executeEvent('custom-ws-unsubscribe', toUnsubscribe);
+    }
+    return toUnsubscribe;
+  });
+}
 
 export const removeNotificationSubscriptions = async (payload, appInfo) => {
   const appName = (appInfo?.name ?? '').toLowerCase();
@@ -5435,39 +5528,71 @@ export const removeNotificationSubscriptions = async (payload, appInfo) => {
   const notificationIds = payload?.notificationIds;
   const idsSet =
     Array.isArray(notificationIds) && notificationIds.length > 0
-      ? new Set(notificationIds.map((id) => String(id).trim()))
+      ? new Set<string>(notificationIds.map((id) => String(id).trim()))
       : null;
-
-  const current = await getStoredCustomSubscriptions();
-  const toUnsubscribe = [];
-  const filtered = current.filter((sub) => {
-    const sameApp =
-      (sub.appName ?? '').toLowerCase() === appName &&
-      (sub.appService ?? 'APP') === appService;
-    if (!sameApp) return true;
-    if (idsSet == null) {
-      toUnsubscribe.push({
-        notificationId: sub.notificationId ?? '',
-        appName: sub.appName ?? '',
-        appService: sub.appService ?? 'APP',
-      });
-      return false;
-    }
-    if (idsSet.has(sub.notificationId ?? '')) {
-      toUnsubscribe.push({
-        notificationId: sub.notificationId ?? '',
-        appName: sub.appName ?? '',
-        appService: sub.appService ?? 'APP',
-      });
-      return false;
-    }
-    return true;
-  });
-  await setStoredCustomSubscriptions(filtered);
-  if (toUnsubscribe.length > 0) {
-    executeEvent('custom-ws-unsubscribe', toUnsubscribe);
-  }
+  await removeRulesForApp(appName, appService, idsSet);
   return true;
+};
+
+/**
+ * Used by the "Revoke" button in the notification settings: removes every
+ * stored rule of the app (all services) through the persisted list, so the
+ * removal reaches storage, the socket and the other devices.
+ */
+export const revokeAppNotificationRules = async (
+  appName: string
+): Promise<NotificationRuleRef[]> => {
+  return removeRulesForApp(appName, null, null);
+};
+
+/**
+ * Merge rules that arrived from another device into the stored list. Rules are
+ * matched by (notificationId, appName, appService). RESOURCE_PUBLISHED rules
+ * whose app has no local notification permission are dropped, mirroring the
+ * filter the notifications socket applies at connect time. The caller is
+ * responsible for `custom-ws-unsubscribe` for the removals; no tombstone event
+ * is emitted here (tombstones only ever come from explicit local removals).
+ */
+export const applySyncedCustomSubscriptions = async (
+  address: string,
+  upserts: any[],
+  removals: NotificationRuleRef[]
+): Promise<void> => {
+  if (!address || address !== getCurrentAddress()) return;
+  await withSubscriptionWriteLock(async () => {
+    if (address !== getCurrentAddress()) return;
+    const current = await getStoredCustomSubscriptions();
+    const byKey = new Map(current.map((s) => [subscriptionIdentity(s), s]));
+    for (const ref of removals ?? []) {
+      byKey.delete(subscriptionIdentity(ref));
+    }
+    for (const sub of upserts ?? []) {
+      if (!sub || typeof sub !== 'object') continue;
+      byKey.set(subscriptionIdentity(sub), sub);
+    }
+    const merged: any[] = [];
+    const permissionByApp = new Map<string, boolean>();
+    for (const sub of byKey.values()) {
+      if (sub?.event !== 'RESOURCE_PUBLISHED') {
+        merged.push(sub);
+        continue;
+      }
+      const app = (sub?.appName ?? '').toLowerCase();
+      if (!app) continue;
+      let allowed = permissionByApp.get(app);
+      if (allowed === undefined) {
+        allowed =
+          (await getPermission(getNotificationPermissionKey(app))) === true;
+        permissionByApp.set(app, allowed);
+      }
+      if (allowed) merged.push(sub);
+    }
+    const unchanged =
+      merged.length === current.length &&
+      merged.every((s, i) => s === current[i]);
+    if (unchanged) return;
+    await setStoredCustomSubscriptions(merged);
+  });
 };
 
 const NOTIFICATION_SEEN_IN_APP_KEY = 'qortal_notification_seen_in_app';
@@ -5517,16 +5642,65 @@ function getStoredSeenInAppKeys(address: string | null): string[] {
   );
 }
 
+/** Seen-in-app key → mark time (ms) for an address, already pruned to the retention window. */
+export function getSeenInAppKeyTimesForAddress(
+  address: string | null
+): Record<string, number> {
+  if (!address) return {};
+  const record = getStoredSeenInAppRecord();
+  return { ...(record[address] ?? {}) };
+}
+
 function setStoredSeenInAppKeys(
   address: string | null,
   keys: string[]
 ): string[] {
   if (!address || keys.length === 0) return [];
+  const now = Date.now();
+  return writeSeenInAppKeyTimes(
+    address,
+    keys.map((k) => [now, k] as [number, string]),
+    'overwrite'
+  );
+}
+
+/**
+ * Seen keys arriving from another device carry their ORIGINAL mark time, which
+ * must be preserved (a prefix key only hides resources published before its
+ * mark time). When the key already exists locally the newer time wins.
+ */
+export function addSeenInAppKeysForAddress(
+  address: string | null,
+  entries: Array<[number, string]>
+): string[] {
+  if (!address || !Array.isArray(entries) || entries.length === 0) return [];
+  return writeSeenInAppKeyTimes(address, entries, 'keep-newer');
+}
+
+function writeSeenInAppKeyTimes(
+  address: string,
+  entries: Array<[number, string]>,
+  mode: 'overwrite' | 'keep-newer'
+): string[] {
   const record = getStoredSeenInAppRecord();
   const now = Date.now();
   const cutoff = now - NOTIFICATION_SEEN_IN_APP_MAX_AGE_MS;
   record[address] = record[address] ?? {};
-  for (const k of keys) record[address][k] = now;
+  for (const entry of entries) {
+    if (!Array.isArray(entry)) continue;
+    const [time, k] = entry;
+    if (typeof k !== 'string' || !k || typeof time !== 'number') continue;
+    if (!Number.isFinite(time) || time <= cutoff) continue;
+    const existing = record[address][k];
+    if (
+      mode === 'keep-newer' &&
+      typeof existing === 'number' &&
+      existing >= time
+    ) {
+      continue;
+    }
+    record[address][k] = Math.min(time, now);
+  }
   const pruned: Record<string, Record<string, number>> = {};
   for (const [addr, inner] of Object.entries(record)) {
     const filtered = Object.fromEntries(
@@ -5548,10 +5722,16 @@ function setStoredSeenInAppKeys(
   } else if (typeof localStorage !== 'undefined') {
     localStorage.setItem(NOTIFICATION_SEEN_IN_APP_KEY, JSON.stringify(pruned));
   }
-  const keysList = Object.keys(record[address] ?? {}).filter(
-    (k) => typeof record[address][k] === 'number' && record[address][k] > cutoff
-  );
-  executeEvent('notification-seen-in-app-updated', { address, keys: keysList });
+  const keyTimes: Record<string, number> = {};
+  for (const [k, t] of Object.entries(record[address] ?? {})) {
+    if (typeof t === 'number' && t > cutoff) keyTimes[k] = t;
+  }
+  const keysList = Object.keys(keyTimes);
+  executeEvent('notification-seen-in-app-updated', {
+    address,
+    keys: keysList,
+    keyTimes,
+  });
   return keysList;
 }
 
@@ -5783,6 +5963,9 @@ export const sendCoin = async (data, isFromExtension) => {
       );
     }
 
+    const url = await createEndpoint(`/crosschain/btc/send`);
+    const egress = assertForeignKeyEgress(url, checkCoin);
+
     const resPermission = await getUserPermission(
       {
         text1: i18n.t('question:permission.send_coins', {
@@ -5794,6 +5977,7 @@ export const sendCoin = async (data, isFromExtension) => {
         }),
         highlightedText: `${amount} ${checkCoin}`,
         foreignFee: `${fee} BTC`,
+        ...foreignKeyConsentFields(egress, checkCoin),
       },
       isFromExtension
     );
@@ -5806,7 +5990,6 @@ export const sendCoin = async (data, isFromExtension) => {
         bitcoinAmount: amount,
         feePerByte: feePerByte,
       };
-      const url = await createEndpoint(`/crosschain/btc/send`);
 
       const response = await fetch(url, {
         method: 'POST',
@@ -5860,6 +6043,8 @@ export const sendCoin = async (data, isFromExtension) => {
         })
       );
     }
+    const url = await createEndpoint(`/crosschain/ltc/send`);
+    const egress = assertForeignKeyEgress(url, checkCoin);
     const resPermission = await getUserPermission(
       {
         text1: i18n.t('question:permission.send_coins', {
@@ -5871,13 +6056,13 @@ export const sendCoin = async (data, isFromExtension) => {
         }),
         highlightedText: `${amount} ${checkCoin}`,
         foreignFee: `${fee} LTC`,
+        ...foreignKeyConsentFields(egress, checkCoin),
       },
       isFromExtension
     );
     const { accepted } = resPermission;
 
     if (accepted) {
-      const url = await createEndpoint(`/crosschain/ltc/send`);
       const opts = {
         xprv58: xprv58,
         receivingAddress: recipient,
@@ -5935,6 +6120,9 @@ export const sendCoin = async (data, isFromExtension) => {
       throw new Error(errorMsg);
     }
 
+    const url = await createEndpoint(`/crosschain/doge/send`);
+    const egress = assertForeignKeyEgress(url, checkCoin);
+
     const resPermission = await getUserPermission(
       {
         text1: i18n.t('question:permission.send_coins', {
@@ -5946,6 +6134,7 @@ export const sendCoin = async (data, isFromExtension) => {
         }),
         highlightedText: `${amount} ${checkCoin}`,
         foreignFee: `${fee} DOGE`,
+        ...foreignKeyConsentFields(egress, checkCoin),
       },
       isFromExtension
     );
@@ -5958,7 +6147,6 @@ export const sendCoin = async (data, isFromExtension) => {
         dogecoinAmount: amount,
         feePerByte: feePerByte,
       };
-      const url = await createEndpoint(`/crosschain/doge/send`);
 
       const response = await fetch(url, {
         method: 'POST',
@@ -6011,6 +6199,9 @@ export const sendCoin = async (data, isFromExtension) => {
       throw new Error(errorMsg);
     }
 
+    const url = await createEndpoint(`/crosschain/dgb/send`);
+    const egress = assertForeignKeyEgress(url, checkCoin);
+
     const resPermission = await getUserPermission(
       {
         text1: i18n.t('question:permission.send_coins', {
@@ -6019,6 +6210,7 @@ export const sendCoin = async (data, isFromExtension) => {
         text2: `To: ${recipient}`,
         highlightedText: `${amount} ${checkCoin}`,
         foreignFee: `${fee} DGB`,
+        ...foreignKeyConsentFields(egress, checkCoin),
       },
       isFromExtension
     );
@@ -6031,7 +6223,6 @@ export const sendCoin = async (data, isFromExtension) => {
         digibyteAmount: amount,
         feePerByte: feePerByte,
       };
-      const url = await createEndpoint(`/crosschain/dgb/send`);
 
       const response = await fetch(url, {
         method: 'POST',
@@ -6084,6 +6275,9 @@ export const sendCoin = async (data, isFromExtension) => {
       throw new Error(errorMsg);
     }
 
+    const url = await createEndpoint(`/crosschain/rvn/send`);
+    const egress = assertForeignKeyEgress(url, checkCoin);
+
     const resPermission = await getUserPermission(
       {
         text1: i18n.t('question:permission.send_coins', {
@@ -6092,6 +6286,7 @@ export const sendCoin = async (data, isFromExtension) => {
         text2: `To: ${recipient}`,
         highlightedText: `${amount} ${checkCoin}`,
         foreignFee: `${fee} RVN`,
+        ...foreignKeyConsentFields(egress, checkCoin),
       },
       isFromExtension
     );
@@ -6104,7 +6299,6 @@ export const sendCoin = async (data, isFromExtension) => {
         ravencoinAmount: amount,
         feePerByte: feePerByte,
       };
-      const url = await createEndpoint(`/crosschain/rvn/send`);
 
       const response = await fetch(url, {
         method: 'POST',
@@ -6138,6 +6332,8 @@ export const sendCoin = async (data, isFromExtension) => {
     const amount = Number(data.amount);
     const recipient = data?.recipient || data.destinationAddress;
     const memo = data?.memo;
+    const url = await createEndpoint(`/crosschain/arrr/send`);
+    const egress = assertForeignKeyEgress(url, checkCoin);
     const arrrWalletBalance = await getWalletBalance({ coin: checkCoin }, true);
 
     if (isNaN(Number(arrrWalletBalance))) {
@@ -6165,6 +6361,7 @@ export const sendCoin = async (data, isFromExtension) => {
         text2: `To: ${recipient}`,
         highlightedText: `${amount} ${checkCoin}`,
         foreignFee: `${fee} ARRR`,
+        ...foreignKeyConsentFields(egress, checkCoin),
       },
       isFromExtension
     );
@@ -6177,7 +6374,6 @@ export const sendCoin = async (data, isFromExtension) => {
         arrrAmount: amount,
         memo: memo,
       };
-      const url = await createEndpoint(`/crosschain/arrr/send`);
 
       const response = await fetch(url, {
         method: 'POST',
@@ -6277,6 +6473,19 @@ export const createBuyOrder = async (data, isFromExtension) => {
 
   try {
     const buyingFees = await getBuyingFees(foreignBlockchain);
+    const foreignKeyFields = isGateway
+      ? foreignKeyProxyConsentFields(buyingFees.ticker)
+      : foreignKeyConsentFields(
+          assertForeignKeyEgress(
+            await createEndpoint(
+              foreignBlockchain === 'PIRATECHAIN'
+                ? '/crosschain/tradebot/respond'
+                : '/crosschain/tradebot/respondmultiple'
+            ),
+            buyingFees.ticker
+          ),
+          buyingFees.ticker
+        );
     const resPermission = await getUserPermission(
       {
         text1: i18n.t('question:permission.buy_order', {
@@ -6330,6 +6539,7 @@ export const createBuyOrder = async (data, isFromExtension) => {
             postProcess: 'capitalizeFirstChar',
           }),
         },
+        ...foreignKeyFields,
       },
       isFromExtension
     );

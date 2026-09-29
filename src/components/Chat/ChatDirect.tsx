@@ -73,6 +73,7 @@ import {
   subscribeToEvent,
   unsubscribeFromEvent,
 } from '../../utils/events';
+import { coreWebsocketPingMs } from '../../utils/coreWebsocketPing';
 import {
   getChatDraft,
   setChatDraft,
@@ -1405,7 +1406,10 @@ export const ChatDirect = ({
       try {
         if (e.data === 'pong') {
           clearTimeout(timeoutIdRef.current);
-          groupSocketTimeoutRef.current = setTimeout(pingWebSocket, 20000); // Ping every 20 seconds
+          groupSocketTimeoutRef.current = setTimeout(
+            pingWebSocket,
+            coreWebsocketPingMs()
+          );
         } else {
           middletierFunc(
             JSON.parse(e.data),
@@ -3970,10 +3974,10 @@ export const ChatDirect = ({
               : '16px 20px 20px',
           paddingBottom: reticulumDirectUiEnabled
             ? isMobile
-              ? 'max(6px, env(safe-area-inset-bottom, 0px))'
-              : 'max(8px, env(safe-area-inset-bottom, 0px))'
+              ? 'max(6px, var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px)))'
+              : 'max(8px, var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px)))'
             : isMobile
-              ? 'max(10px, env(safe-area-inset-bottom, 0px))'
+              ? 'max(10px, var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px)))'
               : undefined,
           position:
             reticulumDirectUiEnabled && isFocusedParent && !isMobile

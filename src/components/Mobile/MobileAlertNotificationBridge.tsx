@@ -9,6 +9,31 @@ const openDirectFromNotification = (fromAddress: string) => {
   executeEvent('openDirectMessage', { from: address });
 };
 
+/** `fromAddress` carries the group id for mention alerts. */
+const openGroupFromNotification = (fromAddress: string) => {
+  const groupId = fromAddress?.trim();
+  if (!groupId) return;
+  executeEvent('openGroupMessage', { from: groupId });
+};
+
+/** Routes a tapped tray alert; returns false when the type is not handled. */
+const openFromAlert = (
+  fromAddress: string | undefined,
+  type: string | undefined
+): boolean => {
+  const target = fromAddress?.trim();
+  if (!target) return false;
+  if (type === 'direct') {
+    openDirectFromNotification(target);
+    return true;
+  }
+  if (type === 'group') {
+    openGroupFromNotification(target);
+    return true;
+  }
+  return false;
+};
+
 export const MobileAlertNotificationBridge = () => {
   const handledPendingRef = useRef(false);
 
@@ -17,15 +42,21 @@ export const MobileAlertNotificationBridge = () => {
 
     let listenerHandle: { remove: () => void } | null = null;
 
+    const clearPending = async () => {
+      try {
+        await QortalBackground.clearPendingAlertNotification();
+      } catch {
+        // ignore — plugin may be unavailable during web dev
+      }
+    };
+
     const consumePending = async () => {
       if (handledPendingRef.current) return;
       try {
         const pending = await QortalBackground.getPendingAlertNotification();
-        const fromAddress = pending?.fromAddress?.trim();
-        if (fromAddress && pending?.type === 'direct') {
+        if (openFromAlert(pending?.fromAddress, pending?.type)) {
           handledPendingRef.current = true;
-          openDirectFromNotification(fromAddress);
-          await QortalBackground.clearPendingAlertNotification();
+          await clearPending();
         }
       } catch {
         // ignore — plugin may be unavailable during web dev
@@ -33,9 +64,9 @@ export const MobileAlertNotificationBridge = () => {
     };
 
     void QortalBackground.addListener('alertNotificationAction', (event) => {
-      const fromAddress = event.fromAddress?.trim();
-      if (!fromAddress || event.type !== 'direct') return;
-      openDirectFromNotification(fromAddress);
+      if (!openFromAlert(event.fromAddress, event.type)) return;
+      handledPendingRef.current = true;
+      void clearPending();
     }).then((handle) => {
       listenerHandle = handle;
       void consumePending();

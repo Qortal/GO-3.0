@@ -12,7 +12,11 @@ import ChevronLeftRoundedIcon from '@mui/icons-material/ChevronLeftRounded';
 import ChevronRightRoundedIcon from '@mui/icons-material/ChevronRightRounded';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import DownloadRoundedIcon from '@mui/icons-material/DownloadRounded';
+import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded';
+import ShareRoundedIcon from '@mui/icons-material/ShareRounded';
+import { useTranslation } from 'react-i18next';
 import { subscribeToEvent, unsubscribeFromEvent } from '../utils/events';
+import { BACK_PRIORITY, useAndroidBack } from '../utils/androidBack';
 import { appHeighOffsetPx } from '../components/Desktop/CustomTitleBar';
 import { SAFE_AREA_BOTTOM, SAFE_AREA_TOP } from '../utils/mobileSafeArea';
 import {
@@ -39,6 +43,11 @@ type OpenPdfDetail = {
     kind?: 'pdf' | 'file';
     title?: string;
   };
+  /**
+   * Set for files that live only in memory (chat attachments): enables Share
+   * and "Open with" on Android. Identifies the file so both reuse one copy.
+   */
+  shareKey?: string;
 };
 
 /**
@@ -47,6 +56,7 @@ type OpenPdfDetail = {
  * Supports pinch/double-tap zoom and save-to-device.
  */
 export const PdfViewer = () => {
+  const { t } = useTranslation(['reticulum']);
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState('Document');
   const [page, setPage] = useState(1);
@@ -54,6 +64,8 @@ export const PdfViewer = () => {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [handingOff, setHandingOff] = useState(false);
+  const [shareKey, setShareKey] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [zoomTick, setZoomTick] = useState(0);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -77,43 +89,62 @@ export const PdfViewer = () => {
     setError(null);
     setLoading(false);
     setSaving(false);
+    setHandingOff(false);
+    setShareKey(null);
     setToast(null);
     setZoomTick(0);
   }, []);
 
-  const renderPage = useCallback(async (pageNum: number) => {
-    const doc = docRef.current;
-    const canvas = canvasRef.current;
-    if (!doc || !canvas) return;
+  useAndroidBack(
+    () => {
+      close();
+      return true;
+    },
+    { priority: BACK_PRIORITY.call, enabled: open }
+  );
+
+  // pdf.js rejects a render() on a canvas that is still drawing, and opening
+  // a document asks for page 1 twice (the load path and the page effect), so
+  // renders run one after another and a superseded one is skipped.
+  const renderChainRef = useRef<Promise<void>>(Promise.resolve());
+
+  const renderPage = useCallback((pageNum: number) => {
     const gen = ++renderGen.current;
-    try {
-      const pdfPage = await doc.getPage(pageNum);
-      if (gen !== renderGen.current) return;
-      const containerWidth = Math.min(
-        canvas.parentElement?.parentElement?.clientWidth ||
-          canvas.parentElement?.clientWidth ||
-          window.innerWidth,
-        window.innerWidth
-      );
-      const unscaled = pdfPage.getViewport({ scale: 1 });
-      const fit = Math.max(0.75, (containerWidth - 24) / unscaled.width);
-      // Render sharper than fit so pinch zoom stays crisp up to ~2.5×.
-      const scale = fit * 1.75;
-      const viewport = pdfPage.getViewport({ scale });
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return;
-      canvas.width = Math.floor(viewport.width);
-      canvas.height = Math.floor(viewport.height);
-      // Display at fit width; CSS zoom handles pinch.
-      const displayW = unscaled.width * fit;
-      const displayH = unscaled.height * fit;
-      canvas.style.width = `${displayW}px`;
-      canvas.style.height = `${displayH}px`;
-      await pdfPage.render({ canvasContext: ctx, viewport }).promise;
-    } catch (e) {
-      if (gen !== renderGen.current) return;
-      setError(e instanceof Error ? e.message : 'Could not render page');
-    }
+    const run = async () => {
+      const doc = docRef.current;
+      const canvas = canvasRef.current;
+      if (!doc || !canvas || gen !== renderGen.current) return;
+      try {
+        const pdfPage = await doc.getPage(pageNum);
+        if (gen !== renderGen.current) return;
+        const containerWidth = Math.min(
+          canvas.parentElement?.parentElement?.clientWidth ||
+            canvas.parentElement?.clientWidth ||
+            window.innerWidth,
+          window.innerWidth
+        );
+        const unscaled = pdfPage.getViewport({ scale: 1 });
+        const fit = Math.max(0.75, (containerWidth - 24) / unscaled.width);
+        // Render sharper than fit so pinch zoom stays crisp up to ~2.5×.
+        const scale = fit * 1.75;
+        const viewport = pdfPage.getViewport({ scale });
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+        canvas.width = Math.floor(viewport.width);
+        canvas.height = Math.floor(viewport.height);
+        // Display at fit width; CSS zoom handles pinch.
+        const displayW = unscaled.width * fit;
+        const displayH = unscaled.height * fit;
+        canvas.style.width = `${displayW}px`;
+        canvas.style.height = `${displayH}px`;
+        await pdfPage.render({ canvasContext: ctx, viewport }).promise;
+      } catch (e) {
+        if (gen !== renderGen.current) return;
+        setError(e instanceof Error ? e.message : 'Could not render page');
+      }
+    };
+    renderChainRef.current = renderChainRef.current.then(run, run);
+    return renderChainRef.current;
   }, []);
 
   const openPdf = useCallback(
@@ -123,6 +154,7 @@ export const PdfViewer = () => {
       if (!blob) return;
       blobRef.current = blob;
       saveItemRef.current = detail?.saveItem || null;
+      setShareKey(detail?.shareKey || null);
       setOpen(true);
       setLoading(true);
       setError(null);
@@ -166,6 +198,11 @@ export const PdfViewer = () => {
     void renderPage(page);
   }, [open, page, pageCount, loading, renderPage]);
 
+  const pdfFileName = () =>
+    normalizeFilename(
+      title.toLowerCase().endsWith('.pdf') ? title : `${title}.pdf`
+    );
+
   const handleSave = async () => {
     if (saving) return;
     setSaving(true);
@@ -185,9 +222,7 @@ export const PdfViewer = () => {
       }
       const blob = blobRef.current;
       if (!blob) throw new Error('Nothing to save');
-      const filename = normalizeFilename(
-        title.toLowerCase().endsWith('.pdf') ? title : `${title}.pdf`
-      );
+      const filename = pdfFileName();
       if (Capacitor.isNativePlatform()) {
         await saveBlobToMobileDocuments(filename, blob);
         setToast(
@@ -204,6 +239,41 @@ export const PdfViewer = () => {
     }
   };
 
+  const handleHandOff = async (action: 'share' | 'open') => {
+    const blob = blobRef.current;
+    if (handingOff || !blob || !shareKey) return;
+    setHandingOff(true);
+    setToast(null);
+    try {
+      const {
+        openStagedMobileFileWith,
+        shareStagedMobileFile,
+        stageMobileFileForSharing,
+      } = await import('../utils/mobileFileShare');
+      const filename = pdfFileName();
+      const uri = await stageMobileFileForSharing(shareKey, filename, blob);
+      if (action === 'share') {
+        await shareStagedMobileFile(uri, filename);
+      } else {
+        await openStagedMobileFileWith(uri, filename, 'application/pdf');
+      }
+    } catch (err) {
+      console.error(`[PdfViewer] ${action} failed:`, err);
+      setToast(
+        t(
+          action === 'share'
+            ? 'reticulum:file_viewer.share_failed'
+            : 'reticulum:file_viewer.open_with_failed',
+          { postProcess: 'capitalizeFirstChar' }
+        )
+      );
+    } finally {
+      setHandingOff(false);
+    }
+  };
+
+  const canHandOff = !!shareKey && Capacitor.isNativePlatform();
+
   if (!open) return null;
 
   return (
@@ -216,7 +286,11 @@ export const PdfViewer = () => {
         display: 'flex',
         flexDirection: 'column',
         width: '100vw',
-        height: `calc(100vh - ${appHeighOffsetPx})`,
+        // The desktop title bar offset does not exist on phones, where it
+        // left a strip for the tab bar to show through under the controls.
+        ...(Capacitor.isNativePlatform()
+          ? { bottom: 0 }
+          : { height: `calc(100vh - ${appHeighOffsetPx})` }),
         boxSizing: 'border-box',
         backgroundColor: '#12141a',
         color: '#f2f4f8',
@@ -251,6 +325,30 @@ export const PdfViewer = () => {
             {title}
           </Typography>
         </Box>
+        {canHandOff ? (
+          <>
+            <IconButton
+              aria-label={t('reticulum:file_viewer.share', {
+                postProcess: 'capitalizeFirstChar',
+              })}
+              disabled={loading || handingOff || !!error}
+              onClick={() => void handleHandOff('share')}
+              sx={{ color: '#f2f4f8' }}
+            >
+              <ShareRoundedIcon />
+            </IconButton>
+            <IconButton
+              aria-label={t('reticulum:file_viewer.open_with', {
+                postProcess: 'capitalizeFirstChar',
+              })}
+              disabled={loading || handingOff || !!error}
+              onClick={() => void handleHandOff('open')}
+              sx={{ color: '#f2f4f8' }}
+            >
+              <OpenInNewRoundedIcon />
+            </IconButton>
+          </>
+        ) : null}
         <IconButton
           aria-label="Save to device"
           disabled={loading || saving || !!error}

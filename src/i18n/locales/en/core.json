@@ -561,6 +561,14 @@
       "no_results": "no results",
       "notification_settings": "Notification settings",
       "notification_settings_desc": "Choose which apps can send desktop alerts while keeping in-GO activity visible.",
+      "notification_sync_arrived": "Your notification settings were updated from another of your devices.",
+      "notification_sync_desc": "App notification rules, permissions, muted apps and read state are shared between Qortal Hub and Qortal GO over Reticulum. Both devices must be signed in to the same account and online together at least once for a change to arrive. Your other device needs a Qortal Hub or Qortal GO version with notification sync. Notifications themselves come from the node each device is connected to, so a public node works as well as a private one.",
+      "notification_sync_status_linked": "Linked with {{count}} of your devices",
+      "notification_sync_status_no_peer": "Ready, waiting for your other device to come online",
+      "notification_sync_status_off": "Reticulum chat is disabled, so these settings stay on this device",
+      "notification_sync_status_unsupported": "Your other device is online but its version does not support notification sync yet",
+      "notification_sync_status_waiting": "Waiting for the Reticulum chat engine",
+      "notification_sync_title": "Synced across your devices",
       "notifications": "Notifications",
       "one_app_per_name": "note: Currently, only one App and Website is allowed per Name.",
       "ongoing_transactions": "ongoing transactions",
@@ -675,6 +683,11 @@
       "state_syncing_body": "The node is still syncing, so minting cannot begin yet.",
       "state_syncing_title": "Synchronizing"
     },
+    "public_node_dialog": {
+      "body": "Minting is only available when connected to your own private node. You are currently on a public node. Open Q-Minter to read the detailed guide on becoming a minter.",
+      "open_q_minter": "Open Q-Minter guide",
+      "title": "Minting requires a private node"
+    },
     "reward_per_block": "estimated reward per block",
     "reward_per_day": "estimated reward per day",
     "rewards_info": "minting rewards info",
@@ -687,12 +700,7 @@
     },
     "status_title": "minting status",
     "tier_share_per_block": "tier share per block",
-    "total_minter_in_tier": "total minters in the tier",
-    "public_node_dialog": {
-      "title": "Minting requires a private node",
-      "body": "Minting is only available when connected to your own private node. You are currently on a public node. Open Q-Minter to read the detailed guide on becoming a minter.",
-      "open_q_minter": "Open Q-Minter guide"
-    }
+    "total_minter_in_tier": "total minters in the tier"
   },
   "name": "name",
   "name_app": "name/App",

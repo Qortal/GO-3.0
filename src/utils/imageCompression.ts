@@ -14,6 +14,8 @@ import { createNamedFile, nameBlob } from './namedFile';
 export interface ImageCompressorOptions {
   quality: number;
   maxWidth: number;
+  /** Also cap the height (tall screenshots); unlimited when omitted. */
+  maxHeight?: number;
   mimeType: string;
 }
 
@@ -27,6 +29,7 @@ export const runImageCompressor = (
     new Compressor(file, {
       quality: opts.quality,
       maxWidth: opts.maxWidth,
+      ...(opts.maxHeight ? { maxHeight: opts.maxHeight } : {}),
       mimeType: opts.mimeType,
       checkOrientation: true,
       success(result) {

@@ -12,6 +12,8 @@ Mobile-only changes (Capacitor UI, FileWriter, biometric, etc.) do **not** requi
 *(Earlier field builds lived at https://gitea.qortal.link/simon/qortal-go-2.0.)*
 
 **Chat GIF picker (v0.0.5, Hub-portable):** see [`HUB_GIF_PICKER.md`](HUB_GIF_PICKER.md).
+
+**Notification sync Hub ⇄ GO (2026-09-29, Hub-portable, needs a Hub release):** see [`HUB_NOTIFICATION_SYNC.md`](HUB_NOTIFICATION_SYNC.md).
 Copy `src/components/Chat/gifs/` and wire `ReactionPicker` / send / `MessageItem`.
 Do not port the Android keyboard panel.
 

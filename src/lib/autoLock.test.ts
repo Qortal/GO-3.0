@@ -3,20 +3,21 @@ import {
   AUTO_LOCK_DISABLED_STORAGE_KEY,
   AUTO_LOCK_LAST_ACTIVITY_STORAGE_KEY,
   AUTO_LOCK_PREFERENCE_CHANGE_EVENT,
+  AUTO_LOCK_TIMEOUT_STORAGE_KEY,
   clearAutoLockLastActivityAt,
   isAutoLockDue,
   normalizeAutoLockTimeoutMinutes,
-  readAutoLockDisabledFromStorage,
   readAutoLockLastActivityAt,
+  readAutoLockTimeoutFromStorage,
   resolveAutoLockTimeoutMinutes,
-  timeoutMinutesForAutoLockDisabled,
-  writeAutoLockDisabledToStorage,
   writeAutoLockLastActivityAt,
+  writeAutoLockTimeoutToStorage,
 } from './autoLock';
 
 describe('auto-lock settings', () => {
   afterEach(() => {
     window.localStorage.removeItem(AUTO_LOCK_DISABLED_STORAGE_KEY);
+    window.localStorage.removeItem(AUTO_LOCK_TIMEOUT_STORAGE_KEY);
     window.sessionStorage.removeItem(AUTO_LOCK_LAST_ACTIVITY_STORAGE_KEY);
   });
 
@@ -46,21 +47,34 @@ describe('auto-lock settings', () => {
     expect(isAutoLockDue(1_000, 10 * 60 * 1_000 + 1_000, 10)).toBe(true);
   });
 
-  it('maps the disable toggle to a timeout of 0 or the default 30', () => {
-    expect(timeoutMinutesForAutoLockDisabled(true)).toBe(0);
-    expect(timeoutMinutesForAutoLockDisabled(false)).toBe(30);
+  it('never treats a blank or null value as disabled', () => {
+    expect(normalizeAutoLockTimeoutMinutes('')).toBe(30);
+    expect(normalizeAutoLockTimeoutMinutes(null)).toBe(30);
+    expect(normalizeAutoLockTimeoutMinutes('180')).toBe(180);
   });
 
-  it('persists the disable toggle and notifies listeners', () => {
+  it('persists the selected timeout and notifies listeners', () => {
     const listener = vi.fn();
     window.addEventListener(AUTO_LOCK_PREFERENCE_CHANGE_EVENT, listener);
-    writeAutoLockDisabledToStorage(true);
-    expect(readAutoLockDisabledFromStorage()).toBe(true);
+    expect(writeAutoLockTimeoutToStorage(180)).toBe(true);
+    expect(readAutoLockTimeoutFromStorage()).toBe(180);
     expect(listener).toHaveBeenCalledTimes(1);
-    writeAutoLockDisabledToStorage(false, { notify: false });
-    expect(readAutoLockDisabledFromStorage()).toBe(false);
+    expect(listener.mock.calls[0][0].detail).toEqual({ timeoutMinutes: 180 });
+    writeAutoLockTimeoutToStorage(0, { notify: false });
+    expect(readAutoLockTimeoutFromStorage()).toBe(0);
     expect(listener).toHaveBeenCalledTimes(1);
     window.removeEventListener(AUTO_LOCK_PREFERENCE_CHANGE_EVENT, listener);
+  });
+
+  it('defaults to 30 minutes when nothing is stored', () => {
+    expect(readAutoLockTimeoutFromStorage()).toBe(30);
+  });
+
+  it('migrates the legacy disabled flag from storage', () => {
+    window.localStorage.setItem(AUTO_LOCK_DISABLED_STORAGE_KEY, 'true');
+    expect(readAutoLockTimeoutFromStorage()).toBe(0);
+    window.localStorage.setItem(AUTO_LOCK_TIMEOUT_STORAGE_KEY, '60');
+    expect(readAutoLockTimeoutFromStorage()).toBe(60);
   });
 
   it('persists last-activity timestamps across watcher remounts', () => {

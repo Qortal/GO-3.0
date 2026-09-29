@@ -5,6 +5,7 @@ import {
 } from './bridge/capacitorBridge';
 import { installMobileReticulumChat } from './reticulumChat/mobile';
 import './utils/configureDomPurify';
+import { installIdleAnimationPause } from './utils/idleAnimationPause';
 
 // Install the Capacitor mobile-shell bridge before any feature module reads
 // window.* (splash, hardware back; web-mode degradation otherwise).
@@ -15,6 +16,9 @@ installReticulumBridges();
 // Install window.reticulumChat backed by the in-app chat engine worker so the
 // mobile app runs the new Reticulum chat (no legacy). No-op off-Capacitor.
 installMobileReticulumChat();
+// Freeze decorative CSS loops after 20 s without input; on-device they cost
+// ~half a CPU core for as long as the screen is on. No-op off-Capacitor.
+installIdleAnimationPause();
 import App from './App.tsx';
 import ErrorBoundary from './common/ErrorBoundary';
 import RootCrashFallback from './common/RootCrashFallback';

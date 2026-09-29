@@ -18,6 +18,7 @@ import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import AddRoundedIcon from '@mui/icons-material/AddRounded';
 import RemoveRoundedIcon from '@mui/icons-material/RemoveRounded';
 import AppsRoundedIcon from '@mui/icons-material/AppsRounded';
+import CloudDownloadRoundedIcon from '@mui/icons-material/CloudDownloadRounded';
 import CreateNewFolderRoundedIcon from '@mui/icons-material/CreateNewFolderRounded';
 import TuneRoundedIcon from '@mui/icons-material/TuneRounded';
 import ArrowBackRoundedIcon from '@mui/icons-material/ArrowBackRounded';
@@ -48,6 +49,12 @@ import {
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { alpha } from '@mui/material/styles';
+import { useAtomValue } from 'jotai';
+import { userInfoAtom } from '../../atoms/global';
+import {
+  getExtSavedSettings,
+  getExtSavedSettingsRecord,
+} from '../../hooks/qdnSavedSettings';
 import { extractComponents } from '../Chat/MessageDisplay';
 import { CustomizedSnackbars } from '../Snackbar/Snackbar';
 import { QORTAL_PROTOCOL } from '../../constants/constants';
@@ -724,6 +731,7 @@ export const MobileTabsOverlay = ({ open, onClose }: MobileTabsOverlayProps) => 
     [rawSelectedTab]
   );
   const org = useMobileTabOrganization();
+  const userInfo = useAtomValue(userInfoAtom);
   const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
   const [tabOptionsOpen, setTabOptionsOpen] = useState(false);
   const [actionTab, setActionTab] = useState<OpenTab | null>(null);
@@ -744,6 +752,7 @@ export const MobileTabsOverlay = ({ open, onClose }: MobileTabsOverlayProps) => 
   const [folderHeaderName, setFolderHeaderName] = useState('');
   const [folderNameEditing, setFolderNameEditing] = useState(false);
   const [tabsEditMode, setTabsEditMode] = useState(false);
+  const [importingHubDashboard, setImportingHubDashboard] = useState(false);
   const [overlayMounted, setOverlayMounted] = useState(false);
   const folderHeaderInputRef = useRef<HTMLInputElement>(null);
   const skipFolderBlurCommitRef = useRef(false);
@@ -1024,6 +1033,73 @@ export const MobileTabsOverlay = ({ open, onClose }: MobileTabsOverlayProps) => 
     setSnackInfo({ type: 'success', message, duration: 3200 });
     setSnackOpen(true);
   }, []);
+
+  const showSnack = useCallback((type: string, message: string) => {
+    setSnackInfo({ type, message, duration: 3200 });
+    setSnackOpen(true);
+  }, []);
+
+  const handleImportHubDashboard = useCallback(async () => {
+    if (importingHubDashboard) return;
+    const myName = String(userInfo?.name || '').trim();
+    if (!myName) {
+      showSnack(
+        'error',
+        'This account has no registered name, so a Hub dashboard cannot be imported.'
+      );
+      return;
+    }
+
+    setImportingHubDashboard(true);
+    try {
+      const { hasPublishRecord } = await getExtSavedSettingsRecord(myName);
+      if (!hasPublishRecord) {
+        showSnack('error', 'No Hub dashboard is saved for this account.');
+        return;
+      }
+      const settings = await getExtSavedSettings(myName);
+      const pins = Array.isArray(settings?.sortablePinnedApps)
+        ? settings.sortablePinnedApps
+        : null;
+      if (!settings || !pins) {
+        showSnack('error', 'Could not read the Hub dashboard for this account.');
+        return;
+      }
+
+      const { folderId, imported, skipped } =
+        org.importPinnedAppsToHubFolder(pins);
+      if (folderId) {
+        selectFolder(folderId);
+      }
+
+      if (imported === 0 && skipped === 0) {
+        showSnack('error', 'The Hub dashboard has no pinned apps to import.');
+        return;
+      }
+
+      if (skipped > 0) {
+        showSnack(
+          'success',
+          `Imported ${imported} pinned app${imported === 1 ? '' : 's'} into Hub. ${skipped} already in other folders.`
+        );
+        return;
+      }
+      showSnack(
+        'success',
+        `Imported ${imported} pinned app${imported === 1 ? '' : 's'} into Hub.`
+      );
+    } catch {
+      showSnack('error', 'Could not read the Hub dashboard for this account.');
+    } finally {
+      setImportingHubDashboard(false);
+    }
+  }, [
+    importingHubDashboard,
+    org,
+    selectFolder,
+    showSnack,
+    userInfo?.name,
+  ]);
 
   const handleTrashTab = useCallback(
     async (tabKey: string) => {
@@ -1478,16 +1554,29 @@ export const MobileTabsOverlay = ({ open, onClose }: MobileTabsOverlayProps) => 
               ) : null}
               {!selectedFolder ? tabsEditButton : null}
               {tabsEditMode ? (
-                <IconButton
-                  size="small"
-                  aria-label="New folder"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    void org.createFolder('New folder').then((id) => selectFolder(id));
-                  }}
-                >
-                  <CreateNewFolderRoundedIcon />
-                </IconButton>
+                <>
+                  <IconButton
+                    size="small"
+                    aria-label="New folder"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      void org.createFolder('New folder').then((id) => selectFolder(id));
+                    }}
+                  >
+                    <CreateNewFolderRoundedIcon />
+                  </IconButton>
+                  <IconButton
+                    size="small"
+                    aria-label="Import Hub dashboard"
+                    disabled={importingHubDashboard}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      void handleImportHubDashboard();
+                    }}
+                  >
+                    <CloudDownloadRoundedIcon />
+                  </IconButton>
+                </>
               ) : null}
             </Box>
           </Box>

@@ -157,7 +157,9 @@ export async function extractAudioFromQdnVideo(
           : new Blob([blob], { type: 'audio/mp4' });
       await saveBlobToMobileDocuments(audioName, audioBlob);
     } finally {
-      await VideoCompress.stopServe().catch(() => undefined);
+      await VideoCompress.stopServe({ url: served.url }).catch(
+        () => undefined
+      );
     }
     return {
       message: `Audio saved to ${mobileSaveLocationLabelFor(audioName)}/${audioName}`,

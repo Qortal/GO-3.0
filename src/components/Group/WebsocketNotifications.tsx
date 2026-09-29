@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { getBaseApiReact, getBaseApiReactSocket } from '../../App';
 import { subscribeToEvent, unsubscribeFromEvent } from '../../utils/events';
+import { coreWebsocketPingMs } from '../../utils/coreWebsocketPing';
 import i18n, { supportedLanguages } from '../../i18n/i18n';
 import { useAtomValue, useSetAtom } from 'jotai';
 import {
@@ -12,7 +13,15 @@ import {
   filterSeenInAppKeysByRules,
   reticulumChatEnabledAtom,
 } from '../../atoms/global';
-import { fireOsNotificationPayment } from '../../background/background';
+import {
+  dismissOsNotificationByKey,
+  fireOsNotificationPayment,
+} from '../../background/background';
+import {
+  reticulumDmAlertKey,
+  reticulumMentionAlertKey,
+  wasAlertShown,
+} from '../../utils/reticulumChatAlerts';
 import {
   getNotificationPermissionKey,
   getPermission,
@@ -40,6 +49,7 @@ const isReticulumCalendarNotification = (notification: any) =>
 const NOTIFICATION_AGE_MS = 3 * 24 * 60 * 60 * 1000;
 const QCHAT_MENTION_OS_NOTIFICATION_MAX_TRACKED = 500;
 const RETICULUM_DM_OS_NOTIFICATION_MAX_TRACKED = 500;
+const RETICULUM_DM_ALERT_DISMISS_DEBOUNCE_MS = 250;
 
 const getNotificationCreatorTimestamp = (notification: {
   data?: { created?: number; timestamp?: number };
@@ -173,7 +183,8 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
         }
       }
 
-      const friend = dmFriendsByAddressRef.current[directEvent.senderAddress!];
+      const sender = String(directEvent.senderAddress || '');
+      const friend = dmFriendsByAddressRef.current[sender];
       const senderName = friend?.name?.trim() || 'a friend';
       void fireOsNotificationPayment(
         {
@@ -186,12 +197,55 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
         LogoSelected,
         undefined,
         {
-          from: directEvent.senderAddress,
+          from: sender,
           name: friend?.name,
           reticulumDirectMessage: true,
+        },
+        {
+          alertKey: reticulumDmAlertKey(sender),
+          fromAddress: sender,
+          notificationType: 'direct',
         }
       );
     });
+
+    // When a DM conversation is read (locally or on another device via
+    // read_sync) its summary changes; if the peer no longer has unread
+    // messages, cancel the tray alert we showed for it. Debounced per peer
+    // because a burst of events reports one summary change each.
+    const dmAlertDismissTimers = new Map<string, number>();
+    const scheduleDmAlertDismiss = (peer: string) => {
+      const alertKey = reticulumDmAlertKey(peer);
+      if (!wasAlertShown(alertKey)) return;
+      const pending = dmAlertDismissTimers.get(peer);
+      if (pending) window.clearTimeout(pending);
+      dmAlertDismissTimers.set(
+        peer,
+        window.setTimeout(() => {
+          dmAlertDismissTimers.delete(peer);
+          if (!wasAlertShown(alertKey)) return;
+          void window.reticulumChat
+            ?.getDirectSummaries?.(myAddress, peer)
+            .then((summaries) => {
+              const summary = (summaries || []).find(
+                (item: any) => String(item?.peerAddress || '') === peer
+              ) as
+                | { unreadCount?: number; unreadMissedCallCount?: number }
+                | undefined;
+              // The enriched summary folds unread missed calls into
+              // `unreadCount`; only the message count matters here (the
+              // missed-call alert is a separate notification).
+              const unreadMessages =
+                Number(summary?.unreadCount || 0) -
+                Number(summary?.unreadMissedCallCount || 0);
+              if (unreadMessages <= 0) {
+                dismissOsNotificationByKey(alertKey);
+              }
+            })
+            .catch(() => undefined);
+        }, RETICULUM_DM_ALERT_DISMISS_DEBOUNCE_MS)
+      );
+    };
 
     const addMissedCallNotification = (record: any) => {
       if (
@@ -248,6 +302,7 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
       ({ peerAddress }: any) => {
         const peer = String(peerAddress || '');
         if (!peer) return;
+        scheduleDmAlertDismiss(peer);
         void window.reticulumChat
           ?.getDirectCallHistory(myAddress, peer, 1, true)
           .then((records) => {
@@ -270,6 +325,8 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
       off?.();
       offCalls?.();
       offCallSummary?.();
+      dmAlertDismissTimers.forEach((timer) => window.clearTimeout(timer));
+      dmAlertDismissTimers.clear();
     };
   }, [myAddress, reticulumChatEnabled, setPaymentNotifications]);
 
@@ -416,6 +473,15 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
       const isUnreadCountSync = detail?.syncUnreadCount === true;
       if ((!eventId && !isUnreadCountSync) || !Number.isFinite(groupId)) {
         return;
+      }
+      // Mentions were read (here or on another device): drop the tray alert.
+      // Runs before the enabled check so an alert shown earlier still clears
+      // after mention notifications get disabled.
+      if (
+        isUnreadCountSync &&
+        Math.max(0, Number(detail?.mentionCount) || 0) === 0
+      ) {
+        dismissOsNotificationByKey(reticulumMentionAlertKey(groupId));
       }
       if (!(await getQChatMentionNotificationsEnabled())) return;
 
@@ -568,6 +634,11 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
             eventId,
             from: groupId,
             qChatMention: true,
+          },
+          {
+            alertKey: reticulumMentionAlertKey(groupId),
+            fromAddress: String(groupId),
+            notificationType: 'group',
           }
         );
       }
@@ -822,7 +893,7 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
               timeoutIdRef.current = null;
               pingTimeoutRef.current = setTimeout(
                 () => pingHeads(socket, isCurrentConnection),
-                20000
+                coreWebsocketPingMs()
               );
             } else {
               const data = JSON.parse(e.data);

@@ -14,18 +14,77 @@ import sqlite3InitModule from '@sqlite.org/sqlite-wasm';
 let sqlite3: any = null;
 let poolUtil: any = null;
 
+/** Threshold past which sqlite-wasm startup indicates interpreted execution. */
+const SLOW_INIT_MS = 4_000;
+
+/**
+ * GrapheneOS lets users turn off the WebView JIT per app or globally (many
+ * do as part of hardening). WebAssembly then runs in the DrumBrake
+ * interpreter, 10-50x slower, or is unavailable on Vanadium builds older
+ * than 141 that have no interpreter.
+ */
+const WEBVIEW_JIT_HINT =
+  'On GrapheneOS check Settings > Apps > Qortal GO > Exploit protection and make sure "WebView JIT" is allowed, then reopen the app.';
+
 /** Must resolve before any Database is constructed. */
 export async function initMobileSqlite(): Promise<void> {
   if (poolUtil) return;
-  sqlite3 = await sqlite3InitModule({
-    print: () => {},
-    printErr: (msg: string) => console.warn('[sqlite-wasm]', msg),
-  });
+  // Name the platform gaps explicitly. Without these checks the failure was a
+  // deep stack trace from inside the wasm loader that told the user nothing.
+  if (typeof WebAssembly === 'undefined') {
+    throw new Error(
+      `WebAssembly is disabled in this WebView, so chat history storage cannot start. ${WEBVIEW_JIT_HINT}`
+    );
+  }
+  const storage = (globalThis as any).navigator?.storage;
+  if (!storage || typeof storage.getDirectory !== 'function') {
+    throw new Error(
+      'Private file storage (OPFS) is unavailable in this WebView, so chat history cannot be stored.'
+    );
+  }
+  const startedAt = Date.now();
+  try {
+    sqlite3 = await sqlite3InitModule({
+      print: () => {},
+      printErr: (msg: string) => console.warn('[sqlite-wasm]', msg),
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const isWasmFailure =
+      (typeof WebAssembly !== 'undefined' &&
+        (err instanceof WebAssembly.CompileError ||
+          err instanceof WebAssembly.LinkError ||
+          err instanceof WebAssembly.RuntimeError)) ||
+      /webassembly|wasm/i.test(message);
+    throw new Error(
+      isWasmFailure
+        ? `The chat database engine (WebAssembly) could not be loaded in this WebView: ${message}. ${WEBVIEW_JIT_HINT}`
+        : `The chat database engine failed to load: ${message}`
+    );
+  }
   poolUtil = await sqlite3.installOpfsSAHPoolVfs({
     name: 'qgo-sql',
     directory: '.qgo-sqlite',
     initialCapacity: 16,
   });
+  const elapsed = Date.now() - startedAt;
+  if (elapsed > SLOW_INIT_MS) {
+    // A stock WebView does this in well under a second. Seconds mean the
+    // wasm is being interpreted (WebView JIT restricted for this app or
+    // globally; on GrapheneOS that is a per-app/global toggle, not the default),
+    // so every query downstream is slow too. Tell the UI so the user gets a
+    // hint instead of a chat that merely times out.
+    console.warn(`[sqlite-wasm] slow_init ms=${elapsed} (interpreted wasm?)`);
+    try {
+      (self as unknown as Worker).postMessage({
+        t: 'engine-slow',
+        ms: elapsed,
+        hint: `Chat storage started slowly (${(elapsed / 1000).toFixed(1)} s): this WebView is running without JIT. ${WEBVIEW_JIT_HINT}`,
+      });
+    } catch {
+      /* not inside a worker */
+    }
+  }
 }
 
 /**
@@ -263,7 +322,10 @@ export class Database {
       try {
         poolUtil.unlink(this.flat);
       } catch (unlinkErr) {
-        console.error('[sqlite-wasm] unlink after corruption failed', unlinkErr);
+        console.error(
+          '[sqlite-wasm] unlink after corruption failed',
+          unlinkErr
+        );
       }
       try {
         (self as unknown as Worker).postMessage({

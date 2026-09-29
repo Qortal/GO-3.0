@@ -3723,6 +3723,7 @@ const reticulumDirectEventSubscribers = new Set<Electron.WebContents>();
 const reticulumDirectCallHistorySubscribers = new Set<Electron.WebContents>();
 const reticulumDirectTypingSubscribers = new Set<Electron.WebContents>();
 const reticulumDirectSummarySubscribers = new Set<Electron.WebContents>();
+const reticulumDeviceStateSubscribers = new Set<WebContents>();
 const reticulumChatResourceSubscribers = new Set<Electron.WebContents>();
 const reticulumChatSilenceSubscribers = new Set<Electron.WebContents>();
 const reticulumCalendarSubscribers = new Set<Electron.WebContents>();
@@ -3891,6 +3892,14 @@ export function attachReticulumChatListeners(
     broadcastToSet(
       reticulumDirectSummarySubscribers,
       'reticulumChat:directSummaryChanged',
+      payload
+    )
+  );
+
+  manager.on('deviceStateChanged', (payload: unknown) =>
+    broadcastToSet(
+      reticulumDeviceStateSubscribers,
+      'reticulumChat:deviceStateChanged',
       payload
     )
   );
@@ -4425,6 +4434,82 @@ ipcMain.handle(
     }
     manager.markDirectRead(myAddress, peerAddress, Number(upToTimestamp));
     return { success: true };
+  }
+);
+
+function ensureReticulumChatDeviceStateOwner(
+  manager: ReturnType<typeof getReticulumChatManager>,
+  ownerAddress: unknown
+): string {
+  const owner = typeof ownerAddress === 'string' ? ownerAddress.trim() : '';
+  if (!manager || !owner) return owner;
+  const registered = manager.getLocalDmAddresses();
+  if (!registered.includes(owner)) {
+    manager.setLocalDmAddresses([owner]);
+  }
+  return owner;
+}
+
+ipcMain.handle(
+  'reticulumChat:setDeviceState',
+  async (
+    _event,
+    ownerAddress: string,
+    key: string,
+    value: string | null,
+    options?: { ttlMs?: number }
+  ) => {
+    const settings = await readAppSettings();
+    if (!isReticulumChatEffectivelyEnabled(settings)) {
+      return { success: false, error: 'Reticulum chat is disabled' };
+    }
+    const manager = getReticulumChatManager();
+    if (!manager) {
+      return { success: false, error: 'Reticulum chat manager is not running' };
+    }
+    const owner = ensureReticulumChatDeviceStateOwner(manager, ownerAddress);
+    try {
+      return manager.setDeviceState(
+        owner,
+        String(key ?? ''),
+        value === null || value === undefined ? null : String(value),
+        options && typeof options === 'object' ? options : undefined
+      );
+    } catch (err) {
+      return {
+        success: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
+);
+
+ipcMain.handle(
+  'reticulumChat:getDeviceStates',
+  async (_event, ownerAddress: string, keyPrefix?: string) => {
+    const settings = await readAppSettings();
+    if (!isReticulumChatEffectivelyEnabled(settings)) return [];
+    const manager = getReticulumChatManager();
+    if (!manager) return [];
+    const owner = ensureReticulumChatDeviceStateOwner(manager, ownerAddress);
+    if (!owner) return [];
+    return manager.getDeviceStates(
+      owner,
+      typeof keyPrefix === 'string' ? keyPrefix : undefined
+    );
+  }
+);
+
+ipcMain.handle(
+  'reticulumChat:getDeviceStateSyncPeers',
+  async (_event, ownerAddress: string) => {
+    const settings = await readAppSettings();
+    if (!isReticulumChatEffectivelyEnabled(settings)) return [];
+    const manager = getReticulumChatManager();
+    if (!manager) return [];
+    const owner = typeof ownerAddress === 'string' ? ownerAddress.trim() : '';
+    if (!owner) return [];
+    return manager.getDeviceStateSyncPeers(owner);
   }
 );
 
@@ -6108,6 +6193,12 @@ ipcMain.on('reticulumChat:directSummaryChanged:subscribe', (event) => {
 });
 ipcMain.on('reticulumChat:directSummaryChanged:unsubscribe', (event) => {
   reticulumDirectSummarySubscribers.delete(event.sender);
+});
+ipcMain.on('reticulumChat:deviceStateChanged:subscribe', (event) => {
+  reticulumDeviceStateSubscribers.add(event.sender);
+});
+ipcMain.on('reticulumChat:deviceStateChanged:unsubscribe', (event) => {
+  reticulumDeviceStateSubscribers.delete(event.sender);
 });
 
 ipcMain.on('reticulumChat:resource:subscribe', (event) => {

@@ -130,7 +130,7 @@ export const useHandleTutorials = () => {
               setOpenTutorialModal({
                 multi: [
                   {
-                    title: t('tutorial:1_getting_started', {
+                    title: t('group:1_getting_started', {
                       postProcess: 'capitalizeFirstChar',
                     }),
                     resource: {
@@ -141,7 +141,7 @@ export const useHandleTutorials = () => {
                     },
                   },
                   {
-                    title: t('tutorial:2_overview', {
+                    title: t('group:2_overview', {
                       postProcess: 'capitalizeFirstChar',
                     }),
                     resource: {
@@ -152,7 +152,7 @@ export const useHandleTutorials = () => {
                     },
                   },
                   {
-                    title: t('tutorial:3_groups', {
+                    title: t('group:3_groups', {
                       postProcess: 'capitalizeFirstChar',
                     }),
                     resource: {
@@ -163,7 +163,7 @@ export const useHandleTutorials = () => {
                     },
                   },
                   {
-                    title: t('tutorial:4_obtain_qort', {
+                    title: t('group:4_obtain_qort', {
                       postProcess: 'capitalizeFirstChar',
                     }),
                     resource: {
@@ -185,7 +185,7 @@ export const useHandleTutorials = () => {
               setOpenTutorialModal({
                 multi: [
                   {
-                    title: t('tutorial:apps.dashboard', {
+                    title: t('group:apps.dashboard', {
                       postProcess: 'capitalizeFirstChar',
                     }),
                     resource: {
@@ -196,7 +196,7 @@ export const useHandleTutorials = () => {
                     },
                   },
                   {
-                    title: t('tutorial:apps.navigation', {
+                    title: t('group:apps.navigation', {
                       postProcess: 'capitalizeFirstChar',
                     }),
                     resource: {

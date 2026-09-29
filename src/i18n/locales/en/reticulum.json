@@ -62,6 +62,26 @@
     "tooltip_value": "message expiry: {{value}}",
     "unavailable": "message expiry is unavailable"
   },
+  "file_viewer": {
+    "close": "close file viewer",
+    "file": "file",
+    "link_unsupported": "this link can't be opened from here",
+    "load_failed": "this file could not be opened. It may still be downloading, or it is no longer stored on this device.",
+    "markup_as_source": "web pages are shown as source code and never run inside the app.",
+    "no_preview": "this type of file can't be shown here. Open it in another app, share it or save it to your device.",
+    "open_with": "open with another app",
+    "open_with_failed": "no app could open this file",
+    "opening": "opening file…",
+    "preview_failed": "this file could not be shown here. Open it in another app, share it or save it to your device.",
+    "save": "save to device",
+    "save_failed": "could not save the file",
+    "saved_to": "saved to {{location}}",
+    "share": "share",
+    "share_failed": "could not share the file",
+    "show_formatted": "show formatted",
+    "show_source": "show plain text",
+    "truncated": "this file is too large to show in full. Save it or open it in another app to see the rest."
+  },
   "group_fallback_name": "Group",
   "group_type": {
     "closed": "closed",
@@ -94,6 +114,9 @@
     "download_failed": "unable to download image",
     "prepare_failed": "unable to prepare image for clipboard",
     "read_failed": "unable to read image",
+    "save": "save image",
+    "share": "share image",
+    "share_failed": "unable to share image",
     "zoom_in": "zoom in",
     "zoom_out": "zoom out"
   },

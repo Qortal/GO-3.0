@@ -62,6 +62,26 @@
     "tooltip_value": "expiration du message : {{value}}",
     "unavailable": "l'expiration des messages est indisponible"
   },
+  "file_viewer": {
+    "close": "fermer la visionneuse de fichiers",
+    "file": "fichier",
+    "link_unsupported": "ce lien ne peut pas être ouvert d'ici",
+    "load_failed": "impossible d'ouvrir ce fichier. Il est peut-être encore en cours de téléchargement, ou il n'est plus stocké sur cet appareil.",
+    "markup_as_source": "les pages web sont affichées sous forme de code source et ne s'exécutent jamais dans l'application.",
+    "no_preview": "ce type de fichier ne peut pas être affiché ici. Ouvrez-le dans une autre application, partagez-le ou enregistrez-le sur votre appareil.",
+    "open_with": "ouvrir avec une autre application",
+    "open_with_failed": "aucune application n'a pu ouvrir ce fichier",
+    "opening": "ouverture du fichier…",
+    "preview_failed": "impossible d'afficher ce fichier ici. Ouvrez-le dans une autre application, partagez-le ou enregistrez-le sur votre appareil.",
+    "save": "enregistrer sur l'appareil",
+    "save_failed": "impossible d'enregistrer le fichier",
+    "saved_to": "enregistré dans {{location}}",
+    "share": "partager",
+    "share_failed": "impossible de partager le fichier",
+    "show_formatted": "afficher la mise en forme",
+    "show_source": "afficher le texte brut",
+    "truncated": "ce fichier est trop volumineux pour être affiché en entier. Enregistrez-le ou ouvrez-le dans une autre application pour voir la suite."
+  },
   "group_fallback_name": "Groupe",
   "group_type": {
     "closed": "fermé",
@@ -94,6 +114,9 @@
     "download_failed": "unable to download image",
     "prepare_failed": "unable to prepare image for clipboard",
     "read_failed": "unable to read image",
+    "save": "enregistrer l'image",
+    "share": "partager l'image",
+    "share_failed": "impossible de partager l'image",
     "zoom_in": "zoom in",
     "zoom_out": "zoom out"
   },

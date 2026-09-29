@@ -507,7 +507,8 @@ export const Minting = ({ setIsOpenMinting, myAddress, show }) => {
         type: 'error',
         message:
           error?.message ||
-          t('group:message.error:minting', {
+          t('core:message.error.minting_failed', {
+            defaultValue: 'minting failed',
             postProcess: 'capitalizeFirstChar',
           }),
       });

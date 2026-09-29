@@ -96,6 +96,22 @@ function wipeTemporaryKeyPairSecrets(keyPair: unknown): void {
   }
 }
 
+/**
+ * Message for a signing failure. Always a non-empty string: a response with
+ * neither `payload` nor `error` is returned to callers as `undefined`, which
+ * the chat UIs then reported as a bogus "author mismatch".
+ */
+function signingErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message) return error.message;
+  if (typeof error === 'string' && error) return error;
+  try {
+    const text = String(error ?? '');
+    return text && text !== '[object Object]' ? text : 'Signing failed';
+  } catch {
+    return 'Signing failed';
+  }
+}
+
 const ED25519_SECRET_KEY_BYTES = 64;
 
 /**
@@ -2513,7 +2529,7 @@ export async function signPresenceMessageCase(request, event) {
       {
         requestId: request.requestId,
         action: 'signPresenceMessage',
-        error: error?.message,
+        error: signingErrorMessage(error),
         type: 'backgroundMessageResponse',
       },
       event.origin
@@ -2565,7 +2581,7 @@ export async function signReticulumChatEventCase(request, event) {
       {
         requestId: request.requestId,
         action: 'signReticulumChatEvent',
-        error: error?.message,
+        error: signingErrorMessage(error),
         type: 'backgroundMessageResponse',
       },
       event.origin

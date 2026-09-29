@@ -106,7 +106,7 @@ export function LandTouchJoystick({
           : 'rgba(7, 12, 20, 0.44)',
         border: '1px solid rgba(44, 248, 255, 0.42)',
         borderRadius: '50%',
-        bottom: 'max(18px, env(safe-area-inset-bottom, 0px))',
+        bottom: 'max(18px, var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px)))',
         boxShadow: '0 10px 26px rgba(0, 0, 0, 0.45)',
         display: 'flex',
         height: PAD_SIZE,

@@ -62,6 +62,26 @@
     "tooltip_value": "メッセージの有効期限: {{value}}",
     "unavailable": "メッセージの有効期限は利用できません"
   },
+  "file_viewer": {
+    "close": "ファイルビューアーを閉じる",
+    "file": "ファイル",
+    "link_unsupported": "このリンクはここからは開けません",
+    "load_failed": "このファイルを開けませんでした。まだダウンロード中か、この端末にもう保存されていない可能性があります。",
+    "markup_as_source": "ウェブページはソースコードとして表示され、アプリ内で実行されることはありません。",
+    "no_preview": "この種類のファイルはここでは表示できません。別のアプリで開くか、共有するか、端末に保存してください。",
+    "open_with": "別のアプリで開く",
+    "open_with_failed": "このファイルを開けるアプリがありませんでした",
+    "opening": "ファイルを開いています…",
+    "preview_failed": "このファイルはここでは表示できませんでした。別のアプリで開くか、共有するか、端末に保存してください。",
+    "save": "端末に保存",
+    "save_failed": "ファイルを保存できませんでした",
+    "saved_to": "{{location}} に保存しました",
+    "share": "共有",
+    "share_failed": "ファイルを共有できませんでした",
+    "show_formatted": "書式付きで表示",
+    "show_source": "プレーンテキストで表示",
+    "truncated": "このファイルは大きすぎるため、全体を表示できません。続きを見るには保存するか、別のアプリで開いてください。"
+  },
   "group_fallback_name": "グループ",
   "group_type": {
     "closed": "非公開",
@@ -94,6 +114,9 @@
     "download_failed": "unable to download image",
     "prepare_failed": "unable to prepare image for clipboard",
     "read_failed": "unable to read image",
+    "save": "画像を保存",
+    "share": "画像を共有",
+    "share_failed": "画像を共有できませんでした",
     "zoom_in": "zoom in",
     "zoom_out": "zoom out"
   },

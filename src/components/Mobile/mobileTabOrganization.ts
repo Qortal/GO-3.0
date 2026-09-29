@@ -44,6 +44,8 @@ export type MobileTabOrganization = {
 
 const STORAGE_PREFIX = 'hub_mobile_tab_org_';
 
+export const HUB_DASHBOARD_FOLDER_NAME = 'Hub';
+
 export const getOpenTabKey = (tab: OpenTab): string => {
   if (tab.internal) {
     return `internal:${String(tab.internal)}`;
@@ -113,6 +115,64 @@ export function snapshotFromTab(tab: OpenTab): SavedTabSnapshot {
     isPrivate:
       isPrivateAppTab(tab) || privateAppProperties != null ? true : undefined,
     ...(privateAppProperties ? { privateAppProperties } : {}),
+  };
+}
+
+export function pinnedAppToOpenTab(item: {
+  name?: string;
+  service?: string;
+  label?: string;
+  identifier?: string;
+  isPrivate?: boolean;
+  privateAppProperties?: {
+    service?: string;
+    name?: string;
+    identifier?: string;
+    groupId?: string | number;
+    appName?: string;
+  };
+} | null | undefined): OpenTab | null {
+  if (!item || typeof item !== 'object') return null;
+
+  if (item.isPrivate || item.privateAppProperties) {
+    const props = item.privateAppProperties || {};
+    const name = String(props.name || item.name || '').trim();
+    if (!name) return null;
+    const service = String(props.service || item.service || 'APP');
+    const identifierRaw = props.identifier ?? item.identifier;
+    const identifier =
+      identifierRaw != null && String(identifierRaw) !== ''
+        ? String(identifierRaw)
+        : undefined;
+    const label = String(props.appName || item.label || name);
+    return {
+      tabId: 'saved:pending',
+      isPrivate: true,
+      name,
+      service,
+      identifier,
+      label,
+      privateAppProperties: {
+        service,
+        name,
+        identifier,
+        groupId: props.groupId,
+        appName: label,
+      },
+    };
+  }
+
+  const name = String(item.name || '').trim();
+  if (!name) return null;
+  return {
+    tabId: 'saved:pending',
+    name,
+    service: String(item.service || 'APP'),
+    label: String(item.label || name),
+    identifier:
+      item.identifier != null && String(item.identifier) !== ''
+        ? String(item.identifier)
+        : undefined,
   };
 }
 

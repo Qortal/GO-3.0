@@ -1,3 +1,4 @@
+import { SAFE_AREA_BOTTOM, SAFE_AREA_TOP } from '../../utils/mobileSafeArea';
 import {
   type ChangeEvent,
   type MouseEvent,
@@ -89,6 +90,7 @@ import {
   useDashboardPanelMouseLight,
 } from './dashboardPanelEffects';
 import { DecryptedText } from '../common/DecryptedText';
+import { useAutoFitFontPx } from '../common/AutoFitText';
 import { getBlueTier1ButtonSx } from '../../styles/blueMaterial';
 import BorderGlow from '../common/BorderGlow';
 import TiltedCard from '../common/TiltedCard';
@@ -103,10 +105,11 @@ import {
 } from './HomeDesktop/homeDesktopConstants';
 import {
   AUTO_LOCK_TIMEOUT_OPTIONS,
-  DEFAULT_AUTO_LOCK_TIMEOUT_MINUTES,
   normalizeAutoLockTimeoutMinutes,
+  readAutoLockTimeoutFromStorage,
   resolveAutoLockTimeoutMinutes,
   type AutoLockTimeoutMinutes,
+  writeAutoLockTimeoutToStorage,
 } from '../../lib/autoLock';
 import { requestHubOnboardingRestart } from '../Onboarding/hubOnboarding';
 
@@ -211,6 +214,10 @@ const formatReticulumConnectedDuration = (
 export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
   const { t } = useTranslation(['core', 'group']);
   const theme = useTheme();
+  // Phones: the two-pane settings dialog (200px nav + content) does not fit a
+  // ~390px viewport, so the nav becomes a horizontal strip and the dialog
+  // goes full screen.
+  const isCompactSettingsLayout = useMediaQuery(theme.breakpoints.down('sm'));
   const hubTutorialAvailable = useMediaQuery(
     theme.breakpoints.up(HOME_WIDE_DASHBOARD_MIN_WIDTH_PX)
   );
@@ -240,6 +247,12 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
   const [isAvatarLoading, setIsAvatarLoading] = useState(false);
   const avatarPanelWasOpenRef = useRef(false);
   const [isAddressFieldHovered, setIsAddressFieldHovered] = useState(false);
+  // Touch screens have no hover, so a tap toggles between name and address.
+  const isHoverlessPointer = useMediaQuery('(hover: none)');
+  const [isAddressRevealedByTap, setIsAddressRevealedByTap] = useState(false);
+  // Stays false until the first reveal, so the name does not scramble on load.
+  const [hasRevealedAddress, setHasRevealedAddress] = useState(false);
+  const addressTextContainerRef = useRef<HTMLDivElement | null>(null);
   const [isAvatarGlowHovered, setIsAvatarGlowHovered] = useState(false);
   const [isAccountSettingsOpen, setIsAccountSettingsOpen] = useState(false);
   const [activeSettingsTab, setActiveSettingsTab] =
@@ -279,7 +292,7 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
     }
   });
   const [autoLockTimeoutMinutes, setAutoLockTimeoutMinutes] =
-    useState<AutoLockTimeoutMinutes>(DEFAULT_AUTO_LOCK_TIMEOUT_MINUTES);
+    useState<AutoLockTimeoutMinutes>(readAutoLockTimeoutFromStorage);
   const [areUiAnimationsEnabled, setAreUiAnimationsEnabled] = useState(() =>
     readStoredBoolean(ACCOUNT_SETTINGS_UI_ANIMATIONS_STORAGE_KEY, true)
   );
@@ -547,9 +560,11 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
     const updatePanelMetrics = () => {
       setAvatarPanelOriginRect(avatarAnchorEl.getBoundingClientRect());
       if (avatarPanelRef.current) {
-        setAvatarPanelHeight(
-          avatarPanelRef.current.getBoundingClientRect().height
-        );
+        // offsetHeight, not getBoundingClientRect(): this runs while the
+        // panel still carries its framer-motion entry transform (scaleY≈0.1),
+        // and the transformed box made the clamp below think the panel was
+        // ~50px tall, so on phones it opened with its buttons off-screen.
+        setAvatarPanelHeight(avatarPanelRef.current.offsetHeight);
       }
     };
 
@@ -582,9 +597,26 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
     ? (name ?? '—')
     : (address ?? '—');
   const accountIdentitySecondaryText = address ?? '—';
-  const shouldRevealAddressOnHover = hasRegisteredName && Boolean(address);
+  const canRevealAddress = hasRegisteredName && Boolean(address);
+  const revealAddressOnTap = canRevealAddress && isHoverlessPointer;
   const showAnimatedAddress =
-    shouldRevealAddressOnHover && isAddressFieldHovered;
+    canRevealAddress &&
+    (revealAddressOnTap ? isAddressRevealedByTap : isAddressFieldHovered);
+  // On a phone the QR action folds away while the address shows, so the
+  // address gets the room it needs to fit on one line at a readable size.
+  const hideReceiveActionForAddress = revealAddressOnTap && showAnimatedAddress;
+  // The full address always fits the field: shrink the font, never ellipsize.
+  const addressFieldFontPx = useAutoFitFontPx(
+    addressTextContainerRef,
+    address ?? '',
+    { maxFontPx: 13.44, minFontPx: 8 } // 13.44px = the field's 0.84rem
+  );
+  const animateAddressSwap = hasRevealedAddress && !prefersReducedMotion;
+
+  useEffect(() => {
+    setIsAddressRevealedByTap(false);
+    setHasRevealedAddress(false);
+  }, [address]);
   const blockedAddressEntries = useMemo(
     () => Object.keys(blockedAddresses || {}),
     [blockedAddresses]
@@ -1050,10 +1082,16 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
       setAutoLockTimeoutMinutes(value);
 
       try {
-        await window.electronAPI?.setAppSettings?.({
-          autoLockTimeoutMinutes: value,
-          disableAutoLockOnIdle: value === 0,
-        });
+        if (typeof window.electronAPI?.setAppSettings === 'function') {
+          await window.electronAPI.setAppSettings({
+            autoLockTimeoutMinutes: value,
+            disableAutoLockOnIdle: value === 0,
+          });
+        } else if (!writeAutoLockTimeoutToStorage(value)) {
+          // Mobile has no Electron settings store, so localStorage is where the
+          // idle watcher (and this screen, on reopen) reads the timeout from.
+          throw new Error('Unable to persist auto-lock preference.');
+        }
       } catch {
         setAutoLockTimeoutMinutes(previous);
         setInfoSnack({
@@ -1515,6 +1553,15 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
       }),
     });
     setOpenSnack(true);
+  };
+
+  const handleAddressFieldActivate = () => {
+    if (revealAddressOnTap) {
+      setHasRevealedAddress(true);
+      setIsAddressRevealedByTap((current) => !current);
+      return;
+    }
+    handleCopyAddress();
   };
 
   const checkIfNameExists = useCallback(
@@ -2470,14 +2517,17 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                     }
                   : undefined,
               }}
-              onClick={address ? handleCopyAddress : undefined}
+              onClick={address ? handleAddressFieldActivate : undefined}
               onMouseEnter={
-                shouldRevealAddressOnHover
-                  ? () => setIsAddressFieldHovered(true)
+                canRevealAddress && !revealAddressOnTap
+                  ? () => {
+                      setHasRevealedAddress(true);
+                      setIsAddressFieldHovered(true);
+                    }
                   : undefined
               }
               onMouseLeave={
-                shouldRevealAddressOnHover
+                canRevealAddress && !revealAddressOnTap
                   ? () => setIsAddressFieldHovered(false)
                   : undefined
               }
@@ -2486,12 +2536,15 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                   ? (event) => {
                       if (event.key === 'Enter' || event.key === ' ') {
                         event.preventDefault();
-                        handleCopyAddress();
+                        handleAddressFieldActivate();
                       }
                     }
                   : undefined
               }
               role={address ? 'button' : undefined}
+              aria-pressed={
+                revealAddressOnTap ? isAddressRevealedByTap : undefined
+              }
               tabIndex={address ? 0 : undefined}
             >
               <Box
@@ -2513,52 +2566,64 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                   transition: 'color 160ms ease',
                 }}
               >
-                {shouldRevealAddressOnHover ? (
-                  showAnimatedAddress ? (
+                <Box
+                  ref={addressTextContainerRef}
+                  sx={{
+                    flex: '1 1 auto',
+                    minWidth: 0,
+                    overflow: 'hidden',
+                    width: '100%',
+                  }}
+                >
+                  {canRevealAddress ? (
+                    // Keyed so each swap remounts and plays the decrypt
+                    // animation in both directions: name -> address -> name.
                     <Box
+                      key={showAnimatedAddress ? 'address' : 'name'}
+                      // One-shot 240ms fade: exempt from the idle animation
+                      // pause so it can never freeze half-blurred.
+                      data-hub-keep-animating=""
                       sx={{
-                        maxWidth: '100%',
-                        overflow: 'hidden',
-                        pointerEvents: 'auto',
-                        textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap',
+                        '@keyframes homeProfileAddressSwap': {
+                          from: { filter: 'blur(2px)', opacity: 0.4 },
+                          to: { filter: 'blur(0)', opacity: 1 },
+                        },
+                        animation: animateAddressSwap
+                          ? 'homeProfileAddressSwap 240ms ease-out'
+                          : 'none',
                       }}
                     >
                       <DecryptedText
-                        text={accountIdentitySecondaryText}
+                        text={
+                          showAnimatedAddress
+                            ? accountIdentitySecondaryText
+                            : accountIdentityPrimaryText
+                        }
                         animateOn="hover"
-                        active={showAnimatedAddress}
+                        active={animateAddressSwap}
                         speed={35}
                         maxIterations={12}
                         sequential={true}
                         revealDirection="start"
                         useOriginalCharsOnly={true}
+                        fontSizePx={
+                          showAnimatedAddress ? addressFieldFontPx : undefined
+                        }
                       />
                     </Box>
                   ) : (
                     <Box
                       sx={{
-                        maxWidth: '100%',
+                        fontSize: address ? `${addressFieldFontPx}px` : null,
+                        letterSpacing: address ? '-0.02em' : null,
                         overflow: 'hidden',
-                        textOverflow: 'ellipsis',
                         whiteSpace: 'nowrap',
                       }}
                     >
                       {accountIdentityPrimaryText}
                     </Box>
-                  )
-                ) : (
-                  <Box
-                    sx={{
-                      maxWidth: '100%',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap',
-                    }}
-                  >
-                    {accountIdentityPrimaryText}
-                  </Box>
-                )}
+                  )}
+                </Box>
               </Box>
               <Box
                 sx={{
@@ -2578,40 +2643,61 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                   }}
                 >
                   {onOpenReceive ? (
-                    <Tooltip
-                      enterDelay={450}
-                      title={td('show_receive_qr', 'Show receive QR')}
+                    <Box
+                      inert={hideReceiveActionForAddress}
+                      sx={{
+                        display: 'inline-flex',
+                        flexShrink: 0,
+                        marginRight: hideReceiveActionForAddress
+                          ? `-${addressFieldActionGapPx}px`
+                          : 0,
+                        opacity: hideReceiveActionForAddress ? 0 : 1,
+                        overflow: 'hidden',
+                        transition:
+                          'width 220ms ease, margin 220ms ease, opacity 160ms ease',
+                        width: hideReceiveActionForAddress
+                          ? 0
+                          : `${addressFieldActionButtonSizePx}px`,
+                      }}
                     >
-                      <Box component="span">
-                        <ButtonBase
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            onOpenReceive(event.currentTarget);
-                          }}
-                          disabled={!address}
-                          aria-label={td('show_receive_qr', 'Show receive QR')}
-                          sx={{
-                            alignItems: 'center',
-                            borderRadius: '8px',
-                            color: addressFieldActionBaseColor,
-                            display: 'inline-flex',
-                            flexShrink: 0,
-                            height: `${addressFieldActionButtonSizePx}px`,
-                            justifyContent: 'center',
-                            transition:
-                              'background-color 160ms ease, color 160ms ease, opacity 160ms ease',
-                            width: `${addressFieldActionButtonSizePx}px`,
-                            '&:hover': {
-                              backgroundColor:
-                                addressFieldActionHoverBackground,
-                              color: addressFieldActionHoverColor,
-                            },
-                          }}
-                        >
-                          <QrCode2RoundedIcon sx={{ fontSize: '0.95rem' }} />
-                        </ButtonBase>
-                      </Box>
-                    </Tooltip>
+                      <Tooltip
+                        enterDelay={450}
+                        title={td('show_receive_qr', 'Show receive QR')}
+                      >
+                        <Box component="span">
+                          <ButtonBase
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              onOpenReceive(event.currentTarget);
+                            }}
+                            disabled={!address}
+                            aria-label={td(
+                              'show_receive_qr',
+                              'Show receive QR'
+                            )}
+                            sx={{
+                              alignItems: 'center',
+                              borderRadius: '8px',
+                              color: addressFieldActionBaseColor,
+                              display: 'inline-flex',
+                              flexShrink: 0,
+                              height: `${addressFieldActionButtonSizePx}px`,
+                              justifyContent: 'center',
+                              transition:
+                                'background-color 160ms ease, color 160ms ease, opacity 160ms ease',
+                              width: `${addressFieldActionButtonSizePx}px`,
+                              '&:hover': {
+                                backgroundColor:
+                                  addressFieldActionHoverBackground,
+                                color: addressFieldActionHoverColor,
+                              },
+                            }}
+                          >
+                            <QrCode2RoundedIcon sx={{ fontSize: '0.95rem' }} />
+                          </ButtonBase>
+                        </Box>
+                      </Tooltip>
+                    </Box>
                   ) : null}
                   <ButtonBase
                     onClick={(event) => {
@@ -2813,6 +2899,7 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
         aria-describedby="account-settings-dialog-description"
         maxWidth={false}
         fullWidth
+        fullScreen={isCompactSettingsLayout}
         slotProps={{
           backdrop: {
             sx: {
@@ -2837,10 +2924,26 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
               boxShadow: isDarkMode
                 ? '0 34px 120px rgba(0,0,0,0.46)'
                 : '0 28px 88px rgba(18,28,45,0.16)',
-              clipPath: 'inset(0 round 16px)',
+              clipPath: isCompactSettingsLayout
+                ? 'none'
+                : 'inset(0 round 16px)',
               isolation: 'isolate',
               overflow: 'hidden',
-              width: 'min(840px, calc(100vw - 32px))',
+              width: isCompactSettingsLayout
+                ? '100%'
+                : 'min(840px, calc(100vw - 32px))',
+              ...(isCompactSettingsLayout
+                ? {
+                    borderRadius: 0,
+                    margin: 0,
+                    maxHeight: '100dvh',
+                    // Android draws edge-to-edge: keep the tab strip below the
+                    // status bar and the content above the navigation bar.
+                    paddingTop: SAFE_AREA_TOP,
+                    paddingBottom: SAFE_AREA_BOTTOM,
+                    boxSizing: 'border-box',
+                  }
+                : {}),
             },
           },
         }}
@@ -2849,22 +2952,37 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
           sx={{
             background: avatarModalSurface,
             display: 'flex',
-            minHeight: 530,
+            flexDirection: isCompactSettingsLayout ? 'column' : 'row',
+            minHeight: isCompactSettingsLayout ? 0 : 530,
+            ...(isCompactSettingsLayout ? { height: '100%' } : {}),
             width: '100%',
           }}
         >
           <Box
             sx={{
               background: settingsSidebarSurface,
-              borderRight: `1px solid ${avatarSectionDivider}`,
+              borderRight: isCompactSettingsLayout
+                ? 'none'
+                : `1px solid ${avatarSectionDivider}`,
+              borderBottom: isCompactSettingsLayout
+                ? `1px solid ${avatarSectionDivider}`
+                : 'none',
               display: 'flex',
-              flexDirection: 'column',
+              flexDirection: isCompactSettingsLayout ? 'row' : 'column',
               flexShrink: 0,
               gap: 1,
-              minWidth: 200,
+              minWidth: isCompactSettingsLayout ? 0 : 200,
               px: 1.1,
               py: 1.15,
-              width: 200,
+              width: isCompactSettingsLayout ? '100%' : 200,
+              ...(isCompactSettingsLayout
+                ? {
+                    alignItems: 'center',
+                    overflowX: 'auto',
+                    scrollbarWidth: 'none',
+                    '&::-webkit-scrollbar': { display: 'none' },
+                  }
+                : {}),
             }}
           >
             {accountSettingsTabs.map((tab) => {
@@ -2896,12 +3014,14 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                       ? theme.palette.text.primary
                       : alpha(theme.palette.text.secondary, 0.9),
                     justifyContent: 'flex-start',
-                    minHeight: 52,
+                    minHeight: isCompactSettingsLayout ? 40 : 52,
                     px: 1.35,
-                    py: 1.15,
+                    py: isCompactSettingsLayout ? 0.6 : 1.15,
                     transition:
                       'background-color 160ms ease, border-color 160ms ease, color 160ms ease',
-                    width: '100%',
+                    width: isCompactSettingsLayout ? 'auto' : '100%',
+                    flexShrink: 0,
+                    whiteSpace: 'nowrap',
                     '&:hover': {
                       background: isActive
                         ? settingsSidebarActiveSurface
@@ -2928,9 +3048,11 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
 
             <Box
               sx={{
-                mt: 'auto',
-                pt: 1.6,
+                mt: isCompactSettingsLayout ? 0 : 'auto',
+                ml: isCompactSettingsLayout ? 'auto' : 0,
+                pt: isCompactSettingsLayout ? 0 : 1.6,
                 display: 'flex',
+                flexShrink: 0,
                 justifyContent: 'center',
               }}
             >
@@ -2975,6 +3097,9 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
               flex: 1,
               flexDirection: 'column',
               minWidth: 0,
+              ...(isCompactSettingsLayout
+                ? { minHeight: 0, overflowY: 'auto' }
+                : {}),
             }}
           >
             <Box
@@ -5411,7 +5536,11 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                       : '0 28px 88px rgba(18,28,45,0.16)',
                     clipPath: 'inset(0 round 14px)',
                     isolation: 'isolate',
-                    overflow: 'hidden',
+                    // Never taller than the visible viewport (keyboard open,
+                    // small phones): scroll inside instead of clipping.
+                    maxHeight: `calc(100dvh - 32px - ${SAFE_AREA_BOTTOM})`,
+                    overflowY: 'auto',
+                    overflowX: 'hidden',
                   }}
                 >
                   <Box

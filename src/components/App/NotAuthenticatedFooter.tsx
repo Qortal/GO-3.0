@@ -34,7 +34,7 @@ export function NotAuthenticatedFooter({
         pointerEvents: 'auto',
         position: 'absolute',
         right: '12px',
-        bottom: 'calc(10px + env(safe-area-inset-bottom, 0px))',
+        bottom: 'calc(10px + var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px)))',
         width: 'auto',
         zIndex: 2000,
       }}

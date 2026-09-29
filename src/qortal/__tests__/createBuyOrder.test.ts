@@ -1,4 +1,12 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  onTestFinished,
+  vi,
+} from 'vitest';
 
 // ── Module mocks (hoisted before any import) ────────────────────────────────
 // Factories live in ./common.ts; async dynamic import is used because vi.mock()
@@ -146,6 +154,25 @@ function makeInput(overrides: Record<string, unknown> = {}) {
     foreignBlockchain: FOREIGN_BLOCKCHAIN,
     ...overrides,
   };
+}
+
+/** Records the payload of every permission prompt raised during the test. */
+function capturePermissionPayloads(): Record<string, unknown>[] {
+  const payloads: Record<string, unknown>[] = [];
+  const listener = (event: MessageEvent) => {
+    if (event.data?.action === 'QORTAL_REQUEST_PERMISSION') {
+      payloads.push(event.data.payload);
+    }
+  };
+  window.addEventListener('message', listener);
+  onTestFinished(() => window.removeEventListener('message', listener));
+  return payloads;
+}
+
+function useNode(base: string) {
+  vi.mocked(createEndpoint).mockImplementation(
+    async (path: string) => `${base}${path}`
+  );
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -351,6 +378,17 @@ describe('createBuyOrder', () => {
       );
     });
 
+    it('does not add a private-key warning for a node on this device', async () => {
+      vi.stubGlobal('fetch', makeFetch());
+      const payloads = capturePermissionPayloads();
+      simulatePermission(true);
+
+      await createBuyOrder(makeInput(), false);
+
+      expect(payloads[0]).not.toHaveProperty('text4');
+      expect(payloads[0]).not.toHaveProperty('confirmCheckbox');
+    });
+
     it('fetches the trade endpoint once per AT address', async () => {
       const mockFetch = makeFetch();
       vi.stubGlobal('fetch', mockFetch);
@@ -374,6 +412,66 @@ describe('createBuyOrder', () => {
           (url as string).includes('/crosschain/trade/')
         );
       expect(tradeCalls).toHaveLength(3);
+    });
+  });
+
+  // ── Foreign private key protection ─────────────────────────────────────────
+
+  describe('foreign private key protection', () => {
+    it('refuses a LAN node over plain HTTP before asking the user', async () => {
+      useNode('http://192.168.1.5:12391');
+      vi.stubGlobal('fetch', makeFetch());
+      const payloads = capturePermissionPayloads();
+
+      await expect(createBuyOrder(makeInput(), false)).rejects.toThrow(
+        'question:message.error.foreign_key_cleartext'
+      );
+      expect(payloads).toHaveLength(0);
+      expect(createBuyOrderTx).not.toHaveBeenCalled();
+    });
+
+    it('refuses a public node before asking the user', async () => {
+      useNode('https://api.qortal.org');
+      vi.stubGlobal('fetch', makeFetch());
+      const payloads = capturePermissionPayloads();
+
+      await expect(createBuyOrder(makeInput(), false)).rejects.toThrow(
+        'question:message.error.foreign_key_public_node'
+      );
+      expect(payloads).toHaveLength(0);
+      expect(createBuyOrderTx).not.toHaveBeenCalled();
+    });
+
+    it('asks for a tick-box confirmation naming a remote node', async () => {
+      useNode('http://100.69.252.77:12391');
+      vi.stubGlobal('fetch', makeFetch());
+      const payloads = capturePermissionPayloads();
+      simulatePermission(true);
+
+      await createBuyOrder(makeInput(), false);
+
+      expect(payloads[0]).toMatchObject({
+        text4: 'question:permission.foreign_key_node_warning',
+        confirmCheckbox: true,
+        confirmCheckboxLabel: 'question:permission.foreign_key_node_confirm',
+      });
+      expect(createBuyOrderTx).toHaveBeenCalledOnce();
+    });
+
+    it('warns that the trade proxy receives the key on the public gateway', async () => {
+      vi.mocked(isRunningGateway).mockResolvedValue(true);
+      useNode('https://ext-node.qortal.link');
+      vi.stubGlobal('fetch', makeFetch());
+      const payloads = capturePermissionPayloads();
+      simulatePermission(true);
+
+      await createBuyOrder(makeInput(), false);
+
+      expect(payloads[0]).toMatchObject({
+        text4: 'question:permission.foreign_key_proxy_warning',
+        confirmCheckbox: true,
+        confirmCheckboxLabel: 'question:permission.foreign_key_proxy_confirm',
+      });
     });
   });
 });

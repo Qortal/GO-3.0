@@ -124,6 +124,8 @@ export class MobileReticulumBridge extends EventEmitter {
   markStopped(): void {
     this.state = 'idle';
     this.overlayLinkSnapshots.clear();
+    // A restarted Python bridge starts with an empty identity cache.
+    this.peerIdentityKnownUntil.clear();
   }
 
   getOverlayLinkSnapshots(): Array<{
@@ -801,14 +803,42 @@ export class MobileReticulumBridge extends EventEmitter {
     });
   }
 
+  // A positive answer stays true for the life of the bridge's identity cache;
+  // the engine asked ~40 times a minute for the same handful of peers.
+  private static readonly PEER_IDENTITY_KNOWN_TTL_MS = 10 * 60_000;
+  private readonly peerIdentityKnownUntil = new Map<string, number>();
+
   async ensurePeerIdentityKnown(peerPresenceHash: string): Promise<boolean> {
     const peer = peerPresenceHash.trim().toLowerCase();
     if (!peer || this.state !== 'ready') return false;
+    const now = Date.now();
+    const knownUntil = this.peerIdentityKnownUntil.get(peer);
+    if (knownUntil !== undefined) {
+      if (knownUntil > now) return true;
+      this.peerIdentityKnownUntil.delete(peer);
+    }
     try {
       const resp = await this.sendCommand('ensure_peer_identity', {
         peerPresenceHash: peer,
       });
-      return resp.ok === true;
+      if (resp.ok === true) {
+        if (this.peerIdentityKnownUntil.size >= 512) {
+          for (const [key, until] of this.peerIdentityKnownUntil) {
+            if (until <= now) this.peerIdentityKnownUntil.delete(key);
+          }
+          if (this.peerIdentityKnownUntil.size >= 512) {
+            this.peerIdentityKnownUntil.delete(
+              this.peerIdentityKnownUntil.keys().next().value as string
+            );
+          }
+        }
+        this.peerIdentityKnownUntil.set(
+          peer,
+          now + MobileReticulumBridge.PEER_IDENTITY_KNOWN_TTL_MS
+        );
+        return true;
+      }
+      return false;
     } catch {
       return false;
     }

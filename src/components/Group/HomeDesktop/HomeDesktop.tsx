@@ -975,7 +975,7 @@ export const HomeDesktop = ({
                       order={groupActivityCardOrder}
                       panelRef={assignGroupActivityPanelNode}
                       refreshing={isGroupWidgetRefreshing}
-                      title={t('tutorial:home.group_activity', {
+                      title={t('group:home.group_activity', {
                         postProcess: 'capitalizeFirstChar',
                       })}
                       widgetId="groups"

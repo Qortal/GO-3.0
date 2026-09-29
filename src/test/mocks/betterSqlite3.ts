@@ -32,6 +32,9 @@ type MockStore = {
   reticulumDirectCallHistory: ReticulumChatRow[];
   reticulumDeviceReadStates: ReticulumChatRow[];
   reticulumPendingDeviceReadStates: ReticulumChatRow[];
+  reticulumDeviceStates: ReticulumChatRow[];
+  reticulumPendingDeviceStates: ReticulumChatRow[];
+  reticulumDeviceStateAcks: ReticulumChatRow[];
   reticulumResources: ReticulumResourceRow[];
   reticulumResourceChunks: ReticulumResourceChunkRow[];
   reticulumResourceRanges: ReticulumResourceStateRow[];
@@ -46,6 +49,28 @@ type MockStore = {
 
 const storesByPath = new Map<string, MockStore>();
 
+// `rchat_device_state` is a substring of `rchat_device_state_ack`, and the
+// replay query joins both; these word-bounded matchers keep the device-state
+// handlers from catching each other's statements (`_` is a word character, so
+// `\b` does not match before `_ack`). None of them can match the unrelated
+// `rchat_device_read_state` / `rchat_pending_device_read_state` tables.
+const DEVICE_STATE_TABLE = /\brchat_device_state\b/;
+const DEVICE_STATE_ACK_TABLE = /\brchat_device_state_ack\b/;
+const PENDING_DEVICE_STATE_TABLE = /\brchat_pending_device_state\b/;
+
+function deviceStateNotExpired(row: ReticulumChatRow, now: number): boolean {
+  return row.expires_at == null || Number(row.expires_at) > Number(now);
+}
+
+function deviceStateOrder(a: ReticulumChatRow, b: ReticulumChatRow): number {
+  return (
+    Number(a.signed_at) - Number(b.signed_at) ||
+    String(a.key).localeCompare(String(b.key))
+  );
+}
+
+// Turns the escaped `prefix%` pattern built by getDeviceStates back into the
+// plain prefix (the DB escapes `\`, `%` and `_` with a backslash).
 class Statement {
   constructor(
     private readonly sql: string,
@@ -182,7 +207,9 @@ class Statement {
             Number(row.author_seq) >= Number(fromSeq) &&
             Number(row.author_seq) <= Number(toSeq)
         )
-        .sort((left, right) => Number(left.author_seq) - Number(right.author_seq))
+        .sort(
+          (left, right) => Number(left.author_seq) - Number(right.author_seq)
+        )
         .map((row) => ({ author_seq: row.author_seq }));
     }
     if (this.sql.includes('FROM rchat_missing_range_peer_observations')) {
@@ -240,6 +267,73 @@ class Statement {
             Number(a.group_id) - Number(b.group_id)
         )
         .slice(0, limit);
+    }
+    if (
+      DEVICE_STATE_TABLE.test(this.sql) &&
+      this.sql.includes('LEFT JOIN rchat_device_state_ack')
+    ) {
+      // getDeviceStatesForReplay: rows the peer has not acked at this signed_at.
+      const [peerHash, ownerAddress, now, limit = 5_000] = args;
+      return this.store.reticulumDeviceStates
+        .filter((row) => {
+          if (row.owner_address !== ownerAddress) return false;
+          if (!deviceStateNotExpired(row, now)) return false;
+          const ack = this.store.reticulumDeviceStateAcks.find(
+            (candidate) =>
+              candidate.owner_address === row.owner_address &&
+              candidate.key === row.key &&
+              candidate.peer_hash === peerHash
+          );
+          return !ack || Number(ack.signed_at) < Number(row.signed_at);
+        })
+        .sort(deviceStateOrder)
+        .slice(0, Number(limit))
+        .map((row) => ({ ...row }));
+    }
+    if (PENDING_DEVICE_STATE_TABLE.test(this.sql)) {
+      const [ownerAddress, limit = 5_000] = args;
+      return this.store.reticulumPendingDeviceStates
+        .filter((row) => row.owner_address === ownerAddress)
+        .sort(
+          (a, b) =>
+            Number(a.updated_at) - Number(b.updated_at) ||
+            String(a.key).localeCompare(String(b.key))
+        )
+        .slice(0, Number(limit))
+        .map((row) => ({ ...row }));
+    }
+    if (DEVICE_STATE_TABLE.test(this.sql)) {
+      if (this.sql.includes('signed_at > ?')) {
+        // getDeviceStatesSince
+        const [ownerAddress, since, now, limit = 5_000] = args;
+        return this.store.reticulumDeviceStates
+          .filter(
+            (row) =>
+              row.owner_address === ownerAddress &&
+              Number(row.signed_at) > Number(since) &&
+              deviceStateNotExpired(row, now)
+          )
+          .sort(deviceStateOrder)
+          .slice(0, Number(limit))
+          .map((row) => ({ ...row }));
+      }
+      // getDeviceStates, with or without the case-sensitive prefix filter
+      // (`key >= ? AND substr(key, 1, ?) = ?`).
+      const hasPrefix = this.sql.includes('substr(key, 1, ?) = ?');
+      const ownerAddress = args[0];
+      const prefix = hasPrefix ? String(args[1] ?? '') : '';
+      const now = hasPrefix ? args[4] : args[1];
+      const limit = (hasPrefix ? args[5] : args[2]) ?? 5_000;
+      return this.store.reticulumDeviceStates
+        .filter(
+          (row) =>
+            row.owner_address === ownerAddress &&
+            (!hasPrefix || String(row.key).startsWith(prefix)) &&
+            deviceStateNotExpired(row, now)
+        )
+        .sort(deviceStateOrder)
+        .slice(0, Number(limit))
+        .map((row) => ({ ...row }));
     }
     if (this.sql.includes('FROM rchat_pending_device_read_state')) {
       const [ownerAddress, limit = 5_000] = args;
@@ -1186,6 +1280,40 @@ class Statement {
       );
       return this.sql.includes('SELECT 1') && row ? { 1: 1 } : row;
     }
+    if (DEVICE_STATE_ACK_TABLE.test(this.sql)) {
+      const [ownerAddress, peerHash, key] = args;
+      const ack = this.store.reticulumDeviceStateAcks.find(
+        (row) =>
+          row.owner_address === ownerAddress &&
+          row.peer_hash === peerHash &&
+          row.key === key
+      );
+      return ack ? { signed_at: ack.signed_at } : undefined;
+    }
+    if (DEVICE_STATE_TABLE.test(this.sql)) {
+      if (this.sql.includes('ORDER BY signed_at DESC')) {
+        // getNewestDeviceStateSignedAt
+        const [ownerAddress] = args;
+        const newest = this.store.reticulumDeviceStates
+          .filter((row) => row.owner_address === ownerAddress)
+          .sort((a, b) => Number(b.signed_at) - Number(a.signed_at))[0];
+        return newest ? { signed_at: newest.signed_at } : undefined;
+      }
+      if (this.sql.includes('COUNT(*) AS count')) {
+        const [ownerAddress] = args;
+        return {
+          count: this.store.reticulumDeviceStates.filter(
+            (row) => row.owner_address === ownerAddress
+          ).length,
+        };
+      }
+      const [ownerAddress, key] = args;
+      const row = this.store.reticulumDeviceStates.find(
+        (candidate) =>
+          candidate.owner_address === ownerAddress && candidate.key === key
+      );
+      return row ? { ...row } : undefined;
+    }
     if (this.sql.includes('FROM rchat_device_read_state')) {
       const [ownerAddress, scopeType, scopeId] = args;
       return this.store.reticulumDeviceReadStates.find(
@@ -1726,7 +1854,9 @@ class Statement {
           return existing.owner_address === args[0];
         }
         if (this.sql.includes('channel_id = ?')) {
-          return existing.group_id === args[0] && existing.channel_id === args[1];
+          return (
+            existing.group_id === args[0] && existing.channel_id === args[1]
+          );
         }
         return existing.group_id === args[0];
       };
@@ -2155,6 +2285,145 @@ class Statement {
         });
       }
       return { changes: 1, lastInsertRowid: 0 };
+    }
+    if (
+      DEVICE_STATE_ACK_TABLE.test(this.sql) &&
+      this.sql.includes('INSERT INTO')
+    ) {
+      const [ownerAddress, peerHash, key, signedAt] = args;
+      const existing = this.store.reticulumDeviceStateAcks.find(
+        (row) =>
+          row.owner_address === ownerAddress &&
+          row.peer_hash === peerHash &&
+          row.key === key
+      );
+      const row = {
+        owner_address: ownerAddress,
+        peer_hash: peerHash,
+        key,
+        signed_at: signedAt,
+      };
+      if (existing) Object.assign(existing, row);
+      else this.store.reticulumDeviceStateAcks.push(row);
+      return { changes: 1, lastInsertRowid: 0 };
+    }
+    if (
+      DEVICE_STATE_ACK_TABLE.test(this.sql) &&
+      this.sql.includes('DELETE FROM')
+    ) {
+      // pruneDeviceStates: drop acks whose state row is about to be pruned
+      // (EXISTS subquery on expiry or on tombstone age).
+      const [threshold] = args;
+      const byExpiry = this.sql.includes('expires_at <= ?');
+      const doomed = this.store.reticulumDeviceStates.filter((row) =>
+        byExpiry
+          ? row.expires_at != null &&
+            Number(row.expires_at) <= Number(threshold)
+          : row.value == null && Number(row.signed_at) < Number(threshold)
+      );
+      const before = this.store.reticulumDeviceStateAcks.length;
+      this.store.reticulumDeviceStateAcks =
+        this.store.reticulumDeviceStateAcks.filter(
+          (ack) =>
+            !doomed.some(
+              (row) =>
+                row.owner_address === ack.owner_address && row.key === ack.key
+            )
+        );
+      return {
+        changes: before - this.store.reticulumDeviceStateAcks.length,
+        lastInsertRowid: 0,
+      };
+    }
+    if (
+      PENDING_DEVICE_STATE_TABLE.test(this.sql) &&
+      this.sql.includes('INSERT INTO')
+    ) {
+      const [ownerAddress, key, value, expiresAt, updatedAt] = args;
+      const existing = this.store.reticulumPendingDeviceStates.find(
+        (row) => row.owner_address === ownerAddress && row.key === key
+      );
+      if (existing && Number(existing.updated_at) > Number(updatedAt)) {
+        return { changes: 0, lastInsertRowid: 0 };
+      }
+      const row = {
+        owner_address: ownerAddress,
+        key,
+        value,
+        expires_at: expiresAt,
+        updated_at: updatedAt,
+      };
+      if (existing) Object.assign(existing, row);
+      else this.store.reticulumPendingDeviceStates.push(row);
+      return { changes: 1, lastInsertRowid: 0 };
+    }
+    if (
+      PENDING_DEVICE_STATE_TABLE.test(this.sql) &&
+      this.sql.includes('DELETE FROM')
+    ) {
+      const [ownerAddress, key, upToUpdatedAt] = args;
+      const before = this.store.reticulumPendingDeviceStates.length;
+      this.store.reticulumPendingDeviceStates =
+        this.store.reticulumPendingDeviceStates.filter(
+          (row) =>
+            !(
+              row.owner_address === ownerAddress &&
+              row.key === key &&
+              Number(row.updated_at) <= Number(upToUpdatedAt)
+            )
+        );
+      return {
+        changes: before - this.store.reticulumPendingDeviceStates.length,
+        lastInsertRowid: 0,
+      };
+    }
+    if (DEVICE_STATE_TABLE.test(this.sql) && this.sql.includes('INSERT INTO')) {
+      // upsertDeviceState: strict last-writer-wins on signed_at.
+      const [
+        ownerAddress,
+        key,
+        value,
+        signedAt,
+        expiresAt,
+        authorPublicKey,
+        signature,
+      ] = args;
+      const existing = this.store.reticulumDeviceStates.find(
+        (row) => row.owner_address === ownerAddress && row.key === key
+      );
+      if (existing && Number(existing.signed_at) >= Number(signedAt)) {
+        return { changes: 0, lastInsertRowid: 0 };
+      }
+      const row = {
+        owner_address: ownerAddress,
+        key,
+        value,
+        signed_at: signedAt,
+        expires_at: expiresAt,
+        author_public_key: authorPublicKey,
+        signature,
+      };
+      if (existing) Object.assign(existing, row);
+      else this.store.reticulumDeviceStates.push(row);
+      return { changes: 1, lastInsertRowid: 0 };
+    }
+    if (DEVICE_STATE_TABLE.test(this.sql) && this.sql.includes('DELETE FROM')) {
+      // pruneDeviceStates: expired rows, or tombstones older than the cutoff.
+      const [threshold] = args;
+      const byExpiry = this.sql.includes('expires_at <= ?');
+      const before = this.store.reticulumDeviceStates.length;
+      this.store.reticulumDeviceStates =
+        this.store.reticulumDeviceStates.filter(
+          (row) =>
+            !(byExpiry
+              ? row.expires_at != null &&
+                Number(row.expires_at) <= Number(threshold)
+              : row.value == null && Number(row.signed_at) < Number(threshold))
+        );
+      return {
+        changes: before - this.store.reticulumDeviceStates.length,
+        lastInsertRowid: 0,
+      };
     }
     if (this.sql.includes('INSERT INTO rchat_pending_device_read_state')) {
       const [
@@ -3689,6 +3958,9 @@ class MockDatabase {
       reticulumDirectCallHistory: [],
       reticulumDeviceReadStates: [],
       reticulumPendingDeviceReadStates: [],
+      reticulumDeviceStates: [],
+      reticulumPendingDeviceStates: [],
+      reticulumDeviceStateAcks: [],
       reticulumResources: [],
       reticulumResourceChunks: [],
       reticulumResourceRanges: [],

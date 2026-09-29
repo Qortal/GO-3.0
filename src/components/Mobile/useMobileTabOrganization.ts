@@ -7,7 +7,9 @@ import {
   getFolderRow,
   getOpenTabDisplayTitle,
   getOpenTabKey,
+  HUB_DASHBOARD_FOLDER_NAME,
   loadMobileTabOrganization,
+  pinnedAppToOpenTab,
   renameTabKeyInOrganization,
   resolveFolderRowCount,
   saveMobileTabOrganization,
@@ -16,6 +18,7 @@ import {
   type MobileTabOrganization,
   type TabFolder,
 } from './mobileTabOrganization';
+import type { SerializedPinnedApp } from '../../hooks/qdnSavedSettings';
 import type { OpenTab } from './useOpenTabs';
 import { updateOpenTab } from './useOpenTabs';
 
@@ -454,6 +457,92 @@ export function useMobileTabOrganization() {
     [persist, upsertSavedTab]
   );
 
+  const importPinnedAppsToHubFolder = useCallback(
+    (pins: SerializedPinnedApp[]) => {
+      let folderId = '';
+      let imported = 0;
+      let skipped = 0;
+
+      persist((prev) => {
+        const existing = prev.folders.find(
+          (folder) =>
+            folder.name.trim().toLowerCase() ===
+            HUB_DASHBOARD_FOLDER_NAME.toLowerCase()
+        );
+        folderId = existing?.id ?? createFolderId();
+
+        const uniqueTabs: OpenTab[] = [];
+        const seen = new Set<string>();
+        for (const pin of pins) {
+          const tab = pinnedAppToOpenTab(pin);
+          if (!tab) continue;
+          const tabKey = getOpenTabKey(tab);
+          if (!tab.name || seen.has(tabKey)) continue;
+          seen.add(tabKey);
+          uniqueTabs.push(tab);
+        }
+
+        const hubTabKeys: string[] = [];
+        const tabFolderMap = { ...prev.tabFolderMap };
+        const savedTabs = { ...prev.savedTabs };
+
+        for (const tab of uniqueTabs) {
+          const tabKey = getOpenTabKey(tab);
+          const currentFolder = tabFolderMap[tabKey];
+          if (currentFolder && currentFolder !== folderId) {
+            skipped += 1;
+            continue;
+          }
+          hubTabKeys.push(tabKey);
+          tabFolderMap[tabKey] = folderId;
+          savedTabs[tabKey] = snapshotFromTab(tab);
+          imported += 1;
+        }
+
+        if (existing) {
+          for (const oldKey of existing.tabKeys) {
+            if (!hubTabKeys.includes(oldKey) && tabFolderMap[oldKey] === folderId) {
+              delete tabFolderMap[oldKey];
+              delete savedTabs[oldKey];
+            }
+          }
+        }
+
+        if (!existing && hubTabKeys.length === 0) {
+          folderId = '';
+          return prev;
+        }
+
+        const folders = existing
+          ? prev.folders.map((folder) =>
+              folder.id === folderId ? { ...folder, tabKeys: hubTabKeys } : folder
+            )
+          : [
+              ...prev.folders,
+              {
+                id: folderId,
+                name: HUB_DASHBOARD_FOLDER_NAME,
+                tabKeys: hubTabKeys,
+                order: prev.folders.filter((folder) => getFolderRow(folder) === 0)
+                  .length,
+                row: 0,
+              } satisfies TabFolder,
+            ];
+
+        return {
+          ...prev,
+          folders,
+          tabFolderMap,
+          savedTabs,
+          folderRowCount: resolveFolderRowCount(folders, prev.folderRowCount),
+        };
+      });
+
+      return { folderId, imported, skipped };
+    },
+    [persist]
+  );
+
   const getTabTitle = useCallback(
     (tab: OpenTab) => getOpenTabDisplayTitle(tab, organization.tabOverrides),
     [organization.tabOverrides]
@@ -487,6 +576,7 @@ export function useMobileTabOrganization() {
     renameTab,
     restoreTabName,
     updateTabAddress,
+    importPinnedAppsToHubFolder,
     getTabTitle,
     getFolderForTab,
   };

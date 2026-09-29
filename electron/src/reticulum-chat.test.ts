@@ -57,6 +57,11 @@ import {
   verifyReticulumDmResourceReceipt,
   verifyReticulumMetadataSnapshotRequest,
   verifyReticulumChatReadSyncWire,
+  buildReticulumChatDeviceStateSignedFields,
+  buildReticulumChatDeviceStateWires,
+  reticulumChatDeviceStateChunkCapacity,
+  verifyReticulumChatDeviceStateWire,
+  RETICULUM_CHAT_DEVICE_STATE_KEY_MAX_LENGTH,
   verifyReticulumDirectCallHistoryWire,
   verifyReticulumLandSessionRouteWire,
   verifyReticulumLandCallV2Wire,
@@ -86,6 +91,7 @@ import {
   RETICULUM_CHAT_RELAY_CACHE_MAX_AGE_MS,
   reticulumChatPayloadHasPrivilegedMention,
   reticulumDmConversationId,
+  type ReticulumChatDeviceStateRecord,
   type ReticulumGroupChannel,
 } from './reticulum-chat-db';
 import {
@@ -1246,6 +1252,171 @@ describe('reticulum chat protocol', () => {
     expect(event.senderAddress).toBe(event.recipientAddress);
     expect(validateReticulumDmEventShape(event)).toBe(true);
     expect(verifyReticulumDmEvent(event)).toBe(true);
+  });
+
+  it('pins and notifies an own device whose features are still unknown', async () => {
+    // A fresh process has no hello_v3 from its own devices yet. The account
+    // endpoint lease is the trust anchor, so an own device with unknown
+    // features must still be pinned (that is what brings the link up) and
+    // must receive the self-DM notify; a device that advertised no
+    // self_dm_v1 stays excluded.
+    const owner = createDmIdentity();
+    const localPeerHash = '1'.repeat(32);
+    const unknownPeerHash = '5'.repeat(32);
+    const legacyPeerHash = '3'.repeat(32);
+    const sent: Array<{ peer: string; wire: ReticulumChatWire }> = [];
+    const pinned: Array<Array<{ destinationHash: string }>> = [];
+    const bridge = Object.assign(new EventEmitter(), {
+      getState: () => 'ready',
+      getLocalDestinationHash: () => localPeerHash,
+      configureReticulumChatPinnedPeers: async (
+        peers: Array<{ destinationHash: string }>
+      ) => {
+        pinned.push(peers);
+        return true;
+      },
+      sendReticulumChatDetailed: async (
+        peer: string,
+        wire: ReticulumChatWire
+      ) => {
+        sent.push({ peer, wire });
+        return { ok: true as const };
+      },
+    });
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      signLocalFields: createDmSigner(owner),
+      hasGoodOverlayHealth: () => false,
+      getAccountEndpointLeases: () => [
+        {
+          destinationHash: unknownPeerHash,
+          address: owner.address,
+          sessionId: 'unknown-features',
+          lastSeen: Date.now(),
+          expiresAt: Date.now() + 60_000,
+          verification: 'relayed-bound',
+        },
+        {
+          destinationHash: legacyPeerHash,
+          address: owner.address,
+          sessionId: 'legacy',
+          lastSeen: Date.now(),
+          expiresAt: Date.now() + 60_000,
+          verification: 'direct-bound',
+        },
+      ],
+    });
+    manager.setLocalDmAddresses([owner.address]);
+    (manager as any).peerProtocolFeatures.set(
+      legacyPeerHash,
+      new Set(['dm', 'dm_author_streams_v1'])
+    );
+    manager.refreshSelfDmWarmLinks();
+    await flushQueuedWork();
+    expect(pinned.at(-1)?.map((peer) => peer.destinationHash)).toEqual([
+      unknownPeerHash,
+    ]);
+    sent.length = 0;
+    const event = signedDmEvent({
+      sender: owner,
+      recipient: owner,
+      eventId: 'dm-self-unknown-features',
+      senderSeq: 2,
+      timestamp: Date.now(),
+    });
+    expect(await manager.publishDirectEvent(event)).toEqual({ ok: true });
+    await flushQueuedWork();
+    expect(
+      sent
+        .filter((item) => item.wire.k === 'dm_notify')
+        .map((item) => item.peer)
+    ).toEqual([unknownPeerHash]);
+    // A peer that is not an own device stays unknown-and-excluded.
+    const foreignPeerHash = '6'.repeat(32);
+    expect((manager as any).peerSupportsSelfDm(foreignPeerHash)).toBe(false);
+    expect((manager as any).peerSupportsSelfDm(unknownPeerHash)).toBe(true);
+    expect((manager as any).peerSupportsSelfDm(legacyPeerHash)).toBe(false);
+    manager.close();
+  });
+
+  it('spaces out untargeted self-conversation catch-ups while links churn', () => {
+    // Overlay-health and lease changes fire many times a minute while links
+    // churn, and a forced self-conversation pull that finds nothing still
+    // costs six link requests. Only the first pull of a process and the
+    // admission of an own device bypass the spacing.
+    const owner = createDmIdentity();
+    const localPeerHash = '1'.repeat(32);
+    const ownPeerHash = '5'.repeat(32);
+    const base = Date.now();
+    let clock = base;
+    const bridge = Object.assign(new EventEmitter(), {
+      getState: () => 'ready',
+      getLocalDestinationHash: () => localPeerHash,
+      configureReticulumChatPinnedPeers: async () => true,
+      sendReticulumChatDetailed: async () => ({ ok: true as const }),
+    });
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      signLocalFields: createDmSigner(owner),
+      hasGoodOverlayHealth: () => true,
+      now: () => clock,
+      getAccountEndpointLeases: () => [
+        {
+          destinationHash: ownPeerHash,
+          address: owner.address,
+          sessionId: 'own-device',
+          lastSeen: base,
+          expiresAt: base + 60 * 60_000,
+          verification: 'relayed-bound',
+        },
+      ],
+    });
+    const selfPulls: Array<{
+      addressA: string;
+      addressB: string;
+      initialAfter?: number;
+    }> = [];
+    const queueOthers = (manager as any).queueDirectMissingEvents.bind(manager);
+    (manager as any).queueDirectMissingEvents = (input: {
+      addressA: string;
+      addressB: string;
+      initialAfter?: number;
+    }) => {
+      if (
+        input.addressA === owner.address &&
+        input.addressB === owner.address
+      ) {
+        selfPulls.push(input);
+        return;
+      }
+      queueOthers(input);
+    };
+    // Our newest own event: the first pull of the process looks back the
+    // recovery window behind it, later pulls a short steady window, so a
+    // message the other device wrote while its notify could not reach us is
+    // still fetched.
+    (manager as any).db.getDirectLatestEvent = () => ({ timestamp: base });
+    manager.setLocalDmAddresses([owner.address]);
+
+    manager.notifyOverlayHealthChanged(true);
+    expect(selfPulls).toHaveLength(1);
+    expect(selfPulls[0]?.initialAfter).toBe(base - 48 * 60 * 60_000);
+
+    clock = base + 60_000;
+    manager.notifyOverlayHealthChanged(true);
+    manager.notifyOwnDeviceLeasesChanged();
+    expect(selfPulls).toHaveLength(1);
+
+    manager.notifyOwnDevicePeerAdmitted(ownPeerHash);
+    expect(selfPulls).toHaveLength(2);
+
+    clock = base + 6 * 60_000;
+    manager.notifyOverlayHealthChanged(true);
+    expect(selfPulls).toHaveLength(3);
+    expect(selfPulls[2]?.initialAfter).toBe(base - 15 * 60_000);
+    manager.close();
   });
 
   it('stores self-DMs as sent and only notifies upgraded verified own devices', async () => {
@@ -16511,7 +16682,9 @@ describe('reticulum chat manager', () => {
     now += 7 * 60_000 + 30_001;
     (manager as any).noteGroupInterestRoute(73, 'peer-c', 'peer-a', 1);
     expect((manager as any).landStateForwardingRevision).toBe(initialRevision);
-    expect((manager as any).landStateForwardingLeaseRefreshTimer).not.toBeNull();
+    expect(
+      (manager as any).landStateForwardingLeaseRefreshTimer
+    ).not.toBeNull();
     manager.close();
   });
 
@@ -24723,6 +24896,9 @@ describe('reticulum chat manager', () => {
     fanout.length = 0;
     direct.length = 0;
 
+    // Identical state sent to the same peer within the dedupe window is
+    // suppressed; a refresh after the window must still use the route.
+    now += 31_000;
     manager.reannounceSubscriptions();
     await new Promise((resolve) => setTimeout(resolve, 250));
 
@@ -38155,5 +38331,832 @@ describe('reticulum chat manager', () => {
       wire: { d: { generatedAt: 200, latest: { ts: 200 } } },
     });
     manager.close();
+  });
+});
+
+describe('reticulum chat device state sync', () => {
+  const DEVICE_A_HASH = 'a1'.repeat(16);
+  const DEVICE_B_HASH = 'b2'.repeat(16);
+  const DEVICE_C_HASH = 'c3'.repeat(16);
+  const STRANGER_HASH = 'd4'.repeat(16);
+
+  function signDeviceState(
+    identity: ReturnType<typeof createDmIdentity>,
+    input: {
+      key: string;
+      value: string | null;
+      signedAt: number;
+      expiresAt?: number | null;
+    }
+  ): ReticulumChatDeviceStateRecord {
+    const record: ReticulumChatDeviceStateRecord = {
+      ownerAddress: identity.address,
+      key: input.key,
+      value: input.value,
+      signedAt: input.signedAt,
+      expiresAt: input.expiresAt ?? null,
+      authorPublicKey: identity.publicKey,
+      signature: '',
+    };
+    const fields = {
+      ...buildReticulumChatDeviceStateSignedFields(record),
+      authorAddress: identity.address,
+      authorPublicKey: identity.publicKey,
+    };
+    record.signature = base58Encode(
+      nacl.sign.detached(
+        new Uint8Array(canonicalizeForSigning(fields)),
+        identity.secretKey
+      )
+    );
+    return record;
+  }
+
+  type SentWire = { target: string; wire: ReticulumChatWire };
+
+  function createDevice(options: {
+    owner: ReturnType<typeof createDmIdentity>;
+    localHash: string;
+    peerHashes: string[];
+    sign?: boolean;
+    dbPath?: string;
+    now?: () => number;
+    sent?: SentWire[];
+    sendResult?: () => { ok: true } | { ok: false; reason: 'no-route' };
+  }): ReticulumChatManager {
+    return new ReticulumChatManager({
+      dbPath: options.dbPath ?? tempDbPath(),
+      ...(options.sign === false
+        ? {}
+        : { signLocalFields: createDmSigner(options.owner) }),
+      hasGoodOverlayHealth: () => false,
+      ...(options.now ? { now: options.now } : {}),
+      getVerifiedReticulumPeers: () =>
+        options.peerHashes.map((destinationHash) => ({
+          destinationHash,
+          address: options.owner.address,
+          lastSeen: Date.now(),
+        })),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => options.localHash,
+        sendReticulumChatDetailed: async (
+          target: string,
+          wire: ReticulumChatWire
+        ) => {
+          options.sent?.push({ target, wire });
+          return options.sendResult?.() ?? { ok: true as const };
+        },
+      } as any,
+    });
+  }
+
+  function deviceStateWires(sent: SentWire[]) {
+    return sent
+      .map((item) => item.wire)
+      .filter(
+        (wire): wire is Extract<ReticulumChatWire, { k: 'device_state' }> =>
+          wire.k === 'device_state'
+      );
+  }
+
+  function helloWithFeatures(features: string[]): Record<string, unknown> {
+    return { t: 'RCHAT', k: 'hello_v3', v: 3, f: features };
+  }
+
+  it('advertises ds1 in a hello wire that still fits the Reticulum MDU', () => {
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      hasGoodOverlayHealth: () => false,
+    });
+    try {
+      const hello = (manager as any).buildHelloWire() as Extract<
+        ReticulumChatWire,
+        { k: 'hello_v3' }
+      >;
+      expect(hello.f).toContain('ds1');
+      expect(wireFitsReticulumChat(hello)).toBe(true);
+      // Headroom guard: 'ds1' left 7 bytes below the MDU. Re-enabling
+      // 'relay_cache' or 'group_keys' (13 bytes each) makes the first
+      // assertion above fail; this one pins the remaining margin so any new
+      // token has to be budgeted deliberately.
+      expect(
+        RT_RETICULUM_MAX_WIRE_JSON_BYTES -
+          byteLengthUtf8JsonWithBridgeSenderOnly(hello)
+      ).toBe(7);
+      for (const flag of ['relay_cache', 'group_keys']) {
+        expect(hello.f).not.toContain(flag);
+        expect(wireFitsReticulumChat({ ...hello, f: [...hello.f, flag] })).toBe(
+          false
+        );
+      }
+      // A Hub 3.0.3 peer without ds1 must still pair.
+      expect(
+        (manager as any).isCompatibleHello(
+          helloWithFeatures(hello.f.filter((feature) => feature !== 'ds1'))
+        )
+      ).toBe(true);
+    } finally {
+      manager.close();
+    }
+  });
+
+  it('round-trips signed device state fields, including tombstones and chunked values', () => {
+    const owner = createDmIdentity();
+    const now = Date.now();
+    const record = signDeviceState(owner, {
+      key: 'notif.mentions',
+      value: '1',
+      signedAt: now - 10,
+      expiresAt: now + 60_000,
+    });
+    const wires = buildReticulumChatDeviceStateWires(record);
+    expect(wires).toHaveLength(1);
+    expect(verifyReticulumChatDeviceStateWire(wires![0].w, '1', now)).toEqual(
+      record
+    );
+    expect(
+      verifyReticulumChatDeviceStateWire(wires![0].w, '2', now)
+    ).toBeNull();
+    expect(
+      verifyReticulumChatDeviceStateWire(
+        { ...wires![0].w, e: undefined },
+        '1',
+        now
+      )
+    ).toBeNull();
+    expect(
+      verifyReticulumChatDeviceStateWire(
+        { ...wires![0].w, k: 'notif.other' },
+        '1',
+        now
+      )
+    ).toBeNull();
+
+    const tombstone = signDeviceState(owner, {
+      key: 'notif.rule.abc',
+      value: null,
+      signedAt: now,
+    });
+    const tombstoneWires = buildReticulumChatDeviceStateWires(tombstone);
+    expect(tombstoneWires).toHaveLength(1);
+    expect(tombstoneWires![0].w).not.toHaveProperty('v');
+    expect(tombstoneWires![0].w).not.toHaveProperty('e');
+    expect(
+      verifyReticulumChatDeviceStateWire(tombstoneWires![0].w, null, now)
+    ).toEqual(tombstone);
+    expect(
+      verifyReticulumChatDeviceStateWire(tombstoneWires![0].w, '', now)
+    ).toBeNull();
+    expect(
+      buildReticulumChatDeviceStateSignedFields({
+        ownerAddress: owner.address,
+        key: 'k',
+        value: null,
+        signedAt: 1,
+        expiresAt: null,
+      })
+    ).toEqual({
+      type: 'RCHAT_DEVICE_STATE_V1',
+      ownerAddress: owner.address,
+      key: 'k',
+      value: null,
+      signedAt: 1,
+      expiresAt: null,
+    });
+
+    // Chunking measures the real wire and never splits a surrogate pair.
+    const value = 'ab😀é"\\\n'.repeat(150);
+    expect(Buffer.byteLength(value, 'utf8')).toBeGreaterThan(1_500);
+    const chunked = signDeviceState(owner, {
+      key: 'notif.rule.' + 'f'.repeat(24),
+      value,
+      signedAt: now,
+    });
+    const chunks = buildReticulumChatDeviceStateWires(chunked)!;
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks.length).toBeLessThanOrEqual(128);
+    for (const [index, chunk] of chunks.entries()) {
+      expect(wireFitsReticulumChat(chunk)).toBe(true);
+      expect(chunk.w.i).toBe(index);
+      expect(chunk.w.m).toBe(chunks.length);
+      expect(chunk.w.z).toBe(chunked.signature);
+      expect(chunk.w.v!).not.toMatch(/^[\udc00-\udfff]|[\ud800-\udbff]$/);
+    }
+    const joined = chunks.map((chunk) => chunk.w.v).join('');
+    expect(joined).toBe(value);
+    expect(
+      verifyReticulumChatDeviceStateWire(chunks[0].w, joined, now)
+    ).toEqual(chunked);
+    expect(
+      reticulumChatDeviceStateChunkCapacity(
+        'k'.repeat(RETICULUM_CHAT_DEVICE_STATE_KEY_MAX_LENGTH)
+      )
+    ).toBeGreaterThanOrEqual(16);
+  });
+
+  it('validates setDeviceState input against the local account', () => {
+    const owner = createDmIdentity();
+    const other = createDmIdentity();
+    const manager = createDevice({
+      owner,
+      localHash: DEVICE_A_HASH,
+      peerHashes: [],
+    });
+    try {
+      manager.setLocalDmAddresses([owner.address]);
+      expect(manager.setDeviceState(other.address, 'k', 'v')).toEqual({
+        success: false,
+        error: 'unknown-owner',
+      });
+      expect(manager.setDeviceState(owner.address, 'has space', 'v')).toEqual({
+        success: false,
+        error: 'invalid-key',
+      });
+      expect(
+        manager.setDeviceState(owner.address, 'k'.repeat(49), 'v')
+      ).toEqual({ success: false, error: 'invalid-key' });
+      expect(
+        manager.setDeviceState(owner.address, 'k', 'x'.repeat(2_049))
+      ).toEqual({ success: false, error: 'invalid-value' });
+      expect(
+        manager.setDeviceState(owner.address, 'k', 'v', { ttlMs: 0 })
+      ).toEqual({ success: false, error: 'invalid-ttl' });
+      // Below the floor: the monotonic signedAt could overtake the expiry.
+      expect(
+        manager.setDeviceState(owner.address, 'k', 'v', { ttlMs: 59_999 })
+      ).toEqual({ success: false, error: 'invalid-ttl' });
+      expect(manager.setDeviceState(owner.address, 'k', 'v')).toEqual({
+        success: true,
+      });
+    } finally {
+      manager.close();
+    }
+  });
+
+  it('exchanges small and chunked values between verified devices, ACKs after verification, and persists the ACK', async () => {
+    const owner = createDmIdentity();
+    const sentA: SentWire[] = [];
+    const sentB: SentWire[] = [];
+    const dbPathA = tempDbPath();
+    const deviceA = createDevice({
+      owner,
+      localHash: DEVICE_A_HASH,
+      peerHashes: [DEVICE_B_HASH],
+      sent: sentA,
+      dbPath: dbPathA,
+    });
+    const deviceB = createDevice({
+      owner,
+      localHash: DEVICE_B_HASH,
+      peerHashes: [DEVICE_A_HASH],
+      sent: sentB,
+    });
+    const eventsA: any[] = [];
+    const eventsB: any[] = [];
+    deviceA.on('deviceStateChanged', (event) => eventsA.push(event));
+    deviceB.on('deviceStateChanged', (event) => eventsB.push(event));
+    try {
+      deviceA.setLocalDmAddresses([owner.address]);
+      deviceB.setLocalDmAddresses([owner.address]);
+
+      expect(
+        deviceA.setDeviceState(owner.address, 'notif.mentions', '1')
+      ).toEqual({ success: true });
+      await flushQueuedWork();
+      expect((deviceA as any).db.getPendingDeviceStates(owner.address)).toEqual(
+        []
+      );
+      const small = deviceStateWires(sentA);
+      expect(small).toHaveLength(1);
+      expect(small[0].w).toMatchObject({ k: 'notif.mentions', v: '1' });
+      expect(small[0].w).not.toHaveProperty('i');
+      expect(sentA[0].target).toBe(DEVICE_B_HASH);
+      expect(eventsA).toEqual([
+        expect.objectContaining({
+          ownerAddress: owner.address,
+          key: 'notif.mentions',
+          value: '1',
+          expiresAt: null,
+          source: 'local',
+        }),
+      ]);
+      const signedAt = small[0].w.n;
+
+      deviceB.handleWire(small[0] as any, DEVICE_A_HASH);
+      expect(deviceB.getDeviceStates(owner.address, 'notif.')).toEqual([
+        expect.objectContaining({
+          key: 'notif.mentions',
+          value: '1',
+          signedAt,
+        }),
+      ]);
+      expect(eventsB).toEqual([
+        expect.objectContaining({
+          key: 'notif.mentions',
+          value: '1',
+          source: 'remote',
+        }),
+      ]);
+      await flushQueuedWork();
+      const acks = sentB.filter((item) => item.wire.k === 'device_state_ack');
+      expect(acks).toHaveLength(1);
+      expect(acks[0].target).toBe(DEVICE_A_HASH);
+      expect(acks[0].wire).toMatchObject({
+        w: { o: owner.address, k: 'notif.mentions', n: signedAt },
+      });
+
+      // Before the ACK arrives the row is replayed; a stranger's ACK is ignored.
+      expect(
+        (deviceA as any).db.getDeviceStatesForReplay(
+          owner.address,
+          DEVICE_B_HASH
+        )
+      ).toHaveLength(1);
+      deviceA.handleWire(acks[0].wire as any, STRANGER_HASH);
+      expect(
+        (deviceA as any).db.getDeviceStateAck(
+          owner.address,
+          DEVICE_B_HASH,
+          'notif.mentions'
+        )
+      ).toBe(0);
+      deviceA.handleWire(acks[0].wire as any, DEVICE_B_HASH);
+      expect(
+        (deviceA as any).db.getDeviceStateAck(
+          owner.address,
+          DEVICE_B_HASH,
+          'notif.mentions'
+        )
+      ).toBe(signedAt);
+      expect(
+        (deviceA as any).db.getDeviceStatesForReplay(
+          owner.address,
+          DEVICE_B_HASH
+        )
+      ).toEqual([]);
+      sentA.length = 0;
+      await (deviceA as any).replayDeviceStatesToOwnDevices();
+      expect(deviceStateWires(sentA)).toHaveLength(0);
+
+      // LWW: an older or equal signedAt never overwrites, but is still ACKed
+      // so the sender can stop replaying its stale row.
+      const stale = signDeviceState(owner, {
+        key: 'notif.mentions',
+        value: '0',
+        signedAt: signedAt - 1,
+      });
+      const equal = signDeviceState(owner, {
+        key: 'notif.mentions',
+        value: '0',
+        signedAt,
+      });
+      sentB.length = 0;
+      deviceB.handleWire(
+        buildReticulumChatDeviceStateWires(stale)![0] as any,
+        DEVICE_A_HASH
+      );
+      deviceB.handleWire(
+        buildReticulumChatDeviceStateWires(equal)![0] as any,
+        DEVICE_A_HASH
+      );
+      expect(deviceB.getDeviceStates(owner.address)[0]).toMatchObject({
+        value: '1',
+        signedAt,
+      });
+      expect(eventsB).toHaveLength(1);
+      await flushQueuedWork();
+      expect(
+        sentB.filter((item) => item.wire.k === 'device_state_ack')
+      ).toHaveLength(2);
+
+      // A 1.5 KB value is chunked; every chunk fits and B reassembles it.
+      const large = JSON.stringify({
+        event: 'RESOURCE_PUBLISHED',
+        message: 'ünïcödé 😀 '.repeat(90),
+      });
+      expect(Buffer.byteLength(large, 'utf8')).toBeGreaterThan(1_500);
+      sentA.length = 0;
+      expect(
+        deviceA.setDeviceState(owner.address, 'notif.rule.abc', large)
+      ).toEqual({ success: true });
+      await flushQueuedWork();
+      const chunks = deviceStateWires(sentA);
+      expect(chunks.length).toBeGreaterThan(1);
+      for (const chunk of chunks) {
+        expect(wireFitsReticulumChat(chunk)).toBe(true);
+        expect(chunk.w.m).toBe(chunks.length);
+      }
+      sentB.length = 0;
+      for (const chunk of chunks.slice(0, -1)) {
+        deviceB.handleWire(chunk as any, DEVICE_A_HASH);
+      }
+      await flushQueuedWork();
+      expect(deviceB.getDeviceStates(owner.address, 'notif.rule.')).toEqual([]);
+      expect(
+        sentB.filter((item) => item.wire.k === 'device_state_ack')
+      ).toHaveLength(0);
+      // A repeated chunk with identical content is idempotent.
+      deviceB.handleWire(chunks[0] as any, DEVICE_A_HASH);
+      expect((deviceB as any).deviceStateReassembly.size).toBe(1);
+      deviceB.handleWire(chunks[chunks.length - 1] as any, DEVICE_A_HASH);
+      expect((deviceB as any).deviceStateReassembly.size).toBe(0);
+      expect(deviceB.getDeviceStates(owner.address, 'notif.rule.')).toEqual([
+        expect.objectContaining({ key: 'notif.rule.abc', value: large }),
+      ]);
+      await flushQueuedWork();
+      const largeAcks = sentB.filter(
+        (item) => item.wire.k === 'device_state_ack'
+      );
+      expect(largeAcks).toHaveLength(1);
+      expect(largeAcks[0].wire).toMatchObject({
+        w: { k: 'notif.rule.abc', n: chunks[0].w.n },
+      });
+      deviceA.handleWire(largeAcks[0].wire as any, DEVICE_B_HASH);
+      expect(
+        (deviceA as any).db.getDeviceStatesForReplay(
+          owner.address,
+          DEVICE_B_HASH
+        )
+      ).toEqual([]);
+
+      // Tombstones travel too.
+      sentA.length = 0;
+      expect(
+        deviceA.setDeviceState(owner.address, 'notif.rule.abc', null)
+      ).toEqual({ success: true });
+      await flushQueuedWork();
+      const tombstone = deviceStateWires(sentA);
+      expect(tombstone).toHaveLength(1);
+      expect(tombstone[0].w).not.toHaveProperty('v');
+      deviceB.handleWire(tombstone[0] as any, DEVICE_A_HASH);
+      expect(deviceB.getDeviceStates(owner.address, 'notif.rule.')).toEqual([
+        expect.objectContaining({ key: 'notif.rule.abc', value: null }),
+      ]);
+
+      // The persisted ACK survives a restart: a new manager on the same DB
+      // does not replay the acknowledged small row.
+      deviceA.close();
+      const sentA2: SentWire[] = [];
+      const deviceA2 = createDevice({
+        owner,
+        localHash: DEVICE_A_HASH,
+        peerHashes: [DEVICE_B_HASH],
+        sent: sentA2,
+        dbPath: dbPathA,
+      });
+      try {
+        deviceA2.setLocalDmAddresses([owner.address]);
+        await flushQueuedWork();
+        const replayed = deviceStateWires(sentA2);
+        expect(replayed.map((wire) => wire.w.k)).toEqual(['notif.rule.abc']);
+        expect(replayed[0].w).not.toHaveProperty('v');
+      } finally {
+        deviceA2.close();
+      }
+    } finally {
+      deviceA.close();
+      deviceB.close();
+    }
+  });
+
+  it('drops device state from unverified peers before buffering and isolates buffers per source peer', async () => {
+    const owner = createDmIdentity();
+    const sentB: SentWire[] = [];
+    const deviceB = createDevice({
+      owner,
+      localHash: DEVICE_B_HASH,
+      peerHashes: [DEVICE_A_HASH, DEVICE_C_HASH],
+      sent: sentB,
+    });
+    try {
+      deviceB.setLocalDmAddresses([owner.address]);
+      const value = 'v'.repeat(700);
+      const record = signDeviceState(owner, {
+        key: 'notif.seenall',
+        value,
+        signedAt: Date.now(),
+      });
+      const chunks = buildReticulumChatDeviceStateWires(record)!;
+      expect(chunks.length).toBeGreaterThanOrEqual(2);
+
+      deviceB.handleWire(chunks[0] as any, STRANGER_HASH);
+      expect((deviceB as any).deviceStateReassembly.size).toBe(0);
+      deviceB.handleWire(
+        buildReticulumChatDeviceStateWires(
+          signDeviceState(owner, { key: 'x', value: '1', signedAt: Date.now() })
+        )![0] as any,
+        STRANGER_HASH
+      );
+      expect(deviceB.getDeviceStates(owner.address)).toEqual([]);
+
+      // Unknown owner: signed by another account, sent by a verified device.
+      const other = createDmIdentity();
+      deviceB.handleWire(
+        buildReticulumChatDeviceStateWires(
+          signDeviceState(other, { key: 'x', value: '1', signedAt: Date.now() })
+        )![0] as any,
+        DEVICE_A_HASH
+      );
+      expect((deviceB as any).db.getDeviceState(other.address, 'x')).toBeNull();
+
+      // Chunks from two different verified devices never merge.
+      deviceB.handleWire(chunks[0] as any, DEVICE_A_HASH);
+      for (const chunk of chunks.slice(1)) {
+        deviceB.handleWire(chunk as any, DEVICE_C_HASH);
+      }
+      expect((deviceB as any).deviceStateReassembly.size).toBe(2);
+      expect(deviceB.getDeviceStates(owner.address)).toEqual([]);
+      await flushQueuedWork();
+      expect(
+        sentB.filter((item) => item.wire.k === 'device_state_ack')
+      ).toHaveLength(0);
+
+      // A conflicting chunk drops that source's buffer.
+      deviceB.handleWire(
+        { ...chunks[0], w: { ...chunks[0].w, v: 'tampered' } } as any,
+        DEVICE_A_HASH
+      );
+      expect((deviceB as any).deviceStateReassembly.size).toBe(1);
+
+      // Completing with tampered content fails verification: no row, no ACK.
+      deviceB.handleWire(
+        {
+          ...chunks[0],
+          w: { ...chunks[0].w, v: chunks[0].w.v!.replace('v', 'w') },
+        } as any,
+        DEVICE_C_HASH
+      );
+      expect((deviceB as any).deviceStateReassembly.size).toBe(0);
+      expect(deviceB.getDeviceStates(owner.address)).toEqual([]);
+      await flushQueuedWork();
+      expect(
+        sentB.filter((item) => item.wire.k === 'device_state_ack')
+      ).toHaveLength(0);
+
+      // Completing the genuine buffer stores the row and ACKs the source.
+      for (const chunk of chunks) {
+        deviceB.handleWire(chunk as any, DEVICE_A_HASH);
+      }
+      expect(deviceB.getDeviceStates(owner.address)).toEqual([
+        expect.objectContaining({ key: 'notif.seenall', value }),
+      ]);
+      await flushQueuedWork();
+      const acks = sentB.filter((item) => item.wire.k === 'device_state_ack');
+      expect(acks).toHaveLength(1);
+      expect(acks[0].target).toBe(DEVICE_A_HASH);
+    } finally {
+      deviceB.close();
+    }
+  });
+
+  it('answers device_state_req with rows newer than the requested watermark', async () => {
+    const owner = createDmIdentity();
+    const sentB: SentWire[] = [];
+    const deviceB = createDevice({
+      owner,
+      localHash: DEVICE_B_HASH,
+      peerHashes: [DEVICE_A_HASH],
+      sent: sentB,
+    });
+    try {
+      deviceB.setLocalDmAddresses([owner.address]);
+      const base = Date.now() - 10_000;
+      for (const [index, key] of ['notif.a', 'notif.b', 'notif.c'].entries()) {
+        deviceB.handleWire(
+          buildReticulumChatDeviceStateWires(
+            signDeviceState(owner, {
+              key,
+              value: String(index),
+              signedAt: base + index,
+            })
+          )![0] as any,
+          DEVICE_A_HASH
+        );
+      }
+      sentB.length = 0;
+      deviceB.handleWire(
+        {
+          t: 'RCHAT',
+          k: 'device_state_req',
+          w: { o: owner.address, s: base },
+        } as any,
+        STRANGER_HASH
+      );
+      await flushQueuedWork();
+      expect(deviceStateWires(sentB)).toHaveLength(0);
+      deviceB.handleWire(
+        {
+          t: 'RCHAT',
+          k: 'device_state_req',
+          w: { o: owner.address, s: base },
+        } as any,
+        DEVICE_A_HASH
+      );
+      await flushQueuedWork();
+      const answered = deviceStateWires(sentB);
+      expect(answered.map((wire) => wire.w.k)).toEqual(['notif.b', 'notif.c']);
+      expect(sentB.every((item) => item.target === DEVICE_A_HASH)).toBe(true);
+    } finally {
+      deviceB.close();
+    }
+  });
+
+  it('requests a catch-up once per peer when a ds1 hello arrives and reports sync peers', async () => {
+    const owner = createDmIdentity();
+    const sentA: SentWire[] = [];
+    const deviceA = createDevice({
+      owner,
+      localHash: DEVICE_A_HASH,
+      peerHashes: [DEVICE_B_HASH, DEVICE_C_HASH],
+      sent: sentA,
+    });
+    try {
+      deviceA.setLocalDmAddresses([owner.address]);
+      expect(deviceA.getDeviceStateSyncPeers(owner.address)).toEqual([
+        { peerHash: DEVICE_B_HASH, supported: false, support: 'unknown' },
+        { peerHash: DEVICE_C_HASH, supported: false, support: 'unknown' },
+      ]);
+      expect(
+        deviceA.setDeviceState(owner.address, 'notif.mentions', '1')
+      ).toEqual({ success: true });
+      await flushQueuedWork();
+      const signedAt = deviceStateWires(sentA)[0].w.n;
+      // Both peers still count as possible targets before any hello.
+      expect(deviceStateWires(sentA).length).toBe(2);
+
+      const hello = (deviceA as any).buildHelloWire() as Extract<
+        ReticulumChatWire,
+        { k: 'hello_v3' }
+      >;
+      sentA.length = 0;
+      deviceA.handleWire(hello as any, DEVICE_B_HASH);
+      deviceA.handleWire(hello as any, DEVICE_B_HASH);
+      deviceA.handleWire(
+        helloWithFeatures(hello.f.filter((feature) => feature !== 'ds1')),
+        DEVICE_C_HASH
+      );
+      deviceA.handleWire(hello as any, STRANGER_HASH);
+      await flushQueuedWork();
+      const requests = sentA.filter(
+        (item) => item.wire.k === 'device_state_req'
+      );
+      expect(requests).toHaveLength(1);
+      expect(requests[0].target).toBe(DEVICE_B_HASH);
+      expect(requests[0].wire).toMatchObject({
+        w: { o: owner.address, s: signedAt },
+      });
+      expect(deviceA.getDeviceStateSyncPeers(owner.address)).toEqual([
+        { peerHash: DEVICE_B_HASH, supported: true, support: 'supported' },
+        { peerHash: DEVICE_C_HASH, supported: false, support: 'unsupported' },
+      ]);
+      // The discovery-completed hook re-requests only from ds1 peers, and the
+      // 10-minute dedupe keeps the request count at one per owner/peer.
+      sentA.length = 0;
+      (deviceA as any).requestDeviceStateCatchupFromOwnDevices();
+      expect(
+        sentA.filter((item) => item.wire.k === 'device_state_req')
+      ).toHaveLength(0);
+      (deviceA as any).deviceStateCatchupRequests.clear();
+      (deviceA as any).requestDeviceStateCatchupFromOwnDevices();
+      const reRequests = sentA.filter(
+        (item) => item.wire.k === 'device_state_req'
+      );
+      expect(reRequests).toHaveLength(1);
+      expect(reRequests[0].target).toBe(DEVICE_B_HASH);
+      // Replay skips the peer that advertised no ds1 support.
+      sentA.length = 0;
+      await (deviceA as any).replayDeviceStatesToOwnDevices();
+      const replayed = deviceStateWires(sentA);
+      expect(replayed).toHaveLength(1);
+      expect(sentA.map((item) => item.target)).toEqual([DEVICE_B_HASH]);
+    } finally {
+      deviceA.close();
+    }
+  });
+
+  it('prunes expired rows together with their ACKs', async () => {
+    // The DB filters expiry with the wall clock, so fake `Date` only.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const clock = Date.now();
+    const owner = createDmIdentity();
+    const sentA: SentWire[] = [];
+    const deviceA = createDevice({
+      owner,
+      localHash: DEVICE_A_HASH,
+      peerHashes: [DEVICE_B_HASH],
+      sent: sentA,
+    });
+    try {
+      deviceA.setLocalDmAddresses([owner.address]);
+      expect(
+        deviceA.setDeviceState(owner.address, 'notif.seen.abc', '[1,"k"]', {
+          ttlMs: 60_000,
+        })
+      ).toEqual({ success: true });
+      expect(
+        deviceA.setDeviceState(owner.address, 'notif.mentions', '1')
+      ).toEqual({ success: true });
+      await flushQueuedWork();
+      const wires = deviceStateWires(sentA);
+      expect(wires).toHaveLength(2);
+      const seen = wires.find((wire) => wire.w.k === 'notif.seen.abc')!;
+      expect(seen.w.e).toBe(clock + 60_000);
+      for (const wire of wires) {
+        deviceA.handleWire(
+          {
+            t: 'RCHAT',
+            k: 'device_state_ack',
+            w: { o: owner.address, k: wire.w.k, n: wire.w.n },
+          } as any,
+          DEVICE_B_HASH
+        );
+      }
+      expect(
+        (deviceA as any).db.getDeviceStateAck(
+          owner.address,
+          DEVICE_B_HASH,
+          'notif.seen.abc'
+        )
+      ).toBe(seen.w.n);
+      expect(deviceA.getDeviceStates(owner.address)).toHaveLength(2);
+
+      vi.setSystemTime(clock + 60_001);
+      expect(deviceA.getDeviceStates(owner.address).map((r) => r.key)).toEqual([
+        'notif.mentions',
+      ]);
+      (deviceA as any).pruneDeviceStates();
+      expect((deviceA as any).db.countDeviceStates(owner.address)).toBe(1);
+      expect(
+        (deviceA as any).db.getDeviceStateAck(
+          owner.address,
+          DEVICE_B_HASH,
+          'notif.seen.abc'
+        )
+      ).toBe(0);
+      expect(
+        (deviceA as any).db.getDeviceStateAck(
+          owner.address,
+          DEVICE_B_HASH,
+          'notif.mentions'
+        )
+      ).toBeGreaterThan(0);
+    } finally {
+      deviceA.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it('finishes a pending device state after the app restarts and clears runtime state on logout', async () => {
+    const owner = createDmIdentity();
+    const dbPath = tempDbPath();
+    const before = createDevice({
+      owner,
+      localHash: DEVICE_A_HASH,
+      peerHashes: [],
+      sign: false,
+      dbPath,
+    });
+    before.setLocalDmAddresses([owner.address]);
+    expect(before.setDeviceState(owner.address, 'notif.mentions', '0')).toEqual(
+      { success: true }
+    );
+    expect(
+      (before as any).db.getPendingDeviceStates(owner.address)
+    ).toHaveLength(1);
+    before.close();
+
+    const sent: SentWire[] = [];
+    const after = createDevice({
+      owner,
+      localHash: DEVICE_A_HASH,
+      peerHashes: [DEVICE_B_HASH],
+      sent,
+      dbPath,
+    });
+    try {
+      after.setLocalDmAddresses([owner.address]);
+      await flushQueuedWork();
+      const wires = deviceStateWires(sent);
+      expect(wires).toHaveLength(1);
+      expect(wires[0].w).toMatchObject({ k: 'notif.mentions', v: '0' });
+      expect((after as any).db.getPendingDeviceStates(owner.address)).toEqual(
+        []
+      );
+      expect((after as any).deviceStatePruneTimer).not.toBeNull();
+
+      await after.clearLocalAccountState();
+      expect((after as any).deviceStatePruneTimer).toBeNull();
+      expect((after as any).pendingDeviceState.size).toBe(0);
+      expect((after as any).deviceStateLastSignedAt.size).toBe(0);
+      expect((after as any).deviceStateCatchupRequests.size).toBe(0);
+      expect((after as any).deviceStateReassembly.size).toBe(0);
+      expect(
+        after.setDeviceState(owner.address, 'notif.mentions', '1')
+      ).toEqual({ success: false, error: 'unknown-owner' });
+    } finally {
+      after.close();
+    }
   });
 });

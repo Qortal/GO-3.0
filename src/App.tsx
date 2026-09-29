@@ -145,6 +145,7 @@ import { UserLookup } from './components/UserLookup.tsx/UserLookup';
 import { RegisterName } from './components/RegisterName';
 import { BuyQortInformation } from './components/BuyQortInformation';
 import { PdfViewer } from './common/PdfViewer';
+import { ReticulumFileViewer } from './components/Chat/ReticulumFileViewer';
 import { useTranslation } from 'react-i18next';
 import { DownloadWallet } from './components/Auth/DownloadWallet.tsx';
 import { BackupWalletModal } from './components/Auth/BackupWalletModal.tsx';
@@ -193,13 +194,13 @@ import {
   AUTO_LOCK_PREFERENCE_CHANGE_EVENT,
   clearAutoLockLastActivityAt,
   isAutoLockDue,
-  readAutoLockDisabledFromStorage,
+  normalizeAutoLockTimeoutMinutes,
   readAutoLockLastActivityAt,
+  readAutoLockTimeoutFromStorage,
   resolveAutoLockTimeoutMinutes,
-  timeoutMinutesForAutoLockDisabled,
   type AutoLockTimeoutMinutes,
-  writeAutoLockDisabledToStorage,
   writeAutoLockLastActivityAt,
+  writeAutoLockTimeoutToStorage,
 } from './lib/autoLock';
 
 const MINTING_LOCAL_DEBUG_STORAGE_KEY = 'hub.mintingLocalDebug';
@@ -361,9 +362,7 @@ function App() {
   const [isAppLocked, setIsAppLocked] = useAtom(appLockedAtom);
   const setIsIdle = useSetAtom(isIdleAtom);
   const [autoLockTimeoutMinutes, setAutoLockTimeoutMinutes] =
-    useState<AutoLockTimeoutMinutes>(() =>
-      timeoutMinutesForAutoLockDisabled(readAutoLockDisabledFromStorage())
-    );
+    useState<AutoLockTimeoutMinutes>(readAutoLockTimeoutFromStorage);
   const [reticulumEnabled, setReticulumEnabled] = useAtom(reticulumEnabledAtom);
   const [reticulumChatEnabled, setReticulumChatEnabled] = useState(true);
   const [desktopViewMode, setDesktopViewMode] = useState('home');
@@ -392,14 +391,16 @@ function App() {
         settings?.disableAutoLockOnIdle === true
       );
       setAutoLockTimeoutMinutes(nextTimeout);
-      // Keep the mobile/localStorage toggle in sync with Electron settings.
-      writeAutoLockDisabledToStorage(nextTimeout === 0, { notify: false });
+      // Keep the mobile/localStorage preference in sync with Electron settings.
+      writeAutoLockTimeoutToStorage(nextTimeout, { notify: false });
     };
     const onLocalPreference = (event: Event) => {
-      const disabled = Boolean(
-        (event as CustomEvent<{ disabled?: boolean }>).detail?.disabled
+      setAutoLockTimeoutMinutes(
+        normalizeAutoLockTimeoutMinutes(
+          (event as CustomEvent<{ timeoutMinutes?: number }>).detail
+            ?.timeoutMinutes
+        )
       );
-      setAutoLockTimeoutMinutes(timeoutMinutesForAutoLockDisabled(disabled));
     };
     window.addEventListener(
       AUTO_LOCK_PREFERENCE_CHANGE_EVENT,
@@ -1985,6 +1986,7 @@ function App() {
   const mainContent = (
     <>
       <PdfViewer />
+      <ReticulumFileViewer />
 
       <QORTAL_APP_CONTEXT.Provider value={contextValue as AppContextInterface}>
         <ElectronPersistentStorageHydration />

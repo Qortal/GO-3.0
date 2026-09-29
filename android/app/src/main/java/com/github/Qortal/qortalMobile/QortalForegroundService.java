@@ -104,6 +104,8 @@ public class QortalForegroundService extends Service {
     public static final String EXTRA_ALERT_ICON_BASE64 = "alert_icon_base64";
     public static final String EXTRA_ALERT_FROM_ADDRESS = "alert_from_address";
     public static final String EXTRA_ALERT_TYPE = "alert_type";
+    /** Stable per-conversation tag; tray identity becomes (tag, id) when present. */
+    public static final String EXTRA_ALERT_TAG = "alert_tag";
     public static final String EXTRA_CALL_ID = "call_id";
     public static final String EXTRA_CALL_FROM = "call_from";
     public static final String EXTRA_CALL_FROM_NAME = "call_from_name";
@@ -216,7 +218,8 @@ public class QortalForegroundService extends Service {
                     safeString(intent.getStringExtra(EXTRA_ALERT_BODY), ""),
                     safeString(intent.getStringExtra(EXTRA_ALERT_ICON_URL), ""),
                     safeString(intent.getStringExtra(EXTRA_ALERT_FROM_ADDRESS), ""),
-                    safeString(intent.getStringExtra(EXTRA_ALERT_TYPE), "")
+                    safeString(intent.getStringExtra(EXTRA_ALERT_TYPE), ""),
+                    safeString(intent.getStringExtra(EXTRA_ALERT_TAG), "")
                 );
                 if (!isRunning) {
                     startStatusForeground();
@@ -634,22 +637,48 @@ public class QortalForegroundService extends Service {
         }
     }
 
+    /**
+     * Tray id for an alert. Shared with the plugin's single-alert cancel so
+     * both sides always agree on (tag, id).
+     */
+    public static int alertNotificationId(int alertId) {
+        return NOTIFICATION_ID_ALERT_BASE + Math.abs(alertId % 10000);
+    }
+
     private void showAlertNotification(
         int alertId,
         String title,
         String body,
         String iconUrl,
         String fromAddress,
-        String alertType
+        String alertType,
+        String alertTag
     ) {
         Runnable publishWithoutAvatar =
-            () -> publishAlertNotification(alertId, title, body, null, fromAddress, alertType);
+            () ->
+                publishAlertNotification(
+                    alertId,
+                    title,
+                    body,
+                    null,
+                    fromAddress,
+                    alertType,
+                    alertTag
+                );
 
         if (iconUrl != null && iconUrl.startsWith("data:")) {
             // Avatar bytes were already fetched by the WebView (which holds the
             // node connection / apiKey); just decode them.
             Bitmap avatar = decodeBase64Image(iconUrl);
-            publishAlertNotification(alertId, title, body, avatar, fromAddress, alertType);
+            publishAlertNotification(
+                alertId,
+                title,
+                body,
+                avatar,
+                fromAddress,
+                alertType,
+                alertTag
+            );
         } else if (iconUrl != null && !iconUrl.isEmpty()) {
             new Thread(() -> {
                 Bitmap avatar = loadBitmapFromUrl(iconUrl);
@@ -661,7 +690,8 @@ public class QortalForegroundService extends Service {
                             body,
                             avatar,
                             fromAddress,
-                            alertType
+                            alertType,
+                            alertTag
                         )
                 );
             }).start();
@@ -676,7 +706,8 @@ public class QortalForegroundService extends Service {
         String body,
         Bitmap avatarBitmap,
         String fromAddress,
-        String alertType
+        String alertType,
+        String alertTag
     ) {
         NotificationManager manager = getSystemService(NotificationManager.class);
         if (manager == null) return;
@@ -738,8 +769,15 @@ public class QortalForegroundService extends Service {
             new NotificationCompat.BigTextStyle().bigText(body).setBigContentTitle(title)
         );
 
-        int notificationId = NOTIFICATION_ID_ALERT_BASE + Math.abs(alertId % 10000);
-        manager.notify(notificationId, builder.build());
+        int notificationId = alertNotificationId(alertId);
+        if (alertTag != null && !alertTag.isEmpty()) {
+            // (tag, id) identity: re-showing the same conversation updates one
+            // tray entry and the JS side can cancel it by key later. The
+            // all-clear already cancels by (sbn.getTag(), sbn.getId()).
+            manager.notify(alertTag, notificationId, builder.build());
+        } else {
+            manager.notify(notificationId, builder.build());
+        }
     }
 
     private void showIncomingCallNotification(String callId, String fromAddress, String fromName) {
@@ -1038,6 +1076,19 @@ public class QortalForegroundService extends Service {
         String fromAddress,
         String alertType
     ) {
+        showAlert(context, alertId, title, body, iconUrl, fromAddress, alertType, "");
+    }
+
+    public static void showAlert(
+        Context context,
+        int alertId,
+        String title,
+        String body,
+        String iconUrl,
+        String fromAddress,
+        String alertType,
+        String alertTag
+    ) {
         Intent intent = new Intent(context, QortalForegroundService.class);
         intent.setAction(ACTION_SHOW_ALERT);
         intent.putExtra(EXTRA_ALERT_ID, alertId);
@@ -1046,6 +1097,7 @@ public class QortalForegroundService extends Service {
         intent.putExtra(EXTRA_ALERT_ICON_URL, iconUrl != null ? iconUrl : "");
         intent.putExtra(EXTRA_ALERT_FROM_ADDRESS, fromAddress != null ? fromAddress : "");
         intent.putExtra(EXTRA_ALERT_TYPE, alertType != null ? alertType : "");
+        intent.putExtra(EXTRA_ALERT_TAG, alertTag != null ? alertTag : "");
         startServiceCompat(context, intent);
     }
 

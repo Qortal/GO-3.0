@@ -32,6 +32,7 @@ import {
   objectToBase64,
 } from '../../qdn/encryption/group-encryption';
 import { executeEvent } from '../../utils/events';
+import { coreWebsocketPingMs } from '../../utils/coreWebsocketPing';
 import { buildGroupAvatarUrl } from '../../utils/groupAvatarUrl';
 import { groupsOwnerNamesSelector } from '../../atoms/global';
 import { useAtomValue } from 'jotai';
@@ -516,7 +517,10 @@ export function MiniGroupThread({
             clearTimeout(timeoutIdRef.current);
             timeoutIdRef.current = null;
           }
-          pingTimeoutRef.current = setTimeout(pingWebSocket, 20000);
+          pingTimeoutRef.current = setTimeout(
+            pingWebSocket,
+            coreWebsocketPingMs()
+          );
         } else {
           const data = JSON.parse(e.data);
           const dataArray = Array.isArray(data) ? data : [data];

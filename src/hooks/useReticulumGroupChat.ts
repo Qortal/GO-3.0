@@ -511,64 +511,85 @@ export function useReticulumGroupChat(
     retryOlderAfterRef.current = 0;
     primaryNameRetryAttemptsRef.current = 0;
     const historyVisibilityRevision = visibilityRevisionRef.current;
-    const structuredHistoryPromise =
-      window.reticulumChat?.getMessageHistoryPage?.(
-        validGroupId,
-        normalizedChannelId,
-        RETICULUM_CHAT_INITIAL_HISTORY_LIMIT
-      );
-    const historyPromise = structuredHistoryPromise
-      ? structuredHistoryPromise.then((page) => ({
-          events: Array.isArray(page?.events) ? page.events : [],
-          hasOlder: page?.hasMore === true,
-        }))
-      : (
-          window.reticulumChat?.getMessageHistory?.(
-            validGroupId,
-            normalizedChannelId,
-            RETICULUM_CHAT_INITIAL_HISTORY_LIMIT
-          ) ??
-          window.reticulumChat?.getHistory?.(
-            validGroupId,
-            normalizedChannelId,
-            RETICULUM_CHAT_INITIAL_HISTORY_LIMIT
-          )
-        )?.then((history) => ({
-          events: Array.isArray(history) ? history : [],
-          hasOlder: Array.isArray(history) && history.length > 0,
-        }));
-    void historyPromise
-      ?.then((historyPage) => {
-        if (
-          cancelled ||
-          historyWindowGenerationRef.current !== historyWindowGeneration ||
-          visibilityRevisionRef.current !== historyVisibilityRevision ||
-          !Array.isArray(historyPage.events)
-        ) {
-          return;
-        }
-        const historyEvents = historyPage.events as ReticulumChatHookEvent[];
-        setHasOlder(historyPage.hasOlder);
-        mergeEvents(historyEvents, expectedChatKey);
-        updateHistoryMode('latest');
-        setHistoryWindowRevision((revision) => revision + 1);
-        void enrichVisibleEvents(historyEvents, expectedChatKey);
-        setLoadedInitialHistoryKey(expectedChatKey);
-      })
-      .catch(() => {
-        if (
-          !cancelled &&
-          historyWindowGenerationRef.current === historyWindowGeneration
-        ) {
-          // The successful path replaces the retained snapshot through
-          // mergeEvents. On failure, explicitly publish the authoritative
-          // empty ref before declaring this channel ready so stale events from
-          // the previous channel can never be processed under the new key.
-          setEvents(eventsRef.current);
-          setHasOlder(false);
+    const loadInitialHistory = (attempt = 0) => {
+      const structuredHistoryPromise =
+        window.reticulumChat?.getMessageHistoryPage?.(
+          validGroupId,
+          normalizedChannelId,
+          RETICULUM_CHAT_INITIAL_HISTORY_LIMIT
+        );
+      const historyPromise = structuredHistoryPromise
+        ? structuredHistoryPromise.then((page) => ({
+            events: Array.isArray(page?.events) ? page.events : [],
+            hasOlder: page?.hasMore === true,
+          }))
+        : (
+            window.reticulumChat?.getMessageHistory?.(
+              validGroupId,
+              normalizedChannelId,
+              RETICULUM_CHAT_INITIAL_HISTORY_LIMIT
+            ) ??
+            window.reticulumChat?.getHistory?.(
+              validGroupId,
+              normalizedChannelId,
+              RETICULUM_CHAT_INITIAL_HISTORY_LIMIT
+            )
+          )?.then((history) => ({
+            events: Array.isArray(history) ? history : [],
+            hasOlder: Array.isArray(history) && history.length > 0,
+          }));
+      void historyPromise
+        ?.then((historyPage) => {
+          if (
+            cancelled ||
+            historyWindowGenerationRef.current !== historyWindowGeneration ||
+            visibilityRevisionRef.current !== historyVisibilityRevision ||
+            !Array.isArray(historyPage.events)
+          ) {
+            return;
+          }
+          const historyEvents = historyPage.events as ReticulumChatHookEvent[];
+          setHasOlder(historyPage.hasOlder);
+          mergeEvents(historyEvents, expectedChatKey);
+          updateHistoryMode('latest');
+          setHistoryWindowRevision((revision) => revision + 1);
+          void enrichVisibleEvents(historyEvents, expectedChatKey);
           setLoadedInitialHistoryKey(expectedChatKey);
-        }
-      });
+        })
+        .catch((error) => {
+          const timedOut = String(error?.message || error).includes('timed out');
+          if (
+            timedOut &&
+            attempt < 2 &&
+            !cancelled &&
+            historyWindowGenerationRef.current === historyWindowGeneration
+          ) {
+            window.setTimeout(() => {
+              if (
+                cancelled ||
+                historyWindowGenerationRef.current !== historyWindowGeneration
+              ) {
+                return;
+              }
+              loadInitialHistory(attempt + 1);
+            }, 1500);
+            return;
+          }
+          if (
+            !cancelled &&
+            historyWindowGenerationRef.current === historyWindowGeneration
+          ) {
+            // The successful path replaces the retained snapshot through
+            // mergeEvents. On failure, explicitly publish the authoritative
+            // empty ref before declaring this channel ready so stale events from
+            // the previous channel can never be processed under the new key.
+            setEvents(eventsRef.current);
+            setHasOlder(false);
+            setLoadedInitialHistoryKey(expectedChatKey);
+          }
+        });
+    };
+    loadInitialHistory();
 
     const offEvent = window.reticulumChat?.onEvent?.((payload) => {
       const event = payload?.event as ReticulumChatHookEvent;

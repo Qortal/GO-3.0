@@ -73,10 +73,12 @@ Base58.decode = function (string) {
   while (i < string.length) {
     c = string[i];
     if (!(c in ALPHABET_MAP)) {
-      throw (
+      // A real Error: callers report `error.message`, and a thrown string used
+      // to reach the UI as an empty response ("author mismatch" toasts).
+      throw new Error(
         "Base58.decode received unacceptable input. Character '" +
-        c +
-        "' is not in the Base58 alphabet."
+          c +
+          "' is not in the Base58 alphabet."
       );
     }
     j = 0;

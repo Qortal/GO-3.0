@@ -28,6 +28,7 @@ type ReadinessStatus = {
   state: ReadinessState;
   revision: number;
   error?: string;
+  warning?: string;
 };
 
 const INVOKE_METHODS = [
@@ -65,6 +66,9 @@ const INVOKE_METHODS = [
   'getDirectSummaries',
   'getDirectCallHistory',
   'markDirectRead',
+  'setDeviceState',
+  'getDeviceStates',
+  'getDeviceStateSyncPeers',
   'sendTyping',
   'sendLandState',
   'sendLandChat',
@@ -108,6 +112,7 @@ const EVENT_SUBSCRIPTIONS: Record<string, string> = {
   onDirectCallHistory: 'reticulumChat:directCallHistory',
   onDirectTyping: 'reticulumChat:directTyping',
   onDirectSummaryChanged: 'reticulumChat:directSummaryChanged',
+  onDeviceStateChanged: 'reticulumChat:deviceStateChanged',
   onSilenceChanged: 'reticulumChat:silenceChanged',
   onResource: 'reticulumChat:resource',
   onTyping: 'reticulumChat:typing',
@@ -116,6 +121,12 @@ const EVENT_SUBSCRIPTIONS: Record<string, string> = {
   onLandAction: 'reticulumChat:landAction',
   onLandCall: 'reticulumChat:landCall',
 };
+
+// Boot budget for the engine worker. Covers sqlite-wasm instantiation plus
+// schema migration of a large history DB; hardened WebViews that run wasm in
+// an interpreter (GrapheneOS Vanadium with JIT off) are 10-50x slower here
+// than a stock WebView, so the budget is generous rather than tight.
+const ENGINE_START_TIMEOUT_MS = 180_000;
 
 const PY_EVENTS_FOR_WORKER = new Set([
   'ready',
@@ -141,16 +152,28 @@ const pendingRpc = new Map<
 
 let startPromise: Promise<void> | null = null;
 let untapPython: (() => void) | null = null;
+/**
+ * True while the worker holds its own loopback socket to the native bridge
+ * (see BridgeSocketServer.kt). Python events are then delivered to it
+ * directly and must not be relayed a second time from this thread.
+ */
+let workerHasDirectBridge = false;
 let presenceFeedTimer: number | null = null;
 /** Automatic engine restarts after the SQLite shim discarded a corrupt file. */
 let dbRebuildRestarts = 0;
 const MAX_DB_REBUILD_RESTARTS = 2;
 
+// Non-fatal condition worth showing the user (e.g. interpreted wasm because
+// the WebView runs without JIT). Cleared when the engine is stopped.
+let readinessWarning: string | undefined;
+
 function setReadiness(state: ReadinessState, error?: string): void {
+  if (state === 'idle') readinessWarning = undefined;
   readiness = {
     state,
     revision: readiness.revision + 1,
     ...(error ? { error } : {}),
+    ...(readinessWarning ? { warning: readinessWarning } : {}),
   };
   for (const cb of [...readinessSubscribers]) {
     try {
@@ -175,17 +198,26 @@ function emitEvent(channel: string, payload: unknown): void {
 
 async function answerSignRequest(id: number, fields: Record<string, unknown>) {
   let result: unknown = null;
+  let error: string | undefined;
+  // The worker waits 30 s. A JIT-less WebView (GrapheneOS with the WebView
+  // JIT toggle restricted; it is allowed by default) signs ~10x slower and,
+  // during engine boot, queues behind interpreted wasm work on the main
+  // thread; the old 10 s cap returned null and dropped every
+  // history/group_sub/DM-probe signature. Stock Android signs in
+  // milliseconds, so a longer budget does not change it.
+  const signTimeoutMs = readinessWarning ? 45_000 : 30_000;
   try {
     const response = await window.sendMessage(
       'signReticulumChatEvent',
       fields,
-      10_000
+      signTimeoutMs
     );
     const failure =
       response && typeof response === 'object'
         ? (response as { error?: unknown }).error
         : null;
     if (failure) {
+      error = String(failure);
       // Every sync primitive (history pages, state heads, group key requests,
       // DM discovery) is signed; a silent failure here looks like a dead
       // network, so make the reason visible.
@@ -198,9 +230,15 @@ async function answerSignRequest(id: number, fields: Record<string, unknown>) {
       result = response;
     }
   } catch (err) {
+    error = err instanceof Error ? err.message : String(err);
     console.error('[MobileChat] signReticulumChatEvent failed', err);
   }
-  worker?.postMessage({ t: 'signres', id, result });
+  worker?.postMessage({
+    t: 'signres',
+    id,
+    result,
+    ...(error ? { error } : {}),
+  });
 }
 
 async function answerCommandRequest(
@@ -264,16 +302,36 @@ async function answerNativeFsRequest(
   worker?.postMessage({ t: 'nativefsres', id, result, error });
 }
 
-function pushPresenceState(): void {
+const NODE_API_CONFIG_REFRESH_MS = 30_000;
+let lastPresenceSnapshotKey = '';
+let lastNodeApiConfigCheckAt = 0;
+
+function pushPresenceState(force = false): void {
   if (!worker) return;
   const snapshot = getReticulumChatPresenceSnapshot();
-  worker.postMessage({
-    t: 'presence-state',
-    peers: snapshot.peers,
-    leases: snapshot.leases,
-    healthy: snapshot.healthy,
-  });
-  pushNodeApiConfig();
+  // This runs every 5 s for the life of the app. The worker only replaces
+  // its copy of the snapshot, so an unchanged one is not worth a structured
+  // clone + message hop; the Core API key is likewise near-constant and does
+  // not need a background round trip every tick.
+  const key = JSON.stringify([
+    snapshot.peers,
+    snapshot.leases,
+    snapshot.healthy,
+  ]);
+  if (force || key !== lastPresenceSnapshotKey) {
+    lastPresenceSnapshotKey = key;
+    worker.postMessage({
+      t: 'presence-state',
+      peers: snapshot.peers,
+      leases: snapshot.leases,
+      healthy: snapshot.healthy,
+    });
+  }
+  const now = Date.now();
+  if (force || now - lastNodeApiConfigCheckAt >= NODE_API_CONFIG_REFRESH_MS) {
+    lastNodeApiConfigCheckAt = now;
+    pushNodeApiConfig();
+  }
   pushLocalIdentity();
 }
 
@@ -405,6 +463,15 @@ function handleWorkerMessage(event: MessageEvent): void {
     case 'engine-failed':
       setReadiness('failed', String(data.error || 'engine failed'));
       break;
+    case 'engine-slow':
+      // sqlite-wasm took seconds to start: interpreted wasm (WebView JIT off).
+      // Re-publish readiness with the hint; state is unchanged.
+      console.warn(
+        `[MobileChat] slow engine runtime ms=${data.ms}: ${data.hint}`
+      );
+      readinessWarning = String(data.hint || '');
+      setReadiness(readiness.state, readiness.error);
+      break;
     case 'db-rebuilt':
       // The SQLite shim discarded an unrecoverably corrupt file. Restart the
       // engine on a fresh DB; history re-syncs from peers.
@@ -430,16 +497,53 @@ function handleWorkerMessage(event: MessageEvent): void {
       }
       break;
     }
+    case 'direct-bridge':
+      workerHasDirectBridge = data.connected === true;
+      break;
+    case 'bridge-traffic': {
+      const fmt = (pairs: Array<[string, number]>) =>
+        pairs.map(([k, n]) => `${k}=${n}`).join(' ');
+      const bytes = Array.isArray(data.resourceBytes)
+        ? ` resource_bytes{ ${fmt(data.resourceBytes)} }`
+        : '';
+      console.info(
+        `[MobileChat] bridge_traffic ${data.seconds}s out{ ${fmt(data.commands)} } in{ ${fmt(data.events)} }${bytes}`
+      );
+      break;
+    }
     default:
       break;
   }
 }
 
+/**
+ * Hand the worker the native bridge's loopback socket so its commands and
+ * events stop queueing behind UI work on this thread. Best effort: without it
+ * the worker keeps using the main-thread relay.
+ */
+function pushBridgeSocket(target: Worker): void {
+  const plugin = Reticulum as { bridgeSocket?: () => Promise<unknown> };
+  if (typeof plugin.bridgeSocket !== 'function') return;
+  void plugin
+    .bridgeSocket()
+    .then((info) => {
+      const { url, token } = (info ?? {}) as { url?: string; token?: string };
+      if (worker !== target || !url || !token) return;
+      target.postMessage({ t: 'bridge-socket', url, token });
+    })
+    .catch((err) => {
+      console.warn('[MobileChat] bridge socket unavailable', err);
+    });
+}
+
 function rpc(
   method: string,
   args: unknown[],
-  timeoutMs = 45_000
+  timeoutMs?: number
 ): Promise<unknown> {
+  // Interpreted wasm (GrapheneOS JIT off) makes history reads slow; stock
+  // Android still returns in milliseconds and never uses this extra budget.
+  const budget = timeoutMs ?? (readinessWarning ? 90_000 : 45_000);
   return ensureStarted().then(
     () =>
       new Promise((resolve, reject) => {
@@ -451,7 +555,7 @@ function rpc(
         const timer = window.setTimeout(() => {
           pendingRpc.delete(id);
           reject(new Error(`reticulumChat:${method} timed out`));
-        }, timeoutMs);
+        }, budget);
         pendingRpc.set(id, {
           resolve: (v) => {
             window.clearTimeout(timer);
@@ -522,8 +626,11 @@ function ensureStarted(): Promise<void> {
     const config = { apiBase: getBaseApiReact() };
     lastPushedApiConfig = `${config.apiBase}|`;
     worker.postMessage({ t: 'boot', config });
+    workerHasDirectBridge = false;
+    pushBridgeSocket(worker);
 
     untapPython = registerPythonEventTap((frame) => {
+      if (workerHasDirectBridge) return;
       const eventName = String(frame.event || '');
       if (!PY_EVENTS_FOR_WORKER.has(eventName)) return;
       worker?.postMessage({
@@ -535,11 +642,22 @@ function ensureStarted(): Promise<void> {
 
     const attachRadio = (): void => {
       pushLocalIdentity();
-      pushPresenceState();
+      pushPresenceState(true);
       if (presenceFeedTimer == null) {
-        presenceFeedTimer = window.setInterval(pushPresenceState, 5_000);
+        const armPresenceFeed = (): void => {
+          if (presenceFeedTimer != null) {
+            window.clearInterval(presenceFeedTimer);
+          }
+          const ms =
+            typeof document !== 'undefined' && document.hidden ? 20_000 : 5_000;
+          presenceFeedTimer = window.setInterval(() => pushPresenceState(), ms);
+        };
+        armPresenceFeed();
+        document.addEventListener('visibilitychange', () => {
+          if (!document.hidden) pushPresenceState();
+          if (worker) armPresenceFeed();
+        });
       }
-      pushNodeApiConfig();
     };
     attachRadio();
     // Once the Python radio is up, re-push identity/presence so the engine's
@@ -558,7 +676,7 @@ function ensureStarted(): Promise<void> {
         if (readiness.state === 'failed') {
           return reject(new Error(readiness.error || 'engine failed'));
         }
-        if (Date.now() - started > 60_000) {
+        if (Date.now() - started > ENGINE_START_TIMEOUT_MS) {
           setReadiness('failed', 'Chat engine start timed out');
           return reject(new Error('Chat engine start timed out'));
         }
@@ -567,6 +685,23 @@ function ensureStarted(): Promise<void> {
       poll();
     });
   })().catch((err) => {
+    // Tear the failed worker down before allowing a retry. It still owns the
+    // OPFS access handles of the SQLite pool; a second worker booted next to
+    // it cannot open the database and fails too, and from then on every chat
+    // call rejected until the app was restarted.
+    untapPython?.();
+    untapPython = null;
+    const failedWorker = worker;
+    const failedPort = rpcPort;
+    worker = null;
+    rpcPort = null;
+    workerHasDirectBridge = false;
+    try {
+      failedPort?.close();
+    } catch {
+      /* already closed */
+    }
+    failedWorker?.terminate();
     startPromise = null;
     setReadiness('failed', err instanceof Error ? err.message : String(err));
     throw err;
@@ -587,6 +722,7 @@ export function stopMobileReticulumChat(): void {
   const stoppingPort = rpcPort;
   worker = null;
   rpcPort = null;
+  workerHasDirectBridge = false;
   stoppingWorker?.postMessage({ t: 'stop' });
   window.setTimeout(() => {
     try {
@@ -636,6 +772,9 @@ export function installMobileReticulumChat(): void {
   for (const method of INVOKE_METHODS) {
     api[method] = (...args: unknown[]) => rpc(method, args);
   }
+  // Diagnostics (read-only): self-DM state as the engine sees it.
+  api.debugSelfDm = () => rpc('debug:selfDm', []);
+  api.debugLogs = (filter?: string) => rpc('debug:logs', [filter]);
 
   for (const [name, channel] of Object.entries(EVENT_SUBSCRIPTIONS)) {
     api[name] = (cb: (payload: unknown) => void) => {
@@ -662,15 +801,28 @@ export function installMobileReticulumChat(): void {
  * Desktop serves assembled files over a custom `qortal-reticulum-resource://`
  * protocol registered in the Electron main process. The WebView has no such
  * protocol, so `getUrl` pulls the bytes out of the worker and hands back a
- * `blob:` URL instead. Everything else is a thin RPC.
+ * `blob:` URL instead, and `open` shows the file in the in-app viewer rather
+ * than an OS app. Everything else is a thin RPC.
  */
 function installMobileReticulumResources(): void {
   const blobUrls = new Map<string, string>();
-  // WebView-picked files have no filesystem path, but the resource sender
-  // streams non-image attachments from disk rather than buffering base64. So
-  // copy the picked bytes into the native staging dir once and hand callers
-  // that path.
+  // WebView-picked files have no filesystem path. The composers require a
+  // path for non-image attachments (`addPendingReticulumFile` refuses to
+  // buffer them as base64) and then import through `importFilePath`, so hand
+  // out a synthetic `mobile-file://` key per File and resolve it back to the
+  // File at import time. Copying the bytes into native staging here bought
+  // nothing: the import can only read through the worker, which sees OPFS.
   const stagedPaths = new WeakMap<File, string>();
+  const stagedFiles = new Map<string, File>();
+  let stagedSequence = 0;
+
+  const encodeBase64 = (bytes: Uint8Array): string => {
+    let binary = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) {
+      binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+    }
+    return btoa(binary);
+  };
 
   const resources = {
     getPathForFile: (file?: unknown) =>
@@ -679,26 +831,45 @@ function installMobileReticulumResources(): void {
     stageFileForPath: async (file: File): Promise<string> => {
       const existing = stagedPaths.get(file);
       if (existing) return existing;
-      const bytes = new Uint8Array(await file.arrayBuffer());
-      let binary = '';
-      for (let i = 0; i < bytes.length; i += 0x8000) {
-        binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-      }
-      const { path } = await Reticulum.chatResourcePath({
-        name: file.name || 'attachment.bin',
-      });
-      await Reticulum.chatResourceWrite({ path, dataBase64: btoa(binary) });
+      const path = `mobile-file://${Date.now()}-${++stagedSequence}/${file.name || 'attachment.bin'}`;
       stagedPaths.set(file, path);
+      stagedFiles.set(path, file);
       return path;
     },
 
     importBase64: (payload: unknown) => rpc('resource:importBase64', [payload]),
 
-    // No path-based import on mobile: the caller has no real filesystem path.
-    importFilePath: async () => ({
-      success: false,
-      error: 'File path import is not available on mobile',
-    }),
+    // Path-based import resolves the staged File and streams it to the worker
+    // as base64 (same path images take). Unknown paths cannot be read here.
+    importFilePath: async (payload: unknown) => {
+      const record =
+        payload && typeof payload === 'object'
+          ? (payload as Record<string, unknown>)
+          : {};
+      const filePath = String(record.filePath ?? '');
+      const file = stagedFiles.get(filePath);
+      if (!file) {
+        return {
+          success: false,
+          error: 'File path import is not available on mobile',
+        };
+      }
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const { filePath: _ignored, ...rest } = record;
+      const result = (await rpc('resource:importBase64', [
+        {
+          ...rest,
+          fileName: rest.fileName || file.name || 'attachment.bin',
+          mimeType: rest.mimeType || file.type || 'application/octet-stream',
+          base64: encodeBase64(bytes),
+        },
+      ])) as { success?: boolean } | null;
+      if (result?.success) {
+        stagedFiles.delete(filePath);
+        stagedPaths.delete(file);
+      }
+      return result;
+    },
 
     getUrl: async (fileHash: string) => {
       const hash = String(fileHash ?? '').trim();
@@ -785,16 +956,14 @@ function installMobileReticulumResources(): void {
       }
     },
 
+    // `window.open(blobUrl)` does not open a new window in the WebView: it
+    // navigates the app itself to the raw file, with no way back. Files open
+    // in the in-app viewer instead, which also offers share / open with.
     open: async (fileHash: string, suggestedFileName?: string) => {
-      const opened = await resources.getUrl(fileHash);
-      if (!opened.success || !opened.url) {
-        return {
-          success: false,
-          error: opened.error || 'Resource unavailable',
-        };
-      }
-      window.open(opened.url, '_blank');
-      void suggestedFileName;
+      const hash = String(fileHash ?? '').trim();
+      if (!hash) return { success: false, error: 'Invalid file hash' };
+      const { openFileViewer } = await import('../../utils/fileViewerEvents');
+      openFileViewer({ fileHash: hash, fileName: suggestedFileName });
       return { success: true };
     },
 

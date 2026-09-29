@@ -475,6 +475,22 @@ describe('Reticulum wallet signing policy', () => {
         signedAt: 1,
       },
       {
+        type: 'RCHAT_DEVICE_STATE_V1',
+        ownerAddress: 'a',
+        key: 'notif.mentions',
+        value: '1',
+        signedAt: 1,
+        expiresAt: 2,
+      },
+      {
+        type: 'RCHAT_DEVICE_STATE_V1',
+        ownerAddress: 'a',
+        key: 'notif.rule.abc',
+        value: null,
+        signedAt: 1,
+        expiresAt: null,
+      },
+      {
         type: 'RCHAT_METADATA_SNAPSHOT',
         createdAt: 1,
         groupId: 1,

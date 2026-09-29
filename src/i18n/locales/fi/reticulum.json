@@ -62,6 +62,26 @@
     "tooltip_value": "viestin vanheneminen: {{value}}",
     "unavailable": "viestin vanheneminen ei ole käytettävissä"
   },
+  "file_viewer": {
+    "close": "sulje tiedostonäkymä",
+    "file": "tiedosto",
+    "link_unsupported": "tätä linkkiä ei voi avata täältä",
+    "load_failed": "tiedostoa ei voitu avata. Sen lataus voi olla vielä kesken, tai sitä ei enää ole tallennettu tälle laitteelle.",
+    "markup_as_source": "verkkosivut näytetään lähdekoodina, eikä niitä koskaan suoriteta sovelluksessa.",
+    "no_preview": "tämäntyyppistä tiedostoa ei voi näyttää täällä. Avaa se toisessa sovelluksessa, jaa se tai tallenna se laitteellesi.",
+    "open_with": "avaa toisella sovelluksella",
+    "open_with_failed": "mikään sovellus ei pystynyt avaamaan tätä tiedostoa",
+    "opening": "avataan tiedostoa…",
+    "preview_failed": "tiedostoa ei voitu näyttää täällä. Avaa se toisessa sovelluksessa, jaa se tai tallenna se laitteellesi.",
+    "save": "tallenna laitteelle",
+    "save_failed": "tiedostoa ei voitu tallentaa",
+    "saved_to": "tallennettu sijaintiin {{location}}",
+    "share": "jaa",
+    "share_failed": "tiedostoa ei voitu jakaa",
+    "show_formatted": "näytä muotoiltuna",
+    "show_source": "näytä pelkkänä tekstinä",
+    "truncated": "tiedosto on liian suuri näytettäväksi kokonaan. Tallenna se tai avaa se toisessa sovelluksessa nähdäksesi loput."
+  },
   "group_fallback_name": "Ryhmä",
   "group_type": {
     "closed": "suljettu",
@@ -94,6 +114,9 @@
     "download_failed": "unable to download image",
     "prepare_failed": "unable to prepare image for clipboard",
     "read_failed": "unable to read image",
+    "save": "tallenna kuva",
+    "share": "jaa kuva",
+    "share_failed": "kuvaa ei voitu jakaa",
     "zoom_in": "zoom in",
     "zoom_out": "zoom out"
   },

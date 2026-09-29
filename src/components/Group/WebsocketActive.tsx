@@ -5,6 +5,7 @@ import {
   resumeAllQueues,
 } from '../../App';
 import { subscribeToEvent, unsubscribeFromEvent } from '../../utils/events';
+import { coreWebsocketPingMs } from '../../utils/coreWebsocketPing';
 import { useAtomValue } from 'jotai';
 import { extStateAtom, selectedNodeInfoAtom } from '../../atoms/global';
 import { getData } from '../../utils/chromeStorage';
@@ -159,8 +160,8 @@ export const WebSocketActive = ({ myAddress, setIsLoadingGroups }) => {
               timeoutIdRef.current = null;
               groupSocketTimeoutRef.current = setTimeout(
                 () => pingHeads(socket, isCurrentConnection),
-                20000
-              ); // Ping every 20 seconds
+                coreWebsocketPingMs()
+              );
             } else {
               if (!initiateRef.current) {
                 setIsLoadingGroups(false);

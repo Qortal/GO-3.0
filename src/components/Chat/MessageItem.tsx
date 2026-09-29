@@ -57,6 +57,8 @@ import DownloadRoundedIcon from '@mui/icons-material/DownloadRounded';
 import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded';
 import InsertDriveFileRoundedIcon from '@mui/icons-material/InsertDriveFileRounded';
 import { getQchatFileApi } from '../../utils/qchatFileApi';
+import { openFileViewer } from '../../utils/fileViewerEvents';
+import { Capacitor } from '@capacitor/core';
 import { buildChatUserAvatarUrlBlocking } from '../../utils/chatAvatarUrl';
 import { buildGroupAvatarUrl } from '../../utils/groupAvatarUrl';
 import CancelRoundedIcon from '@mui/icons-material/CancelRounded';
@@ -1110,7 +1112,6 @@ export const MessageItemComponent = ({
   const [isFileOpenWarningOpen, setIsFileOpenWarningOpen] = useState(false);
   const [isOpeningFile, setIsOpeningFile] = useState(false);
   const [fileOpenError, setFileOpenError] = useState<string | null>(null);
-  const [savedFileUri, setSavedFileUri] = useState<string | null>(null);
   useEffect(() => {
     if (
       !isReticulumResourceImage ||
@@ -1773,7 +1774,6 @@ export const MessageItemComponent = ({
         error: error instanceof Error ? error.message : 'Save failed',
       }));
     if (saved?.success) {
-      if (saved.uri) setSavedFileUri(saved.uri);
       setFileResourceStatus('ready');
       return;
     }
@@ -1790,16 +1790,6 @@ export const MessageItemComponent = ({
     setIsOpeningFile(true);
     setFileOpenError(null);
     try {
-      // Once it is on disk, hand the file to a real viewer app rather than
-      // reloading every byte into the WebView to build a blob url.
-      if (savedFileUri) {
-        const { openSavedMobileFile } =
-          await import('../../utils/mobileFileSave');
-        if (await openSavedMobileFile(savedFileUri, reticulumFileName)) {
-          setIsFileOpenWarningOpen(false);
-          return;
-        }
-      }
       const result = await window.reticulumResources?.open?.(
         reticulumFileResourceId,
         reticulumFileName
@@ -1820,12 +1810,7 @@ export const MessageItemComponent = ({
     } finally {
       setIsOpeningFile(false);
     }
-  }, [
-    fileResourceStatus,
-    reticulumFileName,
-    reticulumFileResourceId,
-    savedFileUri,
-  ]);
+  }, [fileResourceStatus, reticulumFileName, reticulumFileResourceId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -3931,6 +3916,17 @@ export const MessageItemComponent = ({
                         variant="contained"
                         startIcon={<OpenInNewRoundedIcon />}
                         onClick={() => {
+                          // In the app, files open in the in-app viewer and
+                          // stay in the sandbox, so the warning about OS apps
+                          // does not apply.
+                          if (Capacitor.isNativePlatform()) {
+                            openFileViewer({
+                              fileHash: reticulumFileResourceId,
+                              fileName: reticulumFileName,
+                              fileSize: reticulumFileSize,
+                            });
+                            return;
+                          }
                           setFileOpenError(null);
                           setIsFileOpenWarningOpen(true);
                         }}

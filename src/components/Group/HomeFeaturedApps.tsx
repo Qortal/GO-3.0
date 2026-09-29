@@ -25,6 +25,7 @@ import { MessagingIconFilled } from '../../assets/Icons/MessagingIconFilled';
 import qTradeLogo from '../../assets/Icons/q-trade-logo.webp';
 import BorderGlow from '../common/BorderGlow';
 import { getBlueTier1ButtonSx } from '../../styles/blueMaterial';
+import { useVideoPlaybackWhenVisible } from '../../hooks/useVideoPlaybackWhenVisible';
 import {
   HUB_ONBOARDING_QCHAT_CARD_LOCK_ATTRIBUTE,
   HUB_ONBOARDING_QCHAT_CARD_LOCK_EVENT,
@@ -429,6 +430,9 @@ export const HomeFeaturedApps = ({ panelBoxRef = undefined }) => {
           display: 'flex',
           justifyContent: 'center',
           minHeight: '42px',
+          // The motion toggle sits absolutely on the right: keep the centered
+          // title and subtitle clear of it (both sides, so they stay centered).
+          px: '38px',
           position: 'relative',
           textAlign: 'center',
           width: '100%',
@@ -806,6 +810,7 @@ const AppTile = ({
       : buildAppThumbnailUrl(appName);
   const [imageSrc, setImageSrc] = useState(baseAvatarUrl);
   const [hasTileVideoError, setHasTileVideoError] = useState(false);
+  const tileVideoRef = useRef<HTMLVideoElement | null>(null);
   const hasRetriedRef = useRef(false);
   const retryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isPreviewableTile = appName in FEATURED_PREVIEW_CONFIG;
@@ -821,6 +826,14 @@ const AppTile = ({
   const hideBasePreviewTile =
     !calmMode && !!expandedPreviewApp && expandedPreviewApp === appName;
   const allowTileHover = !expandedPreviewApp && !calmMode;
+  // Decode the looping background only while this tile is really on screen.
+  useVideoPlaybackWhenVisible(
+    tileVideoRef,
+    !calmMode &&
+      !hasTileVideoError &&
+      !fadeOutForPreview &&
+      !hideBasePreviewTile
+  );
   const hiddenTileStyles = {
     opacity: fadeOutForPreview ? 0 : hideBasePreviewTile ? 0 : 1,
     pointerEvents: fadeOutForPreview || hideBasePreviewTile ? 'none' : 'auto',
@@ -974,7 +987,7 @@ const AppTile = ({
         >
           <Box
             component="video"
-            autoPlay
+            ref={tileVideoRef}
             muted
             loop
             playsInline
@@ -1255,6 +1268,13 @@ const FeaturedExpandedPreview = ({
   const resolvedAppName = appName ?? lastResolvedAppRef.current;
   const previewConfig = FEATURED_PREVIEW_CONFIG[resolvedAppName];
   const [hasVideoError, setHasVideoError] = useState(false);
+  const previewVideoRef = useRef<HTMLVideoElement | null>(null);
+  // The panel stays mounted at opacity 0 between previews; do not decode then.
+  useVideoPlaybackWhenVisible(
+    previewVideoRef,
+    visible && !hasVideoError,
+    previewConfig.videoSrc
+  );
   const alignRight = previewConfig.align === 'right';
   const isQChatPreview = resolvedAppName === Q_CHAT_APP_NAME;
 
@@ -1299,7 +1319,7 @@ const FeaturedExpandedPreview = ({
         <Box
           key={previewConfig.videoSrc}
           component="video"
-          autoPlay
+          ref={previewVideoRef}
           muted
           loop
           playsInline
