@@ -61,8 +61,9 @@
     "create_transaction": "loo tehing Qortali plokiahelas",
     "decline": "keeldu",
     "decrypt": "dekrüpteeri",
-    "delete": "delete",
+    "delete": "kustuta",
     "disable_enter": "keela Enter",
+    "discard_message": "loobu sõnumist",
     "download": "laadi alla",
     "download_file": "laadi fail alla",
     "edit": "muuda",
@@ -98,6 +99,7 @@
     "pin": "kinnita",
     "pin_app": "kinnita rakendus",
     "pin_to_dashboard": "kinnita juhtpaneelile",
+    "pin_to_tabs": "kinnita vahelehtedesse",
     "post": "postita",
     "post_message": "postita sõnum",
     "publish": "avalda",
@@ -140,6 +142,7 @@
     "unpin": "eemalda kinnitamine",
     "unpin_app": "eemalda rakenduse kinnitamine",
     "unpin_from_dashboard": "eemalda juhtpaneelilt",
+    "unpin_from_tabs": "eemalda vahelehtedest",
     "update": "uuenda",
     "update_app": "uuenda oma rakendust",
     "vote": "hääleta"
@@ -153,6 +156,9 @@
   "announcement_other": "teated",
   "api": "API",
   "app": "rakendus",
+  "app_category": {
+    "title": "kategooria: {{name}}"
+  },
   "app_detail": {
     "about": "teave",
     "by_developer": "@{{developer}} poolt",
@@ -160,11 +166,14 @@
     "details": "üksikasjad",
     "published": "avaldatud",
     "rate_this_app": "hinda seda rakendust",
+    "rating_stars_label": "{{score}} tärni 5-st",
     "ratings": "hinnangud",
     "ratings_count": "{{count}} hinnangut",
     "service": "teenus",
     "size": "suurus",
     "status": "olek",
+    "status_checking": "kontrollin sõlme…",
+    "status_downloading": "allalaadimine ({{percent}})",
     "status_not_installed": "paigaldamata",
     "status_ready": "valmis (paigaldatud)",
     "tags": "sildid",
@@ -183,6 +192,45 @@
     "switch_theme_light": "Lülitu heledasse režiimi"
   },
   "attachment": "manus",
+  "background_sync": {
+    "description": "Hoiab vestluse töös, kui GO pole ekraanil.",
+    "error": {
+      "save_failed": "Taustal sünkroonimist ei õnnestunud muuta. Proovi uuesti."
+    },
+    "help": {
+      "always": "Hoiab vestluse sünkroonituna alati, kui GO töötab taustal. Kulutab märgatavalt rohkem akut.",
+      "charging": "Hoiab vestluse sünkroonituna, kui telefon laeb.",
+      "off": "Vestlus lõpetab sünkroonimise umbes minut pärast GO-st lahkumist ja jõuab järele, kui selle uuesti avad.",
+      "outbox": "Akutoitel saadab GO sinu ootel sõnumid siiski lõpuni kuni 3 minuti jooksul pärast lahkumist.",
+      "relay": "Kui telefon laeb Wi-Fi võrgus, aitab GO ka teiste sõnumeid edasi saata."
+    },
+    "mode": {
+      "always": "alati",
+      "charging": "laadimisel",
+      "off": "väljas"
+    },
+    "native": {
+      "fgs_timeout_text": "Android peatas GO taustaühenduse. Ava GO, et uuesti ühenduda.",
+      "fgs_timeout_title": "GO on peatatud",
+      "status_paused_text": "Ava GO, et vestlusi sünkroonida.",
+      "status_paused_title": "Vestlus on peatatud",
+      "status_syncing_background": "Vestlust sünkroonitakse taustal",
+      "status_waiting_text": "Saatmist ootavaid sõnumeid: {{count}}"
+    },
+    "status": {
+      "relaying": "Edastab teistele (laeb Wi-Fi võrgus)",
+      "syncing_now": "Praegu sünkroonitakse taustal"
+    },
+    "title": "Taustal sünkroonimine",
+    "vendor_freeze": {
+      "body": "Sinu {{manufacturer}} telefon peatas GO taustal, kuigi taustal sünkroonimine oli sees. Ava telefoni akuseaded GO jaoks ja luba taustategevus.",
+      "body_unknown": "Sinu telefon peatas GO taustal, kuigi taustal sünkroonimine oli sees. Ava telefoni akuseaded GO jaoks ja luba taustategevus.",
+      "dismiss": "Loobu",
+      "guide": "Samm-sammuline juhend (dontkillmyapp.com)",
+      "open_battery_settings": "Ava akuseaded",
+      "title": "GO peatati taustal"
+    }
+  },
   "balance": "saldo:",
   "blocks": "plokid",
   "bookmarks": {
@@ -387,6 +435,43 @@
     "payment": "maksetasu",
     "publish": "avaldamistasu"
   },
+  "file_transfer": {
+    "dismiss": "Sulge",
+    "downloading_title": "{{filename}} allalaadimine",
+    "failed_title": "Allalaadimine ebaõnnestus",
+    "fetching_title": "{{filename}} toomine",
+    "gathering": "Kogumine QDN-ist · {{percent}}%",
+    "gathering_chunks": "Kogumine QDN-ist · {{percent}}% · {{local}}/{{total}} osa",
+    "gathering_unknown": "Kogumine QDN-ist…",
+    "hide": "Peida (jätkub teavitustes)",
+    "install": "Paigalda",
+    "looking_for_file": "Faili otsimine QDN-ist…",
+    "not_saved_title": "{{filename}} jäi salvestamata",
+    "not_saved_tray": "Fail on endiselt alla laaditud. Salvestamiseks ava GO teavitused.",
+    "open": "Ava",
+    "open_failed": "Ükski selle telefoni rakendus ei saa seda faili avada",
+    "progress": "{{percent}} % · {{size}}",
+    "ready_to_install": "Valmis paigaldamiseks · {{location}}",
+    "ready_to_open": "Valmis avamiseks · {{location}}",
+    "remove": "Eemalda loendist",
+    "save": "Salvesta",
+    "save_error": "Viga faili salvestamisel: {{message}}",
+    "save_error_generic": "Viga faili salvestamisel",
+    "save_stalled": "Salvestamine takerdus: salvestusruum lakkas vastamast",
+    "save_success": "Fail salvestatud",
+    "saved_title": "{{filename}} salvestatud",
+    "saved_to": "Salvestatud asukohta {{location}}",
+    "saving_file": "Faili salvestamine…",
+    "saving_title": "{{filename}} salvestamine",
+    "stage_awaiting_save": "Alla laaditud, ootab salvestamist",
+    "stage_declined": "Salvestamata · alles hoidmiseks puuduta Salvesta",
+    "stage_downloading": "Allalaadimine",
+    "stage_gathering": "Kogumine QDN-ist",
+    "stage_saving": "Telefoni salvestamine",
+    "storage_permission": "GO vajab salvestusruumi luba, et salvestada faile kausta Documents.",
+    "tap_to_install": "Puuduta paigaldamiseks · {{location}}",
+    "tap_to_open": "Puuduta avamiseks · {{location}}"
+  },
   "filter": {
     "all": "kõik",
     "category": "kategooria",
@@ -399,6 +484,65 @@
   "for": "jaoks",
   "general": "üldine",
   "general_settings": "üldseaded",
+  "go_updates": {
+    "android_only": "Paigaldamine töötab Androidi rakenduses.",
+    "available_title": "Saadaval on uus GO 3.0 uuendus",
+    "badge": {
+      "installed": "Paigaldatud",
+      "new": "Uus",
+      "older": "Vanem"
+    },
+    "check": "Otsi uuendusi",
+    "checking": "QDN-i kontrollimine…",
+    "error": {
+      "fetch_failed": "Versiooni ei õnnestunud tuua",
+      "timeout": "Võrk ei toimetanud versiooni õigeks ajaks kohale"
+    },
+    "hide_changes": "Peida muudatused",
+    "install": "Paigalda",
+    "install_update": "Paigalda uuendus",
+    "installed_label": "Paigaldatud selles telefonis",
+    "job": {
+      "allow_installs": "Luba paigaldamine",
+      "confirm_hint": "Alla laaditud. Android palub sul paigaldamise kinnitada.",
+      "continue_background": "Võid selle ekraani sulgeda. Allalaadimine jätkub.",
+      "dismiss": "Loobu",
+      "downloading": "Allalaadimine",
+      "failed": "Paigaldamine ebaõnnestus",
+      "fetching": "Toomine QDN-ist",
+      "permission": "Vaja on luba",
+      "permission_hint": "Android paigaldab rakendusi ainult lubatud allikatest. Lülita Qortal GO jaoks sisse „Tundmatute rakenduste installimine”. Paigaldamine jätkub ise, kui tagasi tuled.",
+      "ready": "Valmis paigaldamiseks",
+      "updating_to": "Uuendamine versioonile v{{version}}"
+    },
+    "last_checked": "viimati kontrollitud {{time}}",
+    "later": "Hiljem",
+    "loading_versions": "Versioonide laadimine QDN-ist…",
+    "no_notes": "Selle versiooni kohta ei lisatud väljalaskemärkmeid.",
+    "no_versions": "GO 3.0 versioone pole veel avaldatud.",
+    "open_in_qshare": "Ava Q-Share+'is",
+    "progress": {
+      "assembling": "Versiooni kokkupanek",
+      "bytes_of_total": "{{done}} / {{total}}",
+      "confirm_in_android": "Android palub kinnitust",
+      "downloading": "Allalaadimine",
+      "fetching": "Toomine Qortali võrgust",
+      "needs_permission": "Android vajab sinu luba, et Qortal GO-st rakendusi paigaldada"
+    },
+    "published_when": "avaldatud {{when}}",
+    "retry": "Proovi uuesti",
+    "show_changes": "Näita muudatusi",
+    "status": {
+      "available": "Saadaval on uuem versioon.",
+      "never": "Pole veel kontrollitud.",
+      "unreachable": "QDN-iga ei saadud ühendust. Kontrolli sõlme ühendust ja proovi uuesti.",
+      "up_to_date": "Sul on uusim versioon."
+    },
+    "title": "GO 3.0 uuendused",
+    "update_marker": "GO 3.0 uuendus saadaval",
+    "versions_missing": "Mõnda versiooni ei õnnestunud veel laadida ({{count}}). Kontrolli hiljem uuesti.",
+    "versions_title": "Versioonid QDN-is"
+  },
   "group_call": "rühmakõne",
   "group_call_blocked": "lõpeta esmalt oma teine kõne",
   "group_call_chat_placeholder": "Rühmakõnede tekstivestlus ei ole veel saadaval.",
@@ -462,6 +606,7 @@
       "decrypt_app": "privaatset rakendust ei saa dekrüpteerida",
       "download_image": "pilti ei saa alla laadida. Palun proovi hiljem uuesti, vajutades värskenduse nuppu",
       "download_private_app": "privaatset rakendust ei saa alla laadida",
+      "edit_message_too_long": "Muudetud sõnumeid ei saa jagada. Lühenda see {{maximum}} baidini.",
       "encrypt_app": "rakendust ei saa krüpteerida. Rakendus pole avaldatud",
       "fetch_app": "rakendust ei saa laadida",
       "fetch_publish": "avaldust ei saa laadida",
@@ -476,6 +621,8 @@
       "invalid_signature": "vigane allkiri",
       "invalid_theme_format": "vigane teema formaat",
       "invalid_zip": "vigane zip",
+      "long_message_too_many_parts": "See sõnum on saatmiseks liiga pikk, isegi {{maximum}} osaks jagatuna.",
+      "long_message_unsplittable": "Osa sellest sõnumist ei saa saatmiseks piisavalt väikesteks osadeks jagada.",
       "message_loading": "sõnumi laadimisel ilmnes viga.",
       "message_size": "sinu sõnumi suurus on {{ size }} baiti maksimaalsest {{ maximum }}",
       "minting_account_add": "müntimiskontot ei saa lisada",
@@ -530,6 +677,7 @@
       "hub_notification_settings_desc": "Choose which Hub features appear in your notification panel.",
       "link_copied": "link kopeeriti lõikelauale.",
       "loading": "Laadimine...",
+      "long_message_split": "Pikk sõnum: see saadetakse {{count}} osas.",
       "mentioned": "mainitud",
       "message_with_image": "selles sõnumis on juba pilt",
       "minimal_qort_balance": "Vähemalt {{ quantity }} QORTi sinu saldol võimaldab saata vestlussõnumeid peaaegu hetkega.",
@@ -714,6 +862,18 @@
   "none": "puudub",
   "not_available": "pole saadaval",
   "note": "märkus",
+  "notification_history": {
+    "clear": "Tühjenda",
+    "clear_all": "Tühjenda kõik",
+    "clear_all_hint": "Tühjenda kõik teavitused. Need jäävad teavituste ajalukku.",
+    "close": "Sulge",
+    "drag_to_close": "Sulgemiseks lohista üles",
+    "empty": "Siin pole veel midagi. Saadud teavitused jäävad siia 30 päevaks, isegi kui need ära pühid.",
+    "open": "Teavituste ajalugu",
+    "title": "Teavituste ajalugu",
+    "today": "Täna",
+    "yesterday": "Eile"
+  },
   "official_apps": {
     "all_apps": "kõik ametlikud rakendused",
     "featured": "esiletõstetud",
@@ -888,6 +1048,20 @@
     "community_apps": "kogukonna rakendused",
     "my_apps": "minu rakendused",
     "official_apps": "ametlikud rakendused"
+  },
+  "tabs_overlay": {
+    "delete_folder_body_one": "sellesse salvestatud {{count}} rakendus eemaldatakse vahelehtedest. Avatud vahelehed jäävad avatuks.",
+    "delete_folder_body_other": "sellesse salvestatud {{count}} rakendust eemaldatakse vahelehtedest. Avatud vahelehed jäävad avatuks.",
+    "delete_folder_title": "kas kustutada „{{name}}“?",
+    "edit_hint_folder": "lohista rakendusi järjestuse muutmiseks või puuduta eemaldamiseks ×",
+    "edit_hint_root": "lohista rakendusi kaustadesse, puuduta eemaldamiseks × või lohista kaustu järjestuse muutmiseks",
+    "folder_empty": "see kaust on tühi",
+    "folder_empty_hint": "vajuta pikalt mõnele rakendusele, et see sellesse kausta teisaldada.",
+    "no_open_tabs": "avatud vahelehti veel pole",
+    "no_open_tabs_with_folders": "avatud vahelehti pole. Puuduta kausta, et näha selle rakendusi.",
+    "pin_failed": "kinnitust ei õnnestunud vahelehtedesse salvestada",
+    "pinned_to_folder": "kinnitatud vahelehtede kausta {{folder}}",
+    "unpinned_from_folder": "eemaldatud vahelehtede kaustast {{folder}}"
   },
   "tags": "sildid",
   "theme": {

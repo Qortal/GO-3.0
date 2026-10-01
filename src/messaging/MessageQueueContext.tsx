@@ -6,6 +6,7 @@ import {
   useRef,
 } from 'react';
 import ShortUniqueId from 'short-unique-id';
+import { describeSendError, recordSendFailure } from './sendFailureLog';
 
 const MessageQueueContext = createContext(null);
 const uid = new ShortUniqueId({ length: 8 });
@@ -134,10 +135,14 @@ export const MessageQueueProvider = ({ children }) => {
         console.error('Message sending failed', error);
 
         const attempts = currentMessage.attempts || 1;
+        // Carry the reason with the row: "failed to send" alone gives a phone
+        // user (and a screenshot) nothing to act on.
+        const sendError = describeSendError(error);
         if (attempts <= maxRetries) {
           patchQueuedChat(groupDirectId, identifier, {
             retries: attempts,
             status: 'failed',
+            sendError,
           });
           // Avoid a tight retry loop that can publish the same chat reply
           // multiple times when the first attempt partially succeeds.
@@ -145,9 +150,11 @@ export const MessageQueueProvider = ({ children }) => {
           continue;
         }
 
+        recordSendFailure(groupDirectId, attempts, error);
         patchQueuedChat(groupDirectId, identifier, {
           retries: attempts,
           status: 'failed-permanent',
+          sendError,
         });
         messageQueueRef.current.shift();
       }

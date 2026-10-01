@@ -21,6 +21,7 @@ import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded';
 import { getBaseApiReact } from '../../App';
 import { getNameInfo } from '../Group/groupApi';
 import { executeEvent } from '../../utils/events';
+import { BACK_PRIORITY, useAndroidBack } from '../../utils/androidBack';
 import { formatQortAmount } from '../../utils/numberFunctions';
 import { statusDotColor } from '../../hooks/usePresence';
 import { usePresenceStatusLabel } from '../common/accountStatus';
@@ -96,6 +97,22 @@ export const ReticulumUserCard = ({
     null
   );
   const cardContentRef = useRef<HTMLDivElement>(null);
+
+  // Android back peels the card's own layers first, then the card, so it never
+  // falls through to the conversation and leaves the group.
+  useAndroidBack(
+    () => {
+      if (isAvatarPreviewOpen) {
+        setIsAvatarPreviewOpen(false);
+      } else if (hideMenuAnchor) {
+        setHideMenuAnchor(null);
+      } else {
+        onClose();
+      }
+      return true;
+    },
+    { priority: BACK_PRIORITY.dialog, enabled: open || isAvatarPreviewOpen }
+  );
 
   useEffect(() => {
     if (!open) return;

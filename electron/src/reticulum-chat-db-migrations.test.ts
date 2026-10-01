@@ -63,4 +63,36 @@ describe('reticulum chat DB schema migrations', () => {
     expect(hasStamp(third)).toBe(true);
     third.close();
   });
+
+  it('adds the nullable DM delivery retry columns once, additively', () => {
+    const execSpy = vi.spyOn(Database.prototype as any, 'exec');
+    const retryColumnAdds = () =>
+      execSpy.mock.calls.filter(([sql]) =>
+        /ALTER TABLE rchat_dm_events ADD COLUMN (delivery_attempts|next_delivery_attempt_at) INTEGER$/.test(
+          String(sql)
+        )
+      ).length;
+    const dmColumns = (db: ReticulumChatDatabase) =>
+      (
+        rawDb(db).prepare('PRAGMA table_info(rchat_dm_events)').all() as Array<{
+          name: string;
+        }>
+      ).map((column) => column.name);
+
+    const dbPath = tempDbPath();
+    const first = new ReticulumChatDatabase(dbPath);
+    expect(retryColumnAdds()).toBe(2);
+    expect(dmColumns(first)).toEqual(
+      expect.arrayContaining([
+        'own_device_copied_at',
+        'delivery_attempts',
+        'next_delivery_attempt_at',
+      ])
+    );
+    first.close();
+
+    const second = new ReticulumChatDatabase(dbPath);
+    expect(retryColumnAdds()).toBe(2);
+    second.close();
+  });
 });

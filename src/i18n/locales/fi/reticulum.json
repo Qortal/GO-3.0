@@ -33,6 +33,27 @@
     "wait_until_ready": "wait until the discussion is ready"
   },
   "dm": {
+    "delivery": {
+      "delivered": {
+        "hint": "Vastaanottajan laite pyysi sitä, ja se lähetettiin.",
+        "label": "toimitettu"
+      },
+      "on_other_device": {
+        "hint": "Toisella laitteellasi on kopio, ja se voi lähettää viestin, kun vastaanottaja on verkossa. Toimitusta ei ole vahvistettu.",
+        "label": "toisessa laitteessasi"
+      },
+      "only_on_this_device": {
+        "label": "vain tässä laitteessa"
+      },
+      "only_on_this_phone": {
+        "hint": "Ei vielä lähetetty. Lähetystä yritetään automaattisesti uudelleen.",
+        "label": "vain tässä puhelimessa"
+      },
+      "sending": {
+        "hint": "Yritetään tavoittaa vastaanottaja nyt.",
+        "label": "lähetetään"
+      }
+    },
     "required_for_attachments": "Suorat liitteet vaativat Reticulum-yksityiskeskustelun"
   },
   "event_preview": {
@@ -253,6 +274,50 @@
       },
       "title": "Tekstin koko"
     }
+  },
+  "status_badge": {
+    "copy_diagnostics": "Kopioi diagnostiikka",
+    "copy_diagnostics_collecting": "Kerätään…",
+    "copy_diagnostics_copied": "Kopioitu",
+    "copy_diagnostics_hint": "Kopioi teksti tai tallenna se tiedostona ja lähetä se chat-ongelman ilmoituksen mukana.",
+    "help": {
+      "chat_engine": {
+        "body": "Ovatko paikallinen chat-tietokanta ja worker valmiina. Vihreä merkki kertoo radiosta; chattien lataaminen ja lähettäminen tarvitsevat myös tämän moottorin. Jos chat ei toimi, napauta ensin alla ”{{action}}” ja liitä teksti ilmoitukseesi. ready = kunnossa. starting = käynnistyy vielä, ja kulunut aika näytetään; jos tila jatkuu yli minuutin, yksi mahdollinen syy on ilman JIT:iä toimiva WebView. failed = virhe näytetään alla. idle = käynnistystä ei ole vielä pyydetty (chat pois päältä tai et ole kirjautunut).",
+        "title": "Chat-moottori"
+      },
+      "hubs": {
+        "body": "Montako hub-yhteyttä on juuri nyt auki. Nämä ovat TCP-yhteydet yhteisön hubeihin. 0 tarkoittaa, ettet ole vielä mesh-verkossa. 2 on tyypillinen ja terve.",
+        "title": "Hubit"
+      },
+      "ifac": {
+        "body": "Interface Access Coden koko. Tämä on mesh-verkon nimestä johdettu yhteinen verkkosuodatin. 16 B tarkoittaa, että olet nimetyssä Qortal-verkossa. 0 B tarkoittaa, että liitäntä on avoin / suodattamaton.",
+        "title": "IFAC"
+      },
+      "known_paths": {
+        "body": "Moneenko kohteeseen Reticulumilla on tällä hetkellä reitti. Jokainen ilmoitus opettaa puhelimelle tavan tavoittaa jokin identiteetti. Muutama sata on normaalia vilkkaassa mesh-verkossa. Tämä ei ole live-chat.",
+        "title": "Tunnetut reitit"
+      },
+      "network_name": {
+        "body": "Reticulum-mesh-verkko, johon tämä puhelin liittyi. Qortalin julkinen mesh-verkko on qortal-hub. Eri nimi tarkoittaa, että olet eri verkossa etkä näe niitä vertaisia.",
+        "title": "Verkon nimi"
+      },
+      "online_accounts": {
+        "body": "Montako Qortal-tiliä tämä puhelin näkee tällä hetkellä läsnä mesh-verkossa. Sama luku kuin kohdassa ”Koti”. Se ei ole hubien tai Reticulum-solmujen määrä.",
+        "title": "Verkossa olevat tilit"
+      },
+      "received": {
+        "body": "Tietomäärä, jonka tämä puhelin on vastaanottanut hubeilta sen jälkeen, kun Reticulum käynnistyi tässä istunnossa. Se nollautuu, kun pino käynnistyy uudelleen, ei kun suljet chatin.",
+        "title": "Vastaanotettu"
+      },
+      "sent": {
+        "body": "Tietomäärä, jonka tämä puhelin on lähettänyt hubeille sen jälkeen, kun Reticulum käynnistyi tässä istunnossa. Se nollautuu, kun pino käynnistyy uudelleen, ei kun suljet chatin.",
+        "title": "Lähetetty"
+      }
+    },
+    "save_diagnostics": "Tallenna .md-tiedostona",
+    "save_diagnostics_failed": "Tiedoston tallentaminen epäonnistui: {{error}}",
+    "save_diagnostics_saved": "Tallennettu",
+    "save_diagnostics_saved_to": "Tallennettu kohteeseen {{location}}"
   },
   "user_card": {
     "address_copied": "osoite kopioitu",

@@ -67,6 +67,7 @@ import { MOBILE_CHAT_TOOLBAR_SLOT_ID } from '../Mobile/mobileChatCompose';
 import { FULLSCREEN_COMPOSER_ATTACHMENTS_SLOT_ID } from './composerSlots';
 import { restoreComposerTyping } from './composerKeyboard';
 import {
+  closePanelOnOutsideTap,
   isPanelKeyboardSuppressed,
   setEmojiPanelHandler,
   setGifPanelHandler,
@@ -731,6 +732,21 @@ const COMPACT_BUTTON_SIZE = 32;
 const EDGE_GUTTER = 36 + 12;
 const INLINE_TEXT_GUTTERS = EDGE_GUTTER + 68 + (EDGE_GUTTER + 36);
 const SQUEEZED_TEXT_GUTTERS = EDGE_GUTTER + 32 + EDGE_GUTTER;
+// A group's right edge needs one more slot while there is a message: on one
+// line the expiry moves a slot inwards to make room for the discard button,
+// and once the message wraps the expiry keeps the slot over send and the X
+// waits one column in instead, mirroring Aa. The right indent grows by this much in the inline
+// and squeezed stages (chat.css, "Discard").
+const DISPLACED_EXPIRY_GUTTER = 36;
+
+/** Whether the discard button and the expiry both need the right edge, as
+ *  chat.css sees it. Direct messages have no expiry, so their text keeps its
+ *  width. */
+export const composerExpiryDisplaced = (root: ParentNode): boolean =>
+  Boolean(
+    root.querySelector('.compact-composer-expiry') &&
+    root.querySelector('.compact-composer-discard:not([data-idle])')
+  );
 // Canvas metrics and the real line breaker disagree by a hair, so shave the
 // available width: erring towards one line too many only costs a little space,
 // erring the other way hides text.
@@ -752,6 +768,9 @@ const COMPOSER_STAGE_MIN_HEIGHT = {
 // three-row composer would be most of the conversation, so those stay on a
 // shorter stage and scroll instead.
 const COMPOSER_MAX_VIEWPORT_SHARE = 0.45;
+// Height stage 3 needs for four buttons down the right edge (expand, expiry,
+// discard, send), mirroring the composer-rail container query in chat.css.
+const COMPOSER_FOUR_SLOT_PX = 140;
 // Canvas metrics decide the stage; the browser decides the wrapping. Where the
 // two disagree — a font that fell back, a mention chip wider than its text —
 // the stage would clip, so the rendered height is checked once the move has
@@ -848,6 +867,25 @@ const composerStageCeiling = (
   if (budget >= COMPOSER_STAGE_MIN_HEIGHT.squeezed) return 'squeezed';
   return 'inline';
 };
+
+/**
+ * Whether stage 3 is capped under the height of four buttons. It stops growing
+ * at the smallest of 160px, 45vh (the layout viewport, as chat.css reads it)
+ * and the room left in the bar. In a group, the expand button waits for a
+ * fourth slot on the right edge; a box that can never get that tall could be
+ * scrolling a message it cannot show whole, so it keeps expand instead.
+ */
+export const composerStageThreeIsShort = (
+  spacePx: number,
+  layoutViewportHeight: number
+): boolean =>
+  Math.min(
+    COMPACT_EDITOR_MAX_HEIGHT,
+    layoutViewportHeight * COMPOSER_MAX_VIEWPORT_SHARE,
+    Number.isFinite(spacePx)
+      ? Math.max(COMPOSER_MIN_SPACE_PX, Math.round(spacePx))
+      : Number.POSITIVE_INFINITY
+  ) < COMPOSER_FOUR_SLOT_PX;
 
 const composerStageIndex = (kind: ComposerChromeKind) =>
   COMPOSER_STAGE_ORDER.indexOf(kind);
@@ -1023,9 +1061,10 @@ type TiptapProps = {
   insertFiles?: (files: File[]) => void | Promise<void>;
   compactChat?: boolean;
   compactEditorMaxHeight?: number;
-  /** Right-hand cluster: expiry, then send. Both are positioned by the rail
-   *  CSS off `compact-composer-expiry` / `compact-composer-send`, so a
-   *  consumer only has to render them in that order and tag them. */
+  /** Right-hand cluster: expiry, discard, then send. All three are positioned
+   *  by the rail CSS off `compact-composer-expiry` /
+   *  `compact-composer-discard` / `compact-composer-send`, so a consumer only
+   *  has to render them in that order and tag them (expiry is optional). */
   compactActions?:
     | ReactNode
     | ((state: {
@@ -1285,11 +1324,20 @@ const Tiptap = ({
     // A very narrow screen can leave less room than the chrome wants; measure
     // against a sliver rather than a negative width, which would read as "one
     // line" and clip everything the user typed.
+    const railGutter = composerExpiryDisplaced(root)
+      ? DISPLACED_EXPIRY_GUTTER
+      : 0;
     const predicted = composerEditorChromeKind(
       editor,
       `400 ${fontSize} Inter, system-ui, sans-serif`,
-      Math.max(32, rowWidth - INLINE_TEXT_GUTTERS - MEASURE_SAFETY_PX),
-      Math.max(32, rowWidth - SQUEEZED_TEXT_GUTTERS - MEASURE_SAFETY_PX)
+      Math.max(
+        32,
+        rowWidth - INLINE_TEXT_GUTTERS - railGutter - MEASURE_SAFETY_PX
+      ),
+      Math.max(
+        32,
+        rowWidth - SQUEEZED_TEXT_GUTTERS - railGutter - MEASURE_SAFETY_PX
+      )
     );
     // Attachments and the formatting tray share the bar with the typing area;
     // hand the stage — and the stylesheet — the height they left behind.
@@ -1316,6 +1364,12 @@ const Tiptap = ({
     // either, and full screen is the way out of it — so the expand button has
     // to be reachable from the stage it is stuck on, not only from stage 3.
     root.toggleAttribute('data-composer-capped', ceiling !== 'stacked');
+    // Where stage 3 can never fit four buttons down the right edge, a group
+    // keeps its expand button and the discard button waits one column in.
+    root.toggleAttribute(
+      'data-composer-short',
+      composerStageThreeIsShort(space, window.innerHeight)
+    );
     // The box just changed height under the caret, whether the stage moved or
     // only the room around it did.
     scheduleCaretCheck();
@@ -1678,6 +1732,19 @@ const Tiptap = ({
     setEmojiPanelOpen,
     useEmojiKeyboardPanel,
   ]);
+
+  // The panel stands in for the keyboard, so a tap that would have closed the
+  // keyboard closes it too, instead of it hanging on until the next send.
+  useEffect(() => {
+    if (!useEmojiKeyboardPanel || !emojiPanelOpen) return;
+    return closePanelOnOutsideTap(
+      (target) => Boolean(composerRootRef.current?.contains(target)),
+      () => {
+        emojiPanelIntentRef.current = null;
+        setEmojiPanelOpen(false);
+      }
+    );
+  }, [emojiPanelOpen, setEmojiPanelOpen, useEmojiKeyboardPanel]);
 
   useAndroidBack(
     () => {

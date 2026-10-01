@@ -77,7 +77,8 @@
     "gsk_description": "This key encrypts group content visible to all group members. It is currently the only key used for group chat and shared data.",
     "gsk_description_compact": "This key encrypts group content visible to all group members. It is currently the only key used in this UI.",
     "publish_ask": "Publish ASK",
-    "publish_gsk": "Publish GSK"
+    "publish_gsk": "Publish GSK",
+    "title": "ylläpitäjän avaimet"
   },
   "advanced_options": "lisäasetukset",
   "announcement_placeholder": "Write an announcement...",
@@ -777,6 +778,13 @@
   "last_message_from": "{{sender}} • {{date}}",
   "last_message_you": "Sinä",
   "latest_mails": "uusimmat Q-Mailit",
+  "member_actions": {
+    "make_admin_named": "tee käyttäjästä {{name}} ylläpitäjä",
+    "more_named": "lisää toimintoja: {{name}}",
+    "pending": "odottaa",
+    "pending_hint": "odottaa lohkoketjun vahvistusta. Tämä voi kestää pari minuuttia.",
+    "remove_admin_named": "poista käyttäjän {{name}} ylläpitäjän oikeudet"
+  },
   "member_category": {
     "admins": "ylläpitäjät",
     "collapse": "tiivistä {{category}}",
@@ -785,6 +793,10 @@
     "members": "jäsenet",
     "offline": "ei verkossa",
     "park": "puisto"
+  },
+  "members_screen": {
+    "bans": "estot",
+    "invites": "kutsut"
   },
   "message": {
     "error": {
@@ -1013,6 +1025,10 @@
       "copy": "Aloitusnäkymä on lähtöpisteesi Qortal Hubissa.\n\nTehdään nopea kierros perusasioihin!",
       "title": "Tervetuloa Qortal Hubiin"
     }
+  },
+  "panel": {
+    "files": "tiedostot",
+    "threads": "Threads"
   },
   "subscription": {
     "actions_badge_one": "{{count}} toimenpide",

@@ -146,6 +146,15 @@ describe('Reticulum ChatList channel handoff', () => {
     vi.stubGlobal('cancelAnimationFrame', (id: number) => {
       animationFrames.delete(id);
     });
+    // jsdom has no ResizeObserver; ChatList only uses it to keep following.
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        observe(): void {}
+        unobserve(): void {}
+        disconnect(): void {}
+      }
+    );
   });
 
   it('keeps a reused list hidden until the new channel is positioned', async () => {
@@ -336,6 +345,28 @@ describe('Reticulum ChatList channel handoff', () => {
 
     expect(virtualizer.getOffsetForIndex).toHaveBeenCalledWith(4, 'start');
     expect(virtualizer.scrollToIndex).not.toHaveBeenCalled();
+  });
+
+  it('acknowledges unread only while the view is active (not off screen)', async () => {
+    const onReticulumUnreadAcknowledged = vi.fn();
+    const props = {
+      ...baseProps,
+      chatId: 'group-1:off-screen-channel',
+      initialMessages: [message('message-1'), message('message-2')],
+      onReticulumUnreadAcknowledged,
+      reticulumUnreadCount: 1,
+    };
+    // ChatGroup passes isActive && pageVisible: GO off screen with the
+    // channel open must not mark what arrives as read.
+    const { rerender } = render(
+      <ChatList {...props} reticulumViewActive={false} />
+    );
+    await flushPositioning();
+    expect(onReticulumUnreadAcknowledged).not.toHaveBeenCalled();
+
+    rerender(<ChatList {...props} reticulumViewActive />);
+    await flushPositioning();
+    expect(onReticulumUnreadAcknowledged).toHaveBeenCalledTimes(1);
   });
 
   it('pins an all-read channel to the real bottom as rows settle', async () => {

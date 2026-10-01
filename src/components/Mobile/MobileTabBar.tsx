@@ -23,8 +23,11 @@ import {
   restoreQortinoAgentSheet,
 } from '../../qortinoAgent/qortinoSheetNav';
 import { SAFE_AREA_BOTTOM } from '../../utils/mobileSafeArea';
+import { MOBILE_TAB_BAR_HEIGHT_PX } from './mobileBarHeights';
 
-export const MOBILE_TAB_BAR_HEIGHT_PX = 60;
+// Defined in mobileBarHeights.ts so mobileLayout.ts needn't import this
+// component; re-exported for existing importers.
+export { MOBILE_TAB_BAR_HEIGHT_PX };
 
 type TabKey = 'home' | 'apps' | 'chat';
 

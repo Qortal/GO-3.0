@@ -13,8 +13,8 @@ android {
         // The in-app updater reads the version out of that filename and compares
         // it with versionName here, and Android refuses an install whose
         // versionCode is not higher — so both go up with every published build.
-        versionCode 14
-        versionName "0.0.11"
+        versionCode 16
+        versionName "0.0.13"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         // Chaquopy ships the CPython interpreter as native code, so the app must
         // declare which ABIs to package. arm64 = real devices, x86_64 = emulator.

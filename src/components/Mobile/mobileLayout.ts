@@ -1,5 +1,7 @@
-import { MOBILE_TOP_BAR_HEIGHT_PX } from './MobileTopBar';
-import { MOBILE_TAB_BAR_HEIGHT_PX } from './MobileTabBar';
+import {
+  MOBILE_TAB_BAR_HEIGHT_PX,
+  MOBILE_TOP_BAR_HEIGHT_PX,
+} from './mobileBarHeights';
 import {
   SAFE_AREA_BOTTOM,
   SAFE_AREA_LEFT,

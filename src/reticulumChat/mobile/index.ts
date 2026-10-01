@@ -15,13 +15,36 @@
  */
 import {
   ensureReticulumBridgeStarted,
+  getAppLifecycleState,
+  getRelayProfile,
   getReticulumChatPresenceSnapshot,
   isCapacitor,
   presenceCommandWithResult,
   registerPythonEventTap,
+  reportOwnOutboxPending,
+  subscribeAppLifecycle,
+  subscribeDeviceNetworkRegained,
+  subscribeRelayProfile,
 } from '../../bridge/capacitorBridge';
 import { getBaseApiReact } from '../../App';
 import { Reticulum } from '../../plugins/Reticulum';
+import { preferHttpForLocalPrivateUrl } from '../../utils/helpers';
+import {
+  apiHostOf,
+  apiSchemeOf,
+  type GroupValidatorStats,
+  type MembershipProbeResult,
+} from './groupValidation';
+import type {
+  EngineDiagnosticsSnapshot,
+  ResourceSessionStats,
+} from './engineHost';
+
+export type {
+  GroupValidatorStats,
+  MembershipProbeResult,
+  ResourceSessionStats,
+};
 
 type ReadinessState = 'idle' | 'starting' | 'ready' | 'failed';
 type ReadinessStatus = {
@@ -29,6 +52,10 @@ type ReadinessStatus = {
   revision: number;
   error?: string;
   warning?: string;
+  /** When this state was entered (ms since epoch). */
+  since: number;
+  /** Boot wall-clock in ms once `ready`; how long the last boot took. */
+  bootMs?: number;
 };
 
 const INVOKE_METHODS = [
@@ -140,7 +167,16 @@ const PY_EVENTS_FOR_WORKER = new Set([
 
 let worker: Worker | null = null;
 let rpcPort: MessagePort | null = null;
-let readiness: ReadinessStatus = { state: 'idle', revision: 0 };
+let readiness: ReadinessStatus = {
+  state: 'idle',
+  revision: 0,
+  since: Date.now(),
+};
+/** Wall-clock of the last `starting` transition, for boot timing. */
+let bootStartedAt = 0;
+let lastBootMs: number | undefined;
+/** sqlite-wasm init time reported by the worker (interpreted wasm = seconds). */
+let lastSqliteInitMs: number | undefined;
 const readinessSubscribers = new Set<(status: ReadinessStatus) => void>();
 const eventSubscribers = new Map<string, Set<(payload: unknown) => void>>();
 
@@ -169,11 +205,18 @@ let readinessWarning: string | undefined;
 
 function setReadiness(state: ReadinessState, error?: string): void {
   if (state === 'idle') readinessWarning = undefined;
+  const changed = state !== readiness.state;
+  if (changed && state === 'starting') bootStartedAt = Date.now();
+  if (changed && state === 'ready' && bootStartedAt) {
+    lastBootMs = Date.now() - bootStartedAt;
+  }
   readiness = {
     state,
     revision: readiness.revision + 1,
+    since: changed ? Date.now() : readiness.since,
     ...(error ? { error } : {}),
     ...(readinessWarning ? { warning: readinessWarning } : {}),
+    ...(lastBootMs != null ? { bootMs: lastBootMs } : {}),
   };
   for (const cb of [...readinessSubscribers]) {
     try {
@@ -336,6 +379,10 @@ function pushPresenceState(force = false): void {
 }
 
 let lastPushedApiConfig = '';
+/** Core base the worker validates membership against, as last pushed. */
+let lastPushedApiBase = '';
+/** Whether the saved node has an API key; `null` until getApiKey answered. */
+let nodeApiKeyConfigured: boolean | null = null;
 let lastAckedIdentityKey = '';
 let transportIdentityInFlight = false;
 
@@ -413,16 +460,37 @@ function pushLocalIdentity(): void {
  * still be resolving when the worker boots, and it changes when the user
  * switches nodes — without a refresh the engine keeps a stale (or empty) URL
  * and every membership check comes back unavailable.
+ *
+ * The API key itself stays on this thread: the worker's membership check must
+ * not send it (Core's CORS rejects the header), and nothing else there uses
+ * it. Only whether one is configured goes across, for diagnostics.
  */
 function pushNodeApiConfig(): void {
   if (!worker) return;
   void getNodeApiConfig().then((config) => {
     if (!worker || !config.apiBase) return;
-    const next = `${config.apiBase}|${config.apiKey || ''}`;
+    nodeApiKeyConfigured = config.apiKeyConfigured;
+    const next = `${config.apiBase}|${String(config.apiKeyConfigured)}`;
     if (next === lastPushedApiConfig) return;
     lastPushedApiConfig = next;
+    lastPushedApiBase = config.apiBase;
     worker.postMessage({ t: 'config', config });
   });
+}
+
+// Loaded lazily (like the plugin in capacitorBridge) so this early startup
+// module does not pull in i18n; one shared promise keeps the calls in order.
+let backgroundServiceModule: Promise<
+  typeof import('../../utils/mobileBackgroundService')
+> | null = null;
+
+/** Waiting own-message count for the native status text. Changes only. */
+function reportOwnOutboxCount(count: number): void {
+  if (!isCapacitor()) return;
+  backgroundServiceModule ??= import('../../utils/mobileBackgroundService');
+  backgroundServiceModule
+    .then((mod) => mod.reportOwnOutboxCount(count))
+    .catch(() => {});
 }
 
 function handleWorkerMessage(event: MessageEvent): void {
@@ -463,6 +531,9 @@ function handleWorkerMessage(event: MessageEvent): void {
     case 'engine-failed':
       setReadiness('failed', String(data.error || 'engine failed'));
       break;
+    case 'engine-timing':
+      lastSqliteInitMs = Number(data.sqliteInitMs) || undefined;
+      break;
     case 'engine-slow':
       // sqlite-wasm took seconds to start: interpreted wasm (WebView JIT off).
       // Re-publish readiness with the hint; state is unchanged.
@@ -500,14 +571,26 @@ function handleWorkerMessage(event: MessageEvent): void {
     case 'direct-bridge':
       workerHasDirectBridge = data.connected === true;
       break;
+    case 'own-outbox':
+      // Only the running worker speaks for the outbox; a stopping one may
+      // still post, and stop already cleared the flag.
+      if (event.currentTarget === worker || event.currentTarget === rpcPort) {
+        reportOwnOutboxPending(data.pending === true);
+        reportOwnOutboxCount(Number(data.pendingCount) || 0);
+      }
+      break;
     case 'bridge-traffic': {
       const fmt = (pairs: Array<[string, number]>) =>
         pairs.map(([k, n]) => `${k}=${n}`).join(' ');
       const bytes = Array.isArray(data.resourceBytes)
         ? ` resource_bytes{ ${fmt(data.resourceBytes)} }`
         : '';
+      const delivery =
+        Array.isArray(data.delivery) && data.delivery.length > 0
+          ? ` delivery{ ${fmt(data.delivery)} }`
+          : '';
       console.info(
-        `[MobileChat] bridge_traffic ${data.seconds}s out{ ${fmt(data.commands)} } in{ ${fmt(data.events)} }${bytes}`
+        `[MobileChat] bridge_traffic ${data.seconds}s out{ ${fmt(data.commands)} } in{ ${fmt(data.events)} }${bytes}${delivery}`
       );
       break;
     }
@@ -534,6 +617,30 @@ function pushBridgeSocket(target: Worker): void {
     .catch((err) => {
       console.warn('[MobileChat] bridge socket unavailable', err);
     });
+}
+
+let engineLifecycleBound = false;
+
+/**
+ * Hand app foreground/background edges and device network regain to the
+ * engine, which runs its background flush and resume catch-up from them.
+ * Bound once; each edge goes to whichever worker is running at the time,
+ * over the RPC port so it is handled at once instead of queueing behind a
+ * Python event burst (the background flush must start before the freeze).
+ */
+function bindEngineLifecycleForwarders(): void {
+  if (engineLifecycleBound) return;
+  engineLifecycleBound = true;
+  subscribeAppLifecycle((state) => {
+    (rpcPort || worker)?.postMessage({ t: 'lifecycle', state });
+  });
+  subscribeDeviceNetworkRegained(() => {
+    (rpcPort || worker)?.postMessage({ t: 'network-regained' });
+  });
+  // Charging on an unmetered network: relay group control like a desktop.
+  subscribeRelayProfile((profile) => {
+    (rpcPort || worker)?.postMessage({ t: 'relay-profile', profile });
+  });
 }
 
 function rpc(
@@ -574,20 +681,27 @@ function rpc(
 
 async function getNodeApiConfig(): Promise<{
   apiBase: string;
-  apiKey?: string;
+  apiKeyConfigured: boolean | null;
 }> {
   try {
-    const apiKey = await window.sendMessage('getApiKey');
-    if (apiKey && typeof apiKey === 'object' && apiKey.url) {
+    const node = (await window.sendMessage('getApiKey')) as {
+      url?: unknown;
+      apikey?: unknown;
+    } | null;
+    if (node && typeof node === 'object' && node.url) {
+      // Same base the main thread uses (getBaseApiReact): a node saved as
+      // https://localhost before v0.0.5 is plain HTTP over an SSH tunnel, and
+      // the worker's membership checks must not fail its TLS handshake.
+      const url = String(node.url);
       return {
-        apiBase: String(apiKey.url),
-        apiKey: String(apiKey.apikey || ''),
+        apiBase: preferHttpForLocalPrivateUrl(url) || url,
+        apiKeyConfigured: String(node.apikey || '').trim().length > 0,
       };
     }
   } catch {
     /* fall through to the public/base API */
   }
-  return { apiBase: getBaseApiReact() };
+  return { apiBase: getBaseApiReact(), apiKeyConfigured: null };
 }
 
 function ensureStarted(): Promise<void> {
@@ -624,10 +738,21 @@ function ensureStarted(): Promise<void> {
     worker.postMessage({ t: 'rpc-port' }, [rpcChan.port2]);
 
     const config = { apiBase: getBaseApiReact() };
-    lastPushedApiConfig = `${config.apiBase}|`;
+    // Key state is not known yet, so the first getApiKey answer always pushes.
+    lastPushedApiConfig = `${config.apiBase}|unknown`;
+    lastPushedApiBase = config.apiBase;
     worker.postMessage({ t: 'boot', config });
+    // The manager boots as a leaf; queued until the engine is up. Sent on
+    // the RPC port like later changes, so a newer profile cannot overtake it.
+    if (getRelayProfile() === 'full') {
+      rpcPort.postMessage({ t: 'relay-profile', profile: 'full' });
+    }
+    // The engine starts 'unknown' and only hears edges after this, so tell
+    // it the current state once (foreground probes stay off until it knows).
+    rpcPort.postMessage({ t: 'lifecycle', state: getAppLifecycleState() });
     workerHasDirectBridge = false;
     pushBridgeSocket(worker);
+    bindEngineLifecycleForwarders();
 
     untapPython = registerPythonEventTap((frame) => {
       if (workerHasDirectBridge) return;
@@ -703,6 +828,8 @@ function ensureStarted(): Promise<void> {
     }
     failedWorker?.terminate();
     startPromise = null;
+    reportOwnOutboxPending(false);
+    reportOwnOutboxCount(0);
     setReadiness('failed', err instanceof Error ? err.message : String(err));
     throw err;
   });
@@ -724,6 +851,9 @@ export function stopMobileReticulumChat(): void {
   rpcPort = null;
   workerHasDirectBridge = false;
   stoppingWorker?.postMessage({ t: 'stop' });
+  // Nothing leaves once the engine stops (logout); do not hold the page.
+  reportOwnOutboxPending(false);
+  reportOwnOutboxCount(0);
   window.setTimeout(() => {
     try {
       stoppingPort?.close();
@@ -735,7 +865,115 @@ export function stopMobileReticulumChat(): void {
   startPromise = null;
   lastAckedIdentityKey = '';
   lastPushedApiConfig = '';
+  lastPushedApiBase = '';
   setReadiness('idle');
+}
+
+export type MobileReticulumChatDiagnostics = {
+  readiness: ReadinessStatus;
+  /** Seconds spent in the current readiness state. */
+  stateAgeSec: number;
+  bootMs?: number;
+  sqliteInitMs?: number;
+  workerAlive: boolean;
+  workerHasDirectBridge: boolean;
+  pendingRpcCount: number;
+  /** Host of the Core API the engine validates group membership against. */
+  apiHost: string;
+  /** `http` / `https` of that base; `''` when unknown. */
+  apiScheme?: string;
+  /** Whether the saved node has an API key (never the key); `null` = unknown. */
+  apiKeyConfigured: boolean | null;
+  /**
+   * The engine's recent log ring, oldest first. The report picks faults and
+   * a tail from it.
+   */
+  engineLogs: string[];
+  /** First warnings/errors since the engine booted (bounded). */
+  engineBootFaults: string[];
+  /** Engine membership-check counters; `null` when not reported. */
+  validator: GroupValidatorStats | null;
+  /** Mobile bridge resource-session counters; `null` when not reported. */
+  resourceSessions: ResourceSessionStats | null;
+  /** One live membership check; `null` when the engine is not ready. */
+  membershipProbe: MembershipProbeResult | null;
+};
+
+/** The probe's own fetch budget; the RPC gets a little more on top. */
+const DIAGNOSTICS_MEMBERSHIP_PROBE_TIMEOUT_MS = 6_000;
+
+/**
+ * One-call snapshot of the chat engine for the "Copy diagnostics" action in
+ * the Reticulum badge. Read-only; never starts the engine.
+ */
+export async function getMobileReticulumChatDiagnostics(): Promise<MobileReticulumChatDiagnostics> {
+  let apiHost = apiHostOf(lastPushedApiBase || getBaseApiReact());
+  let apiScheme = apiSchemeOf(lastPushedApiBase || getBaseApiReact());
+  let apiKeyConfigured = nodeApiKeyConfigured;
+  let engineLogs: string[] = [];
+  let engineBootFaults: string[] = [];
+  let validator: GroupValidatorStats | null = null;
+  let resourceSessions: ResourceSessionStats | null = null;
+  let membershipProbe: MembershipProbeResult | null = null;
+  if (worker && readiness.state === 'ready') {
+    const probeStarted = Date.now();
+    const [logs, snapshot, probe] = await Promise.all([
+      rpc('debug:logs', [], 8_000).catch(
+        (err) => [`debug:logs unavailable: ${String(err)}`] as unknown
+      ),
+      rpc('debug:diagnostics', [], 8_000).catch(
+        () => null
+      ) as Promise<EngineDiagnosticsSnapshot | null>,
+      (
+        rpc(
+          'debug:membership-probe',
+          [{ timeoutMs: DIAGNOSTICS_MEMBERSHIP_PROBE_TIMEOUT_MS }],
+          DIAGNOSTICS_MEMBERSHIP_PROBE_TIMEOUT_MS + 2_000
+        ) as Promise<MembershipProbeResult>
+      ).catch(
+        (err): MembershipProbeResult => ({
+          host: apiHost,
+          groupId: null,
+          status: null,
+          ok: false,
+          isMember: null,
+          error: `probe did not answer (${err instanceof Error ? err.message : String(err)})`,
+          ms: Date.now() - probeStarted,
+        })
+      ),
+    ]);
+    if (Array.isArray(logs)) engineLogs = logs.map((l) => String(l));
+    if (snapshot && typeof snapshot === 'object') {
+      if (snapshot.apiHost) apiHost = snapshot.apiHost;
+      if (snapshot.apiScheme) apiScheme = snapshot.apiScheme;
+      if (apiKeyConfigured == null) {
+        apiKeyConfigured = snapshot.apiKeyConfigured ?? null;
+      }
+      validator = snapshot.validator ?? null;
+      resourceSessions = snapshot.resourceSessions ?? null;
+      engineBootFaults = Array.isArray(snapshot.bootFaultLogs)
+        ? snapshot.bootFaultLogs.map((l) => String(l))
+        : [];
+    }
+    membershipProbe = probe ?? null;
+  }
+  return {
+    readiness: { ...readiness },
+    stateAgeSec: Math.max(0, Math.round((Date.now() - readiness.since) / 1000)),
+    bootMs: lastBootMs,
+    sqliteInitMs: lastSqliteInitMs,
+    workerAlive: Boolean(worker),
+    workerHasDirectBridge,
+    pendingRpcCount: pendingRpc.size,
+    apiHost,
+    apiScheme,
+    apiKeyConfigured,
+    engineLogs,
+    engineBootFaults,
+    validator,
+    resourceSessions,
+    membershipProbe,
+  };
 }
 
 /** Install the preload-twin API. Safe to call once at bridge install time. */
@@ -775,6 +1013,8 @@ export function installMobileReticulumChat(): void {
   // Diagnostics (read-only): self-DM state as the engine sees it.
   api.debugSelfDm = () => rpc('debug:selfDm', []);
   api.debugLogs = (filter?: string) => rpc('debug:logs', [filter]);
+  api.debugMembershipProbe = (groupId?: number) =>
+    rpc('debug:membership-probe', [{ groupId }]);
 
   for (const [name, channel] of Object.entries(EVENT_SUBSCRIPTIONS)) {
     api[name] = (cb: (payload: unknown) => void) => {

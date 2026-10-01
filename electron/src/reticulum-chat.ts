@@ -64,6 +64,7 @@ import {
   type ReticulumChatSilenceScope,
   type ReticulumPublicGroupActivitySummary,
   type ReticulumDmExpiryPreference,
+  type ReticulumPendingOwnDirectHead,
 } from './reticulum-chat-db';
 import {
   RETICULUM_CHAT_AUTHOR_TREE_DEPTH,
@@ -229,6 +230,11 @@ export interface ReticulumDmEvent {
   legacySignature?: string;
   localDeliveryStatus?: ReticulumDmDeliveryStatus;
   localDeliveryUpdatedAt?: number;
+  /**
+   * Local projection (GO): when a verified own device of the account (a home
+   * Hub) first pulled this own pending event. Never on the wire.
+   */
+  localOwnDeviceCopiedAt?: number;
   /** Local projection hint: this event is at or below a synchronized read watermark. */
   readByOwner?: true;
   /** Local database projection; derived from the signed payload, never trusted from wire input. */
@@ -972,6 +978,14 @@ type ReticulumChatPullQueueItem = {
   nextAttemptAt: number;
   inFlight: boolean;
   linkedAttemptStartedAt?: number;
+  membershipDeferrals?: number;
+};
+
+/** Signature budget shared by the legs of one flush or resume pass. */
+type ReticulumOutboundSignBudget = {
+  startedAt: number;
+  signatures: number;
+  aborted: boolean;
 };
 
 type ReticulumPendingDmNotifyDelivery = {
@@ -2424,6 +2438,12 @@ export interface ReticulumChatManagerOptions {
   bridge?: ReticulumBridge | null;
   now?: () => number;
   localNotifyDebounceMs?: number;
+  /**
+   * Fallback rescan of the local-notification directory. The directory watch
+   * delivers new files promptly; this only catches missed watch events.
+   * Defaults to 2 s; a battery-powered host can pass a much longer interval.
+   */
+  localNotifyScanIntervalMs?: number;
   signLocalFields?: (
     fields: Record<string, unknown>
   ) => Promise<ReticulumChatLocalSignature | null>;
@@ -2431,7 +2451,11 @@ export interface ReticulumChatManagerOptions {
     groupId: number,
     address: string
   ) => Promise<boolean | null>;
-  validateGroupAdmin?: (groupId: number, address: string) => Promise<boolean>;
+  /** Resolves `null` when Core could not answer (treated as unknown). */
+  validateGroupAdmin?: (
+    groupId: number,
+    address: string
+  ) => Promise<boolean | null>;
   getVerifiedReticulumPeers?: () => ReticulumChatVerifiedTransportPeer[];
   getAccountEndpointLeases?: () => ReticulumChatAccountEndpointLease[];
   hasGoodOverlayHealth?: () => boolean;
@@ -2443,6 +2467,29 @@ export interface ReticulumChatManagerOptions {
    * not act as a gossip hop. Defaults to true.
    */
   relayGroupControl?: boolean;
+}
+
+/**
+ * Own messages still waiting to leave this installation (manager event
+ * 'ownOutboxState', emitted only when a field changes; also
+ * getOwnOutboxState()). Mobile hosts use `pending` to keep the engine awake
+ * for a short grace window after the app leaves the screen.
+ *
+ * - pendingCount: own outbound DMs (not Saved Messages) the recipient has not
+ *   pulled yet, from the last 7 days (the background flush window).
+ * - uncopiedCount: those of them no verified own device has pulled either.
+ * - pending: sending work remains that staying awake can finish: a pending DM
+ *   inside the 2 h active retry window, an uncopied pending DM while an own
+ *   device has an admitted link and its cursor has not passed the DM (so it
+ *   would still be re-pushed), a Saved Messages cursor a linked own device
+ *   has not confirmed (and may still be re-notified about), or a group notice
+ *   owed to an own device. An old DM to a recipient who stays offline counts
+ *   in pendingCount but does not keep `pending` true on its own.
+ */
+export interface ReticulumChatOwnOutboxState {
+  pending: boolean;
+  pendingCount: number;
+  uncopiedCount: number;
 }
 
 const RETICULUM_CHAT_MAX_FUTURE_SKEW_MS = 5 * 60_000;
@@ -2854,6 +2901,7 @@ const RETICULUM_CHAT_HISTORY_LINK_FAILURE_BACKOFF_MS = [
 ] as const;
 const RETICULUM_CHAT_HISTORY_LINK_FAILURE_BACKOFF_MAX = 4096;
 const RETICULUM_CHAT_LOCAL_NOTIFY_DEBOUNCE_MS = 50;
+const RETICULUM_CHAT_LOCAL_NOTIFY_SCAN_INTERVAL_MS = 2_000;
 const RETICULUM_CHAT_SIGNED_RESOURCE_AUTH_RETRY_MS = 1_000;
 const RETICULUM_CHAT_SIGNED_RESOURCE_AUTH_MAX_RETRIES = 15;
 const RETICULUM_CHAT_ALL_CHANNELS_ID = '*';
@@ -2931,6 +2979,10 @@ const RETICULUM_CHAT_DM_PAGE_NO_PROGRESS_MAX = 4096;
 const RETICULUM_CHAT_MEMBER_CACHE_TTL_MS = 5 * 60_000;
 const RETICULUM_CHAT_ADMIN_CACHE_TTL_MS = 30_000;
 const RETICULUM_CHAT_VALIDATION_UNAVAILABLE_RETRY_MS = 10_000;
+// Repeated membership deferrals of one queued event double from the retry
+// window up to this cap, so a node that never answers cannot keep the pull
+// queue re-downloading the same events every 10 s.
+const RETICULUM_CHAT_MEMBERSHIP_DEFERRAL_MAX_BACKOFF_MS = 5 * 60_000;
 const RETICULUM_CHAT_VALIDATION_UNAVAILABLE_MAX = 4_096;
 const RETICULUM_CHAT_METADATA_PROJECTION_RETRY_MS = 30_000;
 const RETICULUM_CHAT_MEMBERSHIP_INITIALIZATION_BATCH_SIZE = 1;
@@ -3077,8 +3129,128 @@ const RETICULUM_CHAT_DM_PENDING_BACKOFF_BASE_MS = 20_000;
 const RETICULUM_CHAT_DM_PENDING_BACKOFF_MAX_MS = 5 * 60_000;
 const RETICULUM_CHAT_DM_PENDING_PER_SWEEP_MAX = 4;
 const RETICULUM_CHAT_DM_PENDING_PER_ADDRESS_MAX = 16;
+// One candidate per conversation (its newest pending own event). The live
+// publish is itself tracked (direct, 750 ms gossip, 3 s full fanout); the
+// sweep adds at most this many tracked re-announces per new send, and only
+// while the event is young, so a send costs <= 2 full fanouts. The count is
+// reserved and persisted before anything is signed, so neither a restart nor
+// an overlapping pass re-bursts them. Everything else is recovery mode:
+// direct plus one width-4 gossip signed with a short hop limit.
+const RETICULUM_CHAT_DM_PENDING_TRACKED_ATTEMPTS_MAX = 1;
+const RETICULUM_CHAT_DM_PENDING_TRACKED_MAX_AGE_MS = 10 * 60_000;
+const RETICULUM_CHAT_DM_PENDING_RECOVERY_MAX_HOPS = 2;
+// Slow tail after the 2 h window, up to 7 days (well inside the 30 day
+// validity limit of Hub 3.0.3): every 30 min until the event is a day old,
+// then every 2 h. It stops once an own device (home Hub) holds a copy: the
+// Hub's own summary and probe answers cover the recipient from then on. Tail
+// due times sit on one grid per account (the 2 h grid is a subset of the
+// 30 min one), so every tail conversation shares the same wakeups.
+const RETICULUM_CHAT_DM_PENDING_TAIL_MAX_AGE_MS = 7 * 24 * 60 * 60_000;
+const RETICULUM_CHAT_DM_PENDING_TAIL_EARLY_AGE_MS = 24 * 60 * 60_000;
+const RETICULUM_CHAT_DM_PENDING_TAIL_EARLY_SPACING_MS = 30 * 60_000;
+const RETICULUM_CHAT_DM_PENDING_TAIL_LATE_SPACING_MS = 120 * 60_000;
+// A re-announce that could not be signed or sent is not an attempt, but it
+// still waits >= 60 s, and at most 10 such failures per candidate per 2 h.
+const RETICULUM_CHAT_DM_PENDING_FAILURE_MIN_BACKOFF_MS = 60_000;
+const RETICULUM_CHAT_DM_PENDING_FAILURE_MAX = 10;
+const RETICULUM_CHAT_DM_PENDING_FAILURE_WINDOW_MS = 2 * 60 * 60_000;
+// Overlay unhealthy (offline) or no signer (locked): the sweep reads, signs
+// and spends nothing. It does not poll: overlay recovery, a new signer and the
+// resume hook bring it forward; this is only the safety net.
+const RETICULUM_CHAT_DM_PENDING_SKIPPED_RECHECK_MS = 15 * 60_000;
+// Resume hook: due attempts run on the first sweep after this settle.
+const RETICULUM_CHAT_DM_PENDING_RESUME_SETTLE_MS = 10_000;
+// A new peer event in a conversation holding a pending own event: one
+// recovery notify for that event, at most once per 24 h.
+const RETICULUM_CHAT_DM_PENDING_PEER_SPOKE_MIN_INTERVAL_MS = 24 * 60 * 60_000;
+const RETICULUM_CHAT_DM_PENDING_PEER_SPOKE_QUEUE_MAX = 4;
+// Own-device (home Hub) copy of outbound DMs. A separate, untracked dm_notify
+// signed with m:0 goes directly to verified own devices that hold an admitted
+// overlay link; never gossip or fanout, and nothing at all without such a link.
+const RETICULUM_CHAT_OWN_DEVICE_PUSH_MAX_PEERS = 4;
+// Leading edge: at most one push per conversation per window. A send skipped
+// by this window is owed and paid by the next pending sweep tick.
+const RETICULUM_CHAT_OWN_DEVICE_PUSH_COALESCE_MS = 10_000;
+// A notify signed this late has little of its 30 s acceptance window left.
+const RETICULUM_CHAT_OWN_DEVICE_PUSH_MAX_SIGN_MS = 20_000;
+// Re-pushes (link/resume/sweep edges) for events no own device pulled yet.
+const RETICULUM_CHAT_OWN_DEVICE_REPUSH_MIN_INTERVAL_MS = 5 * 60_000;
+const RETICULUM_CHAT_OWN_DEVICE_REPUSH_MAX_AGE_MS = 7 * 24 * 60 * 60_000;
+const RETICULUM_CHAT_OWN_DEVICE_REPUSH_MAX_CONVERSATIONS = 8;
+// Pushes to one own-device session without any pull from it in between.
+const RETICULUM_CHAT_OWN_DEVICE_PUSH_UNANSWERED_MAX = 3;
+const RETICULUM_CHAT_OWN_DEVICE_PUSH_STATE_MAX = 512;
+const RETICULUM_CHAT_OWN_DEVICE_PEER_STATE_MAX = 64;
+// Last-chance flush when the app leaves the foreground (JS is frozen about
+// 60 s later on Android). Signing may run on a JIT-less main thread, so the
+// flush is capped in signatures and time.
+const RETICULUM_CHAT_BACKGROUND_FLUSH_MIN_INTERVAL_MS = 60_000;
+const RETICULUM_CHAT_BACKGROUND_FLUSH_MAX_CONVERSATIONS = 8;
+const RETICULUM_CHAT_BACKGROUND_FLUSH_OWN_DEVICE_MAX = 2;
+const RETICULUM_CHAT_OUTBOUND_FLUSH_MAX_SIGNATURES = 17;
+const RETICULUM_CHAT_OUTBOUND_FLUSH_MAX_SIGNATURE_MS = 2_000;
+const RETICULUM_CHAT_OUTBOUND_FLUSH_MAX_ELAPSED_MS = 20_000;
+// An early (backoff-ignoring) recovery attempt never repeats one event
+// faster than this (or half its current backoff), however often the app is
+// hidden or resumed, and brings forward at most one attempt per event per
+// 10 min, so with the sweep an event sees <= 12 attempts an hour.
+const RETICULUM_CHAT_DM_FORCED_REDELIVER_MIN_GAP_MS = 60_000;
+const RETICULUM_CHAT_DM_FORCED_REDELIVER_PER_EVENT_MIN_INTERVAL_MS =
+  10 * 60_000;
+// Recovery gossip of an early attempt stays local.
+const RETICULUM_CHAT_DM_FORCED_REDELIVER_MAX_HOPS = 2;
+// Resume, network regain and bridge-socket reopen share one debounce.
+const RETICULUM_CHAT_RESUME_HOOK_DEBOUNCE_MS = 2_000;
+const RETICULUM_CHAT_NETWORK_REGAIN_MIN_INTERVAL_MS = 30_000;
+const RETICULUM_CHAT_RESUME_SWEEP_MIN_INTERVAL_MS = 60_000;
+const RETICULUM_CHAT_RESUME_DISCOVERY_MIN_INTERVAL_MS = 60_000;
+// Saved Messages: a self-DM cursor authored here counts as delivered to an own
+// device only once that device confirms it (it pulled a page holding it, or
+// its own self notify names it). Until then the existing carriers re-notify
+// it directly (m:0, admitted link only): periodic carriers at most every
+// 5 min, edges at most every 60 s, never more than 12 times per cursor per
+// own-device session.
+const RETICULUM_CHAT_SELF_DM_RENOTIFY_MAX = 12;
+const RETICULUM_CHAT_SELF_DM_RENOTIFY_PERIODIC_MIN_MS = 5 * 60_000;
+const RETICULUM_CHAT_SELF_DM_RENOTIFY_EDGE_MIN_MS = 60_000;
+const RETICULUM_CHAT_SELF_DM_OWN_CURSOR_SCAN = 16;
+const RETICULUM_CHAT_SELF_DM_CONFIRM_STATE_MAX = 256;
+// Group posts: the already-signed event notice also goes directly to own
+// devices with an admitted link. A failed send is owed (in memory only) and
+// paid on link, session, resume and background edges; never in a loop.
+const RETICULUM_CHAT_OWN_DEVICE_GROUP_NOTICE_MAX_PEERS = 2;
+const RETICULUM_CHAT_OWN_DEVICE_GROUP_OWED_MAX = 32;
+const RETICULUM_CHAT_OWN_DEVICE_GROUP_OWED_TTL_MS = 24 * 60 * 60_000;
+const RETICULUM_CHAT_OWN_DEVICE_GROUP_OWED_MAX_ATTEMPTS = 3;
+// Hub 3.0.3 drops an identical notice seen in the last 15 min.
+const RETICULUM_CHAT_OWN_DEVICE_GROUP_NOTICE_RESEND_MS = 15 * 60_000;
+const RETICULUM_CHAT_OWN_DEVICE_GROUP_DIGEST_MAX = 4;
+const RETICULUM_CHAT_OWN_DEVICE_GROUP_FLUSH_MAX_COMMANDS = 8;
+const RETICULUM_CHAT_OWN_DEVICE_GROUP_FLUSH_MIN_INTERVAL_MS = 30_000;
+// Targeted own-Hub probe on resume (foreground only): one dm_probe signed with
+// maxHops 0, sent once and directly to own devices with an admitted link.
+const RETICULUM_CHAT_OWN_HUB_PROBE_MAX_PEERS = 2;
+const RETICULUM_CHAT_OWN_HUB_PROBE_MIN_INTERVAL_MS = 120_000;
+const RETICULUM_CHAT_OWN_HUB_PROBE_BUCKET_MAX = 20;
+const RETICULUM_CHAT_OWN_HUB_PROBE_BUCKET_WINDOW_MS = 60 * 60_000;
+const RETICULUM_CHAT_OWN_HUB_PROBE_ANSWER_TIMEOUT_MS = 30_000;
+const RETICULUM_CHAT_OWN_HUB_PROBE_MISSES_BEFORE_BACKOFF = 2;
+const RETICULUM_CHAT_OWN_HUB_PROBE_BACKOFF_MIN_MS = 5 * 60_000;
+const RETICULUM_CHAT_OWN_HUB_PROBE_BACKOFF_MAX_MS = 60 * 60_000;
+// A return to the foreground only probes after the app was hidden this long.
+const RETICULUM_CHAT_OWN_HUB_PROBE_MIN_HIDDEN_MS = 45_000;
+// An own device's answer whose cursor is one of our newest local events, and
+// for which a pull from that device already completed, has nothing we lack:
+// skip the pull. The first answer with a new cursor still pulls (it may hold
+// older events we never got).
+const RETICULUM_CHAT_OWN_PROBE_ANSWER_LOOKBACK_EVENTS = 5;
+const RETICULUM_CHAT_OWN_PROBE_ANSWER_PULLED_MAX = 64;
 const RETICULUM_CHAT_DM_DISCOVERY_ROUTE_TTL_MS = 2 * 60_000;
 const RETICULUM_CHAT_DM_DISCOVERY_ROUTE_MAX = 4096;
+// Probe ids this device signed. Answers to them are consumed here and never
+// re-flooded, since every other node has already seen the probe.
+const RETICULUM_CHAT_OWN_DM_PROBE_TTL_MS = 2 * 60_000;
+const RETICULUM_CHAT_OWN_DM_PROBE_MAX = 256;
 const RETICULUM_CHAT_DM_PROBE_REFRESH_MS = 5 * 60_000;
 const RETICULUM_CHAT_DM_PROBE_REFRESH_JITTER_MS = 60_000;
 // Minimum spacing between own-device DM page pulls for one conversation.
@@ -7253,6 +7425,25 @@ export class ReticulumChatManager extends EventEmitter {
   private readonly localNotifyDir: string;
   private readonly tempEventBlobDir: string;
   private readonly localNotifyDebounceMs: number;
+  private readonly localNotifyScanIntervalMs: number;
+  /**
+   * Cumulative delivery counters since the manager started. Plain increments
+   * only: no timers, no logging; hosts read them with getDeliveryCounters().
+   */
+  private readonly deliveryCounters: Record<string, number> = {
+    dmNotifySent: 0,
+    selfDmNotifySent: 0,
+    dmPendingRedeliver: 0,
+    dmPageServedToRecipient: 0,
+    dmPageServedToOwnDevice: 0,
+    dmPageRefused: 0,
+    dmPullNoEvents: 0,
+    dmDuplicateVerifySkipped: 0,
+    ownProbeAnswerRelaySuppressed: 0,
+    groupEventPublished: 0,
+    ownDevicePushSent: 0,
+    ownDeviceCopied: 0,
+  };
   /** Ephemeral identifier that separates typing state from another installation. */
   private readonly runtimeTypingSessionId = nodeCrypto
     .randomBytes(16)
@@ -7268,7 +7459,7 @@ export class ReticulumChatManager extends EventEmitter {
   private validateGroupAdmin?: (
     groupId: number,
     address: string
-  ) => Promise<boolean>;
+  ) => Promise<boolean | null>;
   private getVerifiedReticulumPeers?: () => ReticulumChatVerifiedTransportPeer[];
   private getAccountEndpointLeases?: () => ReticulumChatAccountEndpointLease[];
   private hasGoodOverlayHealth?: () => boolean;
@@ -7710,7 +7901,25 @@ export class ReticulumChatManager extends EventEmitter {
     }
   >();
   private directDmPageNoProgressSuppressions = new Map<string, number>();
+  /**
+   * owner|device -> newest Saved Messages event authored on this device that
+   * the own device confirmed holding (pulled it, or named it in its notify).
+   * A cache of the persisted confirmation ('' event id: none stored).
+   */
+  private selfDmConfirmedUpTo = new Map<
+    string,
+    { eventId: string; timestamp: number }
+  >();
+  /**
+   * owner|device|session -> Saved Messages cursor written on another device
+   * that was relayed to this device (best effort, once per session).
+   */
   private selfDmSummaryAnnouncements = new Map<string, string>();
+  /** owner|device|session -> re-notifies of one unconfirmed self-DM cursor. */
+  private selfDmRenotifyStates = new Map<
+    string,
+    { cursor: string; count: number; lastSentAt: number }
+  >();
   private directCallHistoryAnnouncements = new Map<string, string>();
   private selfDmWarmLinkAppliedKey = '';
   private selfDmWarmLinkSyncInFlight = false;
@@ -8022,10 +8231,113 @@ export class ReticulumChatManager extends EventEmitter {
   private lastForwardedLandControlPruneAt = 0;
   private dmDigestTimer: ReturnType<typeof setTimeout> | null = null;
   private dmPendingDeliveryTimer: ReturnType<typeof setTimeout> | null = null;
+  private dmPendingDeliveryTimerDueAt = 0;
+  /** The last pass was skipped offline or without a signer (no polling). */
+  private dmPendingSweepSkipped = false;
+  /** A sweep, forced pass or peer-spoke pass is running (never overlap). */
+  private dmPendingSweepInFlight = false;
+  /** Conversation id -> local address: peer events awaiting one check. */
+  private dmPendingPeerSpokeQueue = new Map<string, string>();
+  private dmPendingPeerSpokeQueued = false;
+  /**
+   * Event id -> sweep retry state for pending own conversation heads. Seeded
+   * from (and written through to) the persisted columns; bounded by the
+   * heads a sweep returns.
+   */
   private dmPendingDeliveryAttempts = new Map<
     string,
-    { attempts: number; nextAttemptAt: number }
+    {
+      attempts: number;
+      nextAttemptAt: number;
+      lastAttemptAt?: number;
+      lastForcedAt?: number;
+      lastPeerSpokeAt?: number;
+      failures?: number;
+      failureWindowStartAt?: number;
+    }
   >();
+  /**
+   * Conversation id -> last own-device push; `owed` = a coalesced send, and
+   * `owedEvent` its newest event, paid by the next re-push edge even when
+   * the recipient has pulled it meanwhile.
+   */
+  private ownDevicePushConversations = new Map<
+    string,
+    { lastPushAt: number; owed: boolean; owedEvent?: ReticulumDmEvent }
+  >();
+  /** Own-device peer hash -> its lease session and pushes it left unanswered. */
+  private ownDevicePeerPushStates = new Map<
+    string,
+    { sessionId: string; unanswered: number }
+  >();
+  /** Conversation id -> newest timestamp an own device is known to hold. */
+  private ownDevicePulledUpTo = new Map<string, number>();
+  private lastOwnDmPublishAt = 0;
+  private lastBackgroundFlushAt = 0;
+  private backgroundFlushInFlight = false;
+  private resumeHookTimer: ReturnType<typeof setTimeout> | null = null;
+  private resumeHookReasons = new Set<string>();
+  private lastNetworkRegainAt = 0;
+  private lastSocketReopenAt = 0;
+  private lastResumeSweepAt = 0;
+  private lastResumeDiscoveryAt = 0;
+  /**
+   * Group event id -> its signed notice, owed to own devices whose direct
+   * send failed at publish. In memory only, <= 32 entries, <= 24 h.
+   */
+  private ownDeviceGroupNoticesOwed = new Map<
+    string,
+    {
+      groupId: number;
+      ownerAddress: string;
+      notice: ReticulumChatWire;
+      createdAt: number;
+      peers: Map<
+        string,
+        { attempts: number; lastSentAt: number; sessionId: string }
+      >;
+    }
+  >();
+  /** Own-device peer hash -> last owed-group flush to it (30 s floor). */
+  private ownDeviceGroupFlushAt = new Map<string, number>();
+  /** Last emitted 'ownOutboxState' (change-only). */
+  private ownOutboxState: ReticulumChatOwnOutboxState = {
+    pending: false,
+    pendingCount: 0,
+    uncopiedCount: 0,
+  };
+  /** A microtask recompute is queued (coalesces bursts of triggers). */
+  private ownOutboxRefreshQueued = false;
+  /** Last lifecycle the host reported; 'unknown' on hosts that never do. */
+  private appLifecycleState: 'unknown' | 'foreground' | 'background' =
+    'unknown';
+  private lastAppBackgroundAt = 0;
+  private resumeProbeWanted = false;
+  /** Own-device peer hash -> targeted own-Hub probe bookkeeping. */
+  private ownHubProbeStates = new Map<
+    string,
+    {
+      sessionId: string;
+      lastProbeAt: number;
+      pendingProbeId: string;
+      misses: number;
+      backoffUntil: number;
+    }
+  >();
+  private ownHubProbeTokens = RETICULUM_CHAT_OWN_HUB_PROBE_BUCKET_MAX;
+  private ownHubProbeTokensAt = 0;
+  /**
+   * `${own-device peer hash}|${conversation id}` -> the notify cursor of the
+   * last completed pull from that own device (<= 64). A probe answer is
+   * skipped as up to date only for a cursor we already pulled for.
+   */
+  private ownDevicePulledCursors = new Map<string, string>();
+  /**
+   * Own-device peer hash -> ids of its admitted overlay links at the last
+   * admission call (<= 64), so a repeated call for a link that stayed
+   * admitted is not taken as a new admission edge.
+   */
+  private ownDeviceAdmittedLinkIds = new Map<string, Set<string>>();
   private dmDiscoveryInFlight = false;
   private pendingInitialDmDiscovery = false;
   private pendingDmNotifyDeliveries = new Map<
@@ -8075,6 +8387,8 @@ export class ReticulumChatManager extends EventEmitter {
   private recentDmRequests = new Map<string, number>();
   private recentDmDiscoveryKeys = new Map<string, number>();
   private dmProbeRoutes = new Map<string, ReticulumDmProbeRoute>();
+  /** Probe request id -> expiry, for every dm_probe this device signed. */
+  private ownDmProbeIds = new Map<string, number>();
   private dmNotifyRoutes = new Map<string, ReticulumDmNotifyRoute>();
   private dmConversationRouteIds = new Map<
     string,
@@ -8113,6 +8427,11 @@ export class ReticulumChatManager extends EventEmitter {
     this.localNotifyDebounceMs = Math.max(
       10,
       options.localNotifyDebounceMs ?? RETICULUM_CHAT_LOCAL_NOTIFY_DEBOUNCE_MS
+    );
+    this.localNotifyScanIntervalMs = Math.max(
+      1_000,
+      options.localNotifyScanIntervalMs ??
+        RETICULUM_CHAT_LOCAL_NOTIFY_SCAN_INTERVAL_MS
     );
     this.signLocalFields = options.signLocalFields;
     this.validateGroupMember = options.validateGroupMember;
@@ -8863,6 +9182,12 @@ export class ReticulumChatManager extends EventEmitter {
     this.getVerifiedReticulumPeers = options.getVerifiedReticulumPeers;
     this.getAccountEndpointLeases = options.getAccountEndpointLeases;
     this.hasGoodOverlayHealth = options.hasGoodOverlayHealth;
+    if (this.signLocalFields && this.dmPendingSweepSkipped) {
+      // A pass skipped while locked (no signer) does not poll.
+      this.pullDmPendingDeliverySweepForward(
+        RETICULUM_CHAT_DM_PENDING_SWEEP_MS
+      );
+    }
     void this.reconcileSelfDmWarmLinks();
     void this.broadcastDirectCallHistory();
     if (signerChanged) {
@@ -9073,6 +9398,8 @@ export class ReticulumChatManager extends EventEmitter {
     this.pendingDigestRepairFingerprints.clear();
     this.directDmPageNoProgressSuppressions.clear();
     this.selfDmSummaryAnnouncements.clear();
+    this.selfDmConfirmedUpTo.clear();
+    this.selfDmRenotifyStates.clear();
     this.directCallHistoryAnnouncements.clear();
     this.selfDmWarmLinkAppliedKey = '';
     this.selfDmWarmLinkSyncPending = false;
@@ -9138,6 +9465,7 @@ export class ReticulumChatManager extends EventEmitter {
     this.metadataSnapshotOffers.clear();
     this.recentDmDiscoveryKeys.clear();
     this.dmProbeRoutes.clear();
+    this.ownDmProbeIds.clear();
     this.dmNotifyRoutes.clear();
     this.dmConversationRouteIds.clear();
     this.directDmPageRequests.clear();
@@ -10008,6 +10336,15 @@ export class ReticulumChatManager extends EventEmitter {
     return [...this.localDmAddresses];
   }
 
+  /** Shallow copy of the cumulative delivery counters (see deliveryCounters). */
+  getDeliveryCounters(): Record<string, number> {
+    return { ...this.deliveryCounters };
+  }
+
+  private countDelivery(key: string, amount = 1): void {
+    this.deliveryCounters[key] = (this.deliveryCounters[key] ?? 0) + amount;
+  }
+
   setLocalDmAddresses(addresses: string[]): void {
     const nextAddresses = new Set(
       (Array.isArray(addresses) ? addresses : [])
@@ -10030,6 +10367,7 @@ export class ReticulumChatManager extends EventEmitter {
     }
     this.localDmAddresses = nextAddresses;
     this.lastDmSummaryBroadcastAt = null;
+    this.scheduleOwnOutboxStateRefresh();
     void this.reconcileSelfDmWarmLinks();
     if (this.localDmAddresses.size > 0) {
       this.pendingInitialDmDiscovery = true;
@@ -10040,7 +10378,7 @@ export class ReticulumChatManager extends EventEmitter {
       void this.replayReadStatesToOwnDevices();
       this.hydrateAllPendingDeviceState();
       void this.replayDeviceStatesToOwnDevices();
-      void this.broadcastSelfDmNotifications();
+      void this.broadcastSelfDmNotifications('edge');
       void this.broadcastDirectCallHistory();
       // Give leases and links a moment to settle after sign-in, then pull
       // Saved Messages written on other devices while this one was closed.
@@ -10093,10 +10431,13 @@ export class ReticulumChatManager extends EventEmitter {
     this.typingTimers.clear();
 
     this.selfDmSummaryAnnouncements.clear();
+    this.selfDmConfirmedUpTo.clear();
+    this.selfDmRenotifyStates.clear();
     this.directCallHistoryAnnouncements.clear();
     this.recentDmRequests.clear();
     this.recentDmDiscoveryKeys.clear();
     this.dmProbeRoutes.clear();
+    this.ownDmProbeIds.clear();
     this.dmNotifyRoutes.clear();
     this.dmConversationRouteIds.clear();
     this.directDmPageNoProgressSuppressions.clear();
@@ -10129,6 +10470,7 @@ export class ReticulumChatManager extends EventEmitter {
 
     this.localDmAddresses = new Set();
     this.lastDmSummaryBroadcastAt = null;
+    this.scheduleOwnOutboxStateRefresh();
     this.setLocalGroupMemberships([]);
     // The generic membership setter normally hydrates deferred read state.
     // During logout there is intentionally no active owner to hydrate, and an
@@ -10557,6 +10899,68 @@ export class ReticulumChatManager extends EventEmitter {
       );
     }
     this.scheduleSelfConversationCatchup(peer);
+    // A (re)admitted own device is the edge that hands it what it missed.
+    void this.pushUncopiedOwnEventsToOwnDevices('own-device-admitted').catch(
+      () => undefined
+    );
+    // An admitted own link turns uncopied / unconfirmed own events into work.
+    this.scheduleOwnOutboxStateRefresh();
+    // Hosts also call this for a link that stayed admitted (mobile re-runs
+    // its own-device introduction every 10 min); only a new admitted link is
+    // an edge for the Saved Messages carrier, owed notices and the probe.
+    if (!this.noteOwnDeviceAdmittedLinks(peer)) return;
+    // Saved Messages it has not confirmed (<= 1 per 60 s per device), group
+    // notices owed to it, and, in the foreground, one targeted probe.
+    void this.announceSelfDmSummariesToPeer(peer, 'edge').catch(
+      () => undefined
+    );
+    void this.flushOwedOwnDeviceGroupNotices('own-device-admitted', peer).catch(
+      () => undefined
+    );
+    if (this.appLifecycleState === 'foreground') {
+      void this.sendDmProbeToOwnDevices('own-device-admitted', {
+        peerHash: peer,
+      }).catch(() => undefined);
+    }
+  }
+
+  /**
+   * Records the admitted overlay links to an own device. True when it has an
+   * admitted link now and none of them was admitted at the previous call (a
+   * real admission, or a link that dropped and came back).
+   */
+  private noteOwnDeviceAdmittedLinks(peer: string): boolean {
+    const current = new Set<string>();
+    try {
+      for (const snap of this.bridge?.getOverlayLinkSnapshots?.() ?? []) {
+        if (snap?.overlayTransportAdmitted !== true || !snap.linkId) continue;
+        if (this.normalizeResourcePeerHash(snap.peerPresenceHash) !== peer) {
+          continue;
+        }
+        current.add(String(snap.linkId));
+      }
+    } catch {
+      return false;
+    }
+    const previous = this.ownDeviceAdmittedLinkIds.get(peer);
+    this.ownDeviceAdmittedLinkIds.delete(peer);
+    this.ownDeviceAdmittedLinkIds.set(peer, current);
+    while (
+      this.ownDeviceAdmittedLinkIds.size >
+      RETICULUM_CHAT_OWN_DEVICE_PEER_STATE_MAX
+    ) {
+      const oldest = this.ownDeviceAdmittedLinkIds.keys().next().value as
+        | string
+        | undefined;
+      if (!oldest) break;
+      this.ownDeviceAdmittedLinkIds.delete(oldest);
+    }
+    if (current.size === 0) return false;
+    if (!previous) return true;
+    for (const linkId of current) {
+      if (previous.has(linkId)) return false;
+    }
+    return true;
   }
 
   /** Same-account devices holding verified endpoint leases, newest first. */
@@ -10648,6 +11052,25 @@ export class ReticulumChatManager extends EventEmitter {
     if (this.isClosed || this.localDmAddresses.size === 0) return;
     void this.reconcileSelfDmWarmLinks();
     this.scheduleSelfConversationCatchup();
+    // Only a new session of an own device already pushed to is an edge (a
+    // restarted Hub lost nothing it stored, but may have missed a push).
+    if (
+      this.ownDevicePeerPushStates.size > 0 &&
+      this.noteOwnDeviceLeaseSessions()
+    ) {
+      void this.pushUncopiedOwnEventsToOwnDevices('own-device-session').catch(
+        () => undefined
+      );
+    }
+    // A restarted own device owed a group notice: pay it on the new session.
+    if (this.ownDeviceGroupNoticesOwed.size > 0) {
+      for (const peer of this.owedOwnDeviceGroupPeersWithNewSession()) {
+        void this.flushOwedOwnDeviceGroupNotices(
+          'own-device-session',
+          peer
+        ).catch(() => undefined);
+      }
+    }
   }
 
   private scheduleOwnDeviceCatchup(
@@ -10703,6 +11126,12 @@ export class ReticulumChatManager extends EventEmitter {
 
   notifyOverlayHealthChanged(isHealthy: boolean): void {
     if (!isHealthy) return;
+    // The pending sweep does not poll while offline: resume it here.
+    if (this.dmPendingSweepSkipped) {
+      this.pullDmPendingDeliverySweepForward(
+        RETICULUM_CHAT_DM_PENDING_SWEEP_MS
+      );
+    }
     if (this.hasKnownPublicGroups()) this.schedulePublicActivityRefresh(1_000);
     this.flushPendingDmDiscoveryIfHealthy('overlay-health');
     void this.replayReadStatesToOwnDevices();
@@ -10768,6 +11197,10 @@ export class ReticulumChatManager extends EventEmitter {
               reason: 'expiry',
             });
           }
+        }
+        // An expired own pending message leaves the outbox.
+        if (pruned.conversations.length > 0) {
+          this.scheduleOwnOutboxStateRefresh();
         }
         this.scheduleNextDirectExpiry();
       },
@@ -12239,21 +12672,227 @@ export class ReticulumChatManager extends EventEmitter {
     return `${ownerAddress}|${peer}|${lease.sessionId}`;
   }
 
-  private rememberSelfDmAnnouncement(
+  /** owner|device key of the Saved Messages confirmation state. */
+  private selfDmDeviceKey(ownerAddress: string, peerHash: string): string {
+    const peer =
+      this.routePeerHash(peerHash) ??
+      this.normalizeResourcePeerHash(peerHash) ??
+      '';
+    return ownerAddress && peer ? `${ownerAddress}|${peer}` : '';
+  }
+
+  /**
+   * Saved Messages events authored on this device (inside the recovery
+   * window), newest first. One small indexed read of ids and timestamps.
+   */
+  private ownSelfDmEventCursors(
+    ownerAddress: string
+  ): Array<{ eventId: string; timestamp: number }> {
+    const conversationId = reticulumDmConversationId(
+      ownerAddress,
+      ownerAddress
+    );
+    if (!conversationId) return [];
+    const now = this.now();
+    try {
+      return this.db.listOwnSelfDirectEventCursors(
+        conversationId,
+        now - RETICULUM_CHAT_SELF_DM_RECOVERY_WINDOW_MS,
+        RETICULUM_CHAT_SELF_DM_OWN_CURSOR_SCAN,
+        now
+      );
+    } catch (err) {
+      loggerWarn(
+        `[ReticulumChat] self_dm_cursor_read_failed reason=${err instanceof Error ? err.message : String(err)}`
+      );
+      return [];
+    }
+  }
+
+  /**
+   * An own device holds this self-DM event (and, since it pulls in order,
+   * everything this device authored before it). Only a confirmation ends the
+   * re-notifies; a send the bridge accepted does not.
+   */
+  private confirmSelfDmCursor(
     ownerAddress: string,
     peerHash: string,
-    event: ReticulumDmEvent
+    event: { eventId: string; timestamp: number }
+  ): boolean {
+    const key = this.selfDmDeviceKey(ownerAddress, peerHash);
+    if (!key || !event?.eventId) return false;
+    const previous = this.selfDmConfirmedCursor(ownerAddress, peerHash);
+    if (previous && previous.timestamp >= event.timestamp) return false;
+    const confirmed = {
+      eventId: event.eventId,
+      timestamp: Number(event.timestamp) || 0,
+    };
+    this.rememberSelfDmConfirmed(key, confirmed);
+    // Persisted, so a restart does not re-notify what a device already holds.
+    try {
+      const now = this.now();
+      this.db.setSelfDmConfirmedCursor(
+        ownerAddress,
+        key.slice(ownerAddress.length + 1),
+        confirmed,
+        now,
+        now - RETICULUM_CHAT_SELF_DM_RECOVERY_WINDOW_MS
+      );
+    } catch (err) {
+      loggerWarn(
+        `[ReticulumChat] self_dm_confirm_persist_failed reason=${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+    this.countDelivery('selfDmNotifyConfirmed');
+    this.scheduleOwnOutboxStateRefresh();
+    return true;
+  }
+
+  private rememberSelfDmConfirmed(
+    key: string,
+    confirmed: { eventId: string; timestamp: number }
   ): void {
-    const key = this.selfDmAnnouncementKey(ownerAddress, peerHash);
-    if (!key) return;
-    this.selfDmSummaryAnnouncements.set(key, this.dmNotifyLatestCursor(event));
-    while (this.selfDmSummaryAnnouncements.size > 4_096) {
-      const oldest = this.selfDmSummaryAnnouncements.keys().next().value as
+    this.selfDmConfirmedUpTo.delete(key);
+    this.selfDmConfirmedUpTo.set(key, confirmed);
+    while (
+      this.selfDmConfirmedUpTo.size > RETICULUM_CHAT_SELF_DM_CONFIRM_STATE_MAX
+    ) {
+      const oldest = this.selfDmConfirmedUpTo.keys().next().value as
         | string
         | undefined;
       if (!oldest) break;
-      this.selfDmSummaryAnnouncements.delete(oldest);
+      this.selfDmConfirmedUpTo.delete(oldest);
     }
+  }
+
+  /**
+   * The newest self-DM cursor this own device confirmed, or null. Read from
+   * the DB once per device and process, then from memory ('' id = none).
+   */
+  private selfDmConfirmedCursor(
+    ownerAddress: string,
+    peerHash: string
+  ): { eventId: string; timestamp: number } | null {
+    const key = this.selfDmDeviceKey(ownerAddress, peerHash);
+    if (!key) return null;
+    const cached = this.selfDmConfirmedUpTo.get(key);
+    if (cached) return cached.eventId ? cached : null;
+    let stored: { eventId: string; timestamp: number } | null = null;
+    try {
+      stored = this.db.getSelfDmConfirmedCursor(
+        ownerAddress,
+        key.slice(ownerAddress.length + 1)
+      );
+    } catch {
+      stored = null;
+    }
+    this.rememberSelfDmConfirmed(key, stored ?? { eventId: '', timestamp: 0 });
+    return stored;
+  }
+
+  /** A self-DM page moved between this device and a verified own device. */
+  private confirmSelfDmCursorsFromEvents(
+    ownerAddress: string,
+    peerHash: string,
+    events: Array<{
+      eventId: string;
+      senderAddress: string;
+      recipientAddress: string;
+    }>
+  ): void {
+    if (!this.localDmAddresses.has(ownerAddress)) return;
+    const ids = new Set(
+      events
+        .filter(
+          (event) =>
+            event?.senderAddress === ownerAddress &&
+            event.recipientAddress === ownerAddress
+        )
+        .map((event) => event.eventId)
+    );
+    if (ids.size === 0) return;
+    let best: { eventId: string; timestamp: number } | null = null;
+    for (const cursor of this.ownSelfDmEventCursors(ownerAddress)) {
+      if (!ids.has(cursor.eventId)) continue;
+      if (!best || cursor.timestamp > best.timestamp) best = cursor;
+    }
+    if (best) this.confirmSelfDmCursor(ownerAddress, peerHash, best);
+  }
+
+  /** A verified own device's self notify named one of our self-DM cursors. */
+  private confirmSelfDmCursorFromNotify(
+    ownerAddress: string,
+    peerHash: string,
+    latestCursor: string
+  ): void {
+    if (!latestCursor) return;
+    const match = this.ownSelfDmEventCursors(ownerAddress).find(
+      (cursor) => this.dmNotifyLatestCursor(cursor) === latestCursor
+    );
+    if (match) this.confirmSelfDmCursor(ownerAddress, peerHash, match);
+  }
+
+  /**
+   * Newest Saved Messages event authored on this device that this own device
+   * has not confirmed yet, or null (also when nothing was authored here).
+   */
+  private newestUnconfirmedOwnSelfDmEvent(
+    ownerAddress: string,
+    peerHash: string,
+    cursors = this.ownSelfDmEventCursors(ownerAddress)
+  ): { eventId: string; timestamp: number } | null {
+    const [newest] = cursors;
+    if (!newest) return null;
+    const confirmed = this.selfDmConfirmedCursor(ownerAddress, peerHash);
+    if (confirmed && confirmed.timestamp >= newest.timestamp) return null;
+    return newest;
+  }
+
+  /** Re-notify state of one own-device session (a new session starts clean). */
+  private selfDmRenotifyStateKey(
+    ownerAddress: string,
+    peerHash: string
+  ): string {
+    return (
+      this.selfDmAnnouncementKey(ownerAddress, peerHash) ||
+      `${this.selfDmDeviceKey(ownerAddress, peerHash)}|`
+    );
+  }
+
+  private setSelfDmRenotifyState(
+    key: string,
+    state: { cursor: string; count: number; lastSentAt: number }
+  ): void {
+    this.selfDmRenotifyStates.delete(key);
+    this.selfDmRenotifyStates.set(key, state);
+    // Reaching the re-notify cap ends the Saved Messages part of the outbox.
+    this.scheduleOwnOutboxStateRefresh();
+    while (
+      this.selfDmRenotifyStates.size > RETICULUM_CHAT_SELF_DM_CONFIRM_STATE_MAX
+    ) {
+      const oldest = this.selfDmRenotifyStates.keys().next().value as
+        | string
+        | undefined;
+      if (!oldest) break;
+      this.selfDmRenotifyStates.delete(oldest);
+    }
+  }
+
+  /** The publish-time self notify: spaces the carriers, is not a re-notify. */
+  private noteSelfDmNotifySent(
+    ownerAddress: string,
+    peerHash: string,
+    event: { eventId: string; timestamp: number }
+  ): void {
+    const key = this.selfDmRenotifyStateKey(ownerAddress, peerHash);
+    if (!key || key === '|') return;
+    const cursor = this.dmNotifyLatestCursor(event);
+    const previous = this.selfDmRenotifyStates.get(key);
+    this.setSelfDmRenotifyState(key, {
+      cursor,
+      count: previous?.cursor === cursor ? previous.count : 0,
+      lastSentAt: this.now(),
+    });
   }
 
   getDirectCallHistory(
@@ -12555,7 +13194,22 @@ export class ReticulumChatManager extends EventEmitter {
       event.senderAddress,
       event.recipientAddress
     );
+    this.lastOwnDmPublishAt = this.now();
+    // Hand a copy to a linked home Hub first, with its own untracked notify:
+    // a pull that answers it is never refused as a tracked-notify mismatch.
+    try {
+      await this.pushDirectEventToOwnDevices(event, { mode: 'send' });
+    } catch (err) {
+      loggerWarn(
+        `[ReticulumChat] own_device_push_failed event=${event.eventId.slice(0, 12)} reason=${err instanceof Error ? err.message : String(err)}`
+      );
+    }
     await this.announceDirectNotifyForEvent(event, [], directPeerHashes);
+    // An own send is also an edge for other conversations still waiting for
+    // a home-Hub copy (gated and spaced inside).
+    void this.pushUncopiedOwnEventsToOwnDevices('own-send').catch(
+      () => undefined
+    );
     return { ok: true };
   }
 
@@ -12840,11 +13494,16 @@ export class ReticulumChatManager extends EventEmitter {
       typeof event?.authorAddress === 'string' ? event.authorAddress : ''
     );
     if (!authorIsMember) {
+      // `null` means the membership check gave no answer (request failed,
+      // was blocked or timed out), which needs a different fix from a
+      // genuine non-member; say which one it was.
       return {
         ok: false,
         reason: 'send-command-failed',
         error:
-          'Cannot publish Reticulum chat event: author is not a current group member',
+          authorIsMember === null
+            ? 'Cannot publish Reticulum chat event: could not confirm your group membership with your Qortal node (membership check unavailable)'
+            : 'Cannot publish Reticulum chat event: author is not a current group member',
       };
     }
     this.localGroupIds.add(event.groupId);
@@ -12874,6 +13533,7 @@ export class ReticulumChatManager extends EventEmitter {
         error: 'Invalid event',
       };
     }
+    this.countDelivery('groupEventPublished');
     const fanoutResult = await this.fanoutPublishedEvent(event, channelId);
     if (!fanoutResult.ok) {
       const failed = fanoutResult as Exclude<ReticulumSendResult, { ok: true }>;
@@ -15810,6 +16470,8 @@ export class ReticulumChatManager extends EventEmitter {
       for (const ownerAddress of owners) {
         if (this.isClosed || accountGeneration !== this.localAccountGeneration)
           return;
+        // No own device to replay to: skip the 5,000-row read.
+        if (this.ownDevicePeerHashes(ownerAddress).length === 0) continue;
         const states = this.db.getDeviceReadStates(ownerAddress, 5_000);
         if (states.length === 0) continue;
         for (const peerHash of this.ownDevicePeerHashes(ownerAddress)) {
@@ -19286,7 +19948,7 @@ export class ReticulumChatManager extends EventEmitter {
           }
           if (this.peerSupportsSelfDm(peerHash)) {
             void this.reconcileSelfDmWarmLinks();
-            void this.announceSelfDmSummariesToPeer(peerHash);
+            void this.announceSelfDmSummariesToPeer(peerHash, 'edge');
           }
           if (this.peerSupportsDirectCallHistory(peerHash)) {
             void this.announceDirectCallHistoryToPeer(peerHash);
@@ -20263,6 +20925,8 @@ export class ReticulumChatManager extends EventEmitter {
       fallbackOnPartialFailure?: boolean;
       useRetryQueue?: boolean;
       context?: string;
+      /** Filled with the next hops that accepted the routed send. */
+      deliveredPeerHashes?: Set<string>;
     } = {}
   ): Promise<ReticulumSendResult> {
     if (wire.k === 'group_state_digest_v3' && !this.routePeerHash(wire.o)) {
@@ -20288,6 +20952,7 @@ export class ReticulumChatManager extends EventEmitter {
         delivered = batch.deliveredPeerHashes.length;
         for (const peerHash of batch.deliveredPeerHashes) {
           this.rememberForwardedGroupControlEdge(groupId, wire, peerHash);
+          options.deliveredPeerHashes?.add(peerHash.trim().toLowerCase());
         }
         for (const failure of batch.failures) {
           const failed: Exclude<ReticulumSendResult, { ok: true }> = {
@@ -20336,6 +21001,7 @@ export class ReticulumChatManager extends EventEmitter {
         if (result.ok === true) {
           delivered += 1;
           this.rememberForwardedGroupControlEdge(groupId, wire, peerHash);
+          options.deliveredPeerHashes?.add(peerHash.trim().toLowerCase());
           continue;
         }
         const failed = result as Exclude<ReticulumSendResult, { ok: true }>;
@@ -21147,6 +21813,7 @@ export class ReticulumChatManager extends EventEmitter {
 
   private markDirectEventSent(event: ReticulumDmEvent): void {
     this.db.markDirectDeliveryStatus(event.eventId, 'sent');
+    this.scheduleOwnOutboxStateRefresh();
     const peerAddress = ownAddressMatches(
       this.localDmAddresses,
       event.senderAddress
@@ -21179,6 +21846,9 @@ export class ReticulumChatManager extends EventEmitter {
     for (const [key, expiresAt] of this.recentDmDiscoveryKeys) {
       if (expiresAt <= now) this.recentDmDiscoveryKeys.delete(key);
     }
+    for (const [requestId, expiresAt] of this.ownDmProbeIds) {
+      if (expiresAt <= now) this.ownDmProbeIds.delete(requestId);
+    }
     for (const [transferId, request] of this.directDmPageRequests) {
       const requestedAt = Number(request.requestedAt || 0);
       if (
@@ -21206,6 +21876,7 @@ export class ReticulumChatManager extends EventEmitter {
       this.recentDmDiscoveryKeys,
       RETICULUM_CHAT_DM_DISCOVERY_ROUTE_MAX
     );
+    trimOldest(this.ownDmProbeIds, RETICULUM_CHAT_OWN_DM_PROBE_MAX);
   }
 
   private dmConversationRouteKey(
@@ -21674,6 +22345,7 @@ export class ReticulumChatManager extends EventEmitter {
     pull.inFlight = true;
     pull.activeRequestId = pull.requestId;
     pull.attempts += 1;
+    const requestedId = pull.activeRequestId;
     const result = await this.requestDirectMissingEvents(
       pull.conversationId,
       pull.addressA,
@@ -21697,15 +22369,38 @@ export class ReticulumChatManager extends EventEmitter {
       this.completeDirectDmPull(key);
       return;
     }
-    this.scheduleDirectDmPullRetry(key, result);
+    this.scheduleDirectDmPullRetry(key, result, requestedId);
   }
 
-  private scheduleDirectDmPullRetry(key: string, reason: string): void {
+  private scheduleDirectDmPullRetry(
+    key: string,
+    reason: string,
+    failedRequestId?: string
+  ): void {
     const pull = this.directDmPulls.get(key);
     if (!pull || this.isClosed) return;
     pull.inFlight = false;
     pull.activeRequestId = '';
     if (pull.retryTimer) return;
+    // A newer cursor may have replaced the request while it was in flight;
+    // an empty answer to the old request says nothing about the new one.
+    if (
+      reason === 'no_dm_events' &&
+      (!failedRequestId ||
+        normalizeReticulumControlRequestId(failedRequestId) ===
+          pull.requestId) &&
+      this.isVerifiedOwnDeviceDmSource(
+        pull.addressA,
+        pull.addressB,
+        pull.sourcePeerHash
+      )
+    ) {
+      // Our own device answered that it holds nothing after our cursor. That
+      // is an answer, not a transient failure: another signed attempt would
+      // get the same reply.
+      this.completeDirectDmPull(key);
+      return;
+    }
     if (
       pull.attempts >= RETICULUM_CHAT_DM_PULL_RETRY_DELAYS_MS.length + 1 ||
       this.now() - pull.createdAt > RETICULUM_CHAT_DM_PULL_MAX_AGE_MS
@@ -21730,6 +22425,93 @@ export class ReticulumChatManager extends EventEmitter {
       void this.runDirectDmPull(key);
     }, delay);
     pull.retryTimer.unref?.();
+  }
+
+  private isVerifiedOwnDeviceDmSource(
+    addressA: string,
+    addressB: string,
+    sourcePeerHash: string
+  ): boolean {
+    const localAddress = this.localDmAddressForConversation(addressA, addressB);
+    return (
+      !!localAddress && this.isVerifiedSelfDmPeer(localAddress, sourcePeerHash)
+    );
+  }
+
+  /**
+   * A DM page request was refused with no_dm_events. From a verified own
+   * device, suppress the same pull (same conversation, source, cursor and
+   * notify identity) for the no-progress TTL; a newer cursor still pulls.
+   */
+  private noteDirectDmPageNoEvents(request: {
+    conversationId: string;
+    sourcePeerHash?: string;
+    requesterAddress?: string;
+    peerAddress?: string;
+    after?: number;
+    requestId?: string;
+    remoteEventId?: string;
+    remoteTimestamp?: number;
+  }): void {
+    this.countDelivery('dmPullNoEvents');
+    const source = request.sourcePeerHash || '';
+    if (
+      !source ||
+      !this.isVerifiedOwnDeviceDmSource(
+        request.requesterAddress || '',
+        request.peerAddress || '',
+        source
+      )
+    ) {
+      return;
+    }
+    this.noteOwnDevicePullCompleted(
+      request.conversationId,
+      source,
+      request.remoteEventId || ''
+    );
+    const requestIdentity = this.dmPageRequestIdentity(
+      request.requestId,
+      request.remoteEventId || '',
+      Number(request.remoteTimestamp || 0)
+    );
+    if (!requestIdentity) return;
+    this.markDmPageNoProgress(
+      request.conversationId,
+      source,
+      Number(request.after || 0),
+      requestIdentity,
+      'own_device_no_dm_events'
+    );
+  }
+
+  /**
+   * A pull from a verified own device, made for its notify cursor, got its
+   * last page (or "nothing after your cursor"): we hold everything it had
+   * after our own cursor as of that notify cursor.
+   */
+  private noteOwnDevicePullCompleted(
+    conversationId: string,
+    sourcePeerHash: string,
+    remoteEventId: string
+  ): void {
+    if (!conversationId || !sourcePeerHash) return;
+    if (!remoteEventId.startsWith('cursor:')) return;
+    const latestCursor = remoteEventId.slice(7);
+    if (!latestCursor) return;
+    const key = `${sourcePeerHash}|${conversationId}`;
+    this.ownDevicePulledCursors.delete(key);
+    this.ownDevicePulledCursors.set(key, latestCursor);
+    while (
+      this.ownDevicePulledCursors.size >
+      RETICULUM_CHAT_OWN_PROBE_ANSWER_PULLED_MAX
+    ) {
+      const oldest = this.ownDevicePulledCursors.keys().next().value as
+        | string
+        | undefined;
+      if (!oldest) break;
+      this.ownDevicePulledCursors.delete(oldest);
+    }
   }
 
   private completeDirectDmPull(key: string): void {
@@ -22079,10 +22861,36 @@ export class ReticulumChatManager extends EventEmitter {
       );
       return;
     }
+    if (selfDm) {
+      // The own device's newest Saved Messages cursor may be one we wrote.
+      this.confirmSelfDmCursorFromNotify(
+        authorAddress,
+        sourcePeerHash,
+        typeof notify.lc === 'string' ? notify.lc.trim() : ''
+      );
+    }
     this.pruneDmDiscoveryRoutes(now);
+    // An own device answering our probe with a cursor we already hold among
+    // our newest local events: nothing to pull (evaluated at most once).
+    let upToDateOwnAnswer: boolean | null = null;
+    const isUpToDateOwnAnswer = () => {
+      if (upToDateOwnAnswer === null) {
+        upToDateOwnAnswer =
+          localConversation &&
+          !selfDm &&
+          this.isUpToDateOwnDeviceProbeAnswer(
+            notify,
+            authorAddress,
+            conversationId,
+            sourcePeerHash,
+            now
+          );
+      }
+      return upToDateOwnAnswer;
+    };
     const recentKey = `notify:${requestId}`;
     if ((this.recentDmDiscoveryKeys.get(recentKey) ?? 0) > now) {
-      if (localConversation) {
+      if (localConversation && !isUpToDateOwnAnswer()) {
         const latestCursor =
           typeof notify.lc === 'string' ? notify.lc.trim() : '';
         this.queueDirectMissingEvents({
@@ -22137,15 +22945,26 @@ export class ReticulumChatManager extends EventEmitter {
           `[ReticulumChat] dm_notify_local conversation=${conversationId.slice(0, 16)} author=${authorAddress.slice(0, 8)} source=${sourcePeerHash.slice(0, 16)} reverse=${reversePeerHash.slice(0, 16)} rid=${requestId.slice(0, 12)} latest=${latestCursor || 'none'}`
         );
       }
-      this.queueDirectMissingEvents({
-        conversationId,
-        addressA: authorAddress,
-        addressB: peerAddress,
-        sourcePeerHash,
-        remoteEventId: remoteCursorId,
-        remoteTimestamp: Number.MAX_SAFE_INTEGER,
-        requestId,
-      });
+      if (!selfDm) {
+        this.noteOwnHubProbeAnswered(
+          normalizeReticulumControlRequestId(notify.r),
+          sourcePeerHash,
+          reversePeerHash
+        );
+      }
+      if (isUpToDateOwnAnswer()) {
+        this.countDelivery('ownHubProbeAnswerSkippedUpToDate');
+      } else {
+        this.queueDirectMissingEvents({
+          conversationId,
+          addressA: authorAddress,
+          addressB: peerAddress,
+          sourcePeerHash,
+          remoteEventId: remoteCursorId,
+          remoteTimestamp: Number.MAX_SAFE_INTEGER,
+          requestId,
+        });
+      }
       if (selfDm) return;
     } else if (RETICULUM_CHAT_TRACE) {
       loggerLog(
@@ -22154,6 +22973,12 @@ export class ReticulumChatManager extends EventEmitter {
     }
 
     const probeRequestId = normalizeReticulumControlRequestId(notify.r);
+    if (probeRequestId && (this.ownDmProbeIds.get(probeRequestId) ?? 0) > now) {
+      // An answer to a probe this device signed. The local pull (if any) is
+      // already queued above; nobody else asked, so do not re-flood it.
+      this.countDelivery('ownProbeAnswerRelaySuppressed');
+      return;
+    }
     if (probeRequestId) {
       const route = this.dmProbeRoutes.get(probeRequestId);
       if (route && route.expiresAt > now) {
@@ -27211,6 +28036,8 @@ export class ReticulumChatManager extends EventEmitter {
     // Publish only the signed availability notice. A recipient that is
     // missing the event opens one authenticated dedicated resource link and
     // requests the event on that same link.
+    let signedNotice: ReticulumChatWire | null = null;
+    const noticeDeliveredPeers = new Set<string>();
     const noticeDelivery = this.buildEventNoticeWire(event, eventSizeBytes)
       .then((notice): Promise<ReticulumSendResult> => {
         if (!notice) {
@@ -27220,10 +28047,12 @@ export class ReticulumChatManager extends EventEmitter {
             error: 'Unable to sign event notice',
           });
         }
+        signedNotice = notice;
         return this.sendGroupRoutedControl(event.groupId, notice, {
           fallbackFanout: true,
           useRetryQueue: true,
           context: 'published-event-notice-v3',
+          deliveredPeerHashes: noticeDeliveredPeers,
         });
       })
       .catch(
@@ -27234,6 +28063,23 @@ export class ReticulumChatManager extends EventEmitter {
         })
       );
     const noticeResult = await noticeDelivery;
+    // Assigned inside the promise chain above.
+    const ownDeviceNotice = signedNotice as ReticulumChatWire | null;
+    if (ownDeviceNotice) {
+      // Outside the routed result: the same signed notice straight to a
+      // linked home Hub that the routed send did not already reach. Not
+      // awaited, so a stuck own link never holds the publish; a failed send
+      // is owed inside the helper.
+      void this.sendEventNoticeToOwnDevices(
+        event,
+        ownDeviceNotice,
+        noticeDeliveredPeers
+      ).catch((err) => {
+        loggerWarn(
+          `[ReticulumChat] own_device_group_notice_failed group=${event.groupId} event=${event.eventId.slice(0, 12)} reason=${err instanceof Error ? err.message : String(err)}`
+        );
+      });
+    }
 
     const digestWire = await this.buildGroupStateDigestWire(event.groupId);
     if (!digestWire) {
@@ -27302,7 +28148,7 @@ export class ReticulumChatManager extends EventEmitter {
     );
     if (!requesterIsMember) {
       loggerWarn(
-        `[ReticulumChat] Refusing history page request for group=${groupId}: local signer is not a group member`
+        `[ReticulumChat] Refusing history page request for group=${groupId}: ${this.localSignerMembershipRefusalReason(requesterIsMember)}`
       );
       return null;
     }
@@ -28252,6 +29098,13 @@ export class ReticulumChatManager extends EventEmitter {
     if (!validateReticulumDmEventShape(candidate, now)) return false;
     const event = candidate;
     if (!this.acceptsDirectConversation(event)) return false;
+    // An exact copy of a stored event (same id, same signature) was verified
+    // when it was stored and would be refused below anyway; skip the ed25519
+    // work. Anything else, including a different signature, verifies as usual.
+    if (this.db.getDirectEventSignature(event.eventId) === event.signature) {
+      this.countDelivery('dmDuplicateVerifySkipped');
+      return false;
+    }
     if (!verifyReticulumDmEvent(event)) return false;
     if (
       event.eventType === 'message' &&
@@ -28272,7 +29125,16 @@ export class ReticulumChatManager extends EventEmitter {
           event.senderAddress,
           event.timestamp
         );
+      } else if (
+        ownEvent &&
+        (options.deliveryStatus ?? 'pending') === 'pending'
+      ) {
+        // A new undelivered own event: make sure the retry sweep is running.
+        this.startDmPendingDeliverySweep(true);
+      } else if (!ownEvent) {
+        this.noteDmPeerSpoke(event);
       }
+      if (ownEvent) this.scheduleOwnOutboxStateRefresh();
       this.scheduleNextDirectExpiry();
       const storedEvent = this.db.getDirectEvent(event.eventId) ?? event;
       this.syncDirectResourceReferences(storedEvent, ownEvent);
@@ -29415,6 +30277,41 @@ export class ReticulumChatManager extends EventEmitter {
     groupId: number,
     address: string
   ): Promise<boolean | null> {
+    const isMember = await this.getCoreValidatedGroupMembership(
+      groupId,
+      address
+    );
+    if (isMember !== null) return isMember;
+    // Core gave no answer (the validator resolved null or threw, now or within
+    // the unavailable retry window). The local signer's own membership can
+    // still come from the membership list the host pushed for this account.
+    // The unavailable marker stays so Core is asked again, nothing is cached
+    // as a Core answer, and an explicit Core `false` is never overridden.
+    return this.isLocalSignerGroupMember(groupId, address.trim()) ? true : null;
+  }
+
+  private isLocalSignerGroupMember(
+    groupId: number,
+    normalizedAddress: string
+  ): boolean {
+    return (
+      normalizedAddress.length > 0 &&
+      this.localGroupMembershipsInitialized &&
+      this.localGroupIds.has(groupId) &&
+      this.localGroupAddresses.get(groupId) === normalizedAddress
+    );
+  }
+
+  private localSignerMembershipRefusalReason(isMember: boolean | null): string {
+    return isMember === null
+      ? 'local signer membership could not be confirmed (membership check unavailable)'
+      : 'local signer is not a group member';
+  }
+
+  private async getCoreValidatedGroupMembership(
+    groupId: number,
+    address: string
+  ): Promise<boolean | null> {
     if (!Number.isInteger(groupId) || groupId <= 0) return false;
     const normalizedAddress = address.trim();
     if (!normalizedAddress) return false;
@@ -29463,6 +30360,9 @@ export class ReticulumChatManager extends EventEmitter {
         expiresAt: this.now() + RETICULUM_CHAT_MEMBER_CACHE_TTL_MS,
       });
       this.groupMemberValidationUnavailableUntil.delete(cacheKey);
+      // Core answers again, so events that were backing off on an
+      // unavailable membership check for this group can retry now.
+      this.wakeMembershipDeferredEventPulls(groupId);
       return isMember;
     })();
     this.groupMemberValidationInflight.set(cacheKey, validation);
@@ -29495,9 +30395,11 @@ export class ReticulumChatManager extends EventEmitter {
   ): Promise<boolean> {
     // Calendar mutations are durable administrative state. Unlike legacy chat
     // paths, they must never use local group presence as a substitute for an
-    // authoritative Core membership result.
+    // authoritative Core membership result (so no local-signer fallback).
     if (!this.validateGroupMember) return false;
-    return (await this.isValidatedGroupMember(groupId, address)) === true;
+    return (
+      (await this.getCoreValidatedGroupMembership(groupId, address)) === true
+    );
   }
 
   private async getValidatedCalendarAdminStatus(
@@ -29563,7 +30465,7 @@ export class ReticulumChatManager extends EventEmitter {
     if (existing) return existing;
     const validation =
       (async (): Promise<ReticulumChatAdminValidationStatus> => {
-        let isAdmin = false;
+        let isAdmin: boolean | null = false;
         try {
           isAdmin = await this.validateGroupAdmin!(groupId, normalizedAddress);
         } catch (err) {
@@ -29574,6 +30476,19 @@ export class ReticulumChatManager extends EventEmitter {
           loggerWarn(
             `[ReticulumChat] group_admin_validation_unknown group=${groupId} address=${normalizedAddress}:`,
             err
+          );
+          return 'unknown';
+        }
+        if (isAdmin == null) {
+          // No answer from Core (the mobile validator resolves null when its
+          // fetch fails) is unknown, like a throw: caching it as not_admin
+          // would reject good snapshots and blame the peers that sent them.
+          this.markValidationUnavailable(
+            this.groupAdminValidationUnavailableUntil,
+            cacheKey
+          );
+          loggerWarn(
+            `[ReticulumChat] group_admin_validation_unknown group=${groupId} address=${normalizedAddress}: validator returned no result`
           );
           return 'unknown';
         }
@@ -29654,7 +30569,7 @@ export class ReticulumChatManager extends EventEmitter {
     if (!this.localNotifyScanInterval) {
       this.localNotifyScanInterval = setInterval(() => {
         this.scanLocalNotifications();
-      }, 2_000);
+      }, this.localNotifyScanIntervalMs);
       this.localNotifyScanInterval.unref?.();
     }
     try {
@@ -29880,21 +30795,121 @@ export class ReticulumChatManager extends EventEmitter {
    * summary refresh, and that only covers the newest event per conversation.
    * A phone whose bridge stalls for a minute, or that is closed right after
    * sending, hits that gap routinely. Delivery status is persisted, so this
-   * sweep re-signs and re-announces every own event still `pending` on an
-   * exponential backoff until the recipient pulls it (which flips it to
-   * `sent`) or it ages out.
+   * sweep re-signs and re-announces the newest own event still `pending` in
+   * each conversation (one pull fetches everything after the recipient's
+   * cursor) until the recipient pulls it (which flips it to `sent`) or it
+   * ages out: an exponential backoff for 2 h, then a slow tail up to 7 days
+   * that stops once an own device holds a copy. Attempt count and next due
+   * time are persisted, so a restart neither re-bursts nor forgets them.
+   *
+   * The timer only runs while such events exist: it is armed when an own
+   * pending event is stored and at sign-in, and re-armed after a sweep to the
+   * earliest persisted due time (never sooner than 20 s). Nothing pending
+   * means no timer. A pass skipped offline or while locked re-arms only a
+   * 15 min safety net; overlay recovery, a new signer and the resume hook
+   * bring the sweep forward instead.
    */
-  private startDmPendingDeliverySweep(): void {
-    if (this.dmPendingDeliveryTimer || this.isClosed) return;
+  private startDmPendingDeliverySweep(knownPending = false): void {
+    if (this.isClosed || this.localDmAddresses.size === 0) return;
+    const now = this.now();
+    if (this.dmPendingDeliveryTimer) {
+      // A new send must not wait for a timer armed hours ahead for the tail.
+      if (
+        !knownPending ||
+        this.dmPendingDeliveryTimerDueAt <=
+          now + RETICULUM_CHAT_DM_PENDING_SWEEP_MS
+      ) {
+        return;
+      }
+    }
+    let delay = RETICULUM_CHAT_DM_PENDING_SWEEP_MS;
+    if (!knownPending) {
+      const dueAt = this.nextDmPendingDeliveryDueAt(now);
+      if (dueAt === null) return;
+      // Skipped offline / locked: no polling, only the long safety net.
+      delay = Math.max(
+        this.dmPendingSweepSkipped
+          ? RETICULUM_CHAT_DM_PENDING_SKIPPED_RECHECK_MS
+          : RETICULUM_CHAT_DM_PENDING_SWEEP_MS,
+        dueAt - now
+      );
+    }
+    this.armDmPendingDeliveryTimer(now, delay);
+  }
+
+  private armDmPendingDeliveryTimer(now: number, delay: number): void {
+    if (this.dmPendingDeliveryTimer) {
+      clearTimeout(this.dmPendingDeliveryTimer);
+      this.dmPendingDeliveryTimer = null;
+    }
+    this.dmPendingDeliveryTimerDueAt = now + delay;
     this.dmPendingDeliveryTimer = setTimeout(() => {
       this.dmPendingDeliveryTimer = null;
+      this.dmPendingDeliveryTimerDueAt = 0;
       void this.runDmPendingDeliverySweep().finally(() => {
+        // The sweep tick is also where pending DMs age out of the windows.
+        this.scheduleOwnOutboxStateRefresh();
         if (!this.isClosed && this.localDmAddresses.size > 0) {
           this.startDmPendingDeliverySweep();
         }
       });
-    }, RETICULUM_CHAT_DM_PENDING_SWEEP_MS);
+    }, delay);
     this.dmPendingDeliveryTimer.unref?.();
+  }
+
+  /**
+   * An edge that may end a skipped (offline / locked) state or that wants
+   * due attempts soon (overlay recovered, signer set, resume): run the sweep
+   * `delayMs` from now when a candidate is due or the last pass was skipped,
+   * otherwise re-arm to the persisted due time. Never delays an earlier
+   * timer; one indexed read, nothing when nothing is pending.
+   */
+  private pullDmPendingDeliverySweepForward(delayMs: number): void {
+    if (this.isClosed || this.localDmAddresses.size === 0) return;
+    const now = this.now();
+    if (
+      this.dmPendingDeliveryTimer &&
+      this.dmPendingDeliveryTimerDueAt <= now + delayMs
+    ) {
+      return;
+    }
+    const dueAt = this.nextDmPendingDeliveryDueAt(now);
+    if (dueAt === null) return;
+    this.dmPendingSweepSkipped = false;
+    this.armDmPendingDeliveryTimer(now, Math.max(delayMs, dueAt - now));
+  }
+
+  /**
+   * Earliest due time over the sweep's candidates (2 h backoff window plus
+   * the uncopied 7 day tail): 0 for a candidate never attempted, null when
+   * there is none. A DB error answers "due now" (the sweep stays armed).
+   */
+  private nextDmPendingDeliveryDueAt(now = this.now()): number | null {
+    let earliest: number | null = null;
+    try {
+      for (const localAddress of this.localDmAddresses) {
+        const dueAt = this.db.nextPendingOwnDirectDeliveryDueAt(
+          localAddress,
+          now - RETICULUM_CHAT_DM_PENDING_TAIL_MAX_AGE_MS,
+          now - RETICULUM_CHAT_DM_PENDING_MAX_AGE_MS,
+          now
+        );
+        if (dueAt === null || dueAt === undefined) continue;
+        earliest = earliest === null ? dueAt : Math.min(earliest, dueAt);
+      }
+    } catch (err) {
+      loggerWarn(
+        `[ReticulumChat] dm_pending_check_failed reason=${err instanceof Error ? err.message : String(err)}`
+      );
+      // Keep the previous always-armed behaviour when the answer is unknown.
+      return now;
+    }
+    return earliest;
+  }
+
+  /** Same candidates as runDmPendingDeliverySweep; true on a DB error. */
+  private hasPendingOwnDirectEventsForSweep(): boolean {
+    return this.nextDmPendingDeliveryDueAt() !== null;
   }
 
   private stopDmPendingDeliverySweep(): void {
@@ -29902,21 +30917,80 @@ export class ReticulumChatManager extends EventEmitter {
       clearTimeout(this.dmPendingDeliveryTimer);
       this.dmPendingDeliveryTimer = null;
     }
+    this.dmPendingDeliveryTimerDueAt = 0;
+    this.dmPendingSweepSkipped = false;
     this.dmPendingDeliveryAttempts.clear();
+    this.dmPendingPeerSpokeQueue.clear();
+    // Same account boundary (logout, account switch, close) for the
+    // own-device copy and lifecycle state.
+    if (this.resumeHookTimer) {
+      clearTimeout(this.resumeHookTimer);
+      this.resumeHookTimer = null;
+    }
+    this.resumeHookReasons.clear();
+    this.ownDevicePushConversations.clear();
+    this.ownDevicePeerPushStates.clear();
+    this.ownDevicePulledUpTo.clear();
+    this.lastOwnDmPublishAt = 0;
+    this.lastBackgroundFlushAt = 0;
+    this.lastNetworkRegainAt = 0;
+    this.lastSocketReopenAt = 0;
+    this.lastResumeSweepAt = 0;
+    this.lastResumeDiscoveryAt = 0;
+    this.ownDeviceGroupNoticesOwed.clear();
+    this.ownDeviceGroupFlushAt.clear();
+    this.resumeProbeWanted = false;
+    this.ownHubProbeStates.clear();
+    this.ownDevicePulledCursors.clear();
+    this.ownHubProbeTokens = RETICULUM_CHAT_OWN_HUB_PROBE_BUCKET_MAX;
+    this.ownHubProbeTokensAt = 0;
+    this.ownDeviceAdmittedLinkIds.clear();
   }
 
   private async runDmPendingDeliverySweep(): Promise<void> {
     if (this.isClosed || this.localDmAddresses.size === 0) return;
-    if (!this.isOverlayHealthyForDmDiscovery()) return;
+    // Never two passes at once: they would read the same retry state before
+    // either reserved its attempt. The caller's re-arm covers the skip.
+    if (this.dmPendingSweepInFlight) return;
+    this.dmPendingSweepInFlight = true;
+    try {
+      await this.runDmPendingDeliverySweepLocked();
+    } finally {
+      this.dmPendingSweepInFlight = false;
+    }
+  }
+
+  private async runDmPendingDeliverySweepLocked(): Promise<void> {
+    // Own-device leg: newest uncopied event per conversation to an own device
+    // with an admitted link (no link: no DB read, no signature). Spaced per
+    // conversation and counted in this sweep's budget.
+    let ownDevicePushes = 0;
+    try {
+      ownDevicePushes = await this.pushUncopiedOwnEventsToOwnDevices('sweep', {
+        maxConversations: RETICULUM_CHAT_DM_PENDING_PER_SWEEP_MAX,
+      });
+    } catch (err) {
+      loggerWarn(
+        `[ReticulumChat] own_device_repush_failed reason=sweep error=${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+    if (this.isClosed || this.localDmAddresses.size === 0) return;
+    // Offline, no usable overlay, or no signer (locked): no read, no
+    // signature, no attempt spent, and no polling until an edge (overlay
+    // recovered, signer set, resume) brings the sweep forward.
+    this.dmPendingSweepSkipped =
+      !this.signLocalFields || !this.isOverlayHealthyForDmDiscovery();
+    if (this.dmPendingSweepSkipped) return;
     const now = this.now();
     const accountGeneration = this.localAccountGeneration;
     const seen = new Set<string>();
-    let announced = 0;
-    for (const localAddress of this.localDmAddresses) {
-      let pendingEvents: ReticulumDmEvent[];
+    let announced = ownDevicePushes;
+    for (const localAddress of [...this.localDmAddresses]) {
+      let heads: ReticulumPendingOwnDirectHead[];
       try {
-        pendingEvents = this.db.listPendingOwnDirectEvents(
+        heads = this.db.listPendingOwnDirectConversationHeads(
           localAddress,
+          now - RETICULUM_CHAT_DM_PENDING_TAIL_MAX_AGE_MS,
           now - RETICULUM_CHAT_DM_PENDING_MAX_AGE_MS,
           RETICULUM_CHAT_DM_PENDING_PER_ADDRESS_MAX,
           now
@@ -29927,41 +31001,76 @@ export class ReticulumChatManager extends EventEmitter {
         );
         return;
       }
-      for (const event of pendingEvents) {
+      for (const head of heads) {
+        const event = head.event;
         seen.add(event.eventId);
         if (announced >= RETICULUM_CHAT_DM_PENDING_PER_SWEEP_MAX) continue;
         // Give the live pipeline (and its bridge round trips) time to finish
         // before treating a fresh event as undelivered.
-        if (now - event.timestamp < RETICULUM_CHAT_DM_PENDING_MIN_AGE_MS)
-          continue;
-        if (!this.acceptsDirectConversation(event)) continue;
-        const state = this.dmPendingDeliveryAttempts.get(event.eventId) ?? {
-          attempts: 0,
-          nextAttemptAt: 0,
-        };
+        const age = now - event.timestamp;
+        if (age < RETICULUM_CHAT_DM_PENDING_MIN_AGE_MS) continue;
+        const state = this.dmPendingStateForHead(head);
         if (state.nextAttemptAt > now) continue;
-        state.attempts += 1;
-        const backoff = Math.min(
-          RETICULUM_CHAT_DM_PENDING_BACKOFF_MAX_MS,
-          RETICULUM_CHAT_DM_PENDING_BACKOFF_BASE_MS *
-            2 ** Math.min(8, state.attempts - 1)
-        );
-        state.nextAttemptAt =
-          now + backoff + Math.floor(Math.random() * (backoff / 4));
-        this.dmPendingDeliveryAttempts.set(event.eventId, state);
+        if (!this.acceptsDirectConversation(event)) {
+          // Never announceable: park it so it cannot hold the 20 s tick.
+          state.nextAttemptAt =
+            now + RETICULUM_CHAT_DM_PENDING_TAIL_LATE_SPACING_MS;
+          this.persistDmPendingState(event.eventId, state);
+          continue;
+        }
+        const tail = age >= RETICULUM_CHAT_DM_PENDING_MAX_AGE_MS;
+        const tracked =
+          !tail &&
+          state.attempts < RETICULUM_CHAT_DM_PENDING_TRACKED_ATTEMPTS_MAX &&
+          age < RETICULUM_CHAT_DM_PENDING_TRACKED_MAX_AGE_MS;
         announced += 1;
-        loggerLog(
-          `[ReticulumChat] dm_pending_redeliver event=${event.eventId.slice(0, 12)} conversation=${event.conversationId.slice(0, 16)} attempt=${state.attempts} age_ms=${now - event.timestamp}`
+        const mode = tracked ? 'tracked' : tail ? 'tail' : 'recovery';
+        // Reserve the attempt (persisted) before anything is signed or sent:
+        // a restart mid-send never repeats a tracked burst. Rolled back
+        // below when nothing went out.
+        const previousAttempts = state.attempts;
+        const previousLastAttemptAt = state.lastAttemptAt;
+        state.attempts += 1;
+        state.nextAttemptAt = this.dmPendingNextAttemptAt(
+          event,
+          state.attempts,
+          now
         );
+        state.lastAttemptAt = now;
+        this.persistDmPendingState(event.eventId, state);
+        let delivered = false;
         try {
-          await this.announceDirectNotifyForEvent(
+          const notify = await this.buildSignedDirectNotifyWire(
+            event.senderAddress,
+            event.recipientAddress,
             event,
-            [],
-            this.getPreferredDirectPeerHashes(
-              event.senderAddress,
-              event.recipientAddress
-            )
+            undefined,
+            tracked
+              ? {}
+              : { maxHops: RETICULUM_CHAT_DM_PENDING_RECOVERY_MAX_HOPS }
           );
+          if (
+            this.isClosed ||
+            accountGeneration !== this.localAccountGeneration
+          ) {
+            return;
+          }
+          if (notify) {
+            const accepted = await this.announceDirectNotifyForEvent(
+              event,
+              [],
+              this.getPreferredDirectPeerHashes(
+                event.senderAddress,
+                event.recipientAddress
+              ),
+              tracked
+                ? { notify }
+                : { recovery: true, alwaysGossip: true, notify }
+            );
+            // A tracked notify keeps its own gossip and full fallback
+            // running, so it counts against the tracked budget once signed.
+            delivered = tracked || accepted;
+          }
         } catch (err) {
           loggerWarn(
             `[ReticulumChat] dm_pending_redeliver_failed event=${event.eventId.slice(0, 12)} reason=${err instanceof Error ? err.message : String(err)}`
@@ -29969,12 +31078,1841 @@ export class ReticulumChatManager extends EventEmitter {
         }
         if (this.isClosed || accountGeneration !== this.localAccountGeneration)
           return;
+        const attemptAt = this.now();
+        if (!delivered) {
+          state.attempts = previousAttempts;
+          state.lastAttemptAt = previousLastAttemptAt;
+          this.noteDmPendingAttemptFailed(event, state, attemptAt);
+          continue;
+        }
+        state.lastAttemptAt = attemptAt;
+        this.countDelivery(
+          tail ? 'dmPendingRedeliverTail' : 'dmPendingRedeliver'
+        );
+        loggerLog(
+          `[ReticulumChat] dm_pending_redeliver event=${event.eventId.slice(0, 12)} conversation=${event.conversationId.slice(0, 16)} attempt=${state.attempts} mode=${mode} age_ms=${age}`
+        );
       }
     }
-    // Forget events that were delivered, expired, or aged out of the window.
+    // Forget events that were delivered, expired, copied (tail), or aged out.
     for (const eventId of [...this.dmPendingDeliveryAttempts.keys()]) {
       if (!seen.has(eventId)) this.dmPendingDeliveryAttempts.delete(eventId);
     }
+  }
+
+  /**
+   * A new event from the peer: that peer is reachable right now, so a
+   * pending own event in the same conversation gets one recovery notify (at
+   * most once per 24 h per event), whatever its backoff or tail spacing
+   * says. Coalesced per turn and capped at 4 conversations; nothing is read
+   * while the outbox reports nothing pending.
+   */
+  private noteDmPeerSpoke(event: ReticulumDmEvent): void {
+    if (this.isClosed || this.ownOutboxState.pendingCount <= 0) return;
+    if (ownAddressMatches(this.localDmAddresses, event.senderAddress)) return;
+    if (!this.localDmAddresses.has(event.recipientAddress)) return;
+    if (
+      !this.dmPendingPeerSpokeQueue.has(event.conversationId) &&
+      this.dmPendingPeerSpokeQueue.size >=
+        RETICULUM_CHAT_DM_PENDING_PEER_SPOKE_QUEUE_MAX
+    ) {
+      return;
+    }
+    this.dmPendingPeerSpokeQueue.set(
+      event.conversationId,
+      event.recipientAddress
+    );
+    if (this.dmPendingPeerSpokeQueued) return;
+    this.dmPendingPeerSpokeQueued = true;
+    queueMicrotask(() => {
+      this.dmPendingPeerSpokeQueued = false;
+      void this.runDmPendingPeerSpokePass().catch((err) => {
+        loggerWarn(
+          `[ReticulumChat] dm_pending_peer_spoke_failed reason=${err instanceof Error ? err.message : String(err)}`
+        );
+      });
+    });
+  }
+
+  private async runDmPendingPeerSpokePass(): Promise<void> {
+    const queued = [...this.dmPendingPeerSpokeQueue];
+    this.dmPendingPeerSpokeQueue.clear();
+    // Offline, locked, or another pass running (it covers due heads anyway).
+    if (
+      this.isClosed ||
+      queued.length === 0 ||
+      this.dmPendingSweepInFlight ||
+      !this.signLocalFields ||
+      !this.isOverlayHealthyForDmDiscovery()
+    ) {
+      return;
+    }
+    this.dmPendingSweepInFlight = true;
+    try {
+      await this.runDmPendingPeerSpokePassLocked(queued);
+    } finally {
+      this.dmPendingSweepInFlight = false;
+    }
+  }
+
+  private async runDmPendingPeerSpokePassLocked(
+    queued: Array<[string, string]>
+  ): Promise<void> {
+    const accountGeneration = this.localAccountGeneration;
+    for (const [conversationId, localAddress] of queued) {
+      if (!this.localDmAddresses.has(localAddress)) continue;
+      const now = this.now();
+      let head: ReticulumPendingOwnDirectHead | null;
+      try {
+        head = this.db.getPendingOwnDirectConversationHead(
+          localAddress,
+          conversationId,
+          now - RETICULUM_CHAT_DM_PENDING_TAIL_MAX_AGE_MS,
+          now - RETICULUM_CHAT_DM_PENDING_MAX_AGE_MS,
+          now
+        );
+      } catch (err) {
+        loggerWarn(
+          `[ReticulumChat] dm_pending_sweep_failed reason=${err instanceof Error ? err.message : String(err)}`
+        );
+        return;
+      }
+      if (!head) continue;
+      const event = head.event;
+      if (now - event.timestamp < RETICULUM_CHAT_DM_PENDING_MIN_AGE_MS)
+        continue;
+      if (!this.acceptsDirectConversation(event)) continue;
+      const state = this.dmPendingStateForHead(head);
+      if (
+        (state.lastPeerSpokeAt &&
+          now - state.lastPeerSpokeAt <
+            RETICULUM_CHAT_DM_PENDING_PEER_SPOKE_MIN_INTERVAL_MS) ||
+        (state.lastAttemptAt &&
+          now - state.lastAttemptAt <
+            RETICULUM_CHAT_DM_FORCED_REDELIVER_MIN_GAP_MS)
+      ) {
+        continue;
+      }
+      // The next attempt brought forward (never tracked), reserved before
+      // signing. The 24 h slot is spent even if nothing goes out.
+      const previous = {
+        attempts: state.attempts,
+        nextAttemptAt: state.nextAttemptAt,
+        lastAttemptAt: state.lastAttemptAt,
+      };
+      state.attempts += 1;
+      state.nextAttemptAt = this.dmPendingNextAttemptAt(
+        event,
+        state.attempts,
+        now
+      );
+      state.lastAttemptAt = now;
+      state.lastPeerSpokeAt = now;
+      this.persistDmPendingState(event.eventId, state);
+      let delivered = false;
+      try {
+        const notify = await this.buildSignedDirectNotifyWire(
+          event.senderAddress,
+          event.recipientAddress,
+          event,
+          undefined,
+          { maxHops: RETICULUM_CHAT_DM_PENDING_RECOVERY_MAX_HOPS }
+        );
+        if (
+          this.isClosed ||
+          accountGeneration !== this.localAccountGeneration
+        ) {
+          return;
+        }
+        if (notify) {
+          delivered = await this.announceDirectNotifyForEvent(
+            event,
+            [],
+            this.getPreferredDirectPeerHashes(
+              event.senderAddress,
+              event.recipientAddress
+            ),
+            { recovery: true, alwaysGossip: true, notify }
+          );
+        }
+      } catch (err) {
+        loggerWarn(
+          `[ReticulumChat] dm_pending_redeliver_failed event=${event.eventId.slice(0, 12)} reason=peer-spoke error=${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+      if (this.isClosed || accountGeneration !== this.localAccountGeneration) {
+        return;
+      }
+      if (!delivered) {
+        state.attempts = previous.attempts;
+        state.nextAttemptAt = previous.nextAttemptAt;
+        state.lastAttemptAt = previous.lastAttemptAt;
+        this.persistDmPendingState(event.eventId, state);
+        continue;
+      }
+      this.countDelivery('dmPendingRedeliverPeerSpoke');
+      loggerLog(
+        `[ReticulumChat] dm_pending_redeliver event=${event.eventId.slice(0, 12)} conversation=${event.conversationId.slice(0, 16)} attempt=${state.attempts} mode=peer-spoke age_ms=${now - event.timestamp}`
+      );
+    }
+  }
+
+  /** Retry state of a conversation head, seeded from its persisted columns. */
+  private dmPendingStateForHead(head: ReticulumPendingOwnDirectHead) {
+    let state = this.dmPendingDeliveryAttempts.get(head.event.eventId);
+    if (!state) {
+      state = {
+        attempts: head.deliveryAttempts,
+        nextAttemptAt: head.nextDeliveryAttemptAt,
+      };
+      this.dmPendingDeliveryAttempts.set(head.event.eventId, state);
+    }
+    return state;
+  }
+
+  /**
+   * When the next re-announce of a pending own event is due after attempt
+   * `attempts`: the 20 s - 5 min backoff (with jitter) inside the 2 h window,
+   * then the tail spacing (30 min until a day old, then 2 h). A tail due time
+   * is the first point of the account's tail grid at least half a spacing
+   * away, so after one tail attempt every conversation shares the grid's
+   * wakeups (and later attempts are exactly one spacing apart).
+   */
+  private dmPendingNextAttemptAt(
+    event: ReticulumDmEvent,
+    attempts: number,
+    at: number
+  ): number {
+    const age = at - event.timestamp;
+    if (age >= RETICULUM_CHAT_DM_PENDING_MAX_AGE_MS) {
+      const spacing =
+        age < RETICULUM_CHAT_DM_PENDING_TAIL_EARLY_AGE_MS
+          ? RETICULUM_CHAT_DM_PENDING_TAIL_EARLY_SPACING_MS
+          : RETICULUM_CHAT_DM_PENDING_TAIL_LATE_SPACING_MS;
+      const phase = this.dmPendingTailPhase(event.senderAddress);
+      return phase + Math.ceil((at + spacing / 2 - phase) / spacing) * spacing;
+    }
+    const backoff = Math.min(
+      RETICULUM_CHAT_DM_PENDING_BACKOFF_MAX_MS,
+      RETICULUM_CHAT_DM_PENDING_BACKOFF_BASE_MS *
+        2 ** Math.min(8, Math.max(0, attempts - 1))
+    );
+    return at + backoff + Math.floor(Math.random() * (backoff / 4));
+  }
+
+  /**
+   * Offset of the account's tail grid in [0, 30 min): stable across restarts
+   * (persisted due times stay on the grid) and different between accounts,
+   * so devices do not all wake on the same minute.
+   */
+  private dmPendingTailPhase(senderAddress: string): number {
+    let hash = 0x811c9dc5;
+    for (let index = 0; index < senderAddress.length; index += 1) {
+      hash ^= senderAddress.charCodeAt(index);
+      hash = Math.imul(hash, 0x01000193) >>> 0;
+    }
+    return (
+      (hash % (RETICULUM_CHAT_DM_PENDING_TAIL_EARLY_SPACING_MS / 1_000)) * 1_000
+    );
+  }
+
+  /**
+   * Nothing was signed or sent: not an attempt, but the candidate waits at
+   * least 60 s (or its regular spacing), and after 10 failures in 2 h it
+   * waits for the rest of that window.
+   */
+  private noteDmPendingAttemptFailed(
+    event: ReticulumDmEvent,
+    state: {
+      attempts: number;
+      nextAttemptAt: number;
+      failures?: number;
+      failureWindowStartAt?: number;
+    },
+    at: number
+  ): void {
+    if (
+      !state.failureWindowStartAt ||
+      at - state.failureWindowStartAt >=
+        RETICULUM_CHAT_DM_PENDING_FAILURE_WINDOW_MS
+    ) {
+      state.failureWindowStartAt = at;
+      state.failures = 0;
+    }
+    state.failures = (state.failures ?? 0) + 1;
+    state.nextAttemptAt =
+      state.failures >= RETICULUM_CHAT_DM_PENDING_FAILURE_MAX
+        ? state.failureWindowStartAt +
+          RETICULUM_CHAT_DM_PENDING_FAILURE_WINDOW_MS
+        : Math.max(
+            at + RETICULUM_CHAT_DM_PENDING_FAILURE_MIN_BACKOFF_MS,
+            this.dmPendingNextAttemptAt(event, state.attempts + 1, at)
+          );
+    this.persistDmPendingState(event.eventId, state);
+    this.countDelivery('dmPendingRedeliverFailed');
+  }
+
+  private persistDmPendingState(
+    eventId: string,
+    state: { attempts: number; nextAttemptAt: number }
+  ): void {
+    try {
+      this.db.setDirectEventDeliveryRetry(
+        eventId,
+        state.attempts,
+        state.nextAttemptAt
+      );
+    } catch (err) {
+      loggerWarn(
+        `[ReticulumChat] dm_pending_state_write_failed event=${eventId.slice(0, 12)} reason=${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
+
+  // --- Own-device (home Hub) copy of outbound DMs and lifecycle edges -----
+
+  /**
+   * Own devices a DM push may go to right now: verified own devices of the
+   * account (own lease plus self_dm_v1) that hold an ADMITTED overlay link to
+   * this node. A lease sighting alone does not count: without an admitted
+   * link the transport cannot deliver a direct packet. Re-pushes also skip a
+   * device session that left too many pushes unanswered. Empty means the
+   * caller must not read, sign or send anything.
+   */
+  private ownDevicePushTargets(
+    ownerAddress: string,
+    options: { maxPeers?: number; skipUnanswered?: boolean } = {}
+  ): string[] {
+    if (this.isClosed || !this.localDmAddresses.has(ownerAddress)) return [];
+    const bridge = this.bridge;
+    if (!bridge || typeof bridge.getOverlayLinkSnapshots !== 'function') {
+      return [];
+    }
+    const ownPeers = this.selfDmPeerHashes(ownerAddress);
+    if (ownPeers.length === 0) return [];
+    let snapshots: ReturnType<ReticulumBridge['getOverlayLinkSnapshots']>;
+    try {
+      snapshots = bridge.getOverlayLinkSnapshots();
+    } catch {
+      return [];
+    }
+    const admitted = new Set<string>();
+    for (const snap of snapshots ?? []) {
+      if (snap?.overlayTransportAdmitted !== true) continue;
+      const hash = this.normalizeResourcePeerHash(snap.peerPresenceHash);
+      if (hash) admitted.add(hash);
+    }
+    if (admitted.size === 0) return [];
+    return ownPeers
+      .filter(
+        (peer) =>
+          admitted.has(peer) &&
+          (!options.skipUnanswered ||
+            this.ownDevicePeerPushState(peer).unanswered <
+              RETICULUM_CHAT_OWN_DEVICE_PUSH_UNANSWERED_MAX)
+      )
+      .slice(
+        0,
+        Math.max(
+          0,
+          options.maxPeers ?? RETICULUM_CHAT_OWN_DEVICE_PUSH_MAX_PEERS
+        )
+      );
+  }
+
+  /** Session id of the newest own-account lease for this device hash. */
+  private ownDeviceLeaseSessionId(peerHash: string): string {
+    let best: { sessionId: string; lastSeen: number } | null = null;
+    for (const lease of this.getAccountEndpointLeasesForRouting()) {
+      if (!this.localDmAddresses.has(lease.address)) continue;
+      if (this.normalizeResourcePeerHash(lease.destinationHash) !== peerHash) {
+        continue;
+      }
+      const lastSeen = Number(lease.lastSeen || 0);
+      if (!best || lastSeen > best.lastSeen) {
+        best = { sessionId: String(lease.sessionId || ''), lastSeen };
+      }
+    }
+    return best?.sessionId ?? '';
+  }
+
+  /** Push bookkeeping for one own device; a new lease session starts clean. */
+  private ownDevicePeerPushState(peerHash: string): {
+    sessionId: string;
+    unanswered: number;
+  } {
+    const sessionId = this.ownDeviceLeaseSessionId(peerHash);
+    let state = this.ownDevicePeerPushStates.get(peerHash);
+    if (!state || state.sessionId !== sessionId) {
+      state = { sessionId, unanswered: 0 };
+      this.ownDevicePeerPushStates.delete(peerHash);
+      this.ownDevicePeerPushStates.set(peerHash, state);
+      while (
+        this.ownDevicePeerPushStates.size >
+        RETICULUM_CHAT_OWN_DEVICE_PEER_STATE_MAX
+      ) {
+        const oldest = this.ownDevicePeerPushStates.keys().next().value as
+          | string
+          | undefined;
+        if (!oldest) break;
+        this.ownDevicePeerPushStates.delete(oldest);
+      }
+    }
+    return state;
+  }
+
+  /**
+   * Own-device lease sessions changed (a restarted Hub has a new session id).
+   * Returns true when a device already known here came back with a new one.
+   */
+  private noteOwnDeviceLeaseSessions(): boolean {
+    let changed = false;
+    const newest = new Map<string, { sessionId: string; lastSeen: number }>();
+    for (const lease of this.getAccountEndpointLeasesForRouting()) {
+      if (!this.localDmAddresses.has(lease.address)) continue;
+      const hash = this.normalizeResourcePeerHash(lease.destinationHash);
+      if (!hash) continue;
+      const lastSeen = Number(lease.lastSeen || 0);
+      const existing = newest.get(hash);
+      if (!existing || lastSeen > existing.lastSeen) {
+        newest.set(hash, {
+          sessionId: String(lease.sessionId || ''),
+          lastSeen,
+        });
+      }
+    }
+    for (const [hash, { sessionId }] of newest) {
+      const state = this.ownDevicePeerPushStates.get(hash);
+      if (!state || state.sessionId === sessionId) continue;
+      if (state.unanswered >= RETICULUM_CHAT_OWN_DEVICE_PUSH_UNANSWERED_MAX) {
+        this.scheduleOwnOutboxStateRefresh();
+      }
+      state.sessionId = sessionId;
+      state.unanswered = 0;
+      changed = true;
+    }
+    return changed;
+  }
+
+  private noteOwnDevicePullRequest(peerHash: string): void {
+    const state = this.ownDevicePeerPushStates.get(peerHash);
+    if (!state) return;
+    // A device that had stopped being a re-push target is one again.
+    if (state.unanswered >= RETICULUM_CHAT_OWN_DEVICE_PUSH_UNANSWERED_MAX) {
+      this.scheduleOwnOutboxStateRefresh();
+    }
+    state.unanswered = 0;
+  }
+
+  private noteOwnDevicePulledUpTo(
+    conversationId: string,
+    timestamp: number
+  ): void {
+    const value = Math.floor(Number(timestamp) || 0);
+    if (!conversationId || value <= 0) return;
+    const previous = this.ownDevicePulledUpTo.get(conversationId) ?? 0;
+    if (value <= previous) return;
+    this.ownDevicePulledUpTo.delete(conversationId);
+    this.ownDevicePulledUpTo.set(conversationId, value);
+    while (
+      this.ownDevicePulledUpTo.size > RETICULUM_CHAT_OWN_DEVICE_PUSH_STATE_MAX
+    ) {
+      const oldest = this.ownDevicePulledUpTo.keys().next().value as
+        | string
+        | undefined;
+      if (!oldest) break;
+      this.ownDevicePulledUpTo.delete(oldest);
+    }
+    // An own device's cursor passing our head ends that head's re-push, so
+    // it may also end the outbox's `pending`.
+    if (this.ownOutboxState.pending) this.scheduleOwnOutboxStateRefresh();
+  }
+
+  /**
+   * Newest uncopied pending own event of each conversation that the re-push
+   * loop would still push (<= 7 days old, not passed by an own device's
+   * cursor, accepted conversation), newest first. One indexed read.
+   */
+  private repushableUncopiedOwnHeads(
+    localAddress: string,
+    now: number
+  ): ReticulumDmEvent[] {
+    const events = this.db.listUncopiedPendingOwnDirectEvents(
+      localAddress,
+      now - RETICULUM_CHAT_OWN_DEVICE_REPUSH_MAX_AGE_MS,
+      64,
+      now
+    );
+    const seenConversations = new Set<string>();
+    const heads: ReticulumDmEvent[] = [];
+    for (const event of events ?? []) {
+      if (seenConversations.has(event.conversationId)) continue;
+      seenConversations.add(event.conversationId);
+      if (
+        event.timestamp <=
+        (this.ownDevicePulledUpTo.get(event.conversationId) ?? 0)
+      ) {
+        continue;
+      }
+      if (!this.acceptsDirectConversation(event)) continue;
+      heads.push(event);
+    }
+    return heads;
+  }
+
+  /**
+   * A verified own device pulled a page of an own conversation. Record
+   * 'copy on your own device' for the own pending events in it (one UPDATE)
+   * and tell the UI about exactly those events.
+   */
+  private markOwnDeviceCopiedFromPage(
+    ownerAddress: string,
+    pageEvents: ReticulumDmEvent[]
+  ): void {
+    let newest = 0;
+    const copied: ReticulumDmEvent[] = [];
+    for (const event of pageEvents) {
+      newest = Math.max(newest, Number(event.timestamp) || 0);
+      if (
+        event.senderAddress === ownerAddress &&
+        event.recipientAddress !== ownerAddress &&
+        this.localDmAddresses.has(ownerAddress) &&
+        event.localDeliveryStatus === 'pending' &&
+        !event.localOwnDeviceCopiedAt
+      ) {
+        copied.push(event);
+      }
+    }
+    if (pageEvents[0]) {
+      this.noteOwnDevicePulledUpTo(pageEvents[0].conversationId, newest);
+    }
+    if (copied.length === 0) return;
+    const copiedAt = this.now();
+    let changes = 0;
+    try {
+      changes = this.db.markDirectEventsOwnDeviceCopied(
+        copied.map((event) => event.eventId),
+        copiedAt
+      );
+    } catch (err) {
+      loggerWarn(
+        `[ReticulumChat] own_device_copy_mark_failed reason=${err instanceof Error ? err.message : String(err)}`
+      );
+      return;
+    }
+    if (changes <= 0) return;
+    this.countDelivery('ownDeviceCopied', changes);
+    this.scheduleOwnOutboxStateRefresh();
+    for (const event of copied) {
+      this.emit('directEvent', {
+        event: { ...event, localOwnDeviceCopiedAt: copiedAt },
+      });
+    }
+  }
+
+  /**
+   * Hand one own DM event to linked own devices: a fresh, untracked dm_notify
+   * signed with m:0, sent once (no control-retry queue) directly to each
+   * device. Nothing is signed without an admitted own link. Returns true when
+   * a signature was spent.
+   *
+   * - send: leading edge, at most one push per conversation per 10 s; a
+   *   skipped send is owed and paid by the next sweep tick.
+   * - repush: at most one per conversation per 5 min (an owed push after
+   *   10 s), only to device sessions with fewer than 3 unanswered pushes.
+   * - flush: like repush but spaced by 10 s only (last chance before the
+   *   app is frozen).
+   */
+  private async pushDirectEventToOwnDevices(
+    event: ReticulumDmEvent,
+    options: {
+      mode?: 'send' | 'repush' | 'flush';
+      maxPeers?: number;
+      budget?: ReticulumOutboundSignBudget;
+    } = {}
+  ): Promise<boolean> {
+    const mode = options.mode ?? 'send';
+    if (this.isClosed || !this.signLocalFields) return false;
+    const sender = String(event?.senderAddress || '');
+    if (
+      !sender ||
+      sender === event.recipientAddress ||
+      !this.localDmAddresses.has(sender) ||
+      !event.conversationId
+    ) {
+      return false;
+    }
+    const peers = this.ownDevicePushTargets(sender, {
+      maxPeers: options.maxPeers,
+      skipUnanswered: mode !== 'send',
+    });
+    if (peers.length === 0) return false;
+    const now = this.now();
+    const conversationId = event.conversationId;
+    const previous = this.ownDevicePushConversations.get(conversationId);
+    if (previous) {
+      const minGap =
+        mode === 'repush' && !previous.owed
+          ? RETICULUM_CHAT_OWN_DEVICE_REPUSH_MIN_INTERVAL_MS
+          : RETICULUM_CHAT_OWN_DEVICE_PUSH_COALESCE_MS;
+      if (now - previous.lastPushAt < minGap) {
+        if (mode === 'send') {
+          previous.owed = true;
+          if (
+            !previous.owedEvent ||
+            event.timestamp >= previous.owedEvent.timestamp
+          ) {
+            previous.owedEvent = event;
+          }
+        }
+        return false;
+      }
+    }
+    if (options.budget && !this.outboundSignBudgetAllows(options.budget)) {
+      return false;
+    }
+    // Claim the slot before the (possibly slow) signature, so concurrent
+    // callers coalesce instead of signing twice.
+    this.ownDevicePushConversations.delete(conversationId);
+    this.ownDevicePushConversations.set(conversationId, {
+      lastPushAt: now,
+      owed: false,
+    });
+    while (
+      this.ownDevicePushConversations.size >
+      RETICULUM_CHAT_OWN_DEVICE_PUSH_STATE_MAX
+    ) {
+      const oldest = this.ownDevicePushConversations.keys().next().value as
+        | string
+        | undefined;
+      if (!oldest) break;
+      this.ownDevicePushConversations.delete(oldest);
+    }
+    const accountGeneration = this.localAccountGeneration;
+    const signStartedAt = this.now();
+    const notify = await this.buildSignedDirectNotifyWire(
+      sender,
+      event.recipientAddress,
+      event,
+      undefined,
+      { maxHops: 0 }
+    );
+    const signMs = this.now() - signStartedAt;
+    if (options.budget) this.noteOutboundSignature(options.budget, signMs);
+    if (this.isClosed || accountGeneration !== this.localAccountGeneration) {
+      return !!notify;
+    }
+    if (!notify) return false;
+    if (signMs > RETICULUM_CHAT_OWN_DEVICE_PUSH_MAX_SIGN_MS) {
+      this.countDelivery('ownDevicePushSlowSign');
+      return true;
+    }
+    // The sends leave now, ahead of anything the caller sends next on the
+    // same bridge, but the caller does not wait for their acks: a stuck own
+    // link must not delay the recipient's notify. A failed send is retried
+    // by the next edge or sweep tick.
+    for (const peer of peers) {
+      void this.sendToPeerOnce(peer, notify).then(
+        (result) => {
+          if (
+            !result.ok ||
+            this.isClosed ||
+            accountGeneration !== this.localAccountGeneration
+          ) {
+            return;
+          }
+          this.countDelivery('ownDevicePushSent');
+          const pushState = this.ownDevicePeerPushState(peer);
+          pushState.unanswered += 1;
+          // This device just stopped being a re-push target.
+          if (
+            pushState.unanswered ===
+            RETICULUM_CHAT_OWN_DEVICE_PUSH_UNANSWERED_MAX
+          ) {
+            this.scheduleOwnOutboxStateRefresh();
+          }
+        },
+        () => undefined
+      );
+    }
+    return true;
+  }
+
+  /**
+   * Re-push the newest own pending event of each conversation that no own
+   * device has pulled yet (<= 7 days old). Runs on edges only: own-device
+   * admission, a new device session, an own send, resume or network regain,
+   * the background flush, and the existing pending sweep. Returns the
+   * number of signatures spent.
+   */
+  private async pushUncopiedOwnEventsToOwnDevices(
+    reason: string,
+    options: {
+      mode?: 'repush' | 'flush';
+      maxConversations?: number;
+      maxPeers?: number;
+      budget?: ReticulumOutboundSignBudget;
+    } = {}
+  ): Promise<number> {
+    if (
+      this.isClosed ||
+      this.localDmAddresses.size === 0 ||
+      !this.signLocalFields
+    ) {
+      return 0;
+    }
+    const mode = options.mode ?? 'repush';
+    const maxConversations =
+      options.maxConversations ??
+      RETICULUM_CHAT_OWN_DEVICE_REPUSH_MAX_CONVERSATIONS;
+    const accountGeneration = this.localAccountGeneration;
+    let pushed = 0;
+    // Coalesced sends first: the pending read below misses an owed event
+    // the recipient pulled within the window, but the own device may still
+    // lack it. In memory only; each is attempted once after the window.
+    const owedNow = this.now();
+    const owed: ReticulumDmEvent[] = [];
+    for (const state of this.ownDevicePushConversations.values()) {
+      if (
+        state.owedEvent &&
+        owedNow - state.lastPushAt >= RETICULUM_CHAT_OWN_DEVICE_PUSH_COALESCE_MS
+      ) {
+        owed.push(state.owedEvent);
+      }
+    }
+    for (const event of owed) {
+      if (pushed >= maxConversations) break;
+      if (options.budget && !this.outboundSignBudgetAllows(options.budget)) {
+        return pushed;
+      }
+      const state = this.ownDevicePushConversations.get(event.conversationId);
+      if (state?.owedEvent !== event) continue;
+      delete state.owedEvent;
+      if (
+        event.timestamp <=
+          (this.ownDevicePulledUpTo.get(event.conversationId) ?? 0) ||
+        !this.acceptsDirectConversation(event)
+      ) {
+        continue;
+      }
+      const signed = await this.pushDirectEventToOwnDevices(event, {
+        mode,
+        maxPeers: options.maxPeers,
+        budget: options.budget,
+      });
+      if (this.isClosed || accountGeneration !== this.localAccountGeneration) {
+        return pushed;
+      }
+      if (signed) pushed += 1;
+    }
+    for (const localAddress of [...this.localDmAddresses]) {
+      if (pushed >= maxConversations) break;
+      // The gate comes before any DB read or signature.
+      if (
+        this.ownDevicePushTargets(localAddress, {
+          maxPeers: options.maxPeers,
+          skipUnanswered: true,
+        }).length === 0
+      ) {
+        continue;
+      }
+      const now = this.now();
+      let events: ReticulumDmEvent[];
+      try {
+        events = this.repushableUncopiedOwnHeads(localAddress, now);
+      } catch (err) {
+        loggerWarn(
+          `[ReticulumChat] own_device_repush_failed reason=${reason} error=${err instanceof Error ? err.message : String(err)}`
+        );
+        continue;
+      }
+      for (const event of events) {
+        if (pushed >= maxConversations) break;
+        if (options.budget && !this.outboundSignBudgetAllows(options.budget)) {
+          return pushed;
+        }
+        const signed = await this.pushDirectEventToOwnDevices(event, {
+          mode,
+          maxPeers: options.maxPeers,
+          budget: options.budget,
+        });
+        if (
+          this.isClosed ||
+          accountGeneration !== this.localAccountGeneration
+        ) {
+          return pushed;
+        }
+        if (signed) pushed += 1;
+      }
+    }
+    return pushed;
+  }
+
+  private createOutboundSignBudget(): ReticulumOutboundSignBudget {
+    return {
+      startedAt: this.now(),
+      signatures: 0,
+      aborted: false,
+    };
+  }
+
+  private outboundSignBudgetAllows(
+    budget: ReticulumOutboundSignBudget
+  ): boolean {
+    if (budget.aborted) return false;
+    if (
+      budget.signatures >= RETICULUM_CHAT_OUTBOUND_FLUSH_MAX_SIGNATURES ||
+      this.now() - budget.startedAt >=
+        RETICULUM_CHAT_OUTBOUND_FLUSH_MAX_ELAPSED_MS
+    ) {
+      budget.aborted = true;
+      return false;
+    }
+    return true;
+  }
+
+  private noteOutboundSignature(
+    budget: ReticulumOutboundSignBudget,
+    signMs: number
+  ): void {
+    budget.signatures += 1;
+    // One slow signature means a JIT-less or starved signer: stop early
+    // instead of spending the rest of the window on the main thread.
+    if (signMs > RETICULUM_CHAT_OUTBOUND_FLUSH_MAX_SIGNATURE_MS) {
+      budget.aborted = true;
+    }
+  }
+
+  /** Own DM events still waiting for the recipient (or an own device). */
+  private hasOwnDirectEventsAwaitingDelivery(now = this.now()): boolean {
+    try {
+      for (const localAddress of this.localDmAddresses) {
+        if (
+          this.db.hasPendingOwnDirectEvents(
+            localAddress,
+            now - RETICULUM_CHAT_OWN_DEVICE_REPUSH_MAX_AGE_MS,
+            now
+          )
+        ) {
+          return true;
+        }
+      }
+      return false;
+    } catch (err) {
+      loggerWarn(
+        `[ReticulumChat] dm_pending_check_failed reason=${err instanceof Error ? err.message : String(err)}`
+      );
+      return false;
+    }
+  }
+
+  /**
+   * One early recovery pass over pending own events, newest per
+   * conversation: it ignores the sweep backoff (but never repeats an event
+   * within 60 s), signs recovery notifies with a short hop limit, and never
+   * arms a tracked full fanout. Returns the number of signatures spent.
+   */
+  private async runForcedDmPendingSweep(
+    reason: string,
+    options: { maxConversations?: number; budget?: ReticulumOutboundSignBudget }
+  ): Promise<number> {
+    if (
+      this.isClosed ||
+      this.localDmAddresses.size === 0 ||
+      this.dmPendingSweepInFlight ||
+      !this.signLocalFields ||
+      !this.isOverlayHealthyForDmDiscovery()
+    ) {
+      return 0;
+    }
+    this.dmPendingSweepInFlight = true;
+    try {
+      return await this.runForcedDmPendingSweepLocked(reason, options);
+    } finally {
+      this.dmPendingSweepInFlight = false;
+    }
+  }
+
+  private async runForcedDmPendingSweepLocked(
+    reason: string,
+    options: { maxConversations?: number; budget?: ReticulumOutboundSignBudget }
+  ): Promise<number> {
+    const maxConversations =
+      options.maxConversations ??
+      RETICULUM_CHAT_BACKGROUND_FLUSH_MAX_CONVERSATIONS;
+    const accountGeneration = this.localAccountGeneration;
+    let announced = 0;
+    for (const localAddress of [...this.localDmAddresses]) {
+      const now = this.now();
+      // The 2 h window only: the slow tail keeps its own spacing.
+      let heads: ReticulumPendingOwnDirectHead[];
+      try {
+        heads = this.db.listPendingOwnDirectConversationHeads(
+          localAddress,
+          now - RETICULUM_CHAT_DM_PENDING_MAX_AGE_MS,
+          now - RETICULUM_CHAT_DM_PENDING_MAX_AGE_MS,
+          RETICULUM_CHAT_DM_PENDING_PER_ADDRESS_MAX,
+          now
+        );
+      } catch (err) {
+        loggerWarn(
+          `[ReticulumChat] dm_pending_sweep_failed reason=${err instanceof Error ? err.message : String(err)}`
+        );
+        return announced;
+      }
+      const seenConversations = new Set<string>();
+      for (const head of heads) {
+        const event = head.event;
+        if (announced >= maxConversations) return announced;
+        if (seenConversations.has(event.conversationId)) continue;
+        seenConversations.add(event.conversationId);
+        // The live pipeline is still working on a fresh event.
+        if (now - event.timestamp < RETICULUM_CHAT_DM_PENDING_MIN_AGE_MS) {
+          continue;
+        }
+        if (!this.acceptsDirectConversation(event)) continue;
+        const state = this.dmPendingStateForHead(head);
+        const currentBackoff =
+          state.attempts > 0
+            ? Math.min(
+                RETICULUM_CHAT_DM_PENDING_BACKOFF_MAX_MS,
+                RETICULUM_CHAT_DM_PENDING_BACKOFF_BASE_MS *
+                  2 ** Math.min(8, state.attempts - 1)
+              )
+            : 0;
+        if (
+          (state.lastAttemptAt &&
+            now - state.lastAttemptAt <
+              Math.max(
+                RETICULUM_CHAT_DM_FORCED_REDELIVER_MIN_GAP_MS,
+                currentBackoff / 2
+              )) ||
+          (state.lastForcedAt &&
+            now - state.lastForcedAt <
+              RETICULUM_CHAT_DM_FORCED_REDELIVER_PER_EVENT_MIN_INTERVAL_MS)
+        ) {
+          continue;
+        }
+        if (options.budget && !this.outboundSignBudgetAllows(options.budget)) {
+          return announced;
+        }
+        const signStartedAt = this.now();
+        const notify = await this.buildSignedDirectNotifyWire(
+          event.senderAddress,
+          event.recipientAddress,
+          event,
+          undefined,
+          { maxHops: RETICULUM_CHAT_DM_FORCED_REDELIVER_MAX_HOPS }
+        );
+        if (options.budget) {
+          this.noteOutboundSignature(
+            options.budget,
+            this.now() - signStartedAt
+          );
+        }
+        if (
+          this.isClosed ||
+          accountGeneration !== this.localAccountGeneration
+        ) {
+          return announced;
+        }
+        if (!notify) continue;
+        // The early attempt is the next attempt brought forward, not an
+        // extra one: the backoff ladder continues from here.
+        state.attempts += 1;
+        const attemptAt = this.now();
+        state.nextAttemptAt = this.dmPendingNextAttemptAt(
+          event,
+          state.attempts,
+          attemptAt
+        );
+        state.lastAttemptAt = attemptAt;
+        state.lastForcedAt = attemptAt;
+        this.persistDmPendingState(event.eventId, state);
+        announced += 1;
+        this.countDelivery('dmPendingRedeliverEarly');
+        try {
+          await this.announceDirectNotifyForEvent(
+            event,
+            [],
+            this.getPreferredDirectPeerHashes(
+              event.senderAddress,
+              event.recipientAddress
+            ),
+            { recovery: true, notify }
+          );
+        } catch (err) {
+          loggerWarn(
+            `[ReticulumChat] dm_pending_redeliver_failed event=${event.eventId.slice(0, 12)} reason=${reason} error=${err instanceof Error ? err.message : String(err)}`
+          );
+        }
+        if (
+          this.isClosed ||
+          accountGeneration !== this.localAccountGeneration
+        ) {
+          return announced;
+        }
+      }
+    }
+    return announced;
+  }
+
+  /**
+   * Last-chance flush when the app leaves the foreground. Step 0 is one
+   * SQLite existence check (plus, only with an admitted own link, one read of
+   * our newest Saved Messages cursors); with nothing owed it returns at once.
+   * Then:
+   * (a) own-device push for own events no own device holds yet, newest per
+   * conversation, <= 8 conversations, <= 2 own devices, one signature each;
+   * (a2) Saved Messages re-notify of the newest unconfirmed own cursor;
+   * (a3) group notices owed to own devices (digest first, no signature);
+   * (b) one early recovery pass for pending events, <= 8 conversations,
+   * without tracked fanout. <= 17 signatures in all; stops when one
+   * signature takes > 2 s or 20 s have passed. No announce, path request,
+   * pin or wake lock. Coalesced with a 60 s floor (a new own send since the
+   * last flush lifts the floor).
+   */
+  async flushOutboundForBackground(): Promise<void> {
+    if (this.isClosed || this.localDmAddresses.size === 0) return;
+    if (this.backgroundFlushInFlight) return;
+    const now = this.now();
+    if (
+      this.lastBackgroundFlushAt > 0 &&
+      now - this.lastBackgroundFlushAt <
+        RETICULUM_CHAT_BACKGROUND_FLUSH_MIN_INTERVAL_MS &&
+      this.lastOwnDmPublishAt <= this.lastBackgroundFlushAt
+    ) {
+      return;
+    }
+    const pendingDirect = this.hasOwnDirectEventsAwaitingDelivery(now);
+    const owedGroupNotices = this.hasOwedOwnDeviceGroupNotices(now);
+    const unconfirmedSelfDm = this.hasUnconfirmedSelfDmForLinkedOwnDevice();
+    if (!pendingDirect && !owedGroupNotices && !unconfirmedSelfDm) {
+      this.countDelivery('backgroundFlushNothingPending');
+      return;
+    }
+    this.lastBackgroundFlushAt = now;
+    this.backgroundFlushInFlight = true;
+    this.countDelivery('backgroundFlush');
+    const budget = this.createOutboundSignBudget();
+    try {
+      if (pendingDirect) {
+        await this.pushUncopiedOwnEventsToOwnDevices('background', {
+          mode: 'flush',
+          maxConversations: RETICULUM_CHAT_BACKGROUND_FLUSH_MAX_CONVERSATIONS,
+          maxPeers: RETICULUM_CHAT_BACKGROUND_FLUSH_OWN_DEVICE_MAX,
+          budget,
+        });
+      }
+      if (unconfirmedSelfDm) {
+        await this.broadcastSelfDmNotifications('edge', budget);
+      }
+      if (owedGroupNotices) {
+        await this.flushOwedOwnDeviceGroupNotices('background');
+      }
+      if (pendingDirect) {
+        await this.runForcedDmPendingSweep('background', {
+          maxConversations: RETICULUM_CHAT_BACKGROUND_FLUSH_MAX_CONVERSATIONS,
+          budget,
+        });
+      }
+    } catch (err) {
+      loggerWarn(
+        `[ReticulumChat] background_flush_failed reason=${err instanceof Error ? err.message : String(err)}`
+      );
+    } finally {
+      this.backgroundFlushInFlight = false;
+      this.scheduleOwnOutboxStateRefresh();
+      this.countDelivery('backgroundFlushSignatures', budget.signatures);
+      if (budget.aborted) this.countDelivery('backgroundFlushAborted');
+    }
+  }
+
+  /**
+   * The host tells the engine when the app UI leaves or re-enters the
+   * foreground. Background runs the last-chance flush; foreground runs the
+   * resume hook (shared 2 s debounce), with a targeted own-Hub probe when the
+   * app was hidden for at least 45 s. The state is kept even while signed
+   * out; hosts that never call this (desktop) never send that probe.
+   */
+  notifyAppLifecycle(state: 'foreground' | 'background'): void {
+    if (this.isClosed) return;
+    const previous = this.appLifecycleState;
+    const now = this.now();
+    if (state === 'background') {
+      if (previous !== 'background') this.lastAppBackgroundAt = now;
+      this.appLifecycleState = 'background';
+      if (this.localDmAddresses.size === 0) return;
+      // The hide edge is when the host decides on the outbox grace window:
+      // report the current state now (also catches windows that aged out).
+      this.refreshOwnOutboxState();
+      void this.flushOutboundForBackground().catch(() => undefined);
+      return;
+    }
+    if (state !== 'foreground') return;
+    this.appLifecycleState = 'foreground';
+    if (this.localDmAddresses.size === 0) return;
+    if (
+      previous === 'unknown' ||
+      (previous === 'background' &&
+        now - this.lastAppBackgroundAt >=
+          RETICULUM_CHAT_OWN_HUB_PROBE_MIN_HIDDEN_MS)
+    ) {
+      this.resumeProbeWanted = true;
+    }
+    this.scheduleResumeHook('foreground');
+  }
+
+  /**
+   * Runtime switch of the relayGroupControl option (the startup value is
+   * unchanged: desktop on, mobile off). A mobile host turns it on while the
+   * phone is charging on an unmetered network and off again on unplug.
+   * Only forwarding of other peers' group control changes; local handling
+   * is the same either way.
+   */
+  setRelayGroupControl(enabled: boolean): void {
+    const next = enabled === true;
+    if (this.isClosed || this.relayGroupControl === next) return;
+    this.relayGroupControl = next;
+    loggerLog(`[ReticulumChat] relay_group_control enabled=${next}`);
+    // Land-state forwarding plans are built from the interest routes only
+    // while relaying; hand the bridge the new plan set.
+    if (this.bridge) this.scheduleLandStateForwardingSync(0);
+  }
+
+  /** Current own outbox state (recomputed now; emits if it changed). */
+  getOwnOutboxState(): ReticulumChatOwnOutboxState {
+    this.refreshOwnOutboxState();
+    return { ...this.ownOutboxState };
+  }
+
+  /**
+   * Queue one recompute of the own outbox state. Called from the events that
+   * can change it (own publish, sent / copied marks, confirmations, owed
+   * notices, sweeps, sign-in / sign-out); several triggers in one turn
+   * collapse into one recompute. No timer, no polling.
+   */
+  private scheduleOwnOutboxStateRefresh(): void {
+    if (this.isClosed || this.ownOutboxRefreshQueued) return;
+    this.ownOutboxRefreshQueued = true;
+    queueMicrotask(() => {
+      this.ownOutboxRefreshQueued = false;
+      this.refreshOwnOutboxState();
+    });
+  }
+
+  /** Recompute and emit 'ownOutboxState' when any field changed. */
+  private refreshOwnOutboxState(): void {
+    if (this.isClosed) return;
+    const next = this.computeOwnOutboxState();
+    const previous = this.ownOutboxState;
+    if (
+      next.pending === previous.pending &&
+      next.pendingCount === previous.pendingCount &&
+      next.uncopiedCount === previous.uncopiedCount
+    ) {
+      return;
+    }
+    this.ownOutboxState = next;
+    this.emit('ownOutboxState', { ...next });
+  }
+
+  /**
+   * One indexed count per signed-in address, plus in-memory checks. The
+   * Saved Messages check reads cursors only with an admitted own link.
+   */
+  private computeOwnOutboxState(): ReticulumChatOwnOutboxState {
+    if (this.localDmAddresses.size === 0) {
+      return { pending: false, pendingCount: 0, uncopiedCount: 0 };
+    }
+    const now = this.now();
+    let pendingCount = 0;
+    let uncopiedCount = 0;
+    let pending = false;
+    try {
+      for (const localAddress of this.localDmAddresses) {
+        const counts = this.db.countPendingOwnDirectEvents(
+          localAddress,
+          now - RETICULUM_CHAT_OWN_DEVICE_REPUSH_MAX_AGE_MS,
+          now - RETICULUM_CHAT_DM_PENDING_MAX_AGE_MS,
+          now
+        );
+        pendingCount += counts.pending;
+        uncopiedCount += counts.uncopied;
+        // Same gate as the re-push loop: a linked own device that left too
+        // many pushes unanswered is not a target, and a head its cursor has
+        // already passed is not pushed again, so neither keeps anything
+        // awake. The head read only runs when it decides the answer.
+        if (
+          counts.active > 0 ||
+          (!pending &&
+            counts.uncopied > 0 &&
+            this.ownDevicePushTargets(localAddress, { skipUnanswered: true })
+              .length > 0 &&
+            this.repushableUncopiedOwnHeads(localAddress, now).length > 0)
+        ) {
+          pending = true;
+        }
+      }
+    } catch (err) {
+      loggerWarn(
+        `[ReticulumChat] own_outbox_count_failed reason=${err instanceof Error ? err.message : String(err)}`
+      );
+      // Unknown: keep the last reported counts and pending flag.
+      return { ...this.ownOutboxState };
+    }
+    if (!pending) {
+      pending =
+        this.hasPayableOwedOwnDeviceGroupNotices(now) ||
+        this.hasUnconfirmedSelfDmForLinkedOwnDevice();
+    }
+    return { pending, pendingCount, uncopiedCount };
+  }
+
+  /** The device network came back: the resume hook, at most every 30 s. */
+  notifyNetworkRegained(): void {
+    if (this.isClosed || this.localDmAddresses.size === 0) return;
+    const now = this.now();
+    if (
+      this.lastNetworkRegainAt > 0 &&
+      now - this.lastNetworkRegainAt <
+        RETICULUM_CHAT_NETWORK_REGAIN_MIN_INTERVAL_MS
+    ) {
+      return;
+    }
+    this.lastNetworkRegainAt = now;
+    if (this.appLifecycleState === 'foreground') this.resumeProbeWanted = true;
+    this.scheduleResumeHook('network');
+  }
+
+  /**
+   * The host's bridge socket reconnected after a close (frames were lost):
+   * the resume hook, at most every 30 s while the socket flaps.
+   */
+  notifyBridgeSocketReopened(): void {
+    if (this.isClosed || this.localDmAddresses.size === 0) return;
+    const now = this.now();
+    if (
+      this.lastSocketReopenAt > 0 &&
+      now - this.lastSocketReopenAt <
+        RETICULUM_CHAT_NETWORK_REGAIN_MIN_INTERVAL_MS
+    ) {
+      return;
+    }
+    this.lastSocketReopenAt = now;
+    if (this.appLifecycleState === 'foreground') this.resumeProbeWanted = true;
+    this.scheduleResumeHook('socket');
+  }
+
+  /**
+   * One-shot debounce shared by every resume trigger. Nothing is armed
+   * without a local DM address, or when there is neither an own device nor
+   * an own pending event.
+   */
+  private scheduleResumeHook(reason: string): void {
+    if (this.isClosed || this.localDmAddresses.size === 0) return;
+    if (this.resumeHookTimer) {
+      this.resumeHookReasons.add(reason);
+      return;
+    }
+    if (
+      this.ownDevicePeerHashesForCatchup().length === 0 &&
+      !this.hasPendingOwnDirectEventsForSweep()
+    ) {
+      return;
+    }
+    this.resumeHookReasons.add(reason);
+    const generation = this.localAccountGeneration;
+    this.resumeHookTimer = setTimeout(() => {
+      this.resumeHookTimer = null;
+      const reasons = [...this.resumeHookReasons].sort().join('+');
+      this.resumeHookReasons.clear();
+      if (this.isClosed || generation !== this.localAccountGeneration) return;
+      void this.runResumeHook(reasons).catch((err) => {
+        loggerWarn(
+          `[ReticulumChat] resume_hook_failed reason=${reasons} error=${err instanceof Error ? err.message : String(err)}`
+        );
+      });
+    }, RETICULUM_CHAT_RESUME_HOOK_DEBOUNCE_MS);
+    this.resumeHookTimer.unref?.();
+  }
+
+  /**
+   * Resume work: a targeted own-Hub probe (foreground only), own-device push
+   * for uncopied events, the Saved Messages re-notify, owed group notices,
+   * one early pending pass (<= 1 per 60 s), read states to linked own
+   * devices, and a deferred initial DM discovery (<= 1 per 60 s). Never the
+   * periodic probe flood.
+   */
+  private async runResumeHook(reason: string): Promise<void> {
+    if (this.isClosed || this.localDmAddresses.size === 0) return;
+    const accountGeneration = this.localAccountGeneration;
+    this.countDelivery('resumeHook');
+    const budget = this.createOutboundSignBudget();
+    const probeWanted = this.resumeProbeWanted;
+    this.resumeProbeWanted = false;
+    if (probeWanted && this.appLifecycleState === 'foreground') {
+      await this.sendDmProbeToOwnDevices(`resume:${reason}`, { budget });
+      if (this.isClosed || accountGeneration !== this.localAccountGeneration) {
+        return;
+      }
+    }
+    await this.pushUncopiedOwnEventsToOwnDevices(`resume:${reason}`, {
+      budget,
+    });
+    if (this.isClosed || accountGeneration !== this.localAccountGeneration) {
+      return;
+    }
+    await this.broadcastSelfDmNotifications('edge', budget);
+    if (this.isClosed || accountGeneration !== this.localAccountGeneration) {
+      return;
+    }
+    await this.flushOwedOwnDeviceGroupNotices(`resume:${reason}`);
+    if (this.isClosed || accountGeneration !== this.localAccountGeneration) {
+      return;
+    }
+    const now = this.now();
+    if (
+      now - this.lastResumeSweepAt >=
+        RETICULUM_CHAT_RESUME_SWEEP_MIN_INTERVAL_MS &&
+      this.hasPendingOwnDirectEventsForSweep()
+    ) {
+      this.lastResumeSweepAt = now;
+      await this.runForcedDmPendingSweep(`resume:${reason}`, {
+        maxConversations: RETICULUM_CHAT_BACKGROUND_FLUSH_MAX_CONVERSATIONS,
+        budget,
+      });
+      if (this.isClosed || accountGeneration !== this.localAccountGeneration) {
+        return;
+      }
+      // Whatever is still due (beyond the forced pass, or skipped offline)
+      // runs on the first sweep after a 10 s settle, even when a far-off
+      // tail timer was armed.
+      this.pullDmPendingDeliverySweepForward(
+        RETICULUM_CHAT_DM_PENDING_RESUME_SETTLE_MS
+      );
+    } else if (this.dmPendingSweepSkipped) {
+      this.pullDmPendingDeliverySweepForward(
+        RETICULUM_CHAT_DM_PENDING_RESUME_SETTLE_MS
+      );
+    }
+    if (
+      [...this.localDmAddresses].some(
+        (address) => this.ownDevicePushTargets(address).length > 0
+      )
+    ) {
+      void this.replayReadStatesToOwnDevices();
+    }
+    if (
+      this.pendingInitialDmDiscovery &&
+      now - this.lastResumeDiscoveryAt >=
+        RETICULUM_CHAT_RESUME_DISCOVERY_MIN_INTERVAL_MS
+    ) {
+      this.lastResumeDiscoveryAt = now;
+      this.flushPendingDmDiscoveryIfHealthy(`resume:${reason}`);
+    }
+  }
+
+  /**
+   * True when a linked own device (admitted link) has not confirmed our
+   * newest Saved Messages cursor and may still be re-notified. Nothing is
+   * read without such a link.
+   */
+  private hasUnconfirmedSelfDmForLinkedOwnDevice(): boolean {
+    for (const ownerAddress of this.localDmAddresses) {
+      const peers = this.ownDevicePushTargets(ownerAddress);
+      if (peers.length === 0) continue;
+      const cursors = this.ownSelfDmEventCursors(ownerAddress);
+      if (cursors.length === 0) continue;
+      for (const peer of peers) {
+        const newest = this.newestUnconfirmedOwnSelfDmEvent(
+          ownerAddress,
+          peer,
+          cursors
+        );
+        if (!newest) continue;
+        const state = this.selfDmRenotifyStates.get(
+          this.selfDmRenotifyStateKey(ownerAddress, peer)
+        );
+        if (
+          !state ||
+          state.cursor !== this.dmNotifyLatestCursor(newest) ||
+          state.count < RETICULUM_CHAT_SELF_DM_RENOTIFY_MAX
+        ) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  // --- Group posts: direct notice to own devices --------------------------
+
+  /**
+   * After the routed send of a new own group event, hand the same signed
+   * notice (no new signature) directly to own devices with an admitted link
+   * that the routed send did not reach, <= 2, sent once. A failed send is
+   * owed and paid on the next own-device edge; there is no re-send loop.
+   */
+  private async sendEventNoticeToOwnDevices(
+    event: ReticulumChatEvent,
+    notice: ReticulumChatWire,
+    deliveredPeerHashes: Set<string>
+  ): Promise<void> {
+    const ownerAddress = String(event?.authorAddress || '').trim();
+    if (!ownerAddress || !this.localDmAddresses.has(ownerAddress)) return;
+    const peers = this.ownDevicePushTargets(ownerAddress)
+      .filter((peer) => !deliveredPeerHashes.has(peer))
+      .slice(0, RETICULUM_CHAT_OWN_DEVICE_GROUP_NOTICE_MAX_PEERS);
+    if (peers.length === 0) return;
+    const now = this.now();
+    await Promise.all(
+      peers.map(async (peer) => {
+        let ok = false;
+        try {
+          ok = (await this.sendToPeerOnce(peer, notice)).ok === true;
+        } catch {
+          ok = false;
+        }
+        if (ok) {
+          this.countDelivery('ownDeviceGroupNoticeSent');
+          return;
+        }
+        this.noteOwnDeviceGroupNoticeOwed(event, notice, peer, now);
+      })
+    );
+  }
+
+  private noteOwnDeviceGroupNoticeOwed(
+    event: ReticulumChatEvent,
+    notice: ReticulumChatWire,
+    peerHash: string,
+    now: number
+  ): void {
+    let entry = this.ownDeviceGroupNoticesOwed.get(event.eventId);
+    if (!entry) {
+      entry = {
+        groupId: event.groupId,
+        ownerAddress: String(event.authorAddress || '').trim(),
+        notice,
+        createdAt: now,
+        peers: new Map(),
+      };
+      this.ownDeviceGroupNoticesOwed.set(event.eventId, entry);
+      while (
+        this.ownDeviceGroupNoticesOwed.size >
+        RETICULUM_CHAT_OWN_DEVICE_GROUP_OWED_MAX
+      ) {
+        const oldest = this.ownDeviceGroupNoticesOwed.keys().next().value as
+          | string
+          | undefined;
+        if (!oldest) break;
+        this.ownDeviceGroupNoticesOwed.delete(oldest);
+      }
+    }
+    entry.peers.set(peerHash, {
+      attempts: 1,
+      lastSentAt: now,
+      sessionId: this.ownDeviceLeaseSessionId(peerHash),
+    });
+    this.countDelivery('ownDeviceGroupNoticeOwed');
+    this.scheduleOwnOutboxStateRefresh();
+  }
+
+  /** Drops owed group notices older than 24 h; true when some remain. */
+  private hasOwedOwnDeviceGroupNotices(now = this.now()): boolean {
+    for (const [eventId, entry] of this.ownDeviceGroupNoticesOwed) {
+      if (
+        now - entry.createdAt >= RETICULUM_CHAT_OWN_DEVICE_GROUP_OWED_TTL_MS ||
+        entry.peers.size === 0
+      ) {
+        this.ownDeviceGroupNoticesOwed.delete(eventId);
+      }
+    }
+    return this.ownDeviceGroupNoticesOwed.size > 0;
+  }
+
+  /**
+   * True when an owed group notice can be paid now: one of its devices is a
+   * flush target (admitted own link). Notices owed only to offline devices
+   * wait for the admission edge, which refreshes the outbox state.
+   */
+  private hasPayableOwedOwnDeviceGroupNotices(now = this.now()): boolean {
+    if (!this.hasOwedOwnDeviceGroupNotices(now)) return false;
+    const targetsByOwner = new Map<string, Set<string>>();
+    for (const entry of this.ownDeviceGroupNoticesOwed.values()) {
+      let targets = targetsByOwner.get(entry.ownerAddress);
+      if (!targets) {
+        targets = new Set(this.ownDevicePushTargets(entry.ownerAddress));
+        targetsByOwner.set(entry.ownerAddress, targets);
+      }
+      if (targets.size === 0) continue;
+      for (const peer of entry.peers.keys()) {
+        if (targets.has(peer)) return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Own devices owed a group notice whose lease session changed since the
+   * failed send (a restarted Hub). The recorded session is updated.
+   */
+  private owedOwnDeviceGroupPeersWithNewSession(): string[] {
+    const changed = new Set<string>();
+    for (const entry of this.ownDeviceGroupNoticesOwed.values()) {
+      for (const [peer, state] of entry.peers) {
+        const sessionId = this.ownDeviceLeaseSessionId(peer);
+        if (!sessionId || sessionId === state.sessionId) continue;
+        state.sessionId = sessionId;
+        changed.add(peer);
+      }
+    }
+    return [...changed];
+  }
+
+  /**
+   * Pay owed group notices to linked own devices (<= 8 commands per device,
+   * at most once per 30 s per device): the group state digest first (<= 4
+   * groups, through the deduping send), then the cached signed notice only
+   * where its last send is >= 15 min old (Hub drops identical notices inside
+   * 15 min). An event stops being owed to a device after a notice send
+   * succeeds, after 3 attempts, or after 24 h. No signatures.
+   */
+  private async flushOwedOwnDeviceGroupNotices(
+    reason: string,
+    onlyPeerHash?: string
+  ): Promise<number> {
+    if (this.isClosed || !this.hasOwedOwnDeviceGroupNotices()) return 0;
+    const onlyPeer = onlyPeerHash
+      ? (this.normalizeResourcePeerHash(onlyPeerHash) ?? '')
+      : '';
+    const accountGeneration = this.localAccountGeneration;
+    const owners = new Set(
+      [...this.ownDeviceGroupNoticesOwed.values()].map(
+        (entry) => entry.ownerAddress
+      )
+    );
+    let commands = 0;
+    for (const ownerAddress of owners) {
+      for (const peer of this.ownDevicePushTargets(ownerAddress)) {
+        if (onlyPeer && peer !== onlyPeer) continue;
+        const entries = [...this.ownDeviceGroupNoticesOwed].filter(
+          ([, entry]) =>
+            entry.ownerAddress === ownerAddress && entry.peers.has(peer)
+        );
+        if (entries.length === 0) continue;
+        const now = this.now();
+        const lastFlushAt = this.ownDeviceGroupFlushAt.get(peer) ?? 0;
+        if (
+          lastFlushAt > 0 &&
+          now - lastFlushAt <
+            RETICULUM_CHAT_OWN_DEVICE_GROUP_FLUSH_MIN_INTERVAL_MS
+        ) {
+          continue;
+        }
+        this.ownDeviceGroupFlushAt.delete(peer);
+        this.ownDeviceGroupFlushAt.set(peer, now);
+        while (
+          this.ownDeviceGroupFlushAt.size >
+          RETICULUM_CHAT_OWN_DEVICE_PEER_STATE_MAX
+        ) {
+          const oldest = this.ownDeviceGroupFlushAt.keys().next().value as
+            | string
+            | undefined;
+          if (!oldest) break;
+          this.ownDeviceGroupFlushAt.delete(oldest);
+        }
+        let peerCommands = 0;
+        const groupIds = [
+          ...new Set(entries.map(([, entry]) => entry.groupId)),
+        ].slice(0, RETICULUM_CHAT_OWN_DEVICE_GROUP_DIGEST_MAX);
+        for (const groupId of groupIds) {
+          if (
+            peerCommands >= RETICULUM_CHAT_OWN_DEVICE_GROUP_FLUSH_MAX_COMMANDS
+          )
+            break;
+          const digest = await this.buildGroupStateDigestWire(groupId);
+          if (
+            this.isClosed ||
+            accountGeneration !== this.localAccountGeneration
+          ) {
+            return commands + peerCommands;
+          }
+          if (!digest) continue;
+          peerCommands += 1;
+          const result = await this.sendToPeer(peer, digest);
+          if (result.ok) this.countDelivery('ownDeviceGroupDigestSent');
+        }
+        for (const [eventId, entry] of entries) {
+          if (
+            peerCommands >= RETICULUM_CHAT_OWN_DEVICE_GROUP_FLUSH_MAX_COMMANDS
+          )
+            break;
+          const state = entry.peers.get(peer);
+          if (!state) continue;
+          if (
+            this.now() - state.lastSentAt <
+            RETICULUM_CHAT_OWN_DEVICE_GROUP_NOTICE_RESEND_MS
+          ) {
+            continue;
+          }
+          state.attempts += 1;
+          state.lastSentAt = this.now();
+          peerCommands += 1;
+          let ok = false;
+          try {
+            ok = (await this.sendToPeerOnce(peer, entry.notice)).ok === true;
+          } catch {
+            ok = false;
+          }
+          if (ok) {
+            this.countDelivery('ownDeviceGroupNoticeSent');
+            entry.peers.delete(peer);
+          } else if (
+            state.attempts >= RETICULUM_CHAT_OWN_DEVICE_GROUP_OWED_MAX_ATTEMPTS
+          ) {
+            entry.peers.delete(peer);
+          }
+          if (entry.peers.size === 0) {
+            this.ownDeviceGroupNoticesOwed.delete(eventId);
+          }
+        }
+        commands += peerCommands;
+      }
+    }
+    if (commands > 0) this.scheduleOwnOutboxStateRefresh();
+    if (commands > 0 && RETICULUM_CHAT_TRACE) {
+      loggerLog(
+        `[ReticulumChat] own_device_group_owed_flush reason=${reason} commands=${commands} owed=${this.ownDeviceGroupNoticesOwed.size}`
+      );
+    }
+    return commands;
+  }
+
+  // --- Targeted own-Hub probe ---------------------------------------------
+
+  /** Probe bookkeeping for one own device; a new lease session starts clean. */
+  private ownHubProbeState(peerHash: string): {
+    sessionId: string;
+    lastProbeAt: number;
+    pendingProbeId: string;
+    misses: number;
+    backoffUntil: number;
+  } {
+    const sessionId = this.ownDeviceLeaseSessionId(peerHash);
+    let state = this.ownHubProbeStates.get(peerHash);
+    if (!state || state.sessionId !== sessionId) {
+      state = {
+        sessionId,
+        lastProbeAt: 0,
+        pendingProbeId: '',
+        misses: 0,
+        backoffUntil: 0,
+      };
+      this.ownHubProbeStates.delete(peerHash);
+      this.ownHubProbeStates.set(peerHash, state);
+      while (
+        this.ownHubProbeStates.size > RETICULUM_CHAT_OWN_DEVICE_PEER_STATE_MAX
+      ) {
+        const oldest = this.ownHubProbeStates.keys().next().value as
+          | string
+          | undefined;
+        if (!oldest) break;
+        this.ownHubProbeStates.delete(oldest);
+      }
+    }
+    return state;
+  }
+
+  /**
+   * <= 1 probe per device per 120 s. A probe left without any answer for
+   * 30 s is a miss (judged lazily at the next attempt; no timer); after 2
+   * misses in a row the device backs off 5 min, doubling up to 60 min.
+   */
+  private ownHubProbeAllowed(peerHash: string, now: number): boolean {
+    const state = this.ownHubProbeState(peerHash);
+    if (
+      state.pendingProbeId &&
+      now - state.lastProbeAt >= RETICULUM_CHAT_OWN_HUB_PROBE_ANSWER_TIMEOUT_MS
+    ) {
+      state.pendingProbeId = '';
+      state.misses += 1;
+      if (state.misses >= RETICULUM_CHAT_OWN_HUB_PROBE_MISSES_BEFORE_BACKOFF) {
+        const backoff = Math.min(
+          RETICULUM_CHAT_OWN_HUB_PROBE_BACKOFF_MAX_MS,
+          RETICULUM_CHAT_OWN_HUB_PROBE_BACKOFF_MIN_MS *
+            2 **
+              Math.min(
+                8,
+                state.misses -
+                  RETICULUM_CHAT_OWN_HUB_PROBE_MISSES_BEFORE_BACKOFF
+              )
+        );
+        state.backoffUntil = state.lastProbeAt + backoff;
+      }
+    }
+    if (now < state.backoffUntil) return false;
+    return (
+      state.lastProbeAt <= 0 ||
+      now - state.lastProbeAt >= RETICULUM_CHAT_OWN_HUB_PROBE_MIN_INTERVAL_MS
+    );
+  }
+
+  /** Token bucket: 20 own-Hub probes per hour across all own devices. */
+  private takeOwnHubProbeToken(now: number): boolean {
+    if (this.ownHubProbeTokensAt > 0 && now > this.ownHubProbeTokensAt) {
+      this.ownHubProbeTokens = Math.min(
+        RETICULUM_CHAT_OWN_HUB_PROBE_BUCKET_MAX,
+        this.ownHubProbeTokens +
+          ((now - this.ownHubProbeTokensAt) *
+            RETICULUM_CHAT_OWN_HUB_PROBE_BUCKET_MAX) /
+            RETICULUM_CHAT_OWN_HUB_PROBE_BUCKET_WINDOW_MS
+      );
+    }
+    this.ownHubProbeTokensAt = now;
+    if (this.ownHubProbeTokens < 1) return false;
+    this.ownHubProbeTokens -= 1;
+    return true;
+  }
+
+  /** Any answer to a targeted probe from the device it went to. */
+  private noteOwnHubProbeAnswered(
+    probeRequestId: string,
+    sourcePeerHash: string,
+    reversePeerHash: string
+  ): void {
+    if (!probeRequestId || this.ownHubProbeStates.size === 0) return;
+    for (const [peer, state] of this.ownHubProbeStates) {
+      if (state.pendingProbeId !== probeRequestId) continue;
+      if (peer !== sourcePeerHash && peer !== reversePeerHash) continue;
+      state.pendingProbeId = '';
+      state.misses = 0;
+      state.backoffUntil = 0;
+    }
+  }
+
+  /**
+   * One dm_probe signed with maxHops 0, sent once and directly to own
+   * devices with an admitted link (<= 2). The own Hub answers with a notify
+   * per conversation it holds; answers are consumed here, never relayed, and
+   * an answer naming one of our newest local events is not pulled. Only
+   * while the app is in the foreground (a host that never reports its
+   * lifecycle never probes). Nothing is signed without an admitted link.
+   * Returns the number of signatures spent.
+   */
+  private async sendDmProbeToOwnDevices(
+    reason: string,
+    options: { peerHash?: string; budget?: ReticulumOutboundSignBudget } = {}
+  ): Promise<number> {
+    if (
+      this.isClosed ||
+      this.localDmAddresses.size === 0 ||
+      !this.signLocalFields ||
+      this.appLifecycleState !== 'foreground'
+    ) {
+      return 0;
+    }
+    const onlyPeer = options.peerHash
+      ? (this.normalizeResourcePeerHash(options.peerHash) ?? '')
+      : '';
+    const accountGeneration = this.localAccountGeneration;
+    let signatures = 0;
+    for (const ownerAddress of [...this.localDmAddresses]) {
+      const now = this.now();
+      const peers = this.ownDevicePushTargets(ownerAddress)
+        .filter((peer) => !onlyPeer || peer === onlyPeer)
+        .filter((peer) => this.ownHubProbeAllowed(peer, now))
+        .slice(0, RETICULUM_CHAT_OWN_HUB_PROBE_MAX_PEERS);
+      if (peers.length === 0) continue;
+      if (options.budget && !this.outboundSignBudgetAllows(options.budget)) {
+        return signatures;
+      }
+      if (!this.takeOwnHubProbeToken(now)) return signatures;
+      // Claim the slot before the (possibly slow) signature.
+      for (const peer of peers) {
+        const state = this.ownHubProbeState(peer);
+        state.lastProbeAt = now;
+        state.pendingProbeId = '';
+      }
+      const signStartedAt = this.now();
+      const probe = await this.buildSignedDirectProbeWire(ownerAddress, {
+        maxHops: 0,
+      });
+      if (options.budget) {
+        this.noteOutboundSignature(options.budget, this.now() - signStartedAt);
+      }
+      if (this.isClosed || accountGeneration !== this.localAccountGeneration) {
+        return signatures;
+      }
+      if (!probe) continue;
+      signatures += 1;
+      const probeId = probe.q.q;
+      await Promise.all(
+        peers.map(async (peer) => {
+          const state = this.ownHubProbeStates.get(peer);
+          if (state) state.pendingProbeId = probeId;
+          let ok = false;
+          try {
+            ok = (await this.sendToPeerOnce(peer, probe)).ok === true;
+          } catch {
+            ok = false;
+          }
+          if (ok) {
+            this.countDelivery('ownHubProbeSent');
+          } else if (state?.pendingProbeId === probeId) {
+            // Never left this device: not a miss.
+            state.pendingProbeId = '';
+          }
+        })
+      );
+      if (RETICULUM_CHAT_TRACE) {
+        loggerLog(
+          `[ReticulumChat] own_hub_probe reason=${reason} peers=${peers.length} rid=${probeId.slice(0, 12)}`
+        );
+      }
+    }
+    return signatures;
+  }
+
+  /**
+   * An own device answered one of our probes with a cursor we already hold
+   * among the newest local events of that conversation, and we already
+   * completed a pull from it for that same cursor: nothing to pull. Holding
+   * its newest event alone does not show we hold the older ones it has
+   * (the first answer with a new cursor still pulls).
+   */
+  private isUpToDateOwnDeviceProbeAnswer(
+    notify: ReticulumDmNotifyWire,
+    authorAddress: string,
+    conversationId: string,
+    sourcePeerHash: string,
+    now: number
+  ): boolean {
+    const probeRequestId = normalizeReticulumControlRequestId(notify.r);
+    if (!probeRequestId || (this.ownDmProbeIds.get(probeRequestId) ?? 0) <= now)
+      return false;
+    if (!this.localDmAddresses.has(authorAddress)) return false;
+    const latestCursor = typeof notify.lc === 'string' ? notify.lc.trim() : '';
+    if (!latestCursor) return false;
+    if (
+      this.ownDevicePulledCursors.get(`${sourcePeerHash}|${conversationId}`) !==
+      latestCursor
+    ) {
+      return false;
+    }
+    let cursors: Array<{ eventId: string; timestamp: number }>;
+    try {
+      cursors = this.db.getDirectRecentEventCursors(
+        conversationId,
+        RETICULUM_CHAT_OWN_PROBE_ANSWER_LOOKBACK_EVENTS
+      );
+    } catch {
+      return false;
+    }
+    return cursors.some(
+      (cursor) => this.dmNotifyLatestCursor(cursor) === latestCursor
+    );
   }
 
   private isOverlayHealthyForDmDiscovery(): boolean {
@@ -30050,7 +32988,7 @@ export class ReticulumChatManager extends EventEmitter {
         }
         this.lastDmSummaryBroadcastAt = this.now();
       }
-      await this.broadcastSelfDmNotifications();
+      await this.broadcastSelfDmNotifications('periodic');
       if (this.isClosed || accountGeneration !== this.localAccountGeneration) {
         return;
       }
@@ -30088,7 +33026,8 @@ export class ReticulumChatManager extends EventEmitter {
     addressA: string,
     addressB: string,
     latest: ReticulumDmEvent,
-    probeRequestId?: string
+    probeRequestId?: string,
+    options: { maxHops?: number } = {}
   ): Promise<Extract<ReticulumChatWire, { k: 'dm_notify' }> | null> {
     if (!this.signLocalFields) return null;
     const conversationId = reticulumDmConversationId(addressA, addressB);
@@ -30102,7 +33041,16 @@ export class ReticulumChatManager extends EventEmitter {
     const timestamp = this.now();
     const requestId = nodeCrypto.randomBytes(8).toString('hex');
     const selfDm = addressA === addressB;
-    const maxHops = selfDm ? 0 : RETICULUM_CHAT_DM_NOTIFY_MAX_HOPS;
+    // The hop limit is signed. m:0 (self-DMs, own-device pushes) is never
+    // forwarded by any version; omitted m means the default limit.
+    const maxHops = selfDm
+      ? 0
+      : Number.isInteger(options.maxHops)
+        ? Math.max(
+            0,
+            Math.min(RETICULUM_CHAT_DM_NOTIFY_MAX_HOPS, Number(options.maxHops))
+          )
+        : RETICULUM_CHAT_DM_NOTIFY_MAX_HOPS;
     const normalizedProbeRequestId =
       normalizeReticulumControlRequestId(probeRequestId);
     const latestCursor = this.dmNotifyLatestCursor(latest);
@@ -30131,7 +33079,9 @@ export class ReticulumChatManager extends EventEmitter {
         sp: this.compactResourcePeerHash(sourcePeerHash),
         q: requestId,
         lc: latestCursor,
-        ...(selfDm ? { m: 0 as const } : {}),
+        ...(maxHops !== RETICULUM_CHAT_DM_NOTIFY_MAX_HOPS
+          ? { m: maxHops }
+          : {}),
         ...(normalizedProbeRequestId ? { r: normalizedProbeRequestId } : {}),
         p: signed.authorPublicKey,
         n: timestamp,
@@ -30149,12 +33099,20 @@ export class ReticulumChatManager extends EventEmitter {
   }
 
   private async buildSignedDirectProbeWire(
-    requesterAddress: string
+    requesterAddress: string,
+    options: { maxHops?: number } = {}
   ): Promise<Extract<ReticulumChatWire, { k: 'dm_probe' }> | null> {
     if (!this.signLocalFields || !requesterAddress) return null;
     const timestamp = this.now();
     const requestId = nodeCrypto.randomBytes(8).toString('hex');
-    const maxHops = RETICULUM_CHAT_DM_PROBE_MAX_HOPS;
+    // The hop limit is signed. maxHops 0 (the targeted own-Hub probe) is
+    // answered but never forwarded by any version; omitted m means 5.
+    const maxHops = Number.isInteger(options.maxHops)
+      ? Math.max(
+          0,
+          Math.min(RETICULUM_CHAT_DM_PROBE_MAX_HOPS, Number(options.maxHops))
+        )
+      : RETICULUM_CHAT_DM_PROBE_MAX_HOPS;
     const signed = await this.signLocalFields({
       type: 'RCHAT_DM_PROBE',
       requestId,
@@ -30167,6 +33125,7 @@ export class ReticulumChatManager extends EventEmitter {
       k: 'dm_probe',
       q: {
         q: requestId,
+        ...(maxHops !== RETICULUM_CHAT_DM_PROBE_MAX_HOPS ? { m: maxHops } : {}),
         p: signed.authorPublicKey,
         n: timestamp,
         z: signed.signature,
@@ -30179,35 +33138,61 @@ export class ReticulumChatManager extends EventEmitter {
       `probe:${requestId}`,
       timestamp + RETICULUM_CHAT_DM_DISCOVERY_ROUTE_TTL_MS
     );
+    // Every caller (timer probes, active-chat warm-ups, own-device probes)
+    // builds its probe here, so answers to any of them are recognised.
+    this.ownDmProbeIds.delete(requestId);
+    this.ownDmProbeIds.set(
+      requestId,
+      timestamp + RETICULUM_CHAT_OWN_DM_PROBE_TTL_MS
+    );
     return probe;
   }
 
+  /**
+   * Returns true when at least one copy of the notify was accepted by the
+   * bridge (a direct send or the immediate gossip); false when nothing was
+   * signed or nothing could be handed over. Tracked mode (not recovery)
+   * keeps retrying in the background either way.
+   */
   private async announceDirectNotifyForEvent(
     event: ReticulumDmEvent,
     excludePeerHashes: string[] = [],
     directPeerHashes: string[] = [],
-    options: { recovery?: boolean } = {}
-  ): Promise<void> {
-    const notify = await this.buildSignedDirectNotifyWire(
-      event.senderAddress,
-      event.recipientAddress,
-      event
-    );
-    if (!notify) return;
+    options: {
+      recovery?: boolean;
+      /**
+       * Recovery only: also send the width-4 gossip when a direct send was
+       * accepted (a stale lease accepts packets nobody receives).
+       */
+      alwaysGossip?: boolean;
+      /** Already signed for this event (the caller timed the signature). */
+      notify?: Extract<ReticulumChatWire, { k: 'dm_notify' }>;
+    } = {}
+  ): Promise<boolean> {
+    const notify =
+      options.notify ??
+      (await this.buildSignedDirectNotifyWire(
+        event.senderAddress,
+        event.recipientAddress,
+        event
+      ));
+    if (!notify) return false;
     if (event.senderAddress === event.recipientAddress) {
+      let accepted = false;
       await Promise.allSettled(
         this.selfDmPeerHashes(event.senderAddress).map(async (peerHash) => {
           const result = await this.sendToPeerOnce(peerHash, notify);
           if (result.ok) {
-            this.rememberSelfDmAnnouncement(
-              event.senderAddress,
-              peerHash,
-              event
-            );
+            accepted = true;
+            this.countDelivery('selfDmNotifySent');
+            // Accepted by the bridge is not delivered: the cursor stays
+            // unconfirmed (and re-notified by the carriers) until the own
+            // device pulls it or names it in its own self notify.
+            this.noteSelfDmNotifySent(event.senderAddress, peerHash, event);
           }
         })
       );
-      return;
+      return accepted;
     }
     const localPeerHash = this.getLocalResourcePeerHash();
     const directPeers = [
@@ -30221,6 +33206,7 @@ export class ReticulumChatManager extends EventEmitter {
       ...excludePeerHashes,
       ...(localPeerHash ? [localPeerHash] : []),
     ];
+    this.countDelivery('dmNotifySent');
     if (!options.recovery) {
       // Register before the first packet is sent. A fast receiver can open the
       // authenticated resource link before the bridge resolves this send.
@@ -30251,9 +33237,10 @@ export class ReticulumChatManager extends EventEmitter {
     // Packet acceptance only means the bridge accepted the command. It is not
     // recipient confirmation, so these endpoints remain eligible for the
     // bounded gossip and full-network recovery paths below.
-    if (acceptedDirectPeers.length === 0) {
-      if (options.recovery) {
-        await this.fanoutDiscoveryOnce(
+    let accepted = acceptedDirectPeers.length > 0;
+    if (options.recovery) {
+      if (!accepted || options.alwaysGossip) {
+        const gossip = await this.fanoutDiscoveryOnce(
           {
             ...notify,
             d: {
@@ -30264,20 +33251,28 @@ export class ReticulumChatManager extends EventEmitter {
           exclude,
           RETICULUM_CHAT_DISCOVERY_GOSSIP_WIDTH,
           `dm-summary:${notify.d.q}:0`
-        );
-        return;
+        ).catch(() => null);
+        accepted = accepted || gossip?.ok === true;
       }
+      return accepted;
+    }
+    if (!accepted) {
       const pending = this.pendingDmNotifyDeliveries.get(notify.d.q);
       if (pending?.gossipTimer) {
         clearTimeout(pending.gossipTimer);
         pending.gossipTimer = null;
       }
-      await this.sendPendingDmNotifyGossip(notify.d.q).catch((err) => {
-        loggerWarn(
-          `[ReticulumChat] dm_notify_gossip_failed rid=${notify.d.q.slice(0, 12)} reason=${err instanceof Error ? err.message : String(err)}`
-        );
-      });
+      const gossip = await this.sendPendingDmNotifyGossip(notify.d.q).catch(
+        (err) => {
+          loggerWarn(
+            `[ReticulumChat] dm_notify_gossip_failed rid=${notify.d.q.slice(0, 12)} reason=${err instanceof Error ? err.message : String(err)}`
+          );
+          return null;
+        }
+      );
+      accepted = gossip?.ok === true;
     }
+    return accepted;
   }
 
   private trackPendingDmNotifyDelivery(
@@ -30358,15 +33353,17 @@ export class ReticulumChatManager extends EventEmitter {
     );
   }
 
-  private async sendPendingDmNotifyGossip(requestId: string): Promise<void> {
+  private async sendPendingDmNotifyGossip(
+    requestId: string
+  ): Promise<ReticulumSendResult | null> {
     const pending = this.pendingDmNotifyDeliveries.get(requestId);
-    if (!pending || this.isClosed) return;
+    if (!pending || this.isClosed) return null;
     if (
       this.now() - pending.createdAt >
       RETICULUM_CHAT_DM_NOTIFY_PENDING_TTL_MS
     ) {
       this.completePendingDmNotify(requestId);
-      return;
+      return null;
     }
     const wire: Extract<ReticulumChatWire, { k: 'dm_notify' }> = {
       ...pending.wire,
@@ -30375,7 +33372,7 @@ export class ReticulumChatManager extends EventEmitter {
         fw: RETICULUM_CHAT_DISCOVERY_GOSSIP_WIDTH,
       },
     };
-    await this.fanoutDiscoveryOnce(
+    return this.fanoutDiscoveryOnce(
       wire,
       pending.excludePeerHashes,
       RETICULUM_CHAT_DISCOVERY_GOSSIP_WIDTH,
@@ -30498,46 +33495,176 @@ export class ReticulumChatManager extends EventEmitter {
     }
   }
 
-  private async announceSelfDmSummariesToPeer(peerHash: string): Promise<void> {
-    for (const ownerAddress of this.localDmAddresses) {
-      if (!this.isVerifiedSelfDmPeer(ownerAddress, peerHash)) continue;
-      const [summary] = this.db.getDirectSummaries(ownerAddress, ownerAddress);
-      const latest = summary?.lastEvent;
-      if (!latest || latest.senderAddress !== latest.recipientAddress) continue;
-      const announcementKey = this.selfDmAnnouncementKey(
+  /**
+   * Saved Messages carrier: tell one own device about the newest self-DM
+   * event authored here that it has not confirmed yet (lc = that cursor, not
+   * the conversation's latest, so a later event from another device cannot
+   * strand it). Direct and m:0, only over an admitted overlay link: without
+   * one nothing is read, signed or sent. Periodic carriers (the discovery
+   * tick) repeat a cursor at most every 5 min, edges (sign-in, hello,
+   * admission, resume, background) at most every 60 s, and one cursor is
+   * re-notified at most 12 times per own-device session. Returns the number
+   * of signatures spent.
+   */
+  private async announceSelfDmSummariesToPeer(
+    peerHash: string,
+    trigger: 'periodic' | 'edge' = 'edge',
+    budget?: ReticulumOutboundSignBudget
+  ): Promise<number> {
+    const peer =
+      this.routePeerHash(peerHash) ??
+      this.normalizeResourcePeerHash(peerHash) ??
+      '';
+    if (!peer || this.isClosed) return 0;
+    const accountGeneration = this.localAccountGeneration;
+    let signatures = 0;
+    for (const ownerAddress of [...this.localDmAddresses]) {
+      if (!this.isVerifiedSelfDmPeer(ownerAddress, peer)) continue;
+      if (!this.ownDevicePushTargets(ownerAddress).includes(peer)) continue;
+      const ownCursors = this.ownSelfDmEventCursors(ownerAddress);
+      const newest = this.newestUnconfirmedOwnSelfDmEvent(
         ownerAddress,
-        peerHash
+        peer,
+        ownCursors
       );
-      const latestCursor = this.dmNotifyLatestCursor(latest);
-      if (
-        announcementKey &&
-        this.selfDmSummaryAnnouncements.get(announcementKey) === latestCursor
-      ) {
+      if (!newest) {
+        signatures += await this.relaySelfDmSummaryLatestToPeer(
+          ownerAddress,
+          peer,
+          ownCursors,
+          budget
+        );
+        if (
+          this.isClosed ||
+          accountGeneration !== this.localAccountGeneration
+        ) {
+          return signatures;
+        }
         continue;
       }
+      const cursor = this.dmNotifyLatestCursor(newest);
+      const stateKey = this.selfDmRenotifyStateKey(ownerAddress, peer);
+      const previous = this.selfDmRenotifyStates.get(stateKey);
+      const state =
+        previous && previous.cursor === cursor
+          ? previous
+          : { cursor, count: 0, lastSentAt: 0 };
+      if (state.count >= RETICULUM_CHAT_SELF_DM_RENOTIFY_MAX) continue;
+      const now = this.now();
+      const minGap =
+        trigger === 'periodic'
+          ? RETICULUM_CHAT_SELF_DM_RENOTIFY_PERIODIC_MIN_MS
+          : RETICULUM_CHAT_SELF_DM_RENOTIFY_EDGE_MIN_MS;
+      if (state.lastSentAt > 0 && now - state.lastSentAt < minGap) continue;
+      if (budget && !this.outboundSignBudgetAllows(budget)) return signatures;
+      const event = this.db.getDirectEvent(newest.eventId);
+      if (!event) continue;
+      // Claim the slot before the (possibly slow) signature so concurrent
+      // carriers coalesce; a failed signature or send still counts.
+      this.setSelfDmRenotifyState(stateKey, {
+        cursor,
+        count: state.count + 1,
+        lastSentAt: now,
+      });
+      const signStartedAt = this.now();
       const notify = await this.buildSignedDirectNotifyWire(
         ownerAddress,
         ownerAddress,
-        latest
+        event
       );
+      if (budget)
+        this.noteOutboundSignature(budget, this.now() - signStartedAt);
+      if (this.isClosed || accountGeneration !== this.localAccountGeneration) {
+        return signatures;
+      }
       if (!notify) continue;
-      const result = await this.sendToPeerOnce(peerHash, notify);
+      signatures += 1;
+      const result = await this.sendToPeerOnce(peer, notify);
       if (result.ok) {
-        this.rememberSelfDmAnnouncement(ownerAddress, peerHash, latest);
+        this.countDelivery('selfDmNotifySent');
+        this.countDelivery('selfDmRenotifySent');
       }
     }
+    return signatures;
   }
 
-  private async broadcastSelfDmNotifications(): Promise<void> {
+  /**
+   * Nothing authored here is unconfirmed: as before, pass the conversation's
+   * latest event on once per device session when it came from a third
+   * device (never back to the device that served it, never our own).
+   * Remembered when the bridge accepts it; best effort.
+   */
+  private async relaySelfDmSummaryLatestToPeer(
+    ownerAddress: string,
+    peer: string,
+    ownCursors: Array<{ eventId: string; timestamp: number }>,
+    budget?: ReticulumOutboundSignBudget
+  ): Promise<number> {
+    const announcementKey = this.selfDmAnnouncementKey(ownerAddress, peer);
+    if (!announcementKey) return 0;
+    const [summary] = this.db.getDirectSummaries(ownerAddress, ownerAddress);
+    const latest = summary?.lastEvent;
+    if (!latest || latest.senderAddress !== latest.recipientAddress) return 0;
+    const latestCursor = this.dmNotifyLatestCursor(latest);
+    if (this.selfDmSummaryAnnouncements.get(announcementKey) === latestCursor) {
+      return 0;
+    }
+    if (
+      ownCursors.some((cursor) => cursor.eventId === latest.eventId) ||
+      this.eventSourcePeers.get(latest.eventId)?.peers.has(peer)
+    ) {
+      return 0;
+    }
+    if (budget && !this.outboundSignBudgetAllows(budget)) return 0;
+    const signStartedAt = this.now();
+    const notify = await this.buildSignedDirectNotifyWire(
+      ownerAddress,
+      ownerAddress,
+      latest
+    );
+    if (budget) this.noteOutboundSignature(budget, this.now() - signStartedAt);
+    if (!notify) return 0;
+    const result = await this.sendToPeerOnce(peer, notify);
+    if (result.ok) {
+      this.countDelivery('selfDmNotifySent');
+      this.selfDmSummaryAnnouncements.set(announcementKey, latestCursor);
+      while (this.selfDmSummaryAnnouncements.size > 4_096) {
+        const oldest = this.selfDmSummaryAnnouncements.keys().next().value as
+          | string
+          | undefined;
+        if (!oldest) break;
+        this.selfDmSummaryAnnouncements.delete(oldest);
+      }
+    }
+    return 1;
+  }
+
+  private async broadcastSelfDmNotifications(
+    trigger: 'periodic' | 'edge' = 'periodic',
+    budget?: ReticulumOutboundSignBudget
+  ): Promise<number> {
     const peers = new Set<string>();
     for (const ownerAddress of this.localDmAddresses) {
       for (const peerHash of this.selfDmPeerHashes(ownerAddress)) {
         peers.add(peerHash);
       }
     }
-    await Promise.allSettled(
-      [...peers].map((peerHash) => this.announceSelfDmSummariesToPeer(peerHash))
-    );
+    let signatures = 0;
+    for (const peerHash of peers) {
+      try {
+        signatures += await this.announceSelfDmSummariesToPeer(
+          peerHash,
+          trigger,
+          budget
+        );
+      } catch (err) {
+        loggerWarn(
+          `[ReticulumChat] self_dm_renotify_failed peer=${peerHash.slice(0, 16)} reason=${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+      if (budget?.aborted) break;
+    }
+    return signatures;
   }
 
   private async broadcastDirectCallHistory(): Promise<void> {
@@ -35828,7 +38955,7 @@ export class ReticulumChatManager extends EventEmitter {
     );
     if (!requesterIsMember) {
       loggerWarn(
-        `[ReticulumChat] Refusing resource request for group=${groupId}: local signer is not a group member`
+        `[ReticulumChat] Refusing resource request for group=${groupId}: ${this.localSignerMembershipRefusalReason(requesterIsMember)}`
       );
       return null;
     }
@@ -36033,7 +39160,7 @@ export class ReticulumChatManager extends EventEmitter {
     );
     if (!requesterIsMember) {
       loggerWarn(
-        `[ReticulumChat] Refusing resource discovery for group=${groupId}: local signer is not a group member`
+        `[ReticulumChat] Refusing resource discovery for group=${groupId}: ${this.localSignerMembershipRefusalReason(requesterIsMember)}`
       );
       return null;
     }
@@ -39721,12 +42848,18 @@ export class ReticulumChatManager extends EventEmitter {
       } else if (this.directDmPageRequests.has(payload.transferId)) {
         const request = this.directDmPageRequests.get(payload.transferId);
         this.directDmPageRequests.delete(payload.transferId);
+        const reason =
+          typeof payload.reason === 'string'
+            ? payload.reason
+            : 'resource_failed';
+        if (request && reason === 'no_dm_events') {
+          this.noteDirectDmPageNoEvents(request);
+        }
         if (request?.pullKey) {
           this.scheduleDirectDmPullRetry(
             request.pullKey,
-            typeof payload.reason === 'string'
-              ? payload.reason
-              : 'resource_failed'
+            reason,
+            request.requestId
           );
         }
       } else if (this.metadataSnapshotOffers.has(payload.transferId)) {
@@ -40239,6 +43372,7 @@ export class ReticulumChatManager extends EventEmitter {
         );
         return;
       }
+      const selfDmPageEvents: ReticulumDmEvent[] = [];
       for (const wireEvent of parsed.events) {
         const event = reticulumDmEventFromWire(wireEvent);
         if (!event || event.conversationId !== request.conversationId) continue;
@@ -40252,6 +43386,7 @@ export class ReticulumChatManager extends EventEmitter {
         if (request.sourcePeerHash) {
           this.noteEventSourcePeer(event.eventId, request.sourcePeerHash);
         }
+        if (selfDm) selfDmPageEvents.push(event);
         const inserted = this.acceptDirectEvent(event, false);
         accepted = accepted || inserted;
         if (
@@ -40264,6 +43399,14 @@ export class ReticulumChatManager extends EventEmitter {
         }
       }
       this.directDmPageRequests.delete(payload.transferId);
+      if (selfDm && selfDmPageEvents.length > 0 && request.sourcePeerHash) {
+        // The own device served these, so it holds any we authored here.
+        this.confirmSelfDmCursorsFromEvents(
+          request.requesterAddress || '',
+          request.sourcePeerHash,
+          selfDmPageEvents
+        );
+      }
       loggerLog(
         `[ReticulumChat] dm_page_imported conversation=${request.conversationId.slice(0, 16)} peer=${(request.sourcePeerHash || '').slice(0, 16)} events=${parsed.events.length} accepted=${accepted} more=${parsed.more === true}`
       );
@@ -40272,6 +43415,22 @@ export class ReticulumChatManager extends EventEmitter {
         request.remoteEventId || '',
         Number(request.remoteTimestamp || 0)
       );
+      if (
+        parsed.more !== true &&
+        !selfDm &&
+        request.sourcePeerHash &&
+        this.isVerifiedOwnDeviceDmSource(
+          request.requesterAddress || '',
+          request.peerAddress || '',
+          request.sourcePeerHash
+        )
+      ) {
+        this.noteOwnDevicePullCompleted(
+          request.conversationId,
+          request.sourcePeerHash,
+          request.remoteEventId || ''
+        );
+      }
       if (accepted) {
         this.clearDmPageNoProgress(
           request.conversationId,
@@ -41614,11 +44773,36 @@ export class ReticulumChatManager extends EventEmitter {
     if (digestFingerprint) item.digestFingerprint = digestFingerprint;
     // Membership service availability is independent of the provider and
     // must not consume the event's network retry budget or rotate peers.
+    // Each repeat deferral doubles the wait instead, so a long outage is
+    // bounded; a later Core answer for the group wakes the item early.
     item.attempts = Math.max(0, item.attempts - 1);
     item.inFlight = false;
-    item.nextAttemptAt =
-      this.now() + RETICULUM_CHAT_VALIDATION_UNAVAILABLE_RETRY_MS;
-    this.scheduleEventPullQueue(RETICULUM_CHAT_VALIDATION_UNAVAILABLE_RETRY_MS);
+    item.membershipDeferrals = (item.membershipDeferrals ?? 0) + 1;
+    const delayMs = Math.min(
+      RETICULUM_CHAT_MEMBERSHIP_DEFERRAL_MAX_BACKOFF_MS,
+      RETICULUM_CHAT_VALIDATION_UNAVAILABLE_RETRY_MS *
+        2 ** (item.membershipDeferrals - 1)
+    );
+    item.nextAttemptAt = this.now() + delayMs;
+    this.scheduleEventPullQueue(delayMs);
+  }
+
+  private wakeMembershipDeferredEventPulls(groupId: number): void {
+    const now = this.now();
+    let woke = false;
+    for (const item of this.pendingEventPulls.values()) {
+      if (
+        item.hint.groupId !== groupId ||
+        !item.membershipDeferrals ||
+        item.inFlight ||
+        item.nextAttemptAt <= now
+      ) {
+        continue;
+      }
+      item.nextAttemptAt = now;
+      woke = true;
+    }
+    if (woke) this.scheduleEventPullQueue();
   }
 
   private async authorizeResource(
@@ -42441,6 +45625,8 @@ export class ReticulumChatManager extends EventEmitter {
   ): Promise<void> {
     if (!this.bridge || !payload.linkId || !payload.transferId) return;
     const reject = async (reason: string) => {
+      this.countDelivery('dmPageRefused');
+      this.countDelivery(`dmPageRefused_${reason}`);
       await this.bridge?.rejectReticulumChatResourceDetailed?.({
         linkId: payload.linkId!,
         transferId: payload.transferId!,
@@ -42520,8 +45706,22 @@ export class ReticulumChatManager extends EventEmitter {
     const pendingNotification = notificationId
       ? this.pendingDmNotifyDeliveries.get(notificationId)
       : undefined;
+    // A verified own device of the sender (a home Hub) pulling with the id of
+    // a notify that is still tracked for the recipient: serve it, but leave
+    // the tracked delivery alone (not confirmed, retries not cleared) so the
+    // recipient's gossip and fanout still run.
+    const ownDevicePullOfTrackedNotify =
+      verifiedRequesterDevice &&
+      !!pendingNotification &&
+      requesterAddress === pendingNotification.senderAddress &&
+      peerAddress === pendingNotification.recipientAddress &&
+      reticulumDmConversationId(
+        pendingNotification.senderAddress,
+        pendingNotification.recipientAddress
+      ) === conversationId;
     if (
       pendingNotification &&
+      !ownDevicePullOfTrackedNotify &&
       (pendingNotification.senderAddress !== peerAddress ||
         pendingNotification.recipientAddress !== requesterAddress ||
         reticulumDmConversationId(
@@ -42540,6 +45740,15 @@ export class ReticulumChatManager extends EventEmitter {
       1,
       Math.min(50, Math.floor(Number(request.l ?? request.limit ?? 50)))
     );
+    // Any signed page request from a verified own device answers our pushes.
+    const ownDeviceConversationPull =
+      verifiedRequesterDevice && requesterAddress !== peerAddress;
+    if (verifiedRequesterDevice) {
+      this.noteOwnDevicePullRequest(authenticatedPeerHash);
+    }
+    if (ownDeviceConversationPull) {
+      this.noteOwnDevicePulledUpTo(conversationId, after);
+    }
     let events = this.db.getDirectEventsAfter(conversationId, after, limit + 1);
     // An own device pulling the self conversation asks for everything after
     // ITS newest event. Whatever this device authored while the two were
@@ -42563,6 +45772,36 @@ export class ReticulumChatManager extends EventEmitter {
           ...older,
           ...events.filter((event) => !seen.has(event.eventId)),
         ];
+      }
+    }
+    // The same gap in another conversation: the requester's cursor is its
+    // newest event, so an own event that is still pending here and older
+    // than a message written elsewhere since would never be asked for again
+    // (and would keep the outbox, the re-push and the slow tail busy). Serve
+    // it too, to the recipient or, if still uncopied, to a verified own
+    // device: only this device's pending events, only inside the pending
+    // window, oldest first.
+    const passedSender = ownDeviceConversationPull
+      ? requesterAddress
+      : requesterAddress !== peerAddress && providerOwnsPeer
+        ? peerAddress
+        : '';
+    if (passedSender && after > 0) {
+      const now = this.now();
+      const passed = this.db.listPendingOwnDirectEventsBetween(
+        passedSender,
+        conversationId,
+        now - RETICULUM_CHAT_DM_PENDING_TAIL_MAX_AGE_MS,
+        after,
+        { uncopiedOnly: ownDeviceConversationPull, limit, now }
+      );
+      if (passed.length > 0) {
+        const seen = new Set(passed.map((event) => event.eventId));
+        events = [
+          ...passed,
+          ...events.filter((event) => !seen.has(event.eventId)),
+        ];
+        this.countDelivery('dmPagePassedPendingServed', passed.length);
       }
     }
     if (events.length === 0) {
@@ -42625,17 +45864,39 @@ export class ReticulumChatManager extends EventEmitter {
       );
       return;
     }
-    if (notificationId && pendingNotification) {
+    if (
+      notificationId &&
+      pendingNotification &&
+      !ownDevicePullOfTrackedNotify
+    ) {
       this.clearDmNotifyControlRetries(notificationId);
       this.confirmPendingDmNotifyPeer(notificationId, authenticatedPeerHash);
     }
+    this.countDelivery(
+      requesterAddress === peerAddress || verifiedRequesterDevice
+        ? 'dmPageServedToOwnDevice'
+        : 'dmPageServedToRecipient'
+    );
     for (const event of page.pageEvents) {
       if (
         ownAddressMatches(this.localDmAddresses, event.senderAddress) &&
-        event.recipientAddress === requesterAddress
+        event.recipientAddress === requesterAddress &&
+        // Already 'sent' (every self-DM, and re-served pages): marking again
+        // only costs a DB write, two emits and a summaries refresh.
+        event.localDeliveryStatus !== 'sent'
       ) {
         this.markDirectEventSent(event);
       }
+    }
+    if (ownDeviceConversationPull) {
+      this.markOwnDeviceCopiedFromPage(requesterAddress, page.pageEvents);
+    } else if (requesterAddress === peerAddress) {
+      // A verified own device pulled Saved Messages: what it got is confirmed.
+      this.confirmSelfDmCursorsFromEvents(
+        requesterAddress,
+        authenticatedPeerHash,
+        page.pageEvents
+      );
     }
     loggerLog(
       `[ReticulumChat] dm_page_link_authorized conversation=${conversationId.slice(0, 16)} requester=${requesterAddress} transfer=${payload.transferId} events=${page.eventCount} more=${page.hasMore === true}`
@@ -45398,6 +48659,7 @@ export function startReticulumChatManager(
     | 'hasGoodOverlayHealth'
     | 'resourceStore'
     | 'relayGroupControl'
+    | 'localNotifyScanIntervalMs'
   > = {}
 ): ReticulumChatManager {
   if (singleton) {
@@ -45416,6 +48678,7 @@ export function startReticulumChatManager(
     hasGoodOverlayHealth: options.hasGoodOverlayHealth,
     resourceStore: options.resourceStore,
     relayGroupControl: options.relayGroupControl,
+    localNotifyScanIntervalMs: options.localNotifyScanIntervalMs,
   });
   loggerLog('[ReticulumChat] Manager started');
   return singleton;

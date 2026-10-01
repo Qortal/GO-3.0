@@ -110,6 +110,27 @@ describe('filterAndSortApps', () => {
       expect(result[3].name).toBe('BobApp');     // 3.0
     });
 
+    it('highest_rated weighs how many voted, not just the average', () => {
+      const ratings = new Map([
+        ['app-aliceapp', { averageRating: 5.0, totalVotes: 1, voteCounts: [], hasPublishedRating: true, pollInfo: null, lastFetched: 0 }],
+        ['app-bobapp', { averageRating: 4.8, totalVotes: 10, voteCounts: [], hasPublishedRating: true, pollInfo: null, lastFetched: 0 }],
+        ['app-charlieapp', { averageRating: 5.0, totalVotes: 3, voteCounts: [], hasPublishedRating: true, pollInfo: null, lastFetched: 0 }],
+      ]);
+      const result = filterAndSortApps(mockApps, {
+        sort: 'highest_rated',
+        category: 'all',
+        status: 'all',
+        search: '',
+        ratingsMap: ratings,
+      });
+      expect(result.map((app) => app.name)).toEqual([
+        'BobApp', // 10 votes, 4.8
+        'CharlieApp', // 3 votes, 5.0
+        'AliceApp', // 1 vote, 5.0
+        'DaveApp', // unrated
+      ]);
+    });
+
     it('sorts by most rated using ratingsMap', () => {
       const result = filterAndSortApps(mockApps, {
         sort: 'most_rated',

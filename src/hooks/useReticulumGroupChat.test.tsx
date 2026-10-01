@@ -603,4 +603,280 @@ describe('useReticulumGroupChat', () => {
       'latest-2',
     ]);
   });
+
+  describe('empty channel re-read', () => {
+    const advance = async (ms = 0) => {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(ms);
+      });
+    };
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('re-reads on a bounded backoff until history arrives, then stops', async () => {
+      getMessageHistory.mockResolvedValue([]);
+      const { result, unmount } = renderHook(() =>
+        useReticulumGroupChat(42, 'general')
+      );
+      await advance();
+      expect(getMessageHistory).toHaveBeenCalledTimes(1);
+      expect(result.current.initialHistoryReady).toBe(true);
+
+      // 5 s, 10 s, 20 s, 40 s, then once a minute.
+      const schedule: Array<[number, number]> = [
+        [4999, 1],
+        [1, 2],
+        [9999, 2],
+        [1, 3],
+        [20000, 4],
+        [40000, 5],
+        [60000, 6],
+        [60000, 7],
+      ];
+      for (const [ms, calls] of schedule) {
+        await advance(ms);
+        expect(getMessageHistory).toHaveBeenCalledTimes(calls);
+      }
+      // Each re-read is the same read the channel opened with.
+      for (const call of getMessageHistory.mock.calls) {
+        expect(call).toEqual([42, 'general', 200]);
+      }
+
+      const revisionBefore = result.current.historyWindowRevision;
+      getMessageHistory.mockResolvedValueOnce([
+        event('late-history', 'general', 100),
+      ]);
+      await advance(60000);
+      expect(getMessageHistory).toHaveBeenCalledTimes(8);
+      expect(result.current.events.map((item: any) => item.eventId)).toEqual([
+        'late-history',
+      ]);
+      expect(result.current.historyWindowRevision).toBe(revisionBefore + 1);
+
+      await advance(10 * 60000);
+      expect(getMessageHistory).toHaveBeenCalledTimes(8);
+      unmount();
+    });
+
+    it('recovers a channel whose first read failed', async () => {
+      getMessageHistory
+        .mockRejectedValueOnce(
+          new Error('Local user is not a member of this group')
+        )
+        .mockResolvedValueOnce([event('recovered', 'general', 100)]);
+      const { result, unmount } = renderHook(() =>
+        useReticulumGroupChat(42, 'general')
+      );
+      await advance();
+      expect(result.current.initialHistoryReady).toBe(true);
+      expect(result.current.events).toEqual([]);
+
+      await advance(5000);
+      expect(getMessageHistory).toHaveBeenCalledTimes(2);
+      expect(result.current.events.map((item: any) => item.eventId)).toEqual([
+        'recovered',
+      ]);
+      unmount();
+    });
+
+    it('never starts a re-read while the previous one is in flight', async () => {
+      const slowRead = deferred<unknown[]>();
+      getMessageHistory
+        .mockResolvedValueOnce([])
+        .mockReturnValueOnce(slowRead.promise)
+        .mockResolvedValue([]);
+      const { unmount } = renderHook(() =>
+        useReticulumGroupChat(42, 'general')
+      );
+      await advance();
+      await advance(5000);
+      expect(getMessageHistory).toHaveBeenCalledTimes(2);
+
+      await advance(10 * 60000);
+      expect(getMessageHistory).toHaveBeenCalledTimes(2);
+
+      await act(async () => {
+        slowRead.resolve([]);
+        await slowRead.promise;
+      });
+      // The backoff resumes from the read that just settled.
+      await advance(9999);
+      expect(getMessageHistory).toHaveBeenCalledTimes(2);
+      await advance(1);
+      expect(getMessageHistory).toHaveBeenCalledTimes(3);
+      unmount();
+    });
+
+    it('stops re-reading once a live message arrives', async () => {
+      getMessageHistory.mockResolvedValue([]);
+      const { result, unmount } = renderHook(() =>
+        useReticulumGroupChat(42, 'general')
+      );
+      await advance();
+      act(() => {
+        listeners[0]({ event: event('live', 'general', 300) });
+      });
+      await advance(400);
+      expect(result.current.events).toHaveLength(1);
+
+      await advance(10 * 60000);
+      expect(getMessageHistory).toHaveBeenCalledTimes(1);
+      unmount();
+    });
+
+    it('drops the pending re-read on channel switch and unmount', async () => {
+      getMessageHistory.mockResolvedValue([]);
+      const { rerender, unmount } = renderHook(
+        ({ channelId }) => useReticulumGroupChat(42, channelId),
+        { initialProps: { channelId: 'alpha' } }
+      );
+      await advance();
+      await advance(4000);
+      rerender({ channelId: 'beta' });
+      await advance();
+      const readChannels = () =>
+        getMessageHistory.mock.calls.map((call) => call[1]);
+      expect(readChannels()).toEqual(['alpha', 'beta']);
+
+      await advance(5000);
+      expect(readChannels()).toEqual(['alpha', 'beta', 'beta']);
+
+      unmount();
+      await advance(10 * 60000);
+      expect(getMessageHistory).toHaveBeenCalledTimes(3);
+    });
+
+    it('re-reads through the structured page API', async () => {
+      const getMessageHistoryPage = vi
+        .fn()
+        .mockResolvedValueOnce({ events: [], hasMore: false })
+        .mockResolvedValueOnce({
+          events: [event('paged', 'general', 100)],
+          hasMore: true,
+        });
+      Object.assign(window.reticulumChat as any, {
+        getMessageHistory: undefined,
+        getMessageHistoryPage,
+      });
+      const { result, unmount } = renderHook(() =>
+        useReticulumGroupChat(42, 'general')
+      );
+      await advance();
+      expect(getMessageHistoryPage).toHaveBeenCalledTimes(1);
+      expect(result.current.hasOlder).toBe(false);
+
+      await advance(5000);
+      expect(getMessageHistoryPage).toHaveBeenCalledTimes(2);
+      expect(getMessageHistoryPage).toHaveBeenLastCalledWith(
+        42,
+        'general',
+        200
+      );
+      expect(result.current.events.map((item: any) => item.eventId)).toEqual([
+        'paged',
+      ]);
+      expect(result.current.hasOlder).toBe(true);
+      unmount();
+    });
+
+    it('waits for the page to become visible without polling', async () => {
+      getMessageHistory.mockResolvedValue([]);
+      const visibility = vi
+        .spyOn(document, 'visibilityState', 'get')
+        .mockReturnValue('hidden');
+      const { unmount } = renderHook(() =>
+        useReticulumGroupChat(42, 'general')
+      );
+      await advance();
+      await advance(5000);
+      // The due re-read found the page hidden and did not re-arm a timer.
+      expect(vi.getTimerCount()).toBe(0);
+      await advance(10 * 60000);
+      expect(getMessageHistory).toHaveBeenCalledTimes(1);
+
+      visibility.mockReturnValue('visible');
+      act(() => {
+        document.dispatchEvent(new Event('visibilitychange'));
+      });
+      await advance(4999);
+      expect(getMessageHistory).toHaveBeenCalledTimes(1);
+      await advance(1);
+      expect(getMessageHistory).toHaveBeenCalledTimes(2);
+      unmount();
+    });
+
+    it('caps the once-a-minute phase and resumes when the page is shown again', async () => {
+      getMessageHistory.mockResolvedValue([]);
+      const visibility = vi.spyOn(document, 'visibilityState', 'get');
+      visibility.mockReturnValue('visible');
+      const { unmount } = renderHook(() =>
+        useReticulumGroupChat(42, 'general')
+      );
+      await advance();
+      // Four backoff steps, then ten reads a minute apart.
+      await advance(5000 + 10000 + 20000 + 40000);
+      expect(getMessageHistory).toHaveBeenCalledTimes(5);
+      await advance(10 * 60000);
+      expect(getMessageHistory).toHaveBeenCalledTimes(15);
+      await advance(60 * 60000);
+      expect(getMessageHistory).toHaveBeenCalledTimes(15);
+      expect(vi.getTimerCount()).toBe(0);
+
+      // Hidden first: still parked.
+      visibility.mockReturnValue('hidden');
+      act(() => {
+        document.dispatchEvent(new Event('visibilitychange'));
+      });
+      await advance(60000);
+      expect(getMessageHistory).toHaveBeenCalledTimes(15);
+
+      // Shown again: the backoff starts over.
+      visibility.mockReturnValue('visible');
+      act(() => {
+        document.dispatchEvent(new Event('visibilitychange'));
+      });
+      await advance(5000);
+      expect(getMessageHistory).toHaveBeenCalledTimes(16);
+      await advance(10000);
+      expect(getMessageHistory).toHaveBeenCalledTimes(17);
+
+      unmount();
+      act(() => {
+        document.dispatchEvent(new Event('visibilitychange'));
+      });
+      await advance(60 * 60000);
+      expect(getMessageHistory).toHaveBeenCalledTimes(17);
+    });
+
+    it('stops listening for visibility on unmount', async () => {
+      getMessageHistory.mockResolvedValue([]);
+      const visibility = vi
+        .spyOn(document, 'visibilityState', 'get')
+        .mockReturnValue('hidden');
+      const removeListener = vi.spyOn(document, 'removeEventListener');
+      const { unmount } = renderHook(() =>
+        useReticulumGroupChat(42, 'general')
+      );
+      await advance();
+      await advance(5000);
+      unmount();
+      expect(removeListener).toHaveBeenCalledWith(
+        'visibilitychange',
+        expect.any(Function)
+      );
+
+      visibility.mockReturnValue('visible');
+      act(() => {
+        document.dispatchEvent(new Event('visibilitychange'));
+      });
+      await advance(60 * 60000);
+      expect(getMessageHistory).toHaveBeenCalledTimes(1);
+    });
+  });
 });

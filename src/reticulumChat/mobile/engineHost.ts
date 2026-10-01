@@ -11,7 +11,21 @@
  *    `signReticulumChatEvent` background case, and Qortal group member/admin
  *    validation via direct core API calls.
  */
-import { getRecentLogs } from './shims/logger';
+import { getBootFaultLogs, getRecentLogs } from './shims/logger';
+import {
+  apiHostOf,
+  apiSchemeOf,
+  createGroupValidatorStats,
+  GROUP_VALIDATION_TIMEOUT_MS,
+  membershipProbeResult,
+  recordGroupValidation,
+  runGroupValidationRequest,
+  toWorkerNodeConfig,
+  type GroupValidationRow,
+  type GroupValidatorStats,
+  type MembershipProbeResult,
+  type WorkerNodeConfig,
+} from './groupValidation';
 import {
   startReticulumChatManager,
   stopReticulumChatManager,
@@ -44,11 +58,19 @@ type WorkerOut =
     }
   | { t: 'direct-bridge'; connected: boolean }
   | {
+      t: 'own-outbox';
+      pending: boolean;
+      pendingCount: number;
+      uncopiedCount: number;
+    }
+  | {
       t: 'bridge-traffic';
       seconds: number;
       commands: Array<[string, number]>;
       events: Array<[string, number]>;
       resourceBytes: Array<[string, number]>;
+      // Non-zero per-window deltas of manager.getDeliveryCounters().
+      delivery?: Array<[string, number]>;
     };
 
 const post = (msg: WorkerOut) => {
@@ -129,11 +151,45 @@ const bridgeTrafficKey = (name: string, payload: unknown): string => {
   return `${name}:${String(kind)}`;
 };
 
+// Delivery counters are cumulative in the engine; the summary carries what
+// changed since the previous one. A smaller value means the manager was
+// restarted, so its whole value is new.
+let lastDeliveryCounters: Record<string, number> = {};
+const deliveryCounterDeltas = (): Array<[string, number]> => {
+  const m = getReticulumChatManager() as
+    | { getDeliveryCounters?: () => Record<string, number> }
+    | undefined;
+  if (!m || typeof m.getDeliveryCounters !== 'function') return [];
+  let current: Record<string, number>;
+  try {
+    current = m.getDeliveryCounters() ?? {};
+  } catch {
+    return [];
+  }
+  const deltas: Array<[string, number]> = [];
+  for (const [key, value] of Object.entries(current)) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) continue;
+    const prev = lastDeliveryCounters[key] ?? 0;
+    const delta = n >= prev ? n - prev : n;
+    if (delta > 0) deltas.push([key, delta]);
+  }
+  lastDeliveryCounters = { ...current };
+  return deltas;
+};
+
 const flushBridgeTraffic = (): void => {
   const now = Date.now();
   const seconds = Math.round((now - bridgeTrafficWindowStart) / 1000);
   bridgeTrafficWindowStart = now;
-  if (bridgeCommandCounts.size === 0 && bridgeEventCounts.size === 0) return;
+  const delivery = deliveryCounterDeltas();
+  if (
+    bridgeCommandCounts.size === 0 &&
+    bridgeEventCounts.size === 0 &&
+    delivery.length === 0
+  ) {
+    return;
+  }
   const top = (map: Map<string, number>): Array<[string, number]> =>
     [...map.entries()].sort((a, b) => b[1] - a[1]).slice(0, 20);
   post({
@@ -142,6 +198,7 @@ const flushBridgeTraffic = (): void => {
     commands: top(bridgeCommandCounts),
     events: top(bridgeEventCounts),
     resourceBytes: [...bridgeResourceBytes.entries()],
+    ...(delivery.length ? { delivery } : {}),
   });
   bridgeCommandCounts.clear();
   bridgeEventCounts.clear();
@@ -223,6 +280,9 @@ let socketReconnectDelay = SOCKET_RECONNECT_MIN_MS;
 let socketReconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let socketKeepaliveTimer: ReturnType<typeof setInterval> | null = null;
 let socketClosedByUs = false;
+// Set when an open socket is lost; the next open tells the engine, since
+// frames may have been dropped while it was down.
+let socketReopenPending = false;
 let nextSocketId = 1;
 const pendingSocket = new Map<
   string,
@@ -329,6 +389,10 @@ function connectBridgeSocket(): void {
     socketReconnectDelay = SOCKET_RECONNECT_MIN_MS;
     console.log('[MobileChat] bridge_socket_connected');
     post({ t: 'direct-bridge', connected: true });
+    if (socketReopenPending) {
+      socketReopenPending = false;
+      callManagerHook('notifyBridgeSocketReopened');
+    }
     if (socketKeepaliveTimer) clearInterval(socketKeepaliveTimer);
     socketKeepaliveTimer = setInterval(() => {
       if (bridgeSocketAvailable()) {
@@ -361,6 +425,7 @@ function connectBridgeSocket(): void {
         `[MobileChat] bridge_socket_closed code=${ev.code} reason=${ev.reason || 'none'}`
       );
       post({ t: 'direct-bridge', connected: false });
+      if (!socketClosedByUs) socketReopenPending = true;
     }
     if (!socketClosedByUs) scheduleBridgeSocketReconnect();
   };
@@ -393,6 +458,7 @@ function setBridgeSocketInfo(info: BridgeSocketInfo): void {
     // Endpoint changed (native side restarted): drop the stale connection;
     // onclose reconnects to the new endpoint.
     const stale = socket;
+    if (socketOpen) socketReopenPending = true;
     socket = null;
     socketOpen = false;
     try {
@@ -406,6 +472,7 @@ function setBridgeSocketInfo(info: BridgeSocketInfo): void {
 
 function closeBridgeSocket(): void {
   socketClosedByUs = true;
+  socketReopenPending = false;
   if (socketReconnectTimer) {
     clearTimeout(socketReconnectTimer);
     socketReconnectTimer = null;
@@ -468,12 +535,33 @@ const nativeFs = (
 
 // ── environment fed from the main thread ─────────────────────────────────────
 
-type EngineConfig = {
-  apiBase: string;
-  apiKey?: string;
+// Only the base URL and whether a key exists; the API key itself is never
+// sent to the worker (see groupValidation.ts).
+let config: WorkerNodeConfig = { apiBase: '', apiKeyConfigured: null };
+
+/** Resource-session counters of the mobile bridge (wireBridge.ts). */
+export type ResourceSessionStats = {
+  inFlight: Record<string, number>;
+  oldestInFlightMs: number | null;
+  oldestInFlightType: string | null;
+  /** Keyed `<logicalType>:<ok|reason>`. */
+  results: Record<string, number>;
 };
 
-let config: EngineConfig = { apiBase: '' };
+/** `debug:diagnostics` payload. */
+export type EngineDiagnosticsSnapshot = {
+  /** `host:port` membership checks go to. */
+  apiHost: string;
+  /** `http` / `https` of that base (no path, query or key). */
+  apiScheme: string;
+  apiKeyConfigured: boolean | null;
+  validator: GroupValidatorStats;
+  /** `null` while the bridge does not report them. */
+  resourceSessions: ResourceSessionStats | null;
+  /** First warnings/errors since the worker booted. */
+  bootFaultLogs: string[];
+};
+
 let presencePeers: Array<Record<string, unknown>> = [];
 let presenceLeases: Array<Record<string, unknown>> = [];
 let overlayHealthy = false;
@@ -483,7 +571,8 @@ let overlayHealthy = false;
 const GROUP_VALIDATION_TTL_MS = 5 * 60_000;
 const GROUP_VALIDATION_NEGATIVE_TTL_MS = 30_000;
 
-type GroupValidationRow = { isMember: boolean; isAdmin: boolean };
+/** Engine-driven checks only; the diagnostics probe does not count here. */
+const groupValidatorStats = createGroupValidatorStats();
 
 const groupValidationCache = new Map<
   string,
@@ -500,45 +589,27 @@ const groupValidationInFlight = new Map<
  * megabytes for large groups and routinely times out, which reads as
  * "membership unavailable" and silently stops this device from advertising
  * the attachments it already holds.
+ *
+ * No API key (CORS rejects it; see groupValidation.ts). Unlike desktop there is
+ * deliberately no fallback to the public node: users on a private node (e.g.
+ * over an SSH tunnel) chose it for privacy, and a fallback would send their
+ * group ids and member addresses to ext-node.qortal.link.
  */
 async function fetchGroupValidationRow(
   groupId: number,
   address: string
 ): Promise<GroupValidationRow | null> {
-  if (!config.apiBase) return null;
-  const base = config.apiBase.replace(/\/$/, '');
-  const key = String(config.apiKey || '').trim();
-  const url = key
-    ? `${base}/groups/members/${groupId}/validate?apiKey=${encodeURIComponent(key)}`
-    : `${base}/groups/members/${groupId}/validate`;
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-  };
-  if (key) headers['X-API-KEY'] = key;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 12_000);
-  try {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify([address]),
-      signal: controller.signal,
-    });
-    if (!res.ok) return null;
-    const rows = await res.json();
-    if (!Array.isArray(rows)) return null;
-    const row = rows.find(
-      (item: any) => String(item?.address || '').trim() === address
-    );
-    return {
-      isAdmin: row?.isAdmin === true,
-      isMember: row?.isMember === true,
-    };
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timer);
-  }
+  const outcome = await runGroupValidationRequest(
+    config.apiBase,
+    groupId,
+    address
+  );
+  recordGroupValidation(
+    groupValidatorStats,
+    outcome,
+    apiHostOf(config.apiBase)
+  );
+  return outcome.row;
 }
 
 async function validateGroupRole(
@@ -590,6 +661,77 @@ async function validateGroupAdmin(
   address: string
 ): Promise<boolean | null> {
   return validateGroupRole(groupId, address, 'admin');
+}
+
+/**
+ * The local signer's address for `groupId`, or for the first group it signs
+ * in when none is given: what the diagnostics membership probe checks.
+ */
+function pickMembershipProbeTarget(
+  groupId?: number
+): { groupId: number; address: string } | null {
+  const m = getReticulumChatManager() as unknown as
+    | {
+        localGroupAddresses?: Map<number, string>;
+        localGroupIds?: Set<number>;
+        getLocalDmAddresses?: () => string[];
+      }
+    | undefined;
+  if (!m) return null;
+  const addresses =
+    m.localGroupAddresses instanceof Map
+      ? m.localGroupAddresses
+      : new Map<number, string>();
+  const fallbackAddress = m.getLocalDmAddresses?.()[0] ?? '';
+  if (Number.isInteger(groupId) && groupId > 0) {
+    const address = addresses.get(groupId) || fallbackAddress;
+    return address ? { groupId, address } : null;
+  }
+  for (const [id, address] of addresses) {
+    if (address) return { groupId: id, address };
+  }
+  const firstGroup =
+    m.localGroupIds instanceof Set ? [...m.localGroupIds][0] : undefined;
+  return firstGroup && fallbackAddress
+    ? { groupId: firstGroup, address: fallbackAddress }
+    : null;
+}
+
+async function probeGroupMembership(options?: {
+  groupId?: unknown;
+  timeoutMs?: unknown;
+}): Promise<MembershipProbeResult> {
+  const host = apiHostOf(config.apiBase);
+  const requested = Number(options?.groupId);
+  const target = pickMembershipProbeTarget(requested);
+  if (!target) {
+    // Nothing sent: a DM-only account, or groups not pushed yet after boot.
+    return {
+      host,
+      groupId: null,
+      status: null,
+      ok: false,
+      isMember: null,
+      error:
+        Number.isInteger(requested) && requested > 0
+          ? `no local signer for group ${requested} yet`
+          : 'no local group membership yet',
+      ms: 0,
+      skipped: true,
+    };
+  }
+  const timeoutMs = Math.min(
+    GROUP_VALIDATION_TIMEOUT_MS,
+    Math.max(1_000, Number(options?.timeoutMs) || GROUP_VALIDATION_TIMEOUT_MS)
+  );
+  // The request the engine sends, but past the cache and outside the counters.
+  const outcome = await runGroupValidationRequest(
+    config.apiBase,
+    target.groupId,
+    target.address,
+    { timeoutMs }
+  );
+  return membershipProbeResult(outcome, host, target.groupId);
 }
 
 async function signLocalFields(fields: Record<string, unknown>): Promise<{
@@ -767,8 +909,8 @@ function onOverlayHealthRecovered(): void {
   }, OVERLAY_RECOVERY_REPLAY_DEBOUNCE_MS);
 }
 
-export function startEngine(initial: EngineConfig): void {
-  config = initial;
+export function startEngine(initial: unknown): void {
+  config = toWorkerNodeConfig(initial);
   bridge = new MobileReticulumBridge(
     sendPythonCommand,
     new ReticulumResourceStaging(nativeFs as NativeFsFn)
@@ -807,6 +949,10 @@ export function startEngine(initial: EngineConfig): void {
     // A phone is a leaf: it consumes group digests/notices but does not relay
     // them along interest routes (that was ~6-10 bridge sends a second).
     relayGroupControl: false,
+    // The fs shim already fires the watch callbacks; the 2 s desktop poll
+    // would wake the worker 1,800 times an hour (worker timers are not
+    // throttled while hidden).
+    localNotifyScanIntervalMs: 60_000,
   });
   attachManagerListeners(manager);
   post({ t: 'engine-ready' });
@@ -837,6 +983,32 @@ function attachManagerListeners(manager: any): void {
       post({ t: 'evt', channel: `reticulumChat:${eventName}`, payload });
     });
   }
+  // Own messages still waiting to leave the phone: the native keep-alive
+  // holds the page awake for a short grace window while this is pending.
+  // The engine emits changes only, so hand over the starting state too.
+  manager.on('ownOutboxState', (payload: unknown) => postOwnOutbox(payload));
+  if (typeof manager.getOwnOutboxState === 'function') {
+    try {
+      postOwnOutbox(manager.getOwnOutboxState());
+    } catch (err) {
+      console.warn('[MobileChat] own outbox state failed', err);
+    }
+  }
+}
+
+function postOwnOutbox(payload: unknown): void {
+  if (!payload || typeof payload !== 'object') return;
+  const state = payload as {
+    pending?: unknown;
+    pendingCount?: unknown;
+    uncopiedCount?: unknown;
+  };
+  post({
+    t: 'own-outbox',
+    pending: state.pending === true,
+    pendingCount: Number(state.pendingCount) || 0,
+    uncopiedCount: Number(state.uncopiedCount) || 0,
+  });
 }
 
 // ── invoke dispatcher (port of the 67 setup.ts ipc handlers) ─────────────────
@@ -1584,6 +1756,34 @@ function decodeBase64(base64: string): Uint8Array {
 }
 
 const resourceHandlers: Record<string, Handler> = {
+  // "Copy diagnostics": node/validator state, bridge session counters and the
+  // first warnings since boot. Hosts only; the API key never reaches here.
+  'debug:diagnostics': (): EngineDiagnosticsSnapshot => {
+    let resourceSessions: ResourceSessionStats | null = null;
+    try {
+      resourceSessions =
+        (
+          bridge as {
+            getResourceSessionStats?: () => ResourceSessionStats;
+          } | null
+        )?.getResourceSessionStats?.() ?? null;
+    } catch {
+      resourceSessions = null;
+    }
+    return {
+      apiHost: apiHostOf(config.apiBase),
+      apiScheme: apiSchemeOf(config.apiBase),
+      apiKeyConfigured: config.apiKeyConfigured,
+      validator: { ...groupValidatorStats },
+      resourceSessions,
+      bootFaultLogs: getBootFaultLogs(),
+    };
+  },
+  // One live membership check for the local signer (optionally in `groupId`).
+  'debug:membership-probe': (options?: {
+    groupId?: unknown;
+    timeoutMs?: unknown;
+  }) => probeGroupMembership(options),
   // Lab/diagnostics: the self-DM (Saved Messages) view of the engine for the
   // signed-in addresses. Read-only; used from the page as
   // window.reticulumChat.debugSelfDm().
@@ -1778,8 +1978,49 @@ Object.assign(handlers, resourceHandlers);
 
 // ── worker message pump ──────────────────────────────────────────────────────
 
+/**
+ * Call an optional manager hook (lifecycle, network, socket). Older engines
+ * lack them, and a failure must not reach the message pump.
+ */
+function callManagerHook(name: string, ...args: unknown[]): void {
+  const m = getReticulumChatManager() as unknown as
+    | Record<string, unknown>
+    | undefined;
+  const hook = m?.[name];
+  if (typeof hook !== 'function') return;
+  try {
+    const result = hook.apply(m, args);
+    if (result && typeof (result as Promise<unknown>).catch === 'function') {
+      (result as Promise<unknown>).catch((err) => {
+        console.warn(`[MobileChat] ${name} failed`, err);
+      });
+    }
+  } catch (err) {
+    console.warn(`[MobileChat] ${name} failed`, err);
+  }
+}
+
 export function handleMainMessage(data: any): void {
   if (!data || typeof data !== 'object') return;
+  if (data.t === 'lifecycle') {
+    if (data.state === 'foreground' || data.state === 'background') {
+      callManagerHook('notifyAppLifecycle', data.state);
+    }
+    return;
+  }
+  if (data.t === 'network-regained') {
+    callManagerHook('notifyNetworkRegained');
+    return;
+  }
+  if (data.t === 'relay-profile') {
+    // 'full' (charging on an unmetered network): relay group digests and
+    // notices along interest routes like a desktop does. The manager starts
+    // as a leaf; the main thread re-sends the profile after every boot.
+    if (data.profile === 'full' || data.profile === 'leaf') {
+      callManagerHook('setRelayGroupControl', data.profile === 'full');
+    }
+    return;
+  }
   if (data.t === 'rpc') {
     const { id, method, args } = data;
     void (async () => {
@@ -1855,7 +2096,9 @@ export function handleMainMessage(data: any): void {
     return;
   }
   if (data.t === 'config') {
-    config = { ...config, ...data.config };
+    // Pick known fields rather than spreading, so no key from an older push
+    // can linger in the worker.
+    config = toWorkerNodeConfig(data.config, config);
     return;
   }
   if (data.t === 'local-identity') {

@@ -8,6 +8,7 @@ import android.graphics.PorterDuff;
 import android.graphics.PorterDuffXfermode;
 import android.graphics.Rect;
 import android.widget.RemoteViews;
+import android.app.ActivityManager;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
@@ -17,21 +18,29 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.SharedPreferences;
+import android.content.pm.ServiceInfo;
 import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.NetworkCapabilities;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.util.Base64;
 import android.util.Log;
+import android.webkit.MimeTypeMap;
 import androidx.core.app.NotificationCompat;
+import androidx.core.content.FileProvider;
 import androidx.localbroadcastmanager.content.LocalBroadcastManager;
 
+import java.io.File;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.util.Map;
 
 public class QortalForegroundService extends Service {
     private static final String TAG = "QortalForegroundService";
@@ -44,6 +53,9 @@ public class QortalForegroundService extends Service {
     public static final String CHANNEL_ALERTS_GROUP_ID = "qortal_alerts_group";
     public static final String CHANNEL_CALLS_ID = "qortal_calls";
     public static final String CHANNEL_TRANSFERS_ID = "qortal_transfers";
+    // Progress stays quiet on the transfers channel; a file that lands while
+    // GO is in the background is worth a heads-up, on its own channel.
+    public static final String CHANNEL_FILES_SAVED_ID = "qortal_files_saved";
 
     private static final String CHANNEL_STATUS_NAME = "Qortal status";
     private static final String CHANNEL_ALERTS_NAME = "Qortal alerts";
@@ -51,9 +63,12 @@ public class QortalForegroundService extends Service {
     private static final String CHANNEL_ALERTS_GROUP_NAME = "Group messages";
     private static final String CHANNEL_CALLS_NAME = "Incoming calls";
     private static final String CHANNEL_TRANSFERS_NAME = "File transfers";
+    private static final String CHANNEL_FILES_SAVED_NAME = "Saved files";
 
     public static final int NOTIFICATION_ID_STATUS = 2001;
     public static final int NOTIFICATION_ID_INCOMING_CALL = 2002;
+    /** Plain "GO paused" notice posted after the dataSync time-out. */
+    private static final int NOTIFICATION_ID_PAUSED = 2003;
     private static final int NOTIFICATION_ID_ALERT_BASE = 3000;
     // Alerts occupy 3000..12999 (base + id % 10000); keep transfers clear of that.
     private static final int NOTIFICATION_ID_TRANSFER_BASE = 20000;
@@ -90,6 +105,33 @@ public class QortalForegroundService extends Service {
         "com.github.Qortal.qortalMobile.BROADCAST_PRESENCE_TICK";
     private static final long PRESENCE_TICK_INTERVAL_MS = 25_000L;
 
+    /**
+     * Set when Android stopped this dataSync service at its daily time limit
+     * (Android 15+, about 6 h in 24 h). Until GO is back on screen, a
+     * foreground start is refused ("Time limit already exhausted") and would
+     * crash the app, so nothing may call startForegroundService. Cleared on
+     * the next foreground edge (see onAppForeground). Process-wide: a new
+     * process starts clear, and only the user opening GO starts JS again.
+     */
+    private static volatile boolean fgsTimedOut = false;
+    /** Last status the page asked for, to restart the service after a time-out. */
+    private static volatile Intent lastStatusIntent;
+
+    /**
+     * The WebView was destroyed (QortalBackgroundPlugin.handleOnDestroy) and
+     * no new page has loaded: nothing runs the chat engine, whatever the last
+     * pushed text says. Cleared when a page loads or pushes its status.
+     */
+    private static volatile boolean pageGone = false;
+    /** Own messages waiting to send, as the page last reported (setOutboxCount). */
+    private static volatile int outboxCount = 0;
+    /** The service while it runs in the foreground, for in-process redraws. */
+    private static volatile QortalForegroundService runningInstance;
+    private static final Handler mainHandler = new Handler(Looper.getMainLooper());
+
+    /** Page-provided translations for the texts native code draws itself. */
+    private static final String PREFS_LOCALIZED = "qortal_notification_strings";
+
     public static final String EXTRA_STATUS_TITLE = "status_title";
     public static final String EXTRA_STATUS_DETAIL = "status_detail";
     public static final String EXTRA_STATUS_NODE = "status_node";
@@ -116,6 +158,13 @@ public class QortalForegroundService extends Service {
     /** 0-100 for a determinate bar, -1 for indeterminate, -2 for no bar. */
     public static final String EXTRA_TRANSFER_PROGRESS = "transfer_progress";
     public static final String EXTRA_TRANSFER_ONGOING = "transfer_ongoing";
+    /** Saved file a tap on the notification should open (content:// or a path). */
+    public static final String EXTRA_TRANSFER_OPEN_URI = "transfer_open_uri";
+    public static final String EXTRA_TRANSFER_OPEN_MIME = "transfer_open_mime";
+    /** Pop up (heads-up) once instead of updating quietly. */
+    public static final String EXTRA_TRANSFER_ALERT = "transfer_alert";
+    /** Label of the button that opens the saved file ("Install", "Open"). */
+    public static final String EXTRA_TRANSFER_ACTION_LABEL = "transfer_action_label";
 
     private static final String GROUP_STATUS = "qortal_connection_status";
     private static final String GROUP_ALERTS = "qortal_message_alerts";
@@ -127,6 +176,19 @@ public class QortalForegroundService extends Service {
     private String statusKind = "starting";
     private boolean isRunning = false;
     private boolean connectivityWatchersRegistered = false;
+    /** Last StatusHonesty state drawn, to log only its flips. */
+    private String lastHonestState = StatusHonesty.LIVE;
+
+    /**
+     * Screen on / unlock: re-check whether the page is still running, so a
+     * "paused" state reached while the CPU slept shows when the user looks.
+     */
+    private final BroadcastReceiver screenReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            if (isRunning) updateStatusNotification();
+        }
+    };
 
     private final BroadcastReceiver airplaneModeReceiver = new BroadcastReceiver() {
         @Override
@@ -162,6 +224,10 @@ public class QortalForegroundService extends Service {
         public void run() {
             LocalBroadcastManager.getInstance(QortalForegroundService.this)
                 .sendBroadcast(new Intent(BROADCAST_PRESENCE_TICK));
+            // Background sync: renew the wake lock, watch for vendor freezes.
+            BackgroundKeepAlive.get(QortalForegroundService.this).onServiceTick();
+            // Local check only: has Chromium frozen the page by now?
+            if (isRunning) updateStatusNotification();
             presenceTickHandler.postDelayed(this, PRESENCE_TICK_INTERVAL_MS);
         }
     };
@@ -184,10 +250,13 @@ public class QortalForegroundService extends Service {
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent == null || intent.getAction() == null) {
+            // Only a sticky restart delivers no intent. Nothing is attached
+            // then (no WebView, no engine), and starting in the foreground
+            // again is what crash-looped after the dataSync time-out.
             if (!isRunning) {
-                startStatusForeground();
+                stopSelf(startId);
             }
-            return START_STICKY;
+            return START_NOT_STICKY;
         }
 
         switch (intent.getAction()) {
@@ -200,7 +269,13 @@ public class QortalForegroundService extends Service {
                 statusPeersLabel = safeString(intent.getStringExtra(EXTRA_STATUS_PEERS), statusPeersLabel);
                 statusKind = normalizeStatusKind(intent.getStringExtra(EXTRA_STATUS_KIND));
                 if (!isRunning) {
-                    startStatusForeground();
+                    if (startStatusForegroundOrStop(startId)
+                        && BackgroundKeepAlive.get(this).isSessionActive()) {
+                        // The page is signed in and GO runs again: bring the
+                        // hubs back if a time-out, swipe or logout closed them.
+                        // A start replayed for a signed-out page must not.
+                        ReticulumPlugin.resumeNetwork("status_service_started");
+                    }
                 } else {
                     updateStatusNotification();
                 }
@@ -210,6 +285,8 @@ public class QortalForegroundService extends Service {
                 stopForeground(true);
                 stopSelf();
                 isRunning = false;
+                clearRunningInstance();
+                BackgroundKeepAlive.get(this).setServiceRunning(false);
                 break;
             case ACTION_SHOW_ALERT:
                 showAlertNotification(
@@ -222,7 +299,7 @@ public class QortalForegroundService extends Service {
                     safeString(intent.getStringExtra(EXTRA_ALERT_TAG), "")
                 );
                 if (!isRunning) {
-                    startStatusForeground();
+                    startStatusForegroundOrStop(startId);
                 }
                 break;
             case ACTION_SHOW_INCOMING_CALL:
@@ -232,7 +309,7 @@ public class QortalForegroundService extends Service {
                     safeString(intent.getStringExtra(EXTRA_CALL_FROM_NAME), "Unknown caller")
                 );
                 if (!isRunning) {
-                    startStatusForeground();
+                    startStatusForegroundOrStop(startId);
                 }
                 break;
             case ACTION_DISMISS_INCOMING_CALL:
@@ -247,10 +324,14 @@ public class QortalForegroundService extends Service {
                     safeString(intent.getStringExtra(EXTRA_TRANSFER_TITLE), "File transfer"),
                     safeString(intent.getStringExtra(EXTRA_TRANSFER_TEXT), ""),
                     intent.getIntExtra(EXTRA_TRANSFER_PROGRESS, -2),
-                    intent.getBooleanExtra(EXTRA_TRANSFER_ONGOING, false)
+                    intent.getBooleanExtra(EXTRA_TRANSFER_ONGOING, false),
+                    intent.getStringExtra(EXTRA_TRANSFER_OPEN_URI),
+                    intent.getStringExtra(EXTRA_TRANSFER_OPEN_MIME),
+                    intent.getBooleanExtra(EXTRA_TRANSFER_ALERT, false),
+                    intent.getStringExtra(EXTRA_TRANSFER_ACTION_LABEL)
                 );
                 if (!isRunning) {
-                    startStatusForeground();
+                    startStatusForegroundOrStop(startId);
                 }
                 break;
             case ACTION_DISMISS_TRANSFER:
@@ -266,7 +347,116 @@ public class QortalForegroundService extends Service {
                 break;
         }
 
-        return START_STICKY;
+        // Not sticky: a restarted service has no page behind it (see the
+        // null-intent path above). The page starts it again when it runs.
+        return START_NOT_STICKY;
+    }
+
+    /**
+     * Android 15+ calls this when the dataSync type reaches its daily limit.
+     * The service must leave the foreground within seconds or Android kills
+     * the app (ForegroundServiceDidNotStopInTimeException).
+     */
+    @Override
+    public void onTimeout(int startId, int fgsType) {
+        handleForegroundTimeout();
+    }
+
+    /** API 34 short-service time-out; same handling should the type change. */
+    @Override
+    public void onTimeout(int startId) {
+        handleForegroundTimeout();
+    }
+
+    private void handleForegroundTimeout() {
+        Log.w(TAG, "Foreground service time limit reached; pausing until GO is opened");
+        fgsTimedOut = true;
+        // No keep-alive or wake lock until GO is on screen again.
+        BackgroundKeepAlive.get(this).onForegroundServiceTimeout();
+        leaveForeground();
+        stopSelf();
+        // No page is using the mesh now (it froze long ago), so the hub
+        // sockets go too instead of draining the battery with no listener.
+        ReticulumPlugin.pauseNetwork("fgs_timeout", 0L);
+        postPausedNotification();
+    }
+
+    /**
+     * GO was swiped away from recents. The WebView and the chat engine are
+     * gone, and with RNS transport off the Python layer relays nothing on its
+     * own, so keeping the hubs connected would only burn battery.
+     */
+    @Override
+    public void onTaskRemoved(Intent rootIntent) {
+        Log.i(TAG, "Task removed; stopping the status service and the network layer");
+        ReticulumPlugin.pauseNetwork("task_removed", 0L);
+        leaveForeground();
+        stopSelf();
+        super.onTaskRemoved(rootIntent);
+    }
+
+    private void leaveForeground() {
+        stopPresenceTicker();
+        unregisterConnectivityWatchers();
+        try {
+            stopForeground(Service.STOP_FOREGROUND_REMOVE);
+        } catch (RuntimeException error) {
+            Log.w(TAG, "stopForeground failed", error);
+        }
+        isRunning = false;
+        clearRunningInstance();
+        BackgroundKeepAlive.get(this).setServiceRunning(false);
+    }
+
+    /** One quiet notice that GO stopped; a tap opens GO, which reconnects. */
+    private void postPausedNotification() {
+        NotificationManager manager = getSystemService(NotificationManager.class);
+        if (manager == null) return;
+        Intent openIntent = new Intent(this, MainActivity.class);
+        openIntent.setFlags(
+            Intent.FLAG_ACTIVITY_SINGLE_TOP |
+            Intent.FLAG_ACTIVITY_CLEAR_TOP |
+            Intent.FLAG_ACTIVITY_NEW_TASK
+        );
+        PendingIntent pendingIntent = PendingIntent.getActivity(
+            this,
+            NOTIFICATION_ID_PAUSED,
+            openIntent,
+            PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT
+        );
+        String title = localizedString(
+            this,
+            StatusHonesty.KEY_FGS_TIMEOUT_TITLE,
+            getString(R.string.go_paused_title)
+        );
+        String text = localizedString(
+            this,
+            StatusHonesty.KEY_FGS_TIMEOUT_TEXT,
+            getString(R.string.go_paused_text)
+        );
+        Notification notification = baseNotificationBuilder(CHANNEL_STATUS_ID)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setStyle(new NotificationCompat.BigTextStyle().bigText(text))
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .setOnlyAlertOnce(true)
+            .setSilent(true)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setCategory(NotificationCompat.CATEGORY_STATUS)
+            .build();
+        try {
+            manager.notify(NOTIFICATION_ID_PAUSED, notification);
+        } catch (RuntimeException error) {
+            Log.w(TAG, "Failed to post the paused notification", error);
+        }
+    }
+
+    private static void cancelPausedNotification(Context context) {
+        NotificationManager manager = context.getSystemService(NotificationManager.class);
+        if (manager != null) {
+            manager.cancel(NOTIFICATION_ID_PAUSED);
+        }
     }
 
     @Override
@@ -274,6 +464,8 @@ public class QortalForegroundService extends Service {
         stopPresenceTicker();
         unregisterConnectivityWatchers();
         isRunning = false;
+        clearRunningInstance();
+        BackgroundKeepAlive.get(this).setServiceRunning(false);
         super.onDestroy();
     }
 
@@ -282,23 +474,141 @@ public class QortalForegroundService extends Service {
         return null;
     }
 
+    /**
+     * Enter the foreground with the status notification, or stop when that is
+     * not possible: after a time-out (the service was started with a plain
+     * startService, see startServiceCompat) or when Android refuses it
+     * (ForegroundServiceStartNotAllowedException, API 31+). Returns true when
+     * the service now runs in the foreground.
+     */
+    private boolean startStatusForegroundOrStop(int startId) {
+        if (fgsTimedOut) {
+            // This start may still come from a startForegroundService issued
+            // just before the time-out. Stopping without startForeground would
+            // then crash ("did not then call startForeground"); the call
+            // settles that even when Android refuses it.
+            try {
+                startForegroundTyped(buildStatusNotification(), resolveForegroundTypeFlag());
+            } catch (IllegalStateException | SecurityException error) {
+                Log.w(TAG, "Foreground start after time-out refused: " + error.getMessage());
+            }
+            leaveForeground();
+            stopSelf(startId);
+            return false;
+        }
+        try {
+            startStatusForeground();
+            cancelPausedNotification(this);
+            return true;
+        } catch (IllegalStateException | SecurityException error) {
+            Log.w(TAG, "Foreground start refused: " + error.getMessage());
+            isRunning = false;
+            stopSelf(startId);
+            return false;
+        }
+    }
+
+    /** The type the status notification was last put in the foreground with. */
+    private int appliedForegroundType = 0;
+
+    /**
+     * dataSync, or remoteMessaging while background sync is meant to run
+     * continuously (KeepAlivePolicy.foregroundServiceType). Android 15+ stops
+     * a dataSync service after about 6 h a day; remoteMessaging has no limit.
+     * 0 before Android 10, where startForeground takes no type.
+     */
+    private int resolveForegroundTypeFlag() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return 0;
+        String type = BackgroundKeepAlive.get(this).foregroundServiceType();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE
+            && KeepAlivePolicy.SERVICE_TYPE_REMOTE_MESSAGING.equals(type)) {
+            return ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING;
+        }
+        return ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC;
+    }
+
+    /**
+     * startForeground with an explicit type; the manifest declares two. A
+     * refused remoteMessaging falls back to dataSync, so a phone that rejects
+     * it keeps the service, just with the daily limit.
+     */
+    private void startForegroundTyped(Notification notification, int typeFlag) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && typeFlag != 0) {
+            try {
+                startForeground(NOTIFICATION_ID_STATUS, notification, typeFlag);
+            } catch (IllegalStateException | SecurityException error) {
+                if (typeFlag == ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC) throw error;
+                Log.w(TAG, "remoteMessaging refused, using dataSync: " + error.getMessage());
+                typeFlag = ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC;
+                startForeground(NOTIFICATION_ID_STATUS, notification, typeFlag);
+            }
+        } else {
+            startForeground(NOTIFICATION_ID_STATUS, notification);
+        }
+        appliedForegroundType = typeFlag;
+    }
+
+    /**
+     * Switch the running status service between dataSync and remoteMessaging
+     * (plugged in or unplugged, or the background sync mode changed).
+     */
+    public static void refreshForegroundType() {
+        mainHandler.post(() -> {
+            QortalForegroundService service = runningInstance;
+            if (service != null && service.isRunning && !fgsTimedOut) {
+                service.applyForegroundType();
+            }
+        });
+    }
+
+    private void applyForegroundType() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return;
+        int wanted = resolveForegroundTypeFlag();
+        if (wanted == appliedForegroundType) return;
+        try {
+            startForegroundTyped(buildStatusNotification(), wanted);
+            Log.i(TAG, "Status service type now "
+                + (wanted == ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+                    ? "dataSync" : "remoteMessaging"));
+        } catch (IllegalStateException | SecurityException error) {
+            Log.w(TAG, "Status service type change refused: " + error.getMessage());
+            if (wanted == ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC) {
+                // Back on battery with today's dataSync time already used up
+                // (ForegroundServiceStartNotAllowedException): pause the same
+                // way as at the time limit instead of running on uncapped.
+                handleForegroundTimeout();
+            }
+        }
+    }
+
     private void startStatusForeground() {
         Notification notification = buildStatusNotification();
-        startForeground(NOTIFICATION_ID_STATUS, notification);
+        startForegroundTyped(notification, resolveForegroundTypeFlag());
         isRunning = true;
+        runningInstance = this;
         startPresenceTicker();
         registerConnectivityWatchers();
+        BackgroundKeepAlive.get(this).setServiceRunning(true);
         Log.d(TAG, "Status foreground service started");
     }
 
     private String lastPostedStatusKey = "";
 
     private void updateStatusNotification() {
-        String key = resolveDisplayKind() + "|" + resolveDisplayDetail()
-            + "|" + statusTitle + "|" + statusNodeLabel + "|" + statusSyncLabel
-            + "|" + statusPeersLabel;
+        StatusDisplay display = resolveStatusDisplay();
+        // Paused hides the page's last Node/Sync/Peers rows, so their text
+        // changing then does not need a redraw.
+        String rows = StatusHonesty.PAUSED.equals(display.state)
+            ? ""
+            : statusNodeLabel + "|" + statusSyncLabel + "|" + statusPeersLabel;
+        String key = display.state + "|" + display.kind + "|" + display.detail
+            + "|" + display.title + "|" + rows;
         if (key.equals(lastPostedStatusKey)) return;
         lastPostedStatusKey = key;
+        if (!display.state.equals(lastHonestState)) {
+            Log.i(TAG, "status_redraw " + lastHonestState + " -> " + display.state);
+            lastHonestState = display.state;
+        }
         NotificationManager manager = getSystemService(NotificationManager.class);
         if (manager != null) {
             manager.notify(NOTIFICATION_ID_STATUS, buildStatusNotification());
@@ -379,13 +689,90 @@ public class QortalForegroundService extends Service {
         return DeviceNetwork.isAvailable(this);
     }
 
+    /** What the status notification shows right now. */
+    private static final class StatusDisplay {
+        /** StatusHonesty.LIVE, BACKGROUND or PAUSED. */
+        String state;
+        /** starting | online | offline, for the dot colour. */
+        String kind;
+        String title;
+        String detail;
+    }
+
+    /**
+     * The page's own text while it runs; native text when Chromium has frozen
+     * the page or the WebView is gone (the page cannot push then), or while
+     * the keep-alive controller keeps it running off screen.
+     */
+    private StatusDisplay resolveStatusDisplay() {
+        BackgroundKeepAlive.PageState page = BackgroundKeepAlive.get(this).getPageState();
+        boolean gone = pageGone;
+        StatusDisplay display = new StatusDisplay();
+        display.state = StatusHonesty.resolve(
+            gone,
+            page.activityStopped,
+            page.keepAliveActive,
+            page.hiddenSinceMs,
+            SystemClock.elapsedRealtime()
+        );
+        String primary;
+        if (StatusHonesty.PAUSED.equals(display.state)) {
+            display.kind = "starting";
+            display.title = localizedString(
+                this,
+                StatusHonesty.KEY_PAUSED_TITLE,
+                getString(R.string.status_paused_title)
+            );
+            primary = localizedString(
+                this,
+                StatusHonesty.KEY_PAUSED_TEXT,
+                getString(R.string.status_paused_text)
+            );
+        } else if (!deviceHasNetwork()) {
+            display.kind = "offline";
+            display.title = statusTitle;
+            primary = "Reticulum offline";
+        } else if (StatusHonesty.BACKGROUND.equals(display.state)) {
+            display.kind = statusKind;
+            display.title = statusTitle;
+            primary = localizedString(
+                this,
+                StatusHonesty.KEY_SYNCING_BACKGROUND,
+                getString(R.string.status_syncing_background)
+            );
+        } else {
+            display.kind = statusKind;
+            display.title = statusTitle;
+            primary = statusDetail;
+        }
+        int count = outboxCount;
+        String waiting = StatusHonesty.showWaiting(gone, page.activityStopped, count)
+            ? waitingText(count)
+            : null;
+        display.detail = StatusHonesty.joinLines(primary, waiting);
+        return display;
+    }
+
+    private String waitingText(int count) {
+        String template = null;
+        if (count == 1) {
+            template = localizedString(this, StatusHonesty.KEY_WAITING_TEXT_ONE, null);
+        }
+        if (template == null) {
+            template = localizedString(this, StatusHonesty.KEY_WAITING_TEXT, null);
+        }
+        if (template != null) {
+            return StatusHonesty.fillCount(template, count);
+        }
+        return getResources().getQuantityString(R.plurals.status_waiting_text, count, count);
+    }
+
     private String resolveDisplayKind() {
-        return deviceHasNetwork() ? statusKind : "offline";
+        return resolveStatusDisplay().kind;
     }
 
     private String resolveDisplayDetail() {
-        if (!deviceHasNetwork()) return "Reticulum offline";
-        return statusDetail;
+        return resolveStatusDisplay().detail;
     }
 
     private int statusDotColor() {
@@ -411,6 +798,17 @@ public class QortalForegroundService extends Service {
         } else {
             registerReceiver(airplaneModeReceiver, airplaneFilter);
         }
+        IntentFilter screenFilter = new IntentFilter(Intent.ACTION_SCREEN_ON);
+        screenFilter.addAction(Intent.ACTION_USER_PRESENT);
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                registerReceiver(screenReceiver, screenFilter, Context.RECEIVER_EXPORTED);
+            } else {
+                registerReceiver(screenReceiver, screenFilter);
+            }
+        } catch (RuntimeException error) {
+            Log.w(TAG, "Screen receiver not registered", error);
+        }
         ConnectivityManager cm = getSystemService(ConnectivityManager.class);
         if (cm != null) {
             try {
@@ -425,6 +823,10 @@ public class QortalForegroundService extends Service {
         if (!connectivityWatchersRegistered) return;
         try {
             unregisterReceiver(airplaneModeReceiver);
+        } catch (RuntimeException ignored) {
+        }
+        try {
+            unregisterReceiver(screenReceiver);
         } catch (RuntimeException ignored) {
         }
         ConnectivityManager cm = getSystemService(ConnectivityManager.class);
@@ -455,6 +857,7 @@ public class QortalForegroundService extends Service {
     }
 
     private RemoteViews buildExpandedStatusContentView(
+        String state,
         String title,
         String text,
         String nodeLabel,
@@ -468,9 +871,20 @@ public class QortalForegroundService extends Service {
         views.setTextViewText(R.id.notification_title, title);
         views.setTextViewText(R.id.notification_text, text);
         applyStatusDot(views);
-        views.setTextViewText(R.id.notification_node, "Node: " + nodeLabel);
-        views.setTextViewText(R.id.notification_sync, "Sync: " + syncLabel);
-        views.setTextViewText(R.id.notification_peers, "Peers: " + peersLabel);
+        // Paused: the engine is not running, so the page's last Node/Sync/Peers
+        // text (e.g. "12 online") is stale. RemoteViews are rebuilt on every
+        // redraw, so the rows are set VISIBLE again explicitly.
+        int rowVisibility = StatusHonesty.PAUSED.equals(state)
+            ? android.view.View.GONE
+            : android.view.View.VISIBLE;
+        views.setViewVisibility(R.id.notification_node, rowVisibility);
+        views.setViewVisibility(R.id.notification_sync, rowVisibility);
+        views.setViewVisibility(R.id.notification_peers, rowVisibility);
+        if (rowVisibility == android.view.View.VISIBLE) {
+            views.setTextViewText(R.id.notification_node, "Node: " + nodeLabel);
+            views.setTextViewText(R.id.notification_sync, "Sync: " + syncLabel);
+            views.setTextViewText(R.id.notification_peers, "Peers: " + peersLabel);
+        }
         applyLogoVisibility(views);
         return views;
     }
@@ -485,10 +899,12 @@ public class QortalForegroundService extends Service {
             PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT
         );
 
-        String displayDetail = resolveDisplayDetail();
-        RemoteViews collapsedView = buildBrandedContentView(statusTitle, displayDetail);
+        StatusDisplay display = resolveStatusDisplay();
+        String displayDetail = display.detail;
+        RemoteViews collapsedView = buildBrandedContentView(display.title, displayDetail);
         RemoteViews expandedView = buildExpandedStatusContentView(
-            statusTitle,
+            display.state,
+            display.title,
             displayDetail,
             statusNodeLabel,
             statusSyncLabel,
@@ -498,7 +914,7 @@ public class QortalForegroundService extends Service {
         // No DecoratedCustomViewStyle: the decoration draws the small app icon
         // header row; the fully-custom view shows only the big logo on the left.
         NotificationCompat.Builder builder = statusNotificationBuilder()
-            .setContentTitle(statusTitle)
+            .setContentTitle(display.title)
             .setContentText(displayDetail)
             .setCustomContentView(collapsedView)
             .setCustomBigContentView(expandedView)
@@ -878,38 +1294,76 @@ public class QortalForegroundService extends Service {
         String title,
         String text,
         int progress,
-        boolean ongoing
+        boolean ongoing,
+        String openUri,
+        String openMimeType,
+        boolean alert,
+        String actionLabel
     ) {
         if (transferId == null || transferId.isEmpty()) return;
         NotificationManager manager = getSystemService(NotificationManager.class);
         if (manager == null) return;
 
-        Intent openIntent = new Intent(this, MainActivity.class);
-        openIntent.setFlags(
-            Intent.FLAG_ACTIVITY_SINGLE_TOP |
-            Intent.FLAG_ACTIVITY_CLEAR_TOP |
-            Intent.FLAG_ACTIVITY_NEW_TASK
-        );
         int notificationId = notificationIdForTransfer(transferId);
-        PendingIntent pendingIntent = PendingIntent.getActivity(
-            this,
-            notificationId,
-            openIntent,
-            PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT
-        );
+        PendingIntent pendingIntent = null;
+        Intent viewIntent = buildOpenSavedFileIntent(openUri, openMimeType);
+        if (viewIntent != null) {
+            pendingIntent = PendingIntent.getActivity(
+                this,
+                notificationId,
+                viewIntent,
+                PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT
+            );
+        }
+        if (pendingIntent == null) {
+            Intent openIntent = new Intent(this, MainActivity.class);
+            openIntent.setFlags(
+                Intent.FLAG_ACTIVITY_SINGLE_TOP |
+                Intent.FLAG_ACTIVITY_CLEAR_TOP |
+                Intent.FLAG_ACTIVITY_NEW_TASK
+            );
+            pendingIntent = PendingIntent.getActivity(
+                this,
+                notificationId,
+                openIntent,
+                PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT
+            );
+        }
 
-        NotificationCompat.Builder builder = baseNotificationBuilder(CHANNEL_TRANSFERS_ID)
+        NotificationCompat.Builder builder = baseNotificationBuilder(
+                alert ? CHANNEL_FILES_SAVED_ID : CHANNEL_TRANSFERS_ID
+            )
             .setContentTitle(title)
             .setContentText(text)
             .setStyle(new NotificationCompat.BigTextStyle().bigText(text))
             .setContentIntent(pendingIntent)
             .setOngoing(ongoing)
             .setAutoCancel(!ongoing)
-            .setOnlyAlertOnce(true)
-            .setSilent(true)
             .setShowWhen(false)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
-            .setCategory(NotificationCompat.CATEGORY_PROGRESS);
+            // A group of its own: Android otherwise folds an app's loose
+            // notifications into one quiet bundle, where a finished download
+            // is easy to miss.
+            .setGroup("qortal_transfer:" + transferId);
+
+        if (viewIntent != null && actionLabel != null && !actionLabel.trim().isEmpty()) {
+            builder.addAction(0, actionLabel.trim(), pendingIntent);
+        }
+
+        if (alert) {
+            // An update to a notification that is already showing never peeks.
+            // Take it down first so this one arrives as new and pops up.
+            manager.cancel(notificationId);
+            builder
+                .setOnlyAlertOnce(false)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setCategory(NotificationCompat.CATEGORY_STATUS);
+        } else {
+            builder
+                .setOnlyAlertOnce(true)
+                .setSilent(true)
+                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .setCategory(NotificationCompat.CATEGORY_PROGRESS);
+        }
 
         if (progress >= 0) {
             builder.setProgress(100, Math.min(progress, 100), false);
@@ -918,6 +1372,48 @@ public class QortalForegroundService extends Service {
         }
 
         manager.notify(notificationId, builder.build());
+    }
+
+    /**
+     * ACTION_VIEW for a file GO saved, or null when there is nothing to open or
+     * nothing on the phone that opens it (the tap then just brings GO up). An
+     * .apk goes straight to the package installer.
+     */
+    private Intent buildOpenSavedFileIntent(String rawUri, String mimeType) {
+        if (rawUri == null || rawUri.trim().isEmpty()) return null;
+        try {
+            String value = rawUri.trim();
+            Uri uri;
+            if (value.startsWith("content://")) {
+                uri = Uri.parse(value);
+            } else {
+                File file = new File(
+                    value.startsWith("file://") ? Uri.parse(value).getPath() : value
+                );
+                if (!file.isFile()) return null;
+                uri = FileProvider.getUriForFile(this, getPackageName() + ".fileprovider", file);
+            }
+            String type = mimeType;
+            if (type == null || type.trim().isEmpty() || "application/octet-stream".equals(type)) {
+                String ext = SaveCategory.extensionOf(value);
+                String guessed = ext.isEmpty()
+                    ? null
+                    : MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext);
+                type = guessed != null ? guessed : "*/*";
+            }
+            Intent intent = new Intent(Intent.ACTION_VIEW);
+            intent.setDataAndType(uri, type);
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            if (intent.resolveActivity(getPackageManager()) != null) return intent;
+            // Nothing claims it by type: let the person pick, rather than a tap
+            // that silently does nothing.
+            Intent chooser = Intent.createChooser(intent, null);
+            chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            return chooser;
+        } catch (Exception e) {
+            Log.w(TAG, "saved file is not openable from the notification", e);
+            return null;
+        }
     }
 
     private void dismissTransferNotification(String transferId) {
@@ -996,12 +1492,26 @@ public class QortalForegroundService extends Service {
         transfersChannel.setDescription("Reticulum file uploads, downloads and shared files");
         transfersChannel.setShowBadge(false);
 
+        // High so it pops up, but quiet: a finished download is news, not an alarm.
+        NotificationChannel filesSavedChannel = new NotificationChannel(
+            CHANNEL_FILES_SAVED_ID,
+            CHANNEL_FILES_SAVED_NAME,
+            NotificationManager.IMPORTANCE_HIGH
+        );
+        filesSavedChannel.setDescription(
+            "A download finished while GO was in the background. Tap to open the file."
+        );
+        filesSavedChannel.setSound(null, null);
+        filesSavedChannel.enableVibration(false);
+        filesSavedChannel.setShowBadge(false);
+
         manager.createNotificationChannel(statusChannel);
         manager.createNotificationChannel(alertsChannel);
         manager.createNotificationChannel(alertsPmChannel);
         manager.createNotificationChannel(alertsGroupChannel);
         manager.createNotificationChannel(callsChannel);
         manager.createNotificationChannel(transfersChannel);
+        manager.createNotificationChannel(filesSavedChannel);
     }
 
     private static String safeString(String value, String fallback) {
@@ -1044,13 +1554,133 @@ public class QortalForegroundService extends Service {
         intent.putExtra(EXTRA_STATUS_SYNC, statusSyncLabel);
         intent.putExtra(EXTRA_STATUS_PEERS, statusPeersLabel);
         intent.putExtra(EXTRA_STATUS_KIND, statusKind);
+        lastStatusIntent = new Intent(intent);
         startServiceCompat(context, intent);
     }
 
+    /**
+     * The page stops the status service. Not only on logout: the page also
+     * unmounts its status setup below its width breakpoint (landscape on
+     * phones, tablets), so the hubs are not paused here. A real logout pauses
+     * them through ReticulumPlugin.presencePauseNetwork.
+     */
     public static void stop(Context context) {
+        lastStatusIntent = null;
+        cancelPausedNotification(context);
         Intent intent = new Intent(context, QortalForegroundService.class);
         intent.setAction(ACTION_STOP);
-        context.startService(intent);
+        try {
+            context.startService(intent);
+        } catch (IllegalStateException | SecurityException error) {
+            // Background start refused: the service is not running anyway
+            // (a running service would make this start allowed).
+            Log.w(TAG, "Status service stop not delivered: " + error.getMessage());
+        }
+    }
+
+    /**
+     * GO is on screen again. After a time-out this restarts the status
+     * service with the last status the page sent and reconnects the hubs; the
+     * page itself kept running (frozen) and needs no restart.
+     */
+    public static void onAppForeground(Context context) {
+        if (!fgsTimedOut) return;
+        fgsTimedOut = false;
+        cancelPausedNotification(context);
+        ReticulumPlugin.resumeNetwork("app_foreground");
+        Intent last = lastStatusIntent;
+        if (last != null) {
+            startServiceCompat(context, new Intent(last));
+        }
+    }
+
+    private void clearRunningInstance() {
+        if (runningInstance == this) runningInstance = null;
+    }
+
+    /**
+     * Redraw the status notification in-process if what it should say
+     * changed (updateStatusNotification skips identical text). Never starts
+     * the service; a stopped service has nothing to redraw.
+     */
+    public static void refreshHonestStatus() {
+        mainHandler.post(() -> {
+            QortalForegroundService service = runningInstance;
+            if (service != null && service.isRunning) {
+                service.updateStatusNotification();
+            }
+        });
+    }
+
+    /**
+     * A new page loaded in a new WebView (QortalBackgroundPlugin.load). It
+     * starts signed out with no engine, so pageGone stays set until the page
+     * pushes its status (onPageStatusPushed). On a fresh process pageGone is
+     * already false.
+     */
+    public static void onPageLoaded() {
+        // The new page reports its own outbox once its engine runs.
+        outboxCount = 0;
+        refreshHonestStatus();
+    }
+
+    /** The WebView and its chat engine are gone (QortalBackgroundPlugin.handleOnDestroy). */
+    public static void onPageGone() {
+        pageGone = true;
+        refreshHonestStatus();
+    }
+
+    /** The page pushed its status: it runs, so the pushed text is live again. */
+    public static void onPageStatusPushed() {
+        if (!pageGone) return;
+        pageGone = false;
+        refreshHonestStatus();
+    }
+
+    /** Own messages waiting to send; shown while GO is off screen. */
+    public static void setOutboxCount(int count) {
+        int next = StatusHonesty.clampCount(count);
+        if (outboxCount == next) return;
+        outboxCount = next;
+        refreshHonestStatus();
+    }
+
+    /**
+     * Stores the page's translations for native-drawn texts (see
+     * StatusHonesty.LOCALIZED_KEYS). Persisted, so a frozen page or a
+     * restarted process still shows them. Replaces the previous set: a key
+     * left out falls back to the English resource. Returns how many were kept.
+     */
+    public static int setLocalizedStrings(Context context, Map<String, String> strings) {
+        SharedPreferences.Editor editor = context
+            .getSharedPreferences(PREFS_LOCALIZED, Context.MODE_PRIVATE)
+            .edit()
+            .clear();
+        int kept = 0;
+        if (strings != null) {
+            for (Map.Entry<String, String> entry : strings.entrySet()) {
+                if (!StatusHonesty.isLocalizedKey(entry.getKey())) continue;
+                String value = StatusHonesty.sanitize(entry.getValue());
+                if (value == null) continue;
+                editor.putString(entry.getKey(), value);
+                kept++;
+            }
+        }
+        editor.apply();
+        refreshHonestStatus();
+        return kept;
+    }
+
+    /** The page's translation for {@code key}, or {@code fallback}. */
+    private static String localizedString(Context context, String key, String fallback) {
+        try {
+            String value = context
+                .getSharedPreferences(PREFS_LOCALIZED, Context.MODE_PRIVATE)
+                .getString(key, null);
+            return value != null && !value.isEmpty() ? value : fallback;
+        } catch (RuntimeException error) {
+            return fallback;
+        }
     }
 
     public static void showAlert(Context context, int alertId, String title, String body) {
@@ -1135,6 +1765,23 @@ public class QortalForegroundService extends Service {
         int progress,
         boolean ongoing
     ) {
+        updateTransfer(
+            context, transferId, title, text, progress, ongoing, null, null, false, null
+        );
+    }
+
+    public static void updateTransfer(
+        Context context,
+        String transferId,
+        String title,
+        String text,
+        int progress,
+        boolean ongoing,
+        String openUri,
+        String openMimeType,
+        boolean alert,
+        String actionLabel
+    ) {
         Intent intent = new Intent(context, QortalForegroundService.class);
         intent.setAction(ACTION_UPDATE_TRANSFER);
         intent.putExtra(EXTRA_TRANSFER_ID, transferId);
@@ -1142,6 +1789,10 @@ public class QortalForegroundService extends Service {
         intent.putExtra(EXTRA_TRANSFER_TEXT, text);
         intent.putExtra(EXTRA_TRANSFER_PROGRESS, progress);
         intent.putExtra(EXTRA_TRANSFER_ONGOING, ongoing);
+        intent.putExtra(EXTRA_TRANSFER_OPEN_URI, openUri);
+        intent.putExtra(EXTRA_TRANSFER_OPEN_MIME, openMimeType);
+        intent.putExtra(EXTRA_TRANSFER_ALERT, alert);
+        intent.putExtra(EXTRA_TRANSFER_ACTION_LABEL, actionLabel);
         startServiceCompat(context, intent);
     }
 
@@ -1153,10 +1804,40 @@ public class QortalForegroundService extends Service {
     }
 
     private static void startServiceCompat(Context context, Intent intent) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            context.startForegroundService(intent);
-        } else {
-            context.startService(intent);
+        if (fgsTimedOut) {
+            if (isAppInForeground()) {
+                // Opening GO resets the time limit.
+                onAppForeground(context);
+            } else {
+                // A foreground start would be refused and crash the app. A
+                // plain start still delivers the intent (the service then
+                // posts and stops) when Android allows it; otherwise it is
+                // dropped, as the page is frozen and the hubs are paused.
+                try {
+                    context.startService(intent);
+                } catch (IllegalStateException | SecurityException error) {
+                    Log.w(TAG, "Service start after time-out refused: " + error.getMessage());
+                }
+                return;
+            }
         }
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent);
+            } else {
+                context.startService(intent);
+            }
+        } catch (IllegalStateException | SecurityException error) {
+            // ForegroundServiceStartNotAllowedException (API 31+) is an
+            // IllegalStateException: GO is in the background without an
+            // exemption. The next update from the foreground starts it.
+            Log.w(TAG, "Foreground service start refused: " + error.getMessage());
+        }
+    }
+
+    private static boolean isAppInForeground() {
+        ActivityManager.RunningAppProcessInfo info = new ActivityManager.RunningAppProcessInfo();
+        ActivityManager.getMyMemoryState(info);
+        return info.importance <= ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND;
     }
 }

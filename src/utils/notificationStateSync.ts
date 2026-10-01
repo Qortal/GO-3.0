@@ -699,8 +699,8 @@ export type RemoteApplyDeps = {
 
 /**
  * Execute a plan: permissions, then rules, then OS push, mentions, seen-all
- * and finally seen keys (rules are awaited first because the notifications
- * socket prunes seen keys whose rule is not in the atom yet).
+ * and finally seen keys (rules first, so a seen key never arrives before the
+ * rule it belongs to).
  * Returns the number of records that changed local state.
  */
 export async function executeRemotePlan(

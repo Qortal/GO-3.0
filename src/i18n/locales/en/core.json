@@ -63,6 +63,7 @@
     "decrypt": "decrypt",
     "delete": "delete",
     "disable_enter": "disable enter",
+    "discard_message": "discard message",
     "download": "download",
     "download_file": "download file",
     "edit": "edit",
@@ -98,6 +99,7 @@
     "pin": "pin",
     "pin_app": "pin app",
     "pin_to_dashboard": "pin to dashboard",
+    "pin_to_tabs": "pin to Tabs",
     "post": "post",
     "post_message": "post message",
     "publish": "publish",
@@ -140,6 +142,7 @@
     "unpin": "unpin",
     "unpin_app": "unpin app",
     "unpin_from_dashboard": "unpin from dashboard",
+    "unpin_from_tabs": "unpin from Tabs",
     "update": "update",
     "update_app": "update your app",
     "vote": "vote"
@@ -153,6 +156,9 @@
   "announcement_other": "announcements",
   "api": "API",
   "app": "app",
+  "app_category": {
+    "title": "category: {{name}}"
+  },
   "app_detail": {
     "about": "about",
     "by_developer": "by @{{developer}}",
@@ -160,11 +166,14 @@
     "details": "details",
     "published": "published",
     "rate_this_app": "rate this app",
+    "rating_stars_label": "{{score}} out of 5 stars",
     "ratings": "ratings",
     "ratings_count": "{{count}} ratings",
     "service": "service",
     "size": "size",
     "status": "status",
+    "status_checking": "checking the node…",
+    "status_downloading": "downloading ({{percent}})",
     "status_not_installed": "not installed",
     "status_ready": "ready (installed)",
     "tags": "tags",
@@ -183,6 +192,45 @@
     "switch_theme_light": "Switch to light mode"
   },
   "attachment": "attachment",
+  "background_sync": {
+    "description": "Keeps chat working while GO is not on the screen.",
+    "error": {
+      "save_failed": "Could not change background sync. Please try again."
+    },
+    "help": {
+      "always": "Keeps chat syncing whenever GO runs in the background. Uses noticeably more battery.",
+      "charging": "Keeps chat syncing while the phone charges.",
+      "off": "Chat stops syncing about a minute after you leave GO and catches up when you open it again.",
+      "outbox": "On battery, GO still finishes sending your waiting messages for up to 3 minutes after you leave it.",
+      "relay": "While the phone charges on Wi-Fi, GO also helps relay messages for others."
+    },
+    "mode": {
+      "always": "always",
+      "charging": "while charging",
+      "off": "off"
+    },
+    "native": {
+      "fgs_timeout_text": "Android paused GO's background connection. Open GO to reconnect.",
+      "fgs_timeout_title": "GO paused",
+      "status_paused_text": "Open GO to sync your chats.",
+      "status_paused_title": "Chat paused",
+      "status_syncing_background": "Syncing chat in the background",
+      "status_waiting_text": "Messages waiting to send: {{count}}"
+    },
+    "status": {
+      "relaying": "Relaying for others (charging on Wi-Fi)",
+      "syncing_now": "Syncing in background now"
+    },
+    "title": "Background sync",
+    "vendor_freeze": {
+      "body": "Your {{manufacturer}} phone stopped GO in the background even though background sync was on. Open the phone's battery settings for GO and allow background activity.",
+      "body_unknown": "Your phone stopped GO in the background even though background sync was on. Open the phone's battery settings for GO and allow background activity.",
+      "dismiss": "Dismiss",
+      "guide": "Step-by-step guide (dontkillmyapp.com)",
+      "open_battery_settings": "Open battery settings",
+      "title": "GO was stopped in the background"
+    }
+  },
   "balance": "balance:",
   "blocks": "blocks",
   "bookmarks": {
@@ -387,6 +435,43 @@
     "payment": "payment fee",
     "publish": "publish fee"
   },
+  "file_transfer": {
+    "dismiss": "Dismiss",
+    "downloading_title": "Downloading {{filename}}",
+    "failed_title": "Download failed",
+    "fetching_title": "Fetching {{filename}}",
+    "gathering": "Gathering from QDN · {{percent}}%",
+    "gathering_chunks": "Gathering from QDN · {{percent}}% · {{local}}/{{total}} chunks",
+    "gathering_unknown": "Gathering from QDN…",
+    "hide": "Hide (keeps going in notifications)",
+    "install": "Install",
+    "looking_for_file": "Looking for the file on QDN…",
+    "not_saved_title": "{{filename}} not saved",
+    "not_saved_tray": "Still downloaded. Open GO's notifications to save it.",
+    "open": "Open",
+    "open_failed": "No app on this phone can open this file",
+    "progress": "{{percent}}% · {{size}}",
+    "ready_to_install": "Ready to install · {{location}}",
+    "ready_to_open": "Ready to open · {{location}}",
+    "remove": "Remove from the list",
+    "save": "Save",
+    "save_error": "Error saving file: {{message}}",
+    "save_error_generic": "Error saving file",
+    "save_stalled": "Saving stalled: storage stopped answering",
+    "save_success": "File saved",
+    "saved_title": "{{filename}} saved",
+    "saved_to": "Saved to {{location}}",
+    "saving_file": "Saving file…",
+    "saving_title": "Saving {{filename}}",
+    "stage_awaiting_save": "Downloaded, waiting for the save",
+    "stage_declined": "Not saved · tap Save to keep it",
+    "stage_downloading": "Downloading",
+    "stage_gathering": "Gathering from QDN",
+    "stage_saving": "Saving to the phone",
+    "storage_permission": "GO needs storage permission to save files to Documents.",
+    "tap_to_install": "Tap to install · {{location}}",
+    "tap_to_open": "Tap to open · {{location}}"
+  },
   "filter": {
     "all": "all",
     "category": "category",
@@ -399,6 +484,65 @@
   "for": "for",
   "general": "general",
   "general_settings": "general settings",
+  "go_updates": {
+    "android_only": "Installing a build works in the Android app.",
+    "available_title": "New GO 3.0 update available",
+    "badge": {
+      "installed": "Installed",
+      "new": "New",
+      "older": "Older"
+    },
+    "check": "Check for updates",
+    "checking": "Checking QDN…",
+    "error": {
+      "fetch_failed": "The build could not be fetched",
+      "timeout": "The network did not deliver the build in time"
+    },
+    "hide_changes": "Hide changes",
+    "install": "Install",
+    "install_update": "Install update",
+    "installed_label": "Installed on this phone",
+    "job": {
+      "allow_installs": "Allow installs",
+      "confirm_hint": "Downloaded. Android will ask you to confirm the install.",
+      "continue_background": "You can close this screen. The download carries on.",
+      "dismiss": "Dismiss",
+      "downloading": "Downloading",
+      "failed": "Install failed",
+      "fetching": "Fetching from QDN",
+      "permission": "Permission needed",
+      "permission_hint": "Android only installs apps from sources you have allowed. Turn on “Install unknown apps” for Qortal GO. The install carries on by itself when you come back.",
+      "ready": "Ready to install",
+      "updating_to": "Updating to v{{version}}"
+    },
+    "last_checked": "last checked {{time}}",
+    "later": "Later",
+    "loading_versions": "Loading versions from QDN…",
+    "no_notes": "No release notes were added for this version.",
+    "no_versions": "No GO 3.0 builds have been published yet.",
+    "open_in_qshare": "Open in Q-Share+",
+    "progress": {
+      "assembling": "Assembling the build",
+      "bytes_of_total": "{{done}} of {{total}}",
+      "confirm_in_android": "Android will ask you to confirm",
+      "downloading": "Downloading",
+      "fetching": "Fetching from the Qortal network",
+      "needs_permission": "Android needs your permission to install apps from Qortal GO"
+    },
+    "published_when": "published {{when}}",
+    "retry": "Try again",
+    "show_changes": "Show changes",
+    "status": {
+      "available": "A newer version is available.",
+      "never": "Not checked yet.",
+      "unreachable": "Could not reach QDN. Check the node connection and try again.",
+      "up_to_date": "You have the latest version."
+    },
+    "title": "GO 3.0 Updates",
+    "update_marker": "GO 3.0 update available",
+    "versions_missing": "Some versions could not be loaded yet ({{count}}). Check again later.",
+    "versions_title": "Versions on QDN"
+  },
   "group_call": "group call",
   "group_call_blocked": "finish your other call first",
   "group_call_chat_placeholder": "Text chat for group calls is not available yet.",
@@ -462,6 +606,7 @@
       "decrypt_app": "unable to decrypt private app'",
       "download_image": "unable to download IMAGE. Please try again later by clicking the refresh button",
       "download_private_app": "unable to download private app",
+      "edit_message_too_long": "Edited messages cannot be split. Shorten it to {{maximum}} bytes.",
       "encrypt_app": "unable to encrypt app. App not published'",
       "fetch_app": "unable to fetch app",
       "fetch_publish": "unable to fetch publish",
@@ -476,8 +621,10 @@
       "invalid_signature": "invalid signature",
       "invalid_theme_format": "invalid theme format",
       "invalid_zip": "invalid zip",
+      "long_message_too_many_parts": "This message is too long to send, even split into {{maximum}} messages.",
+      "long_message_unsplittable": "Part of this message cannot be split small enough to send.",
       "message_loading": "error loading message.",
-      "message_size": "your message size is of {{ size }} bytes out of a maximum of {{ maximum }}",
+      "message_size": "your message size is {{ size }} bytes out of a maximum of {{ maximum }}",
       "minting_account_add": "unable to add minting account",
       "minting_account_remove": "unable to remove minting account",
       "missing_fields": "missing: {{ fields }}",
@@ -530,6 +677,7 @@
       "hub_notification_settings_desc": "Choose which Hub features appear in your notification panel.",
       "link_copied": "link copied to clipboard.",
       "loading": "Loading...",
+      "long_message_split": "Long message: it will be sent as {{count}} messages.",
       "mentioned": "mentioned",
       "message_with_image": "this message already has an image",
       "minimal_qort_balance": "Having at least {{ quantity }} QORT in your balance allows you to send chat messages at near instant speed.",
@@ -719,6 +867,18 @@
   "none": "none",
   "not_available": "n/a",
   "note": "note",
+  "notification_history": {
+    "clear": "Clear",
+    "clear_all": "Clear all",
+    "clear_all_hint": "Clear all notifications. They stay in Notification history.",
+    "close": "Close",
+    "drag_to_close": "Drag up to close",
+    "empty": "Nothing here yet. Notifications you receive are kept here for 30 days, even after you swipe them away.",
+    "open": "Notification history",
+    "title": "Notification history",
+    "today": "Today",
+    "yesterday": "Yesterday"
+  },
   "official_apps": {
     "all_apps": "all official apps",
     "featured": "featured",
@@ -893,6 +1053,20 @@
     "community_apps": "community apps",
     "my_apps": "my apps",
     "official_apps": "official apps"
+  },
+  "tabs_overlay": {
+    "delete_folder_body_one": "its {{count}} saved app will be removed from Tabs. Open tabs stay open.",
+    "delete_folder_body_other": "its {{count}} saved apps will be removed from Tabs. Open tabs stay open.",
+    "delete_folder_title": "delete “{{name}}”?",
+    "edit_hint_folder": "drag apps to reorder or tap × to remove",
+    "edit_hint_root": "drag apps onto folders, tap × to remove, or drag folders to reorder",
+    "folder_empty": "this folder is empty",
+    "folder_empty_hint": "long-press any app to move it into this folder.",
+    "no_open_tabs": "no open tabs yet",
+    "no_open_tabs_with_folders": "no open tabs. Tap a folder to see its apps.",
+    "pin_failed": "could not save the pin to Tabs",
+    "pinned_to_folder": "pinned to {{folder}} in Tabs",
+    "unpinned_from_folder": "removed from {{folder}} in Tabs"
   },
   "tags": "tags",
   "theme": {

@@ -52,6 +52,7 @@ import BlockRoundedIcon from '@mui/icons-material/BlockRounded';
 import CheckCircleRoundedIcon from '@mui/icons-material/CheckCircleRounded';
 import FormatListBulletedRoundedIcon from '@mui/icons-material/FormatListBulletedRounded';
 import PeopleAltRoundedIcon from '@mui/icons-material/PeopleAltRounded';
+import { MobilePanelHeader } from '../Mobile/MobilePanelHeader';
 
 function a11yProps(index: number) {
   return {
@@ -80,6 +81,8 @@ export const ManageMembers = ({
   isPrivate = false,
   joinRequestCount = 0,
   onJoinRequestCountChange,
+  // Phones show the member list as its own full-screen panel; this is its X.
+  onClose = undefined,
 }) => {
   const [membersWithNames, setMembersWithNames] = useState([]);
   const [value, setValue] = useState(0);
@@ -182,6 +185,19 @@ export const ManageMembers = ({
     }
   };
 
+  // Re-read after a promotion, demotion, kick or ban so the row catches up
+  // once the transaction confirms.
+  const refreshMembers = useCallback(async () => {
+    const groupId = selectedGroup?.groupId;
+    if (!groupId) return;
+    try {
+      const res = await getGroupMembers(groupId);
+      if (Array.isArray(res?.members)) setMembersWithNames(res.members);
+    } catch (error) {
+      console.log(error);
+    }
+  }, [selectedGroup?.groupId]);
+
   const getGroupInfo = async (groupId) => {
     try {
       const response = await fetch(`${getBaseApiReact()}/groups/${groupId}`);
@@ -221,37 +237,41 @@ export const ManageMembers = ({
   }, [canManageMembers, canReviewJoinRequests, value]);
 
   if (inline && reticulumSidebar) {
+    const tabLabel = (key: string) =>
+      t(key, { postProcess: 'capitalizeFirstChar' });
     const iconTabs = [
       {
         icon: <PeopleAltRoundedIcon sx={{ fontSize: 19 }} />,
-        label: 'Members',
+        label: tabLabel('group:member_category.members'),
         showNotificationDot: false,
       },
       {
         icon: <AddRoundedIcon sx={{ fontSize: 20 }} />,
-        label: 'Invite Member',
+        label: tabLabel('group:action.invite_member'),
         showNotificationDot: false,
       },
       {
         icon: <FormatListBulletedRoundedIcon sx={{ fontSize: 19 }} />,
-        label: 'Invites',
+        label: tabLabel('group:members_screen.invites'),
         showNotificationDot: false,
       },
       {
         icon: <BlockRoundedIcon sx={{ fontSize: 19 }} />,
-        label: 'Bans',
+        label: tabLabel('group:members_screen.bans'),
         showNotificationDot: false,
       },
       ...(canReviewJoinRequests
         ? [
             {
               icon: <CheckCircleRoundedIcon sx={{ fontSize: 19 }} />,
-              label: 'Join Requests',
+              label: tabLabel('group:join_requests'),
               showNotificationDot: joinRequestCount > 0,
             },
           ]
         : []),
     ];
+    const hasScreenHeader = typeof onClose === 'function';
+    const memberCount = membersWithNames?.length || 0;
 
     const panelContentSx = {
       display: 'flex',
@@ -274,15 +294,51 @@ export const ManageMembers = ({
           width: '100%',
         }}
       >
+        {hasScreenHeader && (
+          // Phones: the panel header shared with Calendar, Files, Admin keys,
+          // Threads and Qortal Land. The page fills the screen, so it pads for
+          // the status bar itself.
+          <MobilePanelHeader
+            safeAreaTop
+            icon={<PeopleAltRoundedIcon />}
+            title={iconTabs[value]?.label ?? iconTabs[0].label}
+            actions={
+              memberCount > 0 ? (
+                <Box
+                  aria-hidden
+                  sx={{
+                    bgcolor: theme.palette.action.selected,
+                    borderRadius: '999px',
+                    color: 'text.secondary',
+                    flexShrink: 0,
+                    fontSize: 12,
+                    fontWeight: 700,
+                    lineHeight: '22px',
+                    minWidth: 28,
+                    px: 1,
+                    textAlign: 'center',
+                  }}
+                >
+                  {memberCount}
+                </Box>
+              ) : null
+            }
+            onClose={onClose}
+          />
+        )}
         {canManageMembers && <Tabs
           value={value}
           onChange={handleChange}
           variant="fullWidth"
           sx={{
             position: 'relative',
-            bgcolor: theme.palette.background.default,
-            // Keep the tab strip clear of the Android notch/status bar.
-            paddingTop: SAFE_AREA_TOP,
+            // Under the phone header the tab strip reads as part of it.
+            bgcolor: hasScreenHeader
+              ? theme.palette.background.paper
+              : theme.palette.background.default,
+            // Keep the tab strip clear of the Android notch/status bar. The
+            // phone screen header already sits below the app bar.
+            paddingTop: hasScreenHeader ? 0 : SAFE_AREA_TOP,
             borderBottom: 1,
             borderColor: 'divider',
             minHeight: 42,
@@ -340,6 +396,8 @@ export const ManageMembers = ({
         <Box sx={panelContentSx}>
           {value === 0 && (
             <ListOfMembers
+              // Remount per group so row state never leaks across groups.
+              key={selectedGroup?.groupId}
               compact
               members={membersWithNames || []}
               groupId={selectedGroup?.groupId}
@@ -350,6 +408,7 @@ export const ManageMembers = ({
               show={show}
               ownerAddress={groupInfo?.owner}
               reticulumUserCards
+              onRefreshMembers={refreshMembers}
             />
           )}
           {canManageMembers && value === 1 && (
@@ -569,6 +628,7 @@ export const ManageMembers = ({
               <Spacer height="10px" />
 
               <ListOfMembers
+                key={selectedGroup?.groupId}
                 members={membersWithNames || []}
                 groupId={selectedGroup?.groupId}
                 setOpenSnack={setOpenSnack}
@@ -577,6 +637,7 @@ export const ManageMembers = ({
                 isOwner={isOwner}
                 show={show}
                 ownerAddress={groupInfo?.owner}
+                onRefreshMembers={refreshMembers}
               />
             </Box>
           )}

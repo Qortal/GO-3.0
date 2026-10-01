@@ -17,6 +17,9 @@ import { getBaseApiReact } from '../../../App';
 import LogoSelected from '../../../assets/svgs/LogoSelected.svg';
 import { executeEvent } from '../../../utils/events';
 import { AppButton, AppButtonText } from '../Apps-styles';
+import { AppAvailabilityLabel } from '../AppAvailabilityLabel';
+import { useAppNodeStatus } from '../appNodeStatus';
+import { FeaturedAppStars } from './FeaturedAppStars';
 
 const CarouselContainer = styled(Box)({
   display: 'flex',
@@ -124,15 +127,17 @@ const NavButton = styled(IconButton)(({ theme }) => ({
 interface FeaturedAppBannerProps {
   featuredApps: any[];
   isMobile?: boolean;
+  /** Opened from a category page: its app info returns there. */
+  isFromCategory?: boolean;
 }
 
 function featuredAppsAreEqual(
   prev: FeaturedAppBannerProps,
   next: FeaturedAppBannerProps
 ): boolean {
-  if (prev.featuredApps === next.featuredApps && prev.isMobile === next.isMobile) {
-    return true;
-  }
+  if (prev.isMobile !== next.isMobile) return false;
+  if (prev.isFromCategory !== next.isFromCategory) return false;
+  if (prev.featuredApps === next.featuredApps) return true;
   const a = prev.featuredApps;
   const b = next.featuredApps;
   if (!a || !b || a.length !== b.length) return false;
@@ -145,6 +150,7 @@ function featuredAppsAreEqual(
 const FeaturedAppBannerInner = ({
   featuredApps,
   isMobile = false,
+  isFromCategory = false,
 }: FeaturedAppBannerProps) => {
   const [startIndex, setStartIndex] = useState(0);
   const theme = useTheme();
@@ -164,6 +170,31 @@ const FeaturedAppBannerInner = ({
   };
 
   const visibleCount = getVisibleCount();
+  const featuredCount = featuredApps?.length ?? 0;
+
+  // Hooks stay above the early return below.
+  const handlePrev = useCallback(() => {
+    setStartIndex((prev) => Math.max(0, prev - 1));
+  }, []);
+
+  const handleNext = useCallback(() => {
+    setStartIndex((prev) => Math.min(featuredCount - visibleCount, prev + 1));
+  }, [featuredCount, visibleCount]);
+
+  const handleOpenApp = useCallback((app: any, e: React.MouseEvent) => {
+    e.stopPropagation();
+    executeEvent('addTab', { data: app });
+  }, []);
+
+  const handleViewDetails = useCallback(
+    (app: any) => {
+      executeEvent(
+        isFromCategory ? 'selectedAppInfoCategory' : 'selectedAppInfo',
+        { data: app }
+      );
+    },
+    [isFromCategory]
+  );
 
   if (!featuredApps || featuredApps.length === 0) {
     return null;
@@ -184,28 +215,7 @@ const FeaturedAppBannerInner = ({
   const canGoBack = startIndex > 0;
   const canGoForward = startIndex + visibleCount < featuredApps.length;
 
-  const handlePrev = useCallback(() => {
-    setStartIndex((prev) => Math.max(0, prev - 1));
-  }, []);
-
-  const handleNext = useCallback(() => {
-    setStartIndex((prev) =>
-      Math.min(featuredApps.length - visibleCount, prev + 1)
-    );
-  }, [featuredApps.length, visibleCount]);
-
-  const handleOpenApp = useCallback((app: any, e: React.MouseEvent) => {
-    e.stopPropagation();
-    executeEvent('addTab', { data: app });
-  }, []);
-
-  const handleViewDetails = useCallback((app: any) => {
-    executeEvent('selectedAppInfo', { data: app });
-  }, []);
-
   const renderFeaturedCard = (app: any, index: number) => {
-    const isInstalled = app?.status?.status === 'READY';
-
     return (
       <FeaturedCard
         key={`${app?.name}-${index}`}
@@ -247,6 +257,8 @@ const FeaturedAppBannerInner = ({
 
         <CardTitle>{app?.metadata?.title || app?.name}</CardTitle>
 
+        <FeaturedAppStars app={app} />
+
         <CardDescription>
           {app?.metadata?.description ||
             t('core:message.generic.no_description', {
@@ -254,28 +266,7 @@ const FeaturedAppBannerInner = ({
             })}
         </CardDescription>
 
-        <AppButton
-          onClick={(e) => handleOpenApp(app, e)}
-          sx={{
-            backgroundColor: isInstalled
-              ? theme.palette.primary.main
-              : theme.palette.background.default,
-            color: isInstalled
-              ? theme.palette.primary.contrastText
-              : theme.palette.text.primary,
-            marginTop: 'auto',
-          }}
-        >
-          <AppButtonText>
-            {isInstalled
-              ? t('core:action.open', {
-                  postProcess: 'capitalizeFirstChar',
-                })
-              : t('core:action.download', {
-                  postProcess: 'capitalizeFirstChar',
-                })}
-          </AppButtonText>
-        </AppButton>
+        <FeaturedAppOpenButton app={app} onOpen={handleOpenApp} />
       </FeaturedCard>
     );
   };
@@ -379,6 +370,37 @@ const FeaturedAppBannerInner = ({
 };
 
 FeaturedAppBannerInner.displayName = 'FeaturedAppBanner';
+
+const FeaturedAppOpenButton = ({
+  app,
+  onOpen,
+}: {
+  app: any;
+  onOpen: (app: any, e: React.MouseEvent) => void;
+}) => {
+  const theme = useTheme();
+  const nodeStatus = useAppNodeStatus(app);
+  const isInstalled = nodeStatus.availability === 'ready';
+
+  return (
+    <AppButton
+      onClick={(e) => onOpen(app, e)}
+      sx={{
+        backgroundColor: isInstalled
+          ? theme.palette.primary.main
+          : theme.palette.background.default,
+        color: isInstalled
+          ? theme.palette.primary.contrastText
+          : theme.palette.text.primary,
+        marginTop: 'auto',
+      }}
+    >
+      <AppButtonText>
+        <AppAvailabilityLabel status={nodeStatus} />
+      </AppButtonText>
+    </AppButton>
+  );
+};
 
 export const FeaturedAppBanner = memo(
   FeaturedAppBannerInner,

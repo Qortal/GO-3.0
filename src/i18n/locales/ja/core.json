@@ -61,8 +61,9 @@
     "create_transaction": "Qortalブロックチェーンでトランザクションを作成します",
     "decline": "衰退",
     "decrypt": "復号化",
-    "delete": "delete",
+    "delete": "削除",
     "disable_enter": "Enterを無効にします",
+    "discard_message": "メッセージを破棄",
     "download": "ダウンロード",
     "download_file": "ファイルをダウンロードします",
     "edit": "編集",
@@ -98,6 +99,7 @@
     "pin": "ピン",
     "pin_app": "ピンアプリ",
     "pin_to_dashboard": "ダッシュボードにピン",
+    "pin_to_tabs": "タブにピン留め",
     "post": "役職",
     "post_message": "メッセージを投稿します",
     "publish": "公開",
@@ -140,6 +142,7 @@
     "unpin": "ピン留め解除",
     "unpin_app": "UNPINアプリ",
     "unpin_from_dashboard": "ダッシュボードからリプリッド",
+    "unpin_from_tabs": "タブからピン留めを外す",
     "update": "アップデート",
     "update_app": "アプリを更新します",
     "vote": "投票する"
@@ -153,6 +156,9 @@
   "announcement_other": "発表",
   "api": "API",
   "app": "アプリ",
+  "app_category": {
+    "title": "カテゴリ：{{name}}"
+  },
   "app_detail": {
     "about": "概要",
     "by_developer": "@{{developer}}による",
@@ -160,11 +166,14 @@
     "details": "詳細",
     "published": "公開日",
     "rate_this_app": "このアプリを評価",
+    "rating_stars_label": "5つ星中{{score}}",
     "ratings": "評価",
     "ratings_count": "{{count}}件の評価",
     "service": "サービス",
     "size": "サイズ",
     "status": "ステータス",
+    "status_checking": "ノードを確認中…",
+    "status_downloading": "ダウンロード中（{{percent}}）",
     "status_not_installed": "未インストール",
     "status_ready": "準備完了（インストール済み）",
     "tags": "タグ",
@@ -183,6 +192,45 @@
     "switch_theme_light": "ライトモードに切り替え"
   },
   "attachment": "添付ファイル",
+  "background_sync": {
+    "description": "GOが画面に表示されていない間もチャットを動かし続けます。",
+    "error": {
+      "save_failed": "バックグラウンド同期を変更できませんでした。もう一度お試しください。"
+    },
+    "help": {
+      "always": "GOがバックグラウンドで動作している間は常にチャットを同期します。バッテリーの消費が目に見えて増えます。",
+      "charging": "スマートフォンの充電中はチャットの同期を続けます。",
+      "off": "GOを離れて約1分後にチャットの同期が止まり、再び開いたときに追いつきます。",
+      "outbox": "バッテリー駆動中でも、GOを離れてから最大3分間は送信待ちのメッセージを送り切ります。",
+      "relay": "Wi-Fi接続で充電中は、ほかの人のメッセージの中継にも協力します。"
+    },
+    "mode": {
+      "always": "常に",
+      "charging": "充電中のみ",
+      "off": "オフ"
+    },
+    "native": {
+      "fgs_timeout_text": "AndroidがGOのバックグラウンド接続を一時停止しました。再接続するにはGOを開いてください。",
+      "fgs_timeout_title": "GOは一時停止中です",
+      "status_paused_text": "チャットを同期するにはGOを開いてください。",
+      "status_paused_title": "チャットは一時停止中です",
+      "status_syncing_background": "バックグラウンドでチャットを同期中",
+      "status_waiting_text": "送信待ちのメッセージ: {{count}}"
+    },
+    "status": {
+      "relaying": "ほかの人のために中継中（Wi-Fiで充電中）",
+      "syncing_now": "現在バックグラウンドで同期中"
+    },
+    "title": "バックグラウンド同期",
+    "vendor_freeze": {
+      "body": "バックグラウンド同期がオンなのに、お使いの{{manufacturer}}のスマートフォンがGOをバックグラウンドで停止しました。スマートフォンのGO用バッテリー設定を開き、バックグラウンドでの動作を許可してください。",
+      "body_unknown": "バックグラウンド同期がオンなのに、お使いのスマートフォンがGOをバックグラウンドで停止しました。スマートフォンのGO用バッテリー設定を開き、バックグラウンドでの動作を許可してください。",
+      "dismiss": "閉じる",
+      "guide": "手順ガイド（dontkillmyapp.com）",
+      "open_battery_settings": "バッテリー設定を開く",
+      "title": "GOがバックグラウンドで停止されました"
+    }
+  },
   "balance": "バランス：",
   "blocks": "ブロック",
   "bookmarks": {
@@ -387,6 +435,43 @@
     "payment": "支払い料",
     "publish": "公開料金"
   },
+  "file_transfer": {
+    "dismiss": "閉じる",
+    "downloading_title": "{{filename}}をダウンロード中",
+    "failed_title": "ダウンロードに失敗しました",
+    "fetching_title": "{{filename}}を取得中",
+    "gathering": "QDNから収集中 · {{percent}}%",
+    "gathering_chunks": "QDNから収集中 · {{percent}}% · {{local}}/{{total}}チャンク",
+    "gathering_unknown": "QDNから収集中…",
+    "hide": "非表示（通知で続行されます）",
+    "install": "インストール",
+    "looking_for_file": "QDNでファイルを検索中…",
+    "not_saved_title": "{{filename}}は保存されていません",
+    "not_saved_tray": "ダウンロード済みです。GOの通知から保存できます。",
+    "open": "開く",
+    "open_failed": "このファイルを開けるアプリがこの端末にありません",
+    "progress": "{{percent}}%・{{size}}",
+    "ready_to_install": "インストールの準備ができました · {{location}}",
+    "ready_to_open": "開く準備ができました · {{location}}",
+    "remove": "リストから削除",
+    "save": "保存",
+    "save_error": "ファイルの保存エラー: {{message}}",
+    "save_error_generic": "ファイルの保存エラー",
+    "save_stalled": "保存が停止しました: ストレージが応答しません",
+    "save_success": "ファイルを保存しました",
+    "saved_title": "{{filename}}を保存しました",
+    "saved_to": "{{location}}に保存しました",
+    "saving_file": "ファイルを保存中…",
+    "saving_title": "{{filename}}を保存中",
+    "stage_awaiting_save": "ダウンロード完了、保存待ち",
+    "stage_declined": "未保存 · 残すには「保存」をタップ",
+    "stage_downloading": "ダウンロード中",
+    "stage_gathering": "QDNから収集中",
+    "stage_saving": "端末に保存中",
+    "storage_permission": "Documentsにファイルを保存するには、GOにストレージの権限が必要です。",
+    "tap_to_install": "タップしてインストール · {{location}}",
+    "tap_to_open": "タップして開く · {{location}}"
+  },
   "filter": {
     "all": "すべて",
     "category": "カテゴリ",
@@ -399,6 +484,65 @@
   "for": "のために",
   "general": "一般的な",
   "general_settings": "一般的な設定",
+  "go_updates": {
+    "android_only": "インストールはAndroidアプリで行えます。",
+    "available_title": "GO 3.0の新しいアップデートがあります",
+    "badge": {
+      "installed": "インストール済み",
+      "new": "新しい",
+      "older": "以前"
+    },
+    "check": "アップデートを確認",
+    "checking": "QDNを確認中…",
+    "error": {
+      "fetch_failed": "ビルドを取得できませんでした",
+      "timeout": "ネットワークが時間内にビルドを届けられませんでした"
+    },
+    "hide_changes": "変更点を隠す",
+    "install": "インストール",
+    "install_update": "アップデートをインストール",
+    "installed_label": "このスマートフォンにインストール済み",
+    "job": {
+      "allow_installs": "インストールを許可",
+      "confirm_hint": "ダウンロードしました。Androidがインストールの確認を求めます。",
+      "continue_background": "この画面を閉じてもダウンロードは続きます。",
+      "dismiss": "閉じる",
+      "downloading": "ダウンロード中",
+      "failed": "インストールに失敗しました",
+      "fetching": "QDNから取得中",
+      "permission": "許可が必要です",
+      "permission_hint": "Androidは許可したソースからのみアプリをインストールします。Qortal GOの「不明なアプリのインストール」をオンにしてください。戻るとインストールが自動的に続きます。",
+      "ready": "インストール準備完了",
+      "updating_to": "v{{version}}にアップデート中"
+    },
+    "last_checked": "最終確認 {{time}}",
+    "later": "後で",
+    "loading_versions": "QDNからバージョンを読み込み中…",
+    "no_notes": "このバージョンにはリリースノートがありません。",
+    "no_versions": "GO 3.0のビルドはまだ公開されていません。",
+    "open_in_qshare": "Q-Share+で開く",
+    "progress": {
+      "assembling": "ビルドを組み立て中",
+      "bytes_of_total": "{{done}} / {{total}}",
+      "confirm_in_android": "Androidが確認を求めます",
+      "downloading": "ダウンロード中",
+      "fetching": "Qortalネットワークから取得中",
+      "needs_permission": "Qortal GOからアプリをインストールするにはAndroidの許可が必要です"
+    },
+    "published_when": "公開：{{when}}",
+    "retry": "再試行",
+    "show_changes": "変更点を表示",
+    "status": {
+      "available": "新しいバージョンがあります。",
+      "never": "まだ確認していません。",
+      "unreachable": "QDNに接続できませんでした。ノードへの接続を確認して、もう一度お試しください。",
+      "up_to_date": "最新バージョンです。"
+    },
+    "title": "GO 3.0 アップデート",
+    "update_marker": "GO 3.0のアップデートがあります",
+    "versions_missing": "一部のバージョンをまだ読み込めませんでした（{{count}}件）。後でもう一度確認してください。",
+    "versions_title": "QDN上のバージョン"
+  },
   "group_call": "グループ通話",
   "group_call_blocked": "先に他の通話を終了してください",
   "group_call_chat_placeholder": "グループ通話のテキストチャットはまだ利用できません。",
@@ -462,6 +606,7 @@
       "decrypt_app": "プライベートアプリを復号化できません」",
       "download_image": "画像をダウンロードできません。リフレッシュボタンをクリックして、後でもう一度やり直してください",
       "download_private_app": "プライベートアプリをダウンロードできません",
+      "edit_message_too_long": "編集したメッセージは分割できません。{{maximum}} バイト以内に短くしてください。",
       "encrypt_app": "アプリを暗号化できません。公開されていないアプリ」",
       "fetch_app": "アプリを取得できません",
       "fetch_publish": "公開を取得できません",
@@ -476,6 +621,8 @@
       "invalid_signature": "無効な署名",
       "invalid_theme_format": "無効なテーマ形式",
       "invalid_zip": "無効なzip",
+      "long_message_too_many_parts": "このメッセージは {{maximum}} 件に分割しても長すぎるため、送信できません。",
+      "long_message_unsplittable": "このメッセージの一部は、送信できる大きさまで分割できません。",
       "message_loading": "メッセージの読み込みエラー。",
       "message_size": "メッセージは {{ size }} バイトです（最大 {{ maximum }} バイト）",
       "minting_account_add": "ミントアカウントを追加できません",
@@ -530,6 +677,7 @@
       "hub_notification_settings_desc": "Choose which Hub features appear in your notification panel.",
       "link_copied": "リンクをクリップボードにコピーしました。",
       "loading": "読み込み中...",
+      "long_message_split": "長いメッセージです。{{count}} 件のメッセージに分けて送信されます。",
       "mentioned": "言及された",
       "message_with_image": "このメッセージにはすでに画像があります",
       "minimal_qort_balance": "残高に少なくとも {{ quantity }} QORT があると、ほぼ即時の速度でチャットメッセージを送信できます。",
@@ -714,6 +862,18 @@
   "none": "なし",
   "not_available": "該当なし",
   "note": "注記",
+  "notification_history": {
+    "clear": "クリア",
+    "clear_all": "すべてクリア",
+    "clear_all_hint": "すべての通知をクリアします。通知履歴には残ります。",
+    "close": "閉じる",
+    "drag_to_close": "上にドラッグして閉じる",
+    "empty": "まだ何もありません。受け取った通知は、スワイプで消した後も30日間ここに残ります。",
+    "open": "通知履歴",
+    "title": "通知履歴",
+    "today": "今日",
+    "yesterday": "昨日"
+  },
   "official_apps": {
     "all_apps": "すべての公式アプリ",
     "featured": "おすすめ",
@@ -888,6 +1048,20 @@
     "community_apps": "コミュニティアプリ",
     "my_apps": "マイアプリ",
     "official_apps": "公式アプリ"
+  },
+  "tabs_overlay": {
+    "delete_folder_body_one": "このフォルダに保存されている {{count}} 個のアプリはタブから削除されます。開いているタブはそのままです。",
+    "delete_folder_body_other": "このフォルダに保存されている {{count}} 個のアプリはタブから削除されます。開いているタブはそのままです。",
+    "delete_folder_title": "「{{name}}」を削除しますか？",
+    "edit_hint_folder": "アプリをドラッグして並べ替え、× をタップして削除",
+    "edit_hint_root": "アプリをフォルダにドラッグ、× をタップして削除、フォルダをドラッグして並べ替え",
+    "folder_empty": "このフォルダは空です",
+    "folder_empty_hint": "アプリを長押しすると、このフォルダに移動できます。",
+    "no_open_tabs": "開いているタブはまだありません",
+    "no_open_tabs_with_folders": "開いているタブはありません。フォルダをタップするとアプリが表示されます。",
+    "pin_failed": "タブにピン留めを保存できませんでした",
+    "pinned_to_folder": "タブの {{folder}} にピン留めしました",
+    "unpinned_from_folder": "タブの {{folder}} から削除しました"
   },
   "tags": "タグ",
   "theme": {

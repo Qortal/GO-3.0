@@ -1,5 +1,6 @@
 /**
- * Finds the newest Qortal GO build published to QDN with Q-Share.
+ * Finds the newest Qortal GO build published to QDN with Q-Share+ (or the
+ * original Q-Share: both write the same share data).
  *
  * Q-Share mints a random identifier per file (`qshare_file_<name>_aB12Cd`) and
  * writes one DOCUMENT per share (`…_metadata`) listing what that share
@@ -13,6 +14,13 @@ import { createEndpoint } from '../background/background';
 /** The registered name that publishes official builds. */
 export const APP_UPDATE_QDN_NAME = 'GO 3.0';
 
+/**
+ * The Q-App that opens a build's share page. Builds are published with
+ * Q-Share+, which reads the same share data as Q-Share and serves the same
+ * `share/<name>/<id>` route. The literal `+` is the app's QDN name.
+ */
+export const APP_UPDATE_SHARE_APP = 'Q-Share+';
+
 const QSHARE_PREFIX = 'qshare_file_';
 const METADATA_SUFFIX = '_metadata';
 
@@ -22,6 +30,8 @@ const CONTENT_TIMEOUT_MS = 60_000;
 
 /** A build older than the last handful of shares is not an update. */
 const MAX_SHARES_SCANNED = 8;
+/** Share documents fetched at once when listing every version. */
+const LIST_CONCURRENCY = 4;
 
 export type AppRelease = {
   filename: string;
@@ -32,6 +42,8 @@ export type AppRelease = {
   notesHtml: string;
   publishedAt: number;
   service: string;
+  /** The Q-Share share (`…_metadata`) this build belongs to. */
+  shareIdentifier: string;
   size: number;
   title: string;
   version: string;
@@ -85,15 +97,16 @@ async function fetchJson<T>(
 /**
  * Everything published under the name for one service. `/arbitrary/resources`
  * rather than the search index, which collapses to one row per name+service.
+ * Null when the node did not answer, which is not the same as "nothing".
  */
 async function listResources(
   service: 'DOCUMENT' | 'FILE'
-): Promise<QdnResourceRow[]> {
-  const rows =
-    (await fetchJson<Partial<QdnResourceRow>[]>(
-      `/arbitrary/resources?service=${service}&name=${encodedName()}&limit=100&includemetadata=true`,
-      LIST_TIMEOUT_MS
-    )) || [];
+): Promise<QdnResourceRow[] | null> {
+  const rows = await fetchJson<Partial<QdnResourceRow>[]>(
+    `/arbitrary/resources?service=${service}&name=${encodedName()}&limit=100&includemetadata=true`,
+    LIST_TIMEOUT_MS
+  );
+  if (!Array.isArray(rows)) return null;
   return rows
     .filter((row) => typeof row?.identifier === 'string')
     .map((row) => ({
@@ -155,68 +168,166 @@ async function readTransactionNotes(
   return { notes, title };
 }
 
-/**
- * Newest published .apk, or null when the name has never published one (or the
- * node cannot reach the data yet — a cold node is a "not now", never a "no").
- */
-export async function findLatestPublishedBuild(): Promise<AppRelease | null> {
-  const shares = (await listResources('DOCUMENT'))
+/** Q-Share shares under the name, newest first; null when the node is silent. */
+async function listShares(): Promise<QdnResourceRow[] | null> {
+  const rows = await listResources('DOCUMENT');
+  if (!rows) return null;
+  return rows
     .filter(
       (row) =>
         row.identifier.startsWith(QSHARE_PREFIX) &&
         row.identifier.endsWith(METADATA_SUFFIX)
     )
-    .sort((a, b) => b.created - a.created)
-    .slice(0, MAX_SHARES_SCANNED);
+    .sort((a, b) => b.created - a.created);
+}
 
-  for (const share of shares) {
-    const doc = await fetchJson<QshareShareDoc>(
-      `/arbitrary/DOCUMENT/${encodedName()}/${encodeURIComponent(share.identifier)}`,
-      CONTENT_TIMEOUT_MS
-    );
-    if (!doc?.files?.length) continue;
+/**
+ * The build in one share: null when the share holds no .apk, 'unavailable'
+ * when the node could not deliver its document this time.
+ */
+async function readShareRelease(
+  share: QdnResourceRow
+): Promise<AppRelease | null | 'unavailable'> {
+  const doc = await fetchJson<QshareShareDoc>(
+    `/arbitrary/DOCUMENT/${encodedName()}/${encodeURIComponent(share.identifier)}`,
+    CONTENT_TIMEOUT_MS
+  );
+  if (!doc) return 'unavailable';
+  if (!doc.files?.length) return null;
 
-    // A share can hold several files; the newest .apk in it is the build.
-    let best: {
-      entry: NonNullable<QshareShareDoc['files']>[number];
-      version: string;
-    } | null = null;
-    for (const entry of doc.files) {
-      const filename = String(entry?.filename || '').trim();
-      if (!filename.toLowerCase().endsWith('.apk')) continue;
-      if (!entry?.identifier) continue;
-      const version = versionFromFilename(filename);
-      if (!version) continue;
-      if (!best || compareVersions(version, best.version) > 0) {
-        best = { entry, version };
-      }
+  // A share can hold several files; the newest .apk in it is the build.
+  let best: {
+    entry: NonNullable<QshareShareDoc['files']>[number];
+    version: string;
+  } | null = null;
+  for (const entry of doc.files) {
+    const filename = String(entry?.filename || '').trim();
+    if (!filename.toLowerCase().endsWith('.apk')) continue;
+    if (!entry?.identifier) continue;
+    const version = versionFromFilename(filename);
+    if (!version) continue;
+    if (!best || compareVersions(version, best.version) > 0) {
+      best = { entry, version };
     }
-    if (!best) continue;
-
-    const identifier = String(best.entry.identifier);
-    const service = String(best.entry.service || 'FILE');
-    const notesHtml = String(doc.htmlDescription || '').trim();
-    const described = notesHtml
-      ? null
-      : await readTransactionNotes('DOCUMENT', share.identifier);
-
-    return {
-      filename: String(best.entry.filename),
-      identifier,
-      notes: notesHtml
-        ? ''
-        : described?.notes ||
-          stripCategoryMarker(doc.fullDescription || doc.description || ''),
-      notesHtml,
-      publishedAt: share.created,
-      service,
-      size: typeof best.entry.size === 'number' ? best.entry.size : 0,
-      title: String(doc.title || described?.title || '').trim(),
-      version: best.version,
-    };
   }
+  if (!best) return null;
 
-  return null;
+  const identifier = String(best.entry.identifier);
+  const service = String(best.entry.service || 'FILE');
+  const notesHtml = String(doc.htmlDescription || '').trim();
+  const described = notesHtml
+    ? null
+    : await readTransactionNotes('DOCUMENT', share.identifier);
+
+  return {
+    filename: String(best.entry.filename),
+    identifier,
+    notes: notesHtml
+      ? ''
+      : described?.notes ||
+        stripCategoryMarker(doc.fullDescription || doc.description || ''),
+    notesHtml,
+    publishedAt: share.created,
+    service,
+    shareIdentifier: share.identifier,
+    size: typeof best.entry.size === 'number' ? best.entry.size : 0,
+    title: String(doc.title || described?.title || '').trim(),
+    version: best.version,
+  };
+}
+
+export type LatestBuildLookup = {
+  /** False when the node could not list the name's shares at all. */
+  reachable: boolean;
+  release: AppRelease | null;
+};
+
+/** Newest published .apk, and whether the node could be asked at all. */
+export async function lookUpLatestPublishedBuild(): Promise<LatestBuildLookup> {
+  const shares = await listShares();
+  if (!shares) return { reachable: false, release: null };
+  for (const share of shares.slice(0, MAX_SHARES_SCANNED)) {
+    const release = await readShareRelease(share);
+    if (release && release !== 'unavailable') {
+      return { reachable: true, release };
+    }
+  }
+  return { reachable: true, release: null };
+}
+
+/**
+ * Newest published .apk, or null when the name has never published one (or the
+ * node cannot reach the data yet — a cold node is a "not now", never a "no").
+ */
+export async function findLatestPublishedBuild(): Promise<AppRelease | null> {
+  return (await lookUpLatestPublishedBuild()).release;
+}
+
+/** Newest version first; the later publish wins between equal versions. */
+export const compareReleasesNewestFirst = (
+  a: AppRelease,
+  b: AppRelease
+): number =>
+  compareVersions(b.version, a.version) || b.publishedAt - a.publishedAt;
+
+export type PublishedBuildList = {
+  reachable: boolean;
+  /** One per version, newest first. */
+  releases: AppRelease[];
+  /** Shares whose document the node could not deliver this time. */
+  missing: number;
+};
+
+/**
+ * Every build the name has published, for the version history. Documents are
+ * fetched a few at a time and each one is reported as it lands, so the list
+ * fills in on a cold node instead of waiting for the slowest share.
+ */
+export async function listPublishedBuilds(
+  onRelease?: (releases: AppRelease[]) => void
+): Promise<PublishedBuildList> {
+  const shares = await listShares();
+  if (!shares) return { missing: 0, reachable: false, releases: [] };
+
+  const byVersion = new Map<string, AppRelease>();
+  let missing = 0;
+  let next = 0;
+  const snapshot = () =>
+    Array.from(byVersion.values()).sort(compareReleasesNewestFirst);
+
+  const worker = async () => {
+    while (next < shares.length) {
+      const share = shares[next];
+      next += 1;
+      const release = await readShareRelease(share);
+      if (release === 'unavailable') {
+        missing += 1;
+        continue;
+      }
+      if (!release) continue;
+      const known = byVersion.get(release.version);
+      if (known && known.publishedAt >= release.publishedAt) continue;
+      byVersion.set(release.version, release);
+      onRelease?.(snapshot());
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(LIST_CONCURRENCY, shares.length) }, worker)
+  );
+
+  return { missing, reachable: true, releases: snapshot() };
+}
+
+/**
+ * The `qortal://` path that opens a build's share page in Q-Share, where the
+ * file can be saved to the phone like any other download.
+ */
+export function qShareSharePath(release: {
+  shareIdentifier?: string;
+}): string | null {
+  const id = String(release?.shareIdentifier || '').trim();
+  if (!id) return null;
+  return `share/${encodeURIComponent(APP_UPDATE_QDN_NAME)}/${encodeURIComponent(id)}`;
 }
 
 /**

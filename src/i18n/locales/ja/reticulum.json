@@ -33,6 +33,27 @@
     "wait_until_ready": "wait until the discussion is ready"
   },
   "dm": {
+    "delivery": {
+      "delivered": {
+        "hint": "受信者のデバイスが要求し、送信されました。",
+        "label": "配信済み"
+      },
+      "on_other_device": {
+        "hint": "他のデバイスがコピーを保持しており、受信者がオンラインのときに送信できます。配信は確認されていません。",
+        "label": "他のデバイスにあり"
+      },
+      "only_on_this_device": {
+        "label": "このデバイスのみ"
+      },
+      "only_on_this_phone": {
+        "hint": "まだ送信されていません。自動的に再送信されます。",
+        "label": "このスマホのみ"
+      },
+      "sending": {
+        "hint": "受信者への送信を試みています。",
+        "label": "送信中"
+      }
+    },
     "required_for_attachments": "ダイレクト添付には Reticulum のダイレクトチャットが必要です"
   },
   "event_preview": {
@@ -253,6 +274,50 @@
       },
       "title": "文字サイズ"
     }
+  },
+  "status_badge": {
+    "copy_diagnostics": "診断情報をコピー",
+    "copy_diagnostics_collecting": "収集中…",
+    "copy_diagnostics_copied": "コピーしました",
+    "copy_diagnostics_hint": "テキストをコピーするかファイルとして保存し、チャットの問題の報告と一緒に送ってください。",
+    "help": {
+      "chat_engine": {
+        "body": "ローカルのチャットデータベースとワーカーの準備ができているかどうか。緑のバッジは無線の状態を示し、チャットの読み込みと送信にはこのエンジンも必要です。チャットが動かない場合は、まず下の「{{action}}」をタップし、そのテキストを報告に貼り付けてください。ready = 正常。starting = 起動中（経過時間を表示）。1分以上このままの場合、考えられる原因の一つは JIT なしで動作している WebView です。failed = エラーを下に表示します。idle = まだ起動を要求されていません（チャットがオフ、またはサインインしていません）。",
+        "title": "チャットエンジン"
+      },
+      "hubs": {
+        "body": "現在接続中のハブリンクの数。コミュニティハブへの TCP 接続です。0 はまだメッシュに参加していないことを意味します。2 が一般的で正常です。",
+        "title": "ハブ"
+      },
+      "ifac": {
+        "body": "Interface Access Code のサイズ。メッシュ名から導出される共有ネットワークフィルターです。16 B は名前付きの Qortal ネットワークに参加していることを意味します。0 B はインターフェースが開放（フィルターなし）であることを意味します。",
+        "title": "IFAC"
+      },
+      "known_paths": {
+        "body": "Reticulum が現在経路を知っている宛先の数。アナウンスを受け取るたびに、電話はアイデンティティへの到達方法を学びます。混雑したメッシュでは数百が普通です。これはライブチャットではありません。",
+        "title": "既知の経路"
+      },
+      "network_name": {
+        "body": "この電話が参加している Reticulum メッシュ。Qortal の公開メッシュは qortal-hub です。名前が異なる場合は別のネットワークにいるため、そのピアは見えません。",
+        "title": "ネットワーク名"
+      },
+      "online_accounts": {
+        "body": "この電話がメッシュ上に現在いると認識している Qortal アカウントの数。「家」と同じ数です。ハブや Reticulum ノードの数ではありません。",
+        "title": "オンラインのアカウント"
+      },
+      "received": {
+        "body": "このセッションで Reticulum が起動してから、この電話がハブから受信したデータの合計。チャットを閉じたときではなく、スタックの再起動時にリセットされます。",
+        "title": "受信"
+      },
+      "sent": {
+        "body": "このセッションで Reticulum が起動してから、この電話がハブへ送信したデータの合計。チャットを閉じたときではなく、スタックの再起動時にリセットされます。",
+        "title": "送信"
+      }
+    },
+    "save_diagnostics": ".mdファイルとして保存",
+    "save_diagnostics_failed": "ファイルを保存できませんでした: {{error}}",
+    "save_diagnostics_saved": "保存しました",
+    "save_diagnostics_saved_to": "{{location}} に保存しました"
   },
   "user_card": {
     "address_copied": "アドレスをコピーしました",

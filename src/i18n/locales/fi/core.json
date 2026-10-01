@@ -61,8 +61,9 @@
     "create_transaction": "luo tapahtumia Qortal-lohkoketjussa",
     "decline": "hylkää",
     "decrypt": "purkaa salaus",
-    "delete": "delete",
+    "delete": "poista",
     "disable_enter": "poista Enter käytöstä",
+    "discard_message": "hylkää viesti",
     "download": "lataa",
     "download_file": "lataa tiedosto",
     "edit": "muokkaa",
@@ -98,6 +99,7 @@
     "pin": "kiinnitä",
     "pin_app": "kiinnitä sovellus",
     "pin_to_dashboard": "kiinnitä ohjauspaneeliin",
+    "pin_to_tabs": "kiinnitä välilehtiin",
     "post": "julkaise",
     "post_message": "lähetä viesti",
     "publish": "julkaise",
@@ -140,6 +142,7 @@
     "unpin": "poista kiinnitys",
     "unpin_app": "poista sovelluksen kiinnitys",
     "unpin_from_dashboard": "poista kiinnitys ohjauspaneelista",
+    "unpin_from_tabs": "poista kiinnitys välilehdistä",
     "update": "päivitä",
     "update_app": "päivitä sovellus",
     "vote": "äänestä"
@@ -153,6 +156,9 @@
   "announcement_other": "ilmoitukset",
   "api": "API",
   "app": "sovellus",
+  "app_category": {
+    "title": "kategoria: {{name}}"
+  },
   "app_detail": {
     "about": "tietoja",
     "by_developer": "tekijä @{{developer}}",
@@ -160,11 +166,14 @@
     "details": "tiedot",
     "published": "julkaistu",
     "rate_this_app": "arvostele tämä sovellus",
+    "rating_stars_label": "{{score}}/5 tähteä",
     "ratings": "arvostelut",
     "ratings_count": "{{count}} arvostelua",
     "service": "palvelu",
     "size": "koko",
     "status": "tila",
+    "status_checking": "tarkistetaan solmua…",
+    "status_downloading": "ladataan ({{percent}})",
     "status_not_installed": "ei asennettu",
     "status_ready": "valmis (asennettu)",
     "tags": "tagit",
@@ -183,6 +192,45 @@
     "switch_theme_light": "Vaihda vaaleaan tilaan"
   },
   "attachment": "liite",
+  "background_sync": {
+    "description": "Pitää keskustelun toiminnassa, kun GO ei ole näytöllä.",
+    "error": {
+      "save_failed": "Taustasynkronointia ei voitu muuttaa. Yritä uudelleen."
+    },
+    "help": {
+      "always": "Pitää keskustelun synkronoituna aina, kun GO toimii taustalla. Kuluttaa huomattavasti enemmän akkua.",
+      "charging": "Pitää keskustelun synkronoituna puhelimen latautuessa.",
+      "off": "Keskustelu lakkaa synkronoimasta noin minuutin kuluttua GO:sta poistumisesta ja päivittyy, kun avaat sen uudelleen.",
+      "outbox": "Akkuvirralla GO lähettää odottavat viestisi loppuun vielä enintään 3 minuutin ajan poistumisesi jälkeen.",
+      "relay": "Kun puhelin latautuu Wi-Fi-yhteydellä, GO auttaa myös välittämään muiden viestejä."
+    },
+    "mode": {
+      "always": "aina",
+      "charging": "latautuessa",
+      "off": "pois"
+    },
+    "native": {
+      "fgs_timeout_text": "Android keskeytti GO:n taustayhteyden. Avaa GO yhdistääksesi uudelleen.",
+      "fgs_timeout_title": "GO keskeytetty",
+      "status_paused_text": "Avaa GO synkronoidaksesi keskustelusi.",
+      "status_paused_title": "Keskustelu keskeytetty",
+      "status_syncing_background": "Keskustelua synkronoidaan taustalla",
+      "status_waiting_text": "Lähetystä odottavia viestejä: {{count}}"
+    },
+    "status": {
+      "relaying": "Välitetään muille (latautuu Wi-Fi-yhteydellä)",
+      "syncing_now": "Synkronoidaan taustalla nyt"
+    },
+    "title": "Taustasynkronointi",
+    "vendor_freeze": {
+      "body": "{{manufacturer}}-puhelimesi pysäytti GO:n taustalla, vaikka taustasynkronointi oli päällä. Avaa puhelimen akkuasetukset GO:lle ja salli taustatoiminta.",
+      "body_unknown": "Puhelimesi pysäytti GO:n taustalla, vaikka taustasynkronointi oli päällä. Avaa puhelimen akkuasetukset GO:lle ja salli taustatoiminta.",
+      "dismiss": "Hylkää",
+      "guide": "Vaiheittaiset ohjeet (dontkillmyapp.com)",
+      "open_battery_settings": "Avaa akkuasetukset",
+      "title": "GO pysäytettiin taustalla"
+    }
+  },
   "balance": "saldo:",
   "blocks": "lohkot",
   "bookmarks": {
@@ -387,6 +435,43 @@
     "payment": "maksumaksu",
     "publish": "julkaisumaksu"
   },
+  "file_transfer": {
+    "dismiss": "Sulje",
+    "downloading_title": "Ladataan {{filename}}",
+    "failed_title": "Lataus epäonnistui",
+    "fetching_title": "Haetaan {{filename}}",
+    "gathering": "Kerätään QDN:stä · {{percent}} %",
+    "gathering_chunks": "Kerätään QDN:stä · {{percent}} % · {{local}}/{{total}} osaa",
+    "gathering_unknown": "Kerätään QDN:stä…",
+    "hide": "Piilota (jatkuu ilmoituksissa)",
+    "install": "Asenna",
+    "looking_for_file": "Etsitään tiedostoa QDN:stä…",
+    "not_saved_title": "{{filename}} ei tallennettu",
+    "not_saved_tray": "Tiedosto on yhä ladattuna. Tallenna se GO:n ilmoituksista.",
+    "open": "Avaa",
+    "open_failed": "Mikään tämän puhelimen sovellus ei voi avata tätä tiedostoa",
+    "progress": "{{percent}} % · {{size}}",
+    "ready_to_install": "Valmis asennettavaksi · {{location}}",
+    "ready_to_open": "Valmis avattavaksi · {{location}}",
+    "remove": "Poista listalta",
+    "save": "Tallenna",
+    "save_error": "Virhe tiedoston tallennuksessa: {{message}}",
+    "save_error_generic": "Virhe tiedoston tallennuksessa",
+    "save_stalled": "Tallennus pysähtyi: tallennustila lakkasi vastaamasta",
+    "save_success": "Tiedosto tallennettu",
+    "saved_title": "{{filename}} tallennettu",
+    "saved_to": "Tallennettu kohteeseen {{location}}",
+    "saving_file": "Tallennetaan tiedostoa…",
+    "saving_title": "Tallennetaan {{filename}}",
+    "stage_awaiting_save": "Ladattu, odottaa tallennusta",
+    "stage_declined": "Ei tallennettu · pidä se napauttamalla Tallenna",
+    "stage_downloading": "Ladataan",
+    "stage_gathering": "Kerätään QDN:stä",
+    "stage_saving": "Tallennetaan puhelimeen",
+    "storage_permission": "GO tarvitsee tallennustilan käyttöoikeuden tallentaakseen tiedostoja kansioon Documents.",
+    "tap_to_install": "Asenna napauttamalla · {{location}}",
+    "tap_to_open": "Avaa napauttamalla · {{location}}"
+  },
   "filter": {
     "all": "kaikki",
     "category": "kategoria",
@@ -399,6 +484,65 @@
   "for": "varten",
   "general": "yleinen",
   "general_settings": "yleiset asetukset",
+  "go_updates": {
+    "android_only": "Asentaminen toimii Android-sovelluksessa.",
+    "available_title": "Uusi GO 3.0 -päivitys saatavilla",
+    "badge": {
+      "installed": "Asennettu",
+      "new": "Uusi",
+      "older": "Vanhempi"
+    },
+    "check": "Tarkista päivitykset",
+    "checking": "Tarkistetaan QDN:ää…",
+    "error": {
+      "fetch_failed": "Versiota ei voitu hakea",
+      "timeout": "Verkko ei toimittanut versiota ajoissa"
+    },
+    "hide_changes": "Piilota muutokset",
+    "install": "Asenna",
+    "install_update": "Asenna päivitys",
+    "installed_label": "Asennettu tähän puhelimeen",
+    "job": {
+      "allow_installs": "Salli asennukset",
+      "confirm_hint": "Ladattu. Android pyytää sinua vahvistamaan asennuksen.",
+      "continue_background": "Voit sulkea tämän näkymän. Lataus jatkuu.",
+      "dismiss": "Hylkää",
+      "downloading": "Ladataan",
+      "failed": "Asennus epäonnistui",
+      "fetching": "Haetaan QDN:stä",
+      "permission": "Lupa tarvitaan",
+      "permission_hint": "Android asentaa sovelluksia vain sallituista lähteistä. Ota ”Tuntemattomien sovellusten asentaminen” käyttöön Qortal GO:lle. Asennus jatkuu itsestään, kun palaat.",
+      "ready": "Valmis asennettavaksi",
+      "updating_to": "Päivitetään versioon v{{version}}"
+    },
+    "last_checked": "tarkistettu viimeksi {{time}}",
+    "later": "Myöhemmin",
+    "loading_versions": "Ladataan versioita QDN:stä…",
+    "no_notes": "Tälle versiolle ei lisätty julkaisutietoja.",
+    "no_versions": "GO 3.0 -versioita ei ole vielä julkaistu.",
+    "open_in_qshare": "Avaa Q-Share+:ssa",
+    "progress": {
+      "assembling": "Kootaan versiota",
+      "bytes_of_total": "{{done}} / {{total}}",
+      "confirm_in_android": "Android pyytää vahvistusta",
+      "downloading": "Ladataan",
+      "fetching": "Haetaan Qortal-verkosta",
+      "needs_permission": "Android tarvitsee luvan asentaa sovelluksia Qortal GO:sta"
+    },
+    "published_when": "julkaistu {{when}}",
+    "retry": "Yritä uudelleen",
+    "show_changes": "Näytä muutokset",
+    "status": {
+      "available": "Uudempi versio on saatavilla.",
+      "never": "Ei vielä tarkistettu.",
+      "unreachable": "QDN:ään ei saatu yhteyttä. Tarkista solmuyhteys ja yritä uudelleen.",
+      "up_to_date": "Sinulla on uusin versio."
+    },
+    "title": "GO 3.0 -päivitykset",
+    "update_marker": "GO 3.0 -päivitys saatavilla",
+    "versions_missing": "Joitakin versioita ei vielä voitu ladata ({{count}}). Tarkista myöhemmin uudelleen.",
+    "versions_title": "Versiot QDN:ssä"
+  },
   "group_call": "ryhmäpuhelu",
   "group_call_blocked": "lopeta ensin toinen puhelusi",
   "group_call_chat_placeholder": "Ryhmäpuheluiden tekstikeskustelu ei ole vielä käytettävissä.",
@@ -462,6 +606,7 @@
       "decrypt_app": "sovelluksen salauksen purku epäonnistui",
       "download_image": "kuvan lataaminen epäonnistui. Yritä myöhemmin uudelleen Päivitä-painikkeella",
       "download_private_app": "yksityisen sovelluksen lataaminen epäonnistui",
+      "edit_message_too_long": "Muokattuja viestejä ei voi jakaa. Lyhennä se {{maximum}} tavuun.",
       "encrypt_app": "sovelluksen salaaminen epäonnistui",
       "fetch_app": "sovelluksen hakeminen epäonnistui",
       "fetch_publish": "julkaisun hakeminen epäonnistui",
@@ -476,6 +621,8 @@
       "invalid_signature": "virheellinen allekirjoitus",
       "invalid_theme_format": "virheellinen teeman muoto",
       "invalid_zip": "virheellinen zip-tiedosto",
+      "long_message_too_many_parts": "Tämä viesti on liian pitkä lähetettäväksi, vaikka se jaettaisiin {{maximum}} viestiin.",
+      "long_message_unsplittable": "Osaa tästä viestistä ei voi jakaa tarpeeksi pieneksi lähetettäväksi.",
       "message_loading": "viestin latausvirhe",
       "message_size": "viestisi koko on {{ size }} tavua (maksimi {{ maximum }})",
       "minting_account_add": "minttaustilin lisääminen epäonnistui",
@@ -530,6 +677,7 @@
       "hub_notification_settings_desc": "Choose which Hub features appear in your notification panel.",
       "link_copied": "linkki kopioitu leikepöydälle.",
       "loading": "Ladataan...",
+      "long_message_split": "Pitkä viesti: se lähetetään {{count}} viestinä.",
       "mentioned": "mainittu",
       "message_with_image": "tässä viestissä on jo kuva",
       "minimal_qort_balance": "Vähintään {{ quantity }} QORTin saldo mahdollistaa chat-viestien lähettämisen lähes välittömästi.",
@@ -714,6 +862,18 @@
   "none": "ei mitään",
   "not_available": "ei saatavilla",
   "note": "muistiinpano",
+  "notification_history": {
+    "clear": "Tyhjennä",
+    "clear_all": "Tyhjennä kaikki",
+    "clear_all_hint": "Tyhjennä kaikki ilmoitukset. Ne jäävät ilmoitushistoriaan.",
+    "close": "Sulje",
+    "drag_to_close": "Sulje vetämällä ylös",
+    "empty": "Täällä ei ole vielä mitään. Saamasi ilmoitukset säilyvät täällä 30 päivää, vaikka pyyhkäisisit ne pois.",
+    "open": "Ilmoitushistoria",
+    "title": "Ilmoitushistoria",
+    "today": "Tänään",
+    "yesterday": "Eilen"
+  },
   "official_apps": {
     "all_apps": "kaikki viralliset sovellukset",
     "featured": "suositellut",
@@ -888,6 +1048,20 @@
     "community_apps": "yhteisösovellukset",
     "my_apps": "omat sovellukset",
     "official_apps": "viralliset sovellukset"
+  },
+  "tabs_overlay": {
+    "delete_folder_body_one": "siihen tallennettu {{count}} sovellus poistetaan välilehdistä. Avoimet välilehdet pysyvät auki.",
+    "delete_folder_body_other": "siihen tallennetut {{count}} sovellusta poistetaan välilehdistä. Avoimet välilehdet pysyvät auki.",
+    "delete_folder_title": "poistetaanko ”{{name}}”?",
+    "edit_hint_folder": "järjestä sovelluksia vetämällä tai poista napauttamalla ×",
+    "edit_hint_root": "vedä sovelluksia kansioihin, poista napauttamalla × tai järjestä kansioita vetämällä",
+    "folder_empty": "tämä kansio on tyhjä",
+    "folder_empty_hint": "siirrä sovellus tähän kansioon painamalla sitä pitkään.",
+    "no_open_tabs": "ei vielä avoimia välilehtiä",
+    "no_open_tabs_with_folders": "ei avoimia välilehtiä. Näet kansion sovellukset napauttamalla sitä.",
+    "pin_failed": "kiinnitystä ei voitu tallentaa välilehtiin",
+    "pinned_to_folder": "kiinnitetty välilehtien kansioon {{folder}}",
+    "unpinned_from_folder": "poistettu välilehtien kansiosta {{folder}}"
   },
   "tags": "tunnisteet",
   "theme": {

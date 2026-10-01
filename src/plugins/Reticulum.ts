@@ -77,6 +77,17 @@ export interface ReticulumPlugin {
   presenceStop(): Promise<{ stopped: boolean }>;
 
   /**
+   * Logout: close the hub sockets while the Python bridge stays up. The
+   * native default delay (5 s) lets an offline presence notice sent just
+   * before leave first; the next presenceStart or status service start
+   * redials. Clamped to 0-60 000 ms natively.
+   */
+  presencePauseNetwork(options?: {
+    delayMs?: number;
+    reason?: string;
+  }): Promise<{ ok: boolean }>;
+
+  /**
    * Loopback WebSocket endpoint for the chat engine worker. Commands sent on
    * it are fed to presence_bridge.py and every bridge frame is mirrored back,
    * bypassing the WebView main thread that plugin calls and listeners use.

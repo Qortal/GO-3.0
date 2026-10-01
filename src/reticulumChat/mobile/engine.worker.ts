@@ -6,6 +6,7 @@
  * (their module scopes touch fs/sqlite on load), hence the dynamic import.
  */
 import { Buffer } from 'buffer';
+import { createLogThrottle } from './shims/logger';
 
 (globalThis as any).Buffer = (globalThis as any).Buffer || Buffer;
 (globalThis as any).process = (globalThis as any).process || {
@@ -31,31 +32,18 @@ if (typeof (globalThis as any).setImmediate !== 'function') {
  * logcat. The engine logs per-peer and per-group, so one repeating fault (a
  * storage error, an unreachable peer) turns into thousands of messages a
  * minute and saturates the JS bridge badly enough to stop the UI painting.
- * Collapse repeats of the same message into a periodic summary.
+ * Budget each message kind (5 per 10 s) under a 15-lines-per-10-s ceiling and
+ * collapse the rest into one summary line (see createLogThrottle).
  */
 function throttleWorkerConsole(): void {
-  const WINDOW_MS = 10_000;
-  const LIMIT = 5;
-  const seen = new Map<string, { count: number; windowStart: number }>();
+  const decide = createLogThrottle();
+  const emitSummary = console.log.bind(console);
   for (const level of ['log', 'warn', 'error'] as const) {
     const original = console[level].bind(console);
     console[level] = (...args: unknown[]) => {
-      const key = `${level}:${String(args[0] ?? '').slice(0, 120)}`;
-      const now = Date.now();
-      const entry = seen.get(key);
-      if (!entry || now - entry.windowStart > WINDOW_MS) {
-        if (entry && entry.count > LIMIT) {
-          original(
-            `[MobileChat] (${entry.count - LIMIT} further repeats suppressed)`,
-            args[0]
-          );
-        }
-        seen.set(key, { count: 1, windowStart: now });
-        original(...args);
-        return;
-      }
-      entry.count += 1;
-      if (entry.count <= LIMIT) original(...args);
+      const { emit, summary } = decide(level, args);
+      if (summary) emitSummary(summary);
+      if (emit) original(...args);
     };
   }
 }
@@ -64,7 +52,8 @@ throttleWorkerConsole();
 
 type BootMessage = {
   t: 'boot';
-  config: { apiBase: string; apiKey?: string };
+  // Never the API key: membership checks do not use one (groupValidation.ts).
+  config: { apiBase: string; apiKeyConfigured?: boolean | null };
 };
 
 const early: unknown[] = [];
@@ -101,7 +90,9 @@ handler = (data: any) => {
 /**
  * UI RPCs (and the replies the engine is awaiting) are handled immediately;
  * Python event floods (presence, digests) are drained a few per macrotask so
- * a burst cannot starve a `getDirectHistory` call for seconds.
+ * a burst cannot starve a `getDirectHistory` call for seconds. App state
+ * edges and the relay profile also skip the queue: queued before boot, a
+ * stale one must not be applied after a newer one sent once the engine is up.
  */
 const PRIORITY_TYPES = new Set([
   'rpc',
@@ -110,6 +101,9 @@ const PRIORITY_TYPES = new Set([
   'nativefsres',
   'boot',
   'stop',
+  'lifecycle',
+  'network-regained',
+  'relay-profile',
 ]);
 const deferred: unknown[] = [];
 let pumping = false;

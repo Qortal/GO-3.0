@@ -9,6 +9,341 @@ desktop Hub. The format is based on
 
 ---
 
+## [Unreleased]
+
+## [0.0.13] — 2026-10-01 (GO 3.0)
+
+Field / Q-Share build **GO 3.0 v0.0.13** (`versionName` 0.0.13, `versionCode` 16).
+
+### Added
+
+- **Background sync** _(mobile)_ — a new **Background sync** card in the
+  notification settings: **Off**, **While charging** (the default) or
+  **Always**. Android's WebView freezes a hidden page 60 s after GO leaves
+  the screen, and the chat engine runs in that page, so until now GO stopped
+  sending and receiving about a minute after you switched away. While
+  charging (or always, if chosen) GO now keeps the engine running in the
+  background. On battery it still keeps going for up to 3 minutes after you
+  leave GO while your own messages are waiting to go out, then pauses as
+  before. **Always** uses noticeably more battery. The card shows when GO is
+  syncing in the background. Nothing changes on web or desktop.
+- **Charging mode helps relay** _(mobile)_ — while the phone charges on an
+  unmetered network (for 2 minutes), GO relays group traffic for others and
+  keeps as many mesh neighbours as the desktop Hub (12 + 8 instead of 6 + 6).
+  It drops back to the light phone profile as soon as it is unplugged or on
+  mobile data.
+- **Your messages reach your own Hub** _(shared)_ — when the same account is
+  signed in on another device, such as an always-on Hub at home, GO now tells
+  it about every DM you send, directly and without flooding the mesh, and
+  lets it download the message at once. That device can then deliver the
+  message after GO closes. The same happens when you leave GO, when you come
+  back, and when the network returns; group posts are announced to it too.
+  Works with Hub 3.0.3 as released.
+- **Delivery status on your DMs** _(shared)_ — your own Reticulum DMs show a
+  small status icon: **Sending**, **Only on this phone** (not yet anywhere
+  else), **On your other device** (your Hub has a copy and can deliver it
+  when the recipient comes online) or **Delivered** (the recipient's device
+  requested it and it was sent). Tap or hover it for an explanation.
+- **Phone-maker freeze notice** _(mobile)_ — some phones (vivo was measured)
+  freeze apps when the screen turns off, even with background sync on. When
+  GO notices this it shows a one-time notice with a button to the phone's
+  battery settings and a link to dontkillmyapp.com for that brand.
+- **Note for Hub developers** — `HUB_OWN_DEVICE_DELIVERY.md` describes what
+  was measured, what GO now does on its own and which Hub changes would make
+  delivery through an own Hub reliable.
+- **Long messages are split** _(shared)_ — a chat message over 4,000 bytes
+  (DM, group or thread) is now sent as several consecutive messages, up to
+  15, instead of being refused.
+- **Save diagnostics as a file** _(shared)_ — the Reticulum badge has **Save
+  as .md file** next to **Copy diagnostics**. On phones it is saved to
+  Documents/Qortal Go/Documents, ready to attach instead of pasting a long
+  report that chat apps cut into pieces.
+- **Discard button in the composer** _(shared)_ — a small X left of the send
+  button throws away what you typed. When the message grows to several
+  lines, the X moves up beside the send button.
+- **Library pins go to Tabs** _(mobile)_ — the pin icon in the Q-Apps
+  library now adds the app to a **Library** folder in Tabs. Before, it wrote
+  to the desktop dashboard's pin list, which phones never show.
+
+- **Admin buttons on each member row** _(shared)_ — in the Q-Chat Members
+  list the group owner sees a shield button on every member: **Make admin**
+  on regular members, **Remove admin** on admins, plus a ⋮ menu with
+  **Kick** and **Ban**. Admins who are not the owner get the ⋮ menu (kick,
+  ban) on regular members only; nobody gets buttons on the owner or on
+  themselves, matching what Core accepts. Each action still asks for the
+  fee confirmation. After it is sent the row shows **Pending** and the list
+  re-reads every 15 s until Core shows the change (up to 6 minutes). Pending
+  survives closing and reopening Members. Holding or right-clicking a row
+  opens the same menu. Before, only the owner could reach these actions, by
+  holding a row, and the menu offered all four whatever the member's role.
+- **GO 3.0 Updates screen** _(mobile)_ — a new **GO 3.0 Updates** entry
+  under **Node** in the account menu opens its own full-screen window. It
+  shows the installed version, a **Check for updates** button (with when it
+  last looked), and, when a newer build is published to QDN under GO 3.0, a
+  bell card with **Install update** and **Later**. Below it, **Versions on
+  QDN** lists every published build, newest first, with its size, date and
+  release notes (**Show changes** expands them) and an **Open in Q-Share+**
+  link to its share page. Builds are published with Q-Share+, which stores
+  the same data as Q-Share. Builds newer than the installed one have an
+  **Install** button; older ones can only be opened in Q-Share+, since
+  Android does not put an older version over a newer one. The download and
+  install keep running if the window is closed.
+- **Clear all in the notifications panel** _(shared)_ — a **Clear all**
+  button right of **Notification history** empties the panel in one tap.
+  Everything cleared (notifications and saved files) stays in Notification
+  history, the same as swiping items away one by one.
+
+### Changed
+
+- **Undelivered DMs keep trying for 7 days** _(shared)_ — before, GO stopped
+  re-announcing an undelivered DM after 2 hours. It now keeps trying slowly
+  (every 30 minutes for the first day, then every 2 hours) for up to 7 days,
+  and stops as soon as your own Hub has the message. The retry state is
+  saved, so a restart no longer causes a burst of re-sends.
+- **Saved Messages retry until your other device has them** _(shared)_ — a
+  Saved Message used to count as announced once the phone had sent the
+  notice, so a lost notice was never repeated. It now counts only when your
+  other device has actually downloaded it, with at most 12 re-announcements.
+- **Clear status notification** _(mobile)_ — the persistent GO notification
+  now says **Chat paused — open GO to sync** when the chat engine is frozen,
+  **Syncing in the background** when background sync keeps it running, and
+  how many of your messages are waiting to be sent. These texts and the
+  "GO paused" notice now follow the app language.
+- **No daily limit while background sync runs** _(mobile)_ — on Android 15
+  and later the system stops a "data sync" background service after about
+  6 hours a day, which is what GO used. While background sync is meant to
+  run continuously (charging, or **Always**), GO's service now runs as a
+  messaging service, which has no daily limit (Android 14 and later), so
+  charging mode can run all night. On battery with **While charging** or
+  **Off**, the 6-hour limit stays as a battery safety net; when it is
+  reached GO pauses cleanly with one "GO paused — open GO to reconnect"
+  notice instead of crashing and restarting in a loop until opened.
+- **Less background traffic** _(shared)_ — GO no longer re-floods answers to
+  its own "any messages for me?" questions into the mesh, checks for local
+  notifications every 60 s instead of every 2 s (on phones), runs its DM
+  retry timer only while something is waiting, stops retrying an empty
+  download from your own device, and skips signature checks for exact
+  duplicates. Relaying for others is unchanged.
+- **Swipe away or log out stops the network** _(mobile)_ — after GO is swiped
+  away from recent apps, or after logout, the Reticulum network layer pauses
+  instead of running on with nothing attached to it.
+- **Late messages still notify** _(mobile)_ — DMs and mentions that arrive
+  while GO catches up after being frozen or offline now raise a notification
+  if you have not read them elsewhere; several at once become one sound.
+- **Q-Apps pause in the background** _(mobile)_ — open Q-App tabs are paused
+  while GO is in the background, so they do not drain the battery while
+  background sync keeps GO awake.
+- **Delivery counters in the log** _(mobile)_ — the per-minute
+  `bridge_traffic` log line now includes delivery counters, and the log
+  throttle keeps each kind of line separately so one noisy line no longer
+  hides the others.
+
+- **App updates leave the notifications panel** _(mobile)_ — a new GO build
+  no longer appears as a card in the notifications panel or counts in its
+  badge. The account menu's **GO 3.0 Updates** entry rings its bell instead
+  (with a 1 until the screen has been opened), and the avatar gets a small
+  update mark until then.
+- **Swiping a saved file keeps it in history** _(mobile)_ — swiping a
+  saved download out of the notifications panel, or tapping its X there,
+  now only clears it from the panel; it stays in Notification history. The
+  X in Notification history still forgets it.
+
+- **One layout for every group panel** _(mobile)_ — Members, Calendar,
+  Files, Admin keys, Threads and Qortal Land (the ⋮ menu in a group chat)
+  now all open full screen with the same header as Group Calendar: icon and
+  title on the left, the X in the same top-right spot. Members keeps its
+  member count and Qortal Land its call button beside the X; Calendar keeps
+  Add event. Before, each looked different: Members had a back arrow, Files
+  a small Q-Manager bar, Admin keys was a popover under the chat header, and
+  Threads and Qortal Land showed a row of group tool icons with no close
+  button. While Members, Threads or Qortal Land is open, the app's top bar
+  and Home/Apps/Chat bar step aside, as they already did for Calendar and
+  Files.
+- **Android back closes group panels** _(mobile)_ — back now does what the
+  X does on every panel above: it closes Calendar (an open event, the event
+  editor or the delete prompt first), Files and Admin keys, and returns from
+  Threads and Qortal Land to the chat. In Threads, back first leaves an open
+  thread or the reply composer. Before, back on Calendar, Files, Threads or
+  Qortal Land closed the whole group. Back also closes, in order, the member
+  menu, the member card and the Members panel.
+
+### Fixed
+
+- **Group chats stayed empty on nodes with an API key** _(mobile)_ — reported
+  by GrapheneOS users. The group membership check sent the node's API key,
+  which the node's browser security rules (CORS) reject, so every check
+  failed; and while a DM page was being prepared, downloads for groups were
+  refused. Together they kept groups dark. The check no longer sends the
+  key (it does not need one) and group downloads are no longer blocked.
+- **Emoji panel closes like the keyboard** _(mobile)_ — tapping outside the
+  composer now closes the emoji/GIF panel. Before, only sending, the smiley
+  button, picking a GIF or Android back closed it.
+- **GO refused its own Hub's download** _(shared)_ — while GO was still
+  announcing a new DM, a download request from the same account's other
+  device was rejected (`dm_notification_request_mismatch`), so the Hub gave
+  up after 6 attempts. Own devices are now allowed, and the recipient's
+  delivery continues unchanged.
+- **Background service stopped when the phone was turned sideways**
+  _(mobile)_ — the background service was tied to a narrow screen width, so
+  landscape, tablets and fullscreen video stopped it. It now depends only on
+  running as the Android app.
+- **Chat traffic lost after a freeze** _(mobile)_ — messages that reached the
+  phone while the page was frozen were dropped when the engine reconnected.
+  They are now handed to the engine once it is back.
+- **Admin keys fit on phones** _(mobile)_ — the GSK/ASK cards had a fixed
+  390 px body inside a narrower window, so their right side was cut off.
+  They now follow the screen width.
+
+## [0.0.12] — 2026-09-29 (GO 3.0)
+
+Field / Q-Share build **GO 3.0 v0.0.12** (`versionName` 0.0.12, `versionCode` 15).
+
+### Security
+
+- **Q-Apps only see their own notification read marks** _(shared)_ —
+  `NOTIFICATION_MARK_SEEN` returned the seen keys of every Q-App for the
+  account; it now returns only the calling app's keys
+  (`filterSeenInAppKeysForApp`). It also re-marks only the keys it names,
+  so marking one app's notifications no longer moves other apps' marks
+  forward (which hid their newer notifications and synced that to the
+  other devices).
+
+### Added
+
+- **Account menu closes with a swipe up, with an exit choreography**
+  _(mobile)_ — the panel under the avatar stays put, but a swipe up, on the
+  panel or anywhere on the dimmed screen, lifts it with the finger while the
+  buttons close to the side one after another, bottom-up, in step with the
+  finger (swipe back down and they return); once the swipe is long or fast
+  enough the release throws the panel off the top, a short swipe springs
+  everything back and a downward pull only rubber-bands. When the list has to scroll (landscape)
+  it scrolls, and the swipe-up works from the header and the dim. Closing
+  by a tap outside, an action or Android back plays the opening stagger in
+  reverse: buttons slide away bottom-up, the header lifts and the panel
+  folds back towards the avatar. Android back closes it (it did not before).
+  Reduced-motion users get instant open/close. The panel lives in
+  `MobileAccountPanel.tsx`.
+
+- **Open / Download shows what the node really has** _(shared)_ — the
+  Q-Apps library asked the list endpoint
+  (`/arbitrary/resources/search?includestatus=true`), whose status is a
+  Core cache that goes stale (reloaded every 30 minutes, not updated when
+  a built copy expires or chunks are deleted; on ext-node.qortal.link only
+  6 of 34 apps listed READY were). Buttons on screen now ask
+  `/arbitrary/resource/status` per app (only rows that stay on screen for
+  300 ms, 4 at a time, cached 5 minutes, falling back to the list if the
+  node refuses). READY, DOWNLOADED and BUILDING show **Open**; DOWNLOADING
+  shows a percentage; a listed PUBLISHED shows **Download** right away and
+  anything else a small spinner until the node answers. Opening an app
+  keeps checking it until the node has it, so its button turns into Open.
+  The refresh button re-checks, the Community status filter and the app
+  detail status badge use the same answer.
+- **Featured top-rated apps in Community and every category** _(shared)_ —
+  a Featured carousel with the 10 best rated apps (at least 2 votes),
+  hidden while a filter or category search narrows the list. Featured
+  cards (Official too) show gold stars, the score and the number of votes.
+- **Best rated first** _(shared)_ — "Highest rated" is the default sort
+  and weighs how many people voted: a Bayesian average with a 3-star prior
+  worth 3 votes, so one self-rated 5-star vote (60 of the 111 rating polls
+  have a single vote) no longer tops apps that many rated highly. Category
+  pages and library search sort with ratings too.
+- **Swipe away notifications** _(shared)_ — items in the notifications
+  panel can be swiped (or deleted with Delete/Backspace) away; they stay
+  hidden across reconnects for 7 days and leave the badge count. A group
+  mention card comes back when new mentions arrive.
+
+- **Copy chat diagnostics** _(shared)_ — the Reticulum badge popover has
+  a **Copy diagnostics** button (selectable text if the clipboard fails)
+  with the GO version, WebView, WebAssembly/OPFS support, a JS loop probe
+  as a JIT indicator, radio stats, chat engine state, age and boot timings
+  (sqlite-wasm init), worker/bridge/RPC counts, Core `/admin/status`
+  reachability, recent send failures and the engine log faults and tail.
+  Made for the GrapheneOS "failed to send" reports, where screenshots were
+  the only evidence.
+- **Send failures say why** _(shared)_ — the queue's error is kept on the
+  message and shown under "failed to send". A publish refused because
+  Core could not be asked about group membership (node unreachable or API
+  key missing) now says so, instead of "author is not a current group
+  member".
+- **Download progress and saved files** _(mobile)_ — large QDN fetches
+  from Q-App frames (reported by a document-start script) and GO's own
+  saves show a progress card at the top; ⌄ flies it into the avatar bell.
+  The bell lists running downloads, saved files as "Ready to install" /
+  "Ready to open" with a button, and declined saves with a Save button
+  (30 minutes). The Android tray shows quiet progress, a "Saved files"
+  alert only while GO is in the background, and tapping it installs or
+  opens the file. Saves use a binary WebMessage channel (`goFileSink`,
+  limited to the bridge's allowed origins): about 149 MB/s against about
+  6 MB/s for the base64 chunk path.
+- **Notification history** _(shared)_ — a button next to ⚙ in the bell
+  panel lists the last 30 days per account (up to 300 entries), including
+  swiped-away items and saved downloads; tapping an entry opens it like in
+  the panel. The bell panel also closes by dragging its header or grab bar
+  up.
+
+### Changed
+
+- **Q-Apps library on phones** _(mobile)_ — the Community tab and
+  category pages use compact, virtualized list rows (two columns on
+  tablets) instead of desktop cards, and the Community tab has its
+  "Community apps (N)" header back. Category pages are full width with a
+  translated title and their own search and sort; the hidden category list
+  is no longer rendered while no category is open.
+- **Library tabs** _(shared)_ — each tab remembers its scroll position,
+  tapping the current tab scrolls to the top, and picking a tab leaves the
+  search results.
+- **Tabs folders** _(mobile)_ — a folder shows only its own apps; tapping
+  the open folder's chip goes back to all tabs; reopening Tabs stays in a
+  folder only if the active app is in it; Android back steps out of
+  dialogs, name editing, edit mode and folders one at a time; deleting a
+  folder asks first.
+- **Notification settings fill the screen on phones** _(mobile)_ and no
+  longer scroll sideways.
+- **Q-App names and avatars in notifications** _(shared)_ — notification
+  settings and panel items show the app's registered name (from
+  `/names/{name}`, `%20` decoded) with its avatar.
+
+### Fixed
+
+- **Chat engine badge stuck on "idle"** _(shared)_ — the badge only heard
+  readiness changes after it subscribed, so it missed an engine boot that
+  another chat surface had already started. It now replays the current
+  state on subscribe, and "starting" counts the seconds.
+- **Saving files on Android 8 and 9** _(mobile)_ — the storage permission
+  was never requested at runtime, so every save failed there.
+- **APKs could be saved as `.apk.zip`** _(mobile)_ — the native download
+  path gave MediaStore QDN's MIME type (`application/zip` for APKs); the
+  file name now decides.
+
+- **Home no longer opens black after login** _(mobile)_ — the idle
+  animation pause (10 s without input) froze every CSS animation, including
+  the dashboard's one-shot post-login fade-in, which starts at opacity 0. A
+  biometric unlock produces no DOM input, so the timer set on the lock
+  screen had already expired and the whole Home view stayed invisible until
+  the first touch. Finite CSS animations now always run to completion while
+  idle; only infinite loops stay frozen. Entering the authenticated shell
+  also counts as activity.
+
+- **Tabs folders and Q-Apps library tabs did nothing when tapped**
+  _(shared)_ — a notifications effect re-wrote the seen-notification marks
+  in a loop (~280 times a second on an affected account), which starved
+  every deferred update. Q-App notifications on the desktop that this
+  wrongly marked as read show as unread again.
+- **Scrolling a long folder closed the Tabs window** _(mobile)_ — the
+  overlay's transparent backdrop covers the strip and bottom bar under a
+  full-height panel, so a swipe up from there counted as touching the app
+  behind. A swipe that starts below a scrollable list now scrolls it; a
+  tap there still closes.
+- **Tabs** _(mobile)_ — Rename and Change address saved nothing; a tap
+  right after a drag was ignored; the window closed by itself when a chat
+  behind it updated.
+- The selected library tab showed the hover colour after a tap
+  _(mobile)_.
+- A Featured carousel could crash when its list became empty (hooks
+  after an early return) _(shared)_.
+
+---
+
 ## [0.0.11] — 2026-09-29 (GO 3.0)
 
 Field / Q-Share build **GO 3.0 v0.0.11** (`versionName` 0.0.11, `versionCode` 14).

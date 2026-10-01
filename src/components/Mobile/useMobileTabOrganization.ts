@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { useAtomValue } from 'jotai';
+import { useCallback, useEffect } from 'react';
+import { useAtomValue, useStore } from 'jotai';
 import { arrayMove } from '@dnd-kit/sortable';
 import { userInfoAtom, rawWalletAtom } from '../../atoms/global';
 import {
@@ -7,66 +7,52 @@ import {
   getFolderRow,
   getOpenTabDisplayTitle,
   getOpenTabKey,
+  emptyOrganization,
   HUB_DASHBOARD_FOLDER_NAME,
-  loadMobileTabOrganization,
   pinnedAppToOpenTab,
   renameTabKeyInOrganization,
   resolveFolderRowCount,
-  saveMobileTabOrganization,
   snapshotFromTab,
   sortFolders,
   type MobileTabOrganization,
   type TabFolder,
 } from './mobileTabOrganization';
+import {
+  ensureMobileTabOrganizationLoaded,
+  mobileTabOrganizationStateAtom,
+  updateMobileTabOrganization,
+} from './mobileTabOrganizationStore';
 import type { SerializedPinnedApp } from '../../hooks/qdnSavedSettings';
 import type { OpenTab } from './useOpenTabs';
 import { updateOpenTab } from './useOpenTabs';
+
+const EMPTY_ORGANIZATION = emptyOrganization();
 
 export function useMobileTabOrganization() {
   const userInfo = useAtomValue(userInfoAtom);
   const rawWallet = useAtomValue(rawWalletAtom);
   const walletAddress = userInfo?.address || rawWallet?.address0 || '';
-  const [organization, setOrganization] = useState<MobileTabOrganization>({
-    folders: [],
-    tabOverrides: {},
-    tabFolderMap: {},
-    savedTabs: {},
-    folderRowCount: 1,
-  });
-  const [ready, setReady] = useState(false);
-  const organizationRef = useRef(organization);
+  const store = useStore();
+  const state = useAtomValue(mobileTabOrganizationStateAtom);
+  const isCurrentWallet = state.walletAddress === walletAddress;
+  const organization: MobileTabOrganization = isCurrentWallet
+    ? state.organization
+    : EMPTY_ORGANIZATION;
+  const ready = isCurrentWallet && state.ready;
 
   useEffect(() => {
-    organizationRef.current = organization;
-  }, [organization]);
-
-  useEffect(() => {
-    let cancelled = false;
-    setReady(false);
-    void loadMobileTabOrganization(walletAddress).then((data) => {
-      if (!cancelled) {
-        organizationRef.current = data;
-        setOrganization(data);
-        setReady(true);
+    void ensureMobileTabOrganizationLoaded(store, walletAddress).catch(
+      (error) => {
+        console.error('Failed to load Tabs folders', error);
       }
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [walletAddress]);
+    );
+  }, [store, walletAddress]);
 
   const persist = useCallback(
     (updater: (prev: MobileTabOrganization) => MobileTabOrganization) => {
-      const prev = organizationRef.current;
-      const next = updater(prev);
-      if (next === prev) return;
-      organizationRef.current = next;
-      setOrganization(next);
-      if (walletAddress) {
-        void saveMobileTabOrganization(walletAddress, next);
-      }
+      updateMobileTabOrganization(store, walletAddress, updater);
     },
-    [walletAddress]
+    [store, walletAddress]
   );
 
   const upsertSavedTab = useCallback(

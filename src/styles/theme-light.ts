@@ -39,6 +39,8 @@ export const lightThemeOptions: ThemeOptions = {
       positive: 'rgb(94, 176, 73)',
       danger: 'rgb(177, 70, 70)',
       unread: 'rgb(66, 151, 226)',
+      // Deeper than the dark theme's gold so it holds up on white.
+      rating: '#D49A00',
     },
   },
 

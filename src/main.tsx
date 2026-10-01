@@ -16,7 +16,7 @@ installReticulumBridges();
 // Install window.reticulumChat backed by the in-app chat engine worker so the
 // mobile app runs the new Reticulum chat (no legacy). No-op off-Capacitor.
 installMobileReticulumChat();
-// Freeze decorative CSS loops after 20 s without input; on-device they cost
+// Freeze decorative CSS loops after 10 s without input; on-device they cost
 // ~half a CPU core for as long as the screen is on. No-op off-Capacitor.
 installIdleAnimationPause();
 import App from './App.tsx';

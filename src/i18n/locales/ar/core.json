@@ -61,8 +61,9 @@
     "create_transaction": "إنشاء معاملات على بلوكشين كورتال",
     "decline": "رفض",
     "decrypt": "فك التشفير",
-    "delete": "delete",
+    "delete": "حذف",
     "disable_enter": "تعطيل زر الإدخال",
+    "discard_message": "تجاهل الرسالة",
     "download": "تحميل",
     "download_file": "تحميل ملف",
     "edit": "تعديل",
@@ -98,6 +99,7 @@
     "pin": "تثبيت",
     "pin_app": "تثبيت التطبيق",
     "pin_to_dashboard": "تثبيت على لوحة التحكم",
+    "pin_to_tabs": "تثبيت في علامات التبويب",
     "post": "نشر",
     "post_message": "نشر رسالة",
     "publish": "نشر",
@@ -140,6 +142,7 @@
     "unpin": "إلغاء التثبيت",
     "unpin_app": "إلغاء تثبيت التطبيق",
     "unpin_from_dashboard": "إلغاء التثبيت من لوحة التحكم",
+    "unpin_from_tabs": "إلغاء التثبيت من علامات التبويب",
     "update": "تحديث",
     "update_app": "تحديث تطبيقك",
     "vote": "تصويت"
@@ -153,6 +156,9 @@
   "announcement_other": "إعلانات",
   "api": "API",
   "app": "تطبيق",
+  "app_category": {
+    "title": "الفئة: {{name}}"
+  },
   "app_detail": {
     "about": "حول",
     "by_developer": "بواسطة @{{developer}}",
@@ -160,11 +166,14 @@
     "details": "التفاصيل",
     "published": "تم النشر",
     "rate_this_app": "قيم هذا التطبيق",
+    "rating_stars_label": "{{score}} من 5 نجوم",
     "ratings": "تقييمات",
     "ratings_count": "{{count}} تقييمات",
     "service": "الخدمة",
     "size": "الحجم",
     "status": "الحالة",
+    "status_checking": "جارٍ التحقق من العقدة…",
+    "status_downloading": "جاري التحميل ({{percent}})",
     "status_not_installed": "غير مثبت",
     "status_ready": "جاهز (مثبت)",
     "tags": "الوسوم",
@@ -183,6 +192,45 @@
     "switch_theme_light": "التبديل إلى الوضع الفاتح"
   },
   "attachment": "مرفق",
+  "background_sync": {
+    "description": "تُبقي الدردشة تعمل عندما لا يكون GO على الشاشة.",
+    "error": {
+      "save_failed": "تعذّر تغيير المزامنة في الخلفية. يُرجى المحاولة مرة أخرى."
+    },
+    "help": {
+      "always": "تُبقي الدردشة متزامنة كلما كان GO يعمل في الخلفية. تستهلك بطارية أكثر بشكل ملحوظ.",
+      "charging": "تُبقي الدردشة متزامنة أثناء شحن الهاتف.",
+      "off": "تتوقف مزامنة الدردشة بعد دقيقة تقريبًا من مغادرة GO، وتلحق بما فاتها عند فتحه مجددًا.",
+      "outbox": "على البطارية، يواصل GO إرسال رسائلك المنتظرة لمدة تصل إلى 3 دقائق بعد مغادرته.",
+      "relay": "أثناء شحن الهاتف على شبكة Wi-Fi، يساعد GO أيضًا في تمرير رسائل الآخرين."
+    },
+    "mode": {
+      "always": "دائمًا",
+      "charging": "أثناء الشحن",
+      "off": "إيقاف"
+    },
+    "native": {
+      "fgs_timeout_text": "أوقف Android اتصال GO في الخلفية مؤقتًا. افتح GO لإعادة الاتصال.",
+      "fgs_timeout_title": "تم إيقاف GO مؤقتًا",
+      "status_paused_text": "افتح GO لمزامنة محادثاتك.",
+      "status_paused_title": "الدردشة متوقفة مؤقتًا",
+      "status_syncing_background": "تجري مزامنة الدردشة في الخلفية",
+      "status_waiting_text": "رسائل بانتظار الإرسال: {{count}}"
+    },
+    "status": {
+      "relaying": "يمرر الرسائل للآخرين (يُشحن على Wi-Fi)",
+      "syncing_now": "تجري المزامنة في الخلفية الآن"
+    },
+    "title": "المزامنة في الخلفية",
+    "vendor_freeze": {
+      "body": "أوقف هاتف {{manufacturer}} الخاص بك GO في الخلفية رغم أن المزامنة في الخلفية كانت مفعّلة. افتح إعدادات البطارية في الهاتف لـ GO واسمح بالنشاط في الخلفية.",
+      "body_unknown": "أوقف هاتفك GO في الخلفية رغم أن المزامنة في الخلفية كانت مفعّلة. افتح إعدادات البطارية في الهاتف لـ GO واسمح بالنشاط في الخلفية.",
+      "dismiss": "تجاهل",
+      "guide": "دليل خطوة بخطوة (dontkillmyapp.com)",
+      "open_battery_settings": "فتح إعدادات البطارية",
+      "title": "تم إيقاف GO في الخلفية"
+    }
+  },
   "balance": "الرصيد:",
   "blocks": "كتل",
   "bookmarks": {
@@ -387,6 +435,43 @@
     "payment": "رسوم الدفع",
     "publish": "رسوم النشر"
   },
+  "file_transfer": {
+    "dismiss": "إغلاق",
+    "downloading_title": "جارٍ تنزيل {{filename}}",
+    "failed_title": "فشل التنزيل",
+    "fetching_title": "جارٍ جلب {{filename}}",
+    "gathering": "جارٍ التجميع من QDN · {{percent}}%",
+    "gathering_chunks": "جارٍ التجميع من QDN · {{percent}}% · {{local}}/{{total}} أجزاء",
+    "gathering_unknown": "جارٍ التجميع من QDN…",
+    "hide": "إخفاء (يستمر في الإشعارات)",
+    "install": "تثبيت",
+    "looking_for_file": "جارٍ البحث عن الملف على QDN…",
+    "not_saved_title": "لم يتم حفظ {{filename}}",
+    "not_saved_tray": "لا يزال الملف منزّلًا. افتح إشعارات GO لحفظه.",
+    "open": "فتح",
+    "open_failed": "لا يوجد تطبيق على هذا الهاتف يمكنه فتح هذا الملف",
+    "progress": "{{percent}}٪ · {{size}}",
+    "ready_to_install": "جاهز للتثبيت · {{location}}",
+    "ready_to_open": "جاهز للفتح · {{location}}",
+    "remove": "إزالة من القائمة",
+    "save": "حفظ",
+    "save_error": "خطأ في حفظ الملف: {{message}}",
+    "save_error_generic": "خطأ في حفظ الملف",
+    "save_stalled": "توقف الحفظ: لم تعد وحدة التخزين تستجيب",
+    "save_success": "تم حفظ الملف",
+    "saved_title": "تم حفظ {{filename}}",
+    "saved_to": "تم الحفظ في {{location}}",
+    "saving_file": "جارٍ حفظ الملف…",
+    "saving_title": "جارٍ حفظ {{filename}}",
+    "stage_awaiting_save": "تم التنزيل، في انتظار الحفظ",
+    "stage_declined": "لم يُحفظ · انقر حفظ للاحتفاظ به",
+    "stage_downloading": "جارٍ التنزيل",
+    "stage_gathering": "جارٍ التجميع من QDN",
+    "stage_saving": "جارٍ الحفظ على الهاتف",
+    "storage_permission": "يحتاج GO إلى إذن التخزين لحفظ الملفات في Documents.",
+    "tap_to_install": "انقر للتثبيت · {{location}}",
+    "tap_to_open": "انقر للفتح · {{location}}"
+  },
   "filter": {
     "all": "الكل",
     "category": "الفئة",
@@ -399,6 +484,65 @@
   "for": "لـ",
   "general": "عام",
   "general_settings": "الإعدادات العامة",
+  "go_updates": {
+    "android_only": "التثبيت يعمل في تطبيق Android.",
+    "available_title": "يتوفر تحديث جديد لـ GO 3.0",
+    "badge": {
+      "installed": "مثبّت",
+      "new": "جديد",
+      "older": "أقدم"
+    },
+    "check": "البحث عن تحديثات",
+    "checking": "جارٍ فحص QDN…",
+    "error": {
+      "fetch_failed": "تعذّر جلب الإصدار",
+      "timeout": "لم تُسلّم الشبكة الإصدار في الوقت المحدد"
+    },
+    "hide_changes": "إخفاء التغييرات",
+    "install": "تثبيت",
+    "install_update": "تثبيت التحديث",
+    "installed_label": "مثبّت على هذا الهاتف",
+    "job": {
+      "allow_installs": "السماح بالتثبيت",
+      "confirm_hint": "تم التنزيل. سيطلب منك Android تأكيد التثبيت.",
+      "continue_background": "يمكنك إغلاق هذه الشاشة. سيستمر التنزيل.",
+      "dismiss": "تجاهل",
+      "downloading": "جارٍ التنزيل",
+      "failed": "فشل التثبيت",
+      "fetching": "جارٍ الجلب من QDN",
+      "permission": "مطلوب إذن",
+      "permission_hint": "لا يثبّت Android التطبيقات إلا من المصادر التي سمحت بها. فعّل «تثبيت التطبيقات غير المعروفة» لـ Qortal GO. سيستمر التثبيت تلقائيًا عند عودتك.",
+      "ready": "جاهز للتثبيت",
+      "updating_to": "التحديث إلى v{{version}}"
+    },
+    "last_checked": "آخر فحص {{time}}",
+    "later": "لاحقًا",
+    "loading_versions": "جارٍ تحميل الإصدارات من QDN…",
+    "no_notes": "لم تُضف ملاحظات لهذا الإصدار.",
+    "no_versions": "لم يُنشر أي إصدار من GO 3.0 بعد.",
+    "open_in_qshare": "فتح في Q-Share+",
+    "progress": {
+      "assembling": "جارٍ تجميع الإصدار",
+      "bytes_of_total": "{{done}} من {{total}}",
+      "confirm_in_android": "سيطلب منك Android التأكيد",
+      "downloading": "جارٍ التنزيل",
+      "fetching": "جارٍ الجلب من شبكة Qortal",
+      "needs_permission": "يحتاج Android إلى إذنك لتثبيت التطبيقات من Qortal GO"
+    },
+    "published_when": "نُشر {{when}}",
+    "retry": "إعادة المحاولة",
+    "show_changes": "عرض التغييرات",
+    "status": {
+      "available": "يتوفر إصدار أحدث.",
+      "never": "لم يتم الفحص بعد.",
+      "unreachable": "تعذّر الوصول إلى QDN. تحقق من الاتصال بالعقدة وحاول مجددًا.",
+      "up_to_date": "لديك أحدث إصدار."
+    },
+    "title": "تحديثات GO 3.0",
+    "update_marker": "يتوفر تحديث لـ GO 3.0",
+    "versions_missing": "تعذّر تحميل بعض الإصدارات بعد ({{count}}). تحقق مجددًا لاحقًا.",
+    "versions_title": "الإصدارات على QDN"
+  },
   "group_call": "مكالمة جماعية",
   "group_call_blocked": "أنهِ مكالمتك الأخرى أولاً",
   "group_call_chat_placeholder": "الدردشة النصية للمكالمات الجماعية غير متاحة بعد.",
@@ -462,6 +606,7 @@
       "decrypt_app": "غير قادر على فك تشفير التطبيق الخاص",
       "download_image": "غير قادر على تحميل الصورة. يرجى المحاولة لاحقاً عن طريق زر التحديث",
       "download_private_app": "غير قادر على تحميل التطبيق الخاص",
+      "edit_message_too_long": "لا يمكن تقسيم الرسائل المعدّلة. اختصرها إلى {{maximum}} بايت.",
       "encrypt_app": "غير قادر على تشفير التطبيق. التطبيق غير منشور",
       "fetch_app": "غير قادر على جلب التطبيق",
       "fetch_publish": "غير قادر على جلب المنشور",
@@ -476,6 +621,8 @@
       "invalid_signature": "توقيع غير صالح",
       "invalid_theme_format": "تنسيق السمة غير صالح",
       "invalid_zip": "ملف zip غير صالح",
+      "long_message_too_many_parts": "هذه الرسالة طويلة جدًا بحيث لا يمكن إرسالها، حتى عند تقسيمها إلى {{maximum}} رسالة.",
+      "long_message_unsplittable": "لا يمكن تقسيم جزء من هذه الرسالة إلى حجم صغير بما يكفي لإرسالها.",
       "message_loading": "خطأ في تحميل الرسالة",
       "message_size": "حجم رسالتك {{ size }} بايت من أقصى حد {{ maximum }}",
       "minting_account_add": "غير قادر على إضافة حساب تعدين",
@@ -530,6 +677,7 @@
       "hub_notification_settings_desc": "Choose which Hub features appear in your notification panel.",
       "link_copied": "تم نسخ الرابط إلى الحافظة.",
       "loading": "جارٍ التحميل...",
+      "long_message_split": "رسالة طويلة: سيتم تقسيمها وإرسالها كرسائل منفصلة (العدد: {{count}}).",
       "mentioned": "تم الإشارة إليك",
       "message_with_image": "هذه الرسالة تحتوي بالفعل على صورة",
       "minimal_qort_balance": "امتلاك ما لا يقل عن {{ quantity }} QORT في رصيدك يتيح لك إرسال رسائل الدردشة بسرعة شبه فورية.",
@@ -714,6 +862,18 @@
   "none": "لا شيء",
   "not_available": "غير متاح",
   "note": "ملاحظة",
+  "notification_history": {
+    "clear": "مسح",
+    "clear_all": "مسح الكل",
+    "clear_all_hint": "مسح كل الإشعارات. ستبقى في سجل الإشعارات.",
+    "close": "إغلاق",
+    "drag_to_close": "اسحب لأعلى للإغلاق",
+    "empty": "لا شيء هنا بعد. تُحفظ الإشعارات التي تتلقاها هنا لمدة 30 يومًا، حتى بعد إزالتها بالسحب.",
+    "open": "سجل الإشعارات",
+    "title": "سجل الإشعارات",
+    "today": "اليوم",
+    "yesterday": "أمس"
+  },
   "official_apps": {
     "all_apps": "جميع التطبيقات الرسمية",
     "featured": "مميزة",
@@ -888,6 +1048,24 @@
     "community_apps": "تطبيقات المجتمع",
     "my_apps": "تطبيقاتي",
     "official_apps": "التطبيقات الرسمية"
+  },
+  "tabs_overlay": {
+    "delete_folder_body_few": "ستتم إزالة التطبيقات المحفوظة فيه ({{count}}) من علامات التبويب. تبقى علامات التبويب المفتوحة مفتوحة.",
+    "delete_folder_body_many": "ستتم إزالة التطبيقات المحفوظة فيه ({{count}}) من علامات التبويب. تبقى علامات التبويب المفتوحة مفتوحة.",
+    "delete_folder_body_one": "ستتم إزالة التطبيق المحفوظ فيه ({{count}}) من علامات التبويب. تبقى علامات التبويب المفتوحة مفتوحة.",
+    "delete_folder_body_other": "ستتم إزالة التطبيقات المحفوظة فيه ({{count}}) من علامات التبويب. تبقى علامات التبويب المفتوحة مفتوحة.",
+    "delete_folder_body_two": "ستتم إزالة التطبيقات المحفوظة فيه ({{count}}) من علامات التبويب. تبقى علامات التبويب المفتوحة مفتوحة.",
+    "delete_folder_body_zero": "ستتم إزالة التطبيقات المحفوظة فيه ({{count}}) من علامات التبويب. تبقى علامات التبويب المفتوحة مفتوحة.",
+    "delete_folder_title": "حذف «{{name}}»؟",
+    "edit_hint_folder": "اسحب التطبيقات لإعادة ترتيبها أو اضغط × لإزالتها",
+    "edit_hint_root": "اسحب التطبيقات إلى المجلدات، أو اضغط × لإزالتها، أو اسحب المجلدات لإعادة ترتيبها",
+    "folder_empty": "هذا المجلد فارغ",
+    "folder_empty_hint": "اضغط مطولًا على أي تطبيق لنقله إلى هذا المجلد.",
+    "no_open_tabs": "لا توجد علامات تبويب مفتوحة بعد",
+    "no_open_tabs_with_folders": "لا توجد علامات تبويب مفتوحة. اضغط على مجلد لعرض تطبيقاته.",
+    "pin_failed": "تعذّر حفظ التثبيت في علامات التبويب",
+    "pinned_to_folder": "تم التثبيت في {{folder}} ضمن علامات التبويب",
+    "unpinned_from_folder": "تمت الإزالة من {{folder}} ضمن علامات التبويب"
   },
   "tags": "الوسوم",
   "theme": {

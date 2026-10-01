@@ -53,6 +53,8 @@ export function getElectronPersistentStorage():
 export const ELECTRON_PERSISTENT_ATOM_KEYS = {
   customWsSubscriptionsByAddress: 'qortal_custom_ws_subscriptions',
   notificationSeenInApp: 'qortal_notification_seen_in_app',
+  /** Bell-panel items swiped away (see notificationPanelDismissalsRecordAtom). */
+  notificationPanelDismissed: 'qortal_notification_panel_dismissed',
   seenAllNotificationsByAddress: 'qortal_seen_all_notifications',
   /** Call mic/speaker prefs (see callAudioDevicesAtom). */
   callAudioDevices: 'qortal_call_audio_devices',

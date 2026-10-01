@@ -33,6 +33,27 @@
     "wait_until_ready": "wait until the discussion is ready"
   },
   "dm": {
+    "delivery": {
+      "delivered": {
+        "hint": "Das Gerät des Empfängers hat sie angefordert und sie wurde gesendet.",
+        "label": "zugestellt"
+      },
+      "on_other_device": {
+        "hint": "Dein anderes Gerät hat eine Kopie und kann sie senden, wenn der Empfänger online ist. Die Zustellung ist nicht bestätigt.",
+        "label": "auf deinem anderen Gerät"
+      },
+      "only_on_this_device": {
+        "label": "nur auf diesem Gerät"
+      },
+      "only_on_this_phone": {
+        "hint": "Noch nicht gesendet. Das Senden wird automatisch wiederholt.",
+        "label": "nur auf diesem Handy"
+      },
+      "sending": {
+        "hint": "Der Empfänger wird gerade erreicht.",
+        "label": "wird gesendet"
+      }
+    },
     "required_for_attachments": "Für direkte Anhänge ist ein Reticulum-Direktchat erforderlich"
   },
   "event_preview": {
@@ -253,6 +274,50 @@
       },
       "title": "Textgröße"
     }
+  },
+  "status_badge": {
+    "copy_diagnostics": "Diagnose kopieren",
+    "copy_diagnostics_collecting": "Wird gesammelt…",
+    "copy_diagnostics_copied": "Kopiert",
+    "copy_diagnostics_hint": "Kopiere den Text oder speichere ihn als Datei und schick ihn mit deiner Meldung zum Chat-Problem.",
+    "help": {
+      "chat_engine": {
+        "body": "Ob die lokale Chat-Datenbank und der Worker bereit sind. Das grüne Badge zeigt die Funkverbindung; zum Laden und Senden von Chats wird zusätzlich diese Engine gebraucht. Wenn der Chat nicht funktioniert, tippe zuerst unten auf „{{action}}“ und füge den Text in deine Meldung ein. ready = gut. starting = startet noch, mit der bisherigen Dauer; bleibt es länger als eine Minute dabei, ist eine mögliche Ursache ein WebView ohne JIT. failed = der Fehler wird unten angezeigt. idle = noch nicht zum Start aufgefordert (Chat aus oder nicht angemeldet).",
+        "title": "Chat-Engine"
+      },
+      "hubs": {
+        "body": "Wie viele Hub-Verbindungen gerade aktiv sind. Das sind die TCP-Verbindungen zu Community-Hubs. 0 bedeutet, dass du noch nicht im Mesh bist. 2 ist typisch und gesund.",
+        "title": "Hubs"
+      },
+      "ifac": {
+        "body": "Größe des Interface Access Code. Das ist der gemeinsame Netzwerkfilter, der aus dem Mesh-Namen abgeleitet wird. 16 B bedeutet, dass du im benannten Qortal-Netzwerk bist. 0 B bedeutet, dass das Interface offen / ungefiltert ist.",
+        "title": "IFAC"
+      },
+      "known_paths": {
+        "body": "Zu wie vielen Zielen Reticulum gerade eine Route kennt. Jedes Announce bringt dem Telefon einen Weg zu einer Identität bei. Einige hundert sind in einem belebten Mesh normal. Das ist kein Live-Chat.",
+        "title": "Bekannte Pfade"
+      },
+      "network_name": {
+        "body": "Das Reticulum-Mesh, dem dieses Telefon beigetreten ist. Qortals öffentliches Mesh heißt qortal-hub. Ein anderer Name bedeutet, dass du in einem anderen Netzwerk bist und diese Peers nicht sehen kannst.",
+        "title": "Netzwerkname"
+      },
+      "online_accounts": {
+        "body": "Wie viele Qortal-Konten dieses Telefon gerade als im Mesh anwesend sieht. Dieselbe Zahl wie unter „Heim“. Es ist nicht die Anzahl der Hubs oder Reticulum-Knoten.",
+        "title": "Online-Konten"
+      },
+      "received": {
+        "body": "Gesamte Datenmenge, die dieses Telefon seit dem Start von Reticulum in dieser Sitzung von den Hubs empfangen hat. Sie wird zurückgesetzt, wenn der Stack neu startet, nicht wenn du einen Chat schließt.",
+        "title": "Empfangen"
+      },
+      "sent": {
+        "body": "Gesamte Datenmenge, die dieses Telefon seit dem Start von Reticulum in dieser Sitzung an die Hubs gesendet hat. Sie wird zurückgesetzt, wenn der Stack neu startet, nicht wenn du einen Chat schließt.",
+        "title": "Gesendet"
+      }
+    },
+    "save_diagnostics": "Als .md-Datei speichern",
+    "save_diagnostics_failed": "Die Datei konnte nicht gespeichert werden: {{error}}",
+    "save_diagnostics_saved": "Gespeichert",
+    "save_diagnostics_saved_to": "Gespeichert unter {{location}}"
   },
   "user_card": {
     "address_copied": "adresse kopiert",

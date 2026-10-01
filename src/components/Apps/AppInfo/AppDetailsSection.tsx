@@ -1,6 +1,7 @@
 import { Box, Chip, styled, Typography } from '@mui/material';
 import { useTranslation } from 'react-i18next';
 import { formatBytes } from '../../../utils/numberFunctions';
+import { useAppNodeStatus } from '../appNodeStatus';
 
 interface AppDetailsSectionProps {
   app: any;
@@ -80,10 +81,38 @@ const StatusDot = styled(Box)<{ status: 'ready' | 'not_installed' }>(
 );
 
 export const AppDetailsSection = ({ app }: AppDetailsSectionProps) => {
-  const { t } = useTranslation(['core']);
+  const { t, i18n } = useTranslation(['core']);
 
-  const isInstalled = app?.status?.status === 'READY';
+  const nodeStatus = useAppNodeStatus(app);
+  const isInstalled = nodeStatus.availability === 'ready';
   const statusKey = isInstalled ? 'ready' : 'not_installed';
+
+  let statusText: string;
+  if (isInstalled) {
+    statusText = t('core:app_detail.status_ready', {
+      postProcess: 'capitalizeFirstChar',
+    });
+  } else if (nodeStatus.availability === 'checking') {
+    statusText = t('core:app_detail.status_checking', {
+      postProcess: 'capitalizeFirstChar',
+    });
+  } else if (nodeStatus.availability === 'downloading') {
+    statusText =
+      nodeStatus.percent != null
+        ? t('core:app_detail.status_downloading', {
+            percent: new Intl.NumberFormat(i18n.language, {
+              style: 'percent',
+            }).format(nodeStatus.percent / 100),
+            postProcess: 'capitalizeFirstChar',
+          })
+        : t('core:message.generic.downloading', {
+            postProcess: 'capitalizeFirstChar',
+          });
+  } else {
+    statusText = t('core:app_detail.status_not_installed', {
+      postProcess: 'capitalizeFirstChar',
+    });
+  }
 
   // Parse tags from metadata
   const tags: string[] = app?.metadata?.tags
@@ -151,13 +180,7 @@ export const AppDetailsSection = ({ app }: AppDetailsSectionProps) => {
         </DetailLabel>
         <StatusBadge status={statusKey}>
           <StatusDot status={statusKey} />
-          {isInstalled
-            ? t('core:app_detail.status_ready', {
-                postProcess: 'capitalizeFirstChar',
-              })
-            : t('core:app_detail.status_not_installed', {
-                postProcess: 'capitalizeFirstChar',
-              })}
+          {statusText}
         </StatusBadge>
       </DetailRow>
 

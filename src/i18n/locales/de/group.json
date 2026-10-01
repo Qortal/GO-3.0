@@ -77,7 +77,8 @@
     "gsk_description": "This key encrypts group content visible to all group members. It is currently the only key used for group chat and shared data.",
     "gsk_description_compact": "This key encrypts group content visible to all group members. It is currently the only key used in this UI.",
     "publish_ask": "Publish ASK",
-    "publish_gsk": "Publish GSK"
+    "publish_gsk": "Publish GSK",
+    "title": "Admin-Schlüssel"
   },
   "advanced_options": "Erweiterte Optionen",
   "announcement_placeholder": "Write an announcement...",
@@ -777,6 +778,13 @@
   "last_message_from": "{{sender}} • {{date}}",
   "last_message_you": "Du",
   "latest_mails": "Neueste Q-Mails",
+  "member_actions": {
+    "make_admin_named": "{{name}} zum Admin machen",
+    "more_named": "weitere Aktionen für {{name}}",
+    "pending": "ausstehend",
+    "pending_hint": "wartet auf die Bestätigung in der Blockchain. Das kann ein paar Minuten dauern.",
+    "remove_admin_named": "{{name}} die Adminrechte entziehen"
+  },
   "member_category": {
     "admins": "Administratoren",
     "collapse": "{{category}} einklappen",
@@ -785,6 +793,10 @@
     "members": "Mitglieder",
     "offline": "offline",
     "park": "Park"
+  },
+  "members_screen": {
+    "bans": "Sperren",
+    "invites": "Einladungen"
   },
   "message": {
     "error": {
@@ -1013,6 +1025,10 @@
       "copy": "Das Home-Dashboard ist dein Ausgangspunkt für Qortal Hub.\n\nMachen wir einen kurzen Rundgang durch die Grundlagen!",
       "title": "Willkommen bei Qortal Hub"
     }
+  },
+  "panel": {
+    "files": "Dateien",
+    "threads": "Threads"
   },
   "subscription": {
     "actions_badge_one": "{{count}} aktion",

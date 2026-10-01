@@ -113,6 +113,8 @@ import { CustomStyledMenu } from '../ContextMenu';
 import FormatQuoteRoundedIcon from '@mui/icons-material/FormatQuoteRounded';
 import { ReticulumRoleBadge } from './ReticulumRoleBadge';
 import { createReticulumImageRequestGate } from './reticulumImageRequestGate';
+import { ReticulumDmDeliveryGlyph } from './ReticulumDmDeliveryGlyph';
+import { hasReticulumDmDeliveryState } from './reticulumDmDeliveryState';
 import {
   executeEvent,
   subscribeToEvent,
@@ -432,6 +434,18 @@ export const MessageItemComponent = ({
   scrollToItem,
 }: MessageItemProps) => {
   const { getIndividualUserInfo } = useContext(QORTAL_APP_CONTEXT);
+  // Queue-side fields on an optimistic row (see MessageQueueContext); the
+  // row is typed loosely upstream, so read them through a narrow view.
+  const queuedRow = message as unknown as
+    | { status?: unknown; sendError?: unknown }
+    | null
+    | undefined;
+  const queuedSendError =
+    isTemp &&
+    queuedRow?.status === 'failed-permanent' &&
+    typeof queuedRow?.sendError === 'string'
+      ? queuedRow.sendError
+      : '';
   const highlightOwnReticulumMessages = useAtomValue(
     reticulumHighlightOwnMessagesAtom
   );
@@ -2277,6 +2291,26 @@ export const MessageItemComponent = ({
       </Typography>
     </Tooltip>
   ) : null;
+  // Own DM delivery state (Sending / Only on this phone / On your other
+  // device / Delivered). Saved Messages and group posts show nothing. Only
+  // engine-built lists qualify: a legacy Core DM payload can set these fields.
+  const reticulumDeliveryGlyph =
+    reticulumChatEnabled &&
+    !isShowingAsReply &&
+    !isTemp &&
+    !isUpdating &&
+    hasReticulumDmDeliveryState(message, myAddress) ? (
+      <ReticulumDmDeliveryGlyph message={message} myAddress={myAddress} />
+    ) : null;
+  // A grouped message has no header row, so its labels trail the text.
+  const collapsedTrailingContent =
+    collapseGroupedHeader &&
+    (reticulumExpiringSoonLabel || reticulumDeliveryGlyph) ? (
+      <>
+        {reticulumExpiringSoonLabel}
+        {reticulumDeliveryGlyph}
+      </>
+    ) : null;
   const isReticulumDiscussionInitialPost =
     reticulumDiscussionView &&
     String(message?.signature || '') === reticulumDiscussionRootId;
@@ -2956,6 +2990,8 @@ export const MessageItemComponent = ({
                       </Typography>
                     )}
 
+                    {!collapseGroupedHeader && reticulumDeliveryGlyph}
+
                     {!collapseGroupedHeader && reticulumExpiringSoonLabel}
 
                     {!collapseGroupedHeader && reticulumDiscussionButton}
@@ -3398,9 +3434,7 @@ export const MessageItemComponent = ({
               <MessageDisplay
                 fitContent={ownAligned}
                 htmlContent={message.decryptedData?.data?.message}
-                trailingContent={
-                  collapseGroupedHeader ? reticulumExpiringSoonLabel : null
-                }
+                trailingContent={collapsedTrailingContent}
                 mentionedAddresses={mentionedAddresses}
                 mentionUsers={reticulumMentionUsers}
                 myAddress={myAddress}
@@ -3413,9 +3447,7 @@ export const MessageItemComponent = ({
               <MessageDisplay
                 fitContent={ownAligned}
                 htmlContent={htmlText}
-                trailingContent={
-                  collapseGroupedHeader ? reticulumExpiringSoonLabel : null
-                }
+                trailingContent={collapsedTrailingContent}
                 hiddenQortalUrls={reticulumHiddenPreviewLinks}
                 mentionedAddresses={mentionedAddresses}
                 mentionUsers={reticulumMentionUsers}
@@ -3436,9 +3468,7 @@ export const MessageItemComponent = ({
               <MessageDisplay
                 fitContent={ownAligned}
                 htmlContent={message.text}
-                trailingContent={
-                  collapseGroupedHeader ? reticulumExpiringSoonLabel : null
-                }
+                trailingContent={collapsedTrailingContent}
                 hiddenQortalUrls={reticulumHiddenPreviewLinks}
                 mentionedAddresses={mentionedAddresses}
                 mentionUsers={reticulumMentionUsers}
@@ -4141,6 +4171,24 @@ export const MessageItemComponent = ({
                         })}
                 </Typography>
               )}
+            {/* The reason a send was given up on (queue error text). Lets a
+                phone user report something more useful than "failed". */}
+            {queuedSendError && (
+              <Typography
+                sx={{
+                  color: theme.palette.text.secondary,
+                  fontFamily: 'Inter',
+                  fontSize: '11px',
+                  lineHeight: 1.35,
+                  marginTop: '2px',
+                  opacity: 0.85,
+                  overflowWrap: 'anywhere',
+                  userSelect: 'text',
+                }}
+              >
+                {queuedSendError}
+              </Typography>
+            )}
 
             {/* Reactions row */}
             {reactions &&

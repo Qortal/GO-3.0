@@ -780,7 +780,8 @@
 /* Text indent per stage. The editor box itself stays 36px padded on both
    sides so the focused contenteditable is never resized; only the paragraph
    indent moves, which is what frees width as the buttons close ranks.
-   inline 104/72, squeezed 68/36, stacked 36/36.
+   inline 104/72, squeezed 68/36, stacked 36/36, with 36 more on the right
+   in a group while the discard button shows: it takes a slot beside send.
 
    The full-screen composer puts its controls in a row underneath the text, so
    there is nothing beside the paragraphs to clear: it keeps the full width. */
@@ -819,7 +820,10 @@
 
      inline    1 line   + 😊 Aa along the row, expiry beside send
      squeezed  2 lines  + over 😊, Aa centred beside them, expiry over send
-     stacked   3+ lines single file down both edges, expand button appears */
+     stacked   3+ lines single file down both edges, expand button appears
+
+   Once there is a message, discard shows beside send, and hops over it when
+   the outer column has room (see "Discard" below). */
 .tiptap-chat-composer--corners {
   --composer-chrome-duration: 180ms;
   --composer-chrome-ease: cubic-bezier(0.2, 0, 0, 1);
@@ -1014,6 +1018,304 @@
   right: 1px;
 }
 
+/* Discard. It comes and goes with send, and sits beside it on one line (a
+   group's expiry moves a slot further in to make room).
+
+   Once the message wraps, the X hops over send into the outer column as soon
+   as that column has a slot free for it, and stays pinned to send as the box
+   grows. 53px puts it exactly between the expand button and send on a 104px
+   stage 3, 1px off each. In a direct message the slot is free straight away.
+   In a group the expiry has it: the expiry goes back over send, and the X
+   waits one column in, mirroring Aa, until stage 3, where the expand button
+   makes way for it until there is room for all four (see further down).
+
+   It draws above send, so where their paths cross mid-hop it goes over the
+   blue button rather than under it. */
+.tiptap-chat-composer--corners:not(.tiptap-chat-composer--expanded)
+  .compact-composer-discard {
+  right: 38px;
+  transform: translateY(-50%) scale(1);
+  z-index: 1;
+  transition:
+    left var(--composer-chrome-duration) var(--composer-chrome-ease),
+    right var(--composer-chrome-duration) var(--composer-chrome-ease),
+    top var(--composer-chrome-duration) var(--composer-chrome-ease),
+    opacity var(--composer-chrome-duration) var(--composer-chrome-ease),
+    transform var(--composer-chrome-duration) var(--composer-chrome-ease),
+    visibility 0s linear 0s;
+  visibility: visible;
+}
+
+.tiptap-chat-composer--corners:not(.tiptap-chat-composer--expanded)
+  .compact-composer-discard[data-idle] {
+  opacity: 0;
+  transform: translateY(-50%) scale(0.4);
+  transition:
+    left var(--composer-chrome-duration) var(--composer-chrome-ease),
+    right var(--composer-chrome-duration) var(--composer-chrome-ease),
+    top var(--composer-chrome-duration) var(--composer-chrome-ease),
+    opacity var(--composer-chrome-duration) var(--composer-chrome-ease),
+    transform var(--composer-chrome-duration) var(--composer-chrome-ease),
+    visibility 0s linear var(--composer-chrome-duration);
+  visibility: hidden;
+}
+
+.tiptap-chat-composer--corners:not(
+    .tiptap-chat-composer--expanded
+  )[data-composer-squeezed]
+  .compact-composer-discard,
+.tiptap-chat-composer--corners:not(
+    .tiptap-chat-composer--expanded
+  )[data-composer-stacked]
+  .compact-composer-discard {
+  right: 1px;
+  top: calc(100% - 53px);
+}
+
+/* The hop itself: the X holds its sideways move for a third of the move, so
+   send has already started dropping out from under it when it goes over. */
+.tiptap-chat-composer--corners:not(
+    .tiptap-chat-composer--expanded
+  )[data-composer-squeezed]
+  .compact-composer-discard:not([data-idle]),
+.tiptap-chat-composer--corners:not(
+    .tiptap-chat-composer--expanded
+  )[data-composer-stacked]
+  .compact-composer-discard:not([data-idle]) {
+  transition:
+    left var(--composer-chrome-duration) var(--composer-chrome-ease),
+    right var(--composer-chrome-duration) var(--composer-chrome-ease)
+      calc(var(--composer-chrome-duration) / 3),
+    top var(--composer-chrome-duration) var(--composer-chrome-ease),
+    opacity var(--composer-chrome-duration) var(--composer-chrome-ease),
+    transform var(--composer-chrome-duration) var(--composer-chrome-ease),
+    visibility 0s linear 0s;
+}
+
+.tiptap-chat-composer--corners:not(.tiptap-chat-composer--expanded):not(
+    [data-composer-squeezed]
+  ):not([data-composer-stacked])
+  .compact-composer-rail--right:has(.compact-composer-discard:not([data-idle]))
+  .compact-composer-expiry {
+  right: 74px;
+  /* Back from over send it has to cross the X, which rises with the box as it
+     shrinks: it passes over it, as it did on the way out. */
+  z-index: 2;
+}
+
+/* A group once the message wraps: the expiry keeps its old place over send
+   and the X waits one column in, centred, where Aa sits on the left, so the
+   two sides mirror each other. The expiry slides back out over the X and
+   send, so it draws above them and holds its sideways move until they have
+   started dropping. */
+.tiptap-chat-composer--corners:not(
+    .tiptap-chat-composer--expanded
+  )[data-composer-squeezed]
+  .compact-composer-rail--right:has(.compact-composer-expiry):has(
+    .compact-composer-discard:not([data-idle])
+  )
+  .compact-composer-discard,
+.tiptap-chat-composer--corners:not(
+    .tiptap-chat-composer--expanded
+  )[data-composer-stacked][data-composer-short]
+  .compact-composer-rail--right:has(.compact-composer-expiry):has(
+    .compact-composer-discard:not([data-idle])
+  )
+  .compact-composer-discard {
+  right: 36px;
+  top: 50%;
+}
+
+.tiptap-chat-composer--corners:not(
+    .tiptap-chat-composer--expanded
+  )[data-composer-squeezed]
+  .compact-composer-rail--right:has(.compact-composer-discard:not([data-idle]))
+  .compact-composer-expiry,
+.tiptap-chat-composer--corners:not(
+    .tiptap-chat-composer--expanded
+  )[data-composer-stacked]
+  .compact-composer-rail--right:has(.compact-composer-discard:not([data-idle]))
+  .compact-composer-expiry {
+  transition:
+    left var(--composer-chrome-duration) var(--composer-chrome-ease),
+    right var(--composer-chrome-duration) var(--composer-chrome-ease)
+      calc(var(--composer-chrome-duration) / 3),
+    top var(--composer-chrome-duration) var(--composer-chrome-ease);
+  z-index: 2;
+}
+
+/* A group at stage 3: the right edge runs single file like the left one,
+   expiry at the top like +, the X in the middle like Aa, send at the bottom
+   like the smiley. The expand button gives up its slot for this while the
+   whole message still fits (it is only the way out of a box that scrolls),
+   and comes back once the box is tall enough for all four (the container
+   query below).
+
+   A box that can never get that tall (data-composer-short, set by TipTap
+   when stage 3 is capped under 140px) could be scrolling already, so there
+   expand keeps its slot and the X waits one column in, as on two lines.
+
+   Expand and the expiry share the top slot in turn, so they take turns:
+   dropping under 140px expand fades out first and the rest close up after
+   it; going past it the rest make room first and expand fades in after. */
+.tiptap-chat-composer--corners:not(
+    .tiptap-chat-composer--expanded
+  )[data-composer-stacked]:not([data-composer-short])
+  .compact-composer-rail--right:has(.compact-composer-expiry):has(
+    .compact-composer-discard:not([data-idle])
+  )
+  .compact-composer-discard {
+  right: 1px;
+  top: 50%;
+  transition:
+    left var(--composer-chrome-duration) var(--composer-chrome-ease),
+    right var(--composer-chrome-duration) var(--composer-chrome-ease)
+      calc(var(--composer-chrome-duration) / 3),
+    top var(--composer-chrome-duration) var(--composer-chrome-ease)
+      calc(var(--composer-chrome-duration) / 2),
+    opacity var(--composer-chrome-duration) var(--composer-chrome-ease),
+    transform var(--composer-chrome-duration) var(--composer-chrome-ease),
+    visibility 0s linear 0s;
+}
+
+.tiptap-chat-composer--corners:not(
+    .tiptap-chat-composer--expanded
+  )[data-composer-stacked]:not([data-composer-short])
+  .compact-composer-rail--right:has(.compact-composer-expiry):has(
+    .compact-composer-discard:not([data-idle])
+  )
+  .compact-composer-expiry {
+  top: 18px;
+  transition:
+    left var(--composer-chrome-duration) var(--composer-chrome-ease),
+    right var(--composer-chrome-duration) var(--composer-chrome-ease)
+      calc(var(--composer-chrome-duration) / 3),
+    top var(--composer-chrome-duration) var(--composer-chrome-ease)
+      calc(var(--composer-chrome-duration) / 2);
+}
+
+.tiptap-chat-composer--corners:not(
+    .tiptap-chat-composer--expanded
+  )[data-composer-stacked]:not([data-composer-short])
+  .compact-composer-rail--right:has(.compact-composer-expiry):has(
+    .compact-composer-discard:not([data-idle])
+  )
+  .compact-composer-expand {
+  opacity: 0;
+  transform: translateY(-50%) scale(0.7);
+  /* Quick: deleting a line shrinks stage 3 at once, which lifts the expiry
+     straight into this slot. */
+  transition:
+    opacity calc(var(--composer-chrome-duration) / 3)
+      var(--composer-chrome-ease),
+    transform calc(var(--composer-chrome-duration) / 3)
+      var(--composer-chrome-ease),
+    right var(--composer-chrome-duration) var(--composer-chrome-ease),
+    top var(--composer-chrome-duration) var(--composer-chrome-ease),
+    visibility 0s linear calc(var(--composer-chrome-duration) / 3);
+  visibility: hidden;
+}
+
+/* The right rail is measured by its own height: the only way to know whether
+   stage 3 has grown tall enough for expand to come back. */
+.tiptap-chat-composer--corners:not(.tiptap-chat-composer--expanded)
+  .compact-composer-rail--right {
+  container: composer-rail / size;
+}
+
+/* Tall enough for expand, expiry, X and send down the edge (4 buttons need
+   ~138px): expand fades back in at the top and the rest close up over send.
+   Nothing here changes the text's width, so the box height, and with it this
+   query, never depends on it; nothing can flip back and forth. */
+@container composer-rail (min-height: 140px) {
+  .tiptap-chat-composer--corners:not(
+      .tiptap-chat-composer--expanded
+    )[data-composer-stacked]:not([data-composer-short])
+    .compact-composer-rail--right:has(.compact-composer-expiry):has(
+      .compact-composer-discard:not([data-idle])
+    )
+    .compact-composer-discard {
+    top: calc(100% - 53px);
+    transition:
+      left var(--composer-chrome-duration) var(--composer-chrome-ease),
+      right var(--composer-chrome-duration) var(--composer-chrome-ease)
+        calc(var(--composer-chrome-duration) / 3),
+      top var(--composer-chrome-duration) var(--composer-chrome-ease),
+      opacity var(--composer-chrome-duration) var(--composer-chrome-ease),
+      transform var(--composer-chrome-duration) var(--composer-chrome-ease),
+      visibility 0s linear 0s;
+  }
+
+  .tiptap-chat-composer--corners:not(
+      .tiptap-chat-composer--expanded
+    )[data-composer-stacked]:not([data-composer-short])
+    .compact-composer-rail--right:has(.compact-composer-expiry):has(
+      .compact-composer-discard:not([data-idle])
+    )
+    .compact-composer-expiry {
+    top: calc(100% - 87px);
+    transition:
+      left var(--composer-chrome-duration) var(--composer-chrome-ease),
+      right var(--composer-chrome-duration) var(--composer-chrome-ease)
+        calc(var(--composer-chrome-duration) / 3),
+      top var(--composer-chrome-duration) var(--composer-chrome-ease);
+  }
+
+  .tiptap-chat-composer--corners:not(
+      .tiptap-chat-composer--expanded
+    )[data-composer-stacked]:not([data-composer-short])
+    .compact-composer-rail--right:has(.compact-composer-expiry):has(
+      .compact-composer-discard:not([data-idle])
+    )
+    .compact-composer-expand {
+    opacity: 1;
+    transform: translateY(-50%) scale(1);
+    transition:
+      opacity var(--composer-chrome-duration) var(--composer-chrome-ease)
+        calc(var(--composer-chrome-duration) / 2),
+      transform var(--composer-chrome-duration) var(--composer-chrome-ease)
+        calc(var(--composer-chrome-duration) / 2),
+      right var(--composer-chrome-duration) var(--composer-chrome-ease),
+      top var(--composer-chrome-duration) var(--composer-chrome-ease),
+      visibility 0s linear 0s;
+    visibility: visible;
+  }
+}
+
+.tiptap-chat-composer--corners:not(.tiptap-chat-composer--expanded):not(
+    [data-composer-stacked]
+  ):not([data-composer-squeezed]):has(.compact-composer-expiry):has(
+    .compact-composer-discard:not([data-idle])
+  )
+  .compact-composer-editor
+  .tiptap
+  > * {
+  padding-right: 72px;
+}
+
+/* The inner column is only taken while the X waits there. At stage 3 that
+   depends on data-composer-short alone, never on the text, so the indent
+   cannot feed back into the box height. */
+.tiptap-chat-composer--corners:not(
+    .tiptap-chat-composer--expanded
+  )[data-composer-squeezed]:has(.compact-composer-expiry):has(
+    .compact-composer-discard:not([data-idle])
+  )
+  .compact-composer-editor
+  .tiptap
+  > *,
+.tiptap-chat-composer--corners:not(
+    .tiptap-chat-composer--expanded
+  )[data-composer-stacked][data-composer-short]:has(
+    .compact-composer-expiry
+  ):has(.compact-composer-discard:not([data-idle]))
+  .compact-composer-editor
+  .tiptap
+  > * {
+  box-sizing: border-box;
+  padding-right: 36px;
+}
+
 /* The expand button belongs to stage 3 only, so it scales in rather than
    popping. Visibility is delayed off the end of the fade so it stops taking
    focus and taps as soon as it is gone. */
@@ -1027,6 +1329,7 @@
   transition:
     opacity var(--composer-chrome-duration) var(--composer-chrome-ease),
     transform var(--composer-chrome-duration) var(--composer-chrome-ease),
+    right var(--composer-chrome-duration) var(--composer-chrome-ease),
     top var(--composer-chrome-duration) var(--composer-chrome-ease),
     visibility 0s linear var(--composer-chrome-duration);
   visibility: hidden;
@@ -1050,6 +1353,7 @@
   transition:
     opacity var(--composer-chrome-duration) var(--composer-chrome-ease),
     transform var(--composer-chrome-duration) var(--composer-chrome-ease),
+    right var(--composer-chrome-duration) var(--composer-chrome-ease),
     top var(--composer-chrome-duration) var(--composer-chrome-ease),
     visibility 0s linear 0s;
   visibility: visible;
@@ -1065,6 +1369,62 @@
   .compact-composer-rail--right:has(.compact-composer-send[data-idle])
   .compact-composer-expiry {
   right: 38px;
+}
+
+/* Once discard shows, the outer column has no top slot left for the expand
+   button, so it moves one column in, level with whatever holds that slot: the
+   X over send in a direct message, the expiry in a group (where the X leaves
+   the middle of that column to it and waits below, beside send). The text
+   clears that column as well. */
+.tiptap-chat-composer--corners:not(
+    .tiptap-chat-composer--expanded
+  )[data-composer-capped][data-composer-squeezed]:not([data-composer-stacked])
+  .compact-composer-rail--right:has(.compact-composer-discard:not([data-idle]))
+  .compact-composer-expand {
+  right: 38px;
+  top: calc(100% - 53px);
+}
+
+.tiptap-chat-composer--corners:not(
+    .tiptap-chat-composer--expanded
+  )[data-composer-capped][data-composer-squeezed]:not([data-composer-stacked])
+  .compact-composer-rail--right:has(.compact-composer-discard:not([data-idle]))
+  .compact-composer-expiry {
+  right: 1px;
+  top: 18px;
+}
+
+.tiptap-chat-composer--corners:not(
+    .tiptap-chat-composer--expanded
+  )[data-composer-capped][data-composer-squeezed]:not([data-composer-stacked])
+  .compact-composer-rail--right:has(.compact-composer-expiry):has(
+    .compact-composer-discard:not([data-idle])
+  )
+  .compact-composer-expand {
+  top: 18px;
+}
+
+.tiptap-chat-composer--corners:not(
+    .tiptap-chat-composer--expanded
+  )[data-composer-capped][data-composer-squeezed]:not([data-composer-stacked])
+  .compact-composer-rail--right:has(.compact-composer-expiry):has(
+    .compact-composer-discard:not([data-idle])
+  )
+  .compact-composer-discard {
+  right: 38px;
+  top: calc(100% - 19px);
+}
+
+.tiptap-chat-composer--corners:not(
+    .tiptap-chat-composer--expanded
+  )[data-composer-capped][data-composer-squeezed]:not(
+    [data-composer-stacked]
+  ):has(.compact-composer-discard:not([data-idle]))
+  .compact-composer-editor
+  .tiptap
+  > * {
+  box-sizing: border-box;
+  padding-right: 36px;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1104,7 +1464,8 @@
 /* The fullscreen composer lays its controls out in a row, so an idle send
    button would hold a gap open rather than fade out of one. Drop it instead;
    the reveal animation belongs to the compact bar. */
-.tiptap-chat-composer--expanded .compact-composer-send[data-idle] {
+.tiptap-chat-composer--expanded .compact-composer-send[data-idle],
+.tiptap-chat-composer--expanded .compact-composer-discard[data-idle] {
   display: none;
 }
 
@@ -1133,6 +1494,19 @@
   p.is-editor-empty:first-child::before {
   color: var(--text-secondary);
   opacity: 0.7;
+}
+
+/* An attachment with no caption brings the discard button out, and in a group
+   that pushes the expiry in: the placeholder then has less room than it needs
+   on a narrow phone. A second line would be clipped by the one-line stage, so
+   it stays on one and trails off instead. */
+.tiptap-chat-composer--corners:not(.tiptap-chat-composer--expanded)
+  .tiptap-prosemirror
+  p.is-editor-empty:first-child::before {
+  max-width: 100%;
+  overflow-x: clip;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .tippy-box[data-theme~='qchat-mention'] {

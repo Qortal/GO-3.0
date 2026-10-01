@@ -3,13 +3,12 @@ import { atomWithReset, atomWithStorage } from 'jotai/utils';
 import type { AppRelease } from './qdnAppUpdate';
 
 /**
- * Where an update is in its life: found, being fetched off QDN, streaming to
- * the device, waiting for Android's install permission, or handed over to the
- * installer.
+ * Where an install is in its life: being fetched off QDN, streaming to the
+ * device, waiting for Android's install permission, or handed over to the
+ * installer. `idle` means nothing is being installed.
  */
 export type AppUpdatePhase =
   | 'idle'
-  | 'available'
   | 'preparing'
   | 'downloading'
   | 'needs-permission'
@@ -28,7 +27,36 @@ export type AppUpdateProgress = {
 // atomWithReset rather than atom(null): with the project's loose null checks,
 // a bare null argument matches jotai's read-only overload and the atom comes
 // out unwritable.
+/** The newest build when it is newer than this one: the update on offer. */
 export const appUpdateReleaseAtom = atomWithReset<AppRelease | null>(null);
+
+/**
+ * The build the progress below belongs to: usually the update, but an older
+ * build when the person chose to go back to it.
+ */
+export const appUpdateTargetAtom = atomWithReset<AppRelease | null>(null);
+
+export type AppUpdateCheckStatus =
+  | 'idle'
+  | 'checking'
+  | 'up-to-date'
+  | 'available'
+  | 'unreachable';
+
+/** The last look at QDN for a newer build, for the Updates screen. */
+export const appUpdateCheckAtom = atom<{
+  checkedAt: number;
+  status: AppUpdateCheckStatus;
+}>({ checkedAt: 0, status: 'idle' });
+
+/** Every build published under the name, for the version history. */
+export const appUpdateReleaseListAtom = atom<{
+  loadedAt: number;
+  /** Shares the node could not deliver on the last load. */
+  missing: number;
+  releases: AppRelease[];
+  status: 'idle' | 'loading' | 'ready' | 'unreachable';
+}>({ loadedAt: 0, missing: 0, releases: [], status: 'idle' });
 
 export const appUpdateProgressAtom = atom<AppUpdateProgress>({
   percent: 0,
@@ -38,7 +66,7 @@ export const appUpdateProgressAtom = atom<AppUpdateProgress>({
 /** Set once the file is on the device, so installing can be retried. */
 export const appUpdateFileAtom = atomWithReset<string | null>(null);
 
-/** The big window; false while it is minimised into the notification. */
+/** The GO 3.0 Updates screen. Closing it never stops a download. */
 export const appUpdateWindowOpenAtom = atom(false);
 
 export const appUpdateInstalledVersionAtom = atom<string>('');
@@ -52,7 +80,7 @@ export const appUpdateDismissedVersionAtom = atomWithStorage<string | null>(
   null
 );
 
-/** Version whose notification has been looked at, for the bell's unread dot. */
+/** Version the Updates screen has been opened for, for the menu's bell. */
 export const appUpdateSeenVersionAtom = atomWithStorage<string | null>(
   'qortal-go-update-seen',
   null

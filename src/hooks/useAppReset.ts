@@ -27,6 +27,7 @@ import {
   mobileChatComposeActiveAtom,
   mobileEmojiPanelOpenAtom,
   mobileFullscreenComposerActiveAtom,
+  mobileGroupPanelOpenAtom,
   mutedGroupsAtom,
   myGroupsWhereIAmAdminAtom,
   myMemberGroupsAtom,
@@ -102,6 +103,7 @@ export function useAppReset() {
   const resetMobileFullscreenComposerActiveAtom = useResetAtom(
     mobileFullscreenComposerActiveAtom
   );
+  const resetMobileGroupPanelOpenAtom = useResetAtom(mobileGroupPanelOpenAtom);
   const resetGroupChatTimestampsAtom = useResetAtom(groupChatTimestampsAtom);
   const resetReticulumChatSummariesAtom = useResetAtom(
     reticulumChatSummariesAtom
@@ -189,6 +191,7 @@ export function useAppReset() {
     resetMobileChatComposeActiveAtom();
     resetMobileEmojiPanelOpenAtom();
     resetMobileFullscreenComposerActiveAtom();
+    resetMobileGroupPanelOpenAtom();
     resetGroupChatTimestampsAtom();
     resetReticulumChatSummariesAtom();
     resetReticulumDirectSummariesAtom();
@@ -245,6 +248,7 @@ export function useAppReset() {
     resetMobileChatComposeActiveAtom,
     resetMobileEmojiPanelOpenAtom,
     resetMobileFullscreenComposerActiveAtom,
+    resetMobileGroupPanelOpenAtom,
     resetGroupChatTimestampsAtom,
     resetReticulumChatSummariesAtom,
     resetReticulumDirectSummariesAtom,

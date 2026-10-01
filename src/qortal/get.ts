@@ -117,6 +117,7 @@ import { executeEvent } from '../utils/events.ts';
 import { getElectronPersistentStorage } from '../utils/electronPersistentStorage';
 import { fileToBase64 } from '../utils/fileReading/index.ts';
 import { mimeToExtensionMap } from '../utils/memeTypes.ts';
+import { filterSeenInAppKeysForApp } from '../utils/notificationSeenInAppScope.ts';
 import { RequestQueueWithPromise } from '../utils/queue/queue.ts';
 import utils from '../utils/utils.ts';
 import ShortUniqueId from 'short-unique-id';
@@ -139,10 +140,6 @@ import {
   normalizeFilename,
 } from '../utils/downloadFromLocation.ts';
 import { isCapacitor } from '../utils/platform.ts';
-import {
-  isSilentSaveFile,
-  mobileSaveLocationLabelFor,
-} from '../utils/mobileFileSave.ts';
 import { getElectronPersistentStorage } from '../utils/electronPersistentStorage.ts';
 
 const uid = new ShortUniqueId({ length: 6 });
@@ -2963,7 +2960,17 @@ export const joinGroup = async (data, isFromExtension, appInfo?) => {
   }
 };
 
-export const saveFile = async (data, sender, isFromExtension, snackMethods) => {
+/**
+ * `options.preApproved` is only ever set by GO itself — the Save button on a
+ * file the person first declined — never taken from the Q-App's request.
+ */
+export const saveFile = async (
+  data,
+  sender,
+  isFromExtension,
+  snackMethods,
+  options: { preApproved?: boolean } = {}
+) => {
   try {
     if (!data?.filename) throw new Error('Missing filename');
 
@@ -2989,15 +2996,17 @@ export const saveFile = async (data, sender, isFromExtension, snackMethods) => {
     const filename = data.filename;
     const blob = data.blob;
 
-    const resPermission = await getUserPermission(
-      {
-        text1: i18n.t('question:download_file', {
-          postProcess: 'capitalizeFirstChar',
-        }),
-        highlightedText: `${filename}`,
-      },
-      isFromExtension
-    );
+    const resPermission = options.preApproved
+      ? { accepted: true }
+      : await getUserPermission(
+          {
+            text1: i18n.t('question:download_file', {
+              postProcess: 'capitalizeFirstChar',
+            }),
+            highlightedText: `${filename}`,
+          },
+          isFromExtension
+        );
     const { accepted } = resPermission;
 
     if (accepted) {
@@ -3035,6 +3044,7 @@ export const saveFile = async (data, sender, isFromExtension, snackMethods) => {
           filename,
           mimeType,
           blob,
+          transferId: data.transferId,
         },
         snackMethods
       );
@@ -3151,18 +3161,7 @@ async function saveFileFromLocation(data, isFromExtension, snackMethods) {
       throw new Error(result.error || 'Failed to download file');
     }
 
-    if (
-      snackMethods?.setOpenSnackGlobal &&
-      snackMethods?.setInfoSnackCustom &&
-      !isSilentSaveFile(filename)
-    ) {
-      snackMethods.setInfoSnackCustom({
-        type: 'success',
-        message: `Saved to ${mobileSaveLocationLabelFor(filename)}`,
-      });
-      snackMethods.setOpenSnackGlobal(true);
-    }
-
+    // The progress card already ends on "Saved to …" with an Open button.
     return true;
   }
 
@@ -5751,8 +5750,10 @@ export const markNotificationSeenInApp = (payload, appInfo) => {
   if (!address) return [];
   const appName = (appInfo?.name ?? '').toLowerCase();
   const appService = appInfo?.service ?? 'APP';
-  const current = getStoredSeenInAppKeys(address);
-  const set = new Set(current);
+  // Only the keys this request names are (re)marked at now. Re-writing every
+  // stored key would move other apps' prefix marks forward too, hiding their
+  // newer notifications, and the sync would carry that to other devices.
+  const toMark = new Set<string>();
   notificationIds.forEach((item) => {
     const notificationId =
       typeof item === 'string'
@@ -5767,13 +5768,17 @@ export const markNotificationSeenInApp = (payload, appInfo) => {
         ? String(item.identifier).trim()
         : '';
     if (identifier) {
-      set.add(`${prefixKey}-${identifier}`);
+      toMark.add(`${prefixKey}-${identifier}`);
     } else {
-      set.add(prefixKey);
+      toMark.add(prefixKey);
     }
   });
-  const merged = Array.from(set);
-  return setStoredSeenInAppKeys(address, merged);
+  // The stored list spans every app; only this app's keys go back to it.
+  const keys =
+    toMark.size === 0
+      ? getStoredSeenInAppKeys(address)
+      : setStoredSeenInAppKeys(address, Array.from(toMark));
+  return filterSeenInAppKeysForApp(keys, appName, appService);
 };
 
 /** Returns notification rules for the app in the same format as NOTIFICATION_ADD (image, link, notificationId, message, filters). */

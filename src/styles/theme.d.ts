@@ -14,6 +14,8 @@ declare module '@mui/material/styles' {
       positive: string;
       danger: string;
       unread: string;
+      /** Gold for star ratings. */
+      rating: string;
     };
   }
   interface PaletteOptions {
@@ -25,6 +27,7 @@ declare module '@mui/material/styles' {
       positive?: string;
       danger?: string;
       unread?: string;
+      rating?: string;
     };
   }
 }

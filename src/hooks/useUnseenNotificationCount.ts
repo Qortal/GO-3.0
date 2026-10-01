@@ -1,15 +1,13 @@
 import { useAtomValue } from 'jotai';
 import { useMemo } from 'react';
 import {
+  isNotificationPanelDismissed,
   isNotificationSeenInAppFromKeyTimes,
   lastPaymentSeenTimestampAtom,
+  notificationPanelDismissalsAtom,
   notificationSeenInAppKeyTimesAtom,
   paymentNotificationsAtom,
 } from '../atoms/global';
-import {
-  appUpdateReleaseAtom,
-  appUpdateSeenVersionAtom,
-} from '../appUpdate/appUpdateAtoms';
 
 const RESOURCE_EVENT = 'RESOURCE_PUBLISHED';
 
@@ -33,17 +31,16 @@ export function useUnseenNotificationCount() {
   const notifications = useAtomValue(paymentNotificationsAtom);
   const lastSeenTimestamp = useAtomValue(lastPaymentSeenTimestampAtom);
   const seenInAppKeyTimes = useAtomValue(notificationSeenInAppKeyTimesAtom);
-  const updateRelease = useAtomValue(appUpdateReleaseAtom);
-  const updateSeenVersion = useAtomValue(appUpdateSeenVersionAtom);
-  // A published app update is unread until the panel holding it is opened.
-  const updateUnseen = Boolean(
-    updateRelease && updateSeenVersion !== updateRelease.version
-  );
+  const panelDismissals = useAtomValue(notificationPanelDismissalsAtom);
 
   const resourceNotifications = useMemo(
     () =>
-      (notifications ?? []).filter((item) => item?.event === RESOURCE_EVENT),
-    [notifications]
+      (notifications ?? []).filter(
+        (item) =>
+          item?.event === RESOURCE_EVENT &&
+          !isNotificationPanelDismissed(item, panelDismissals)
+      ),
+    [notifications, panelDismissals]
   );
 
   const unseenCount = useMemo(() => {
@@ -59,10 +56,10 @@ export function useUnseenNotificationCount() {
     }).length;
   }, [resourceNotifications, seenInAppKeyTimes, lastSeenTimestamp]);
 
-  const total = unseenCount + (updateUnseen ? 1 : 0);
-
+  // App updates are not counted here: they have their own GO 3.0 Updates
+  // screen and their own marker on the account button.
   return {
-    hasNewNotifications: total > 0,
-    unseenCount: total,
+    hasNewNotifications: unseenCount > 0,
+    unseenCount,
   };
 }

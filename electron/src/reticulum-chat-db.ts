@@ -642,6 +642,21 @@ type DirectEventRow = {
   delivery_updated_at?: number;
   expires_at?: number | null;
   message_expiry_duration_ms?: number | null;
+  own_device_copied_at?: number | null;
+  delivery_attempts?: number | null;
+  next_delivery_attempt_at?: number | null;
+};
+
+/**
+ * Newest pending own DM event of one conversation plus its persisted retry
+ * state (local only, never on the wire or in the renderer event).
+ */
+export type ReticulumPendingOwnDirectHead = {
+  event: ReticulumDmEvent;
+  /** Re-announce attempts made so far (0 = none). */
+  deliveryAttempts: number;
+  /** When the next re-announce is due (0 = not scheduled yet). */
+  nextDeliveryAttemptAt: number;
 };
 
 export type ReticulumDmExpiryPreference = {
@@ -939,6 +954,59 @@ function rowToEvent(row: EventRow): ReticulumChatEvent {
   return rememberRendererExpiresAt(event, row.expires_at);
 }
 
+// rchat_sync_state scope of the per-own-device Saved Messages confirmations.
+const SELF_DM_CONFIRMED_SCOPE = 'self_dm_confirmed';
+
+// Newest pending own outbound DM event per conversation. Parameters: sender,
+// [conversation id,] since, now (inner window), then sender, since, now,
+// uncopied-only-before (outer). Heads older than the last cutoff count only
+// while no own device copied them. The outer `since` only narrows (every head
+// is inside the window) but lets the pending-delivery index range on time.
+function pendingOwnDirectHeadsFrom(byConversation: boolean): string {
+  return `
+  FROM rchat_dm_events d
+  JOIN (
+    SELECT conversation_id AS head_conversation_id,
+           MAX(timestamp) AS head_timestamp
+    FROM rchat_dm_events
+    WHERE delivery_status = 'pending'
+      AND sender_address = ?${byConversation ? '\n      AND conversation_id = ?' : ''}
+      AND recipient_address != sender_address
+      AND own_event = 1
+      AND timestamp >= ?
+      AND (expires_at IS NULL OR expires_at > ?)
+    GROUP BY conversation_id
+  ) h
+    ON d.conversation_id = h.head_conversation_id
+   AND d.timestamp = h.head_timestamp
+  WHERE d.delivery_status = 'pending'
+    AND d.sender_address = ?
+    AND d.timestamp >= ?
+    AND d.recipient_address != d.sender_address
+    AND d.own_event = 1
+    AND (d.expires_at IS NULL OR d.expires_at > ?)
+    AND (d.timestamp >= ? OR d.own_device_copied_at IS NULL)`;
+}
+const PENDING_OWN_DIRECT_HEADS_FROM = pendingOwnDirectHeadsFrom(false);
+const PENDING_OWN_DIRECT_CONVERSATION_HEAD_FROM =
+  pendingOwnDirectHeadsFrom(true);
+
+function rowToPendingOwnDirectHead(
+  row: DirectEventRow
+): ReticulumPendingOwnDirectHead {
+  return {
+    event: rowToDirectEvent(row),
+    deliveryAttempts: Math.max(
+      0,
+      Math.floor(Number(row.delivery_attempts) || 0)
+    ),
+    nextDeliveryAttemptAt: Math.max(
+      0,
+      Math.floor(Number(row.next_delivery_attempt_at) || 0)
+    ),
+  };
+}
+
 function rowToDirectEvent(row: DirectEventRow): ReticulumDmEvent {
   return {
     eventId: row.event_id,
@@ -970,6 +1038,9 @@ function rowToDirectEvent(row: DirectEventRow): ReticulumDmEvent {
         : undefined,
     ...(Number.isFinite(Number(row.delivery_updated_at))
       ? { localDeliveryUpdatedAt: Number(row.delivery_updated_at) }
+      : {}),
+    ...(row.own_device_copied_at != null && Number(row.own_device_copied_at) > 0
+      ? { localOwnDeviceCopiedAt: Number(row.own_device_copied_at) }
       : {}),
     expiresAt:
       row.expires_at == null || !Number.isFinite(Number(row.expires_at))
@@ -3518,6 +3589,517 @@ export class ReticulumChatDatabase {
       )
       .all(sender, since, now, safeLimit) as DirectEventRow[];
     return rows.map(rowToDirectEvent);
+  }
+
+  /**
+   * Cheap existence check for listPendingOwnDirectEvents' window, used to
+   * decide whether the pending-delivery sweep needs to stay armed.
+   */
+  hasPendingOwnDirectEvents(
+    senderAddress: string,
+    sinceTimestamp: number,
+    now = Date.now()
+  ): boolean {
+    const sender = String(senderAddress || '').trim();
+    if (!sender) return false;
+    const since = Math.max(0, Math.floor(Number(sinceTimestamp) || 0));
+    return !!this.db
+      .prepare(
+        `SELECT 1 FROM rchat_dm_events
+         WHERE delivery_status = 'pending'
+           AND sender_address = ?
+           AND recipient_address != sender_address
+           AND own_event = 1
+           AND timestamp >= ?
+           AND (expires_at IS NULL OR expires_at > ?)
+         LIMIT 1`
+      )
+      .get(sender, since, now);
+  }
+
+  /**
+   * Counts for the own outbox state, one indexed read: own outbound DM
+   * events the recipient has not pulled yet since `sinceTimestamp`
+   * (`pending`), those no verified own device has pulled either
+   * (`uncopied`), and those at or after `activeSinceTimestamp` (`active`).
+   * Same shape filter as listPendingOwnDirectEvents.
+   */
+  countPendingOwnDirectEvents(
+    senderAddress: string,
+    sinceTimestamp: number,
+    activeSinceTimestamp: number,
+    now = Date.now()
+  ): { pending: number; uncopied: number; active: number } {
+    const sender = String(senderAddress || '').trim();
+    if (!sender) return { pending: 0, uncopied: 0, active: 0 };
+    const since = Math.max(0, Math.floor(Number(sinceTimestamp) || 0));
+    const activeSince = Math.max(
+      since,
+      Math.floor(Number(activeSinceTimestamp) || 0)
+    );
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS pending_count,
+                SUM(CASE WHEN own_device_copied_at IS NULL THEN 1 ELSE 0 END)
+                  AS uncopied_count,
+                SUM(CASE WHEN timestamp >= ? THEN 1 ELSE 0 END) AS active_count
+         FROM rchat_dm_events
+         WHERE delivery_status = 'pending'
+           AND sender_address = ?
+           AND recipient_address != sender_address
+           AND own_event = 1
+           AND timestamp >= ?
+           AND (expires_at IS NULL OR expires_at > ?)`
+      )
+      .get(activeSince, sender, since, now) as
+      | {
+          pending_count?: unknown;
+          uncopied_count?: unknown;
+          active_count?: unknown;
+        }
+      | undefined;
+    const count = (value: unknown) =>
+      Math.max(0, Math.floor(Number(value) || 0));
+    return {
+      pending: count(row?.pending_count),
+      uncopied: count(row?.uncopied_count),
+      active: count(row?.active_count),
+    };
+  }
+
+  /**
+   * Newest own outbound DM event per conversation that the recipient has not
+   * pulled yet and that no verified own device has pulled either, newest
+   * first; `limit` counts conversations, so one busy conversation cannot
+   * starve the others. Same shape filter as listPendingOwnDirectEvents. Two
+   * events sharing a conversation's newest timestamp may both be returned.
+   */
+  listUncopiedPendingOwnDirectEvents(
+    senderAddress: string,
+    sinceTimestamp: number,
+    limit = 64,
+    now = Date.now()
+  ): ReticulumDmEvent[] {
+    const sender = String(senderAddress || '').trim();
+    if (!sender) return [];
+    const safeLimit = Math.max(
+      1,
+      Math.min(256, Math.floor(Number(limit) || 64))
+    );
+    const since = Math.max(0, Math.floor(Number(sinceTimestamp) || 0));
+    const rows = this.db
+      .prepare(
+        `SELECT d.* FROM rchat_dm_events d
+         JOIN (
+           SELECT conversation_id AS head_conversation_id,
+                  MAX(timestamp) AS head_timestamp
+           FROM rchat_dm_events
+           WHERE delivery_status = 'pending'
+             AND sender_address = ?
+             AND recipient_address != sender_address
+             AND own_event = 1
+             AND own_device_copied_at IS NULL
+             AND timestamp >= ?
+             AND (expires_at IS NULL OR expires_at > ?)
+           GROUP BY conversation_id
+         ) h
+           ON d.conversation_id = h.head_conversation_id
+          AND d.timestamp = h.head_timestamp
+         WHERE d.delivery_status = 'pending'
+           AND d.sender_address = ?
+           AND d.timestamp >= ?
+           AND d.recipient_address != d.sender_address
+           AND d.own_event = 1
+           AND d.own_device_copied_at IS NULL
+           AND (d.expires_at IS NULL OR d.expires_at > ?)
+         ORDER BY d.timestamp DESC, d.event_id DESC
+         LIMIT ?`
+      )
+      .all(
+        sender,
+        since,
+        now,
+        sender,
+        since,
+        now,
+        safeLimit
+      ) as DirectEventRow[];
+    return rows.map(rowToDirectEvent);
+  }
+
+  /**
+   * Own outbound DM events of one conversation that the recipient has not
+   * pulled yet, with `fromTimestamp <= timestamp <= toTimestamp`, oldest
+   * first; with `uncopiedOnly`, only those no own device has pulled either.
+   * Serves events a puller's cursor has already passed.
+   */
+  listPendingOwnDirectEventsBetween(
+    senderAddress: string,
+    conversationId: string,
+    fromTimestamp: number,
+    toTimestamp: number,
+    options: { uncopiedOnly?: boolean; limit?: number; now?: number } = {}
+  ): ReticulumDmEvent[] {
+    const sender = String(senderAddress || '').trim();
+    const conversation = normalizeReticulumDmConversationId(conversationId);
+    if (!sender || !conversation) return [];
+    const from = Math.max(0, Math.floor(Number(fromTimestamp) || 0));
+    const to = Math.floor(Number(toTimestamp) || 0);
+    if (to < from) return [];
+    const safeLimit = Math.max(
+      1,
+      Math.min(50, Math.floor(Number(options.limit) || 50))
+    );
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM rchat_dm_events
+         WHERE delivery_status = 'pending'
+           AND sender_address = ?
+           AND timestamp >= ?
+           AND timestamp <= ?
+           AND conversation_id = ?
+           AND recipient_address != sender_address
+           AND own_event = 1${options.uncopiedOnly ? '\n           AND own_device_copied_at IS NULL' : ''}
+           AND (expires_at IS NULL OR expires_at > ?)
+         ORDER BY timestamp ASC, event_id ASC
+         LIMIT ?`
+      )
+      .all(
+        sender,
+        from,
+        to,
+        conversation,
+        options.now ?? Date.now(),
+        safeLimit
+      ) as DirectEventRow[];
+    return (rows ?? []).map(rowToDirectEvent);
+  }
+
+  /**
+   * Newest pending own outbound DM event per conversation (the sweep's one
+   * candidate per conversation: a pull fetches everything after the
+   * recipient's cursor), with its persisted retry state. Heads older than
+   * `uncopiedOnlyBefore` are returned only while no own device has pulled
+   * them (the slow tail stops once the home Hub holds a copy). Due heads come
+   * first, so a busy conversation cannot starve the others.
+   */
+  listPendingOwnDirectConversationHeads(
+    senderAddress: string,
+    sinceTimestamp: number,
+    uncopiedOnlyBefore: number,
+    limit = 16,
+    now = Date.now()
+  ): ReticulumPendingOwnDirectHead[] {
+    const sender = String(senderAddress || '').trim();
+    if (!sender) return [];
+    const safeLimit = Math.max(
+      1,
+      Math.min(64, Math.floor(Number(limit) || 16))
+    );
+    const since = Math.max(0, Math.floor(Number(sinceTimestamp) || 0));
+    const copiedCutoff = Math.max(
+      since,
+      Math.floor(Number(uncopiedOnlyBefore) || 0)
+    );
+    const rows = this.db
+      .prepare(
+        `SELECT d.* ${PENDING_OWN_DIRECT_HEADS_FROM}
+         ORDER BY COALESCE(d.next_delivery_attempt_at, 0) ASC,
+                  d.timestamp DESC, d.event_id DESC
+         LIMIT ?`
+      )
+      .all(
+        sender,
+        since,
+        now,
+        sender,
+        since,
+        now,
+        copiedCutoff,
+        safeLimit
+      ) as DirectEventRow[];
+    const seen = new Set<string>();
+    const heads: ReticulumPendingOwnDirectHead[] = [];
+    for (const row of rows ?? []) {
+      // Two events with the same newest timestamp: keep one.
+      if (!row?.event_id || seen.has(row.conversation_id)) continue;
+      seen.add(row.conversation_id);
+      heads.push(rowToPendingOwnDirectHead(row));
+    }
+    return heads;
+  }
+
+  /**
+   * listPendingOwnDirectConversationHeads for one conversation: its head, or
+   * null. Indexed by conversation and time.
+   */
+  getPendingOwnDirectConversationHead(
+    senderAddress: string,
+    conversationId: string,
+    sinceTimestamp: number,
+    uncopiedOnlyBefore: number,
+    now = Date.now()
+  ): ReticulumPendingOwnDirectHead | null {
+    const sender = String(senderAddress || '').trim();
+    const conversation = String(conversationId || '').trim();
+    if (!sender || !conversation) return null;
+    const since = Math.max(0, Math.floor(Number(sinceTimestamp) || 0));
+    const copiedCutoff = Math.max(
+      since,
+      Math.floor(Number(uncopiedOnlyBefore) || 0)
+    );
+    const row = this.db
+      .prepare(
+        `SELECT d.* ${PENDING_OWN_DIRECT_CONVERSATION_HEAD_FROM}
+         ORDER BY d.event_id DESC
+         LIMIT 1`
+      )
+      .get(
+        sender,
+        conversation,
+        since,
+        now,
+        sender,
+        since,
+        now,
+        copiedCutoff
+      ) as DirectEventRow | undefined;
+    return row?.event_id ? rowToPendingOwnDirectHead(row) : null;
+  }
+
+  /**
+   * Earliest persisted due time over listPendingOwnDirectConversationHeads'
+   * heads (0 when a head was never attempted), or null when there is no
+   * head at all. One indexed read; used to arm (or not arm) the sweep timer.
+   */
+  nextPendingOwnDirectDeliveryDueAt(
+    senderAddress: string,
+    sinceTimestamp: number,
+    uncopiedOnlyBefore: number,
+    now = Date.now()
+  ): number | null {
+    const sender = String(senderAddress || '').trim();
+    if (!sender) return null;
+    const since = Math.max(0, Math.floor(Number(sinceTimestamp) || 0));
+    const copiedCutoff = Math.max(
+      since,
+      Math.floor(Number(uncopiedOnlyBefore) || 0)
+    );
+    const row = this.db
+      .prepare(
+        `SELECT MIN(COALESCE(d.next_delivery_attempt_at, 0)) AS next_due_at
+         ${PENDING_OWN_DIRECT_HEADS_FROM}`
+      )
+      .get(sender, since, now, sender, since, now, copiedCutoff) as
+      | { next_due_at?: unknown }
+      | undefined;
+    if (row?.next_due_at == null) return null;
+    const dueAt = Number(row.next_due_at);
+    return Number.isFinite(dueAt) ? Math.max(0, Math.floor(dueAt)) : null;
+  }
+
+  /** Persist the sweep's retry state for one own event (local only). */
+  setDirectEventDeliveryRetry(
+    eventId: string,
+    attempts: number,
+    nextAttemptAt: number
+  ): void {
+    if (!eventId) return;
+    this.db
+      .prepare(
+        `UPDATE rchat_dm_events
+         SET delivery_attempts = ?,
+             next_delivery_attempt_at = ?
+         WHERE event_id = ? AND own_event = 1`
+      )
+      .run(
+        Math.max(0, Math.floor(Number(attempts) || 0)),
+        Math.max(0, Math.floor(Number(nextAttemptAt) || 0)),
+        eventId
+      );
+  }
+
+  /**
+   * Local-only marker: a verified own device pulled a page holding these own
+   * events. One UPDATE per served page; rows already marked keep their time.
+   */
+  markDirectEventsOwnDeviceCopied(
+    eventIds: string[],
+    copiedAt: number
+  ): number {
+    const ids = [...new Set(eventIds.filter(Boolean))].slice(0, 256);
+    if (ids.length === 0) return 0;
+    const result = this.db
+      .prepare(
+        `UPDATE rchat_dm_events
+         SET own_device_copied_at = ?
+         WHERE own_device_copied_at IS NULL
+           AND event_id IN (${ids.map(() => '?').join(', ')})`
+      )
+      .run(Math.max(1, Math.floor(Number(copiedAt) || Date.now())), ...ids);
+    return Number(result?.changes ?? 0);
+  }
+
+  /**
+   * Saved Messages (self conversation) events authored on this installation,
+   * newest first: only id and timestamp, for cursor comparisons.
+   */
+  listOwnSelfDirectEventCursors(
+    conversationId: string,
+    sinceTimestamp: number,
+    limit = 16,
+    now = Date.now()
+  ): Array<{ eventId: string; timestamp: number }> {
+    const normalized = normalizeReticulumDmConversationId(conversationId);
+    if (!normalized) return [];
+    const safeLimit = Math.max(
+      1,
+      Math.min(64, Math.floor(Number(limit) || 16))
+    );
+    const since = Math.max(0, Math.floor(Number(sinceTimestamp) || 0));
+    const rows = this.db
+      .prepare(
+        `SELECT event_id, timestamp, own_event FROM rchat_dm_events
+         WHERE conversation_id = ?
+           AND own_event = 1
+           AND sender_address = recipient_address
+           AND timestamp >= ?
+           AND (expires_at IS NULL OR expires_at > ?)
+         ORDER BY timestamp DESC, event_id DESC
+         LIMIT ?`
+      )
+      .all(normalized, since, now, safeLimit) as Array<{
+      event_id?: unknown;
+      timestamp?: unknown;
+      own_event?: unknown;
+    }>;
+    return rows
+      .filter(
+        (row) =>
+          typeof row.event_id === 'string' &&
+          Number(row.own_event) === 1 &&
+          Number.isFinite(Number(row.timestamp))
+      )
+      .map((row) => ({
+        eventId: row.event_id as string,
+        timestamp: Number(row.timestamp),
+      }))
+      .sort(
+        (a, b) =>
+          b.timestamp - a.timestamp || b.eventId.localeCompare(a.eventId)
+      );
+  }
+
+  /**
+   * Newest Saved Messages event authored on this device that one own device
+   * (by peer hash) confirmed holding, or null. Local only, never synced.
+   */
+  getSelfDmConfirmedCursor(
+    ownerAddress: string,
+    peerHash: string
+  ): { eventId: string; timestamp: number } | null {
+    const owner = String(ownerAddress || '').trim();
+    const peer = String(peerHash || '').trim();
+    if (!owner || !peer) return null;
+    const row = this.db
+      .prepare(
+        `SELECT state_value FROM rchat_sync_state
+         WHERE scope = ? AND group_id = 0 AND peer_hash = ? AND state_key = ?`
+      )
+      .get(SELF_DM_CONFIRMED_SCOPE, peer, owner) as
+      | { state_value?: unknown }
+      | undefined;
+    if (typeof row?.state_value !== 'string') return null;
+    try {
+      const parsed = JSON.parse(row.state_value) as {
+        e?: unknown;
+        t?: unknown;
+      };
+      const timestamp = Number(parsed?.t);
+      if (typeof parsed?.e !== 'string' || !Number.isFinite(timestamp)) {
+        return null;
+      }
+      return { eventId: parsed.e, timestamp };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Persist getSelfDmConfirmedCursor's answer, and drop confirmations last
+   * written before `pruneBefore` (older than any cursor they could cover).
+   */
+  setSelfDmConfirmedCursor(
+    ownerAddress: string,
+    peerHash: string,
+    event: { eventId: string; timestamp: number },
+    now: number,
+    pruneBefore: number
+  ): void {
+    const owner = String(ownerAddress || '').trim();
+    const peer = String(peerHash || '').trim();
+    if (!owner || !peer || !event?.eventId) return;
+    this.db
+      .prepare(
+        `DELETE FROM rchat_sync_state WHERE scope = ? AND updated_at < ?`
+      )
+      .run(SELF_DM_CONFIRMED_SCOPE, Math.floor(Number(pruneBefore) || 0));
+    this.db
+      .prepare(
+        `INSERT OR REPLACE INTO rchat_sync_state
+           (scope, group_id, peer_hash, state_key, state_value, updated_at)
+         VALUES (?, 0, ?, ?, ?, ?)`
+      )
+      .run(
+        SELF_DM_CONFIRMED_SCOPE,
+        peer,
+        owner,
+        JSON.stringify({
+          e: event.eventId,
+          t: Math.floor(Number(event.timestamp) || 0),
+        }),
+        Math.floor(Number(now) || 0)
+      );
+  }
+
+  /** Newest events of a conversation (any author): id and timestamp only. */
+  getDirectRecentEventCursors(
+    conversationId: string,
+    limit = 5
+  ): Array<{ eventId: string; timestamp: number }> {
+    const normalized = normalizeReticulumDmConversationId(conversationId);
+    if (!normalized) return [];
+    const safeLimit = Math.max(1, Math.min(16, Math.floor(Number(limit) || 5)));
+    const rows = this.db
+      .prepare(
+        `SELECT event_id, timestamp FROM rchat_dm_events
+         WHERE conversation_id = ?
+         ORDER BY timestamp DESC, event_id DESC
+         LIMIT ?`
+      )
+      .all(normalized, safeLimit) as Array<{
+      event_id?: unknown;
+      timestamp?: unknown;
+    }>;
+    return rows
+      .filter(
+        (row) =>
+          typeof row.event_id === 'string' &&
+          Number.isFinite(Number(row.timestamp))
+      )
+      .map((row) => ({
+        eventId: row.event_id as string,
+        timestamp: Number(row.timestamp),
+      }));
+  }
+
+  /** Stored signature of a DM event, or null when the event is not stored. */
+  getDirectEventSignature(eventId: string): string | null {
+    if (!eventId) return null;
+    const row = this.db
+      .prepare('SELECT signature FROM rchat_dm_events WHERE event_id = ?')
+      .get(eventId) as { signature?: unknown } | undefined;
+    return typeof row?.signature === 'string' ? row.signature : null;
   }
 
   isDirectEventDeleted(eventId: string): boolean {
@@ -13765,6 +14347,14 @@ export class ReticulumChatDatabase {
         run: () => this.migrateDirectExpiryMarkerSequenceIndex(),
       },
       {
+        name: 'dm-own-device-copied-at',
+        run: () => this.migrateDirectOwnDeviceCopiedSchema(),
+      },
+      {
+        name: 'dm-delivery-retry-state',
+        run: () => this.migrateDirectDeliveryRetrySchema(),
+      },
+      {
         name: 'device-read-state-peer-address',
         run: () =>
           this.ensureColumn(
@@ -14939,6 +15529,9 @@ export class ReticulumChatDatabase {
           'delivery_updated_at',
           'expires_at',
           'message_expiry_duration_ms',
+          'own_device_copied_at',
+          'delivery_attempts',
+          'next_delivery_attempt_at',
         ],
       },
       {
@@ -15522,6 +16115,36 @@ export class ReticulumChatDatabase {
         PRIMARY KEY (owner_address, peer_address)
       );
     `);
+  }
+
+  /**
+   * GO-only local state: when a verified own device (a home Hub) first pulled
+   * an own pending event. Additive and nullable; nothing on the wire reads it.
+   */
+  private migrateDirectOwnDeviceCopiedSchema(): void {
+    this.ensureColumn(
+      'rchat_dm_events',
+      'own_device_copied_at',
+      `ALTER TABLE rchat_dm_events ADD COLUMN own_device_copied_at INTEGER`
+    );
+  }
+
+  /**
+   * GO-only local state: the pending-delivery sweep's attempt count and next
+   * due time per own event, so a restart neither re-bursts tracked fanouts
+   * nor forgets the slow tail. Additive and nullable; never on the wire.
+   */
+  private migrateDirectDeliveryRetrySchema(): void {
+    this.ensureColumn(
+      'rchat_dm_events',
+      'delivery_attempts',
+      `ALTER TABLE rchat_dm_events ADD COLUMN delivery_attempts INTEGER`
+    );
+    this.ensureColumn(
+      'rchat_dm_events',
+      'next_delivery_attempt_at',
+      `ALTER TABLE rchat_dm_events ADD COLUMN next_delivery_attempt_at INTEGER`
+    );
   }
 
   private migrateDirectExpiryQueueIndex(): void {

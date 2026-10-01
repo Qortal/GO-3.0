@@ -1,11 +1,19 @@
 import { Capacitor } from '@capacitor/core';
+import i18n from 'i18next';
 import {
   writeNativeDocumentFile,
   writeNativeDocumentBlob,
   writeNativeDocumentBytes,
   downloadNativeDocument,
+  ensureNativeStoragePermission,
   type DownloadProgressEvent,
 } from '../plugins/FileWriter';
+import {
+  hasNativeFileSink,
+  NativeFileSinkUnavailableError,
+  readBlobSlices,
+  writeToNativeFileSink,
+} from './nativeFileSink';
 
 const QORTAL_DOCUMENTS_FOLDER = 'Qortal Go';
 /** Coalesce small network chunks before each native write (MediaStore opens
@@ -124,6 +132,24 @@ function assertNative() {
   }
 }
 
+let storageAccess: Promise<void> | null = null;
+
+/**
+ * Android 8/9 need the storage permission at runtime before anything can be
+ * written to Documents; later versions answer at once. Asked once per run.
+ */
+async function ensureStorageAccess(): Promise<void> {
+  if (!storageAccess) {
+    storageAccess = ensureNativeStoragePermission().then((granted) => {
+      if (!granted) {
+        storageAccess = null;
+        throw new Error(i18n.t('core:file_transfer.storage_permission'));
+      }
+    });
+  }
+  return storageAccess;
+}
+
 const sanitizeName = (filename: string | null | undefined) => {
   const raw = String(filename ?? '').trim();
   const cleaned = (raw || 'download').replace(/[/\\?%*:|"<>]/g, '_');
@@ -135,6 +161,7 @@ export async function saveTextToMobileDocuments(
   contents: string
 ): Promise<{ path: string; uri: string }> {
   assertNative();
+  await ensureStorageAccess();
   const safeName = sanitizeName(filename);
   const result = await writeNativeDocumentFile(
     `${QORTAL_DOCUMENTS_FOLDER}/${safeName}`,
@@ -151,32 +178,36 @@ export async function saveTextToMobileDocuments(
  */
 const BLOB_SINGLE_WRITE_MAX_BYTES = 4 * 1024 * 1024;
 
-async function* readBlobInSlices(
-  blob: Blob,
-  sliceBytes: number
-): AsyncGenerator<Uint8Array> {
-  for (let offset = 0; offset < blob.size; offset += sliceBytes) {
-    const slice = blob.slice(offset, Math.min(offset + sliceBytes, blob.size));
-    yield new Uint8Array(await slice.arrayBuffer());
-  }
-}
-
 export async function saveBlobToMobileDocuments(
   filename: string,
   blob: Blob,
   onProgress?: (bytesWritten: number, totalBytes: number) => void
 ): Promise<{ path: string; uri: string }> {
   assertNative();
+  await ensureStorageAccess();
   const safeName = sanitizeName(filename);
+
+  if (hasNativeFileSink()) {
+    try {
+      return await writeToNativeFileSink(
+        `${QORTAL_DOCUMENTS_FOLDER}/${safeName}`,
+        readBlobSlices(blob),
+        { categorize: true, mimeType: blob.type || undefined },
+        onProgress ? (written) => onProgress(written, blob.size) : undefined
+      );
+    } catch (error) {
+      if (!(error instanceof NativeFileSinkUnavailableError)) throw error;
+    }
+  }
 
   // A blob crosses to the native side as base64 text, which costs a third
   // again in size on both sides of the bridge at once. For a file of any real
   // size that is hundreds of megabytes of string, and Android kills the app
   // long before the save finishes — so anything large goes over in slices.
   if (blob.size > BLOB_SINGLE_WRITE_MAX_BYTES) {
-    return await saveStreamToMobileDocuments(
-      safeName,
-      readBlobInSlices(blob, STREAM_WRITE_BUFFER_BYTES),
+    return await writeStreamThroughPlugin(
+      `${QORTAL_DOCUMENTS_FOLDER}/${safeName}`,
+      readBlobSlices(blob, STREAM_WRITE_BUFFER_BYTES),
       blob.type || undefined,
       onProgress ? (written) => onProgress(written, blob.size) : undefined
     );
@@ -197,7 +228,8 @@ export async function saveBlobToMobileDocuments(
  */
 export async function openSavedMobileFile(
   uri: string,
-  filename?: string
+  filename?: string,
+  mimeType?: string
 ): Promise<boolean> {
   if (!uri || !Capacitor.isNativePlatform()) return false;
   try {
@@ -205,6 +237,7 @@ export async function openSavedMobileFile(
     const result = await Reticulum.qchatFileOpen({
       uri,
       ...(filename ? { fileName: filename } : {}),
+      ...(mimeType ? { mimeType } : {}),
     });
     return result?.ok === true;
   } catch (error) {
@@ -230,6 +263,7 @@ export async function downloadUrlToMobileDocuments(
   apiKey?: string
 ): Promise<{ path: string; uri: string; bytesWritten: number }> {
   assertNative();
+  await ensureStorageAccess();
   const safeName = sanitizeName(filename);
   return downloadNativeDocument(
     `${QORTAL_DOCUMENTS_FOLDER}/${safeName}`,
@@ -252,10 +286,45 @@ export async function saveStreamToMobileDocuments(
   onProgress?: (bytesWritten: number) => void
 ): Promise<{ path: string; uri: string; bytesWritten: number }> {
   assertNative();
+  await ensureStorageAccess();
 
   const safeName = sanitizeName(filename);
   const target = `${QORTAL_DOCUMENTS_FOLDER}/${safeName}`;
 
+  if (hasNativeFileSink()) {
+    // The source can only be read once. If the sink never opened, nothing was
+    // read from it and the plugin path below can still have all of it.
+    let started = false;
+    const tracked = (async function* () {
+      for await (const chunk of chunks) {
+        started = true;
+        yield chunk;
+      }
+    })();
+    try {
+      return await writeToNativeFileSink(
+        target,
+        tracked,
+        { categorize: true, mimeType },
+        onProgress
+      );
+    } catch (error) {
+      if (!(error instanceof NativeFileSinkUnavailableError) || started) {
+        throw error;
+      }
+    }
+  }
+
+  return writeStreamThroughPlugin(target, chunks, mimeType, onProgress);
+}
+
+/** The base64 plugin path, for WebViews without the binary sink. */
+async function writeStreamThroughPlugin(
+  target: string,
+  chunks: AsyncIterable<Uint8Array>,
+  mimeType?: string,
+  onProgress?: (bytesWritten: number) => void
+): Promise<{ path: string; uri: string; bytesWritten: number }> {
   let buffer: Uint8Array[] = [];
   let buffered = 0;
   let bytesWritten = 0;

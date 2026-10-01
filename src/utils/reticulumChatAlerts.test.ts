@@ -1,6 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  CHAT_ALERT_MAX_CATCH_UP_MS,
+  chatAlertFloor,
   chatAlertIdFromKey,
+  createChatAlertCoalescer,
+  isChatAlertCatchUp,
+  readChatAlertLastRunMark,
+  unreadDirectMessageCount,
+  writeChatAlertLastRunMark,
   dismissShownAlert,
   forgetShownAlert,
   hashNotificationId,
@@ -228,5 +235,256 @@ describe('dismissShownAlert', () => {
     ).resolves.toBeUndefined();
     expect(consoleError).toHaveBeenCalled();
     consoleError.mockRestore();
+  });
+});
+
+describe('catch-up alert window', () => {
+  const NOW = 1_800_000_000_000;
+
+  afterEach(() => {
+    window.localStorage.clear();
+  });
+
+  it('starts at listeningSince - 60 s without a last-run mark', () => {
+    expect(chatAlertFloor({ listeningSince: NOW, now: NOW })).toBe(
+      NOW - 60_000
+    );
+  });
+
+  it('reaches back to the last run so catch-up messages alert', () => {
+    const lastRunMark = NOW - 3 * 60 * 60 * 1000;
+    expect(chatAlertFloor({ listeningSince: NOW, lastRunMark, now: NOW })).toBe(
+      lastRunMark - 60_000
+    );
+  });
+
+  it('never reaches back more than 7 days', () => {
+    expect(
+      chatAlertFloor({
+        listeningSince: NOW,
+        lastRunMark: NOW - 30 * 24 * 60 * 60 * 1000,
+        now: NOW,
+      })
+    ).toBe(NOW - CHAT_ALERT_MAX_CATCH_UP_MS);
+  });
+
+  it('ignores a mark newer than the listener start', () => {
+    expect(
+      chatAlertFloor({
+        listeningSince: NOW - 1000,
+        lastRunMark: NOW,
+        now: NOW,
+      })
+    ).toBe(NOW - 1000 - 60_000);
+  });
+
+  it('stores the last-run mark per account', () => {
+    expect(readChatAlertLastRunMark('Qa')).toBeNull();
+    writeChatAlertLastRunMark('Qa', NOW);
+    expect(readChatAlertLastRunMark('Qa')).toBe(NOW);
+    expect(readChatAlertLastRunMark('Qb')).toBeNull();
+  });
+});
+
+describe('chat alert coalescer', () => {
+  const makeClock = () => {
+    let now = 0;
+    let timer: { callback: () => void; at: number } | null = null;
+    return {
+      now: () => now,
+      setTimer: (callback: () => void, ms: number) => {
+        timer = { callback, at: now + ms };
+        return timer;
+      },
+      clearTimer: (handle: unknown) => {
+        if (handle === timer) timer = null;
+      },
+      advance: (ms: number) => {
+        now += ms;
+        if (timer && timer.at <= now) {
+          const { callback } = timer;
+          timer = null;
+          callback();
+        }
+      },
+      armed: () => timer !== null,
+    };
+  };
+
+  it('posts the first alert at once and then at most one per 60 s', () => {
+    const clock = makeClock();
+    const coalescer = createChatAlertCoalescer(clock);
+    const posted: string[] = [];
+    const post = (name: string) => () => {
+      posted.push(name);
+      return true;
+    };
+    coalescer.offer('dm:a', post('a1'));
+    coalescer.offer('dm:a', post('a2'));
+    coalescer.offer('dm:b', post('b1'));
+    coalescer.offer('dm:c', post('c1'));
+    expect(posted).toEqual(['a1']);
+    expect(clock.armed()).toBe(true);
+
+    clock.advance(59_999);
+    expect(posted).toEqual(['a1']);
+    clock.advance(1);
+    // Only the newest waiting alert sounds when the window ends.
+    expect(posted).toEqual(['a1', 'c1']);
+    expect(clock.armed()).toBe(false);
+
+    clock.advance(60_000);
+    coalescer.offer('dm:d', post('d1'));
+    expect(posted).toEqual(['a1', 'c1', 'd1']);
+  });
+
+  it('does not post alerts cancelled while they wait', () => {
+    const clock = makeClock();
+    const coalescer = createChatAlertCoalescer(clock);
+    const posted: string[] = [];
+    coalescer.offer('dm:a', () => (posted.push('a'), true));
+    coalescer.offer('dm:b', () => (posted.push('b'), true));
+    expect(coalescer.isPending('dm:b')).toBe(true);
+    coalescer.cancel('dm:b');
+    expect(coalescer.isPending('dm:b')).toBe(false);
+    expect(clock.armed()).toBe(false);
+    clock.advance(120_000);
+    expect(posted).toEqual(['a']);
+  });
+
+  it('falls back to an older waiting alert when the newest is unwanted', () => {
+    const clock = makeClock();
+    const coalescer = createChatAlertCoalescer(clock);
+    const posted: string[] = [];
+    coalescer.offer('dm:a', () => (posted.push('a'), true));
+    coalescer.offer('dm:b', () => (posted.push('b'), true));
+    coalescer.offer('dm:c', () => false);
+    clock.advance(60_000);
+    expect(posted).toEqual(['a', 'b']);
+  });
+
+  it('does not count an unwanted alert against the audible budget', () => {
+    const clock = makeClock();
+    const coalescer = createChatAlertCoalescer(clock);
+    const posted: string[] = [];
+    coalescer.offer('dm:a', () => false);
+    coalescer.offer('dm:b', () => (posted.push('b'), true));
+    expect(posted).toEqual(['b']);
+    expect(clock.armed()).toBe(false);
+  });
+
+  it('clear drops waiting alerts and the timer', () => {
+    const clock = makeClock();
+    const coalescer = createChatAlertCoalescer(clock);
+    const posted: string[] = [];
+    coalescer.offer('dm:a', () => (posted.push('a'), true));
+    coalescer.offer('dm:b', () => (posted.push('b'), true));
+    coalescer.clear();
+    expect(clock.armed()).toBe(false);
+    clock.advance(120_000);
+    expect(posted).toEqual(['a']);
+  });
+  it('holds catch-up alerts for the settle and posts only the newest', () => {
+    const clock = makeClock();
+    const coalescer = createChatAlertCoalescer(clock);
+    const posted: string[] = [];
+    const post = (name: string) => () => (posted.push(name), true);
+    coalescer.offer('dm:a', post('a'), { settleMs: 10_000 });
+    clock.advance(500);
+    coalescer.offer('dm:b', post('b'), { settleMs: 10_000 });
+    expect(posted).toEqual([]);
+    clock.advance(9_500);
+    // b was offered 9.5 s ago and is not due yet: only a posts.
+    expect(posted).toEqual(['a']);
+    expect(clock.armed()).toBe(true);
+    clock.advance(59_999);
+    expect(posted).toEqual(['a']);
+    clock.advance(1);
+    expect(posted).toEqual(['a', 'b']);
+    expect(clock.armed()).toBe(false);
+  });
+
+  it('drops a catch-up alert cancelled by a read sync during the settle', () => {
+    const clock = makeClock();
+    const coalescer = createChatAlertCoalescer(clock);
+    const posted: string[] = [];
+    coalescer.offer('dm:a', () => (posted.push('a'), true), {
+      settleMs: 10_000,
+    });
+    coalescer.cancel('dm:a');
+    expect(clock.armed()).toBe(false);
+    clock.advance(120_000);
+    expect(posted).toEqual([]);
+  });
+
+  it('awaits async posts and falls back when one resolves unwanted', async () => {
+    const clock = makeClock();
+    const coalescer = createChatAlertCoalescer(clock);
+    const posted: string[] = [];
+    coalescer.offer('dm:a', async () => (posted.push('a'), true), {
+      settleMs: 10_000,
+    });
+    coalescer.offer('dm:b', async () => false, { settleMs: 10_000 });
+    clock.advance(10_000);
+    expect(coalescer.isPending('dm:a')).toBe(true);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(posted).toEqual(['a']);
+    expect(coalescer.isPending('dm:a')).toBe(false);
+    expect(clock.armed()).toBe(false);
+  });
+
+  it('tells an async post it was cancelled while it checked', async () => {
+    const clock = makeClock();
+    const coalescer = createChatAlertCoalescer(clock);
+    let release: () => void = () => undefined;
+    const seen: boolean[] = [];
+    coalescer.offer(
+      'dm:a',
+      async (isCancelled) => {
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        seen.push(isCancelled());
+        return !isCancelled();
+      },
+      { settleMs: 10_000 }
+    );
+    clock.advance(10_000);
+    coalescer.cancel('dm:a');
+    release();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(seen).toEqual([true]);
+  });
+});
+
+describe('catch-up classification', () => {
+  const NOW = 1_800_000_000_000;
+
+  it('treats messages older than the clock skew as catch-up', () => {
+    expect(isChatAlertCatchUp({ timestamp: NOW, now: NOW })).toBe(false);
+    expect(isChatAlertCatchUp({ timestamp: NOW - 60_000, now: NOW })).toBe(
+      false
+    );
+    expect(isChatAlertCatchUp({ timestamp: NOW - 60_001, now: NOW })).toBe(
+      true
+    );
+    expect(isChatAlertCatchUp({ timestamp: Number.NaN, now: NOW })).toBe(false);
+  });
+
+  it('counts unread DM messages without missed calls', () => {
+    expect(
+      unreadDirectMessageCount(
+        [
+          { peerAddress: 'Qx', unreadCount: 5 },
+          { peerAddress: 'Qa', unreadCount: 3, unreadMissedCallCount: 1 },
+        ],
+        'Qa'
+      )
+    ).toBe(2);
+    expect(unreadDirectMessageCount(null, 'Qa')).toBe(0);
+    expect(unreadDirectMessageCount([], 'Qa')).toBe(0);
   });
 });

@@ -33,6 +33,7 @@ public class QortalBackgroundPlugin extends Plugin {
     private Boolean lastEmittedDeviceOnline = null;
     private String pendingAlertFromAddress;
     private String pendingAlertType;
+    private BackgroundKeepAlive.Listener keepAliveListener;
 
     @Override
     public void load() {
@@ -68,7 +69,42 @@ public class QortalBackgroundPlugin extends Plugin {
         registerDeviceNetworkWatchers();
         emitDeviceNetwork();
 
+        keepAliveListener = new BackgroundKeepAlive.Listener() {
+            @Override
+            public void onRelayProfileChanged(String profile) {
+                JSObject payload = new JSObject();
+                payload.put("profile", profile);
+                notifyListeners("relayProfileChanged", payload);
+            }
+
+            @Override
+            public void onVendorFreezeDetected(int count, long lastAt, String manufacturer) {
+                JSObject payload = new JSObject();
+                payload.put("count", count);
+                payload.put("lastAt", lastAt);
+                payload.put("manufacturer", manufacturer);
+                notifyListeners("vendorFreezeDetected", payload);
+            }
+        };
+        BackgroundKeepAlive.get(getContext()).setListener(keepAliveListener);
+
+        // A page runs again: the status notification may use its text.
+        QortalForegroundService.onPageLoaded();
+
         consumeLaunchIntent(getActivity() != null ? getActivity().getIntent() : null);
+    }
+
+    /**
+     * The real "GO is on screen" edge (document.visibilityState is not one).
+     * Restarts the status service and the hubs after a dataSync time-out.
+     */
+    @Override
+    protected void handleOnResume() {
+        super.handleOnResume();
+        Context context = getContext();
+        if (context != null) {
+            QortalForegroundService.onAppForeground(context);
+        }
     }
 
     @Override
@@ -115,6 +151,13 @@ public class QortalBackgroundPlugin extends Plugin {
             LocalBroadcastManager.getInstance(getContext()).unregisterReceiver(presenceTickReceiver);
         }
         unregisterDeviceNetworkWatchers();
+        if (keepAliveListener != null && getContext() != null) {
+            BackgroundKeepAlive.get(getContext()).clearListener(keepAliveListener);
+            keepAliveListener = null;
+        }
+        // The WebView and its chat engine go with this bridge: the status
+        // notification must stop saying "online".
+        QortalForegroundService.onPageGone();
         super.handleOnDestroy();
     }
 
@@ -211,6 +254,16 @@ public class QortalBackgroundPlugin extends Plugin {
 
     @PluginMethod
     public void startPersistentStatus(PluginCall call) {
+        applyPersistentStatus(call, true);
+    }
+
+    /**
+     * Starts or updates the status notification. Only a start marks the
+     * session: a throttled update can still land after logout and must not
+     * switch background keep-alive back on for a signed-out page, nor start
+     * the stopped service again (which would redial the hubs).
+     */
+    private void applyPersistentStatus(PluginCall call, boolean markSession) {
         Context context = getContext();
         if (context == null) {
             call.reject("Context not available");
@@ -223,6 +276,22 @@ public class QortalBackgroundPlugin extends Plugin {
         String syncLabel = call.getString("syncLabel", "Sync status unknown");
         String peersLabel = call.getString("peersLabel", "0 connected peers");
         String statusKind = call.getString("statusKind", "starting");
+        BackgroundKeepAlive keepAlive = BackgroundKeepAlive.get(context);
+        if (!KeepAlivePolicy.acceptsStatusPush(markSession, keepAlive.isSessionActive())) {
+            // Signed out (logout, reload): restarting the service here would
+            // also redial the hubs the logout is closing.
+            JSObject skipped = new JSObject();
+            skipped.put("success", true);
+            skipped.put("skipped", true);
+            call.resolve(skipped);
+            return;
+        }
+        // Only a running page pushes; its text is live again.
+        QortalForegroundService.onPageStatusPushed();
+        // Only a signed-in page starts the status service.
+        if (markSession) {
+            keepAlive.setSessionActive(true);
+        }
         QortalForegroundService.startOrUpdate(
             context,
             title,
@@ -240,7 +309,7 @@ public class QortalBackgroundPlugin extends Plugin {
 
     @PluginMethod
     public void updatePersistentStatus(PluginCall call) {
-        startPersistentStatus(call);
+        applyPersistentStatus(call, false);
     }
 
     @PluginMethod
@@ -313,7 +382,11 @@ public class QortalBackgroundPlugin extends Plugin {
             title,
             text,
             progress,
-            ongoing
+            ongoing,
+            call.getString("openUri"),
+            call.getString("openMimeType"),
+            Boolean.TRUE.equals(call.getBoolean("alert", false)),
+            call.getString("actionLabel")
         );
 
         JSObject ret = new JSObject();
@@ -443,6 +516,133 @@ public class QortalBackgroundPlugin extends Plugin {
 
         JSObject ret = new JSObject();
         ret.put("success", true);
+        call.resolve(ret);
+    }
+
+    /** Background sync mode: off | charging (default) | always. Persisted natively. */
+    @PluginMethod
+    public void setBackgroundSyncMode(PluginCall call) {
+        Context context = getContext();
+        if (context == null) {
+            call.reject("Context not available");
+            return;
+        }
+        String mode = KeepAlivePolicy.parseMode(call.getString("mode"));
+        JSObject ret = new JSObject();
+        if (mode == null) {
+            // Unknown value: keep the current mode.
+            ret.put("ok", false);
+            call.resolve(ret);
+            return;
+        }
+        BackgroundKeepAlive.get(context).setMode(mode);
+        ret.put("ok", true);
+        call.resolve(ret);
+    }
+
+    @PluginMethod
+    public void getBackgroundSyncState(PluginCall call) {
+        Context context = getContext();
+        if (context == null) {
+            call.reject("Context not available");
+            return;
+        }
+        BackgroundKeepAlive.State state = BackgroundKeepAlive.get(context).getState();
+        JSObject ret = new JSObject();
+        ret.put("mode", state.mode);
+        ret.put("charging", state.charging);
+        ret.put("unmetered", state.unmetered);
+        ret.put("relayProfile", state.relayProfile);
+        ret.put("keepAliveActive", state.keepAliveActive);
+        ret.put("vendorFreezeCount", state.vendorFreezeCount);
+        if (state.vendorFreezeLastAt != null) {
+            ret.put("vendorFreezeLastAt", state.vendorFreezeLastAt.longValue());
+        } else {
+            ret.put("vendorFreezeLastAt", org.json.JSONObject.NULL);
+        }
+        ret.put("vendorFreezeHintPending", state.vendorFreezeHintPending);
+        ret.put("manufacturer", state.manufacturer);
+        call.resolve(ret);
+    }
+
+    /** True while own messages still wait to leave the phone (engine's ownOutboxState). */
+    @PluginMethod
+    public void setOutboxPending(PluginCall call) {
+        Context context = getContext();
+        if (context == null) {
+            call.reject("Context not available");
+            return;
+        }
+        BackgroundKeepAlive.get(context)
+            .setOutboxPending(Boolean.TRUE.equals(call.getBoolean("pending", false)));
+        // Optional: the number waiting, for the status notification.
+        Integer count = call.getInt("count");
+        if (count != null) {
+            QortalForegroundService.setOutboxCount(count);
+        }
+        JSObject ret = new JSObject();
+        ret.put("ok", true);
+        call.resolve(ret);
+    }
+
+    /** Own messages waiting to send (ownOutboxState.pendingCount), shown while GO is off screen. */
+    @PluginMethod
+    public void setOutboxCount(PluginCall call) {
+        Integer count = call.getInt("count");
+        JSObject ret = new JSObject();
+        if (count == null) {
+            ret.put("ok", false);
+            call.resolve(ret);
+            return;
+        }
+        QortalForegroundService.setOutboxCount(count);
+        ret.put("ok", true);
+        call.resolve(ret);
+    }
+
+    /**
+     * Translations for texts native code draws itself (paused / waiting /
+     * syncing status, the time-out notice). Keys: StatusHonesty.LOCALIZED_KEYS;
+     * values may contain {{count}}. Persisted; unknown keys are ignored.
+     */
+    @PluginMethod
+    public void setLocalizedStrings(PluginCall call) {
+        Context context = getContext();
+        if (context == null) {
+            call.reject("Context not available");
+            return;
+        }
+        JSObject strings = call.getObject("strings");
+        JSObject ret = new JSObject();
+        if (strings == null) {
+            ret.put("ok", false);
+            call.resolve(ret);
+            return;
+        }
+        java.util.Map<String, String> values = new java.util.HashMap<>();
+        java.util.Iterator<String> keys = strings.keys();
+        while (keys.hasNext()) {
+            String key = keys.next();
+            Object value = strings.opt(key);
+            if (value instanceof String) {
+                values.put(key, (String) value);
+            }
+        }
+        QortalForegroundService.setLocalizedStrings(context, values);
+        ret.put("ok", true);
+        call.resolve(ret);
+    }
+
+    @PluginMethod
+    public void acknowledgeVendorFreezeHint(PluginCall call) {
+        Context context = getContext();
+        if (context == null) {
+            call.reject("Context not available");
+            return;
+        }
+        BackgroundKeepAlive.get(context).acknowledgeVendorFreezeHint();
+        JSObject ret = new JSObject();
+        ret.put("ok", true);
         call.resolve(ret);
     }
 

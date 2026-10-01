@@ -1,9 +1,10 @@
-import AppsIcon from '@mui/icons-material/Apps';
 import CloseIcon from '@mui/icons-material/Close';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import MailOutlineIcon from '@mui/icons-material/MailOutline';
 import NotificationsRoundedIcon from '@mui/icons-material/NotificationsRounded';
 import SettingsIcon from '@mui/icons-material/Settings';
+import HistoryRoundedIcon from '@mui/icons-material/HistoryRounded';
+import ClearAllRoundedIcon from '@mui/icons-material/ClearAllRounded';
 import {
   Avatar,
   Box,
@@ -20,8 +21,10 @@ import {
   Tooltip,
   Typography,
   alpha,
+  useMediaQuery,
   useTheme,
 } from '@mui/material';
+import { AnimatePresence } from 'framer-motion';
 import { useAtom, useAtomValue, useSetAtom } from 'jotai';
 import {
   forwardRef,
@@ -35,8 +38,11 @@ import { useTranslation } from 'react-i18next';
 import { getBaseApiReact } from '../App';
 import {
   customWebsocketSubscriptionsAtom,
+  getNotificationPanelDismissKey,
+  isNotificationPanelDismissed,
   isNotificationSeenInAppFromKeyTimes,
   lastPaymentSeenTimestampAtom,
+  notificationPanelDismissalsAtom,
   notificationSeenInAppKeyTimesAtom,
   notificationSeenInAppKeysAtom,
   paymentNotificationsAtom,
@@ -47,10 +53,20 @@ import {
 import { revokeAppNotificationRules } from '../qortal/get';
 import LogoSelected from '../assets/svgs/LogoSelected.svg';
 import {
-  appUpdateReleaseAtom,
-  appUpdateSeenVersionAtom,
-} from '../appUpdate/appUpdateAtoms';
-import { AppUpdateNotice } from './AppUpdate/AppUpdateNotice';
+  QdnDownloadsNotice,
+  useQdnDownloadsBadge,
+} from './Transfers/QdnDownloadsNotice';
+import {
+  hideSavedQdnFilesFromPanel,
+  markSavedQdnFilesSeen,
+} from '../utils/qdnDownloadNotifications';
+import { recordNotificationHistory } from '../utils/notificationHistory';
+import { DragToClosePanel } from './Notifications/DragToClosePanel';
+import {
+  NotificationAppIdentity,
+  RegisteredNameText,
+} from './Notifications/NotificationAppIdentity';
+import { NotificationHistoryDialog } from './Notifications/NotificationHistoryDialog';
 import {
   getAppsWithNotificationPermission,
   getNotificationOsPushDisabledMap,
@@ -65,7 +81,7 @@ import {
   unsubscribeFromEvent,
 } from '../utils/events';
 import { formatDate } from '../utils/time';
-import { useUnseenNotificationCount } from '../hooks/useUnseenNotificationCount';
+import { SAFE_AREA_BOTTOM, SAFE_AREA_TOP } from '../utils/mobileSafeArea';
 
 export type GeneralNotificationsHandle = {
   open: () => void;
@@ -77,6 +93,8 @@ import {
   setQChatMentionNotificationsEnabled,
 } from '../utils/qChatMentionNotifications';
 import { ReticulumUnreadCountBadge } from './common/ReticulumUnreadCountBadge';
+import { SwipeToDismiss } from './common/SwipeToDismiss';
+import { MobileBackgroundSyncSetting } from './Mobile/MobileBackgroundSyncSetting';
 import NotificationsActiveRoundedIcon from '@mui/icons-material/NotificationsActiveRounded';
 
 const RESOURCE_EVENT = 'RESOURCE_PUBLISHED';
@@ -139,6 +157,7 @@ export const GeneralNotifications = forwardRef<
   const triggerRef = useRef<HTMLElement>(null);
   const [anchorEl, setAnchorEl] = useState(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<'hub' | 'q-apps'>(
     'hub'
   );
@@ -165,8 +184,13 @@ export const GeneralNotifications = forwardRef<
   const setLastSeenTimestamp = useSetAtom(lastPaymentSeenTimestampAtom);
   const seenInAppKeyTimes = useAtomValue(notificationSeenInAppKeyTimesAtom);
   const setSeenKeys = useSetAtom(notificationSeenInAppKeysAtom);
+  const [panelDismissals, updatePanelDismissals] = useAtom(
+    notificationPanelDismissalsAtom
+  );
   const theme = useTheme();
   const isDarkMode = theme.palette.mode === 'dark';
+  // Phones get the settings full screen, like GO's other settings screens.
+  const isNarrowSettings = useMediaQuery(theme.breakpoints.down('sm'));
   const { t, i18n } = useTranslation(['core', 'group']);
 
   useEffect(() => {
@@ -205,21 +229,76 @@ export const GeneralNotifications = forwardRef<
     () =>
       (notifications ?? []).filter(
         (item) =>
+          (item?.event === RESOURCE_EVENT ||
+            (reticulumEnabled &&
+              (isQChatMentionNotification(item) ||
+                isReticulumDmMissedCallNotification(item) ||
+                isReticulumCalendarNotification(item)))) &&
+          !isNotificationPanelDismissed(item, panelDismissals)
+      ),
+    [notifications, panelDismissals, reticulumEnabled]
+  );
+  // Everything that reaches the panel is also kept in the history, including
+  // what is later swiped away or read.
+  useEffect(() => {
+    recordNotificationHistory(
+      myAddress,
+      (notifications ?? []).filter(
+        (item) =>
           item?.event === RESOURCE_EVENT ||
           (reticulumEnabled &&
             (isQChatMentionNotification(item) ||
               isReticulumDmMissedCallNotification(item) ||
               isReticulumCalendarNotification(item)))
-      ),
-    [notifications, reticulumEnabled]
-  );
-  const updateRelease = useAtomValue(appUpdateReleaseAtom);
-  const [updateSeenVersion, setUpdateSeenVersion] = useAtom(
-    appUpdateSeenVersionAtom
-  );
-  const updateUnseen = Boolean(
-    updateRelease && updateSeenVersion !== updateRelease.version
-  );
+      )
+    );
+  }, [notifications, myAddress, reticulumEnabled]);
+
+  const dismissNotification = (notification) => {
+    const key = getNotificationPanelDismissKey(notification);
+    if (!key) {
+      setNotifications((current) =>
+        current.filter((item) => item !== notification)
+      );
+      return;
+    }
+    updatePanelDismissals({
+      type: 'dismiss',
+      key,
+      mentionCount: isQChatMentionNotification(notification)
+        ? Math.max(0, Number(notification?.data?.mentionCount) || 0)
+        : undefined,
+    });
+  };
+  /**
+   * Clear all: every card leaves the panel the way a swipe takes it, so all of
+   * it stays in the notification history. Running downloads stay put.
+   */
+  const clearAllNotifications = () => {
+    const items: Array<{ key: string; mentionCount?: number }> = [];
+    const keyless = new Set<unknown>();
+    for (const notification of resourceNotifications) {
+      const key = getNotificationPanelDismissKey(notification);
+      if (!key) {
+        keyless.add(notification);
+        continue;
+      }
+      items.push({
+        key,
+        mentionCount: isQChatMentionNotification(notification)
+          ? Math.max(0, Number(notification?.data?.mentionCount) || 0)
+          : undefined,
+      });
+    }
+    updatePanelDismissals({ type: 'dismissMany', items });
+    if (keyless.size) {
+      setNotifications((current) =>
+        current.filter((item) => !keyless.has(item))
+      );
+    }
+    hideSavedQdnFilesFromPanel();
+    setLastSeenTimestamp(Date.now());
+  };
   const unseenCount = useMemo(() => {
     return resourceNotifications.reduce((count, notification) => {
       const timestamp = getNotificationTimestamp(notification);
@@ -235,11 +314,15 @@ export const GeneralNotifications = forwardRef<
       );
     }, 0);
   }, [resourceNotifications, seenInAppKeyTimes, lastSeenTimestamp]);
-  // A pending app update sits at the top of the list and counts towards the
-  // badge like any other unread thing.
-  const totalUnseenCount = unseenCount + (updateUnseen ? 1 : 0);
+  // Downloads (running, or saved and not yet seen) sit at the top of the
+  // list and count towards the badge like any other unread thing. App updates
+  // have their own screen (GO 3.0 Updates), not a card here.
+  const downloadsBadge = useQdnDownloadsBadge();
+  const totalUnseenCount = unseenCount + downloadsBadge.unseen;
   const hasAnyNotifications =
-    resourceNotifications.length > 0 || Boolean(updateRelease);
+    resourceNotifications.length > 0 || downloadsBadge.hasAny;
+  const canClearAll =
+    resourceNotifications.length > 0 || downloadsBadge.clearable > 0;
 
   const hasNewNotifications = totalUnseenCount > 0;
   const notificationsLabel = t('message.generic.notifications', {
@@ -251,6 +334,84 @@ export const GeneralNotifications = forwardRef<
   const NotificationIcon = hasNewNotifications
     ? NotificationsActiveRoundedIcon
     : NotificationsRoundedIcon;
+
+  const closePanel = () => {
+    if (hasNewNotifications) setLastSeenTimestamp(Date.now());
+    setAnchorEl(null);
+  };
+
+  const describeNotification = (notification) =>
+    getNotificationMessage(
+      notification?.message,
+      i18n.language,
+      t('message.generic.new_notification', {
+        defaultValue: 'New notification',
+      })
+    );
+
+  /** What tapping an item does, in the panel and in the history alike. */
+  const openNotification = (notification) => {
+    if (isQChatMentionNotification(notification)) {
+      setNotifications((current) =>
+        current.filter(
+          (item) =>
+            !(
+              isQChatMentionNotification(item) &&
+              Number(item?.data?.groupId) ===
+                Number(notification?.data?.groupId)
+            )
+        )
+      );
+      setAnchorEl(null);
+      executeEvent('openGroupMessage', {
+        channelId: notification?.data?.channelId,
+        eventId: notification?.data?.eventId,
+        from: notification?.data?.groupId,
+      });
+      return;
+    }
+    if (isReticulumDmMissedCallNotification(notification)) {
+      setNotifications((current) =>
+        current.filter(
+          (item) =>
+            item?.data?.reticulumDmCallId !==
+            notification?.data?.reticulumDmCallId
+        )
+      );
+      setAnchorEl(null);
+      executeEvent('openDirectMessageInternal', {
+        address: notification?.data?.from,
+        name: notification?.data?.name,
+      });
+      return;
+    }
+    if (isReticulumCalendarNotification(notification)) {
+      setNotifications((current) =>
+        current.filter(
+          (item) => item?.notificationId !== notification?.notificationId
+        )
+      );
+      setAnchorEl(null);
+      executeEvent('openGroupMessage', {
+        from: notification?.data?.groupId,
+        eventId: notification?.data?.eventId,
+        occurrenceStart: notification?.data?.occurrenceStart,
+        timezone: notification?.data?.timezone,
+        openCalendar: true,
+      });
+      return;
+    }
+    if (hasNewNotifications) setLastSeenTimestamp(Date.now());
+    setAnchorEl(null);
+    const link = notification?.link;
+    if (!link) return;
+    const data = extractComponents(link);
+    if (!data) return;
+    executeEvent('addTab', {
+      data: { ...data, navigateIfAlreadyOpen: true },
+    });
+    executeEvent('open-apps-mode', {});
+  };
 
   useImperativeHandle(ref, () => ({
     open: () => {
@@ -438,7 +599,7 @@ export const GeneralNotifications = forwardRef<
           onClick={(event) => {
             event.stopPropagation();
             setAnchorEl(event.currentTarget);
-            if (updateRelease) setUpdateSeenVersion(updateRelease.version);
+            markSavedQdnFilesSeen();
           }}
           sx={{
             ...(buttonSx || {}),
@@ -497,388 +658,414 @@ export const GeneralNotifications = forwardRef<
       <Popover
         anchorEl={anchorEl}
         anchorOrigin={{ horizontal: 'right', vertical: 'bottom' }}
-        onClose={() => {
-          if (hasNewNotifications) setLastSeenTimestamp(Date.now());
-          setAnchorEl(null);
-        }}
+        onClose={closePanel}
         open={!!anchorEl}
         slotProps={{
+          // The panel below draws itself so it can be dragged up and away;
+          // the popover paper is only its frame.
           paper: {
-            sx: isDarkMode
+            sx: {
+              background: 'none',
+              backgroundImage: 'none',
+              boxShadow: 'none',
+              mt: 1,
+              overflow: 'visible',
+            },
+          },
+        }}
+        transformOrigin={{ horizontal: 'right', vertical: 'top' }}
+      >
+        <DragToClosePanel
+          handleLabel={t('core:notification_history.drag_to_close')}
+          onClose={closePanel}
+          sx={
+            isDarkMode
               ? {
                   background: '#111820',
-                  backgroundImage: 'none',
                   border: `1px solid ${alpha('#A9BCD8', 0.18)}`,
                   borderRadius: '16px',
                   boxShadow: `0 22px 46px ${alpha('#000', 0.44)}`,
-                  mt: 1,
+                  overflow: 'hidden',
+                }
+              : {
+                  background: theme.palette.background.paper,
+                  border: `1px solid ${theme.palette.divider}`,
+                  borderRadius: '16px',
+                  boxShadow: `0 16px 40px ${alpha('#1E3248', 0.1)}`,
+                  overflow: 'hidden',
+                }
+          }
+          header={
+            <Box
+              sx={{
+                alignItems: 'center',
+                display: 'flex',
+                gap: 0.25,
+                justifyContent: 'flex-end',
+                minHeight: 40,
+                pr: 0.5,
+                pt: 0.5,
+              }}
+            >
+              <ButtonBase
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setHistoryOpen(true);
+                  setAnchorEl(null);
+                }}
+                sx={{
+                  borderRadius: 999,
+                  color: theme.palette.text.secondary,
+                  fontSize: '0.76rem',
+                  fontWeight: 600,
+                  gap: 0.5,
+                  px: 1,
+                  py: 0.5,
+                }}
+              >
+                <HistoryRoundedIcon sx={{ fontSize: 17 }} />
+                {t('core:notification_history.open')}
+              </ButtonBase>
+              {canClearAll && (
+                <ButtonBase
+                  aria-label={t('core:notification_history.clear_all_hint')}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    clearAllNotifications();
+                  }}
+                  sx={{
+                    borderRadius: 999,
+                    color: theme.palette.text.secondary,
+                    fontSize: '0.76rem',
+                    fontWeight: 600,
+                    gap: 0.5,
+                    px: 1,
+                    py: 0.5,
+                  }}
+                >
+                  <ClearAllRoundedIcon sx={{ fontSize: 17 }} />
+                  {t('core:notification_history.clear_all')}
+                </ButtonBase>
+              )}
+              <IconButton
+                aria-label="Notification settings"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  openSettings();
+                }}
+                size="small"
+                sx={{ color: theme.palette.text.secondary }}
+              >
+                <SettingsIcon fontSize="small" />
+              </IconButton>
+            </Box>
+          }
+        >
+          <Box
+            sx={{
+              alignItems: hasAnyNotifications ? 'stretch' : 'center',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: hasAnyNotifications ? 1 : 1.2,
+              maxHeight: '60vh',
+              // Hidden on x so a row swiped sideways never adds a scrollbar.
+              overflowX: 'hidden',
+              overflowY: 'auto',
+              ...(hasAnyNotifications
+                ? { pb: 0.5, pl: 1, pr: 1, pt: 0.5 }
+                : { p: '4px 20px 12px' }),
+              position: 'relative',
+              width: 360,
+            }}
+          >
+            <Box
+              sx={{
+                alignItems: 'center',
+                border: `1px solid ${alpha(theme.palette.divider, 0.5)}`,
+                borderRadius: '12px',
+                display: 'flex',
+                gap: 1,
+                justifyContent: 'space-between',
+                mt: resourceNotifications.length ? 0 : 1.5,
+                px: 1.25,
+                py: 0.75,
+                width: '100%',
+              }}
+            >
+              <Typography
+                sx={{
+                  color: theme.palette.text.secondary,
+                  fontSize: '0.78rem',
+                  fontWeight: 600,
+                  lineHeight: 1.3,
+                  pr: 1,
+                }}
+              >
+                {t('group:action.disable_push_notifications', {
+                  ns: 'group',
+                  defaultValue: 'Disable push notifications',
+                  postProcess: 'capitalizeFirstChar',
+                })}
+              </Typography>
+              <Switch
+                checked={disablePushNotifications}
+                onChange={handleDisablePushChange}
+                size="small"
+                onClick={(event) => event.stopPropagation()}
+              />
+            </Box>
+
+            <QdnDownloadsNotice onClose={() => setAnchorEl(null)} />
+
+            {!hasAnyNotifications && (
+              <>
+                <NotificationsRoundedIcon
+                  sx={{
+                    color: alpha(theme.palette.text.secondary, 0.82),
+                    fontSize: 22,
+                    mt: 2,
+                  }}
+                />
+                <Typography
+                  sx={{
+                    color: theme.palette.text.primary,
+                    fontSize: '0.96rem',
+                    fontWeight: 600,
+                    textAlign: 'center',
+                  }}
+                >
+                  {t('message.generic.no_app_notifications', {
+                    defaultValue: 'No app notifications yet',
+                  })}
+                </Typography>
+                <Typography
+                  sx={{
+                    color: alpha(theme.palette.text.secondary, 0.76),
+                    fontSize: '0.78rem',
+                    lineHeight: 1.5,
+                    maxWidth: 250,
+                    textAlign: 'center',
+                  }}
+                >
+                  {t('message.generic.app_notifications_hint', {
+                    defaultValue: 'Q-App notifications will appear here',
+                  })}
+                </Typography>
+              </>
+            )}
+
+            <AnimatePresence initial={false}>
+              {resourceNotifications.map((notification, index) => {
+                const isQMail =
+                  notification?.notificationId === 'q-mail-notification' ||
+                  notification?.appName === 'Q-Mail';
+                const isQChatMention = isQChatMentionNotification(notification);
+                const timestamp = getNotificationTimestamp(notification);
+                const unseen =
+                  timestamp != null &&
+                  (!lastSeenTimestamp || timestamp > lastSeenTimestamp) &&
+                  !isNotificationSeenInAppFromKeyTimes(
+                    notification,
+                    seenInAppKeyTimes
+                  );
+
+                return (
+                  <SwipeToDismiss
+                    gapPx={8}
+                    key={
+                      getNotificationPanelDismissKey(notification) ||
+                      notification?.data?.identifier ||
+                      notification?.data?.created ||
+                      index
+                    }
+                    onDismiss={() => dismissNotification(notification)}
+                  >
+                    <MenuItem
+                      onClick={() => openNotification(notification)}
+                      sx={{
+                        borderRadius: '12px',
+                        display: 'block',
+                        p: 0,
+                        whiteSpace: 'normal',
+                        '&:hover': {
+                          bgcolor: isDarkMode
+                            ? alpha('#FFFFFF', 0.045)
+                            : alpha(theme.palette.primary.main, 0.06),
+                        },
+                      }}
+                    >
+                      <Card
+                        elevation={0}
+                        sx={{
+                          bgcolor: unseen
+                            ? isDarkMode
+                              ? alpha(theme.palette.other.unread, 0.11)
+                              : alpha(theme.palette.other.unread, 0.12)
+                            : isDarkMode
+                              ? alpha('#FFFFFF', 0.025)
+                              : theme.palette.action.hover,
+                          border: `1px solid ${
+                            unseen
+                              ? alpha(theme.palette.other.unread, 0.36)
+                              : isDarkMode
+                                ? alpha('#A9BCD8', 0.12)
+                                : alpha(theme.palette.divider, 0.95)
+                          }`,
+                          borderRadius: '12px',
+                          display: 'flex',
+                          gap: 1.2,
+                          p: 1.35,
+                        }}
+                      >
+                        <Avatar
+                          alt={
+                            isQChatMention
+                              ? notification?.data?.groupName
+                              : notification?.appName || 'App'
+                          }
+                          src={
+                            isQChatMention
+                              ? undefined
+                              : `${getBaseApiReact()}${
+                                  notification?.image ||
+                                  `/arbitrary/THUMBNAIL/${notification?.appName || 'Q-Mail'}/qortal_avatar?async=true`
+                                }`
+                          }
+                          sx={{
+                            bgcolor: isDarkMode
+                              ? alpha('#FFFFFF', 0.06)
+                              : alpha(theme.palette.primary.main, 0.08),
+                            height: 34,
+                            width: 34,
+                            '& img': { objectFit: 'contain' },
+                          }}
+                        >
+                          {isQMail ? (
+                            <MailOutlineIcon
+                              sx={{
+                                color: theme.palette.primary.main,
+                                fontSize: 18,
+                              }}
+                            />
+                          ) : (
+                            <img
+                              alt="app-icon"
+                              src={LogoSelected}
+                              style={{ height: 'auto', width: 20 }}
+                            />
+                          )}
+                        </Avatar>
+                        <Box sx={{ minWidth: 0 }}>
+                          <Box
+                            sx={{
+                              alignItems: 'center',
+                              display: 'flex',
+                              gap: 1,
+                              justifyContent: 'space-between',
+                            }}
+                          >
+                            <Typography
+                              sx={{
+                                color: theme.palette.text.primary,
+                                fontSize: '0.86rem',
+                                fontWeight: 650,
+                              }}
+                            >
+                              {isQChatMention ? (
+                                notification?.data?.groupName
+                              ) : (
+                                <RegisteredNameText
+                                  name={notification?.appName || 'Q-App'}
+                                />
+                              )}
+                            </Typography>
+                            {timestamp && (
+                              <Typography
+                                sx={{
+                                  color: alpha(
+                                    theme.palette.text.secondary,
+                                    0.72
+                                  ),
+                                  fontSize: '0.72rem',
+                                  whiteSpace: 'nowrap',
+                                }}
+                              >
+                                {formatDate(timestamp)}
+                              </Typography>
+                            )}
+                          </Box>
+                          <Typography
+                            sx={{
+                              color: alpha(theme.palette.text.secondary, 0.92),
+                              fontSize: '0.8rem',
+                              lineHeight: 1.45,
+                              mt: 0.35,
+                              wordBreak: 'break-word',
+                            }}
+                          >
+                            {getNotificationMessage(
+                              notification?.message,
+                              i18n.language,
+                              t('message.generic.new_notification', {
+                                defaultValue: 'New notification',
+                              })
+                            )}
+                          </Typography>
+                        </Box>
+                      </Card>
+                    </MenuItem>
+                  </SwipeToDismiss>
+                );
+              })}
+            </AnimatePresence>
+          </Box>
+        </DragToClosePanel>
+      </Popover>
+
+      <NotificationHistoryDialog
+        address={myAddress}
+        describe={describeNotification}
+        fullScreen={isNarrowSettings}
+        onClose={() => setHistoryOpen(false)}
+        onOpenNotification={openNotification}
+        open={historyOpen}
+      />
+
+      <Dialog
+        fullScreen={isNarrowSettings}
+        fullWidth
+        maxWidth="sm"
+        onClose={() => setSettingsOpen(false)}
+        open={settingsOpen}
+        PaperProps={{
+          sx: {
+            ...(isDarkMode
+              ? {
+                  background: '#121821',
+                  backgroundImage: 'none',
+                  border: `1px solid ${alpha('#A9BCD8', 0.18)}`,
+                  borderRadius: '18px',
+                  boxShadow: `0 26px 56px ${alpha('#000', 0.46)}`,
                   overflow: 'hidden',
                 }
               : {
                   background: theme.palette.background.paper,
                   backgroundImage: 'none',
                   border: `1px solid ${theme.palette.divider}`,
-                  borderRadius: '16px',
-                  boxShadow: `0 16px 40px ${alpha('#1E3248', 0.1)}`,
-                  mt: 1,
+                  borderRadius: '18px',
+                  boxShadow: `0 20px 48px ${alpha('#1E3248', 0.12)}`,
                   overflow: 'hidden',
-                },
-          },
-        }}
-        transformOrigin={{ horizontal: 'right', vertical: 'top' }}
-      >
-        <Box
-          sx={{
-            alignItems: hasAnyNotifications ? 'stretch' : 'center',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: hasAnyNotifications ? 1 : 1.2,
-            maxHeight: '60vh',
-            overflow: 'auto',
-            ...(hasAnyNotifications
-              ? { pb: 1, pl: 1, pr: 1, pt: 5.5 }
-              : { p: '18px 20px' }),
-            position: 'relative',
-            width: 360,
-          }}
-        >
-          <IconButton
-            aria-label="Notification settings"
-            onClick={(event) => {
-              event.stopPropagation();
-              openSettings();
-            }}
-            onMouseDown={(event) => event.stopPropagation()}
-            size="small"
-            sx={{
-              color: theme.palette.text.secondary,
-              pointerEvents: 'auto',
-              position: 'absolute',
-              right: 4,
-              top: 4,
-              zIndex: 2,
-            }}
-          >
-            <SettingsIcon fontSize="small" />
-          </IconButton>
-
-          <Box
-            sx={{
-              alignItems: 'center',
-              border: `1px solid ${alpha(theme.palette.divider, 0.5)}`,
-              borderRadius: '12px',
-              display: 'flex',
-              gap: 1,
-              justifyContent: 'space-between',
-              mt: resourceNotifications.length ? 0 : 1.5,
-              px: 1.25,
-              py: 0.75,
-              width: '100%',
-            }}
-          >
-            <Typography
-              sx={{
-                color: theme.palette.text.secondary,
-                fontSize: '0.78rem',
-                fontWeight: 600,
-                lineHeight: 1.3,
-                pr: 1,
-              }}
-            >
-              {t('group:action.disable_push_notifications', {
-                ns: 'group',
-                defaultValue: 'Disable push notifications',
-                postProcess: 'capitalizeFirstChar',
-              })}
-            </Typography>
-            <Switch
-              checked={disablePushNotifications}
-              onChange={handleDisablePushChange}
-              size="small"
-              onClick={(event) => event.stopPropagation()}
-            />
-          </Box>
-
-          <AppUpdateNotice onOpen={() => setAnchorEl(null)} />
-
-          {!hasAnyNotifications && (
-            <>
-              <NotificationsRoundedIcon
-                sx={{
-                  color: alpha(theme.palette.text.secondary, 0.82),
-                  fontSize: 22,
-                  mt: 2,
-                }}
-              />
-              <Typography
-                sx={{
-                  color: theme.palette.text.primary,
-                  fontSize: '0.96rem',
-                  fontWeight: 600,
-                  textAlign: 'center',
-                }}
-              >
-                {t('message.generic.no_app_notifications', {
-                  defaultValue: 'No app notifications yet',
-                })}
-              </Typography>
-              <Typography
-                sx={{
-                  color: alpha(theme.palette.text.secondary, 0.76),
-                  fontSize: '0.78rem',
-                  lineHeight: 1.5,
-                  maxWidth: 250,
-                  textAlign: 'center',
-                }}
-              >
-                {t('message.generic.app_notifications_hint', {
-                  defaultValue: 'Q-App notifications will appear here',
-                })}
-              </Typography>
-            </>
-          )}
-
-          {resourceNotifications.map((notification, index) => {
-            const isQMail =
-              notification?.notificationId === 'q-mail-notification' ||
-              notification?.appName === 'Q-Mail';
-            const isQChatMention = isQChatMentionNotification(notification);
-            const isMissedDmCall =
-              isReticulumDmMissedCallNotification(notification);
-            const isCalendarReminder =
-              isReticulumCalendarNotification(notification);
-            const timestamp = getNotificationTimestamp(notification);
-            const unseen =
-              timestamp != null &&
-              (!lastSeenTimestamp || timestamp > lastSeenTimestamp) &&
-              !isNotificationSeenInAppFromKeyTimes(
-                notification,
-                seenInAppKeyTimes
-              );
-
-            return (
-              <MenuItem
-                key={
-                  notification?.data?.identifier ||
-                  notification?.data?.created ||
-                  index
+                }),
+            ...(isNarrowSettings
+              ? {
+                  border: 'none',
+                  borderRadius: 0,
+                  boxShadow: 'none',
+                  paddingBottom: SAFE_AREA_BOTTOM,
+                  paddingTop: SAFE_AREA_TOP,
                 }
-                onClick={() => {
-                  if (isQChatMention) {
-                    setNotifications((current) =>
-                      current.filter(
-                        (item) =>
-                          !(
-                            isQChatMentionNotification(item) &&
-                            Number(item?.data?.groupId) ===
-                              Number(notification?.data?.groupId)
-                          )
-                      )
-                    );
-                    setAnchorEl(null);
-                    executeEvent('openGroupMessage', {
-                      channelId: notification?.data?.channelId,
-                      eventId: notification?.data?.eventId,
-                      from: notification?.data?.groupId,
-                    });
-                    return;
-                  }
-                  if (isMissedDmCall) {
-                    setNotifications((current) =>
-                      current.filter(
-                        (item) =>
-                          item?.data?.reticulumDmCallId !==
-                          notification?.data?.reticulumDmCallId
-                      )
-                    );
-                    setAnchorEl(null);
-                    executeEvent('openDirectMessageInternal', {
-                      address: notification?.data?.from,
-                      name: notification?.data?.name,
-                    });
-                    return;
-                  }
-                  if (isCalendarReminder) {
-                    setNotifications((current) =>
-                      current.filter(
-                        (item) =>
-                          item?.notificationId !== notification?.notificationId
-                      )
-                    );
-                    setAnchorEl(null);
-                    executeEvent('openGroupMessage', {
-                      from: notification?.data?.groupId,
-                      eventId: notification?.data?.eventId,
-                      occurrenceStart: notification?.data?.occurrenceStart,
-                      timezone: notification?.data?.timezone,
-                      openCalendar: true,
-                    });
-                    return;
-                  }
-                  if (hasNewNotifications) setLastSeenTimestamp(Date.now());
-                  setAnchorEl(null);
-                  const link = notification?.link;
-                  if (!link) return;
-                  const data = extractComponents(link);
-                  if (!data) return;
-                  executeEvent('addTab', {
-                    data: { ...data, navigateIfAlreadyOpen: true },
-                  });
-                  executeEvent('open-apps-mode', {});
-                }}
-                sx={{
-                  borderRadius: '12px',
-                  display: 'block',
-                  p: 0,
-                  whiteSpace: 'normal',
-                  '&:hover': {
-                    bgcolor: isDarkMode
-                      ? alpha('#FFFFFF', 0.045)
-                      : alpha(theme.palette.primary.main, 0.06),
-                  },
-                }}
-              >
-                <Card
-                  elevation={0}
-                  sx={{
-                    bgcolor: unseen
-                      ? isDarkMode
-                        ? alpha(theme.palette.other.unread, 0.11)
-                        : alpha(theme.palette.other.unread, 0.12)
-                      : isDarkMode
-                        ? alpha('#FFFFFF', 0.025)
-                        : theme.palette.action.hover,
-                    border: `1px solid ${
-                      unseen
-                        ? alpha(theme.palette.other.unread, 0.36)
-                        : isDarkMode
-                          ? alpha('#A9BCD8', 0.12)
-                          : alpha(theme.palette.divider, 0.95)
-                    }`,
-                    borderRadius: '12px',
-                    display: 'flex',
-                    gap: 1.2,
-                    p: 1.35,
-                  }}
-                >
-                  <Avatar
-                    alt={
-                      isQChatMention
-                        ? notification?.data?.groupName
-                        : notification?.appName || 'App'
-                    }
-                    src={
-                      isQChatMention
-                        ? undefined
-                        : `${getBaseApiReact()}${
-                            notification?.image ||
-                            `/arbitrary/THUMBNAIL/${notification?.appName || 'Q-Mail'}/qortal_avatar?async=true`
-                          }`
-                    }
-                    sx={{
-                      bgcolor: isDarkMode
-                        ? alpha('#FFFFFF', 0.06)
-                        : alpha(theme.palette.primary.main, 0.08),
-                      height: 34,
-                      width: 34,
-                      '& img': { objectFit: 'contain' },
-                    }}
-                  >
-                    {isQMail ? (
-                      <MailOutlineIcon
-                        sx={{
-                          color: theme.palette.primary.main,
-                          fontSize: 18,
-                        }}
-                      />
-                    ) : (
-                      <img
-                        alt="app-icon"
-                        src={LogoSelected}
-                        style={{ height: 'auto', width: 20 }}
-                      />
-                    )}
-                  </Avatar>
-                  <Box sx={{ minWidth: 0 }}>
-                    <Box
-                      sx={{
-                        alignItems: 'center',
-                        display: 'flex',
-                        gap: 1,
-                        justifyContent: 'space-between',
-                      }}
-                    >
-                      <Typography
-                        sx={{
-                          color: theme.palette.text.primary,
-                          fontSize: '0.86rem',
-                          fontWeight: 650,
-                        }}
-                      >
-                        {isQChatMention
-                          ? notification?.data?.groupName
-                          : notification?.appName || 'Q-App'}
-                      </Typography>
-                      {timestamp && (
-                        <Typography
-                          sx={{
-                            color: alpha(theme.palette.text.secondary, 0.72),
-                            fontSize: '0.72rem',
-                            whiteSpace: 'nowrap',
-                          }}
-                        >
-                          {formatDate(timestamp)}
-                        </Typography>
-                      )}
-                    </Box>
-                    <Typography
-                      sx={{
-                        color: alpha(theme.palette.text.secondary, 0.92),
-                        fontSize: '0.8rem',
-                        lineHeight: 1.45,
-                        mt: 0.35,
-                        wordBreak: 'break-word',
-                      }}
-                    >
-                      {getNotificationMessage(
-                        notification?.message,
-                        i18n.language,
-                        t('message.generic.new_notification', {
-                          defaultValue: 'New notification',
-                        })
-                      )}
-                    </Typography>
-                  </Box>
-                </Card>
-              </MenuItem>
-            );
-          })}
-        </Box>
-      </Popover>
-
-      <Dialog
-        fullWidth
-        maxWidth="sm"
-        onClose={() => setSettingsOpen(false)}
-        open={settingsOpen}
-        PaperProps={{
-          sx: isDarkMode
-            ? {
-                background: '#121821',
-                backgroundImage: 'none',
-                border: `1px solid ${alpha('#A9BCD8', 0.18)}`,
-                borderRadius: '18px',
-                boxShadow: `0 26px 56px ${alpha('#000', 0.46)}`,
-                overflow: 'hidden',
-              }
-            : {
-                background: theme.palette.background.paper,
-                backgroundImage: 'none',
-                border: `1px solid ${theme.palette.divider}`,
-                borderRadius: '18px',
-                boxShadow: `0 20px 48px ${alpha('#1E3248', 0.12)}`,
-                overflow: 'hidden',
-              },
+              : {}),
+          },
         }}
       >
         <DialogTitle
@@ -892,7 +1079,7 @@ export const GeneralNotifications = forwardRef<
             fontSize: '1.08rem',
             fontWeight: 650,
             justifyContent: 'space-between',
-            px: 3,
+            px: { xs: 2, sm: 3 },
             py: 2.35,
           }}
         >
@@ -919,7 +1106,13 @@ export const GeneralNotifications = forwardRef<
           sx={{
             display: 'grid',
             gap: 1.9,
-            px: 3,
+            // Without an explicit track the column grows to the widest row
+            // and the whole dialog scrolls sideways on a phone.
+            gridTemplateColumns: 'minmax(0, 1fr)',
+            // Full screen on a phone: keep rows at their natural height
+            // instead of stretching them over the spare space.
+            alignContent: 'start',
+            px: { xs: 2, sm: 3 },
             pb: 2.9,
             '&&': {
               pt: 3.1,
@@ -1001,6 +1194,7 @@ export const GeneralNotifications = forwardRef<
               </Typography>
             </Box>
           </Box>
+          <MobileBackgroundSyncSetting />
           <Box
             role="tablist"
             sx={{
@@ -1086,13 +1280,23 @@ export const GeneralNotifications = forwardRef<
                     }`,
                     borderRadius: '14px',
                     display: 'flex',
-                    gap: 2,
+                    // Phones: text on top, controls on their own line below.
+                    flexDirection: { xs: 'column', sm: 'row' },
+                    alignItems: { xs: 'stretch', sm: 'center' },
+                    gap: { xs: 1, sm: 2 },
                     justifyContent: 'space-between',
                     px: 1.7,
                     py: 1.55,
                   }}
                 >
-                  <Box sx={{ alignItems: 'center', display: 'flex', gap: 1.2 }}>
+                  <Box
+                    sx={{
+                      alignItems: 'center',
+                      display: 'flex',
+                      gap: 1.2,
+                      minWidth: 0,
+                    }}
+                  >
                     <Box
                       sx={{
                         alignItems: 'center',
@@ -1139,12 +1343,21 @@ export const GeneralNotifications = forwardRef<
                       </Typography>
                     </Box>
                   </Box>
-                  <Box sx={{ alignItems: 'center', display: 'flex', gap: 1.2 }}>
+                  <Box
+                    sx={{
+                      alignItems: 'center',
+                      display: 'flex',
+                      flexShrink: 0,
+                      gap: 1.2,
+                      justifyContent: 'flex-end',
+                    }}
+                  >
                     <Typography
                       sx={{
                         color: alpha(theme.palette.text.secondary, 0.82),
                         fontSize: '0.78rem',
                         fontWeight: 500,
+                        whiteSpace: 'nowrap',
                       }}
                     >
                       Mentions
@@ -1213,43 +1426,18 @@ export const GeneralNotifications = forwardRef<
                         }`,
                         borderRadius: '14px',
                         display: 'flex',
-                        gap: 2,
+                        // Phones: text on top, controls on their own line.
+                        flexDirection: { xs: 'column', sm: 'row' },
+                        alignItems: { xs: 'stretch', sm: 'center' },
+                        gap: { xs: 1, sm: 2 },
                         justifyContent: 'space-between',
                         px: 1.7,
                         py: 1.55,
                       }}
                     >
-                      <Box
-                        sx={{ alignItems: 'center', display: 'flex', gap: 1.2 }}
-                      >
-                        <Box
-                          sx={{
-                            alignItems: 'center',
-                            backgroundColor: alpha(
-                              theme.palette.primary.main,
-                              0.12
-                            ),
-                            border: `1px solid ${alpha(theme.palette.primary.main, 0.22)}`,
-                            borderRadius: '10px',
-                            color: alpha(theme.palette.primary.light, 0.96),
-                            display: 'inline-flex',
-                            height: 34,
-                            justifyContent: 'center',
-                            width: 34,
-                          }}
-                        >
-                          <AppsIcon sx={{ fontSize: 18 }} />
-                        </Box>
-                        <Box sx={{ minWidth: 0 }}>
-                          <Typography
-                            sx={{
-                              color: theme.palette.text.primary,
-                              fontSize: '0.92rem',
-                              fontWeight: 600,
-                            }}
-                          >
-                            {appName}
-                          </Typography>
+                      <NotificationAppIdentity
+                        appName={appName}
+                        description={
                           <Typography
                             sx={{
                               color: alpha(theme.palette.text.secondary, 0.76),
@@ -1263,16 +1451,23 @@ export const GeneralNotifications = forwardRef<
                                 'Mute desktop alerts for this app while keeping in-Hub activity visible.',
                             })}
                           </Typography>
-                        </Box>
-                      </Box>
+                        }
+                      />
                       <Box
-                        sx={{ alignItems: 'center', display: 'flex', gap: 1.2 }}
+                        sx={{
+                          alignItems: 'center',
+                          display: 'flex',
+                          flexShrink: 0,
+                          gap: 1.2,
+                          justifyContent: 'flex-end',
+                        }}
                       >
                         <Typography
                           sx={{
                             color: alpha(theme.palette.text.secondary, 0.82),
                             fontSize: '0.78rem',
                             fontWeight: 500,
+                            whiteSpace: 'nowrap',
                           }}
                         >
                           {t('message.generic.disable_os_push', {

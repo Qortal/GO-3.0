@@ -27,6 +27,8 @@ export type ReticulumDmEvent = {
   senderName?: string;
   localDeliveryStatus?: 'pending' | 'sent' | 'received';
   localDeliveryUpdatedAt?: number;
+  /** An own device (the home Hub) pulled this pending own event. */
+  localOwnDeviceCopiedAt?: number;
   expiresAt?: number | null;
 };
 
@@ -154,6 +156,7 @@ export const reticulumDmEventToChatMessage = (event: ReticulumDmEvent) => {
     reticulumDirect: true,
     reticulumDeliveryStatus: event.localDeliveryStatus,
     reticulumDeliveryUpdatedAt: event.localDeliveryUpdatedAt,
+    reticulumOwnDeviceCopiedAt: event.localOwnDeviceCopiedAt,
     expiresAt:
       event.expiresAt == null || !Number.isFinite(Number(event.expiresAt))
         ? null
@@ -209,13 +212,42 @@ export const projectReticulumDmEvents = (events: ReticulumDmEvent[]) => {
     else delete reactions[reaction];
   }
 
-  const messages = ordered
-    .filter(
-      (event) =>
-        event.eventType === 'message' &&
-        chatReferences[event.eventId]?.deleted !== true
-    )
-    .map(reticulumDmEventToChatMessage);
+  // Delivery is cumulative: the recipient pulls everything after its cursor,
+  // so once any later own event (message, edit or reaction) is 'sent', the
+  // earlier own messages reached it too. The engine only marks the event it
+  // served (or the matching head), so lift the older pending ones here.
+  // Only events this device authored carry 'pending'/'sent'; self-DMs are
+  // born 'sent' and are skipped. Per sender, so two local accounts never
+  // vouch for each other. The stored events stay unchanged. Compared by
+  // position in `ordered` (timestamp, then event id: the cursor order).
+  const newestSentIndexBySender = new Map<string, number>();
+  ordered.forEach((event, index) => {
+    if (
+      event.localDeliveryStatus === 'sent' &&
+      event.senderAddress !== event.recipientAddress
+    ) {
+      newestSentIndexBySender.set(event.senderAddress, index);
+    }
+  });
+
+  const messages: Array<ReturnType<typeof reticulumDmEventToChatMessage>> = [];
+  ordered.forEach((event, index) => {
+    if (
+      event.eventType !== 'message' ||
+      chatReferences[event.eventId]?.deleted === true
+    ) {
+      return;
+    }
+    const message = reticulumDmEventToChatMessage(event);
+    const newestSentIndex = newestSentIndexBySender.get(event.senderAddress);
+    messages.push(
+      event.localDeliveryStatus === 'pending' &&
+        newestSentIndex !== undefined &&
+        index < newestSentIndex
+        ? { ...message, reticulumDeliveryStatus: 'sent' }
+        : message
+    );
+  });
   return { messages, chatReferences };
 };
 
@@ -264,12 +296,44 @@ const addPrimaryNamesToDirectEvents = async (
   });
 };
 
-const mergeEvents = (
+/**
+ * Delivery only moves forward (pending -> sent, then an own-device copy
+ * stays recorded). A stale copy of an event (an older emit, a cached history
+ * page, the optimistic row) must not walk the UI state back.
+ */
+const keepDeliveryProgress = (
+  existing: ReticulumDmEvent | undefined,
+  incoming: ReticulumDmEvent
+): ReticulumDmEvent => {
+  if (!existing) return incoming;
+  let next = incoming;
+  if (
+    existing.localDeliveryStatus === 'sent' &&
+    incoming.localDeliveryStatus === 'pending'
+  ) {
+    next = {
+      ...next,
+      localDeliveryStatus: 'sent',
+      localDeliveryUpdatedAt: existing.localDeliveryUpdatedAt,
+    };
+  }
+  if (existing.localOwnDeviceCopiedAt && !incoming.localOwnDeviceCopiedAt) {
+    next = { ...next, localOwnDeviceCopiedAt: existing.localOwnDeviceCopiedAt };
+  }
+  return next;
+};
+
+export const mergeEvents = (
   prev: ReticulumDmEvent[],
   incoming: ReticulumDmEvent[]
 ) => {
   const byId = new Map(prev.map((event) => [event.eventId, event]));
-  for (const event of incoming) byId.set(event.eventId, event);
+  for (const event of incoming) {
+    byId.set(
+      event.eventId,
+      keepDeliveryProgress(byId.get(event.eventId), event)
+    );
+  }
   return [...byId.values()].sort(
     (a, b) => a.timestamp - b.timestamp || a.eventId.localeCompare(b.eventId)
   );

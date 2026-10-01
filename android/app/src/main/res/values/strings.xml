@@ -4,4 +4,18 @@
     <string name="title_activity_main">GO 3.0</string>
     <string name="package_name">com.github.Qortal.qortalGo2</string>
     <string name="custom_url_scheme">com.github.Qortal.qortalGo2</string>
+    <!-- Posted when Android stops GO's background connection at its daily time limit. -->
+    <string name="go_paused_title">GO paused</string>
+    <string name="go_paused_text">Android paused GO\'s background connection. Open GO to reconnect.</string>
+    <!-- Status notification when the chat engine is not running (page frozen or closed).
+         English fallbacks; the page sends translations through QortalBackground.setLocalizedStrings. -->
+    <string name="status_paused_title">Chat paused</string>
+    <string name="status_paused_text">Open GO to sync messages.</string>
+    <!-- GO is off screen and background sync keeps the chat engine running. -->
+    <string name="status_syncing_background">Syncing in the background</string>
+    <!-- Own messages that have not left the phone yet. -->
+    <plurals name="status_waiting_text">
+        <item quantity="one">%d message waiting to send</item>
+        <item quantity="other">%d messages waiting to send</item>
+    </plurals>
 </resources>

@@ -27,6 +27,8 @@ import {
   TagChip,
   AppCircle,
 } from '../Apps-styles';
+import { AppAvailabilityLabel } from '../AppAvailabilityLabel';
+import { useAppNodeStatus } from '../appNodeStatus';
 
 const PINNED_KEY_SEP = '\0';
 
@@ -43,7 +45,8 @@ const AppCardEnhancedInner = ({
 }: AppCardEnhancedProps) => {
   const theme = useTheme();
   const { t } = useTranslation(['core']);
-  const isInstalled = app?.status?.status === 'READY';
+  const nodeStatus = useAppNodeStatus(app);
+  const isInstalled = nodeStatus.availability === 'ready';
 
   const pinnedKey = useMemo(
     () => `${app?.service ?? ''}${PINNED_KEY_SEP}${app?.name ?? ''}`,
@@ -214,11 +217,7 @@ const AppCardEnhancedInner = ({
           }}
         >
           <AppButtonText>
-            {isInstalled
-              ? t('core:action.open', { postProcess: 'capitalizeFirstChar' })
-              : t('core:action.download', {
-                  postProcess: 'capitalizeFirstChar',
-                })}
+            <AppAvailabilityLabel status={nodeStatus} />
           </AppButtonText>
         </AppButton>
       </AppCardActions>

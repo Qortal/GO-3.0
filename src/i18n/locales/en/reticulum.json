@@ -33,6 +33,27 @@
     "wait_until_ready": "wait until the discussion is ready"
   },
   "dm": {
+    "delivery": {
+      "delivered": {
+        "hint": "The recipient's device requested it and it was sent.",
+        "label": "delivered"
+      },
+      "on_other_device": {
+        "hint": "Your other device has a copy and can send it when the recipient is online. Delivery is not confirmed.",
+        "label": "on your other device"
+      },
+      "only_on_this_device": {
+        "label": "only on this device"
+      },
+      "only_on_this_phone": {
+        "hint": "Not sent yet. It will be retried automatically.",
+        "label": "only on this phone"
+      },
+      "sending": {
+        "hint": "Trying to reach the recipient now.",
+        "label": "sending"
+      }
+    },
     "required_for_attachments": "Reticulum direct chat is required for direct attachments"
   },
   "event_preview": {
@@ -253,6 +274,50 @@
       },
       "title": "Text size"
     }
+  },
+  "status_badge": {
+    "copy_diagnostics": "Copy diagnostics",
+    "copy_diagnostics_collecting": "Collecting…",
+    "copy_diagnostics_copied": "Copied",
+    "copy_diagnostics_hint": "Copy the text or save it as a file, then send it with your chat problem report.",
+    "help": {
+      "chat_engine": {
+        "body": "Whether the local chat database and worker are ready. The green badge is the radio; loading and sending chats need this engine too. If chat is not working, first tap “{{action}}” below and paste the text into your report. ready = good. starting = still booting, with the time so far; if it stays there for more than a minute, one possible cause is a WebView running without JIT. failed = the error is shown below. idle = not asked to start yet (chat off or not signed in).",
+        "title": "Chat engine"
+      },
+      "hubs": {
+        "body": "How many hub links are up right now. These are the TCP connections to community hubs. 0 means you are not on the mesh yet. 2 is typical and healthy.",
+        "title": "Hubs"
+      },
+      "ifac": {
+        "body": "Interface Access Code size. This is the shared network filter derived from the mesh name. 16 B means you are on the named Qortal network. 0 B means the interface is open / unfiltered.",
+        "title": "IFAC"
+      },
+      "known_paths": {
+        "body": "How many destinations Reticulum currently has a route to. Each announce teaches the phone a way to reach an identity. A few hundred is normal on a busy mesh. This is not live chat.",
+        "title": "Known paths"
+      },
+      "network_name": {
+        "body": "The Reticulum mesh this phone joined. Qortal’s public mesh is qortal-hub. A different name means you are on a different network and cannot see those peers.",
+        "title": "Network name"
+      },
+      "online_accounts": {
+        "body": "How many Qortal accounts this phone currently sees as present on the mesh. Same number as Home. It is not the number of hubs or Reticulum nodes.",
+        "title": "Online accounts"
+      },
+      "received": {
+        "body": "Total data this phone has received from the hubs since Reticulum started this session. It resets when the stack restarts, not when you close a chat.",
+        "title": "Received"
+      },
+      "sent": {
+        "body": "Total data this phone has sent to the hubs since Reticulum started this session. It resets when the stack restarts, not when you close a chat.",
+        "title": "Sent"
+      }
+    },
+    "save_diagnostics": "Save as .md file",
+    "save_diagnostics_failed": "Could not save the file: {{error}}",
+    "save_diagnostics_saved": "Saved",
+    "save_diagnostics_saved_to": "Saved to {{location}}"
   },
   "user_card": {
     "address_copied": "address copied",

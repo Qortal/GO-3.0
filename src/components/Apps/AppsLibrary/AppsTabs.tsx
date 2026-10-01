@@ -13,6 +13,8 @@ interface AppsTabsProps {
   isMobile?: boolean;
   isSearchActive?: boolean;
   onTabChange: (tab: AppsLibraryTabValue) => void;
+  /** Tapping the tab that is already selected (MUI fires no onChange). */
+  onTabReselect?: (tab: AppsLibraryTabValue) => void;
 }
 
 const StyledTabs = styled(Tabs, {
@@ -55,7 +57,14 @@ const StyledTab = styled(Tab, {
     backgroundColor: theme.palette.background.default,
     color: theme.palette.text.primary,
   },
-  '&:hover': {
+  // Touch WebViews keep :hover on the last tapped element, which painted the
+  // newly selected tab in the hover colour instead of the selected one.
+  '@media (hover: hover)': {
+    '&:hover:not(.Mui-selected)': {
+      backgroundColor: theme.palette.action.hover,
+    },
+  },
+  '&:active:not(.Mui-selected)': {
     backgroundColor: theme.palette.action.hover,
   },
 }));
@@ -77,11 +86,19 @@ export const AppsTabs = ({
   isMobile = false,
   isSearchActive = false,
   onTabChange,
+  onTabReselect,
 }: AppsTabsProps) => {
   const { t } = useTranslation(['core']);
 
   const handleChange = (_event: React.SyntheticEvent, newValue: string) => {
     onTabChange(newValue as AppsLibraryTabValue);
+  };
+
+  const handleClick = (event: React.MouseEvent<HTMLElement>) => {
+    const value = event.currentTarget.getAttribute('data-tab-value');
+    if (!isSearchActive && value === currentTab) {
+      onTabReselect?.(currentTab);
+    }
   };
 
   return (
@@ -104,6 +121,8 @@ export const AppsTabs = ({
         <StyledTab
           isMobile={isMobile}
           value="official"
+          data-tab-value="official"
+          onClick={handleClick}
           label={t('core:tabs.official_apps', {
             postProcess: 'capitalizeFirstChar',
           })}
@@ -111,6 +130,8 @@ export const AppsTabs = ({
         <StyledTab
           isMobile={isMobile}
           value="community"
+          data-tab-value="community"
+          onClick={handleClick}
           label={t('core:tabs.community_apps', {
             postProcess: 'capitalizeFirstChar',
           })}
@@ -118,6 +139,8 @@ export const AppsTabs = ({
         <StyledTab
           isMobile={isMobile}
           value="categories"
+          data-tab-value="categories"
+          onClick={handleClick}
           label={t('core:tabs.categories', {
             postProcess: 'capitalizeFirstChar',
           })}
@@ -125,6 +148,8 @@ export const AppsTabs = ({
         <StyledTab
           isMobile={isMobile}
           value="my-apps"
+          data-tab-value="my-apps"
+          onClick={handleClick}
           label={t('core:tabs.my_apps', {
             postProcess: 'capitalizeFirstChar',
           })}
@@ -132,6 +157,8 @@ export const AppsTabs = ({
         <StyledTab
           isMobile={isMobile}
           value="private"
+          data-tab-value="private"
+          onClick={handleClick}
           label={t('core:tabs.add_private', {
             postProcess: 'capitalizeFirstChar',
           })}

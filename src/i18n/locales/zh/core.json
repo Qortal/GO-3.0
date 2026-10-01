@@ -61,8 +61,9 @@
     "create_transaction": "在Qortal区块链上创建交易",
     "decline": "衰退",
     "decrypt": "解密",
-    "delete": "delete",
+    "delete": "删除",
     "disable_enter": "禁用输入",
+    "discard_message": "舍弃消息",
     "download": "下载",
     "download_file": "下载文件",
     "edit": "编辑",
@@ -98,6 +99,7 @@
     "pin": "别针",
     "pin_app": "引脚应用程序",
     "pin_to_dashboard": "固定到仪表板",
+    "pin_to_tabs": "固定到标签页",
     "post": "邮政",
     "post_message": "发布消息",
     "publish": "发布",
@@ -140,6 +142,7 @@
     "unpin": "Uncin",
     "unpin_app": "Unpin App",
     "unpin_from_dashboard": "从仪表板上锁定",
+    "unpin_from_tabs": "从标签页取消固定",
     "update": "更新",
     "update_app": "更新您的应用程序",
     "vote": "投票"
@@ -153,6 +156,9 @@
   "announcement_other": "公告",
   "api": "API",
   "app": "应用程序",
+  "app_category": {
+    "title": "分类：{{name}}"
+  },
   "app_detail": {
     "about": "关于",
     "by_developer": "由 @{{developer}}",
@@ -160,11 +166,14 @@
     "details": "详情",
     "published": "发布于",
     "rate_this_app": "为此应用评分",
+    "rating_stars_label": "{{score}}/5 星",
     "ratings": "评分",
     "ratings_count": "{{count}} 个评分",
     "service": "服务",
     "size": "大小",
     "status": "状态",
+    "status_checking": "正在检查节点…",
+    "status_downloading": "下载中（{{percent}}）",
     "status_not_installed": "未安装",
     "status_ready": "就绪（已安装）",
     "tags": "标签",
@@ -183,6 +192,45 @@
     "switch_theme_light": "切换到浅色模式"
   },
   "attachment": "依恋",
+  "background_sync": {
+    "description": "在GO不在屏幕上时保持聊天运行。",
+    "error": {
+      "save_failed": "无法更改后台同步。请重试。"
+    },
+    "help": {
+      "always": "只要GO在后台运行就保持聊天同步。耗电量明显增加。",
+      "charging": "手机充电时保持聊天同步。",
+      "off": "离开GO大约一分钟后聊天会停止同步，再次打开时会自动补上。",
+      "outbox": "使用电池时，GO仍会在您离开后最多3分钟内发送完等待中的消息。",
+      "relay": "手机连接Wi-Fi充电时，GO还会帮助为他人中继消息。"
+    },
+    "mode": {
+      "always": "始终",
+      "charging": "充电时",
+      "off": "关闭"
+    },
+    "native": {
+      "fgs_timeout_text": "Android 已暂停 GO 的后台连接。打开 GO 以重新连接。",
+      "fgs_timeout_title": "GO 已暂停",
+      "status_paused_text": "打开 GO 以同步你的聊天。",
+      "status_paused_title": "聊天已暂停",
+      "status_syncing_background": "正在后台同步聊天",
+      "status_waiting_text": "等待发送的消息：{{count}}"
+    },
+    "status": {
+      "relaying": "正在为他人中继（连接Wi-Fi充电中）",
+      "syncing_now": "正在后台同步"
+    },
+    "title": "后台同步",
+    "vendor_freeze": {
+      "body": "尽管已开启后台同步，您的{{manufacturer}}手机仍在后台停止了GO。请打开手机中GO的电池设置，并允许后台活动。",
+      "body_unknown": "尽管已开启后台同步，您的手机仍在后台停止了GO。请打开手机中GO的电池设置，并允许后台活动。",
+      "dismiss": "关闭",
+      "guide": "分步指南（dontkillmyapp.com）",
+      "open_battery_settings": "打开电池设置",
+      "title": "GO在后台被停止"
+    }
+  },
   "balance": "平衡：",
   "blocks": "区块",
   "bookmarks": {
@@ -387,6 +435,43 @@
     "payment": "付款费",
     "publish": "发布费"
   },
+  "file_transfer": {
+    "dismiss": "关闭",
+    "downloading_title": "正在下载{{filename}}",
+    "failed_title": "下载失败",
+    "fetching_title": "正在获取{{filename}}",
+    "gathering": "正在从QDN收集 · {{percent}}%",
+    "gathering_chunks": "正在从QDN收集 · {{percent}}% · {{local}}/{{total}}个分块",
+    "gathering_unknown": "正在从QDN收集…",
+    "hide": "隐藏（在通知中继续）",
+    "install": "安装",
+    "looking_for_file": "正在QDN上查找文件…",
+    "not_saved_title": "{{filename}}未保存",
+    "not_saved_tray": "文件仍已下载。打开GO的通知即可保存。",
+    "open": "打开",
+    "open_failed": "此手机上没有可以打开此文件的应用",
+    "progress": "{{percent}}%・{{size}}",
+    "ready_to_install": "可以安装 · {{location}}",
+    "ready_to_open": "可以打开 · {{location}}",
+    "remove": "从列表中移除",
+    "save": "保存",
+    "save_error": "保存文件出错：{{message}}",
+    "save_error_generic": "保存文件出错",
+    "save_stalled": "保存已停滞：存储无响应",
+    "save_success": "文件已保存",
+    "saved_title": "{{filename}}已保存",
+    "saved_to": "已保存到{{location}}",
+    "saving_file": "正在保存文件…",
+    "saving_title": "正在保存{{filename}}",
+    "stage_awaiting_save": "已下载，等待保存",
+    "stage_declined": "未保存 · 点按“保存”即可保留",
+    "stage_downloading": "正在下载",
+    "stage_gathering": "正在从QDN收集",
+    "stage_saving": "正在保存到手机",
+    "storage_permission": "GO需要存储权限才能将文件保存到Documents。",
+    "tap_to_install": "点按安装 · {{location}}",
+    "tap_to_open": "点按打开 · {{location}}"
+  },
   "filter": {
     "all": "全部",
     "category": "分类",
@@ -399,6 +484,65 @@
   "for": "为了",
   "general": "一般的",
   "general_settings": "一般设置",
+  "go_updates": {
+    "android_only": "安装需在 Android 应用中进行。",
+    "available_title": "GO 3.0 有新更新可用",
+    "badge": {
+      "installed": "已安装",
+      "new": "新版",
+      "older": "旧版"
+    },
+    "check": "检查更新",
+    "checking": "正在检查 QDN…",
+    "error": {
+      "fetch_failed": "无法获取该版本",
+      "timeout": "网络未能及时传送该版本"
+    },
+    "hide_changes": "隐藏更改",
+    "install": "安装",
+    "install_update": "安装更新",
+    "installed_label": "已安装在此手机上",
+    "job": {
+      "allow_installs": "允许安装",
+      "confirm_hint": "已下载。Android 将请你确认安装。",
+      "continue_background": "可以关闭此界面，下载会继续进行。",
+      "dismiss": "关闭",
+      "downloading": "正在下载",
+      "failed": "安装失败",
+      "fetching": "正在从 QDN 获取",
+      "permission": "需要权限",
+      "permission_hint": "Android 只安装来自你允许的来源的应用。请为 Qortal GO 开启“安装未知应用”。返回后安装会自动继续。",
+      "ready": "可以安装",
+      "updating_to": "正在更新到 v{{version}}"
+    },
+    "last_checked": "上次检查 {{time}}",
+    "later": "稍后",
+    "loading_versions": "正在从 QDN 加载版本…",
+    "no_notes": "此版本没有添加更新说明。",
+    "no_versions": "尚未发布任何 GO 3.0 版本。",
+    "open_in_qshare": "在 Q-Share+ 中打开",
+    "progress": {
+      "assembling": "正在组装版本",
+      "bytes_of_total": "{{done}} / {{total}}",
+      "confirm_in_android": "Android 将请你确认",
+      "downloading": "正在下载",
+      "fetching": "正在从 Qortal 网络获取",
+      "needs_permission": "Android 需要你的许可才能从 Qortal GO 安装应用"
+    },
+    "published_when": "发布于 {{when}}",
+    "retry": "重试",
+    "show_changes": "显示更改",
+    "status": {
+      "available": "有更新的版本可用。",
+      "never": "尚未检查。",
+      "unreachable": "无法连接 QDN。请检查节点连接后重试。",
+      "up_to_date": "你使用的是最新版本。"
+    },
+    "title": "GO 3.0 更新",
+    "update_marker": "GO 3.0 有更新可用",
+    "versions_missing": "部分版本暂时无法加载（{{count}} 个）。请稍后再检查。",
+    "versions_title": "QDN 上的版本"
+  },
   "group_call": "群组通话",
   "group_call_blocked": "请先结束你的另一个通话",
   "group_call_chat_placeholder": "群组通话的文字聊天尚不可用。",
@@ -462,6 +606,7 @@
       "decrypt_app": "无法解密私人应用程序'",
       "download_image": "无法下载图像。请单击“刷新”按钮，请稍后再试",
       "download_private_app": "无法下载私人应用",
+      "edit_message_too_long": "已编辑的消息无法拆分。请将其缩短至 {{maximum}} 字节以内。",
       "encrypt_app": "无法加密应用程序。应用未发布'",
       "fetch_app": "无法获取应用",
       "fetch_publish": "无法获取发布",
@@ -476,6 +621,8 @@
       "invalid_signature": "无效的签名",
       "invalid_theme_format": "无效的主题格式",
       "invalid_zip": "无效拉链",
+      "long_message_too_many_parts": "此消息太长，即使拆分为 {{maximum}} 条消息也无法发送。",
+      "long_message_unsplittable": "此消息的某一部分无法拆分到足以发送的大小。",
       "message_loading": "错误加载消息。",
       "message_size": "消息大小为 {{ size }} 字节，最大 {{ maximum }} 字节",
       "minting_account_add": "无法添加薄荷帐户",
@@ -530,6 +677,7 @@
       "hub_notification_settings_desc": "Choose which Hub features appear in your notification panel.",
       "link_copied": "链接已复制到剪贴板。",
       "loading": "加载中...",
+      "long_message_split": "长消息：将分为 {{count}} 条消息发送。",
       "mentioned": "提及",
       "message_with_image": "此消息已经有一个图像",
       "minimal_qort_balance": "账户中至少拥有 {{ quantity }} QORT，可让您以接近即时的速度发送聊天消息。",
@@ -714,6 +862,18 @@
   "none": "没有任何",
   "not_available": "不适用",
   "note": "笔记",
+  "notification_history": {
+    "clear": "清除",
+    "clear_all": "全部清除",
+    "clear_all_hint": "清除所有通知。它们会保留在通知历史中。",
+    "close": "关闭",
+    "drag_to_close": "向上拖动即可关闭",
+    "empty": "这里还没有内容。收到的通知会在此保留30天，即使已被滑动清除。",
+    "open": "通知历史",
+    "title": "通知历史",
+    "today": "今天",
+    "yesterday": "昨天"
+  },
   "official_apps": {
     "all_apps": "所有官方应用",
     "featured": "精选",
@@ -888,6 +1048,20 @@
     "community_apps": "社区应用",
     "my_apps": "我的应用",
     "official_apps": "官方应用"
+  },
+  "tabs_overlay": {
+    "delete_folder_body_one": "其中保存的 {{count}} 个应用将从标签页中移除。已打开的标签页会保持打开。",
+    "delete_folder_body_other": "其中保存的 {{count}} 个应用将从标签页中移除。已打开的标签页会保持打开。",
+    "delete_folder_title": "删除“{{name}}”？",
+    "edit_hint_folder": "拖动应用以重新排序，或点按 × 移除",
+    "edit_hint_root": "将应用拖到文件夹中，点按 × 移除，或拖动文件夹以重新排序",
+    "folder_empty": "此文件夹为空",
+    "folder_empty_hint": "长按任意应用即可将其移到此文件夹。",
+    "no_open_tabs": "还没有打开的标签页",
+    "no_open_tabs_with_folders": "没有打开的标签页。点按文件夹即可查看其中的应用。",
+    "pin_failed": "无法将固定保存到标签页",
+    "pinned_to_folder": "已固定到标签页中的 {{folder}}",
+    "unpinned_from_folder": "已从标签页中的 {{folder}} 移除"
   },
   "tags": "标签",
   "theme": {

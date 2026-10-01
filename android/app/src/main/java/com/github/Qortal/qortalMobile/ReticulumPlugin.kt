@@ -4,6 +4,8 @@ import android.content.ContentValues
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
+import android.os.Handler
+import android.os.Looper
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.util.Log
@@ -40,6 +42,8 @@ class ReticulumPlugin : Plugin() {
     companion object {
         private const val TAG = "ReticulumPlugin"
         private const val DEFAULT_NETNAME = "qortal-hub"
+        /** Lets the offline presence notice leave before logout closes the hubs. */
+        private const val LOGOUT_NETWORK_PAUSE_DELAY_MS = 5_000L
 
         // Process-lifetime state. MainActivity / the Capacitor plugin are
         // destroyed on swipe-away; the foreground service keeps this process.
@@ -53,9 +57,105 @@ class ReticulumPlugin : Plugin() {
         @Volatile private var presenceReaderRunning = false
         @Volatile private var presenceConfigDir: String = ""
         private var presenceReader: Thread? = null
+        // A reader from a destroyed Activity may still sit in poll() when the
+        // next one starts; it exits once it sees a newer generation.
+        @Volatile private var presenceReaderGeneration = 0
+        private val presenceReaderLock = Any()
         // Direct worker <-> bridge channel; process-lifetime like the reader.
         @Volatile private var bridgeSocket: BridgeSocketServer? = null
         private val bridgeSocketLock = Any()
+
+        // Network pause: hub sockets closed while no GO screen needs the mesh
+        // (dataSync time-out, swipe from recents, logout). The Python bridge
+        // stays up, so JS never has to start it again. Only presenceWorker
+        // touches networkPaused, which orders every pause and resume.
+        private var networkPaused = false
+        private val pauseHandler = Handler(Looper.getMainLooper())
+        private val pauseLock = Any()
+        private var pendingPause: Runnable? = null
+        // Bumped by every pause/resume request; a pause that is overtaken by
+        // a resume before it reaches presenceWorker is dropped.
+        private var networkRequestSeq = 0L
+
+        /**
+         * Close the hub sockets after [delayMs] (0 = now). A later
+         * [resumeNetwork] cancels a pause that has not run yet. Never blocks
+         * the caller: the Python call runs on presenceWorker (see
+         * handleOnDestroy for why the UI thread must not wait on Python).
+         */
+        @JvmStatic
+        fun pauseNetwork(reason: String, delayMs: Long) {
+            val seq: Long
+            val task: Runnable
+            synchronized(pauseLock) {
+                pendingPause?.let { pauseHandler.removeCallbacks(it) }
+                seq = ++networkRequestSeq
+                // Removing an already-run task later is a harmless no-op.
+                task = Runnable { runPause(reason, seq) }
+                pendingPause = if (delayMs > 0) task else null
+            }
+            if (delayMs > 0) pauseHandler.postDelayed(task, delayMs) else task.run()
+        }
+
+        private fun runPause(reason: String, seq: Long) {
+            presenceWorker.execute {
+                synchronized(pauseLock) {
+                    if (seq != networkRequestSeq) return@execute
+                }
+                val host = presenceHost
+                if (host == null || !presenceStarted || networkPaused) return@execute
+                try {
+                    // Frames kept for a reconnecting worker predate the pause.
+                    // Clear first so the link-closed events the pause emits
+                    // still reach the next worker.
+                    bridgeSocket?.clearHandover()
+                    host.callAttr("pause_network")
+                    networkPaused = true
+                    Log.i(TAG, "Presence network paused ($reason)")
+                } catch (t: Throwable) {
+                    Log.e(TAG, "Presence network pause failed ($reason)", t)
+                }
+            }
+        }
+
+        /**
+         * Feed one command [frame] to the Python bridge from native code, with
+         * no page involved; a no-op when the bridge is not running. Never
+         * blocks the caller (runs on presenceWorker).
+         */
+        @JvmStatic
+        fun feedPresenceFrame(frame: String, reason: String) {
+            presenceWorker.execute {
+                val host = presenceHost
+                if (host == null || !presenceStarted) return@execute
+                try {
+                    host.callAttr("feed", frame)
+                } catch (t: Throwable) {
+                    Log.e(TAG, "Presence command failed ($reason)", t)
+                }
+            }
+        }
+
+        /** Redial the hubs after [pauseNetwork]; a no-op when not paused. */
+        @JvmStatic
+        fun resumeNetwork(reason: String) {
+            synchronized(pauseLock) {
+                pendingPause?.let { pauseHandler.removeCallbacks(it) }
+                pendingPause = null
+                networkRequestSeq++
+            }
+            presenceWorker.execute {
+                val host = presenceHost
+                if (host == null || !networkPaused) return@execute
+                try {
+                    host.callAttr("resume_network")
+                    networkPaused = false
+                    Log.i(TAG, "Presence network resumed ($reason)")
+                } catch (t: Throwable) {
+                    Log.e(TAG, "Presence network resume failed ($reason)", t)
+                }
+            }
+        }
     }
 
     @PluginMethod
@@ -80,12 +180,42 @@ class ReticulumPlugin : Plugin() {
         call.resolve(JSObject().put("stopped", true))
     }
 
+    /**
+     * Logout: nothing signed in needs the mesh, so close the hub sockets.
+     * The default delay lets the offline presence notice sent just before
+     * logout leave first. The next presenceStart or status service start
+     * redials. Kept apart from stopping the status service, which the page
+     * also does when it only changes layout (e.g. rotation).
+     *
+     * Frames kept for a reconnecting worker are dropped now, not when the
+     * delayed pause runs: a quick login cancels that pause, and the kept
+     * frames would then be replayed after the next login. The engine worker
+     * is shared across accounts; if none is connected now, nothing more is
+     * kept until one connects, otherwise the connected one keeps getting
+     * frames live and its later gaps stay covered. This call is the only
+     * native signal that the signed-in session ended.
+     */
+    @PluginMethod
+    fun presencePauseNetwork(call: PluginCall) {
+        bridgeSocket?.endSession()
+        // Signed out: no background keep-alive or wake lock for this page.
+        context?.let { BackgroundKeepAlive.get(it).setSessionActive(false) }
+        val delayMs = (call.getInt("delayMs") ?: LOGOUT_NETWORK_PAUSE_DELAY_MS.toInt())
+            .coerceIn(0, 60_000)
+        pauseNetwork(call.getString("reason") ?: "logout", delayMs.toLong())
+        call.resolve(JSObject().put("ok", true))
+    }
+
     // ── Presence bridge methods ─────────────────────────────────────────────
 
     @PluginMethod
     fun presenceStart(call: PluginCall) {
+        // Only a signed-in page starts the presence bridge.
+        context?.let { BackgroundKeepAlive.get(it).setSessionActive(true) }
         if (presenceStarted) {
             if (!presenceReaderRunning) startPresenceReader()
+            // A new page after a swipe or logout: the hubs were paused.
+            resumeNetwork("presence_start")
             reemitPresenceReady()
             call.resolve(JSObject().put("started", true).put("reused", true))
             return
@@ -674,11 +804,18 @@ class ReticulumPlugin : Plugin() {
 
     /** Drains JSON frames emitted by the Python bridge and relays them to JS. */
     private fun startPresenceReader() {
-        if (presenceReaderRunning) return
-        presenceReaderRunning = true
+        val generation: Int
+        synchronized(presenceReaderLock) {
+            if (presenceReaderRunning) return
+            presenceReaderRunning = true
+            generation = ++presenceReaderGeneration
+        }
         presenceReader = Thread({
             val host = presenceHost ?: return@Thread
-            while (presenceReaderRunning) {
+            // The generation check retires a reader left over from a destroyed
+            // Activity, which would otherwise keep taking frames for a dead
+            // plugin instance alongside the new one.
+            while (presenceReaderRunning && generation == presenceReaderGeneration) {
                 try {
                     // poll() returns the moment a frame is queued; the timeout
                     // only bounds how long a stop takes to be noticed. 250 ms

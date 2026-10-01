@@ -83,6 +83,12 @@ export const mobileEmojiPanelOpenAtom = atomWithReset(false);
  * own stacking context — so the bar steps aside instead.
  */
 export const mobileFullscreenComposerActiveAtom = atomWithReset(false);
+/**
+ * True while a group panel (Threads, Qortal Land, Members) fills the phone
+ * screen. The app's top and bottom bars step aside so it sits full screen like
+ * the Calendar and Files panels, with its close X in the same place.
+ */
+export const mobileGroupPanelOpenAtom = atomWithReset(false);
 /** True when the chat message list has been scrolled down, so the group section
  *  tabs collapse (landscape) to give the conversation more vertical room. */
 export const mobileChatHeaderCollapsedAtom = atomWithReset(false);
@@ -429,10 +435,15 @@ export const notificationSeenInAppKeysRecordAtom =
 
 /**
  * Keys for current user (from last 3 days). Set with string[] for current
- * address, { address, keys } to merge keys marked "now" for an address, or
- * { address, keyTimes } to merge keys with their real mark times (the newer
- * time wins when a key already exists) — used when seen state arrives from
- * another device.
+ * address or { address, keys } to add missing keys marked "now" (existing
+ * marks keep their time), or { address, keyTimes } to merge keys with their
+ * real mark times (the newer time wins when a key already exists) — used when
+ * seen state arrives from another device or from get.ts, which passes a
+ * re-mark's new time this way.
+ *
+ * An update that changes nothing writes nothing: no storage write, no new
+ * record, no re-render. Subscribers derive arrays from this record, so a
+ * write with identical content would still look like a change to them.
  */
 export const notificationSeenInAppKeysAtom = atom(
   (get) =>
@@ -468,21 +479,34 @@ export const notificationSeenInAppKeysAtom = atom(
           ? update
           : null;
     if (!keyTimes && !Array.isArray(keys)) return;
-    const record = { ...full };
-    record[address] = { ...(record[address] ?? {}) };
+    const next: SeenInAppKeyRecord = { ...(full[address] ?? {}) };
     const now = Date.now();
+    let changed = false;
     if (keyTimes && typeof keyTimes === 'object') {
       for (const [k, t] of Object.entries(keyTimes)) {
-        if (typeof t !== 'number' || !Number.isFinite(t)) continue;
-        const existing = record[address][k];
-        if (typeof existing === 'number' && existing >= t) continue;
-        record[address][k] = Math.min(t, now);
+        if (!k || typeof t !== 'number' || !Number.isFinite(t)) continue;
+        const markedAt = Math.min(t, now);
+        const existing = next[k];
+        if (typeof existing === 'number' && existing >= markedAt) continue;
+        next[k] = markedAt;
+        changed = true;
       }
     } else if (Array.isArray(keys)) {
-      for (const k of keys) record[address][k] = now;
+      for (const k of keys) {
+        if (typeof k !== 'string' || !k) continue;
+        // Never move an existing mark: a prefix key hides every resource
+        // published before its time, so bumping it would silently mark newer
+        // items as seen.
+        if (typeof next[k] === 'number') continue;
+        next[k] = now;
+        changed = true;
+      }
     }
-    const pruned = filterSeenInAppRecordByAge(record);
-    set(notificationSeenInAppKeysRecordAtom, pruned);
+    if (!changed) return;
+    set(
+      notificationSeenInAppKeysRecordAtom,
+      filterSeenInAppRecordByAge({ ...full, [address]: next })
+    );
   }
 );
 
@@ -578,32 +602,213 @@ export function getNotificationSeenPrefixKey(notification: {
   return getNotificationSeenKey(notification as any);
 }
 
-/** Build prefix for a subscription (same shape as getNotificationSeenPrefixKey). */
-function getSubscriptionSeenPrefix(sub: CustomWebsocketSubscription): string {
-  const appName = ((sub.appName as string) ?? '').toLowerCase();
-  const appService = (sub.appService as string) ?? 'APP';
-  const notificationId = (sub.notificationId as string) ?? '';
-  return `RESOURCE_PUBLISHED-${appName}-${appService}-${notificationId}`;
+/**
+ * Persisted: notifications swiped out of the bell panel, by address then
+ * dismissal key. The panel list itself is in-memory and the WebSocket history
+ * replays the last 3 days on every (re)connect, so without this a swiped item
+ * would come back. Entries older than 7 days are pruned.
+ */
+export const NOTIFICATION_PANEL_DISMISSED_STORAGE_KEY =
+  'qortal_notification_panel_dismissed';
+const NOTIFICATION_PANEL_DISMISSED_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** When the item was swiped away; a mention card also keeps its count then. */
+export type NotificationPanelDismissal = {
+  at: number;
+  mentionCount?: number;
+};
+export type NotificationPanelDismissals = Record<
+  string,
+  NotificationPanelDismissal
+>;
+export type NotificationPanelDismissalsByAddress = Record<
+  string,
+  NotificationPanelDismissals
+>;
+
+/** Parse the stored record, dropping malformed and expired entries. */
+export function parseNotificationPanelDismissals(
+  raw: unknown
+): NotificationPanelDismissalsByAddress {
+  let parsed: unknown = raw;
+  if (typeof raw === 'string') {
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return {};
+    }
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return {};
+  }
+  const cutoff = Date.now() - NOTIFICATION_PANEL_DISMISSED_MAX_AGE_MS;
+  const result: NotificationPanelDismissalsByAddress = {};
+  for (const [address, inner] of Object.entries(parsed)) {
+    if (!inner || typeof inner !== 'object' || Array.isArray(inner)) continue;
+    const entries: NotificationPanelDismissals = {};
+    for (const [key, entry] of Object.entries(inner)) {
+      const at = (entry as NotificationPanelDismissal)?.at;
+      if (typeof at !== 'number' || !Number.isFinite(at) || at <= cutoff) {
+        continue;
+      }
+      const mentionCount = (entry as NotificationPanelDismissal)?.mentionCount;
+      entries[key] =
+        typeof mentionCount === 'number' && Number.isFinite(mentionCount)
+          ? { at, mentionCount }
+          : { at };
+    }
+    if (Object.keys(entries).length > 0) result[address] = entries;
+  }
+  return result;
 }
 
-/** Keep only seen-in-app keys that still match a rule in customWebsocketSubscriptions. */
-export function filterSeenInAppKeysByRules(
-  seenKeys: string[],
-  customSubscriptions: CustomWebsocketSubscription[]
-): string[] {
-  if (!Array.isArray(seenKeys) || seenKeys.length === 0) return [];
-  const validPrefixes = new Set(
-    (customSubscriptions ?? []).map(getSubscriptionSeenPrefix)
-  );
-  if (validPrefixes.size === 0) return [];
-  return seenKeys.filter((key) => {
-    if (validPrefixes.has(key)) return true;
-    for (const prefix of validPrefixes) {
-      if (key.startsWith(prefix + '-')) return true;
-    }
-    return false;
-  });
+/**
+ * Stable key for swiping an item out of the bell panel, or null when the item
+ * has nothing stable to key on (it then only leaves the in-memory list).
+ */
+export function getNotificationPanelDismissKey(notification: {
+  event?: string;
+  appName?: string;
+  appService?: string;
+  notificationId?: string;
+  data?: {
+    created?: unknown;
+    groupId?: unknown;
+    identifier?: string;
+    qChatMention?: boolean;
+    reticulumCalendarReminder?: boolean;
+    reticulumDmCallId?: string;
+    reticulumDmMissedCall?: boolean;
+  };
+}): string | null {
+  const data = notification?.data;
+  if (data?.qChatMention === true) {
+    const groupId = Number(data?.groupId);
+    return Number.isFinite(groupId) ? `q-chat-mention-${groupId}` : null;
+  }
+  if (data?.reticulumDmMissedCall === true) {
+    return data?.reticulumDmCallId
+      ? `reticulum-dm-call-${data.reticulumDmCallId}`
+      : null;
+  }
+  if (data?.reticulumCalendarReminder === true) {
+    return notification?.notificationId || null;
+  }
+  if (notification?.event === 'RESOURCE_PUBLISHED') {
+    if (data?.identifier == null && data?.created == null) return null;
+    return getNotificationSeenKey(notification as any);
+  }
+  return null;
 }
+
+export function isNotificationPanelDismissed(
+  notification: Parameters<typeof getNotificationPanelDismissKey>[0] & {
+    data?: { mentionCount?: unknown };
+  },
+  dismissals: NotificationPanelDismissals | null | undefined
+): boolean {
+  const key = getNotificationPanelDismissKey(notification);
+  const entry = key ? dismissals?.[key] : undefined;
+  if (!entry) return false;
+  // One mention card stands for a whole group, so it comes back once the
+  // group has more unread mentions than when it was swiped away.
+  if (notification?.data?.qChatMention === true) {
+    const mentionCount = Number(notification?.data?.mentionCount) || 0;
+    return mentionCount <= (entry.mentionCount ?? 0);
+  }
+  return true;
+}
+
+const notificationPanelDismissalsStorage = {
+  getItem: (key: string): NotificationPanelDismissalsByAddress =>
+    parseNotificationPanelDismissals(
+      electronStorage != null
+        ? (electronStorage as any).getItem(key, null)
+        : typeof localStorage !== 'undefined'
+          ? localStorage.getItem(key)
+          : null
+    ),
+  setItem: (key: string, value: NotificationPanelDismissalsByAddress): void => {
+    const pruned = parseNotificationPanelDismissals(value);
+    if (electronStorage != null) {
+      (electronStorage as any).setItem(key, pruned);
+    } else if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(key, JSON.stringify(pruned));
+    }
+  },
+  removeItem: (key: string): void => {
+    if (electronStorage != null) {
+      (electronStorage as any).removeItem?.(key);
+    } else if (typeof localStorage !== 'undefined') {
+      localStorage.removeItem(key);
+    }
+  },
+};
+
+export const notificationPanelDismissalsRecordAtom =
+  atomWithStorage<NotificationPanelDismissalsByAddress>(
+    NOTIFICATION_PANEL_DISMISSED_STORAGE_KEY,
+    {},
+    notificationPanelDismissalsStorage as any
+  );
+
+/**
+ * Current user's bell-panel dismissals. Write `{ type: 'dismiss' }` when an
+ * item is swiped away (`dismissMany` for the panel's Clear all), and
+ * `{ type: 'mentionCount' }` on every unread-mention sync so reading a group's
+ * mentions lets the next new mention show again.
+ */
+export const notificationPanelDismissalsAtom = atom(
+  (get): NotificationPanelDismissals => {
+    const address = get(userInfoAtom)?.address;
+    if (!address) return {};
+    return get(notificationPanelDismissalsRecordAtom)[address] ?? {};
+  },
+  (
+    get,
+    set,
+    action:
+      | { type: 'dismiss'; key: string; mentionCount?: number }
+      | {
+          type: 'dismissMany';
+          items: Array<{ key: string; mentionCount?: number }>;
+        }
+      | { type: 'mentionCount'; groupId: number; mentionCount: number }
+  ) => {
+    const address = get(userInfoAtom)?.address;
+    if (!address) return;
+    const record = get(notificationPanelDismissalsRecordAtom);
+    const current = record[address] ?? {};
+    let next: NotificationPanelDismissals;
+    if (action.type === 'dismiss' || action.type === 'dismissMany') {
+      const items = action.type === 'dismiss' ? [action] : action.items;
+      if (!items.length) return;
+      const at = Date.now();
+      next = { ...current };
+      for (const item of items) {
+        if (!item?.key) continue;
+        next[item.key] =
+          typeof item.mentionCount === 'number'
+            ? { at, mentionCount: item.mentionCount }
+            : { at };
+      }
+    } else {
+      const key = `q-chat-mention-${action.groupId}`;
+      const entry = current[key];
+      const mentionCount = Math.max(0, action.mentionCount);
+      if (!entry || (entry.mentionCount ?? 0) <= mentionCount) return;
+      const { [key]: _, ...rest } = current;
+      next =
+        mentionCount === 0
+          ? rest
+          : { ...rest, [key]: { ...entry, mentionCount } };
+    }
+    set(
+      notificationPanelDismissalsRecordAtom,
+      parseNotificationPanelDismissals({ ...record, [address]: next })
+    );
+  }
+);
 
 export const txListAtom = atomWithReset([]);
 

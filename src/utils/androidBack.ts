@@ -38,6 +38,11 @@ export const BACK_PRIORITY = {
   dialog: 80,
   /** Slide-in overlays (tabs grid, drawers, minting). */
   overlay: 70,
+  /**
+   * Screens stacked on an open conversation (the phone member list). Below
+   * `overlay` so a drawer opened from the sheet closes before the sheet.
+   */
+  sheet: 60,
   /** In-section detail views (open chat thread, forum thread). */
   detail: 40,
   /** Section-level toggles (groups <-> DMs). */

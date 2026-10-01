@@ -33,6 +33,27 @@
     "wait_until_ready": "wait until the discussion is ready"
   },
   "dm": {
+    "delivery": {
+      "delivered": {
+        "hint": "收件人的设备请求了它，并已发送。",
+        "label": "已送达"
+      },
+      "on_other_device": {
+        "hint": "你的其他设备有一份副本，可在收件人在线时发送。送达尚未确认。",
+        "label": "在你的其他设备上"
+      },
+      "only_on_this_device": {
+        "label": "仅在此设备上"
+      },
+      "only_on_this_phone": {
+        "hint": "尚未发送。将自动重试发送。",
+        "label": "仅在此手机上"
+      },
+      "sending": {
+        "hint": "正在尝试联系收件人。",
+        "label": "发送中"
+      }
+    },
     "required_for_attachments": "直接附件需要 Reticulum 私聊"
   },
   "event_preview": {
@@ -253,6 +274,50 @@
       },
       "title": "文字大小"
     }
+  },
+  "status_badge": {
+    "copy_diagnostics": "复制诊断信息",
+    "copy_diagnostics_collecting": "正在收集…",
+    "copy_diagnostics_copied": "已复制",
+    "copy_diagnostics_hint": "复制这段文字或将其保存为文件，然后随聊天问题报告一起发送。",
+    "help": {
+      "chat_engine": {
+        "body": "本地聊天数据库和 worker 是否已就绪。绿色徽章表示无线电状态；加载和发送聊天还需要这个引擎。如果聊天无法使用，请先点按下方的“{{action}}”，并将文字粘贴到报告中。ready = 正常。starting = 仍在启动，并显示已用时间；如果停留超过一分钟，可能的原因之一是 WebView 在没有 JIT 的情况下运行。failed = 错误显示在下方。idle = 尚未请求启动（聊天已关闭或未登录）。",
+        "title": "聊天引擎"
+      },
+      "hubs": {
+        "body": "当前已连接的枢纽链路数量。这些是到社区枢纽的 TCP 连接。0 表示尚未接入网状网络。2 是常见且健康的状态。",
+        "title": "枢纽"
+      },
+      "ifac": {
+        "body": "Interface Access Code 的大小。这是根据网状网络名称生成的共享网络过滤器。16 B 表示你在已命名的 Qortal 网络上。0 B 表示接口是开放的/未过滤。",
+        "title": "IFAC"
+      },
+      "known_paths": {
+        "body": "Reticulum 当前知道路由的目的地数量。每条广播都会让手机学到一条通往某个身份的路径。在繁忙的网状网络中，几百条是正常的。这不是实时聊天。",
+        "title": "已知路径"
+      },
+      "network_name": {
+        "body": "这台手机加入的 Reticulum 网状网络。Qortal 的公共网状网络是 qortal-hub。名称不同说明你在另一个网络上，看不到那些节点。",
+        "title": "网络名称"
+      },
+      "online_accounts": {
+        "body": "这台手机当前在网状网络上看到的 Qortal 账户数量。与“家”中的数字相同。它不是枢纽或 Reticulum 节点的数量。",
+        "title": "在线账户"
+      },
+      "received": {
+        "body": "自本次会话 Reticulum 启动以来，这台手机从枢纽接收的数据总量。它会在协议栈重启时清零，而不是在关闭聊天时。",
+        "title": "已接收"
+      },
+      "sent": {
+        "body": "自本次会话 Reticulum 启动以来，这台手机向枢纽发送的数据总量。它会在协议栈重启时清零，而不是在关闭聊天时。",
+        "title": "已发送"
+      }
+    },
+    "save_diagnostics": "保存为 .md 文件",
+    "save_diagnostics_failed": "无法保存文件：{{error}}",
+    "save_diagnostics_saved": "已保存",
+    "save_diagnostics_saved_to": "已保存到 {{location}}"
   },
   "user_card": {
     "address_copied": "地址已复制",

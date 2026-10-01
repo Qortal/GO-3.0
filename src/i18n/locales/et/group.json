@@ -77,7 +77,8 @@
     "gsk_description": "This key encrypts group content visible to all group members. It is currently the only key used for group chat and shared data.",
     "gsk_description_compact": "This key encrypts group content visible to all group members. It is currently the only key used in this UI.",
     "publish_ask": "Publish ASK",
-    "publish_gsk": "Publish GSK"
+    "publish_gsk": "Publish GSK",
+    "title": "administraatori võtmed"
   },
   "advanced_options": "lisavalikud",
   "announcement_placeholder": "Write an announcement...",
@@ -777,6 +778,13 @@
   "last_message_from": "{{sender}} • {{date}}",
   "last_message_you": "Sina",
   "latest_mails": "viimased Q-kirjad",
+  "member_actions": {
+    "make_admin_named": "tee {{name}} administraatoriks",
+    "more_named": "rohkem toiminguid: {{name}}",
+    "pending": "ootel",
+    "pending_hint": "ootab plokiahela kinnitust. See võib võtta paar minutit.",
+    "remove_admin_named": "eemalda kasutaja {{name}} administraatori staatus"
+  },
   "member_category": {
     "admins": "adminid",
     "collapse": "ahenda {{category}}",
@@ -785,6 +793,10 @@
     "members": "liikmed",
     "offline": "võrgust väljas",
     "park": "park"
+  },
+  "members_screen": {
+    "bans": "keelud",
+    "invites": "kutsed"
   },
   "message": {
     "error": {
@@ -1013,6 +1025,10 @@
       "copy": "Avalehe juhtpaneel on sinu lähtepunkt Qortal Hubis.\n\nTeeme kiire ringkäigu põhitõdedes!",
       "title": "Tere tulemast Qortal Hubi"
     }
+  },
+  "panel": {
+    "files": "failid",
+    "threads": "Threads"
   },
   "subscription": {
     "actions_badge_one": "{{count}} toiming",

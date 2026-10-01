@@ -33,6 +33,27 @@
     "wait_until_ready": "wait until the discussion is ready"
   },
   "dm": {
+    "delivery": {
+      "delivered": {
+        "hint": "O dispositivo do destinatário a solicitou e ela foi enviada.",
+        "label": "entregue"
+      },
+      "on_other_device": {
+        "hint": "Seu outro dispositivo tem uma cópia e pode enviá-la quando o destinatário estiver online. A entrega não foi confirmada.",
+        "label": "no seu outro dispositivo"
+      },
+      "only_on_this_device": {
+        "label": "apenas neste dispositivo"
+      },
+      "only_on_this_phone": {
+        "hint": "Ainda não enviada. O envio será repetido automaticamente.",
+        "label": "apenas neste telefone"
+      },
+      "sending": {
+        "hint": "Tentando alcançar o destinatário agora.",
+        "label": "enviando"
+      }
+    },
     "required_for_attachments": "O chat direto Reticulum é necessário para anexos diretos"
   },
   "event_preview": {
@@ -253,6 +274,50 @@
       },
       "title": "Tamanho do texto"
     }
+  },
+  "status_badge": {
+    "copy_diagnostics": "Copiar diagnóstico",
+    "copy_diagnostics_collecting": "Coletando…",
+    "copy_diagnostics_copied": "Copiado",
+    "copy_diagnostics_hint": "Copie o texto ou salve-o como arquivo e envie-o com o seu relato do problema no chat.",
+    "help": {
+      "chat_engine": {
+        "body": "Indica se o banco de dados local do chat e o worker estão prontos. O selo verde é o rádio; carregar e enviar chats também depende deste motor. Se o chat não estiver funcionando, toque primeiro em “{{action}}” abaixo e cole o texto no seu relato. ready = bom. starting = ainda iniciando, com o tempo decorrido; se ficar assim por mais de um minuto, uma causa possível é um WebView sem JIT. failed = o erro é mostrado abaixo. idle = ainda não foi solicitado a iniciar (chat desativado ou sem login).",
+        "title": "Motor do chat"
+      },
+      "hubs": {
+        "body": "Quantas conexões com hubs estão ativas agora. São as conexões TCP com os hubs da comunidade. 0 significa que você ainda não está na malha. 2 é típico e saudável.",
+        "title": "Hubs"
+      },
+      "ifac": {
+        "body": "Tamanho do Interface Access Code. É o filtro de rede compartilhado derivado do nome da malha. 16 B significa que você está na rede Qortal nomeada. 0 B significa que a interface está aberta / sem filtro.",
+        "title": "IFAC"
+      },
+      "known_paths": {
+        "body": "Para quantos destinos o Reticulum conhece uma rota agora. Cada anúncio ensina ao telefone um caminho até uma identidade. Algumas centenas é normal em uma malha movimentada. Isto não é o chat ao vivo.",
+        "title": "Rotas conhecidas"
+      },
+      "network_name": {
+        "body": "A malha Reticulum em que este telefone entrou. A malha pública do Qortal é qortal-hub. Um nome diferente significa que você está em outra rede e não pode ver esses pares.",
+        "title": "Nome da rede"
+      },
+      "online_accounts": {
+        "body": "Quantas contas Qortal este telefone vê presentes na malha agora. É o mesmo número de “Início”. Não é o número de hubs nem de nós Reticulum.",
+        "title": "Contas online"
+      },
+      "received": {
+        "body": "Total de dados que este telefone recebeu dos hubs desde que o Reticulum iniciou nesta sessão. Zera quando a pilha reinicia, não quando você fecha um chat.",
+        "title": "Recebido"
+      },
+      "sent": {
+        "body": "Total de dados que este telefone enviou aos hubs desde que o Reticulum iniciou nesta sessão. Zera quando a pilha reinicia, não quando você fecha um chat.",
+        "title": "Enviado"
+      }
+    },
+    "save_diagnostics": "Salvar como arquivo .md",
+    "save_diagnostics_failed": "Não foi possível salvar o arquivo: {{error}}",
+    "save_diagnostics_saved": "Salvo",
+    "save_diagnostics_saved_to": "Salvo em {{location}}"
   },
   "user_card": {
     "address_copied": "endereço copiado",

@@ -1,4 +1,5 @@
 import { Preferences } from '@capacitor/preferences';
+import i18n from '../i18n/i18n';
 import { QortalBackground } from '../plugins/QortalBackground';
 import {
   getMobileReticulumStatus,
@@ -89,6 +90,7 @@ export const startMobilePersistentStatus = async (
 ): Promise<void> => {
   if (!isCapacitor()) return;
 
+  installNativeLocalizedStrings();
   try {
     await QortalBackground.startPersistentStatus(
       buildPersistentStatusPayload(snapshot)
@@ -283,4 +285,95 @@ export const subscribeMobilePersistentStatusUpdates = (
       unsubDevice();
     },
   };
+};
+
+// Texts the native side draws on its own (the status notification while the
+// page is frozen, the 'GO paused' notice): native key -> i18n key.
+const NATIVE_TEXT_KEYS = {
+  status_paused_title: 'core:background_sync.native.status_paused_title',
+  status_paused_text: 'core:background_sync.native.status_paused_text',
+  status_waiting_text: 'core:background_sync.native.status_waiting_text',
+  fgs_timeout_title: 'core:background_sync.native.fgs_timeout_title',
+  fgs_timeout_text: 'core:background_sync.native.fgs_timeout_text',
+  status_syncing_background:
+    'core:background_sync.native.status_syncing_background',
+} as const;
+
+/** Current-language texts; `{{count}}` stays literal for native to fill. */
+export const buildNativeLocalizedStrings = (): Record<string, string> => {
+  const strings: Record<string, string> = {};
+  for (const [nativeKey, key] of Object.entries(NATIVE_TEXT_KEYS)) {
+    // i18next returns the bare key path (no namespace) for a missing key, so
+    // test presence explicitly; never hand a raw key to a system notification.
+    if (!i18n.exists(key)) continue;
+    const value = i18n.t(key, { skipInterpolation: true } as never);
+    if (typeof value === 'string' && value) {
+      strings[nativeKey] = value;
+    }
+  }
+  return strings;
+};
+
+let lastNativeStringsJson = '';
+let nativeStringsInstalled = false;
+
+/** Push the texts when they differ from the last push. Native only. */
+export const pushNativeLocalizedStrings = (): void => {
+  if (!isCapacitor()) return;
+  const strings = buildNativeLocalizedStrings();
+  const json = JSON.stringify(strings);
+  if (json === lastNativeStringsJson) return;
+  lastNativeStringsJson = json;
+  // An older APK lacks the method (or rejects it); native keeps English.
+  if (typeof QortalBackground.setLocalizedStrings !== 'function') return;
+  try {
+    void Promise.resolve(
+      QortalBackground.setLocalizedStrings({ strings })
+    ).catch((error) => {
+      console.warn(
+        '[mobileBackgroundService] setLocalizedStrings failed',
+        error
+      );
+    });
+  } catch (error) {
+    console.warn('[mobileBackgroundService] setLocalizedStrings failed', error);
+  }
+};
+
+/**
+ * Push the native texts now and again on every language switch. A language
+ * whose bundle is still loading resolves to English first; its 'added' event
+ * pushes the real texts. Idempotent. Native only.
+ */
+export const installNativeLocalizedStrings = (): void => {
+  if (!isCapacitor() || nativeStringsInstalled) return;
+  nativeStringsInstalled = true;
+  i18n.on('languageChanged', () => pushNativeLocalizedStrings());
+  i18n.store?.on('added', (lng: string, ns: string) => {
+    const current = (i18n.language || '').split('-')[0];
+    if (ns === 'core' && lng === current) pushNativeLocalizedStrings();
+  });
+  pushNativeLocalizedStrings();
+};
+
+let outboxCountReported: number | null = null;
+let outboxCountChain: Promise<void> = Promise.resolve();
+
+/**
+ * Own messages waiting to send, for the native status text. Changes only,
+ * in order; harmless on an APK without the method. Native only.
+ */
+export const reportOwnOutboxCount = (count: number): void => {
+  if (!isCapacitor()) return;
+  const next = Number.isFinite(count) && count > 0 ? Math.floor(count) : 0;
+  if (next === outboxCountReported) return;
+  outboxCountReported = next;
+  installNativeLocalizedStrings();
+  if (typeof QortalBackground.setOutboxCount !== 'function') return;
+  outboxCountChain = outboxCountChain
+    .then(() => QortalBackground.setOutboxCount({ count: next }))
+    .then(() => undefined)
+    .catch((error) => {
+      console.warn('[mobileBackgroundService] setOutboxCount failed', error);
+    });
 };

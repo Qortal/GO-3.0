@@ -10,7 +10,7 @@ import {
   useMediaQuery,
   useTheme,
 } from '@mui/material';
-import { alpha } from '@mui/material/styles';
+import { alpha, keyframes } from '@mui/material/styles';
 import AccountBalanceWalletRoundedIcon from '@mui/icons-material/AccountBalanceWalletRounded';
 import SendRoundedIcon from '@mui/icons-material/SendRounded';
 import PersonSearchRoundedIcon from '@mui/icons-material/PersonSearchRounded';
@@ -22,8 +22,15 @@ import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import NotificationsActiveRoundedIcon from '@mui/icons-material/NotificationsActiveRounded';
 import NotificationsRoundedIcon from '@mui/icons-material/NotificationsRounded';
 import ChevronRightRoundedIcon from '@mui/icons-material/ChevronRightRounded';
+import SystemUpdateAltRoundedIcon from '@mui/icons-material/SystemUpdateAltRounded';
 import { useAtomValue, useSetAtom } from 'jotai';
-import { nodeInfosAtom, p2pHealthAtom, rawWalletAtom, selectedNodeInfoAtom, mobileChatComposeActiveAtom, mobileFullscreenComposerActiveAtom, navigationControllerAtom } from '../../atoms/global';
+import { useTranslation } from 'react-i18next';
+import {
+  appUpdateReleaseAtom,
+  appUpdateSeenVersionAtom,
+} from '../../appUpdate/appUpdateAtoms';
+import { openAppUpdateWindow } from '../../appUpdate/appUpdateController';
+import { nodeInfosAtom, p2pHealthAtom, rawWalletAtom, selectedNodeInfoAtom, mobileChatComposeActiveAtom, mobileFullscreenComposerActiveAtom, mobileGroupPanelOpenAtom, navigationControllerAtom } from '../../atoms/global';
 import { computeP2pHealth } from '../../lib/p2pHealth';
 import { onMobileReticulumStatus } from '../../bridge/capacitorBridge';
 import { CoreSyncStatus } from '../CoreSyncStatus';
@@ -39,11 +46,13 @@ import { executeEvent } from '../../utils/events';
 import { useOpenTabs } from './useOpenTabs';
 import { liveTabQortalUrl } from './tabQortalLink';
 import { QortalUserAvatar } from '../QortalUserAvatar';
+import { useQdnDownloadsBadge } from '../Transfers/QdnDownloadsNotice';
 import { getWalletAvatarCache, fetchWalletAvatarDataUrl, setWalletAvatarCache, type WalletAvatarCacheEntry } from '../../utils/walletAvatarCache';
 import { getPrimaryNameForAvatar } from '../Group/groupApi';
 import { useUnseenNotificationCount } from '../../hooks/useUnseenNotificationCount';
 import { HTTPS_EXT_NODE_QORTAL_LINK } from '../../constants/constants';
 import { MintingPublicNodeDialog } from './MintingPublicNodeDialog';
+import { MobileAccountPanel, type AccountAction } from './MobileAccountPanel';
 import { MobileTopBarSearch } from './MobileTopBarSearch';
 import { MobileTabBar } from './MobileTabBar';
 import {
@@ -52,6 +61,7 @@ import {
 } from '../App/dialogSurface';
 import { MOBILE_CHAT_TOOLBAR_SLOT_ID } from './mobileChatCompose';
 import { SAFE_AREA_LEFT, SAFE_AREA_RIGHT, SAFE_AREA_TOP } from '../../utils/mobileSafeArea';
+import { MOBILE_TOP_BAR_HEIGHT_PX } from './mobileBarHeights';
 
 // Tall enough for the two-row formatting toolbar (2 × 40px buttons + gap +
 // shell padding) so every action is visible without horizontal scrolling.
@@ -65,7 +75,9 @@ const qortalLogo = 'qortal.png';
 /** Keep above {@link MOBILE_TABS_OVERLAY_Z} (2000) in mobileLayout.ts */
 const MOBILE_TOP_BAR_TABS_OPEN_Z = 2001;
 
-export const MOBILE_TOP_BAR_HEIGHT_PX = 52;
+// Defined in mobileBarHeights.ts to break an import cycle; re-exported for
+// existing importers.
+export { MOBILE_TOP_BAR_HEIGHT_PX };
 
 type MobileTopBarProps = {
   userInfo: { name?: string; primaryName?: string; address?: string } | null;
@@ -79,14 +91,6 @@ type MobileTopBarProps = {
   tabsOverlayOpen?: boolean;
   desktopViewMode?: string;
   setDesktopViewMode?: (mode: string) => void;
-};
-
-type AccountAction = {
-  icon: typeof AccountBalanceWalletRoundedIcon;
-  label: string;
-  onClick: () => void;
-  accent?: boolean;
-  badge?: number;
 };
 
 /**
@@ -111,6 +115,7 @@ export const MobileTopBar = ({
   setDesktopViewMode,
 }: MobileTopBarProps) => {
   const theme = useTheme();
+  const { t } = useTranslation(['core']);
   // In landscape the bottom Home/Apps/Chat bar is hidden (vertical room is
   // scarce); we surface those controls inline here, left of the avatar.
   const isLandscape = useMediaQuery('(orientation: landscape)');
@@ -161,11 +166,40 @@ export const MobileTopBar = ({
   const nodeInfos = useAtomValue(nodeInfosAtom);
   const selectedNode = useAtomValue(selectedNodeInfoAtom);
   const setP2pHealth = useSetAtom(p2pHealthAtom);
-  const { hasNewNotifications, unseenCount } = useUnseenNotificationCount();
+  const {
+    hasNewNotifications: hasNewAppNotifications,
+    unseenCount: appUnseenCount,
+  } = useUnseenNotificationCount();
+  // A hidden download progress card goes into the notifications, so the bell
+  // counts it (and a file saved but not yet looked at).
+  const downloadsBadge = useQdnDownloadsBadge();
+  const unseenCount = appUnseenCount + downloadsBadge.unseen;
+  const hasNewNotifications =
+    hasNewAppNotifications || downloadsBadge.unseen > 0;
+  // A newer GO build rings its own bell on GO 3.0 Updates in the account
+  // menu (and marks the avatar until that screen has shown it).
+  const updateRelease = useAtomValue(appUpdateReleaseAtom);
+  const updateSeenVersion = useAtomValue(appUpdateSeenVersionAtom);
+  const updateAvailable = Boolean(updateRelease);
+  const updateUnseen = Boolean(
+    updateRelease && updateSeenVersion !== updateRelease.version
+  );
+  // The bell pops each time a download lands in it.
+  const [bellPop, setBellPop] = useState(0);
+  const lastDownloadsUnseenRef = useRef(0);
+  useEffect(() => {
+    if (downloadsBadge.unseen > lastDownloadsUnseenRef.current) {
+      setBellPop((count) => count + 1);
+    }
+    lastDownloadsUnseenRef.current = downloadsBadge.unseen;
+  }, [downloadsBadge.unseen]);
   const chatComposeActive = useAtomValue(mobileChatComposeActiveAtom);
   const fullscreenComposerActive = useAtomValue(
     mobileFullscreenComposerActiveAtom
   );
+  // A group panel (Threads, Qortal Land, Members) fills the screen with its own
+  // header. Hidden rather than unmounted, so the bell and search keep state.
+  const groupPanelOpen = useAtomValue(mobileGroupPanelOpenAtom);
 
   useEffect(() => {
     return onMobileReticulumStatus((s) => {
@@ -372,6 +406,15 @@ export const MobileTopBar = ({
       onClick: onOpenSettings,
     },
     {
+      icon: updateAvailable
+        ? NotificationsActiveRoundedIcon
+        : SystemUpdateAltRoundedIcon,
+      label: t('core:go_updates.title'),
+      onClick: openAppUpdateWindow,
+      accent: updateAvailable,
+      ...(updateUnseen ? { badge: 1 } : {}),
+    },
+    {
       icon: LogoutRoundedIcon,
       label: 'Logout',
       onClick: onLogout,
@@ -396,7 +439,7 @@ export const MobileTopBar = ({
         paddingTop: SAFE_AREA_TOP,
         paddingLeft: `max(10px, ${SAFE_AREA_LEFT})`,
         paddingRight: `max(10px, ${SAFE_AREA_RIGHT})`,
-        display: 'flex',
+        display: groupPanelOpen ? 'none' : 'flex',
         alignItems: chatComposeActive ? 'center' : 'center',
         justifyContent: 'flex-start',
         gap: 0.5,
@@ -614,7 +657,10 @@ export const MobileTopBar = ({
           </Box>
         </Box>
 
-        <Box sx={{ position: 'relative', flexShrink: 0 }}>
+        <Box
+          data-go-notifications-anchor=""
+          sx={{ position: 'relative', flexShrink: 0 }}
+        >
           <IconButton
             ref={avatarButtonRef}
             size="small"
@@ -653,10 +699,16 @@ export const MobileTopBar = ({
 
           {hasNewNotifications && (
             <Box
+              key={bellPop}
               role="button"
               aria-label="New notifications"
               onClick={openNotifications}
               sx={{
+                // Waits for the card to arrive before it pops.
+                animation:
+                  bellPop > 0
+                    ? `${bellPopKeyframes} 600ms ease-out 450ms both`
+                    : 'none',
                 position: 'absolute',
                 top: -2,
                 right: -2,
@@ -680,6 +732,37 @@ export const MobileTopBar = ({
               }}
             >
               <NotificationsActiveRoundedIcon sx={{ fontSize: 11 }} />
+            </Box>
+          )}
+
+          {updateUnseen && (
+            <Box
+              aria-label={t('core:go_updates.update_marker')}
+              role="img"
+              sx={{
+                // Taps fall through to the avatar, which opens the menu with
+                // GO 3.0 Updates in it.
+                pointerEvents: 'none',
+                position: 'absolute',
+                bottom: -1,
+                right: -2,
+                width: 16,
+                height: 16,
+                borderRadius: '50%',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                bgcolor: theme.palette.primary.main,
+                color: theme.palette.primary.contrastText,
+                border: `2px solid ${
+                  theme.palette.mode === 'dark'
+                    ? 'rgb(28, 30, 36)'
+                    : theme.palette.background.paper
+                }`,
+                zIndex: 1,
+              }}
+            >
+              <SystemUpdateAltRoundedIcon sx={{ fontSize: 9 }} />
             </Box>
           )}
 
@@ -796,229 +879,15 @@ export const MobileTopBar = ({
         </DialogContent>
       </Dialog>
 
-      {accountOpen && panelAnchor ? (
-        <>
-          <Box
-            aria-hidden
-            onClick={closeAccount}
-            sx={{
-              bgcolor: alpha(theme.palette.common.black, 0.28),
-              inset: 0,
-              position: 'fixed',
-              zIndex: 1290,
-            }}
-          />
-          <Box
-            role="menu"
-            aria-label="Account menu"
-            sx={{
-              '@keyframes accountPanelIn': {
-                from: {
-                  opacity: 0,
-                  transform: 'scale(0.95) translateY(-8px)',
-                },
-                to: {
-                  opacity: 1,
-                  transform: 'scale(1) translateY(0)',
-                },
-              },
-              '@keyframes accountItemIn': {
-                from: {
-                  opacity: 0,
-                  transform: 'translateY(-12px)',
-                },
-                to: {
-                  opacity: 1,
-                  transform: 'translateY(0)',
-                },
-              },
-              animation: 'accountPanelIn 200ms cubic-bezier(0.22, 1, 0.36, 1) forwards',
-              backgroundColor:
-                theme.palette.mode === 'dark'
-                  ? 'rgb(34, 36, 42)'
-                  : theme.palette.background.paper,
-              border: `1px solid ${theme.palette.divider}`,
-              borderRadius: '16px',
-              boxShadow:
-                theme.palette.mode === 'dark'
-                  ? `0 16px 40px ${alpha('#000', 0.45)}`
-                  : `0 14px 36px ${alpha('#1E3248', 0.14)}`,
-              maxWidth: 'min(300px, calc(100vw - 20px))',
-              minWidth: 248,
-              // Cap to the viewport so the full action list (incl. Logout) is
-              // reachable on short landscape screens; actions scroll if needed.
-              maxHeight: `calc(100dvh - ${panelAnchor.top + 8}px - 12px)`,
-              display: 'flex',
-              flexDirection: 'column',
-              overflow: 'hidden',
-              position: 'fixed',
-              right: panelAnchor.right,
-              top: panelAnchor.top + 8,
-              transformOrigin: 'top right',
-              zIndex: 1291,
-            }}
-          >
-            <Box
-              sx={{
-                alignItems: 'center',
-                // `both` keeps the row hidden during the delay and settled after,
-                // while the resting style stays visible: on devices where CSS
-                // animations never run (GrapheneOS with animations removed, some
-                // WebViews) an `opacity: 0` base left the whole menu blank.
-                animation: 'accountItemIn 180ms ease 40ms both',
-                borderBottom: `1px solid ${theme.palette.divider}`,
-                display: 'flex',
-                flexShrink: 0,
-                gap: 1,
-                px: 1.25,
-                py: 1.1,
-              }}
-            >
-              <QortalUserAvatar
-                key={`${address}-${effectivePrimaryName}-panel`}
-                primaryName={effectivePrimaryName}
-                walletAddress={address}
-                cachedAvatarEntry={cachedAvatarEntry}
-                fallbackIconSize={22}
-                sx={{
-                  width: 40,
-                  height: 40,
-                  bgcolor:
-                    theme.palette.mode === 'dark'
-                      ? alpha(theme.palette.common.white, 0.1)
-                      : alpha(theme.palette.common.black, 0.06),
-                  fontSize: 16,
-                  fontWeight: 700,
-                }}
-              />
-              <Box sx={{ minWidth: 0, flex: 1 }}>
-                <Typography
-                  sx={{
-                    fontSize: '0.95rem',
-                    fontWeight: 700,
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    whiteSpace: 'nowrap',
-                  }}
-                >
-                  {effectivePrimaryName || 'Account'}
-                </Typography>
-                {address ? (
-                  <Typography
-                    sx={{
-                      color: theme.palette.text.secondary,
-                      fontFamily: 'monospace',
-                      fontSize: '0.7rem',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap',
-                    }}
-                  >
-                    {address.slice(0, 8)}…{address.slice(-6)}
-                  </Typography>
-                ) : null}
-              </Box>
-            </Box>
-
-            <Box
-              sx={{
-                display: 'flex',
-                flexDirection: 'column',
-                gap: 0.35,
-                p: 0.75,
-                minHeight: 0,
-                overflowY: 'auto',
-                WebkitOverflowScrolling: 'touch',
-                overscrollBehavior: 'contain',
-              }}
-            >
-              {accountActions.map(({ icon: Icon, label, onClick, accent, badge }, index) => (
-                <Box
-                  key={label}
-                  role="menuitem"
-                  onClick={run(onClick)}
-                  sx={{
-                    '@keyframes accountItemIn': {
-                      from: {
-                        opacity: 0,
-                        transform: 'translateY(-12px)',
-                      },
-                      to: {
-                        opacity: 1,
-                        transform: 'translateY(0)',
-                      },
-                    },
-                    alignItems: 'center',
-                    animation: `accountItemIn 200ms cubic-bezier(0.22, 1, 0.36, 1) ${70 + index * 45}ms both`,
-                    borderRadius: '12px',
-                    cursor: 'pointer',
-                    display: 'flex',
-                    gap: 1,
-                    px: 1,
-                    py: 0.95,
-                    transition: 'background-color 120ms ease',
-                    ...(accent
-                      ? {
-                          bgcolor: alpha(theme.palette.success.main, 0.1),
-                          border: `1px solid ${alpha(theme.palette.success.main, 0.2)}`,
-                        }
-                      : {
-                          '&:active': {
-                            bgcolor: alpha(theme.palette.text.primary, 0.08),
-                          },
-                        }),
-                  }}
-                >
-                  <Box
-                    sx={{
-                      alignItems: 'center',
-                      bgcolor: accent
-                        ? alpha(theme.palette.success.main, 0.16)
-                        : alpha(theme.palette.primary.main, 0.1),
-                      borderRadius: '10px',
-                      color: accent
-                        ? theme.palette.success.main
-                        : theme.palette.primary.main,
-                      display: 'flex',
-                      height: 32,
-                      justifyContent: 'center',
-                      width: 32,
-                      flexShrink: 0,
-                    }}
-                  >
-                    <Icon sx={{ fontSize: 18 }} />
-                  </Box>
-                  <Typography sx={{ flex: 1, fontSize: '0.88rem', fontWeight: 600 }}>
-                    {label}
-                  </Typography>
-                  {badge != null && badge > 0 ? (
-                    <Box
-                      sx={{
-                        alignItems: 'center',
-                        bgcolor: theme.palette.success.main,
-                        borderRadius: 999,
-                        color: '#fff',
-                        display: 'inline-flex',
-                        fontSize: '0.65rem',
-                        fontWeight: 700,
-                        height: 18,
-                        justifyContent: 'center',
-                        minWidth: 18,
-                        px: 0.5,
-                      }}
-                    >
-                      {badge > 99 ? '99+' : badge}
-                    </Box>
-                  ) : null}
-                  <ChevronRightRoundedIcon
-                    sx={{ color: theme.palette.text.disabled, fontSize: 18 }}
-                  />
-                </Box>
-              ))}
-            </Box>
-          </Box>
-        </>
-      ) : null}
+      <MobileAccountPanel
+        open={accountOpen}
+        anchor={panelAnchor}
+        actions={accountActions}
+        address={address}
+        primaryName={effectivePrimaryName}
+        cachedAvatarEntry={cachedAvatarEntry}
+        onClose={closeAccount}
+      />
 
       <MintingPublicNodeDialog
         open={mintingPublicOpen}
@@ -1031,3 +900,11 @@ export const MobileTopBar = ({
 };
 
 export default MobileTopBar;
+
+/** The bell badge catching a download card that flew into it. */
+const bellPopKeyframes = keyframes`
+  0% { transform: scale(0); }
+  45% { transform: scale(1.45); }
+  70% { transform: scale(0.9); }
+  100% { transform: scale(1); }
+`;

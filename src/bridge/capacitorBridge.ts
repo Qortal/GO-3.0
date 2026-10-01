@@ -21,6 +21,7 @@
 
 import { Capacitor } from '@capacitor/core';
 import { Reticulum } from '../plugins/Reticulum';
+import type { RelayProfile } from '../plugins/QortalBackground';
 import { compactDmVoiceJoinWireChatId } from '../lib/call/dmVoiceWire';
 import { installMobileAudioSurface } from './mobileAudioSurface';
 import { verifyQchatFileLinkAuth } from '../utils/qchatFileAuthVerify';
@@ -76,6 +77,7 @@ export function installCapacitorBridge(): void {
   }
 
   guardBlobWindowOpen();
+  installPageVisibilityOverride();
 
   // Hide the native splash immediately. The launch window is just a solid dark
   // color (no logo), and the in-app HTML splash already covers the WebView, so
@@ -126,16 +128,474 @@ export function installCapacitorBridge(): void {
 
       // Resume repaint: soft layout nudge only. Native onResume owns the
       // heavier wake; repeating body display toggles here caused unlock flicker.
-      App.addListener('appStateChange', ({ isActive }) => {
-        if (isActive) scheduleWebViewReflow();
-      });
+      void Promise.resolve(
+        App.addListener('appStateChange', ({ isActive }) => {
+          if (isActive) scheduleWebViewReflow();
+          reportNativeAppState(isActive);
+        })
+      )
+        .then(() => {
+          appStateChangeAvailable = true;
+        })
+        .catch(() => {});
+
+      // Seed the page visibility override; until this (or the first
+      // appStateChange) lands, page code sees Chromium's own value.
+      queryNativeAppState = () => App.getState();
+      reconcileNativeAppState();
     })
     .catch(() => {});
 
   // Backstop for WebViews that don't reliably deliver appStateChange.
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') scheduleWebViewReflow();
+    const visible = document.visibilityState === 'visible';
+    if (visible) scheduleWebViewReflow();
+    reportAppLifecycle(visible ? 'foreground' : 'background', 'visibility');
   });
+}
+
+export type AppLifecycleState = 'foreground' | 'background';
+
+// Capacitor's appStateChange is the source of truth for foreground/background.
+// The page's visibility is only a fallback for when the App plugin is missing:
+// on native it is not reliable (the page may be kept 'visible' while GO is in
+// the background).
+let appStateChangeAvailable = false;
+let appLifecycleState: AppLifecycleState | null =
+  typeof document !== 'undefined' && document.visibilityState === 'hidden'
+    ? 'background'
+    : 'foreground';
+const appLifecycleListeners = new Set<(state: AppLifecycleState) => void>();
+
+/**
+ * Record an app foreground/background edge. Repeats of the current state are
+ * dropped, so appStateChange and visibilitychange for the same transition
+ * reach listeners once. Exported for tests.
+ */
+export function reportAppLifecycle(
+  state: AppLifecycleState,
+  source: 'app' | 'visibility'
+): void {
+  if (source === 'app') appStateChangeAvailable = true;
+  else if (appStateChangeAvailable) return;
+  if (state === appLifecycleState) return;
+  appLifecycleState = state;
+  for (const listener of [...appLifecycleListeners]) {
+    try {
+      listener(state);
+    } catch (err) {
+      console.warn('[Lifecycle] listener failed', err);
+    }
+  }
+}
+
+// ── Page visibility for app code (native only) ─────────────────────────────
+// Native keep-alive holds the WebView visible to Chromium while GO is off
+// screen, so the chat engine is not frozen after 60 s. App code must still
+// see 'hidden' then (tray alerts, read marking, presence 'away', pollers), so
+// document.visibilityState / hidden / hasFocus() follow appStateChange once
+// it is known, and Chromium's own value before that. Chromium's
+// visibilitychange events that do not change what app code sees (hidden,
+// then visible again 500 ms later when keep-alive starts) are dropped;
+// changes that come from appStateChange are dispatched as a synthetic
+// visibilitychange. Chromium's internal visibility is unaffected.
+
+// null until appStateChange or App.getState() has answered.
+let nativeAppActive: boolean | null = null;
+let nativeAppStateSeq = 0;
+let queryNativeAppState: (() => Promise<{ isActive: boolean }>) | null = null;
+let nativeAppStateQueryInFlight = false;
+let visibilityOverrideInstalled = false;
+let realVisibilityState: (() => string) | null = null;
+let lastEffectiveHidden = false;
+let dispatchingSyntheticVisibility = false;
+
+function findPropertyDescriptor(
+  target: object,
+  name: string
+): PropertyDescriptor | undefined {
+  for (let o: object | null = target; o; o = Object.getPrototypeOf(o)) {
+    const descriptor = Object.getOwnPropertyDescriptor(o, name);
+    if (descriptor) return descriptor;
+  }
+  return undefined;
+}
+
+function readRealVisibilityState(): string {
+  try {
+    return realVisibilityState ? realVisibilityState() : 'visible';
+  } catch {
+    return 'visible';
+  }
+}
+
+/**
+ * Chromium's own visibility, ignoring the override. True only when the page
+ * really is hidden (and so about to be frozen); false while native keep-alive
+ * holds it visible in the background. For network upkeep that must keep
+ * running as long as the engine does; UI and pollers use document.hidden.
+ */
+export function isPageReallyHidden(): boolean {
+  if (typeof document === 'undefined') return false;
+  if (!visibilityOverrideInstalled) return document.hidden;
+  return readRealVisibilityState() === 'hidden';
+}
+
+/** What app code sees: hidden while Android says GO is not on screen. */
+function isPageEffectivelyHidden(): boolean {
+  if (nativeAppActive === false) return true;
+  return readRealVisibilityState() === 'hidden';
+}
+
+/**
+ * Override document.visibilityState / hidden / hasFocus() for app code.
+ * Native only (installCapacitorBridge); exported for tests.
+ */
+export function installPageVisibilityOverride(): void {
+  if (visibilityOverrideInstalled || typeof document === 'undefined') return;
+  const stateGetter = findPropertyDescriptor(document, 'visibilityState')?.get;
+  if (typeof stateGetter !== 'function') return;
+  const nativeHasFocus =
+    typeof document.hasFocus === 'function' ? document.hasFocus : null;
+  realVisibilityState = () => String(stateGetter.call(document));
+  try {
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      get: () =>
+        isPageEffectivelyHidden() ? 'hidden' : readRealVisibilityState(),
+    });
+    Object.defineProperty(document, 'hidden', {
+      configurable: true,
+      get: () => isPageEffectivelyHidden(),
+    });
+    if (nativeHasFocus) {
+      // Window focus can outlive the Activity; never report focus while GO
+      // is off screen (read marking and "hub is being viewed" rely on it).
+      Object.defineProperty(document, 'hasFocus', {
+        configurable: true,
+        writable: true,
+        value: function hasFocus(): boolean {
+          if (nativeAppActive === false) return false;
+          return nativeHasFocus.call(document);
+        },
+      });
+    }
+  } catch (err) {
+    // All or nothing: a half-installed override would disagree with itself.
+    for (const name of ['visibilityState', 'hidden', 'hasFocus']) {
+      try {
+        delete (document as unknown as Record<string, unknown>)[name];
+      } catch {
+        /* ignore */
+      }
+    }
+    realVisibilityState = null;
+    console.warn('[Lifecycle] page visibility override unavailable', err);
+    return;
+  }
+  visibilityOverrideInstalled = true;
+  lastEffectiveHidden = isPageEffectivelyHidden();
+  // Window capture runs before every document listener; installed first
+  // (main.tsx), it also runs before any other window capture listener.
+  window.addEventListener('visibilitychange', filterChromiumVisibility, true);
+  // While keep-alive holds the page visible, Chromium fires no
+  // visibilitychange when the user comes back, so a lost resume event
+  // would leave app code 'hidden' for good. Window focus (every return to
+  // GO) and a touch are proof enough to re-ask Android.
+  window.addEventListener('focus', reconcileIfOffScreen, true);
+  window.addEventListener('pointerdown', reconcileIfOffScreen, true);
+}
+
+function reconcileIfOffScreen(): void {
+  if (nativeAppActive === false) reconcileNativeAppState();
+}
+
+function filterChromiumVisibility(event: Event): void {
+  if (dispatchingSyntheticVisibility) return;
+  const hidden = isPageEffectivelyHidden();
+  if (hidden === lastEffectiveHidden) {
+    event.stopImmediatePropagation();
+  } else {
+    lastEffectiveHidden = hidden;
+  }
+  // Chromium disagreeing with Android is expected while keep-alive holds the
+  // page visible, but a lost resume event looks the same: re-ask Android.
+  const realVisible = readRealVisibilityState() !== 'hidden';
+  if (nativeAppActive !== null && realVisible !== nativeAppActive) {
+    reconcileNativeAppState();
+  }
+}
+
+function syncEffectiveVisibility(): void {
+  if (!visibilityOverrideInstalled) return;
+  const hidden = isPageEffectivelyHidden();
+  if (hidden === lastEffectiveHidden) return;
+  lastEffectiveHidden = hidden;
+  dispatchingSyntheticVisibility = true;
+  try {
+    document.dispatchEvent(new Event('visibilitychange', { bubbles: true }));
+  } finally {
+    dispatchingSyntheticVisibility = false;
+  }
+}
+
+/**
+ * Android's answer to "is GO on screen" (appStateChange / App.getState()).
+ * Drives the lifecycle emitter and the page visibility app code sees.
+ * Exported for tests.
+ */
+export function reportNativeAppState(isActive: boolean): void {
+  nativeAppStateSeq += 1;
+  nativeAppActive = isActive;
+  reportAppLifecycle(isActive ? 'foreground' : 'background', 'app');
+  syncEffectiveVisibility();
+}
+
+/** Ask Android for the current state; an event that lands first wins. */
+function reconcileNativeAppState(): void {
+  if (!queryNativeAppState || nativeAppStateQueryInFlight) return;
+  const seq = nativeAppStateSeq;
+  nativeAppStateQueryInFlight = true;
+  void Promise.resolve()
+    .then(() => queryNativeAppState?.())
+    .then((result) => {
+      if (seq !== nativeAppStateSeq) return;
+      if (typeof result?.isActive !== 'boolean') return;
+      if (result.isActive === nativeAppActive) return;
+      reportNativeAppState(result.isActive);
+    })
+    .catch(() => {})
+    .finally(() => {
+      nativeAppStateQueryInFlight = false;
+    });
+}
+
+/** Test hook: point the override at a fake App.getState(). */
+export function setNativeAppStateQueryForTests(
+  query: (() => Promise<{ isActive: boolean }>) | null
+): void {
+  queryNativeAppState = query;
+}
+
+/** Test hook: restore the real document properties. */
+export function uninstallPageVisibilityOverrideForTests(): void {
+  if (!visibilityOverrideInstalled) return;
+  window.removeEventListener(
+    'visibilitychange',
+    filterChromiumVisibility,
+    true
+  );
+  window.removeEventListener('focus', reconcileIfOffScreen, true);
+  window.removeEventListener('pointerdown', reconcileIfOffScreen, true);
+  for (const name of ['visibilityState', 'hidden', 'hasFocus']) {
+    delete (document as unknown as Record<string, unknown>)[name];
+  }
+  visibilityOverrideInstalled = false;
+  realVisibilityState = null;
+}
+
+/**
+ * The current app state, the one edges are measured against. A newly started
+ * chat engine is told this once, since it only hears edges afterwards.
+ */
+export function getAppLifecycleState(): AppLifecycleState {
+  return appLifecycleState ?? 'foreground';
+}
+
+/** Foreground/background edges of the app (deduplicated). */
+export function subscribeAppLifecycle(
+  listener: (state: AppLifecycleState) => void
+): () => void {
+  appLifecycleListeners.add(listener);
+  return () => {
+    appLifecycleListeners.delete(listener);
+  };
+}
+
+// Device network as the native radio probe reports it; `null` until known.
+let deviceNetworkOnline: boolean | null = null;
+let deviceNetworkWatcherBound = false;
+const deviceNetworkRegainedListeners = new Set<() => void>();
+
+/**
+ * Record the device network state. Listeners hear only an offline -> online
+ * edge; the first report just sets the baseline. Exported for tests.
+ */
+export function reportDeviceNetwork(online: boolean): void {
+  const regained = deviceNetworkOnline === false && online;
+  deviceNetworkOnline = online;
+  if (!regained) return;
+  for (const listener of [...deviceNetworkRegainedListeners]) {
+    try {
+      listener();
+    } catch (err) {
+      console.warn('[Network] listener failed', err);
+    }
+  }
+}
+
+function bindDeviceNetworkWatcher(): void {
+  if (deviceNetworkWatcherBound || !isCapacitor()) return;
+  deviceNetworkWatcherBound = true;
+  void import('../plugins/QortalBackground')
+    .then(({ QortalBackground }) => {
+      void QortalBackground.getDeviceNetwork()
+        .then((result) => {
+          // An event may have landed first; it is newer.
+          if (deviceNetworkOnline === null) {
+            deviceNetworkOnline = result?.online !== false;
+          }
+        })
+        .catch(() => {});
+      void Promise.resolve(
+        QortalBackground.addListener('deviceNetwork', (event) => {
+          reportDeviceNetwork(event?.online !== false);
+        })
+      ).catch(() => {});
+    })
+    .catch(() => {});
+}
+
+/** Called when the device network comes back after being offline. */
+export function subscribeDeviceNetworkRegained(
+  listener: () => void
+): () => void {
+  bindDeviceNetworkWatcher();
+  deviceNetworkRegainedListeners.add(listener);
+  return () => {
+    deviceNetworkRegainedListeners.delete(listener);
+  };
+}
+
+// ── Background sync: relay profile and own outbox (native) ────────────────
+// The native keep-alive controller (QortalBackground) decides the relay
+// profile: 'full' while charging on an unmetered network, 'leaf' otherwise.
+// The engine switches group-control relaying and Python its neighbour caps.
+// Older native builds lack these methods; the calls then fail quietly and
+// the phone stays a leaf.
+
+let relayProfile: RelayProfile = 'leaf';
+let relayProfileSeq = 0;
+let backgroundSyncWatcherBound = false;
+const relayProfileListeners = new Set<(profile: RelayProfile) => void>();
+let pushOverlayProfileRef: ((profile: RelayProfile) => void) | null = null;
+
+export const getRelayProfile = (): RelayProfile => relayProfile;
+
+/** Test hook: stand in for the bridge's configure_overlay_profile push. */
+export function setOverlayProfilePushForTests(
+  push: ((profile: RelayProfile) => void) | null
+): void {
+  pushOverlayProfileRef = push;
+}
+
+/**
+ * Record the native relay profile; listeners hear changes only. Returns
+ * whether it changed.
+ */
+export function reportRelayProfile(profile: unknown): boolean {
+  relayProfileSeq += 1;
+  const next: RelayProfile = profile === 'full' ? 'full' : 'leaf';
+  if (next === relayProfile) return false;
+  relayProfile = next;
+  pushOverlayProfileRef?.(next);
+  for (const listener of [...relayProfileListeners]) {
+    try {
+      listener(next);
+    } catch (err) {
+      console.warn('[BackgroundSync] relay profile listener failed', err);
+    }
+  }
+  return true;
+}
+
+function bindBackgroundSyncWatcher(): void {
+  if (backgroundSyncWatcherBound || !isCapacitor()) return;
+  backgroundSyncWatcherBound = true;
+  void import('../plugins/QortalBackground')
+    .then(({ QortalBackground }) => {
+      // Events fired while the page was frozen may be lost; re-read the
+      // native state at start and on every return to the foreground.
+      const refresh = (initial: boolean): void => {
+        const seq = relayProfileSeq;
+        void Promise.resolve()
+          .then(() => QortalBackground.getBackgroundSyncState())
+          .then((state) => {
+            const changed =
+              seq === relayProfileSeq &&
+              reportRelayProfile(state?.relayProfile);
+            // Python and the service outlive the page: a new page starts
+            // as a leaf while Python may still hold 'full' caps from the
+            // last one, so tell it once even when nothing changed here.
+            if (initial && !changed) pushOverlayProfileRef?.(relayProfile);
+          })
+          .catch(() => {});
+      };
+      refresh(true);
+      subscribeAppLifecycle((state) => {
+        if (state === 'foreground') refresh(false);
+      });
+      void Promise.resolve(
+        QortalBackground.addListener('relayProfileChanged', (event) => {
+          reportRelayProfile(event?.profile);
+        })
+      ).catch(() => {});
+    })
+    .catch(() => {});
+}
+
+/** Relay profile changes ('full' while charging on an unmetered network). */
+export function subscribeRelayProfile(
+  listener: (profile: RelayProfile) => void
+): () => void {
+  bindBackgroundSyncWatcher();
+  relayProfileListeners.add(listener);
+  return () => {
+    relayProfileListeners.delete(listener);
+  };
+}
+
+let ownOutboxPendingReported: boolean | null = null;
+let ownOutboxChain: Promise<void> = Promise.resolve();
+
+/**
+ * Tell the native keep-alive whether own messages still wait to leave the
+ * phone (it keeps the page awake up to 3 min after GO leaves the screen).
+ * Changes only, in order. Native only; exported for tests.
+ */
+export function reportOwnOutboxPending(pending: boolean): void {
+  if (!isCapacitor()) return;
+  if (pending === ownOutboxPendingReported) return;
+  ownOutboxPendingReported = pending;
+  ownOutboxChain = ownOutboxChain
+    .then(() => import('../plugins/QortalBackground'))
+    .then(({ QortalBackground }) =>
+      QortalBackground.setOutboxPending({ pending })
+    )
+    .then(() => undefined)
+    .catch((err) => {
+      console.warn('[BackgroundSync] setOutboxPending failed', err);
+    });
+}
+
+/**
+ * Logout: ask the native side to close the hub sockets. The native default
+ * delay (5 s) lets the offline presence notice sent just before leave first;
+ * the next login's status service start redials. Native only, best effort.
+ */
+export function pauseReticulumNetworkForLogout(): void {
+  if (!isCapacitor()) return;
+  if (typeof Reticulum.presencePauseNetwork !== 'function') return;
+  try {
+    // An older native build rejects the unknown method; that is harmless.
+    void Promise.resolve(
+      Reticulum.presencePauseNetwork({ reason: 'logout' })
+    ).catch((err) => {
+      console.warn('[Presence] network pause failed', err);
+    });
+  } catch (err) {
+    console.warn('[Presence] network pause failed', err);
+  }
 }
 
 /**
@@ -1232,6 +1692,25 @@ export function installReticulumBridges(): void {
     });
   };
 
+  // Neighbour caps: 'leaf' = phone defaults (6 + 6), 'full' = desktop-sized
+  // (12 + 8) while charging on an unmetered network. Idempotent in Python;
+  // an older bridge rejects the unknown action, which is harmless.
+  const pushOverlayProfile = (profile: RelayProfile): void => {
+    if (!bridgeReady) return;
+    void Promise.resolve()
+      .then(() =>
+        Reticulum.presenceCommand({
+          action: 'configure_overlay_profile',
+          payload: { profile },
+        })
+      )
+      .catch((err) => {
+        console.warn('[Presence] configure_overlay_profile failed:', err);
+      });
+  };
+  pushOverlayProfileRef = pushOverlayProfile;
+  bindBackgroundSyncWatcher();
+
   // Tell the bridge which discovered peers to fan presence out to. Debounced,
   // single-flight, and re-run if state changed while a sync was in flight.
   // An unchanged neighbor set is already a no-op on the Python side; skip
@@ -1241,8 +1720,9 @@ export function installReticulumBridges(): void {
   const pushOverlaySync = async (): Promise<void> => {
     if (!bridgeReady) return;
     const overlayKey = `${neighborList().join(',')}|${overlaySyncAccountLeases().length}`;
-    const minMs =
-      typeof document !== 'undefined' && document.hidden ? 60_000 : 20_000;
+    // Real visibility: keep-alive keeps the engine (and these leases)
+    // working while GO is off screen.
+    const minMs = isPageReallyHidden() ? 60_000 : 20_000;
     if (
       overlayKey === lastOverlaySyncKey &&
       Date.now() - lastOverlaySyncAt < minMs
@@ -1838,6 +2318,10 @@ export function installReticulumBridges(): void {
         });
         refreshMobileStatus();
         void pushOverlaySync();
+        // Python may outlive the page (Activity recreated, task swiped away
+        // while the service kept the process): always push the current
+        // profile, a stale 'full' must drop back to leaf. Idempotent.
+        pushOverlayProfile(relayProfile);
         hydrateQchatPendingSends();
         void window.hub?.getIceServers?.().catch(() => {});
         break;
@@ -3351,10 +3835,12 @@ export function installReticulumBridges(): void {
   });
 
   // Keep the bridge's neighbour leases warm (90 s grace) and prune expired
-  // online entries so the UI doesn't show stale peers. Hidden WebView timers
-  // are already throttled; skip the work — Python keeps the last neighbor set.
+  // online entries so the UI doesn't show stale peers. A really hidden
+  // WebView is about to be frozen; skip the work, Python keeps the last
+  // neighbor set. Keep-alive (GO off screen, page still visible to Chromium)
+  // keeps it running so neighbours found in the background are synced.
   setInterval(() => {
-    if (typeof document !== 'undefined' && document.hidden) return;
+    if (isPageReallyHidden()) return;
     if (bridgeReady && neighborHashes.size > 0) void pushOverlaySync();
     refreshMobileStatus();
     armStatusRefresh();

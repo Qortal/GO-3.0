@@ -1,22 +1,24 @@
-import { Avatar, Box, IconButton, Typography, alpha, styled, useTheme } from '@mui/material';
+import {
+  Avatar,
+  Box,
+  IconButton,
+  Typography,
+  alpha,
+  styled,
+  useTheme,
+} from '@mui/material';
 import PushPinIcon from '@mui/icons-material/PushPin';
 import PushPinOutlinedIcon from '@mui/icons-material/PushPinOutlined';
-import { useAtomValue, useSetAtom } from 'jotai';
-import { useCallback, useMemo, memo } from 'react';
+import { useCallback, memo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { getBaseApiReact } from '../../../App';
 import LogoSelected from '../../../assets/svgs/LogoSelected.svg';
-import {
-  isAppPinnedAtomFamily,
-  settingsLocalLastUpdatedAtom,
-  sortablePinnedAppsAtom,
-} from '../../../atoms/global';
 import { executeEvent } from '../../../utils/events';
-import { saveToLocalStorage } from '../AppsNavBarDesktop';
 import { AppRating } from '../AppRating';
 import { AppButton, AppButtonText } from '../Apps-styles';
-
-const PINNED_KEY_SEP = '\0';
+import { AppAvailabilityLabel } from '../AppAvailabilityLabel';
+import { useAppNodeStatus } from '../appNodeStatus';
+import { useLibraryAppPin } from '../useLibraryAppPin';
 
 interface AppCardListItemProps {
   app: any;
@@ -101,15 +103,14 @@ const AppCardListItemInner = ({
 }: AppCardListItemProps) => {
   const theme = useTheme();
   const { t } = useTranslation(['core']);
-  const isInstalled = app?.status?.status === 'READY';
+  const nodeStatus = useAppNodeStatus(app);
+  const isInstalled = nodeStatus.availability === 'ready';
 
-  const pinnedKey = useMemo(
-    () => `${app?.service ?? ''}${PINNED_KEY_SEP}${app?.name ?? ''}`,
-    [app?.name, app?.service]
-  );
-  const isSelectedAppPinned = useAtomValue(isAppPinnedAtomFamily(pinnedKey));
-  const setSortablePinnedApps = useSetAtom(sortablePinnedAppsAtom);
-  const setSettingsLocalLastUpdated = useSetAtom(settingsLocalLastUpdatedAtom);
+  const {
+    isPinned: isSelectedAppPinned,
+    target: pinTarget,
+    togglePin,
+  } = useLibraryAppPin(app);
 
   const handleCardClick = useCallback(() => {
     if (isFromCategory) {
@@ -122,32 +123,9 @@ const AppCardListItemInner = ({
   const handlePinClick = useCallback(
     (e: React.MouseEvent) => {
       e.stopPropagation();
-      const name = app?.name;
-      const service = app?.service;
-      setSortablePinnedApps((prev) => {
-        const isPinned = !!prev?.find(
-          (item) => item?.name === name && item?.service === service
-        );
-        const updatedApps = isPinned
-          ? prev.filter(
-              (item) => !(item?.name === name && item?.service === service)
-            )
-          : [...(prev ?? []), { name, service }];
-        saveToLocalStorage(
-          'ext_saved_settings',
-          'sortablePinnedApps',
-          updatedApps
-        );
-        return updatedApps;
-      });
-      setSettingsLocalLastUpdated(Date.now());
+      togglePin();
     },
-    [
-      app?.name,
-      app?.service,
-      setSortablePinnedApps,
-      setSettingsLocalLastUpdated,
-    ]
+    [togglePin]
   );
 
   const handleOpenClick = useCallback(
@@ -180,7 +158,15 @@ const AppCardListItemInner = ({
 
       <ContentContainer>
         <AppTitle>{app?.metadata?.title || app?.name}</AppTitle>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'nowrap', minWidth: 0 }}>
+        <Box
+          sx={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            flexWrap: 'nowrap',
+            minWidth: 0,
+          }}
+        >
           <DeveloperName>
             {t('core:app_detail.by_developer', {
               developer: app?.name,
@@ -202,11 +188,16 @@ const AppCardListItemInner = ({
               ? theme.palette.primary.main
               : theme.palette.text.secondary,
           }}
-          aria-label={
-            isSelectedAppPinned
-              ? t('core:action.unpin', { postProcess: 'capitalizeFirstChar' })
-              : t('core:action.pin', { postProcess: 'capitalizeFirstChar' })
-          }
+          aria-label={t(
+            pinTarget === 'tabs'
+              ? isSelectedAppPinned
+                ? 'core:action.unpin_from_tabs'
+                : 'core:action.pin_to_tabs'
+              : isSelectedAppPinned
+                ? 'core:action.unpin'
+                : 'core:action.pin',
+            { postProcess: 'capitalizeFirstChar' }
+          )}
         >
           {isSelectedAppPinned ? (
             <PushPinIcon sx={{ fontSize: '18px' }} />
@@ -233,11 +224,7 @@ const AppCardListItemInner = ({
           }}
         >
           <AppButtonText sx={{ fontSize: '12px' }}>
-            {isInstalled
-              ? t('core:action.open', { postProcess: 'capitalizeFirstChar' })
-              : t('core:action.download', {
-                  postProcess: 'capitalizeFirstChar',
-                })}
+            <AppAvailabilityLabel status={nodeStatus} />
           </AppButtonText>
         </AppButton>
       </ActionsContainer>

@@ -211,7 +211,8 @@ export async function downloadFromLocation(
           if (announce) {
             finishQdnSaveNotification(
               notificationId,
-              mobileSaveLocationLabelFor(safeFilename, mimeType)
+              mobileSaveLocationLabelFor(safeFilename, mimeType),
+              { uri: saved.uri, mimeType }
             );
           }
           return {
@@ -269,7 +270,8 @@ export async function downloadFromLocation(
         if (announce) {
           finishQdnSaveNotification(
             notificationId,
-            mobileSaveLocationLabelFor(safeFilename, mimeType)
+            mobileSaveLocationLabelFor(safeFilename, mimeType),
+            { uri: saved.uri, mimeType }
           );
         }
         return {

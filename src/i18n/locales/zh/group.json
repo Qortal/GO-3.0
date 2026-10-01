@@ -77,7 +77,8 @@
     "gsk_description": "This key encrypts group content visible to all group members. It is currently the only key used for group chat and shared data.",
     "gsk_description_compact": "This key encrypts group content visible to all group members. It is currently the only key used in this UI.",
     "publish_ask": "Publish ASK",
-    "publish_gsk": "Publish GSK"
+    "publish_gsk": "Publish GSK",
+    "title": "管理员密钥"
   },
   "advanced_options": "高级选项",
   "announcement_placeholder": "Write an announcement...",
@@ -777,6 +778,13 @@
   "last_message_from": "{{sender}} • {{date}}",
   "last_message_you": "你",
   "latest_mails": "最新 Q 邮件",
+  "member_actions": {
+    "make_admin_named": "将{{name}}设为管理员",
+    "more_named": "{{name}}的更多操作",
+    "pending": "待确认",
+    "pending_hint": "正在等待区块链确认，可能需要几分钟。",
+    "remove_admin_named": "取消{{name}}的管理员身份"
+  },
   "member_category": {
     "admins": "管理员",
     "collapse": "收起{{category}}",
@@ -785,6 +793,10 @@
     "members": "成员",
     "offline": "离线",
     "park": "公园"
+  },
+  "members_screen": {
+    "bans": "封禁",
+    "invites": "邀请"
   },
   "message": {
     "error": {
@@ -1013,6 +1025,10 @@
       "copy": "主页仪表板是你使用Qortal Hub的起点。\n\n让我们快速了解一下基础功能！",
       "title": "欢迎使用Qortal Hub"
     }
+  },
+  "panel": {
+    "files": "文件",
+    "threads": "Threads"
   },
   "subscription": {
     "actions_badge_one": "{{count}} 项操作",

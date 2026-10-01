@@ -10,6 +10,8 @@ import {
   AppInfoSnippetRight,
   AppInfoUserName,
 } from './Apps-styles';
+import { AppAvailabilityLabel } from './AppAvailabilityLabel';
+import { useAppNodeStatus } from './appNodeStatus';
 import { Avatar, ButtonBase, useTheme } from '@mui/material';
 import { getBaseApiReact } from '../../App';
 import LogoSelected from '../../assets/svgs/LogoSelected.svg';
@@ -30,7 +32,8 @@ export const AppInfoSnippet = ({
   isFromCategory,
   parentStyles = {},
 }) => {
-  const isInstalled = app?.status?.status === 'READY';
+  const nodeStatus = useAppNodeStatus(app);
+  const isInstalled = nodeStatus.availability === 'ready';
   const [sortablePinnedApps, setSortablePinnedApps] = useAtom(
     sortablePinnedAppsAtom
   );
@@ -193,13 +196,7 @@ export const AppInfoSnippet = ({
           }}
         >
           <AppButtonText>
-            {isInstalled
-              ? t('core:action.open', {
-                  postProcess: 'capitalizeFirstChar',
-                })
-              : t('core:action.download', {
-                  postProcess: 'capitalizeFirstChar',
-                })}
+            <AppAvailabilityLabel status={nodeStatus} />
           </AppButtonText>
         </AppButton>
       </AppInfoSnippetRight>

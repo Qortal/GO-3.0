@@ -33,6 +33,27 @@
     "wait_until_ready": "wait until the discussion is ready"
   },
   "dm": {
+    "delivery": {
+      "delivered": {
+        "hint": "L'appareil du destinataire l'a demandé et il lui a été envoyé.",
+        "label": "remis"
+      },
+      "on_other_device": {
+        "hint": "Votre autre appareil en a une copie et peut l'envoyer quand le destinataire est en ligne. La remise n'est pas confirmée.",
+        "label": "sur votre autre appareil"
+      },
+      "only_on_this_device": {
+        "label": "uniquement sur cet appareil"
+      },
+      "only_on_this_phone": {
+        "hint": "Pas encore envoyé. L'envoi sera retenté automatiquement.",
+        "label": "uniquement sur ce téléphone"
+      },
+      "sending": {
+        "hint": "Tentative de joindre le destinataire.",
+        "label": "envoi en cours"
+      }
+    },
     "required_for_attachments": "Le chat direct Reticulum est requis pour les pièces jointes directes"
   },
   "event_preview": {
@@ -253,6 +274,50 @@
       },
       "title": "Taille du texte"
     }
+  },
+  "status_badge": {
+    "copy_diagnostics": "Copier le diagnostic",
+    "copy_diagnostics_collecting": "Collecte…",
+    "copy_diagnostics_copied": "Copié",
+    "copy_diagnostics_hint": "Copiez le texte ou enregistrez-le dans un fichier, puis envoyez-le avec votre signalement de problème de chat.",
+    "help": {
+      "chat_engine": {
+        "body": "Indique si la base de données locale du chat et le worker sont prêts. Le badge vert correspond à la radio ; charger et envoyer des messages nécessite aussi ce moteur. Si le chat ne fonctionne pas, touchez d'abord « {{action}} » ci-dessous et collez le texte dans votre signalement. ready = bon. starting = encore en démarrage, avec le temps écoulé ; si cela dure plus d'une minute, une cause possible est une WebView sans JIT. failed = l'erreur est affichée ci-dessous. idle = pas encore invité à démarrer (chat désactivé ou non connecté).",
+        "title": "Moteur de chat"
+      },
+      "hubs": {
+        "body": "Nombre de liaisons vers des hubs actives en ce moment. Ce sont les connexions TCP vers les hubs communautaires. 0 signifie que vous n'êtes pas encore sur le maillage. 2 est typique et sain.",
+        "title": "Hubs"
+      },
+      "ifac": {
+        "body": "Taille de l'Interface Access Code. C'est le filtre réseau partagé dérivé du nom du maillage. 16 B signifie que vous êtes sur le réseau Qortal nommé. 0 B signifie que l'interface est ouverte / non filtrée.",
+        "title": "IFAC"
+      },
+      "known_paths": {
+        "body": "Nombre de destinations vers lesquelles Reticulum connaît actuellement une route. Chaque annonce apprend au téléphone un moyen d'atteindre une identité. Quelques centaines, c'est normal sur un maillage chargé. Ce n'est pas le chat en direct.",
+        "title": "Chemins connus"
+      },
+      "network_name": {
+        "body": "Le maillage Reticulum que ce téléphone a rejoint. Le maillage public de Qortal est qortal-hub. Un autre nom signifie que vous êtes sur un autre réseau et ne pouvez pas voir ces pairs.",
+        "title": "Nom du réseau"
+      },
+      "online_accounts": {
+        "body": "Nombre de comptes Qortal que ce téléphone voit actuellement présents sur le maillage. Même nombre que dans « Maison ». Ce n'est pas le nombre de hubs ni de nœuds Reticulum.",
+        "title": "Comptes en ligne"
+      },
+      "received": {
+        "body": "Total des données reçues des hubs par ce téléphone depuis le démarrage de Reticulum pour cette session. Il est remis à zéro quand la pile redémarre, pas quand vous fermez un chat.",
+        "title": "Reçu"
+      },
+      "sent": {
+        "body": "Total des données envoyées aux hubs par ce téléphone depuis le démarrage de Reticulum pour cette session. Il est remis à zéro quand la pile redémarre, pas quand vous fermez un chat.",
+        "title": "Envoyé"
+      }
+    },
+    "save_diagnostics": "Enregistrer en fichier .md",
+    "save_diagnostics_failed": "Impossible d’enregistrer le fichier : {{error}}",
+    "save_diagnostics_saved": "Enregistré",
+    "save_diagnostics_saved_to": "Enregistré dans {{location}}"
   },
   "user_card": {
     "address_copied": "adresse copiée",

@@ -1,13 +1,33 @@
-import { useState } from 'react';
-import { alpha, Box, Popover, Typography, useTheme } from '@mui/material';
+import { useEffect, useState } from 'react';
+import { Capacitor } from '@capacitor/core';
+import FileSaver from 'file-saver';
 import {
+  alpha,
+  Box,
+  Button,
+  Popover,
+  Typography,
+  useTheme,
+} from '@mui/material';
+import {
+  chatEngineLabel,
   reticulumDisplayLabel,
   reticulumDisplayPhase,
   reticulumPhaseColor,
   useDeviceOnline,
   useReticulumStatus,
 } from './reticulumStatus';
+import {
+  collectReticulumDiagnostics,
+  diagnosticsFileName,
+  diagnosticsReportToMarkdown,
+} from './reticulumDiagnostics';
+import {
+  mobileSaveLocationLabelFor,
+  saveTextToMobileDocuments,
+} from '../../utils/mobileFileSave';
 import { useOnlineAddresses } from '../../hooks/usePresence';
+import { useTranslation } from 'react-i18next';
 
 /**
  * Compact Reticulum status indicator for the mobile top bar. Sits to the right
@@ -33,38 +53,39 @@ type StatKey =
   | 'tx'
   | 'engine';
 
+// i18n keys (reticulum namespace) for the help shown under a tapped row.
 const STAT_HELP: Record<StatKey, { title: string; body: string }> = {
   online: {
-    title: 'Online accounts',
-    body: 'How many Qortal accounts this phone currently sees as present on the mesh. Same number as Home. It is not the number of hubs or Reticulum nodes.',
+    title: 'reticulum:status_badge.help.online_accounts.title',
+    body: 'reticulum:status_badge.help.online_accounts.body',
   },
   network: {
-    title: 'Network name',
-    body: 'The Reticulum mesh this phone joined. Qortal’s public mesh is qortal-hub. A different name means you are on a different network and cannot see those peers.',
+    title: 'reticulum:status_badge.help.network_name.title',
+    body: 'reticulum:status_badge.help.network_name.body',
   },
   ifac: {
-    title: 'IFAC',
-    body: 'Interface Access Code size. This is the shared network filter derived from the mesh name. 16 B means you are on the named Qortal network. 0 B means the interface is open / unfiltered.',
+    title: 'reticulum:status_badge.help.ifac.title',
+    body: 'reticulum:status_badge.help.ifac.body',
   },
   ifaces: {
-    title: 'Hubs',
-    body: 'How many hub links are up right now. These are the TCP connections to community hubs. 0 means you are not on the mesh yet. 2 is typical and healthy.',
+    title: 'reticulum:status_badge.help.hubs.title',
+    body: 'reticulum:status_badge.help.hubs.body',
   },
   paths: {
-    title: 'Known paths',
-    body: 'How many destinations Reticulum currently has a route to. Each announce teaches the phone a way to reach an identity. A few hundred is normal on a busy mesh. This is not live chat.',
+    title: 'reticulum:status_badge.help.known_paths.title',
+    body: 'reticulum:status_badge.help.known_paths.body',
   },
   rx: {
-    title: 'Received',
-    body: 'Total data this phone has received from the hubs since Reticulum started this session. It resets when the stack restarts, not when you close a chat.',
+    title: 'reticulum:status_badge.help.received.title',
+    body: 'reticulum:status_badge.help.received.body',
   },
   tx: {
-    title: 'Sent',
-    body: 'Total data this phone has sent to the hubs since Reticulum started this session. It resets when the stack restarts, not when you close a chat.',
+    title: 'reticulum:status_badge.help.sent.title',
+    body: 'reticulum:status_badge.help.sent.body',
   },
   engine: {
-    title: 'Chat engine',
-    body: 'Whether the local chat database and worker are ready. The green badge is the radio. Chat fetch and send need this engine to be ready. starting = still booting. failed = tap for the error, or allow WebView JIT for Qortal GO on GrapheneOS.',
+    title: 'reticulum:status_badge.help.chat_engine.title',
+    body: 'reticulum:status_badge.help.chat_engine.body',
   },
 };
 
@@ -82,6 +103,7 @@ const StatRow = ({
   onToggle: (key: StatKey) => void;
 }) => {
   const theme = useTheme();
+  const { t } = useTranslation(['reticulum']);
   const help = STAT_HELP[statKey];
   return (
     <Box
@@ -149,7 +171,7 @@ const StatRow = ({
               mb: 0.25,
             }}
           >
-            {help.title}
+            {t(help.title)}
           </Typography>
           <Typography
             sx={{
@@ -158,7 +180,10 @@ const StatRow = ({
               color: theme.palette.text.secondary,
             }}
           >
-            {help.body}
+            {/* The chat engine help names the diagnostics button below. */}
+            {t(help.body, {
+              action: t('reticulum:status_badge.copy_diagnostics'),
+            })}
           </Typography>
         </Box>
       ) : null}
@@ -168,12 +193,39 @@ const StatRow = ({
 
 export const ReticulumTopBadge = () => {
   const theme = useTheme();
+  const { t } = useTranslation(['reticulum']);
+  const reticulumState = useReticulumStatus();
   const { phase, status, error, bridgeError, bridgeWarning, chatEngineState } =
-    useReticulumStatus();
+    reticulumState;
   const onlineCount = useOnlineAddresses().size;
   const deviceOnline = useDeviceOnline();
   const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
   const [openStat, setOpenStat] = useState<StatKey | null>(null);
+  const [clock, setClock] = useState(() => Date.now());
+  const [diagState, setDiagState] = useState<
+    'idle' | 'collecting' | 'copied' | 'failed'
+  >('idle');
+  const [diagText, setDiagText] = useState<string | null>(null);
+  const [saveState, setSaveState] = useState<
+    'idle' | 'collecting' | 'saved' | 'failed'
+  >('idle');
+  const [saveNote, setSaveNote] = useState<string | null>(null);
+  const popoverOpen = Boolean(anchorEl);
+
+  // Tick once a second while the popover shows a booting engine, so the
+  // "starting · N s" label counts up.
+  useEffect(() => {
+    if (!popoverOpen || chatEngineState !== 'starting') return undefined;
+    setClock(Date.now());
+    const timer = window.setInterval(() => setClock(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [popoverOpen, chatEngineState]);
+
+  useEffect(() => {
+    if (diagState !== 'copied') return undefined;
+    const timer = window.setTimeout(() => setDiagState('idle'), 2500);
+    return () => window.clearTimeout(timer);
+  }, [diagState]);
   // A dead chat bridge is an error for the user even while the transport
   // layer reports peers: nothing they type can leave the phone.
   const displayPhase = bridgeError
@@ -186,7 +238,67 @@ export const ReticulumTopBadge = () => {
 
   const color = reticulumPhaseColor(displayPhase);
   const isOnline = displayPhase === 'online';
-  const engineLabel = chatEngineState || 'idle';
+  const engineLabel = chatEngineLabel(reticulumState, clock);
+
+  const collectReport = async (): Promise<string> => {
+    try {
+      return await collectReticulumDiagnostics(
+        reticulumState,
+        onlineCount,
+        deviceOnline
+      );
+    } catch (err) {
+      return `Diagnostics could not be collected: ${
+        err instanceof Error ? err.message : String(err)
+      }`;
+    }
+  };
+
+  const copyDiagnostics = async () => {
+    setDiagState('collecting');
+    setDiagText(null);
+    const report = await collectReport();
+    try {
+      await navigator.clipboard.writeText(report);
+      setDiagState('copied');
+    } catch {
+      // No clipboard permission (or no secure context): show the text so it
+      // can be selected and copied by hand.
+      setDiagText(report);
+      setDiagState('failed');
+    }
+  };
+
+  // A file survives chat apps that split a long paste into several messages.
+  const saveDiagnostics = async () => {
+    setSaveState('collecting');
+    setSaveNote(null);
+    const markdown = diagnosticsReportToMarkdown(await collectReport());
+    const filename = diagnosticsFileName(Date.now());
+    try {
+      if (Capacitor.isNativePlatform()) {
+        await saveTextToMobileDocuments(filename, markdown);
+        setSaveNote(
+          t('reticulum:status_badge.save_diagnostics_saved_to', {
+            location: `${mobileSaveLocationLabelFor(filename)}/${filename}`,
+          })
+        );
+      } else {
+        FileSaver.saveAs(
+          new Blob([markdown], { type: 'text/markdown;charset=utf-8' }),
+          filename
+        );
+      }
+      setSaveState('saved');
+    } catch (err) {
+      setSaveNote(
+        t('reticulum:status_badge.save_diagnostics_failed', {
+          error: err instanceof Error ? err.message : String(err),
+        })
+      );
+      setSaveState('failed');
+    }
+  };
 
   const toggleStat = (key: StatKey) => {
     setOpenStat((current) => (current === key ? null : key));
@@ -197,6 +309,10 @@ export const ReticulumTopBadge = () => {
       <Box
         onClick={(e) => {
           setOpenStat(null);
+          if (saveState !== 'collecting') {
+            setSaveState('idle');
+            setSaveNote(null);
+          }
           setAnchorEl(e.currentTarget);
         }}
         sx={{
@@ -230,8 +346,7 @@ export const ReticulumTopBadge = () => {
             height: 8,
             borderRadius: '50%',
             backgroundColor: color,
-            boxShadow:
-              displayPhase === 'online' ? `0 0 6px ${color}` : 'none',
+            boxShadow: displayPhase === 'online' ? `0 0 6px ${color}` : 'none',
             flexShrink: 0,
           }}
         />
@@ -265,6 +380,8 @@ export const ReticulumTopBadge = () => {
         onClose={() => {
           setAnchorEl(null);
           setOpenStat(null);
+          setDiagText(null);
+          setDiagState('idle');
         }}
         anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
         transformOrigin={{ vertical: 'top', horizontal: 'left' }}
@@ -291,7 +408,9 @@ export const ReticulumTopBadge = () => {
         }}
       >
         <Box sx={{ p: 2, pb: 1.5 }}>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25, mb: 0.5 }}>
+          <Box
+            sx={{ display: 'flex', alignItems: 'center', gap: 1.25, mb: 0.5 }}
+          >
             <Box
               sx={{
                 width: 10,
@@ -421,6 +540,89 @@ export const ReticulumTopBadge = () => {
               {bridgeWarning}
             </Typography>
           )}
+
+          <Box
+            sx={{
+              display: 'flex',
+              flexWrap: 'wrap',
+              alignItems: 'center',
+              gap: 1,
+              mt: 1.5,
+            }}
+          >
+            <Button
+              size="small"
+              variant="outlined"
+              disabled={
+                diagState === 'collecting' || saveState === 'collecting'
+              }
+              onClick={(event) => {
+                event.stopPropagation();
+                void copyDiagnostics();
+              }}
+              sx={{ textTransform: 'none', fontWeight: 600, borderRadius: 2 }}
+            >
+              {diagState === 'collecting'
+                ? t('reticulum:status_badge.copy_diagnostics_collecting')
+                : diagState === 'copied'
+                  ? t('reticulum:status_badge.copy_diagnostics_copied')
+                  : t('reticulum:status_badge.copy_diagnostics')}
+            </Button>
+            <Button
+              size="small"
+              variant="outlined"
+              disabled={
+                diagState === 'collecting' || saveState === 'collecting'
+              }
+              onClick={(event) => {
+                event.stopPropagation();
+                void saveDiagnostics();
+              }}
+              sx={{ textTransform: 'none', fontWeight: 600, borderRadius: 2 }}
+            >
+              {saveState === 'collecting'
+                ? t('reticulum:status_badge.copy_diagnostics_collecting')
+                : saveState === 'saved'
+                  ? t('reticulum:status_badge.save_diagnostics_saved')
+                  : t('reticulum:status_badge.save_diagnostics')}
+            </Button>
+          </Box>
+          <Typography
+            sx={{
+              fontSize: 11,
+              mt: 0.75,
+              lineHeight: 1.4,
+              userSelect: saveNote ? 'text' : undefined,
+              overflowWrap: 'anywhere',
+              color:
+                saveState === 'failed'
+                  ? theme.palette.error.main
+                  : theme.palette.text.secondary,
+            }}
+          >
+            {saveNote ?? t('reticulum:status_badge.copy_diagnostics_hint')}
+          </Typography>
+          {diagText ? (
+            <Box
+              component="pre"
+              sx={{
+                mt: 1,
+                p: 1,
+                maxHeight: 220,
+                overflow: 'auto',
+                fontSize: 10,
+                lineHeight: 1.35,
+                whiteSpace: 'pre-wrap',
+                overflowWrap: 'anywhere',
+                userSelect: 'text',
+                borderRadius: 2,
+                backgroundColor: alpha(theme.palette.common.black, 0.25),
+                color: theme.palette.text.secondary,
+              }}
+            >
+              {diagText}
+            </Box>
+          ) : null}
         </Box>
       </Popover>
     </>

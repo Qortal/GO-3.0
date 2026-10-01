@@ -79,6 +79,7 @@ import {
   setChatDraft,
   clearChatDraft,
   directDraftKey,
+  isEmptyChatHtml,
 } from '../../utils/chatPersistence';
 import { buildChatUserAvatarUrl } from '../../utils/chatAvatarUrl';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
@@ -87,6 +88,7 @@ import CreateRoundedIcon from '@mui/icons-material/CreateRounded';
 import ShortUniqueId from 'short-unique-id';
 import { ExitIcon } from '../../assets/Icons/ExitIcon';
 import { ReplyPreview } from './MessageItem';
+import { ComposerDiscardButton } from './ComposerDiscardButton';
 import { ComposerReplyPreview } from './ComposerReplyPreview';
 import { useTranslation } from 'react-i18next';
 import { useNameSearch } from '../../hooks/useNameSearch';
@@ -95,21 +97,32 @@ import { getQchatFileApi } from '../../utils/qchatFileApi';
 import { resolveDirectTarget } from '../../lib/dm/resolveDirectTarget';
 import {
   MAX_SIZE_MESSAGE,
+  MAX_SPLIT_MESSAGE_PARTS,
   MESSAGE_LIMIT_WARNING,
   MIN_REQUIRED_QORTS,
   TIME_MONTHS_1_IN_MILLISECONDS,
   TIME_MINUTES_2_IN_MILLISECONDS,
 } from '../../constants/constants.ts';
+import {
+  chatDocumentToHtml,
+  splitChatDocument,
+  utf8ByteLength,
+  type ChatDocNode,
+} from '../../utils/chat/splitLongMessage';
 import { useVoiceCallContext } from '../../context/VoiceCallContext';
 import { useCallSwitchGuard } from '../../contexts/CallSwitchGuardContext';
 import { buildDirectVoiceCallChatId } from '../../lib/call/directVoiceCallChatId';
 import { useIsOnline } from '../../hooks/usePresence';
 import { useSoftKeyboardOpen } from '../../hooks/useSoftKeyboardOpen';
+import { usePageVisible } from '../../hooks/usePageVisible';
 import { hasInvisibleCharacters } from '../../utils/hasInvisibleCharacters';
 import { useReticulumDirectChat } from '../../hooks/useReticulumDirectChat';
 import { fileToBase64 } from '../../utils/fileReading';
 import { ReticulumGifCompressionStatus } from './ReticulumGifCompressionStatus';
-import { MessageSizeLimitLip } from './MessageSizeLimitLip';
+import {
+  MessageSizeLimitLip,
+  type MessageSplitError,
+} from './MessageSizeLimitLip';
 import {
   compressReticulumImageFile,
   convertReticulumGifFile,
@@ -340,6 +353,249 @@ const buildQchatFileLinkAuthSignedFields = (payload: {
   timestamp: payload.timestamp,
 });
 
+// What a DM carries beyond its HTML (the message JSON fields, the encryption
+// MAC), as the composer has always counted it.
+const DIRECT_MESSAGE_ENVELOPE_BYTES = 200;
+
+/** A DM's size as the composer counts it: its HTML as a JSON string + envelope. */
+export const directMessageHtmlSize = (html: string): number =>
+  utf8ByteLength(JSON.stringify(html)) + DIRECT_MESSAGE_ENVELOPE_BYTES;
+
+/** One message of a composer send; `doc` is set on the parts of a split. */
+export type DirectMessagePart = { doc?: ChatDocNode; html: string };
+
+export type DirectMessagePlan =
+  | { parts: DirectMessagePart[]; error?: undefined }
+  | { parts?: undefined; error: MessageSplitError };
+
+/**
+ * The messages a DM composer text goes out as. A text that fits is one
+ * message with its HTML untouched. One over the limit is split into
+ * consecutive messages that each fit, measured like the composer measures a
+ * DM, or the plan says why it cannot be sent: an edit replaces one message,
+ * so it is never split.
+ */
+export const planDirectMessageParts = ({
+  html,
+  getDoc,
+  toHtml,
+  isEdit = false,
+  maximum = MAX_SIZE_MESSAGE,
+  maxParts = MAX_SPLIT_MESSAGE_PARTS,
+}: {
+  /** The composer's HTML, what `toHtml(getDoc())` gives. */
+  html: string;
+  getDoc: () => ChatDocNode;
+  toHtml: (doc: ChatDocNode) => string;
+  isEdit?: boolean;
+  maximum?: number;
+  maxParts?: number;
+}): DirectMessagePlan => {
+  if (directMessageHtmlSize(html) <= maximum) return { parts: [{ html }] };
+  if (isEdit) return { error: 'edit' };
+  try {
+    const doc = getDoc();
+    const htmlOf = (part: ChatDocNode) => (part === doc ? html : toHtml(part));
+    const result = splitChatDocument(
+      doc,
+      (part) => directMessageHtmlSize(htmlOf(part)) <= maximum,
+      { maxParts }
+    );
+    if (result.error) return { error: result.error };
+    return {
+      parts: result.parts.map((part) => ({ doc: part, html: htmlOf(part) })),
+    };
+  } catch (error) {
+    console.error('Could not split the direct message', error);
+    return { error: 'unsplittable' };
+  }
+};
+
+export type DirectMessagePartPayload = {
+  messageText: string;
+  otherData: Record<string, unknown>;
+};
+
+/**
+ * The sendChatDirect fields of each message of one composer send. The first
+ * carries the reply, the images and file attachments (and an edit's original
+ * data); the later parts of a split text are plain text. Each gets its own
+ * specialId, so the queue shows it as a message of its own.
+ */
+export const buildDirectMessagePartPayloads = ({
+  texts,
+  createSpecialId,
+  editData,
+  isEdit = false,
+  repliedTo,
+  images = [],
+  attachments = [],
+}: {
+  texts: string[];
+  createSpecialId: () => string;
+  editData?: Record<string, unknown> | null;
+  isEdit?: boolean;
+  repliedTo?: string;
+  images?: unknown[];
+  attachments?: unknown[];
+}): DirectMessagePartPayload[] =>
+  texts.map((messageText, index) => {
+    const first = index === 0;
+    return {
+      messageText,
+      otherData: {
+        ...((first && editData) || {}),
+        specialId: createSpecialId(),
+        repliedTo: first ? repliedTo : undefined,
+        type: isEdit ? 'edit' : '',
+        ...(first && images.length > 0 ? { images } : {}),
+        ...(first && attachments.length > 0 ? { attachments } : {}),
+      },
+    };
+  });
+
+// nacl.secretbox's MAC, added to every encrypted legacy DM.
+const LEGACY_DIRECT_MESSAGE_MAC_BYTES = 16;
+
+/**
+ * What a legacy on-chain DM carries beyond its HTML as a JSON string: the
+ * rest of the JSON that background sendChatDirect encrypts,
+ * `{message, version: 2, ...otherData}`, plus the encryption MAC.
+ */
+export const legacyDirectMessageOverhead = (
+  otherData: Record<string, unknown>
+): number =>
+  // The empty message's '""' is counted in the HTML's JSON string instead.
+  utf8ByteLength(JSON.stringify({ message: '', version: 2, ...otherData })) -
+  2 +
+  LEGACY_DIRECT_MESSAGE_MAC_BYTES;
+
+/**
+ * How big a DM may be as the composer counts it (directMessageHtmlSize). A
+ * legacy on-chain DM carries its reply and GIF inside the same CHAT
+ * transaction, whose data Core caps at MAX_SIZE_MESSAGE, so when the first
+ * message's `otherData` needs more than the composer's envelope the text gets
+ * that much less room. Reticulum DMs (null) keep the full maximum.
+ */
+export const directMessageSizeBudget = (
+  legacyFirstOtherData: Record<string, unknown> | null,
+  maximum = MAX_SIZE_MESSAGE
+): number =>
+  legacyFirstOtherData
+    ? maximum -
+      Math.max(
+        0,
+        legacyDirectMessageOverhead(legacyFirstOtherData) -
+          DIRECT_MESSAGE_ENVELOPE_BYTES
+      )
+    : maximum;
+
+/**
+ * Sends the parts of one composer send one after another. Before each part
+ * after the first it asks `canContinue`; when that says no, or a part fails,
+ * it hands the index of the first unsent part to `keepUnsent` so the rest can
+ * be sent again later, and resolves false or rejects with the failure.
+ */
+export const sendDirectMessagePartsInOrder = async ({
+  sends,
+  canContinue,
+  keepUnsent,
+}: {
+  sends: Array<() => Promise<unknown>>;
+  canContinue: () => boolean;
+  keepUnsent: (fromIndex: number) => void;
+}): Promise<boolean> => {
+  let sent = 0;
+  try {
+    for (const send of sends) {
+      if (sent > 0 && !canContinue()) {
+        keepUnsent(sent);
+        return false;
+      }
+      await send();
+      sent += 1;
+    }
+    return true;
+  } catch (error) {
+    keepUnsent(sent);
+    throw error;
+  }
+};
+
+/**
+ * Wraps the queue functions of one legacy send's parts. The message queue runs
+ * them in order and moves on when it gives up on one, so a part that finds an
+ * earlier part unsent drops itself (and the rows of the rest) instead of
+ * leaving a hole in the text, and the first to do so hands the index of the
+ * first unsent part to `keepUnsent`.
+ */
+export const guardLegacyDirectMessageParts = (
+  sends: Array<() => Promise<unknown>>,
+  keepUnsent: (fromIndex: number) => void
+): Array<() => Promise<unknown>> => {
+  let sent = 0;
+  let stopped = false;
+  return sends.map((send, index) => async () => {
+    if (index > sent) {
+      if (!stopped) {
+        stopped = true;
+        keepUnsent(sent);
+      }
+      return { success: true, clearQueueOnSuccess: true };
+    }
+    const result = await send();
+    sent = index + 1;
+    return result;
+  });
+};
+
+type DirectComposerEditor = {
+  getJSON: () => ChatDocNode;
+  schema: Parameters<typeof chatDocumentToHtml>[1];
+};
+
+const planDirectComposerMessages = (
+  editor: DirectComposerEditor,
+  html: string,
+  isEdit = false,
+  maximum = MAX_SIZE_MESSAGE
+): DirectMessagePlan =>
+  planDirectMessageParts({
+    html,
+    getDoc: () => editor.getJSON(),
+    toHtml: (doc) => chatDocumentToHtml(doc, editor.schema),
+    isEdit,
+    maximum,
+  });
+
+/** How an over-limit composer text will go out, for the size lip. */
+type DirectMessageSplitState = {
+  parts: number | null;
+  error: MessageSplitError | null;
+};
+
+const NO_MESSAGE_SPLIT: DirectMessageSplitState = { parts: null, error: null };
+
+const measureDirectComposerSplit = (
+  editor: DirectComposerEditor | null,
+  html: string,
+  size: number,
+  maximum = MAX_SIZE_MESSAGE
+): DirectMessageSplitState => {
+  if (!editor || size <= maximum) return NO_MESSAGE_SPLIT;
+  const plan = planDirectComposerMessages(editor, html, false, maximum);
+  return plan.error
+    ? { parts: null, error: plan.error }
+    : { parts: plan.parts.length, error: null };
+};
+
+// A state updater that keeps the previous state when nothing changed.
+const nextMessageSplit =
+  (next: DirectMessageSplitState) => (previous: DirectMessageSplitState) =>
+    previous.parts === next.parts && previous.error === next.error
+      ? previous
+      : next;
+
 export const ChatDirect = ({
   myAddress,
   isNewChat,
@@ -480,6 +736,10 @@ export const ChatDirect = ({
   const [onEditMessage, setOnEditMessage] = useState(null);
   const [messages, setMessages] = useState([]);
   const [isSending, setIsSending] = useState(false);
+  // Only while sendMessage still holds the composer's content. isSending stays
+  // up until the queue has published, long after the composer was cleared;
+  // the discard button must not wait for that.
+  const [isPreparingSend, setIsPreparingSend] = useState(false);
   // React state alone cannot block double-taps / Enter+Send in the same tick.
   const isSendingRef = useRef(false);
   const lastSentFingerprintRef = useRef<{ key: string; at: number } | null>(
@@ -536,6 +796,8 @@ export const ChatDirect = ({
   const socketRef = useRef(null);
   const timeoutIdRef = useRef(null);
   const [messageSize, setMessageSize] = useState(0);
+  const [messageSplit, setMessageSplit] =
+    useState<DirectMessageSplitState>(NO_MESSAGE_SPLIT);
   const [messageSizeLimitShakeKey, setMessageSizeLimitShakeKey] = useState(0);
   const [showDmExpiryNotice, setShowDmExpiryNotice] = useState(false);
   const groupSocketTimeoutRef = useRef(null);
@@ -590,6 +852,9 @@ export const ChatDirect = ({
     markRead: markReticulumDirectRead,
     sendTyping: sendReticulumDirectTyping,
   } = useReticulumDirectChat(myAddress, selectedDirect?.address);
+  // Phone keep-alive runs this page while GO is off screen; an open chat
+  // must not mark what arrives then as read.
+  const pageVisible = usePageVisible();
   const reticulumDirectUiEnabled = Boolean(
     reticulumChatEnabled || (reticulumDirectEnabled && !isNewChat)
   );
@@ -1067,7 +1332,8 @@ export const ChatDirect = ({
       !reticulumDirectEnabled ||
       !reticulumDirectCallHistoryReady ||
       !selectedDirect?.address ||
-      !isActive
+      !isActive ||
+      !pageVisible
     )
       return;
     const latestTimestamp = reticulumDirectMessagesWithCalls.reduce(
@@ -1082,6 +1348,7 @@ export const ChatDirect = ({
     reticulumDirectCallHistoryReady,
     reticulumDirectMessagesWithCalls,
     isActive,
+    pageVisible,
     selectedDirect?.address,
   ]);
 
@@ -1886,14 +2153,84 @@ export const ChatDirect = ({
     pendingReticulumFiles.length > 0 ||
     Boolean(pendingLibraryGif) ||
     Boolean(onEditMessage);
+  // How big each message may be. On a legacy DM the first message's reply and
+  // GIF travel in the same CHAT transaction, so they can leave the text less
+  // room (the same otherData sendMessage builds for it).
+  const directMessageBudget = useMemo(
+    () =>
+      directMessageSizeBudget(
+        !reticulumDirectEnabled && !isNewChat && !onEditMessage
+          ? buildDirectMessagePartPayloads({
+              texts: [''],
+              createSpecialId: () => uid.rnd(),
+              repliedTo: replyMessage?.chatReference || replyMessage?.signature,
+              images: pendingLibraryGif
+                ? [toChatImagePointer(pendingLibraryGif)]
+                : [],
+            })[0].otherData
+          : null
+      ),
+    [
+      isNewChat,
+      onEditMessage,
+      pendingLibraryGif,
+      replyMessage,
+      reticulumDirectEnabled,
+    ]
+  );
+  const directMessageBudgetRef = useRef(directMessageBudget);
+  directMessageBudgetRef.current = directMessageBudget;
+  // Over the limit the text still goes out, as several messages, unless it is
+  // an edit or cannot be split small enough.
+  const messageOverLimit = messageSize > directMessageBudget;
+  const messageSplitError: MessageSplitError | null = !messageOverLimit
+    ? null
+    : onEditMessage
+      ? 'edit'
+      : messageSplit.error;
+  const messageSplitParts =
+    messageOverLimit && !messageSplitError ? messageSplit.parts : null;
+  const messageSendBlocked = Boolean(messageSplitError);
+  // Over the limit only by blank lines at its ends, the trimmed text goes out
+  // as it is, so there is nothing to warn about.
+  const messageSizeTextShown =
+    messageSize > MESSAGE_LIMIT_WARNING &&
+    !(messageOverLimit && messageSplitParts === 1);
+  let messageSizeText: string;
+  if (messageSplitError === 'too_many_parts') {
+    messageSizeText = t('core:message.error.long_message_too_many_parts', {
+      maximum: MAX_SPLIT_MESSAGE_PARTS,
+    });
+  } else if (messageSplitError === 'unsplittable') {
+    messageSizeText = t('core:message.error.long_message_unsplittable');
+  } else if (messageSplitError === 'edit') {
+    messageSizeText = t('core:message.error.edit_message_too_long', {
+      maximum: directMessageBudget,
+    });
+  } else if (messageSplitParts > 1) {
+    messageSizeText = t('core:message.generic.long_message_split', {
+      count: messageSplitParts,
+    });
+  } else {
+    messageSizeText = t('core:message.error.message_size', {
+      maximum: directMessageBudget,
+      size: messageSize,
+      postProcess: 'capitalizeFirstChar',
+    });
+  }
 
-  const clearEditorContent = () => {
+  const clearEditorContent = ({ focus = true }: { focus?: boolean } = {}) => {
     if (editorRef.current) {
       setMessageSize(0);
+      setMessageSplit(NO_MESSAGE_SPLIT);
       setComposerHasText(false);
       // Sending closes the formatting tray and the full-screen composer too.
       setFormattingTrayResetKey((key) => key + 1);
-      editorRef.current.chain().focus().clearContent().run();
+      if (focus) {
+        editorRef.current.chain().focus().clearContent().run();
+      } else {
+        editorRef.current.commands.clearContent();
+      }
       if (myAddress && !isNewChat && selectedDirect?.address) {
         clearChatDraft(myAddress, directDraftKey(selectedDirect.address));
       }
@@ -2391,6 +2728,31 @@ export const ChatDirect = ({
     });
   }, []);
 
+  // The corner X: everything the composer holds goes — text and saved draft,
+  // attachments (and any file still being read), and the reply or edit it
+  // belonged to. The keyboard stays as it was.
+  const discardComposer = () => {
+    // The message being sent is already on its way.
+    if (isPreparingSend) return;
+    if (editLoadTimerRef.current) {
+      clearTimeout(editLoadTimerRef.current);
+      editLoadTimerRef.current = null;
+    }
+    // Clearing the editor emits no update, so the typing signal would linger.
+    clearReticulumDirectTypingStopTimer();
+    if (reticulumDirectTypingActiveRef.current) {
+      void sendReticulumDirectTypingState(false, true);
+    }
+    reticulumGifConversionSequenceRef.current += 1;
+    setIsCompressingReticulumGif(false);
+    setReplyMessage(null);
+    setOnEditMessage(null);
+    setPendingLibraryGif(null);
+    clearPendingReticulumFiles();
+    clearEditorContent({ focus: false });
+    restoreComposerTyping(editorRef.current);
+  };
+
   useEffect(() => {
     return () => {
       pendingReticulumFiles.forEach((file) => {
@@ -2446,7 +2808,12 @@ export const ChatDirect = ({
   const addPendingReticulumFile = useCallback(
     async (
       file: File,
-      options: { asAttachment?: boolean; filePathOverride?: string } = {}
+      options: {
+        asAttachment?: boolean;
+        filePathOverride?: string;
+        /** Composer sequence the file was picked under; see insertFiles. */
+        expectedSequence?: number;
+      } = {}
     ) => {
       if (!reticulumDirectEnabled) return false;
       const targetPeerAddress = String(selectedDirect?.address || '').trim();
@@ -2482,7 +2849,14 @@ export const ChatDirect = ({
         : null;
       const previewUrl = isImage ? URL.createObjectURL(file) : undefined;
       const base64 = !filePath ? await fileToBase64(file) : undefined;
-      if (reticulumDirectPeerRef.current !== targetPeerAddress) {
+      // Reading the file can take seconds; switching peer or discarding the
+      // message in the meantime has thrown it away.
+      if (
+        reticulumDirectPeerRef.current !== targetPeerAddress ||
+        (options.expectedSequence !== undefined &&
+          reticulumGifConversionSequenceRef.current !==
+            options.expectedSequence)
+      ) {
         if (previewUrl) URL.revokeObjectURL(previewUrl);
         return false;
       }
@@ -2533,8 +2907,13 @@ export const ChatDirect = ({
         setOpenSnack(true);
         return;
       }
+      // The GIF conversion sequence doubles as the composer's: discarding the
+      // message or switching peer bumps it, and a file still being read when
+      // that happens is dropped rather than landing in the new composer.
+      let attachSequence = reticulumGifConversionSequenceRef.current;
       if (await isReticulumGifFile(file)) {
         const conversionSequence = ++reticulumGifConversionSequenceRef.current;
+        attachSequence = conversionSequence;
         const conversionPeer = reticulumDirectPeerRef.current;
         setIsCompressingReticulumGif(true);
         try {
@@ -2580,6 +2959,14 @@ export const ChatDirect = ({
             setIsCompressingReticulumGif(false);
           }
         }
+        // Conversion failed (phones cannot convert at all), so the GIF goes
+        // out as it is — unless it was discarded while converting.
+        if (
+          reticulumGifConversionSequenceRef.current !== conversionSequence ||
+          reticulumDirectPeerRef.current !== conversionPeer
+        ) {
+          return;
+        }
       }
       if (isReticulumCompressibleImage(file)) {
         const filePath =
@@ -2590,7 +2977,7 @@ export const ChatDirect = ({
         setReticulumImageChoice({ file, filePath });
         return;
       }
-      await addPendingReticulumFile(file);
+      await addPendingReticulumFile(file, { expectedSequence: attachSequence });
     },
     [
       addPendingReticulumFile,
@@ -2758,6 +3145,16 @@ export const ChatDirect = ({
       const stringified = JSON.stringify(htmlContent);
       const size = new Blob([stringified]).size;
       setMessageSize(size + 200);
+      setMessageSplit(
+        nextMessageSplit(
+          measureDirectComposerSplit(
+            editorRef.current,
+            htmlContent,
+            size + 200,
+            directMessageBudgetRef.current
+          )
+        )
+      );
       const ctx = draftContextRef.current;
       if (!ctx) return;
       try {
@@ -2814,7 +3211,18 @@ export const ChatDirect = ({
           composerHasSendableText(editorRef.current.getText())
         );
         try {
-          setMessageSize(new Blob([JSON.stringify(draft)]).size + 200);
+          const draftSize = new Blob([JSON.stringify(draft)]).size + 200;
+          setMessageSize(draftSize);
+          setMessageSplit(
+            nextMessageSplit(
+              measureDirectComposerSplit(
+                editorRef.current,
+                editorRef.current.getHTML(),
+                draftSize,
+                directMessageBudgetRef.current
+              )
+            )
+          );
         } catch {
           /* ignore */
         }
@@ -2823,6 +3231,7 @@ export const ChatDirect = ({
       } else {
         editorRef.current.commands.clearContent(true);
         setMessageSize(0);
+        setMessageSplit(NO_MESSAGE_SPLIT);
         setComposerHasText(false);
       }
       draftContextRef.current = { account: myAddress, key };
@@ -2832,6 +3241,24 @@ export const ChatDirect = ({
       cancelled = true;
     };
   }, [isNewChat, selectedDirect?.address, myAddress]);
+
+  // Picking or dropping a reply or GIF can change the room left for the text,
+  // and with it how many messages the text needs.
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (!editor || editor.isDestroyed) return;
+    const html = editor.getHTML();
+    setMessageSplit(
+      nextMessageSplit(
+        measureDirectComposerSplit(
+          editor,
+          html,
+          directMessageHtmlSize(html),
+          directMessageBudget
+        )
+      )
+    );
+  }, [directMessageBudget]);
 
   const closeMobileCompose = useCallback(() => {
     if (!isMobile) return;
@@ -2888,10 +3315,44 @@ export const ChatDirect = ({
     editorRef?.current,
   ]);
 
+  // After a split send stopped part-way, keeps the parts that did not go out
+  // so they can be sent again: in the composer, ahead of anything typed since,
+  // while it is on that conversation, otherwise in that conversation's draft.
+  const keepUnsentMessageParts = (
+    target: { account: string; key: string } | null,
+    parts: DirectMessagePart[]
+  ) => {
+    const content = parts.flatMap((part) => part.doc?.content || []);
+    if (!target?.account || !content.length) return;
+    const editor = editorRef.current;
+    const current = draftContextRef.current;
+    if (
+      editor &&
+      !editor.isDestroyed &&
+      current?.account === target.account &&
+      current?.key === target.key
+    ) {
+      if (composerHasSendableText(editor.getText())) {
+        editor.commands.insertContentAt(0, content);
+      } else {
+        editor.commands.setContent({ type: 'doc', content }, true);
+      }
+      return;
+    }
+    const savedDraft = getChatDraft(target.account, target.key);
+    setChatDraft(
+      target.account,
+      target.key,
+      parts.map((part) => part.html).join('') +
+        (isEmptyChatHtml(savedDraft) ? '' : savedDraft)
+    );
+  };
+
   const sendMessage = async () => {
     let ownsSendingState = false;
+    let ownsPreparingSend = false;
     try {
-      if (messageSize > MAX_SIZE_MESSAGE) {
+      if (messageSendBlocked) {
         setMessageSizeLimitShakeKey((key) => key + 1);
         return;
       }
@@ -2927,6 +3388,26 @@ export const ChatDirect = ({
         )
           return;
 
+        // A text over the limit goes out as consecutive messages. Planned from
+        // the editor itself, since the size shown can lag behind the text.
+        const messagePlan = planDirectComposerMessages(
+          editorRef.current,
+          htmlContent,
+          Boolean(onEditMessage),
+          directMessageBudget
+        );
+        if (messagePlan.error) {
+          setMessageSize(directMessageHtmlSize(htmlContent));
+          if (messagePlan.error !== 'edit') {
+            setMessageSplit(
+              nextMessageSplit({ parts: null, error: messagePlan.error })
+            );
+          }
+          setMessageSizeLimitShakeKey((key) => key + 1);
+          return;
+        }
+        const messageParts = messagePlan.parts;
+
         let repliedTo = replyMessage?.signature;
         if (replyMessage?.chatReference) {
           repliedTo = replyMessage?.chatReference;
@@ -2956,26 +3437,58 @@ export const ChatDirect = ({
         isSendingRef.current = true;
         setIsSending(true);
         ownsSendingState = true;
+        setIsPreparingSend(true);
+        ownsPreparingSend = true;
         pauseAllQueues();
 
         if (isNewChat) {
-          await sendChatDirect(
-            {
-              messageText: htmlContent,
-              ...(reticulumDirectUiEnabled
-                ? { expiryDurationMs: reticulumDirectExpiryDurationMs }
-                : {}),
+          // The first message opens the conversation, and the composer is
+          // handed back as soon as it has gone (the view may already show the
+          // new conversation); the rest of a split text follows it there.
+          let newChatRecipient: string | null = null;
+          await sendDirectMessagePartsInOrder({
+            sends: messageParts.map((part, index) => async () => {
+              const result = (await sendChatDirect(
+                {
+                  messageText: part.html,
+                  ...(reticulumDirectUiEnabled
+                    ? { expiryDurationMs: reticulumDirectExpiryDurationMs }
+                    : {}),
+                },
+                newChatRecipient,
+                null,
+                index === 0
+              )) as { recipient?: string } | undefined;
+              if (index > 0) return;
+              newChatRecipient =
+                result?.recipient || resolvedNewChatTarget?.address || null;
+              lastSentFingerprintRef.current = {
+                key: sendFingerprint,
+                at: Date.now(),
+              };
+              clearEditorContent();
+              closeMobileCompose();
+            }),
+            // A Reticulum DM is shown in whichever conversation this view has
+            // open, so the rest waits once the user has opened another one.
+            canContinue: () => {
+              const shownPeer = reticulumDirectPeerRef.current;
+              return (
+                !reticulumDirectEnabled ||
+                !shownPeer ||
+                shownPeer === newChatRecipient
+              );
             },
-            null,
-            null,
-            true
-          );
-          lastSentFingerprintRef.current = {
-            key: sendFingerprint,
-            at: Date.now(),
-          };
-          clearEditorContent();
-          closeMobileCompose();
+            // Until the first message has gone the text is still in the
+            // composer.
+            keepUnsent: (fromIndex) => {
+              if (fromIndex === 0 || !myAddress || !newChatRecipient) return;
+              keepUnsentMessageParts(
+                { account: myAddress, key: directDraftKey(newChatRecipient) },
+                messageParts.slice(fromIndex)
+              );
+            },
+          });
           return;
         }
 
@@ -2986,85 +3499,128 @@ export const ChatDirect = ({
           ? [toChatImagePointer(pendingLibraryGif)]
           : reticulumResources.images;
 
-        const otherData = {
-          ...(onEditMessage?.decryptedData || {}),
-          specialId: uid.rnd(),
+        // The first message carries the reply, images and attachments; the
+        // rest of a split text follows as plain messages.
+        const partPayloads = buildDirectMessagePartPayloads({
+          texts: messageParts.map((part) => part.html),
+          createSpecialId: () => uid.rnd(),
+          editData: onEditMessage?.decryptedData,
+          isEdit: Boolean(chatReference),
           repliedTo: onEditMessage ? onEditMessage?.repliedTo : repliedTo,
-          type: chatReference ? 'edit' : '',
-          ...(images.length > 0 ? { images } : {}),
-          ...(reticulumResources.attachments.length > 0
-            ? { attachments: reticulumResources.attachments }
-            : {}),
+          images,
+          attachments: reticulumResources.attachments,
+        });
+        const releaseSendingState = () => {
+          isSendingRef.current = false;
+          setIsSending(false);
         };
-        // Reticulum mints a new eventId per publish — guard queue retries.
-        let reticulumPublishCompleted = false;
-        const sendMessageFunc = async () => {
-          try {
-            if (reticulumDirectEnabled && reticulumPublishCompleted) {
-              return { success: true, clearQueueOnSuccess: true };
-            }
-            const result = await sendChatDirect(
-              {
-                chatReference,
-                messageText: htmlContent,
-                otherData,
-                ...(reticulumDirectEnabled && !onEditMessage
-                  ? { expiryDurationMs: reticulumDirectExpiryDurationMs }
-                  : {}),
-              },
-              selectedDirect?.address,
-              publicKeyOfRecipient,
-              false
-            );
-            if (reticulumDirectEnabled) {
-              reticulumPublishCompleted = true;
-            }
-            return result;
-          } finally {
-            isSendingRef.current = false;
-            setIsSending(false);
-          }
-        };
+        const sendPeer = String(selectedDirect?.address || '').trim();
+        const keepUnsentFrom = (fromIndex: number) =>
+          keepUnsentMessageParts(
+            myAddress && sendPeer
+              ? { account: myAddress, key: directDraftKey(sendPeer) }
+              : null,
+            messageParts.slice(fromIndex)
+          );
+        const partSends = partPayloads.map(
+          ({ messageText, otherData }, index) => {
+            // Reticulum mints a new eventId per publish — guard queue retries.
+            let reticulumPublishCompleted = false;
+            const sendMessageFunc = async () => {
+              try {
+                if (reticulumDirectEnabled && reticulumPublishCompleted) {
+                  return { success: true, clearQueueOnSuccess: true };
+                }
+                const result = await sendChatDirect(
+                  {
+                    chatReference,
+                    messageText,
+                    otherData,
+                    ...(reticulumDirectEnabled && !onEditMessage
+                      ? { expiryDurationMs: reticulumDirectExpiryDurationMs }
+                      : {}),
+                  },
+                  selectedDirect?.address,
+                  publicKeyOfRecipient,
+                  false
+                );
+                if (reticulumDirectEnabled) {
+                  reticulumPublishCompleted = true;
+                }
+                return result;
+              } finally {
+                // A legacy send unlocks after its first message's first
+                // attempt, as a single message always has: the queue sends
+                // the rest, and anything sent next, strictly in order. A
+                // Reticulum send unlocks once its whole chain has settled.
+                if (!reticulumDirectEnabled && index === 0) {
+                  releaseSendingState();
+                }
+              }
+            };
 
-        // Add the function to the queue
-        const messageObj = {
-          message: {
-            timestamp: Date.now(),
-            senderName: myName,
-            sender: myAddress,
-            ...(otherData || {}),
-            text: htmlContent,
-          },
-          chatReference,
-        };
+            // Add the function to the queue
+            const messageObj = {
+              message: {
+                timestamp: Date.now(),
+                senderName: myName,
+                sender: myAddress,
+                ...(otherData || {}),
+                text: messageText,
+              },
+              chatReference,
+            };
+            return { sendMessageFunc, messageObj };
+          }
+        );
         lastSentFingerprintRef.current = {
           key: sendFingerprint,
           at: Date.now(),
         };
         if (reticulumDirectEnabled) {
-          // The DM hook renders the event optimistically, so the composer can
-          // be handed back now instead of after the publish round-trip. Errors
-          // are surfaced here because nothing is awaiting this call any more.
-          void sendMessageFunc().catch((error) => {
-            setInfoSnack({
-              type: 'error',
-              message:
-                error?.message ||
-                String(error) ||
-                t('core:message.error.generic', {
-                  postProcess: 'capitalizeFirstChar',
-                }),
-            });
-            setOpenSnack(true);
-          });
+          // The DM hook renders each event optimistically, so the composer can
+          // be handed back now instead of after the publish round-trip. The
+          // parts of a split text publish one after another to keep their
+          // order, and a failure stops the rest, which goes back into the
+          // composer. Errors are surfaced here because nothing is awaiting
+          // this call any more.
+          void sendDirectMessagePartsInOrder({
+            sends: partSends.map(({ sendMessageFunc }) => sendMessageFunc),
+            // The DM hook shows each event in whichever conversation this view
+            // has open, so once the user opens another one the rest waits in
+            // this conversation's draft instead of turning up over there.
+            canContinue: () => reticulumDirectPeerRef.current === sendPeer,
+            keepUnsent: keepUnsentFrom,
+          })
+            .catch((error) => {
+              setInfoSnack({
+                type: 'error',
+                message:
+                  error?.message ||
+                  String(error) ||
+                  t('core:message.error.generic', {
+                    postProcess: 'capitalizeFirstChar',
+                  }),
+              });
+              setOpenSnack(true);
+            })
+            .finally(releaseSendingState);
           ownsSendingState = false;
         } else {
-          addToQueue(
-            sendMessageFunc,
-            messageObj,
-            'chat-direct',
-            selectedDirect?.address
+          // Each part is its own CHAT transaction. When the queue gives up on
+          // one, the rest is not sent after the gap but kept for resending.
+          const queuedSends = guardLegacyDirectMessageParts(
+            partSends.map(({ sendMessageFunc }) => sendMessageFunc),
+            keepUnsentFrom
           );
+          partSends.forEach(({ messageObj }, index) => {
+            addToQueue(
+              queuedSends[index],
+              messageObj,
+              'chat-direct',
+              selectedDirect?.address
+            );
+          });
           ownsSendingState = false;
         }
         setTimeout(() => {
@@ -3105,6 +3661,7 @@ export const ChatDirect = ({
         isSendingRef.current = false;
         setIsSending(false);
       }
+      if (ownsPreparingSend) setIsPreparingSend(false);
       resumeAllQueues();
     }
   };
@@ -3124,11 +3681,16 @@ export const ChatDirect = ({
     [onEditMessage]
   );
 
+  // The edited text lands a beat after the edit starts; a discard in between
+  // has to stop it, or it arrives in the emptied composer as a new message.
+  const editLoadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onEdit = useCallback((message) => {
     setOnEditMessage(message);
     setReplyMessage(null);
     setIsFocusedParent(true);
-    setTimeout(() => {
+    if (editLoadTimerRef.current) clearTimeout(editLoadTimerRef.current);
+    editLoadTimerRef.current = setTimeout(() => {
+      editLoadTimerRef.current = null;
       editorRef.current
         ?.chain()
         .focus()
@@ -4053,9 +4615,11 @@ export const ChatDirect = ({
         {reticulumDirectUiEnabled && (
           <MessageSizeLimitLip
             floating
-            maximum={MAX_SIZE_MESSAGE}
+            maximum={directMessageBudget}
             shakeKey={messageSizeLimitShakeKey}
             size={messageSize}
+            splitParts={messageSplitParts}
+            splitError={messageSplitError}
           />
         )}
         <Box
@@ -4156,51 +4720,55 @@ export const ChatDirect = ({
                   compactActions={
                     isMobile && reticulumDirectUiEnabled
                       ? () => (
-                          // Kept mounted while the composer is empty so the
-                          // rail CSS can fade it in and out; unmounting it
-                          // would make it pop.
-                          <IconButton
-                            aria-label="Send"
-                            className="compact-composer-send"
-                            data-idle={
-                              directComposerHasContent ? undefined : ''
-                            }
-                            disabled={
-                              isSending || messageSize > MAX_SIZE_MESSAGE
-                            }
-                            onClick={() => {
-                              if (!directComposerHasContent) return;
-                              if (isSending || messageSize > MAX_SIZE_MESSAGE)
-                                return;
-                              sendMessage();
-                            }}
-                            size="small"
-                            sx={{
-                              bgcolor: theme.palette.primary.main,
-                              borderRadius: '50%',
-                              color: theme.palette.primary.contrastText,
-                              flexShrink: 0,
-                              height: 34,
-                              width: 34,
-                              '&:hover': {
-                                bgcolor: theme.palette.primary.dark,
-                              },
-                              '&.Mui-disabled': {
-                                bgcolor:
-                                  theme.palette.action.disabledBackground,
-                                color: theme.palette.action.disabled,
-                              },
-                            }}
-                          >
-                            {isSending ? (
-                              <CircularProgress
-                                size={18}
-                                sx={{ color: 'inherit' }}
-                              />
-                            ) : (
-                              <SendIcon sx={{ fontSize: 18 }} />
-                            )}
-                          </IconButton>
+                          <>
+                            <ComposerDiscardButton
+                              disabled={isPreparingSend}
+                              idle={!directComposerHasContent}
+                              onDiscard={discardComposer}
+                            />
+                            {/* Kept mounted while the composer is empty so the
+                              rail CSS can fade it in and out; unmounting it
+                              would make it pop. */}
+                            <IconButton
+                              aria-label="Send"
+                              className="compact-composer-send"
+                              data-idle={
+                                directComposerHasContent ? undefined : ''
+                              }
+                              disabled={isSending || messageSendBlocked}
+                              onClick={() => {
+                                if (!directComposerHasContent) return;
+                                if (isSending || messageSendBlocked) return;
+                                sendMessage();
+                              }}
+                              size="small"
+                              sx={{
+                                bgcolor: theme.palette.primary.main,
+                                borderRadius: '50%',
+                                color: theme.palette.primary.contrastText,
+                                flexShrink: 0,
+                                height: 34,
+                                width: 34,
+                                '&:hover': {
+                                  bgcolor: theme.palette.primary.dark,
+                                },
+                                '&.Mui-disabled': {
+                                  bgcolor:
+                                    theme.palette.action.disabledBackground,
+                                  color: theme.palette.action.disabled,
+                                },
+                              }}
+                            >
+                              {isSending ? (
+                                <CircularProgress
+                                  size={18}
+                                  sx={{ color: 'inherit' }}
+                                />
+                              ) : (
+                                <SendIcon sx={{ fontSize: 18 }} />
+                              )}
+                            </IconButton>
+                          </>
                         )
                       : undefined
                   }
@@ -4384,9 +4952,9 @@ export const ChatDirect = ({
                     aria-label={t('core:action.send', {
                       postProcess: 'capitalizeFirstChar',
                     })}
-                    disabled={isSending || messageSize > MAX_SIZE_MESSAGE}
+                    disabled={isSending || messageSendBlocked}
                     onClick={() => {
-                      if (isSending || messageSize > MAX_SIZE_MESSAGE) return;
+                      if (isSending || messageSendBlocked) return;
                       sendMessage();
                     }}
                     sx={{
@@ -4412,7 +4980,7 @@ export const ChatDirect = ({
                   </IconButton>
                 </>
               )}
-              {messageSize > MESSAGE_LIMIT_WARNING && (
+              {messageSizeTextShown && (
                 <Box
                   sx={{
                     display: 'flex',
@@ -4424,17 +4992,16 @@ export const ChatDirect = ({
                   <Typography
                     sx={{
                       fontSize: '12px',
-                      color:
-                        messageSize > MAX_SIZE_MESSAGE
-                          ? theme.palette.other.danger
-                          : 'unset',
+                      color: messageSplitError
+                        ? theme.palette.other.danger
+                        : messageSplitParts > 1
+                          ? theme.palette.primary.main
+                          : messageOverLimit
+                            ? theme.palette.other.danger
+                            : 'unset',
                     }}
                   >
-                    {t('core:message.error.message_size', {
-                      maximum: MAX_SIZE_MESSAGE,
-                      size: messageSize,
-                      postProcess: 'capitalizeFirstChar',
-                    })}
+                    {messageSizeText}
                   </Typography>
                 </Box>
               )}

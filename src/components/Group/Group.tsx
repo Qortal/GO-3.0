@@ -16,6 +16,7 @@ import {
   Suspense,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -34,6 +35,7 @@ import CalendarMonthRoundedIcon from '@mui/icons-material/CalendarMonthRounded';
 import FolderRoundedIcon from '@mui/icons-material/FolderRounded';
 import ForumRoundedIcon from '@mui/icons-material/ForumRounded';
 import PeopleAltRoundedIcon from '@mui/icons-material/PeopleAltRounded';
+import PublicRoundedIcon from '@mui/icons-material/PublicRounded';
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
 import SecurityRoundedIcon from '@mui/icons-material/SecurityRounded';
 import { ReticulumUnreadCountBadge } from '../common/ReticulumUnreadCountBadge';
@@ -102,6 +104,7 @@ import {
   memberDirectsAtom,
   memberGroupsLoadedAddressAtom,
   memberGroupsWithReticulumChatAtom,
+  mobileGroupPanelOpenAtom,
   mutedGroupsAtom,
   myGroupsWhereIAmAdminAtom,
   reticulumDirectSummariesAtom,
@@ -166,6 +169,10 @@ import {
   setLastOpenChat,
 } from '../../utils/chatPersistence';
 import { mobileAppsShellSx } from '../Mobile/mobileLayout';
+import {
+  MOBILE_PANEL_HEADER_OFFSET,
+  MobilePanelHeader,
+} from '../Mobile/MobilePanelHeader';
 import {
   orderReticulumGroups,
   readReticulumGroupOrder,
@@ -525,7 +532,7 @@ function PersistentSectionLayer({
 }: {
   active: boolean;
   children: ReactNode;
-  topOffset?: number;
+  topOffset?: number | string;
 }) {
   const layerRef = useRef<HTMLDivElement | null>(null);
 
@@ -4696,6 +4703,34 @@ export const Group = ({
     setNotificationReticulumMessageId('');
   }, []);
 
+  const closeReticulumMembersPanel = useCallback(() => {
+    setReticulumChatMembersPanelOpen(false);
+    setReticulumLandMembersPanelOpen(false);
+  }, []);
+
+  // On phones Members, Threads and Qortal Land are full-screen panels over the
+  // conversation, so back does what their X does: return to the chat instead
+  // of leaving the group. Members can sit over Qortal Land, so it closes first.
+  const mobileSectionPanelOpen =
+    groupSection === 'forum' || groupSection === 'land';
+  useAndroidBack(
+    () => {
+      if (reticulumMembersPanelOpen) {
+        closeReticulumMembersPanel();
+        return true;
+      }
+      goToChat();
+      return true;
+    },
+    {
+      priority: BACK_PRIORITY.sheet,
+      enabled:
+        isMobile &&
+        reticulumChatEnabled &&
+        (reticulumMembersPanelOpen || mobileSectionPanelOpen),
+    }
+  );
+
   useEffect(() => {
     if (!reticulumChatEnabled) return;
     const closeMembersPanel = () => {
@@ -4771,6 +4806,25 @@ export const Group = ({
     (!reticulumChatEnabled || reticulumDirectsInline);
   const mobileDirectConversationOpen =
     reticulumDirectsInline && Boolean(selectedDirect || newChat);
+
+  // Threads, Qortal Land and Members fill the phone screen like Calendar and
+  // Files do, so the app's top and tab bars step aside while one is up.
+  const setMobileGroupPanelOpen = useSetAtom(mobileGroupPanelOpenAtom);
+  const mobileGroupPanelOpen =
+    isMobile &&
+    reticulumChatEnabled &&
+    desktopViewMode === 'chat' &&
+    Boolean(selectedGroup) &&
+    !mobileDirectConversationOpen &&
+    !mobileListPanelOpen &&
+    (mobileSectionPanelOpen || reticulumMembersPanelOpen);
+  useLayoutEffect(() => {
+    setMobileGroupPanelOpen(mobileGroupPanelOpen);
+  }, [mobileGroupPanelOpen, setMobileGroupPanelOpen]);
+  useEffect(
+    () => () => setMobileGroupPanelOpen(false),
+    [setMobileGroupPanelOpen]
+  );
 
   const setDesktopSideViewFromRail = useCallback(
     (view: 'groups' | 'directs') => {
@@ -5294,55 +5348,112 @@ export const Group = ({
                   zIndex: 3,
                 }}
               >
-                <ReticulumGroupSectionHeader
-                  activeSection={groupSection}
-                  calendarOpen={reticulumCalendarOpen}
-                  canManageReticulumGroup={canManageReticulumGroup}
-                  sectionLabel={
-                    groupSection === 'land'
-                      ? selectedGroup?.groupName || 'Group'
-                      : groupSection === 'forum'
-                        ? 'Threads'
-                        : groupSection === 'members'
-                          ? 'Members'
-                          : selectedGroup?.groupName || 'Group'
-                  }
-                  onCalendarClick={() => {
-                    const groupId = Number(selectedGroup?.groupId);
-                    if (!Number.isInteger(groupId) || groupId <= 0) return;
-                    setReticulumCalendarTarget({
-                      groupId,
-                      eventId: '',
-                      occurrenceStart: Date.now(),
-                      timezone: '',
-                    });
-                    setReticulumCalendarOpenRequest((value) => value + 1);
-                  }}
-                  onGroupCallClick={
-                    reticulumEnabled && gcallGroupNumericId !== null
-                      ? handleGroupCallHeaderClick
-                      : undefined
-                  }
-                  onModeSwitchClick={
-                    groupSection === 'land' ? goToChat : undefined
-                  }
-                  onThreadsClick={goToThreads}
-                  groupCallInCall={
-                    inThisGroupGcall && gcallRoomState === 'connected'
-                  }
-                  groupCallJoining={gcallRoomState === 'joining'}
-                  groupCallDisabled={inOtherGcall}
-                  groupCallTooltip={
-                    inOtherGcall
-                      ? t('core:group_call_blocked', {
-                          postProcess: 'capitalizeFirstChar',
-                        })
-                      : ''
-                  }
-                  membersPanelOpen={reticulumMembersPanelOpen}
-                  membersNotificationCount={reticulumJoinRequestCount}
-                  onMembersClick={toggleReticulumMembersPanel}
-                />
+                {isMobile && mobileSectionPanelOpen ? (
+                  // Phones: the same panel header as Calendar, Files, Members
+                  // and Admin keys; the X returns to the chat.
+                  <MobilePanelHeader
+                    safeAreaTop
+                    icon={
+                      groupSection === 'land' ? (
+                        <PublicRoundedIcon />
+                      ) : (
+                        <ForumRoundedIcon />
+                      )
+                    }
+                    title={
+                      groupSection === 'land'
+                        ? t('group:chat_group.qortal_land')
+                        : t('group:panel.threads', {
+                            postProcess: 'capitalizeFirstChar',
+                          })
+                    }
+                    actions={
+                      groupSection === 'land' &&
+                      reticulumEnabled &&
+                      gcallGroupNumericId !== null ? (
+                        <IconButton
+                          aria-label={t(
+                            gcallRoomState === 'joining'
+                              ? 'core:group_call_joining'
+                              : inThisGroupGcall &&
+                                  gcallRoomState === 'connected'
+                                ? 'core:group_call_leave'
+                                : 'core:group_call',
+                            { postProcess: 'capitalizeFirstChar' }
+                          )}
+                          disabled={
+                            inOtherGcall || gcallRoomState === 'joining'
+                          }
+                          onClick={handleGroupCallHeaderClick}
+                          sx={{ color: 'text.secondary', flexShrink: 0 }}
+                        >
+                          {gcallRoomState === 'joining' ? (
+                            <CircularProgress
+                              size={20}
+                              sx={{ color: 'inherit' }}
+                            />
+                          ) : inThisGroupGcall &&
+                            gcallRoomState === 'connected' ? (
+                            <CallEndRoundedIcon />
+                          ) : (
+                            <CallIcon />
+                          )}
+                        </IconButton>
+                      ) : null
+                    }
+                    onClose={goToChat}
+                  />
+                ) : (
+                  <ReticulumGroupSectionHeader
+                    activeSection={groupSection}
+                    calendarOpen={reticulumCalendarOpen}
+                    canManageReticulumGroup={canManageReticulumGroup}
+                    sectionLabel={
+                      groupSection === 'land'
+                        ? selectedGroup?.groupName || 'Group'
+                        : groupSection === 'forum'
+                          ? 'Threads'
+                          : groupSection === 'members'
+                            ? 'Members'
+                            : selectedGroup?.groupName || 'Group'
+                    }
+                    onCalendarClick={() => {
+                      const groupId = Number(selectedGroup?.groupId);
+                      if (!Number.isInteger(groupId) || groupId <= 0) return;
+                      setReticulumCalendarTarget({
+                        groupId,
+                        eventId: '',
+                        occurrenceStart: Date.now(),
+                        timezone: '',
+                      });
+                      setReticulumCalendarOpenRequest((value) => value + 1);
+                    }}
+                    onGroupCallClick={
+                      reticulumEnabled && gcallGroupNumericId !== null
+                        ? handleGroupCallHeaderClick
+                        : undefined
+                    }
+                    onModeSwitchClick={
+                      groupSection === 'land' ? goToChat : undefined
+                    }
+                    onThreadsClick={goToThreads}
+                    groupCallInCall={
+                      inThisGroupGcall && gcallRoomState === 'connected'
+                    }
+                    groupCallJoining={gcallRoomState === 'joining'}
+                    groupCallDisabled={inOtherGcall}
+                    groupCallTooltip={
+                      inOtherGcall
+                        ? t('core:group_call_blocked', {
+                            postProcess: 'capitalizeFirstChar',
+                          })
+                        : ''
+                    }
+                    membersPanelOpen={reticulumMembersPanelOpen}
+                    membersNotificationCount={reticulumJoinRequestCount}
+                    onMembersClick={toggleReticulumMembersPanel}
+                  />
+                )}
               </Box>
             )}
             {!reticulumChatEnabled && (
@@ -5581,7 +5692,10 @@ export const Group = ({
                 groupSection === 'forum' &&
                 isPrivate &&
                 isLoadingThreadKey && (
-                  <PersistentSectionLayer active topOffset={50}>
+                  <PersistentSectionLayer
+                    active
+                    topOffset={isMobile ? MOBILE_PANEL_HEADER_OFFSET : 50}
+                  >
                     <CenterBox
                       sx={{
                         backgroundColor: 'background.default',
@@ -5699,7 +5813,7 @@ export const Group = ({
                   {groupSection === 'forum' && (
                     <PersistentSectionLayer
                       active={groupSection === 'forum'}
-                      topOffset={50}
+                      topOffset={isMobile ? MOBILE_PANEL_HEADER_OFFSET : 50}
                     >
                       <GroupForum
                         myAddress={myAddress}
@@ -5771,7 +5885,13 @@ export const Group = ({
               {canMountQortalLand && shouldMountGroupSection('land') && (
                 <PersistentSectionLayer
                   active={groupSection === 'land'}
-                  topOffset={reticulumChatEnabled ? 50 : 0}
+                  topOffset={
+                    !reticulumChatEnabled
+                      ? 0
+                      : isMobile
+                        ? MOBILE_PANEL_HEADER_OFFSET
+                        : 50
+                  }
                 >
                   <Suspense
                     fallback={
@@ -5809,7 +5929,13 @@ export const Group = ({
                 selectedGroup && (
                   <PersistentSectionLayer
                     active
-                    topOffset={reticulumChatEnabled ? 50 : 0}
+                    topOffset={
+                      !reticulumChatEnabled
+                        ? 0
+                        : isMobile
+                          ? MOBILE_PANEL_HEADER_OFFSET
+                          : 50
+                    }
                   >
                     <CenterBox
                       sx={{
@@ -5869,9 +5995,10 @@ export const Group = ({
                         : 'none',
                     position: 'absolute',
                     right: 0,
-                    top: 50,
-                    // Phones show the member list as a full-width sheet; a
-                    // 280px rail would leave the chat unusably narrow.
+                    // Phones show the member list as a full-screen panel with
+                    // its own header and X, over the group header; a 280px
+                    // rail would leave the chat unusably narrow.
+                    top: isMobile ? 0 : 50,
                     width: { xs: '100%', md: 280 },
                     zIndex: reticulumSearchOverlayOpen ? 0 : 8,
                   }}
@@ -5890,6 +6017,9 @@ export const Group = ({
                       joinRequestCount={reticulumJoinRequestCount}
                       onJoinRequestCountChange={
                         handleReticulumJoinRequestCountChange
+                      }
+                      onClose={
+                        isMobile ? closeReticulumMembersPanel : undefined
                       }
                     />
                   </Suspense>

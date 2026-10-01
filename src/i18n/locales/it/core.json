@@ -61,8 +61,9 @@
     "create_transaction": "creare transazioni sulla blockchain Qortal",
     "decline": "rifiuta",
     "decrypt": "decripta",
-    "delete": "delete",
+    "delete": "elimina",
     "disable_enter": "disabilita invio",
+    "discard_message": "scarta messaggio",
     "download": "scarica",
     "download_file": "scarica file",
     "edit": "modifica",
@@ -98,6 +99,7 @@
     "pin": "blocca",
     "pin_app": "blocca app",
     "pin_to_dashboard": "fissa alla dashboard",
+    "pin_to_tabs": "fissa nelle schede",
     "post": "posta",
     "post_message": "posta messaggio",
     "publish": "pubblica",
@@ -140,6 +142,7 @@
     "unpin": "sblocca",
     "unpin_app": "sblocca app",
     "unpin_from_dashboard": "rimuovi dalla dashboard",
+    "unpin_from_tabs": "rimuovi dalle schede",
     "update": "aggiorna",
     "update_app": "aggiorna la tua app",
     "vote": "vota"
@@ -153,6 +156,9 @@
   "announcement_other": "annunci",
   "api": "API",
   "app": "app",
+  "app_category": {
+    "title": "categoria: {{name}}"
+  },
   "app_detail": {
     "about": "informazioni",
     "by_developer": "di @{{developer}}",
@@ -160,11 +166,14 @@
     "details": "dettagli",
     "published": "pubblicata",
     "rate_this_app": "valuta questa app",
+    "rating_stars_label": "{{score}} su 5 stelle",
     "ratings": "valutazioni",
     "ratings_count": "{{count}} valutazioni",
     "service": "servizio",
     "size": "dimensione",
     "status": "stato",
+    "status_checking": "verifica del nodo…",
+    "status_downloading": "download in corso ({{percent}})",
     "status_not_installed": "non installata",
     "status_ready": "pronta (installata)",
     "tags": "tag",
@@ -183,6 +192,45 @@
     "switch_theme_light": "Passa alla modalità chiara"
   },
   "attachment": "allegato",
+  "background_sync": {
+    "description": "Mantiene attiva la chat mentre GO non è sullo schermo.",
+    "error": {
+      "save_failed": "Impossibile modificare la sincronizzazione in background. Riprova."
+    },
+    "help": {
+      "always": "Mantiene la chat sincronizzata ogni volta che GO è in background. Consuma sensibilmente più batteria.",
+      "charging": "Mantiene la chat sincronizzata mentre il telefono è in carica.",
+      "off": "La chat smette di sincronizzarsi circa un minuto dopo che esci da GO e si aggiorna quando lo riapri.",
+      "outbox": "A batteria, GO finisce comunque di inviare i tuoi messaggi in attesa fino a 3 minuti dopo che lo lasci.",
+      "relay": "Mentre il telefono è in carica su Wi-Fi, GO aiuta anche a inoltrare i messaggi degli altri."
+    },
+    "mode": {
+      "always": "sempre",
+      "charging": "in carica",
+      "off": "disattivata"
+    },
+    "native": {
+      "fgs_timeout_text": "Android ha messo in pausa la connessione in background di GO. Apri GO per riconnetterti.",
+      "fgs_timeout_title": "GO in pausa",
+      "status_paused_text": "Apri GO per sincronizzare le tue chat.",
+      "status_paused_title": "Chat in pausa",
+      "status_syncing_background": "Sincronizzazione della chat in background",
+      "status_waiting_text": "Messaggi in attesa di invio: {{count}}"
+    },
+    "status": {
+      "relaying": "Inoltro per altri (in carica su Wi-Fi)",
+      "syncing_now": "Sincronizzazione in background in corso"
+    },
+    "title": "Sincronizzazione in background",
+    "vendor_freeze": {
+      "body": "Il tuo telefono {{manufacturer}} ha fermato GO in background anche se la sincronizzazione in background era attiva. Apri le impostazioni della batteria del telefono per GO e consenti l'attività in background.",
+      "body_unknown": "Il tuo telefono ha fermato GO in background anche se la sincronizzazione in background era attiva. Apri le impostazioni della batteria del telefono per GO e consenti l'attività in background.",
+      "dismiss": "Ignora",
+      "guide": "Guida passo passo (dontkillmyapp.com)",
+      "open_battery_settings": "Apri impostazioni batteria",
+      "title": "GO è stato fermato in background"
+    }
+  },
   "balance": "bilancio:",
   "blocks": "blocchi",
   "bookmarks": {
@@ -387,6 +435,43 @@
     "payment": "commissione di pagamento",
     "publish": "commissione di pubblicazione"
   },
+  "file_transfer": {
+    "dismiss": "Chiudi",
+    "downloading_title": "Download di {{filename}}",
+    "failed_title": "Download non riuscito",
+    "fetching_title": "Recupero di {{filename}}",
+    "gathering": "Raccolta da QDN · {{percent}}%",
+    "gathering_chunks": "Raccolta da QDN · {{percent}}% · {{local}}/{{total}} blocchi",
+    "gathering_unknown": "Raccolta da QDN…",
+    "hide": "Nascondi (continua nelle notifiche)",
+    "install": "Installa",
+    "looking_for_file": "Ricerca del file su QDN…",
+    "not_saved_title": "{{filename}} non salvato",
+    "not_saved_tray": "Ancora scaricato. Apri le notifiche di GO per salvarlo.",
+    "open": "Apri",
+    "open_failed": "Nessuna app su questo telefono può aprire questo file",
+    "progress": "{{percent}} % · {{size}}",
+    "ready_to_install": "Pronto da installare · {{location}}",
+    "ready_to_open": "Pronto da aprire · {{location}}",
+    "remove": "Rimuovi dall'elenco",
+    "save": "Salva",
+    "save_error": "Errore durante il salvataggio del file: {{message}}",
+    "save_error_generic": "Errore durante il salvataggio del file",
+    "save_stalled": "Salvataggio bloccato: la memoria non risponde più",
+    "save_success": "File salvato",
+    "saved_title": "{{filename}} salvato",
+    "saved_to": "Salvato in {{location}}",
+    "saving_file": "Salvataggio del file…",
+    "saving_title": "Salvataggio di {{filename}}",
+    "stage_awaiting_save": "Scaricato, in attesa del salvataggio",
+    "stage_declined": "Non salvato · tocca Salva per tenerlo",
+    "stage_downloading": "Download in corso",
+    "stage_gathering": "Raccolta da QDN",
+    "stage_saving": "Salvataggio sul telefono",
+    "storage_permission": "GO ha bisogno dell'autorizzazione di archiviazione per salvare i file in Documents.",
+    "tap_to_install": "Tocca per installare · {{location}}",
+    "tap_to_open": "Tocca per aprire · {{location}}"
+  },
   "filter": {
     "all": "tutti",
     "category": "categoria",
@@ -399,6 +484,65 @@
   "for": "per",
   "general": "generale",
   "general_settings": "impostazioni generali",
+  "go_updates": {
+    "android_only": "L'installazione funziona nell'app Android.",
+    "available_title": "Nuovo aggiornamento di GO 3.0 disponibile",
+    "badge": {
+      "installed": "Installata",
+      "new": "Nuova",
+      "older": "Precedente"
+    },
+    "check": "Cerca aggiornamenti",
+    "checking": "Controllo di QDN…",
+    "error": {
+      "fetch_failed": "Impossibile recuperare la versione",
+      "timeout": "La rete non ha consegnato la versione in tempo"
+    },
+    "hide_changes": "Nascondi modifiche",
+    "install": "Installa",
+    "install_update": "Installa aggiornamento",
+    "installed_label": "Installata su questo telefono",
+    "job": {
+      "allow_installs": "Consenti installazioni",
+      "confirm_hint": "Scaricata. Android ti chiederà di confermare l'installazione.",
+      "continue_background": "Puoi chiudere questa schermata. Il download continua.",
+      "dismiss": "Ignora",
+      "downloading": "Download in corso",
+      "failed": "Installazione non riuscita",
+      "fetching": "Recupero da QDN",
+      "permission": "Autorizzazione necessaria",
+      "permission_hint": "Android installa solo app da fonti che hai consentito. Attiva «Installa app sconosciute» per Qortal GO. L'installazione riprende da sola quando torni.",
+      "ready": "Pronta per l'installazione",
+      "updating_to": "Aggiornamento a v{{version}}"
+    },
+    "last_checked": "ultimo controllo {{time}}",
+    "later": "Più tardi",
+    "loading_versions": "Caricamento delle versioni da QDN…",
+    "no_notes": "Per questa versione non sono state aggiunte note di rilascio.",
+    "no_versions": "Non è ancora stata pubblicata nessuna versione di GO 3.0.",
+    "open_in_qshare": "Apri in Q-Share+",
+    "progress": {
+      "assembling": "Assemblaggio della versione",
+      "bytes_of_total": "{{done}} di {{total}}",
+      "confirm_in_android": "Android ti chiederà di confermare",
+      "downloading": "Download in corso",
+      "fetching": "Recupero dalla rete Qortal",
+      "needs_permission": "Android ha bisogno del tuo permesso per installare app da Qortal GO"
+    },
+    "published_when": "pubblicata {{when}}",
+    "retry": "Riprova",
+    "show_changes": "Mostra modifiche",
+    "status": {
+      "available": "È disponibile una versione più recente.",
+      "never": "Non ancora controllato.",
+      "unreachable": "Impossibile raggiungere QDN. Controlla la connessione al nodo e riprova.",
+      "up_to_date": "Hai l'ultima versione."
+    },
+    "title": "Aggiornamenti GO 3.0",
+    "update_marker": "Aggiornamento di GO 3.0 disponibile",
+    "versions_missing": "Alcune versioni non sono ancora state caricate ({{count}}). Riprova più tardi.",
+    "versions_title": "Versioni su QDN"
+  },
   "group_call": "chiamata di gruppo",
   "group_call_blocked": "termina prima l'altra chiamata",
   "group_call_chat_placeholder": "La chat testuale per le chiamate di gruppo non è ancora disponibile.",
@@ -462,6 +606,7 @@
       "decrypt_app": "impossibile decrittografare l'app privata '",
       "download_image": "impossibile scaricare l'immagine. Riprova più tardi facendo clic sul pulsante Aggiorna.",
       "download_private_app": "impossibile scaricare l'app privata.",
+      "edit_message_too_long": "I messaggi modificati non possono essere divisi. Accorcialo a {{maximum}} byte.",
       "encrypt_app": "impossibile crittografare. App non pubblicata.",
       "fetch_app": "impossibile recuperare l'app.",
       "fetch_publish": "impossibile recuperare la pubblicazione.",
@@ -476,6 +621,8 @@
       "invalid_signature": "firma non valida",
       "invalid_theme_format": "formato tema non valido",
       "invalid_zip": "zip non valido",
+      "long_message_too_many_parts": "Questo messaggio è troppo lungo da inviare, anche se diviso in {{maximum}} messaggi.",
+      "long_message_unsplittable": "Una parte di questo messaggio non può essere divisa abbastanza da poter essere inviata.",
       "message_loading": "errore di caricamento del messaggio",
       "message_size": "la dimensione del messaggio è di {{ size }} byte su un massimo di {{maximum }}",
       "minting_account_add": "impossibile aggiungere l'account di minting.",
@@ -530,6 +677,7 @@
       "hub_notification_settings_desc": "Choose which Hub features appear in your notification panel.",
       "link_copied": "link copiato negli appunti.",
       "loading": "Caricamento...",
+      "long_message_split": "Messaggio lungo: verrà inviato in {{count}} messaggi.",
       "mentioned": "menzionato",
       "message_with_image": "questo messaggio ha già un'immagine",
       "minimal_qort_balance": "Avere almeno {{ quantity }} QORT nel tuo saldo ti consente di inviare messaggi di chat a una velocità quasi istantanea.",
@@ -714,6 +862,18 @@
   "none": "nessuno",
   "not_available": "n/d",
   "note": "nota",
+  "notification_history": {
+    "clear": "Cancella",
+    "clear_all": "Cancella tutto",
+    "clear_all_hint": "Cancella tutte le notifiche. Restano nella cronologia delle notifiche.",
+    "close": "Chiudi",
+    "drag_to_close": "Trascina verso l'alto per chiudere",
+    "empty": "Ancora niente. Le notifiche ricevute restano qui per 30 giorni, anche dopo averle scartate.",
+    "open": "Cronologia notifiche",
+    "title": "Cronologia notifiche",
+    "today": "Oggi",
+    "yesterday": "Ieri"
+  },
   "official_apps": {
     "all_apps": "tutte le app ufficiali",
     "featured": "in evidenza",
@@ -888,6 +1048,20 @@
     "community_apps": "app della community",
     "my_apps": "le mie app",
     "official_apps": "app ufficiali"
+  },
+  "tabs_overlay": {
+    "delete_folder_body_one": "l’app salvata al suo interno ({{count}}) verrà rimossa dalle schede. Le schede aperte restano aperte.",
+    "delete_folder_body_other": "le {{count}} app salvate al suo interno verranno rimosse dalle schede. Le schede aperte restano aperte.",
+    "delete_folder_title": "eliminare «{{name}}»?",
+    "edit_hint_folder": "trascina le app per riordinarle o tocca × per rimuoverle",
+    "edit_hint_root": "trascina le app nelle cartelle, tocca × per rimuoverle o trascina le cartelle per riordinarle",
+    "folder_empty": "questa cartella è vuota",
+    "folder_empty_hint": "tieni premuta un’app per spostarla in questa cartella.",
+    "no_open_tabs": "ancora nessuna scheda aperta",
+    "no_open_tabs_with_folders": "nessuna scheda aperta. Tocca una cartella per vedere le sue app.",
+    "pin_failed": "impossibile salvare nelle schede",
+    "pinned_to_folder": "fissata in {{folder}} nelle schede",
+    "unpinned_from_folder": "rimossa da {{folder}} nelle schede"
   },
   "tags": "tag",
   "theme": {

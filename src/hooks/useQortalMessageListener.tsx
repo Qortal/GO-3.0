@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import i18n from 'i18next';
 import { executeEvent } from '../utils/events';
 import {
   infoSnackGlobalAtom,
@@ -17,6 +18,10 @@ import {
 } from '../utils/mobileFileSave';
 import {
   beginQdnSaveNotification,
+  cancelQdnSaveNotification,
+  claimQappFetchForSave,
+  continueQdnSaveNotification,
+  declineQdnSave,
   failQdnSaveNotification,
   finishQdnSaveNotification,
   reportQdnTransferProgress,
@@ -456,31 +461,36 @@ export const showSaveFilePicker = async (
   { openSnackGlobal, setOpenSnackGlobal, infoSnackCustom, setInfoSnackCustom }
 ) => {
   try {
-    const { filename, mimeType, blob, fileHandleOptions } = data;
+    const { filename, mimeType, blob, fileHandleOptions, transferId } = data;
     const silent = isSilentSaveFile(filename);
-
-    if (!silent) {
-      setInfoSnackCustom({
-        type: 'info',
-        message: 'Saving file...',
-      });
-
-      setOpenSnackGlobal(true);
-    }
 
     if (isCapacitor()) {
       // FileSaver's anchor-tag download does nothing inside the Capacitor
       // WebView — write to Documents/Qortal Go via the native plugin instead.
       //
       // A big file takes long enough that the screen it was started from is
-      // usually gone by the time it lands, so the wait goes to the tray.
-      const notificationId = `qdn-save:${filename}:${Date.now()}`;
+      // usually gone by the time it lands, so the wait goes to the progress
+      // card and the tray. A Q-App download already on the card (the app
+      // fetched the file itself first) carries straight on into the save.
+      const notificationId = transferId || `qdn-save:${filename}:${Date.now()}`;
       const announce =
         !silent &&
-        blob?.size > NOTIFY_SAVE_MIN_BYTES &&
-        beginQdnSaveNotification(notificationId, filename);
+        (transferId
+          ? continueQdnSaveNotification(transferId, filename)
+          : blob?.size > NOTIFY_SAVE_MIN_BYTES &&
+            beginQdnSaveNotification(notificationId, filename, {
+              stage: 'saving',
+            }));
+      if (!silent && !announce) {
+        setInfoSnackCustom({
+          type: 'info',
+          message: i18n.t('core:file_transfer.saving_file'),
+        });
+        setOpenSnackGlobal(true);
+      }
+      let saved: { path: string; uri: string };
       try {
-        await saveBlobToMobileDocuments(
+        saved = await saveBlobToMobileDocuments(
           filename,
           blob,
           announce
@@ -493,18 +503,35 @@ export const showSaveFilePicker = async (
         throw error;
       }
       if (announce) {
+        // The card says where it went and offers to open it.
         finishQdnSaveNotification(
           notificationId,
-          mobileSaveLocationLabelFor(filename, mimeType || blob?.type)
+          mobileSaveLocationLabelFor(filename, mimeType || blob?.type),
+          { uri: saved?.uri, mimeType: mimeType || blob?.type }
         );
+        return;
       }
       if (silent) return;
       setInfoSnackCustom({
         type: 'success',
-        message: `Saved to ${mobileSaveLocationLabelFor(filename, mimeType || blob?.type)}`,
+        message: i18n.t('core:file_transfer.saved_to', {
+          location: mobileSaveLocationLabelFor(
+            filename,
+            mimeType || blob?.type
+          ),
+        }),
       });
       setOpenSnackGlobal(true);
       return;
+    }
+
+    if (!silent) {
+      setInfoSnackCustom({
+        type: 'info',
+        message: i18n.t('core:file_transfer.saving_file'),
+      });
+
+      setOpenSnackGlobal(true);
     }
 
     FileSaver.saveAs(blob, filename);
@@ -513,7 +540,7 @@ export const showSaveFilePicker = async (
 
     setInfoSnackCustom({
       type: 'success',
-      message: 'Saving file success!',
+      message: i18n.t('core:file_transfer.save_success'),
     });
 
     setOpenSnackGlobal(true);
@@ -521,8 +548,10 @@ export const showSaveFilePicker = async (
     setInfoSnackCustom({
       type: 'error',
       message: error?.message
-        ? `Error saving file: ${error?.message}`
-        : 'Error saving file',
+        ? i18n.t('core:file_transfer.save_error', {
+            message: error.message,
+          })
+        : i18n.t('core:file_transfer.save_error_generic'),
     });
 
     setOpenSnackGlobal(true);
@@ -874,18 +903,43 @@ export const useQortalMessageListener = (
       } else if (event?.data?.action === 'SAVE_FILE') {
         if (!eventPort) return;
 
+        // A Q-App that downloaded this very file a moment ago (the card is
+        // already showing it) hands it over here; the save continues that card.
+        const transferId = isCapacitor()
+          ? claimQappFetchForSave(event.data?.blob?.size)
+          : null;
+        const request = transferId ? { ...event.data, transferId } : event.data;
+        const snackMethods = {
+          openSnackGlobal,
+          setOpenSnackGlobal,
+          infoSnackCustom,
+          setInfoSnackCustom,
+        };
         try {
-          await saveFile(event.data, null, true, {
-            openSnackGlobal,
-            setOpenSnackGlobal,
-            infoSnackCustom,
-            setInfoSnackCustom,
-          });
+          await saveFile(request, null, true, snackMethods);
           eventPort.postMessage({
             result: true,
             error: null,
           });
         } catch (error) {
+          if (transferId) {
+            const declined =
+              error?.message ===
+              i18n.t('question:message.generic.user_declined_save_file', {
+                postProcess: 'capitalizeFirstChar',
+              });
+            if (declined) {
+              // The file is downloaded and GO still has it: keep it in the
+              // notifications with a Save button, in case the answer changes.
+              declineQdnSave(transferId, () =>
+                saveFile(request, null, true, snackMethods, {
+                  preApproved: true,
+                })
+              );
+            } else {
+              cancelQdnSaveNotification(transferId);
+            }
+          }
           eventPort.postMessage({
             result: null,
             error: error?.message || 'Failed to save file',

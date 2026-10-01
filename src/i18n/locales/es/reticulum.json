@@ -33,6 +33,27 @@
     "wait_until_ready": "wait until the discussion is ready"
   },
   "dm": {
+    "delivery": {
+      "delivered": {
+        "hint": "El dispositivo del destinatario lo solicitó y se le envió.",
+        "label": "entregado"
+      },
+      "on_other_device": {
+        "hint": "Tu otro dispositivo tiene una copia y puede enviarlo cuando el destinatario esté en línea. La entrega no está confirmada.",
+        "label": "en tu otro dispositivo"
+      },
+      "only_on_this_device": {
+        "label": "solo en este dispositivo"
+      },
+      "only_on_this_phone": {
+        "hint": "Aún no se ha enviado. Se reintentará automáticamente.",
+        "label": "solo en este teléfono"
+      },
+      "sending": {
+        "hint": "Intentando llegar al destinatario ahora.",
+        "label": "enviando"
+      }
+    },
     "required_for_attachments": "El chat directo de Reticulum es necesario para los adjuntos directos"
   },
   "event_preview": {
@@ -253,6 +274,50 @@
       },
       "title": "Tamaño del texto"
     }
+  },
+  "status_badge": {
+    "copy_diagnostics": "Copiar diagnóstico",
+    "copy_diagnostics_collecting": "Recopilando…",
+    "copy_diagnostics_copied": "Copiado",
+    "copy_diagnostics_hint": "Copia el texto o guárdalo como archivo y envíalo con tu informe del problema del chat.",
+    "help": {
+      "chat_engine": {
+        "body": "Indica si la base de datos local del chat y el worker están listos. La insignia verde es la radio; cargar y enviar chats también necesita este motor. Si el chat no funciona, primero toca «{{action}}» abajo y pega el texto en tu informe. ready = bien. starting = todavía arrancando, con el tiempo transcurrido; si se queda así más de un minuto, una posible causa es un WebView sin JIT. failed = el error se muestra abajo. idle = aún no se le pidió iniciar (chat desactivado o sin sesión iniciada).",
+        "title": "Motor de chat"
+      },
+      "hubs": {
+        "body": "Cuántos enlaces a hubs están activos ahora mismo. Son las conexiones TCP a los hubs de la comunidad. 0 significa que todavía no estás en la malla. 2 es lo habitual y saludable.",
+        "title": "Hubs"
+      },
+      "ifac": {
+        "body": "Tamaño del Interface Access Code. Es el filtro de red compartido derivado del nombre de la malla. 16 B significa que estás en la red Qortal con nombre. 0 B significa que la interfaz está abierta / sin filtrar.",
+        "title": "IFAC"
+      },
+      "known_paths": {
+        "body": "A cuántos destinos tiene Reticulum una ruta en este momento. Cada anuncio le enseña al teléfono una forma de llegar a una identidad. Unos cientos es normal en una malla concurrida. Esto no es el chat en vivo.",
+        "title": "Rutas conocidas"
+      },
+      "network_name": {
+        "body": "La malla Reticulum a la que se unió este teléfono. La malla pública de Qortal es qortal-hub. Un nombre distinto significa que estás en otra red y no puedes ver a esos pares.",
+        "title": "Nombre de la red"
+      },
+      "online_accounts": {
+        "body": "Cuántas cuentas de Qortal ve este teléfono presentes en la malla ahora mismo. Es el mismo número que en «Hogar». No es el número de hubs ni de nodos de Reticulum.",
+        "title": "Cuentas en línea"
+      },
+      "received": {
+        "body": "Total de datos que este teléfono ha recibido de los hubs desde que Reticulum arrancó en esta sesión. Se reinicia cuando se reinicia la pila, no cuando cierras un chat.",
+        "title": "Recibido"
+      },
+      "sent": {
+        "body": "Total de datos que este teléfono ha enviado a los hubs desde que Reticulum arrancó en esta sesión. Se reinicia cuando se reinicia la pila, no cuando cierras un chat.",
+        "title": "Enviado"
+      }
+    },
+    "save_diagnostics": "Guardar como archivo .md",
+    "save_diagnostics_failed": "No se pudo guardar el archivo: {{error}}",
+    "save_diagnostics_saved": "Guardado",
+    "save_diagnostics_saved_to": "Guardado en {{location}}"
   },
   "user_card": {
     "address_copied": "dirección copiada",

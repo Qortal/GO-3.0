@@ -26,6 +26,7 @@ const shouldNotify = (overrides: Record<string, unknown> = {}) =>
     event,
     friendsByAddress: friends,
     listeningSince: NOW,
+    now: NOW,
     myAddress: MY_ADDRESS,
     hubIsBeingViewed: false,
     ...overrides,
@@ -62,6 +63,42 @@ describe('Reticulum DM OS notifications', () => {
   it('does not notify for history imported before this listener session', () => {
     expect(
       shouldNotify({ event: { ...event, timestamp: NOW - 60_001 } })
+    ).toBe(false);
+  });
+
+  it('notifies for a message sent after GO last ran that arrives by catch-up', () => {
+    const lastRunMark = NOW - 30_000;
+    expect(
+      shouldNotify({
+        event: { ...event, timestamp: lastRunMark + 1 },
+        lastRunMark,
+        listeningSince: NOW + 3_600_000,
+        now: NOW + 3_600_000,
+      })
+    ).toBe(true);
+  });
+
+  it('does not notify for catch-up history from before GO last ran', () => {
+    const lastRunMark = NOW;
+    expect(
+      shouldNotify({
+        event: { ...event, timestamp: lastRunMark - 60_001 },
+        lastRunMark,
+        listeningSince: NOW + 3_600_000,
+        now: NOW + 3_600_000,
+      })
+    ).toBe(false);
+  });
+
+  it('does not notify for catch-up older than 7 days', () => {
+    const now = NOW + 8 * 24 * 60 * 60 * 1000;
+    expect(
+      shouldNotify({
+        event: { ...event, timestamp: NOW + 1 },
+        lastRunMark: NOW,
+        listeningSince: now,
+        now,
+      })
     ).toBe(false);
   });
 

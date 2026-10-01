@@ -30,6 +30,8 @@ import LaunchRoundedIcon from '@mui/icons-material/LaunchRounded';
 import ShareRoundedIcon from '@mui/icons-material/ShareRounded';
 import { buildQortalGroupCalendarLink } from '../../utils/qortalGroupLinks';
 import { SAFE_AREA_BOTTOM, SAFE_AREA_TOP } from '../../utils/mobileSafeArea';
+import { BACK_PRIORITY, useAndroidBack } from '../../utils/androidBack';
+import { MobilePanelHeader } from '../Mobile/MobilePanelHeader';
 import CheckRoundedIcon from '@mui/icons-material/CheckRounded';
 import UploadRoundedIcon from '@mui/icons-material/UploadRounded';
 import moment from 'moment-timezone';
@@ -164,6 +166,29 @@ export function ReticulumGroupCalendarDialog({
   const [coverDraft, setCoverDraft] = useState<EventCoverDraft | null>(null);
   const [selectedCoverUrl, setSelectedCoverUrl] = useState('');
   const [selectedCoverLoading, setSelectedCoverLoading] = useState(false);
+
+  // Android back closes the topmost calendar layer, then the calendar itself,
+  // like the X on the other group panels.
+  useAndroidBack(
+    () => {
+      if (coverCropFile) {
+        setCoverCropFile(null);
+      } else if (deleteConfirmationOpen) {
+        if (!saving) setDeleteConfirmationOpen(false);
+      } else if (postSuccessLink) {
+        setPostSuccessLink('');
+        setShareCopied(false);
+      } else if (editing) {
+        if (!saving) setEditing(false);
+      } else if (selected) {
+        setSelected(null);
+      } else {
+        onClose();
+      }
+      return true;
+    },
+    { priority: BACK_PRIORITY.dialog, enabled: open && narrow }
+  );
   const formStart = moment.tz(form.startLocal, form.timezone);
   const formEnd = moment.tz(form.endLocal, form.timezone);
   const formStartsInPast = form.allDay
@@ -670,6 +695,44 @@ export function ReticulumGroupCalendarDialog({
     }
   };
 
+  const addEventButton = canManage ? (
+    <Button
+      startIcon={<AddRoundedIcon />}
+      onClick={beginAdd}
+      disabled={moment(selectedDate, 'YYYY-MM-DD', true).isBefore(
+        moment(),
+        'day'
+      )}
+      sx={{
+        alignItems: 'center',
+        backgroundColor: RETICULUM_ACTIVE_BLUE,
+        border: 0,
+        borderRadius: '8px',
+        color: theme.palette.common.white,
+        display: 'inline-flex',
+        fontSize: 14,
+        fontWeight: 500,
+        gap: '6px',
+        height: 38,
+        minWidth: 74,
+        px: '14px',
+        py: '8px',
+        transition: 'background-color 0.2s ease',
+        '&:hover': { backgroundColor: RETICULUM_ACTIVE_BLUE_HOVER },
+        '&.Mui-disabled': {
+          backgroundColor: alpha(RETICULUM_ACTIVE_BLUE, 0.28),
+          color: alpha(theme.palette.common.white, 0.42),
+        },
+        '& .MuiSvgIcon-root': {
+          color: theme.palette.common.white,
+          fontSize: 18,
+        },
+      }}
+    >
+      {t('core:calendar.add')}
+    </Button>
+  ) : null;
+
   return (
     <Dialog
       fullScreen={narrow}
@@ -693,74 +756,36 @@ export function ReticulumGroupCalendarDialog({
         },
       }}
     >
-      <DialogTitle
-        sx={{
-          alignItems: 'center',
-          display: 'flex',
-          gap: 1,
-          ...(narrow ? { px: 1.5, py: 1 } : {}),
-        }}
-      >
-        <EventRoundedIcon color="primary" />
-        <Box sx={{ flex: 1, minWidth: 0 }}>
-          <Typography
-            component="div"
-            fontSize={narrow ? 16 : 18}
-            fontWeight={700}
-          >
-            {t('core:calendar.title')}
-          </Typography>
-          {!narrow && (
-            <Typography color="text.secondary" fontSize={12}>
-              {t('core:calendar.subtitle')}
-            </Typography>
-          )}
-        </Box>
-        {canManage && (
-          <Button
-            startIcon={<AddRoundedIcon />}
-            onClick={beginAdd}
-            disabled={moment(selectedDate, 'YYYY-MM-DD', true).isBefore(
-              moment(),
-              'day'
-            )}
-            sx={{
-              alignItems: 'center',
-              backgroundColor: RETICULUM_ACTIVE_BLUE,
-              border: 0,
-              borderRadius: '8px',
-              color: theme.palette.common.white,
-              display: 'inline-flex',
-              fontSize: 14,
-              fontWeight: 500,
-              gap: '6px',
-              height: 38,
-              minWidth: 74,
-              px: '14px',
-              py: '8px',
-              transition: 'background-color 0.2s ease',
-              '&:hover': { backgroundColor: RETICULUM_ACTIVE_BLUE_HOVER },
-              '&.Mui-disabled': {
-                backgroundColor: alpha(RETICULUM_ACTIVE_BLUE, 0.28),
-                color: alpha(theme.palette.common.white, 0.42),
-              },
-              '& .MuiSvgIcon-root': {
-                color: theme.palette.common.white,
-                fontSize: 18,
-              },
-            }}
-          >
-            {t('core:calendar.add')}
-          </Button>
-        )}
-        <IconButton
-          aria-label={t('core:action.close', 'Close')}
-          onClick={onClose}
-        >
-          <CloseRoundedIcon />
-        </IconButton>
-      </DialogTitle>
-      <Divider />
+      {narrow ? (
+        <MobilePanelHeader
+          icon={<EventRoundedIcon />}
+          title={t('core:calendar.title')}
+          actions={addEventButton}
+          onClose={onClose}
+        />
+      ) : (
+        <>
+          <DialogTitle sx={{ alignItems: 'center', display: 'flex', gap: 1 }}>
+            <EventRoundedIcon color="primary" />
+            <Box sx={{ flex: 1, minWidth: 0 }}>
+              <Typography component="div" fontSize={18} fontWeight={700}>
+                {t('core:calendar.title')}
+              </Typography>
+              <Typography color="text.secondary" fontSize={12}>
+                {t('core:calendar.subtitle')}
+              </Typography>
+            </Box>
+            {addEventButton}
+            <IconButton
+              aria-label={t('core:action.close', 'Close')}
+              onClick={onClose}
+            >
+              <CloseRoundedIcon />
+            </IconButton>
+          </DialogTitle>
+          <Divider />
+        </>
+      )}
       <DialogContent
         sx={{ display: 'flex', flexDirection: 'column', minHeight: 0, p: 0 }}
       >

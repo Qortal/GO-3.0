@@ -16,6 +16,17 @@ import { isCapacitor } from './platform';
  * paused animation costs nothing, so the user only pays while actually
  * looking at and using the screen. Progress indicators and skeletons are
  * excluded so a pending action never looks stuck. Transitions are untouched.
+ *
+ * One-shot animations must never be frozen, though. An entrance such as the
+ * dashboard's post-login fade starts at opacity 0 and, when the document is
+ * already idle by the time it begins (a biometric unlock is not DOM input, so
+ * the timer set on the lock screen simply runs out), the global rule would
+ * hold it on its first frame and the content would never appear: that was the
+ * "Home is black until touched" bug. So every finite CSS animation is allowed
+ * to run to its end: when the document goes idle, and whenever one starts
+ * while idle, it is resumed through the Web Animations API (`play()` takes
+ * precedence over the `animation-play-state` property). Only infinite loops
+ * stay frozen, and they are the only ones that cost anything.
  */
 const IDLE_AFTER_MS = 10_000;
 const IDLE_ATTR = 'data-hub-ui-idle';
@@ -42,7 +53,39 @@ html[${IDLE_ATTR}="on"] *:not(
 }
 `;
 
+const isCssAnimation = (animation: Animation): animation is CSSAnimation =>
+  'animationName' in animation;
+
+/** A CSS animation that ends by itself, as opposed to an infinite loop. */
+const isFiniteCssAnimation = (animation: Animation): boolean => {
+  if (!isCssAnimation(animation)) return false;
+  const iterations = animation.effect?.getTiming().iterations;
+  return typeof iterations === 'number' && Number.isFinite(iterations);
+};
+
+/**
+ * Let every finite CSS animation the idle rule froze run to its end. Only
+ * `paused` ones are touched: `play()` on a finished animation would replay it.
+ */
+export function resumeFiniteAnimations(): void {
+  if (typeof document.getAnimations !== 'function') return;
+  for (const animation of document.getAnimations()) {
+    if (animation.playState !== 'paused') continue;
+    if (!isFiniteCssAnimation(animation)) continue;
+    animation.play();
+  }
+}
+
 let installed = false;
+let noteActivity: (() => void) | null = null;
+
+/**
+ * Count something that is not DOM input as user activity, e.g. a completed
+ * biometric unlock. No-op when the pause is not installed.
+ */
+export function noteIdlePauseActivity(): void {
+  noteActivity?.();
+}
 
 export function installIdleAnimationPause(): void {
   if (installed || typeof window === 'undefined' || !isCapacitor()) return;
@@ -60,9 +103,40 @@ export function installIdleAnimationPause(): void {
   const setIdle = (next: boolean) => {
     if (idle === next) return;
     idle = next;
-    if (next) root.setAttribute(IDLE_ATTR, 'on');
-    else root.removeAttribute(IDLE_ATTR);
+    if (next) {
+      root.setAttribute(IDLE_ATTR, 'on');
+      // getAnimations() flushes style, so the rule above has already paused
+      // everything by the time the play states are read.
+      resumeFiniteAnimations();
+    } else {
+      root.removeAttribute(IDLE_ATTR);
+    }
   };
+
+  // One pass per frame no matter how many entrances start together.
+  let resumeQueued = false;
+  const queueResume = () => {
+    if (resumeQueued) return;
+    resumeQueued = true;
+    const run = () => {
+      resumeQueued = false;
+      if (idle) resumeFiniteAnimations();
+    };
+    if (typeof window.requestAnimationFrame === 'function') {
+      window.requestAnimationFrame(run);
+    } else {
+      window.setTimeout(run, 0);
+    }
+  };
+  // Fires for an animation that begins paused too, so entrances mounted while
+  // idle (post-login dashboard, toasts, network-driven UI) still play.
+  document.addEventListener(
+    'animationstart',
+    () => {
+      if (idle) queueResume();
+    },
+    { passive: true, capture: true }
+  );
 
   const arm = () => {
     if (timer != null) window.clearTimeout(timer);
@@ -84,6 +158,7 @@ export function installIdleAnimationPause(): void {
     lastArmedAt = now;
     arm();
   };
+  noteActivity = onActivity;
 
   for (const name of RESUME_EVENTS) {
     window.addEventListener(name, onActivity, { passive: true, capture: true });

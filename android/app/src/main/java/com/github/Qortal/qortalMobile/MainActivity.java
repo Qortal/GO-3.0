@@ -101,6 +101,10 @@ public class MainActivity extends BridgeActivity {
                 // them and save to Documents/Qortal Go like the desktop Hub does.
                 webView.setDownloadListener(new QortalDownloadListener(this.bridge));
                 installSafeAreaInsetBridge(webView);
+                // Background sync: keeps this page awake off screen when the
+                // user's mode asks for it (see BackgroundKeepAlive).
+                BackgroundKeepAlive.get(this).attachWebView(webView);
+                installWindowVisibilitySentinel();
             }
             // Android kills the WebView's renderer process under memory
             // pressure while we're backgrounded — likely here because the
@@ -108,6 +112,13 @@ public class MainActivity extends BridgeActivity {
             // that leaves a permanently blank surface after screen wake and the
             // user has to force-close. Rebuild the activity instead.
             this.bridge.addWebViewListener(new WebViewListener() {
+                @Override
+                public void onPageStarted(WebView view) {
+                    // A reload or navigation starts a signed-out page; login
+                    // marks the session again (status service / presence).
+                    BackgroundKeepAlive.get(MainActivity.this).setSessionActive(false);
+                }
+
                 @Override
                 public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
                     boolean crashed = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
@@ -131,6 +142,41 @@ public class MainActivity extends BridgeActivity {
         super.onNewIntent(intent);
         // "Share to Quitter" while the app is already running (singleTask).
         ShareReceiverPlugin.handleSendIntent(this, intent);
+    }
+
+    @Override
+    public void onStart() {
+        super.onStart();
+        BackgroundKeepAlive.get(this).onActivityStart();
+    }
+
+    @Override
+    public void onStop() {
+        super.onStop();
+        BackgroundKeepAlive.get(this).onActivityStop();
+    }
+
+    @Override
+    public void onDestroy() {
+        if (this.bridge != null) {
+            BackgroundKeepAlive.get(this).detachWebView(this.bridge.getWebView());
+        }
+        super.onDestroy();
+    }
+
+    /** See BackgroundKeepAlive.WindowVisibilitySentinel. */
+    private void installWindowVisibilitySentinel() {
+        try {
+            ViewGroup content = findViewById(android.R.id.content);
+            if (content != null) {
+                content.addView(
+                    new BackgroundKeepAlive.WindowVisibilitySentinel(this),
+                    new ViewGroup.LayoutParams(0, 0)
+                );
+            }
+        } catch (RuntimeException error) {
+            Log.w(TAG, "Window visibility sentinel not installed", error);
+        }
     }
 
     @Override
@@ -223,6 +269,8 @@ public class MainActivity extends BridgeActivity {
             return;
         }
         recoveringRenderProcess = true;
+        // Never dispatch to the dead view; the recreated Activity attaches anew.
+        BackgroundKeepAlive.get(this).detachWebView(deadWebView);
         try {
             if (deadWebView != null) {
                 ViewParent parent = deadWebView.getParent();

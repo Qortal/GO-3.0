@@ -77,7 +77,8 @@
     "gsk_description": "This key encrypts group content visible to all group members. It is currently the only key used for group chat and shared data.",
     "gsk_description_compact": "This key encrypts group content visible to all group members. It is currently the only key used in this UI.",
     "publish_ask": "Publish ASK",
-    "publish_gsk": "Publish GSK"
+    "publish_gsk": "Publish GSK",
+    "title": "clés d’administration"
   },
   "advanced_options": "options avancées",
   "announcement_placeholder": "Write an announcement...",
@@ -777,6 +778,13 @@
   "last_message_from": "{{sender}} • {{date}}",
   "last_message_you": "Vous",
   "latest_mails": "derniers Q-Mails",
+  "member_actions": {
+    "make_admin_named": "nommer {{name}} administrateur",
+    "more_named": "plus d’actions pour {{name}}",
+    "pending": "en attente",
+    "pending_hint": "en attente de confirmation sur la blockchain. Cela peut prendre quelques minutes.",
+    "remove_admin_named": "retirer les droits d’admin de {{name}}"
+  },
   "member_category": {
     "admins": "administrateurs",
     "collapse": "réduire {{category}}",
@@ -785,6 +793,10 @@
     "members": "membres",
     "offline": "hors ligne",
     "park": "parc"
+  },
+  "members_screen": {
+    "bans": "bannissements",
+    "invites": "invitations"
   },
   "message": {
     "error": {
@@ -1013,6 +1025,10 @@
       "copy": "Le Tableau de bord d’accueil est votre point de départ dans Qortal Hub.\n\nFaisons un tour rapide des notions essentielles !",
       "title": "Bienvenue dans Qortal Hub"
     }
+  },
+  "panel": {
+    "files": "fichiers",
+    "threads": "Threads"
   },
   "subscription": {
     "actions_badge_one": "{{count}} action",

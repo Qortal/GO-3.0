@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   isReticulumDmEventForConversation,
+  mergeEvents,
   projectReticulumDmEvents,
   reticulumDmEventToChatMessage,
   type ReticulumDmEvent,
@@ -221,5 +222,151 @@ describe('Reticulum DM live conversation filtering', () => {
         'bob'
       )
     ).toBe(false);
+  });
+});
+
+describe('Reticulum DM delivery state in the UI', () => {
+  it('maps the own-device copy onto the chat message', () => {
+    const message = reticulumDmEventToChatMessage(
+      event({
+        eventId: 'own-1',
+        eventType: 'message',
+        senderAddress: 'alice',
+        localDeliveryStatus: 'pending',
+        localOwnDeviceCopiedAt: 1234,
+      })
+    );
+    expect(message).toMatchObject({
+      reticulumDeliveryStatus: 'pending',
+      reticulumOwnDeviceCopiedAt: 1234,
+    });
+  });
+
+  it('does not let a payload forge an own-device copy', () => {
+    const message = reticulumDmEventToChatMessage(
+      event({
+        eventId: 'own-2',
+        eventType: 'message',
+        senderAddress: 'alice',
+        localDeliveryStatus: 'pending',
+        payload: JSON.stringify({
+          messageText: 'hi',
+          otherData: {
+            reticulumOwnDeviceCopiedAt: 99,
+            localOwnDeviceCopiedAt: 99,
+          },
+        }),
+      })
+    );
+    expect(message.reticulumOwnDeviceCopiedAt).toBeUndefined();
+    expect(message.localOwnDeviceCopiedAt).toBeUndefined();
+  });
+
+  it('treats earlier pending own messages as delivered once a later own event is sent', () => {
+    const own = (
+      eventId: string,
+      timestamp: number,
+      overrides: Partial<ReticulumDmEvent> = {}
+    ) =>
+      event({
+        eventId,
+        eventType: 'message',
+        senderAddress: 'alice',
+        timestamp,
+        localDeliveryStatus: 'pending',
+        ...overrides,
+      });
+    const statusOf = (events: ReticulumDmEvent[]) =>
+      Object.fromEntries(
+        projectReticulumDmEvents(events).messages.map((message) => [
+          message.eventId,
+          message.reticulumDeliveryStatus,
+        ])
+      );
+
+    const m1 = own('m1', 1, { localOwnDeviceCopiedAt: 5 });
+    const m2 = own('m2', 2);
+    // A later sent message or a sent reaction both prove delivery.
+    expect(
+      statusOf([m1, m2, own('m3', 3, { localDeliveryStatus: 'sent' })])
+    ).toEqual({ m1: 'sent', m2: 'sent', m3: 'sent' });
+    expect(
+      statusOf([
+        m1,
+        m2,
+        own('r1', 3, {
+          eventType: 'reaction_add',
+          targetEventId: 'm1',
+          localDeliveryStatus: 'sent',
+          payload: JSON.stringify({ content: '👍' }),
+        }),
+      ])
+    ).toEqual({ m1: 'sent', m2: 'sent' });
+    // Anything after the newest sent event stays pending.
+    expect(
+      statusOf([own('m0', 0, { localDeliveryStatus: 'sent' }), m1, m2])
+    ).toEqual({ m0: 'sent', m1: 'pending', m2: 'pending' });
+    // The stored events are not rewritten.
+    expect(m1.localDeliveryStatus).toBe('pending');
+  });
+
+  it('never lets a peer event or a Saved Messages event vouch for delivery', () => {
+    const pending = event({
+      eventId: 'm1',
+      eventType: 'message',
+      senderAddress: 'alice',
+      timestamp: 1,
+      localDeliveryStatus: 'pending',
+    });
+    const fromPeer = event({
+      eventId: 'p1',
+      eventType: 'message',
+      senderAddress: 'bob',
+      timestamp: 2,
+      localDeliveryStatus: 'sent',
+    });
+    const selfDm = event({
+      eventId: 's1',
+      eventType: 'message',
+      senderAddress: 'alice',
+      recipientAddress: 'alice',
+      timestamp: 3,
+      localDeliveryStatus: 'sent',
+    });
+    const [message] = projectReticulumDmEvents([
+      pending,
+      fromPeer,
+      selfDm,
+    ]).messages;
+    expect(message.reticulumDeliveryStatus).toBe('pending');
+  });
+
+  it('never walks delivery progress back on a stale copy of an event', () => {
+    const pending = event({
+      eventId: 'own-3',
+      eventType: 'message',
+      senderAddress: 'alice',
+      localDeliveryStatus: 'pending',
+    });
+    const copied = { ...pending, localOwnDeviceCopiedAt: 50 };
+    const sent = {
+      ...pending,
+      localDeliveryStatus: 'sent' as const,
+      localDeliveryUpdatedAt: 60,
+    };
+
+    // A stale pending emit after the copy keeps the copy.
+    expect(mergeEvents([copied], [pending])[0]).toMatchObject({
+      localDeliveryStatus: 'pending',
+      localOwnDeviceCopiedAt: 50,
+    });
+    // A stale pending emit or history page after delivery keeps 'sent'.
+    expect(mergeEvents([sent], [copied])[0]).toMatchObject({
+      localDeliveryStatus: 'sent',
+      localDeliveryUpdatedAt: 60,
+      localOwnDeviceCopiedAt: 50,
+    });
+    // Forward progress still applies.
+    expect(mergeEvents([pending], [sent])[0].localDeliveryStatus).toBe('sent');
   });
 });

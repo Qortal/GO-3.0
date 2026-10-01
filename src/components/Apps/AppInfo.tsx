@@ -14,6 +14,8 @@ import {
   AppsLibraryContainer,
   AppsWidthLimiter,
 } from './Apps-styles';
+import { AppAvailabilityLabel } from './AppAvailabilityLabel';
+import { useAppNodeStatus } from './appNodeStatus';
 import {
   Avatar,
   Box,
@@ -27,12 +29,7 @@ import LogoSelected from '../../assets/svgs/LogoSelected.svg';
 import { Spacer } from '../../common/Spacer';
 import { executeEvent } from '../../utils/events';
 import { AppRating } from './AppRating';
-import {
-  settingsLocalLastUpdatedAtom,
-  sortablePinnedAppsAtom,
-} from '../../atoms/global';
-import { saveToLocalStorage } from './AppsNavBarDesktop';
-import { useAtom, useSetAtom } from 'jotai';
+import { useLibraryAppPin } from './useLibraryAppPin';
 import { useTranslation } from 'react-i18next';
 import { ComposeP, ShowMessageReturnButton } from '../Group/Forum/Mail-styles';
 import { ReturnIcon } from '../../assets/Icons/ReturnIcon';
@@ -61,10 +58,13 @@ const StyledDivider = styled(Divider)(({ theme }) => ({
 }));
 
 export const AppInfo = ({ app, myName }) => {
-  const isInstalled = app?.status?.status === 'READY';
-  const [sortablePinnedApps, setSortablePinnedApps] = useAtom(
-    sortablePinnedAppsAtom
-  );
+  const nodeStatus = useAppNodeStatus(app);
+  const isInstalled = nodeStatus.availability === 'ready';
+  const {
+    isPinned: isSelectedAppPinned,
+    target: pinTarget,
+    togglePin,
+  } = useLibraryAppPin(app);
   const { show } = useContext(QORTAL_APP_CONTEXT);
   const [openSnack, setOpenSnack] = useState(false);
   const [infoSnack, setInfoSnack] = useState<{
@@ -79,11 +79,6 @@ export const AppInfo = ({ app, myName }) => {
   const { rating, refresh } = useAppRating(app?.name, app?.service);
   const hasPublishedRating = rating?.hasPublishedRating ?? null;
   const pollInfo = rating?.pollInfo ?? null;
-
-  const isSelectedAppPinned = !!sortablePinnedApps?.find(
-    (item) => item?.name === app?.name && item?.service === app?.service
-  );
-  const setSettingsLocalLastUpdated = useSetAtom(settingsLocalLastUpdatedAtom);
 
   const handleRate = async (rating: number): Promise<boolean> => {
     try {
@@ -355,37 +350,7 @@ export const AppInfo = ({ app, myName }) => {
             }}
           >
             <AppButton
-              onClick={() => {
-                setSortablePinnedApps((prev) => {
-                  let updatedApps;
-
-                  if (isSelectedAppPinned) {
-                    updatedApps = prev.filter(
-                      (item) =>
-                        !(
-                          item?.name === app?.name &&
-                          item?.service === app?.service
-                        )
-                    );
-                  } else {
-                    updatedApps = [
-                      ...prev,
-                      {
-                        name: app?.name,
-                        service: app?.service,
-                      },
-                    ];
-                  }
-
-                  saveToLocalStorage(
-                    'ext_saved_settings',
-                    'sortablePinnedApps',
-                    updatedApps
-                  );
-                  return updatedApps;
-                });
-                setSettingsLocalLastUpdated(Date.now());
-              }}
+              onClick={togglePin}
               sx={{
                 backgroundColor: theme.palette.background.paper,
                 height: '40px',
@@ -394,13 +359,16 @@ export const AppInfo = ({ app, myName }) => {
               }}
             >
               <AppButtonText>
-                {isSelectedAppPinned
-                  ? t('core:action.unpin_from_dashboard', {
-                      postProcess: 'capitalizeFirstChar',
-                    })
-                  : t('core:action.pin_to_dashboard', {
-                      postProcess: 'capitalizeFirstChar',
-                    })}
+                {t(
+                  pinTarget === 'tabs'
+                    ? isSelectedAppPinned
+                      ? 'core:action.unpin_from_tabs'
+                      : 'core:action.pin_to_tabs'
+                    : isSelectedAppPinned
+                      ? 'core:action.unpin_from_dashboard'
+                      : 'core:action.pin_to_dashboard',
+                  { postProcess: 'capitalizeFirstChar' }
+                )}
               </AppButtonText>
             </AppButton>
 
@@ -419,13 +387,7 @@ export const AppInfo = ({ app, myName }) => {
               }}
             >
               <AppButtonText>
-                {isInstalled
-                  ? t('core:action.open', {
-                      postProcess: 'capitalizeFirstChar',
-                    })
-                  : t('core:action.download', {
-                      postProcess: 'capitalizeFirstChar',
-                    })}
+                <AppAvailabilityLabel status={nodeStatus} />
               </AppButtonText>
             </AppButton>
           </Box>

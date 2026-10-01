@@ -12,6 +12,13 @@ const RETICULUM_CHAT_INITIAL_HISTORY_LIMIT = 200;
 const RETICULUM_CHAT_OLDER_HISTORY_LIMIT = 100;
 const RETICULUM_CHAT_NEWER_HISTORY_LIMIT = 100;
 const RETICULUM_CHAT_EMPTY_OLDER_RETRY_MS = 3000;
+// Backoff for re-reading a channel whose first read came back empty: the listed
+// steps, then one read a minute for a capped number of reads. The hook cannot
+// tell whether the chat section is on screen (Group keeps it mounted behind
+// other sections), so after the cap it waits for the page to be shown again.
+const RETICULUM_CHAT_EMPTY_REREAD_DELAYS_MS = [5000, 10000, 20000, 40000];
+const RETICULUM_CHAT_EMPTY_REREAD_STEADY_MS = 60000;
+const RETICULUM_CHAT_EMPTY_REREAD_STEADY_LIMIT = 10;
 export const isDisabledTyping = false;
 
 type ReticulumChatHookEvent = {
@@ -511,14 +518,14 @@ export function useReticulumGroupChat(
     retryOlderAfterRef.current = 0;
     primaryNameRetryAttemptsRef.current = 0;
     const historyVisibilityRevision = visibilityRevisionRef.current;
-    const loadInitialHistory = (attempt = 0) => {
+    const readLatestHistoryPage = () => {
       const structuredHistoryPromise =
         window.reticulumChat?.getMessageHistoryPage?.(
           validGroupId,
           normalizedChannelId,
           RETICULUM_CHAT_INITIAL_HISTORY_LIMIT
         );
-      const historyPromise = structuredHistoryPromise
+      return structuredHistoryPromise
         ? structuredHistoryPromise.then((page) => ({
             events: Array.isArray(page?.events) ? page.events : [],
             hasOlder: page?.hasMore === true,
@@ -538,7 +545,116 @@ export function useReticulumGroupChat(
             events: Array.isArray(history) ? history : [],
             hasOlder: Array.isArray(history) && history.length > 0,
           }));
+    };
+    const applyLatestHistoryPage = (historyPage: {
+      events: unknown[];
+      hasOlder: boolean;
+    }) => {
+      const historyEvents = historyPage.events as ReticulumChatHookEvent[];
+      setHasOlder(historyPage.hasOlder);
+      mergeEvents(historyEvents, expectedChatKey);
+      updateHistoryMode('latest');
+      setHistoryWindowRevision((revision) => revision + 1);
+      void enrichVisibleEvents(historyEvents, expectedChatKey);
+      setLoadedInitialHistoryKey(expectedChatKey);
+    };
+
+    // The first read can come back empty while the network request it
+    // triggers is still unanswered (no peer reachable yet, membership check
+    // unavailable, radio busy). The UI never read again, so such a channel
+    // stayed blank even after its history arrived. While the channel stays
+    // selected and has no message, re-issue the same read on a bounded
+    // backoff. Only one read runs at a time; the first message, a channel
+    // switch or unmount ends it. A hidden page or the read cap parks it until
+    // the page is shown again, which starts the backoff over.
+    let historyReadInFlight = true;
+    let emptyRereadTimer: number | null = null;
+    let emptyRereadCount = 0;
+    let waitingForVisiblePage = false;
+    const channelHasMessage = () =>
+      messageCursorAt(eventsRef.current, 'newest') !== null ||
+      messageCursorAt(pendingEventsRef.current, 'newest') !== null;
+    const resumeEmptyChannelReread = () => {
+      if (document.visibilityState === 'hidden') return;
+      document.removeEventListener(
+        'visibilitychange',
+        resumeEmptyChannelReread
+      );
+      waitingForVisiblePage = false;
+      emptyRereadCount = 0;
+      scheduleEmptyChannelReread();
+    };
+    const waitForVisiblePage = () => {
+      if (waitingForVisiblePage) return;
+      waitingForVisiblePage = true;
+      document.addEventListener('visibilitychange', resumeEmptyChannelReread);
+    };
+    const scheduleEmptyChannelReread = () => {
+      if (
+        cancelled ||
+        emptyRereadTimer !== null ||
+        waitingForVisiblePage ||
+        channelHasMessage()
+      ) {
+        return;
+      }
+      if (
+        emptyRereadCount >=
+        RETICULUM_CHAT_EMPTY_REREAD_DELAYS_MS.length +
+          RETICULUM_CHAT_EMPTY_REREAD_STEADY_LIMIT
+      ) {
+        waitForVisiblePage();
+        return;
+      }
+      const delay =
+        RETICULUM_CHAT_EMPTY_REREAD_DELAYS_MS[emptyRereadCount] ??
+        RETICULUM_CHAT_EMPTY_REREAD_STEADY_MS;
+      emptyRereadTimer = window.setTimeout(() => {
+        emptyRereadTimer = null;
+        if (cancelled || channelHasMessage()) return;
+        if (document.visibilityState === 'hidden') {
+          waitForVisiblePage();
+          return;
+        }
+        if (historyReadInFlight || loadingNewerRef.current) {
+          scheduleEmptyChannelReread();
+          return;
+        }
+        emptyRereadCount += 1;
+        rereadEmptyChannel();
+      }, delay);
+    };
+    const settleHistoryRead = () => {
+      historyReadInFlight = false;
+      scheduleEmptyChannelReread();
+    };
+    const rereadEmptyChannel = () => {
+      const readGeneration = historyWindowGenerationRef.current;
+      const readVisibilityRevision = visibilityRevisionRef.current;
+      const historyPromise = readLatestHistoryPage();
+      if (!historyPromise) return;
+      historyReadInFlight = true;
       void historyPromise
+        .then((historyPage) => {
+          if (
+            cancelled ||
+            historyWindowGenerationRef.current !== readGeneration ||
+            visibilityRevisionRef.current !== readVisibilityRevision ||
+            messageCursorAt(historyPage.events, 'newest') === null
+          ) {
+            return;
+          }
+          applyLatestHistoryPage(historyPage);
+        })
+        .catch(() => {
+          // Same as an empty page: keep backing off.
+        })
+        .finally(settleHistoryRead);
+    };
+
+    const loadInitialHistory = (attempt = 0) => {
+      let retrying = false;
+      void readLatestHistoryPage()
         ?.then((historyPage) => {
           if (
             cancelled ||
@@ -548,13 +664,7 @@ export function useReticulumGroupChat(
           ) {
             return;
           }
-          const historyEvents = historyPage.events as ReticulumChatHookEvent[];
-          setHasOlder(historyPage.hasOlder);
-          mergeEvents(historyEvents, expectedChatKey);
-          updateHistoryMode('latest');
-          setHistoryWindowRevision((revision) => revision + 1);
-          void enrichVisibleEvents(historyEvents, expectedChatKey);
-          setLoadedInitialHistoryKey(expectedChatKey);
+          applyLatestHistoryPage(historyPage);
         })
         .catch((error) => {
           const timedOut = String(error?.message || error).includes('timed out');
@@ -564,11 +674,13 @@ export function useReticulumGroupChat(
             !cancelled &&
             historyWindowGenerationRef.current === historyWindowGeneration
           ) {
+            retrying = true;
             window.setTimeout(() => {
               if (
                 cancelled ||
                 historyWindowGenerationRef.current !== historyWindowGeneration
               ) {
+                settleHistoryRead();
                 return;
               }
               loadInitialHistory(attempt + 1);
@@ -587,6 +699,9 @@ export function useReticulumGroupChat(
             setHasOlder(false);
             setLoadedInitialHistoryKey(expectedChatKey);
           }
+        })
+        .finally(() => {
+          if (!retrying) settleHistoryRead();
         });
     };
     loadInitialHistory();
@@ -729,6 +844,14 @@ export function useReticulumGroupChat(
 
     return () => {
       cancelled = true;
+      if (emptyRereadTimer !== null) {
+        window.clearTimeout(emptyRereadTimer);
+        emptyRereadTimer = null;
+      }
+      document.removeEventListener(
+        'visibilitychange',
+        resumeEmptyChannelReread
+      );
       if (batchTimerRef.current) {
         clearTimeout(batchTimerRef.current);
         batchTimerRef.current = null;

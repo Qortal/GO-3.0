@@ -28,10 +28,8 @@ import {
 } from '../../utils/mobileBackgroundService';
 import { initMobileTransferNotifications } from '../../utils/mobileTransferNotifications';
 import { isCapacitor } from '../../utils/platform';
-import {
-  dialogContentSx,
-  getDialogPaperSx,
-} from '../App/dialogSurface';
+import { VendorFreezeHintDialog } from './VendorFreezeHintDialog';
+import { dialogContentSx, getDialogPaperSx } from '../App/dialogSurface';
 
 type MobileBackgroundSetupProps = {
   enabled: boolean;
@@ -194,74 +192,78 @@ export const MobileBackgroundSetup = ({
   };
 
   return (
-    <Dialog
-      open={batteryPromptOpen}
-      onClose={() => handleNotNow()}
-      fullWidth
-      maxWidth="xs"
-      PaperProps={{
-        sx: getDialogPaperSx(theme, { maxWidth: 420, radius: 20 }),
-      }}
-    >
-      <DialogContent sx={{ ...dialogContentSx, pt: 2.2 }}>
-        <Typography
-          sx={{
-            fontSize: '1.05rem',
-            fontWeight: 700,
-            letterSpacing: '-0.02em',
-            mb: 1,
-          }}
-        >
-          {t('auth:mobile_background.battery_title', {
-            defaultValue: 'Keep Qortal Go reachable',
-          })}
-        </Typography>
-        <Typography
-          sx={{
-            color: theme.palette.text.secondary,
-            fontSize: '0.9rem',
-            lineHeight: 1.55,
-            mb: 1.4,
-          }}
-        >
-          {t('auth:mobile_background.battery_body', {
-            defaultValue:
-              'To receive calls and messages reliably, disable battery restrictions for Qortal Go. On Android, turn off "Pause app activity if unused" and allow unrestricted battery use.',
-          })}
-        </Typography>
-        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.85 }}>
-          <ButtonBase
-            onClick={() => void handleAllowUnrestricted()}
-            sx={actionButtonSx(true)}
+    <>
+      {/* After the battery prompt, so two dialogs never stack. */}
+      <VendorFreezeHintDialog suspended={batteryPromptOpen} />
+      <Dialog
+        open={batteryPromptOpen}
+        onClose={() => handleNotNow()}
+        fullWidth
+        maxWidth="xs"
+        PaperProps={{
+          sx: getDialogPaperSx(theme, { maxWidth: 420, radius: 20 }),
+        }}
+      >
+        <DialogContent sx={{ ...dialogContentSx, pt: 2.2 }}>
+          <Typography
+            sx={{
+              fontSize: '1.05rem',
+              fontWeight: 700,
+              letterSpacing: '-0.02em',
+              mb: 1,
+            }}
           >
-            {t('auth:mobile_background.battery_allow', {
-              defaultValue: 'Allow in background',
+            {t('auth:mobile_background.battery_title', {
+              defaultValue: 'Keep Qortal Go reachable',
             })}
-          </ButtonBase>
-          <ButtonBase
-            onClick={() => void handleOpenAppSettings()}
-            sx={actionButtonSx(false)}
+          </Typography>
+          <Typography
+            sx={{
+              color: theme.palette.text.secondary,
+              fontSize: '0.9rem',
+              lineHeight: 1.55,
+              mb: 1.4,
+            }}
           >
-            {t('auth:mobile_background.battery_settings', {
-              defaultValue: 'Open settings',
+            {t('auth:mobile_background.battery_body', {
+              defaultValue:
+                'To receive calls and messages reliably, disable battery restrictions for Qortal Go. On Android, turn off "Pause app activity if unused" and allow unrestricted battery use.',
             })}
-          </ButtonBase>
-          <ButtonBase onClick={handleNotNow} sx={actionButtonSx(false)}>
-            {t('auth:mobile_background.battery_not_now', {
-              defaultValue: 'Not now',
-            })}
-          </ButtonBase>
-          <ButtonBase
-            onClick={() => void handleNeverShowAgain()}
-            sx={textButtonSx}
-          >
-            {t('auth:mobile_background.battery_never_again', {
-              defaultValue: 'Never show this again',
-            })}
-          </ButtonBase>
-        </Box>
-      </DialogContent>
-    </Dialog>
+          </Typography>
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.85 }}>
+            <ButtonBase
+              onClick={() => void handleAllowUnrestricted()}
+              sx={actionButtonSx(true)}
+            >
+              {t('auth:mobile_background.battery_allow', {
+                defaultValue: 'Allow in background',
+              })}
+            </ButtonBase>
+            <ButtonBase
+              onClick={() => void handleOpenAppSettings()}
+              sx={actionButtonSx(false)}
+            >
+              {t('auth:mobile_background.battery_settings', {
+                defaultValue: 'Open settings',
+              })}
+            </ButtonBase>
+            <ButtonBase onClick={handleNotNow} sx={actionButtonSx(false)}>
+              {t('auth:mobile_background.battery_not_now', {
+                defaultValue: 'Not now',
+              })}
+            </ButtonBase>
+            <ButtonBase
+              onClick={() => void handleNeverShowAgain()}
+              sx={textButtonSx}
+            >
+              {t('auth:mobile_background.battery_never_again', {
+                defaultValue: 'Never show this again',
+              })}
+            </ButtonBase>
+          </Box>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 };
 

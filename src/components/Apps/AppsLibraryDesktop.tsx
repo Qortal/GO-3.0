@@ -1,4 +1,11 @@
-import { useState, useEffect, useCallback, useMemo, useTransition } from 'react';
+import {
+  useState,
+  useEffect,
+  useCallback,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+} from 'react';
 import {
   AppsDesktopLibraryBody,
   AppsDesktopLibraryHeader,
@@ -25,8 +32,10 @@ import { ReturnIcon } from '../../assets/Icons/ReturnIcon.tsx';
 import { useTranslation } from 'react-i18next';
 import SearchIcon from '@mui/icons-material/Search';
 import IconClearInput from '../../assets/svgs/ClearInput.svg';
-import { useAtom } from 'jotai';
+import { atom, useAtom, useAtomValue } from 'jotai';
 import { appSortAtom } from '../../atoms/appsAtoms';
+import { ratingsStoreAtom } from '../../hooks/useAppRatings';
+import type { AppRatingData } from '../../types/ratings';
 import { filterAndSortApps } from '../../atoms/appsAtoms';
 import {
   SortDropdown,
@@ -45,6 +54,8 @@ import {
 } from './AppsLibrary';
 import { LibraryTabPanel } from './AppsLibrary/LibraryTabPanel';
 import { AppCardEnhanced, AppCardListItem } from './AppCard';
+
+const EMPTY_RATINGS_MAP = new Map<string, AppRatingData>();
 
 const SearchContainer = styled(Box)(({ theme }) => ({
   display: 'flex',
@@ -73,7 +84,10 @@ export const AppsLibraryDesktop = ({
   const [mountedTabs, setMountedTabs] = useState<Set<AppsLibraryTabValue>>(
     () => new Set(['official'])
   );
-  const [, startTabTransition] = useTransition();
+  // Every tab shares one scroll container; remember each tab's position.
+  const tabScrollTopRef = useRef<Partial<Record<AppsLibraryTabValue, number>>>(
+    {}
+  );
   const [searchValue, setSearchValue] = useState('');
   const [debouncedSearchValue, setDebouncedSearchValue] = useState('');
   const [sortOption, setSortOption] = useAtom(appSortAtom);
@@ -101,23 +115,66 @@ export const AppsLibraryDesktop = ({
     setDebouncedSearchValue(externalSearchRequest?.query || '');
   }, [externalSearchRequest?.nonce]);
 
+  // An urgent update on purpose: inside a transition the tab strip itself
+  // did not move until the whole switch committed, and nothing did at all
+  // while other work kept the transition lanes waiting.
   const handleTabChange = useCallback((tab: AppsLibraryTabValue) => {
-    startTabTransition(() => {
-      setCurrentTab(tab);
-      setMountedTabs((prev) => {
-        if (prev.has(tab)) return prev;
-        const next = new Set(prev);
-        next.add(tab);
-        return next;
-      });
+    // Picking a tab leaves search results; otherwise the click changed
+    // nothing visible (every tab looks unselected while searching).
+    setSearchValue('');
+    setDebouncedSearchValue('');
+    setCurrentTab(tab);
+    setMountedTabs((prev) => {
+      if (prev.has(tab)) return prev;
+      const next = new Set(prev);
+      next.add(tab);
+      return next;
     });
   }, []);
+
+  const handleTabReselect = useCallback(() => {
+    scrollParent?.scrollTo({ top: 0, behavior: 'smooth' });
+  }, [scrollParent]);
 
   const bindScrollContainer = useCallback((node: HTMLDivElement | null) => {
     setScrollParent(node);
   }, []);
 
   const isSearchResultsActive = debouncedSearchValue.trim().length > 0;
+
+  // Record each tab's position as it scrolls (not while search results fill
+  // the container), and put it back when the tab or the results go away.
+  const currentTabRef = useRef(currentTab);
+  currentTabRef.current = currentTab;
+  const searchResultsActiveRef = useRef(isSearchResultsActive);
+  searchResultsActiveRef.current = isSearchResultsActive;
+
+  useEffect(() => {
+    if (!scrollParent) return;
+    const onScroll = () => {
+      if (searchResultsActiveRef.current) return;
+      tabScrollTopRef.current[currentTabRef.current] = scrollParent.scrollTop;
+    };
+    scrollParent.addEventListener('scroll', onScroll, { passive: true });
+    return () => scrollParent.removeEventListener('scroll', onScroll);
+  }, [scrollParent]);
+
+  useLayoutEffect(() => {
+    if (!scrollParent || isSearchResultsActive) return;
+    scrollParent.scrollTop = tabScrollTopRef.current[currentTab] ?? 0;
+  }, [currentTab, isSearchResultsActive, scrollParent]);
+
+  // Ratings only matter (and only re-render the library) for a rating sort
+  // of search results.
+  const needsRatings =
+    isSearchResultsActive &&
+    (sortOption === 'highest_rated' || sortOption === 'most_rated');
+  const searchRatingsAtom = useMemo(
+    () =>
+      atom((get) => (needsRatings ? get(ratingsStoreAtom) : EMPTY_RATINGS_MAP)),
+    [needsRatings]
+  );
+  const searchRatings = useAtomValue(searchRatingsAtom);
 
   const searchResults = useMemo(() => {
     if (!isSearchResultsActive) return [];
@@ -126,8 +183,15 @@ export const AppsLibraryDesktop = ({
       category: 'all',
       status: 'all',
       search: debouncedSearchValue,
+      ratingsMap: searchRatings,
     });
-  }, [availableQapps, debouncedSearchValue, isSearchResultsActive, sortOption]);
+  }, [
+    availableQapps,
+    debouncedSearchValue,
+    isSearchResultsActive,
+    searchRatings,
+    sortOption,
+  ]);
 
   const renderTabContent = () => {
     if (isSearchResultsActive) {
@@ -390,6 +454,7 @@ export const AppsLibraryDesktop = ({
               isMobile={isMobile}
               isSearchActive={isSearchActive}
               onTabChange={handleTabChange}
+              onTabReselect={handleTabReselect}
             />
 
             <Box

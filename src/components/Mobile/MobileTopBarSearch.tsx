@@ -26,7 +26,7 @@ import { AppThumbnailAvatar } from '../Apps/AppThumbnailAvatar';
 import IconClearInput from '../../assets/svgs/ClearInput.svg';
 import { executeEvent } from '../../utils/events';
 import { getBaseApiReact } from '../../utils/globalApi';
-import { MOBILE_TOP_BAR_HEIGHT_PX } from './MobileTopBar';
+import { MOBILE_TOP_BAR_HEIGHT_PX } from './mobileBarHeights';
 import { MOBILE_TABS_OVERLAY_Z } from './mobileLayout';
 import {
   SAFE_AREA_LEFT,

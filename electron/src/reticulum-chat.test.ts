@@ -7377,6 +7377,196 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('treats a null admin validation as unknown instead of caching not_admin', async () => {
+    let calls = 0;
+    let now = 1_000;
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      now: () => now,
+      validateGroupAdmin: async () => {
+        calls += 1;
+        return calls === 1 ? null : true;
+      },
+    });
+    const address = 'QaU2XUB6iMgM9YUJnYRkxwVKJd322hJh91';
+
+    await expect(
+      (manager as any).getValidatedGroupAdminStatus(718, address)
+    ).resolves.toBe('unknown');
+    await expect(
+      (manager as any).getValidatedGroupAdminStatus(718, address)
+    ).resolves.toBe('unknown');
+    expect(calls).toBe(1);
+    expect((manager as any).groupAdminValidationCache.size).toBe(0);
+    now += 10_000;
+    await expect(
+      (manager as any).getValidatedGroupAdminStatus(718, address)
+    ).resolves.toBe('admin');
+    expect(calls).toBe(2);
+    manager.close();
+  });
+
+  it('uses local membership for the local signer only when membership validation is unavailable', async () => {
+    const groupId = 719;
+    const localAddress = 'QlocalSignerMembershipFallback';
+    const remoteAddress = 'QremoteAuthorMembershipUnavailable';
+    let calls = 0;
+    let now = 1_000;
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      now: () => now,
+      validateGroupMember: async () => {
+        calls += 1;
+        return null;
+      },
+    });
+    const validate = (groupId: number, address: string) =>
+      (manager as any).isValidatedGroupMember(groupId, address);
+
+    // Not initialized yet: no local list to fall back on.
+    await expect(validate(groupId, localAddress)).resolves.toBeNull();
+    expect(calls).toBe(1);
+
+    manager.setLocalGroupMemberships([{ groupId, localAddress }]);
+    now += 10_000;
+    await expect(validate(groupId, localAddress)).resolves.toBe(true);
+    expect(calls).toBe(2);
+    // The fallback is not cached as a Core answer: the unavailable marker
+    // stays, and Core is asked again once the retry window has passed.
+    expect(
+      (manager as any).groupMemberValidationCache.has(
+        `${groupId}:${localAddress}`
+      )
+    ).toBe(false);
+    await expect(validate(groupId, localAddress)).resolves.toBe(true);
+    expect(calls).toBe(2);
+    now += 10_000;
+    await expect(validate(groupId, localAddress)).resolves.toBe(true);
+    expect(calls).toBe(3);
+
+    // Only the local signer's own address, and only for its own groups.
+    await expect(validate(groupId, remoteAddress)).resolves.toBeNull();
+    await expect(validate(groupId + 1, localAddress)).resolves.toBeNull();
+    manager.close();
+  });
+
+  it('never lets local membership override an explicit not-member result', async () => {
+    const groupId = 720;
+    const localAddress = 'QlocalSignerExplicitNotMember';
+    const validateMember = vi.fn(async () => false);
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      validateGroupMember: validateMember,
+    });
+    manager.setLocalGroupMemberships([{ groupId, localAddress }]);
+
+    await expect(
+      (manager as any).isValidatedGroupMember(groupId, localAddress)
+    ).resolves.toBe(false);
+    expect(validateMember).toHaveBeenCalledTimes(1);
+    manager.close();
+  });
+
+  it('publishes a local event when membership validation is unavailable and the local signer is a member', async () => {
+    const event = signedEvent({ groupId: 721 });
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      } as any,
+      validateGroupMember: async () => null,
+    });
+    manager.setLocalGroupMemberships([
+      { groupId: 721, localAddress: event.authorAddress },
+    ]);
+
+    await expect(manager.publishEvent(event)).resolves.toEqual({ ok: true });
+    expect(manager.getHistory(721, 10).map((item) => item.eventId)).toContain(
+      event.eventId
+    );
+    manager.close();
+  });
+
+  it('explains a refused publish as unavailable membership or as a non-member', async () => {
+    const unavailable = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      validateGroupMember: async () => null,
+    });
+    const unavailableEvent = signedEvent({ groupId: 722 });
+    // Local membership names another address, so the fallback does not apply.
+    unavailable.setLocalGroupMemberships([
+      { groupId: 722, localAddress: 'QsomeoneElseOnThisDevice' },
+    ]);
+    await expect(
+      unavailable.publishEvent(unavailableEvent)
+    ).resolves.toMatchObject({
+      ok: false,
+      error:
+        'Cannot publish Reticulum chat event: could not confirm your group membership with your Qortal node (membership check unavailable)',
+    });
+    expect(unavailable.getHistory(722, 10)).toHaveLength(0);
+    unavailable.close();
+
+    const notMember = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      validateGroupMember: async () => false,
+    });
+    const notMemberEvent = signedEvent({ groupId: 723 });
+    notMember.setLocalGroupMemberships([
+      { groupId: 723, localAddress: notMemberEvent.authorAddress },
+    ]);
+    await expect(notMember.publishEvent(notMemberEvent)).resolves.toMatchObject(
+      {
+        ok: false,
+        error:
+          'Cannot publish Reticulum chat event: author is not a current group member',
+      }
+    );
+    expect(notMember.getHistory(723, 10)).toHaveLength(0);
+    notMember.close();
+  });
+
+  it('signs own history page requests when membership validation is unavailable', async () => {
+    const signer = createReticulumChatTestSigner();
+    const identity = await signer({});
+    if (!identity) throw new Error('Expected test signer identity');
+    const build = (manager: ReticulumChatManager) =>
+      (manager as any).buildSignedHistoryPageRequest(
+        724,
+        'general',
+        null,
+        'before',
+        false
+      );
+
+    const unavailable = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      signLocalFields: signer,
+      validateGroupMember: async () => null,
+    });
+    unavailable.setLocalGroupMemberships([
+      { groupId: 724, localAddress: identity.authorAddress },
+    ]);
+    await expect(build(unavailable)).resolves.toMatchObject({
+      c: 'general',
+      d: 'before',
+    });
+    unavailable.close();
+
+    const notMember = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      signLocalFields: signer,
+      validateGroupMember: async () => false,
+    });
+    notMember.setLocalGroupMemberships([
+      { groupId: 724, localAddress: identity.authorAddress },
+    ]);
+    await expect(build(notMember)).resolves.toBeNull();
+    notMember.close();
+  });
+
   it('defers the first direct DM probe until overlay health is good', async () => {
     const local = createDmIdentity();
     let healthy = false;
@@ -30661,6 +30851,54 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('retries channel metadata projection when the admin validator resolves null', async () => {
+    const payload = {
+      channelId: 'null-admin-channel',
+      name: 'null-admin-channel',
+      position: 1,
+    };
+    const event = signedEvent({
+      eventId: 'event-channel-admin-validation-null',
+      groupId: 82,
+      channelId: 'null-admin-channel',
+      eventType: 'channel_create',
+      timestamp: 20_000,
+      encryptedPayload: JSON.stringify(payload),
+    });
+    let attempts = 0;
+    let now = 20_000;
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      } as any,
+      now: () => now,
+      validateGroupMember: async () => true,
+      validateGroupAdmin: async () => {
+        attempts += 1;
+        return attempts === 1 ? null : true;
+      },
+    });
+    manager.setLocalGroupMemberships([82]);
+    expect(await (manager as any).acceptEvent(event, false)).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(
+      manager.getChannels(82, true).map((channel) => channel.channelId)
+    ).not.toContain('null-admin-channel');
+
+    now += 10_000;
+    manager.subscribeGroup(82);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(attempts).toBeGreaterThanOrEqual(2);
+    expect(
+      manager.getChannels(82, true).map((channel) => channel.channelId)
+    ).toContain('null-admin-channel');
+    manager.close();
+  });
+
   it('stores channel write mode from admin metadata', async () => {
     const payload = {
       channelId: 'announcements',
@@ -35278,6 +35516,98 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('defers a metadata snapshot without blaming its peer when the admin validator resolves null', async () => {
+    const groupId = 751;
+    const peer = 'peer-null-admin-snapshot';
+    const resources: Array<Record<string, unknown>> = [];
+    const sender = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        sendReticulumChatDetailed: async () => ({ ok: true as const }),
+        sendReticulumChatResourceDetailed: async (
+          payload: Record<string, unknown>
+        ) => {
+          resources.push(payload);
+          return { ok: true as const };
+        },
+      } as any,
+      now: () => 100_000,
+      signLocalFields: createReticulumChatTestSigner(),
+      validateGroupMember: async () => true,
+      validateGroupAdmin: async () => true,
+    });
+    sender.setLocalGroupMemberships([
+      { groupId, isAdmin: true, localAddress: 'QnullAdminSnapshotSender' },
+    ]);
+    sender.subscribeGroup(groupId);
+    const payload = {
+      channelId: 'null-admin-snapshot',
+      name: 'null-admin-snapshot',
+      position: 1,
+    };
+    const channelEvent = signedEvent({
+      eventId: 'event-null-admin-snapshot-channel',
+      groupId,
+      channelId: payload.channelId,
+      eventType: 'channel_create',
+      encryptedPayload: JSON.stringify(payload),
+    });
+    expect((sender as any).db.insertEvent(channelEvent, true)).toBe(true);
+    await expect(
+      sender.applyChannelMetadataEvent(channelEvent.eventId, payload)
+    ).resolves.toBe(true);
+    (sender as any).notePeerSubscription(peer, groupId, true);
+    await (sender as any).sendMetadataSnapshotToPeer(peer, groupId, 'test');
+    expect(resources).toHaveLength(1);
+    const offer = JSON.parse(
+      fs.readFileSync(String(resources[0].filePath), 'utf8')
+    );
+    expect(offer.a).toBeTruthy();
+    sender.close();
+
+    let adminResult: boolean | null = null;
+    let adminCalls = 0;
+    let now = 100_000;
+    const receiver = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        sendReticulumChatDetailed: async () => ({ ok: true as const }),
+      } as any,
+      now: () => now,
+      validateGroupMember: async () => true,
+      validateGroupAdmin: async () => {
+        adminCalls += 1;
+        return adminResult;
+      },
+    });
+    receiver.setLocalGroupMemberships([groupId]);
+    receiver.subscribeGroup(groupId);
+    const notePeerViolation = vi.spyOn(receiver as any, 'notePeerViolation');
+    const channelIds = () =>
+      receiver.getChannels(groupId, true).map((channel) => channel.channelId);
+
+    await (receiver as any).handleMetadataSnapshotOffer(groupId, offer, peer);
+    expect(adminCalls).toBe(1);
+    expect(notePeerViolation).not.toHaveBeenCalled();
+    expect((receiver as any).deferredMetadataSnapshots.size).toBe(1);
+    expect(channelIds()).not.toContain('null-admin-snapshot');
+
+    // The null was not cached as not_admin: once Core answers, the same
+    // snapshot (as the deferred retry re-offers it) is applied.
+    adminResult = true;
+    now += 10_000;
+    await (receiver as any).handleMetadataSnapshotOffer(groupId, offer, peer);
+    expect(adminCalls).toBe(2);
+    expect(notePeerViolation).not.toHaveBeenCalled();
+    expect(channelIds()).toContain('null-admin-snapshot');
+    expect((receiver as any).deferredMetadataSnapshots.size).toBe(0);
+    receiver.close();
+  });
+
   it('does not infer full snapshot access without an admin validator or admin hint', async () => {
     const manager = new ReticulumChatManager({ dbPath: tempDbPath() });
     manager.setLocalGroupMemberships([
@@ -37389,6 +37719,169 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('still defers a remote author when membership validation is unavailable and local membership names the local signer', async () => {
+    const acceptedTransfers: unknown[] = [];
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        acceptReticulumChatResourceDetailed: async (payload: unknown) => {
+          acceptedTransfers.push(payload);
+          return { ok: true as const };
+        },
+      } as any,
+      now: () => 100_000,
+      signLocalFields: createReticulumChatTestSigner(),
+      validateGroupMember: async () => null,
+    });
+    manager.setLocalGroupMemberships([
+      { groupId: 76, localAddress: 'QlocalSignerNotTheAuthor' },
+    ]);
+    manager.subscribeGroup(76);
+    const event = signedEvent({
+      eventId: 'event-remote-author-membership-unavailable',
+      groupId: 76,
+      timestamp: 100_000,
+    });
+    const blob = serializeReticulumChatEvent(event);
+    const wireHash = nodeCrypto
+      .createHash('sha256')
+      .update(blob, 'utf8')
+      .digest('hex');
+    const resourcePath = path.join(
+      path.dirname(tempDbPath()),
+      'event-remote-author-membership-unavailable.json'
+    );
+    fs.writeFileSync(resourcePath, blob, 'utf8');
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'event_offer',
+        g: 76,
+        o: {
+          x: 'transfer-remote-author-membership-unavailable',
+          id: event.eventId,
+          ph: event.payloadHash,
+          wh: wireHash,
+          s: Buffer.byteLength(blob, 'utf8'),
+        },
+      },
+      'peer'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(acceptedTransfers).toHaveLength(1);
+
+    manager.handleResourceEvent({
+      status: 'received',
+      transferId: 'transfer-remote-author-membership-unavailable',
+      peerPresenceHash: 'peer',
+      path: resourcePath,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(manager.getHistory(76, 10)).toHaveLength(0);
+    expect(
+      (manager as any).db.getRejectedEventMarker(76, event.eventId)
+    ).toBeNull();
+    expect(
+      (manager as any).pendingEventPulls.get(`76:${event.eventId}`)
+    ).toEqual(
+      expect.objectContaining({
+        attempts: 0,
+        nextAttemptAt: 110_000,
+        peerHashes: new Set(['peer']),
+      })
+    );
+    manager.close();
+  });
+
+  it('backs off repeated membership deferrals and wakes them when Core answers for the group again', async () => {
+    vi.useFakeTimers();
+    let now = 100_000;
+    let coreAnswers = false;
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: { on: () => undefined, off: () => undefined } as any,
+      now: () => now,
+      signLocalFields: createReticulumChatTestSigner(),
+      validateGroupMember: async () => (coreAnswers ? true : null),
+    });
+    try {
+      manager.setLocalGroupMemberships([77, 78]);
+      const event = signedEvent({
+        eventId: 'event-membership-deferral-backoff',
+        groupId: 77,
+        timestamp: 100_000,
+      });
+      const otherGroupEvent = signedEvent({
+        eventId: 'event-membership-deferral-other-group',
+        groupId: 78,
+        timestamp: 100_000,
+      });
+      const pending = () =>
+        (manager as any).pendingEventPulls.get(`77:${event.eventId}`);
+
+      // Every import path (live resource, event page, digest batch) re-defers
+      // through this sink while Core stays silent.
+      const waits: number[] = [];
+      for (let deferral = 0; deferral < 7; deferral += 1) {
+        (manager as any).deferEventForMembershipValidation(event, 'peer');
+        expect(pending()).toEqual(
+          expect.objectContaining({ attempts: 0, inFlight: false })
+        );
+        waits.push(pending().nextAttemptAt - now);
+        now = pending().nextAttemptAt;
+      }
+      expect(waits).toEqual([
+        10_000, 20_000, 40_000, 80_000, 160_000, 300_000, 300_000,
+      ]);
+
+      const deferredUntil = pending().nextAttemptAt;
+      (manager as any).deferEventForMembershipValidation(
+        otherGroupEvent,
+        'peer'
+      );
+      const otherDeferredUntil = (manager as any).pendingEventPulls.get(
+        `78:${otherGroupEvent.eventId}`
+      ).nextAttemptAt;
+      // An ordinary network retry in the same group is not a membership
+      // deferral and keeps its own schedule.
+      (manager as any).pendingEventPulls.set('77:event-network-retry', {
+        hint: { eventId: 'event-network-retry', groupId: 77 },
+        peerHashes: new Set(['peer']),
+        digestFingerprint: '',
+        attempts: 1,
+        nextAttemptAt: now + 4_000,
+        inFlight: false,
+      });
+
+      // A null answer is not Core answering again.
+      await expect(
+        (manager as any).isValidatedGroupMember(77, 'QstillUnavailable')
+      ).resolves.toBeNull();
+      expect(pending().nextAttemptAt).toBe(deferredUntil);
+
+      coreAnswers = true;
+      await expect(
+        (manager as any).isValidatedGroupMember(77, 'QcoreAnswersAgain')
+      ).resolves.toBe(true);
+      expect(pending().nextAttemptAt).toBe(now);
+      expect(
+        (manager as any).pendingEventPulls.get('77:event-network-retry')
+          .nextAttemptAt
+      ).toBe(now + 4_000);
+      expect(
+        (manager as any).pendingEventPulls.get(`78:${otherGroupEvent.eventId}`)
+          .nextAttemptAt
+      ).toBe(otherDeferredUntil);
+    } finally {
+      manager.close();
+      vi.useRealTimers();
+    }
+  });
+
   it('permanently suppresses rejected events across digests and author-gap repair', () => {
     let now = 100_000;
     const manager = new ReticulumChatManager({
@@ -39157,6 +39650,3244 @@ describe('reticulum chat device state sync', () => {
       ).toEqual({ success: false, error: 'unknown-owner' });
     } finally {
       after.close();
+    }
+  });
+});
+
+describe('reticulum chat delivery waste cuts', () => {
+  const signDmNotify = (input: {
+    author: ReturnType<typeof createDmIdentity>;
+    peerAddress: string;
+    sourcePeerHash: string;
+    requestId: string;
+    probeRequestId?: string;
+  }): Extract<ReticulumChatWire, { k: 'dm_notify' }> => {
+    const timestamp = Date.now();
+    const signedFields = buildReticulumDmNotifySignedFields({
+      peerAddress: input.peerAddress,
+      sourcePeerHash: input.sourcePeerHash,
+      requestId: input.requestId,
+      probeRequestId: input.probeRequestId,
+      maxHops: 5,
+      authorAddress: input.author.address,
+      authorPublicKey: input.author.publicKey,
+      timestamp,
+    });
+    return {
+      t: 'RCHAT',
+      k: 'dm_notify',
+      d: {
+        b: input.peerAddress,
+        sp: input.sourcePeerHash,
+        q: input.requestId,
+        ...(input.probeRequestId ? { r: input.probeRequestId } : {}),
+        p: input.author.publicKey,
+        n: timestamp,
+        z: base58Encode(
+          nacl.sign.detached(
+            new Uint8Array(canonicalizeForSigning(signedFields)),
+            input.author.secretKey
+          )
+        ),
+      },
+    };
+  };
+
+  it('consumes answers to its own DM probes without re-flooding them but still relays for others', async () => {
+    const local = createDmIdentity();
+    const answerer = createDmIdentity();
+    const otherA = createDmIdentity();
+    const otherB = createDmIdentity();
+    const localPeerHash = 'b'.repeat(32);
+    const inboundPeerHash = 'c'.repeat(32);
+    const fanoutReticulumChatDetailed = vi.fn(async () => ({
+      ok: true as const,
+    }));
+    const sendReticulumChatDetailed = vi.fn(async () => ({
+      ok: true as const,
+    }));
+    const bridge = Object.assign(new EventEmitter(), {
+      getLocalDestinationHash: () => localPeerHash,
+      fanoutReticulumChatDetailed,
+      sendReticulumChatDetailed,
+    });
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      signLocalFields: createDmSigner(local),
+      hasGoodOverlayHealth: () => false,
+      bridge: bridge as any,
+    });
+    try {
+      manager.setLocalDmAddresses([local.address]);
+      await flushAsyncWork();
+      const queuePull = vi
+        .spyOn(manager as any, 'queueDirectMissingEvents')
+        .mockImplementation(() => undefined);
+      const probe = await (manager as any).buildSignedDirectProbeWire(
+        local.address
+      );
+      expect(probe).not.toBeNull();
+      fanoutReticulumChatDetailed.mockClear();
+      sendReticulumChatDetailed.mockClear();
+
+      await (manager as any).handleDirectNotify(
+        signDmNotify({
+          author: answerer,
+          peerAddress: local.address,
+          sourcePeerHash: 'a'.repeat(32),
+          requestId: '1'.repeat(8),
+          probeRequestId: probe.q.q,
+        }),
+        inboundPeerHash
+      );
+      await flushAsyncWork();
+
+      expect(queuePull).toHaveBeenCalledTimes(1);
+      expect(fanoutReticulumChatDetailed).not.toHaveBeenCalled();
+      expect(sendReticulumChatDetailed).not.toHaveBeenCalled();
+      expect(manager.getDeliveryCounters().ownProbeAnswerRelaySuppressed).toBe(
+        1
+      );
+
+      // A notify answering somebody else's probe is relayed exactly as before.
+      await (manager as any).handleDirectNotify(
+        signDmNotify({
+          author: otherA,
+          peerAddress: otherB.address,
+          sourcePeerHash: 'd'.repeat(32),
+          requestId: '2'.repeat(8),
+          probeRequestId: 'e'.repeat(16),
+        }),
+        inboundPeerHash
+      );
+      await flushAsyncWork();
+
+      expect(fanoutReticulumChatDetailed).toHaveBeenCalledTimes(1);
+      expect(manager.getDeliveryCounters().ownProbeAnswerRelaySuppressed).toBe(
+        1
+      );
+    } finally {
+      manager.close();
+    }
+  });
+
+  it('arms the DM pending-delivery sweep only while own pending events exist', async () => {
+    vi.useFakeTimers();
+    const owner = createDmIdentity();
+    const peer = createDmIdentity();
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      signLocalFields: createDmSigner(owner),
+      hasGoodOverlayHealth: () => false,
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => '8'.repeat(32),
+      } as any,
+    });
+    try {
+      let pending = false;
+      const hasPending = vi.fn(() => (pending ? 0 : null));
+      (manager as any).db.nextPendingOwnDirectDeliveryDueAt = hasPending;
+      const sweep = vi
+        .spyOn(manager as any, 'runDmPendingDeliverySweep')
+        .mockResolvedValue(undefined);
+
+      manager.setLocalDmAddresses([owner.address]);
+      await flushAsyncWork();
+      expect(hasPending).toHaveBeenCalled();
+      expect((manager as any).dmPendingDeliveryTimer).toBeNull();
+
+      // Self-DMs are born 'sent' and never need the sweep.
+      const selfEvent = signedDmEvent({
+        sender: owner,
+        recipient: owner,
+        eventId: 'sweep-self-dm',
+        senderSeq: 1,
+        timestamp: Date.now() - 1_000,
+      });
+      expect(
+        (manager as any).acceptDirectEvent(selfEvent, true, {
+          deliveryStatus: 'sent',
+        })
+      ).toBe(true);
+      expect((manager as any).dmPendingDeliveryTimer).toBeNull();
+
+      const event = signedDmEvent({
+        sender: owner,
+        recipient: peer,
+        eventId: 'sweep-own-pending',
+        senderSeq: 2,
+        timestamp: Date.now() - 1_000,
+      });
+      expect(
+        (manager as any).acceptDirectEvent(event, true, {
+          deliveryStatus: 'pending',
+        })
+      ).toBe(true);
+      expect((manager as any).dmPendingDeliveryTimer).not.toBeNull();
+
+      pending = true;
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(sweep).toHaveBeenCalledTimes(1);
+      expect((manager as any).dmPendingDeliveryTimer).not.toBeNull();
+
+      pending = false;
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(sweep).toHaveBeenCalledTimes(2);
+      expect((manager as any).dmPendingDeliveryTimer).toBeNull();
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(sweep).toHaveBeenCalledTimes(2);
+    } finally {
+      manager.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it('skips signature verification only for an exact stored duplicate DM event', () => {
+    const sender = createDmIdentity();
+    const recipient = createDmIdentity();
+    const manager = new ReticulumChatManager({ dbPath: tempDbPath() });
+    try {
+      manager.setLocalDmAddresses([recipient.address]);
+      const event = signedDmEvent({
+        sender,
+        recipient,
+        eventId: 'duplicate-verify-skip',
+        senderSeq: 1,
+        timestamp: Date.now() - 1_000,
+      });
+      expect((manager as any).acceptDirectEvent(event, false)).toBe(true);
+      expect(manager.getDeliveryCounters().dmDuplicateVerifySkipped).toBe(0);
+
+      // The counter is bumped only on the branch that returns before the
+      // ed25519 check; the duplicate is still refused as before.
+      expect((manager as any).acceptDirectEvent({ ...event }, false)).toBe(
+        false
+      );
+      expect(manager.getDeliveryCounters().dmDuplicateVerifySkipped).toBe(1);
+
+      // Same id with a different signature is not an exact copy: it goes
+      // through verification (and fails it) exactly as before.
+      const forged = {
+        ...event,
+        signature: base58Encode(new Uint8Array(64).fill(7)),
+      };
+      expect((manager as any).acceptDirectEvent(forged, false)).toBe(false);
+      expect(manager.getDeliveryCounters().dmDuplicateVerifySkipped).toBe(1);
+    } finally {
+      manager.close();
+    }
+  });
+
+  it('marks only still-pending own events as sent when serving a DM page', async () => {
+    const owner = createDmIdentity();
+    const requester = createDmIdentity();
+    const requesterPeerHash = 'b'.repeat(32);
+    const sentResources: Array<Record<string, any>> = [];
+    const rejected: Array<Record<string, unknown>> = [];
+    const bridge = Object.assign(new EventEmitter(), {
+      getLocalDestinationHash: () => 'a'.repeat(32),
+      sendReticulumChatResourceDetailed: async (
+        payload: Record<string, any>
+      ) => {
+        sentResources.push(payload);
+        return { ok: true as const };
+      },
+      authorizeReticulumChatResourceDetailed: async () => ({
+        ok: true as const,
+      }),
+      rejectReticulumChatResourceDetailed: async (
+        payload: Record<string, unknown>
+      ) => {
+        rejected.push(payload);
+        return { ok: true as const };
+      },
+    });
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+    });
+    try {
+      manager.setLocalDmAddresses([owner.address]);
+      await flushQueuedWork();
+      const alreadySent: ReticulumDmEvent = {
+        ...signedDmEvent({
+          sender: owner,
+          recipient: requester,
+          eventId: 'dm-page-already-sent',
+          senderSeq: 1,
+          timestamp: Date.now() - 2_000,
+        }),
+        localDeliveryStatus: 'sent',
+      };
+      const stillPending: ReticulumDmEvent = {
+        ...signedDmEvent({
+          sender: owner,
+          recipient: requester,
+          eventId: 'dm-page-still-pending',
+          senderSeq: 2,
+          timestamp: Date.now() - 1_000,
+        }),
+        localDeliveryStatus: 'pending',
+      };
+      let pageEvents: ReticulumDmEvent[] = [alreadySent, stillPending];
+      (manager as any).db.getDirectEventsAfter = () => pageEvents;
+      const markSent = vi
+        .spyOn(manager as any, 'markDirectEventSent')
+        .mockImplementation(() => undefined);
+
+      const authorize = async (transferId: string) => {
+        const timestamp = Date.now();
+        const signedFields = buildReticulumDmRequestSignedFields({
+          peerAddress: owner.address,
+          after: 0,
+          limit: 50,
+          requesterPeerHash,
+          requestId: transferId,
+          authorAddress: requester.address,
+          authorPublicKey: requester.publicKey,
+          timestamp,
+        });
+        await (manager as any).authorizeDirectDmPageResource(
+          {
+            status: 'auth',
+            linkId: `link-${transferId}`,
+            transferId,
+            peerPresenceHash: requesterPeerHash,
+          },
+          {
+            transferId,
+            b: owner.address,
+            a: 0,
+            l: 50,
+            q: transferId,
+            rp: requesterPeerHash,
+            p: requester.publicKey,
+            n: timestamp,
+            z: base58Encode(
+              nacl.sign.detached(
+                new Uint8Array(canonicalizeForSigning(signedFields)),
+                requester.secretKey
+              )
+            ),
+          }
+        );
+      };
+
+      await authorize('5'.repeat(16));
+      expect(rejected).toEqual([]);
+      expect(sentResources).toHaveLength(1);
+      expect(markSent).toHaveBeenCalledTimes(1);
+      expect((markSent.mock.calls[0][0] as ReticulumDmEvent).eventId).toBe(
+        stillPending.eventId
+      );
+      expect(manager.getDeliveryCounters()).toMatchObject({
+        dmPageServedToRecipient: 1,
+        dmPageServedToOwnDevice: 0,
+        dmPageRefused: 0,
+      });
+      fs.rmSync(String(sentResources[0].filePath), { force: true });
+
+      pageEvents = [];
+      await authorize('6'.repeat(16));
+      expect(rejected.map((entry) => entry.reason)).toEqual(['no_dm_events']);
+      expect(manager.getDeliveryCounters()).toMatchObject({
+        dmPageRefused: 1,
+        dmPageRefused_no_dm_events: 1,
+      });
+    } finally {
+      manager.close();
+    }
+  });
+
+  it('treats an empty DM page from a verified own device as final', () => {
+    const owner = createDmIdentity();
+    const peer = createDmIdentity();
+    const manager = new ReticulumChatManager({ dbPath: tempDbPath() });
+    try {
+      manager.setLocalDmAddresses([owner.address]);
+      const ownDeviceHash = 'c'.repeat(32);
+      const otherPeerHash = 'd'.repeat(32);
+      const conversationId = reticulumDmConversationId(
+        owner.address,
+        peer.address
+      );
+      vi.spyOn(manager as any, 'isVerifiedSelfDmPeer').mockImplementation(
+        (...args: unknown[]) => args[1] === ownDeviceHash
+      );
+      const addPull = (sourcePeerHash: string) => {
+        const key = `${sourcePeerHash}:${conversationId}`;
+        (manager as any).directDmPulls.set(key, {
+          key,
+          conversationId,
+          addressA: peer.address,
+          addressB: owner.address,
+          sourcePeerHash,
+          remoteEventId: 'cursor:abc',
+          remoteTimestamp: Number.MAX_SAFE_INTEGER,
+          requestId: 'a'.repeat(8),
+          attempts: 1,
+          createdAt: Date.now(),
+          inFlight: true,
+          activeRequestId: 'a'.repeat(8),
+          retryTimer: null,
+        });
+        return key;
+      };
+      const request = (sourcePeerHash: string) => ({
+        conversationId,
+        sourcePeerHash,
+        requesterAddress: owner.address,
+        peerAddress: peer.address,
+        after: 1234,
+        requestId: 'a'.repeat(8),
+        remoteEventId: 'cursor:abc',
+        remoteTimestamp: Number.MAX_SAFE_INTEGER,
+      });
+
+      // A newer notify replaced the in-flight request: the empty answer to
+      // the old request must not drop the new cursor.
+      const ownKey = addPull(ownDeviceHash);
+      const runPull = vi
+        .spyOn(manager as any, 'runDirectDmPull')
+        .mockImplementation(async () => undefined);
+      (manager as any).queueDirectMissingEvents({
+        conversationId,
+        addressA: peer.address,
+        addressB: owner.address,
+        sourcePeerHash: ownDeviceHash,
+        remoteEventId: 'cursor:newer',
+        remoteTimestamp: Number.MAX_SAFE_INTEGER,
+        requestId: 'b'.repeat(8),
+      });
+      expect(runPull).not.toHaveBeenCalled();
+      (manager as any).scheduleDirectDmPullRetry(
+        ownKey,
+        'no_dm_events',
+        'a'.repeat(8)
+      );
+      const replaced = (manager as any).directDmPulls.get(ownKey);
+      expect(replaced.remoteEventId).toBe('cursor:newer');
+      expect(replaced.retryTimer).not.toBe(null);
+      (manager as any).completeDirectDmPull(ownKey);
+      runPull.mockRestore();
+
+      addPull(ownDeviceHash);
+      (manager as any).noteDirectDmPageNoEvents(request(ownDeviceHash));
+      (manager as any).scheduleDirectDmPullRetry(
+        ownKey,
+        'no_dm_events',
+        'a'.repeat(8)
+      );
+      expect((manager as any).directDmPulls.has(ownKey)).toBe(false);
+      expect(
+        (manager as any).isDmPageNoProgressSuppressed(
+          conversationId,
+          ownDeviceHash,
+          1234,
+          'event:cursor:abc'
+        )
+      ).toBe(true);
+
+      const otherKey = addPull(otherPeerHash);
+      (manager as any).noteDirectDmPageNoEvents(request(otherPeerHash));
+      (manager as any).scheduleDirectDmPullRetry(otherKey, 'no_dm_events');
+      expect((manager as any).directDmPulls.get(otherKey).retryTimer).not.toBe(
+        null
+      );
+      expect(
+        (manager as any).isDmPageNoProgressSuppressed(
+          conversationId,
+          otherPeerHash,
+          1234,
+          'event:cursor:abc'
+        )
+      ).toBe(false);
+      expect(manager.getDeliveryCounters().dmPullNoEvents).toBe(2);
+    } finally {
+      manager.close();
+    }
+  });
+});
+
+describe('reticulum chat own-device copy of outbound DMs', () => {
+  // The Vitest better-sqlite3 mock has no SQL engine and no handlers for the
+  // pending/uncopied DM queries, so these tests stub those DB methods (as the
+  // delivery tests above do) and exercise the engine logic around them.
+  const LOCAL_PEER = 'a'.repeat(32);
+  const RECIPIENT_PEER = 'b'.repeat(32);
+  const OWN_DEVICE_PEER = 'c'.repeat(32);
+  type DmNotifyWire = Extract<ReticulumChatWire, { k: 'dm_notify' }>;
+
+  const setup = (
+    options: {
+      admitted?: boolean;
+      hasGoodOverlayHealth?: boolean;
+    } = {}
+  ) => {
+    const owner = createDmIdentity();
+    const recipient = createDmIdentity();
+    let clock = Date.now();
+    const sent: Array<{ peer: string; wire: ReticulumChatWire }> = [];
+    const fanout: ReticulumChatWire[] = [];
+    const sentResources: Array<Record<string, any>> = [];
+    const rejected: Array<Record<string, unknown>> = [];
+    const snapshots: Array<Record<string, unknown>> = [];
+    const setAdmitted = (admitted: boolean) => {
+      snapshots.length = 0;
+      snapshots.push({
+        linkId: 'own-link',
+        peerPresenceHash: OWN_DEVICE_PEER,
+        incoming: false,
+        overlayTransportAdmitted: admitted,
+        connectedAt: clock,
+        lastRxAt: clock,
+        lastActivityAt: clock,
+      });
+    };
+    if (options.admitted !== undefined) setAdmitted(options.admitted);
+    const bridge = Object.assign(new EventEmitter(), {
+      getLocalDestinationHash: () => LOCAL_PEER,
+      getOverlayLinkSnapshots: () => [...snapshots],
+      sendReticulumChatDetailed: async (
+        peer: string,
+        wire: ReticulumChatWire
+      ) => {
+        sent.push({ peer, wire });
+        return { ok: true as const };
+      },
+      fanoutReticulumChatDetailed: async (messages: ReticulumChatWire[]) => {
+        fanout.push(...messages);
+        return { ok: true as const };
+      },
+      sendReticulumChatResourceDetailed: async (
+        payload: Record<string, any>
+      ) => {
+        sentResources.push(payload);
+        return { ok: true as const };
+      },
+      authorizeReticulumChatResourceDetailed: async () => ({
+        ok: true as const,
+      }),
+      rejectReticulumChatResourceDetailed: async (
+        payload: Record<string, unknown>
+      ) => {
+        rejected.push(payload);
+        return { ok: true as const };
+      },
+    });
+    const signer = vi.fn(createDmSigner(owner));
+    const lease = (destinationHash: string, address: string) => ({
+      destinationHash,
+      address,
+      sessionId: `session-${destinationHash.slice(0, 4)}`,
+      lastSeen: clock,
+      expiresAt: clock + 60 * 60_000,
+      verification: 'direct-bound' as const,
+    });
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      now: () => clock,
+      signLocalFields: signer,
+      hasGoodOverlayHealth: () => options.hasGoodOverlayHealth ?? false,
+      getAccountEndpointLeases: () => [
+        lease(OWN_DEVICE_PEER, owner.address),
+        lease(RECIPIENT_PEER, recipient.address),
+      ],
+      bridge: bridge as any,
+    });
+    const db = (manager as any).db;
+    const pullPage = (input: {
+      requester: ReturnType<typeof createDmIdentity>;
+      requesterPeerHash: string;
+      peerAddress: string;
+      requestId: string;
+      transferId: string;
+      after?: number;
+    }) => {
+      const timestamp = clock;
+      const after = input.after ?? 0;
+      const signedFields = buildReticulumDmRequestSignedFields({
+        peerAddress: input.peerAddress,
+        after,
+        limit: 50,
+        requesterPeerHash: input.requesterPeerHash,
+        requestId: input.requestId,
+        authorAddress: input.requester.address,
+        authorPublicKey: input.requester.publicKey,
+        timestamp,
+      });
+      return (manager as any).authorizeDirectDmPageResource(
+        {
+          status: 'auth',
+          linkId: `link-${input.transferId}`,
+          transferId: input.transferId,
+          peerPresenceHash: input.requesterPeerHash,
+        },
+        {
+          transferId: input.transferId,
+          b: input.peerAddress,
+          a: after,
+          l: 50,
+          q: input.requestId,
+          rp: input.requesterPeerHash,
+          p: input.requester.publicKey,
+          n: timestamp,
+          z: base58Encode(
+            nacl.sign.detached(
+              new Uint8Array(canonicalizeForSigning(signedFields)),
+              input.requester.secretKey
+            )
+          ),
+        }
+      );
+    };
+    const notifySignatures = () =>
+      signer.mock.calls.filter(
+        ([fields]) => (fields as any).type === 'RCHAT_DM_NOTIFY'
+      );
+    const notifiesTo = (peer: string) =>
+      sent
+        .filter((entry) => entry.peer === peer && entry.wire.k === 'dm_notify')
+        .map((entry) => entry.wire as DmNotifyWire);
+    const pendingEvent = (eventId: string, senderSeq: number, age = 0) => ({
+      ...signedDmEvent({
+        sender: owner,
+        recipient,
+        eventId,
+        senderSeq,
+        timestamp: clock - age,
+      }),
+      localDeliveryStatus: 'pending' as const,
+    });
+    return {
+      owner,
+      recipient,
+      manager,
+      db,
+      signer,
+      sent,
+      fanout,
+      sentResources,
+      rejected,
+      setAdmitted,
+      pullPage,
+      notifySignatures,
+      notifiesTo,
+      pendingEvent,
+      heads: (...events: ReticulumDmEvent[]) =>
+        events.map((event) => ({
+          event,
+          deliveryAttempts: 0,
+          nextDeliveryAttemptAt: 0,
+        })),
+      advance: (ms: number) => {
+        clock += ms;
+      },
+      now: () => clock,
+      cleanup: () => {
+        for (const resource of sentResources) {
+          fs.rmSync(String(resource.filePath), { force: true });
+        }
+        manager.close();
+      },
+    };
+  };
+
+  it('lets a verified own device pull while the notify is tracked, without confirming the recipient delivery', async () => {
+    const t = setup();
+    try {
+      t.manager.setLocalDmAddresses([t.owner.address]);
+      await flushAsyncWork();
+      const event = t.pendingEvent('own-device-tracked-pull', 1);
+      await t.manager.publishDirectEvent(event);
+      const tracked = t.notifiesTo(RECIPIENT_PEER)[0];
+      expect(tracked).toBeDefined();
+      const requestId = tracked.d.q;
+      expect((t.manager as any).pendingDmNotifyDeliveries.has(requestId)).toBe(
+        true
+      );
+
+      let pageEvents: ReticulumDmEvent[] = [event];
+      t.db.getDirectEventsAfter = () => pageEvents;
+      const markCopied = vi.fn(
+        (eventIds: string[], _copiedAt: number) => eventIds.length
+      );
+      t.db.markDirectEventsOwnDeviceCopied = markCopied;
+      const confirm = vi.spyOn(t.manager as any, 'confirmPendingDmNotifyPeer');
+      const clearRetries = vi.spyOn(
+        t.manager as any,
+        'clearDmNotifyControlRetries'
+      );
+      const markSent = vi
+        .spyOn(t.manager as any, 'markDirectEventSent')
+        .mockImplementation(() => undefined);
+      const emitted: ReticulumDmEvent[] = [];
+      t.manager.on('directEvent', ({ event: changed }) => {
+        emitted.push(changed);
+      });
+
+      // The home Hub signs with the same account key, from its own hash.
+      await t.pullPage({
+        requester: t.owner,
+        requesterPeerHash: OWN_DEVICE_PEER,
+        peerAddress: t.recipient.address,
+        requestId,
+        transferId: '7'.repeat(16),
+      });
+
+      expect(t.rejected).toEqual([]);
+      expect(t.sentResources).toHaveLength(1);
+      expect(confirm).not.toHaveBeenCalled();
+      expect(clearRetries).not.toHaveBeenCalled();
+      expect(markSent).not.toHaveBeenCalled();
+      expect((t.manager as any).pendingDmNotifyDeliveries.has(requestId)).toBe(
+        true
+      );
+      expect(markCopied).toHaveBeenCalledTimes(1);
+      expect(markCopied.mock.calls[0]).toEqual([[event.eventId], t.now()]);
+      expect(emitted.map((changed) => changed.eventId)).toEqual([
+        event.eventId,
+      ]);
+      expect(emitted[0].localOwnDeviceCopiedAt).toBe(t.now());
+      expect(t.manager.getDeliveryCounters()).toMatchObject({
+        dmPageServedToOwnDevice: 1,
+        ownDeviceCopied: 1,
+        dmPageRefused: 0,
+      });
+
+      // Serving a page whose events are already marked writes and emits
+      // nothing.
+      pageEvents = [{ ...event, localOwnDeviceCopiedAt: t.now() }];
+      await t.pullPage({
+        requester: t.owner,
+        requesterPeerHash: OWN_DEVICE_PEER,
+        peerAddress: t.recipient.address,
+        requestId,
+        transferId: '8'.repeat(16),
+      });
+      expect(markCopied).toHaveBeenCalledTimes(1);
+      expect(emitted).toHaveLength(1);
+
+      // Anybody else pulling with the tracked id is still refused.
+      const stranger = createDmIdentity();
+      await t.pullPage({
+        requester: stranger,
+        requesterPeerHash: 'd'.repeat(32),
+        peerAddress: t.owner.address,
+        requestId,
+        transferId: '9'.repeat(16),
+      });
+      expect(t.rejected.map((entry) => entry.reason)).toEqual([
+        'dm_notification_request_mismatch',
+      ]);
+
+      // The recipient's pull confirms the tracked delivery as before, marks
+      // the event sent and records no own-device copy.
+      pageEvents = [event];
+      await t.pullPage({
+        requester: t.recipient,
+        requesterPeerHash: RECIPIENT_PEER,
+        peerAddress: t.owner.address,
+        requestId,
+        transferId: 'a'.repeat(16),
+      });
+      expect(confirm).toHaveBeenCalledTimes(1);
+      expect(clearRetries).toHaveBeenCalledTimes(1);
+      expect(markSent).toHaveBeenCalledTimes(1);
+      expect(markCopied).toHaveBeenCalledTimes(1);
+      expect(t.manager.getDeliveryCounters()).toMatchObject({
+        dmPageServedToRecipient: 1,
+        ownDeviceCopied: 1,
+      });
+    } finally {
+      t.cleanup();
+    }
+  });
+
+  it('serves a pending own event that the puller cursor already passed, to the own device and to the recipient', async () => {
+    const t = setup();
+    try {
+      t.manager.setLocalDmAddresses([t.owner.address]);
+      await flushAsyncWork();
+      // M1 was sent from here while the Hub link was down; M2 was written
+      // later on the Hub, so the Hub's cursor (and the recipient's, once it
+      // holds M2) is past M1.
+      const m1 = t.pendingEvent('passed-m1', 1, 60_000);
+      const m2: ReticulumDmEvent = {
+        ...signedDmEvent({
+          sender: t.owner,
+          recipient: t.recipient,
+          eventId: 'passed-m2',
+          senderSeq: 2,
+          timestamp: t.now(),
+        }),
+        localDeliveryStatus: 'received',
+      };
+      let after: ReticulumDmEvent[] = [m2];
+      t.db.getDirectEventsAfter = () => after;
+      const passed = vi.fn(
+        (
+          _sender: string,
+          _conversation: string,
+          _from: number,
+          _to: number,
+          _options: Record<string, unknown>
+        ) => [m1]
+      );
+      t.db.listPendingOwnDirectEventsBetween = passed;
+      const markCopied = vi.fn((eventIds: string[]) => eventIds.length);
+      t.db.markDirectEventsOwnDeviceCopied = markCopied;
+      const markSent = vi
+        .spyOn(t.manager as any, 'markDirectEventSent')
+        .mockImplementation(() => undefined);
+
+      // The home Hub pulls after its own newest event.
+      await t.pullPage({
+        requester: t.owner,
+        requesterPeerHash: OWN_DEVICE_PEER,
+        peerAddress: t.recipient.address,
+        requestId: '1'.repeat(16),
+        transferId: '2'.repeat(16),
+        after: m2.timestamp - 1,
+      });
+      expect(t.rejected).toEqual([]);
+      expect(passed).toHaveBeenCalledTimes(1);
+      expect(passed.mock.calls[0]).toEqual([
+        t.owner.address,
+        m1.conversationId,
+        t.now() - 7 * 24 * 60 * 60_000,
+        m2.timestamp - 1,
+        { uncopiedOnly: true, limit: 50, now: t.now() },
+      ]);
+      expect(t.sentResources).toHaveLength(1);
+      expect(t.sentResources[0].metadata.eventCount).toBe(2);
+      expect(markCopied.mock.calls[0][0]).toEqual([m1.eventId]);
+      expect(markSent).not.toHaveBeenCalled();
+      expect(t.manager.getDeliveryCounters()).toMatchObject({
+        dmPagePassedPendingServed: 1,
+        ownDeviceCopied: 1,
+      });
+
+      // Even when nothing is newer than the cursor, M1 is served instead of
+      // answering no_dm_events.
+      after = [];
+      await t.pullPage({
+        requester: t.owner,
+        requesterPeerHash: OWN_DEVICE_PEER,
+        peerAddress: t.recipient.address,
+        requestId: '3'.repeat(16),
+        transferId: '4'.repeat(16),
+        after: m2.timestamp - 1,
+      });
+      expect(t.rejected).toEqual([]);
+      expect(t.sentResources).toHaveLength(2);
+
+      // The recipient, past M1 through M2, gets M1 too (any pending, copied
+      // or not), which marks it sent.
+      after = [m2];
+      await t.pullPage({
+        requester: t.recipient,
+        requesterPeerHash: RECIPIENT_PEER,
+        peerAddress: t.owner.address,
+        requestId: '5'.repeat(16),
+        transferId: '6'.repeat(16),
+        after: m2.timestamp - 1,
+      });
+      expect(t.rejected).toEqual([]);
+      expect(passed).toHaveBeenCalledTimes(3);
+      expect(passed.mock.calls[2][0]).toBe(t.owner.address);
+      expect(passed.mock.calls[2][4]).toMatchObject({ uncopiedOnly: false });
+      expect(markSent).toHaveBeenCalledWith(
+        expect.objectContaining({ eventId: m1.eventId })
+      );
+
+      // A pull from the start already covers everything: no extra read.
+      await t.pullPage({
+        requester: t.recipient,
+        requesterPeerHash: RECIPIENT_PEER,
+        peerAddress: t.owner.address,
+        requestId: '7'.repeat(16),
+        transferId: '8'.repeat(16),
+      });
+      expect(passed).toHaveBeenCalledTimes(3);
+    } finally {
+      t.cleanup();
+    }
+  });
+
+  it('pushes an untracked m:0 notify only to own devices with an admitted link, coalesced per conversation', async () => {
+    const t = setup();
+    try {
+      t.manager.setLocalDmAddresses([t.owner.address]);
+      await flushAsyncWork();
+      const first = t.pendingEvent('own-push-gate', 1);
+      let uncopied: ReticulumDmEvent[] = [first];
+      const listUncopied = vi.fn(() => uncopied);
+      t.db.listUncopiedPendingOwnDirectEvents = listUncopied;
+
+      // No link, then a link that is not admitted: no DB read, no signature.
+      expect(await (t.manager as any).pushDirectEventToOwnDevices(first)).toBe(
+        false
+      );
+      t.setAdmitted(false);
+      expect(await (t.manager as any).pushDirectEventToOwnDevices(first)).toBe(
+        false
+      );
+      expect(
+        await (t.manager as any).pushUncopiedOwnEventsToOwnDevices('sweep')
+      ).toBe(0);
+      expect(listUncopied).not.toHaveBeenCalled();
+      expect(t.signer).not.toHaveBeenCalled();
+      expect(t.sent).toEqual([]);
+
+      t.setAdmitted(true);
+      t.advance(1);
+      const second = t.pendingEvent('own-push-publish', 2);
+      uncopied = [second, first];
+      await t.manager.publishDirectEvent(second);
+      await flushAsyncWork();
+
+      const notifies = t.sent.filter(({ wire }) => wire.k === 'dm_notify');
+      // The own-device push goes out first, then the tracked recipient notify.
+      expect(notifies.map(({ peer }) => peer)).toEqual([
+        OWN_DEVICE_PEER,
+        RECIPIENT_PEER,
+      ]);
+      const push = notifies[0].wire as DmNotifyWire;
+      const tracked = notifies[1].wire as DmNotifyWire;
+      expect(push.d.m).toBe(0);
+      expect(push.d.b).toBe(t.recipient.address);
+      expect(verifyReticulumDmNotify(push.d, t.now())).toBe(true);
+      expect((t.manager as any).pendingDmNotifyDeliveries.has(push.d.q)).toBe(
+        false
+      );
+      expect(tracked.d.m).toBeUndefined();
+      expect(tracked.d.q).not.toBe(push.d.q);
+      expect(
+        (t.manager as any).pendingDmNotifyDeliveries.has(tracked.d.q)
+      ).toBe(true);
+      const pushSignature = t
+        .notifySignatures()
+        .find(([fields]) => (fields as any).requestId === push.d.q);
+      expect((pushSignature?.[0] as any).maxHops).toBe(0);
+      expect(t.manager.getDeliveryCounters().ownDevicePushSent).toBe(1);
+
+      // A second send within 10 s is coalesced: only the tracked recipient
+      // notify is signed.
+      t.advance(1);
+      const third = t.pendingEvent('own-push-coalesced', 3);
+      uncopied = [third, second, first];
+      const signaturesBefore = t.notifySignatures().length;
+      await t.manager.publishDirectEvent(third);
+      await flushAsyncWork();
+      expect(t.notifySignatures()).toHaveLength(signaturesBefore + 1);
+      expect(t.notifiesTo(OWN_DEVICE_PEER)).toHaveLength(1);
+
+      // The owed push is paid by the next sweep tick after the window.
+      t.advance(10_000);
+      expect(
+        await (t.manager as any).pushUncopiedOwnEventsToOwnDevices('sweep')
+      ).toBe(1);
+      expect(t.notifiesTo(OWN_DEVICE_PEER)).toHaveLength(2);
+      expect(t.notifiesTo(OWN_DEVICE_PEER)[1].d.m).toBe(0);
+      // Later re-pushes wait 5 minutes per conversation.
+      t.advance(10_000);
+      expect(
+        await (t.manager as any).pushUncopiedOwnEventsToOwnDevices('sweep')
+      ).toBe(0);
+      t.advance(5 * 60_000);
+      expect(
+        await (t.manager as any).pushUncopiedOwnEventsToOwnDevices('sweep')
+      ).toBe(1);
+      // The push does not wait for the send ack; let it settle.
+      await flushAsyncWork();
+      // Three pushes left unanswered by this device session: re-pushes stop.
+      t.advance(5 * 60_000);
+      expect(
+        await (t.manager as any).pushUncopiedOwnEventsToOwnDevices('sweep')
+      ).toBe(0);
+      expect(t.manager.getDeliveryCounters().ownDevicePushSent).toBe(3);
+
+      // Any page request from that device answers them.
+      t.db.getDirectEventsAfter = () => [];
+      await t.pullPage({
+        requester: t.owner,
+        requesterPeerHash: OWN_DEVICE_PEER,
+        peerAddress: t.recipient.address,
+        requestId: 'e'.repeat(16),
+        transferId: 'f'.repeat(16),
+      });
+      expect(
+        await (t.manager as any).pushUncopiedOwnEventsToOwnDevices('sweep')
+      ).toBe(1);
+      await flushAsyncWork();
+      expect(t.manager.getDeliveryCounters().ownDevicePushSent).toBe(4);
+    } finally {
+      t.cleanup();
+    }
+  });
+
+  it('pays a coalesced own-device push even after the recipient pulled the event', async () => {
+    const t = setup({ admitted: true });
+    try {
+      t.manager.setLocalDmAddresses([t.owner.address]);
+      await flushAsyncWork();
+      // Nothing is pending by the time the sweep runs: the recipient pulled
+      // both messages within seconds.
+      t.db.listUncopiedPendingOwnDirectEvents = vi.fn(() => []);
+      const first = t.pendingEvent('owed-first', 1);
+      await t.manager.publishDirectEvent(first);
+      await flushAsyncWork();
+      expect(t.notifiesTo(OWN_DEVICE_PEER)).toHaveLength(1);
+      t.advance(2_000);
+      const second = t.pendingEvent('owed-second', 2);
+      await t.manager.publishDirectEvent(second);
+      await flushAsyncWork();
+      expect(t.notifiesTo(OWN_DEVICE_PEER)).toHaveLength(1);
+
+      // Not inside the 10 s window, then once after it.
+      expect(
+        await (t.manager as any).pushUncopiedOwnEventsToOwnDevices('sweep')
+      ).toBe(0);
+      t.advance(10_000);
+      expect(
+        await (t.manager as any).pushUncopiedOwnEventsToOwnDevices('sweep')
+      ).toBe(1);
+      await flushAsyncWork();
+      const pushes = t.notifiesTo(OWN_DEVICE_PEER);
+      expect(pushes).toHaveLength(2);
+      expect(pushes[1].d.m).toBe(0);
+      expect(pushes[1].d.lc).toBe(
+        (t.manager as any).dmNotifyLatestCursor(second)
+      );
+      t.advance(10 * 60_000);
+      expect(
+        await (t.manager as any).pushUncopiedOwnEventsToOwnDevices('sweep')
+      ).toBe(0);
+
+      // A debt the own device has already pulled past is dropped unpaid.
+      t.advance(1_000);
+      const third = t.pendingEvent('owed-third', 3);
+      await t.manager.publishDirectEvent(third);
+      t.advance(1_000);
+      const fourth = t.pendingEvent('owed-fourth', 4);
+      await t.manager.publishDirectEvent(fourth);
+      await flushAsyncWork();
+      expect(t.notifiesTo(OWN_DEVICE_PEER)).toHaveLength(3);
+      (t.manager as any).noteOwnDevicePulledUpTo(
+        fourth.conversationId,
+        fourth.timestamp
+      );
+      t.advance(10_000);
+      expect(
+        await (t.manager as any).pushUncopiedOwnEventsToOwnDevices('sweep')
+      ).toBe(0);
+      expect(t.notifiesTo(OWN_DEVICE_PEER)).toHaveLength(3);
+    } finally {
+      t.cleanup();
+    }
+  });
+
+  it('keeps the lifecycle hooks free when nothing is pending and no own device exists', async () => {
+    vi.useFakeTimers();
+    const owner = createDmIdentity();
+    const signer = vi.fn(createDmSigner(owner));
+    const send = vi.fn(async () => ({ ok: true as const }));
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      signLocalFields: signer,
+      hasGoodOverlayHealth: () => true,
+      getAccountEndpointLeases: () => [],
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => LOCAL_PEER,
+        getOverlayLinkSnapshots: () => [],
+        sendReticulumChatDetailed: send,
+        fanoutReticulumChatDetailed: send,
+      } as any,
+    });
+    try {
+      const db = (manager as any).db;
+      const hasPending = vi.fn(() => false);
+      db.hasPendingOwnDirectEvents = hasPending;
+      const listUncopied = vi.fn(() => []);
+      db.listUncopiedPendingOwnDirectEvents = listUncopied;
+      const listPending = vi.fn(() => []);
+      db.listPendingOwnDirectEvents = listPending;
+      db.listPendingOwnDirectConversationHeads = listPending;
+      const nextDue = vi.fn(() => null);
+      db.nextPendingOwnDirectDeliveryDueAt = nextDue;
+
+      // No local DM address: nothing is read or armed.
+      manager.notifyAppLifecycle('background');
+      manager.notifyAppLifecycle('foreground');
+      manager.notifyNetworkRegained();
+      manager.notifyBridgeSocketReopened();
+      expect((manager as any).resumeHookTimer).toBeNull();
+      expect(hasPending).not.toHaveBeenCalled();
+      expect(nextDue).not.toHaveBeenCalled();
+
+      manager.setLocalDmAddresses([owner.address]);
+      await flushAsyncWork();
+      signer.mockClear();
+      send.mockClear();
+
+      await manager.flushOutboundForBackground();
+      manager.notifyAppLifecycle('background');
+      manager.notifyAppLifecycle('foreground');
+      manager.notifyNetworkRegained();
+      manager.notifyBridgeSocketReopened();
+      expect((manager as any).resumeHookTimer).toBeNull();
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(hasPending).toHaveBeenCalled();
+      expect(listUncopied).not.toHaveBeenCalled();
+      expect(listPending).not.toHaveBeenCalled();
+      expect(signer).not.toHaveBeenCalled();
+      expect(send).not.toHaveBeenCalled();
+      expect(manager.getDeliveryCounters()).toMatchObject({
+        backgroundFlushNothingPending: 2,
+      });
+      expect(manager.getDeliveryCounters().backgroundFlush).toBeUndefined();
+      expect(manager.getDeliveryCounters().resumeHook).toBeUndefined();
+    } finally {
+      manager.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it('flushes on background with an m:0 own-device push and an untracked recovery notify, at most once per 60 s', async () => {
+    const t = setup({ admitted: true, hasGoodOverlayHealth: true });
+    try {
+      t.manager.setLocalDmAddresses([t.owner.address]);
+      await flushAsyncWork();
+      const event = t.pendingEvent('background-flush-event', 1, 30_000);
+      t.db.hasPendingOwnDirectEvents = () => true;
+      t.db.listUncopiedPendingOwnDirectEvents = () => [event];
+      t.db.listPendingOwnDirectEvents = () => [event];
+      t.db.listPendingOwnDirectConversationHeads = () => t.heads(event);
+      t.db.nextPendingOwnDirectDeliveryDueAt = () => 0;
+      t.sent.length = 0;
+      t.fanout.length = 0;
+      t.signer.mockClear();
+
+      t.manager.notifyAppLifecycle('background');
+      await flushQueuedWork();
+
+      expect(
+        t.sent
+          .filter(({ wire }) => wire.k === 'dm_notify')
+          .map(({ peer }) => peer)
+      ).toEqual([OWN_DEVICE_PEER, RECIPIENT_PEER]);
+      const ownPush = t.notifiesTo(OWN_DEVICE_PEER)[0];
+      const recovery = t.notifiesTo(RECIPIENT_PEER)[0];
+      expect(ownPush.d.m).toBe(0);
+      expect(recovery.d.m).toBe(2);
+      expect(verifyReticulumDmNotify(recovery.d, t.now())).toBe(true);
+      // Recovery mode: nothing tracked, so no 750 ms gossip or 3 s fanout.
+      expect((t.manager as any).pendingDmNotifyDeliveries.size).toBe(0);
+      expect(t.fanout).toEqual([]);
+      expect(t.notifySignatures()).toHaveLength(2);
+      expect(t.manager.getDeliveryCounters()).toMatchObject({
+        backgroundFlush: 1,
+        backgroundFlushSignatures: 2,
+        ownDevicePushSent: 1,
+        dmPendingRedeliverEarly: 1,
+      });
+
+      // Coalesced: another hide within 60 s signs nothing.
+      t.advance(30_000);
+      t.manager.notifyAppLifecycle('background');
+      await flushQueuedWork();
+      expect(t.notifySignatures()).toHaveLength(2);
+      expect(t.manager.getDeliveryCounters().backgroundFlush).toBe(1);
+
+      // After the floor, the push is spaced by 10 s only, but the early
+      // recovery attempt of the same event is brought forward at most once
+      // per 10 min.
+      t.advance(31_000);
+      t.manager.notifyAppLifecycle('background');
+      await flushQueuedWork();
+      expect(t.manager.getDeliveryCounters()).toMatchObject({
+        backgroundFlush: 2,
+        ownDevicePushSent: 2,
+        dmPendingRedeliverEarly: 1,
+      });
+      t.advance(10 * 60_000);
+      t.manager.notifyAppLifecycle('background');
+      await flushQueuedWork();
+      expect(t.manager.getDeliveryCounters()).toMatchObject({
+        backgroundFlush: 3,
+        dmPendingRedeliverEarly: 2,
+      });
+    } finally {
+      t.cleanup();
+    }
+  });
+
+  it('does not hold the recipient notify on an own-device send that never acks', async () => {
+    const t = setup({ admitted: true });
+    try {
+      t.manager.setLocalDmAddresses([t.owner.address]);
+      await flushAsyncWork();
+      const bridge = (t.manager as any).bridge;
+      const send = bridge.sendReticulumChatDetailed;
+      const hung: string[] = [];
+      bridge.sendReticulumChatDetailed = (
+        peer: string,
+        wire: ReticulumChatWire
+      ) => {
+        if (peer !== OWN_DEVICE_PEER) return send(peer, wire);
+        hung.push(wire.k);
+        return new Promise(() => undefined);
+      };
+      const event = t.pendingEvent('own-push-hung', 1);
+      t.db.listUncopiedPendingOwnDirectEvents = () => [event];
+
+      await t.manager.publishDirectEvent(event);
+      await flushAsyncWork();
+
+      expect(hung).toEqual(['dm_notify']);
+      expect(t.notifiesTo(RECIPIENT_PEER)).toHaveLength(1);
+      expect(t.manager.getDeliveryCounters().ownDevicePushSent ?? 0).toBe(0);
+    } finally {
+      t.cleanup();
+    }
+  });
+
+  it('runs the resume hook for bridge socket reopens at most every 30 s', async () => {
+    const t = setup({ admitted: true });
+    try {
+      t.manager.setLocalDmAddresses([t.owner.address]);
+      await flushAsyncWork();
+      const schedule = vi
+        .spyOn(t.manager as any, 'scheduleResumeHook')
+        .mockImplementation(() => undefined);
+      t.manager.notifyBridgeSocketReopened();
+      t.advance(1_000);
+      t.manager.notifyBridgeSocketReopened();
+      t.advance(28_000);
+      t.manager.notifyBridgeSocketReopened();
+      expect(schedule).toHaveBeenCalledTimes(1);
+      t.advance(1_000);
+      t.manager.notifyBridgeSocketReopened();
+      expect(schedule).toHaveBeenCalledTimes(2);
+    } finally {
+      t.cleanup();
+    }
+  });
+
+  it('keeps an event at <= 12 attempts an hour when the app is hidden and shown every 61 s', async () => {
+    // No own device linked: the early recovery leg alone must stay bounded.
+    const t = setup({ hasGoodOverlayHealth: true });
+    try {
+      t.manager.setLocalDmAddresses([t.owner.address]);
+      await flushAsyncWork();
+      const event = t.pendingEvent('forced-sweep-bound', 1, 30_000);
+      t.db.hasPendingOwnDirectEvents = () => true;
+      t.db.listUncopiedPendingOwnDirectEvents = () => [event];
+      t.db.listPendingOwnDirectEvents = () => [event];
+      t.db.listPendingOwnDirectConversationHeads = () => t.heads(event);
+      t.db.nextPendingOwnDirectDeliveryDueAt = () => 0;
+      // The regular sweep's tracked announce is not under test here.
+      vi.spyOn(
+        t.manager as any,
+        'announceDirectNotifyForEvent'
+      ).mockResolvedValue(true);
+      const attempts = () => {
+        const counters = t.manager.getDeliveryCounters();
+        return (
+          (counters.dmPendingRedeliver ?? 0) +
+          (counters.dmPendingRedeliverEarly ?? 0)
+        );
+      };
+      const hourStartAttempts: number[] = [];
+      for (let second = 0; second < 2 * 60 * 60; second += 1) {
+        if (second % (60 * 60) === 0) hourStartAttempts.push(attempts());
+        if (second % 20 === 0) {
+          await (t.manager as any).runDmPendingDeliverySweep();
+        }
+        if (second % 61 === 0) {
+          // Hide (background flush), then show (resume hook) 30 s later.
+          await t.manager.flushOutboundForBackground();
+        } else if (second % 61 === 30) {
+          await (t.manager as any).runResumeHook('foreground');
+        }
+        t.advance(1_000);
+      }
+      hourStartAttempts.push(attempts());
+      // Once the early ladder has reached its 5 min ceiling, the sweep and
+      // the lifecycle edges together stay at <= 12 attempts an hour.
+      expect(hourStartAttempts[2] - hourStartAttempts[1]).toBeLessThanOrEqual(
+        12
+      );
+      // At most one early attempt per event per 10 min.
+      expect(
+        t.manager.getDeliveryCounters().dmPendingRedeliverEarly
+      ).toBeLessThanOrEqual(12);
+      expect(
+        t.manager.getDeliveryCounters().dmPendingRedeliverEarly
+      ).toBeGreaterThan(0);
+    } finally {
+      t.cleanup();
+    }
+  });
+});
+
+describe('reticulum chat own-device Saved Messages, group notices and probes', () => {
+  // Like the own-device copy tests above, the DB methods whose SQL the
+  // better-sqlite3 mock cannot evaluate are stubbed per test.
+  const LOCAL_PEER = 'a'.repeat(32);
+  const RECIPIENT_PEER = 'b'.repeat(32);
+  const OWN_DEVICE_PEER = 'c'.repeat(32);
+  type DmNotifyWire = Extract<ReticulumChatWire, { k: 'dm_notify' }>;
+  type DmProbeWire = Extract<ReticulumChatWire, { k: 'dm_probe' }>;
+
+  const setup = (options: { admitted?: boolean } = {}) => {
+    const owner = createDmIdentity();
+    const recipient = createDmIdentity();
+    let clock = Date.now();
+    let ownSessionId = 'own-session-1';
+    const sent: Array<{ peer: string; wire: ReticulumChatWire }> = [];
+    const fanout: ReticulumChatWire[] = [];
+    const sentResources: Array<Record<string, any>> = [];
+    const snapshots: Array<Record<string, unknown>> = [];
+    let failSendsTo = new Set<string>();
+    const setAdmitted = (admitted: boolean, linkId = 'own-link') => {
+      snapshots.length = 0;
+      snapshots.push({
+        linkId,
+        peerPresenceHash: OWN_DEVICE_PEER,
+        incoming: false,
+        overlayTransportAdmitted: admitted,
+        connectedAt: clock,
+        lastRxAt: clock,
+        lastActivityAt: clock,
+      });
+    };
+    if (options.admitted !== undefined) setAdmitted(options.admitted);
+    const bridge = Object.assign(new EventEmitter(), {
+      getLocalDestinationHash: () => LOCAL_PEER,
+      getOverlayLinkSnapshots: () => [...snapshots],
+      sendReticulumChatDetailed: async (
+        peer: string,
+        wire: ReticulumChatWire
+      ) => {
+        if (failSendsTo.has(peer)) {
+          return { ok: false as const, reason: 'packet-send-false' as const };
+        }
+        sent.push({ peer, wire });
+        return { ok: true as const };
+      },
+      fanoutReticulumChatDetailed: async (messages: ReticulumChatWire[]) => {
+        fanout.push(...messages);
+        return { ok: true as const };
+      },
+      sendReticulumChatResourceDetailed: async (
+        payload: Record<string, any>
+      ) => {
+        sentResources.push(payload);
+        return { ok: true as const };
+      },
+      authorizeReticulumChatResourceDetailed: async () => ({
+        ok: true as const,
+      }),
+      rejectReticulumChatResourceDetailed: async () => ({ ok: true as const }),
+    });
+    const signer = vi.fn(createDmSigner(owner));
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      now: () => clock,
+      signLocalFields: signer,
+      hasGoodOverlayHealth: () => false,
+      getAccountEndpointLeases: () => [
+        {
+          destinationHash: OWN_DEVICE_PEER,
+          address: owner.address,
+          sessionId: ownSessionId,
+          lastSeen: clock,
+          expiresAt: clock + 60 * 60_000,
+          verification: 'direct-bound' as const,
+        },
+        {
+          destinationHash: RECIPIENT_PEER,
+          address: recipient.address,
+          sessionId: 'recipient-session',
+          lastSeen: clock,
+          expiresAt: clock + 60 * 60_000,
+          verification: 'direct-bound' as const,
+        },
+      ],
+      bridge: bridge as any,
+    });
+    const db = (manager as any).db;
+    // Defaults: nothing pending, nothing uncopied, no own self-DM cursors.
+    db.hasPendingOwnDirectEvents = vi.fn(() => false);
+    db.listUncopiedPendingOwnDirectEvents = vi.fn(() => []);
+    db.listPendingOwnDirectEvents = vi.fn(() => []);
+    db.listPendingOwnDirectConversationHeads = vi.fn(() => []);
+    db.nextPendingOwnDirectDeliveryDueAt = vi.fn(() => null);
+    db.listOwnSelfDirectEventCursors = vi.fn(() => []);
+    const signNotify = (input: {
+      author: ReturnType<typeof createDmIdentity>;
+      peerAddress: string;
+      sourcePeerHash: string;
+      requestId: string;
+      latestCursor: string;
+      probeRequestId?: string;
+      maxHops?: number;
+    }): DmNotifyWire => {
+      const maxHops = input.maxHops ?? 5;
+      const signedFields = buildReticulumDmNotifySignedFields({
+        peerAddress: input.peerAddress,
+        sourcePeerHash: input.sourcePeerHash,
+        requestId: input.requestId,
+        latestCursor: input.latestCursor,
+        probeRequestId: input.probeRequestId,
+        maxHops,
+        authorAddress: input.author.address,
+        authorPublicKey: input.author.publicKey,
+        timestamp: clock,
+      });
+      return {
+        t: 'RCHAT',
+        k: 'dm_notify',
+        d: {
+          b: input.peerAddress,
+          sp: input.sourcePeerHash,
+          q: input.requestId,
+          lc: input.latestCursor,
+          ...(maxHops !== 5 ? { m: maxHops } : {}),
+          ...(input.probeRequestId ? { r: input.probeRequestId } : {}),
+          p: input.author.publicKey,
+          n: clock,
+          z: base58Encode(
+            nacl.sign.detached(
+              new Uint8Array(canonicalizeForSigning(signedFields)),
+              input.author.secretKey
+            )
+          ),
+        },
+      };
+    };
+    const pullPage = (input: {
+      peerAddress: string;
+      requestId: string;
+      transferId: string;
+    }) => {
+      const timestamp = clock;
+      const signedFields = buildReticulumDmRequestSignedFields({
+        peerAddress: input.peerAddress,
+        after: 0,
+        limit: 50,
+        requesterPeerHash: OWN_DEVICE_PEER,
+        requestId: input.requestId,
+        authorAddress: owner.address,
+        authorPublicKey: owner.publicKey,
+        timestamp,
+      });
+      return (manager as any).authorizeDirectDmPageResource(
+        {
+          status: 'auth',
+          linkId: `link-${input.transferId}`,
+          transferId: input.transferId,
+          peerPresenceHash: OWN_DEVICE_PEER,
+        },
+        {
+          transferId: input.transferId,
+          b: input.peerAddress,
+          a: 0,
+          l: 50,
+          q: input.requestId,
+          rp: OWN_DEVICE_PEER,
+          p: owner.publicKey,
+          n: timestamp,
+          z: base58Encode(
+            nacl.sign.detached(
+              new Uint8Array(canonicalizeForSigning(signedFields)),
+              owner.secretKey
+            )
+          ),
+        }
+      );
+    };
+    const cursorOf = (event: { eventId: string; timestamp: number }): string =>
+      (manager as any).dmNotifyLatestCursor(event);
+    const wiresTo = <K extends ReticulumChatWire['k']>(peer: string, k: K) =>
+      sent
+        .filter((entry) => entry.peer === peer && entry.wire.k === k)
+        .map((entry) => entry.wire as Extract<ReticulumChatWire, { k: K }>);
+    const signaturesOfType = (type: string) =>
+      signer.mock.calls.filter(([fields]) => (fields as any).type === type);
+    return {
+      owner,
+      recipient,
+      manager,
+      db,
+      signer,
+      sent,
+      fanout,
+      setAdmitted,
+      signNotify,
+      pullPage,
+      cursorOf,
+      wiresTo,
+      signaturesOfType,
+      failSends: (peers: string[]) => {
+        failSendsTo = new Set(peers);
+      },
+      setOwnSession: (sessionId: string) => {
+        ownSessionId = sessionId;
+      },
+      advance: (ms: number) => {
+        clock += ms;
+      },
+      now: () => clock,
+      cleanup: () => {
+        for (const resource of sentResources) {
+          fs.rmSync(String(resource.filePath), { force: true });
+        }
+        manager.close();
+      },
+    };
+  };
+
+  it('keeps re-notifying a Saved Messages cursor until an own device confirms it, at most 12 times', async () => {
+    const t = setup({ admitted: true });
+    try {
+      t.manager.setLocalDmAddresses([t.owner.address]);
+      await flushAsyncWork();
+      vi.spyOn(t.manager as any, 'queueDirectMissingEvents').mockImplementation(
+        () => undefined
+      );
+      const first = signedDmEvent({
+        sender: t.owner,
+        recipient: t.owner,
+        eventId: 'saved-renotify-1',
+        senderSeq: 1,
+        timestamp: t.now(),
+      });
+      let cursors = [{ eventId: first.eventId, timestamp: first.timestamp }];
+      const listCursors = vi.fn(() => cursors);
+      t.db.listOwnSelfDirectEventCursors = listCursors;
+      const selfNotifies = () =>
+        t
+          .wiresTo(OWN_DEVICE_PEER, 'dm_notify')
+          .filter((wire) => wire.d.b === t.owner.address);
+
+      expect(await t.manager.publishDirectEvent(first)).toEqual({ ok: true });
+      await flushAsyncWork();
+      expect(selfNotifies()).toHaveLength(1);
+      // The bridge accepted the send, but nothing is confirmed yet.
+      expect(
+        (t.manager as any).selfDmConfirmedCursor(
+          t.owner.address,
+          OWN_DEVICE_PEER
+        )
+      ).toBeNull();
+
+      // The periodic carrier waits 5 min after the publish send; an edge 60 s.
+      await (t.manager as any).broadcastSelfDmNotifications('periodic');
+      await (t.manager as any).broadcastSelfDmNotifications('edge');
+      expect(selfNotifies()).toHaveLength(1);
+      t.advance(60_000);
+      await (t.manager as any).broadcastSelfDmNotifications('edge');
+      expect(selfNotifies()).toHaveLength(2);
+      const renotify = selfNotifies()[1];
+      expect(renotify.d.m).toBe(0);
+      expect(renotify.d.lc).toBe(t.cursorOf(first));
+      expect(verifyReticulumDmNotify(renotify.d, t.now())).toBe(true);
+      await (t.manager as any).broadcastSelfDmNotifications('edge');
+      await (t.manager as any).broadcastSelfDmNotifications('periodic');
+      expect(selfNotifies()).toHaveLength(2);
+
+      // A device that never confirms costs at most 12 re-notifies per cursor
+      // and session.
+      for (let i = 0; i < 20; i += 1) {
+        t.advance(5 * 60_000);
+        await (t.manager as any).broadcastSelfDmNotifications('periodic');
+      }
+      expect(selfNotifies()).toHaveLength(1 + 12);
+      expect(t.manager.getDeliveryCounters().selfDmRenotifySent).toBe(12);
+
+      // A new own-device session starts a fresh (still capped) count.
+      t.setOwnSession('own-session-2');
+      await (t.manager as any).broadcastSelfDmNotifications('edge');
+      expect(selfNotifies()).toHaveLength(14);
+
+      // The own device's self notify naming the cursor confirms it.
+      t.advance(60_000);
+      await (t.manager as any).handleDirectNotify(
+        t.signNotify({
+          author: t.owner,
+          peerAddress: t.owner.address,
+          sourcePeerHash: OWN_DEVICE_PEER,
+          requestId: '3'.repeat(16),
+          latestCursor: t.cursorOf(first),
+          maxHops: 0,
+        }),
+        OWN_DEVICE_PEER
+      );
+      expect(t.manager.getDeliveryCounters().selfDmNotifyConfirmed).toBe(1);
+      t.advance(10 * 60_000);
+      await (t.manager as any).broadcastSelfDmNotifications('periodic');
+      await (t.manager as any).broadcastSelfDmNotifications('edge');
+      expect(selfNotifies()).toHaveLength(14);
+
+      // A newer cursor is unconfirmed again; the device pulling a page that
+      // holds it confirms it.
+      const second = signedDmEvent({
+        sender: t.owner,
+        recipient: t.owner,
+        eventId: 'saved-renotify-2',
+        senderSeq: 2,
+        timestamp: t.now(),
+      });
+      await t.manager.publishDirectEvent(second);
+      cursors = [
+        { eventId: second.eventId, timestamp: second.timestamp },
+        { eventId: first.eventId, timestamp: first.timestamp },
+      ];
+      t.advance(60_000);
+      await (t.manager as any).broadcastSelfDmNotifications('edge');
+      expect(selfNotifies()).toHaveLength(16);
+      expect(selfNotifies()[15].d.lc).toBe(t.cursorOf(second));
+      t.db.getDirectEventsAfter = () => [second];
+      await t.pullPage({
+        peerAddress: t.owner.address,
+        requestId: '4'.repeat(16),
+        transferId: '5'.repeat(16),
+      });
+      expect(t.manager.getDeliveryCounters().selfDmNotifyConfirmed).toBe(2);
+      t.advance(10 * 60_000);
+      await (t.manager as any).broadcastSelfDmNotifications('periodic');
+      expect(selfNotifies()).toHaveLength(16);
+
+      // Without an admitted link: no cursor read, no signature, no send.
+      const third = signedDmEvent({
+        sender: t.owner,
+        recipient: t.owner,
+        eventId: 'saved-renotify-3',
+        senderSeq: 3,
+        timestamp: t.now(),
+      });
+      await t.manager.publishDirectEvent(third);
+      cursors = [{ eventId: third.eventId, timestamp: third.timestamp }];
+      t.setAdmitted(false);
+      listCursors.mockClear();
+      t.signer.mockClear();
+      const sentBefore = t.sent.length;
+      t.advance(10 * 60_000);
+      await (t.manager as any).broadcastSelfDmNotifications('periodic');
+      await (t.manager as any).broadcastSelfDmNotifications('edge');
+      await t.manager.flushOutboundForBackground();
+      expect(listCursors).not.toHaveBeenCalled();
+      expect(t.signer).not.toHaveBeenCalled();
+      expect(t.sent.length).toBe(sentBefore);
+    } finally {
+      t.cleanup();
+    }
+  });
+
+  it('treats only a newly admitted own link as an admission edge', async () => {
+    const t = setup({ admitted: true });
+    try {
+      t.manager.setLocalDmAddresses([t.owner.address]);
+      await flushAsyncWork();
+      vi.spyOn(t.manager as any, 'queueDirectMissingEvents').mockImplementation(
+        () => undefined
+      );
+      const probe = vi
+        .spyOn(t.manager as any, 'sendDmProbeToOwnDevices')
+        .mockResolvedValue(0);
+      const carrier = vi
+        .spyOn(t.manager as any, 'announceSelfDmSummariesToPeer')
+        .mockResolvedValue(undefined);
+      const owed = vi
+        .spyOn(t.manager as any, 'flushOwedOwnDeviceGroupNotices')
+        .mockResolvedValue(0);
+      (t.manager as any).appLifecycleState = 'foreground';
+      const edges = () => [
+        probe.mock.calls.length,
+        carrier.mock.calls.length,
+        owed.mock.calls.length,
+      ];
+
+      t.manager.notifyOwnDevicePeerAdmitted(OWN_DEVICE_PEER);
+      expect(edges()).toEqual([1, 1, 1]);
+
+      // The mobile host re-introduces own devices every 10 min while the
+      // link stays admitted: no probe, carrier or owed flush.
+      t.advance(10 * 60_000);
+      t.manager.notifyOwnDevicePeerAdmitted(OWN_DEVICE_PEER);
+      expect(edges()).toEqual([1, 1, 1]);
+
+      // No admitted link: nothing.
+      t.setAdmitted(false);
+      t.manager.notifyOwnDevicePeerAdmitted(OWN_DEVICE_PEER);
+      expect(edges()).toEqual([1, 1, 1]);
+
+      // The link came back (a new link id): a real admission again.
+      t.setAdmitted(true, 'own-link-2');
+      t.manager.notifyOwnDevicePeerAdmitted(OWN_DEVICE_PEER);
+      expect(edges()).toEqual([2, 2, 2]);
+    } finally {
+      t.cleanup();
+    }
+  });
+
+  it('sends a published group notice directly to own devices the routed send missed, and pays failures once', async () => {
+    const t = setup({ admitted: true });
+    try {
+      t.manager.setLocalDmAddresses([t.owner.address]);
+      await flushAsyncWork();
+      const notice = (eventId: string): ReticulumChatWire =>
+        ({
+          t: 'RCHAT',
+          v: 3,
+          k: 'event_notice_v3',
+          g: 42,
+          n: { id: eventId, sp: 'x', p: 'y', z: 'z' },
+        }) as any;
+      const buildNotice = vi
+        .spyOn(t.manager as any, 'buildEventNoticeWire')
+        .mockImplementation(async (event: any) => notice(event.eventId));
+      const nextHops = vi
+        .spyOn(t.manager as any, 'getGroupInterestNextHops')
+        .mockReturnValue([]);
+      const digest = {
+        t: 'RCHAT',
+        v: 3,
+        k: 'group_state_digest_v3',
+        g: 42,
+        d: { eventHash: 'h' },
+      } as any;
+      const buildDigest = vi
+        .spyOn(t.manager as any, 'buildGroupStateDigestWire')
+        .mockResolvedValue(null);
+      const groupEvent = (eventId: string) =>
+        ({ eventId, groupId: 42, authorAddress: t.owner.address }) as any;
+      const noticesToOwn = () => t.wiresTo(OWN_DEVICE_PEER, 'event_notice_v3');
+
+      // No interest route: the routed notice falls back to fanout, and the
+      // own device gets the same signed notice directly (no extra signature).
+      await (t.manager as any).fanoutPublishedEvent(
+        groupEvent('group-post-1'),
+        'main'
+      );
+      // The direct own-device send is not awaited by the publish.
+      await flushAsyncWork();
+      expect(noticesToOwn()).toHaveLength(1);
+      expect(buildNotice).toHaveBeenCalledTimes(1);
+      expect(t.signer).not.toHaveBeenCalled();
+      expect(t.manager.getDeliveryCounters().ownDeviceGroupNoticeSent).toBe(1);
+
+      // The routed send already reached the own device: nothing extra.
+      nextHops.mockReturnValue([OWN_DEVICE_PEER]);
+      await (t.manager as any).fanoutPublishedEvent(
+        groupEvent('group-post-2'),
+        'main'
+      );
+      await flushAsyncWork();
+      expect(noticesToOwn()).toHaveLength(2);
+      expect(t.manager.getDeliveryCounters().ownDeviceGroupNoticeSent).toBe(1);
+
+      // No admitted link: nothing is sent or owed.
+      nextHops.mockReturnValue([]);
+      t.setAdmitted(false);
+      await (t.manager as any).fanoutPublishedEvent(
+        groupEvent('group-post-3'),
+        'main'
+      );
+      expect(noticesToOwn()).toHaveLength(2);
+      expect((t.manager as any).ownDeviceGroupNoticesOwed.size).toBe(0);
+
+      // A failed direct send is owed; no re-send loop runs by itself.
+      t.setAdmitted(true);
+      t.failSends([OWN_DEVICE_PEER]);
+      await (t.manager as any).fanoutPublishedEvent(
+        groupEvent('group-post-4'),
+        'main'
+      );
+      await flushAsyncWork();
+      expect((t.manager as any).ownDeviceGroupNoticesOwed.size).toBe(1);
+      expect(t.manager.getDeliveryCounters().ownDeviceGroupNoticeOwed).toBe(1);
+
+      // The owed map is bounded.
+      for (let i = 0; i < 40; i += 1) {
+        await (t.manager as any).fanoutPublishedEvent(
+          groupEvent(`group-post-bulk-${i}`),
+          'main'
+        );
+      }
+      await flushAsyncWork();
+      expect((t.manager as any).ownDeviceGroupNoticesOwed.size).toBe(32);
+      expect(
+        (t.manager as any).ownDeviceGroupNoticesOwed.has('group-post-4')
+      ).toBe(false);
+
+      // Admission pays it: digest first, the notice only after 15 min.
+      t.failSends([]);
+      buildDigest.mockResolvedValue(digest);
+      const flushOwed = vi.spyOn(
+        t.manager as any,
+        'flushOwedOwnDeviceGroupNotices'
+      );
+      vi.spyOn(t.manager as any, 'queueDirectMissingEvents').mockImplementation(
+        () => undefined
+      );
+      t.manager.notifyOwnDevicePeerAdmitted(OWN_DEVICE_PEER);
+      await flushQueuedWork();
+      expect(flushOwed).toHaveBeenCalledWith(
+        'own-device-admitted',
+        OWN_DEVICE_PEER
+      );
+      expect(t.wiresTo(OWN_DEVICE_PEER, 'group_state_digest_v3')).toHaveLength(
+        1
+      );
+      expect(noticesToOwn()).toHaveLength(2);
+      // 30 s floor per device.
+      await (t.manager as any).flushOwedOwnDeviceGroupNotices('resume');
+      expect(t.wiresTo(OWN_DEVICE_PEER, 'group_state_digest_v3')).toHaveLength(
+        1
+      );
+      t.advance(15 * 60_000);
+      const commands = await (t.manager as any).flushOwedOwnDeviceGroupNotices(
+        'resume'
+      );
+      // <= 8 commands per device: 1 digest (one group) + 7 cached notices.
+      expect(commands).toBe(8);
+      expect(noticesToOwn()).toHaveLength(2 + 7);
+      expect((t.manager as any).ownDeviceGroupNoticesOwed.size).toBe(32 - 7);
+
+      // Owed entries expire after 24 h.
+      t.advance(24 * 60 * 60_000);
+      expect((t.manager as any).hasOwedOwnDeviceGroupNotices()).toBe(false);
+      expect((t.manager as any).ownDeviceGroupNoticesOwed.size).toBe(0);
+    } finally {
+      t.cleanup();
+    }
+  });
+
+  it('probes linked own devices with maxHops 0 on resume, rate-limited, and skips pulls for answers already held', async () => {
+    const t = setup();
+    try {
+      t.manager.setLocalDmAddresses([t.owner.address]);
+      await flushAsyncWork();
+      const queuePull = vi
+        .spyOn(t.manager as any, 'queueDirectMissingEvents')
+        .mockImplementation(() => undefined);
+      const probe = (reason = 'test', peerHash?: string) =>
+        (t.manager as any).sendDmProbeToOwnDevices(reason, { peerHash });
+      const probesToOwn = () => t.wiresTo(OWN_DEVICE_PEER, 'dm_probe');
+
+      // Unknown lifecycle (a desktop host) never probes, even with a link.
+      t.setAdmitted(true);
+      expect(await probe()).toBe(0);
+      // Foreground but no admitted link: no signature, no send.
+      t.manager.notifyAppLifecycle('foreground');
+      t.setAdmitted(false);
+      expect(await probe()).toBe(0);
+      expect(t.signaturesOfType('RCHAT_DM_PROBE')).toHaveLength(0);
+      expect(probesToOwn()).toHaveLength(0);
+
+      t.setAdmitted(true);
+      expect(await probe()).toBe(1);
+      expect(probesToOwn()).toHaveLength(1);
+      const sentProbe = probesToOwn()[0] as DmProbeWire;
+      expect(sentProbe.q.m).toBe(0);
+      expect(verifyReticulumDmProbe(sentProbe.q, t.now())).toBe(true);
+      expect((t.signaturesOfType('RCHAT_DM_PROBE')[0][0] as any).maxHops).toBe(
+        0
+      );
+      expect((t.manager as any).ownDmProbeIds.has(sentProbe.q.q)).toBe(true);
+      expect(t.manager.getDeliveryCounters().ownHubProbeSent).toBe(1);
+      // Nothing else goes out: no fanout, nobody else.
+      expect(t.fanout).toEqual([]);
+      expect(t.sent.every(({ peer }) => peer === OWN_DEVICE_PEER)).toBe(true);
+
+      // The Hub answers with a cursor we hold among our newest events. It
+      // may still hold older events we never got (a message only it pulled
+      // while we were frozen), so the first such answer is pulled.
+      const held = { eventId: 'held-event', timestamp: t.now() - 1_000 };
+      t.db.getDirectRecentEventCursors = vi.fn(() => [held]);
+      const answerHeld = (requestId: string) =>
+        (t.manager as any).handleDirectNotify(
+          t.signNotify({
+            author: t.owner,
+            peerAddress: t.recipient.address,
+            sourcePeerHash: OWN_DEVICE_PEER,
+            requestId,
+            latestCursor: t.cursorOf(held),
+            probeRequestId: sentProbe.q.q,
+          }),
+          OWN_DEVICE_PEER
+        );
+      await answerHeld('5'.repeat(16));
+      expect(queuePull).toHaveBeenCalledTimes(1);
+      expect(
+        t.manager.getDeliveryCounters().ownHubProbeAnswerSkippedUpToDate
+      ).toBeUndefined();
+      // That pull completed ("nothing after your cursor"): the same cursor
+      // from the same device is not pulled again, and is not relayed.
+      (t.manager as any).noteDirectDmPageNoEvents({
+        conversationId: reticulumDmConversationId(
+          t.owner.address,
+          t.recipient.address
+        ),
+        sourcePeerHash: OWN_DEVICE_PEER,
+        requesterAddress: t.owner.address,
+        peerAddress: t.recipient.address,
+        after: held.timestamp - 1,
+        requestId: '5'.repeat(16),
+        remoteEventId: `cursor:${t.cursorOf(held)}`,
+        remoteTimestamp: Number.MAX_SAFE_INTEGER,
+      });
+      queuePull.mockClear();
+      await answerHeld('6'.repeat(16));
+      expect(queuePull).not.toHaveBeenCalled();
+      expect(
+        t.manager.getDeliveryCounters().ownHubProbeAnswerSkippedUpToDate
+      ).toBe(1);
+      expect(
+        t.manager.getDeliveryCounters().ownProbeAnswerRelaySuppressed
+      ).toBeGreaterThanOrEqual(1);
+      // An answer with news is pulled.
+      await (t.manager as any).handleDirectNotify(
+        t.signNotify({
+          author: t.owner,
+          peerAddress: createDmIdentity().address,
+          sourcePeerHash: OWN_DEVICE_PEER,
+          requestId: '7'.repeat(16),
+          latestCursor: 'newsnewsnews',
+          probeRequestId: sentProbe.q.q,
+        }),
+        OWN_DEVICE_PEER
+      );
+      expect(queuePull).toHaveBeenCalledTimes(1);
+      expect(t.fanout).toEqual([]);
+
+      // At most one probe per device per 120 s.
+      t.advance(60_000);
+      expect(await probe()).toBe(0);
+
+      // Two unanswered probes back off 5 min, then 10 min.
+      t.advance(60_000);
+      expect(await probe()).toBe(1); // answered before: no miss
+      t.advance(120_000);
+      expect(await probe()).toBe(1); // miss 1
+      t.advance(120_000);
+      expect(await probe()).toBe(0); // miss 2: 5 min from the last probe
+      t.advance(3 * 60_000);
+      expect(await probe()).toBe(1);
+      t.advance(5 * 60_000);
+      expect(await probe()).toBe(0); // miss 3: 10 min
+      t.advance(5 * 60_000);
+      expect(await probe()).toBe(1);
+      // A new own-device session starts clean.
+      t.advance(120_000);
+      t.setOwnSession('own-session-restarted');
+      expect(await probe()).toBe(1);
+
+      // Token bucket: 20 per hour across own devices.
+      (t.manager as any).ownHubProbeTokens = 20;
+      (t.manager as any).ownHubProbeTokensAt = t.now();
+      for (let i = 0; i < 20; i += 1) {
+        expect((t.manager as any).takeOwnHubProbeToken(t.now())).toBe(true);
+      }
+      expect((t.manager as any).takeOwnHubProbeToken(t.now())).toBe(false);
+      t.advance(3 * 60_000);
+      expect((t.manager as any).takeOwnHubProbeToken(t.now())).toBe(true);
+    } finally {
+      t.cleanup();
+    }
+  });
+
+  it('runs the own-Hub probe from the resume hook only in the foreground after a real absence', async () => {
+    vi.useFakeTimers();
+    const t = setup({ admitted: true });
+    try {
+      t.manager.setLocalDmAddresses([t.owner.address]);
+      await flushAsyncWork();
+      vi.spyOn(t.manager as any, 'queueDirectMissingEvents').mockImplementation(
+        () => undefined
+      );
+      const probesToOwn = () => t.wiresTo(OWN_DEVICE_PEER, 'dm_probe');
+
+      // Socket reopen on a host that never reported its lifecycle: no probe.
+      t.manager.notifyBridgeSocketReopened();
+      await vi.advanceTimersByTimeAsync(2_500);
+      expect(probesToOwn()).toHaveLength(0);
+
+      t.manager.notifyAppLifecycle('foreground');
+      await vi.advanceTimersByTimeAsync(2_500);
+      expect(probesToOwn()).toHaveLength(1);
+
+      // Hidden for 10 s only: the resume hook runs, but no probe.
+      t.manager.notifyAppLifecycle('background');
+      t.advance(10_000);
+      t.manager.notifyAppLifecycle('foreground');
+      t.advance(2_500);
+      await vi.advanceTimersByTimeAsync(2_500);
+      expect(probesToOwn()).toHaveLength(1);
+
+      // Hidden for over 45 s and past the 120 s spacing: probe again.
+      t.manager.notifyAppLifecycle('background');
+      t.advance(120_000);
+      t.manager.notifyAppLifecycle('foreground');
+      await vi.advanceTimersByTimeAsync(2_500);
+      expect(probesToOwn()).toHaveLength(2);
+      expect(probesToOwn().every((wire) => wire.q.m === 0)).toBe(true);
+    } finally {
+      t.cleanup();
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('reticulum chat background sync controls', () => {
+  // The better-sqlite3 mock cannot evaluate the outbox count query, so tests
+  // stub db.countPendingOwnDirectEvents (and the self-DM cursor read) and
+  // exercise the engine logic around them.
+  const LOCAL_PEER = 'a'.repeat(32);
+  const RECIPIENT_PEER = 'b'.repeat(32);
+  const OWN_DEVICE_PEER = 'c'.repeat(32);
+
+  const setup = (options: { relayGroupControl?: boolean } = {}) => {
+    const owner = createDmIdentity();
+    const recipient = createDmIdentity();
+    let clock = Date.now();
+    const snapshots: Array<Record<string, unknown>> = [];
+    const setAdmitted = (admitted: boolean) => {
+      snapshots.length = 0;
+      snapshots.push({
+        linkId: 'own-link',
+        peerPresenceHash: OWN_DEVICE_PEER,
+        incoming: false,
+        overlayTransportAdmitted: admitted,
+        connectedAt: clock,
+        lastRxAt: clock,
+        lastActivityAt: clock,
+      });
+    };
+    const bridge = Object.assign(new EventEmitter(), {
+      getLocalDestinationHash: () => LOCAL_PEER,
+      getOverlayLinkSnapshots: () => [...snapshots],
+      sendReticulumChatDetailed: async () => ({ ok: true as const }),
+      fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      sendReticulumChatResourceDetailed: async () => ({ ok: true as const }),
+      authorizeReticulumChatResourceDetailed: async () => ({
+        ok: true as const,
+      }),
+      rejectReticulumChatResourceDetailed: async () => ({ ok: true as const }),
+    });
+    const lease = (destinationHash: string, address: string) => ({
+      destinationHash,
+      address,
+      sessionId: `session-${destinationHash.slice(0, 4)}`,
+      lastSeen: clock,
+      expiresAt: clock + 60 * 60_000,
+      verification: 'direct-bound' as const,
+    });
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      now: () => clock,
+      signLocalFields: vi.fn(createDmSigner(owner)),
+      hasGoodOverlayHealth: () => false,
+      getAccountEndpointLeases: () => [
+        lease(OWN_DEVICE_PEER, owner.address),
+        lease(RECIPIENT_PEER, recipient.address),
+      ],
+      bridge: bridge as any,
+      ...(options.relayGroupControl !== undefined
+        ? { relayGroupControl: options.relayGroupControl }
+        : {}),
+    });
+    const db = (manager as any).db;
+    let counts = { pending: 0, uncopied: 0, active: 0 };
+    const countPending = vi.fn(() => ({ ...counts }));
+    db.countPendingOwnDirectEvents = countPending;
+    db.hasPendingOwnDirectEvents = vi.fn(() => false);
+    // The head the re-push loop would push, while anything is uncopied.
+    const uncopiedHead: ReticulumDmEvent = {
+      ...signedDmEvent({
+        sender: owner,
+        recipient,
+        eventId: 'outbox-uncopied-head',
+        senderSeq: 1,
+        timestamp: clock - 3 * 60 * 60_000,
+      }),
+      localDeliveryStatus: 'pending',
+    };
+    db.listUncopiedPendingOwnDirectEvents = vi.fn(() =>
+      counts.uncopied > 0 ? [uncopiedHead] : []
+    );
+    db.listPendingOwnDirectEvents = vi.fn(() => []);
+    db.listPendingOwnDirectConversationHeads = vi.fn(() => []);
+    db.nextPendingOwnDirectDeliveryDueAt = vi.fn(() => null);
+    let selfCursors: Array<{ eventId: string; timestamp: number }> = [];
+    db.listOwnSelfDirectEventCursors = vi.fn(() => selfCursors);
+    const states: Array<Record<string, unknown>> = [];
+    manager.on('ownOutboxState', (state) => states.push(state));
+    return {
+      owner,
+      recipient,
+      manager,
+      db,
+      countPending,
+      uncopiedHead,
+      states,
+      setAdmitted,
+      setCounts: (next: typeof counts) => {
+        counts = next;
+      },
+      setSelfCursors: (next: typeof selfCursors) => {
+        selfCursors = next;
+      },
+      advance: (ms: number) => {
+        clock += ms;
+      },
+      now: () => clock,
+      cleanup: () => manager.close(),
+    };
+  };
+
+  it('switches relaying of group control at runtime', async () => {
+    const t = setup({ relayGroupControl: false });
+    try {
+      const inbound = 'd'.repeat(32);
+      const downstream = 'e'.repeat(32);
+      const nextHops = vi
+        .spyOn(t.manager as any, 'getGroupInterestNextHops')
+        .mockReturnValue([]);
+      const landSync = vi.spyOn(
+        t.manager as any,
+        'scheduleLandStateForwardingSync'
+      );
+      (t.manager as any).groupInterestRoutes.set(`73:${downstream}`, {
+        groupId: 73,
+        originPeerHash: downstream,
+        reversePeerHash: downstream,
+        hops: 1,
+        expiresAt: t.now() + 60_000,
+      });
+      const forward = () =>
+        (t.manager as any).forwardGroupControlToInterestRoutes(
+          'group_typing',
+          73,
+          { g: 73 },
+          inbound
+        );
+      const plans = () =>
+        (t.manager as any).buildLandStateForwardingSnapshot().plans;
+
+      // Startup value off (mobile): consumed locally, never re-sent.
+      await forward();
+      expect(nextHops).not.toHaveBeenCalled();
+      expect(plans()).toEqual([]);
+
+      t.manager.setRelayGroupControl(true);
+      await forward();
+      expect(nextHops).toHaveBeenCalledTimes(1);
+      expect(plans()).toHaveLength(1);
+      expect(landSync).toHaveBeenCalledTimes(1);
+
+      // Idempotent: no second land-state sync for the same value.
+      t.manager.setRelayGroupControl(true);
+      expect(landSync).toHaveBeenCalledTimes(1);
+
+      t.manager.setRelayGroupControl(false);
+      await forward();
+      expect(nextHops).toHaveBeenCalledTimes(1);
+      expect(plans()).toEqual([]);
+      expect(landSync).toHaveBeenCalledTimes(2);
+    } finally {
+      t.cleanup();
+    }
+  });
+
+  it('reports zeros without a signed-in account or a stubbed count', () => {
+    const t = setup();
+    try {
+      expect(t.manager.getOwnOutboxState()).toEqual({
+        pending: false,
+        pendingCount: 0,
+        uncopiedCount: 0,
+      });
+      expect(t.countPending).not.toHaveBeenCalled();
+      // The mock DB has no handler for the real query: it reads as zeros.
+      delete t.db.countPendingOwnDirectEvents;
+      t.manager.setLocalDmAddresses([t.owner.address]);
+      expect(t.manager.getOwnOutboxState()).toEqual({
+        pending: false,
+        pendingCount: 0,
+        uncopiedCount: 0,
+      });
+      expect(t.states).toEqual([]);
+    } finally {
+      t.cleanup();
+    }
+  });
+
+  it('emits ownOutboxState only on change, on publish, own-device copy and sent', async () => {
+    const t = setup();
+    try {
+      t.manager.setLocalDmAddresses([t.owner.address]);
+      await flushAsyncWork();
+      // Sign-in recomputes, but nothing changed from the initial zeros.
+      expect(t.states).toEqual([]);
+
+      const event = {
+        ...signedDmEvent({
+          sender: t.owner,
+          recipient: t.recipient,
+          eventId: 'outbox-dm-1',
+          senderSeq: 1,
+          timestamp: t.now(),
+        }),
+        localDeliveryStatus: 'pending' as const,
+      };
+      t.setCounts({ pending: 1, uncopied: 1, active: 1 });
+      expect(await t.manager.publishDirectEvent(event)).toEqual({ ok: true });
+      await flushAsyncWork();
+      expect(t.states).toEqual([
+        { pending: true, pendingCount: 1, uncopiedCount: 1 },
+      ]);
+
+      // Unrelated events do not recompute: an incoming DM from the peer.
+      const callsBefore = t.countPending.mock.calls.length;
+      (t.manager as any).acceptDirectEvent(
+        signedDmEvent({
+          sender: t.recipient,
+          recipient: t.owner,
+          eventId: 'outbox-incoming-1',
+          senderSeq: 1,
+          timestamp: t.now(),
+        }),
+        false
+      );
+      await flushAsyncWork();
+      expect(t.countPending.mock.calls.length).toBe(callsBefore);
+
+      // A trigger whose recompute finds the same state emits nothing.
+      (t.manager as any).scheduleOwnOutboxStateRefresh();
+      await flushAsyncWork();
+      expect(t.states).toHaveLength(1);
+
+      // A burst of triggers in one turn is one recompute.
+      const burstBefore = t.countPending.mock.calls.length;
+      (t.manager as any).scheduleOwnOutboxStateRefresh();
+      (t.manager as any).scheduleOwnOutboxStateRefresh();
+      (t.manager as any).scheduleOwnOutboxStateRefresh();
+      await flushAsyncWork();
+      expect(t.countPending.mock.calls.length).toBe(burstBefore + 1);
+
+      // A verified own device pulled a page holding it.
+      t.db.markDirectEventsOwnDeviceCopied = vi.fn(() => 1);
+      t.setCounts({ pending: 1, uncopied: 0, active: 1 });
+      (t.manager as any).markOwnDeviceCopiedFromPage(t.owner.address, [event]);
+      await flushAsyncWork();
+      expect(t.states).toEqual([
+        { pending: true, pendingCount: 1, uncopiedCount: 1 },
+        { pending: true, pendingCount: 1, uncopiedCount: 0 },
+      ]);
+
+      // The recipient pulled it.
+      t.setCounts({ pending: 0, uncopied: 0, active: 0 });
+      (t.manager as any).markDirectEventSent(event);
+      await flushAsyncWork();
+      expect(t.states).toHaveLength(3);
+      expect(t.states[2]).toEqual({
+        pending: false,
+        pendingCount: 0,
+        uncopiedCount: 0,
+      });
+      expect(t.manager.getOwnOutboxState()).toEqual(t.states[2]);
+      expect(t.states).toHaveLength(3);
+    } finally {
+      t.cleanup();
+    }
+  });
+
+  it('keeps pending only while staying awake can still move own messages', async () => {
+    const t = setup();
+    try {
+      t.manager.setLocalDmAddresses([t.owner.address]);
+      await flushAsyncWork();
+
+      // Old pending DMs outside the active retry window, no own link.
+      t.setCounts({ pending: 2, uncopied: 2, active: 0 });
+      expect(t.manager.getOwnOutboxState()).toEqual({
+        pending: false,
+        pendingCount: 2,
+        uncopiedCount: 2,
+      });
+      // An admitted own link can take the uncopied ones.
+      t.setAdmitted(true);
+      expect(t.manager.getOwnOutboxState().pending).toBe(true);
+      // Copied to the own device: nothing left to move.
+      t.setCounts({ pending: 2, uncopied: 0, active: 0 });
+      expect(t.manager.getOwnOutboxState()).toEqual({
+        pending: false,
+        pendingCount: 2,
+        uncopiedCount: 0,
+      });
+      expect(t.states.map((state) => state.pending)).toEqual([
+        false,
+        true,
+        false,
+      ]);
+
+      // Signing out reports an empty outbox.
+      t.setCounts({ pending: 1, uncopied: 1, active: 1 });
+      expect(t.manager.getOwnOutboxState().pending).toBe(true);
+      await t.manager.clearLocalAccountState();
+      await flushAsyncWork();
+      expect(t.states[t.states.length - 1]).toEqual({
+        pending: false,
+        pendingCount: 0,
+        uncopiedCount: 0,
+      });
+    } finally {
+      t.cleanup();
+    }
+  });
+
+  it('counts an unconfirmed Saved Messages cursor until the own device confirms it', async () => {
+    const t = setup();
+    try {
+      t.setAdmitted(true);
+      t.manager.setLocalDmAddresses([t.owner.address]);
+      await flushAsyncWork();
+      const cursor = { eventId: 'saved-outbox-1', timestamp: t.now() };
+      t.setSelfCursors([cursor]);
+      expect(t.manager.getOwnOutboxState()).toEqual({
+        pending: true,
+        pendingCount: 0,
+        uncopiedCount: 0,
+      });
+      expect(
+        (t.manager as any).confirmSelfDmCursor(
+          t.owner.address,
+          OWN_DEVICE_PEER,
+          cursor
+        )
+      ).toBe(true);
+      await flushAsyncWork();
+      expect(t.states.map((state) => state.pending)).toEqual([true, false]);
+    } finally {
+      t.cleanup();
+    }
+  });
+
+  it('remembers a Saved Messages confirmation across a restart', async () => {
+    const t = setup();
+    try {
+      const stored = new Map<string, { eventId: string; timestamp: number }>();
+      const persist = vi.fn(
+        (
+          owner: string,
+          peer: string,
+          event: { eventId: string; timestamp: number },
+          now: number,
+          pruneBefore: number
+        ) => {
+          expect(pruneBefore).toBe(now - 48 * 60 * 60_000);
+          stored.set(`${owner}|${peer}`, { ...event });
+        }
+      );
+      const load = vi.fn(
+        (owner: string, peer: string) => stored.get(`${owner}|${peer}`) ?? null
+      );
+      t.db.setSelfDmConfirmedCursor = persist;
+      t.db.getSelfDmConfirmedCursor = load;
+      t.setAdmitted(true);
+      t.manager.setLocalDmAddresses([t.owner.address]);
+      await flushAsyncWork();
+      const cursor = { eventId: 'saved-restart-1', timestamp: t.now() };
+      t.setSelfCursors([cursor]);
+      expect(t.manager.getOwnOutboxState().pending).toBe(true);
+      (t.manager as any).confirmSelfDmCursor(
+        t.owner.address,
+        OWN_DEVICE_PEER,
+        cursor
+      );
+      expect(persist).toHaveBeenCalledTimes(1);
+      expect(t.manager.getOwnOutboxState().pending).toBe(false);
+
+      // A restart empties the memory state; the stored confirmation is read
+      // once and nothing is re-notified or kept awake.
+      (t.manager as any).selfDmConfirmedUpTo.clear();
+      (t.manager as any).selfDmRenotifyStates.clear();
+      load.mockClear();
+      expect(t.manager.getOwnOutboxState().pending).toBe(false);
+      expect(t.manager.getOwnOutboxState().pending).toBe(false);
+      expect(load).toHaveBeenCalledTimes(1);
+      expect(
+        (t.manager as any).newestUnconfirmedOwnSelfDmEvent(
+          t.owner.address,
+          OWN_DEVICE_PEER
+        )
+      ).toBeNull();
+
+      // An older confirmation does not overwrite a newer stored one.
+      expect(
+        (t.manager as any).confirmSelfDmCursor(
+          t.owner.address,
+          OWN_DEVICE_PEER,
+          { eventId: 'saved-older', timestamp: cursor.timestamp - 1 }
+        )
+      ).toBe(false);
+      expect(persist).toHaveBeenCalledTimes(1);
+    } finally {
+      t.cleanup();
+    }
+  });
+
+  it('counts an owed own-device group notice until it ages out, rechecked at the hide edge', async () => {
+    const t = setup();
+    try {
+      t.setAdmitted(true);
+      t.manager.setLocalDmAddresses([t.owner.address]);
+      await flushAsyncWork();
+      (t.manager as any).noteOwnDeviceGroupNoticeOwed(
+        {
+          eventId: 'owed-group-post',
+          groupId: 73,
+          authorAddress: t.owner.address,
+        },
+        { t: 'RCHAT', k: 'event_notice_v3' },
+        OWN_DEVICE_PEER,
+        t.now()
+      );
+      await flushAsyncWork();
+      expect(t.states).toEqual([
+        { pending: true, pendingCount: 0, uncopiedCount: 0 },
+      ]);
+
+      vi.spyOn(t.manager, 'flushOutboundForBackground').mockResolvedValue();
+      t.advance(24 * 60 * 60_000);
+      t.manager.notifyAppLifecycle('background');
+      expect(t.states).toEqual([
+        { pending: true, pendingCount: 0, uncopiedCount: 0 },
+        { pending: false, pendingCount: 0, uncopiedCount: 0 },
+      ]);
+    } finally {
+      t.cleanup();
+    }
+  });
+
+  it('ignores an uncopied DM that an own device cursor has already passed', async () => {
+    const t = setup();
+    try {
+      t.setAdmitted(true);
+      t.manager.setLocalDmAddresses([t.owner.address]);
+      await flushAsyncWork();
+      t.setCounts({ pending: 1, uncopied: 1, active: 0 });
+      expect(t.manager.getOwnOutboxState().pending).toBe(true);
+      // The home Hub pulled after a newer message written on it: the re-push
+      // loop skips this head, so it keeps nothing awake either.
+      (t.manager as any).noteOwnDevicePulledUpTo(
+        t.uncopiedHead.conversationId,
+        t.uncopiedHead.timestamp + 1
+      );
+      await flushAsyncWork();
+      expect(t.states[t.states.length - 1]).toEqual({
+        pending: false,
+        pendingCount: 1,
+        uncopiedCount: 1,
+      });
+      expect(
+        await (t.manager as any).pushUncopiedOwnEventsToOwnDevices('sweep')
+      ).toBe(0);
+    } finally {
+      t.cleanup();
+    }
+  });
+
+  it('ignores uncopied DMs while the only linked own device leaves pushes unanswered', async () => {
+    const t = setup();
+    try {
+      t.setAdmitted(true);
+      t.manager.setLocalDmAddresses([t.owner.address]);
+      await flushAsyncWork();
+      (t.manager as any).ownDevicePeerPushState(OWN_DEVICE_PEER).unanswered = 3;
+      t.setCounts({ pending: 1, uncopied: 1, active: 0 });
+      // The re-push loop skips this device, so staying awake moves nothing.
+      expect(t.manager.getOwnOutboxState()).toEqual({
+        pending: false,
+        pendingCount: 1,
+        uncopiedCount: 1,
+      });
+      // A pull from it answers the pushes: it is a target again.
+      (t.manager as any).noteOwnDevicePullRequest(OWN_DEVICE_PEER);
+      await flushAsyncWork();
+      expect(t.states[t.states.length - 1]).toEqual({
+        pending: true,
+        pendingCount: 1,
+        uncopiedCount: 1,
+      });
+    } finally {
+      t.cleanup();
+    }
+  });
+
+  it('counts an owed group notice only while its own device is linked', async () => {
+    const t = setup();
+    try {
+      t.setAdmitted(false);
+      t.manager.setLocalDmAddresses([t.owner.address]);
+      await flushAsyncWork();
+      (t.manager as any).noteOwnDeviceGroupNoticeOwed(
+        {
+          eventId: 'owed-offline-post',
+          groupId: 73,
+          authorAddress: t.owner.address,
+        },
+        { t: 'RCHAT', k: 'event_notice_v3' },
+        OWN_DEVICE_PEER,
+        t.now()
+      );
+      await flushAsyncWork();
+      // Owed to an offline device: nothing to pay until it relinks.
+      expect(t.states).toEqual([]);
+      expect(t.manager.getOwnOutboxState().pending).toBe(false);
+      expect((t.manager as any).ownDeviceGroupNoticesOwed.size).toBe(1);
+
+      vi.spyOn(
+        t.manager as any,
+        'flushOwedOwnDeviceGroupNotices'
+      ).mockResolvedValue(0);
+      t.setAdmitted(true);
+      t.manager.notifyOwnDevicePeerAdmitted(OWN_DEVICE_PEER);
+      await flushAsyncWork();
+      expect(t.states).toEqual([
+        { pending: true, pendingCount: 0, uncopiedCount: 0 },
+      ]);
+    } finally {
+      t.cleanup();
+    }
+  });
+});
+
+describe('reticulum chat pending delivery sweep: persisted state and slow tail', () => {
+  // The Vitest better-sqlite3 mock cannot evaluate the heads query, so a
+  // small in-memory store stands in for rchat_dm_events and applies the same
+  // rules as its SQL: newest pending own event per conversation inside the
+  // window, and heads older than the tail cutoff only while uncopied.
+  const LOCAL_PEER = '1'.repeat(32);
+  const RECIPIENT_PEER = '2'.repeat(32);
+  const MINUTE = 60_000;
+  const HOUR = 60 * MINUTE;
+  type DmNotifyWire = Extract<ReticulumChatWire, { k: 'dm_notify' }>;
+  type Row = {
+    event: ReticulumDmEvent;
+    attempts: number;
+    next: number;
+    copied: boolean;
+  };
+
+  const setup = (options: { healthy?: boolean } = {}) => {
+    const owner = createDmIdentity();
+    const recipient = createDmIdentity();
+    let clock = Date.now();
+    let healthy = options.healthy ?? true;
+    // A stalled bridge: sends wait for this gate while it is set.
+    let sendGate: Promise<void> | null = null;
+    const sent: Array<{ peer: string; wire: ReticulumChatWire }> = [];
+    const fanout: ReticulumChatWire[] = [];
+    const bridge = Object.assign(new EventEmitter(), {
+      getLocalDestinationHash: () => LOCAL_PEER,
+      getOverlayLinkSnapshots: () => [],
+      sendReticulumChatDetailed: async (
+        peer: string,
+        wire: ReticulumChatWire
+      ) => {
+        if (sendGate) await sendGate;
+        sent.push({ peer, wire });
+        return { ok: true as const };
+      },
+      fanoutReticulumChatDetailed: async (messages: ReticulumChatWire[]) => {
+        fanout.push(...messages);
+        return { ok: true as const };
+      },
+    });
+    const signer = vi.fn(createDmSigner(owner));
+    const getAccountEndpointLeases = () => [
+      {
+        destinationHash: RECIPIENT_PEER,
+        address: recipient.address,
+        sessionId: 'session-recipient',
+        lastSeen: clock,
+        expiresAt: clock + HOUR,
+        verification: 'direct-bound' as const,
+      },
+    ];
+    const hasGoodOverlayHealth = () => healthy;
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      now: () => clock,
+      signLocalFields: signer,
+      hasGoodOverlayHealth,
+      getAccountEndpointLeases,
+      bridge: bridge as any,
+    });
+    const rows = new Map<string, Row>();
+    const headsOf = (
+      sender: string,
+      since: number,
+      uncopiedOnlyBefore: number,
+      limit = 16
+    ) => {
+      const newest = new Map<string, Row>();
+      for (const row of rows.values()) {
+        if (row.event.senderAddress !== sender) continue;
+        if (row.event.timestamp < since) continue;
+        const current = newest.get(row.event.conversationId);
+        if (!current || row.event.timestamp > current.event.timestamp) {
+          newest.set(row.event.conversationId, row);
+        }
+      }
+      return [...newest.values()]
+        .filter(
+          (row) => row.event.timestamp >= uncopiedOnlyBefore || !row.copied
+        )
+        .sort(
+          (a, b) => a.next - b.next || b.event.timestamp - a.event.timestamp
+        )
+        .slice(0, limit)
+        .map((row) => ({
+          event: row.event,
+          deliveryAttempts: row.attempts,
+          nextDeliveryAttemptAt: row.next,
+        }));
+    };
+    const db = (manager as any).db;
+    const listHeads = vi.fn(headsOf);
+    db.listPendingOwnDirectConversationHeads = listHeads;
+    db.nextPendingOwnDirectDeliveryDueAt = vi.fn(
+      (sender: string, since: number, uncopiedOnlyBefore: number) => {
+        const heads = headsOf(sender, since, uncopiedOnlyBefore, 64);
+        return heads.length > 0
+          ? Math.min(...heads.map((head) => head.nextDeliveryAttemptAt))
+          : null;
+      }
+    );
+    const persist = vi.fn(
+      (eventId: string, attempts: number, nextAttemptAt: number) => {
+        const row = rows.get(eventId);
+        if (!row) return;
+        row.attempts = attempts;
+        row.next = nextAttemptAt;
+      }
+    );
+    db.setDirectEventDeliveryRetry = persist;
+    db.getPendingOwnDirectConversationHead = vi.fn(
+      (
+        sender: string,
+        conversationId: string,
+        since: number,
+        uncopiedOnlyBefore: number
+      ) =>
+        headsOf(sender, since, uncopiedOnlyBefore, 64).find(
+          (head) => head.event.conversationId === conversationId
+        ) ?? null
+    );
+    db.countPendingOwnDirectEvents = vi.fn(() => ({
+      pending: rows.size,
+      uncopied: rows.size,
+      active: rows.size,
+    }));
+    db.hasPendingOwnDirectEvents = vi.fn(() => rows.size > 0);
+    db.listUncopiedPendingOwnDirectEvents = vi.fn(() => []);
+    db.listPendingOwnDirectEvents = vi.fn(() => []);
+    let nextSeq = 1;
+    const addPending = (
+      eventId: string,
+      age: number,
+      state: Partial<Omit<Row, 'event'>> = {},
+      to = recipient
+    ) => {
+      const event: ReticulumDmEvent = {
+        ...signedDmEvent({
+          sender: owner,
+          recipient: to,
+          eventId,
+          senderSeq: nextSeq++,
+          timestamp: clock - age,
+        }),
+        localDeliveryStatus: 'pending',
+      };
+      rows.set(eventId, {
+        event,
+        attempts: 0,
+        next: 0,
+        copied: false,
+        ...state,
+      });
+      return event;
+    };
+    const notifiesTo = (peer: string) =>
+      sent
+        .filter((entry) => entry.peer === peer && entry.wire.k === 'dm_notify')
+        .map((entry) => entry.wire as DmNotifyWire);
+    const dmFanouts = () =>
+      fanout.filter((wire) => wire.k === 'dm_notify') as DmNotifyWire[];
+    const notifySignatures = () =>
+      signer.mock.calls.filter(
+        ([fields]) => (fields as any).type === 'RCHAT_DM_NOTIFY'
+      ).length;
+    return {
+      owner,
+      recipient,
+      manager,
+      signer,
+      notifySignatures,
+      getAccountEndpointLeases,
+      hasGoodOverlayHealth,
+      rows,
+      listHeads,
+      persist,
+      addPending,
+      notifiesTo,
+      dmFanouts,
+      fullFanouts: () =>
+        dmFanouts().filter((wire) => wire.d.fw === undefined).length,
+      tracked: () => (manager as any).pendingDmNotifyDeliveries.size as number,
+      sweep: () => (manager as any).runDmPendingDeliverySweep(),
+      counters: () => manager.getDeliveryCounters(),
+      setHealthy: (value: boolean) => {
+        healthy = value;
+      },
+      setSendGate: (gate: Promise<void> | null) => {
+        sendGate = gate;
+      },
+      timerDueIn: () =>
+        (manager as any).dmPendingDeliveryTimer
+          ? (manager as any).dmPendingDeliveryTimerDueAt - clock
+          : null,
+      tailPhase: () =>
+        (manager as any).dmPendingTailPhase(owner.address) as number,
+      // Move the clock onto the next point of the account's tail grid.
+      alignToTailGrid: () => {
+        const phase = (manager as any).dmPendingTailPhase(
+          owner.address
+        ) as number;
+        clock =
+          phase + Math.ceil((clock - phase) / (30 * MINUTE)) * 30 * MINUTE;
+      },
+      advance: (ms: number) => {
+        clock += ms;
+      },
+      advanceTo: (at: number) => {
+        clock = Math.max(clock, at);
+      },
+      now: () => clock,
+      cleanup: () => manager.close(),
+    };
+  };
+
+  it('persists sweep attempts, so a restart never re-runs the tracked fanouts', async () => {
+    vi.useFakeTimers();
+    const t = setup();
+    try {
+      t.manager.setLocalDmAddresses([t.owner.address]);
+      await flushAsyncWork();
+      const event = t.addPending('restart-pending', 30_000);
+      const row = t.rows.get(event.eventId)!;
+
+      // Attempt 1: the only tracked one (direct, gossip, full fallback). The
+      // live publish was the other tracked notify of this send.
+      await t.sweep();
+      expect(row.attempts).toBe(1);
+      expect(row.next).toBeGreaterThanOrEqual(t.now() + 20_000);
+      expect(t.notifiesTo(RECIPIENT_PEER).at(-1)?.d.m).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(t.fullFanouts()).toBe(1);
+      const trackedBefore = t.tracked();
+
+      // Attempt 2 is already recovery mode: short hop limit, and the width-4
+      // gossip goes out even though the direct send was accepted.
+      t.advanceTo(row.next);
+      let fanoutsBefore = t.dmFanouts().length;
+      await t.sweep();
+      expect(row.attempts).toBe(2);
+      expect(t.tracked()).toBe(trackedBefore);
+      expect(t.notifiesTo(RECIPIENT_PEER).at(-1)?.d.m).toBe(2);
+      expect(
+        t
+          .dmFanouts()
+          .slice(fanoutsBefore)
+          .map((w) => w.d.fw)
+      ).toEqual([4]);
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(t.fullFanouts()).toBe(1);
+
+      // Restart: the in-memory state is gone, the persisted count is not.
+      (t.manager as any).dmPendingDeliveryAttempts.clear();
+      t.advanceTo(row.next);
+      fanoutsBefore = t.dmFanouts().length;
+      await t.sweep();
+      expect(row.attempts).toBe(3);
+      expect(t.tracked()).toBe(trackedBefore);
+      expect(t.notifiesTo(RECIPIENT_PEER).at(-1)?.d.m).toBe(2);
+      expect(
+        t
+          .dmFanouts()
+          .slice(fanoutsBefore)
+          .map((w) => w.d.fw)
+      ).toEqual([4]);
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(t.fullFanouts()).toBe(1);
+      expect(t.persist).toHaveBeenLastCalledWith(event.eventId, 3, row.next);
+    } finally {
+      t.cleanup();
+      vi.useRealTimers();
+    }
+  });
+
+  it('never runs a tracked fanout for a persisted count of 1, even for a young event', async () => {
+    vi.useFakeTimers();
+    const t = setup();
+    try {
+      t.manager.setLocalDmAddresses([t.owner.address]);
+      await flushAsyncWork();
+      t.addPending('restart-young', 60_000, { attempts: 1, next: 0 });
+      await t.sweep();
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(t.fullFanouts()).toBe(0);
+      expect(t.notifiesTo(RECIPIENT_PEER)).toHaveLength(1);
+      expect(t.notifiesTo(RECIPIENT_PEER)[0].d.m).toBe(2);
+      expect(t.counters().dmPendingRedeliver).toBe(1);
+    } finally {
+      t.cleanup();
+      vi.useRealTimers();
+    }
+  });
+
+  it('reserves the attempt before signing, so an overlapping pass or a restart mid-send never repeats the tracked fanout', async () => {
+    vi.useFakeTimers();
+    const t = setup();
+    try {
+      t.manager.setLocalDmAddresses([t.owner.address]);
+      await flushAsyncWork();
+      const event = t.addPending('overlap-pending', 30_000);
+      const row = t.rows.get(event.eventId)!;
+      let release!: () => void;
+      t.setSendGate(
+        new Promise<void>((resolve) => {
+          release = resolve;
+        })
+      );
+      const first = t.sweep();
+      await flushAsyncWork(40);
+      // Reserved and persisted while the bridge is still stalled.
+      expect(row.attempts).toBe(1);
+      expect(row.next).toBeGreaterThan(t.now());
+      expect(t.notifySignatures()).toBe(1);
+
+      // A second pass (new send, resume, timer) while the first is stuck.
+      t.advance(10 * MINUTE);
+      await t.sweep();
+      await (t.manager as any).runForcedDmPendingSweep('test', {});
+      expect(t.notifySignatures()).toBe(1);
+
+      // A restart mid-send: the persisted reservation still holds.
+      (t.manager as any).dmPendingDeliveryAttempts.clear();
+      (t.manager as any).dmPendingSweepInFlight = false;
+      t.advanceTo(row.next);
+      const afterRestart = t.sweep();
+      await flushAsyncWork(40);
+      expect(t.notifySignatures()).toBe(2);
+      expect(row.attempts).toBe(2);
+      expect(t.notifiesTo(RECIPIENT_PEER)).toHaveLength(0);
+
+      t.setSendGate(null);
+      release();
+      await first;
+      await afterRestart;
+      await vi.advanceTimersByTimeAsync(5_000);
+      // One tracked full fanout from the sweep, however the passes overlap.
+      expect(t.fullFanouts()).toBeLessThanOrEqual(1);
+      // One tracked notify (its own gossip step may repeat the same wire).
+      expect(
+        new Set(
+          t
+            .notifiesTo(RECIPIENT_PEER)
+            .filter((wire) => wire.d.m === undefined)
+            .map((wire) => wire.d.q)
+        ).size
+      ).toBe(1);
+    } finally {
+      t.cleanup();
+      vi.useRealTimers();
+    }
+  });
+
+  it('runs the tail after 2 h: every 30 min until a day old, then every 2 h, up to 7 days', async () => {
+    const t = setup();
+    try {
+      t.manager.setLocalDmAddresses([t.owner.address]);
+      await flushAsyncWork();
+      t.alignToTailGrid();
+      const event = t.addPending('tail-pending', 2 * HOUR + MINUTE, {
+        attempts: 14,
+      });
+      const row = t.rows.get(event.eventId)!;
+      const tailAttempts = () => t.counters().dmPendingRedeliverTail ?? 0;
+
+      await t.sweep();
+      expect(t.listHeads).toHaveBeenLastCalledWith(
+        t.owner.address,
+        t.now() - 7 * 24 * HOUR,
+        t.now() - 2 * HOUR,
+        16,
+        t.now()
+      );
+      expect(tailAttempts()).toBe(1);
+      expect(row.attempts).toBe(15);
+      expect(row.next).toBe(t.now() + 30 * MINUTE);
+      expect(t.tracked()).toBe(0);
+      expect(t.notifiesTo(RECIPIENT_PEER)[0].d.m).toBe(2);
+      expect(t.dmFanouts().map((wire) => wire.d.fw)).toEqual([4]);
+
+      // The timer is armed to the due time, not to the 20 s tick.
+      (t.manager as any).startDmPendingDeliverySweep();
+      expect(t.timerDueIn()).toBe(30 * MINUTE);
+
+      t.advance(29 * MINUTE);
+      await t.sweep();
+      expect(tailAttempts()).toBe(1);
+      t.advance(MINUTE);
+      await t.sweep();
+      expect(tailAttempts()).toBe(2);
+
+      // Past a day old: every 2 h, on the account's grid.
+      t.advanceTo(event.timestamp + 24 * HOUR + MINUTE);
+      await t.sweep();
+      expect(tailAttempts()).toBe(3);
+      expect((row.next - t.tailPhase()) % (120 * MINUTE)).toBe(0);
+      expect(row.next - t.now()).toBeGreaterThanOrEqual(60 * MINUTE);
+      expect(row.next - t.now()).toBeLessThan(180 * MINUTE);
+      t.advanceTo(row.next - MINUTE);
+      await t.sweep();
+      expect(tailAttempts()).toBe(3);
+      t.advance(MINUTE);
+      await t.sweep();
+      expect(tailAttempts()).toBe(4);
+      expect(row.next).toBe(t.now() + 120 * MINUTE);
+
+      // Past 7 days nothing is due, and nothing arms the timer.
+      t.advanceTo(event.timestamp + 7 * 24 * HOUR + MINUTE);
+      await t.sweep();
+      expect(tailAttempts()).toBe(4);
+      expect((t.manager as any).nextDmPendingDeliveryDueAt()).toBeNull();
+      expect(t.counters().dmPendingRedeliver ?? 0).toBe(0);
+    } finally {
+      t.cleanup();
+    }
+  });
+
+  it('puts tail conversations on shared wakeups', async () => {
+    const t = setup();
+    try {
+      t.manager.setLocalDmAddresses([t.owner.address]);
+      await flushAsyncWork();
+      t.alignToTailGrid();
+      const start = t.now();
+      const first = t.addPending('tail-shared-a', 3 * HOUR, { attempts: 20 });
+      const second = t.addPending(
+        'tail-shared-b',
+        3 * HOUR - 10 * MINUTE,
+        { attempts: 20, next: start + 10 * MINUTE },
+        createDmIdentity()
+      );
+      const tailAttempts = () => t.counters().dmPendingRedeliverTail ?? 0;
+
+      // Their own phases are 10 min apart ...
+      await t.sweep();
+      expect(tailAttempts()).toBe(1);
+      t.advance(10 * MINUTE);
+      await t.sweep();
+      expect(tailAttempts()).toBe(2);
+      // ... but both next attempts land on the same grid point.
+      const firstRow = t.rows.get(first.eventId)!;
+      const secondRow = t.rows.get(second.eventId)!;
+      expect(firstRow.next).toBe(start + 30 * MINUTE);
+      expect(secondRow.next).toBe(firstRow.next);
+      (t.manager as any).startDmPendingDeliverySweep();
+      expect(t.timerDueIn()).toBe(20 * MINUTE);
+
+      // One wakeup announces both.
+      t.advanceTo(firstRow.next);
+      await t.sweep();
+      expect(tailAttempts()).toBe(4);
+      expect(secondRow.next).toBe(firstRow.next);
+      expect(firstRow.next).toBe(t.now() + 30 * MINUTE);
+    } finally {
+      t.cleanup();
+    }
+  });
+
+  it('stops the tail once an own device holds a copy', async () => {
+    const t = setup();
+    try {
+      t.manager.setLocalDmAddresses([t.owner.address]);
+      await flushAsyncWork();
+      const event = t.addPending('tail-copied', 3 * HOUR);
+      await t.sweep();
+      expect(t.counters().dmPendingRedeliverTail).toBe(1);
+      const signatures = t.signer.mock.calls.length;
+
+      t.rows.get(event.eventId)!.copied = true;
+      t.advance(30 * MINUTE);
+      await t.sweep();
+      t.advance(24 * HOUR);
+      await t.sweep();
+      expect(t.counters().dmPendingRedeliverTail).toBe(1);
+      expect(t.signer.mock.calls.length).toBe(signatures);
+      expect((t.manager as any).nextDmPendingDeliveryDueAt()).toBeNull();
+      expect((t.manager as any).dmPendingDeliveryAttempts.size).toBe(0);
+    } finally {
+      t.cleanup();
+    }
+  });
+
+  it('arms no timer with nothing pending and spends nothing while offline', async () => {
+    vi.useFakeTimers();
+    const t = setup({ healthy: false });
+    try {
+      const sweep = vi.spyOn(t.manager as any, 'runDmPendingDeliverySweep');
+      t.manager.setLocalDmAddresses([t.owner.address]);
+      await flushAsyncWork();
+      expect((t.manager as any).dmPendingDeliveryTimer).toBeNull();
+      await vi.advanceTimersByTimeAsync(HOUR);
+      expect(sweep).not.toHaveBeenCalled();
+
+      // Offline with a pending event: the tick reads and signs nothing,
+      // spends no attempt, and does not poll (only a 15 min safety net).
+      const event = t.addPending('offline-pending', 30_000);
+      (t.manager as any).startDmPendingDeliverySweep(true);
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(sweep).toHaveBeenCalledTimes(1);
+      expect(t.listHeads).not.toHaveBeenCalled();
+      expect(t.signer).not.toHaveBeenCalled();
+      expect(t.persist).not.toHaveBeenCalled();
+      expect(t.rows.get(event.eventId)!.attempts).toBe(0);
+      expect(t.timerDueIn()).toBe(15 * MINUTE);
+      await vi.advanceTimersByTimeAsync(14 * MINUTE);
+      t.advance(14 * MINUTE);
+      expect(sweep).toHaveBeenCalledTimes(1);
+      // The 5 min digest timer does not bring it back to a short tick.
+      (t.manager as any).startDmPendingDeliverySweep();
+      expect(t.timerDueIn()).toBe(MINUTE);
+
+      // Back online: the overlay recovery edge runs the sweep within 20 s.
+      t.setHealthy(true);
+      t.manager.notifyOverlayHealthChanged(true);
+      expect(t.timerDueIn()).toBe(20_000);
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(sweep).toHaveBeenCalledTimes(2);
+      expect(t.rows.get(event.eventId)!.attempts).toBe(1);
+
+      // Delivered (no longer pending): the timer is not re-armed.
+      t.rows.clear();
+      await vi.advanceTimersByTimeAsync(HOUR);
+      expect(sweep.mock.calls.length).toBeLessThanOrEqual(3);
+      expect((t.manager as any).dmPendingDeliveryTimer).toBeNull();
+    } finally {
+      t.cleanup();
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not poll while locked and resumes when a signer is set', async () => {
+    vi.useFakeTimers();
+    const t = setup();
+    try {
+      const sweep = vi.spyOn(t.manager as any, 'runDmPendingDeliverySweep');
+      t.manager.setLocalDmAddresses([t.owner.address]);
+      await flushAsyncWork();
+      (t.manager as any).signLocalFields = undefined;
+      const event = t.addPending('locked-pending', 30_000);
+      (t.manager as any).startDmPendingDeliverySweep(true);
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(sweep).toHaveBeenCalledTimes(1);
+      expect(t.listHeads).not.toHaveBeenCalled();
+      expect(t.persist).not.toHaveBeenCalled();
+      expect(t.timerDueIn()).toBe(15 * MINUTE);
+
+      t.manager.setRuntimeCallbacks({
+        signLocalFields: t.signer,
+        getAccountEndpointLeases: t.getAccountEndpointLeases,
+        hasGoodOverlayHealth: t.hasGoodOverlayHealth,
+      } as any);
+      expect(t.timerDueIn()).toBe(20_000);
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(sweep).toHaveBeenCalledTimes(2);
+      expect(t.rows.get(event.eventId)!.attempts).toBe(1);
+    } finally {
+      t.cleanup();
+      vi.useRealTimers();
+    }
+  });
+
+  it('runs due attempts 10 s after the resume hook, replacing a far tail timer', async () => {
+    vi.useFakeTimers();
+    const t = setup();
+    try {
+      t.manager.setLocalDmAddresses([t.owner.address]);
+      await flushAsyncWork();
+      // Overdue tail head (the forced pass only covers the 2 h window).
+      t.addPending('tail-resume', 3 * HOUR, {
+        attempts: 20,
+        next: t.now() - MINUTE,
+      });
+      (t.manager as any).armDmPendingDeliveryTimer(t.now(), 90 * MINUTE);
+      await (t.manager as any).runResumeHook('socket');
+      expect(t.timerDueIn()).toBe(10_000);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(t.counters().dmPendingRedeliverTail).toBe(1);
+
+      // Nothing due: the resume hook leaves the timer at the due time.
+      const dueIn = t.timerDueIn();
+      expect(dueIn).toBeGreaterThan(10_000);
+      t.advance(2 * MINUTE);
+      await (t.manager as any).runResumeHook('socket');
+      expect(t.timerDueIn()).toBe(dueIn! - 2 * MINUTE);
+    } finally {
+      t.cleanup();
+      vi.useRealTimers();
+    }
+  });
+
+  it('sends one recovery notify when the peer speaks in a conversation with a pending own event', async () => {
+    const t = setup();
+    try {
+      t.manager.setLocalDmAddresses([t.owner.address]);
+      await flushAsyncWork();
+      const own = t.addPending('peer-spoke-own', 5 * MINUTE, {
+        attempts: 3,
+        next: t.now() + 4 * MINUTE,
+      });
+      const row = t.rows.get(own.eventId)!;
+      (t.manager as any).refreshOwnOutboxState();
+      const reply = (eventId: string, senderSeq: number) =>
+        signedDmEvent({
+          sender: t.recipient,
+          recipient: t.owner,
+          eventId,
+          senderSeq,
+          timestamp: t.now() - 1_000,
+        });
+
+      expect(
+        (t.manager as any).acceptDirectEvent(reply('peer-spoke-1', 1), false)
+      ).toBe(true);
+      await flushQueuedWork(20);
+      expect(t.counters().dmPendingRedeliverPeerSpoke).toBe(1);
+      expect(t.notifiesTo(RECIPIENT_PEER)).toHaveLength(1);
+      expect(t.notifiesTo(RECIPIENT_PEER)[0].d.m).toBe(2);
+      expect(t.dmFanouts().map((wire) => wire.d.fw)).toEqual([4]);
+      expect(row.attempts).toBe(4);
+      expect(t.tracked()).toBe(0);
+
+      // At most once per 24 h per pending event.
+      t.advance(10 * MINUTE);
+      expect(
+        (t.manager as any).acceptDirectEvent(reply('peer-spoke-2', 2), false)
+      ).toBe(true);
+      await flushQueuedWork(20);
+      expect(t.counters().dmPendingRedeliverPeerSpoke).toBe(1);
+      expect(t.notifiesTo(RECIPIENT_PEER)).toHaveLength(1);
+    } finally {
+      t.cleanup();
+    }
+  });
+
+  it('re-arms a far tail timer when a new DM is stored', async () => {
+    vi.useFakeTimers();
+    const t = setup();
+    try {
+      t.manager.setLocalDmAddresses([t.owner.address]);
+      await flushAsyncWork();
+      t.addPending('tail-far', 30 * HOUR, {
+        attempts: 30,
+        next: t.now() + 90 * MINUTE,
+      });
+      (t.manager as any).startDmPendingDeliverySweep();
+      expect((t.manager as any).dmPendingDeliveryTimerDueAt).toBe(
+        t.now() + 90 * MINUTE
+      );
+      (t.manager as any).startDmPendingDeliverySweep(true);
+      expect((t.manager as any).dmPendingDeliveryTimerDueAt).toBe(
+        t.now() + 20_000
+      );
+    } finally {
+      t.cleanup();
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not count an unsigned notify as an attempt, spaces failures >= 60 s and caps them at 10 per 2 h', async () => {
+    const t = setup();
+    try {
+      t.manager.setLocalDmAddresses([t.owner.address]);
+      await flushAsyncWork();
+      const sign = createDmSigner(t.owner);
+      t.signer.mockImplementation(async (fields) => {
+        if ((fields as any).type === 'RCHAT_DM_NOTIFY') {
+          throw new Error('signer unavailable');
+        }
+        return sign(fields);
+      });
+      const event = t.addPending('sign-failure', 30_000);
+      const row = t.rows.get(event.eventId)!;
+      const start = t.now();
+      await t.sweep();
+      expect(row.attempts).toBe(0);
+      expect(row.next).toBeGreaterThanOrEqual(t.now() + 60_000);
+      expect(t.notifiesTo(RECIPIENT_PEER)).toHaveLength(0);
+      for (let failure = 2; failure <= 10; failure += 1) {
+        t.advanceTo(row.next);
+        await t.sweep();
+      }
+      expect(t.counters().dmPendingRedeliverFailed).toBe(10);
+      expect(row.attempts).toBe(0);
+      expect(row.next).toBe(start + 2 * HOUR);
+      t.advance(MINUTE);
+      await t.sweep();
+      expect(t.counters().dmPendingRedeliverFailed).toBe(10);
+    } finally {
+      t.cleanup();
+    }
+  });
+
+  it('announces at most 4 conversations per sweep', async () => {
+    const t = setup();
+    try {
+      t.manager.setLocalDmAddresses([t.owner.address]);
+      await flushAsyncWork();
+      for (let index = 0; index < 6; index += 1) {
+        t.addPending(`busy-${index}`, 30_000, {}, createDmIdentity());
+      }
+      await t.sweep();
+      expect(t.counters().dmPendingRedeliver).toBe(4);
+      expect(
+        [...t.rows.values()].filter((row) => row.attempts === 1)
+      ).toHaveLength(4);
+      // The two left over are due first on the next pass.
+      t.advance(20_000);
+      await t.sweep();
+      expect(
+        [...t.rows.values()].filter((row) => row.attempts >= 1)
+      ).toHaveLength(6);
+    } finally {
+      t.cleanup();
     }
   });
 });

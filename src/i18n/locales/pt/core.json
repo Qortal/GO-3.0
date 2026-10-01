@@ -61,8 +61,9 @@
     "create_transaction": "criar transações na Blockchain do Qortal",
     "decline": "recusar",
     "decrypt": "desencritar",
-    "delete": "delete",
+    "delete": "excluir",
     "disable_enter": "desligar a tecla Enter",
+    "discard_message": "descartar mensagem",
     "download": "baixar",
     "download_file": "baixar arquivo",
     "edit": "editar",
@@ -98,6 +99,7 @@
     "pin": "fixar",
     "pin_app": "fixar app",
     "pin_to_dashboard": "fixar ao dashboard",
+    "pin_to_tabs": "fixar nas abas",
     "post": "postar",
     "post_message": "postar menssagem",
     "publish": "publicar",
@@ -140,6 +142,7 @@
     "unpin": "desafixar",
     "unpin_app": "desafixar app",
     "unpin_from_dashboard": "desafixar do dashboard",
+    "unpin_from_tabs": "desafixar das abas",
     "update": "atualizar",
     "update_app": "atualizar seu app",
     "vote": "votar"
@@ -153,6 +156,9 @@
   "announcement_other": "anuncios",
   "api": "API",
   "app": "app",
+  "app_category": {
+    "title": "categoria: {{name}}"
+  },
   "app_detail": {
     "about": "sobre",
     "by_developer": "por @{{developer}}",
@@ -160,11 +166,14 @@
     "details": "detalhes",
     "published": "publicado",
     "rate_this_app": "avaliar este app",
+    "rating_stars_label": "{{score}} de 5 estrelas",
     "ratings": "avaliações",
     "ratings_count": "{{count}} avaliações",
     "service": "serviço",
     "size": "tamanho",
     "status": "status",
+    "status_checking": "verificando o nó…",
+    "status_downloading": "baixando ({{percent}})",
     "status_not_installed": "não instalado",
     "status_ready": "pronto (instalado)",
     "tags": "tags",
@@ -183,6 +192,45 @@
     "switch_theme_light": "Mudar para modo claro"
   },
   "attachment": "anexo",
+  "background_sync": {
+    "description": "Mantém o chat funcionando enquanto o GO não está na tela.",
+    "error": {
+      "save_failed": "Não foi possível alterar a sincronização em segundo plano. Tente novamente."
+    },
+    "help": {
+      "always": "Mantém o chat sincronizado sempre que o GO está em segundo plano. Gasta visivelmente mais bateria.",
+      "charging": "Mantém o chat sincronizado enquanto o celular carrega.",
+      "off": "O chat para de sincronizar cerca de um minuto depois que você sai do GO e se atualiza quando você o abre novamente.",
+      "outbox": "Na bateria, o GO continua terminando o envio das suas mensagens pendentes por até 3 minutos depois que você sai dele.",
+      "relay": "Enquanto o celular carrega no Wi-Fi, o GO também ajuda a retransmitir mensagens de outros."
+    },
+    "mode": {
+      "always": "sempre",
+      "charging": "ao carregar",
+      "off": "desligada"
+    },
+    "native": {
+      "fgs_timeout_text": "O Android pausou a conexão em segundo plano do GO. Abra o GO para reconectar.",
+      "fgs_timeout_title": "GO pausado",
+      "status_paused_text": "Abra o GO para sincronizar seus chats.",
+      "status_paused_title": "Chat pausado",
+      "status_syncing_background": "Sincronizando o chat em segundo plano",
+      "status_waiting_text": "Mensagens aguardando envio: {{count}}"
+    },
+    "status": {
+      "relaying": "Retransmitindo para outros (carregando no Wi-Fi)",
+      "syncing_now": "Sincronizando em segundo plano agora"
+    },
+    "title": "Sincronização em segundo plano",
+    "vendor_freeze": {
+      "body": "Seu celular {{manufacturer}} parou o GO em segundo plano, mesmo com a sincronização em segundo plano ativada. Abra as configurações de bateria do celular para o GO e permita a atividade em segundo plano.",
+      "body_unknown": "Seu celular parou o GO em segundo plano, mesmo com a sincronização em segundo plano ativada. Abra as configurações de bateria do celular para o GO e permita a atividade em segundo plano.",
+      "dismiss": "Dispensar",
+      "guide": "Guia passo a passo (dontkillmyapp.com)",
+      "open_battery_settings": "Abrir configurações de bateria",
+      "title": "O GO foi parado em segundo plano"
+    }
+  },
   "balance": "balanço:",
   "blocks": "blocos",
   "bookmarks": {
@@ -387,6 +435,43 @@
     "payment": "taxa de pagamento",
     "publish": "taxa de publicação"
   },
+  "file_transfer": {
+    "dismiss": "Fechar",
+    "downloading_title": "Baixando {{filename}}",
+    "failed_title": "Falha no download",
+    "fetching_title": "Obtendo {{filename}}",
+    "gathering": "Reunindo da QDN · {{percent}}%",
+    "gathering_chunks": "Reunindo da QDN · {{percent}}% · {{local}}/{{total}} partes",
+    "gathering_unknown": "Reunindo da QDN…",
+    "hide": "Ocultar (continua nas notificações)",
+    "install": "Instalar",
+    "looking_for_file": "Procurando o arquivo na QDN…",
+    "not_saved_title": "{{filename}} não salvo",
+    "not_saved_tray": "Ainda baixado. Abra as notificações do GO para salvá-lo.",
+    "open": "Abrir",
+    "open_failed": "Nenhum aplicativo deste telefone consegue abrir este arquivo",
+    "progress": "{{percent}} % · {{size}}",
+    "ready_to_install": "Pronto para instalar · {{location}}",
+    "ready_to_open": "Pronto para abrir · {{location}}",
+    "remove": "Remover da lista",
+    "save": "Salvar",
+    "save_error": "Erro ao salvar o arquivo: {{message}}",
+    "save_error_generic": "Erro ao salvar o arquivo",
+    "save_stalled": "Salvamento travado: o armazenamento parou de responder",
+    "save_success": "Arquivo salvo",
+    "saved_title": "{{filename}} salvo",
+    "saved_to": "Salvo em {{location}}",
+    "saving_file": "Salvando arquivo…",
+    "saving_title": "Salvando {{filename}}",
+    "stage_awaiting_save": "Baixado, aguardando para salvar",
+    "stage_declined": "Não salvo · toque em Salvar para mantê-lo",
+    "stage_downloading": "Baixando",
+    "stage_gathering": "Reunindo da QDN",
+    "stage_saving": "Salvando no telefone",
+    "storage_permission": "O GO precisa de permissão de armazenamento para salvar arquivos em Documents.",
+    "tap_to_install": "Toque para instalar · {{location}}",
+    "tap_to_open": "Toque para abrir · {{location}}"
+  },
   "filter": {
     "all": "todos",
     "category": "categoria",
@@ -399,6 +484,65 @@
   "for": "para",
   "general": "geral",
   "general_settings": "configurações gerais",
+  "go_updates": {
+    "android_only": "A instalação funciona no app para Android.",
+    "available_title": "Nova atualização do GO 3.0 disponível",
+    "badge": {
+      "installed": "Instalada",
+      "new": "Nova",
+      "older": "Anterior"
+    },
+    "check": "Verificar atualizações",
+    "checking": "Verificando o QDN…",
+    "error": {
+      "fetch_failed": "Não foi possível obter a versão",
+      "timeout": "A rede não entregou a versão a tempo"
+    },
+    "hide_changes": "Ocultar alterações",
+    "install": "Instalar",
+    "install_update": "Instalar atualização",
+    "installed_label": "Instalada neste telefone",
+    "job": {
+      "allow_installs": "Permitir instalações",
+      "confirm_hint": "Baixada. O Android vai pedir que você confirme a instalação.",
+      "continue_background": "Você pode fechar esta tela. O download continua.",
+      "dismiss": "Dispensar",
+      "downloading": "Baixando",
+      "failed": "Falha na instalação",
+      "fetching": "Obtendo do QDN",
+      "permission": "Permissão necessária",
+      "permission_hint": "O Android só instala apps de fontes que você permitiu. Ative «Instalar apps desconhecidos» para o Qortal GO. A instalação continua sozinha quando você voltar.",
+      "ready": "Pronta para instalar",
+      "updating_to": "Atualizando para v{{version}}"
+    },
+    "last_checked": "última verificação {{time}}",
+    "later": "Mais tarde",
+    "loading_versions": "Carregando versões do QDN…",
+    "no_notes": "Nenhuma nota foi adicionada para esta versão.",
+    "no_versions": "Nenhuma versão do GO 3.0 foi publicada ainda.",
+    "open_in_qshare": "Abrir no Q-Share+",
+    "progress": {
+      "assembling": "Montando a versão",
+      "bytes_of_total": "{{done}} de {{total}}",
+      "confirm_in_android": "O Android vai pedir que você confirme",
+      "downloading": "Baixando",
+      "fetching": "Obtendo da rede Qortal",
+      "needs_permission": "O Android precisa da sua permissão para instalar apps a partir do Qortal GO"
+    },
+    "published_when": "publicada {{when}}",
+    "retry": "Tentar novamente",
+    "show_changes": "Ver alterações",
+    "status": {
+      "available": "Há uma versão mais nova disponível.",
+      "never": "Ainda não verificado.",
+      "unreachable": "Não foi possível acessar o QDN. Verifique a conexão com o nó e tente novamente.",
+      "up_to_date": "Você tem a versão mais recente."
+    },
+    "title": "Atualizações do GO 3.0",
+    "update_marker": "Atualização do GO 3.0 disponível",
+    "versions_missing": "Algumas versões ainda não puderam ser carregadas ({{count}}). Verifique novamente mais tarde.",
+    "versions_title": "Versões no QDN"
+  },
   "group_call": "chamada de grupo",
   "group_call_blocked": "termina primeiro a tua outra chamada",
   "group_call_chat_placeholder": "O chat de texto para chamadas de grupo ainda não está disponível.",
@@ -462,6 +606,7 @@
       "decrypt_app": "não foi possível descriptografar o aplicativo privado",
       "download_image": "não foi possível baixar a IMAGEM. Por favor, tente novamente mais tarde clicando no botão de atualizar",
       "download_private_app": "não foi possível baixar o aplicativo privado",
+      "edit_message_too_long": "Mensagens editadas não podem ser divididas. Encurte-a para {{maximum}} bytes.",
       "encrypt_app": "não foi possível criptografar o aplicativo. Aplicativo não publicado",
       "fetch_app": "não foi possível buscar o aplicativo",
       "fetch_publish": "não foi possível buscar a publicação",
@@ -476,6 +621,8 @@
       "invalid_signature": "assinatura inválida",
       "invalid_theme_format": "formato de tema inválido",
       "invalid_zip": "arquivo ZIP inválido",
+      "long_message_too_many_parts": "Esta mensagem é longa demais para ser enviada, mesmo dividida em {{maximum}} mensagens.",
+      "long_message_unsplittable": "Uma parte desta mensagem não pode ser dividida o suficiente para ser enviada.",
       "message_loading": "erro ao carregar a mensagem.",
       "message_size": "o tamanho da sua mensagem é de {{ size }} bytes, de um máximo de {{ maximum }}",
       "minting_account_add": "não foi possível adicionar a conta de cunhagem",
@@ -530,6 +677,7 @@
       "hub_notification_settings_desc": "Choose which Hub features appear in your notification panel.",
       "link_copied": "ligação copiada para a área de transferência.",
       "loading": "A carregar...",
+      "long_message_split": "Mensagem longa: será enviada em {{count}} mensagens.",
       "mentioned": "mencionado",
       "message_with_image": "esta mensagem já possui uma imagem",
       "minimal_qort_balance": "Ter pelo menos {{ quantity }} QORT no seu saldo permite enviar mensagens de chat a uma velocidade quase instantânea.",
@@ -714,6 +862,18 @@
   "none": "nenhum",
   "not_available": "n/d",
   "note": "notar",
+  "notification_history": {
+    "clear": "Limpar",
+    "clear_all": "Limpar tudo",
+    "clear_all_hint": "Limpar todas as notificações. Elas ficam no histórico de notificações.",
+    "close": "Fechar",
+    "drag_to_close": "Arraste para cima para fechar",
+    "empty": "Nada aqui ainda. As notificações recebidas ficam aqui por 30 dias, mesmo depois de dispensadas.",
+    "open": "Histórico de notificações",
+    "title": "Histórico de notificações",
+    "today": "Hoje",
+    "yesterday": "Ontem"
+  },
   "official_apps": {
     "all_apps": "todos os apps oficiais",
     "featured": "destaque",
@@ -888,6 +1048,20 @@
     "community_apps": "apps da comunidade",
     "my_apps": "meus apps",
     "official_apps": "apps oficiais"
+  },
+  "tabs_overlay": {
+    "delete_folder_body_one": "o {{count}} app salvo nela será removido das abas. As abas abertas continuam abertas.",
+    "delete_folder_body_other": "os {{count}} apps salvos nela serão removidos das abas. As abas abertas continuam abertas.",
+    "delete_folder_title": "excluir “{{name}}”?",
+    "edit_hint_folder": "arraste os apps para reordenar ou toque em × para remover",
+    "edit_hint_root": "arraste apps para as pastas, toque em × para remover ou arraste pastas para reordenar",
+    "folder_empty": "esta pasta está vazia",
+    "folder_empty_hint": "toque e segure um app para movê-lo para esta pasta.",
+    "no_open_tabs": "nenhuma aba aberta ainda",
+    "no_open_tabs_with_folders": "nenhuma aba aberta. Toque em uma pasta para ver seus apps.",
+    "pin_failed": "não foi possível salvar nas abas",
+    "pinned_to_folder": "fixado em {{folder}} nas abas",
+    "unpinned_from_folder": "removido de {{folder}} nas abas"
   },
   "tags": "tags",
   "theme": {

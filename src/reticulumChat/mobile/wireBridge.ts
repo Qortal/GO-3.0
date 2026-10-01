@@ -73,6 +73,35 @@ function mapSendFailureReason(frame: RespFrame): ReticulumSendFailureReason {
 
 const DESTINATION_HASH_RE = /^[0-9a-f]{32}$/;
 
+/**
+ * Resource-session counters for Copy diagnostics. Types are the caller's
+ * `logicalResourceType`, or its `resourceType` when it has none. Every caller
+ * counts, including ones that joined another caller's pending preparation.
+ */
+export type ResourceSessionStats = {
+  /** Callers still waiting for a session, by type. */
+  inFlight: Record<string, number>;
+  /** Age of the longest-waiting caller, or null when none is waiting. */
+  oldestInFlightMs: number | null;
+  oldestInFlightType: string | null;
+  /**
+   * Outcomes since the worker started, keyed `<type>:<ok|reason>`. Once the
+   * key cap is reached, new keys are counted under `other`.
+   */
+  results: Record<string, number>;
+};
+
+const RESOURCE_SESSION_RESULT_KEYS_MAX = 64;
+
+function resourceSessionStatsType(payload: {
+  resourceType?: string;
+  logicalResourceType?: string;
+}): string {
+  return String(
+    payload.logicalResourceType || payload.resourceType || 'unknown'
+  ).slice(0, 64);
+}
+
 export class MobileReticulumBridge extends EventEmitter {
   private state: 'idle' | 'ready' = 'idle';
   private localDestinationHash: string | undefined;
@@ -81,14 +110,12 @@ export class MobileReticulumBridge extends EventEmitter {
     string,
     Promise<ReticulumSendResult>
   >();
-  /**
-   * Number of DM-page link preparations currently in flight. A phone has one
-   * radio path to the mesh, and a DM page pull is the most latency-sensitive
-   * thing it does; while one is being set up, other (group) link
-   * preparations are answered with a local `bridge-overloaded` so the engine
-   * retries them shortly instead of rotating providers.
-   */
-  private dmPagePrepares = 0;
+  private resourceSessionWaiterSeq = 0;
+  private readonly resourceSessionWaiters = new Map<
+    number,
+    { type: string; startedAt: number }
+  >();
+  private readonly resourceSessionResults = new Map<string, number>();
   /** Established overlay links by link id (desktop: `overlayLinkSnapshots`). */
   private readonly overlayLinkSnapshots = new Map<
     string,
@@ -658,24 +685,24 @@ export class MobileReticulumBridge extends EventEmitter {
         payload.resourceType === 'reticulum_chat_event')
         ? 'fast'
         : 'bulk';
+    const statsType = resourceSessionStatsType(payload);
     if (!peerPresenceHash) {
-      return {
+      const result: ReticulumSendResult = {
         ok: false,
         reason: 'unknown-peer-presence-hash',
         error: 'Missing peer presence hash',
       };
+      this.noteResourceSessionResult(statsType, result);
+      return result;
     }
-    const isDmPage = logicalResourceType === 'reticulum_chat_dm_page';
-    if (!isDmPage && this.dmPagePrepares > 0) {
-      // Local pressure, not a provider problem: the engine retries after its
-      // overload backoff instead of rotating to another peer.
-      return {
-        ok: false,
-        reason: 'bridge-overloaded',
-        error: 'dm page link preparation in flight',
-      };
-    }
-    if (isDmPage) this.dmPagePrepares += 1;
+    // Deduped by peer and lane only, like the desktop bridge. Python gives DM
+    // pages their own scheduler lane, so a slow DM-page link must not hold up
+    // group sessions here.
+    const waiterId = ++this.resourceSessionWaiterSeq;
+    this.resourceSessionWaiters.set(waiterId, {
+      type: statsType,
+      startedAt: Date.now(),
+    });
     try {
       const key = `${peerPresenceHash}:${lane}`;
       const existing = this.resourceSessionPreparations.get(key);
@@ -690,10 +717,47 @@ export class MobileReticulumBridge extends EventEmitter {
           }
         });
       }
-      return await preparation;
+      const result = await preparation;
+      this.noteResourceSessionResult(statsType, result);
+      return result;
     } finally {
-      if (isDmPage) this.dmPagePrepares = Math.max(0, this.dmPagePrepares - 1);
+      this.resourceSessionWaiters.delete(waiterId);
     }
+  }
+
+  getResourceSessionStats(): ResourceSessionStats {
+    const inFlight: Record<string, number> = {};
+    let oldest: { type: string; startedAt: number } | null = null;
+    for (const waiter of this.resourceSessionWaiters.values()) {
+      inFlight[waiter.type] = (inFlight[waiter.type] ?? 0) + 1;
+      if (!oldest || waiter.startedAt < oldest.startedAt) oldest = waiter;
+    }
+    return {
+      inFlight,
+      oldestInFlightMs: oldest
+        ? Math.max(0, Date.now() - oldest.startedAt)
+        : null,
+      oldestInFlightType: oldest?.type ?? null,
+      results: Object.fromEntries(this.resourceSessionResults),
+    };
+  }
+
+  private noteResourceSessionResult(
+    type: string,
+    result: ReticulumSendResult
+  ): void {
+    let key = `${type}:${result.ok === false ? result.reason : 'ok'}`;
+    // Leave one slot for the overflow bucket so the map never exceeds the cap.
+    if (
+      !this.resourceSessionResults.has(key) &&
+      this.resourceSessionResults.size >= RESOURCE_SESSION_RESULT_KEYS_MAX - 1
+    ) {
+      key = 'other';
+    }
+    this.resourceSessionResults.set(
+      key,
+      (this.resourceSessionResults.get(key) ?? 0) + 1
+    );
   }
 
   /**

@@ -33,6 +33,27 @@
     "wait_until_ready": "wait until the discussion is ready"
   },
   "dm": {
+    "delivery": {
+      "delivered": {
+        "hint": "Il dispositivo del destinatario l'ha richiesto ed è stato inviato.",
+        "label": "consegnato"
+      },
+      "on_other_device": {
+        "hint": "Il tuo altro dispositivo ne ha una copia e può inviarlo quando il destinatario è online. La consegna non è confermata.",
+        "label": "sul tuo altro dispositivo"
+      },
+      "only_on_this_device": {
+        "label": "solo su questo dispositivo"
+      },
+      "only_on_this_phone": {
+        "hint": "Non ancora inviato. L'invio verrà ritentato automaticamente.",
+        "label": "solo su questo telefono"
+      },
+      "sending": {
+        "hint": "Tentativo di raggiungere il destinatario in corso.",
+        "label": "invio in corso"
+      }
+    },
     "required_for_attachments": "La chat diretta Reticulum è necessaria per gli allegati diretti"
   },
   "event_preview": {
@@ -253,6 +274,50 @@
       },
       "title": "Dimensione del testo"
     }
+  },
+  "status_badge": {
+    "copy_diagnostics": "Copia diagnostica",
+    "copy_diagnostics_collecting": "Raccolta…",
+    "copy_diagnostics_copied": "Copiato",
+    "copy_diagnostics_hint": "Copia il testo o salvalo come file, poi invialo con la segnalazione del problema della chat.",
+    "help": {
+      "chat_engine": {
+        "body": "Indica se il database locale della chat e il worker sono pronti. Il badge verde è la radio; anche caricare e inviare chat richiede questo motore. Se la chat non funziona, tocca prima «{{action}}» qui sotto e incolla il testo nella tua segnalazione. ready = ok. starting = ancora in avvio, con il tempo trascorso; se resta così per più di un minuto, una possibile causa è una WebView senza JIT. failed = l'errore è mostrato qui sotto. idle = avvio non ancora richiesto (chat disattivata o accesso non effettuato).",
+        "title": "Motore chat"
+      },
+      "hubs": {
+        "body": "Quanti collegamenti agli hub sono attivi in questo momento. Sono le connessioni TCP agli hub della community. 0 significa che non sei ancora nella mesh. 2 è tipico e sano.",
+        "title": "Hub"
+      },
+      "ifac": {
+        "body": "Dimensione dell'Interface Access Code. È il filtro di rete condiviso derivato dal nome della mesh. 16 B significa che sei sulla rete Qortal con nome. 0 B significa che l'interfaccia è aperta / non filtrata.",
+        "title": "IFAC"
+      },
+      "known_paths": {
+        "body": "A quante destinazioni Reticulum conosce attualmente un percorso. Ogni annuncio insegna al telefono un modo per raggiungere un'identità. Qualche centinaio è normale su una mesh affollata. Non è la chat dal vivo.",
+        "title": "Percorsi noti"
+      },
+      "network_name": {
+        "body": "La mesh Reticulum a cui si è unito questo telefono. La mesh pubblica di Qortal è qortal-hub. Un nome diverso significa che sei su un'altra rete e non puoi vedere quei peer.",
+        "title": "Nome della rete"
+      },
+      "online_accounts": {
+        "body": "Quanti account Qortal questo telefono vede attualmente presenti sulla mesh. Stesso numero di «Casa». Non è il numero di hub o di nodi Reticulum.",
+        "title": "Account online"
+      },
+      "received": {
+        "body": "Dati totali che questo telefono ha ricevuto dagli hub da quando Reticulum è partito in questa sessione. Si azzera quando lo stack si riavvia, non quando chiudi una chat.",
+        "title": "Ricevuti"
+      },
+      "sent": {
+        "body": "Dati totali che questo telefono ha inviato agli hub da quando Reticulum è partito in questa sessione. Si azzera quando lo stack si riavvia, non quando chiudi una chat.",
+        "title": "Inviati"
+      }
+    },
+    "save_diagnostics": "Salva come file .md",
+    "save_diagnostics_failed": "Impossibile salvare il file: {{error}}",
+    "save_diagnostics_saved": "Salvato",
+    "save_diagnostics_saved_to": "Salvato in {{location}}"
   },
   "user_card": {
     "address_copied": "indirizzo copiato",

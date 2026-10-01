@@ -3,6 +3,7 @@ import { Box } from '@mui/material';
 import { AppViewer } from './AppViewer';
 import Frame from 'react-frame-component';
 import { appChromeOffsetPx } from '../Desktop/CustomTitleBar';
+import { usePageVisible } from '../../hooks/usePageVisible';
 
 type AppViewerContainerProps = {
   app: any;
@@ -17,7 +18,23 @@ const AppViewerContainer = forwardRef<
   HTMLIFrameElement,
   AppViewerContainerProps
 >(({ app, isSelected, hide, isDevMode, customHeight, fillParent = false }, ref) => {
-  const isHidden = !isSelected || hide;
+  // Q-App frames are cross-origin, so the phone's page-visibility override
+  // does not reach them: while native keep-alive holds the WebView visible in
+  // the background, the open Q-App would keep rendering. While GO is off
+  // screen (phone only; usePageVisible is always true elsewhere) the frame
+  // gets the same display:none an inactive tab gets. That stops its
+  // rendering and animation frames and keeps the document loaded, so state
+  // and media survive (audio keeps playing); its timers and network keep
+  // running. Restored on the next foreground. While a frame is fullscreen
+  // (a Q-App video) nothing is hidden.
+  const pageVisible = usePageVisible();
+  const pausedInBackground =
+    !pageVisible &&
+    !(
+      typeof document !== 'undefined' &&
+      document.fullscreenElement?.tagName === 'IFRAME'
+    );
+  const isHidden = !isSelected || hide || pausedInBackground;
   const frameHeight =
     customHeight || `calc(100dvh - ${appChromeOffsetPx})`;
   const fillShell = fillParent;

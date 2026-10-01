@@ -77,7 +77,8 @@
     "gsk_description": "This key encrypts group content visible to all group members. It is currently the only key used for group chat and shared data.",
     "gsk_description_compact": "This key encrypts group content visible to all group members. It is currently the only key used in this UI.",
     "publish_ask": "Publish ASK",
-    "publish_gsk": "Publish GSK"
+    "publish_gsk": "Publish GSK",
+    "title": "管理者キー"
   },
   "advanced_options": "高度なオプション",
   "announcement_placeholder": "Write an announcement...",
@@ -777,6 +778,13 @@
   "last_message_from": "{{sender}} • {{date}}",
   "last_message_you": "あなた",
   "latest_mails": "最新のQメール",
+  "member_actions": {
+    "make_admin_named": "{{name}}を管理者に設定",
+    "more_named": "{{name}}のその他の操作",
+    "pending": "保留中",
+    "pending_hint": "ブロックチェーンでの承認を待っています。数分かかる場合があります。",
+    "remove_admin_named": "{{name}}を管理者から除外"
+  },
   "member_category": {
     "admins": "管理者",
     "collapse": "{{category}}を折りたたむ",
@@ -785,6 +793,10 @@
     "members": "メンバー",
     "offline": "オフライン",
     "park": "パーク"
+  },
+  "members_screen": {
+    "bans": "禁止",
+    "invites": "招待"
   },
   "message": {
     "error": {
@@ -1013,6 +1025,10 @@
       "copy": "ホームダッシュボードはQortal Hubの出発点です。\n\n基本を簡単に見てみましょう！",
       "title": "Qortal Hubへようこそ"
     }
+  },
+  "panel": {
+    "files": "ファイル",
+    "threads": "Threads"
   },
   "subscription": {
     "actions_badge_one": "{{count}} 件",

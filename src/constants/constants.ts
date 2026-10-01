@@ -269,6 +269,8 @@ export const MAX_SIZE_AVATAR: number = 500;
 export const MAX_SIZE_PUBLIC_NODE: number = 500 * 1024 * 1024; // 500mb
 export const MAX_SIZE_PUBLISH: number = 2000 * 1024 * 1024; // 2GB
 export const MAX_SIZE_MESSAGE: number = 4000; // bytes
+// A composer text over MAX_SIZE_MESSAGE is sent as up to this many messages.
+export const MAX_SPLIT_MESSAGE_PARTS: number = 15;
 export const MIN_REQUIRED_QORTS: number = 4;
 
 export const PUBLIC_NOTIFICATION_CODE_FIRST_SECRET_KEY: string = '4001'; // Q for Qortal

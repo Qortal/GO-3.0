@@ -7,7 +7,9 @@ import {
   parseDmFriendsPersisted,
   customWebsocketSubscriptionsByAddressAtom,
   filterSeenInAppRecordByAge,
+  notificationPanelDismissalsRecordAtom,
   notificationSeenInAppKeysRecordAtom,
+  parseNotificationPanelDismissals,
   parseSeenInAppStored,
   reticulumChatTextScaleAtom,
   reticulumHighlightOwnMessagesAtom,
@@ -30,6 +32,7 @@ export function ElectronPersistentStorageHydration() {
     customWebsocketSubscriptionsByAddressAtom
   );
   const setSeenInAppRecord = useSetAtom(notificationSeenInAppKeysRecordAtom);
+  const setPanelDismissals = useSetAtom(notificationPanelDismissalsRecordAtom);
   const setSeenAllNotificationsByAddress = useSetAtom(
     seenAllNotificationsByAddressAtom
   );
@@ -83,6 +86,7 @@ export function ElectronPersistentStorageHydration() {
         reticulumHighlightOwnMessagesPayload,
         reticulumChatTextScalePayload,
         reticulumLegacyThreadsEnabledPayload,
+        panelDismissedPayload,
       ] =
         await Promise.all([
           appStorage.get(
@@ -103,6 +107,9 @@ export function ElectronPersistentStorageHydration() {
           appStorage.get(
             ELECTRON_PERSISTENT_ATOM_KEYS.reticulumLegacyThreadsEnabled
           ),
+          appStorage.get(
+            ELECTRON_PERSISTENT_ATOM_KEYS.notificationPanelDismissed
+          ),
         ]);
       if (subsPayload != null) {
         if (Array.isArray(subsPayload)) {
@@ -122,6 +129,12 @@ export function ElectronPersistentStorageHydration() {
       if (seen != null && typeof seen === 'object' && !Array.isArray(seen)) {
         const record = filterSeenInAppRecordByAge(parseSeenInAppStored(seen));
         if (Object.keys(record).length > 0) setSeenInAppRecord(record);
+      }
+      const panelDismissals = parseNotificationPanelDismissals(
+        panelDismissedPayload
+      );
+      if (Object.keys(panelDismissals).length > 0) {
+        setPanelDismissals(panelDismissals);
       }
       if (
         seenAllPayload != null &&
@@ -161,6 +174,7 @@ export function ElectronPersistentStorageHydration() {
   }, [
     setCustomSubscriptionsByAddress,
     setSeenInAppRecord,
+    setPanelDismissals,
     setSeenAllNotificationsByAddress,
     setDmFriendsByAccount,
     setDisableDevLogs,

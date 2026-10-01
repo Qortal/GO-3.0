@@ -132,6 +132,7 @@ import {
   userInfoAtom,
   walletToBeDecryptedErrorAtom,
   mobileChatComposeActiveAtom,
+  mobileGroupPanelOpenAtom,
   mobileEmojiPanelOpenAtom,
 } from './atoms/global';
 import { NotAuthenticated } from './components/NotAuthenticated.tsx';
@@ -146,6 +147,7 @@ import { RegisterName } from './components/RegisterName';
 import { BuyQortInformation } from './components/BuyQortInformation';
 import { PdfViewer } from './common/PdfViewer';
 import { ReticulumFileViewer } from './components/Chat/ReticulumFileViewer';
+import { QdnTransfersOverlay } from './components/Transfers/QdnTransfersOverlay';
 import { useTranslation } from 'react-i18next';
 import { DownloadWallet } from './components/Auth/DownloadWallet.tsx';
 import { BackupWalletModal } from './components/Auth/BackupWalletModal.tsx';
@@ -189,6 +191,8 @@ initMobileSafeAreaInsets();
 import { biometricUnlockWallet } from './utils/walletBiometricAuth';
 import { allowReticulumStart } from './components/Reticulum/reticulumStatus';
 import { isCapacitor } from './utils/platform';
+import { pauseReticulumNetworkForLogout } from './bridge/capacitorBridge';
+import { noteIdlePauseActivity } from './utils/idleAnimationPause';
 import { appLockedAtom, isIdleAtom } from './atoms/presence';
 import {
   AUTO_LOCK_PREFERENCE_CHANGE_EVENT,
@@ -465,6 +469,8 @@ function App() {
   const isLandscape = useMediaQuery('(orientation: landscape)');
   const showMobileBottomBar = isMobile && !isLandscape;
   const mobileChatComposeActive = useAtomValue(mobileChatComposeActiveAtom);
+  // Threads / Qortal Land / Members fill the screen, so the tab bar steps aside.
+  const mobileGroupPanelOpen = useAtomValue(mobileGroupPanelOpenAtom);
   const [tabsGridOpen, setTabsGridOpen] = useState(false);
   // The in-app emoji keyboard replaces the soft keyboard *and* the tab bar it
   // was sitting above, so the composer above it does not move when they swap.
@@ -504,7 +510,9 @@ function App() {
     ? emojiSearchLifted
       ? emojiSearchPanelPx
       : lastKeyboardHeight +
-        (showMobileBottomBar && !mobileChatComposeActive
+        (showMobileBottomBar &&
+        !mobileChatComposeActive &&
+        !mobileGroupPanelOpen
           ? MOBILE_TAB_BAR_HEIGHT_PX
           : 0)
     : 0;
@@ -646,6 +654,14 @@ function App() {
       clearAutoLockLastActivityAt();
     }
   }, [extState, setIsAppLocked, setIsIdle]);
+
+  // Reaching the authenticated shell follows a user action (a password typed,
+  // or a biometric prompt confirmed, which is not DOM input), so count it as
+  // activity for the idle animation pause: Home animates for the usual 10 s
+  // instead of staying frozen from a lock-screen timer that already ran out.
+  useEffect(() => {
+    if (extState === 'authenticated' && !isAppLocked) noteIdlePauseActivity();
+  }, [extState, isAppLocked]);
 
   useEffect(() => {
     if (
@@ -1420,6 +1436,10 @@ function App() {
       await cleanupReticulumAccountBeforeLogout();
       const response = await window.sendMessage('logout', {});
       if (response) {
+        // The offline notice went out above; close the hub sockets after
+        // the native delay so it can leave first. Only a real logout does
+        // this, never a layout unmount.
+        pauseReticulumNetworkForLogout();
         clearLastAuthenticatedWalletAddress();
         stopSharedEarbumpPlayback();
         executeEvent('logout-event', {});
@@ -1557,7 +1577,9 @@ function App() {
     if (!isMainWindow) return;
     // Handler for when the window gains focus
     const handleFocus = () => {
-      isFocusedRef.current = true;
+      // On the phone, window focus can arrive while GO is off screen (page
+      // kept alive); document.hidden follows Android there.
+      isFocusedRef.current = !document.hidden;
     };
 
     // Handler for when the window loses focus
@@ -1987,6 +2009,7 @@ function App() {
     <>
       <PdfViewer />
       <ReticulumFileViewer />
+      <QdnTransfersOverlay />
 
       <QORTAL_APP_CONTEXT.Provider value={contextValue as AppContextInterface}>
         <ElectronPersistentStorageHydration />
@@ -2502,7 +2525,9 @@ function App() {
               alignItems: 'stretch',
               pb: showEmojiPanel
                 ? `calc(${emojiPanelReservePx}px + ${SAFE_AREA_BOTTOM})`
-                : mobileChatComposeActive || !showMobileBottomBar
+                : mobileChatComposeActive ||
+                    mobileGroupPanelOpen ||
+                    !showMobileBottomBar
                   ? SAFE_AREA_BOTTOM
                   : `calc(${MOBILE_TAB_BAR_HEIGHT_PX}px + ${SAFE_AREA_BOTTOM})`,
             }),
@@ -2620,6 +2645,7 @@ function App() {
         extState === 'authenticated' &&
         isMainWindow &&
         !mobileChatComposeActive &&
+        !mobileGroupPanelOpen &&
         !showEmojiPanel && (
           <MobileTabBar
             desktopViewMode={desktopViewMode}
@@ -2633,9 +2659,11 @@ function App() {
           searchLifted={emojiSearchLifted}
         />
       )}
-      {isMobile && extState === 'authenticated' && isMainWindow && (
-        <MobileBackgroundSetup enabled />
-      )}
+      {/* Native: independent of width, so rotation, tablets and fullscreen
+          video do not stop the status service. Web keeps the width gate. */}
+      {(isCapacitor() || isMobile) &&
+        extState === 'authenticated' &&
+        isMainWindow && <MobileBackgroundSetup enabled />}
       {isAuthenticated && isMainWindow && isAppLocked && (
         <AuthenticatedLockScreen
           accountLabel={userInfo?.name || address || null}

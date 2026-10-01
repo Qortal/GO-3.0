@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import type { Editor } from '@tiptap/core';
 import {
@@ -31,8 +31,18 @@ import { ReticulumGifCompressionStatus } from './ReticulumGifCompressionStatus';
 import { ReticulumMessageExpiryButton } from './ReticulumMessageExpiryButton';
 import { resolveReticulumPreferredMessageExpiryDurationMs } from './reticulumMessageExpiry';
 import { ReactionPicker } from '../ReactionPicker';
-import { fetchLibraryGifFile } from './gifs/libraryGifs';
+import { fetchLibraryGifFile, type LibraryGif } from './gifs/libraryGifs';
 import { MessageSizeLimitLip } from './MessageSizeLimitLip';
+import { BACK_PRIORITY, useAndroidBack } from '../../utils/androidBack';
+import { executeEvent } from '../../utils/events';
+import {
+  type ChatDocNode,
+  type SplitChatDocumentError,
+  chatDocumentToHtml,
+  jsonPayloadFits,
+  splitChatDocument,
+  utf8ByteLength,
+} from '../../utils/chat/splitLongMessage';
 
 const RETICULUM_BLUE = '#2563eb';
 
@@ -88,6 +98,142 @@ type ReticulumDiscussionDialogProps = {
   selectedGroup: number | string;
 };
 
+/** Least time between two split plans while the text stays over the limit. */
+const SPLIT_PLAN_THROTTLE_MS = 300;
+/**
+ * Longest a split reply that carries files waits, after its first part, for
+ * the parent to re-render its onSend. Only a safety net: the new handler
+ * normally arrives with the next render.
+ */
+const NEXT_PART_SENDER_TIMEOUT_MS = 10_000;
+
+/**
+ * The thread composer's size of a reply document: the larger of its own rule
+ * (JSON.stringify length + 300) and the UTF-8 bytes of that JSON, which the
+ * parent's send handler refuses above MAX_SIZE_MESSAGE. For ASCII text this is
+ * exactly the old `JSON.stringify(json).length + 300`, so every reply that
+ * went out as one message before still does, unchanged.
+ */
+export const reticulumDiscussionPayloadSize = (doc: unknown): number => {
+  const json = JSON.stringify(doc) ?? '';
+  return Math.max(json.length + 300, utf8ByteLength(json));
+};
+
+// Parts are cut by the stricter byte rule of the group composer (UTF-8 bytes
+// + 300), which also satisfies both checks above.
+const fitsReticulumDiscussionPart = jsonPayloadFits(MAX_SIZE_MESSAGE);
+
+export type ReticulumDiscussionSplitPlan = {
+  /** How many replies the over-limit text goes out as; null within limit. */
+  splitParts: number | null;
+  /** Why the over-limit text cannot be sent, even split. */
+  splitError: SplitChatDocumentError | null;
+};
+
+const NO_SPLIT_PLAN: ReticulumDiscussionSplitPlan = {
+  splitParts: null,
+  splitError: null,
+};
+
+/** How the composer text will be sent, for the size lip. */
+export const planReticulumDiscussionSplit = (
+  doc: Record<string, unknown>
+): ReticulumDiscussionSplitPlan => {
+  if (reticulumDiscussionPayloadSize(doc) <= MAX_SIZE_MESSAGE) {
+    return NO_SPLIT_PLAN;
+  }
+  const result = splitChatDocument(
+    doc as ChatDocNode,
+    fitsReticulumDiscussionPart
+  );
+  return result.error
+    ? { splitParts: null, splitError: result.error }
+    : { splitParts: result.parts.length, splitError: null };
+};
+
+export type ReticulumDiscussionDraftPlan =
+  | { drafts: ReticulumDiscussionDraft[]; error?: undefined }
+  | { drafts?: undefined; error: SplitChatDocumentError };
+
+/**
+ * The thread replies one composer text is sent as. Within the limit it is the
+ * single draft it always was (the same JSON object and the editor's own HTML).
+ * A longer text becomes one draft per part, in order, each with the HTML of
+ * its own part (so the parent resolves its mentions from that part alone) and
+ * the same expiry. The parent links every reply to the thread root and
+ * attaches the pending files to the first reply it sends.
+ */
+export const planReticulumDiscussionDrafts = ({
+  expiryDurationMs,
+  htmlContent,
+  messageText,
+  partToHtml,
+}: ReticulumDiscussionDraft & {
+  /** The HTML editor.getHTML() would give for a part. */
+  partToHtml: (part: ChatDocNode) => string;
+}): ReticulumDiscussionDraftPlan => {
+  if (reticulumDiscussionPayloadSize(messageText) <= MAX_SIZE_MESSAGE) {
+    return { drafts: [{ expiryDurationMs, htmlContent, messageText }] };
+  }
+  const result = splitChatDocument(
+    messageText as ChatDocNode,
+    fitsReticulumDiscussionPart
+  );
+  if (result.error) return { error: result.error };
+  return {
+    drafts: result.parts.map((part) => ({
+      expiryDurationMs,
+      htmlContent: partToHtml(part),
+      messageText: part as Record<string, unknown>,
+    })),
+  };
+};
+
+export type ReticulumDiscussionSender = (
+  draft: ReticulumDiscussionDraft
+) => Promise<boolean>;
+
+/**
+ * Sends the drafts in order and stops at the first one that is not sent;
+ * resolves to how many were sent. The first goes through `send`. Every later
+ * one goes through `send` too, unless `nextSender` is given: it is then asked
+ * once, as soon as the first draft was sent, for the sender of all the later
+ * ones, and a null answer stops there with nothing more sent.
+ *
+ * The parent keeps its sending flag and its pending files in the closure of
+ * its handler. The handler held when Send was pressed saw no send running, so
+ * it can send every part (its thread root stays fixed even if the thread is
+ * closed meanwhile), but it attaches the files it saw to each reply. With
+ * files, the later parts therefore need the handler the parent re-rendered
+ * with once the first reply had taken them.
+ */
+export const sendReticulumDiscussionDrafts = async (
+  drafts: ReticulumDiscussionDraft[],
+  send: ReticulumDiscussionSender,
+  nextSender?: () => Promise<ReticulumDiscussionSender | null>
+): Promise<number> => {
+  let sender: ReticulumDiscussionSender | null = send;
+  let sent = 0;
+  for (const draft of drafts) {
+    if (sent === 1 && nextSender) sender = await nextSender();
+    if (!sender || !(await sender(draft))) break;
+    sent += 1;
+  }
+  return sent;
+};
+
+/** The drafts not sent yet, as one composer document. */
+export const mergeReticulumDiscussionDrafts = (
+  drafts: ReticulumDiscussionDraft[]
+): ChatDocNode => ({
+  type: 'doc',
+  content: drafts.flatMap((draft) =>
+    Array.isArray(draft.messageText?.content)
+      ? (draft.messageText.content as ChatDocNode[])
+      : []
+  ),
+});
+
 export const ReticulumDiscussionDialog = ({
   canWrite,
   channelExpiryDurationMs,
@@ -128,7 +274,18 @@ export const ReticulumDiscussionDialog = ({
   const [focused, setFocused] = useState(false);
   const [messageSize, setMessageSize] = useState(0);
   const [messageSizeLimitShakeKey, setMessageSizeLimitShakeKey] = useState(0);
+  const [splitPlan, setSplitPlan] =
+    useState<ReticulumDiscussionSplitPlan>(NO_SPLIT_PLAN);
   const [sending, setSending] = useState(false);
+  // A split reply is going out: the composer is locked until it is done.
+  const [sendingSplit, setSendingSplit] = useState(false);
+  const splitPlanRef = useRef<ReticulumDiscussionSplitPlan>(NO_SPLIT_PLAN);
+  const splitPlanTimerRef = useRef<number | null>(null);
+  const splitPlannedAtRef = useRef(0);
+  const mountedRef = useRef(true);
+  const openRef = useRef(open);
+  const onSendRef = useRef(onSend);
+  const onSendWaitersRef = useRef(new Set<() => void>());
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const rootMessage = messages[0] || null;
   const messageById = useMemo(
@@ -147,11 +304,113 @@ export const ReticulumDiscussionDialog = ({
     overscan: 8,
   });
 
+  const applySplitPlan = (plan: ReticulumDiscussionSplitPlan) => {
+    splitPlanRef.current = plan;
+    setSplitPlan(plan);
+  };
+
+  const cancelSplitPlanTimer = () => {
+    if (splitPlanTimerRef.current === null) return;
+    window.clearTimeout(splitPlanTimerRef.current);
+    splitPlanTimerRef.current = null;
+  };
+
+  const resetComposerSize = () => {
+    cancelSplitPlanTimer();
+    setMessageSize(0);
+    applySplitPlan(NO_SPLIT_PLAN);
+  };
+
+  // The size shows on every keystroke; the split plan behind the lip is
+  // throttled, except when the text first goes over the limit (or
+  // `immediate`), so the lip never flashes the size error before the notice.
+  const updateComposerSize = (nextEditor: Editor, immediate = false) => {
+    const size = reticulumDiscussionPayloadSize(nextEditor.getJSON());
+    setMessageSize(size);
+    if (size <= MAX_SIZE_MESSAGE) {
+      cancelSplitPlanTimer();
+      if (splitPlanRef.current !== NO_SPLIT_PLAN) applySplitPlan(NO_SPLIT_PLAN);
+      return;
+    }
+    if (immediate) cancelSplitPlanTimer();
+    if (splitPlanTimerRef.current !== null) return;
+    const plan = () => {
+      splitPlanTimerRef.current = null;
+      splitPlannedAtRef.current = Date.now();
+      if (nextEditor.isDestroyed) return;
+      applySplitPlan(
+        planReticulumDiscussionSplit(
+          nextEditor.getJSON() as Record<string, unknown>
+        )
+      );
+    };
+    const wait =
+      splitPlannedAtRef.current + SPLIT_PLAN_THROTTLE_MS - Date.now();
+    if (immediate || splitPlanRef.current === NO_SPLIT_PLAN || wait <= 0) {
+      plan();
+    } else {
+      splitPlanTimerRef.current = window.setTimeout(plan, wait);
+    }
+  };
+
+  useLayoutEffect(() => {
+    openRef.current = open;
+  }, [open]);
+
+  useLayoutEffect(() => {
+    onSendRef.current = onSend;
+    onSendWaitersRef.current.forEach((wake) => wake());
+  }, [onSend]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    const waiters = onSendWaitersRef.current;
+    return () => {
+      mountedRef.current = false;
+      if (splitPlanTimerRef.current !== null) {
+        window.clearTimeout(splitPlanTimerRef.current);
+      }
+      // A split reply waiting for the parent's next handler stops here.
+      waiters.forEach((wake) => wake());
+    };
+  }, []);
+
+  // For the later parts of a split reply that carries files: the onSend the
+  // parent hands down once it re-rendered after the first reply took the
+  // files. The one held until then would attach the files again or still see
+  // its send running, so it is never used: null when no new one comes in
+  // time, or when the thread was closed first (its handler refuses then).
+  const waitForFreshOnSend = (): Promise<ReticulumDiscussionSender | null> => {
+    const stale = onSendRef.current;
+    const waiters = onSendWaitersRef.current;
+    return new Promise((resolve) => {
+      let timer = 0;
+      const settle = (sender: ReticulumDiscussionSender | null) => {
+        window.clearTimeout(timer);
+        waiters.delete(wake);
+        resolve(sender);
+      };
+      const wake = () => {
+        if (!mountedRef.current || !openRef.current) settle(null);
+        else if (onSendRef.current !== stale) settle(onSendRef.current);
+      };
+      if (!mountedRef.current || !openRef.current) {
+        resolve(null);
+        return;
+      }
+      timer = window.setTimeout(
+        () => settle(null),
+        NEXT_PART_SENDER_TIMEOUT_MS
+      );
+      waiters.add(wake);
+    });
+  };
+
   useEffect(() => {
     if (!open) {
       editor?.commands.clearContent();
       setExpiryDurationMs(undefined);
-      setMessageSize(0);
+      resetComposerSize();
       setFormattingResetKey((key) => key + 1);
       return;
     }
@@ -183,36 +442,115 @@ export const ReticulumDiscussionDialog = ({
     const hasText = composerHasSendableText(editor.getText());
     if (!hasText && files.length === 0) return;
     const messageText = editor.getJSON() as Record<string, unknown>;
-    const payloadSize = JSON.stringify(messageText).length + 300;
-    if (payloadSize > MAX_SIZE_MESSAGE) {
+    // Over the limit, the text goes out as several replies in the thread.
+    const plan = planReticulumDiscussionDrafts({
+      expiryDurationMs,
+      htmlContent,
+      messageText,
+      partToHtml: (part) => chatDocumentToHtml(part, editor.schema),
+    });
+    if (plan.error) {
+      cancelSplitPlanTimer();
+      setMessageSize(reticulumDiscussionPayloadSize(messageText));
+      applySplitPlan({ splitParts: null, splitError: plan.error });
       setMessageSizeLimitShakeKey((key) => key + 1);
       return;
     }
+    const splitReply = plan.drafts.length > 1;
     setSending(true);
+    if (splitReply) {
+      // Sending every part takes a while, and nothing typed or attached
+      // meanwhile would survive the clear (or the restore of the parts not
+      // sent) at the end, so the composer is locked until then.
+      setSendingSplit(true);
+      editor.setEditable(false, false);
+    }
+    let senderLost = false;
     try {
-      if (
-        await onSend({
-          expiryDurationMs,
-          htmlContent,
-          messageText,
-        })
-      ) {
-        editor.commands.clearContent();
-        setExpiryDurationMs(
-          resolveReticulumPreferredMessageExpiryDurationMs(
-            preferredExpiryDurationMs,
-            channelExpiryDurationMs
-          )
-        );
-        setMessageSize(0);
-        setFormattingResetKey((key) => key + 1);
+      const sent = await sendReticulumDiscussionDrafts(
+        plan.drafts,
+        onSend,
+        files.length > 0
+          ? async () => {
+              const sender = await waitForFreshOnSend();
+              senderLost = !sender;
+              return sender;
+            }
+          : undefined
+      );
+      // The thread may have been closed (and another one opened) meanwhile:
+      // its composer was reset then, and this editor is not the one shown.
+      const composerKept =
+        mountedRef.current && openRef.current && !editor.isDestroyed;
+      if (sent === plan.drafts.length) {
+        if (composerKept) {
+          editor.commands.clearContent();
+          setExpiryDurationMs(
+            resolveReticulumPreferredMessageExpiryDurationMs(
+              preferredExpiryDurationMs,
+              channelExpiryDurationMs
+            )
+          );
+          resetComposerSize();
+          setFormattingResetKey((key) => key + 1);
+        }
+      } else if (sent > 0) {
+        if (composerKept) {
+          // Some parts went out: keep only the rest, so sending again does
+          // not repeat them.
+          editor.commands.setContent(
+            mergeReticulumDiscussionDrafts(plan.drafts.slice(sent)),
+            false
+          );
+          updateComposerSize(editor, true);
+        }
+        // The parent reports its own failures. Say it here when the next part
+        // was never even tried, or when the rest of the text left with the
+        // thread, so a reply cut short is never silent.
+        if (senderLost || !composerKept) {
+          executeEvent('openGlobalSnackBar', {
+            message: t('core:message.error.send_failed', {
+              postProcess: 'capitalizeFirstChar',
+            }),
+            type: 'error',
+          });
+        }
       }
     } finally {
+      if (splitReply) {
+        if (!editor.isDestroyed) editor.setEditable(true, false);
+        setSendingSplit(false);
+      }
       setSending(false);
     }
   };
 
   const closeDisabled = sending || preparingFile;
+
+  // Android back closes the thread, not the whole chat under it, and like the
+  // disabled close button it does nothing while a reply is going out.
+  useAndroidBack(
+    () => {
+      if (!closeDisabled) onClose();
+      return true;
+    },
+    { enabled: open, priority: BACK_PRIORITY.dialog }
+  );
+
+  // No attachment is taken while a split reply goes out: its later parts are
+  // text only, and the parent drops pending files after each reply it sends.
+  const selectFiles = sendingSplit ? undefined : onSelectFiles;
+  const selectGif = async (gif: LibraryGif) => {
+    if (sendingSplit) return;
+    const file = await fetchLibraryGifFile(gif);
+    if (file) void onSelectFiles([file]);
+  };
+
+  const overSizeLimit = messageSize > MAX_SIZE_MESSAGE;
+  // Over the limit, a text that splits is still sendable. One part means
+  // trimming blank lines was enough, so the lip has nothing to say.
+  const sendableParts = splitPlan.splitError ? null : splitPlan.splitParts;
+  const showSizeLip = overSizeLimit && sendableParts !== 1;
   const sendDisabled =
     loading ||
     !canWrite ||
@@ -526,11 +864,13 @@ export const ReticulumDiscussionDialog = ({
             : {}),
         }}
       >
-        <Box sx={{ mb: messageSize > MAX_SIZE_MESSAGE ? 1.25 : 0 }}>
+        <Box sx={{ mb: showSizeLip ? 1.25 : 0 }}>
           <MessageSizeLimitLip
             maximum={MAX_SIZE_MESSAGE}
             shakeKey={messageSizeLimitShakeKey}
             size={messageSize}
+            splitError={splitPlan.splitError}
+            splitParts={splitPlan.splitParts}
           />
         </Box>
         {(files.length > 0 || preparingFile) && (
@@ -637,17 +977,14 @@ export const ReticulumDiscussionDialog = ({
             disableEnter={!canWrite || loading || closeDisabled}
             enableMentions
             inOverlay
-            insertFiles={onSelectFiles}
-            insertGif={async (gif) => {
-              const file = await fetchLibraryGifFile(gif);
-              if (file) void onSelectFiles([file]);
-            }}
+            insertFiles={selectFiles}
+            insertGif={selectGif}
             isChat
             isFocusedParent={focused}
             membersWithNames={membersWithNames}
             mentionSuggestions={mentionSuggestions}
             onContentUpdate={(nextEditor) => {
-              setMessageSize(JSON.stringify(nextEditor.getJSON()).length + 300);
+              updateComposerSize(nextEditor);
               onTypingChange(composerHasSendableText(nextEditor.getText()));
             }}
             onEnter={send}
@@ -672,15 +1009,14 @@ export const ReticulumDiscussionDialog = ({
                   display: 'inline-flex',
                   flexShrink: 0,
                   justifyContent: 'center',
+                  opacity: sendingSplit ? 0.4 : 1,
+                  pointerEvents: sendingSplit ? 'none' : undefined,
                 }}
               >
                 <ReactionPicker
                   compactComposer
                   neutralIcon
-                  onGifSelect={async (gif) => {
-                    const file = await fetchLibraryGifFile(gif);
-                    if (file) void onSelectFiles([file]);
-                  }}
+                  onGifSelect={selectGif}
                   onReaction={(emoji: string) => {
                     editor?.chain().focus().insertContent(emoji).run();
                   }}
@@ -758,7 +1094,7 @@ export const ReticulumDiscussionDialog = ({
           <Typography
             sx={{
               color:
-                messageSize > MAX_SIZE_MESSAGE
+                overSizeLimit && !sendableParts
                   ? 'error.main'
                   : 'text.secondary',
               fontSize: 11,

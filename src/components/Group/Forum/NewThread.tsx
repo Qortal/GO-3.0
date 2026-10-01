@@ -31,6 +31,7 @@ import { saveTempPublish } from '../../Chat/GroupAnnouncements';
 import { useTranslation } from 'react-i18next';
 import { ComposeIcon } from '../../../assets/Icons/ComposeIcon';
 import CloseIcon from '@mui/icons-material/Close';
+import { BACK_PRIORITY, useAndroidBack } from '../../../utils/androidBack';
 
 const uid = new ShortUniqueId({ length: 8 });
 
@@ -172,6 +173,15 @@ export const NewThread = ({
       setPostReply(null);
     }
   };
+
+  // Back closes the composer (like its X) before the thread under it.
+  useAndroidBack(
+    () => {
+      if (!isSending) closeModal();
+      return true;
+    },
+    { priority: BACK_PRIORITY.dialog, enabled: isOpen }
+  );
 
   async function publishQDNResource() {
     try {

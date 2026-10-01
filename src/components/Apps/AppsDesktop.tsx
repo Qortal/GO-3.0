@@ -53,6 +53,10 @@ import {
 } from '../../hooks/useAppRatings';
 import { AppsLibraryDesktop } from './AppsLibraryDesktop';
 import { AppsCategoryDesktop } from './AppsCategoryDesktop';
+import {
+  invalidateAppNodeStatuses,
+  watchAppNodeStatus,
+} from './appNodeStatus';
 import AddRoundedIcon from '@mui/icons-material/AddRounded';
 import { CustomizedSnackbars } from '../Snackbar/Snackbar';
 import {
@@ -1023,6 +1027,16 @@ export const AppsDesktop = ({
     setDesktopViewMode('apps');
     setIsNewTabWindow(false);
     recordMobileAppOpen(newTab);
+    // Opening it makes the node fetch whatever it lacks; keep asking so the
+    // library's Download button becomes Open once the app is there.
+    if (
+      !newTab.internal &&
+      !newTab.isPreview &&
+      !newTab.identifier &&
+      (newTab.service === 'APP' || newTab.service === 'WEBSITE')
+    ) {
+      watchAppNodeStatus(newTab.service, newTab.name);
+    }
     if (shouldUseSmoothHandoff) {
       scheduleVisualTabActivation(newTab.tabId);
     } else {
@@ -1941,6 +1955,7 @@ export const AppsDesktop = ({
             contentHeight={appsContentHeight}
             externalSearchRequest={librarySearchRequest}
             getQapps={async () => {
+              invalidateAppNodeStatuses();
               await getQapps();
               refreshRatings();
             }}
@@ -1980,15 +1995,22 @@ export const AppsDesktop = ({
               </Box>
             )}
 
-          <AppsCategoryDesktop
-            availableQapps={availableQapps}
-            contentHeight={appsContentHeight}
-            isShow={
-              desktopViewMode === 'apps' && mode === 'category' && !selectedTab
-            }
-            category={selectedCategory}
-            myName={myName}
-          />
+          {/* Stays mounted behind the app info it opens (keeps the search);
+              with no category there is nothing to keep. */}
+          {selectedCategory ? (
+            <AppsCategoryDesktop
+              availableQapps={availableQapps}
+              contentHeight={appsContentHeight}
+              isShow={
+                desktopViewMode === 'apps' &&
+                mode === 'category' &&
+                !selectedTab
+              }
+              isMobile={isMobile}
+              category={selectedCategory}
+              myName={myName}
+            />
+          ) : null}
 
           {desktopViewMode === 'apps' &&
             (mode === 'publish' ||

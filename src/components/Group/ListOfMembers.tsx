@@ -3,24 +3,32 @@ import {
   alpha,
   Box,
   ButtonBase,
+  CircularProgress,
   IconButton,
   ListItem,
   ListItemAvatar,
   ListItemButton,
+  ListItemIcon,
   ListItemText,
-  Popover,
+  Menu,
+  MenuItem,
+  Tooltip,
   Typography,
   useTheme,
 } from '@mui/material';
+import AddModeratorRoundedIcon from '@mui/icons-material/AddModeratorRounded';
 import AdminPanelSettingsRoundedIcon from '@mui/icons-material/AdminPanelSettingsRounded';
+import BlockRoundedIcon from '@mui/icons-material/BlockRounded';
 import Groups2RoundedIcon from '@mui/icons-material/Groups2Rounded';
 import LocalFloristRoundedIcon from '@mui/icons-material/LocalFloristRounded';
+import MoreVertRoundedIcon from '@mui/icons-material/MoreVertRounded';
 import NightlifeRoundedIcon from '@mui/icons-material/NightlifeRounded';
 import BedtimeRoundedIcon from '@mui/icons-material/BedtimeRounded';
+import PersonRemoveRoundedIcon from '@mui/icons-material/PersonRemoveRounded';
+import RemoveModeratorRoundedIcon from '@mui/icons-material/RemoveModeratorRounded';
 import VisibilityOffRoundedIcon from '@mui/icons-material/VisibilityOffRounded';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AutoSizer, List } from 'react-virtualized';
-import { LoadingButton } from '@mui/lab';
 import { getFee } from '../../background/background.ts';
 import { getBaseApiReact } from '../../App';
 import { useTranslation } from 'react-i18next';
@@ -39,9 +47,67 @@ import {
 import { QortalLandAvailabilityTags } from '../QortalLand/QortalLandAvailabilityTags';
 import { MemberCategoryHeader } from './MemberCategoryHeader';
 import { executeEvent } from '../../utils/events';
+import { BACK_PRIORITY, useAndroidBack } from '../../utils/androidBack';
+import {
+  MemberAdminAction,
+  PendingMemberAction,
+  getAvailableMemberActions,
+  prunePendingMemberActions,
+} from './memberAdminActions';
 
 const MEMBER_ROW_HEIGHT = 64;
 const QORTAL_LAND_REMOTE_TTL_MS = 30_000;
+// Re-read the member list this often while a promotion, demotion, kick or ban
+// waits for a block, so the row flips as soon as Core reports the change.
+const PENDING_MEMBER_REFRESH_MS = 15_000;
+
+// Broadcast-but-unconfirmed actions per group. Kept outside the component so
+// closing and reopening the Members screen still shows "pending" instead of
+// offering the same paid transaction again.
+const pendingActionsByGroup = new Map<
+  string,
+  Record<string, PendingMemberAction>
+>();
+
+const MEMBER_ACTION_TX: Record<
+  MemberAdminAction,
+  { feeType: string; request: string; successKey: string }
+> = {
+  make_admin: {
+    feeType: 'ADD_GROUP_ADMIN',
+    request: 'makeAdmin',
+    successKey: 'group:message.success.group_member_admin',
+  },
+  remove_admin: {
+    feeType: 'REMOVE_GROUP_ADMIN',
+    request: 'removeAdmin',
+    successKey: 'group:message.success.group_remove_member',
+  },
+  kick: {
+    feeType: 'GROUP_KICK',
+    request: 'kickFromGroup',
+    successKey: 'group:message.success.group_kick',
+  },
+  ban: {
+    feeType: 'GROUP_BAN',
+    request: 'banFromGroup',
+    successKey: 'group:message.success.group_ban',
+  },
+};
+
+const MEMBER_ACTION_LABEL_KEY: Record<MemberAdminAction, string> = {
+  make_admin: 'group:action.make_admin',
+  remove_admin: 'group:action.remove_admin',
+  kick: 'group:action.kick_member',
+  ban: 'group:action.ban',
+};
+
+const MEMBER_ACTION_ICON: Record<MemberAdminAction, typeof BlockRoundedIcon> = {
+  make_admin: AddModeratorRoundedIcon,
+  remove_admin: RemoveModeratorRoundedIcon,
+  kick: PersonRemoveRoundedIcon,
+  ban: BlockRoundedIcon,
+};
 
 const ListOfMembers = ({
   members,
@@ -54,13 +120,39 @@ const ListOfMembers = ({
   ownerAddress,
   compact = false,
   reticulumUserCards = false,
+  onRefreshMembers = undefined,
+}: {
+  members: any[];
+  groupId: number | string;
+  setInfoSnack: (info: any) => void;
+  setOpenSnack: (open: boolean) => void;
+  isAdmin?: boolean;
+  isOwner?: boolean;
+  show: (data: any) => Promise<unknown>;
+  ownerAddress?: string;
+  compact?: boolean;
+  reticulumUserCards?: boolean;
+  onRefreshMembers?: () => unknown;
 }) => {
-  const [popoverAnchor, setPopoverAnchor] = useState(null); // Track which list item the popover is anchored to
-  const [openPopoverIndex, setOpenPopoverIndex] = useState(null); // Track which list item has the popover open
-  const [isLoadingKick, setIsLoadingKick] = useState(false);
-  const [isLoadingBan, setIsLoadingBan] = useState(false);
-  const [isLoadingMakeAdmin, setIsLoadingMakeAdmin] = useState(false);
-  const [isLoadingRemoveAdmin, setIsLoadingRemoveAdmin] = useState(false);
+  // One action menu for the whole list, opened from a row's ⋮ button or by
+  // holding / right-clicking the row.
+  const [actionMenu, setActionMenu] = useState<{
+    anchorEl: HTMLElement;
+    address: string;
+    label: string;
+    actions: MemberAdminAction[];
+  } | null>(null);
+  // The transaction being confirmed or broadcast right now. Only one at a
+  // time: parallel sends from one account race for the same last reference.
+  const [busyAction, setBusyAction] = useState<{
+    address: string;
+    action: MemberAdminAction;
+  } | null>(null);
+  const busyActionRef = useRef(false);
+  // Broadcast but not yet visible in the member list, by member address.
+  const [pendingActions, setPendingActions] = useState<
+    Record<string, PendingMemberAction>
+  >(() => pendingActionsByGroup.get(String(groupId)) ?? {});
   const [expandedSections, setExpandedSections] = useState({
     admins: true,
     lounge: true,
@@ -376,18 +468,68 @@ const ListOfMembers = ({
     t,
   ]);
 
-  const handlePopoverOpen = (event, index) => {
-    setPopoverAnchor(event.currentTarget);
-    setOpenPopoverIndex(index);
+  const groupMemberAddresses = useMemo(
+    () =>
+      new Set((members || []).map((member) => member?.member).filter(Boolean)),
+    [members]
+  );
+  const getMemberActions = (member) =>
+    getAvailableMemberActions(member, {
+      viewerAddress: currentAddress,
+      ownerAddress,
+      isOwner: Boolean(isOwner),
+      isAdmin: Boolean(isAdmin),
+      inGroup: groupMemberAddresses.has(member?.member),
+    });
+
+  const openActionMenu = (anchorEl: HTMLElement, member, label: string) => {
+    const actions = getMemberActions(member);
+    if (!anchorEl || actions.length === 0) return;
+    setActionMenu({ anchorEl, address: member.member, label, actions });
   };
 
-  const handlePopoverClose = () => {
-    setPopoverAnchor(null);
-    setOpenPopoverIndex(null);
-  };
+  const closeActionMenu = useCallback(() => setActionMenu(null), []);
 
-  // Owners right-click a member row for the admin actions; touch gets the same
-  // menu by holding. One timer is enough because only one finger can hold.
+  useAndroidBack(
+    () => {
+      closeActionMenu();
+      return true;
+    },
+    { priority: BACK_PRIORITY.dialog, enabled: Boolean(actionMenu) }
+  );
+
+  // Rows that settled (or waited too long) stop showing "pending" as soon as a
+  // fresh member list arrives.
+  const membersRef = useRef(members);
+  membersRef.current = members;
+  useEffect(() => {
+    setPendingActions((previous) =>
+      prunePendingMemberActions(previous, members, Date.now())
+    );
+  }, [members]);
+
+  const hasPendingActions = Object.keys(pendingActions).length > 0;
+  useEffect(() => {
+    const key = String(groupId);
+    if (hasPendingActions) pendingActionsByGroup.set(key, pendingActions);
+    else pendingActionsByGroup.delete(key);
+  }, [groupId, hasPendingActions, pendingActions]);
+  const onRefreshMembersRef = useRef(onRefreshMembers);
+  onRefreshMembersRef.current = onRefreshMembers;
+  useEffect(() => {
+    if (!hasPendingActions) return;
+    const timer = window.setInterval(() => {
+      setPendingActions((previous) =>
+        prunePendingMemberActions(previous, membersRef.current, Date.now())
+      );
+      void onRefreshMembersRef.current?.();
+    }, PENDING_MEMBER_REFRESH_MS);
+    return () => window.clearInterval(timer);
+  }, [hasPendingActions]);
+
+  // Owners and admins hold (touch) or right-click a member row for the same
+  // menu the ⋮ button opens. One timer is enough because only one finger can
+  // hold.
   const memberHold = useRef<{
     timer: number | null;
     origin: { x: number; y: number } | null;
@@ -399,7 +541,7 @@ const ListOfMembers = ({
       memberHold.current.timer = null;
     }
   };
-  const memberLongPressProps = (index: number) => ({
+  const memberLongPressProps = (member, label: string) => ({
     onTouchStart: (event: React.TouchEvent<HTMLElement>) => {
       const touch = event.touches[0];
       if (!touch) return;
@@ -410,8 +552,7 @@ const ListOfMembers = ({
       memberHold.current.timer = window.setTimeout(() => {
         memberHold.current.timer = null;
         memberHold.current.fired = true;
-        setPopoverAnchor(target);
-        setOpenPopoverIndex(index);
+        openActionMenu(target, member, label);
       }, 450);
     },
     onTouchMove: (event: React.TouchEvent<HTMLElement>) => {
@@ -435,239 +576,178 @@ const ListOfMembers = ({
       }
     },
     onTouchCancel: () => cancelMemberHold(),
+    onContextMenu: (event: React.MouseEvent<HTMLElement>) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openActionMenu(event.currentTarget, member, label);
+    },
   });
 
-  const handleKick = async (address) => {
+  const runMemberAction = async (
+    action: MemberAdminAction,
+    address: string
+  ) => {
+    if (!address || busyActionRef.current) return;
+    const config = MEMBER_ACTION_TX[action];
+    busyActionRef.current = true;
+    setActionMenu(null);
+    setBusyAction({ address, action });
     try {
-      const fee = await getFee('GROUP_KICK');
+      const fee = await getFee(config.feeType);
       await show({
         message: t('core:message.question.perform_transaction', {
-          action: 'GROUP_KICK',
+          action: config.feeType,
           postProcess: 'capitalizeFirstChar',
         }),
         publishFee: fee.fee + ' QORT',
       });
-
-      setIsLoadingKick(true);
-      new Promise((res, rej) => {
-        window
-          .sendMessage('kickFromGroup', {
-            groupId,
-            qortalAddress: address,
-          })
-          .then((response) => {
-            if (!response?.error) {
-              setInfoSnack({
-                type: 'success',
-                message: t('group:message.success.group_kick', {
-                  postProcess: 'capitalizeFirstChar',
-                }),
-              });
-              setOpenSnack(true);
-              handlePopoverClose();
-              res(response);
-              return;
-            }
-            setInfoSnack({
-              type: 'error',
-              message: response?.error,
-            });
-            setOpenSnack(true);
-            rej(response.error);
-          })
-          .catch((error) => {
-            setInfoSnack({
-              type: 'error',
-              message:
-                error.message ||
-                t('core:message.error.generic', {
-                  postProcess: 'capitalizeFirstChar',
-                }),
-            });
-            setOpenSnack(true);
-            rej(error);
-          });
+      const response: any = await window.sendMessage(config.request, {
+        groupId,
+        qortalAddress: address,
+        ...(action === 'ban' ? { rBanTime: 0 } : {}),
       });
+      if (response?.error) {
+        throw new Error(
+          typeof response.error === 'string'
+            ? response.error
+            : response.error?.message
+        );
+      }
+      setPendingActions((previous) => ({
+        ...previous,
+        [address]: { action, startedAt: Date.now() },
+      }));
+      setInfoSnack({
+        type: 'success',
+        message: t(config.successKey, { postProcess: 'capitalizeFirstChar' }),
+      });
+      setOpenSnack(true);
     } catch (error) {
+      // Declining the fee confirmation is not an error.
+      if (error?.isCanceled) return;
       console.log(error);
+      setInfoSnack({
+        type: 'error',
+        message:
+          error?.message ||
+          t('core:message.error.generic', {
+            postProcess: 'capitalizeFirstChar',
+          }),
+      });
+      setOpenSnack(true);
     } finally {
-      setIsLoadingKick(false);
+      busyActionRef.current = false;
+      setBusyAction(null);
     }
   };
 
-  const handleBan = async (address) => {
-    try {
-      const fee = await getFee('GROUP_BAN');
-
-      await show({
-        message: t('core:message.question.perform_transaction', {
-          action: 'GROUP_BAN',
-          postProcess: 'capitalizeFirstChar',
-        }),
-        publishFee: fee.fee + ' QORT',
-      });
-
-      setIsLoadingBan(true);
-
-      await new Promise((res, rej) => {
-        window
-          .sendMessage('banFromGroup', {
-            groupId,
-            qortalAddress: address,
-            rBanTime: 0,
-          })
-          .then((response) => {
-            if (!response?.error) {
-              setInfoSnack({
-                type: 'success',
-                message: t('group:message.success.group_ban', {
+  const renderMemberActions = (member, label: string) => {
+    const address = member?.member;
+    const pending = address ? pendingActions[address] : undefined;
+    const isBusy = busyAction?.address === address;
+    if (pending || isBusy) {
+      return (
+        <Tooltip
+          title={
+            pending
+              ? t('group:member_actions.pending_hint', {
                   postProcess: 'capitalizeFirstChar',
-                }),
-              });
-              setOpenSnack(true);
-              handlePopoverClose();
-              res(response);
-              return;
-            }
-            setInfoSnack({
-              type: 'error',
-              message: response?.error,
-            });
-            setOpenSnack(true);
-            rej(response.error);
-          })
-          .catch((error) => {
-            setInfoSnack({
-              type: 'error',
-              message:
-                error.message ||
-                t('core:message.error.generic', {
-                  postProcess: 'capitalizeFirstChar',
-                }),
-            });
-            setOpenSnack(true);
-            rej(error);
-          });
-      });
-    } catch (error) {
-      console.log(error);
-    } finally {
-      setIsLoadingBan(false);
+                })
+              : ''
+          }
+        >
+          <Box
+            aria-live="polite"
+            sx={{
+              alignItems: 'center',
+              color: 'text.secondary',
+              display: 'flex',
+              flexShrink: 0,
+              fontSize: 11,
+              fontWeight: 650,
+              gap: 0.6,
+              pl: 0.5,
+              pr: 1,
+            }}
+          >
+            <CircularProgress size={14} sx={{ color: 'inherit' }} />
+            {pending &&
+              t('group:member_actions.pending', {
+                postProcess: 'capitalizeFirstChar',
+              })}
+          </Box>
+        </Tooltip>
+      );
     }
-  };
-
-  const makeAdmin = async (address) => {
-    try {
-      const fee = await getFee('ADD_GROUP_ADMIN');
-      await show({
-        message: t('core:message.question.perform_transaction', {
-          action: 'ADD_GROUP_ADMIN',
-          postProcess: 'capitalizeFirstChar',
-        }),
-        publishFee: fee.fee + ' QORT',
-      });
-      setIsLoadingMakeAdmin(true);
-      await new Promise((res, rej) => {
-        window
-          .sendMessage('makeAdmin', {
-            groupId,
-            qortalAddress: address,
-          })
-          .then((response) => {
-            if (!response?.error) {
-              setInfoSnack({
-                type: 'success',
-                message: t('group:message.success.group_member_admin', {
-                  postProcess: 'capitalizeFirstChar',
-                }),
-              });
-              setOpenSnack(true);
-              handlePopoverClose();
-              res(response);
-              return;
-            }
-            setInfoSnack({
-              type: 'error',
-              message: response?.error,
-            });
-            setOpenSnack(true);
-            rej(response.error);
-          })
-          .catch((error) => {
-            setInfoSnack({
-              type: 'error',
-              message:
-                error.message ||
-                t('core:message.error.generic', {
-                  postProcess: 'capitalizeFirstChar',
-                }),
-            });
-            setOpenSnack(true);
-            rej(error);
-          });
-      });
-    } catch (error) {
-      console.log(error);
-    } finally {
-      setIsLoadingMakeAdmin(false);
-    }
-  };
-
-  const removeAdmin = async (address) => {
-    try {
-      const fee = await getFee('REMOVE_GROUP_ADMIN');
-      await show({
-        message: t('core:message.question.perform_transaction', {
-          action: 'REMOVE_GROUP_ADMIN',
-          postProcess: 'capitalizeFirstChar',
-        }),
-        publishFee: fee.fee + ' QORT',
-      });
-      setIsLoadingRemoveAdmin(true);
-      await new Promise((res, rej) => {
-        window
-          .sendMessage('removeAdmin', {
-            groupId,
-            qortalAddress: address,
-          })
-          .then((response) => {
-            if (!response?.error) {
-              setInfoSnack({
-                type: 'success',
-                message: t('group:message.success.group_remove_member', {
-                  postProcess: 'capitalizeFirstChar',
-                }),
-              });
-              setOpenSnack(true);
-              handlePopoverClose();
-              res(response);
-              return;
-            }
-            setInfoSnack({
-              type: 'error',
-              message: response?.error,
-            });
-            setOpenSnack(true);
-            rej(response.error);
-          })
-          .catch((error) => {
-            setInfoSnack({
-              type: 'error',
-              message:
-                error.message ||
-                t('core:message.error.generic', {
-                  postProcess: 'capitalizeFirstChar',
-                }),
-            });
-            setOpenSnack(true);
-            rej(error);
-          });
-      });
-    } catch (error) {
-      console.log(error);
-    } finally {
-      setIsLoadingRemoveAdmin(false);
-    }
+    const actions = getMemberActions(member);
+    if (actions.length === 0) return null;
+    const adminAction = actions.find(
+      (action) => action === 'make_admin' || action === 'remove_admin'
+    );
+    const AdminActionIcon = adminAction
+      ? MEMBER_ACTION_ICON[adminAction]
+      : null;
+    const iconButtonSx = {
+      color: 'text.secondary',
+      height: 36,
+      width: 36,
+      '&:hover': { color: 'text.primary' },
+    };
+    return (
+      <Box
+        sx={{
+          alignItems: 'center',
+          display: 'flex',
+          flexShrink: 0,
+          gap: 0.25,
+          pr: 0.25,
+        }}
+      >
+        {adminAction && AdminActionIcon && (
+          <Tooltip
+            title={t(MEMBER_ACTION_LABEL_KEY[adminAction], {
+              postProcess: 'capitalizeFirstChar',
+            })}
+          >
+            <span style={{ display: 'inline-flex' }}>
+              <IconButton
+                aria-label={t(
+                  adminAction === 'make_admin'
+                    ? 'group:member_actions.make_admin_named'
+                    : 'group:member_actions.remove_admin_named',
+                  { name: label, postProcess: 'capitalizeFirstChar' }
+                )}
+                disabled={Boolean(busyAction)}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  void runMemberAction(adminAction, address);
+                }}
+                size="small"
+                sx={iconButtonSx}
+              >
+                <AdminActionIcon sx={{ fontSize: 20 }} />
+              </IconButton>
+            </span>
+          </Tooltip>
+        )}
+        <IconButton
+          aria-haspopup="menu"
+          aria-label={t('group:member_actions.more_named', {
+            name: label,
+            postProcess: 'capitalizeFirstChar',
+          })}
+          disabled={Boolean(busyAction)}
+          onClick={(event) => {
+            event.stopPropagation();
+            openActionMenu(event.currentTarget, member, label);
+          }}
+          size="small"
+          sx={iconButtonSx}
+        >
+          <MoreVertRoundedIcon sx={{ fontSize: 20 }} />
+        </IconButton>
+      </Box>
+    );
   };
 
   const rowRenderer = ({ index, key, style }) => {
@@ -720,8 +800,6 @@ const ListOfMembers = ({
     const hasUnsafeMemberName = Boolean(
       member?.primaryName && hasInvisibleCharacters(member.primaryName)
     );
-    const popoverWidth =
-      popoverAnchor?.getBoundingClientRect?.().width || (compact ? 240 : 325);
     const memberRole =
       member?.member === ownerAddress
         ? 'Owner'
@@ -876,178 +954,62 @@ const ListOfMembers = ({
       </>
     );
 
+    const rowHasActions = getMemberActions(member).length > 0;
+
     return (
       <div key={semanticRowKey} style={style}>
-        {isOwner && (
-          <Popover
-            open={openPopoverIndex === index}
-            anchorEl={popoverAnchor}
-            onClose={handlePopoverClose}
-            transformOrigin={{
-              vertical: 'top',
-              horizontal: 'left',
-            }}
-            anchorOrigin={{
-              vertical: 'bottom',
-              horizontal: 'left',
-            }}
-            slotProps={{
-              paper: {
-                sx: {
-                  backgroundColor: theme.palette.background.paper,
-                  border: `1px solid ${theme.palette.divider}`,
-                  borderRadius: '8px',
-                  boxShadow: theme.shadows[8],
-                  mt: 0.5,
-                  overflow: 'hidden',
-                  width: popoverWidth,
-                },
-              },
-            }}
-          >
-            <Box
-              sx={{
-                display: 'flex',
-                flexDirection: 'column',
-                gap: 0.25,
-                p: 0.5,
-              }}
-            >
-              {isOwner && (
-                <>
-                  <LoadingButton
-                    fullWidth
-                    loading={isLoadingKick}
-                    loadingPosition="start"
-                    onClick={() => handleKick(member?.member)}
-                    sx={{
-                      borderRadius: '6px',
-                      color: 'text.primary',
-                      justifyContent: 'flex-start',
-                      px: 1.25,
-                      textTransform: 'none',
-                    }}
-                    variant="text"
-                  >
-                    {t('group:action.kick_member', {
-                      postProcess: 'capitalizeFirstChar',
-                    })}
-                  </LoadingButton>
-
-                  <LoadingButton
-                    fullWidth
-                    loading={isLoadingBan}
-                    loadingPosition="start"
-                    onClick={() => handleBan(member?.member)}
-                    sx={{
-                      borderRadius: '6px',
-                      color: 'error.main',
-                      justifyContent: 'flex-start',
-                      px: 1.25,
-                      textTransform: 'none',
-                    }}
-                    variant="text"
-                  >
-                    {t('group:action.ban', {
-                      postProcess: 'capitalizeFirstChar',
-                    })}
-                  </LoadingButton>
-
-                  <LoadingButton
-                    fullWidth
-                    loading={isLoadingMakeAdmin}
-                    loadingPosition="start"
-                    onClick={() => makeAdmin(member?.member)}
-                    sx={{
-                      borderRadius: '6px',
-                      color: 'text.primary',
-                      justifyContent: 'flex-start',
-                      px: 1.25,
-                      textTransform: 'none',
-                    }}
-                    variant="text"
-                  >
-                    {t('group:action.make_admin', {
-                      postProcess: 'capitalizeFirstChar',
-                    })}
-                  </LoadingButton>
-
-                  <LoadingButton
-                    fullWidth
-                    loading={isLoadingRemoveAdmin}
-                    loadingPosition="start"
-                    onClick={() => removeAdmin(member?.member)}
-                    sx={{
-                      borderRadius: '6px',
-                      color: 'text.primary',
-                      justifyContent: 'flex-start',
-                      px: 1.25,
-                      textTransform: 'none',
-                    }}
-                    variant="text"
-                  >
-                    {t('group:action.remove_admin', {
-                      postProcess: 'capitalizeFirstChar',
-                    })}
-                  </LoadingButton>
-                </>
-              )}
-            </Box>
-          </Popover>
-        )}
-
         <ListItem key={member?.member} disablePadding>
           {reticulumUserCard ? (
-            <WrapperUserAction
-              address={member.member}
-              fullWidth
-              name={memberLabel}
-              reticulumUserCard={reticulumUserCard}
-              reticulumSilenceContext={reticulumSilenceContext}
-            >
-              <ListItemButton
-                {...(isOwner ? memberLongPressProps(index) : {})}
-                onContextMenu={
-                  isOwner
-                    ? (event) => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        handlePopoverOpen(event, index);
-                      }
-                    : undefined
-                }
-                sx={{
-                  borderRadius: '6px',
-                  cursor: 'pointer',
-                  minHeight:
-                    compact && reticulumUserCards ? compactRowHeight : 50,
-                  px: 1,
-                  py: 0.5,
-                  opacity: isOfflineRow ? 0.58 : 1,
-                  transition: 'opacity 140ms ease',
-                  width: '100%',
-                  '&:hover': {
-                    opacity: isOfflineRow ? 0.78 : 1,
-                  },
-                }}
+            <Box sx={{ display: 'flex', flex: 1, minWidth: 0 }}>
+              <WrapperUserAction
+                address={member.member}
+                fullWidth
+                name={memberLabel}
+                reticulumUserCard={reticulumUserCard}
+                reticulumSilenceContext={reticulumSilenceContext}
               >
-                {memberContent}
-              </ListItemButton>
-            </WrapperUserAction>
+                <ListItemButton
+                  {...(rowHasActions
+                    ? memberLongPressProps(member, memberLabel)
+                    : {})}
+                  sx={{
+                    borderRadius: '6px',
+                    cursor: 'pointer',
+                    minHeight:
+                      compact && reticulumUserCards ? compactRowHeight : 50,
+                    minWidth: 0,
+                    px: 1,
+                    py: 0.5,
+                    opacity: isOfflineRow ? 0.58 : 1,
+                    transition: 'opacity 140ms ease',
+                    width: '100%',
+                    '&:hover': {
+                      opacity: isOfflineRow ? 0.78 : 1,
+                    },
+                  }}
+                >
+                  {memberContent}
+                </ListItemButton>
+              </WrapperUserAction>
+            </Box>
           ) : (
             <ListItemButton
               onClick={
-                isOwner ? (event) => handlePopoverOpen(event, index) : undefined
+                rowHasActions
+                  ? (event) =>
+                      openActionMenu(event.currentTarget, member, memberLabel)
+                  : undefined
               }
               sx={{
                 borderRadius: compact ? '6px' : undefined,
-                cursor: isOwner ? 'pointer' : 'default',
+                cursor: rowHasActions ? 'pointer' : 'default',
                 minHeight:
                   compact && reticulumUserCards
                     ? compactRowHeight
                     : compact
                       ? 50
                       : undefined,
+                minWidth: 0,
                 px: compact ? 1 : undefined,
                 py: compact ? 0.5 : undefined,
                 opacity: isOfflineRow ? 0.58 : 1,
@@ -1056,6 +1018,7 @@ const ListOfMembers = ({
               {memberContent}
             </ListItemButton>
           )}
+          {renderMemberActions(member, memberLabel)}
         </ListItem>
       </div>
     );
@@ -1153,6 +1116,75 @@ const ListOfMembers = ({
           {t('group:chat_group.hidden_members')}
         </ButtonBase>
       )}
+      <Menu
+        anchorEl={actionMenu?.anchorEl}
+        anchorOrigin={{ horizontal: 'right', vertical: 'bottom' }}
+        onClose={closeActionMenu}
+        open={Boolean(actionMenu)}
+        slotProps={{
+          paper: {
+            sx: {
+              backgroundColor: theme.palette.background.paper,
+              backgroundImage: 'none',
+              border: `1px solid ${theme.palette.divider}`,
+              borderRadius: '8px',
+              boxShadow: theme.shadows[8],
+              maxWidth: 'calc(100vw - 32px)',
+              minWidth: 220,
+            },
+          },
+          list: { dense: true, sx: { p: 0.5 } },
+        }}
+        transformOrigin={{ horizontal: 'right', vertical: 'top' }}
+      >
+        {actionMenu?.label && (
+          <Typography
+            component="li"
+            role="presentation"
+            sx={{
+              color: 'text.secondary',
+              fontSize: 12,
+              fontWeight: 700,
+              overflow: 'hidden',
+              px: 1,
+              py: 0.5,
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {actionMenu.label}
+          </Typography>
+        )}
+        {(actionMenu?.actions || []).map((action) => {
+          const ActionIcon = MEMBER_ACTION_ICON[action];
+          const danger = action === 'ban';
+          return (
+            <MenuItem
+              key={action}
+              onClick={() => void runMemberAction(action, actionMenu.address)}
+              sx={{
+                borderRadius: '6px',
+                color: danger ? 'error.main' : 'text.primary',
+                fontSize: 13,
+                fontWeight: 600,
+                minHeight: 40,
+                px: 1,
+                '& .MuiListItemIcon-root': {
+                  color: danger ? 'error.main' : 'text.secondary',
+                  minWidth: 32,
+                },
+              }}
+            >
+              <ListItemIcon>
+                <ActionIcon sx={{ fontSize: 19 }} />
+              </ListItemIcon>
+              {t(MEMBER_ACTION_LABEL_KEY[action], {
+                postProcess: 'capitalizeFirstChar',
+              })}
+            </MenuItem>
+          );
+        })}
+      </Menu>
     </div>
   );
 };

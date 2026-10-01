@@ -9,8 +9,7 @@ import {
   paymentNotificationsAtom,
   customWebsocketSubscriptionsAtom,
   dmFriendsByAddressAtom,
-  notificationSeenInAppKeysAtom,
-  filterSeenInAppKeysByRules,
+  notificationPanelDismissalsAtom,
   reticulumChatEnabledAtom,
 } from '../../atoms/global';
 import {
@@ -18,10 +17,19 @@ import {
   fireOsNotificationPayment,
 } from '../../background/background';
 import {
+  CHAT_ALERT_CATCH_UP_SETTLE_MS,
+  chatAlertFloor,
+  createChatAlertCoalescer,
+  isChatAlertCatchUp,
+  readChatAlertLastRunMark,
   reticulumDmAlertKey,
   reticulumMentionAlertKey,
+  unreadDirectMessageCount,
   wasAlertShown,
+  writeChatAlertLastRunMark,
+  type ChatAlertCoalescer,
 } from '../../utils/reticulumChatAlerts';
+import { isCapacitor } from '../../utils/platform';
 import {
   getNotificationPermissionKey,
   getPermission,
@@ -119,10 +127,9 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
   const myAddressRef = useRef(myAddress);
   myAddressRef.current = myAddress;
   const setPaymentNotifications = useSetAtom(paymentNotificationsAtom);
+  const updatePanelDismissals = useSetAtom(notificationPanelDismissalsAtom);
   const customSubscriptions = useAtomValue(customWebsocketSubscriptionsAtom);
   const setCustomSubscriptions = useSetAtom(customWebsocketSubscriptionsAtom);
-  const seenInAppKeys = useAtomValue(notificationSeenInAppKeysAtom);
-  const setSeenInAppKeys = useSetAtom(notificationSeenInAppKeysAtom);
 
   const [socketOpen, setSocketOpen] = useState(false);
   const socketRef = useRef<WebSocket | null>(null);
@@ -140,10 +147,61 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
   const initWebsocketRef = useRef<(() => Promise<void>) | null>(null);
   const qChatMentionOsNotifiedEventIdsRef = useRef<Set<string>>(new Set());
   const reticulumDmOsNotifiedEventIdsRef = useRef<Set<string>>(new Set());
+  // Catch-up DM and mention tray alerts (phone only) share one coalescer: at
+  // most one sounding alert per 60 s, however many messages a catch-up
+  // delivers at once. Live alerts post at once, as before.
+  const chatAlertCoalescerRef = useRef<ChatAlertCoalescer | null>(null);
+  if (!chatAlertCoalescerRef.current) {
+    chatAlertCoalescerRef.current = createChatAlertCoalescer();
+  }
+  const chatAlertCoalescer = chatAlertCoalescerRef.current;
+  // Catch-up gate for this account: when this session started listening and
+  // when GO last ran before it (read once; see chatAlertFloor). Catch-up
+  // alerts are for the phone, whose page is frozen or killed in the
+  // background; desktop keeps the listening-time gate (lastRunMark null).
+  const chatAlertWindowRef = useRef<{
+    listeningSince: number;
+    lastRunMark: number | null;
+    catchUpAlerts: boolean;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!myAddress) return;
+    const catchUpAlerts = isCapacitor();
+    chatAlertWindowRef.current = {
+      listeningSince: Date.now(),
+      lastRunMark: catchUpAlerts ? readChatAlertLastRunMark(myAddress) : null,
+      catchUpAlerts,
+    };
+    if (!catchUpAlerts) return;
+    // Written only when GO leaves the screen or unloads, never on a timer.
+    // On the phone document.hidden follows Android's foreground state.
+    const markLastRun = () => writeChatAlertLastRunMark(myAddress);
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') markLastRun();
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener('pagehide', markLastRun);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener('pagehide', markLastRun);
+      // Alerts still waiting belong to this account.
+      chatAlertCoalescer.clear();
+    };
+  }, [chatAlertCoalescer, myAddress]);
 
   useEffect(() => {
     if (!reticulumChatEnabled || !myAddress) return;
     const listeningSince = Date.now();
+    // The mark read when this account's session started: a hide since then
+    // must not narrow the catch-up window if chat is enabled late.
+    const alertWindow = chatAlertWindowRef.current;
+    const catchUpAlerts = alertWindow?.catchUpAlerts ?? isCapacitor();
+    const lastRunMark = !catchUpAlerts
+      ? null
+      : alertWindow
+        ? alertWindow.lastRunMark
+        : readChatAlertLastRunMark(myAddress);
     reticulumDmOsNotifiedEventIdsRef.current.clear();
     const off = window.reticulumChat?.onDirectEvent?.(({ event }) => {
       if (!event || typeof event !== 'object') return;
@@ -163,6 +221,7 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
           event: directEvent,
           friendsByAddress: dmFriendsByAddressRef.current,
           listeningSince,
+          lastRunMark,
           myAddress,
           hubIsBeingViewed: isHubBeingViewed(),
         })
@@ -184,28 +243,57 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
       }
 
       const sender = String(directEvent.senderAddress || '');
-      const friend = dmFriendsByAddressRef.current[sender];
-      const senderName = friend?.name?.trim() || 'a friend';
-      void fireOsNotificationPayment(
-        {
-          appName: 'Q-Chat',
-          appService: 'INTERNAL',
-          event: 'RETICULUM_DM_MESSAGE',
+      const alertKey = reticulumDmAlertKey(sender);
+      const postDmAlert = () => {
+        const friend = dmFriendsByAddressRef.current[sender];
+        const senderName = friend?.name?.trim() || 'a friend';
+        void fireOsNotificationPayment(
+          {
+            appName: 'Q-Chat',
+            appService: 'INTERNAL',
+            event: 'RETICULUM_DM_MESSAGE',
+          },
+          `New message from ${senderName}`,
+          'Open Q-Chat to view it.',
+          LogoSelected,
+          undefined,
+          {
+            from: sender,
+            name: friend?.name,
+            reticulumDirectMessage: true,
+          },
+          {
+            alertKey,
+            fromAddress: sender,
+            notificationType: 'direct',
+          }
+        );
+      };
+      if (
+        !catchUpAlerts ||
+        !isChatAlertCatchUp({ timestamp: Number(directEvent.timestamp) })
+      ) {
+        postDmAlert();
+        return;
+      }
+      // Catch-up: the message may have been read on another device, and
+      // that read sync is a separate wire that can land after the events.
+      // Wait a short settle (a read cancels the waiting alert through
+      // scheduleDmAlertDismiss), then post only if the chat is still unread
+      // and GO is not on screen.
+      chatAlertCoalescer.offer(
+        alertKey,
+        async (isCancelled) => {
+          if (isHubBeingViewed()) return false;
+          const summaries = await Promise.resolve(
+            window.reticulumChat?.getDirectSummaries?.(myAddress, sender)
+          ).catch(() => null);
+          if (isCancelled() || isHubBeingViewed()) return false;
+          if (unreadDirectMessageCount(summaries, sender) <= 0) return false;
+          postDmAlert();
+          return true;
         },
-        `New message from ${senderName}`,
-        'Open Q-Chat to view it.',
-        LogoSelected,
-        undefined,
-        {
-          from: sender,
-          name: friend?.name,
-          reticulumDirectMessage: true,
-        },
-        {
-          alertKey: reticulumDmAlertKey(sender),
-          fromAddress: sender,
-          notificationType: 'direct',
-        }
+        { settleMs: CHAT_ALERT_CATCH_UP_SETTLE_MS }
       );
     });
 
@@ -216,29 +304,22 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
     const dmAlertDismissTimers = new Map<string, number>();
     const scheduleDmAlertDismiss = (peer: string) => {
       const alertKey = reticulumDmAlertKey(peer);
-      if (!wasAlertShown(alertKey)) return;
+      const alertWanted = () =>
+        wasAlertShown(alertKey) || chatAlertCoalescer.isPending(alertKey);
+      if (!alertWanted()) return;
       const pending = dmAlertDismissTimers.get(peer);
       if (pending) window.clearTimeout(pending);
       dmAlertDismissTimers.set(
         peer,
         window.setTimeout(() => {
           dmAlertDismissTimers.delete(peer);
-          if (!wasAlertShown(alertKey)) return;
+          if (!alertWanted()) return;
           void window.reticulumChat
             ?.getDirectSummaries?.(myAddress, peer)
             .then((summaries) => {
-              const summary = (summaries || []).find(
-                (item: any) => String(item?.peerAddress || '') === peer
-              ) as
-                | { unreadCount?: number; unreadMissedCallCount?: number }
-                | undefined;
-              // The enriched summary folds unread missed calls into
-              // `unreadCount`; only the message count matters here (the
-              // missed-call alert is a separate notification).
-              const unreadMessages =
-                Number(summary?.unreadCount || 0) -
-                Number(summary?.unreadMissedCallCount || 0);
-              if (unreadMessages <= 0) {
+              // Messages only: the missed-call alert is a separate one.
+              if (unreadDirectMessageCount(summaries, peer) <= 0) {
+                chatAlertCoalescer.cancel(alertKey);
                 dismissOsNotificationByKey(alertKey);
               }
             })
@@ -327,8 +408,15 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
       offCallSummary?.();
       dmAlertDismissTimers.forEach((timer) => window.clearTimeout(timer));
       dmAlertDismissTimers.clear();
+      // Chat turned off or account changed: waiting alerts are stale.
+      chatAlertCoalescer.clear();
     };
-  }, [myAddress, reticulumChatEnabled, setPaymentNotifications]);
+  }, [
+    chatAlertCoalescer,
+    myAddress,
+    reticulumChatEnabled,
+    setPaymentNotifications,
+  ]);
 
   useEffect(() => {
     if (!reticulumChatEnabled || !myAddress) return;
@@ -481,7 +569,17 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
         isUnreadCountSync &&
         Math.max(0, Number(detail?.mentionCount) || 0) === 0
       ) {
+        chatAlertCoalescer.cancel(reticulumMentionAlertKey(groupId));
         dismissOsNotificationByKey(reticulumMentionAlertKey(groupId));
+      }
+      // A mention card swiped out of the bell panel stays hidden until the
+      // group has more unread mentions than it had then; reads lower that bar.
+      if (isUnreadCountSync) {
+        updatePanelDismissals({
+          type: 'mentionCount',
+          groupId,
+          mentionCount: Math.max(0, Number(detail?.mentionCount) || 0),
+        });
       }
       if (!(await getQChatMentionNotificationsEnabled())) return;
 
@@ -602,9 +700,16 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
       });
 
       // Unread-count synchronization rebuilds the Hub notification state and
-      // must not replay old mentions as OS notifications.
+      // must not replay old mentions as OS notifications. On the phone,
+      // mentions older than the catch-up window (see chatAlertFloor) are
+      // history, not news; desktop is unchanged.
+      const alertWindow = chatAlertWindowRef.current;
+      const catchUpAlerts = alertWindow?.catchUpAlerts === true;
+      const withinAlertWindow =
+        !alertWindow?.catchUpAlerts || timestamp >= chatAlertFloor(alertWindow);
       if (
         !isUnreadCountSync &&
+        withinAlertWindow &&
         !qChatMentionOsNotifiedEventIdsRef.current.has(eventId)
       ) {
         qChatMentionOsNotifiedEventIdsRef.current.add(eventId);
@@ -619,27 +724,46 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
             qChatMentionOsNotifiedEventIdsRef.current.delete(oldestEventId);
           }
         }
-        void fireOsNotificationPayment(
-          {
-            appName: QCHAT_MENTION_NOTIFICATION_APP_NAME,
-            appService: 'INTERNAL',
-            event: QCHAT_MENTION_NOTIFICATION_EVENT,
+        const alertKey = reticulumMentionAlertKey(groupId);
+        const postMentionAlert = () => {
+          void fireOsNotificationPayment(
+            {
+              appName: QCHAT_MENTION_NOTIFICATION_APP_NAME,
+              appService: 'INTERNAL',
+              event: QCHAT_MENTION_NOTIFICATION_EVENT,
+            },
+            `Mention in ${groupName}`,
+            `You were mentioned in #${channelName}`,
+            LogoSelected,
+            undefined,
+            {
+              channelId,
+              eventId,
+              from: groupId,
+              qChatMention: true,
+            },
+            {
+              alertKey,
+              fromAddress: String(groupId),
+              notificationType: 'group',
+            }
+          );
+        };
+        if (!catchUpAlerts || !isChatAlertCatchUp({ timestamp })) {
+          postMentionAlert();
+          return;
+        }
+        // Catch-up: wait a short settle; an unread sync with no mentions
+        // left (read on another device) cancels the waiting alert. The
+        // timer may fire on resume, so re-check the screen at post time.
+        chatAlertCoalescer.offer(
+          alertKey,
+          (isCancelled) => {
+            if (isCancelled() || isHubBeingViewed()) return false;
+            postMentionAlert();
+            return true;
           },
-          `Mention in ${groupName}`,
-          `You were mentioned in #${channelName}`,
-          LogoSelected,
-          undefined,
-          {
-            channelId,
-            eventId,
-            from: groupId,
-            qChatMention: true,
-          },
-          {
-            alertKey: reticulumMentionAlertKey(groupId),
-            fromAddress: String(groupId),
-            notificationType: 'group',
-          }
+          { settleMs: CHAT_ALERT_CATCH_UP_SETTLE_MS }
         );
       }
     };
@@ -681,18 +805,14 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
         handleMentionSettingUpdated as EventListener
       );
     };
-  }, [setPaymentNotifications]);
+  }, [chatAlertCoalescer, setPaymentNotifications, updatePanelDismissals]);
 
-  useEffect(() => {
-    const current = Array.isArray(seenInAppKeys) ? seenInAppKeys : [];
-    const filtered = filterSeenInAppKeysByRules(
-      current,
-      customSubscriptions ?? []
-    );
-    if (filtered.length !== current.length) {
-      setSeenInAppKeys(filtered);
-    }
-  }, [customSubscriptions, seenInAppKeys, setSeenInAppKeys]);
+  // Seen-in-app keys are not pruned against the subscription rules here. The
+  // built-in Q-Mail subscription is not a custom rule, rules can still be
+  // hydrating, and the setter can only add marks, so pruning re-wrote the
+  // record forever and starved every startTransition in the app. Marks
+  // expire after 3 days on their own, and a mark whose rule is gone hides
+  // nothing new.
 
   useEffect(() => {
     const handler = (e) => {

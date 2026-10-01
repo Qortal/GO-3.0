@@ -46,6 +46,9 @@ const STORAGE_PREFIX = 'hub_mobile_tab_org_';
 
 export const HUB_DASHBOARD_FOLDER_NAME = 'Hub';
 
+/** Folder that the Q-Apps library pin button fills on phones. */
+export const LIBRARY_FOLDER_NAME = 'Library';
+
 export const getOpenTabKey = (tab: OpenTab): string => {
   if (tab.internal) {
     return `internal:${String(tab.internal)}`;
@@ -71,7 +74,7 @@ export const getOpenTabDisplayTitle = (
   return label || name || service || 'Tab';
 };
 
-const emptyOrganization = (): MobileTabOrganization => ({
+export const emptyOrganization = (): MobileTabOrganization => ({
   folders: [],
   tabOverrides: {},
   tabFolderMap: {},
@@ -283,5 +286,118 @@ export function renameTabKeyInOrganization(
     tabKeys: folder.tabKeys.map((key) => (key === oldKey ? newKey : key)),
   }));
 
-  return { folders, tabOverrides, tabFolderMap, savedTabs };
+  return { ...organization, folders, tabOverrides, tabFolderMap, savedTabs };
+}
+
+export function findFolderByName(
+  folders: TabFolder[],
+  name: string
+): TabFolder | undefined {
+  const wanted = name.trim().toLowerCase();
+  return folders.find((folder) => folder.name.trim().toLowerCase() === wanted);
+}
+
+export function findFolderForTabKey(
+  organization: MobileTabOrganization,
+  tabKey: string
+): TabFolder | null {
+  const folderId = organization.tabFolderMap[tabKey];
+  if (!folderId) return null;
+  return organization.folders.find((folder) => folder.id === folderId) ?? null;
+}
+
+/** Tab for a Q-Apps library entry, keyed like the tab that opening it creates. */
+export function libraryAppToOpenTab(
+  app:
+    | {
+        name?: string;
+        service?: string;
+        identifier?: string;
+        metadata?: { title?: string };
+      }
+    | null
+    | undefined
+): OpenTab | null {
+  if (!app?.name) return null;
+  return pinnedAppToOpenTab({
+    name: app.name,
+    service: app.service,
+    identifier: app.identifier,
+    label: app.metadata?.title || app.name,
+  });
+}
+
+/**
+ * Puts a tab into the folder with this name, creating the folder at the end
+ * of the first row when there is none. A tab lives in one folder at a time,
+ * so it leaves any other folder.
+ */
+export function addTabToNamedFolder(
+  organization: MobileTabOrganization,
+  tab: OpenTab,
+  folderName: string,
+  newFolderId: string
+): { organization: MobileTabOrganization; folder: TabFolder } {
+  const tabKey = getOpenTabKey(tab);
+  const existing = findFolderByName(organization.folders, folderName);
+  const folderId = existing?.id ?? newFolderId;
+
+  let folders = organization.folders.map((folder) => {
+    if (folder.id === folderId) {
+      return folder.tabKeys.includes(tabKey)
+        ? folder
+        : { ...folder, tabKeys: [...folder.tabKeys, tabKey] };
+    }
+    return folder.tabKeys.includes(tabKey)
+      ? { ...folder, tabKeys: folder.tabKeys.filter((key) => key !== tabKey) }
+      : folder;
+  });
+  if (!existing) {
+    folders = [
+      ...folders,
+      {
+        id: folderId,
+        name: folderName,
+        tabKeys: [tabKey],
+        order: folders.filter((folder) => getFolderRow(folder) === 0).length,
+        row: 0,
+      },
+    ];
+  }
+
+  return {
+    organization: {
+      ...organization,
+      folders,
+      tabFolderMap: { ...organization.tabFolderMap, [tabKey]: folderId },
+      savedTabs: { ...organization.savedTabs, [tabKey]: snapshotFromTab(tab) },
+      folderRowCount: resolveFolderRowCount(
+        folders,
+        organization.folderRowCount
+      ),
+    },
+    folder: folders.find((folder) => folder.id === folderId)!,
+  };
+}
+
+/** Removes a tab from whichever folder holds it. Open tabs stay open. */
+export function removeTabKeyFromFolders(
+  organization: MobileTabOrganization,
+  tabKey: string
+): MobileTabOrganization {
+  const inFolder =
+    Boolean(organization.tabFolderMap[tabKey]) ||
+    organization.folders.some((folder) => folder.tabKeys.includes(tabKey));
+  if (!inFolder) return organization;
+
+  const tabFolderMap = { ...organization.tabFolderMap };
+  delete tabFolderMap[tabKey];
+  const savedTabs = { ...organization.savedTabs };
+  delete savedTabs[tabKey];
+  const folders = organization.folders.map((folder) =>
+    folder.tabKeys.includes(tabKey)
+      ? { ...folder, tabKeys: folder.tabKeys.filter((key) => key !== tabKey) }
+      : folder
+  );
+  return { ...organization, folders, tabFolderMap, savedTabs };
 }

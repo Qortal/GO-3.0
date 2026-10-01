@@ -68,6 +68,17 @@ export async function initMobileSqlite(): Promise<void> {
     initialCapacity: 16,
   });
   const elapsed = Date.now() - startedAt;
+  // Always report the timing: it is the one number that tells a JIT-less
+  // WebView (tens of seconds) from a stock one (well under a second) in a
+  // diagnostics report, even when the slow threshold below is not reached.
+  try {
+    (self as unknown as Worker).postMessage({
+      t: 'engine-timing',
+      sqliteInitMs: elapsed,
+    });
+  } catch {
+    /* not inside a worker */
+  }
   if (elapsed > SLOW_INIT_MS) {
     // A stock WebView does this in well under a second. Seconds mean the
     // wasm is being interpreted (WebView JIT restricted for this app or
@@ -79,7 +90,7 @@ export async function initMobileSqlite(): Promise<void> {
       (self as unknown as Worker).postMessage({
         t: 'engine-slow',
         ms: elapsed,
-        hint: `Chat storage started slowly (${(elapsed / 1000).toFixed(1)} s): this WebView is running without JIT. ${WEBVIEW_JIT_HINT}`,
+        hint: `Chat storage started slowly (${(elapsed / 1000).toFixed(1)} s). This usually means the WebView is running without JIT. ${WEBVIEW_JIT_HINT}`,
       });
     } catch {
       /* not inside a worker */

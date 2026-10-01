@@ -1,26 +1,36 @@
 /**
- * Drives the update from "there is a newer build on QDN" to "Android is asking
- * whether to install it".
+ * Drives an install from "there is a build on QDN" to "Android is asking
+ * whether to install it", and keeps the GO 3.0 Updates screen's view of what
+ * is published.
  *
- * Lives outside React so the notification card, the window and the periodic
- * check all act on one download rather than one each, and so a download keeps
- * going while its window is closed.
+ * Lives outside React so the Updates screen, the account menu's bell and the
+ * periodic check all act on one download rather than one each, and so a
+ * download keeps going while the screen is closed.
  */
 import { Capacitor } from '@capacitor/core';
 import { getDefaultStore } from 'jotai';
+import { GO_VERSION } from '../appVersion';
+import i18n from '../i18n/i18n';
 import { QortalAppUpdate } from '../plugins/QortalAppUpdate';
 import {
+  appUpdateCheckAtom,
   appUpdateDismissedVersionAtom,
   appUpdateFileAtom,
   appUpdateInstalledVersionAtom,
   appUpdateProgressAtom,
   appUpdateReleaseAtom,
+  appUpdateReleaseListAtom,
+  appUpdateSeenVersionAtom,
+  appUpdateTargetAtom,
   appUpdateWindowOpenAtom,
+  type AppUpdatePhase,
 } from './appUpdateAtoms';
 import {
   buildDownloadUrl,
+  compareReleasesNewestFirst,
   compareVersions,
-  findLatestPublishedBuild,
+  listPublishedBuilds,
+  lookUpLatestPublishedBuild,
   readResourceStatus,
   requestResourceBuild,
   type AppRelease,
@@ -34,9 +44,15 @@ const PREPARE_POLL_MS = 3_000;
 const PREPARE_TIMEOUT_MS = 15 * 60 * 1000;
 /** Chunks stuck at the same percentage this long get another async nudge. */
 const PREPARE_NUDGE_MS = 45_000;
+/** Reopening the Updates screen within this long reuses the version list. */
+const RELEASE_LIST_FRESH_MS = 5 * 60 * 1000;
 
 let checkInFlight: Promise<AppRelease | null> | null = null;
+let listInFlight: Promise<void> | null = null;
 let downloadInFlight = false;
+
+const tr = (key: string, options?: Record<string, unknown>): string =>
+  i18n.t(`core:go_updates.${key}`, options) as string;
 
 const formatBytes = (bytes: number): string => {
   if (!bytes || bytes < 0) return '';
@@ -50,31 +66,77 @@ const setProgress = (
     detail: string;
     error: string;
     percent: number;
-    phase: import('./appUpdateAtoms').AppUpdatePhase;
+    phase: AppUpdatePhase;
   }>
 ) => {
   store.set(appUpdateProgressAtom, (current) => ({ ...current, ...update }));
 };
 
-/** versionName from build.gradle, e.g. "3.0.0". */
+/** Only the Android app can download and install a build. */
+export const canInstallBuilds = (): boolean => Capacitor.isNativePlatform();
+
+/**
+ * versionName from build.gradle, e.g. "0.0.12". The bundle's own version
+ * (kept identical to it) stands in when Android cannot be asked, and outside
+ * the Android app, so the Updates screen always knows where it is in the list.
+ */
 export async function readInstalledVersion(): Promise<string> {
   const cached = store.get(appUpdateInstalledVersionAtom);
   if (cached) return cached;
-  try {
-    const { App } = await import('@capacitor/app');
-    const info = await App.getInfo();
-    const version = String(info?.version || '');
-    if (version) store.set(appUpdateInstalledVersionAtom, version);
-    return version;
-  } catch {
-    return '';
+  let version = '';
+  if (Capacitor.isNativePlatform()) {
+    try {
+      const { App } = await import('@capacitor/app');
+      const info = await App.getInfo();
+      version = String(info?.version || '');
+    } catch {
+      version = '';
+    }
   }
+  version = version || GO_VERSION;
+  store.set(appUpdateInstalledVersionAtom, version);
+  return version;
+}
+
+const isNewer = (release: AppRelease | null, installed: string): boolean =>
+  Boolean(
+    release && installed && compareVersions(release.version, installed) > 0
+  );
+
+/**
+ * Put the newest build on offer when it is newer than what is installed.
+ * Silent about everything that is not an update, including a version the user
+ * already turned down, unless they went looking for it themselves (`force`).
+ */
+function offerRelease(
+  release: AppRelease | null,
+  installed: string,
+  force: boolean
+): AppRelease | null {
+  if (!release || compareVersions(release.version, installed) <= 0) {
+    // A build that is no longer newer (it was just installed) stops showing.
+    const offered = store.get(appUpdateReleaseAtom);
+    if (offered && compareVersions(offered.version, installed) <= 0) {
+      store.set(appUpdateReleaseAtom, null);
+    }
+    return null;
+  }
+  const dismissed = store.get(appUpdateDismissedVersionAtom);
+  if (!force && dismissed && compareVersions(release.version, dismissed) <= 0) {
+    return null;
+  }
+  const current = store.get(appUpdateReleaseAtom);
+  // A download already under way for this same build is left alone.
+  if (current?.identifier === release.identifier && downloadInFlight) {
+    return current;
+  }
+  store.set(appUpdateReleaseAtom, release);
+  return release;
 }
 
 /**
- * Look for a newer build. Silent about everything that is not an update: a
- * node that cannot answer, a publish that is not newer, a version the user has
- * already turned down.
+ * Look for a newer build (the background check). A node that cannot answer is
+ * a "not now", never a "no".
  */
 export async function checkForAppUpdate(options?: {
   force?: boolean;
@@ -89,35 +151,20 @@ export async function checkForAppUpdate(options?: {
       // and offering someone the build they are already running is worse than
       // saying nothing.
       if (!installed) return null;
-      const release = await findLatestPublishedBuild();
-      if (!release) return null;
-      if (compareVersions(release.version, installed) <= 0) return null;
-      // Asking again for a version already turned down, unless the user went
-      // looking for it themselves.
-      const dismissed = store.get(appUpdateDismissedVersionAtom);
-      if (
-        !options?.force &&
-        dismissed &&
-        compareVersions(release.version, dismissed) <= 0
-      ) {
+      const { reachable, release } = await lookUpLatestPublishedBuild();
+      if (!reachable) {
+        store.set(appUpdateCheckAtom, {
+          checkedAt: Date.now(),
+          status: 'unreachable',
+        });
         return null;
       }
-
-      const current = store.get(appUpdateReleaseAtom);
-      // A download already under way for this same build is left alone.
-      if (current?.identifier === release.identifier && downloadInFlight) {
-        return current;
-      }
-      store.set(appUpdateReleaseAtom, release);
-      if (store.get(appUpdateProgressAtom).phase === 'idle') {
-        setProgress({
-          detail: undefined,
-          error: undefined,
-          percent: 0,
-          phase: 'available',
-        });
-      }
-      return release;
+      const offered = offerRelease(release, installed, Boolean(options?.force));
+      store.set(appUpdateCheckAtom, {
+        checkedAt: Date.now(),
+        status: isNewer(release, installed) ? 'available' : 'up-to-date',
+      });
+      return offered;
     } catch {
       return null;
     } finally {
@@ -128,6 +175,104 @@ export async function checkForAppUpdate(options?: {
   return checkInFlight;
 }
 
+/** One entry per version, `next` winning, newest first. */
+const mergeReleases = (
+  previous: AppRelease[],
+  next: AppRelease[]
+): AppRelease[] => {
+  const byVersion = new Map(
+    previous.map((release) => [release.version, release])
+  );
+  next.forEach((release) => byVersion.set(release.version, release));
+  return Array.from(byVersion.values()).sort(compareReleasesNewestFirst);
+};
+
+/**
+ * Read every published build for the version history. The newest one is also
+ * what the check looks for, so a full load doubles as a check; `force` (the
+ * Check for updates button) also brings back a version put off with Later.
+ */
+export function loadPublishedReleases(options?: {
+  force?: boolean;
+}): Promise<void> {
+  if (listInFlight) return listInFlight;
+  const current = store.get(appUpdateReleaseListAtom);
+  if (
+    !options?.force &&
+    current.status === 'ready' &&
+    Date.now() - current.loadedAt < RELEASE_LIST_FRESH_MS
+  ) {
+    return Promise.resolve();
+  }
+
+  store.set(appUpdateReleaseListAtom, (list) => ({
+    ...list,
+    status: 'loading',
+  }));
+  store.set(appUpdateCheckAtom, (check) => ({ ...check, status: 'checking' }));
+
+  listInFlight = (async () => {
+    try {
+      const installed = await readInstalledVersion();
+      // A reload keeps what is already listed and fills in over it, so the
+      // list does not shrink to the first document back and grow again.
+      const result = await listPublishedBuilds((releases) => {
+        store.set(appUpdateReleaseListAtom, (list) => ({
+          ...list,
+          releases: mergeReleases(list.releases, releases),
+        }));
+      });
+      const now = Date.now();
+      if (!result.reachable) {
+        store.set(appUpdateReleaseListAtom, (list) => ({
+          ...list,
+          status: 'unreachable',
+        }));
+        store.set(appUpdateCheckAtom, {
+          checkedAt: now,
+          status: 'unreachable',
+        });
+        return;
+      }
+      store.set(appUpdateReleaseListAtom, (list) => ({
+        loadedAt: now,
+        missing: result.missing,
+        // A share the node could not deliver this time is still published.
+        releases: result.missing
+          ? mergeReleases(list.releases, result.releases)
+          : result.releases,
+        status: 'ready',
+      }));
+      const newest = store.get(appUpdateReleaseListAtom).releases[0] ?? null;
+      if (installed) {
+        offerRelease(newest, installed, Boolean(options?.force));
+      }
+      store.set(appUpdateCheckAtom, {
+        checkedAt: now,
+        status: isNewer(newest, installed) ? 'available' : 'up-to-date',
+      });
+    } catch {
+      store.set(appUpdateReleaseListAtom, (list) => ({
+        ...list,
+        status: 'unreachable',
+      }));
+      store.set(appUpdateCheckAtom, {
+        checkedAt: Date.now(),
+        status: 'unreachable',
+      });
+    } finally {
+      listInFlight = null;
+    }
+  })();
+
+  return listInFlight;
+}
+
+/** The Check for updates button: always asks QDN again. */
+export function checkForUpdatesNow(): Promise<void> {
+  return loadPublishedReleases({ force: true });
+}
+
 /**
  * Gather the file on the node. Until every chunk has been found among peers
  * there is nothing to stream, and on a cold node that is the slow part, so it
@@ -135,7 +280,7 @@ export async function checkForAppUpdate(options?: {
  */
 async function prepareOnNode(release: AppRelease): Promise<void> {
   setProgress({
-    detail: 'Fetching from the Qortal network',
+    detail: tr('progress.fetching'),
     percent: 0,
     phase: 'preparing',
   });
@@ -147,7 +292,7 @@ async function prepareOnNode(release: AppRelease): Promise<void> {
 
   for (;;) {
     if (Date.now() - startedAt > PREPARE_TIMEOUT_MS) {
-      throw new Error('The network did not deliver the update in time');
+      throw new Error(tr('error.timeout'));
     }
     await new Promise((resolve) => setTimeout(resolve, PREPARE_POLL_MS));
 
@@ -163,7 +308,7 @@ async function prepareOnNode(release: AppRelease): Promise<void> {
     }
     if (status.status === 'DOWNLOADED') {
       // Chunks are all here; the node still has to put them back together.
-      setProgress({ detail: 'Assembling the update', percent: 100 });
+      setProgress({ detail: tr('progress.assembling'), percent: 100 });
       const built = await readResourceStatus(
         release.service,
         release.identifier,
@@ -177,10 +322,7 @@ async function prepareOnNode(release: AppRelease): Promise<void> {
     if (percent !== lastPercent) {
       lastPercent = percent;
       lastMovedAt = Date.now();
-      setProgress({
-        detail: 'Fetching from the Qortal network',
-        percent,
-      });
+      setProgress({ detail: tr('progress.fetching'), percent });
     } else if (Date.now() - lastMovedAt > PREPARE_NUDGE_MS) {
       // Peers come and go; re-asking restarts the search for what is missing.
       lastMovedAt = Date.now();
@@ -189,19 +331,29 @@ async function prepareOnNode(release: AppRelease): Promise<void> {
   }
 }
 
-/** Stream the assembled file to the device, then hand it to the installer. */
-export async function startAppUpdateDownload(): Promise<void> {
-  const release = store.get(appUpdateReleaseAtom);
-  if (!release || downloadInFlight) return;
+/**
+ * Stream a build to the device, then hand it to the installer. Without an
+ * argument it is the update on offer. Only a build newer than this one is
+ * installed: Android refuses to put an older version over a newer one.
+ */
+export async function startAppUpdateDownload(
+  requested?: AppRelease
+): Promise<void> {
+  const release = requested ?? store.get(appUpdateReleaseAtom);
+  if (!release || downloadInFlight || !canInstallBuilds()) return;
+  if (!isNewer(release, await readInstalledVersion())) return;
+  if (downloadInFlight) return;
   downloadInFlight = true;
+  store.set(appUpdateTargetAtom, release);
   store.set(appUpdateFileAtom, null);
+  setProgress({ detail: undefined, error: undefined });
 
   let listener: { remove: () => void } | null = null;
   try {
     await prepareOnNode(release);
 
     setProgress({
-      detail: 'Downloading',
+      detail: tr('progress.downloading'),
       percent: 0,
       phase: 'downloading',
     });
@@ -210,7 +362,10 @@ export async function startAppUpdateDownload(): Promise<void> {
       ({ bytes, percent, total }) => {
         setProgress({
           detail: total
-            ? `${formatBytes(bytes)} of ${formatBytes(total)}`
+            ? tr('progress.bytes_of_total', {
+                done: formatBytes(bytes),
+                total: formatBytes(total),
+              })
             : formatBytes(bytes),
           percent,
         });
@@ -232,9 +387,9 @@ export async function startAppUpdateDownload(): Promise<void> {
   } catch (error) {
     setProgress({
       error:
-        error instanceof Error
+        error instanceof Error && error.message
           ? error.message
-          : 'The update could not be fetched',
+          : tr('error.fetch_failed'),
       phase: 'error',
     });
   } finally {
@@ -254,14 +409,14 @@ export async function installDownloadedUpdate(): Promise<void> {
   const { allowed } = await QortalAppUpdate.canInstall();
   if (!allowed) {
     setProgress({
-      detail: 'Android needs your permission to install apps from Qortal GO',
+      detail: tr('progress.needs_permission'),
       percent: 100,
       phase: 'needs-permission',
     });
     return;
   }
   setProgress({
-    detail: 'Android will ask you to confirm',
+    detail: tr('progress.confirm_in_android'),
     percent: 100,
     phase: 'installing',
   });
@@ -304,25 +459,45 @@ export async function refreshInstallPermission(): Promise<void> {
   }
 }
 
-export function openAppUpdateWindow(): void {
-  store.set(appUpdateWindowOpenAtom, true);
+/** The update on offer counts as seen once the Updates screen has shown it. */
+export function markAppUpdateSeen(): void {
+  const release = store.get(appUpdateReleaseAtom);
+  if (release) store.set(appUpdateSeenVersionAtom, release.version);
 }
 
-export function minimizeAppUpdateWindow(): void {
+export function openAppUpdateWindow(): void {
+  store.set(appUpdateWindowOpenAtom, true);
+  markAppUpdateSeen();
+  void loadPublishedReleases();
+}
+
+export function closeAppUpdateWindow(): void {
   store.set(appUpdateWindowOpenAtom, false);
 }
 
 /** "Later": keep quiet about this version until a newer one is published. */
 export function dismissAppUpdate(): void {
   const release = store.get(appUpdateReleaseAtom);
-  if (release) store.set(appUpdateDismissedVersionAtom, release.version);
-  store.set(appUpdateWindowOpenAtom, false);
+  if (!release) return;
+  store.set(appUpdateDismissedVersionAtom, release.version);
   store.set(appUpdateReleaseAtom, null);
-  store.set(appUpdateProgressAtom, { percent: 0, phase: 'idle' });
+  const target = store.get(appUpdateTargetAtom);
+  if (target?.identifier === release.identifier && !downloadInFlight) {
+    resetAppUpdateProgress();
+  }
 }
 
-/** Give up on a failed attempt without hiding the update itself. */
+/** Give up on a finished or failed attempt; the builds stay listed. */
 export function resetAppUpdateProgress(): void {
-  store.set(appUpdateProgressAtom, { percent: 0, phase: 'available' });
+  if (downloadInFlight) return;
+  store.set(appUpdateProgressAtom, { percent: 0, phase: 'idle' });
   store.set(appUpdateFileAtom, null);
+  store.set(appUpdateTargetAtom, null);
+}
+
+/** Test hook. */
+export function resetAppUpdateControllerForTests(): void {
+  checkInFlight = null;
+  listInFlight = null;
+  downloadInFlight = false;
 }

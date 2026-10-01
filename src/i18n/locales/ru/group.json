@@ -77,7 +77,8 @@
     "gsk_description": "This key encrypts group content visible to all group members. It is currently the only key used for group chat and shared data.",
     "gsk_description_compact": "This key encrypts group content visible to all group members. It is currently the only key used in this UI.",
     "publish_ask": "Publish ASK",
-    "publish_gsk": "Publish GSK"
+    "publish_gsk": "Publish GSK",
+    "title": "ключи администратора"
   },
   "advanced_options": "расширенные настройки",
   "announcement_placeholder": "Write an announcement...",
@@ -777,6 +778,13 @@
   "last_message_from": "{{sender}} • {{date}}",
   "last_message_you": "Вы",
   "latest_mails": "последние Q-сообщения",
+  "member_actions": {
+    "make_admin_named": "сделать {{name}} администратором",
+    "more_named": "другие действия для {{name}}",
+    "pending": "ожидание",
+    "pending_hint": "ожидается подтверждение в блокчейне. Это может занять пару минут.",
+    "remove_admin_named": "удалить {{name}} из администраторов"
+  },
   "member_category": {
     "admins": "администраторы",
     "collapse": "свернуть {{category}}",
@@ -785,6 +793,10 @@
     "members": "участники",
     "offline": "не в сети",
     "park": "парк"
+  },
+  "members_screen": {
+    "bans": "баны",
+    "invites": "приглашения"
   },
   "message": {
     "error": {
@@ -1013,6 +1025,10 @@
       "copy": "Главная панель — ваша отправная точка в Qortal Hub.\n\nДавайте быстро познакомимся с основами!",
       "title": "Добро пожаловать в Qortal Hub"
     }
+  },
+  "panel": {
+    "files": "файлы",
+    "threads": "Threads"
   },
   "subscription": {
     "actions_badge_one": "{{count}} действие",

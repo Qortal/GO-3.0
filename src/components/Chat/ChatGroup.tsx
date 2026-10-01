@@ -54,18 +54,31 @@ import {
 import { CustomizedSnackbars } from '../Snackbar/Snackbar';
 import {
   MAX_SIZE_MESSAGE,
+  MAX_SPLIT_MESSAGE_PARTS,
   MIN_REQUIRED_QORTS,
   PUBLIC_NOTIFICATION_CODE_FIRST_SECRET_KEY,
   TIME_DAYS_1_IN_MILLISECONDS,
   TIME_MONTHS_1_IN_MILLISECONDS,
   TIME_MINUTES_2_IN_MILLISECONDS,
 } from '../../constants/constants';
+import type { Schema } from '@tiptap/pm/model';
+import {
+  chatDocumentToHtml,
+  jsonPayloadFits,
+  jsonPayloadSize,
+  splitChatDocument,
+  splitChatDocumentAsync,
+  utf8ByteLength,
+  type ChatDocNode,
+  type SplitChatDocumentError,
+} from '../../utils/chat/splitLongMessage';
 import { useMessageQueue } from '../../messaging/MessageQueueContext.tsx';
 import {
   executeEvent,
   subscribeToEvent,
   unsubscribeFromEvent,
 } from '../../utils/events';
+import { BACK_PRIORITY, useAndroidBack } from '../../utils/androidBack';
 import { coreWebsocketPingMs } from '../../utils/coreWebsocketPing';
 import {
   getChatDraft,
@@ -102,6 +115,7 @@ import {
 import { alpha } from '@mui/material/styles';
 import ShortUniqueId from 'short-unique-id';
 import { ReplyPreview } from './MessageItem';
+import { ComposerDiscardButton } from './ComposerDiscardButton';
 import { ComposerReplyPreview } from './ComposerReplyPreview';
 import { ExitIcon } from '../../assets/Icons/ExitIcon';
 import { RESOURCE_TYPE_NUMBER_GROUP_CHAT_REACTIONS } from '../../constants/constants';
@@ -131,7 +145,6 @@ import PublicRoundedIcon from '@mui/icons-material/PublicRounded';
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
 import CalendarMonthRoundedIcon from '@mui/icons-material/CalendarMonthRounded';
 import SendIcon from '@mui/icons-material/Send';
-import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import CreateRoundedIcon from '@mui/icons-material/CreateRounded';
 import SecurityRoundedIcon from '@mui/icons-material/SecurityRounded';
 import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined';
@@ -144,13 +157,18 @@ import { messageHasImage } from '../../utils/chat';
 import { toChatImagePointer, type LibraryGif } from './gifs/libraryGifs';
 import { GifImage } from './gifs/GifImage';
 import { SAFE_AREA_BOTTOM, SAFE_AREA_TOP } from '../../utils/mobileSafeArea';
+import { MobilePanelHeader } from '../Mobile/MobilePanelHeader';
 import { useTranslation } from 'react-i18next';
 import {
   isDisabledTyping,
   useReticulumGroupChat,
 } from '../../hooks/useReticulumGroupChat';
+import { usePageVisible } from '../../hooks/usePageVisible';
 import { ReticulumGifCompressionStatus } from './ReticulumGifCompressionStatus';
-import { MessageSizeLimitLip } from './MessageSizeLimitLip';
+import {
+  MessageSizeLimitLip,
+  type MessageSplitError,
+} from './MessageSizeLimitLip';
 import { ReticulumUnreadCountBadge } from '../common/ReticulumUnreadCountBadge';
 import { ReticulumModePill } from '../Group/ReticulumModePill';
 import {
@@ -816,6 +834,309 @@ const buildMentionAddressHashes = async (addresses: string[]) => [
   ),
 ];
 
+/** One message of a composer text, as the group composer sends it. */
+export type ChatGroupMessagePart = {
+  /** The part as editor.getHTML() renders it; null for an empty text. */
+  html: string | null;
+  /** The payload body: TipTap JSON on plain payloads, HTML when encrypted. */
+  message: unknown;
+};
+
+export type ChatGroupComposerMeasure =
+  | { size: number; parts: ChatDocNode[]; error?: undefined }
+  | { size: number; parts?: undefined; error: SplitChatDocumentError };
+
+/**
+ * Measures a group composer document by its transport's size rule and, when
+ * it is over the limit, splits it into the parts it has to be sent as.
+ *
+ * Plain payloads (Reticulum and public legacy groups) count the UTF-8 bytes
+ * of the TipTap JSON plus 300. Encrypted payloads (legacy private groups)
+ * pass `encryptedSize`, which encrypts a part's HTML and returns its length
+ * plus overhead. A document within the limit comes back as `parts: [doc]`,
+ * the same object, without going through the splitter.
+ */
+export async function measureChatGroupComposer({
+  doc,
+  html,
+  encryptedSize = null,
+  maxBytes = MAX_SIZE_MESSAGE,
+  schema,
+}: {
+  doc: ChatDocNode;
+  /** editor.getHTML() for `doc`; rendered from `doc` when missing. */
+  html?: string | null;
+  encryptedSize?: ((html: string) => Promise<number>) | null;
+  maxBytes?: number;
+  schema: Schema;
+}): Promise<ChatGroupComposerMeasure> {
+  if (!encryptedSize) {
+    const size = jsonPayloadSize(doc);
+    if (size <= maxBytes) return { size, parts: [doc] };
+    const split = splitChatDocument(doc, jsonPayloadFits(maxBytes));
+    return split.error
+      ? { size, error: split.error }
+      : { size, parts: split.parts };
+  }
+  const htmlOf = (part: ChatDocNode) =>
+    part === doc && typeof html === 'string'
+      ? html
+      : chatDocumentToHtml(part, schema);
+  const size = await encryptedSize(htmlOf(doc));
+  if (size <= maxBytes) return { size, parts: [doc] };
+  // Every part is checked with the real encryption, so what is enqueued is
+  // what was measured.
+  const split = await splitChatDocumentAsync(doc, async (part) =>
+    part === doc ? false : (await encryptedSize(htmlOf(part))) <= maxBytes
+  );
+  return split.error
+    ? { size, error: split.error }
+    : { size, parts: split.parts };
+}
+
+/**
+ * The messages a composer text goes out as. The part that is the editor's own
+ * document keeps the editor's HTML; the others are rendered from their JSON
+ * with the editor schema, as editor.getHTML() would render them. A blank part
+ * becomes what an empty composer sends.
+ */
+export function buildChatGroupMessageParts({
+  doc,
+  html,
+  parts,
+  plainPayload,
+  schema,
+}: {
+  doc: ChatDocNode;
+  html: string;
+  parts: ChatDocNode[];
+  plainPayload: boolean;
+  schema: Schema;
+}): ChatGroupMessagePart[] {
+  return parts.map((part) => {
+    const partHtml = part === doc ? html : chatDocumentToHtml(part, schema);
+    if (!partHtml?.trim() || partHtml.trim() === '<p></p>') {
+      return { html: null, message: plainPayload ? '<p></p>' : null };
+    }
+    return { html: partHtml, message: plainPayload ? part : partHtml };
+  });
+}
+
+/**
+ * The payload of one part of a group message. The first part carries the
+ * reply and the images and file attachments; later parts are plain text.
+ * Edit data, public flags and expiry go on every part. For a message sent as
+ * one part this is, key for key, the payload a single message always had.
+ */
+export function buildChatGroupPartPayload({
+  attachments,
+  decryptedData,
+  images,
+  isEdit,
+  mentionedAddresses,
+  mentionTargets,
+  message,
+  messageExpiryPayload,
+  partIndex,
+  plainPayload,
+  publicData,
+  repliedTo,
+  specialId,
+}: {
+  attachments: unknown[];
+  decryptedData?: Record<string, unknown> | null;
+  images: unknown[];
+  isEdit: boolean;
+  mentionedAddresses: string[];
+  mentionTargets: unknown[];
+  message: unknown;
+  messageExpiryPayload: Record<string, unknown>;
+  partIndex: number;
+  plainPayload: boolean;
+  publicData: Record<string, unknown>;
+  repliedTo?: string;
+  specialId: string;
+}) {
+  const isFirstPart = partIndex === 0;
+  const partRepliedTo = isFirstPart ? repliedTo : undefined;
+  const partAttachments =
+    isFirstPart && Array.isArray(attachments) ? attachments : [];
+  const otherData = {
+    repliedTo: partRepliedTo,
+    ...(decryptedData || {}),
+    type: isEdit ? 'edit' : '',
+    specialId,
+    images: isFirstPart ? images : [],
+    ...(partAttachments.length > 0 ? { attachments: partAttachments } : {}),
+    mentionedAddresses,
+    mentionTargets,
+    ...(publicData || {}),
+  };
+  const objectMessage = {
+    ...otherData,
+    [plainPayload ? 'messageText' : 'message']: message,
+    ...(messageExpiryPayload || {}),
+    version: 3,
+  };
+  return { objectMessage, otherData, repliedTo: partRepliedTo };
+}
+
+// Covers base64 rounding when a budget is lowered by an overshoot.
+const CHAT_GROUP_WIRE_BUDGET_MARGIN = 16;
+
+/**
+ * Makes every part of a legacy group text fit Core's CHAT data limit.
+ *
+ * Legacy groups send each part as an on-chain CHAT transaction, and Core
+ * refuses one whose data is over MAX_SIZE_MESSAGE bytes. The composer rule
+ * counts only the text, not the reply, image and mentions a part also
+ * carries. So the parts are built, what each would send is measured, and
+ * while one is too big the text is split again with a budget lowered by the
+ * largest overshoot. `built` holds the parts that fit, in order.
+ */
+export async function fitChatGroupPartsToWire<T>({
+  build,
+  maxAttempts = 4,
+  maxBytes = MAX_SIZE_MESSAGE,
+  parts,
+  split,
+  wireSize,
+}: {
+  build: (parts: ChatDocNode[]) => Promise<T[]>;
+  maxAttempts?: number;
+  maxBytes?: number;
+  /** The parts the composer rule split the text into within maxBytes. */
+  parts: ChatDocNode[];
+  /** Splits the text again by the composer rule, within `budget`. */
+  split: (budget: number) => Promise<ChatGroupComposerMeasure>;
+  /** The bytes a built part takes in its transaction. */
+  wireSize: (built: T) => number;
+}): Promise<
+  | { built: T[]; parts: ChatDocNode[]; error?: undefined }
+  | { built?: undefined; parts?: undefined; error: SplitChatDocumentError }
+> {
+  let budget = maxBytes;
+  let current = parts;
+  for (let attempt = 1; ; attempt++) {
+    const built = await build(current);
+    const overshoot = built.reduce(
+      (most, item) => Math.max(most, wireSize(item) - maxBytes),
+      0
+    );
+    if (overshoot <= 0) return { built, parts: current };
+    budget -= overshoot + CHAT_GROUP_WIRE_BUDGET_MARGIN;
+    if (attempt >= maxAttempts || budget <= 0) return { error: 'unsplittable' };
+    const measured = await split(budget);
+    if (measured.error) return { error: measured.error };
+    current = measured.parts;
+  }
+}
+
+/**
+ * Chains the sends of the parts of one split text. The parts read as one
+ * message, so once a part has failed for good the parts after it fail with
+ * the same reason rather than go out with a gap. The message queue runs its
+ * items strictly in order, so when a part runs, the part before it has
+ * either been sent or been given up on.
+ */
+export function createSplitPartSender(fallbackFailure: () => unknown) {
+  const sent: boolean[] = [];
+  let failure: unknown = null;
+  return function sendAfterEarlierParts<T>(
+    partIndex: number,
+    publish: () => Promise<T>
+  ) {
+    return async (): Promise<T> => {
+      try {
+        if (partIndex > 0 && !sent[partIndex - 1]) {
+          throw failure || fallbackFailure();
+        }
+        const result = await publish();
+        sent[partIndex] = true;
+        return result;
+      } catch (error) {
+        failure = error;
+        throw error;
+      }
+    };
+  };
+}
+
+/** How the composer text would go out while it is over the size limit. */
+export type ComposerMessageSplit = {
+  /** Messages the text will be sent as; null while within the limit. */
+  parts: number | null;
+  error: SplitChatDocumentError | null;
+};
+
+const COMPOSER_MESSAGE_SPLIT_NONE: ComposerMessageSplit = {
+  parts: null,
+  error: null,
+};
+
+export type ComposerSizeLine = {
+  key: string;
+  options: Record<string, unknown>;
+  tone: 'neutral' | 'notice' | 'error';
+};
+
+/**
+ * The line under the group composer once the text nears the size limit.
+ * Over the limit it says what MessageSizeLimitLip says: how many messages the
+ * text will be sent as, or why it cannot be sent. Null when the over-limit
+ * text fits once its blank lines are trimmed, so it is sent as it is.
+ */
+export function getComposerSizeLine({
+  maximum,
+  maxParts = MAX_SPLIT_MESSAGE_PARTS,
+  size,
+  splitError = null,
+  splitParts = null,
+}: {
+  maximum: number;
+  maxParts?: number;
+  size: number;
+  splitError?: MessageSplitError | null;
+  splitParts?: number | null;
+}): ComposerSizeLine | null {
+  if (size > maximum) {
+    if (splitError === 'too_many_parts') {
+      return {
+        key: 'core:message.error.long_message_too_many_parts',
+        options: { maximum: maxParts },
+        tone: 'error',
+      };
+    }
+    if (splitError === 'unsplittable') {
+      return {
+        key: 'core:message.error.long_message_unsplittable',
+        options: {},
+        tone: 'error',
+      };
+    }
+    if (splitError === 'edit') {
+      return {
+        key: 'core:message.error.edit_message_too_long',
+        options: { maximum },
+        tone: 'error',
+      };
+    }
+    if (splitParts === 1) return null;
+    if (typeof splitParts === 'number' && splitParts > 1) {
+      return {
+        key: 'core:message.generic.long_message_split',
+        options: { count: splitParts },
+        tone: 'notice',
+      };
+    }
+  }
+  return {
+    key: 'core:message.error.message_size',
+    options: { maximum, size, postProcess: 'capitalizeFirstChar' },
+    tone: size > maximum ? 'error' : 'neutral',
+  };
+}
+
 type ReticulumSortableChannelButtonProps = {
   channel: ReticulumGroupChannel;
   dropPosition?: ReticulumDragInsertionPosition;
@@ -1406,6 +1727,10 @@ export const ChatGroup = ({
   const [messages, setMessages] = useState([]);
   const [chatReferences, setChatReferences] = useState({});
   const [isSending, setIsSending] = useState(false);
+  // Only while sendMessage still holds the composer's content. isSending stays
+  // up until the queue has published, long after the composer was cleared;
+  // the discard button must not wait for that.
+  const [isPreparingSend, setIsPreparingSend] = useState(false);
   // React state alone cannot block double-taps / Enter+Send in the same tick.
   const isSendingRef = useRef(false);
   // Blocks identical reply/link payloads from being queued twice in a short window
@@ -1519,6 +1844,19 @@ export const ChatGroup = ({
     );
   }, []);
   const [messageSizeLimitShakeKey, setMessageSizeLimitShakeKey] = useState(0);
+  // How an over-limit text would be sent: as N messages, or not at all. Stays
+  // COMPOSER_MESSAGE_SPLIT_NONE within the limit so typing does not re-render.
+  const [messageSplit, setMessageSplitState] = useState<ComposerMessageSplit>(
+    COMPOSER_MESSAGE_SPLIT_NONE
+  );
+  const setMessageSplit = useCallback((next: ComposerMessageSplit) => {
+    setMessageSplitState((prev) =>
+      prev.parts === next.parts && prev.error === next.error ? prev : next
+    );
+  }, []);
+  // Composer measurements are async (legacy private groups encrypt to
+  // measure); a result is applied only when nothing started later has been.
+  const composerMeasureSeqRef = useRef({ applied: 0, started: 0 });
   const groupNameLabelRef = useRef<HTMLSpanElement | null>(null);
   const [isGroupNameTruncated, setIsGroupNameTruncated] = useState(false);
   const [chatImagesToSave, setChatImagesToSave] = useState([]);
@@ -3626,6 +3964,11 @@ export const ChatGroup = ({
 
   const secretKeyRef = useRef(null);
   const reticulumReadWasActiveRef = useRef(false);
+  // Phone keep-alive runs this page while GO is off screen; treat that like
+  // an inactive panel so nothing arriving then is marked read.
+  const pageVisible = usePageVisible();
+  const pageVisibleRef = useRef(pageVisible);
+  pageVisibleRef.current = pageVisible;
   const lastReticulumReadEntryTokenRef = useRef<number | null>(null);
   const lastReticulumReadChannelKeyRef = useRef<string | null>(null);
   const deferredReticulumUnreadReadKeysRef = useRef(new Set<string>());
@@ -5929,8 +6272,8 @@ export const ChatGroup = ({
   ]);
 
   useEffect(() => {
-    if (!reticulumChatEnabled || !isActive || !selectedGroup) {
-      if (!isActive) {
+    if (!reticulumChatEnabled || !isActive || !pageVisible || !selectedGroup) {
+      if (!isActive || !pageVisible) {
         reticulumReadWasActiveRef.current = false;
       }
       return;
@@ -6023,6 +6366,7 @@ export const ChatGroup = ({
   }, [
     isActive,
     myAddress,
+    pageVisible,
     reticulumReadEntryToken,
     reticulumChatEnabled,
     reticulumChatEvents,
@@ -6032,6 +6376,7 @@ export const ChatGroup = ({
   ]);
 
   const acknowledgeReticulumUnreadMessages = useCallback(() => {
+    if (!pageVisibleRef.current) return;
     const groupId = Number(selectedGroup);
     if (!Number.isInteger(groupId) || groupId <= 0) return;
     const latestVisibleTimestamp = reticulumChatEvents.reduce<number>(
@@ -6090,13 +6435,89 @@ export const ChatGroup = ({
     selectedReticulumChannelId,
   ]);
 
-  const clearEditorContent = () => {
+  // Drops any measurement still running and forgets the split, for when the
+  // composer is emptied.
+  const resetComposerMeasure = () => {
+    const seq = composerMeasureSeqRef.current;
+    seq.started += 1;
+    seq.applied = seq.started;
+    setMessageSplit(COMPOSER_MESSAGE_SPLIT_NONE);
+  };
+
+  // The legacy private-group size rule: the encrypted HTML, plus overhead.
+  const measureEncryptedChatHtml = async (
+    html: string,
+    secretKeyObject: any
+  ): Promise<number> => {
+    const message64 = await objectToBase64(JSON.stringify(html));
+    const encryptSingle: any = await encryptChatMessage(
+      message64,
+      secretKeyObject
+    );
+    return (encryptSingle?.length || 0) + 200;
+  };
+
+  // Sets messageSize, and while over the limit how many messages the text
+  // would be sent as (or why it cannot be), from the editor's current text.
+  const measureComposer = async () => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const seq = composerMeasureSeqRef.current;
+    const token = ++seq.started;
+    try {
+      const encrypted = Boolean(isPrivate && !reticulumChatEnabled);
+      // The group key already loaded, never getSecretKey(): measuring must
+      // not start a key download or drive the group's loading state, e.g.
+      // while a draft is restored mid-switch. Sending fetches the key itself.
+      const secretKeyObject = encrypted ? secretKey : null;
+      if (encrypted && !secretKeyObject) {
+        // No key yet, so nothing can be measured (the composer is hidden
+        // until there is one); do not leave another text's size on screen.
+        if (token <= seq.applied) return;
+        seq.applied = token;
+        setMessageSize(0);
+        setMessageSplit(COMPOSER_MESSAGE_SPLIT_NONE);
+        return;
+      }
+      const doc = editor.getJSON() as ChatDocNode;
+      const html = encrypted ? editor.getHTML() : undefined;
+      const measured = await measureChatGroupComposer({
+        doc,
+        html,
+        encryptedSize: encrypted
+          ? (partHtml) => measureEncryptedChatHtml(partHtml, secretKeyObject)
+          : null,
+        schema: editor.schema,
+      });
+      if (token <= seq.applied) return;
+      seq.applied = token;
+      setMessageSize(measured.size);
+      setMessageSplit(
+        measured.size <= MAX_SIZE_MESSAGE
+          ? COMPOSER_MESSAGE_SPLIT_NONE
+          : measured.error
+            ? { parts: null, error: measured.error }
+            : { parts: measured.parts.length, error: null }
+      );
+    } catch (error) {
+      // calc size error
+    }
+  };
+  const measureComposerRef = useRef(measureComposer);
+  measureComposerRef.current = measureComposer;
+
+  const clearEditorContent = ({ focus = true }: { focus?: boolean } = {}) => {
     if (editorRef.current) {
       setMessageSize(0);
+      resetComposerMeasure();
       setComposerHasText(false);
       // Sending closes the formatting tray and the full-screen composer too.
       setFormattingTrayResetKey((key) => key + 1);
-      editorRef.current.chain().focus().clearContent().run();
+      if (focus) {
+        editorRef.current.chain().focus().clearContent().run();
+      } else {
+        editorRef.current.commands.clearContent();
+      }
       if (myAddress && selectedGroup != null) {
         clearChatDraft(myAddress, groupDraftKey(selectedGroup));
       }
@@ -6182,11 +6603,8 @@ export const ChatGroup = ({
 
   const sendMessage = async () => {
     let ownsSendingState = false;
+    let ownsPreparingSend = false;
     try {
-      if (messageSize > MAX_SIZE_MESSAGE) {
-        setMessageSizeLimitShakeKey((key) => key + 1);
-        return;
-      }
       if (
         reticulumChatEnabled &&
         (isCompressingReticulumImage || isCompressingReticulumGif)
@@ -6252,6 +6670,8 @@ export const ChatGroup = ({
         isSendingRef.current = true;
         setIsSending(true);
         ownsSendingState = true;
+        setIsPreparingSend(true);
+        ownsPreparingSend = true;
         if (reticulumChatEnabled) {
           setFormattingTrayResetKey((key) => key + 1);
         }
@@ -6291,9 +6711,84 @@ export const ChatGroup = ({
             ? '<p></p>'
             : editorRef.current.getJSON()
           : htmlContent;
+        // The document a new text is split from, read together with
+        // htmlContent. Edits are never split.
+        const splittableDoc = (
+          htmlContent && !onEditMessage
+            ? reticulumPlainPayload
+              ? message
+              : editorRef.current.getJSON()
+            : null
+        ) as ChatDocNode | null;
         const secretKeyObject = reticulumPlainPayload
           ? null
           : await getSecretKey(false, true);
+        const composerSchema = editorRef.current.schema;
+        const encryptedSize = reticulumPlainPayload
+          ? null
+          : (partHtml: string) =>
+              measureEncryptedChatHtml(partHtml, secretKeyObject);
+        // Keeps the text in the composer and says why it cannot be sent.
+        const blockTooLong = (
+          size: number,
+          error: SplitChatDocumentError | null
+        ) => {
+          resetComposerMeasure();
+          setMessageSize(size);
+          if (error) setMessageSplit({ parts: null, error });
+          setMessageSizeLimitShakeKey((key) => key + 1);
+        };
+
+        // An edit replaces one message, so it is never split and cannot go
+        // over the limit. Measured now, on what is sent: the throttled
+        // composer size can lag a paste, or be the size of an earlier text.
+        if (onEditMessage) {
+          const editSize = encryptedSize
+            ? await encryptedSize(htmlContent || '')
+            : jsonPayloadSize(message);
+          if (editSize > MAX_SIZE_MESSAGE) {
+            blockTooLong(editSize, null);
+            return;
+          }
+        }
+
+        // A text over the size limit goes out as several consecutive
+        // messages, measured by the composer's own rule.
+        let messageParts: ChatGroupMessagePart[] = [
+          { html: htmlContent, message },
+        ];
+        let splitMeasure: ChatGroupComposerMeasure | null = null;
+        if (splittableDoc) {
+          const doc = splittableDoc;
+          const measured = await measureChatGroupComposer({
+            doc,
+            html: htmlContent,
+            encryptedSize,
+            schema: composerSchema,
+          });
+          if (measured.error) {
+            // Too long even when split: keep the text and show why.
+            blockTooLong(measured.size, measured.error);
+            return;
+          }
+          splitMeasure = measured;
+          if (measured.parts[0] !== doc) {
+            messageParts = buildChatGroupMessageParts({
+              doc,
+              html: htmlContent,
+              parts: measured.parts,
+              plainPayload: reticulumPlainPayload,
+              schema: composerSchema,
+            });
+            if (
+              messageParts.every((part) => !part.html) &&
+              !hasImage &&
+              !hasPendingReticulumFiles &&
+              !deleteImage
+            )
+              return;
+          }
+        }
 
         const chatReference = onEditMessage?.signature;
         const messageExpiryPayload =
@@ -6309,6 +6804,131 @@ export const ChatGroup = ({
               isEdited: chatReference ? true : false,
             }
           : {};
+
+        // What one part sends: its own mentions, its payload, and the string
+        // that goes out (JSON on plain payloads, encrypted otherwise).
+        const buildPart = async (
+          part: ChatGroupMessagePart,
+          partIndex: number,
+          media: { attachments: unknown[]; images: unknown[] }
+        ) => {
+          const partHtml = part.html;
+          const mentionedAddresses = resolveMentionedAddresses(partHtml || '');
+          const mentionTargets = resolveMentionTargets(partHtml || '');
+          const mentionedAddressHashes =
+            await buildMentionAddressHashes(mentionedAddresses);
+          const {
+            otherData,
+            objectMessage,
+            repliedTo: partRepliedTo,
+          } = buildChatGroupPartPayload({
+            attachments: media.attachments,
+            decryptedData: onEditMessage?.decryptedData,
+            images: media.images,
+            isEdit: Boolean(chatReference),
+            mentionedAddresses,
+            mentionTargets,
+            message: part.message,
+            messageExpiryPayload,
+            partIndex,
+            plainPayload: reticulumPlainPayload,
+            publicData,
+            repliedTo,
+            specialId: uid.rnd(),
+          });
+          const encryptSingle: string = reticulumPlainPayload
+            ? JSON.stringify(objectMessage)
+            : ((await encryptChatMessage(
+                (await objectToBase64(objectMessage)) as string,
+                secretKeyObject
+              )) as string);
+          return {
+            encryptSingle,
+            mentionTargets,
+            mentionedAddressHashes,
+            otherData,
+            partHtml,
+            partRepliedTo,
+          };
+        };
+        const buildParts = async (
+          parts: ChatGroupMessagePart[],
+          media: { attachments: unknown[]; images: unknown[] }
+        ) => {
+          const built: Awaited<ReturnType<typeof buildPart>>[] = [];
+          for (let partIndex = 0; partIndex < parts.length; partIndex++) {
+            built.push(await buildPart(parts[partIndex], partIndex, media));
+          }
+          return built;
+        };
+
+        const libraryGifImages = pendingLibraryGif
+          ? [toChatImagePointer(pendingLibraryGif)]
+          : [];
+        // Made up front so the size check below can count the image pointer
+        // the first part will carry before the image is published.
+        const legacyImageIdentifier =
+          chatImagesToSave?.length > 0 && !reticulumChatEnabled
+            ? `grp-q-manager_${isPrivate ? 0 : 1}_group_${selectedGroup}_${uidImages.rnd()}`
+            : null;
+
+        // Legacy groups send every part as an on-chain CHAT transaction, and
+        // Core refuses one with more than MAX_SIZE_MESSAGE bytes of data. The
+        // composer rule counts only the text, so check what each part really
+        // sends, with the reply, image and mentions it carries, and split
+        // tighter where needed, before anything is published.
+        if (splittableDoc && splitMeasure?.parts && !reticulumChatEnabled) {
+          const doc = splittableDoc;
+          const toMessageParts = (parts: ChatDocNode[]) =>
+            buildChatGroupMessageParts({
+              doc,
+              html: htmlContent,
+              parts,
+              plainPayload: reticulumPlainPayload,
+              schema: composerSchema,
+            });
+          // The first part's pointers, as `images` below will be built.
+          const media = {
+            attachments: [],
+            images: libraryGifImages.length
+              ? libraryGifImages
+              : legacyImageIdentifier
+                ? [
+                    {
+                      name: myName,
+                      identifier: legacyImageIdentifier,
+                      service: 'IMAGE',
+                      timestamp: Date.now(),
+                    },
+                  ]
+                : [],
+          };
+          const fitted = await fitChatGroupPartsToWire({
+            build: (parts) => buildParts(toMessageParts(parts), media),
+            parts: splitMeasure.parts,
+            split: (budget) =>
+              measureChatGroupComposer({
+                doc,
+                html: htmlContent,
+                encryptedSize,
+                maxBytes: budget,
+                schema: composerSchema,
+              }),
+            wireSize: (built) => utf8ByteLength(built.encryptSingle || ''),
+          });
+          if (fitted.error) {
+            if (splitMeasure.size > MAX_SIZE_MESSAGE) {
+              blockTooLong(splitMeasure.size, fitted.error);
+              return;
+            }
+            throw new Error(
+              t('core:message.error.long_message_unsplittable', {
+                postProcess: 'capitalizeFirstChar',
+              })
+            );
+          }
+          messageParts = toMessageParts(fitted.parts);
+        }
 
         interface ImageToPublish {
           service: string;
@@ -6371,7 +6991,7 @@ export const ChatGroup = ({
           });
         }
 
-        if (chatImagesToSave?.length > 0 && !reticulumChatEnabled) {
+        if (legacyImageIdentifier) {
           const imageToSave = chatImagesToSave[0];
 
           const base64ToSave = isPrivate
@@ -6379,7 +6999,7 @@ export const ChatGroup = ({
             : imageToSave;
 
           // 1 represents public group, 0 is private
-          const identifier = `grp-q-manager_${isPrivate ? 0 : 1}_group_${selectedGroup}_${uidImages.rnd()}`;
+          const identifier = legacyImageIdentifier;
           imagesToPublish.push({
             service: 'IMAGE',
             identifier,
@@ -6558,9 +7178,6 @@ export const ChatGroup = ({
               )
             : [];
 
-        const libraryGifImages = pendingLibraryGif
-          ? [toChatImagePointer(pendingLibraryGif)]
-          : [];
         const images = libraryGifImages.length
           ? libraryGifImages
           : reticulumImages
@@ -6580,41 +7197,41 @@ export const ChatGroup = ({
                 : onEditMessage?.images || []
               : [];
 
-        const mentionedAddresses = resolveMentionedAddresses(htmlContent || '');
-        const mentionTargets = resolveMentionTargets(htmlContent || '');
-        const mentionedAddressHashes =
-          await buildMentionAddressHashes(mentionedAddresses);
-        const otherData = {
-          repliedTo,
-          ...(onEditMessage?.decryptedData || {}),
-          type: chatReference ? 'edit' : '',
-          specialId: uid.rnd(),
-          images: images,
-          ...(reticulumAttachments.length > 0
-            ? { attachments: reticulumAttachments }
-            : {}),
-          mentionedAddresses,
-          mentionTargets,
-          ...publicData,
-        };
-        const objectMessage = {
-          ...(otherData || {}),
-          [reticulumPlainPayload ? 'messageText' : 'message']: message,
-          ...messageExpiryPayload,
-          version: 3,
-        };
-        const message64: any = await objectToBase64(objectMessage);
+        // One queue item per part, all built before any is queued, so the
+        // parts go out in order and a failure while building queues none.
+        const builtParts = await buildParts(messageParts, {
+          attachments: reticulumAttachments,
+          images,
+        });
+        // A part after one that failed for good fails too, with its reason.
+        const sendAfterEarlierParts = createSplitPartSender(
+          () =>
+            new Error(
+              t('core:message.error.send_failed', {
+                postProcess: 'capitalizeFirstChar',
+              })
+            )
+        );
+        const queuedParts: Array<{
+          messageObj: Record<string, unknown>;
+          sendMessageFunc: () => Promise<any>;
+        }> = [];
+        let lastPartTimestamp = 0;
+        builtParts.forEach((builtPart, partIndex) => {
+          const {
+            encryptSingle,
+            mentionTargets,
+            mentionedAddressHashes,
+            otherData,
+            partHtml,
+            partRepliedTo,
+          } = builtPart;
 
-        const encryptSingle = reticulumPlainPayload
-          ? JSON.stringify(objectMessage)
-          : await encryptChatMessage(message64, secretKeyObject);
-
-        // Reticulum publishes mint a new eventId per call. Guard so queue
-        // retries cannot emit the same logical reply multiple times.
-        let reticulumPublishCompleted = false;
-        const reticulumSendRef: { event?: Record<string, unknown> } = {};
-        const sendMessageFunc = async () => {
-          try {
+          // Reticulum publishes mint a new eventId per call. Guard so queue
+          // retries cannot emit the same logical reply multiple times.
+          let reticulumPublishCompleted = false;
+          const reticulumSendRef: { event?: Record<string, unknown> } = {};
+          const publishPart = async () => {
             if (reticulumChatEnabled) {
               if (reticulumPublishCompleted) {
                 return { success: true, clearQueueOnSuccess: true };
@@ -6623,7 +7240,7 @@ export const ChatGroup = ({
                 encryptedPayload: encryptSingle,
                 eventType: chatReference ? 'edit' : 'message',
                 targetEventId: chatReference || undefined,
-                replyToEventId: repliedTo || undefined,
+                replyToEventId: partRepliedTo || undefined,
                 mentionAddressHashes: mentionedAddressHashes,
                 mentionTargets,
                 sendRef: reticulumSendRef,
@@ -6638,33 +7255,55 @@ export const ChatGroup = ({
               messageText: encryptSingle,
               chatReference,
             });
-          } finally {
-            // Keep the send lock until the queue item finishes so Enter/Send
-            // cannot enqueue the same reply/link again mid-publish.
-            isSendingRef.current = false;
-            setIsSending(false);
-          }
-        };
+          };
+          const sendPart = sendAfterEarlierParts(partIndex, publishPart);
+          const sendMessageFunc = async () => {
+            try {
+              return await sendPart();
+            } finally {
+              // Keep the send lock until the first part's queue item finishes
+              // so Enter/Send cannot enqueue the same reply/link again
+              // mid-publish. Later parts need no lock: the composer is
+              // already cleared and the queue keeps any new send after them.
+              if (partIndex === 0) {
+                isSendingRef.current = false;
+                setIsSending(false);
+              }
+            }
+          };
 
-        // Add the function to the queue
-        const messageObj = {
-          message: {
-            text: htmlContent,
-            // Match confirmed Reticulum rows so reply previews and the main
-            // MessageItem body path both resolve while the send is optimistic.
-            messageText: htmlContent,
-            timestamp: Date.now(),
-            senderName: myName,
-            sender: myAddress,
-            ...(otherData || {}),
-          },
-          chatReference,
-        };
+          // Parts get increasing timestamps so their optimistic rows keep
+          // their order.
+          const partTimestamp =
+            partIndex === 0
+              ? Date.now()
+              : Math.max(Date.now(), lastPartTimestamp + 1);
+          lastPartTimestamp = partTimestamp;
+          const messageObj = {
+            message: {
+              text: partHtml,
+              // Match confirmed Reticulum rows so reply previews and the main
+              // MessageItem body path both resolve while the send is
+              // optimistic.
+              messageText: partHtml,
+              timestamp: partTimestamp,
+              senderName: myName,
+              sender: myAddress,
+              ...(otherData || {}),
+            },
+            chatReference,
+          };
+          queuedParts.push({ messageObj, sendMessageFunc });
+        });
+
         lastSentFingerprintRef.current = {
           key: sendFingerprint,
           at: Date.now(),
         };
-        addToQueue(sendMessageFunc, messageObj, 'chat', reticulumChatQueueId);
+        // Add the functions to the queue, which sends them one after another.
+        queuedParts.forEach(({ messageObj, sendMessageFunc }) => {
+          addToQueue(sendMessageFunc, messageObj, 'chat', reticulumChatQueueId);
+        });
         // Queue owns the sending latch from here.
         ownsSendingState = false;
         if (!onEditMessage) {
@@ -6705,6 +7344,7 @@ export const ChatGroup = ({
         isSendingRef.current = false;
         setIsSending(false);
       }
+      if (ownsPreparingSend) setIsPreparingSend(false);
       resumeAllQueues();
     }
   };
@@ -6717,27 +7357,12 @@ export const ChatGroup = ({
   useEffect(() => {
     if (!editorInstance) return;
 
-    handleUpdateRef.current = throttle(async () => {
-      try {
-        if (isPrivate && !reticulumChatEnabled) {
-          const htmlContent = editorRef.current.getHTML();
-          const message64 = await objectToBase64(JSON.stringify(htmlContent));
-          const secretKeyObject = await getSecretKey(false, true);
-          const encryptSingle = await encryptChatMessage(
-            message64,
-            secretKeyObject
-          );
-          setMessageSize((encryptSingle?.length || 0) + 200);
-        } else {
-          const htmlContent = editorRef.current.getJSON();
-          const message = JSON.stringify(htmlContent);
-          const size = new Blob([message]).size;
-          setMessageSize(size + 300);
-        }
-      } catch (error) {
-        // calc size error
-      }
-    }, 1200);
+    // Size (and, over the limit, the split) by the same rule as sending:
+    // encrypted HTML on legacy private groups, TipTap JSON everywhere else.
+    handleUpdateRef.current = throttle(
+      () => measureComposerRef.current(),
+      1200
+    );
 
     const currentEditor = editorRef.current;
 
@@ -6795,11 +7420,12 @@ export const ChatGroup = ({
         setComposerHasText(
           composerHasSendableText(editorRef.current.getText())
         );
-        try {
-          setMessageSize(new Blob([JSON.stringify(draft)]).size + 300);
-        } catch {
-          /* ignore */
-        }
+        // Measured from the editor, as while typing, so a restored long
+        // draft shows its split notice right away. The previous chat's size
+        // is cleared first so a failed measurement cannot leave it showing.
+        resetComposerMeasure();
+        setMessageSize(0);
+        void measureComposerRef.current();
         // Surface the composer (and the restored text) so the user can keep
         // typing right away, without forcing the keyboard open.
         setIsFocusedParent(true);
@@ -6807,6 +7433,7 @@ export const ChatGroup = ({
       } else {
         editorRef.current.commands.clearContent(true);
         setMessageSize(0);
+        resetComposerMeasure();
         setComposerHasText(false);
       }
       draftContextRef.current = { account: myAddress, key };
@@ -6862,11 +7489,16 @@ export const ChatGroup = ({
     }));
   }, [replyJumpTargetId]);
 
+  // The edited text lands a beat after the edit starts; a discard in between
+  // has to stop it, or it arrives in the emptied composer as a new message.
+  const editLoadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onEdit = useCallback((message) => {
     setOnEditMessage(message);
     setReplyMessage(null);
     setIsFocusedParent(true);
-    setTimeout(() => {
+    if (editLoadTimerRef.current) clearTimeout(editLoadTimerRef.current);
+    editLoadTimerRef.current = setTimeout(() => {
+      editLoadTimerRef.current = null;
       editorRef.current
         ?.chain()
         .focus()
@@ -6876,6 +7508,9 @@ export const ChatGroup = ({
           )
         )
         .run();
+      // setContent emits no update, so measure the edited text now rather
+      // than keep the size of whatever the composer held before.
+      void measureComposerRef.current();
     }, 250);
   }, []);
 
@@ -7327,6 +7962,59 @@ export const ChatGroup = ({
     ]
   );
 
+  const reticulumAdminKeysOpen = Boolean(
+    reticulumAdminAnchorEl || reticulumAdminAnchorPosition
+  );
+  const closeReticulumAdminKeys = useCallback(() => {
+    setReticulumAdminAnchorEl(null);
+    setReticulumAdminAnchorPosition(null);
+  }, []);
+  const reticulumAdminKeysBody = isReticulumChannelAdmin ? (
+    <AdminSpaceInner
+      adminsWithNames={adminsWithNames}
+      compact
+      isOwner={isGroupOwner}
+      selectedGroup={selectedGroup}
+    />
+  ) : (
+    <Typography
+      sx={{
+        color: 'text.secondary',
+        fontSize: 13,
+        p: 2,
+      }}
+    >
+      {t('group:chat_group.admins_area_only')}
+    </Typography>
+  );
+
+  // Android back closes the header popovers and the Admin keys / Files panels
+  // (like their X) before it can leave the group.
+  useAndroidBack(
+    () => {
+      if (reticulumMobileMenuAnchor) {
+        setReticulumMobileMenuAnchor(null);
+        return true;
+      }
+      if (reticulumAdminKeysOpen) {
+        closeReticulumAdminKeys();
+        return true;
+      }
+      if (isOpenQManager === true) {
+        setIsOpenQManager(false);
+        return true;
+      }
+      return false;
+    },
+    {
+      priority: BACK_PRIORITY.overlay,
+      enabled:
+        Boolean(reticulumMobileMenuAnchor) ||
+        reticulumAdminKeysOpen ||
+        isOpenQManager === true,
+    }
+  );
+
   const reticulumSearchOpenRef = useRef(false);
   useEffect(() => {
     reticulumSearchOpenRef.current = reticulumSearchOpen;
@@ -7391,6 +8079,9 @@ export const ChatGroup = ({
 
   useEffect(() => {
     if (!reticulumAdminAnchorEl && !reticulumAdminAnchorPosition) return;
+    // Phones show admin keys as a full-screen panel; it has no outside, and
+    // the publish confirmation it opens must not close it.
+    if (isMobile) return;
 
     const closeAdminPopoverOnOutsidePointerDown = (event: PointerEvent) => {
       const target = event.target as Node;
@@ -7418,7 +8109,7 @@ export const ChatGroup = ({
         closeAdminPopoverOnOutsidePointerDown,
         true
       );
-  }, [reticulumAdminAnchorEl, reticulumAdminAnchorPosition]);
+  }, [isMobile, reticulumAdminAnchorEl, reticulumAdminAnchorPosition]);
 
   const insertImage = useCallback(
     (img) => {
@@ -7480,7 +8171,13 @@ export const ChatGroup = ({
   const addPendingReticulumFile = useCallback(
     async (
       file: File,
-      options: { asAttachment?: boolean; filePathOverride?: string } = {}
+      options: {
+        asAttachment?: boolean;
+        filePathOverride?: string;
+        /** Composer sequence the file was picked under; see insertFiles. */
+        expectedSequence?: number;
+        expectedContext?: string;
+      } = {}
     ) => {
       const isImage =
         file.type?.startsWith('image/') === true &&
@@ -7501,9 +8198,19 @@ export const ChatGroup = ({
         return false;
       }
       const dimensions = isImage ? await getImageFileDimensions(file) : null;
-      const previewUrl = isImage ? URL.createObjectURL(file) : undefined;
       const base64 =
         isImage && !filePath ? await fileToBase64(file) : undefined;
+      // Reading the file can take seconds; a discard or a channel switch in
+      // the meantime has thrown it away.
+      if (
+        options.expectedSequence !== undefined &&
+        (reticulumGifConversionSequenceRef.current !==
+          options.expectedSequence ||
+          reticulumGifConversionContextRef.current !== options.expectedContext)
+      ) {
+        return false;
+      }
+      const previewUrl = isImage ? URL.createObjectURL(file) : undefined;
       setPendingReticulumFiles([
         {
           ...(filePath ? { filePath } : {}),
@@ -7567,8 +8274,14 @@ export const ChatGroup = ({
         (typeof (file as File & { path?: unknown }).path === 'string'
           ? String((file as File & { path?: unknown }).path)
           : '');
+      // The GIF conversion sequence doubles as the composer's: discarding the
+      // message or switching channel bumps it, and a file still being read
+      // when that happens is dropped rather than landing in the new composer.
+      let attachSequence = reticulumGifConversionSequenceRef.current;
+      const attachContext = reticulumGifConversionContextRef.current;
       if (await isReticulumGifFile(file)) {
         const conversionSequence = ++reticulumGifConversionSequenceRef.current;
+        attachSequence = conversionSequence;
         const conversionContext = reticulumGifConversionContextRef.current;
         setIsCompressingReticulumGif(true);
         try {
@@ -7613,6 +8326,14 @@ export const ChatGroup = ({
             setIsCompressingReticulumGif(false);
           }
         }
+        // Conversion failed (phones cannot convert at all), so the GIF goes
+        // out as it is — unless it was discarded while converting.
+        if (
+          reticulumGifConversionSequenceRef.current !== conversionSequence ||
+          reticulumGifConversionContextRef.current !== conversionContext
+        ) {
+          return;
+        }
       }
       if (!isImage && !filePath) {
         setInfoSnack({
@@ -7630,7 +8351,11 @@ export const ChatGroup = ({
         });
         return;
       }
-      await addPendingReticulumFile(file, { filePathOverride: filePath });
+      await addPendingReticulumFile(file, {
+        filePathOverride: filePath,
+        expectedSequence: attachSequence,
+        expectedContext: attachContext,
+      });
     },
     [
       addPendingReticulumFile,
@@ -9116,6 +9841,26 @@ export const ChatGroup = ({
   const reticulumComposerBusy =
     isSending || isCompressingReticulumGif || isCompressingReticulumImage;
 
+  // Over the limit, a new text is sent as several messages (or cannot be, and
+  // says why); an edit is never split. The lip and the line under the editor
+  // both show this.
+  const composerSplitError: MessageSplitError | null =
+    messageSize > MAX_SIZE_MESSAGE
+      ? onEditMessage
+        ? 'edit'
+        : messageSplit.error
+      : null;
+  const composerSplitParts = composerSplitError ? null : messageSplit.parts;
+  const composerSizeLine =
+    messageSize >= MESSAGE_SIZE_WARNING_FROM
+      ? getComposerSizeLine({
+          maximum: MAX_SIZE_MESSAGE,
+          size: messageSize,
+          splitError: composerSplitError,
+          splitParts: composerSplitParts,
+        })
+      : null;
+
   // On phones this cluster is handed to the editor instead of sitting beside
   // it, so the attach/format buttons can tuck underneath it once the message
   // grows and leave the typing area full width.
@@ -9126,9 +9871,36 @@ export const ChatGroup = ({
     Boolean(pendingLibraryGif) ||
     Boolean(onEditMessage);
 
+  // The corner X: everything the composer holds goes, as when an edit is
+  // abandoned — text and saved draft, attachments (and any file still being
+  // read), the reply or edit it belonged to, and the expiry picked for it. The
+  // keyboard stays as it was.
+  const discardComposer = () => {
+    // The message being sent is already on its way.
+    if (isPreparingSend) return;
+    if (editLoadTimerRef.current) {
+      clearTimeout(editLoadTimerRef.current);
+      editLoadTimerRef.current = null;
+    }
+    // Clearing the editor emits no update, so the typing signal would linger.
+    stopReticulumTyping();
+    reticulumGifConversionSequenceRef.current += 1;
+    setIsCompressingReticulumGif(false);
+    setReplyMessage(null);
+    setOnEditMessage(null);
+    setIsDeleteImage(false);
+    setChatImagesToSave([]);
+    setPendingLibraryGif(null);
+    clearPendingReticulumFiles();
+    setReticulumMessageExpiryDurationMs(undefined);
+    clearEditorContent({ focus: false });
+    restoreComposerTyping(editorRef.current);
+  };
+
   // Telegram-style corner cluster: expiry stays a quiet icon and the send
-  // button only shows up once there is something to send. Stacked (expiry over
-  // send) once the composer grows, so the gutter stays one button wide.
+  // button only shows up once there is something to send, with a quiet X to
+  // discard beside it. The X hops over send once the composer grows, so the
+  // outer gutter stays one button wide.
   const renderReticulumMobileComposerActions = ({
     showExpiry,
   }: {
@@ -9169,6 +9941,11 @@ export const ChatGroup = ({
           value={reticulumMessageExpiryDurationMs}
         />
       </Box>
+      <ComposerDiscardButton
+        disabled={isPreparingSend}
+        idle={!reticulumComposerHasContent}
+        onDiscard={discardComposer}
+      />
       {/* Kept mounted while the composer is empty so the rail CSS can fade it
           in and out; unmounting would make it pop. */}
       <CustomButton
@@ -10537,7 +11314,9 @@ export const ChatGroup = ({
                         ? acknowledgeReticulumUnreadMessages
                         : undefined
                     }
-                    reticulumViewActive={isActive}
+                    // Off screen (keep-alive) the open view is not being
+                    // read, so ChatList must not acknowledge unread then.
+                    reticulumViewActive={isActive && pageVisible}
                     reticulumReadEntryToken={reticulumReadEntryToken}
                     reticulumDiscussionReplyCounts={
                       reticulumChatEnabled
@@ -10703,6 +11482,8 @@ export const ChatGroup = ({
                       maximum={MAX_SIZE_MESSAGE}
                       shakeKey={messageSizeLimitShakeKey}
                       size={messageSize}
+                      splitError={composerSplitError}
+                      splitParts={composerSplitParts}
                     />
                   )}
                   <Box
@@ -11092,7 +11873,7 @@ export const ChatGroup = ({
                         }
                       />
                     </ErrorBoundary>
-                    {messageSize >= MESSAGE_SIZE_WARNING_FROM && (
+                    {composerSizeLine && (
                       <Box
                         sx={{
                           display: 'flex',
@@ -11105,16 +11886,14 @@ export const ChatGroup = ({
                           sx={{
                             fontSize: '12px',
                             color:
-                              messageSize > MAX_SIZE_MESSAGE
+                              composerSizeLine.tone === 'error'
                                 ? theme.palette.other.danger
-                                : 'unset',
+                                : composerSizeLine.tone === 'notice'
+                                  ? theme.palette.primary.main
+                                  : 'unset',
                           }}
                         >
-                          {t('core:message.error.message_size', {
-                            maximum: MAX_SIZE_MESSAGE,
-                            size: messageSize,
-                            postProcess: 'capitalizeFirstChar',
-                          })}
+                          {t(composerSizeLine.key, composerSizeLine.options)}
                         </Typography>
                       </Box>
                     )}
@@ -13665,91 +14444,103 @@ export const ChatGroup = ({
         />
       </Popover>
 
-      <Popover
-        anchorEl={reticulumAdminAnchorEl}
-        anchorPosition={
-          reticulumAdminAnchorPosition
-            ? {
-                left: reticulumAdminAnchorPosition.left,
-                top: reticulumAdminAnchorPosition.top,
-              }
-            : undefined
-        }
-        anchorOrigin={{ horizontal: 'center', vertical: 'bottom' }}
-        anchorReference={
-          reticulumAdminAnchorPosition ? 'anchorPosition' : 'anchorEl'
-        }
-        onClose={() => {
-          setReticulumAdminAnchorEl(null);
-          setReticulumAdminAnchorPosition(null);
-        }}
-        open={Boolean(reticulumAdminAnchorEl || reticulumAdminAnchorPosition)}
-        hideBackdrop
-        disableAutoFocus
-        disableEnforceFocus
-        slotProps={{
-          root: { sx: { pointerEvents: 'none' } },
-          paper: {
-            className: 'reticulum-admin-popover-paper',
+      {isMobile ? (
+        // Phones: a full-screen panel with the shared header, like Calendar.
+        <Dialog
+          fullScreen
+          open={reticulumAdminKeysOpen}
+          onClose={closeReticulumAdminKeys}
+          PaperProps={{
             sx: {
-              backgroundColor: `${theme.palette.background.surface} !important`,
-              boxSizing: 'border-box',
-              maxWidth: 'calc(100vw - 24px) !important',
-              minWidth: '0 !important',
-              pointerEvents: 'auto',
-              width: '390px !important',
+              backgroundImage: 'none',
+              bgcolor: 'background.paper',
+              paddingBottom: SAFE_AREA_BOTTOM,
+              paddingTop: SAFE_AREA_TOP,
             },
-          },
-        }}
-        PaperProps={{
-          className: 'reticulum-admin-popover-paper',
-          ref: reticulumAdminPopoverRef,
-          sx: {
-            backgroundColor: `${theme.palette.background.surface} !important`,
-            border: `1px solid ${alpha(theme.palette.divider, 0.82)}`,
-            borderRadius: '10px',
-            boxShadow:
-              theme.palette.mode === 'dark'
-                ? `0 18px 44px ${alpha(theme.palette.common.black, 0.48)}, 0 1px 0 ${alpha(theme.palette.common.white, 0.05)}`
-                : `0 18px 44px ${alpha(theme.palette.common.black, 0.16)}, 0 1px 0 ${alpha(theme.palette.common.white, 0.72)}`,
-            mt: 1,
-            overflow: 'hidden',
-            maxWidth: 'calc(100vw - 24px)',
-            width: '390px !important',
-          },
-        }}
-        transformOrigin={{ horizontal: 'center', vertical: 'top' }}
-      >
-        <Box
-          sx={{
-            backgroundColor: theme.palette.background.surface,
-            boxSizing: 'border-box',
-            position: 'relative',
-            width: '390px',
-            zIndex: 1,
           }}
         >
-          {isReticulumChannelAdmin ? (
-            <AdminSpaceInner
-              adminsWithNames={adminsWithNames}
-              compact
-              isOwner={isGroupOwner}
-              selectedGroup={selectedGroup}
-            />
-          ) : (
-            <Typography
-              sx={{
-                color: 'text.secondary',
-                fontSize: 13,
-                p: 2,
-                width: '390px',
-              }}
-            >
-              This area is available to group admins.
-            </Typography>
-          )}
-        </Box>
-      </Popover>
+          <MobilePanelHeader
+            icon={<SecurityRoundedIcon />}
+            title={t('group:admin_space.title', {
+              postProcess: 'capitalizeFirstChar',
+            })}
+            onClose={closeReticulumAdminKeys}
+          />
+          <Box sx={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
+            {reticulumAdminKeysBody}
+          </Box>
+        </Dialog>
+      ) : (
+        <Popover
+          anchorEl={reticulumAdminAnchorEl}
+          anchorPosition={
+            reticulumAdminAnchorPosition
+              ? {
+                  left: reticulumAdminAnchorPosition.left,
+                  top: reticulumAdminAnchorPosition.top,
+                }
+              : undefined
+          }
+          anchorOrigin={{ horizontal: 'center', vertical: 'bottom' }}
+          anchorReference={
+            reticulumAdminAnchorPosition ? 'anchorPosition' : 'anchorEl'
+          }
+          onClose={() => {
+            setReticulumAdminAnchorEl(null);
+            setReticulumAdminAnchorPosition(null);
+          }}
+          open={Boolean(reticulumAdminAnchorEl || reticulumAdminAnchorPosition)}
+          hideBackdrop
+          disableAutoFocus
+          disableEnforceFocus
+          slotProps={{
+            root: { sx: { pointerEvents: 'none' } },
+            paper: {
+              className: 'reticulum-admin-popover-paper',
+              sx: {
+                backgroundColor: `${theme.palette.background.surface} !important`,
+                boxSizing: 'border-box',
+                maxWidth: 'calc(100vw - 24px) !important',
+                minWidth: '0 !important',
+                pointerEvents: 'auto',
+                width: '390px !important',
+              },
+            },
+          }}
+          PaperProps={{
+            className: 'reticulum-admin-popover-paper',
+            ref: reticulumAdminPopoverRef,
+            sx: {
+              backgroundColor: `${theme.palette.background.surface} !important`,
+              border: `1px solid ${alpha(theme.palette.divider, 0.82)}`,
+              borderRadius: '10px',
+              boxShadow:
+                theme.palette.mode === 'dark'
+                  ? `0 18px 44px ${alpha(theme.palette.common.black, 0.48)}, 0 1px 0 ${alpha(theme.palette.common.white, 0.05)}`
+                  : `0 18px 44px ${alpha(theme.palette.common.black, 0.16)}, 0 1px 0 ${alpha(theme.palette.common.white, 0.72)}`,
+              mt: 1,
+              overflowX: 'hidden',
+              overflowY: 'auto',
+              maxWidth: 'calc(100vw - 24px)',
+              width: '390px !important',
+            },
+          }}
+          transformOrigin={{ horizontal: 'center', vertical: 'top' }}
+        >
+          <Box
+            sx={{
+              backgroundColor: theme.palette.background.surface,
+              boxSizing: 'border-box',
+              position: 'relative',
+              // Follow the paper; a fixed 390px box was clipped on phones.
+              width: '100%',
+              zIndex: 1,
+            }}
+          >
+            {reticulumAdminKeysBody}
+          </Box>
+        </Popover>
+      )}
 
       {(isResizingQManager || isOpenQManager === true) && (
         <Portal>
@@ -13840,8 +14631,12 @@ export const ChatGroup = ({
                   width: '100%',
                   ...(isMobile
                     ? {
-                        // Full-screen on mobile: square edges, keep the
-                        // header clear of the status bar / cutout.
+                        // Full-screen on mobile, like Calendar: square edges,
+                        // the panel colour, header clear of the status bar.
+                        backgroundColor: theme.palette.background.paper,
+                        border: 0,
+                        borderRadius: 0,
+                        boxShadow: 'none',
                         paddingTop: SAFE_AREA_TOP,
                         paddingBottom: SAFE_AREA_BOTTOM,
                       }
@@ -13859,85 +14654,95 @@ export const ChatGroup = ({
                       }),
                 }}
               >
-                <Box
-                  sx={{
-                    alignItems: 'center',
-                    backgroundColor:
-                      theme.palette.mode === 'dark'
-                        ? alpha(theme.palette.background.default, 0.58)
-                        : alpha(theme.palette.background.paper, 0.72),
-                    borderBottom: `1px solid ${alpha(theme.palette.divider, 0.72)}`,
-                    display: 'flex',
-                    flex: `0 0 ${Q_MANAGER_HEADER_HEIGHT}px`,
-                    gap: 1,
-                    height: `${Q_MANAGER_HEADER_HEIGHT}px`,
-                    justifyContent: 'space-between',
-                    padding: '0 8px 0 12px',
-                  }}
-                >
+                {isMobile ? (
+                  <MobilePanelHeader
+                    icon={<FolderRoundedIcon />}
+                    title={t('group:panel.files', {
+                      postProcess: 'capitalizeFirstChar',
+                    })}
+                    onClose={() => setIsOpenQManager(false)}
+                  />
+                ) : (
                   <Box
                     sx={{
                       alignItems: 'center',
+                      backgroundColor:
+                        theme.palette.mode === 'dark'
+                          ? alpha(theme.palette.background.default, 0.58)
+                          : alpha(theme.palette.background.paper, 0.72),
+                      borderBottom: `1px solid ${alpha(theme.palette.divider, 0.72)}`,
                       display: 'flex',
+                      flex: `0 0 ${Q_MANAGER_HEADER_HEIGHT}px`,
                       gap: 1,
-                      minWidth: 0,
+                      height: `${Q_MANAGER_HEADER_HEIGHT}px`,
+                      justifyContent: 'space-between',
+                      padding: '0 8px 0 12px',
                     }}
                   >
                     <Box
-                      aria-hidden
                       sx={{
-                        backgroundColor: theme.palette.primary.main,
-                        borderRadius: '999px',
-                        boxShadow: `0 0 0 3px ${alpha(theme.palette.primary.main, 0.16)}`,
-                        flexShrink: 0,
-                        height: 8,
-                        width: 8,
-                      }}
-                    />
-                    <Typography
-                      noWrap
-                      sx={{
-                        color: theme.palette.text.primary,
-                        fontFamily: 'Inter',
-                        fontSize: '14px',
-                        fontWeight: 700,
+                        alignItems: 'center',
+                        display: 'flex',
+                        gap: 1,
+                        minWidth: 0,
                       }}
                     >
-                      Q-Manager
-                    </Typography>
-                  </Box>
+                      <Box
+                        aria-hidden
+                        sx={{
+                          backgroundColor: theme.palette.primary.main,
+                          borderRadius: '999px',
+                          boxShadow: `0 0 0 3px ${alpha(theme.palette.primary.main, 0.16)}`,
+                          flexShrink: 0,
+                          height: 8,
+                          width: 8,
+                        }}
+                      />
+                      <Typography
+                        noWrap
+                        sx={{
+                          color: theme.palette.text.primary,
+                          fontFamily: 'Inter',
+                          fontSize: '14px',
+                          fontWeight: 700,
+                        }}
+                      >
+                        Q-Manager
+                      </Typography>
+                    </Box>
 
-                  <ButtonBase
-                    onClick={() => {
-                      setIsOpenQManager(false);
-                    }}
-                    sx={{
-                      alignItems: 'center',
-                      borderRadius: '8px',
-                      color: theme.palette.text.secondary,
-                      display: 'inline-flex',
-                      height: 30,
-                      justifyContent: 'center',
-                      transition:
-                        'background-color 0.18s ease, color 0.18s ease',
-                      width: 30,
-                      '&:hover': {
-                        backgroundColor: alpha(
-                          theme.palette.text.primary,
-                          0.08
-                        ),
-                        color: theme.palette.text.primary,
-                      },
-                    }}
-                  >
-                    <CloseIcon
-                      sx={{
-                        color: 'currentColor',
-                        fontSize: 20,
+                    <ButtonBase
+                      onClick={() => {
+                        setIsOpenQManager(false);
                       }}
-                    />
-                  </ButtonBase>
-                </Box>
+                      sx={{
+                        alignItems: 'center',
+                        borderRadius: '8px',
+                        color: theme.palette.text.secondary,
+                        display: 'inline-flex',
+                        height: 30,
+                        justifyContent: 'center',
+                        transition:
+                          'background-color 0.18s ease, color 0.18s ease',
+                        width: 30,
+                        '&:hover': {
+                          backgroundColor: alpha(
+                            theme.palette.text.primary,
+                            0.08
+                          ),
+                          color: theme.palette.text.primary,
+                        },
+                      }}
+                    >
+                      <CloseIcon
+                        sx={{
+                          color: 'currentColor',
+                          fontSize: 20,
+                        }}
+                      />
+                    </ButtonBase>
+                  </Box>
+                )}
 
                 <Box sx={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
                   <AppViewerContainer

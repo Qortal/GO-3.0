@@ -1,4 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useTransition, memo } from 'react';
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import { useTranslation } from 'react-i18next';
 import {
   Box,
   Button,
@@ -76,6 +85,8 @@ import {
   type OpenTab,
 } from './useOpenTabs';
 import { buildTabQortalUrl } from './tabQortalLink';
+import { createBackgroundGesture } from './tabsOverlayBackgroundGesture';
+import { BACK_PRIORITY, useAndroidBack } from '../../utils/androidBack';
 import { filterAppTabsForMobile, isQChatOpenTab } from '../../utils/openQChatTab';
 import { MOBILE_TAB_BAR_HEIGHT_PX } from './MobileTabBar';
 import { MOBILE_TOP_BAR_HEIGHT_PX } from './MobileTopBar';
@@ -423,7 +434,6 @@ const SortableFolderChip = memo(function SortableFolderChip({
   const sortableId = folderDragId(folderId);
   const dropTargetId = folderDropId(folderId);
   const skipClickRef = useRef(false);
-  const wasDraggingRef = useRef(false);
   const {
     attributes,
     listeners,
@@ -437,12 +447,16 @@ const SortableFolderChip = memo(function SortableFolderChip({
   useEffect(() => {
     if (isDragging) {
       skipClickRef.current = true;
-      wasDraggingRef.current = true;
       return;
     }
-    if (wasDraggingRef.current) {
-      wasDraggingRef.current = false;
-    }
+    if (!skipClickRef.current) return;
+    // Swallow only the click that ends the drag. dnd-kit usually eats that
+    // click itself and a touch drag makes none, so a flag left set here
+    // would swallow the next real tap on this folder.
+    const timer = window.setTimeout(() => {
+      skipClickRef.current = false;
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [isDragging]);
 
   const handleClick = () => {
@@ -722,6 +736,7 @@ const SortableTabCard = ({
 
 export const MobileTabsOverlay = ({ open, onClose }: MobileTabsOverlayProps) => {
   const theme = useTheme();
+  const { t } = useTranslation(['core']);
   const isLandscape = useMediaQuery('(orientation: landscape)');
   const { tabs: rawTabs, selectedTab: rawSelectedTab } = useOpenTabs();
   const tabs = useMemo(() => filterAppTabsForMobile(rawTabs), [rawTabs]);
@@ -753,6 +768,17 @@ export const MobileTabsOverlay = ({ open, onClose }: MobileTabsOverlayProps) => 
   const [folderNameEditing, setFolderNameEditing] = useState(false);
   const [tabsEditMode, setTabsEditMode] = useState(false);
   const [importingHubDashboard, setImportingHubDashboard] = useState(false);
+  const [folderPendingDelete, setFolderPendingDelete] = useState<{
+    id: string;
+    name: string;
+    count: number;
+  } | null>(null);
+  // Keeps the dialog text stable while it fades out after a close.
+  const lastFolderPendingDeleteRef = useRef(folderPendingDelete);
+  if (folderPendingDelete) {
+    lastFolderPendingDeleteRef.current = folderPendingDelete;
+  }
+  const folderDeleteText = folderPendingDelete ?? lastFolderPendingDeleteRef.current;
   const [overlayMounted, setOverlayMounted] = useState(false);
   const folderHeaderInputRef = useRef<HTMLInputElement>(null);
   const skipFolderBlurCommitRef = useRef(false);
@@ -761,7 +787,7 @@ export const MobileTabsOverlay = ({ open, onClose }: MobileTabsOverlayProps) => 
   const dragEndedRef = useRef(false);
   const tabsRef = useRef(tabs);
   const tabsPanelRef = useRef<HTMLDivElement | null>(null);
-  const [, startFolderTransition] = useTransition();
+  const tabsListRef = useRef<HTMLDivElement | null>(null);
 
   tabsRef.current = tabs;
 
@@ -799,42 +825,13 @@ export const MobileTabsOverlay = ({ open, onClose }: MobileTabsOverlayProps) => 
     return map;
   }, [org.folders, org.organization.savedTabs, tabsByKey]);
 
-  const visibleTabs = useMemo(() => {
-    const seenKeys = new Set<string>();
-    const result: OpenTab[] = [];
-
-    for (const tab of tabs) {
-      const key = getOpenTabKey(tab);
-      seenKeys.add(key);
-      result.push(tab);
-    }
-
-    const foldersToAppend = selectedFolderId
-      ? org.folders.filter((folder) => folder.id === selectedFolderId)
-      : [];
-
-    for (const folder of foldersToAppend) {
-      for (const key of folder.tabKeys) {
-        if (seenKeys.has(key)) continue;
-        const resolved = resolveFolderTab(
-          key,
-          undefined,
-          org.organization.savedTabs
-        );
-        if (resolved) {
-          seenKeys.add(key);
-          result.push(resolved);
-        }
-      }
-    }
-
-    return result;
-  }, [
-    org.folders,
-    org.organization.savedTabs,
-    selectedFolderId,
-    tabs,
-  ]);
+  // Root shows the open tabs; a folder shows exactly its own apps in folder
+  // order, open ones live and closed ones as saved shells.
+  const visibleTabs = useMemo(
+    () =>
+      selectedFolder ? folderTabsMap.get(selectedFolder.id) ?? [] : tabs,
+    [folderTabsMap, selectedFolder, tabs]
+  );
 
   const sortableTabIds = useMemo(
     () => visibleTabs.map((tab) => tabDragId(tab)),
@@ -929,6 +926,17 @@ export const MobileTabsOverlay = ({ open, onClose }: MobileTabsOverlayProps) => 
     if (open) setOverlayMounted(true);
   }, [open]);
 
+  const wasOpenRef = useRef(open);
+  useLayoutEffect(() => {
+    const justOpened = open && !wasOpenRef.current;
+    wasOpenRef.current = open;
+    if (!justOpened || !selectedFolder) return;
+    const activeKey = selectedTab ? getOpenTabKey(selectedTab) : null;
+    if (!activeKey || !selectedFolder.tabKeys.includes(activeKey)) {
+      setSelectedFolderId(null);
+    }
+  }, [open, selectedFolder, selectedTab]);
+
   useEffect(() => {
     if (!open) return;
     if (detailsOpen || tabOptionsOpen || renameOpen || addressOpen) return;
@@ -938,35 +946,39 @@ export const MobileTabsOverlay = ({ open, onClose }: MobileTabsOverlayProps) => 
     // touchmove would otherwise background-close the overlay mid-drag.
     if (tabsEditMode) return;
 
-    const panel = tabsPanelRef.current;
     const isInsideTabsPanel = (target: EventTarget | null) =>
-      target instanceof Node && Boolean(panel?.contains(target));
+      target instanceof Node &&
+      Boolean(tabsPanelRef.current?.contains(target));
 
     const isInsideModal = (target: EventTarget | null) =>
       target instanceof Element &&
       Boolean(target.closest('.MuiDialog-root, .MuiModal-root'));
 
-    const closeIfBackgroundInteraction = (event: Event) => {
-      if (isInsideTabsPanel(event.target) || isInsideModal(event.target)) {
-        return;
-      }
-      onClose();
-    };
+    // Touching the app behind closes the panel, except a swipe from just
+    // below a long list, which scrolls the list (see the helper).
+    const gesture = createBackgroundGesture({
+      getList: () => tabsListRef.current,
+      getPanel: () => tabsPanelRef.current,
+      isExempt: (target) => isInsideTabsPanel(target) || isInsideModal(target),
+      onClose,
+    });
 
-    document.addEventListener('scroll', closeIfBackgroundInteraction, true);
-    document.addEventListener('touchmove', closeIfBackgroundInteraction, {
-      capture: true,
-      passive: true,
-    });
-    document.addEventListener('wheel', closeIfBackgroundInteraction, {
-      capture: true,
-      passive: true,
-    });
+    // No 'scroll' listener: it also fires for programmatic scrolls, such as
+    // a chat behind the panel following a new message, and closed the
+    // overlay with no input at all.
+    const options = { capture: true, passive: true };
+    document.addEventListener('touchstart', gesture.onTouchStart, options);
+    document.addEventListener('touchmove', gesture.onTouchMove, options);
+    document.addEventListener('touchend', gesture.onTouchEnd, options);
+    document.addEventListener('touchcancel', gesture.onTouchEnd, options);
+    document.addEventListener('wheel', gesture.onWheel, options);
 
     return () => {
-      document.removeEventListener('scroll', closeIfBackgroundInteraction, true);
-      document.removeEventListener('touchmove', closeIfBackgroundInteraction, true);
-      document.removeEventListener('wheel', closeIfBackgroundInteraction, true);
+      document.removeEventListener('touchstart', gesture.onTouchStart, true);
+      document.removeEventListener('touchmove', gesture.onTouchMove, true);
+      document.removeEventListener('touchend', gesture.onTouchEnd, true);
+      document.removeEventListener('touchcancel', gesture.onTouchEnd, true);
+      document.removeEventListener('wheel', gesture.onWheel, true);
     };
   }, [
     addressOpen,
@@ -984,6 +996,11 @@ export const MobileTabsOverlay = ({ open, onClose }: MobileTabsOverlayProps) => 
     if (open) return;
     setTabsEditMode(false);
     dismissFolderNameEdit(true);
+    setDetailsOpen(false);
+    setTabOptionsOpen(false);
+    setRenameOpen(false);
+    setAddressOpen(false);
+    setFolderPendingDelete(null);
   }, [dismissFolderNameEdit, open]);
 
   const toggleTabsEditMode = useCallback(() => {
@@ -1015,12 +1032,13 @@ export const MobileTabsOverlay = ({ open, onClose }: MobileTabsOverlayProps) => 
     </IconButton>
   );
 
+  // An urgent update on purpose: a folder holds at most a few dozen cards,
+  // and a transition here left the tap without any visible response whenever
+  // other work kept the transition lanes waiting.
   const selectFolder = useCallback((folderId: string | null) => {
     dismissFolderNameEdit(true);
-    startFolderTransition(() => {
-      setSelectedFolderId(folderId);
-    });
-  }, [dismissFolderNameEdit, startFolderTransition]);
+    setSelectedFolderId(folderId);
+  }, [dismissFolderNameEdit]);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 10 } }),
@@ -1129,6 +1147,22 @@ export const MobileTabsOverlay = ({ open, onClose }: MobileTabsOverlayProps) => 
       showRemovalSnack(`Folder "${name}" removed`);
     },
     [org, selectedFolderId, showRemovalSnack]
+  );
+
+  // A folder with apps in it asks first: deleting it also forgets the saved
+  // apps inside, and the × sits on a small corner of a draggable chip.
+  const requestTrashFolder = useCallback(
+    (folderId: string) => {
+      const folder = org.folders.find((item) => item.id === folderId);
+      if (!folder) return;
+      const count = folderTabsMap.get(folderId)?.length ?? 0;
+      if (count === 0) {
+        void handleTrashFolder(folderId);
+        return;
+      }
+      setFolderPendingDelete({ id: folderId, name: folder.name, count });
+    },
+    [folderTabsMap, handleTrashFolder, org.folders]
   );
 
   const handleDragStart = (event: DragStartEvent) => {
@@ -1341,26 +1375,82 @@ export const MobileTabsOverlay = ({ open, onClose }: MobileTabsOverlayProps) => 
     closeTabOptions();
   };
 
+  // These dialogs act on actionTab, so only the options sheet closes here;
+  // closeTabOptions() would clear the tab and leave Save with nothing to do.
   const openRenameDialog = () => {
     if (!actionTab) return;
     setRenameValue(org.getTabTitle(actionTab));
     setRenameOpen(true);
-    closeTabOptions();
+    setTabOptionsOpen(false);
   };
 
   const openAddressDialog = () => {
     if (!actionTab || actionTab.internal) return;
     setAddressValue(buildTabQortalUrl(actionTab));
     setAddressOpen(true);
-    closeTabOptions();
+    setTabOptionsOpen(false);
+  };
+
+  const closeRenameDialog = () => {
+    setRenameOpen(false);
+    setActionTab(null);
+  };
+
+  const closeAddressDialog = () => {
+    setAddressOpen(false);
+    setActionTab(null);
   };
 
   const saveFolderHeaderName = () => {
     void commitFolderHeaderName();
   };
 
+  // Android back unwinds the overlay one layer at a time: a dialog, folder
+  // name editing, edit mode, then the open folder. Only after that does
+  // App's overlay handler close the panel.
+  useAndroidBack(
+    () => {
+      if (folderPendingDelete) {
+        setFolderPendingDelete(null);
+        return true;
+      }
+      if (renameOpen) {
+        closeRenameDialog();
+        return true;
+      }
+      if (addressOpen) {
+        closeAddressDialog();
+        return true;
+      }
+      if (tabOptionsOpen) {
+        closeTabOptions();
+        return true;
+      }
+      if (detailsOpen) {
+        closeTabDetails();
+        return true;
+      }
+      if (!open) return false;
+      if (folderNameEditing) {
+        dismissFolderNameEdit(true);
+        return true;
+      }
+      if (tabsEditMode) {
+        toggleTabsEditMode();
+        return true;
+      }
+      if (selectedFolder) {
+        selectFolder(null);
+        return true;
+      }
+      return false;
+    },
+    { priority: BACK_PRIORITY.overlay + 5 }
+  );
+
   const tabsPanelTop = `calc(${MOBILE_TOP_BAR_HEIGHT_PX}px + ${SAFE_AREA_TOP})`;
-  const tabsPanelMaxHeight = `calc(100dvh - ${MOBILE_TOP_BAR_HEIGHT_PX}px - ${SAFE_AREA_TOP} - ${MOBILE_TAB_BAR_HEIGHT_PX}px - ${SAFE_AREA_BOTTOM} - 24px)`;
+  // In landscape the bottom tab bar is hidden, so its height is not reserved.
+  const tabsPanelMaxHeight = `calc(100dvh - ${MOBILE_TOP_BAR_HEIGHT_PX}px - ${SAFE_AREA_TOP} - ${isLandscape ? 0 : MOBILE_TAB_BAR_HEIGHT_PX}px - ${SAFE_AREA_BOTTOM} - 24px)`;
 
   return (
     <>
@@ -1525,7 +1615,7 @@ export const MobileTabsOverlay = ({ open, onClose }: MobileTabsOverlayProps) => 
               </Typography>
             )}
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexShrink: 0 }}>
-              {tabs.length > 0 ? (
+              {tabs.length > 0 && !selectedFolder ? (
                 <ButtonBase
                   aria-label="Close all tabs"
                   onClick={(event) => {
@@ -1648,10 +1738,13 @@ export const MobileTabsOverlay = ({ open, onClose }: MobileTabsOverlayProps) => 
                           folderId={folder.id}
                           getTitle={org.getTabTitle}
                           name={folder.name}
-                          onRemove={() => void handleTrashFolder(folder.id)}
+                          onRemove={() => requestTrashFolder(folder.id)}
                           onSelect={() => {
                             if (dragEndedRef.current) return;
-                            selectFolder(folder.id);
+                            // Tapping the open folder again goes back to all tabs.
+                            selectFolder(
+                              selectedFolder?.id === folder.id ? null : folder.id
+                            );
                           }}
                           selected={selectedFolderId === folder.id}
                           tabs={folderTabsMap.get(folder.id) || []}
@@ -1683,6 +1776,7 @@ export const MobileTabsOverlay = ({ open, onClose }: MobileTabsOverlayProps) => 
           )}
 
           <Box
+            ref={tabsListRef}
             sx={{
               flex: 1,
               minHeight: 0,
@@ -1693,28 +1787,85 @@ export const MobileTabsOverlay = ({ open, onClose }: MobileTabsOverlayProps) => 
               WebkitOverflowScrolling: 'touch',
             }}
           >
-            {visibleTabs.length === 0 ? (
-              <Box
+            {tabsEditMode && canDragTabs && visibleTabs.length > 0 ? (
+              <Typography
                 sx={{
-                  display: 'flex',
-                  flexDirection: 'column',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: 1,
-                  opacity: 0.7,
-                  py: 2.5,
+                  fontSize: 12,
+                  mb: 1.25,
+                  opacity: 0.65,
+                  textAlign: 'center',
                 }}
               >
-                <AppsRoundedIcon sx={{ fontSize: 48 }} />
-                <Typography sx={{ fontSize: 14 }}>No open tabs yet</Typography>
-                {tabsEditMode && canDragTabs && (
-                  <Typography sx={{ fontSize: 12, opacity: 0.75, px: 2, textAlign: 'center' }}>
-                    {canReorderFolderTabs
-                      ? 'Drag apps to reorder or tap × to remove'
-                      : 'Drag apps onto folders, tap × to remove, or drag folders to reorder'}
+                {canReorderFolderTabs
+                  ? t('core:tabs_overlay.edit_hint_folder', {
+                      postProcess: 'capitalizeFirstChar',
+                    })
+                  : t('core:tabs_overlay.edit_hint_root', {
+                      postProcess: 'capitalizeFirstChar',
+                    })}
+              </Typography>
+            ) : null}
+            {visibleTabs.length === 0 ? (
+              selectedFolder ? (
+                <Box
+                  sx={{
+                    alignItems: 'center',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 0.75,
+                    opacity: 0.7,
+                    px: 2,
+                    py: 2.5,
+                    textAlign: 'center',
+                  }}
+                >
+                  <Typography sx={{ fontSize: 14 }}>
+                    {t('core:tabs_overlay.folder_empty', {
+                      postProcess: 'capitalizeFirstChar',
+                    })}
                   </Typography>
-                )}
-              </Box>
+                  <Typography sx={{ fontSize: 12, opacity: 0.8 }}>
+                    {t('core:tabs_overlay.folder_empty_hint', {
+                      postProcess: 'capitalizeFirstChar',
+                    })}
+                  </Typography>
+                </Box>
+              ) : org.folders.length > 0 ? (
+                // Folders are right above: a big "nothing here" would read as
+                // if the saved apps were gone.
+                <Typography
+                  sx={{
+                    fontSize: 13,
+                    opacity: 0.65,
+                    px: 2,
+                    py: 1.5,
+                    textAlign: 'center',
+                  }}
+                >
+                  {t('core:tabs_overlay.no_open_tabs_with_folders', {
+                    postProcess: 'capitalizeFirstChar',
+                  })}
+                </Typography>
+              ) : (
+                <Box
+                  sx={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 1,
+                    opacity: 0.7,
+                    py: 2.5,
+                  }}
+                >
+                  <AppsRoundedIcon sx={{ fontSize: 48 }} />
+                  <Typography sx={{ fontSize: 14 }}>
+                    {t('core:tabs_overlay.no_open_tabs', {
+                      postProcess: 'capitalizeFirstChar',
+                    })}
+                  </Typography>
+                </Box>
+              )
             ) : (
               <SortableContext
                 items={sortableTabIds}
@@ -1791,15 +1942,11 @@ export const MobileTabsOverlay = ({ open, onClose }: MobileTabsOverlayProps) => 
           </DndContext>
           </Box>
             </Box>
+            {/* A swipe here is handled by the document listeners above, which
+                scroll a long list instead of closing; a tap closes. */}
             <Box
               aria-label="Close tabs"
               onClick={onClose}
-              onTouchMove={() => {
-                // Don't close while arranging tabs: a drag toward a folder can
-                // move the finger into this backdrop before the drop lands.
-                if (tabsEditMode || draggedTab || draggedFolderId) return;
-                onClose();
-              }}
               sx={{
                 flex: 1,
                 minHeight: 0,
@@ -1858,8 +2005,46 @@ export const MobileTabsOverlay = ({ open, onClose }: MobileTabsOverlayProps) => 
       />
 
       <Dialog
+        open={Boolean(folderPendingDelete)}
+        onClose={() => setFolderPendingDelete(null)}
+        fullWidth
+        maxWidth="xs"
+        sx={{ zIndex: MOBILE_TABS_DIALOG_Z }}
+      >
+        <DialogTitle>
+          {t('core:tabs_overlay.delete_folder_title', {
+            name: folderDeleteText?.name ?? '',
+            postProcess: 'capitalizeFirstChar',
+          })}
+        </DialogTitle>
+        <DialogContent>
+          <Typography sx={{ fontSize: 14, opacity: 0.8 }}>
+            {t('core:tabs_overlay.delete_folder_body', {
+              count: folderDeleteText?.count ?? 0,
+              postProcess: 'capitalizeFirstChar',
+            })}
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setFolderPendingDelete(null)}>
+            {t('core:action.cancel', { postProcess: 'capitalizeFirstChar' })}
+          </Button>
+          <Button
+            color="error"
+            onClick={() => {
+              const pending = folderPendingDelete;
+              setFolderPendingDelete(null);
+              if (pending) void handleTrashFolder(pending.id);
+            }}
+          >
+            {t('core:action.delete', { postProcess: 'capitalizeFirstChar' })}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
         open={renameOpen}
-        onClose={() => setRenameOpen(false)}
+        onClose={closeRenameDialog}
         fullWidth
         maxWidth="xs"
         sx={{
@@ -1881,7 +2066,7 @@ export const MobileTabsOverlay = ({ open, onClose }: MobileTabsOverlayProps) => 
           />
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setRenameOpen(false)}>Cancel</Button>
+          <Button onClick={closeRenameDialog}>Cancel</Button>
           <Button
             onClick={() => {
               if (actionTab) void org.renameTab(actionTab, renameValue);
@@ -1896,7 +2081,7 @@ export const MobileTabsOverlay = ({ open, onClose }: MobileTabsOverlayProps) => 
 
       <Dialog
         open={addressOpen}
-        onClose={() => setAddressOpen(false)}
+        onClose={closeAddressDialog}
         fullWidth
         maxWidth="sm"
         sx={{
@@ -1919,7 +2104,7 @@ export const MobileTabsOverlay = ({ open, onClose }: MobileTabsOverlayProps) => 
           />
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setAddressOpen(false)}>Cancel</Button>
+          <Button onClick={closeAddressDialog}>Cancel</Button>
           <Button
             onClick={() => {
               if (!actionTab) return;

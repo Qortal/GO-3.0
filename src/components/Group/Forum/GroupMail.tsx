@@ -58,6 +58,7 @@ import { hasInvisibleCharacters } from '../../../utils/hasInvisibleCharacters';
 const filterOptions = ['Recently active', 'Newest', 'Oldest'];
 import CheckIcon from '@mui/icons-material/Check';
 import { TIME_MINUTES_2_IN_MILLISECONDS } from '../../../constants/constants';
+import { BACK_PRIORITY, useAndroidBack } from '../../../utils/androidBack';
 export const threadIdentifier = 'DOCUMENT';
 
 export const GroupMail = ({
@@ -417,6 +418,19 @@ export const GroupMail = ({
   const closeThread = useCallback(() => {
     setCurrentThread(null);
   }, []);
+
+  // On phones back leaves Threads for the chat (its X does the same); an open
+  // thread sits on top of the list, so back returns to the list first.
+  useAndroidBack(
+    () => {
+      closeThread();
+      return true;
+    },
+    {
+      priority: BACK_PRIORITY.sheet + 1,
+      enabled: Boolean(currentThread) && !hide,
+    }
+  );
 
   const getGroupMembers = useCallback(async (groupNumber: string) => {
     try {

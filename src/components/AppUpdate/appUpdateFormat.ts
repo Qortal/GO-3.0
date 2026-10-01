@@ -1,3 +1,4 @@
+import type { TFunction } from 'i18next';
 import type { AppUpdatePhase } from '../../appUpdate/appUpdateAtoms';
 
 export const formatUpdateSize = (bytes: number): string => {
@@ -7,30 +8,46 @@ export const formatUpdateSize = (bytes: number): string => {
   return `${Math.max(1, Math.round(bytes / 1024))} KB`;
 };
 
-export const formatUpdateDate = (timestamp: number): string => {
+/**
+ * "published 3 days ago" in the reader's language. The relative part comes
+ * from Intl, which already knows each language's plural forms.
+ */
+export const formatUpdateDate = (
+  timestamp: number,
+  t: TFunction,
+  language?: string
+): string => {
   if (!timestamp) return '';
-  const published = new Date(timestamp);
-  const days = Math.floor((Date.now() - timestamp) / 86_400_000);
-  if (days <= 0) return 'published today';
-  if (days === 1) return 'published yesterday';
-  if (days < 7) return `published ${days} days ago`;
-  return `published ${published.toLocaleDateString()}`;
+  const days = Math.max(0, Math.floor((Date.now() - timestamp) / 86_400_000));
+  let when: string;
+  if (days < 7) {
+    try {
+      when = new Intl.RelativeTimeFormat(language || undefined, {
+        numeric: 'auto',
+      }).format(-days, 'day');
+    } catch {
+      when = new Date(timestamp).toLocaleDateString();
+    }
+  } else {
+    when = new Date(timestamp).toLocaleDateString(language || undefined);
+  }
+  return t('core:go_updates.published_when', { when });
 };
 
-/** One line that says where the update is, wherever it is shown. */
-export const updateHeadline = (phase: AppUpdatePhase): string => {
+/** One line that says where an install is, wherever it is shown. */
+export const updateHeadline = (phase: AppUpdatePhase, t: TFunction): string => {
   switch (phase) {
     case 'preparing':
-      return 'Fetching update';
+      return t('core:go_updates.job.fetching');
     case 'downloading':
-      return 'Downloading update';
+      return t('core:go_updates.job.downloading');
     case 'installing':
-      return 'Ready to install';
+      return t('core:go_updates.job.ready');
     case 'needs-permission':
-      return 'Permission needed';
+      return t('core:go_updates.job.permission');
     case 'error':
-      return 'Update failed';
+      return t('core:go_updates.job.failed');
     default:
-      return 'Update available';
+      return '';
   }
 };

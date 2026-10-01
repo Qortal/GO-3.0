@@ -33,6 +33,27 @@
     "wait_until_ready": "wait until the discussion is ready"
   },
   "dm": {
+    "delivery": {
+      "delivered": {
+        "hint": "Saaja seade küsis seda ja see saadeti.",
+        "label": "kohale toimetatud"
+      },
+      "on_other_device": {
+        "hint": "Sinu teisel seadmel on koopia ja see võib sõnumi saata, kui saaja on võrgus. Kohaletoimetamine pole kinnitatud.",
+        "label": "sinu teises seadmes"
+      },
+      "only_on_this_device": {
+        "label": "ainult selles seadmes"
+      },
+      "only_on_this_phone": {
+        "hint": "Pole veel saadetud. Saatmist proovitakse automaatselt uuesti.",
+        "label": "ainult selles telefonis"
+      },
+      "sending": {
+        "hint": "Proovin praegu saajani jõuda.",
+        "label": "saatmine"
+      }
+    },
     "required_for_attachments": "Otsemanuste jaoks on vajalik Reticulumi otsevestlus"
   },
   "event_preview": {
@@ -253,6 +274,50 @@
       },
       "title": "Teksti suurus"
     }
+  },
+  "status_badge": {
+    "copy_diagnostics": "Kopeeri diagnostika",
+    "copy_diagnostics_collecting": "Kogumine…",
+    "copy_diagnostics_copied": "Kopeeritud",
+    "copy_diagnostics_hint": "Kopeeri tekst või salvesta see failina ja saada see koos oma vestluse probleemi teatega.",
+    "help": {
+      "chat_engine": {
+        "body": "Kas kohalik vestluse andmebaas ja worker on valmis. Roheline märk näitab raadiot; vestluste laadimiseks ja saatmiseks on vaja ka seda mootorit. Kui vestlus ei tööta, puuduta esmalt allpool „{{action}}“ ja kleebi tekst oma teatesse. ready = korras. starting = alles käivitub, koos seni kulunud ajaga; kui see jääb nii kauemaks kui minutiks, on üks võimalik põhjus ilma JIT-ita töötav WebView. failed = viga on näidatud allpool. idle = käivitamist pole veel palutud (vestlus väljas või pole sisse logitud).",
+        "title": "Vestlusmootor"
+      },
+      "hubs": {
+        "body": "Mitu jaoturiühendust on praegu üleval. Need on TCP-ühendused kogukonna jaoturitega. 0 tähendab, et sa pole veel mesh-võrgus. 2 on tavaline ja terve.",
+        "title": "Jaoturid"
+      },
+      "ifac": {
+        "body": "Interface Access Code'i suurus. See on ühine võrgufilter, mis tuletatakse mesh-võrgu nimest. 16 B tähendab, et oled nimega Qortali võrgus. 0 B tähendab, et liides on avatud / filtreerimata.",
+        "title": "IFAC"
+      },
+      "known_paths": {
+        "body": "Mitme sihtkohani Reticulum praegu marsruuti teab. Iga teadaanne õpetab telefonile tee mõne identiteedini. Paarsada on hõivatud mesh-võrgus tavaline. See ei ole reaalajas vestlus.",
+        "title": "Teadaolevad teed"
+      },
+      "network_name": {
+        "body": "Reticulumi mesh-võrk, millega see telefon liitus. Qortali avalik mesh-võrk on qortal-hub. Teistsugune nimi tähendab, et oled teises võrgus ega näe neid partnereid.",
+        "title": "Võrgu nimi"
+      },
+      "online_accounts": {
+        "body": "Mitu Qortali kontot see telefon praegu mesh-võrgus kohalolevana näeb. Sama arv mis „Avaleht“ all. See ei ole jaoturite ega Reticulumi sõlmede arv.",
+        "title": "Võrgus olevad kontod"
+      },
+      "received": {
+        "body": "Andmete koguhulk, mille see telefon on jaoturitelt vastu võtnud alates Reticulumi käivitamisest selles seansis. See nullitakse, kui virn taaskäivitub, mitte siis, kui sulged vestluse.",
+        "title": "Vastu võetud"
+      },
+      "sent": {
+        "body": "Andmete koguhulk, mille see telefon on jaoturitele saatnud alates Reticulumi käivitamisest selles seansis. See nullitakse, kui virn taaskäivitub, mitte siis, kui sulged vestluse.",
+        "title": "Saadetud"
+      }
+    },
+    "save_diagnostics": "Salvesta .md-failina",
+    "save_diagnostics_failed": "Faili salvestamine ebaõnnestus: {{error}}",
+    "save_diagnostics_saved": "Salvestatud",
+    "save_diagnostics_saved_to": "Salvestatud asukohta {{location}}"
   },
   "user_card": {
     "address_copied": "aadress kopeeritud",
