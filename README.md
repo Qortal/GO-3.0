@@ -8,7 +8,7 @@ Reticulum — plus a mobile-first UI, OS notifications, biometric login, and bat
 background behavior.
 
 **Repository:** https://gitea.qortal.link/simon/GO-3.0  
-**Current APK:** GO 3.0 **v0.0.12** (`versionName` 0.0.12, `versionCode` 15) — shown in-app as **GO version** (Core & settings). Chat engine matches Hub v3.0.3.
+**Current APK:** GO 3.0 **v0.0.14** (`versionName` 0.0.14, `versionCode` 17), the first release (non-debuggable) build — shown in-app as **GO version** (Core & settings). Chat engine matches Hub v3.0.3.
 
 > **For Hub developers**
 >
@@ -101,10 +101,10 @@ transfer Resources.
 
 ---
 
-## Since the last Gitea push (v0.0.1 → v0.0.6)
+## Release history
 
-Gitea `main` was last updated **2026-08-09** at `0bb0c74a` (v0.0.1 rebrand). Field
-builds **v0.0.2–v0.0.6** were published to Q-Share. Details are in
+Every field build is published on Q-Share (Q-Share+ from v0.0.13) under the name
+`GO 3.0`, and the in-app updater offers it from there. Details are in
 [`CHANGELOG.md`](CHANGELOG.md).
 
 | Version | What landed |
@@ -120,6 +120,8 @@ builds **v0.0.2–v0.0.6** were published to Q-Share. Details are in
 | **v0.0.10** | Battery (one Reticulum stack, phone as leaf, idle timers), GrapheneOS chat, group/Saved Messages sync, multiple saved private nodes |
 | **v0.0.11** | Notification sync with Hub, in-app file viewer, Torq posting from Home, upload while compressing, attachment fixes, Saved Messages after restart, safer foreign-coin keys |
 | **v0.0.12** | Q-Apps library: truthful Open/Download, Featured top-rated Community and category apps with gold stars, best rated first, phone list layout; chat diagnostics and send-failure reasons; download progress and saved files in the bell, notification history; Tabs and library tabs open again; swipe away notifications; saving on Android 8/9 |
+| **v0.0.13** | Background sync (Off / While charging / Always), DMs handed to your own Hub, DM delivery status, honest status notification, 7-day DM retries, GrapheneOS group-chat fix, Updates screen via Q-Share+ |
+| **v0.0.14** | First release (non-debuggable) build: fast login on GrapheneOS, one key derivation per unlock, chat starts after login, node-check timeouts, unlock timings in diagnostics, bottom bar hides while typing, faster Qortino offline assistant |
 
 ---
 
