@@ -1010,6 +1010,22 @@ export function installMobileReticulumChat(): void {
   for (const method of INVOKE_METHODS) {
     api[method] = (...args: unknown[]) => rpc(method, args);
   }
+  // An engine that is not running holds no DM registrations or account
+  // runtime state, so clearing them must not boot it (desktop answers the
+  // same way without a manager). The App-level registration hook clears with
+  // `[]` on the lock screen, and Back from the unlock screen runs the logout
+  // cleanup; booting the worker and the Python bridge there starves the
+  // biometric prompt and the wallet decrypt.
+  api.setLocalDmAddresses = (...args: unknown[]) => {
+    const [addresses] = args;
+    const clearing = !Array.isArray(addresses) || addresses.length === 0;
+    if (clearing && !startPromise) return Promise.resolve({ success: true });
+    return rpc('setLocalDmAddresses', args);
+  };
+  api.clearLocalAccountState = () =>
+    startPromise
+      ? rpc('clearLocalAccountState', [])
+      : Promise.resolve({ success: true });
   // Diagnostics (read-only): self-DM state as the engine sees it.
   api.debugSelfDm = () => rpc('debug:selfDm', []);
   api.debugLogs = (filter?: string) => rpc('debug:logs', [filter]);

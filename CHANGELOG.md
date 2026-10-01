@@ -11,6 +11,66 @@ desktop Hub. The format is based on
 
 ## [Unreleased]
 
+## [0.0.14] — 2026-10-01 (GO 3.0)
+
+Field / Q-Share build **GO 3.0 v0.0.14** (`versionName` 0.0.14, `versionCode` 17).
+First **release build** (not debuggable) of GO 3.0, built with
+`./gradlew assembleRelease` and signed with the same key as every earlier
+version, so it installs over v0.0.13 with accounts and chats kept.
+
+### Fixed
+
+- **Slow login on GrapheneOS** _(mobile)_ — every earlier GO 3.0 APK was a
+  debug build. Android never gives a debuggable app precompiled code, and
+  GrapheneOS has no ART JIT, so all of GO's Java ran in the slowest
+  interpreter there: the wallet key derivation took 10–25 s instead of under
+  1 s, and the rest of the app was slower too. The per-app "WebView JIT"
+  setting could not help, because it only affects JavaScript. Investigation:
+  `reports/GO-GrapheneOS-slow-login-2026-10-01.md` in the GO folder.
+- **Fingerprint unlock did the slow part twice** _(shared)_ — the prewarm
+  and the unlock itself each started the full wallet key derivation at the
+  same time, and the account list could start it up to three more times.
+  Identical runs now share one (`src/encryption/kdf.ts`).
+- **Chat started on the lock screen** _(mobile)_ — the chat engine and the
+  Python/Reticulum bridge booted before login and competed with the unlock
+  for the CPU. They now start once you are logged in (also when you go Back
+  from the unlock screen).
+- **Password login could hang on a slow node** _(shared)_ — the node checks
+  before decrypting had no time limit; each now gives up after 5 s like a
+  network error. The loading screen shows during the check, a second tap no
+  longer starts it again, and the user-info fetch that was repeated after
+  login is skipped.
+- **Wrong version shown** _(mobile)_ — v0.0.13 showed "0.0.12" in Settings
+  and diagnostics.
+
+### Added
+
+- **Unlock section in diagnostics** _(mobile)_ — Copy diagnostics / Save as
+  .md now shows whether the app is a release or debug build, a Java speed
+  probe, and the last unlock steps with their times (node check, key
+  derivation, fingerprint scan, decrypt). Kept across restarts so a slow
+  login can be reported afterwards; no passwords or addresses are stored.
+
+### Security
+
+- **Not debuggable any more** _(mobile)_ — WebView DevTools and the Java
+  debugger can no longer attach to GO, and Capacitor's debug logging (which
+  wrote plugin call data to logcat) is off (audit GO-02, most of GO-14).
+
+### Changed
+
+- **More room while typing** _(mobile)_ — in Q-Apps and Chat the bottom
+  Home / Apps / Chat bar now hides while the keyboard is open, so the app or
+  conversation gets that space. It comes back when the keyboard closes. Home
+  keeps the bar.
+- **Qortino's offline assistant answers faster** _(mobile)_ — the release
+  build compiles its llama.cpp engine with optimizations (CMake
+  `RelWithDebInfo`). Debug builds left the C kernels (`ggml-cpu.c`,
+  `quants.c`) at `-O0`.
+- **On-chain chat sends on GrapheneOS** _(mobile)_ — the chat proof-of-work
+  (`NativePOW`, Java) also ran in the slowest interpreter in debug builds and
+  is compiled ahead of time now.
+
 ## [0.0.13] — 2026-10-01 (GO 3.0)
 
 Field / Q-Share build **GO 3.0 v0.0.13** (`versionName` 0.0.13, `versionCode` 16).

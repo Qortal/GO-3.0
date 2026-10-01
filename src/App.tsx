@@ -473,10 +473,18 @@ function App() {
   const mobileGroupPanelOpen = useAtomValue(mobileGroupPanelOpenAtom);
   const [tabsGridOpen, setTabsGridOpen] = useState(false);
   // The in-app emoji keyboard replaces the soft keyboard *and* the tab bar it
-  // was sitting above, so the composer above it does not move when they swap.
+  // was sitting above (if any), so the composer above it does not move when
+  // they swap.
   const emojiPanelOpen = useAtomValue(mobileEmojiPanelOpenAtom);
   const lastKeyboardHeight = useLastSoftKeyboardHeight();
   const keyboardInset = useSoftKeyboardInset();
+  // In Q-Apps and Chat the tab bar steps aside while the soft keyboard is up,
+  // so the app or conversation gets that strip above the keyboard back.
+  const keyboardOwnsTabBarSlot =
+    desktopViewMode === 'apps' ||
+    desktopViewMode === 'dev' ||
+    desktopViewMode === 'chat';
+  const tabBarHiddenByKeyboard = keyboardOwnsTabBarSlot && keyboardInset > 0;
   const showEmojiPanel =
     emojiPanelOpen && isMobile && isAuthenticated && isMainWindow;
   const [emojiSearchFocused, setEmojiSearchFocused] = useState(false);
@@ -512,7 +520,8 @@ function App() {
       : lastKeyboardHeight +
         (showMobileBottomBar &&
         !mobileChatComposeActive &&
-        !mobileGroupPanelOpen
+        !mobileGroupPanelOpen &&
+        !keyboardOwnsTabBarSlot
           ? MOBILE_TAB_BAR_HEIGHT_PX
           : 0)
     : 0;
@@ -1513,24 +1522,44 @@ function App() {
     resetAllRecoil();
   };
 
+  // Repeat Unlock taps / Enter while a password unlock is still checking the
+  // node (or decrypting) are ignored instead of starting the checks again.
+  const passwordUnlockInFlightRef = useRef(false);
+
   const authenticateWallet = async (options?: {
     skipNodeCheck?: boolean;
     skipLocalCheck?: boolean;
   }) => {
+    const checkNode = !options?.skipNodeCheck;
+    if (checkNode) {
+      if (passwordUnlockInFlightRef.current) return;
+      passwordUnlockInFlightRef.current = true;
+      // A remote node (e.g. over an SSH tunnel) can take a few round trips;
+      // show the loader now, not only once the decrypt starts.
+      setIsLoading(true);
+    }
     try {
-      if (!options?.skipNodeCheck) {
-        const isValid = await isNodeValid();
+      if (checkNode) {
+        // authenticate() fetches user info itself after the decrypt.
+        const isValid = await isNodeValid({ refreshUserInfo: false });
         if (!isValid) {
+          setIsLoading(false);
           return;
         }
       }
-      await authenticate(undefined, options?.skipLocalCheck);
+      const unlocked = await authenticate(undefined, options?.skipLocalCheck);
+      // Covers the early returns that never touch the loader (local node
+      // still syncing, another unlock already running).
+      if (!unlocked && checkNode) setIsLoading(false);
     } catch (error) {
+      if (checkNode) setIsLoading(false);
       setWalletToBeDecryptedError(
         t('core:message.error.password_wrong', {
           postProcess: 'capitalizeFirstChar',
         })
       );
+    } finally {
+      if (checkNode) passwordUnlockInFlightRef.current = false;
     }
   };
 
@@ -2527,6 +2556,7 @@ function App() {
                 ? `calc(${emojiPanelReservePx}px + ${SAFE_AREA_BOTTOM})`
                 : mobileChatComposeActive ||
                     mobileGroupPanelOpen ||
+                    tabBarHiddenByKeyboard ||
                     !showMobileBottomBar
                   ? SAFE_AREA_BOTTOM
                   : `calc(${MOBILE_TAB_BAR_HEIGHT_PX}px + ${SAFE_AREA_BOTTOM})`,
@@ -2646,6 +2676,7 @@ function App() {
         isMainWindow &&
         !mobileChatComposeActive &&
         !mobileGroupPanelOpen &&
+        !tabBarHiddenByKeyboard &&
         !showEmojiPanel && (
           <MobileTabBar
             desktopViewMode={desktopViewMode}

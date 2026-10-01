@@ -11,6 +11,7 @@ import {
   canUseNativeBcrypt,
   nativeBcryptHashBatch,
 } from '../utils/nativeBcrypt';
+import { recordUnlockTiming } from '../utils/unlockTimings';
 
 const stringtoUTF8Array = (message) => {
   if (typeof message === 'string') {
@@ -126,21 +127,33 @@ const bcryptBatchInWorkers = (jobs) => {
   return batch;
 };
 
+/** Resolves `{ hashes, path }`; `path` says which engine ran, for timings. */
 async function bcryptBatch(jobs) {
+  let wasmReason = 'not native Android';
   if (canUseNativeBcrypt()) {
     try {
-      const hashes = await nativeBcryptHashBatch(jobs);
+      const batch = await nativeBcryptHashBatch(jobs);
+      const hashes = batch?.hashes;
       if (Array.isArray(hashes) && hashes.length === jobs.length) {
-        return hashes;
+        const path = [
+          'native',
+          `batch ${Math.round(batch.elapsedMs ?? -1)} ms`,
+          `pool ${batch.poolSize ?? '?'}`,
+        ];
+        if (batch.debuggable) path.push('debuggable');
+        return { hashes, path: path.join(', ') };
       }
       console.warn(
         '[KDF] native bcrypt returned an incomplete batch, using WASM'
       );
+      wasmReason = 'native batch incomplete';
     } catch (error) {
       console.warn('[KDF] native bcrypt failed, using WASM', error);
+      wasmReason = `native failed: ${String(error?.message ?? error).slice(0, 60)}`;
     }
   }
-  return bcryptBatchInWorkers(jobs);
+  const hashes = await bcryptBatchInWorkers(jobs);
+  return { hashes, path: `wasm (${wasmReason})` };
 }
 
 const stringToUTF8Array = (message) => {
@@ -161,7 +174,34 @@ export const doInitWorkers = (numberOfWorkers) => {
   return workers;
 };
 
-export const kdf = async (seed, salt, threads) => {
+const runKdf = async (jobs) => {
+  const { hashes: seedParts, path } = await bcryptBatch(jobs);
+
+  const result = new Sha512()
+    .process(
+      stringtoUTF8Array(crypto2.staticSalt + seedParts.reduce((a, c) => a + c))
+    )
+    .finish().result;
+
+  return { result, path };
+};
+
+/**
+ * KDF batches in flight, keyed by job count and the first job's hash (never
+ * the seed itself). The output depends only on the seed and the job count
+ * (the salt argument is unused), so the fingerprint prewarm, the KDF during
+ * the scan and a password unlock share one bcrypt batch instead of queueing
+ * a second one behind it. Entries are dropped when they settle, so a retry
+ * after a failure runs again.
+ */
+const inFlightKdf = new Map();
+
+/**
+ * `label` names the caller in the unlock timings ('prewarm', 'scan',
+ * 'decrypt', 'seedphrase', ...).
+ */
+export const kdf = async (seed, salt, threads, label?: string) => {
+  const started = performance.now();
   const jobs = threads.map((worker, index) =>
     buildKdfBcryptJob({
       key: seed,
@@ -171,15 +211,37 @@ export const kdf = async (seed, salt, threads) => {
     })
   );
 
-  const seedParts = await bcryptBatch(jobs);
+  const flightKey = `${jobs.length}:${jobs[0]?.hashBase64 ?? ''}`;
+  let run = inFlightKdf.get(flightKey);
+  const joined = Boolean(run);
+  if (!run) {
+    run = runKdf(jobs);
+    inFlightKdf.set(flightKey, run);
+    const forget = () => {
+      if (inFlightKdf.get(flightKey) === run) inFlightKdf.delete(flightKey);
+    };
+    run.then(forget, forget);
+  }
 
-  const result = new Sha512()
-    .process(
-      stringtoUTF8Array(crypto2.staticSalt + seedParts.reduce((a, c) => a + c))
-    )
-    .finish().result;
-
-  return result;
+  const timingDetail = (path) =>
+    [path, `${jobs.length} jobs`, label].filter(Boolean).join(', ');
+  try {
+    const { result, path } = await run;
+    recordUnlockTiming(
+      'kdf',
+      performance.now() - started,
+      timingDetail(joined ? 'joined running KDF' : path)
+    );
+    // Each caller gets its own bytes; callers slice and cache them.
+    return new Uint8Array(result);
+  } catch (error) {
+    recordUnlockTiming(
+      'kdf',
+      performance.now() - started,
+      timingDetail(joined ? 'joined running KDF, failed' : 'failed')
+    );
+    throw error;
+  }
 };
 
 /** Spawn bcrypt workers without running a hash (must stay instant for UI paths). */

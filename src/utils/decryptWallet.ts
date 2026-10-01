@@ -14,8 +14,15 @@ import {
   setCachedWalletKdfKey,
 } from './walletKdfSessionCache';
 
-/** Run KDF only and cache the derived key (used during biometric scan). */
-export async function precomputeWalletKdfKey(password, wallet) {
+/**
+ * Run KDF only and cache the derived key (used during biometric scan).
+ * `label` names the caller in the unlock timings ('prewarm', 'scan').
+ */
+export async function precomputeWalletKdfKey(
+  password,
+  wallet,
+  label = 'precompute'
+) {
   const walletAddress = wallet?.address0?.trim();
   if (walletAddress && getCachedWalletKdfKey(walletAddress, password)) {
     return;
@@ -31,13 +38,22 @@ export async function precomputeWalletKdfKey(password, wallet) {
   }
 
   const threads = doInitWorkers(wallet.kdfThreads ?? crypto.kdfThreads);
-  const key = await kdf(password, salt, threads);
+  const kdfStarted = performance.now();
+  const key = await kdf(password, salt, threads, label);
+  console.info(
+    `[Unlock] KDF ${Math.round(performance.now() - kdfStarted)}ms (${threads.length} jobs, ${label})`
+  );
   if (walletAddress) {
     setCachedWalletKdfKey(walletAddress, password, key);
   }
 }
 
-export const decryptStoredWallet = async (password, wallet, threadCount) => {
+export const decryptStoredWallet = async (
+  password,
+  wallet,
+  threadCount?: number,
+  label = 'decrypt'
+) => {
   validateStoredWalletForDecrypt(wallet);
 
   const threads = doInitWorkers(threadCount ?? crypto.kdfThreads);
@@ -54,11 +70,10 @@ export const decryptStoredWallet = async (password, wallet, threadCount) => {
   }
 
   const walletAddress = wallet.address0?.trim();
-  let key =
-    walletAddress && getCachedWalletKdfKey(walletAddress, password);
+  let key = walletAddress && getCachedWalletKdfKey(walletAddress, password);
   if (!key) {
     const kdfStarted = performance.now();
-    key = await kdf(password, salt, threads);
+    key = await kdf(password, salt, threads, label);
     console.info(
       `[Unlock] KDF ${Math.round(performance.now() - kdfStarted)}ms (${threads.length} jobs)`
     );
@@ -89,6 +104,6 @@ export const decryptStoredWalletFromSeedPhrase = async (password) => {
   const threads = doInitWorkers(crypto.kdfThreads);
   const salt = new Uint8Array(void 0);
 
-  const seed = await kdf(password, salt, threads);
+  const seed = await kdf(password, salt, threads, 'seedphrase');
   return seed;
 };

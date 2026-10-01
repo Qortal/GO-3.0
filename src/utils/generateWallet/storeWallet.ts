@@ -15,7 +15,7 @@ export const generateSaveWalletData = async (wallet, password, kdfThreads) => {
   getRandomValues(iv);
   const salt = new Uint8Array(32);
   getRandomValues(salt);
-  const key = await kdf(password, salt, threads);
+  const key = await kdf(password, salt, threads, 'store');
   const encryptionKey = key.slice(0, 32);
   const macKey = key.slice(32, 63);
   const encryptedSeed = AES_CBC.encrypt(

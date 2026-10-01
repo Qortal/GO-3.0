@@ -6,7 +6,11 @@ vi.mock('../../reticulumChat/mobile', () => ({
 vi.mock('../../utils/globalApi', () => ({
   getBaseApiReact: () => 'http://127.0.0.1:12391',
 }));
+vi.mock('../../utils/nativeBcrypt', () => ({
+  getNativeBcryptRuntimeInfo: vi.fn(async () => null),
+}));
 
+import { getNativeBcryptRuntimeInfo } from '../../utils/nativeBcrypt';
 import {
   buildReticulumDiagnosticsReport,
   collapseEngineLogLines,
@@ -14,9 +18,11 @@ import {
   diagnosticsReportToMarkdown,
   formatMembershipProbeLine,
   formatResourceSessionsLine,
+  formatUnlockLines,
   formatValidatorLine,
   isEngineFaultLine,
   jitVerdict,
+  probeUnlockRuntime,
   selectEngineLogLines,
   type ReticulumDiagnosticsInput,
 } from './reticulumDiagnostics';
@@ -519,6 +525,107 @@ describe('reticulumDiagnostics', () => {
       `${ts(3)} warn [ReticulumChat] metadata_snapshot_resource_failed group=1144 peer=d844a0c4aa32242b transfer=18ce448c02182e1a reason=session_prepare_failed:bridge-overloaded alternate_providers=0 [x2 until 03:49:03.000]`,
       `${ts(5)} warn [ReticulumChat] Giving up event pull 1ed2d76c-1d92-45d7-9dcb-f35b34a67039 after 8 attempts [x2 until 03:49:11.000]`,
     ]);
+  });
+
+  it('shows the build type, Java speed, KDF pool and unlock steps', () => {
+    const now = Date.UTC(2026, 9, 1, 8, 42, 0);
+    const report = buildReticulumDiagnosticsReport({
+      now,
+      version: '0.0.14',
+      state: ONLINE_STATE,
+      onlineCount: 51,
+      deviceOnline: true,
+      webView: WEBVIEW,
+      engine: readyEngine(),
+      coreApi: { host: 'localhost:52391', ok: true, httpStatus: 200, ms: 151 },
+      sendFailures: [],
+      unlock: {
+        runtime: { debuggable: true, poolSize: 7, cores: 8, probeMs: 83 },
+        events: [
+          {
+            at: Date.UTC(2026, 8, 30, 22, 5, 9),
+            step: 'kdf',
+            ms: 21_480,
+            detail:
+              'native, batch 21470 ms, pool 7, debuggable, 16 jobs, decrypt',
+          },
+          {
+            at: Date.UTC(2026, 9, 1, 8, 41, 3),
+            step: 'kdf',
+            ms: 9_812,
+            detail: 'joined running KDF, 16 jobs, scan',
+          },
+          {
+            at: Date.UTC(2026, 9, 1, 8, 41, 4),
+            step: 'fingerprint',
+            ms: 10_240,
+            detail: 'scan 1180 ms, KDF wait 9812 ms',
+          },
+        ],
+      },
+    });
+    const lines = report.split('\n');
+    const start = lines.indexOf('--- Unlock ---');
+    // Right after the WebView section.
+    expect(lines[start - 2]).toMatch(/^JS loop probe:/);
+    expect(lines.slice(start + 1, start + 8)).toEqual([
+      'App build: DEBUG (debuggable): on GrapheneOS all Java runs interpreted',
+      'Java speed probe: bcrypt cost 6 in 83 ms (compiled is a few ms; 50 ms or more means Java runs interpreted)',
+      'KDF pool: 7 threads of 8 cores',
+      '2026-09-30 22:05:09 kdf 21480 ms — native, batch 21470 ms, pool 7, debuggable, 16 jobs, decrypt',
+      '08:41:03 kdf 9812 ms — joined running KDF, 16 jobs, scan',
+      '08:41:04 fingerprint 10240 ms — scan 1180 ms, KDF wait 9812 ms',
+      '',
+    ]);
+    expect(lines[start + 8]).toBe('--- Reticulum radio ---');
+    expect(diagnosticsReportToMarkdown(report)).toContain(
+      '## Unlock\n\n```text\nApp build: DEBUG (debuggable)'
+    );
+  });
+
+  it('says what is unknown when there is no plugin and no unlock yet', () => {
+    expect(formatUnlockLines(null, 0)).toEqual([
+      'App build: unknown',
+      'Java speed probe: not run',
+      'KDF pool: unknown',
+      'No unlock recorded yet',
+    ]);
+    expect(
+      formatUnlockLines(
+        {
+          runtime: { debuggable: false, poolSize: 3, cores: 4, probeMs: 4 },
+          events: [{ at: 0, step: 'kdf', ms: -1 }],
+        },
+        0
+      )
+    ).toEqual([
+      'App build: release (not debuggable)',
+      'Java speed probe: bcrypt cost 6 in 4 ms (compiled is a few ms; 50 ms or more means Java runs interpreted)',
+      'KDF pool: 3 threads of 4 cores',
+      '00:00:00 kdf n/a',
+    ]);
+    // Older reports built without the unlock input still get the section.
+    expect(readyReport(readyEngine())).toContain(
+      '--- Unlock ---\nApp build: unknown'
+    );
+  });
+
+  it('gives up on the runtime probe after the timeout', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(getNativeBcryptRuntimeInfo).mockReturnValueOnce(
+        new Promise(() => {})
+      );
+      const pending = probeUnlockRuntime(3_000);
+      await vi.advanceTimersByTimeAsync(3_000);
+      await expect(pending).resolves.toBeNull();
+
+      const runtime = { debuggable: false, poolSize: 7, cores: 8, probeMs: 5 };
+      vi.mocked(getNativeBcryptRuntimeInfo).mockResolvedValueOnce(runtime);
+      await expect(probeUnlockRuntime(3_000)).resolves.toEqual(runtime);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('names the saved file after the report time, in UTC', () => {

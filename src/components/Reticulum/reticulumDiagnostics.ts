@@ -2,7 +2,7 @@
  * "Copy diagnostics" for the Reticulum badge: one plain-text report a phone
  * user can paste into a chat, covering the radio, the chat engine, the
  * WebView's capabilities and speed, Core API reachability, the last send
- * failures and the engine's own log tail.
+ * failures, the last unlock timings and the engine's own log tail.
  *
  * Built for remote reports (GrapheneOS in particular, where WebView JIT can
  * be off per app): every value here is one the app cannot otherwise show and
@@ -27,6 +27,14 @@ import {
   type ResourceSessionStats,
 } from '../../reticulumChat/mobile';
 import { redactDiagnosticText } from '../../reticulumChat/mobile/groupValidation';
+import {
+  getNativeBcryptRuntimeInfo,
+  type NativeBcryptRuntimeInfo,
+} from '../../utils/nativeBcrypt';
+import {
+  getUnlockTimingSnapshot,
+  type UnlockTimingEvent,
+} from '../../utils/unlockTimings';
 import {
   chatEngineStateAgeSec,
   reticulumDisplayLabel,
@@ -58,6 +66,13 @@ export type CoreApiProbe = {
   error?: string;
 };
 
+export type UnlockDiagnostics = {
+  /** Oldest first, from `getUnlockTimingSnapshot`. */
+  events: UnlockTimingEvent[];
+  /** Null off native Android, on a plugin error or a timeout. */
+  runtime: NativeBcryptRuntimeInfo | null;
+};
+
 export type ReticulumDiagnosticsInput = {
   now: number;
   version: string;
@@ -68,6 +83,7 @@ export type ReticulumDiagnosticsInput = {
   engine: MobileReticulumChatDiagnostics | null;
   coreApi: CoreApiProbe | null;
   sendFailures: SendFailureRecord[];
+  unlock?: UnlockDiagnostics | null;
 };
 
 export type JitEvidence = {
@@ -201,6 +217,27 @@ export async function probeCoreApi(timeoutMs = 6_000): Promise<CoreApiProbe> {
       ms: Date.now() - t0,
       error: err instanceof Error ? err.message : String(err),
     };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * The plugin's build and Java speed facts. The probe waits behind a running
+ * KDF batch on the same pool, so it is bounded.
+ */
+export async function probeUnlockRuntime(
+  timeoutMs = 3_000
+): Promise<NativeBcryptRuntimeInfo | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), timeoutMs);
+  });
+  try {
+    return await Promise.race([
+      getNativeBcryptRuntimeInfo().catch(() => null),
+      timeout,
+    ]);
   } finally {
     clearTimeout(timer);
   }
@@ -496,6 +533,64 @@ export function formatResourceSessionsLine(
   }${oldest}; results ${shown.length ? shown.join(' ') : 'none'}`;
 }
 
+/** Interpreted Java takes ~80 ms for the probe; compiled a few ms. */
+const JAVA_INTERPRETED_PROBE_MS = 50;
+
+/** `HH:MM:SS` in UTC, with the date when it is not the report's day. */
+function fmtEventTime(at: number, now: number): string {
+  const date = new Date(at);
+  if (Number.isNaN(date.getTime())) return 'n/a';
+  const iso = date.toISOString();
+  const time = iso.slice(11, 19);
+  return iso.slice(0, 10) === new Date(now).toISOString().slice(0, 10)
+    ? time
+    : `${iso.slice(0, 10)} ${time}`;
+}
+
+/** The "Unlock" section: build type, Java speed, KDF pool, recorded steps. */
+export function formatUnlockLines(
+  unlock: UnlockDiagnostics | null | undefined,
+  now: number
+): string[] {
+  const runtime = unlock?.runtime ?? null;
+  const lines: string[] = [];
+  lines.push(
+    `App build: ${
+      runtime == null
+        ? 'unknown'
+        : runtime.debuggable
+          ? 'DEBUG (debuggable): on GrapheneOS all Java runs interpreted'
+          : 'release (not debuggable)'
+    }`
+  );
+  const probeMs = finiteMs(runtime?.probeMs);
+  lines.push(
+    probeMs == null
+      ? 'Java speed probe: not run'
+      : `Java speed probe: bcrypt cost 6 in ${Math.round(probeMs)} ms (compiled is a few ms; ${JAVA_INTERPRETED_PROBE_MS} ms or more means Java runs interpreted)`
+  );
+  lines.push(
+    runtime && Number.isFinite(runtime.poolSize)
+      ? `KDF pool: ${runtime.poolSize} threads of ${
+          Number.isFinite(runtime.cores) ? runtime.cores : '?'
+        } cores`
+      : 'KDF pool: unknown'
+  );
+  const events = unlock?.events ?? [];
+  if (events.length === 0) {
+    lines.push('No unlock recorded yet');
+  }
+  for (const event of events) {
+    const ms = event.ms >= 0 ? `${Math.round(event.ms)} ms` : 'n/a';
+    lines.push(
+      `${fmtEventTime(event.at, now)} ${event.step} ${ms}${
+        event.detail ? ` — ${event.detail}` : ''
+      }`
+    );
+  }
+  return lines;
+}
+
 export function buildReticulumDiagnosticsReport(
   input: ReticulumDiagnosticsInput
 ): string {
@@ -529,6 +624,9 @@ export function buildReticulumDiagnosticsReport(
   lines.push(
     `JS loop probe: ${webView.jsLoopMs} ms (weak hint only; CPU speed and load move it as much as JIT does)`
   );
+  lines.push('');
+  lines.push('--- Unlock ---');
+  lines.push(...formatUnlockLines(input.unlock, input.now));
   lines.push('');
   lines.push('--- Reticulum radio ---');
   lines.push(
@@ -717,9 +815,10 @@ export async function collectReticulumDiagnostics(
   deviceOnline: boolean
 ): Promise<string> {
   const webView = probeWebView();
-  const [engine, coreApi] = await Promise.all([
+  const [engine, coreApi, unlockRuntime] = await Promise.all([
     getMobileReticulumChatDiagnostics().catch(() => null),
     probeCoreApi().catch(() => null),
+    probeUnlockRuntime().catch(() => null),
   ]);
   return buildReticulumDiagnosticsReport({
     now: Date.now(),
@@ -731,5 +830,9 @@ export async function collectReticulumDiagnostics(
     engine,
     coreApi,
     sendFailures: getRecentSendFailures(),
+    unlock: {
+      events: getUnlockTimingSnapshot().events,
+      runtime: unlockRuntime,
+    },
   });
 }

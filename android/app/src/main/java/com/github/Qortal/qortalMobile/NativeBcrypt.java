@@ -1,5 +1,7 @@
 package com.github.Qortal.qortalMobile;
 
+import android.content.pm.ApplicationInfo;
+import android.util.Log;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
@@ -18,11 +20,20 @@ import org.mindrot.jbcrypt.BCrypt;
 
 @CapacitorPlugin(name = "NativeBcrypt")
 public class NativeBcrypt extends Plugin {
+    private static final String TAG = "NativeBcrypt";
+    // Speed probe: one cost-6 hash. Compiled Java takes a few ms on a mid-range
+    // phone; interpreted Java (debuggable build on GrapheneOS) ~80 ms.
+    private static final String PROBE_SALT = "$2a$06$IxVE941tXVUD4cW0TNVm.O";
+
     // Leave one core for the UI/render thread and run below it in priority:
     // KDF batches fire during the fingerprint scan, and saturating every core
     // at MAX_PRIORITY visibly delays the biometric prompt on mid-range devices.
+    private final int poolSize = Math.max(
+        2,
+        Runtime.getRuntime().availableProcessors() - 1
+    );
     private final ExecutorService executor = Executors.newFixedThreadPool(
-        Math.max(2, Runtime.getRuntime().availableProcessors() - 1),
+        poolSize,
         new ThreadFactory() {
             @Override
             public Thread newThread(Runnable r) {
@@ -70,6 +81,7 @@ public class NativeBcrypt extends Plugin {
         }
 
         final int count = jobs.length();
+        final long startedNs = System.nanoTime();
         List<CompletableFuture<String>> futures = new ArrayList<>(count);
 
         for (int i = 0; i < count; i++) {
@@ -102,8 +114,20 @@ public class NativeBcrypt extends Plugin {
                     for (CompletableFuture<String> future : futures) {
                         hashes.put(future.join());
                     }
+                    long elapsedMs = (System.nanoTime() - startedNs) / 1_000_000L;
+                    boolean debuggable = isDebuggable();
+                    // Log.i stays in logcat on release builds, where
+                    // Capacitor's console logging is off.
+                    Log.i(
+                        TAG,
+                        "batch jobs=" + count + " pool=" + poolSize +
+                        " ms=" + elapsedMs + " debuggable=" + debuggable
+                    );
                     JSObject result = new JSObject();
                     result.put("hashes", hashes);
+                    result.put("elapsedMs", elapsedMs);
+                    result.put("poolSize", poolSize);
+                    result.put("debuggable", debuggable);
                     getActivity().runOnUiThread(() -> call.resolve(result));
                 } catch (Exception e) {
                     getActivity()
@@ -125,6 +149,43 @@ public class NativeBcrypt extends Plugin {
                     );
                 return null;
             });
+    }
+
+    /** Build and Java speed facts for Copy diagnostics. */
+    @PluginMethod
+    public void runtimeInfo(PluginCall call) {
+        final boolean debuggable = isDebuggable();
+        // Own short-lived thread, not the KDF pool: while an unlock batch is
+        // running, a queued probe would wait behind it and the report would
+        // lose the build type too.
+        new Thread(() -> {
+            try {
+                long startedNs = System.nanoTime();
+                BCrypt.hashpw("qortal-go-speed-probe", PROBE_SALT);
+                long probeMs = Math.round(
+                    (System.nanoTime() - startedNs) / 1_000_000.0
+                );
+                JSObject result = new JSObject();
+                result.put("debuggable", debuggable);
+                result.put("poolSize", poolSize);
+                result.put(
+                    "cores",
+                    Runtime.getRuntime().availableProcessors()
+                );
+                result.put("probeMs", probeMs);
+                getActivity().runOnUiThread(() -> call.resolve(result));
+            } catch (Exception e) {
+                getActivity()
+                    .runOnUiThread(
+                        () -> call.reject("Probe failed: " + e.getMessage())
+                    );
+            }
+        }, "NativeBcrypt-probe").start();
+    }
+
+    private boolean isDebuggable() {
+        int flags = getContext().getApplicationInfo().flags;
+        return (flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0;
     }
 
     @Override

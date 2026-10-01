@@ -93,7 +93,7 @@ export const createAccount = async (generatedSeedPhrase) => {
   if (!generatedSeedPhrase) throw new Error('No generated seed-phrase');
   const threads = doInitWorkers(crypto.kdfThreads);
 
-  const seed = await kdf(generatedSeedPhrase, void 0, threads);
+  const seed = await kdf(generatedSeedPhrase, void 0, threads, 'create');
   const wallet = new PhraseWallet(seed, walletVersion);
   return wallet;
 };

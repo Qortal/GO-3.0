@@ -1488,7 +1488,12 @@ export async function addUserSettings({ keyValue }) {
 export async function decryptWallet({ password, wallet, walletVersion }) {
   try {
     const unlockStarted = performance.now();
-    const response = await decryptStoredWallet(password, wallet);
+    const response = await decryptStoredWallet(
+      password,
+      wallet,
+      undefined,
+      'unlock'
+    );
     const qortStarted = performance.now();
     const wallet2 = new PhraseWallet(response, walletVersion, {
       qortOnly: true,

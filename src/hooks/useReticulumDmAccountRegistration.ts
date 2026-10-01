@@ -99,7 +99,16 @@ export const useReticulumDmAccountRegistration = ({
   }, [address, authenticated, enabled, managed, queueRegistration]);
 
   useEffect(() => {
-    if (!managed || typeof onReadinessChanged !== 'function') return;
+    // Only while authenticated: on mobile, subscribing boots the chat engine
+    // and the Python bridge, which must not run on the lock screen. Before
+    // login the desired list is empty, so there is nothing to reapply.
+    if (
+      !managed ||
+      !authenticated ||
+      typeof onReadinessChanged !== 'function'
+    ) {
+      return;
+    }
 
     // A startup registration can race manager creation. Reapply the latest
     // authenticated state once readiness changes to ready. This is event
@@ -109,5 +118,5 @@ export const useReticulumDmAccountRegistration = ({
         queueRegistration(desiredAddressesRef.current);
       }
     });
-  }, [managed, onReadinessChanged, queueRegistration]);
+  }, [authenticated, managed, onReadinessChanged, queueRegistration]);
 };

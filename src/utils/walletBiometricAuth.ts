@@ -16,14 +16,12 @@ import {
   storeData,
 } from './chromeStorage';
 import { isCapacitor } from './platform';
-import {
-  decryptStoredWallet,
-  precomputeWalletKdfKey,
-} from './decryptWallet';
+import { decryptStoredWallet, precomputeWalletKdfKey } from './decryptWallet';
 import {
   isWalletUnlockedInSession,
   markWalletUnlockedInSession,
 } from './walletUnlockSession';
+import { recordUnlockTiming } from './unlockTimings';
 
 const ENABLED_KEY = 'walletBiometricEnabledAddresses';
 const ENABLED_LS_KEY = 'walletBiometricEnabledAddresses';
@@ -56,7 +54,9 @@ async function loadEnabledSet(): Promise<Set<string>> {
           /* ignore */
         }
         return new Set(
-          parsed.filter((item) => typeof item === 'string').map(normalizeAddress)
+          parsed
+            .filter((item) => typeof item === 'string')
+            .map(normalizeAddress)
         );
       }
     }
@@ -70,7 +70,9 @@ async function loadEnabledSet(): Promise<Set<string>> {
       const parsed = JSON.parse(local);
       if (Array.isArray(parsed)) {
         return new Set(
-          parsed.filter((item) => typeof item === 'string').map(normalizeAddress)
+          parsed
+            .filter((item) => typeof item === 'string')
+            .map(normalizeAddress)
         );
       }
     }
@@ -88,7 +90,9 @@ function loadEnabledSetSync(): Set<string> {
       const parsed = JSON.parse(local);
       if (Array.isArray(parsed)) {
         return new Set(
-          parsed.filter((item) => typeof item === 'string').map(normalizeAddress)
+          parsed
+            .filter((item) => typeof item === 'string')
+            .map(normalizeAddress)
         );
       }
     }
@@ -227,7 +231,9 @@ async function readLegacyPassword(address: string): Promise<string | null> {
   if (!trimmed) return null;
 
   try {
-    const { value } = await Preferences.get({ key: legacyPasswordKey(trimmed) });
+    const { value } = await Preferences.get({
+      key: legacyPasswordKey(trimmed),
+    });
     if (typeof value === 'string' && value.length > 0) {
       return value;
     }
@@ -618,10 +624,11 @@ export async function prewarmBiometricUnlockKdf(
 
   await syncBiometricPasswordCache([trimmed]);
 
-  const password = readStoredPasswordSync(trimmed) ?? (await readStoredPassword(trimmed));
+  const password =
+    readStoredPasswordSync(trimmed) ?? (await readStoredPassword(trimmed));
   if (!password) return;
 
-  await precomputeWalletKdfKey(password, wallet).catch(() => {
+  await precomputeWalletKdfKey(password, wallet, 'prewarm').catch(() => {
     /* retry on unlock if prewarm fails */
   });
 }
@@ -726,8 +733,13 @@ export async function biometricUnlockWallet(
   }
 
   const trimmed = normalizeAddress(address);
+  const started = performance.now();
+  let scanMs: number | null = null;
+  let kdfMs: number | null = null;
   const sessionPromise = canResumeWalletSession(trimmed);
-  const verifyPromise = verifyBiometricUnlock();
+  const verifyPromise = verifyBiometricUnlock().then(() => {
+    scanMs = performance.now() - started;
+  });
   // Probe is a local storage check (~ms). Skip the 16-round KDF entirely on
   // resume-unlocks; otherwise it runs during the fingerprint scan.
   const kdfDuringScan = wallet
@@ -735,10 +747,13 @@ export async function biometricUnlockWallet(
         if (resume) return;
         await syncBiometricPasswordCache([trimmed]);
         const syncPassword = readBiometricUnlockPasswordSync(trimmed);
-        const password =
-          syncPassword ?? (await readStoredPassword(trimmed));
+        const password = syncPassword ?? (await readStoredPassword(trimmed));
         if (password) {
-          await precomputeWalletKdfKey(password, wallet).catch(() => {});
+          const kdfStarted = performance.now();
+          await precomputeWalletKdfKey(password, wallet, 'scan').catch(
+            () => {}
+          );
+          kdfMs = performance.now() - kdfStarted;
         }
       })
     : Promise.resolve();
@@ -749,13 +764,23 @@ export async function biometricUnlockWallet(
     kdfDuringScan,
   ]);
 
+  const scan = `scan ${Math.round(scanMs ?? -1)} ms`;
+  recordUnlockTiming(
+    'fingerprint',
+    performance.now() - started,
+    canResume
+      ? `resumed session, no KDF, ${scan}`
+      : kdfMs != null
+        ? `${scan}, KDF wait ${Math.round(kdfMs)} ms`
+        : `${scan}, no KDF during scan`
+  );
+
   if (canResume) {
     return 'resume';
   }
 
   const syncPassword = readBiometricUnlockPasswordSync(trimmed);
-  const password =
-    syncPassword ?? (await readBiometricUnlockPassword(trimmed));
+  const password = syncPassword ?? (await readBiometricUnlockPassword(trimmed));
 
   return password;
 }

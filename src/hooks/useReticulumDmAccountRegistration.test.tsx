@@ -145,6 +145,56 @@ describe('useReticulumDmAccountRegistration', () => {
     await waitFor(() => expect(register).toHaveBeenCalledTimes(2));
     expect(register).toHaveBeenLastCalledWith(['Qowner']);
   });
+
+  it('does not watch readiness on the lock screen', async () => {
+    // On mobile, subscribing boots the chat engine and the Python bridge.
+    const register = vi.fn(async () => ({ success: true }));
+    const onReadinessChanged = vi.fn(() => vi.fn());
+    const { rerender } = renderHook(
+      ({ authenticated }) =>
+        useReticulumDmAccountRegistration({
+          authenticated,
+          enabled: true,
+          address: 'Qowner',
+          register,
+          onReadinessChanged,
+        }),
+      { initialProps: { authenticated: false } }
+    );
+
+    await waitFor(() => expect(register).toHaveBeenCalledWith([]));
+    expect(onReadinessChanged).not.toHaveBeenCalled();
+
+    rerender({ authenticated: true });
+    await waitFor(() => expect(register).toHaveBeenCalledWith(['Qowner']));
+    expect(onReadinessChanged).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops watching readiness and clears registration on logout', async () => {
+    const register = vi.fn<ReticulumDmAddressRegistrar>(async () => ({
+      success: true,
+    }));
+    const unsubscribe = vi.fn();
+    const onReadinessChanged = vi.fn(() => unsubscribe);
+    const { rerender } = renderHook(
+      ({ authenticated }) =>
+        useReticulumDmAccountRegistration({
+          authenticated,
+          enabled: true,
+          address: 'Qowner',
+          register,
+          onReadinessChanged,
+        }),
+      { initialProps: { authenticated: true } }
+    );
+
+    await waitFor(() => expect(register).toHaveBeenCalledWith(['Qowner']));
+    rerender({ authenticated: false });
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+    expect(onReadinessChanged).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(register).toHaveBeenLastCalledWith([]));
+    expect(register.mock.calls).toEqual([[['Qowner']], [[]]]);
+  });
 });
 
 type ReticulumDmAddressRegistrar = (

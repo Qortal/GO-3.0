@@ -13,8 +13,8 @@ android {
         // The in-app updater reads the version out of that filename and compares
         // it with versionName here, and Android refuses an install whose
         // versionCode is not higher — so both go up with every published build.
-        versionCode 16
-        versionName "0.0.13"
+        versionCode 17
+        versionName "0.0.14"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         // Chaquopy ships the CPython interpreter as native code, so the app must
         // declare which ABIs to package. arm64 = real devices, x86_64 = emulator.
@@ -71,7 +71,17 @@ android {
         jvmTarget = '17'
     }
     buildTypes {
+        // Published APKs come from `./gradlew assembleRelease` (not debuggable)
+        // from v0.0.14 on. A debuggable app gets no ahead-of-time compiled
+        // code, and GrapheneOS has no ART JIT, so a debug build runs all of
+        // its Java there in the slowest interpreter (wallet KDF ~11 s instead
+        // of ~0.6 s). Debug builds stay for the lab: WebView DevTools, run-as.
+        // Both are signed with the same key, so they install over each other
+        // with data kept — as long as versionCode never goes down.
         release {
+            // Same certificate as every earlier GO 3.0 release; a different
+            // key would force users to uninstall and lose their data.
+            signingConfig signingConfigs.debug
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }

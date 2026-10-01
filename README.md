@@ -54,6 +54,22 @@ cd android && ./gradlew assembleDebug
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
+APKs for users are release builds (not debuggable), from v0.0.14 on:
+
+```bash
+cd android && ./gradlew assembleRelease
+# → app/build/outputs/apk/release/app-release.apk, published as "GO 3.0 v<versionName>.apk"
+```
+
+Release builds are much faster on GrapheneOS: it has no ART JIT, and a debuggable app gets
+no precompiled code, so a debug build runs all of its Java interpreted there. Use debug builds only
+for development (WebView DevTools, `run-as`).
+
+Both build types are signed with the same key (`~/.android/debug.keystore`; keep a backup), so they
+install over each other with data kept. Android refuses a lower `versionCode` once a release build is
+installed, so raise `versionCode` with every published build and keep debug builds at the same or a
+higher one.
+
 The Python bridge (`presence_bridge.py`) and vendored RNS ship inside the APK via Chaquopy; no
 on-device Python setup is needed.
 

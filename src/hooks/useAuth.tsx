@@ -44,10 +44,52 @@ import { useModalGlobal } from './useModalGlobal';
 import { getWalletErrorMessage } from '../utils/walletErrorMessages';
 import { markWalletUnlockedInSession } from '../utils/walletUnlockSession';
 import { saveLastAuthenticatedWalletAddress } from '../utils/lastAuthenticatedWallet';
+import { recordUnlockTiming } from '../utils/unlockTimings';
 
 let balanceSetIntervalRef: null | NodeJS.Timeout = null;
 const LOCAL_CORE_READY_SYNC_PERCENT = 99.95;
 const ADMIN_STATUS_FETCH_TIMEOUT_MS = 5000;
+// localAuthBypassEnabled / apikey/test / apikey/generate: a timeout counts as
+// a network error.
+const ADMIN_AUTH_FETCH_TIMEOUT_MS = 5000;
+
+export type NodeCheckOptions = {
+  /**
+   * Re-fetch the account's user info against the node once it is saved
+   * (default true). Unlock passes false: authenticate() fetches it after the
+   * decrypt, so the KDF does not wait on extra node round trips.
+   */
+  refreshUserInfo?: boolean;
+};
+
+/**
+ * Run `request` with a signal that aborts after `timeoutMs`, so a node that
+ * accepts the connection but never answers (e.g. a dead SSH tunnel on
+ * 127.0.0.1) cannot hold the unlock loader. Read the body inside `request`
+ * so it is bounded too.
+ */
+async function withFetchTimeout<T>(
+  timeoutMs: number,
+  request: (signal: AbortSignal) => Promise<T>
+): Promise<T> {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => {
+    controller.abort();
+  }, timeoutMs);
+  try {
+    return await request(controller.signal);
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+}
+
+/** GET `url` and read the body as text, aborting both after `timeoutMs`. */
+function fetchTextWithTimeout(url: string, timeoutMs: number): Promise<string> {
+  return withFetchTimeout(timeoutMs, async (signal) => {
+    const response = await fetch(url, { signal });
+    return response.text();
+  });
+}
 
 function isLocalCoreStatusSynced(status: any) {
   const syncPercent = Number(status?.syncPercent);
@@ -99,7 +141,10 @@ export const useAuth = () => {
 
   const checkIfLocalIsRunning = useCallback(async (baseUrl: string) => {
     try {
-      const res = await fetch(baseUrl + '/admin/status');
+      const res = await withFetchTimeout(
+        ADMIN_STATUS_FETCH_TIMEOUT_MS,
+        (signal) => fetch(baseUrl + '/admin/status', { signal })
+      );
       if (res?.ok) return true;
       return false;
     } catch (error) {
@@ -109,16 +154,22 @@ export const useAuth = () => {
 
   const generateApiKey = useCallback(async () => {
     try {
-      const res = await fetch(
-        `${getDefaultLocalNodeUrl()}/admin/apikey/generate`,
-        {
-          method: 'POST',
+      const key = await withFetchTimeout(
+        ADMIN_AUTH_FETCH_TIMEOUT_MS,
+        async (signal) => {
+          const res = await fetch(
+            `${getDefaultLocalNodeUrl()}/admin/apikey/generate`,
+            {
+              method: 'POST',
+              signal,
+            }
+          );
+          if (!res.ok) {
+            return null;
+          }
+          return (await res.text()).trim();
         }
       );
-      if (!res.ok) {
-        return null;
-      }
-      const key = (await res.text()).trim();
       if (!key) return null;
       return key;
     } catch (error) {
@@ -216,23 +267,27 @@ export const useAuth = () => {
         let isValid = false;
 
         const url = `${baseUrl}/admin/settings/localAuthBypassEnabled`;
-        const response = await fetch(url);
-
         // Assuming the response is in plain text and will be 'true' or 'false'
-        const data = await response.text();
+        const data = await fetchTextWithTimeout(
+          url,
+          ADMIN_AUTH_FETCH_TIMEOUT_MS
+        );
         if (data && data === 'true') {
           isValid = true;
         } else {
           try {
             const url2 = `${baseUrl}/admin/apikey/test?apiKey=${validatedNodeInfo?.apikey}`;
-            const response2 = await fetch(url2);
-
             // Assuming the response is in plain text and will be 'true' or 'false'
-            const data2 = await response2.text();
+            const data2 = await fetchTextWithTimeout(
+              url2,
+              ADMIN_AUTH_FETCH_TIMEOUT_MS
+            );
             if (data2 === 'true') {
               isValid = true;
             }
-          } catch (error) {}
+          } catch (error) {
+            // Network error or timeout: the key stays untested (isValid false).
+          }
         }
         if (!isValid && isLocal && !isElectron) {
           const resGenerateApiKey = await generateApiKey();
@@ -295,7 +350,7 @@ export const useAuth = () => {
   }, []);
 
   const handleSaveNodeInfo = useCallback(
-    async (nodeInfo) => {
+    async (nodeInfo, options?: NodeCheckOptions) => {
       const incoming = nodeInfo || {
         url: HTTPS_EXT_NODE_QORTAL_LINK,
         apikey: '',
@@ -322,6 +377,9 @@ export const useAuth = () => {
       // Without this the cached name from the previous node persists, and
       // chain interactions that require a registered name fail after a
       // private->public switch ("a registered name is needed").
+      // Skipped (not deferred) when the caller fetches it itself: a late
+      // answer for the previous session's account could land after the new one.
+      if (options?.refreshUserInfo === false) return;
       try {
         const userResponse = await window.sendMessage('userInfo');
         if (userResponse && !userResponse.error) {
@@ -334,40 +392,45 @@ export const useAuth = () => {
     [setIsRunningPublicNode, setSelectedNode, setUserInfo]
   );
 
-  const isNodeValid = useCallback(async (): Promise<boolean> => {
-    try {
-      const currentSelectedNode = store.get(selectedNodeInfoAtom);
-      const isCurrentLocalNode = isLocalNodeUrl(currentSelectedNode?.url);
+  const isNodeValid = useCallback(
+    async (options?: NodeCheckOptions): Promise<boolean> => {
+      const startedAt = performance.now();
+      let isCurrentLocalNode = false;
+      let isNodeOk = false;
+      try {
+        const currentSelectedNode = store.get(selectedNodeInfoAtom);
+        isCurrentLocalNode = isLocalNodeUrl(currentSelectedNode?.url);
 
-      if (isCurrentLocalNode) {
-        const payload = {
-          apikey: '',
-          url: getDefaultLocalNodeUrl(),
-        };
-        const { isValid, validatedNodeInfo } = await validateApiKey(payload);
-
-        if (isValid) {
-          await handleSaveNodeInfo(validatedNodeInfo);
-          return true;
-        } else {
-          return false;
-        }
-      } else {
-        const payload = currentSelectedNode;
+        const payload = isCurrentLocalNode
+          ? {
+              apikey: '',
+              url: getDefaultLocalNodeUrl(),
+            }
+          : currentSelectedNode;
         if (!payload) return false;
         const { isValid, validatedNodeInfo } = await validateApiKey(payload);
 
         if (isValid) {
-          await handleSaveNodeInfo(validatedNodeInfo);
+          await handleSaveNodeInfo(validatedNodeInfo, options);
+          isNodeOk = true;
           return true;
         } else {
           return false;
         }
+      } catch (error) {
+        return false;
+      } finally {
+        recordUnlockTiming(
+          'node-check',
+          performance.now() - startedAt,
+          `${isNodeOk ? 'ok' : 'failed'}, ${
+            isCurrentLocalNode ? 'local node' : 'remote node'
+          }`
+        );
       }
-    } catch (error) {
-      return false;
-    }
-  }, [store, validateApiKey, handleSaveNodeInfo]);
+    },
+    [store, validateApiKey, handleSaveNodeInfo]
+  );
 
   const balanceSetInterval = useCallback(() => {
     try {
@@ -430,10 +493,17 @@ export const useAuth = () => {
     try {
       const currentSelectedNode = store.get(selectedNodeInfoAtom);
       if (!isLocalNodeUrl(currentSelectedNode?.url)) return true;
-      const res = await fetch(HTTP_LOCALHOST_12391 + '/admin/status');
-      if (!res?.ok) return false;
-      const data = await res.json();
-      if (!isLocalCoreStatusSynced(data)) {
+      const status = await withFetchTimeout(
+        ADMIN_STATUS_FETCH_TIMEOUT_MS,
+        async (signal) => {
+          const res = await fetch(HTTP_LOCALHOST_12391 + '/admin/status', {
+            signal,
+          });
+          return res?.ok ? { data: await res.json() } : null;
+        }
+      );
+      if (!status) return false;
+      if (!isLocalCoreStatusSynced(status.data)) {
         if (enableAuthWhenSyncing) {
           return true;
         }
@@ -451,6 +521,7 @@ export const useAuth = () => {
       skipToPublic?: boolean,
       skipLocalCheck?: boolean
     ): Promise<boolean> => {
+      const unlockStartedAt = performance.now();
       if (authenticateInFlightRef.current) {
         return false;
       }
@@ -481,6 +552,11 @@ export const useAuth = () => {
             markWalletUnlockedInSession(walletAddress);
             setAuthenticatePassword('');
             setExtstate('authenticated');
+            recordUnlockTiming(
+              'unlock',
+              performance.now() - unlockStartedAt,
+              'resumed session'
+            );
             setWalletToBeDecryptedError('');
             setIsLoading(false);
 
@@ -510,20 +586,37 @@ export const useAuth = () => {
           }
         }
 
-        const response = await window.sendMessage(
-          'decryptWallet',
-          {
-            password,
-            wallet,
-          },
-          TIME_MINUTES_2_IN_MILLISECONDS
-        );
+        const decryptStartedAt = performance.now();
+        let decryptOutcome = 'error';
+        let response;
+        try {
+          response = await window.sendMessage(
+            'decryptWallet',
+            {
+              password,
+              wallet,
+            },
+            TIME_MINUTES_2_IN_MILLISECONDS
+          );
+          decryptOutcome = response && !response.error ? 'ok' : 'failed';
+        } finally {
+          recordUnlockTiming(
+            'decrypt',
+            performance.now() - decryptStartedAt,
+            decryptOutcome
+          );
+        }
 
         if (response && !response.error) {
           saveLastAuthenticatedWalletAddress(wallet?.address0);
           markWalletUnlockedInSession(wallet?.address0);
           setAuthenticatePassword('');
           setExtstate('authenticated');
+          recordUnlockTiming(
+            'unlock',
+            performance.now() - unlockStartedAt,
+            skipLocalCheck ? 'fingerprint' : 'password'
+          );
           setWalletToBeDecryptedError('');
           setIsLoading(false);
 
