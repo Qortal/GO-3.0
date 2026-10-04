@@ -5,6 +5,7 @@ import { SAFE_AREA_BOTTOM } from '../../utils/mobileSafeArea';
 import { emitEmojiPanelSelection, emitGifPanelSelection } from './emojiPanelBus';
 import { ChatGifPicker } from '../Chat/gifs/ChatGifPicker';
 import { EmojiGifStage } from '../Chat/gifs/EmojiGifStage';
+import { PHONE_EMOJI_PICKER_EMOJI_PX } from '../Chat/messageActionSizes';
 import {
   EMOJI_GIF_SWITCH_HEIGHT,
   EmojiGifSwitch,
@@ -84,7 +85,8 @@ export const MobileEmojiPanel = ({
         '& .EmojiPickerReact': {
           border: 'none !important',
           borderRadius: '0 !important',
-          '--epr-emoji-size': '24px !important',
+          // Same glyph size as the message-toolbar picker on phones.
+          '--epr-emoji-size': `${PHONE_EMOJI_PICKER_EMOJI_PX}px !important`,
           '--epr-emoji-padding': '4px !important',
           '--epr-emoji-fullsize':
             'calc(var(--epr-emoji-size) + var(--epr-emoji-padding) * 2) !important',

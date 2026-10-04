@@ -22,12 +22,42 @@ import { LoadingButton } from '@mui/lab';
 import ErrorIcon from '@mui/icons-material/Error';
 import { useTranslation } from 'react-i18next';
 import { MAX_SIZE_AVATAR } from '../constants/constants.ts';
+import { useAtomValue } from 'jotai';
+import { userInfoAtom } from '../atoms/global';
+import { useQdnAvatar } from '../lib/qdnAvatars';
+import { useOwnQdnAvatarRefresh } from '../hooks/useOwnQdnAvatarRefresh';
+import { useFullSizeQdnAvatarSrc } from '../hooks/useFullSizeQdnAvatarSrc';
+import { applyPublishedOwnAvatar } from '../utils/ownQdnAvatarPublish';
 
-export const MainAvatar = ({ myName, balance, setOpenSnack, setInfoSnack }) => {
+/** The signed-in wallet's address when it owns `name`, else ''. */
+function ownAddressFor(userInfo: unknown, name: string | undefined): string {
+  const info = (userInfo ?? {}) as { address?: unknown; name?: unknown };
+  const address = typeof info.address === 'string' ? info.address : '';
+  const infoName = typeof info.name === 'string' ? info.name.trim() : '';
+  if (!address || !name?.trim()) return '';
+  return infoName.toLowerCase() === name.trim().toLowerCase() ? address : '';
+}
+
+export const MainAvatar = ({
+  myName,
+  balance,
+  setOpenSnack,
+  setInfoSnack,
+  address = undefined,
+}) => {
   const [hasAvatar, setHasAvatar] = useState(false);
   const [avatarFile, setAvatarFile] = useState(null);
   const [tempAvatar, setTempAvatar] = useState(null);
   const { show } = useContext(QORTAL_APP_CONTEXT);
+  // A cached image proves the avatar exists even when the node is too slow
+  // to answer the search below.
+  const cachedAvatar = useQdnAvatar(myName, { priority: 'high' });
+  useOwnQdnAvatarRefresh(myName, cachedAvatar.status);
+  // 138 px: the cached copy (at most 128 px) is replaced by the full-size
+  // image once it has loaded.
+  const { src: avatarSrc } = useFullSizeQdnAvatarSrc(myName, cachedAvatar);
+  const userInfo = useAtomValue(userInfoAtom);
+  const walletAddress = address || ownAddressFor(userInfo, myName);
 
   const [anchorEl, setAnchorEl] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -119,7 +149,12 @@ export const MainAvatar = ({ myName, balance, setOpenSnack, setInfoSnack }) => {
           });
       });
       setAvatarFile(null);
-      setTempAvatar(`data:image/webp;base64,${avatarBase64}`);
+      const publishedAvatar = `data:image/webp;base64,${avatarBase64}`;
+      setTempAvatar(publishedAvatar);
+      // Show the new avatar everywhere now, not after the cache's next refresh
+      // (a node that has not caught up would still hand back the old one),
+      // and in the wallet picker before login.
+      void applyPublishedOwnAvatar(myName, publishedAvatar, walletAddress);
       handleClose();
     } catch (error) {
       if (error?.message) {
@@ -176,7 +211,7 @@ export const MainAvatar = ({ myName, balance, setOpenSnack, setInfoSnack }) => {
     );
   }
 
-  if (hasAvatar) {
+  if (hasAvatar || cachedAvatar.source === 'cache') {
     return (
       <>
         <Avatar
@@ -184,7 +219,7 @@ export const MainAvatar = ({ myName, balance, setOpenSnack, setInfoSnack }) => {
             height: '138px',
             width: '138px',
           }}
-          src={`${getBaseApiReact()}/arbitrary/THUMBNAIL/${myName}/qortal_avatar?async=true`}
+          src={avatarSrc}
           alt={myName}
         >
           {myName?.charAt(0)}

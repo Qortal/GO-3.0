@@ -1,3 +1,5 @@
+import { prepareCrashReload } from '../lib/appLock';
+
 /**
  * Last-resort screen for an error that escaped every feature-level boundary.
  * Deliberately plain DOM with inline styles: the theme provider sits inside
@@ -43,6 +45,16 @@ const detailStyle: React.CSSProperties = {
   wordBreak: 'break-word',
 };
 
+/**
+ * A Q-App can crash GO on purpose, including while it is locked, so the reload
+ * must never resume the wallet: it goes back through the fingerprint or
+ * password unlock, which the account picker opens straight away.
+ */
+const reloadAfterCrash = () => {
+  prepareCrashReload();
+  window.location.reload();
+};
+
 const RootCrashFallback = ({ error }: { error: Error | null }) => (
   <div style={containerStyle}>
     <div style={{ fontSize: 20, fontWeight: 600 }}>Qortal Go hit a problem</div>
@@ -50,11 +62,7 @@ const RootCrashFallback = ({ error }: { error: Error | null }) => (
       The app stopped unexpectedly. Reloading usually fixes it — your account
       and messages are stored on the device and are not affected.
     </div>
-    <button
-      onClick={() => window.location.reload()}
-      style={buttonStyle}
-      type="button"
-    >
+    <button onClick={reloadAfterCrash} style={buttonStyle} type="button">
       Reload
     </button>
     {error ? (

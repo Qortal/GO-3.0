@@ -66,6 +66,7 @@ import { useAndroidBack, BACK_PRIORITY } from '../../utils/androidBack';
 import { WebSocketActive } from './WebsocketActive';
 import { WebSocketNotifications } from './WebsocketNotifications';
 import { NotificationStateSync } from '../App/NotificationStateSync';
+import { PresenceStatusSync } from '../App/PresenceStatusSync';
 import {
   getGroupAdmins,
   getGroupMembers,
@@ -159,6 +160,10 @@ import {
 } from '../../constants/constants';
 import { useWebsocketStatus } from './useWebsocketStatus';
 import { DirectsSidebar } from './DirectsSidebar';
+import {
+  MobileChatListPager,
+  isChatListSwipeEnabled,
+} from './MobileChatListPager';
 import { GlobalChatWidget } from './GlobalChatWidget';
 import { openQChatTab, QCHAT_INTERNAL_TAB_ID } from '../../utils/openQChatTab';
 import { HubOnboardingTour } from '../Onboarding/HubOnboardingTour';
@@ -169,6 +174,7 @@ import {
   setLastOpenChat,
 } from '../../utils/chatPersistence';
 import { mobileAppsShellSx } from '../Mobile/mobileLayout';
+import { rememberQdnAvatarPrewarmPeerNames } from '../../lib/qdnAvatars/prewarmSources';
 import {
   MOBILE_PANEL_HEADER_OFFSET,
   MobilePanelHeader,
@@ -1210,13 +1216,6 @@ export const Group = ({
     }
   }, []);
   const [isRunningPublicNode] = useAtom(isRunningPublicNodeAtom);
-  const [avatarPreviewData, setAvatarPreviewData] = useState<{
-    alt: string;
-    src: string;
-  } | null>(null);
-  const [directAvatarLoaded, setDirectAvatarLoaded] = useState<
-    Record<string, boolean>
-  >({});
 
   useEffect(() => {
     if (desktopViewMode === 'apps' || desktopViewMode === 'dev') {
@@ -2252,6 +2251,8 @@ export const Group = ({
       if (address && name) knownNames[address] = name;
     }
     if (Object.keys(knownNames).length) {
+      // Reticulum DMs only carry addresses: the avatar prewarm needs names.
+      rememberQdnAvatarPrewarmPeerNames(knownNames);
       setReticulumDirectNamesByAddress((previous) => {
         const changed = Object.entries(knownNames).some(
           ([address, name]) => previous[address] !== name
@@ -2306,6 +2307,7 @@ export const Group = ({
         }
       }
       if (!entries.length) return;
+      rememberQdnAvatarPrewarmPeerNames(Object.fromEntries(entries));
       setReticulumDirectNamesByAddress((previous) => {
         const additions = Object.fromEntries(entries);
         const changed = Object.entries(additions).some(
@@ -4469,27 +4471,6 @@ export const Group = ({
     setFirstSecretKeyInCreation(true);
   }, []);
 
-  const getUserAvatarUrl = useCallback((name?: string) => {
-    return name
-      ? `${getBaseApiReact()}/arbitrary/THUMBNAIL/${name}/qortal_avatar?async=true`
-      : '';
-  }, []);
-
-  const openAvatarPreview = useCallback(
-    (src: string | null, alt?: string) => {
-      if (!src) return;
-      setAvatarPreviewData({
-        src,
-        alt: alt || '',
-      });
-    },
-    [setAvatarPreviewData]
-  );
-
-  const closeAvatarPreview = useCallback(() => {
-    setAvatarPreviewData(null);
-  }, [setAvatarPreviewData]);
-
   const goToHome = useCallback(async () => {
     setDesktopViewMode('home');
 
@@ -5068,6 +5049,45 @@ export const Group = ({
         (newChat || selectedDirect)
       );
 
+    const renderGroupList = (keepPhoneList: boolean) => (
+      <GroupList
+        selectGroupFunc={selectGroupFunc}
+        setDesktopSideView={setDesktopSideViewFromRail}
+        desktopSideView={desktopSideView}
+        directChatHasUnread={directChatHasUnread}
+        directChatUnreadCount={reticulumDirectUnreadCount}
+        chatMode={chatMode}
+        selectedGroup={selectedGroup}
+        getUserSettings={getUserSettings}
+        setOpenAddGroup={setOpenAddGroup}
+        setOpenFindGroup={setOpenFindGroup}
+        setIsOpenBlockedUserModal={setIsOpenBlockedUserModal}
+        myAddress={myAddress}
+        reticulumChatEnabled={reticulumChatEnabled}
+        keepPhoneList={keepPhoneList}
+      />
+    );
+    const renderDirectsSidebar = () => (
+      <DirectsSidebar
+        setDesktopSideView={setDesktopSideViewFromRail}
+        desktopSideView={desktopSideView}
+        directChatHasUnread={directChatHasUnread}
+        directs={displayDirects}
+        dmFriendsByAddress={dmFriendsByAddress}
+        setSelectedDirect={selectDirectFromList}
+        setNewChat={startNewChatFromList}
+        setIsOpenDrawer={setIsOpenDrawer}
+        getTimestampEnterChat={getTimestampEnterChat}
+        selectedDirect={selectedDirect}
+        timestampEnterData={timestampEnterData}
+        timeDifferenceForNotificationChats={timeDifferenceForNotificationChats}
+        myAddress={myAddress}
+        isRunningPublicNode={isRunningPublicNode}
+        setIsOpenBlockedUserModal={setIsOpenBlockedUserModal}
+        reticulumChatEnabled={reticulumChatEnabled}
+      />
+    );
+
     return (
       <Box
         onTouchStart={
@@ -5200,61 +5220,36 @@ export const Group = ({
               : {}),
           }}
         >
-        {!showDirectsList || reticulumChatEnabled ? (
-          // The DM list owns the whole column on phones; the group rail would
-          // only steal 72px from it. Hidden rather than unmounted so the list
-          // keeps its order, avatars and unread state.
-          <Box
-            sx={{
-              display:
-                isMobile && showDirectsList ? 'none' : 'contents',
-            }}
-          >
-          <GroupList
-            selectGroupFunc={selectGroupFunc}
-            setDesktopSideView={setDesktopSideViewFromRail}
-            desktopSideView={desktopSideView}
-            directChatHasUnread={directChatHasUnread}
-            directChatUnreadCount={reticulumDirectUnreadCount}
-            chatMode={chatMode}
-            selectedGroup={selectedGroup}
-            getUserSettings={getUserSettings}
-            setOpenAddGroup={setOpenAddGroup}
-            setOpenFindGroup={setOpenFindGroup}
-            setIsOpenBlockedUserModal={setIsOpenBlockedUserModal}
-            myAddress={myAddress}
-            reticulumChatEnabled={reticulumChatEnabled}
-          />
-          </Box>
-        ) : null}
-        {showDirectsList && (
-          <DirectsSidebar
-            setDesktopSideView={setDesktopSideViewFromRail}
-            desktopSideView={desktopSideView}
-            directChatHasUnread={directChatHasUnread}
-            directs={displayDirects}
-            dmFriendsByAddress={dmFriendsByAddress}
-            getUserAvatarUrl={getUserAvatarUrl}
-            directAvatarLoaded={directAvatarLoaded}
-            setDirectAvatarLoaded={setDirectAvatarLoaded}
-            setSelectedDirect={selectDirectFromList}
-            setNewChat={startNewChatFromList}
-            setIsOpenDrawer={setIsOpenDrawer}
-            getTimestampEnterChat={getTimestampEnterChat}
-            selectedDirect={selectedDirect}
-            timestampEnterData={timestampEnterData}
-            timeDifferenceForNotificationChats={
-              timeDifferenceForNotificationChats
-            }
-            myAddress={myAddress}
-            openAvatarPreview={openAvatarPreview}
-            avatarPreviewData={avatarPreviewData}
-            closeAvatarPreview={closeAvatarPreview}
-            isRunningPublicNode={isRunningPublicNode}
-            setIsOpenBlockedUserModal={setIsOpenBlockedUserModal}
-            reticulumChatEnabled={reticulumChatEnabled}
-          />
-        )}
+          {isMobile && reticulumChatEnabled ? (
+            // Phones: Groups and DMs are two pages side by side on the home
+            // screen, so a sideways swipe moves between them like the switch
+            // does. Over an open chat only the current list shows, as before.
+            <MobileChatListPager
+              swipeEnabled={isChatListSwipeEnabled({ inChatDetail, isVisible })}
+              scope={desktopSideView === 'directs' ? 'directs' : 'groups'}
+              onScopeChange={setDesktopSideViewFromRail}
+              renderGroups={renderGroupList}
+              renderDirects={(mounted) =>
+                mounted ? renderDirectsSidebar() : null
+              }
+            />
+          ) : (
+            <>
+              {!showDirectsList || reticulumChatEnabled ? (
+                // The DM list owns the whole column on phones; the group rail
+                // would only steal 72px from it. Hidden rather than unmounted
+                // so the list keeps its order, avatars and unread state.
+                <Box
+                  sx={{
+                    display: isMobile && showDirectsList ? 'none' : 'contents',
+                  }}
+                >
+                  {renderGroupList(false)}
+                </Box>
+              ) : null}
+              {showDirectsList && renderDirectsSidebar()}
+            </>
+          )}
         </Box>
 
         <Box
@@ -6066,9 +6061,6 @@ export const Group = ({
                 directChatHasUnread={directChatHasUnread}
                 directs={displayDirects}
                 dmFriendsByAddress={dmFriendsByAddress}
-                getUserAvatarUrl={getUserAvatarUrl}
-                directAvatarLoaded={directAvatarLoaded}
-                setDirectAvatarLoaded={setDirectAvatarLoaded}
                 setSelectedDirect={setSelectedDirect}
                 setNewChat={setNewChat}
                 setIsOpenDrawer={setIsOpenDrawer}
@@ -6079,9 +6071,6 @@ export const Group = ({
                   timeDifferenceForNotificationChats
                 }
                 myAddress={myAddress}
-                openAvatarPreview={openAvatarPreview}
-                avatarPreviewData={avatarPreviewData}
-                closeAvatarPreview={closeAvatarPreview}
                 isRunningPublicNode={isRunningPublicNode}
                 setIsOpenBlockedUserModal={setIsOpenBlockedUserModal}
                 reticulumChatEnabled={reticulumChatEnabled}
@@ -6170,6 +6159,7 @@ export const Group = ({
         userName={userInfo?.name}
       />
       <NotificationStateSync myAddress={userInfo?.address || myAddress} />
+      <PresenceStatusSync myAddress={userInfo?.address || myAddress} />
       <WebSocketActive
         myAddress={myAddress}
         setIsLoadingGroups={setIsLoadingGroups}
@@ -6296,15 +6286,12 @@ export const Group = ({
         {!chatWidgetClosed && !isMobile && (
           <GlobalChatWidget
             directs={displayDirects}
-            getUserAvatarUrl={getUserAvatarUrl}
             directChatHasUnread={directChatHasUnread}
             timestampEnterData={timestampEnterData}
             timeDifferenceForNotificationChats={
               timeDifferenceForNotificationChats
             }
             myAddress={myAddress}
-            directAvatarLoaded={directAvatarLoaded}
-            setDirectAvatarLoaded={setDirectAvatarLoaded}
             getTimestampEnterChat={getTimestampEnterChat}
             getSecretKeyForGroup={getSecretKeyForGroup}
             onClose={() => setChatWidgetClosed(true)}

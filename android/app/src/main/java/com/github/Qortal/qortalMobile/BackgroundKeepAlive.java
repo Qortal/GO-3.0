@@ -19,6 +19,7 @@ import android.view.View;
 import android.webkit.WebView;
 
 import java.lang.ref.WeakReference;
+import java.util.List;
 
 /**
  * Keeps GO's chat engine running after GO leaves the screen.
@@ -34,8 +35,15 @@ import java.lang.ref.WeakReference;
  * With the screen off the CPU sleeps unless a partial wake lock is held, so
  * one is taken on the charger and during the short outbox window. Some
  * vendors (vivo, measured) freeze the whole process anyway; a late service
- * tick while the wake lock is held records that as a vendor freeze so the
- * page can point the user at the phone's battery settings.
+ * tick while the wake lock is held records that as a vendor freeze in a
+ * short log ({@link VendorFreezeLog}). The page decides from that log whether
+ * and when to point the user at the phone's battery settings.
+ *
+ * On Android 15+, after 6 h off screen on battery (mode charging or off), GO
+ * pauses the status service and the hubs until it is opened
+ * ({@link KeepAlivePolicy#shouldPauseOnBattery}, see {@link #checkBatteryPause}):
+ * GO's own limit, since the service runs as remoteMessaging, which Android
+ * does not limit.
  *
  * Process-wide singleton. State is guarded by {@code this}; the WebView and
  * the wake lock are only touched on the main thread (see {@link #evaluate}).
@@ -46,17 +54,30 @@ public final class BackgroundKeepAlive {
     private static final String KEY_MODE = "mode";
     private static final String KEY_FREEZE_COUNT = "vendor_freeze_count";
     private static final String KEY_FREEZE_LAST_AT = "vendor_freeze_last_at";
+    /**
+     * Old builds set this on every freeze (it opened the modal notice). The
+     * page owns the notice policy now: the stale value is removed at start
+     * and State.vendorFreezeHintPending is always false.
+     */
     private static final String KEY_FREEZE_HINT_PENDING = "vendor_freeze_hint_pending";
+    /** Recent freezes, oldest first (see {@link VendorFreezeLog#trim} for which stay). */
+    private static final String KEY_FREEZE_LOG = "vendor_freeze_log";
     /** Renewed from the 25 s status service tick; a safety net if that stops. */
     private static final long WAKE_LOCK_TIMEOUT_MS = 5L * 60_000L;
     /** The framework hides the window after onStop; re-show after it did (measured). */
     private static final long STOP_REAPPLY_DELAY_MS = 500L;
+    /**
+     * A battery pause a tick found due waits this long, so power broadcasts
+     * queued behind that tick (after a vendor freeze) run first.
+     */
+    private static final long BATTERY_PAUSE_SETTLE_MS = 2_000L;
 
     /** Events for the Capacitor plugin (it forwards them to the page). */
     public interface Listener {
         void onRelayProfileChanged(String profile);
 
-        void onVendorFreezeDetected(int count, long lastAt, String manufacturer);
+        /** {@code entry} is the freeze just appended to the log (entry.at = lastAt). */
+        void onVendorFreezeDetected(int count, VendorFreezeLog.Entry entry, String manufacturer);
     }
 
     /** Snapshot for getBackgroundSyncState(). */
@@ -69,8 +90,13 @@ public final class BackgroundKeepAlive {
         public int vendorFreezeCount;
         /** Wall-clock ms of the last vendor freeze, or null. */
         public Long vendorFreezeLastAt;
+        /** Always false: kept for older pages, the page owns the notice policy. */
         public boolean vendorFreezeHintPending;
         public String manufacturer;
+        /** Recent freezes, oldest first (at most {@link VendorFreezeLog#MAX_ENTRIES}). */
+        public List<VendorFreezeLog.Entry> vendorFreezeRecent;
+        /** GO is exempt from battery optimisations right now; null when unknown. */
+        public Boolean ignoringBatteryOptimizations;
     }
 
     /** For the status notification: is the page still running off screen? */
@@ -125,8 +151,11 @@ public final class BackgroundKeepAlive {
         new KeepAlivePolicy.RelayProfileTracker();
     private final KeepAlivePolicy.VendorFreezeDetector freezeDetector =
         new KeepAlivePolicy.VendorFreezeDetector();
+    /** Serialises the read-modify-write of the freeze count and log. */
+    private final Object freezeLogLock = new Object();
     private final Runnable evaluateRunnable = this::evaluate;
     private final Runnable deadlineRunnable = this::evaluate;
+    private final Runnable batteryPauseCheckRunnable = this::checkBatteryPause;
     /**
      * The immediate evaluate after onStop runs before the framework's hide
      * traversal (the window is still visible then), so this late pass must
@@ -139,7 +168,8 @@ public final class BackgroundKeepAlive {
 
     // Guarded by this.
     private String mode;
-    private boolean charging;
+    /** Charger state and the last unplug, seen or inferred (GO's battery limit). */
+    private final KeepAlivePolicy.BatteryStretchTracker battery;
     private boolean unmetered;
     private boolean activityStopped;
     private long stoppedAtMs;
@@ -152,11 +182,17 @@ public final class BackgroundKeepAlive {
     private long keepAliveEndedAtMs = -1L;
     /** activityStopped as of the last evaluate, to spot the edge for the status text. */
     private boolean evaluatedStopped;
-    /** Service type the last evaluate() saw; an edge re-types the running service. */
-    private String evaluatedServiceType = KeepAlivePolicy.SERVICE_TYPE_DATA_SYNC;
     private WeakReference<WebView> webViewRef = new WeakReference<>(null);
     private Listener listener;
     private boolean evaluatePosted;
+    /**
+     * Charger and exemption at the last watched tick (or at arm): the state
+     * when a freeze the next tick reveals began. GO cannot look while frozen,
+     * and the tick that sees the freeze usually runs after screen-on, when
+     * the phone may already be off the charger.
+     */
+    private boolean lastWatchedCharging;
+    private boolean lastWatchedIgnoring;
 
     // Main thread only.
     /** Our last dispatch told Chromium VISIBLE while the Activity is stopped. */
@@ -169,7 +205,11 @@ public final class BackgroundKeepAlive {
         this.appContext = appContext;
         this.prefs = appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         this.mode = KeepAlivePolicy.modeOrDefault(prefs.getString(KEY_MODE, null));
-        this.charging = readChargingSticky();
+        dropStaleFreezeHint();
+        BatteryReading reading = readBattery();
+        this.battery = new KeepAlivePolicy.BatteryStretchTracker(
+            reading != null && reading.plugged
+        );
         this.unmetered = readUnmeteredNow();
         registerPowerReceiver();
         registerNetworkCallback();
@@ -207,10 +247,13 @@ public final class BackgroundKeepAlive {
     public void onActivityStart() {
         synchronized (this) {
             activityStopped = false;
-            // Opening GO resets the dataSync time limit (see the service).
+            // Opening GO ends a pause (Android's dataSync time limit or GO's
+            // own battery limit; the service resumes in onAppForeground).
             suspended = false;
         }
         mainHandler.removeCallbacks(stopReapplyRunnable);
+        // On screen: no battery pause (checkBatteryPause would skip it anyway).
+        mainHandler.removeCallbacks(batteryPauseCheckRunnable);
         requestEvaluate();
     }
 
@@ -240,11 +283,6 @@ public final class BackgroundKeepAlive {
         return sessionActive;
     }
 
-    /** Foreground service type the status service should run as now. */
-    public synchronized String foregroundServiceType() {
-        return KeepAlivePolicy.foregroundServiceType(mode, charging, Build.VERSION.SDK_INT);
-    }
-
     /** The status service entered or left the foreground. */
     public void setServiceRunning(boolean running) {
         synchronized (this) {
@@ -254,7 +292,10 @@ public final class BackgroundKeepAlive {
         requestEvaluate();
     }
 
-    /** Android stopped the status service at its time limit; resume when GO is opened. */
+    /**
+     * The status service paused until GO is opened: Android's time limit
+     * (onTimeout) or GO's own battery limit (see {@link #checkBatteryPause}).
+     */
     public void onForegroundServiceTimeout() {
         synchronized (this) {
             suspended = true;
@@ -279,8 +320,9 @@ public final class BackgroundKeepAlive {
         requestEvaluate();
     }
 
+    /** Kept for older pages; harmless (the flag is never set any more). */
     public void acknowledgeVendorFreezeHint() {
-        prefs.edit().putBoolean(KEY_FREEZE_HINT_PENDING, false).apply();
+        prefs.edit().remove(KEY_FREEZE_HINT_PENDING).apply();
     }
 
     public synchronized void setListener(Listener next) {
@@ -295,7 +337,7 @@ public final class BackgroundKeepAlive {
         State state = new State();
         synchronized (this) {
             state.mode = mode;
-            state.charging = charging;
+            state.charging = battery.charging();
             state.unmetered = unmetered;
             state.relayProfile = relayTracker.profile();
             state.keepAliveActive = keepAliveActive;
@@ -303,8 +345,10 @@ public final class BackgroundKeepAlive {
         state.vendorFreezeCount = prefs.getInt(KEY_FREEZE_COUNT, 0);
         long lastAt = prefs.getLong(KEY_FREEZE_LAST_AT, 0L);
         state.vendorFreezeLastAt = lastAt > 0 ? lastAt : null;
-        state.vendorFreezeHintPending = prefs.getBoolean(KEY_FREEZE_HINT_PENDING, false);
+        state.vendorFreezeHintPending = false;
         state.manufacturer = manufacturer();
+        state.vendorFreezeRecent = VendorFreezeLog.decode(readFreezeLog());
+        state.ignoringBatteryOptimizations = readIgnoringBatteryOptimizations();
         return state;
     }
 
@@ -318,21 +362,95 @@ public final class BackgroundKeepAlive {
 
     /**
      * The status service's 25 s tick (main thread): renews the wake lock,
-     * re-reads the charger and watches for vendor freezes.
+     * re-reads the charger and battery level, watches for vendor freezes and
+     * schedules GO's own battery limit ({@link #checkBatteryPause}). A tick
+     * that arrives late (CPU asleep, or a vendor freeze) just pauses late;
+     * the stretch is measured in elapsedRealtime.
      */
     public void onServiceTick() {
         long now = SystemClock.elapsedRealtime();
-        boolean chargingNow = readChargingSticky();
+        BatteryReading reading = readBattery();
         boolean held = wakeLock != null && wakeLock.isHeld();
-        boolean frozen;
+        boolean watching;
         synchronized (this) {
-            charging = chargingNow;
-            frozen = freezeDetector.onTick(now, keepAliveActive && held);
+            watching = keepAliveActive && held;
         }
-        if (frozen) recordVendorFreeze();
+        // A binder call: outside the lock, and only while watching.
+        boolean ignoringNow = watching && isIgnoringBatteryOptimizations();
+        long freezeGapMs;
+        boolean chargingBefore;
+        boolean ignoringBefore;
+        boolean batteryPauseDue;
+        synchronized (this) {
+            noteBatteryLocked(reading, now);
+            boolean chargingNow = battery.charging();
+            chargingBefore = lastWatchedCharging;
+            ignoringBefore = lastWatchedIgnoring;
+            freezeGapMs = freezeDetector.onTickGap(now, watching);
+            if (watching) {
+                lastWatchedCharging = chargingNow;
+                lastWatchedIgnoring = ignoringNow;
+            }
+            batteryPauseDue = serviceRunning
+                && KeepAlivePolicy.shouldPauseOnBattery(batteryInputsLocked(now));
+        }
+        if (freezeGapMs >= 0) {
+            // Exempt only if it was so on both sides of the freeze.
+            recordVendorFreeze(freezeGapMs, ignoringBefore && ignoringNow, chargingBefore);
+        }
+        if (batteryPauseDue) {
+            // Not in this message: after a vendor freeze, the power
+            // broadcasts that arrived while GO was frozen are queued behind
+            // this tick, and one may show a charge GO has not seen yet.
+            mainHandler.removeCallbacks(batteryPauseCheckRunnable);
+            mainHandler.postDelayed(batteryPauseCheckRunnable, BATTERY_PAUSE_SETTLE_MS);
+        }
         evaluate();
         // A re-show is cheap and covers a framework hide the sentinel missed.
         reapplyVisibleIfKept();
+    }
+
+    /**
+     * GO's own battery limit (Android 15+): pause the status service and the
+     * hubs until GO is opened, once GO has been off screen on battery for
+     * 6 h ({@link KeepAlivePolicy#shouldPauseOnBattery}). Posted by a tick
+     * that found the pause due, {@link #BATTERY_PAUSE_SETTLE_MS} later, and
+     * checks everything again with a fresh charger reading. Main thread:
+     * onActivityStart runs there too, so GO coming on screen cannot slip in
+     * between this check and the pause. The pause sets suspended (only
+     * opening GO clears it), so it happens once.
+     */
+    private void checkBatteryPause() {
+        long now = SystemClock.elapsedRealtime();
+        BatteryReading reading = readBattery();
+        boolean chargerChanged;
+        boolean due;
+        long stretchMs = 0L;
+        synchronized (this) {
+            chargerChanged = noteBatteryLocked(reading, now);
+            KeepAlivePolicy.Inputs in = batteryInputsLocked(now);
+            due = serviceRunning && KeepAlivePolicy.shouldPauseOnBattery(in);
+            if (due) stretchMs = now - KeepAlivePolicy.batteryStretchStartMs(in);
+        }
+        if (chargerChanged) requestEvaluate();
+        if (!due) return;
+        Log.i(TAG, "Off screen on battery for " + (stretchMs / 60_000L)
+            + " min; pausing background sync until GO is opened");
+        QortalForegroundService.pauseOnBattery();
+    }
+
+    /** Inputs for GO's battery limit. Caller holds {@code this}. */
+    private KeepAlivePolicy.Inputs batteryInputsLocked(long now) {
+        KeepAlivePolicy.Inputs in = new KeepAlivePolicy.Inputs();
+        in.mode = mode;
+        in.activityStopped = activityStopped;
+        in.stoppedAtMs = stoppedAtMs;
+        in.nowMs = now;
+        in.charging = battery.charging();
+        in.unpluggedAtMs = battery.unpluggedAtMs();
+        in.suspended = suspended;
+        in.sdkInt = Build.VERSION.SDK_INT;
+        return in;
     }
 
     /**
@@ -375,7 +493,6 @@ public final class BackgroundKeepAlive {
         WebView webView;
         Listener currentListener;
         boolean statusEdge;
-        boolean serviceTypeEdge;
         synchronized (this) {
             evaluatePosted = false;
             webView = webViewRef.get();
@@ -384,7 +501,7 @@ public final class BackgroundKeepAlive {
             in.activityStopped = activityStopped;
             in.stoppedAtMs = stoppedAtMs;
             in.nowMs = now;
-            in.charging = charging;
+            in.charging = battery.charging();
             in.outboxPending = outboxPending;
             in.sessionActive = sessionActive && webView != null;
             in.suspended = suspended;
@@ -396,11 +513,7 @@ public final class BackgroundKeepAlive {
             statusEdge = keepAliveActive != keep || evaluatedStopped != stopped;
             keepAliveActive = keep;
             evaluatedStopped = stopped;
-            profileChange = relayTracker.update(charging, unmetered, now);
-            String serviceType =
-                KeepAlivePolicy.foregroundServiceType(mode, charging, Build.VERSION.SDK_INT);
-            serviceTypeEdge = !serviceType.equals(evaluatedServiceType);
-            evaluatedServiceType = serviceType;
+            profileChange = relayTracker.update(in.charging, unmetered, now);
             long outboxEnd = KeepAlivePolicy.msUntilOutboxWindowEnds(in);
             long relayDue = relayTracker.msUntilFull(now);
             nextDeadline = minPositive(outboxEnd, relayDue);
@@ -418,11 +531,6 @@ public final class BackgroundKeepAlive {
             // On screen / off screen / kept awake changed what the status
             // notification should say; it redraws only if its text changed.
             QortalForegroundService.refreshHonestStatus();
-        }
-        if (serviceTypeEdge) {
-            // Plugged in / unplugged or the mode changed: switch between the
-            // capped (dataSync) and uncapped (remoteMessaging) type.
-            QortalForegroundService.refreshForegroundType();
         }
 
         if (profileChange != null) {
@@ -520,8 +628,11 @@ public final class BackgroundKeepAlive {
                 return;
             }
             if (!wasHeld) {
+                boolean ignoringNow = isIgnoringBatteryOptimizations();
                 synchronized (this) {
                     freezeDetector.arm(now);
+                    lastWatchedCharging = battery.charging();
+                    lastWatchedIgnoring = ignoringNow;
                 }
                 Log.i(TAG, "Wake lock held for background sync");
             }
@@ -554,26 +665,82 @@ public final class BackgroundKeepAlive {
         return wakeLock;
     }
 
-    private void recordVendorFreeze() {
-        int count = prefs.getInt(KEY_FREEZE_COUNT, 0) + 1;
-        long lastAt = System.currentTimeMillis();
-        prefs.edit()
-            .putInt(KEY_FREEZE_COUNT, count)
-            .putLong(KEY_FREEZE_LAST_AT, lastAt)
-            .putBoolean(KEY_FREEZE_HINT_PENDING, true)
-            .apply();
-        Log.w(TAG, "Vendor freeze detected (" + count + ") on " + manufacturer());
+    /**
+     * Appends the freeze to the log and tells the page. No hint flag is set:
+     * the page owns the notice policy (significant gaps, episodes, cooldown,
+     * "Don't show again"), so a single freeze never forces a notice.
+     * {@code ignoring} and {@code charging} describe the freeze itself (see
+     * {@link VendorFreezeLog.Entry}), not the moment it was noticed.
+     */
+    private void recordVendorFreeze(long gapMs, boolean ignoring, boolean charging) {
+        VendorFreezeLog.Entry entry = new VendorFreezeLog.Entry(
+            System.currentTimeMillis(),
+            gapMs,
+            ignoring,
+            charging
+        );
+        int count;
+        synchronized (freezeLogLock) {
+            count = prefs.getInt(KEY_FREEZE_COUNT, 0) + 1;
+            prefs.edit()
+                .putInt(KEY_FREEZE_COUNT, count)
+                .putLong(KEY_FREEZE_LAST_AT, entry.at)
+                .putString(KEY_FREEZE_LOG, VendorFreezeLog.append(readFreezeLog(), entry))
+                .apply();
+        }
+        Log.w(TAG, "Vendor freeze detected (" + count + ", gap " + gapMs + " ms, exempt "
+            + entry.ignoring + ", charging " + entry.charging + ") on " + manufacturer());
         Listener currentListener;
         synchronized (this) {
             currentListener = listener;
         }
         if (currentListener != null) {
             try {
-                currentListener.onVendorFreezeDetected(count, lastAt, manufacturer());
+                currentListener.onVendorFreezeDetected(count, entry, manufacturer());
             } catch (RuntimeException error) {
                 Log.w(TAG, "vendorFreezeDetected listener failed", error);
             }
         }
+    }
+
+    private String readFreezeLog() {
+        try {
+            return prefs.getString(KEY_FREEZE_LOG, null);
+        } catch (ClassCastException error) {
+            // Not a string (never written so): start a fresh log.
+            return null;
+        }
+    }
+
+    /** Old builds left this true after any freeze; nothing reads it now. */
+    private void dropStaleFreezeHint() {
+        try {
+            if (prefs.contains(KEY_FREEZE_HINT_PENDING)) {
+                prefs.edit().remove(KEY_FREEZE_HINT_PENDING).apply();
+            }
+        } catch (RuntimeException error) {
+            Log.w(TAG, "Stale freeze hint not removed", error);
+        }
+    }
+
+    /**
+     * GO is on the system's "unrestricted" battery list (deviceidle
+     * whitelist); null when the system cannot say.
+     */
+    public Boolean readIgnoringBatteryOptimizations() {
+        try {
+            PowerManager pm = (PowerManager) appContext.getSystemService(Context.POWER_SERVICE);
+            if (pm == null) return null;
+            return pm.isIgnoringBatteryOptimizations(appContext.getPackageName());
+        } catch (RuntimeException error) {
+            // Not logged: the 25 s tick asks while watching.
+            return null;
+        }
+    }
+
+    /** {@link #readIgnoringBatteryOptimizations}, unknown read as not exempt. */
+    public boolean isIgnoringBatteryOptimizations() {
+        return Boolean.TRUE.equals(readIgnoringBatteryOptimizations());
     }
 
     private static String manufacturer() {
@@ -582,17 +749,51 @@ public final class BackgroundKeepAlive {
 
     // ── Charger and network ─────────────────────────────────────────────────
 
-    private boolean readChargingSticky() {
+    /** Charger and battery level from one sticky ACTION_BATTERY_CHANGED read. */
+    private static final class BatteryReading {
+        final boolean plugged;
+        /** 0-100, or -1 when unknown. */
+        final int levelPct;
+
+        BatteryReading(boolean plugged, int levelPct) {
+            this.plugged = plugged;
+            this.levelPct = levelPct;
+        }
+    }
+
+    /** The current battery state, or null when the system gives none. */
+    private BatteryReading readBattery() {
         try {
             Intent battery = appContext.registerReceiver(
                 null,
                 new IntentFilter(Intent.ACTION_BATTERY_CHANGED)
             );
-            if (battery == null) return charging;
-            return battery.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) != 0;
+            if (battery == null) return null;
+            return new BatteryReading(
+                battery.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) != 0,
+                KeepAlivePolicy.batteryPercent(
+                    battery.getIntExtra(BatteryManager.EXTRA_LEVEL, -1),
+                    battery.getIntExtra(BatteryManager.EXTRA_SCALE, -1)
+                )
+            );
         } catch (RuntimeException error) {
-            return charging;
+            return null;
         }
+    }
+
+    /**
+     * Feeds a battery reading to the tracker (an unplug, or a level that
+     * shows a charge GO did not see, restarts GO's on-battery count). Caller
+     * holds {@code this}. Returns whether the charger state changed.
+     */
+    private boolean noteBatteryLocked(BatteryReading reading, long nowMs) {
+        if (reading == null) return false;
+        boolean changed = battery.onCharging(reading.plugged, nowMs);
+        if (battery.onLevel(reading.levelPct, nowMs)) {
+            Log.i(TAG, "Battery at " + reading.levelPct
+                + "% shows a charge GO did not see; on-battery count starts again");
+        }
+        return changed;
     }
 
     private void registerPowerReceiver() {
@@ -608,9 +809,18 @@ public final class BackgroundKeepAlive {
                 } else {
                     return;
                 }
+                long now = SystemClock.elapsedRealtime();
                 synchronized (BackgroundKeepAlive.this) {
-                    if (charging == plugged) return;
-                    charging = plugged;
+                    if (plugged) {
+                        if (!battery.onCharging(true, now)) return;
+                    } else if (!battery.onPowerDisconnected(now)) {
+                        // Already on battery as far as GO knew (the plug-in
+                        // came while GO was frozen, or a tick saw the
+                        // unplug first): the count starts from now.
+                        Log.i(TAG, "Power disconnected while on battery for GO;"
+                            + " on-battery count starts again");
+                        return;
+                    }
                 }
                 requestEvaluate();
             }

@@ -1,12 +1,10 @@
 import CloseIcon from '@mui/icons-material/Close';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
-import MailOutlineIcon from '@mui/icons-material/MailOutline';
 import NotificationsRoundedIcon from '@mui/icons-material/NotificationsRounded';
 import SettingsIcon from '@mui/icons-material/Settings';
 import HistoryRoundedIcon from '@mui/icons-material/HistoryRounded';
 import ClearAllRoundedIcon from '@mui/icons-material/ClearAllRounded';
 import {
-  Avatar,
   Box,
   ButtonBase,
   Card,
@@ -35,7 +33,6 @@ import {
   useState,
 } from 'react';
 import { useTranslation } from 'react-i18next';
-import { getBaseApiReact } from '../App';
 import {
   customWebsocketSubscriptionsAtom,
   getNotificationPanelDismissKey,
@@ -94,7 +91,14 @@ import {
 } from '../utils/qChatMentionNotifications';
 import { ReticulumUnreadCountBadge } from './common/ReticulumUnreadCountBadge';
 import { SwipeToDismiss } from './common/SwipeToDismiss';
+import { NotificationAppAvatar } from './Notifications/NotificationAppAvatar';
 import { MobileBackgroundSyncSetting } from './Mobile/MobileBackgroundSyncSetting';
+import { BackgroundStopNotice } from './Mobile/BackgroundStopNotice';
+import {
+  useVendorFreezeBellBadge,
+  useVendorFreezeHint,
+  vendorFreezeHintActions,
+} from './Mobile/vendorFreezeHintStore';
 import NotificationsActiveRoundedIcon from '@mui/icons-material/NotificationsActiveRounded';
 
 const RESOURCE_EVENT = 'RESOURCE_PUBLISHED';
@@ -187,6 +191,11 @@ export const GeneralNotifications = forwardRef<
   const [panelDismissals, updatePanelDismissals] = useAtom(
     notificationPanelDismissalsAtom
   );
+  // "GO was stopped in the background" (native Android only): a card at the
+  // top of the panel and +1 on the badge until one of its actions is used.
+  // Opening the panel alone does not count as seeing it.
+  const vendorFreezeCardShown = useVendorFreezeHint().bell != null;
+  const vendorFreezeBadge = useVendorFreezeBellBadge();
   const theme = useTheme();
   const isDarkMode = theme.palette.mode === 'dark';
   // Phones get the settings full screen, like GO's other settings screens.
@@ -297,6 +306,8 @@ export const GeneralNotifications = forwardRef<
       );
     }
     hideSavedQdnFilesFromPanel();
+    // The "GO was stopped" card goes too (X), like every other card.
+    if (vendorFreezeCardShown) void vendorFreezeHintActions.closeCard();
     setLastSeenTimestamp(Date.now());
   };
   const unseenCount = useMemo(() => {
@@ -318,11 +329,16 @@ export const GeneralNotifications = forwardRef<
   // list and count towards the badge like any other unread thing. App updates
   // have their own screen (GO 3.0 Updates), not a card here.
   const downloadsBadge = useQdnDownloadsBadge();
-  const totalUnseenCount = unseenCount + downloadsBadge.unseen;
+  const totalUnseenCount =
+    unseenCount + downloadsBadge.unseen + vendorFreezeBadge;
   const hasAnyNotifications =
-    resourceNotifications.length > 0 || downloadsBadge.hasAny;
+    resourceNotifications.length > 0 ||
+    downloadsBadge.hasAny ||
+    vendorFreezeCardShown;
   const canClearAll =
-    resourceNotifications.length > 0 || downloadsBadge.clearable > 0;
+    resourceNotifications.length > 0 ||
+    downloadsBadge.clearable > 0 ||
+    vendorFreezeCardShown;
 
   const hasNewNotifications = totalUnseenCount > 0;
   const notificationsLabel = t('message.generic.notifications', {
@@ -778,6 +794,8 @@ export const GeneralNotifications = forwardRef<
               width: 360,
             }}
           >
+            <BackgroundStopNotice variant="bell" />
+
             <Box
               sx={{
                 alignItems: 'center',
@@ -786,7 +804,10 @@ export const GeneralNotifications = forwardRef<
                 display: 'flex',
                 gap: 1,
                 justifyContent: 'space-between',
-                mt: resourceNotifications.length ? 0 : 1.5,
+                mt:
+                  resourceNotifications.length || vendorFreezeCardShown
+                    ? 0
+                    : 1.5,
                 px: 1.25,
                 py: 0.75,
                 width: '100%',
@@ -917,20 +938,15 @@ export const GeneralNotifications = forwardRef<
                           p: 1.35,
                         }}
                       >
-                        <Avatar
+                        <NotificationAppAvatar
                           alt={
                             isQChatMention
                               ? notification?.data?.groupName
                               : notification?.appName || 'App'
                           }
-                          src={
-                            isQChatMention
-                              ? undefined
-                              : `${getBaseApiReact()}${
-                                  notification?.image ||
-                                  `/arbitrary/THUMBNAIL/${notification?.appName || 'Q-Mail'}/qortal_avatar?async=true`
-                                }`
-                          }
+                          isQChatMention={isQChatMention}
+                          isQMail={isQMail}
+                          notification={notification}
                           sx={{
                             bgcolor: isDarkMode
                               ? alpha('#FFFFFF', 0.06)
@@ -939,22 +955,7 @@ export const GeneralNotifications = forwardRef<
                             width: 34,
                             '& img': { objectFit: 'contain' },
                           }}
-                        >
-                          {isQMail ? (
-                            <MailOutlineIcon
-                              sx={{
-                                color: theme.palette.primary.main,
-                                fontSize: 18,
-                              }}
-                            />
-                          ) : (
-                            <img
-                              alt="app-icon"
-                              src={LogoSelected}
-                              style={{ height: 'auto', width: 20 }}
-                            />
-                          )}
-                        </Avatar>
+                        />
                         <Box sx={{ minWidth: 0 }}>
                           <Box
                             sx={{

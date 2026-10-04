@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAtomValue } from 'jotai';
 import { userInfoAtom } from '../../../atoms/global';
-import { Avatar, Box, Popover, Typography, useTheme } from '@mui/material';
+import { Box, Popover, Typography, useTheme } from '@mui/material';
 import { Thread } from './Thread';
 import {
   AllThreadP,
@@ -46,6 +46,7 @@ import { executeEvent } from '../../../utils/events';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import { getArbitraryEndpointReact, getBaseApiReact } from '../../../App';
 import { getNameInfo } from '../groupApi';
+import { CachedUserAvatar } from '../CachedAvatars';
 import {
   addDataPublishesFunc,
   getDataPublishesFunc,
@@ -739,16 +740,16 @@ export const GroupMail = ({
                   }
                 }}
               >
-                <Avatar
+                <CachedUserAvatar
                   sx={{
                     height: '50px',
                     width: '50px',
                   }}
-                  src={`${getBaseApiReact()}/arbitrary/THUMBNAIL/${thread?.threadData?.name}/qortal_avatar?async=true`}
+                  name={thread?.threadData?.name}
                   alt={thread?.threadData?.name}
                 >
                   {thread?.threadData?.name?.charAt(0)}
-                </Avatar>
+                </CachedUserAvatar>
 
                 <ThreadInfoColumn>
                   <ThreadInfoColumnNameP

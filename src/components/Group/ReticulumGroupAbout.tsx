@@ -20,6 +20,7 @@ import LockRoundedIcon from '@mui/icons-material/LockRounded';
 import PublicRoundedIcon from '@mui/icons-material/PublicRounded';
 import { getBaseApiReact } from '../../App';
 import { userInfoAtom } from '../../atoms/global';
+import { useQdnGroupAvatar } from '../../lib/qdnAvatars';
 import { QORTAL_PROTOCOL } from '../../constants/constants';
 import {
   executeEvent,
@@ -163,10 +164,8 @@ export const ReticulumGroupAboutModal = () => {
     data?.groupType === 0 ||
     data?.groupType === 'OPEN';
   const groupScore = useReticulumGroupScore(groupId, isOpen);
-  const avatarUrl =
-    ownerName && groupId
-      ? `${getBaseApiReact()}/arbitrary/THUMBNAIL/${ownerName}/qortal_group_avatar_${groupId}?async=true`
-      : undefined;
+  // Cached on the device, so it shows at once also on a slow node.
+  const { src: avatarUrl } = useQdnGroupAvatar(ownerName, groupId);
 
   const measureDescription = useCallback(() => {
     const element = descriptionRef.current;

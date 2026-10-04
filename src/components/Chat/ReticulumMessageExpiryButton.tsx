@@ -14,6 +14,10 @@ import LockRoundedIcon from '@mui/icons-material/LockRounded';
 import { useTranslation } from 'react-i18next';
 import { CustomStyledMenu } from '../ContextMenu';
 import {
+  COMPOSER_CORNER_BUTTON_PX,
+  COMPOSER_EXPIRY_LABEL_PX,
+} from './composerCornerLayout';
+import {
   formatReticulumExpiryDuration,
   isReticulumMessageExpiryOptionAllowed,
   RETICULUM_MESSAGE_EXPIRY_OPTIONS,
@@ -21,6 +25,9 @@ import {
 
 type ReticulumMessageExpiryButtonProps = {
   channelExpiryDurationMs?: number;
+  /** A borderless round button the size of the other controls in the phone
+   *  composer's corners, which places it by its wrapper. */
+  corner?: boolean;
   direct?: boolean;
   disabled?: boolean;
   disabledReason?: string;
@@ -75,6 +82,7 @@ const expiryIndicatorLabel = (durationMs?: number): string | null => {
 
 export function ReticulumMessageExpiryButton({
   channelExpiryDurationMs,
+  corner = false,
   direct = false,
   disabled = false,
   disabledReason,
@@ -179,16 +187,19 @@ export function ReticulumMessageExpiryButton({
                 : value !== undefined
                   ? theme.palette.action.selected
                   : 'transparent',
-              border: segmented ? 'none' : `1px solid ${theme.palette.divider}`,
-              borderRadius: segmented ? 0 : '8px',
+              border:
+                segmented || corner
+                  ? 'none'
+                  : `1px solid ${theme.palette.divider}`,
+              borderRadius: segmented ? 0 : corner ? '50%' : '8px',
               color:
                 value !== undefined
                   ? theme.palette.text.primary
                   : theme.palette.text.secondary,
               flexShrink: 0,
-              height: segmented ? 38 : 34,
+              height: segmented ? 38 : corner ? COMPOSER_CORNER_BUTTON_PX : 34,
               position: 'relative',
-              width: segmented ? 40 : 34,
+              width: segmented ? 40 : corner ? COMPOSER_CORNER_BUTTON_PX : 34,
               '&::after': segmented
                 ? {
                     backgroundColor: theme.palette.divider,
@@ -217,7 +228,7 @@ export function ReticulumMessageExpiryButton({
                 component="span"
                 sx={{
                   fontFamily: 'Inter, system-ui, sans-serif',
-                  fontSize: '11px',
+                  fontSize: corner ? `${COMPOSER_EXPIRY_LABEL_PX}px` : '11px',
                   fontVariantNumeric: 'tabular-nums',
                   fontWeight: 800,
                   letterSpacing: '-0.02em',

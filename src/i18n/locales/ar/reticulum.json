@@ -21,15 +21,24 @@
     "sign_failed": "تعذّر توقيع حدث دردشة Reticulum",
     "welcome_failed": "فشل نشر ترحيب Reticulum"
   },
+  "chat_scope": {
+    "direct_messages": "الرسائل",
+    "groups": "المجموعات",
+    "label": "عرض المجموعات أو الرسائل المباشرة"
+  },
   "copy_invite_link": "نسخ رابط الدعوة",
   "discussion": {
     "choose_emoji": "choose emoji",
     "close": "close discussion",
     "initial_post": "initial post",
+    "preparing_attachment": "جارٍ تجهيز المرفق…",
     "remove_attachment": "remove attachment",
     "remove_file": "remove {{fileName}}",
     "replies": "replies:",
     "reply_placeholder": "reply to discussion...",
+    "size_counter": "{{size}} / {{maximum}} بايت",
+    "title": "النقاش",
+    "unavailable": "لم تعد هذه المناقشة متاحة",
     "wait_until_ready": "wait until the discussion is ready"
   },
   "dm": {
@@ -55,6 +64,10 @@
       }
     },
     "required_for_attachments": "دردشة Reticulum المباشرة مطلوبة للمرفقات المباشرة"
+  },
+  "dm_list": {
+    "empty": "لا توجد رسائل خاصة حاليًا.",
+    "subtitle": "دردشات Reticulum خاصة"
   },
   "event_preview": {
     "all_day": "all day",
@@ -104,6 +117,12 @@
     "truncated": "هذا الملف كبير جدًا لعرضه كاملًا. احفظه أو افتحه في تطبيق آخر لرؤية الباقي."
   },
   "group_fallback_name": "الجروب",
+  "group_list": {
+    "empty": "لم تنضم إلى أي مجتمع Q-Chat بعد.",
+    "pin_hold_hint": "اضغط مطولًا لإعادة ترتيب المجموعات المثبّتة",
+    "pinned": "مثبّتة",
+    "reorder_hint": "اسحب المجموعات المثبّتة لإعادة ترتيبها"
+  },
   "group_type": {
     "closed": "مغلق",
     "open": "مفتوح"

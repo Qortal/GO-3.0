@@ -64,6 +64,7 @@ import {
 } from './qdnUserProfile';
 import type { OfficialResourceLink } from './officialResources';
 import { formatQdnResourceLine } from './qdnAppLinks';
+import { extractComponents } from '../components/Chat/MessageDisplay';
 
 export type QdnProfileCard = {
   name: string;
@@ -299,7 +300,7 @@ function rolePitchForPortrait(tags: string[]): string {
   return 'a non-minter on Qortal';
 }
 
-function profileLinksToOfficial(
+export function profileLinksToOfficial(
   name: string,
   hubProfile: QortalUserProfile | null
 ): OfficialResourceLink[] {
@@ -313,12 +314,20 @@ function profileLinksToOfficial(
       if (l.href.toLowerCase().startsWith('qortal://')) {
         const m = l.href.match(/^qortal:\/\/(APP|WEBSITE)\/(.+)$/i);
         if (m) {
-          out.push({
-            id,
-            label: l.label,
-            service: m[1].toUpperCase() as 'APP' | 'WEBSITE',
-            name: decodeURIComponent(m[2]),
-          });
+          // GO-21: the chip is built from the checked parts, so a name with
+          // "/" or ".." (which addTab refuses) never becomes a chip.
+          const parts = extractComponents(`qortal://${l.href.slice(9)}`);
+          if (
+            parts?.name &&
+            (parts.service === 'APP' || parts.service === 'WEBSITE')
+          ) {
+            out.push({
+              id,
+              label: l.label,
+              service: parts.service,
+              name: parts.name,
+            });
+          }
           continue;
         }
       }

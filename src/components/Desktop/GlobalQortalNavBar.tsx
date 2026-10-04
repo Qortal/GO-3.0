@@ -44,12 +44,11 @@ import {
   unsubscribeFromEvent,
 } from '../../utils/events';
 import { QORTAL_PROTOCOL } from '../../constants/constants';
-import { getBaseApiReactForAvatar } from '../../utils/globalApi';
+import { useQdnAvatar } from '../../lib/qdnAvatars';
+import { useOwnQdnAvatarRefresh } from '../../hooks/useOwnQdnAvatarRefresh';
 import { formatQortAmount } from '../../utils/numberFunctions';
-import {
-  useAccountStatusDisplay,
-  useAccountStatusOptions,
-} from '../common/accountStatus';
+import { useAccountStatusDisplay } from '../common/accountStatus';
+import { AccountStatusPicker } from '../common/AccountStatusPicker';
 import {
   APP_NAV_BAR_HEIGHT,
   type CustomTitleBarRightNavProps,
@@ -167,19 +166,17 @@ function AuthenticatedUserAvatar({
   avatarUrl,
   primaryName,
   size,
-  onAvatarError,
   borderRadius = '50%',
 }: {
-  avatarUrl: string | null;
+  avatarUrl: string | undefined;
   primaryName: string;
   size: number;
-  onAvatarError: () => void;
   borderRadius?: string | number;
 }) {
+  // MUI shows the letter (or person icon) when the image fails to load.
   return (
     <Avatar
-      src={avatarUrl ?? undefined}
-      onError={onAvatarError}
+      src={avatarUrl}
       sx={{
         bgcolor: (theme) =>
           theme.palette.mode === 'dark'
@@ -226,30 +223,18 @@ function AuthenticatedUserMenu({
   const theme = useTheme();
   const { i18n, t } = useTranslation(['core']);
   const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
-  const [avatarError, setAvatarError] = useState(false);
-  const {
-    color: accountStatusColor,
-    label: accountStatusLabel,
-    myStatus,
-    setMyStatus,
-  } = useAccountStatusDisplay();
-  const accountStatusOptions = useAccountStatusOptions();
+  const { color: accountStatusColor, label: accountStatusLabel } =
+    useAccountStatusDisplay();
   const address = userInfo?.address || '';
   const primaryName = (userInfo?.name || userInfo?.primaryName || '').trim();
   const formattedBalance = formatQortBalance(balance, i18n.language);
-  const avatarUrl =
-    primaryName && !avatarError
-      ? `${getBaseApiReactForAvatar()}/arbitrary/THUMBNAIL/${encodeURIComponent(
-          primaryName
-        )}/qortal_avatar?async=true`
-      : null;
+  const { src: avatarUrl, status: avatarStatus } = useQdnAvatar(primaryName, {
+    priority: 'high',
+  });
+  useOwnQdnAvatarRefresh(primaryName, avatarStatus);
   const open = Boolean(anchorEl);
   const popoverId = open ? 'authenticated-user-menu' : undefined;
   const isDarkMode = theme.palette.mode === 'dark';
-
-  useEffect(() => {
-    setAvatarError(false);
-  }, [primaryName]);
 
   const handleCopyAddress = useCallback(() => {
     if (!address || !navigator.clipboard?.writeText) {
@@ -351,7 +336,6 @@ function AuthenticatedUserMenu({
             avatarUrl={avatarUrl}
             primaryName={primaryName}
             size={27}
-            onAvatarError={() => setAvatarError(true)}
           />
         </Box>
         <Box
@@ -375,14 +359,14 @@ function AuthenticatedUserMenu({
   return (
     <>
       {primaryName ? (
-      <Tooltip
+        <Tooltip
           title={tooltipTitle(primaryName)}
-        placement="bottom"
-        arrow
-        slotProps={tooltipSlotProps}
-      >
-        {accountButton}
-      </Tooltip>
+          placement="bottom"
+          arrow
+          slotProps={tooltipSlotProps}
+        >
+          {accountButton}
+        </Tooltip>
       ) : (
         accountButton
       )}
@@ -446,7 +430,6 @@ function AuthenticatedUserMenu({
                 primaryName={primaryName}
                 size={54}
                 borderRadius="10px"
-                onAvatarError={() => setAvatarError(true)}
               />
             </Box>
             <Box sx={{ minWidth: 0 }}>
@@ -478,103 +461,7 @@ function AuthenticatedUserMenu({
             </Box>
           </Box>
 
-          <Box
-            sx={{
-              backgroundColor: isDarkMode
-                ? alpha(theme.palette.common.white, 0.04)
-                : alpha(theme.palette.common.black, 0.035),
-              border: `1px solid ${theme.palette.border.subtle}`,
-              borderRadius: '10px',
-              mt: 0.5,
-              p: 1,
-            }}
-          >
-            <Typography
-              id="nav-account-status-label"
-              sx={{
-                color: theme.palette.text.secondary,
-                fontSize: 11,
-                fontWeight: 700,
-                lineHeight: 1,
-                mb: 0.75,
-                textTransform: 'uppercase',
-              }}
-            >
-              {t('core:message.generic.status', {
-                defaultValue: 'Status',
-              })}
-            </Typography>
-            <Box
-              role="group"
-              aria-labelledby="nav-account-status-label"
-              sx={{ display: 'flex', gap: 0.75 }}
-            >
-              {accountStatusOptions.map((option) => {
-                const isSelected = option.key === myStatus;
-
-                return (
-                  <ButtonBase
-                    key={option.key}
-                    aria-pressed={isSelected}
-                    onClick={() => setMyStatus(option.key)}
-                    sx={{
-                      alignItems: 'center',
-                      backgroundColor: isSelected
-                        ? alpha(
-                            theme.palette.primary.main,
-                            isDarkMode ? 0.2 : 0.12
-                          )
-                        : 'transparent',
-                      border: `1px solid ${
-                        isSelected
-                          ? alpha(theme.palette.primary.main, 0.45)
-                          : theme.palette.border.subtle
-                      }`,
-                      borderRadius: '999px',
-                      color: isSelected
-                        ? theme.palette.text.primary
-                        : theme.palette.text.secondary,
-                      display: 'flex',
-                      flex: 1,
-                      gap: 0.65,
-                      justifyContent: 'center',
-                      minHeight: 30,
-                      px: 1,
-                      transition:
-                        'background-color 140ms ease, border-color 140ms ease, color 140ms ease',
-                      '&:hover': {
-                        backgroundColor: theme.palette.action.hover,
-                      },
-                      '&:focus-visible': {
-                        outline: `1px solid ${theme.palette.primary.main}`,
-                        outlineOffset: '2px',
-                      },
-                    }}
-                  >
-                    <Box
-                      aria-hidden="true"
-                      sx={{
-                        backgroundColor: option.color,
-                        borderRadius: '50%',
-                        flexShrink: 0,
-                        height: 8,
-                        width: 8,
-                      }}
-                    />
-                    <Typography
-                      sx={{
-                        fontSize: 12.5,
-                        fontWeight: isSelected ? 700 : 600,
-                        whiteSpace: 'nowrap',
-                      }}
-                    >
-                      {option.label}
-                    </Typography>
-                  </ButtonBase>
-                );
-              })}
-            </Box>
-          </Box>
+          <AccountStatusPicker labelId="nav-account-status-label" />
 
           <Box
             sx={{

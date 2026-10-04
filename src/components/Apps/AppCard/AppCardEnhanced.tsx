@@ -1,9 +1,7 @@
-import { Avatar, useTheme } from '@mui/material';
+import { useTheme } from '@mui/material';
 import { useAtomValue, useSetAtom } from 'jotai';
 import { useCallback, useMemo, memo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { getBaseApiReact } from '../../../App';
-import LogoSelected from '../../../assets/svgs/LogoSelected.svg';
 import {
   isAppPinnedAtomFamily,
   settingsLocalLastUpdatedAtom,
@@ -12,6 +10,7 @@ import {
 import { executeEvent } from '../../../utils/events';
 import { saveToLocalStorage } from '../AppsNavBarDesktop';
 import { AppRating } from '../AppRating';
+import { AppThumbnailAvatar } from '../AppThumbnailAvatar';
 import {
   AppCardEnhancedContainer,
   AppCardHeader,
@@ -135,26 +134,12 @@ const AppCardEnhancedInner = ({
             flexShrink: 0,
           }}
         >
-          <Avatar
-            sx={{
-              height: '40px',
-              width: '40px',
-              '& img': {
-                objectFit: 'fill',
-              },
-            }}
+          <AppThumbnailAvatar
+            appName={app?.name}
             alt={app?.name}
-            src={`${getBaseApiReact()}/arbitrary/THUMBNAIL/${app?.name}/qortal_avatar?async=true`}
-          >
-            <img
-              style={{
-                width: '28px',
-                height: 'auto',
-              }}
-              src={LogoSelected}
-              alt="app-icon"
-            />
-          </Avatar>
+            fallbackSize={28}
+            sx={{ height: '40px', width: '40px' }}
+          />
         </AppCircle>
 
         <AppCardHeaderInfo>

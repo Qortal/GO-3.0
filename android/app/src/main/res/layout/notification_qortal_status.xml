@@ -33,8 +33,11 @@
             android:textAppearance="@style/TextAppearance.Compat.Notification.Title"
             android:textStyle="bold" />
 
+        <!-- One line only: the collapsed view is about 64dp tall, so a second
+             line is clipped. wrap_content row + weighted wrap_content text: the
+             status ellipsizes first and the waiting count stays visible. -->
         <LinearLayout
-            android:layout_width="match_parent"
+            android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:gravity="center_vertical"
             android:orientation="horizontal">
@@ -49,12 +52,21 @@
 
             <TextView
                 android:id="@+id/notification_text"
-                android:layout_width="0dp"
+                android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
                 android:ellipsize="end"
-                android:maxLines="2"
+                android:maxLines="1"
                 android:textAppearance="@style/TextAppearance.Compat.Notification.Info" />
+
+            <TextView
+                android:id="@+id/notification_waiting"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="4dp"
+                android:maxLines="1"
+                android:textAppearance="@style/TextAppearance.Compat.Notification.Info"
+                android:visibility="gone" />
         </LinearLayout>
     </LinearLayout>
 </LinearLayout>

@@ -64,6 +64,7 @@ import {
   QORTAL_APP_CONTEXT,
 } from '../../App';
 import LogoSelected from '../../assets/svgs/LogoSelected.svg';
+import { useQdnAvatar } from '../../lib/qdnAvatars';
 import ErrorBoundary from '../../common/ErrorBoundary';
 import {
   executeEvent,
@@ -316,9 +317,6 @@ const formatHotkeyAppLabel = (appName: string) =>
     .replace(/[-_]+/g, ' ')
     .replace(/\b\w/g, (character) => character.toUpperCase());
 
-const getHotkeyAppThumbnailUrl = (appName: string) =>
-  `${getBaseApiReact()}/arbitrary/THUMBNAIL/${appName}/qortal_avatar?async=true`;
-
 const HotkeyAppAvatar = ({
   appName,
   radius = 12,
@@ -327,33 +325,35 @@ const HotkeyAppAvatar = ({
   appName: string;
   radius?: number;
   size?: number;
-}) => (
-  <Avatar
-    alt={appName}
-    imgProps={{ loading: 'lazy' }}
-    src={getHotkeyAppThumbnailUrl(appName)}
-    sx={{
-      background: alpha('#A9C9FF', 0.06),
-      borderRadius: `${radius}px`,
-      boxShadow: `inset 0 0 0 1px ${alpha('#A9C9FF', 0.08)}`,
-      height: `${size}px`,
-      width: `${size}px`,
-      '& img': {
-        objectFit: 'fill',
-      },
-    }}
-  >
-    <Box
-      alt=""
-      component="img"
-      src={LogoSelected}
+}) => {
+  const { src } = useQdnAvatar(appName);
+  return (
+    <Avatar
+      alt={appName}
+      src={src}
       sx={{
-        height: 'auto',
-        width: `${Math.round(size * 0.68)}px`,
+        background: alpha('#A9C9FF', 0.06),
+        borderRadius: `${radius}px`,
+        boxShadow: `inset 0 0 0 1px ${alpha('#A9C9FF', 0.08)}`,
+        height: `${size}px`,
+        width: `${size}px`,
+        '& img': {
+          objectFit: 'fill',
+        },
       }}
-    />
-  </Avatar>
-);
+    >
+      <Box
+        alt=""
+        component="img"
+        src={LogoSelected}
+        sx={{
+          height: 'auto',
+          width: `${Math.round(size * 0.68)}px`,
+        }}
+      />
+    </Avatar>
+  );
+};
 
 const truncateQortinoBubbleMessage = (
   message: string | null,

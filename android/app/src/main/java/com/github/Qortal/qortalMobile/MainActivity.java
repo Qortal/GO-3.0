@@ -2,19 +2,21 @@ package com.github.Qortal.qortalMobile;
 
 import com.github.Qortal.qortalMobile.QortalBiometricPlugin;
 import com.getcapacitor.BridgeActivity;
+import com.getcapacitor.JSObject;
+import com.getcapacitor.Plugin;
+import com.getcapacitor.PluginCall;
+import com.getcapacitor.PluginMethod;
 import com.getcapacitor.WebViewListener;
+import com.getcapacitor.annotation.CapacitorPlugin;
 import com.github.Qortal.qortalMobile.NativeBcrypt;
 import com.github.Qortal.qortalMobile.NativePOW;
 import com.github.Qortal.qortalMobile.FileWriter;
-import com.github.Qortal.qortalMobile.EncryptedMediaServerPlugin;
-import com.github.Qortal.qortalMobile.ChromecastPlugin;
 import com.github.Qortal.qortalMobile.NetworkInfoPlugin;
-import com.github.Qortal.qortalMobile.ProxyServerPlugin;
-import com.github.Qortal.qortalMobile.ForegroundServicePlugin;
 import com.github.Qortal.qortalMobile.ReticulumPlugin;
 import com.github.Qortal.qortalMobile.AudioRoutingPlugin;
 import android.Manifest;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.content.res.Configuration;
 import android.os.Build;
@@ -22,6 +24,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
+import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewParent;
 import android.webkit.RenderProcessGoneDetail;
@@ -48,14 +51,15 @@ public class MainActivity extends BridgeActivity {
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
+        // Must run before super.onCreate, which builds the Bridge and reads it.
+        clearPersistedServerBasePath();
         registerPlugin(NativeBcrypt.class);
         registerPlugin(NativePOW.class);
         registerPlugin(FileWriter.class);
-        registerPlugin(EncryptedMediaServerPlugin.class);
-        registerPlugin(ChromecastPlugin.class);
+        // EncryptedMediaServerPlugin is not registered: no JS calls it
+        // (encrypted media playback is Electron-only), so it is only an
+        // unused local HTTP server reachable from page script.
         registerPlugin(NetworkInfoPlugin.class);
-        registerPlugin(ProxyServerPlugin.class);
-        registerPlugin(ForegroundServicePlugin.class);
         registerPlugin(QortalBackgroundPlugin.class);
         registerPlugin(ReticulumPlugin.class);
         registerPlugin(AudioRoutingPlugin.class);
@@ -66,7 +70,13 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(ShareReceiverPlugin.class);
         registerPlugin(SoftKeyboardPlugin.class);
         registerPlugin(AppUpdatePlugin.class);
+        // Replaces Capacitor's own "WebView" plugin (N-18): see the class.
+        registerPlugin(LockedWebViewPlugin.class);
+        // FLAG_SECURE and overlay protection for sensitive screens (GO-37).
+        registerPlugin(ScreenSecurityPlugin.class);
         super.onCreate(savedInstanceState);
+        // Home and VPN node addresses never go to a carrier or Wi-Fi proxy.
+        WebViewProxyBypass.start(this);
         // "Share to Quitter": photos/videos shared from other apps (cold start).
         ShareReceiverPlugin.handleSendIntent(this, getIntent());
         // Edge-to-edge: WebView draws under system bars; CSS safe-area vars pad content.
@@ -78,13 +88,31 @@ public class MainActivity extends BridgeActivity {
             QortalBiometricPlugin.maybeShowEarlyPrompt(this);
         }
 
-        // ✅ Enable mixed content mode for WebView
         if (this.bridge != null) {
             WebView webView = this.bridge.getWebView();
             if (webView != null) {
                 WebSettings webSettings = webView.getSettings();
-                webSettings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+                // Mixed-content rules only apply to https pages: Q-Apps from an
+                // https node or gateway. Like a browser, they may still show
+                // http images and media, but no longer run http scripts or
+                // fetch over http (N-19). GO's own page is http://localhost,
+                // which this does not touch.
+                webSettings.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
                 webSettings.setMediaPlaybackRequiresUserGesture(false);
+                // Seed phrases, keys and approval dialogs are WebView text.
+                // Hide it from accessibility services that are not
+                // accessibility tools (TalkBack, Switch Access and Voice
+                // Access still work) (N-34).
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                    webView.setAccessibilityDataSensitive(View.ACCESSIBILITY_DATA_SENSITIVE_YES);
+                }
+                // Keep the wallet password away from Android Autofill and
+                // password managers: they would offer to save it, and a saved
+                // copy syncs to the provider's cloud (N-33). This hides every
+                // field in the WebView from Autofill, Q-Apps included. Typing
+                // and pasting are not affected. minSdk is 26 (Android 8), where
+                // Autofill starts, so no version check is needed.
+                webView.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS);
                 // Kill the overscroll gesture so pulling down at the top of a
                 // scroll view can't refresh/reload the whole app.
                 webView.setOverScrollMode(WebView.OVER_SCROLL_NEVER);
@@ -100,6 +128,9 @@ public class MainActivity extends BridgeActivity {
                 // URLs, Content-Disposition: attachment) with no listener — catch
                 // them and save to Documents/Qortal Go like the desktop Hub does.
                 webView.setDownloadListener(new QortalDownloadListener(this.bridge));
+                // Outside content (Q-Apps, QDN sites, chat links) must never
+                // get a page on GO's own origin (GO-01, CVE-2026-103922).
+                this.bridge.setWebViewClient(new AppOriginGuardWebViewClient(this.bridge));
                 installSafeAreaInsetBridge(webView);
                 // Background sync: keeps this page awake off screen when the
                 // user's mode asks for it (see BackgroundKeepAlive).
@@ -117,6 +148,9 @@ public class MainActivity extends BridgeActivity {
                     // A reload or navigation starts a signed-out page; login
                     // marks the session again (status service / presence).
                     BackgroundKeepAlive.get(MainActivity.this).setSessionActive(false);
+                    // The screens that held FLAG_SECURE are gone with the old
+                    // page; the new page asks again for what it shows (GO-37).
+                    ScreenSecurityPlugin.onPageStarted(MainActivity.this.bridge);
                 }
 
                 @Override
@@ -161,6 +195,7 @@ public class MainActivity extends BridgeActivity {
         if (this.bridge != null) {
             BackgroundKeepAlive.get(this).detachWebView(this.bridge.getWebView());
         }
+        if (isFinishing()) WebViewProxyBypass.stop(this);
         super.onDestroy();
     }
 
@@ -288,6 +323,75 @@ public class MainActivity extends BridgeActivity {
             }
             recreate();
         });
+    }
+
+    /**
+     * N-18: Capacitor's WebView plugin can save a folder to serve GO's page
+     * from on every later start (serverBasePath in CapWebViewSettings), and
+     * the Preferences plugin can write that file too. GO never uses it, so a
+     * saved path can only come from injected script trying to stay after a
+     * restart. res/xml/config.xml sets DisableDeploy so Capacitor ignores the
+     * key; removing it as well keeps that true if config.xml is regenerated.
+     */
+    private void clearPersistedServerBasePath() {
+        try {
+            SharedPreferences prefs = getSharedPreferences(
+                com.getcapacitor.plugin.WebView.WEBVIEW_PREFS_NAME,
+                MODE_PRIVATE
+            );
+            String key = com.getcapacitor.plugin.WebView.CAP_SERVER_PATH;
+            if (!prefs.contains(key)) {
+                return;
+            }
+            Object saved = prefs.getAll().get(key);
+            prefs.edit().remove(key).commit();
+            // Capacitor itself saves "" here after every app update, so only
+            // a real path (or a value of another type) is worth a warning.
+            if (saved != null && !"".equals(saved)) {
+                Log.w(TAG, "Removed a saved Capacitor server path");
+            }
+        } catch (RuntimeException error) {
+            Log.w(TAG, "Could not check the saved Capacitor server path", error);
+        }
+    }
+
+    /**
+     * N-18: takes the place of Capacitor's core "WebView" plugin, which
+     * registers first under the same name, so this one wins. The core plugin
+     * lets page script point GO's local server at any folder or asset path
+     * (setServerBasePath, setServerAssetPath). That holds for every later
+     * reload, logout included, until the activity is rebuilt, so a one-off
+     * script injection could serve a fake GO from a file it wrote. GO never
+     * calls these, so they are refused; reading the current path still works.
+     */
+    @CapacitorPlugin(name = "WebView")
+    public static class LockedWebViewPlugin extends Plugin {
+        private static final String REFUSED = "Changing where GO is served from is not allowed";
+
+        @PluginMethod
+        public void setServerAssetPath(PluginCall call) {
+            Log.w(TAG, "Refused WebView.setServerAssetPath");
+            call.reject(REFUSED);
+        }
+
+        @PluginMethod
+        public void setServerBasePath(PluginCall call) {
+            Log.w(TAG, "Refused WebView.setServerBasePath");
+            call.reject(REFUSED);
+        }
+
+        @PluginMethod
+        public void persistServerBasePath(PluginCall call) {
+            Log.w(TAG, "Refused WebView.persistServerBasePath");
+            call.reject(REFUSED);
+        }
+
+        @PluginMethod
+        public void getServerBasePath(PluginCall call) {
+            JSObject ret = new JSObject();
+            ret.put("path", getBridge().getServerBasePath());
+            call.resolve(ret);
+        }
     }
 
     private void requestCallPermissions() {

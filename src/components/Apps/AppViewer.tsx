@@ -8,6 +8,14 @@ import { useThemeContext } from '../Theme/ThemeContext';
 import { useTranslation } from 'react-i18next';
 import { QORTAL_PROTOCOL } from '../../constants/constants';
 import { appHeighOffsetPx } from '../Desktop/CustomTitleBar';
+import { buildQappRenderUrl, isSafeQappPath } from '../../utils/qappPath';
+import { useSetAtom } from 'jotai';
+import { infoSnackGlobalAtom, openSnackGlobalAtom } from '../../atoms/global';
+
+const identifierParam = (identifier: unknown): string =>
+  identifier != null && identifier != 'null'
+    ? encodeURIComponent(String(identifier))
+    : '';
 
 type AppViewerProps = {
   app: any;
@@ -33,6 +41,35 @@ export const AppViewer = forwardRef<HTMLIFrameElement, AppViewerProps>(
     const { themeMode } = useThemeContext();
     const { i18n, t } = useTranslation(['auth', 'core', 'group', 'question']);
     const currentLang = i18n.language;
+    const setInfoSnackGlobal = useSetAtom(infoSnackGlobalAtom);
+    const setOpenSnackGlobal = useSetAtom(openSnackGlobalAtom);
+
+    // GO-21: every node /render URL is built here, with the name and each path
+    // segment encoded. A name or path that would leave /render/<SERVICE>/<name>
+    // gives null, and the tab does not load another publisher's app.
+    const renderUrl = (rest: string, query: string): string | null => {
+      const built = buildQappRenderUrl({
+        baseUrl: getBaseApiReact(),
+        service: app?.service,
+        name: app?.name,
+        rest,
+        query,
+      });
+      if (built === null) {
+        console.warn('Refused a Q-App URL outside its own path', {
+          name: app?.name,
+          service: app?.service,
+        });
+        setInfoSnackGlobal({
+          type: 'error',
+          message: t('auth:message.error.invalid_qortal_link', {
+            postProcess: 'capitalizeFirstChar',
+          }),
+        });
+        setOpenSnackGlobal(true);
+      }
+      return built;
+    };
 
     useEffect(() => {
       if (app?.isPreview) return;
@@ -46,7 +83,10 @@ export const AppViewer = forwardRef<HTMLIFrameElement, AppViewerProps>(
       }
 
       setUrl(
-        `${getBaseApiReact()}/render/${app?.service}/${app?.name}${app?.path != null ? `/${app?.path}` : ''}${hasQueryParam ? '&' : '?'}theme=${themeMode}&lang=${currentLang}&identifier=${app?.identifier != null && app?.identifier != 'null' ? app?.identifier : ''}`
+        renderUrl(
+          app?.path != null ? `/${app?.path}` : '',
+          `${hasQueryParam ? '&' : '?'}theme=${themeMode}&lang=${currentLang}&identifier=${identifierParam(app?.identifier)}`
+        ) ?? ''
       );
     }, [app?.service, app?.name, app?.identifier, app?.path, app?.isPreview]);
 
@@ -74,8 +114,11 @@ export const AppViewer = forwardRef<HTMLIFrameElement, AppViewerProps>(
           }
           return;
         }
-        const constructUrl = `${getBaseApiReact()}/render/${app?.service}/${app?.name}${path != null ? path : ''}?theme=${themeMode}&lang=${currentLang}&identifier=${app?.identifier != null ? app?.identifier : ''}&time=${new Date().getMilliseconds()}`;
-        setUrl(constructUrl);
+        const constructUrl = renderUrl(
+          path != null ? path : '',
+          `?theme=${themeMode}&lang=${currentLang}&identifier=${app?.identifier != null ? encodeURIComponent(app.identifier) : ''}&time=${new Date().getMilliseconds()}`
+        );
+        if (constructUrl) setUrl(constructUrl);
       }
     };
 
@@ -274,9 +317,11 @@ export const AppViewer = forwardRef<HTMLIFrameElement, AppViewerProps>(
             );
             return;
           }
-          setUrl(
-            `${getBaseApiReact()}/render/${app?.service}/${app?.name}${previousPath != null ? previousPath : ''}?theme=${themeMode}&lang=${currentLang}&identifier=${app?.identifier != null && app?.identifier != 'null' ? app?.identifier : ''}&time=${new Date().getMilliseconds()}&isManualNavigation=false`
+          const previousUrl = renderUrl(
+            previousPath != null ? previousPath : '',
+            `?theme=${themeMode}&lang=${currentLang}&identifier=${identifierParam(app?.identifier)}&time=${new Date().getMilliseconds()}&isManualNavigation=false`
           );
+          if (previousUrl) setUrl(previousUrl);
           // iframeRef.current.contentWindow.location.href = previousPath; // Fallback URL update
         }
       }
@@ -301,6 +346,9 @@ export const AppViewer = forwardRef<HTMLIFrameElement, AppViewerProps>(
     const navigateToPathFunc = useCallback(
       async (e) => {
         const { path: targetPath = '' } = e.detail;
+        // GO-21: the app itself may act on this path, so a traversal path is
+        // never handed to it either.
+        if (!isSafeQappPath(targetPath)) return;
         const iframe = iframeRef.current;
         if (!iframe?.contentWindow) return;
 
@@ -352,9 +400,11 @@ export const AppViewer = forwardRef<HTMLIFrameElement, AppViewerProps>(
             );
             return;
           }
-          setUrl(
-            `${getBaseApiReact()}/render/${app?.service}/${app?.name}/${targetPath}?theme=${themeMode}&lang=${currentLang}&identifier=${app?.identifier != null && app?.identifier != 'null' ? app?.identifier : ''}&time=${new Date().getMilliseconds()}&isManualNavigation=false`
+          const targetUrl = renderUrl(
+            `/${targetPath}`,
+            `?theme=${themeMode}&lang=${currentLang}&identifier=${identifierParam(app?.identifier)}&time=${new Date().getMilliseconds()}&isManualNavigation=false`
           );
+          if (targetUrl) setUrl(targetUrl);
         }
       },
       [app, frameWindow, iframeRef, isDevMode, url, themeMode, currentLang]

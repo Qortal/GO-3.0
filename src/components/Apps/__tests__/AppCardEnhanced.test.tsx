@@ -1,5 +1,5 @@
 import React, { createContext } from 'react';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { ThemeProvider, createTheme } from '@mui/material/styles';
 import { I18nextProvider } from 'react-i18next';
@@ -49,6 +49,20 @@ vi.mock('../../../utils/events', () => ({
 
 // Import after mocks
 import { AppCardEnhanced } from '../AppCard/AppCardEnhanced';
+import { setQdnAvatarCacheForTests } from '../../../lib/qdnAvatars/defaultCache';
+import { createAvatarTestHarness } from '../../../lib/qdnAvatars/testHarness';
+
+// App icons come from the avatar cache: a node that never answers here.
+beforeEach(() => {
+  setQdnAvatarCacheForTests(
+    createAvatarTestHarness({
+      handler: () => new Promise<Response>(() => {}),
+    }).cache
+  );
+});
+afterEach(() => {
+  setQdnAvatarCacheForTests(null);
+});
 
 describe('AppCardEnhanced', () => {
   const mockApp = {

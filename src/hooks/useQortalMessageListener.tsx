@@ -16,6 +16,7 @@ import {
   mobileSaveLocationLabelFor,
   saveBlobToMobileDocuments,
 } from '../utils/mobileFileSave';
+import { isAndroidPackageFile } from '../utils/androidPackageFiles';
 import {
   beginQdnSaveNotification,
   cancelQdnSaveNotification,
@@ -34,6 +35,7 @@ import {
   TIME_SECONDS_30_IN_MILLISECONDS,
 } from '../constants/constants';
 import { buildQortalResourceLink } from '../utils/qortalLink';
+import { isSafeQappPath, pickQappTabTarget } from '../utils/qappPath';
 
 /** Below this a save is over before a notification would be read. */
 const NOTIFY_SAVE_MIN_BYTES = 4 * 1024 * 1024;
@@ -144,10 +146,11 @@ class Semaphore {
     }
   }
 }
-let semaphore = new Semaphore(1);
+const semaphore = new Semaphore(1);
 let reader = new FileReader();
 
 const fileToBase64 = (file) =>
+  // eslint-disable-next-line no-async-promise-executor -- waits for the shared FileReader first
   new Promise(async (resolve, reject) => {
     if (!reader) {
       reader = new FileReader();
@@ -421,7 +424,7 @@ async function deleteQortalFilesFromIndexedDB() {
       const keys = event.target.result;
 
       // Iterate through keys to find and delete those containing '_qortalfile'
-      for (let key of keys) {
+      for (const key of keys) {
         if (key.includes('_qortalfile')) {
           const deleteRequest = objectStore.delete(key);
 
@@ -503,11 +506,16 @@ export const showSaveFilePicker = async (
         throw error;
       }
       if (announce) {
-        // The card says where it went and offers to open it.
+        // The card says where it went and offers to open it. A package type
+        // from either source wins, so a Q-App that declares octet-stream for
+        // a package-typed blob still gets no Open.
+        const savedType = isAndroidPackageFile(null, blob?.type)
+          ? blob.type
+          : mimeType || blob?.type;
         finishQdnSaveNotification(
           notificationId,
-          mobileSaveLocationLabelFor(filename, mimeType || blob?.type),
-          { uri: saved?.uri, mimeType: mimeType || blob?.type }
+          mobileSaveLocationLabelFor(filename, savedType),
+          { uri: saved?.uri, mimeType: savedType, sizeBytes: blob?.size }
         );
         return;
       }
@@ -559,7 +567,7 @@ export const showSaveFilePicker = async (
   }
 };
 
-declare var cordova: any;
+declare const cordova: any;
 
 async function storeFilesInIndexedDB(obj) {
   // First delete any existing files in IndexedDB with '_qortalfile' in their ID
@@ -596,7 +604,7 @@ async function storeFilesInIndexedDB(obj) {
     objectStore.put(fileData);
 
     // Replace the file object with the file ID in the original object
-    let blobObj = {
+    const blobObj = {
       type: obj.blob?.type,
     };
     obj.fileId = fileId;
@@ -605,7 +613,7 @@ async function storeFilesInIndexedDB(obj) {
   }
 
   // Iterate through resources to find files and save them to IndexedDB
-  for (let resource of obj?.resources || []) {
+  for (const resource of obj?.resources || []) {
     if (resource.file) {
       const fileId = resource.identifier + Date.now() + '_qortalfile';
 
@@ -916,7 +924,9 @@ export const useQortalMessageListener = (
           setInfoSnackCustom,
         };
         try {
-          await saveFile(request, null, true, snackMethods);
+          await saveFile(request, null, true, snackMethods, {
+            appInfo: { name: appName, service: appService },
+          });
           eventPort.postMessage({
             result: true,
             error: null,
@@ -934,6 +944,7 @@ export const useQortalMessageListener = (
               declineQdnSave(transferId, () =>
                 saveFile(request, null, true, snackMethods, {
                   preApproved: true,
+                  appInfo: { name: appName, service: appService },
                 })
               );
             } else {
@@ -978,7 +989,9 @@ export const useQortalMessageListener = (
           event?.data?.path != null
             ? (event?.data?.path.startsWith('/') ? '' : '/') + event?.data?.path
             : null;
-        setPath(pathUrl);
+        // GO-21: this path is reused for Refresh, Copy link and Duplicate, so
+        // one that climbs out of the app ("/../../render/APP/Other") is ignored.
+        if (isSafeQappPath(pathUrl)) setPath(pathUrl);
         if (appName?.toLowerCase() === 'q-mail') {
           window.sendMessage('addEnteredQmailTimestamp').catch((error) => {
             console.error(error);
@@ -1028,8 +1041,21 @@ export const useQortalMessageListener = (
           event.ports[0].postMessage({ result: true, error: null });
         }
       } else if (event?.data?.action === 'SET_TAB' && !isDevMode) {
+        // GO-21: a Q-App may only say which app to open (service, name,
+        // identifier, path). It never sets the tab's URL or preview flag, and a
+        // path or name that climbs into another app is refused.
+        const target = pickQappTabTarget(event?.data?.payload);
+        if (!target) {
+          event.ports?.[0]?.postMessage({
+            result: null,
+            error: i18n.t('auth:message.error.invalid_qortal_link', {
+              postProcess: 'capitalizeFirstChar',
+            }),
+          });
+          return;
+        }
         executeEvent('addTab', {
-          data: event?.data?.payload,
+          data: target,
         });
         const targetOrigin = iframeRef.current
           ? new URL(iframeRef.current.src).origin
@@ -1039,7 +1065,7 @@ export const useQortalMessageListener = (
             action: 'SET_TAB_SUCCESS',
             requestedHandler: 'UI',
             payload: {
-              name: event?.data?.payload?.name,
+              name: target.name,
             },
           },
           targetOrigin

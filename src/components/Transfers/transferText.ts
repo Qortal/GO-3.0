@@ -1,4 +1,5 @@
 import type { TFunction } from 'i18next';
+import { isAndroidPackageFile } from '../../utils/androidPackageFiles';
 import {
   formatTransferBytes,
   type QdnTransfer,
@@ -22,10 +23,6 @@ export const ACTIVE_TRANSFER_STAGES: ReadonlySet<QdnTransferStage> = new Set([
   'awaiting_save',
   'saving',
 ]);
-
-export const isPackageFile = (filename: string, mimeType?: string) =>
-  /\.(apk|apks|aab)$/i.test(filename) ||
-  String(mimeType || '').includes('android.package-archive');
 
 /** One line under the file name: the stage, percent and sizes. */
 export function transferStatusText(
@@ -57,9 +54,12 @@ export function transferStatusText(
     case 'declined':
       return t('core:file_transfer.stage_declined');
     case 'saved':
-      return t('core:file_transfer.saved_to', {
-        location: transfer.location || '',
-      });
+      return t(
+        isAndroidPackageFile(transfer.filename, transfer.mimeType)
+          ? 'core:file_transfer.package_saved'
+          : 'core:file_transfer.saved_to',
+        { location: transfer.location || '' }
+      );
     case 'failed':
     default:
       return transfer.error || t('core:file_transfer.failed_title');

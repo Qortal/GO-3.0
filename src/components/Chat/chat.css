@@ -425,23 +425,39 @@
   white-space: pre-wrap;
 }
 
-.reticulum-discussion-composer
+/* The desktop thread composer: a bordered field with its buttons beside it.
+   Phones use the chat's corner composer instead (--corners), whose sizes,
+   stages and offsets come from chat.css and composerCornerLayout.ts, so none
+   of this may reach it. :where() keeps these rules exactly as specific as
+   they were before phones were left out. */
+.reticulum-discussion-composer:where(
+    :not(.reticulum-discussion-composer--corners)
+  )
   .tiptap-chat-composer--compact
   > .MuiBox-root:not(.tiptap-format-tray-host) {
   gap: 8px;
   min-height: 56px;
 }
 
-.reticulum-discussion-composer
+.reticulum-discussion-composer:where(
+    :not(.reticulum-discussion-composer--corners)
+  )
   .tiptap-chat-composer--compact
   .MuiIconButton-root,
-.reticulum-discussion-composer > .MuiBox-root > span .MuiIconButton-root {
+.reticulum-discussion-composer:where(
+    :not(.reticulum-discussion-composer--corners)
+  )
+  > .MuiBox-root
+  > span
+  .MuiIconButton-root {
   border-radius: 10px;
   height: 44px;
   width: 44px;
 }
 
-.reticulum-discussion-composer
+.reticulum-discussion-composer:where(
+    :not(.reticulum-discussion-composer--corners)
+  )
   .tiptap-chat-composer--compact
   .tiptap-prosemirror {
   background: var(--discussion-composer-field-bg);
@@ -452,18 +468,51 @@
   padding: 15px 18px;
 }
 
-.reticulum-discussion-composer .tiptap-chat-composer--compact .tiptap p {
+.reticulum-discussion-composer:where(
+    :not(.reticulum-discussion-composer--corners)
+  )
+  .tiptap-chat-composer--compact
+  .tiptap
+  p {
   color: #f3f5f9;
   font-size: 16px;
   font-weight: 400;
   line-height: 24px;
 }
 
-.reticulum-discussion-composer
+.reticulum-discussion-composer:where(
+    :not(.reticulum-discussion-composer--corners)
+  )
   .tiptap-chat-composer--compact
   .tiptap
   p.is-editor-empty:first-child::before {
   color: rgba(170, 180, 197, 0.58);
+}
+
+/* The phone thread composer has no expand button (TipTap inOverlay), so stage
+   3 keeps the expiry in the top slot and the X midway however tall the box
+   grows, rather than closing up over send to free that slot for expand (the
+   composer-rail container query). One class more specific than those rules. */
+.reticulum-discussion-composer--corners
+  .tiptap-chat-composer--corners:not(
+    .tiptap-chat-composer--expanded
+  )[data-composer-stacked]:not([data-composer-short])
+  .compact-composer-rail--right:has(.compact-composer-expiry):has(
+    .compact-composer-discard:not([data-idle])
+  )
+  .compact-composer-discard {
+  top: calc(50% - var(--composer-slot-middle-shift));
+}
+
+.reticulum-discussion-composer--corners
+  .tiptap-chat-composer--corners:not(
+    .tiptap-chat-composer--expanded
+  )[data-composer-stacked]:not([data-composer-short])
+  .compact-composer-rail--right:has(.compact-composer-expiry):has(
+    .compact-composer-discard:not([data-idle])
+  )
+  .compact-composer-expiry {
+  top: var(--composer-slot-first);
 }
 
 /* @mentions — class survives DOMPurify; data-type may be stripped */
@@ -567,6 +616,14 @@
 .mobile-chat-compose-row .tiptap-chat-composer .tiptap-prosemirror {
   min-height: 40px;
   max-height: 120px;
+}
+
+/* The corner composer (a direct message on a phone) grows by its stages like a
+   group's does, up to --composer-stage-3-max, and scrolls in its editor box
+   after that. A cap on the text inside would cut it off below the stage-3
+   floor and scroll it a second time. */
+.mobile-chat-compose-row .tiptap-chat-composer--corners .tiptap-prosemirror {
+  max-height: none;
 }
 
 .chat-format-toolbar--top-bar {
@@ -687,26 +744,29 @@
 
   /* Height of the typing area at each stage, sized for the tallest thing that
      stage can hold — N wrapped lines, or N paragraphs with their gaps — and
-     never smaller than the button column beside it (72px for two buttons,
-     104px for three). Clamping the editor to these is what lets the composer
-     grow by animation instead of snapping a whole line at a time. */
+     never smaller than the button column beside it (one, two and three
+     buttons; the corner composer sets the --composer-stage-N-floor values
+     from its button sizes, see composerCornerLayout.ts). Clamping the editor
+     to these is what lets the composer grow by animation instead of snapping
+     a whole line at a time. */
   --composer-stage-1: max(
     calc(var(--composer-line) + var(--composer-text-pad)),
-    var(--composer-text-floor)
+    var(--composer-text-floor),
+    var(--composer-stage-1-floor, 0px)
   );
   --composer-stage-2: max(
     calc(
       var(--composer-line) * 2 + var(--composer-para-gap) +
         var(--composer-text-pad)
     ),
-    72px
+    var(--composer-stage-2-floor, 0px)
   );
   --composer-stage-3: max(
     calc(
       var(--composer-line) * 3 + var(--composer-para-gap) * 2 +
         var(--composer-text-pad)
     ),
-    104px
+    var(--composer-stage-3-floor, 0px)
   );
 }
 
@@ -716,14 +776,18 @@
   padding: calc(var(--composer-text-pad) / 2) 10px;
 }
 
+/* The corner composer's sizes and offsets (--composer-button, --composer-send,
+   --composer-slot-*, --composer-indent-*, --composer-stage-N-floor, ...) are
+   set on the composer by TipTap from composerCornerLayout.ts, the one place
+   they are derived from the button sizes. */
 .tiptap-chat-composer--corners .compact-composer-row {
-  min-height: 34px;
+  min-height: var(--composer-send);
 }
 
 .tiptap-chat-composer--corners .compact-composer-editor {
   contain: layout;
-  padding-left: 36px;
-  padding-right: 36px;
+  padding-left: var(--composer-editor-pad);
+  padding-right: var(--composer-editor-pad);
 }
 
 /* Growing the composer smoothly.
@@ -767,21 +831,26 @@
 
 /* Stage 3 is the one stage the text may outgrow, so it keeps a ceiling instead
    of a fixed height. On a short viewport — landscape, a folded phone, the
-   keyboard up on a small screen — the component's 160px would be most of what
+   keyboard up on a small screen — the component's cap would be most of what
    is left, so the viewport gets a say too. */
 .tiptap-chat-composer--corners:not(
     .tiptap-chat-composer--expanded
   )[data-composer-stacked]
   .compact-composer-editor {
-  max-height: min(160px, 45vh, var(--composer-space, 100vh));
+  max-height: min(
+    var(--composer-stage-3-max),
+    45vh,
+    var(--composer-space, 100vh)
+  );
   min-height: min(var(--composer-stage-3), var(--composer-space, 100vh));
 }
 
-/* Text indent per stage. The editor box itself stays 36px padded on both
-   sides so the focused contenteditable is never resized; only the paragraph
-   indent moves, which is what frees width as the buttons close ranks.
-   inline 104/72, squeezed 68/36, stacked 36/36, with 36 more on the right
-   in a group while the discard button shows: it takes a slot beside send.
+/* Text indent per stage. The editor box itself keeps its side padding so the
+   focused contenteditable is never resized; only the paragraph indent moves,
+   which is what frees width as the buttons close ranks: three buttons on the
+   left and one beside send on one line, one beside the + / 😊 column on two,
+   none once stacked. A group's right edge takes a slot more while the discard
+   button shows (see "Discard").
 
    The full-screen composer puts its controls in a row underneath the text, so
    there is nothing beside the paragraphs to clear: it keeps the full width. */
@@ -792,8 +861,8 @@
   .tiptap
   > * {
   box-sizing: border-box;
-  padding-left: 68px;
-  padding-right: 36px;
+  padding-left: var(--composer-indent-inline-start);
+  padding-right: var(--composer-indent-inline-end);
 }
 
 .tiptap-chat-composer:not(
@@ -803,7 +872,7 @@
   .tiptap
   > * {
   box-sizing: border-box;
-  padding-left: 32px;
+  padding-left: var(--composer-indent-squeezed-start);
   padding-right: 0;
 }
 
@@ -815,8 +884,12 @@
    animatable: only top/left/right change, and every control keeps its box.
 
    Controls are placed by their vertical centre, hence the constant
-   translateY(-50%); 18px is a 32px button sitting 2px off an edge, and
-   calc(100% - 19px) is the 34px send button sitting 2px off the bottom.
+   translateY(-50%): --composer-slot-first is a button against the top (or,
+   from 100%, the bottom) edge, --composer-slot-send is send against the
+   bottom, and --composer-slot-over-send a button sitting on top of send.
+   Sideways, the left rail's slots are --composer-button apart, and the
+   right rail's inner column starts at --composer-send; --composer-column-inset
+   centres a button on send's slightly wider column.
 
      inline    1 line   + 😊 Aa along the row, expiry beside send
      squeezed  2 lines  + over 😊, Aa centred beside them, expiry over send
@@ -878,21 +951,21 @@
     [data-composer-squeezed]
   ):not([data-composer-stacked])
   .compact-composer-emoji {
-  left: 36px;
+  left: var(--composer-button);
 }
 
 .tiptap-chat-composer--corners:not(.tiptap-chat-composer--expanded):not(
     [data-composer-squeezed]
   ):not([data-composer-stacked])
   .compact-composer-format {
-  left: 72px;
+  left: calc(var(--composer-button) * 2);
 }
 
 .tiptap-chat-composer--corners:not(.tiptap-chat-composer--expanded):not(
     [data-composer-squeezed]
   ):not([data-composer-stacked])
   .compact-composer-expiry {
-  right: 38px;
+  right: var(--composer-send);
 }
 
 .tiptap-chat-composer--corners:not(.tiptap-chat-composer--expanded):not(
@@ -908,7 +981,7 @@
   )[data-composer-squeezed]:not([data-composer-stacked])
   .compact-composer-attach {
   left: 0;
-  top: 18px;
+  top: var(--composer-slot-first);
 }
 
 .tiptap-chat-composer--corners:not(
@@ -916,22 +989,22 @@
   )[data-composer-squeezed]:not([data-composer-stacked])
   .compact-composer-emoji {
   left: 0;
-  top: calc(100% - 18px);
+  top: calc(100% - var(--composer-slot-first));
 }
 
 .tiptap-chat-composer--corners:not(
     .tiptap-chat-composer--expanded
   )[data-composer-squeezed]:not([data-composer-stacked])
   .compact-composer-format {
-  left: 36px;
+  left: var(--composer-button);
 }
 
 .tiptap-chat-composer--corners:not(
     .tiptap-chat-composer--expanded
   )[data-composer-squeezed]:not([data-composer-stacked])
   .compact-composer-expiry {
-  right: 1px;
-  top: 18px;
+  right: var(--composer-column-inset);
+  top: var(--composer-slot-first);
 }
 
 .tiptap-chat-composer--corners:not(
@@ -939,7 +1012,7 @@
   )[data-composer-squeezed]:not([data-composer-stacked])
   .compact-composer-send {
   right: 0;
-  top: calc(100% - 19px);
+  top: calc(100% - var(--composer-slot-send));
 }
 
 /* Stage 3 — three or more lines. */
@@ -949,7 +1022,7 @@
   )[data-composer-stacked]
   .compact-composer-attach {
   left: 0;
-  top: 18px;
+  top: var(--composer-slot-first);
 }
 
 .tiptap-chat-composer--corners:not(
@@ -964,14 +1037,17 @@
   )[data-composer-stacked]
   .compact-composer-emoji {
   left: 0;
-  top: calc(100% - 18px);
+  top: calc(100% - var(--composer-slot-first));
 }
 
 .tiptap-chat-composer--corners:not(
     .tiptap-chat-composer--expanded
   )[data-composer-stacked]
   .compact-composer-expiry {
-  right: 1px;
+  right: var(--composer-column-inset);
+  /* Midway between expand at the top and send, which is a little bigger
+     than the rest. */
+  top: calc(50% - var(--composer-slot-middle-shift));
 }
 
 .tiptap-chat-composer--corners:not(
@@ -979,7 +1055,7 @@
   )[data-composer-stacked]
   .compact-composer-send {
   right: 0;
-  top: calc(100% - 19px);
+  top: calc(100% - var(--composer-slot-send));
 }
 
 /* Send appears with the first character and leaves with the last. It stays in
@@ -1015,7 +1091,7 @@
 .tiptap-chat-composer--corners:not(.tiptap-chat-composer--expanded)
   .compact-composer-rail--right:has(.compact-composer-send[data-idle])
   .compact-composer-expiry {
-  right: 1px;
+  right: var(--composer-column-inset);
 }
 
 /* Discard. It comes and goes with send, and sits beside it on one line (a
@@ -1023,8 +1099,9 @@
 
    Once the message wraps, the X hops over send into the outer column as soon
    as that column has a slot free for it, and stays pinned to send as the box
-   grows. 53px puts it exactly between the expand button and send on a 104px
-   stage 3, 1px off each. In a direct message the slot is free straight away.
+   grows (--composer-slot-over-send: on a stage 3 at its floor, that is exactly
+   between the expand button and send). In a direct message the slot is free
+   straight away.
    In a group the expiry has it: the expiry goes back over send, and the X
    waits one column in, mirroring Aa, until stage 3, where the expand button
    makes way for it until there is room for all four (see further down).
@@ -1033,7 +1110,7 @@
    blue button rather than under it. */
 .tiptap-chat-composer--corners:not(.tiptap-chat-composer--expanded)
   .compact-composer-discard {
-  right: 38px;
+  right: var(--composer-send);
   transform: translateY(-50%) scale(1);
   z-index: 1;
   transition:
@@ -1068,8 +1145,8 @@
     .tiptap-chat-composer--expanded
   )[data-composer-stacked]
   .compact-composer-discard {
-  right: 1px;
-  top: calc(100% - 53px);
+  right: var(--composer-column-inset);
+  top: calc(100% - var(--composer-slot-over-send));
 }
 
 /* The hop itself: the X holds its sideways move for a third of the move, so
@@ -1097,7 +1174,7 @@
   ):not([data-composer-stacked])
   .compact-composer-rail--right:has(.compact-composer-discard:not([data-idle]))
   .compact-composer-expiry {
-  right: 74px;
+  right: calc(var(--composer-send) + var(--composer-button));
   /* Back from over send it has to cross the X, which rises with the box as it
      shrinks: it passes over it, as it did on the way out. */
   z-index: 2;
@@ -1122,7 +1199,7 @@
     .compact-composer-discard:not([data-idle])
   )
   .compact-composer-discard {
-  right: 36px;
+  right: var(--composer-send);
   top: 50%;
 }
 
@@ -1152,12 +1229,14 @@
    query below).
 
    A box that can never get that tall (data-composer-short, set by TipTap
-   when stage 3 is capped under 140px) could be scrolling already, so there
-   expand keeps its slot and the X waits one column in, as on two lines.
+   when stage 3 is capped under four buttons' height) could be scrolling
+   already, so there expand keeps its slot and the X waits one column in, as
+   on two lines.
 
    Expand and the expiry share the top slot in turn, so they take turns:
-   dropping under 140px expand fades out first and the rest close up after
-   it; going past it the rest make room first and expand fades in after. */
+   dropping under four buttons' height expand fades out first and the rest
+   close up after it; going past it the rest make room first and expand fades
+   in after. */
 .tiptap-chat-composer--corners:not(
     .tiptap-chat-composer--expanded
   )[data-composer-stacked]:not([data-composer-short])
@@ -1165,8 +1244,10 @@
     .compact-composer-discard:not([data-idle])
   )
   .compact-composer-discard {
-  right: 1px;
-  top: 50%;
+  right: var(--composer-column-inset);
+  /* Midway between the expiry at the top and send, which is a little
+     bigger than the rest. */
+  top: calc(50% - var(--composer-slot-middle-shift));
   transition:
     left var(--composer-chrome-duration) var(--composer-chrome-ease),
     right var(--composer-chrome-duration) var(--composer-chrome-ease)
@@ -1185,7 +1266,7 @@
     .compact-composer-discard:not([data-idle])
   )
   .compact-composer-expiry {
-  top: 18px;
+  top: var(--composer-slot-first);
   transition:
     left var(--composer-chrome-duration) var(--composer-chrome-ease),
     right var(--composer-chrome-duration) var(--composer-chrome-ease)
@@ -1223,11 +1304,15 @@
   container: composer-rail / size;
 }
 
-/* Tall enough for expand, expiry, X and send down the edge (4 buttons need
-   ~138px): expand fades back in at the top and the rest close up over send.
-   Nothing here changes the text's width, so the box height, and with it this
-   query, never depends on it; nothing can flip back and forth. */
-@container composer-rail (min-height: 140px) {
+/* Tall enough for expand, expiry, X and send down the edge: expand fades back
+   in at the top and the rest close up over send. Nothing here changes the
+   text's width, so the box height, and with it this query, never depends on
+   it; nothing can flip back and forth.
+
+   A query cannot read a custom property, so the height is spelled out: it is
+   COMPOSER_FOUR_SLOT_PX in composerCornerLayout.ts, and a test there fails
+   if the two disagree. */
+@container composer-rail (min-height: 164px) {
   .tiptap-chat-composer--corners:not(
       .tiptap-chat-composer--expanded
     )[data-composer-stacked]:not([data-composer-short])
@@ -1235,7 +1320,7 @@
       .compact-composer-discard:not([data-idle])
     )
     .compact-composer-discard {
-    top: calc(100% - 53px);
+    top: calc(100% - var(--composer-slot-over-send));
     transition:
       left var(--composer-chrome-duration) var(--composer-chrome-ease),
       right var(--composer-chrome-duration) var(--composer-chrome-ease)
@@ -1253,7 +1338,7 @@
       .compact-composer-discard:not([data-idle])
     )
     .compact-composer-expiry {
-    top: calc(100% - 87px);
+    top: calc(100% - var(--composer-slot-fourth));
     transition:
       left var(--composer-chrome-duration) var(--composer-chrome-ease),
       right var(--composer-chrome-duration) var(--composer-chrome-ease)
@@ -1290,7 +1375,7 @@
   .compact-composer-editor
   .tiptap
   > * {
-  padding-right: 72px;
+  padding-right: var(--composer-indent-inline-end-displaced);
 }
 
 /* The inner column is only taken while the X waits there. At stage 3 that
@@ -1313,7 +1398,7 @@
   .tiptap
   > * {
   box-sizing: border-box;
-  padding-right: 36px;
+  padding-right: var(--composer-indent-inner-end);
 }
 
 /* The expand button belongs to stage 3 only, so it scales in rather than
@@ -1323,8 +1408,8 @@
   .compact-composer-expand {
   display: inline-flex;
   opacity: 0;
-  right: 1px;
-  top: 18px;
+  right: var(--composer-column-inset);
+  top: var(--composer-slot-first);
   transform: translateY(-50%) scale(0.7);
   transition:
     opacity var(--composer-chrome-duration) var(--composer-chrome-ease),
@@ -1368,7 +1453,7 @@
   )[data-composer-capped][data-composer-squeezed]:not([data-composer-stacked])
   .compact-composer-rail--right:has(.compact-composer-send[data-idle])
   .compact-composer-expiry {
-  right: 38px;
+  right: var(--composer-send);
 }
 
 /* Once discard shows, the outer column has no top slot left for the expand
@@ -1381,8 +1466,8 @@
   )[data-composer-capped][data-composer-squeezed]:not([data-composer-stacked])
   .compact-composer-rail--right:has(.compact-composer-discard:not([data-idle]))
   .compact-composer-expand {
-  right: 38px;
-  top: calc(100% - 53px);
+  right: var(--composer-send);
+  top: calc(100% - var(--composer-slot-over-send));
 }
 
 .tiptap-chat-composer--corners:not(
@@ -1390,8 +1475,8 @@
   )[data-composer-capped][data-composer-squeezed]:not([data-composer-stacked])
   .compact-composer-rail--right:has(.compact-composer-discard:not([data-idle]))
   .compact-composer-expiry {
-  right: 1px;
-  top: 18px;
+  right: var(--composer-column-inset);
+  top: var(--composer-slot-first);
 }
 
 .tiptap-chat-composer--corners:not(
@@ -1401,7 +1486,7 @@
     .compact-composer-discard:not([data-idle])
   )
   .compact-composer-expand {
-  top: 18px;
+  top: var(--composer-slot-first);
 }
 
 .tiptap-chat-composer--corners:not(
@@ -1411,8 +1496,8 @@
     .compact-composer-discard:not([data-idle])
   )
   .compact-composer-discard {
-  right: 38px;
-  top: calc(100% - 19px);
+  right: var(--composer-send);
+  top: calc(100% - var(--composer-slot-send));
 }
 
 .tiptap-chat-composer--corners:not(
@@ -1424,7 +1509,7 @@
   .tiptap
   > * {
   box-sizing: border-box;
-  padding-right: 36px;
+  padding-right: var(--composer-indent-inner-end);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1507,6 +1592,19 @@
   overflow-x: clip;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* With nothing written, send and the X are away and at most the expiry sits
+   against the right edge, so the placeholder can run up to the editor's own
+   padding. The indent comes back with the first character, together with
+   send, and an empty line has nothing to move. */
+.tiptap-chat-composer--corners:not(.tiptap-chat-composer--expanded):has(
+    .compact-composer-send[data-idle]
+  )
+  .compact-composer-editor
+  .tiptap
+  > p.is-editor-empty:first-child {
+  padding-right: 0;
 }
 
 .tippy-box[data-theme~='qchat-mention'] {

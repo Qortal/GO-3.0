@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Rnd } from 'react-rnd';
 import {
-  Avatar,
   Box,
   Button,
   ClickAwayListener,
@@ -39,12 +38,11 @@ import {
   userInfoAtom,
 } from '../../atoms/global';
 import { sortArrayByTimestampAndGroupName } from '../../utils/time';
-import { getBaseApiReact } from '../../App';
-import { buildChatUserAvatarUrl } from '../../utils/chatAvatarUrl';
-import { buildGroupAvatarUrl } from '../../utils/groupAvatarUrl';
 import { executeEvent } from '../../utils/events';
 import { formatEmailDate } from './qmailUtils';
 import { getClickableAvatarSx } from '../Chat/clickableAvatarStyles';
+import { CachedGroupAvatar, CachedUserAvatar } from './CachedAvatars';
+import { rowAvatarPriority } from './useGroupRowAvatar';
 import { MiniDirectThread } from '../Chat/MiniDirectThread';
 import { MiniGroupThread } from '../Chat/MiniGroupThread';
 import { useNameSearch } from '../../hooks/useNameSearch';
@@ -56,15 +54,10 @@ export type ChatWidgetTab = 'messages' | 'groups';
 
 export interface GlobalChatWidgetProps {
   directs: any[];
-  getUserAvatarUrl: (name?: string) => string;
   directChatHasUnread: boolean;
   timestampEnterData: Record<string, number>;
   timeDifferenceForNotificationChats: number;
   myAddress: string;
-  directAvatarLoaded: Record<string, boolean>;
-  setDirectAvatarLoaded: React.Dispatch<
-    React.SetStateAction<Record<string, boolean>>
-  >;
   getTimestampEnterChat: () => Promise<any>;
   getSecretKeyForGroup: (group: any) => Promise<any>;
   onClose?: () => void;
@@ -72,13 +65,10 @@ export interface GlobalChatWidgetProps {
 
 export function GlobalChatWidget({
   directs,
-  getUserAvatarUrl,
   directChatHasUnread,
   timestampEnterData,
   timeDifferenceForNotificationChats,
   myAddress,
-  directAvatarLoaded,
-  setDirectAvatarLoaded,
   getTimestampEnterChat,
   getSecretKeyForGroup,
   onClose,
@@ -500,7 +490,8 @@ export function GlobalChatWidget({
               flex: 1,
             }}
           >
-            <Avatar
+            <CachedUserAvatar
+              name={myName}
               sx={{
                 width: 36,
                 height: 36,
@@ -511,10 +502,9 @@ export function GlobalChatWidget({
                 border: `1px solid ${theme.palette.divider}`,
               }}
               alt={myName || ''}
-              src={getUserAvatarUrl(myName)}
             >
               {(myName || '')?.charAt(0) || '?'}
-            </Avatar>
+            </CachedUserAvatar>
             <Typography
               sx={{
                 fontFamily: 'Inter',
@@ -653,7 +643,6 @@ export function GlobalChatWidget({
                   });
                 }}
                 getTimestampEnterChat={getTimestampEnterChat}
-                getUserAvatarUrl={getUserAvatarUrl}
               />
             ) : selectedGroup != null ? (
               <MiniGroupThread
@@ -670,7 +659,6 @@ export function GlobalChatWidget({
                   });
                 }}
                 getTimestampEnterChat={getTimestampEnterChat}
-                getUserAvatarUrl={getUserAvatarUrl}
               />
             ) : null
           ) : (
@@ -1022,15 +1010,6 @@ export function GlobalChatWidget({
                                         typeof opt === 'string'
                                           ? opt
                                           : opt.name;
-                                      const optAddress =
-                                        typeof opt === 'string'
-                                          ? undefined
-                                          : opt.address;
-                                      const avatarUrl = buildChatUserAvatarUrl(
-                                        getBaseApiReact(),
-                                        optName,
-                                        optAddress
-                                      );
                                       return (
                                         <ListItem
                                           key={key}
@@ -1057,8 +1036,11 @@ export function GlobalChatWidget({
                                               },
                                             }}
                                           >
-                                            <Avatar
-                                              src={avatarUrl || undefined}
+                                            <CachedUserAvatar
+                                              name={optName}
+                                              // Search results go last.
+                                              priority="low"
+                                              countUse={false}
                                               alt={label}
                                               sx={{
                                                 width: 32,
@@ -1074,7 +1056,7 @@ export function GlobalChatWidget({
                                               }}
                                             >
                                               {initial}
-                                            </Avatar>
+                                            </CachedUserAvatar>
                                             <ListItemText
                                               primary={label}
                                               primaryTypographyProps={{
@@ -1108,17 +1090,7 @@ export function GlobalChatWidget({
                         })}
                       </Box>
                     ) : (
-                      sortedDirects.map((direct: any) => {
-                        const avatarUrl = getUserAvatarUrl(direct?.name);
-                        const avatarKey =
-                          direct?.address ||
-                          direct?.name ||
-                          `${direct?.timestamp}-${direct?.sender}`;
-                        const isAvatarLoaded = Boolean(
-                          avatarUrl &&
-                            avatarKey &&
-                            directAvatarLoaded[avatarKey]
-                        );
+                      sortedDirects.map((direct: any, index: number) => {
                         const hasUnread =
                           direct?.sender !== myAddress &&
                           direct?.timestamp &&
@@ -1177,40 +1149,22 @@ export function GlobalChatWidget({
                             <ListItemAvatar
                               sx={{ minWidth: 44, marginRight: 0 }}
                             >
-                              <Avatar
+                              <CachedUserAvatar
+                                name={direct?.name}
+                                priority={rowAvatarPriority(index)}
                                 sx={{
                                   height: 40,
                                   width: 40,
                                   background: theme.palette.background.default,
                                   color: theme.palette.text.primary,
-                                  ...getClickableAvatarSx(
-                                    theme,
-                                    isAvatarLoaded
-                                  ),
                                 }}
+                                sxWithImage={(hasImage) =>
+                                  getClickableAvatarSx(theme, hasImage)
+                                }
                                 alt={direct?.name || direct?.address}
-                                src={avatarUrl}
-                                imgProps={{
-                                  onLoad: () => {
-                                    if (!avatarKey) return;
-                                    setDirectAvatarLoaded((prev) =>
-                                      prev[avatarKey]
-                                        ? prev
-                                        : { ...prev, [avatarKey]: true }
-                                    );
-                                  },
-                                  onError: () => {
-                                    if (!avatarKey) return;
-                                    setDirectAvatarLoaded((prev) =>
-                                      prev[avatarKey] === false
-                                        ? prev
-                                        : { ...prev, [avatarKey]: false }
-                                    );
-                                  },
-                                }}
                               >
                                 {(direct?.name || direct?.address)?.charAt(0)}
-                              </Avatar>
+                              </CachedUserAvatar>
                             </ListItemAvatar>
                             <ListItemText
                               primary={directName}
@@ -1300,7 +1254,7 @@ export function GlobalChatWidget({
                         No groups
                       </Box>
                     ) : (
-                      sortedGroups.map((group: any) => {
+                      sortedGroups.map((group: any, index: number) => {
                         const groupName =
                           group?.groupName ||
                           group?.name ||
@@ -1311,10 +1265,6 @@ export function GlobalChatWidget({
                           groupsOwnerNames[group?.groupId] ??
                           group?.ownerName ??
                           group?.name;
-                        const avatarUrl = buildGroupAvatarUrl(
-                          ownerName,
-                          group?.groupId
-                        );
                         const isSelected =
                           selectedGroup?.groupId === group?.groupId;
                         const groupChatTimestamp =
@@ -1378,22 +1328,22 @@ export function GlobalChatWidget({
                             <ListItemAvatar
                               sx={{ minWidth: 44, marginRight: 0 }}
                             >
-                              <Avatar
+                              <CachedGroupAvatar
+                                ownerName={ownerName}
+                                groupId={group?.groupId}
+                                priority={rowAvatarPriority(index)}
                                 sx={{
                                   height: 40,
                                   width: 40,
                                   background: theme.palette.background.default,
                                   color: theme.palette.text.primary,
-                                  ...getClickableAvatarSx(theme, !!avatarUrl),
                                 }}
-                                src={avatarUrl || undefined}
-                                imgProps={{
-                                  onLoad: () => {},
-                                  onError: () => {},
-                                }}
+                                sxWithImage={(hasImage) =>
+                                  getClickableAvatarSx(theme, hasImage)
+                                }
                               >
                                 {groupName?.charAt(0)?.toUpperCase() || 'G'}
-                              </Avatar>
+                              </CachedGroupAvatar>
                             </ListItemAvatar>
                             <ListItemText
                               primary={

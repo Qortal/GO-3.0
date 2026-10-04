@@ -2,6 +2,8 @@ import {
   CSSProperties,
   useEffect,
   useEffectEvent,
+  useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from 'react';
@@ -19,7 +21,7 @@ import VisibilityOffRoundedIcon from '@mui/icons-material/VisibilityOffRounded';
 import VisibilityRoundedIcon from '@mui/icons-material/VisibilityRounded';
 import { useTranslation } from 'react-i18next';
 import { executeEvent } from '../../utils/events';
-import { buildAppThumbnailUrl } from '../../utils/walletAvatarCache';
+import { useQdnAvatarSrc } from '../../hooks/useQdnAvatarSrc';
 import { openQChatTab } from '../../utils/openQChatTab';
 import { MessagingIconFilled } from '../../assets/Icons/MessagingIconFilled';
 import qTradeLogo from '../../assets/Icons/q-trade-logo.webp';
@@ -40,8 +42,11 @@ import {
   GROUP_ACTIVITY_BLUE,
   getBlueAmbientLineBackground,
 } from './groupActivityColorSystem';
+import {
+  substituteComposerApp,
+  useComposerTarget,
+} from '../Widgets/quitter/composerTarget';
 
-const RETRY_DELAY_MS = 5000;
 export const FEATURED_PREVIEW_EXPAND_DELAY_MS = 200;
 export const FEATURED_INITIAL_PREVIEW_DURATION_MS = 3500;
 export const FEATURED_INTRO_TOTAL_DURATION_MS =
@@ -54,6 +59,7 @@ const FEATURED_TEASER_FADE_DURATION_MS = 300;
 const SUBWIRE_APP_NAME = 'SubWire';
 const Q_CHAT_APP_NAME = 'Q-Chat';
 const Q_TUBE_APP_NAME = 'Q-Tube';
+
 const SUBWIRE_PREVIEW_VIDEO_SRC = '/subwire-preview.webm';
 const Q_TUBE_PREVIEW_VIDEO_SRC = '/q-tube-preview.webm';
 const FEATURED_TILE_VIDEO_SRC = {
@@ -121,6 +127,12 @@ const openAppsLibrary = () => {
 
 export const HomeFeaturedApps = ({ panelBoxRef = undefined }) => {
   const theme = useTheme();
+  // Torq takes Quitter's tile once the Home composer posts to Torq.
+  const composerTarget = useComposerTarget();
+  const featuredAppGrid = useMemo(
+    () => substituteComposerApp(FEATURED_APP_GRID, composerTarget),
+    [composerTarget]
+  );
   const { t } = useTranslation(['group']);
   const panelRef = useDashboardPanelMouseLight<HTMLDivElement>();
   const assignPanelNode = (node) => {
@@ -556,7 +568,7 @@ export const HomeFeaturedApps = ({ panelBoxRef = undefined }) => {
               zIndex: 1,
             }}
           >
-            {FEATURED_APP_GRID.map((appName, index) =>
+            {featuredAppGrid.map((appName, index) =>
               appName ? (
                 <AppTile
                   key={appName}
@@ -783,6 +795,137 @@ export const HomeFeaturedApps = ({ panelBoxRef = undefined }) => {
 
 // ---------------------------------------------------------------------------
 
+/**
+ * The short three-line tagline on the wide Q-Tube and Q-Chat tiles, beside
+ * the icon column. Its size follows the tile, and it measures itself: when
+ * its longest line does not fit next to the icon (narrow phones, long
+ * translations) it is hidden instead of being cut off or drawn over the icon.
+ */
+const TAGLINE_FIT_TOLERANCE_PX = 4;
+
+const TileTagline = ({
+  side,
+  lines,
+  onFitChange,
+}: {
+  side: 'left' | 'right';
+  lines: string[];
+  onFitChange: (fits: boolean) => void;
+}) => {
+  const theme = useTheme();
+  const boxRef = useRef<HTMLDivElement | null>(null);
+  const textRef = useRef<HTMLDivElement | null>(null);
+  const [fits, setFits] = useState(true);
+  const onFitChangeRef = useRef(onFitChange);
+  onFitChangeRef.current = onFitChange;
+  const linesKey = lines.join('\n');
+
+  useLayoutEffect(() => {
+    const box = boxRef.current;
+    const text = textRef.current;
+    if (!box || !text) return;
+    const measure = () => {
+      // A few pixels into the slot's margins still reads fine.
+      const next =
+        text.getBoundingClientRect().width <=
+        box.getBoundingClientRect().width + TAGLINE_FIT_TOLERANCE_PX;
+      setFits(next);
+      onFitChangeRef.current(next);
+    };
+    measure();
+    // The web font arrives after the first layout and is wider than the
+    // fallback: measure again once fonts are in.
+    let cancelled = false;
+    document.fonts?.ready.then(() => {
+      if (!cancelled) measure();
+    });
+    if (typeof ResizeObserver === 'undefined') {
+      return () => {
+        cancelled = true;
+      };
+    }
+    const observer = new ResizeObserver(measure);
+    observer.observe(box);
+    observer.observe(text);
+    return () => {
+      cancelled = true;
+      observer.disconnect();
+    };
+  }, [linesKey]);
+
+  const ink =
+    theme.palette.mode === 'dark'
+      ? 'rgba(239,243,250,0.9)'
+      : 'rgba(20,28,40,0.84)';
+
+  return (
+    <Box
+      ref={boxRef}
+      aria-hidden="true"
+      sx={{
+        alignItems: 'center',
+        bottom: 0,
+        display: 'flex',
+        justifyContent: 'center',
+        pointerEvents: 'none',
+        position: 'absolute',
+        top: 0,
+        visibility: fits ? 'visible' : 'hidden',
+        zIndex: 1,
+        // Beside the icon column (clamp(72px, 32%, 104px) in AppTile), never
+        // over it.
+        ...(side === 'left'
+          ? { left: 'calc(clamp(72px, 32%, 104px) + 18px)', right: '8px' }
+          : {
+              left: 'clamp(8px, 2.5%, 16px)',
+              right: 'clamp(76px, 38%, 132px)',
+            }),
+      }}
+    >
+      <Box
+        ref={textRef}
+        sx={{ alignItems: 'stretch', display: 'inline-flex', gap: '6px' }}
+      >
+        <Box
+          sx={{
+            bgcolor:
+              theme.palette.mode === 'dark'
+                ? 'rgba(239,243,250,0.72)'
+                : 'rgba(20,28,40,0.66)',
+            borderRadius: '999px',
+            flexShrink: 0,
+            width: '3px',
+          }}
+        />
+        <Typography
+          component="div"
+          sx={{
+            color: ink,
+            display: 'inline-flex',
+            flexDirection: 'column',
+            fontSize: '0.8rem',
+            fontWeight: 800,
+            letterSpacing: '0.004em',
+            lineHeight: 0.98,
+            textAlign: 'left',
+            textShadow:
+              theme.palette.mode === 'dark'
+                ? '0 1px 10px rgba(0,0,0,0.28)'
+                : '0 1px 6px rgba(255,255,255,0.16)',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {lines.map((line, index) => (
+            <Box key={index} component="span" sx={{ display: 'block' }}>
+              {line}
+            </Box>
+          ))}
+        </Typography>
+      </Box>
+    </Box>
+  );
+};
+
 interface AppTileProps {
   appName: string;
   calmMode: boolean;
@@ -803,16 +946,15 @@ const AppTile = ({
   const { t } = useTranslation(['group']);
   const isQChat = appName === Q_CHAT_APP_NAME;
   const isQTrade = appName === 'Q-Trade';
-  const baseAvatarUrl = isQChat
-    ? undefined
-    : isQTrade
-      ? qTradeLogo
-      : buildAppThumbnailUrl(appName);
-  const [imageSrc, setImageSrc] = useState(baseAvatarUrl);
+  // The app's icon from the device cache (a bundled icon until the node's
+  // copy arrives), so a slow node never leaves a letter in its place.
+  const cachedIconSrc = useQdnAvatarSrc(isQChat || isQTrade ? null : appName, {
+    priority: 'high',
+  });
+  const imageSrc = isQChat ? undefined : isQTrade ? qTradeLogo : cachedIconSrc;
   const [hasTileVideoError, setHasTileVideoError] = useState(false);
   const tileVideoRef = useRef<HTMLVideoElement | null>(null);
-  const hasRetriedRef = useRef(false);
-  const retryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [taglineFits, setTaglineFits] = useState(true);
   const isPreviewableTile = appName in FEATURED_PREVIEW_CONFIG;
   const isWideLeftTile = appName === Q_TUBE_APP_NAME;
   const isWideRightTile = appName === Q_CHAT_APP_NAME;
@@ -875,21 +1017,6 @@ const AppTile = ({
   useEffect(() => {
     setHasTileVideoError(false);
   }, [tileVideoSrc]);
-
-  useEffect(() => {
-    return () => {
-      if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
-    };
-  }, []);
-
-  const handleImageError = () => {
-    if (!baseAvatarUrl || hasRetriedRef.current) return;
-    hasRetriedRef.current = true;
-    retryTimeoutRef.current = setTimeout(() => {
-      retryTimeoutRef.current = null;
-      setImageSrc(`${baseAvatarUrl}&_retry=${Date.now()}`);
-    }, RETRY_DELAY_MS);
-  };
 
   const tileButton = (
     <ButtonBase
@@ -1024,12 +1151,13 @@ const AppTile = ({
           flexShrink: isWideTile ? 0 : undefined,
           alignSelf: isWideRightTile ? 'flex-end' : 'auto',
           zIndex: 1,
+          // No room for the Q-Tube tagline: the icon takes the tile's centre.
+          ...(isWideLeftTile && !taglineFits ? { alignSelf: 'center' } : null),
         }}
       >
         <Avatar
           src={imageSrc}
           variant="rounded"
-          onError={handleImageError}
           sx={{
             backgroundColor: isQChat ? 'transparent' : undefined,
             color: isQChat ? theme.palette.common.white : undefined,
@@ -1069,136 +1197,26 @@ const AppTile = ({
         </Typography>
       </Box>
       {isWideLeftTile ? (
-        <Box
-          aria-hidden="true"
-          sx={{
-            alignItems: 'center',
-            display: 'flex',
-            inset: '0 16px 0 124px',
-            justifyContent: 'center',
-            pointerEvents: 'none',
-            position: 'absolute',
-            transform: 'translateX(-20px)',
-            zIndex: 1,
-          }}
-        >
-          <Box
-            sx={{
-              alignItems: 'stretch',
-              display: 'inline-flex',
-              gap: '6px',
-            }}
-          >
-            <Box
-              sx={{
-                bgcolor:
-                  theme.palette.mode === 'dark'
-                    ? 'rgba(239,243,250,0.72)'
-                    : 'rgba(20,28,40,0.66)',
-                borderRadius: '999px',
-                flexShrink: 0,
-                width: '3px',
-              }}
-            />
-            <Typography
-              component="div"
-              sx={{
-                color:
-                  theme.palette.mode === 'dark'
-                    ? 'rgba(239,243,250,0.9)'
-                    : 'rgba(20,28,40,0.84)',
-                display: 'inline-flex',
-                flexDirection: 'column',
-                fontSize: '0.8rem',
-                fontWeight: 800,
-                letterSpacing: '0.004em',
-                lineHeight: 0.98,
-                textAlign: 'left',
-                textShadow:
-                  theme.palette.mode === 'dark'
-                    ? '0 1px 10px rgba(0,0,0,0.28)'
-                    : '0 1px 6px rgba(255,255,255,0.16)',
-              }}
-            >
-              <Box component="span" sx={{ display: 'block' }}>
-                {t('group:dashboard.featured_q_tube_keyword_decentralized')}
-              </Box>
-              <Box component="span" sx={{ display: 'block' }}>
-                {t('group:dashboard.featured_q_tube_keyword_cat_videos')}
-              </Box>
-              <Box component="span" sx={{ display: 'block' }}>
-                {t('group:dashboard.featured_q_tube_keyword_platform')}
-              </Box>
-            </Typography>
-          </Box>
-        </Box>
+        <TileTagline
+          side="left"
+          lines={[
+            t('group:dashboard.featured_q_tube_keyword_watch'),
+            t('group:dashboard.featured_q_tube_keyword_share'),
+            t('group:dashboard.featured_q_tube_keyword_own'),
+          ]}
+          onFitChange={setTaglineFits}
+        />
       ) : null}
       {isWideRightTile ? (
-        <Box
-          aria-hidden="true"
-          sx={{
-            alignItems: 'center',
-            bottom: 0,
-            display: 'flex',
-            justifyContent: 'center',
-            left: 'clamp(8px, 2.5%, 16px)',
-            pointerEvents: 'none',
-            position: 'absolute',
-            right: 'clamp(76px, 38%, 132px)',
-            top: 0,
-            zIndex: 1,
-          }}
-        >
-          <Box
-            sx={{
-              alignItems: 'stretch',
-              display: 'inline-flex',
-              gap: '6px',
-            }}
-          >
-            <Box
-              sx={{
-                bgcolor:
-                  theme.palette.mode === 'dark'
-                    ? 'rgba(239,243,250,0.72)'
-                    : 'rgba(20,28,40,0.66)',
-                borderRadius: '999px',
-                flexShrink: 0,
-                width: '3px',
-              }}
-            />
-            <Typography
-              component="div"
-              sx={{
-                color:
-                  theme.palette.mode === 'dark'
-                    ? 'rgba(239,243,250,0.9)'
-                    : 'rgba(20,28,40,0.84)',
-                display: 'inline-flex',
-                flexDirection: 'column',
-                fontSize: '0.8rem',
-                fontWeight: 800,
-                letterSpacing: '0.004em',
-                lineHeight: 0.98,
-                textAlign: 'left',
-                textShadow:
-                  theme.palette.mode === 'dark'
-                    ? '0 1px 10px rgba(0,0,0,0.28)'
-                    : '0 1px 6px rgba(255,255,255,0.16)',
-              }}
-            >
-              <Box component="span" sx={{ display: 'block' }}>
-                {t('group:dashboard.featured_q_chat_keyword_talk')}
-              </Box>
-              <Box component="span" sx={{ display: 'block' }}>
-                {t('group:dashboard.featured_q_chat_keyword_connect')}
-              </Box>
-              <Box component="span" sx={{ display: 'block' }}>
-                {t('group:dashboard.featured_q_chat_keyword_freely')}
-              </Box>
-            </Typography>
-          </Box>
-        </Box>
+        <TileTagline
+          side="right"
+          lines={[
+            t('group:dashboard.featured_q_chat_keyword_talk'),
+            t('group:dashboard.featured_q_chat_keyword_connect'),
+            t('group:dashboard.featured_q_chat_keyword_freely'),
+          ]}
+          onFitChange={setTaglineFits}
+        />
       ) : null}
     </ButtonBase>
   );

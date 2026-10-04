@@ -34,14 +34,14 @@ import {
   buyName,
   getBaseApi,
   getAssetBalanceInfo,
-  getNameOrAddress,
   getAssetInfo,
   getPublicKey,
+  resolveRecipient,
   transferAsset,
   sendChatNotification,
   sendChatGroup,
 } from '../background/background.ts';
-import { qdnResourcePath } from '../utils/qdnPath';
+import { encodeQdnPathSegment, qdnResourcePath } from '../utils/qdnPath';
 import {
   encryptAndPublishSymmetricKeyGroupChat,
   getAllUserNames,
@@ -131,6 +131,26 @@ import {
   foreignKeyConsentFields,
   foreignKeyProxyConsentFields,
 } from '../utils/foreignKeyEgress';
+import { nodePathSegment } from '../utils/nodeEndpointPath';
+import { assertPublicKeyForAddress } from '../encryption/addressKeyCheck';
+import {
+  formatAtomicAmount,
+  parseDecimalAmount,
+  recipientDisplayLabel,
+} from '../transactions/paymentSafety';
+import {
+  foreignCoinPathSegment,
+  foreignFeeType,
+  isArrrCoin,
+  listNamePathSegment,
+  nodeOriginForQApp,
+  requireForeignCoinTicker,
+  tradeBlockchainName,
+} from './qappNodePaths';
+import {
+  ensureForeignKeyConsent,
+  foreignKeyConsentScope,
+} from './foreignKeySessionConsent';
 import { validateAddress } from '../utils/validateAddress.ts';
 import i18n from 'i18next';
 import aesjs from 'aes-js';
@@ -140,7 +160,6 @@ import {
   normalizeFilename,
 } from '../utils/downloadFromLocation.ts';
 import { isCapacitor } from '../utils/platform.ts';
-import { getElectronPersistentStorage } from '../utils/electronPersistentStorage.ts';
 
 const uid = new ShortUniqueId({ length: 6 });
 
@@ -193,7 +212,8 @@ export async function retryTransaction(
 export const _createPoll = async (
   { pollName, pollDescription, options },
   isFromExtension,
-  skipPermission
+  skipPermission,
+  appInfo?
 ) => {
   const fee = await getFee('CREATE_POLL');
   let resPermission = {};
@@ -217,7 +237,8 @@ export const _createPoll = async (
         }),
         fee: fee.fee,
       },
-      isFromExtension
+      isFromExtension,
+      appInfo
     );
   }
 
@@ -265,7 +286,8 @@ export const _createPoll = async (
 
 const _deployAt = async (
   { name, description, tags, creationBytes, amount, assetId, atType },
-  isFromExtension
+  isFromExtension,
+  appInfo?
 ) => {
   const fee = await getFee('DEPLOY_AT');
 
@@ -287,8 +309,10 @@ const _deployAt = async (
         postProcess: 'capitalizeFirstChar',
       }),
       fee: fee.fee,
+      confirmCheckbox: true,
     },
-    isFromExtension
+    isFromExtension,
+    appInfo
   );
 
   const { accepted } = resPermission;
@@ -341,7 +365,8 @@ const _deployAt = async (
 export const _voteOnPoll = async (
   { pollName, optionIndex, optionName },
   isFromExtension,
-  skipPermission
+  skipPermission,
+  appInfo?
 ) => {
   const fee = await getFee('VOTE_ON_POLL');
   let resPermission = {};
@@ -362,7 +387,8 @@ export const _voteOnPoll = async (
         }),
         fee: fee.fee,
       },
-      isFromExtension
+      isFromExtension,
+      appInfo
     );
   }
 
@@ -504,7 +530,13 @@ const handleMessage = (event) => {
 
 window.addEventListener('message', handleMessage);
 
-async function getUserPermission(payload, isFromExtension) {
+/**
+ * Asks the user in the approval dialog (App.tsx). `appInfo` is GO's record of
+ * the tab the request came from; the dialog names the app from it, never from
+ * the payload (GO-28). `expiresAt` lets a request that waits behind another
+ * one show the time it really has left.
+ */
+async function getUserPermission(payload, isFromExtension, appInfo?) {
   return new Promise((resolve) => {
     const requestId = generatePermissionRequestId();
     responseResolvers.set(requestId, resolve); // Store resolver by requestId
@@ -517,6 +549,17 @@ async function getUserPermission(payload, isFromExtension) {
         payload,
         requestId,
         isFromExtension,
+        appInfo:
+          appInfo && typeof appInfo === 'object'
+            ? {
+                name: appInfo.name,
+                service: appInfo.service,
+                // GO's own screens (never a Q-App: their appInfo comes from
+                // the tab, see useQortalMessageListener).
+                ...(appInfo.internal === true ? { internal: true } : {}),
+              }
+            : null,
+        expiresAt: Date.now() + TIME_MINUTES_1_IN_MILLISECONDS,
       },
       targetOrigin
     );
@@ -575,7 +618,8 @@ export const getUserAccount = async ({ isFromExtension, appInfo }) => {
             }),
           },
         },
-        isFromExtension
+        isFromExtension,
+        appInfo
       );
     }
 
@@ -761,7 +805,8 @@ export const sessionPermissions = async (data, isFromExtension, appInfo) => {
         }),
         isSessionPermission: true,
       },
-      isFromExtension
+      isFromExtension,
+      appInfo
     );
 
     const { accepted = false } = resPermission || {};
@@ -1173,7 +1218,7 @@ export const decryptDataWithSharingKey = async (data, sender) => {
   return base64ToObject.data;
 };
 
-export const getHostedData = async (data, isFromExtension) => {
+export const getHostedData = async (data, isFromExtension, appInfo?) => {
   const isGateway = await isRunningGateway();
   if (isGateway) {
     throw new Error(
@@ -1188,7 +1233,8 @@ export const getHostedData = async (data, isFromExtension) => {
         postProcess: 'capitalizeFirstChar',
       }),
     },
-    isFromExtension
+    isFromExtension,
+    appInfo
   );
   const { accepted } = resPermission;
 
@@ -1197,9 +1243,11 @@ export const getHostedData = async (data, isFromExtension) => {
     const query = data?.query ? data?.query : '';
     const offset = data?.offset ? data?.offset : 0;
 
-    let urlPath = `/arbitrary/hosted/resources/?limit=${limit}&offset=${offset}`;
+    let urlPath = `/arbitrary/hosted/resources/?limit=${encodeURIComponent(
+      limit
+    )}&offset=${encodeURIComponent(offset)}`;
     if (query) {
-      urlPath = urlPath + `&query=${query}`;
+      urlPath = urlPath + `&query=${encodeURIComponent(query)}`;
     }
 
     const url = await createEndpoint(urlPath);
@@ -1215,7 +1263,7 @@ export const getHostedData = async (data, isFromExtension) => {
   }
 };
 
-export const deleteHostedData = async (data, isFromExtension) => {
+export const deleteHostedData = async (data, isFromExtension, appInfo?) => {
   const isGateway = await isRunningGateway();
   if (isGateway) {
     throw new Error(
@@ -1238,7 +1286,8 @@ export const deleteHostedData = async (data, isFromExtension) => {
         postProcess: 'capitalizeFirstChar',
       }),
     },
-    isFromExtension
+    isFromExtension,
+    appInfo
   );
   const { accepted } = resPermission;
 
@@ -1255,7 +1304,11 @@ export const deleteHostedData = async (data, isFromExtension) => {
     for (const hostedDataItem of hostedData) {
       try {
         const url = await createEndpoint(
-          `/arbitrary/resource/${hostedDataItem.service}/${hostedDataItem.name}/${hostedDataItem.identifier}`
+          `/arbitrary/resource/${encodeQdnPathSegment(
+            `${hostedDataItem.service}`
+          )}/${encodeQdnPathSegment(
+            `${hostedDataItem.name}`
+          )}/${encodeQdnPathSegment(`${hostedDataItem.identifier}`)}`
         );
         const response = await fetch(url, {
           method: 'DELETE',
@@ -1372,6 +1425,7 @@ export const getListItems = async (data, appInfo, isFromExtension) => {
     });
     throw new Error(errorMsg);
   }
+  listNamePathSegment(data.list_name);
   const value = (await getPermission('qAPPAutoLists')) || false;
 
   let skip = false;
@@ -1403,7 +1457,8 @@ export const getListItems = async (data, appInfo, isFromExtension) => {
           }),
         },
       },
-      isFromExtension
+      isFromExtension,
+      appInfo
     );
     const { accepted, checkbox1 } = resPermission;
     acceptedVar = accepted;
@@ -1412,7 +1467,9 @@ export const getListItems = async (data, appInfo, isFromExtension) => {
   }
 
   if (acceptedVar || skip) {
-    const url = await createEndpoint(`/lists/${data.list_name}`);
+    const url = await createEndpoint(
+      `/lists/${listNamePathSegment(data.list_name)}`
+    );
     const response = await fetch(url);
     if (!response.ok)
       throw new Error(
@@ -1432,7 +1489,7 @@ export const getListItems = async (data, appInfo, isFromExtension) => {
   }
 };
 
-export const addListItems = async (data, isFromExtension) => {
+export const addListItems = async (data, isFromExtension, appInfo?) => {
   const isGateway = await isRunningGateway();
   if (isGateway) {
     throw new Error(
@@ -1459,6 +1516,7 @@ export const addListItems = async (data, isFromExtension) => {
 
   const items = data.items;
   const list_name = data.list_name;
+  listNamePathSegment(list_name);
 
   const resPermission = await getUserPermission(
     {
@@ -1468,12 +1526,15 @@ export const addListItems = async (data, isFromExtension) => {
       }),
       highlightedText: items.join(', '),
     },
-    isFromExtension
+    isFromExtension,
+    appInfo
   );
   const { accepted } = resPermission;
 
   if (accepted) {
-    const url = await createEndpoint(`/lists/${list_name}`);
+    const url = await createEndpoint(
+      `/lists/${listNamePathSegment(list_name)}`
+    );
     const body = {
       items: items,
     };
@@ -1508,7 +1569,7 @@ export const addListItems = async (data, isFromExtension) => {
   }
 };
 
-export const deleteListItems = async (data, isFromExtension) => {
+export const deleteListItems = async (data, isFromExtension, appInfo?) => {
   const isGateway = await isRunningGateway();
   if (isGateway) {
     throw new Error(
@@ -1543,6 +1604,7 @@ export const deleteListItems = async (data, isFromExtension) => {
   const item = data?.item;
   const items = data?.items;
   const list_name = data.list_name;
+  listNamePathSegment(list_name);
 
   const resPermission = await getUserPermission(
     {
@@ -1552,12 +1614,15 @@ export const deleteListItems = async (data, isFromExtension) => {
       }),
       highlightedText: items ? JSON.stringify(items) : item,
     },
-    isFromExtension
+    isFromExtension,
+    appInfo
   );
   const { accepted } = resPermission;
 
   if (accepted) {
-    const url = await createEndpoint(`/lists/${list_name}`);
+    const url = await createEndpoint(
+      `/lists/${listNamePathSegment(list_name)}`
+    );
     const body = {
       items: items || [item],
     };
@@ -1591,6 +1656,35 @@ export const deleteListItems = async (data, isFromExtension) => {
     );
   }
 };
+
+/**
+ * Pays the app fee the user approved with a publish, once the publish went
+ * through. The publish result is returned without waiting for it, as before.
+ * If the payment is refused (a node fee above the approved fee, an unknown
+ * fee recipient, a network error), the user is told instead of the failure
+ * being lost as an unhandled rejection.
+ */
+export function payAppFeeAfterPublish(payment: {
+  amount: unknown;
+  receiver: string;
+  approvedFee: unknown;
+}): Promise<void> {
+  return sendCoinFunc({ ...payment }, true).then(
+    () => undefined,
+    (error) => {
+      const reason = typeof error?.message === 'string' ? error.message : '';
+      console.warn('[app fee] payment not sent', reason);
+      executeEvent('openGlobalSnackBar', {
+        message: i18n.t('question:message.error.app_fee_not_sent', {
+          error: reason,
+          postProcess: 'capitalizeFirstChar',
+        }),
+        type: 'error',
+        duration: 8000,
+      });
+    }
+  );
+}
 
 export const publishQDNResource = async (
   data: any,
@@ -1759,8 +1853,12 @@ export const publishQDNResource = async (
   const fee = await getFee('ARBITRARY');
 
   const handleDynamicValues = {};
+  // The PAYMENT fee included in the app fee shown in the dialog; the app-fee
+  // payment refuses a higher fee from the node (GO-19).
+  let appFeePaymentFee;
   if (hasAppFee) {
     const feePayment = await getFee('PAYMENT');
+    appFeePaymentFee = feePayment.fee;
 
     ((handleDynamicValues['appFee'] = +appFee + +feePayment.fee),
       (handleDynamicValues['checkbox1'] = {
@@ -1769,6 +1867,8 @@ export const publishQDNResource = async (
           postProcess: 'capitalizeFirstChar',
         }),
       }));
+    // An app fee moves QORT to the app's recipient: tick required (GO-28).
+    handleDynamicValues['confirmCheckbox'] = true;
   }
   if (!!data?.encrypt) {
     handleDynamicValues['highlightedText'] = `isEncrypted: ${!!data.encrypt}`;
@@ -1794,7 +1894,8 @@ export const publishQDNResource = async (
         fee: fee.fee,
         ...handleDynamicValues,
       },
-      isFromExtension
+      isFromExtension,
+      appInfo
     );
     const { accepted, checkbox1 = false } = resPermission || {
       accepted: false,
@@ -1836,13 +1937,11 @@ export const publishQDNResource = async (
         encryption: isStreamedEncryption ? encryption : null,
       });
       if (resPublish?.signature && hasAppFee && checkbox1Var) {
-        sendCoinFunc(
-          {
-            amount: appFee,
-            receiver: appFeeRecipient,
-          },
-          true
-        );
+        void payAppFeeAfterPublish({
+          amount: appFee,
+          receiver: appFeeRecipient,
+          approvedFee: appFeePaymentFee,
+        });
       }
       return resPublish;
     } catch (error) {
@@ -1856,6 +1955,71 @@ export const publishQDNResource = async (
     );
   }
 };
+
+/**
+ * Every ARRR wallet read (address, balance, transactions, sync status) sends the
+ * ARRR seed, which spends the wallet, to the node. Before the first one in a
+ * Q-App tab, show the same "your private key will be sent to the node" warning
+ * and tick box that sends show. One consent covers that tab, app, account and
+ * node until the tab closes; the general "authenticate" grant and the "always"
+ * boxes never cover it.
+ */
+async function confirmArrrSeedEgress(
+  isFromExtension,
+  appInfo?: { tabId?: unknown; name?: unknown }
+) {
+  const endpoint = await createEndpoint('/crosschain/arrr/syncstatus');
+  const egress = assertForeignKeyEgress(endpoint, 'ARRR');
+  const wallet = await getSaveWallet();
+  const scope = foreignKeyConsentScope({
+    tabId: appInfo?.tabId,
+    appName: appInfo?.name,
+    address: wallet?.address0,
+    // The whole origin, not just the host: another port on 127.0.0.1 can be
+    // another app, and http/https on one host get different warnings.
+    node: nodeOriginForQApp(endpoint),
+    coin: 'ARRR',
+  });
+  const accepted = await ensureForeignKeyConsent(scope, async () => {
+    const resPermission = await getUserPermission(
+      {
+        text1: i18n.t('question:permission.arrr_wallet_access', {
+          postProcess: 'capitalizeFirstChar',
+        }),
+        ...foreignKeyConsentFields(egress, 'ARRR'),
+      },
+      isFromExtension,
+      appInfo
+    );
+    return !!(resPermission as { accepted?: boolean } | undefined)?.accepted;
+  });
+  if (!accepted) {
+    throw new Error(
+      i18n.t('question:message.generic.user_declined_request', {
+        postProcess: 'capitalizeFirstChar',
+      })
+    );
+  }
+}
+
+/**
+ * For Q-App requests that used to need no permission at all: pass when the app
+ * is already authenticated in this tab, otherwise show the normal
+ * "authenticate" prompt (skipped when the user ticked "always authenticate").
+ */
+async function requireAuthenticatedSession(
+  isFromExtension,
+  appInfo?: { tabId?: unknown; name?: unknown }
+) {
+  if (
+    appInfo?.tabId &&
+    appInfo?.name &&
+    hasSessionPermission(appInfo.tabId, appInfo.name, 'GET_USER_ACCOUNT')
+  ) {
+    return;
+  }
+  await getUserAccount({ isFromExtension, appInfo });
+}
 
 export const checkArrrSyncStatus = async (seed) => {
   const _url = await createEndpoint(`/crosschain/arrr/syncstatus`);
@@ -2097,6 +2261,8 @@ export const publishMultipleQDNResources = async (
           postProcess: 'capitalizeFirstChar',
         }),
       }));
+    // An app fee moves QORT to the app's recipient: tick required (GO-28).
+    handleDynamicValues['confirmCheckbox'] = true;
   }
   if (data?.encrypt) {
     handleDynamicValues['highlightedText'] = `isEncrypted: ${!!data.encrypt}`;
@@ -2145,7 +2311,8 @@ export const publishMultipleQDNResources = async (
         fee: +fee.fee * resources.length,
         ...handleDynamicValues,
       },
-      isFromExtension
+      isFromExtension,
+      appInfo
     );
     const { accepted, checkbox1 = false } = resPermission || {
       accepted: false,
@@ -2467,18 +2634,17 @@ export const publishMultipleQDNResources = async (
     return obj;
   }
   if (hasAppFee && checkbox1Var) {
-    sendCoinFunc(
-      {
-        amount: appFee,
-        receiver: appFeeRecipient,
-      },
-      true
-    );
+    void payAppFeeAfterPublish({
+      amount: appFee,
+      receiver: appFeeRecipient,
+      // The PAYMENT fee shown in the dialog (GO-19).
+      approvedFee: paymentFeeAmount,
+    });
   }
   return publishedResponses;
 };
 
-export const voteOnPoll = async (data, isFromExtension) => {
+export const voteOnPoll = async (data, isFromExtension, appInfo?) => {
   const requiredFields = ['pollName', 'optionIndex'];
   const missingFields: string[] = [];
 
@@ -2534,7 +2700,9 @@ export const voteOnPoll = async (data, isFromExtension) => {
     const optionName = pollInfo.pollOptions[optionIndex].optionName;
     const resVoteOnPoll = await _voteOnPoll(
       { pollName, optionIndex, optionName },
-      isFromExtension
+      isFromExtension,
+      false,
+      appInfo
     );
     return resVoteOnPoll;
   } catch (error) {
@@ -2547,7 +2715,7 @@ export const voteOnPoll = async (data, isFromExtension) => {
   }
 };
 
-export const createPoll = async (data, isFromExtension) => {
+export const createPoll = async (data, isFromExtension, appInfo?) => {
   const requiredFields = [
     'pollName',
     'pollDescription',
@@ -2580,7 +2748,9 @@ export const createPoll = async (data, isFromExtension) => {
         pollDescription,
         options: pollOptions,
       },
-      isFromExtension
+      isFromExtension,
+      false,
+      appInfo
     );
     return resCreatePoll;
   } catch (error) {
@@ -2669,7 +2839,8 @@ export const sendChatMessage = async (data, isFromExtension, appInfo) => {
           }),
         },
       },
-      isFromExtension
+      isFromExtension,
+      appInfo
     );
   }
   const { accepted = false, checkbox1 = false } = resPermission || {};
@@ -2716,7 +2887,9 @@ export const sendChatMessage = async (data, isFromExtension, appInfo) => {
       );
     }
     if (isRecipient && recipient) {
-      const url = await createEndpoint(`/addresses/publickey/${recipient}`);
+      const url = await createEndpoint(
+        `/addresses/publickey/${nodePathSegment(recipient)}`
+      );
       const response = await fetch(url);
       if (!response.ok)
         throw new Error(
@@ -2753,6 +2926,12 @@ export const sendChatMessage = async (data, isFromExtension, appInfo) => {
           'Cannot send an encrypted message to this user since they do not have their publickey on chain.'
         );
       }
+      // The message is encrypted to this key: it must belong to the recipient
+      // address, not be one the node substituted (GO-30).
+      key = assertPublicKeyForAddress(
+        typeof key === 'string' ? key : '',
+        recipient
+      );
       let _reference = new Uint8Array(64);
       self.crypto.getRandomValues(_reference);
 
@@ -2882,7 +3061,9 @@ export const joinGroup = async (data, isFromExtension, appInfo?) => {
   }
   let groupInfo = null;
   try {
-    const url = await createEndpoint(`/groups/${data.groupId}`);
+    const url = await createEndpoint(
+      `/groups/${nodePathSegment(data.groupId)}`
+    );
     const response = await fetch(url);
     if (!response.ok)
       throw new Error(
@@ -2919,7 +3100,8 @@ export const joinGroup = async (data, isFromExtension, appInfo?) => {
         highlightedText: `${groupInfo.groupName}`,
         fee: fee.fee,
       },
-      isFromExtension
+      isFromExtension,
+      appInfo
     );
     const { accepted } = resPermission || {
       accepted: false,
@@ -2963,20 +3145,29 @@ export const joinGroup = async (data, isFromExtension, appInfo?) => {
 /**
  * `options.preApproved` is only ever set by GO itself — the Save button on a
  * file the person first declined — never taken from the Q-App's request.
+ * `options.appInfo` names the asking app in the approval dialog (GO-28).
  */
 export const saveFile = async (
   data,
   sender,
   isFromExtension,
   snackMethods,
-  options: { preApproved?: boolean } = {}
+  options: {
+    preApproved?: boolean;
+    appInfo?: { name?: string; service?: string };
+  } = {}
 ) => {
   try {
     if (!data?.filename) throw new Error('Missing filename');
 
     // Handle location-based downloads (streaming approach)
     if (data?.location) {
-      return await saveFileFromLocation(data, isFromExtension, snackMethods);
+      return await saveFileFromLocation(
+        data,
+        isFromExtension,
+        snackMethods,
+        options.appInfo
+      );
     }
     const requiredFields = ['filename', 'blob'];
     const missingFields: string[] = [];
@@ -3005,7 +3196,8 @@ export const saveFile = async (
             }),
             highlightedText: `${filename}`,
           },
-          isFromExtension
+          isFromExtension,
+          options.appInfo
         );
     const { accepted } = resPermission;
 
@@ -3070,7 +3262,12 @@ export const saveFile = async (
  * Downloads a file from QDN location with optional decryption
  * Uses streaming to avoid loading entire file into memory
  */
-async function saveFileFromLocation(data, isFromExtension, snackMethods) {
+async function saveFileFromLocation(
+  data,
+  isFromExtension,
+  snackMethods,
+  appInfo?
+) {
   const {
     filename,
     location,
@@ -3124,7 +3321,8 @@ async function saveFileFromLocation(data, isFromExtension, snackMethods) {
       }),
       highlightedText: isEncrypted ? `${filename} (encrypted)` : filename,
     },
-    isFromExtension
+    isFromExtension,
+    appInfo
   );
 
   if (!resPermission.accepted) {
@@ -3577,7 +3775,7 @@ function fallbackDecryptCtr(keyBytes, ivBytes, blockOffset, ciphertext) {
   return new Uint8Array(decrypted);
 }
 
-export const deployAt = async (data, isFromExtension) => {
+export const deployAt = async (data, isFromExtension, appInfo?) => {
   const requiredFields = [
     'name',
     'description',
@@ -3616,7 +3814,8 @@ export const deployAt = async (data, isFromExtension) => {
         assetId: data.assetId,
         atType: data.type,
       },
-      isFromExtension
+      isFromExtension,
+      appInfo
     );
     return resDeployAt;
   } catch (error) {
@@ -3646,8 +3845,10 @@ export const getUserWallet = async (data, isFromExtension, appInfo) => {
     throw new Error(errorMsg);
   }
   const isGateway = await isRunningGateway();
+  // Only ARRR asks the node for the address, which sends it the ARRR seed.
+  const sendsArrrSeed = data?.coin === 'ARRR';
 
-  if (data?.coin === 'ARRR' && isGateway)
+  if (sendsArrrSeed && isGateway)
     throw new Error(
       i18n.t('question:message.error.gateway_wallet_local_node', {
         token: 'ARRR',
@@ -3655,23 +3856,29 @@ export const getUserWallet = async (data, isFromExtension, appInfo) => {
       })
     );
 
-  const value =
-    (await getPermission(
-      `qAPPAutoGetUserWallet-${appInfo?.name}-${data.coin}`
-    )) || false;
   let skip = false;
-  if (value) {
+  if (sendsArrrSeed) {
+    // Replaces the plain prompt, the "always" box and the authenticate grant.
+    await confirmArrrSeedEgress(isFromExtension, appInfo);
     skip = true;
-  }
+  } else {
+    const value =
+      (await getPermission(
+        `qAPPAutoGetUserWallet-${appInfo?.name}-${data.coin}`
+      )) || false;
+    if (value) {
+      skip = true;
+    }
 
-  // Check for session permission
-  if (
-    !skip &&
-    appInfo?.tabId &&
-    appInfo?.name &&
-    hasSessionPermission(appInfo.tabId, appInfo.name, 'GET_USER_WALLET')
-  ) {
-    skip = true;
+    // Check for session permission
+    if (
+      !skip &&
+      appInfo?.tabId &&
+      appInfo?.name &&
+      hasSessionPermission(appInfo.tabId, appInfo.name, 'GET_USER_WALLET')
+    ) {
+      skip = true;
+    }
   }
 
   let resPermission;
@@ -3690,7 +3897,8 @@ export const getUserWallet = async (data, isFromExtension, appInfo) => {
           }),
         },
       },
-      isFromExtension
+      isFromExtension,
+      appInfo
     );
   }
   const { accepted = false, checkbox1 = false } = resPermission || {};
@@ -3799,8 +4007,10 @@ export const getWalletBalance = async (
   }
 
   const isGateway = await isRunningGateway();
+  // The ARRR balance comes from the node, which needs the ARRR seed for it.
+  const sendsArrrSeed = data?.coin === 'ARRR';
 
-  if (data?.coin === 'ARRR' && isGateway)
+  if (sendsArrrSeed && isGateway)
     throw new Error(
       i18n.t('question:message.error.gateway_balance_local_node', {
         token: 'ARRR',
@@ -3808,23 +4018,32 @@ export const getWalletBalance = async (
       })
     );
 
-  const value =
-    (await getPermission(
-      `qAPPAutoWalletBalance-${appInfo?.name}-${data.coin}`
-    )) || false;
   let skip = false;
-  if (value) {
+  if (sendsArrrSeed) {
+    // bypassPermission is only set by SEND_COIN, after the user has accepted
+    // the send dialog and its private-key warning.
+    if (!bypassPermission) {
+      await confirmArrrSeedEgress(isFromExtension, appInfo);
+    }
     skip = true;
-  }
+  } else {
+    const value =
+      (await getPermission(
+        `qAPPAutoWalletBalance-${appInfo?.name}-${data.coin}`
+      )) || false;
+    if (value) {
+      skip = true;
+    }
 
-  // Check for session permission
-  if (
-    !skip &&
-    appInfo?.tabId &&
-    appInfo?.name &&
-    hasSessionPermission(appInfo.tabId, appInfo.name, 'GET_WALLET_BALANCE')
-  ) {
-    skip = true;
+    // Check for session permission
+    if (
+      !skip &&
+      appInfo?.tabId &&
+      appInfo?.name &&
+      hasSessionPermission(appInfo.tabId, appInfo.name, 'GET_WALLET_BALANCE')
+    ) {
+      skip = true;
+    }
   }
 
   let resPermission;
@@ -3843,7 +4062,8 @@ export const getWalletBalance = async (
           }),
         },
       },
-      isFromExtension
+      isFromExtension,
+      appInfo
     );
   }
   const { accepted = false, checkbox1 = false } = resPermission || {};
@@ -4037,10 +4257,11 @@ export const getUserWalletFunc = async (coin) => {
       userWallet['publickey'] = parsedData.rvnPublicKey;
       break;
     case 'ARRR':
-    case 'PIRATECHAIN':
+    case 'PIRATECHAIN': {
       const arrrAddress = await getPirateWallet(parsedData.arrrSeed58);
       userWallet['address'] = arrrAddress;
       break;
+    }
     default:
       break;
   }
@@ -4063,7 +4284,10 @@ export const getUserWalletInfo = async (data, isFromExtension, appInfo) => {
     });
     throw new Error(errorMsg);
   }
-  if (data?.coin === 'ARRR') {
+  // Only the xpub coins have /addressinfos. ARRR (also as PIRATECHAIN) would
+  // first send its seed to the node to look up the address.
+  const ticker = requireForeignCoinTicker(data.coin);
+  if (ticker === 'ARRR') {
     throw new Error(
       i18n.t('question:message.error.token_not_supported', {
         token: 'ARRR',
@@ -4105,7 +4329,8 @@ export const getUserWalletInfo = async (data, isFromExtension, appInfo) => {
           }),
         },
       },
-      isFromExtension
+      isFromExtension,
+      appInfo
     );
   }
   const { accepted = false, checkbox1 = false } = resPermission || {};
@@ -4115,13 +4340,12 @@ export const getUserWalletInfo = async (data, isFromExtension, appInfo) => {
   }
 
   if (accepted || skip) {
-    let coin = data.coin;
-    let walletKeys = await getUserWalletFunc(coin);
+    const walletKeys = await getUserWalletFunc(ticker);
 
     const _url = await createEndpoint(
-      `/crosschain/` + data.coin.toLowerCase() + `/addressinfos`
+      `/crosschain/${foreignCoinPathSegment(ticker)}/addressinfos`
     );
-    let _body = { xpub58: walletKeys['publickey'] };
+    const _body = { xpub58: walletKeys['publickey'] };
     try {
       const response = await fetch(_url, {
         method: 'POST',
@@ -4185,28 +4409,37 @@ export const getUserWalletTransactions = async (
     });
     throw new Error(errorMsg);
   }
+  const ticker = requireForeignCoinTicker(data.coin);
+  // For ARRR (also as PIRATECHAIN) the node needs the ARRR seed itself.
+  const sendsArrrSeed = ticker === 'ARRR';
 
-  const value =
-    (await getPermission(
-      `getUserWalletTransactions-${appInfo?.name}-${data.coin}`
-    )) || false;
   let skip = false;
-  if (value) {
+  if (sendsArrrSeed) {
+    // Replaces the plain prompt, the "always" box and the authenticate grant.
+    await confirmArrrSeedEgress(isFromExtension, appInfo);
     skip = true;
-  }
+  } else {
+    const value =
+      (await getPermission(
+        `getUserWalletTransactions-${appInfo?.name}-${data.coin}`
+      )) || false;
+    if (value) {
+      skip = true;
+    }
 
-  // Check for session permission
-  if (
-    !skip &&
-    appInfo?.tabId &&
-    appInfo?.name &&
-    hasSessionPermission(
-      appInfo.tabId,
-      appInfo.name,
-      'GET_USER_WALLET_TRANSACTIONS'
-    )
-  ) {
-    skip = true;
+    // Check for session permission
+    if (
+      !skip &&
+      appInfo?.tabId &&
+      appInfo?.name &&
+      hasSessionPermission(
+        appInfo.tabId,
+        appInfo.name,
+        'GET_USER_WALLET_TRANSACTIONS'
+      )
+    ) {
+      skip = true;
+    }
   }
 
   let resPermission;
@@ -4225,7 +4458,8 @@ export const getUserWalletTransactions = async (
           }),
         },
       },
-      isFromExtension
+      isFromExtension,
+      appInfo
     );
   }
   const { accepted = false, checkbox1 = false } = resPermission || {};
@@ -4238,10 +4472,9 @@ export const getUserWalletTransactions = async (
   }
 
   if (accepted || skip) {
-    const coin = data.coin;
-    const walletKeys = await getUserWalletFunc(coin);
+    const walletKeys = await getUserWalletFunc(ticker);
     let publicKey;
-    if (data?.coin === 'ARRR') {
+    if (sendsArrrSeed) {
       const resKeyPair = await getKeyPair();
       const parsedData = resKeyPair;
       publicKey = parsedData.arrrSeed58;
@@ -4250,9 +4483,9 @@ export const getUserWalletTransactions = async (
     }
 
     const _url = await createEndpoint(
-      `/crosschain/` + data.coin.toLowerCase() + `/wallettransactions`
+      `/crosschain/${foreignCoinPathSegment(ticker)}/wallettransactions`
     );
-    if (data?.coin === 'ARRR') assertForeignKeyEgress(_url, data.coin);
+    if (sendsArrrSeed) assertForeignKeyEgress(_url, ticker);
     const _body = publicKey;
     try {
       const response = await fetch(_url, {
@@ -4313,7 +4546,7 @@ export const getCrossChainServerInfo = async (data) => {
     });
     throw new Error(errorMsg);
   }
-  const _url = `/crosschain/` + data.coin.toLowerCase() + `/serverinfos`;
+  const _url = `/crosschain/${foreignCoinPathSegment(data.coin)}/serverinfos`;
   try {
     const url = await createEndpoint(_url);
     const response = await fetch(url);
@@ -4383,7 +4616,7 @@ export const startCrossChainServer = async (
     });
     throw new Error(errorMsg);
   }
-  const coin = data.coin.toLowerCase();
+  const coin = foreignCoinPathSegment(data.coin);
   const url = `/crosschain/${coin}/start`;
   try {
     const endpoint = await createEndpoint(url);
@@ -4420,7 +4653,11 @@ export const startCrossChainServer = async (
   }
 };
 
-export const getTxActivitySummary = async (data) => {
+export const getTxActivitySummary = async (
+  data,
+  isFromExtension?: boolean,
+  appInfo?: { tabId?: unknown; name?: unknown }
+) => {
   const requiredFields = ['coin'];
   const missingFields: string[] = [];
   requiredFields.forEach((field) => {
@@ -4438,8 +4675,12 @@ export const getTxActivitySummary = async (data) => {
     throw new Error(errorMsg);
   }
 
-  const coin = data.coin;
-  const url = `/crosschain/txactivity?foreignBlockchain=${coin}`; // No apiKey here
+  const foreignBlockchain = tradeBlockchainName(data.coin);
+  // Core only serves this with the node API key, so the app must be signed in.
+  await requireAuthenticatedSession(isFromExtension, appInfo);
+  const url = `/crosschain/txactivity?foreignBlockchain=${encodeURIComponent(
+    foreignBlockchain
+  )}`;
 
   try {
     const endpoint = await createEndpoint(url);
@@ -4496,8 +4737,11 @@ export const getForeignFee = async (data) => {
     throw new Error(errorMsg);
   }
 
-  const { coin, type } = data;
-  const url = `/crosschain/${coin.toLowerCase()}/${type}`;
+  // Only /crosschain/<coin>/feekb or /feerequired, both readable without the
+  // node API key.
+  const coin = foreignCoinPathSegment(data.coin);
+  const type = foreignFeeType(data.type);
+  const url = `/crosschain/${coin}/${type}`;
 
   try {
     const endpoint = await createEndpoint(url);
@@ -4567,7 +4811,9 @@ export const updateForeignFee = async (data, isFromExtension, appInfo?) => {
     throw new Error(errorMsg);
   }
 
-  const { coin, type, value } = data;
+  const { coin, value } = data;
+  const coinSegment = foreignCoinPathSegment(coin);
+  const type = foreignFeeType(data.type);
 
   const text3 =
     type === 'feerequired'
@@ -4612,7 +4858,8 @@ export const updateForeignFee = async (data, isFromExtension, appInfo?) => {
           postProcess: 'capitalizeFirstChar',
         }),
       },
-      isFromExtension
+      isFromExtension,
+      appInfo
     );
     const { accepted } = resPermission || {
       accepted: false,
@@ -4629,7 +4876,7 @@ export const updateForeignFee = async (data, isFromExtension, appInfo?) => {
       })
     );
   }
-  const url = `/crosschain/${coin.toLowerCase()}/update${type}`;
+  const url = `/crosschain/${coinSegment}/update${type}`;
   const valueStringified = JSON.stringify(+value);
 
   const endpoint = await createEndpoint(url);
@@ -4680,8 +4927,8 @@ export const getServerConnectionHistory = async (data) => {
     throw new Error(errorMsg);
   }
 
-  const coin = data.coin.toLowerCase();
-  const url = `/crosschain/${coin.toLowerCase()}/serverconnectionhistory`;
+  const coin = foreignCoinPathSegment(data.coin);
+  const url = `/crosschain/${coin}/serverconnectionhistory`;
 
   try {
     const endpoint = await createEndpoint(url); // Assuming createEndpoint is available
@@ -4755,6 +5002,7 @@ export const setCurrentForeignServer = async (
   }
 
   const { coin, host, port, type } = data;
+  const coinSegment = foreignCoinPathSegment(coin);
 
   // Check for session permission
   const hasPermission =
@@ -4786,7 +5034,8 @@ export const setCurrentForeignServer = async (
           postProcess: 'capitalizeFirstChar',
         }),
       },
-      isFromExtension
+      isFromExtension,
+      appInfo
     );
 
     const { accepted } = resPermission || {
@@ -4810,7 +5059,7 @@ export const setCurrentForeignServer = async (
     connectionType: type,
   };
 
-  const url = `/crosschain/${coin.toLowerCase()}/setcurrentserver`;
+  const url = `/crosschain/${coinSegment}/setcurrentserver`;
 
   const endpoint = await createEndpoint(url); // Assuming createEndpoint is available
   const response = await fetch(endpoint, {
@@ -4872,6 +5121,7 @@ export const addForeignServer = async (data, isFromExtension, appInfo?) => {
   }
 
   const { coin, host, port, type } = data;
+  const coinSegment = foreignCoinPathSegment(coin);
 
   // Check for session permission
   const hasPermission =
@@ -4899,7 +5149,8 @@ export const addForeignServer = async (data, isFromExtension, appInfo?) => {
           postProcess: 'capitalizeFirstChar',
         }),
       },
-      isFromExtension
+      isFromExtension,
+      appInfo
     );
 
     const { accepted } = resPermission || {
@@ -4923,7 +5174,7 @@ export const addForeignServer = async (data, isFromExtension, appInfo?) => {
     connectionType: type,
   };
 
-  const url = `/crosschain/${coin.toLowerCase()}/addserver`;
+  const url = `/crosschain/${coinSegment}/addserver`;
 
   const endpoint = await createEndpoint(url); // Assuming createEndpoint is available
   const response = await fetch(endpoint, {
@@ -4985,6 +5236,7 @@ export const removeForeignServer = async (data, isFromExtension, appInfo?) => {
   }
 
   const { coin, host, port, type } = data;
+  const coinSegment = foreignCoinPathSegment(coin);
 
   // Check for session permission
   const hasPermission =
@@ -5012,7 +5264,8 @@ export const removeForeignServer = async (data, isFromExtension, appInfo?) => {
           postProcess: 'capitalizeFirstChar',
         }),
       },
-      isFromExtension
+      isFromExtension,
+      appInfo
     );
 
     const { accepted } = resPermission || {
@@ -5036,7 +5289,7 @@ export const removeForeignServer = async (data, isFromExtension, appInfo?) => {
     connectionType: type,
   };
 
-  const url = `/crosschain/${coin.toLowerCase()}/removeserver`;
+  const url = `/crosschain/${coinSegment}/removeserver`;
 
   const endpoint = await createEndpoint(url); // Assuming createEndpoint is available
   const response = await fetch(endpoint, {
@@ -5192,7 +5445,14 @@ export const getNodeStatus = async () => {
   }
 };
 
-export const getArrrSyncStatus = async () => {
+export const getArrrSyncStatus = async (
+  _payload?: unknown,
+  isFromExtension?: boolean,
+  appInfo?: { tabId?: unknown; name?: unknown }
+) => {
+  // The node needs the ARRR seed to report sync status, so this asks first
+  // like every other ARRR read (it used to send the seed with no prompt).
+  await confirmArrrSeedEgress(isFromExtension, appInfo);
   const resKeyPair = await getKeyPair();
   const parsedData = resKeyPair;
   const arrrSeed = parsedData.arrrSeed58;
@@ -5815,7 +6075,7 @@ export const getNotificationSubscriptions = async (_payload, appInfo) => {
   });
 };
 
-export const sendCoin = async (data, isFromExtension) => {
+export const sendCoin = async (data, isFromExtension, appInfo?) => {
   const requiredFields = ['coin', 'amount'];
   const missingFields: string[] = [];
   requiredFields.forEach((field) => {
@@ -5858,8 +6118,17 @@ export const sendCoin = async (data, isFromExtension) => {
     // TODO: prompt user to send. If they confirm, call `POST /crosschain/:coin/send`, or for QORT, broadcast a PAYMENT transaction
     // then set the response string from the core to the `response` variable (defined above)
     // If they decline, send back JSON that includes an `error` key, such as `{"error": "User declined request"}`
-    const amount = Number(data.amount);
+    // Plain decimals only ("1e3", "0x10" are refused); the dialog shows the
+    // normalised amount that is signed.
+    const parsedAmount = parseDecimalAmount(data.amount);
+    const amount = parsedAmount.value;
     const recipient = data?.recipient || data.destinationAddress;
+    if (typeof recipient !== 'string' || recipient.trim().length === 0) {
+      const errorMsg = i18n.t('question:message.error.empty_receiver', {
+        postProcess: 'capitalizeFirstChar',
+      });
+      throw new Error(errorMsg);
+    }
 
     const url = await createEndpoint(`/addresses/balance/${address}`);
     const response = await fetch(url);
@@ -5901,15 +6170,12 @@ export const sendCoin = async (data, isFromExtension) => {
       });
       throw new Error(errorMsg);
     }
-    if (recipient.length === 0) {
-      const errorMsg = i18n.t('question:message.error.empty_receiver', {
-        postProcess: 'capitalizeFirstChar',
-      });
-      throw new Error(errorMsg);
-    }
     if (!validateAddress(recipient) && hasInvisibleCharacters(recipient)) {
       throw new Error('Recipient name contains invisible characters');
     }
+    // Resolve a name before asking, show the name and the full address, and
+    // pay that address: nothing is looked up again after approval.
+    const resolvedRecipient = await resolveRecipient(recipient);
 
     const resPermission = await getUserPermission(
       {
@@ -5917,20 +6183,26 @@ export const sendCoin = async (data, isFromExtension) => {
           postProcess: 'capitalizeFirstChar',
         }),
         text2: i18n.t('question:to_recipient', {
-          recipient: recipient,
+          recipient: recipientDisplayLabel(resolvedRecipient),
           postProcess: 'capitalizeFirstChar',
         }),
-        highlightedText: `${amount} ${checkCoin}`,
+        highlightedText: `${parsedAmount.text} ${checkCoin}`,
         fee: fee,
         confirmCheckbox: true,
       },
-      isFromExtension
+      isFromExtension,
+      appInfo
     );
     const { accepted } = resPermission;
 
     if (accepted) {
       const makePayment = await sendCoinFunc(
-        { amount, password: null, receiver: recipient },
+        {
+          amount,
+          password: null,
+          receiver: resolvedRecipient.address,
+          approvedFee: fee,
+        },
         true
       );
       return makePayment.res?.data;
@@ -5942,7 +6214,10 @@ export const sendCoin = async (data, isFromExtension) => {
       );
     }
   } else if (checkCoin === 'BTC') {
-    const amount = Number(data.amount);
+    // Plain decimals with at most 8 places, as for QORT ("1e3", "0x10" are
+    // refused); the dialog shows the normalised amount that is sent.
+    const parsedAmount = parseDecimalAmount(data.amount);
+    const amount = parsedAmount.value;
     const recipient = data?.recipient || data.destinationAddress;
     const xprv58 = parsedData.btcPrivateKey;
     const feePerByte = data.fee ? data.fee : BTC_FEE_PER_BYTE;
@@ -5980,11 +6255,13 @@ export const sendCoin = async (data, isFromExtension) => {
           recipient: recipient,
           postProcess: 'capitalizeFirstChar',
         }),
-        highlightedText: `${amount} ${checkCoin}`,
+        highlightedText: `${parsedAmount.text} ${checkCoin}`,
         foreignFee: `${fee} BTC`,
+        confirmCheckbox: true,
         ...foreignKeyConsentFields(egress, checkCoin),
       },
-      isFromExtension
+      isFromExtension,
+      appInfo
     );
     const { accepted } = resPermission;
 
@@ -6025,7 +6302,10 @@ export const sendCoin = async (data, isFromExtension) => {
       );
     }
   } else if (checkCoin === 'LTC') {
-    const amount = Number(data.amount);
+    // Plain decimals with at most 8 places, as for QORT ("1e3", "0x10" are
+    // refused); the dialog shows the normalised amount that is sent.
+    const parsedAmount = parseDecimalAmount(data.amount);
+    const amount = parsedAmount.value;
     const recipient = data?.recipient || data.destinationAddress;
     const xprv58 = parsedData.ltcPrivateKey;
     const feePerByte = data.fee ? data.fee : LTC_FEE_PER_BYTE;
@@ -6059,11 +6339,13 @@ export const sendCoin = async (data, isFromExtension) => {
           recipient: recipient,
           postProcess: 'capitalizeFirstChar',
         }),
-        highlightedText: `${amount} ${checkCoin}`,
+        highlightedText: `${parsedAmount.text} ${checkCoin}`,
         foreignFee: `${fee} LTC`,
+        confirmCheckbox: true,
         ...foreignKeyConsentFields(egress, checkCoin),
       },
-      isFromExtension
+      isFromExtension,
+      appInfo
     );
     const { accepted } = resPermission;
 
@@ -6103,7 +6385,10 @@ export const sendCoin = async (data, isFromExtension) => {
       );
     }
   } else if (checkCoin === 'DOGE') {
-    const amount = Number(data.amount);
+    // Plain decimals with at most 8 places, as for QORT ("1e3", "0x10" are
+    // refused); the dialog shows the normalised amount that is sent.
+    const parsedAmount = parseDecimalAmount(data.amount);
+    const amount = parsedAmount.value;
     const recipient = data?.recipient || data.destinationAddress;
     const xprv58 = parsedData.dogePrivateKey;
     const feePerByte = data.fee ? data.fee : DOGE_FEE_PER_BYTE;
@@ -6137,11 +6422,13 @@ export const sendCoin = async (data, isFromExtension) => {
           recipient: recipient,
           postProcess: 'capitalizeFirstChar',
         }),
-        highlightedText: `${amount} ${checkCoin}`,
+        highlightedText: `${parsedAmount.text} ${checkCoin}`,
         foreignFee: `${fee} DOGE`,
+        confirmCheckbox: true,
         ...foreignKeyConsentFields(egress, checkCoin),
       },
-      isFromExtension
+      isFromExtension,
+      appInfo
     );
     const { accepted } = resPermission;
 
@@ -6182,7 +6469,10 @@ export const sendCoin = async (data, isFromExtension) => {
       );
     }
   } else if (checkCoin === 'DGB') {
-    const amount = Number(data.amount);
+    // Plain decimals with at most 8 places, as for QORT ("1e3", "0x10" are
+    // refused); the dialog shows the normalised amount that is sent.
+    const parsedAmount = parseDecimalAmount(data.amount);
+    const amount = parsedAmount.value;
     const recipient = data?.recipient || data.destinationAddress;
     const xprv58 = parsedData.dgbPrivateKey;
     const feePerByte = data.fee ? data.fee : DGB_FEE_PER_BYTE;
@@ -6212,12 +6502,17 @@ export const sendCoin = async (data, isFromExtension) => {
         text1: i18n.t('question:permission.send_coins', {
           postProcess: 'capitalizeFirstChar',
         }),
-        text2: `To: ${recipient}`,
-        highlightedText: `${amount} ${checkCoin}`,
+        text2: i18n.t('question:to_recipient', {
+          recipient: recipient,
+          postProcess: 'capitalizeFirstChar',
+        }),
+        highlightedText: `${parsedAmount.text} ${checkCoin}`,
         foreignFee: `${fee} DGB`,
+        confirmCheckbox: true,
         ...foreignKeyConsentFields(egress, checkCoin),
       },
-      isFromExtension
+      isFromExtension,
+      appInfo
     );
     const { accepted } = resPermission;
 
@@ -6258,7 +6553,10 @@ export const sendCoin = async (data, isFromExtension) => {
       );
     }
   } else if (checkCoin === 'RVN') {
-    const amount = Number(data.amount);
+    // Plain decimals with at most 8 places, as for QORT ("1e3", "0x10" are
+    // refused); the dialog shows the normalised amount that is sent.
+    const parsedAmount = parseDecimalAmount(data.amount);
+    const amount = parsedAmount.value;
     const recipient = data?.recipient || data.destinationAddress;
     const xprv58 = parsedData.rvnPrivateKey;
     const feePerByte = data.fee ? data.fee : RVN_FEE_PER_BYTE;
@@ -6288,12 +6586,17 @@ export const sendCoin = async (data, isFromExtension) => {
         text1: i18n.t('question:permission.send_coins', {
           postProcess: 'capitalizeFirstChar',
         }),
-        text2: `To: ${recipient}`,
-        highlightedText: `${amount} ${checkCoin}`,
+        text2: i18n.t('question:to_recipient', {
+          recipient: recipient,
+          postProcess: 'capitalizeFirstChar',
+        }),
+        highlightedText: `${parsedAmount.text} ${checkCoin}`,
         foreignFee: `${fee} RVN`,
+        confirmCheckbox: true,
         ...foreignKeyConsentFields(egress, checkCoin),
       },
-      isFromExtension
+      isFromExtension,
+      appInfo
     );
     const { accepted } = resPermission;
 
@@ -6334,45 +6637,59 @@ export const sendCoin = async (data, isFromExtension) => {
       );
     }
   } else if (checkCoin === 'ARRR') {
-    const amount = Number(data.amount);
+    // Plain decimals with at most 8 places, as for QORT ("1e3", "0x10" are
+    // refused); the dialog shows the normalised amount that is sent.
+    const parsedAmount = parseDecimalAmount(data.amount);
+    const amount = parsedAmount.value;
     const recipient = data?.recipient || data.destinationAddress;
     const memo = data?.memo;
     const url = await createEndpoint(`/crosschain/arrr/send`);
     const egress = assertForeignKeyEgress(url, checkCoin);
-    const arrrWalletBalance = await getWalletBalance({ coin: checkCoin }, true);
-
-    if (isNaN(Number(arrrWalletBalance))) {
-      const errorMsg = i18n.t('question:message.error.fetch_balance_token', {
-        token: 'ARR',
-        postProcess: 'capitalizeFirstChar',
-      });
-      throw new Error(errorMsg);
-    }
-    const arrrWalletBalanceDecimals = Number(arrrWalletBalance);
-    const arrrAmountDecimals = Number(amount);
     const fee = 0.0001;
-    if (arrrAmountDecimals + fee > arrrWalletBalanceDecimals) {
-      const errorMsg = i18n.t('question:message.error.insufficient_funds', {
-        postProcess: 'capitalizeFirstChar',
-      });
-      throw new Error(errorMsg);
-    }
 
+    // The balance check sends the ARRR seed to the node, so it waits until the
+    // user has accepted the send and its private-key warning.
     const resPermission = await getUserPermission(
       {
         text1: i18n.t('question:permission.send_coins', {
           postProcess: 'capitalizeFirstChar',
         }),
-        text2: `To: ${recipient}`,
-        highlightedText: `${amount} ${checkCoin}`,
+        text2: i18n.t('question:to_recipient', {
+          recipient: recipient,
+          postProcess: 'capitalizeFirstChar',
+        }),
+        highlightedText: `${parsedAmount.text} ${checkCoin}`,
         foreignFee: `${fee} ARRR`,
+        confirmCheckbox: true,
         ...foreignKeyConsentFields(egress, checkCoin),
       },
-      isFromExtension
+      isFromExtension,
+      appInfo
     );
     const { accepted } = resPermission;
 
     if (accepted) {
+      const arrrWalletBalance = await getWalletBalance(
+        { coin: checkCoin },
+        true
+      );
+
+      if (isNaN(Number(arrrWalletBalance))) {
+        const errorMsg = i18n.t('question:message.error.fetch_balance_token', {
+          token: 'ARRR',
+          postProcess: 'capitalizeFirstChar',
+        });
+        throw new Error(errorMsg);
+      }
+      const arrrWalletBalanceDecimals = Number(arrrWalletBalance);
+      const arrrAmountDecimals = Number(amount);
+      if (arrrAmountDecimals + fee > arrrWalletBalanceDecimals) {
+        const errorMsg = i18n.t('question:message.error.insufficient_funds', {
+          postProcess: 'capitalizeFirstChar',
+        });
+        throw new Error(errorMsg);
+      }
+
       const opts = {
         entropy58: parsedData.arrrSeed58,
         receivingAddress: recipient,
@@ -6436,7 +6753,7 @@ const getBuyingFees = async (foreignBlockchain) => {
   };
 };
 
-export const createBuyOrder = async (data, isFromExtension) => {
+export const createBuyOrder = async (data, isFromExtension, appInfo?) => {
   const requiredFields = ['crosschainAtInfo', 'foreignBlockchain'];
   const missingFields: string[] = [];
   requiredFields.forEach((field) => {
@@ -6460,7 +6777,9 @@ export const createBuyOrder = async (data, isFromExtension) => {
 
   const atPromises = atAddresses.map((atAddress) =>
     requestQueueGetAtAddresses.enqueue(async () => {
-      const url = await createEndpoint(`/crosschain/trade/${atAddress}`);
+      const url = await createEndpoint(
+        `/crosschain/trade/${nodePathSegment(atAddress)}`
+      );
       const resAddress = await fetch(url);
       const resData = await resAddress.json();
       if (foreignBlockchain !== resData?.foreignBlockchain) {
@@ -6544,9 +6863,11 @@ export const createBuyOrder = async (data, isFromExtension) => {
             postProcess: 'capitalizeFirstChar',
           }),
         },
+        confirmCheckbox: true,
         ...foreignKeyFields,
       },
-      isFromExtension
+      isFromExtension,
+      appInfo
     );
     const { accepted } = resPermission;
     if (accepted) {
@@ -6721,7 +7042,7 @@ const tradeBotCreateRequest = async (body, keyPair) => {
   }
 };
 
-export const createSellOrder = async (data, isFromExtension) => {
+export const createSellOrder = async (data, isFromExtension, appInfo?) => {
   const requiredFields = ['qortAmount', 'foreignBlockchain', 'foreignAmount'];
   const missingFields: string[] = [];
   requiredFields.forEach((field) => {
@@ -6740,7 +7061,17 @@ export const createSellOrder = async (data, isFromExtension) => {
 
   const parsedForeignAmount = Number(data.foreignAmount)?.toFixed(8);
 
-  const receivingAddress = await getUserWalletFunc(data.foreignBlockchain);
+  // An ARRR receiving address comes from the node, which needs the ARRR seed
+  // for it: warn in the sell dialog and look the address up only after accept.
+  const arrrSeedConsentFields = isArrrCoin(data.foreignBlockchain)
+    ? foreignKeyConsentFields(
+        assertForeignKeyEgress(
+          await createEndpoint('/crosschain/arrr/walletaddress'),
+          'ARRR'
+        ),
+        'ARRR'
+      )
+    : {};
   try {
     const resPermission = await getUserPermission(
       {
@@ -6754,11 +7085,15 @@ export const createSellOrder = async (data, isFromExtension) => {
           postProcess: 'capitalizeFirstChar',
         }),
         fee: '0.02',
+        confirmCheckbox: true,
+        ...arrrSeedConsentFields,
       },
-      isFromExtension
+      isFromExtension,
+      appInfo
     );
     const { accepted } = resPermission;
     if (accepted) {
+      const receivingAddress = await getUserWalletFunc(data.foreignBlockchain);
       const resKeyPair = await getKeyPair();
       const parsedData = resKeyPair;
       const userPublicKey = parsedData.publicKey;
@@ -6799,7 +7134,7 @@ export const createSellOrder = async (data, isFromExtension) => {
   }
 };
 
-export const cancelSellOrder = async (data, isFromExtension) => {
+export const cancelSellOrder = async (data, isFromExtension, appInfo?) => {
   const requiredFields = ['atAddress'];
   const missingFields: string[] = [];
 
@@ -6817,7 +7152,9 @@ export const cancelSellOrder = async (data, isFromExtension) => {
     throw new Error(errorMsg);
   }
 
-  const url = await createEndpoint(`/crosschain/trade/${data.atAddress}`);
+  const url = await createEndpoint(
+    `/crosschain/trade/${nodePathSegment(data.atAddress)}`
+  );
   const resAddress = await fetch(url);
   const resData = await resAddress.json();
 
@@ -6844,7 +7181,8 @@ export const cancelSellOrder = async (data, isFromExtension) => {
         }),
         fee: fee.fee,
       },
-      isFromExtension
+      isFromExtension,
+      appInfo
     );
     const { accepted } = resPermission;
     if (accepted) {
@@ -6983,7 +7321,8 @@ export const lockTab = async (data, isFromExtension, appInfo) => {
           postProcess: 'capitalizeFirstChar',
         }),
       },
-      isFromExtension
+      isFromExtension,
+      appInfo
     );
 
     const { accepted } = resPermission || { accepted: false };
@@ -7011,7 +7350,7 @@ export const unlockTab = async (data, isFromExtension, appInfo) => {
   return true;
 };
 
-export const adminAction = async (data, isFromExtension) => {
+export const adminAction = async (data, isFromExtension, appInfo?) => {
   const requiredFields = ['type'];
   const missingFields: string[] = [];
   requiredFields.forEach((field) => {
@@ -7130,7 +7469,8 @@ export const adminAction = async (data, isFromExtension) => {
     {
       text1: permissionText,
     },
-    isFromExtension
+    isFromExtension,
+    appInfo
   );
 
   const { accepted } = resPermission;
@@ -7169,7 +7509,7 @@ export const adminAction = async (data, isFromExtension) => {
   }
 };
 
-export const signTransaction = async (data, isFromExtension) => {
+export const signTransaction = async (data, isFromExtension, appInfo?) => {
   const requiredFields = ['unsignedBytes'];
   const missingFields: string[] = [];
   requiredFields.forEach((field) => {
@@ -7222,8 +7562,10 @@ export const signTransaction = async (data, isFromExtension) => {
       ),
       text2: `Tx type: ${decodedData.type}`,
       json: decodedData,
+      confirmCheckbox: true,
     },
-    isFromExtension
+    isFromExtension,
+    appInfo
   );
 
   const { accepted } = resPermission;
@@ -7403,7 +7745,7 @@ export const createAndCopyEmbedLink = async (data, isFromExtension) => {
   }
 };
 
-export const registerNameRequest = async (data, isFromExtension) => {
+export const registerNameRequest = async (data, isFromExtension, appInfo?) => {
   const requiredFields = ['name'];
   const missingFields: string[] = [];
   requiredFields.forEach((field) => {
@@ -7430,7 +7772,8 @@ export const registerNameRequest = async (data, isFromExtension) => {
       text2: data?.description,
       fee: fee.fee,
     },
-    isFromExtension
+    isFromExtension,
+    appInfo
   );
   const { accepted } = resPermission;
   if (accepted) {
@@ -7447,7 +7790,7 @@ export const registerNameRequest = async (data, isFromExtension) => {
   }
 };
 
-export const updateNameRequest = async (data, isFromExtension) => {
+export const updateNameRequest = async (data, isFromExtension, appInfo?) => {
   const requiredFields = ['newName', 'oldName'];
   const missingFields: string[] = [];
   requiredFields.forEach((field) => {
@@ -7469,13 +7812,16 @@ export const updateNameRequest = async (data, isFromExtension) => {
   const fee = await getFee('UPDATE_NAME');
   const resPermission = await getUserPermission(
     {
-      text1: `Do you give this application permission to update this name?`, // TODO translate
+      text1: i18n.t('question:permission.update_name', {
+        postProcess: 'capitalizeFirstChar',
+      }),
       text2: `previous name: ${oldName}`,
       text3: `new name: ${newName}`,
       text4: data?.description,
       fee: fee.fee,
     },
-    isFromExtension
+    isFromExtension,
+    appInfo
   );
   const { accepted } = resPermission;
   if (accepted) {
@@ -7490,7 +7836,7 @@ export const updateNameRequest = async (data, isFromExtension) => {
   }
 };
 
-export const leaveGroupRequest = async (data, isFromExtension) => {
+export const leaveGroupRequest = async (data, isFromExtension, appInfo?) => {
   const requiredFields = ['groupId'];
   const missingFields: string[] = [];
   requiredFields.forEach((field) => {
@@ -7509,7 +7855,7 @@ export const leaveGroupRequest = async (data, isFromExtension) => {
   const groupId = data.groupId;
   let groupInfo = null;
   try {
-    const url = await createEndpoint(`/groups/${groupId}`);
+    const url = await createEndpoint(`/groups/${nodePathSegment(groupId)}`);
     const response = await fetch(url);
     if (!response.ok)
       throw new Error(
@@ -7537,7 +7883,8 @@ export const leaveGroupRequest = async (data, isFromExtension) => {
       highlightedText: `${groupInfo.groupName}`,
       fee: fee.fee,
     },
-    isFromExtension
+    isFromExtension,
+    appInfo
   );
   const { accepted } = resPermission;
   if (accepted) {
@@ -7552,7 +7899,7 @@ export const leaveGroupRequest = async (data, isFromExtension) => {
   }
 };
 
-export const inviteToGroupRequest = async (data, isFromExtension) => {
+export const inviteToGroupRequest = async (data, isFromExtension, appInfo?) => {
   const requiredFields = ['groupId', 'inviteTime', 'inviteeAddress'];
   const missingFields: string[] = [];
   requiredFields.forEach((field) => {
@@ -7575,7 +7922,7 @@ export const inviteToGroupRequest = async (data, isFromExtension) => {
 
   let groupInfo = null;
   try {
-    const url = await createEndpoint(`/groups/${groupId}`);
+    const url = await createEndpoint(`/groups/${nodePathSegment(groupId)}`);
     const response = await fetch(url);
     if (!response.ok)
       throw new Error(
@@ -7609,7 +7956,8 @@ export const inviteToGroupRequest = async (data, isFromExtension) => {
       }),
       fee: fee.fee,
     },
-    isFromExtension
+    isFromExtension,
+    appInfo
   );
   const { accepted } = resPermission;
   if (accepted) {
@@ -7629,7 +7977,7 @@ export const inviteToGroupRequest = async (data, isFromExtension) => {
   }
 };
 
-export const kickFromGroupRequest = async (data, isFromExtension) => {
+export const kickFromGroupRequest = async (data, isFromExtension, appInfo?) => {
   const requiredFields = ['groupId', 'qortalAddress'];
   const missingFields: string[] = [];
   requiredFields.forEach((field) => {
@@ -7651,7 +7999,7 @@ export const kickFromGroupRequest = async (data, isFromExtension) => {
   const txGroupId = data?.txGroupId || 0;
   let groupInfo = null;
   try {
-    const url = await createEndpoint(`/groups/${groupId}`);
+    const url = await createEndpoint(`/groups/${nodePathSegment(groupId)}`);
     const response = await fetch(url);
     if (!response.ok)
       throw new Error(
@@ -7685,7 +8033,8 @@ export const kickFromGroupRequest = async (data, isFromExtension) => {
       }),
       fee: fee.fee,
     },
-    isFromExtension
+    isFromExtension,
+    appInfo
   );
   const { accepted } = resPermission;
   if (accepted) {
@@ -7705,7 +8054,7 @@ export const kickFromGroupRequest = async (data, isFromExtension) => {
   }
 };
 
-export const banFromGroupRequest = async (data, isFromExtension) => {
+export const banFromGroupRequest = async (data, isFromExtension, appInfo?) => {
   const requiredFields = ['groupId', 'qortalAddress'];
   const missingFields: string[] = [];
   requiredFields.forEach((field) => {
@@ -7728,7 +8077,7 @@ export const banFromGroupRequest = async (data, isFromExtension) => {
   const txGroupId = data?.txGroupId || 0;
   let groupInfo = null;
   try {
-    const url = await createEndpoint(`/groups/${groupId}`);
+    const url = await createEndpoint(`/groups/${nodePathSegment(groupId)}`);
     const response = await fetch(url);
     if (!response.ok)
       throw new Error(
@@ -7762,7 +8111,8 @@ export const banFromGroupRequest = async (data, isFromExtension) => {
       }),
       fee: fee.fee,
     },
-    isFromExtension
+    isFromExtension,
+    appInfo
   );
   const { accepted } = resPermission;
   if (accepted) {
@@ -7783,7 +8133,11 @@ export const banFromGroupRequest = async (data, isFromExtension) => {
   }
 };
 
-export const cancelGroupBanRequest = async (data, isFromExtension) => {
+export const cancelGroupBanRequest = async (
+  data,
+  isFromExtension,
+  appInfo?
+) => {
   const requiredFields = ['groupId', 'qortalAddress'];
   const missingFields: string[] = [];
   requiredFields.forEach((field) => {
@@ -7805,7 +8159,7 @@ export const cancelGroupBanRequest = async (data, isFromExtension) => {
 
   let groupInfo = null;
   try {
-    const url = await createEndpoint(`/groups/${groupId}`);
+    const url = await createEndpoint(`/groups/${nodePathSegment(groupId)}`);
     const response = await fetch(url);
     if (!response.ok)
       throw new Error(
@@ -7839,7 +8193,8 @@ export const cancelGroupBanRequest = async (data, isFromExtension) => {
       }),
       fee: fee.fee,
     },
-    isFromExtension
+    isFromExtension,
+    appInfo
   );
   const { accepted } = resPermission;
   if (accepted) {
@@ -7858,7 +8213,7 @@ export const cancelGroupBanRequest = async (data, isFromExtension) => {
   }
 };
 
-export const addGroupAdminRequest = async (data, isFromExtension) => {
+export const addGroupAdminRequest = async (data, isFromExtension, appInfo?) => {
   const requiredFields = ['groupId', 'qortalAddress'];
   const missingFields: string[] = [];
   requiredFields.forEach((field) => {
@@ -7880,7 +8235,7 @@ export const addGroupAdminRequest = async (data, isFromExtension) => {
 
   let groupInfo = null;
   try {
-    const url = await createEndpoint(`/groups/${groupId}`);
+    const url = await createEndpoint(`/groups/${nodePathSegment(groupId)}`);
     const response = await fetch(url);
     if (!response.ok)
       throw new Error(
@@ -7914,7 +8269,8 @@ export const addGroupAdminRequest = async (data, isFromExtension) => {
       }),
       fee: fee.fee,
     },
-    isFromExtension
+    isFromExtension,
+    appInfo
   );
   const { accepted } = resPermission;
   if (accepted) {
@@ -7933,7 +8289,11 @@ export const addGroupAdminRequest = async (data, isFromExtension) => {
   }
 };
 
-export const removeGroupAdminRequest = async (data, isFromExtension) => {
+export const removeGroupAdminRequest = async (
+  data,
+  isFromExtension,
+  appInfo?
+) => {
   const requiredFields = ['groupId', 'qortalAddress'];
   const missingFields: string[] = [];
   requiredFields.forEach((field) => {
@@ -7954,7 +8314,7 @@ export const removeGroupAdminRequest = async (data, isFromExtension) => {
   const txGroupId = data?.txGroupId || 0;
   let groupInfo = null;
   try {
-    const url = await createEndpoint(`/groups/${groupId}`);
+    const url = await createEndpoint(`/groups/${nodePathSegment(groupId)}`);
     const response = await fetch(url);
     if (!response.ok)
       throw new Error(
@@ -7988,7 +8348,8 @@ export const removeGroupAdminRequest = async (data, isFromExtension) => {
       }),
       fee: fee.fee,
     },
-    isFromExtension
+    isFromExtension,
+    appInfo
   );
   const { accepted } = resPermission;
   if (accepted) {
@@ -8007,7 +8368,11 @@ export const removeGroupAdminRequest = async (data, isFromExtension) => {
   }
 };
 
-export const cancelGroupInviteRequest = async (data, isFromExtension) => {
+export const cancelGroupInviteRequest = async (
+  data,
+  isFromExtension,
+  appInfo?
+) => {
   const requiredFields = ['groupId', 'qortalAddress'];
   const missingFields: string[] = [];
   requiredFields.forEach((field) => {
@@ -8029,7 +8394,7 @@ export const cancelGroupInviteRequest = async (data, isFromExtension) => {
 
   let groupInfo = null;
   try {
-    const url = await createEndpoint(`/groups/${groupId}`);
+    const url = await createEndpoint(`/groups/${nodePathSegment(groupId)}`);
     const response = await fetch(url);
     if (!response.ok)
       throw new Error(
@@ -8063,7 +8428,8 @@ export const cancelGroupInviteRequest = async (data, isFromExtension) => {
       }),
       fee: fee.fee,
     },
-    isFromExtension
+    isFromExtension,
+    appInfo
   );
 
   const { accepted } = resPermission;
@@ -8084,7 +8450,7 @@ export const cancelGroupInviteRequest = async (data, isFromExtension) => {
   }
 };
 
-export const createGroupRequest = async (data, isFromExtension) => {
+export const createGroupRequest = async (data, isFromExtension, appInfo?) => {
   const requiredFields = [
     'approvalThreshold',
     'groupName',
@@ -8125,7 +8491,8 @@ export const createGroupRequest = async (data, isFromExtension) => {
       }),
       fee: fee.fee,
     },
-    isFromExtension
+    isFromExtension,
+    appInfo
   );
   const { accepted } = resPermission;
   if (accepted) {
@@ -8147,7 +8514,7 @@ export const createGroupRequest = async (data, isFromExtension) => {
   }
 };
 
-export const updateGroupRequest = async (data, isFromExtension) => {
+export const updateGroupRequest = async (data, isFromExtension, appInfo?) => {
   const requiredFields = [
     'groupId',
     'newOwner',
@@ -8180,7 +8547,7 @@ export const updateGroupRequest = async (data, isFromExtension) => {
   const txGroupId = data?.txGroupId || 0;
   let groupInfo = null;
   try {
-    const url = await createEndpoint(`/groups/${groupId}`);
+    const url = await createEndpoint(`/groups/${nodePathSegment(groupId)}`);
     const response = await fetch(url);
     if (!response.ok)
       throw new Error(
@@ -8217,7 +8584,8 @@ export const updateGroupRequest = async (data, isFromExtension) => {
       }),
       fee: fee.fee,
     },
-    isFromExtension
+    isFromExtension,
+    appInfo
   );
   const { accepted } = resPermission;
   if (accepted) {
@@ -8329,7 +8697,7 @@ export const decryptAESGCMRequest = async (data, isFromExtension) => {
   }
 };
 
-export const sellNameRequest = async (data, isFromExtension) => {
+export const sellNameRequest = async (data, isFromExtension, appInfo?) => {
   const requiredFields = ['salePrice', 'nameForSale'];
   const missingFields: string[] = [];
   requiredFields.forEach((field) => {
@@ -8380,8 +8748,12 @@ export const sellNameRequest = async (data, isFromExtension) => {
         }
       ),
       fee: fee.fee,
+      // The Q-App sets the price: a name listed too cheap can be bought at
+      // once (GO-28).
+      confirmCheckbox: true,
     },
-    isFromExtension
+    isFromExtension,
+    appInfo
   );
   const { accepted } = resPermission;
   if (accepted) {
@@ -8399,7 +8771,11 @@ export const sellNameRequest = async (data, isFromExtension) => {
   }
 };
 
-export const cancelSellNameRequest = async (data, isFromExtension) => {
+export const cancelSellNameRequest = async (
+  data,
+  isFromExtension,
+  appInfo?
+) => {
   const requiredFields = ['nameForSale'];
   const missingFields: string[] = [];
   requiredFields.forEach((field) => {
@@ -8439,7 +8815,8 @@ export const cancelSellNameRequest = async (data, isFromExtension) => {
       }),
       fee: fee.fee,
     },
-    isFromExtension
+    isFromExtension,
+    appInfo
   );
   const { accepted } = resPermission;
   if (accepted) {
@@ -8456,7 +8833,7 @@ export const cancelSellNameRequest = async (data, isFromExtension) => {
   }
 };
 
-export const buyNameRequest = async (data, isFromExtension) => {
+export const buyNameRequest = async (data, isFromExtension, appInfo?) => {
   const requiredFields = ['nameForSale'];
   const missingFields: string[] = [];
   requiredFields.forEach((field) => {
@@ -8500,8 +8877,10 @@ export const buyNameRequest = async (data, isFromExtension) => {
         postProcess: 'capitalizeFirstChar',
       }),
       fee: fee.fee,
+      confirmCheckbox: true,
     },
-    isFromExtension
+    isFromExtension,
+    appInfo
   );
   const { accepted } = resPermission;
   if (accepted) {
@@ -8538,8 +8917,11 @@ export const signForeignFees = async (data, appInfo, isFromExtension) => {
         text1: i18n.t('question:permission.sign_fee', {
           postProcess: 'capitalizeFirstChar',
         }),
+        // Signs data from the node with the account key (GO-28).
+        confirmCheckbox: true,
       },
-      isFromExtension
+      isFromExtension,
+      appInfo
     );
     const { accepted } = resPermission;
 
@@ -8605,7 +8987,11 @@ export const signForeignFees = async (data, appInfo, isFromExtension) => {
     );
   }
 };
-export const multiPaymentWithPrivateData = async (data, isFromExtension) => {
+export const multiPaymentWithPrivateData = async (
+  data,
+  isFromExtension,
+  appInfo?
+) => {
   const requiredFields = ['payments', 'assetId'];
   requiredFields.forEach((field) => {
     if (data[field] === undefined || data[field] === null) {
@@ -8626,12 +9012,21 @@ export const multiPaymentWithPrivateData = async (data, isFromExtension) => {
 
   let name = null;
   const payments = data.payments;
-  const assetId = data.assetId;
+  // The signer writes the id as an int64; text such as "abc" would become 0,
+  // which is QORT.
+  if (!isAssetId(data.assetId)) {
+    throw new Error(
+      i18n.t('question:message.error.invalid_asset_id', {
+        postProcess: 'capitalizeFirstChar',
+      })
+    );
+  }
+  const assetId = Number(data.assetId);
   const pendingTransactions = [];
   const pendingAdditionalArbitraryTxs = [];
   const additionalArbitraryTxsWithoutPayment =
     data?.additionalArbitraryTxsWithoutPayment || [];
-  let totalAmount = 0;
+  let totalAtomic = BigInt(0);
   let fee = 0;
   for (const payment of payments) {
     const paymentRefId = uid.rnd();
@@ -8648,27 +9043,28 @@ export const multiPaymentWithPrivateData = async (data, isFromExtension) => {
       }
     }
 
-    const confirmReceiver = await getNameOrAddress(payment.recipient);
-    if (confirmReceiver.error) {
-      throw new Error(
-        i18n.t('question:message.error.invalid_receiver', {
-          postProcess: 'capitalizeFirstChar',
-        })
-      );
-    }
+    // Resolved before the dialog; the dialog shows name and address, and the
+    // transfer goes to this address.
+    const resolvedRecipient = await resolveRecipient(payment.recipient);
+    const confirmReceiver = resolvedRecipient.address;
+    // Checked against the address (GO-30): the resource below is encrypted
+    // to this key.
     const receiverPublicKey = await getPublicKey(confirmReceiver);
 
-    const amount = +payment.amount.toFixed(8);
+    const parsedAmount = parseDecimalAmount(payment.amount);
+    const amount = parsedAmount.value;
 
     pendingTransactions.push({
       type: 'PAYMENT',
       recipientAddress: confirmReceiver,
+      recipientLabel: recipientDisplayLabel(resolvedRecipient),
       amount: amount,
+      amountText: parsedAmount.text,
       paymentRefId,
     });
 
     fee = fee + +paymentFee;
-    totalAmount = totalAmount + amount;
+    totalAtomic = totalAtomic + parsedAmount.atomic;
 
     if (payment.arbitraryTxs && payment.arbitraryTxs.length > 0) {
       for (const arbitraryTx of payment.arbitraryTxs) {
@@ -8795,6 +9191,8 @@ export const multiPaymentWithPrivateData = async (data, isFromExtension) => {
         postProcess: 'capitalizeFirstChar',
       })
     );
+  const totalAmountText = formatAtomicAmount(totalAtomic);
+  const totalAmount = Number(totalAmountText);
   const assetBalance = await getAssetBalanceInfo(assetId);
   const assetInfo = await getAssetInfo(assetId);
   if (assetBalance < totalAmount)
@@ -8818,8 +9216,9 @@ export const multiPaymentWithPrivateData = async (data, isFromExtension) => {
         payments: pendingTransactions
           .filter((item) => item.type === 'PAYMENT')
           .map((payment) => ({
-            recipientAddress: payment.recipientAddress,
-            amount: payment.amount,
+            // Display only: "name (address)" or the address.
+            recipientAddress: payment.recipientLabel,
+            amount: payment.amountText,
           })),
         resources: [...pendingTransactions, ...pendingAdditionalArbitraryTxs]
           .filter((item) => item.type === 'ARBITRARY')
@@ -8829,10 +9228,15 @@ export const multiPaymentWithPrivateData = async (data, isFromExtension) => {
             identifier: arbitraryTx.identifier,
           })),
       },
-      highlightedText: `Total Amount: ${totalAmount}`,
+      highlightedText: i18n.t('question:total_amount', {
+        amount: totalAmountText,
+        postProcess: 'capitalizeFirstChar',
+      }),
       fee: fee,
+      confirmCheckbox: true,
     },
-    isFromExtension
+    isFromExtension,
+    appInfo
   );
 
   const { accepted, checkbox1 = false } = resPermission;
@@ -8848,22 +9252,39 @@ export const multiPaymentWithPrivateData = async (data, isFromExtension) => {
   const paymentsDone = {};
 
   const transactionsDone = [];
+  const paymentCount = pendingTransactions.filter(
+    (item) => item.type === 'PAYMENT'
+  ).length;
+  let paymentsSent = 0;
 
   for (const transaction of pendingTransactions) {
     const type = transaction.type;
 
     if (type === 'PAYMENT') {
-      const makePayment = await retryTransaction(
-        transferAsset,
-        [
-          {
-            amount: transaction.amount,
-            assetId,
-            recipient: transaction.recipientAddress,
-          },
-        ],
-        true
-      );
+      let makePayment;
+      try {
+        // Each approved transfer is signed once. transferAsset resends the
+        // same signed bytes after a failure and never signs a second copy, so
+        // there is no retryTransaction here (that rebuilt and re-signed the
+        // transfer, which could pay the recipient again).
+        makePayment = await transferAsset({
+          amount: transaction.amount,
+          assetId,
+          recipient: transaction.recipientAddress,
+          approvedFee: paymentFee,
+        });
+      } catch (error) {
+        if (paymentsSent === 0) throw error;
+        throw new Error(
+          i18n.t('question:message.error.payments_partially_sent', {
+            sent: paymentsSent,
+            total: paymentCount,
+            error: error?.message || '',
+            postProcess: 'capitalizeFirstChar',
+          })
+        );
+      }
+      paymentsSent += 1;
       if (makePayment) {
         transactionsDone.push(makePayment?.signature);
         if (transaction.paymentRefId) {
@@ -8976,7 +9397,7 @@ export const multiPaymentWithPrivateData = async (data, isFromExtension) => {
   return transactionsDone;
 };
 
-export const transferAssetRequest = async (data, isFromExtension) => {
+export const transferAssetRequest = async (data, isFromExtension, appInfo?) => {
   const requiredFields = ['amount', 'assetId', 'recipient'];
   requiredFields.forEach((field) => {
     if (data[field] === undefined || data[field] === null) {
@@ -8988,8 +9409,19 @@ export const transferAssetRequest = async (data, isFromExtension) => {
       );
     }
   });
-  const amount = data.amount;
-  const assetId = data.assetId;
+  // Plain decimals only; the dialog shows the normalised amount that is signed.
+  const parsedAmount = parseDecimalAmount(data.amount);
+  const amount = parsedAmount.value;
+  // The signer writes the id as an int64; text such as "abc" would become 0,
+  // which is QORT.
+  if (!isAssetId(data.assetId)) {
+    throw new Error(
+      i18n.t('question:message.error.invalid_asset_id', {
+        postProcess: 'capitalizeFirstChar',
+      })
+    );
+  }
+  const assetId = Number(data.assetId);
   const recipient = data.recipient;
 
   const { fee } = await getFee('TRANSFER_ASSET');
@@ -9008,31 +9440,33 @@ export const transferAssetRequest = async (data, isFromExtension) => {
         postProcess: 'capitalizeFirstChar',
       })
     );
-  const confirmReceiver = await getNameOrAddress(recipient);
-  if (confirmReceiver.error) {
-    throw new Error(
-      i18n.t('question:message.error.invalid_receiver', {
-        postProcess: 'capitalizeFirstChar',
-      })
-    );
-  }
+  // Resolved before the dialog, shown as name and full address, and paid to
+  // that address without a second lookup.
+  const resolvedRecipient = await resolveRecipient(recipient);
   const assetInfo = await getAssetInfo(assetId);
   const resPermission = await getUserPermission(
     {
       text1: i18n.t('question:permission.transfer_asset', {
         postProcess: 'capitalizeFirstChar',
       }),
-      text2: i18n.t('question:asset_name', {
+      text2: i18n.t('question:asset_name_id', {
         asset: assetInfo?.name,
+        id: String(assetId),
+        postProcess: 'capitalizeFirstChar',
+      }),
+      text3: i18n.t('question:to_recipient', {
+        recipient: recipientDisplayLabel(resolvedRecipient),
         postProcess: 'capitalizeFirstChar',
       }),
       highlightedText: i18n.t('question:amount_qty', {
-        quantity: amount,
+        quantity: parsedAmount.text,
         postProcess: 'capitalizeFirstChar',
       }),
       fee: fee,
+      confirmCheckbox: true,
     },
-    isFromExtension
+    isFromExtension,
+    appInfo
   );
 
   const { accepted } = resPermission;
@@ -9045,11 +9479,24 @@ export const transferAssetRequest = async (data, isFromExtension) => {
   }
   const res = await transferAsset({
     amount,
-    recipient: confirmReceiver,
+    recipient: resolvedRecipient.address,
     assetId,
+    approvedFee: fee,
   });
   return res;
 };
+
+/** A Core asset id: a non-negative safe integer, as a number or digit string. */
+function isAssetId(value: unknown): boolean {
+  if (typeof value === 'number') {
+    return Number.isSafeInteger(value) && value >= 0;
+  }
+  return (
+    typeof value === 'string' &&
+    /^\d+$/.test(value) &&
+    Number.isSafeInteger(Number(value))
+  );
+}
 
 // Track last re-encryption timestamp per groupId
 const lastReEncryptionTime = new Map<number, number>();
@@ -9085,7 +9532,9 @@ export const reEncryptQortalKeys = async (data, isFromExtension, appInfo) => {
     );
   }
 
-  const urlGroupInfo = await createEndpoint(`/groups/${data?.groupId}`);
+  const urlGroupInfo = await createEndpoint(
+    `/groups/${nodePathSegment(data?.groupId)}`
+  );
   const response = await fetch(urlGroupInfo);
   if (!response.ok)
     throw new Error(
@@ -9120,7 +9569,8 @@ export const reEncryptQortalKeys = async (data, isFromExtension, appInfo) => {
         }),
         highlightedText: `Group: ${groupName}`,
       },
-      isFromExtension
+      isFromExtension,
+      appInfo
     );
     const { accepted } = resPermission;
 
@@ -9223,7 +9673,11 @@ export const playEncryptedMedia = async (data, isFromExtension, appInfo) => {
 
   // Construct resourceUrl from location object
   const resourceUrl = await createEndpoint(
-    `/arbitrary/${data.location.service}/${data.location.name}/${data.location.identifier}`
+    `/arbitrary/${encodeQdnPathSegment(
+      `${data.location.service}`
+    )}/${encodeQdnPathSegment(
+      `${data.location.name}`
+    )}/${encodeQdnPathSegment(`${data.location.identifier}`)}`
   );
 
   // Check if we're in Electron

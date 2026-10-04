@@ -1186,7 +1186,7 @@ function installMobileReticulumResources(): void {
         return { success: false, error: res?.error || 'Resource unavailable' };
       }
       try {
-        const { saveStreamToMobileDocuments } =
+        const { describeMobileSave, saveStreamToMobileDocuments } =
           await import('../../utils/mobileFileSave');
         // Base64-ing the whole transfer for a single bridge call stalls the
         // WebView (and can run it out of memory) on anything large, so hand it
@@ -1198,12 +1198,24 @@ function installMobileReticulumResources(): void {
             yield bytes.subarray(offset, offset + SLICE_BYTES);
           }
         })();
+        const fileName =
+          suggestedFileName || res.manifest?.fileName || 'qortal-file';
+        const mimeType = res.manifest?.mimeType || 'application/octet-stream';
         const saved = await saveStreamToMobileDocuments(
-          suggestedFileName || res.manifest?.fileName || 'qortal-file',
+          fileName,
           slices,
-          res.manifest?.mimeType || 'application/octet-stream'
+          mimeType
         );
-        return { success: true, path: saved.path, uri: saved.uri };
+        // Where it really went (the type decides the folder, and a page is
+        // saved as .txt), for the chat's "Saved to" message.
+        const { folder, name } = describeMobileSave(saved, fileName, mimeType);
+        return {
+          success: true,
+          path: saved.path,
+          uri: saved.uri,
+          location: folder,
+          name,
+        };
       } catch (err) {
         return {
           success: false,

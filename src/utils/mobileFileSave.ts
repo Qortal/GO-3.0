@@ -14,6 +14,12 @@ import {
   readBlobSlices,
   writeToNativeFileSink,
 } from './nativeFileSink';
+import {
+  hasPageExtension,
+  isPageMimeType,
+  openFileInViewerApp,
+} from './nativeFileOpen';
+import { cleanFileName } from './receivedFileName';
 
 const QORTAL_DOCUMENTS_FOLDER = 'Qortal Go';
 /** Coalesce small network chunks before each native write (MediaStore opens
@@ -84,21 +90,54 @@ function extensionOf(filename: string): string {
   return base.slice(dot + 1).toLowerCase();
 }
 
-/** Folder name a file will be saved into, e.g. "Images". */
+/**
+ * The name and type native stores a save under (SavedFilePolicy.forSave):
+ * the cleaned name, with ".txt" added to a page (HTML, SVG, XML...), and a
+ * page type given to any other name dropped.
+ */
+export function mobileSaveTarget(
+  filename: string | null | undefined,
+  mimeType?: string | null
+): { name: string; mimeType: string } {
+  const name = cleanFileName(filename) || 'download';
+  const mime = String(mimeType || '')
+    .toLowerCase()
+    .split(';')[0]
+    .trim();
+  if (hasPageExtension(name)) {
+    return { name: `${name}.txt`, mimeType: 'text/plain' };
+  }
+  if (isPageMimeType(mime)) {
+    return { name, mimeType: 'application/octet-stream' };
+  }
+  return { name, mimeType: mime };
+}
+
+/**
+ * Folder name a file will be saved into, e.g. "Images". Same rules and order
+ * as SaveCategory.java, after the save renaming above: apps, Qortino packs,
+ * then the type, then the extension.
+ */
 export function categorizeSaveFile(
   filename: string,
   mimeType?: string
 ): string {
-  const ext = extensionOf(filename);
-  const byExt = EXTENSION_CATEGORY[ext];
-  if (byExt) return byExt;
-  const mime = String(mimeType || '').toLowerCase();
-  if (mime.includes('android.package-archive'))
+  const target = mobileSaveTarget(filename, mimeType);
+  const byExt = EXTENSION_CATEGORY[extensionOf(target.name)];
+  const mime = target.mimeType;
+  if (
+    byExt === SAVE_CATEGORY_FOLDERS.apps ||
+    mime.includes('android.package-archive')
+  ) {
     return SAVE_CATEGORY_FOLDERS.apps;
+  }
+  if (byExt === SAVE_CATEGORY_FOLDERS.qortino) {
+    return SAVE_CATEGORY_FOLDERS.qortino;
+  }
   if (mime.startsWith('image/')) return SAVE_CATEGORY_FOLDERS.images;
   if (mime.startsWith('video/')) return SAVE_CATEGORY_FOLDERS.videos;
   if (mime.startsWith('audio/')) return SAVE_CATEGORY_FOLDERS.audio;
-  return SAVE_CATEGORY_FOLDERS.documents;
+  return byExt || SAVE_CATEGORY_FOLDERS.documents;
 }
 
 /** User-facing location of saved files, for snackbars/dialogs. */
@@ -110,6 +149,32 @@ export function mobileSaveLocationLabelFor(
   mimeType?: string
 ): string {
   return `${MOBILE_SAVE_LOCATION_LABEL}/${categorizeSaveFile(filename, mimeType)}`;
+}
+
+/**
+ * Where a finished save went, for the "Saved to" message: `folder` as
+ * "Documents/Qortal Go/Images" and the file's `name`. Android 8/9 return
+ * the real path, which is read as is; Android 10+ return a content:// uri,
+ * so the folder and name come from the same rules native applied.
+ */
+export function describeMobileSave(
+  saved: { path?: string | null } | null | undefined,
+  filename: string,
+  mimeType?: string
+): { folder: string; name: string } {
+  const path = String(saved?.path || '');
+  const at = path.startsWith('/') ? path.indexOf('/Documents/') : -1;
+  if (at >= 0) {
+    const relative = path.slice(at + 1);
+    const slash = relative.lastIndexOf('/');
+    const name = relative.slice(slash + 1);
+    if (name) return { folder: relative.slice(0, slash), name };
+  }
+  const target = mobileSaveTarget(filename, mimeType);
+  return {
+    folder: mobileSaveLocationLabelFor(target.name, target.mimeType),
+    name: target.name,
+  };
 }
 
 /**
@@ -150,11 +215,13 @@ async function ensureStorageAccess(): Promise<void> {
   return storageAccess;
 }
 
-const sanitizeName = (filename: string | null | undefined) => {
-  const raw = String(filename ?? '').trim();
-  const cleaned = (raw || 'download').replace(/[/\\?%*:|"<>]/g, '_');
-  return cleaned || 'download';
-};
+/**
+ * The name a file is saved under: the same cleaning native applies
+ * (SavedFilePolicy.cleanName), so no bidi or control character from a
+ * sender's name reaches storage or the "Saved to" message.
+ */
+const sanitizeName = (filename: string | null | undefined) =>
+  cleanFileName(filename) || 'download';
 
 export async function saveTextToMobileDocuments(
   filename: string,
@@ -224,7 +291,8 @@ export async function saveBlobToMobileDocuments(
 
 /**
  * Hands a saved file to whichever app on the device can display it. Accepts the
- * `content://` uri MediaStore hands back from a save.
+ * `content://` uri MediaStore hands back from a save. An app package is never
+ * opened (false): only GO's own updater installs apps.
  */
 export async function openSavedMobileFile(
   uri: string,
@@ -233,8 +301,7 @@ export async function openSavedMobileFile(
 ): Promise<boolean> {
   if (!uri || !Capacitor.isNativePlatform()) return false;
   try {
-    const { Reticulum } = await import('../plugins/Reticulum');
-    const result = await Reticulum.qchatFileOpen({
+    const result = await openFileInViewerApp({
       uri,
       ...(filename ? { fileName: filename } : {}),
       ...(mimeType ? { mimeType } : {}),

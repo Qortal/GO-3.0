@@ -14,8 +14,8 @@ import { startDirectIncomingRingtone } from '../../lib/call/directIncomingRingto
 import {
   addrHue,
   initialsFromDisplayLabel,
-  qortalAvatarThumbnailSrc,
   shortAddr,
+  useQortalAvatarThumbnailSrc,
 } from '../Group/qortalGroupCallParticipantUi';
 import { getPrimaryNameForAvatar } from '../Group/groupApi';
 
@@ -64,7 +64,7 @@ export function DirectVoiceCallGlobalOverlay({
 
   const displayLabel =
     callerPrimaryName || (fromAddress ? shortAddr(fromAddress) : '');
-  const avatarSrc = qortalAvatarThumbnailSrc(callerPrimaryName || undefined);
+  const avatarSrc = useQortalAvatarThumbnailSrc(callerPrimaryName || undefined);
   const initials = initialsFromDisplayLabel(displayLabel, fromAddress);
 
   useEffect(() => {

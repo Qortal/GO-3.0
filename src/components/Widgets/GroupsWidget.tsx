@@ -56,7 +56,7 @@ import {
   userInfoAtom,
 } from '../../atoms/global';
 import { getFee } from '../../background/background';
-import { buildGroupAvatarUrl } from '../../utils/groupAvatarUrl';
+import { CachedGroupAvatar } from '../Group/CachedAvatars';
 import { TIME_WEEKS_1_IN_MILLISECONDS } from '../../constants/constants';
 import { executeEvent } from '../../utils/events';
 import { hasInvisibleCharacters } from '../../utils/hasInvisibleCharacters';
@@ -85,7 +85,8 @@ type GroupsWidgetProps = {
 };
 
 type GroupNotificationItem = {
-  avatarUrl: string | null;
+  /** Group owner's name: the group avatar is published under it. */
+  avatarOwnerName: string | null;
   groupId: string;
   groupName: string;
   id: string;
@@ -307,11 +308,6 @@ const buildJoinRequestItems = (
       };
     })
   );
-
-const getGroupAvatarUrl = (
-  ownerName: string | null,
-  groupId: string | number
-) => buildGroupAvatarUrl(ownerName, groupId);
 
 const normalizeSnippet = (value: unknown, fallback: string) => {
   if (typeof value !== 'string') {
@@ -1033,7 +1029,7 @@ export const GroupsWidget = ({
           const ownerName = ownerNamesByGroupId?.[groupId] ?? null;
 
           return {
-            avatarUrl: getGroupAvatarUrl(ownerName, groupId),
+            avatarOwnerName: ownerName,
             groupId,
             groupName,
             id: `reticulum:${groupId}`,
@@ -1098,7 +1094,7 @@ export const GroupsWidget = ({
         const ownerName = ownerNamesByGroupId?.[groupId] ?? null;
 
         return {
-          avatarUrl: getGroupAvatarUrl(ownerName, groupId),
+          avatarOwnerName: ownerName,
           groupId,
           groupName,
           id: `${groupId}:${timestamp}:${group.sender ?? 'unknown'}`,
@@ -2252,9 +2248,10 @@ export const GroupsWidget = ({
             },
           }}
         >
-          <Avatar
+          <CachedGroupAvatar
             alt={item.groupName}
-            src={item.avatarUrl ?? undefined}
+            groupId={item.groupId}
+            ownerName={item.avatarOwnerName}
             sx={{
               bgcolor: alpha(theme.palette.primary.main, 0.12),
               color: theme.palette.text.primary,
@@ -2264,7 +2261,7 @@ export const GroupsWidget = ({
             }}
           >
             {item.groupName.charAt(0).toUpperCase()}
-          </Avatar>
+          </CachedGroupAvatar>
 
           <Box
             sx={{
@@ -2486,9 +2483,10 @@ export const GroupsWidget = ({
                   },
                 }}
               >
-                <Avatar
+                <CachedGroupAvatar
                   alt={item.groupName}
-                  src={item.avatarUrl ?? undefined}
+                  groupId={item.groupId}
+                  ownerName={item.avatarOwnerName}
                   sx={{
                     bgcolor: alpha(theme.palette.primary.main, 0.12),
                     color: theme.palette.text.primary,
@@ -2498,7 +2496,7 @@ export const GroupsWidget = ({
                   }}
                 >
                   {item.groupName.charAt(0).toUpperCase()}
-                </Avatar>
+                </CachedGroupAvatar>
 
                 <Box
                   sx={{

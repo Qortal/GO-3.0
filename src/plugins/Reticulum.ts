@@ -107,18 +107,21 @@ export interface ReticulumPlugin {
   /** Unique bridge-writable save path for an inbound file transfer. */
   qchatFileSavePath(options: { fileName: string }): Promise<{ path: string }>;
 
-  /** Existence/size probe for a staged file path. */
+  /**
+   * Existence/size probe for a staged send or a received file. Any other
+   * path reads as missing (FileOpenPolicy.java).
+   */
   qchatFileStat(options: {
     path: string;
   }): Promise<{ exists: boolean; size: number }>;
 
-  /** Copy a completed inbound transfer into the public Downloads collection. */
-  qchatFileExportToDownloads(options: {
-    path: string;
-    fileName?: string;
-  }): Promise<{ ok: boolean; uri?: string }>;
-
-  /** Open a received file (content:// URI or app-storage path) in a viewer app. */
+  /**
+   * Open a received or saved file (MediaStore content:// URI, or a path in
+   * GO's received-file or share-staging folders or, on Android 8/9, in
+   * Documents/Qortal Go or Downloads) in a viewer app. Rejects with code
+   * NOT_FOUND for anything else. Received files stay in GO's private
+   * storage: nothing copies them to Downloads (N-22).
+   */
   qchatFileOpen(options: {
     uri: string;
     fileName?: string;

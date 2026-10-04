@@ -1,4 +1,8 @@
-import { Capacitor, registerPlugin, type PluginListenerHandle } from '@capacitor/core';
+import {
+  Capacitor,
+  registerPlugin,
+  type PluginListenerHandle,
+} from '@capacitor/core';
 import {
   isQortinoWebDebugEnabled,
   QortinoLlmWebDebug,
@@ -74,7 +78,12 @@ export interface QortinoLlmPlugin {
     zipAbsolutePath?: string;
     destRelativePath?: string;
   }): Promise<{ extractedFiles: number; destDir: string }>;
+  /**
+   * `url` must not carry the node API key: pass it as `apiKey`, which the
+   * native side sends as an X-API-KEY header (native HTTP has no CORS).
+   */
   downloadUrl(options: {
+    apiKey?: string;
     url: string;
     relativePath: string;
   }): Promise<{ path: string; bytesWritten: number }>;
@@ -104,8 +113,12 @@ export interface QortinoLlmPlugin {
   unload(): Promise<void>;
   cancel(): Promise<void>;
   getStatus(): Promise<QortinoLlmStatus>;
-  complete(options: QortinoCompleteOptions): Promise<{ ok: boolean; text?: string }>;
-  embed(options: { text: string }): Promise<{ vector: number[]; dimensions: number }>;
+  complete(
+    options: QortinoCompleteOptions
+  ): Promise<{ ok: boolean; text?: string }>;
+  embed(options: {
+    text: string;
+  }): Promise<{ vector: number[]; dimensions: number }>;
   addListener(
     eventName: 'token',
     listenerFunc: (event: QortinoTokenEvent) => void
@@ -159,7 +172,9 @@ const QortinoLlm = registerPlugin<QortinoLlmPlugin>('QortinoLlm', {
         throw new Error('QortinoLlm.downloadUrl is only available on native');
       },
       async copyFileIntoAgent() {
-        throw new Error('QortinoLlm.copyFileIntoAgent is only available on native');
+        throw new Error(
+          'QortinoLlm.copyFileIntoAgent is only available on native'
+        );
       },
       async cancelDownload() {},
       async loadModel() {

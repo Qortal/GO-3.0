@@ -19,6 +19,10 @@ import {
 import { isCapacitor } from './platform';
 
 const BATTERY_PROMPT_DISMISSED_KEY = 'hub_mobile_battery_prompt_dismissed';
+/** Epoch ms until which 'Not now' keeps the boot battery prompt away. */
+const BATTERY_PROMPT_SNOOZED_UNTIL_KEY =
+  'hub_mobile_battery_prompt_snoozed_until';
+export const BATTERY_PROMPT_SNOOZE_MS = 14 * 24 * 60 * 60 * 1000;
 
 export type ReticulumStatusKind = 'starting' | 'online' | 'offline';
 
@@ -169,11 +173,32 @@ export const stopMobilePersistentStatus = async (): Promise<void> => {
   }
 };
 
-export const shouldShowBatteryOptimizationPrompt = async (): Promise<boolean> => {
+export const shouldShowBatteryOptimizationPrompt = async (
+  now: number = Date.now()
+): Promise<boolean> => {
   if (!isCapacitor()) return false;
 
-  const dismissed = await Preferences.get({ key: BATTERY_PROMPT_DISMISSED_KEY });
-  if (dismissed.value === '1') return false;
+  try {
+    const dismissed = await Preferences.get({
+      key: BATTERY_PROMPT_DISMISSED_KEY,
+    });
+    if (dismissed.value === '1') return false;
+    const snoozed = await Preferences.get({
+      key: BATTERY_PROMPT_SNOOZED_UNTIL_KEY,
+    });
+    const until = Number(snoozed.value);
+    // A clock set back by more than the snooze must not hide it for good.
+    if (
+      snoozed.value &&
+      Number.isFinite(until) &&
+      now < until &&
+      until - now <= BATTERY_PROMPT_SNOOZE_MS
+    ) {
+      return false;
+    }
+  } catch {
+    // Unreadable preferences: fall through to the exemption check.
+  }
 
   try {
     const { ignoring } = await QortalBackground.isIgnoringBatteryOptimizations();
@@ -185,6 +210,23 @@ export const shouldShowBatteryOptimizationPrompt = async (): Promise<boolean> =>
 
 export const dismissBatteryOptimizationPrompt = async (): Promise<void> => {
   await Preferences.set({ key: BATTERY_PROMPT_DISMISSED_KEY, value: '1' });
+};
+
+/** 'Not now': keep the boot prompt away for 14 days, not just this start. */
+export const snoozeBatteryOptimizationPrompt = async (
+  now: number = Date.now()
+): Promise<void> => {
+  try {
+    await Preferences.set({
+      key: BATTERY_PROMPT_SNOOZED_UNTIL_KEY,
+      value: String(now + BATTERY_PROMPT_SNOOZE_MS),
+    });
+  } catch (error) {
+    console.warn(
+      '[mobileBackgroundService] Could not snooze battery prompt',
+      error
+    );
+  }
 };
 
 export const requestIgnoreBatteryOptimizations = async (): Promise<void> => {
@@ -288,13 +330,16 @@ export const subscribeMobilePersistentStatusUpdates = (
 };
 
 // Texts the native side draws on its own (the status notification while the
-// page is frozen, the 'GO paused' notice): native key -> i18n key.
+// page is frozen, the 'GO paused' notice after Android's time limit or GO's
+// own 6 h battery limit): native key -> i18n key.
 const NATIVE_TEXT_KEYS = {
   status_paused_title: 'core:background_sync.native.status_paused_title',
   status_paused_text: 'core:background_sync.native.status_paused_text',
   status_waiting_text: 'core:background_sync.native.status_waiting_text',
+  status_waiting_short: 'core:background_sync.native.status_waiting_short',
   fgs_timeout_title: 'core:background_sync.native.fgs_timeout_title',
   fgs_timeout_text: 'core:background_sync.native.fgs_timeout_text',
+  battery_pause_text: 'core:background_sync.native.battery_pause_text',
   status_syncing_background:
     'core:background_sync.native.status_syncing_background',
 } as const;

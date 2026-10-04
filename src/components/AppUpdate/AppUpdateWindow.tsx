@@ -18,6 +18,7 @@ import {
 } from '@mui/material';
 import { alpha, type Theme } from '@mui/material/styles';
 import DOMPurify from 'dompurify';
+import '../../utils/configureDomPurify';
 import { useAtomValue } from 'jotai';
 import { useTranslation } from 'react-i18next';
 import {

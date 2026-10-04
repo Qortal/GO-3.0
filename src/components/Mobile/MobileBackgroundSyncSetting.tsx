@@ -1,14 +1,5 @@
-import CloseIcon from '@mui/icons-material/Close';
 import SyncRoundedIcon from '@mui/icons-material/SyncRounded';
-import WarningAmberRoundedIcon from '@mui/icons-material/WarningAmberRounded';
-import {
-  Box,
-  ButtonBase,
-  IconButton,
-  Typography,
-  alpha,
-  useTheme,
-} from '@mui/material';
+import { Box, ButtonBase, Typography, alpha, useTheme } from '@mui/material';
 import {
   type KeyboardEvent,
   useCallback,
@@ -18,14 +9,10 @@ import {
   useState,
 } from 'react';
 import { useTranslation } from 'react-i18next';
-import { openAppBatterySettings } from '../../utils/mobileBackgroundService';
-import { openHttpUrlExternally } from '../../utils/openExternalHttp';
+import { BackgroundStopNotice } from './BackgroundStopNotice';
 import {
   BACKGROUND_SYNC_MODES,
   DEFAULT_BACKGROUND_SYNC_MODE,
-  acknowledgeVendorFreezeHint,
-  displayManufacturer,
-  dontKillMyAppUrl,
   fetchBackgroundSyncState,
   isNativeAndroid,
   saveBackgroundSyncMode,
@@ -33,6 +20,7 @@ import {
   type BackgroundSyncMode,
   type BackgroundSyncState,
 } from './backgroundSync';
+import { vendorFreezeHintActions } from './vendorFreezeHintStore';
 
 // Charging / network changes are not pushed as events; a light poll keeps the
 // status line honest while the settings screen is open.
@@ -52,8 +40,10 @@ const MODE_HELP_KEYS: Record<BackgroundSyncMode, string> = {
 
 /**
  * "Background sync" setting (native Android only): Off / While charging /
- * Always, a live status line and the vendor-freeze notice. Renders nothing on
- * web/desktop or when the APK predates the native keep-alive plugin methods.
+ * Always, a live status line and, when the phone's own battery manager keeps
+ * stopping GO, the facts and steps (BackgroundStopNotice, fed by
+ * vendorFreezeHintStore). Renders nothing on web/desktop or when the APK
+ * predates the native keep-alive plugin methods.
  */
 export const MobileBackgroundSyncSetting = () => {
   const theme = useTheme();
@@ -63,11 +53,10 @@ export const MobileBackgroundSyncSetting = () => {
   const [state, setState] = useState<BackgroundSyncState | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveFailed, setSaveFailed] = useState(false);
-  const [freezeNoticeOpen, setFreezeNoticeOpen] = useState(false);
   const radioRefs = useRef<Array<HTMLButtonElement | null>>([]);
-  // Every read is stamped; a local change (mode write, notice dismiss, native
-  // event) bumps the stamp so reads already in flight cannot undo it. Reads are
-  // skipped while a native write is still running and redone once it settles.
+  // Every read is stamped; a local change (mode write) bumps the stamp so reads
+  // already in flight cannot undo it. Reads are skipped while a native write
+  // is still running and redone once it settles.
   const readStampRef = useRef(0);
   const writesInFlightRef = useRef(0);
 
@@ -77,7 +66,6 @@ export const MobileBackgroundSyncSetting = () => {
     const next = await fetchBackgroundSyncState();
     if (!next || stamp !== readStampRef.current) return;
     setState(next);
-    if (next.vendorFreezeHintPending) setFreezeNoticeOpen(true);
   }, []);
 
   const runLocalWrite = useCallback(
@@ -97,6 +85,8 @@ export const MobileBackgroundSyncSetting = () => {
   useEffect(() => {
     if (!supported) return undefined;
     void refresh();
+    // The stop notice below reads the app-wide store: fresh facts on open.
+    void vendorFreezeHintActions.refresh();
     const interval = setInterval(() => void refresh(), STATE_REFRESH_MS);
     const onVisibility = () => {
       if (document.visibilityState === 'visible') void refresh();
@@ -105,21 +95,6 @@ export const MobileBackgroundSyncSetting = () => {
     const unsubscribe = subscribeBackgroundSyncEvents({
       onRelayProfileChanged: (relayProfile) => {
         setState((prev) => (prev ? { ...prev, relayProfile } : prev));
-      },
-      onVendorFreezeDetected: (event) => {
-        readStampRef.current += 1;
-        setState((prev) =>
-          prev
-            ? {
-                ...prev,
-                vendorFreezeCount: event.count,
-                vendorFreezeLastAt: event.lastAt,
-                vendorFreezeHintPending: true,
-                manufacturer: event.manufacturer || prev.manufacturer,
-              }
-            : prev
-        );
-        setFreezeNoticeOpen(true);
       },
     });
     return () => {
@@ -144,17 +119,11 @@ export const MobileBackgroundSyncSetting = () => {
         return;
       }
       void refresh();
+      // 'Off' hides the stop notice at once (and other modes may bring it).
+      void vendorFreezeHintActions.refresh();
     },
     [refresh, runLocalWrite, state]
   );
-
-  const dismissFreezeNotice = useCallback(() => {
-    setFreezeNoticeOpen(false);
-    setState((prev) =>
-      prev ? { ...prev, vendorFreezeHintPending: false } : prev
-    );
-    void runLocalWrite(acknowledgeVendorFreezeHint);
-  }, [runLocalWrite]);
 
   // Hidden until the native side answers: an older APK has no such setting.
   if (!supported || !state) return null;
@@ -361,128 +330,7 @@ export const MobileBackgroundSyncSetting = () => {
         </Box>
       )}
 
-      {freezeNoticeOpen && (
-        <VendorFreezeNotice
-          manufacturer={state.manufacturer}
-          onDismiss={dismissFreezeNotice}
-        />
-      )}
-    </Box>
-  );
-};
-
-/**
- * The vendor-freeze notice: what happened, the phone's battery settings and
- * the dontkillmyapp.com guide. Dismissing it acknowledges the hint natively.
- * Shown in the setting card and, app-wide, by VendorFreezeHintDialog.
- */
-export const VendorFreezeNotice = ({
-  manufacturer,
-  onDismiss,
-  titleId,
-}: {
-  manufacturer: string | null | undefined;
-  onDismiss: () => void;
-  titleId?: string;
-}) => {
-  const theme = useTheme();
-  const { t } = useTranslation(['core']);
-  const brand = displayManufacturer(manufacturer);
-  const openBatterySettings = () => {
-    void openAppBatterySettings().catch(() => {});
-  };
-  return (
-    <Box
-      role="alert"
-      sx={{
-        backgroundColor: alpha(theme.palette.warning.main, 0.1),
-        border: `1px solid ${alpha(theme.palette.warning.main, 0.4)}`,
-        borderRadius: '12px',
-        display: 'flex',
-        gap: 1,
-        px: 1.3,
-        py: 1.1,
-      }}
-    >
-      <WarningAmberRoundedIcon
-        sx={{
-          color: theme.palette.warning.main,
-          flexShrink: 0,
-          fontSize: 20,
-          mt: 0.2,
-        }}
-      />
-      <Box sx={{ display: 'grid', flex: 1, gap: 0.8, minWidth: 0 }}>
-        <Typography
-          id={titleId}
-          sx={{
-            color: theme.palette.text.primary,
-            fontSize: '0.84rem',
-            fontWeight: 650,
-          }}
-        >
-          {t('core:background_sync.vendor_freeze.title')}
-        </Typography>
-        <Typography
-          sx={{
-            color: theme.palette.text.secondary,
-            fontSize: '0.76rem',
-            lineHeight: 1.45,
-          }}
-        >
-          {brand
-            ? t('core:background_sync.vendor_freeze.body', {
-                manufacturer: brand,
-              })
-            : t('core:background_sync.vendor_freeze.body_unknown')}
-        </Typography>
-        <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.8 }}>
-          <ButtonBase
-            onClick={openBatterySettings}
-            sx={{
-              backgroundColor: alpha(theme.palette.primary.main, 0.12),
-              border: `1px solid ${alpha(theme.palette.primary.main, 0.34)}`,
-              borderRadius: '10px',
-              color: theme.palette.text.primary,
-              fontSize: '0.78rem',
-              fontWeight: 650,
-              minHeight: 36,
-              px: 1.3,
-            }}
-          >
-            {t('core:background_sync.vendor_freeze.open_battery_settings')}
-          </ButtonBase>
-          <ButtonBase
-            onClick={() =>
-              openHttpUrlExternally(dontKillMyAppUrl(manufacturer))
-            }
-            sx={{
-              borderRadius: '10px',
-              color: theme.palette.primary.main,
-              fontSize: '0.78rem',
-              fontWeight: 600,
-              minHeight: 36,
-              px: 1,
-              textDecoration: 'underline',
-            }}
-          >
-            {t('core:background_sync.vendor_freeze.guide')}
-          </ButtonBase>
-        </Box>
-      </Box>
-      <IconButton
-        aria-label={t('core:background_sync.vendor_freeze.dismiss')}
-        onClick={onDismiss}
-        size="small"
-        sx={{
-          alignSelf: 'flex-start',
-          color: theme.palette.text.secondary,
-          mr: -0.6,
-          mt: -0.4,
-        }}
-      >
-        <CloseIcon fontSize="small" />
-      </IconButton>
+      <BackgroundStopNotice variant="settings" />
     </Box>
   );
 };

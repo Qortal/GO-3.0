@@ -21,9 +21,10 @@ import GroupsRoundedIcon from '@mui/icons-material/GroupsRounded';
 import LockRoundedIcon from '@mui/icons-material/LockRounded';
 import PublicRoundedIcon from '@mui/icons-material/PublicRounded';
 import { useAtomValue } from 'jotai';
-import { QORTAL_APP_CONTEXT, getBaseApiReact } from '../../App';
+import { QORTAL_APP_CONTEXT } from '../../App';
 import { getFee } from '../../background/background';
 import { memberGroupsAtom } from '../../atoms/global';
+import { useQdnGroupAvatar } from '../../lib/qdnAvatars';
 import { getReticulumGroupMetadata } from '../Group/ReticulumGroupAbout';
 import { getNameInfo } from '../Group/groupApi';
 import { GroupScoreBadge } from '../Group/ReticulumGroupLevel';
@@ -215,9 +216,8 @@ function InviteCard({ groupId }: { groupId: string }) {
   const groupScoreColor = groupScore
     ? getReticulumGroupScoreColor(groupScore.score)
     : 'rgba(151,161,178,0.38)';
-  const avatarUrl = ownerName
-    ? `${getBaseApiReact()}/arbitrary/THUMBNAIL/${ownerName}/qortal_group_avatar_${groupId}?async=true`
-    : undefined;
+  // Cached on the device, so it shows at once also on a slow node.
+  const { src: avatarUrl } = useQdnGroupAvatar(ownerName, groupId);
 
   const updateActionState = useCallback(
     (nextState: 'idle' | 'joined' | 'pending') => {

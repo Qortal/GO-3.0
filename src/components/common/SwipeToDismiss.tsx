@@ -16,6 +16,24 @@ const DISMISS_FLICK_MIN_PX = 40;
 const SWIPE_SUPPRESSES_CLICK_PX = 8;
 const FALLBACK_ROW_WIDTH_PX = 320;
 
+/**
+ * Whether a sideways drag released at `offsetX` px moving at `velocityX` px/s
+ * dismisses something `width` px wide: dragged past a third of it, or flicked
+ * the way it was dragged. Shared with the download cards over the app.
+ */
+export function isSwipeDismissal(
+  offsetX: number,
+  velocityX: number,
+  width: number
+): boolean {
+  const draggedFarEnough = Math.abs(offsetX) > width * DISMISS_DISTANCE_RATIO;
+  const flicked =
+    Math.abs(velocityX) > DISMISS_FLICK_VELOCITY &&
+    Math.abs(offsetX) > DISMISS_FLICK_MIN_PX &&
+    Math.sign(velocityX) === Math.sign(offsetX);
+  return draggedFarEnough || flicked;
+}
+
 type SwipeToDismissProps = {
   children: ReactNode;
   /** Flex gap above the row, folded away together with the row. */
@@ -56,13 +74,7 @@ export const SwipeToDismiss = ({
   const handleDragEnd = (_event: PointerEvent, info: PanInfo) => {
     const width = rowRef.current?.offsetWidth || FALLBACK_ROW_WIDTH_PX;
     const offsetX = info.offset.x;
-    const velocityX = info.velocity.x;
-    const draggedFarEnough = Math.abs(offsetX) > width * DISMISS_DISTANCE_RATIO;
-    const flicked =
-      Math.abs(velocityX) > DISMISS_FLICK_VELOCITY &&
-      Math.abs(offsetX) > DISMISS_FLICK_MIN_PX &&
-      Math.sign(velocityX) === Math.sign(offsetX);
-    if (draggedFarEnough || flicked) {
+    if (isSwipeDismissal(offsetX, info.velocity.x, width)) {
       dismiss(offsetX < 0 ? -1 : 1);
       return;
     }

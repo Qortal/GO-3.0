@@ -107,29 +107,28 @@ describe('QDN transfer progress', () => {
       uri: 'content://media/external_primary/file/9',
       mimeType: 'application/zip',
     });
+    // An .apk is listed as saved, but GO does not open or install it.
     expect(only()).toMatchObject({
       stage: 'saved',
       location: 'Documents/Qortal Go/Apps',
-      uri: 'content://media/external_primary/file/9',
-      mimeType: 'application/vnd.android.package-archive',
+      mimeType: 'application/zip',
     });
-    // GO was in the background, so the phone pops it up and opens the file.
+    expect(only().uri).toBeUndefined();
+    // GO was in the background, so the phone pops it up.
     expect(lastNotification()).toMatchObject({
       transferId: 'qapp-fetch:a',
-      openUri: 'content://media/external_primary/file/9',
-      openMimeType: 'application/vnd.android.package-archive',
       alert: true,
       ongoing: false,
     });
+    expect(lastNotification().openUri).toBeUndefined();
 
-    // The card goes after a while; the panel keeps it as ready to open.
+    // The card goes after a while; the panel keeps it as saved.
     vi.advanceTimersByTime(13_000);
     expect(getQdnTransfers()).toHaveLength(0);
     expect(getSavedQdnFiles()).toMatchObject([
       {
         filename: 'GO 3.0 v0.0.11.apk',
         location: 'Documents/Qortal Go/Apps',
-        uri: 'content://media/external_primary/file/9',
         seen: false,
       },
     ]);
@@ -167,10 +166,8 @@ describe('QDN transfer progress', () => {
     finishQdnSaveNotification('save:3', 'Documents/Qortal Go/Apps', {
       uri: 'content://media/external_primary/file/5',
     });
-    expect(String(lastNotification().actionLabel)).toMatch(/install/i);
-    expect(lastNotification().openMimeType).toBe(
-      'application/vnd.android.package-archive'
-    );
+    expect(lastNotification().actionLabel).toBeUndefined();
+    expect(lastNotification().openUri).toBeUndefined();
     expect(unseen()).toBe(1);
     expect(localStorage.getItem('qortal-go:saved-files:v1')).toContain(
       'GO 3.0 v0.0.11.apk'
@@ -233,6 +230,51 @@ describe('QDN transfer progress', () => {
     expect(plugin.dismissTransferNotification).toHaveBeenCalledWith({
       transferId: 'qapp-fetch:b',
     });
+  });
+
+  // Torq fetched a song twice (to play it, then to save it); the save carried
+  // on one download and left "Downloaded, waiting for the save" on the other.
+  it('drops the other downloads of a file once it is saved', () => {
+    const size = 9_421_337;
+    for (const id of ['qapp-fetch:play', 'qapp-fetch:save']) {
+      beginQappFetchNotification(id, 'El Sueño.m4a', size);
+      completeQappFetch(id);
+    }
+    beginQappFetchNotification('qapp-fetch:other', 'other.m4a', size + 1);
+    completeQappFetch('qapp-fetch:other');
+
+    const id = claimQappFetchForSave(size)!;
+    expect(id).toBe('qapp-fetch:save');
+    continueQdnSaveNotification(id, 'El_Sueno.m4a');
+    reportQdnTransferProgress(id, size, size);
+    finishQdnSaveNotification(id, 'Documents/Qortal Go/Audio', {
+      uri: 'content://media/external_primary/file/7',
+      mimeType: 'audio/mp4',
+    });
+
+    expect(
+      getQdnTransfers().map((transfer) => [transfer.id, transfer.stage])
+    ).toEqual([
+      ['qapp-fetch:save', 'saved'],
+      ['qapp-fetch:other', 'awaiting_save'],
+    ]);
+    expect(plugin.dismissTransferNotification).toHaveBeenCalledWith({
+      transferId: 'qapp-fetch:play',
+    });
+  });
+
+  it('drops a waiting download when the save brought its own copy', () => {
+    beginQappFetchNotification('qapp-fetch:i', 'song.m4a', 4_000_000);
+    completeQappFetch('qapp-fetch:i');
+    // A save that claimed nothing (a different size at claim time) still
+    // says how big the file was.
+    beginQdnSaveNotification('qdn-save:song', 'song.m4a', { stage: 'saving' });
+    finishQdnSaveNotification('qdn-save:song', 'Documents/Qortal Go/Audio', {
+      uri: 'content://media/external_primary/file/8',
+      mimeType: 'audio/mp4',
+      sizeBytes: 4_000_000,
+    });
+    expect(only()).toMatchObject({ id: 'qdn-save:song', stage: 'saved' });
   });
 
   it('drops a Q-App download that stops reporting', () => {

@@ -1,4 +1,5 @@
 import { Capacitor } from '@capacitor/core';
+import { openFileInViewerApp } from './nativeFileOpen';
 
 /**
  * Hands a file the app holds in memory to other Android apps: the share sheet
@@ -98,6 +99,28 @@ export function stageMobileFileForSharing(
   return pending;
 }
 
+/**
+ * Deletes every file staged for Share or "Open with". Logout calls it, so a
+ * received chat file shared from GO's viewer does not stay in the cache after
+ * the session. The next stage writes the file again.
+ */
+export async function clearStagedShareFiles(): Promise<void> {
+  writtenByKey.clear();
+  // Sweep again before the next write, in case this delete fails.
+  cacheSwept = false;
+  if (!Capacitor.isNativePlatform()) return;
+  try {
+    const { Filesystem, Directory } = await import('@capacitor/filesystem');
+    await Filesystem.rmdir({
+      path: SHARE_CACHE_FOLDER,
+      directory: Directory.Cache,
+      recursive: true,
+    });
+  } catch {
+    // Nothing staged yet, or already gone.
+  }
+}
+
 /** Opens the Android share sheet for a staged file. */
 export async function shareStagedMobileFile(
   uri: string,
@@ -120,7 +143,11 @@ export async function shareStagedMobileFile(
   }
 }
 
-/** Opens a staged file in another app through the Android chooser. */
+/**
+ * Opens a staged file in another app through the Android chooser. Throws a
+ * PackageOpenRefusedError (code PACKAGE_ARCHIVE_REFUSED) for an app
+ * package, so the caller can say why nothing opened.
+ */
 export async function openStagedMobileFileWith(
   uri: string,
   fileName: string,
@@ -129,8 +156,7 @@ export async function openStagedMobileFileWith(
   if (!Capacitor.isNativePlatform()) {
     throw new Error('openStagedMobileFileWith: not running natively');
   }
-  const { Reticulum } = await import('../plugins/Reticulum');
-  const result = await Reticulum.qchatFileOpen({
+  const result = await openFileInViewerApp({
     uri,
     fileName,
     ...(mimeType ? { mimeType } : {}),

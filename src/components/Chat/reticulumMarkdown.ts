@@ -1,5 +1,6 @@
 import MarkdownIt from 'markdown-it';
 import DOMPurify from 'dompurify';
+import '../../utils/configureDomPurify';
 
 /**
  * Markdown → sanitized HTML for the in-app file viewer.

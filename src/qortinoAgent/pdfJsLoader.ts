@@ -5,7 +5,11 @@
 
 export type PdfJsLib = {
   GlobalWorkerOptions: { workerSrc: string };
-  getDocument: (src: { data: ArrayBuffer }) => {
+  getDocument: (src: {
+    data: ArrayBuffer;
+    /** false: fonts are drawn without compiling code from the PDF. */
+    isEvalSupported?: boolean;
+  }) => {
     promise: Promise<{
       numPages: number;
       getPage: (n: number) => Promise<{

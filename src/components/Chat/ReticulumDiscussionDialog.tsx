@@ -11,8 +11,10 @@ import {
   Typography,
   useMediaQuery,
 } from '@mui/material';
+import { useAtomValue } from 'jotai';
 import { useTranslation } from 'react-i18next';
 import { alpha, useTheme } from '@mui/material/styles';
+import { reticulumChatTextScaleAtom } from '../../atoms/global';
 import { SAFE_AREA_BOTTOM, SAFE_AREA_TOP } from '../../utils/mobileSafeArea';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import ForumRoundedIcon from '@mui/icons-material/ForumRounded';
@@ -33,6 +35,12 @@ import { resolveReticulumPreferredMessageExpiryDurationMs } from './reticulumMes
 import { ReactionPicker } from '../ReactionPicker';
 import { fetchLibraryGifFile, type LibraryGif } from './gifs/libraryGifs';
 import { MessageSizeLimitLip } from './MessageSizeLimitLip';
+import { ComposerDiscardButton } from './ComposerDiscardButton';
+import { ComposerDismissButton } from './ComposerDismissButton';
+import {
+  COMPOSER_SEND_BUTTON_PX,
+  COMPOSER_SEND_ICON_PX,
+} from './composerCornerLayout';
 import { BACK_PRIORITY, useAndroidBack } from '../../utils/androidBack';
 import { executeEvent } from '../../utils/events';
 import {
@@ -97,6 +105,21 @@ type ReticulumDiscussionDialogProps = {
   preferredExpiryDurationMs?: number;
   selectedGroup: number | string;
 };
+
+/**
+ * The phone field's height budget, which TipTap measures its stages against:
+ * the chat composer bar's cap (min(50vh, 320px)) less that bar's 6px top and
+ * bottom padding. The size lip and the captions sit outside the field, so they
+ * never take the text's room.
+ */
+export const DISCUSSION_PHONE_FIELD_MAX_HEIGHT =
+  'calc(min(50vh, 320px) - 12px)';
+/**
+ * One row of attachment chips (a 48px chip under the row's 3px top padding):
+ * as far as the chips give way when the field runs out of height. They scroll
+ * from there, and the typing row never shrinks.
+ */
+export const DISCUSSION_PHONE_CHIP_ROW_PX = 51;
 
 /** Least time between two split plans while the text stays over the limit. */
 const SPLIT_PLAN_THROTTLE_MS = 300;
@@ -265,7 +288,9 @@ export const ReticulumDiscussionDialog = ({
 }: ReticulumDiscussionDialogProps) => {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
-  const { t } = useTranslation(['core', 'reticulum']);
+  const { t } = useTranslation(['core', 'group', 'reticulum']);
+  // The chat's reading size reaches the phone composer, as in the chat.
+  const textScale = useAtomValue(reticulumChatTextScaleAtom);
   const [editor, setEditor] = useState<Editor | null>(null);
   const [expiryDurationMs, setExpiryDurationMs] = useState<
     number | undefined
@@ -551,11 +576,235 @@ export const ReticulumDiscussionDialog = ({
   // trimming blank lines was enough, so the lip has nothing to say.
   const sendableParts = splitPlan.splitError ? null : splitPlan.splitParts;
   const showSizeLip = overSizeLimit && sendableParts !== 1;
+  const composerHasContent =
+    composerHasSendableText(editor?.getText()) || files.length > 0;
   const sendDisabled =
-    loading ||
-    !canWrite ||
-    closeDisabled ||
-    (!composerHasSendableText(editor?.getText()) && files.length === 0);
+    loading || !canWrite || closeDisabled || !composerHasContent;
+  const sendLabel = t('core:action.send', {
+    postProcess: 'capitalizeFirstChar',
+  });
+
+  // The phone corner X: the text, the attachments and the expiry picked for
+  // this reply go, as after a send. Nothing goes while a reply is on its way
+  // or a file is still being prepared, which would land after the discard.
+  const discardComposer = () => {
+    if (!editor || editor.isDestroyed || closeDisabled) return;
+    editor.commands.clearContent();
+    // Last first, so every index still points at the file it meant.
+    for (let index = files.length - 1; index >= 0; index -= 1) {
+      onRemoveFile(index);
+    }
+    setExpiryDurationMs(
+      resolveReticulumPreferredMessageExpiryDurationMs(
+        preferredExpiryDurationMs,
+        channelExpiryDurationMs
+      )
+    );
+    resetComposerSize();
+    // Clearing the editor emits no update, so the typing signal would linger.
+    onTypingChange(false);
+  };
+
+  // Phones: the main group composer's corner cluster (expiry, discard, send),
+  // which TipTap places down the right edge of the one rounded field. Send and
+  // the X fade in with the first character or attachment.
+  const renderCornerActions = () => (
+    <>
+      <Box
+        className="compact-composer-expiry"
+        sx={{
+          alignItems: 'center',
+          display: 'flex',
+          flexShrink: 0,
+          justifyContent: 'center',
+        }}
+      >
+        <ReticulumMessageExpiryButton
+          channelExpiryDurationMs={channelExpiryDurationMs}
+          corner
+          disabled={loading || closeDisabled}
+          disabledReason={t('reticulum:discussion.wait_until_ready', {
+            postProcess: 'capitalizeFirstChar',
+          })}
+          onChange={setExpiryDurationMs}
+          onPreferredExpiryChange={onPreferredExpiryChange}
+          preferredExpiryDurationMs={preferredExpiryDurationMs}
+          value={expiryDurationMs}
+        />
+      </Box>
+      <ComposerDiscardButton
+        disabled={closeDisabled}
+        idle={!composerHasContent}
+        onDiscard={discardComposer}
+      />
+      {/* Kept mounted while there is nothing to send, so the rail CSS can
+          fade it in and out. Never `disabled`, as in the group composer: a
+          disabled button lets taps through the rail to the editor under it,
+          which would move the caret or raise the keyboard. */}
+      <IconButton
+        aria-disabled={sendDisabled || undefined}
+        aria-label={sendLabel}
+        className="compact-composer-send"
+        data-idle={composerHasContent ? undefined : ''}
+        disableRipple={sendDisabled}
+        onClick={() => {
+          if (sendDisabled) return;
+          void send();
+        }}
+        size="small"
+        sx={{
+          backgroundColor: sendDisabled
+            ? theme.palette.action.disabledBackground
+            : RETICULUM_BLUE,
+          borderRadius: '50%',
+          color: sendDisabled
+            ? sending
+              ? theme.palette.text.secondary
+              : theme.palette.action.disabled
+            : 'common.white',
+          cursor: sendDisabled ? 'default' : 'pointer',
+          flexShrink: 0,
+          height: COMPOSER_SEND_BUTTON_PX,
+          padding: 0,
+          pointerEvents: 'auto',
+          width: COMPOSER_SEND_BUTTON_PX,
+          '&:hover': {
+            backgroundColor: sendDisabled
+              ? theme.palette.action.disabledBackground
+              : '#1e40af',
+          },
+        }}
+      >
+        {sending ? (
+          <CircularProgress color="inherit" size={COMPOSER_SEND_ICON_PX - 2} />
+        ) : (
+          <SendRoundedIcon sx={{ fontSize: COMPOSER_SEND_ICON_PX }} />
+        )}
+      </IconButton>
+    </>
+  );
+
+  // Stops a tap on a chip's X from taking focus, and the soft keyboard with
+  // it, away from the reply being written.
+  const keepComposerFocus = (event: { preventDefault: () => void }) => {
+    event.preventDefault();
+  };
+
+  const composerEditor = (
+    <Tiptap
+      collapseFormattingTraySignal={formattingResetKey}
+      compactActions={isMobile ? renderCornerActions : undefined}
+      compactChat
+      disableEnter={!canWrite || loading || closeDisabled}
+      enableMentions
+      inOverlay
+      insertFiles={selectFiles}
+      insertGif={selectGif}
+      isChat
+      isFocusedParent={focused}
+      membersWithNames={membersWithNames}
+      mentionSuggestions={mentionSuggestions}
+      onContentUpdate={(nextEditor) => {
+        updateComposerSize(nextEditor);
+        onTypingChange(composerHasSendableText(nextEditor.getText()));
+      }}
+      onEnter={send}
+      placeholder={t('reticulum:discussion.reply_placeholder', {
+        postProcess: 'capitalizeFirstChar',
+      })}
+      setEditorRef={setEditor}
+      setIsFocusedParent={setFocused}
+    />
+  );
+
+  const sizeLip = (
+    <MessageSizeLimitLip
+      maximum={MAX_SIZE_MESSAGE}
+      shakeKey={messageSizeLimitShakeKey}
+      size={messageSize}
+      splitError={splitPlan.splitError}
+      splitParts={splitPlan.splitParts}
+    />
+  );
+
+  const preparingStatus = compressingGif ? (
+    <ReticulumGifCompressionStatus />
+  ) : preparingFile ? (
+    <Box sx={{ alignItems: 'center', display: 'flex', gap: 1, px: 0.5 }}>
+      <CircularProgress size={16} />
+      <Typography sx={{ color: 'text.secondary', fontSize: 12 }}>
+        {t('reticulum:discussion.preparing_attachment', {
+          postProcess: 'capitalizeFirstChar',
+        })}
+      </Typography>
+    </Box>
+  ) : null;
+
+  const fileThumbnail = (file: ReticulumDiscussionFile, sizePx: number) =>
+    file.previewUrl ? (
+      <Box
+        component="img"
+        src={file.previewUrl}
+        sx={{
+          borderRadius: '5px',
+          height: sizePx,
+          objectFit: 'cover',
+          width: sizePx,
+        }}
+      />
+    ) : file.isImage ? (
+      <ImageRoundedIcon sx={{ color: 'text.secondary' }} />
+    ) : (
+      <InsertDriveFileRoundedIcon sx={{ color: 'text.secondary' }} />
+    );
+
+  const fileNameLabel = (file: ReticulumDiscussionFile) => (
+    <Typography
+      sx={{
+        flex: 1,
+        fontSize: 12,
+        fontWeight: 600,
+        minWidth: 0,
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        whiteSpace: 'nowrap',
+      }}
+    >
+      {file.fileName}
+    </Typography>
+  );
+
+  const writeNotice = !canWrite && (
+    <Typography
+      sx={{
+        color: 'text.secondary',
+        fontSize: 11.5,
+        mt: 0.5,
+        pl: isMobile ? 1.5 : 0.5,
+      }}
+    >
+      {t('group:chat_group.admins_only_write', {
+        postProcess: 'capitalizeFirstChar',
+      })}
+    </Typography>
+  );
+
+  const sizeCounter = messageSize >= 3200 && (
+    <Typography
+      sx={{
+        color:
+          overSizeLimit && !sendableParts ? 'error.main' : 'text.secondary',
+        fontSize: 11,
+        mt: 0.5,
+        pl: isMobile ? 1.5 : 0.5,
+      }}
+    >
+      {t('reticulum:discussion.size_counter', {
+        maximum: MAX_SIZE_MESSAGE,
+        size: messageSize,
+      })}
+    </Typography>
+  );
 
   return (
     <Dialog
@@ -565,6 +814,10 @@ export const ReticulumDiscussionDialog = ({
           backgroundColor: 'rgba(3, 6, 12, 0.76)',
         },
       }}
+      // The phone composer's emoji and GIF picker opens outside the dialog;
+      // a focus trap would pull focus back from its search field (and the
+      // soft keyboard down with it) on every tap.
+      disableEnforceFocus={isMobile}
       fullScreen={isMobile}
       fullWidth
       maxWidth={false}
@@ -654,7 +907,9 @@ export const ReticulumDiscussionDialog = ({
                 lineHeight: isMobile ? '21px' : '30px',
               }}
             >
-              Discussion
+              {t('reticulum:discussion.title', {
+                postProcess: 'capitalizeFirstChar',
+              })}
             </Typography>
             <Typography
               sx={{
@@ -665,7 +920,7 @@ export const ReticulumDiscussionDialog = ({
                 mt: '2px',
               }}
             >
-              {replyCount} {replyCount === 1 ? 'reply' : 'replies'}
+              {t('group:message_item.reply_count', { count: replyCount })}
             </Typography>
           </Box>
         </Box>
@@ -680,8 +935,8 @@ export const ReticulumDiscussionDialog = ({
             backgroundColor: alpha(theme.palette.text.primary, 0.025),
             border: `1px solid ${alpha(theme.palette.text.primary, 0.14)}`,
             color: 'text.primary',
-            height: isMobile ? 34 : 40,
-            width: isMobile ? 34 : 40,
+            height: 40,
+            width: 40,
             '&:hover': {
               backgroundColor: alpha(theme.palette.text.primary, 0.07),
             },
@@ -710,7 +965,9 @@ export const ReticulumDiscussionDialog = ({
         ) : messages.length === 0 ? (
           <Box sx={{ display: 'grid', height: '100%', placeItems: 'center' }}>
             <Typography sx={{ color: 'text.secondary', fontSize: 14 }}>
-              This discussion is no longer available.
+              {t('reticulum:discussion.unavailable', {
+                postProcess: 'capitalizeFirstChar',
+              })}
             </Typography>
           </Box>
         ) : (
@@ -843,161 +1100,193 @@ export const ReticulumDiscussionDialog = ({
         )}
       </Box>
 
-      <Box
-        className="reticulum-discussion-composer"
-        sx={{
-          '--discussion-composer-field-bg':
-            theme.palette.mode === 'dark' ? '#131720' : '#ffffff',
-          '--discussion-composer-field-border': alpha(
-            theme.palette.text.primary,
-            0.16
-          ),
-          backgroundColor:
-            theme.palette.mode === 'dark'
-              ? 'rgba(15, 18, 25, 0.82)'
-              : 'rgba(247, 249, 252, 0.94)',
-          borderTop: '1px solid',
-          borderColor: 'divider',
-          p: isMobile ? '8px 10px' : '16px 18px',
-          ...(isMobile
-            ? { paddingBottom: `calc(8px + ${SAFE_AREA_BOTTOM})` }
-            : {}),
-        }}
-      >
-        <Box sx={{ mb: showSizeLip ? 1.25 : 0 }}>
-          <MessageSizeLimitLip
-            maximum={MAX_SIZE_MESSAGE}
-            shakeKey={messageSizeLimitShakeKey}
-            size={messageSize}
-            splitError={splitPlan.splitError}
-            splitParts={splitPlan.splitParts}
-          />
-        </Box>
-        {(files.length > 0 || preparingFile) && (
-          <Box
-            sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, mb: 1, px: 0.25 }}
-          >
-            {compressingGif ? (
-              <ReticulumGifCompressionStatus />
-            ) : preparingFile ? (
-              <Box
-                sx={{ alignItems: 'center', display: 'flex', gap: 1, px: 0.5 }}
-              >
-                <CircularProgress size={16} />
-                <Typography sx={{ color: 'text.secondary', fontSize: 12 }}>
-                  Preparing attachment…
-                </Typography>
-              </Box>
-            ) : null}
-            {files.map((file, index) => (
-              <Box
-                key={`${file.fileName}-${index}`}
-                sx={{
-                  alignItems: 'center',
-                  backgroundColor: alpha(
-                    theme.palette.background.default,
-                    0.72
-                  ),
-                  border: '1px solid',
-                  borderColor: 'divider',
-                  borderRadius: '8px',
-                  display: 'flex',
-                  gap: 1,
-                  maxWidth: 280,
-                  minHeight: 48,
-                  p: 0.75,
-                }}
-              >
-                {file.previewUrl ? (
-                  <Box
-                    component="img"
-                    src={file.previewUrl}
-                    sx={{
-                      borderRadius: '5px',
-                      height: 36,
-                      objectFit: 'cover',
-                      width: 36,
-                    }}
-                  />
-                ) : file.isImage ? (
-                  <ImageRoundedIcon sx={{ color: 'text.secondary' }} />
-                ) : (
-                  <InsertDriveFileRoundedIcon
-                    sx={{ color: 'text.secondary' }}
-                  />
-                )}
-                <Typography
-                  sx={{
-                    flex: 1,
-                    fontSize: 12,
-                    fontWeight: 600,
-                    minWidth: 0,
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    whiteSpace: 'nowrap',
-                  }}
-                >
-                  {file.fileName}
-                </Typography>
-                <Tooltip
-                  title={t('reticulum:discussion.remove_attachment', {
-                    postProcess: 'capitalizeFirstChar',
-                  })}
-                >
-                  <IconButton
-                    aria-label={t('reticulum:discussion.remove_file', {
-                      fileName: file.fileName,
-                      postProcess: 'capitalizeFirstChar',
-                    })}
-                    onClick={() => onRemoveFile(index)}
-                    size="small"
-                  >
-                    <CloseRoundedIcon sx={{ fontSize: 17 }} />
-                  </IconButton>
-                </Tooltip>
-              </Box>
-            ))}
-          </Box>
-        )}
-
+      {isMobile ? (
+        // Phones: the main group composer, as one full-width rounded field
+        // that holds the attachment chips, the text with + 😊 Aa on its left
+        // and expiry, X and send on its right, growing by its stages and then
+        // scrolling. The field is capped like the chat's composer bar, so the
+        // chips and the formatting tray take their rows out of the text's
+        // room rather than squeezing the thread away.
         <Box
+          className={`reticulum-discussion-composer reticulum-discussion-composer--corners reticulum-chat-text-scale--${textScale}`}
           sx={{
-            alignItems: 'center',
+            boxSizing: 'border-box',
             display: 'flex',
-            gap: isMobile ? 0.5 : 1,
-            minHeight: isMobile ? 40 : 44,
+            flexDirection: 'column',
+            flexShrink: 0,
+            padding: '6px 8px',
+            paddingBottom: `max(6px, ${SAFE_AREA_BOTTOM})`,
           }}
         >
-          {/* Without this the editor is just another flex item and the fixed
-              width controls beside it squeeze the typing area to nothing. */}
-          <Box sx={{ flex: 1, minWidth: 0 }}>
-          <Tiptap
-            collapseFormattingTraySignal={formattingResetKey}
-            compactChat
-            disableEnter={!canWrite || loading || closeDisabled}
-            enableMentions
-            inOverlay
-            insertFiles={selectFiles}
-            insertGif={selectGif}
-            isChat
-            isFocusedParent={focused}
-            membersWithNames={membersWithNames}
-            mentionSuggestions={mentionSuggestions}
-            onContentUpdate={(nextEditor) => {
-              updateComposerSize(nextEditor);
-              onTypingChange(composerHasSendableText(nextEditor.getText()));
-            }}
-            onEnter={send}
-            placeholder={t('reticulum:discussion.reply_placeholder', {
-              postProcess: 'capitalizeFirstChar',
-            })}
-            setEditorRef={setEditor}
-            setIsFocusedParent={setFocused}
-          />
+          <Box sx={{ flexShrink: 0, mb: showSizeLip ? '6px' : 0 }}>
+            {sizeLip}
           </Box>
-          {/* The tray already carries an emoji button on phones, and the row
-              has no width to spare. */}
-          {!isMobile && (
+          <Box
+            className="reticulum-discussion-composer__field"
+            sx={{
+              backgroundColor: alpha(theme.palette.text.primary, 0.06),
+              border: `1px solid ${theme.palette.divider}`,
+              borderRadius: '22px',
+              boxSizing: 'border-box',
+              display: 'flex',
+              flexDirection: 'column',
+              flexShrink: 0,
+              gap: '2px',
+              maxHeight: DISCUSSION_PHONE_FIELD_MAX_HEIGHT,
+              minWidth: 0,
+              overflow: 'hidden',
+              padding: '3px 5px',
+            }}
+          >
+            {(files.length > 0 || preparingFile) && (
+              <Box
+                className="reticulum-discussion-composer__attachments"
+                sx={{
+                  alignItems: 'center',
+                  display: 'flex',
+                  // Two rows of chips, more scroll. Short of height they give
+                  // way down to one row, and the typing row never does.
+                  flexShrink: files.length > 0 ? 1 : 0,
+                  flexWrap: 'wrap',
+                  gap: '6px',
+                  maxHeight: 108,
+                  minHeight:
+                    files.length > 0 ? DISCUSSION_PHONE_CHIP_ROW_PX : undefined,
+                  overflowY: 'auto',
+                  pt: '3px',
+                  px: '3px',
+                }}
+              >
+                {preparingStatus}
+                {files.map((file, index) => (
+                  <Box
+                    key={`${file.fileName}-${index}`}
+                    sx={{
+                      alignItems: 'center',
+                      border: '1px solid',
+                      borderColor: 'divider',
+                      borderRadius: '8px',
+                      boxSizing: 'border-box',
+                      display: 'flex',
+                      gap: 1,
+                      maxWidth: 'min(280px, 100%)',
+                      minHeight: 48,
+                      minWidth: 0,
+                      p: '3px 2px 3px 6px',
+                    }}
+                  >
+                    {fileThumbnail(file, 36)}
+                    {fileNameLabel(file)}
+                    <ComposerDismissButton
+                      desktopIcon={<CloseRoundedIcon sx={{ fontSize: 17 }} />}
+                      keepFocus={keepComposerFocus}
+                      label={t('reticulum:discussion.remove_file', {
+                        fileName: file.fileName,
+                        postProcess: 'capitalizeFirstChar',
+                      })}
+                      onClick={() => onRemoveFile(index)}
+                    />
+                  </Box>
+                ))}
+              </Box>
+            )}
+            {/* Keeps the formatting tray and the typing row at their own
+                height: TipTap's root may otherwise shrink, clipping them. */}
+            <Box
+              className="reticulum-discussion-composer__editor"
+              sx={{ flexShrink: 0, minWidth: 0 }}
+            >
+              {composerEditor}
+            </Box>
+          </Box>
+          {writeNotice}
+          {sizeCounter}
+        </Box>
+      ) : (
+        <Box
+          className="reticulum-discussion-composer"
+          sx={{
+            '--discussion-composer-field-bg':
+              theme.palette.mode === 'dark' ? '#131720' : '#ffffff',
+            '--discussion-composer-field-border': alpha(
+              theme.palette.text.primary,
+              0.16
+            ),
+            backgroundColor:
+              theme.palette.mode === 'dark'
+                ? 'rgba(15, 18, 25, 0.82)'
+                : 'rgba(247, 249, 252, 0.94)',
+            borderTop: '1px solid',
+            borderColor: 'divider',
+            p: '16px 18px',
+          }}
+        >
+          <Box sx={{ mb: showSizeLip ? 1.25 : 0 }}>{sizeLip}</Box>
+          {(files.length > 0 || preparingFile) && (
+            <Box
+              sx={{
+                display: 'flex',
+                flexWrap: 'wrap',
+                gap: 1,
+                mb: 1,
+                px: 0.25,
+              }}
+            >
+              {preparingStatus}
+              {files.map((file, index) => (
+                <Box
+                  key={`${file.fileName}-${index}`}
+                  sx={{
+                    alignItems: 'center',
+                    backgroundColor: alpha(
+                      theme.palette.background.default,
+                      0.72
+                    ),
+                    border: '1px solid',
+                    borderColor: 'divider',
+                    borderRadius: '8px',
+                    display: 'flex',
+                    gap: 1,
+                    maxWidth: 280,
+                    minHeight: 48,
+                    p: 0.75,
+                  }}
+                >
+                  {fileThumbnail(file, 36)}
+                  {fileNameLabel(file)}
+                  <Tooltip
+                    title={t('reticulum:discussion.remove_attachment', {
+                      postProcess: 'capitalizeFirstChar',
+                    })}
+                  >
+                    <IconButton
+                      aria-label={t('reticulum:discussion.remove_file', {
+                        fileName: file.fileName,
+                        postProcess: 'capitalizeFirstChar',
+                      })}
+                      onClick={() => onRemoveFile(index)}
+                      size="small"
+                    >
+                      <CloseRoundedIcon sx={{ fontSize: 17 }} />
+                    </IconButton>
+                  </Tooltip>
+                </Box>
+              ))}
+            </Box>
+          )}
+
+          <Box
+            sx={{
+              alignItems: 'center',
+              display: 'flex',
+              gap: 1,
+              minHeight: 44,
+            }}
+          >
+            {/* Without this the editor is just another flex item and the
+                fixed width controls beside it squeeze the typing area to
+                nothing. */}
+            <Box sx={{ flex: 1, minWidth: 0 }}>{composerEditor}</Box>
             <Tooltip
               title={t('reticulum:discussion.choose_emoji', {
                 postProcess: 'capitalizeFirstChar',
@@ -1023,89 +1312,66 @@ export const ReticulumDiscussionDialog = ({
                 />
               </Box>
             </Tooltip>
-          )}
-          <Box
-            sx={{
-              alignItems: 'stretch',
-              border: '1px solid',
-              borderColor: 'divider',
-              borderRadius: '10px',
-              display: 'inline-flex',
-              flexShrink: 0,
-              height: isMobile ? 34 : 38,
-              overflow: 'hidden',
-            }}
-          >
-            <ReticulumMessageExpiryButton
-              channelExpiryDurationMs={channelExpiryDurationMs}
-              disabled={loading || closeDisabled}
-              disabledReason={t('reticulum:discussion.wait_until_ready', {
-                postProcess: 'capitalizeFirstChar',
-              })}
-              onChange={setExpiryDurationMs}
-              onPreferredExpiryChange={onPreferredExpiryChange}
-              preferredExpiryDurationMs={preferredExpiryDurationMs}
-              segmented
-              value={expiryDurationMs}
-            />
-            <Button
-              disabled={sendDisabled}
-              onClick={() => void send()}
-              startIcon={
-                sending ? (
-                  <CircularProgress color="inherit" size={16} />
-                ) : (
-                  <SendRoundedIcon sx={{ fontSize: 18 }} />
-                )
-              }
+            <Box
               sx={{
-                backgroundColor: RETICULUM_BLUE,
-                borderRadius: 0,
-                color: 'common.white',
+                alignItems: 'stretch',
+                border: '1px solid',
+                borderColor: 'divider',
+                borderRadius: '10px',
+                display: 'inline-flex',
                 flexShrink: 0,
-                fontWeight: 650,
-                height: isMobile ? 34 : 38,
-                minWidth: isMobile ? 44 : 82,
-                px: isMobile ? '10px' : '14px',
-                textTransform: 'none',
-                '& .MuiButton-startIcon': isMobile
-                  ? { margin: 0 }
-                  : undefined,
-                '&:hover': { backgroundColor: '#1e40af' },
-                '&.Mui-focusVisible': {
-                  boxShadow: (theme) =>
-                    `inset 0 0 0 2px ${theme.palette.common.white}`,
-                },
+                height: 38,
+                overflow: 'hidden',
               }}
-              variant="contained"
             >
-              {isMobile ? '' : 'Send'}
-            </Button>
+              <ReticulumMessageExpiryButton
+                channelExpiryDurationMs={channelExpiryDurationMs}
+                disabled={loading || closeDisabled}
+                disabledReason={t('reticulum:discussion.wait_until_ready', {
+                  postProcess: 'capitalizeFirstChar',
+                })}
+                onChange={setExpiryDurationMs}
+                onPreferredExpiryChange={onPreferredExpiryChange}
+                preferredExpiryDurationMs={preferredExpiryDurationMs}
+                segmented
+                value={expiryDurationMs}
+              />
+              <Button
+                disabled={sendDisabled}
+                onClick={() => void send()}
+                startIcon={
+                  sending ? (
+                    <CircularProgress color="inherit" size={16} />
+                  ) : (
+                    <SendRoundedIcon sx={{ fontSize: 18 }} />
+                  )
+                }
+                sx={{
+                  backgroundColor: RETICULUM_BLUE,
+                  borderRadius: 0,
+                  color: 'common.white',
+                  flexShrink: 0,
+                  fontWeight: 650,
+                  height: 38,
+                  minWidth: 82,
+                  px: '14px',
+                  textTransform: 'none',
+                  '&:hover': { backgroundColor: '#1e40af' },
+                  '&.Mui-focusVisible': {
+                    boxShadow: (theme) =>
+                      `inset 0 0 0 2px ${theme.palette.common.white}`,
+                  },
+                }}
+                variant="contained"
+              >
+                {sendLabel}
+              </Button>
+            </Box>
           </Box>
+          {writeNotice}
+          {sizeCounter}
         </Box>
-        {!canWrite && (
-          <Typography
-            sx={{ color: 'text.secondary', fontSize: 11.5, mt: 0.5, pl: 0.5 }}
-          >
-            Only group admins can write in this channel.
-          </Typography>
-        )}
-        {messageSize >= 3200 && (
-          <Typography
-            sx={{
-              color:
-                overSizeLimit && !sendableParts
-                  ? 'error.main'
-                  : 'text.secondary',
-              fontSize: 11,
-              mt: 0.5,
-              pl: 0.5,
-            }}
-          >
-            {messageSize} / {MAX_SIZE_MESSAGE} bytes
-          </Typography>
-        )}
-      </Box>
+      )}
     </Dialog>
   );
 };

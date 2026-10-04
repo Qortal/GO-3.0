@@ -113,13 +113,14 @@
     "reload_page": "重新加载页面",
     "remove": "消除",
     "remove_reaction": "删除反应",
-    "reply": "reply",
+    "reply": "回复",
     "resize": "调整大小",
     "restore": "还原",
     "return": "返回",
     "return_apps_dashboard": "返回应用程序仪表板",
     "save": "节省",
     "save_disk": "保存到磁盘",
+    "scan_qr_code": "扫描二维码",
     "search": "搜索",
     "search_apps": "搜索应用程序",
     "search_apps_or_link": "搜索应用或输入 qortal:// 链接",
@@ -179,10 +180,47 @@
     "tags": "标签",
     "updated": "更新时间"
   },
+  "app_lock": {
+    "account_still_signed_in": "{{account}}仍处于登录状态。",
+    "connections_note": "锁定期间，聊天和进行中的通话保持连接。",
+    "fingerprint_cancelled": "已取消指纹解锁。",
+    "fingerprint_failed": "指纹解锁失败。请改为输入密码。",
+    "lock_now": "立即锁定",
+    "minimize_window": "最小化",
+    "or": "或",
+    "password_label": "Qortal账户密码",
+    "qapp_request_locked": "GO已锁定。请解锁后重试。",
+    "retry_wait_one": "请等待{{count}}秒后重试。",
+    "retry_wait_other": "请等待{{count}}秒后重试。",
+    "still_signed_in": "你仍处于登录状态。",
+    "tap_fingerprint": "轻触以使用指纹解锁",
+    "title": "Qortal Hub已锁定",
+    "unlock": "解锁",
+    "unlock_with_fingerprint": "使用指纹解锁",
+    "unlocking": "正在解锁…",
+    "waiting_for_fingerprint": "正在等待你的指纹…",
+    "wrong_password": "密码不正确。请重试。"
+  },
   "app_name": "应用名称",
   "app_other": "应用",
   "app_private": "私人的",
   "app_service_type": "应用服务类型",
+  "approval_dialog": {
+    "app_fee": "应用费用",
+    "decline_all_one": "拒绝此应用的{{count}}个请求",
+    "decline_all_other": "拒绝此应用的全部{{count}}个请求",
+    "fee": "费用",
+    "foreign_fee": "外部费用",
+    "internal_app": "Qortal GO（本应用）",
+    "more_waiting_one": "还有{{count}}个请求在等待",
+    "more_waiting_other": "还有{{count}}个请求在等待",
+    "qapp_request": "Q-App请求",
+    "requested_by": "请求方",
+    "session_only": "仅为本次会话授予权限",
+    "unknown_app": "未知的Q-App",
+    "unknown_app_hint": "GO无法确定是哪个Q-App发送了此请求。除非是你刚刚自己发起的，否则请拒绝。",
+    "what_you_approve": "你正在批准的内容"
+  },
   "apps_dashboard": "应用仪表板",
   "apps_official": "官方应用程序",
   "aria": {
@@ -210,11 +248,13 @@
       "off": "关闭"
     },
     "native": {
+      "battery_pause_text": "GO 在使用电池 6 小时后已暂停后台连接以节省电量。打开 GO 以重新连接。",
       "fgs_timeout_text": "Android 已暂停 GO 的后台连接。打开 GO 以重新连接。",
       "fgs_timeout_title": "GO 已暂停",
       "status_paused_text": "打开 GO 以同步你的聊天。",
       "status_paused_title": "聊天已暂停",
       "status_syncing_background": "正在后台同步聊天",
+      "status_waiting_short": "未发送：{{count}}",
       "status_waiting_text": "等待发送的消息：{{count}}"
     },
     "status": {
@@ -223,12 +263,57 @@
     },
     "title": "后台同步",
     "vendor_freeze": {
-      "body": "尽管已开启后台同步，您的{{manufacturer}}手机仍在后台停止了GO。请打开手机中GO的电池设置，并允许后台活动。",
-      "body_unknown": "尽管已开启后台同步，您的手机仍在后台停止了GO。请打开手机中GO的电池设置，并允许后台活动。",
+      "allow_in_background": "允许GO在后台运行",
       "dismiss": "关闭",
-      "guide": "分步指南（dontkillmyapp.com）",
+      "dont_show_again": "不再显示",
+      "exempt_body": "GO的电池限制已经关闭，但你的{{manufacturer}}手机仍会在熄屏时停止它。亮屏时后台同步可以正常工作；打开GO后聊天会自动补上。",
+      "exempt_body_unknown": "GO的电池限制已经关闭，但你的手机仍会在熄屏时停止它。亮屏时后台同步可以正常工作；打开GO后聊天会自动补上。",
+      "impact": "直到你重新打开GO，聊天才补上。",
+      "last_stopped": "上次停止：{{time}}",
       "open_battery_settings": "打开电池设置",
-      "title": "GO在后台被停止"
+      "open_failed": "无法打开设置。请按照下面的步骤在手机的“设置”应用中操作。",
+      "steps": {
+        "generic": {
+          "step_1": "打开设置 > 应用 > GO > “应用的电池用量”（或“电池”）。",
+          "step_2": "选择“不受限制”（或开启“允许后台使用”）。"
+        },
+        "huawei": {
+          "step_1": "打开设置 > 电池 > “应用启动管理”。",
+          "step_2": "找到GO，关闭“自动管理”。",
+          "step_3": "开启“允许自启动”、“允许关联启动”和“允许后台活动”。"
+        },
+        "note_menu_names": "不同手机型号和Android版本的菜单名称可能略有不同。",
+        "note_recents": "不要在最近任务中划掉GO。",
+        "oppo": {
+          "step_1": "打开设置 > 应用 > “应用管理” > GO。",
+          "step_2": "点按“耗电管理”，开启“允许后台行为”（如有“允许自启动”，也一并开启）。"
+        },
+        "samsung": {
+          "step_1": "打开设置 > 应用程序 > GO > 电池，选择“不受限制”。",
+          "step_2": "在设置 > 电池 > “后台使用限制”中，确保GO不在“休眠应用程序”或“深度休眠应用程序”中。"
+        },
+        "vivo": {
+          "step_1": "打开设置 > 电池 > “后台耗电管理”。",
+          "step_2": "找到GO，选择“允许”（或“不限制”）。",
+          "step_3": "如果手机上有设置 > 应用 > “自启动”，请在其中开启GO。"
+        },
+        "xiaomi": {
+          "step_1": "打开设置 > 应用设置 > “应用管理” > GO。",
+          "step_2": "开启“自启动”。",
+          "step_3": "点按“省电策略”，选择“无限制”。"
+        }
+      },
+      "steps_toggle": "如何在{{brand}}上允许",
+      "steps_toggle_generic": "如何在你的手机上允许",
+      "summary_one": "开启后台同步期间，你的{{manufacturer}}手机在过去7天内将GO停止了{{count}}次。",
+      "summary_other": "开启后台同步期间，你的{{manufacturer}}手机在过去7天内将GO停止了{{count}}次。",
+      "summary_recent": "开启后台同步期间，你的{{manufacturer}}手机在后台停止了GO。",
+      "summary_recent_unknown": "开启后台同步期间，你的手机在后台停止了GO。",
+      "summary_unknown_one": "开启后台同步期间，你的手机在过去7天内将GO停止了{{count}}次。",
+      "summary_unknown_other": "开启后台同步期间，你的手机在过去7天内将GO停止了{{count}}次。",
+      "title": "GO在后台被停止",
+      "warnings_off": "通知中关于此问题的警告已关闭。",
+      "warnings_on": "重新开启警告"
     }
   },
   "balance": "平衡：",
@@ -377,6 +462,16 @@
   "close_quit_completely": "完全退出",
   "close_window_behavior": "关闭窗口时",
   "comment_other": "评论",
+  "composer": {
+    "attachment_count_one": "{{count}} 个附件",
+    "attachment_count_other": "{{count}} 个附件",
+    "emoji": "表情",
+    "expand": "展开",
+    "keyboard": "键盘",
+    "shrink": "收起",
+    "title": "撰写消息",
+    "write_message": "写消息"
+  },
   "contact_other": "联系人",
   "core": {
     "block_height": "块高度",
@@ -437,28 +532,38 @@
   },
   "file_transfer": {
     "dismiss": "关闭",
+    "downloaded": "已下载",
     "downloading_title": "正在下载{{filename}}",
     "failed_title": "下载失败",
     "fetching_title": "正在获取{{filename}}",
+    "file_transfer_fallback": "文件传输",
     "gathering": "正在从QDN收集 · {{percent}}%",
     "gathering_chunks": "正在从QDN收集 · {{percent}}% · {{local}}/{{total}}个分块",
     "gathering_unknown": "正在从QDN收集…",
     "hide": "隐藏（在通知中继续）",
-    "install": "安装",
     "looking_for_file": "正在QDN上查找文件…",
     "not_saved_title": "{{filename}}未保存",
     "not_saved_tray": "文件仍已下载。打开GO的通知即可保存。",
+    "offer_expired": "已过期",
     "open": "打开",
     "open_failed": "此手机上没有可以打开此文件的应用",
+    "package_not_opened": "GO不会打开或安装应用安装包。要更新GO，请使用账户菜单中的“GO 3.0 更新”。",
+    "package_saved": "已保存到{{location}}。GO不会打开应用安装包。",
     "progress": "{{percent}}%・{{size}}",
-    "ready_to_install": "可以安装 · {{location}}",
     "ready_to_open": "可以打开 · {{location}}",
+    "received_file_gone": "此文件已不在本设备上。GO会在你退出登录时删除收到的文件；请让发送者重新发送。",
+    "received_file_removed": "已不在本设备上",
+    "received_in_downloads": "此文件已在你的“下载”文件夹中。",
+    "received_notification_text": "{{fileName}}已可在GO中打开",
+    "received_notification_title": "已收到文件",
+    "received_private_hint": "在你退出登录前私密保存在GO中",
     "remove": "从列表中移除",
     "save": "保存",
     "save_error": "保存文件出错：{{message}}",
     "save_error_generic": "保存文件出错",
     "save_stalled": "保存已停滞：存储无响应",
     "save_success": "文件已保存",
+    "save_to_device": "保存到设备",
     "saved_title": "{{filename}}已保存",
     "saved_to": "已保存到{{location}}",
     "saving_file": "正在保存文件…",
@@ -469,7 +574,6 @@
     "stage_gathering": "正在从QDN收集",
     "stage_saving": "正在保存到手机",
     "storage_permission": "GO需要存储权限才能将文件保存到Documents。",
-    "tap_to_install": "点按安装 · {{location}}",
     "tap_to_open": "点按打开 · {{location}}"
   },
   "filter": {
@@ -496,7 +600,12 @@
     "checking": "正在检查 QDN…",
     "error": {
       "fetch_failed": "无法获取该版本",
-      "timeout": "网络未能及时传送该版本"
+      "insecure_node": "此节点使用未加密的 HTTP，因此 GO 不会从它下载更新。更新只通过 HTTPS 或来自本机上的节点。请切换到 HTTPS 节点后再更新。",
+      "not_go_build": "此文件不是 Qortal GO 的版本，因此未安装。",
+      "not_newer": "此版本并不比本机上的 GO 更新，因此未安装。",
+      "timeout": "网络未能及时传送该版本",
+      "unreadable": "Android 无法将此文件识别为应用，因此未安装。",
+      "wrong_signer": "此版本与本机上的 GO 使用的签名密钥不同，因此未安装。"
     },
     "hide_changes": "隐藏更改",
     "install": "安装",
@@ -541,7 +650,8 @@
     "title": "GO 3.0 更新",
     "update_marker": "GO 3.0 有更新可用",
     "versions_missing": "部分版本暂时无法加载（{{count}} 个）。请稍后再检查。",
-    "versions_title": "QDN 上的版本"
+    "versions_title": "QDN 上的版本",
+    "versions_unreachable": "无法连接 QDN。请检查节点连接后重试。"
   },
   "group_call": "群组通话",
   "group_call_blocked": "请先结束你的另一个通话",
@@ -623,6 +733,7 @@
       "invalid_zip": "无效拉链",
       "long_message_too_many_parts": "此消息太长，即使拆分为 {{maximum}} 条消息也无法发送。",
       "long_message_unsplittable": "此消息的某一部分无法拆分到足以发送的大小。",
+      "max_tabs_reached": "已达到标签页数量上限。请先关闭一个再打开新的。",
       "message_loading": "错误加载消息。",
       "message_size": "消息大小为 {{ size }} 字节，最大 {{ maximum }} 字节",
       "minting_account_add": "无法添加薄荷帐户",
@@ -639,6 +750,7 @@
       "same_foreign_blockchain": "该地址不属于同一条外部区块链",
       "save_qdn": "无法保存到QDN",
       "send_failed": "未能发送",
+      "unrecognized_qr": "此二维码不是Qortal付款码。",
       "update_failed": "无法更新",
       "vote": "无法投票"
     },
@@ -742,6 +854,7 @@
       "revert_qdn": "还原为QDN",
       "revoke_permission": "撤销",
       "save_qdn": "保存到QDN",
+      "saving": "正在保存…",
       "secure_ownership": "确保按您的名字发布的数据所有权。您甚至可以将数据以及数据出售给第三方。",
       "select_file": "请选择一个文件",
       "select_image": "请选择徽标的图像",
@@ -772,7 +885,8 @@
       "register_name": "您想注册这个名字吗？",
       "reset_pinned": "不喜欢您当前的本地更改吗？您想重置默认的固定应用吗？",
       "reset_qdn": "不喜欢您当前的本地更改吗？您想重置保存的QDN固定应用吗？",
-      "transfer_qort": "要转账 {{ amount }} QORT 吗"
+      "transfer_qort": "要转账 {{ amount }} QORT 吗",
+      "transfer_qort_to": "要向 {{ recipient }} 转账 {{ amount }} QORT 吗？"
     },
     "success": {
       "order_submitted": "您的买入订单已提交",
@@ -999,15 +1113,15 @@
     "wallets": "钱包"
   },
   "quitter_feed": {
-    "empty_message_no_following": "浏览 Quitter 并关注账号以构建你的动态。",
+    "empty_message_no_following": "浏览 {{app}} 并关注账号以构建你的动态。",
     "empty_message_no_name": "使用 Qortal 名称登录以建立个性化动态。",
-    "empty_message_no_posts": "你关注的账号尚未在 Quitter 发帖。",
+    "empty_message_no_posts": "你关注的账号尚未在 {{app}} 发帖。",
     "empty_title_general": "暂无帖子",
     "empty_title_no_following": "你似乎还没有关注任何人。",
     "empty_title_no_name": "登录以个性化你的动态",
     "empty_title_no_posts": "暂无已关注账号的帖子",
-    "error_following": "个性化 Quitter 动态暂时不可用。请重试。",
-    "error_generic": "公开 Quitter 动态暂时不可用。请稍后再试。",
+    "error_following": "个性化 {{app}} 动态暂时不可用。请重试。",
+    "error_generic": "公开 {{app}} 动态暂时不可用。请稍后再试。",
     "error_timeout": "动态加载失败。你可以重试或返回「综合」。",
     "error_title_following": "动态加载失败",
     "error_title_general": "无法加载帖子",

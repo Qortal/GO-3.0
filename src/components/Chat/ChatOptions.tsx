@@ -28,7 +28,7 @@ import {
   AppsSearchRight,
 } from '../Apps/Apps-styles';
 import IconClearInput from '../../assets/svgs/ClearInput.svg';
-import { getBaseApiReact } from '../../App';
+import { useQdnAvatar } from '../../lib/qdnAvatars';
 import { MessageDisplay } from './MessageDisplay';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { formatTimestamp } from '../../utils/time';
@@ -543,7 +543,7 @@ export const ChatOptions = ({
                       .getVirtualItems()
                       .map((virtualRow) => {
                         const index = virtualRow.index;
-                        let message = mentionList[index];
+                        const message = mentionList[index];
                         return (
                           <div
                             data-index={virtualRow.index} //needed for dynamic row height measurement
@@ -821,7 +821,7 @@ export const ChatOptions = ({
                   >
                     {rowVirtualizer.getVirtualItems().map((virtualRow) => {
                       const index = virtualRow.index;
-                      let message = searchedList[index];
+                      const message = searchedList[index];
                       return (
                         <div
                           data-index={virtualRow.index} //needed for dynamic row height measurement
@@ -1067,6 +1067,7 @@ export const ChatOptions = ({
 
 const ShowMessage = ({ message, goToMessage, messages, onSelect }) => {
   const theme = useTheme();
+  const { src: senderAvatarSrc } = useQdnAvatar(message?.senderName);
 
   return (
     <Box
@@ -1101,9 +1102,7 @@ const ShowMessage = ({ message, goToMessage, messages, onSelect }) => {
               width: '25px',
             }}
             alt={message?.senderName}
-            src={`${getBaseApiReact()}/arbitrary/THUMBNAIL/${
-              message?.senderName
-            }/qortal_avatar?async=true`}
+            src={senderAvatarSrc}
           >
             {message?.senderName?.charAt(0)}
           </Avatar>

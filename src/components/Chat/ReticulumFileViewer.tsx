@@ -43,7 +43,13 @@ import {
   SAFE_AREA_TOP,
 } from '../../utils/mobileSafeArea';
 import { openHttpUrlExternally } from '../../utils/openExternalHttp';
+import {
+  isPackageOpenRefusal,
+  isRefusedForOpen,
+} from '../../utils/nativeFileOpen';
+import { cleanFileName } from '../../utils/receivedFileName';
 import { QortinoZoomableBox } from '../Group/QortinoAgent/QortinoZoomableBox';
+import { FileNameWithExtension } from './FileNameWithExtension';
 import {
   classifyFilePreview,
   decodeTextPreview,
@@ -144,9 +150,11 @@ export const ReticulumFileViewer = () => {
       const blob = await response.blob();
       if (generation !== generationRef.current) return;
 
+      // The sender picks the name; it is shown and saved without bidi or
+      // other invisible characters (N-27).
       const name =
-        next.fileName?.trim() ||
-        manifest?.fileName?.trim() ||
+        cleanFileName(next.fileName) ||
+        cleanFileName(manifest?.fileName) ||
         t('reticulum:file_viewer.file');
       // The WebView types every untyped blob as text/plain on fetch, so that
       // value says nothing; the extension or the bytes decide instead.
@@ -262,15 +270,23 @@ export const ReticulumFileViewer = () => {
       try {
         if (action === 'save') {
           if (isNative) {
-            const { mobileSaveLocationLabelFor, saveBlobToMobileDocuments } =
+            const { describeMobileSave, saveBlobToMobileDocuments } =
               await import('../../utils/mobileFileSave');
-            await saveBlobToMobileDocuments(current.name, current.blob);
+            const saved = await saveBlobToMobileDocuments(
+              current.name,
+              current.blob
+            );
+            // The folder and name the save really used: the blob's type
+            // (what the save was given) picks the folder, and a page (HTML,
+            // SVG...) is saved as .txt.
+            const { folder, name } = describeMobileSave(
+              saved,
+              current.name,
+              current.blob.type
+            );
             setToast(
               t('reticulum:file_viewer.saved_to', {
-                location: `${mobileSaveLocationLabelFor(
-                  current.name,
-                  current.mimeType
-                )}/${current.name}`,
+                location: `${folder}/${name}`,
                 postProcess: 'capitalizeFirstChar',
               })
             );
@@ -308,6 +324,10 @@ export const ReticulumFileViewer = () => {
         }
       } catch (error) {
         console.error(`[FileViewer] ${action} failed:`, error);
+        if (isPackageOpenRefusal(error)) {
+          setToast(t('core:file_transfer.package_not_opened'));
+          return;
+        }
         setToast(
           t(
             action === 'save'
@@ -359,7 +379,9 @@ export const ReticulumFileViewer = () => {
   if (!isOpen) return null;
 
   const displayName =
-    file?.name || request?.fileName?.trim() || t('reticulum:file_viewer.file');
+    file?.name ||
+    cleanFileName(request?.fileName) ||
+    t('reticulum:file_viewer.file');
   const displaySize = file?.size ?? request?.fileSize ?? 0;
   const extension = fileExtension(displayName).toUpperCase();
   const metaLine = [
@@ -369,6 +391,13 @@ export const ReticulumFileViewer = () => {
     .filter(Boolean)
     .join(' · ');
   const actionsDisabled = status !== 'ready' || !file || busyAction !== null;
+  // App packages are never handed to another app: only GO's own updater
+  // installs. Save still works.
+  const canOpenWith =
+    isNative &&
+    !(
+      file && isRefusedForOpen({ fileName: file.name, mimeType: file.mimeType })
+    );
   const showNoPreviewCard =
     file &&
     (file.kind === 'other' ||
@@ -484,7 +513,7 @@ export const ReticulumFileViewer = () => {
                     postProcess: 'capitalizeFirstChar',
                   })}
             </Typography>
-            {isNative && (
+            {canOpenWith && (
               <Button
                 fullWidth
                 variant="contained"
@@ -800,8 +829,11 @@ export const ReticulumFileViewer = () => {
           </IconButton>
         </Tooltip>
         <Box sx={{ flex: 1, minWidth: 0, px: 0.5 }}>
-          <Typography noWrap sx={{ fontSize: '0.95rem', fontWeight: 700 }}>
-            {displayName}
+          <Typography
+            component="div"
+            sx={{ fontSize: '0.95rem', fontWeight: 700 }}
+          >
+            <FileNameWithExtension name={displayName} fallback={displayName} />
           </Typography>
           {metaLine && (
             <Typography
@@ -868,7 +900,7 @@ export const ReticulumFileViewer = () => {
             </IconButton>
           </span>
         </Tooltip>
-        {isNative && (
+        {canOpenWith && (
           <Tooltip title={openWithLabel}>
             <span>
               <IconButton

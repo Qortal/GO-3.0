@@ -52,9 +52,9 @@ i18n.init({
           featured_q_chat_subtitle:
             'Your conversations, your groups, your network.\nPowered by Reticulum\nValidated on Qortal Blockchain',
           featured_q_tube_eyebrow: 'Always on',
-          featured_q_tube_keyword_cat_videos: 'cat. videos.',
-          featured_q_tube_keyword_decentralized: 'decentralized.',
-          featured_q_tube_keyword_platform: 'platform.',
+          featured_q_tube_keyword_share: 'share.',
+          featured_q_tube_keyword_watch: 'watch.',
+          featured_q_tube_keyword_own: 'own it.',
           featured_q_tube_subtitle:
             'Network-hosted video drops, weird clips, and creator rabbit holes.',
           open_q_app: 'Open Q-App',
@@ -77,6 +77,8 @@ import {
   HUB_ONBOARDING_QCHAT_CARD_LOCK_ATTRIBUTE,
   HUB_ONBOARDING_QCHAT_CARD_LOCK_EVENT,
 } from '../../Onboarding/hubOnboarding';
+import { getDefaultStore } from 'jotai';
+import { composerTargetAtom } from '../../Widgets/quitter/composerTarget';
 
 const FEATURED_APP_NAMES = [
   'Q-Tube',
@@ -113,10 +115,12 @@ describe('HomeFeaturedApps', () => {
     window.localStorage.clear();
     window.sessionStorage.clear();
     document.body.removeAttribute(HUB_ONBOARDING_QCHAT_CARD_LOCK_ATTRIBUTE);
+    getDefaultStore().set(composerTargetAtom, 'quitter');
   });
 
   afterEach(() => {
     vi.useRealTimers();
+    vi.unstubAllGlobals();
   });
 
   it('renders the section title', () => {
@@ -130,6 +134,19 @@ describe('HomeFeaturedApps', () => {
       expect(screen.getAllByText(appName).length).toBeGreaterThan(0);
     }
     expect(screen.queryByText('Q-Blog')).not.toBeInTheDocument();
+  });
+
+  it('shows Torq in place of Quitter when the composer posts to Torq', () => {
+    getDefaultStore().set(composerTargetAtom, 'torq');
+    renderComponent();
+    expect(screen.getByRole('button', { name: 'Torq' })).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Quitter' })
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Torq' }));
+    expect(mockExecuteEvent).toHaveBeenCalledWith('addTab', {
+      data: { service: 'APP', name: 'Torq' },
+    });
   });
 
   it('renders a clickable tile for each featured app', () => {
@@ -151,6 +168,11 @@ describe('HomeFeaturedApps', () => {
   });
 
   it('opens Q-Chat as a Hub-owned internal tab', () => {
+    // jsdom has no matchMedia; a desktop-width viewport keeps the tab path.
+    vi.stubGlobal(
+      'matchMedia',
+      vi.fn(() => ({ matches: false }) as unknown as MediaQueryList)
+    );
     renderComponent();
     fireEvent.click(screen.getByRole('button', { name: 'Q-Chat' }));
 
@@ -243,5 +265,41 @@ describe('HomeFeaturedApps', () => {
     });
 
     expect(screen.getByText('Featured Q-Apps')).toBeInTheDocument();
+  });
+
+  it('shows a tile tagline only when it fits beside the icon', () => {
+    // jsdom has no layout: give the Q-Tube tagline a slot narrower than its
+    // text, and the Q-Chat one enough room.
+    const rect = (width: number) =>
+      ({
+        width,
+        height: 0,
+        top: 0,
+        left: 0,
+        right: width,
+        bottom: 0,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      }) as DOMRect;
+    const spy = vi
+      .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+      .mockImplementation(function (this: HTMLElement) {
+        const text = this.textContent || '';
+        const isTagline = this.getAttribute('aria-hidden') === 'true';
+        if (text.startsWith('watch.')) return rect(isTagline ? 40 : 52);
+        if (text.startsWith('talk.')) return rect(isTagline ? 80 : 65);
+        return rect(0);
+      });
+    try {
+      renderComponent();
+
+      const tagline = (first: string) =>
+        screen.getByText(first).closest('[aria-hidden="true"]') as HTMLElement;
+      expect(tagline('watch.')).toHaveStyle({ visibility: 'hidden' });
+      expect(tagline('talk.')).toHaveStyle({ visibility: 'visible' });
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

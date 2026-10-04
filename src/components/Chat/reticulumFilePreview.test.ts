@@ -110,6 +110,12 @@ describe('mime helpers', () => {
     expect(mimeTypeForExternalOpen('a.pdf')).toBe('application/pdf');
   });
 
+  // N-31: GO never builds the package installer's type for a chat file.
+  it('never gives an .apk the package installer type', () => {
+    expect(resolveFileMimeType('GO.apk', '')).toBe('application/octet-stream');
+    expect(mimeTypeForExternalOpen('GO.apk')).not.toContain('package-archive');
+  });
+
   it('reads extensions from paths and well-known bare names', () => {
     expect(fileExtension('dir/Report.Final.MD')).toBe('md');
     expect(fileExtension('Dockerfile')).toBe('dockerfile');

@@ -29,6 +29,10 @@ import java.util.concurrent.Executors;
  * desktop the browser shows a save dialog; inside the Android WebView nothing
  * happens unless a DownloadListener is registered. This one streams the bytes
  * into Documents/Qortal Go (same place as `qortalRequest SAVE_FILE`).
+ *
+ * The page picks the name and type and there is no prompt, so names lose
+ * bidi/control characters and web pages, SVG and XML are saved as ".txt"
+ * plain text ({@link SavedFilePolicy}).
  */
 public class QortalDownloadListener implements DownloadListener {
 
@@ -55,7 +59,14 @@ public class QortalDownloadListener implements DownloadListener {
             return;
         }
 
-        final String filename = DocumentSaver.safeName(resolveFilename(url, contentDisposition, mimetype));
+        // The name the file is saved under, so the toast names the real file:
+        // cleaned, and ".txt" added to web pages, SVG and XML (GO-01). The
+        // name does not depend on the type, so the save below keeps it.
+        final String filename = SavedFilePolicy.forSave(
+            resolveFilename(url, contentDisposition, mimetype),
+            mimetype,
+            DocumentSaver.EXTENSION_TYPES
+        ).name;
         final String mime = mimetype;
 
         if (url.startsWith("data:")) {
@@ -69,10 +80,10 @@ public class QortalDownloadListener implements DownloadListener {
             // can't be read from native. Apps should route saves through
             // qortalRequest SAVE_FILE or an /arbitrary/…?attachment=true URL on
             // mobile instead.
-            Log.w(TAG, "Unsupported blob download: " + url);
+            Log.w(TAG, "Unsupported blob download: " + SecretRedaction.stripQuery(url));
             toast("Couldn't save this file on mobile");
         } else {
-            Log.w(TAG, "Unsupported download scheme: " + url);
+            Log.w(TAG, "Unsupported download scheme: " + SecretRedaction.stripQuery(url));
             toast("Couldn't save this file");
         }
     }
@@ -80,35 +91,44 @@ public class QortalDownloadListener implements DownloadListener {
     private void saveHttp(String url, String userAgent, String filename, String mimeHint) {
         HttpURLConnection conn = null;
         try {
-            conn = (HttpURLConnection) new URL(url).openConnection();
-            conn.setInstanceFollowRedirects(true);
-            conn.setConnectTimeout(30_000);
-            conn.setReadTimeout(60_000);
-            if (userAgent != null && !userAgent.isEmpty()) {
-                conn.setRequestProperty("User-Agent", userAgent);
-            }
-            String cookie = CookieManager.getInstance().getCookie(url);
-            if (cookie != null && !cookie.isEmpty()) {
-                conn.setRequestProperty("Cookie", cookie);
-            }
-            conn.connect();
+            // Redirects are followed hop by hop, each routed by LocalHttp
+            // (direct for the phone's own addresses), so a web link that
+            // redirects to the node reaches it, as in the WebView.
+            conn = LocalHttp.openFollowingRedirects(new URL(url), LocalHttp.MAX_REDIRECTS, (hop, hopUrl) -> {
+                hop.setConnectTimeout(30_000);
+                hop.setReadTimeout(60_000);
+                if (userAgent != null && !userAgent.isEmpty()) {
+                    hop.setRequestProperty("User-Agent", userAgent);
+                }
+                // Each hop gets its own address's cookies, never the first one's.
+                String cookie = CookieManager.getInstance().getCookie(hopUrl);
+                if (cookie != null && !cookie.isEmpty()) {
+                    hop.setRequestProperty("Cookie", cookie);
+                }
+            });
 
             int code = conn.getResponseCode();
             if (code < 200 || code >= 300) {
-                Log.w(TAG, "Download HTTP " + code + " for " + url);
+                Log.w(TAG, "Download HTTP " + code + " for " + SecretRedaction.stripQuery(url));
                 toast("Download failed (" + code + ")");
                 return;
             }
 
             String mime = !TextUtils.isEmpty(mimeHint) ? mimeHint : conn.getContentType();
-            String folder = SaveCategory.folderFor(FOLDER, filename, mime);
+            // Web pages, SVG and XML are saved as plain text (GO-01).
+            SavedFilePolicy.Target target =
+                SavedFilePolicy.forSave(filename, mime, DocumentSaver.EXTENSION_TYPES);
+            String folder = SaveCategory.folderFor(FOLDER, target.name, target.mime);
             try (InputStream in = conn.getInputStream()) {
-                DocumentSaver.saveStream(getContext(), folder, filename, mime, in);
+                DocumentSaver.saveStream(getContext(), folder, target.name, target.mime, in);
             }
             toast("Saved to Documents/" + folder);
         } catch (Exception e) {
-            Log.e(TAG, "Failed HTTP download " + url, e);
-            toast("Couldn't save file: " + e.getMessage());
+            // The URL's query (and an exception that repeats it) can carry
+            // the node API key: logcat and the toast get neither.
+            Log.e(TAG, "Failed HTTP download " + SecretRedaction.stripQuery(url)
+                + ": " + SecretRedaction.redactText(String.valueOf(e)));
+            toast("Couldn't save file: " + SecretRedaction.redactText(e.getMessage()));
         } finally {
             if (conn != null) {
                 conn.disconnect();
@@ -137,9 +157,12 @@ public class QortalDownloadListener implements DownloadListener {
             } else {
                 bytes = Uri.decode(data).getBytes("UTF-8");
             }
-            String folder = SaveCategory.folderFor(FOLDER, filename, mime);
+            // Web pages, SVG and XML are saved as plain text (GO-01).
+            SavedFilePolicy.Target target =
+                SavedFilePolicy.forSave(filename, mime, DocumentSaver.EXTENSION_TYPES);
+            String folder = SaveCategory.folderFor(FOLDER, target.name, target.mime);
             try (InputStream in = new ByteArrayInputStream(bytes)) {
-                DocumentSaver.saveStream(getContext(), folder, filename, mime, in);
+                DocumentSaver.saveStream(getContext(), folder, target.name, target.mime, in);
             }
             toast("Saved to Documents/" + folder);
         } catch (Exception e) {

@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+} from 'react';
 import {
   Box,
   ButtonBase,
@@ -22,7 +29,11 @@ import { useTranslation } from 'react-i18next';
 import { AuthButton, authPasswordFieldSx } from './AuthShell';
 import { PasswordField } from '../index';
 import { getWallets } from '../../background/background.ts';
-import { getPrimaryNamesForAddresses } from '../Group/groupApi';
+import { getWalletAvatarCacheEntries } from '../../utils/walletAvatarCache';
+import {
+  getCachedWalletPrimaryNames,
+  primaryNamesFromAvatarCache,
+} from '../../utils/walletPrimaryNameCache';
 import { mobileLoginSettingsWalletsAtom } from '../../atoms/global';
 import { isCapacitor } from '../../utils/platform';
 import {
@@ -54,7 +65,8 @@ type MobileLoginSettingsModalProps = {
 };
 
 const AUTH_STARTUP_AUDIO_DISABLED_STORAGE_KEY = 'hub_startup_audio_disabled';
-const STARTUP_SOUND_PREFERENCE_EVENT = 'qortal-startup-sound-preference-changed';
+const STARTUP_SOUND_PREFERENCE_EVENT =
+  'qortal-startup-sound-preference-changed';
 
 const shortenAddress = (address?: string) => {
   if (!address) return '';
@@ -145,9 +157,7 @@ export function MobileLoginSettingsModal({
     if (rawWallet?.address0?.trim() === trimmed) {
       return rawWallet;
     }
-    return (
-      walletList.find((w) => w.address0?.trim() === trimmed) ?? null
-    );
+    return walletList.find((w) => w.address0?.trim() === trimmed) ?? null;
   }, [rawWallet, walletList, selectedAddress]);
 
   const refreshBiometricState = useCallback(async () => {
@@ -184,10 +194,7 @@ export function MobileLoginSettingsModal({
     setSelectedAddress((prev) => {
       const prevTrimmed = prev.trim();
       if (preferred) return preferred;
-      if (
-        prevTrimmed &&
-        list.some((w) => w.address0?.trim() === prevTrimmed)
-      ) {
+      if (prevTrimmed && list.some((w) => w.address0?.trim() === prevTrimmed)) {
         return prevTrimmed;
       }
       return '';
@@ -199,7 +206,8 @@ export function MobileLoginSettingsModal({
     setSelectedAddress((prev) => {
       if (prev && walletsProp.some((w) => w.address0 === prev)) return prev;
       if (walletAddress?.trim()) return walletAddress.trim();
-      if (walletsProp.length === 1) return walletsProp[0]?.address0?.trim() || '';
+      if (walletsProp.length === 1)
+        return walletsProp[0]?.address0?.trim() || '';
       return prev;
     });
   }, [open, walletAddress, walletsProp]);
@@ -238,15 +246,22 @@ export function MobileLoginSettingsModal({
 
     let canceled = false;
 
-    getPrimaryNamesForAddresses(addresses)
-      .then((namesByAddress) => {
-        if (!canceled) {
-          setPrimaryNamesByAddress(namesByAddress);
-        }
-      })
-      .catch((error) => {
-        console.error('Unable to fetch wallet primary names:', error);
-      });
+    // Names saved on this device only, as on the account picker: one request
+    // listing every saved wallet would tell the node which wallets share
+    // this phone.
+    void Promise.all([
+      getWalletAvatarCacheEntries().catch(() => ({})),
+      getCachedWalletPrimaryNames(addresses).catch(
+        () => ({}) as Record<string, string>
+      ),
+    ]).then(([avatarsByAddress, cachedNames]) => {
+      if (!canceled) {
+        setPrimaryNamesByAddress({
+          ...primaryNamesFromAvatarCache(avatarsByAddress, addresses),
+          ...cachedNames,
+        });
+      }
+    });
 
     return () => {
       canceled = true;
@@ -328,24 +343,32 @@ export function MobileLoginSettingsModal({
     if (!selectedAddress) return;
     const password = setupPassword.trim();
     if (!password) {
-      setBiometricError(t('auth:mobile_login_settings.biometric_confirm_password'));
+      setBiometricError(
+        t('auth:mobile_login_settings.biometric_confirm_password')
+      );
       return;
     }
 
     const wallet = await resolveFullWallet(selectedAddress, selectedWallet);
     if (!wallet) {
-      setBiometricError(t('auth:mobile_login_settings.biometric_select_account'));
+      setBiometricError(
+        t('auth:mobile_login_settings.biometric_select_account')
+      );
       return;
     }
 
     const address = selectedAddress.trim();
     setBiometricError('');
     setBiometricBusy(true);
-    setBiometricStatus(t('auth:mobile_login_settings.biometric_checking_password'));
+    setBiometricStatus(
+      t('auth:mobile_login_settings.biometric_checking_password')
+    );
 
     const valid = await verifyWalletPassword(password, wallet);
     if (!valid) {
-      setBiometricError(t('auth:mobile_login_settings.biometric_wrong_password'));
+      setBiometricError(
+        t('auth:mobile_login_settings.biometric_wrong_password')
+      );
       setBiometricStatus('');
       setBiometricBusy(false);
       return;
@@ -390,9 +413,7 @@ export function MobileLoginSettingsModal({
 
   const cardSx = {
     alignItems: 'center',
-    background: isLight
-      ? 'rgba(255,255,255,0.72)'
-      : 'rgba(255,255,255,0.04)',
+    background: isLight ? 'rgba(255,255,255,0.72)' : 'rgba(255,255,255,0.04)',
     border: isLight
       ? `1px solid ${theme.palette.divider}`
       : '1px solid rgba(255,255,255,0.08)',
@@ -519,7 +540,9 @@ export function MobileLoginSettingsModal({
                     lineHeight: 1.4,
                   }}
                 >
-                  {t('auth:mobile_login_settings.biometric_hardware_unavailable')}
+                  {t(
+                    'auth:mobile_login_settings.biometric_hardware_unavailable'
+                  )}
                 </Typography>
               )}
 
@@ -642,112 +665,131 @@ export function MobileLoginSettingsModal({
                     })}
                   </Box>
 
-                  {biometricAvailable !== false && selectedAddress && selectedWallet && (
-                    <>
-                      {biometricEnabled ? (
-                        <Box
-                          sx={{
-                            display: 'flex',
-                            flexDirection: 'column',
-                            gap: 1,
-                            mt: 0.25,
-                          }}
-                        >
+                  {biometricAvailable !== false &&
+                    selectedAddress &&
+                    selectedWallet && (
+                      <>
+                        {biometricEnabled ? (
                           <Box
                             sx={{
-                              alignItems: 'center',
                               display: 'flex',
-                              gap: 0.75,
+                              flexDirection: 'column',
+                              gap: 1,
+                              mt: 0.25,
                             }}
                           >
-                            <CheckCircleRoundedIcon
+                            <Box
                               sx={{
-                                color: theme.palette.success.main,
-                                fontSize: 20,
-                                flexShrink: 0,
+                                alignItems: 'center',
+                                display: 'flex',
+                                gap: 0.75,
                               }}
-                            />
-                            <Typography sx={{ fontSize: '0.82rem', fontWeight: 600 }}>
-                              {t('auth:mobile_login_settings.biometric_on_for_account')}
-                            </Typography>
+                            >
+                              <CheckCircleRoundedIcon
+                                sx={{
+                                  color: theme.palette.success.main,
+                                  fontSize: 20,
+                                  flexShrink: 0,
+                                }}
+                              />
+                              <Typography
+                                sx={{ fontSize: '0.82rem', fontWeight: 600 }}
+                              >
+                                {t(
+                                  'auth:mobile_login_settings.biometric_on_for_account'
+                                )}
+                              </Typography>
+                            </Box>
+                            <AuthButton
+                              onClick={() => void handleRemoveBiometric()}
+                              disabled={biometricBusy}
+                              fullWidth
+                              sx={{
+                                background: 'transparent',
+                                border: isLight
+                                  ? `1px solid ${theme.palette.divider}`
+                                  : '1px solid rgba(255,255,255,0.12)',
+                                color: theme.palette.error.main,
+                                fontWeight: 600,
+                                '&:hover': {
+                                  background: alpha(
+                                    theme.palette.error.main,
+                                    0.08
+                                  ),
+                                },
+                              }}
+                            >
+                              {biometricBusy
+                                ? t(
+                                    'auth:mobile_login_settings.biometric_removing'
+                                  )
+                                : t(
+                                    'auth:mobile_login_settings.biometric_remove'
+                                  )}
+                            </AuthButton>
                           </Box>
-                          <AuthButton
-                            onClick={() => void handleRemoveBiometric()}
-                            disabled={biometricBusy}
-                            fullWidth
+                        ) : (
+                          <Box
                             sx={{
-                              background: 'transparent',
-                              border: isLight
-                                ? `1px solid ${theme.palette.divider}`
-                                : '1px solid rgba(255,255,255,0.12)',
-                              color: theme.palette.error.main,
-                              fontWeight: 600,
-                              '&:hover': {
-                                background: alpha(theme.palette.error.main, 0.08),
-                              },
+                              display: 'flex',
+                              flexDirection: 'column',
+                              gap: 1,
+                              mt: 0.25,
                             }}
                           >
-                            {biometricBusy
-                              ? t('auth:mobile_login_settings.biometric_removing')
-                              : t('auth:mobile_login_settings.biometric_remove')}
-                          </AuthButton>
-                        </Box>
-                      ) : (
-                        <Box
-                          sx={{
-                            display: 'flex',
-                            flexDirection: 'column',
-                            gap: 1,
-                            mt: 0.25,
-                          }}
-                        >
-                          <Typography
-                            sx={{
-                              fontSize: '0.82rem',
-                              fontWeight: 600,
-                              lineHeight: 1.4,
-                            }}
-                          >
-                            {t('auth:mobile_login_settings.biometric_confirm_password')}
-                          </Typography>
-                          <PasswordField
-                            value={setupPassword}
-                            onChange={(e) => setSetupPassword(e.target.value)}
-                            onFocus={() => setPasswordFieldActive(true)}
-                            onMouseDown={() => setPasswordFieldActive(true)}
-                            onKeyDown={(e) => {
-                              if (
-                                e.key === 'Enter' &&
-                                setupPassword.trim() &&
-                                !biometricBusy
-                              ) {
-                                void handleEnableBiometric();
-                              }
-                            }}
-                            placeholder={t(
-                              'auth:mobile_login_settings.biometric_password_label'
-                            )}
-                            fullWidth
-                            InputProps={{
-                              readOnly: !passwordFieldActive,
-                            }}
-                            sx={authPasswordFieldSx(theme)}
-                          />
-                          <AuthButton
-                            onClick={() => void handleEnableBiometric()}
-                            disabled={!setupPassword.trim() || biometricBusy}
-                            primary
-                            fullWidth
-                          >
-                            {biometricBusy
-                              ? biometricStatus ||
-                                t('auth:mobile_login_settings.biometric_enabling')
-                              : t('auth:mobile_login_settings.biometric_enable')}
-                          </AuthButton>
-                        </Box>
-                      )}
-                    </>
-                  )}
+                            <Typography
+                              sx={{
+                                fontSize: '0.82rem',
+                                fontWeight: 600,
+                                lineHeight: 1.4,
+                              }}
+                            >
+                              {t(
+                                'auth:mobile_login_settings.biometric_confirm_password'
+                              )}
+                            </Typography>
+                            <PasswordField
+                              value={setupPassword}
+                              onChange={(e) => setSetupPassword(e.target.value)}
+                              onFocus={() => setPasswordFieldActive(true)}
+                              onMouseDown={() => setPasswordFieldActive(true)}
+                              onKeyDown={(e) => {
+                                if (
+                                  e.key === 'Enter' &&
+                                  setupPassword.trim() &&
+                                  !biometricBusy
+                                ) {
+                                  void handleEnableBiometric();
+                                }
+                              }}
+                              placeholder={t(
+                                'auth:mobile_login_settings.biometric_password_label'
+                              )}
+                              fullWidth
+                              InputProps={{
+                                readOnly: !passwordFieldActive,
+                              }}
+                              sx={authPasswordFieldSx(theme)}
+                            />
+                            <AuthButton
+                              onClick={() => void handleEnableBiometric()}
+                              disabled={!setupPassword.trim() || biometricBusy}
+                              primary
+                              fullWidth
+                            >
+                              {biometricBusy
+                                ? biometricStatus ||
+                                  t(
+                                    'auth:mobile_login_settings.biometric_enabling'
+                                  )
+                                : t(
+                                    'auth:mobile_login_settings.biometric_enable'
+                                  )}
+                            </AuthButton>
+                          </Box>
+                        )}
+                      </>
+                    )}
 
                   {biometricAvailable !== false && !selectedAddress && (
                     <Typography
@@ -774,7 +816,9 @@ export function MobileLoginSettingsModal({
               </Typography>
 
               {biometricError && (
-                <Typography sx={{ color: theme.palette.error.main, fontSize: '0.76rem' }}>
+                <Typography
+                  sx={{ color: theme.palette.error.main, fontSize: '0.76rem' }}
+                >
                   {biometricError}
                 </Typography>
               )}
@@ -813,7 +857,15 @@ export function MobileLoginSettingsModal({
                 justifyContent: 'space-between',
               }}
             >
-              <Box sx={{ alignItems: 'center', display: 'flex', gap: 1.25, flex: 1, minWidth: 0 }}>
+              <Box
+                sx={{
+                  alignItems: 'center',
+                  display: 'flex',
+                  gap: 1.25,
+                  flex: 1,
+                  minWidth: 0,
+                }}
+              >
                 <Box
                   sx={{
                     alignItems: 'center',
@@ -849,7 +901,9 @@ export function MobileLoginSettingsModal({
                 checked={isStartupSoundDisabled}
                 onChange={handleToggleStartupSound}
                 inputProps={{
-                  'aria-label': t('auth:mobile_login_settings.startup_sound_title'),
+                  'aria-label': t(
+                    'auth:mobile_login_settings.startup_sound_title'
+                  ),
                 }}
               />
             </Box>

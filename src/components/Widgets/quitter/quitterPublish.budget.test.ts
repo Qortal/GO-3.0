@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 
-// Output shrinks with quality and the size box, like a real encoder.
+// Output shrinks with quality and the size box, like a real encoder. It
+// starts with a GIF signature so the publish-time metadata check (which lets
+// GIFs through as they are) accepts it without a real encoder.
 vi.mock('../../../utils/imageCompression', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../utils/imageCompression')>()),
   compressImageFile: vi.fn(
@@ -9,8 +11,11 @@ vi.mock('../../../utils/imageCompression', async (importOriginal) => ({
       options: { first: { quality: number; maxWidth: number } }
     ) => {
       const box = Math.min(1, options.first.maxWidth / 1920);
-      const bytes = Math.floor(file.size * options.first.quality * box);
-      return new File([new Uint8Array(bytes)], 'x.webp', { type: 'image/webp' });
+      const bytes = new Uint8Array(
+        Math.floor(file.size * options.first.quality * box)
+      );
+      bytes.set(Buffer.from('GIF89a', 'latin1'));
+      return new File([bytes], 'x.webp', { type: 'image/webp' });
     }
   ),
 }));
@@ -50,14 +55,18 @@ describe('shrinkPostImagesToBudget', () => {
   it('gives up with an error when even the strongest step is too big', async () => {
     const files = [photo(90_000)];
     const encoded = ['x'.repeat(base64Length(90_000))];
-    await expect(shrinkPostImagesToBudget(files, encoded, 1000)).rejects.toThrow();
+    await expect(
+      shrinkPostImagesToBudget(files, encoded, 1000)
+    ).rejects.toThrow();
   });
 });
 
 describe('assertPostFitsQuitter', () => {
   it('refuses a post Quitter lists would skip (5 MiB or more)', () => {
     expect(POST_IMAGE_BUDGET).toBeLessThan(QUITTER_MAX_POST_BYTES);
-    const justUnder = 'A'.repeat(Math.floor(((QUITTER_MAX_POST_BYTES - 1) * 4) / 3));
+    const justUnder = 'A'.repeat(
+      Math.floor(((QUITTER_MAX_POST_BYTES - 1) * 4) / 3)
+    );
     expect(() => assertPostFitsQuitter(justUnder)).not.toThrow();
     const over = 'A'.repeat(Math.ceil((QUITTER_MAX_POST_BYTES * 4) / 3));
     expect(() => assertPostFitsQuitter(over)).toThrow();

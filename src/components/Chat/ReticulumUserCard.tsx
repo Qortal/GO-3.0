@@ -19,6 +19,11 @@ import NorthEastRoundedIcon from '@mui/icons-material/NorthEastRounded';
 import VisibilityOffRoundedIcon from '@mui/icons-material/VisibilityOffRounded';
 import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded';
 import { getBaseApiReact } from '../../App';
+import {
+  buildQdnAvatarUrl,
+  QDN_AVATAR_DEFAULT_IDENTIFIER,
+  useQdnAvatar,
+} from '../../lib/qdnAvatars';
 import { getNameInfo } from '../Group/groupApi';
 import { executeEvent } from '../../utils/events';
 import { BACK_PRIORITY, useAndroidBack } from '../../utils/androidBack';
@@ -27,6 +32,8 @@ import { statusDotColor } from '../../hooks/usePresence';
 import { usePresenceStatusLabel } from '../common/accountStatus';
 import { MinterAvatarOrnament } from './MinterAvatarOrnament';
 import { AvatarPreviewModal } from './AvatarPreviewModal';
+import { useAvatarPreviewSrc } from './useAvatarPreviewSrc';
+import { useFullSizeQdnAvatarSrc } from '../../hooks/useFullSizeQdnAvatarSrc';
 import { ReticulumRoleBadge } from './ReticulumRoleBadge';
 import { useTranslation } from 'react-i18next';
 import {
@@ -41,7 +48,12 @@ export type ReticulumUserCardData = {
   isOwn: boolean;
   minterLevel?: number | null;
   name?: string;
-  onAvatarPreview?: (event: MouseEvent, src: string) => void;
+  /** src: the full-size image; placeholderSrc: the small one already shown. */
+  onAvatarPreview?: (
+    event: MouseEvent,
+    src: string,
+    placeholderSrc?: string
+  ) => void;
   role?: 'admin' | 'owner';
   roleColor?: string;
   status: string | null;
@@ -92,7 +104,11 @@ export const ReticulumUserCard = ({
     data.isMinterResolved
   );
   const [isAvatarPreviewOpen, setIsAvatarPreviewOpen] = useState(false);
-  const [avatarPreviewSrc, setAvatarPreviewSrc] = useState<string | null>(null);
+  const {
+    previewSrc: avatarPreviewSrc,
+    showPreview: showAvatarPreview,
+    cancelPending: cancelAvatarPreviewLoad,
+  } = useAvatarPreviewSrc();
   const [hideMenuAnchor, setHideMenuAnchor] = useState<HTMLElement | null>(
     null
   );
@@ -103,6 +119,7 @@ export const ReticulumUserCard = ({
   useAndroidBack(
     () => {
       if (isAvatarPreviewOpen) {
+        cancelAvatarPreviewLoad();
         setIsAvatarPreviewOpen(false);
       } else if (hideMenuAnchor) {
         setHideMenuAnchor(null);
@@ -199,10 +216,19 @@ export const ReticulumUserCard = ({
   }, [data.address, data.isMinterResolved, data.minterLevel, open]);
 
   const displayName = profile?.name || data.name || data.address;
-  const avatarName = profile?.name || data.name;
-  const avatarUrl = avatarName
-    ? `${getBaseApiReact()}/arbitrary/THUMBNAIL/${encodeURIComponent(avatarName)}/qortal_avatar?async=true`
-    : data.avatarUrl;
+  const avatarName = (profile?.name || data.name || '').trim();
+  const cachedAvatar = useQdnAvatar(avatarName, {
+    enabled: open,
+    priority: 'high',
+  });
+  // 82 px: the cached copy (at most 128 px) is replaced by the full-size
+  // image once it has loaded (the same file the preview shows).
+  const { src: cardAvatarSrc } = useFullSizeQdnAvatarSrc(
+    avatarName,
+    cachedAvatar,
+    open
+  );
+  const avatarUrl = avatarName ? cardAvatarSrc : data.avatarUrl;
   const formattedBalance = useMemo(
     () => formatQortAmount(profile?.balance ?? null, i18n.language),
     [i18n.language, profile?.balance]
@@ -259,17 +285,34 @@ export const ReticulumUserCard = ({
     onClose();
   };
 
+  // The cached image is at most 128 px: the preview loads the full one.
+  const getAvatarPreviewUrl = (): string | undefined => {
+    if (!avatarName) return data.avatarUrl;
+    try {
+      return buildQdnAvatarUrl(
+        getBaseApiReact(),
+        { name: avatarName, identifier: QDN_AVATAR_DEFAULT_IDENTIFIER },
+        { blocking: true }
+      );
+    } catch {
+      return undefined;
+    }
+  };
+
   const handleAvatarPreview = (event: MouseEvent) => {
-    if (!avatarUrl) return;
+    const avatarPreviewUrl = avatarUrl ? getAvatarPreviewUrl() : undefined;
+    if (!avatarPreviewUrl) return;
 
     event.preventDefault();
     event.stopPropagation();
     if (data.onAvatarPreview) {
-      data.onAvatarPreview(event, avatarUrl);
+      data.onAvatarPreview(event, avatarPreviewUrl, avatarUrl);
       return;
     }
 
-    setAvatarPreviewSrc(avatarUrl);
+    // The small cached image shows at once; the full one replaces it when
+    // it has loaded.
+    if (!showAvatarPreview(avatarPreviewUrl, avatarUrl)) return;
     setIsAvatarPreviewOpen(true);
   };
 
@@ -638,7 +681,10 @@ export const ReticulumUserCard = ({
         alt={displayName}
         open={isAvatarPreviewOpen}
         src={avatarPreviewSrc}
-        onClose={() => setIsAvatarPreviewOpen(false)}
+        onClose={() => {
+          cancelAvatarPreviewLoad();
+          setIsAvatarPreviewOpen(false);
+        }}
       />
     </>
   );

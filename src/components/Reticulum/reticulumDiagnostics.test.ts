@@ -16,6 +16,7 @@ import {
   collapseEngineLogLines,
   diagnosticsFileName,
   diagnosticsReportToMarkdown,
+  formatBackgroundSyncLines,
   formatMembershipProbeLine,
   formatResourceSessionsLine,
   formatUnlockLines,
@@ -217,9 +218,11 @@ describe('reticulumDiagnostics', () => {
     expect(report).toContain('Node API key: not set');
     expect(report).toContain('Membership check: not run (engine not ready)');
     expect(report).not.toContain('Membership API host');
-    expect(report).toContain(
-      'target=group-1169 attempts=3: Local user is not a member of this group'
+    // The target (a DM partner's address or a group) is a pseudonym.
+    expect(report).toMatch(
+      /target=<id-[0-9a-f]{6}> attempts=3: Local user is not a member of this group/
     );
+    expect(report).not.toContain('group-1169');
     expect(report).toContain('Warning: Chat storage started slowly');
     expect(report).toContain('engine not ready; log not available');
   });
@@ -246,9 +249,10 @@ describe('reticulumDiagnostics', () => {
       'JIT: likely on (WebAssembly present, sqlite-wasm init 164 ms)'
     );
     expect(report).toContain('Node API key: set');
-    expect(report).toContain(
-      'Membership check: FAILED TypeError: Failed to fetch <url> in 3 ms via localhost:52391, group 1144'
+    expect(report).toMatch(
+      /Membership check: FAILED TypeError: Failed to fetch <url> in 3 ms via localhost:52391, group <id-[0-9a-f]{6}>/
     );
+    expect(report).not.toContain('1144');
     expect(report).toContain(
       'Membership validator: 0 ok, 17 unavailable; last no response in 3 ms, 6 s ago via localhost:52391; last error TypeError: Failed to fetch, 6 s ago'
     );
@@ -626,6 +630,84 @@ describe('reticulumDiagnostics', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('reports background sync: mode, exemption, freeze count and the last 5 freezes', () => {
+    const now = Date.UTC(2026, 9, 2, 9, 0, 0);
+    const freeze = (hoursAgo: number, gapMs: number, extra = {}) => ({
+      at: now - hoursAgo * 3_600_000,
+      gapMs,
+      ignoring: false,
+      charging: true,
+      ...extra,
+    });
+    const sync = {
+      mode: 'charging' as const,
+      ignoringBatteryOptimizations: false,
+      vendorFreezeCount: 14,
+      vendorFreezeRecent: [
+        freeze(60, 600_000),
+        freeze(30, 3_000),
+        freeze(20, 125_000),
+        freeze(8, 21_900_000),
+        freeze(6, 600_000, { charging: false }),
+        freeze(2, 7_200_000, { ignoring: true }),
+      ],
+    };
+    expect(formatBackgroundSyncLines(sync, now)).toEqual([
+      'Mode: charging, battery optimisation exempt: no',
+      'Vendor freezes recorded: 14, last 5:',
+      '2026-10-01 03:00:00 frozen 3 s, charging',
+      '2026-10-01 13:00:00 frozen 2 min, charging',
+      '01:00:00 frozen 6 h 05 min, charging',
+      '03:00:00 frozen 10 min, on battery',
+      '07:00:00 frozen 2 h 00 min, charging, exempt',
+    ]);
+    expect(
+      formatBackgroundSyncLines(
+        {
+          mode: 'off',
+          ignoringBatteryOptimizations: null,
+          vendorFreezeCount: 0,
+          vendorFreezeRecent: [],
+        },
+        now
+      )
+    ).toEqual([
+      'Mode: off, battery optimisation exempt: unknown',
+      'Vendor freezes recorded: 0',
+    ]);
+    expect(formatBackgroundSyncLines(null, now)).toEqual([
+      'Not reported (not native Android, or an older app)',
+    ]);
+
+    const report = buildReticulumDiagnosticsReport({
+      now,
+      version: '0.0.15',
+      state: ONLINE_STATE,
+      onlineCount: 3,
+      deviceOnline: true,
+      webView: WEBVIEW,
+      engine: null,
+      coreApi: null,
+      sendFailures: [],
+      backgroundSync: sync,
+    });
+    const lines = report.split('\n');
+    const start = lines.indexOf('--- Background sync ---');
+    expect(start).toBeGreaterThan(lines.indexOf('--- Chat engine ---'));
+    expect(lines.slice(start + 1, start + 3)).toEqual([
+      'Mode: charging, battery optimisation exempt: no',
+      'Vendor freezes recorded: 14, last 5:',
+    ]);
+    expect(lines.slice(start + 8, start + 10)).toEqual([
+      '',
+      '--- Core API ---',
+    ]);
+    // Older callers without the input still get the section.
+    expect(readyReport(readyEngine())).toContain(
+      '--- Background sync ---\nNot reported'
+    );
   });
 
   it('names the saved file after the report time, in UTC', () => {

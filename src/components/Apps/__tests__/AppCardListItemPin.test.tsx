@@ -38,6 +38,8 @@ vi.mock('../AppAvailabilityLabel', () => ({
 import { executeEvent } from '../../../utils/events';
 import { sortablePinnedAppsAtom, userInfoAtom } from '../../../atoms/global';
 import { AppCardListItem } from '../AppCard/AppCardListItem';
+import { setQdnAvatarCacheForTests } from '../../../lib/qdnAvatars/defaultCache';
+import { createAvatarTestHarness } from '../../../lib/qdnAvatars/testHarness';
 
 const WALLET = 'QWallet1';
 const STORAGE_KEY = `hub_mobile_tab_org_${WALLET}`;
@@ -105,10 +107,17 @@ describe('AppCardListItem pin', () => {
   beforeEach(() => {
     storage.clear();
     vi.mocked(executeEvent).mockClear();
+    // App icons come from the avatar cache: a node that never answers here.
+    setQdnAvatarCacheForTests(
+      createAvatarTestHarness({
+        handler: () => new Promise<Response>(() => {}),
+      }).cache
+    );
   });
 
   afterEach(() => {
     window.matchMedia = originalMatchMedia;
+    setQdnAvatarCacheForTests(null);
   });
 
   it('pins into the Tabs Library folder on phones', async () => {

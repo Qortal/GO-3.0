@@ -1,7 +1,6 @@
-import { Avatar, Box, ButtonBase, Rating, styled, Typography } from '@mui/material';
+import { Box, ButtonBase, Rating, styled, Typography } from '@mui/material';
 import { useTranslation } from 'react-i18next';
-import { getBaseApiReact } from '../../../App';
-import LogoSelected from '../../../assets/svgs/LogoSelected.svg';
+import { AppThumbnailAvatar } from '../AppThumbnailAvatar';
 import { StarFilledIcon } from '../../../assets/Icons/StarFilled';
 import { StarEmptyIcon } from '../../../assets/Icons/StarEmpty';
 import { executeEvent } from '../../../utils/events';
@@ -100,26 +99,12 @@ export const AppCardCompact = ({ app, myName }: AppCardCompactProps) => {
   return (
     <CardContainer onClick={handleClick}>
       <AppIcon>
-        <Avatar
-          sx={{
-            height: '36px',
-            width: '36px',
-            '& img': {
-              objectFit: 'fill',
-            },
-          }}
+        <AppThumbnailAvatar
+          appName={app?.name}
           alt={app?.name}
-          src={`${getBaseApiReact()}/arbitrary/THUMBNAIL/${app?.name}/qortal_avatar?async=true`}
-        >
-          <img
-            style={{
-              width: '24px',
-              height: 'auto',
-            }}
-            src={LogoSelected}
-            alt="app-icon"
-          />
-        </Avatar>
+          fallbackSize={24}
+          sx={{ height: '36px', width: '36px' }}
+        />
       </AppIcon>
 
       <ContentContainer>

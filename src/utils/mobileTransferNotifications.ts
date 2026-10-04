@@ -5,8 +5,9 @@
  * - outgoing shares waiting for the recipient ("active files") with the
  *   time remaining before the offer expires,
  * - live upload/download progress bars with speed and ETA,
- * - terminal states (sent / downloaded / failed).
+ * - terminal states (sent / received / failed).
  */
+import i18n from 'i18next';
 import {
   getQchatPendingSendInfo,
   onMobileQchatFileTransferEvent,
@@ -235,10 +236,14 @@ const handleTerminalEvent = (
     return;
   }
   if (status === 'received') {
+    // A received file stays in GO's private storage; nothing is copied to
+    // Downloads (N-22, N-27). The chat card has Open and Save to device.
     notify({
       transferId: transfer.transferId,
-      title: 'File downloaded',
-      text: `${fileName} was saved to Downloads`,
+      title: i18n.t('core:file_transfer.received_notification_title'),
+      text: i18n.t('core:file_transfer.received_notification_text', {
+        fileName,
+      }),
     });
     return;
   }

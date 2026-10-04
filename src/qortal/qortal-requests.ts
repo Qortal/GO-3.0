@@ -86,8 +86,12 @@ import {
 } from './get.ts';
 import { triggerMemberGroupsFetch } from '../subscriptions/useInitializeMySubscriptions.ts';
 import { getData, storeData } from '../utils/chromeStorage.ts';
+import {
+  clearAllForeignKeyConsent,
+  clearForeignKeyConsentForApp,
+  clearForeignKeyConsentForTab,
+} from './foreignKeySessionConsent.ts';
 import { executeEvent } from '../utils/events.ts';
-import { triggerMemberGroupsFetch } from '../subscriptions/useInitializeMySubscriptions.ts';
 
 function getLocalStorage(key) {
   return getData(key).catch((error) => {
@@ -517,6 +521,7 @@ export function hasSessionPermission(tabId, qapName, requestType) {
 
 export function clearSessionPermissions(tabId, qapName) {
   try {
+    clearForeignKeyConsentForApp(tabId, qapName);
     sessionPermissionsStore.delete(getSessionPermissionKey(tabId, qapName));
     sessionPermissionsStore.delete(
       getAddressScopedSessionPermissionKey(tabId, qapName)
@@ -529,6 +534,7 @@ export function clearSessionPermissions(tabId, qapName) {
 
 export function clearAllSessionPermissions() {
   try {
+    clearAllForeignKeyConsent();
     sessionPermissionsStore.clear();
   } catch (error) {
     console.error('Error clearing all session permissions:', error);
@@ -538,6 +544,7 @@ export function clearAllSessionPermissions() {
 
 export function clearSessionPermissionsByTabId(tabId) {
   try {
+    clearForeignKeyConsentForTab(tabId);
     // Find all keys that start with this tabId and remove them
     const keysToDelete = [];
     for (const key of sessionPermissionsStore.keys()) {
@@ -833,7 +840,11 @@ function setupMessageListenerQortalRequest() {
 
       case 'ADD_LIST_ITEMS': {
         try {
-          const res = await addListItems(request.payload, isFromExtension);
+          const res = await addListItems(
+            request.payload,
+            isFromExtension,
+            appInfo
+          );
           event.source.postMessage(
             {
               requestId: request.requestId,
@@ -859,7 +870,11 @@ function setupMessageListenerQortalRequest() {
 
       case 'DELETE_LIST_ITEM': {
         try {
-          const res = await deleteListItems(request.payload, isFromExtension);
+          const res = await deleteListItems(
+            request.payload,
+            isFromExtension,
+            appInfo
+          );
           event.source.postMessage(
             {
               requestId: request.requestId,
@@ -947,7 +962,11 @@ function setupMessageListenerQortalRequest() {
 
       case 'VOTE_ON_POLL': {
         try {
-          const res = await voteOnPoll(request.payload, isFromExtension);
+          const res = await voteOnPoll(
+            request.payload,
+            isFromExtension,
+            appInfo
+          );
           event.source.postMessage(
             {
               requestId: request.requestId,
@@ -973,7 +992,11 @@ function setupMessageListenerQortalRequest() {
 
       case 'CREATE_POLL': {
         try {
-          const res = await createPoll(request.payload, isFromExtension);
+          const res = await createPoll(
+            request.payload,
+            isFromExtension,
+            appInfo
+          );
           event.source.postMessage(
             {
               requestId: request.requestId,
@@ -1059,7 +1082,7 @@ function setupMessageListenerQortalRequest() {
 
       case 'DEPLOY_AT': {
         try {
-          const res = await deployAt(request.payload, isFromExtension);
+          const res = await deployAt(request.payload, isFromExtension, appInfo);
           event.source.postMessage(
             {
               requestId: request.requestId,
@@ -1262,7 +1285,11 @@ function setupMessageListenerQortalRequest() {
 
       case 'GET_TX_ACTIVITY_SUMMARY': {
         try {
-          const res = await getTxActivitySummary(request.payload);
+          const res = await getTxActivitySummary(
+            request.payload,
+            isFromExtension,
+            appInfo
+          );
           event.source.postMessage(
             {
               requestId: request.requestId,
@@ -1538,7 +1565,7 @@ function setupMessageListenerQortalRequest() {
 
       case 'SEND_COIN': {
         try {
-          const res = await sendCoin(request.payload, isFromExtension);
+          const res = await sendCoin(request.payload, isFromExtension, appInfo);
           event.source.postMessage(
             {
               requestId: request.requestId,
@@ -1564,7 +1591,11 @@ function setupMessageListenerQortalRequest() {
 
       case 'CREATE_TRADE_BUY_ORDER': {
         try {
-          const res = await createBuyOrder(request.payload, isFromExtension);
+          const res = await createBuyOrder(
+            request.payload,
+            isFromExtension,
+            appInfo
+          );
           event.source.postMessage(
             {
               requestId: request.requestId,
@@ -1590,7 +1621,11 @@ function setupMessageListenerQortalRequest() {
 
       case 'CREATE_TRADE_SELL_ORDER': {
         try {
-          const res = await createSellOrder(request.payload, isFromExtension);
+          const res = await createSellOrder(
+            request.payload,
+            isFromExtension,
+            appInfo
+          );
           event.source.postMessage(
             {
               requestId: request.requestId,
@@ -1616,7 +1651,11 @@ function setupMessageListenerQortalRequest() {
 
       case 'CANCEL_TRADE_SELL_ORDER': {
         try {
-          const res = await cancelSellOrder(request.payload, isFromExtension);
+          const res = await cancelSellOrder(
+            request.payload,
+            isFromExtension,
+            appInfo
+          );
           event.source.postMessage(
             {
               requestId: request.requestId,
@@ -1668,7 +1707,11 @@ function setupMessageListenerQortalRequest() {
 
       case 'ADMIN_ACTION': {
         try {
-          const res = await adminAction(request.payload, isFromExtension);
+          const res = await adminAction(
+            request.payload,
+            isFromExtension,
+            appInfo
+          );
           event.source.postMessage(
             {
               requestId: request.requestId,
@@ -1694,7 +1737,11 @@ function setupMessageListenerQortalRequest() {
 
       case 'SIGN_TRANSACTION': {
         try {
-          const res = await signTransaction(request.payload, isFromExtension);
+          const res = await signTransaction(
+            request.payload,
+            isFromExtension,
+            appInfo
+          );
           event.source.postMessage(
             {
               requestId: request.requestId,
@@ -1915,7 +1962,11 @@ function setupMessageListenerQortalRequest() {
 
       case 'DELETE_HOSTED_DATA': {
         try {
-          const res = await deleteHostedData(request.payload, isFromExtension);
+          const res = await deleteHostedData(
+            request.payload,
+            isFromExtension,
+            appInfo
+          );
           event.source.postMessage(
             {
               requestId: request.requestId,
@@ -1941,7 +1992,11 @@ function setupMessageListenerQortalRequest() {
 
       case 'GET_HOSTED_DATA': {
         try {
-          const res = await getHostedData(request.payload, isFromExtension);
+          const res = await getHostedData(
+            request.payload,
+            isFromExtension,
+            appInfo
+          );
           event.source.postMessage(
             {
               requestId: request.requestId,
@@ -2107,7 +2162,8 @@ function setupMessageListenerQortalRequest() {
         try {
           const res = await registerNameRequest(
             request.payload,
-            isFromExtension
+            isFromExtension,
+            appInfo
           );
           event.source.postMessage(
             {
@@ -2134,7 +2190,11 @@ function setupMessageListenerQortalRequest() {
 
       case 'UPDATE_NAME': {
         try {
-          const res = await updateNameRequest(request.payload, isFromExtension);
+          const res = await updateNameRequest(
+            request.payload,
+            isFromExtension,
+            appInfo
+          );
           event.source.postMessage(
             {
               requestId: request.requestId,
@@ -2160,7 +2220,11 @@ function setupMessageListenerQortalRequest() {
 
       case 'LEAVE_GROUP': {
         try {
-          const res = await leaveGroupRequest(request.payload, isFromExtension);
+          const res = await leaveGroupRequest(
+            request.payload,
+            isFromExtension,
+            appInfo
+          );
           event.source.postMessage(
             {
               requestId: request.requestId,
@@ -2188,7 +2252,8 @@ function setupMessageListenerQortalRequest() {
         try {
           const res = await inviteToGroupRequest(
             request.payload,
-            isFromExtension
+            isFromExtension,
+            appInfo
           );
           event.source.postMessage(
             {
@@ -2217,7 +2282,8 @@ function setupMessageListenerQortalRequest() {
         try {
           const res = await kickFromGroupRequest(
             request.payload,
-            isFromExtension
+            isFromExtension,
+            appInfo
           );
           event.source.postMessage(
             {
@@ -2246,7 +2312,8 @@ function setupMessageListenerQortalRequest() {
         try {
           const res = await banFromGroupRequest(
             request.payload,
-            isFromExtension
+            isFromExtension,
+            appInfo
           );
           event.source.postMessage(
             {
@@ -2275,7 +2342,8 @@ function setupMessageListenerQortalRequest() {
         try {
           const res = await cancelGroupBanRequest(
             request.payload,
-            isFromExtension
+            isFromExtension,
+            appInfo
           );
           event.source.postMessage(
             {
@@ -2304,7 +2372,8 @@ function setupMessageListenerQortalRequest() {
         try {
           const res = await addGroupAdminRequest(
             request.payload,
-            isFromExtension
+            isFromExtension,
+            appInfo
           );
           event.source.postMessage(
             {
@@ -2362,7 +2431,8 @@ function setupMessageListenerQortalRequest() {
         try {
           const res = await removeGroupAdminRequest(
             request.payload,
-            isFromExtension
+            isFromExtension,
+            appInfo
           );
           event.source.postMessage(
             {
@@ -2391,7 +2461,8 @@ function setupMessageListenerQortalRequest() {
         try {
           const res = await cancelGroupInviteRequest(
             request.payload,
-            isFromExtension
+            isFromExtension,
+            appInfo
           );
           event.source.postMessage(
             {
@@ -2420,7 +2491,8 @@ function setupMessageListenerQortalRequest() {
         try {
           const res = await createGroupRequest(
             request.payload,
-            isFromExtension
+            isFromExtension,
+            appInfo
           );
           event.source.postMessage(
             {
@@ -2449,7 +2521,8 @@ function setupMessageListenerQortalRequest() {
         try {
           const res = await updateGroupRequest(
             request.payload,
-            isFromExtension
+            isFromExtension,
+            appInfo
           );
           event.source.postMessage(
             {
@@ -2507,7 +2580,11 @@ function setupMessageListenerQortalRequest() {
 
       case 'GET_ARRR_SYNC_STATUS': {
         try {
-          const res = await getArrrSyncStatus(request.payload);
+          const res = await getArrrSyncStatus(
+            request.payload,
+            isFromExtension,
+            appInfo
+          );
           event.source.postMessage(
             {
               requestId: request.requestId,
@@ -2566,7 +2643,8 @@ function setupMessageListenerQortalRequest() {
         try {
           const res = await multiPaymentWithPrivateData(
             request.payload,
-            isFromExtension
+            isFromExtension,
+            appInfo
           );
           event.source.postMessage(
             {
@@ -2595,7 +2673,8 @@ function setupMessageListenerQortalRequest() {
         try {
           const res = await transferAssetRequest(
             request.payload,
-            isFromExtension
+            isFromExtension,
+            appInfo
           );
           event.source.postMessage(
             {
@@ -2622,7 +2701,11 @@ function setupMessageListenerQortalRequest() {
 
       case 'BUY_NAME': {
         try {
-          const res = await buyNameRequest(request.payload, isFromExtension);
+          const res = await buyNameRequest(
+            request.payload,
+            isFromExtension,
+            appInfo
+          );
           event.source.postMessage(
             {
               requestId: request.requestId,
@@ -2648,7 +2731,11 @@ function setupMessageListenerQortalRequest() {
 
       case 'SELL_NAME': {
         try {
-          const res = await sellNameRequest(request.payload, isFromExtension);
+          const res = await sellNameRequest(
+            request.payload,
+            isFromExtension,
+            appInfo
+          );
           event.source.postMessage(
             {
               requestId: request.requestId,
@@ -2676,7 +2763,8 @@ function setupMessageListenerQortalRequest() {
         try {
           const res = await cancelSellNameRequest(
             request.payload,
-            isFromExtension
+            isFromExtension,
+            appInfo
           );
           event.source.postMessage(
             {

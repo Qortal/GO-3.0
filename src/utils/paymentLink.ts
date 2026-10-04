@@ -1,6 +1,11 @@
 import { validateAddress } from './validateAddress';
 import { executeEvent } from './events';
 import { extractComponents } from '../components/Chat/MessageDisplay';
+import {
+  isLookupSafeName,
+  isValidPaymentAddress,
+  parseDecimalAmount,
+} from '../transactions/paymentSafety';
 
 /**
  * Parsing + routing for scanned QR codes and `qortal://` / `qort:` deep links.
@@ -70,12 +75,25 @@ export function parseUseGroupJoinLink(rawInput: string): string | null {
 const AMOUNT_KEYS = ['amount', 'qty', 'qort', 'value'];
 const RECIPIENT_KEYS = ['recipient', 'address', 'to', 'r'];
 
+// A plain decimal with at most 8 places ("1,5" is read as "1.5"). "1e3",
+// "0x10", "Infinity" and the like are dropped rather than read as a number;
+// the Send screen then asks for the amount.
 const parseAmount = (raw: string | null | undefined): number | undefined => {
   if (!raw) return undefined;
-  const n = Number(String(raw).trim().replace(',', '.'));
-  if (!Number.isFinite(n) || n <= 0) return undefined;
-  return n;
+  try {
+    return parseDecimalAmount(String(raw).trim().replace(',', '.')).value;
+  } catch {
+    return undefined;
+  }
 };
+
+/**
+ * A recipient from a link: a valid account or AT address, or text that can
+ * be a registered name. Anything else (paths, control characters, "..") is
+ * not a payment target.
+ */
+const isAcceptableRecipient = (recipient: string): boolean =>
+  isValidPaymentAddress(recipient) || isLookupSafeName(recipient);
 
 const readParam = (
   params: URLSearchParams,
@@ -96,7 +114,7 @@ const paymentFromQuery = (query: string): ParsedPaymentTarget => {
   const params = new URLSearchParams(query);
   const recipient = (readParam(params, RECIPIENT_KEYS) || '').trim();
   const amount = parseAmount(readParam(params, AMOUNT_KEYS));
-  if (!recipient) return { kind: 'none' };
+  if (!recipient || !isAcceptableRecipient(recipient)) return { kind: 'none' };
   return { kind: 'payment', recipient, ...(amount ? { amount } : {}) };
 };
 
@@ -219,6 +237,7 @@ export function parsePaymentTarget(rawInput: string): ParsedPaymentTarget {
     const params = new URLSearchParams(query);
     const amount = parseAmount(readParam(params, AMOUNT_KEYS));
     const recipient = base.trim();
+    if (!isAcceptableRecipient(recipient)) return { kind: 'none' };
     return { kind: 'payment', recipient, ...(amount ? { amount } : {}) };
   }
 

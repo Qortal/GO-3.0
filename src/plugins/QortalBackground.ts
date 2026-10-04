@@ -20,6 +20,30 @@ export type BackgroundSyncMode = 'off' | 'charging' | 'always';
  */
 export type RelayProfile = 'full' | 'leaf';
 
+/**
+ * One detected vendor freeze, as the native side recorded it
+ * (VendorFreezeLog.Entry). Entries come in recording order; sort by `at`.
+ */
+export type VendorFreezeRecord = {
+  /** Wall-clock epoch ms of the service tick that noticed the freeze. */
+  at: number;
+  /**
+   * From the last tick before the freeze to `at`, so `at - gapMs` is when
+   * the freeze began; includes up to one 25 s tick interval.
+   */
+  gapMs: number;
+  /**
+   * GO was exempt from battery optimisation both at the last tick before
+   * the freeze and when it was noticed.
+   */
+  ignoring: boolean;
+  /** On the charger at the last tick before the freeze. */
+  charging: boolean;
+};
+
+/** Which page openVendorBatterySettings() reached. */
+export type VendorBatterySettingsPage = 'vendor' | 'app_details';
+
 export type BackgroundSyncState = {
   mode: BackgroundSyncMode;
   charging: boolean;
@@ -30,14 +54,27 @@ export type BackgroundSyncState = {
   /** Times the vendor froze GO although it was meant to stay awake. */
   vendorFreezeCount: number;
   vendorFreezeLastAt: number | null;
-  vendorFreezeHintPending: boolean;
   manufacturer: string;
+  /**
+   * Up to 50 recorded freezes, oldest first; when its log is full, native
+   * drops stale or short episodes first. Missing on older native builds.
+   */
+  vendorFreezeRecent?: VendorFreezeRecord[];
+  /**
+   * GO is exempt now. Null when the system cannot say; missing on older
+   * native builds.
+   */
+  ignoringBatteryOptimizations?: boolean | null;
 };
 
 export type VendorFreezeDetectedEvent = {
   count: number;
   lastAt: number;
   manufacturer: string;
+  /** Newer native builds only. */
+  gapMs?: number;
+  ignoring?: boolean;
+  charging?: boolean;
 };
 
 export interface QortalBackgroundPlugin {
@@ -59,7 +96,8 @@ export interface QortalBackgroundPlugin {
    * across restarts. Values may hold a literal `{{count}}` for native to
    * fill; a missing key falls back to the English resources. Keys:
    * status_paused_title, status_paused_text, status_waiting_text,
-   * fgs_timeout_title, fgs_timeout_text, status_syncing_background.
+   * status_waiting_short, fgs_timeout_title, fgs_timeout_text,
+   * battery_pause_text, status_syncing_background.
    */
   setLocalizedStrings(options: {
     strings: Record<string, string>;
@@ -147,6 +185,14 @@ export interface QortalBackgroundPlugin {
   requestIgnoreBatteryOptimizations(): Promise<{ success: boolean }>;
 
   openAppBatterySettings(): Promise<{ success: boolean }>;
+
+  /**
+   * The phone's own battery page where one exists (vivo / iQOO), else GO's
+   * App info page. Older native builds reject (method missing).
+   */
+  openVendorBatterySettings(): Promise<{
+    opened: VendorBatterySettingsPage | null;
+  }>;
 
   /** Same radio probe as the tray: airplane / no Wi-Fi / no ethernet / no VPN. */
   getDeviceNetwork(): Promise<{ online: boolean }>;

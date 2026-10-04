@@ -26,7 +26,12 @@ import {
   type AppUpdatePhase,
 } from './appUpdateAtoms';
 import {
-  buildDownloadUrl,
+  describeAppUpdateError,
+  insecureNodeError,
+  isSecureUpdateUrl,
+} from './appUpdateSafety';
+import {
+  buildDownloadRequest,
   compareReleasesNewestFirst,
   compareVersions,
   listPublishedBuilds,
@@ -350,6 +355,15 @@ export async function startAppUpdateDownload(
 
   let listener: { remove: () => void } | null = null;
   try {
+    const request = await buildDownloadRequest(
+      release.service,
+      release.identifier,
+      release.filename
+    );
+    // The plugin refuses plain HTTP to a node that is not on this phone; say
+    // so now rather than after QDN has spent minutes gathering the build.
+    if (!isSecureUpdateUrl(request.url)) throw insecureNodeError();
+
     await prepareOnNode(release);
 
     setProgress({
@@ -372,24 +386,19 @@ export async function startAppUpdateDownload(
       }
     );
 
-    const url = await buildDownloadUrl(
-      release.service,
-      release.identifier,
-      release.filename
-    );
-    const { path } = await QortalAppUpdate.download({
+    // The key travels beside the URL and goes out as an X-API-KEY header.
+    const downloadOptions = {
+      ...(request.apiKey ? { apiKey: request.apiKey } : {}),
       filename: release.filename,
-      url,
-    });
+      url: request.url,
+    };
+    const { path } = await QortalAppUpdate.download(downloadOptions);
     store.set(appUpdateFileAtom, path);
 
     await installDownloadedUpdate();
   } catch (error) {
     setProgress({
-      error:
-        error instanceof Error && error.message
-          ? error.message
-          : tr('error.fetch_failed'),
+      error: describeAppUpdateError(error, tr),
       phase: 'error',
     });
   } finally {
@@ -402,6 +411,10 @@ export async function startAppUpdateDownload(
  * Hand the downloaded file to Android. The system asks the user to confirm, so
  * nothing is installed behind their back; if the app is not yet trusted to ask,
  * the user is pointed at the screen where that is granted.
+ *
+ * The plugin checks the file once more first (GO's package, the installed
+ * GO's signing key, a newer versionCode); a refusal ends the attempt with the
+ * reason on screen.
  */
 export async function installDownloadedUpdate(): Promise<void> {
   const path = store.get(appUpdateFileAtom);
@@ -420,7 +433,16 @@ export async function installDownloadedUpdate(): Promise<void> {
     percent: 100,
     phase: 'installing',
   });
-  await QortalAppUpdate.install({ path });
+  try {
+    await QortalAppUpdate.install({ path });
+  } catch (error) {
+    store.set(appUpdateFileAtom, null);
+    setProgress({
+      detail: undefined,
+      error: describeAppUpdateError(error, tr),
+      phase: 'error',
+    });
+  }
 }
 
 /**

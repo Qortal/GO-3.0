@@ -54,6 +54,8 @@ import ThemeManager from '../Theme/ThemeManager';
 import { isDisabledLegacy } from '../../constants/featureFlags';
 import { isCapacitor } from '../../utils/platform';
 import { MobileNodeConnectionSettings } from '../Mobile/MobileNodeConnectionSettings';
+import { useSecureScreen } from '../../hooks/useSecureScreen';
+import { WALLET_PASSWORD_INPUT_PROPS } from '../PasswordField/noAutofill';
 
 export const LocalNodeSwitch = styled(Switch)(({ theme }) => ({
   padding: 8,
@@ -1219,12 +1221,15 @@ export const Settings = ({ open, setOpen, rawWallet }) => {
   );
 };
 
-const ExportPrivateKey = ({ rawWallet }) => {
+export const ExportPrivateKey = ({ rawWallet }) => {
   const [isPrivateKeyPasswordEditable, setIsPrivateKeyPasswordEditable] =
     useState(false);
   const [password, setPassword] = useState('');
   const [privateKey, setPrivateKey] = useState('');
   const [isOpen, setIsOpen] = useState(false);
+  // Private key export: no screenshots, recordings or recents thumbnail
+  // (GO-37).
+  useSecureScreen({ secure: isOpen });
   const setOpenSnackGlobal = useSetAtom(openSnackGlobalAtom);
   const setInfoSnackCustom = useSetAtom(infoSnackGlobalAtom);
   const theme = useTheme();
@@ -1313,7 +1318,7 @@ const ExportPrivateKey = ({ rawWallet }) => {
             autoFocus
             type="password"
             value={password}
-            autoComplete="new-password"
+            autoComplete="off"
             name="settings-private-key-decrypt"
             size="small"
             onFocus={() => setIsPrivateKeyPasswordEditable(true)}
@@ -1327,12 +1332,7 @@ const ExportPrivateKey = ({ rawWallet }) => {
             InputProps={{
               readOnly: !isPrivateKeyPasswordEditable,
             }}
-            inputProps={{
-              autoComplete: 'new-password',
-              'data-1p-ignore': 'true',
-              'data-lpignore': 'true',
-              spellCheck: 'false',
-            }}
+            inputProps={{ ...WALLET_PASSWORD_INPUT_PROPS }}
             sx={{
               '& .MuiOutlinedInput-root': { borderRadius: 2 },
               '& input:-webkit-autofill, & input:-webkit-autofill:hover, & input:-webkit-autofill:focus':

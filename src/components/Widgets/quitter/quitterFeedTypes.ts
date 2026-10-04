@@ -19,12 +19,40 @@ export type QuitterFeedVideoRef = {
   service: 'DOCUMENT';
 };
 
+/** Torq-only post fields (Torq posts are Quitter posts with extras). */
+export type TorqFeedGifRef = {
+  identifier?: string;
+  name?: string;
+  description?: string;
+};
+
+export type TorqFeedAttachmentRef = {
+  filename?: string;
+  mimeType?: string;
+  service?: string;
+  title?: string;
+};
+
 export type QuitterFeedDocument = {
   images?: QuitterFeedImageRef[];
   name: string;
   text: string;
   timestamp: number;
   videos?: QuitterFeedVideoRef[];
+  gifs?: TorqFeedGifRef[];
+  attachments?: TorqFeedAttachmentRef[];
+  poll?: { options?: { id?: string; text?: string }[] };
+};
+
+export type TorqFeedGif = {
+  identifier: string;
+  name: string;
+  description?: string;
+};
+
+export type TorqFeedAttachment = {
+  title: string;
+  isAudio: boolean;
 };
 
 export type QuitterFeedItemImage = {
@@ -34,6 +62,7 @@ export type QuitterFeedItemImage = {
 
 export type QuitterFeedItem = {
   author: string;
+  /** Full-size node URL; cards show the cached avatar of `author`. */
   avatarUrl: string;
   hasVideo: boolean;
   id: string;
@@ -45,10 +74,16 @@ export type QuitterFeedItem = {
   service: 'DOCUMENT';
   text: string;
   updatedAt?: number;
+  /** Torq extras; Quitter ignores them. */
+  gifs?: TorqFeedGif[];
+  attachments?: TorqFeedAttachment[];
+  pollOptions?: string[];
 };
 
 export type FetchQuitterFeedOptions = {
   allowedAuthors?: string[];
+  /** Publishers left out entirely (Torq's hidden users). */
+  hiddenAuthors?: string[];
   excludeIds?: string[];
   itemLimit?: number;
   offset?: number;

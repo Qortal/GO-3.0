@@ -1,12 +1,9 @@
 package com.github.Qortal.qortalMobile
 
-import android.content.ContentValues
 import android.net.Uri
-import android.os.Build
 import android.os.Environment
 import android.os.Handler
 import android.os.Looper
-import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.util.Log
 import com.chaquo.python.PyObject
@@ -66,7 +63,7 @@ class ReticulumPlugin : Plugin() {
         private val bridgeSocketLock = Any()
 
         // Network pause: hub sockets closed while no GO screen needs the mesh
-        // (dataSync time-out, swipe from recents, logout). The Python bridge
+        // (a time-out or 6 h battery pause, swipe from recents, logout). The Python bridge
         // stays up, so JS never has to start it again. Only presenceWorker
         // touches networkPaused, which orders every pause and resume.
         private var networkPaused = false
@@ -482,30 +479,95 @@ class ReticulumPlugin : Plugin() {
         }
     }
 
-    /** Returns a unique, bridge-writable save path for an inbound transfer. */
+    /**
+     * Returns a unique, bridge-writable save path for an inbound transfer.
+     *
+     * Received files stay private to GO (N-22, N-27): they go to the internal
+     * files directory, which no other app can read on any Android version,
+     * each in its own folder so the cleaned sender name can be kept as is.
+     * Nothing is copied to shared storage; the user exports one file with
+     * "Save to device" (qchatReceivedFileSave).
+     */
     @PluginMethod
     fun qchatFileSavePath(call: PluginCall) {
         try {
             val requested = sanitizeFileName(call.getString("fileName") ?: "received-file")
-            val baseDir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
-                ?: File(context.filesDir, "downloads")
-            val dir = File(baseDir, "QortalFiles").apply { mkdirs() }
-            var candidate = File(dir, requested)
-            if (candidate.exists()) {
-                val dot = requested.lastIndexOf('.')
-                val stem = if (dot > 0) requested.substring(0, dot) else requested
-                val ext = if (dot > 0) requested.substring(dot) else ""
-                var i = 1
-                while (candidate.exists() && i < 1000) {
-                    candidate = File(dir, "$stem ($i)$ext")
-                    i += 1
-                }
-            }
-            call.resolve(JSObject().put("path", candidate.absolutePath))
+            val dir = File(receivedFilesDir(), UUID.randomUUID().toString()).apply { mkdirs() }
+            call.resolve(JSObject().put("path", File(dir, requested).absolutePath))
         } catch (t: Throwable) {
             Log.e(TAG, "qchatFileSavePath failed", t)
             call.reject("qchatFileSavePath failed: ${t.message}", t as? Exception)
         }
+    }
+
+    /** Private home of received Q-Chat files (see ReceivedFilePolicy). */
+    private fun receivedFilesDir(): File =
+        File(context.filesDir, ReceivedFilePolicy.PRIVATE_DIR)
+
+    /**
+     * Where builds up to v0.0.14 put received files: app-specific external
+     * storage, or the internal fallback when that was unavailable.
+     */
+    private fun legacyReceivedFilesDirs(): List<File> = listOfNotNull(
+        context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+            ?.let { File(it, ReceivedFilePolicy.LEGACY_DIR) },
+        File(File(context.filesDir, "downloads"), ReceivedFilePolicy.LEGACY_DIR)
+    )
+
+    /**
+     * The received file at `rawPath` (a path or file:// URI), or null when it
+     * is missing or outside the received-file directories. Symbolic links and
+     * ".." are resolved before the check.
+     */
+    private fun resolveReceivedFile(rawPath: String): File? =
+        resolveFileInside(rawPath, receivedFileRoots())
+
+    private fun receivedFileRoots(): Array<String> =
+        (listOf(receivedFilesDir()) + legacyReceivedFilesDirs())
+            .map { it.path }
+            .toTypedArray()
+
+    /**
+     * Folders qchatFileOpen hands files from: received files, Share / Open
+     * with copies and, on Android 8/9, GO's saves and the Downloads copies
+     * older builds made of received files (FileOpenPolicy).
+     */
+    @Suppress("DEPRECATION")
+    private fun openFileRoots(): Array<String> = FileOpenPolicy.openRoots(
+        receivedFileRoots(),
+        context.cacheDir.path,
+        arrayOf(
+            File(
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS),
+                SaveCategory.BASE_FOLDER
+            ).path,
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).path
+        ),
+        android.os.Build.VERSION.SDK_INT
+    )
+
+    /** Folders qchatFileStat answers for: received files and staged sends. */
+    private fun statFileRoots(): Array<String> =
+        FileOpenPolicy.statRoots(receivedFileRoots(), context.cacheDir.path)
+
+    /**
+     * The file at `rawPath` (a path or file:// URI), or null when it is
+     * missing or not inside one of `roots`. Symbolic links and ".." are
+     * resolved, in the path and the roots, before the check.
+     */
+    private fun resolveFileInside(rawPath: String, roots: Array<String>): File? {
+        val path = if (rawPath.startsWith("file://")) {
+            Uri.parse(rawPath).path ?: return null
+        } else {
+            rawPath
+        }
+        if (path.isBlank()) return null
+        val file = File(path).canonicalFile
+        val canonicalRoots = roots
+            .mapNotNull { root -> runCatching { File(root).canonicalPath }.getOrNull() }
+            .toTypedArray()
+        if (!ReceivedFilePolicy.isInside(file.path, *canonicalRoots)) return null
+        return if (file.isFile) file else null
     }
 
     /**
@@ -621,7 +683,12 @@ class ReticulumPlugin : Plugin() {
         }
     }
 
-    /** Existence/size probe used to prune stale pending sends after restart. */
+    /**
+     * Existence/size probe for a staged send (pruned after a restart when
+     * gone) or a received file. Answers only for those folders
+     * (FileOpenPolicy.statRoots): any other path reads as missing, so the
+     * call cannot probe the rest of GO's files.
+     */
     @PluginMethod
     fun qchatFileStat(call: PluginCall) {
         val path = call.getString("path")
@@ -629,20 +696,31 @@ class ReticulumPlugin : Plugin() {
             call.reject("Missing path")
             return
         }
-        val f = File(path)
+        val f = try {
+            resolveFileInside(path, statFileRoots())
+        } catch (t: Throwable) {
+            null
+        }
         call.resolve(
             JSObject()
-                .put("exists", f.isFile)
-                .put("size", if (f.isFile) f.length() else 0L)
+                .put("exists", f != null)
+                .put("size", f?.length() ?: 0L)
         )
     }
 
     /**
-     * Copies a completed inbound transfer into the public Downloads collection
-     * (MediaStore) so the user can find it outside the app sandbox.
+     * "Save to device" for one received file: copies it into
+     * Documents/Qortal Go/<category>, the folder every other GO save uses.
+     * The name is cleaned and a page type (HTML, SVG, XML...) is saved as
+     * text (SavedFilePolicy, GO-01). Only files in the received-file
+     * directories can be saved this way. Android 8/9 need the storage
+     * permission first (FileWriter.ensureStoragePermission).
+     *
+     * Resolves `{ ok, uri, name, folder }`; rejects with code NOT_FOUND when
+     * the file is no longer there.
      */
     @PluginMethod
-    fun qchatFileExportToDownloads(call: PluginCall) {
+    fun qchatReceivedFileSave(call: PluginCall) {
         val path = call.getString("path")
         if (path.isNullOrBlank()) {
             call.reject("Missing path")
@@ -650,57 +728,163 @@ class ReticulumPlugin : Plugin() {
         }
         fileWorker.execute {
             try {
-                val source = File(path)
-                if (!source.isFile) throw IllegalStateException("File not found")
-                val fileName = sanitizeFileName(
-                    call.getString("fileName") ?: source.name
-                )
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    val values = ContentValues().apply {
-                        put(MediaStore.Downloads.DISPLAY_NAME, fileName)
-                        put(MediaStore.Downloads.MIME_TYPE, "application/octet-stream")
-                        put(MediaStore.Downloads.IS_PENDING, 1)
-                    }
-                    val resolver = context.contentResolver
-                    val uri = resolver.insert(
-                        MediaStore.Downloads.EXTERNAL_CONTENT_URI,
-                        values
-                    ) ?: throw IllegalStateException("Unable to create Downloads entry")
-                    resolver.openOutputStream(uri).use { out ->
-                        if (out == null) throw IllegalStateException("Unable to open Downloads stream")
-                        FileInputStream(source).use { it.copyTo(out, 256 * 1024) }
-                    }
-                    values.clear()
-                    values.put(MediaStore.Downloads.IS_PENDING, 0)
-                    resolver.update(uri, values, null, null)
-                    call.resolve(JSObject().put("ok", true).put("uri", uri.toString()))
-                } else {
-                    @Suppress("DEPRECATION")
-                    val downloads = Environment.getExternalStoragePublicDirectory(
-                        Environment.DIRECTORY_DOWNLOADS
-                    ).apply { mkdirs() }
-                    val dest = File(downloads, fileName)
-                    FileInputStream(source).use { input ->
-                        dest.outputStream().use { input.copyTo(it, 256 * 1024) }
-                    }
-                    call.resolve(JSObject().put("ok", true).put("uri", dest.absolutePath))
+                val source = resolveReceivedFile(path)
+                if (source == null) {
+                    call.reject("Received file not found", "NOT_FOUND")
+                    return@execute
                 }
-            } catch (t: Throwable) {
-                Log.e(TAG, "qchatFileExportToDownloads failed", t)
-                call.reject(
-                    "qchatFileExportToDownloads failed: ${t.message}",
-                    t as? Exception
+                val target = SavedFilePolicy.forSave(
+                    sanitizeFileName(call.getString("fileName") ?: source.name),
+                    null,
+                    DocumentSaver.EXTENSION_TYPES
                 )
+                val folder = SaveCategory.folderFor(null, target.name, target.mime)
+                val saved = FileInputStream(source).use { input ->
+                    DocumentSaver.saveStream(context, folder, target.name, target.mime, input)
+                }
+                call.resolve(
+                    JSObject()
+                        .put("ok", true)
+                        .put("uri", saved)
+                        .put("name", savedDisplayName(saved, target.name))
+                        .put("folder", folder)
+                )
+            } catch (t: Throwable) {
+                Log.e(TAG, "qchatReceivedFileSave failed", t)
+                call.reject("qchatReceivedFileSave failed: ${t.message}", t as? Exception)
             }
         }
     }
 
     /**
-     * Opens a received file in the user's preferred viewer app. Accepts the
-     * MediaStore content:// URI returned by qchatFileExportToDownloads or a
-     * plain app-storage path (exposed through the app's FileProvider). An
-     * optional `mimeType` wins over the extension guess, which knows nothing
-     * about e.g. `.md`.
+     * The name a save actually got: MediaStore (Android 10+) and
+     * DocumentSaver (8/9) rename a duplicate to "name (1).ext".
+     */
+    private fun savedDisplayName(saved: String, fallback: String): String {
+        if (!saved.startsWith("content://")) {
+            return File(saved).name.ifBlank { fallback }
+        }
+        return try {
+            context.contentResolver.query(
+                Uri.parse(saved),
+                arrayOf(OpenableColumns.DISPLAY_NAME),
+                null,
+                null,
+                null
+            )?.use { cursor ->
+                val column = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                if (column >= 0 && cursor.moveToFirst()) cursor.getString(column) else null
+            }?.takeIf { it.isNotBlank() } ?: fallback
+        } catch (t: Throwable) {
+            fallback
+        }
+    }
+
+    /**
+     * Reads one slice of a received file for GO's in-app viewer:
+     * `{ dataBase64, bytesRead, size, eof }`. At most
+     * ReceivedFilePolicy.MAX_READ_BYTES per call, and only from the
+     * received-file directories.
+     */
+    @PluginMethod
+    fun qchatReceivedFileRead(call: PluginCall) {
+        val path = call.getString("path")
+        if (path.isNullOrBlank()) {
+            call.reject("Missing path")
+            return
+        }
+        // getLong only returns values JSON already parsed as Long, and a JS
+        // number under 2^31 arrives as Integer, so read either as a Number.
+        val offset = (call.data.opt("offset") as? Number)?.toLong() ?: 0L
+        val length = (call.data.opt("length") as? Number)?.toInt() ?: 0
+        fileWorker.execute {
+            try {
+                val file = resolveReceivedFile(path)
+                if (file == null) {
+                    call.reject("Received file not found", "NOT_FOUND")
+                    return@execute
+                }
+                val size = file.length()
+                val count = ReceivedFilePolicy.readLength(size, offset, length)
+                if (count < 0) {
+                    call.reject("Invalid offset")
+                    return@execute
+                }
+                val bytes = ByteArray(count)
+                var filled = 0
+                java.io.RandomAccessFile(file, "r").use { raf ->
+                    raf.seek(offset)
+                    while (filled < count) {
+                        val n = raf.read(bytes, filled, count - filled)
+                        if (n < 0) break
+                        filled += n
+                    }
+                }
+                call.resolve(
+                    JSObject()
+                        .put(
+                            "dataBase64",
+                            android.util.Base64.encodeToString(
+                                bytes,
+                                0,
+                                filled,
+                                android.util.Base64.NO_WRAP
+                            )
+                        )
+                        .put("bytesRead", filled)
+                        .put("size", size)
+                        .put("eof", offset + filled >= size)
+                )
+            } catch (t: Throwable) {
+                Log.e(TAG, "qchatReceivedFileRead failed", t)
+                call.reject("qchatReceivedFileRead failed: ${t.message}", t as? Exception)
+            }
+        }
+    }
+
+    /**
+     * Deletes every received file GO still holds (current and legacy
+     * locations), on logout. Files the user saved to the device are not
+     * touched. Resolves `{ ok, deleted }`.
+     */
+    @PluginMethod
+    fun qchatReceivedFilesClear(call: PluginCall) {
+        fileWorker.execute {
+            var deleted = 0
+            for (dir in listOf(receivedFilesDir()) + legacyReceivedFilesDirs()) {
+                try {
+                    if (!dir.exists()) continue
+                    deleted += dir.walkBottomUp().count { it.isFile }
+                    dir.deleteRecursively()
+                } catch (t: Throwable) {
+                    Log.w(TAG, "qchatReceivedFilesClear: could not clear a folder", t)
+                }
+            }
+            call.resolve(JSObject().put("ok", true).put("deleted", deleted))
+        }
+    }
+
+    /**
+     * Opens a received or saved file in the user's preferred viewer app.
+     * Accepts a MediaStore content:// URI (a saved file, or a received file
+     * older builds copied to Downloads) or a plain path (exposed through the
+     * app's FileProvider). An optional `mimeType` wins over the extension
+     * guess, which knows nothing about e.g. `.md`.
+     *
+     * A path must be inside the folders GO's own flows open from
+     * (FileOpenPolicy.openRoots): received files, Share / Open with copies
+     * and, on Android 8/9, GO's saves and older builds' Downloads copies of
+     * received files. GO's own content:// providers are
+     * refused, since the FileProvider exposes all of files/ and cache/
+     * (N-19). Either is rejected with code NOT_FOUND. A page type (HTML,
+     * SVG, XML, any +xml type, script) is handed out as text/plain, judged
+     * by name, given type and the extension's platform type (N-27).
+     *
+     * App packages (.apk, .apks, .xapk, .apkm, .aab) are refused with code
+     * PACKAGE_ARCHIVE_REFUSED: GO may hold the install-unknown-apps grant for
+     * its updater, and a file a peer or a Q-App delivered must not reach the
+     * package installer under it. Only AppUpdatePlugin installs, after its
+     * signer, package and version checks.
      */
     @PluginMethod
     fun qchatFileOpen(call: PluginCall) {
@@ -711,26 +895,57 @@ class ReticulumPlugin : Plugin() {
         }
         try {
             val fileName = call.getString("fileName") ?: rawUri.substringAfterLast('/')
+            // The file's own name, for a path: judged as well as fileName.
+            var localName: String? = null
             val contentUri: Uri = if (rawUri.startsWith("content://")) {
-                Uri.parse(rawUri)
+                val parsed = Uri.parse(rawUri)
+                if (FileOpenPolicy.isOwnAuthority(parsed.authority, context.packageName)) {
+                    call.reject("File not found", "NOT_FOUND")
+                    return
+                }
+                parsed
             } else {
-                val file = File(
-                    if (rawUri.startsWith("file://")) Uri.parse(rawUri).path ?: rawUri
-                    else rawUri
-                )
-                if (!file.isFile) throw IllegalStateException("File not found")
+                val file = resolveFileInside(rawUri, openFileRoots())
+                if (file == null) {
+                    call.reject("File not found", "NOT_FOUND")
+                    return
+                }
+                localName = file.name
                 androidx.core.content.FileProvider.getUriForFile(
                     context,
                     "${context.packageName}.fileprovider",
                     file
                 )
             }
+            if (SavedFileOpenGuard.isPackageArchive(
+                    context,
+                    contentUri,
+                    rawUri,
+                    fileName,
+                    call.getString("mimeType")
+                )
+            ) {
+                call.reject(
+                    "GO does not open app packages",
+                    PackageArchivePolicy.REFUSED_CODE
+                )
+                return
+            }
             val extension = fileName.substringAfterLast('.', "").lowercase()
-            val mimeType = call.getString("mimeType")
+            val guessedType = call.getString("mimeType")
                 ?.takeIf { it.isNotBlank() && it != "application/octet-stream" }
                 ?: android.webkit.MimeTypeMap.getSingleton()
                     .getMimeTypeFromExtension(extension)
                 ?: "*/*"
+            val mimeType = SavedFileOpenGuard.viewType(
+                context,
+                contentUri,
+                FileOpenPolicy.openType(
+                    arrayOf(fileName, localName),
+                    guessedType,
+                    DocumentSaver.EXTENSION_TYPES
+                )
+            )
             val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
                 setDataAndType(contentUri, mimeType)
                 addFlags(
@@ -782,10 +997,16 @@ class ReticulumPlugin : Plugin() {
         }
     }
 
+    /**
+     * A peer picks the name of every file it sends. SavedFilePolicy.cleanName
+     * removes control, bidi and other invisible characters (so
+     * "invoice[RLO]fdp.apk" cannot read as "invoice.pdf"), turns path
+     * separators and characters storage refuses into "_", drops leading dots
+     * and shortens long names while keeping the extension.
+     */
     private fun sanitizeFileName(name: String): String {
-        val trimmed = name.trim().replace(Regex("[/\\\\\u0000]"), "_")
-        val safe = trimmed.ifBlank { "shared-file" }
-        return if (safe.length > 200) safe.takeLast(200) else safe
+        if (name.isBlank()) return "shared-file"
+        return SavedFilePolicy.cleanName(name)
     }
 
     @PluginMethod

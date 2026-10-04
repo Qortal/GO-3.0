@@ -11,11 +11,15 @@ import '../../i18n/i18n';
 const native = vi.hoisted(() => ({
   android: true,
   listeners: {} as Record<string, (event: any) => void>,
+  prefs: new Map<string, string>(),
   plugin: {
     getBackgroundSyncState: vi.fn(),
     setBackgroundSyncMode: vi.fn(),
     acknowledgeVendorFreezeHint: vi.fn(),
+    isIgnoringBatteryOptimizations: vi.fn(),
+    requestIgnoreBatteryOptimizations: vi.fn(),
     openAppBatterySettings: vi.fn(),
+    openVendorBatterySettings: vi.fn(),
     addListener: vi.fn(),
   },
 }));
@@ -34,16 +38,28 @@ vi.mock('@capacitor/core', async (importOriginal) => {
 vi.mock('../../plugins/QortalBackground', () => ({
   QortalBackground: native.plugin,
 }));
-vi.mock('../../utils/openExternalHttp', () => ({
-  openHttpUrlExternally: vi.fn(() => true),
+vi.mock('@capacitor/preferences', () => ({
+  Preferences: {
+    get: vi.fn(async ({ key }: { key: string }) => ({
+      value: native.prefs.get(key) ?? null,
+    })),
+    set: vi.fn(async ({ key, value }: { key: string; value: string }) => {
+      native.prefs.set(key, value);
+    }),
+  },
 }));
 
 import { MobileBackgroundSyncSetting } from './MobileBackgroundSyncSetting';
+import { normalizeBackgroundSyncState } from './backgroundSync';
+import { initialUiState } from './vendorFreezeHintPolicy';
 import {
-  dontKillMyAppUrl,
-  normalizeBackgroundSyncState,
-} from './backgroundSync';
-import { openHttpUrlExternally } from '../../utils/openExternalHttp';
+  VENDOR_FREEZE_HINT_PREFS_KEY,
+  resetVendorFreezeHintStoreForTests,
+  startVendorFreezeHintStore,
+} from './vendorFreezeHintStore';
+
+const HOUR = 60 * 60_000;
+const DAY = 24 * HOUR;
 
 const baseState = {
   mode: 'charging',
@@ -58,16 +74,6 @@ const baseState = {
 };
 
 describe('backgroundSync helpers', () => {
-  it('links known vendors and aliases, else the general page', () => {
-    expect(dontKillMyAppUrl('vivo')).toBe('https://dontkillmyapp.com/vivo');
-    expect(dontKillMyAppUrl('Xiaomi')).toBe('https://dontkillmyapp.com/xiaomi');
-    expect(dontKillMyAppUrl('HMD Global')).toBe(
-      'https://dontkillmyapp.com/nokia'
-    );
-    expect(dontKillMyAppUrl('Acme')).toBe('https://dontkillmyapp.com/general');
-    expect(dontKillMyAppUrl('')).toBe('https://dontkillmyapp.com/general');
-  });
-
   it('defaults a missing or unknown mode to charging', () => {
     expect(normalizeBackgroundSyncState({})?.mode).toBe('charging');
     expect(normalizeBackgroundSyncState({ mode: 'bogus' })?.mode).toBe(
@@ -77,10 +83,38 @@ describe('backgroundSync helpers', () => {
   });
 });
 
+/** Two 6-hour freezes on the charger in the last two nights. */
+const twoNights = () => [
+  {
+    at: Date.now() - 2 * DAY,
+    gapMs: 6 * HOUR,
+    ignoring: false,
+    charging: true,
+  },
+  { at: Date.now() - DAY, gapMs: 6 * HOUR, ignoring: false, charging: true },
+];
+
+/** The app-wide store, as MobileBackgroundSetup starts it. */
+const startStore = async (ui: Record<string, unknown> = {}) => {
+  native.prefs.set(
+    VENDOR_FREEZE_HINT_PREFS_KEY,
+    JSON.stringify({ ...initialUiState(Date.now() - 30 * DAY), ...ui })
+  );
+  const stop = startVendorFreezeHintStore();
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+  return stop;
+};
+
 describe('MobileBackgroundSyncSetting', () => {
+  let stopStore: (() => void) | null = null;
+
   beforeEach(() => {
+    resetVendorFreezeHintStoreForTests();
     native.android = true;
     native.listeners = {};
+    native.prefs.clear();
     // Mirrors the native side: a successful write is what the next read returns.
     let stored = { ...baseState };
     native.plugin.getBackgroundSyncState.mockImplementation(async () => ({
@@ -93,7 +127,16 @@ describe('MobileBackgroundSyncSetting', () => {
       }
     );
     native.plugin.acknowledgeVendorFreezeHint.mockResolvedValue({ ok: true });
+    native.plugin.isIgnoringBatteryOptimizations.mockResolvedValue({
+      ignoring: false,
+    });
+    native.plugin.requestIgnoreBatteryOptimizations.mockResolvedValue({
+      success: true,
+    });
     native.plugin.openAppBatterySettings.mockResolvedValue({ success: true });
+    native.plugin.openVendorBatterySettings.mockResolvedValue({
+      opened: 'vendor',
+    });
     native.plugin.addListener.mockImplementation(
       async (name: string, fn: (event: any) => void) => {
         native.listeners[name] = fn;
@@ -102,6 +145,9 @@ describe('MobileBackgroundSyncSetting', () => {
     );
   });
   afterEach(() => {
+    stopStore?.();
+    stopStore = null;
+    resetVendorFreezeHintStoreForTests();
     vi.clearAllMocks();
   });
 
@@ -227,28 +273,6 @@ describe('MobileBackgroundSyncSetting', () => {
     ).not.toBeInTheDocument();
   });
 
-  it('ignores a read that raced a dismiss', async () => {
-    native.plugin.getBackgroundSyncState.mockResolvedValue({
-      ...baseState,
-      vendorFreezeHintPending: true,
-    });
-    render(<MobileBackgroundSyncSetting />);
-    await screen.findByText(/stopped GO/);
-
-    let resolveRead: (value: unknown) => void = () => {};
-    native.plugin.getBackgroundSyncState.mockImplementationOnce(
-      () => new Promise((resolve) => (resolveRead = resolve))
-    );
-    act(() => {
-      document.dispatchEvent(new Event('visibilitychange'));
-    });
-    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
-    await act(async () => {
-      resolveRead({ ...baseState, vendorFreezeHintPending: true });
-    });
-    expect(screen.queryByText(/stopped GO/)).not.toBeInTheDocument();
-  });
-
   it('ignores a read that raced a mode change', async () => {
     render(<MobileBackgroundSyncSetting />);
     await screen.findByRole('radio', { name: 'While charging' });
@@ -273,46 +297,115 @@ describe('MobileBackgroundSyncSetting', () => {
     );
   });
 
-  it('shows the vendor-freeze notice from state and dismisses it', async () => {
+  it('shows no stop notice while nothing was stopped', async () => {
+    stopStore = await startStore();
+    render(<MobileBackgroundSyncSetting />);
+    await screen.findByRole('radio', { name: 'While charging' });
+    expect(
+      screen.queryByText('GO was stopped in the background')
+    ).not.toBeInTheDocument();
+  });
+
+  it('shows the stop facts and the brand steps from the store, in place', async () => {
     native.plugin.getBackgroundSyncState.mockResolvedValue({
       ...baseState,
-      vendorFreezeHintPending: true,
-      vendorFreezeCount: 2,
+      vendorFreezeRecent: twoNights(),
+      ignoringBatteryOptimizations: false,
     });
+    stopStore = await startStore();
     render(<MobileBackgroundSyncSetting />);
     expect(
-      await screen.findByText(/Your vivo phone stopped GO/)
+      await screen.findByText('GO was stopped in the background')
     ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'Your vivo phone stopped GO 2 times in the last 7 days while background sync was on.'
+      )
+    ).toBeInTheDocument();
+    // In the settings: no X, no alert, never a dialog, no outside website.
+    expect(
+      screen.queryByRole('button', { name: 'Dismiss' })
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toMatch(/dontkillmyapp/i);
 
-    fireEvent.click(screen.getByRole('button', { name: /Step-by-step guide/ }));
-    expect(openHttpUrlExternally).toHaveBeenCalledWith(
-      'https://dontkillmyapp.com/vivo'
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: 'How to allow it on your vivo / iQOO',
+      })
+    );
+    expect(
+      screen.getByText(
+        'Open Settings > Battery > "Background power consumption management".'
+      )
+    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        JSON.parse(native.prefs.get(VENDOR_FREEZE_HINT_PREFS_KEY) ?? '{}')
+          .cooldownFrom
+      ).toEqual(expect.any(Number))
     );
 
     fireEvent.click(
       screen.getByRole('button', { name: 'Open battery settings' })
     );
-    expect(native.plugin.openAppBatterySettings).toHaveBeenCalled();
-
-    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
-    expect(native.plugin.acknowledgeVendorFreezeHint).toHaveBeenCalled();
-    expect(screen.queryByText(/stopped GO/)).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(native.plugin.openVendorBatterySettings).toHaveBeenCalled()
+    );
   });
 
-  it('opens the notice when the native event arrives', async () => {
+  it('hides the stop notice at once when background sync is turned off', async () => {
+    let stored: Record<string, unknown> = {
+      ...baseState,
+      vendorFreezeRecent: twoNights(),
+      ignoringBatteryOptimizations: false,
+    };
+    native.plugin.getBackgroundSyncState.mockImplementation(async () => ({
+      ...stored,
+    }));
+    native.plugin.setBackgroundSyncMode.mockImplementation(
+      async ({ mode }: { mode: string }) => {
+        stored = { ...stored, mode };
+        return { ok: true };
+      }
+    );
+    stopStore = await startStore();
     render(<MobileBackgroundSyncSetting />);
-    await screen.findByRole('radio', { name: 'Off' });
-    expect(screen.queryByText(/stopped GO/)).not.toBeInTheDocument();
+    await screen.findByText('GO was stopped in the background');
 
-    act(() =>
-      native.listeners.vendorFreezeDetected?.({
-        count: 1,
-        lastAt: 1_700_000_000_000,
-        manufacturer: 'samsung',
-      })
+    fireEvent.click(screen.getByRole('radio', { name: 'Off' }));
+    await waitFor(() =>
+      expect(
+        screen.queryByText('GO was stopped in the background')
+      ).not.toBeInTheDocument()
+    );
+  });
+
+  it('turns the bell warnings back on from the settings', async () => {
+    native.plugin.getBackgroundSyncState.mockResolvedValue({
+      ...baseState,
+      vendorFreezeRecent: twoNights(),
+      ignoringBatteryOptimizations: false,
+    });
+    stopStore = await startStore({ dontShowAgain: true });
+    render(<MobileBackgroundSyncSetting />);
+    await screen.findByText('GO was stopped in the background');
+    expect(
+      screen.queryByRole('checkbox', { name: "Don't show again" })
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Turn warnings back on' })
+    );
+    await waitFor(() =>
+      expect(
+        JSON.parse(native.prefs.get(VENDOR_FREEZE_HINT_PREFS_KEY) ?? '{}')
+          .dontShowAgain
+      ).toBe(false)
     );
     expect(
-      screen.getByText(/Your Samsung phone stopped GO/)
-    ).toBeInTheDocument();
+      await screen.findByRole('checkbox', { name: "Don't show again" })
+    ).not.toBeChecked();
   });
 });

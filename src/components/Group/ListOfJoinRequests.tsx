@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Avatar,
   Box,
   Button,
   IconButton,
@@ -28,6 +27,7 @@ import { txListAtom } from '../../atoms/global';
 import { useAtom } from 'jotai';
 import { useTranslation } from 'react-i18next';
 import { hasInvisibleCharacters } from '../../utils/hasInvisibleCharacters';
+import { CachedUserAvatar } from './CachedAvatars';
 
 export const getMemberInvites = async (groupNumber) => {
   const response = await fetch(
@@ -268,17 +268,14 @@ export const ListOfJoinRequests = ({
                         mb: 2,
                       }}
                     >
-                      <Avatar
+                      <CachedUserAvatar
                         alt={displayName}
-                        src={
-                          member?.name
-                            ? `${getBaseApiReact()}/arbitrary/THUMBNAIL/${member.name}/qortal_avatar?async=true`
-                            : undefined
-                        }
+                        name={member?.name}
+                        priority="high"
                         sx={{ width: 40, height: 40 }}
                       >
                         {displayName?.charAt(0)?.toUpperCase() || '?'}
-                      </Avatar>
+                      </CachedUserAvatar>
                       <Box sx={{ minWidth: 0 }}>
                         <Typography
                           variant="subtitle1"
@@ -382,13 +379,9 @@ export const ListOfJoinRequests = ({
                 }}
               >
                 <ListItemAvatar sx={{ minWidth: compact ? 40 : undefined }}>
-                  <Avatar
+                  <CachedUserAvatar
                     alt={member?.name}
-                    src={
-                      member?.name
-                        ? `${getBaseApiReact()}/arbitrary/THUMBNAIL/${member?.name}/qortal_avatar?async=true`
-                        : ''
-                    }
+                    name={member?.name}
                     sx={{
                       height: compact ? 32 : undefined,
                       width: compact ? 32 : undefined,

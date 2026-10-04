@@ -32,6 +32,25 @@ import { createTransaction } from '../transactions/transactions';
 import { decryptChatMessage } from '../utils/decryptChatMessage';
 import { decryptStoredWallet } from '../utils/decryptWallet';
 import { assertForeignKeyEgress } from '../utils/foreignKeyEgress';
+import { joinNodeEndpoint, nodePathSegment } from '../utils/nodeEndpointPath';
+import { nodeOriginForQApp } from '../qortal/qappNodePaths';
+import {
+  assertPublicKeyForAddress,
+  isAddressShaped,
+  isValidQortalAddress,
+  publicKeyBelongsToAddress,
+} from '../encryption/addressKeyCheck';
+import {
+  checkValueTransferFee,
+  InvalidRecipientError,
+  isLookupSafeName,
+  isValidPaymentAddress,
+  parseDecimalAmount,
+  RecipientNameNotFoundError,
+  recipientFromNameRecord,
+  type ResolvedRecipient,
+} from '../transactions/paymentSafety';
+import { submitSignedTransactionOnce } from '../transactions/submitSignedOnce';
 import { getWalletErrorMessage } from '../utils/walletErrorMessages';
 import PhraseWallet from '../utils/generateWallet/phrase-wallet';
 import { deriveAltcoinFieldsInWorker } from '../utils/generateWallet/deriveAltcoinFields';
@@ -461,22 +480,30 @@ export const isUsingLocal = async () => {
   }
 };
 
+/**
+ * Full node URL for `endpoint` (a path starting with "/"), with the node API key
+ * when one is set. Throws for a path the URL parser could rewrite (a "." or ".."
+ * segment, raw or percent-encoded, or a "#" in the path), or one that would end
+ * up on another host, so text from a Q-App cannot steer the key to a different
+ * endpoint (see utils/nodeEndpointPath.ts).
+ */
 export const createEndpoint = async (endpoint, customApi?: string) => {
   if (customApi) {
-    return `${customApi}${endpoint}`;
+    return joinNodeEndpoint(customApi, endpoint);
   }
 
   const apiKey = await getApiKeyFromStorage(); // Retrieve apiKey asynchronously
 
   if (apiKey?.url) {
+    const url = joinNodeEndpoint(apiKey.url, endpoint);
     const key = typeof apiKey.apikey === 'string' ? apiKey.apikey.trim() : '';
     if (!key) {
-      return `${apiKey.url}${endpoint}`;
+      return url;
     }
     const separator = endpoint.includes('?') ? '&' : '?';
-    return `${apiKey.url}${endpoint}${separator}apiKey=${encodeURIComponent(key)}`;
+    return `${url}${separator}apiKey=${encodeURIComponent(key)}`;
   } else {
-    return `${groupApi}${endpoint}`;
+    return joinNodeEndpoint(groupApi, endpoint);
   }
 };
 
@@ -1309,42 +1336,90 @@ export const sendQortFee = async (): Promise<number> => {
   return qortFee;
 };
 
+/**
+ * Address and registered name for a payment or invite recipient given as an
+ * address or a name. An account ("Q…") or AT ("A…") address with a valid
+ * checksum is returned without asking the node; text that decodes like an
+ * address but fails the checksum is a mistyped address and is refused, also
+ * without asking the node. A name is checked before it goes into the
+ * /names/<name> path (encoded), and the owner the node returns must be a valid
+ * Qortal address. Call this before showing a confirmation, show the result,
+ * and sign with the returned address so nothing is looked up again after
+ * approval.
+ */
+export async function resolveRecipient(
+  receiver: unknown
+): Promise<ResolvedRecipient> {
+  const value = typeof receiver === 'string' ? receiver.trim() : '';
+  if (isValidPaymentAddress(value)) return { address: value, name: '' };
+  if (isAddressShaped(value)) throw new InvalidRecipientError();
+  if (!isLookupSafeName(value)) throw new InvalidRecipientError();
+
+  const validApi = await getBaseApi();
+  const response = await fetch(`${validApi}/names/${nodePathSegment(value)}`);
+  let data: unknown = null;
+  try {
+    data = await response.json();
+  } catch {
+    data = null;
+  }
+  if (!response?.ok || !data || (data as { error?: unknown }).error) {
+    throw new RecipientNameNotFoundError();
+  }
+  return recipientFromNameRecord(value, data);
+}
+
 export async function getNameOrAddress(receiver) {
   try {
-    const isAddress = validateAddress(receiver);
-    if (isAddress) {
-      return receiver;
-    }
-    const validApi = await getBaseApi();
-
-    const response = await fetch(validApi + '/names/' + receiver);
-    const data = await response.json();
-    if (data?.owner) return data.owner;
-    if (data?.error) {
-      throw new Error('Name does not exist');
-    }
-    if (!response?.ok) throw new Error('Cannot fetch name');
-    return { error: 'cannot validate address or name' };
+    const { address } = await resolveRecipient(receiver);
+    return address;
   } catch (error) {
     throw new Error(error?.message || 'cannot validate address or name');
   }
 }
 
+/**
+ * The public key of `receiver` (an address), from the node. The key must
+ * derive that address; any other answer is refused, so DMs, Q-Mail and keys
+ * are never encrypted to a key the node substituted.
+ */
 export async function getPublicKey(receiver) {
   try {
+    if (!isValidQortalAddress(receiver)) {
+      throw new Error("Cannot fetch recipient's public key");
+    }
     const validApi = await getBaseApi();
 
     const response = await fetch(validApi + '/addresses/publickey/' + receiver);
     if (!response?.ok) throw new Error("Cannot fetch recipient's public key");
 
-    const data = await response.text();
-    if (!data?.error && data !== 'false') return data;
-    if (data?.error) {
+    const data = (await response.text()).trim();
+    if (!data || data === 'false') {
       throw new Error("Cannot fetch recipient's public key");
     }
-    throw new Error("Cannot fetch recipient's public key");
+    return assertPublicKeyForAddress(data, receiver);
   } catch (error) {
     throw new Error(error?.message || 'cannot validate address or name');
+  }
+}
+
+/**
+ * The node's record of a transaction, or null when it does not know the
+ * signature (or answers with anything that is not that transaction).
+ */
+export async function lookupTransactionBySignature(
+  signature58: string
+): Promise<unknown> {
+  const validApi = await getBaseApi();
+  const response = await fetch(
+    `${validApi}/transactions/signature/${nodePathSegment(signature58)}`
+  );
+  if (!response?.ok) return null;
+  try {
+    const data = await response.json();
+    return data?.signature === signature58 ? data : null;
+  } catch {
+    return null;
   }
 }
 
@@ -1861,6 +1936,12 @@ export async function sendChatDirect({
   }
 
   if (!recipientPublicKey) throw new Error('Cannot retrieve publickey');
+  // A key handed in by the caller (cached in the chat UI or saved with a
+  // friend) is only used when it belongs to the recipient; otherwise fetch the
+  // key again, which getPublicKey checks the same way.
+  if (!publicKeyBelongsToAddress(recipientPublicKey, recipientAddress)) {
+    recipientPublicKey = await getPublicKey(recipientAddress);
+  }
 
   let _reference = new Uint8Array(64);
   self.crypto.getRandomValues(_reference);
@@ -2074,7 +2155,8 @@ export async function createBuyOrderTx({
                 ? [crosschainAtInfo[0].qortalAtAddress]
                 : crosschainAtInfo.map((order) => order.qortalAtAddress),
             senderAddress: address,
-            node: url,
+            // Origin only: `url` carries the node API key in its query.
+            node: nodeOriginForQApp(url),
           },
         };
       } else {
@@ -2087,7 +2169,8 @@ export async function createBuyOrderTx({
                 ? [crosschainAtInfo[0].qortalAtAddress]
                 : crosschainAtInfo.map((order) => order.qortalAtAddress),
             senderAddress: address,
-            node: url,
+            // Origin only: `url` carries the node API key in its query.
+            node: nodeOriginForQApp(url),
           },
         };
       }
@@ -2501,7 +2584,28 @@ export async function kickFromGroup({
   return res;
 }
 
-export async function transferAsset({ amount, recipient, assetId }) {
+const ED25519_SIGNATURE_BYTES = 64;
+
+/**
+ * Builds, signs and submits one TRANSFER_ASSET. `approvedFee` is the fee the
+ * user saw in the confirmation; a higher fee from the node is refused before
+ * signing (see checkValueTransferFee). The transfer is signed exactly once: a
+ * failed submit is followed by a signature lookup and a resend of the same
+ * bytes, never by a new signature (see submitSignedTransactionOnce).
+ */
+export async function transferAsset({
+  amount,
+  recipient,
+  assetId,
+  approvedFee,
+}: {
+  amount: unknown;
+  recipient: string;
+  assetId: unknown;
+  approvedFee?: unknown;
+}) {
+  if (!isValidPaymentAddress(recipient)) throw new InvalidRecipientError();
+  const parsedAmount = parseDecimalAmount(amount);
   const lastReference = await getLastRef();
   const resKeyPair = await getKeyPair();
   const parsedData = resKeyPair;
@@ -2512,21 +2616,29 @@ export async function transferAsset({ amount, recipient, assetId }) {
     publicKey: uint8PublicKey,
   };
   const feeres = await getFee('TRANSFER_ASSET');
+  const fee = checkValueTransferFee(feeres.fee, approvedFee);
 
   const tx = await createTransaction(12, keyPair, {
-    fee: feeres.fee,
+    fee,
     recipient: recipient,
-    amount: amount,
+    amount: parsedAmount.value,
     assetId: assetId,
     lastReference: lastReference,
   });
 
-  const signedBytes = Base58.encode(tx.signedBytes);
-
-  const res = await processTransactionVersion2(signedBytes);
-  if (!res?.signature)
-    throw new Error(res?.message || 'Transaction was not able to be processed');
-  return res;
+  const signedBytes: Uint8Array = tx.signedBytes;
+  return submitSignedTransactionOnce(
+    {
+      signedBytes58: Base58.encode(signedBytes),
+      signature58: Base58.encode(
+        signedBytes.slice(signedBytes.length - ED25519_SIGNATURE_BYTES)
+      ),
+    },
+    {
+      submit: (signedBytes58) => processTransactionVersion2(signedBytes58),
+      lookup: lookupTransactionBySignature,
+    }
+  );
 }
 
 export async function createGroup({
@@ -2739,18 +2851,34 @@ export async function inviteToGroup({
   return res;
 }
 
+/**
+ * Signs and sends a QORT PAYMENT. Callers should resolve the recipient and
+ * read the fee before their confirmation, show both, and pass the resolved
+ * address as `receiver` and the shown fee as `approvedFee`: a higher fee from
+ * the node is then refused before anything is signed. Without `approvedFee`
+ * only the fixed fee ceiling applies.
+ */
 export async function sendCoin(
-  { password, amount, receiver },
+  {
+    password,
+    amount,
+    receiver,
+    approvedFee,
+  }: {
+    password?: string | null;
+    amount: unknown;
+    receiver: string;
+    approvedFee?: unknown;
+  },
   skipConfirmPassword
 ) {
   try {
     if (!validateAddress(receiver) && hasInvisibleCharacters(receiver)) {
       throw new Error('Recipient name contains invisible characters');
     }
+    const parsedAmount = parseDecimalAmount(amount);
 
     const confirmReceiver = await getNameOrAddress(receiver);
-    if (confirmReceiver.error)
-      throw new Error('Invalid receiver address or name');
     const wallet = await getSaveWallet();
     let keyPair = '';
     if (skipConfirmPassword) {
@@ -2774,13 +2902,13 @@ export async function sendCoin(
     }
 
     const lastRef = await getLastRef();
-    const fee = await sendQortFee();
+    const fee = checkValueTransferFee(await sendQortFee(), approvedFee);
     const validApi = null;
 
     const res = await makeTransactionRequest(
       confirmReceiver,
       lastRef,
-      amount,
+      parsedAmount.value,
       fee,
       keyPair,
       validApi

@@ -1,5 +1,6 @@
 import { Box, Modal, useTheme } from '@mui/material';
 import type { MouseEvent, SyntheticEvent } from 'react';
+import { BACK_PRIORITY, useAndroidBack } from '../../utils/androidBack';
 import { appHeighOffsetPx } from '../Desktop/CustomTitleBar';
 
 type AvatarPreviewModalProps = {
@@ -15,6 +16,16 @@ export const AvatarPreviewModal = ({
   src,
 }: AvatarPreviewModalProps) => {
   const theme = useTheme();
+  // Android back closes the picture first, wherever it was opened from (a
+  // list row, a header, a message), before it leaves the screen beneath.
+  useAndroidBack(
+    () => {
+      if (!open || !src) return false;
+      onClose();
+      return true;
+    },
+    { enabled: open && Boolean(src), priority: BACK_PRIORITY.dialog }
+  );
   if (!src) {
     return null;
   }

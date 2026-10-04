@@ -31,6 +31,7 @@ import {
   fetchQtubePosterDataUrl,
   formatMediaBytes,
   formatMediaDate,
+  isSafeQortinoImageSrc,
 } from '../../../qortinoAgent/qdnMedia';
 import {
   extractAudioFromQdnVideo,
@@ -104,7 +105,12 @@ export function QortinoVideoPlayer({ item, onClose }: Props) {
   const percent =
     total > 0 ? Math.min(100, Math.round((local / total) * 100)) : statusName ? 5 : 0;
 
-  const [poster, setPoster] = useState<string | undefined>(item.thumbnailUrl);
+  // N-43: a poster URL from QDN metadata may point at any server; only one
+  // that cannot reach a third party is shown.
+  const safeThumbnail = isSafeQortinoImageSrc(item.thumbnailUrl)
+    ? item.thumbnailUrl
+    : undefined;
+  const [poster, setPoster] = useState<string | undefined>(safeThumbnail);
   const [ready, setReady] = useState(false);
   const [playing, setPlaying] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -139,8 +145,8 @@ export function QortinoVideoPlayer({ item, onClose }: Props) {
     });
     let cancelled = false;
     (async () => {
-      if (item.thumbnailUrl) {
-        setPoster(item.thumbnailUrl);
+      if (safeThumbnail) {
+        setPoster(safeThumbnail);
         return;
       }
       const dataUrl = await fetchQtubePosterDataUrl(item.name, item.identifier, {
@@ -152,7 +158,13 @@ export function QortinoVideoPlayer({ item, onClose }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [downloadResource, item.identifier, item.name, item.service, item.thumbnailUrl]);
+  }, [
+    downloadResource,
+    item.identifier,
+    item.name,
+    item.service,
+    safeThumbnail,
+  ]);
 
   useEffect(() => {
     if (statusName === 'READY') setReady(true);

@@ -7,9 +7,10 @@ buildscript {
         mavenCentral()
     }
     dependencies {
+        // After changing this, run app/release-web-assets-test/run.sh and
+        // check-apk.sh on the new release APK (GO-40).
         classpath 'com.android.tools.build:gradle:8.13.0'
         classpath 'org.jetbrains.kotlin:kotlin-gradle-plugin:2.3.0'
-        classpath 'com.google.gms:google-services:4.4.2'
         // Chaquopy: embeds CPython so the proven Qortal RNS presence bridge
         // (electron/resources/presence_bridge.py) runs natively on Android.
         classpath 'com.chaquo.python:gradle:17.0.0'

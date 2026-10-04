@@ -10,10 +10,7 @@ import {
 } from '@mui/material';
 import { alpha } from '@mui/material/styles';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
-import {
-  SAFE_AREA_BOTTOM,
-  SAFE_AREA_TOP,
-} from '../../../utils/mobileSafeArea';
+import { SAFE_AREA_BOTTOM, SAFE_AREA_TOP } from '../../../utils/mobileSafeArea';
 import DownloadRoundedIcon from '@mui/icons-material/DownloadRounded';
 import InsertDriveFileRoundedIcon from '@mui/icons-material/InsertDriveFileRounded';
 import PictureAsPdfRoundedIcon from '@mui/icons-material/PictureAsPdfRounded';
@@ -21,18 +18,16 @@ import PlayArrowRoundedIcon from '@mui/icons-material/PlayArrowRounded';
 import { QORTAL_APP_CONTEXT } from '../../../App';
 import { executeEvent } from '../../../utils/events';
 import {
+  blobLooksLikePdf,
   buildMediaThumbUrl,
   fetchQdnImageObjectUrl,
   fetchQtubePosterDataUrl,
   formatMediaBytes,
   formatMediaDate,
+  isSafeQortinoImageSrc,
   waitForQdnResourceReady,
   type QdnMediaItem,
 } from '../../../qortinoAgent/qdnMedia';
-import {
-  fetchPdfFirstPageThumbObjectUrl,
-  itemLooksLikePdfDocument,
-} from '../../../qortinoAgent/pdfFirstPageThumb';
 import { saveQdnMediaToDevice } from '../../../qortinoAgent/qortinoMediaActions';
 import {
   formatShelfShareText,
@@ -88,7 +83,8 @@ export function QortinoMediaCards({ items, layout, onSearchUser }: Props) {
     layout === 'grid' ||
     (layout !== 'list' &&
       items.length >= 4 &&
-      items.filter((i) => i.kind === 'image').length >= Math.ceil(items.length * 0.6));
+      items.filter((i) => i.kind === 'image').length >=
+        Math.ceil(items.length * 0.6));
   const { downloadResource } = useContext(QORTAL_APP_CONTEXT);
   const [playingVideo, setPlayingVideo] = useState<QdnMediaItem | null>(null);
   const [playingAudio, setPlayingAudio] = useState<QdnMediaItem | null>(null);
@@ -139,6 +135,9 @@ export function QortinoMediaCards({ items, layout, onSearchUser }: Props) {
     `${item.service}:${item.name}:${item.identifier}`;
 
   // Lazy thumbs: load posters/images as cards enter the viewport (concurrency 2).
+  // Documents get no automatic thumbnail: rendering page 1 meant downloading
+  // and parsing an untrusted PDF from a search result with no tap. A tap
+  // still opens it in the PDF viewer.
   useEffect(() => {
     let cancelled = false;
     const queue: QdnMediaItem[] = [];
@@ -180,37 +179,19 @@ export function QortinoMediaCards({ items, layout, onSearchUser }: Props) {
             if (!cancelled) setThumb(key, buildMediaThumbUrl(item, true));
           }
         } else if (item.kind === 'video') {
-          const poster = await fetchQtubePosterDataUrl(item.name, item.identifier, {
-            downloadResource,
-            timeoutMs: 20_000,
-          });
+          const poster = await fetchQtubePosterDataUrl(
+            item.name,
+            item.identifier,
+            {
+              downloadResource,
+              timeoutMs: 20_000,
+            }
+          );
           if (poster) {
             setThumb(key, poster);
           } else {
             // Soft fallback: try IMAGE sibling / async video poster if node serves one
             setThumb(key, buildMediaThumbUrl(item, true));
-          }
-        } else if (itemLooksLikePdfDocument(item)) {
-          const pageOne = await fetchPdfFirstPageThumbObjectUrl(item, {
-            downloadResource,
-            timeoutMs: 45_000,
-          });
-          if (pageOne && !cancelled) {
-            // Successful page-1 render ⇒ treat as PDF in the card chrome.
-            setEnriched((prev) =>
-              prev.map((row) => {
-                if (keyOf(row) !== key) return row;
-                if (row.thumbnailUrl && row.thumbnailUrl !== pageOne) {
-                  revokeBlobUrl(row.thumbnailUrl);
-                }
-                if (pageOne.startsWith('blob:')) trackBlobUrl(pageOne);
-                return {
-                  ...row,
-                  thumbnailUrl: pageOne,
-                  kind: row.kind === 'file' ? 'pdf' : row.kind,
-                };
-              })
-            );
           }
         }
       } finally {
@@ -228,13 +209,7 @@ export function QortinoMediaCards({ items, layout, onSearchUser }: Props) {
 
     const enqueue = (item: QdnMediaItem) => {
       if (item.thumbnailUrl) return;
-      if (
-        item.kind !== 'image' &&
-        item.kind !== 'video' &&
-        !itemLooksLikePdfDocument(item)
-      ) {
-        return;
-      }
+      if (item.kind !== 'image' && item.kind !== 'video') return;
       const key = keyOf(item);
       if (thumbQueued.current.has(key)) return;
       if (queue.some((q) => keyOf(q) === key)) return;
@@ -321,7 +296,8 @@ export function QortinoMediaCards({ items, layout, onSearchUser }: Props) {
     setLightbox(item);
     // Prefer an already-fetched blob thumb while the full image loads.
     setLightboxUrl(
-      item.thumbnailUrl?.startsWith('blob:') || item.thumbnailUrl?.startsWith('data:')
+      item.thumbnailUrl?.startsWith('blob:') ||
+        item.thumbnailUrl?.startsWith('data:')
         ? item.thumbnailUrl
         : null
     );
@@ -397,11 +373,25 @@ export function QortinoMediaCards({ items, layout, onSearchUser }: Props) {
       const res = await fetch(url, { signal: controller.signal });
       if (!res.ok) throw new Error(`Download failed (${res.status})`);
       const blob = await res.blob();
-      const looksPdf =
+      const namedPdf =
         item.kind === 'pdf' ||
         blob.type.includes('pdf') ||
         /\.pdf(\b|$)/i.test(item.title) ||
         /\.pdf$/i.test(item.identifier);
+      // Most DOCUMENT PDFs have no .pdf cue and come back as a generic type:
+      // their first bytes say so (no extra download).
+      const looksPdf = namedPdf || (await blobLooksLikePdf(blob));
+      if (controller.signal.aborted) return;
+      if (looksPdf && item.kind === 'file') {
+        const key = keyOf(item);
+        setEnriched((prev) =>
+          prev.map((row) =>
+            keyOf(row) === key && row.kind === 'file'
+              ? { ...row, kind: 'pdf' }
+              : row
+          )
+        );
+      }
       if (looksPdf) {
         const pdfBlob =
           blob.type === 'application/pdf'
@@ -462,13 +452,19 @@ export function QortinoMediaCards({ items, layout, onSearchUser }: Props) {
     void openPdfOrFile(item);
   };
 
-  const resolvedVideo =
+  const matchedVideo =
     playingVideo &&
     (enriched.find(
       (i) =>
         i.identifier === playingVideo.identifier && i.name === playingVideo.name
     ) ||
       playingVideo);
+  // The player shows `thumbnailUrl` as its poster: the same rule as the cards.
+  const resolvedVideo =
+    matchedVideo?.thumbnailUrl &&
+    !isSafeQortinoImageSrc(matchedVideo.thumbnailUrl)
+      ? { ...matchedVideo, thumbnailUrl: undefined }
+      : matchedVideo;
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.85, mt: 1.1 }}>
@@ -547,6 +543,10 @@ export function QortinoMediaCards({ items, layout, onSearchUser }: Props) {
       >
         {list.map((item) => {
           const accent = kindColor(item.kind);
+          // Only GO, data:/blob: and Qortal node images: never a third party.
+          const thumbSrc = isSafeQortinoImageSrc(item.thumbnailUrl)
+            ? item.thumbnailUrl
+            : undefined;
           const busy = busyKey === keyOf(item);
           const when = formatMediaDate(item.updated || item.created);
           const size = formatMediaBytes(item.size);
@@ -560,7 +560,10 @@ export function QortinoMediaCards({ items, layout, onSearchUser }: Props) {
                   else cardRefs.current.delete(keyOf(item));
                 }}
                 sx={{
-                  background: alpha(theme.palette.common.black, isDark ? 0.28 : 0.04),
+                  background: alpha(
+                    theme.palette.common.black,
+                    isDark ? 0.28 : 0.04
+                  ),
                   border: `1px solid ${alpha(accent, 0.35)}`,
                   borderRadius: '12px',
                   display: 'flex',
@@ -589,7 +592,7 @@ export function QortinoMediaCards({ items, layout, onSearchUser }: Props) {
                     width: '100%',
                   }}
                 >
-                  {item.thumbnailUrl &&
+                  {thumbSrc &&
                   (item.kind === 'video' ||
                     item.kind === 'image' ||
                     item.kind === 'pdf' ||
@@ -597,7 +600,7 @@ export function QortinoMediaCards({ items, layout, onSearchUser }: Props) {
                     <Box
                       component="img"
                       alt=""
-                      src={item.thumbnailUrl}
+                      src={thumbSrc}
                       referrerPolicy="no-referrer"
                       loading="lazy"
                       decoding="async"
@@ -633,22 +636,36 @@ export function QortinoMediaCards({ items, layout, onSearchUser }: Props) {
                     {busy ? (
                       <CircularProgress size={22} sx={{ color: '#fff' }} />
                     ) : item.kind === 'video' || item.kind === 'audio' ? (
-                      <PlayArrowRoundedIcon sx={{ color: '#fff', fontSize: 34 }} />
+                      <PlayArrowRoundedIcon
+                        sx={{ color: '#fff', fontSize: 34 }}
+                      />
                     ) : (item.kind === 'pdf' || item.kind === 'file') &&
-                      !item.thumbnailUrl ? (
-                      itemLooksLikePdfDocument(item) ? (
-                        <CircularProgress size={18} sx={{ color: '#fff', opacity: 0.85 }} />
-                      ) : item.kind === 'pdf' ? (
-                        <PictureAsPdfRoundedIcon sx={{ color: '#fff', fontSize: 30 }} />
+                      !thumbSrc ? (
+                      item.kind === 'pdf' ? (
+                        <PictureAsPdfRoundedIcon
+                          sx={{ color: '#fff', fontSize: 30 }}
+                        />
                       ) : (
-                        <InsertDriveFileRoundedIcon sx={{ color: '#fff', fontSize: 30 }} />
+                        <InsertDriveFileRoundedIcon
+                          sx={{ color: '#fff', fontSize: 30 }}
+                        />
                       )
-                    ) : item.kind === 'image' && !item.thumbnailUrl ? (
-                      <CircularProgress size={18} sx={{ color: '#fff', opacity: 0.85 }} />
+                    ) : item.kind === 'image' && !thumbSrc ? (
+                      <CircularProgress
+                        size={18}
+                        sx={{ color: '#fff', opacity: 0.85 }}
+                      />
                     ) : null}
                   </Box>
                 </Box>
-                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.2, p: 0.65 }}>
+                <Box
+                  sx={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 0.2,
+                    p: 0.65,
+                  }}
+                >
                   <Box
                     component="button"
                     type="button"
@@ -708,7 +725,10 @@ export function QortinoMediaCards({ items, layout, onSearchUser }: Props) {
                 else cardRefs.current.delete(keyOf(item));
               }}
               sx={{
-                background: alpha(theme.palette.common.black, isDark ? 0.28 : 0.04),
+                background: alpha(
+                  theme.palette.common.black,
+                  isDark ? 0.28 : 0.04
+                ),
                 border: `1px solid ${alpha(accent, 0.35)}`,
                 borderRadius: '12px',
                 display: 'flex',
@@ -740,7 +760,7 @@ export function QortinoMediaCards({ items, layout, onSearchUser }: Props) {
                   width: 96,
                 }}
               >
-                {item.thumbnailUrl &&
+                {thumbSrc &&
                 (item.kind === 'video' ||
                   item.kind === 'image' ||
                   item.kind === 'pdf' ||
@@ -748,7 +768,7 @@ export function QortinoMediaCards({ items, layout, onSearchUser }: Props) {
                   <Box
                     component="img"
                     alt=""
-                    src={item.thumbnailUrl}
+                    src={thumbSrc}
                     referrerPolicy="no-referrer"
                     loading="lazy"
                     decoding="async"
@@ -776,18 +796,25 @@ export function QortinoMediaCards({ items, layout, onSearchUser }: Props) {
                   {busy ? (
                     <CircularProgress size={22} sx={{ color: '#fff' }} />
                   ) : item.kind === 'video' || item.kind === 'audio' ? (
-                    <PlayArrowRoundedIcon sx={{ color: '#fff', fontSize: 30 }} />
+                    <PlayArrowRoundedIcon
+                      sx={{ color: '#fff', fontSize: 30 }}
+                    />
                   ) : (item.kind === 'pdf' || item.kind === 'file') &&
-                    !item.thumbnailUrl ? (
-                    itemLooksLikePdfDocument(item) ? (
-                      <CircularProgress size={16} sx={{ color: '#fff', opacity: 0.85 }} />
-                    ) : item.kind === 'pdf' ? (
-                      <PictureAsPdfRoundedIcon sx={{ color: '#fff', fontSize: 28 }} />
+                    !thumbSrc ? (
+                    item.kind === 'pdf' ? (
+                      <PictureAsPdfRoundedIcon
+                        sx={{ color: '#fff', fontSize: 28 }}
+                      />
                     ) : (
-                      <InsertDriveFileRoundedIcon sx={{ color: '#fff', fontSize: 28 }} />
+                      <InsertDriveFileRoundedIcon
+                        sx={{ color: '#fff', fontSize: 28 }}
+                      />
                     )
-                  ) : item.kind === 'image' && !item.thumbnailUrl ? (
-                    <CircularProgress size={16} sx={{ color: '#fff', opacity: 0.85 }} />
+                  ) : item.kind === 'image' && !thumbSrc ? (
+                    <CircularProgress
+                      size={16}
+                      sx={{ color: '#fff', opacity: 0.85 }}
+                    />
                   ) : null}
                 </Box>
               </Box>
@@ -853,7 +880,9 @@ export function QortinoMediaCards({ items, layout, onSearchUser }: Props) {
                   }}
                 >
                   {busy && progressLabel && busyKey === keyOf(item) ? (
-                    <Typography sx={{ fontSize: '0.7rem' }}>{progressLabel}</Typography>
+                    <Typography sx={{ fontSize: '0.7rem' }}>
+                      {progressLabel}
+                    </Typography>
                   ) : (
                     <>
                       <Box component="span">by</Box>
@@ -878,7 +907,9 @@ export function QortinoMediaCards({ items, layout, onSearchUser }: Props) {
         })}
       </Box>
       {error ? (
-        <Typography sx={{ color: theme.palette.error.main, fontSize: '0.75rem' }}>
+        <Typography
+          sx={{ color: theme.palette.error.main, fontSize: '0.75rem' }}
+        >
           {error}
         </Typography>
       ) : null}
@@ -948,7 +979,9 @@ export function QortinoMediaCards({ items, layout, onSearchUser }: Props) {
               {lightbox?.title}
             </Typography>
             {lightbox ? (
-              <Typography sx={{ color: alpha('#fff', 0.55), fontSize: '0.72rem' }}>
+              <Typography
+                sx={{ color: alpha('#fff', 0.55), fontSize: '0.72rem' }}
+              >
                 {[
                   `by ${lightbox.name}`,
                   formatMediaDate(lightbox.updated || lightbox.created),
@@ -1027,7 +1060,9 @@ export function QortinoMediaCards({ items, layout, onSearchUser }: Props) {
             >
               <Box sx={{ position: 'relative', display: 'inline-flex' }}>
                 <CircularProgress
-                  variant={lightboxProgress > 0 ? 'determinate' : 'indeterminate'}
+                  variant={
+                    lightboxProgress > 0 ? 'determinate' : 'indeterminate'
+                  }
                   value={lightboxProgress}
                   size={64}
                   sx={{ color: '#22D3EE' }}
@@ -1042,13 +1077,21 @@ export function QortinoMediaCards({ items, layout, onSearchUser }: Props) {
                       position: 'absolute',
                     }}
                   >
-                    <Typography sx={{ color: '#fff', fontSize: '0.8rem', fontWeight: 700 }}>
+                    <Typography
+                      sx={{
+                        color: '#fff',
+                        fontSize: '0.8rem',
+                        fontWeight: 700,
+                      }}
+                    >
                       {lightboxProgress}%
                     </Typography>
                   </Box>
                 ) : null}
               </Box>
-              <Typography sx={{ color: alpha('#fff', 0.65), fontSize: '0.8rem' }}>
+              <Typography
+                sx={{ color: alpha('#fff', 0.65), fontSize: '0.8rem' }}
+              >
                 {progressLabel || 'Fetching image from QDN…'}
               </Typography>
             </Box>
@@ -1088,12 +1131,24 @@ export function QortinoMediaCards({ items, layout, onSearchUser }: Props) {
             Save to device
           </Button>
           {imageActionBusy ? (
-            <Typography sx={{ color: alpha('#fff', 0.65), fontSize: '0.75rem', textAlign: 'center' }}>
+            <Typography
+              sx={{
+                color: alpha('#fff', 0.65),
+                fontSize: '0.75rem',
+                textAlign: 'center',
+              }}
+            >
               {imageActionBusy}
             </Typography>
           ) : null}
           {imageToast ? (
-            <Typography sx={{ color: '#C9E8D4', fontSize: '0.75rem', textAlign: 'center' }}>
+            <Typography
+              sx={{
+                color: '#C9E8D4',
+                fontSize: '0.75rem',
+                textAlign: 'center',
+              }}
+            >
               {imageToast}
             </Typography>
           ) : null}

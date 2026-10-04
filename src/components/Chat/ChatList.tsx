@@ -408,6 +408,8 @@ export const ChatList = ({
     }),
     [theme]
   );
+  // Round arrow button: a full 44px touch target on phones.
+  const scrollButtonCompactPx = isMobile ? 44 : 40;
   const scrollButtonCompactSx = useMemo(
     () => ({
       ...scrollButtonSx,
@@ -416,12 +418,12 @@ export const ChatList = ({
       borderRadius: '50%',
       px: 0,
       py: 0,
-      minWidth: 40,
-      width: 40,
-      height: 40,
+      minWidth: scrollButtonCompactPx,
+      width: scrollButtonCompactPx,
+      height: scrollButtonCompactPx,
       '& .MuiButton-startIcon': { margin: 0 },
     }),
-    [scrollButtonSx]
+    [scrollButtonSx, scrollButtonCompactPx]
   );
   // Phones don't have room for a labelled pill floating over the thread.
   const useCompactScrollButton = compactScrollButton || isMobile;

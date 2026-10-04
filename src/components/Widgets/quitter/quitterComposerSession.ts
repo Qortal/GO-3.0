@@ -6,7 +6,11 @@ import type {
 import type { LibraryGif } from '../../Chat/gifs/libraryGifs';
 import type { TorqDocNode } from './torqRichText';
 
-export type ComposerTarget = 'quitter' | 'torq';
+export {
+  readComposerTarget,
+  writeComposerTarget,
+  type ComposerTarget,
+} from './composerTarget';
 
 export type SessionImageDraft = {
   id: string;
@@ -17,6 +21,13 @@ export type SessionImageDraft = {
 export type SessionFileDraft = {
   id: string;
   file: File;
+  /** Shown on the post's file card; defaults to the file name. */
+  title?: string;
+  /** Published file name; defaults to the picked file's name. */
+  filename?: string;
+  /** Cover picture, already shrunk for publishing. */
+  thumbnail?: File;
+  thumbnailPreview?: string;
 };
 
 export type SessionVideoDraft = {
@@ -99,31 +110,15 @@ export function clearQuitterComposerSession(): void {
   session.images.forEach((img) => {
     if (img.previewUrl.startsWith('blob:')) URL.revokeObjectURL(img.previewUrl);
   });
+  session.files.forEach((item) => {
+    if (item.thumbnailPreview?.startsWith('blob:')) {
+      URL.revokeObjectURL(item.thumbnailPreview);
+    }
+  });
   if (session.video?.previewUrl?.startsWith('blob:')) {
     URL.revokeObjectURL(session.video.previewUrl);
   }
   session.compressJob?.cancel();
   session = emptySession();
   listeners.forEach((listener) => listener());
-}
-
-const TARGET_STORAGE_KEY = 'go-home-composer-target';
-
-/** Quitter or Torq, as the user last chose it (survives restarts). */
-export function readComposerTarget(): ComposerTarget {
-  try {
-    return localStorage.getItem(TARGET_STORAGE_KEY) === 'torq'
-      ? 'torq'
-      : 'quitter';
-  } catch {
-    return 'quitter';
-  }
-}
-
-export function writeComposerTarget(target: ComposerTarget): void {
-  try {
-    localStorage.setItem(TARGET_STORAGE_KEY, target);
-  } catch {
-    // private mode / quota — the choice just won't persist
-  }
 }

@@ -27,6 +27,14 @@ import {
 } from './QAppWidgetContainer';
 import { QuitterFeedCard } from './quitter/QuitterFeedCard';
 import {
+  composerAppName,
+  useComposerTarget,
+} from './quitter/composerTarget';
+import {
+  fetchTorqHiddenUsers,
+  hiddenUserKey,
+} from './quitter/torqHiddenUsers';
+import {
   fetchQuitterFeedPage,
   fetchQuitterFollowedNames,
 } from './quitter/quitterFeedApi';
@@ -177,6 +185,8 @@ export const QuitterFeedWidget = ({
   const { t } = useTranslation('core');
   const userInfo = useAtomValue(userInfoAtom);
   const [feedCache, setFeedCache] = useAtom(quitterDashboardFeedCacheAtom);
+  // Torq posts are Quitter posts: same feed, shown and opened in Torq.
+  const app = composerAppName(useComposerTarget());
   const isCompact = displayMode === 'compact';
   const currentUserName =
     typeof userInfo?.name === 'string' && userInfo.name.trim().length > 0
@@ -204,7 +214,13 @@ export const QuitterFeedWidget = ({
   const activeFeedRequestIdRef = useRef(0);
   const activeUpdateRequestIdRef = useRef(0);
   const isUpdateCheckInFlightRef = useRef(false);
-  const feedKey = `${feedMode}:${currentUserName ?? ''}`;
+  // The app is part of the key: Torq's feed leaves out its hidden users.
+  const feedKey = `${feedMode}:${app}:${currentUserName ?? ''}`;
+  const isTorqFeed = app === 'Torq';
+  const [torqHiddenKeys, setTorqHiddenKeys] = useState<Set<string>>(
+    () => new Set()
+  );
+  const forceHiddenRefreshRef = useRef(false);
 
   const cacheMatches = feedCache?.feedKey === feedKey;
   const items = cacheMatches ? feedCache.items : [];
@@ -313,6 +329,26 @@ export const QuitterFeedWidget = ({
     };
   }, [revealedItemIds]);
 
+  /** Torq's hidden users for this account; [] for Quitter. */
+  const resolveHiddenAuthors = useEffectEvent(
+    async (signal: AbortSignal): Promise<string[]> => {
+      if (!isTorqFeed || !currentUserName) return [];
+      const force = forceHiddenRefreshRef.current;
+      forceHiddenRefreshRef.current = false;
+      const names = await fetchTorqHiddenUsers(currentUserName, {
+        force,
+        signal,
+      });
+      const keys = new Set(names.map(hiddenUserKey));
+      setTorqHiddenKeys((prev) =>
+        prev.size === keys.size && [...keys].every((key) => prev.has(key))
+          ? prev
+          : keys
+      );
+      return names;
+    }
+  );
+
   const fetchFeedPageForMode = useEffectEvent(
     async (
       signal: AbortSignal,
@@ -329,6 +365,7 @@ export const QuitterFeedWidget = ({
           signal,
           FOLLOWING_LOAD_TIMEOUT_MS,
           async (timedSignal) => {
+            const hiddenAuthors = resolveHiddenAuthors(timedSignal);
             const followedNames = await fetchQuitterFollowedNames(
               currentUserName,
               timedSignal
@@ -344,6 +381,7 @@ export const QuitterFeedWidget = ({
 
             return fetchQuitterFeedPage({
               allowedAuthors: followedNames,
+              hiddenAuthors: await hiddenAuthors,
               itemLimit: requestedItemLimit,
               offset: 0,
               searchLimit,
@@ -363,6 +401,7 @@ export const QuitterFeedWidget = ({
       }
 
       return fetchQuitterFeedPage({
+        hiddenAuthors: await resolveHiddenAuthors(signal),
         itemLimit: requestedItemLimit,
         offset: 0,
         searchLimit,
@@ -411,6 +450,7 @@ export const QuitterFeedWidget = ({
               signal,
               FOLLOWING_LOAD_TIMEOUT_MS,
               async (timedSignal) => {
+                const hiddenAuthors = resolveHiddenAuthors(timedSignal);
                 const followedNames = await fetchQuitterFollowedNames(
                   currentUserName,
                   timedSignal
@@ -429,6 +469,7 @@ export const QuitterFeedWidget = ({
 
                 const page = await fetchQuitterFeedPage({
                   allowedAuthors: followedNames,
+                  hiddenAuthors: await hiddenAuthors,
                   itemLimit: initialBatchSize,
                   offset: 0,
                   searchLimit,
@@ -494,8 +535,8 @@ export const QuitterFeedWidget = ({
           error instanceof FeedLoadTimeoutError
             ? error.message
             : resolvedFeedMode === 'following'
-              ? t('quitter_feed.error_following')
-              : t('quitter_feed.error_generic');
+              ? t('quitter_feed.error_following', { app })
+              : t('quitter_feed.error_generic', { app });
         const nextCache: QuitterDashboardFeedCache = {
           ...emptyCacheForKey(requestFeedKey),
           error: message,
@@ -630,6 +671,8 @@ export const QuitterFeedWidget = ({
       pendingItemsRef.current = snapshot.pendingItems;
       setIsInitialLoading(false);
       setRevealedItemIds([]);
+      // No fetch now, but users hidden in Torq since must still go.
+      void resolveHiddenAuthors(controller.signal);
       return () => {
         controller.abort();
       };
@@ -651,6 +694,8 @@ export const QuitterFeedWidget = ({
     }
 
     previousRefreshTokenRef.current = refreshToken;
+    // A manual refresh also picks up hidden users saved in Torq since.
+    forceHiddenRefreshRef.current = true;
 
     if (isInitialLoading || initialFeedState === 'loading') {
       return undefined;
@@ -727,17 +772,46 @@ export const QuitterFeedWidget = ({
     };
   }, [feedMode, feedKey, initialFeedState, items.length]);
 
-  const handleOpenPost = useCallback((item: QuitterFeedItem) => {
-    executeEvent('addTab', {
-      data: {
-        identifier: '',
-        name: 'Quitter',
-        path: `post/${encodeURIComponent(item.author)}/${encodeURIComponent(item.identifier)}`,
-        service: 'APP',
-      },
-    });
-    executeEvent('open-apps-mode', {});
-  }, []);
+  // Posts already on screen (a cached feed, or a list saved in Torq since)
+  // leave as soon as their author turns out to be hidden.
+  useEffect(() => {
+    if (!isTorqFeed || torqHiddenKeys.size === 0) return;
+    const isHidden = (item: QuitterFeedItem) =>
+      torqHiddenKeys.has(hiddenUserKey(item.author));
+    if (itemsRef.current.some(isHidden)) {
+      commitVisibleItems(itemsRef.current.filter((item) => !isHidden(item)));
+    }
+    if (pendingItemsRef.current.some(isHidden)) {
+      commitPendingItems(
+        pendingItemsRef.current.filter((item) => !isHidden(item))
+      );
+    }
+  }, [
+    commitPendingItems,
+    commitVisibleItems,
+    feedCache,
+    isTorqFeed,
+    torqHiddenKeys,
+  ]);
+
+  useEffect(() => {
+    setTorqHiddenKeys((prev) => (prev.size === 0 ? prev : new Set()));
+  }, [currentUserName, isTorqFeed]);
+
+  const handleOpenPost = useCallback(
+    (item: QuitterFeedItem) => {
+      executeEvent('addTab', {
+        data: {
+          identifier: '',
+          name: app,
+          path: `post/${encodeURIComponent(item.author)}/${encodeURIComponent(item.identifier)}`,
+          service: 'APP',
+        },
+      });
+      executeEvent('open-apps-mode', {});
+    },
+    [app]
+  );
 
   const handleApplyPendingPosts = useCallback(() => {
     const nextPendingItems = pendingItemsRef.current;
@@ -846,10 +920,10 @@ export const QuitterFeedWidget = ({
       return t('quitter_feed.empty_message_no_name');
     }
     if (followingEmptyReason === 'no-following') {
-      return t('quitter_feed.empty_message_no_following');
+      return t('quitter_feed.empty_message_no_following', { app });
     }
-    return t('quitter_feed.empty_message_no_posts');
-  }, [followingEmptyReason, isFollowingFeed, t]);
+    return t('quitter_feed.empty_message_no_posts', { app });
+  }, [app, followingEmptyReason, isFollowingFeed, t]);
   const showStatePanel =
     showInitialLoadingState || showInitialErrorState || showEmptyState;
   const segmentedToggleSx = {
@@ -1191,6 +1265,7 @@ export const QuitterFeedWidget = ({
                         >
                           <Box sx={revealSx}>
                             <QuitterFeedCard
+                              app={app}
                               displayMode={displayMode}
                               item={item}
                               onOpen={() => {

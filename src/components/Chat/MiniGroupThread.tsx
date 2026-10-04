@@ -33,7 +33,7 @@ import {
 } from '../../qdn/encryption/group-encryption';
 import { executeEvent } from '../../utils/events';
 import { coreWebsocketPingMs } from '../../utils/coreWebsocketPing';
-import { buildGroupAvatarUrl } from '../../utils/groupAvatarUrl';
+import { useQdnGroupAvatar } from '../../lib/qdnAvatars';
 import { groupsOwnerNamesSelector } from '../../atoms/global';
 import { useAtomValue } from 'jotai';
 import { ChatList } from './ChatList';
@@ -183,7 +183,6 @@ export function MiniGroupThread({
   onBack,
   onOpenInApp,
   getTimestampEnterChat,
-  getUserAvatarUrl,
 }: {
   group: any;
   isPrivate: boolean | null;
@@ -193,7 +192,6 @@ export function MiniGroupThread({
   onBack: () => void;
   onOpenInApp?: () => void;
   getTimestampEnterChat: () => Promise<any>;
-  getUserAvatarUrl: (name?: string) => string;
 }) {
   const theme = useTheme();
   const { t } = useTranslation(['core', 'group']);
@@ -762,7 +760,7 @@ export function MiniGroupThread({
     group?.ownerPrimaryName ||
     group?.ownerName ||
     null;
-  const avatarUrl = buildGroupAvatarUrl(ownerName, groupId);
+  const { src: avatarUrl } = useQdnGroupAvatar(ownerName, groupId);
 
   if (keyError && isPrivate !== false) {
     return (

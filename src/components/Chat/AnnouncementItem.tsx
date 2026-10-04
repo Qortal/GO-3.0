@@ -10,6 +10,7 @@ import { CustomLoader } from '../../common/CustomLoader';
 import { getArbitraryEndpointReact, getBaseApiReact } from '../../App';
 import { WrapperUserAction } from '../WrapperUserAction';
 import { useTranslation } from 'react-i18next';
+import { useQdnAvatar } from '../../lib/qdnAvatars';
 
 export const AnnouncementItem = ({
   message,
@@ -21,6 +22,7 @@ export const AnnouncementItem = ({
   const theme = useTheme();
   const { t } = useTranslation(['auth', 'core', 'group', 'question']);
   const [commentLength, setCommentLength] = useState(0);
+  const { src: authorAvatarSrc } = useQdnAvatar(message?.name);
 
   const getNumberOfComments = useCallback(async () => {
     try {
@@ -86,7 +88,7 @@ export const AnnouncementItem = ({
               color: theme.palette.text.primary,
             }}
             alt={message?.name}
-            src={`${getBaseApiReact()}/arbitrary/THUMBNAIL/${message?.name}/qortal_avatar?async=true`}
+            src={authorAvatarSrc}
           >
             {message?.name?.charAt(0)}
           </Avatar>

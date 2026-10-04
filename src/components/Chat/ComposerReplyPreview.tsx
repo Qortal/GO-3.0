@@ -1,7 +1,19 @@
 import { useMemo } from 'react';
-import { alpha, Box, IconButton, Typography, useTheme } from '@mui/material';
+import {
+  alpha,
+  Box,
+  IconButton,
+  Typography,
+  useMediaQuery,
+  useTheme,
+} from '@mui/material';
 import CloseIcon from '@mui/icons-material/Close';
 import ReplyRoundedIcon from '@mui/icons-material/ReplyRounded';
+import { useTranslation } from 'react-i18next';
+import {
+  COMPOSER_DISMISS_BUTTON_PX,
+  COMPOSER_DISMISS_ICON_PX,
+} from './composerCornerLayout';
 
 type ComposerReplyPreviewProps = {
   /** The message being replied to. */
@@ -46,6 +58,8 @@ export const ComposerReplyPreview = ({
   rounded = false,
 }: ComposerReplyPreviewProps) => {
   const theme = useTheme();
+  const { t } = useTranslation(['core', 'group']);
+  const isMobile = useMediaQuery(theme.breakpoints.down('md'));
 
   const previewText = useMemo(
     () =>
@@ -66,7 +80,7 @@ export const ComposerReplyPreview = ({
     message?.senderName ||
     message?.sender ||
     message?.senderAddress ||
-    'Unknown';
+    t('core:unknown', { postProcess: 'capitalizeFirstChar' });
 
   return (
     <Box
@@ -160,22 +174,42 @@ export const ComposerReplyPreview = ({
             }}
           >
             {previewText ||
-              (attachmentCount > 0
-                ? attachmentCount > 1
-                  ? `${attachmentCount} attachments`
-                  : 'Attachment'
-                : 'Message')}
+              (attachmentCount > 1
+                ? t('core:composer.attachment_count', {
+                    count: attachmentCount,
+                    postProcess: 'capitalizeFirstChar',
+                  })
+                : attachmentCount === 1
+                  ? t('core:attachment', {
+                      postProcess: 'capitalizeFirstChar',
+                    })
+                  : t('core:message.message', {
+                      postProcess: 'capitalizeFirstChar',
+                    }))}
           </Typography>
         </Box>
       </Box>
 
       <IconButton
-        aria-label="Cancel reply"
+        aria-label={t('group:chat_group.cancel_reply')}
         onClick={onCancel}
         size="small"
-        sx={{ alignSelf: 'flex-start', color: 'text.secondary', flexShrink: 0 }}
+        sx={{
+          alignSelf: 'flex-start',
+          color: 'text.secondary',
+          flexShrink: 0,
+          // A thumb-sized target on phones. It reaches into the strip's
+          // padding rather than making the strip, and the composer, taller.
+          ...(isMobile && {
+            height: COMPOSER_DISMISS_BUTTON_PX,
+            margin: '-4px -4px -4px 0',
+            width: COMPOSER_DISMISS_BUTTON_PX,
+          }),
+        }}
       >
-        <CloseIcon sx={{ fontSize: 17 }} />
+        <CloseIcon
+          sx={{ fontSize: isMobile ? COMPOSER_DISMISS_ICON_PX : 17 }}
+        />
       </IconButton>
     </Box>
   );

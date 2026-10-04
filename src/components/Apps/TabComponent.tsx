@@ -17,8 +17,8 @@ import { alpha } from '@mui/material/styles';
 import { CSS } from '@dnd-kit/utilities';
 import { useSortable } from '@dnd-kit/sortable';
 import { AppsHorizontalTabButton, AppsHorizontalTabLabel } from './Apps-styles';
-import { getBaseApiReact } from '../../App';
 import LogoSelected from '../../assets/svgs/LogoSelected.svg';
+import { useQdnAvatar } from '../../lib/qdnAvatars';
 
 function devTabLabel(app: any): string {
   const base =
@@ -84,6 +84,11 @@ const TabComponent = ({
   const interactionLockRef = tabInteractionLockedRef ?? localInteractionLockRef;
 
   const treatAsDevApp = Boolean(isDevApp);
+  // Cached QDN icon (or the bundled one) of a public app or website tab.
+  const { src: qdnIconSrc } = useQdnAvatar(app?.name, {
+    enabled:
+      !treatAsDevApp && !app?.isPrivate && !app?.privateAppProperties?.logo,
+  });
   const canDuplicate = !app?.internal && !!app?.service;
   const label = treatAsDevApp
     ? devTabLabel(app)
@@ -277,13 +282,7 @@ const TabComponent = ({
             width: '22px',
           }}
           alt={label}
-          src={
-            app?.privateAppProperties?.logo
-              ? app?.privateAppProperties?.logo
-              : `${getBaseApiReact()}/arbitrary/THUMBNAIL/${
-                  app?.name
-                }/qortal_avatar?async=true`
-          }
+          src={app?.privateAppProperties?.logo || qdnIconSrc}
         >
           <img
             style={{

@@ -1,8 +1,6 @@
 import aesjs from 'aes-js';
-import {
-  createEndpoint,
-  getApiKeyFromStorage,
-} from '../background/background.ts';
+import { createEndpoint } from '../background/background.ts';
+import { createNativeNodeRequest } from './nativeNodeRequest';
 import { isCapacitor } from './platform';
 import { qdnResourcePath } from './qdnPath';
 import {
@@ -154,12 +152,6 @@ export async function downloadFromLocation(
       identifier,
     })}`;
 
-    const storedApiKey = await getApiKeyFromStorage().catch(() => null);
-    const nativeApiKey =
-      storedApiKey && typeof storedApiKey === 'object'
-        ? String((storedApiKey as { apikey?: string }).apikey || '').trim()
-        : '';
-
     // Capacitor Android/iOS: the WebView has neither the File System Access
     // API nor working anchor-tag downloads, so both browser fallbacks below
     // silently do nothing. Stream into Documents/Qortal Go via the native
@@ -183,20 +175,18 @@ export async function downloadFromLocation(
             : undefined
         );
 
-        const endpoint = isEncrypted
-          ? await createEndpoint(locationUrl)
-          : await createEndpoint(
-              locationUrl +
-                `?attachment=true&attachmentFilename=${encodeURIComponent(safeFilename)}`
-            );
-
         // Unencrypted content needs nothing from the WebView, so let the native
         // side fetch and write it in one pass rather than shuttling every chunk
-        // across the bridge as base64.
+        // across the bridge as base64. Native HTTP sends the node API key as a
+        // header, so the URL it gets (and may log or show) has none.
         if (!isEncrypted) {
+          const nativeRequest = await createNativeNodeRequest(
+            locationUrl +
+              `?attachment=true&attachmentFilename=${encodeURIComponent(safeFilename)}`
+          );
           const saved = await downloadUrlToMobileDocuments(
             safeFilename,
-            endpoint,
+            nativeRequest.url,
             mimeType,
             announce
               ? (event) =>
@@ -206,7 +196,7 @@ export async function downloadFromLocation(
                     event.totalBytes
                   )
               : undefined,
-            nativeApiKey || undefined
+            nativeRequest.apiKey
           );
           if (announce) {
             finishQdnSaveNotification(
@@ -223,6 +213,7 @@ export async function downloadFromLocation(
           };
         }
 
+        const endpoint = await createEndpoint(locationUrl);
         const response = await fetch(endpoint);
         if (!response.ok) {
           throw new Error(`HTTP ${response.status} from node`);

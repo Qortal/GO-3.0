@@ -113,13 +113,14 @@
     "reload_page": "Seite neu laden",
     "remove": "entfernen",
     "remove_reaction": "Reaktion entfernen",
-    "reply": "reply",
+    "reply": "antworten",
     "resize": "Größe ändern",
     "restore": "wiederherstellen",
     "return": "zurück",
     "return_apps_dashboard": "Kehren Sie zu Apps Dashboard zurück",
     "save": "speichern",
     "save_disk": "Speichern auf der Festplatte",
+    "scan_qr_code": "QR-Code scannen",
     "search": "suchen",
     "search_apps": "Suche nach Apps",
     "search_apps_or_link": "Apps durchsuchen oder qortal://-Link eingeben",
@@ -179,10 +180,47 @@
     "tags": "Tags",
     "updated": "aktualisiert"
   },
+  "app_lock": {
+    "account_still_signed_in": "{{account}} ist weiterhin angemeldet.",
+    "connections_note": "Chats und laufende Anrufe bleiben während der Sperre verbunden.",
+    "fingerprint_cancelled": "Entsperren per Fingerabdruck wurde abgebrochen.",
+    "fingerprint_failed": "Entsperren per Fingerabdruck fehlgeschlagen. Gib stattdessen dein Passwort ein.",
+    "lock_now": "Jetzt sperren",
+    "minimize_window": "Minimieren",
+    "or": "oder",
+    "password_label": "Passwort des Qortal-Kontos",
+    "qapp_request_locked": "GO ist gesperrt. Entsperre es und versuche es erneut.",
+    "retry_wait_one": "Bitte warte {{count}} Sekunde und versuche es erneut.",
+    "retry_wait_other": "Bitte warte {{count}} Sekunden und versuche es erneut.",
+    "still_signed_in": "Du bist weiterhin angemeldet.",
+    "tap_fingerprint": "Tippe, um mit deinem Fingerabdruck zu entsperren",
+    "title": "Qortal Hub ist gesperrt",
+    "unlock": "Entsperren",
+    "unlock_with_fingerprint": "Mit Fingerabdruck entsperren",
+    "unlocking": "Wird entsperrt…",
+    "waiting_for_fingerprint": "Warte auf deinen Fingerabdruck…",
+    "wrong_password": "Dieses Passwort ist nicht korrekt. Bitte versuche es erneut."
+  },
   "app_name": "App -Name",
   "app_other": "Apps",
   "app_private": "Privat",
   "app_service_type": "App -Service -Typ",
+  "approval_dialog": {
+    "app_fee": "App-Gebühr",
+    "decline_all_one": "{{count}} Anfrage dieser App ablehnen",
+    "decline_all_other": "Alle {{count}} Anfragen dieser App ablehnen",
+    "fee": "Gebühr",
+    "foreign_fee": "Fremdgebühr",
+    "internal_app": "Qortal GO (diese App)",
+    "more_waiting_one": "{{count}} weitere Anfrage wartet",
+    "more_waiting_other": "{{count}} weitere Anfragen warten",
+    "qapp_request": "Q-App-Anfrage",
+    "requested_by": "Angefordert von",
+    "session_only": "Berechtigungen nur für diese Sitzung erteilen",
+    "unknown_app": "Unbekannte Q-App",
+    "unknown_app_hint": "GO konnte nicht feststellen, welche Q-App diese Anfrage gesendet hat. Lehne sie ab, außer du hast das gerade selbst angefordert.",
+    "what_you_approve": "Was du genehmigst"
+  },
   "apps_dashboard": "Apps Dashboard",
   "apps_official": "offizielle Apps",
   "aria": {
@@ -210,11 +248,13 @@
       "off": "aus"
     },
     "native": {
+      "battery_pause_text": "GO hat seine Hintergrundverbindung nach 6 Stunden im Akkubetrieb pausiert, um Strom zu sparen. Öffne GO, um wieder zu verbinden.",
       "fgs_timeout_text": "Android hat die Hintergrundverbindung von GO pausiert. Öffne GO, um wieder zu verbinden.",
       "fgs_timeout_title": "GO pausiert",
       "status_paused_text": "Öffne GO, um deine Chats zu synchronisieren.",
       "status_paused_title": "Chat pausiert",
       "status_syncing_background": "Chat wird im Hintergrund synchronisiert",
+      "status_waiting_short": "Nicht gesendet: {{count}}",
       "status_waiting_text": "Nachrichten warten auf den Versand: {{count}}"
     },
     "status": {
@@ -223,12 +263,57 @@
     },
     "title": "Hintergrundsynchronisierung",
     "vendor_freeze": {
-      "body": "Dein {{manufacturer}}-Telefon hat GO im Hintergrund gestoppt, obwohl die Hintergrundsynchronisierung eingeschaltet war. Öffne die Akkueinstellungen des Telefons für GO und erlaube die Hintergrundaktivität.",
-      "body_unknown": "Dein Telefon hat GO im Hintergrund gestoppt, obwohl die Hintergrundsynchronisierung eingeschaltet war. Öffne die Akkueinstellungen des Telefons für GO und erlaube die Hintergrundaktivität.",
+      "allow_in_background": "GO im Hintergrund erlauben",
       "dismiss": "Verwerfen",
-      "guide": "Schritt-für-Schritt-Anleitung (dontkillmyapp.com)",
+      "dont_show_again": "Nicht mehr anzeigen",
+      "exempt_body": "Die Akku-Einschränkungen sind für GO bereits aus, aber dein {{manufacturer}}-Telefon stoppt GO trotzdem, wenn der Bildschirm aus ist. Die Hintergrundsynchronisierung funktioniert bei eingeschaltetem Bildschirm; die Chats holen auf, sobald du GO öffnest.",
+      "exempt_body_unknown": "Die Akku-Einschränkungen sind für GO bereits aus, aber dein Telefon stoppt GO trotzdem, wenn der Bildschirm aus ist. Die Hintergrundsynchronisierung funktioniert bei eingeschaltetem Bildschirm; die Chats holen auf, sobald du GO öffnest.",
+      "impact": "Die Chats haben erst aufgeholt, als du GO wieder geöffnet hast.",
+      "last_stopped": "Zuletzt gestoppt: {{time}}",
       "open_battery_settings": "Akkueinstellungen öffnen",
-      "title": "GO wurde im Hintergrund gestoppt"
+      "open_failed": "Die Einstellungen ließen sich nicht öffnen. Folge den Schritten unten in der Einstellungen-App deines Telefons.",
+      "steps": {
+        "generic": {
+          "step_1": "Öffne Einstellungen > Apps > GO > „Akkunutzung der App“ (oder „Akku“).",
+          "step_2": "Wähle „Nicht eingeschränkt“ (oder aktiviere „Hintergrundnutzung zulassen“)."
+        },
+        "huawei": {
+          "step_1": "Öffne Einstellungen > Akku > „App-Start“.",
+          "step_2": "Suche GO und deaktiviere „Automatisch verwalten“.",
+          "step_3": "Aktiviere „Automatischer Start“, „Sekundärer Start“ und „Im Hintergrund ausführen“."
+        },
+        "note_menu_names": "Die Menünamen können je nach Telefonmodell und Android-Version etwas abweichen.",
+        "note_recents": "Wische GO nicht aus den zuletzt verwendeten Apps weg.",
+        "oppo": {
+          "step_1": "Öffne Einstellungen > Apps > „App-Verwaltung“ > GO.",
+          "step_2": "Tippe auf „Akkunutzung“ und aktiviere „Hintergrundaktivität zulassen“ (und „Automatischen Start zulassen“, falls angezeigt)."
+        },
+        "samsung": {
+          "step_1": "Öffne Einstellungen > Apps > GO > Akku und wähle „Nicht eingeschränkt“.",
+          "step_2": "Achte unter Einstellungen > Akku > „Einschränkungen der Hintergrundnutzung“ darauf, dass GO nicht unter „Apps im Standby-Modus“ oder „Apps im Tiefschlaf“ steht."
+        },
+        "vivo": {
+          "step_1": "Öffne Einstellungen > Akku > „Verwaltung des Stromverbrauchs im Hintergrund“.",
+          "step_2": "Suche GO und wähle „Zulassen“ (oder „Nicht einschränken“).",
+          "step_3": "Aktiviere GO unter Einstellungen > Apps > „Autostart“, falls dein Telefon das hat."
+        },
+        "xiaomi": {
+          "step_1": "Öffne Einstellungen > Apps > „Apps verwalten“ > GO.",
+          "step_2": "Aktiviere „Autostart“.",
+          "step_3": "Tippe auf „Energiesparmodus“ und wähle „Keine Einschränkungen“."
+        }
+      },
+      "steps_toggle": "So erlaubst du es auf deinem {{brand}}",
+      "steps_toggle_generic": "So erlaubst du es auf deinem Telefon",
+      "summary_one": "Dein {{manufacturer}}-Telefon hat GO in den letzten 7 Tagen {{count}}-mal gestoppt, während die Hintergrundsynchronisierung an war.",
+      "summary_other": "Dein {{manufacturer}}-Telefon hat GO in den letzten 7 Tagen {{count}}-mal gestoppt, während die Hintergrundsynchronisierung an war.",
+      "summary_recent": "Dein {{manufacturer}}-Telefon hat GO im Hintergrund gestoppt, während die Hintergrundsynchronisierung an war.",
+      "summary_recent_unknown": "Dein Telefon hat GO im Hintergrund gestoppt, während die Hintergrundsynchronisierung an war.",
+      "summary_unknown_one": "Dein Telefon hat GO in den letzten 7 Tagen {{count}}-mal gestoppt, während die Hintergrundsynchronisierung an war.",
+      "summary_unknown_other": "Dein Telefon hat GO in den letzten 7 Tagen {{count}}-mal gestoppt, während die Hintergrundsynchronisierung an war.",
+      "title": "GO wurde im Hintergrund gestoppt",
+      "warnings_off": "Warnungen dazu in deinen Benachrichtigungen sind ausgeschaltet.",
+      "warnings_on": "Warnungen wieder einschalten"
     }
   },
   "balance": "Gleichgewicht:",
@@ -377,6 +462,16 @@
   "close_quit_completely": "Vollständig beenden",
   "close_window_behavior": "Beim Schließen des Fensters",
   "comment_other": "Kommentare",
+  "composer": {
+    "attachment_count_one": "{{count}} Anhang",
+    "attachment_count_other": "{{count}} Anhänge",
+    "emoji": "Emoji",
+    "expand": "vergrößern",
+    "keyboard": "Tastatur",
+    "shrink": "verkleinern",
+    "title": "Nachricht verfassen",
+    "write_message": "Nachricht schreiben"
+  },
   "contact_other": "Kontakte",
   "core": {
     "block_height": "Blockhöhe",
@@ -437,28 +532,38 @@
   },
   "file_transfer": {
     "dismiss": "Schließen",
+    "downloaded": "Heruntergeladen",
     "downloading_title": "{{filename}} wird heruntergeladen",
     "failed_title": "Download fehlgeschlagen",
     "fetching_title": "{{filename}} wird abgerufen",
+    "file_transfer_fallback": "Dateiübertragung",
     "gathering": "Wird aus QDN gesammelt · {{percent}}%",
     "gathering_chunks": "Wird aus QDN gesammelt · {{percent}}% · {{local}}/{{total}} Teile",
     "gathering_unknown": "Wird aus QDN gesammelt…",
     "hide": "Ausblenden (läuft in den Benachrichtigungen weiter)",
-    "install": "Installieren",
     "looking_for_file": "Datei wird in QDN gesucht…",
     "not_saved_title": "{{filename}} nicht gespeichert",
     "not_saved_tray": "Noch heruntergeladen. Öffne die GO-Benachrichtigungen, um sie zu speichern.",
+    "offer_expired": "Abgelaufen",
     "open": "Öffnen",
     "open_failed": "Keine App auf diesem Telefon kann diese Datei öffnen",
+    "package_not_opened": "GO öffnet und installiert keine App-Pakete. Um GO zu aktualisieren, nutze „GO 3.0 Updates“ im Kontomenü.",
+    "package_saved": "Gespeichert unter {{location}}. GO öffnet keine App-Pakete.",
     "progress": "{{percent}} % · {{size}}",
-    "ready_to_install": "Bereit zur Installation · {{location}}",
     "ready_to_open": "Bereit zum Öffnen · {{location}}",
+    "received_file_gone": "Diese Datei ist nicht mehr auf diesem Gerät. GO entfernt empfangene Dateien beim Abmelden; bitte den Absender, sie erneut zu senden.",
+    "received_file_removed": "Nicht mehr auf diesem Gerät",
+    "received_in_downloads": "Diese Datei ist bereits in deinem Downloads-Ordner.",
+    "received_notification_text": "{{fileName}} ist in GO bereit",
+    "received_notification_title": "Datei empfangen",
+    "received_private_hint": "Privat in GO gespeichert, bis du dich abmeldest",
     "remove": "Aus der Liste entfernen",
     "save": "Speichern",
     "save_error": "Fehler beim Speichern der Datei: {{message}}",
     "save_error_generic": "Fehler beim Speichern der Datei",
     "save_stalled": "Speichern hängt: Der Speicher antwortet nicht mehr",
     "save_success": "Datei gespeichert",
+    "save_to_device": "Auf dem Gerät speichern",
     "saved_title": "{{filename}} gespeichert",
     "saved_to": "Gespeichert unter {{location}}",
     "saving_file": "Datei wird gespeichert…",
@@ -469,7 +574,6 @@
     "stage_gathering": "Wird aus QDN gesammelt",
     "stage_saving": "Wird auf dem Telefon gespeichert",
     "storage_permission": "GO benötigt die Speicherberechtigung, um Dateien im Ordner Documents zu speichern.",
-    "tap_to_install": "Zum Installieren tippen · {{location}}",
     "tap_to_open": "Zum Öffnen tippen · {{location}}"
   },
   "filter": {
@@ -496,7 +600,12 @@
     "checking": "QDN wird geprüft…",
     "error": {
       "fetch_failed": "Die Version konnte nicht abgerufen werden",
-      "timeout": "Das Netzwerk hat die Version nicht rechtzeitig geliefert"
+      "insecure_node": "Diese Node nutzt unverschlüsseltes HTTP, deshalb lädt GO kein Update von ihr. Updates kommen nur über HTTPS oder von einer Node auf diesem Telefon. Wechsle zu einer HTTPS-Node, um zu aktualisieren.",
+      "not_go_build": "Diese Datei ist keine Qortal-GO-Version und wurde nicht installiert.",
+      "not_newer": "Diese Version ist nicht neuer als das GO auf diesem Telefon und wurde nicht installiert.",
+      "timeout": "Das Netzwerk hat die Version nicht rechtzeitig geliefert",
+      "unreadable": "Android konnte diese Datei nicht als App lesen, sie wurde nicht installiert.",
+      "wrong_signer": "Diese Version ist nicht mit demselben Schlüssel signiert wie das GO auf diesem Telefon und wurde nicht installiert."
     },
     "hide_changes": "Änderungen ausblenden",
     "install": "Installieren",
@@ -541,7 +650,8 @@
     "title": "GO 3.0 Updates",
     "update_marker": "GO 3.0-Update verfügbar",
     "versions_missing": "Einige Versionen konnten noch nicht geladen werden ({{count}}). Versuche es später erneut.",
-    "versions_title": "Versionen auf QDN"
+    "versions_title": "Versionen auf QDN",
+    "versions_unreachable": "QDN ist nicht erreichbar. Prüfe die Node-Verbindung und versuche es erneut."
   },
   "group_call": "Gruppenanruf",
   "group_call_blocked": "beende zuerst deinen anderen Anruf",
@@ -623,6 +733,7 @@
       "invalid_zip": "Ungültiges Reißverschluss",
       "long_message_too_many_parts": "Diese Nachricht ist zu lang zum Senden, selbst aufgeteilt in {{maximum}} Nachrichten.",
       "long_message_unsplittable": "Ein Teil dieser Nachricht lässt sich nicht klein genug aufteilen, um gesendet zu werden.",
+      "max_tabs_reached": "Maximale Anzahl an Tabs erreicht. Schließe einen, um einen weiteren zu öffnen.",
       "message_loading": "Fehlerladelademeldung.",
       "message_size": "Ihre Nachricht hat {{ size }} Bytes, maximal erlaubt sind {{ maximum }} Bytes.",
       "minting_account_add": "Es kann kein Münzkonto hinzufügen",
@@ -639,6 +750,7 @@
       "same_foreign_blockchain": "die adresse gehört nicht zur selben fremden blockchain",
       "save_qdn": "qdn kann nicht speichern",
       "send_failed": "nicht senden",
+      "unrecognized_qr": "dieser QR-Code ist kein Qortal-Zahlungscode.",
       "update_failed": "nicht aktualisiert",
       "vote": "nicht stimmen können"
     },
@@ -742,6 +854,7 @@
       "revert_qdn": "zurück zu QDN zurückkehren",
       "revoke_permission": "Widerrufen",
       "save_qdn": "speichern auf qdn",
+      "saving": "Speichern…",
       "secure_ownership": "Sicheres Eigentum an Daten, die mit Ihrem Namen veröffentlicht wurden. Sie können Ihren Namen sogar zusammen mit Ihren Daten an einen Dritten verkaufen.",
       "select_file": "Bitte wählen Sie eine Datei aus",
       "select_image": "Bitte wählen Sie ein Bild für ein Logo",
@@ -772,7 +885,8 @@
       "register_name": "Möchten Sie diesen Namen registrieren?",
       "reset_pinned": "Mögen Sie Ihre aktuellen lokalen Änderungen nicht? Möchten Sie auf die standardmäßigen angestellten Apps zurücksetzen?",
       "reset_qdn": "Mögen Sie Ihre aktuellen lokalen Änderungen nicht? Möchten Sie auf Ihre gespeicherten QDN -Apps zurücksetzen?",
-      "transfer_qort": "Möchten Sie {{ amount }} QORT überweisen"
+      "transfer_qort": "Möchten Sie {{ amount }} QORT überweisen",
+      "transfer_qort_to": "Möchten Sie {{ amount }} QORT an {{ recipient }} überweisen?"
     },
     "success": {
       "order_submitted": "Ihre Kaufbestellung wurde eingereicht",
@@ -999,15 +1113,15 @@
     "wallets": "Wallets"
   },
   "quitter_feed": {
-    "empty_message_no_following": "Stöbere in Quitter und folge Konten, um deinen Feed aufzubauen.",
+    "empty_message_no_following": "Stöbere in {{app}} und folge Konten, um deinen Feed aufzubauen.",
     "empty_message_no_name": "Melde dich mit einem Qortal-Namen an, um einen personalisierten Feed zu erstellen.",
-    "empty_message_no_posts": "Die Konten, denen du folgst, haben noch keine Beiträge auf Quitter.",
+    "empty_message_no_posts": "Die Konten, denen du folgst, haben noch keine Beiträge auf {{app}}.",
     "empty_title_general": "Keine Beiträge verfügbar",
     "empty_title_no_following": "Du folgst noch niemandem.",
     "empty_title_no_name": "Melde dich an, um deinen Feed zu personalisieren",
     "empty_title_no_posts": "Keine gefolgten Beiträge verfügbar",
-    "error_following": "Der personalisierte Quitter-Feed ist vorübergehend nicht verfügbar. Bitte versuche es erneut.",
-    "error_generic": "Der öffentliche Quitter-Feed ist vorübergehend nicht verfügbar. Bitte gleich noch einmal versuchen.",
+    "error_following": "Der personalisierte {{app}}-Feed ist vorübergehend nicht verfügbar. Bitte versuche es erneut.",
+    "error_generic": "Der öffentliche {{app}}-Feed ist vorübergehend nicht verfügbar. Bitte gleich noch einmal versuchen.",
     "error_timeout": "Feed-Laden fehlgeschlagen. Du kannst es erneut versuchen oder zu Allgemein zurückkehren.",
     "error_title_following": "Feed-Laden fehlgeschlagen",
     "error_title_general": "Beiträge konnten nicht geladen werden",

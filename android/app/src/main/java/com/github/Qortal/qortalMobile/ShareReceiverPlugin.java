@@ -1,7 +1,9 @@
 package com.github.Qortal.qortalMobile;
 
+import android.content.ComponentName;
 import android.content.ContentResolver;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.database.Cursor;
 import android.net.Uri;
 import android.provider.OpenableColumns;
@@ -22,7 +24,7 @@ import java.util.List;
 
 /**
  * Receives ACTION_SEND / ACTION_SEND_MULTIPLE photo & video shares (the
- * "Quitter" share-sheet target) and hands them to the WebView.
+ * "Quitter" or "Torq" share-sheet target) and hands them to the WebView.
  *
  * Flow:
  *  - MainActivity forwards share intents here (cold start + onNewIntent).
@@ -212,5 +214,35 @@ public class ShareReceiverPlugin extends Plugin {
             }
         }
         call.resolve();
+    }
+
+    /**
+     * Shows "Torq" or "Quitter" in the share sheet, after the app the Home
+     * composer posts to. Each is its own activity-alias; exactly one is on.
+     */
+    @PluginMethod
+    public void setShareTarget(PluginCall call) {
+        boolean torq = "torq".equals(call.getString("target"));
+        try {
+            setAliasEnabled(".TorqShareActivity", torq);
+            setAliasEnabled(".QuitterShareActivity", !torq);
+            call.resolve();
+        } catch (Exception e) {
+            Log.w(TAG, "Could not switch the share target: " + e.getMessage());
+            call.reject("share target not changed");
+        }
+    }
+
+    private void setAliasEnabled(String alias, boolean enabled) {
+        PackageManager pm = getContext().getPackageManager();
+        // Aliases are named after the Java namespace (com.github.Qortal.qortalMobile),
+        // which differs from the application id.
+        ComponentName component = new ComponentName(
+            getContext(), MainActivity.class.getPackage().getName() + alias);
+        int state = enabled
+            ? PackageManager.COMPONENT_ENABLED_STATE_ENABLED
+            : PackageManager.COMPONENT_ENABLED_STATE_DISABLED;
+        if (pm.getComponentEnabledSetting(component) == state) return;
+        pm.setComponentEnabledSetting(component, state, PackageManager.DONT_KILL_APP);
     }
 }

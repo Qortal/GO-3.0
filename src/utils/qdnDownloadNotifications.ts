@@ -9,11 +9,15 @@
  * (where a hidden card goes), and the Android notification.
  *
  * A saved file stays in GO's panel as "ready to open" until it is removed
- * ({@link getSavedQdnFiles}). The Android notification opens it on tap (an
- * .apk goes to the installer) and pops up only when GO is in the background.
+ * ({@link getSavedQdnFiles}). The Android notification opens it on tap and
+ * pops up only when GO is in the background. An app package (.apk) is
+ * listed as saved, with where it went, but never offered to open or install:
+ * the Q-App names it, so GO's "Install" would vouch for anything (see
+ * androidPackageFiles.ts).
  */
 import i18n from 'i18next';
 import { QortalBackground } from '../plugins/QortalBackground';
+import { isAndroidPackageFile, safeOpenMimeType } from './androidPackageFiles';
 import { isCapacitor } from './platform';
 
 export type QdnTransferStage =
@@ -113,10 +117,21 @@ function loadSavedFiles(): SavedQdnFile[] {
           typeof file.location === 'string' &&
           Number(file.savedAt) > cutoff
       )
-      .slice(0, SAVED_FILES_MAX);
+      .slice(0, SAVED_FILES_MAX)
+      .map(withoutPackageOpen);
   } catch {
     return [];
   }
+}
+
+/**
+ * Earlier builds stored packages with the installer's type and a uri the
+ * panel offered as "Install". Without the uri there is nothing to open.
+ */
+function withoutPackageOpen(file: SavedQdnFile): SavedQdnFile {
+  if (!isAndroidPackageFile(file.filename, file.mimeType)) return file;
+  const { uri: _uri, ...rest } = file;
+  return { ...rest, mimeType: safeOpenMimeType(file.filename, file.mimeType) };
 }
 
 function storeSavedFiles(): void {
@@ -485,33 +500,33 @@ export function reportQdnTransferProgress(
   );
 }
 
-const PACKAGE_MIME = 'application/vnd.android.package-archive';
-
-function isPackage(filename: string, mimeType?: string): boolean {
-  return (
-    /\.(apk|apks|aab)$/i.test(filename) ||
-    String(mimeType || '').includes('android.package-archive')
-  );
-}
-
 export function finishQdnSaveNotification(
   id: string,
   location: string,
-  file: { uri?: string; mimeType?: string } = {}
+  file: { uri?: string; mimeType?: string; sizeBytes?: number } = {}
 ): void {
   const save = saves.get(id);
   if (!save) return;
   saves.delete(id);
-  const packageFile = isPackage(save.filename, file.mimeType);
-  const mimeType = packageFile ? PACKAGE_MIME : file.mimeType;
-  addSavedFile({ filename: save.filename, location, uri: file.uri, mimeType });
+  dropQappFetchesOfSavedFile(
+    id,
+    file.sizeBytes || transfers.get(id)?.totalBytes || 0
+  );
+  // An app package is saved but not offered to open: the Q-App chose its
+  // name, and GO opening it would put GO's name on the install. The native
+  // open paths refuse packages too, so an Open here could only fail. The
+  // file is still where the location says.
+  const packageFile = isAndroidPackageFile(save.filename, file.mimeType);
+  const uri = packageFile ? undefined : file.uri;
+  const mimeType = safeOpenMimeType(save.filename, file.mimeType);
+  addSavedFile({ filename: save.filename, location, uri, mimeType });
   update(
     id,
     {
       stage: 'saved',
       percent: 100,
       location,
-      uri: file.uri,
+      uri,
       mimeType,
     },
     true
@@ -521,22 +536,44 @@ export function finishQdnSaveNotification(
   notify(
     id,
     t('saved_title', { filename: save.filename }),
-    file.uri
-      ? t(packageFile ? 'tap_to_install' : 'tap_to_open', { location })
-      : `${save.filename} · ${location}`,
+    uri
+      ? t('tap_to_open', { location })
+      : packageFile
+        ? t('package_saved', { location })
+        : `${save.filename} · ${location}`,
     -2,
     false,
     {
-      ...(file.uri
+      ...(uri
         ? {
-            openUri: file.uri,
+            openUri: uri,
             openMimeType: mimeType,
-            actionLabel: t(packageFile ? 'install' : 'open'),
+            actionLabel: t('open'),
           }
         : {}),
       alert: !goInForeground(),
     }
   );
+}
+
+/**
+ * A Q-App may fetch the same file more than once (to play it, then again to
+ * save it), and a save continues only one of those downloads. Once the file
+ * is saved, the others' "waiting for the save" has nothing left to wait for.
+ * Matched by size, as {@link claimQappFetchForSave} does: the names differ
+ * (resource file name against the name the Q-App saves under).
+ */
+function dropQappFetchesOfSavedFile(savedId: string, sizeBytes: number): void {
+  if (!sizeBytes) return;
+  for (const transfer of [...transfers.values()]) {
+    if (
+      transfer.id !== savedId &&
+      transfer.stage === 'awaiting_save' &&
+      transfer.totalBytes === sizeBytes
+    ) {
+      cancelQdnSaveNotification(transfer.id);
+    }
+  }
 }
 
 export function failQdnSaveNotification(id: string, reason?: string): void {

@@ -23,6 +23,7 @@ import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 import com.otaliastudios.transcoder.Transcoder;
 import com.otaliastudios.transcoder.TranscoderListener;
+import com.otaliastudios.transcoder.source.UriDataSource;
 import com.otaliastudios.transcoder.strategy.DefaultAudioStrategy;
 import com.otaliastudios.transcoder.strategy.DefaultVideoStrategies;
 import com.otaliastudios.transcoder.strategy.DefaultVideoStrategy;
@@ -453,12 +454,13 @@ public class VideoCompressPlugin extends Plugin {
             dir.mkdirs();
             File dest = new File(dir, safeName);
             try {
-                java.net.HttpURLConnection conn =
-                        (java.net.HttpURLConnection) new java.net.URL(sourceUrl).openConnection();
-                conn.setConnectTimeout(20_000);
-                conn.setReadTimeout(120_000);
-                conn.setInstanceFollowRedirects(true);
-                conn.connect();
+                // Redirects are followed hop by hop, each routed by
+                // LocalHttp (direct for the phone's own addresses).
+                java.net.HttpURLConnection conn = LocalHttp.openFollowingRedirects(
+                        new java.net.URL(sourceUrl), LocalHttp.MAX_REDIRECTS, (hop, hopUrl) -> {
+                            hop.setConnectTimeout(20_000);
+                            hop.setReadTimeout(120_000);
+                        });
                 int code = conn.getResponseCode();
                 if (code < 200 || code >= 300) {
                     call.reject("Download failed (" + code + ")");
@@ -484,10 +486,14 @@ public class VideoCompressPlugin extends Plugin {
                 result.put("size", dest.length());
                 call.resolve(result);
             } catch (Exception e) {
-                Log.e(TAG, "downloadUrlToCache failed", e);
+                // The exception can repeat the URL, query (API key) and all.
+                Log.e(TAG, "downloadUrlToCache failed: "
+                    + SecretRedaction.redactText(String.valueOf(e)));
                 //noinspection ResultOfMethodCallIgnored
                 dest.delete();
-                call.reject(e.getMessage() != null ? e.getMessage() : "Download failed");
+                call.reject(e.getMessage() != null
+                    ? SecretRedaction.redactText(e.getMessage())
+                    : "Download failed");
             }
         });
     }
@@ -886,8 +892,11 @@ public class VideoCompressPlugin extends Plugin {
         AtomicBoolean canceled = new AtomicBoolean(false);
 
         try {
+            // Wrapped so the source's GPS location is not copied into the
+            // output (MediaMuxer would write it as moov/udta/©xyz).
             Future<Void> future = Transcoder.into(outFile.getAbsolutePath())
-                    .addDataSource(getContext(), decodeUri)
+                    .addDataSource(new LocationFreeDataSource(
+                            new UriDataSource(getContext(), decodeUri)))
                     .setVideoTrackStrategy(attempt.video)
                     .setAudioTrackStrategy(attempt.audio)
                     .setListener(new TranscoderListener() {

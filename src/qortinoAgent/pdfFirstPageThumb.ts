@@ -90,7 +90,8 @@ export async function fetchPdfFirstPageThumbObjectUrl(
       if (!startsWithPdfMagic(data)) return undefined;
 
       const pdfjs = await loadPdfJs();
-      const doc = await pdfjs.getDocument({ data }).promise;
+      const doc = await pdfjs.getDocument({ data, isEvalSupported: false })
+        .promise;
       const page = await doc.getPage(1);
       const unscaled = page.getViewport({ scale: 1 });
       const scale =

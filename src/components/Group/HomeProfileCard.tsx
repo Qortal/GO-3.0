@@ -53,6 +53,7 @@ import { useAtom, useAtomValue, useSetAtom } from 'jotai';
 import { useTranslation } from 'react-i18next';
 import {
   blockedAddressesAtom,
+  selectedNodeInfoAtom,
   blockedNamesAtom,
   disableDevLogsAtom,
   enabledDevModeAtom,
@@ -61,7 +62,7 @@ import {
   openSnackGlobalAtom,
   infoSnackGlobalAtom,
 } from '../../atoms/global';
-import { type SelectableStatus } from '../../atoms/presence';
+import { appLockedAtom, type SelectableStatus } from '../../atoms/presence';
 import {
   useAccountStatusDisplay,
   useAccountStatusOptions,
@@ -70,19 +71,26 @@ import { QORTAL_APP_CONTEXT } from '../../App';
 import { getFee, walletVersion } from '../../background/background.ts';
 import Base58 from '../../encryption/Base58';
 import ImageUploader from '../../common/ImageUploader';
-import { MAX_SIZE_AVATAR } from '../../constants/constants.ts';
+import {
+  EXT_NODE_QORTAL_LINK,
+  MAX_SIZE_AVATAR,
+} from '../../constants/constants.ts';
 import { decryptStoredWallet } from '../../utils/decryptWallet';
 import { fileToBase64 } from '../../utils/fileReading';
 import PhraseWallet from '../../utils/generateWallet/phrase-wallet';
+import { isCapacitor } from '../../utils/platform';
+import { useSecureScreen } from '../../hooks/useSecureScreen';
+import { WALLET_PASSWORD_INPUT_PROPS } from '../PasswordField/noAutofill';
 import {
   executeEvent,
   subscribeToEvent,
   unsubscribeFromEvent,
 } from '../../utils/events';
-import {
-  getBaseApiReact,
-  getBaseApiReactForAvatar,
-} from '../../utils/globalApi';
+import { getBaseApiReact } from '../../utils/globalApi';
+import { useQdnAvatar } from '../../lib/qdnAvatars';
+import { useOwnQdnAvatarRefresh } from '../../hooks/useOwnQdnAvatarRefresh';
+import { useFullSizeQdnAvatarSrc } from '../../hooks/useFullSizeQdnAvatarSrc';
+import { applyPublishedOwnAvatar } from '../../utils/ownQdnAvatarPublish';
 import {
   dashboardPanelSx,
   handleDashboardPanelPointerLeave,
@@ -112,6 +120,10 @@ import {
   writeAutoLockTimeoutToStorage,
 } from '../../lib/autoLock';
 import { requestHubOnboardingRestart } from '../Onboarding/hubOnboarding';
+import {
+  composerAppName,
+  useComposerTarget,
+} from '../Widgets/quitter/composerTarget';
 
 type HomeProfileCardProps = {
   onOpenReceive?: (anchorEl: HTMLElement) => void;
@@ -119,6 +131,18 @@ type HomeProfileCardProps = {
 
 type NameAvailability = 'available' | 'loading' | 'not-available' | 'null';
 type CloseAction = 'ask' | 'minimizeToTray' | 'quit';
+/**
+ * Tabs GO leaves out: Developer (dev mode only adds a desktop sidebar item),
+ * Help (the tutorial needs a 1250 px wide dashboard) and Reticulum (rnsd
+ * config, transport and details exist only in the Electron shell; GO runs
+ * its own Reticulum stack).
+ */
+const GO_HIDDEN_SETTINGS_TABS = new Set<string>([
+  'developer',
+  'help',
+  'reticulum',
+]);
+
 type AccountSettingsTab =
   | 'blocked'
   | 'developer'
@@ -218,6 +242,12 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
   // ~390px viewport, so the nav becomes a horizontal strip and the dialog
   // goes full screen.
   const isCompactSettingsLayout = useMediaQuery(theme.breakpoints.down('sm'));
+  // GO (Android): settings that only reach the Electron shell are left out.
+  const isGoApp = isCapacitor();
+  // Same rule as isRunningGateway: no own node URL, or the public gateway.
+  const selectedNode = useAtomValue(selectedNodeInfoAtom);
+  const isOnPublicNode =
+    !selectedNode?.url || selectedNode.url.includes(EXT_NODE_QORTAL_LINK);
   const hubTutorialAvailable = useMediaQuery(
     theme.breakpoints.up(HOME_WIDE_DASHBOARD_MIN_WIDTH_PX)
   );
@@ -234,7 +264,6 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
 
   const avatarAnchorRef = useRef<HTMLButtonElement | null>(null);
   const avatarPanelRef = useRef<HTMLDivElement | null>(null);
-  const [avatarError, setAvatarError] = useState(false);
   const [tempAvatar, setTempAvatar] = useState<string | null>(null);
   const [avatarFile, setAvatarFile] = useState<File | null>(null);
   const [avatarPreviewUrl, setAvatarPreviewUrl] = useState<string | null>(null);
@@ -347,6 +376,24 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
   const [revealedPrivateKey, setRevealedPrivateKey] = useState('');
   const [privateKeyError, setPrivateKeyError] = useState<string | null>(null);
   const [isRevealingPrivateKey, setIsRevealingPrivateKey] = useState(false);
+  // The Security tab reveals the private key: no screenshots, recordings or
+  // recents thumbnail while it is open (GO-37).
+  useSecureScreen({
+    secure: isAccountSettingsOpen && activeSettingsTab === 'security',
+  });
+  // The app lock hides these settings but leaves them open. Drop a revealed
+  // private key and the typed password as soon as it locks, so neither is
+  // still on screen after the unlock.
+  const isAppLocked = useAtomValue(appLockedAtom);
+  const isAppLockedRef = useRef(isAppLocked);
+  isAppLockedRef.current = isAppLocked;
+  useEffect(() => {
+    if (!isAppLocked) return;
+    setSecurityPassword('');
+    setIsSecurityPasswordEditable(false);
+    setPrivateKeyError(null);
+    setRevealedPrivateKey('');
+  }, [isAppLocked]);
   const [accountStatusAnchorEl, setAccountStatusAnchorEl] =
     useState<HTMLElement | null>(null);
   const {
@@ -434,89 +481,91 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
       t(`group:dashboard.${key}`, { defaultValue, ...options }),
     [t]
   );
+  const feedApp = composerAppName(useComposerTarget());
   const accountSettingsTabs = useMemo(
-    () => [
-      {
-        description: td(
-          'profile_settings_description',
-          'Review your name and account identity.'
-        ),
-        icon: PersonIcon,
-        key: 'profile' as const,
-        label: td('profile', 'Profile'),
-        title: td('profile_settings', 'Profile Settings'),
-      },
-      {
-        description: td(
-          'security_settings_description',
-          'Reveal and copy your private key only when absolutely needed.'
-        ),
-        icon: LockOutlinedIcon,
-        key: 'security' as const,
-        label: td('security', 'Security'),
-        title: td('security_settings', 'Security Settings'),
-      },
-      {
-        description: td(
-          'blocked_settings_description',
-          'Manage blocked names and addresses for this wallet or across this device.'
-        ),
-        icon: BlockRoundedIcon,
-        key: 'blocked' as const,
-        label: td('blocked', 'Blocked'),
-        title: td('blocked_settings', 'Blocked Accounts'),
-      },
-      {
-        description: td(
-          'developer_settings_description',
-          'Enable developer tools and diagnostics for advanced testing.'
-        ),
-        icon: CodeRoundedIcon,
-        key: 'developer' as const,
-        label: td('developer', 'Developer'),
-        title: td('developer_settings', 'Developer Settings'),
-      },
-      {
-        description: td(
-          'system_settings_description',
-          'Control notifications, motion, and pinned Q-App backup preferences.'
-        ),
-        icon: TuneRoundedIcon,
-        key: 'system' as const,
-        label: td('system', 'System'),
-        title: td('system_settings', 'System Settings'),
-      },
-      {
-        description: td(
-          'modules_settings_description',
-          'Choose which dashboard modules are shown on Home.'
-        ),
-        icon: ViewModuleRoundedIcon,
-        key: 'modules' as const,
-        label: td('modules', 'Modules'),
-        title: td('modules_settings', 'Modules Settings'),
-      },
-      {
-        description: td(
-          'help_settings_description',
-          'Restart the guided introduction to Hub and Q-Chat.'
-        ),
-        icon: HelpOutlineRoundedIcon,
-        key: 'help' as const,
-        label: td('help', 'Help'),
-        title: td('help_settings', 'Help'),
-      },
-      {
-        description: td(
-          'reticulum_settings_description',
-          'Control Reticulum networking configuration preferences.'
-        ),
-        icon: SettingsRoundedIcon,
-        key: 'reticulum' as const,
-        label: td('reticulum', 'Reticulum'),
-        title: td('reticulum_settings', 'Reticulum Settings'),
-      },
-    ],
+    () =>
+      [
+        {
+          description: td(
+            'profile_settings_description',
+            'Review your name and account identity.'
+          ),
+          icon: PersonIcon,
+          key: 'profile' as const,
+          label: td('profile', 'Profile'),
+          title: td('profile_settings', 'Profile Settings'),
+        },
+        {
+          description: td(
+            'security_settings_description',
+            'Reveal and copy your private key only when absolutely needed.'
+          ),
+          icon: LockOutlinedIcon,
+          key: 'security' as const,
+          label: td('security', 'Security'),
+          title: td('security_settings', 'Security Settings'),
+        },
+        {
+          description: td(
+            'blocked_settings_description',
+            'Manage blocked names and addresses for this wallet or across this device.'
+          ),
+          icon: BlockRoundedIcon,
+          key: 'blocked' as const,
+          label: td('blocked', 'Blocked'),
+          title: td('blocked_settings', 'Blocked Accounts'),
+        },
+        {
+          description: td(
+            'developer_settings_description',
+            'Enable developer tools and diagnostics for advanced testing.'
+          ),
+          icon: CodeRoundedIcon,
+          key: 'developer' as const,
+          label: td('developer', 'Developer'),
+          title: td('developer_settings', 'Developer Settings'),
+        },
+        {
+          description: td(
+            'system_settings_description',
+            'Control notifications, motion, and pinned Q-App backup preferences.'
+          ),
+          icon: TuneRoundedIcon,
+          key: 'system' as const,
+          label: td('system', 'System'),
+          title: td('system_settings', 'System Settings'),
+        },
+        {
+          description: td(
+            'modules_settings_description',
+            'Choose which dashboard modules are shown on Home.'
+          ),
+          icon: ViewModuleRoundedIcon,
+          key: 'modules' as const,
+          label: td('modules', 'Modules'),
+          title: td('modules_settings', 'Modules Settings'),
+        },
+        {
+          description: td(
+            'help_settings_description',
+            'Restart the guided introduction to Hub and Q-Chat.'
+          ),
+          icon: HelpOutlineRoundedIcon,
+          key: 'help' as const,
+          label: td('help', 'Help'),
+          title: td('help_settings', 'Help'),
+        },
+        {
+          description: td(
+            'reticulum_settings_description',
+            'Control Reticulum networking configuration preferences.'
+          ),
+          icon: SettingsRoundedIcon,
+          key: 'reticulum' as const,
+          label: td('reticulum', 'Reticulum'),
+          title: td('reticulum_settings', 'Reticulum Settings'),
+        },
+      ].filter((tab) => !isGoApp || !GO_HIDDEN_SETTINGS_TABS.has(tab.key)),
     [td]
   );
 
@@ -591,6 +640,14 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
 
   const name = userInfo?.name;
   const address = userInfo?.address;
+  const cachedProfileAvatar = useQdnAvatar(name, { priority: 'high' });
+  useOwnQdnAvatarRefresh(name, cachedProfileAvatar.status);
+  // 88 px: the cached copy (at most 128 px) is blurry on a phone screen, so
+  // the full-size image replaces it once loaded.
+  const { src: profileAvatarSrc } = useFullSizeQdnAvatarSrc(
+    name,
+    cachedProfileAvatar
+  );
   const normalizedCurrentName = name?.trim().toLowerCase() ?? '';
   const hasRegisteredName = Boolean(name);
   const accountIdentityPrimaryText = hasRegisteredName
@@ -1502,6 +1559,8 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
         phraseWallet._addresses[0].keyPair.privateKey
       );
 
+      // Locked while decrypting: do not show it behind the lock.
+      if (isAppLockedRef.current) return;
       setRevealedPrivateKey(derivedPrivateKey);
     } catch (error) {
       setRevealedPrivateKey('');
@@ -1535,11 +1594,7 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
     setOpenSnack(true);
   }, [revealedPrivateKey, setInfoSnack, setOpenSnack, td]);
 
-  const avatarUrl =
-    tempAvatar ??
-    (name && !avatarError
-      ? `${getBaseApiReactForAvatar()}/arbitrary/THUMBNAIL/${name}/qortal_avatar?async=true`
-      : null);
+  const avatarUrl = tempAvatar ?? (name ? profileAvatarSrc : null);
 
   const handleCopyAddress = () => {
     if (!address) return;
@@ -1927,7 +1982,12 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
       }
 
       setAvatarFile(null);
-      setTempAvatar(`data:image/webp;base64,${avatarBase64}`);
+      const publishedAvatar = `data:image/webp;base64,${avatarBase64}`;
+      setTempAvatar(publishedAvatar);
+      // Show the new avatar everywhere now, not after the cache's next refresh
+      // (a node that has not caught up would still hand back the old one),
+      // and in the wallet picker before login.
+      void applyPublishedOwnAvatar(name, publishedAvatar, address);
       setAvatarAnchorEl(null);
       executeEvent('avatarUploaded', {});
     } catch (error) {
@@ -2325,7 +2385,6 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
             >
               <Avatar
                 src={avatarUrl ?? undefined}
-                onError={() => setAvatarError(true)}
                 sx={{
                   bgcolor: isDarkMode ? '#636772' : '#E7DED0',
                   borderRadius: '22px',
@@ -3469,12 +3528,7 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                       InputProps={{
                         readOnly: !isSecurityPasswordEditable,
                       }}
-                      inputProps={{
-                        autoComplete: 'new-password',
-                        'data-1p-ignore': 'true',
-                        'data-lpignore': 'true',
-                        spellCheck: 'false',
-                      }}
+                      inputProps={{ ...WALLET_PASSWORD_INPUT_PROPS }}
                     />
                   </Box>
 
@@ -3672,235 +3726,316 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
               ) : null}
 
               {activeSettingsTab === 'blocked' ? (
-                <Box
-                  sx={{
-                    background: avatarModalSurfaceSoft,
-                    border: `1px solid ${avatarFieldBorder}`,
-                    borderRadius: '12px',
-                    overflow: 'hidden',
-                  }}
-                >
-                  <Box
-                    sx={{
-                      display: 'flex',
-                      flexDirection: 'column',
-                      gap: 1,
-                      px: 1.35,
-                      py: 1.2,
-                    }}
-                  >
+                <Box sx={{ display: 'grid', gap: 1.2 }}>
+                  {isOnPublicNode ? (
                     <Box
                       sx={{
                         alignItems: 'flex-start',
+                        backgroundColor: changeNameNoteTone.background,
+                        border: `1px solid ${changeNameNoteTone.border}`,
+                        borderRadius: '12px',
                         display: 'flex',
-                        gap: 1.2,
-                        justifyContent: 'space-between',
+                        gap: 1,
+                        px: 1.25,
+                        py: 1.05,
                       }}
                     >
+                      <InfoOutlinedIcon
+                        sx={{
+                          color: changeNameNoteTone.icon,
+                          flexShrink: 0,
+                          fontSize: 18,
+                          mt: '1px',
+                        }}
+                      />
                       <Box sx={{ minWidth: 0 }}>
                         <Typography
                           sx={{
                             color: theme.palette.text.primary,
-                            fontSize: '0.82rem',
+                            fontSize: '0.8rem',
                             fontWeight: 700,
-                            letterSpacing: '0.01em',
+                            lineHeight: 1.4,
                           }}
                         >
-                          {td('block_list', 'Block list')}
+                          {td(
+                            'blocked_public_node_title',
+                            "You're on a public node"
+                          )}
                         </Typography>
+                        <Typography
+                          sx={{
+                            color: theme.palette.text.secondary,
+                            fontSize: '0.76rem',
+                            lineHeight: 1.48,
+                            mt: 0.3,
+                          }}
+                        >
+                          {td(
+                            'blocked_public_node_desc',
+                            'Blocking happens on the node, so on a public node its operator decides who is blocked, not you. To be fully in control on Qortal, use your own node.'
+                          )}
+                        </Typography>
+                      </Box>
+                    </Box>
+                  ) : null}
+                  <Box
+                    sx={{
+                      background: avatarModalSurfaceSoft,
+                      border: `1px solid ${avatarFieldBorder}`,
+                      borderRadius: '12px',
+                      overflow: 'hidden',
+                    }}
+                  >
+                    <Box
+                      sx={{
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: 1,
+                        px: 1.35,
+                        py: 1.2,
+                      }}
+                    >
+                      <Box
+                        sx={{
+                          alignItems: 'flex-start',
+                          display: 'flex',
+                          gap: 1.2,
+                          justifyContent: 'space-between',
+                        }}
+                      >
+                        <Box sx={{ minWidth: 0 }}>
+                          <Typography
+                            sx={{
+                              color: theme.palette.text.primary,
+                              fontSize: '0.82rem',
+                              fontWeight: 700,
+                              letterSpacing: '0.01em',
+                            }}
+                          >
+                            {td('block_list', 'Block list')}
+                          </Typography>
+                          <Typography
+                            sx={{
+                              color: theme.palette.text.secondary,
+                              fontSize: '0.75rem',
+                              lineHeight: 1.45,
+                              mt: 0.4,
+                            }}
+                          >
+                            {td(
+                              'block_list_desc',
+                              'Review blocked names and addresses, then unblock accounts whenever you are ready.'
+                            )}
+                          </Typography>
+                        </Box>
+                        <Typography
+                          sx={{
+                            color: theme.palette.text.secondary,
+                            flexShrink: 0,
+                            fontSize: '0.73rem',
+                            fontWeight: 700,
+                            lineHeight: 1.4,
+                          }}
+                        >
+                          {td('blocked_count', '{{count}} blocked', {
+                            count: blockedCount,
+                          })}
+                        </Typography>
+                      </Box>
+
+                      {blockedCount > 0 ? (
+                        // minmax(0, 1fr): otherwise the longest address sets the
+                        // column width and pushes every Unblock off screen.
+                        <Box
+                          sx={{
+                            display: 'grid',
+                            gap: 1,
+                            gridTemplateColumns: 'minmax(0, 1fr)',
+                          }}
+                        >
+                          {blockedNameEntries.length > 0 ? (
+                            <Box
+                              sx={{
+                                display: 'grid',
+                                gap: 0.7,
+                                gridTemplateColumns: 'minmax(0, 1fr)',
+                              }}
+                            >
+                              <Typography
+                                sx={{
+                                  color: theme.palette.text.secondary,
+                                  fontSize: '0.68rem',
+                                  fontWeight: 700,
+                                  letterSpacing: '0.04em',
+                                  textTransform: 'uppercase',
+                                }}
+                              >
+                                {td('names', 'Names')}
+                              </Typography>
+                              {blockedNameEntries.map((blockedName) => (
+                                <Box
+                                  key={blockedName}
+                                  sx={{
+                                    alignItems: 'center',
+                                    borderRadius: '10px',
+                                    display: 'flex',
+                                    gap: 1,
+                                    justifyContent: 'space-between',
+                                    px: 0.85,
+                                    py: 0.55,
+                                    transition: 'background-color 0.14s ease',
+                                    '&:hover': {
+                                      backgroundColor: alpha(
+                                        theme.palette.primary.main,
+                                        0.08
+                                      ),
+                                    },
+                                  }}
+                                >
+                                  <Typography
+                                    className={privacyBlurClassName}
+                                    sx={{
+                                      color: theme.palette.text.primary,
+                                      fontSize: '0.8rem',
+                                      fontWeight: 600,
+                                      minWidth: 0,
+                                      overflow: 'hidden',
+                                      textOverflow: 'ellipsis',
+                                      whiteSpace: 'nowrap',
+                                    }}
+                                  >
+                                    {blockedName}
+                                  </Typography>
+                                  <ButtonBase
+                                    onClick={() =>
+                                      removeBlockFromList(
+                                        undefined,
+                                        blockedName
+                                      )
+                                    }
+                                    sx={{
+                                      borderRadius: '8px',
+                                      color: theme.palette.primary.light,
+                                      flexShrink: 0,
+                                      fontSize: '0.74rem',
+                                      fontWeight: 700,
+                                      px: 0.9,
+                                      py: 0.55,
+                                      '&:hover': {
+                                        backgroundColor: alpha(
+                                          theme.palette.primary.main,
+                                          0.1
+                                        ),
+                                      },
+                                    }}
+                                  >
+                                    {td('unblock', 'Unblock')}
+                                  </ButtonBase>
+                                </Box>
+                              ))}
+                            </Box>
+                          ) : null}
+
+                          {blockedAddressEntries.length > 0 ? (
+                            <Box
+                              sx={{
+                                display: 'grid',
+                                gap: 0.7,
+                                gridTemplateColumns: 'minmax(0, 1fr)',
+                              }}
+                            >
+                              <Typography
+                                sx={{
+                                  color: theme.palette.text.secondary,
+                                  fontSize: '0.68rem',
+                                  fontWeight: 700,
+                                  letterSpacing: '0.04em',
+                                  textTransform: 'uppercase',
+                                }}
+                              >
+                                {td('addresses', 'Addresses')}
+                              </Typography>
+                              {blockedAddressEntries.map((blockedAddress) => (
+                                <Box
+                                  key={blockedAddress}
+                                  sx={{
+                                    alignItems: 'center',
+                                    borderRadius: '10px',
+                                    display: 'flex',
+                                    gap: 1,
+                                    justifyContent: 'space-between',
+                                    px: 0.85,
+                                    py: 0.55,
+                                    transition: 'background-color 0.14s ease',
+                                    '&:hover': {
+                                      backgroundColor: alpha(
+                                        theme.palette.primary.main,
+                                        0.08
+                                      ),
+                                    },
+                                  }}
+                                >
+                                  <Typography
+                                    className={privacyBlurClassName}
+                                    sx={{
+                                      color: theme.palette.text.primary,
+                                      fontSize: '0.8rem',
+                                      fontWeight: 600,
+                                      minWidth: 0,
+                                      overflow: 'hidden',
+                                      textOverflow: 'ellipsis',
+                                      whiteSpace: 'nowrap',
+                                    }}
+                                  >
+                                    {isCompactSettingsLayout
+                                      ? `${blockedAddress.slice(0, 10)}…${blockedAddress.slice(-8)}`
+                                      : blockedAddress}
+                                  </Typography>
+                                  <ButtonBase
+                                    onClick={() =>
+                                      removeBlockFromList(
+                                        blockedAddress,
+                                        undefined
+                                      )
+                                    }
+                                    sx={{
+                                      borderRadius: '8px',
+                                      color: theme.palette.primary.light,
+                                      flexShrink: 0,
+                                      fontSize: '0.74rem',
+                                      fontWeight: 700,
+                                      px: 0.9,
+                                      py: 0.55,
+                                      '&:hover': {
+                                        backgroundColor: alpha(
+                                          theme.palette.primary.main,
+                                          0.1
+                                        ),
+                                      },
+                                    }}
+                                  >
+                                    {td('unblock', 'Unblock')}
+                                  </ButtonBase>
+                                </Box>
+                              ))}
+                            </Box>
+                          ) : null}
+                        </Box>
+                      ) : (
                         <Typography
                           sx={{
                             color: theme.palette.text.secondary,
                             fontSize: '0.75rem',
                             lineHeight: 1.45,
-                            mt: 0.4,
                           }}
                         >
                           {td(
-                            'block_list_desc',
-                            'Review blocked names and addresses, then unblock accounts whenever you are ready.'
+                            'no_blocked_accounts',
+                            'No blocked accounts yet.'
                           )}
                         </Typography>
-                      </Box>
-                      <Typography
-                        sx={{
-                          color: theme.palette.text.secondary,
-                          flexShrink: 0,
-                          fontSize: '0.73rem',
-                          fontWeight: 700,
-                          lineHeight: 1.4,
-                        }}
-                      >
-                        {td('blocked_count', '{{count}} blocked', {
-                          count: blockedCount,
-                        })}
-                      </Typography>
+                      )}
                     </Box>
-
-                    {blockedCount > 0 ? (
-                      <Box sx={{ display: 'grid', gap: 1 }}>
-                        {blockedNameEntries.length > 0 ? (
-                          <Box sx={{ display: 'grid', gap: 0.7 }}>
-                            <Typography
-                              sx={{
-                                color: theme.palette.text.secondary,
-                                fontSize: '0.68rem',
-                                fontWeight: 700,
-                                letterSpacing: '0.04em',
-                                textTransform: 'uppercase',
-                              }}
-                            >
-                              {td('names', 'Names')}
-                            </Typography>
-                            {blockedNameEntries.map((blockedName) => (
-                              <Box
-                                key={blockedName}
-                                sx={{
-                                  alignItems: 'center',
-                                  borderRadius: '10px',
-                                  display: 'flex',
-                                  gap: 1,
-                                  justifyContent: 'space-between',
-                                  px: 0.85,
-                                  py: 0.55,
-                                  transition: 'background-color 0.14s ease',
-                                  '&:hover': {
-                                    backgroundColor: alpha(
-                                      theme.palette.primary.main,
-                                      0.08
-                                    ),
-                                  },
-                                }}
-                              >
-                                <Typography
-                                  className={privacyBlurClassName}
-                                  sx={{
-                                    color: theme.palette.text.primary,
-                                    fontSize: '0.8rem',
-                                    fontWeight: 600,
-                                    minWidth: 0,
-                                    overflow: 'hidden',
-                                    textOverflow: 'ellipsis',
-                                    whiteSpace: 'nowrap',
-                                  }}
-                                >
-                                  {blockedName}
-                                </Typography>
-                                <ButtonBase
-                                  onClick={() =>
-                                    removeBlockFromList(undefined, blockedName)
-                                  }
-                                  sx={{
-                                    borderRadius: '8px',
-                                    color: theme.palette.primary.light,
-                                    flexShrink: 0,
-                                    fontSize: '0.74rem',
-                                    fontWeight: 700,
-                                    px: 0.9,
-                                    py: 0.55,
-                                    '&:hover': {
-                                      backgroundColor: alpha(
-                                        theme.palette.primary.main,
-                                        0.1
-                                      ),
-                                    },
-                                  }}
-                                >
-                                  {td('unblock', 'Unblock')}
-                                </ButtonBase>
-                              </Box>
-                            ))}
-                          </Box>
-                        ) : null}
-
-                        {blockedAddressEntries.length > 0 ? (
-                          <Box sx={{ display: 'grid', gap: 0.7 }}>
-                            <Typography
-                              sx={{
-                                color: theme.palette.text.secondary,
-                                fontSize: '0.68rem',
-                                fontWeight: 700,
-                                letterSpacing: '0.04em',
-                                textTransform: 'uppercase',
-                              }}
-                            >
-                              {td('addresses', 'Addresses')}
-                            </Typography>
-                            {blockedAddressEntries.map((blockedAddress) => (
-                              <Box
-                                key={blockedAddress}
-                                sx={{
-                                  alignItems: 'center',
-                                  borderRadius: '10px',
-                                  display: 'flex',
-                                  gap: 1,
-                                  justifyContent: 'space-between',
-                                  px: 0.85,
-                                  py: 0.55,
-                                  transition: 'background-color 0.14s ease',
-                                  '&:hover': {
-                                    backgroundColor: alpha(
-                                      theme.palette.primary.main,
-                                      0.08
-                                    ),
-                                  },
-                                }}
-                              >
-                                <Typography
-                                  className={privacyBlurClassName}
-                                  sx={{
-                                    color: theme.palette.text.primary,
-                                    fontSize: '0.8rem',
-                                    fontWeight: 600,
-                                    minWidth: 0,
-                                    overflow: 'hidden',
-                                    textOverflow: 'ellipsis',
-                                    whiteSpace: 'nowrap',
-                                  }}
-                                >
-                                  {blockedAddress}
-                                </Typography>
-                                <ButtonBase
-                                  onClick={() =>
-                                    removeBlockFromList(
-                                      blockedAddress,
-                                      undefined
-                                    )
-                                  }
-                                  sx={{
-                                    borderRadius: '8px',
-                                    color: theme.palette.primary.light,
-                                    flexShrink: 0,
-                                    fontSize: '0.74rem',
-                                    fontWeight: 700,
-                                    px: 0.9,
-                                    py: 0.55,
-                                    '&:hover': {
-                                      backgroundColor: alpha(
-                                        theme.palette.primary.main,
-                                        0.1
-                                      ),
-                                    },
-                                  }}
-                                >
-                                  {td('unblock', 'Unblock')}
-                                </ButtonBase>
-                              </Box>
-                            ))}
-                          </Box>
-                        ) : null}
-                      </Box>
-                    ) : (
-                      <Typography
-                        sx={{
-                          color: theme.palette.text.secondary,
-                          fontSize: '0.75rem',
-                          lineHeight: 1.45,
-                        }}
-                      >
-                        {td('no_blocked_accounts', 'No blocked accounts yet.')}
-                      </Typography>
-                    )}
                   </Box>
                 </Box>
               ) : null}
@@ -3915,7 +4050,10 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                       overflow: 'hidden',
                     }}
                   >
-                    {reticulumEnabled ? (
+                    {/* Group chat switch, attachment storage and STUN write only
+                        the Electron settings store; GO's chat and storage
+                        limits are set natively. */}
+                    {reticulumEnabled && !isGoApp ? (
                       <>
                         <Box
                           sx={{
@@ -4101,54 +4239,62 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                       </>
                     ) : null}
 
-                    <Box
-                      sx={{
-                        alignItems: 'center',
-                        display: 'flex',
-                        gap: 1.2,
-                        justifyContent: 'space-between',
-                        px: 1.35,
-                        py: 1.2,
-                      }}
-                    >
-                      <Box sx={{ minWidth: 0 }}>
-                        <Typography
+                    {/* Filters the Electron main-process logs. */}
+                    {!isGoApp && (
+                      <>
+                        <Box
                           sx={{
-                            color: theme.palette.text.primary,
-                            fontSize: '0.82rem',
-                            fontWeight: 700,
-                            letterSpacing: '0.01em',
+                            alignItems: 'center',
+                            display: 'flex',
+                            gap: 1.2,
+                            justifyContent: 'space-between',
+                            px: 1.35,
+                            py: 1.2,
                           }}
                         >
-                          {td('filter_developer_logs', 'Filter Developer Logs')}
-                        </Typography>
-                        <Typography
-                          sx={{
-                            color: theme.palette.text.secondary,
-                            fontSize: '0.75rem',
-                            lineHeight: 1.45,
-                            mt: 0.4,
-                          }}
-                        >
-                          {td(
-                            'filter_developer_logs_desc',
-                            'Turn on to hide verbose main-process logs while keeping warnings and errors visible.'
-                          )}
-                        </Typography>
-                      </Box>
-                      <Switch
-                        checked={disableDevLogs}
-                        onChange={handleToggleDevLogFiltering}
-                        sx={settingsSwitchSx}
-                      />
-                    </Box>
+                          <Box sx={{ minWidth: 0 }}>
+                            <Typography
+                              sx={{
+                                color: theme.palette.text.primary,
+                                fontSize: '0.82rem',
+                                fontWeight: 700,
+                                letterSpacing: '0.01em',
+                              }}
+                            >
+                              {td(
+                                'filter_developer_logs',
+                                'Filter Developer Logs'
+                              )}
+                            </Typography>
+                            <Typography
+                              sx={{
+                                color: theme.palette.text.secondary,
+                                fontSize: '0.75rem',
+                                lineHeight: 1.45,
+                                mt: 0.4,
+                              }}
+                            >
+                              {td(
+                                'filter_developer_logs_desc',
+                                'Turn on to hide verbose main-process logs while keeping warnings and errors visible.'
+                              )}
+                            </Typography>
+                          </Box>
+                          <Switch
+                            checked={disableDevLogs}
+                            onChange={handleToggleDevLogFiltering}
+                            sx={settingsSwitchSx}
+                          />
+                        </Box>
 
-                    <Box
-                      sx={{
-                        borderTop: `1px solid ${avatarSectionDivider}`,
-                        mx: 1.35,
-                      }}
-                    />
+                        <Box
+                          sx={{
+                            borderTop: `1px solid ${avatarSectionDivider}`,
+                            mx: 1.35,
+                          }}
+                        />
+                      </>
+                    )}
 
                     <Box
                       sx={{
@@ -4230,127 +4376,138 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                       }}
                     />
 
-                    <Box
-                      sx={{
-                        alignItems: 'center',
-                        display: 'flex',
-                        gap: 1.2,
-                        justifyContent: 'space-between',
-                        px: 1.35,
-                        py: 1.2,
-                      }}
-                    >
-                      <Box sx={{ minWidth: 0 }}>
-                        <Typography
+                    {/* On GO push mute lives in the Notifications panel, as in
+                        the Node screen. */}
+                    {!isGoApp && (
+                      <>
+                        <Box
                           sx={{
-                            color: theme.palette.text.primary,
-                            fontSize: '0.82rem',
-                            fontWeight: 700,
-                            letterSpacing: '0.01em',
+                            alignItems: 'center',
+                            display: 'flex',
+                            gap: 1.2,
+                            justifyContent: 'space-between',
+                            px: 1.35,
+                            py: 1.2,
                           }}
                         >
-                          {td(
-                            'reduce_app_notifications',
-                            'Reduce App Notifications'
-                          )}
-                        </Typography>
-                        <Typography
+                          <Box sx={{ minWidth: 0 }}>
+                            <Typography
+                              sx={{
+                                color: theme.palette.text.primary,
+                                fontSize: '0.82rem',
+                                fontWeight: 700,
+                                letterSpacing: '0.01em',
+                              }}
+                            >
+                              {td(
+                                'reduce_app_notifications',
+                                'Reduce App Notifications'
+                              )}
+                            </Typography>
+                            <Typography
+                              sx={{
+                                color: theme.palette.text.secondary,
+                                fontSize: '0.75rem',
+                                lineHeight: 1.45,
+                                mt: 0.4,
+                              }}
+                            >
+                              {td(
+                                'reduce_app_notifications_desc',
+                                'Turn on to mute desktop push notifications. Leave off for normal Hub alerts.'
+                              )}
+                            </Typography>
+                          </Box>
+                          <Switch
+                            checked={!areAppNotificationsEnabled}
+                            onChange={handleToggleAppNotifications}
+                            sx={settingsSwitchSx}
+                          />
+                        </Box>
+
+                        <Box
                           sx={{
-                            color: theme.palette.text.secondary,
-                            fontSize: '0.75rem',
-                            lineHeight: 1.45,
-                            mt: 0.4,
+                            borderTop: `1px solid ${avatarSectionDivider}`,
+                            mx: 1.35,
+                          }}
+                        />
+                      </>
+                    )}
+
+                    {/* Desktop window and tray only. */}
+                    {!isGoApp && (
+                      <>
+                        <Box
+                          sx={{
+                            alignItems: 'center',
+                            display: 'flex',
+                            gap: 1.2,
+                            justifyContent: 'space-between',
+                            px: 1.35,
+                            py: 1.2,
                           }}
                         >
-                          {td(
-                            'reduce_app_notifications_desc',
-                            'Turn on to mute desktop push notifications. Leave off for normal Hub alerts.'
-                          )}
-                        </Typography>
-                      </Box>
-                      <Switch
-                        checked={!areAppNotificationsEnabled}
-                        onChange={handleToggleAppNotifications}
-                        sx={settingsSwitchSx}
-                      />
-                    </Box>
-
-                    <Box
-                      sx={{
-                        borderTop: `1px solid ${avatarSectionDivider}`,
-                        mx: 1.35,
-                      }}
-                    />
-
-                    <Box
-                      sx={{
-                        alignItems: 'center',
-                        display: 'flex',
-                        gap: 1.2,
-                        justifyContent: 'space-between',
-                        px: 1.35,
-                        py: 1.2,
-                      }}
-                    >
-                      <Typography
-                        sx={{
-                          color: theme.palette.text.primary,
-                          fontSize: '0.82rem',
-                          fontWeight: 700,
-                          letterSpacing: '0.01em',
-                          minWidth: 0,
-                        }}
-                      >
-                        {t('core:close_window_behavior', {
-                          defaultValue: 'When closing the window',
-                        })}
-                      </Typography>
-                      <Select
-                        size="small"
-                        value={closeAction}
-                        onChange={(event) =>
-                          handleCloseActionChange(
-                            event.target.value as CloseAction
-                          )
-                        }
-                        sx={{
-                          borderRadius: '10px',
-                          flexShrink: 0,
-                          fontSize: '0.82rem',
-                          minWidth: 170,
-                          '& .MuiSelect-select': {
-                            py: 0.85,
-                          },
-                        }}
-                      >
-                        <MenuItem value="ask">
-                          {t('core:close_always_ask', {
-                            defaultValue: 'Always ask',
-                          })}
-                        </MenuItem>
-                        <MenuItem value="minimizeToTray">
-                          {platform === 'darwin'
-                            ? t('core:close_minimize_to_dock', {
-                                defaultValue: 'Minimize to dock',
-                              })
-                            : t('core:close_minimize_to_tray', {
-                                defaultValue: 'Minimize to tray',
+                          <Typography
+                            sx={{
+                              color: theme.palette.text.primary,
+                              fontSize: '0.82rem',
+                              fontWeight: 700,
+                              letterSpacing: '0.01em',
+                              minWidth: 0,
+                            }}
+                          >
+                            {t('core:close_window_behavior', {
+                              defaultValue: 'When closing the window',
+                            })}
+                          </Typography>
+                          <Select
+                            size="small"
+                            value={closeAction}
+                            onChange={(event) =>
+                              handleCloseActionChange(
+                                event.target.value as CloseAction
+                              )
+                            }
+                            sx={{
+                              borderRadius: '10px',
+                              flexShrink: 0,
+                              fontSize: '0.82rem',
+                              minWidth: 170,
+                              '& .MuiSelect-select': {
+                                py: 0.85,
+                              },
+                            }}
+                          >
+                            <MenuItem value="ask">
+                              {t('core:close_always_ask', {
+                                defaultValue: 'Always ask',
                               })}
-                        </MenuItem>
-                        <MenuItem value="quit">
-                          {t('core:close_quit_completely', {
-                            defaultValue: 'Quit completely',
-                          })}
-                        </MenuItem>
-                      </Select>
-                    </Box>
+                            </MenuItem>
+                            <MenuItem value="minimizeToTray">
+                              {platform === 'darwin'
+                                ? t('core:close_minimize_to_dock', {
+                                    defaultValue: 'Minimize to dock',
+                                  })
+                                : t('core:close_minimize_to_tray', {
+                                    defaultValue: 'Minimize to tray',
+                                  })}
+                            </MenuItem>
+                            <MenuItem value="quit">
+                              {t('core:close_quit_completely', {
+                                defaultValue: 'Quit completely',
+                              })}
+                            </MenuItem>
+                          </Select>
+                        </Box>
 
-                    <Box
-                      sx={{
-                        borderTop: `1px solid ${avatarSectionDivider}`,
-                        mx: 1.35,
-                      }}
-                    />
+                        <Box
+                          sx={{
+                            borderTop: `1px solid ${avatarSectionDivider}`,
+                            mx: 1.35,
+                          }}
+                        />
+                      </>
+                    )}
 
                     <Box
                       sx={{
@@ -4443,79 +4600,86 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                       />
                     </Box>
 
-                    <Box
-                      sx={{
-                        borderTop: `1px solid ${avatarSectionDivider}`,
-                        mx: 1.35,
-                      }}
-                    />
+                    {/* Publishes the dashboard pin list Hub loads its pinned apps
+                        from; phones keep apps in Tabs folders instead, so a save
+                        from GO could overwrite the Hub pins with an old list. */}
+                    {!isGoApp && (
+                      <>
+                        <Box
+                          sx={{
+                            borderTop: `1px solid ${avatarSectionDivider}`,
+                            mx: 1.35,
+                          }}
+                        />
 
-                    <Box
-                      sx={{
-                        alignItems: 'center',
-                        display: 'flex',
-                        gap: 1.2,
-                        justifyContent: 'space-between',
-                        px: 1.35,
-                        py: 1.2,
-                      }}
-                    >
-                      <Box sx={{ minWidth: 0 }}>
-                        <Typography
+                        <Box
                           sx={{
-                            color: theme.palette.text.primary,
-                            fontSize: '0.82rem',
-                            fontWeight: 700,
-                            letterSpacing: '0.01em',
+                            alignItems: 'center',
+                            display: 'flex',
+                            gap: 1.2,
+                            justifyContent: 'space-between',
+                            px: 1.35,
+                            py: 1.2,
                           }}
                         >
-                          {td('pinned_qapp_backup', 'Pinned Q-App backup')}
-                        </Typography>
-                        <Typography
-                          sx={{
-                            color: theme.palette.text.secondary,
-                            fontSize: '0.75rem',
-                            lineHeight: 1.45,
-                            mt: 0.4,
-                          }}
-                        >
-                          {td(
-                            'pinned_qapp_backup_desc',
-                            'Save your pinned Q-Apps to encrypted QDN settings so the same layout can follow you across devices.'
-                          )}
-                        </Typography>
-                      </Box>
-                      <Tooltip title={td('manage_backup', 'Manage backup')}>
-                        <Box component="span" sx={{ flexShrink: 0 }}>
-                          <Save
-                            isDesktop
-                            disableWidth={false}
-                            myName={userInfo?.name}
-                            toolbarModule
-                            buttonSx={{
-                              alignItems: 'center',
-                              backgroundColor: avatarModalSurfaceSoft,
-                              border: `1px solid ${avatarFieldBorder}`,
-                              borderRadius: '10px',
-                              display: 'inline-flex',
-                              height: 38,
-                              justifyContent: 'center',
-                              width: 42,
-                              '&:hover': {
-                                backgroundColor: alpha(
-                                  theme.palette.primary.main,
-                                  isDarkMode ? 0.12 : 0.08
-                                ),
-                                borderColor: alpha(
-                                  theme.palette.primary.main,
-                                  0.32
-                                ),
-                              },
-                            }}
-                          />
+                          <Box sx={{ minWidth: 0 }}>
+                            <Typography
+                              sx={{
+                                color: theme.palette.text.primary,
+                                fontSize: '0.82rem',
+                                fontWeight: 700,
+                                letterSpacing: '0.01em',
+                              }}
+                            >
+                              {td('pinned_qapp_backup', 'Pinned Q-App backup')}
+                            </Typography>
+                            <Typography
+                              sx={{
+                                color: theme.palette.text.secondary,
+                                fontSize: '0.75rem',
+                                lineHeight: 1.45,
+                                mt: 0.4,
+                              }}
+                            >
+                              {td(
+                                'pinned_qapp_backup_desc',
+                                'Save your pinned Q-Apps to encrypted QDN settings so the same layout can follow you across devices.'
+                              )}
+                            </Typography>
+                          </Box>
+                          <Tooltip title={td('manage_backup', 'Manage backup')}>
+                            <Box component="span" sx={{ flexShrink: 0 }}>
+                              <Save
+                                isDesktop
+                                disableWidth={false}
+                                myName={userInfo?.name}
+                                toolbarModule
+                                buttonSx={{
+                                  alignItems: 'center',
+                                  backgroundColor: avatarModalSurfaceSoft,
+                                  border: `1px solid ${avatarFieldBorder}`,
+                                  borderRadius: '10px',
+                                  display: 'inline-flex',
+                                  height: 38,
+                                  justifyContent: 'center',
+                                  width: 42,
+                                  '&:hover': {
+                                    backgroundColor: alpha(
+                                      theme.palette.primary.main,
+                                      isDarkMode ? 0.12 : 0.08
+                                    ),
+                                    borderColor: alpha(
+                                      theme.palette.primary.main,
+                                      0.32
+                                    ),
+                                  },
+                                }}
+                              />
+                            </Box>
+                          </Tooltip>
                         </Box>
-                      </Tooltip>
-                    </Box>
+                      </>
+                    )}
                   </Box>
                 </Box>
               ) : null}
@@ -4598,7 +4762,9 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                             letterSpacing: '0.01em',
                           }}
                         >
-                          {td('quitter_feed_module', 'Quitter Feed')}
+                          {feedApp === 'Torq'
+                            ? td('torq_feed', 'Torq Feed')
+                            : td('quitter_feed_module', 'Quitter Feed')}
                         </Typography>
                         <Typography
                           sx={{
@@ -4608,10 +4774,15 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                             mt: 0.4,
                           }}
                         >
-                          {td(
-                            'quitter_feed_module_desc',
-                            'Show the Quitter Feed module on Home. Turn off to stop rendering it.'
-                          )}
+                          {feedApp === 'Torq'
+                            ? td(
+                                'torq_feed_module_desc',
+                                'Show the Torq Feed module on Home. Turn off to stop rendering it.'
+                              )
+                            : td(
+                                'quitter_feed_module_desc',
+                                'Show the Quitter Feed module on Home. Turn off to stop rendering it.'
+                              )}
                         </Typography>
                       </Box>
                       <Switch

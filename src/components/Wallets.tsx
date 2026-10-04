@@ -42,28 +42,53 @@ import {
   storeWallets,
   walletVersion,
 } from '../background/background.ts';
-import { getPrimaryNamesForAddresses } from './Group/groupApi';
 import {
+  clearWalletAvatarCache,
   getWalletAvatarCacheEntries,
   syncWalletAvatarCachesForAddresses,
-  resolveWalletAvatarSrc,
+  walletAvatarCacheMatchesName,
   type WalletAvatarCacheEntry,
 } from '../utils/walletAvatarCache';
+import {
+  forgetWalletPrimaryNames,
+  getCachedWalletPrimaryNames,
+  isLoopbackNodeUrl,
+  primaryNamesFromAvatarCache,
+  refreshWalletPrimaryNamesFromOwnNode,
+  registerDeviceWalletAddresses,
+  staleWalletAddresses,
+} from '../utils/walletPrimaryNameCache';
+import { getBaseApiReactForPrimaryName } from '../utils/globalApi';
 import { QortalUserAvatar } from './QortalUserAvatar';
 import PhraseWallet from '../utils/generateWallet/phrase-wallet.ts';
 import { decryptStoredWalletFromSeedPhrase } from '../utils/decryptWallet.ts';
 import { crypto } from '../constants/decryptWallet.ts';
 import { prewarmKdfWorkers } from '../encryption/kdf';
 import { PasswordField } from './index.ts';
+import { SECRET_TEXT_INPUT_PROPS } from './PasswordField/noAutofill';
+import { useSecureScreen } from '../hooks/useSecureScreen';
 import { AuthButton, AuthSectionLabel } from './Auth/AuthShell';
 import type { AuthUnlockTransitionSnapshot } from '../types/authTransition';
 import {
   hasAttemptedLastWalletAutoSelectThisSession,
   markLastWalletAutoSelectAttemptedThisSession,
 } from '../utils/lastAuthenticatedWallet';
-import { mobileLoginSettingsOpenAtom } from '../atoms/global';
+import {
+  mobileLoginSettingsOpenAtom,
+  selectedNodeInfoAtom,
+} from '../atoms/global';
 import { isCapacitor } from '../utils/platform';
-import { getBiometricEnabledAddresses, getBiometricEnabledAddressesSync, prefetchWalletSessionProbe, prewarmBiometricUnlockKdf, syncBiometricAutoPromptFlag, syncBiometricPasswordCache, updateEarlyBiometricPromptForTopWallet, warmUpBiometricHardware } from '../utils/walletBiometricAuth';
+import { isAndroidApp } from '../utils/androidApp';
+import {
+  getBiometricEnabledAddresses,
+  getBiometricEnabledAddressesSync,
+  prefetchWalletSessionProbe,
+  prewarmBiometricUnlockKdf,
+  syncBiometricAutoPromptFlag,
+  syncBiometricPasswordCache,
+  updateEarlyBiometricPromptForTopWallet,
+  warmUpBiometricHardware,
+} from '../utils/walletBiometricAuth';
 import { isQortalBiometricHardwareAvailable } from '../plugins/QortalBiometric';
 
 const parsefilenameQortal = (filename) => {
@@ -113,7 +138,15 @@ export const Wallets = ({
 }: WalletsProps) => {
   const { t } = useTranslation(['auth']);
   const nativeShell = isCapacitor();
+  // GO-42: on Android the seed phrase goes in a password input. Elsewhere a
+  // CSS-masked textarea, as before: Chrome's password manager would offer to
+  // save a second password field in a browser build.
+  const seedInputIsPassword = isAndroidApp();
   const isLoginSettingsOpen = useAtomValue(mobileLoginSettingsOpenAtom);
+  // A Core on this device (desktop Hub) may be asked about every wallet.
+  const nodeIsOnThisDevice = isLoopbackNodeUrl(
+    useAtomValue(selectedNodeInfoAtom)?.url
+  );
   const [biometricEnabledAddresses, setBiometricEnabledAddresses] = useState<
     Set<string>
   >(() => new Set());
@@ -126,6 +159,9 @@ export const Wallets = ({
   const [isSeedVisible, setIsSeedVisible] = useState(false);
   const [importView, setImportView] = useState<ImportView>('choice');
   const [backupImportHint, setBackupImportHint] = useState('');
+  // Typing a seed phrase: no screenshots, recordings or recents thumbnail
+  // (GO-37).
+  useSecureScreen({ secure: importView === 'seedphrase' });
   /** Insertion slot index in the wallet list — line appears before wallets[idx] when idx < length */
   const [walletDropGapBeforeIndex, setWalletDropGapBeforeIndex] = useState<
     number | null
@@ -136,12 +172,8 @@ export const Wallets = ({
   const [primaryNamesByAddress, setPrimaryNamesByAddress] = useState<
     Record<string, string>
   >({});
-  const [primaryNamesLoaded, setPrimaryNamesLoaded] = useState(false);
   const [walletAvatarsByAddress, setWalletAvatarsByAddress] = useState<
     Record<string, WalletAvatarCacheEntry>
-  >({});
-  const [qortalAvatarsByAddress, setQortalAvatarsByAddress] = useState<
-    Record<string, boolean | null | undefined>
   >({});
   const [walletEntrySearchOpen, setWalletEntrySearchOpen] = useState(false);
   const [walletEntryFilterQuery, setWalletEntryFilterQuery] = useState('');
@@ -287,72 +319,86 @@ export const Wallets = ({
     };
   }, []);
 
+  // Names and avatars come from this device only. Asking a remote node about
+  // every saved wallet at once (or one request per wallet, all at the same
+  // moment) tells it which wallets share this phone. Each wallet's entry is
+  // refreshed while that wallet is in use: the unlock screen and the
+  // signed-in top bar look up that one address. A node on this device itself
+  // is the exception: it is the user's own, so it is asked as before.
   useEffect(() => {
     if (walletAddresses.length === 0) {
       setPrimaryNamesByAddress({});
-      setPrimaryNamesLoaded(false);
       setWalletAvatarsByAddress({});
       return;
     }
 
-    let canceled = false;
-    setPrimaryNamesLoaded(false);
-
-    getPrimaryNamesForAddresses(walletAddresses)
-      .then((namesByAddress) => {
-        if (!canceled) {
-          setPrimaryNamesByAddress(namesByAddress);
-          setPrimaryNamesLoaded(true);
-        }
-      })
-      .catch((error) => {
-        console.error('Unable to fetch wallet primary names:', error);
-        if (!canceled) {
-          setPrimaryNamesLoaded(true);
-        }
-      });
-
-    getWalletAvatarCacheEntries()
-      .then((avatarsByAddress) => {
-        if (!canceled) {
-          setWalletAvatarsByAddress(avatarsByAddress);
-        }
-      })
-      .catch((error) => {
-        console.error('Unable to load cached wallet avatars:', error);
-      });
-
-    return () => {
-      canceled = true;
-    };
-  }, [walletAddresses]);
-
-  useEffect(() => {
-    if (walletAddresses.length === 0) {
-      setQortalAvatarsByAddress({});
-      return;
-    }
-
+    registerDeviceWalletAddresses(walletAddresses);
     let canceled = false;
 
     void (async () => {
-      const { hasAvatarByAddress, entriesByAddress } =
-        await syncWalletAvatarCachesForAddresses(
-          walletAddresses,
-          primaryNamesByAddress,
-          { namesLoaded: primaryNamesLoaded }
-        );
-
+      const [storedAvatars, cachedNames] = await Promise.all([
+        getWalletAvatarCacheEntries().catch((error) => {
+          console.error('Unable to load cached wallet avatars:', error);
+          return {} as Record<string, WalletAvatarCacheEntry>;
+        }),
+        getCachedWalletPrimaryNames(walletAddresses).catch((error) => {
+          console.error('Unable to load cached wallet names:', error);
+          return {} as Record<string, string>;
+        }),
+      ]);
+      const staleAvatars = staleWalletAddresses(
+        Object.keys(storedAvatars),
+        walletAddresses
+      );
+      const avatarsByAddress = { ...storedAvatars };
+      for (const address of staleAvatars) delete avatarsByAddress[address];
       if (!canceled) {
-        setQortalAvatarsByAddress(hasAvatarByAddress);
-        setWalletAvatarsByAddress(entriesByAddress);
+        setWalletAvatarsByAddress(avatarsByAddress);
+        setPrimaryNamesByAddress({
+          ...primaryNamesFromAvatarCache(avatarsByAddress, walletAddresses),
+          ...cachedNames,
+        });
+      }
+
+      // A removed wallet's name and avatar do not stay on the device.
+      await forgetWalletPrimaryNames(walletAddresses).catch(() => []);
+      for (const address of staleAvatars) {
+        // One at a time: each clear rewrites the whole stored map.
+        await clearWalletAvatarCache(address).catch(() => undefined);
+      }
+      if (canceled) return;
+
+      if (
+        !nodeIsOnThisDevice ||
+        !isLoopbackNodeUrl(getBaseApiReactForPrimaryName())
+      ) {
+        return;
+      }
+      try {
+        // Loaded on demand: groupApi pulls in App, which renders this file.
+        const { getPrimaryNamesForAddresses } =
+          await import('./Group/groupApi');
+        const ownNodeNames = await refreshWalletPrimaryNamesFromOwnNode(
+          walletAddresses,
+          getPrimaryNamesForAddresses
+        );
+        if (canceled) return;
+        setPrimaryNamesByAddress((prev) => ({ ...prev, ...ownNodeNames }));
+        const { entriesByAddress } = await syncWalletAvatarCachesForAddresses(
+          walletAddresses,
+          ownNodeNames,
+          { namesLoaded: true }
+        );
+        if (!canceled) setWalletAvatarsByAddress(entriesByAddress);
+      } catch (error) {
+        console.error('Unable to refresh wallet names from this node:', error);
       }
     })();
 
     return () => {
       canceled = true;
     };
-  }, [walletAddresses, primaryNamesByAddress, primaryNamesLoaded]);
+  }, [nodeIsOnThisDevice, walletAddresses]);
 
   useEffect(() => {
     if (mode !== 'entry' || !nativeShell || walletAddresses.length === 0) {
@@ -382,7 +428,11 @@ export const Wallets = ({
   }, [isLoginSettingsOpen, mode, nativeShell, walletAddresses]);
 
   useEffect(() => {
-    if (mode !== 'entry' || !nativeShell || biometricEnabledAddresses.size === 0) {
+    if (
+      mode !== 'entry' ||
+      !nativeShell ||
+      biometricEnabledAddresses.size === 0
+    ) {
       return;
     }
     void prewarmKdfWorkers();
@@ -444,6 +494,11 @@ export const Wallets = ({
     getWallets()
       .then((res) => {
         if (res && Array.isArray(res)) {
+          // Registered here too: the top wallet may open its unlock screen
+          // (and look up its name) before the picker's own effects run.
+          registerDeviceWalletAddresses(
+            res.map((wallet) => wallet?.address0).filter(Boolean) as string[]
+          );
           setWallets(res);
           if (mode === 'entry' && nativeShell) {
             const addresses = res
@@ -524,7 +579,10 @@ export const Wallets = ({
     ): Promise<boolean> => {
       if (!onBiometricWalletUnlock) return false;
 
-      const unlocked = await onBiometricWalletUnlock(wallet, transitionSnapshot);
+      const unlocked = await onBiometricWalletUnlock(
+        wallet,
+        transitionSnapshot
+      );
       if (unlocked && transitionSnapshot && mode === 'entry') {
         onWalletUnlockStart?.(transitionSnapshot);
       }
@@ -579,19 +637,22 @@ export const Wallets = ({
    * drag started (adjusted for any scrolling since). Using the snapshot — not
    * live rects — keeps the target stable while neighbours animate.
    */
-  const computeReorderGapBeforeIndex = useCallback((clientY: number): number => {
-    const session = walletDragSessionRef.current;
-    if (!session) return 0;
-    const snapshot = session.rowSnapshot;
-    if (!snapshot.length) return session.sourceIdx;
-    const container = accountsScrollRef.current;
-    const scrollDelta = (container?.scrollTop ?? 0) - session.scrollTop0;
-    for (let i = 0; i < snapshot.length; i += 1) {
-      const midpoint = snapshot[i].top - scrollDelta + snapshot[i].height / 2;
-      if (clientY < midpoint) return i;
-    }
-    return snapshot.length;
-  }, []);
+  const computeReorderGapBeforeIndex = useCallback(
+    (clientY: number): number => {
+      const session = walletDragSessionRef.current;
+      if (!session) return 0;
+      const snapshot = session.rowSnapshot;
+      if (!snapshot.length) return session.sourceIdx;
+      const container = accountsScrollRef.current;
+      const scrollDelta = (container?.scrollTop ?? 0) - session.scrollTop0;
+      for (let i = 0; i < snapshot.length; i += 1) {
+        const midpoint = snapshot[i].top - scrollDelta + snapshot[i].height / 2;
+        if (clientY < midpoint) return i;
+      }
+      return snapshot.length;
+    },
+    []
+  );
 
   const stopReorderAutoScroll = useCallback(() => {
     const state = walletDragAutoScrollRef.current;
@@ -720,7 +781,7 @@ export const Wallets = ({
         current.rowStride =
           snapshot.length >= 2
             ? snapshot[1].top - snapshot[0].top
-            : snapshot[0]?.height ?? 0;
+            : (snapshot[0]?.height ?? 0);
         setWalletDragRowStride(current.rowStride);
 
         try {
@@ -968,8 +1029,7 @@ export const Wallets = ({
 
   if (isLoading) return null;
 
-  const showsEntryWalletFilter =
-    mode === 'entry' && wallets.length > 8;
+  const showsEntryWalletFilter = mode === 'entry' && wallets.length > 8;
 
   const entryFilteredNoMatches =
     showsEntryWalletFilter &&
@@ -1062,7 +1122,7 @@ export const Wallets = ({
                   mode === 'entry' &&
                   Boolean(
                     wallet?.address0 &&
-                      biometricEnabledAddresses.has(wallet.address0.trim())
+                    biometricEnabledAddresses.has(wallet.address0.trim())
                   )
                 }
                 finalizeWalletReorder={finalizeWalletReorder}
@@ -1082,7 +1142,7 @@ export const Wallets = ({
                 }
                 hasQortalAvatar={
                   wallet?.address0
-                    ? qortalAvatarsByAddress[wallet.address0]
+                    ? Boolean(walletAvatarsByAddress[wallet.address0])
                     : false
                 }
                 registerCardRef={registerCardRef}
@@ -1394,22 +1454,41 @@ export const Wallets = ({
             <AuthSectionLabel>
               {t('auth:entry.import_seed_label')}
             </AuthSectionLabel>
+            {/* On Android a password input, shown as text only on request:
+                the keyboard does not learn, suggest or correct in it, and no
+                password manager keeps it (GO-42). Pasted line breaks become
+                spaces. Elsewhere the masked textarea, with the keyboard's
+                corrections turned off. */}
             <TextField
               fullWidth
-              multiline
-              minRows={4}
+              {...(seedInputIsPassword
+                ? { type: isSeedVisible ? 'text' : 'password' }
+                : { multiline: true, minRows: 4 })}
               value={seedValue}
               onChange={(event) => setSeedValue(event.target.value)}
               placeholder={t('auth:entry.import_seed_placeholder')}
-              sx={seedTextFieldSx(theme, isSeedVisible)}
+              autoComplete="off"
+              sx={seedTextFieldSx(theme, isSeedVisible, !seedInputIsPassword)}
+              inputProps={{
+                'aria-label': t('auth:entry.import_seed_label'),
+                ...SECRET_TEXT_INPUT_PROPS,
+              }}
               InputProps={{
                 endAdornment: (
                   <ButtonBase
+                    aria-label={
+                      isSeedVisible
+                        ? t('auth:entry.hide_seed_phrase')
+                        : t('auth:entry.show_seed_phrase')
+                    }
+                    aria-pressed={isSeedVisible}
                     onClick={() => setIsSeedVisible((prev) => !prev)}
                     sx={{
-                      alignSelf: 'flex-start',
                       color: 'rgba(214,221,233,0.62)',
-                      mt: 1,
+                      ml: 1,
+                      ...(seedInputIsPassword
+                        ? {}
+                        : { alignSelf: 'flex-start', mt: 1 }),
                     }}
                   >
                     {isSeedVisible ? <VisibilityOffIcon /> : <VisibilityIcon />}
@@ -1417,6 +1496,23 @@ export const Wallets = ({
                 ),
               }}
             />
+            {seedInputIsPassword && isSeedVisible && seedValue.trim() && (
+              // The input shows one line; this lets the user check every
+              // word. The whole screen is protected from capture.
+              <Typography
+                data-testid="seed-phrase-preview"
+                sx={{
+                  color: theme.palette.text.secondary,
+                  fontSize: '0.9rem',
+                  lineHeight: 1.6,
+                  mt: 0.8,
+                  overflowWrap: 'anywhere',
+                  whiteSpace: 'pre-wrap',
+                }}
+              >
+                {seedValue}
+              </Typography>
+            )}
           </Box>
 
           <Box>
@@ -1590,11 +1686,13 @@ const WalletRow = ({
   const theme = useTheme();
   const effectivePrimaryName =
     primaryName?.trim() || wallet?.name?.trim() || '';
-  const resolvedAvatarSrc = resolveWalletAvatarSrc({
-    primaryName: effectivePrimaryName,
-    walletAddress: wallet?.address0,
+  // Only the avatar saved on this device: the picker sends the node nothing.
+  const resolvedAvatarSrc = walletAvatarCacheMatchesName(
     cachedAvatarEntry,
-  });
+    effectivePrimaryName
+  )
+    ? cachedAvatarEntry?.dataUrl
+    : undefined;
   const displayName =
     effectivePrimaryName ||
     wallet?.name ||
@@ -1615,7 +1713,8 @@ const WalletRow = ({
     idx !== reorderActiveSourceIndex
   ) {
     const source = reorderActiveSourceIndex;
-    const landing = reorderGapIndex > source ? reorderGapIndex - 1 : reorderGapIndex;
+    const landing =
+      reorderGapIndex > source ? reorderGapIndex - 1 : reorderGapIndex;
     const reduced = idx < source ? idx : idx - 1;
     const finalSlot = reduced + (reduced >= landing ? 1 : 0);
     neighbourShiftPx = (finalSlot - idx) * reorderRowStride;
@@ -1662,7 +1761,9 @@ const WalletRow = ({
       avatarSrc: resolvedAvatarSrc,
       displayName,
       nameRect: rectToObject(nameRef.current.getBoundingClientRect()),
-      primaryName: effectivePrimaryName || undefined,
+      // Only a real, remembered name: a wallet label here would make the
+      // unlock screen skip its own lookup (and ask for the label's avatar).
+      primaryName: primaryName?.trim() || undefined,
       walletAddress: wallet?.address0,
     };
   };
@@ -1687,7 +1788,9 @@ const WalletRow = ({
       const snapshot = getTransitionSnapshot();
       const unlocked = await onBiometricUnlock(wallet, snapshot);
       if (!unlocked) {
-        setSelectedWallet(wallet, snapshot, { startWithPasswordFallback: true });
+        setSelectedWallet(wallet, snapshot, {
+          startWithPasswordFallback: true,
+        });
       }
     } finally {
       setBiometricUnlockBusy(false);
@@ -1745,323 +1848,319 @@ const WalletRow = ({
         </Box>
       )}
       <Box
-      ref={(element: HTMLDivElement | null) => {
-        rowRef.current = element;
-        if (wallet?.address0) {
-          registerCardRef(wallet.address0)(element);
-        }
-      }}
-      draggable={mode !== 'entry'}
-      onDragStart={
-        mode !== 'entry'
-          ? (event) => {
-              isDraggingRef.current = true;
-              registerReorderDragActive?.(true);
-              onReorderDragStart?.(idx);
-              event.dataTransfer.effectAllowed = 'move';
-              event.dataTransfer.setData('text/plain', String(idx));
-            }
-          : undefined
-      }
-      onDragOver={
-        mode !== 'entry'
-          ? (event) => {
-              event.preventDefault();
-              event.dataTransfer.dropEffect = 'move';
-              reorderDragHover?.(idx, event);
-            }
-          : undefined
-      }
-      onDragLeave={
-        mode !== 'entry'
-          ? (event) => {
-              reorderDragHoverLeave?.(event);
-            }
-          : undefined
-      }
-      onDrop={
-        mode !== 'entry'
-          ? (event) => {
-              event.preventDefault();
-              const fromIndex = Number(
-                event.dataTransfer.getData('text/plain')
-              );
-
-              const bounds = (
-                event.currentTarget as HTMLElement
-              ).getBoundingClientRect();
-              const gapBeforeIndex =
-                event.clientY < bounds.top + bounds.height / 2 ? idx : idx + 1;
-
-              if (Number.isInteger(fromIndex)) {
-                finalizeWalletReorder(fromIndex, gapBeforeIndex);
-              }
-              onReorderDragEnd?.();
-            }
-          : undefined
-      }
-      onDragEnd={
-        mode !== 'entry'
-          ? () => {
-              registerReorderDragActive?.(false);
-              onReorderDragEnd?.();
-              window.setTimeout(() => {
-                isDraggingRef.current = false;
-              }, 0);
-            }
-          : undefined
-      }
-      onTouchStart={
-        pointerReorderEnabled
-          ? (event) => {
-              pointerDraggedRef.current = false;
-              onRowTouchStart?.(idx, event);
-            }
-          : undefined
-      }
-      onTouchMove={
-        pointerReorderEnabled
-          ? (event) => onRowTouchMove?.(event)
-          : undefined
-      }
-      onTouchEnd={
-        pointerReorderEnabled
-          ? (event) => onRowTouchEnd?.(event)
-          : undefined
-      }
-      onContextMenu={
-        pointerReorderEnabled
-          ? (event) => event.preventDefault()
-          : undefined
-      }
-      sx={{
-        borderBottom:
-          mode === 'entry' ? 'none' : '1px solid rgba(255,255,255,0.06)',
-        opacity: pointerDragActive
-          ? 0.98
-          : reorderDragSourceIndex !== null && reorderDragSourceIndex === idx
-            ? 0.46
-            : 1,
-        pb: mode === 'entry' ? 0 : 0,
-        pt: mode === 'entry' ? 0 : 0.2,
-        transition: pointerDragActive
-          ? 'none'
-          : 'transform 190ms cubic-bezier(0.2,0,0,1), opacity 160ms ease',
-        // Long-press must lift the row, not start native text selection or the
-        // context/callout menu, which would steal the gesture and cancel the
-        // pointer capture (leaving you unable to drag).
-        ...(mode === 'entry'
-          ? {
-              userSelect: 'none',
-              WebkitUserSelect: 'none',
-              WebkitTouchCallout: 'none',
-            }
-          : {}),
-        ...(pointerDragActive
-          ? {
-              transform: `translateY(${pointerDragTranslateY}px) scale(1.04)`,
-              zIndex: 60,
-              position: 'relative',
-              touchAction: 'none',
-              filter: 'brightness(1.03)',
-              boxShadow:
-                theme.palette.mode === 'light'
-                  ? '0 20px 44px rgba(45,72,112,0.34)'
-                  : '0 20px 44px rgba(0,0,0,0.72)',
-              cursor: 'grabbing',
-            }
-          : {
-              transform: `translateY(${neighbourShiftPx}px)`,
-              willChange: neighbourShiftPx !== 0 ? 'transform' : undefined,
-            }),
-      }}
-    >
-      <Box
-        sx={{
-          alignItems: 'center',
-          background:
-            mode === 'entry' ? entryRowBackground : 'transparent',
-          border:
-            mode === 'entry'
-              ? isLight
-                ? `1px solid ${theme.palette.border.subtle}`
-                : '1px solid rgba(123,145,174,0.2)'
-              : 'none',
-          borderRadius: mode === 'entry' ? '8px' : '7px',
-          cursor: 'grab',
-          display: 'grid',
-          gap: mode === 'entry' ? 1.3 : 1,
-          gridTemplateColumns:
-            mode === 'entry'
-              ? '54px minmax(0,1fr) auto auto'
-              : '36px minmax(0,1fr) auto',
-          minHeight: mode === 'entry' ? 86 : 60,
-          px: mode === 'entry' ? 1.6 : 0.55,
-          py: mode === 'entry' ? 1.15 : 0.5,
-          transition:
-            'background 160ms ease, border-color 160ms ease, box-shadow 160ms ease',
-          '&:hover': {
-            background:
-              mode === 'entry' ? entryRowHoverBackground : 'rgba(255,255,255,0.03)',
-            borderColor:
-              mode === 'entry'
-                ? isLight
-                  ? theme.palette.border.main
-                  : 'rgba(188,213,246,0.34)'
-                : undefined,
-            boxShadow:
-              mode === 'entry'
-                ? isLight
-                  ? '0 2px 12px rgba(45, 72, 112, 0.06)'
-                  : '0 0 0 1px rgba(70,120,210,0.04)'
-                : 'none',
-          },
-          '&:active': {
-            cursor: 'grabbing',
-          },
+        ref={(element: HTMLDivElement | null) => {
+          rowRef.current = element;
+          if (wallet?.address0) {
+            registerCardRef(wallet.address0)(element);
+          }
         }}
-        onClick={handleSelectWallet}
+        draggable={mode !== 'entry'}
+        onDragStart={
+          mode !== 'entry'
+            ? (event) => {
+                isDraggingRef.current = true;
+                registerReorderDragActive?.(true);
+                onReorderDragStart?.(idx);
+                event.dataTransfer.effectAllowed = 'move';
+                event.dataTransfer.setData('text/plain', String(idx));
+              }
+            : undefined
+        }
+        onDragOver={
+          mode !== 'entry'
+            ? (event) => {
+                event.preventDefault();
+                event.dataTransfer.dropEffect = 'move';
+                reorderDragHover?.(idx, event);
+              }
+            : undefined
+        }
+        onDragLeave={
+          mode !== 'entry'
+            ? (event) => {
+                reorderDragHoverLeave?.(event);
+              }
+            : undefined
+        }
+        onDrop={
+          mode !== 'entry'
+            ? (event) => {
+                event.preventDefault();
+                const fromIndex = Number(
+                  event.dataTransfer.getData('text/plain')
+                );
+
+                const bounds = (
+                  event.currentTarget as HTMLElement
+                ).getBoundingClientRect();
+                const gapBeforeIndex =
+                  event.clientY < bounds.top + bounds.height / 2
+                    ? idx
+                    : idx + 1;
+
+                if (Number.isInteger(fromIndex)) {
+                  finalizeWalletReorder(fromIndex, gapBeforeIndex);
+                }
+                onReorderDragEnd?.();
+              }
+            : undefined
+        }
+        onDragEnd={
+          mode !== 'entry'
+            ? () => {
+                registerReorderDragActive?.(false);
+                onReorderDragEnd?.();
+                window.setTimeout(() => {
+                  isDraggingRef.current = false;
+                }, 0);
+              }
+            : undefined
+        }
+        onTouchStart={
+          pointerReorderEnabled
+            ? (event) => {
+                pointerDraggedRef.current = false;
+                onRowTouchStart?.(idx, event);
+              }
+            : undefined
+        }
+        onTouchMove={
+          pointerReorderEnabled ? (event) => onRowTouchMove?.(event) : undefined
+        }
+        onTouchEnd={
+          pointerReorderEnabled ? (event) => onRowTouchEnd?.(event) : undefined
+        }
+        onContextMenu={
+          pointerReorderEnabled ? (event) => event.preventDefault() : undefined
+        }
+        sx={{
+          borderBottom:
+            mode === 'entry' ? 'none' : '1px solid rgba(255,255,255,0.06)',
+          opacity: pointerDragActive
+            ? 0.98
+            : reorderDragSourceIndex !== null && reorderDragSourceIndex === idx
+              ? 0.46
+              : 1,
+          pb: mode === 'entry' ? 0 : 0,
+          pt: mode === 'entry' ? 0 : 0.2,
+          transition: pointerDragActive
+            ? 'none'
+            : 'transform 190ms cubic-bezier(0.2,0,0,1), opacity 160ms ease',
+          // Long-press must lift the row, not start native text selection or the
+          // context/callout menu, which would steal the gesture and cancel the
+          // pointer capture (leaving you unable to drag).
+          ...(mode === 'entry'
+            ? {
+                userSelect: 'none',
+                WebkitUserSelect: 'none',
+                WebkitTouchCallout: 'none',
+              }
+            : {}),
+          ...(pointerDragActive
+            ? {
+                transform: `translateY(${pointerDragTranslateY}px) scale(1.04)`,
+                zIndex: 60,
+                position: 'relative',
+                touchAction: 'none',
+                filter: 'brightness(1.03)',
+                boxShadow:
+                  theme.palette.mode === 'light'
+                    ? '0 20px 44px rgba(45,72,112,0.34)'
+                    : '0 20px 44px rgba(0,0,0,0.72)',
+                cursor: 'grabbing',
+              }
+            : {
+                transform: `translateY(${neighbourShiftPx}px)`,
+                willChange: neighbourShiftPx !== 0 ? 'transform' : undefined,
+              }),
+        }}
       >
-        <QortalUserAvatar
-          key={`${wallet?.address0 || idx}-${resolvedAvatarSrc ?? 'none'}`}
-          ref={avatarRef}
-          alt={displayName}
-          primaryName={effectivePrimaryName}
-          walletAddress={wallet?.address0}
-          cachedAvatarEntry={cachedAvatarEntry}
-          fallbackIconSize={mode === 'entry' ? 27 : 22}
+        <Box
           sx={{
-            alignSelf: 'center',
-            flexShrink: 0,
-            height: mode === 'entry' ? 46 : 34,
-            width: mode === 'entry' ? 46 : 34,
-          }}
-        />
-
-        <Box sx={{ minWidth: 0 }}>
-          <Box
-            sx={{
-              alignItems: 'baseline',
-              display: 'inline-flex',
-              flexWrap: 'wrap',
-              gap: 0.35,
-              maxWidth: '100%',
-              minWidth: 0,
-            }}
-          >
-            <Typography
-              ref={nameRef}
-              sx={{
-                color: theme.palette.text.primary,
-                fontSize: mode === 'entry' ? '1rem' : '0.95rem',
-                fontWeight: 700,
-                display: '-webkit-box',
-                WebkitBoxOrient: 'vertical',
-                WebkitLineClamp: 2,
-                overflow: 'hidden',
-                overflowWrap: 'anywhere',
-                lineHeight: 1.2,
-              }}
-            >
-              {displayName}
-            </Typography>
-            {wallet?.note && (
-              <Typography
-                sx={{
-                  color:
-                    mode === 'entry'
-                      ? alpha(theme.palette.text.secondary, 0.72)
-                      : 'rgba(214,221,233,0.42)',
-                  fontSize: '0.72rem',
-                  fontStyle: 'italic',
-                  fontWeight: 400,
-                  lineHeight: 1,
-                  maxWidth: { xs: 120, sm: 180 },
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
-                }}
-              >
-                {wallet.note}
-              </Typography>
-            )}
-          </Box>
-          <Typography
-            ref={addressRef}
-            sx={{
-              color:
+            alignItems: 'center',
+            background: mode === 'entry' ? entryRowBackground : 'transparent',
+            border:
+              mode === 'entry'
+                ? isLight
+                  ? `1px solid ${theme.palette.border.subtle}`
+                  : '1px solid rgba(123,145,174,0.2)'
+                : 'none',
+            borderRadius: mode === 'entry' ? '8px' : '7px',
+            cursor: 'grab',
+            display: 'grid',
+            gap: mode === 'entry' ? 1.3 : 1,
+            gridTemplateColumns:
+              mode === 'entry'
+                ? '54px minmax(0,1fr) auto auto'
+                : '36px minmax(0,1fr) auto',
+            minHeight: mode === 'entry' ? 86 : 60,
+            px: mode === 'entry' ? 1.6 : 0.55,
+            py: mode === 'entry' ? 1.15 : 0.5,
+            transition:
+              'background 160ms ease, border-color 160ms ease, box-shadow 160ms ease',
+            '&:hover': {
+              background:
                 mode === 'entry'
-                  ? theme.palette.text.secondary
-                  : 'rgba(214,221,233,0.56)',
-              fontSize: mode === 'entry' ? '0.84rem' : '0.79rem',
-              lineHeight: 1.35,
-              mt: 0.05,
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
-            }}
-          >
-            {addressLabel}
-          </Typography>
-        </Box>
-
-        <Box data-no-drag onClick={(event) => event.stopPropagation()}>
-          {mode === 'entry' && biometricUnlockEnabled ? (
-            <IconButton
-              aria-label={t('auth:mobile_login_settings.biometric_unlock')}
-              disabled={biometricUnlockBusy}
-              onClick={(event) => void handleBiometricUnlockClick(event)}
-              sx={{
-                background: isLight
-                  ? alpha(theme.palette.primary.main, 0.1)
-                  : 'rgba(118,164,255,0.12)',
-                border: isLight
-                  ? `1px solid ${alpha(theme.palette.primary.main, 0.28)}`
-                  : '1px solid rgba(118,164,255,0.28)',
-                borderRadius: '50%',
-                color: theme.palette.primary.main,
-                height: 46,
-                width: 46,
-                '&:hover': {
-                  background: isLight
-                    ? alpha(theme.palette.primary.main, 0.16)
-                    : 'rgba(118,164,255,0.18)',
-                },
-                '&:disabled': {
-                  opacity: 0.55,
-                },
-              }}
-            >
-              <FingerprintRoundedIcon sx={{ fontSize: 26 }} />
-            </IconButton>
-          ) : (
-            <AuthButton
-              fullWidth={false}
-              prominence="subtle"
-              onClick={handleSelectWallet}
-            >
-              {t('auth:authentication_form.unlock')}
-            </AuthButton>
-          )}
-        </Box>
-        {mode === 'entry' && (
-          <ChevronRightRoundedIcon
+                  ? entryRowHoverBackground
+                  : 'rgba(255,255,255,0.03)',
+              borderColor:
+                mode === 'entry'
+                  ? isLight
+                    ? theme.palette.border.main
+                    : 'rgba(188,213,246,0.34)'
+                  : undefined,
+              boxShadow:
+                mode === 'entry'
+                  ? isLight
+                    ? '0 2px 12px rgba(45, 72, 112, 0.06)'
+                    : '0 0 0 1px rgba(70,120,210,0.04)'
+                  : 'none',
+            },
+            '&:active': {
+              cursor: 'grabbing',
+            },
+          }}
+          onClick={handleSelectWallet}
+        >
+          <QortalUserAvatar
+            key={`${wallet?.address0 || idx}-${resolvedAvatarSrc ?? 'none'}`}
+            ref={avatarRef}
+            alt={displayName}
+            srcOverride={resolvedAvatarSrc ?? ''}
+            cachedAvatarEntry={cachedAvatarEntry}
+            fallbackIconSize={mode === 'entry' ? 27 : 22}
             sx={{
-              color: alpha(theme.palette.text.secondary, 0.65),
-              fontSize: 24,
-              opacity: 0.82,
+              alignSelf: 'center',
+              flexShrink: 0,
+              height: mode === 'entry' ? 46 : 34,
+              width: mode === 'entry' ? 46 : 34,
             }}
           />
-        )}
+
+          <Box sx={{ minWidth: 0 }}>
+            <Box
+              sx={{
+                alignItems: 'baseline',
+                display: 'inline-flex',
+                flexWrap: 'wrap',
+                gap: 0.35,
+                maxWidth: '100%',
+                minWidth: 0,
+              }}
+            >
+              <Typography
+                ref={nameRef}
+                sx={{
+                  color: theme.palette.text.primary,
+                  fontSize: mode === 'entry' ? '1rem' : '0.95rem',
+                  fontWeight: 700,
+                  display: '-webkit-box',
+                  WebkitBoxOrient: 'vertical',
+                  WebkitLineClamp: 2,
+                  overflow: 'hidden',
+                  overflowWrap: 'anywhere',
+                  lineHeight: 1.2,
+                }}
+              >
+                {displayName}
+              </Typography>
+              {wallet?.note && (
+                <Typography
+                  sx={{
+                    color:
+                      mode === 'entry'
+                        ? alpha(theme.palette.text.secondary, 0.72)
+                        : 'rgba(214,221,233,0.42)',
+                    fontSize: '0.72rem',
+                    fontStyle: 'italic',
+                    fontWeight: 400,
+                    lineHeight: 1,
+                    maxWidth: { xs: 120, sm: 180 },
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {wallet.note}
+                </Typography>
+              )}
+            </Box>
+            <Typography
+              ref={addressRef}
+              sx={{
+                color:
+                  mode === 'entry'
+                    ? theme.palette.text.secondary
+                    : 'rgba(214,221,233,0.56)',
+                fontSize: mode === 'entry' ? '0.84rem' : '0.79rem',
+                lineHeight: 1.35,
+                mt: 0.05,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {addressLabel}
+            </Typography>
+          </Box>
+
+          <Box data-no-drag onClick={(event) => event.stopPropagation()}>
+            {mode === 'entry' && biometricUnlockEnabled ? (
+              <IconButton
+                aria-label={t('auth:mobile_login_settings.biometric_unlock')}
+                disabled={biometricUnlockBusy}
+                onClick={(event) => void handleBiometricUnlockClick(event)}
+                sx={{
+                  background: isLight
+                    ? alpha(theme.palette.primary.main, 0.1)
+                    : 'rgba(118,164,255,0.12)',
+                  border: isLight
+                    ? `1px solid ${alpha(theme.palette.primary.main, 0.28)}`
+                    : '1px solid rgba(118,164,255,0.28)',
+                  borderRadius: '50%',
+                  color: theme.palette.primary.main,
+                  height: 46,
+                  width: 46,
+                  '&:hover': {
+                    background: isLight
+                      ? alpha(theme.palette.primary.main, 0.16)
+                      : 'rgba(118,164,255,0.18)',
+                  },
+                  '&:disabled': {
+                    opacity: 0.55,
+                  },
+                }}
+              >
+                <FingerprintRoundedIcon sx={{ fontSize: 26 }} />
+              </IconButton>
+            ) : (
+              <AuthButton
+                fullWidth={false}
+                prominence="subtle"
+                onClick={handleSelectWallet}
+              >
+                {t('auth:authentication_form.unlock')}
+              </AuthButton>
+            )}
+          </Box>
+          {mode === 'entry' && (
+            <ChevronRightRoundedIcon
+              sx={{
+                color: alpha(theme.palette.text.secondary, 0.65),
+                fontSize: 24,
+                opacity: 0.82,
+              }}
+            />
+          )}
+        </Box>
       </Box>
-    </Box>
     </>
   );
 };
 
-const seedTextFieldSx = (theme, isVisible: boolean) => ({
+const seedTextFieldSx = (theme, isVisible: boolean, multiline: boolean) => ({
   '& .MuiOutlinedInput-root': {
-    alignItems: 'flex-start',
+    alignItems: multiline ? 'flex-start' : 'center',
     backgroundColor: 'rgba(255,255,255,0.03)',
     borderRadius: '8px',
     '& fieldset': {
@@ -2074,10 +2173,14 @@ const seedTextFieldSx = (theme, isVisible: boolean) => ({
       borderColor: 'rgba(90,136,243,0.42)',
     },
   },
-  '& textarea': {
-    WebkitTextSecurity: isVisible ? 'none' : 'disc',
+  '& input, & textarea': {
     color: theme.palette.text.primary,
     fontSize: '0.95rem',
     lineHeight: 1.6,
+  },
+  // The textarea (desktop, browser) is masked with CSS: a password input
+  // cannot wrap.
+  '& textarea': {
+    WebkitTextSecurity: isVisible ? 'none' : 'disc',
   },
 });

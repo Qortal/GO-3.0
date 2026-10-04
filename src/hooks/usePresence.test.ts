@@ -16,28 +16,29 @@ describe('usePresence', () => {
     vi.useRealTimers();
   });
 
-  it('uses the newest session status when an address has multiple live sessions', () => {
+  it('uses the most available status when an address has multiple live sessions', () => {
     const snapshot = buildPresenceSnapshot([
       {
         address: 'Q123',
         publicKey: 'pub-1',
-        sessionId: 'session-busy',
+        sessionId: 'session-online',
         lastSeen: 1_000,
         firstSeen: 900,
         originNodeId: 'node-a',
         viaPeerId: 'node-a',
-        status: 'busy',
+        status: 'online',
         signatureValid: true,
       },
       {
+        // An idle desktop heartbeat newer than the phone in use.
         address: 'Q123',
         publicKey: 'pub-2',
-        sessionId: 'session-online',
+        sessionId: 'session-idle',
         lastSeen: 2_000,
         firstSeen: 1_900,
         originNodeId: 'node-b',
         viaPeerId: 'node-b',
-        status: 'online',
+        status: 'idle',
         signatureValid: true,
       },
       {

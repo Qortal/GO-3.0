@@ -18,6 +18,7 @@ import ListItem from '@tiptap/extension-list-item';
 import TextStyle from '@tiptap/extension-text-style';
 import Placeholder from '@tiptap/extension-placeholder';
 import { createNamedFile } from '../../utils/namedFile';
+import { stripImageFileMetadata } from '../../utils/imageCompression';
 import IconButton from '@mui/material/IconButton';
 import FormatBoldIcon from '@mui/icons-material/FormatBold';
 import FormatItalicIcon from '@mui/icons-material/FormatItalic';
@@ -42,7 +43,9 @@ import FormatHeadingIcon from '@mui/icons-material/FormatSize';
 import DeveloperModeIcon from '@mui/icons-material/DeveloperMode';
 import Compressor from 'compressorjs';
 import Mention, { MentionPluginKey } from '@tiptap/extension-mention';
-import ImageResize from 'tiptap-extension-resize-image'; // Import the ResizeImage extension
+// Its alignment icons are inlined at build time instead of loaded from
+// Google: see tools/vite/inlineResizeImageIcons.ts.
+import ImageResize from 'tiptap-extension-resize-image';
 import tippy from 'tippy.js';
 import 'tippy.js/dist/tippy.css';
 import { ReactRenderer } from '@tiptap/react';
@@ -66,6 +69,20 @@ import {
 import { MOBILE_CHAT_TOOLBAR_SLOT_ID } from '../Mobile/mobileChatCompose';
 import { FULLSCREEN_COMPOSER_ATTACHMENTS_SLOT_ID } from './composerSlots';
 import { restoreComposerTyping } from './composerKeyboard';
+import {
+  COMPOSER_CORNER_BUTTON_PX,
+  COMPOSER_CORNER_CSS_VARS,
+  COMPOSER_CORNER_ICON_PX,
+  COMPOSER_DISPLACED_GUTTER,
+  COMPOSER_EXPAND_ICON_PX,
+  COMPOSER_FORMAT_LABEL_PX,
+  COMPOSER_FOUR_SLOT_PX,
+  COMPOSER_INLINE_TEXT_GUTTERS,
+  COMPOSER_SEND_BUTTON_PX,
+  COMPOSER_SQUEEZED_TEXT_GUTTERS,
+  COMPOSER_STAGE_FLOOR,
+  COMPOSER_STAGE_THREE_MAX_PX,
+} from './composerCornerLayout';
 import {
   closePanelOnOutsideTap,
   isPanelKeyboardSuppressed,
@@ -148,10 +165,6 @@ const MenuBar = memo(
       return () => cancelAnimationFrame(frame);
     }, [toolbarInTopBar]);
 
-    if (!editor) {
-      return null;
-    }
-
     const handleImageUpload = async (file) => {
       if (!file?.type?.includes('image')) return;
       let compressedFile;
@@ -174,6 +187,8 @@ const MenuBar = memo(
       });
 
       if (compressedFile) {
+        // Strict mode can hand back the original WebP, EXIF and all.
+        compressedFile = await stripImageFileMetadata(compressedFile);
         const reader = new FileReader();
         reader.onload = () => {
           const url = reader.result;
@@ -218,6 +233,12 @@ const MenuBar = memo(
         };
       }
     }, [editor, isChat]);
+
+    // After every hook: returning before the paste effect above changed the
+    // hook count between renders (react-hooks/rules-of-hooks).
+    if (!editor) {
+      return null;
+    }
 
     // An enabled mark reads as blue on a tinted pill; a plain brightness shift
     // was too subtle to tell on/off apart at a glance.
@@ -723,21 +744,20 @@ const content = ``;
 let lastEnterSendAt = 0;
 
 const COMPACT_ACTION_GAP = 4;
-const COMPACT_BUTTON_SIZE = 32;
-// Width the text loses to chrome in each stage, mirroring chat.css: 36px of
-// editor padding and 12px of ProseMirror padding on both sides, plus the
-// paragraph indent that clears the buttons (68/36 inline, 32/0 squeezed, none
-// once stacked). Underestimating these would let the text wrap inside a stage
-// sized for fewer lines, which now clips rather than just looking cramped.
-const EDGE_GUTTER = 36 + 12;
-const INLINE_TEXT_GUTTERS = EDGE_GUTTER + 68 + (EDGE_GUTTER + 36);
-const SQUEEZED_TEXT_GUTTERS = EDGE_GUTTER + 32 + EDGE_GUTTER;
+const COMPACT_BUTTON_SIZE = COMPOSER_CORNER_BUTTON_PX;
+// Width the text loses to chrome in each stage, mirroring chat.css: the editor
+// padding and ProseMirror's own on both sides, plus the paragraph indent that
+// clears the buttons (composerCornerLayout.ts derives all of it from the button
+// sizes). Underestimating these would let the text wrap inside a stage sized
+// for fewer lines, which now clips rather than just looking cramped.
+const INLINE_TEXT_GUTTERS = COMPOSER_INLINE_TEXT_GUTTERS;
+const SQUEEZED_TEXT_GUTTERS = COMPOSER_SQUEEZED_TEXT_GUTTERS;
 // A group's right edge needs one more slot while there is a message: on one
 // line the expiry moves a slot inwards to make room for the discard button,
 // and once the message wraps the expiry keeps the slot over send and the X
-// waits one column in instead, mirroring Aa. The right indent grows by this much in the inline
-// and squeezed stages (chat.css, "Discard").
-const DISPLACED_EXPIRY_GUTTER = 36;
+// waits one column in instead, mirroring Aa. The right indent grows by this
+// much in the inline and squeezed stages (chat.css, "Discard").
+const DISPLACED_EXPIRY_GUTTER = COMPOSER_DISPLACED_GUTTER;
 
 /** Whether the discard button and the expiry both need the right edge, as
  *  chat.css sees it. Direct messages have no expiry, so their text keeps its
@@ -751,26 +771,23 @@ export const composerExpiryDisplaced = (root: ParentNode): boolean =>
 // available width: erring towards one line too many only costs a little space,
 // erring the other way hides text.
 const MEASURE_SAFETY_PX = 8;
-const COMPACT_EDITOR_MAX_HEIGHT = 160;
+// The corner composer's stage-3 cap; chat.css reads the same value.
+const COMPACT_EDITOR_MAX_HEIGHT = COMPOSER_STAGE_THREE_MAX_PX;
 const COMPACT_MEASURE_FALLBACK_FONT_SIZE = '17px';
 const SQUEEZE_AT_LINES = 2;
 const STACK_AT_LINES = 3;
-// Shortest each stage can be, mirroring the --composer-stage-* floors in
-// chat.css: one row of controls, two stacked, three stacked.
+// Shortest each stage can be, the same --composer-stage-N-floor values chat.css
+// reads: one row of controls, two stacked, three stacked.
 const COMPOSER_STAGE_ORDER = ['inline', 'squeezed', 'stacked'] as const;
-const COMPOSER_STAGE_MIN_HEIGHT = {
-  inline: 44,
-  squeezed: 72,
-  stacked: 104,
-} as const;
+const COMPOSER_STAGE_MIN_HEIGHT = COMPOSER_STAGE_FLOOR;
 // Share of the visible viewport the typing area may claim. Landscape, folded
 // phones and small screens with the keyboard up leave so little height that a
 // three-row composer would be most of the conversation, so those stay on a
 // shorter stage and scroll instead.
 const COMPOSER_MAX_VIEWPORT_SHARE = 0.45;
-// Height stage 3 needs for four buttons down the right edge (expand, expiry,
-// discard, send), mirroring the composer-rail container query in chat.css.
-const COMPOSER_FOUR_SLOT_PX = 140;
+// COMPOSER_FOUR_SLOT_PX (composerCornerLayout.ts) is the height stage 3 needs
+// for four buttons down the right edge (expand, expiry, discard, send),
+// mirrored by the composer-rail container query in chat.css.
 // Canvas metrics decide the stage; the browser decides the wrapping. Where the
 // two disagree — a font that fell back, a mention chip wider than its text —
 // the stage would clip, so the rendered height is checked once the move has
@@ -870,10 +887,11 @@ const composerStageCeiling = (
 
 /**
  * Whether stage 3 is capped under the height of four buttons. It stops growing
- * at the smallest of 160px, 45vh (the layout viewport, as chat.css reads it)
- * and the room left in the bar. In a group, the expand button waits for a
- * fourth slot on the right edge; a box that can never get that tall could be
- * scrolling a message it cannot show whole, so it keeps expand instead.
+ * at the smallest of its own cap (COMPOSER_STAGE_THREE_MAX_PX), 45vh (the
+ * layout viewport, as chat.css reads it) and the room left in the bar. In a
+ * group, the expand button waits for a fourth slot on the right edge; a box
+ * that can never get that tall could be scrolling a message it cannot show
+ * whole, so it keeps expand instead.
  */
 export const composerStageThreeIsShort = (
   spacePx: number,
@@ -1050,7 +1068,10 @@ type TiptapProps = {
   setIsFocusedParent?: React.Dispatch<React.SetStateAction<boolean>>;
   isFocusedParent?: boolean;
   isReply?: boolean;
-  /** Composer lives inside a modal, so it must not take over the app top bar. */
+  /** Composer lives inside a modal, so it must not take over the app top bar.
+   *  In the phone corner layout it also keeps the popover emoji picker and
+   *  has no full-screen mode: the emoji panel and the full-screen composer's
+   *  attachment slot belong to the app shell and the chat under the modal. */
   inOverlay?: boolean;
   membersWithNames?: unknown[];
   mentionSuggestions?: MentionSuggestionItem[];
@@ -1119,6 +1140,7 @@ const Tiptap = ({
   collapseFormattingTraySignal,
 }: TiptapProps) => {
   const theme = useTheme();
+  const { t } = useTranslation(['core', 'group']);
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
   const setMobileComposeActive = useSetAtom(mobileChatComposeActiveAtom);
   const emojiPanelOpen = useAtomValue(mobileEmojiPanelOpenAtom);
@@ -1165,8 +1187,9 @@ const Tiptap = ({
     },
     []
   );
-  // Only the chat composers hand their send cluster over; the discussion
-  // composer keeps its own bordered field and single trailing button group.
+  // The chat composers hand their send cluster over, and so does the thread
+  // composer on phones; desktop threads and announcements keep their own
+  // bordered field and trailing buttons.
   const hasCornerActions = compactChat && Boolean(compactActions);
 
   // Android dismisses the soft keyboard the moment focus leaves the editor, so
@@ -1295,7 +1318,7 @@ const Tiptap = ({
 
   // 1 line: + 😊 Aa in a row, expiry beside send. 2 lines: + stacks over the
   // smiley with Aa centred beside them, expiry over send. 3+ lines: both rails
-  // run single-file down the edges. The editor box width stays 36px padded;
+  // run single-file down the edges. The editor box keeps its side padding;
   // only the inner paragraph indent changes.
   const measureSideChrome = useCallback(() => {
     if (!hasCornerActions || readOnly || composerExpanded || document.hidden) {
@@ -1324,19 +1347,23 @@ const Tiptap = ({
     // A very narrow screen can leave less room than the chrome wants; measure
     // against a sliver rather than a negative width, which would read as "one
     // line" and clip everything the user typed.
-    const railGutter = composerExpiryDisplaced(root)
-      ? DISPLACED_EXPIRY_GUTTER
-      : 0;
+    const displaced = composerExpiryDisplaced(root);
     const predicted = composerEditorChromeKind(
       editor,
       `400 ${fontSize} Inter, system-ui, sans-serif`,
       Math.max(
         32,
-        rowWidth - INLINE_TEXT_GUTTERS - railGutter - MEASURE_SAFETY_PX
+        rowWidth -
+          INLINE_TEXT_GUTTERS -
+          (displaced ? DISPLACED_EXPIRY_GUTTER.inline : 0) -
+          MEASURE_SAFETY_PX
       ),
       Math.max(
         32,
-        rowWidth - SQUEEZED_TEXT_GUTTERS - railGutter - MEASURE_SAFETY_PX
+        rowWidth -
+          SQUEEZED_TEXT_GUTTERS -
+          (displaced ? DISPLACED_EXPIRY_GUTTER.squeezed : 0) -
+          MEASURE_SAFETY_PX
       )
     );
     // Attachments and the formatting tray share the bar with the typing area;
@@ -1363,12 +1390,16 @@ const Tiptap = ({
     // A bar that cannot reach its tallest stage cannot show the whole message
     // either, and full screen is the way out of it — so the expand button has
     // to be reachable from the stage it is stuck on, not only from stage 3.
-    root.toggleAttribute('data-composer-capped', ceiling !== 'stacked');
+    // Both flags only place the expand button, which an overlay has none of.
+    root.toggleAttribute(
+      'data-composer-capped',
+      !inOverlay && ceiling !== 'stacked'
+    );
     // Where stage 3 can never fit four buttons down the right edge, a group
     // keeps its expand button and the discard button waits one column in.
     root.toggleAttribute(
       'data-composer-short',
-      composerStageThreeIsShort(space, window.innerHeight)
+      !inOverlay && composerStageThreeIsShort(space, window.innerHeight)
     );
     // The box just changed height under the caret, whether the stage moved or
     // only the room around it did.
@@ -1384,6 +1415,7 @@ const Tiptap = ({
     applyComposerChrome,
     composerExpanded,
     hasCornerActions,
+    inOverlay,
     readOnly,
     runComposerFitCheck,
     scheduleCaretCheck,
@@ -1593,7 +1625,11 @@ const Tiptap = ({
         }
 
         if (compressedFile) {
-          const toBase64 = await fileToBase64(compressedFile);
+          // A failed compression leaves the original, and strict mode can
+          // return the original WebP: neither may keep its GPS/camera data.
+          const toBase64 = await fileToBase64(
+            await stripImageFileMetadata(compressedFile)
+          );
           insertImage?.(toBase64);
         }
       } catch (error) {
@@ -1645,7 +1681,9 @@ const Tiptap = ({
   // Mobile chat swaps the popover picker for a panel that takes over the soft
   // keyboard's slot, so the composer never moves and one button toggles between
   // the two keyboards — the way Telegram does it.
-  const useEmojiKeyboardPanel = hasCornerActions && isMobile;
+  // The panel lives in the app shell, under any modal: a composer in a dialog
+  // (a thread) keeps the popover picker, which opens above it.
+  const useEmojiKeyboardPanel = hasCornerActions && isMobile && !inOverlay;
 
   const emojiPanelIntentRef = useRef<'emoji' | 'keyboard' | null>(null);
 
@@ -2243,8 +2281,10 @@ const Tiptap = ({
     padding: 0,
     width: `${cornerButtonPx}px`,
   };
-  // Outside the corner layout the buttons keep the bordered look that matches
-  // the discussion composer's field.
+  // Outside the corner layout (the thread and announcement composers) the
+  // buttons keep the bordered look that matches the discussion composer's
+  // field, at the corner buttons' thumb size on phones.
+  const plainCompactButtonPx = isMobile ? COMPOSER_CORNER_BUTTON_PX : 34;
   const compactButtonSx = hasCornerActions
     ? cornerButtonSx
     : {
@@ -2252,15 +2292,20 @@ const Tiptap = ({
         borderRadius: '8px',
         color: theme.palette.text.secondary,
         flexShrink: 0,
-        height: 34,
-        width: 34,
+        height: plainCompactButtonPx,
+        width: plainCompactButtonPx,
       };
+  const compactIconsGrown = hasCornerActions || isMobile;
 
+  const attachLabel = t('core:action.add_attachment', {
+    postProcess: 'capitalizeFirstChar',
+  });
   const attachControl = (
     <>
-      <Tooltip title="Add attachment">
+      <Tooltip title={attachLabel}>
         <span style={{ display: 'inline-flex' }}>
           <IconButton
+            aria-label={attachLabel}
             disabled={readOnly || typeof insertFiles !== 'function'}
             onClick={() => {
               attachResumeTypingRef.current = Boolean(
@@ -2272,7 +2317,11 @@ const Tiptap = ({
             size="small"
             sx={{ backgroundColor: 'transparent', ...compactButtonSx }}
           >
-            <AddRoundedIcon sx={{ fontSize: hasCornerActions ? 22 : 19 }} />
+            <AddRoundedIcon
+              sx={{
+                fontSize: compactIconsGrown ? COMPOSER_CORNER_ICON_PX : 19,
+              }}
+            />
           </IconButton>
         </span>
       </Tooltip>
@@ -2296,9 +2345,14 @@ const Tiptap = ({
     </>
   );
 
+  const formatLabel = t('core:action.formatting', {
+    postProcess: 'capitalizeFirstChar',
+  });
   const formatControl = (
-    <Tooltip title="Formatting">
+    <Tooltip title={formatLabel}>
       <IconButton
+        aria-label={formatLabel}
+        aria-pressed={showFormattingTray}
         disabled={readOnly}
         onClick={() => setShowFormattingTray((show) => !show)}
         onMouseDown={preventFocusSteal}
@@ -2308,7 +2362,7 @@ const Tiptap = ({
             ? theme.palette.action.selected
             : 'transparent',
           fontFamily: 'Inter',
-          fontSize: 13,
+          fontSize: compactIconsGrown ? COMPOSER_FORMAT_LABEL_PX : 13,
           fontWeight: 700,
           ...compactButtonSx,
           color: showFormattingTray
@@ -2321,10 +2375,14 @@ const Tiptap = ({
     </Tooltip>
   );
 
+  const emojiLabel = emojiPanelOpen
+    ? t('core:composer.keyboard', { postProcess: 'capitalizeFirstChar' })
+    : t('core:composer.emoji', { postProcess: 'capitalizeFirstChar' });
   const emojiControl = useEmojiKeyboardPanel ? (
-    <Tooltip title={emojiPanelOpen ? 'Keyboard' : 'Emoji'}>
+    <Tooltip title={emojiLabel}>
       <span style={{ display: 'inline-flex' }}>
         <IconButton
+          aria-label={emojiLabel}
           disabled={readOnly}
           onClick={() => {
             toggleEmojiPanel();
@@ -2335,9 +2393,11 @@ const Tiptap = ({
           sx={{ backgroundColor: 'transparent', ...compactButtonSx }}
         >
           {emojiPanelOpen ? (
-            <KeyboardOutlinedIcon sx={{ fontSize: 22 }} />
+            <KeyboardOutlinedIcon sx={{ fontSize: COMPOSER_CORNER_ICON_PX }} />
           ) : (
-            <SentimentSatisfiedAltOutlinedIcon sx={{ fontSize: 22 }} />
+            <SentimentSatisfiedAltOutlinedIcon
+              sx={{ fontSize: COMPOSER_CORNER_ICON_PX }}
+            />
           )}
         </IconButton>
       </span>
@@ -2353,8 +2413,11 @@ const Tiptap = ({
         pointerEvents: readOnly ? 'none' : undefined,
       }}
     >
+      {/* Only the corner rails show this, so it takes a corner slot's size. */}
       <ReactionPicker
+        buttonSize={COMPACT_BUTTON_SIZE}
         compactComposer
+        iconSize={COMPOSER_CORNER_ICON_PX}
         neutralIcon
         onGifSelect={insertGif}
         onReaction={(emoji: string) => {
@@ -2364,22 +2427,24 @@ const Tiptap = ({
     </Box>
   );
 
+  const expandLabel = composerExpanded
+    ? t('core:composer.shrink', { postProcess: 'capitalizeFirstChar' })
+    : t('core:composer.expand', { postProcess: 'capitalizeFirstChar' });
   const expandControl = (
-    <Tooltip title={composerExpanded ? 'Shrink' : 'Expand'}>
+    <Tooltip title={expandLabel}>
       <IconButton
+        aria-label={expandLabel}
         onClick={() => setComposerExpanded((expanded) => !expanded)}
         onMouseDown={preventFocusSteal}
         size="small"
-        sx={{
-          ...cornerButtonSx,
-          height: `${cornerButtonPx}px`,
-          width: `${cornerButtonPx}px`,
-        }}
+        sx={cornerButtonSx}
       >
         {composerExpanded ? (
-          <CloseFullscreenRoundedIcon sx={{ fontSize: 15 }} />
+          <CloseFullscreenRoundedIcon
+            sx={{ fontSize: COMPOSER_EXPAND_ICON_PX }}
+          />
         ) : (
-          <OpenInFullRoundedIcon sx={{ fontSize: 15 }} />
+          <OpenInFullRoundedIcon sx={{ fontSize: COMPOSER_EXPAND_ICON_PX }} />
         )}
       </IconButton>
     </Tooltip>
@@ -2438,6 +2503,9 @@ const Tiptap = ({
           '--code-block-border': theme.palette.divider,
           '--composer-bg': 'transparent',
           '--composer-border': theme.palette.divider,
+          // Button sizes, offsets, indents and stage floors for the corner
+          // layout in chat.css, all derived from the button sizes.
+          ...(hasCornerActions && COMPOSER_CORNER_CSS_VARS),
         }}
       >
         {hasCornerActions ? (
@@ -2464,7 +2532,7 @@ const Tiptap = ({
                     textTransform: 'uppercase',
                   }}
                 >
-                  Compose
+                  {t('core:composer.title')}
                 </Typography>
                 <Box sx={{ ml: 'auto' }}>{expandControl}</Box>
               </Box>
@@ -2501,7 +2569,9 @@ const Tiptap = ({
                 flex: 1,
                 flexDirection: composerExpanded ? 'column' : 'row',
                 gap: `${COMPACT_ACTION_GAP}px`,
-                minHeight: composerExpanded ? 0 : '34px',
+                minHeight: composerExpanded
+                  ? 0
+                  : `${COMPOSER_SEND_BUTTON_PX}px`,
                 minWidth: 0,
                 overflow: 'visible',
                 position: 'relative',
@@ -2554,7 +2624,7 @@ const Tiptap = ({
                       whiteSpace: 'nowrap',
                     }}
                   >
-                    Only group admins can write in this channel
+                    {t('group:chat_group.admins_only_write')}
                   </Typography>
                 )}
                 {editorProvider}
@@ -2606,7 +2676,14 @@ const Tiptap = ({
                   </Box>
                 </Box>
                 <Box className="compact-composer-rail compact-composer-rail--right">
-                  <Box className="compact-composer-expand">{expandControl}</Box>
+                  {/* The full-screen composer shares its attachment slot and
+                      the app-shell flags with the chat composer under a
+                      dialog, so a thread's composer scrolls instead. */}
+                  {!inOverlay && (
+                    <Box className="compact-composer-expand">
+                      {expandControl}
+                    </Box>
+                  )}
                   {compactActionsNode}
                 </Box>
               </Box>
@@ -2665,7 +2742,7 @@ const Tiptap = ({
                       zIndex: 2,
                     }}
                   >
-                    Only group admins can write in this channel
+                    {t('group:chat_group.admins_only_write')}
                   </Typography>
                 )}
                 {editorProvider}

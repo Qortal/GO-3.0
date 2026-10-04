@@ -62,6 +62,8 @@ import {
   unsubscribeFromEvent,
 } from '../../utils/events';
 import { formatTimestamp } from '../../utils/time';
+import { useQdnAvatar } from '../../lib/qdnAvatars';
+import { useFullSizeQdnAvatarSrc } from '../../hooks/useFullSizeQdnAvatarSrc';
 import { SAFE_AREA_BOTTOM, SAFE_AREA_TOP } from '../../utils/mobileSafeArea';
 import {
   formatQortAmount,
@@ -371,6 +373,13 @@ export const UserLookup = ({
     typeof currentUser?.address === 'string' ? currentUser.address : '';
   const targetUserName =
     typeof addressInfo?.name === 'string' ? addressInfo.name.trim() : '';
+  const targetAvatar = useQdnAvatar(targetUserName, { priority: 'high' });
+  // 108 px: the cached copy (at most 128 px) is replaced by the full-size
+  // image once it has loaded.
+  const { src: targetAvatarSrc } = useFullSizeQdnAvatarSrc(
+    targetUserName,
+    targetAvatar
+  );
   const hasUnsafeTargetUserName = Boolean(
     targetUserName && hasInvisibleCharacters(targetUserName)
   );
@@ -1481,7 +1490,7 @@ export const UserLookup = ({
                     {addressInfo.name ? (
                       <Avatar
                         alt={addressInfo.name}
-                        src={`${getBaseApiReact()}/arbitrary/THUMBNAIL/${addressInfo.name}/qortal_avatar?async=true`}
+                        src={targetAvatarSrc}
                         sx={{
                           border: `3px solid ${alpha(
                             theme.palette.common.white,

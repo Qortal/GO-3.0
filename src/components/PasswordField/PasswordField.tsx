@@ -9,8 +9,13 @@ import { alpha } from '@mui/material/styles';
 import { forwardRef, useState } from 'react';
 import VisibilityOffIcon from '@mui/icons-material/VisibilityOff';
 import VisibilityIcon from '@mui/icons-material/Visibility';
+import { WALLET_PASSWORD_INPUT_PROPS } from './noAutofill';
 
 type PasswordFieldProps = TextFieldProps & {
+  /**
+   * Also keep the field read-only until it is focused, so nothing can fill
+   * it before the user does. Autofill itself is always off (N-33).
+   */
   suppressAutofill?: boolean;
 };
 
@@ -88,11 +93,24 @@ export const CustomInput = styled(TextField)(({ theme }) => ({
     },
 }));
 
+/** A MUI slot's props: an object, or a function of the owner state. */
+type SlotPropsValue =
+  | Record<string, any>
+  | ((ownerState: unknown) => Record<string, any>)
+  | undefined;
+
+const resolveSlotProps = (
+  slot: SlotPropsValue,
+  ownerState: unknown
+): Record<string, any> =>
+  (typeof slot === 'function' ? slot(ownerState) : slot) ?? {};
+
 export const PasswordField = forwardRef<HTMLInputElement, PasswordFieldProps>(
   (
     {
       InputProps,
       inputProps,
+      slotProps,
       onBlur,
       onFocus,
       onMouseDown,
@@ -105,6 +123,17 @@ export const PasswordField = forwardRef<HTMLInputElement, PasswordFieldProps>(
     const [canViewPassword, setCanViewPassword] = useState(false);
     const [isEditable, setIsEditable] = useState(!suppressAutofill);
     const hasValue = typeof value === 'string' ? value.length > 0 : Boolean(value);
+    const {
+      input: inputSlotProps,
+      htmlInput: htmlInputSlotProps,
+      ...otherSlotProps
+    } = (slotProps ?? {}) as Record<string, SlotPropsValue>;
+    // The caller's props for MUI's input slot: the deprecated InputProps,
+    // then slotProps.input, which wins as it does in MUI.
+    const callerInputSlotProps = (ownerState: unknown) => ({
+      ...InputProps,
+      ...resolveSlotProps(inputSlotProps, ownerState),
+    });
 
     return (
       <CustomInput
@@ -128,53 +157,64 @@ export const PasswordField = forwardRef<HTMLInputElement, PasswordFieldProps>(
           }
           onBlur?.(event);
         }}
-        InputProps={{
-          ...InputProps,
-          readOnly:
-            Boolean(InputProps?.readOnly) ||
-            (suppressAutofill ? !isEditable && !hasValue : false),
-          endAdornment: (
-            <>
-              {InputProps?.endAdornment}
-              <InputAdornment
-                position="end"
-                data-testid="toggle-view-password-btn"
-                onClick={() => {
-                  setCanViewPassword((prevState) => !prevState);
-                }}
-              >
-                {canViewPassword ? (
-                  <ButtonBase
-                    data-testid="plain-text-indicator"
-                    sx={{ minWidth: 0, p: 0 }}
-                  >
-                    <VisibilityOffIcon />
-                  </ButtonBase>
-                ) : (
-                  <ButtonBase
-                    data-testid="password-text-indicator"
-                    sx={{ minWidth: 0, p: 0 }}
-                  >
-                    <VisibilityIcon />
-                  </ButtonBase>
-                )}
-              </InputAdornment>
-            </>
-          ),
-        }}
-        inputProps={{
-          ...inputProps,
-          ...(suppressAutofill
-            ? {
-                autoComplete: 'new-password',
-                'data-1p-ignore': 'true',
-                'data-lpignore': 'true',
-                spellCheck: 'false',
-              }
-            : {}),
-        }}
         inputRef={ref}
         {...props}
+        // After {...props}: every PasswordField holds a wallet password, which
+        // must never be offered to Autofill or a password manager (N-33), so
+        // a caller's autoComplete cannot turn it back on.
+        autoComplete="off"
+        // Built from InputProps / inputProps and slotProps alike, so neither
+        // the old nor the new MUI API can drop the eye toggle, the read-only
+        // guard or the autofill opt-out.
+        slotProps={{
+          ...otherSlotProps,
+          input: (ownerState) => {
+            const callerInput = callerInputSlotProps(ownerState);
+            // Nested inputProps would replace the html input's props, opt-out
+            // included: they are merged into htmlInput below instead.
+            delete callerInput.inputProps;
+            return {
+              ...callerInput,
+              readOnly:
+                Boolean(callerInput.readOnly) ||
+                (suppressAutofill ? !isEditable && !hasValue : false),
+              endAdornment: (
+                <>
+                  {callerInput.endAdornment}
+                  <InputAdornment
+                    position="end"
+                    data-testid="toggle-view-password-btn"
+                    onClick={() => {
+                      setCanViewPassword((prevState) => !prevState);
+                    }}
+                  >
+                    {canViewPassword ? (
+                      <ButtonBase
+                        data-testid="plain-text-indicator"
+                        sx={{ minWidth: 0, p: 0 }}
+                      >
+                        <VisibilityOffIcon />
+                      </ButtonBase>
+                    ) : (
+                      <ButtonBase
+                        data-testid="password-text-indicator"
+                        sx={{ minWidth: 0, p: 0 }}
+                      >
+                        <VisibilityIcon />
+                      </ButtonBase>
+                    )}
+                  </InputAdornment>
+                </>
+              ),
+            };
+          },
+          htmlInput: (ownerState) => ({
+            ...inputProps,
+            ...callerInputSlotProps(ownerState).inputProps,
+            ...resolveSlotProps(htmlInputSlotProps, ownerState),
+            ...WALLET_PASSWORD_INPUT_PROPS,
+          }),
+        }}
       />
     );
   }

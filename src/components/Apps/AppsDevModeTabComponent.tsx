@@ -1,11 +1,15 @@
 import { TabParent } from './Apps-styles';
 import { NavCloseTab } from '../../assets/Icons/NavCloseTab.tsx';
-import { getBaseApiReact } from '../../App';
 import { Avatar, ButtonBase } from '@mui/material';
 import LogoSelected from '../../assets/svgs/LogoSelected.svg';
+import { useQdnAvatar } from '../../lib/qdnAvatars';
 import { executeEvent } from '../../utils/events';
 
 export const AppsDevModeTabComponent = ({ isSelected, app }) => {
+  // Cached QDN icon of a published app; the Qortal logo while there is none.
+  const { src: qdnIconSrc } = useQdnAvatar(app?.name, {
+    enabled: !app?.customIcon && !!app?.service,
+  });
   return (
     <ButtonBase
       onClick={() => {
@@ -50,15 +54,7 @@ export const AppsDevModeTabComponent = ({ isSelected, app }) => {
               width: '28px',
               height: 'auto',
             }}
-            src={
-              app?.customIcon
-                ? app?.customIcon
-                : app?.service
-                  ? `${getBaseApiReact()}/arbitrary/THUMBNAIL/${
-                      app?.name
-                    }/qortal_avatar?async=true`
-                  : LogoSelected
-            }
+            src={app?.customIcon || qdnIconSrc || LogoSelected}
             alt="center-icon"
           />
         </Avatar>

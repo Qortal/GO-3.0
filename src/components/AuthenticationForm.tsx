@@ -35,10 +35,13 @@ import type { ApiKey } from '../types/auth';
 import { getPrimaryNameForAvatar } from './Group/groupApi';
 import { QortalUserAvatar } from './QortalUserAvatar';
 import {
+  clearWalletAvatarCache,
   getWalletAvatarCache,
   resolveWalletAvatarSrc,
   type WalletAvatarCacheEntry,
 } from '../utils/walletAvatarCache';
+import { forgetWalletPrimaryName } from '../utils/walletPrimaryNameCache';
+import { clearLastAuthenticatedWalletAddress } from '../utils/lastAuthenticatedWallet';
 import { AuthButton, AuthFrame, authPasswordFieldSx } from './Auth/AuthShell';
 import {
   HTTPS_EXT_NODE_QORTAL_LINK,
@@ -60,6 +63,10 @@ import {
   wasEarlyBiometricPromptCancelled,
 } from '../utils/walletBiometricAuth';
 import { prewarmKdfWorkers } from '../encryption/kdf';
+import { useSecureScreen } from '../hooks/useSecureScreen';
+import { clearReceivedChatFiles } from '../utils/receivedChatFiles';
+import { clearQdnAvatarCache } from '../lib/qdnAvatars';
+import { clearQdnAvatarPrewarmPeerNames } from '../lib/qdnAvatars/prewarmSources';
 import type {
   AuthUnlockTransitionSnapshot,
   SharedElementRect,
@@ -123,6 +130,10 @@ export const AuthenticationForm = ({
   onWalletUpdated,
   onWalletRemoved,
 }: AuthenticationFormProps) => {
+  // The unlock screen guards the wallet after every cold start and reload,
+  // like the lock screen: no screenshots, recordings or recents thumbnail
+  // while the password can be shown or typed here (GO-37).
+  useSecureScreen({ secure: true });
   const theme = useTheme();
   const isLight = theme.palette.mode === 'light';
   const { t } = useTranslation(['auth']);
@@ -224,8 +235,9 @@ export const AuthenticationForm = ({
   }, [rawWallet?.address0, primaryName]);
 
   const walletAddress = rawWallet?.address0?.trim() || '';
-  const effectivePrimaryName =
-    primaryName?.trim() || rawWallet?.name?.trim() || '';
+  // Only a registered name has an avatar. The wallet's own label is text the
+  // user typed: asking QDN for an avatar under it could show a stranger's.
+  const effectivePrimaryName = primaryName?.trim() || '';
 
   const dismissKeyboard = useCallback(() => {
     passwordRef.current?.blur();
@@ -448,6 +460,23 @@ export const AuthenticationForm = ({
       wallets.splice(idx, 1);
       await storeWallets(wallets);
     }
+    // The device keeps nothing about a removed wallet: not its name, its
+    // avatar, or that it was the last one used.
+    if (walletAddress) {
+      clearQdnAvatarPrewarmPeerNames();
+      await Promise.allSettled([
+        forgetWalletPrimaryName(walletAddress),
+        clearWalletAvatarCache(walletAddress),
+        // Received chat files are not kept per account, and nobody is signed
+        // in here: whatever is left comes from a session GO was closed in
+        // without a logout (N-22).
+        clearReceivedChatFiles(),
+        // The avatar cache is shared by every account on this device, and its
+        // names show who this one talked to: it is rebuilt as GO is used.
+        clearQdnAvatarCache(),
+      ]);
+      clearLastAuthenticatedWalletAddress(walletAddress);
+    }
     onWalletRemoved?.();
   }, [onWalletRemoved, walletAddress]);
 
@@ -598,6 +627,8 @@ export const AuthenticationForm = ({
               primaryName={effectivePrimaryName}
               walletAddress={walletAddress}
               cachedAvatarEntry={cachedAvatarEntry}
+              ownAvatar
+              fullSize
               fallbackIconSize={42}
               sx={{ height: 84, width: 84, ...avatarSharedOpacitySx }}
             />

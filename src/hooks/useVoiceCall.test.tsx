@@ -14,6 +14,17 @@ import { buildDirectVoiceCallChatId } from '../lib/call/directVoiceCallChatId';
 import nacl from '../encryption/nacl-fast';
 import { useVoiceCall } from './useVoiceCall';
 
+// The tests use made-up addresses, so the "key belongs to the address" check
+// is controlled here; one test turns it off to see a foreign key refused.
+const addressKeyCheck = vi.hoisted(() => ({
+  belongs: vi.fn((_publicKey: unknown, _address: unknown) => true),
+}));
+vi.mock('../encryption/addressKeyCheck', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../encryption/addressKeyCheck')>()),
+  publicKeyBelongsToAddress: (publicKey: unknown, address: unknown) =>
+    addressKeyCheck.belongs(publicKey, address),
+}));
+
 function goodSystemReadiness() {
   return {
     status: 'good',
@@ -1326,6 +1337,36 @@ describe('useVoiceCall', () => {
     await waitFor(() => expect(sendKey).toHaveBeenCalled());
     expect(sendKey.mock.calls[0]?.[0]).toBe(roomId);
     expect(sendKey.mock.calls[0]?.[1]).toBe(peerAddr);
+
+    // A saved friend key that does not belong to the peer's address (saved
+    // unchecked by an earlier build) is never used to encrypt the room key.
+    sendKey.mockClear();
+    addressKeyCheck.belongs.mockClear();
+    addressKeyCheck.belongs.mockReturnValue(false);
+    try {
+      await act(async () => {
+        await gcallEventHandler?.('gcall:key-request', {
+          roomId,
+          toAddress: myAddr,
+          fromAddress: peerAddr,
+          fromPublicKey: peerPublicKey,
+          callSessionId: 'call-session',
+          mediaSessionGeneration: 1,
+          keyMessageVersion: 3,
+          verified: true,
+        });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      await waitFor(() =>
+        expect(addressKeyCheck.belongs).toHaveBeenCalledWith(
+          peerPublicKey,
+          peerAddr
+        )
+      );
+      expect(sendKey).not.toHaveBeenCalled();
+    } finally {
+      addressKeyCheck.belongs.mockReturnValue(true);
+    }
   });
 
   it('stops after audio-surface DM media start fails', async () => {

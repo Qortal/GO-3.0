@@ -59,7 +59,12 @@ APKs for users are release builds (not debuggable), from v0.0.14 on:
 ```bash
 cd android && ./gradlew assembleRelease
 # → app/build/outputs/apk/release/app-release.apk, published as "GO 3.0 v<versionName>.apk"
+app/release-web-assets-test/check-apk.sh app/build/outputs/apk/release/app-release.apk  # must print OK
 ```
+
+Release APKs leave out the web bundle's source maps and the debug-only pages (GO-40);
+debug APKs keep them. `assembleRelease` checks the packaged APK itself and fails if a map or a
+debug page is still in it; `check-apk.sh` is the same check by hand.
 
 Release builds are much faster on GrapheneOS: it has no ART JIT, and a debuggable app gets
 no precompiled code, so a debug build runs all of its Java interpreted there. Use debug builds only

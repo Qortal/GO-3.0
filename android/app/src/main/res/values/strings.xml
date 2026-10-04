@@ -7,6 +7,8 @@
     <!-- Posted when Android stops GO's background connection at its daily time limit. -->
     <string name="go_paused_title">GO paused</string>
     <string name="go_paused_text">Android paused GO\'s background connection. Open GO to reconnect.</string>
+    <!-- Same notice when GO itself paused after 6 h off screen on battery. -->
+    <string name="go_battery_pause_text">GO paused its background connection after 6 hours on battery to save power. Open GO to reconnect.</string>
     <!-- Status notification when the chat engine is not running (page frozen or closed).
          English fallbacks; the page sends translations through QortalBackground.setLocalizedStrings. -->
     <string name="status_paused_title">Chat paused</string>
@@ -18,4 +20,6 @@
         <item quantity="one">%d message waiting to send</item>
         <item quantity="other">%d messages waiting to send</item>
     </plurals>
+    <!-- Same count, short, after the status on the one-line collapsed notification. -->
+    <string name="status_waiting_short">%1$d unsent</string>
 </resources>

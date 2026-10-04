@@ -16,6 +16,9 @@ import { useTranslation, type TFunction } from 'react-i18next';
 import i18n from '../../i18n/i18n';
 import { getBaseApiReact } from '../../utils/globalApi';
 import { executeEvent } from '../../utils/events';
+import { isAllowedMediaUrl } from '../../utils/remoteContentPolicy';
+import { isSafeQappPath } from '../../utils/qappPath';
+import { useQdnAvatar } from '../../lib/qdnAvatars';
 import qortalWhiteLogo from '../../assets/sidebar/qortal-logo-white.png';
 
 type QAppPreviewKind = 'qtube' | 'quitter' | 'subwire';
@@ -165,6 +168,11 @@ const parseCandidate = (candidate: string): ReticulumQAppLink | null => {
         ? 'post'
         : 'publication';
   if (route !== expectedRoute) return null;
+  // GO-21: an author or id that reads as ".." (in any spelling) would move
+  // the path out of the app; such a link gets no card.
+  if (!isSafeQappPath(`${expectedRoute}/${rawAuthor}/${rawIdentifier}`)) {
+    return null;
+  }
 
   let author = '';
   let identifier = '';
@@ -279,25 +287,20 @@ const resourceSearchUrl = (link: ReticulumQAppLink) => {
   return `${getBaseApiReact()}/arbitrary/resources/search?${params.toString()}`;
 };
 
-const qAppIconUrl = (appName: string) =>
-  `${getBaseApiReact()}/arbitrary/THUMBNAIL/${encodeURIComponent(
-    appName
-  )}/qortal_avatar?async=true`;
-
-const qortalAvatarUrl = (name: string) =>
-  `${getBaseApiReact()}/arbitrary/THUMBNAIL/${encodeURIComponent(
-    name
-  )}/qortal_avatar?async=true`;
+/**
+ * A publisher-chosen http(s) image URL, kept only when it points at GO or a
+ * Qortal node (remoteContentPolicy). Anything else could be a tracking pixel
+ * that tells its server the reader's IP address and when they read the chat.
+ */
+const allowedRemoteImageUrl = (source: string) =>
+  isAllowedMediaUrl(source) ? source : '';
 
 const embeddedImageDataUrl = (value: unknown) => {
   const source = safeString(value).replace(/\s+/g, '');
   if (!source) return '';
-  if (
-    source.startsWith('data:image/') ||
-    source.startsWith('http://') ||
-    source.startsWith('https://')
-  ) {
-    return source;
+  if (source.startsWith('data:image/')) return source;
+  if (source.startsWith('http://') || source.startsWith('https://')) {
+    return allowedRemoteImageUrl(source);
   }
 
   const mimeType = source.startsWith('UklGR')
@@ -319,12 +322,9 @@ export const resolveReticulumPreviewImageUrl = (
   fallbackIdentifier?: string
 ) => {
   const direct = safeString(value);
-  if (
-    direct.startsWith('data:') ||
-    direct.startsWith('http://') ||
-    direct.startsWith('https://')
-  ) {
-    return direct;
+  if (direct.startsWith('data:')) return direct;
+  if (direct.startsWith('http://') || direct.startsWith('https://')) {
+    return allowedRemoteImageUrl(direct);
   }
   if (direct) {
     return `${getBaseApiReact()}/arbitrary/IMAGE/${encodeURIComponent(
@@ -594,6 +594,8 @@ function PreviewSourceLink({
 }
 
 function AppHeader({ link }: { link: ReticulumQAppLink }) {
+  // Cached app icon, or the one GO ships for Q-Tube, Quitter and SubWire.
+  const { src: appIconSrc } = useQdnAvatar(link.appName);
   return (
     <Box
       sx={{
@@ -605,7 +607,7 @@ function AppHeader({ link }: { link: ReticulumQAppLink }) {
     >
       <Avatar
         alt=""
-        src={qAppIconUrl(link.appName)}
+        src={appIconSrc}
         variant="rounded"
         sx={{
           bgcolor: 'rgba(78, 156, 255, 0.14)',
@@ -987,6 +989,7 @@ function QuitterPreview({
   link: ReticulumQAppLink;
 }) {
   const { t } = useTranslation(['core', 'reticulum']);
+  const { src: authorAvatarSrc } = useQdnAvatar(data.author);
   const date = formatPreviewDate(data.createdAt);
   const layout = previewShellLayout(link.kind);
   return (
@@ -1041,7 +1044,7 @@ function QuitterPreview({
           }}
         >
           <Avatar
-            src={qortalAvatarUrl(data.author)}
+            src={authorAvatarSrc}
             sx={{
               bgcolor: 'rgba(255,255,255,0.05)',
               height: 53,

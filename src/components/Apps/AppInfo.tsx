@@ -16,19 +16,12 @@ import {
 } from './Apps-styles';
 import { AppAvailabilityLabel } from './AppAvailabilityLabel';
 import { useAppNodeStatus } from './appNodeStatus';
-import {
-  Avatar,
-  Box,
-  Divider,
-  styled,
-  Typography,
-  useTheme,
-} from '@mui/material';
-import { getBaseApiReact, QORTAL_APP_CONTEXT } from '../../App';
-import LogoSelected from '../../assets/svgs/LogoSelected.svg';
+import { Box, Divider, styled, Typography, useTheme } from '@mui/material';
+import { QORTAL_APP_CONTEXT } from '../../App';
 import { Spacer } from '../../common/Spacer';
 import { executeEvent } from '../../utils/events';
 import { AppRating } from './AppRating';
+import { AppThumbnailAvatar } from './AppThumbnailAvatar';
 import { useLibraryAppPin } from './useLibraryAppPin';
 import { useTranslation } from 'react-i18next';
 import { ComposeP, ShowMessageReturnButton } from '../Group/Forum/Mail-styles';
@@ -284,28 +277,13 @@ export const AppInfo = ({ app, myName }) => {
                     width: '100px',
                   }}
                 >
-                  <Avatar
-                    sx={{
-                      height: '50px',
-                      width: '50px',
-                      '& img': {
-                        objectFit: 'fill',
-                      },
-                    }}
+                  <AppThumbnailAvatar
+                    appName={app?.name}
                     alt={app?.name}
-                    src={`${getBaseApiReact()}/arbitrary/THUMBNAIL/${
-                      app?.name
-                    }/qortal_avatar?async=true`}
-                  >
-                    <img
-                      style={{
-                        width: '50px',
-                        height: 'auto',
-                      }}
-                      src={LogoSelected}
-                      alt="center-icon"
-                    />
-                  </Avatar>
+                    fallbackSize={50}
+                    priority="high"
+                    sx={{ height: '50px', width: '50px' }}
+                  />
                 </AppCircle>
               </AppCircleContainer>
 

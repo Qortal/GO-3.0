@@ -179,6 +179,10 @@ function useNode(base: string) {
 
 describe('createBuyOrder', () => {
   beforeEach(() => {
+    // Run as the Android app, where a node on 127.0.0.1 gets the key warning.
+    (window as unknown as { Capacitor?: unknown }).Capacitor = {
+      isNativePlatform: () => true,
+    };
     vi.mocked(isRunningGateway).mockResolvedValue(false);
     vi.mocked(createEndpoint).mockImplementation(
       async (path: string) => `http://localhost${path}`
@@ -187,6 +191,7 @@ describe('createBuyOrder', () => {
   });
 
   afterEach(() => {
+    delete (window as unknown as { Capacitor?: unknown }).Capacitor;
     vi.unstubAllGlobals();
     vi.clearAllMocks();
   });
@@ -202,7 +207,10 @@ describe('createBuyOrder', () => {
 
     it('throws when foreignBlockchain is missing', async () => {
       await expect(
-        createBuyOrder({ crosschainAtInfo: [{ qortalAtAddress: AT_ADDRESS }] }, false)
+        createBuyOrder(
+          { crosschainAtInfo: [{ qortalAtAddress: AT_ADDRESS }] },
+          false
+        )
       ).rejects.toThrow('question:message.error.missing_fields');
     });
 
@@ -219,7 +227,9 @@ describe('createBuyOrder', () => {
     it('throws when the fetched AT has a different foreignBlockchain', async () => {
       vi.stubGlobal(
         'fetch',
-        makeFetch({ atData: { ...DEFAULT_AT_DATA, foreignBlockchain: 'BITCOIN' } })
+        makeFetch({
+          atData: { ...DEFAULT_AT_DATA, foreignBlockchain: 'BITCOIN' },
+        })
       );
 
       await expect(createBuyOrder(makeInput(), false)).rejects.toThrow(
@@ -235,17 +245,25 @@ describe('createBuyOrder', () => {
         vi.fn(async (url: string) => {
           if (url.includes('/crosschain/trade/')) {
             callCount++;
-            const blockchain =
-              callCount === 2 ? 'BITCOIN' : FOREIGN_BLOCKCHAIN;
+            const blockchain = callCount === 2 ? 'BITCOIN' : FOREIGN_BLOCKCHAIN;
             return {
               ok: true,
-              json: async () => ({ ...DEFAULT_AT_DATA, foreignBlockchain: blockchain }),
+              json: async () => ({
+                ...DEFAULT_AT_DATA,
+                foreignBlockchain: blockchain,
+              }),
             };
           }
           if (url.includes('/feerequired'))
-            return { ok: true, clone: () => ({ json: async () => UNLOCK_FEE_SATS }) };
+            return {
+              ok: true,
+              clone: () => ({ json: async () => UNLOCK_FEE_SATS }),
+            };
           if (url.includes('/feekb'))
-            return { ok: true, clone: () => ({ json: async () => LOCK_FEE_SATS }) };
+            return {
+              ok: true,
+              clone: () => ({ json: async () => LOCK_FEE_SATS }),
+            };
           throw new Error(`Unexpected URL: ${url}`);
         })
       );
@@ -352,9 +370,15 @@ describe('createBuyOrder', () => {
           if (url.includes(`/crosschain/trade/${AT_ADDRESS_2}`))
             return { ok: true, json: async () => at2 };
           if (url.includes('/feerequired'))
-            return { ok: true, clone: () => ({ json: async () => UNLOCK_FEE_SATS }) };
+            return {
+              ok: true,
+              clone: () => ({ json: async () => UNLOCK_FEE_SATS }),
+            };
           if (url.includes('/feekb'))
-            return { ok: true, clone: () => ({ json: async () => LOCK_FEE_SATS }) };
+            return {
+              ok: true,
+              clone: () => ({ json: async () => LOCK_FEE_SATS }),
+            };
           throw new Error(`Unexpected URL: ${url}`);
         })
       );
@@ -378,15 +402,19 @@ describe('createBuyOrder', () => {
       );
     });
 
-    it('does not add a private-key warning for a node on this device', async () => {
+    it('still asks for the private-key tick box for a node on this device', async () => {
+      // Any app on the phone can listen on a loopback port.
       vi.stubGlobal('fetch', makeFetch());
       const payloads = capturePermissionPayloads();
       simulatePermission(true);
 
       await createBuyOrder(makeInput(), false);
 
-      expect(payloads[0]).not.toHaveProperty('text4');
-      expect(payloads[0]).not.toHaveProperty('confirmCheckbox');
+      expect(payloads[0]).toMatchObject({
+        text4: 'question:permission.foreign_key_local_warning',
+        confirmCheckbox: true,
+        confirmCheckboxLabel: 'question:permission.foreign_key_node_confirm',
+      });
     });
 
     it('fetches the trade endpoint once per AT address', async () => {
@@ -443,7 +471,7 @@ describe('createBuyOrder', () => {
     });
 
     it('asks for a tick-box confirmation naming a remote node', async () => {
-      useNode('http://100.69.252.77:12391');
+      useNode('https://mynode.example.com');
       vi.stubGlobal('fetch', makeFetch());
       const payloads = capturePermissionPayloads();
       simulatePermission(true);
@@ -456,6 +484,39 @@ describe('createBuyOrder', () => {
         confirmCheckboxLabel: 'question:permission.foreign_key_node_confirm',
       });
       expect(createBuyOrderTx).toHaveBeenCalledOnce();
+    });
+
+    it('warns that plain HTTP over Tailscale is only private while connected', async () => {
+      useNode('http://100.69.252.77:12391');
+      vi.stubGlobal('fetch', makeFetch());
+      const payloads = capturePermissionPayloads();
+      simulatePermission(true);
+
+      await createBuyOrder(makeInput(), false);
+
+      expect(payloads[0]).toMatchObject({
+        text4: 'question:permission.foreign_key_tailscale_warning',
+        confirmCheckbox: true,
+      });
+    });
+
+    it('encodes AT addresses taken from the Q-App', async () => {
+      const mockFetch = makeFetch();
+      vi.stubGlobal('fetch', mockFetch);
+      simulatePermission(true);
+
+      await createBuyOrder(
+        makeInput({ crosschainAtInfo: [{ qortalAtAddress: 'AT?x=1' }] }),
+        false
+      ).catch(() => undefined);
+
+      const tradeUrls = vi
+        .mocked(mockFetch)
+        .mock.calls.map(([url]) => url as string)
+        .filter((url) => url.includes('/crosschain/trade/'));
+      expect(tradeUrls).toEqual([
+        'http://localhost/crosschain/trade/AT%3Fx%3D1',
+      ]);
     });
 
     it('warns that the trade proxy receives the key on the public gateway', async () => {

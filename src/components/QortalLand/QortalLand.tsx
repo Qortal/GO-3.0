@@ -43,6 +43,8 @@ import characterSkin6Url from '../../assets/qortalland/character-skin-6.webp';
 import characterSkin6FaceUrl from '../../assets/qortalland/character-skin-6-face.webp';
 import { useGroupCallContext } from '../../contexts/GroupCallContext';
 import { useVoiceCall, type VoiceCallApi } from '../../hooks/useVoiceCall';
+import { useSecureScreen } from '../../hooks/useSecureScreen';
+import { useAcceptDelay } from '../../hooks/useAcceptDelay';
 import { getPrimaryNamesForAddresses } from '../Group/groupApi';
 import { useQortalLandGame } from './games/useQortalLandGame';
 import { ProximityVoiceControl } from './proximity/ProximityVoiceControl';
@@ -2911,6 +2913,12 @@ export function QortalLand({
   const [sendQortAmount, setSendQortAmount] = useState('1');
   const [sendQortError, setSendQortError] = useState('');
   const [isSendingQort, setIsSendingQort] = useState(false);
+  // Send QORT pays without a password prompt: no screenshots or taps through
+  // other apps' overlays while it is open, and its Send button waits a moment
+  // after the dialog appears (GO-28, GO-29).
+  const isSendQortOpen = Boolean(sendQortTarget);
+  useSecureScreen({ secure: isSendQortOpen, touchProtection: isSendQortOpen });
+  const sendQortArmed = useAcceptDelay(isSendQortOpen, sendQortTarget);
   const [activeLandCallPeerAddress, setActiveLandCallPeerAddress] = useState<string | null>(null);
   const [landCallPresenceVersion, setLandCallPresenceVersion] = useState(0);
   const [landGamePresenceVersion, setLandGamePresenceVersion] = useState(0);
@@ -9362,6 +9370,7 @@ export function QortalLand({
   const sendQortAmountNumber = Number(sendQortAmount);
   const canSendQort =
     Boolean(sendQortTarget) &&
+    sendQortArmed &&
     Number.isFinite(sendQortAmountNumber) &&
     sendQortAmountNumber > 0 &&
     sendQortAmountNumber <= qortBalance &&

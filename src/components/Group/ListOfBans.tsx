@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
 import {
-  Avatar,
   Box,
   IconButton,
   ListItem,
@@ -23,6 +22,7 @@ import { LoadingButton } from '@mui/lab';
 import { getBaseApiReact } from '../../App';
 import { useTranslation } from 'react-i18next';
 import { hasInvisibleCharacters } from '../../utils/hasInvisibleCharacters';
+import { CachedUserAvatar } from './CachedAvatars';
 
 export const getMemberInvites = async (groupNumber) => {
   const response = await fetch(
@@ -238,13 +238,9 @@ export const ListOfBans = ({
                 }}
               >
                 <ListItemAvatar sx={{ minWidth: compact ? 40 : undefined }}>
-                  <Avatar
+                  <CachedUserAvatar
                     alt={member?.name}
-                    src={
-                      member?.name
-                        ? `${getBaseApiReact()}/arbitrary/THUMBNAIL/${member?.name}/qortal_avatar?async=true`
-                        : ''
-                    }
+                    name={member?.name}
                     sx={{
                       height: compact ? 32 : undefined,
                       width: compact ? 32 : undefined,

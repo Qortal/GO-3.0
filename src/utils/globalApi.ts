@@ -6,6 +6,8 @@ import {
 } from '../background/background.ts';
 import { ApiKey } from '../types/auth.ts';
 import { preferHttpForLocalPrivateUrl } from './helpers.ts';
+import { setCurrentNodeBaseResolver } from './remoteContentPolicy.ts';
+import { setQdnAvatarApiBaseResolver } from '../lib/qdnAvatars/defaultCache';
 
 export let globalApiKey: ApiKey | null = null;
 
@@ -28,6 +30,11 @@ export const getBaseApiReact = (customApi?: string): string => {
   }
   return preferHttpForLocalPrivateUrl(groupApi) || groupApi;
 };
+
+// Messages may show images served by the node GO is using.
+setCurrentNodeBaseResolver(() => getBaseApiReact());
+// The avatar cache asks the same node (read at each fetch).
+setQdnAvatarApiBaseResolver(() => getBaseApiReact());
 
 /** Base API URL for avatar/image requests. Uses HTTP when on local/private HTTPS (same logic as useAuth). */
 export const getBaseApiReactForAvatar = (customApi?: string): string => {

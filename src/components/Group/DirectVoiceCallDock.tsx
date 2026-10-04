@@ -28,8 +28,8 @@ import {
 import {
   addrHue,
   initialsFromDisplayLabel,
-  qortalAvatarThumbnailSrc,
   shortAddr,
+  useQortalAvatarThumbnailSrc,
 } from './qortalGroupCallParticipantUi';
 import { CallAudioSettingsButton } from '../Chat/CallAudioDeviceSelectors';
 import { getPrimaryNameForAvatar } from './groupApi';
@@ -88,7 +88,7 @@ export function DirectVoiceCallDock() {
 
   const title = peerPrimaryName || (peerAddress ? shortAddr(peerAddress) : 'Voice call');
   const avatarRegName = peerPrimaryName || undefined;
-  const avatarSrc = qortalAvatarThumbnailSrc(avatarRegName);
+  const avatarSrc = useQortalAvatarThumbnailSrc(avatarRegName);
   const initials = initialsFromDisplayLabel(title, peerAddress || myAddress);
 
   const durationLabel = useMemo(() => {

@@ -1,5 +1,6 @@
 import { type ReactNode, useCallback, useMemo, useRef, useState } from 'react';
 import DOMPurify from 'dompurify';
+import '../../utils/configureDomPurify';
 import './chat.css';
 import { executeEvent } from '../../utils/events';
 import { openHttpUrlExternally } from '../../utils/openExternalHttp';
@@ -11,9 +12,23 @@ import { QORTAL_PROTOCOL } from '../../constants/constants';
 import { ReticulumUserCard } from './ReticulumUserCard';
 import type { ReticulumUserCardData } from './ReticulumUserCard';
 import { parseQortalUseGroupLink } from '../../utils/qortalGroupLinks';
+import { useSetAtom } from 'jotai';
+import { infoSnackGlobalAtom, openSnackGlobalAtom } from '../../atoms/global';
+import {
+  decodeQappName,
+  isSafeQappName,
+  isSafeQappPath,
+  isSafeQappService,
+} from '../../utils/qappPath';
 
 const stripTrailingQortalLinkPunctuation = (value: string) =>
   value.replace(/[),.;!?]+$/g, '');
+
+/** "Name?x=1" → ["Name", "?x=1"], "Name#x" → ["Name", "#x"]. */
+const splitNameSuffix = (value: string): [string, string] => {
+  const cut = value.search(/[?#]/);
+  return cut === -1 ? [value, ''] : [value.slice(0, cut), value.slice(cut)];
+};
 
 export const extractComponents = (url: string) => {
   if (!url || !url.startsWith(QORTAL_PROTOCOL)) {
@@ -39,7 +54,7 @@ export const extractComponents = (url: string) => {
     const parts = basePart.split('/');
     const service = parts[0].toUpperCase();
     parts.shift();
-    const name = parts[0];
+    const [name, fragment] = splitNameSuffix(parts[0] ?? '');
     parts.shift();
 
     const params = new URLSearchParams(queryString);
@@ -49,18 +64,34 @@ export const extractComponents = (url: string) => {
     }
 
     const remainingQuery = params.toString();
-    const basePath = parts.join('/');
+    // "qortal://APP/Q-Blog#/post/x": everything after the "#" is the fragment.
+    const basePath = fragment
+      ? [fragment, ...parts].join('/')
+      : parts.join('/');
     const path = `${basePath}${remainingQuery ? `?${remainingQuery}` : ''}`;
 
-    return { service, name, identifier, path };
+    // GO-21: a name or path that could leave /render/<SERVICE>/<name>/
+    // ("..", "%2e%2e", "\", "..;") would open another app under this name.
+    if (
+      !isSafeQappService(service) ||
+      !isSafeQappName(name) ||
+      !isSafeQappPath(basePath)
+    ) {
+      return null;
+    }
+
+    return { service, name: decodeQappName(name), identifier, path };
   }
 
-  // Case 2: url is just a username -> default to WEBSITE
+  // Case 2: url is just a username -> default to WEBSITE. A "?query" or
+  // "#fragment" after it stays with the site, as the browser always read it.
+  const [name, suffix] = splitNameSuffix(url);
+  if (!isSafeQappName(name)) return null;
   return {
     service: 'WEBSITE',
-    name: url,
+    name: decodeQappName(name),
     identifier: undefined,
-    path: '',
+    path: suffix,
   };
 };
 
@@ -90,7 +121,11 @@ function processText(input) {
     }
   }
 
-  const wrapper = document.createElement('div');
+  // An element of the live page starts fetching images as soon as innerHTML
+  // is set, even while detached; one in a document without a window does not.
+  const wrapper = document.implementation
+    .createHTMLDocument('')
+    .createElement('div');
   wrapper.innerHTML = input;
   processNode(wrapper);
   return wrapper.innerHTML;
@@ -265,7 +300,9 @@ export const MessageDisplay = ({
   textColor?: string;
   trailingContent?: ReactNode;
 }) => {
-  const { t } = useTranslation(['core']);
+  const { t } = useTranslation(['core', 'auth']);
+  const setInfoSnackGlobal = useSetAtom(infoSnackGlobalAtom);
+  const setOpenSnackGlobal = useSetAtom(openSnackGlobalAtom);
   const theme = useTheme();
   const contentRef = useRef(null);
   const [copied, setCopied] = useState(false);
@@ -655,6 +692,19 @@ export const MessageDisplay = ({
         const { service, name, identifier, path } = res;
         executeEvent('addTab', { data: { service, name, identifier, path } });
         executeEvent('open-apps-mode', {});
+      } else if (
+        url?.startsWith(QORTAL_PROTOCOL) &&
+        !url.startsWith(`${QORTAL_PROTOCOL}use-`)
+      ) {
+        // GO-21: say why nothing opens (for example a link whose path climbs
+        // into another app) instead of ignoring the tap.
+        setInfoSnackGlobal({
+          type: 'error',
+          message: t('auth:message.error.invalid_qortal_link', {
+            postProcess: 'capitalizeFirstChar',
+          }),
+        });
+        setOpenSnackGlobal(true);
       }
     }
   };

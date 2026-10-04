@@ -1385,6 +1385,10 @@ declare global {
         success: boolean;
         canceled?: boolean;
         path?: string;
+        /** Android: the folder the file was saved in, for the toast. */
+        location?: string;
+        /** Android: the name it was saved under (may get a " (1)"). */
+        name?: string;
         error?: string;
       }>;
       open: (

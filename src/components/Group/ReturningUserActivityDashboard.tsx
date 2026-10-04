@@ -15,7 +15,7 @@ import { useAtomValue } from 'jotai';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
-import { getBaseApiReact } from '../../App';
+import { useQdnGroupAvatar } from '../../lib/qdnAvatars';
 import { groupsOwnerNamesAtom } from '../../atoms/global';
 import {
   orderReticulumGroups,
@@ -40,7 +40,8 @@ type ActivityGroup = {
 };
 
 type NormalizedActivityGroup = {
-  avatarUrl?: string;
+  /** Owner of the group, who publishes its avatar. */
+  ownerName?: string;
   group: ActivityGroup;
   groupId: string;
   mentionCount: number;
@@ -87,6 +88,8 @@ function GroupActivityCard({
   const theme = useTheme();
   const initial = item.name.trim().charAt(0).toUpperCase() || 'G';
   const lightMode = theme.palette.mode === 'light';
+  // Cached on the device, so it shows at once also on a slow node.
+  const { src: avatarSrc } = useQdnGroupAvatar(item.ownerName, item.groupId);
   return (
     <ButtonBase
       aria-label={activityLabel(item, t)}
@@ -149,7 +152,7 @@ function GroupActivityCard({
       />
       <Avatar
         alt=""
-        src={item.avatarUrl}
+        src={avatarSrc}
         sx={{
           backgroundColor: 'transparent',
           color: 'common.white',
@@ -260,9 +263,7 @@ export function ReturningUserActivityDashboard({
           t('group:activity_dashboard.group_fallback_name', { groupId });
         const ownerName = ownerNames[groupId];
         return {
-          avatarUrl: ownerName
-            ? `${getBaseApiReact()}/arbitrary/THUMBNAIL/${ownerName}/qortal_group_avatar_${groupId}?async=true`
-            : undefined,
+          ownerName,
           group,
           groupId,
           mentionCount,

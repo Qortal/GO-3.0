@@ -68,7 +68,7 @@ public class MediaServer extends NanoHTTPD {
                 }
                 Log.d(TAG, "Prefetch complete for: " + config.mediaId);
             } catch (Exception e) {
-                Log.w(TAG, "Prefetch failed (non-critical): " + e.getMessage());
+                Log.w(TAG, "Prefetch failed (non-critical): " + SecretRedaction.redactText(e.getMessage()));
             }
         }).start();
     }
@@ -241,9 +241,10 @@ public class MediaServer extends NanoHTTPD {
             return response;
             
         } catch (Exception e) {
-            Log.e(TAG, "Error serving media: " + mediaId, e);
+            // The exception text can name the resource URL, API key included.
+            Log.e(TAG, "Error serving media: " + mediaId + ": " + SecretRedaction.redactText(String.valueOf(e)));
             return newFixedLengthResponse(Response.Status.INTERNAL_ERROR, 
-                "text/plain", "Server error: " + e.getMessage());
+                "text/plain", "Server error: " + SecretRedaction.redactText(e.getMessage()));
         }
     }
     
@@ -259,25 +260,26 @@ public class MediaServer extends NanoHTTPD {
         
         try {
             URL url = new URL(urlString);
-            conn = (HttpURLConnection) url.openConnection();
-            
-            // Critical: Set method before other properties
-            conn.setRequestMethod("GET");
-            
-            // Enable connection reuse
-            conn.setRequestProperty("Connection", "keep-alive");
-            conn.setRequestProperty("Accept-Encoding", "identity"); // Prevent compression that breaks range
-            
             // Set range header - MUST be exact format
             String rangeValue = "bytes=" + start + "-" + end;
-            conn.setRequestProperty("Range", rangeValue);
-            
-            conn.setConnectTimeout(10000);
-            conn.setReadTimeout(15000);
-            conn.setUseCaches(false);
-            conn.setInstanceFollowRedirects(true);
             
             Log.d(TAG, "Fetching from Qortal: " + rangeValue + " (" + requestSize + " bytes)");
+            
+            // Redirects are followed hop by hop, each routed by LocalHttp
+            // (direct for the phone's own addresses), with the same request.
+            conn = LocalHttp.openFollowingRedirects(url, LocalHttp.MAX_REDIRECTS, (hop, hopUrl) -> {
+                // Critical: Set method before other properties
+                hop.setRequestMethod("GET");
+                
+                // Enable connection reuse
+                hop.setRequestProperty("Connection", "keep-alive");
+                hop.setRequestProperty("Accept-Encoding", "identity"); // Prevent compression that breaks range
+                hop.setRequestProperty("Range", rangeValue);
+                
+                hop.setConnectTimeout(10000);
+                hop.setReadTimeout(15000);
+                hop.setUseCaches(false);
+            });
             
             int responseCode = conn.getResponseCode();
             

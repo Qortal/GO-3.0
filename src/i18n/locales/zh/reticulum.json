@@ -21,15 +21,24 @@
     "sign_failed": "无法签名 Reticulum 聊天事件",
     "welcome_failed": "Reticulum 欢迎消息发布失败"
   },
+  "chat_scope": {
+    "direct_messages": "私信",
+    "groups": "群组",
+    "label": "显示群组或私信"
+  },
   "copy_invite_link": "复制邀请链接",
   "discussion": {
     "choose_emoji": "choose emoji",
     "close": "close discussion",
     "initial_post": "initial post",
+    "preparing_attachment": "正在准备附件…",
     "remove_attachment": "remove attachment",
     "remove_file": "remove {{fileName}}",
     "replies": "replies:",
     "reply_placeholder": "reply to discussion...",
+    "size_counter": "{{size}} / {{maximum}} 字节",
+    "title": "讨论",
+    "unavailable": "此讨论已不可用",
     "wait_until_ready": "wait until the discussion is ready"
   },
   "dm": {
@@ -55,6 +64,10 @@
       }
     },
     "required_for_attachments": "直接附件需要 Reticulum 私聊"
+  },
+  "dm_list": {
+    "empty": "当前没有私信。",
+    "subtitle": "Reticulum 私密聊天"
   },
   "event_preview": {
     "all_day": "all day",
@@ -104,6 +117,12 @@
     "truncated": "此文件太大，无法完整显示。请保存或用其他应用打开以查看其余内容。"
   },
   "group_fallback_name": "群组",
+  "group_list": {
+    "empty": "你还没有加入任何 Q-Chat 社区。",
+    "pin_hold_hint": "长按以重新排列置顶群组",
+    "pinned": "已置顶",
+    "reorder_hint": "拖动置顶群组以重新排序"
+  },
   "group_type": {
     "closed": "封闭",
     "open": "公开"

@@ -1,15 +1,19 @@
 import {
+  useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
+  type ReactNode,
 } from 'react';
-import { Box, Typography, useTheme } from '@mui/material';
+import { Box, Typography, useTheme, type Theme } from '@mui/material';
 import { alpha } from '@mui/material/styles';
 import type { SvgIconComponent } from '@mui/icons-material';
 import ChevronRightRoundedIcon from '@mui/icons-material/ChevronRightRounded';
+import LockRoundedIcon from '@mui/icons-material/LockRounded';
+import { useTranslation } from 'react-i18next';
 import {
   AnimatePresence,
   animate,
@@ -26,6 +30,7 @@ import {
 import { QortalUserAvatar } from '../QortalUserAvatar';
 import type { WalletAvatarCacheEntry } from '../../utils/walletAvatarCache';
 import { BACK_PRIORITY, useAndroidBack } from '../../utils/androidBack';
+import { requestAppLockNow } from '../../lib/appLock';
 
 export type AccountAction = {
   icon: SvgIconComponent;
@@ -45,35 +50,59 @@ type MobileAccountPanelProps = {
   primaryName: string;
   cachedAvatarEntry: WalletAvatarCacheEntry | null;
   onClose: () => void;
+  /**
+   * "Lock now": locks GO exactly as the idle timer does. Defaults to asking
+   * App over the event bus; pass null to leave the item out.
+   */
+  onLockNow?: (() => void) | null;
 };
+
+/**
+ * Put "Lock now" just above the last action, which is Logout, so the two ways
+ * of leaving the wallet sit together at the bottom of the menu.
+ */
+export function withLockNowAction(
+  actions: AccountAction[],
+  lockAction: AccountAction
+): AccountAction[] {
+  if (actions.length === 0) return [lockAction];
+  return [...actions.slice(0, -1), lockAction, actions[actions.length - 1]];
+}
 
 /** Past this upward travel a slow swipe still closes the panel on release. */
 export const DISMISS_DISTANCE_PX = 72;
 /** An upward flick this fast (px/s) closes it even after a short travel. */
 export const DISMISS_FLICK_VELOCITY = 600;
 export const DISMISS_FLICK_MIN_PX = 24;
-/** Upward travel over which every button has closed to the side. */
+/** Upward travel over which every tile has closed to the side. */
 export const BUTTONS_GONE_TRAVEL_PX = 144;
-/** Share of that travel one button takes to close; they overlap, bottom-up. */
-const BUTTON_CLOSE_SPAN = 0.5;
-/** How far a button slides to the side while it closes. */
-const BUTTON_SLIDE_OUT_PX = 88;
+/**
+ * Share of that travel one tile takes to close. Small, so the tiles leave
+ * one after another, bottom-up, rather than all at once.
+ */
+const BUTTON_CLOSE_SPAN = 0.3;
+/** How far a tile slides to the side while it closes. */
+const BUTTON_SLIDE_OUT_PX = 96;
+/** Upward travel over which the panel's own background dissolves. */
+const SHELL_GONE_TRAVEL_PX = 24;
+/** How much of the finger's travel the tiles follow upwards. */
+const CONTENT_LIFT = 0.25;
+/** A tap-close (or a released swipe) runs the rest of the travel this fast. */
+const CLOSE_SECONDS = 0.42;
 /** Travel that turns the gesture into a swipe, so releasing it is not a tap. */
 const DRAG_SUPPRESSES_CLICK_PX = 8;
-/** Extra travel past the top edge when the panel is thrown off-screen. */
-const THROW_EXTRA_PX = 40;
 /** How much of a downward pull the panel follows: a hint that it only goes up. */
 const PULL_DOWN_ELASTIC = 0.12;
 const ANIMATIONS_DISABLED_STORAGE_KEY = 'hub_ui_animations_enabled';
 
 const EASE_OUT = [0.22, 1, 0.36, 1] as const;
-const EASE_IN = [0.4, 0, 1, 1] as const;
+const EASE_IN_OUT = [0.45, 0, 0.55, 1] as const;
 const SETTLE_SPRING = { type: 'spring', stiffness: 520, damping: 38 } as const;
 
 const BACKDROP_Z = 1290;
 const PANEL_Z = 1291;
 
-/** Where a swipe-up sends the panel, in px from its resting spot (negative). */
+/** Where a released swipe-up sends the travel, in px (negative). */
 export type Fling = { y: number };
 
 export type SwipeRelease = { kind: 'settle' } | ({ kind: 'fling' } & Fling);
@@ -83,9 +112,9 @@ const clamp = (value: number, min: number, max: number) =>
 
 /**
  * Decide what a released swipe does. Pure so the thresholds are testable
- * without a pointer: enough upward travel, or an upward flick, throws the
- * panel up to `flingToY`; anything else (including any downward pull) springs
- * it back.
+ * without a pointer: enough upward travel, or an upward flick, closes the
+ * panel (the travel runs on to `flingToY`); anything else (including any
+ * downward pull) springs it back.
  */
 export function resolveSwipeRelease(
   offsetY: number,
@@ -101,11 +130,11 @@ export function resolveSwipeRelease(
 }
 
 /**
- * How far button `index` of `count` has closed to the side, 0..1, for the
- * panel's current vertical offset `y` (negative while swiped up). The bottom
- * button starts first and the top one last, each taking half the travel, so
- * they peel off one after another; because it is a pure function of `y`,
- * swiping back down simply plays it backwards and the buttons return.
+ * How far tile `index` of `count` has closed to the side, 0..1, for the
+ * swipe travel `y` (negative while swiped up). The bottom tile starts first
+ * and the top one last, each taking a short slice of the travel, so they peel
+ * off one after another; because it is a pure function of `y`, swiping back
+ * down simply plays it backwards and the tiles return.
  */
 export function buttonCloseProgress(
   y: number,
@@ -130,18 +159,17 @@ const readAnimationsDisabled = (): boolean => {
 };
 
 /**
- * The account menu under the avatar on GO. It opens with the header and each
- * button dropping in one after another, and closes the same way in reverse:
- * the buttons slide away bottom-up, the header lifts, the panel shrinks back
- * towards the avatar and the dim behind it clears. It stays where it is
- * otherwise: a swipe up, on the panel or anywhere on the dimmed screen, lifts
- * it with the finger while the buttons close to the side one after another,
- * bottom-up, in step with the finger (swipe back down and they return), and
- * once the swipe is long or fast enough the release throws the panel off the
- * top; a short swipe springs everything back and a downward pull only
- * rubber-bands. When the list has to scroll (short landscape screens) it
- * scrolls instead, and the swipe-up still works from the header and the dim.
- * Android back closes it as well.
+ * The account menu under the avatar on GO: the account and the actions, each
+ * its own tile. It opens with the tiles dropping in one
+ * after another. Closing, by a tap outside, an action, Android back or a
+ * swipe up (on the panel or anywhere on the dimmed screen), dissolves the
+ * panel's background at once and leaves the tiles on their own, which then
+ * slide away to the side one by one, bottom-up, while the dim clears. During
+ * a swipe the tiles follow the finger: swipe back down and they return; a
+ * long or fast enough swipe finishes the close on release, a short one
+ * springs everything back, and a downward pull only rubber-bands. When the
+ * list has to scroll (short landscape screens) it scrolls instead, and the
+ * swipe-up still works from the header and the dim.
  */
 export const MobileAccountPanel = ({
   open,
@@ -151,7 +179,22 @@ export const MobileAccountPanel = ({
   primaryName,
   cachedAvatarEntry,
   onClose,
+  onLockNow = requestAppLockNow,
 }: MobileAccountPanelProps) => {
+  const { t } = useTranslation(['core']);
+  const lockNowLabel = t('core:app_lock.lock_now');
+  const menuActions = useMemo(
+    () =>
+      onLockNow
+        ? withLockNowAction(actions, {
+            icon: LockRoundedIcon,
+            label: lockNowLabel,
+            onClick: onLockNow,
+          })
+        : actions,
+    [actions, lockNowLabel, onLockNow]
+  );
+
   useAndroidBack(
     () => {
       onClose();
@@ -166,7 +209,7 @@ export const MobileAccountPanel = ({
         <AccountPanelSurface
           key="account-panel"
           anchor={anchor}
-          actions={actions}
+          actions={menuActions}
           address={address}
           primaryName={primaryName}
           cachedAvatarEntry={cachedAvatarEntry}
@@ -177,11 +220,14 @@ export const MobileAccountPanel = ({
   );
 };
 
-type SurfaceProps = Omit<MobileAccountPanelProps, 'open' | 'anchor'> & {
+type SurfaceProps = Omit<
+  MobileAccountPanelProps,
+  'open' | 'anchor' | 'onLockNow'
+> & {
   anchor: AccountPanelAnchor;
 };
 
-// One instance per opening, so the swipe position and the throw of a closing
+// One instance per opening, so the swipe position and the close of a closing
 // panel never leak into the next one.
 const AccountPanelSurface = ({
   anchor,
@@ -198,19 +244,47 @@ const AccountPanelSurface = ({
   const prefersReducedMotion = useReducedMotion();
   const reduced = Boolean(prefersReducedMotion) || readAnimationsDisabled();
 
-  const panelRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
-  const flingRef = useRef<Fling | null>(null);
   const movedRef = useRef(false);
   const dragControls = useDragControls();
+  // The swipe travel (negative while swiped up). Drag writes it through
+  // `_dragY` instead of moving the panel, and everything below is derived
+  // from it, so a swipe and a tap-close play the same choreography.
   const y = useMotionValue(0);
-  // The dim clears as the buttons close, gone when the last one has left.
-  const dimFade = useTransform(y, (value) =>
-    clamp(1 - Math.max(0, -value) / BUTTONS_GONE_TRAVEL_PX, 0, 1)
+  const travel = useTransform(y, (value) => Math.max(0, -value));
+  // The panel's own background goes first, so the tiles stand on their own.
+  const shellOpacity = useTransform(travel, (value) =>
+    clamp(1 - value / SHELL_GONE_TRAVEL_PX, 0, 1)
+  );
+  // Each tile gets its own surface as the shared one dissolves.
+  const tileSurfaceOpacity = useTransform(shellOpacity, (value) => 1 - value);
+  const contentLift = useTransform(y, (value) => value * CONTENT_LIFT);
+  // The dim clears while the tiles leave, gone before the last one has.
+  const dimFade = useTransform(travel, (value) =>
+    clamp(1 - value / (BUTTONS_GONE_TRAVEL_PX * 0.6), 0, 1)
   );
 
+  /** Seconds the close still needs from the current travel. */
+  const remainingCloseSeconds = () =>
+    reduced
+      ? 0
+      : CLOSE_SECONDS * clamp(1 - travel.get() / BUTTONS_GONE_TRAVEL_PX, 0, 1);
+
+  // Closing runs the rest of the travel: the shell dissolves (if a swipe has
+  // not already), then the tiles slide away one by one.
+  useEffect(() => {
+    if (isPresent) return undefined;
+    const duration = remainingCloseSeconds();
+    const controls = animate(y, -BUTTONS_GONE_TRAVEL_PX, {
+      duration,
+      ease: EASE_IN_OUT,
+    });
+    return () => controls.stop();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isPresent]);
+
   // While the list has to scroll (short landscape screens) an upward swipe on
-  // it must scroll it, so the swipe-up then only starts from the header and
+  // it must scroll it, so the swipe-up then only starts from the header, the
   // the dim behind the panel.
   const [listOverflows, setListOverflows] = useState(false);
   useLayoutEffect(() => {
@@ -232,98 +306,52 @@ const AccountPanelSurface = ({
         opacity: 1,
         scale: 1,
         y: 0,
-        transition: { duration: d(0.2), ease: EASE_OUT },
+        transition: {
+          duration: d(0.2),
+          ease: EASE_OUT,
+          delayChildren: d(0.04),
+          staggerChildren: d(0.035),
+        },
       },
-      // Resolved when the exit starts, so it sees the throw of the swipe that
-      // closed the panel (a plain close folds it back towards the avatar).
-      // Throwing `y` also drives the buttons' own close-to-the-side, so the
-      // ones still showing finish it on the way out.
-      exit: () => {
-        const fling = flingRef.current;
-        return fling
-          ? {
-              opacity: 0,
-              scale: 0.96,
-              y: fling.y,
-              transition: { duration: d(0.26), ease: EASE_OUT },
-            }
-          : {
-              opacity: 0,
-              scale: 0.94,
-              y: -10,
-              transition: { duration: d(0.18), ease: EASE_IN, delay: d(0.12) },
-            };
-      },
+      // The tiles leave through `y` (see the effect above); the panel only
+      // stays mounted until the last one is gone.
+      exit: () => ({
+        opacity: 0,
+        transition: { duration: d(0.06), delay: remainingCloseSeconds() },
+      }),
     };
     const backdrop: Variants = {
       hidden: { opacity: 0 },
       show: { opacity: 1, transition: { duration: d(0.16) } },
-      exit: () => ({
-        opacity: 0,
-        transition: {
-          duration: d(0.18),
-          delay: flingRef.current ? 0 : d(0.1),
-        },
-      }),
+      exit: { opacity: 0, transition: { duration: d(0.2) } },
     };
-    const header: Variants = {
+    const list: Variants = {
+      hidden: {},
+      show: { transition: { staggerChildren: d(0.035) } },
+    };
+    const tile: Variants = {
       hidden: { opacity: 0, y: -12 },
       show: {
         opacity: 1,
         y: 0,
-        transition: { duration: d(0.18), ease: 'easeOut', delay: d(0.04) },
-      },
-      exit: {
-        opacity: 0,
-        y: -6,
-        transition: { duration: d(0.12), ease: EASE_IN, delay: d(0.14) },
-      },
-    };
-    const list: Variants = {
-      hidden: {},
-      show: {
-        transition: { delayChildren: d(0.07), staggerChildren: d(0.045) },
-      },
-      exit: { transition: { staggerChildren: d(0.03), staggerDirection: -1 } },
-    };
-    const item: Variants = {
-      hidden: { opacity: 0, x: 0, y: -12 },
-      show: {
-        opacity: 1,
-        x: 0,
-        y: 0,
         transition: { duration: d(0.2), ease: EASE_OUT },
       },
-      // A tap-close slides each button to the side, bottom-up. After a swipe
-      // the buttons have already closed (or finish closing with the throw), so
-      // the exit only makes sure nothing lingers.
-      exit: () =>
-        flingRef.current
-          ? { opacity: 0, transition: { duration: d(0.1) } }
-          : {
-              opacity: 0,
-              x: BUTTON_SLIDE_OUT_PX,
-              transition: { duration: d(0.16), ease: EASE_IN },
-            },
     };
-    return { panel, backdrop, header, list, item };
+    return { panel, backdrop, list, tile };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reduced]);
 
   const handleDragEnd = (_event: PointerEvent, info: PanInfo) => {
-    // Far enough that the panel's bottom edge clears the top of the screen.
-    const height = panelRef.current?.offsetHeight ?? 0;
-    const flingToY = -(anchor.top + 8 + height + THROW_EXTRA_PX);
     const release = resolveSwipeRelease(
       info.offset.y,
       info.velocity.y,
-      flingToY
+      -BUTTONS_GONE_TRAVEL_PX
     );
     if (release.kind === 'settle') {
-      // Springing `y` back also brings the buttons back to their places.
+      // Springing the travel back also brings the tiles and the shell back.
       void animate(y, 0, SETTLE_SPRING);
       return;
     }
-    flingRef.current = release;
     onClose();
   };
 
@@ -348,6 +376,9 @@ const AccountPanelSurface = ({
 
   const isDark = theme.palette.mode === 'dark';
   const interactive = isPresent ? undefined : ('none' as const);
+  const surface = panelSurfaceColor(theme);
+  // The header first, then the actions: one sequence of tiles.
+  const tileCount = actions.length + 1;
 
   return (
     <>
@@ -356,6 +387,11 @@ const AccountPanelSurface = ({
         data-testid="account-menu-backdrop"
         onClick={onClose}
         onClickCapture={swallowClickAfterDrag}
+        // A touch swipe ends without a click, so a fresh press clears the
+        // flag here too, or the next tap on the dim would be swallowed.
+        onPointerDownCapture={() => {
+          movedRef.current = false;
+        }}
         onPointerDown={startSwipe}
         variants={variants.backdrop}
         initial="hidden"
@@ -379,7 +415,6 @@ const AccountPanelSurface = ({
         />
       </motion.div>
       <motion.div
-        ref={panelRef}
         role="menu"
         aria-label="Account menu"
         variants={variants.panel}
@@ -387,6 +422,7 @@ const AccountPanelSurface = ({
         animate="show"
         exit="exit"
         drag="y"
+        _dragY={y}
         dragListener={false}
         dragControls={dragControls}
         // Free to go up, only a hint of give downwards.
@@ -404,15 +440,6 @@ const AccountPanelSurface = ({
           movedRef.current = false;
         }}
         style={{
-          y,
-          backgroundColor: isDark
-            ? 'rgb(34, 36, 42)'
-            : theme.palette.background.paper,
-          border: `1px solid ${theme.palette.divider}`,
-          borderRadius: 16,
-          boxShadow: isDark
-            ? `0 16px 40px ${alpha('#000', 0.45)}`
-            : `0 14px 36px ${alpha('#1E3248', 0.14)}`,
           display: 'flex',
           flexDirection: 'column',
           // Cap to the viewport so the full action list (incl. Logout) is
@@ -420,7 +447,6 @@ const AccountPanelSurface = ({
           maxHeight: `calc(100dvh - ${anchor.top + 8}px - 12px)`,
           maxWidth: 'min(300px, calc(100vw - 20px))',
           minWidth: 248,
-          overflow: 'hidden',
           pointerEvents: interactive,
           position: 'fixed',
           right: anchor.right,
@@ -432,208 +458,296 @@ const AccountPanelSurface = ({
           zIndex: PANEL_Z,
         }}
       >
+        {/* The panel's own background, apart from the tiles so it can go
+            first. */}
         <motion.div
-          onPointerDown={startSwipe}
-          variants={variants.header}
+          aria-hidden
+          data-testid="account-menu-shell"
           style={{
-            alignItems: 'center',
-            borderBottom: `1px solid ${theme.palette.divider}`,
-            display: 'flex',
-            flexShrink: 0,
-            gap: 8,
-            padding: '8.8px 10px',
+            backgroundColor: surface,
+            border: `1px solid ${theme.palette.divider}`,
+            borderRadius: 16,
+            boxShadow: isDark
+              ? `0 16px 40px ${alpha('#000', 0.45)}`
+              : `0 14px 36px ${alpha('#1E3248', 0.14)}`,
+            inset: 0,
+            opacity: shellOpacity,
+            pointerEvents: 'none',
+            position: 'absolute',
           }}
-        >
-          <QortalUserAvatar
-            key={`${address}-${primaryName}-panel`}
-            primaryName={primaryName}
-            walletAddress={address}
-            cachedAvatarEntry={cachedAvatarEntry}
-            fallbackIconSize={22}
-            sx={{
-              width: 40,
-              height: 40,
-              bgcolor: isDark
-                ? alpha(theme.palette.common.white, 0.1)
-                : alpha(theme.palette.common.black, 0.06),
-              fontSize: 16,
-              fontWeight: 700,
-            }}
-          />
-          <Box sx={{ minWidth: 0, flex: 1 }}>
-            <Typography
-              sx={{
-                fontSize: '0.95rem',
-                fontWeight: 700,
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-              }}
-            >
-              {primaryName || 'Account'}
-            </Typography>
-            {address ? (
-              <Typography
-                sx={{
-                  color: theme.palette.text.secondary,
-                  fontFamily: 'monospace',
-                  fontSize: '0.7rem',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
-                }}
-              >
-                {address.slice(0, 8)}…{address.slice(-6)}
-              </Typography>
-            ) : null}
-          </Box>
-        </motion.div>
-
-        {/* The list is a scroll container, and Chrome resolves touch-action only
-            between the touched element and the nearest scroll container, so the
-            panel's own touch-action: none never applied to a swipe that started
-            on a button: after 4 px Chrome claimed the touch as a scroll and
-            fired pointercancel, and the swipe sprang back. The list has to forbid
-            native panning itself, and only scrolls when it really overflows. */}
+        />
         <motion.div
-          ref={listRef}
-          onPointerDown={listOverflows ? undefined : startSwipe}
-          variants={variants.list}
           style={{
             display: 'flex',
+            flex: '1 1 auto',
             flexDirection: 'column',
             gap: 3,
             minHeight: 0,
-            overflowY: 'auto',
-            overscrollBehavior: 'contain',
             padding: 6,
-            touchAction: listOverflows ? 'pan-y' : 'none',
-            WebkitOverflowScrolling: 'touch',
+            position: 'relative',
+            y: contentLift,
           }}
         >
-          {actions.map((action, index) => (
-            <AccountPanelButton
-              key={action.label}
-              action={action}
-              count={actions.length}
-              index={index}
-              onSelect={runAction(action)}
-              variants={variants.item}
-              y={y}
-            />
-          ))}
+          <PanelTile
+            count={tileCount}
+            index={0}
+            onPointerDown={startSwipe}
+            surface={surface}
+            surfaceOpacity={tileSurfaceOpacity}
+            variants={variants.tile}
+            y={y}
+          >
+            <Box
+              sx={{
+                alignItems: 'center',
+                display: 'flex',
+                gap: 1,
+                p: '2.8px 4px',
+              }}
+            >
+              <QortalUserAvatar
+                key={`${address}-${primaryName}-panel`}
+                primaryName={primaryName}
+                walletAddress={address}
+                cachedAvatarEntry={cachedAvatarEntry}
+                ownAvatar
+                fallbackIconSize={22}
+                sx={{
+                  width: 40,
+                  height: 40,
+                  bgcolor: isDark
+                    ? alpha(theme.palette.common.white, 0.1)
+                    : alpha(theme.palette.common.black, 0.06),
+                  fontSize: 16,
+                  fontWeight: 700,
+                }}
+              />
+              <Box sx={{ minWidth: 0, flex: 1 }}>
+                <Typography
+                  sx={{
+                    fontSize: '0.95rem',
+                    fontWeight: 700,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {primaryName || 'Account'}
+                </Typography>
+                {address ? (
+                  <Typography
+                    sx={{
+                      color: theme.palette.text.secondary,
+                      fontFamily: 'monospace',
+                      fontSize: '0.7rem',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {address.slice(0, 8)}…{address.slice(-6)}
+                  </Typography>
+                ) : null}
+              </Box>
+            </Box>
+          </PanelTile>
+
+          {/* The list is a scroll container, and Chrome resolves touch-action
+              only between the touched element and the nearest scroll
+              container, so the panel's own touch-action: none never applied
+              to a swipe that started on a button: after 4 px Chrome claimed
+              the touch as a scroll and fired pointercancel, and the swipe
+              sprang back. The list has to forbid native panning itself, and
+              only scrolls when it really overflows. */}
+          <motion.div
+            ref={listRef}
+            data-testid="account-menu-list"
+            onPointerDown={listOverflows ? undefined : startSwipe}
+            variants={variants.list}
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 3,
+              minHeight: 0,
+              // A scroll container clips, and tiles sliding to the side gave it
+              // a horizontal scrollbar; only scroll when the list must.
+              overflowX: listOverflows ? 'hidden' : 'visible',
+              overflowY: listOverflows ? 'auto' : 'visible',
+              overscrollBehavior: 'contain',
+              touchAction: listOverflows ? 'pan-y' : 'none',
+              WebkitOverflowScrolling: 'touch',
+            }}
+          >
+            {actions.map((action, index) => (
+              <PanelTile
+                key={action.label}
+                count={tileCount}
+                index={index + 1}
+                surface={surface}
+                surfaceOpacity={tileSurfaceOpacity}
+                variants={variants.tile}
+                y={y}
+              >
+                <AccountPanelButton
+                  action={action}
+                  onSelect={runAction(action)}
+                />
+              </PanelTile>
+            ))}
+          </motion.div>
         </motion.div>
       </motion.div>
     </>
   );
 };
 
-type AccountPanelButtonProps = {
-  action: AccountAction;
+const panelSurfaceColor = (theme: Theme) =>
+  theme.palette.mode === 'dark'
+    ? 'rgb(34, 36, 42)'
+    : theme.palette.background.paper;
+
+type PanelTileProps = {
+  children: ReactNode;
   count: number;
   index: number;
-  onSelect: () => void;
+  onPointerDown?: (event: ReactPointerEvent) => void;
+  surface: string;
+  surfaceOpacity: MotionValue<number>;
   variants: Variants;
   y: MotionValue<number>;
 };
 
-// The outer div carries the open/close choreography; the inner one follows
-// the swipe, closing to the side in step with the finger and coming back when
-// the finger comes back.
-const AccountPanelButton = ({
-  action,
+// One tile of the menu. The outer div carries the drop-in on open; the inner
+// one closes to the side in step with the travel and comes back with it. Its
+// own surface shows once the panel's background has gone, so a tile reads as
+// a card on its own while it leaves.
+const PanelTile = ({
+  children,
   count,
   index,
-  onSelect,
+  onPointerDown,
+  surface,
+  surfaceOpacity,
   variants,
   y,
-}: AccountPanelButtonProps) => {
+}: PanelTileProps) => {
   const theme = useTheme();
-  const { icon: Icon, label, accent, badge } = action;
   const progress = useTransform(y, (value) =>
     buttonCloseProgress(value, index, count)
   );
   const x = useTransform(progress, (q) => q * BUTTON_SLIDE_OUT_PX);
   const opacity = useTransform(progress, (q) => 1 - q);
-  const scale = useTransform(progress, (q) => 1 - 0.04 * q);
+  const scale = useTransform(progress, (q) => 1 - 0.06 * q);
 
   return (
-    <motion.div variants={variants} style={{ flexShrink: 0 }}>
+    <motion.div
+      variants={variants}
+      onPointerDown={onPointerDown}
+      style={{ flexShrink: 0 }}
+    >
       <motion.div
-        data-testid="account-menu-button"
-        style={{ opacity, scale, x }}
+        data-testid="account-menu-tile"
+        style={{ opacity, position: 'relative', scale, x }}
       >
-        <Box
-          role="menuitem"
-          onClick={onSelect}
-          sx={{
-            alignItems: 'center',
-            borderRadius: '12px',
-            cursor: 'pointer',
-            display: 'flex',
-            gap: 1,
-            px: 1,
-            py: 0.95,
-            transition: 'background-color 120ms ease',
-            ...(accent
-              ? {
-                  bgcolor: alpha(theme.palette.success.main, 0.1),
-                  border: `1px solid ${alpha(theme.palette.success.main, 0.2)}`,
-                }
-              : {
-                  '&:active': {
-                    bgcolor: alpha(theme.palette.text.primary, 0.08),
-                  },
-                }),
+        <motion.div
+          aria-hidden
+          style={{
+            backgroundColor: surface,
+            border: `1px solid ${theme.palette.divider}`,
+            borderRadius: 12,
+            boxShadow: `0 6px 16px ${alpha('#000', 0.22)}`,
+            inset: 0,
+            opacity: surfaceOpacity,
+            pointerEvents: 'none',
+            position: 'absolute',
           }}
-        >
-          <Box
-            sx={{
-              alignItems: 'center',
-              bgcolor: accent
-                ? alpha(theme.palette.success.main, 0.16)
-                : alpha(theme.palette.primary.main, 0.1),
-              borderRadius: '10px',
-              color: accent
-                ? theme.palette.success.main
-                : theme.palette.primary.main,
-              display: 'flex',
-              height: 32,
-              justifyContent: 'center',
-              width: 32,
-              flexShrink: 0,
-            }}
-          >
-            <Icon sx={{ fontSize: 18 }} />
-          </Box>
-          <Typography sx={{ flex: 1, fontSize: '0.88rem', fontWeight: 600 }}>
-            {label}
-          </Typography>
-          {badge != null && badge > 0 ? (
-            <Box
-              sx={{
-                alignItems: 'center',
-                bgcolor: theme.palette.success.main,
-                borderRadius: 999,
-                color: '#fff',
-                display: 'inline-flex',
-                fontSize: '0.65rem',
-                fontWeight: 700,
-                height: 18,
-                justifyContent: 'center',
-                minWidth: 18,
-                px: 0.5,
-              }}
-            >
-              {badge > 99 ? '99+' : badge}
-            </Box>
-          ) : null}
-          <ChevronRightRoundedIcon
-            sx={{ color: theme.palette.text.disabled, fontSize: 18 }}
-          />
-        </Box>
+        />
+        <Box sx={{ position: 'relative' }}>{children}</Box>
       </motion.div>
     </motion.div>
+  );
+};
+
+type AccountPanelButtonProps = {
+  action: AccountAction;
+  onSelect: () => void;
+};
+
+const AccountPanelButton = ({ action, onSelect }: AccountPanelButtonProps) => {
+  const theme = useTheme();
+  const { icon: Icon, label, accent, badge } = action;
+
+  return (
+    <Box
+      role="menuitem"
+      data-testid="account-menu-button"
+      onClick={onSelect}
+      sx={{
+        alignItems: 'center',
+        borderRadius: '12px',
+        cursor: 'pointer',
+        display: 'flex',
+        gap: 1,
+        px: 1,
+        py: 0.95,
+        transition: 'background-color 120ms ease',
+        ...(accent
+          ? {
+              bgcolor: alpha(theme.palette.success.main, 0.1),
+              border: `1px solid ${alpha(theme.palette.success.main, 0.2)}`,
+            }
+          : {
+              '&:active': {
+                bgcolor: alpha(theme.palette.text.primary, 0.08),
+              },
+            }),
+      }}
+    >
+      <Box
+        sx={{
+          alignItems: 'center',
+          bgcolor: accent
+            ? alpha(theme.palette.success.main, 0.16)
+            : alpha(theme.palette.primary.main, 0.1),
+          borderRadius: '10px',
+          color: accent
+            ? theme.palette.success.main
+            : theme.palette.primary.main,
+          display: 'flex',
+          height: 32,
+          justifyContent: 'center',
+          width: 32,
+          flexShrink: 0,
+        }}
+      >
+        <Icon sx={{ fontSize: 18 }} />
+      </Box>
+      <Typography sx={{ flex: 1, fontSize: '0.88rem', fontWeight: 600 }}>
+        {label}
+      </Typography>
+      {badge != null && badge > 0 ? (
+        <Box
+          sx={{
+            alignItems: 'center',
+            bgcolor: theme.palette.success.main,
+            borderRadius: 999,
+            color: '#fff',
+            display: 'inline-flex',
+            fontSize: '0.65rem',
+            fontWeight: 700,
+            height: 18,
+            justifyContent: 'center',
+            minWidth: 18,
+            px: 0.5,
+          }}
+        >
+          {badge > 99 ? '99+' : badge}
+        </Box>
+      ) : null}
+      <ChevronRightRoundedIcon
+        sx={{ color: theme.palette.text.disabled, fontSize: 18 }}
+      />
+    </Box>
   );
 };
 

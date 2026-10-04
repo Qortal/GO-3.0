@@ -21,15 +21,24 @@
     "sign_failed": "Не удалось подписать событие чата Reticulum",
     "welcome_failed": "Не удалось опубликовать приветствие Reticulum"
   },
+  "chat_scope": {
+    "direct_messages": "Личные",
+    "groups": "Группы",
+    "label": "Показать группы или личные сообщения"
+  },
   "copy_invite_link": "скопировать ссылку-приглашение",
   "discussion": {
     "choose_emoji": "choose emoji",
     "close": "close discussion",
     "initial_post": "initial post",
+    "preparing_attachment": "подготовка вложения…",
     "remove_attachment": "remove attachment",
     "remove_file": "remove {{fileName}}",
     "replies": "replies:",
     "reply_placeholder": "reply to discussion...",
+    "size_counter": "{{size}} / {{maximum}} байт",
+    "title": "обсуждение",
+    "unavailable": "это обсуждение больше недоступно",
     "wait_until_ready": "wait until the discussion is ready"
   },
   "dm": {
@@ -55,6 +64,10 @@
       }
     },
     "required_for_attachments": "Для прямых вложений требуется личный чат Reticulum"
+  },
+  "dm_list": {
+    "empty": "Сейчас нет личных сообщений.",
+    "subtitle": "Личные чаты Reticulum"
   },
   "event_preview": {
     "all_day": "all day",
@@ -104,6 +117,12 @@
     "truncated": "этот файл слишком большой, чтобы показать его целиком. Сохраните его или откройте в другом приложении, чтобы увидеть остальное."
   },
   "group_fallback_name": "Группа",
+  "group_list": {
+    "empty": "Вы ещё не вступили ни в одно сообщество Q-Chat.",
+    "pin_hold_hint": "Удерживайте, чтобы упорядочить закреплённые группы",
+    "pinned": "Закреплено",
+    "reorder_hint": "Перетащите закреплённые группы, чтобы изменить порядок"
+  },
   "group_type": {
     "closed": "закрытая",
     "open": "открытая"

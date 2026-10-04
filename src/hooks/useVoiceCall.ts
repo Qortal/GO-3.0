@@ -34,6 +34,7 @@ import {
 } from '../lib/call/directVoiceUiLog';
 import { startDirectOutboundRingtone } from '../lib/call/directIncomingRingtone';
 import i18n from '../i18n/i18n';
+import { publicKeyBelongsToAddress } from '../encryption/addressKeyCheck';
 import {
   type DecodedAudioPacket,
   decodeAudioPackets,
@@ -1885,10 +1886,23 @@ export function useVoiceCall(
       if (!roomId || !peer || !roomKey || !callSessionId || !myAddr) {
         return false;
       }
+      // The room key is encrypted to this key, so it must be the peer's own:
+      // a Qortal address is derived from its public key. Friend keys saved
+      // by earlier builds were never checked against the address.
+      const candidates = [
+        dmFriendsByAddressRef.current[peer]?.publicKey,
+        optionsRef.current.getPeerPublicKey?.(peer),
+      ].filter((pk): pk is string => typeof pk === 'string' && !!pk);
       const friendPk =
-        dmFriendsByAddressRef.current[peer]?.publicKey ??
-        optionsRef.current.getPeerPublicKey?.(peer) ??
-        '';
+        candidates.find((pk) => publicKeyBelongsToAddress(pk, peer)) ?? '';
+      if (!friendPk && candidates.length > 0) {
+        pushDirectVoiceUiLog(
+          'warn',
+          'friend publicKey does not match the peer address (no GC_KEY)',
+          { peerTrunc: peer.slice(0, 8), reason }
+        );
+        return false;
+      }
       if (!friendPk) {
         pushDirectVoiceUiLog(
           'warn',

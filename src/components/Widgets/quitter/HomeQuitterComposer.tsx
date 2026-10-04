@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Box,
   Button,
+  ButtonBase,
   CircularProgress,
   Dialog,
   DialogContent,
@@ -25,10 +26,7 @@ import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded';
 import GifBoxOutlinedIcon from '@mui/icons-material/GifBoxOutlined';
 import PollOutlinedIcon from '@mui/icons-material/PollOutlined';
 import AttachFileRoundedIcon from '@mui/icons-material/AttachFileRounded';
-import AudioFileOutlinedIcon from '@mui/icons-material/AudioFileOutlined';
-import InsertDriveFileOutlinedIcon from '@mui/icons-material/InsertDriveFileOutlined';
-import ChevronLeftRoundedIcon from '@mui/icons-material/ChevronLeftRounded';
-import ChevronRightRoundedIcon from '@mui/icons-material/ChevronRightRounded';
+import PlayCircleFilledRoundedIcon from '@mui/icons-material/PlayCircleFilledRounded';
 import AutoAwesomeRoundedIcon from '@mui/icons-material/AutoAwesomeRounded';
 import { useAtomValue } from 'jotai';
 import { Capacitor } from '@capacitor/core';
@@ -36,7 +34,7 @@ import { useTranslation } from 'react-i18next';
 import { userInfoAtom } from '../../../atoms/global';
 import { dashboardPanelSx } from '../../Group/dashboardPanelEffects';
 import { AppThumbnailAvatar } from '../../Apps/AppThumbnailAvatar';
-import { buildAppThumbnailUrl } from '../../../utils/walletAvatarCache';
+import { useQdnAvatar } from '../../../lib/qdnAvatars';
 import {
   executeEvent,
   subscribeToEvent,
@@ -44,7 +42,6 @@ import {
 } from '../../../utils/events';
 import { detachStreamedChunkUpload } from '../../../utils/streamedChunkUpload';
 import { ChatGifPicker } from '../../Chat/gifs/ChatGifPicker';
-import { GifImage } from '../../Chat/gifs/GifImage';
 import { libraryGifKey, type LibraryGif } from '../../Chat/gifs/libraryGifs';
 import {
   buildQtubeVideoIdentifier,
@@ -74,12 +71,22 @@ import {
   type QuitterVideoEditorValue,
 } from './QuitterVideoEditorDialog';
 import {
+  composerAppName,
+  composerTargetOrder,
+  setComposerTarget,
+  useComposerTarget,
+  type ComposerTarget,
+} from './composerTarget';
+import {
+  ComposerAttachmentCards,
+  ComposerAttachmentEditDialog,
+  ComposerGifStack,
+  ComposerImageGrid,
+} from './ComposerPostPreview';
+import {
   clearQuitterComposerSession,
   getQuitterComposerSession,
   patchQuitterComposerSession,
-  readComposerTarget,
-  writeComposerTarget,
-  type ComposerTarget,
   type SessionFileDraft,
   type SessionImageDraft,
   type SessionVideoDraft,
@@ -131,9 +138,22 @@ const isCancelError = (err: any) =>
   err?.name === 'VideoPrepareCancelledError' ||
   /cancel/i.test(String(err?.message || err));
 
-const isAudioFile = (file: File) =>
-  (typeof file.type === 'string' && file.type.startsWith('audio/')) ||
-  /\.(mp3|m4a|aac|wav|ogg|oga|opus|flac)$/i.test(file.name);
+const revokeBlobUrl = (url?: string) => {
+  if (url?.startsWith('blob:')) URL.revokeObjectURL(url);
+};
+
+/** Open Quitter or Torq in a Q-Apps tab (optionally at one of its pages). */
+const openComposerApp = (app: string, path?: string) => {
+  executeEvent('addTab', {
+    data: {
+      identifier: '',
+      name: app,
+      ...(path ? { path } : {}),
+      service: 'APP',
+    },
+  });
+  executeEvent('open-apps-mode', {});
+};
 
 export const HomeQuitterComposer = ({
   onPublished,
@@ -155,9 +175,9 @@ export const HomeQuitterComposer = ({
   const hasName = Boolean(userName);
 
   const session = getQuitterComposerSession();
-  const [target, setTarget] = useState<ComposerTarget>(readComposerTarget);
+  const target = useComposerTarget();
   const isTorq = target === 'torq';
-  const appName = isTorq ? 'Torq' : 'Quitter';
+  const appName = composerAppName(target);
   const [expanded, setExpanded] = useState(session.expanded);
   const [text, setText] = useState(session.text);
   const [torqDoc, setTorqDoc] = useState<TorqDocNode>(
@@ -174,6 +194,7 @@ export const HomeQuitterComposer = ({
   const [pollAnonymous, setPollAnonymous] = useState(session.pollAnonymous);
   const [files, setFiles] = useState<SessionFileDraft[]>(session.files);
   const [gifDialogOpen, setGifDialogOpen] = useState(false);
+  const [editingFileId, setEditingFileId] = useState<string | null>(null);
   const [pendingVideo, setPendingVideo] = useState<PendingVideoPick | null>(
     null
   );
@@ -302,6 +323,7 @@ export const HomeQuitterComposer = ({
     images.forEach((img) => {
       if (img.previewUrl.startsWith('blob:')) URL.revokeObjectURL(img.previewUrl);
     });
+    files.forEach((item) => revokeBlobUrl(item.thumbnailPreview));
     publishAbortRef.current?.abort();
     publishAbortRef.current = null;
     liveUploadRef.current?.upload.cancel();
@@ -321,6 +343,7 @@ export const HomeQuitterComposer = ({
     setPollChoices(null);
     setPollAnonymous(false);
     setFiles([]);
+    setEditingFileId(null);
     setPreparedVideo(null);
     setCompressPercent(null);
     setCompressLabel('');
@@ -329,18 +352,13 @@ export const HomeQuitterComposer = ({
     setError('');
     setExpanded(false);
     clearQuitterComposerSession();
-  }, [pendingVideo, video, images]);
+  }, [pendingVideo, video, images, files]);
 
   const openPublishedPost = useCallback((post: LastPublishedPost) => {
-    executeEvent('addTab', {
-      data: {
-        identifier: '',
-        name: post.app,
-        path: `post/${encodeURIComponent(post.author)}/${encodeURIComponent(post.postIdentifier)}`,
-        service: 'APP',
-      },
-    });
-    executeEvent('open-apps-mode', {});
+    openComposerApp(
+      post.app,
+      `post/${encodeURIComponent(post.author)}/${encodeURIComponent(post.postIdentifier)}`
+    );
   }, []);
 
   const handleTargetChange = (next: ComposerTarget | null) => {
@@ -352,8 +370,8 @@ export const HomeQuitterComposer = ({
       // Formatting has no Quitter equivalent; lists stay as "• " lines.
       setText(torqDocToPostBody(torqDoc).text);
     }
-    setTarget(next);
-    writeComposerTarget(next);
+    // Home's feed, Featured Q-Apps and the share sheet follow this choice.
+    setComposerTarget(next);
     setError('');
   };
 
@@ -442,6 +460,48 @@ export const HomeQuitterComposer = ({
     }
     if (accepted.length) setFiles((prev) => [...prev, ...accepted]);
     if (rejection) setError(rejection);
+  };
+
+  const removeFile = (id: string) => {
+    setFiles((prev) => {
+      revokeBlobUrl(prev.find((item) => item.id === id)?.thumbnailPreview);
+      return prev.filter((item) => item.id !== id);
+    });
+  };
+
+  const moveFile = (fromId: string, toId: string) => {
+    setFiles((prev) => {
+      const from = prev.findIndex((item) => item.id === fromId);
+      const to = prev.findIndex((item) => item.id === toId);
+      if (from < 0 || to < 0) return prev;
+      const next = [...prev];
+      [next[from], next[to]] = [next[to], next[from]];
+      return next;
+    });
+  };
+
+  const setFileThumbnail = (id: string, thumbnail: File) => {
+    setError('');
+    setFiles((prev) =>
+      prev.map((item) => {
+        if (item.id !== id) return item;
+        revokeBlobUrl(item.thumbnailPreview);
+        return {
+          ...item,
+          thumbnail,
+          thumbnailPreview: URL.createObjectURL(thumbnail),
+        };
+      })
+    );
+  };
+
+  const saveFileDetails = (id: string, title: string, filename: string) => {
+    setFiles((prev) =>
+      prev.map((item) =>
+        item.id === id ? { ...item, title, filename } : item
+      )
+    );
+    setEditingFileId(null);
   };
 
   const handleSelectGif = (gif: LibraryGif) => {
@@ -909,7 +969,12 @@ export const HomeQuitterComposer = ({
                       anonymous: pollAnonymous,
                     })
                   : null,
-                files: files.map((item) => ({ file: item.file })),
+                files: files.map((item) => ({
+                  file: item.file,
+                  title: item.title,
+                  filename: item.filename,
+                  thumbnail: item.thumbnail,
+                })),
                 onProgress,
                 signal: abort.signal,
               })
@@ -969,18 +1034,8 @@ export const HomeQuitterComposer = ({
   const isDark = theme.palette.mode === 'dark';
   const hazeAccent = '#7EB6FF';
   const hazeWarm = '#E8D5C4';
-  const appLogoUrl = buildAppThumbnailUrl(appName);
-
-  const thumbButtonSx = {
-    backgroundColor: 'rgba(0,0,0,0.55)',
-    color: '#fff',
-    height: 22,
-    padding: 0,
-    position: 'absolute',
-    width: 22,
-    '&:hover': { backgroundColor: 'rgba(0,0,0,0.7)' },
-    '&.Mui-disabled': { display: 'none' },
-  } as const;
+  // Quitter and Torq ship bundled icons, so this is set even on a slow node.
+  const { src: appLogoUrl } = useQdnAvatar(appName, { countUse: false });
 
   return (
     <Box
@@ -1084,20 +1139,34 @@ export const HomeQuitterComposer = ({
             minWidth: 0,
           }}
         >
-          <AppThumbnailAvatar
-            key={appName}
-            appName={appName}
-            fallbackSize={22}
+          <ButtonBase
+            aria-label={tc('open_app', { app: appName })}
+            onClick={() => openComposerApp(appName)}
             sx={{
-              bgcolor: alpha(theme.palette.common.black, isDark ? 0.25 : 0.06),
-              border: `1px solid ${alpha(theme.palette.common.white, isDark ? 0.12 : 0.5)}`,
-              boxShadow: `0 4px 14px ${alpha(hazeAccent, 0.18)}`,
+              borderRadius: '50%',
               flexShrink: 0,
-              height: 36,
-              width: 36,
-              '& img': { objectFit: 'cover' },
+              transition: 'transform 140ms ease',
+              '&:active': { transform: 'scale(0.94)' },
+              '&:focus-visible': {
+                outline: `2px solid ${alpha(theme.palette.primary.main, 0.6)}`,
+                outlineOffset: 2,
+              },
             }}
-          />
+          >
+            <AppThumbnailAvatar
+              key={appName}
+              appName={appName}
+              fallbackSize={22}
+              sx={{
+                bgcolor: alpha(theme.palette.common.black, isDark ? 0.25 : 0.06),
+                border: `1px solid ${alpha(theme.palette.common.white, isDark ? 0.12 : 0.5)}`,
+                boxShadow: `0 4px 14px ${alpha(hazeAccent, 0.18)}`,
+                height: 36,
+                width: 36,
+                '& img': { objectFit: 'cover' },
+              }}
+            />
+          </ButtonBase>
           <Box sx={{ minWidth: 0 }}>
             <Typography
               sx={{
@@ -1236,8 +1305,8 @@ export const HomeQuitterComposer = ({
                 },
               }}
             >
-              {(['quitter', 'torq'] as const).map((option) => {
-                const optionApp = option === 'torq' ? 'Torq' : 'Quitter';
+              {composerTargetOrder(target).map((option) => {
+                const optionApp = composerAppName(option);
                 return (
                   <ToggleButton key={option} value={option}>
                     <AppThumbnailAvatar
@@ -1340,261 +1409,31 @@ export const HomeQuitterComposer = ({
             />
           )}
 
-          {(images.length > 0 || video || gifs.length > 0) && (
-            <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
-              {images.map((img, index) => (
-                <Box
-                  key={img.id}
-                  sx={{
-                    borderRadius: '10px',
-                    height: 72,
-                    overflow: 'hidden',
-                    position: 'relative',
-                    width: 72,
-                  }}
-                >
-                  <Box
-                    component="img"
-                    src={img.previewUrl}
-                    alt=""
-                    sx={{ height: '100%', objectFit: 'cover', width: '100%' }}
-                  />
-                  <IconButton
-                    size="small"
-                    aria-label={tc('remove_image')}
-                    disabled={publishing}
-                    onClick={() => removeImage(img.id)}
-                    sx={{ ...thumbButtonSx, right: 2, top: 2 }}
-                  >
-                    <CloseRoundedIcon sx={{ fontSize: 14 }} />
-                  </IconButton>
-                  {isTorq && images.length > 1 ? (
-                    <>
-                      <IconButton
-                        size="small"
-                        aria-label={tc('move_image_earlier')}
-                        disabled={publishing || index === 0}
-                        onClick={() => moveImage(index, -1)}
-                        sx={{ ...thumbButtonSx, bottom: 2, left: 2 }}
-                      >
-                        <ChevronLeftRoundedIcon sx={{ fontSize: 16 }} />
-                      </IconButton>
-                      <IconButton
-                        size="small"
-                        aria-label={tc('move_image_later')}
-                        disabled={publishing || index === images.length - 1}
-                        onClick={() => moveImage(index, 1)}
-                        sx={{ ...thumbButtonSx, bottom: 2, right: 2 }}
-                      >
-                        <ChevronRightRoundedIcon sx={{ fontSize: 16 }} />
-                      </IconButton>
-                    </>
-                  ) : null}
-                </Box>
-              ))}
-              {gifs.map((gif) => (
-                <Box
-                  key={libraryGifKey(gif)}
-                  sx={{
-                    borderRadius: '10px',
-                    height: 72,
-                    overflow: 'hidden',
-                    position: 'relative',
-                    width: 72,
-                  }}
-                >
-                  <GifImage gif={gif} eager fill />
-                  <IconButton
-                    size="small"
-                    aria-label={tc('remove_gif')}
-                    disabled={publishing}
-                    onClick={() =>
-                      setGifs((prev) =>
-                        prev.filter(
-                          (item) => libraryGifKey(item) !== libraryGifKey(gif)
-                        )
-                      )
-                    }
-                    sx={{ ...thumbButtonSx, right: 2, top: 2 }}
-                  >
-                    <CloseRoundedIcon sx={{ fontSize: 14 }} />
-                  </IconButton>
-                </Box>
-              ))}
-              {video ? (
-                <Box
-                  sx={{
-                    border: `1px solid ${theme.palette.divider}`,
-                    borderRadius: '12px',
-                    display: 'flex',
-                    flex: '1 1 240px',
-                    gap: 1,
-                    minWidth: 0,
-                    p: 1,
-                  }}
-                >
-                  <Box
-                    sx={{
-                      backgroundColor: '#000',
-                      backgroundImage: video.videoImage
-                        ? `url(${quitterThumbSrc(video.videoImage)})`
-                        : undefined,
-                      backgroundPosition: 'center',
-                      backgroundSize: 'cover',
-                      borderRadius: '8px',
-                      flexShrink: 0,
-                      height: 72,
-                      width: 112,
-                    }}
-                  />
-                  <Box sx={{ flex: 1, minWidth: 0 }}>
-                    <Typography
-                      sx={{
-                        fontSize: 13,
-                        fontWeight: 650,
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap',
-                      }}
-                    >
-                      {video.title}
-                    </Typography>
-                    <Typography
-                      sx={{
-                        color: theme.palette.text.secondary,
-                        fontSize: 12,
-                      }}
-                    >
-                      {compressLabel ||
-                        `${formatBytes(preparedVideo?.file.size || video.size)}${
-                          videoPlan ? ` · ${videoPlan.label}` : ''
-                        }`}
-                    </Typography>
-                    {publishing && liveSentBytes > 0 ? (
-                      <Typography
-                        sx={{
-                          color: theme.palette.text.secondary,
-                          fontSize: 11.5,
-                        }}
-                      >
-                        {tc('status.live_uploaded', {
-                          size: formatBytes(liveSentBytes),
-                        })}
-                      </Typography>
-                    ) : null}
-                    {publishing ||
-                    videoCompressing ||
-                    (compressPercent != null && compressPercent < 100) ? (
-                      <LinearProgress
-                        variant={
-                          compressPercent == null || compressPercent < 0
-                            ? 'indeterminate'
-                            : 'determinate'
-                        }
-                        value={Math.max(0, compressPercent ?? 0)}
-                        sx={{
-                          borderRadius: 999,
-                          height: 4,
-                          mt: 0.75,
-                          mb: 0.25,
-                        }}
-                      />
-                    ) : null}
-                    <Box sx={{ display: 'flex', gap: 0.25, mt: 0.25 }}>
-                      <IconButton
-                        size="small"
-                        aria-label={tc('edit_video')}
-                        disabled={publishing}
-                        onClick={() => {
-                          setPendingVideo({
-                            file: video.file,
-                            nativePath: video.nativePath,
-                            mimeType: video.mimeType,
-                            size: video.size,
-                            previewUrl: video.previewUrl,
-                            fileName: video.fileName,
-                          });
-                          setEditorOpen(true);
-                        }}
-                      >
-                        <EditRoundedIcon sx={{ fontSize: 18 }} />
-                      </IconButton>
-                      <IconButton
-                        size="small"
-                        aria-label={tc('remove_video')}
-                        disabled={publishing}
-                        onClick={clearVideo}
-                      >
-                        <CloseRoundedIcon sx={{ fontSize: 18 }} />
-                      </IconButton>
-                    </Box>
-                  </Box>
-                </Box>
-              ) : null}
-            </Box>
-          )}
+          {/* Attachments in the order the post shows them. */}
+          <ComposerGifStack
+            gifs={gifs}
+            disabled={publishing}
+            onRemove={(gif) =>
+              setGifs((prev) =>
+                prev.filter(
+                  (item) => libraryGifKey(item) !== libraryGifKey(gif)
+                )
+              )
+            }
+          />
 
-          {files.length > 0 ? (
-            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75 }}>
-              {files.map((item) => (
-                <Box
-                  key={item.id}
-                  sx={{
-                    alignItems: 'center',
-                    border: `1px solid ${theme.palette.divider}`,
-                    borderRadius: '10px',
-                    display: 'flex',
-                    gap: 1,
-                    minWidth: 0,
-                    pl: 1.25,
-                    pr: 0.5,
-                    py: 0.5,
-                  }}
-                >
-                  {isAudioFile(item.file) ? (
-                    <AudioFileOutlinedIcon
-                      sx={{ color: theme.palette.text.secondary, fontSize: 20 }}
-                    />
-                  ) : (
-                    <InsertDriveFileOutlinedIcon
-                      sx={{ color: theme.palette.text.secondary, fontSize: 20 }}
-                    />
-                  )}
-                  <Typography
-                    sx={{
-                      flex: 1,
-                      fontSize: 13,
-                      minWidth: 0,
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap',
-                    }}
-                  >
-                    {item.file.name}
-                  </Typography>
-                  <Typography
-                    sx={{
-                      color: theme.palette.text.secondary,
-                      flexShrink: 0,
-                      fontSize: 12,
-                    }}
-                  >
-                    {formatBytes(item.file.size)}
-                  </Typography>
-                  <IconButton
-                    size="small"
-                    aria-label={tc('remove_file', { name: item.file.name })}
-                    disabled={publishing}
-                    onClick={() =>
-                      setFiles((prev) => prev.filter((f) => f.id !== item.id))
-                    }
-                  >
-                    <CloseRoundedIcon sx={{ fontSize: 16 }} />
-                  </IconButton>
-                </Box>
-              ))}
-            </Box>
-          ) : null}
+          <ComposerAttachmentCards
+            files={files}
+            userName={userName}
+            disabled={publishing}
+            onRemove={removeFile}
+            onMove={moveFile}
+            onEdit={setEditingFileId}
+            onThumbnail={setFileThumbnail}
+            onError={(message) =>
+              setError(message || tc('error.thumbnail_too_large'))
+            }
+          />
 
           {isTorq && pollChoices ? (
             <TorqPollEditor
@@ -1608,6 +1447,135 @@ export const HomeQuitterComposer = ({
                 setPollAnonymous(false);
               }}
             />
+          ) : null}
+
+          <ComposerImageGrid
+            images={images}
+            disabled={publishing}
+            onRemove={removeImage}
+            onMove={moveImage}
+          />
+
+          {video ? (
+            <Box
+              sx={{
+                border: `1px solid ${theme.palette.divider}`,
+                borderRadius: '16px',
+                overflow: 'hidden',
+                width: '100%',
+              }}
+            >
+              <Box
+                sx={{
+                  alignItems: 'center',
+                  aspectRatio: '16 / 9',
+                  backgroundColor: '#000',
+                  backgroundImage: video.videoImage
+                    ? `url(${quitterThumbSrc(video.videoImage)})`
+                    : undefined,
+                  backgroundPosition: 'center',
+                  backgroundSize: 'cover',
+                  display: 'flex',
+                  justifyContent: 'center',
+                  width: '100%',
+                }}
+              >
+                <PlayCircleFilledRoundedIcon
+                  sx={{ color: 'rgba(255,255,255,0.85)', fontSize: 56 }}
+                />
+              </Box>
+              <Box
+                sx={{
+                  alignItems: 'center',
+                  display: 'flex',
+                  gap: 1,
+                  minWidth: 0,
+                  px: 1.25,
+                  py: 1,
+                }}
+              >
+                <Box sx={{ flex: 1, minWidth: 0 }}>
+                  <Typography
+                    sx={{
+                      fontSize: 14,
+                      fontWeight: 700,
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {video.title}
+                  </Typography>
+                  <Typography
+                    sx={{
+                      color: theme.palette.text.secondary,
+                      fontSize: 12,
+                    }}
+                  >
+                    {compressLabel ||
+                      `${formatBytes(preparedVideo?.file.size || video.size)}${
+                        videoPlan ? ` · ${videoPlan.label}` : ''
+                      }`}
+                  </Typography>
+                  {publishing && liveSentBytes > 0 ? (
+                    <Typography
+                      sx={{
+                        color: theme.palette.text.secondary,
+                        fontSize: 11.5,
+                      }}
+                    >
+                      {tc('status.live_uploaded', {
+                        size: formatBytes(liveSentBytes),
+                      })}
+                    </Typography>
+                  ) : null}
+                  {publishing ||
+                  videoCompressing ||
+                  (compressPercent != null && compressPercent < 100) ? (
+                    <LinearProgress
+                      variant={
+                        compressPercent == null || compressPercent < 0
+                          ? 'indeterminate'
+                          : 'determinate'
+                      }
+                      value={Math.max(0, compressPercent ?? 0)}
+                      sx={{
+                        borderRadius: 999,
+                        height: 4,
+                        mt: 0.75,
+                        mb: 0.25,
+                      }}
+                    />
+                  ) : null}
+                </Box>
+                <IconButton
+                  size="small"
+                  aria-label={tc('edit_video')}
+                  disabled={publishing}
+                  onClick={() => {
+                    setPendingVideo({
+                      file: video.file,
+                      nativePath: video.nativePath,
+                      mimeType: video.mimeType,
+                      size: video.size,
+                      previewUrl: video.previewUrl,
+                      fileName: video.fileName,
+                    });
+                    setEditorOpen(true);
+                  }}
+                >
+                  <EditRoundedIcon sx={{ fontSize: 18 }} />
+                </IconButton>
+                <IconButton
+                  size="small"
+                  aria-label={tc('remove_video')}
+                  disabled={publishing}
+                  onClick={clearVideo}
+                >
+                  <CloseRoundedIcon sx={{ fontSize: 18 }} />
+                </IconButton>
+              </Box>
+            </Box>
           ) : null}
 
           <Box
@@ -1797,6 +1765,12 @@ export const HomeQuitterComposer = ({
           ) : null}
         </Box>
       ) : null}
+
+      <ComposerAttachmentEditDialog
+        draft={files.find((item) => item.id === editingFileId) || null}
+        onCancel={() => setEditingFileId(null)}
+        onSave={saveFileDetails}
+      />
 
       <Dialog
         open={gifDialogOpen}

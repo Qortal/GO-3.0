@@ -1,10 +1,12 @@
-import { useMemo } from 'react';
+import { useCallback, useMemo } from 'react';
 import { useTheme } from '@mui/material';
 import { alpha } from '@mui/material/styles';
 import { useAtomValue } from 'jotai';
 import { useTranslation } from 'react-i18next';
 import { isIdleAtom, type SelectableStatus } from '../../atoms/presence';
 import { statusDotColor, useMyStatus } from '../../hooks/usePresence';
+import { executeEvent } from '../../utils/events';
+import { PRESENCE_STATUS_CHOSEN_EVENT } from '../../utils/presenceStatusSync';
 
 /**
  * What the UI can show for the local account: the statuses the user may pick,
@@ -97,8 +99,9 @@ export function useAccountStatusOptions(): AccountStatusOption[] {
 
 /**
  * Current status of the local account as it should be displayed, together with
- * the chosen status and its setter. Idle overrides the chosen status for
- * display only — going idle must not clear an explicit "appear offline".
+ * the chosen status and its setter (a user's pick, synced to their other
+ * devices). Idle overrides the chosen status for display only — going idle
+ * must not clear an explicit "appear offline".
  */
 export function useAccountStatusDisplay(): {
   color: string;
@@ -107,7 +110,15 @@ export function useAccountStatusDisplay(): {
   myStatus: SelectableStatus;
   setMyStatus: (status: SelectableStatus) => void;
 } {
-  const [myStatus, setMyStatus] = useMyStatus();
+  const [myStatus, setStoredStatus] = useMyStatus();
+  // A pick in a status picker also goes to the account's other devices.
+  const setMyStatus = useCallback(
+    (status: SelectableStatus) => {
+      setStoredStatus(status);
+      executeEvent(PRESENCE_STATUS_CHOSEN_EVENT, { status });
+    },
+    [setStoredStatus]
+  );
   const isIdle = useAtomValue(isIdleAtom);
   const getColor = useAccountStatusColor();
   const getLabel = usePresenceStatusLabel();

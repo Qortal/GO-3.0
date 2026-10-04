@@ -1,6 +1,10 @@
 import { IconButton, useTheme } from '@mui/material';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import { useTranslation } from 'react-i18next';
+import {
+  COMPOSER_CORNER_BUTTON_PX,
+  COMPOSER_DISCARD_ICON_PX,
+} from './composerCornerLayout';
 
 type ComposerDiscardButtonProps = {
   /** Nothing to throw away yet; it fades out with the send button. */
@@ -20,7 +24,8 @@ type ComposerDiscardButtonProps = {
  * ways.
  *
  * Deliberately quiet: no fill and the secondary text colour, so the send button
- * next to it stays the obvious thing to press.
+ * next to it stays the obvious thing to press. It is as big a target as the
+ * other corner controls all the same: a quiet button is still one to hit.
  */
 export const ComposerDiscardButton = ({
   idle,
@@ -48,15 +53,15 @@ export const ComposerDiscardButton = ({
         borderRadius: '50%',
         color: theme.palette.text.secondary,
         flexShrink: 0,
-        height: 32,
+        height: COMPOSER_CORNER_BUTTON_PX,
         padding: 0,
-        width: 32,
+        width: COMPOSER_CORNER_BUTTON_PX,
         '&.Mui-disabled': {
           color: theme.palette.action.disabled,
         },
       }}
     >
-      <CloseRoundedIcon sx={{ fontSize: 19 }} />
+      <CloseRoundedIcon sx={{ fontSize: COMPOSER_DISCARD_ICON_PX }} />
     </IconButton>
   );
 };

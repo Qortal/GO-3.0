@@ -1,5 +1,12 @@
 import '@testing-library/jest-dom';
-import { vi } from 'vitest';
+import { afterEach, beforeEach, vi } from 'vitest';
+import { setQdnAvatarCacheForTests } from '../lib/qdnAvatars/defaultCache';
+import { qdnAvatarKey } from '../lib/qdnAvatars/keys';
+import {
+  getQdnAvatarSeedNames,
+  getQdnAvatarSeedUrl,
+} from '../lib/qdnAvatars/seeds';
+import { createAvatarTestHarness } from '../lib/qdnAvatars/testHarness';
 
 Object.defineProperties(HTMLMediaElement.prototype, {
   load: {
@@ -38,4 +45,28 @@ vi.mock('../background/background', () => {
     }),
     // if it exports a default or other helpers, add them too
   };
+});
+
+// Components that show avatars must not ask a real node from tests (that
+// would also use up fetch mocks): every test starts with an avatar cache
+// whose node never answers, with the icons GO ships, as in the app. Tests
+// that need answers install their own.
+const bundledAvatarSeeds = Object.fromEntries(
+  getQdnAvatarSeedNames().map((name) => [
+    qdnAvatarKey(name),
+    getQdnAvatarSeedUrl(name),
+  ])
+);
+
+beforeEach(() => {
+  setQdnAvatarCacheForTests(
+    createAvatarTestHarness({
+      handler: () => new Promise<Response>(() => {}),
+      seeds: bundledAvatarSeeds,
+    }).cache
+  );
+});
+
+afterEach(() => {
+  setQdnAvatarCacheForTests(null);
 });

@@ -82,6 +82,8 @@ android {
             // Same certificate as every earlier GO 3.0 release; a different
             // key would force users to uninstall and lose their data.
             signingConfig signingConfigs.debug
+            // The web bundle's source maps and debug pages stay out of this
+            // variant's assets (GO-40): see release-web-assets.gradle.
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
@@ -112,8 +114,6 @@ dependencies {
     // Loopback WebSocket that lets the chat engine worker talk to the Python
     // bridge without crossing the WebView main thread (see BridgeSocketServer).
     implementation 'org.nanohttpd:nanohttpd-websocket:2.3.1'
-    implementation 'com.google.android.gms:play-services-cast-framework:21.4.0'
-    implementation 'androidx.mediarouter:mediarouter:1.6.0'
     implementation 'androidx.localbroadcastmanager:localbroadcastmanager:1.1.0'
     // Open-source MediaCodec transcoder for Quitter (DeepMedia / formerly otaliastudios).
     // No Google Media3 / Play Services — local hardware encode only.
@@ -128,11 +128,8 @@ dependencies {
 
 apply from: 'capacitor.build.gradle'
 
-try {
-    def servicesJSON = file('google-services.json')
-    if (servicesJSON.text) {
-        apply plugin: 'com.google.gms.google-services'
-    }
-} catch(Exception e) {
-    logger.info("google-services.json not found, google-services plugin not applied. Push Notifications won't work")
-}
+// Release APKs leave out the web bundle's source maps and debug-only pages
+// (GO-40); debug builds keep them. The file says how to check an APK.
+// After any AGP or Gradle upgrade, run app/release-web-assets-test/run.sh and
+// app/release-web-assets-test/check-apk.sh on the new release APK.
+apply from: 'release-web-assets.gradle'

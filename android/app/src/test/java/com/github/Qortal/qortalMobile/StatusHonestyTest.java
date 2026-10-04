@@ -108,6 +108,7 @@ public class StatusHonestyTest {
         assertTrue(StatusHonesty.isLocalizedKey("status_waiting_text"));
         assertTrue(StatusHonesty.isLocalizedKey("fgs_timeout_title"));
         assertTrue(StatusHonesty.isLocalizedKey("fgs_timeout_text"));
+        assertTrue(StatusHonesty.isLocalizedKey("battery_pause_text"));
         assertTrue(StatusHonesty.isLocalizedKey("status_syncing_background"));
         assertFalse(StatusHonesty.isLocalizedKey("app_name"));
         assertFalse(StatusHonesty.isLocalizedKey(null));
@@ -118,6 +119,14 @@ public class StatusHonestyTest {
         assertEquals("a", StatusHonesty.joinLines("a", null));
         assertEquals("a\nb", StatusHonesty.joinLines("a", "b"));
         assertEquals("b", StatusHonesty.joinLines("", "b"));
+    }
+
+    @Test
+    public void inlineSuffixOnlyWhenThereIsText() {
+        assertNull(StatusHonesty.inlineSuffix(null));
+        assertNull(StatusHonesty.inlineSuffix(""));
+        assertEquals("\u00b7 4 unsent", StatusHonesty.inlineSuffix("4 unsent"));
+        assertTrue(StatusHonesty.isLocalizedKey("status_waiting_short"));
     }
 
     /**

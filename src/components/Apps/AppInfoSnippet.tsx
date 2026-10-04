@@ -12,12 +12,11 @@ import {
 } from './Apps-styles';
 import { AppAvailabilityLabel } from './AppAvailabilityLabel';
 import { useAppNodeStatus } from './appNodeStatus';
-import { Avatar, ButtonBase, useTheme } from '@mui/material';
-import { getBaseApiReact } from '../../App';
-import LogoSelected from '../../assets/svgs/LogoSelected.svg';
+import { ButtonBase, useTheme } from '@mui/material';
 import { Spacer } from '../../common/Spacer';
 import { executeEvent } from '../../utils/events';
 import { AppRating } from './AppRating';
+import { AppThumbnailAvatar } from './AppThumbnailAvatar';
 import {
   settingsLocalLastUpdatedAtom,
   sortablePinnedAppsAtom,
@@ -76,28 +75,12 @@ export const AppInfoSnippet = ({
                 border: 'none',
               }}
             >
-              <Avatar
-                sx={{
-                  height: '42px',
-                  width: '42px',
-                  '& img': {
-                    objectFit: 'fill',
-                  },
-                }}
+              <AppThumbnailAvatar
+                appName={app?.name}
                 alt={app?.name}
-                src={`${getBaseApiReact()}/arbitrary/THUMBNAIL/${
-                  app?.name
-                }/qortal_avatar?async=true`}
-              >
-                <img
-                  style={{
-                    width: '31px',
-                    height: 'auto',
-                  }}
-                  src={LogoSelected}
-                  alt="center-icon"
-                />
-              </Avatar>
+                fallbackSize={31}
+                sx={{ height: '42px', width: '42px' }}
+              />
             </AppCircle>
           </AppCircleContainer>
         </ButtonBase>

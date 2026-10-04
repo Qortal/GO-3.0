@@ -120,6 +120,7 @@
     "return_apps_dashboard": "return to Apps Dashboard",
     "save": "save",
     "save_disk": "save to disk",
+    "scan_qr_code": "scan QR code",
     "search": "search",
     "search_apps": "search for apps",
     "search_apps_or_link": "Search apps or enter qortal:// link",
@@ -179,10 +180,47 @@
     "tags": "tags",
     "updated": "updated"
   },
+  "app_lock": {
+    "account_still_signed_in": "{{account}} is still signed in.",
+    "connections_note": "Chats and active calls remain connected while locked.",
+    "fingerprint_cancelled": "Fingerprint unlock was cancelled.",
+    "fingerprint_failed": "Fingerprint unlock failed. Enter your password instead.",
+    "lock_now": "Lock now",
+    "minimize_window": "Minimize",
+    "or": "or",
+    "password_label": "Qortal account password",
+    "qapp_request_locked": "GO is locked. Unlock it and try again.",
+    "retry_wait_one": "Please wait {{count}} second and try again.",
+    "retry_wait_other": "Please wait {{count}} seconds and try again.",
+    "still_signed_in": "You are still signed in.",
+    "tap_fingerprint": "Tap to unlock with your fingerprint",
+    "title": "Qortal Hub is locked",
+    "unlock": "Unlock",
+    "unlock_with_fingerprint": "Unlock with fingerprint",
+    "unlocking": "Unlocking…",
+    "waiting_for_fingerprint": "Waiting for your fingerprint…",
+    "wrong_password": "That password is not correct. Please try again."
+  },
   "app_name": "app name",
   "app_other": "apps",
   "app_private": "private",
   "app_service_type": "app service type",
+  "approval_dialog": {
+    "app_fee": "App fee",
+    "decline_all_one": "Decline {{count}} request from this app",
+    "decline_all_other": "Decline all {{count}} from this app",
+    "fee": "Fee",
+    "foreign_fee": "Foreign fee",
+    "internal_app": "Qortal GO (this app)",
+    "more_waiting_one": "{{count}} more request is waiting",
+    "more_waiting_other": "{{count}} more requests are waiting",
+    "qapp_request": "Q-App request",
+    "requested_by": "Requested by",
+    "session_only": "Grant permissions for this session only",
+    "unknown_app": "Unknown Q-App",
+    "unknown_app_hint": "GO could not tell which Q-App sent this request. Decline it unless you just asked for this yourself.",
+    "what_you_approve": "What you are approving"
+  },
   "apps_dashboard": "apps Dashboard",
   "apps_official": "official Apps",
   "aria": {
@@ -210,11 +248,13 @@
       "off": "off"
     },
     "native": {
+      "battery_pause_text": "GO paused its background connection after 6 hours on battery to save power. Open GO to reconnect.",
       "fgs_timeout_text": "Android paused GO's background connection. Open GO to reconnect.",
       "fgs_timeout_title": "GO paused",
       "status_paused_text": "Open GO to sync your chats.",
       "status_paused_title": "Chat paused",
       "status_syncing_background": "Syncing chat in the background",
+      "status_waiting_short": "{{count}} unsent",
       "status_waiting_text": "Messages waiting to send: {{count}}"
     },
     "status": {
@@ -223,12 +263,57 @@
     },
     "title": "Background sync",
     "vendor_freeze": {
-      "body": "Your {{manufacturer}} phone stopped GO in the background even though background sync was on. Open the phone's battery settings for GO and allow background activity.",
-      "body_unknown": "Your phone stopped GO in the background even though background sync was on. Open the phone's battery settings for GO and allow background activity.",
+      "allow_in_background": "Allow GO in background",
       "dismiss": "Dismiss",
-      "guide": "Step-by-step guide (dontkillmyapp.com)",
+      "dont_show_again": "Don't show again",
+      "exempt_body": "Battery restrictions are already off for GO, but your {{manufacturer}} phone still stops it while the screen is off. Background sync works while the screen is on; chats catch up when you open GO.",
+      "exempt_body_unknown": "Battery restrictions are already off for GO, but your phone still stops it while the screen is off. Background sync works while the screen is on; chats catch up when you open GO.",
+      "impact": "Chats only caught up when you opened GO again.",
+      "last_stopped": "Last stopped: {{time}}",
       "open_battery_settings": "Open battery settings",
-      "title": "GO was stopped in the background"
+      "open_failed": "Could not open the settings. Follow the steps below in the phone's Settings app.",
+      "steps": {
+        "generic": {
+          "step_1": "Open Settings > Apps > GO > \"App battery usage\" (or \"Battery\").",
+          "step_2": "Choose \"Unrestricted\" (or turn on \"Allow background usage\")."
+        },
+        "huawei": {
+          "step_1": "Open Settings > Battery > \"App launch\".",
+          "step_2": "Find GO and turn off \"Manage automatically\".",
+          "step_3": "Turn on \"Auto-launch\", \"Secondary launch\" and \"Run in background\"."
+        },
+        "note_menu_names": "Menu names can differ a little between phone models and Android versions.",
+        "note_recents": "Don't swipe GO away from your recent apps.",
+        "oppo": {
+          "step_1": "Open Settings > Apps > \"App management\" > GO.",
+          "step_2": "Tap \"Battery usage\" and turn on \"Allow background activity\" (and \"Allow auto launch\" if shown)."
+        },
+        "samsung": {
+          "step_1": "Open Settings > Apps > GO > Battery and choose \"Unrestricted\".",
+          "step_2": "In Settings > Battery > \"Background usage limits\", make sure GO is not in \"Sleeping apps\" or \"Deep sleeping apps\"."
+        },
+        "vivo": {
+          "step_1": "Open Settings > Battery > \"Background power consumption management\".",
+          "step_2": "Find GO and choose \"Allow\" (or \"Don't restrict\").",
+          "step_3": "In Settings > Apps > \"Autostart\", turn GO on if your phone has it."
+        },
+        "xiaomi": {
+          "step_1": "Open Settings > Apps > \"Manage apps\" > GO.",
+          "step_2": "Turn on \"Autostart\".",
+          "step_3": "Tap \"Battery saver\" and choose \"No restrictions\"."
+        }
+      },
+      "steps_toggle": "How to allow it on your {{brand}}",
+      "steps_toggle_generic": "How to allow it on your phone",
+      "summary_one": "Your {{manufacturer}} phone stopped GO {{count}} time in the last 7 days while background sync was on.",
+      "summary_other": "Your {{manufacturer}} phone stopped GO {{count}} times in the last 7 days while background sync was on.",
+      "summary_recent": "Your {{manufacturer}} phone stopped GO in the background while background sync was on.",
+      "summary_recent_unknown": "Your phone stopped GO in the background while background sync was on.",
+      "summary_unknown_one": "Your phone stopped GO {{count}} time in the last 7 days while background sync was on.",
+      "summary_unknown_other": "Your phone stopped GO {{count}} times in the last 7 days while background sync was on.",
+      "title": "GO was stopped in the background",
+      "warnings_off": "Warnings about this in your notifications are off.",
+      "warnings_on": "Turn warnings back on"
     }
   },
   "balance": "balance:",
@@ -377,6 +462,16 @@
   "close_quit_completely": "Quit completely",
   "close_window_behavior": "When closing the window",
   "comment_other": "comments",
+  "composer": {
+    "attachment_count_one": "{{count}} attachment",
+    "attachment_count_other": "{{count}} attachments",
+    "emoji": "emoji",
+    "expand": "expand",
+    "keyboard": "keyboard",
+    "shrink": "shrink",
+    "title": "compose",
+    "write_message": "write a message"
+  },
   "contact_other": "contacts",
   "core": {
     "block_height": "block height",
@@ -437,28 +532,38 @@
   },
   "file_transfer": {
     "dismiss": "Dismiss",
+    "downloaded": "Downloaded",
     "downloading_title": "Downloading {{filename}}",
     "failed_title": "Download failed",
     "fetching_title": "Fetching {{filename}}",
+    "file_transfer_fallback": "File transfer",
     "gathering": "Gathering from QDN · {{percent}}%",
     "gathering_chunks": "Gathering from QDN · {{percent}}% · {{local}}/{{total}} chunks",
     "gathering_unknown": "Gathering from QDN…",
     "hide": "Hide (keeps going in notifications)",
-    "install": "Install",
     "looking_for_file": "Looking for the file on QDN…",
     "not_saved_title": "{{filename}} not saved",
     "not_saved_tray": "Still downloaded. Open GO's notifications to save it.",
+    "offer_expired": "Expired",
     "open": "Open",
     "open_failed": "No app on this phone can open this file",
+    "package_not_opened": "GO does not open or install app packages. To update GO, use “GO 3.0 Updates” in the account menu.",
+    "package_saved": "Saved to {{location}}. GO does not open app packages.",
     "progress": "{{percent}}% · {{size}}",
-    "ready_to_install": "Ready to install · {{location}}",
     "ready_to_open": "Ready to open · {{location}}",
+    "received_file_gone": "This file is no longer on this device. GO removes received files when you log out; ask the sender to send it again.",
+    "received_file_removed": "No longer on this device",
+    "received_in_downloads": "This file is already in your Downloads folder.",
+    "received_notification_text": "{{fileName}} is ready in GO",
+    "received_notification_title": "File received",
+    "received_private_hint": "Kept privately in GO until you log out",
     "remove": "Remove from the list",
     "save": "Save",
     "save_error": "Error saving file: {{message}}",
     "save_error_generic": "Error saving file",
     "save_stalled": "Saving stalled: storage stopped answering",
     "save_success": "File saved",
+    "save_to_device": "Save to device",
     "saved_title": "{{filename}} saved",
     "saved_to": "Saved to {{location}}",
     "saving_file": "Saving file…",
@@ -469,7 +574,6 @@
     "stage_gathering": "Gathering from QDN",
     "stage_saving": "Saving to the phone",
     "storage_permission": "GO needs storage permission to save files to Documents.",
-    "tap_to_install": "Tap to install · {{location}}",
     "tap_to_open": "Tap to open · {{location}}"
   },
   "filter": {
@@ -496,7 +600,12 @@
     "checking": "Checking QDN…",
     "error": {
       "fetch_failed": "The build could not be fetched",
-      "timeout": "The network did not deliver the build in time"
+      "insecure_node": "This node uses plain HTTP, so GO will not download an update from it. Updates come only over HTTPS or from a node on this phone. Switch to an HTTPS node to update.",
+      "not_go_build": "This file is not a Qortal GO build, so it was not installed.",
+      "not_newer": "This build is not newer than the GO on this phone, so it was not installed.",
+      "timeout": "The network did not deliver the build in time",
+      "unreadable": "Android could not read this file as an app, so it was not installed.",
+      "wrong_signer": "This build is not signed with the same key as the GO on this phone, so it was not installed."
     },
     "hide_changes": "Hide changes",
     "install": "Install",
@@ -541,7 +650,8 @@
     "title": "GO 3.0 Updates",
     "update_marker": "GO 3.0 update available",
     "versions_missing": "Some versions could not be loaded yet ({{count}}). Check again later.",
-    "versions_title": "Versions on QDN"
+    "versions_title": "Versions on QDN",
+    "versions_unreachable": "Could not reach QDN. Check the node connection and try again."
   },
   "group_call": "group call",
   "group_call_blocked": "finish your other call first",
@@ -623,6 +733,7 @@
       "invalid_zip": "invalid zip",
       "long_message_too_many_parts": "This message is too long to send, even split into {{maximum}} messages.",
       "long_message_unsplittable": "Part of this message cannot be split small enough to send.",
+      "max_tabs_reached": "Maximum number of tabs reached. Close one to open another.",
       "message_loading": "error loading message.",
       "message_size": "your message size is {{ size }} bytes out of a maximum of {{ maximum }}",
       "minting_account_add": "unable to add minting account",
@@ -639,6 +750,7 @@
       "same_foreign_blockchain": "the address does not belong to the same foreign blockchain",
       "save_qdn": "unable to save to QDN",
       "send_failed": "failed to send",
+      "unrecognized_qr": "this QR code is not a Qortal payment code.",
       "update_failed": "failed to update",
       "vote": "unable to vote"
     },
@@ -742,6 +854,7 @@
       "revert_qdn": "revert to QDN",
       "revoke_permission": "Revoke",
       "save_qdn": "save to QDN",
+      "saving": "saving…",
       "secure_ownership": "secure ownership of data published by your name. You can even sell your name, along with your data to a third party.",
       "select_file": "please select a file",
       "select_image": "please select an image for a logo",
@@ -772,7 +885,8 @@
       "register_name": "would you like to register this name?",
       "reset_pinned": "don't like your current local changes? Would you like to reset to the default pinned apps?",
       "reset_qdn": "don't like your current local changes? Would you like to reset to your saved QDN pinned apps?",
-      "transfer_qort": "would you like to transfer {{ amount }} QORT"
+      "transfer_qort": "would you like to transfer {{ amount }} QORT",
+      "transfer_qort_to": "would you like to transfer {{ amount }} QORT to {{ recipient }}?"
     },
     "success": {
       "order_submitted": "your buy order was submitted",
@@ -1004,15 +1118,15 @@
     "wallets": "Wallets"
   },
   "quitter_feed": {
-    "empty_message_no_following": "Browse Quitter and follow accounts to build your feed.",
+    "empty_message_no_following": "Browse {{app}} and follow accounts to build your feed.",
     "empty_message_no_name": "Sign in with a Qortal name to build a personalized feed.",
-    "empty_message_no_posts": "The accounts you follow haven’t posted to Quitter yet.",
+    "empty_message_no_posts": "The accounts you follow haven’t posted to {{app}} yet.",
     "empty_title_general": "No posts available",
     "empty_title_no_following": "It looks like you’re not following anyone yet.",
     "empty_title_no_name": "Sign in to personalize your feed",
     "empty_title_no_posts": "No followed posts available",
-    "error_following": "The personalized Quitter feed is temporarily unavailable. Please try again.",
-    "error_generic": "The public Quitter feed is temporarily unavailable. Give it another try in a moment.",
+    "error_following": "The personalized {{app}} feed is temporarily unavailable. Please try again.",
+    "error_generic": "The public {{app}} feed is temporarily unavailable. Give it another try in a moment.",
     "error_timeout": "Feed load failed. You can try again or return to General.",
     "error_title_following": "Feed load failed",
     "error_title_general": "Unable to load posts",

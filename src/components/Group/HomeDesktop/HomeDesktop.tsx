@@ -77,6 +77,10 @@ import {
   parseHomeCustomizableCardsLayout,
 } from './utils';
 import { returnToQChat } from './homeNavigation';
+import {
+  composerAppName,
+  useComposerTarget,
+} from '../../Widgets/quitter/composerTarget';
 
 const readStoredDashboardModuleVisible = (key: string): boolean => {
   if (typeof window === 'undefined') return true;
@@ -141,6 +145,8 @@ export const HomeDesktop = ({
     [t]
   );
   const theme = useTheme();
+  // The feed shows the app the Home composer posts to: Quitter or Torq.
+  const feedApp = composerAppName(useComposerTarget());
   const isSplitDashboardLayout = useMediaQuery(theme.breakpoints.up('md'));
   const isWideDashboardLayout = useMediaQuery(
     theme.breakpoints.up(HOME_WIDE_DASHBOARD_MIN_WIDTH_PX)
@@ -499,9 +505,9 @@ export const HomeDesktop = ({
     setDesktopViewMode('apps');
   }, [setDesktopViewMode]);
   const handleOpenEmbeddedQuitter = useCallback(() => {
-    executeEvent('addTab', { data: { service: 'APP', name: 'Quitter' } });
+    executeEvent('addTab', { data: { service: 'APP', name: feedApp } });
     executeEvent('open-apps-mode', {});
-  }, []);
+  }, [feedApp]);
   const handleOpenQChatPanel = useCallback(() => {
     returnToQChat(setGroupSection, openQChatTab);
   }, [setGroupSection]);
@@ -1006,7 +1012,11 @@ export const HomeDesktop = ({
                       order={quitterCardOrder}
                       panelRef={quitterCardHeightRef}
                       refreshing={isQuitterWidgetRefreshing}
-                      title={td('quitter_feed', 'Quitter Feed')}
+                      title={
+                        feedApp === 'Torq'
+                          ? td('torq_feed', 'Torq Feed')
+                          : td('quitter_feed', 'Quitter Feed')
+                      }
                       widgetId="quitter"
                     >
                       <QuitterFeedWidget

@@ -19,6 +19,7 @@ import PhraseWallet from '../../utils/generateWallet/phrase-wallet';
 import { crypto, walletVersion } from '../../constants/decryptWallet';
 import { executeEvent } from '../../utils/events';
 import { getWalletErrorMessage } from '../../utils/walletErrorMessages';
+import { useSecureScreen } from '../../hooks/useSecureScreen';
 
 export const DownloadWallet = ({
   returnToMain,
@@ -39,6 +40,8 @@ export const DownloadWallet = ({
     useState<string>('');
 
   const { t } = useTranslation(['auth']);
+  // Wallet backup: no screenshots, recordings or recents thumbnail (GO-37).
+  useSecureScreen({ secure: true });
 
   const saveFileToDiskFunc = async () => {
     try {

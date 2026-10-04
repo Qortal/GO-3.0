@@ -27,7 +27,6 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
-import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -230,11 +229,17 @@ public class QortinoLlmPlugin extends Plugin {
     /**
      * Stream a remote URL straight into app-private storage (no WebView/CORS).
      * Emits {@code downloadProgress} events: { bytesReceived, bytesTotal, done, error? }.
+     *
+     * The node API key comes as its own {@code apiKey} argument and goes out as
+     * an X-API-KEY header (native HTTP is not bound by the node's CORS rules),
+     * so it is never part of a URL that reaches logcat or an error message.
+     * URLs are logged and reported without their query string all the same.
      */
     @PluginMethod
     public void downloadUrl(PluginCall call) {
         String url = call.getString("url");
         String relativePath = call.getString("relativePath");
+        String apiKey = call.getString("apiKey");
         if (url == null || url.isEmpty()) {
             call.reject("url is required");
             return;
@@ -247,6 +252,7 @@ public class QortinoLlmPlugin extends Plugin {
             call.reject("A download is already running");
             return;
         }
+        final String shownUrl = SecretRedaction.stripQuery(url);
         downloadCancel.set(false);
         downloadJob = executor.submit(() -> {
             HttpURLConnection conn = null;
@@ -257,34 +263,19 @@ public class QortinoLlmPlugin extends Plugin {
                     call.reject("Failed to create parent directory");
                     return;
                 }
-                Log.i(TAG, "downloadUrl start: " + url);
-                URL parsed = new java.net.URI(url).toURL();
-                conn = (HttpURLConnection) parsed.openConnection();
-                conn.setConnectTimeout(30_000);
-                conn.setReadTimeout(120_000);
-                conn.setInstanceFollowRedirects(true);
-                conn.setRequestProperty("Accept", "*/*");
-                conn.setRequestProperty("User-Agent", "QortalGO-QortinoLlm/1.0");
-                conn.connect();
+                Log.i(TAG, "downloadUrl start: " + shownUrl);
+                // Redirects are followed by hand (one at most), so the key
+                // header never goes to another origin.
+                try {
+                    conn = RedirectPolicy.open(url, apiKey, 1, null, packTransport(apiKey));
+                } catch (RedirectPolicy.RedirectRefused refused) {
+                    call.reject("HTTP " + refused.status + " for " + shownUrl);
+                    return;
+                }
                 int code = conn.getResponseCode();
                 Log.i(TAG, "downloadUrl HTTP " + code + " len=" + conn.getContentLengthLong());
-                // Follow one redirect manually if needed (some stacks disable auto)
-                if (code == HttpURLConnection.HTTP_MOVED_PERM
-                        || code == HttpURLConnection.HTTP_MOVED_TEMP
-                        || code == HttpURLConnection.HTTP_SEE_OTHER
-                        || code == 307 || code == 308) {
-                    String loc = conn.getHeaderField("Location");
-                    conn.disconnect();
-                    conn = (HttpURLConnection) new java.net.URI(loc).toURL().openConnection();
-                    conn.setConnectTimeout(30_000);
-                    conn.setReadTimeout(120_000);
-                    conn.setRequestProperty("User-Agent", "QortalGO-QortinoLlm/1.0");
-                    conn.connect();
-                    code = conn.getResponseCode();
-                    Log.i(TAG, "downloadUrl redirected HTTP " + code);
-                }
                 if (code < 200 || code >= 300) {
-                    call.reject("HTTP " + code + " for " + url);
+                    call.reject("HTTP " + code + " for " + shownUrl);
                     return;
                 }
                 long total = conn.getContentLengthLong();
@@ -327,17 +318,58 @@ public class QortinoLlmPlugin extends Plugin {
                 ret.put("bytesWritten", received);
                 call.resolve(ret);
             } catch (Exception e) {
+                String reason = e.getMessage() != null
+                    ? SecretRedaction.redactText(e.getMessage())
+                    : "download failed";
                 JSObject ev = new JSObject();
                 ev.put("done", true);
-                ev.put("error", e.getMessage() != null ? e.getMessage() : "download failed");
+                ev.put("error", reason);
                 notifyListeners("downloadProgress", ev);
-                call.reject("downloadUrl failed: " + e.getMessage());
+                call.reject("downloadUrl failed: " + reason);
             } finally {
                 if (conn != null) {
                     conn.disconnect();
                 }
             }
         });
+    }
+
+    /** One pack-download hop over HttpURLConnection, never following redirects itself. */
+    private static RedirectPolicy.Transport<HttpURLConnection> packTransport(String apiKey) {
+        return new RedirectPolicy.Transport<HttpURLConnection>() {
+            @Override
+            public HttpURLConnection open(String hopUrl, boolean withKey) throws Exception {
+                HttpURLConnection hop = (HttpURLConnection) LocalHttp.openConnection(new java.net.URI(hopUrl).toURL());
+                hop.setConnectTimeout(30_000);
+                hop.setReadTimeout(120_000);
+                hop.setInstanceFollowRedirects(false);
+                hop.setRequestProperty("Accept", "*/*");
+                hop.setRequestProperty("User-Agent", "QortalGO-QortinoLlm/1.0");
+                if (withKey) hop.setRequestProperty("X-API-KEY", apiKey);
+                try {
+                    hop.connect();
+                } catch (Exception e) {
+                    hop.disconnect();
+                    throw e;
+                }
+                return hop;
+            }
+
+            @Override
+            public int status(HttpURLConnection hop) throws Exception {
+                return hop.getResponseCode();
+            }
+
+            @Override
+            public String location(HttpURLConnection hop) {
+                return hop.getHeaderField("Location");
+            }
+
+            @Override
+            public void close(HttpURLConnection hop) {
+                hop.disconnect();
+            }
+        };
     }
 
     @PluginMethod

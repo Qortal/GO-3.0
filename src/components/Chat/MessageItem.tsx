@@ -18,6 +18,7 @@ import {
   Box,
   Button,
   ButtonBase,
+  CircularProgress,
   ClickAwayListener,
   Dialog,
   DialogActions,
@@ -56,13 +57,22 @@ import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import DownloadRoundedIcon from '@mui/icons-material/DownloadRounded';
 import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded';
 import InsertDriveFileRoundedIcon from '@mui/icons-material/InsertDriveFileRounded';
+import SaveAltRoundedIcon from '@mui/icons-material/SaveAltRounded';
 import { getQchatFileApi } from '../../utils/qchatFileApi';
 import { openFileViewer } from '../../utils/fileViewerEvents';
+import { cleanFileName } from '../../utils/receivedFileName';
+import { FileNameWithExtension } from './FileNameWithExtension';
+import { useReceivedQchatFile } from './useReceivedQchatFile';
+import { isPrivateReceivedChatFile } from '../../utils/receivedChatFiles';
 import { Capacitor } from '@capacitor/core';
-import { buildChatUserAvatarUrlBlocking } from '../../utils/chatAvatarUrl';
-import { buildGroupAvatarUrl } from '../../utils/groupAvatarUrl';
+import {
+  buildQdnAvatarUrl,
+  qdnGroupAvatarIdentifier,
+  QDN_AVATAR_DEFAULT_IDENTIFIER,
+} from '../../lib/qdnAvatars';
+import { useQdnAvatarSrc } from '../../hooks/useQdnAvatarSrc';
+import { useAvatarPreviewSrc } from './useAvatarPreviewSrc';
 import CancelRoundedIcon from '@mui/icons-material/CancelRounded';
-import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded';
 import WarningAmberRoundedIcon from '@mui/icons-material/WarningAmberRounded';
 import TextStyle from '@tiptap/extension-text-style';
 import messageExpiresIcon from '../../assets/Icons/message-expires-icon.png';
@@ -80,6 +90,7 @@ import level9Img from '../../assets/badges/level-9.png';
 import level10Img from '../../assets/badges/level-10.png';
 import { Embed } from '../Embeds/Embed';
 import CommentsDisabledIcon from '@mui/icons-material/CommentsDisabled';
+import ForumRoundedIcon from '@mui/icons-material/ForumRounded';
 import {
   buildImageEmbedLink,
   isHtmlString,
@@ -115,6 +126,22 @@ import { ReticulumRoleBadge } from './ReticulumRoleBadge';
 import { createReticulumImageRequestGate } from './reticulumImageRequestGate';
 import { ReticulumDmDeliveryGlyph } from './ReticulumDmDeliveryGlyph';
 import { hasReticulumDmDeliveryState } from './reticulumDmDeliveryState';
+import {
+  getMessageActionSizes,
+  getMessageColumnWidthFromRow,
+  getPhoneMessageColumnWidth,
+  getPhoneToolbarButtonSize,
+  PHONE_MENU_QUICK_REACTION_PX,
+  PHONE_AVATAR_HIT_SLOP_BOTTOM_PX,
+  PHONE_AVATAR_HIT_SLOP_TOP_PX,
+  PHONE_AVATAR_HIT_SLOP_X_PX,
+  PHONE_MESSAGE_AVATAR_PX,
+  PHONE_MESSAGE_BUTTON_MIN_HEIGHT_PX,
+  PHONE_RETRY_PILL_MIN_HEIGHT_PX,
+  PHONE_TOOLBAR_BORDER_PX,
+  PHONE_TOOLBAR_GROUP_GAP_PX,
+  PHONE_TOOLBAR_PADDING_PX,
+} from './messageActionSizes';
 import {
   executeEvent,
   subscribeToEvent,
@@ -457,7 +484,11 @@ export const MessageItemComponent = ({
   const [isReticulumMinterResolved, setIsReticulumMinterResolved] =
     useState(false);
   const [isAvatarPreviewOpen, setIsAvatarPreviewOpen] = useState(false);
-  const [avatarPreviewSrc, setAvatarPreviewSrc] = useState(null);
+  const {
+    previewSrc: avatarPreviewSrc,
+    showPreview: showAvatarPreview,
+    clearPreview: clearAvatarPreview,
+  } = useAvatarPreviewSrc();
   const [isAvatarLoaded, setIsAvatarLoaded] = useState(false);
   const [nowMs, setNowMs] = useState(Date.now());
   const [expiryClockMs, setExpiryClockMs] = useState(Date.now());
@@ -482,6 +513,12 @@ export const MessageItemComponent = ({
   // Phones have no hover, so the quick-action bar is an explicit toggle. It is
   // unmounted while closed so it claims no row height.
   const [mobileActionsOpen, setMobileActionsOpen] = useState(false);
+  // Width of the message column the bar opens in, measured from the row so a
+  // narrower host (sidebar layout, mini thread) still fits it on one line.
+  const [mobileActionsColumnPx, setMobileActionsColumnPx] = useState<
+    number | null
+  >(null);
+  const mobileActionsRowRef = useRef<HTMLElement | null>(null);
   const messageActionsKey = message?.signature;
   const handleMobileActionsTap = useCallback(
     (event: React.MouseEvent) => {
@@ -494,6 +531,11 @@ export const MessageItemComponent = ({
       ) {
         return;
       }
+      const row = event.currentTarget as HTMLElement;
+      mobileActionsRowRef.current = row;
+      setMobileActionsColumnPx(
+        getMessageColumnWidthFromRow(row.clientWidth, window.innerWidth)
+      );
       setMobileActionsOpen((open) => {
         if (!open) {
           executeEvent(MESSAGE_ACTIONS_OPENED_EVENT, {
@@ -518,6 +560,20 @@ export const MessageItemComponent = ({
     return () =>
       unsubscribeFromEvent(MESSAGE_ACTIONS_OPENED_EVENT, onOtherOpened);
   }, [mobileActionsOpen, messageActionsKey]);
+  // Rotating the phone changes the column under an open bar.
+  useEffect(() => {
+    if (!mobileActionsOpen) return;
+    const remeasure = () => {
+      setMobileActionsColumnPx(
+        getMessageColumnWidthFromRow(
+          mobileActionsRowRef.current?.clientWidth,
+          window.innerWidth
+        )
+      );
+    };
+    window.addEventListener('resize', remeasure);
+    return () => window.removeEventListener('resize', remeasure);
+  }, [mobileActionsOpen]);
   const cancelReactionHold = useCallback(() => {
     if (reactionHold.current.timer !== null) {
       window.clearTimeout(reactionHold.current.timer);
@@ -746,54 +802,90 @@ export const MessageItemComponent = ({
     return null;
   }, [replyExpiredMeta?.messageText, replyExpiredMeta?.editTimestamp]);
 
-  const userAvatarUrl = useMemo(() => {
-    if (
-      isOfficialGroupSystem &&
-      (reticulumGroupAvatarOwnerName ||
-        officialGroupSystem?.groupAvatarOwnerName) &&
-      officialGroupSystem?.groupId
-    ) {
-      return (
-        buildGroupAvatarUrl(
-          reticulumGroupAvatarOwnerName ||
-            officialGroupSystem.groupAvatarOwnerName,
-          officialGroupSystem.groupId
-        ) || ''
+  // Official group system messages show the group's avatar, everyone else
+  // their own; both come from the device cache (no request per row).
+  const avatarGroupOwnerName =
+    isOfficialGroupSystem && officialGroupSystem?.groupId
+      ? reticulumGroupAvatarOwnerName ||
+        officialGroupSystem?.groupAvatarOwnerName ||
+        ''
+      : '';
+  const avatarGroupId = avatarGroupOwnerName
+    ? officialGroupSystem?.groupId
+    : null;
+  // Only the src: a status-only change (a retry on a slow node) does not
+  // re-render the whole row. System rows never show a person's avatar: their
+  // senderName can be the group name (calendar), which may also be a user's
+  // or a Q-App's name. Without a known owner they keep the group letter.
+  const senderAvatarSrc = useQdnAvatarSrc(message?.senderName, {
+    enabled: !isOfficialGroupSystem,
+  });
+  const groupSenderAvatarSrc = useQdnAvatarSrc(avatarGroupOwnerName, {
+    identifier: avatarGroupOwnerName
+      ? qdnGroupAvatarIdentifier(avatarGroupId)
+      : null,
+    enabled: !!avatarGroupOwnerName,
+  });
+  const userAvatarUrl = avatarGroupOwnerName
+    ? groupSenderAvatarSrc
+    : senderAvatarSrc;
+  // Cached images are at most 128 px: the preview loads the full one.
+  const getUserAvatarPreviewUrl = useCallback((): string | undefined => {
+    const name = (
+      isOfficialGroupSystem ? avatarGroupOwnerName : message?.senderName || ''
+    ).trim();
+    if (!name) return undefined;
+    try {
+      return buildQdnAvatarUrl(
+        getBaseApiReact(),
+        {
+          name,
+          identifier: avatarGroupOwnerName
+            ? qdnGroupAvatarIdentifier(avatarGroupId)
+            : QDN_AVATAR_DEFAULT_IDENTIFIER,
+        },
+        { blocking: true }
       );
+    } catch {
+      return undefined;
     }
-    return buildChatUserAvatarUrlBlocking(
-      getBaseApiReact(),
-      message?.senderName,
-      message?.sender
-    );
   }, [
+    avatarGroupId,
+    avatarGroupOwnerName,
     isOfficialGroupSystem,
-    message?.sender,
     message?.senderName,
-    officialGroupSystem?.groupAvatarOwnerName,
-    officialGroupSystem?.groupId,
-    reticulumGroupAvatarOwnerName,
   ]);
 
   useEffect(() => {
     setIsAvatarLoaded(false);
   }, [userAvatarUrl]);
 
+  // Opens with the small cached image at once; the full-size one replaces it
+  // when it has loaded (it can take long on a slow node).
   const handleAvatarPreview = useCallback(
-    (event, src = userAvatarUrl, requireLoaded = true) => {
-      if (!src || (requireLoaded && !isAvatarLoaded)) return;
+    (event, src?: string, requireLoaded = true, placeholderSrc?: string) => {
+      if (requireLoaded && !isAvatarLoaded) return;
+      const fullSrc = typeof src === 'string' ? src : getUserAvatarPreviewUrl();
+      const smallSrc = typeof src === 'string' ? placeholderSrc : userAvatarUrl;
+      if (!fullSrc && !smallSrc) return;
       event.preventDefault();
       event.stopPropagation();
-      setAvatarPreviewSrc(src);
+      if (!showAvatarPreview(fullSrc, smallSrc)) return;
       setIsAvatarPreviewOpen(true);
     },
-    [isAvatarLoaded, setAvatarPreviewSrc, setIsAvatarPreviewOpen, userAvatarUrl]
+    [
+      getUserAvatarPreviewUrl,
+      isAvatarLoaded,
+      setIsAvatarPreviewOpen,
+      showAvatarPreview,
+      userAvatarUrl,
+    ]
   );
 
   const closeAvatarPreview = useCallback(() => {
     setIsAvatarPreviewOpen(false);
-    setAvatarPreviewSrc(null);
-  }, [setIsAvatarPreviewOpen, setAvatarPreviewSrc]);
+    clearAvatarPreview();
+  }, [clearAvatarPreview, setIsAvatarPreviewOpen]);
 
   const onSeenFunc = useCallback(() => {
     onSeen(message.id);
@@ -934,13 +1026,11 @@ export const MessageItemComponent = ({
     typeof reticulumDownloadAttachment?.fileHash === 'string'
       ? reticulumDownloadAttachment.fileHash
       : '';
+  // The sender picks the name: shown, saved and opened without bidi or other
+  // invisible characters (N-27).
   const reticulumFileName =
-    typeof reticulumDownloadAttachment?.fileName === 'string' &&
-    reticulumDownloadAttachment.fileName.trim()
-      ? reticulumDownloadAttachment.fileName.trim()
-      : largeReticulumImageAttachment
-        ? 'Image attachment'
-        : 'File attachment';
+    cleanFileName(reticulumDownloadAttachment?.fileName) ||
+    (largeReticulumImageAttachment ? 'Image attachment' : 'File attachment');
   const reticulumFileSize =
     typeof reticulumDownloadAttachment?.sizeBytes === 'number'
       ? reticulumDownloadAttachment.sizeBytes
@@ -1308,29 +1398,33 @@ export const MessageItemComponent = ({
   const qchatCompletedRecord = qchatFileData?.transferId
     ? qchatCompletedTransfers?.[qchatFileData.transferId]
     : null;
-  const qchatOpenUri =
-    qchatCompletedRecord?.downloadsUri || qchatCompletedRecord?.path || '';
-  const qchatCanOpenFile =
+  // Android keeps a received file in GO's private storage (N-22, N-27):
+  // "Open" shows it in GO's viewer and "Save to device" exports it on
+  // request. Builds up to v0.0.14 also copied it to public Downloads; that
+  // copy (downloadsUri) is still opened when the private one is gone.
+  const qchatReceivedPath = qchatCompletedRecord?.path || '';
+  const qchatReceivedLegacyUri = qchatCompletedRecord?.downloadsUri || '';
+  const qchatReceivedFileName =
+    qchatCompletedRecord?.fileName || qchatFileData?.fileName || '';
+  const qchatReceivedFile = useMemo(
+    () => ({
+      path: qchatReceivedPath,
+      legacyUri: qchatReceivedLegacyUri,
+      fileName: qchatReceivedFileName,
+    }),
+    [qchatReceivedFileName, qchatReceivedLegacyUri, qchatReceivedPath]
+  );
+  const qchatReceivedActionsEnabled =
     qchatDownloaded &&
-    !!qchatOpenUri &&
+    (!!qchatReceivedPath || !!qchatReceivedLegacyUri) &&
+    Capacitor.isNativePlatform() &&
     typeof getQchatFileApi()?.qchatFileOpen === 'function';
-  const handleOpenQchatFile = useCallback(() => {
-    if (!qchatOpenUri) return;
-    void getQchatFileApi()
-      ?.qchatFileOpen?.({
-        uri: qchatOpenUri,
-        fileName:
-          qchatCompletedRecord?.fileName ||
-          qchatFileData?.fileName ||
-          undefined,
-      })
-      .then((res) => {
-        if (res && res.ok === false) {
-          console.error('[QchatFile] open failed:', res.error);
-        }
-      })
-      .catch((err) => console.error('[QchatFile] open failed:', err));
-  }, [qchatCompletedRecord?.fileName, qchatFileData?.fileName, qchatOpenUri]);
+  const qchatReceived = useReceivedQchatFile(
+    qchatReceivedFile,
+    qchatReceivedActionsEnabled
+  );
+  const qchatReceivedGone =
+    qchatReceivedActionsEnabled && qchatReceived.state === 'gone';
   const qchatDisplayStatus = qchatDownloaded
     ? 'received'
     : qchatTransferState?.status || qchatFileData?.status || 'offer';
@@ -1789,6 +1883,22 @@ export const MessageItemComponent = ({
       }));
     if (saved?.success) {
       setFileResourceStatus('ready');
+      // The phone has no save dialog: say where the file went. The save
+      // reports the folder its type put it in.
+      if (Capacitor.isNativePlatform()) {
+        const { mobileSaveLocationLabelFor } =
+          await import('../../utils/mobileFileSave');
+        const savedLocation = (saved as { location?: unknown }).location;
+        executeEvent('openGlobalSnackBar', {
+          message: t('core:file_transfer.saved_to', {
+            location:
+              typeof savedLocation === 'string' && savedLocation
+                ? savedLocation
+                : mobileSaveLocationLabelFor(reticulumFileName),
+          }),
+          type: 'success',
+        });
+      }
       return;
     }
     setFileResourceStatus(saved?.canceled ? 'ready' : 'error');
@@ -1797,6 +1907,7 @@ export const MessageItemComponent = ({
     requestReticulumFileResource,
     reticulumFileName,
     reticulumFileResourceId,
+    t,
   ]);
 
   const openReticulumFileResource = useCallback(async () => {
@@ -2082,7 +2193,9 @@ export const MessageItemComponent = ({
   // column, so the body can use the full row width underneath it.
   const mobileStackedLayout =
     reticulumChatEnabled && isMobileLayout && !isShowingAsReply;
-  const avatarSizePx = mobileStackedLayout ? '30px' : '38px';
+  const avatarSizePx = mobileStackedLayout
+    ? `${PHONE_MESSAGE_AVATAR_PX}px`
+    : '38px';
   // Name + role badge on one line, timestamp tucked underneath. `display:
   // contents` leaves the desktop header as the single flat row it was.
   const headerMetaColumnSx = mobileStackedLayout
@@ -2225,8 +2338,8 @@ export const MessageItemComponent = ({
               ? reticulumMinterLevel
               : undefined,
           name: message.senderName,
-          onAvatarPreview: (event, src) =>
-            handleAvatarPreview(event, src, false),
+          onAvatarPreview: (event, src, placeholderSrc) =>
+            handleAvatarPreview(event, src, false, placeholderSrc),
           role: reticulumMemberRole,
           roleColor: reticulumMemberRoleColor,
           status: senderStatus,
@@ -2318,68 +2431,126 @@ export const MessageItemComponent = ({
     !isReticulumDiscussionInitialPost &&
     (!reticulumDiscussionView ||
       String(message?.repliedTo || '') !== reticulumDiscussionRootId);
+  // Phones size the reaction chips, the replies chip and the long-press menu
+  // for fingers; reply previews keep their compact desktop look.
+  const touchSizedChips = isMobileLayout && !isShowingAsReply;
+  const chipSizes = getMessageActionSizes(touchSizedChips);
+  // Buttons inside a message (file offers) get the same finger-sized height.
+  const inMessageButtonSx = touchSizedChips
+    ? {
+        fontSize: '14px',
+        minHeight: `${PHONE_MESSAGE_BUTTON_MIN_HEIGHT_PX}px`,
+        padding: '6px 14px',
+      }
+    : {};
+  const menuSizes = getMessageActionSizes(isMobileLayout);
+  // The defaultValues keep English (not key names) on screen until the
+  // locales carry this surface's new keys.
+  const reticulumDiscussionLabel = t('group:message_item.view_replies', {
+    count: reticulumDiscussionReplyCount,
+    defaultValue: 'view {{count}} replies',
+    defaultValue_one: 'view {{count}} reply',
+    postProcess: 'capitalizeFirstChar',
+  });
+  const reticulumDiscussionAccent =
+    theme.palette.mode === 'light' ? '#174ea6' : theme.palette.primary.main;
+  const reticulumDiscussionChipSx = {
+    alignItems: 'center',
+    backgroundColor:
+      theme.palette.mode === 'light'
+        ? alpha('#174ea6', 0.14)
+        : alpha(theme.palette.primary.main, 0.12),
+    border:
+      theme.palette.mode === 'light'
+        ? '1px solid rgba(23, 78, 166, 0.24)'
+        : '1px solid transparent',
+    color: reticulumDiscussionAccent,
+    display: 'inline-flex',
+    flexShrink: 0,
+    fontWeight: 700,
+    justifyContent: 'center',
+    lineHeight: 1,
+    '&:hover': {
+      backgroundColor:
+        theme.palette.mode === 'light'
+          ? alpha('#174ea6', 0.22)
+          : alpha(theme.palette.primary.main, 0.2),
+    },
+  };
+  // Phones show a labelled pill with the reaction chips, under the message;
+  // the desktop keeps the small "+N" badge beside the timestamp.
   const reticulumDiscussionButton =
     hasReticulumDiscussion && onOpenReticulumDiscussion ? (
-      <Tooltip
-        title={`View ${reticulumDiscussionReplyCount} ${
-          reticulumDiscussionReplyCount === 1 ? 'reply' : 'replies'
-        }`}
-        slotProps={{
-          tooltip: {
-            sx: {
-              backgroundColor:
-                theme.palette.mode === 'light' ? '#f8fafc' : undefined,
-              border:
-                theme.palette.mode === 'light'
-                  ? '1px solid rgba(15, 23, 42, 0.16)'
-                  : undefined,
-              color: theme.palette.mode === 'light' ? '#111827' : undefined,
-              fontWeight: 600,
-            },
-          },
-        }}
-      >
+      touchSizedChips ? (
         <ButtonBase
-          aria-label={`View ${reticulumDiscussionReplyCount} ${
-            reticulumDiscussionReplyCount === 1 ? 'reply' : 'replies'
-          }`}
-          onClick={() => onOpenReticulumDiscussion(message)}
+          aria-label={reticulumDiscussionLabel}
+          onClick={(event) => {
+            event.stopPropagation();
+            onOpenReticulumDiscussion(message);
+          }}
           sx={{
-            alignItems: 'center',
-            backgroundColor:
-              theme.palette.mode === 'light'
-                ? alpha('#174ea6', 0.14)
-                : alpha(theme.palette.primary.main, 0.12),
-            border:
-              theme.palette.mode === 'light'
-                ? '1px solid rgba(23, 78, 166, 0.24)'
-                : '1px solid transparent',
-            borderRadius: '50%',
-            color:
-              theme.palette.mode === 'light'
-                ? '#174ea6'
-                : theme.palette.primary.main,
-            display: 'inline-flex',
-            flexShrink: 0,
-            fontSize: '10px',
-            fontWeight: 700,
-            height: 24,
-            justifyContent: 'center',
-            lineHeight: 1,
-            minWidth: 24,
-            px: reticulumDiscussionReplyCount > 99 ? 0.5 : 0,
-            '&:hover': {
-              backgroundColor:
-                theme.palette.mode === 'light'
-                  ? alpha('#174ea6', 0.22)
-                  : alpha(theme.palette.primary.main, 0.2),
+            ...reticulumDiscussionChipSx,
+            borderRadius: `${chipSizes.discussionChipHeightPx / 2}px`,
+            fontSize: `${chipSizes.discussionChipFontPx}px`,
+            gap: '6px',
+            height: chipSizes.discussionChipHeightPx,
+            minWidth: chipSizes.reactionChipMinWidthPx,
+            padding: `0 ${chipSizes.reactionChipPaddingXPx + 2}px 0 ${chipSizes.reactionChipPaddingXPx}px`,
+          }}
+        >
+          <ForumRoundedIcon aria-hidden="true" sx={{ fontSize: '18px' }} />
+          {t('group:message_item.reply_count', {
+            count: reticulumDiscussionReplyCount,
+            defaultValue: '{{count}} replies',
+            defaultValue_one: '{{count}} reply',
+          })}
+        </ButtonBase>
+      ) : (
+        <Tooltip
+          title={reticulumDiscussionLabel}
+          slotProps={{
+            tooltip: {
+              sx: {
+                backgroundColor:
+                  theme.palette.mode === 'light' ? '#f8fafc' : undefined,
+                border:
+                  theme.palette.mode === 'light'
+                    ? '1px solid rgba(15, 23, 42, 0.16)'
+                    : undefined,
+                color: theme.palette.mode === 'light' ? '#111827' : undefined,
+                fontWeight: 600,
+              },
             },
           }}
         >
-          +{reticulumDiscussionReplyCount}
-        </ButtonBase>
-      </Tooltip>
+          <ButtonBase
+            aria-label={reticulumDiscussionLabel}
+            onClick={() => onOpenReticulumDiscussion(message)}
+            sx={{
+              ...reticulumDiscussionChipSx,
+              borderRadius: '50%',
+              fontSize: `${chipSizes.discussionChipFontPx}px`,
+              height: chipSizes.discussionChipHeightPx,
+              minWidth: chipSizes.discussionChipHeightPx,
+              px: reticulumDiscussionReplyCount > 99 ? 0.5 : 0,
+            }}
+          >
+            +{reticulumDiscussionReplyCount}
+          </ButtonBase>
+        </Tooltip>
+      )
     ) : null;
+  const hasVisibleReactions = Boolean(
+    reactions &&
+    Object.keys(reactions).some((r) => (reactions[r]?.length ?? 0) > 0)
+  );
+  // On phones the replies chip joins the reactions row instead of the header.
+  const discussionChipInReactionsRow = Boolean(
+    touchSizedChips && reticulumDiscussionButton
+  );
+  const discussionChipInHeader = Boolean(
+    reticulumDiscussionButton && !discussionChipInReactionsRow
+  );
 
   if (shouldSuppressUnvalidatedGroupWelcome) return null;
 
@@ -2392,6 +2563,20 @@ export const MessageItemComponent = ({
         flexShrink: 0,
         gap: '4px',
         paddingTop: mobileStackedLayout ? 0 : '2px',
+        // The phone avatar is drawn at 30px; a transparent ring on the tap
+        // wrapper (the avatar itself clips overflow) makes it a 44px target.
+        // It reaches less far down, so taps on the text below still open the
+        // message actions.
+        ...(mobileStackedLayout
+          ? {
+              '& > :first-of-type': { position: 'relative' },
+              '& > :first-of-type::after': {
+                content: '""',
+                inset: `-${PHONE_AVATAR_HIT_SLOP_TOP_PX}px -${PHONE_AVATAR_HIT_SLOP_X_PX}px -${PHONE_AVATAR_HIT_SLOP_BOTTOM_PX}px`,
+                position: 'absolute',
+              },
+            }
+          : {}),
       }}
     >
       <WrapperUserAction
@@ -2508,150 +2693,225 @@ export const MessageItemComponent = ({
     </Box>
   );
 
-  const renderMessageActionToolbar = (placement: 'header' | 'below') => (
-    <Box
-      className="message-item-toolbar"
-      sx={{
-        alignItems: 'center',
-        backgroundColor: theme.palette.background.paper,
-        border: '1px solid',
-        borderColor: theme.palette.divider,
-        borderRadius: '8px',
-        boxShadow: theme.shadows[2],
-        display: 'flex',
-        flexShrink: 0,
-        gap: '2px',
-        padding: '3px 6px',
-        transition: 'opacity 0.15s ease',
-        zIndex: 2,
-        ...(placement === 'below'
-          ? {
-              // Hug the reaction/action chips instead of stretching across the
-              // full message column (column flex defaults to stretch).
-              alignSelf: ownAligned ? 'flex-end' : 'flex-start',
-              animation: 'messageActionsIn 160ms ease-out',
-              marginTop: '6px',
-              transformOrigin: ownAligned ? 'right top' : 'left top',
-              width: 'fit-content',
-              '@keyframes messageActionsIn': {
-                from: { opacity: 0, transform: 'translateY(-4px) scale(0.96)' },
-                to: { opacity: 1, transform: 'translateY(0) scale(1)' },
-              },
-            }
-          : {}),
-      }}
-    >
-      {reticulumChatEnabled &&
-        RETICULUM_QUICK_REACTIONS.map((emoji) => (
+  // Desktop shows the bar on hover in the header; phones open it below the
+  // message with a tap, so 'below' is the touch-sized variant.
+  const renderMessageActionToolbar = (placement: 'header' | 'below') => {
+    const isTouchBar = placement === 'below';
+    const toolbarSizes = getMessageActionSizes(isTouchBar);
+    const toolbarButtonCount =
+      (reticulumChatEnabled ? RETICULUM_QUICK_REACTIONS.length : 0) +
+      (handleReaction ? 1 : 0) +
+      (isOwnReticulumEditable ? 1 : 0) +
+      1 +
+      (isOwnReticulumDeletable ? 1 : 0);
+    const touchButtonSize = isTouchBar
+      ? getPhoneToolbarButtonSize(
+          toolbarButtonCount,
+          mobileActionsColumnPx ?? getPhoneMessageColumnWidth(window.innerWidth)
+        )
+      : undefined;
+    const toolbarButtonSx = {
+      borderRadius: isTouchBar ? '8px' : '6px',
+      flexShrink: 0,
+      ...(touchButtonSize
+        ? { height: touchButtonSize, width: touchButtonSize }
+        : { padding: '4px' }),
+    };
+    // Reactions and edit / reply / delete are separate groups so a screen
+    // narrower than 360px wraps the bar between them, never mid-group.
+    const toolbarGroupSx = {
+      alignItems: 'center',
+      display: 'flex',
+      gap: isTouchBar ? 0 : '2px',
+    };
+
+    return (
+      <Box
+        className="message-item-toolbar"
+        sx={{
+          alignItems: 'center',
+          backgroundColor: theme.palette.background.paper,
+          border: isTouchBar
+            ? `${PHONE_TOOLBAR_BORDER_PX}px solid`
+            : '1px solid',
+          borderColor: theme.palette.divider,
+          borderRadius: isTouchBar ? '12px' : '8px',
+          boxShadow: theme.shadows[2],
+          display: 'flex',
+          flexShrink: 0,
+          gap: isTouchBar ? `${PHONE_TOOLBAR_GROUP_GAP_PX}px` : '2px',
+          padding: isTouchBar ? `${PHONE_TOOLBAR_PADDING_PX}px` : '3px 6px',
+          transition: 'opacity 0.15s ease',
+          zIndex: 2,
+          ...(placement === 'below'
+            ? {
+                // Hug the reaction/action chips instead of stretching across the
+                // full message column (column flex defaults to stretch).
+                alignSelf: ownAligned ? 'flex-end' : 'flex-start',
+                animation: 'messageActionsIn 160ms ease-out',
+                boxSizing: 'border-box',
+                flexWrap: 'wrap',
+                justifyContent: ownAligned ? 'flex-end' : 'flex-start',
+                marginTop: '6px',
+                maxWidth: '100%',
+                transformOrigin: ownAligned ? 'right top' : 'left top',
+                width: 'fit-content',
+                '@keyframes messageActionsIn': {
+                  from: {
+                    opacity: 0,
+                    transform: 'translateY(-4px) scale(0.96)',
+                  },
+                  to: { opacity: 1, transform: 'translateY(0) scale(1)' },
+                },
+              }
+            : {}),
+        }}
+      >
+        <Box sx={toolbarGroupSx}>
+          {reticulumChatEnabled &&
+            RETICULUM_QUICK_REACTIONS.map((emoji) => (
+              <Tooltip
+                key={emoji}
+                title={t('group:message_item.react_with', {
+                  defaultValue: 'react with {{emoji}}',
+                  emoji,
+                  postProcess: 'capitalizeFirstChar',
+                })}
+                disableFocusListener
+              >
+                <ButtonBase
+                  aria-label={t('group:message_item.react_with', {
+                    defaultValue: 'react with {{emoji}}',
+                    emoji,
+                    postProcess: 'capitalizeFirstChar',
+                  })}
+                  sx={{
+                    ...toolbarButtonSx,
+                    fontSize: `${toolbarSizes.toolbarEmojiPx}px`,
+                    lineHeight: 1,
+                    '&:hover': {
+                      backgroundColor: theme.palette.action.hover,
+                    },
+                  }}
+                  onClick={() => {
+                    const hasReacted = reactions?.[emoji]?.some(
+                      (item) => item?.sender === myAddress
+                    );
+                    handleReaction(emoji, message, !hasReacted);
+                    setMobileActionsOpen(false);
+                  }}
+                >
+                  {emoji}
+                </ButtonBase>
+              </Tooltip>
+            ))}
+
+          {handleReaction && (
+            <ReactionPicker
+              buttonSize={touchButtonSize}
+              iconSize={isTouchBar ? toolbarSizes.toolbarIconPx : undefined}
+              neutralIcon={reticulumChatEnabled}
+              onReaction={(val) => {
+                if (
+                  reactions &&
+                  reactions[val] &&
+                  reactions[val]?.find((item) => item?.sender === myAddress)
+                ) {
+                  handleReaction(val, message, false);
+                } else {
+                  handleReaction(val, message, true);
+                }
+                setMobileActionsOpen(false);
+              }}
+            />
+          )}
+        </Box>
+
+        <Box sx={toolbarGroupSx}>
+          {isOwnReticulumEditable && (
+            <Tooltip
+              title={t('core:action.edit', {
+                postProcess: 'capitalizeFirstChar',
+              })}
+              disableFocusListener
+            >
+              <ButtonBase
+                sx={{
+                  ...toolbarButtonSx,
+                  color: theme.palette.text.secondary,
+                  '&:hover': {
+                    backgroundColor: theme.palette.action.hover,
+                    color: theme.palette.text.primary,
+                  },
+                }}
+                onClick={() => {
+                  onEdit(message);
+                }}
+              >
+                <EditIcon
+                  sx={{ fontSize: `${toolbarSizes.toolbarIconPx}px` }}
+                />
+              </ButtonBase>
+            </Tooltip>
+          )}
+
           <Tooltip
-            key={emoji}
-            title={`React with ${emoji}`}
+            title={t('core:action.reply', {
+              postProcess: 'capitalizeFirstChar',
+            })}
             disableFocusListener
           >
             <ButtonBase
-              aria-label={`React with ${emoji}`}
               sx={{
-                borderRadius: '6px',
-                fontSize: '18px',
-                lineHeight: 1,
-                padding: '4px',
+                ...toolbarButtonSx,
+                color: theme.palette.text.secondary,
                 '&:hover': {
                   backgroundColor: theme.palette.action.hover,
+                  color: theme.palette.text.primary,
                 },
               }}
               onClick={() => {
-                const hasReacted = reactions?.[emoji]?.some(
-                  (item) => item?.sender === myAddress
-                );
-                handleReaction(emoji, message, !hasReacted);
-                setMobileActionsOpen(false);
+                onReply(message);
               }}
             >
-              {emoji}
+              <ReplyIcon sx={{ fontSize: `${toolbarSizes.toolbarIconPx}px` }} />
             </ButtonBase>
           </Tooltip>
-        ))}
 
-      {handleReaction && (
-        <ReactionPicker
-          neutralIcon={reticulumChatEnabled}
-          onReaction={(val) => {
-            if (
-              reactions &&
-              reactions[val] &&
-              reactions[val]?.find((item) => item?.sender === myAddress)
-            ) {
-              handleReaction(val, message, false);
-            } else {
-              handleReaction(val, message, true);
-            }
-            setMobileActionsOpen(false);
-          }}
-        />
-      )}
-
-      {isOwnReticulumEditable && (
-        <Tooltip title="Edit" disableFocusListener>
-          <ButtonBase
-            sx={{
-              borderRadius: '6px',
-              color: theme.palette.text.secondary,
-              padding: '4px',
-              '&:hover': {
-                backgroundColor: theme.palette.action.hover,
-                color: theme.palette.text.primary,
-              },
-            }}
-            onClick={() => {
-              onEdit(message);
-            }}
-          >
-            <EditIcon sx={{ fontSize: '18px' }} />
-          </ButtonBase>
-        </Tooltip>
-      )}
-
-      <Tooltip title="Reply" disableFocusListener>
-        <ButtonBase
-          sx={{
-            borderRadius: '6px',
-            color: theme.palette.text.secondary,
-            padding: '4px',
-            '&:hover': {
-              backgroundColor: theme.palette.action.hover,
-              color: theme.palette.text.primary,
-            },
-          }}
-          onClick={() => {
-            onReply(message);
-          }}
-        >
-          <ReplyIcon sx={{ fontSize: '18px' }} />
-        </ButtonBase>
-      </Tooltip>
-
-      {isOwnReticulumDeletable && (
-        <Tooltip title="Delete (shift+del)" disableFocusListener>
-          <ButtonBase
-            sx={{
-              borderRadius: '6px',
-              color: theme.palette.error.main,
-              padding: '4px',
-              '&:hover': {
-                backgroundColor: theme.palette.action.hover,
-                color: theme.palette.error.light,
-              },
-            }}
-            onClick={() => {
-              onDelete(message);
-            }}
-          >
-            <DeleteOutlineIcon sx={{ fontSize: '18px' }} />
-          </ButtonBase>
-        </Tooltip>
-      )}
-    </Box>
-  );
+          {isOwnReticulumDeletable && (
+            <Tooltip
+              title={
+                isTouchBar
+                  ? t('core:action.delete', {
+                      postProcess: 'capitalizeFirstChar',
+                    })
+                  : t('group:message_item.delete_shortcut')
+              }
+              disableFocusListener
+            >
+              <ButtonBase
+                sx={{
+                  ...toolbarButtonSx,
+                  color: theme.palette.error.main,
+                  '&:hover': {
+                    backgroundColor: theme.palette.action.hover,
+                    color: theme.palette.error.light,
+                  },
+                }}
+                onClick={() => {
+                  onDelete(message);
+                }}
+              >
+                <DeleteOutlineIcon
+                  sx={{ fontSize: `${toolbarSizes.toolbarIconPx}px` }}
+                />
+              </ButtonBase>
+            </Tooltip>
+          )}
+        </Box>
+      </Box>
+    );
+  };
 
   return (
     <>
@@ -2994,7 +3254,9 @@ export const MessageItemComponent = ({
 
                     {!collapseGroupedHeader && reticulumExpiringSoonLabel}
 
-                    {!collapseGroupedHeader && reticulumDiscussionButton}
+                    {!collapseGroupedHeader &&
+                      discussionChipInHeader &&
+                      reticulumDiscussionButton}
 
                     {message?.isEdit && !isUpdating && !isTemp && (
                       <Typography
@@ -3329,6 +3591,7 @@ export const MessageItemComponent = ({
                   borderColor: theme.palette.divider,
                   borderRadius: '8px',
                   display: 'flex',
+                  flexWrap: 'wrap',
                   gap: '10px',
                   maxWidth: 420,
                   p: 1.25,
@@ -3337,17 +3600,18 @@ export const MessageItemComponent = ({
                 <InsertDriveFileRoundedIcon
                   sx={{ color: theme.palette.text.secondary, flexShrink: 0 }}
                 />
-                <Box sx={{ minWidth: 0, flex: 1 }}>
+                <Box sx={{ minWidth: 0, flex: '1 1 140px' }}>
                   <Typography
+                    component="div"
                     sx={{
                       fontSize: 13,
                       fontWeight: 600,
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap',
                     }}
                   >
-                    {qchatFileData?.fileName || 'File transfer'}
+                    <FileNameWithExtension
+                      name={qchatFileData?.fileName}
+                      fallback={t('core:file_transfer.file_transfer_fallback')}
+                    />
                   </Typography>
                   <Typography
                     sx={{
@@ -3358,8 +3622,24 @@ export const MessageItemComponent = ({
                     }}
                   >
                     {formatQchatFileSize(qchatFileData?.size)} ·{' '}
-                    {qchatStatusText}
+                    {qchatReceivedGone
+                      ? t('core:file_transfer.received_file_removed')
+                      : qchatStatusText}
                   </Typography>
+                  {qchatReceivedActionsEnabled &&
+                    !isOwn &&
+                    qchatReceived.state === 'present' &&
+                    isPrivateReceivedChatFile(qchatReceivedFile) && (
+                      <Typography
+                        sx={{
+                          color: theme.palette.text.secondary,
+                          fontSize: 11,
+                          mt: 0.25,
+                        }}
+                      >
+                        {t('core:file_transfer.received_private_hint')}
+                      </Typography>
+                    )}
                   {qchatExpiryText && (
                     <Typography
                       sx={{
@@ -3399,16 +3679,63 @@ export const MessageItemComponent = ({
                 {!isOwn &&
                   isQchatFileOffer &&
                   onAcceptQchatFileTransfer &&
-                  (qchatCanOpenFile ? (
-                    <Button
-                      size="small"
-                      variant="contained"
-                      startIcon={<OpenInNewRoundedIcon />}
-                      onClick={handleOpenQchatFile}
-                      sx={{ flexShrink: 0, textTransform: 'none' }}
-                    >
-                      Open
-                    </Button>
+                  (qchatReceivedActionsEnabled ? (
+                    qchatReceivedGone ? null : (
+                      <Box
+                        sx={{
+                          display: 'flex',
+                          flexShrink: 0,
+                          gap: 1,
+                          marginLeft: 'auto',
+                        }}
+                      >
+                        {/* An app package is saved but never opened: only
+                            GO's own updater installs apps. */}
+                        {!qchatReceived.isPackage && (
+                          <Button
+                            size="small"
+                            variant="contained"
+                            startIcon={
+                              qchatReceived.busy === 'open' ? (
+                                <CircularProgress size={14} color="inherit" />
+                              ) : (
+                                <OpenInNewRoundedIcon />
+                              )
+                            }
+                            disabled={qchatReceived.busy !== null}
+                            onClick={() => void qchatReceived.open()}
+                            sx={{
+                              flexShrink: 0,
+                              textTransform: 'none',
+                              ...inMessageButtonSx,
+                            }}
+                          >
+                            {t('core:file_transfer.open')}
+                          </Button>
+                        )}
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          color="inherit"
+                          startIcon={
+                            qchatReceived.busy === 'save' ? (
+                              <CircularProgress size={14} color="inherit" />
+                            ) : (
+                              <SaveAltRoundedIcon />
+                            )
+                          }
+                          disabled={qchatReceived.busy !== null}
+                          onClick={() => void qchatReceived.save()}
+                          sx={{
+                            flexShrink: 0,
+                            textTransform: 'none',
+                            ...inMessageButtonSx,
+                          }}
+                        >
+                          {t('core:file_transfer.save_to_device')}
+                        </Button>
+                      </Box>
+                    )
                   ) : (
                     <Button
                       size="small"
@@ -3420,13 +3747,23 @@ export const MessageItemComponent = ({
                         qchatOfferExpired
                       }
                       onClick={() => onAcceptQchatFileTransfer(message)}
-                      sx={{ flexShrink: 0, textTransform: 'none' }}
+                      sx={{
+                        flexShrink: 0,
+                        textTransform: 'none',
+                        ...inMessageButtonSx,
+                      }}
                     >
                       {qchatDownloaded
-                        ? 'Downloaded'
+                        ? t('core:file_transfer.downloaded', {
+                            defaultValue: 'Downloaded',
+                          })
                         : qchatOfferExpired
-                          ? 'Expired'
-                          : 'Accept'}
+                          ? t('core:file_transfer.offer_expired', {
+                              defaultValue: 'Expired',
+                            })
+                          : t('core:action.accept', {
+                              postProcess: 'capitalizeFirstChar',
+                            })}
                     </Button>
                   ))}
               </Box>
@@ -3618,7 +3955,8 @@ export const MessageItemComponent = ({
                         display: 'flex',
                         flexDirection: 'column',
                         gap: '8px',
-                        padding: '16px',
+                        // The bigger phone pill still fits a 96px placeholder.
+                        padding: touchSizedChips ? '12px' : '16px',
                         textAlign: 'center',
                       }}
                     >
@@ -3631,8 +3969,10 @@ export const MessageItemComponent = ({
                         }}
                       >
                         {reticulumImageDownloadIssue === 'unavailable'
-                          ? 'Image unavailable right now (no peers)'
-                          : "Couldn't download image"}
+                          ? t('group:message_item.image_unavailable_no_peers')
+                          : t('group:message_item.image_download_failed', {
+                              defaultValue: "Couldn't download image",
+                            })}
                       </Typography>
                       <Button
                         size="small"
@@ -3643,12 +3983,17 @@ export const MessageItemComponent = ({
                             0.1
                           ),
                           borderRadius: '999px',
-                          fontSize: '12px',
+                          fontSize: touchSizedChips ? '14px' : '12px',
                           fontWeight: 600,
                           lineHeight: 1,
                           minWidth: 0,
-                          padding: '7px 14px',
+                          padding: touchSizedChips ? '0 20px' : '7px 14px',
                           textTransform: 'none',
+                          ...(touchSizedChips
+                            ? {
+                                minHeight: `${PHONE_RETRY_PILL_MIN_HEIGHT_PX}px`,
+                              }
+                            : {}),
                           '&:hover': {
                             backgroundColor: alpha(
                               theme.palette.primary.main,
@@ -3657,13 +4002,15 @@ export const MessageItemComponent = ({
                           },
                         }}
                       >
-                        Retry
+                        {t('group:message_item.try_again')}
                       </Button>
                     </Box>
                   ) : (
                     <>
                       <Typography sx={{ fontSize: '13px' }}>
-                        Downloading image...
+                        {t('group:message_item.downloading_image', {
+                          defaultValue: 'Downloading image…',
+                        })}
                       </Typography>
                       <LinearProgress
                         sx={{
@@ -3797,7 +4144,10 @@ export const MessageItemComponent = ({
                         },
                       }}
                     >
-                      {reticulumFileName}
+                      <FileNameWithExtension
+                        name={reticulumFileName}
+                        fallback={reticulumFileName}
+                      />
                     </Typography>
                   </Tooltip>
                   <Box
@@ -3991,7 +4341,7 @@ export const MessageItemComponent = ({
                           },
                         }}
                       >
-                        Open
+                        {t('core:file_transfer.open')}
                       </Button>
                       <Button
                         size="small"
@@ -4030,7 +4380,9 @@ export const MessageItemComponent = ({
                           },
                         }}
                       >
-                        Save
+                        {Capacitor.isNativePlatform()
+                          ? t('core:file_transfer.save_to_device')
+                          : t('core:file_transfer.save')}
                       </Button>
                     </>
                   ) : (
@@ -4128,7 +4480,7 @@ export const MessageItemComponent = ({
               </Box>
             )}
 
-            {collapseGroupedHeader && reticulumDiscussionButton && (
+            {collapseGroupedHeader && discussionChipInHeader && (
               <Box
                 sx={{
                   alignItems: 'center',
@@ -4190,113 +4542,118 @@ export const MessageItemComponent = ({
               </Typography>
             )}
 
-            {/* Reactions row */}
-            {reactions &&
-              Object.keys(reactions).some(
-                (r) => (reactions[r]?.length ?? 0) > 0
-              ) && (
-                <Box
-                  sx={{
-                    alignItems: 'center',
-                    display: 'flex',
-                    flexWrap: 'wrap',
-                    gap: '4px',
-                    marginTop: '4px',
-                  }}
-                >
-                  {message?.isNotEncrypted &&
-                    isPrivate &&
-                    !reticulumChatEnabled && (
-                      <Tooltip title="Unencrypted" disableFocusListener>
-                        <KeyOffIcon
-                          sx={{
-                            color: theme.palette.text.secondary,
-                            fontSize: '16px',
-                            mr: '4px',
-                          }}
-                        />
-                      </Tooltip>
-                    )}
-
-                  {Object.keys(reactions).map((reaction) => {
-                    const numberOfReactions = reactions[reaction]?.length;
-                    if (numberOfReactions === 0) return null;
-                    const isMine = !!reactions[reaction]?.find(
-                      (item) => item?.sender === myAddress
-                    );
-                    return (
-                      <ButtonBase
-                        key={reaction}
+            {/* Reactions row (phones also put the replies chip here) */}
+            {(hasVisibleReactions || discussionChipInReactionsRow) && (
+              <Box
+                sx={{
+                  alignItems: 'center',
+                  display: 'flex',
+                  flexWrap: 'wrap',
+                  gap: `${chipSizes.reactionRowGapPx}px`,
+                  marginTop: touchSizedChips ? '6px' : '4px',
+                }}
+              >
+                {message?.isNotEncrypted &&
+                  isPrivate &&
+                  !reticulumChatEnabled && (
+                    <Tooltip
+                      title={t('group:message_item.unencrypted')}
+                      disableFocusListener
+                    >
+                      <KeyOffIcon
                         sx={{
-                          background: isMine
-                            ? `${theme.palette.primary.main}22`
-                            : theme.palette.background.surface,
-                          border: '1px solid',
-                          borderColor: isMine
-                            ? theme.palette.primary.main
-                            : theme.palette.divider,
-                          borderRadius: '14px',
-                          height: '28px',
-                          minWidth: '44px',
-                          padding: '0 10px',
-                          transition:
-                            'background-color 0.1s ease, border-color 0.1s ease',
-                          '&:hover': {
-                            backgroundColor: theme.palette.action.hover,
-                          },
+                          color: theme.palette.text.secondary,
+                          fontSize: '16px',
+                          mr: '4px',
                         }}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          handleReaction(reaction, message, !isMine);
+                      />
+                    </Tooltip>
+                  )}
+
+                {Object.keys(reactions || {}).map((reaction) => {
+                  const numberOfReactions = reactions[reaction]?.length;
+                  if (numberOfReactions === 0) return null;
+                  const isMine = !!reactions[reaction]?.find(
+                    (item) => item?.sender === myAddress
+                  );
+                  return (
+                    <ButtonBase
+                      key={reaction}
+                      sx={{
+                        background: isMine
+                          ? `${theme.palette.primary.main}22`
+                          : theme.palette.background.surface,
+                        border: '1px solid',
+                        borderColor: isMine
+                          ? theme.palette.primary.main
+                          : theme.palette.divider,
+                        borderRadius: `${chipSizes.reactionChipHeightPx / 2}px`,
+                        height: `${chipSizes.reactionChipHeightPx}px`,
+                        minWidth: `${chipSizes.reactionChipMinWidthPx}px`,
+                        padding: `0 ${chipSizes.reactionChipPaddingXPx}px`,
+                        transition:
+                          'background-color 0.1s ease, border-color 0.1s ease',
+                        '&:hover': {
+                          backgroundColor: theme.palette.action.hover,
+                        },
+                      }}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        handleReaction(reaction, message, !isMine);
+                      }}
+                      onContextMenu={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        setAnchorEl(event.currentTarget);
+                        setSelectedReaction(reaction);
+                      }}
+                      onTouchStart={(event) =>
+                        startReactionHold(event, reaction)
+                      }
+                      onTouchMove={moveReactionHold}
+                      onTouchEnd={endReactionHold}
+                      onTouchCancel={endReactionHold}
+                    >
+                      <span
+                        style={{
+                          fontSize: `${chipSizes.reactionChipEmojiPx}px`,
+                          lineHeight: 1,
                         }}
-                        onContextMenu={(event) => {
-                          event.preventDefault();
-                          event.stopPropagation();
-                          setAnchorEl(event.currentTarget);
-                          setSelectedReaction(reaction);
-                        }}
-                        onTouchStart={(event) =>
-                          startReactionHold(event, reaction)
-                        }
-                        onTouchMove={moveReactionHold}
-                        onTouchEnd={endReactionHold}
-                        onTouchCancel={endReactionHold}
                       >
-                        <span style={{ fontSize: '14px', lineHeight: 1 }}>
-                          {reaction}
-                        </span>
-                        {numberOfReactions > 1 && (
-                          <Typography
-                            sx={{
-                              color: isMine
-                                ? theme.palette.primary.main
-                                : theme.palette.text.secondary,
-                              fontFamily: 'Inter',
-                              fontSize: '12px',
-                              fontWeight: 600,
-                              marginLeft: '4px',
-                            }}
-                          >
-                            {numberOfReactions}
-                          </Typography>
-                        )}
-                      </ButtonBase>
-                    );
-                  })}
-                </Box>
-              )}
+                        {reaction}
+                      </span>
+                      {numberOfReactions > 1 && (
+                        <Typography
+                          sx={{
+                            color: isMine
+                              ? theme.palette.primary.main
+                              : theme.palette.text.secondary,
+                            fontFamily: 'Inter',
+                            fontSize: `${chipSizes.reactionChipCountPx}px`,
+                            fontWeight: 600,
+                            marginLeft: '4px',
+                          }}
+                        >
+                          {numberOfReactions}
+                        </Typography>
+                      )}
+                    </ButtonBase>
+                  );
+                })}
+
+                {discussionChipInReactionsRow && reticulumDiscussionButton}
+              </Box>
+            )}
 
             {/* KeyOff when no reactions to show it beside */}
             {message?.isNotEncrypted &&
               isPrivate &&
               !reticulumChatEnabled &&
-              !(
-                reactions &&
-                Object.keys(reactions).some(
-                  (r) => (reactions[r]?.length ?? 0) > 0
-                )
-              ) && (
-                <Tooltip title="Unencrypted" disableFocusListener>
+              !hasVisibleReactions && (
+                <Tooltip
+                  title={t('group:message_item.unencrypted')}
+                  disableFocusListener
+                >
                   <KeyOffIcon
                     sx={{
                       color: theme.palette.text.secondary,
@@ -4809,7 +5166,7 @@ export const MessageItemComponent = ({
         }}
       >
         <Box
-          aria-label="Quick reactions"
+          aria-label={t('group:message_item.quick_reactions')}
           role="group"
           sx={{
             alignItems: 'center',
@@ -4822,24 +5179,37 @@ export const MessageItemComponent = ({
             gap: '8px',
             justifyContent: 'center',
             boxSizing: 'border-box',
-            minWidth: '212px',
-            padding: '7px 10px',
+            minWidth: `${menuSizes.menuMinWidthPx}px`,
+            padding: isMobileLayout ? '4px 8px' : '7px 10px',
             width: '100%',
           }}
         >
           {RETICULUM_QUICK_REACTIONS.map((emoji) => (
             <Tooltip
               key={emoji}
-              title={`React with ${emoji}`}
+              title={t('group:message_item.react_with', {
+                defaultValue: 'react with {{emoji}}',
+                emoji,
+                postProcess: 'capitalizeFirstChar',
+              })}
               disableFocusListener
             >
               <ButtonBase
-                aria-label={`React with ${emoji}`}
+                aria-label={t('group:message_item.react_with', {
+                  defaultValue: 'react with {{emoji}}',
+                  emoji,
+                  postProcess: 'capitalizeFirstChar',
+                })}
                 sx={{
-                  borderRadius: '6px',
-                  fontSize: '20px',
+                  borderRadius: isMobileLayout ? '8px' : '6px',
+                  fontSize: `${menuSizes.menuQuickReactionEmojiPx}px`,
                   lineHeight: 1,
-                  padding: '5px 8px',
+                  ...(isMobileLayout
+                    ? {
+                        height: PHONE_MENU_QUICK_REACTION_PX,
+                        width: PHONE_MENU_QUICK_REACTION_PX,
+                      }
+                    : { padding: '5px 8px' }),
                   '&:hover': {
                     backgroundColor: theme.palette.action.hover,
                   },
@@ -4867,9 +5237,29 @@ export const MessageItemComponent = ({
             boxShadow: '0 12px 28px rgba(0, 0, 0, 0.28)',
             boxSizing: 'border-box',
             marginTop: '6px',
-            minWidth: '212px',
+            minWidth: `${menuSizes.menuMinWidthPx}px`,
             padding: '5px',
             width: '100%',
+            // The doubled class outranks CustomStyledMenu's 36px item rule and
+            // MenuItem's own icon column rule.
+            ...(isMobileLayout
+              ? {
+                  '&& .MuiMenuItem-root': {
+                    minHeight: `${menuSizes.menuItemMinHeightPx}px`,
+                    paddingX: '10px',
+                    paddingY: 0,
+                  },
+                }
+              : {}),
+            '&& .MuiListItemIcon-root': {
+              minWidth: `${menuSizes.menuIconColumnPx}px`,
+            },
+            '& .MuiListItemIcon-root .MuiSvgIcon-root': {
+              fontSize: `${menuSizes.menuIconPx}px`,
+            },
+            '& .message-menu-label': {
+              fontSize: `${menuSizes.menuLabelPx}px`,
+            },
           }}
         >
           <MenuItem
@@ -4878,11 +5268,14 @@ export const MessageItemComponent = ({
               void copyReticulumMessage();
             }}
           >
-            <ListItemIcon sx={{ minWidth: '32px' }}>
+            <ListItemIcon>
               <ContentCopyRoundedIcon fontSize="small" />
             </ListItemIcon>
-            <Typography variant="inherit" sx={{ fontSize: '14px' }}>
-              Copy Message
+            <Typography className="message-menu-label" variant="inherit">
+              {t('group:message_item.copy_message', {
+                defaultValue: 'copy message',
+                postProcess: 'capitalizeFirstChar',
+              })}
             </Typography>
           </MenuItem>
           <MenuItem
@@ -4893,11 +5286,14 @@ export const MessageItemComponent = ({
               setIsSelectTextOpen(true);
             }}
           >
-            <ListItemIcon sx={{ minWidth: '32px' }}>
+            <ListItemIcon>
               <TextFieldsRoundedIcon fontSize="small" />
             </ListItemIcon>
-            <Typography variant="inherit" sx={{ fontSize: '14px' }}>
-              Select Text
+            <Typography className="message-menu-label" variant="inherit">
+              {t('group:message_item.select_text', {
+                defaultValue: 'select text',
+                postProcess: 'capitalizeFirstChar',
+              })}
             </Typography>
           </MenuItem>
           <MenuItem
@@ -4906,11 +5302,14 @@ export const MessageItemComponent = ({
               onReply(message);
             }}
           >
-            <ListItemIcon sx={{ minWidth: '32px' }}>
+            <ListItemIcon>
               <ReplyIcon fontSize="small" />
             </ListItemIcon>
-            <Typography variant="inherit" sx={{ fontSize: '14px' }}>
-              Reply Message
+            <Typography className="message-menu-label" variant="inherit">
+              {t('group:message_item.reply_message', {
+                defaultValue: 'reply message',
+                postProcess: 'capitalizeFirstChar',
+              })}
             </Typography>
           </MenuItem>
           {isOwnReticulumEditable && (
@@ -4920,11 +5319,14 @@ export const MessageItemComponent = ({
                 onEdit(message);
               }}
             >
-              <ListItemIcon sx={{ minWidth: '32px' }}>
+              <ListItemIcon>
                 <EditIcon fontSize="small" />
               </ListItemIcon>
-              <Typography variant="inherit" sx={{ fontSize: '14px' }}>
-                Edit Message
+              <Typography className="message-menu-label" variant="inherit">
+                {t('group:message_item.edit_message', {
+                  defaultValue: 'edit message',
+                  postProcess: 'capitalizeFirstChar',
+                })}
               </Typography>
             </MenuItem>
           )}
@@ -4936,11 +5338,14 @@ export const MessageItemComponent = ({
               }}
               sx={{ color: 'error.main' }}
             >
-              <ListItemIcon sx={{ color: 'inherit', minWidth: '32px' }}>
+              <ListItemIcon sx={{ color: 'inherit' }}>
                 <DeleteOutlineIcon fontSize="small" />
               </ListItemIcon>
-              <Typography variant="inherit" sx={{ fontSize: '14px' }}>
-                Delete Message
+              <Typography className="message-menu-label" variant="inherit">
+                {t('group:message_item.delete_message', {
+                  defaultValue: 'delete message',
+                  postProcess: 'capitalizeFirstChar',
+                })}
               </Typography>
             </MenuItem>
           )}
@@ -4955,7 +5360,7 @@ export const MessageItemComponent = ({
           sx={{
             boxSizing: 'border-box',
             marginTop: '6px',
-            minWidth: '212px',
+            minWidth: `${menuSizes.menuMinWidthPx}px`,
             width: '100%',
           }}
         >

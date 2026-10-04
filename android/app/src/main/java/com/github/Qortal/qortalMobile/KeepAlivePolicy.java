@@ -29,6 +29,23 @@ public final class KeepAlivePolicy {
      * held means something outside GO stopped the process (vendor freezer).
      */
     public static final long VENDOR_FREEZE_GAP_MS = 90_000L;
+    /**
+     * GO pauses its background connection once it has been off screen and on
+     * battery this long without a break (see {@link #shouldPauseOnBattery}).
+     */
+    public static final long PAUSE_ON_BATTERY_AFTER_MS = 6L * 60L * 60_000L;
+    /**
+     * Build.VERSION_CODES.VANILLA_ICE_CREAM: the first release that stops a
+     * dataSync service after about 6 h a day. GO's own battery limit applies
+     * only from here on, where it replaces that limit.
+     */
+    public static final int DATA_SYNC_TIME_LIMIT_MIN_SDK = 35;
+    /**
+     * On battery, a level this many points above the lowest one seen means
+     * the phone charged while GO could not see it (see
+     * {@link BatteryStretchTracker#onLevel}).
+     */
+    public static final int UNSEEN_CHARGE_RISE_PCT = 2;
 
     /** Known mode, or null for anything else. */
     public static String parseMode(String raw) {
@@ -55,11 +72,21 @@ public final class KeepAlivePolicy {
         public long stoppedAtMs;
         public long nowMs;
         public boolean charging;
+        /**
+         * elapsedRealtime when the phone was last unplugged, or -1 when no
+         * unplug was seen (on battery since before GO started).
+         */
+        public long unpluggedAtMs = -1L;
         public boolean outboxPending;
         /** A page with a signed-in session exists (WebView attached, not logged out). */
         public boolean sessionActive;
-        /** Android stopped the status service at its time limit; wait for GO to be opened. */
+        /**
+         * The status service is paused (Android's time limit or GO's own
+         * battery pause); wait for GO to be opened.
+         */
         public boolean suspended;
+        /** Build.VERSION.SDK_INT (0 = unknown: no battery pause). */
+        public int sdkInt;
     }
 
     /** Within the 3-minute window for own messages that still wait to leave. */
@@ -98,18 +125,150 @@ public final class KeepAlivePolicy {
     public static final int REMOTE_MESSAGING_MIN_SDK = 34;
 
     /**
-     * Foreground service type for the status service. Android 15+ stops a
-     * dataSync service after about 6 h a day; remoteMessaging (Android 14+)
-     * has no such limit. The uncapped type is used only while background sync
-     * is meant to run continuously (mode always, or mode charging while
-     * charging), so on battery the daily limit stays a safety net.
+     * Foreground service type for the status service: remoteMessaging from
+     * Android 14 on, in every mode and on battery or charger alike; dataSync
+     * before (Android 13 and older have no dataSync time limit, and the type
+     * is ignored before Android 10).
+     *
+     * Android 15+ stops a dataSync service after about 6 h a day and kills
+     * the app if it cannot leave the foreground within seconds. A vendor
+     * freezer (vivo, measured) can hold the whole process frozen through
+     * that grace period, so the time-out handler never ran in time and GO
+     * crashed on the next screen-on. remoteMessaging has no daily limit;
+     * on Android 15+ GO's own {@link #shouldPauseOnBattery} rule replaces
+     * the cap.
      */
-    public static String foregroundServiceType(String mode, boolean charging, int sdkInt) {
+    public static String foregroundServiceType(int sdkInt) {
         if (sdkInt < REMOTE_MESSAGING_MIN_SDK) return SERVICE_TYPE_DATA_SYNC;
-        String m = modeOrDefault(mode);
-        if (MODE_ALWAYS.equals(m)) return SERVICE_TYPE_REMOTE_MESSAGING;
-        if (MODE_CHARGING.equals(m) && charging) return SERVICE_TYPE_REMOTE_MESSAGING;
-        return SERVICE_TYPE_DATA_SYNC;
+        return SERVICE_TYPE_REMOTE_MESSAGING;
+    }
+
+    /**
+     * Start of the current stretch with GO off screen AND on battery: the
+     * later of leaving the screen and unplugging. -1 while GO is on screen
+     * or charging (either one ends the stretch).
+     */
+    public static long batteryStretchStartMs(Inputs in) {
+        if (in == null || !in.activityStopped || in.charging) return -1L;
+        return Math.max(in.stoppedAtMs, in.unpluggedAtMs);
+    }
+
+    /**
+     * GO's own cap on background running, in place of Android's dataSync
+     * limit: pause the status service and the hubs once GO has been off
+     * screen and on battery for {@link #PAUSE_ON_BATTERY_AFTER_MS} without a
+     * break. Only from Android 15 on ({@link #DATA_SYNC_TIME_LIMIT_MIN_SDK}),
+     * the releases where GO gave up Android's limit by switching to
+     * remoteMessaging; older releases never had one and keep running as
+     * before. Never in mode always (the user asked for it to run), and not
+     * again while already paused.
+     */
+    public static boolean shouldPauseOnBattery(Inputs in) {
+        if (in == null || in.suspended) return false;
+        if (in.sdkInt < DATA_SYNC_TIME_LIMIT_MIN_SDK) return false;
+        if (MODE_ALWAYS.equals(modeOrDefault(in.mode))) return false;
+        long since = batteryStretchStartMs(in);
+        if (since < 0) return false;
+        return in.nowMs - since >= PAUSE_ON_BATTERY_AFTER_MS;
+    }
+
+    /**
+     * Battery percent from ACTION_BATTERY_CHANGED's EXTRA_LEVEL and
+     * EXTRA_SCALE, 0-100, or -1 when either is missing.
+     */
+    public static int batteryPercent(int level, int scale) {
+        if (level < 0 || scale <= 0) return -1;
+        return (int) Math.min(100L, level * 100L / scale);
+    }
+
+    /**
+     * Charger bookkeeping for {@link #shouldPauseOnBattery}: whether the
+     * phone charges, and when it was last unplugged
+     * ({@link Inputs#unpluggedAtMs}).
+     *
+     * A vendor freezer (vivo, measured) can hold GO frozen through a whole
+     * charge. The power broadcasts sent meanwhile then run after GO's first
+     * tick, or only the last one arrives (Android 14+ can keep only the most
+     * recent of connected / disconnected for an app it holds back), and the
+     * sticky battery state already says "unplugged" again. Two signs still
+     * show such a charge, and either one counts as an unplug now: a
+     * disconnect while GO believed it was on battery
+     * ({@link #onPowerDisconnected}), and a battery level
+     * {@link #UNSEEN_CHARGE_RISE_PCT} or more above the lowest seen on battery
+     * ({@link #onLevel}). Counting it late only pauses later.
+     *
+     * Not thread-safe; the owner serialises calls.
+     */
+    public static final class BatteryStretchTracker {
+        private boolean charging;
+        /** elapsedRealtime of the last unplug, seen or inferred; -1 if none. */
+        private long unpluggedAtMs = -1L;
+        /** Lowest battery percent seen on battery since the last charge, or -1. */
+        private int lowestLevelPct = -1;
+
+        public BatteryStretchTracker(boolean charging) {
+            this.charging = charging;
+        }
+
+        public boolean charging() {
+            return charging;
+        }
+
+        /**
+         * For {@link Inputs#unpluggedAtMs}: -1 while no unplug was seen (on
+         * battery since GO started).
+         */
+        public long unpluggedAtMs() {
+            return unpluggedAtMs;
+        }
+
+        /**
+         * A charger reading: the sticky battery state at a tick, or
+         * ACTION_POWER_CONNECTED. Only a change from charging to not charging
+         * is an unplug, so repeated readings keep the first unplug time and a
+         * plug-in leaves it alone. Returns whether the charger state changed.
+         */
+        public boolean onCharging(boolean next, long nowMs) {
+            if (charging == next) return false;
+            charging = next;
+            lowestLevelPct = -1;
+            if (!next) unpluggedAtMs = nowMs;
+            return true;
+        }
+
+        /**
+         * ACTION_POWER_DISCONNECTED: always an unplug, now, even when GO
+         * already believed it was on battery (it missed the connect before
+         * it). Returns whether the charger state changed.
+         */
+        public boolean onPowerDisconnected(long nowMs) {
+            boolean changed = charging;
+            charging = false;
+            lowestLevelPct = -1;
+            unpluggedAtMs = nowMs;
+            return changed;
+        }
+
+        /**
+         * Battery percent at a tick (-1 = unknown, ignored). On battery, a
+         * level {@link #UNSEEN_CHARGE_RISE_PCT} or more above the lowest one
+         * seen means a charge GO did not see: counted as an unplug now, and
+         * true is returned. A 1-point rise is gauge noise.
+         */
+        public boolean onLevel(int levelPct, long nowMs) {
+            if (levelPct < 0) return false;
+            if (charging) {
+                lowestLevelPct = -1;
+                return false;
+            }
+            if (lowestLevelPct >= 0 && levelPct - lowestLevelPct >= UNSEEN_CHARGE_RISE_PCT) {
+                unpluggedAtMs = nowMs;
+                lowestLevelPct = levelPct;
+                return true;
+            }
+            if (lowestLevelPct < 0 || levelPct < lowestLevelPct) lowestLevelPct = levelPct;
+            return false;
+        }
     }
 
     /**
@@ -209,11 +368,55 @@ public final class KeepAlivePolicy {
          * held right now. Returns true when this tick reveals a freeze.
          */
         public boolean onTick(long nowMs, boolean watching) {
-            boolean frozen = watching
-                && lastWatchedMs >= 0
-                && nowMs - lastWatchedMs > VENDOR_FREEZE_GAP_MS;
-            lastWatchedMs = watching ? nowMs : -1L;
-            return frozen;
+            return onTickGap(nowMs, watching) >= 0;
         }
+
+        /**
+         * Same as {@link #onTick}, but returns the gap in ms since the last
+         * watched tick when this tick reveals a freeze (always more than
+         * {@link #VENDOR_FREEZE_GAP_MS}), or -1 when it does not.
+         */
+        public long onTickGap(long nowMs, boolean watching) {
+            long gap = -1L;
+            if (watching && lastWatchedMs >= 0 && nowMs - lastWatchedMs > VENDOR_FREEZE_GAP_MS) {
+                gap = nowMs - lastWatchedMs;
+            }
+            lastWatchedMs = watching ? nowMs : -1L;
+            return gap;
+        }
+    }
+
+    public static final String VIVO_POWER_PACKAGE = "com.iqoo.powersaving";
+    /**
+     * vivo's main Battery page, exported without a permission (OriginOS 6,
+     * measured). Its "high background power" pages are signature|privileged
+     * and must never be targeted.
+     */
+    public static final String VIVO_POWER_SETTINGS_ACTION =
+        "com.iqoo.powersaving.PowerManagerSettingsActivity.search";
+
+    /** An activity start by action, limited to one package. */
+    public static final class VendorBatteryIntentSpec {
+        public final String packageName;
+        public final String action;
+
+        public VendorBatteryIntentSpec(String packageName, String action) {
+            this.packageName = packageName;
+            this.action = action;
+        }
+    }
+
+    /**
+     * The phone maker's own battery page for "Open battery settings", or null
+     * when GO knows none (the caller opens App info instead). Only vivo and
+     * iQOO (Build.MANUFACTURER, any case) have one.
+     */
+    public static VendorBatteryIntentSpec vendorBatteryIntentSpec(String manufacturer) {
+        if (manufacturer == null) return null;
+        String maker = manufacturer.trim().toLowerCase(java.util.Locale.ROOT);
+        if ("vivo".equals(maker) || "iqoo".equals(maker)) {
+            return new VendorBatteryIntentSpec(VIVO_POWER_PACKAGE, VIVO_POWER_SETTINGS_ACTION);
+        }
+        return null;
     }
 }

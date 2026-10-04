@@ -21,15 +21,24 @@
     "sign_failed": "Reticulum-keskustelutapahtumaa ei voitu allekirjoittaa",
     "welcome_failed": "Reticulum-tervetuloviestin julkaisu epäonnistui"
   },
+  "chat_scope": {
+    "direct_messages": "Viestit",
+    "groups": "Ryhmät",
+    "label": "Näytä ryhmät tai yksityisviestit"
+  },
   "copy_invite_link": "kopioi kutsulinkki",
   "discussion": {
     "choose_emoji": "choose emoji",
     "close": "close discussion",
     "initial_post": "initial post",
+    "preparing_attachment": "valmistellaan liitettä…",
     "remove_attachment": "remove attachment",
     "remove_file": "remove {{fileName}}",
     "replies": "replies:",
     "reply_placeholder": "reply to discussion...",
+    "size_counter": "{{size}} / {{maximum}} tavua",
+    "title": "keskustelu",
+    "unavailable": "tämä keskustelu ei ole enää saatavilla",
     "wait_until_ready": "wait until the discussion is ready"
   },
   "dm": {
@@ -55,6 +64,10 @@
       }
     },
     "required_for_attachments": "Suorat liitteet vaativat Reticulum-yksityiskeskustelun"
+  },
+  "dm_list": {
+    "empty": "Ei yksityisviestejä tällä hetkellä.",
+    "subtitle": "Yksityiset Reticulum-keskustelut"
   },
   "event_preview": {
     "all_day": "all day",
@@ -104,6 +117,12 @@
     "truncated": "tiedosto on liian suuri näytettäväksi kokonaan. Tallenna se tai avaa se toisessa sovelluksessa nähdäksesi loput."
   },
   "group_fallback_name": "Ryhmä",
+  "group_list": {
+    "empty": "Et ole vielä liittynyt yhteenkään Q-Chat-yhteisöön.",
+    "pin_hold_hint": "Pidä painettuna järjestääksesi kiinnitetyt ryhmät",
+    "pinned": "Kiinnitetty",
+    "reorder_hint": "Järjestä kiinnitetyt ryhmät vetämällä"
+  },
   "group_type": {
     "closed": "suljettu",
     "open": "avoin"

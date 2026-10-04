@@ -51,8 +51,8 @@ import { getPrimaryNameForAvatar } from './groupApi';
 import {
   addrHue,
   initialsFromDisplayLabel,
-  qortalAvatarThumbnailSrc,
   shortAddr,
+  useQortalAvatarThumbnailSrc,
 } from './qortalGroupCallParticipantUi';
 
 const DANGER = '#f23f42';
@@ -195,7 +195,7 @@ export function DirectVoiceCallNavWidget() {
   }, [peerAddress]);
 
   const title = peerPrimaryName || (peerAddress ? shortAddr(peerAddress) : '');
-  const avatarSrc = qortalAvatarThumbnailSrc(peerPrimaryName || undefined);
+  const avatarSrc = useQortalAvatarThumbnailSrc(peerPrimaryName || undefined);
   const initials = initialsFromDisplayLabel(title, peerAddress || myAddress);
 
   const durationLabel = useMemo(() => {

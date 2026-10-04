@@ -2,6 +2,7 @@ import { LocalNotifications } from '@capacitor/local-notifications';
 import { QortalBackground } from '../plugins/QortalBackground';
 import { isCapacitor } from './platform';
 import { fetchChatAvatarDataUrl } from './chatAvatarUrl';
+import { parseQdnThumbnailRef } from './qdnThumbnailRef';
 import { chatAlertIdFromKey, hashNotificationId } from './reticulumChatAlerts';
 
 type OsNotificationOptions = {
@@ -15,6 +16,64 @@ type OsNotificationOptions = {
 };
 
 let channelsReady = false;
+
+/** How long a notification waits for an avatar the device does not have. */
+export const NOTIFICATION_AVATAR_WAIT_MS = 4_000;
+
+// Intent extras ride a binder transaction (~1MB cap shared with the rest of
+// the intent); only inline reasonably-sized avatars.
+const MAX_INLINE_ICON_CHARS = 300_000;
+
+const inlineable = (dataUrl: string | null | undefined): string | undefined =>
+  dataUrl?.startsWith('data:') && dataUrl.length <= MAX_INLINE_ICON_CHARS
+    ? dataUrl
+    : undefined;
+
+/**
+ * Icon for a native notification, resolved in the WebView: the native
+ * service's own HTTP client cannot always reach the node (base URL + apiKey),
+ * so the icon goes over as a data URL the native side just decodes.
+ *
+ * A QDN avatar (user, Q-App or group) comes from the device's avatar cache:
+ * the cached image at once, otherwise a short wait for the node, otherwise a
+ * bundled icon. When none is ready the raw URL is kept for the native side to
+ * try; it is dropped when the node confirmed there is no avatar. Other URLs
+ * are fetched directly as before.
+ */
+export async function resolveNotificationIconUrl(
+  iconUrl: string | undefined
+): Promise<string | undefined> {
+  if (!iconUrl || !/^https?:\/\//i.test(iconUrl)) return iconUrl;
+
+  const avatar = parseQdnThumbnailRef(iconUrl);
+  if (avatar) {
+    try {
+      // Loaded on demand: background.ts imports this module, and the cache
+      // reads the node URL from globalApi, which imports background.ts.
+      const avatars = await import('../lib/qdnAvatars');
+      const options = { identifier: avatar.identifier };
+      const dataUrl = inlineable(
+        await avatars.getQdnAvatarDataUrl(avatar.name, {
+          ...options,
+          timeoutMs: NOTIFICATION_AVATAR_WAIT_MS,
+        })
+      );
+      if (dataUrl) return dataUrl;
+      const { status } = avatars.getQdnAvatarSnapshot(avatar.name, options);
+      if (status === 'missing') return undefined;
+    } catch {
+      /* keep the raw URL */
+    }
+    return iconUrl;
+  }
+
+  try {
+    return inlineable(await fetchChatAvatarDataUrl(iconUrl)) ?? iconUrl;
+  } catch {
+    /* keep the raw URL; native side will retry its own fetch */
+    return iconUrl;
+  }
+}
 
 const ensureNotificationChannels = async (): Promise<void> => {
   if (!isCapacitor() || channelsReady) return;
@@ -83,27 +142,17 @@ export const showOsNotification = async ({
 
     const alertId = hashNotificationId(id || `${title}:${body}:${Date.now()}`);
 
-    // Resolve the sender avatar in the WebView: this fetch goes through the
-    // app's existing node connection (base URL + apiKey), which the native
-    // service's own HTTP client cannot always reach. The native side then just
-    // decodes the data-URL. The raw URL is kept as a native-side fallback.
-    let resolvedIconUrl = iconUrl;
-    if (iconUrl && /^https?:\/\//i.test(iconUrl)) {
-      try {
-        const dataUrl = await fetchChatAvatarDataUrl(iconUrl);
-        // Intent extras ride a binder transaction (~1MB cap shared with the
-        // rest of the intent); only inline reasonably-sized avatars.
-        if (dataUrl && dataUrl.length <= 300_000) {
-          resolvedIconUrl = dataUrl;
-          console.log('[mobileOsNotifications] avatar inlined as data URL');
-        } else {
-          console.log(
-            '[mobileOsNotifications] avatar not inlined (size or fetch), using raw URL'
-          );
-        }
-      } catch {
-        /* keep the raw URL; native side will retry its own fetch */
-      }
+    const resolvedIconUrl = await resolveNotificationIconUrl(iconUrl);
+    if (resolvedIconUrl !== iconUrl) {
+      console.log(
+        resolvedIconUrl
+          ? '[mobileOsNotifications] avatar inlined as data URL'
+          : '[mobileOsNotifications] no avatar published, default icon'
+      );
+    } else if (iconUrl && /^https?:\/\//i.test(iconUrl)) {
+      console.log(
+        '[mobileOsNotifications] avatar not inlined (size or fetch), using raw URL'
+      );
     }
 
     await QortalBackground.showAlertNotification({

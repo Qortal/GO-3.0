@@ -1,5 +1,4 @@
 import {
-  Avatar,
   Box,
   IconButton,
   Typography,
@@ -11,10 +10,9 @@ import PushPinIcon from '@mui/icons-material/PushPin';
 import PushPinOutlinedIcon from '@mui/icons-material/PushPinOutlined';
 import { useCallback, memo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { getBaseApiReact } from '../../../App';
-import LogoSelected from '../../../assets/svgs/LogoSelected.svg';
 import { executeEvent } from '../../../utils/events';
 import { AppRating } from '../AppRating';
+import { AppThumbnailAvatar } from '../AppThumbnailAvatar';
 import { AppButton, AppButtonText } from '../Apps-styles';
 import { AppAvailabilityLabel } from '../AppAvailabilityLabel';
 import { useAppNodeStatus } from '../appNodeStatus';
@@ -139,21 +137,12 @@ const AppCardListItemInner = ({
   return (
     <ListItemContainer onClick={handleCardClick}>
       <AppIcon>
-        <Avatar
-          sx={{
-            height: '36px',
-            width: '36px',
-            '& img': { objectFit: 'fill' },
-          }}
+        <AppThumbnailAvatar
+          appName={app?.name}
           alt={app?.name}
-          src={`${getBaseApiReact()}/arbitrary/THUMBNAIL/${app?.name}/qortal_avatar?async=true`}
-        >
-          <img
-            style={{ width: '24px', height: 'auto' }}
-            src={LogoSelected}
-            alt="app-icon"
-          />
-        </Avatar>
+          fallbackSize={24}
+          sx={{ height: '36px', width: '36px' }}
+        />
       </AppIcon>
 
       <ContentContainer>

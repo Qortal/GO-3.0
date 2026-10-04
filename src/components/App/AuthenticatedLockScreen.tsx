@@ -13,6 +13,7 @@ import {
   Typography,
 } from '@mui/material';
 import { alpha, useTheme } from '@mui/material/styles';
+import { useTranslation } from 'react-i18next';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import FingerprintRoundedIcon from '@mui/icons-material/FingerprintRounded';
 import LockRoundedIcon from '@mui/icons-material/LockRounded';
@@ -21,6 +22,8 @@ import RemoveRoundedIcon from '@mui/icons-material/RemoveRounded';
 import QortalLogo from '../../assets/svgs/Logo1Dark.svg';
 import { CUSTOM_TITLE_BAR_HEIGHT } from '../Desktop/CustomTitleBar';
 import { isCapacitor } from '../../utils/platform';
+import { useSecureScreen } from '../../hooks/useSecureScreen';
+import { WALLET_PASSWORD_INPUT_PROPS } from '../PasswordField/noAutofill';
 import {
   isBiometricHardwareAvailable,
   isBiometricUnlockConfigured,
@@ -40,6 +43,7 @@ const FAILURES_BEFORE_DELAY = 3;
 
 function LockScreenTitleBar() {
   const theme = useTheme();
+  const { t } = useTranslation(['core']);
   const hasWindowControls =
     typeof window.electronAPI?.windowMinimize === 'function';
 
@@ -116,7 +120,7 @@ function LockScreenTitleBar() {
           tabIndex={-1}
           size="small"
           onClick={() => window.electronAPI?.windowMinimize?.()}
-          aria-label="Minimize"
+          aria-label={t('core:app_lock.minimize_window')}
           sx={{
             width: 46,
             height: CUSTOM_TITLE_BAR_HEIGHT,
@@ -133,7 +137,9 @@ function LockScreenTitleBar() {
           tabIndex={-1}
           size="small"
           onClick={() => window.electronAPI?.windowClose?.()}
-          aria-label="Close"
+          aria-label={t('core:action.close', {
+            postProcess: 'capitalizeFirstChar',
+          })}
           sx={{
             width: 46,
             height: CUSTOM_TITLE_BAR_HEIGHT,
@@ -156,6 +162,7 @@ export function AuthenticatedLockScreen({
   onUnlock,
 }: AuthenticatedLockScreenProps) {
   const theme = useTheme();
+  const { t } = useTranslation(['core']);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const checkingRef = useRef(false);
   const scanLeftScreenRef = useRef(false);
@@ -167,6 +174,9 @@ export function AuthenticatedLockScreen({
   const [secondsRemaining, setSecondsRemaining] = useState(0);
   const [biometricReady, setBiometricReady] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
+
+  // No screenshots, recordings or recents thumbnail while locked (GO-37).
+  useSecureScreen({ secure: true });
 
   useEffect(() => {
     if (!blockedUntil) return;
@@ -231,8 +241,8 @@ export function AuthenticatedLockScreen({
       const message = err instanceof Error ? err.message : String(err);
       setError(
         /cancel/i.test(message)
-          ? 'Fingerprint unlock was cancelled.'
-          : 'Fingerprint unlock failed. Enter your password instead.'
+          ? t('core:app_lock.fingerprint_cancelled')
+          : t('core:app_lock.fingerprint_failed')
       );
       requestAnimationFrame(() => inputRef.current?.focus());
     } finally {
@@ -275,7 +285,7 @@ export function AuthenticatedLockScreen({
       if (nextFailures % FAILURES_BEFORE_DELAY === 0) {
         setBlockedUntil(Date.now() + RETRY_DELAY_MS);
       }
-      setError('That password is not correct. Please try again.');
+      setError(t('core:app_lock.wrong_password'));
       requestAnimationFrame(() => inputRef.current?.focus());
     } finally {
       checkingRef.current = false;
@@ -351,12 +361,14 @@ export function AuthenticatedLockScreen({
 
           <Box sx={{ textAlign: 'center', mb: 3 }}>
             <Typography id="app-lock-title" variant="h5" fontWeight={700}>
-              Qortal Hub is locked
+              {t('core:app_lock.title')}
             </Typography>
             <Typography color="text.secondary" sx={{ mt: 0.75 }}>
               {accountLabel
-                ? `${accountLabel} is still signed in.`
-                : 'You are still signed in.'}
+                ? t('core:app_lock.account_still_signed_in', {
+                    account: accountLabel,
+                  })
+                : t('core:app_lock.still_signed_in')}
             </Typography>
           </Box>
 
@@ -373,7 +385,7 @@ export function AuthenticatedLockScreen({
               <ButtonBase
                 onClick={() => void handleBiometricUnlock()}
                 disabled={isBusy || isBlocked}
-                aria-label="Unlock with fingerprint"
+                aria-label={t('core:app_lock.unlock_with_fingerprint')}
                 sx={{
                   alignItems: 'center',
                   animation:
@@ -416,12 +428,12 @@ export function AuthenticatedLockScreen({
                 sx={{ textAlign: 'center' }}
               >
                 {isScanning
-                  ? 'Waiting for your fingerprint…'
-                  : 'Tap to unlock with your fingerprint'}
+                  ? t('core:app_lock.waiting_for_fingerprint')
+                  : t('core:app_lock.tap_fingerprint')}
               </Typography>
               <Divider flexItem sx={{ my: 0.5 }}>
                 <Typography variant="caption" color="text.secondary">
-                  or
+                  {t('core:app_lock.or')}
                 </Typography>
               </Divider>
             </Box>
@@ -432,15 +444,18 @@ export function AuthenticatedLockScreen({
             autoFocus={!biometricReady}
             inputRef={inputRef}
             type="password"
-            label="Qortal account password"
+            label={t('core:app_lock.password_label')}
             value={password}
             disabled={isBusy || isBlocked}
-            autoComplete="current-password"
+            // Not "current-password": that asks password managers to save
+            // and fill the wallet password (N-33).
+            autoComplete="off"
             onChange={(event) => {
               setPassword(event.target.value);
               if (error) setError('');
             }}
             slotProps={{
+              htmlInput: { ...WALLET_PASSWORD_INPUT_PROPS },
               input: {
                 startAdornment: (
                   <InputAdornment position="start">
@@ -454,7 +469,7 @@ export function AuthenticatedLockScreen({
           {error && (
             <Alert severity="error" sx={{ mt: 2 }}>
               {isBlocked
-                ? `Please wait ${secondsRemaining} second${secondsRemaining === 1 ? '' : 's'} and try again.`
+                ? t('core:app_lock.retry_wait', { count: secondsRemaining })
                 : error}
             </Alert>
           )}
@@ -479,7 +494,9 @@ export function AuthenticatedLockScreen({
               fontWeight: 700,
             }}
           >
-            {isChecking ? 'Unlocking…' : 'Unlock'}
+            {isChecking
+              ? t('core:app_lock.unlocking')
+              : t('core:app_lock.unlock')}
           </Button>
 
           <Typography
@@ -487,7 +504,7 @@ export function AuthenticatedLockScreen({
             color="text.secondary"
             sx={{ display: 'block', mt: 2.25, textAlign: 'center' }}
           >
-            Chats and active calls remain connected while locked.
+            {t('core:app_lock.connections_note')}
           </Typography>
         </Box>
       </Box>

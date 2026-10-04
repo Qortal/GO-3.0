@@ -25,6 +25,7 @@ import { executeEvent } from '../../utils/events';
 import { coreWebsocketPingMs } from '../../utils/coreWebsocketPing';
 import { ChatList } from './ChatList';
 import { TIME_MINUTES_2_IN_MILLISECONDS } from '../../constants/constants';
+import { useQdnAvatar } from '../../lib/qdnAvatars';
 
 const uid = new ShortUniqueId({ length: 5 });
 
@@ -129,7 +130,6 @@ export function MiniDirectThread({
   onBack,
   onOpenInApp,
   getTimestampEnterChat,
-  getUserAvatarUrl,
 }: {
   direct: any;
   myAddress: string;
@@ -137,7 +137,6 @@ export function MiniDirectThread({
   onBack: () => void;
   onOpenInApp?: () => void;
   getTimestampEnterChat: () => Promise<any>;
-  getUserAvatarUrl: (name?: string) => string;
 }) {
   const theme = useTheme();
   const { t } = useTranslation(['core', 'group']);
@@ -364,9 +363,14 @@ export function MiniDirectThread({
 
   useEffect(() => {
     let cancelled = false;
-    getPublicKey(direct?.address).then((key) => {
-      if (!cancelled) setPublicKey(key || '');
-    });
+    getPublicKey(direct?.address)
+      .then((key) => {
+        if (!cancelled) setPublicKey(key || '');
+      })
+      // A key that does not belong to the address is now a rejection.
+      .catch(() => {
+        if (!cancelled) setPublicKey('');
+      });
     return () => {
       cancelled = true;
     };
@@ -495,7 +499,8 @@ export function MiniDirectThread({
     }
   };
 
-  const avatarUrl = getUserAvatarUrl(direct?.name);
+  // Cached on the device, so it shows at once also on a slow node.
+  const { src: avatarUrl } = useQdnAvatar(direct?.name);
 
   return (
     <Box

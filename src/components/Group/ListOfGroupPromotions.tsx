@@ -1,6 +1,5 @@
 import { useCallback, useContext, useEffect, useRef, useState } from 'react';
 import {
-  Avatar,
   Box,
   Button,
   ButtonBase,
@@ -38,6 +37,7 @@ import {
 import ShortUniqueId from 'short-unique-id';
 import { CustomizedSnackbars } from '../Snackbar/Snackbar';
 import { getGroupNames } from './UserListOfInvites';
+import { CachedUserAvatar } from './CachedAvatars';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import ErrorBoundary from '../../common/ErrorBoundary';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
@@ -754,7 +754,7 @@ export const ListOfGroupPromotions = ({
                               flex: 1,
                             }}
                           >
-                            <Avatar
+                            <CachedUserAvatar
                               sx={{
                                 width: 40,
                                 height: 40,
@@ -764,10 +764,10 @@ export const ListOfGroupPromotions = ({
                                 flexShrink: 0,
                               }}
                               alt={promotion?.name}
-                              src={`${getBaseApiReact()}/arbitrary/THUMBNAIL/${promotion?.name}/qortal_avatar?async=true`}
+                              name={promotion?.name}
                             >
                               {promotion?.name?.charAt(0)}
-                            </Avatar>
+                            </CachedUserAvatar>
                             <Box sx={{ minWidth: 0, flex: 1 }}>
                               <Typography
                                 sx={{

@@ -4,6 +4,8 @@ import { createNamedFile, nameBlob } from '../../../utils/namedFile';
 import {
   blobToNamedImageFile,
   compressImageFile,
+  ensureImageMetadataFree,
+  stripImageFileMetadata,
 } from '../../../utils/imageCompression';
 import { objectToBase64 } from '../../../qdn/encryption/group-encryption';
 import {
@@ -25,6 +27,7 @@ import {
   type StreamedChunkUpload,
 } from '../../../utils/streamedChunkUpload';
 import i18n from '../../../i18n/i18n';
+import { GO_INTERNAL_APP_INFO } from '../../../utils/qappApproval';
 
 /** Quitter renders at most 2 images per post. */
 export const QUITTER_MAX_IMAGES = 2;
@@ -144,7 +147,8 @@ export const fileToRawBase64 = (file: Blob): Promise<string> =>
       const base64 = result.includes(',') ? result.split(',')[1] : result;
       resolve(base64 || '');
     };
-    reader.onerror = () => reject(reader.error || new Error('Failed to read file'));
+    reader.onerror = () =>
+      reject(reader.error || new Error('Failed to read file'));
     reader.readAsDataURL(file);
   });
 
@@ -153,8 +157,10 @@ const IMAGE_COMPRESS_THRESHOLD_BYTES = 5 * 1024 * 1024;
 const blobToPublishFile = blobToNamedImageFile;
 
 /**
- * Only compress Quitter images above 5 MB. Smaller images publish as-is.
- * When compressing, retry harder if the first pass stays over the threshold.
+ * Only compress Quitter images above 5 MB. Smaller images keep their pixels
+ * but lose their EXIF/XMP/IPTC metadata (GPS, camera, capture time) — posts
+ * are public and permanent. When compressing, retry harder if the first pass
+ * stays over the threshold.
  */
 async function compressImageForQuitter(file: File): Promise<File> {
   return compressImageFile(file, {
@@ -182,7 +188,8 @@ export const publishMultipleResources = async (
       'PUBLISH_MULTIPLE_QDN_RESOURCES',
       { resources },
       timeoutMs,
-      true
+      true,
+      GO_INTERNAL_APP_INFO
     );
 
     if (signal?.aborted || isPublishAborted() || res?.error?.cancelled) {
@@ -316,8 +323,7 @@ export async function buildQtubeVideoResources({
   }
 
   const title = video.metadata.title.trim();
-  const videoIdentifier =
-    video.identifier || buildQtubeVideoIdentifier(title);
+  const videoIdentifier = video.identifier || buildQtubeVideoIdentifier(title);
   const id = videoIdentifier.slice(videoIdentifier.lastIndexOf('_') + 1);
   const metadataIdentifier = `${videoIdentifier}_metadata`;
   const videoCode = videoCodeUid.rnd();
@@ -386,8 +392,7 @@ export async function buildQtubeVideoResources({
 
   // Match Q-Tube filename sanitization (alphanumeric + underscore + ext).
   const fileExt =
-    (video.file.name.split('.').pop() || 'mp4').replace(/[^\w]/g, '') ||
-    'mp4';
+    (video.file.name.split('.').pop() || 'mp4').replace(/[^\w]/g, '') || 'mp4';
   const safeBase = title
     .slice(0, 15)
     .replace(/[\s\uFEFF\xA0]+/g, '_')
@@ -506,7 +511,10 @@ export function normalizePostText(raw: string): string {
   // stripHtmlTags would also drop newlines-only markup; keep plain input as-is.
   return /<\/?[a-z][\s\S]*>/i.test(raw)
     ? plainText
-    : raw.replace(/\r\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+    : raw
+        .replace(/\r\n/g, '\n')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
 }
 
 /**
@@ -653,9 +661,9 @@ export async function publishQuitterPost(
   const hashtagMatches = publishText.match(/#\w+/g);
   let keywordString = '';
   if (hashtagMatches?.length) {
-    const keywords = hashtagMatches.slice(0, 2).map((tag) =>
-      tag.length > 70 ? tag.substring(0, 70) : tag
-    );
+    const keywords = hashtagMatches
+      .slice(0, 2)
+      .map((tag) => (tag.length > 70 ? tag.substring(0, 70) : tag));
     keywordString = normalizeKeywords(keywords);
   }
   const mentionString = await firstMentionKeyword(publishText);
@@ -741,7 +749,11 @@ export async function shrinkPostImagesToBudget(
         first: { ...pass, mimeType: 'image/webp' },
         fallback: { ...pass, mimeType: 'image/jpeg' },
       });
-      const src = await fileToRawBase64(smaller);
+      // These start from the originals: only a result whose metadata is
+      // known to be gone may replace the photo already encoded.
+      const clean = await ensureImageMetadataFree(smaller);
+      if (clean.ok === false) continue;
+      const src = await fileToRawBase64(clean.file);
       if (src && src.length < out[i].length) out[i] = src;
     }
   }
@@ -780,7 +792,19 @@ export async function encodeImageForPost(
       })
     );
   }
-  const base64 = await fileToRawBase64(prepared);
+  // Posts are public and permanent: refuse an image whose location/camera
+  // metadata could not be removed (HEIC, which the WebView cannot re-encode)
+  // rather than publish it with that metadata.
+  const clean = await ensureImageMetadataFree(prepared);
+  if (clean.ok === false) {
+    throw new Error(
+      i18n.t('group:home_composer.error.image_metadata_unremovable', {
+        index: index + 1,
+        postProcess: 'capitalizeFirstChar',
+      })
+    );
+  }
+  const base64 = await fileToRawBase64(clean.file);
   if (!base64) {
     throw new Error(
       i18n.t('group:home_composer.error.image_encode_failed', {
@@ -925,7 +949,8 @@ export async function extractVideoHoverFrames(
 
     await new Promise<void>((resolve, reject) => {
       video.onloadeddata = () => resolve();
-      video.onerror = () => reject(new Error('Failed to load video for frames'));
+      video.onerror = () =>
+        reject(new Error('Failed to load video for frames'));
     });
 
     const duration = Number.isFinite(video.duration) ? video.duration : 0;
@@ -1063,7 +1088,9 @@ export async function extractVideoThumbnailBase64(
     } else {
       candidates.push(0);
     }
-    const unique = [...new Set(candidates.map((t) => Math.round(t * 100) / 100))];
+    const unique = [
+      ...new Set(candidates.map((t) => Math.round(t * 100) / 100)),
+    ];
 
     let bestScore = -1;
     let bestDataUrl = '';
@@ -1095,7 +1122,16 @@ export function compressThumbnailFileToBase64(file: File): Promise<string> {
       quality: 0.78,
       maxWidth: 1280,
       mimeType: 'image/webp',
-      success(result) {
+      async success(compressed) {
+        // Compressor.js hands back the original (metadata and all) when its
+        // output would be bigger, so strip it before it goes into the post.
+        let result: Blob;
+        try {
+          result = await stripImageFileMetadata(compressed as File);
+        } catch (err) {
+          reject(err);
+          return;
+        }
         const reader = new FileReader();
         reader.onload = () => {
           const dataUrl = String(reader.result || '');

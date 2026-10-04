@@ -21,6 +21,7 @@ import {
 } from '@mui/material';
 import { Add } from '@mui/icons-material';
 import { getBaseApiReact } from '../../App';
+import { AppThumbnailAvatar } from './AppThumbnailAvatar';
 import { executeEvent } from '../../utils/events';
 import { Spacer } from '../../common/Spacer';
 import { useModal } from '../../hooks/useModal.tsx';
@@ -386,27 +387,14 @@ export const AppsDevModeHome = ({
             }}
           >
             <AppCircle>
-              <Avatar
-                sx={{
-                  height: '42px',
-                  width: '42px',
-                  '& img': {
-                    objectFit: 'fill',
-                  },
-                }}
+              <AppThumbnailAvatar
+                appName="Q-Sandbox"
                 alt={t('core:q_apps.q_sandbox', {
                   postProcess: 'capitalizeFirstChar',
                 })}
-                src={`${getBaseApiReact()}/arbitrary/THUMBNAIL/Q-Sandbox/qortal_avatar?async=true`}
-              >
-                <img
-                  style={{
-                    width: '31px',
-                    height: 'auto',
-                  }}
-                  alt="center-icon"
-                />
-              </Avatar>
+                fallbackSize={31}
+                sx={{ height: '42px', width: '42px' }}
+              />
             </AppCircle>
 
             <AppCircleLabel>

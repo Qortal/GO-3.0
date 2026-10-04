@@ -131,31 +131,34 @@ export function statusDotColor(status: string | null): string {
   return '#23a55a'; // online or any non-null fallback
 }
 
+const STATUS_PRIORITY: Record<UserStatus, number> = {
+  busy: 3,
+  online: 2,
+  idle: 1,
+};
+
+/**
+ * One status per account: the most available of its live devices (busy >
+ * online > idle), as the main process aggregates later updates. The newest
+ * heartbeat used to win, so an idle desktop could hide the phone in use.
+ */
 export function buildPresenceSnapshot(sessions: PresenceSession[]): {
   onlineAddresses: Set<string>;
   statusMap: Map<string, UserStatus>;
 } {
   const onlineAddresses = new Set<string>();
-  const latestStatusByAddress = new Map<
-    string,
-    { status: UserStatus; lastSeen: number }
-  >();
+  const statusMap = new Map<string, UserStatus>();
 
   for (const session of sessions) {
     onlineAddresses.add(session.address);
     const nextStatus = session.status as UserStatus;
-    const previous = latestStatusByAddress.get(session.address);
-    if (!previous || session.lastSeen > previous.lastSeen) {
-      latestStatusByAddress.set(session.address, {
-        status: nextStatus,
-        lastSeen: session.lastSeen,
-      });
+    const previous = statusMap.get(session.address);
+    if (
+      !previous ||
+      (STATUS_PRIORITY[nextStatus] ?? 0) > (STATUS_PRIORITY[previous] ?? 0)
+    ) {
+      statusMap.set(session.address, nextStatus);
     }
-  }
-
-  const statusMap = new Map<string, UserStatus>();
-  for (const [address, value] of latestStatusByAddress.entries()) {
-    statusMap.set(address, value.status);
   }
 
   return { onlineAddresses, statusMap };

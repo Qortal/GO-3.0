@@ -1,5 +1,4 @@
 import {
-  Avatar,
   alpha,
   Box,
   ButtonBase,
@@ -30,7 +29,6 @@ import VisibilityOffRoundedIcon from '@mui/icons-material/VisibilityOffRounded';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AutoSizer, List } from 'react-virtualized';
 import { getFee } from '../../background/background.ts';
-import { getBaseApiReact } from '../../App';
 import { useTranslation } from 'react-i18next';
 import { useOnlineAddresses } from '../../hooks/usePresence';
 import { useAtomValue } from 'jotai';
@@ -38,6 +36,7 @@ import { statusMapAtom } from '../../atoms/presence';
 import { reticulumChatTextScaleAtom, userInfoAtom } from '../../atoms/global';
 import { PresenceStatusBadge } from '../common/PresenceStatusBadge';
 import { getFallbackAvatarOutlineSx } from '../Chat/clickableAvatarStyles';
+import { CachedUserAvatar } from './CachedAvatars';
 import { hasInvisibleCharacters } from '../../utils/hasInvisibleCharacters';
 import { WrapperUserAction } from '../WrapperUserAction';
 import {
@@ -825,9 +824,7 @@ const ListOfMembers = ({
       reticulumUserCards && member?.member
         ? {
             address: member.member,
-            avatarUrl: member?.primaryName
-              ? `${getBaseApiReact()}/arbitrary/THUMBNAIL/${encodeURIComponent(member.primaryName)}/qortal_avatar?async=true`
-              : undefined,
+            // The card loads the avatar by name from the device cache.
             isMinterResolved: false,
             isOwn: member.member === currentAddress,
             name: member?.primaryName || member?.name,
@@ -866,8 +863,9 @@ const ListOfMembers = ({
                 : (statusMap.get(member?.member) ?? null)
             }
           >
-            <Avatar
+            <CachedUserAvatar
               alt={memberLabel}
+              name={member?.primaryName}
               sx={{
                 height: compact ? 34 : undefined,
                 width: compact ? 34 : undefined,
@@ -875,11 +873,6 @@ const ListOfMembers = ({
                   ? getFallbackAvatarOutlineSx(theme)
                   : {}),
               }}
-              src={
-                member?.primaryName
-                  ? `${getBaseApiReact()}/arbitrary/THUMBNAIL/${member.primaryName}/qortal_avatar?async=true`
-                  : ''
-              }
             />
           </PresenceStatusBadge>
         </ListItemAvatar>

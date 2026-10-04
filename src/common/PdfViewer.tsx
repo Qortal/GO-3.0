@@ -170,7 +170,11 @@ export const PdfViewer = () => {
           pdfjsRef.current = await loadPdfJs();
         }
         const data = await blob.arrayBuffer();
-        const doc = await pdfjsRef.current.getDocument({ data }).promise;
+        // A received PDF is untrusted: no font code compiled from it.
+        const doc = await pdfjsRef.current.getDocument({
+          data,
+          isEvalSupported: false,
+        }).promise;
         docRef.current = doc;
         setPageCount(doc.numPages || 1);
         setLoading(false);

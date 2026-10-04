@@ -2,9 +2,18 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <!-- allowBackup="false": no Android Auto Backup of app data to Google
+         Drive. dataExtractionRules also blocks phone-to-phone transfer on
+         Android 12+ (see res/xml/data_extraction_rules.xml).
+         allowCrossUidActivitySwitchFromBelow="false" (Android 15+): another
+         app's activity below GO in a task cannot open a screen over GO
+         (GO-35, task hijacking). -->
     <application
         android:largeHeap="true"
-        android:allowBackup="true"
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:allowCrossUidActivitySwitchFromBelow="false"
+        tools:targetApi="35"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher"
@@ -20,7 +29,11 @@
             android:label="@string/title_activity_main"
             android:theme="@style/AppTheme.NoActionBarLaunch"
             android:launchMode="singleTask"
+            android:taskAffinity=""
             android:exported="true">
+            <!-- taskAffinity="": GO's screen never joins another app's task,
+                 so on Android 8-10 an app cannot slip a fake GO screen into
+                 GO's task (GO-35, StrandHogg). singleTask still keeps one GO. -->
 
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -80,14 +93,25 @@
 
         </activity>
 
-        <!-- "Quitter" entry in the Android share sheet: sharing a photo or a
-             video from any app shows Quitter, which opens Qortal GO with the
-             media pre-attached in the Quitter composer. -->
+        <!-- "Quitter" / "Torq" entry in the Android share sheet: sharing a
+             photo or a video from any app opens Qortal GO with the media
+             pre-attached in the Home composer. Only one of the two aliases is
+             enabled at a time, following the app the composer posts to
+             (ShareReceiverPlugin.setShareTarget). They go through
+             ShareTrampolineActivity, so disabling one never closes GO. -->
+        <activity
+            android:name=".ShareTrampolineActivity"
+            android:theme="@android:style/Theme.NoDisplay"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:exported="false" />
         <activity-alias
             android:name=".QuitterShareActivity"
-            android:targetActivity=".MainActivity"
+            android:targetActivity=".ShareTrampolineActivity"
             android:label="Quitter"
             android:icon="@mipmap/ic_launcher"
+            android:enabled="true"
             android:exported="true">
             <intent-filter android:label="Quitter">
                 <action android:name="android.intent.action.SEND" />
@@ -96,6 +120,26 @@
                 <data android:mimeType="video/*" />
             </intent-filter>
             <intent-filter android:label="Quitter">
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
+                <data android:mimeType="video/*" />
+            </intent-filter>
+        </activity-alias>
+        <activity-alias
+            android:name=".TorqShareActivity"
+            android:targetActivity=".ShareTrampolineActivity"
+            android:label="Torq"
+            android:icon="@mipmap/ic_launcher"
+            android:enabled="false"
+            android:exported="true">
+            <intent-filter android:label="Torq">
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
+                <data android:mimeType="video/*" />
+            </intent-filter>
+            <intent-filter android:label="Torq">
                 <action android:name="android.intent.action.SEND_MULTIPLE" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="image/*" />
@@ -123,18 +167,29 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths"></meta-data>
         </provider>
-        
-        <!-- Google Cast Options Provider -->
-        <meta-data
-            android:name="com.google.android.gms.cast.framework.OPTIONS_PROVIDER_CLASS_NAME"
-            android:value="com.github.Qortal.qortalMobile.CastOptionsProvider" />
-        
-        <!-- Chromecast Foreground Service -->
-        <service
-            android:name=".ChromecastForegroundService"
-            android:enabled="true"
+
+        <!-- androidx.emoji2 would ask Google Play Services' font provider for
+             an emoji font every time GO starts. GO's text is drawn by the
+             WebView, which has its own emoji, so drop that initializer. -->
+        <provider
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="${applicationId}.androidx-startup"
             android:exported="false"
-            android:foregroundServiceType="mediaPlayback" />
+            tools:node="merge">
+            <meta-data
+                android:name="androidx.emoji2.text.EmojiCompatInitializer"
+                tools:node="remove" />
+        </provider>
+
+        <!-- WebView: no usage/crash metrics to Google, and no Safe Browsing
+             lookups (a Google service, through Play Services). The WebView
+             only shows GO's own pages and Q-Apps from the Qortal node. -->
+        <meta-data
+            android:name="android.webkit.WebView.MetricsOptOut"
+            android:value="true" />
+        <meta-data
+            android:name="android.webkit.WebView.EnableSafeBrowsing"
+            android:value="false" />
 
         <!-- Qortal Reticulum / presence foreground service -->
         <service
@@ -160,16 +215,20 @@
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"/>
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
-    <!-- Needed if you want to retrieve unredacted EXIF metadata from photos -->
-    <uses-permission android:name="android.permission.ACCESS_MEDIA_LOCATION" />
+    <!-- Never hold ACCESS_MEDIA_LOCATION: without it Android 10+ removes the
+         GPS position from photos GO reads through MediaStore and the system
+         pickers. tools:node="remove" also drops it if a library declares it
+         (the file picker plugin can ask for it). Photos on Android 8/9, or
+         from another app's own file provider, can still carry it. -->
+    <uses-permission
+        android:name="android.permission.ACCESS_MEDIA_LOCATION"
+        tools:node="remove" />
     <!-- Foreground service permission for Android 9+ -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <!-- Media playback foreground service type for Android 10+ -->
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <!-- Reticulum / presence foreground service type -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
-    <!-- remoteMessaging (Android 14+) has no daily time limit; used only while
-         background sync runs continuously (charging, or mode Always). -->
+    <!-- remoteMessaging (Android 14+) has no daily time limit: the status
+         service type on Android 14+; dataSync before, and as a fallback. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_REMOTE_MESSAGING" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
@@ -178,6 +237,11 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.USE_BIOMETRIC" />
     <uses-permission android:name="android.permission.USE_FINGERPRINT" />
+    <!-- Approval dialogs hide other apps' overlay windows while GO is in front
+         (Window.setHideOverlayWindows, Android 12+), so an overlay cannot
+         cover them and trick the user into a tap (GO-29). A normal
+         permission: granted at install, the user is never asked. -->
+    <uses-permission android:name="android.permission.HIDE_OVERLAY_WINDOWS" />
     <!-- In-app updates: lets the app hand a build published to QDN to Android's
          package installer. The installer still asks the user to confirm, and
          Android only offers the app this permission once the user has allowed
@@ -191,6 +255,15 @@
         <intent>
             <action android:name="android.intent.action.VIEW" />
             <data android:mimeType="*/*" />
+        </intent>
+        <!-- The in-app updater hands its build to the system package
+             installer by name (AppUpdatePlugin.systemInstallerPackage);
+             this makes that installer visible to the lookup. -->
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data
+                android:scheme="content"
+                android:mimeType="application/vnd.android.package-archive" />
         </intent>
     </queries>
 

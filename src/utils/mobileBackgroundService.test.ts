@@ -9,6 +9,7 @@ const plugin = vi.hoisted(
     ({}) as {
       setLocalizedStrings?: ReturnType<typeof vi.fn>;
       setOutboxCount?: ReturnType<typeof vi.fn>;
+      isIgnoringBatteryOptimizations?: ReturnType<typeof vi.fn>;
     }
 );
 
@@ -29,11 +30,13 @@ vi.mock('../components/Reticulum/reticulumStatus', () => ({
 }));
 
 const NATIVE_KEYS = [
+  'battery_pause_text',
   'fgs_timeout_text',
   'fgs_timeout_title',
   'status_paused_text',
   'status_paused_title',
   'status_syncing_background',
+  'status_waiting_short',
   'status_waiting_text',
 ];
 
@@ -80,6 +83,7 @@ describe('native localized strings', () => {
     expect(Object.keys(strings).sort()).toEqual(NATIVE_KEYS);
     expect(strings.status_waiting_text).toContain('{{count}}');
     expect(strings.fgs_timeout_title).toBe('GO paused');
+    expect(strings.battery_pause_text).toContain('6 hours on battery');
   });
 
   it('a language change triggers one push with the new texts', async () => {
@@ -194,5 +198,78 @@ describe('own outbox count', () => {
       expect(plugin.setOutboxCount).toHaveBeenCalledTimes(2)
     );
     expect(warn).toHaveBeenCalled();
+  });
+});
+
+describe('boot battery prompt', () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const NOW = Date.UTC(2026, 9, 2, 12, 0, 0);
+  let prefs: Map<string, string>;
+
+  beforeEach(async () => {
+    native.platform = true;
+    prefs = new Map();
+    const { Preferences } = await import('@capacitor/preferences');
+    vi.mocked(Preferences.get).mockImplementation((async ({ key }) => ({
+      value: prefs.get(key) ?? null,
+    })) as typeof Preferences.get);
+    vi.mocked(Preferences.set).mockImplementation((async ({ key, value }) => {
+      prefs.set(key, value);
+    }) as typeof Preferences.set);
+    plugin.isIgnoringBatteryOptimizations = vi
+      .fn()
+      .mockResolvedValue({ ignoring: false });
+  });
+  afterEach(() => {
+    delete plugin.isIgnoringBatteryOptimizations;
+    vi.restoreAllMocks();
+  });
+
+  it('shows while GO is not exempt, never once exempt', async () => {
+    const { service } = await load();
+    await expect(
+      service.shouldShowBatteryOptimizationPrompt(NOW)
+    ).resolves.toBe(true);
+    plugin.isIgnoringBatteryOptimizations?.mockResolvedValue({
+      ignoring: true,
+    });
+    await expect(
+      service.shouldShowBatteryOptimizationPrompt(NOW)
+    ).resolves.toBe(false);
+  });
+
+  it("'Not now' keeps it away for 14 days, not just until the next start", async () => {
+    const { service } = await load();
+    await service.snoozeBatteryOptimizationPrompt(NOW);
+    await expect(
+      service.shouldShowBatteryOptimizationPrompt(NOW + DAY)
+    ).resolves.toBe(false);
+    await expect(
+      service.shouldShowBatteryOptimizationPrompt(NOW + 14 * DAY - 1)
+    ).resolves.toBe(false);
+    await expect(
+      service.shouldShowBatteryOptimizationPrompt(NOW + 14 * DAY)
+    ).resolves.toBe(true);
+    // A clock set far back does not hide it for good.
+    await expect(
+      service.shouldShowBatteryOptimizationPrompt(NOW - 30 * DAY)
+    ).resolves.toBe(true);
+  });
+
+  it("'Never show this again' still hides it for good", async () => {
+    const { service } = await load();
+    await service.dismissBatteryOptimizationPrompt();
+    await expect(
+      service.shouldShowBatteryOptimizationPrompt(NOW + 400 * DAY)
+    ).resolves.toBe(false);
+  });
+
+  it('falls back to the exemption check when preferences cannot be read', async () => {
+    const { Preferences } = await import('@capacitor/preferences');
+    vi.mocked(Preferences.get).mockRejectedValue(new Error('gone'));
+    const { service } = await load();
+    await expect(
+      service.shouldShowBatteryOptimizationPrompt(NOW)
+    ).resolves.toBe(true);
   });
 });

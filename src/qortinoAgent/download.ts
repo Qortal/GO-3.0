@@ -1,6 +1,11 @@
 import { createEndpoint } from '../background/background';
 import QortinoLlm, { isQortinoLlmNativeAvailable } from '../plugins/QortinoLlm';
 import {
+  createNativeNodeRequest,
+  redactUrlQueries,
+  stripUrlQuery,
+} from '../utils/nativeNodeRequest';
+import {
   DEFAULT_QORTINO_AGENT_MANIFEST,
   QORTINO_MANIFEST_IDENTIFIER,
   QORTINO_MANIFEST_SERVICE,
@@ -34,15 +39,19 @@ export type DownloadProgress = {
   error?: string;
 };
 
-async function resolveQdnUrl(options: {
+type QdnResourceRef = {
   service: string;
   name: string;
   identifier: string;
-}): Promise<string> {
-  const path =
-    `/arbitrary/${options.service}/` +
-    `${encodeURIComponent(options.name)}/${encodeURIComponent(options.identifier)}`;
-  return createEndpoint(path);
+};
+
+const qdnResourcePath = (options: QdnResourceRef): string =>
+  `/arbitrary/${options.service}/` +
+  `${encodeURIComponent(options.name)}/${encodeURIComponent(options.identifier)}`;
+
+/** For WebView fetch: the node API key rides in the query (CORS). */
+async function resolveQdnUrl(options: QdnResourceRef): Promise<string> {
+  return createEndpoint(qdnResourcePath(options));
 }
 
 /**
@@ -69,12 +78,15 @@ async function fetchQdnResource(options: {
     response = await fetch(endpoint, { signal: controller.signal });
   } catch (e) {
     const detail = e instanceof Error ? e.message : 'Failed to fetch';
-    throw new Error(`${detail} (${endpoint})`);
+    // The endpoint carries the API key in its query: never show that part.
+    throw new Error(`${redactUrlQueries(detail)} (${stripUrlQuery(endpoint)})`);
   } finally {
     clearTimeout(timer);
   }
   if (!response.ok) {
-    throw new Error(`QDN fetch failed (${response.status}) for ${options.identifier}`);
+    throw new Error(
+      `QDN fetch failed (${response.status}) for ${options.identifier}`
+    );
   }
   return response;
 }
@@ -161,9 +173,7 @@ async function applyQshareIdentifiers(
   manifest: QortinoAgentManifest
 ): Promise<QortinoAgentManifest> {
   const [shared, fileRows] = await Promise.all([
-    discoverQortinoQshareFiles().catch(
-      () => new Map<string, never>() as never
-    ),
+    discoverQortinoQshareFiles().catch(() => new Map<string, never>() as never),
     listQortinoResources('FILE').catch(() => []),
   ]);
 
@@ -435,7 +445,9 @@ async function streamFileToAppStorage(
       if (typeof event.bytesReceived === 'number') {
         onBytes(
           event.bytesReceived,
-          event.bytesTotal > 0 ? event.bytesTotal : file.sizeBytes || event.bytesReceived
+          event.bytesTotal > 0
+            ? event.bytesTotal
+            : file.sizeBytes || event.bytesReceived
         );
       }
     }
@@ -471,23 +483,26 @@ async function streamFileToAppStorage(
       signal,
     });
 
-    const url = await resolveQdnUrl({
-      service,
-      name,
-      identifier: file.identifier,
-    });
+    // The native downloader sends the API key as an X-API-KEY header, so the
+    // URL it logs and reports never contains it.
+    const { apiKey, url } = await createNativeNodeRequest(
+      qdnResourcePath({ service, name, identifier: file.identifier })
+    );
     try {
       const result = await QortinoLlm.downloadUrl({
+        ...(apiKey ? { apiKey } : {}),
         url,
         relativePath: file.relativePath,
       });
       onBytes(result.bytesWritten, result.bytesWritten);
       return result.path;
     } catch (e) {
-      throw new Error(`${capacitorErrorMessage(e)}\nURL: ${url}`);
+      throw new Error(
+        `${redactUrlQueries(capacitorErrorMessage(e))}\nURL: ${stripUrlQuery(url)}`
+      );
     }
   } catch (e) {
-    throw new Error(capacitorErrorMessage(e));
+    throw new Error(redactUrlQueries(capacitorErrorMessage(e)));
   } finally {
     signal?.removeEventListener('abort', onAbort);
     await progressHandle.remove().catch(() => undefined);
@@ -506,9 +521,11 @@ export function filesForPack(
     const zip = resolveManifestFile(manifest, pack.packZipFileId);
     return zip ? [zip] : [];
   }
-  const ids = [pack.llmFileId, pack.embedderFileId, pack.knowledgeFileId].filter(
-    Boolean
-  ) as string[];
+  const ids = [
+    pack.llmFileId,
+    pack.embedderFileId,
+    pack.knowledgeFileId,
+  ].filter(Boolean) as string[];
   return ids
     .map((id) => resolveManifestFile(manifest, id))
     .filter((f): f is QortinoManifestFile => Boolean(f));

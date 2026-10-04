@@ -9,6 +9,16 @@ import {
   useTheme,
 } from '@mui/material';
 import { useTranslation } from 'react-i18next';
+import { useAcceptDelay } from '../../hooks/useAcceptDelay';
+import { useSecureScreen } from '../../hooks/useSecureScreen';
+import { BACK_PRIORITY, useAndroidBack } from '../../utils/androidBack';
+import { DECLINE_GUARD_MS } from '../../utils/qappApprovalQueue';
+
+/**
+ * Above every screen and sheet; below the Q-App approval dialog
+ * (BACK_PRIORITY.call + 10), which is drawn over this one.
+ */
+const PAYMENT_PUBLISH_BACK_PRIORITY = BACK_PRIORITY.call + 5;
 
 type Message = {
   message: string;
@@ -18,19 +28,46 @@ type Message = {
 
 type PaymentPublishDialogProps = {
   open: boolean;
+  /** The id of the request on screen (useModal); restarts the Accept delay. */
+  requestId?: number | null;
+  /** How many more confirmations wait behind this one. */
+  pendingCount?: number;
   message: Message;
   onAccept: () => void;
   onCancel: () => void;
 };
 
+/**
+ * GO's own payment / publish confirmation (GO-28 / GO-29): Accept waits a
+ * second after a request appears, and while open the screen cannot be
+ * captured and taps through another app's overlay are dropped. The Android
+ * back button declines it (ignored for a moment after a confirmation
+ * appears, so a double press cannot decline the next one).
+ */
 export function PaymentPublishDialog({
   open,
+  requestId = null,
+  pendingCount = 0,
   message,
   onAccept,
   onCancel,
 }: PaymentPublishDialogProps) {
   const theme = useTheme();
   const { t } = useTranslation(['core']);
+  useSecureScreen({ secure: open, touchProtection: open });
+  const acceptArmed = useAcceptDelay(open, requestId ?? message);
+  const backArmed = useAcceptDelay(
+    open,
+    requestId ?? message,
+    DECLINE_GUARD_MS
+  );
+  useAndroidBack(
+    () => {
+      if (backArmed) onCancel();
+      return true;
+    },
+    { priority: PAYMENT_PUBLISH_BACK_PRIORITY, enabled: open }
+  );
 
   return (
     <Dialog
@@ -83,6 +120,8 @@ export function PaymentPublishDialog({
             fontSize: '1rem',
             lineHeight: 1.6,
             mb: message?.paymentFee || message?.publishFee ? 1.65 : 0,
+            // The message carries a full 34-character address.
+            overflowWrap: 'anywhere',
             textAlign: 'left',
           }}
         >
@@ -132,6 +171,20 @@ export function PaymentPublishDialog({
             </DialogContentText>
           </Box>
         )}
+        {pendingCount > 0 ? (
+          <DialogContentText
+            data-testid="payment-publish-pending"
+            sx={{
+              color: theme.palette.text.secondary,
+              fontSize: '0.84rem',
+              lineHeight: 1.4,
+              mt: 1.4,
+              textAlign: 'left',
+            }}
+          >
+            {t('core:approval_dialog.more_waiting', { count: pendingCount })}
+          </DialogContentText>
+        ) : null}
       </DialogContent>
       <DialogActions
         sx={{
@@ -178,10 +231,20 @@ export function PaymentPublishDialog({
               backgroundColor: theme.palette.primary.main,
               filter: 'brightness(1.05)',
             },
+            '&.Mui-disabled': {
+              backgroundColor: theme.palette.primary.main,
+              color: '#FFFFFF',
+              opacity: 0.45,
+            },
           }}
           variant="contained"
-          onClick={onAccept}
-          autoFocus
+          // No autoFocus: Enter must not confirm a payment the moment it
+          // appears.
+          disabled={!acceptArmed}
+          data-testid="payment-publish-accept"
+          onClick={() => {
+            if (acceptArmed) onAccept();
+          }}
         >
           {t('core:action.accept', { postProcess: 'capitalizeFirstChar' })}
         </Button>

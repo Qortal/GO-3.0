@@ -10,6 +10,10 @@
  * transaction metadata.
  */
 import { createEndpoint } from '../background/background';
+import {
+  createNativeNodeRequest,
+  type NativeNodeRequest,
+} from '../utils/nativeNodeRequest';
 
 /** The registered name that publishes official builds. */
 export const APP_UPDATE_QDN_NAME = 'GO 3.0';
@@ -372,14 +376,18 @@ export async function readResourceStatus(
   };
 }
 
-/** Direct URL the native downloader streams the finished file from. */
-export async function buildDownloadUrl(
+/**
+ * Where the native downloader streams the finished file from. The node API
+ * key is returned on its own, for the plugin to send as an X-API-KEY header,
+ * so it never sits in a URL that can reach logs or error text.
+ */
+export async function buildDownloadRequest(
   service: string,
   identifier: string,
   filename: string
-): Promise<string> {
-  return createEndpoint(
-    `/arbitrary/${service}/${encodedName()}/${encodeURIComponent(
+): Promise<NativeNodeRequest> {
+  return createNativeNodeRequest(
+    `/arbitrary/${encodeURIComponent(service)}/${encodedName()}/${encodeURIComponent(
       identifier
     )}?attachment=true&attachmentFilename=${encodeURIComponent(filename)}`
   );

@@ -42,6 +42,7 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.Collections;
+import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -56,6 +57,7 @@ public class FileWriter extends Plugin {
     private static final String TAG = "FileWriter";
     private static final Object fileLock = new Object();
     private static final int STREAM_BUFFER_BYTES = 64 * 1024;
+    private static final int MAX_NODE_REDIRECTS = 5;
     /** JS object the binary save channel appears as in GO's own page. */
     private static final String FILE_SINK_OBJECT = "goFileSink";
     private final ExecutorService downloadWorker = Executors.newSingleThreadExecutor();
@@ -182,6 +184,68 @@ public class FileWriter extends Plugin {
      * the QDN endpoint is just an HTTP URL, fetching it here keeps the bytes
      * binary and touches MediaStore once.
      */
+    /**
+     * Opens a node URL. Redirects are followed by hand ({@link RedirectPolicy}):
+     * HttpURLConnection's own following would carry the X-API-KEY header to
+     * wherever a reply points. The key only goes to the origin the request
+     * started on, and an https request is never redirected to plain http.
+     */
+    private static HttpURLConnection openNodeUrl(
+        String url,
+        String apiKey,
+        int connectTimeoutMs,
+        int readTimeoutMs
+    ) throws Exception {
+        final boolean startedSecure = url.trim().toLowerCase(Locale.ROOT).startsWith("https:");
+        try {
+            return RedirectPolicy.open(
+                url,
+                apiKey,
+                MAX_NODE_REDIRECTS,
+                hopUrl -> {
+                    if (startedSecure && !hopUrl.toLowerCase(Locale.ROOT).startsWith("https:")) {
+                        throw new IOException("Refused a redirect from https to http");
+                    }
+                },
+                new RedirectPolicy.Transport<HttpURLConnection>() {
+                    @Override
+                    public HttpURLConnection open(String hopUrl, boolean withKey) throws Exception {
+                        HttpURLConnection connection =
+                            (HttpURLConnection) LocalHttp.openConnection(new URL(hopUrl));
+                        connection.setInstanceFollowRedirects(false);
+                        connection.setConnectTimeout(connectTimeoutMs);
+                        connection.setReadTimeout(readTimeoutMs);
+                        if (withKey) connection.setRequestProperty("X-API-KEY", apiKey);
+                        try {
+                            connection.connect();
+                        } catch (Exception e) {
+                            connection.disconnect();
+                            throw e;
+                        }
+                        return connection;
+                    }
+
+                    @Override
+                    public int status(HttpURLConnection connection) throws Exception {
+                        return connection.getResponseCode();
+                    }
+
+                    @Override
+                    public String location(HttpURLConnection connection) {
+                        return connection.getHeaderField("Location");
+                    }
+
+                    @Override
+                    public void close(HttpURLConnection connection) {
+                        connection.disconnect();
+                    }
+                }
+            );
+        } catch (RedirectPolicy.RedirectRefused refused) {
+            throw new IOException("HTTP " + refused.status + " from node");
+        }
+    }
+
     @PluginMethod
     public void downloadToDocuments(PluginCall call) {
         String url = call.getString("url");
@@ -204,16 +268,9 @@ public class FileWriter extends Plugin {
         downloadWorker.execute(() -> {
             HttpURLConnection connection = null;
             try {
-                connection = (HttpURLConnection) new URL(url).openConnection();
-                connection.setInstanceFollowRedirects(true);
-                connection.setConnectTimeout(30_000);
                 // QDN can stall mid-stream while the node serves a large file;
                 // a short read timeout would abort an otherwise healthy save.
-                connection.setReadTimeout(120_000);
-                if (apiKey != null && !apiKey.isEmpty()) {
-                    connection.setRequestProperty("X-API-KEY", apiKey);
-                }
-                connection.connect();
+                connection = openNodeUrl(url, apiKey, 30_000, 120_000);
 
                 int status = connection.getResponseCode();
                 if (status < 200 || status >= 300) {
@@ -228,8 +285,11 @@ public class FileWriter extends Plugin {
                     subFolder = filename.substring(0, slash);
                     displayName = filename.substring(slash + 1);
                 }
+                SavedFilePolicy.Target saveAs = saveTarget(displayName, mimeHint);
+                displayName = saveAs.name;
+                String saveMime = saveAs.mime;
                 if (Boolean.TRUE.equals(categorize)) {
-                    subFolder = SaveCategory.folderFor(subFolder, displayName, mimeHint);
+                    subFolder = SaveCategory.folderFor(subFolder, displayName, saveMime);
                 }
 
                 long totalBytes = connection.getContentLengthLong();
@@ -243,7 +303,7 @@ public class FileWriter extends Plugin {
                 )) {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                         target = streamToMediaStore(
-                            displayName, subFolder, mimeHint, in, written, progress
+                            displayName, subFolder, saveMime, in, written, progress
                         );
                     } else {
                         target = streamToLegacyFile(
@@ -262,9 +322,9 @@ public class FileWriter extends Plugin {
                 ret.put("bytesWritten", written[0]);
                 call.resolve(ret);
             } catch (IOException e) {
-                call.reject("Failed to save file: " + e.getMessage());
+                call.reject("Failed to save file: " + SecretRedaction.redactText(e.getMessage()));
             } catch (Exception e) {
-                call.reject("Unexpected error: " + e.getMessage());
+                call.reject("Unexpected error: " + SecretRedaction.redactText(e.getMessage()));
             } finally {
                 if (connection != null) {
                     connection.disconnect();
@@ -289,14 +349,7 @@ public class FileWriter extends Plugin {
         downloadWorker.execute(() -> {
             HttpURLConnection connection = null;
             try {
-                connection = (HttpURLConnection) new URL(url).openConnection();
-                connection.setInstanceFollowRedirects(true);
-                connection.setConnectTimeout(15_000);
-                connection.setReadTimeout(15_000);
-                if (apiKey != null && !apiKey.isEmpty()) {
-                    connection.setRequestProperty("X-API-KEY", apiKey);
-                }
-                connection.connect();
+                connection = openNodeUrl(url, apiKey, 15_000, 15_000);
                 int status = connection.getResponseCode();
                 InputStream stream =
                     status >= 400 ? connection.getErrorStream() : connection.getInputStream();
@@ -313,7 +366,7 @@ public class FileWriter extends Plugin {
                 ret.put("ok", status >= 200 && status < 300);
                 call.resolve(ret);
             } catch (Exception e) {
-                call.reject("HTTP probe failed: " + e.getMessage());
+                call.reject("HTTP probe failed: " + SecretRedaction.redactText(e.getMessage()));
             } finally {
                 if (connection != null) {
                     connection.disconnect();
@@ -484,11 +537,14 @@ public class FileWriter extends Plugin {
                 subFolder = filename.substring(0, slash);
                 displayName = filename.substring(slash + 1);
             }
+            // Same name for every chunk of one file, so appends still meet.
+            SavedFilePolicy.Target saveAs = saveTarget(displayName, mimeHint);
+            displayName = saveAs.name;
 
             if (Boolean.TRUE.equals(categorize)) {
-                subFolder = SaveCategory.folderFor(subFolder, displayName, mimeHint);
-                filename = subFolder + "/" + displayName;
+                subFolder = SaveCategory.folderFor(subFolder, displayName, saveAs.mime);
             }
+            filename = subFolder.isEmpty() ? displayName : subFolder + "/" + displayName;
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 writeWithMediaStore(call, displayName, subFolder, bytes, append);
@@ -708,9 +764,12 @@ public class FileWriter extends Plugin {
             subFolder = filename.substring(0, slash);
             displayName = filename.substring(slash + 1);
         }
-        displayName = DocumentSaver.safeName(displayName);
+        SavedFilePolicy.Target saveAs =
+            saveTarget(displayName, command.optString("mimeType", null));
+        displayName = saveAs.name;
+        String saveMime = saveAs.mime;
         if (command.optBoolean("categorize", false)) {
-            subFolder = SaveCategory.folderFor(subFolder, displayName, command.optString("mimeType", null));
+            subFolder = SaveCategory.folderFor(subFolder, displayName, saveMime);
         }
         if (subFolder.contains("..")) {
             replySinkError(replyProxy, sid, "Invalid folder");
@@ -730,7 +789,7 @@ public class FileWriter extends Plugin {
                 values.put(MediaStore.MediaColumns.DISPLAY_NAME, displayName);
                 values.put(
                     MediaStore.MediaColumns.MIME_TYPE,
-                    mediaStoreMimeType(displayName, command.optString("mimeType", null))
+                    mediaStoreMimeType(displayName, saveMime)
                 );
                 values.put(MediaStore.MediaColumns.RELATIVE_PATH, relativePath);
                 // Hidden from other apps until the last byte is in.
@@ -872,6 +931,16 @@ public class FileWriter extends Plugin {
      * {@link MimeTypeMap#getFileExtensionFromUrl}, this copes with spaces in
      * the name ("GO 3.0 v0.0.11.apk").
      */
+    /**
+     * The name and type a save is stored under (GO-01): the name cleaned of
+     * bidi and control characters, and a page type (HTML, SVG, XML...) saved
+     * as text, so it never reaches shared storage as something a WebView or
+     * browser runs. A Q-App's SAVE_FILE picks both name and type.
+     */
+    private static SavedFilePolicy.Target saveTarget(String displayName, String mimeHint) {
+        return SavedFilePolicy.forSave(displayName, mimeHint, DocumentSaver.EXTENSION_TYPES);
+    }
+
     private static String mediaStoreMimeType(String displayName, String mimeHint) {
         String ext = SaveCategory.extensionOf(displayName);
         if (!ext.isEmpty()) {

@@ -8,9 +8,12 @@
  * be off per app): every value here is one the app cannot otherwise show and
  * that decides which fix applies.
  *
- * Users paste this publicly: it names hosts (host:port) but never a URL or an
- * API key; a key is only ever reported as set / not set. The formatter is
- * pure; only the probes and `collectReticulumDiagnostics` touch the
+ * Users paste this publicly: it never holds a URL or an API key (a key is only
+ * reported as set / not set), and Qortal addresses, group / peer /
+ * conversation / file ids and the user's own node host are replaced with
+ * per-report pseudonyms (diagnosticPseudonyms.ts). Loopback and the public
+ * Qortal nodes keep their names. The formatter is pure apart from the random
+ * pseudonym key; only the probes and `collectReticulumDiagnostics` touch the
  * environment.
  */
 import { GO_VERSION } from '../../appVersion';
@@ -27,6 +30,11 @@ import {
   type ResourceSessionStats,
 } from '../../reticulumChat/mobile';
 import { redactDiagnosticText } from '../../reticulumChat/mobile/groupValidation';
+import { createDiagnosticPseudonymizer } from './diagnosticPseudonyms';
+import {
+  fetchBackgroundSyncState,
+  type BackgroundSyncState,
+} from '../Mobile/backgroundSync';
 import {
   getNativeBcryptRuntimeInfo,
   type NativeBcryptRuntimeInfo,
@@ -73,6 +81,15 @@ export type UnlockDiagnostics = {
   runtime: NativeBcryptRuntimeInfo | null;
 };
 
+/** Background sync facts for the report: no names, addresses or ids. */
+export type BackgroundSyncDiagnostics = Pick<
+  BackgroundSyncState,
+  | 'mode'
+  | 'ignoringBatteryOptimizations'
+  | 'vendorFreezeCount'
+  | 'vendorFreezeRecent'
+>;
+
 export type ReticulumDiagnosticsInput = {
   now: number;
   version: string;
@@ -84,6 +101,10 @@ export type ReticulumDiagnosticsInput = {
   coreApi: CoreApiProbe | null;
   sendFailures: SendFailureRecord[];
   unlock?: UnlockDiagnostics | null;
+  /** Native Android only; null or missing elsewhere. */
+  backgroundSync?: BackgroundSyncDiagnostics | null;
+  /** Key for the identifier pseudonyms; random per report unless a test fixes it. */
+  pseudonymKey?: Uint8Array;
 };
 
 export type JitEvidence = {
@@ -591,10 +612,58 @@ export function formatUnlockLines(
   return lines;
 }
 
+/** `42 s`, `12 min`, `6 h 05 min`. */
+function fmtFrozen(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return 'n/a';
+  const sec = Math.round(ms / 1000);
+  if (sec < 60) return `${sec} s`;
+  const min = Math.round(sec / 60);
+  if (min < 60) return `${min} min`;
+  return `${Math.floor(min / 60)} h ${String(min % 60).padStart(2, '0')} min`;
+}
+
+export const BACKGROUND_SYNC_FREEZE_LINES = 5;
+
+/**
+ * The "Background sync" section: mode, exemption, how often the phone's own
+ * battery manager froze GO, and the last few freezes (UTC time, how long,
+ * charging / exempt then).
+ */
+export function formatBackgroundSyncLines(
+  sync: BackgroundSyncDiagnostics | null | undefined,
+  now: number
+): string[] {
+  if (!sync) return ['Not reported (not native Android, or an older app)'];
+  const exempt =
+    sync.ignoringBatteryOptimizations == null
+      ? 'unknown'
+      : sync.ignoringBatteryOptimizations
+        ? 'yes'
+        : 'no';
+  const recent = Array.isArray(sync.vendorFreezeRecent)
+    ? sync.vendorFreezeRecent
+    : [];
+  const lines = [
+    `Mode: ${sync.mode}, battery optimisation exempt: ${exempt}`,
+    `Vendor freezes recorded: ${
+      Number.isFinite(sync.vendorFreezeCount) ? sync.vendorFreezeCount : 0
+    }${recent.length ? `, last ${Math.min(recent.length, BACKGROUND_SYNC_FREEZE_LINES)}:` : ''}`,
+  ];
+  for (const freeze of recent.slice(-BACKGROUND_SYNC_FREEZE_LINES)) {
+    lines.push(
+      `${fmtEventTime(freeze.at, now)} frozen ${fmtFrozen(freeze.gapMs)}${
+        freeze.charging ? ', charging' : ', on battery'
+      }${freeze.ignoring ? ', exempt' : ''}`
+    );
+  }
+  return lines;
+}
+
 export function buildReticulumDiagnosticsReport(
   input: ReticulumDiagnosticsInput
 ): string {
   const { state, webView, engine, coreApi } = input;
+  const pseudonyms = createDiagnosticPseudonymizer(input.pseudonymKey);
   const displayPhase = state.bridgeError
     ? 'error'
     : reticulumDisplayPhase(state.phase, input.onlineCount, input.deviceOnline);
@@ -602,6 +671,9 @@ export function buildReticulumDiagnosticsReport(
   lines.push('Qortal GO diagnostics');
   lines.push(`GO version: ${input.version}`);
   lines.push(`Time: ${new Date(input.now).toISOString()}`);
+  lines.push(
+    'Ids: addresses, names, group/peer/file ids, IP addresses and your own node host are per-report pseudonyms (<addr-…>, <id-…>, <ip-…>, <node-…>)'
+  );
   lines.push('');
   lines.push('--- WebView ---');
   lines.push(`User agent: ${webView.userAgent || 'unknown'}`);
@@ -674,10 +746,13 @@ export function buildReticulumDiagnosticsReport(
   if (state.bridgeWarning) lines.push(`Warning: ${state.bridgeWarning}`);
   if (state.bridgeError) lines.push(`Bridge error: ${state.bridgeError}`);
   lines.push('');
+  lines.push('--- Background sync ---');
+  lines.push(...formatBackgroundSyncLines(input.backgroundSync, input.now));
+  lines.push('');
   lines.push('--- Core API ---');
   if (coreApi) {
     lines.push(
-      `Node: ${coreApi.host || 'unknown'}, /admin/status: ${
+      `Node: ${pseudonyms.host(coreApi.host) || 'unknown'}, /admin/status: ${
         coreApi.ok
           ? `ok (${coreApi.httpStatus})`
           : coreApi.httpStatus != null
@@ -705,16 +780,28 @@ export function buildReticulumDiagnosticsReport(
         notes.push(`${engine.apiScheme}, node above uses ${coreApi?.scheme}`);
       }
       lines.push(
-        `Membership API host: ${engine.apiHost || 'none'}${
+        `Membership API host: ${pseudonyms.host(engine.apiHost) || 'none'}${
           notes.length ? ` (${notes.join('; ')})` : ''
         }`
       );
     }
+    const probe = engine.membershipProbe ?? null;
     lines.push(
-      formatMembershipProbeLine(engine.membershipProbe ?? null, engineReady)
+      formatMembershipProbeLine(
+        probe ? { ...probe, host: pseudonyms.host(probe.host) } : null,
+        engineReady
+      )
     );
     if (engineReady) {
-      lines.push(formatValidatorLine(engine.validator ?? null, input.now));
+      const validator = engine.validator ?? null;
+      lines.push(
+        formatValidatorLine(
+          validator?.host
+            ? { ...validator, host: pseudonyms.host(validator.host) }
+            : validator,
+          input.now
+        )
+      );
     }
   }
   lines.push('');
@@ -743,8 +830,11 @@ export function buildReticulumDiagnosticsReport(
     );
   }
   // Last line of defence for a report pasted publicly: no URL (they can
-  // carry keys or tokens) and no API key value, whatever the source line.
-  return lines.map((line) => redactDiagnosticText(line)).join('\n');
+  // carry keys or tokens), no API key value and no raw identifier, whatever
+  // the source line.
+  return lines
+    .map((line) => pseudonyms.line(redactDiagnosticText(line)))
+    .join('\n');
 }
 
 // ── Markdown file export ─────────────────────────────────────────────────────
@@ -815,10 +905,11 @@ export async function collectReticulumDiagnostics(
   deviceOnline: boolean
 ): Promise<string> {
   const webView = probeWebView();
-  const [engine, coreApi, unlockRuntime] = await Promise.all([
+  const [engine, coreApi, unlockRuntime, backgroundSync] = await Promise.all([
     getMobileReticulumChatDiagnostics().catch(() => null),
     probeCoreApi().catch(() => null),
     probeUnlockRuntime().catch(() => null),
+    fetchBackgroundSyncState().catch(() => null),
   ]);
   return buildReticulumDiagnosticsReport({
     now: Date.now(),
@@ -834,5 +925,6 @@ export async function collectReticulumDiagnostics(
       events: getUnlockTimingSnapshot().events,
       runtime: unlockRuntime,
     },
+    backgroundSync,
   });
 }

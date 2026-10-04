@@ -106,9 +106,9 @@ public class EncryptedMediaServerPlugin extends Plugin {
                 return;
             }
             
-            // DEBUG: Log the raw data received
+            // The call data holds the media AES key and IV, and the resource
+            // URL can carry the node API key: none of it goes to logcat.
             Log.d(TAG, "=== registerMedia called ===");
-            Log.d(TAG, "Raw call data: " + call.getData().toString());
             
             // Get parameters
             String mediaId = call.getString("mediaId");
@@ -121,7 +121,7 @@ public class EncryptedMediaServerPlugin extends Plugin {
             Log.d(TAG, "mediaId: " + mediaId);
             Log.d(TAG, "key length: " + (key != null ? key.length() : "null"));
             Log.d(TAG, "iv length: " + (iv != null ? iv.length() : "null"));
-            Log.d(TAG, "resourceUrl: " + resourceUrl);
+            Log.d(TAG, "resourceUrl: " + SecretRedaction.stripQuery(resourceUrl));
             Log.d(TAG, "mimeType: " + mimeType);
             
             // Try to get totalSize - handle multiple possible types

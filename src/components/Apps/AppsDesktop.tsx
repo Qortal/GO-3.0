@@ -53,10 +53,7 @@ import {
 } from '../../hooks/useAppRatings';
 import { AppsLibraryDesktop } from './AppsLibraryDesktop';
 import { AppsCategoryDesktop } from './AppsCategoryDesktop';
-import {
-  invalidateAppNodeStatuses,
-  watchAppNodeStatus,
-} from './appNodeStatus';
+import { invalidateAppNodeStatuses, watchAppNodeStatus } from './appNodeStatus';
 import AddRoundedIcon from '@mui/icons-material/AddRounded';
 import { CustomizedSnackbars } from '../Snackbar/Snackbar';
 import {
@@ -76,7 +73,11 @@ import {
   isNewTabWindowAtom,
   userInfoAtom,
 } from '../../atoms/global';
-import { publishEditTargetAtom, availableQappsAtom, appOpenCountsAtom } from '../../atoms/appsAtoms';
+import {
+  publishEditTargetAtom,
+  availableQappsAtom,
+  appOpenCountsAtom,
+} from '../../atoms/appsAtoms';
 import {
   incrementAppOpenCount,
   loadAppOpenCounts,
@@ -98,6 +99,7 @@ import {
 } from '../../constants/constants';
 import { appChromeOffsetPx } from '../Desktop/CustomTitleBar';
 import { extractComponents } from '../Chat/MessageDisplay';
+import { isQappTabTargetSafe } from '../../utils/qappPath';
 import { QORTAL_PROTOCOL } from '../../constants/constants';
 import { QCHAT_INTERNAL_TAB_ID } from '../../utils/openQChatTab';
 import {
@@ -257,7 +259,8 @@ export const AppsDesktop = ({
 
   const recordMobileAppOpen = useCallback(
     (tab: Record<string, unknown> | null | undefined) => {
-      if (!isMobile || !myAddress || isRestoringSessionRef.current || !tab) return;
+      if (!isMobile || !myAddress || isRestoringSessionRef.current || !tab)
+        return;
       setAppOpenCounts((prev) => {
         const next = incrementAppOpenCount(prev, tab);
         void saveAppOpenCounts(myAddress, next);
@@ -333,7 +336,9 @@ export const AppsDesktop = ({
 
   useEffect(() => {
     if (!isMobile || !myAddress) return;
-    void loadAppOpenCounts(myAddress).then((counts) => setAppOpenCounts(counts));
+    void loadAppOpenCounts(myAddress).then((counts) =>
+      setAppOpenCounts(counts)
+    );
   }, [isMobile, myAddress, setAppOpenCounts]);
 
   useEffect(() => {
@@ -708,7 +713,12 @@ export const AppsDesktop = ({
   }, []);
 
   useEffect(() => {
-    if (!isMobile || desktopViewMode !== 'apps' || mode !== 'home' || selectedTab) {
+    if (
+      !isMobile ||
+      desktopViewMode !== 'apps' ||
+      mode !== 'home' ||
+      selectedTab
+    ) {
       return;
     }
     setMode('library');
@@ -960,9 +970,22 @@ export const AppsDesktop = ({
         return;
       }
     }
+    // GO-21: every route into a tab (chat links, deep links, notifications,
+    // SET_TAB, Qortino) ends here. A name or path that climbs out of
+    // /render/<SERVICE>/<name> would run another app under this one's name.
+    if (!isQappTabTargetSafe(data)) {
+      setInfoSnack({
+        message: t('auth:message.error.invalid_qortal_link', {
+          postProcess: 'capitalizeFirstChar',
+        }),
+        type: 'error',
+      });
+      setOpenSnack(true);
+      return;
+    }
     if (tabs.length >= MAX_OPEN_APP_TABS) {
       setInfoSnack({
-        message: 'Maximum number of tabs reached. Close one to open another.',
+        message: t('core:message.error.max_tabs_reached'),
         type: 'warning',
       });
       setOpenSnack(true);
@@ -1069,7 +1092,7 @@ export const AppsDesktop = ({
     const data = e.detail?.data;
     if (tabs.length >= MAX_OPEN_APP_TABS) {
       setInfoSnack({
-        message: 'Maximum number of tabs reached. Close one to open another.',
+        message: t('core:message.error.max_tabs_reached'),
         type: 'warning',
       });
       setOpenSnack(true);
@@ -1750,133 +1773,133 @@ export const AppsDesktop = ({
         }}
       >
         {!isMobile && (
-        <AppsHorizontalTabBar
-          sx={{
-            transition: `opacity ${show ? '200ms ease-out' : '140ms ease-in'}, transform ${show ? '200ms ease-out' : '140ms ease-in'}`,
-            opacity: show ? 1 : 0,
-            transform: show ? 'translateY(0px)' : 'translateY(-10px)',
-            willChange: 'opacity, transform',
-            pointerEvents: show ? 'auto' : 'none',
-          }}
-        >
-          <AppsHorizontalTabScroller
-            ref={tabScrollerRef}
+          <AppsHorizontalTabBar
             sx={{
-              alignItems: 'stretch',
-              gap: '2px',
-              paddingLeft: `calc(6px + ${sidebarOffsetPx}px)`,
-              transition: `padding-left ${SIDEBAR_CHROME_TRANSITION}`,
+              transition: `opacity ${show ? '200ms ease-out' : '140ms ease-in'}, transform ${show ? '200ms ease-out' : '140ms ease-in'}`,
+              opacity: show ? 1 : 0,
+              transform: show ? 'translateY(0px)' : 'translateY(-10px)',
+              willChange: 'opacity, transform',
+              pointerEvents: show ? 'auto' : 'none',
             }}
           >
-            <DndContext
-              collisionDetection={closestCenter}
-              modifiers={[restrictTabsToHorizontalAxis, restrictTabsToStrip]}
-              onDragCancel={handleTabDragCancel}
-              onDragEnd={handleTabDragEnd}
-              onDragStart={handleTabDragStart}
-              sensors={sensors}
+            <AppsHorizontalTabScroller
+              ref={tabScrollerRef}
+              sx={{
+                alignItems: 'stretch',
+                gap: '2px',
+                paddingLeft: `calc(6px + ${sidebarOffsetPx}px)`,
+                transition: `padding-left ${SIDEBAR_CHROME_TRANSITION}`,
+              }}
             >
-              <SortableContext
-                items={tabs.map((tab) => tab?.tabId)}
-                strategy={horizontalListSortingStrategy}
+              <DndContext
+                collisionDetection={closestCenter}
+                modifiers={[restrictTabsToHorizontalAxis, restrictTabsToStrip]}
+                onDragCancel={handleTabDragCancel}
+                onDragEnd={handleTabDragEnd}
+                onDragStart={handleTabDragStart}
+                sensors={sensors}
               >
-                <Box
-                  sx={{
-                    display: 'flex',
-                    gap: '2px',
-                    ...(tabStripCompresses
-                      ? {
-                          flex: '1 1 auto',
-                          maxWidth: '100%',
-                          minWidth: 0,
-                          overflow: 'hidden',
-                        }
-                      : {
-                          flex: '0 0 auto',
-                          overflow: 'visible',
-                          width: 'max-content',
-                        }),
-                  }}
+                <SortableContext
+                  items={tabs.map((tab) => tab?.tabId)}
+                  strategy={horizontalListSortingStrategy}
                 >
-                  {tabs.map((tab) => (
-                    <TabComponent
-                      key={tab?.tabId}
-                      app={tab}
-                      isDevApp={isLocalDevTab(tab)}
-                      isSelected={tab?.tabId === selectedTab?.tabId}
-                      tabInteractionLockedRef={tabInteractionLockedRef}
-                      tabStripCompresses={tabStripCompresses}
-                      isEntering={enteringTabIds.includes(tab?.tabId)}
-                      isVisuallySelected={
-                        delayedVisualActiveTabId === tab?.tabId ||
-                        (tab?.tabId === selectedTab?.tabId &&
-                          pendingVisualTabActivationId !== tab?.tabId)
-                      }
-                      onCloseAll={closeAllTabs}
-                      onDuplicate={() => duplicateTab(tab)}
-                      onClose={() => {
-                        executeEvent('removeTab', {
-                          data: tab,
-                        });
-                      }}
-                      onSelect={() => {
-                        if (isLocalDevTab(tab)) {
-                          executeEvent('open-dev-mode', {});
-                          executeEvent('setSelectedTab', {
-                            data: tab,
-                            isDevMode: true,
-                          });
-                        } else {
-                          executeEvent('open-apps-mode', {});
-                          executeEvent('setSelectedTab', {
-                            data: tab,
-                          });
+                  <Box
+                    sx={{
+                      display: 'flex',
+                      gap: '2px',
+                      ...(tabStripCompresses
+                        ? {
+                            flex: '1 1 auto',
+                            maxWidth: '100%',
+                            minWidth: 0,
+                            overflow: 'hidden',
+                          }
+                        : {
+                            flex: '0 0 auto',
+                            overflow: 'visible',
+                            width: 'max-content',
+                          }),
+                    }}
+                  >
+                    {tabs.map((tab) => (
+                      <TabComponent
+                        key={tab?.tabId}
+                        app={tab}
+                        isDevApp={isLocalDevTab(tab)}
+                        isSelected={tab?.tabId === selectedTab?.tabId}
+                        tabInteractionLockedRef={tabInteractionLockedRef}
+                        tabStripCompresses={tabStripCompresses}
+                        isEntering={enteringTabIds.includes(tab?.tabId)}
+                        isVisuallySelected={
+                          delayedVisualActiveTabId === tab?.tabId ||
+                          (tab?.tabId === selectedTab?.tabId &&
+                            pendingVisualTabActivationId !== tab?.tabId)
                         }
-                      }}
-                    />
-                  ))}
-                </Box>
-              </SortableContext>
-            </DndContext>
+                        onCloseAll={closeAllTabs}
+                        onDuplicate={() => duplicateTab(tab)}
+                        onClose={() => {
+                          executeEvent('removeTab', {
+                            data: tab,
+                          });
+                        }}
+                        onSelect={() => {
+                          if (isLocalDevTab(tab)) {
+                            executeEvent('open-dev-mode', {});
+                            executeEvent('setSelectedTab', {
+                              data: tab,
+                              isDevMode: true,
+                            });
+                          } else {
+                            executeEvent('open-apps-mode', {});
+                            executeEvent('setSelectedTab', {
+                              data: tab,
+                            });
+                          }
+                        }}
+                      />
+                    ))}
+                  </Box>
+                </SortableContext>
+              </DndContext>
 
-            <AppsHorizontalTabAddButton
-              ref={tabAddButtonRef}
-              disableRipple
-              onClick={openDashboardFromTabs}
-              sx={(theme) => ({
-                backgroundColor: isAddTabFocused
-                  ? alpha(
-                      theme.palette.primary.main,
-                      theme.palette.mode === 'dark' ? 0.78 : 0.88
-                    )
-                  : undefined,
-                borderColor: isAddTabFocused ? 'transparent' : undefined,
-                color: isAddTabFocused
-                  ? theme.palette.mode === 'dark'
-                    ? theme.palette.common.white
-                    : theme.palette.primary.contrastText
-                  : undefined,
-                '&:hover': {
+              <AppsHorizontalTabAddButton
+                ref={tabAddButtonRef}
+                disableRipple
+                onClick={openDashboardFromTabs}
+                sx={(theme) => ({
                   backgroundColor: isAddTabFocused
                     ? alpha(
                         theme.palette.primary.main,
-                        theme.palette.mode === 'dark' ? 0.86 : 0.94
+                        theme.palette.mode === 'dark' ? 0.78 : 0.88
                       )
-                    : theme.palette.mode === 'dark'
-                      ? 'rgba(255, 255, 255, 0.08)'
-                      : 'rgba(0, 0, 0, 0.06)',
+                    : undefined,
+                  borderColor: isAddTabFocused ? 'transparent' : undefined,
                   color: isAddTabFocused
                     ? theme.palette.mode === 'dark'
                       ? theme.palette.common.white
                       : theme.palette.primary.contrastText
-                    : theme.palette.text.primary,
-                },
-              })}
-            >
-              <AddRoundedIcon sx={{ fontSize: 20 }} />
-            </AppsHorizontalTabAddButton>
-          </AppsHorizontalTabScroller>
-        </AppsHorizontalTabBar>
+                    : undefined,
+                  '&:hover': {
+                    backgroundColor: isAddTabFocused
+                      ? alpha(
+                          theme.palette.primary.main,
+                          theme.palette.mode === 'dark' ? 0.86 : 0.94
+                        )
+                      : theme.palette.mode === 'dark'
+                        ? 'rgba(255, 255, 255, 0.08)'
+                        : 'rgba(0, 0, 0, 0.06)',
+                    color: isAddTabFocused
+                      ? theme.palette.mode === 'dark'
+                        ? theme.palette.common.white
+                        : theme.palette.primary.contrastText
+                      : theme.palette.text.primary,
+                  },
+                })}
+              >
+                <AddRoundedIcon sx={{ fontSize: 20 }} />
+              </AppsHorizontalTabAddButton>
+            </AppsHorizontalTabScroller>
+          </AppsHorizontalTabBar>
         )}
 
         <Box
@@ -2064,28 +2087,28 @@ export const AppsDesktop = ({
                 !isNewTabWindow &&
                 !hideContentForDevHome;
               return (
-              <Box
-                key={tab?.tabId}
-                sx={{
-                  display: isInternalTabActive ? 'flex' : 'none',
-                  flex: 1,
-                  flexDirection: 'column',
-                  height: '100%',
-                  minHeight: 0,
-                  overflow: 'hidden',
-                  width: '100%',
-                  ...(!isInternalTabActive
-                    ? {
-                        left: '-200vw',
-                        position: 'absolute',
-                        top: 0,
-                      }
-                    : {}),
-                }}
-              >
-                {internalTabContent}
-              </Box>
-            );
+                <Box
+                  key={tab?.tabId}
+                  sx={{
+                    display: isInternalTabActive ? 'flex' : 'none',
+                    flex: 1,
+                    flexDirection: 'column',
+                    height: '100%',
+                    minHeight: 0,
+                    overflow: 'hidden',
+                    width: '100%',
+                    ...(!isInternalTabActive
+                      ? {
+                          left: '-200vw',
+                          position: 'absolute',
+                          top: 0,
+                        }
+                      : {}),
+                  }}
+                >
+                  {internalTabContent}
+                </Box>
+              );
             }
             if (!iframeRefs.current[tab.tabId]) {
               iframeRefs.current[tab.tabId] = createRef();

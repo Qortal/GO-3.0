@@ -10,7 +10,7 @@ import {
 } from '@testing-library/react';
 import { useCallback, useRef, useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import '../../i18n/i18n';
+import i18n from '../../i18n/i18n';
 import { ANDROID_BACK_EVENT } from '../../bridge/capacitorBridge';
 import {
   MAX_SIZE_MESSAGE,
@@ -22,6 +22,8 @@ import {
   chatDocumentToHtml,
 } from '../../utils/chat/splitLongMessage';
 import {
+  DISCUSSION_PHONE_CHIP_ROW_PX,
+  DISCUSSION_PHONE_FIELD_MAX_HEIGHT,
   type ReticulumDiscussionDraft,
   type ReticulumDiscussionFile,
   type ReticulumDiscussionSender,
@@ -39,6 +41,8 @@ const composer = vi.hoisted(() => ({
   editor: null as any,
   props: null as any,
 }));
+// The expiry control's props, as the dialog last rendered it.
+const expiry = vi.hoisted(() => ({ props: null as any }));
 
 vi.mock('./TipTap', async () => {
   const { useEffect, useRef } = await import('react');
@@ -60,7 +64,20 @@ vi.mock('./TipTap', async () => {
         editor.destroy();
       };
     }, []);
-    return null;
+    // TipTap renders the phone corner cluster inside its own field.
+    const { compactActions } = props;
+    if (!compactActions) return null;
+    return (
+      <div data-testid="composer-corner-actions">
+        {typeof compactActions === 'function'
+          ? compactActions({
+              showExpiry: true,
+              squeezed: false,
+              stacked: false,
+            })
+          : compactActions}
+      </div>
+    );
   };
   return {
     default: MockTiptap,
@@ -71,7 +88,10 @@ vi.mock('./TipTap', async () => {
 vi.mock('./MessageItem', () => ({ MessageItem: () => null }));
 vi.mock('../ReactionPicker', () => ({ ReactionPicker: () => null }));
 vi.mock('./ReticulumMessageExpiryButton', () => ({
-  ReticulumMessageExpiryButton: () => null,
+  ReticulumMessageExpiryButton: (props: any) => {
+    expiry.props = props;
+    return null;
+  },
 }));
 vi.mock('./gifs/libraryGifs', () => ({ fetchLibraryGifFile: vi.fn() }));
 
@@ -360,24 +380,38 @@ const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
  * or one of a closed thread refuses without a word.
  */
 const ParentHarness = ({
+  canWrite = true,
   closeDuringFirstSend = false,
   failAtSend = -1,
   initialFiles = [],
   log,
   onClose = () => undefined,
+  onRemoveFile,
   onSendStarted,
+  onTypingChange = () => undefined,
   preparingFile = false,
 }: {
+  canWrite?: boolean;
   /** The thread closes (a group switch) while the first reply goes out. */
   closeDuringFirstSend?: boolean;
   failAtSend?: number;
   initialFiles?: ReticulumDiscussionFile[];
   log: SendLogEntry[];
   onClose?: () => void;
+  /** Sees every removal; the file goes from the pending list either way. */
+  onRemoveFile?: (index: number) => void;
   onSendStarted?: () => void;
+  onTypingChange?: (active: boolean) => void;
   preparingFile?: boolean;
 }) => {
   const [files, setFiles] = useState(initialFiles);
+  const removeFile = useCallback(
+    (index: number) => {
+      onRemoveFile?.(index);
+      setFiles((current) => current.filter((_, i) => i !== index));
+    },
+    [onRemoveFile]
+  );
   const [isSending, setIsSending] = useState(false);
   const [rootId, setRootId] = useState('root-1');
   const isSendingRef = useRef(false);
@@ -421,7 +455,7 @@ const ParentHarness = ({
   );
   return (
     <ReticulumDiscussionDialog
-      canWrite
+      canWrite={canWrite}
       compressingGif={false}
       files={files}
       loading={false}
@@ -430,10 +464,10 @@ const ParentHarness = ({
       myAddress="Qme"
       onClose={onClose}
       onPreferredExpiryChange={() => undefined}
-      onRemoveFile={() => undefined}
+      onRemoveFile={removeFile}
       onSelectFiles={() => undefined}
       onSend={onSend}
-      onTypingChange={() => undefined}
+      onTypingChange={onTypingChange}
       open={Boolean(rootId)}
       preferredExpiryDurationMs={ONE_DAY_MS}
       preparingFile={preparingFile}
@@ -768,5 +802,367 @@ describe('ReticulumDiscussionDialog Android back', () => {
     );
     pressAndroidBack();
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+});
+
+const setPhone = (phone: boolean) => {
+  window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+    // Phones are under MUI's md breakpoint; nothing else is asked for here.
+    matches: phone && query.includes('max-width'),
+    media: query,
+    onchange: null,
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  })) as unknown as typeof window.matchMedia;
+};
+
+const composerBand = () =>
+  document.querySelector<HTMLElement>('.reticulum-discussion-composer');
+const sendButton = () => screen.getByRole('button', { name: 'Send' });
+const discardButton = () =>
+  screen.getByRole('button', { name: 'Discard message' });
+
+describe('ReticulumDiscussionDialog phone composer', () => {
+  const originalMatchMedia = window.matchMedia;
+
+  beforeEach(() => {
+    setPhone(true);
+  });
+
+  afterEach(() => {
+    window.matchMedia = originalMatchMedia;
+    composer.editor = null;
+    composer.props = null;
+    expiry.props = null;
+  });
+
+  it('is the chat corner composer: one full-width rounded field', async () => {
+    await renderDialog({ log: [] });
+    const band = composerBand() as HTMLElement;
+    expect(band).toHaveClass('reticulum-discussion-composer--corners');
+    expect(getComputedStyle(band).flexDirection).toBe('column');
+
+    const field = band.querySelector<HTMLElement>(
+      '.reticulum-discussion-composer__field'
+    ) as HTMLElement;
+    expect(field.parentElement).toBe(band);
+    const fieldStyle = getComputedStyle(field);
+    // Capped like the chat's composer bar, so the corner composer measures
+    // the room the chips and the formatting tray leave it.
+    expect(DISCUSSION_PHONE_FIELD_MAX_HEIGHT).toBe(
+      'calc(min(50vh, 320px) - 12px)'
+    );
+    expect(fieldStyle.maxHeight).toBe(DISCUSSION_PHONE_FIELD_MAX_HEIGHT);
+    expect(getComputedStyle(band).maxHeight).not.toMatch(/px|vh/);
+    expect(fieldStyle.borderRadius).toBe('22px');
+    expect(fieldStyle.width).not.toMatch(/px$/);
+    expect(fieldStyle.maxWidth).not.toMatch(/px$/);
+    // Nothing sits beside the field: the controls live inside it.
+    expect(band.querySelectorAll(':scope > *')).toHaveLength(2);
+    expect(
+      field.querySelector('[data-testid="composer-corner-actions"]')
+    ).not.toBeNull();
+
+    // TipTap's corner layout, kept out of the app shell's emoji panel and
+    // full-screen composer, with the placeholder it lays out on one line.
+    expect(composer.props.compactChat).toBe(true);
+    expect(typeof composer.props.compactActions).toBe('function');
+    expect(composer.props.inOverlay).toBe(true);
+    expect(composer.props.placeholder).toBe('Reply to discussion...');
+    expect(typeof composer.props.insertFiles).toBe('function');
+    expect(typeof composer.props.insertGif).toBe('function');
+    expect(composer.props.enableMentions).toBe(true);
+
+    // Expiry, discard and send, tagged for the rail CSS, at thumb size.
+    expect(expiry.props.corner).toBe(true);
+    expect(expiry.props.segmented).toBeUndefined();
+    expect(discardButton()).toHaveClass('compact-composer-discard');
+    expect(sendButton()).toHaveClass('compact-composer-send');
+    expect(getComputedStyle(sendButton()).width).toBe('42px');
+    expect(getComputedStyle(sendButton()).height).toBe('42px');
+    expect(getComputedStyle(discardButton()).width).toBe('40px');
+    const actions = screen.getByTestId('composer-corner-actions');
+    expect(
+      actions.querySelector(':scope > .compact-composer-expiry')
+    ).not.toBeNull();
+    // The full-width text button of the desktop composer is not there.
+    expect(sendButton()).toHaveTextContent('');
+  });
+
+  it('shows send and discard only once there is something to send', async () => {
+    await renderDialog({ log: [] });
+    expect(sendButton()).toHaveAttribute('data-idle', '');
+    expect(discardButton()).toHaveAttribute('data-idle', '');
+    expect(sendButton()).toHaveAttribute('aria-disabled', 'true');
+
+    typeIntoComposer(doc(paragraph(text('Hello thread'))));
+    await waitFor(() => expect(sendButton()).not.toHaveAttribute('data-idle'));
+    expect(discardButton()).not.toHaveAttribute('data-idle');
+    expect(sendButton()).not.toHaveAttribute('aria-disabled');
+  });
+
+  it('never lets a tap on a send it refuses through to the editor', async () => {
+    const log: SendLogEntry[] = [];
+    await renderDialog({ canWrite: false, log });
+    typeIntoComposer(doc(paragraph(text('Let me in'))));
+    // Mui-disabled would set pointer-events: none, and the rail over the
+    // editor takes no taps either.
+    expect(sendButton()).not.toBeDisabled();
+    expect(sendButton()).not.toHaveClass('Mui-disabled');
+    expect(getComputedStyle(sendButton()).pointerEvents).toBe('auto');
+    expect(sendButton()).toHaveAttribute('aria-disabled', 'true');
+    fireEvent.click(sendButton());
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(log).toEqual([]);
+  });
+
+  it('keeps the typing row whole however much is stacked above it', async () => {
+    // A key the integrator adds to the locales; until then, its English.
+    if (!i18n.exists('reticulum:discussion.size_counter')) {
+      i18n.addResource(
+        'en',
+        'reticulum',
+        'discussion.size_counter',
+        '{{size}} / {{maximum}} bytes'
+      );
+    }
+    await renderDialog({
+      canWrite: false,
+      initialFiles: [
+        image,
+        { ...image, fileName: 'notes.txt' },
+        { ...image, fileName: 'third.webp' },
+      ],
+      log: [],
+    });
+    typeIntoComposer(longDoc(30));
+    const band = composerBand() as HTMLElement;
+    const field = band.querySelector<HTMLElement>(
+      '.reticulum-discussion-composer__field'
+    ) as HTMLElement;
+
+    // Short of height the chips give way, down to one row, and scroll.
+    const chips = field.querySelector<HTMLElement>(
+      '.reticulum-discussion-composer__attachments'
+    ) as HTMLElement;
+    expect(getComputedStyle(chips).flexShrink).toBe('1');
+    expect(getComputedStyle(chips).minHeight).toBe(
+      `${DISCUSSION_PHONE_CHIP_ROW_PX}px`
+    );
+    expect(getComputedStyle(chips).overflowY).toBe('auto');
+    // The formatting tray and the typing row never do.
+    const editor = field.querySelector<HTMLElement>(
+      '.reticulum-discussion-composer__editor'
+    ) as HTMLElement;
+    expect(editor.parentElement).toBe(field);
+    expect(getComputedStyle(editor).flexShrink).toBe('0');
+    expect(
+      editor.querySelector('[data-testid="composer-corner-actions"]')
+    ).not.toBeNull();
+
+    // The lip, the byte count and the admins-only note sit outside the
+    // field's height budget, so none of them takes the text's room.
+    const lip = screen.getByRole('status');
+    const counter = screen.getByText(/\/ 4000 bytes$/);
+    const note = screen.getByText(
+      'Only group admins can write in this channel'
+    );
+    for (const node of [lip, counter, note]) {
+      expect(band.contains(node)).toBe(true);
+      expect(field.contains(node)).toBe(false);
+    }
+  });
+
+  it('sends the reply with its files and the expiry picked for it', async () => {
+    const log: SendLogEntry[] = [];
+    await renderDialog({ initialFiles: [image], log });
+    // A file alone is enough to send.
+    expect(sendButton()).not.toHaveAttribute('data-idle');
+    expect(screen.getByText('photo.webp')).toBeInTheDocument();
+    expect(expiry.props.value).toBe(ONE_DAY_MS);
+
+    const ONE_HOUR_MS = 60 * 60 * 1000;
+    act(() => {
+      expiry.props.onChange(ONE_HOUR_MS);
+    });
+    const value = doc(paragraph(text('With a picture')));
+    typeIntoComposer(value);
+    fireEvent.click(sendButton());
+    await waitFor(() => expect(composer.editor.isEmpty).toBe(true));
+
+    expect(log).toHaveLength(1);
+    expect(log[0].files).toEqual(['photo.webp']);
+    expect(log[0].draft.expiryDurationMs).toBe(ONE_HOUR_MS);
+    expect(log[0].draft.messageText).toEqual(value);
+    // The next reply starts from the preferred expiry again.
+    await waitFor(() => expect(expiry.props.value).toBe(ONE_DAY_MS));
+    await waitFor(() => expect(sendButton()).toHaveAttribute('data-idle', ''));
+  });
+
+  it('sends a long reply as several, as on desktop', async () => {
+    const log: SendLogEntry[] = [];
+    await renderDialog({ log });
+    const value = longDoc(30);
+    typeIntoComposer(value);
+    const expectedParts = planReticulumDiscussionSplit(value).splitParts;
+    expect(screen.getByRole('status')).toHaveTextContent(
+      `Long message: it will be sent as ${expectedParts} messages.`
+    );
+
+    fireEvent.click(sendButton());
+    await waitFor(() => expect(composer.editor.isEmpty).toBe(true), {
+      timeout: 5000,
+    });
+    expect(log.filter((entry) => !entry.refused)).toHaveLength(
+      expectedParts as number
+    );
+  });
+
+  it('removes an attachment from its chip with a thumb-sized X', async () => {
+    const onRemoveFile = vi.fn();
+    await renderDialog({
+      initialFiles: [image, { ...image, fileName: 'notes.txt' }],
+      log: [],
+      onRemoveFile,
+    });
+    const remove = screen.getByRole('button', { name: 'Remove notes.txt' });
+    expect(getComputedStyle(remove).width).toBe('40px');
+    expect(getComputedStyle(remove).height).toBe('40px');
+    fireEvent.click(remove);
+    expect(onRemoveFile).toHaveBeenCalledWith(1);
+    await waitFor(() =>
+      expect(screen.queryByText('notes.txt')).not.toBeInTheDocument()
+    );
+    expect(screen.getByText('photo.webp')).toBeInTheDocument();
+  });
+
+  it('discards the text, the files and the expiry picked', async () => {
+    const onRemoveFile = vi.fn();
+    const onTypingChange = vi.fn();
+    await renderDialog({
+      initialFiles: [image, { ...image, fileName: 'notes.txt' }],
+      log: [],
+      onRemoveFile,
+      onTypingChange,
+    });
+    act(() => {
+      expiry.props.onChange(60 * 60 * 1000);
+    });
+    typeIntoComposer(doc(paragraph(text('Never mind'))));
+    onTypingChange.mockClear();
+
+    fireEvent.click(discardButton());
+
+    expect(composer.editor.isEmpty).toBe(true);
+    // Last first, so each index still names the file it meant.
+    expect(onRemoveFile.mock.calls).toEqual([[1], [0]]);
+    expect(onTypingChange).toHaveBeenLastCalledWith(false);
+    await waitFor(() => expect(expiry.props.value).toBe(ONE_DAY_MS));
+    await waitFor(() => expect(sendButton()).toHaveAttribute('data-idle', ''));
+    expect(screen.queryByText('photo.webp')).not.toBeInTheDocument();
+  });
+
+  it('keeps everything while a file is still being prepared', async () => {
+    const onRemoveFile = vi.fn();
+    await renderDialog({
+      initialFiles: [image],
+      log: [],
+      onRemoveFile,
+      preparingFile: true,
+    });
+    typeIntoComposer(doc(paragraph(text('Wait for it'))));
+    expect(discardButton()).toBeDisabled();
+    expect(sendButton()).toHaveAttribute('aria-disabled', 'true');
+    fireEvent.click(sendButton());
+    fireEvent.click(discardButton());
+    expect(onRemoveFile).not.toHaveBeenCalled();
+    expect(composer.editor.isEmpty).toBe(false);
+    expect(expiry.props.disabled).toBe(true);
+  });
+
+  it('cannot send in an admins-only channel and says why', async () => {
+    const log: SendLogEntry[] = [];
+    await renderDialog({ canWrite: false, log });
+    expect(
+      screen.getByText('Only group admins can write in this channel')
+    ).toBeInTheDocument();
+    typeIntoComposer(doc(paragraph(text('Let me in'))));
+    expect(sendButton()).toHaveAttribute('aria-disabled', 'true');
+    expect(composer.props.disableEnter).toBe(true);
+    fireEvent.click(sendButton());
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(log).toEqual([]);
+  });
+
+  it('lets the emoji picker, which opens outside the dialog, take focus', async () => {
+    await renderDialog({ log: [] });
+    // Stands in for the picker's search field, portalled into the body.
+    const search = document.createElement('input');
+    document.body.append(search);
+    try {
+      act(() => search.focus());
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      expect(document.activeElement).toBe(search);
+    } finally {
+      search.remove();
+    }
+  });
+
+  it('pads the bottom for the gesture bar', async () => {
+    await renderDialog({ log: [] });
+    // jsdom drops the max()/var() value it cannot parse, so read the rule
+    // emotion wrote instead.
+    const band = composerBand() as HTMLElement;
+    const rules = [...document.querySelectorAll('style')]
+      .map((style) => style.textContent || '')
+      .join('\n');
+    const className = [...band.classList].find((name) =>
+      name.startsWith('css-')
+    );
+    expect(className).toBeDefined();
+    expect(rules).toMatch(
+      new RegExp(
+        `\\.${className}\\{[^}]*padding-bottom:max\\(6px, var\\(--safe-area-inset-bottom`
+      )
+    );
+  });
+});
+
+describe('ReticulumDiscussionDialog desktop composer', () => {
+  afterEach(() => {
+    composer.editor = null;
+    composer.props = null;
+    expiry.props = null;
+  });
+
+  it('keeps its bordered field, segmented expiry and text Send button', async () => {
+    await renderDialog({ log: [] });
+    expect(composerBand()).not.toHaveClass(
+      'reticulum-discussion-composer--corners'
+    );
+    expect(composer.props.compactActions).toBeUndefined();
+    expect(screen.queryByTestId('composer-corner-actions')).toBeNull();
+    expect(expiry.props.segmented).toBe(true);
+    expect(expiry.props.corner).toBeUndefined();
+    expect(sendButton()).toHaveTextContent('Send');
+    expect(
+      screen.queryByRole('button', { name: 'Discard message' })
+    ).toBeNull();
+  });
+
+  it('still keeps focus inside the dialog', async () => {
+    await renderDialog({ log: [] });
+    const outside = document.createElement('input');
+    document.body.append(outside);
+    try {
+      act(() => outside.focus());
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      expect(document.activeElement).not.toBe(outside);
+    } finally {
+      outside.remove();
+    }
   });
 });

@@ -67,7 +67,7 @@ public class QortalForegroundService extends Service {
 
     public static final int NOTIFICATION_ID_STATUS = 2001;
     public static final int NOTIFICATION_ID_INCOMING_CALL = 2002;
-    /** Plain "GO paused" notice posted after the dataSync time-out. */
+    /** Plain "GO paused" notice posted when the service pauses until GO is opened. */
     private static final int NOTIFICATION_ID_PAUSED = 2003;
     private static final int NOTIFICATION_ID_ALERT_BASE = 3000;
     // Alerts occupy 3000..12999 (base + id % 10000); keep transfers clear of that.
@@ -106,15 +106,17 @@ public class QortalForegroundService extends Service {
     private static final long PRESENCE_TICK_INTERVAL_MS = 25_000L;
 
     /**
-     * Set when Android stopped this dataSync service at its daily time limit
-     * (Android 15+, about 6 h in 24 h). Until GO is back on screen, a
-     * foreground start is refused ("Time limit already exhausted") and would
-     * crash the app, so nothing may call startForegroundService. Cleared on
-     * the next foreground edge (see onAppForeground). Process-wide: a new
-     * process starts clear, and only the user opening GO starts JS again.
+     * Set when the service is paused until GO is opened (pauseUntilOpened):
+     * Android stopped a dataSync service at its daily time limit (Android
+     * 15+, about 6 h in 24 h), or GO's own battery limit was reached. After
+     * Android's limit a foreground start is refused ("Time limit already
+     * exhausted") and would crash the app, so until GO is back on screen
+     * nothing may call startForegroundService. Cleared on the next
+     * foreground edge (see onAppForeground). Process-wide: a new process
+     * starts clear, and only the user opening GO starts JS again.
      */
     private static volatile boolean fgsTimedOut = false;
-    /** Last status the page asked for, to restart the service after a time-out. */
+    /** Last status the page asked for, to restart the service after a pause (pauseUntilOpened). */
     private static volatile Intent lastStatusIntent;
 
     /**
@@ -224,10 +226,13 @@ public class QortalForegroundService extends Service {
         public void run() {
             LocalBroadcastManager.getInstance(QortalForegroundService.this)
                 .sendBroadcast(new Intent(BROADCAST_PRESENCE_TICK));
-            // Background sync: renew the wake lock, watch for vendor freezes.
+            // Background sync: renew the wake lock, watch for vendor freezes,
+            // and check GO's 6 h battery limit (pauseOnBattery).
             BackgroundKeepAlive.get(QortalForegroundService.this).onServiceTick();
+            // A stopped service ticks no more.
+            if (!isRunning) return;
             // Local check only: has Chromium frozen the page by now?
-            if (isRunning) updateStatusNotification();
+            updateStatusNotification();
             presenceTickHandler.postDelayed(this, PRESENCE_TICK_INTERVAL_MS);
         }
     };
@@ -355,21 +360,55 @@ public class QortalForegroundService extends Service {
     /**
      * Android 15+ calls this when the dataSync type reaches its daily limit.
      * The service must leave the foreground within seconds or Android kills
-     * the app (ForegroundServiceDidNotStopInTimeException).
+     * the app (ForegroundServiceDidNotStopInTimeException). Since Android 14
+     * the service runs as remoteMessaging, which has no such limit, so this
+     * remains only for a phone that refused remoteMessaging (dataSync
+     * fallback in startForegroundTyped).
      */
     @Override
     public void onTimeout(int startId, int fgsType) {
-        handleForegroundTimeout();
+        pauseUntilOpened(PAUSE_REASON_FGS_TIMEOUT);
     }
 
     /** API 34 short-service time-out; same handling should the type change. */
     @Override
     public void onTimeout(int startId) {
-        handleForegroundTimeout();
+        pauseUntilOpened(PAUSE_REASON_FGS_TIMEOUT);
     }
 
-    private void handleForegroundTimeout() {
-        Log.w(TAG, "Foreground service time limit reached; pausing until GO is opened");
+    /** Android stopped the service at its time limit (onTimeout). */
+    private static final String PAUSE_REASON_FGS_TIMEOUT = "fgs_timeout";
+    /**
+     * GO's own limit (Android 15+): 6 h off screen on battery
+     * (KeepAlivePolicy.shouldPauseOnBattery).
+     */
+    private static final String PAUSE_REASON_BATTERY = "battery_pause";
+
+    /**
+     * GO's own battery limit was reached (BackgroundKeepAlive
+     * .checkBatteryPause). Runs at once, in the same main-thread message as
+     * that check, so GO coming on screen cannot slip in between. Same pause
+     * as at Android's time limit; opening GO undoes it (onAppForeground).
+     * Never posted: a pause run later could land after GO came on screen.
+     */
+    public static void pauseOnBattery() {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            Log.w(TAG, "Battery pause ignored: not called on the main thread");
+            return;
+        }
+        QortalForegroundService service = runningInstance;
+        if (service != null && service.isRunning && !fgsTimedOut) {
+            service.pauseUntilOpened(PAUSE_REASON_BATTERY);
+        }
+    }
+
+    /**
+     * Leave the foreground, stop, pause the hubs and post the "GO paused"
+     * notice until GO is opened again. Main thread. {@code reason} is
+     * PAUSE_REASON_FGS_TIMEOUT or PAUSE_REASON_BATTERY.
+     */
+    private void pauseUntilOpened(String reason) {
+        Log.w(TAG, "Background connection paused (" + reason + ") until GO is opened");
         fgsTimedOut = true;
         // No keep-alive or wake lock until GO is on screen again.
         BackgroundKeepAlive.get(this).onForegroundServiceTimeout();
@@ -377,8 +416,8 @@ public class QortalForegroundService extends Service {
         stopSelf();
         // No page is using the mesh now (it froze long ago), so the hub
         // sockets go too instead of draining the battery with no listener.
-        ReticulumPlugin.pauseNetwork("fgs_timeout", 0L);
-        postPausedNotification();
+        ReticulumPlugin.pauseNetwork(reason, 0L);
+        postPausedNotification(reason);
     }
 
     /**
@@ -409,7 +448,7 @@ public class QortalForegroundService extends Service {
     }
 
     /** One quiet notice that GO stopped; a tap opens GO, which reconnects. */
-    private void postPausedNotification() {
+    private void postPausedNotification(String reason) {
         NotificationManager manager = getSystemService(NotificationManager.class);
         if (manager == null) return;
         Intent openIntent = new Intent(this, MainActivity.class);
@@ -429,11 +468,18 @@ public class QortalForegroundService extends Service {
             StatusHonesty.KEY_FGS_TIMEOUT_TITLE,
             getString(R.string.go_paused_title)
         );
-        String text = localizedString(
-            this,
-            StatusHonesty.KEY_FGS_TIMEOUT_TEXT,
-            getString(R.string.go_paused_text)
-        );
+        // Say who paused it: GO's own battery limit, or Android's.
+        String text = PAUSE_REASON_BATTERY.equals(reason)
+            ? localizedString(
+                this,
+                StatusHonesty.KEY_BATTERY_PAUSE_TEXT,
+                getString(R.string.go_battery_pause_text)
+            )
+            : localizedString(
+                this,
+                StatusHonesty.KEY_FGS_TIMEOUT_TEXT,
+                getString(R.string.go_paused_text)
+            );
         Notification notification = baseNotificationBuilder(CHANNEL_STATUS_ID)
             .setContentTitle(title)
             .setContentText(text)
@@ -508,18 +554,14 @@ public class QortalForegroundService extends Service {
         }
     }
 
-    /** The type the status notification was last put in the foreground with. */
-    private int appliedForegroundType = 0;
-
     /**
-     * dataSync, or remoteMessaging while background sync is meant to run
-     * continuously (KeepAlivePolicy.foregroundServiceType). Android 15+ stops
-     * a dataSync service after about 6 h a day; remoteMessaging has no limit.
+     * remoteMessaging from Android 14 on, dataSync before
+     * (KeepAlivePolicy.foregroundServiceType, the one place that decides).
      * 0 before Android 10, where startForeground takes no type.
      */
-    private int resolveForegroundTypeFlag() {
+    private static int resolveForegroundTypeFlag() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return 0;
-        String type = BackgroundKeepAlive.get(this).foregroundServiceType();
+        String type = KeepAlivePolicy.foregroundServiceType(Build.VERSION.SDK_INT);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE
             && KeepAlivePolicy.SERVICE_TYPE_REMOTE_MESSAGING.equals(type)) {
             return ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING;
@@ -530,9 +572,10 @@ public class QortalForegroundService extends Service {
     /**
      * startForeground with an explicit type; the manifest declares two. A
      * refused remoteMessaging falls back to dataSync, so a phone that rejects
-     * it keeps the service, just with the daily limit.
+     * it keeps the service, with Android's daily limit (onTimeout) as the
+     * safety net there. Returns the type flag actually used.
      */
-    private void startForegroundTyped(Notification notification, int typeFlag) {
+    private int startForegroundTyped(Notification notification, int typeFlag) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && typeFlag != 0) {
             try {
                 startForeground(NOTIFICATION_ID_STATUS, notification, typeFlag);
@@ -545,51 +588,25 @@ public class QortalForegroundService extends Service {
         } else {
             startForeground(NOTIFICATION_ID_STATUS, notification);
         }
-        appliedForegroundType = typeFlag;
+        return typeFlag;
     }
 
-    /**
-     * Switch the running status service between dataSync and remoteMessaging
-     * (plugged in or unplugged, or the background sync mode changed).
-     */
-    public static void refreshForegroundType() {
-        mainHandler.post(() -> {
-            QortalForegroundService service = runningInstance;
-            if (service != null && service.isRunning && !fgsTimedOut) {
-                service.applyForegroundType();
-            }
-        });
-    }
-
-    private void applyForegroundType() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return;
-        int wanted = resolveForegroundTypeFlag();
-        if (wanted == appliedForegroundType) return;
-        try {
-            startForegroundTyped(buildStatusNotification(), wanted);
-            Log.i(TAG, "Status service type now "
-                + (wanted == ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
-                    ? "dataSync" : "remoteMessaging"));
-        } catch (IllegalStateException | SecurityException error) {
-            Log.w(TAG, "Status service type change refused: " + error.getMessage());
-            if (wanted == ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC) {
-                // Back on battery with today's dataSync time already used up
-                // (ForegroundServiceStartNotAllowedException): pause the same
-                // way as at the time limit instead of running on uncapped.
-                handleForegroundTimeout();
-            }
-        }
+    private static String foregroundTypeName(int typeFlag) {
+        if (typeFlag == 0) return "untyped";
+        return typeFlag == ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+            ? KeepAlivePolicy.SERVICE_TYPE_DATA_SYNC
+            : KeepAlivePolicy.SERVICE_TYPE_REMOTE_MESSAGING;
     }
 
     private void startStatusForeground() {
         Notification notification = buildStatusNotification();
-        startForegroundTyped(notification, resolveForegroundTypeFlag());
+        int typeFlag = startForegroundTyped(notification, resolveForegroundTypeFlag());
         isRunning = true;
         runningInstance = this;
         startPresenceTicker();
         registerConnectivityWatchers();
         BackgroundKeepAlive.get(this).setServiceRunning(true);
-        Log.d(TAG, "Status foreground service started");
+        Log.i(TAG, "Status foreground service started as " + foregroundTypeName(typeFlag));
     }
 
     private String lastPostedStatusKey = "";
@@ -696,7 +713,12 @@ public class QortalForegroundService extends Service {
         /** starting | online | offline, for the dot colour. */
         String kind;
         String title;
+        /** Status, then the full waiting text on a second line (expanded view). */
         String detail;
+        /** First line of {@link #detail}; the collapsed view has room for one. */
+        String primary;
+        /** Short waiting count for the collapsed line, or null. */
+        String waitingShort;
     }
 
     /**
@@ -746,11 +768,20 @@ public class QortalForegroundService extends Service {
             primary = statusDetail;
         }
         int count = outboxCount;
-        String waiting = StatusHonesty.showWaiting(gone, page.activityStopped, count)
-            ? waitingText(count)
-            : null;
+        boolean showWaiting = StatusHonesty.showWaiting(gone, page.activityStopped, count);
+        String waiting = showWaiting ? waitingText(count) : null;
+        display.primary = primary;
+        display.waitingShort = showWaiting ? waitingShortText(count) : null;
         display.detail = StatusHonesty.joinLines(primary, waiting);
         return display;
+    }
+
+    private String waitingShortText(int count) {
+        String template = localizedString(this, StatusHonesty.KEY_WAITING_SHORT, null);
+        if (template != null) {
+            return StatusHonesty.fillCount(template, count);
+        }
+        return getString(R.string.status_waiting_short, count);
     }
 
     private String waitingText(int count) {
@@ -848,9 +879,22 @@ public class QortalForegroundService extends Service {
     }
 
     private RemoteViews buildBrandedContentView(String title, String text) {
+        return buildBrandedContentView(title, text, null);
+    }
+
+    /** Collapsed layout: one detail line, with the waiting count kept visible. */
+    private RemoteViews buildBrandedContentView(String title, String text, String waiting) {
         RemoteViews views = new RemoteViews(getPackageName(), R.layout.notification_qortal_status);
         views.setTextViewText(R.id.notification_title, title);
         views.setTextViewText(R.id.notification_text, text);
+        String suffix = StatusHonesty.inlineSuffix(waiting);
+        views.setViewVisibility(
+            R.id.notification_waiting,
+            suffix == null ? android.view.View.GONE : android.view.View.VISIBLE
+        );
+        if (suffix != null) {
+            views.setTextViewText(R.id.notification_waiting, suffix);
+        }
         applyStatusDot(views);
         applyLogoVisibility(views);
         return views;
@@ -901,7 +945,11 @@ public class QortalForegroundService extends Service {
 
         StatusDisplay display = resolveStatusDisplay();
         String displayDetail = display.detail;
-        RemoteViews collapsedView = buildBrandedContentView(display.title, displayDetail);
+        RemoteViews collapsedView = buildBrandedContentView(
+            display.title,
+            display.primary,
+            display.waitingShort
+        );
         RemoteViews expandedView = buildExpandedStatusContentView(
             display.state,
             display.title,
@@ -982,12 +1030,14 @@ public class QortalForegroundService extends Service {
         HttpURLConnection connection = null;
         try {
             URL url = new URL(urlString);
-            connection = (HttpURLConnection) url.openConnection();
-            connection.setConnectTimeout(8000);
-            connection.setReadTimeout(8000);
-            connection.setDoInput(true);
-            connection.setRequestProperty("User-Agent", "QortalGO/2.0 Android");
-            connection.connect();
+            // Redirects are followed hop by hop, each routed by LocalHttp
+            // (direct for the phone's own addresses).
+            connection = LocalHttp.openFollowingRedirects(url, LocalHttp.MAX_REDIRECTS, (hop, hopUrl) -> {
+                hop.setConnectTimeout(8000);
+                hop.setReadTimeout(8000);
+                hop.setDoInput(true);
+                hop.setRequestProperty("User-Agent", "QortalGO/2.0 Android");
+            });
             int responseCode = connection.getResponseCode();
             if (responseCode < 200 || responseCode >= 300) {
                 return null;
@@ -1004,7 +1054,18 @@ public class QortalForegroundService extends Service {
             }
             return bitmap;
         } catch (Exception error) {
-            Log.w(TAG, "Failed to load notification avatar from " + urlString, error);
+            // The URL can carry the node API key (?apiKey=), and so can the
+            // exception text (FileNotFoundException names the URL): neither
+            // goes to logcat as is.
+            Log.w(
+                TAG,
+                "Failed to load notification avatar from "
+                    + SecretRedaction.stripQuery(urlString)
+                    + ": "
+                    + error.getClass().getSimpleName()
+                    + " "
+                    + SecretRedaction.redactText(error.getMessage())
+            );
             return null;
         } finally {
             if (connection != null) {
@@ -1376,8 +1437,13 @@ public class QortalForegroundService extends Service {
 
     /**
      * ACTION_VIEW for a file GO saved, or null when there is nothing to open or
-     * nothing on the phone that opens it (the tap then just brings GO up). An
-     * .apk goes straight to the package installer.
+     * nothing on the phone that opens it (the tap then just brings GO up).
+     *
+     * An app package (.apk and friends) is never opened from here: GO may hold
+     * the install-unknown-apps grant for its updater, and a file a Q-App or a
+     * peer delivered must not reach the package installer under that grant.
+     * Only the updater installs, after its signer, package and version checks
+     * (AppUpdatePlugin).
      */
     private Intent buildOpenSavedFileIntent(String rawUri, String mimeType) {
         if (rawUri == null || rawUri.trim().isEmpty()) return null;
@@ -1393,6 +1459,10 @@ public class QortalForegroundService extends Service {
                 if (!file.isFile()) return null;
                 uri = FileProvider.getUriForFile(this, getPackageName() + ".fileprovider", file);
             }
+            if (SavedFileOpenGuard.isPackageArchive(this, uri, value, null, mimeType)) {
+                Log.i(TAG, "saved app package is not opened from the notification");
+                return null;
+            }
             String type = mimeType;
             if (type == null || type.trim().isEmpty() || "application/octet-stream".equals(type)) {
                 String ext = SaveCategory.extensionOf(value);
@@ -1401,6 +1471,7 @@ public class QortalForegroundService extends Service {
                     : MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext);
                 type = guessed != null ? guessed : "*/*";
             }
+            type = SavedFileOpenGuard.viewType(this, uri, type);
             Intent intent = new Intent(Intent.ACTION_VIEW);
             intent.setDataAndType(uri, type);
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_GRANT_READ_URI_PERMISSION);
@@ -1579,9 +1650,10 @@ public class QortalForegroundService extends Service {
     }
 
     /**
-     * GO is on screen again. After a time-out this restarts the status
-     * service with the last status the page sent and reconnects the hubs; the
-     * page itself kept running (frozen) and needs no restart.
+     * GO is on screen again. After a pause (Android's time-out or GO's own
+     * battery limit, see pauseUntilOpened) this restarts the status service
+     * with the last status the page sent and reconnects the hubs; the page
+     * itself kept running (frozen) and needs no restart.
      */
     public static void onAppForeground(Context context) {
         if (!fgsTimedOut) return;
@@ -1806,7 +1878,7 @@ public class QortalForegroundService extends Service {
     private static void startServiceCompat(Context context, Intent intent) {
         if (fgsTimedOut) {
             if (isAppInForeground()) {
-                // Opening GO resets the time limit.
+                // Opening GO ends the pause (and resets Android's time limit).
                 onAppForeground(context);
             } else {
                 // A foreground start would be refused and crash the app. A

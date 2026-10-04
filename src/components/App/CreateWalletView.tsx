@@ -13,6 +13,7 @@ import ArrowBackRoundedIcon from '@mui/icons-material/ArrowBackRounded';
 import WarningAmberRoundedIcon from '@mui/icons-material/WarningAmberRounded';
 import { PasswordField, ErrorText } from '../index';
 import { AuthButton, AuthScreen, AuthSectionLabel, authPasswordFieldSx } from '../Auth/AuthShell';
+import { useSecureScreen } from '../../hooks/useSecureScreen';
 
 type CreateWalletViewProps = {
   creationStep: number;
@@ -64,6 +65,11 @@ export function CreateWalletView({
   const [seedphraseRevealed, setSeedphraseRevealed] = useState(false);
   const [passwordStepError, setPasswordStepError] = useState('');
   const generatedSeedphrase = generatorRef.current?.parsedString || '';
+  // The seed phrase step and the backup step: no screenshots, recordings or
+  // recents thumbnail (GO-37). The password step stays capturable.
+  useSecureScreen({
+    secure: Boolean(walletToBeDownloaded) || creationStep === 2,
+  });
   const successAccent = backupDownloaded
     ? {
         border: 'rgba(126,171,255,0.36)',

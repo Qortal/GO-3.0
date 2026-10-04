@@ -1,5 +1,4 @@
 import {
-  Avatar,
   Box,
   ButtonBase,
   CircularProgress,
@@ -47,6 +46,7 @@ import {
   useReticulumGroupScoreSnapshot,
 } from './reticulumGroupScore';
 import { GroupScoreBadge } from './ReticulumGroupLevel';
+import { CachedGroupAvatar, CachedUserAvatar } from './CachedAvatars';
 import {
   comparePinnedTopGroups,
   isPinnedTopGroup,
@@ -580,10 +580,6 @@ export const AddGroupList = ({
       : undefined;
     const ownerName =
       groupOwnerNames[String(group?.groupId)] || group?.ownerPrimaryName;
-    const showRemoteAvatar = Boolean(ownerName);
-    const avatarUrl = showRemoteAvatar
-      ? `${getBaseApiReact()}/arbitrary/THUMBNAIL/${encodeURIComponent(ownerName)}/qortal_group_avatar_${group.groupId}?async=true`
-      : undefined;
     return (
       <div key={key} style={style}>
         <ListItem
@@ -619,10 +615,13 @@ export const AddGroupList = ({
               },
             }}
           >
-            <Avatar
+            <CachedGroupAvatar
               alt=""
-              imgProps={{ loading: 'lazy' }}
-              src={avatarUrl}
+              groupId={group?.groupId}
+              ownerName={ownerName}
+              // Browsing only: behind the user's own chats and groups.
+              priority="low"
+              countUse={false}
               sx={{
                 backgroundColor: 'background.default',
                 border: `1px solid ${theme.palette.divider}`,
@@ -644,7 +643,7 @@ export const AddGroupList = ({
                   width: 22,
                 }}
               />
-            </Avatar>
+            </CachedGroupAvatar>
             <Box sx={{ minWidth: 0 }}>
               <Box
                 sx={{
@@ -904,9 +903,6 @@ export const AddGroupList = ({
     ownerPrimaryName ||
     ownerAddress ||
     t('core:unknown', { postProcess: 'capitalizeFirstChar' });
-  const selectedOwnerAvatarUrl = ownerPrimaryName
-    ? `${getBaseApiReact()}/arbitrary/THUMBNAIL/${encodeURIComponent(ownerPrimaryName)}/qortal_avatar?async=true`
-    : undefined;
   const privateFilterDisabled = sortMode === 'top' || sortMode === 'active';
   const privateFilterExplanation =
     sortMode === 'top'
@@ -1175,8 +1171,9 @@ export const AddGroupList = ({
                 {ownerLoading ? (
                   <Skeleton height={44} variant="circular" width={44} />
                 ) : (
-                  <Avatar
-                    src={selectedOwnerAvatarUrl}
+                  <CachedUserAvatar
+                    name={ownerPrimaryName}
+                    priority="high"
                     sx={{
                       backgroundColor: 'rgba(96,165,250,0.18)',
                       border: '1px solid rgba(96,165,250,0.35)',
@@ -1188,7 +1185,7 @@ export const AddGroupList = ({
                   >
                     {String(selectedOwnerDisplayName).charAt(0).toUpperCase() ||
                       '?'}
-                  </Avatar>
+                  </CachedUserAvatar>
                 )}
                 <Box sx={{ minWidth: 0 }}>
                   {ownerLoading ? (

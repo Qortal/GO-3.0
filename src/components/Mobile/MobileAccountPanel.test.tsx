@@ -10,13 +10,20 @@ import {
   BUTTONS_GONE_TRAVEL_PX,
   buttonCloseProgress,
   resolveSwipeRelease,
+  withLockNowAction,
   type AccountAction,
 } from './MobileAccountPanel';
 import { useAndroidBack } from '../../utils/androidBack';
+import { LOCK_APP_NOW_EVENT } from '../../lib/appLock';
 
 vi.mock('../../utils/androidBack', () => ({
   BACK_PRIORITY: { overlay: 70, root: 10 },
   useAndroidBack: vi.fn(),
+}));
+vi.mock('react-i18next', () => ({
+  useTranslation: () => ({
+    t: (key: string) => (key === 'core:app_lock.lock_now' ? 'Lock now' : key),
+  }),
 }));
 vi.mock('../QortalUserAvatar', () => ({
   QortalUserAvatar: () => <div data-testid="avatar" />,
@@ -63,13 +70,40 @@ describe('MobileAccountPanel', () => {
     expect(screen.getByText('Simon James')).toBeTruthy();
     expect(screen.getByText('QfX9KhXn…YcyQyH')).toBeTruthy();
     expect(screen.getAllByRole('menuitem').map((el) => el.textContent)).toEqual(
+      ['Node', 'Lock now', 'Logout']
+    );
+  });
+
+  it('locks the app from "Lock now" through the same lock as the idle timer', () => {
+    const onLockNow = vi.fn();
+    const { onClose } = renderPanel({ onLockNow });
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Lock now' }));
+    expect(onLockNow).toHaveBeenCalledTimes(1);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('asks App to lock over the event bus by default', () => {
+    const listener = vi.fn();
+    document.addEventListener(LOCK_APP_NOW_EVENT, listener);
+    try {
+      renderPanel();
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Lock now' }));
+      expect(listener).toHaveBeenCalledTimes(1);
+    } finally {
+      document.removeEventListener(LOCK_APP_NOW_EVENT, listener);
+    }
+  });
+
+  it('leaves "Lock now" out when asked to', () => {
+    renderPanel({ onLockNow: null });
+    expect(screen.getAllByRole('menuitem').map((el) => el.textContent)).toEqual(
       ['Node', 'Logout']
     );
   });
 
   it('turns native panning off inside the list so a drag on a button is not cancelled', () => {
     renderPanel();
-    const list = screen.getByRole('menu').lastElementChild as HTMLElement;
+    const list = screen.getByTestId('account-menu-list');
     expect(list.style.touchAction).toBe('none');
   });
 
@@ -127,6 +161,26 @@ describe('MobileAccountPanel', () => {
       />
     );
     await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+  });
+});
+
+describe('withLockNowAction', () => {
+  const lock: AccountAction = {
+    icon: SettingsRoundedIcon,
+    label: 'Lock now',
+    onClick: () => {},
+  };
+
+  it('puts the lock just above the last action (Logout)', () => {
+    expect(withLockNowAction(actions(), lock).map((a) => a.label)).toEqual([
+      'Node',
+      'Lock now',
+      'Logout',
+    ]);
+  });
+
+  it('still offers the lock with no other actions', () => {
+    expect(withLockNowAction([], lock)).toEqual([lock]);
   });
 });
 

@@ -61,11 +61,14 @@ export type QchatFileApi = {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     cb: (payload: any) => void
   ) => (() => void) | undefined;
-  /** Mobile only: open a received file in a viewer app. */
+  /**
+   * Mobile only: open a received file in a viewer app. `code` is
+   * PACKAGE_ARCHIVE_REFUSED when the file is an app package.
+   */
   qchatFileOpen?: (payload: {
     uri: string;
     fileName?: string;
-  }) => Promise<{ ok: boolean; error?: string }>;
+  }) => Promise<{ ok: boolean; error?: string; code?: string }>;
   reticulumGetLocalDestinationHash: () => Promise<{
     destinationHash: string | null;
   }>;
@@ -114,8 +117,8 @@ const mobileQchatFileSelect = async (): Promise<QchatFileSelectResult> => {
 
 const mobileApi: QchatFileApi = {
   qchatFileSelect: mobileQchatFileSelect,
-  // No save dialog on mobile: files land in app storage and are exported to
-  // the public Downloads collection when the transfer completes.
+  // No save dialog on mobile: received files stay in GO's private storage
+  // (N-22); "Save to device" exports one on request.
   qchatFileChooseSavePath: async (fileName: string) => {
     try {
       const { path } = await Reticulum.qchatFileSavePath({

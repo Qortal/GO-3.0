@@ -1,0 +1,471 @@
+/*
+ * Release APKs ship without the web bundle's source maps and debug-only pages
+ * (security audit GO-40). Debug APKs keep all of it for the lab, and the
+ * desktop (Electron) build is not touched: vite.config.ts still emits the
+ * maps and both extra pages; only the Android release variant leaves them out.
+ *
+ * Left out of the release APK (assets/public, as copied by `npx cap sync`):
+ *   - every *.map file. Vite writes source maps (vite.config.ts
+ *     `sourcemap: true`); together they hold the app's full original source,
+ *     about 27 MB over 112 files.
+ *   - qortino-debug.html (PC debug page for Qortino) and audio-surface.html
+ *     (the desktop app's hidden group-call audio window; GO never opens it).
+ *   - the JS entry chunk of each of those two pages, but only when no file
+ *     that still ships names it. A chunk the main app imports always stays.
+ *   - pdfjs/web/: pdf.js's own viewer app and its debugger. GO loads pdf.js
+ *     from pdfjs/build only (src/qortinoAgent/pdfJsLoader.ts).
+ *
+ * How: an AGP variant-API transform of the merged ASSETS artifact, for the
+ * release variant only. Task stripReleaseWebAssets copies the merged assets
+ * without the files above, then checks its own output: index.html and
+ * everything it loads are there, no map or debug page is left, and no file
+ * that ships still points into pdfjs/web (that folder exists in debug and
+ * desktop builds, so such a link would break only in the release APK).
+ *
+ * Then task verifyReleaseApkWebAssets opens the APK that was really packaged
+ * and fails assembleRelease and installRelease when it still holds a map or a
+ * debug page, or has no index.html. That catches the transform no longer
+ * reaching packaging (an AGP upgrade that packages other assets, say), which
+ * would otherwise ship the maps again without any error.
+ *
+ * Check a built APK:
+ *   app/release-web-assets-test/check-apk.sh app/build/outputs/apk/release/app-release.apk
+ * or by hand:
+ *   unzip -l app-release.apk | grep -c '\.map$'                                  # 0
+ *   unzip -l app-release.apk | grep -E 'qortino-debug|audio-surface|pdfjs/web/'  # nothing
+ *   unzip -l app-release.apk | grep 'assets/public/index.html'                   # 1 line
+ * The debug APK still lists the maps and the pages.
+ *
+ * Tests: app/release-web-assets-test/run.sh (plain Groovy and JUnit from the
+ * Gradle distribution; it does not run a Gradle build). After any AGP or
+ * Gradle upgrade, run it (it checks every AGP call below against the new AGP
+ * API) and run check-apk.sh on the first new release APK.
+ */
+
+import org.gradle.api.Action
+import org.gradle.api.DefaultTask
+import org.gradle.api.file.Directory
+import org.gradle.api.file.DirectoryProperty
+import org.gradle.api.provider.Property
+import org.gradle.api.tasks.InputDirectory
+import org.gradle.api.tasks.InputFiles
+import org.gradle.api.tasks.Internal
+import org.gradle.api.tasks.OutputDirectory
+import org.gradle.api.tasks.PathSensitive
+import org.gradle.api.tasks.PathSensitivity
+import org.gradle.api.tasks.TaskAction
+
+import java.nio.charset.StandardCharsets
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
+import java.util.regex.Matcher
+import java.util.regex.Pattern
+import java.util.zip.ZipFile
+
+/** Which merged assets stay out of a release APK. Plain java.io, unit-tested. */
+class ReleaseWebAssets {
+    /** The Capacitor web bundle inside the merged assets. */
+    static final String WEB_ROOT = 'public/'
+
+    /** Pages that only developers or the desktop build open. */
+    static final List<String> DEBUG_PAGES =
+            ['qortino-debug.html', 'audio-surface.html'].asImmutable()
+
+    /** Folders GO never loads: pdf.js's viewer app (GO uses pdfjs/build). */
+    static final List<String> DEBUG_FOLDERS = ['pdfjs/web/'].asImmutable()
+
+    /**
+     * Text that means a shipped file loads something from pdfjs/web: its own
+     * path, or pdf.js's usual standardFontDataUrl / cMapUrl ('../web/...').
+     */
+    static final List<String> DEBUG_FOLDER_LINKS =
+            ['pdfjs/web/', 'web/standard_fonts', 'web/cmaps'].asImmutable()
+
+    /** Where an APK keeps its assets. */
+    static final String APK_ASSETS = 'assets/'
+
+    /** At most this many problems are listed in one build failure. */
+    static final int MAX_LISTED_PROBLEMS = 20
+
+    /** Files searched for the names of chunks that are about to be dropped. */
+    static final List<String> TEXT_EXTENSIONS = [
+            '.html', '.htm', '.js', '.mjs', '.cjs', '.css', '.json', '.webmanifest',
+    ].asImmutable()
+
+    private static final Pattern SCRIPT_TAG =
+            Pattern.compile(/<script\b[^>]*>/, Pattern.CASE_INSENSITIVE)
+    private static final Pattern SRC_ATTR =
+            Pattern.compile(/\bsrc\s*=\s*["']([^"']+)["']/, Pattern.CASE_INSENSITIVE)
+    private static final Pattern SRC_OR_HREF_ATTR =
+            Pattern.compile(/\b(?:src|href)\s*=\s*["']([^"']+)["']/, Pattern.CASE_INSENSITIVE)
+
+    /** Every file under root as a '/'-separated path relative to root, sorted. */
+    static List<String> listFiles(File root) {
+        List<String> out = []
+        if (!root.isDirectory()) return out
+        def rootPath = root.toPath()
+        root.eachFileRecurse(groovy.io.FileType.FILES) { File f ->
+            out << rootPath.relativize(f.toPath()).toString().replace('\\', '/')
+        }
+        out.sort()
+    }
+
+    static boolean isSourceMap(String rel) {
+        rel.startsWith(WEB_ROOT) && rel.endsWith('.map')
+    }
+
+    static boolean isDebugPage(String rel) {
+        DEBUG_PAGES.any { rel == WEB_ROOT + it }
+    }
+
+    static boolean isInDebugFolder(String rel) {
+        DEBUG_FOLDERS.any { rel.startsWith(WEB_ROOT + it) }
+    }
+
+    static boolean isText(String rel) {
+        String lower = rel.toLowerCase(Locale.ROOT)
+        TEXT_EXTENSIONS.any { lower.endsWith(it) }
+    }
+
+    static String baseName(String rel) {
+        rel.substring(rel.lastIndexOf('/') + 1)
+    }
+
+    /**
+     * A page-relative URL as a path under the web root: './assets/a.js',
+     * '/assets/a.js' and 'assets/a.js' all give 'assets/a.js'. Null for
+     * anything that is not a plain local path (a scheme, '//host', '..').
+     */
+    static String localWebPath(String url) {
+        String u = url == null ? '' : url.trim()
+        int cut = u.indexOf('#')
+        if (cut >= 0) u = u.substring(0, cut)
+        cut = u.indexOf('?')
+        if (cut >= 0) u = u.substring(0, cut)
+        if (u.isEmpty() || u.contains(':') || u.startsWith('//') || u.contains('..')) {
+            return null
+        }
+        while (u.startsWith('./')) u = u.substring(2)
+        while (u.startsWith('/')) u = u.substring(1)
+        u.isEmpty() ? null : u
+    }
+
+    /** Local JS files a page runs through <script src>, under the web root. */
+    static List<String> pageScripts(String html) {
+        List<String> out = []
+        Matcher tag = SCRIPT_TAG.matcher(html)
+        while (tag.find()) {
+            Matcher src = SRC_ATTR.matcher(tag.group())
+            if (!src.find()) continue
+            String local = localWebPath(src.group(1))
+            if (local != null && (local.endsWith('.js') || local.endsWith('.mjs'))) {
+                out << local
+            }
+        }
+        out
+    }
+
+    /** Every local file a page names in a src or href attribute. */
+    static List<String> pageReferences(String html) {
+        List<String> out = []
+        Matcher attr = SRC_OR_HREF_ATTR.matcher(html)
+        while (attr.find()) {
+            String local = localWebPath(attr.group(1))
+            if (local != null) out << local
+        }
+        out
+    }
+
+    /** The paths (relative to root) a release build leaves out. */
+    static Set<String> planRemovals(File root) {
+        List<String> files = listFiles(root)
+        Set<String> present = new HashSet<>(files)
+        Set<String> removed = new TreeSet<>()
+        files.each { String rel ->
+            if (isSourceMap(rel) || isDebugPage(rel) || isInDebugFolder(rel)) {
+                removed << rel
+            }
+        }
+
+        // Entry chunks of the removed pages: candidates only.
+        Set<String> candidates = new TreeSet<>()
+        DEBUG_PAGES.each { String page ->
+            String rel = WEB_ROOT + page
+            if (!present.contains(rel)) return
+            pageScripts(new File(root, rel).getText('UTF-8')).each { String script ->
+                String chunk = WEB_ROOT + script
+                if (present.contains(chunk) && !removed.contains(chunk)) candidates << chunk
+            }
+        }
+        if (candidates.isEmpty()) return removed
+
+        // Which shipped files name each candidate (Vite writes chunk file
+        // names literally in imports, preload lists and worker URLs).
+        Map<String, Set<String>> namedBy = [:]
+        candidates.each { namedBy[it] = new TreeSet<String>() }
+        files.each { String rel ->
+            if (removed.contains(rel) || !isText(rel)) return
+            String text = new String(
+                    Files.readAllBytes(new File(root, rel).toPath()),
+                    StandardCharsets.ISO_8859_1)
+            candidates.each { String chunk ->
+                if (rel != chunk && text.contains(baseName(chunk))) namedBy[chunk] << rel
+            }
+        }
+
+        // Drop a candidate only while nothing that ships still names it.
+        Set<String> dropping = new TreeSet<>(candidates)
+        boolean changed = true
+        while (changed) {
+            changed = false
+            for (String chunk : new ArrayList<String>(dropping)) {
+                if (namedBy[chunk].any { !dropping.contains(it) }) {
+                    dropping.remove(chunk)
+                    changed = true
+                }
+            }
+        }
+        removed.addAll(dropping)
+        removed
+    }
+
+    /** Empties dir (creating it if needed). */
+    static void clearDirectory(File dir) {
+        if (dir.exists()) {
+            dir.listFiles()?.each { File f ->
+                boolean gone = f.isDirectory() ? f.deleteDir() : f.delete()
+                if (!gone) throw new IOException("Could not delete $f")
+            }
+        }
+        if (!dir.isDirectory() && !dir.mkdirs()) throw new IOException("Could not create $dir")
+    }
+
+    /** Copies from into into, leaving out planRemovals(from), then checks the result. */
+    static List<String> copyStripped(File from, File into) {
+        // into is emptied first: never let that reach the input.
+        def fromPath = from.canonicalFile.toPath()
+        def intoPath = into.canonicalFile.toPath()
+        if (fromPath.startsWith(intoPath) || intoPath.startsWith(fromPath)) {
+            throw new IllegalArgumentException("Output $into overlaps input $from")
+        }
+        Set<String> removed = planRemovals(from)
+        clearDirectory(into)
+        listFiles(from).each { String rel ->
+            if (removed.contains(rel)) return
+            File target = new File(into, rel)
+            target.parentFile.mkdirs()
+            Files.copy(new File(from, rel).toPath(), target.toPath(),
+                    StandardCopyOption.REPLACE_EXISTING)
+        }
+        verify(from, into, removed)
+        new ArrayList<String>(removed)
+    }
+
+    /** Throws when into is not exactly from minus removed, or still has debug assets. */
+    static void verify(File from, File into, Set<String> removed) {
+        List<String> problems = []
+        List<String> shipped = listFiles(into)
+        Set<String> shippedSet = new HashSet<>(shipped)
+        shipped.each { String rel ->
+            if (isSourceMap(rel)) problems << "source map still packaged: $rel".toString()
+            if (isDebugPage(rel) || isInDebugFolder(rel)) {
+                problems << "debug page still packaged: $rel".toString()
+            }
+            if (removed.contains(rel)) problems << "should have been left out: $rel".toString()
+        }
+        listFiles(from).each { String rel ->
+            if (removed.contains(rel)) return
+            if (!shippedSet.contains(rel)) {
+                problems << "missing: $rel".toString()
+            } else if (new File(from, rel).length() != new File(into, rel).length()) {
+                problems << "copied with a different size: $rel".toString()
+            }
+        }
+        String index = WEB_ROOT + 'index.html'
+        if (new File(from, index).isFile()) {
+            if (!shippedSet.contains(index)) {
+                problems << "missing: $index".toString()
+            } else {
+                pageReferences(new File(into, index).getText('UTF-8')).each { String ref ->
+                    String rel = WEB_ROOT + ref
+                    if (new File(from, rel).isFile() && !shippedSet.contains(rel)) {
+                        problems << "index.html loads $ref, which is not packaged".toString()
+                    }
+                }
+            }
+        }
+        if (removed.any { isInDebugFolder(it) }) {
+            problems.addAll(debugFolderLinks(into, shipped))
+        }
+        if (!problems.isEmpty()) {
+            throw new IllegalStateException(
+                    'Release web assets check failed:\n  ' + problems.join('\n  '))
+        }
+    }
+
+    /**
+     * Shipped web files that still name pdfjs/web. It is left out of release
+     * APKs only, so such a link would work in debug and on desktop and break
+     * in the release APK alone.
+     */
+    static List<String> debugFolderLinks(File root, Collection<String> shipped) {
+        List<String> problems = []
+        shipped.each { String rel ->
+            if (!rel.startsWith(WEB_ROOT) || !isText(rel) || isInDebugFolder(rel)) return
+            String text = new String(
+                    Files.readAllBytes(new File(root, rel).toPath()), StandardCharsets.ISO_8859_1)
+            String link = DEBUG_FOLDER_LINKS.find { text.contains(it) }
+            if (link != null) {
+                problems << ("$rel names '$link', but release APKs leave out " +
+                        "${WEB_ROOT}${DEBUG_FOLDERS.join(', ')}: load it from pdfjs/build, " +
+                        'or stop leaving it out in release-web-assets.gradle').toString()
+            }
+        }
+        problems
+    }
+
+    /** One log line: what was left out and how big the maps were. */
+    static String describe(File from, Collection<String> removed) {
+        List<String> maps = removed.findAll { isSourceMap(it) }.toList()
+        long mapBytes = maps.sum(0L) { new File(from, it).length() } as long
+        int pages = removed.count { isDebugPage(it) } as int
+        int folderFiles = removed.count { isInDebugFolder(it) && !isSourceMap(it) } as int
+        int chunks = removed.size() - maps.size() - pages - folderFiles
+        String mb = String.format(Locale.ROOT, '%.1f', mapBytes / 1048576d)
+        "left out ${maps.size()} source maps (${mb} MB), ${pages} debug pages, " +
+                "${chunks} debug entry chunks, ${folderFiles} pdf.js viewer files"
+    }
+
+    // ---- the packaged APK ----------------------------------------------------
+
+    /** What a packaged APK, given as its entry names, must not hold or lack. */
+    static List<String> packagedProblems(Collection<String> entries) {
+        List<String> problems = []
+        entries.each { String entry ->
+            if (!entry.startsWith(APK_ASSETS)) return
+            String rel = entry.substring(APK_ASSETS.length())
+            if (isSourceMap(rel)) {
+                problems << "source map packaged: $entry".toString()
+            } else if (isDebugPage(rel) || isInDebugFolder(rel)) {
+                problems << "debug page packaged: $entry".toString()
+            }
+        }
+        String index = APK_ASSETS + WEB_ROOT + 'index.html'
+        if (!entries.contains(index)) problems << "missing: $index".toString()
+        problems
+    }
+
+    /** packagedProblems of one APK file, each prefixed with the file name. */
+    static List<String> apkProblems(File apk) {
+        List<String> entries = []
+        new ZipFile(apk).withCloseable { ZipFile zip ->
+            zip.entries().each { entries << it.name }
+        }
+        packagedProblems(entries).collect { "${apk.name}: $it".toString() }
+    }
+
+    /**
+     * The APKs to check: the ones AGP's output-metadata.json lists (a path
+     * relative to folder is resolved against it), or every .apk in folder
+     * when it lists none.
+     */
+    static List<File> apkFiles(Collection<String> listed, File folder) {
+        List<File> apks = listed.collect { String path ->
+            File f = new File(path)
+            f.isAbsolute() ? f : new File(folder, path)
+        }
+        if (apks.isEmpty() && folder.isDirectory()) {
+            apks = folder.listFiles().findAll { it.isFile() && it.name.endsWith('.apk') }.toList()
+        }
+        apks.sort { it.name }
+    }
+
+    /** Throws when there is no APK, or one still holds what a release leaves out. */
+    static void verifyPackages(List<File> apks, File folder) {
+        if (apks.isEmpty()) throw new IllegalStateException("No APK to check in $folder")
+        List<String> problems = apks.collectMany { apkProblems(it) }
+        if (problems.isEmpty()) return
+        List<String> listed = problems.take(MAX_LISTED_PROBLEMS)
+        if (problems.size() > listed.size()) {
+            listed << "... and ${problems.size() - listed.size()} more".toString()
+        }
+        throw new IllegalStateException(
+                'Release APK check failed (GO-40). A packaged map or debug page means the ' +
+                        'assets transform in release-web-assets.gradle no longer reaches ' +
+                        'packaging:\n  ' + listed.join('\n  '))
+    }
+}
+
+/** Copies the merged assets minus ReleaseWebAssets.planRemovals. */
+abstract class StripReleaseWebAssetsTask extends DefaultTask {
+    @InputDirectory
+    @PathSensitive(PathSensitivity.RELATIVE)
+    abstract DirectoryProperty getInputDir()
+
+    @OutputDirectory
+    abstract DirectoryProperty getOutputDir()
+
+    @TaskAction
+    void strip() {
+        File from = getInputDir().get().asFile
+        List<String> removed = ReleaseWebAssets.copyStripped(from, getOutputDir().get().asFile)
+        getLogger().lifecycle("${getName()}: ${ReleaseWebAssets.describe(from, removed)}")
+    }
+}
+
+/** Opens the packaged APK and fails when it is not stripped (ReleaseWebAssets.verifyPackages). */
+abstract class VerifyReleaseApkWebAssetsTask extends DefaultTask {
+    @InputFiles
+    @PathSensitive(PathSensitivity.RELATIVE)
+    abstract DirectoryProperty getApkFolder()
+
+    /** AGP's BuiltArtifactsLoader (typed Object: see agpSingleArtifact below). */
+    @Internal
+    abstract Property<Object> getBuiltArtifactsLoader()
+
+    @TaskAction
+    void verifyApk() {
+        Directory folder = getApkFolder().get()
+        def built = getBuiltArtifactsLoader().get().load(folder)
+        List<String> listed = built == null ? [] : built.elements.collect { it.outputFile as String }
+        List<File> apks = ReleaseWebAssets.apkFiles(listed, folder.asFile)
+        ReleaseWebAssets.verifyPackages(apks, folder.asFile)
+        getLogger().lifecycle(
+                "${getName()}: ${apks*.name.join(', ')} has no source maps or debug pages")
+    }
+}
+
+/*
+ * AGP classes are looked up at run time. A script applied with `apply from:`
+ * is compiled without the buildscript classpath, so importing
+ * com.android.build.api.* here fails with "unable to resolve class". The
+ * androidComponents extension comes from AGP's own class loader, which sees
+ * the AGP API (SingleArtifact lives in com.android.tools.build:gradle-api).
+ */
+def agpSingleArtifact = { String name ->
+    Class.forName("com.android.build.api.artifact.SingleArtifact\$${name}", true,
+            androidComponents.getClass().getClassLoader()).getField('INSTANCE').get(null)
+}
+
+// Release variant only: debug builds keep the maps and debug pages.
+androidComponents.onVariants(androidComponents.selector().withBuildType('release'), { variant ->
+    String name = variant.name.capitalize()
+    def strip = tasks.register("strip${name}WebAssets", StripReleaseWebAssetsTask)
+    variant.artifacts.use(strip)
+            .wiredWithDirectories({ it.inputDir }, { it.outputDir })
+            .toTransform(agpSingleArtifact('ASSETS'))
+
+    // Check the APK that was really packaged, before assemble or install
+    // counts as done.
+    def apkFolder = variant.artifacts.get(agpSingleArtifact('APK'))
+    def loader = variant.artifacts.builtArtifactsLoader
+    def verify = tasks.register(
+            "verify${name}ApkWebAssets", VerifyReleaseApkWebAssetsTask, { task ->
+        task.apkFolder.set(apkFolder)
+        task.builtArtifactsLoader.set(loader)
+    } as Action)
+    Set<String> gated = ["assemble${name}".toString(), "install${name}".toString()] as Set
+    tasks.configureEach({ task ->
+        if (gated.contains(task.name)) task.dependsOn(verify)
+    } as Action)
+} as Action)

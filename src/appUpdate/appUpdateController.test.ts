@@ -2,6 +2,10 @@ import { getDefaultStore } from 'jotai';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const native = vi.hoisted(() => ({ value: true }));
+const node = vi.hoisted(() => ({
+  apiKey: 'NODE_KEY' as string | undefined,
+  base: 'https://node.example',
+}));
 const plugin = vi.hoisted(() => ({
   addListener: vi.fn(async () => ({ remove: vi.fn() })),
   canInstall: vi.fn(async () => ({ allowed: true })),
@@ -30,14 +34,17 @@ vi.mock('../plugins/QortalAppUpdate', () => ({ QortalAppUpdate: plugin }));
 vi.mock('./qdnAppUpdate', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./qdnAppUpdate')>()),
   ...qdn,
-  buildDownloadUrl: async (_service: string, identifier: string) =>
-    `http://node/${identifier}`,
+  buildDownloadRequest: async (_service: string, identifier: string) => ({
+    ...(node.apiKey ? { apiKey: node.apiKey } : {}),
+    url: `${node.base}/${identifier}`,
+  }),
 }));
-import '../i18n/i18n';
+import i18n from '../i18n/i18n';
 
 import {
   appUpdateCheckAtom,
   appUpdateDismissedVersionAtom,
+  appUpdateFileAtom,
   appUpdateInstalledVersionAtom,
   appUpdateProgressAtom,
   appUpdateReleaseAtom,
@@ -85,6 +92,8 @@ const publish = (...releases: AppRelease[]) =>
 describe('GO 3.0 Updates controller', () => {
   beforeEach(() => {
     native.value = true;
+    node.apiKey = 'NODE_KEY';
+    node.base = 'https://node.example';
     localStorage.clear();
     resetAppUpdateControllerForTests();
     store.set(appUpdateInstalledVersionAtom, '');
@@ -102,6 +111,12 @@ describe('GO 3.0 Updates controller', () => {
       status: 'idle',
     });
     Object.values(plugin).forEach((fn) => fn.mockClear());
+    plugin.download.mockImplementation(async () => ({
+      bytes: 10,
+      path: '/cache/updates/go.apk',
+    }));
+    plugin.install.mockImplementation(async () => undefined);
+    qdn.requestResourceBuild.mockClear();
     qdn.listPublishedBuilds.mockReset();
   });
 
@@ -187,9 +202,11 @@ describe('GO 3.0 Updates controller', () => {
       'FILE',
       'file-0.0.13'
     );
+    // The node key goes beside the URL (an X-API-KEY header natively).
     expect(plugin.download).toHaveBeenCalledWith({
+      apiKey: 'NODE_KEY',
       filename: 'GO 3.0 v0.0.13.apk',
-      url: 'http://node/file-0.0.13',
+      url: 'https://node.example/file-0.0.13',
     });
     expect(plugin.install).toHaveBeenCalledWith({
       path: '/cache/updates/go.apk',
@@ -207,6 +224,90 @@ describe('GO 3.0 Updates controller', () => {
     await startAppUpdateDownload(v9);
     expect(store.get(appUpdateTargetAtom)).toBeNull();
     expect(plugin.download).not.toHaveBeenCalled();
+  });
+
+  it('refuses a plain-HTTP node before asking QDN for the build', async () => {
+    store.set(appUpdateInstalledVersionAtom, '0.0.12');
+    node.base = 'http://192.168.1.20:12391';
+    await startAppUpdateDownload(v13);
+
+    expect(qdn.requestResourceBuild).not.toHaveBeenCalled();
+    expect(plugin.download).not.toHaveBeenCalled();
+    expect(store.get(appUpdateProgressAtom)).toMatchObject({
+      error: i18n.t('core:go_updates.error.insecure_node'),
+      phase: 'error',
+    });
+    expect(store.get(appUpdateProgressAtom).error).toContain('HTTPS');
+  });
+
+  it('still updates over plain HTTP from a node on this phone', async () => {
+    vi.useFakeTimers();
+    store.set(appUpdateInstalledVersionAtom, '0.0.12');
+    node.apiKey = undefined;
+    node.base = 'http://127.0.0.1:12391';
+    const done = startAppUpdateDownload(v13);
+    await vi.advanceTimersByTimeAsync(3_000);
+    await done;
+
+    expect(plugin.download).toHaveBeenCalledWith({
+      filename: 'GO 3.0 v0.0.13.apk',
+      url: 'http://127.0.0.1:12391/file-0.0.13',
+    });
+    expect(plugin.install).toHaveBeenCalled();
+  });
+
+  it('shows why the plugin refused a downloaded build', async () => {
+    vi.useFakeTimers();
+    store.set(appUpdateInstalledVersionAtom, '0.0.12');
+    plugin.download.mockImplementation(async () => {
+      throw Object.assign(new Error('signer mismatch'), {
+        code: 'UPDATE_WRONG_SIGNER',
+      });
+    });
+    const done = startAppUpdateDownload(v13);
+    await vi.advanceTimersByTimeAsync(3_000);
+    await done;
+
+    expect(plugin.install).not.toHaveBeenCalled();
+    expect(store.get(appUpdateProgressAtom)).toMatchObject({
+      error: i18n.t('core:go_updates.error.wrong_signer'),
+      phase: 'error',
+    });
+  });
+
+  it('ends the attempt when the installer step is refused', async () => {
+    vi.useFakeTimers();
+    store.set(appUpdateInstalledVersionAtom, '0.0.12');
+    plugin.install.mockImplementation(async () => {
+      throw Object.assign(new Error('not GO'), {
+        code: 'UPDATE_WRONG_PACKAGE',
+      });
+    });
+    const done = startAppUpdateDownload(v13);
+    await vi.advanceTimersByTimeAsync(3_000);
+    await done;
+
+    expect(store.get(appUpdateFileAtom)).toBeNull();
+    expect(store.get(appUpdateProgressAtom)).toMatchObject({
+      error: i18n.t('core:go_updates.error.not_go_build'),
+      phase: 'error',
+    });
+  });
+
+  it('never shows a URL query (which can hold the key) in an error', async () => {
+    vi.useFakeTimers();
+    store.set(appUpdateInstalledVersionAtom, '0.0.12');
+    plugin.download.mockImplementation(async () => {
+      throw new Error(
+        'Failed to download the update: https://node.example/x?apiKey=NODE_KEY'
+      );
+    });
+    const done = startAppUpdateDownload(v13);
+    await vi.advanceTimersByTimeAsync(3_000);
+    await done;
+
+    const { error } = store.get(appUpdateProgressAtom);
+    expect(error).toBe('Failed to download the update: https://node.example/x');
   });
 
   it('installs nothing outside the Android app', async () => {

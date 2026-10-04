@@ -1,8 +1,9 @@
 /**
- * "Share to Quitter" intake: photos/videos shared from other Android apps
- * arrive via the native ShareReceiver plugin (the "Quitter" share-sheet
- * target). This module drains the native queue, converts the items into
- * composer-ready media, navigates Home and hands them to HomeQuitterComposer.
+ * "Share to Quitter / Torq" intake: photos/videos shared from other Android
+ * apps arrive via the native ShareReceiver plugin (the share-sheet entry is
+ * named after the app the composer posts to). This module drains the native
+ * queue, converts the items into composer-ready media, navigates Home and
+ * hands them to HomeQuitterComposer.
  */
 import { Capacitor } from '@capacitor/core';
 import {
@@ -12,6 +13,11 @@ import {
 } from '../../../plugins/ShareReceiver';
 import { executeEvent } from '../../../utils/events';
 import { createNamedFile } from '../../../utils/namedFile';
+import { stripImageFileMetadata } from '../../../utils/imageCompression';
+import { getDefaultStore } from 'jotai';
+import { composerTargetAtom, syncComposerShareTarget } from './composerTarget';
+import { QUITTER_MAX_IMAGES } from './quitterPublish';
+import { TORQ_MAX_IMAGES } from './torqPublish';
 
 export type SharedComposerVideo = {
   /** Native cache path — the compress/publish pipeline reads it directly. */
@@ -56,9 +62,13 @@ async function imageItemToFile(
       (typeof item.mimeType === 'string' && item.mimeType) ||
       (typeof blob.type === 'string' && blob.type) ||
       'image/jpeg';
-    const file = createNamedFile([blob], item.name || 'shared-image.jpg', {
-      type: mimeType,
-    });
+    // Gallery apps often share the original file, GPS and camera EXIF
+    // included; drop it before the photo reaches the composer.
+    const file = await stripImageFileMetadata(
+      createNamedFile([blob], item.name || 'shared-image.jpg', {
+        type: mimeType,
+      })
+    );
     // Bytes are in memory now — free the native cache copy.
     void ShareReceiver.consumeSharedFile(item.path);
     return { file, mimeType };
@@ -71,12 +81,15 @@ async function drainNativeQueue(): Promise<void> {
   const items = await ShareReceiver.getPendingShare();
   if (!items.length) return;
 
-  // Quitter posts support up to 2 images or 1 video.
+  // Quitter posts take up to 2 images, Torq posts 10; one video either way.
+  const maxImages =
+    getDefaultStore().get(composerTargetAtom) === 'torq'
+      ? TORQ_MAX_IMAGES
+      : QUITTER_MAX_IMAGES;
   const imageItems = items
     .filter((i) => i.mimeType?.startsWith('image/'))
-    .slice(0, 2);
-  const videoItem =
-    items.find((i) => i.mimeType?.startsWith('video/')) || null;
+    .slice(0, maxImages);
+  const videoItem = items.find((i) => i.mimeType?.startsWith('video/')) || null;
 
   const images = (
     await Promise.all(imageItems.map((item) => imageItemToFile(item)))
@@ -105,6 +118,7 @@ async function drainNativeQueue(): Promise<void> {
 export function initQuitterShareIntake(): void {
   if (initialized || !isShareReceiverAvailable()) return;
   initialized = true;
+  syncComposerShareTarget();
   void drainNativeQueue().catch(() => undefined);
   void ShareReceiver.addShareListener(() => {
     void drainNativeQueue().catch(() => undefined);

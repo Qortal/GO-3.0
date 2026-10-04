@@ -32,6 +32,9 @@ import {
   mobileSaveLocationLabelFor,
   openSavedMobileFile,
 } from '../../utils/mobileFileSave';
+import { isRefusedForOpen } from '../../utils/nativeFileOpen';
+import { cleanFileName } from '../../utils/receivedFileName';
+import { FileNameWithExtension } from '../Chat/FileNameWithExtension';
 
 const encodeQdnPathSegment = (value) => {
   const rawValue = String(value ?? '');
@@ -65,6 +68,13 @@ export const AttachmentCard = ({
   const { downloadResource } = useContext(QORTAL_APP_CONTEXT);
   const theme = useTheme();
   const { t } = useTranslation(['auth', 'core', 'group', 'question']);
+  // A saved app package is not opened: only GO's own updater installs apps.
+  const savedFileIsPackage =
+    !!savedFile &&
+    isRefusedForOpen({
+      fileName: savedFile.filename,
+      mimeType: resourceData?.mimeType,
+    });
 
   const formatETA = (seconds: number | undefined) => {
     if (!seconds || seconds <= 0) return null;
@@ -82,10 +92,12 @@ export const AttachmentCard = ({
     }
   };
 
+  // The publisher picks the name: saved and shown without bidi or other
+  // invisible characters (N-27).
   const resolveSaveFilename = () => {
-    const fromResource = String(resourceData?.fileName || '').trim();
+    const fromResource = cleanFileName(resourceData?.fileName);
     if (fromResource) return fromResource;
-    const identifier = String(resourceData?.identifier || '').trim();
+    const identifier = cleanFileName(resourceData?.identifier);
     if (identifier) return identifier;
     return 'qortal-file';
   };
@@ -96,10 +108,12 @@ export const AttachmentCard = ({
       if (isSilentSaveFile(filename)) return;
       setInfoSnack({
         type: 'success',
-        message: `Saved to ${mobileSaveLocationLabelFor(
-          filename,
-          resourceData?.mimeType
-        )}`,
+        message: t('core:file_transfer.saved_to', {
+          location: mobileSaveLocationLabelFor(
+            filename,
+            resourceData?.mimeType
+          ),
+        }),
       });
       setOpenSnack(true);
       return;
@@ -422,19 +436,19 @@ export const AttachmentCard = ({
           {resourceData?.fileName && (
             <>
               <Typography
+                component="div"
                 sx={{
                   fontSize: '13px',
                   fontWeight: 500,
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
                   maxWidth: '100%',
                   color: theme.palette.text.primary,
                   mb: 1,
                 }}
-                title={resourceData?.fileName}
               >
-                {resourceData?.fileName}
+                <FileNameWithExtension
+                  name={resourceData?.fileName}
+                  fallback={resolveSaveFilename()}
+                />
               </Typography>
             </>
           )}
@@ -457,6 +471,14 @@ export const AttachmentCard = ({
               if (isSaving) return;
               if (resourceDetails?.status?.status === 'READY') {
                 if (savedFile) {
+                  if (savedFileIsPackage) {
+                    setInfoSnack?.({
+                      type: 'info',
+                      message: t('core:file_transfer.package_not_opened'),
+                    });
+                    setOpenSnack?.(true);
+                    return;
+                  }
                   void openSavedMobileFile(savedFile.uri, savedFile.filename);
                   return;
                 }
@@ -560,9 +582,11 @@ export const AttachmentCard = ({
                   <>
                     <FolderOpenIcon />
                     <FileAttachmentFont>
-                      {t('core:action.open', {
-                        postProcess: 'capitalizeFirstChar',
-                      })}
+                      {savedFileIsPackage
+                        ? t('core:file_transfer.save_success')
+                        : t('core:action.open', {
+                            postProcess: 'capitalizeFirstChar',
+                          })}
                     </FileAttachmentFont>
                   </>
                 ) : (

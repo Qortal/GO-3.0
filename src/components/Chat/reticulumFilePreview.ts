@@ -110,7 +110,6 @@ export function resolveFileMimeType(
   if (MARKUP_SOURCE_EXT.has(ext)) return 'text/html';
   if (ext === 'json') return 'application/json';
   if (TEXT_EXT.has(ext)) return 'text/plain';
-  if (ext === 'apk') return 'application/vnd.android.package-archive';
   return mime || 'application/octet-stream';
 }
 

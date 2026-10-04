@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Avatar, Box, Button, Rating, Typography, alpha, styled } from '@mui/material';
+import { Box, Button, Rating, Typography, alpha, styled } from '@mui/material';
 import { useTranslation } from 'react-i18next';
 import { getBaseApiReact } from '../../../App';
-import LogoSelected from '../../../assets/svgs/LogoSelected.svg';
+import { AppThumbnailAvatar } from '../AppThumbnailAvatar';
 import { StarFilledIcon } from '../../../assets/Icons/StarFilled';
 import { StarEmptyIcon } from '../../../assets/Icons/StarEmpty';
 import AppsIcon from '@mui/icons-material/Apps';
@@ -255,21 +255,12 @@ export const PublishedAppCard = ({
     return (
       <ListItemContainer>
         <ListAppIcon>
-          <Avatar
-            sx={{
-              height: '36px',
-              width: '36px',
-              '& img': { objectFit: 'fill' },
-            }}
+          <AppThumbnailAvatar
+            appName={app?.name}
             alt={app?.name}
-            src={`${getBaseApiReact()}/arbitrary/THUMBNAIL/${app?.name}/qortal_avatar?async=true`}
-          >
-            <img
-              style={{ width: '24px', height: 'auto' }}
-              src={LogoSelected}
-              alt="app-icon"
-            />
-          </Avatar>
+            fallbackSize={24}
+            sx={{ height: '36px', width: '36px' }}
+          />
         </ListAppIcon>
 
         <ListContent>
@@ -321,26 +312,12 @@ export const PublishedAppCard = ({
     <CardContainer>
       <HeaderRow>
         <AppIcon>
-          <Avatar
-            sx={{
-              height: '48px',
-              width: '48px',
-              '& img': {
-                objectFit: 'fill',
-              },
-            }}
+          <AppThumbnailAvatar
+            appName={app?.name}
             alt={app?.name}
-            src={`${getBaseApiReact()}/arbitrary/THUMBNAIL/${app?.name}/qortal_avatar?async=true`}
-          >
-            <img
-              style={{
-                width: '32px',
-                height: 'auto',
-              }}
-              src={LogoSelected}
-              alt="app-icon"
-            />
-          </Avatar>
+            fallbackSize={32}
+            sx={{ height: '48px', width: '48px' }}
+          />
         </AppIcon>
 
         <AppDetails>

@@ -19,17 +19,19 @@ import PeopleAltRoundedIcon from '@mui/icons-material/PeopleAltRounded';
 import { useTranslation } from 'react-i18next';
 import { getBaseApiReact } from '../../App';
 import {
-  buildGroupAvatarUrl,
-  buildGroupAvatarUrlAsyncFallback,
-} from '../../utils/groupAvatarUrl';
+  useQdnGroupAvatar,
+  type QdnAvatarPriority,
+} from '../../lib/qdnAvatars';
+import { buildGroupAvatarPreviewUrl } from './avatarPreviewUrls';
+import { useFullSizeAvatarSrc } from './useFullSizeAvatarSrc';
 import { getGroupAdmins, getGroupMembers } from './groupApi';
 import { AvatarPreviewModal } from '../Chat/AvatarPreviewModal';
 import { getDialogPaperSx } from '../App/dialogSurface';
-import { QortalUserAvatar } from '../QortalUserAvatar';
+import { CachedUserAvatar } from './CachedAvatars';
 import { SAFE_AREA_TOP } from '../../utils/mobileSafeArea';
 import {
   ensureAvatarPresence,
-  isAvatarKnownPresent,
+  getAvatarPresence,
 } from '../../utils/groupMemberAvatars';
 import { executeEvent } from '../../utils/events';
 import { formatTimestamp } from '../../utils/time';
@@ -65,6 +67,48 @@ const shortenAddress = (address?: string) =>
 const sortNewestJoinedFirst = (a: ListedPerson, b: ListedPerson) =>
   (b.joined || 0) - (a.joined || 0);
 
+/**
+ * The first rows of the dialog (owner, then admins, then members: on screen
+ * first) ask the avatar cache straight away, so cached avatars show at once.
+ * Further down, only names the node lists as having an avatar are looked up.
+ */
+export const EAGER_MEMBER_AVATARS = 20;
+
+/**
+ * Whether the row at `index` (owner first, then admins, then members) is one
+ * of the first EAGER_MEMBER_AVATARS rows.
+ */
+export const isEagerPersonRow = (index: number) =>
+  index >= 0 && index < EAGER_MEMBER_AVATARS;
+
+/**
+ * Whether a person row may look up (and fetch) the avatar: eager rows unless
+ * the node already said the name has none, later rows only when it said the
+ * name has one.
+ */
+export const shouldLookUpPersonAvatar = (
+  name: string | null | undefined,
+  eager: boolean
+) => {
+  if (!name?.trim()) return false;
+  const presence = getAvatarPresence(name);
+  return eager ? presence !== false : presence === true;
+};
+
+/**
+ * Queue level of a person row. The list is not virtualized: every row mounts
+ * at once, and inside one level the cache serves the newest request first.
+ * So the owner goes 'high', the other eager rows 'normal', and rows only
+ * enabled by the presence search 'low', behind every row on screen.
+ */
+export const personAvatarPriority = (options: {
+  role: 'owner' | 'admin' | 'member';
+  eager: boolean;
+}): QdnAvatarPriority => {
+  if (options.role === 'owner') return 'high';
+  return options.eager ? 'normal' : 'low';
+};
+
 export const GroupDetailsDialog = ({
   open,
   onClose,
@@ -85,14 +129,33 @@ export const GroupDetailsDialog = ({
   >([]);
   const [previewOpen, setPreviewOpen] = useState(false);
 
-  const avatarUrl = useMemo(
-    () => buildGroupAvatarUrl(ownerName, groupId),
-    [ownerName, groupId]
+  const groupAvatar = useQdnGroupAvatar(ownerName, groupId, {
+    enabled: open,
+    priority: 'high',
+  });
+  const canPreviewAvatar = Boolean(groupAvatar.src);
+  const showPreview = open && previewOpen && canPreviewAvatar;
+  // The header shows the cached copy (at most 128 px). Only the preview
+  // loads the full size from the node (address read when it opens), the
+  // cached copy showing until then.
+  const previewFullUrl = useMemo(
+    () =>
+      showPreview
+        ? buildGroupAvatarPreviewUrl(getBaseApiReact(), ownerName, groupId)
+        : null,
+    [showPreview, ownerName, groupId]
   );
-  const avatarPreviewUrl = useMemo(
-    () => buildGroupAvatarUrlAsyncFallback(avatarUrl),
-    [avatarUrl]
+  const previewSrc = useFullSizeAvatarSrc(
+    showPreview ? groupAvatar.src : undefined,
+    previewFullUrl,
+    showPreview
   );
+
+  // The dialog stays mounted: a preview left open when it closed (Android
+  // back) or whose image went away must not pop up again later.
+  useEffect(() => {
+    if (previewOpen && (!open || !canPreviewAvatar)) setPreviewOpen(false);
+  }, [previewOpen, open, canPreviewAvatar]);
 
   useEffect(() => {
     if (!open || groupId == null || groupId === '') return;
@@ -138,6 +201,10 @@ export const GroupDetailsDialog = ({
     };
   }, [ownerAddress, ownerName, members]);
 
+  // Rows before the admins, for the eager budget.
+  const ownerRows =
+    ownerPerson && (ownerPerson.address || ownerPerson.name) ? 1 : 0;
+
   const adminAddresses = useMemo(
     () => new Set(admins.map((a) => a.address)),
     [admins]
@@ -176,9 +243,10 @@ export const GroupDetailsDialog = ({
     [members, adminAddresses, ownerAddress]
   );
 
-  // Bulk-detect which listed users actually have a published avatar so only
-  // those load an image (avatar-less users render an instant local fallback
-  // with zero network). Re-render as each detection batch streams in.
+  // Bulk-detect which listed users actually have a published avatar so, below
+  // the first rows, only those load an image (avatar-less users render an
+  // instant local fallback with zero network). Re-render as each detection
+  // batch streams in.
   const [, refreshAvatars] = useReducer((x: number) => x + 1, 0);
   useEffect(() => {
     if (!open) return;
@@ -211,7 +279,11 @@ export const GroupDetailsDialog = ({
 
   const renderPerson = (
     person: ListedPerson,
-    options?: { roleLabel?: string }
+    options: {
+      role: 'owner' | 'admin' | 'member';
+      roleLabel?: string;
+      eager?: boolean;
+    }
   ) => {
     const { name, address, joined } = person;
     const avatarSx = {
@@ -222,11 +294,11 @@ export const GroupDetailsDialog = ({
       height: 26,
       width: 26,
     };
-    // Only mount an image-loading avatar for users confirmed to have one.
-    const showImageAvatar = isAvatarKnownPresent(name);
+    const eager = !!options.eager;
+    const lookUpAvatar = shouldLookUpPersonAvatar(name, eager);
     return (
       <Box
-        key={address || name || options?.roleLabel}
+        key={address || name || options.roleLabel}
         onClick={() => openUserProfile(name, address)}
         role="button"
         tabIndex={0}
@@ -248,18 +320,15 @@ export const GroupDetailsDialog = ({
           },
         }}
       >
-        {showImageAvatar ? (
-          <QortalUserAvatar
-            primaryName={name || undefined}
-            walletAddress={address}
-            fallbackIconSize={16}
-            sx={avatarSx}
-          />
-        ) : (
-          <Avatar sx={avatarSx}>
-            {(name || address || '?').trim().charAt(0).toUpperCase()}
-          </Avatar>
-        )}
+        <CachedUserAvatar
+          name={name}
+          enabled={lookUpAvatar}
+          priority={personAvatarPriority({ role: options.role, eager })}
+          alt={name || address}
+          sx={avatarSx}
+        >
+          {(name || address || '?').trim().charAt(0).toUpperCase()}
+        </CachedUserAvatar>
         <Box sx={{ flex: 1, minWidth: 0 }}>
           <Box
             sx={{
@@ -283,7 +352,7 @@ export const GroupDetailsDialog = ({
             >
               {name || shortenAddress(address)}
             </Typography>
-            {options?.roleLabel ? (
+            {options.roleLabel ? (
               <Typography
                 sx={{
                   color: theme.palette.text.secondary,
@@ -370,15 +439,15 @@ export const GroupDetailsDialog = ({
             }}
           >
             <Avatar
-              src={avatarUrl || undefined}
+              src={groupAvatar.src}
               alt={groupName || 'Group'}
               onClick={() => {
-                if (avatarPreviewUrl) setPreviewOpen(true);
+                if (canPreviewAvatar) setPreviewOpen(true);
               }}
               sx={{
                 bgcolor: alpha(theme.palette.primary.main, 0.16),
                 color: theme.palette.primary.main,
-                cursor: avatarPreviewUrl ? 'zoom-in' : 'default',
+                cursor: canPreviewAvatar ? 'zoom-in' : 'default',
                 fontSize: 42,
                 fontWeight: 700,
                 height: 104,
@@ -569,6 +638,8 @@ export const GroupDetailsDialog = ({
                   </Typography>
                   <Box>
                     {renderPerson(ownerPerson, {
+                      role: 'owner',
+                      eager: isEagerPersonRow(0),
                       roleLabel: t('core:owner', { defaultValue: 'Owner' }),
                     })}
                   </Box>
@@ -581,7 +652,12 @@ export const GroupDetailsDialog = ({
                     {t('core:admin_other', { defaultValue: 'Admins' })}
                   </Typography>
                   <Box>
-                    {renderedAdmins.map((a) => renderPerson(a))}
+                    {renderedAdmins.map((a, index) =>
+                      renderPerson(a, {
+                        role: 'admin',
+                        eager: isEagerPersonRow(ownerRows + index),
+                      })
+                    )}
                   </Box>
                 </Box>
               )}
@@ -592,7 +668,14 @@ export const GroupDetailsDialog = ({
                     {t('core:member_other', { defaultValue: 'Members' })}
                   </Typography>
                   <Box sx={{ pr: 0.5 }}>
-                    {renderedMembers.map((m) => renderPerson(m))}
+                    {renderedMembers.map((m, index) =>
+                      renderPerson(m, {
+                        role: 'member',
+                        eager: isEagerPersonRow(
+                          ownerRows + renderedAdmins.length + index
+                        ),
+                      })
+                    )}
                   </Box>
                 </Box>
               )}
@@ -602,8 +685,8 @@ export const GroupDetailsDialog = ({
       </Dialog>
 
       <AvatarPreviewModal
-        open={previewOpen}
-        src={avatarPreviewUrl}
+        open={showPreview}
+        src={previewSrc}
         alt={groupName || 'Group'}
         onClose={() => setPreviewOpen(false)}
       />

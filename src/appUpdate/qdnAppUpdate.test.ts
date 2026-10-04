@@ -2,9 +2,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../background/background', () => ({
   createEndpoint: async (path: string) => `http://node${path}`,
+  getApiKeyFromStorage: async () => ({
+    apikey: 'NODE_KEY',
+    url: 'https://my-node.example',
+  }),
+  getBaseApi: async () => 'https://my-node.example',
 }));
 
 import {
+  buildDownloadRequest,
   listPublishedBuilds,
   lookUpLatestPublishedBuild,
   qShareSharePath,
@@ -151,5 +157,19 @@ describe('GO 3.0 builds on QDN', () => {
       })
     ).toBe('share/GO%203.0/qshare_file_go-30-v0012_WAT6bz_metadata');
     expect(qShareSharePath({ shareIdentifier: '' })).toBeNull();
+  });
+
+  it('keeps the node API key out of the download URL', async () => {
+    const request = await buildDownloadRequest(
+      'FILE',
+      'qshare_file_go-30-v0015_file',
+      'GO 3.0 v0.0.15.apk'
+    );
+    expect(request).toEqual({
+      apiKey: 'NODE_KEY',
+      url:
+        'https://my-node.example/arbitrary/FILE/GO%203.0/qshare_file_go-30-v0015_file' +
+        '?attachment=true&attachmentFilename=GO%203.0%20v0.0.15.apk',
+    });
   });
 });

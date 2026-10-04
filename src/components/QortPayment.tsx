@@ -13,7 +13,7 @@ import VisibilityOffIcon from '@mui/icons-material/VisibilityOff';
 import VisibilityIcon from '@mui/icons-material/Visibility';
 import QrCodeScannerIcon from '@mui/icons-material/QrCodeScanner';
 import { useEffect, useRef, useState } from 'react';
-import { getFee } from '../background/background.ts';
+import { getFee, resolveRecipient } from '../background/background.ts';
 import { useTranslation } from 'react-i18next';
 import BoundedNumericTextField from '../common/BoundedNumericTextField.tsx';
 import { ErrorText } from './ErrorText/ErrorText.tsx';
@@ -25,8 +25,15 @@ import { isQrScannerAvailable } from '../utils/qrScanner';
 import { parsePaymentTarget } from '../utils/paymentLink';
 import { QrScannerOverlay } from './QrScannerOverlay';
 import { useAutoFitInputFont } from './common/AutoFitText';
+import { WALLET_PASSWORD_INPUT_PROPS } from './PasswordField/noAutofill';
 import { validateAddress } from '../utils/validateAddress';
 import { getPrimaryNameForAvatar } from './Group/groupApi';
+import {
+  parseDecimalAmount,
+  recipientDisplayLabel,
+} from '../transactions/paymentSafety';
+
+const RECIPIENT_NAME_LOOKUP_DELAY_MS = 400;
 
 export const QortPayment = ({
   balance,
@@ -44,10 +51,13 @@ export const QortPayment = ({
   );
   // Seed used to (re)mount the uncontrolled amount field when a prefilled /
   // scanned amount arrives, so its displayed value updates.
-  const [amountSeed, setAmountSeed] = useState<number>(defaultPaymentAmount || 0);
+  const [amountSeed, setAmountSeed] = useState<number>(
+    defaultPaymentAmount || 0
+  );
   const [isScannerOpen, setIsScannerOpen] = useState(false);
-  // Primary registered name of a *scanned* recipient address (shown in green
-  // next to "To" so the sender can confirm who they're paying).
+  // Primary registered name of the recipient address, whether scanned, typed
+  // or prefilled from a link (shown in green next to "To" so the sender can
+  // confirm who they're paying).
   const [scannedRecipientName, setScannedRecipientName] = useState<string>('');
   const canScan = isQrScannerAvailable();
   const paymentToInputRef = useRef<HTMLInputElement | null>(null);
@@ -101,6 +111,16 @@ export const QortPayment = ({
       .catch(() => {});
   };
 
+  // Look the name up for any recipient address, a short moment after the
+  // field stops changing.
+  useEffect(() => {
+    const timer = setTimeout(
+      () => resolveScannedRecipientName(paymentTo || ''),
+      RECIPIENT_NAME_LOOKUP_DELAY_MS
+    );
+    return () => clearTimeout(timer);
+  }, [paymentTo]);
+
   const handleScanResult = (scanned: string) => {
     setIsScannerOpen(false);
     if (!scanned) return;
@@ -108,16 +128,17 @@ export const QortPayment = ({
     const parsed = parsePaymentTarget(scanned);
     if (parsed.kind === 'payment') {
       setPaymentTo(parsed.recipient);
-      resolveScannedRecipientName(parsed.recipient);
       if (parsed.amount && parsed.amount > 0) {
         setPaymentAmount(parsed.amount);
         setAmountSeed(parsed.amount);
       }
-    } else if (!scanned.includes('?') && !/^[a-z][a-z0-9+.-]*:/i.test(scanned)) {
+    } else if (
+      !scanned.includes('?') &&
+      !/^[a-z][a-z0-9+.-]*:/i.test(scanned)
+    ) {
       // Not a recognized payment/link, but a plain token (address or name):
       // populate the recipient field directly.
       setPaymentTo(scanned);
-      resolveScannedRecipientName(scanned);
     } else {
       setSendPaymentError(
         t('core:message.error.unrecognized_qr', {
@@ -196,7 +217,14 @@ export const QortPayment = ({
       },
   } as const;
 
+  // One send at a time: a second tap while the recipient, the fee or the
+  // confirmation is still pending does nothing (GO-28).
+  const sendInFlightRef = useRef(false);
+
   const sendCoinFunc = async () => {
+    if (sendInFlightRef.current) return;
+    sendInFlightRef.current = true;
+    let handedOff = false;
     try {
       setSendPaymentError('');
       if (!paymentTo) {
@@ -224,11 +252,31 @@ export const QortPayment = ({
         return;
       }
 
+      let parsedAmount;
+      try {
+        parsedAmount = parseDecimalAmount(paymentAmount);
+      } catch (error) {
+        setSendPaymentError(formatSendPaymentError(error));
+        return;
+      }
+
+      // Resolve a name before asking, so the confirmation shows exactly who
+      // is paid (name and full address) and the payment goes to that address
+      // without a second lookup after approval.
+      let recipient;
+      try {
+        recipient = await resolveRecipient(paymentTo.trim());
+      } catch (error) {
+        setSendPaymentError(formatSendPaymentError(error));
+        return;
+      }
+
       const fee = await getFee('PAYMENT');
 
       await show({
-        message: t('core:message.question.transfer_qort', {
-          amount: Number(paymentAmount),
+        message: t('core:message.question.transfer_qort_to', {
+          amount: parsedAmount.text,
+          recipient: recipientDisplayLabel(recipient),
           postProcess: 'capitalizeFirstChar',
         }),
         paymentFee: fee.fee + ' QORT',
@@ -238,9 +286,11 @@ export const QortPayment = ({
 
       window
         .sendMessage('sendCoin', {
-          amount: Number(paymentAmount),
-          receiver: paymentTo.trim(),
+          amount: parsedAmount.value,
+          receiver: recipient.address,
           password: paymentPassword,
+          // The fee shown above; a higher fee from the node is refused.
+          approvedFee: fee.fee,
         })
         .then((response) => {
           if (response?.error) {
@@ -257,285 +307,291 @@ export const QortPayment = ({
           console.error('Failed to send coin:', error);
           setSendPaymentError(formatSendPaymentError(error));
           setIsLoadingSendCoin(false);
+        })
+        .finally(() => {
+          sendInFlightRef.current = false;
         });
+      // From here the promise above releases the guard.
+      handedOff = true;
     } catch (error) {
       console.log(error);
+    } finally {
+      if (!handedOff) sendInFlightRef.current = false;
     }
   };
 
   return (
     <>
-    {canScan && (
-      <QrScannerOverlay
-        open={isScannerOpen}
-        onClose={() => setIsScannerOpen(false)}
-        onResult={handleScanResult}
-      />
-    )}
-    <Box
-      sx={{
-        display: 'flex',
-        flexDirection: 'column',
-        gap: compact ? '14px' : '16px',
-        px: compact ? 2 : 2.5,
-        py: compact ? 1.6 : 2.1,
-      }}
-    >
+      {canScan && (
+        <QrScannerOverlay
+          open={isScannerOpen}
+          onClose={() => setIsScannerOpen(false)}
+          onResult={handleScanResult}
+        />
+      )}
       <Box
         sx={{
           display: 'flex',
           flexDirection: 'column',
-          gap: '5px',
-          pb: compact ? 1.35 : 1.5,
-          borderBottom: `1px solid ${sectionDivider}`,
+          gap: compact ? '14px' : '16px',
+          px: compact ? 2 : 2.5,
+          py: compact ? 1.6 : 2.1,
         }}
       >
-        <Typography
-          sx={{
-            ...fieldLabelSx,
-            alignSelf: 'flex-start',
-          }}
-        >
-          {t('core:balance', { postProcess: 'capitalizeFirstChar' })}
-        </Typography>
-        <Typography
-          sx={{
-            alignSelf: 'flex-start',
-            color: theme.palette.text.primary,
-            fontSize: compact ? '1.06rem' : '1.12rem',
-            fontWeight: 700,
-            letterSpacing: '-0.025em',
-            lineHeight: 1.1,
-          }}
-        >
-          {formatQortAmount(balance, i18n.language)} QORT
-        </Typography>
-      </Box>
-
-      <Box sx={fieldGroupSx}>
         <Box
           sx={{
-            alignItems: 'baseline',
             display: 'flex',
-            flexWrap: 'wrap',
-            gap: '8px',
+            flexDirection: 'column',
+            gap: '5px',
+            pb: compact ? 1.35 : 1.5,
+            borderBottom: `1px solid ${sectionDivider}`,
           }}
         >
-          <Typography component="label" htmlFor="payment-to" sx={fieldLabelSx}>
-            {t('core:to', { postProcess: 'capitalizeFirstChar' })}
+          <Typography
+            sx={{
+              ...fieldLabelSx,
+              alignSelf: 'flex-start',
+            }}
+          >
+            {t('core:balance', { postProcess: 'capitalizeFirstChar' })}
           </Typography>
-          {scannedRecipientName && (
-            <Typography
-              sx={{
-                color: theme.palette.success.main,
-                fontSize: compact ? '0.75rem' : '0.77rem',
-                fontWeight: 600,
-                letterSpacing: '0.01em',
-                lineHeight: 1.2,
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-              }}
-            >
-              {scannedRecipientName}
-            </Typography>
-          )}
+          <Typography
+            sx={{
+              alignSelf: 'flex-start',
+              color: theme.palette.text.primary,
+              fontSize: compact ? '1.06rem' : '1.12rem',
+              fontWeight: 700,
+              letterSpacing: '-0.025em',
+              lineHeight: 1.1,
+            }}
+          >
+            {formatQortAmount(balance, i18n.language)} QORT
+          </Typography>
         </Box>
-        <TextField
-          id="payment-to"
-          value={paymentTo}
-          onChange={(e) => {
-            setPaymentTo(e.target.value);
-            // Manual edits invalidate the scanned-name badge.
-            if (scannedRecipientName) setScannedRecipientName('');
-          }}
-          autoComplete="off"
-          placeholder={t('group:dashboard.qortal_address_or_name')}
-          fullWidth
-          inputRef={paymentToInputRef}
-          sx={{
-            ...textFieldSurfaceSx,
-            '& .MuiOutlinedInput-input': {
-              ...(textFieldSurfaceSx['& .MuiOutlinedInput-input'] as object),
-              letterSpacing: '-0.01em',
-              // Font size is auto-fit via useAutoFitInputFont so a full Qortal
-              // address always fits on one line.
-            },
-          }}
-          InputProps={
-            canScan
-              ? {
-                  endAdornment: (
-                    <InputAdornment position="end">
-                      <IconButton
-                        onClick={() => setIsScannerOpen(true)}
-                        edge="end"
-                        aria-label={t('core:action.scan_qr_code', {
-                          defaultValue: 'Scan QR code',
-                          postProcess: 'capitalizeFirstChar',
-                        })}
-                        sx={{ color: theme.palette.text.secondary }}
-                      >
-                        <QrCodeScannerIcon fontSize="small" />
-                      </IconButton>
-                    </InputAdornment>
-                  ),
-                }
-              : undefined
-          }
-        />
-      </Box>
 
-      <Box sx={fieldGroupSx}>
-        <Typography
-          component="label"
-          htmlFor="payment-amount"
-          sx={fieldLabelSx}
-        >
-          {t('core:amount', { postProcess: 'capitalizeFirstChar' })}
-        </Typography>
-        <BoundedNumericTextField
-          key={`payment-amount-${amountSeed}`}
-          value={paymentAmount}
-          minValue={0}
-          maxValue={+balance}
-          allowDecimals={true}
-          initialValue={amountSeed ? String(amountSeed) : '0'}
-          allowNegatives={false}
-          addIconButtons={false}
-          afterChange={(e: string) => setPaymentAmount(+e)}
-          sx={{
-            width: '100%',
-            '& .MuiOutlinedInput-root': {
-              backgroundColor: inputSurface,
-              borderRadius: '10px',
-              minHeight: compact ? '42px' : '44px',
-              '& fieldset': {
-                borderColor: inputBorder,
+        <Box sx={fieldGroupSx}>
+          <Box
+            sx={{
+              alignItems: 'baseline',
+              display: 'flex',
+              flexWrap: 'wrap',
+              gap: '8px',
+            }}
+          >
+            <Typography
+              component="label"
+              htmlFor="payment-to"
+              sx={fieldLabelSx}
+            >
+              {t('core:to', { postProcess: 'capitalizeFirstChar' })}
+            </Typography>
+            {scannedRecipientName && (
+              <Typography
+                sx={{
+                  color: theme.palette.success.main,
+                  fontSize: compact ? '0.75rem' : '0.77rem',
+                  fontWeight: 600,
+                  letterSpacing: '0.01em',
+                  lineHeight: 1.2,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {scannedRecipientName}
+              </Typography>
+            )}
+          </Box>
+          <TextField
+            id="payment-to"
+            value={paymentTo}
+            onChange={(e) => {
+              setPaymentTo(e.target.value);
+              // Manual edits invalidate the scanned-name badge.
+              if (scannedRecipientName) setScannedRecipientName('');
+            }}
+            autoComplete="off"
+            placeholder={t('group:dashboard.qortal_address_or_name')}
+            fullWidth
+            inputRef={paymentToInputRef}
+            sx={{
+              ...textFieldSurfaceSx,
+              '& .MuiOutlinedInput-input': {
+                ...(textFieldSurfaceSx['& .MuiOutlinedInput-input'] as object),
+                letterSpacing: '-0.01em',
+                // Font size is auto-fit via useAutoFitInputFont so a full Qortal
+                // address always fits on one line.
               },
-              '&:hover fieldset': {
-                borderColor: alpha(theme.palette.primary.main, 0.28),
-              },
-              '&.Mui-focused fieldset': {
-                borderColor: alpha(theme.palette.primary.main, 0.42),
-              },
-            },
-            '& input': {
-              fontSize: compact ? '0.92rem' : '0.94rem',
-              padding: compact ? '9px 12px' : '10px 13px',
-            },
-          }}
-        />
-      </Box>
-
-      <Box sx={fieldGroupSx}>
-        <Typography
-          component="label"
-          htmlFor="payment-password"
-          sx={fieldLabelSx}
-        >
-          {t('auth:wallet.password_confirmation', {
-            postProcess: 'capitalizeFirstChar',
-          })}
-        </Typography>
-        <TextField
-          id="payment-password"
-          type={showPassword ? 'text' : 'password'}
-          value={paymentPassword}
-          onChange={(e) => setPaymentPassword(e.target.value)}
-          autoComplete="new-password"
-          name="payment-password-confirmation"
-          fullWidth
-          onFocus={() => setIsPaymentPasswordEditable(true)}
-          onMouseDown={() => setIsPaymentPasswordEditable(true)}
-          onBlur={() => {
-            if (!paymentPassword) {
-              setIsPaymentPasswordEditable(false);
+            }}
+            InputProps={
+              canScan
+                ? {
+                    endAdornment: (
+                      <InputAdornment position="end">
+                        <IconButton
+                          onClick={() => setIsScannerOpen(true)}
+                          edge="end"
+                          aria-label={t('core:action.scan_qr_code', {
+                            defaultValue: 'Scan QR code',
+                            postProcess: 'capitalizeFirstChar',
+                          })}
+                          sx={{ color: theme.palette.text.secondary }}
+                        >
+                          <QrCodeScannerIcon fontSize="small" />
+                        </IconButton>
+                      </InputAdornment>
+                    ),
+                  }
+                : undefined
             }
-          }}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') {
-              if (isLoadingSendCoin) return;
-              sendCoinFunc();
-            }
-          }}
-          InputProps={{
-            readOnly: !isPaymentPasswordEditable,
-            endAdornment: (
-              <InputAdornment position="end">
-                <IconButton
-                  onClick={() => setShowPassword((prev) => !prev)}
-                  edge="end"
-                  sx={{ color: theme.palette.text.secondary }}
-                >
-                  {showPassword ? (
-                    <VisibilityOffIcon fontSize="small" />
-                  ) : (
-                    <VisibilityIcon fontSize="small" />
-                  )}
-                </IconButton>
-              </InputAdornment>
-            ),
-          }}
-          inputProps={{
-            autoComplete: 'new-password',
-            'data-1p-ignore': 'true',
-            'data-lpignore': 'true',
-            spellCheck: 'false',
-          }}
-          sx={textFieldSurfaceSx}
-        />
-      </Box>
+          />
+        </Box>
 
-      <ErrorText
-        sx={{
-          fontSize: '0.74rem',
-          minHeight: sendPaymentError ? '20px' : compact ? '8px' : '12px',
-          px: 0.5,
-        }}
-      >
-        {sendPaymentError}
-      </ErrorText>
+        <Box sx={fieldGroupSx}>
+          <Typography
+            component="label"
+            htmlFor="payment-amount"
+            sx={fieldLabelSx}
+          >
+            {t('core:amount', { postProcess: 'capitalizeFirstChar' })}
+          </Typography>
+          <BoundedNumericTextField
+            key={`payment-amount-${amountSeed}`}
+            value={paymentAmount}
+            minValue={0}
+            maxValue={+balance}
+            allowDecimals={true}
+            initialValue={amountSeed ? String(amountSeed) : '0'}
+            allowNegatives={false}
+            addIconButtons={false}
+            afterChange={(e: string) => setPaymentAmount(+e)}
+            sx={{
+              width: '100%',
+              '& .MuiOutlinedInput-root': {
+                backgroundColor: inputSurface,
+                borderRadius: '10px',
+                minHeight: compact ? '42px' : '44px',
+                '& fieldset': {
+                  borderColor: inputBorder,
+                },
+                '&:hover fieldset': {
+                  borderColor: alpha(theme.palette.primary.main, 0.28),
+                },
+                '&.Mui-focused fieldset': {
+                  borderColor: alpha(theme.palette.primary.main, 0.42),
+                },
+              },
+              '& input': {
+                fontSize: compact ? '0.92rem' : '0.94rem',
+                padding: compact ? '9px 12px' : '10px 13px',
+              },
+            }}
+          />
+        </Box>
 
-      <Button
-        variant="contained"
-        fullWidth
-        disabled={isLoadingSendCoin}
-        onClick={() => {
-          if (isLoadingSendCoin) return;
-          sendCoinFunc();
-        }}
-        sx={{
-          borderRadius: '12px',
-          ...getBlueTier1ButtonSx(),
-          background: isDarkMode
-            ? 'linear-gradient(180deg, rgba(143,181,247,0.96) 0%, rgba(124,166,236,0.96) 100%)'
-            : 'linear-gradient(180deg, rgba(133,176,245,0.96) 0%, rgba(113,157,230,0.96) 100%)',
-          boxShadow: isDarkMode
-            ? '0 10px 24px rgba(76, 123, 209, 0.18), inset 0 1px 0 rgba(255,255,255,0.26)'
-            : '0 10px 20px rgba(76, 123, 209, 0.16), inset 0 1px 0 rgba(255,255,255,0.32)',
-          fontSize: '0.84rem',
-          fontWeight: 600,
-          minHeight: compact ? 42 : 44,
-          textTransform: 'none',
-          '&:hover': {
+        <Box sx={fieldGroupSx}>
+          <Typography
+            component="label"
+            htmlFor="payment-password"
+            sx={fieldLabelSx}
+          >
+            {t('auth:wallet.password_confirmation', {
+              postProcess: 'capitalizeFirstChar',
+            })}
+          </Typography>
+          <TextField
+            id="payment-password"
+            type={showPassword ? 'text' : 'password'}
+            value={paymentPassword}
+            onChange={(e) => setPaymentPassword(e.target.value)}
+            autoComplete="off"
+            name="payment-password-confirmation"
+            fullWidth
+            onFocus={() => setIsPaymentPasswordEditable(true)}
+            onMouseDown={() => setIsPaymentPasswordEditable(true)}
+            onBlur={() => {
+              if (!paymentPassword) {
+                setIsPaymentPasswordEditable(false);
+              }
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                if (isLoadingSendCoin) return;
+                sendCoinFunc();
+              }
+            }}
+            InputProps={{
+              readOnly: !isPaymentPasswordEditable,
+              endAdornment: (
+                <InputAdornment position="end">
+                  <IconButton
+                    onClick={() => setShowPassword((prev) => !prev)}
+                    edge="end"
+                    sx={{ color: theme.palette.text.secondary }}
+                  >
+                    {showPassword ? (
+                      <VisibilityOffIcon fontSize="small" />
+                    ) : (
+                      <VisibilityIcon fontSize="small" />
+                    )}
+                  </IconButton>
+                </InputAdornment>
+              ),
+            }}
+            inputProps={{ ...WALLET_PASSWORD_INPUT_PROPS }}
+            sx={textFieldSurfaceSx}
+          />
+        </Box>
+
+        <ErrorText
+          sx={{
+            fontSize: '0.74rem',
+            minHeight: sendPaymentError ? '20px' : compact ? '8px' : '12px',
+            px: 0.5,
+          }}
+        >
+          {sendPaymentError}
+        </ErrorText>
+
+        <Button
+          variant="contained"
+          fullWidth
+          disabled={isLoadingSendCoin}
+          onClick={() => {
+            if (isLoadingSendCoin) return;
+            sendCoinFunc();
+          }}
+          sx={{
+            borderRadius: '12px',
+            ...getBlueTier1ButtonSx(),
             background: isDarkMode
-              ? 'linear-gradient(180deg, rgba(149,186,249,0.97) 0%, rgba(130,171,239,0.97) 100%)'
-              : 'linear-gradient(180deg, rgba(138,181,248,0.97) 0%, rgba(118,163,234,0.97) 100%)',
+              ? 'linear-gradient(180deg, rgba(143,181,247,0.96) 0%, rgba(124,166,236,0.96) 100%)'
+              : 'linear-gradient(180deg, rgba(133,176,245,0.96) 0%, rgba(113,157,230,0.96) 100%)',
             boxShadow: isDarkMode
-              ? '0 12px 28px rgba(76, 123, 209, 0.2), inset 0 1px 0 rgba(255,255,255,0.28)'
-              : '0 12px 24px rgba(76, 123, 209, 0.18), inset 0 1px 0 rgba(255,255,255,0.34)',
-          },
-        }}
-        startIcon={
-          isLoadingSendCoin ? (
-            <CircularProgress size={16} color="inherit" />
-          ) : null
-        }
-      >
-        {t('core:action.send', { postProcess: 'capitalizeFirstChar' })}
-      </Button>
-    </Box>
+              ? '0 10px 24px rgba(76, 123, 209, 0.18), inset 0 1px 0 rgba(255,255,255,0.26)'
+              : '0 10px 20px rgba(76, 123, 209, 0.16), inset 0 1px 0 rgba(255,255,255,0.32)',
+            fontSize: '0.84rem',
+            fontWeight: 600,
+            minHeight: compact ? 42 : 44,
+            textTransform: 'none',
+            '&:hover': {
+              background: isDarkMode
+                ? 'linear-gradient(180deg, rgba(149,186,249,0.97) 0%, rgba(130,171,239,0.97) 100%)'
+                : 'linear-gradient(180deg, rgba(138,181,248,0.97) 0%, rgba(118,163,234,0.97) 100%)',
+              boxShadow: isDarkMode
+                ? '0 12px 28px rgba(76, 123, 209, 0.2), inset 0 1px 0 rgba(255,255,255,0.28)'
+                : '0 12px 24px rgba(76, 123, 209, 0.18), inset 0 1px 0 rgba(255,255,255,0.34)',
+            },
+          }}
+          startIcon={
+            isLoadingSendCoin ? (
+              <CircularProgress size={16} color="inherit" />
+            ) : null
+          }
+        >
+          {t('core:action.send', { postProcess: 'capitalizeFirstChar' })}
+        </Button>
+      </Box>
     </>
   );
 };

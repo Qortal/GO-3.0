@@ -9,6 +9,7 @@
 import ShortUniqueId from 'short-unique-id';
 import { objectToBase64 } from '../../../qdn/encryption/group-encryption';
 import { compressImageFile } from '../../../utils/imageCompression';
+import { stripAttachmentMetadata } from '../../../utils/stripFileMetadata';
 import {
   discardPublishFile,
   stashPublishFile,
@@ -54,6 +55,12 @@ export type TorqPoll = {
   voteKey?: string;
 };
 
+export type TorqAttachmentThumbnail = {
+  name: string;
+  service: 'IMAGE';
+  identifier: string;
+};
+
 export type TorqPostAttachment = {
   name: string;
   service: string;
@@ -65,6 +72,16 @@ export type TorqPostAttachment = {
   source?: 'upload';
   shareIdentifier?: string;
   shareName?: string;
+  thumbnail?: TorqAttachmentThumbnail;
+};
+
+/** A file for the post, with the title, name and cover set in the composer. */
+export type TorqFileInput = {
+  file: File;
+  title?: string;
+  filename?: string;
+  /** Cover picture; shrink it with prepareTorqThumbnail first. */
+  thumbnail?: File | null;
 };
 
 export type TorqPublishInput = {
@@ -77,7 +94,7 @@ export type TorqPublishInput = {
   video?: QuitterPublishVideo | null;
   gifs?: LibraryGif[];
   poll?: TorqPoll | null;
-  files?: { file: File }[];
+  files?: TorqFileInput[];
   onProgress?: (message: string, percent?: number) => void;
   signal?: AbortSignal;
 };
@@ -200,6 +217,11 @@ export function buildTorqAttachmentEmbed(attachment: TorqPostAttachment): string
     params.set('shareIdentifier', attachment.shareIdentifier);
   }
   if (attachment.shareName) params.set('shareName', attachment.shareName);
+  if (attachment.thumbnail) {
+    params.set('thumbName', attachment.thumbnail.name);
+    params.set('thumbService', attachment.thumbnail.service);
+    params.set('thumbIdentifier', attachment.thumbnail.identifier);
+  }
   return `qortal://use-embed/ATTACHMENT?${params.toString()}`;
 }
 
@@ -251,10 +273,34 @@ export function sanitizePublishFilename(filename: string): string {
 
 const AUDIO_EXT = ['mp3', 'm4a', 'aac', 'wav', 'ogg', 'oga', 'opus', 'flac'];
 
+// Players only know the registered types: there is no `audio/m4a`, and a post
+// labelled with it sat at 0:00 in Torq on phones (Torq's AUDIO_MIME).
+const AUDIO_MIME: Record<string, string> = {
+  aac: 'audio/aac',
+  flac: 'audio/flac',
+  m4a: 'audio/mp4',
+  mp3: 'audio/mpeg',
+  oga: 'audio/ogg',
+  ogg: 'audio/ogg',
+  opus: 'audio/ogg',
+  wav: 'audio/wav',
+};
+
+const fileExtension = (filename: string) =>
+  /\.([^.]+)$/.exec(String(filename || ''))?.[1]?.toLowerCase() || '';
+
+export const isAudioExtension = (filename: string) =>
+  AUDIO_EXT.includes(fileExtension(filename));
+
 export function guessFileMime(file: File, filename: string): string {
-  if (typeof file.type === 'string' && file.type) return file.type;
-  const ext = (filename.split('.').pop() || '').toLowerCase();
-  if (AUDIO_EXT.includes(ext)) return ext === 'mp3' ? 'audio/mpeg' : `audio/${ext}`;
+  const type =
+    typeof file.type === 'string' ? file.type.trim().toLowerCase() : '';
+  const ext = fileExtension(filename) || fileExtension(file.name);
+  if (type === 'audio/m4a' || type === 'audio/x-m4a') return 'audio/mp4';
+  if (type.startsWith('audio/')) return type;
+  // Phones often report nothing, or a generic type, for audio files.
+  if (AUDIO_EXT.includes(ext)) return AUDIO_MIME[ext] || `audio/${ext}`;
+  if (type && type !== 'application/octet-stream') return type;
   const known: Record<string, string> = {
     apk: 'application/vnd.android.package-archive',
     epub: 'application/epub+zip',
@@ -264,7 +310,62 @@ export function guessFileMime(file: File, filename: string): string {
     txt: 'text/plain',
     zip: 'application/zip',
   };
-  return known[ext] || 'application/octet-stream';
+  return known[ext] || type || 'application/octet-stream';
+}
+
+/** True when Torq plays the file in its audio player, not as a file card. */
+export function isTorqAudioFile(file: File, filename = file.name): boolean {
+  return guessFileMime(file, filename).startsWith('audio/');
+}
+
+export const TORQ_THUMBNAIL_MAX_PX = 400;
+export const TORQ_THUMBNAIL_MAX_BYTES = 450_000;
+
+const IMAGE_EXT_MIME: Record<string, string> = {
+  avif: 'image/avif',
+  bmp: 'image/bmp',
+  jpeg: 'image/jpeg',
+  jpg: 'image/jpeg',
+  png: 'image/png',
+  webp: 'image/webp',
+};
+
+/**
+ * A file card or audio cover, as Torq makes it: at most 400 px, JPEG,
+ * under 450 KB (Torq's prepareAttachmentThumbnail).
+ */
+export async function prepareTorqThumbnail(file: File): Promise<File> {
+  const declared = typeof file.type === 'string' ? file.type : '';
+  const type = declared.startsWith('image/')
+    ? declared
+    : IMAGE_EXT_MIME[fileExtension(file.name)] || '';
+  if (!type || type === 'image/gif') {
+    throw new Error(
+      i18n.t('group:home_composer.error.thumbnail_not_image', {
+        postProcess: 'capitalizeFirstChar',
+      })
+    );
+  }
+  const typed =
+    type === declared ? file : new File([file], file.name || 'cover', { type });
+  const resized = await compressImageFile(typed, {
+    first: {
+      quality: 0.72,
+      maxWidth: TORQ_THUMBNAIL_MAX_PX,
+      maxHeight: TORQ_THUMBNAIL_MAX_PX,
+      mimeType: 'image/jpeg',
+    },
+  });
+  if (resized.size > 0 && resized.size <= TORQ_THUMBNAIL_MAX_BYTES) {
+    return new File([resized], 'cover.jpg', {
+      type: resized.type || 'image/jpeg',
+    });
+  }
+  throw new Error(
+    i18n.t('group:home_composer.error.thumbnail_too_large', {
+      postProcess: 'capitalizeFirstChar',
+    })
+  );
 }
 
 /** Torq's picker refuses these: GIFs and videos have their own buttons. */
@@ -355,10 +456,17 @@ export async function publishTorqPost(
   const attachments: TorqPostAttachment[] = [];
   for (const item of files) {
     throwIfAborted(signal);
-    const title = item.file.name || 'file';
-    const filename = sanitizePublishFilename(item.file.name);
+    // A photo or video attached as a file goes to public, permanent QDN:
+    // publish it without its GPS position, camera model and capture time.
+    // Name and type do not change, so they still come from item.file.
+    const file = await stripAttachmentMetadata(item.file);
+    throwIfAborted(signal);
+    const filename = sanitizePublishFilename(
+      item.filename?.trim() || item.file.name
+    );
+    const title = item.title?.trim() || item.file.name || filename || 'file';
     const identifier = `${QSHARE_FILE_PREFIX}${sanitizeFileSlug(title)}_${qshareUid.rnd()}`;
-    const fileId = stashPublishFile(item.file);
+    const fileId = stashPublishFile(file);
     stashedIds.push(fileId);
     resources.push({
       identifier,
@@ -371,22 +479,43 @@ export async function publishTorqPost(
       description: buildQshareDescription({ title, postText: text, postLink })
         .resource,
     });
-    attachments.push({
+    const attachment: TorqPostAttachment = {
       name: userName,
       service: 'FILE',
       identifier,
       filename,
       mimeType: guessFileMime(item.file, filename),
-      size: item.file.size,
+      size: file.size,
       title,
       source: 'upload',
-    });
+    };
+    if (item.thumbnail) {
+      // Torq's cover: its own IMAGE resource, named after the file.
+      const thumbId = `${identifier}_thumb`;
+      const thumbFileId = stashPublishFile(item.thumbnail);
+      stashedIds.push(thumbFileId);
+      resources.push({
+        identifier: thumbId,
+        service: 'IMAGE',
+        fileId: thumbFileId,
+        name: userName,
+        title: `${title.slice(0, 40)} cover`,
+        filename: item.thumbnail.name || 'cover.jpg',
+      });
+      attachment.thumbnail = {
+        name: userName,
+        service: 'IMAGE',
+        identifier: thumbId,
+      };
+    }
+    attachments.push(attachment);
   }
   if (attachments.length > 0) {
     const title = attachments[0].title || attachments[0].filename || 'Files';
     const idMeta = qshareUid.rnd();
     const identifier = `${QSHARE_FILE_PREFIX}${sanitizeFileSlug(title)}_${idMeta}_metadata`;
     const described = buildQshareDescription({ title, postText: text, postLink });
+    const cover = attachments.find((item) => item.thumbnail)?.thumbnail;
     resources.push({
       identifier,
       service: 'DOCUMENT',
@@ -404,6 +533,11 @@ export async function publishTorqPost(
           mimetype: file.mimeType,
           size: file.size,
         })),
+        ...(cover
+          ? {
+              videoImage: `qortal://${cover.service}/${encodeURIComponent(cover.name)}/${encodeURIComponent(cover.identifier)}`,
+            }
+          : {}),
       }),
       name: userName,
       title: title.slice(0, 50),

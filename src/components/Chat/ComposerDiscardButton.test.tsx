@@ -4,6 +4,11 @@ import { describe, expect, it, vi } from 'vitest';
 import '../../i18n/i18n';
 import { ComposerDiscardButton } from './ComposerDiscardButton';
 import { composerExpiryDisplaced, composerStageThreeIsShort } from './TipTap';
+import {
+  COMPOSER_CORNER_BUTTON_PX,
+  COMPOSER_FOUR_SLOT_PX,
+  COMPOSER_STAGE_THREE_MAX_PX,
+} from './composerCornerLayout';
 
 describe('ComposerDiscardButton', () => {
   it('discards when there is a message', async () => {
@@ -17,6 +22,17 @@ describe('ComposerDiscardButton', () => {
 
     await user.click(button);
     expect(onDiscard).toHaveBeenCalledTimes(1);
+  });
+
+  it('is as big a target as the other corner controls', () => {
+    render(<ComposerDiscardButton idle={false} onDiscard={vi.fn()} />);
+
+    expect(screen.getByRole('button', { name: 'Discard message' })).toHaveStyle(
+      {
+        height: `${COMPOSER_CORNER_BUTTON_PX}px`,
+        width: `${COMPOSER_CORNER_BUTTON_PX}px`,
+      }
+    );
   });
 
   it('stays mounted but inert while there is nothing to discard', () => {
@@ -90,16 +106,35 @@ describe('composerStageThreeIsShort', () => {
     expect(composerStageThreeIsShort(300, 800)).toBe(false);
   });
 
-  it('is short when attachments or the tray leave the bar under 140px', () => {
-    expect(composerStageThreeIsShort(120, 800)).toBe(true);
+  it('is short when attachments or the tray leave the bar under four buttons', () => {
+    expect(composerStageThreeIsShort(COMPOSER_FOUR_SLOT_PX - 20, 800)).toBe(
+      true
+    );
   });
 
-  it('is short when 45% of the viewport is under 140px', () => {
+  it('is short when 45% of the viewport is under four buttons', () => {
     expect(composerStageThreeIsShort(Number.POSITIVE_INFINITY, 300)).toBe(true);
+    const tallEnough = Math.ceil(COMPOSER_FOUR_SLOT_PX / 0.45);
+    expect(
+      composerStageThreeIsShort(Number.POSITIVE_INFINITY, tallEnough)
+    ).toBe(false);
+    expect(
+      composerStageThreeIsShort(Number.POSITIVE_INFINITY, tallEnough - 4)
+    ).toBe(true);
   });
 
   it('rounds the room the way the stylesheet gets it', () => {
-    expect(composerStageThreeIsShort(139.6, 800)).toBe(false);
-    expect(composerStageThreeIsShort(139.4, 800)).toBe(true);
+    expect(composerStageThreeIsShort(COMPOSER_FOUR_SLOT_PX - 0.4, 800)).toBe(
+      false
+    );
+    expect(composerStageThreeIsShort(COMPOSER_FOUR_SLOT_PX - 0.6, 800)).toBe(
+      true
+    );
+  });
+
+  it('is never short just because of its own cap', () => {
+    expect(
+      composerStageThreeIsShort(COMPOSER_STAGE_THREE_MAX_PX + 100, 2000)
+    ).toBe(false);
   });
 });

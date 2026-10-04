@@ -38,8 +38,8 @@ vi.mock('../Group/groupApi', () => ({
 vi.mock('../Group/qortalGroupCallParticipantUi', () => ({
   addrHue: () => '#123456',
   initialsFromDisplayLabel: () => 'C',
-  qortalAvatarThumbnailSrc: () => '',
   shortAddr: (address: string) => address,
+  useQortalAvatarThumbnailSrc: () => undefined,
 }));
 
 describe('DirectVoiceCallGlobalOverlay', () => {

@@ -2,10 +2,8 @@
  * QDN media discovery for Qortino QDN mode.
  * Patterns mirror Q-Tube / EarBump / Q-Share (see Hub embeds + gitea Q-Apps).
  */
-import {
-  getBaseApiReact,
-  getBaseApiReactForAvatar,
-} from '../utils/globalApi';
+import { getBaseApiReact, getBaseApiReactForAvatar } from '../utils/globalApi';
+import { isAllowedMediaUrl } from '../utils/remoteContentPolicy';
 import { formatQdnResourceLine } from './qdnAppLinks';
 
 export type QdnMediaKind = 'video' | 'audio' | 'image' | 'pdf' | 'file';
@@ -51,7 +49,9 @@ function hitTimestamps(hit: SearchHit): { created?: number; updated?: number } {
         ? hit.timestamp
         : undefined;
   const updated =
-    typeof hit.updated === 'number' && hit.updated > 0 ? hit.updated : undefined;
+    typeof hit.updated === 'number' && hit.updated > 0
+      ? hit.updated
+      : undefined;
   return { created, updated };
 }
 
@@ -129,7 +129,10 @@ const EARBUMP_PREFIX = 'earbump_song_';
 const ENJOYMUSIC_PREFIX = 'enjoymusic_song';
 const QSHARE_PREFIX = 'qshare_file_';
 
-async function apiGetJson<T>(path: string, signal?: AbortSignal): Promise<T | null> {
+async function apiGetJson<T>(
+  path: string,
+  signal?: AbortSignal
+): Promise<T | null> {
   const base = getBaseApiReact().replace(/\/$/, '');
   const url = `${base}${path.startsWith('/') ? path : `/${path}`}`;
   try {
@@ -149,7 +152,12 @@ function encodeSeg(value: string): string {
   }
 }
 
-function resourceUrl(service: string, name: string, identifier: string, async = false): string {
+function resourceUrl(
+  service: string,
+  name: string,
+  identifier: string,
+  async = false
+): string {
   const base = getBaseApiReact().replace(/\/$/, '');
   const path = `/arbitrary/${encodeSeg(service)}/${encodeSeg(name)}/${encodeSeg(identifier)}`;
   return async ? `${base}${path}?async=true` : `${base}${path}`;
@@ -199,7 +207,11 @@ export async function waitForQdnResourceReady(
     const local = Number(status?.localChunkCount || 0);
     const total = Number(status?.totalChunkCount || 0);
     const percent =
-      total > 0 ? Math.min(100, Math.round((local / total) * 100)) : nameStatus === 'READY' ? 100 : 0;
+      total > 0
+        ? Math.min(100, Math.round((local / total) * 100))
+        : nameStatus === 'READY'
+          ? 100
+          : 0;
     options?.onProgress?.(percent, nameStatus);
 
     if (nameStatus === 'READY') {
@@ -241,7 +253,11 @@ function tidyTitle(raw: string | undefined, fallback: string): string {
 
 function stripCategoryPrefix(desc?: string): string {
   if (!desc) return '';
-  return desc.replace(/^\*\*category:[^*]+\*\*/, '').replace(/<[^>]+>/g, ' ').trim().slice(0, 160);
+  return desc
+    .replace(/^\*\*category:[^*]+\*\*/, '')
+    .replace(/<[^>]+>/g, ' ')
+    .trim()
+    .slice(0, 160);
 }
 
 /** Which media kinds the user is asking for. */
@@ -287,7 +303,18 @@ async function searchResources(
   return Array.isArray(data) ? data : [];
 }
 
-function posterFromMetadataJson(data: Record<string, unknown> | null): string | undefined {
+/**
+ * Poster for a Q-Tube video from its `_metadata` DOCUMENT. `undefined` while
+ * the metadata is not there yet (keep polling); `null` when it is there but
+ * has no poster GO may show (stop polling).
+ *
+ * A publisher-chosen http(s) poster is kept only when it points at GO or a
+ * Qortal node (remoteContentPolicy): any other host would learn the viewer's
+ * IP address and when they looked, without a tap.
+ */
+export function posterFromMetadataJson(
+  data: Record<string, unknown> | null
+): string | null | undefined {
   if (!data || typeof data !== 'object' || 'error' in data) return undefined;
   const img =
     (typeof data.videoImage === 'string' && data.videoImage) ||
@@ -296,8 +323,53 @@ function posterFromMetadataJson(data: Record<string, unknown> | null): string | 
       : '');
   if (!img) return undefined;
   if (img.startsWith('data:image/')) return img;
-  if (img.startsWith('http')) return img;
+  if (/^https?:/i.test(img)) return isAllowedMediaUrl(img) ? img : null;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(img)) return null;
   return `data:image/jpeg;base64,${img}`;
+}
+
+/** True for a card/player image source that cannot reach a third party. */
+export function isSafeQortinoImageSrc(src: string | null | undefined): boolean {
+  const value = String(src ?? '').trim();
+  if (!value) return false;
+  return isAllowedMediaUrl(value);
+}
+
+const PDF_MAGIC = [0x25, 0x50, 0x44, 0x46, 0x2d]; // "%PDF-"
+/** PDF readers accept the header anywhere in the first kilobyte. */
+const PDF_HEADER_WINDOW = 1024;
+
+async function blobHead(blob: Blob, length: number): Promise<Uint8Array> {
+  const head = blob.slice(0, length);
+  if (typeof head.arrayBuffer === 'function') {
+    return new Uint8Array(await head.arrayBuffer());
+  }
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(new Uint8Array(reader.result as ArrayBuffer));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsArrayBuffer(head);
+  });
+}
+
+/**
+ * True when a downloaded file is a PDF by its bytes. QDN DOCUMENT and FILE
+ * resources often carry no `.pdf` name and come back as a generic type; this
+ * reads only the bytes GO already has after a tap.
+ */
+export async function blobLooksLikePdf(
+  blob: Blob | null | undefined
+): Promise<boolean> {
+  if (!blob || blob.size < PDF_MAGIC.length) return false;
+  try {
+    const head = await blobHead(blob, PDF_HEADER_WINDOW);
+    for (let i = 0; i + PDF_MAGIC.length <= head.length; i += 1) {
+      if (PDF_MAGIC.every((byte, j) => head[i + j] === byte)) return true;
+    }
+  } catch {
+    // Unreadable: treat as not a PDF (it opens outside the viewer).
+  }
+  return false;
 }
 
 /** In-memory poster cache so cards + viewer don't re-download metadata. */
@@ -363,6 +435,8 @@ export async function fetchQtubePosterDataUrl(
         posterCache.set(cacheKey, poster);
         return poster;
       }
+      // Metadata loaded but its poster is not allowed: polling cannot help.
+      if (poster === null) return undefined;
       await new Promise((r) => window.setTimeout(r, delay));
       delay = Math.min(800, Math.round(delay * 1.35));
     }
@@ -543,7 +617,8 @@ async function fetchVideosForName(
   for (const hit of metaHits) {
     if (!isExactPublisherName(hit.name, name)) continue;
     const id = hit.identifier || '';
-    if (!id.startsWith(QTUBE_META_PREFIX) || !id.endsWith('_metadata')) continue;
+    if (!id.startsWith(QTUBE_META_PREFIX) || !id.endsWith('_metadata'))
+      continue;
     const videoId = id.replace(/_metadata$/, '');
     if (seenIds.has(videoId.toLowerCase())) continue;
     seenIds.add(videoId.toLowerCase());
@@ -865,7 +940,10 @@ export async function fetchMediaForName(
       fetchImagesForName(name, limits.image, signal, { publisherSearch })
     );
   }
-  if ((kinds.includes('pdf') || kinds.includes('file')) && (limits.pdf > 0 || limits.file > 0)) {
+  if (
+    (kinds.includes('pdf') || kinds.includes('file')) &&
+    (limits.pdf > 0 || limits.file > 0)
+  ) {
     const pdfOnly = kinds.includes('pdf') && !kinds.includes('file');
     tasks.push(
       fetchFilesForName(
@@ -930,10 +1008,7 @@ export async function fetchMediaForOwnedNames(
 
   // Fetch the looked-up name first with a larger budget, then siblings.
   const ordered = preferred
-    ? [
-        preferred,
-        ...unique.filter((n) => n.toLowerCase() !== preferredKey),
-      ]
+    ? [preferred, ...unique.filter((n) => n.toLowerCase() !== preferredKey)]
     : unique;
 
   const perNameLimit = options?.explicit ? 12 : 5;
@@ -997,12 +1072,12 @@ export async function fetchMediaForOwnedNames(
   // Prefer the searched name's publishes. Only fill remainder from other names
   // (e.g. primary) so secondary-name searches surface that name's content.
   if (fromPreferred.length) {
-    const reserved = Math.min(fromPreferred.length, Math.max(12, Math.floor(limit * 0.75)));
+    const reserved = Math.min(
+      fromPreferred.length,
+      Math.max(12, Math.floor(limit * 0.75))
+    );
     const head = fromPreferred.slice(0, reserved);
-    const rest = [
-      ...fromPreferred.slice(reserved),
-      ...fromOthers,
-    ];
+    const rest = [...fromPreferred.slice(reserved), ...fromOthers];
     return preferSubstantialVideos([...head, ...rest]).slice(0, limit);
   }
 

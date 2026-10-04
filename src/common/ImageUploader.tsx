@@ -7,6 +7,7 @@ import {
 } from 'react-dropzone';
 import Compressor from 'compressorjs';
 import { createNamedFile } from '../utils/namedFile';
+import { stripImageFileMetadata } from '../utils/imageCompression';
 
 const toBase64 = (file: File): Promise<string | ArrayBuffer | null> =>
   new Promise((resolve, reject) => {
@@ -93,15 +94,19 @@ const ImageUploader: React.FC<ImageUploaderProps> = ({
           !(compressedFile instanceof Blob) ||
           compressedFile.size === 0
         ) {
-          // Fall back to the original file rather than crashing downstream.
-          onPick(image);
+          // Fall back to the original file rather than crashing downstream,
+          // but without its GPS/camera metadata: avatars are public.
+          onPick(await stripImageFileMetadata(image));
           return;
         }
 
-        onPick(compressedFile);
+        // CompressorJS returns its input unchanged when re-encoding would make
+        // it bigger, so the "compressed" file can still be the original.
+        // Stripping is a no-op on a real re-encode.
+        onPick(await stripImageFileMetadata(compressedFile));
       } catch (error) {
         console.error('[ImageUploader] File processing error:', error);
-        onPick(image);
+        onPick(await stripImageFileMetadata(image).catch(() => image));
       }
     },
     [onPick, skipCompression]

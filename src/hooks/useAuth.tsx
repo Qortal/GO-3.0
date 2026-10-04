@@ -276,7 +276,7 @@ export const useAuth = () => {
           isValid = true;
         } else {
           try {
-            const url2 = `${baseUrl}/admin/apikey/test?apiKey=${validatedNodeInfo?.apikey}`;
+            const url2 = `${baseUrl}/admin/apikey/test?apiKey=${encodeURIComponent(validatedNodeInfo?.apikey)}`;
             // Assuming the response is in plain text and will be 'true' or 'false'
             const data2 = await fetchTextWithTimeout(
               url2,
@@ -333,7 +333,7 @@ export const useAuth = () => {
 
   const validateLocalApiKey = useCallback(async (apiKey) => {
     try {
-      const url2 = `${getDefaultLocalNodeUrl()}/admin/apikey/test?apiKey=${apiKey}`;
+      const url2 = `${getDefaultLocalNodeUrl()}/admin/apikey/test?apiKey=${encodeURIComponent(apiKey)}`;
       const response2 = await fetch(url2);
 
       // Assuming the response is in plain text and will be 'true' or 'false'

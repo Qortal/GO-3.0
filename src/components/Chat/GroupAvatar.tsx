@@ -1,4 +1,4 @@
-import { useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import { useCallback, useContext, useEffect, useState } from 'react';
 import Logo2 from '../../assets/svgs/Logo2.svg';
 import {
   QORTAL_APP_CONTEXT,
@@ -25,7 +25,16 @@ import { LoadingButton } from '@mui/lab';
 import ErrorIcon from '@mui/icons-material/Error';
 import { useTranslation } from 'react-i18next';
 import { MAX_SIZE_AVATAR } from '../../constants/constants.ts';
-import { buildGroupAvatarUrl } from '../../utils/groupAvatarUrl';
+import {
+  putQdnAvatarImage,
+  qdnGroupAvatarIdentifier,
+  useQdnGroupAvatar,
+} from '../../lib/qdnAvatars';
+import {
+  buildGroupAvatarPreviewUrl,
+  noteAvatarPublishedHere,
+} from '../Group/avatarPreviewUrls';
+import { useFullSizeAvatarSrc } from '../Group/useFullSizeAvatarSrc';
 import { AvatarPreviewModal } from '../Chat/AvatarPreviewModal';
 import { getClickableAvatarSx } from './clickableAvatarStyles';
 
@@ -47,8 +56,12 @@ export const GroupAvatar = ({
   const theme = useTheme();
   const [anchorEl, setAnchorEl] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
-  const [isPreviewOpen, setIsPreviewOpen] = useState(false);
-  const [previewSrc, setPreviewSrc] = useState(null);
+  // What the preview shows: the avatar just published from here (a local
+  // image), or the cached avatar with the full size loaded from the node.
+  const [previewKind, setPreviewKind] = useState<'published' | 'cached' | null>(
+    null
+  );
+  const [previewFullUrl, setPreviewFullUrl] = useState<string | null>(null);
   // Handle child element click to open Popover
   const handleChildClick = (event) => {
     event.stopPropagation(); // Prevent parent onClick from firing
@@ -65,9 +78,14 @@ export const GroupAvatar = ({
   const open = Boolean(anchorEl) || dialogOpen;
   const id = open ? 'avatar-img' : undefined;
 
+  // Shows the device copy at once; the node only refreshes it.
+  const { src: cachedAvatarSrc } = useQdnGroupAvatar(myName, groupId, {
+    enabled: !externalOnly,
+  });
+
   const checkIfAvatarExists = useCallback(async (name, groupId) => {
     try {
-      const identifier = `qortal_group_avatar_${groupId}`;
+      const identifier = qdnGroupAvatarIdentifier(groupId);
       const url = `${getBaseApiReact()}${getArbitraryEndpointReact()}?mode=ALL&service=THUMBNAIL&identifier=${identifier}&limit=1&name=${name}&includemetadata=false&prefix=true`;
       const response = await fetch(url, {
         method: 'GET',
@@ -85,33 +103,51 @@ export const GroupAvatar = ({
   }, []);
 
   useEffect(() => {
-    if (!myName || !groupId) return;
+    // Only the avatar view needs to know; the publish dialog does not.
+    if (externalOnly || !myName || !groupId) return;
     checkIfAvatarExists(myName, groupId);
-  }, [myName, groupId, checkIfAvatarExists]);
+  }, [myName, groupId, checkIfAvatarExists, externalOnly]);
 
-  const groupAvatarUrl = useMemo(
-    () => buildGroupAvatarUrl(myName, groupId),
-    [myName, groupId]
+  // The avatar shows the cached copy (at most 128 px); only the preview
+  // loads the full size from the node, the cached copy showing until then.
+  const fullSizePreviewSrc = useFullSizeAvatarSrc(
+    previewKind === 'cached' ? cachedAvatarSrc : undefined,
+    previewFullUrl,
+    previewKind === 'cached'
   );
+  const shownPreviewSrc =
+    previewKind === 'published' ? tempAvatar : fullSizePreviewSrc;
 
-  const handleAvatarPreview = useCallback(
-    (src) => {
-      if (!src) return;
-      setPreviewSrc(src);
-      setIsPreviewOpen(true);
-    },
-    [setIsPreviewOpen, setPreviewSrc]
-  );
+  const openPublishedPreview = useCallback(() => {
+    if (!tempAvatar) return;
+    setPreviewFullUrl(null);
+    setPreviewKind('published');
+  }, [tempAvatar]);
+
+  const openCachedPreview = useCallback(() => {
+    if (!cachedAvatarSrc) return;
+    // Read the node address now: the user can switch nodes.
+    setPreviewFullUrl(
+      buildGroupAvatarPreviewUrl(getBaseApiReact(), myName, groupId)
+    );
+    setPreviewKind('cached');
+  }, [cachedAvatarSrc, myName, groupId]);
 
   const closePreview = useCallback(() => {
-    setIsPreviewOpen(false);
-    setPreviewSrc(null);
-  }, [setIsPreviewOpen, setPreviewSrc]);
+    setPreviewKind(null);
+    setPreviewFullUrl(null);
+  }, []);
+
+  // The cached image went away (cache cleared): close the preview so it does
+  // not pop up again when an image arrives later.
+  useEffect(() => {
+    if (previewKind === 'cached' && !cachedAvatarSrc) closePreview();
+  }, [previewKind, cachedAvatarSrc, closePreview]);
 
   const avatarPreviewModal = (
     <AvatarPreviewModal
-      open={isPreviewOpen}
-      src={previewSrc}
+      open={Boolean(previewKind && shownPreviewSrc)}
+      src={shownPreviewSrc}
       alt={myName}
       onClose={closePreview}
     />
@@ -143,7 +179,7 @@ export const GroupAvatar = ({
         window
           .sendMessage('publishOnQDN', {
             data: avatarBase64,
-            identifier: `qortal_group_avatar_${groupId}`,
+            identifier: qdnGroupAvatarIdentifier(groupId),
             service: 'THUMBNAIL',
             uploadType: 'base64',
           })
@@ -163,8 +199,15 @@ export const GroupAvatar = ({
             );
           });
       });
+      const publishedAvatar = `data:image/webp;base64,${avatarBase64}`;
+      // Every group list shows the new avatar at once, not the old cached
+      // one, and previews do not swap in the old file the node still has.
+      void putQdnAvatarImage(myName, publishedAvatar, {
+        identifier: qdnGroupAvatarIdentifier(groupId),
+      });
+      noteAvatarPublishedHere(myName, qdnGroupAvatarIdentifier(groupId));
       setAvatarFile(null);
-      setTempAvatar(`data:image/webp;base64,${avatarBase64}`);
+      setTempAvatar(publishedAvatar);
       handleClose();
     } catch (error) {
       if (error?.message) {
@@ -213,7 +256,7 @@ export const GroupAvatar = ({
           onClick={(event) => {
             event.preventDefault();
             event.stopPropagation();
-            handleAvatarPreview(tempAvatar);
+            openPublishedPreview();
           }}
         >
           {myName?.charAt(0)}
@@ -249,21 +292,22 @@ export const GroupAvatar = ({
     );
   }
 
-  if (hasAvatar) {
+  if (hasAvatar || cachedAvatarSrc) {
+    const canPreview = Boolean(cachedAvatarSrc);
     return (
       <>
         <Avatar
           sx={{
             height: '138px',
             width: '138px',
-            ...getClickableAvatarSx(theme, Boolean(groupAvatarUrl)),
+            ...getClickableAvatarSx(theme, canPreview),
           }}
-          src={groupAvatarUrl || undefined}
+          src={cachedAvatarSrc}
           alt={myName}
           onClick={(event) => {
             event.preventDefault();
             event.stopPropagation();
-            handleAvatarPreview(groupAvatarUrl);
+            if (canPreview) openCachedPreview();
           }}
         >
           {myName?.charAt(0)}

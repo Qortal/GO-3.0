@@ -1,5 +1,4 @@
 import {
-  Avatar,
   Box,
   ButtonBase,
   IconButton,
@@ -20,7 +19,7 @@ import PersonOffIcon from '@mui/icons-material/PersonOff';
 import MarkChatUnreadIcon from '@mui/icons-material/MarkChatUnread';
 import PhoneMissedRoundedIcon from '@mui/icons-material/PhoneMissedRounded';
 import { useTranslation } from 'react-i18next';
-import React from 'react';
+import React, { useCallback, useState } from 'react';
 import { useAtomValue } from 'jotai';
 import {
   groupChatHasUnreadAtom,
@@ -31,10 +30,11 @@ import { HubsIcon } from '../../assets/Icons/HubsIcon';
 import { MessagingIcon } from '../../assets/Icons/MessagingIcon';
 import { formatEmailDate } from './qmailUtils';
 import { AvatarPreviewModal } from '../Chat/AvatarPreviewModal';
-import {
-  getClickableAvatarSx,
-  getFallbackAvatarOutlineSx,
-} from '../Chat/clickableAvatarStyles';
+import { useAvatarPreviewSrc } from '../Chat/useAvatarPreviewSrc';
+import { getBaseApiReact } from '../../utils/globalApi';
+import { buildUserAvatarPreviewUrl } from './avatarPreviewUrls';
+import { DirectRowAvatar } from './DirectRowAvatar';
+import { rowAvatarPriority } from './useGroupRowAvatar';
 import { effectivePresenceStatusAtomFamily } from '../../atoms/presence';
 import type { DmFriendStored } from '../../atoms/global';
 import { PresenceStatusBadge } from '../common/PresenceStatusBadge';
@@ -42,7 +42,22 @@ import { hasInvisibleCharacters } from '../../utils/hasInvisibleCharacters';
 import { useChatDraftKeys } from '../../hooks/useChatDraftKeys';
 import { directDraftKey } from '../../utils/chatPersistence';
 import { DraftBadge } from '../Chat/DraftBadge';
-import qortalWhiteLogo from '../../assets/sidebar/qortal-logo-white.png';
+import {
+  CHAT_LIST_AVATAR_SIZE,
+  CHAT_LIST_ICON_SIZE,
+  chatListAvatarSlotSx,
+  chatListHeaderButtonSx,
+  chatListHeaderIconSx,
+  chatListHeaderSx,
+  chatListRowContentSx,
+  chatListRowEdgeActionSx,
+  chatListScrollPadding,
+  chatListTextSx,
+  getChatListPanelSx,
+  getChatListRowSx,
+  getChatListSubtitleSx,
+  getChatListTitleSx,
+} from './chatListRowStyles';
 
 /** Renders only the presence badge for a single DM address.
  * Subscribes to per-address atoms so a change to any other peer
@@ -68,17 +83,21 @@ const DirectsPresenceBadge = React.memo(
   }
 );
 
+/** reticulum:call_history key for the outcome of a DM's last call. */
+const callOutcomeKey = (outcome?: string) =>
+  outcome === 'missed' ||
+  outcome === 'declined' ||
+  outcome === 'no_answer' ||
+  outcome === 'cancelled'
+    ? outcome
+    : 'answered';
+
 export interface DirectsSidebarProps {
   setDesktopSideView: (view: 'groups' | 'directs') => void;
   desktopSideView: string;
   directChatHasUnread: boolean;
   directs: any[];
   dmFriendsByAddress: Record<string, DmFriendStored>;
-  getUserAvatarUrl: (name?: string) => string;
-  directAvatarLoaded: Record<string, boolean>;
-  setDirectAvatarLoaded: React.Dispatch<
-    React.SetStateAction<Record<string, boolean>>
-  >;
   setSelectedDirect: (direct: any) => void;
   setNewChat: (value: boolean) => void;
   setIsOpenDrawer: (value: boolean) => void;
@@ -87,9 +106,6 @@ export interface DirectsSidebarProps {
   timestampEnterData: Record<string, number>;
   timeDifferenceForNotificationChats: number;
   myAddress: string;
-  openAvatarPreview: (src: string | null, alt?: string) => void;
-  avatarPreviewData: { src: string; alt: string } | null;
-  closeAvatarPreview: () => void;
   isRunningPublicNode: boolean;
   setIsOpenBlockedUserModal: (value: boolean) => void;
   reticulumChatEnabled?: boolean;
@@ -104,9 +120,6 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
     directChatHasUnread,
     directs,
     dmFriendsByAddress,
-    getUserAvatarUrl,
-    directAvatarLoaded,
-    setDirectAvatarLoaded,
     setSelectedDirect,
     setNewChat,
     setIsOpenDrawer,
@@ -115,21 +128,40 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
     timestampEnterData,
     timeDifferenceForNotificationChats,
     myAddress,
-    openAvatarPreview,
-    avatarPreviewData,
-    closeAvatarPreview,
     isRunningPublicNode,
     setIsOpenBlockedUserModal,
     reticulumChatEnabled = false,
   } = props;
 
   const theme = useTheme();
-  // Compact the Groups/DM toggle on landscape phones (matches GroupList).
+  // Compact the legacy Groups/DM toggle on landscape phones (matches
+  // GroupList). The Reticulum list has no such toggle, so it keeps its header
+  // above the rows in landscape too.
   const isMobileWidth = useMediaQuery(theme.breakpoints.down('md'));
   const isLandscape = useMediaQuery('(orientation: landscape)');
-  const compactToggle = isMobileWidth && isLandscape;
-  const { t } = useTranslation();
+  const compactToggle = isMobileWidth && isLandscape && !reticulumChatEnabled;
+  // Phones (and the legacy list) use the shared Q-Chat list rows, the same as
+  // the Groups list; only the narrow desktop Reticulum DM column keeps its
+  // compact rows.
+  const compactRows = reticulumChatEnabled && !isMobileWidth;
+  const phoneReticulumList = reticulumChatEnabled && isMobileWidth;
+  const { t } = useTranslation(['core', 'group', 'reticulum']);
   const draftKeys = useChatDraftKeys(myAddress);
+  // Tap on a DM avatar: the picture on screen at once, the full-size image
+  // from the node once it has loaded.
+  const {
+    previewSrc: dmAvatarPreviewSrc,
+    showPreview: showDmAvatarPreview,
+    clearPreview: clearDmAvatarPreview,
+  } = useAvatarPreviewSrc();
+  const [dmAvatarPreviewAlt, setDmAvatarPreviewAlt] = useState('');
+  const openDmAvatarPreview = useCallback(
+    (name: string | undefined, shownSrc: string, alt: string) => {
+      const fullSrc = buildUserAvatarPreviewUrl(getBaseApiReact(), name);
+      if (showDmAvatarPreview(fullSrc, shownSrc)) setDmAvatarPreviewAlt(alt);
+    },
+    [showDmAvatarPreview]
+  );
   const directUnreadCount = directs.reduce(
     (total, direct) => total + Math.max(0, Number(direct?.unreadCount || 0)),
     0
@@ -142,9 +174,11 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
         // stretch to full height so the list can scroll. In portrait keep the
         // original top-aligned column.
         alignItems: compactToggle ? 'stretch' : 'flex-start',
-        background: theme.palette.background.surface,
+        background: phoneReticulumList
+          ? getChatListPanelSx(theme).background
+          : theme.palette.background.surface,
         borderRadius: reticulumChatEnabled ? 0 : '0 15px 15px 0',
-        borderRight: reticulumChatEnabled ? '1px solid' : 'none',
+        borderRight: compactRows ? '1px solid' : 'none',
         borderColor: 'divider',
         boxShadow: reticulumChatEnabled
           ? 'none'
@@ -348,19 +382,12 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
       {reticulumChatEnabled && (
         <Box
           sx={{
-            alignItems: 'center',
-            borderBottom: '1px solid',
-            borderColor: 'divider',
-            display: 'flex',
-            gap: 1,
-            justifyContent: 'space-between',
-            minHeight: 62,
-            px: '10px',
-            py: '10px',
-            width: '100%',
+            ...chatListHeaderSx,
+            // The desktop column is narrower; phones match the Groups header.
+            px: isMobileWidth ? chatListHeaderSx.px : '10px',
           }}
         >
-          <Box sx={{ display: { xs: 'block', md: 'none' }, flexShrink: 0 }}>
+          <Box sx={{ display: { xs: 'flex', md: 'none' }, minWidth: 0 }}>
             <ChatScopeSwitch
               directHasUnread={directChatHasUnread}
               directUnreadCount={directUnreadCount}
@@ -385,7 +412,7 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
                 whiteSpace: 'nowrap',
               }}
             >
-              Direct Messages
+              {t('group:dm.direct_messages')}
             </Typography>
             <Typography
               sx={{
@@ -395,7 +422,7 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
                 mt: 0.25,
               }}
             >
-              Private Reticulum chats
+              {t('reticulum:dm_list.subtitle')}
             </Typography>
           </Box>
           <Tooltip
@@ -404,21 +431,32 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
             })}
           >
             <IconButton
+              aria-label={t('core:action.new.chat', {
+                postProcess: 'capitalizeFirstChar',
+              })}
               size="small"
               onClick={() => {
                 setNewChat(true);
                 setSelectedDirect(null);
                 setIsOpenDrawer(false);
               }}
-              sx={{ color: 'text.secondary', p: 0.5 }}
+              sx={
+                isMobileWidth
+                  ? chatListHeaderButtonSx
+                  : { color: 'text.secondary', p: 0.5 }
+              }
             >
-              <CreateIcon sx={{ fontSize: 17 }} />
+              <CreateIcon
+                sx={isMobileWidth ? chatListHeaderIconSx : { fontSize: 17 }}
+              />
             </IconButton>
           </Tooltip>
         </Box>
       )}
 
       <Box
+        // The phone Groups / DMs pager keeps sideways swipes off this list.
+        data-pager-scroller=""
         sx={{
           alignItems: 'flex-start',
           display: 'flex',
@@ -428,7 +466,11 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
           minWidth: compactToggle ? 0 : undefined,
           order: compactToggle ? 1 : 0,
           overflowY: 'auto',
-          padding: reticulumChatEnabled ? '10px' : '12px 8px',
+          padding: reticulumChatEnabled
+            ? isMobileWidth
+              ? chatListScrollPadding
+              : '10px'
+            : '12px 8px',
           width: compactToggle ? 'auto' : '100%',
         }}
       >
@@ -450,20 +492,14 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
                 py: 1.5,
               }}
             >
-              No current private messages.
+              {t('reticulum:dm_list.empty')}
             </Typography>
           )}
-          {directs.map((direct: any) => {
-            const avatarUrl = direct?.savedMessages
-              ? ''
-              : getUserAvatarUrl(direct?.name);
-            const avatarKey =
+          {directs.map((direct: any, index: number) => {
+            const rowKey =
               direct?.address ||
               direct?.name ||
               `${direct?.timestamp}-${direct?.sender}`;
-            const isAvatarLoaded = Boolean(
-              avatarUrl && avatarKey && directAvatarLoaded[avatarKey]
-            );
             const isSelected = direct?.address === selectedDirect?.address;
             const hasUnread =
               !reticulumChatEnabled &&
@@ -484,16 +520,10 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
               Number(direct.lastCall.endedAt || 0) >=
                 Number(direct?.lastMessageTimestamp || 0)
             );
-            const callActivityLabel =
-              direct?.lastCall?.outcome === 'missed'
-                ? 'Missed call'
-                : direct?.lastCall?.outcome === 'declined'
-                  ? 'Declined call'
-                  : direct?.lastCall?.outcome === 'no_answer'
-                    ? 'No answer'
-                    : direct?.lastCall?.outcome === 'cancelled'
-                      ? 'Cancelled call'
-                      : 'Voice call';
+            const callActivityLabel = t(
+              `reticulum:call_history.${callOutcomeKey(direct?.lastCall?.outcome)}`,
+              { postProcess: 'capitalizeFirstChar' }
+            );
             const isDmFriend = Boolean(
               direct?.address && dmFriendsByAddress[direct.address]
             );
@@ -504,10 +534,17 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
             const hasDraft = Boolean(
               direct?.address && draftKeys.has(directDraftKey(direct.address))
             );
+            const isUnread = Boolean(hasUnread || hasReticulumUnread);
+            // Adding a friend is handled by the open DM chat (ChatDirect).
+            // On phones the full list shows exactly when no DM is open, so a
+            // row button would do nothing there: phones show only the Friend
+            // badge and add friends from the chat header.
+            const showFriendControl =
+              direct?.savedMessages !== true && (isDmFriend || !isMobileWidth);
 
             return (
               <ListItem
-                key={direct?.address || avatarKey}
+                key={direct?.address || rowKey}
                 onClick={() => {
                   setSelectedDirect(direct);
                   setNewChat(false);
@@ -525,117 +562,79 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
                     });
                   getTimestampEnterChat();
                 }}
-                sx={{
-                  borderRadius: '10px',
-                  cursor: 'pointer',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  marginBottom: '6px',
-                  padding: reticulumChatEnabled ? '8px 9px' : '12px 14px',
-                  position: 'relative',
-                  width: '100%',
-                  backgroundColor: isSelected
-                    ? theme.palette.action.selected
-                    : 'transparent',
-                  transition:
-                    'background-color 0.15s ease, border-color 0.15s ease',
-                  '&::before': {
-                    backgroundColor: isSelected
-                      ? theme.palette.primary.main
-                      : 'transparent',
-                    borderRadius: '999px',
-                    bottom: '5px',
-                    content: '""',
-                    left: 0,
-                    position: 'absolute',
-                    top: '5px',
-                    width: '3px',
-                  },
-                  '&:hover': {
-                    backgroundColor: isSelected
-                      ? theme.palette.action.selected
-                      : theme.palette.action.hover,
-                    '& .dm-friend-indicator': {
+                sx={[
+                  compactRows
+                    ? {
+                        borderRadius: '10px',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        marginBottom: '6px',
+                        padding: '8px 9px',
+                        position: 'relative',
+                        width: '100%',
+                        backgroundColor: isSelected
+                          ? theme.palette.action.selected
+                          : 'transparent',
+                        transition:
+                          'background-color 0.15s ease, border-color 0.15s ease',
+                        '&::before': {
+                          backgroundColor: isSelected
+                            ? theme.palette.primary.main
+                            : 'transparent',
+                          borderRadius: '999px',
+                          bottom: '5px',
+                          content: '""',
+                          left: 0,
+                          position: 'absolute',
+                          top: '5px',
+                          width: '3px',
+                        },
+                        '&:hover': {
+                          backgroundColor: isSelected
+                            ? theme.palette.action.selected
+                            : theme.palette.action.hover,
+                        },
+                      }
+                    : getChatListRowSx(theme, { selected: isSelected }),
+                  {
+                    '&:hover .dm-friend-indicator': {
                       opacity: 1,
                     },
                   },
-                }}
+                ]}
               >
                 <Box
-                  sx={{
-                    alignItems: 'center',
-                    display: 'flex',
-                    gap: reticulumChatEnabled ? '10px' : '20px',
-                    width: '100%',
-                  }}
+                  sx={
+                    compactRows
+                      ? {
+                          alignItems: 'center',
+                          display: 'flex',
+                          gap: '10px',
+                          width: '100%',
+                        }
+                      : chatListRowContentSx
+                  }
                 >
-                  <ListItemAvatar sx={{ minWidth: 44, marginRight: 0 }}>
+                  <ListItemAvatar sx={chatListAvatarSlotSx}>
                     <DirectsPresenceBadge
                       address={direct?.address}
                       disabled={direct?.savedMessages === true}
                     >
-                      <Avatar
-                        sx={{
-                          height: reticulumChatEnabled ? 34 : 40,
-                          width: reticulumChatEnabled ? 34 : 40,
-                          background: theme.palette.background.surface,
-                          color: theme.palette.text.primary,
-                          ...(!isAvatarLoaded
-                            ? getFallbackAvatarOutlineSx(theme)
-                            : {}),
-                          ...getClickableAvatarSx(theme, isAvatarLoaded),
-                        }}
-                        alt={direct?.name || direct?.address}
-                        src={avatarUrl}
-                        onClick={(event) => {
-                          if (!avatarUrl || !isAvatarLoaded) return;
-                          event.preventDefault();
-                          event.stopPropagation();
-                          openAvatarPreview(
-                            avatarUrl,
+                      <DirectRowAvatar
+                        name={direct?.name}
+                        label={direct?.name || direct?.address}
+                        savedMessages={direct?.savedMessages === true}
+                        size={compactRows ? 34 : CHAT_LIST_AVATAR_SIZE}
+                        priority={rowAvatarPriority(index)}
+                        onOpenPreview={(shownSrc) =>
+                          openDmAvatarPreview(
+                            direct?.name,
+                            shownSrc,
                             direct?.name || direct?.address
-                          );
-                        }}
-                        imgProps={{
-                          onLoad: () => {
-                            if (!avatarKey) return;
-                            setDirectAvatarLoaded((prev) => {
-                              if (prev[avatarKey]) return prev;
-                              return {
-                                ...prev,
-                                [avatarKey]: true,
-                              };
-                            });
-                          },
-                          onError: () => {
-                            if (!avatarKey) return;
-                            setDirectAvatarLoaded((prev) => {
-                              if (prev[avatarKey] === false) return prev;
-                              return {
-                                ...prev,
-                                [avatarKey]: false,
-                              };
-                            });
-                          },
-                        }}
-                      >
-                        {direct?.savedMessages ? (
-                          <Box
-                            alt=""
-                            aria-hidden
-                            component="img"
-                            src={qortalWhiteLogo}
-                            sx={{
-                              height: 22,
-                              objectFit: 'contain',
-                              opacity: 0.15,
-                              width: 22,
-                            }}
-                          />
-                        ) : (
-                          (direct?.name || direct?.address)?.charAt(0)
-                        )}
-                      </Avatar>
+                          )
+                        }
+                      />
                     </DirectsPresenceBadge>
                   </ListItemAvatar>
 
@@ -687,56 +686,84 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
                     }
                     primaryTypographyProps={{
                       component: 'div',
-                      sx: {
-                        color:
-                          hasUnread || hasReticulumUnread
-                            ? theme.palette.primary.main
-                            : theme.palette.text.primary,
-                        fontFamily: 'Inter',
-                        fontSize: reticulumChatEnabled ? '13px' : '15px',
-                        fontWeight: 600,
-                        lineHeight: 1.3,
-                      },
+                      sx: compactRows
+                        ? {
+                            color: isUnread
+                              ? theme.palette.primary.main
+                              : theme.palette.text.primary,
+                            fontFamily: 'Inter',
+                            fontSize: '13px',
+                            fontWeight: 600,
+                            lineHeight: 1.3,
+                          }
+                        : getChatListTitleSx(theme, isUnread),
                     }}
                     secondaryTypographyProps={{
-                      sx: {
-                        color: theme.palette.text.secondary,
-                        fontFamily: 'Inter',
-                        fontSize: reticulumChatEnabled ? '11px' : '12px',
-                        lineHeight: 1.4,
-                        marginTop: '3px',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap',
-                      },
+                      sx: compactRows
+                        ? {
+                            color: theme.palette.text.secondary,
+                            fontFamily: 'Inter',
+                            fontSize: '11px',
+                            lineHeight: 1.4,
+                            marginTop: '3px',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                          }
+                        : getChatListSubtitleSx(theme),
                     }}
-                    sx={{
-                      flex: 1,
-                      minWidth: 0,
-                      margin: 0,
-                      overflow: 'hidden',
-                    }}
+                    sx={chatListTextSx}
                   />
 
-                  {direct?.savedMessages !== true && (
-                    <Tooltip title={isDmFriend ? 'Friends' : 'Add Friend'}>
+                  {showFriendControl && (
+                    <Tooltip
+                      title={
+                        isDmFriend
+                          ? t('core:dm_friends.friend_badge_aria', {
+                              postProcess: 'capitalizeFirstChar',
+                            })
+                          : t('core:dm_friends.add_friend', {
+                              postProcess: 'capitalizeFirstChar',
+                            })
+                      }
+                    >
                       {isDmFriend ? (
-                        <GroupRoundedIcon
+                        <Box
+                          component="span"
                           className="dm-friend-indicator"
-                          aria-label="Friends"
-                          sx={{
-                            color: theme.palette.primary.main,
-                            fontSize: '19px',
-                            flexShrink: 0,
-                            marginLeft: '4px',
-                            opacity: 1,
-                            transition: 'opacity 0.15s ease',
-                          }}
-                        />
+                          aria-label={t('core:dm_friends.friend_badge_aria', {
+                            postProcess: 'capitalizeFirstChar',
+                          })}
+                          role="img"
+                          sx={
+                            isMobileWidth
+                              ? {
+                                  ...chatListRowEdgeActionSx,
+                                  color: theme.palette.primary.main,
+                                  order: 1,
+                                }
+                              : {
+                                  color: theme.palette.primary.main,
+                                  display: 'inline-flex',
+                                  flexShrink: 0,
+                                  marginLeft: '4px',
+                                }
+                          }
+                        >
+                          <GroupRoundedIcon
+                            sx={{
+                              fontSize: isMobileWidth
+                                ? CHAT_LIST_ICON_SIZE
+                                : '19px',
+                            }}
+                          />
+                        </Box>
                       ) : (
                         <IconButton
                           className="dm-friend-indicator"
-                          aria-label="Add Friend"
+                          aria-label={t('core:dm_friends.add_friend', {
+                            postProcess: 'capitalizeFirstChar',
+                          })}
                           onClick={(event) => {
                             event.preventDefault();
                             event.stopPropagation();
@@ -754,9 +781,19 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
                             color: theme.palette.text.secondary,
                             flexShrink: 0,
                             marginLeft: '4px',
+                            // Desktop only: shown while the row is hovered
+                            // or the button has keyboard focus.
                             opacity: 0,
                             padding: 0,
                             transition: 'opacity 0.15s ease',
+                            '&:focus-visible, &.Mui-focusVisible': {
+                              opacity: 1,
+                            },
+                            // A touch screen cannot hover, so the button
+                            // would stay invisible yet tappable.
+                            '@media (hover: none)': {
+                              display: 'none',
+                            },
                           }}
                         >
                           <GroupOutlinedIcon sx={{ fontSize: '19px' }} />
@@ -764,7 +801,7 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
                       )}
                     </Tooltip>
                   )}
-                  {(hasUnread || hasReticulumUnread) &&
+                  {isUnread &&
                     (hasMissedCall ? (
                       <PhoneMissedRoundedIcon
                         sx={{
@@ -848,10 +885,10 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
       )}
 
       <AvatarPreviewModal
-        open={Boolean(avatarPreviewData)}
-        src={avatarPreviewData?.src || null}
-        alt={avatarPreviewData?.alt}
-        onClose={closeAvatarPreview}
+        open={Boolean(dmAvatarPreviewSrc)}
+        src={dmAvatarPreviewSrc || null}
+        alt={dmAvatarPreviewAlt}
+        onClose={clearDmAvatarPreview}
       />
     </Box>
   );

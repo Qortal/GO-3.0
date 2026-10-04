@@ -13,6 +13,7 @@ import {
   throwIfPublishAborted,
 } from '../../utils/publishAbort';
 import { takeStreamedChunkUpload } from '../../utils/streamedChunkUpload';
+import { qdnResourcePath } from '../../utils/qdnPath';
 import aesjs from 'aes-js';
 
 async function encryptAesCtrChunkWithFallback(
@@ -393,10 +394,19 @@ export const publishData = async ({
       throw new Error('No data provided');
     }
 
-    let uploadDataUrl = `/arbitrary/${service}/${registeredName}`;
+    // Each part is one path segment: a Q-App's identifier must not add
+    // segments ("x/../..") to a keyed POST (E2a / GO-21).
+    let uploadDataUrl = `/arbitrary/${qdnResourcePath({
+      service,
+      name: registeredName,
+    })}`;
     let paramQueries = '';
     if (identifier?.trim().length > 0) {
-      uploadDataUrl = `/arbitrary/${service}/${registeredName}/${identifier}`;
+      uploadDataUrl = `/arbitrary/${qdnResourcePath({
+        service,
+        name: registeredName,
+        identifier,
+      })}`;
     }
 
     paramQueries = paramQueries + `?fee=${fee}`;

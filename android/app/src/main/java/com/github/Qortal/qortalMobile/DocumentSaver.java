@@ -22,20 +22,27 @@ import java.io.OutputStream;
  * URLs, `Content-Disposition: attachment`) because no DownloadListener is set and
  * the WebView has no save UI. {@link QortalDownloadListener} routes those here so
  * Q-Apps and published websites can save files the same way they do on desktop.
+ *
+ * Every save goes through {@link SavedFilePolicy#forSave}: web pages, SVG and
+ * XML (including any extension Android maps to an XML type, such as ".rss")
+ * become ".txt" plain text, so no saved file is named or typed as a page.
  */
 public final class DocumentSaver {
 
     private static final Object FILE_LOCK = new Object();
 
+    /** Android's MIME type for an extension, for {@link SavedFilePolicy#forSave}. */
+    public static final SavedFilePolicy.ExtensionTypes EXTENSION_TYPES =
+        ext -> MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext);
+
     private DocumentSaver() {}
 
+    /**
+     * A file name safe to show and create: no bidi/control characters, path
+     * separators or leading dots ({@link SavedFilePolicy#cleanName}).
+     */
     public static String safeName(String name) {
-        String n = (name == null || name.trim().isEmpty()) ? "download" : name.trim();
-        n = n.replaceAll("[/\\\\?%*:|\"<>]", "_");
-        if (n.length() > 200) {
-            n = n.substring(0, 200);
-        }
-        return n.isEmpty() ? "download" : n;
+        return SavedFilePolicy.cleanName(name);
     }
 
     /** Save raw bytes to Documents/<subFolder>/<displayName>. Returns the saved uri/path. */
@@ -46,6 +53,9 @@ public final class DocumentSaver {
         byte[] bytes,
         String mimeType
     ) throws IOException {
+        SavedFilePolicy.Target target = SavedFilePolicy.forSave(displayName, mimeType, EXTENSION_TYPES);
+        displayName = target.name;
+        mimeType = target.mime;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             Uri uri = createMediaStoreUri(context, subFolder, displayName, mimeType);
             ContentResolver resolver = context.getContentResolver();
@@ -78,6 +88,9 @@ public final class DocumentSaver {
         String mimeType,
         InputStream in
     ) throws IOException {
+        SavedFilePolicy.Target target = SavedFilePolicy.forSave(displayName, mimeType, EXTENSION_TYPES);
+        displayName = target.name;
+        mimeType = target.mime;
         byte[] buffer = new byte[64 * 1024];
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             Uri uri = createMediaStoreUri(context, subFolder, displayName, mimeType);

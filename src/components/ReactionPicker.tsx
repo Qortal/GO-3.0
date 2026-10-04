@@ -1,8 +1,8 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, type CSSProperties } from 'react';
 import ReactDOM from 'react-dom';
 import Picker, { EmojiStyle, Theme } from 'emoji-picker-react';
 import '../styles/ReactionPicker.css';
-import { ButtonBase } from '@mui/material';
+import { ButtonBase, useMediaQuery, useTheme } from '@mui/material';
 import SentimentSatisfiedAltOutlinedIcon from '@mui/icons-material/SentimentSatisfiedAltOutlined';
 import { ChatGifPicker } from './Chat/gifs/ChatGifPicker';
 import { EmojiGifStage } from './Chat/gifs/EmojiGifStage';
@@ -12,18 +12,43 @@ import {
   type EmojiGifMode,
 } from './Chat/gifs/EmojiGifSwitch';
 import type { LibraryGif } from './Chat/gifs/libraryGifs';
+import { PHONE_EMOJI_PICKER_EMOJI_PX } from './Chat/messageActionSizes';
+import { BACK_PRIORITY, useAndroidBack } from '../utils/androidBack';
+
+/**
+ * The desktop composer's corner emoji button is a 32px square unless told
+ * otherwise. Phone composers use their own emoji button and panel instead.
+ */
+const COMPACT_COMPOSER_BUTTON_PX = 32;
+
+// The stylesheet sets 18px emoji (28px cells); phones get 36px cells so a
+// finger lands on the emoji it aims at. Inline so it beats the theme class.
+const PHONE_PICKER_STYLE = {
+  '--epr-emoji-size': `${PHONE_EMOJI_PICKER_EMOJI_PX}px`,
+} as CSSProperties;
 
 export const ReactionPicker = ({
   onReaction,
   onGifSelect,
   neutralIcon = false,
   compactComposer = false,
+  buttonSize,
+  iconSize,
 }: {
   onReaction: (emoji: string) => void;
   onGifSelect?: (gif: LibraryGif) => void;
   neutralIcon?: boolean;
   compactComposer?: boolean;
+  /** Square size of the trigger in px; overrides the default sizing. */
+  buttonSize?: number;
+  /** Size of the trigger's icon (or emoji) in px. */
+  iconSize?: number;
 }) => {
+  const theme = useTheme();
+  const isPhone = useMediaQuery(theme.breakpoints.down('md'));
+  const pickerStyle = isPhone ? PHONE_PICKER_STYLE : undefined;
+  const squareSize =
+    buttonSize ?? (compactComposer ? COMPACT_COMPOSER_BUTTON_PX : undefined);
   const [showPicker, setShowPicker] = useState(false);
   const [mode, setMode] = useState<EmojiGifMode>('emoji');
   const [pickerPosition, setPickerPosition] = useState({ top: 0, left: 0 });
@@ -94,6 +119,18 @@ export const ReactionPicker = ({
     setShowPicker(true);
   };
 
+  // Android back closes the picker first, as it does the composer's emoji
+  // panel, rather than whatever the picker was opened over (a thread dialog
+  // would close and take the reply being written with it). Opened after that
+  // surface registered its own handler, the picker wins a tie in priority.
+  useAndroidBack(
+    () => {
+      setShowPicker(false);
+      return true;
+    },
+    { enabled: showPicker, priority: BACK_PRIORITY.dialog }
+  );
+
   // Close picker if clicked outside
   useEffect(() => {
     const handleClickOutside = (event) => {
@@ -125,11 +162,17 @@ export const ReactionPicker = ({
         sx={{
           borderRadius: '6px',
           color: neutralIcon ? 'text.secondary' : undefined,
-          fontSize: '22px',
-          height: compactComposer ? 32 : undefined,
-          minWidth: compactComposer ? 32 : undefined,
-          padding: neutralIcon ? (compactComposer ? '2px' : '4px') : undefined,
-          width: compactComposer ? 32 : undefined,
+          fontSize: !neutralIcon && iconSize ? `${iconSize}px` : '22px',
+          height: squareSize,
+          minWidth: squareSize,
+          padding: buttonSize
+            ? 0
+            : neutralIcon
+              ? compactComposer
+                ? '2px'
+                : '4px'
+              : undefined,
+          width: squareSize,
           '&:hover': neutralIcon
             ? { backgroundColor: 'action.hover', color: 'text.primary' }
             : undefined,
@@ -142,7 +185,13 @@ export const ReactionPicker = ({
       >
         {neutralIcon ? (
           <SentimentSatisfiedAltOutlinedIcon
-            sx={{ fontSize: compactComposer ? '23px' : '18px' }}
+            sx={{
+              fontSize: iconSize
+                ? `${iconSize}px`
+                : compactComposer
+                  ? '23px'
+                  : '18px',
+            }}
           />
         ) : (
           '😃'
@@ -180,6 +229,7 @@ export const ReactionPicker = ({
                     height={innerHeight}
                     onEmojiClick={handlePicker}
                     onReactionClick={handleReaction}
+                    style={pickerStyle}
                     theme={Theme.DARK}
                     width={pickerSize.width}
                   />
@@ -203,6 +253,7 @@ export const ReactionPicker = ({
                 height={innerHeight}
                 onEmojiClick={handlePicker}
                 onReactionClick={handleReaction}
+                style={pickerStyle}
                 theme={Theme.DARK}
                 width={pickerSize.width}
               />

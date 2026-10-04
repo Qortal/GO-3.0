@@ -37,8 +37,12 @@ public final class StatusHonesty {
     public static final String KEY_WAITING_TEXT = "status_waiting_text";
     /** Optional singular form of {@link #KEY_WAITING_TEXT}, used for a count of 1. */
     public static final String KEY_WAITING_TEXT_ONE = "status_waiting_text_one";
+    /** Short form ("4 unsent") for the one-line collapsed notification. */
+    public static final String KEY_WAITING_SHORT = "status_waiting_short";
     public static final String KEY_FGS_TIMEOUT_TITLE = "fgs_timeout_title";
     public static final String KEY_FGS_TIMEOUT_TEXT = "fgs_timeout_text";
+    /** The "GO paused" text when GO's own battery limit paused it (title stays fgs_timeout_title). */
+    public static final String KEY_BATTERY_PAUSE_TEXT = "battery_pause_text";
     public static final String KEY_SYNCING_BACKGROUND = "status_syncing_background";
 
     public static final String[] LOCALIZED_KEYS = {
@@ -46,8 +50,10 @@ public final class StatusHonesty {
         KEY_PAUSED_TEXT,
         KEY_WAITING_TEXT,
         KEY_WAITING_TEXT_ONE,
+        KEY_WAITING_SHORT,
         KEY_FGS_TIMEOUT_TITLE,
         KEY_FGS_TIMEOUT_TEXT,
+        KEY_BATTERY_PAUSE_TEXT,
         KEY_SYNCING_BACKGROUND,
     };
 
@@ -142,5 +148,11 @@ public final class StatusHonesty {
         if (second == null || second.isEmpty()) return first;
         if (first == null || first.isEmpty()) return second;
         return first + "\n" + second;
+    }
+
+    /** Text after the status on the collapsed line ("· 4 unsent"), or null. */
+    public static String inlineSuffix(String second) {
+        if (second == null || second.isEmpty()) return null;
+        return "\u00b7 " + second;
     }
 }

@@ -7,8 +7,11 @@ import {
 } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+// The real English strings, so the queries below read what users see.
+import '../../i18n/i18n';
 import { AuthenticatedLockScreen } from './AuthenticatedLockScreen';
 import { isCapacitor } from '../../utils/platform';
+import { useSecureScreen } from '../../hooks/useSecureScreen';
 import {
   isBiometricHardwareAvailable,
   isBiometricUnlockConfigured,
@@ -17,6 +20,7 @@ import {
 } from '../../utils/walletBiometricAuth';
 
 vi.mock('../../utils/platform', () => ({ isCapacitor: vi.fn(() => false) }));
+vi.mock('../../hooks/useSecureScreen', () => ({ useSecureScreen: vi.fn() }));
 vi.mock('../../utils/walletBiometricAuth', () => ({
   isBiometricHardwareAvailable: vi.fn(async () => false),
   isBiometricUnlockConfigured: vi.fn(async () => false),
@@ -81,6 +85,26 @@ describe('AuthenticatedLockScreen', () => {
     ).toBeVisible();
   });
 
+  it('names the signed-in account and asks to wait after three wrong passwords', async () => {
+    const onUnlock = vi.fn().mockRejectedValue(new Error('incorrect'));
+    render(
+      <AuthenticatedLockScreen accountLabel="alice" onUnlock={onUnlock} />
+    );
+    expect(screen.getByText('Qortal Hub is locked')).toBeVisible();
+    expect(screen.getByText('alice is still signed in.')).toBeVisible();
+
+    const passwordInput = screen.getByLabelText('Qortal account password');
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      fireEvent.change(passwordInput, { target: { value: 'wrong' } });
+      fireEvent.submit(passwordInput.closest('form')!);
+      await waitFor(() => expect(onUnlock).toHaveBeenCalledTimes(attempt));
+      await waitFor(() => expect(passwordInput).toHaveValue(''));
+    }
+    expect(
+      await screen.findByText(/^Please wait \d seconds? and try again\.$/)
+    ).toBeVisible();
+  });
+
   it('does not start duplicate password checks', async () => {
     let finishUnlock: (() => void) | undefined;
     const onUnlock = vi.fn(
@@ -129,7 +153,9 @@ describe('AuthenticatedLockScreen', () => {
   it('unlocks with the stored password after a successful scan', async () => {
     enrolFingerprint('stored password');
     const onUnlock = vi.fn().mockResolvedValue(undefined);
-    render(<AuthenticatedLockScreen onUnlock={onUnlock} walletAddress="Q123" />);
+    render(
+      <AuthenticatedLockScreen onUnlock={onUnlock} walletAddress="Q123" />
+    );
 
     await userEvent.click(await fingerprintButton());
 
@@ -141,18 +167,48 @@ describe('AuthenticatedLockScreen', () => {
     );
   });
 
+  it('blocks screen capture while locked (GO-37)', () => {
+    render(<AuthenticatedLockScreen onUnlock={vi.fn()} />);
+    expect(vi.mocked(useSecureScreen)).toHaveBeenCalledWith({ secure: true });
+  });
+
+  it('keeps the wallet password away from password managers (N-33)', async () => {
+    const onUnlock = vi.fn().mockResolvedValue(undefined);
+    render(<AuthenticatedLockScreen onUnlock={onUnlock} />);
+
+    const passwordInput = screen.getByLabelText('Qortal account password');
+    expect(passwordInput).toHaveAttribute('autocomplete', 'off');
+    expect(passwordInput).toHaveAttribute('data-1p-ignore', 'true');
+    expect(passwordInput).toHaveAttribute('data-lpignore', 'true');
+    expect(passwordInput).toHaveAttribute('data-bwignore', 'true');
+    expect(passwordInput).toHaveAttribute('type', 'password');
+
+    // Typing and paste still work.
+    await userEvent.click(passwordInput);
+    await userEvent.paste('pasted ');
+    await userEvent.type(passwordInput, 'password');
+    fireEvent.submit(passwordInput.closest('form')!);
+    await waitFor(() =>
+      expect(onUnlock).toHaveBeenCalledWith('pasted password')
+    );
+  });
+
   it('falls back to the password when the scan is cancelled', async () => {
     enrolFingerprint();
     vi.mocked(verifyBiometricUnlock).mockRejectedValue(
       new Error('Biometric scan cancelled')
     );
     const onUnlock = vi.fn();
-    render(<AuthenticatedLockScreen onUnlock={onUnlock} walletAddress="Q123" />);
+    render(
+      <AuthenticatedLockScreen onUnlock={onUnlock} walletAddress="Q123" />
+    );
 
     await userEvent.click(await fingerprintButton());
 
     await waitFor(() =>
-      expect(screen.getByText('Fingerprint unlock was cancelled.')).toBeVisible()
+      expect(
+        screen.getByText('Fingerprint unlock was cancelled.')
+      ).toBeVisible()
     );
     expect(onUnlock).not.toHaveBeenCalled();
     expect(screen.getByLabelText('Qortal account password')).toBeEnabled();

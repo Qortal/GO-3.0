@@ -41,6 +41,7 @@ import { userInfoAtom } from '../atoms/global';
 import { useP2PChat, UseP2PChatReturn } from './useP2PChat';
 import { useOnlineAddresses } from './usePresence';
 import { createNamedFile } from '../utils/namedFile';
+import { stripImageFileMetadata } from '../utils/imageCompression';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -548,6 +549,8 @@ export function useSupportChat(hasStarted = false): UseSupportChatReturn {
             error: reject,
           });
         });
+        // Strict mode can hand back the original WebP, EXIF and all.
+        compressedFile = await stripImageFileMetadata(compressedFile);
       }
 
       // Step 2: read dimensions and raw bytes.

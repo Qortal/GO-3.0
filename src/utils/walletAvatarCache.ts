@@ -52,14 +52,17 @@ export function walletAvatarCacheMatchesName(
   return cachedName.toLowerCase() === expected.toLowerCase();
 }
 
+/**
+ * Avatar URL for a registered name. `_walletAddress` is accepted for older
+ * callers but not sent: the request would tell the node which wallet address
+ * is on this device, before login and for every wallet in the picker.
+ */
 export function buildQortalAvatarUrl(
   primaryName: string,
-  walletAddress?: string
+  _walletAddress?: string
 ): string {
   const encoded = encodeURIComponent(primaryName.trim());
-  const base = `${getBaseApiReactForAvatar()}/arbitrary/THUMBNAIL/${encoded}/qortal_avatar?async=true`;
-  const address = walletAddress?.trim();
-  return address ? `${base}&_=${encodeURIComponent(address)}` : base;
+  return `${getBaseApiReactForAvatar()}/arbitrary/THUMBNAIL/${encoded}/qortal_avatar?async=true`;
 }
 
 /** QDN app/website thumbnail URL (avatar-friendly base + encoded name). */

@@ -1,6 +1,5 @@
 import { memo, useCallback, useState } from 'react';
 import {
-  Avatar,
   Box,
   IconButton,
   Typography,
@@ -13,11 +12,10 @@ import ChevronLeftIcon from '@mui/icons-material/ChevronLeft';
 import ChevronRightIcon from '@mui/icons-material/ChevronRight';
 import SwipeIcon from '@mui/icons-material/Swipe';
 import { useTranslation } from 'react-i18next';
-import { getBaseApiReact } from '../../../App';
-import LogoSelected from '../../../assets/svgs/LogoSelected.svg';
 import { executeEvent } from '../../../utils/events';
 import { AppButton, AppButtonText } from '../Apps-styles';
 import { AppAvailabilityLabel } from '../AppAvailabilityLabel';
+import { AppThumbnailAvatar } from '../AppThumbnailAvatar';
 import { useAppNodeStatus } from '../appNodeStatus';
 import { FeaturedAppStars } from './FeaturedAppStars';
 
@@ -233,26 +231,15 @@ const FeaturedAppBannerInner = ({
         }
       >
         <CardAvatar>
-          <Avatar
+          <AppThumbnailAvatar
+            appName={app?.name}
+            alt={app?.name}
+            fallbackSize={35}
             sx={{
               height: { xs: '36px', sm: '42px' },
               width: { xs: '36px', sm: '42px' },
-              '& img': {
-                objectFit: 'fill',
-              },
             }}
-            alt={app?.name}
-            src={`${getBaseApiReact()}/arbitrary/THUMBNAIL/${app?.name}/qortal_avatar?async=true`}
-          >
-            <img
-              style={{
-                width: '35px',
-                height: 'auto',
-              }}
-              src={LogoSelected}
-              alt="app-icon"
-            />
-          </Avatar>
+          />
         </CardAvatar>
 
         <CardTitle>{app?.metadata?.title || app?.name}</CardTitle>

@@ -9,6 +9,13 @@ import { Provider, createStore } from 'jotai';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import '../../i18n/i18n';
 import { userInfoAtom } from '../../atoms/global';
+import { setQdnAvatarCacheForTests } from '../../lib/qdnAvatars/defaultCache';
+import {
+  createAvatarTestHarness,
+  flushAsync,
+  imageResponse,
+  notPublishedResponse,
+} from '../../lib/qdnAvatars/testHarness';
 import ListOfMembers from './ListOfMembers';
 
 vi.mock('../../App', () => ({
@@ -86,10 +93,17 @@ const renderList = ({
 describe('ListOfMembers admin actions', () => {
   beforeEach(() => {
     window.sendMessage = vi.fn(async () => ({ signature: 'sig' }));
+    // Avatars come from a fake node, never the network.
+    setQdnAvatarCacheForTests(
+      createAvatarTestHarness({
+        handler: (_url, { name }) => notPublishedResponse(name),
+      }).cache
+    );
   });
   afterEach(() => {
     vi.clearAllMocks();
     vi.useRealTimers();
+    setQdnAvatarCacheForTests(null);
   });
 
   it('gives the owner a make-admin and a menu button on regular members only', () => {
@@ -232,5 +246,33 @@ describe('ListOfMembers admin actions', () => {
       })
     );
     expect(screen.queryByText('Pending')).not.toBeInTheDocument();
+  });
+});
+
+describe('ListOfMembers avatars', () => {
+  afterEach(() => {
+    setQdnAvatarCacheForTests(null);
+  });
+
+  it('shows cached avatars and keeps the letter for members without one', async () => {
+    const h = createAvatarTestHarness({
+      handler: (_url, { name }) =>
+        name === 'Owner Name' ? imageResponse() : notPublishedResponse(name),
+    });
+    setQdnAvatarCacheForTests(h.cache);
+    const { container } = renderList();
+    await act(async () => {
+      await flushAsync();
+    });
+
+    const ownerImg = container.querySelector('img[alt="Owner Name"]');
+    expect(ownerImg?.getAttribute('src')).toBe('blob:test/1');
+    expect(container.querySelector('img[alt="Member Name"]')).toBeNull();
+    expect(
+      container.querySelector('[data-qdn-avatar="missing"]')?.textContent
+    ).toBe('A');
+    expect(new Set(h.calls.map((call) => call.name))).toEqual(
+      new Set(['Owner Name', 'Admin Name', 'Member Name'])
+    );
   });
 });

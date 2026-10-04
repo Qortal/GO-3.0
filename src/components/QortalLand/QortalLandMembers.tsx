@@ -3,7 +3,6 @@ import Groups2RoundedIcon from '@mui/icons-material/Groups2Rounded';
 import LocalFloristRoundedIcon from '@mui/icons-material/LocalFloristRounded';
 import NightlifeRoundedIcon from '@mui/icons-material/NightlifeRounded';
 import {
-  Avatar,
   Box,
   Collapse,
   IconButton,
@@ -13,10 +12,10 @@ import {
 } from '@mui/material';
 import { useAtomValue } from 'jotai';
 import { useEffect, useMemo, useState } from 'react';
-import { getBaseApiReact } from '../../App';
 import { reticulumChatTextScaleAtom } from '../../atoms/global';
 import { useOnlineAddresses } from '../../hooks/usePresence';
 import { PresenceStatusBadge } from '../common/PresenceStatusBadge';
+import { CachedUserAvatar } from '../Group/CachedAvatars';
 import { getGroupMembers } from '../Group/groupApi';
 import {
   QORTAL_LAND_PRESENCE_EVENT,
@@ -262,13 +261,9 @@ export function QortalLandMembers({ groupId, myAddress }: Props) {
                         online
                         status={presence?.afk ? 'idle' : 'online'}
                       >
-                        <Avatar
+                        <CachedUserAvatar
                           alt={name}
-                          src={
-                            member.primaryName
-                              ? `${getBaseApiReact()}/arbitrary/THUMBNAIL/${encodeURIComponent(member.primaryName)}/qortal_avatar?async=true`
-                              : undefined
-                          }
+                          name={member.primaryName}
                           sx={{
                             bgcolor: alpha(theme.palette.primary.main, 0.18),
                             color: 'text.primary',
@@ -278,7 +273,7 @@ export function QortalLandMembers({ groupId, myAddress }: Props) {
                           }}
                         >
                           {name.slice(0, 1).toUpperCase()}
-                        </Avatar>
+                        </CachedUserAvatar>
                       </PresenceStatusBadge>
                       <Box sx={{ flex: 1, minWidth: 0 }}>
                         <Typography

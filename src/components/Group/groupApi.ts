@@ -7,11 +7,13 @@ import {
   requestQueueAdminMemberNames,
   requestQueueMemberNames,
 } from './groupQueues';
+import {
+  isOwnWalletAddress,
+  rememberWalletPrimaryName,
+} from '../../utils/walletPrimaryNameCache';
 
 export async function getNameInfo(address: string): Promise<string> {
-  const response = await fetch(
-    `${getBaseApiReact()}/names/primary/` + address
-  );
+  const response = await fetch(`${getBaseApiReact()}/names/primary/` + address);
   const nameData = await response.json();
 
   if (nameData?.name) {
@@ -20,19 +22,41 @@ export async function getNameInfo(address: string): Promise<string> {
   return '';
 }
 
-/** Primary name for avatar display (wallets/auth). Uses avatar-friendly base URL (e.g. HTTP when local HTTPS). */
-export async function getPrimaryNameForAvatar(address: string): Promise<string> {
+/**
+ * Primary name for avatar display (wallets/auth). Uses avatar-friendly base URL (e.g. HTTP when local HTTPS).
+ * A lookup for one of this device's own wallets (the unlock screen, the
+ * signed-in top bar) is remembered for the account picker, which no longer
+ * asks the node about every saved wallet.
+ */
+export async function getPrimaryNameForAvatar(
+  address: string
+): Promise<string> {
   const response = await fetch(
-    `${getBaseApiReactForPrimaryName()}/names/primary/` + encodeURIComponent(address)
+    `${getBaseApiReactForPrimaryName()}/names/primary/` +
+      encodeURIComponent(address)
   );
   const nameData = await response.json();
+  const name = typeof nameData?.name === 'string' ? nameData.name : '';
 
-  if (nameData?.name) {
-    return nameData.name;
+  if (
+    response.ok &&
+    nameData &&
+    typeof nameData === 'object' &&
+    !('error' in nameData) &&
+    isOwnWalletAddress(address)
+  ) {
+    void rememberWalletPrimaryName(address, name).catch(() => undefined);
   }
-  return '';
+
+  return name;
 }
 
+/**
+ * Primary names for many addresses in one request. Never send it the
+ * wallets saved on this device, except to a node on this device itself: one
+ * request listing them all tells the node which wallets share the phone (use
+ * walletPrimaryNameCache instead).
+ */
 export async function getPrimaryNamesForAddresses(
   addresses: string[]
 ): Promise<Record<string, string>> {
@@ -41,13 +65,16 @@ export async function getPrimaryNamesForAddresses(
   );
   if (uniqueAddresses.length === 0) return {};
 
-  const response = await fetch(`${getBaseApiReactForPrimaryName()}/names/list`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(uniqueAddresses),
-  });
+  const response = await fetch(
+    `${getBaseApiReactForPrimaryName()}/names/list`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(uniqueAddresses),
+    }
+  );
 
   if (!response.ok) {
     throw new Error(`Request failed: ${response.status}`);
@@ -169,7 +196,9 @@ export type GroupMemberEntry = {
   joined?: number;
 };
 
-export const getGroupMembers = async (groupNumber: number): Promise<{
+export const getGroupMembers = async (
+  groupNumber: number
+): Promise<{
   members?: GroupMemberEntry[];
   memberCount?: number;
   [key: string]: unknown;

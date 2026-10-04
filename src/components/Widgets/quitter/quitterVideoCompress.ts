@@ -5,6 +5,7 @@ import {
   VideoCompress,
   type VideoCompressResult,
 } from '../../../plugins/VideoCompress';
+import { scrubVideoFileMetadata } from '../../../utils/stripVideoMetadata';
 
 const MB = 1024 * 1024;
 
@@ -137,7 +138,7 @@ export function listCompressPresets(
   const mediumAudio = 96_000;
   const maxAudio = 64_000;
 
-  let highBytes = estimateCompressedBytes(
+  const highBytes = estimateCompressedBytes(
     fileSize,
     720,
     30,
@@ -240,17 +241,14 @@ export function planVideoCompression(
       audioBitRate: 128_000,
       audioChannels: 0,
       passThroughAudio: false,
-      label: tinyEfficient
-        ? 'Already efficient MP4'
-        : 'Compression skipped',
+      label: tinyEfficient ? 'Already efficient MP4' : 'Compression skipped',
       estimatedBytes: size,
       durationSec: assumedDurationSec,
     };
   }
 
   const presets = listCompressPresets(size, mimeType, fileName, durationSec);
-  const preset =
-    presets.find((item) => item.level === level) || presets[0];
+  const preset = presets.find((item) => item.level === level) || presets[0];
 
   const labelByLevel: Record<Exclude<CompressLevel, 'none'>, string> = {
     high: 'High quality compress for publish',
@@ -288,7 +286,9 @@ function createPublishFile(
   const type = mimeType || 'video/mp4';
   const byteLength = buffer.byteLength;
   if (byteLength < 1024) {
-    throw new Error(`Compressed video file is invalid (too small: ${byteLength} bytes)`);
+    throw new Error(
+      `Compressed video file is invalid (too small: ${byteLength} bytes)`
+    );
   }
 
   // Prefer real File on desktop/web only.
@@ -392,7 +392,9 @@ async function fileFromNativeUri(
     if (!buffer || buffer.byteLength < 1024) {
       throw new Error(
         `Compressed video read failed (disk ${diskSize} bytes)` +
-          (lastError ? `: ${String((lastError as any)?.message || lastError)}` : '')
+          (lastError
+            ? `: ${String((lastError as any)?.message || lastError)}`
+            : '')
       );
     }
 
@@ -497,12 +499,17 @@ export function startBackgroundVideoPrepare(
         options.mimeType || 'video/mp4'
       );
     };
+    // The original is published as it is (not transcoded), so drop the
+    // recording location, device and time from its metadata first. The
+    // native transcoder never writes them into compressed output.
+    const originalFile = async (): Promise<File> =>
+      (await scrubVideoFileMetadata(await ensureFile())) as File;
 
     if (!wantCompress) {
       throwIfCancelled();
       options.onProgress?.('Video ready', 100);
       return {
-        file: await ensureFile(),
+        file: await originalFile(),
         plan,
         compressed: false,
         skipped: true,
@@ -518,7 +525,7 @@ export function startBackgroundVideoPrepare(
         undefined
       );
       return {
-        file: await ensureFile(),
+        file: await originalFile(),
         plan,
         compressed: false,
         skipped: false,
@@ -532,7 +539,7 @@ export function startBackgroundVideoPrepare(
         undefined
       );
       return {
-        file: await ensureFile(),
+        file: await originalFile(),
         plan,
         compressed: false,
         skipped: false,
@@ -610,7 +617,7 @@ export function startBackgroundVideoPrepare(
     if (result.skipped || !result.compressed) {
       options.onProgress?.('Video ready', 100);
       return {
-        file: await ensureFile(),
+        file: await originalFile(),
         plan,
         compressed: false,
         skipped: true,
@@ -637,9 +644,7 @@ export function startBackgroundVideoPrepare(
       Number(result.size) || 0
     );
     if (effectiveSize < 32 * 1024) {
-      throw new Error(
-        `Compressed video is invalid (${effectiveSize} bytes)`
-      );
+      throw new Error(`Compressed video is invalid (${effectiveSize} bytes)`);
     }
 
     // options.size is 0 when the picker/share sheet did not report a size;
@@ -651,17 +656,14 @@ export function startBackgroundVideoPrepare(
     ) {
       options.onProgress?.('Video ready', 100);
       return {
-        file: await ensureFile(),
+        file: await originalFile(),
         plan,
         compressed: false,
         skipped: false,
       };
     }
 
-    options.onProgress?.(
-      `Ready · ${formatBytes(effectiveSize)}`,
-      100
-    );
+    options.onProgress?.(`Ready · ${formatBytes(effectiveSize)}`, 100);
     return {
       file: compressedFile,
       plan,

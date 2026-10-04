@@ -9,6 +9,11 @@ import {
 import { publishData } from '../qdn/publish/publish.ts';
 import { getData } from '../utils/chromeStorage.ts';
 import { RequestQueueWithPromise } from '../utils/queue/queue.ts';
+import {
+  assertPublicKeyForAddress,
+  isValidQortalAddress,
+  PublicKeyMismatchError,
+} from './addressKeyCheck.ts';
 
 export const requestQueueGetPublicKeys = new RequestQueueWithPromise(10);
 
@@ -75,6 +80,24 @@ async function getKeyPair() {
   }
 }
 
+/**
+ * The public key of `address` from the node's account record. The key must
+ * derive that address (GO-30): a group key is encrypted to every key returned
+ * here, so a key the node swapped in would hand it the group's messages. Any
+ * mismatch, missing key or malformed address throws, and nothing is published.
+ */
+export const fetchVerifiedAccountPublicKey = async (
+  validApi: string,
+  address: unknown
+): Promise<string> => {
+  if (!isValidQortalAddress(address)) {
+    throw new PublicKeyMismatchError(address);
+  }
+  const resAddress = await fetch(`${validApi}/addresses/${address}`);
+  const resData = await resAddress.json();
+  return assertPublicKeyForAddress(resData?.publicKey, address);
+};
+
 const getPublicKeys = async (groupNumber: number) => {
   const validApi = await getBaseApi();
   const response = await fetch(
@@ -87,13 +110,9 @@ const getPublicKeys = async (groupNumber: number) => {
     const memberPromises = groupData.members
       .filter((member) => member.member)
       .map((member) =>
-        requestQueueGetPublicKeys.enqueue(async () => {
-          const resAddress = await fetch(
-            `${validApi}/addresses/${member.member}`
-          );
-          const resData = await resAddress.json();
-          return resData.publicKey;
-        })
+        requestQueueGetPublicKeys.enqueue(() =>
+          fetchVerifiedAccountPublicKey(validApi, member.member)
+        )
       );
 
     const members = await Promise.all(memberPromises);
@@ -111,11 +130,9 @@ export const getPublicKeysByAddress = async (admins: string[]) => {
     const memberPromises = admins
       .filter((address) => address) // Ensure the address is valid
       .map((address) =>
-        requestQueueGetPublicKeys.enqueue(async () => {
-          const resAddress = await fetch(`${validApi}/addresses/${address}`);
-          const resData = await resAddress.json();
-          return resData.publicKey;
-        })
+        requestQueueGetPublicKeys.enqueue(() =>
+          fetchVerifiedAccountPublicKey(validApi, address)
+        )
       );
 
     const members = await Promise.all(memberPromises);
@@ -401,16 +418,24 @@ export const sendPrivateQmail = async ({
   const recipientAddress =
     typeof nameData?.owner === 'string' ? nameData.owner : '';
   if (!recipientAddress) throw new Error('Recipient name was not found');
+  if (!isValidQortalAddress(recipientAddress)) {
+    throw new PublicKeyMismatchError(recipientAddress);
+  }
 
   const pubRes = await fetch(
     `${validApi}/addresses/publickey/${recipientAddress}`
   );
-  const recipientPublicKey = pubRes.ok ? (await pubRes.text()).trim() : '';
-  if (!recipientPublicKey || recipientPublicKey === 'false') {
+  const fetchedPublicKey = pubRes.ok ? (await pubRes.text()).trim() : '';
+  if (!fetchedPublicKey || fetchedPublicKey === 'false') {
     throw new Error(
       'The recipient does not have a public key on chain yet (no outgoing transactions).'
     );
   }
+  // The mail is encrypted to this key: it must belong to the owner address.
+  const recipientPublicKey = assertPublicKeyForAddress(
+    fetchedPublicKey,
+    recipientAddress
+  );
 
   const keyPair = await getKeyPair();
   const mailObject = {

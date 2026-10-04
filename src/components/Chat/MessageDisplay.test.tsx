@@ -74,6 +74,43 @@ describe('extractComponents', () => {
   });
 });
 
+describe('outside images in messages', () => {
+  it('shows a tracking image as a link instead of loading it', () => {
+    const tracker = 'https://tracker.example/pixel.gif';
+    const { container } = render(
+      <MessageDisplay htmlContent={`<p>look <img src="${tracker}"></p>`} />
+    );
+
+    expect(container.querySelector('img')).toBeNull();
+    const link = container.querySelector('a.auto-link');
+    expect(link?.getAttribute('href')).toBe(tracker);
+    expect(link?.textContent).toBe(tracker);
+  });
+
+  // linkify used to garble lower-case http(s) sources by accident; these two
+  // spellings slipped past it and were fetched.
+  it.each(['HTTPS://TRACKER.EXAMPLE/pixel.gif', '//tracker.example/pixel.gif'])(
+    'does not load %s',
+    (src) => {
+      const { container } = render(
+        <MessageDisplay htmlContent={`<p>look <img src="${src}"></p>`} />
+      );
+
+      expect(container.querySelector('img')).toBeNull();
+      expect(container.textContent).toContain(src);
+    }
+  );
+
+  it('keeps an image pasted into the message', () => {
+    const pasted = 'data:image/png;base64,iVBORw0KGgo=';
+    const { container } = render(
+      <MessageDisplay htmlContent={`<p><img src="${pasted}"></p>`} />
+    );
+
+    expect(container.querySelector('img')?.getAttribute('src')).toBe(pasted);
+  });
+});
+
 describe('Reticulum privileged mention rendering', () => {
   const everyoneHtml =
     '<p><span class="mention" data-type="mention" data-id="everyone" data-label="everyone">@everyone</span></p>';

@@ -113,13 +113,14 @@
     "reload_page": "lataa sivu uudelleen",
     "remove": "poista",
     "remove_reaction": "poista reaktio",
-    "reply": "reply",
+    "reply": "vastaa",
     "resize": "muuta kokoa",
     "restore": "palauta",
     "return": "palaa",
     "return_apps_dashboard": "palaa sovellusten hallintaan",
     "save": "tallenna",
     "save_disk": "tallenna levylle",
+    "scan_qr_code": "skannaa QR-koodi",
     "search": "etsi",
     "search_apps": "etsi sovelluksia",
     "search_apps_or_link": "Etsi sovelluksia tai syötä qortal://-linkki",
@@ -179,10 +180,47 @@
     "tags": "tagit",
     "updated": "päivitetty"
   },
+  "app_lock": {
+    "account_still_signed_in": "{{account}} on edelleen kirjautuneena.",
+    "connections_note": "Keskustelut ja käynnissä olevat puhelut pysyvät yhdistettyinä lukituksen aikana.",
+    "fingerprint_cancelled": "Sormenjälkiavaus peruttiin.",
+    "fingerprint_failed": "Sormenjälkiavaus epäonnistui. Anna salasanasi sen sijaan.",
+    "lock_now": "Lukitse nyt",
+    "minimize_window": "Pienennä",
+    "or": "tai",
+    "password_label": "Qortal-tilin salasana",
+    "qapp_request_locked": "GO on lukittu. Avaa lukitus ja yritä uudelleen.",
+    "retry_wait_one": "Odota {{count}} sekunti ja yritä uudelleen.",
+    "retry_wait_other": "Odota {{count}} sekuntia ja yritä uudelleen.",
+    "still_signed_in": "Olet edelleen kirjautuneena.",
+    "tap_fingerprint": "Napauta avataksesi lukituksen sormenjäljellä",
+    "title": "Qortal Hub on lukittu",
+    "unlock": "Avaa lukitus",
+    "unlock_with_fingerprint": "Avaa lukitus sormenjäljellä",
+    "unlocking": "Avataan lukitusta…",
+    "waiting_for_fingerprint": "Odotetaan sormenjälkeäsi…",
+    "wrong_password": "Salasana ei ole oikein. Yritä uudelleen."
+  },
   "app_name": "sovelluksen nimi",
   "app_other": "sovellukset",
   "app_private": "yksityinen",
   "app_service_type": "sovelluksen palvelutyyppi",
+  "approval_dialog": {
+    "app_fee": "Sovelluksen maksu",
+    "decline_all_one": "Hylkää {{count}} pyyntö tältä sovellukselta",
+    "decline_all_other": "Hylkää kaikki {{count}} pyyntöä tältä sovellukselta",
+    "fee": "Maksu",
+    "foreign_fee": "Ulkoinen maksu",
+    "internal_app": "Qortal GO (tämä sovellus)",
+    "more_waiting_one": "{{count}} pyyntö odottaa vielä",
+    "more_waiting_other": "{{count}} pyyntöä odottaa vielä",
+    "qapp_request": "Q-App-pyyntö",
+    "requested_by": "Pyytäjä",
+    "session_only": "Myönnä oikeudet vain tälle istunnolle",
+    "unknown_app": "Tuntematon Q-App",
+    "unknown_app_hint": "GO ei pystynyt selvittämään, mikä Q-App lähetti tämän pyynnön. Hylkää se, ellet juuri itse pyytänyt tätä.",
+    "what_you_approve": "Mitä olet hyväksymässä"
+  },
   "apps_dashboard": "sovellusten hallintapaneeli",
   "apps_official": "viralliset sovellukset",
   "aria": {
@@ -210,11 +248,13 @@
       "off": "pois"
     },
     "native": {
+      "battery_pause_text": "GO keskeytti taustayhteytensä 6 tunnin akkuvirralla olon jälkeen säästääkseen virtaa. Avaa GO yhdistääksesi uudelleen.",
       "fgs_timeout_text": "Android keskeytti GO:n taustayhteyden. Avaa GO yhdistääksesi uudelleen.",
       "fgs_timeout_title": "GO keskeytetty",
       "status_paused_text": "Avaa GO synkronoidaksesi keskustelusi.",
       "status_paused_title": "Keskustelu keskeytetty",
       "status_syncing_background": "Keskustelua synkronoidaan taustalla",
+      "status_waiting_short": "Lähettämättä: {{count}}",
       "status_waiting_text": "Lähetystä odottavia viestejä: {{count}}"
     },
     "status": {
@@ -223,12 +263,57 @@
     },
     "title": "Taustasynkronointi",
     "vendor_freeze": {
-      "body": "{{manufacturer}}-puhelimesi pysäytti GO:n taustalla, vaikka taustasynkronointi oli päällä. Avaa puhelimen akkuasetukset GO:lle ja salli taustatoiminta.",
-      "body_unknown": "Puhelimesi pysäytti GO:n taustalla, vaikka taustasynkronointi oli päällä. Avaa puhelimen akkuasetukset GO:lle ja salli taustatoiminta.",
+      "allow_in_background": "Salli GO taustalla",
       "dismiss": "Hylkää",
-      "guide": "Vaiheittaiset ohjeet (dontkillmyapp.com)",
+      "dont_show_again": "Älä näytä uudelleen",
+      "exempt_body": "GO:n akkurajoitukset ovat jo pois päältä, mutta {{manufacturer}}-puhelimesi pysäyttää sen silti, kun näyttö on sammuksissa. Taustasynkronointi toimii, kun näyttö on päällä; keskustelut päivittyvät, kun avaat GO:n.",
+      "exempt_body_unknown": "GO:n akkurajoitukset ovat jo pois päältä, mutta puhelimesi pysäyttää sen silti, kun näyttö on sammuksissa. Taustasynkronointi toimii, kun näyttö on päällä; keskustelut päivittyvät, kun avaat GO:n.",
+      "impact": "Keskustelut päivittyivät vasta, kun avasit GO:n uudelleen.",
+      "last_stopped": "Viimeksi pysäytetty: {{time}}",
       "open_battery_settings": "Avaa akkuasetukset",
-      "title": "GO pysäytettiin taustalla"
+      "open_failed": "Asetuksia ei voitu avata. Seuraa alla olevia ohjeita puhelimen Asetukset-sovelluksessa.",
+      "steps": {
+        "generic": {
+          "step_1": "Avaa Asetukset > Sovellukset > GO > ”Sovelluksen akunkäyttö” (tai ”Akku”).",
+          "step_2": "Valitse ”Rajoittamaton” (tai laita päälle ”Salli taustakäyttö”)."
+        },
+        "huawei": {
+          "step_1": "Avaa Asetukset > Akku > ”Sovellusten käynnistys”.",
+          "step_2": "Etsi GO ja laita ”Hallitse automaattisesti” pois päältä.",
+          "step_3": "Laita päälle ”Automaattinen käynnistys”, ”Toissijainen käynnistys” ja ”Suorita taustalla”."
+        },
+        "note_menu_names": "Valikkojen nimet voivat vaihdella hieman puhelinmallin ja Android-version mukaan.",
+        "note_recents": "Älä pyyhkäise GO:ta pois viimeaikaisista sovelluksista.",
+        "oppo": {
+          "step_1": "Avaa Asetukset > Sovellukset > ”Sovellusten hallinta” > GO.",
+          "step_2": "Napauta ”Akun käyttö” ja laita päälle ”Salli taustatoiminta” (ja ”Salli automaattinen käynnistys”, jos se näkyy)."
+        },
+        "samsung": {
+          "step_1": "Avaa Asetukset > Sovellukset > GO > Akku ja valitse ”Rajoittamaton”.",
+          "step_2": "Varmista kohdassa Asetukset > Akku > ”Taustakäytön rajoitukset”, ettei GO ole luettelossa ”Lepotilassa olevat sovellukset” tai ”Syvässä lepotilassa olevat sovellukset”."
+        },
+        "vivo": {
+          "step_1": "Avaa Asetukset > Akku > ”Taustavirrankulutuksen hallinta”.",
+          "step_2": "Etsi GO ja valitse ”Salli” (tai ”Älä rajoita”).",
+          "step_3": "Jos puhelimessasi on Asetukset > Sovellukset > ”Automaattinen käynnistys”, laita GO siellä päälle."
+        },
+        "xiaomi": {
+          "step_1": "Avaa Asetukset > Sovellukset > ”Hallitse sovelluksia” > GO.",
+          "step_2": "Laita ”Automaattinen käynnistys” päälle.",
+          "step_3": "Napauta ”Virransäästö” ja valitse ”Ei rajoituksia”."
+        }
+      },
+      "steps_toggle": "Näin sallit sen {{brand}}-puhelimessa",
+      "steps_toggle_generic": "Näin sallit sen puhelimessasi",
+      "summary_one": "Taustasynkronoinnin ollessa päällä {{manufacturer}}-puhelimesi pysäytti GO:n {{count}} kerran viimeisten 7 päivän aikana.",
+      "summary_other": "Taustasynkronoinnin ollessa päällä {{manufacturer}}-puhelimesi pysäytti GO:n {{count}} kertaa viimeisten 7 päivän aikana.",
+      "summary_recent": "Taustasynkronoinnin ollessa päällä {{manufacturer}}-puhelimesi pysäytti GO:n taustalla.",
+      "summary_recent_unknown": "Puhelimesi pysäytti GO:n taustalla, kun taustasynkronointi oli päällä.",
+      "summary_unknown_one": "Puhelimesi pysäytti GO:n {{count}} kerran viimeisten 7 päivän aikana, kun taustasynkronointi oli päällä.",
+      "summary_unknown_other": "Puhelimesi pysäytti GO:n {{count}} kertaa viimeisten 7 päivän aikana, kun taustasynkronointi oli päällä.",
+      "title": "GO pysäytettiin taustalla",
+      "warnings_off": "Tätä koskevat varoitukset ovat pois päältä ilmoituksissasi.",
+      "warnings_on": "Ota varoitukset taas käyttöön"
     }
   },
   "balance": "saldo:",
@@ -377,6 +462,16 @@
   "close_quit_completely": "Lopeta täysin",
   "close_window_behavior": "Kun ikkuna suljetaan",
   "comment_other": "kommentit",
+  "composer": {
+    "attachment_count_one": "{{count}} liite",
+    "attachment_count_other": "{{count}} liitettä",
+    "emoji": "emojit",
+    "expand": "laajenna",
+    "keyboard": "näppäimistö",
+    "shrink": "pienennä",
+    "title": "kirjoita viesti",
+    "write_message": "kirjoita viesti"
+  },
   "contact_other": "yhteystiedot",
   "core": {
     "block_height": "lohkon korkeus",
@@ -437,28 +532,38 @@
   },
   "file_transfer": {
     "dismiss": "Sulje",
+    "downloaded": "Ladattu",
     "downloading_title": "Ladataan {{filename}}",
     "failed_title": "Lataus epäonnistui",
     "fetching_title": "Haetaan {{filename}}",
+    "file_transfer_fallback": "Tiedostonsiirto",
     "gathering": "Kerätään QDN:stä · {{percent}} %",
     "gathering_chunks": "Kerätään QDN:stä · {{percent}} % · {{local}}/{{total}} osaa",
     "gathering_unknown": "Kerätään QDN:stä…",
     "hide": "Piilota (jatkuu ilmoituksissa)",
-    "install": "Asenna",
     "looking_for_file": "Etsitään tiedostoa QDN:stä…",
     "not_saved_title": "{{filename}} ei tallennettu",
     "not_saved_tray": "Tiedosto on yhä ladattuna. Tallenna se GO:n ilmoituksista.",
+    "offer_expired": "Vanhentunut",
     "open": "Avaa",
     "open_failed": "Mikään tämän puhelimen sovellus ei voi avata tätä tiedostoa",
+    "package_not_opened": "GO ei avaa eikä asenna sovelluspaketteja. Päivitä GO tilivalikon kohdasta ”GO 3.0 -päivitykset”.",
+    "package_saved": "Tallennettu kohteeseen {{location}}. GO ei avaa sovelluspaketteja.",
     "progress": "{{percent}} % · {{size}}",
-    "ready_to_install": "Valmis asennettavaksi · {{location}}",
     "ready_to_open": "Valmis avattavaksi · {{location}}",
+    "received_file_gone": "Tämä tiedosto ei ole enää tällä laitteella. GO poistaa vastaanotetut tiedostot, kun kirjaudut ulos; pyydä lähettäjää lähettämään se uudelleen.",
+    "received_file_removed": "Ei enää tällä laitteella",
+    "received_in_downloads": "Tämä tiedosto on jo Lataukset-kansiossasi.",
+    "received_notification_text": "{{fileName}} on valmiina GO:ssa",
+    "received_notification_title": "Tiedosto vastaanotettu",
+    "received_private_hint": "Säilytetään yksityisesti GO:ssa uloskirjautumiseen asti",
     "remove": "Poista listalta",
     "save": "Tallenna",
     "save_error": "Virhe tiedoston tallennuksessa: {{message}}",
     "save_error_generic": "Virhe tiedoston tallennuksessa",
     "save_stalled": "Tallennus pysähtyi: tallennustila lakkasi vastaamasta",
     "save_success": "Tiedosto tallennettu",
+    "save_to_device": "Tallenna laitteelle",
     "saved_title": "{{filename}} tallennettu",
     "saved_to": "Tallennettu kohteeseen {{location}}",
     "saving_file": "Tallennetaan tiedostoa…",
@@ -469,7 +574,6 @@
     "stage_gathering": "Kerätään QDN:stä",
     "stage_saving": "Tallennetaan puhelimeen",
     "storage_permission": "GO tarvitsee tallennustilan käyttöoikeuden tallentaakseen tiedostoja kansioon Documents.",
-    "tap_to_install": "Asenna napauttamalla · {{location}}",
     "tap_to_open": "Avaa napauttamalla · {{location}}"
   },
   "filter": {
@@ -496,7 +600,12 @@
     "checking": "Tarkistetaan QDN:ää…",
     "error": {
       "fetch_failed": "Versiota ei voitu hakea",
-      "timeout": "Verkko ei toimittanut versiota ajoissa"
+      "insecure_node": "Tämä solmu käyttää salaamatonta HTTP:tä, joten GO ei lataa päivitystä siitä. Päivitykset tulevat vain HTTPS:n kautta tai tässä puhelimessa olevasta solmusta. Vaihda HTTPS-solmuun päivittääksesi.",
+      "not_go_build": "Tämä tiedosto ei ole Qortal GO -versio, joten sitä ei asennettu.",
+      "not_newer": "Tämä versio ei ole uudempi kuin tämän puhelimen GO, joten sitä ei asennettu.",
+      "timeout": "Verkko ei toimittanut versiota ajoissa",
+      "unreadable": "Android ei pystynyt lukemaan tätä tiedostoa sovelluksena, joten sitä ei asennettu.",
+      "wrong_signer": "Tätä versiota ei ole allekirjoitettu samalla avaimella kuin tämän puhelimen GO:ta, joten sitä ei asennettu."
     },
     "hide_changes": "Piilota muutokset",
     "install": "Asenna",
@@ -541,7 +650,8 @@
     "title": "GO 3.0 -päivitykset",
     "update_marker": "GO 3.0 -päivitys saatavilla",
     "versions_missing": "Joitakin versioita ei vielä voitu ladata ({{count}}). Tarkista myöhemmin uudelleen.",
-    "versions_title": "Versiot QDN:ssä"
+    "versions_title": "Versiot QDN:ssä",
+    "versions_unreachable": "QDN:ään ei saatu yhteyttä. Tarkista solmuyhteys ja yritä uudelleen."
   },
   "group_call": "ryhmäpuhelu",
   "group_call_blocked": "lopeta ensin toinen puhelusi",
@@ -623,6 +733,7 @@
       "invalid_zip": "virheellinen zip-tiedosto",
       "long_message_too_many_parts": "Tämä viesti on liian pitkä lähetettäväksi, vaikka se jaettaisiin {{maximum}} viestiin.",
       "long_message_unsplittable": "Osaa tästä viestistä ei voi jakaa tarpeeksi pieneksi lähetettäväksi.",
+      "max_tabs_reached": "Välilehtiä on auki enimmäismäärä. Sulje yksi avataksesi uuden.",
       "message_loading": "viestin latausvirhe",
       "message_size": "viestisi koko on {{ size }} tavua (maksimi {{ maximum }})",
       "minting_account_add": "minttaustilin lisääminen epäonnistui",
@@ -639,6 +750,7 @@
       "same_foreign_blockchain": "osoite ei kuulu samaan ulkoiseen lohkoketjuun",
       "save_qdn": "tallennus QDN:ään epäonnistui",
       "send_failed": "lähetys epäonnistui",
+      "unrecognized_qr": "tämä QR-koodi ei ole Qortal-maksukoodi.",
       "update_failed": "päivitys epäonnistui",
       "vote": "äänestys epäonnistui"
     },
@@ -742,6 +854,7 @@
       "revert_qdn": "palauta QDN:stä",
       "revoke_permission": "Peruuta",
       "save_qdn": "tallenna QDN:ään",
+      "saving": "tallennetaan…",
       "secure_ownership": "varmista nimelläsi julkaistun sisällön omistus. Voit myös myydä nimesi ja sisältösi kolmannelle osapuolelle.",
       "select_file": "valitse tiedosto",
       "select_image": "valitse kuva logoksi",
@@ -772,7 +885,8 @@
       "register_name": "haluatko rekisteröidä tämän nimen?",
       "reset_pinned": "etkö pidä nykyisistä paikallisista muutoksistasi? Haluatko palauttaa oletuksena kiinnitetyt sovellukset?",
       "reset_qdn": "etkö pidä nykyisistä paikallisista muutoksistasi? Haluatko palauttaa QDN:ään tallennetut kiinnitetyt sovellukset?",
-      "transfer_qort": "haluatko siirtää {{ amount }} QORT"
+      "transfer_qort": "haluatko siirtää {{ amount }} QORT",
+      "transfer_qort_to": "haluatko siirtää {{ amount }} QORT vastaanottajalle {{ recipient }}?"
     },
     "success": {
       "order_submitted": "ostotoimeksiantosi lähetettiin",
@@ -999,15 +1113,15 @@
     "wallets": "Lompakot"
   },
   "quitter_feed": {
-    "empty_message_no_following": "Selaa Quitteria ja seuraa tilejä syöttesi rakentamiseksi.",
+    "empty_message_no_following": "Selaa {{app}}ia ja seuraa tilejä syöttesi rakentamiseksi.",
     "empty_message_no_name": "Kirjaudu Qortal-nimellä rakentaaksesi personoidun syötteen.",
-    "empty_message_no_posts": "Seuraamasi tilit eivät ole vielä julkaisseet Quitterissa.",
+    "empty_message_no_posts": "Seuraamasi tilit eivät ole vielä julkaisseet {{app}}issa.",
     "empty_title_general": "Ei julkaisuja saatavilla",
     "empty_title_no_following": "Et näytä seuraavan vielä ketään.",
     "empty_title_no_name": "Kirjaudu sisään personoidaksesi syötteesi",
     "empty_title_no_posts": "Ei julkaisuja seuraamiltasi tileiltä",
-    "error_following": "Personoitu Quitter-syöte ei ole juuri nyt käytettävissä. Yritä uudelleen.",
-    "error_generic": "Julkinen Quitter-syöte ei ole juuri nyt käytettävissä. Yritä hetken kuluttua uudelleen.",
+    "error_following": "Personoitu {{app}}-syöte ei ole juuri nyt käytettävissä. Yritä uudelleen.",
+    "error_generic": "Julkinen {{app}}-syöte ei ole juuri nyt käytettävissä. Yritä hetken kuluttua uudelleen.",
     "error_timeout": "Syöteen lataus epäonnistui. Voit yrittää uudelleen tai palata Yleiseen.",
     "error_title_following": "Syöteen lataus epäonnistui",
     "error_title_general": "Julkaisuja ei voitu ladata",

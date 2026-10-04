@@ -113,13 +113,14 @@
     "reload_page": "ページを再読み込み",
     "remove": "取り除く",
     "remove_reaction": "反応を取り除きます",
-    "reply": "reply",
+    "reply": "返信",
     "resize": "サイズ変更",
     "restore": "元に戻す",
     "return": "戻る",
     "return_apps_dashboard": "アプリダッシュボードに戻ります",
     "save": "保存",
     "save_disk": "ディスクに保存します",
+    "scan_qr_code": "QRコードをスキャン",
     "search": "検索",
     "search_apps": "アプリを検索します",
     "search_apps_or_link": "アプリを検索または qortal:// リンクを入力",
@@ -179,10 +180,47 @@
     "tags": "タグ",
     "updated": "更新日"
   },
+  "app_lock": {
+    "account_still_signed_in": "{{account}}はサインインしたままです。",
+    "connections_note": "ロック中もチャットと通話はつながったままです。",
+    "fingerprint_cancelled": "指紋によるロック解除はキャンセルされました。",
+    "fingerprint_failed": "指紋によるロック解除に失敗しました。代わりにパスワードを入力してください。",
+    "lock_now": "今すぐロック",
+    "minimize_window": "最小化",
+    "or": "または",
+    "password_label": "Qortalアカウントのパスワード",
+    "qapp_request_locked": "GOはロックされています。ロックを解除してからもう一度お試しください。",
+    "retry_wait_one": "{{count}}秒待ってからもう一度お試しください。",
+    "retry_wait_other": "{{count}}秒待ってからもう一度お試しください。",
+    "still_signed_in": "サインインしたままです。",
+    "tap_fingerprint": "タップして指紋でロック解除",
+    "title": "Qortal Hubはロックされています",
+    "unlock": "ロック解除",
+    "unlock_with_fingerprint": "指紋でロック解除",
+    "unlocking": "ロック解除中…",
+    "waiting_for_fingerprint": "指紋を待っています…",
+    "wrong_password": "パスワードが正しくありません。もう一度お試しください。"
+  },
   "app_name": "アプリ名",
   "app_other": "アプリ",
   "app_private": "プライベート",
   "app_service_type": "アプリサービスタイプ",
+  "approval_dialog": {
+    "app_fee": "アプリ手数料",
+    "decline_all_one": "このアプリからのリクエスト{{count}}件を拒否",
+    "decline_all_other": "このアプリからのリクエスト{{count}}件をすべて拒否",
+    "fee": "手数料",
+    "foreign_fee": "外部手数料",
+    "internal_app": "Qortal GO（このアプリ）",
+    "more_waiting_one": "ほかに{{count}}件のリクエストが待機中です",
+    "more_waiting_other": "ほかに{{count}}件のリクエストが待機中です",
+    "qapp_request": "Q-Appのリクエスト",
+    "requested_by": "リクエスト元",
+    "session_only": "このセッションのみ権限を付与する",
+    "unknown_app": "不明なQ-App",
+    "unknown_app_hint": "GOはこのリクエストを送信したQ-Appを特定できませんでした。ご自身で今リクエストしたものでない限り、拒否してください。",
+    "what_you_approve": "承認する内容"
+  },
   "apps_dashboard": "アプリダッシュボード",
   "apps_official": "公式アプリ",
   "aria": {
@@ -210,11 +248,13 @@
       "off": "オフ"
     },
     "native": {
+      "battery_pause_text": "バッテリー駆動が6時間続いたので、GOは節電のためバックグラウンド接続を一時停止しました。再接続するにはGOを開いてください。",
       "fgs_timeout_text": "AndroidがGOのバックグラウンド接続を一時停止しました。再接続するにはGOを開いてください。",
       "fgs_timeout_title": "GOは一時停止中です",
       "status_paused_text": "チャットを同期するにはGOを開いてください。",
       "status_paused_title": "チャットは一時停止中です",
       "status_syncing_background": "バックグラウンドでチャットを同期中",
+      "status_waiting_short": "未送信: {{count}}",
       "status_waiting_text": "送信待ちのメッセージ: {{count}}"
     },
     "status": {
@@ -223,12 +263,57 @@
     },
     "title": "バックグラウンド同期",
     "vendor_freeze": {
-      "body": "バックグラウンド同期がオンなのに、お使いの{{manufacturer}}のスマートフォンがGOをバックグラウンドで停止しました。スマートフォンのGO用バッテリー設定を開き、バックグラウンドでの動作を許可してください。",
-      "body_unknown": "バックグラウンド同期がオンなのに、お使いのスマートフォンがGOをバックグラウンドで停止しました。スマートフォンのGO用バッテリー設定を開き、バックグラウンドでの動作を許可してください。",
+      "allow_in_background": "GOのバックグラウンド動作を許可",
       "dismiss": "閉じる",
-      "guide": "手順ガイド（dontkillmyapp.com）",
+      "dont_show_again": "今後表示しない",
+      "exempt_body": "GOのバッテリー制限はすでにオフになっていますが、お使いの{{manufacturer}}のスマートフォンは画面がオフの間にGOを停止します。バックグラウンド同期は画面がオンの間は動作し、チャットはGOを開いたときに追いつきます。",
+      "exempt_body_unknown": "GOのバッテリー制限はすでにオフになっていますが、お使いのスマートフォンは画面がオフの間にGOを停止します。バックグラウンド同期は画面がオンの間は動作し、チャットはGOを開いたときに追いつきます。",
+      "impact": "チャットはGOを再び開いたときにようやく追いつきました。",
+      "last_stopped": "最後の停止: {{time}}",
       "open_battery_settings": "バッテリー設定を開く",
-      "title": "GOがバックグラウンドで停止されました"
+      "open_failed": "設定を開けませんでした。スマートフォンの設定アプリで以下の手順に従ってください。",
+      "steps": {
+        "generic": {
+          "step_1": "設定 > アプリ > GO > 「アプリのバッテリー使用量」（または「バッテリー」）を開きます。",
+          "step_2": "「制限なし」を選びます（または「バックグラウンドでの使用を許可」をオンにします）。"
+        },
+        "huawei": {
+          "step_1": "設定 > 電池 > 「アプリ起動」を開きます。",
+          "step_2": "GOを探して「自動管理」をオフにします。",
+          "step_3": "「自動起動」「二次起動」「バックグラウンドで実行」をオンにします。"
+        },
+        "note_menu_names": "メニュー名は機種やAndroidのバージョンによって多少異なる場合があります。",
+        "note_recents": "最近使ったアプリの画面でGOをスワイプして閉じないでください。",
+        "oppo": {
+          "step_1": "設定 > アプリ > 「アプリ管理」 > GOを開きます。",
+          "step_2": "「バッテリー使用量」をタップし、「バックグラウンドアクティビティを許可」をオンにします（表示される場合は「自動起動を許可」もオンにします）。"
+        },
+        "samsung": {
+          "step_1": "設定 > アプリ > GO > バッテリーを開き、「制限なし」を選びます。",
+          "step_2": "設定 > バッテリー > 「バックグラウンドでの使用制限」で、GOが「スリープ中のアプリ」や「ディープスリープ中のアプリ」に入っていないことを確認します。"
+        },
+        "vivo": {
+          "step_1": "設定 > バッテリー > 「バックグラウンドの電力消費管理」を開きます。",
+          "step_2": "GOを探して「許可」（または「制限しない」）を選びます。",
+          "step_3": "設定 > アプリ > 「自動起動」がある場合は、そこでGOをオンにします。"
+        },
+        "xiaomi": {
+          "step_1": "設定 > アプリ > 「アプリを管理」 > GOを開きます。",
+          "step_2": "「自動起動」をオンにします。",
+          "step_3": "「バッテリーセーバー」をタップして「制限なし」を選びます。"
+        }
+      },
+      "steps_toggle": "{{brand}}で許可する方法",
+      "steps_toggle_generic": "スマートフォンで許可する方法",
+      "summary_one": "バックグラウンド同期がオンの間に、お使いの{{manufacturer}}のスマートフォンが過去7日間でGOを{{count}}回停止しました。",
+      "summary_other": "バックグラウンド同期がオンの間に、お使いの{{manufacturer}}のスマートフォンが過去7日間でGOを{{count}}回停止しました。",
+      "summary_recent": "バックグラウンド同期がオンの間に、お使いの{{manufacturer}}のスマートフォンがバックグラウンドでGOを停止しました。",
+      "summary_recent_unknown": "バックグラウンド同期がオンの間に、お使いのスマートフォンがバックグラウンドでGOを停止しました。",
+      "summary_unknown_one": "バックグラウンド同期がオンの間に、お使いのスマートフォンが過去7日間でGOを{{count}}回停止しました。",
+      "summary_unknown_other": "バックグラウンド同期がオンの間に、お使いのスマートフォンが過去7日間でGOを{{count}}回停止しました。",
+      "title": "GOがバックグラウンドで停止されました",
+      "warnings_off": "通知でのこの件に関する警告はオフになっています。",
+      "warnings_on": "警告を再びオンにする"
     }
   },
   "balance": "バランス：",
@@ -377,6 +462,16 @@
   "close_quit_completely": "完全に終了",
   "close_window_behavior": "ウィンドウを閉じるとき",
   "comment_other": "コメント",
+  "composer": {
+    "attachment_count_one": "添付ファイル {{count}} 件",
+    "attachment_count_other": "添付ファイル {{count}} 件",
+    "emoji": "絵文字",
+    "expand": "拡大",
+    "keyboard": "キーボード",
+    "shrink": "縮小",
+    "title": "メッセージを作成",
+    "write_message": "メッセージを書く"
+  },
   "contact_other": "連絡先",
   "core": {
     "block_height": "ブロックの高さ",
@@ -437,28 +532,38 @@
   },
   "file_transfer": {
     "dismiss": "閉じる",
+    "downloaded": "ダウンロード済み",
     "downloading_title": "{{filename}}をダウンロード中",
     "failed_title": "ダウンロードに失敗しました",
     "fetching_title": "{{filename}}を取得中",
+    "file_transfer_fallback": "ファイル転送",
     "gathering": "QDNから収集中 · {{percent}}%",
     "gathering_chunks": "QDNから収集中 · {{percent}}% · {{local}}/{{total}}チャンク",
     "gathering_unknown": "QDNから収集中…",
     "hide": "非表示（通知で続行されます）",
-    "install": "インストール",
     "looking_for_file": "QDNでファイルを検索中…",
     "not_saved_title": "{{filename}}は保存されていません",
     "not_saved_tray": "ダウンロード済みです。GOの通知から保存できます。",
+    "offer_expired": "期限切れ",
     "open": "開く",
     "open_failed": "このファイルを開けるアプリがこの端末にありません",
+    "package_not_opened": "GOはアプリパッケージを開いたりインストールしたりしません。GOを更新するには、アカウントメニューの「GO 3.0 アップデート」を使ってください。",
+    "package_saved": "{{location}}に保存しました。GOはアプリパッケージを開きません。",
     "progress": "{{percent}}%・{{size}}",
-    "ready_to_install": "インストールの準備ができました · {{location}}",
     "ready_to_open": "開く準備ができました · {{location}}",
+    "received_file_gone": "このファイルはこのデバイスにはもうありません。GOはログアウト時に受信したファイルを削除します。送信者にもう一度送ってもらってください。",
+    "received_file_removed": "このデバイスにはもうありません",
+    "received_in_downloads": "このファイルはすでにダウンロードフォルダにあります。",
+    "received_notification_text": "{{fileName}}をGOで開く準備ができました",
+    "received_notification_title": "ファイルを受信しました",
+    "received_private_hint": "ログアウトするまでGO内に非公開で保存されます",
     "remove": "リストから削除",
     "save": "保存",
     "save_error": "ファイルの保存エラー: {{message}}",
     "save_error_generic": "ファイルの保存エラー",
     "save_stalled": "保存が停止しました: ストレージが応答しません",
     "save_success": "ファイルを保存しました",
+    "save_to_device": "デバイスに保存",
     "saved_title": "{{filename}}を保存しました",
     "saved_to": "{{location}}に保存しました",
     "saving_file": "ファイルを保存中…",
@@ -469,7 +574,6 @@
     "stage_gathering": "QDNから収集中",
     "stage_saving": "端末に保存中",
     "storage_permission": "Documentsにファイルを保存するには、GOにストレージの権限が必要です。",
-    "tap_to_install": "タップしてインストール · {{location}}",
     "tap_to_open": "タップして開く · {{location}}"
   },
   "filter": {
@@ -496,7 +600,12 @@
     "checking": "QDNを確認中…",
     "error": {
       "fetch_failed": "ビルドを取得できませんでした",
-      "timeout": "ネットワークが時間内にビルドを届けられませんでした"
+      "insecure_node": "このノードは暗号化されていないHTTPを使用しているため、GOはここからアップデートをダウンロードしません。アップデートはHTTPS経由、またはこの電話上のノードからのみ取得します。アップデートするにはHTTPSのノードに切り替えてください。",
+      "not_go_build": "このファイルはQortal GOのビルドではないため、インストールされませんでした。",
+      "not_newer": "このビルドはこの電話のGOより新しくないため、インストールされませんでした。",
+      "timeout": "ネットワークが時間内にビルドを届けられませんでした",
+      "unreadable": "Androidがこのファイルをアプリとして読み取れなかったため、インストールされませんでした。",
+      "wrong_signer": "このビルドはこの電話のGOと同じ鍵で署名されていないため、インストールされませんでした。"
     },
     "hide_changes": "変更点を隠す",
     "install": "インストール",
@@ -541,7 +650,8 @@
     "title": "GO 3.0 アップデート",
     "update_marker": "GO 3.0のアップデートがあります",
     "versions_missing": "一部のバージョンをまだ読み込めませんでした（{{count}}件）。後でもう一度確認してください。",
-    "versions_title": "QDN上のバージョン"
+    "versions_title": "QDN上のバージョン",
+    "versions_unreachable": "QDNに接続できませんでした。ノードへの接続を確認して、もう一度お試しください。"
   },
   "group_call": "グループ通話",
   "group_call_blocked": "先に他の通話を終了してください",
@@ -623,6 +733,7 @@
       "invalid_zip": "無効なzip",
       "long_message_too_many_parts": "このメッセージは {{maximum}} 件に分割しても長すぎるため、送信できません。",
       "long_message_unsplittable": "このメッセージの一部は、送信できる大きさまで分割できません。",
+      "max_tabs_reached": "タブの最大数に達しました。新しいタブを開くには、いずれかを閉じてください。",
       "message_loading": "メッセージの読み込みエラー。",
       "message_size": "メッセージは {{ size }} バイトです（最大 {{ maximum }} バイト）",
       "minting_account_add": "ミントアカウントを追加できません",
@@ -639,6 +750,7 @@
       "same_foreign_blockchain": "そのアドレスは同じ外部ブロックチェーンに属していません",
       "save_qdn": "QDNに保存できません",
       "send_failed": "送信に失敗しました",
+      "unrecognized_qr": "このQRコードはQortalの支払いコードではありません。",
       "update_failed": "更新に失敗しました",
       "vote": "投票できません"
     },
@@ -742,6 +854,7 @@
       "revert_qdn": "QDNに戻ります",
       "revoke_permission": "取り消す",
       "save_qdn": "QDNに保存します",
+      "saving": "保存中…",
       "secure_ownership": "あなたの名前で公開されたデータの安全な所有権。データとともに、名前をサードパーティに販売することもできます。",
       "select_file": "ファイルを選択してください",
       "select_image": "ロゴの画像を選択してください",
@@ -772,7 +885,8 @@
       "register_name": "この名前を登録しますか？",
       "reset_pinned": "あなたの現在のローカルの変更が気に入らない？デフォルトのピン留めアプリにリセットしますか？",
       "reset_qdn": "あなたの現在のローカルの変更が気に入らない？保存したQDNピン留めアプリにリセットしますか？",
-      "transfer_qort": "{{ amount }} QORT を送金しますか"
+      "transfer_qort": "{{ amount }} QORT を送金しますか",
+      "transfer_qort_to": "{{ amount }} QORT を {{ recipient }} に送金しますか？"
     },
     "success": {
       "order_submitted": "購入注文が提出されました",
@@ -999,15 +1113,15 @@
     "wallets": "ウォレット"
   },
   "quitter_feed": {
-    "empty_message_no_following": "Quitter を見てアカウントをフォローし、フィードを作りましょう。",
+    "empty_message_no_following": "{{app}} を見てアカウントをフォローし、フィードを作りましょう。",
     "empty_message_no_name": "パーソナライズされたフィードを作るには Qortal 名でサインインしてください。",
-    "empty_message_no_posts": "フォロー中のアカウントはまだ Quitter に投稿していません。",
+    "empty_message_no_posts": "フォロー中のアカウントはまだ {{app}} に投稿していません。",
     "empty_title_general": "投稿がありません",
     "empty_title_no_following": "まだ誰もフォローしていないようです。",
     "empty_title_no_name": "フィードをパーソナライズするにはサインインしてください",
     "empty_title_no_posts": "フォロー中のアカウントの投稿はありません",
-    "error_following": "パーソナライズされた Quitter フィードは一時的に利用できません。もう一度お試しください。",
-    "error_generic": "公開の Quitter フィードは一時的に利用できません。しばらくしてからもう一度お試しください。",
+    "error_following": "パーソナライズされた {{app}} フィードは一時的に利用できません。もう一度お試しください。",
+    "error_generic": "公開の {{app}} フィードは一時的に利用できません。しばらくしてからもう一度お試しください。",
     "error_timeout": "フィードの読み込みに失敗しました。再試行するか「一般」に戻れます。",
     "error_title_following": "フィードの読み込みに失敗しました",
     "error_title_general": "投稿を読み込めませんでした",

@@ -1,30 +1,69 @@
 import PlayCircleOutlineRoundedIcon from '@mui/icons-material/PlayCircleOutlineRounded';
+import AudioFileOutlinedIcon from '@mui/icons-material/AudioFileOutlined';
+import InsertDriveFileOutlinedIcon from '@mui/icons-material/InsertDriveFileOutlined';
+import PollOutlinedIcon from '@mui/icons-material/PollOutlined';
 import { Avatar, Box, ButtonBase, Typography, useTheme } from '@mui/material';
 import { alpha } from '@mui/material/styles';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { formatTimestamp } from '../../../utils/time';
 import { hasInvisibleCharacters } from '../../../utils/hasInvisibleCharacters';
 import type { WidgetDisplayMode } from '../DashboardWidgetFrame';
 import type { QuitterFeedItem } from './quitterFeedTypes';
+import { useQdnAvatar } from '../../../lib/qdnAvatars';
+import { GifImage } from '../../Chat/gifs/GifImage';
+import { libraryGifKey } from '../../Chat/gifs/libraryGifs';
+import type { ComposerAppName } from './composerTarget';
+import { visibleTorqPostText } from './torqFeedText';
 
 type QuitterFeedCardProps = {
+  /** Torq shows its GIFs, files and polls and hides the links for Quitter. */
+  app?: ComposerAppName;
   displayMode?: WidgetDisplayMode;
   item: QuitterFeedItem;
   onOpen?: () => void;
 };
 
+/** Torq posts take up to 10 pictures; the card shows four, then "+N". */
+const TORQ_CARD_PICTURES = 4;
+
 export const QuitterFeedCard = ({
+  app = 'Quitter',
   displayMode = 'compact',
   item,
   onOpen,
 }: QuitterFeedCardProps) => {
   const theme = useTheme();
+  const { src: authorAvatarSrc } = useQdnAvatar(item.author);
   const { t } = useTranslation('group');
-  const hasText = item.text.trim().length > 0;
+  const isTorq = app === 'Torq';
+  const gifs = isTorq ? (item.gifs ?? []) : [];
+  const attachments = isTorq ? (item.attachments ?? []) : [];
+  const pollOptions = isTorq ? (item.pollOptions ?? []) : [];
+  const shownText = useMemo(
+    () =>
+      isTorq
+        ? visibleTorqPostText(item.text, {
+            author: item.author,
+            identifier: item.identifier,
+            hasAttachments: (item.attachments?.length ?? 0) > 0,
+          })
+        : item.text,
+    [isTorq, item.attachments, item.author, item.identifier, item.text]
+  );
+  const hasText = shownText.trim().length > 0;
   const hasUnsafeAuthorName = hasInvisibleCharacters(item.author);
-  const imageCount = item.images.length;
-  const hasMedia = imageCount > 0 || item.hasVideo;
+  const shownImages = isTorq
+    ? item.images.slice(0, TORQ_CARD_PICTURES)
+    : item.images;
+  const hiddenImageCount = item.images.length - shownImages.length;
+  const imageCount = shownImages.length;
+  const hasMedia =
+    imageCount > 0 ||
+    item.hasVideo ||
+    gifs.length > 0 ||
+    attachments.length > 0 ||
+    pollOptions.length > 0;
   const isCompact = displayMode === 'compact';
   const collapsedLineCount = hasMedia
     ? isCompact
@@ -103,7 +142,7 @@ export const QuitterFeedCard = ({
     return () => {
       resizeObserver.disconnect();
     };
-  }, [collapsedLineCount, hasText, isExpanded, item.text]);
+  }, [collapsedLineCount, hasText, isExpanded, shownText]);
 
   return (
     <Box
@@ -160,7 +199,7 @@ export const QuitterFeedCard = ({
       <Box sx={{ display: 'flex', gap: isCompact ? '9px' : '10px' }}>
         <Avatar
           alt={item.author}
-          src={item.avatarUrl}
+          src={authorAvatarSrc}
           sx={{
             bgcolor:
               theme.palette.mode === 'dark'
@@ -264,7 +303,7 @@ export const QuitterFeedCard = ({
                   wordBreak: 'break-word',
                 }}
               >
-                {item.text}
+                {shownText}
               </Typography>
               {isTextExpandable || isExpanded ? (
                 <ButtonBase
@@ -441,7 +480,7 @@ export const QuitterFeedCard = ({
               imageCount > 1 ? 'repeat(2, minmax(0, 1fr))' : 'minmax(0, 1fr)',
           }}
         >
-          {item.images.map((image) => (
+          {shownImages.map((image, index) => (
             <Box
               key={image.src}
               sx={{
@@ -452,8 +491,27 @@ export const QuitterFeedCard = ({
                 borderRadius: '8px',
                 maxHeight: imageHeight,
                 overflow: 'hidden',
+                position: 'relative',
               }}
             >
+              {hiddenImageCount > 0 && index === imageCount - 1 ? (
+                <Box
+                  aria-hidden
+                  sx={{
+                    alignItems: 'center',
+                    backgroundColor: 'rgba(0,0,0,0.5)',
+                    color: '#fff',
+                    display: 'flex',
+                    fontSize: isCompact ? '1.1rem' : '1.25rem',
+                    fontWeight: 800,
+                    inset: 0,
+                    justifyContent: 'center',
+                    position: 'absolute',
+                  }}
+                >
+                  +{hiddenImageCount}
+                </Box>
+              ) : null}
               <Box
                 component="img"
                 alt={image.alt}
@@ -468,6 +526,131 @@ export const QuitterFeedCard = ({
                   width: '100%',
                 }}
               />
+            </Box>
+          ))}
+        </Box>
+      ) : null}
+
+      {gifs.length > 0 ? (
+        <Box
+          sx={{
+            display: 'grid',
+            gap: '6px',
+            gridTemplateColumns:
+              gifs.length > 1 ? 'repeat(2, minmax(0, 1fr))' : 'minmax(0, 1fr)',
+          }}
+        >
+          {gifs.slice(0, TORQ_CARD_PICTURES).map((gif) => (
+            <Box
+              key={libraryGifKey(gif)}
+              sx={{
+                border: `1px solid ${alpha(
+                  theme.palette.border.main,
+                  theme.palette.mode === 'dark' ? 0.24 : 0.12
+                )}`,
+                borderRadius: '8px',
+                height: gifs.length > 1 ? (isCompact ? 118 : 142) : isCompact ? 172 : 204,
+                overflow: 'hidden',
+              }}
+            >
+              <GifImage
+                alt={gif.description || ''}
+                fill
+                fit={gifs.length > 1 ? 'cover' : 'contain'}
+                gif={gif}
+              />
+            </Box>
+          ))}
+        </Box>
+      ) : null}
+
+      {attachments.length > 0 ? (
+        <Box sx={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+          {attachments.map((attachment, index) => (
+            <Box
+              key={`${attachment.title}-${index}`}
+              sx={{
+                alignItems: 'center',
+                backgroundColor: alpha(theme.palette.text.primary, 0.04),
+                border: `1px solid ${alpha(
+                  theme.palette.border.main,
+                  theme.palette.mode === 'dark' ? 0.24 : 0.12
+                )}`,
+                borderRadius: '10px',
+                display: 'flex',
+                gap: '8px',
+                minWidth: 0,
+                px: '10px',
+                py: '7px',
+              }}
+            >
+              {attachment.isAudio ? (
+                <AudioFileOutlinedIcon
+                  sx={{ color: theme.palette.primary.main, fontSize: 18 }}
+                />
+              ) : (
+                <InsertDriveFileOutlinedIcon
+                  sx={{ color: theme.palette.primary.main, fontSize: 18 }}
+                />
+              )}
+              <Typography
+                sx={{
+                  fontSize: isCompact ? '0.74rem' : '0.78rem',
+                  fontWeight: 650,
+                  minWidth: 0,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {attachment.title}
+              </Typography>
+            </Box>
+          ))}
+        </Box>
+      ) : null}
+
+      {pollOptions.length > 0 ? (
+        <Box sx={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+          <Box
+            sx={{
+              alignItems: 'center',
+              color: theme.palette.text.secondary,
+              display: 'flex',
+              gap: '6px',
+            }}
+          >
+            <PollOutlinedIcon
+              sx={{ color: theme.palette.primary.main, fontSize: 16 }}
+            />
+            <Typography sx={{ fontSize: '0.7rem', fontWeight: 700 }}>
+              {t('home_composer.poll_title', {
+                postProcess: 'capitalizeFirstChar',
+              })}
+            </Typography>
+          </Box>
+          {pollOptions.map((option, index) => (
+            <Box
+              key={`${option}-${index}`}
+              sx={{
+                border: `1px solid ${alpha(theme.palette.primary.main, 0.35)}`,
+                borderRadius: '999px',
+                minWidth: 0,
+                px: '12px',
+                py: '6px',
+              }}
+            >
+              <Typography
+                sx={{
+                  fontSize: isCompact ? '0.74rem' : '0.78rem',
+                  fontWeight: 600,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {option}
+              </Typography>
             </Box>
           ))}
         </Box>

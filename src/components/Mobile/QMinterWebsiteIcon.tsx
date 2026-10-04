@@ -1,19 +1,32 @@
 import { useMemo, useState } from 'react';
 import { Box } from '@mui/material';
 import SavingsRoundedIcon from '@mui/icons-material/SavingsRounded';
-import { getQMinterWebsiteAvatarCandidates } from '../../utils/openQMinterWebsite';
+import { useQdnAvatar } from '../../lib/qdnAvatars';
+import {
+  getQMinterWebsiteAvatarCandidates,
+  Q_MINTER_WEBSITE_NAME,
+} from '../../utils/openQMinterWebsite';
 
 type QMinterWebsiteIconProps = {
   size?: number;
 };
 
-/** Tries QDN avatar and website favicon URLs until one loads. */
+/**
+ * The Q-Minter icon from GO's avatar cache (or the icon GO ships), updated
+ * when the live one arrives; if that image fails, the node's QDN avatar and
+ * the website favicons are tried in turn.
+ */
 export function QMinterWebsiteIcon({ size = 24 }: QMinterWebsiteIconProps) {
-  const candidates = useMemo(() => getQMinterWebsiteAvatarCandidates(), []);
-  const [candidateIndex, setCandidateIndex] = useState(0);
-  const [failed, setFailed] = useState(false);
+  const { src: cachedSrc } = useQdnAvatar(Q_MINTER_WEBSITE_NAME);
+  const fallbacks = useMemo(() => getQMinterWebsiteAvatarCandidates(), []);
+  const [failedSrcs, setFailedSrcs] = useState<string[]>([]);
 
-  if (failed || candidateIndex >= candidates.length) {
+  const src = [cachedSrc, ...fallbacks].find(
+    (candidate): candidate is string =>
+      Boolean(candidate) && !failedSrcs.includes(candidate as string)
+  );
+
+  if (!src) {
     return <SavingsRoundedIcon sx={{ fontSize: size * 0.65 }} />;
   }
 
@@ -21,13 +34,9 @@ export function QMinterWebsiteIcon({ size = 24 }: QMinterWebsiteIconProps) {
     <Box
       alt="Q-Minter"
       component="img"
-      src={candidates[candidateIndex]}
+      src={src}
       onError={() => {
-        if (candidateIndex + 1 < candidates.length) {
-          setCandidateIndex((prev) => prev + 1);
-          return;
-        }
-        setFailed(true);
+        setFailedSrcs((prev) => (prev.includes(src) ? prev : [...prev, src]));
       }}
       sx={{
         borderRadius: '50%',

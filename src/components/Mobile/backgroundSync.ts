@@ -1,6 +1,12 @@
 import { Capacitor } from '@capacitor/core';
 import type { PluginListenerHandle } from '@capacitor/core';
-import { QortalBackground } from '../../plugins/QortalBackground';
+import {
+  QortalBackground,
+  type VendorBatterySettingsPage,
+  type VendorFreezeRecord,
+} from '../../plugins/QortalBackground';
+
+export type { VendorBatterySettingsPage, VendorFreezeRecord };
 
 /**
  * Background sync ("keep-alive") setting for GO on Android. The native side
@@ -27,14 +33,24 @@ export type BackgroundSyncState = {
   keepAliveActive: boolean;
   vendorFreezeCount: number;
   vendorFreezeLastAt: number | null;
-  vendorFreezeHintPending: boolean;
   manufacturer: string;
+  /**
+   * Up to 50 recorded freezes, oldest first. When its log is full, native
+   * drops stale or short episodes first, so this is not strictly the last N.
+   */
+  vendorFreezeRecent: VendorFreezeRecord[];
+  /** Current exemption; null when an older native build does not say. */
+  ignoringBatteryOptimizations: boolean | null;
 };
 
 export type VendorFreezeEvent = {
   count: number;
   lastAt: number;
   manufacturer: string;
+  /** Null from older native builds, which do not send them. */
+  gapMs: number | null;
+  ignoring: boolean | null;
+  charging: boolean | null;
 };
 
 type BackgroundSyncPlugin = {
@@ -43,6 +59,10 @@ type BackgroundSyncPlugin = {
   }): Promise<{ ok: boolean }>;
   getBackgroundSyncState(): Promise<Partial<BackgroundSyncState>>;
   acknowledgeVendorFreezeHint(): Promise<{ ok: boolean }>;
+  isIgnoringBatteryOptimizations(): Promise<{ ignoring?: boolean }>;
+  requestIgnoreBatteryOptimizations(): Promise<{ success?: boolean }>;
+  openAppBatterySettings(): Promise<{ success?: boolean }>;
+  openVendorBatterySettings(): Promise<{ opened?: unknown }>;
   addListener(
     eventName: 'relayProfileChanged',
     listenerFunc: (event: { profile?: string }) => void
@@ -71,11 +91,49 @@ export const isBackgroundSyncMode = (
   typeof value === 'string' &&
   (BACKGROUND_SYNC_MODES as readonly string[]).includes(value);
 
+/** Native's log holds up to 50 (VendorFreezeLog.MAX_ENTRIES). */
+export const VENDOR_FREEZE_RECENT_MAX = 50;
+
+const finitePositive = (value: unknown): number | null => {
+  if (value == null || typeof value === 'boolean') return null;
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : null;
+};
+
+/**
+ * Valid records only (epoch ms `at`, non-negative gap), oldest first, one per
+ * `at`, at most VENDOR_FREEZE_RECENT_MAX (the newest kept).
+ */
+export const normalizeVendorFreezeRecords = (
+  raw: unknown
+): VendorFreezeRecord[] => {
+  if (!Array.isArray(raw)) return [];
+  const byAt = new Map<number, VendorFreezeRecord>();
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const value = item as Partial<Record<keyof VendorFreezeRecord, unknown>>;
+    const at = finitePositive(value.at);
+    if (at == null) continue;
+    const gap = Number(value.gapMs);
+    if (value.gapMs == null || !Number.isFinite(gap) || gap < 0) continue;
+    byAt.set(at, {
+      at,
+      gapMs: gap,
+      ignoring: value.ignoring === true,
+      charging: value.charging === true,
+    });
+  }
+  return [...byAt.values()]
+    .sort((a, b) => a.at - b.at)
+    .slice(-VENDOR_FREEZE_RECENT_MAX);
+};
+
 export const normalizeBackgroundSyncState = (
   raw: unknown
 ): BackgroundSyncState | null => {
   if (!raw || typeof raw !== 'object') return null;
-  const value = raw as Partial<BackgroundSyncState>;
+  const value = raw as Partial<Record<keyof BackgroundSyncState, unknown>> &
+    Partial<BackgroundSyncState>;
   const lastAt = Number(value.vendorFreezeLastAt);
   const count = Number(value.vendorFreezeCount);
   return {
@@ -88,9 +146,34 @@ export const normalizeBackgroundSyncState = (
     keepAliveActive: value.keepAliveActive === true,
     vendorFreezeCount: Number.isFinite(count) && count > 0 ? count : 0,
     vendorFreezeLastAt: Number.isFinite(lastAt) && lastAt > 0 ? lastAt : null,
-    vendorFreezeHintPending: value.vendorFreezeHintPending === true,
     manufacturer:
       typeof value.manufacturer === 'string' ? value.manufacturer.trim() : '',
+    vendorFreezeRecent: normalizeVendorFreezeRecords(value.vendorFreezeRecent),
+    ignoringBatteryOptimizations:
+      typeof value.ignoringBatteryOptimizations === 'boolean'
+        ? value.ignoringBatteryOptimizations
+        : null,
+  };
+};
+
+/** The live event's payload; fields an older native build omits are null. */
+export const normalizeVendorFreezeEvent = (
+  raw: unknown,
+  now: number = Date.now()
+): VendorFreezeEvent => {
+  const value = (raw && typeof raw === 'object' ? raw : {}) as Partial<
+    Record<keyof VendorFreezeEvent, unknown>
+  >;
+  const count = Number(value.count);
+  const gap = Number(value.gapMs);
+  return {
+    count: Number.isFinite(count) && count > 0 ? count : 0,
+    lastAt: finitePositive(value.lastAt) ?? now,
+    manufacturer:
+      typeof value.manufacturer === 'string' ? value.manufacturer.trim() : '',
+    gapMs: value.gapMs != null && Number.isFinite(gap) && gap >= 0 ? gap : null,
+    ignoring: typeof value.ignoring === 'boolean' ? value.ignoring : null,
+    charging: typeof value.charging === 'boolean' ? value.charging : null,
   };
 };
 
@@ -129,6 +212,58 @@ export const acknowledgeVendorFreezeHint = async (): Promise<boolean> => {
   }
 };
 
+/**
+ * Whether GO is on the battery-optimisation whitelist now. Null off Android
+ * or when native cannot say.
+ */
+export const fetchIgnoringBatteryOptimizations = async (): Promise<
+  boolean | null
+> => {
+  if (!isNativeAndroid()) return null;
+  try {
+    const result = await plugin.isIgnoringBatteryOptimizations();
+    return typeof result?.ignoring === 'boolean' ? result.ignoring : null;
+  } catch {
+    return null;
+  }
+};
+
+/** Opens Android's 'Allow in background' dialog. False when it could not. */
+export const requestBatteryExemption = async (): Promise<boolean> => {
+  if (!isNativeAndroid()) return false;
+  try {
+    const result = await plugin.requestIgnoreBatteryOptimizations();
+    return result?.success !== false;
+  } catch {
+    return false;
+  }
+};
+
+const isSettingsPage = (value: unknown): value is VendorBatterySettingsPage =>
+  value === 'vendor' || value === 'app_details';
+
+/**
+ * The phone's own battery page where native knows one (vivo / iQOO), else
+ * GO's App info page. An older native build without the method falls back to
+ * openAppBatterySettings (App info). Null when nothing opened.
+ */
+export const openVendorBatterySettings =
+  async (): Promise<VendorBatterySettingsPage | null> => {
+    if (!isNativeAndroid()) return null;
+    try {
+      const result = await plugin.openVendorBatterySettings();
+      return isSettingsPage(result?.opened) ? result.opened : null;
+    } catch {
+      // Method missing (older APK) or rejected: App info still helps.
+    }
+    try {
+      const result = await plugin.openAppBatterySettings();
+      return result?.success === false ? null : 'app_details';
+    } catch {
+      return null;
+    }
+  };
+
 export const subscribeBackgroundSyncEvents = (handlers: {
   onRelayProfileChanged?: (profile: 'full' | 'leaf') => void;
   onVendorFreezeDetected?: (event: VendorFreezeEvent) => void;
@@ -154,16 +289,7 @@ export const subscribeBackgroundSyncEvents = (handlers: {
     const onFreeze = handlers.onVendorFreezeDetected;
     guard(() =>
       plugin.addListener('vendorFreezeDetected', (event) => {
-        const count = Number(event?.count);
-        const lastAt = Number(event?.lastAt);
-        onFreeze({
-          count: Number.isFinite(count) ? count : 0,
-          lastAt: Number.isFinite(lastAt) ? lastAt : Date.now(),
-          manufacturer:
-            typeof event?.manufacturer === 'string'
-              ? event.manufacturer.trim()
-              : '',
-        });
+        onFreeze(normalizeVendorFreezeEvent(event));
       })
     );
   }
@@ -172,50 +298,6 @@ export const subscribeBackgroundSyncEvents = (handlers: {
       void handle.then((h) => h?.remove()).catch(() => {});
     }
   };
-};
-
-const DONT_KILL_MY_APP_BASE = 'https://dontkillmyapp.com/';
-
-/** Vendors with their own page on dontkillmyapp.com. */
-const DONT_KILL_MY_APP_VENDORS = new Set([
-  'asus',
-  'blackview',
-  'google',
-  'htc',
-  'huawei',
-  'lenovo',
-  'meizu',
-  'motorola',
-  'nokia',
-  'oneplus',
-  'oppo',
-  'realme',
-  'samsung',
-  'sony',
-  'unihertz',
-  'vivo',
-  'wiko',
-  'xiaomi',
-]);
-
-/** Build.MANUFACTURER values that report a sub-brand or holding company. */
-const DONT_KILL_MY_APP_ALIASES: Record<string, string> = {
-  hmd: 'nokia',
-  hmdglobal: 'nokia',
-  honor: 'huawei',
-  iqoo: 'vivo',
-  poco: 'xiaomi',
-  redmi: 'xiaomi',
-};
-
-export const dontKillMyAppUrl = (manufacturer: string | null | undefined) => {
-  const key = String(manufacturer ?? '')
-    .toLowerCase()
-    .replace(/[^a-z0-9]/g, '');
-  const vendor = DONT_KILL_MY_APP_ALIASES[key] ?? key;
-  return DONT_KILL_MY_APP_VENDORS.has(vendor)
-    ? `${DONT_KILL_MY_APP_BASE}${vendor}`
-    : `${DONT_KILL_MY_APP_BASE}general`;
 };
 
 const MANUFACTURER_DISPLAY: Record<string, string> = {

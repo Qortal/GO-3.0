@@ -68,6 +68,11 @@ export const CustomStyledMenu = styled(Menu, {
           minHeight: 36,
           padding: theme.spacing(0.65, 1),
           transition: 'background-color 120ms ease',
+          // Finger-sized items on phones, as in the message menu.
+          [theme.breakpoints.down('md')]: {
+            minHeight: 44,
+            '& .MuiSvgIcon-root': { fontSize: 22 },
+          },
         }
       : { transition: '0.3s background-color' }),
     '&:hover': {

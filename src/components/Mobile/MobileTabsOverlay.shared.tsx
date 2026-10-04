@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Box } from '@mui/material';
 import ChatRoundedIcon from '@mui/icons-material/ChatRounded';
-import { buildAppThumbnailUrl } from '../../utils/walletAvatarCache';
+import { useQdnAvatar } from '../../lib/qdnAvatars';
 import type { OpenTab } from './useOpenTabs';
 
 export const tabPalette = [
@@ -40,18 +40,24 @@ export const TabAvatar = ({
   color: string;
   size?: number;
 }) => {
-  const [failed, setFailed] = useState(false);
+  // The src that failed to load: a new src (e.g. the live icon replacing the
+  // bundled one) gets its own chance.
+  const [failedSrc, setFailedSrc] = useState<string | null>(null);
   const privateLogo =
     typeof (tab as any)?.privateAppProperties?.logo === 'string'
       ? String((tab as any).privateAppProperties.logo)
       : typeof (tab as any)?.logo === 'string'
         ? String((tab as any).logo)
         : null;
-  const avatarUrl = privateLogo
-    ? privateLogo
-    : !tab.internal && tab.name
-      ? buildAppThumbnailUrl(String(tab.name))
-      : null;
+  // A private app's name is its publisher's own name: that avatar is a
+  // person, not the app, so a private tab without a logo shows the letter.
+  const usesQdnIcon =
+    !privateLogo && !tab.internal && !tab.isPrivate && Boolean(tab.name);
+  const { src: qdnIconSrc } = useQdnAvatar(
+    usesQdnIcon ? String(tab.name) : null,
+    { enabled: usesQdnIcon }
+  );
+  const avatarUrl = privateLogo || qdnIconSrc || null;
 
   const fallback = (
     <Box
@@ -77,14 +83,14 @@ export const TabAvatar = ({
     </Box>
   );
 
-  if (!avatarUrl || failed) return fallback;
+  if (!avatarUrl || failedSrc === avatarUrl) return fallback;
 
   return (
     <Box
       component="img"
       src={avatarUrl}
       alt=""
-      onError={() => setFailed(true)}
+      onError={() => setFailedSrc(avatarUrl)}
       sx={{
         width: size,
         height: size,

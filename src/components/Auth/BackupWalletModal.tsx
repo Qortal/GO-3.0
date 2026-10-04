@@ -22,6 +22,7 @@ import { executeEvent } from '../../utils/events';
 import { PasswordField } from '../index';
 import { getBlueTier1ButtonSx } from '../../styles/blueMaterial';
 import { getWalletErrorMessage } from '../../utils/walletErrorMessages';
+import { useSecureScreen } from '../../hooks/useSecureScreen';
 
 type BackupWalletModalProps = {
   onClose: () => void;
@@ -45,6 +46,8 @@ export const BackupWalletModal = ({
   const [keepCurrentPassword, setKeepCurrentPassword] = useState(true);
   const [error, setError] = useState('');
   const [isDownloading, setIsDownloading] = useState(false);
+  // Wallet backup: no screenshots, recordings or recents thumbnail (GO-37).
+  useSecureScreen({ secure: open });
 
   const modalSurface = isDarkMode
     ? 'linear-gradient(145deg, rgba(49,54,64,0.985) 0%, rgba(35,39,47,0.992) 48%, rgba(24,27,33,0.996) 100%)'

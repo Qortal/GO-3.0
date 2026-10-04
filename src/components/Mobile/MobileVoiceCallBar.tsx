@@ -31,8 +31,8 @@ import { getPrimaryNameForAvatar } from '../Group/groupApi';
 import {
   addrHue,
   initialsFromDisplayLabel,
-  qortalAvatarThumbnailSrc,
   shortAddr,
+  useQortalAvatarThumbnailSrc,
 } from '../Group/qortalGroupCallParticipantUi';
 import { MOBILE_TOP_BAR_HEIGHT_PX } from './MobileTopBar';
 import { SAFE_AREA_TOP } from '../../utils/mobileSafeArea';
@@ -112,7 +112,7 @@ export function MobileVoiceCallBar() {
   }, [activeDirect]);
 
   const title = peerPrimaryName || (peerAddress ? shortAddr(peerAddress) : '');
-  const avatarSrc = qortalAvatarThumbnailSrc(peerPrimaryName || undefined);
+  const avatarSrc = useQortalAvatarThumbnailSrc(peerPrimaryName || undefined);
   const initials = initialsFromDisplayLabel(title, peerAddress || myAddress);
 
   const durationLabel = useMemo(() => {

@@ -4,7 +4,7 @@ import {
   type PluginListenerHandle,
 } from '@capacitor/core';
 
-/** A photo/video shared into the app via the Android "Quitter" share target. */
+/** A photo/video shared into the app via the Android share target (Quitter or Torq). */
 export type SharedMediaItem = {
   /** Absolute native path in the app cache (cacheDir/shared_media/…). */
   path: string;
@@ -16,6 +16,7 @@ export type SharedMediaItem = {
 interface ShareReceiverNativePlugin {
   getPendingShare(): Promise<{ items: SharedMediaItem[] }>;
   consumeSharedFile(options: { path: string }): Promise<void>;
+  setShareTarget(options: { target: 'quitter' | 'torq' }): Promise<void>;
   addListener(
     eventName: 'shareReceived',
     listenerFunc: (event: { pending: boolean }) => void
@@ -46,6 +47,15 @@ export const ShareReceiver = {
       await ShareReceiverNative.consumeSharedFile({ path });
     } catch {
       // best-effort cleanup
+    }
+  },
+  /** Name the share-sheet entry after the app the composer posts to. */
+  setShareTarget: async (target: 'quitter' | 'torq'): Promise<void> => {
+    if (!isShareReceiverAvailable()) return;
+    try {
+      await ShareReceiverNative.setShareTarget({ target });
+    } catch {
+      // older native build: the entry stays as it is
     }
   },
   addShareListener: async (

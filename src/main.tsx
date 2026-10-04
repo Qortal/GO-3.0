@@ -34,6 +34,7 @@ import { CssBaseline } from '@mui/material';
 import './i18n/i18n.js';
 import ReticulumStatusChip from './components/Reticulum/ReticulumStatusChip.tsx';
 import { prefetchAuthenticatedShell } from './components/App/LazyAuthenticatedShell.tsx';
+import { preloadQdnAvatars } from './lib/qdnAvatars';
 
 function hideAppSplash() {
   const el = document.getElementById('app-splash');
@@ -50,6 +51,10 @@ function hideAppSplash() {
 window.setTimeout(hideAppSplash, 8000);
 
 installFatalErrorRecorder();
+
+// Open the avatar cache now, so the most used avatars are in memory by the
+// first frame that shows them (instead of a letter, then the picture).
+void preloadQdnAvatars();
 
 // React 18 unmounts the entire tree when a render error reaches the root, so
 // without a boundary here any uncaught fault anywhere above the authenticated

@@ -31,11 +31,8 @@ import {
 } from '../../utils/qdnDownloadNotifications';
 import { formatDate } from '../../utils/time';
 import { SwipeToDismiss } from '../common/SwipeToDismiss';
-import {
-  isPackageFile,
-  PANEL_TRANSFER_STAGES,
-  transferStatusText,
-} from './transferText';
+import { isAndroidPackageFile } from '../../utils/androidPackageFiles';
+import { PANEL_TRANSFER_STAGES, transferStatusText } from './transferText';
 
 const useTransfers = () =>
   useSyncExternalStore(subscribeQdnTransfers, getQdnTransfers, getQdnTransfers);
@@ -229,7 +226,9 @@ export function SavedQdnFileRow({
   const { t } = useTranslation(['core']);
   const [openFailed, setOpenFailed] = useState(false);
   const accent = theme.palette.success.main;
-  const packageFile = isPackageFile(file.filename, file.mimeType);
+  // Packages are saved without a uri: GO never opens them (only its own
+  // updater installs), so there is no Open and no "ready to install".
+  const packageFile = isAndroidPackageFile(file.filename, file.mimeType);
 
   const open = async () => {
     if (!file.uri) return;
@@ -281,9 +280,11 @@ export function SavedQdnFileRow({
             {openFailed
               ? t('core:file_transfer.open_failed')
               : t(
-                  packageFile
-                    ? 'core:file_transfer.ready_to_install'
-                    : 'core:file_transfer.ready_to_open',
+                  file.uri
+                    ? 'core:file_transfer.ready_to_open'
+                    : packageFile
+                      ? 'core:file_transfer.package_saved'
+                      : 'core:file_transfer.saved_to',
                   { location: file.location }
                 )}
           </Typography>
@@ -327,9 +328,7 @@ export function SavedQdnFileRow({
               textTransform: 'none',
             }}
           >
-            {packageFile
-              ? t('core:file_transfer.install')
-              : t('core:file_transfer.open')}
+            {t('core:file_transfer.open')}
           </Button>
         </Box>
       )}

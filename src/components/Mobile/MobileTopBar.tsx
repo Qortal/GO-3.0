@@ -47,6 +47,10 @@ import { useOpenTabs } from './useOpenTabs';
 import { liveTabQortalUrl } from './tabQortalLink';
 import { QortalUserAvatar } from '../QortalUserAvatar';
 import { useQdnDownloadsBadge } from '../Transfers/QdnDownloadsNotice';
+import {
+  claimVendorFreezeCardPop,
+  useVendorFreezeHint,
+} from './vendorFreezeHintStore';
 import { getWalletAvatarCache, fetchWalletAvatarDataUrl, setWalletAvatarCache, type WalletAvatarCacheEntry } from '../../utils/walletAvatarCache';
 import { getPrimaryNameForAvatar } from '../Group/groupApi';
 import { useUnseenNotificationCount } from '../../hooks/useUnseenNotificationCount';
@@ -173,9 +177,19 @@ export const MobileTopBar = ({
   // A hidden download progress card goes into the notifications, so the bell
   // counts it (and a file saved but not yet looked at).
   const downloadsBadge = useQdnDownloadsBadge();
-  const unseenCount = appUnseenCount + downloadsBadge.unseen;
+  // "GO was stopped in the background" counts 1 until one of its actions is
+  // used (opening the panel alone does not clear it).
+  const vendorFreezeBell = useVendorFreezeHint().bell;
+  const vendorFreezeBadge = vendorFreezeBell?.badge ? 1 : 0;
+  const unseenVendorFreezeCardAt = vendorFreezeBell?.badge
+    ? vendorFreezeBell.shownAt
+    : null;
+  const unseenCount =
+    appUnseenCount + downloadsBadge.unseen + vendorFreezeBadge;
   const hasNewNotifications =
-    hasNewAppNotifications || downloadsBadge.unseen > 0;
+    hasNewAppNotifications ||
+    downloadsBadge.unseen > 0 ||
+    vendorFreezeBadge > 0;
   // A newer GO build rings its own bell on GO 3.0 Updates in the account
   // menu (and marks the avatar until that screen has shown it).
   const updateRelease = useAtomValue(appUpdateReleaseAtom);
@@ -184,15 +198,18 @@ export const MobileTopBar = ({
   const updateUnseen = Boolean(
     updateRelease && updateSeenVersion !== updateRelease.version
   );
-  // The bell pops each time a download lands in it.
+  // The bell pops each time a download (or a new "GO was stopped" card)
+  // lands in it.
   const [bellPop, setBellPop] = useState(0);
   const lastDownloadsUnseenRef = useRef(0);
   useEffect(() => {
-    if (downloadsBadge.unseen > lastDownloadsUnseenRef.current) {
+    // Once per card: not again on a remount or for a card from an earlier run.
+    const cardPop = claimVendorFreezeCardPop(unseenVendorFreezeCardAt);
+    if (cardPop || downloadsBadge.unseen > lastDownloadsUnseenRef.current) {
       setBellPop((count) => count + 1);
     }
     lastDownloadsUnseenRef.current = downloadsBadge.unseen;
-  }, [downloadsBadge.unseen]);
+  }, [downloadsBadge.unseen, unseenVendorFreezeCardAt]);
   const chatComposeActive = useAtomValue(mobileChatComposeActiveAtom);
   const fullscreenComposerActive = useAtomValue(
     mobileFullscreenComposerActiveAtom
@@ -683,6 +700,7 @@ export const MobileTopBar = ({
               primaryName={effectivePrimaryName}
               walletAddress={address}
               cachedAvatarEntry={cachedAvatarEntry}
+              ownAvatar
               fallbackIconSize={20}
               sx={{
                 width: 32,

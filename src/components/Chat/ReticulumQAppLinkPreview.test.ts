@@ -6,7 +6,10 @@ import {
   waitFor,
 } from '@testing-library/react';
 import { createElement } from 'react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { qdnAvatarKey } from '../../lib/qdnAvatars';
+import { setQdnAvatarCacheForTests } from '../../lib/qdnAvatars/defaultCache';
+import { createAvatarTestHarness } from '../../lib/qdnAvatars/testHarness';
 import {
   formatReticulumQAppDisplayLink,
   getQuitterPostSummary,
@@ -29,7 +32,20 @@ const subwireLink =
 const missingQTubeLink =
   'qortal://APP/Q-Tube/video/Johnny%20Go%20Vroom/definitely-missing-metadata';
 
+// App icons come from the avatar cache, not from the stubbed fetch: a node
+// that never answers, with a bundled Q-Tube icon.
+const Q_TUBE_SEED = '/seeds/q-tube.webp';
+let avatars: ReturnType<typeof createAvatarTestHarness>;
+beforeEach(() => {
+  avatars = createAvatarTestHarness({
+    seeds: { [qdnAvatarKey('Q-Tube')!]: Q_TUBE_SEED },
+    handler: () => new Promise<Response>(() => {}),
+  });
+  setQdnAvatarCacheForTests(avatars.cache);
+});
+
 afterEach(() => {
+  setQdnAvatarCacheForTests(null);
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });
@@ -71,6 +87,21 @@ describe('parseReticulumQAppLinks', () => {
           'qortal://APP/Quitter/video/name/id',
           'qortal://APP/SubWire/post/name/id',
           'qortal://APP/Unknown/video/name/id',
+        ].join(' ')
+      )
+    ).toEqual([]);
+  });
+
+  // GO-21: a dot segment in any spelling would move the tab's path out of
+  // the app, so such a link gets no card (and no Open button).
+  it('gives no card to links whose author or id is a dot segment', () => {
+    expect(
+      parseReticulumQAppLinks(
+        [
+          'qortal://APP/Quitter/post/../id',
+          'qortal://APP/Quitter/post/%2e%2e/id',
+          'qortal://APP/Q-Tube/video/name/%252e%252e',
+          'qortal://APP/Quitter/post/name/..;x',
         ].join(' ')
       )
     ).toEqual([]);
@@ -257,6 +288,31 @@ describe('ReticulumQAppLinkPreviews', () => {
       expect(screen.getByText('Recovered video')).toBeVisible()
     );
     expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
+  it('shows the app icon from the avatar cache, not from the node', async () => {
+    const fetchMock = vi.fn(async (_url: string) => {
+      throw new Error('unavailable');
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { container } = render(
+      createElement(ReticulumQAppLinkPreviews, { source: missingQTubeLink })
+    );
+
+    await waitFor(() =>
+      expect(
+        [...container.querySelectorAll('img')].map((img) =>
+          img.getAttribute('src')
+        )
+      ).toContain(Q_TUBE_SEED)
+    );
+    expect(avatars.calls[0]?.url).toContain(
+      '/arbitrary/THUMBNAIL/Q-Tube/qortal_avatar?async=true'
+    );
+    expect(
+      fetchMock.mock.calls.some(([url]) => String(url).includes('THUMBNAIL'))
+    ).toBe(false);
   });
 
   it('distinguishes a missing resource from a metadata fetch failure', async () => {

@@ -39,12 +39,9 @@ import PhoneIcon from '@mui/icons-material/Phone';
 import { HubsIcon } from '../../assets/Icons/HubsIcon';
 import { MessagingIcon } from '../../assets/Icons/MessagingIcon';
 import { ContextMenu } from '../ContextMenu';
-import {
-  buildGroupAvatarUrl,
-  buildGroupAvatarUrlAsyncFallback,
-} from '../../utils/groupAvatarUrl';
+import type { QdnAvatarPriority } from '../../lib/qdnAvatars';
+import { rowAvatarPriority, useGroupRowAvatar } from './useGroupRowAvatar';
 import { prefetchReticulumGroupAboutMetadata } from './ReticulumGroupAbout';
-import { getBaseApiReact } from '../../App';
 import { formatEmailDate } from './qmailUtils';
 import CampaignIcon from '@mui/icons-material/Campaign';
 import MarkChatUnreadIcon from '@mui/icons-material/MarkChatUnread';
@@ -111,6 +108,24 @@ import {
   RETICULUM_NOTIFICATION_RED,
 } from '../common/ReticulumUnreadCountBadge';
 import { ChatScopeSwitch } from './ChatScopeSwitch';
+import {
+  CHAT_LIST_AVATAR_SIZE,
+  CHAT_LIST_TOUCH_TARGET,
+  chatListAvatarSlotSx,
+  chatListHeaderActionsSx,
+  chatListHeaderButtonSx,
+  chatListHeaderIconSx,
+  chatListHeaderSx,
+  chatListRowContentSx,
+  chatListRowEdgeActionSx,
+  chatListScrollPadding,
+  chatListTextSx,
+  getChatListAvatarFallbackSx,
+  getChatListPanelSx,
+  getChatListRowSx,
+  getChatListSubtitleSx,
+  getChatListTitleSx,
+} from './chatListRowStyles';
 import CloseIcon from '@mui/icons-material/Close';
 import PushPinRoundedIcon from '@mui/icons-material/PushPinRounded';
 import {
@@ -125,12 +140,12 @@ import {
 
 const RETICULUM_ACTIVE_BLUE = '#2563eb';
 const RETICULUM_CALL_GREEN = '#22c55e';
+/** Finger travel that turns a hold on a group's pin into a swipe or scroll
+ * (same as the row's long-press menu). */
+const PIN_HOLD_SLOP_PX = 10;
 
-const reticulumTextScaleOptions = [
-  { value: 'default', label: 'Default', detail: 'Current chat text size' },
-  { value: 'medium', label: 'Medium', detail: 'A comfortable increase' },
-  { value: 'high', label: 'High', detail: 'Largest readable chat text' },
-] as const;
+// Labels: reticulum:settings.text_size.<value>.label / .detail
+const reticulumTextScaleOptions = ['default', 'medium', 'high'] as const;
 
 const ReticulumChatSettingsDialog = ({
   open,
@@ -140,6 +155,7 @@ const ReticulumChatSettingsDialog = ({
   onClose: () => void;
 }) => {
   const theme = useTheme();
+  const { t } = useTranslation(['core', 'reticulum']);
   const isNarrow = useMediaQuery(theme.breakpoints.down('sm'));
   const [activeSection, setActiveSection] = useState<
     'text-size' | 'messages' | 'notifications' | 'legacy-threads'
@@ -281,11 +297,17 @@ const ReticulumChatSettingsDialog = ({
             px: { xs: 2, sm: 4 },
           }}
         >
-          Settings
+          {t('core:settings', { postProcess: 'capitalizeFirstChar' })}
         </DialogTitle>
         {isNarrow && (
-          <IconButton aria-label="Close" onClick={onClose} size="small">
-            <CloseIcon />
+          <IconButton
+            aria-label={t('core:action.close', {
+              postProcess: 'capitalizeFirstChar',
+            })}
+            onClick={onClose}
+            sx={chatListHeaderButtonSx}
+          >
+            <CloseIcon sx={{ fontSize: 24 }} />
           </IconButton>
         )}
       </Box>
@@ -331,7 +353,7 @@ const ReticulumChatSettingsDialog = ({
             onClick={() => setAccessibilityExpanded((expanded) => !expanded)}
             sx={categoryButtonSx}
           >
-            <span>Accessibility</span>
+            <span>{t('reticulum:settings.category.accessibility')}</span>
             {accessibilityExpanded ? (
               <ExpandMoreRoundedIcon sx={{ fontSize: 18 }} />
             ) : (
@@ -344,13 +366,15 @@ const ReticulumChatSettingsDialog = ({
                 onClick={() => setActiveSection('text-size')}
                 sx={navButtonSx(activeSection === 'text-size')}
               >
-                <AccessibilityNewOutlinedIcon sx={{ fontSize: 19 }} /> Text size
+                <AccessibilityNewOutlinedIcon sx={{ fontSize: 19 }} />
+                {t('reticulum:settings.nav.text_size')}
               </ButtonBase>
               <ButtonBase
                 onClick={() => setActiveSection('messages')}
                 sx={navButtonSx(activeSection === 'messages')}
               >
-                <ChatBubbleOutlineRoundedIcon sx={{ fontSize: 19 }} /> Messages
+                <ChatBubbleOutlineRoundedIcon sx={{ fontSize: 19 }} />
+                {t('reticulum:settings.nav.messages')}
               </ButtonBase>
             </>
           )}
@@ -359,7 +383,7 @@ const ReticulumChatSettingsDialog = ({
             onClick={() => setNotificationsExpanded((expanded) => !expanded)}
             sx={{ ...categoryButtonSx, mt: 2.25 }}
           >
-            <span>Notifications</span>
+            <span>{t('reticulum:settings.notifications.title')}</span>
             {notificationsExpanded ? (
               <ExpandMoreRoundedIcon sx={{ fontSize: 18 }} />
             ) : (
@@ -371,7 +395,8 @@ const ReticulumChatSettingsDialog = ({
               onClick={() => setActiveSection('notifications')}
               sx={navButtonSx(activeSection === 'notifications')}
             >
-              <NotificationsNoneRoundedIcon sx={{ fontSize: 19 }} /> Mentions
+              <NotificationsNoneRoundedIcon sx={{ fontSize: 19 }} />
+              {t('reticulum:settings.nav.mentions')}
             </ButtonBase>
           )}
           <ButtonBase
@@ -379,7 +404,7 @@ const ReticulumChatSettingsDialog = ({
             onClick={() => setLegacyExpanded((expanded) => !expanded)}
             sx={{ ...categoryButtonSx, mt: 2.25 }}
           >
-            <span>Legacy</span>
+            <span>{t('reticulum:settings.category.legacy')}</span>
             {legacyExpanded ? (
               <ExpandMoreRoundedIcon sx={{ fontSize: 18 }} />
             ) : (
@@ -391,7 +416,8 @@ const ReticulumChatSettingsDialog = ({
               onClick={() => setActiveSection('legacy-threads')}
               sx={navButtonSx(activeSection === 'legacy-threads')}
             >
-              <ForumRoundedIcon sx={{ fontSize: 19 }} /> Threads
+              <ForumRoundedIcon sx={{ fontSize: 19 }} />
+              {t('reticulum:settings.nav.threads')}
             </ButtonBase>
           )}
         </Box>
@@ -409,7 +435,7 @@ const ReticulumChatSettingsDialog = ({
                   lineHeight: '26px',
                 }}
               >
-                Text size
+                {t('reticulum:settings.text_size.title')}
               </Typography>
               <Typography
                 sx={{
@@ -421,16 +447,15 @@ const ReticulumChatSettingsDialog = ({
                   mt: 0.75,
                 }}
               >
-                Choose a reading size for Reticulum messages, channel labels and
-                the members list. Invitation previews keep their fixed layout.
+                {t('reticulum:settings.text_size.description')}
               </Typography>
               <Box sx={{ display: 'grid', gap: 1, mt: 2.5 }}>
                 {reticulumTextScaleOptions.map((option) => {
-                  const selected = textScale === option.value;
+                  const selected = textScale === option;
                   return (
                     <ButtonBase
-                      key={option.value}
-                      onClick={() => setTextScale(option.value)}
+                      key={option}
+                      onClick={() => setTextScale(option)}
                       sx={{
                         alignItems: 'center',
                         backgroundColor: selected
@@ -454,7 +479,7 @@ const ReticulumChatSettingsDialog = ({
                             lineHeight: '20px',
                           }}
                         >
-                          {option.label}
+                          {t(`reticulum:settings.text_size.${option}.label`)}
                         </Typography>
                         <Typography
                           sx={{
@@ -463,7 +488,7 @@ const ReticulumChatSettingsDialog = ({
                             mt: 0.25,
                           }}
                         >
-                          {option.detail}
+                          {t(`reticulum:settings.text_size.${option}.detail`)}
                         </Typography>
                       </Box>
                       <Box
@@ -493,7 +518,7 @@ const ReticulumChatSettingsDialog = ({
                   lineHeight: '26px',
                 }}
               >
-                Messages
+                {t('reticulum:settings.messages.title')}
               </Typography>
               <Typography
                 sx={{
@@ -505,7 +530,7 @@ const ReticulumChatSettingsDialog = ({
                   mt: 0.75,
                 }}
               >
-                Adjust how your own messages appear in Reticulum Q-Chat.
+                {t('reticulum:settings.messages.description')}
               </Typography>
               <Box
                 sx={{
@@ -530,7 +555,7 @@ const ReticulumChatSettingsDialog = ({
                       lineHeight: '20px',
                     }}
                   >
-                    Highlight my messages
+                    {t('reticulum:settings.messages.highlight_own.label')}
                   </Typography>
                   <Typography
                     sx={{
@@ -540,12 +565,16 @@ const ReticulumChatSettingsDialog = ({
                       mt: 0.25,
                     }}
                   >
-                    Add a faint background to messages you send.
+                    {t('reticulum:settings.messages.highlight_own.description')}
                   </Typography>
                 </Box>
                 <Switch
                   checked={highlightOwnMessages === true}
-                  inputProps={{ 'aria-label': 'Highlight my messages' }}
+                  inputProps={{
+                    'aria-label': t(
+                      'reticulum:settings.messages.highlight_own.label'
+                    ),
+                  }}
                   onChange={(_, checked) => setHighlightOwnMessages(checked)}
                 />
               </Box>
@@ -561,7 +590,7 @@ const ReticulumChatSettingsDialog = ({
                   lineHeight: '26px',
                 }}
               >
-                Notifications
+                {t('reticulum:settings.notifications.title')}
               </Typography>
               <Typography
                 sx={{
@@ -573,8 +602,7 @@ const ReticulumChatSettingsDialog = ({
                   mt: 0.75,
                 }}
               >
-                Show Reticulum Q-Chat mentions in the Hub notification panel.
-                Regular unread messages will not create Hub notifications.
+                {t('reticulum:settings.notifications.description')}
               </Typography>
               <Box
                 sx={{
@@ -599,7 +627,7 @@ const ReticulumChatSettingsDialog = ({
                       lineHeight: '20px',
                     }}
                   >
-                    Mention notifications
+                    {t('reticulum:settings.notifications.mentions.label')}
                   </Typography>
                   <Typography
                     sx={{
@@ -609,12 +637,16 @@ const ReticulumChatSettingsDialog = ({
                       mt: 0.25,
                     }}
                   >
-                    Alert me when someone mentions me in a channel.
+                    {t('reticulum:settings.notifications.mentions.description')}
                   </Typography>
                 </Box>
                 <Switch
                   checked={mentionNotificationsEnabled === true}
-                  inputProps={{ 'aria-label': 'Mention notifications' }}
+                  inputProps={{
+                    'aria-label': t(
+                      'reticulum:settings.notifications.mentions.label'
+                    ),
+                  }}
                   onChange={(_, checked) => {
                     setMentionNotificationsEnabled(checked);
                     void setQChatMentionNotificationsEnabled(checked).catch(
@@ -635,7 +667,7 @@ const ReticulumChatSettingsDialog = ({
                   lineHeight: '26px',
                 }}
               >
-                Threads
+                {t('reticulum:settings.legacy.title')}
               </Typography>
               <Typography
                 sx={{
@@ -647,7 +679,7 @@ const ReticulumChatSettingsDialog = ({
                   mt: 0.75,
                 }}
               >
-                Show the legacy Threads and Admin controls in the Q-Chat header.
+                {t('reticulum:settings.legacy.description')}
               </Typography>
               <Box
                 sx={{
@@ -672,7 +704,7 @@ const ReticulumChatSettingsDialog = ({
                       lineHeight: '20px',
                     }}
                   >
-                    Threads
+                    {t('reticulum:settings.legacy.toggle.label')}
                   </Typography>
                   <Typography
                     sx={{
@@ -682,12 +714,14 @@ const ReticulumChatSettingsDialog = ({
                       mt: 0.25,
                     }}
                   >
-                    Display the legacy Threads and Admin icons.
+                    {t('reticulum:settings.legacy.toggle.description')}
                   </Typography>
                 </Box>
                 <Switch
                   checked={legacyThreadsEnabled === true}
-                  inputProps={{ 'aria-label': 'Show legacy Threads' }}
+                  inputProps={{
+                    'aria-label': t('reticulum:settings.legacy.toggle.aria'),
+                  }}
                   onChange={(_, checked) => setLegacyThreadsEnabled(checked)}
                 />
               </Box>
@@ -699,9 +733,7 @@ const ReticulumChatSettingsDialog = ({
                   mt: 1.5,
                 }}
               >
-                Threads will be removed in the upcoming release. Move any
-                important thread information to a safe place or to a new
-                channel in Q-Chat before updating.
+                {t('reticulum:settings.legacy.warning')}
               </Typography>
             </>
           ) : null}
@@ -889,6 +921,9 @@ const GroupListInner = ({
   setIsOpenBlockedUserModal,
   myAddress,
   reticulumChatEnabled,
+  // Phones: show the named group list even while DMs are the current scope,
+  // for the Groups / DMs pager that keeps it right beside them.
+  keepPhoneList = false,
 }) => {
   const theme = useTheme();
   // Compact the Groups/DM toggle on landscape phones, where the tall stacked
@@ -901,6 +936,7 @@ const GroupListInner = ({
     'core',
     'group',
     'question',
+    'reticulum',
     'tutorial',
   ]);
   const [isRunningPublicNode] = useAtom(isRunningPublicNodeAtom);
@@ -914,7 +950,9 @@ const GroupListInner = ({
   // On phones the rail alone gives no readable group names, so pair it with a
   // list panel unless the DM list already owns that space.
   const showMobileGroupPanel =
-    railMode && isMobileWidth && desktopSideView !== 'directs';
+    railMode &&
+    isMobileWidth &&
+    (desktopSideView !== 'directs' || keepPhoneList);
   const [manualGroupOrder, setManualGroupOrder] = useState<string[]>(
     readReticulumGroupOrder
   );
@@ -1073,7 +1111,13 @@ const GroupListInner = ({
         />
         <Tooltip
           placement="right"
-          title={desktopSideView === 'directs' ? 'Groups' : 'Direct Messages'}
+          title={
+            desktopSideView === 'directs'
+              ? t('reticulum:chat_scope.groups', {
+                  postProcess: 'capitalizeFirstChar',
+                })
+              : t('group:dm.direct_messages')
+          }
         >
           <ButtonBase
             data-tour="hub-direct-messages"
@@ -1182,11 +1226,12 @@ const GroupListInner = ({
                   width: '100%',
                 }}
               >
-                {orderedGroups.map((group: any) => (
+                {orderedGroups.map((group: any, index: number) => (
                   <GroupItem
                     selectGroupFunc={selectGroupFunc}
                     key={group.groupId}
                     group={group}
+                    avatarPriority={rowAvatarPriority(index)}
                     dropPosition={
                       groupDragTarget?.activeId !== String(group.groupId) &&
                       groupDragTarget?.overId === String(group.groupId)
@@ -1219,7 +1264,7 @@ const GroupListInner = ({
             width: '100%',
           }}
         >
-          <Tooltip placement="right" title="Find Groups">
+          <Tooltip placement="right" title={t('reticulum:rail.find_groups')}>
             <ButtonBase
               data-tour="hub-group-discovery"
               aria-label={t('reticulum:rail.find_groups')}
@@ -1244,9 +1289,16 @@ const GroupListInner = ({
             </ButtonBase>
           </Tooltip>
 
-          <Tooltip placement="right" title="Create Group">
+          <Tooltip
+            placement="right"
+            title={t('group:action.create_group', {
+              postProcess: 'capitalizeFirstChar',
+            })}
+          >
             <ButtonBase
-              aria-label="Create Group"
+              aria-label={t('group:action.create_group', {
+                postProcess: 'capitalizeFirstChar',
+              })}
               onClick={() => {
                 setOpenAddGroup(true);
               }}
@@ -1268,9 +1320,9 @@ const GroupListInner = ({
             </ButtonBase>
           </Tooltip>
 
-          <Tooltip placement="right" title="Group Settings">
+          <Tooltip placement="right" title={t('reticulum:rail.group_settings')}>
             <ButtonBase
-              aria-label="Group Settings"
+              aria-label={t('reticulum:rail.group_settings')}
               onClick={() => {
                 setReticulumSettingsOpen(true);
               }}
@@ -1293,7 +1345,7 @@ const GroupListInner = ({
           </Tooltip>
 
           <ButtonBase
-            aria-label="Open What's New"
+            aria-label={t('reticulum:rail.whats_new')}
             onClick={() => setReticulumWhatsNewOpen(true)}
             sx={{
               borderRadius: '5px',
@@ -1333,6 +1385,9 @@ const GroupListInner = ({
     // portals and so are unaffected by the hidden wrapper.
     return (
       <Box
+        // While pinned groups are being reordered, no swipe from anywhere on
+        // the list leaves for the DM list mid-arrangement.
+        data-pager-swipe-ignore={pinnedReorderMode ? '' : undefined}
         sx={{
           display: 'flex',
           height: '100%',
@@ -1343,7 +1398,7 @@ const GroupListInner = ({
         <Box sx={{ display: 'none' }}>{rail}</Box>
         <Box
           sx={{
-            background: theme.palette.background.default,
+            ...getChatListPanelSx(theme),
             display: 'flex',
             flex: 1,
             flexDirection: 'column',
@@ -1351,74 +1406,71 @@ const GroupListInner = ({
             minWidth: 0,
           }}
         >
-          <Box
-            sx={{
-              alignItems: 'center',
-              borderBottom: '1px solid',
-              borderColor: 'divider',
-              display: 'flex',
-              gap: 1,
-              justifyContent: 'space-between',
-              minHeight: 62,
-              px: '12px',
-              py: '10px',
-            }}
-          >
+          <Box sx={chatListHeaderSx}>
             <ChatScopeSwitch
               directHasUnread={directChatHasUnread}
               directUnreadCount={directChatUnreadCount}
               onChange={setDesktopSideView}
               value="groups"
             />
-            <Box sx={{ alignItems: 'center', display: 'flex', gap: 0.25 }}>
+            <Box sx={chatListHeaderActionsSx}>
+              {/* The onboarding tour's "find groups" step points here on
+                  phones; the hidden rail keeps the desktop anchor. */}
               <IconButton
-                aria-label="Find Groups"
+                aria-label={t('reticulum:rail.find_groups')}
+                data-tour="hub-group-discovery"
                 onClick={() => setOpenFindGroup(true)}
-                size="small"
-                sx={{ color: 'text.secondary' }}
+                sx={chatListHeaderButtonSx}
               >
-                <SearchRoundedIcon sx={{ fontSize: 19 }} />
+                <SearchRoundedIcon sx={chatListHeaderIconSx} />
               </IconButton>
               <IconButton
-                aria-label="Create Group"
+                aria-label={t('group:action.create_group', {
+                  postProcess: 'capitalizeFirstChar',
+                })}
                 onClick={() => setOpenAddGroup(true)}
-                size="small"
-                sx={{ color: 'text.secondary' }}
+                sx={chatListHeaderButtonSx}
               >
-                <AddCircleOutlineIcon sx={{ fontSize: 19 }} />
+                <AddCircleOutlineIcon sx={chatListHeaderIconSx} />
               </IconButton>
               <IconButton
-                aria-label="Group Settings"
+                aria-label={t('reticulum:rail.group_settings')}
                 onClick={() => setReticulumSettingsOpen(true)}
-                size="small"
-                sx={{ color: 'text.secondary' }}
+                sx={chatListHeaderButtonSx}
               >
-                <SettingsOutlinedIcon sx={{ fontSize: 19 }} />
+                <SettingsOutlinedIcon sx={chatListHeaderIconSx} />
               </IconButton>
             </Box>
           </Box>
           <Box
+            // The phone Groups / DMs pager keeps sideways swipes off this
+            // list.
+            data-pager-scroller=""
             sx={{
               flex: 1,
               minHeight: 0,
               overflowY: 'auto',
-              px: '8px',
-              py: '10px',
+              padding: chatListScrollPadding,
             }}
           >
             {orderedGroups.length === 0 && (
               <Box sx={{ px: 1.5, py: 3, textAlign: 'center' }}>
                 <Typography
-                  sx={{ color: 'text.secondary', fontSize: 13, mb: 1.5 }}
+                  sx={{ color: 'text.secondary', fontSize: 14, mb: 1.5 }}
                 >
-                  You have not joined any Q-Chat communities yet.
+                  {t('reticulum:group_list.empty')}
                 </Typography>
                 <CustomButton
                   onClick={() => setOpenFindGroup(true)}
-                  sx={{ gap: '8px', padding: '9px 14px' }}
+                  role="button"
+                  sx={{
+                    gap: '8px',
+                    minHeight: CHAT_LIST_TOUCH_TARGET,
+                    padding: '10px 16px',
+                  }}
                 >
-                  <SearchRoundedIcon sx={{ fontSize: 18 }} />
-                  Find communities
+                  <SearchRoundedIcon sx={{ fontSize: 20 }} />
+                  {t('reticulum:onboarding.find_communities')}
                 </CustomButton>
               </Box>
             )}
@@ -1433,18 +1485,26 @@ const GroupListInner = ({
                   gap: 1,
                   justifyContent: 'space-between',
                   mb: '8px',
-                  px: 1.25,
+                  pl: 1.5,
+                  pr: 0.75,
                   py: 0.75,
                 }}
               >
-                <Typography sx={{ fontSize: 12, fontWeight: 600 }}>
-                  Drag pinned groups to reorder
+                <Typography sx={{ fontSize: 13, fontWeight: 600 }}>
+                  {t('reticulum:group_list.reorder_hint')}
                 </Typography>
                 <CustomButton
                   onClick={() => setPinnedReorderMode(false)}
-                  sx={{ fontSize: 12, padding: '4px 12px' }}
+                  role="button"
+                  sx={{
+                    flexShrink: 0,
+                    fontSize: 14,
+                    minHeight: CHAT_LIST_TOUCH_TARGET,
+                    minWidth: 72,
+                    padding: '8px 18px',
+                  }}
                 >
-                  Done
+                  {t('group:chat_group.done')}
                 </CustomButton>
               </Box>
             )}
@@ -1461,11 +1521,12 @@ const GroupListInner = ({
                     )}
                     strategy={verticalListSortingStrategy}
                   >
-                    {pinnedGroups.map((group: any) => (
+                    {pinnedGroups.map((group: any, index: number) => (
                       <GroupItem
                         selectGroupFunc={selectGroupFunc}
                         key={group.groupId}
                         group={group}
+                        avatarPriority={rowAvatarPriority(index)}
                         selectedGroupId={selectedGroup?.groupId ?? null}
                         getUserSettings={getUserSettings}
                         myAddress={myAddress}
@@ -1480,11 +1541,14 @@ const GroupListInner = ({
                   </SortableContext>
                 </DndContext>
               )}
-              {unpinnedGroups.map((group: any) => (
+              {unpinnedGroups.map((group: any, index: number) => (
                 <GroupItem
                   selectGroupFunc={selectGroupFunc}
                   key={group.groupId}
                   group={group}
+                  avatarPriority={rowAvatarPriority(
+                    pinnedGroups.length + index
+                  )}
                   selectedGroupId={selectedGroup?.groupId ?? null}
                   getUserSettings={getUserSettings}
                   myAddress={myAddress}
@@ -1765,11 +1829,12 @@ const GroupListInner = ({
           className="group-list"
           dense={false}
         >
-          {groups.map((group: any) => (
+          {groups.map((group: any, index: number) => (
             <GroupItem
               selectGroupFunc={selectGroupFunc}
               key={group.groupId}
               group={group}
+              avatarPriority={rowAvatarPriority(index)}
               selectedGroupId={selectedGroup?.groupId ?? null}
               getUserSettings={getUserSettings}
               myAddress={myAddress}
@@ -1853,6 +1918,8 @@ interface GroupItemProps {
   canReorderPins?: boolean;
   pinDragEnabled?: boolean;
   onRequestPinReorder?: () => void;
+  /** 'low' for rows far down the list, so rows on screen load first. */
+  avatarPriority?: QdnAvatarPriority;
 }
 
 const GroupItem = memo(
@@ -1870,9 +1937,10 @@ const GroupItem = memo(
     canReorderPins = false,
     pinDragEnabled = false,
     onRequestPinReorder,
+    avatarPriority = 'normal',
   }: GroupItemProps) => {
     const theme = useTheme();
-    const { t } = useTranslation(['core', 'group']);
+    const { t } = useTranslation(['core', 'group', 'reticulum']);
     const {
       attributes,
       listeners,
@@ -1903,17 +1971,20 @@ const GroupItem = memo(
       qortalGroupMeshCallMaxParticipantsAtom
     );
     const selfGcallRoomId = useAtomValue(qortalGroupSelfGcallRoomIdAtom);
-    const [isPreviewOpen, setIsPreviewOpen] = useState(false);
-    const [previewSrc, setPreviewSrc] = useState(null);
-    const [loadedAvatarUrl, setLoadedAvatarUrl] = useState<string | null>(null);
     const [isGroupTooltipOpen, setIsGroupTooltipOpen] = useState(false);
     const [isGroupContextMenuOpen, setIsGroupContextMenuOpen] = useState(false);
-    const avatarUrl = useMemo(() => {
-      if (!ownerName) return null;
-      return `${getBaseApiReact()}/arbitrary/THUMBNAIL/${ownerName}/qortal_group_avatar_${group?.groupId}?async=true`;
-    }, [ownerName, group?.groupId]);
-    const isAvatarLoaded =
-      Boolean(avatarUrl) && loadedAvatarUrl === avatarUrl;
+    // Cached on the device, so it shows at once also on a slow node.
+    const {
+      src: avatarSrc,
+      isLoaded: isAvatarLoaded,
+      imgProps: avatarImgProps,
+      previewOpen: isPreviewOpen,
+      previewSrc,
+      openPreview: openAvatarPreview,
+      closePreview: handleClosePreview,
+    } = useGroupRowAvatar(ownerName, group?.groupId, {
+      priority: avatarPriority,
+    });
 
     useEffect(() => {
       if (railMode) prefetchReticulumGroupAboutMetadata(group);
@@ -1932,24 +2003,25 @@ const GroupItem = memo(
 
     const handleAvatarClick = useCallback(
       (event) => {
-        if (!avatarUrl || !isAvatarLoaded) return;
+        // Cached copy at once, the full-size image once the node sends it.
+        if (!openAvatarPreview()) return;
         event.preventDefault();
         stopEvent(event);
-        setPreviewSrc(avatarUrl);
-        setIsPreviewOpen(true);
       },
-      [avatarUrl, isAvatarLoaded, stopEvent]
+      [openAvatarPreview, stopEvent]
     );
-
-    const handleClosePreview = useCallback(() => {
-      setIsPreviewOpen(false);
-      setPreviewSrc(null);
-    }, [setIsPreviewOpen, setPreviewSrc]);
 
     // Holding the pin itself is what unlocks reordering, so a stray tap on the
     // row still just opens the group.
     const pinHoldTimer = useRef<number | null>(null);
+    // Set once a hold has switched to reordering, so the click that follows
+    // the release is swallowed; a short tap opens the group like the row.
+    const pinHoldFired = useRef(false);
+    // Where the hold started: a finger that wanders off (a swipe to the DM
+    // list that starts on the pin) is not a hold.
+    const pinHoldOrigin = useRef<{ x: number; y: number } | null>(null);
     const cancelPinHold = useCallback(() => {
+      pinHoldOrigin.current = null;
       if (pinHoldTimer.current !== null) {
         clearTimeout(pinHoldTimer.current);
         pinHoldTimer.current = null;
@@ -1960,6 +2032,7 @@ const GroupItem = memo(
       cancelPinHold();
       pinHoldTimer.current = window.setTimeout(() => {
         pinHoldTimer.current = null;
+        pinHoldFired.current = true;
         onRequestPinReorder?.();
       }, 450);
     }, [cancelPinHold, canReorderPins, onRequestPinReorder, pinDragEnabled]);
@@ -1978,6 +2051,17 @@ const GroupItem = memo(
     const hasReticulumMention =
       group?.reticulumChatSummary?.hasUnreadMention === true ||
       (group?.reticulumChatSummary?.mentionCount ?? 0) > 0;
+    const hasUnreadIndicator = Boolean(
+      hasReticulumUnread ||
+      (!reticulumChatEnabled &&
+        group?.data &&
+        groupChatTimestamp &&
+        group?.sender !== myAddress &&
+        group?.timestamp &&
+        ((!timestampEnterData &&
+          Date.now() - group?.timestamp < timeDifferenceForNotificationChats) ||
+          timestampEnterData < group?.timestamp))
+    );
 
     const gcallRoomIdForRow =
       group?.groupId &&
@@ -2038,17 +2122,8 @@ const GroupItem = memo(
             },
           }}
           alt={group?.groupName?.charAt(0)}
-          src={avatarUrl || undefined}
-          imgProps={{
-            onLoad: () => {
-              setLoadedAvatarUrl(avatarUrl);
-            },
-            onError: () => {
-              setLoadedAvatarUrl((currentUrl) =>
-                currentUrl === avatarUrl ? null : currentUrl
-              );
-            },
-          }}
+          src={avatarSrc}
+          imgProps={avatarImgProps}
         >
           {group?.groupName?.charAt(0).toUpperCase()}
         </Avatar>
@@ -2205,16 +2280,7 @@ const GroupItem = memo(
               >
                 {avatarNode}
 
-                {(hasReticulumUnread ||
-                  (!reticulumChatEnabled &&
-                    group?.data &&
-                    groupChatTimestamp &&
-                    group?.sender !== myAddress &&
-                    group?.timestamp &&
-                    ((!timestampEnterData &&
-                      Date.now() - group?.timestamp <
-                        timeDifferenceForNotificationChats) ||
-                      timestampEnterData < group?.timestamp))) && (
+                {hasUnreadIndicator && (
                   <ReticulumUnreadCountBadge
                     color={
                       hasReticulumMention
@@ -2339,6 +2405,8 @@ const GroupItem = memo(
         ref={pinDragEnabled ? setNodeRef : undefined}
         {...(pinDragEnabled ? attributes : {})}
         {...(pinDragEnabled ? listeners : {})}
+        // A row being dragged to reorder never swipes to the DM list.
+        data-pager-swipe-ignore={pinDragEnabled ? '' : undefined}
         onClick={pinDragEnabled ? undefined : selectGroupHandler}
         style={
           pinDragEnabled
@@ -2352,33 +2420,18 @@ const GroupItem = memo(
               }
             : undefined
         }
-        sx={{
-          borderRadius: '10px',
-          cursor: pinDragEnabled ? 'grab' : 'pointer',
-          display: 'flex',
-          flexDirection: 'column',
-          marginBottom: '6px',
-          padding: '12px 14px',
-          touchAction: pinDragEnabled ? 'none' : undefined,
-          width: '100%',
-          backgroundColor: isSelected
-            ? theme.palette.action.selected
-            : 'transparent',
-          borderLeft: isSelected
-            ? `3px solid ${theme.palette.primary.main}`
-            : '3px solid transparent',
-          boxShadow: isDragging
-            ? `0 10px 26px ${alpha('#000', 0.45)}`
-            : undefined,
-          opacity: isDragging ? 0.92 : 1,
-          zIndex: isDragging ? 4 : undefined,
-          transition: 'background-color 0.15s ease, border-color 0.15s ease',
-          '&:hover': {
-            backgroundColor: isSelected
-              ? theme.palette.action.selected
-              : theme.palette.action.hover,
+        sx={[
+          getChatListRowSx(theme, { selected: isSelected }),
+          {
+            cursor: pinDragEnabled ? 'grab' : 'pointer',
+            touchAction: pinDragEnabled ? 'none' : undefined,
+            boxShadow: isDragging
+              ? `0 10px 26px ${alpha('#000', 0.45)}`
+              : undefined,
+            opacity: isDragging ? 0.92 : 1,
+            zIndex: isDragging ? 4 : undefined,
           },
-        }}
+        ]}
       >
         <ContextMenu
           disabled={pinDragEnabled}
@@ -2388,24 +2441,20 @@ const GroupItem = memo(
           onMenuOpenChange={setIsGroupContextMenuOpen}
           reticulumGroup={reticulumChatEnabled ? group : null}
         >
-          <Box
-            sx={{
-              alignItems: 'center',
-              display: 'flex',
-              gap: '20px',
-              width: '100%',
-            }}
-          >
-            <ListItemAvatar sx={{ minWidth: 44, marginRight: 0 }}>
+          <Box sx={chatListRowContentSx}>
+            <ListItemAvatar sx={chatListAvatarSlotSx}>
               {ownerName ? (
                 <Avatar
                   sx={{
-                    height: 40,
-                    width: 40,
+                    height: CHAT_LIST_AVATAR_SIZE,
+                    width: CHAT_LIST_AVATAR_SIZE,
+                    ...(isAvatarLoaded
+                      ? {}
+                      : getChatListAvatarFallbackSx(theme)),
                     ...getClickableAvatarSx(theme, isAvatarLoaded),
                   }}
                   alt={group?.groupName?.charAt(0)}
-                  src={avatarUrl || undefined}
+                  src={avatarSrc}
                   onClick={handleAvatarClick}
                   onMouseDown={(event) => {
                     if (isAvatarLoaded) {
@@ -2417,23 +2466,18 @@ const GroupItem = memo(
                       stopEvent(event);
                     }
                   }}
-                  imgProps={{
-                    onLoad: () => {
-                      setLoadedAvatarUrl(avatarUrl);
-                    },
-                    onError: () => {
-                      setLoadedAvatarUrl((currentUrl) =>
-                        currentUrl === avatarUrl ? null : currentUrl
-                      );
-                    },
-                  }}
+                  imgProps={avatarImgProps}
                 >
                   {group?.groupName?.charAt(0).toUpperCase()}
                 </Avatar>
               ) : (
                 <Avatar
                   alt={group?.groupName?.charAt(0)}
-                  sx={{ height: 40, width: 40 }}
+                  sx={{
+                    height: CHAT_LIST_AVATAR_SIZE,
+                    width: CHAT_LIST_AVATAR_SIZE,
+                    ...getChatListAvatarFallbackSx(theme),
+                  }}
                 >
                   {group?.groupName?.charAt(0).toUpperCase() || 'G'}
                 </Avatar>
@@ -2462,7 +2506,9 @@ const GroupItem = memo(
                       whiteSpace: 'nowrap',
                     }}
                   >
-                    {group.groupId === '0' ? 'General' : group.groupName}
+                    {group.groupId === '0'
+                      ? t('group:groups_widget.group_general')
+                      : group.groupName}
                   </Box>
                   {hasDraft && <DraftBadge />}
                 </Box>
@@ -2478,29 +2524,12 @@ const GroupItem = memo(
               }
               primaryTypographyProps={{
                 component: 'div',
-                sx: {
-                  color: theme.palette.text.primary,
-                  fontFamily: 'Inter',
-                  fontSize: '15px',
-                  fontWeight: 600,
-                  lineHeight: 1.3,
-                },
+                sx: getChatListTitleSx(theme, hasUnreadIndicator),
               }}
               secondaryTypographyProps={{
-                sx: {
-                  color: theme.palette.text.secondary,
-                  fontFamily: 'Inter',
-                  fontSize: '12px',
-                  lineHeight: 1.4,
-                  marginTop: '3px',
-                },
+                sx: getChatListSubtitleSx(theme),
               }}
-              sx={{
-                flex: 1,
-                minWidth: 0,
-                margin: 0,
-                overflow: 'hidden',
-              }}
+              sx={chatListTextSx}
             />
 
             {!reticulumChatEnabled &&
@@ -2526,16 +2555,7 @@ const GroupItem = memo(
                 marginLeft: '4px',
               }}
             >
-              {(hasReticulumUnread ||
-                (!reticulumChatEnabled &&
-                  group?.data &&
-                  groupChatTimestamp &&
-                  group?.sender !== myAddress &&
-                  group?.timestamp &&
-                  ((!timestampEnterData &&
-                    Date.now() - group?.timestamp <
-                      timeDifferenceForNotificationChats) ||
-                    timestampEnterData < group?.timestamp))) && (
+              {hasUnreadIndicator && (
                 <MarkChatUnreadIcon
                   sx={{
                     // Mentions keep the red; ordinary unread traffic matches
@@ -2623,14 +2643,23 @@ const GroupItem = memo(
               <Tooltip
                 title={
                   canReorderPins
-                    ? 'Hold to rearrange pinned groups'
-                    : 'Pinned'
+                    ? t('reticulum:group_list.pin_hold_hint')
+                    : t('reticulum:group_list.pinned')
                 }
               >
                 <Box
                   component="span"
+                  aria-label={
+                    canReorderPins
+                      ? t('reticulum:group_list.pin_hold_hint')
+                      : t('reticulum:group_list.pinned')
+                  }
+                  data-testid="group-row-pin"
+                  role="img"
                   onClick={(event) => {
-                    if (!canReorderPins) return;
+                    // Only the click that ends a reorder hold is swallowed.
+                    if (!pinHoldFired.current) return;
+                    pinHoldFired.current = false;
                     event.preventDefault();
                     event.stopPropagation();
                   }}
@@ -2638,23 +2667,52 @@ const GroupItem = memo(
                     if (!canReorderPins) return;
                     event.preventDefault();
                     event.stopPropagation();
+                    cancelPinHold();
+                    if (pinDragEnabled) return;
+                    // Android may fire its own contextmenu before the hold
+                    // timer: the click after the release is swallowed too.
+                    pinHoldFired.current = true;
                     onRequestPinReorder?.();
                   }}
                   onPointerDown={(event) => {
+                    // In reorder mode the pin is a drag handle like the rest
+                    // of the row, so the press must reach the sortable row.
+                    if (pinDragEnabled) return;
+                    pinHoldFired.current = false;
                     event.stopPropagation();
                     startPinHold();
+                    pinHoldOrigin.current = Number.isFinite(event.clientX)
+                      ? { x: event.clientX, y: event.clientY }
+                      : null;
+                  }}
+                  onPointerMove={(event) => {
+                    const origin = pinHoldOrigin.current;
+                    if (!origin || pinHoldTimer.current === null) return;
+                    if (
+                      Math.abs(event.clientX - origin.x) > PIN_HOLD_SLOP_PX ||
+                      Math.abs(event.clientY - origin.y) > PIN_HOLD_SLOP_PX
+                    ) {
+                      cancelPinHold();
+                    }
+                  }}
+                  onTouchStart={(event) => {
+                    // A hold on the pin reorders; it must not also open the
+                    // row's long-press menu. Known limit: the touch then does
+                    // not reach Group.tsx either, so a swipe to close the
+                    // swiped-in list cannot start on a reorderable pin.
+                    // ContextMenu has no way yet to skip one touch.
+                    if (canReorderPins && !pinDragEnabled) {
+                      event.stopPropagation();
+                    }
                   }}
                   onPointerUp={cancelPinHold}
                   onPointerLeave={cancelPinHold}
                   onPointerCancel={cancelPinHold}
                   sx={{
-                    alignItems: 'center',
-                    display: 'inline-flex',
-                    flexShrink: 0,
-                    justifyContent: 'center',
-                    marginLeft: '6px',
-                    touchAction: 'none',
-                    width: 18,
+                    ...chatListRowEdgeActionSx,
+                    // A swipe that starts on the pin still scrolls the list
+                    // (the browser cancels the hold when it takes over).
+                    touchAction: 'pan-y',
                   }}
                 >
                   <PushPinRoundedIcon
@@ -2662,7 +2720,7 @@ const GroupItem = memo(
                       color: pinDragEnabled
                         ? theme.palette.primary.main
                         : theme.palette.text.secondary,
-                      fontSize: 15,
+                      fontSize: 18,
                       transform: 'rotate(35deg)',
                       transition: 'color 140ms ease',
                     }}

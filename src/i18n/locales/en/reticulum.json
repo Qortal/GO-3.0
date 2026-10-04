@@ -21,15 +21,24 @@
     "sign_failed": "Unable to sign Reticulum chat event",
     "welcome_failed": "Reticulum welcome publish failed"
   },
+  "chat_scope": {
+    "direct_messages": "DMs",
+    "groups": "Groups",
+    "label": "Show groups or direct messages"
+  },
   "copy_invite_link": "copy invite link",
   "discussion": {
     "choose_emoji": "choose emoji",
     "close": "close discussion",
     "initial_post": "initial post",
+    "preparing_attachment": "preparing attachment…",
     "remove_attachment": "remove attachment",
     "remove_file": "remove {{fileName}}",
     "replies": "replies:",
     "reply_placeholder": "reply to discussion...",
+    "size_counter": "{{size}} / {{maximum}} bytes",
+    "title": "discussion",
+    "unavailable": "this discussion is no longer available",
     "wait_until_ready": "wait until the discussion is ready"
   },
   "dm": {
@@ -55,6 +64,10 @@
       }
     },
     "required_for_attachments": "Reticulum direct chat is required for direct attachments"
+  },
+  "dm_list": {
+    "empty": "No current private messages.",
+    "subtitle": "Private Reticulum chats"
   },
   "event_preview": {
     "all_day": "all day",
@@ -104,6 +117,12 @@
     "truncated": "this file is too large to show in full. Save it or open it in another app to see the rest."
   },
   "group_fallback_name": "Group",
+  "group_list": {
+    "empty": "You have not joined any Q-Chat communities yet.",
+    "pin_hold_hint": "Hold to rearrange pinned groups",
+    "pinned": "Pinned",
+    "reorder_hint": "Drag pinned groups to reorder"
+  },
   "group_type": {
     "closed": "closed",
     "open": "open"

@@ -11,6 +11,295 @@ desktop Hub. The format is based on
 
 ## [Unreleased]
 
+### Changed
+
+- **Status follows the account across GO and Hub** _(shared)_ — picking
+  Online, Busy or Offline (under the avatar on Home, or in the Hub account
+  menu) now switches the account's other devices too. It travels as the
+  signed own-device record `presence.status` over the same `ds1` sync as the
+  notification settings; the automatic Idle stays per device. Needs a Hub with
+  `ds1`. The Hub "Status" card is now a shared `AccountStatusPicker`.
+- **Avatar menu closes as tiles** _(mobile)_ — swiping the menu up (or
+  closing it any other way) left an empty panel behind while the items slid
+  away. Now the panel's background dissolves at once and the header and each
+  item leave as separate cards, one by one from the bottom, following the
+  finger. A tap on the dim right after a short swipe is no longer swallowed,
+  and the list no longer shows a horizontal scrollbar while items slide.
+- **Settings trimmed on GO** _(mobile)_ — the Home settings dialog had no
+  phone branch, and many controls only wrote to the desktop settings store, so
+  on GO they did nothing or showed wrong values. GO now leaves out the
+  Developer, Help and Reticulum tabs, and in System: Reticulum group chat,
+  attachment storage, community call support, developer-log filtering, close
+  window behaviour, "Reduce app notifications" (already in the Notifications
+  panel) and the pinned Q-App backup (it publishes Hub's dashboard pins, which
+  a phone could overwrite with an old list).
+- **Blocked accounts** _(shared)_ — a note explains that on a public node its
+  operator decides who is blocked, and that full control needs your own node
+  (all 12 languages). On phones the list no longer pushes the Unblock buttons
+  off screen, and addresses are shortened in the middle.
+
+- **"GO was stopped in the background" no longer pops up on every return**
+  _(mobile)_ — on phones whose maker freezes background apps (measured on a
+  vivo with OriginOS 6), the warning opened as a full-screen window over chats
+  after almost every screen-off. Nothing limited it, and "Open battery
+  settings" did not count as seen.
+  - **Where it shows:** a quiet card in the bell, plus the facts in Settings →
+    Background sync.
+  - **When it shows:** only after 2 freezes of 5 min or more in a week. After
+    that, at most every 14 days, and at most 3 times in total.
+  - **Don't show again:** a tick stops it for good. Warnings can be turned
+    back on in Settings.
+  - **Steps inside GO** for the phone's brand: vivo/iQOO, Xiaomi, Samsung,
+    OPPO/realme/OnePlus, Huawei/Honor, and a general version. These replace
+    the dontkillmyapp.com link, so GO no longer sends people to an outside
+    website.
+  - **Buttons:** "Allow GO in background" opens Android's own dialog. "Open
+    battery settings" opens vivo's Battery page on vivo phones.
+  - **Honest text when exempt:** if GO is already exempt and still gets
+    frozen, the card says so instead of asking again.
+  - **Copy diagnostics** now lists recent freezes.
+  - **Startup prompt:** "Not now" on the "Keep Qortal Go reachable" prompt
+    waits 14 days before asking again.
+- **Avatars and Q-App icons cached on the device** _(shared)_ — on a slow or
+  unreachable node, avatars and icons kept failing to load. They are now kept
+  in a device cache (IndexedDB, copies at most 128 px) and shown at once:
+  - **Bundled icons:** 36 popular Q-Apps ship inside the app (about 96 KB).
+  - **Covered surfaces:** Home Featured tiles, the Q-Apps library, group and
+    DM rows, chat headers, members, calls, notifications and link cards.
+  - **Re-checks:** each avatar is re-checked quietly about once a day, so a
+    changed avatar shows up. The exact time differs per avatar, so they don't
+    all re-check at once. A name with no avatar is re-checked every 6-7.5 h.
+  - **Login prewarm:** at most 40 avatars the account already shows, one at
+    a time, never ahead of avatars on screen.
+  - **Removing an account** from the device also empties the cache.
+- **Featured Q-Apps tiles** _(shared)_ — the Q-Tube tile's tagline sat on top
+  of the Q-Tube icon on phones and was cut off ("decentralizec"). It is now
+  "watch. / share. / own it." (all 12 languages), placed beside the icon
+  column like Q-Chat's "talk. / connect. / freely.", and both wide tiles
+  measure their tagline: when it does not fit (very narrow screens, long
+  translations) it is hidden and the icon centres, instead of overlapping.
+- **Q-App approval window** _(shared)_ — redesigned to fit a phone screen: the
+  requesting app's icon (its QDN `qortal_avatar`, with the Qortal logo while
+  it loads or when it has none), name and type in a compact header with a
+  small countdown; the question at normal size instead of a four-line
+  headline, and no longer repeated under "What you are approving";
+  "label: value" details (service, identifier, Tx type…) as tidy rows; for a
+  payment, the amount large with the recipient's name and full address
+  (fixed-width) in the same card; transaction data in a compact scrolling
+  panel; Decline/Accept always visible at the bottom. All questions are
+  shorter — "Allow this app to …?" instead of "Do you give this application
+  permission to …?" — in all 12 languages. Dev preview:
+  `tools/preview/approval-dialog.html` (`npm run dev`, never shipped).
+
+### Fixed
+
+- **Someone active on GO showed as Idle** _(mobile)_ — GO kept one presence
+  entry per account, so whichever device spoke last won: an idle desktop Hub
+  hid the phone the person was using. GO also never counted its own phone for
+  its own account, never cleared an account whose devices had gone quiet (the
+  last dot, often Idle, stayed until restart), and treated one device going
+  offline as the whole account. GO now keeps one entry per device and shows
+  the most available status (Busy > Online > Idle), like the desktop. The
+  first presence list after start uses the same rule.
+
+- **Private node on a home or VPN address behind a carrier proxy** _(mobile)_
+  — GO now sends requests to home-network and VPN addresses (192.168.x,
+  10.x, 172.16–31.x, Tailscale 100.64–127.x and fd7a:…, `*.ts.net`) directly,
+  in the WebView as well as in native code. Before, a proxy on mobile data
+  received them in plain text and could not reach the node. Other addresses
+  still use the phone's proxy settings.
+- **Q-Apps and sites failed on a private node at 127.0.0.1 on mobile data**
+  _(mobile)_ — with GO set to a node on the phone itself (for example an ssh
+  tunnel in Termux at `http://127.0.0.1:12398`), opening a Q-App or QDN site
+  on mobile data showed the carrier's proxy error page ("The requested URL
+  could not be retrieved … Connection refused") instead of the app. The
+  public node worked. The Q-App and site part only hit test builds with the
+  new native page fetch ("Q-Apps limited to the node" under Security); the
+  other requests below had the same flaw in released builds.
+  - **Why:** the carrier's mobile network tells the phone to use a web proxy.
+    GO's own page requests sent the phone's own address to that proxy, and
+    the proxy, a machine at the carrier, cannot reach the phone.
+  - **Now:** GO talks to addresses on the phone (`localhost`, `127.x`,
+    `[::1]`) and on the local link (`169.254.x`, `[fe80::…]`) directly, like
+    the browser part of GO already did. Every other address uses the proxy
+    as before.
+  - **Same fix** for encrypted video playback, file saves and downloads from
+    such a node, the video compressor's download, the updater, Qortino's
+    pack download and notification avatars (`LocalHttp`).
+  - **Redirects:** each step of a redirect now picks its own way, as in the
+    browser part of GO: a download link that redirects to the node reaches
+    it, and a download's cookies go only to the address they belong to.
+  - **API key:** see "Node API key could reach a carrier proxy" under
+    Security.
+- **Crash after a night on battery** _(mobile)_ — on Android 15 and newer,
+  Android stops GO's background connection after about 6 hours a day and gives
+  GO a few seconds to let go. Phones that freeze background apps (measured on
+  a vivo, Android 16) kept GO frozen through those seconds, so Android closed
+  GO with a crash about a second after the screen came on in the morning.
+  - **No deadline to miss:** from Android 14 on, GO's background connection
+    runs as a messaging service, which Android does not stop after 6 hours.
+    Plugging in or unplugging no longer switches it between two kinds of
+    service.
+  - **GO's own limit instead:** on Android 15 and newer, after 6 hours in a
+    row off screen and unplugged, GO pauses its background connection
+    itself, in "while charging" and "off" (never in "always"). Plugging in
+    or opening GO resets the count; it starts again at the next unplug or
+    when you leave GO. Once paused, GO stays paused, even on the charger,
+    until you open it. A charge that happened while the phone held GO
+    frozen still resets the count (GO sees the unplug or the higher battery
+    level when it wakes up). If the phone froze GO past the 6 hours, the
+    pause comes when the phone wakes it up, without a crash. Android 14 and
+    older never had this limit and keep running as before.
+  - **Honest notice:** "GO paused its background connection after 6 hours on
+    battery to save power. Open GO to reconnect." Opening GO reconnects, as
+    before. The "Android paused…" text stays for phones where Android itself
+    still stops it. New `battery_pause_text` string (English in all 12
+    languages for now).
+- **Status notification text cut off** _(mobile)_ — with messages waiting to
+  send, the collapsed GO notification put the waiting count on a second line
+  that Android clips. It is now one line, "Reticulum offline · 4 unsent", and
+  the count stays visible while a long status shortens. Expanding the
+  notification still shows the full text. New `status_waiting_short` string in
+  all 12 languages.
+
+### Security
+
+- **Node API key could reach a carrier proxy** _(mobile)_ — on mobile data
+  with a carrier web proxy, GO's own native requests to a node on the phone
+  (`127.0.0.1`) went to that proxy unencrypted. Some carried the node API
+  key: in a header on saves, updates and pack downloads, and in the address
+  of some media, avatar and download requests. Fixed by "Q-Apps and sites
+  failed on a private node at 127.0.0.1 on mobile data" under Fixed. If you
+  used an API-keyed node on 127.0.0.1 over mobile data, change the key once
+  as a precaution.
+- **Outside code could run as GO** _(mobile)_ — Capacitor 6.1.2
+  (CVE-2026-103922) served any URL under GO's own origin through its internal
+  `/_capacitor_http_interceptor_` proxy, even with CapacitorHttp off. A Q-App,
+  or one tap on a link in chat, could load attacker code as GO, with access to
+  the wallet vault and signing code. Upgraded to Capacitor 6.2.2.
+- **Native origin guard** _(mobile)_ — `AppOriginGuardWebViewClient`
+  (rules in `AppOriginGuardPolicy`) refuses any frame page on GO's origin,
+  any page or HTML/SVG/XML through `/_capacitor_file_` and
+  `/_capacitor_content_`, and the HTTP proxy on every host. This also closes
+  the saved-HTML route of audit finding GO-01, and holds if a later Capacitor
+  regresses.
+- **Links back into GO** _(shared)_ — chat and file-viewer links to GO's own
+  origin or the phone's loopback (`localhost`, `127.x`, `[::1]`) are refused
+  instead of navigating GO's own window.
+- **Q-Apps limited to the node** _(mobile)_ — every Q-App or QDN-site page is
+  fetched natively (`QappDocumentFetcher`) and gets GO's policy on top of the
+  node's (`QappFramePolicy`), as the desktop Hub does: what a Q-App loads,
+  fetches and connects to stays on the node. Q-Apps can no longer open other
+  apps through `intent:`, `market:`, `tel:` and similar links, install
+  service workers, or prefetch other sites.
+- **Screen protection** _(mobile)_ — screenshots, recordings, recents
+  thumbnails and assistant screen reading are blocked on the unlock and lock
+  screens, seed phrase, private key and backup screens, and while a payment
+  or Q-App approval is open (`ScreenSecurityPlugin`, `useSecureScreen`).
+  Approvals also drop taps through other apps' overlays, and hide overlays on
+  Android 12+.
+- **App lock** _(shared)_ — the lock survives a reload or crash recovery
+  (before, "Reload" re-entered the wallet), covers every dialog and blocks
+  Q-App requests while locked; "Lock now" in the phone account menu. Payment
+  links opened while locked wait for the unlock.
+- **Approval dialogs** _(shared)_ — show which app is asking, queue a second
+  request instead of replacing the open one, keep Accept disabled for about a
+  second, and require "I have read this request" for every value-moving or
+  signing action.
+- **Updates and app packages** _(mobile)_ — the updater installs only an APK
+  with GO's package name, GO's signing certificate and a higher version code.
+  GO never opens or installs any other app package it downloads or receives.
+- **Node requests from Q-Apps** _(shared)_ — Q-App values that become node
+  paths are checked and encoded, so a Q-App cannot reach other node endpoints
+  with the API key (GO-07). The API key is no longer handed to Q-Apps after a
+  buy order (GO-33). Users with an API-keyed node should rotate the key once:
+  Q-Trade saved it with earlier orders.
+- **Payments** _(shared)_ — the fee signed can never exceed the fee shown,
+  the recipient is resolved before the dialog and shown in full, amounts are
+  parsed strictly, node-supplied public keys must match the address, and a
+  multi-payment is signed once (GO-19, GO-20, GO-30).
+- **Private keys** _(shared)_ — a foreign-coin key or the ARRR seed leaving
+  GO always needs consent, including for local and Tailscale nodes.
+- **Hardening** _(mobile)_ — mixed content in compatibility mode, camera and
+  microphone only for GO itself, `taskAffinity=""`, WebView content hidden
+  from non-accessibility-tool services, Capacitor's server-path override
+  disabled, `.html`/`.svg` downloads saved as text, logging and WebView
+  debugging off in the shipped config, Capacitor 6.2.2, markdown-it 14.3.2,
+  DOMPurify 3.4.16, axios 1.20.0.
+- Full audit: `reports/GO-3.0-security-privacy-audit-2026-10-01.md`.
+
+### Removed
+
+- **Chromecast and Google Play Services** _(mobile)_ — the native Cast
+  plugin (`ChromecastPlugin`, `CastOptionsProvider`), its "casting"
+  notification service (`ChromecastForegroundService`,
+  `ForegroundServicePlugin`) and the LAN proxy to the Core API that let a
+  Chromecast fetch videos (`ProxyServerPlugin`) came over from Qortal Mobile
+  with the Android shell, but GO 3.0 never got the Cast button, mini player or
+  `CHROMECAST_CAST` Q-App request, so nothing could reach them. Removing them
+  drops `play-services-cast-framework`, `mediarouter` and the Google
+  `datatransport` / `firebase-encoders` libraries Cast pulled in, and the
+  `FOREGROUND_SERVICE_MEDIA_PLAYBACK` permission. GO no longer contains any
+  Google Play Services code — one of the blockers for an F-Droid build.
+- **`google-services` Gradle plugin** _(mobile)_ — Capacitor template
+  leftover. It only ran when a `google-services.json` existed, and none does.
+
+### Privacy
+
+- **No location in shared photos and videos** _(shared)_ — photos and videos
+  posted to Quitter, Torq, avatars and sent in chat kept their EXIF/XMP
+  metadata (GPS position, phone model, time). It is now stripped losslessly
+  before anything leaves the phone (`stripImageMetadata`,
+  `stripVideoMetadata`); public posts refuse files that cannot be cleaned.
+  The `ACCESS_MEDIA_LOCATION` permission is gone.
+- **Received files stay in GO** _(mobile)_ — files received in chat are kept
+  in GO's private storage and opened in the in-app viewer; "Save to device"
+  exports one when wanted. They are no longer copied to public Downloads, and
+  logging out deletes them.
+- **Wallet password not offered to Autofill** _(mobile)_ — password managers
+  and Google's Autofill no longer save or fill GO's wallet password; the seed
+  import field turns off keyboard suggestions and learning.
+- **Fewer outside images** _(shared)_ — chat Q-App link previews and Qortino
+  cards no longer load posters from outside servers; Qortino no longer
+  parses documents before a tap.
+- **Account picker** _(shared)_ — no longer sends the node every wallet
+  address on the phone in one request.
+- **Diagnostics** _(shared)_ — "Copy diagnostics" replaces addresses, names,
+  ids, IP addresses and the node host with per-report pseudonyms.
+- **No source code in the release APK** _(mobile)_ — release builds leave out
+  the 27 MB of source maps, the debug pages and the unused pdf.js viewer; the
+  build fails if they come back.
+- **No tracking images in messages** _(shared)_ — chat messages, forum posts
+  and update notes could carry `<img>` (or video, audio, CSS backgrounds)
+  pointing at any web server, and showing the message fetched it: that
+  server learned the reader's IP address and when they read it. On GO this
+  worked with `HTTPS://…` or `//…` addresses; the desktop Hub's CSP already
+  blocked it. A DOMPurify hook (`src/utils/configureDomPurify.ts`, rules in
+  `src/utils/remoteContentPolicy.ts`) now allows media only from GO itself,
+  `data:`/`blob:`, the local node, the Qortal public nodes and the node in
+  use. A blocked image shows as its address, which chat turns into a link
+  the reader can choose to open. `MessageDisplay` also parses message HTML
+  in an inert document, so nothing is fetched while it is processed.
+- **No request to Google from the editor** _(shared)_ — selecting an image in
+  the rich-text editor loaded its three alignment icons from
+  `fonts.gstatic.com`, which handed the user's IP address to Google.
+  `tiptap-extension-resize-image` stays on 1.1.8 (1.4 inlines the icons but
+  is a full rewrite); `tools/vite/inlineResizeImageIcons.ts` swaps in the same
+  inline SVGs at build time, and the build fails if the package ever loads
+  anything else from Google Fonts.
+- **No Google backup of app data** _(mobile)_ — `android:allowBackup` was
+  `true` with no rules, so on phones with Google backup on, Android copied
+  GO's data (wallet files, Reticulum identity keys, chat history) to Google
+  Drive. Backup is now off, and `data_extraction_rules.xml` also blocks
+  phone-to-phone transfer on Android 12+ (security audit finding GO-41).
+  Moving to a new phone goes through the wallet backup file.
+- **WebView metrics and Safe Browsing off** _(mobile)_ — the WebView no longer
+  sends usage and crash metrics to Google or checks URLs with Google Safe
+  Browsing. It only shows GO's own pages and Q-Apps from the Qortal node.
+- **No emoji-font request to Google Play Services** _(mobile)_ — AndroidX
+  EmojiCompat asked Play Services' font provider for an emoji font on every
+  start. Its initializer is removed; the WebView draws its own emoji.
+
 ## [0.0.14] — 2026-10-01 (GO 3.0)
 
 Field / Q-Share build **GO 3.0 v0.0.14** (`versionName` 0.0.14, `versionCode` 17).

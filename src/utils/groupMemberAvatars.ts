@@ -10,9 +10,10 @@ import { RequestQueueWithPromise } from './queue/queue';
  *
  * Instead we first ask the node — in batches of many names per request — which
  * names actually have a `qortal_avatar` THUMBNAIL published. Only those users
- * then load an image; everyone else renders an instant local fallback with no
- * network at all. Results are cached process-wide so re-opening a group (or
- * seeing the same user elsewhere) is free.
+ * then load an image (through the device avatar cache, src/lib/qdnAvatars);
+ * everyone else renders an instant local fallback with no network at all.
+ * Results are cached process-wide so re-opening a group (or seeing the same
+ * user elsewhere) is free.
  */
 
 // nameLower -> true/false (has avatar). Absent = not yet resolved.
@@ -30,6 +31,15 @@ const normalize = (name?: string | null): string =>
 export function isAvatarKnownPresent(name?: string | null): boolean {
   const key = normalize(name);
   return !!key && avatarPresenceCache.get(key) === true;
+}
+
+/**
+ * What the node said about this name: true (has an avatar), false (has
+ * none) or undefined (not asked yet, or the lookup failed).
+ */
+export function getAvatarPresence(name?: string | null): boolean | undefined {
+  const key = normalize(name);
+  return key ? avatarPresenceCache.get(key) : undefined;
 }
 
 async function resolveBatch(names: string[]): Promise<void> {

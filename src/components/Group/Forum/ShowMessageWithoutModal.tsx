@@ -1,6 +1,7 @@
 import { useState } from 'react';
-import { Avatar, Box, IconButton, useTheme } from '@mui/material';
+import { Box, IconButton, useTheme } from '@mui/material';
 import DOMPurify from 'dompurify';
+import '../../../utils/configureDomPurify';
 import '../../Chat/chat.css';
 import FormatQuoteIcon from '@mui/icons-material/FormatQuote';
 import MoreSVG from '../../../assets/svgs/More.svg';
@@ -16,8 +17,8 @@ import { Spacer } from '../../../common/Spacer';
 import { formatTimestampForum } from '../../../utils/time';
 import ReadOnlySlate from './ReadOnlySlate';
 import { MessageDisplay } from '../../Chat/MessageDisplay';
-import { getBaseApiReact } from '../../../App';
 import { WrapperUserAction } from '../../WrapperUserAction';
+import { CachedUserAvatar } from '../CachedAvatars';
 
 const allowedHtmlTags = [
   'a',
@@ -113,16 +114,16 @@ export const ShowMessage = ({ message, openNewPostWithQuote, myName }: any) => {
             disabled={myName === message?.name}
             name={message?.name}
           >
-            <Avatar
+            <CachedUserAvatar
               sx={{
                 height: '50px',
                 width: '50px',
               }}
-              src={`${getBaseApiReact()}/arbitrary/THUMBNAIL/${message?.name}/qortal_avatar?async=true`}
+              name={message?.name}
               alt={message?.name}
             >
               {message?.name?.charAt(0)}
-            </Avatar>
+            </CachedUserAvatar>
           </WrapperUserAction>
 
           <ThreadInfoColumn>
@@ -234,16 +235,16 @@ export const ShowMessage = ({ message, openNewPostWithQuote, myName }: any) => {
                   gap: '10px',
                 }}
               >
-                <Avatar
+                <CachedUserAvatar
                   sx={{
                     height: '30px',
                     width: '30px',
                   }}
-                  src={`${getBaseApiReact()}/arbitrary/THUMBNAIL/${message?.reply?.name}/qortal_avatar?async=true`}
+                  name={message?.reply?.name}
                   alt={message?.reply?.name}
                 >
                   {message?.reply?.name?.charAt(0)}
-                </Avatar>
+                </CachedUserAvatar>
 
                 <ThreadInfoColumn>
                   <ThreadInfoColumnNameP

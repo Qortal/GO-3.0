@@ -1,14 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAtomValue } from 'jotai';
 import { userInfoAtom } from '../../../atoms/global';
-import {
-  Avatar,
-  Box,
-  Button,
-  ButtonBase,
-  Typography,
-  useTheme,
-} from '@mui/material';
+import { Box, Button, ButtonBase, Typography, useTheme } from '@mui/material';
 import { ShowMessage } from './ShowMessageWithoutModal';
 import {
   ComposeP,
@@ -45,6 +38,7 @@ import {
 import { RequestQueueWithPromise } from '../../../utils/queue/queue';
 import { CustomLoader } from '../../../common/CustomLoader';
 import { WrapperUserAction } from '../../WrapperUserAction';
+import { CachedUserAvatar } from '../CachedAvatars';
 import { formatTimestampForum } from '../../../utils/time';
 import { useTranslation } from 'react-i18next';
 import { ReturnIcon } from '../../../assets/Icons/ReturnIcon';
@@ -821,18 +815,16 @@ export const Thread = ({
                           address={undefined}
                           name={message?.name}
                         >
-                          <Avatar
+                          <CachedUserAvatar
                             sx={{
                               height: '50px',
                               width: '50px',
                             }}
-                            src={`${getBaseApiReact()}/arbitrary/THUMBNAIL/${
-                              message?.name
-                            }/qortal_avatar?async=true`}
+                            name={message?.name}
                             alt={message?.name}
                           >
                             {message?.name?.charAt(0)}
-                          </Avatar>
+                          </CachedUserAvatar>
                         </WrapperUserAction>
 
                         <ThreadInfoColumn>
@@ -930,18 +922,16 @@ export const Thread = ({
                       address={undefined}
                       name={message?.name}
                     >
-                      <Avatar
+                      <CachedUserAvatar
                         sx={{
                           height: '50px',
                           width: '50px',
                         }}
-                        src={`${getBaseApiReact()}/arbitrary/THUMBNAIL/${
-                          message?.name
-                        }/qortal_avatar?async=true`}
+                        name={message?.name}
                         alt={message?.name}
                       >
                         {message?.name?.charAt(0)}
-                      </Avatar>
+                      </CachedUserAvatar>
                     </WrapperUserAction>
 
                     <ThreadInfoColumn>

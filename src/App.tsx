@@ -36,7 +36,6 @@ import ErrorBoundary from './common/ErrorBoundary';
 import { AuthenticationForm } from './components/AuthenticationForm';
 import {
   BuyOrderRequestScreen,
-  AuthenticatedLockScreen,
   ConnectionRequestScreen,
   CountdownOverlay,
   CreateWalletView,
@@ -58,6 +57,7 @@ import {
 } from './components/App';
 
 import { LazyAuthenticatedShell } from './components/App/LazyAuthenticatedShell';
+import { AppLockLayer } from './components/App/AppLockLayer';
 import {
   MobileTabBar,
   MOBILE_TAB_BAR_HEIGHT_PX,
@@ -101,12 +101,6 @@ import {
   subscribeToEvent,
   unsubscribeFromEvent,
 } from './utils/events';
-import {
-  getPendingPaymentRequest,
-  clearPendingPaymentRequest,
-  getPendingJoinGroupRequest,
-  clearPendingJoinGroupRequest,
-} from './utils/paymentLink';
 import { useAndroidBack, BACK_PRIORITY } from './utils/androidBack';
 import { stopSharedEarbumpPlayback } from './components/Group/earbumpSharedAudio';
 import { Settings } from './components/Group/Settings';
@@ -176,6 +170,16 @@ import { roundUpToDecimals } from './utils/numberFunctions.ts';
 import { GlobalQortalNavBar } from './components/Desktop/GlobalQortalNavBar.tsx';
 import type { AuthUnlockTransitionSnapshot } from './types/authTransition';
 import { openQWalletsTab } from './utils/openQWalletsTab';
+import {
+  acceptedPermissionResult,
+  isApprovalAcceptable,
+  type ApprovalDecision,
+} from './utils/qappApproval';
+import {
+  DECLINE_ALL_MUTE_MS,
+  createApprovalMuteList,
+  requestQappApproval,
+} from './utils/qappApprovalQueue';
 import { clearLastAuthenticatedWalletAddress } from './utils/lastAuthenticatedWallet';
 import { clearWalletKdfSessionCache } from './utils/walletKdfSessionCache';
 import { clearWalletUnlockSession } from './utils/walletUnlockSession';
@@ -206,6 +210,17 @@ import {
   writeAutoLockLastActivityAt,
   writeAutoLockTimeoutToStorage,
 } from './lib/autoLock';
+import {
+  canResumeSessionAtBoot,
+  clearAppSessionUnlocked,
+  isAppSessionUnlocked,
+  readAppLockLatch,
+  readAppSessionUnlockedAddress,
+} from './lib/appLock';
+import { useAppLock } from './hooks/useAppLock';
+import { useQdnAvatarPrewarm } from './lib/qdnAvatars/useQdnAvatarPrewarm';
+import { clearQdnAvatarPrewarmPeerNames } from './lib/qdnAvatars/prewarmSources';
+import { useSendQortOverlay } from './hooks/useSendQortOverlay';
 
 const MINTING_LOCAL_DEBUG_STORAGE_KEY = 'hub.mintingLocalDebug';
 const LOCAL_CORE_READY_SYNC_PERCENT = 99.95;
@@ -371,6 +386,8 @@ function App() {
   const [reticulumChatEnabled, setReticulumChatEnabled] = useState(true);
   const [desktopViewMode, setDesktopViewMode] = useState('home');
   const [rawWallet, setRawWallet] = useAtom(rawWalletAtom);
+  const rawWalletRef = useRef(rawWallet);
+  rawWalletRef.current = rawWallet;
   const [qortBalanceLoading, setQortBalanceLoading] = useAtom(
     qortBalanceLoadingAtom
   );
@@ -436,10 +453,6 @@ function App() {
     };
   }, [userInfo?.address]);
   const [balance, setBalance] = useAtom(balanceAtom);
-  const [paymentTo, setPaymentTo] = useState<string>('');
-  const [paymentAmount, setPaymentAmount] = useState<number | undefined>(
-    undefined
-  );
   const [sendPaymentError, setSendPaymentError] = useState<string>('');
   const [countdown, setCountdown] = useState<null | number>(null);
   const [globalRuntimeFault, setGlobalRuntimeFault] = useState<{
@@ -577,8 +590,6 @@ function App() {
     info,
     qortalRequest,
     qortalRequestExtension,
-    confirmRequestRead,
-    setConfirmRequestRead,
     qortalRequestCheckbox1Ref,
   } = modals;
   const isShow = paymentPublish.isShow;
@@ -600,11 +611,21 @@ function App() {
   const showQortalRequest = qortalRequest.show;
   const isShowQortalRequest = qortalRequest.isShow;
   const messageQortalRequest = qortalRequest.message;
-  const onCancelQortalRequestExtension = qortalRequestExtension.onCancel;
-  const onOkQortalRequestExtension = qortalRequestExtension.onOk;
   const showQortalRequestExtension = qortalRequestExtension.show;
   const isShowQortalRequestExtension = qortalRequestExtension.isShow;
   const messageQortalRequestExtension = qortalRequestExtension.message;
+  // GO-28: Q-App requests queue; Accept/Decline answer only the request whose
+  // id was on screen.
+  const requestIdQortalRequestExtension = qortalRequestExtension.requestId;
+  const pendingQortalRequestExtension = qortalRequestExtension.pendingCount;
+  const okQortalRequestExtension = qortalRequestExtension.okRequest;
+  const cancelQortalRequestExtension = qortalRequestExtension.cancelRequest;
+  const sameAppPendingQortalRequestExtension =
+    qortalRequestExtension.sameGroupPendingCount;
+  const groupKeyQortalRequestExtension = qortalRequestExtension.groupKey;
+  const cancelWhereQortalRequestExtension = qortalRequestExtension.cancelWhere;
+  // Apps whose requests are declined for a while after "Decline all".
+  const approvalMuteListRef = useRef(createApprovalMuteList());
 
   const confirmRef = useRef(null);
 
@@ -613,13 +634,7 @@ function App() {
   const [infoSnack, setInfoSnack] = useAtom(infoSnackGlobalAtom);
   const [openSnack, setOpenSnack] = useAtom(openSnackGlobalAtom);
   const [isOpenDrawerLookup, setIsOpenDrawerLookup] = useState(false);
-  const [isOpenSendQort, setIsOpenSendQort] = useState(false);
   const [isOpenReceiveQort, setIsOpenReceiveQort] = useState(false);
-  const [isOpenSendQortSuccess, setIsOpenSendQortSuccess] = useState(false);
-  const [sendQortOriginRect, setSendQortOriginRect] =
-    useState<SendQortOriginRect>(null);
-  const [sendQortTargetRect, setSendQortTargetRect] =
-    useState<SendQortOriginRect>(null);
   const [receiveQortOriginRect, setReceiveQortOriginRect] =
     useState<SendQortOriginRect>(null);
   const [receiveQortTargetRect, setReceiveQortTargetRect] =
@@ -636,25 +651,43 @@ function App() {
   useBlockedAddressesLoader(extState === 'authenticated');
   const { sendOfflineBeforeLogout } = usePresence();
 
-  const lockApp = useCallback(() => {
-    if (extState !== 'authenticated' || !isMainWindow) return;
-    setIsIdle(true);
-    setIsAppLocked(true);
-  }, [extState, setIsAppLocked, setIsIdle]);
-
-  const unlockApp = useCallback(
-    async (password: string) => {
+  // App lock (N-09, GO-04, GO-39): the idle timer below, "Lock now", and a
+  // lock that survives reloads and covers everything (hooks/useAppLock.ts).
+  const {
+    lockScreenActive,
+    walletUnlocked,
+    walletUnlockedRef,
+    bootLastActivityAt,
+    lockApp,
+    unlockApp,
+    runVerifiedEntry,
+    noteVerifiedWalletEntry,
+  } = useAppLock({
+    authenticated: isAuthenticated,
+    mainWindow: isMainWindow,
+    walletAddress: rawWallet?.address0,
+    verifyPassword: async (password) => {
       if (!rawWallet) throw new Error('Wallet data is unavailable');
       await decryptStoredWallet(password, structuredClone(rawWallet));
-      // Clear idle before releasing the latch so the idle watcher cannot lock
-      // the app again between these state updates.
-      const unlockedAt = Date.now();
-      writeAutoLockLastActivityAt(unlockedAt);
-      setIsIdle(false);
-      setIsAppLocked(false);
     },
-    [rawWallet, setIsAppLocked, setIsIdle]
-  );
+    // Declines the request on screen and every queued one in one go, so no
+    // queued request surfaces (hidden) under the lock.
+    approvals: [
+      {
+        open: isShowQortalRequestExtension,
+        decline: qortalRequestExtension.cancelAll,
+      },
+      { open: isShow, decline: paymentPublish.cancelAll },
+      { open: isShowUnsavedChanges, decline: onCancelUnsavedChanges },
+    ],
+    // A backup shows the seed or the decrypted wallet: close it, not hide it.
+    onLock: () => setIsBackupWalletModalOpen(false),
+  });
+
+  // Fetches the avatars GO is about to show (featured Q-Apps, tabs, recent
+  // DMs and groups) in the background, so lists keep their icons when the
+  // node is slow. Starts a few seconds after login, never while locked.
+  useQdnAvatarPrewarm({ enabled: walletUnlocked, address: userInfo?.address });
 
   useEffect(() => {
     if (extState !== 'authenticated') {
@@ -984,6 +1017,28 @@ function App() {
                 if (holdRefExtState.current !== 'not-authenticated') return;
 
                 if (response?.hasKeyPair) {
+                  // Only a reload of a tab that was unlocked for this same
+                  // wallet goes straight back in. Locked, timed out, a cold
+                  // start or a crash: the picker asks for the fingerprint or
+                  // password (N-09).
+                  if (
+                    !canResumeSessionAtBoot({
+                      walletAddress: (
+                        response as { walletInfo?: { address0?: string } }
+                      )?.walletInfo?.address0,
+                      latch: readAppLockLatch(),
+                      unlockedSessionAddress: readAppSessionUnlockedAddress(),
+                      lastActivityAt: bootLastActivityAt,
+                      timeoutMinutes: readAutoLockTimeoutFromStorage(),
+                      now: Date.now(),
+                    })
+                  ) {
+                    return;
+                  }
+                  // Keep the idle clock running from the last activity.
+                  if (bootLastActivityAt) {
+                    writeAutoLockLastActivityAt(bootLastActivityAt);
+                  }
                   setRawWallet(response?.walletInfo);
                   setExtstate('authenticated');
                   window.sendMessage('startNotificationCheck').catch(() => {});
@@ -1011,6 +1066,22 @@ function App() {
     if (!rawWallet?.address0) return '';
     return rawWallet.address0;
   }, [rawWallet]);
+
+  // Send QORT and the payment / join-group deep links (GO-10): Send opens
+  // only in an open, unlocked wallet, and never keeps an old recipient.
+  const {
+    isOpen: isOpenSendQort,
+    isSuccessOpen: isOpenSendQortSuccess,
+    paymentTo,
+    paymentAmount,
+    originRect: sendQortOriginRect,
+    targetRect: sendQortTargetRect,
+    openManual: onOpenSendQort,
+    close: closeSendQortOverlay,
+    markSent: onSendQortSent,
+    continueAfterSuccess: onTransferSuccessContinue,
+    closeAll: closeAllSendQort,
+  } = useSendQortOverlay({ walletUnlocked, walletUnlockedRef, address });
 
   useReticulumDmAccountRegistration({
     managed: isMainWindow,
@@ -1116,52 +1187,26 @@ function App() {
   };
 
   const qortalRequestPermissionFromExtension = async (message, event) => {
-    if (message.action === 'QORTAL_REQUEST_PERMISSION') {
-      try {
-        if (message?.payload?.checkbox1) {
-          qortalRequestCheckbox1Ref.current =
-            message?.payload?.checkbox1?.value || false;
-        }
-        setConfirmRequestRead(false);
-        await showQortalRequestExtension(message?.payload);
-
-        if (qortalRequestCheckbox1Ref.current) {
-          event.source.postMessage(
-            {
-              action: 'QORTAL_REQUEST_PERMISSION_RESPONSE',
-              requestId: message?.requestId,
-              result: {
-                accepted: true,
-                checkbox1: qortalRequestCheckbox1Ref.current,
-              },
-            },
-            event.origin
-          );
-          return;
-        }
+    if (message.action !== 'QORTAL_REQUEST_PERMISSION') return;
+    // GO-28: names the app from appInfo only, queues behind an open request
+    // (per-app limit, equal value-moving requests coalesce), and answers with
+    // the result of the request that was on screen (utils/qappApprovalQueue).
+    await requestQappApproval({
+      message,
+      show: showQortalRequestExtension,
+      now: Date.now(),
+      muteList: approvalMuteListRef.current,
+      respond: (result) => {
         event.source.postMessage(
           {
             action: 'QORTAL_REQUEST_PERMISSION_RESPONSE',
             requestId: message?.requestId,
-            result: {
-              accepted: true,
-            },
+            result,
           },
           event.origin
         );
-      } catch (error) {
-        event.source.postMessage(
-          {
-            action: 'QORTAL_REQUEST_PERMISSION_RESPONSE',
-            requestId: message?.requestId,
-            result: {
-              accepted: false,
-            },
-          },
-          event.origin
-        );
-      }
-    }
+      },
+    });
   };
   permissionHandlerRef.current = qortalRequestPermissionFromExtension;
   useAppMessageHandler(isFocusedRef, permissionHandlerRef);
@@ -1352,6 +1397,8 @@ function App() {
         .then((response) => {
           if (response && !response.error) {
             setRawWallet(wallet);
+            // Created here with the password just typed: an unlocked wallet.
+            noteVerifiedWalletEntry(wallet?.address0);
             if (storeAccount) {
               saveWalletToLocalStorage(wallet);
             }
@@ -1475,8 +1522,14 @@ function App() {
 
   const returnToMain = useCallback(() => {
     suppressWalletInfoRestoreRef.current = true;
-    holdRefExtState.current = 'authenticated';
-    setPaymentTo('');
+    // Back into the wallet only when this tab unlocked it (password,
+    // fingerprint, or a wallet just created here); otherwise to the picker.
+    const nextState: extStates = isAppSessionUnlocked(
+      rawWalletRef.current?.address0
+    )
+      ? 'authenticated'
+      : 'not-authenticated';
+    holdRefExtState.current = nextState;
     setSendPaymentError('');
     setCountdown(null);
     setWalletToBeDownloaded(null);
@@ -1484,20 +1537,18 @@ function App() {
     generatorRef.current = null;
     setShowSeed(false);
     setCreationStep(1);
-    setSendQortOriginRect(null);
-    setSendQortTargetRect(null);
     setReceiveQortOriginRect(null);
     setReceiveQortTargetRect(null);
     setReceiveQortAddress('');
-    setExtstate('authenticated');
-    setIsOpenSendQort(false);
+    setExtstate(nextState);
+    closeAllSendQort();
     setIsOpenReceiveQort(false);
-    setIsOpenSendQortSuccess(false);
-  }, []);
+  }, [closeAllSendQort]);
 
   const resetAllStates = () => {
     clearWalletKdfSessionCache();
     clearWalletUnlockSession();
+    clearAppSessionUnlocked();
     suppressWalletInfoRestoreRef.current = true;
     holdRefExtState.current = 'not-authenticated';
     setExtstate('not-authenticated');
@@ -1506,7 +1557,6 @@ function App() {
     setRequestBuyOrder(null);
     setUserInfo(null);
     setBalance(null);
-    setPaymentTo('');
     setSendPaymentError('');
     setCountdown(null);
     setWalletToBeDownloaded(null);
@@ -1517,7 +1567,12 @@ function App() {
     setWalletToBeDownloadedPasswordConfirm('');
     setWalletToBeDownloadedError('');
     setSendqortState(null);
+    // Send/Receive belong to the signed-in wallet; never carry them over.
+    closeAllSendQort();
+    setIsOpenReceiveQort(false);
     setQcallPrimaryNames({});
+    // DM partner names of this account must not reach the next one's prewarm.
+    clearQdnAvatarPrewarmPeerNames();
     downloadResource.cancelAllResourceDownloads();
     resetAllRecoil();
   };
@@ -1547,7 +1602,12 @@ function App() {
           return;
         }
       }
-      const unlocked = await authenticate(undefined, options?.skipLocalCheck);
+      // The password (or the form's fingerprint) is checked in here, so the
+      // shell it opens is not held behind a lock latch.
+      const unlocked = await runVerifiedEntry(
+        () => authenticate(undefined, options?.skipLocalCheck),
+        () => rawWalletRef.current?.address0
+      );
       // Covers the early returns that never touch the loader (local node
       // still syncing, another unlock already running).
       if (!unlocked && checkNode) setIsLoading(false);
@@ -1585,13 +1645,18 @@ function App() {
           setAuthenticatePassword(unlockResult);
         }
 
-        return await authenticate(undefined, true);
+        // The fingerprint was verified above.
+        return await runVerifiedEntry(
+          () => authenticate(undefined, true),
+          () => address
+        );
       } catch {
         return false;
       }
     },
     [
       authenticate,
+      runVerifiedEntry,
       setAuthUnlockTransition,
       setAuthenticatePassword,
       setRawWallet,
@@ -1639,39 +1704,6 @@ function App() {
     };
   }, []);
 
-  const openPaymentInternal = (e) => {
-    const directAddress = e.detail?.address;
-    const name = e.detail?.name;
-    const anchorRect = e.detail?.anchorRect;
-    const targetRect = e.detail?.targetRect;
-    setSendQortOriginRect(
-      anchorRect
-        ? {
-            left: anchorRect.left,
-            top: anchorRect.top,
-            width: anchorRect.width,
-            height: anchorRect.height,
-          }
-        : null
-    );
-    setSendQortTargetRect(
-      targetRect
-        ? {
-            left: targetRect.left,
-            top: targetRect.top,
-            width: targetRect.width,
-            height: targetRect.height,
-          }
-        : null
-    );
-    setIsOpenSendQort(true);
-    setPaymentTo(name || directAddress || '');
-    const amount = Number(e.detail?.amount);
-    setPaymentAmount(
-      Number.isFinite(amount) && amount > 0 ? amount : undefined
-    );
-  };
-
   const openReceiveQortInternal = (e) => {
     const anchorRect = e.detail?.anchorRect;
     const targetRect = e.detail?.targetRect;
@@ -1700,24 +1732,9 @@ function App() {
   };
 
   useEffect(() => {
-    subscribeToEvent('openPaymentInternal', openPaymentInternal);
     subscribeToEvent('openReceiveQortInternal', openReceiveQortInternal);
 
-    // Replay a payment / join-group deep link that arrived before the
-    // authenticated app UI was mounted (cold launch from an external scanner).
     if (address) {
-      const pending = getPendingPaymentRequest();
-      if (pending?.recipient) {
-        clearPendingPaymentRequest();
-        openPaymentInternal({
-          detail: { address: pending.recipient, amount: pending.amount },
-        });
-      }
-      const pendingJoinGroupId = getPendingJoinGroupRequest();
-      if (pendingJoinGroupId) {
-        clearPendingJoinGroupRequest();
-        executeEvent('globalActionJoinGroup', { groupId: pendingJoinGroupId });
-      }
       // Photos/videos shared from other apps via the "Quitter" share-sheet
       // target (Android). Idempotent — safe to call on every auth.
       void import('./components/Widgets/quitter/quitterShareIntake')
@@ -1726,17 +1743,10 @@ function App() {
     }
 
     return () => {
-      unsubscribeFromEvent('openPaymentInternal', openPaymentInternal);
       unsubscribeFromEvent('openReceiveQortInternal', openReceiveQortInternal);
     };
   }, [address]);
 
-  const onOpenSendQort = useCallback(() => {
-    setSendQortOriginRect(null);
-    setSendQortTargetRect(null);
-    executeEvent('openSendQortInternal', {});
-    setIsOpenSendQort(true);
-  }, []);
   const onOpenRegisterName = useCallback(
     () => executeEvent('openRegisterName', {}),
     []
@@ -2005,21 +2015,56 @@ function App() {
   const onCountdownComplete = useCallback(() => {
     window.close();
   }, []);
-  const onTransferSuccessContinue = useCallback(() => returnToMain(), []);
   const onTransferSuccessRequestClose = useCallback(() => window.close(), []);
   const onBuyOrderSubmittedClose = useCallback(() => window.close(), []);
-  const onOkQortalRequestExtensionAccept = useCallback(() => {
-    const ext = messageQortalRequestExtension as
-      | { confirmCheckbox?: boolean }
-      | null
-      | undefined;
-    if (ext?.confirmCheckbox && !confirmRequestRead) return;
-    onOkQortalRequestExtension('accepted');
-  }, [
-    messageQortalRequestExtension,
-    confirmRequestRead,
-    onOkQortalRequestExtension,
-  ]);
+  const onOkQortalRequestExtensionAccept = useCallback(
+    (decision: ApprovalDecision) => {
+      // Only the request that was on screen, and only once ticked when it
+      // asks for the tick (GO-28).
+      if (
+        !isApprovalAcceptable(
+          messageQortalRequestExtension,
+          requestIdQortalRequestExtension,
+          decision
+        )
+      ) {
+        return;
+      }
+      okQortalRequestExtension(
+        requestIdQortalRequestExtension,
+        acceptedPermissionResult(messageQortalRequestExtension, decision)
+      );
+    },
+    [
+      messageQortalRequestExtension,
+      requestIdQortalRequestExtension,
+      okQortalRequestExtension,
+    ]
+  );
+  // Declines every request from the app on screen, and that app's new
+  // requests for a short while, so a Q-App that keeps asking cannot hold the
+  // dialog open (GO-28).
+  const onDeclineAllQortalRequestExtension = useCallback(() => {
+    const groupKey = groupKeyQortalRequestExtension;
+    if (groupKey === null) return;
+    approvalMuteListRef.current.mute(
+      groupKey,
+      Date.now() + DECLINE_ALL_MUTE_MS
+    );
+    cancelWhereQortalRequestExtension(
+      (request) => request.groupKey === groupKey
+    );
+  }, [groupKeyQortalRequestExtension, cancelWhereQortalRequestExtension]);
+  // GO's own payment / publish confirmation answers only the request on
+  // screen, so a late tap cannot answer the next one.
+  const onAcceptPaymentPublish = useCallback(() => {
+    if (paymentPublish.requestId === null) return;
+    paymentPublish.okRequest(paymentPublish.requestId, undefined);
+  }, [paymentPublish]);
+  const onCancelPaymentPublish = useCallback(() => {
+    if (paymentPublish.requestId === null) return;
+    paymentPublish.cancelRequest(paymentPublish.requestId);
+  }, [paymentPublish]);
   const onOpenCoreSetup = useCallback(
     () => setOpenCoreSetup(true),
     [setOpenCoreSetup]
@@ -2199,31 +2244,26 @@ function App() {
 
         {isMainWindow && (
           <BackupWalletModal
-            open={isBackupWalletModalOpen}
+            open={isBackupWalletModalOpen && !lockScreenActive}
             onClose={closeBackupWalletModal}
             rawWallet={rawWallet}
           />
         )}
 
         <AnimatePresence>
-          {isOpenSendQort && isMainWindow && (
+          {isOpenSendQort && walletUnlocked && (
             <SendQortOverlay
               balance={balance}
               originRect={sendQortOriginRect}
               targetRect={sendQortTargetRect}
               paymentTo={paymentTo}
               paymentAmount={paymentAmount}
-              onReturn={returnToMain}
-              onSuccess={() => {
-                setIsOpenSendQort(false);
-                setSendQortOriginRect(null);
-                setSendQortTargetRect(null);
-                setIsOpenSendQortSuccess(true);
-              }}
+              onReturn={closeSendQortOverlay}
+              onSuccess={onSendQortSent}
               show={show}
             />
           )}
-          {isOpenReceiveQort && isMainWindow && (
+          {isOpenReceiveQort && walletUnlocked && (
             <ReceiveQortOverlay
               address={receiveQortAddress || address || ''}
               originRect={receiveQortOriginRect}
@@ -2355,7 +2395,7 @@ function App() {
           />
         )}
 
-        {isOpenSendQortSuccess && (
+        {isOpenSendQortSuccess && walletUnlocked && (
           <SuccessOverlay
             messageKey="message.success.transfer"
             buttonLabelKey="action.continue"
@@ -2389,40 +2429,50 @@ function App() {
 
         {isLoading && <Loader />}
         <PaymentPublishDialog
-          open={isShow}
+          open={isShow && !lockScreenActive}
+          requestId={paymentPublish.requestId}
+          pendingCount={paymentPublish.pendingCount}
           message={message}
-          onAccept={() => onOk(undefined)}
-          onCancel={() => onCancel(undefined)}
+          onAccept={onAcceptPaymentPublish}
+          onCancel={onCancelPaymentPublish}
         />
         <InfoDialog
-          open={isShowInfo}
+          open={isShowInfo && !lockScreenActive}
           message={messageInfo.message}
           onClose={() => onOkInfo(undefined)}
         />
         <UnsavedChangesDialog
-          open={isShowUnsavedChanges}
+          open={isShowUnsavedChanges && !lockScreenActive}
           message={messageUnsavedChanges.message}
           onCancel={onCancelUnsavedChanges}
           onConfirm={() => onOkUnsavedChanges(undefined)}
         />
         {isMainWindow && <NotificationPermissionSlideDown />}
-        {isShowQortalRequestExtension && isMainWindow && (
-          <QortalRequestExtensionDialog
-            open={isShowQortalRequestExtension}
-            message={messageQortalRequestExtension}
-            sendPaymentError={sendPaymentError}
-            confirmRequestRead={confirmRequestRead}
-            onConfirmRequestReadChange={setConfirmRequestRead}
-            onCheckbox1Change={(checked) => {
-              qortalRequestCheckbox1Ref.current = checked;
-            }}
-            onAccept={onOkQortalRequestExtensionAccept}
-            onCancel={onCancelQortalRequestExtension}
-            onCountdownComplete={onCancelQortalRequestExtension}
-          />
+        {isShowQortalRequestExtension && isMainWindow && !lockScreenActive && (
+          // A request the dialog cannot draw is declined instead of taking
+          // GO down to the crash screen (N-09). The dialog declines a single
+          // request it cannot draw itself; reaching this boundary declines
+          // every queued one, so the next request gets a fresh boundary.
+          <ErrorBoundary
+            fallback={null}
+            onCatch={() => qortalRequestExtension.cancelAll()}
+          >
+            <QortalRequestExtensionDialog
+              open={isShowQortalRequestExtension}
+              requestId={requestIdQortalRequestExtension}
+              pendingCount={pendingQortalRequestExtension}
+              sameAppPendingCount={sameAppPendingQortalRequestExtension}
+              message={messageQortalRequestExtension}
+              sendPaymentError={sendPaymentError}
+              onAccept={onOkQortalRequestExtensionAccept}
+              onCancel={cancelQortalRequestExtension}
+              onDeclineAll={onDeclineAllQortalRequestExtension}
+              onCountdownComplete={cancelQortalRequestExtension}
+            />
+          </ErrorBoundary>
         )}
 
-        {isSettingsOpen && (
+        {isSettingsOpen && !lockScreenActive && (
           <Settings
             open={isSettingsOpen}
             setOpen={setIsSettingsOpen}
@@ -2695,8 +2745,8 @@ function App() {
       {(isCapacitor() || isMobile) &&
         extState === 'authenticated' &&
         isMainWindow && <MobileBackgroundSetup enabled />}
-      {isAuthenticated && isMainWindow && isAppLocked && (
-        <AuthenticatedLockScreen
+      {lockScreenActive && (
+        <AppLockLayer
           accountLabel={userInfo?.name || address || null}
           walletAddress={rawWallet?.address0 || address || null}
           onUnlock={unlockApp}

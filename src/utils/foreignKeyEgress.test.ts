@@ -1,8 +1,11 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('i18next', () => ({
   default: { t: vi.fn((key: string) => key) },
 }));
+
+const platform = vi.hoisted(() => ({ native: true }));
+vi.mock('./platform', () => ({ isCapacitor: () => platform.native }));
 
 import {
   assertForeignKeyEgress,
@@ -18,10 +21,11 @@ describe('checkForeignKeyEgress', () => {
     'https://127.0.0.1:12391/crosschain/ltc/send',
     'http://localhost:12391/crosschain/ltc/send',
     'http://[::1]:12391/crosschain/ltc/send',
-  ])('allows a node on this device without consent: %s', (url) => {
+  ])('allows a node on this device, marked as loopback: %s', (url) => {
     expect(checkForeignKeyEgress(url)).toMatchObject({
       allowed: true,
       local: true,
+      route: 'loopback',
     });
   });
 
@@ -35,13 +39,25 @@ describe('checkForeignKeyEgress', () => {
     expect(checkForeignKeyEgress(url)).toMatchObject({
       allowed: true,
       local: false,
+      route: 'tailscale',
     });
+  });
+
+  it('treats a Tailscale HTTPS name as an ordinary HTTPS node', () => {
+    expect(
+      checkForeignKeyEgress('https://node.tail1234.ts.net/crosschain/ltc/send')
+    ).toMatchObject({ allowed: true, local: false, route: 'https' });
   });
 
   it('allows a remote HTTPS node as a remote node', () => {
     expect(
       checkForeignKeyEgress('https://mynode.example.com/crosschain/ltc/send')
-    ).toEqual({ allowed: true, host: 'mynode.example.com', local: false });
+    ).toEqual({
+      allowed: true,
+      host: 'mynode.example.com',
+      local: false,
+      route: 'https',
+    });
   });
 
   it.each([
@@ -98,7 +114,12 @@ describe('assertForeignKeyEgress', () => {
         'http://127.0.0.1:12391/crosschain/ltc/send',
         'LTC'
       )
-    ).toEqual({ allowed: true, host: '127.0.0.1', local: true });
+    ).toEqual({
+      allowed: true,
+      host: '127.0.0.1',
+      local: true,
+      route: 'loopback',
+    });
   });
 
   it('throws the cleartext error for a LAN node over HTTP', () => {
@@ -121,19 +142,52 @@ describe('assertForeignKeyEgress', () => {
 });
 
 describe('consent fields', () => {
-  it('adds nothing for a node on this device', () => {
-    expect(
-      foreignKeyConsentFields(
-        { allowed: true, host: '127.0.0.1', local: true },
-        'LTC'
-      )
-    ).toEqual({});
+  afterEach(() => {
+    platform.native = true;
   });
 
-  it('requires a tick-box confirmation for a remote node', () => {
+  it('requires a tick-box confirmation for a node on this device', () => {
+    // Any app on the phone can listen on a loopback port.
     expect(
       foreignKeyConsentFields(
-        { allowed: true, host: '100.69.252.77', local: false },
+        checkForeignKeyEgress('http://127.0.0.1:12391/x') as Extract<
+          ReturnType<typeof checkForeignKeyEgress>,
+          { allowed: true }
+        >,
+        'LTC'
+      )
+    ).toEqual({
+      text4: 'question:permission.foreign_key_local_warning',
+      confirmCheckbox: true,
+      confirmCheckboxLabel: 'question:permission.foreign_key_node_confirm',
+    });
+  });
+
+  it('warns that plain HTTP over Tailscale is only private while connected', () => {
+    expect(
+      foreignKeyConsentFields(
+        checkForeignKeyEgress('http://100.69.252.77:12391/x') as Extract<
+          ReturnType<typeof checkForeignKeyEgress>,
+          { allowed: true }
+        >,
+        'LTC'
+      )
+    ).toEqual({
+      text4: 'question:permission.foreign_key_tailscale_warning',
+      confirmCheckbox: true,
+      confirmCheckboxLabel: 'question:permission.foreign_key_node_confirm',
+    });
+  });
+
+  it('requires a tick-box confirmation for a remote HTTPS node', () => {
+    expect(
+      foreignKeyConsentFields(
+        {
+          allowed: true,
+          host: 'mynode.example.com',
+          local: false,
+          route: 'https',
+        },
         'LTC'
       )
     ).toEqual({
@@ -141,6 +195,37 @@ describe('consent fields', () => {
       confirmCheckbox: true,
       confirmCheckboxLabel: 'question:permission.foreign_key_node_confirm',
     });
+  });
+
+  it('keeps no warning for the local Core node on desktop', () => {
+    platform.native = false;
+    const egress = checkForeignKeyEgress('http://127.0.0.1:12391/x');
+    expect(egress.allowed).toBe(true);
+    if (egress.allowed !== true) return;
+    expect(foreignKeyConsentFields(egress, 'LTC')).toEqual({});
+    // Remote nodes still warn on desktop.
+    const remote = checkForeignKeyEgress('https://mynode.example.com/x');
+    if (remote.allowed !== true) throw new Error('expected allowed');
+    expect(foreignKeyConsentFields(remote, 'LTC')).toMatchObject({
+      confirmCheckbox: true,
+    });
+  });
+
+  it('never returns an empty consent on the phone for any allowed node', () => {
+    for (const url of [
+      'http://localhost:12391/x',
+      'http://[::1]:12391/x',
+      'https://127.0.0.1:12391/x',
+      'http://node.tail1234.ts.net:12391/x',
+      'https://mynode.example.com/x',
+    ]) {
+      const egress = checkForeignKeyEgress(url);
+      expect(egress.allowed).toBe(true);
+      if (egress.allowed !== true) continue;
+      expect(foreignKeyConsentFields(egress, 'ARRR')).toMatchObject({
+        confirmCheckbox: true,
+      });
+    }
   });
 
   it('requires a tick-box confirmation for the gateway trade proxy', () => {

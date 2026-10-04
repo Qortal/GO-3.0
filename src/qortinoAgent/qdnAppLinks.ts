@@ -652,14 +652,11 @@ export function openQortalDeepLink(link: string): void {
   const url = link.trim().replace(/[.,;:!?)+]+$/, '');
   if (!url.toLowerCase().startsWith('qortal://')) return;
   parkQortinoAgentSheet();
+  // extractComponents checks the link (GO-21) and returns the name already
+  // decoded; decoding it again would turn "%252e%252e" into "%2e%2e".
   const res = extractComponents(url);
   if (!res) return;
-  let name = res.name || '';
-  try {
-    name = decodeURIComponent(name);
-  } catch {
-    /* keep raw */
-  }
+  const name = res.name || '';
   executeEvent('addTab', {
     data: {
       service: res.service,

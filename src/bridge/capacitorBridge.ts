@@ -25,6 +25,11 @@ import type { RelayProfile } from '../plugins/QortalBackground';
 import { compactDmVoiceJoinWireChatId } from '../lib/call/dmVoiceWire';
 import { installMobileAudioSurface } from './mobileAudioSurface';
 import { verifyQchatFileLinkAuth } from '../utils/qchatFileAuthVerify';
+import {
+  errorCode as fileOpenErrorCode,
+  openFileInViewerApp,
+} from '../utils/nativeFileOpen';
+import { cleanFileName } from '../utils/receivedFileName';
 import { P2P_HEALTH_RECEIVING_STABLE_MS } from '../lib/p2pHealth';
 import {
   encodeJoinWire,
@@ -78,6 +83,12 @@ export function installCapacitorBridge(): void {
 
   guardBlobWindowOpen();
   installPageVisibilityOverride();
+  // Received chat files stay in GO's private storage; logout deletes them.
+  void import('../utils/receivedChatFiles')
+    .then(({ installReceivedChatFileCleanup }) =>
+      installReceivedChatFileCleanup()
+    )
+    .catch(() => {});
 
   // Hide the native splash immediately. The launch window is just a solid dark
   // color (no logo), and the in-app HTML splash already covers the WebView, so
@@ -1018,8 +1029,9 @@ export const presenceCommandWithResult = async (
 //   • sender: register pending sends with the bridge, persist them across app
 //     restarts, and answer inbound QCHAT_FILE_LINK_AUTH packets (verify the
 //     downloader's signed auth, then authorize/reject the RNS link).
-//   • receiver: forward accept commands and export completed files to the
-//     public Downloads collection so the user can actually reach them.
+//   • receiver: forward accept commands. Completed files stay in GO's
+//     private storage (N-22, N-27): the chat opens them in GO's viewer and
+//     "Save to device" exports one (src/utils/receivedChatFiles.ts).
 // All transfer bytes move inside the Python bridge as RNS Resources; this
 // layer only drives the control protocol.
 
@@ -1203,7 +1215,25 @@ const handleQchatFileAuth = async (
   }
 };
 
-const handleQchatFileTransferEvent = (
+/**
+ * A peer picks the name of every file it sends. The chat and the transfer
+ * notifications get it cleaned: no bidi or other invisible characters, so
+ * "holiday[RLO]gpj.apk" cannot read as "holidaykpa.jpg" (N-27).
+ */
+export const withCleanQchatFileName = (
+  payload: Record<string, unknown>
+): Record<string, unknown> => {
+  const fileName = asString(payload.fileName);
+  if (fileName === undefined) return payload;
+  const cleaned = cleanFileName(fileName) || 'file';
+  return cleaned === fileName ? payload : { ...payload, fileName: cleaned };
+};
+
+/**
+ * A `qchat_file_transfer` frame from the presence bridge. Exported for the
+ * tests that check a received file is never copied anywhere.
+ */
+export const handleQchatFileTransferEvent = (
   payload: Record<string, unknown>
 ): void => {
   const status = asString(payload.status);
@@ -1216,40 +1246,29 @@ const handleQchatFileTransferEvent = (
     const transferId = asString(payload.transferId);
     if (transferId) markQchatSendCompleted(transferId);
   }
-  if (status === 'received') {
-    const savePath = asString(payload.path);
-    const fileName = asString(payload.fileName) ?? undefined;
-    if (savePath) {
-      // Export to public Downloads first so the emitted event carries the
-      // openable content:// URI (used by the chat's "Open" button).
-      void Reticulum.qchatFileExportToDownloads({ path: savePath, fileName })
-        .then((res) => {
-          console.log('[QchatFile] exported to Downloads:', res.uri);
-          emitQchatFileEvent({
-            ...payload,
-            ...(res.uri ? { downloadsUri: res.uri } : {}),
-          });
-        })
-        .catch((err) => {
-          console.error('[QchatFile] export to Downloads failed:', err);
-          emitQchatFileEvent(payload);
-        });
-      return;
-    }
-  }
-  emitQchatFileEvent(payload);
+  // A received file stays where the transfer wrote it, in GO's private
+  // storage. Nothing is copied to public Downloads (N-22, N-27).
+  emitQchatFileEvent(withCleanQchatFileName(payload));
 };
 
-/** Mobile implementation of the chat's "Open" action for received files. */
+/**
+ * Mobile implementation of the chat's "Open" action for received files. An
+ * app package is refused (code PACKAGE_ARCHIVE_REFUSED) without asking native.
+ */
 export const mobileQchatFileOpen = async (payload: {
   uri: string;
   fileName?: string;
-}): Promise<{ ok: boolean; error?: string }> => {
+}): Promise<{ ok: boolean; error?: string; code?: string }> => {
   try {
-    await Reticulum.qchatFileOpen(payload);
+    await openFileInViewerApp(payload);
     return { ok: true };
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    const code = fileOpenErrorCode(err);
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+      ...(code ? { code } : {}),
+    };
   }
 };
 
@@ -1483,10 +1502,17 @@ export function installReticulumBridges(): void {
 
   // ── Overlay coordinator state (minimal mobile port of presence.ts) ──────
   const neighborHashes = new Set<string>();
-  const onlineByAddress = new Map<string, PresenceSession>();
   /**
-   * `onlineByAddress` keeps one session per account, which is enough for the
-   * online dot but loses every endpoint after the first. Account endpoint
+   * Live presence sessions per account, keyed by session id: one per device
+   * signed into that account, including this one (recorded on publish, as the
+   * desktop records its `local` route). The status shown for an account is
+   * the most available of its devices (busy > online > idle), like
+   * `getAddressAggregate` in electron/src/presence.ts. With one entry per
+   * account, an idle desktop Hub overwrote the phone the user was on.
+   */
+  const sessionsByAddress = new Map<string, Map<string, PresenceSession>>();
+  /**
+   * `sessionsByAddress` only covers the online dot. Account endpoint
    * leases must enumerate *all* live destination hashes for an address —
    * otherwise a second device signed into the same account is invisible and
    * Saved Messages cannot sync between them.
@@ -1775,39 +1801,132 @@ export function installReticulumBridges(): void {
     scheduleSync();
   };
 
-  const liveSessions = (): PresenceSession[] => {
-    const now = Date.now();
+  const STATUS_PRIORITY: Record<UserStatus, number> = {
+    busy: 3,
+    online: 2,
+    idle: 1,
+  };
+
+  const isSessionLive = (session: PresenceSession, now: number): boolean =>
+    now - session.lastSeen <= PRESENCE_TTL_MS;
+
+  const liveSessions = (now: number = Date.now()): PresenceSession[] => {
     const out: PresenceSession[] = [];
-    for (const [addr, session] of [...onlineByAddress]) {
-      if (now - session.lastSeen > PRESENCE_TTL_MS) {
-        onlineByAddress.delete(addr);
-        continue;
+    for (const sessions of sessionsByAddress.values()) {
+      for (const session of sessions.values()) {
+        if (isSessionLive(session, now)) out.push(session);
       }
-      out.push(session);
     }
     return out;
   };
 
-  const emitUpdate = (
-    address: string,
-    online: boolean,
-    status: UserStatus | null
-  ): void => {
-    const payload: UpdatePayload = { address, online, status };
-    updateCbs.forEach((cb) => {
-      try {
-        cb(payload);
-      } catch {
-        /* ignore */
+  /** Drops expired sessions; returns the accounts that lost one. */
+  const pruneExpiredSessions = (now: number = Date.now()): Set<string> => {
+    const changed = new Set<string>();
+    for (const [address, sessions] of [...sessionsByAddress]) {
+      for (const [key, session] of [...sessions]) {
+        if (isSessionLive(session, now)) continue;
+        sessions.delete(key);
+        changed.add(address);
       }
+      if (sessions.size === 0) sessionsByAddress.delete(address);
+    }
+    return changed;
+  };
+
+  /** The most available status across an account's live devices. */
+  const aggregateStatus = (
+    address: string,
+    now: number = Date.now()
+  ): UserStatus | null => {
+    let best: UserStatus | null = null;
+    for (const session of sessionsByAddress.get(address)?.values() ?? []) {
+      if (!isSessionLive(session, now)) continue;
+      if (
+        best === null ||
+        STATUS_PRIORITY[session.status] > STATUS_PRIORITY[best]
+      ) {
+        best = session.status;
+      }
+    }
+    return best;
+  };
+
+  const emitAggregates = (addresses: Iterable<string>): void => {
+    const now = Date.now();
+    const payloads: UpdatePayload[] = [];
+    for (const address of addresses) {
+      const status = aggregateStatus(address, now);
+      payloads.push({ address, online: status !== null, status });
+    }
+    if (payloads.length === 0) return;
+    updateCbs.forEach((cb) => {
+      payloads.forEach((payload) => {
+        try {
+          cb(payload);
+        } catch {
+          /* ignore */
+        }
+      });
     });
     batchCbs.forEach((cb) => {
       try {
-        cb([payload]);
+        cb(payloads);
       } catch {
         /* ignore */
       }
     });
+  };
+
+  /**
+   * Applies one signed presence envelope to the session map and returns its
+   * account, or null when it carries none. `routeHash` is the device's
+   * Reticulum destination; `local` marks this device's own publish.
+   */
+  const applyPresenceEnvelope = (
+    env: Record<string, unknown>,
+    routeHash: string,
+    local: boolean
+  ): string | null => {
+    const envPayload = asObject(env.payload) ?? {};
+    const address =
+      asString(envPayload.address) ?? asString(env.senderAddress) ?? '';
+    if (!address) return null;
+    const sessionId = asString(envPayload.sessionId) ?? '';
+    const key = sessionId || routeHash || address;
+    let sessions = sessionsByAddress.get(address);
+
+    if (asString(env.type) === 'PRESENCE_OFFLINE') {
+      if (sessions) {
+        // Only this device went offline; an older envelope without a session
+        // id cannot say which one, so it clears the account as before.
+        if (sessionId) sessions.delete(key);
+        else sessions.clear();
+        if (sessions.size === 0) sessionsByAddress.delete(address);
+      }
+      return address;
+    }
+
+    const now = Date.now();
+    const existing = sessions?.get(key);
+    if (!sessions) {
+      sessions = new Map();
+      sessionsByAddress.set(address, sessions);
+    }
+    sessions.set(key, {
+      address,
+      publicKey: asString(envPayload.publicKey) ?? existing?.publicKey ?? '',
+      sessionId: sessionId || existing?.sessionId || '',
+      lastSeen: now,
+      firstSeen: existing?.firstSeen ?? now,
+      originNodeId: local ? 'local' : 'reticulum',
+      viaPeerId: routeHash || existing?.viaPeerId || '',
+      clientVersion:
+        asString(envPayload.clientVersion) ?? existing?.clientVersion,
+      status: asUserStatus(envPayload.status) ?? 'online',
+      signatureValid: true,
+    });
+    return address;
   };
 
   // Inbound signed presence packet relayed by the bridge → update session map.
@@ -1820,48 +1939,27 @@ export function installReticulumBridges(): void {
     }
     const env = asObject(payload.envelope);
     if (!env) return;
-    const envPayload = asObject(env.payload) ?? {};
-    const address =
-      asString(envPayload.address) ?? asString(env.senderAddress) ?? '';
+    const routeHash = String(route?.destinationHash || '').toLowerCase();
+    const address = applyPresenceEnvelope(env, routeHash, false);
     if (!address) return;
-    const type = asString(env.type);
 
-    if (type === 'PRESENCE_OFFLINE') {
-      onlineByAddress.delete(address);
+    if (asString(env.type) === 'PRESENCE_OFFLINE') {
       const endpoints = accountEndpoints.get(address);
-      const goneHash = String(route?.destinationHash || '').toLowerCase();
-      if (endpoints && goneHash) {
-        endpoints.delete(goneHash);
+      if (endpoints && routeHash) {
+        endpoints.delete(routeHash);
         if (endpoints.size === 0) accountEndpoints.delete(address);
       } else {
         accountEndpoints.delete(address);
       }
-      emitUpdate(address, false, null);
-      return;
+    } else {
+      const envPayload = asObject(env.payload) ?? {};
+      rememberAccountEndpoint(
+        address,
+        route?.destinationHash,
+        asString(envPayload.sessionId) ?? ''
+      );
     }
-
-    const status = asUserStatus(envPayload.status) ?? 'online';
-    const now = Date.now();
-    const existing = onlineByAddress.get(address);
-    rememberAccountEndpoint(
-      address,
-      route?.destinationHash,
-      asString(envPayload.sessionId) ?? existing?.sessionId ?? ''
-    );
-    onlineByAddress.set(address, {
-      address,
-      publicKey: asString(envPayload.publicKey) ?? existing?.publicKey ?? '',
-      sessionId: asString(envPayload.sessionId) ?? existing?.sessionId ?? '',
-      lastSeen: now,
-      firstSeen: existing?.firstSeen ?? now,
-      originNodeId: 'reticulum',
-      viaPeerId: asString(route?.destinationHash) ?? existing?.viaPeerId ?? '',
-      clientVersion:
-        asString(envPayload.clientVersion) ?? existing?.clientVersion,
-      status,
-      signatureValid: true,
-    });
-    emitUpdate(address, true, status);
+    emitAggregates([address]);
   };
 
   // ── 1:1 call signaling (port of electron/src/call.ts) ──────────────────
@@ -2522,7 +2620,7 @@ export function installReticulumBridges(): void {
       leases,
       healthy:
         peers.length > 0 ||
-        liveSessions().length > 0 ||
+        liveSessions().some((s) => s.originNodeId !== 'local') ||
         onlineRemoteHubInterfaces > 0,
     };
   };
@@ -2552,6 +2650,18 @@ export function installReticulumBridges(): void {
         return { success: false };
       }
       firstPublishDone = true;
+      // Count this device among its account's sessions, as the desktop does
+      // with its `local` route: our own packets never loop back, so without
+      // this GO would show its own account with only the other devices' status.
+      const localHash = (
+        getMobileReticulumInfo().destinationHash || ''
+      ).toLowerCase();
+      const address = applyPresenceEnvelope(
+        envelope as unknown as Record<string, unknown>,
+        localHash,
+        true
+      );
+      if (address) emitAggregates([address]);
       return { success: true };
     } catch (err) {
       console.error('[Presence] publish failed:', err);
@@ -3844,23 +3954,8 @@ export function installReticulumBridges(): void {
     if (bridgeReady && neighborHashes.size > 0) void pushOverlaySync();
     refreshMobileStatus();
     armStatusRefresh();
-    const before = onlineByAddress.size;
-    const live = liveSessions();
-    if (live.length !== before) {
-      // Some sessions expired; nudge listeners with the current truth.
-      batchCbs.forEach((cb) => {
-        try {
-          cb(
-            live.map((s) => ({
-              address: s.address,
-              online: true,
-              status: s.status,
-            }))
-          );
-        } catch {
-          /* ignore */
-        }
-      });
-    }
+    // Expired devices: tell listeners, or the account keeps its last dot
+    // (often Idle) until the app restarts.
+    emitAggregates(pruneExpiredSessions());
   }, 20_000);
 }

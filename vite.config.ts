@@ -6,6 +6,7 @@ import { resolve } from 'node:path';
 import fixReactVirtualized from 'esbuild-plugin-react-virtualized';
 import wasm from 'vite-plugin-wasm';
 import topLevelAwait from 'vite-plugin-top-level-await';
+import { inlineResizeImageIconsPlugin } from './tools/vite/inlineResizeImageIcons';
 
 /**
  * Swap the chat engine's Node worker-thread pools for the mobile inline pools.
@@ -171,14 +172,27 @@ export default defineConfig({
     ],
     globals: true,
     setupFiles: ['./src/test/setup.ts'],
-    include: ['src/**/*.{test,spec}.{ts,tsx}', 'electron/src/**/*.test.ts'],
+    include: [
+      'src/**/*.{test,spec}.{ts,tsx}',
+      'electron/src/**/*.test.ts',
+      'tools/vite/**/*.test.ts',
+    ],
     environmentMatchGlobs: [['electron/**', 'node']],
   } as any,
   assetsInclude: ['**/*.wasm'],
-  plugins: [mobileChatWorkerPoolPlugin(), react(), wasm(), topLevelAwait()],
+  plugins: [
+    inlineResizeImageIconsPlugin(),
+    mobileChatWorkerPoolPlugin(),
+    react(),
+    wasm(),
+    topLevelAwait(),
+  ],
   optimizeDeps: {
     esbuildOptions: {
       plugins: [fixReactVirtualized],
     },
+    // Pre-bundled deps skip plugin transforms; serve this one through the
+    // pipeline so the dev server gets the inline icons too.
+    exclude: ['tiptap-extension-resize-image'],
   },
 });

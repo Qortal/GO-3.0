@@ -7,8 +7,15 @@ import type {
   QuitterFeedItemImage,
   QuitterFeedSearchResource,
   QuitterFeedVideoRef,
+  TorqFeedAttachment,
+  TorqFeedGif,
 } from './quitterFeedTypes';
 import { getBaseApiReact } from '../../../utils/globalApi';
+import {
+  buildQdnAvatarUrl,
+  QDN_AVATAR_DEFAULT_IDENTIFIER,
+} from '../../../lib/qdnAvatars';
+import { hiddenUserKey } from './torqHiddenUsers';
 
 export const QUITTER_PUBLIC_FEED_SEARCH_ENDPOINT =
   '/arbitrary/resources/search';
@@ -209,6 +216,44 @@ const mapDocumentToFeedItem = (
   const hasVideo = (Array.isArray(document.videos) ? document.videos : []).some(
     isQuitterVideoRef
   );
+  const gifs = (Array.isArray(document.gifs) ? document.gifs : [])
+    .filter(
+      (gif) =>
+        isRecord(gif) &&
+        toSafeString(gif.identifier).length > 0 &&
+        toSafeString(gif.name).length > 0
+    )
+    .map(
+      (gif): TorqFeedGif => ({
+        identifier: toSafeString(gif.identifier),
+        name: toSafeString(gif.name),
+        ...(toSafeString(gif.description)
+          ? { description: toSafeString(gif.description) }
+          : {}),
+      })
+    );
+  const attachments = (
+    Array.isArray(document.attachments) ? document.attachments : []
+  )
+    .filter(isRecord)
+    .map((attachment): TorqFeedAttachment => {
+      const filename = toSafeString(attachment.filename);
+      const mimeType = toSafeString(attachment.mimeType).toLowerCase();
+      return {
+        title: toSafeString(attachment.title).trim() || filename || 'file',
+        isAudio:
+          mimeType.startsWith('audio/') ||
+          toSafeString(attachment.service).toUpperCase() === 'AUDIO' ||
+          /\.(mp3|m4a|aac|wav|ogg|oga|opus|flac)$/i.test(filename),
+      };
+    });
+  const pollOptions = (
+    isRecord(document.poll) && Array.isArray(document.poll.options)
+      ? document.poll.options
+      : []
+  )
+    .map((option) => (isRecord(option) ? toSafeString(option.text).trim() : ''))
+    .filter(Boolean);
 
   return {
     author,
@@ -223,6 +268,9 @@ const mapDocumentToFeedItem = (
     service: resource.service,
     text: document.text,
     updatedAt: resource.updated,
+    ...(gifs.length > 0 ? { gifs } : {}),
+    ...(attachments.length > 0 ? { attachments } : {}),
+    ...(pollOptions.length >= 2 ? { pollOptions } : {}),
   };
 };
 
@@ -307,8 +355,15 @@ const buildQuitterUserResourceSearchUrl = (
 const buildQuitterDocumentUrl = (name: string, identifier: string) =>
   `${getBaseApiReact()}/arbitrary/DOCUMENT/${encodeURIComponent(name)}/${encodeURIComponent(identifier)}`;
 
+/**
+ * Node URL of an author's full-size avatar. Feed cards show the device-cached
+ * copy instead (`useQdnAvatar(item.author)`), which survives a slow node.
+ */
 export const getQuitterAvatarUrl = (author: string) =>
-  `${getBaseApiReact()}/arbitrary/THUMBNAIL/${encodeURIComponent(author)}/qortal_avatar?async=true`;
+  buildQdnAvatarUrl(getBaseApiReact(), {
+    name: author,
+    identifier: QDN_AVATAR_DEFAULT_IDENTIFIER,
+  });
 
 const fetchQuitterSearchResources = async (
   searchLimit: number,
@@ -443,6 +498,7 @@ export const fetchQuitterFeed = async ({
 
 export const fetchQuitterFeedPage = async ({
   allowedAuthors,
+  hiddenAuthors,
   excludeIds = [],
   itemLimit = QUITTER_WIDGET_ITEM_LIMIT,
   offset = 0,
@@ -456,6 +512,9 @@ export const fetchQuitterFeedPage = async ({
       .filter(Boolean) ?? null;
   const allowedAuthorsSet =
     normalizedAllowedAuthors != null ? new Set(normalizedAllowedAuthors) : null;
+  const hiddenAuthorsSet = new Set(
+    (hiddenAuthors ?? []).map(hiddenUserKey).filter(Boolean)
+  );
 
   if (allowedAuthorsSet && allowedAuthorsSet.size === 0) {
     return {
@@ -495,6 +554,9 @@ export const fetchQuitterFeedPage = async ({
         resourceIndex,
       }))
       .filter(({ resource }) => {
+        // Hidden publishers are skipped before their posts are downloaded,
+        // so the page still fills with everyone else.
+        if (hiddenAuthorsSet.has(hiddenUserKey(resource.name))) return false;
         const normalizedName = resource.name.trim().toLowerCase();
         return allowedAuthorsSet ? allowedAuthorsSet.has(normalizedName) : true;
       });

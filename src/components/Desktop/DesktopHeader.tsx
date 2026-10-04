@@ -29,7 +29,7 @@ import {
   p2pHealthAtom,
   groupsOwnerNamesSelector,
 } from '../../atoms/global';
-import { buildGroupAvatarUrl } from '../../utils/groupAvatarUrl';
+import { useQdnGroupAvatar } from '../../lib/qdnAvatars';
 import { GroupDetailsDialog } from '../Group/GroupDetailsDialog';
 import { AutoFitEllipsisText } from '../common/AutoFitText';
 import { executeEvent } from '../../utils/events';
@@ -150,9 +150,10 @@ export const DesktopHeader = ({
     groupsOwnerNamesSelector(selectedGroup?.groupId ?? '')
   );
   const isGeneralGroup = selectedGroup?.groupId === '0';
-  const groupAvatarUrl = isGeneralGroup
-    ? null
-    : buildGroupAvatarUrl(groupOwnerName, selectedGroup?.groupId);
+  const { src: groupAvatarUrl } = useQdnGroupAvatar(
+    groupOwnerName,
+    isGeneralGroup ? null : selectedGroup?.groupId
+  );
   const groupAvatarFallback = (selectedGroup?.groupName || '?')
     .trim()
     .charAt(0)

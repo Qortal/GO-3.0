@@ -21,6 +21,7 @@ import {
   openAppBatterySettings,
   requestIgnoreBatteryOptimizations,
   shouldShowBatteryOptimizationPrompt,
+  snoozeBatteryOptimizationPrompt,
   startMobilePersistentStatus,
   stopMobilePersistentStatus,
   subscribeMobilePersistentStatusUpdates,
@@ -28,7 +29,7 @@ import {
 } from '../../utils/mobileBackgroundService';
 import { initMobileTransferNotifications } from '../../utils/mobileTransferNotifications';
 import { isCapacitor } from '../../utils/platform';
-import { VendorFreezeHintDialog } from './VendorFreezeHintDialog';
+import { startVendorFreezeHintStore } from './vendorFreezeHintStore';
 import { dialogContentSx, getDialogPaperSx } from '../App/dialogSurface';
 
 type MobileBackgroundSetupProps = {
@@ -121,8 +122,17 @@ export const MobileBackgroundSetup = ({
     publishStatusRef.current?.();
   }, [enabled, selectedNode, nodeInfos, onlineAddresses]);
 
+  // Vendor-freeze notice facts for the bell panel and the Background sync
+  // settings (native Android only; a no-op elsewhere).
+  useEffect(() => {
+    if (!enabled || !isCapacitor()) return undefined;
+    return startVendorFreezeHintStore();
+  }, [enabled]);
+
+  // Also on back / tap outside: the prompt waits 14 days, not one restart.
   const handleNotNow = useCallback(() => {
     setBatteryPromptOpen(false);
+    void snoozeBatteryOptimizationPrompt();
   }, []);
 
   const handleNeverShowAgain = useCallback(async () => {
@@ -130,13 +140,17 @@ export const MobileBackgroundSetup = ({
     setBatteryPromptOpen(false);
   }, []);
 
+  // Granted means it never shows again; declined in Android's dialog or left
+  // unchanged in settings, it waits 14 days like 'Not now'.
   const handleAllowUnrestricted = useCallback(async () => {
-    await requestIgnoreBatteryOptimizations();
+    void snoozeBatteryOptimizationPrompt();
+    await requestIgnoreBatteryOptimizations().catch(() => {});
     setBatteryPromptOpen(false);
   }, []);
 
   const handleOpenAppSettings = useCallback(async () => {
-    await openAppBatterySettings();
+    void snoozeBatteryOptimizationPrompt();
+    await openAppBatterySettings().catch(() => {});
     setBatteryPromptOpen(false);
   }, []);
 
@@ -193,8 +207,6 @@ export const MobileBackgroundSetup = ({
 
   return (
     <>
-      {/* After the battery prompt, so two dialogs never stack. */}
-      <VendorFreezeHintDialog suspended={batteryPromptOpen} />
       <Dialog
         open={batteryPromptOpen}
         onClose={() => handleNotNow()}

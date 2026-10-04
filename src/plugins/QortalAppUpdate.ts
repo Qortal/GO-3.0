@@ -19,6 +19,8 @@ export interface QortalAppUpdatePlugin {
   download(options: {
     filename: string;
     url: string;
+    /** Sent as X-API-KEY, only to the node's own origin (native HTTP). */
+    apiKey?: string;
   }): Promise<{ bytes: number; path: string }>;
   install(options: { path: string }): Promise<void>;
   requestInstallPermission(): Promise<void>;

@@ -1,6 +1,8 @@
 package com.github.Qortal.qortalMobile;
 
+import android.app.Activity;
 import android.app.NotificationManager;
+import android.content.ActivityNotFoundException;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
@@ -10,12 +12,12 @@ import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.Uri;
 import android.os.Build;
-import android.os.PowerManager;
 import android.provider.Settings;
 import android.util.Log;
 
 import androidx.localbroadcastmanager.content.LocalBroadcastManager;
 
+import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
@@ -78,12 +80,15 @@ public class QortalBackgroundPlugin extends Plugin {
             }
 
             @Override
-            public void onVendorFreezeDetected(int count, long lastAt, String manufacturer) {
-                JSObject payload = new JSObject();
-                payload.put("count", count);
-                payload.put("lastAt", lastAt);
-                payload.put("manufacturer", manufacturer);
-                notifyListeners("vendorFreezeDetected", payload);
+            public void onVendorFreezeDetected(
+                int count,
+                VendorFreezeLog.Entry entry,
+                String manufacturer
+            ) {
+                notifyListeners(
+                    VendorFreezeLog.EVENT_DETECTED,
+                    toJSObject(VendorFreezeLog.eventFields(count, entry, manufacturer))
+                );
             }
         };
         BackgroundKeepAlive.get(getContext()).setListener(keepAliveListener);
@@ -96,7 +101,8 @@ public class QortalBackgroundPlugin extends Plugin {
 
     /**
      * The real "GO is on screen" edge (document.visibilityState is not one).
-     * Restarts the status service and the hubs after a dataSync time-out.
+     * Restarts the status service and the hubs after a pause (Android's
+     * time-out or GO's own 6 h battery limit).
      */
     @Override
     protected void handleOnResume() {
@@ -562,6 +568,17 @@ public class QortalBackgroundPlugin extends Plugin {
         }
         ret.put("vendorFreezeHintPending", state.vendorFreezeHintPending);
         ret.put("manufacturer", state.manufacturer);
+        JSArray recent = new JSArray();
+        for (VendorFreezeLog.Entry entry : state.vendorFreezeRecent) {
+            recent.put(toJSObject(VendorFreezeLog.fields(entry)));
+        }
+        ret.put(VendorFreezeLog.STATE_RECENT, recent);
+        ret.put(
+            VendorFreezeLog.STATE_IGNORING,
+            state.ignoringBatteryOptimizations != null
+                ? (Object) state.ignoringBatteryOptimizations
+                : org.json.JSONObject.NULL
+        );
         call.resolve(ret);
     }
 
@@ -633,6 +650,10 @@ public class QortalBackgroundPlugin extends Plugin {
         call.resolve(ret);
     }
 
+    /**
+     * Kept for older pages. The flag it clears is no longer set: the page
+     * owns the freeze notice policy (see recordVendorFreeze).
+     */
     @PluginMethod
     public void acknowledgeVendorFreezeHint(PluginCall call) {
         Context context = getContext();
@@ -646,6 +667,7 @@ public class QortalBackgroundPlugin extends Plugin {
         call.resolve(ret);
     }
 
+    /** { ignoring: boolean }; rejects when the system cannot say. */
     @PluginMethod
     public void isIgnoringBatteryOptimizations(PluginCall call) {
         Context context = getContext();
@@ -654,12 +676,14 @@ public class QortalBackgroundPlugin extends Plugin {
             return;
         }
 
-        PowerManager powerManager = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
-        boolean ignoring = powerManager != null &&
-            powerManager.isIgnoringBatteryOptimizations(context.getPackageName());
+        Boolean ignoring = BackgroundKeepAlive.get(context).readIgnoringBatteryOptimizations();
+        if (ignoring == null) {
+            call.reject("Battery optimisation state not available");
+            return;
+        }
 
         JSObject ret = new JSObject();
-        ret.put("ignoring", ignoring);
+        ret.put("ignoring", ignoring.booleanValue());
         call.resolve(ret);
     }
 
@@ -704,6 +728,69 @@ public class QortalBackgroundPlugin extends Plugin {
             call.resolve(ret);
         } catch (Exception error) {
             call.reject("Unable to open app settings", error);
+        }
+    }
+
+    /**
+     * "Open battery settings" for the vendor freeze notice: the phone maker's
+     * own Battery page where GO knows one (vivo / iQOO, see
+     * KeepAlivePolicy.vendorBatteryIntentSpec), else GO's App info page.
+     * Resolves { opened: 'vendor' | 'app_details' | null }; never rejects.
+     */
+    @PluginMethod
+    public void openVendorBatterySettings(PluginCall call) {
+        Context context = getContext();
+        String opened = null;
+        if (context != null) {
+            KeepAlivePolicy.VendorBatteryIntentSpec spec =
+                KeepAlivePolicy.vendorBatteryIntentSpec(Build.MANUFACTURER);
+            if (spec != null) {
+                Intent vendor = new Intent(spec.action);
+                vendor.setPackage(spec.packageName);
+                if (startSettingsActivity(context, vendor)) opened = VendorFreezeLog.OPENED_VENDOR;
+            }
+            if (opened == null) {
+                Intent appDetails = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+                appDetails.setData(Uri.parse("package:" + context.getPackageName()));
+                if (startSettingsActivity(context, appDetails)) {
+                    opened = VendorFreezeLog.OPENED_APP_DETAILS;
+                }
+            }
+        }
+        JSObject ret = new JSObject();
+        ret.put(VendorFreezeLog.RESULT_OPENED, opened != null ? opened : org.json.JSONObject.NULL);
+        call.resolve(ret);
+    }
+
+    private static JSObject toJSObject(java.util.Map<String, Object> fields) {
+        JSObject out = new JSObject();
+        for (java.util.Map.Entry<String, Object> field : fields.entrySet()) {
+            out.put(field.getKey(), field.getValue());
+        }
+        return out;
+    }
+
+    /**
+     * Starts a settings screen from GO's Activity when there is one (Back
+     * returns to GO), else as a new task. False when the page is missing or
+     * protected on this phone.
+     */
+    private boolean startSettingsActivity(Context context, Intent intent) {
+        Activity activity = getActivity();
+        try {
+            if (activity != null) {
+                activity.startActivity(intent);
+            } else {
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                context.startActivity(intent);
+            }
+            return true;
+        } catch (ActivityNotFoundException | SecurityException error) {
+            Log.w(TAG, "Settings page not available: " + intent.getAction(), error);
+            return false;
+        } catch (RuntimeException error) {
+            Log.w(TAG, "Settings page failed to open: " + intent.getAction(), error);
+            return false;
         }
     }
 }

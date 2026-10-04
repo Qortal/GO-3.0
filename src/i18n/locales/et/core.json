@@ -113,13 +113,14 @@
     "reload_page": "laadi leht uuesti",
     "remove": "eemalda",
     "remove_reaction": "eemalda reaktsioon",
-    "reply": "reply",
+    "reply": "vasta",
     "resize": "muuda suurust",
     "restore": "taasta",
     "return": "tagasi",
     "return_apps_dashboard": "tagasi rakenduste juhtpaneelile",
     "save": "salvesta",
     "save_disk": "salvesta kettale",
+    "scan_qr_code": "skanni QR-kood",
     "search": "otsi",
     "search_apps": "otsi rakendusi",
     "search_apps_or_link": "Otsi rakendusi või sisesta qortal:// link",
@@ -179,10 +180,47 @@
     "tags": "sildid",
     "updated": "uuendatud"
   },
+  "app_lock": {
+    "account_still_signed_in": "{{account}} on endiselt sisse logitud.",
+    "connections_note": "Vestlused ja käimasolevad kõned jäävad lukustuse ajal ühendatuks.",
+    "fingerprint_cancelled": "Sõrmejäljega avamine tühistati.",
+    "fingerprint_failed": "Sõrmejäljega avamine ebaõnnestus. Sisesta selle asemel oma parool.",
+    "lock_now": "Lukusta kohe",
+    "minimize_window": "Minimeeri",
+    "or": "või",
+    "password_label": "Qortali konto parool",
+    "qapp_request_locked": "GO on lukus. Ava see ja proovi uuesti.",
+    "retry_wait_one": "Palun oota {{count}} sekund ja proovi uuesti.",
+    "retry_wait_other": "Palun oota {{count}} sekundit ja proovi uuesti.",
+    "still_signed_in": "Oled endiselt sisse logitud.",
+    "tap_fingerprint": "Puuduta, et avada sõrmejäljega",
+    "title": "Qortal Hub on lukus",
+    "unlock": "Ava",
+    "unlock_with_fingerprint": "Ava sõrmejäljega",
+    "unlocking": "Avamine…",
+    "waiting_for_fingerprint": "Ootan sinu sõrmejälge…",
+    "wrong_password": "See parool pole õige. Palun proovi uuesti."
+  },
   "app_name": "rakenduse nimi",
   "app_other": "rakendused",
   "app_private": "privaatne",
   "app_service_type": "rakenduse teenuse tüüp",
+  "approval_dialog": {
+    "app_fee": "Rakenduse tasu",
+    "decline_all_one": "Keeldu {{count}} selle rakenduse päringust",
+    "decline_all_other": "Keeldu kõigist {{count}} selle rakenduse päringust",
+    "fee": "Tasu",
+    "foreign_fee": "Välismaine tasu",
+    "internal_app": "Qortal GO (see rakendus)",
+    "more_waiting_one": "Veel {{count}} päring ootab",
+    "more_waiting_other": "Veel {{count}} päringut ootab",
+    "qapp_request": "Q-Appi päring",
+    "requested_by": "Päringu saatja",
+    "session_only": "Anna õigused ainult selleks seansiks",
+    "unknown_app": "Tundmatu Q-App",
+    "unknown_app_hint": "GO ei suutnud kindlaks teha, milline Q-App selle päringu saatis. Keeldu sellest, kui sa just ise seda ei palunud.",
+    "what_you_approve": "Mida sa kinnitad"
+  },
   "apps_dashboard": "rakenduste juhtpaneel",
   "apps_official": "ametlikud rakendused",
   "aria": {
@@ -210,11 +248,13 @@
       "off": "väljas"
     },
     "native": {
+      "battery_pause_text": "GO peatas energia säästmiseks oma taustaühenduse pärast 6 tundi akutoitel. Ava GO, et uuesti ühenduda.",
       "fgs_timeout_text": "Android peatas GO taustaühenduse. Ava GO, et uuesti ühenduda.",
       "fgs_timeout_title": "GO on peatatud",
       "status_paused_text": "Ava GO, et vestlusi sünkroonida.",
       "status_paused_title": "Vestlus on peatatud",
       "status_syncing_background": "Vestlust sünkroonitakse taustal",
+      "status_waiting_short": "Saatmata: {{count}}",
       "status_waiting_text": "Saatmist ootavaid sõnumeid: {{count}}"
     },
     "status": {
@@ -223,12 +263,57 @@
     },
     "title": "Taustal sünkroonimine",
     "vendor_freeze": {
-      "body": "Sinu {{manufacturer}} telefon peatas GO taustal, kuigi taustal sünkroonimine oli sees. Ava telefoni akuseaded GO jaoks ja luba taustategevus.",
-      "body_unknown": "Sinu telefon peatas GO taustal, kuigi taustal sünkroonimine oli sees. Ava telefoni akuseaded GO jaoks ja luba taustategevus.",
+      "allow_in_background": "Luba GO taustal",
       "dismiss": "Loobu",
-      "guide": "Samm-sammuline juhend (dontkillmyapp.com)",
+      "dont_show_again": "Ära näita uuesti",
+      "exempt_body": "GO akupiirangud on juba välja lülitatud, kuid sinu {{manufacturer}} telefon peatab selle ikkagi, kui ekraan on väljas. Taustal sünkroonimine töötab, kui ekraan on sees; vestlused jõuavad järele, kui GO avad.",
+      "exempt_body_unknown": "GO akupiirangud on juba välja lülitatud, kuid sinu telefon peatab selle ikkagi, kui ekraan on väljas. Taustal sünkroonimine töötab, kui ekraan on sees; vestlused jõuavad järele, kui GO avad.",
+      "impact": "Vestlused jõudsid järele alles siis, kui GO uuesti avasid.",
+      "last_stopped": "Viimati peatatud: {{time}}",
       "open_battery_settings": "Ava akuseaded",
-      "title": "GO peatati taustal"
+      "open_failed": "Seadeid ei õnnestunud avada. Järgi allolevaid samme telefoni rakenduses Seaded.",
+      "steps": {
+        "generic": {
+          "step_1": "Ava Seaded > Rakendused > GO > „Rakenduse akukasutus“ (või „Aku“).",
+          "step_2": "Vali „Piiranguteta“ (või lülita sisse „Luba taustal kasutamine“)."
+        },
+        "huawei": {
+          "step_1": "Ava Seaded > Aku > „Rakenduste käivitamine“.",
+          "step_2": "Leia GO ja lülita välja „Halda automaatselt“.",
+          "step_3": "Lülita sisse „Automaatne käivitus“, „Teisene käivitus“ ja „Töötamine taustal“."
+        },
+        "note_menu_names": "Menüüde nimed võivad telefonimudeliti ja Androidi versiooniti veidi erineda.",
+        "note_recents": "Ära pühi GO-d viimati kasutatud rakenduste loendist ära.",
+        "oppo": {
+          "step_1": "Ava Seaded > Rakendused > „Rakenduste haldus“ > GO.",
+          "step_2": "Puuduta „Akukasutus“ ja lülita sisse „Luba taustategevus“ (ja „Luba automaatne käivitus“, kui see on olemas)."
+        },
+        "samsung": {
+          "step_1": "Ava Seaded > Rakendused > GO > Aku ja vali „Piiranguteta“.",
+          "step_2": "Kontrolli jaotises Seaded > Aku > „Taustakasutuse piirangud“, et GO poleks loendis „Unerežiimis rakendused“ ega „Sügavas unerežiimis rakendused“."
+        },
+        "vivo": {
+          "step_1": "Ava Seaded > Aku > „Taustal energiatarbimise haldus“.",
+          "step_2": "Leia GO ja vali „Luba“ (või „Ära piira“).",
+          "step_3": "Kui su telefonis on Seaded > Rakendused > „Automaatne käivitus“, lülita seal GO sisse."
+        },
+        "xiaomi": {
+          "step_1": "Ava Seaded > Rakendused > „Halda rakendusi“ > GO.",
+          "step_2": "Lülita sisse „Automaatne käivitus“.",
+          "step_3": "Puuduta „Akusäästja“ ja vali „Piiranguteta“."
+        }
+      },
+      "steps_toggle": "Kuidas seda oma {{brand}} telefonis lubada",
+      "steps_toggle_generic": "Kuidas seda oma telefonis lubada",
+      "summary_one": "Sinu {{manufacturer}} telefon peatas GO viimase 7 päeva jooksul {{count}} korra, kui taustal sünkroonimine oli sees.",
+      "summary_other": "Sinu {{manufacturer}} telefon peatas GO viimase 7 päeva jooksul {{count}} korda, kui taustal sünkroonimine oli sees.",
+      "summary_recent": "Sinu {{manufacturer}} telefon peatas GO taustal, kui taustal sünkroonimine oli sees.",
+      "summary_recent_unknown": "Sinu telefon peatas GO taustal, kui taustal sünkroonimine oli sees.",
+      "summary_unknown_one": "Sinu telefon peatas GO viimase 7 päeva jooksul {{count}} korra, kui taustal sünkroonimine oli sees.",
+      "summary_unknown_other": "Sinu telefon peatas GO viimase 7 päeva jooksul {{count}} korda, kui taustal sünkroonimine oli sees.",
+      "title": "GO peatati taustal",
+      "warnings_off": "Selle kohta käivad hoiatused on sinu teavitustes välja lülitatud.",
+      "warnings_on": "Lülita hoiatused uuesti sisse"
     }
   },
   "balance": "saldo:",
@@ -377,6 +462,16 @@
   "close_quit_completely": "Välju täielikult",
   "close_window_behavior": "Akna sulgemisel",
   "comment_other": "kommentaarid",
+  "composer": {
+    "attachment_count_one": "{{count}} manus",
+    "attachment_count_other": "{{count}} manust",
+    "emoji": "emotikonid",
+    "expand": "laienda",
+    "keyboard": "klaviatuur",
+    "shrink": "ahenda",
+    "title": "koosta sõnum",
+    "write_message": "kirjuta sõnum"
+  },
   "contact_other": "kontaktid",
   "core": {
     "block_height": "ploki kõrgus",
@@ -437,28 +532,38 @@
   },
   "file_transfer": {
     "dismiss": "Sulge",
+    "downloaded": "Alla laaditud",
     "downloading_title": "{{filename}} allalaadimine",
     "failed_title": "Allalaadimine ebaõnnestus",
     "fetching_title": "{{filename}} toomine",
+    "file_transfer_fallback": "Failiedastus",
     "gathering": "Kogumine QDN-ist · {{percent}}%",
     "gathering_chunks": "Kogumine QDN-ist · {{percent}}% · {{local}}/{{total}} osa",
     "gathering_unknown": "Kogumine QDN-ist…",
     "hide": "Peida (jätkub teavitustes)",
-    "install": "Paigalda",
     "looking_for_file": "Faili otsimine QDN-ist…",
     "not_saved_title": "{{filename}} jäi salvestamata",
     "not_saved_tray": "Fail on endiselt alla laaditud. Salvestamiseks ava GO teavitused.",
+    "offer_expired": "Aegunud",
     "open": "Ava",
     "open_failed": "Ükski selle telefoni rakendus ei saa seda faili avada",
+    "package_not_opened": "GO ei ava ega paigalda rakenduspakette. GO uuendamiseks kasuta konto menüüs valikut „GO 3.0 uuendused“.",
+    "package_saved": "Salvestatud asukohta {{location}}. GO ei ava rakenduspakette.",
     "progress": "{{percent}} % · {{size}}",
-    "ready_to_install": "Valmis paigaldamiseks · {{location}}",
     "ready_to_open": "Valmis avamiseks · {{location}}",
+    "received_file_gone": "Seda faili pole enam selles seadmes. GO eemaldab vastuvõetud failid väljalogimisel; palu saatjal see uuesti saata.",
+    "received_file_removed": "Pole enam selles seadmes",
+    "received_in_downloads": "See fail on juba sinu allalaadimiste kaustas.",
+    "received_notification_text": "{{fileName}} on GO-s valmis",
+    "received_notification_title": "Fail vastu võetud",
+    "received_private_hint": "Hoitakse privaatselt GO-s kuni väljalogimiseni",
     "remove": "Eemalda loendist",
     "save": "Salvesta",
     "save_error": "Viga faili salvestamisel: {{message}}",
     "save_error_generic": "Viga faili salvestamisel",
     "save_stalled": "Salvestamine takerdus: salvestusruum lakkas vastamast",
     "save_success": "Fail salvestatud",
+    "save_to_device": "Salvesta seadmesse",
     "saved_title": "{{filename}} salvestatud",
     "saved_to": "Salvestatud asukohta {{location}}",
     "saving_file": "Faili salvestamine…",
@@ -469,7 +574,6 @@
     "stage_gathering": "Kogumine QDN-ist",
     "stage_saving": "Telefoni salvestamine",
     "storage_permission": "GO vajab salvestusruumi luba, et salvestada faile kausta Documents.",
-    "tap_to_install": "Puuduta paigaldamiseks · {{location}}",
     "tap_to_open": "Puuduta avamiseks · {{location}}"
   },
   "filter": {
@@ -496,7 +600,12 @@
     "checking": "QDN-i kontrollimine…",
     "error": {
       "fetch_failed": "Versiooni ei õnnestunud tuua",
-      "timeout": "Võrk ei toimetanud versiooni õigeks ajaks kohale"
+      "insecure_node": "See sõlm kasutab krüptimata HTTP-d, seega GO ei laadi sealt uuendust alla. Uuendused tulevad ainult HTTPS-i kaudu või selles telefonis olevast sõlmest. Uuendamiseks vaheta HTTPS-sõlmele.",
+      "not_go_build": "See fail ei ole Qortal GO versioon, seega seda ei paigaldatud.",
+      "not_newer": "See versioon ei ole uuem kui selles telefonis olev GO, seega seda ei paigaldatud.",
+      "timeout": "Võrk ei toimetanud versiooni õigeks ajaks kohale",
+      "unreadable": "Android ei suutnud seda faili rakendusena lugeda, seega seda ei paigaldatud.",
+      "wrong_signer": "See versioon ei ole allkirjastatud sama võtmega kui selles telefonis olev GO, seega seda ei paigaldatud."
     },
     "hide_changes": "Peida muudatused",
     "install": "Paigalda",
@@ -541,7 +650,8 @@
     "title": "GO 3.0 uuendused",
     "update_marker": "GO 3.0 uuendus saadaval",
     "versions_missing": "Mõnda versiooni ei õnnestunud veel laadida ({{count}}). Kontrolli hiljem uuesti.",
-    "versions_title": "Versioonid QDN-is"
+    "versions_title": "Versioonid QDN-is",
+    "versions_unreachable": "QDN-iga ei saadud ühendust. Kontrolli sõlme ühendust ja proovi uuesti."
   },
   "group_call": "rühmakõne",
   "group_call_blocked": "lõpeta esmalt oma teine kõne",
@@ -623,6 +733,7 @@
       "invalid_zip": "vigane zip",
       "long_message_too_many_parts": "See sõnum on saatmiseks liiga pikk, isegi {{maximum}} osaks jagatuna.",
       "long_message_unsplittable": "Osa sellest sõnumist ei saa saatmiseks piisavalt väikesteks osadeks jagada.",
+      "max_tabs_reached": "Vahekaarte on avatud suurim lubatud arv. Uue avamiseks sulge üks.",
       "message_loading": "sõnumi laadimisel ilmnes viga.",
       "message_size": "sinu sõnumi suurus on {{ size }} baiti maksimaalsest {{ maximum }}",
       "minting_account_add": "müntimiskontot ei saa lisada",
@@ -639,6 +750,7 @@
       "same_foreign_blockchain": "aadress ei kuulu samasse välisesse plokiahelasse",
       "save_qdn": "QDN-i salvestamine ebaõnnestus",
       "send_failed": "saatmine ebaõnnestus",
+      "unrecognized_qr": "see QR-kood ei ole Qortali maksekood.",
       "update_failed": "uuendamine ebaõnnestus",
       "vote": "ei saa hääletada"
     },
@@ -742,6 +854,7 @@
       "revert_qdn": "taasta QDN-ist",
       "revoke_permission": "Tühista",
       "save_qdn": "salvesta QDN-i",
+      "saving": "salvestamine…",
       "secure_ownership": "turvasta oma nime all avaldatud andmete omandiõigus. Soovi korral võid oma nime ja andmed ka kolmandale isikule müüa.",
       "select_file": "palun vali fail",
       "select_image": "palun vali pilt logo jaoks",
@@ -772,7 +885,8 @@
       "register_name": "kas soovid selle nime registreerida?",
       "reset_pinned": "ei meeldi kohalikud muudatused? Kas soovid taastada vaikimisi kinnitatud rakendused?",
       "reset_qdn": "ei meeldi kohalikud muudatused? Kas soovid taastada oma QDN-i salvestatud kinnitatud rakendused?",
-      "transfer_qort": "kas soovid kanda üle {{ amount }} QORT?"
+      "transfer_qort": "kas soovid kanda üle {{ amount }} QORT?",
+      "transfer_qort_to": "kas soovid kanda {{ amount }} QORT üle saajale {{ recipient }}?"
     },
     "success": {
       "order_submitted": "sinu ostutellimus esitatud",
@@ -999,15 +1113,15 @@
     "wallets": "Rahakotid"
   },
   "quitter_feed": {
-    "empty_message_no_following": "Sirvi Quitteri ja järgi kontosid oma voo koostamiseks.",
+    "empty_message_no_following": "Sirvi {{app}}i ja järgi kontosid oma voo koostamiseks.",
     "empty_message_no_name": "Logi sisse Qortali nimelaadiga, et luua isikupärastatud voog.",
-    "empty_message_no_posts": "Kontod, keda järgid, ei ole Quitterisse veel postitanud.",
+    "empty_message_no_posts": "Kontod, keda järgid, ei ole {{app}}isse veel postitanud.",
     "empty_title_general": "Postitusi pole saadaval",
     "empty_title_no_following": "Paistab, et sa ei järgi veel kedagi.",
     "empty_title_no_name": "Logi sisse, et oma voogu isikupärastada",
     "empty_title_no_posts": "Jälgitavatelt kontodelt pole postitusi",
-    "error_following": "Isikupärastatud Quitteri voog pole ajutiselt saadaval. Palun proovi uuesti.",
-    "error_generic": "Avalik Quitteri voog pole ajutiselt saadaval. Proovi hetke pärast uuesti.",
+    "error_following": "Isikupärastatud {{app}}i voog pole ajutiselt saadaval. Palun proovi uuesti.",
+    "error_generic": "Avalik {{app}}i voog pole ajutiselt saadaval. Proovi hetke pärast uuesti.",
     "error_timeout": "Voo laadimine ebaõnnestus. Võid proovida uuesti või naasta Üldise juurde.",
     "error_title_following": "Voo laadimine ebaõnnestus",
     "error_title_general": "Postitusi ei õnnestunud laadida",
