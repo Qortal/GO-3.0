@@ -27883,7 +27883,8 @@ describe('reticulum chat manager', () => {
       eventId: 'range-offer-actual-envelope',
       groupId: 50,
       channelId: 'general',
-      timestamp: 20_000,
+      // Peers are served only recent events (RETICULUM_CHAT_SERVE_MAX_AGE_MS).
+      timestamp: Date.now() - 20_000,
     });
 
     const result = await (manager as any).offerEventPageResource(
@@ -27933,7 +27934,7 @@ describe('reticulum chat manager', () => {
       eventId: 'event-page-temp-cleanup',
       groupId: 50,
       channelId: 'general',
-      timestamp: 20_500,
+      timestamp: Date.now() - 20_500,
     });
 
     const result = await (manager as any).offerEventPageResource(
@@ -27985,7 +27986,7 @@ describe('reticulum chat manager', () => {
       eventId: 'event-page-temp-volume-full',
       groupId: 50,
       channelId: 'general',
-      timestamp: 20_750,
+      timestamp: Date.now() - 20_750,
     });
 
     const result = await (manager as any).offerEventPageResource(
@@ -39881,7 +39882,7 @@ describe('reticulum chat delivery waste cuts', () => {
     }
   });
 
-  it('marks only still-pending own events as sent when serving a DM page', async () => {
+  it('marks only still-pending own events as sent once a served DM page is delivered', async () => {
     const owner = createDmIdentity();
     const requester = createDmIdentity();
     const requesterPeerHash = 'b'.repeat(32);
@@ -39921,6 +39922,7 @@ describe('reticulum chat delivery waste cuts', () => {
           timestamp: Date.now() - 2_000,
         }),
         localDeliveryStatus: 'sent',
+        localOwnEvent: true,
       };
       const stillPending: ReticulumDmEvent = {
         ...signedDmEvent({
@@ -39931,9 +39933,14 @@ describe('reticulum chat delivery waste cuts', () => {
           timestamp: Date.now() - 1_000,
         }),
         localDeliveryStatus: 'pending',
+        localOwnEvent: true,
       };
       let pageEvents: ReticulumDmEvent[] = [alreadySent, stillPending];
       (manager as any).db.getDirectEventsAfter = () => pageEvents;
+      (manager as any).db.getDirectEvent = (eventId: string) =>
+        [alreadySent, stillPending].find(
+          (event) => event.eventId === eventId
+        ) ?? null;
       const markSent = vi
         .spyOn(manager as any, 'markDirectEventSent')
         .mockImplementation(() => undefined);
@@ -39979,6 +39986,12 @@ describe('reticulum chat delivery waste cuts', () => {
       await authorize('5'.repeat(16));
       expect(rejected).toEqual([]);
       expect(sentResources).toHaveLength(1);
+      // Authorized is not delivered.
+      expect(markSent).not.toHaveBeenCalled();
+      manager.handleResourceEvent({
+        status: 'sent',
+        transferId: '5'.repeat(16),
+      } as any);
       expect(markSent).toHaveBeenCalledTimes(1);
       expect((markSent.mock.calls[0][0] as ReticulumDmEvent).eventId).toBe(
         stillPending.eventId
@@ -40261,7 +40274,11 @@ describe('reticulum chat own-device copy of outbound DMs', () => {
         timestamp: clock - age,
       }),
       localDeliveryStatus: 'pending' as const,
+      localOwnEvent: true,
     });
+    // The bridge's terminal event for a page this device authorized.
+    const pageDelivered = (transferId: string) =>
+      manager.handleResourceEvent({ status: 'sent', transferId } as any);
     return {
       owner,
       recipient,
@@ -40274,6 +40291,7 @@ describe('reticulum chat own-device copy of outbound DMs', () => {
       rejected,
       setAdmitted,
       pullPage,
+      pageDelivered,
       notifySignatures,
       notifiesTo,
       pendingEvent,
@@ -40312,6 +40330,8 @@ describe('reticulum chat own-device copy of outbound DMs', () => {
 
       let pageEvents: ReticulumDmEvent[] = [event];
       t.db.getDirectEventsAfter = () => pageEvents;
+      t.db.getDirectEvent = (eventId: string) =>
+        pageEvents.find((candidate) => candidate.eventId === eventId) ?? null;
       const markCopied = vi.fn(
         (eventIds: string[], _copiedAt: number) => eventIds.length
       );
@@ -40337,6 +40357,9 @@ describe('reticulum chat own-device copy of outbound DMs', () => {
         requestId,
         transferId: '7'.repeat(16),
       });
+      // Authorized is not copied: only the delivered page records it.
+      expect(markCopied).not.toHaveBeenCalled();
+      t.pageDelivered('7'.repeat(16));
 
       expect(t.rejected).toEqual([]);
       expect(t.sentResources).toHaveLength(1);
@@ -40368,6 +40391,7 @@ describe('reticulum chat own-device copy of outbound DMs', () => {
         requestId,
         transferId: '8'.repeat(16),
       });
+      t.pageDelivered('8'.repeat(16));
       expect(markCopied).toHaveBeenCalledTimes(1);
       expect(emitted).toHaveLength(1);
 
@@ -40384,8 +40408,8 @@ describe('reticulum chat own-device copy of outbound DMs', () => {
         'dm_notification_request_mismatch',
       ]);
 
-      // The recipient's pull confirms the tracked delivery as before, marks
-      // the event sent and records no own-device copy.
+      // The recipient's pull confirms the tracked delivery as before; its
+      // delivered page marks the event sent and records no own-device copy.
       pageEvents = [event];
       await t.pullPage({
         requester: t.recipient,
@@ -40394,6 +40418,10 @@ describe('reticulum chat own-device copy of outbound DMs', () => {
         requestId,
         transferId: 'a'.repeat(16),
       });
+      expect(confirm).toHaveBeenCalledTimes(1);
+      expect(clearRetries).toHaveBeenCalledTimes(1);
+      expect(markSent).not.toHaveBeenCalled();
+      t.pageDelivered('a'.repeat(16));
       expect(confirm).toHaveBeenCalledTimes(1);
       expect(clearRetries).toHaveBeenCalledTimes(1);
       expect(markSent).toHaveBeenCalledTimes(1);
@@ -40428,6 +40456,10 @@ describe('reticulum chat own-device copy of outbound DMs', () => {
       };
       let after: ReticulumDmEvent[] = [m2];
       t.db.getDirectEventsAfter = () => after;
+      t.db.getDirectEvent = (eventId: string) =>
+        [m1, { ...m2, localOwnEvent: false }].find(
+          (candidate) => candidate.eventId === eventId
+        ) ?? null;
       const passed = vi.fn(
         (
           _sender: string,
@@ -40453,6 +40485,7 @@ describe('reticulum chat own-device copy of outbound DMs', () => {
         transferId: '2'.repeat(16),
         after: m2.timestamp - 1,
       });
+      t.pageDelivered('2'.repeat(16));
       expect(t.rejected).toEqual([]);
       expect(passed).toHaveBeenCalledTimes(1);
       expect(passed.mock.calls[0]).toEqual([
@@ -40496,6 +40529,7 @@ describe('reticulum chat own-device copy of outbound DMs', () => {
         transferId: '6'.repeat(16),
         after: m2.timestamp - 1,
       });
+      t.pageDelivered('6'.repeat(16));
       expect(t.rejected).toEqual([]);
       expect(passed).toHaveBeenCalledTimes(3);
       expect(passed.mock.calls[2][0]).toBe(t.owner.address);
@@ -41262,6 +41296,12 @@ describe('reticulum chat own-device Saved Messages, group notices and probes', (
         requestId: '4'.repeat(16),
         transferId: '5'.repeat(16),
       });
+      // Confirmed only once the bridge reports the page delivered.
+      expect(t.manager.getDeliveryCounters().selfDmNotifyConfirmed).toBe(1);
+      t.manager.handleResourceEvent({
+        status: 'sent',
+        transferId: '5'.repeat(16),
+      } as any);
       expect(t.manager.getDeliveryCounters().selfDmNotifyConfirmed).toBe(2);
       t.advance(10 * 60_000);
       await (t.manager as any).broadcastSelfDmNotifications('periodic');
@@ -42462,6 +42502,9 @@ describe('reticulum chat pending delivery sweep: persisted state and slow tail',
       expect(t.fullFanouts()).toBe(0);
       expect(t.notifiesTo(RECIPIENT_PEER)).toHaveLength(1);
       expect(t.notifiesTo(RECIPIENT_PEER)[0].d.m).toBe(2);
+      // Attempt 2 names the head as `lc` (only attempts 4, 8, 16... leave
+      // it out, so devices that hold the head pull again).
+      expect(typeof t.notifiesTo(RECIPIENT_PEER)[0].d.lc).toBe('string');
       expect(t.counters().dmPendingRedeliver).toBe(1);
     } finally {
       t.cleanup();
@@ -42792,6 +42835,7 @@ describe('reticulum chat pending delivery sweep: persisted state and slow tail',
       expect(t.counters().dmPendingRedeliverPeerSpoke).toBe(1);
       expect(t.notifiesTo(RECIPIENT_PEER)).toHaveLength(1);
       expect(t.notifiesTo(RECIPIENT_PEER)[0].d.m).toBe(2);
+      expect(t.notifiesTo(RECIPIENT_PEER)[0].d.lc).toBeUndefined();
       expect(t.dmFanouts().map((wire) => wire.d.fw)).toEqual([4]);
       expect(row.attempts).toBe(4);
       expect(t.tracked()).toBe(0);

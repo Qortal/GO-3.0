@@ -279,17 +279,24 @@
     },
     "text_size": {
       "default": {
-        "detail": "Tamanho atual do texto do chat",
+        "detail": "O tamanho habitual do texto do chat",
         "label": "Predefinido"
       },
-      "description": "Escolhe um tamanho de leitura para as mensagens Reticulum, as etiquetas dos canais e a lista de membros. As pré-visualizações de convites mantêm o seu esquema fixo.",
-      "high": {
-        "detail": "O maior texto de chat ainda legível",
+      "description": "Define o tamanho do texto nos chats de grupo e nas mensagens diretas, incluindo as respostas, a caixa de mensagem, os nomes dos canais e a lista de membros. Os ficheiros, os convites e as pré-visualizações de ligações mantêm o seu esquema.",
+      "large": {
+        "detail": "Texto maior e mais fácil de ler",
         "label": "Grande"
       },
-      "medium": {
-        "detail": "Um aumento confortável",
-        "label": "Médio"
+      "preview": {
+        "incoming": "Este texto é fácil de ler?",
+        "label": "Pré-visualização",
+        "outgoing": "Sim, este tamanho serve-me bem.",
+        "sender": "Inês"
+      },
+      "sample": "Aa",
+      "small": {
+        "detail": "Cabem mais mensagens no ecrã",
+        "label": "Pequeno"
       },
       "title": "Tamanho do texto"
     }

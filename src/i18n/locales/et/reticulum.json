@@ -279,17 +279,24 @@
     },
     "text_size": {
       "default": {
-        "detail": "Praegune vestluse teksti suurus",
+        "detail": "Tavaline vestluse teksti suurus",
         "label": "Vaikimisi"
       },
-      "description": "Vali lugemissuurus Reticulumi sõnumitele, kanalisiltidele ja liikmete loendile. Kutsete eelvaated säilitavad oma kindla paigutuse.",
-      "high": {
-        "detail": "Suurim loetav vestlusteksti suurus",
+      "description": "Määrab teksti suuruse grupivestlustes ja otsesõnumites, sealhulgas vastustes, sõnumikastis, kanalinimedes ja liikmete loendis. Failid, kutsed ja linkide eelvaated säilitavad oma paigutuse.",
+      "large": {
+        "detail": "Suurem ja kergemini loetav tekst",
         "label": "Suur"
       },
-      "medium": {
-        "detail": "Mugav suurendus",
-        "label": "Keskmine"
+      "preview": {
+        "incoming": "Kas seda teksti on lihtne lugeda?",
+        "label": "Eelvaade",
+        "outgoing": "Jah, see suurus sobib mulle.",
+        "sender": "Liis"
+      },
+      "sample": "Aa",
+      "small": {
+        "detail": "Ekraanile mahub rohkem sõnumeid",
+        "label": "Väike"
       },
       "title": "Teksti suurus"
     }

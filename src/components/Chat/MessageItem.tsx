@@ -47,8 +47,13 @@ import StarterKit from '@tiptap/starter-kit';
 import Underline from '@tiptap/extension-underline';
 import { WrapperUserAction } from '../WrapperUserAction';
 import ReplyIcon from '@mui/icons-material/Reply';
+import ReplyRoundedIcon from '@mui/icons-material/ReplyRounded';
 import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded';
 import TextFieldsRoundedIcon from '@mui/icons-material/TextFieldsRounded';
+import EditOutlinedIcon from '@mui/icons-material/EditOutlined';
+import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded';
+import ForumOutlinedIcon from '@mui/icons-material/ForumOutlined';
+import ScheduleRoundedIcon from '@mui/icons-material/ScheduleRounded';
 import { ReactionPicker } from '../ReactionPicker';
 import KeyOffIcon from '@mui/icons-material/KeyOff';
 import EditIcon from '@mui/icons-material/Edit';
@@ -127,28 +132,31 @@ import { createReticulumImageRequestGate } from './reticulumImageRequestGate';
 import { ReticulumDmDeliveryGlyph } from './ReticulumDmDeliveryGlyph';
 import { hasReticulumDmDeliveryState } from './reticulumDmDeliveryState';
 import {
+  DESKTOP_MESSAGE_ACTION_SIZES,
   getMessageActionSizes,
-  getMessageColumnWidthFromRow,
-  getPhoneMessageColumnWidth,
-  getPhoneToolbarButtonSize,
-  PHONE_MENU_QUICK_REACTION_PX,
   PHONE_AVATAR_HIT_SLOP_BOTTOM_PX,
   PHONE_AVATAR_HIT_SLOP_TOP_PX,
   PHONE_AVATAR_HIT_SLOP_X_PX,
   PHONE_MESSAGE_AVATAR_PX,
   PHONE_MESSAGE_BUTTON_MIN_HEIGHT_PX,
   PHONE_RETRY_PILL_MIN_HEIGHT_PX,
-  PHONE_TOOLBAR_BORDER_PX,
-  PHONE_TOOLBAR_GROUP_GAP_PX,
-  PHONE_TOOLBAR_PADDING_PX,
 } from './messageActionSizes';
 import {
-  executeEvent,
-  subscribeToEvent,
-  unsubscribeFromEvent,
-} from '../../utils/events';
+  MessageActionsDetailRow,
+  MessageActionsPopup,
+  type MessageActionsPopupAction,
+} from './MessageActionsPopup';
+import { executeEvent } from '../../utils/events';
 import { useAtomValue } from 'jotai';
-import { reticulumHighlightOwnMessagesAtom } from '../../atoms/global';
+import {
+  reticulumChatTextScaleAtom,
+  reticulumHighlightOwnMessagesAtom,
+} from '../../atoms/global';
+import {
+  qchatMetaTextSize,
+  qchatTextSize,
+  reticulumChatTextScaleClassName,
+} from './reticulumChatTextScale';
 
 const QCHAT_FILE_TRANSFER_TTL_MS = 2 * 60 * 60 * 1000;
 const RETICULUM_FILE_DOWNLOAD_STALL_MS = 2 * 60 * 1000;
@@ -181,8 +189,29 @@ const formatReticulumExpiry = (value: number | null): string => {
   });
   return `${monthAndDay} | ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 };
+// React passes events from a portal up the component tree, so a tap on the
+// user card, its invisible backdrop or a reaction list drawn for this message
+// reaches the row too. Only taps on the row's own page content count.
+const isEventFromRowItself = (event: {
+  currentTarget: EventTarget;
+  target: EventTarget;
+}): boolean =>
+  event.currentTarget instanceof Node &&
+  event.target instanceof Node &&
+  event.currentTarget.contains(event.target);
+// Full date and time in the reader's locale, for the long-press details.
+const formatMessageDetailMoment = (value: unknown): string => {
+  const ms = normalizeReticulumExpiryMs(value);
+  if (!ms) return '';
+  const date = new Date(ms);
+  return Number.isNaN(date.getTime())
+    ? ''
+    : date.toLocaleString(undefined, {
+        dateStyle: 'medium',
+        timeStyle: 'short',
+      });
+};
 const RETICULUM_QUICK_REACTIONS = ['👍', '💯', '😂', '❤️'] as const;
-const MESSAGE_ACTIONS_OPENED_EVENT = 'reticulumMessageActionsOpened';
 
 const reticulumImageRequestGate = createReticulumImageRequestGate(
   RETICULUM_IMAGE_REQUEST_BACKOFF_MS,
@@ -379,7 +408,11 @@ const getQchatFileTransfer = (message: any) => {
 };
 
 type MessageItemProps = {
-  handleReaction: (reaction: string, messageId: string) => void;
+  handleReaction: (
+    reaction: string,
+    chatMessage: any,
+    reactionState?: boolean
+  ) => void;
   isLast: boolean;
   isGroupedWithPrevious?: boolean;
   isPrivate: boolean;
@@ -476,6 +509,8 @@ export const MessageItemComponent = ({
   const highlightOwnReticulumMessages = useAtomValue(
     reticulumHighlightOwnMessagesAtom
   );
+  // Only for the Select text sheet: a portal, outside the chat's size root.
+  const reticulumChatTextScale = useAtomValue(reticulumChatTextScaleAtom);
   const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
   const [selectedReaction, setSelectedReaction] = useState<string | null>(null);
   const [userInfo, setUserInfo] = useState(null);
@@ -501,79 +536,24 @@ export const MessageItemComponent = ({
     origin: { x: number; y: number } | null;
     fired: boolean;
   }>({ timer: null, origin: null, fired: false });
-  const messageRowLongPress = useLongPress(
-    ({ clientX, clientY }) => {
-      setReticulumMessageMenuPosition({
-        mouseX: clientX + 2,
-        mouseY: clientY - 6,
-      });
+  // Phones show the message actions as a Telegram-style popup where the
+  // message was touched: a tap opens the short version, a long press the one
+  // with every action and the details. It stays mounted through its closing
+  // fade, so `open` and the anchor are separate.
+  const [phoneActions, setPhoneActions] = useState<{
+    mode: 'tap' | 'hold';
+    x: number;
+    y: number;
+  } | null>(null);
+  const [phoneActionsOpen, setPhoneActionsOpen] = useState(false);
+  const openPhoneActions = useCallback(
+    (mode: 'tap' | 'hold', x: number, y: number) => {
+      setPhoneActions({ mode, x, y });
+      setPhoneActionsOpen(true);
     },
-    { enabled: reticulumChatEnabled }
+    []
   );
-  // Phones have no hover, so the quick-action bar is an explicit toggle. It is
-  // unmounted while closed so it claims no row height.
-  const [mobileActionsOpen, setMobileActionsOpen] = useState(false);
-  // Width of the message column the bar opens in, measured from the row so a
-  // narrower host (sidebar layout, mini thread) still fits it on one line.
-  const [mobileActionsColumnPx, setMobileActionsColumnPx] = useState<
-    number | null
-  >(null);
-  const mobileActionsRowRef = useRef<HTMLElement | null>(null);
-  const messageActionsKey = message?.signature;
-  const handleMobileActionsTap = useCallback(
-    (event: React.MouseEvent) => {
-      const target = event.target as HTMLElement | null;
-      // Never steal a tap meant for a link, control, or the bar's own buttons.
-      if (
-        target?.closest(
-          'a, button, input, textarea, [role="button"], .message-item-toolbar'
-        )
-      ) {
-        return;
-      }
-      const row = event.currentTarget as HTMLElement;
-      mobileActionsRowRef.current = row;
-      setMobileActionsColumnPx(
-        getMessageColumnWidthFromRow(row.clientWidth, window.innerWidth)
-      );
-      setMobileActionsOpen((open) => {
-        if (!open) {
-          executeEvent(MESSAGE_ACTIONS_OPENED_EVENT, {
-            signature: messageActionsKey,
-          });
-        }
-        return !open;
-      });
-    },
-    [messageActionsKey]
-  );
-  // Leaving a trail of open bars down the conversation is noise, so opening one
-  // closes the rest.
-  useEffect(() => {
-    if (!mobileActionsOpen) return;
-    const onOtherOpened = (event: CustomEvent) => {
-      if (event?.detail?.signature !== messageActionsKey) {
-        setMobileActionsOpen(false);
-      }
-    };
-    subscribeToEvent(MESSAGE_ACTIONS_OPENED_EVENT, onOtherOpened);
-    return () =>
-      unsubscribeFromEvent(MESSAGE_ACTIONS_OPENED_EVENT, onOtherOpened);
-  }, [mobileActionsOpen, messageActionsKey]);
-  // Rotating the phone changes the column under an open bar.
-  useEffect(() => {
-    if (!mobileActionsOpen) return;
-    const remeasure = () => {
-      setMobileActionsColumnPx(
-        getMessageColumnWidthFromRow(
-          mobileActionsRowRef.current?.clientWidth,
-          window.innerWidth
-        )
-      );
-    };
-    window.addEventListener('resize', remeasure);
-    return () => window.removeEventListener('resize', remeasure);
-  }, [mobileActionsOpen]);
+  const closePhoneActions = useCallback(() => setPhoneActionsOpen(false), []);
   const cancelReactionHold = useCallback(() => {
     if (reactionHold.current.timer !== null) {
       window.clearTimeout(reactionHold.current.timer);
@@ -893,6 +873,44 @@ export const MessageItemComponent = ({
 
   const theme = useTheme();
   const isMobileLayout = useMediaQuery(theme.breakpoints.down('md'));
+  const messageRowLongPress = useLongPress(
+    ({ clientX, clientY }) => {
+      if (isMobileLayout) {
+        // A short buzz says "held", as on Telegram, before the menu lands.
+        try {
+          navigator.vibrate?.(10);
+        } catch {
+          // Vibration is a nicety; some WebViews refuse it.
+        }
+        openPhoneActions('hold', clientX, clientY);
+        return;
+      }
+      setReticulumMessageMenuPosition({
+        mouseX: clientX + 2,
+        mouseY: clientY - 6,
+      });
+    },
+    { enabled: reticulumChatEnabled }
+  );
+  // A tap anywhere on a message that is not a link, a control or a picture
+  // opens the short popup; a picture opens itself. Threads open read-only, so
+  // they skip the tap version.
+  const handleMobileActionsTap = useCallback(
+    (event: React.MouseEvent) => {
+      if (reticulumDiscussionView) return;
+      if (!isEventFromRowItself(event)) return;
+      const target = event.target as HTMLElement | null;
+      if (
+        target?.closest(
+          'a, button, input, textarea, [role="button"], img, video'
+        )
+      ) {
+        return;
+      }
+      openPhoneActions('tap', event.clientX, event.clientY);
+    },
+    [openPhoneActions, reticulumDiscussionView]
+  );
   const reticulumMemberRole = reticulumChatEnabled
     ? reticulumMemberRolesByAddress?.[message?.sender]
     : undefined;
@@ -2392,7 +2410,7 @@ export const MessageItemComponent = ({
           color: alpha(theme.palette.warning.main, 0.9),
           cursor: 'help',
           flexShrink: 0,
-          fontSize: '9.5px',
+          fontSize: qchatMetaTextSize(9.5),
           fontWeight: 500,
           letterSpacing: '0.035em',
           lineHeight: 1,
@@ -2443,7 +2461,8 @@ export const MessageItemComponent = ({
         padding: '6px 14px',
       }
     : {};
-  const menuSizes = getMessageActionSizes(isMobileLayout);
+  // Only the desktop opens this menu; phones get MessageActionsPopup.
+  const menuSizes = DESKTOP_MESSAGE_ACTION_SIZES;
   // The defaultValues keep English (not key names) on screen until the
   // locales carry this surface's new keys.
   const reticulumDiscussionLabel = t('group:message_item.view_replies', {
@@ -2551,6 +2570,119 @@ export const MessageItemComponent = ({
   const discussionChipInHeader = Boolean(
     reticulumDiscussionButton && !discussionChipInReactionsRow
   );
+
+  // What the phone popup offers. Threads show their messages read-only (the
+  // host passes no-op handlers), so there only copying and the details make
+  // sense. The long-press version adds Select text and the details card.
+  const phoneActionsHold = phoneActions?.mode === 'hold';
+  const phoneActionsInteractive = !reticulumDiscussionView;
+  const capitalized = { postProcess: 'capitalizeFirstChar' } as const;
+  const phoneActionCandidates: Array<
+    MessageActionsPopupAction | false | undefined
+  > = phoneActions
+    ? [
+        phoneActionsInteractive && {
+          icon: <ReplyRoundedIcon />,
+          key: 'reply',
+          label: t('core:action.reply', capitalized),
+          onSelect: () => onReply(message),
+        },
+        phoneActionsInteractive &&
+          onOpenReticulumDiscussion && {
+            icon: <ForumOutlinedIcon />,
+            key: 'discussion',
+            label:
+              reticulumDiscussionReplyCount > 0
+                ? reticulumDiscussionLabel
+                : t('group:message_item.reply_in_discussion', capitalized),
+            onSelect: () => onOpenReticulumDiscussion(message),
+          },
+        Boolean(reticulumMessagePlainText) && {
+          icon: <ContentCopyRoundedIcon />,
+          key: 'copy',
+          label: t('core:action.copy', capitalized),
+          onSelect: () => void copyReticulumMessage(),
+        },
+        phoneActionsHold &&
+          Boolean(reticulumMessagePlainText) && {
+            icon: <TextFieldsRoundedIcon />,
+            key: 'select-text',
+            label: t('group:message_item.select_text', capitalized),
+            onSelect: () => {
+              setSelectTextCopied(false);
+              setIsSelectTextOpen(true);
+            },
+          },
+        phoneActionsInteractive &&
+          isOwnReticulumEditable && {
+            icon: <EditOutlinedIcon />,
+            key: 'edit',
+            label: t('core:action.edit', capitalized),
+            onSelect: () => onEdit(message),
+          },
+        phoneActionsInteractive &&
+          isOwnReticulumDeletable && {
+            destructive: true,
+            icon: <DeleteOutlineRoundedIcon />,
+            key: 'delete',
+            label: t('core:action.delete', capitalized),
+            onSelect: () => onDelete(message),
+          },
+      ]
+    : [];
+  const phoneMessageActions = phoneActionCandidates.filter(
+    (action): action is MessageActionsPopupAction => Boolean(action)
+  );
+  // The row is typed loosely upstream; read the times through a narrow view.
+  const messageTimes = message as unknown as
+    | { editTimestamp?: unknown; isEdit?: unknown; timestamp?: unknown }
+    | null
+    | undefined;
+  const phoneActionsSentAt = phoneActionsHold
+    ? formatMessageDetailMoment(messageTimes?.timestamp)
+    : '';
+  const phoneActionsEditedAt =
+    phoneActionsHold && messageTimes?.isEdit
+      ? formatMessageDetailMoment(messageTimes?.editTimestamp)
+      : '';
+  const phoneActionDetails = phoneActionsHold ? (
+    <>
+      {phoneActionsSentAt && (
+        <MessageActionsDetailRow
+          icon={<ScheduleRoundedIcon />}
+          label={t('group:message_item.sent', capitalized)}
+          value={phoneActionsSentAt}
+        />
+      )}
+      {phoneActionsEditedAt && (
+        <MessageActionsDetailRow
+          icon={<EditOutlinedIcon />}
+          label={t('core:message.generic.edited', capitalized)}
+          value={phoneActionsEditedAt}
+        />
+      )}
+      {reticulumChatEnabled &&
+        (hasReticulumExpiry ? (
+          <MessageActionsDetailRow
+            icon={<img alt="" src={messageExpiresIcon} />}
+            label={t('group:message_item.message_expires', capitalized)}
+            tone="warning"
+            value={formatMessageDetailMoment(reticulumExpiryMs)}
+          />
+        ) : (
+          <MessageActionsDetailRow
+            icon={<img alt="" src={noExpiryIcon} />}
+            label={t('reticulum:expiry.title', capitalized)}
+            value={t('reticulum:expiry.no_expiry', capitalized)}
+          />
+        ))}
+    </>
+  ) : undefined;
+  const myReactionEmojis = phoneActions
+    ? Object.keys(reactions || {}).filter((emoji) =>
+        reactions?.[emoji]?.some((item) => item?.sender === myAddress)
+      )
+    : [];
 
   if (shouldSuppressUnvalidatedGroupWelcome) return null;
 
@@ -2693,36 +2825,18 @@ export const MessageItemComponent = ({
     </Box>
   );
 
-  // Desktop shows the bar on hover in the header; phones open it below the
-  // message with a tap, so 'below' is the touch-sized variant.
-  const renderMessageActionToolbar = (placement: 'header' | 'below') => {
-    const isTouchBar = placement === 'below';
-    const toolbarSizes = getMessageActionSizes(isTouchBar);
-    const toolbarButtonCount =
-      (reticulumChatEnabled ? RETICULUM_QUICK_REACTIONS.length : 0) +
-      (handleReaction ? 1 : 0) +
-      (isOwnReticulumEditable ? 1 : 0) +
-      1 +
-      (isOwnReticulumDeletable ? 1 : 0);
-    const touchButtonSize = isTouchBar
-      ? getPhoneToolbarButtonSize(
-          toolbarButtonCount,
-          mobileActionsColumnPx ?? getPhoneMessageColumnWidth(window.innerWidth)
-        )
-      : undefined;
+  // The desktop's hover bar in the header; phones use MessageActionsPopup.
+  const renderMessageActionToolbar = () => {
+    const toolbarSizes = DESKTOP_MESSAGE_ACTION_SIZES;
     const toolbarButtonSx = {
-      borderRadius: isTouchBar ? '8px' : '6px',
+      borderRadius: '6px',
       flexShrink: 0,
-      ...(touchButtonSize
-        ? { height: touchButtonSize, width: touchButtonSize }
-        : { padding: '4px' }),
+      padding: '4px',
     };
-    // Reactions and edit / reply / delete are separate groups so a screen
-    // narrower than 360px wraps the bar between them, never mid-group.
     const toolbarGroupSx = {
       alignItems: 'center',
       display: 'flex',
-      gap: isTouchBar ? 0 : '2px',
+      gap: '2px',
     };
 
     return (
@@ -2731,40 +2845,16 @@ export const MessageItemComponent = ({
         sx={{
           alignItems: 'center',
           backgroundColor: theme.palette.background.paper,
-          border: isTouchBar
-            ? `${PHONE_TOOLBAR_BORDER_PX}px solid`
-            : '1px solid',
+          border: '1px solid',
           borderColor: theme.palette.divider,
-          borderRadius: isTouchBar ? '12px' : '8px',
+          borderRadius: '8px',
           boxShadow: theme.shadows[2],
           display: 'flex',
           flexShrink: 0,
-          gap: isTouchBar ? `${PHONE_TOOLBAR_GROUP_GAP_PX}px` : '2px',
-          padding: isTouchBar ? `${PHONE_TOOLBAR_PADDING_PX}px` : '3px 6px',
+          gap: '2px',
+          padding: '3px 6px',
           transition: 'opacity 0.15s ease',
           zIndex: 2,
-          ...(placement === 'below'
-            ? {
-                // Hug the reaction/action chips instead of stretching across the
-                // full message column (column flex defaults to stretch).
-                alignSelf: ownAligned ? 'flex-end' : 'flex-start',
-                animation: 'messageActionsIn 160ms ease-out',
-                boxSizing: 'border-box',
-                flexWrap: 'wrap',
-                justifyContent: ownAligned ? 'flex-end' : 'flex-start',
-                marginTop: '6px',
-                maxWidth: '100%',
-                transformOrigin: ownAligned ? 'right top' : 'left top',
-                width: 'fit-content',
-                '@keyframes messageActionsIn': {
-                  from: {
-                    opacity: 0,
-                    transform: 'translateY(-4px) scale(0.96)',
-                  },
-                  to: { opacity: 1, transform: 'translateY(0) scale(1)' },
-                },
-              }
-            : {}),
         }}
       >
         <Box sx={toolbarGroupSx}>
@@ -2798,7 +2888,6 @@ export const MessageItemComponent = ({
                       (item) => item?.sender === myAddress
                     );
                     handleReaction(emoji, message, !hasReacted);
-                    setMobileActionsOpen(false);
                   }}
                 >
                   {emoji}
@@ -2808,8 +2897,6 @@ export const MessageItemComponent = ({
 
           {handleReaction && (
             <ReactionPicker
-              buttonSize={touchButtonSize}
-              iconSize={isTouchBar ? toolbarSizes.toolbarIconPx : undefined}
               neutralIcon={reticulumChatEnabled}
               onReaction={(val) => {
                 if (
@@ -2821,7 +2908,6 @@ export const MessageItemComponent = ({
                 } else {
                   handleReaction(val, message, true);
                 }
-                setMobileActionsOpen(false);
               }}
             />
           )}
@@ -2880,13 +2966,7 @@ export const MessageItemComponent = ({
 
           {isOwnReticulumDeletable && (
             <Tooltip
-              title={
-                isTouchBar
-                  ? t('core:action.delete', {
-                      postProcess: 'capitalizeFirstChar',
-                    })
-                  : t('group:message_item.delete_shortcut')
-              }
+              title={t('group:message_item.delete_shortcut')}
               disableFocusListener
             >
               <ButtonBase
@@ -2938,8 +3018,14 @@ export const MessageItemComponent = ({
           onContextMenu={
             reticulumChatEnabled
               ? (event) => {
+                  if (!isEventFromRowItself(event)) return;
                   event.preventDefault();
                   event.stopPropagation();
+                  // Android also sends this for a long press: same popup.
+                  if (isMobileLayout) {
+                    openPhoneActions('hold', event.clientX, event.clientY);
+                    return;
+                  }
                   setReticulumMessageMenuPosition({
                     mouseX: event.clientX + 2,
                     mouseY: event.clientY - 6,
@@ -2947,7 +3033,16 @@ export const MessageItemComponent = ({
                 }
               : undefined
           }
-          {...(reticulumChatEnabled ? messageRowLongPress : {})}
+          {...(reticulumChatEnabled
+            ? {
+                ...messageRowLongPress,
+                onTouchStart: (event: React.TouchEvent) => {
+                  if (isEventFromRowItself(event)) {
+                    messageRowLongPress.onTouchStart(event);
+                  }
+                },
+              }
+            : {})}
           onClick={
             reticulumChatEnabled && isMobileLayout && !isShowingAsReply
               ? handleMobileActionsTap
@@ -3079,6 +3174,13 @@ export const MessageItemComponent = ({
                   : undefined,
               },
             }),
+            // The message the open popup belongs to.
+            ...(phoneActionsOpen && {
+              backgroundColor: alpha(theme.palette.primary.main, 0.12),
+              '&:hover': {
+                backgroundColor: alpha(theme.palette.primary.main, 0.12),
+              },
+            }),
           }}
           id={message?.signature}
         >
@@ -3195,9 +3297,13 @@ export const MessageItemComponent = ({
                               ? theme.palette.primary.main
                               : theme.palette.text.primary,
                           fontFamily: 'Inter',
-                          fontSize: reticulumDiscussionView ? '18px' : '15.5px',
+                          fontSize: qchatTextSize(
+                            reticulumDiscussionView ? 18 : 15.5
+                          ),
                           fontWeight: reticulumDiscussionView ? 700 : 600,
-                          lineHeight: reticulumDiscussionView ? '22px' : 1.3,
+                          lineHeight: reticulumDiscussionView
+                            ? qchatTextSize(22)
+                            : 1.3,
                           letterSpacing: reticulumDiscussionView
                             ? '-0.015em'
                             : undefined,
@@ -3241,9 +3347,13 @@ export const MessageItemComponent = ({
                           color: theme.palette.text.secondary,
                           flexShrink: 0,
                           fontFamily: 'Inter',
-                          fontSize: reticulumDiscussionView ? '13px' : '11px',
+                          fontSize: qchatMetaTextSize(
+                            reticulumDiscussionView ? 13 : 11
+                          ),
                           fontWeight: reticulumDiscussionView ? 400 : undefined,
-                          lineHeight: reticulumDiscussionView ? '18px' : 1,
+                          lineHeight: reticulumDiscussionView
+                            ? qchatMetaTextSize(18)
+                            : 1,
                         }}
                       >
                         {displayTimestamp}
@@ -3263,7 +3373,7 @@ export const MessageItemComponent = ({
                         sx={{
                           color: theme.palette.text.secondary,
                           fontFamily: 'Inter',
-                          fontSize: '11px',
+                          fontSize: qchatMetaTextSize(11),
                           fontStyle: 'italic',
                           lineHeight: 1,
                         }}
@@ -3277,12 +3387,12 @@ export const MessageItemComponent = ({
                 </Box>
               </Box>
 
-              {/* Desktop hover toolbar stays in the header row. On mobile the
-                  tap toolbar is rendered below the message body instead. */}
+              {/* Desktop hover toolbar stays in the header row. Phones get
+                  MessageActionsPopup from a tap or a long press instead. */}
               {!isShowingAsReply &&
                 !reticulumDiscussionView &&
                 !isMobileLayout &&
-                renderMessageActionToolbar('header')}
+                renderMessageActionToolbar()}
             </Box>
 
             {/* Reply preview - active reply */}
@@ -3323,8 +3433,12 @@ export const MessageItemComponent = ({
                   marginLeft: '2px',
                   height:
                     !reticulumChatEnabled && isRepliedToMe ? '72px' : undefined,
-                  maxHeight: reticulumChatEnabled ? '92px' : '72px',
-                  minHeight: reticulumChatEnabled ? '72px' : undefined,
+                  // Two lines of the reply's text under its header, at the
+                  // chat's text size.
+                  maxHeight: reticulumChatEnabled ? qchatTextSize(92) : '72px',
+                  minHeight: reticulumChatEnabled
+                    ? qchatTextSize(72)
+                    : undefined,
                   minWidth: reticulumChatEnabled ? 'min(540px, 100%)' : 0,
                   maxWidth: '100%',
                   overflow: 'hidden',
@@ -3387,7 +3501,9 @@ export const MessageItemComponent = ({
                           : theme.palette.mode === 'light'
                             ? theme.palette.text.primary
                             : theme.palette.primary.main,
-                        fontSize: reticulumChatEnabled ? '17px' : '14px',
+                        fontSize: reticulumChatEnabled
+                          ? qchatTextSize(17)
+                          : '14px',
                         flexShrink: 0,
                       }}
                     />
@@ -3398,7 +3514,9 @@ export const MessageItemComponent = ({
                           : theme.palette.mode === 'light'
                             ? theme.palette.text.primary
                             : theme.palette.primary.main,
-                        fontSize: reticulumChatEnabled ? '14px' : '13px',
+                        fontSize: reticulumChatEnabled
+                          ? qchatTextSize(14)
+                          : '13px',
                         fontWeight: reticulumChatEnabled
                           ? 650
                           : isRepliedToMe
@@ -3512,7 +3630,7 @@ export const MessageItemComponent = ({
                             theme.palette.mode === 'light'
                               ? theme.palette.text.primary
                               : theme.palette.text.secondary,
-                          fontSize: '14px',
+                          fontSize: qchatTextSize(14),
                           flexShrink: 0,
                         }}
                       />
@@ -3522,7 +3640,7 @@ export const MessageItemComponent = ({
                             theme.palette.mode === 'light'
                               ? theme.palette.text.primary
                               : theme.palette.text.secondary,
-                          fontSize: '13px',
+                          fontSize: qchatTextSize(13),
                           fontWeight: 500,
                           ...(hasUnsafeExpiredReplyName
                             ? {
@@ -3836,7 +3954,10 @@ export const MessageItemComponent = ({
                   color="primary"
                   sx={{ fontSize: '18px' }}
                 />
-                <Typography color="primary" sx={{ fontSize: '14px' }}>
+                <Typography
+                  color="primary"
+                  sx={{ fontSize: qchatTextSize(14) }}
+                >
                   {t('core:message.generic.no_message', {
                     postProcess: 'capitalizeFirstChar',
                   })}
@@ -4501,7 +4622,7 @@ export const MessageItemComponent = ({
                   sx={{
                     color: theme.palette.text.secondary,
                     fontFamily: 'Inter',
-                    fontSize: '12px',
+                    fontSize: qchatMetaTextSize(12),
                     fontStyle: 'italic',
                     marginTop: '2px',
                   }}
@@ -4530,7 +4651,7 @@ export const MessageItemComponent = ({
                 sx={{
                   color: theme.palette.text.secondary,
                   fontFamily: 'Inter',
-                  fontSize: '11px',
+                  fontSize: qchatMetaTextSize(11),
                   lineHeight: 1.35,
                   marginTop: '2px',
                   opacity: 0.85,
@@ -4663,14 +4784,6 @@ export const MessageItemComponent = ({
                   />
                 </Tooltip>
               )}
-
-            {/* Mobile tap toolbar sits under the message body and any existing
-                reaction chips, so it never covers the text. */}
-            {!isShowingAsReply &&
-              !reticulumDiscussionView &&
-              isMobileLayout &&
-              mobileActionsOpen &&
-              renderMessageActionToolbar('below')}
 
             {/* Reaction popover — zIndex 1400 so it appears above GlobalChatWidget (1300).
                 Own (right-aligned) messages use top-end so the panel opens left of
@@ -4864,6 +4977,8 @@ export const MessageItemComponent = ({
             },
           },
           paper: {
+            // The message text keeps the chat's text size in here.
+            className: reticulumChatTextScaleClassName(reticulumChatTextScale),
             sx: {
               backgroundColor: theme.palette.background.paper,
               backgroundImage: 'none',
@@ -4903,7 +5018,7 @@ export const MessageItemComponent = ({
               borderColor: theme.palette.divider,
               borderRadius: '10px',
               cursor: 'text',
-              fontSize: '15px',
+              fontSize: qchatTextSize(15),
               lineHeight: 1.45,
               maxHeight: '52vh',
               overflowY: 'auto',
@@ -5180,7 +5295,7 @@ export const MessageItemComponent = ({
             justifyContent: 'center',
             boxSizing: 'border-box',
             minWidth: `${menuSizes.menuMinWidthPx}px`,
-            padding: isMobileLayout ? '4px 8px' : '7px 10px',
+            padding: '7px 10px',
             width: '100%',
           }}
         >
@@ -5201,15 +5316,10 @@ export const MessageItemComponent = ({
                   postProcess: 'capitalizeFirstChar',
                 })}
                 sx={{
-                  borderRadius: isMobileLayout ? '8px' : '6px',
+                  borderRadius: '6px',
                   fontSize: `${menuSizes.menuQuickReactionEmojiPx}px`,
                   lineHeight: 1,
-                  ...(isMobileLayout
-                    ? {
-                        height: PHONE_MENU_QUICK_REACTION_PX,
-                        width: PHONE_MENU_QUICK_REACTION_PX,
-                      }
-                    : { padding: '5px 8px' }),
+                  padding: '5px 8px',
                   '&:hover': {
                     backgroundColor: theme.palette.action.hover,
                   },
@@ -5240,17 +5350,7 @@ export const MessageItemComponent = ({
             minWidth: `${menuSizes.menuMinWidthPx}px`,
             padding: '5px',
             width: '100%',
-            // The doubled class outranks CustomStyledMenu's 36px item rule and
-            // MenuItem's own icon column rule.
-            ...(isMobileLayout
-              ? {
-                  '&& .MuiMenuItem-root': {
-                    minHeight: `${menuSizes.menuItemMinHeightPx}px`,
-                    paddingX: '10px',
-                    paddingY: 0,
-                  },
-                }
-              : {}),
+            // The doubled class outranks MenuItem's own icon column rule.
             '&& .MuiListItemIcon-root': {
               minWidth: `${menuSizes.menuIconColumnPx}px`,
             },
@@ -5466,6 +5566,28 @@ export const MessageItemComponent = ({
           </Box>
         </Box>
       </CustomStyledMenu>
+      {phoneActions && (
+        <MessageActionsPopup
+          actions={phoneMessageActions}
+          alignEnd={ownAligned}
+          anchor={phoneActions}
+          details={phoneActionDetails}
+          myReactions={myReactionEmojis}
+          onClose={closePhoneActions}
+          onExited={() => setPhoneActions(null)}
+          onReact={
+            phoneActionsInteractive && handleReaction
+              ? (emoji) =>
+                  handleReaction(
+                    emoji,
+                    message,
+                    !myReactionEmojis.includes(emoji)
+                  )
+              : undefined
+          }
+          open={phoneActionsOpen}
+        />
+      )}
     </>
   );
 };

@@ -659,6 +659,37 @@ export type ReticulumPendingOwnDirectHead = {
   nextDeliveryAttemptAt: number;
 };
 
+// Re-announce number of a pending own DM head's first dm_notify without
+// `lc` (the chat engine leaves it out on attempts 4, 8, 16, ...). With `lc`
+// a recipient that already holds the head ends its pull without asking for
+// a page, so nothing older is served or proven.
+export const RETICULUM_DM_PENDING_NO_CURSOR_FIRST_ATTEMPT = 4;
+
+// One-time re-pend of own DMs that older builds marked 'sent' when the
+// bridge accepted the page authorize, before any byte was delivered
+// (repairPrematureDmSent). Window, first due delay and per-conversation
+// spacing of the re-announces it schedules.
+export const RETICULUM_DM_PREMATURE_SENT_REPAIR_WINDOW_MS =
+  7 * 24 * 60 * 60 * 1000;
+export const RETICULUM_DM_PREMATURE_SENT_REPAIR_FIRST_DUE_MS = 120_000;
+export const RETICULUM_DM_PREMATURE_SENT_REPAIR_SPACING_MS = 75_000;
+// Attempts a re-pended row starts with: its first re-announce is then the
+// first one without `lc`, so every recipient pulls from its own cursor once
+// (and a page that arrives proves the rows it already had).
+export const RETICULUM_DM_PREMATURE_SENT_REPAIR_SEED_ATTEMPTS =
+  RETICULUM_DM_PENDING_NO_CURSOR_FIRST_ATTEMPT - 1;
+
+export type ReticulumDmPrematureSentRepairResult = {
+  /** Rows turned back into 'pending'. */
+  rows: number;
+  /** Touched conversations, newest first, with their first due time. */
+  conversations: Array<{
+    conversationId: string;
+    recipientAddress: string;
+    nextAttemptAt: number;
+  }>;
+};
+
 export type ReticulumDmExpiryPreference = {
   ownerAddress: string;
   peerAddress: string;
@@ -956,12 +987,34 @@ function rowToEvent(row: EventRow): ReticulumChatEvent {
 
 // rchat_sync_state scope of the per-own-device Saved Messages confirmations.
 const SELF_DM_CONFIRMED_SCOPE = 'self_dm_confirmed';
+// rchat_sync_state scope of completed non-self DM look-backs, per source
+// device (peer_hash) and conversation (state_key).
+const DM_LOOKBACK_DONE_SCOPE = 'dm_lookback_done';
+// rchat_sync_state scope of the once-per-address premature 'sent' repair
+// guard (peer_hash '', state_key = the sender address).
+const DM_PREMATURE_SENT_REPAIR_SCOPE = 'dm_premature_sent_repair';
+
+// SQL condition: this rchat_dm_events row (alias `d`) is one the premature
+// 'sent' repair turned back into 'pending' and nothing has settled since.
+// The repair writes its own time into delivery_updated_at and into its
+// guard row's updated_at; nothing else writes that column on a pending row.
+function prematureSentRepairedRowSql(d: string): string {
+  return `${d}.delivery_updated_at = (
+      SELECT g.updated_at FROM rchat_sync_state g
+      WHERE g.scope = '${DM_PREMATURE_SENT_REPAIR_SCOPE}'
+        AND g.group_id = 0 AND g.peer_hash = ''
+        AND g.state_key = ${d}.sender_address)`;
+}
 
 // Newest pending own outbound DM event per conversation. Parameters: sender,
 // [conversation id,] since, now (inner window), then sender, since, now,
 // uncopied-only-before (outer). Heads older than the last cutoff count only
-// while no own device copied them. The outer `since` only narrows (every head
-// is inside the window) but lets the pending-delivery index range on time.
+// while no own device copied them; a head the premature 'sent' repair
+// re-pended also counts until its first re-announce without `lc`
+// (RETICULUM_DM_PENDING_NO_CURSOR_FIRST_ATTEMPT): an own device's copy never
+// reaches a recipient whose cursor already passed it. The outer `since` only
+// narrows (every head is inside the window) but lets the pending-delivery
+// index range on time.
 function pendingOwnDirectHeadsFrom(byConversation: boolean): string {
   return `
   FROM rchat_dm_events d
@@ -985,7 +1038,10 @@ function pendingOwnDirectHeadsFrom(byConversation: boolean): string {
     AND d.recipient_address != d.sender_address
     AND d.own_event = 1
     AND (d.expires_at IS NULL OR d.expires_at > ?)
-    AND (d.timestamp >= ? OR d.own_device_copied_at IS NULL)`;
+    AND (d.timestamp >= ?
+         OR d.own_device_copied_at IS NULL
+         OR (COALESCE(d.delivery_attempts, 0) < ${RETICULUM_DM_PENDING_NO_CURSOR_FIRST_ATTEMPT}
+             AND ${prematureSentRepairedRowSql('d')}))`;
 }
 const PENDING_OWN_DIRECT_HEADS_FROM = pendingOwnDirectHeadsFrom(false);
 const PENDING_OWN_DIRECT_CONVERSATION_HEAD_FROM =
@@ -1038,6 +1094,9 @@ function rowToDirectEvent(row: DirectEventRow): ReticulumDmEvent {
         : undefined,
     ...(Number.isFinite(Number(row.delivery_updated_at))
       ? { localDeliveryUpdatedAt: Number(row.delivery_updated_at) }
+      : {}),
+    ...(row.own_event != null
+      ? { localOwnEvent: Number(row.own_event) === 1 }
       : {}),
     ...(row.own_device_copied_at != null && Number(row.own_device_copied_at) > 0
       ? { localOwnDeviceCopiedAt: Number(row.own_device_copied_at) }
@@ -3622,16 +3681,20 @@ export class ReticulumChatDatabase {
    * events the recipient has not pulled yet since `sinceTimestamp`
    * (`pending`), those no verified own device has pulled either
    * (`uncopied`), and those at or after `activeSinceTimestamp` (`active`).
-   * Same shape filter as listPendingOwnDirectEvents.
+   * Same shape filter as listPendingOwnDirectEvents. Rows the premature
+   * 'sent' repair turned back into 'pending' (repairPrematureDmSent) are
+   * counted in `repaired` only: most of them were delivered, so they are no
+   * more 'waiting to send' now than before the repair
+   * (prematureSentRepairedRowSql).
    */
   countPendingOwnDirectEvents(
     senderAddress: string,
     sinceTimestamp: number,
     activeSinceTimestamp: number,
     now = Date.now()
-  ): { pending: number; uncopied: number; active: number } {
+  ): { pending: number; uncopied: number; active: number; repaired: number } {
     const sender = String(senderAddress || '').trim();
-    if (!sender) return { pending: 0, uncopied: 0, active: 0 };
+    if (!sender) return { pending: 0, uncopied: 0, active: 0, repaired: 0 };
     const since = Math.max(0, Math.floor(Number(sinceTimestamp) || 0));
     const activeSince = Math.max(
       since,
@@ -3639,23 +3702,32 @@ export class ReticulumChatDatabase {
     );
     const row = this.db
       .prepare(
-        `SELECT COUNT(*) AS pending_count,
-                SUM(CASE WHEN own_device_copied_at IS NULL THEN 1 ELSE 0 END)
-                  AS uncopied_count,
-                SUM(CASE WHEN timestamp >= ? THEN 1 ELSE 0 END) AS active_count
-         FROM rchat_dm_events
-         WHERE delivery_status = 'pending'
-           AND sender_address = ?
-           AND recipient_address != sender_address
-           AND own_event = 1
-           AND timestamp >= ?
-           AND (expires_at IS NULL OR expires_at > ?)`
+        `SELECT SUM(1 - repaired) AS pending_count,
+                SUM(CASE WHEN repaired = 0 AND own_device_copied_at IS NULL
+                         THEN 1 ELSE 0 END) AS uncopied_count,
+                SUM(CASE WHEN repaired = 0 AND timestamp >= ?
+                         THEN 1 ELSE 0 END) AS active_count,
+                SUM(repaired) AS repaired_count
+         FROM (
+           SELECT e.own_device_copied_at AS own_device_copied_at,
+                  e.timestamp AS timestamp,
+                  CASE WHEN ${prematureSentRepairedRowSql('e')}
+                       THEN 1 ELSE 0 END AS repaired
+           FROM rchat_dm_events e
+           WHERE e.delivery_status = 'pending'
+             AND e.sender_address = ?
+             AND e.recipient_address != e.sender_address
+             AND e.own_event = 1
+             AND e.timestamp >= ?
+             AND (e.expires_at IS NULL OR e.expires_at > ?)
+         )`
       )
       .get(activeSince, sender, since, now) as
       | {
           pending_count?: unknown;
           uncopied_count?: unknown;
           active_count?: unknown;
+          repaired_count?: unknown;
         }
       | undefined;
     const count = (value: unknown) =>
@@ -3664,6 +3736,7 @@ export class ReticulumChatDatabase {
       pending: count(row?.pending_count),
       uncopied: count(row?.uncopied_count),
       active: count(row?.active_count),
+      repaired: count(row?.repaired_count),
     };
   }
 
@@ -3780,8 +3853,10 @@ export class ReticulumChatDatabase {
    * candidate per conversation: a pull fetches everything after the
    * recipient's cursor), with its persisted retry state. Heads older than
    * `uncopiedOnlyBefore` are returned only while no own device has pulled
-   * them (the slow tail stops once the home Hub holds a copy). Due heads come
-   * first, so a busy conversation cannot starve the others.
+   * them (the slow tail stops once the home Hub holds a copy), or, for a
+   * head the premature 'sent' repair re-pended, until its first re-announce
+   * without `lc`. Due heads come first, so a busy conversation cannot starve
+   * the others.
    */
   listPendingOwnDirectConversationHeads(
     senderAddress: string,
@@ -3941,6 +4016,147 @@ export class ReticulumChatDatabase {
   }
 
   /**
+   * Once per sender address (an rchat_sync_state guard row written in the
+   * same transaction): own outbound DM events of the last 7 days that are
+   * 'sent' become 'pending' again, with three attempts counted (so the first
+   * re-announce leaves `lc` out and every recipient pulls from its own
+   * cursor) and a staggered next attempt: the conversation with the newest
+   * such event at `now` + 2 min, each next one 75 s later. Own-device copy
+   * marks stay: an own device that holds a row is not asked again, and a
+   * copied head still gets that first re-announce from the slow tail. Their
+   * delivery_updated_at is `now`, the guard row's time, which marks them as
+   * repaired (prematureSentRepairedRowSql) until a delivered page settles
+   * them; the outbox counts leave them out meanwhile. Older builds marked a
+   * page's events 'sent' when the bridge accepted the authorize, before any
+   * byte arrived, and no record tells those from real deliveries; only rows the
+   * recipient has answered (a reply or a reaction to them) prove delivery
+   * and stay 'sent'. Self-DMs, copies, expired rows and rows changed at or
+   * after `now` are left alone. Returns null when the guard was already
+   * there (nothing done). Local only, never synced.
+   */
+  repairPrematureDmSent(
+    senderAddress: string,
+    now: number
+  ): ReticulumDmPrematureSentRepairResult | null {
+    const sender = String(senderAddress || '').trim();
+    const at = Math.floor(Number(now));
+    if (!sender || !Number.isFinite(at) || at <= 0) return null;
+    const run = this.db.transaction(
+      (): ReticulumDmPrematureSentRepairResult | null => {
+        const guard = this.db
+          .prepare(
+            `SELECT 1 AS present FROM rchat_sync_state
+             WHERE scope = ? AND group_id = 0 AND peer_hash = '' AND state_key = ?`
+          )
+          .get(DM_PREMATURE_SENT_REPAIR_SCOPE, sender);
+        if (guard) return null;
+        const candidates = (this.db
+          .prepare(
+            `SELECT d.event_id AS event_id,
+                    d.conversation_id AS conversation_id,
+                    d.recipient_address AS recipient_address
+             FROM rchat_dm_events d
+             WHERE d.delivery_status = 'sent'
+               AND d.sender_address = ?
+               AND d.timestamp >= ?
+               AND d.own_event = 1
+               AND d.recipient_address != d.sender_address
+               AND (d.expires_at IS NULL OR d.expires_at > ?)
+               AND d.delivery_updated_at < ?
+               AND NOT EXISTS (
+                 SELECT 1 FROM rchat_dm_events r
+                 WHERE r.conversation_id = d.conversation_id
+                   AND r.sender_address = d.recipient_address
+                   AND (r.reply_to_event_id = d.event_id
+                        OR r.target_event_id = d.event_id)
+               )
+             ORDER BY d.timestamp DESC, d.event_id DESC`
+          )
+          .all(
+            sender,
+            at - RETICULUM_DM_PREMATURE_SENT_REPAIR_WINDOW_MS,
+            at,
+            at
+          ) ?? []) as Array<{
+          event_id: string;
+          conversation_id: string;
+          recipient_address: string;
+        }>;
+        // Newest first: the conversation whose newest candidate is newest
+        // goes first.
+        const byConversation = new Map<
+          string,
+          { recipientAddress: string; eventIds: string[] }
+        >();
+        for (const row of candidates) {
+          let entry = byConversation.get(row.conversation_id);
+          if (!entry) {
+            entry = { recipientAddress: row.recipient_address, eventIds: [] };
+            byConversation.set(row.conversation_id, entry);
+          }
+          entry.eventIds.push(row.event_id);
+        }
+        const update = this.db.prepare(
+          `UPDATE rchat_dm_events
+           SET delivery_status = 'pending',
+               delivery_updated_at = ?,
+               delivery_attempts = ?,
+               next_delivery_attempt_at = ?
+           WHERE event_id = ? AND delivery_status = 'sent'`
+        );
+        const result: ReticulumDmPrematureSentRepairResult = {
+          rows: 0,
+          conversations: [],
+        };
+        for (const [conversationId, entry] of byConversation) {
+          const nextAttemptAt =
+            at +
+            RETICULUM_DM_PREMATURE_SENT_REPAIR_FIRST_DUE_MS +
+            result.conversations.length *
+              RETICULUM_DM_PREMATURE_SENT_REPAIR_SPACING_MS;
+          let changed = 0;
+          for (const eventId of entry.eventIds) {
+            changed += Number(
+              update.run(
+                at,
+                RETICULUM_DM_PREMATURE_SENT_REPAIR_SEED_ATTEMPTS,
+                nextAttemptAt,
+                eventId
+              )?.changes ?? 0
+            );
+          }
+          if (changed === 0) continue;
+          result.rows += changed;
+          result.conversations.push({
+            conversationId,
+            recipientAddress: entry.recipientAddress,
+            nextAttemptAt,
+          });
+        }
+        this.db
+          .prepare(
+            `INSERT INTO rchat_sync_state
+               (scope, group_id, peer_hash, state_key, state_value, updated_at)
+             VALUES (?, 0, '', ?, ?, ?)`
+          )
+          .run(
+            DM_PREMATURE_SENT_REPAIR_SCOPE,
+            sender,
+            JSON.stringify({
+              v: 1,
+              at,
+              rows: result.rows,
+              conversations: result.conversations.length,
+            }),
+            at
+          );
+        return result;
+      }
+    );
+    return run();
+  }
+
+  /**
    * Saved Messages (self conversation) events authored on this installation,
    * newest first: only id and timestamp, for cursor comparisons.
    */
@@ -4058,6 +4274,72 @@ export class ReticulumChatDatabase {
           e: event.eventId,
           t: Math.floor(Number(event.timestamp) || 0),
         }),
+        Math.floor(Number(now) || 0)
+      );
+  }
+
+  /**
+   * The sender cursor (timestamp) a completed DM look-back from one source
+   * device started at, or null. Local only, never synced.
+   */
+  getDirectDmLookbackMark(
+    sourcePeerHash: string,
+    conversationId: string
+  ): number | null {
+    const peer = String(sourcePeerHash || '').trim();
+    const conversation = normalizeReticulumDmConversationId(conversationId);
+    if (!peer || !conversation) return null;
+    const row = this.db
+      .prepare(
+        `SELECT state_value FROM rchat_sync_state
+         WHERE scope = ? AND group_id = 0 AND peer_hash = ? AND state_key = ?`
+      )
+      .get(DM_LOOKBACK_DONE_SCOPE, peer, conversation) as
+      | { state_value?: unknown }
+      | undefined;
+    if (typeof row?.state_value !== 'string') return null;
+    try {
+      const cursor = Number(
+        (JSON.parse(row.state_value) as { c?: unknown })?.c
+      );
+      return Number.isFinite(cursor) && cursor > 0 ? Math.floor(cursor) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Persist getDirectDmLookbackMark's answer (never lowering it), and drop
+   * marks last written before `pruneBefore`.
+   */
+  setDirectDmLookbackMark(
+    sourcePeerHash: string,
+    conversationId: string,
+    cursor: number,
+    now: number,
+    pruneBefore: number
+  ): void {
+    const peer = String(sourcePeerHash || '').trim();
+    const conversation = normalizeReticulumDmConversationId(conversationId);
+    const value = Math.floor(Number(cursor) || 0);
+    if (!peer || !conversation || value <= 0) return;
+    this.db
+      .prepare(
+        `DELETE FROM rchat_sync_state WHERE scope = ? AND updated_at < ?`
+      )
+      .run(DM_LOOKBACK_DONE_SCOPE, Math.floor(Number(pruneBefore) || 0));
+    const previous = this.getDirectDmLookbackMark(peer, conversation);
+    this.db
+      .prepare(
+        `INSERT OR REPLACE INTO rchat_sync_state
+           (scope, group_id, peer_hash, state_key, state_value, updated_at)
+         VALUES (?, 0, ?, ?, ?, ?)`
+      )
+      .run(
+        DM_LOOKBACK_DONE_SCOPE,
+        peer,
+        conversation,
+        JSON.stringify({ c: Math.max(value, previous ?? 0) }),
         Math.floor(Number(now) || 0)
       );
   }

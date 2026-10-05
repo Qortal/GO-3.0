@@ -2,7 +2,13 @@
  * Honest delivery states for the user's own Reticulum DMs (plan item #13).
  *
  * - delivered: the engine served the event on the recipient's own page
- *   request ('sent', set when the transfer is authorized).
+ *   request and the bridge reported that transfer complete ('sent', set once
+ *   the recipient's Reticulum stack proved receipt of the page; it does not
+ *   prove the recipient's app stored it), or the recipient's own signed
+ *   notify named it as its newest event. Older builds set it as soon as the
+ *   transfer was authorized, so a row from those builds may say 'sent'
+ *   without a delivery. Each message shows its own state: a later delivered
+ *   message never makes an earlier pending one "delivered".
  * - on_other_device: still pending here, but one of the user's own devices
  *   (the home Hub) pulled a copy and may deliver it; not confirmed. Never
  *   "delivered".
@@ -10,7 +16,10 @@
  * - only_on_this_phone: pending, no own-device copy, older than that.
  *
  * Saved Messages (self-DMs) are born 'sent' and show nothing. Events this
- * device did not author locally are stored 'received' and show nothing.
+ * device did not author locally (also copies of the account's own messages
+ * written on another device) are stored 'received' and show nothing; older
+ * builds marked such a copy 'sent' when it served it, and the DM hook shows
+ * those as 'received' (useReticulumDirectChat, localOwnEvent).
  * A message still pending after the engine stopped re-announcing it (older
  * than RETICULUM_DM_PENDING_MAX_AGE_MS) shows nothing either: nobody retries
  * it any more, and rows written before own-device copies were recorded may

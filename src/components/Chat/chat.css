@@ -26,26 +26,97 @@
   word-break: break-word;
 }
 
-/* Reticulum-only accessibility sizes. Invitation cards deliberately do not
-   use these selectors so their fixed preview layout stays stable. */
-.reticulum-chat-text-scale--medium .message-item-row .tiptap:not(.isReply) p,
-.reticulum-chat-text-scale--medium .message-item-row .tiptap:not(.isReply) li {
+/* Q-Chat text size (chat settings → Text size; reticulumChatTextScale.ts has
+   the same numbers). A group chat, DM or thread carries one of these on its
+   root. Reading text multiplies its size by --qchat-text-scale, the small
+   labels around it (times, "edited") by the gentler --qchat-meta-scale.
+   Default sets neither, so it stays exactly the size it always was.
+   Invitation, file and link preview cards deliberately do not use these, so
+   their fixed layout stays stable. */
+.reticulum-chat-text-scale--small {
+  --qchat-text-scale: 0.875;
+  --qchat-meta-scale: 0.91;
+}
+
+.reticulum-chat-text-scale--large {
+  --qchat-text-scale: 1.1875;
+  --qchat-meta-scale: 1.09;
+}
+
+/* Message text, also when it is not wrapped in a paragraph. Headings and code
+   are rem-sized below, which would not follow it: inside a scaled message
+   they become the same em sizes, equal to those rem sizes at 16px. */
+:is(.reticulum-chat-text-scale--small, .reticulum-chat-text-scale--large)
+  .message-item-row
+  .tiptap:not(.isReply),
+:is(.reticulum-chat-text-scale--small, .reticulum-chat-text-scale--large)
+  .message-item-row
+  .tiptap:not(.isReply)
+  :is(p, li) {
+  font-size: calc(16px * var(--qchat-text-scale));
+}
+
+:is(.reticulum-chat-text-scale--small, .reticulum-chat-text-scale--large)
+  .message-item-row
+  .tiptap:not(.isReply)
+  h1 {
+  font-size: 1.4em;
+}
+
+:is(.reticulum-chat-text-scale--small, .reticulum-chat-text-scale--large)
+  .message-item-row
+  .tiptap:not(.isReply)
+  h2 {
+  font-size: 1.2em;
+}
+
+:is(.reticulum-chat-text-scale--small, .reticulum-chat-text-scale--large)
+  .message-item-row
+  .tiptap:not(.isReply)
+  h3 {
+  font-size: 1.1em;
+}
+
+:is(.reticulum-chat-text-scale--small, .reticulum-chat-text-scale--large)
+  .message-item-row
+  .tiptap:not(.isReply)
+  :is(h4, h5, h6) {
+  font-size: 1em;
+}
+
+:is(.reticulum-chat-text-scale--small, .reticulum-chat-text-scale--large)
+  .message-item-row
+  .tiptap:not(.isReply)
+  :not(pre)
+  > code {
+  font-size: 0.85em;
+}
+
+:is(.reticulum-chat-text-scale--small, .reticulum-chat-text-scale--large)
+  .message-item-row
+  .tiptap:not(.isReply)
+  pre {
+  font-size: 0.875em;
+}
+
+/* The message box. A plain px value: TipTap measures the text with it. */
+.reticulum-chat-text-scale--small .tiptap-chat-composer--compact {
+  --composer-font-size: 15px;
+}
+
+.reticulum-chat-text-scale--large .tiptap-chat-composer--compact {
+  --composer-font-size: 20px;
+}
+
+/* The hint keeps the default size, centred on the large line, so Large does
+   not cut it down to a few letters beside the phone's buttons. What is typed
+   is large. */
+.reticulum-chat-text-scale--large
+  .tiptap-chat-composer--compact
+  .tiptap
+  p.is-editor-empty:first-child::before {
   font-size: 17px;
-  line-height: 1.5;
-}
-
-.reticulum-chat-text-scale--high .message-item-row .tiptap:not(.isReply) p,
-.reticulum-chat-text-scale--high .message-item-row .tiptap:not(.isReply) li {
-  font-size: 18px;
-  line-height: 1.55;
-}
-
-.reticulum-chat-text-scale--medium .tiptap-chat-composer--compact {
-  --composer-font-size: 18px;
-}
-
-.reticulum-chat-text-scale--high .tiptap-chat-composer--compact {
-  --composer-font-size: 19px;
+  line-height: calc(var(--composer-font-size) * var(--composer-line-height));
 }
 
 .tiptap ul,
@@ -286,7 +357,7 @@
 
 .isReply p {
   color: var(--text-secondary);
-  font-size: 16px !important;
+  font-size: calc(16px * var(--qchat-text-scale, 1)) !important;
   line-height: 1.4;
   margin: 0;
   opacity: 1;
@@ -335,7 +406,7 @@
 
 .reticulum-inline-reply-card .tiptap.isReply p {
   color: var(--text-secondary);
-  font-size: 14px !important;
+  font-size: calc(14px * var(--qchat-text-scale, 1)) !important;
   line-height: 1.35;
 }
 
@@ -389,15 +460,15 @@
 .reticulum-discussion-message .tiptap p,
 .reticulum-discussion-message .tiptap li {
   color: var(--discussion-body-text-color, var(--text-primary));
-  font-size: 16px;
+  font-size: calc(16px * var(--qchat-text-scale, 1));
   font-weight: 400;
   letter-spacing: 0;
-  line-height: 24px;
+  line-height: calc(24px * var(--qchat-text-scale, 1));
 }
 
 .reticulum-discussion-message--initial .tiptap p,
 .reticulum-discussion-message--initial .tiptap li {
-  line-height: 26px;
+  line-height: calc(26px * var(--qchat-text-scale, 1));
 }
 
 /* Reticulum rows must never widen the chat viewport. Legacy Q-Chat is
@@ -475,9 +546,9 @@
   .tiptap
   p {
   color: #f3f5f9;
-  font-size: 16px;
+  font-size: calc(16px * var(--qchat-text-scale, 1));
   font-weight: 400;
-  line-height: 24px;
+  line-height: calc(24px * var(--qchat-text-scale, 1));
 }
 
 .reticulum-discussion-composer:where(
@@ -560,7 +631,7 @@
 
 .reticulum-unread-divider {
   color: #ef4444;
-  font-size: 10px;
+  font-size: calc(10px * var(--qchat-meta-scale, 1));
   margin: 6px 16px;
   opacity: 0.9;
 }

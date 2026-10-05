@@ -45,6 +45,7 @@ import { getWalletErrorMessage } from '../utils/walletErrorMessages';
 import { markWalletUnlockedInSession } from '../utils/walletUnlockSession';
 import { saveLastAuthenticatedWalletAddress } from '../utils/lastAuthenticatedWallet';
 import { recordUnlockTiming } from '../utils/unlockTimings';
+import { isGoApp } from '../utils/platform';
 
 let balanceSetIntervalRef: null | NodeJS.Timeout = null;
 const LOCAL_CORE_READY_SYNC_PERCENT = 99.95;
@@ -60,6 +61,28 @@ export type NodeCheckOptions = {
    * decrypt, so the KDF does not wait on extra node round trips.
    */
   refreshUserInfo?: boolean;
+};
+
+/**
+ * Why a node check failed:
+ * - 'unreachable': no usable answer from the node (offline, node or SSH
+ *   tunnel down, timeout).
+ * - 'key-rejected': the node answered but did not accept the API key.
+ * - 'error': anything else.
+ */
+export type NodeCheckFailure = 'unreachable' | 'key-rejected' | 'error';
+
+export type ValidateApiKeyResult = {
+  isValid: boolean;
+  validatedNodeInfo: any;
+  /** Set when isValid is false. */
+  failure?: NodeCheckFailure;
+};
+
+export type NodeCheckResult = {
+  ok: boolean;
+  /** Set when ok is false. */
+  failure?: NodeCheckFailure;
 };
 
 /**
@@ -96,6 +119,11 @@ function isLocalCoreStatusSynced(status: any) {
   return (
     Number.isFinite(syncPercent) && syncPercent >= LOCAL_CORE_READY_SYNC_PERCENT
   );
+}
+
+/** False only when the device says it has no network (navigator.onLine). */
+function isDeviceOnline() {
+  return typeof navigator === 'undefined' || navigator.onLine !== false;
 }
 
 function isGatewayNode(nodeInfo?: ApiKey | null) {
@@ -178,8 +206,20 @@ export const useAuth = () => {
   }, []);
 
   const validateApiKey = useCallback(
-    async (currentNode, disablePopup = false) => {
+    async (
+      currentNode,
+      disablePopup = false
+    ): Promise<ValidateApiKeyResult | undefined> => {
       const isElectron = !!window?.coreSetup;
+      // GO has no Core of its own to set up, and its unlock goes on without a
+      // node that cannot be reached (like the fingerprint unlock). Offline it
+      // stays silent; online, a chosen node (not the public one) that does not
+      // answer gets the "url invalid" note, so a bad URL or a tunnel that is
+      // down is not hidden. The unlock still goes on.
+      const goApp = isGoApp();
+      const noteGoNodeUnreachable = () => {
+        if (!disablePopup && isDeviceOnline()) setIsUrlInvalid(true);
+      };
       const validatedNodeInfo = currentNode;
 
       const preferredUrl =
@@ -205,8 +245,16 @@ export const useAuth = () => {
             ? await window.coreSetup.isCoreRunning()
             : await checkIfLocalIsRunning(baseUrl);
           if (!runningRes && !disablePopup) {
-            setIsOpenCoreSetup(true);
-            return { isValid: false, validatedNodeInfo };
+            if (goApp) {
+              noteGoNodeUnreachable();
+            } else {
+              setIsOpenCoreSetup(true);
+            }
+            return {
+              isValid: false,
+              validatedNodeInfo,
+              failure: 'unreachable',
+            };
           }
           if (isLocal && isElectron && !disablePopup) {
             const statusAvailable = await checkIfLocalIsRunning(baseUrl);
@@ -248,7 +296,11 @@ export const useAuth = () => {
           }
 
           if (!isUrlGood) {
-            if (!disablePopup) {
+            if (goApp) {
+              if (validatedNodeInfo?.url !== HTTPS_EXT_NODE_QORTAL_LINK) {
+                noteGoNodeUnreachable();
+              }
+            } else if (!disablePopup) {
               if (validatedNodeInfo?.url === HTTPS_EXT_NODE_QORTAL_LINK) {
                 setPublicNodeUnavailable(true);
                 setIsOpenCoreSetup(true);
@@ -256,7 +308,11 @@ export const useAuth = () => {
                 setIsUrlInvalid(true);
               }
             }
-            return { isValid: false, validatedNodeInfo };
+            return {
+              isValid: false,
+              validatedNodeInfo,
+              failure: 'unreachable',
+            };
           }
 
           if (validatedNodeInfo?.url === HTTPS_EXT_NODE_QORTAL_LINK) {
@@ -267,11 +323,20 @@ export const useAuth = () => {
         let isValid = false;
 
         const url = `${baseUrl}/admin/settings/localAuthBypassEnabled`;
-        // Assuming the response is in plain text and will be 'true' or 'false'
-        const data = await fetchTextWithTimeout(
-          url,
-          ADMIN_AUTH_FETCH_TIMEOUT_MS
-        );
+        let data: string;
+        try {
+          // Assuming the response is in plain text and will be 'true' or 'false'
+          data = await fetchTextWithTimeout(url, ADMIN_AUTH_FETCH_TIMEOUT_MS);
+        } catch (error) {
+          // The node stopped answering: no key test and no dialog.
+          return {
+            isValid: false,
+            validatedNodeInfo,
+            failure: 'unreachable',
+          };
+        }
+        // False when the key test got no answer (network error or timeout).
+        let keyTestAnswered = false;
         if (data && data === 'true') {
           isValid = true;
         } else {
@@ -282,12 +347,21 @@ export const useAuth = () => {
               url2,
               ADMIN_AUTH_FETCH_TIMEOUT_MS
             );
+            keyTestAnswered = true;
             if (data2 === 'true') {
               isValid = true;
             }
           } catch (error) {
             // Network error or timeout: the key stays untested (isValid false).
           }
+        }
+        if (!isValid && !keyTestAnswered && goApp) {
+          // GO: the key was never tested, so no key dialog.
+          return {
+            isValid: false,
+            validatedNodeInfo,
+            failure: 'unreachable',
+          };
         }
         if (!isValid && isLocal && !isElectron) {
           const resGenerateApiKey = await generateApiKey();
@@ -315,9 +389,17 @@ export const useAuth = () => {
           }
         }
 
-        return { isValid, validatedNodeInfo };
+        return {
+          isValid,
+          validatedNodeInfo,
+          failure: isValid
+            ? undefined
+            : keyTestAnswered
+              ? 'key-rejected'
+              : 'unreachable',
+        };
       } catch (error) {
-        return { isValid: false, validatedNodeInfo };
+        return { isValid: false, validatedNodeInfo, failure: 'error' };
       }
     },
     [
@@ -392,11 +474,15 @@ export const useAuth = () => {
     [setIsRunningPublicNode, setSelectedNode, setUserInfo]
   );
 
-  const isNodeValid = useCallback(
-    async (options?: NodeCheckOptions): Promise<boolean> => {
+  /**
+   * Check the selected node and save it when it works. On failure it says
+   * why, so a node that cannot be reached is not mistaken for a rejected key.
+   */
+  const checkNode = useCallback(
+    async (options?: NodeCheckOptions): Promise<NodeCheckResult> => {
       const startedAt = performance.now();
       let isCurrentLocalNode = false;
-      let isNodeOk = false;
+      let result: NodeCheckResult = { ok: false, failure: 'error' };
       try {
         const currentSelectedNode = store.get(selectedNodeInfoAtom);
         isCurrentLocalNode = isLocalNodeUrl(currentSelectedNode?.url);
@@ -407,29 +493,54 @@ export const useAuth = () => {
               url: getDefaultLocalNodeUrl(),
             }
           : currentSelectedNode;
-        if (!payload) return false;
-        const { isValid, validatedNodeInfo } = await validateApiKey(payload);
+        if (!payload) return result;
+        const validation = await validateApiKey(payload);
 
-        if (isValid) {
-          await handleSaveNodeInfo(validatedNodeInfo, options);
-          isNodeOk = true;
-          return true;
+        if (validation?.isValid) {
+          await handleSaveNodeInfo(validation.validatedNodeInfo, options);
+          result = { ok: true };
         } else {
-          return false;
+          result = { ok: false, failure: validation?.failure ?? 'error' };
         }
+        return result;
       } catch (error) {
-        return false;
+        return result;
       } finally {
+        // GO's diagnostics also say why it failed.
+        const outcome = result.ok
+          ? 'ok'
+          : isGoApp()
+            ? `failed (${result.failure})`
+            : 'failed';
         recordUnlockTiming(
           'node-check',
           performance.now() - startedAt,
-          `${isNodeOk ? 'ok' : 'failed'}, ${
-            isCurrentLocalNode ? 'local node' : 'remote node'
-          }`
+          `${outcome}, ${isCurrentLocalNode ? 'local node' : 'remote node'}`
         );
       }
     },
     [store, validateApiKey, handleSaveNodeInfo]
+  );
+
+  const isNodeValid = useCallback(
+    async (options?: NodeCheckOptions): Promise<boolean> =>
+      (await checkNode(options)).ok,
+    [checkNode]
+  );
+
+  /**
+   * The password unlock's node check: true when the unlock may go on. GO goes
+   * on without a node it cannot reach (offline, public node down, SSH tunnel
+   * down), like its fingerprint unlock; a rejected key still stops it with
+   * the key dialog. Elsewhere the node must work, as before.
+   */
+  const checkNodeBeforeUnlock = useCallback(
+    async (options?: NodeCheckOptions): Promise<boolean> => {
+      const result = await checkNode(options);
+      if (result.ok) return true;
+      return isGoApp() && result.failure === 'unreachable';
+    },
+    [checkNode]
   );
 
   const balanceSetInterval = useCallback(() => {
@@ -490,6 +601,10 @@ export const useAuth = () => {
   }, []);
 
   const isSyncedLocal = useCallback(async () => {
+    // GO: a local node that does not answer (offline, SSH tunnel down) does
+    // not stop the unlock, as with its fingerprint unlock. One that answers
+    // keeps the sync check below.
+    const goOnWithoutAnswer = isGoApp();
     try {
       const currentSelectedNode = store.get(selectedNodeInfoAtom);
       if (!isLocalNodeUrl(currentSelectedNode?.url)) return true;
@@ -502,7 +617,7 @@ export const useAuth = () => {
           return res?.ok ? { data: await res.json() } : null;
         }
       );
-      if (!status) return false;
+      if (!status) return goOnWithoutAnswer;
       if (!isLocalCoreStatusSynced(status.data)) {
         if (enableAuthWhenSyncing) {
           return true;
@@ -512,7 +627,7 @@ export const useAuth = () => {
       }
       return true;
     } catch (error) {
-      return false;
+      return goOnWithoutAnswer;
     }
   }, [store, setIsOpenSyncingDialog, enableAuthWhenSyncing]);
 
@@ -713,7 +828,9 @@ export const useAuth = () => {
   return useMemo(
     () => ({
       validateApiKey,
+      checkNode,
       isNodeValid,
+      checkNodeBeforeUnlock,
       handleSaveNodeInfo,
       authenticate,
       getBalanceFunc,
@@ -724,7 +841,9 @@ export const useAuth = () => {
     }),
     [
       validateApiKey,
+      checkNode,
       isNodeValid,
+      checkNodeBeforeUnlock,
       handleSaveNodeInfo,
       authenticate,
       getBalanceFunc,

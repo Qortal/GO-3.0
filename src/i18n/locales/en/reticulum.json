@@ -279,17 +279,24 @@
     },
     "text_size": {
       "default": {
-        "detail": "Current chat text size",
+        "detail": "The usual chat text size",
         "label": "Default"
       },
-      "description": "Choose a reading size for Reticulum messages, channel labels and the members list. Invitation previews keep their fixed layout.",
-      "high": {
-        "detail": "Largest readable chat text",
-        "label": "High"
+      "description": "Sets how big text is in group chats and direct messages, including replies, the message box, channel names and the members list. Files, invitations and link previews keep their layout.",
+      "large": {
+        "detail": "Bigger text that is easier to read",
+        "label": "Large"
       },
-      "medium": {
-        "detail": "A comfortable increase",
-        "label": "Medium"
+      "preview": {
+        "incoming": "Is this text easy to read?",
+        "label": "Preview",
+        "outgoing": "Yes, this size suits me.",
+        "sender": "Alice"
+      },
+      "sample": "Aa",
+      "small": {
+        "detail": "Fits more messages on the screen",
+        "label": "Small"
       },
       "title": "Text size"
     }

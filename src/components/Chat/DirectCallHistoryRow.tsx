@@ -3,6 +3,7 @@ import CallRoundedIcon from '@mui/icons-material/CallRounded';
 import CallReceivedRoundedIcon from '@mui/icons-material/CallReceivedRounded';
 import CallMadeRoundedIcon from '@mui/icons-material/CallMadeRounded';
 import { useTranslation } from 'react-i18next';
+import { qchatMetaTextSize, qchatTextSize } from './reticulumChatTextScale';
 
 const LABEL_KEYS: Record<string, string> = {
   answered: 'reticulum:call_history.answered',
@@ -46,13 +47,21 @@ export const DirectCallHistoryRow = ({ record }: { record: any }) => {
       }}
     >
       <Icon sx={{ color, fontSize: 18 }} />
-      <Typography sx={{ color, fontSize: 13, fontWeight: missed ? 600 : 500 }}>
+      <Typography
+        sx={{
+          color,
+          fontSize: qchatTextSize(13),
+          fontWeight: missed ? 600 : 500,
+        }}
+      >
         {t(LABEL_KEYS[record?.outcome] || 'reticulum:call_history.answered', {
           postProcess: 'capitalizeFirstChar',
         })}
       </Typography>
       {timestamp > 0 && (
-        <Typography sx={{ color: 'text.secondary', fontSize: 11 }}>
+        <Typography
+          sx={{ color: 'text.secondary', fontSize: qchatMetaTextSize(11) }}
+        >
           {new Date(timestamp).toLocaleTimeString([], {
             hour: 'numeric',
             minute: '2-digit',

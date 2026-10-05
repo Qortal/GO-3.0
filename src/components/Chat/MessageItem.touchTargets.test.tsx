@@ -1,4 +1,11 @@
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react';
 import {
   afterEach,
   beforeAll,
@@ -238,73 +245,163 @@ describe('MessageItem touch targets', () => {
       expect(getComputedStyle(chip).height).toBe('36px');
     });
 
-    it('opens a 44px toolbar for other people’s messages', () => {
+    it('opens the Telegram-style popup on a tap, not a bar under it', () => {
       const { container } = renderItem(post());
-      fireEvent.click(row(container));
-      const toolbar = container.querySelector('.message-item-toolbar');
-      expect(toolbar).not.toBeNull();
-      const buttons = toolbar.querySelectorAll('button');
-      // 4 quick reactions + reply.
-      expect(buttons).toHaveLength(5);
-      for (const button of buttons) {
+      fireEvent.click(row(container), { clientX: 120, clientY: 300 });
+      expect(container.querySelector('.message-item-toolbar')).toBeNull();
+      const pill = screen.getByRole('group', { name: 'Quick reactions' });
+      const pillButtons = within(pill).getAllByRole('button');
+      // Six quick reactions fit a 360px phone, then the expand chevron.
+      expect(pillButtons).toHaveLength(7);
+      expect(pillButtons[6]).toHaveAccessibleName('More reactions');
+      for (const button of pillButtons) {
         expect(getComputedStyle(button).height).toBe('44px');
-        expect(getComputedStyle(button).width).toBe('44px');
       }
-      const picker = screen.getByTestId('reaction-picker');
-      expect(picker.dataset.buttonSize).toBe('44');
-      expect(picker.dataset.iconSize).toBe('22');
+      expect(
+        screen.getAllByRole('menuitem').map((item) => item.textContent)
+      ).toEqual(['Reply', 'View 3 replies', 'Copy']);
+      // The details are for the long press.
+      expect(screen.queryByText('Sent')).not.toBeInTheDocument();
     });
 
-    it('keeps the full own-message toolbar at 40px on a 360px phone', () => {
+    it('adds edit and delete to the tap popup of your own message', () => {
       const { container } = renderItem(post({ sender: ME, senderAddress: ME }));
-      fireEvent.click(row(container));
-      const buttons = container.querySelectorAll(
-        '.message-item-toolbar button'
-      );
-      // 4 quick reactions + edit + reply + delete (picker is the stub).
-      expect(buttons).toHaveLength(7);
-      for (const button of buttons) {
-        expect(getComputedStyle(button).width).toBe('40px');
-      }
-      expect(screen.getByTestId('reaction-picker').dataset.buttonSize).toBe(
-        '40'
-      );
+      fireEvent.click(row(container), { clientX: 300, clientY: 300 });
+      expect(
+        screen.getAllByRole('menuitem').map((item) => item.textContent)
+      ).toEqual(['Reply', 'View 3 replies', 'Copy', 'Edit', 'Delete']);
     });
 
-    it('gives the full own-message toolbar 44px buttons on a 412px phone', () => {
-      setViewport(true, 412);
-      const { container } = renderItem(post({ sender: ME, senderAddress: ME }));
-      fireEvent.click(row(container));
-      expect(screen.getByTestId('reaction-picker').dataset.buttonSize).toBe(
-        '44'
-      );
-    });
-
-    it('sizes the toolbar from the row it opens in', () => {
-      // A 412px screen, but a host (sidebar layout, mini thread) leaves the
-      // row 330px wide: the full bar must drop to 40px to stay on one line.
-      setViewport(true, 412);
-      const { container } = renderItem(post({ sender: ME, senderAddress: ME }));
-      setRowWidth(row(container), 330);
-      fireEvent.click(row(container));
-      expect(screen.getByTestId('reaction-picker').dataset.buttonSize).toBe(
-        '40'
-      );
-    });
-
-    it('re-measures the open toolbar when the phone rotates', () => {
-      const { container } = renderItem(post({ sender: ME, senderAddress: ME }));
-      setRowWidth(row(container), 360);
-      fireEvent.click(row(container));
-      expect(screen.getByTestId('reaction-picker').dataset.buttonSize).toBe(
-        '40'
-      );
-      setRowWidth(row(container), 800);
-      act(() => {
-        window.dispatchEvent(new Event('resize'));
+    it('offers to start a discussion when there are no replies yet', () => {
+      const onOpenReticulumDiscussion = vi.fn();
+      const message = post();
+      const { container } = renderItem(message, {
+        onOpenReticulumDiscussion,
+        reticulumDiscussionReplyCount: 0,
       });
-      expect(screen.getByTestId('reaction-picker').dataset.buttonSize).toBe(
-        '44'
+      fireEvent.click(row(container), { clientX: 120, clientY: 300 });
+      fireEvent.click(
+        screen.getByRole('menuitem', { name: 'Reply in discussion' })
+      );
+      expect(onOpenReticulumDiscussion).toHaveBeenCalledWith(message);
+    });
+
+    it('reacts from the pill and closes', async () => {
+      const handleReaction = vi.fn();
+      const message = post();
+      const { container } = renderItem(message, { handleReaction });
+      fireEvent.click(row(container), { clientX: 120, clientY: 300 });
+      fireEvent.click(screen.getByRole('button', { name: 'React with 🔥' }));
+      expect(handleReaction).toHaveBeenCalledWith('🔥', message, true);
+      await waitFor(() =>
+        expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+      );
+    });
+
+    it('takes your reaction back from the pill', () => {
+      const handleReaction = vi.fn();
+      const message = post();
+      const { container } = renderItem(message, {
+        handleReaction,
+        reactions: { '👍': [{ sender: ME, senderName: 'me' }] },
+      });
+      fireEvent.click(row(container), { clientX: 120, clientY: 300 });
+      const thumbs = screen.getByRole('button', { name: 'React with 👍' });
+      expect(thumbs).toHaveAttribute('aria-pressed', 'true');
+      fireEvent.click(thumbs);
+      expect(handleReaction).toHaveBeenCalledWith('👍', message, false);
+    });
+
+    it('shows every action and the details on a long press', () => {
+      vi.useFakeTimers();
+      try {
+        const { container } = renderItem(
+          post({
+            expiresAt: Date.now() + 3 * 24 * 60 * 60_000,
+            sender: ME,
+            senderAddress: ME,
+          })
+        );
+        fireEvent.touchStart(row(container), {
+          touches: [{ clientX: 200, clientY: 300 }],
+        });
+        act(() => {
+          vi.advanceTimersByTime(450);
+        });
+        fireEvent.touchEnd(row(container));
+        expect(
+          screen.getAllByRole('menuitem').map((item) => item.textContent)
+        ).toEqual([
+          'Reply',
+          'View 3 replies',
+          'Copy',
+          'Select text',
+          'Edit',
+          'Delete',
+        ]);
+        expect(screen.getByText('Sent')).toBeInTheDocument();
+        expect(screen.getByText('Message expires')).toBeInTheDocument();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('opens the long-press version for Android’s context menu too', () => {
+      const { container } = renderItem(post());
+      fireEvent.contextMenu(row(container), { clientX: 20, clientY: 20 });
+      expect(
+        screen.getByRole('menuitem', { name: 'Select text' })
+      ).toBeInTheDocument();
+      expect(screen.getByText('No expiry')).toBeInTheDocument();
+    });
+
+    it('keeps a thread read-only: no tap popup, a long press only copies', () => {
+      const { container } = renderItem(
+        post({ sender: ME, senderAddress: ME }),
+        {
+          reticulumDiscussionView: true,
+        }
+      );
+      fireEvent.click(row(container), { clientX: 120, clientY: 300 });
+      expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+      fireEvent.contextMenu(row(container), { clientX: 120, clientY: 300 });
+      expect(
+        screen.getAllByRole('menuitem').map((item) => item.textContent)
+      ).toEqual(['Copy', 'Select text']);
+      expect(
+        screen.queryByRole('group', { name: 'Quick reactions' })
+      ).not.toBeInTheDocument();
+    });
+
+    it('lets a tap on a picture open the picture, not the popup', () => {
+      const { container } = renderItem(post());
+      const picture = document.createElement('img');
+      row(container).appendChild(picture);
+      fireEvent.click(picture, { clientX: 120, clientY: 300 });
+      expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+    });
+
+    it('does not open the popup when a tap closes the user card', async () => {
+      const { container } = renderItem(post());
+      fireEvent.click(container.querySelector('.MuiAvatar-root') as Element);
+      const backdrop = await waitFor(() => {
+        const element = document.querySelector(
+          '.MuiPopover-root .MuiBackdrop-root'
+        );
+        expect(element).not.toBeNull();
+        return element as Element;
+      });
+      // The card is drawn in a portal, but React still hands the tap on its
+      // backdrop to the message row it belongs to.
+      fireEvent.click(backdrop, { clientX: 120, clientY: 600 });
+      expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+    });
+
+    it('makes the popup menu rows at least 48px tall', () => {
+      const { container } = renderItem(post());
+      fireEvent.click(row(container), { clientX: 120, clientY: 300 });
+      expect(cssRulesFor(screen.getAllByRole('menuitem')[0])).toMatch(
+        /min-height:\s*48px/
       );
     });
 
@@ -317,14 +414,14 @@ describe('MessageItem touch targets', () => {
       expect(chip.parentElement).not.toBe(reactionChip().parentElement);
     });
 
-    it('opens the thread from the replies pill without the toolbar', () => {
+    it('opens the thread from the replies pill without the popup', () => {
       const onOpenReticulumDiscussion = vi.fn();
       const message = post();
-      const { container } = renderItem(message, { onOpenReticulumDiscussion });
+      renderItem(message, { onOpenReticulumDiscussion });
       fireEvent.click(screen.getByRole('button', { name: 'View 3 replies' }));
       expect(onOpenReticulumDiscussion).toHaveBeenCalledTimes(1);
       expect(onOpenReticulumDiscussion).toHaveBeenCalledWith(message);
-      expect(container.querySelector('.message-item-toolbar')).toBeNull();
+      expect(screen.queryByRole('menu')).not.toBeInTheDocument();
     });
 
     it('makes the file-offer Accept button 44px tall', () => {
@@ -338,30 +435,6 @@ describe('MessageItem touch targets', () => {
       expect(avatarColumnRules(container)).toMatch(
         /::after\s*\{[^}]*inset:\s*-9px -7px -5px/
       );
-    });
-
-    it('makes long-press menu rows 44px tall', () => {
-      const { container } = renderItem(post({ sender: ME, senderAddress: ME }));
-      fireEvent.contextMenu(row(container), { clientX: 20, clientY: 20 });
-      const items = screen.getAllByRole('menuitem');
-      expect(items.map((item) => item.textContent)).toEqual([
-        'Copy message',
-        'Select text',
-        'Reply message',
-        'Edit message',
-        'Delete message',
-      ]);
-      expect(cssRulesFor(items[0].parentElement)).toMatch(
-        /\.MuiMenuItem-root\s*\{[^}]*min-height:\s*44px/
-      );
-      const quickReactions = screen
-        .getByRole('group', { name: 'Quick reactions' })
-        .querySelectorAll('button');
-      expect(quickReactions).toHaveLength(4);
-      for (const button of quickReactions) {
-        expect(getComputedStyle(button).height).toBe('44px');
-      }
-      expect(quickReactions[0]).toHaveAccessibleName('React with 👍');
     });
   });
 

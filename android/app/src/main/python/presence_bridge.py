@@ -460,6 +460,30 @@ _RESOURCE_SESSION_PROVIDER_ACTIVE_MAX_PER_PEER = 10
 _RESOURCE_SESSION_PROVIDER_ATTACHMENT_MAX_PER_PEER = 8
 _RESOURCE_SESSION_PROVIDER_PENDING_AUTH_MAX = 40
 _RESOURCE_SESSION_PROVIDER_PENDING_AUTH_MAX_PER_PEER = 8
+# Desktop requesters drop a live DM page pull 10 s after sending it unless the
+# first response bytes arrived. Group repair and history pulls from the same
+# peer must not take every pending-auth slot, so everything that is not a DM
+# page stops 8 slots short globally and 2 short per peer. DM pages keep the
+# absolute caps above. Refusals keep the existing wire reason.
+_RESOURCE_SESSION_PROVIDER_PENDING_AUTH_NON_DM_MAX = 32
+_RESOURCE_SESSION_PROVIDER_PENDING_AUTH_NON_DM_MAX_PER_PEER = 6
+# A DM page that has been authorized may start this many Resources beyond the
+# normal provider concurrency, without queueing behind other classes.
+_RESOURCE_SESSION_PROVIDER_DM_PAGE_EXTRA = 4
+# A phone is a poor history provider: bursts of history pulls held 26
+# provider slots exactly while DM pages timed out. Bound chat history serving
+# (pending + waiting + active). Requesters treat resource_provider_busy as a
+# provider failure and move to an alternate provider.
+_RESOURCE_SESSION_PROVIDER_HISTORY_LOGICAL_TYPES = frozenset(
+    {
+        "reticulum_chat_history_page",
+        "reticulum_chat_author_range",
+        "reticulum_chat_event_page",
+    }
+)
+_RESOURCE_SESSION_PROVIDER_HISTORY_CONCURRENCY = 6
+_RESOURCE_SESSION_PROVIDER_HISTORY_BUDGET = 8
+_RESOURCE_SESSION_PROVIDER_HISTORY_PENDING_PER_PEER = 2
 _RESOURCE_SESSION_PROVIDER_CAPACITY_QUEUE_MAX = 24
 _RESOURCE_SESSION_PROVIDER_CAPACITY_QUEUE_MAX_PER_PEER = 6
 _RESOURCE_SESSION_PROVIDER_CAPACITY_WAIT_SECONDS = 15.0
@@ -788,6 +812,13 @@ _resource_session_jobs_by_semantic_key: Dict[str, Dict[str, Any]] = {}
 _resource_session_provider_waiters: Dict[str, Dict[str, Any]] = {}
 _resource_session_failures_by_key: Dict[str, Dict[str, Any]] = {}
 _resource_session_provider_pending_auth_by_peer: Dict[str, int] = {}
+# Pending-auth DM pages (subset of the waiters above) and pending-auth chat
+# history requests (also a subset). Guarded by _state_lock.
+_resource_session_provider_pending_auth_dm_total = 0
+_resource_session_provider_pending_auth_dm_by_peer: Dict[str, int] = {}
+_resource_session_provider_history_pending_total = 0
+_resource_session_provider_history_pending_by_peer: Dict[str, int] = {}
+_resource_session_provider_history_active = 0
 _resource_session_provider_inflight_transfers: Set[str] = set()
 _resource_session_provider_recent_cancellations: Dict[str, float] = {}
 _resource_session_provider_capacity_condition = threading.Condition(_state_lock)
@@ -924,6 +955,17 @@ _RNS_EXECUTOR_IDLE_AUDIO_TIMEOUT_SECONDS = 0.05
 _RNS_EXECUTOR_IDLE_TIMEOUT_SECONDS = 5.0
 _BRIDGE_PRESSURE_LOG_INTERVAL_SECONDS = 5.0
 _BRIDGE_PRESSURE_RNS_GAP_THRESHOLD_MS = 1000.0
+# A GIL handoff this late means the RNS reader threads were starved too.
+_BRIDGE_PRESSURE_GIL_LAG_THRESHOLD_MS = 500.0
+# The default 5 ms switch interval lets a busy lane thread keep the GIL that
+# long each time an I/O thread (RNS readers, the host's JNI poll/feed) wants
+# it back. A shorter interval trades a little switching for fairer ingress.
+_GIL_SWITCH_INTERVAL_SECONDS = 0.002
+# reticulum-gil-probe: sleep-overshoot sample period and _state_lock timing
+# period. Both only measure; nothing waits on the probe.
+_GIL_PROBE_INTERVAL_SECONDS = 0.05
+_GIL_PROBE_STATE_LOCK_INTERVAL_SECONDS = 1.0
+_PROVIDER_REQUEST_LAG_SAMPLE_MAX = 256
 _PRESENCE_PRESSURE_LOG_INTERVAL_SECONDS = 10.0
 _CALLBACK_SLOW_LOG_THRESHOLD_MS = 100.0
 _CALLBACK_SLOW_LOG_MIN_INTERVAL_SECONDS = 5.0
@@ -961,7 +1003,10 @@ _SCHEDULER_QUEUE_MAX_BY_LANE: Dict[str, int] = {
     # most latency-sensitive thing a phone does; neither may wait behind a
     # backlog of group fanout on control-send / resource-control.
     "dm-control": 32,
-    "dm-page": 16,
+    # DM page registrations and requester prepares/accepts (16), plus the
+    # engine's authorize/reject answers to DM page requests, which carry the
+    # logical type too: at most one per pending provider auth.
+    "dm-page": 16 + _RESOURCE_SESSION_PROVIDER_PENDING_AUTH_MAX,
     "link-management": 128,
     "overlay-control": 64,
     "overlay-io-0": 32,
@@ -1029,6 +1074,13 @@ _audio_data_plane_inbound_queue: "queue.Queue[Optional[Tuple[float, bytes]]]" = 
 _scheduler_queues: Dict[str, "queue.Queue[Optional[Tuple[float, str, Callable[..., Any], tuple, dict]]]"] = {}
 _scheduler_threads: list[threading.Thread] = []
 _scheduler_stats: Dict[str, Dict[str, Any]] = {}
+# Leaf lock for _scheduler_stats, _rns_overlay_callback_pending_keys and the
+# provider ingress diagnostics. Nothing is acquired while it is held (apart
+# from a queue's own internal mutex in qsize), so it may be taken inside
+# _state_lock, never the other way round. The RNS reader thread enqueues
+# every overlay packet; with this lock it never waits for _state_lock, whose
+# holders can lose the GIL for many time slices.
+_scheduler_stats_lock = threading.Lock()
 
 
 class _BoundedKeyedSendDispatcher:
@@ -1352,6 +1404,24 @@ _AUDIO_EXECUTOR_COMMAND_LOG_THRESHOLD_MS = 80.0
 _audio_queue_state_last_emit = 0.0
 _audio_queue_state_dirty = False
 _bridge_pressure_last_log_at = 0.0
+# Provider ingress diagnostics for bridge_pressure. The lag samples and the
+# probe maxima reset after each line; the refusal counts are cumulative.
+# Guarded by _scheduler_stats_lock (a leaf lock), never by _state_lock.
+# Lag = request arrival on this device minus the requester's own requested_at
+# stamp, so it includes the clock skew between the two devices.
+_provider_request_lag_ms_samples: "deque[int]" = deque(
+    maxlen=_PROVIDER_REQUEST_LAG_SAMPLE_MAX
+)
+_provider_request_lag_dm_ms_samples: "deque[int]" = deque(maxlen=64)
+_provider_request_lag_window: Dict[str, Any] = {
+    "n": 0,
+    "max": None,
+    "dmMax": None,
+}
+_provider_refused_counts: Dict[str, int] = {"dm": 0, "history": 0, "other": 0}
+_gil_probe_lag_ms_max = 0.0
+_gil_probe_state_lock_wait_ms_max = 0.0
+_gil_probe_generation = 0
 _audio_stage_counter_last_log_at_ms = 0
 _rns_interface_pressure_last_log_at = 0.0
 _RNS_INTERFACE_PRESSURE_LOG_INTERVAL_SECONDS = 15.0
@@ -1649,6 +1719,7 @@ def _mark_audio_queue_state_dirty() -> None:
 
 
 def _scheduler_stats_for_lane(lane: str) -> Dict[str, Any]:
+    # Caller holds _scheduler_stats_lock.
     stats = _scheduler_stats.get(lane)
     if stats is not None:
         return stats
@@ -1680,7 +1751,7 @@ def _logical_scheduler_lane(lane: str) -> str:
 
 
 def _scheduler_diagnostics() -> list:
-    with _state_lock:
+    with _scheduler_stats_lock:
         out = []
         for lane in sorted(_scheduler_stats.keys()):
             stats = dict(_scheduler_stats_for_lane(lane))
@@ -1717,7 +1788,7 @@ def _overlay_close_diagnostic_counts(now_wall: float) -> Tuple[int, int, int]:
 
 def _format_scheduler_active_tasks(now: float) -> str:
     parts: list[str] = []
-    with _state_lock:
+    with _scheduler_stats_lock:
         for lane in sorted(_scheduler_stats.keys()):
             stats = _scheduler_stats.get(lane) or {}
             task = str(stats.get("currentTask") or "")
@@ -1751,6 +1822,179 @@ def _estimate_gap_median_ms(bucket_counts: List[int], sample_count: int) -> int:
     return _RNS_GAP_MEDIAN_MAX_MS
 
 
+def _note_provider_request_lag(lag_ms: Optional[int], dm_page: bool) -> None:
+    if lag_ms is None:
+        return
+    try:
+        value = int(lag_ms)
+    except Exception:
+        return
+    with _scheduler_stats_lock:
+        _provider_request_lag_ms_samples.append(value)
+        window = _provider_request_lag_window
+        window["n"] = int(window.get("n") or 0) + 1
+        if window.get("max") is None or value > int(window["max"]):
+            window["max"] = value
+        if dm_page:
+            _provider_request_lag_dm_ms_samples.append(value)
+            if window.get("dmMax") is None or value > int(window["dmMax"]):
+                window["dmMax"] = value
+
+
+def _note_provider_refused(kind: str) -> None:
+    key = kind if kind in ("dm", "history") else "other"
+    with _scheduler_stats_lock:
+        _provider_refused_counts[key] = int(_provider_refused_counts.get(key) or 0) + 1
+
+
+def _take_provider_ingress_window() -> Dict[str, Any]:
+    """Return the ingress diagnostics since the last call and reset them."""
+    global _gil_probe_lag_ms_max, _gil_probe_state_lock_wait_ms_max
+    with _scheduler_stats_lock:
+        window = _provider_request_lag_window
+        snapshot = {
+            "lag": list(_provider_request_lag_ms_samples),
+            "dmLag": list(_provider_request_lag_dm_ms_samples),
+            "n": int(window.get("n") or 0),
+            "max": window.get("max"),
+            "dmMax": window.get("dmMax"),
+            "gilLagMsMax": float(_gil_probe_lag_ms_max or 0.0),
+            "stateLockWaitMsMax": float(_gil_probe_state_lock_wait_ms_max or 0.0),
+            "refused": dict(_provider_refused_counts),
+        }
+        _provider_request_lag_ms_samples.clear()
+        _provider_request_lag_dm_ms_samples.clear()
+        window["n"] = 0
+        window["max"] = None
+        window["dmMax"] = None
+        _gil_probe_lag_ms_max = 0.0
+        _gil_probe_state_lock_wait_ms_max = 0.0
+    return snapshot
+
+
+def _format_lag_p50_max(samples: List[int], max_value: Any) -> str:
+    if not samples or max_value is None:
+        return "n/a"
+    ordered = sorted(samples)
+    return f"{int(ordered[(len(ordered) - 1) // 2])}/{int(max_value)}"
+
+
+def _host_out_queue_depth() -> int:
+    try:
+        host = sys.modules.get("qortal_presence_host")
+        out_queue = getattr(host, "_out_queue", None) if host is not None else None
+        return int(out_queue.qsize()) if out_queue is not None else -1
+    except Exception:
+        return -1
+
+
+def _rns_rx_backlog_text() -> str:
+    """Unread bytes in each RNS interface socket: the direct reader-lag probe."""
+    try:
+        import fcntl
+        import struct
+        import termios
+    except Exception:
+        return "unavailable"
+    parts: List[str] = []
+    try:
+        interfaces = list(getattr(RNS.Transport, "interfaces", None) or [])
+    except Exception:
+        interfaces = []
+    for iface in interfaces:
+        if len(parts) >= 8:
+            break
+        try:
+            sock = getattr(iface, "socket", None)
+            if sock is None or not hasattr(sock, "fileno"):
+                continue
+            fd = int(sock.fileno())
+            if fd < 0:
+                continue
+            raw = fcntl.ioctl(fd, termios.FIONREAD, b"\0\0\0\0")
+            pending = int(struct.unpack("i", raw)[0])
+            name = str(getattr(iface, "name", "") or type(iface).__name__)
+            name = re.sub(r"[^A-Za-z0-9_.-]+", "_", name)[:24] or "iface"
+            parts.append(f"{name}:{pending}")
+        except Exception:
+            continue
+    return ",".join(parts) if parts else "none"
+
+
+def _gil_probe_loop(generation: int) -> None:
+    """Measure GIL handoff delay and _state_lock waits; never blocks others.
+
+    Samples every 50 ms while the provider has work (a request waiting for
+    its authorize, a transfer in flight, provider capacity held) and every
+    second otherwise, so an idle phone is not woken 20 times a second. Open
+    links alone do not count: resource-session links stay open minutes after
+    their last use, so a phone almost always has some.
+    """
+    global _gil_probe_lag_ms_max, _gil_probe_state_lock_wait_ms_max
+    next_lock_probe_at = time.monotonic() + _GIL_PROBE_STATE_LOCK_INTERVAL_SECONDS
+    while generation == _gil_probe_generation:
+        # Unlocked reads: a stale answer only picks the other interval once.
+        busy = bool(
+            _resource_session_provider_waiters
+            or _resource_session_provider_inflight_transfers
+            or any(
+                int(count or 0) > 0
+                for count in list(_resource_session_provider_active_by_class.values())
+            )
+        )
+        interval = (
+            _GIL_PROBE_INTERVAL_SECONDS
+            if busy
+            else _GIL_PROBE_STATE_LOCK_INTERVAL_SECONDS
+        )
+        before = time.monotonic()
+        if _shutdown.wait(interval):
+            return
+        after = time.monotonic()
+        lag_ms = max(0.0, (after - before - interval) * 1000.0)
+        lock_wait_ms: Optional[float] = None
+        if after >= next_lock_probe_at:
+            next_lock_probe_at = after + _GIL_PROBE_STATE_LOCK_INTERVAL_SECONDS
+            lock_started_at = time.monotonic()
+            with _state_lock:
+                pass
+            lock_wait_ms = (time.monotonic() - lock_started_at) * 1000.0
+        with _scheduler_stats_lock:
+            if lag_ms > _gil_probe_lag_ms_max:
+                _gil_probe_lag_ms_max = lag_ms
+            if (
+                lock_wait_ms is not None
+                and lock_wait_ms > _gil_probe_state_lock_wait_ms_max
+            ):
+                _gil_probe_state_lock_wait_ms_max = lock_wait_ms
+
+
+def _start_gil_probe() -> None:
+    # One probe per bridge run: a probe left from an earlier run in this
+    # process sees the new generation and exits.
+    global _gil_probe_generation
+    _gil_probe_generation += 1
+    threading.Thread(
+        target=_gil_probe_loop,
+        args=(_gil_probe_generation,),
+        name="reticulum-gil-probe",
+        daemon=True,
+    ).start()
+
+
+def _apply_gil_switch_interval() -> None:
+    try:
+        previous = sys.getswitchinterval()
+        sys.setswitchinterval(_GIL_SWITCH_INTERVAL_SECONDS)
+        log(
+            "[presence_bridge] gil_switch_interval "
+            f"previous_ms={previous * 1000.0:.1f} "
+            f"now_ms={sys.getswitchinterval() * 1000.0:.1f}"
+        )
+    except Exception as exc:
+        log(f"[presence_bridge] gil_switch_interval_failed err={exc}")
+
+
 def _maybe_log_bridge_pressure(now: Optional[float] = None, force: bool = False) -> None:
     global _bridge_pressure_last_log_at
     global _audio_rns_callback_scheduler_gap_ms_window
@@ -1780,14 +2024,15 @@ def _maybe_log_bridge_pressure(now: Optional[float] = None, force: bool = False)
         _overlay_close_diagnostic_counts(now_wall)
     )
     with _state_lock:
-        lanes = set(_SCHEDULER_QUEUE_MAX_BY_LANE.keys()) | set(_scheduler_queues.keys()) | set(_scheduler_stats.keys())
-        for lane in lanes:
-            q = _scheduler_queues.get(lane)
-            lane_depths[lane] = q.qsize() if q is not None else 0
-            stats = _scheduler_stats.get(lane)
-            slow_count = int(stats.get("slowTaskCount") or 0) if stats is not None else 0
-            if slow_count > 0:
-                slow_counts[lane] = slow_count
+        with _scheduler_stats_lock:
+            lanes = set(_SCHEDULER_QUEUE_MAX_BY_LANE.keys()) | set(_scheduler_queues.keys()) | set(_scheduler_stats.keys())
+            for lane in lanes:
+                q = _scheduler_queues.get(lane)
+                lane_depths[lane] = q.qsize() if q is not None else 0
+                stats = _scheduler_stats.get(lane)
+                slow_count = int(stats.get("slowTaskCount") or 0) if stats is not None else 0
+                if slow_count > 0:
+                    slow_counts[lane] = slow_count
         overlay_links = len(_overlay_links_by_id)
         audio_links = len(_audio_links_by_id)
         file_links = len(_qchat_file_links_by_id)
@@ -1803,6 +2048,10 @@ def _maybe_log_bridge_pressure(now: Optional[float] = None, force: bool = False)
             _resource_session_provider_active_by_class
         )
         provider_active_peers = len(_resource_session_provider_active_by_peer)
+        provider_history_pending = int(
+            _resource_session_provider_history_pending_total or 0
+        )
+        provider_history_active = int(_resource_session_provider_history_active or 0)
         provider_link_handoff_waiting = sum(
             1
             for state in _qchat_file_links_by_id.values()
@@ -1844,6 +2093,11 @@ def _maybe_log_bridge_pressure(now: Optional[float] = None, force: bool = False)
     rns_gap_pressure = (
         rns_gap_ms_window >= _BRIDGE_PRESSURE_RNS_GAP_THRESHOLD_MS
     )
+    with _scheduler_stats_lock:
+        gil_lag_pressure = (
+            float(_gil_probe_lag_ms_max or 0.0)
+            >= _BRIDGE_PRESSURE_GIL_LAG_THRESHOLD_MS
+        )
     has_pressure = (
         cmd_q > 0
         or resp_q > 0
@@ -1860,12 +2114,20 @@ def _maybe_log_bridge_pressure(now: Optional[float] = None, force: bool = False)
         or any(count > 0 for count in provider_capacity_waiters.values())
         or any(count > 0 for count in provider_active_by_class.values())
         or rns_gap_pressure
+        or gil_lag_pressure
         or overlay_destination_closes > 0
     )
     if not force and not has_pressure:
         return
 
     _bridge_pressure_last_log_at = now
+    ingress = _take_provider_ingress_window()
+    refused = ingress.get("refused") or {}
+    req_lag_text = (
+        f"all:{_format_lag_p50_max(ingress.get('lag') or [], ingress.get('max'))},"
+        f"dm:{_format_lag_p50_max(ingress.get('dmLag') or [], ingress.get('dmMax'))},"
+        f"n={int(ingress.get('n') or 0)}"
+    )
     lanes_text = _format_bridge_pressure_counts(lane_depths)
     slow_text = _format_bridge_pressure_counts(slow_counts)
     active_text = _format_scheduler_active_tasks(now)
@@ -1896,7 +2158,17 @@ def _maybe_log_bridge_pressure(now: Optional[float] = None, force: bool = False)
         f"rns_gap_total_samples=raw:{raw_gap_sample_count},shared:{shared_gap_sample_count} "
         f"overlay_destination_closed_5m={overlay_destination_closes} "
         f"overlay_replay_destination_closed_5m={overlay_replay_closes} "
-        f"overlay_announce_retry_destination_closed_5m={overlay_announce_retry_closes}"
+        f"overlay_announce_retry_destination_closed_5m={overlay_announce_retry_closes} "
+        f"req_lag_ms={req_lag_text} "
+        f"gil_lag_ms_max={int(ingress.get('gilLagMsMax') or 0)} "
+        f"state_lock_wait_ms_max={int(ingress.get('stateLockWaitMsMax') or 0)} "
+        f"host_out_q={_host_out_queue_depth()} "
+        f"rns_rx_backlog_bytes={_rns_rx_backlog_text()} "
+        f"provider_refused=dm:{int(refused.get('dm') or 0)},"
+        f"history:{int(refused.get('history') or 0)},"
+        f"other:{int(refused.get('other') or 0)} "
+        f"provider_history=pending:{provider_history_pending},"
+        f"active:{provider_history_active}"
     )
     _maybe_log_audio_stage_counters(_now_wall_ms())
     if rns_gap_ms_window >= _BRIDGE_PRESSURE_RNS_GAP_THRESHOLD_MS:
@@ -2013,7 +2285,8 @@ def _note_callback_duration(name: str, started_at: float, raw: Any = None) -> No
 
 
 def _note_scheduler_enqueue(lane: str) -> None:
-    with _state_lock:
+    # Runs on the RNS reader thread for every overlay packet: leaf lock only.
+    with _scheduler_stats_lock:
         stats = _scheduler_stats_for_lane(lane)
         q = _scheduler_queues.get(lane)
         depth = q.qsize() if q is not None else 0
@@ -2024,7 +2297,7 @@ def _note_scheduler_enqueue(lane: str) -> None:
 
 
 def _note_scheduler_drop(lane: str) -> None:
-    with _state_lock:
+    with _scheduler_stats_lock:
         stats = _scheduler_stats_for_lane(lane)
         stats["droppedTasks"] = int(stats.get("droppedTasks") or 0) + 1
         _mark_audio_queue_state_dirty()
@@ -2033,7 +2306,7 @@ def _note_scheduler_drop(lane: str) -> None:
 def _note_scheduler_complete(lane: str, name: str, queued_at: float, started_at: float) -> None:
     duration_ms = max(0.0, (time.monotonic() - started_at) * 1000.0)
     dwell_ms = max(0.0, (started_at - queued_at) * 1000.0)
-    with _state_lock:
+    with _scheduler_stats_lock:
         stats = _scheduler_stats_for_lane(lane)
         q = _scheduler_queues.get(lane)
         stats["queueDepth"] = q.qsize() if q is not None else int(stats.get("queueDepth") or 0)
@@ -2245,7 +2518,7 @@ def _scheduler_worker_loop(lane: str) -> None:
             return
         queued_at, name, fn, args, kwargs = item
         started_at = time.monotonic()
-        with _state_lock:
+        with _scheduler_stats_lock:
             stats = _scheduler_stats_for_lane(lane)
             stats["currentTask"] = str(name or "")[:80]
             stats["currentTaskStartedAt"] = started_at
@@ -2265,7 +2538,7 @@ def _scheduler_worker_loop(lane: str) -> None:
             )
         finally:
             _note_scheduler_complete(lane, name, queued_at, started_at)
-            with _state_lock:
+            with _scheduler_stats_lock:
                 stats = _scheduler_stats_for_lane(lane)
                 if str(stats.get("currentTask") or "") == str(name or "")[:80]:
                     stats["currentTask"] = ""
@@ -2279,7 +2552,8 @@ def _start_scheduler_workers() -> None:
         return
     for lane, maxsize in _SCHEDULER_QUEUE_MAX_BY_LANE.items():
         _scheduler_queues[lane] = queue.Queue(maxsize=max(1, int(maxsize)))
-        _scheduler_stats_for_lane(lane)
+        with _scheduler_stats_lock:
+            _scheduler_stats_for_lane(lane)
         worker_count = 1
         for worker_index in range(worker_count):
             thread = threading.Thread(
@@ -5659,7 +5933,7 @@ def _run_bounded_rns_packet_callback(
         callback_to_run(message, packet)
     finally:
         if pending_key:
-            with _state_lock:
+            with _scheduler_stats_lock:
                 _rns_overlay_callback_pending_keys.discard(pending_key)
 
 
@@ -5686,7 +5960,7 @@ def _dispatch_bounded_rns_packet_callback(
         pending_key = hashlib.sha256(
             stable_link_id.encode("utf-8") + b":" + bytes(message or b"")
         ).hexdigest()
-        with _state_lock:
+        with _scheduler_stats_lock:
             if pending_key in _rns_overlay_callback_pending_keys:
                 return
             _rns_overlay_callback_pending_keys.add(pending_key)
@@ -5705,7 +5979,7 @@ def _dispatch_bounded_rns_packet_callback(
         drop_oldest=normalized_kind == "audio",
     )
     if not queued and pending_key:
-        with _state_lock:
+        with _scheduler_stats_lock:
             _rns_overlay_callback_pending_keys.discard(pending_key)
 
 
@@ -6390,7 +6664,10 @@ def _stall_watchdog_loop() -> None:
                     log(f"[presence_bridge] target=stall-watchdog thread_population_failed err={exc}")
             stuck_lanes: List[Dict[str, Any]] = []
             # Read the stats dicts without _state_lock on purpose (see above).
-            for lane, stats in list(_scheduler_stats.items()):
+            # The leaf lock is only ever held for a few dict operations.
+            with _scheduler_stats_lock:
+                lane_stats = list(_scheduler_stats.items())
+            for lane, stats in lane_stats:
                 try:
                     started_at = float(stats.get("currentTaskStartedAt") or 0.0)
                     task = str(stats.get("currentTask") or "")
@@ -23132,10 +23409,17 @@ def _resource_session_provider_class(
 def _resource_session_provider_has_capacity_locked(
     provider_class: str,
     peer_hash: str = "",
+    history_budget: bool = False,
 ) -> bool:
     peer_key = str(peer_hash or "").strip().lower()
     active_total = sum(_resource_session_provider_active_by_class.values())
     if active_total >= _RESOURCE_SESSION_PROVIDER_CONCURRENCY:
+        return False
+    if (
+        history_budget
+        and int(_resource_session_provider_history_active or 0)
+        >= _RESOURCE_SESSION_PROVIDER_HISTORY_CONCURRENCY
+    ):
         return False
     if (
         peer_key
@@ -23184,6 +23468,7 @@ def _resource_session_provider_can_start_locked(
     if not _resource_session_provider_has_capacity_locked(
         provider_class,
         peer_hash,
+        isinstance(waiter, dict) and waiter.get("historyBudget") is True,
     ):
         return False
     if waiter is None:
@@ -23214,9 +23499,45 @@ def _resource_session_provider_can_start_locked(
         if _resource_session_provider_has_capacity_locked(
             queued_class,
             queued_peer,
+            queued.get("historyBudget") is True,
         ):
             return False
     return True
+
+
+def _resource_session_provider_dm_page_bypass_locked() -> bool:
+    """An authorized DM page may start at once while below the extended cap."""
+    return (
+        sum(_resource_session_provider_active_by_class.values())
+        < _RESOURCE_SESSION_PROVIDER_CONCURRENCY
+        + _RESOURCE_SESSION_PROVIDER_DM_PAGE_EXTRA
+    )
+
+
+def _resource_session_provider_mark_active_locked(
+    provider_class: str,
+    peer_hash: str,
+    history_budget: bool,
+) -> None:
+    global _resource_session_provider_history_active
+    _resource_session_provider_active_by_class[provider_class] += 1
+    if history_budget:
+        _resource_session_provider_history_active += 1
+    if peer_hash:
+        _resource_session_provider_active_by_peer[peer_hash] = (
+            int(_resource_session_provider_active_by_peer.get(peer_hash) or 0)
+            + 1
+        )
+        if provider_class == "attachment":
+            _resource_session_provider_active_attachments_by_peer[peer_hash] = (
+                int(
+                    _resource_session_provider_active_attachments_by_peer.get(
+                        peer_hash
+                    )
+                    or 0
+                )
+                + 1
+            )
 
 
 def _resource_session_provider_acquire_capacity(
@@ -23224,20 +23545,47 @@ def _resource_session_provider_acquire_capacity(
     transfer_id: str,
     pending: Dict[str, Any],
     state: Dict[str, Any],
+    dm_page: bool = False,
+    history_budget: bool = False,
 ) -> bool:
+    """Reserve provider response capacity after authorization.
+
+    An authorized DM page skips the queue, the per-peer active cap and the
+    priority scan while the provider is below its concurrency plus
+    _RESOURCE_SESSION_PROVIDER_DM_PAGE_EXTRA; beyond that it waits like
+    everything else, but is never refused for a full queue. Chat history
+    (history_budget) also stops at its own concurrency.
+    """
     deadline = time.monotonic() + _RESOURCE_SESSION_PROVIDER_CAPACITY_WAIT_SECONDS
     peer_hash = str(state.get("peerPresenceHash") or "").strip().lower()
+    dm_page = bool(dm_page) and provider_class == "live"
+    history_budget = bool(history_budget) and not dm_page
     waiter = {
         "providerClass": provider_class,
         "peerPresenceHash": peer_hash,
         "transferId": transfer_id,
+        "historyBudget": history_budget,
+        "dmPage": dm_page,
     }
     with _resource_session_provider_capacity_condition:
+        if (
+            dm_page
+            and pending.get("cancelled") is not True
+            and not _shutdown.is_set()
+            and state.get("closing") is not True
+            and _resource_session_provider_dm_page_bypass_locked()
+        ):
+            _resource_session_provider_mark_active_locked(
+                provider_class,
+                peer_hash,
+                False,
+            )
+            return True
         total_waiters = len(_resource_session_provider_capacity_queue)
         peer_waiters = int(
             _resource_session_provider_capacity_waiters_by_peer.get(peer_hash) or 0
         )
-        if (
+        if not dm_page and (
             total_waiters >= _RESOURCE_SESSION_PROVIDER_CAPACITY_QUEUE_MAX
             or (
                 peer_hash
@@ -23260,34 +23608,18 @@ def _resource_session_provider_acquire_capacity(
                     or state.get("closing") is True
                 ):
                     return False
-                if _resource_session_provider_can_start_locked(
+                if (
+                    dm_page and _resource_session_provider_dm_page_bypass_locked()
+                ) or _resource_session_provider_can_start_locked(
                     provider_class,
                     peer_hash,
                     waiter,
                 ):
-                    _resource_session_provider_active_by_class[provider_class] += 1
-                    if peer_hash:
-                        _resource_session_provider_active_by_peer[peer_hash] = (
-                            int(
-                                _resource_session_provider_active_by_peer.get(
-                                    peer_hash
-                                )
-                                or 0
-                            )
-                            + 1
-                        )
-                        if provider_class == "attachment":
-                            _resource_session_provider_active_attachments_by_peer[
-                                peer_hash
-                            ] = (
-                                int(
-                                    _resource_session_provider_active_attachments_by_peer.get(
-                                        peer_hash
-                                    )
-                                    or 0
-                                )
-                                + 1
-                            )
+                    _resource_session_provider_mark_active_locked(
+                        provider_class,
+                        peer_hash,
+                        history_budget,
+                    )
                     return True
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
@@ -23332,13 +23664,20 @@ def _resource_session_provider_acquire_capacity(
 def _resource_session_provider_release_capacity(
     provider_class: str,
     peer_hash: str = "",
+    history_budget: bool = False,
 ) -> None:
+    global _resource_session_provider_history_active
     peer_key = str(peer_hash or "").strip().lower()
     with _resource_session_provider_capacity_condition:
         _resource_session_provider_active_by_class[provider_class] = max(
             0,
             _resource_session_provider_active_by_class[provider_class] - 1,
         )
+        if history_budget:
+            _resource_session_provider_history_active = max(
+                0,
+                _resource_session_provider_history_active - 1,
+            )
         if peer_key:
             remaining = max(
                 0,
@@ -23376,6 +23715,8 @@ def _resource_session_provider_release_auth_admission(
     waiter_key: str,
     waiter: Optional[Dict[str, Any]],
 ) -> None:
+    global _resource_session_provider_pending_auth_dm_total
+    global _resource_session_provider_history_pending_total
     if not waiter_key or not isinstance(waiter, dict):
         return
     with _state_lock:
@@ -23393,12 +23734,121 @@ def _resource_session_provider_release_auth_admission(
                 _resource_session_provider_pending_auth_by_peer[peer_hash] = remaining
             else:
                 _resource_session_provider_pending_auth_by_peer.pop(peer_hash, None)
+        if waiter.pop("dmPage", False) is True:
+            _resource_session_provider_pending_auth_dm_total = max(
+                0,
+                _resource_session_provider_pending_auth_dm_total - 1,
+            )
+            _resource_session_provider_counter_decrement_locked(
+                _resource_session_provider_pending_auth_dm_by_peer,
+                peer_hash,
+            )
+        if waiter.pop("historyBudget", False) is True:
+            _resource_session_provider_history_pending_total = max(
+                0,
+                _resource_session_provider_history_pending_total - 1,
+            )
+            _resource_session_provider_counter_decrement_locked(
+                _resource_session_provider_history_pending_by_peer,
+                peer_hash,
+            )
+
+
+def _resource_session_provider_counter_decrement_locked(
+    counts: Dict[str, int],
+    key: str,
+) -> None:
+    if not key:
+        return
+    remaining = max(0, int(counts.get(key) or 0) - 1)
+    if remaining > 0:
+        counts[key] = remaining
+    else:
+        counts.pop(key, None)
+
+
+def _resource_session_provider_is_history_budget(logical_resource_type: str) -> bool:
+    return (
+        str(logical_resource_type or "").strip().lower()
+        in _RESOURCE_SESSION_PROVIDER_HISTORY_LOGICAL_TYPES
+    )
+
+
+def _resource_session_provider_history_budget_used_locked() -> int:
+    """Chat history requests pending auth, waiting for capacity, or active."""
+    waiting = sum(
+        1
+        for queued in _resource_session_provider_capacity_queue
+        if queued.get("historyBudget") is True
+    )
+    return (
+        int(_resource_session_provider_history_pending_total or 0)
+        + waiting
+        + int(_resource_session_provider_history_active or 0)
+    )
+
+
+def _resource_session_provider_admission_refusal_locked(
+    peer_hash: str,
+    dm_page: bool,
+    history_budget: bool,
+    extra_total: int = 0,
+    extra_peer: int = 0,
+    extra_non_dm_total: int = 0,
+    extra_non_dm_peer: int = 0,
+) -> str:
+    """Pending-auth admission. Returns the refusal kind, or "" to admit.
+
+    DM pages keep the absolute caps. Everything else also stops at the
+    non-DM caps, which leaves slots that only DM pages can take. Chat history
+    is further limited by its own budget. extra_* count handoff waiters that
+    are not yet in the waiter table.
+    """
+    peer_key = str(peer_hash or "").strip().lower()
+    pending_total = len(_resource_session_provider_waiters) + int(extra_total)
+    peer_pending = int(
+        _resource_session_provider_pending_auth_by_peer.get(peer_key, 0) or 0
+    ) + int(extra_peer)
+    if pending_total >= _RESOURCE_SESSION_PROVIDER_PENDING_AUTH_MAX:
+        return "pending_total"
+    if peer_pending >= _RESOURCE_SESSION_PROVIDER_PENDING_AUTH_MAX_PER_PEER:
+        return "pending_peer"
+    if dm_page:
+        return ""
+    non_dm_total = (
+        len(_resource_session_provider_waiters)
+        - int(_resource_session_provider_pending_auth_dm_total or 0)
+        + int(extra_non_dm_total)
+    )
+    non_dm_peer = (
+        int(_resource_session_provider_pending_auth_by_peer.get(peer_key, 0) or 0)
+        - int(_resource_session_provider_pending_auth_dm_by_peer.get(peer_key, 0) or 0)
+        + int(extra_non_dm_peer)
+    )
+    if non_dm_total >= _RESOURCE_SESSION_PROVIDER_PENDING_AUTH_NON_DM_MAX:
+        return "pending_total"
+    if non_dm_peer >= _RESOURCE_SESSION_PROVIDER_PENDING_AUTH_NON_DM_MAX_PER_PEER:
+        return "pending_peer"
+    if history_budget:
+        if (
+            _resource_session_provider_history_budget_used_locked()
+            >= _RESOURCE_SESSION_PROVIDER_HISTORY_BUDGET
+        ):
+            return "history_budget"
+        if (
+            int(_resource_session_provider_history_pending_by_peer.get(peer_key, 0) or 0)
+            >= _RESOURCE_SESSION_PROVIDER_HISTORY_PENDING_PER_PEER
+        ):
+            return "history_peer"
+    return ""
 
 
 def _resource_session_provider_acquire_link_slot(
     state: Dict[str, Any],
     transfer_id: str,
     peer_hash: str,
+    dm_page: bool = False,
+    detail: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Reserve a provider Link after its previous Resource fully concludes.
 
@@ -23407,9 +23857,14 @@ def _resource_session_provider_acquire_link_slot(
     the provider's completion watcher. Keep one bounded successor waiting on
     the provider's own completion condition and reserve the slot atomically
     when it becomes free. A non-empty return value is the rejection reason.
+    A DM page successor may use the pending-auth slots reserved for DM pages;
+    anything else stops at the non-DM caps. detail, when given, receives the
+    local busy kind of a refusal (diagnostics only).
     """
     transfer_key = str(transfer_id or "").strip()
     peer_key = str(peer_hash or "").strip().lower()
+    if detail is None:
+        detail = {}
     deadline = (
         time.monotonic()
         + _RESOURCE_SESSION_PROVIDER_LINK_HANDOFF_WAIT_SECONDS
@@ -23424,16 +23879,21 @@ def _resource_session_provider_acquire_link_slot(
             or state.get("provider_ready_sent") is not True
             or _qchat_file_links_by_id.get(link_id) is not state
         ):
+            detail["busyKind"] = "unavailable"
             return "resource_session_unavailable"
         if _resource_session_provider_was_cancelled_locked(
             peer_key,
             transfer_key,
         ):
+            detail["busyKind"] = "cancelled"
             return "resource_requester_cancelled"
         existing_waiter = str(
             state.get("provider_link_waiter_transfer") or ""
         ).strip()
         if existing_waiter:
+            detail["busyKind"] = (
+                "duplicate" if existing_waiter == transfer_key else "link_slot"
+            )
             return (
                 "duplicate_resource_request"
                 if existing_waiter == transfer_key
@@ -23444,6 +23904,9 @@ def _resource_session_provider_acquire_link_slot(
                 state.get("provider_link_waiter_transfer") or ""
             ).strip()
             if existing_waiter and not owns_waiter:
+                detail["busyKind"] = (
+                    "duplicate" if existing_waiter == transfer_key else "link_slot"
+                )
                 return (
                     "duplicate_resource_request"
                     if existing_waiter == transfer_key
@@ -23458,31 +23921,35 @@ def _resource_session_provider_acquire_link_slot(
                     and item.get("incoming") is True
                     and item.get("provider_link_waiter_transfer")
                 ]
-                peer_handoff_waiters = sum(
-                    1
+                peer_handoff_waiters = [
+                    item
                     for item in handoff_waiters
                     if str(
                         item.get("peerPresenceHash") or ""
                     ).strip().lower() == peer_key
+                ]
+                refusal = _resource_session_provider_admission_refusal_locked(
+                    peer_key,
+                    dm_page,
+                    False,
+                    extra_total=len(handoff_waiters),
+                    extra_peer=len(peer_handoff_waiters),
+                    extra_non_dm_total=sum(
+                        1
+                        for item in handoff_waiters
+                        if item.get("provider_link_waiter_dm_page") is not True
+                    ),
+                    extra_non_dm_peer=sum(
+                        1
+                        for item in peer_handoff_waiters
+                        if item.get("provider_link_waiter_dm_page") is not True
+                    ),
                 )
-                pending_auth_total = len(
-                    _resource_session_provider_waiters
-                )
-                peer_pending_auth = int(
-                    _resource_session_provider_pending_auth_by_peer.get(
-                        peer_key,
-                        0,
-                    )
-                    or 0
-                )
-                if (
-                    pending_auth_total + len(handoff_waiters)
-                    >= _RESOURCE_SESSION_PROVIDER_PENDING_AUTH_MAX
-                    or peer_pending_auth + peer_handoff_waiters
-                    >= _RESOURCE_SESSION_PROVIDER_PENDING_AUTH_MAX_PER_PEER
-                ):
+                if refusal:
+                    detail["busyKind"] = refusal
                     return "resource_provider_busy"
                 state["provider_link_waiter_transfer"] = transfer_key
+                state["provider_link_waiter_dm_page"] = bool(dm_page)
                 owns_waiter = True
             waited = True
             if state.get("closing") is True or _shutdown.is_set():
@@ -23491,6 +23958,7 @@ def _resource_session_provider_acquire_link_slot(
                     and state.get("provider_link_waiter_transfer") == transfer_key
                 ):
                     state.pop("provider_link_waiter_transfer", None)
+                detail["busyKind"] = "unavailable"
                 return "resource_session_unavailable"
             if _resource_session_provider_was_cancelled_locked(
                 peer_key,
@@ -23501,6 +23969,7 @@ def _resource_session_provider_acquire_link_slot(
                     and state.get("provider_link_waiter_transfer") == transfer_key
                 ):
                     state.pop("provider_link_waiter_transfer", None)
+                detail["busyKind"] = "cancelled"
                 return "resource_requester_cancelled"
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -23513,6 +23982,7 @@ def _resource_session_provider_acquire_link_slot(
                     "[presence_bridge] resource_session_link_handoff_timeout "
                     f"transfer={transfer_key} peer={peer_key[:16]}"
                 )
+                detail["busyKind"] = "handoff"
                 return "resource_session_busy"
             _resource_session_provider_capacity_condition.wait(
                 timeout=min(0.1, remaining)
@@ -23527,11 +23997,13 @@ def _resource_session_provider_acquire_link_slot(
             or _shutdown.is_set()
             or _qchat_file_links_by_id.get(link_id) is not state
         ):
+            detail["busyKind"] = "unavailable"
             return "resource_session_unavailable"
         if _resource_session_provider_was_cancelled_locked(
             peer_key,
             transfer_key,
         ):
+            detail["busyKind"] = "cancelled"
             return "resource_requester_cancelled"
         # Reservation and the zero-to-one transition are atomic under the
         # shared condition lock, so two request threads cannot both start an
@@ -25397,6 +25869,35 @@ def _resource_session_response_metadata(pending: Dict[str, Any]) -> Dict[str, An
     return metadata
 
 
+def _resource_session_provider_is_dm_page_pending(pending: Any) -> bool:
+    if not isinstance(pending, dict):
+        return False
+    metadata = pending.get("metadata") if isinstance(pending.get("metadata"), dict) else {}
+    return (
+        str(metadata.get("logicalResourceType") or "").strip().lower()
+        == "reticulum_chat_dm_page"
+    )
+
+
+def _resource_session_provider_timing_payload(
+    pending: Any,
+    ended_at_ms: Optional[int] = None,
+) -> Optional[Dict[str, Any]]:
+    """Local-IPC timing for a DM page's terminal event (never on the wire)."""
+    if not _resource_session_provider_is_dm_page_pending(pending):
+        return None
+    timing = pending.get("_providerTiming")
+    if not isinstance(timing, dict):
+        return None
+    out = {
+        key: value
+        for key, value in timing.items()
+        if isinstance(value, int) and not isinstance(value, bool)
+    }
+    out["endedAtMs"] = int(ended_at_ms if ended_at_ms is not None else _now_wall_ms())
+    return out
+
+
 def _resource_session_watch_provider_file(
     file_handle,
     transfer_id: str,
@@ -25404,10 +25905,20 @@ def _resource_session_watch_provider_file(
     state: Dict[str, Any],
     request_id: Any,
     provider_class: str,
+    history_budget: bool = False,
 ) -> None:
     transfer_id = str(transfer_id or "").strip()
     peer_hash = str(state.get("peerPresenceHash") or "").strip().lower()
     link = state.get("link")
+    provider_timing = (
+        pending.get("_providerTiming")
+        if isinstance(pending.get("_providerTiming"), dict)
+        else None
+    )
+
+    def note_timing(key: str) -> None:
+        if provider_timing is not None and key not in provider_timing:
+            provider_timing[key] = _now_wall_ms()
 
     def watch() -> None:
         completed = False
@@ -25437,6 +25948,8 @@ def _resource_session_watch_provider_file(
                         ),
                         None,
                     )
+                    if tracked_resource is not None:
+                        note_timing("resourceFoundAtMs")
                 cancelled = pending.get("cancelled") is True
                 session_closed = _shutdown.is_set() or state.get("closing") is True
                 if (cancelled or session_closed) and tracked_resource is None:
@@ -25452,6 +25965,10 @@ def _resource_session_watch_provider_file(
                 if tracked_resource is not None:
                     status = getattr(tracked_resource, "status", None)
                     if status == getattr(RNS.Resource, "COMPLETE", object()):
+                        # Progress > 0 means the requester asked for parts,
+                        # which is what stops a desktop requester's 10 s
+                        # watchdog. A fast COMPLETE can be seen first.
+                        note_timing("firstProgressAtMs")
                         try:
                             segment_index = int(
                                 getattr(tracked_resource, "segment_index", 1) or 1
@@ -25500,6 +26017,7 @@ def _resource_session_watch_provider_file(
                     if not math.isfinite(progress):
                         progress = last_progress
                     if progress > last_progress:
+                        note_timing("firstProgressAtMs")
                         transfer_started = True
                         last_progress = progress
                         last_progress_at = time.monotonic()
@@ -25552,9 +26070,11 @@ def _resource_session_watch_provider_file(
             _resource_session_provider_release_capacity(
                 provider_class,
                 peer_hash,
+                history_budget,
             )
             _resource_session_schedule_idle_close(state)
             if not cancelled:
+                timing_payload = _resource_session_provider_timing_payload(pending)
                 _qchat_file_emit(
                     "sent" if completed else "failed",
                     {
@@ -25564,6 +26084,11 @@ def _resource_session_watch_provider_file(
                         "size": int(pending.get("size") or 0),
                         "resourceType": pending.get("resourceType") or "",
                         **({} if completed else {"reason": failure_reason}),
+                        **(
+                            {"providerTiming": timing_payload}
+                            if timing_payload is not None
+                            else {}
+                        ),
                     },
                 )
 
@@ -25575,6 +26100,115 @@ def _resource_session_watch_provider_file(
     thread.start()
 
 
+def _resource_session_requested_at_ms(
+    requested_at: Any,
+    arrived_at_ms: int,
+) -> Optional[int]:
+    """The requester's own request stamp in ms, if it is plausible."""
+    try:
+        if isinstance(requested_at, bool):
+            return None
+        value = float(requested_at)
+    except Exception:
+        return None
+    if not math.isfinite(value):
+        return None
+    requested_at_ms = int(value * 1000)
+    if abs(int(arrived_at_ms) - requested_at_ms) > 24 * 60 * 60 * 1000:
+        return None
+    return requested_at_ms
+
+
+def _resource_session_link_rtt_ms(link: Any) -> Optional[int]:
+    try:
+        rtt = getattr(link, "rtt", None)
+        if rtt is None or isinstance(rtt, bool):
+            return None
+        value = float(rtt) * 1000.0
+    except Exception:
+        return None
+    if not math.isfinite(value) or value < 0:
+        return None
+    return int(round(value))
+
+
+def _resource_session_provider_note_refusal(
+    peer_hash: str,
+    transfer_id: str,
+    reason: str,
+    busy_kind: str,
+    dm_page: bool,
+    history_budget: bool,
+    arrived_at_ms: int,
+    requested_at_ms: Optional[int],
+    slot_wait_ms: Optional[int],
+) -> None:
+    """Count a provider refusal before the auth emit; log DM page ones.
+
+    DM page refusals are rare and each one is a likely missed live message,
+    so the line goes straight to stderr, past log()'s per-kind rate limit.
+    The wire reason is unchanged; busy_kind is local only.
+    """
+    _note_provider_refused(
+        "dm" if dm_page else ("history" if history_budget else "other")
+    )
+    if not dm_page:
+        return
+    peer_key = str(peer_hash or "").strip().lower()
+    with _state_lock:
+        pending_total = len(_resource_session_provider_waiters)
+        pending_peer = int(
+            _resource_session_provider_pending_auth_by_peer.get(peer_key, 0) or 0
+        )
+    req_lag = (
+        str(int(arrived_at_ms) - int(requested_at_ms))
+        if requested_at_ms is not None
+        else "n/a"
+    )
+    slot_ms = str(int(slot_wait_ms)) if slot_wait_ms is not None else "n/a"
+    try:
+        print(
+            "[presence_bridge] resource_dm_page_provider_refused "
+            f"peer={peer_key[:16]} transfer={str(transfer_id or '')[:16]} "
+            f"reason={reason} busy_kind={busy_kind or 'unknown'} "
+            f"pending_total={pending_total} pending_peer={pending_peer} "
+            f"req_lag_ms={req_lag} slot_ms={slot_ms}",
+            file=sys.stderr,
+            flush=True,
+        )
+    except Exception:
+        pass
+
+
+def _resource_session_provider_emit_auth_ended(
+    waiter: Dict[str, Any],
+    reason: str,
+    resource_type: str,
+    logical_resource_type: str,
+) -> None:
+    """Tell the engine this incoming request is over before it answered.
+
+    Local IPC only. The request was already answered on the wire by the
+    generator's return value; the engine just skips work still queued for it.
+    """
+    if waiter.get("engineAnswered") is True or waiter.get("authEndedSent") is True:
+        return
+    waiter["authEndedSent"] = True
+    payload: Dict[str, Any] = {
+        "linkId": str(waiter.get("linkId") or ""),
+        "transferId": str(waiter.get("transferId") or ""),
+        "peerPresenceHash": str(waiter.get("peerPresenceHash") or ""),
+        "resourceType": resource_type,
+        "reason": str(reason or "resource_request_rejected"),
+        "metadata": {"logicalResourceType": logical_resource_type},
+    }
+    for key in ("arrivedAtMs", "authStartedAtMs"):
+        value = waiter.get(key)
+        if isinstance(value, int) and not isinstance(value, bool):
+            payload[key] = value
+    _qchat_file_emit("auth_ended", payload)
+
+
 def _resource_session_response_generator(
     _path,
     request_data,
@@ -25583,7 +26217,12 @@ def _resource_session_response_generator(
     remote_identity,
     _requested_at,
 ):
+    global _resource_session_provider_pending_auth_dm_total
+    global _resource_session_provider_history_pending_total
+    arrived_at_ms = _now_wall_ms()
+    requested_at_ms: Optional[int] = None
     provider_capacity_acquired = False
+    capacity_history_budget = False
     provider_capacity_transferred = False
     provider_session_active = False
     provider_session_active_transferred = False
@@ -25601,6 +26240,20 @@ def _resource_session_response_generator(
         resource_type = str(request_data.get("resourceType") or "").strip()
         if not transfer_id or not isinstance(auth, dict) or not _qchat_file_is_managed_resource_type(resource_type):
             return {"ok": False, "reason": "invalid_resource_request"}
+        logical_resource_type = str(metadata.get("logicalResourceType") or "").strip()
+        # Desktop and GO requesters both send the logical type on DM pages.
+        is_dm_page = logical_resource_type.lower() == "reticulum_chat_dm_page"
+        history_budget_request = _resource_session_provider_is_history_budget(
+            logical_resource_type
+        )
+        requested_at_ms = _resource_session_requested_at_ms(
+            _requested_at,
+            arrived_at_ms,
+        )
+        _note_provider_request_lag(
+            arrived_at_ms - requested_at_ms if requested_at_ms is not None else None,
+            is_dm_page,
+        )
         try:
             encoded_size = len(json.dumps(request_data, separators=(",", ":")).encode("utf-8"))
         except Exception:
@@ -25634,14 +26287,31 @@ def _resource_session_response_generator(
                 f"generation={int(state.get('generation') or 0)} "
                 f"logical={_resource_session_trace_logical_type({'resourceType': resource_type, 'metadata': metadata})}"
             )
+        slot_detail: Dict[str, Any] = {}
+        slot_started_at = time.monotonic()
         link_slot_reason = _resource_session_provider_acquire_link_slot(
             state,
             transfer_id,
             identified_peer_hash,
+            dm_page=is_dm_page,
+            detail=slot_detail,
         )
+        slot_wait_ms = int(max(0.0, time.monotonic() - slot_started_at) * 1000)
         if link_slot_reason:
+            _resource_session_provider_note_refusal(
+                identified_peer_hash,
+                transfer_id,
+                link_slot_reason,
+                str(slot_detail.get("busyKind") or ""),
+                is_dm_page,
+                history_budget_request,
+                arrived_at_ms,
+                requested_at_ms,
+                slot_wait_ms,
+            )
             return {"ok": False, "reason": link_slot_reason}
         provider_session_active = True
+        link_rtt_ms = _resource_session_link_rtt_ms(state.get("link"))
         waiter_key = _resource_session_waiter_key(
             str(state.get("linkId") or ""),
             transfer_id,
@@ -25658,7 +26328,13 @@ def _resource_session_response_generator(
             "transferId": transfer_id,
             "peerPresenceHash": identified_peer_hash,
             "providerClass": provider_class,
+            "arrivedAtMs": arrived_at_ms,
+            "requestedAtMs": requested_at_ms,
         }
+        admission_reason = ""
+        admission_busy_kind = ""
+        pending_auth_total = 0
+        pending_auth_peer = 0
         with _state_lock:
             link_id = str(state.get("linkId") or "")
             if (
@@ -25667,38 +26343,86 @@ def _resource_session_response_generator(
                 or state.get("provider_ready_sent") is not True
                 or _qchat_file_links_by_id.get(link_id) is not state
             ):
-                return {"ok": False, "reason": "resource_session_unavailable"}
-            if _resource_session_provider_was_cancelled_locked(
+                admission_reason = "resource_session_unavailable"
+                admission_busy_kind = "unavailable"
+            elif _resource_session_provider_was_cancelled_locked(
                 identified_peer_hash,
                 transfer_id,
             ):
-                return {"ok": False, "reason": "resource_requester_cancelled"}
-            if (
+                admission_reason = "resource_requester_cancelled"
+                admission_busy_kind = "cancelled"
+            elif (
                 waiter_key in _resource_session_provider_waiters
                 or transfer_id in _resource_session_provider_inflight_transfers
             ):
-                return {"ok": False, "reason": "duplicate_resource_request"}
-            peer_pending_auth = int(
-                _resource_session_provider_pending_auth_by_peer.get(
+                admission_reason = "duplicate_resource_request"
+                admission_busy_kind = "duplicate"
+            else:
+                admission_busy_kind = _resource_session_provider_admission_refusal_locked(
                     identified_peer_hash,
-                    0,
+                    is_dm_page,
+                    history_budget_request,
                 )
-                or 0
+                if admission_busy_kind:
+                    admission_reason = "resource_provider_busy"
+            if not admission_reason:
+                peer_pending_auth = int(
+                    _resource_session_provider_pending_auth_by_peer.get(
+                        identified_peer_hash,
+                        0,
+                    )
+                    or 0
+                )
+                state["peerPresenceHash"] = identified_peer_hash
+                state["peerDestinationHash"] = identified_peer_hash
+                _resource_session_provider_waiters[waiter_key] = waiter
+                _resource_session_provider_inflight_transfers.add(transfer_id)
+                _resource_session_provider_pending_auth_by_peer[identified_peer_hash] = (
+                    peer_pending_auth + 1
+                )
+                if is_dm_page:
+                    waiter["dmPage"] = True
+                    _resource_session_provider_pending_auth_dm_total += 1
+                    _resource_session_provider_pending_auth_dm_by_peer[
+                        identified_peer_hash
+                    ] = (
+                        int(
+                            _resource_session_provider_pending_auth_dm_by_peer.get(
+                                identified_peer_hash
+                            )
+                            or 0
+                        )
+                        + 1
+                    )
+                elif history_budget_request:
+                    waiter["historyBudget"] = True
+                    _resource_session_provider_history_pending_total += 1
+                    _resource_session_provider_history_pending_by_peer[
+                        identified_peer_hash
+                    ] = (
+                        int(
+                            _resource_session_provider_history_pending_by_peer.get(
+                                identified_peer_hash
+                            )
+                            or 0
+                        )
+                        + 1
+                    )
+                pending_auth_total = len(_resource_session_provider_waiters)
+                pending_auth_peer = peer_pending_auth + 1
+        if admission_reason:
+            _resource_session_provider_note_refusal(
+                identified_peer_hash,
+                transfer_id,
+                admission_reason,
+                admission_busy_kind,
+                is_dm_page,
+                history_budget_request,
+                arrived_at_ms,
+                requested_at_ms,
+                slot_wait_ms,
             )
-            if (
-                len(_resource_session_provider_waiters)
-                >= _RESOURCE_SESSION_PROVIDER_PENDING_AUTH_MAX
-                or peer_pending_auth
-                >= _RESOURCE_SESSION_PROVIDER_PENDING_AUTH_MAX_PER_PEER
-            ):
-                return {"ok": False, "reason": "resource_provider_busy"}
-            state["peerPresenceHash"] = identified_peer_hash
-            state["peerDestinationHash"] = identified_peer_hash
-            _resource_session_provider_waiters[waiter_key] = waiter
-            _resource_session_provider_inflight_transfers.add(transfer_id)
-            _resource_session_provider_pending_auth_by_peer[identified_peer_hash] = (
-                peer_pending_auth + 1
-            )
+            return {"ok": False, "reason": admission_reason}
         _resource_session_cancel_timer(state, "idle_timer")
         if expected_lane == "fast":
             _resource_session_trace_log(
@@ -25707,23 +26431,49 @@ def _resource_session_response_generator(
                 f"link={str(state.get('linkId') or '')[:16]} "
                 f"logical={_resource_session_trace_logical_type({'resourceType': resource_type, 'metadata': metadata})}"
             )
-        _qchat_file_emit(
-            "auth",
-            {
-                "linkId": link_id,
-                "transferId": transfer_id,
-                "peerPresenceHash": state.get("peerPresenceHash") or "",
-                "auth": auth,
-                "resourceType": resource_type,
-                "eventId": auth.get("eventId") or auth.get("id") or metadata.get("eventId"),
-                "groupId": auth.get("groupId") or auth.get("g") or metadata.get("groupId"),
-                "metadata": metadata,
-                "sessionLane": state.get("sessionLane") or "",
-            },
-        )
+        # Ingress stamps for the engine's timing breakdown (local IPC only;
+        # all on this device's wall clock except requestedAtMs, which is the
+        # requester's own stamp).
+        auth_started_at_ms = _now_wall_ms()
+        waiter["authStartedAtMs"] = auth_started_at_ms
+        auth_payload: Dict[str, Any] = {
+            "linkId": link_id,
+            "transferId": transfer_id,
+            "peerPresenceHash": state.get("peerPresenceHash") or "",
+            "auth": auth,
+            "resourceType": resource_type,
+            "eventId": auth.get("eventId") or auth.get("id") or metadata.get("eventId"),
+            "groupId": auth.get("groupId") or auth.get("g") or metadata.get("groupId"),
+            "metadata": metadata,
+            "sessionLane": state.get("sessionLane") or "",
+            "arrivedAtMs": arrived_at_ms,
+            "slotWaitMs": slot_wait_ms,
+            "pendingAuthTotal": pending_auth_total,
+            "pendingAuthPeer": pending_auth_peer,
+            "authStartedAtMs": auth_started_at_ms,
+        }
+        if requested_at_ms is not None:
+            auth_payload["requestedAtMs"] = requested_at_ms
+        if link_rtt_ms is not None:
+            auth_payload["linkRttMs"] = link_rtt_ms
+        _qchat_file_emit("auth", auth_payload)
         if not waiter["event"].wait(_RESOURCE_SESSION_PROVIDER_AUTH_TIMEOUT_SECONDS):
+            _resource_session_provider_emit_auth_ended(
+                waiter,
+                "resource_authorization_timeout",
+                resource_type,
+                logical_resource_type,
+            )
             return {"ok": False, "reason": "resource_authorization_timeout"}
         if waiter.get("authorized") is not True:
+            # Woken by link close, requester cancel or bridge stop rather
+            # than by the engine's reject.
+            _resource_session_provider_emit_auth_ended(
+                waiter,
+                str(waiter.get("reason") or "resource_request_rejected"),
+                resource_type,
+                logical_resource_type,
+            )
             return {"ok": False, "reason": str(waiter.get("reason") or "resource_request_rejected")}
         _resource_session_provider_release_auth_admission(waiter_key, waiter)
         with _state_lock:
@@ -25739,6 +26489,12 @@ def _resource_session_response_generator(
             str(pending.get("resourceType") or ""),
             str(pending_metadata.get("logicalResourceType") or ""),
         )
+        pending_dm_page = is_dm_page and _resource_session_provider_is_dm_page_pending(
+            pending
+        )
+        pending_history_budget = _resource_session_provider_is_history_budget(
+            str(pending_metadata.get("logicalResourceType") or "")
+        )
         allowed_recipient = str(pending.get("allowedRecipientAddress") or "").strip().lower()
         peer_hash = str(state.get("peerPresenceHash") or "").strip().lower()
         if allowed_recipient and peer_hash and allowed_recipient != peer_hash:
@@ -25748,14 +26504,36 @@ def _resource_session_response_generator(
         file_path = str(pending.get("filePath") or "")
         if not os.path.isfile(file_path):
             return {"ok": False, "reason": "resource_file_missing"}
+        capacity_history_budget = pending_history_budget and not (
+            pending_dm_page and provider_class == "live"
+        )
         provider_capacity_acquired = _resource_session_provider_acquire_capacity(
             provider_class,
             transfer_id,
             pending,
             state,
+            dm_page=pending_dm_page,
+            history_budget=capacity_history_budget,
         )
         if not provider_capacity_acquired:
             return {"ok": False, "reason": "resource_provider_busy"}
+        if pending_dm_page:
+            authorized_at_ms = waiter.get("authorizedAtMs")
+            pending["_providerTiming"] = {
+                "arrivedAtMs": arrived_at_ms,
+                **(
+                    {"requestedAtMs": requested_at_ms}
+                    if requested_at_ms is not None
+                    else {}
+                ),
+                "authStartedAtMs": auth_started_at_ms,
+                **(
+                    {"authorizedAtMs": authorized_at_ms}
+                    if isinstance(authorized_at_ms, int)
+                    else {}
+                ),
+                "capAcquiredAtMs": _now_wall_ms(),
+            }
         if pending.get("cancelled") is True:
             return {"ok": False, "reason": "resource_requester_cancelled"}
         if state.get("closing") is True:
@@ -25781,6 +26559,7 @@ def _resource_session_response_generator(
                 state,
                 request_id,
                 provider_class,
+                capacity_history_budget,
             )
         except Exception:
             file_handle.close()
@@ -25812,6 +26591,7 @@ def _resource_session_response_generator(
                     None,
                 )
             if isinstance(abandoned, dict):
+                abandoned_timing = _resource_session_provider_timing_payload(abandoned)
                 _qchat_file_emit(
                     "failed",
                     {
@@ -25821,6 +26601,11 @@ def _resource_session_response_generator(
                         "size": int(abandoned.get("size") or 0),
                         "resourceType": abandoned.get("resourceType") or "",
                         "reason": "resource_response_not_started",
+                        **(
+                            {"providerTiming": abandoned_timing}
+                            if abandoned_timing is not None
+                            else {}
+                        ),
                     },
                 )
         _resource_session_provider_release_auth_admission(waiter_key, waiter)
@@ -25847,6 +26632,7 @@ def _resource_session_response_generator(
                 str(state.get("peerPresenceHash") or "").strip().lower()
                 if "state" in locals() and isinstance(state, dict)
                 else "",
+                capacity_history_budget,
             )
         if not provider_session_active_transferred:
             with _state_lock:
@@ -26182,6 +26968,8 @@ def handle_authorize_qchat_file_resource(req_id: str, payload: Dict[str, Any]) -
                 f"generation={int(state.get('generation') or 0)} "
                 f"logical={_resource_session_trace_logical_type(pending)}"
             )
+        waiter["engineAnswered"] = True
+        waiter["authorizedAtMs"] = _now_wall_ms()
         waiter["authorized"] = True
         waiter["reason"] = ""
         waiter["event"].set()
@@ -26255,6 +27043,7 @@ def handle_reject_qchat_file_resource(req_id: str, payload: Dict[str, Any]) -> N
                 error="Unknown resource session request",
             )
             return
+        waiter["engineAnswered"] = True
         waiter["authorized"] = False
         waiter["reason"] = reason
         waiter["event"].set()
@@ -28190,6 +28979,8 @@ def main() -> None:
             daemon=True,
         ).start()
 
+    _apply_gil_switch_interval()
+    _start_gil_probe()
     # Start bounded callback workers before attaching to the shared daemon.
     # An inbound Link can arrive as soon as the destination is registered;
     # its callback must never fall back to synchronous execution just because

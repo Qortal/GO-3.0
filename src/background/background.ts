@@ -52,8 +52,12 @@ import {
 } from '../transactions/paymentSafety';
 import { submitSignedTransactionOnce } from '../transactions/submitSignedOnce';
 import { getWalletErrorMessage } from '../utils/walletErrorMessages';
-import PhraseWallet from '../utils/generateWallet/phrase-wallet';
 import { deriveAltcoinFieldsInWorker } from '../utils/generateWallet/deriveAltcoinFields';
+import {
+  deriveVerifiedWalletKey,
+  withCorrectedWalletVersion,
+} from '../utils/generateWallet/verifiedWalletKey';
+import { recordUnlockTiming } from '../utils/unlockTimings';
 import { RequestQueueWithPromise } from '../utils/queue/queue';
 import { validateAddress } from '../utils/validateAddress';
 import { hasInvisibleCharacters } from '../utils/hasInvisibleCharacters';
@@ -1560,6 +1564,16 @@ export async function addUserSettings({ keyValue }) {
   });
 }
 
+/**
+ * Writes the version that derived the account into the saved wallets list,
+ * on the entry that was unlocked (same address0 and encrypted seed).
+ */
+async function saveCorrectedWalletVersion(wallet, version: 1 | 2) {
+  const wallets = await getWallets();
+  const next = withCorrectedWalletVersion(wallets, wallet, version);
+  if (next) await storeWallets(next);
+}
+
 export async function decryptWallet({ password, wallet, walletVersion }) {
   try {
     const unlockStarted = performance.now();
@@ -1570,9 +1584,21 @@ export async function decryptWallet({ password, wallet, walletVersion }) {
       'unlock'
     );
     const qortStarted = performance.now();
-    const wallet2 = new PhraseWallet(response, walletVersion, {
-      qortOnly: true,
-    });
+    // The key must be the entry's own account before anything is stored. An
+    // entry whose key opens another account throws here and stores nothing.
+    const verified = deriveVerifiedWalletKey(
+      response,
+      walletVersion ? { ...wallet, version: walletVersion } : wallet,
+      { qortOnly: true }
+    );
+    const wallet2 = verified.wallet;
+    if (verified.versionFixed) {
+      recordUnlockTiming(
+        'wallet-check',
+        performance.now() - qortStarted,
+        `version fixed ${verified.entryVersion}→${verified.version}`
+      );
+    }
     const keyPair = wallet2._addresses[0].keyPair;
     const toSave = {
       privateKey: Base58.encode(keyPair.privateKey),
@@ -1587,6 +1613,7 @@ export async function decryptWallet({ password, wallet, walletVersion }) {
     });
     const newWallet = {
       ...wallet,
+      ...(verified.versionFixed ? { version: verified.version } : {}),
       publicKey: Base58.encode(keyPair.publicKey),
     };
     await new Promise((resolve, reject) => {
@@ -1596,6 +1623,17 @@ export async function decryptWallet({ password, wallet, walletVersion }) {
           reject(new Error(error.message || 'Error saving data'));
         });
     });
+    if (verified.versionFixed) {
+      // Saved so the next unlock, backup or send derives it right away.
+      await saveCorrectedWalletVersion(wallet, verified.version).catch(
+        (error) => {
+          console.warn(
+            '[Unlock] could not save the corrected wallet version',
+            error?.message
+          );
+        }
+      );
+    }
     console.info(
       `[Unlock] QORT wallet+store ${Math.round(performance.now() - qortStarted)}ms (total ${Math.round(performance.now() - unlockStarted)}ms)`
     );
@@ -1606,10 +1644,7 @@ export async function decryptWallet({ password, wallet, walletVersion }) {
         wallet2.seed instanceof Uint8Array
           ? wallet2.seed
           : new Uint8Array(response);
-      const extra = await deriveAltcoinFieldsInWorker(
-        seed,
-        walletVersion || wallet2._walletVersion || 2
-      );
+      const extra = await deriveAltcoinFieldsInWorker(seed, verified.version);
       const existing = await getData('keyPair').catch(() => null);
       if (!existing) return;
       await storeData('keyPair', { ...existing, ...extra });
@@ -2893,10 +2928,9 @@ export async function sendCoin(
       };
     } else {
       const response = await decryptStoredWallet(password, wallet);
-      const wallet2 = new PhraseWallet(
-        response,
-        wallet?.version || walletVersion
-      );
+      const wallet2 = deriveVerifiedWalletKey(response, wallet, {
+        qortOnly: true,
+      }).wallet;
 
       keyPair = wallet2._addresses[0].keyPair;
     }

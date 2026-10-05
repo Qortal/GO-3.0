@@ -44,12 +44,11 @@ import {
   infoSnackGlobalAtom,
   openSnackGlobalAtom,
 } from '../../atoms/global';
-import { walletVersion } from '../../background/background.ts';
 import { TransitionUp } from '../../common/Transitions.tsx';
 import Base58 from '../../encryption/Base58.ts';
 import { decryptStoredWallet } from '../../utils/decryptWallet';
 import { executeEvent } from '../../utils/events';
-import PhraseWallet from '../../utils/generateWallet/phrase-wallet';
+import { deriveVerifiedWalletKey } from '../../utils/generateWallet/verifiedWalletKey';
 import ThemeManager from '../Theme/ThemeManager';
 import { isDisabledLegacy } from '../../constants/featureFlags';
 import { isCapacitor } from '../../utils/platform';
@@ -552,7 +551,8 @@ export const Settings = ({ open, setOpen, rawWallet }) => {
             flexGrow: 1,
             overflowY: 'auto',
             p: 2,
-            paddingBottom: 'calc(16px + var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px)))',
+            paddingBottom:
+              'calc(16px + var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px)))',
           }}
         >
           <Box sx={{ maxWidth: 760, mx: 'auto', py: 3, px: 1, width: '100%' }}>
@@ -1248,7 +1248,11 @@ export const ExportPrivateKey = ({ rawWallet }) => {
       const wallet = structuredClone(rawWallet);
 
       const res = await decryptStoredWallet(password, wallet);
-      const wallet2 = new PhraseWallet(res, wallet?.version || walletVersion);
+      // Only the account's own key: an entry whose key opens another account
+      // throws instead of showing that account's private key.
+      const wallet2 = deriveVerifiedWalletKey(res, wallet, {
+        qortOnly: true,
+      }).wallet;
 
       const keyPair = Base58.encode(wallet2._addresses[0].keyPair.privateKey);
       setPrivateKey(keyPair);

@@ -1,7 +1,8 @@
 /**
- * Sizes for the per-message action surfaces: the tap toolbar, the long-press
- * menu, reaction chips and the replies chip. Phones (below the `md`
- * breakpoint) get finger-sized targets; desktop keeps its compact hover sizes.
+ * Sizes for the per-message action surfaces: the desktop hover toolbar and
+ * right-click menu, reaction chips and the replies chip. Phones (below the
+ * `md` breakpoint) get finger-sized chips; their actions are in
+ * MessageActionsPopup, which sizes itself (messageActionsPopupLayout.ts).
  * Every phone value is at least the desktop one, so nothing ever shrinks.
  */
 export type MessageActionSizes = {
@@ -71,83 +72,6 @@ export const PHONE_MESSAGE_ACTION_SIZES: MessageActionSizes = {
 
 export const getMessageActionSizes = (isPhone: boolean): MessageActionSizes =>
   isPhone ? PHONE_MESSAGE_ACTION_SIZES : DESKTOP_MESSAGE_ACTION_SIZES;
-
-/** Square size of each quick reaction in the phone long-press menu. */
-export const PHONE_MENU_QUICK_REACTION_PX = 44;
-
-/** Preferred and minimum square size of a phone toolbar button. */
-export const PHONE_TOOLBAR_BUTTON_MAX_PX = 44;
-export const PHONE_TOOLBAR_BUTTON_MIN_PX = 40;
-
-/** Phone toolbar chrome: 2px padding and 1px border per side. */
-export const PHONE_TOOLBAR_PADDING_PX = 2;
-export const PHONE_TOOLBAR_BORDER_PX = 1;
-/** Gap between the reactions group and the edit / reply / delete group. */
-export const PHONE_TOOLBAR_GROUP_GAP_PX = 4;
-const PHONE_TOOLBAR_CHROME_PX =
-  2 * (PHONE_TOOLBAR_PADDING_PX + PHONE_TOOLBAR_BORDER_PX) +
-  PHONE_TOOLBAR_GROUP_GAP_PX;
-
-/** Side padding of a Q-Chat message row (MessageItem). */
-export const MESSAGE_ROW_PADDING_X_PX = 14;
-
-/**
- * The message column on the narrowest phone we design for: a 360px screen
- * minus the message row's side padding.
- */
-export const PHONE_MESSAGE_COLUMN_PX = 360 - 2 * MESSAGE_ROW_PADDING_X_PX;
-
-/** Width of the message column on a full-width phone chat. */
-export const getPhoneMessageColumnWidth = (viewportWidthPx: number): number =>
-  Number.isFinite(viewportWidthPx) && viewportWidthPx > 0
-    ? viewportWidthPx - 2 * MESSAGE_ROW_PADDING_X_PX
-    : PHONE_MESSAGE_COLUMN_PX;
-
-/**
- * Width of the message column inside a measured message row. The row is the
- * real host (full-screen chat, a sidebar layout, a mini thread), so it beats
- * the viewport guess; an unmeasured row (0, e.g. before layout) falls back to
- * the full-width phone column.
- */
-export const getMessageColumnWidthFromRow = (
-  rowClientWidthPx: number | null | undefined,
-  viewportWidthPx: number
-): number => {
-  const fromRow =
-    typeof rowClientWidthPx === 'number' && Number.isFinite(rowClientWidthPx)
-      ? rowClientWidthPx - 2 * MESSAGE_ROW_PADDING_X_PX
-      : 0;
-  return fromRow > 0 ? fromRow : getPhoneMessageColumnWidth(viewportWidthPx);
-};
-
-/**
- * Largest button size (44px down to 40px) that keeps the whole tap toolbar on
- * one line of the message column. Four quick reactions, the emoji picker and
- * reply are always there; edit and delete only on your own messages, so on a
- * 360px phone only the full eight-button bar drops to 40px. Narrower than
- * that, the bar wraps between its two groups instead of shrinking further.
- */
-export const getPhoneToolbarButtonSize = (
-  buttonCount: number,
-  columnWidthPx: number = PHONE_MESSAGE_COLUMN_PX
-): number => {
-  if (!Number.isFinite(buttonCount) || buttonCount <= 0) {
-    return PHONE_TOOLBAR_BUTTON_MAX_PX;
-  }
-  const fit = Math.floor(
-    (columnWidthPx - PHONE_TOOLBAR_CHROME_PX) / buttonCount
-  );
-  return Math.max(
-    PHONE_TOOLBAR_BUTTON_MIN_PX,
-    Math.min(PHONE_TOOLBAR_BUTTON_MAX_PX, fit)
-  );
-};
-
-/** Outer width of the phone toolbar when it sits on one line. */
-export const getPhoneToolbarWidth = (
-  buttonCount: number,
-  buttonSizePx: number
-): number => buttonCount * buttonSizePx + PHONE_TOOLBAR_CHROME_PX;
 
 /**
  * Emoji glyph size in the phone emoji picker (emoji-picker-react's

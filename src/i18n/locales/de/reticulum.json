@@ -279,17 +279,24 @@
     },
     "text_size": {
       "default": {
-        "detail": "Aktuelle Chat-Textgröße",
+        "detail": "Die übliche Chat-Textgröße",
         "label": "Standard"
       },
-      "description": "Wähle eine Lesegröße für Reticulum-Nachrichten, Kanalbezeichnungen und die Mitgliederliste. Einladungsvorschauen behalten ihr festes Layout.",
-      "high": {
-        "detail": "Größter gut lesbarer Chat-Text",
-        "label": "Hoch"
+      "description": "Legt fest, wie groß der Text in Gruppenchats und Direktnachrichten ist, einschließlich Antworten, Nachrichtenfeld, Kanalnamen und Mitgliederliste. Dateien, Einladungen und Linkvorschauen behalten ihr Layout.",
+      "large": {
+        "detail": "Größerer Text, leichter zu lesen",
+        "label": "Groß"
       },
-      "medium": {
-        "detail": "Eine angenehme Vergrößerung",
-        "label": "Mittel"
+      "preview": {
+        "incoming": "Ist dieser Text gut lesbar?",
+        "label": "Vorschau",
+        "outgoing": "Ja, diese Größe passt mir.",
+        "sender": "Anna"
+      },
+      "sample": "Aa",
+      "small": {
+        "detail": "Mehr Nachrichten passen auf den Bildschirm",
+        "label": "Klein"
       },
       "title": "Textgröße"
     }

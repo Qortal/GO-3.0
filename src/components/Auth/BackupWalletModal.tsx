@@ -14,9 +14,9 @@ import CloseIcon from '@mui/icons-material/Close';
 import FileDownloadRoundedIcon from '@mui/icons-material/FileDownloadRounded';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import { useTranslation } from 'react-i18next';
-import { crypto, walletVersion } from '../../constants/decryptWallet';
+import { crypto } from '../../constants/decryptWallet';
 import { decryptStoredWallet } from '../../utils/decryptWallet';
-import PhraseWallet from '../../utils/generateWallet/phrase-wallet';
+import { deriveVerifiedWalletKey } from '../../utils/generateWallet/verifiedWalletKey';
 import { saveFileToDisk } from '../../utils/generateWallet/generateWallet';
 import { executeEvent } from '../../utils/events';
 import { PasswordField } from '../index';
@@ -120,11 +120,15 @@ export const BackupWalletModal = ({
       setIsDownloading(true);
 
       let wallet = structuredClone(rawWallet);
-      const decryptedWallet = await decryptStoredWallet(currentPassword, wallet);
-      const phraseWallet = new PhraseWallet(
-        decryptedWallet,
-        wallet?.version || walletVersion
+      const decryptedWallet = await decryptStoredWallet(
+        currentPassword,
+        wallet
       );
+      // The file holds this account's own key (with the version that derives
+      // it), or nothing: an entry whose key opens another account throws.
+      const phraseWallet = deriveVerifiedWalletKey(decryptedWallet, wallet, {
+        qortOnly: true,
+      }).wallet;
       const passwordToUse = keepCurrentPassword ? currentPassword : newPassword;
 
       wallet = await phraseWallet.generateSaveWalletData(
@@ -133,7 +137,8 @@ export const BackupWalletModal = ({
         () => {}
       );
 
-      await saveFileToDisk(wallet, rawWallet.address0);
+      // Named after the address written inside it.
+      await saveFileToDisk(wallet, wallet.address0);
       handleClose();
       executeEvent('openGlobalSnackBar', {
         message: t('auth:message.generic.keep_secure', {
@@ -218,7 +223,13 @@ export const BackupWalletModal = ({
         },
       }}
     >
-      <Box sx={{ background: modalSurface, display: 'flex', flexDirection: 'column' }}>
+      <Box
+        sx={{
+          background: modalSurface,
+          display: 'flex',
+          flexDirection: 'column',
+        }}
+      >
         <Box
           sx={{
             alignItems: 'center',
@@ -432,7 +443,9 @@ export const BackupWalletModal = ({
             sx={{ m: 0 }}
             control={
               <Checkbox
-                onChange={(event) => setKeepCurrentPassword(event.target.checked)}
+                onChange={(event) =>
+                  setKeepCurrentPassword(event.target.checked)
+                }
                 checked={keepCurrentPassword}
                 disableRipple
                 sx={{
@@ -545,7 +558,11 @@ export const BackupWalletModal = ({
 
           <LoadingButton
             loading={isDownloading}
-            disabled={!rawWallet || !currentPassword || (!keepCurrentPassword && !newPassword)}
+            disabled={
+              !rawWallet ||
+              !currentPassword ||
+              (!keepCurrentPassword && !newPassword)
+            }
             onClick={handleDownload}
             startIcon={!isDownloading ? <FileDownloadRoundedIcon /> : null}
             variant="contained"

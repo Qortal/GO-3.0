@@ -22,6 +22,7 @@ import {
   ELECTRON_PERSISTENT_ATOM_KEYS,
   primeElectronPersistentCacheKey,
 } from '../../utils/electronPersistentStorage';
+import { normalizeReticulumChatTextScale } from '../Chat/reticulumChatTextScale';
 
 /**
  * When running in Electron, loads persisted values from appStorage and sets
@@ -160,12 +161,11 @@ export function ElectronPersistentStorageHydration() {
           reticulumHighlightOwnMessagesPayload
         );
       }
-      if (
-        reticulumChatTextScalePayload === 'default' ||
-        reticulumChatTextScalePayload === 'medium' ||
-        reticulumChatTextScalePayload === 'high'
-      ) {
-        setReticulumChatTextScale(reticulumChatTextScalePayload);
+      if (typeof reticulumChatTextScalePayload === 'string') {
+        // An older build's Medium or High comes back as Large.
+        setReticulumChatTextScale(
+          normalizeReticulumChatTextScale(reticulumChatTextScalePayload)
+        );
       }
       if (typeof reticulumLegacyThreadsEnabledPayload === 'boolean') {
         setReticulumLegacyThreadsEnabled(reticulumLegacyThreadsEnabledPayload);

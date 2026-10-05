@@ -13,6 +13,7 @@ import {
 import { useAtomValue } from 'jotai';
 import { useEffect, useMemo, useState } from 'react';
 import { reticulumChatTextScaleAtom } from '../../atoms/global';
+import { reticulumMemberNamePx } from '../Chat/reticulumChatTextScale';
 import { useOnlineAddresses } from '../../hooks/usePresence';
 import { PresenceStatusBadge } from '../common/PresenceStatusBadge';
 import { CachedUserAvatar } from '../Group/CachedAvatars';
@@ -152,7 +153,7 @@ export function QortalLandMembers({ groupId, myAddress }: Props) {
     return { lounge, park, online };
   }, [knownMembers, landAddresses, onlineAddresses, presenceBySession]);
 
-  const rowFontSize = textScale === 'high' ? 15 : textScale === 'medium' ? 14 : 13;
+  const rowFontSize = reticulumMemberNamePx(textScale);
   const sectionData = [
     { key: 'lounge' as const, label: 'Lounge', icon: <NightlifeRoundedIcon /> },
     { key: 'park' as const, label: 'Park', icon: <LocalFloristRoundedIcon /> },

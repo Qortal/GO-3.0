@@ -27,6 +27,12 @@ export type ReticulumDmEvent = {
   senderName?: string;
   localDeliveryStatus?: 'pending' | 'sent' | 'received';
   localDeliveryUpdatedAt?: number;
+  /**
+   * True when this device authored the event, false for a stored copy (also
+   * of the account's own message written on another device). Only authored
+   * events have a delivery this device can know about.
+   */
+  localOwnEvent?: boolean;
   /** An own device (the home Hub) pulled this pending own event. */
   localOwnDeviceCopiedAt?: number;
   expiresAt?: number | null;
@@ -97,9 +103,7 @@ const compactOtherData = (
     return undefined;
   }
   const out: Record<string, unknown> = {};
-  for (const [key, entry] of Object.entries(
-    value as Record<string, unknown>
-  )) {
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
     if (key === 'specialId') continue;
     if (entry == null || entry === '') continue;
     out[key] = entry;
@@ -154,7 +158,13 @@ export const reticulumDmEventToChatMessage = (event: ReticulumDmEvent) => {
     unread: false,
     reticulumChat: true,
     reticulumDirect: true,
-    reticulumDeliveryStatus: event.localDeliveryStatus,
+    // A copy of our own message written on another device has no delivery
+    // this device knows about. Older builds marked such copies 'sent' when
+    // serving them, which showed a delivered tick here; show nothing.
+    reticulumDeliveryStatus:
+      event.localOwnEvent === false && event.localDeliveryStatus === 'sent'
+        ? 'received'
+        : event.localDeliveryStatus,
     reticulumDeliveryUpdatedAt: event.localDeliveryUpdatedAt,
     reticulumOwnDeviceCopiedAt: event.localOwnDeviceCopiedAt,
     expiresAt:
@@ -212,41 +222,20 @@ export const projectReticulumDmEvents = (events: ReticulumDmEvent[]) => {
     else delete reactions[reaction];
   }
 
-  // Delivery is cumulative: the recipient pulls everything after its cursor,
-  // so once any later own event (message, edit or reaction) is 'sent', the
-  // earlier own messages reached it too. The engine only marks the event it
-  // served (or the matching head), so lift the older pending ones here.
-  // Only events this device authored carry 'pending'/'sent'; self-DMs are
-  // born 'sent' and are skipped. Per sender, so two local accounts never
-  // vouch for each other. The stored events stay unchanged. Compared by
-  // position in `ordered` (timestamp, then event id: the cursor order).
-  const newestSentIndexBySender = new Map<string, number>();
-  ordered.forEach((event, index) => {
-    if (
-      event.localDeliveryStatus === 'sent' &&
-      event.senderAddress !== event.recipientAddress
-    ) {
-      newestSentIndexBySender.set(event.senderAddress, index);
-    }
-  });
-
+  // Each message shows its own stored delivery state. A later 'sent' event
+  // says nothing about an earlier pending one: the engine marks every event
+  // a delivered page carried, so one left pending was not on that page (it
+  // was older than the window a page re-serves, or past the page's cap), or
+  // only the newer one was proven (the recipient's notify names its newest).
   const messages: Array<ReturnType<typeof reticulumDmEventToChatMessage>> = [];
-  ordered.forEach((event, index) => {
+  ordered.forEach((event) => {
     if (
       event.eventType !== 'message' ||
       chatReferences[event.eventId]?.deleted === true
     ) {
       return;
     }
-    const message = reticulumDmEventToChatMessage(event);
-    const newestSentIndex = newestSentIndexBySender.get(event.senderAddress);
-    messages.push(
-      event.localDeliveryStatus === 'pending' &&
-        newestSentIndex !== undefined &&
-        index < newestSentIndex
-        ? { ...message, reticulumDeliveryStatus: 'sent' }
-        : message
-    );
+    messages.push(reticulumDmEventToChatMessage(event));
   });
   return { messages, chatReferences };
 };
@@ -319,6 +308,12 @@ const keepDeliveryProgress = (
   }
   if (existing.localOwnDeviceCopiedAt && !incoming.localOwnDeviceCopiedAt) {
     next = { ...next, localOwnDeviceCopiedAt: existing.localOwnDeviceCopiedAt };
+  }
+  if (
+    existing.localOwnEvent !== undefined &&
+    incoming.localOwnEvent === undefined
+  ) {
+    next = { ...next, localOwnEvent: existing.localOwnEvent };
   }
   return next;
 };
@@ -479,7 +474,9 @@ export function useReticulumDirectChat(
           });
         })
         .catch((error) => {
-          const timedOut = String(error?.message || error).includes('timed out');
+          const timedOut = String(error?.message || error).includes(
+            'timed out'
+          );
           if (
             timedOut &&
             attempt < 2 &&
@@ -697,9 +694,8 @@ export function useReticulumDirectChat(
       let senderStreamId = senderStreamIdRef.current;
       if (!senderStreamId) {
         senderStreamId =
-          (await window.reticulumChat?.getDirectAuthorStreamId?.(
-            myAddress
-          )) || '';
+          (await window.reticulumChat?.getDirectAuthorStreamId?.(myAddress)) ||
+          '';
       }
       if (!senderStreamId) {
         throw new Error('DM author stream is unavailable');
@@ -767,6 +763,7 @@ export function useReticulumDirectChat(
 
       const optimisticEvent: ReticulumDmEvent = {
         ...event,
+        localOwnEvent: true,
         expiresAt:
           eventType === 'message' && effectiveExpiryDurationMs != null
             ? timestamp + effectiveExpiryDurationMs

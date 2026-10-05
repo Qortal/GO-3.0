@@ -11,6 +11,7 @@
  * window.__composerRun() walks every sample through it. A pane that is not on
  * screen runs no animation frames: open the page with ?timers there. ?thread
  * adds the compact composer threads and announcements use, without corners.
+ * ?scale=small|large sets the Q-Chat text size (chat settings → Text size).
  */
 import { useCallback, useRef, useState, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -30,6 +31,7 @@ import Tiptap, {
 } from '../../src/components/Chat/TipTap';
 import { ComposerDiscardButton } from '../../src/components/Chat/ComposerDiscardButton';
 import { ComposerReplyPreview } from '../../src/components/Chat/ComposerReplyPreview';
+import { ComposerEditBanner } from '../../src/components/Chat/ComposerEditBanner';
 import {
   ComposerAttachmentTile,
   ComposerDismissButton,
@@ -39,6 +41,10 @@ import {
   COMPOSER_SEND_BUTTON_PX,
   COMPOSER_SEND_ICON_PX,
 } from '../../src/components/Chat/composerCornerLayout';
+import {
+  normalizeReticulumChatTextScale,
+  reticulumChatTextScaleClassName,
+} from '../../src/components/Chat/reticulumChatTextScale';
 
 // A browser tab that is not on screen runs no animation frames and reports
 // itself hidden, and the composer measures its text in a frame and skips
@@ -77,6 +83,9 @@ type Mode = 'group' | 'dm';
 
 const showThreadComposer = new URLSearchParams(window.location.search).has(
   'thread'
+);
+const textScale = normalizeReticulumChatTextScale(
+  new URLSearchParams(window.location.search).get('scale')
 );
 
 const SendButton = ({ idle }: { idle: boolean }) => {
@@ -341,6 +350,7 @@ function Preview() {
 
   return (
     <Box
+      className={reticulumChatTextScaleClassName(textScale)}
       sx={{
         bgcolor: 'background.default',
         display: 'flex',
@@ -485,16 +495,15 @@ function Preview() {
             />
           )}
           {editing && (
-            <Box sx={{ alignItems: 'flex-start', display: 'flex', gap: '5px' }}>
-              <Box sx={{ flex: 1, fontSize: 13, p: '6px' }}>
-                Editing: “See you at eight”
-              </Box>
-              <ComposerDismissButton
-                desktopIcon={<CloseIcon fontSize="small" />}
-                label="Cancel edit"
-                onClick={() => setEditing(false)}
-              />
-            </Box>
+            <ComposerEditBanner
+              desktopIcon={<CloseIcon fontSize="small" />}
+              desktopPreview={
+                <Box sx={{ flex: 1, fontSize: 13, p: '6px' }}>
+                  Editing: “See you at eight”
+                </Box>
+              }
+              onCancel={() => setEditing(false)}
+            />
           )}
           {showThreadComposer && (
             // The thread and announcement composers: compact, but without the

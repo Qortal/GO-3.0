@@ -9,13 +9,13 @@ import {
   reticulumScaledTextSize,
 } from './reticulumChannelListLayout';
 
-const scales = ['default', 'medium', 'high'] as const;
+const scales = ['small', 'default', 'large'] as const;
 
 describe('reticulumChannelRowMetrics', () => {
-  it('keeps desktop rows as they were', () => {
+  it('keeps desktop rows as they were at the default size', () => {
     expect(
       scales.map((scale) => reticulumChannelRowMetrics(scale, false).minHeight)
-    ).toEqual([30, 33, 36]);
+    ).toEqual([28, 30, 36]);
     expect(reticulumChannelRowMetrics('default', false)).toMatchObject({
       fontSize: 14,
       iconSize: 18,
@@ -23,19 +23,27 @@ describe('reticulumChannelRowMetrics', () => {
     });
   });
 
+  it('scales the channel names with the chat text size', () => {
+    expect(
+      scales.map((scale) => reticulumChannelRowMetrics(scale, true).fontSize)
+    ).toEqual([13, 15, 18]);
+    expect(
+      scales.map((scale) => reticulumChannelRowMetrics(scale, false).fontSize)
+    ).toEqual([12.5, 14, 16.5]);
+  });
+
   it('gives phones thumb-sized rows that grow with the text scale', () => {
     const heights = scales.map(
       (scale) => reticulumChannelRowMetrics(scale, true).minHeight
     );
-    expect(heights[0]).toBeGreaterThanOrEqual(44);
-    expect(heights).toEqual([...heights].sort((a, b) => a - b));
-    expect(new Set(heights).size).toBe(3);
+    // Small text never shrinks a phone row under the 44px touch target.
+    expect(heights).toEqual([44, 44, 50]);
     expect(reticulumChannelRowMetrics('default', true)).toMatchObject({
       fontSize: 15,
       iconSize: 20,
     });
-    expect(reticulumChannelRowMetrics('high', true).fontSize).toBe(
-      reticulumScaledTextSize('high', 15)
+    expect(reticulumChannelRowMetrics('large', true).fontSize).toBe(
+      reticulumScaledTextSize('large', 15)
     );
   });
 
@@ -97,11 +105,11 @@ describe('reticulumOnboardingChannelAnchor', () => {
     const anchor = reticulumOnboardingChannelAnchor({
       defaultCategoryHidden: false,
       phone: true,
-      scale: 'medium',
+      scale: 'large',
     });
     const padding = reticulumChannelListPadding(true);
     expect(anchor).toEqual({
-      height: reticulumChannelRowMetrics('medium', true).minHeight,
+      height: reticulumChannelRowMetrics('large', true).minHeight,
       inset: padding.outer + padding.inner,
       top:
         RETICULUM_CHANNEL_LIST_HEADER_PX +

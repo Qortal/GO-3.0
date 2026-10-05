@@ -279,17 +279,24 @@
     },
     "text_size": {
       "default": {
-        "detail": "Dimensione attuale del testo della chat",
+        "detail": "La dimensione abituale del testo della chat",
         "label": "Predefinita"
       },
-      "description": "Scegli una dimensione di lettura per i messaggi Reticulum, le etichette dei canali e l'elenco dei membri. Le anteprime degli inviti mantengono il loro layout fisso.",
-      "high": {
-        "detail": "Il testo della chat più grande ma ancora leggibile",
+      "description": "Imposta la dimensione del testo nelle chat di gruppo e nei messaggi diretti, incluse le risposte, la casella del messaggio, i nomi dei canali e l'elenco dei membri. File, inviti e anteprime dei link mantengono il loro layout.",
+      "large": {
+        "detail": "Testo più grande e più facile da leggere",
         "label": "Grande"
       },
-      "medium": {
-        "detail": "Un aumento confortevole",
-        "label": "Media"
+      "preview": {
+        "incoming": "Questo testo si legge bene?",
+        "label": "Anteprima",
+        "outgoing": "Sì, questa dimensione mi va bene.",
+        "sender": "Giulia"
+      },
+      "sample": "Aa",
+      "small": {
+        "detail": "Più messaggi sullo schermo",
+        "label": "Piccola"
       },
       "title": "Dimensione del testo"
     }

@@ -2,6 +2,7 @@ import { alpha, Box, Typography, useTheme } from '@mui/material';
 import GroupRoundedIcon from '@mui/icons-material/GroupRounded';
 import { useTranslation } from 'react-i18next';
 import i18n from '../../i18n/i18n';
+import { qchatTextSize } from './reticulumChatTextScale';
 
 const compactIdentity = (value: unknown) => {
   const text = String(value || '').trim();
@@ -50,7 +51,7 @@ export const DirectFriendEventRow = ({
       }}
     >
       <GroupRoundedIcon sx={{ color: 'info.main', fontSize: 18 }} />
-      <Typography sx={{ color: 'text.secondary', fontSize: 13 }}>
+      <Typography sx={{ color: 'text.secondary', fontSize: qchatTextSize(13) }}>
         {text}
       </Typography>
     </Box>

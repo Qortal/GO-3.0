@@ -8,7 +8,7 @@ Reticulum — plus a mobile-first UI, OS notifications, biometric login, and bat
 background behavior.
 
 **Repository:** https://gitea.qortal.link/simon/GO-3.0  
-**Current APK:** GO 3.0 **v0.0.14** (`versionName` 0.0.14, `versionCode` 17), the first release (non-debuggable) build — shown in-app as **GO version** (Core & settings). Chat engine matches Hub v3.0.3.
+**Current APK:** GO 3.0 **v0.0.15** (`versionName` 0.0.15, `versionCode` 18), a release (non-debuggable) build — shown in-app as **GO version** (Core & settings). Chat engine matches Hub v3.0.3.
 
 > **For Hub developers**
 >
@@ -127,6 +127,7 @@ Every field build is published on Q-Share (Q-Share+ from v0.0.13) under the name
 | **v0.0.12** | Q-Apps library: truthful Open/Download, Featured top-rated Community and category apps with gold stars, best rated first, phone list layout; chat diagnostics and send-failure reasons; download progress and saved files in the bell, notification history; Tabs and library tabs open again; swipe away notifications; saving on Android 8/9 |
 | **v0.0.13** | Background sync (Off / While charging / Always), DMs handed to your own Hub, DM delivery status, honest status notification, 7-day DM retries, GrapheneOS group-chat fix, Updates screen via Q-Share+ |
 | **v0.0.14** | First release (non-debuggable) build: fast login on GrapheneOS, one key derivation per unlock, chat starts after login, node-check timeouts, unlock timings in diagnostics, bottom bar hides while typing, faster Qortino offline assistant |
+| **v0.0.15** | Security and privacy release (Capacitor CVE fix, origin guard, Q-Apps limited to the node, screen protection, no Google code, no location in shared media, no tracking images); Telegram-style message popup, chat text size Small/Default/Large, truthful DM delivery ticks with 7-day re-send, no more "protocol violation" from desktop Hubs, status synced across devices, wallet key check at unlock, avatar/icon cache |
 
 ---
 

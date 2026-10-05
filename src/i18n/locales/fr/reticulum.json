@@ -279,17 +279,24 @@
     },
     "text_size": {
       "default": {
-        "detail": "Taille actuelle du texte du chat",
+        "detail": "La taille habituelle du texte du chat",
         "label": "Par défaut"
       },
-      "description": "Choisissez une taille de lecture pour les messages Reticulum, les libellés de canaux et la liste des membres. Les aperçus d'invitation conservent leur mise en page fixe.",
-      "high": {
-        "detail": "Texte de chat le plus grand tout en restant lisible",
-        "label": "Élevée"
+      "description": "Définit la taille du texte dans les discussions de groupe et les messages privés, y compris les réponses, la zone de saisie, les noms des canaux et la liste des membres. Les fichiers, les invitations et les aperçus de liens conservent leur mise en page.",
+      "large": {
+        "detail": "Texte plus grand, plus facile à lire",
+        "label": "Grande"
       },
-      "medium": {
-        "detail": "Une augmentation confortable",
-        "label": "Moyenne"
+      "preview": {
+        "incoming": "Ce texte est-il facile à lire ?",
+        "label": "Aperçu",
+        "outgoing": "Oui, cette taille me convient.",
+        "sender": "Camille"
+      },
+      "sample": "Aa",
+      "small": {
+        "detail": "Plus de messages tiennent à l'écran",
+        "label": "Petite"
       },
       "title": "Taille du texte"
     }

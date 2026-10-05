@@ -1,11 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import {
+  getReticulumDmDeliveryState,
+  setReticulumDmDeliveryTrackingSince,
+} from '../components/Chat/reticulumDmDeliveryState';
+import {
   isReticulumDmEventForConversation,
   mergeEvents,
   projectReticulumDmEvents,
   reticulumDmEventToChatMessage,
   type ReticulumDmEvent,
 } from './useReticulumDirectChat';
+
+const DAY_MS = 24 * 60 * 60_000;
 
 const event = (
   overrides: Partial<ReticulumDmEvent> &
@@ -262,7 +268,7 @@ describe('Reticulum DM delivery state in the UI', () => {
     expect(message.localOwnDeviceCopiedAt).toBeUndefined();
   });
 
-  it('treats earlier pending own messages as delivered once a later own event is sent', () => {
+  it('shows each own message as stored: a later sent event never vouches for an earlier pending one', () => {
     const own = (
       eventId: string,
       timestamp: number,
@@ -274,6 +280,7 @@ describe('Reticulum DM delivery state in the UI', () => {
         senderAddress: 'alice',
         timestamp,
         localDeliveryStatus: 'pending',
+        localOwnEvent: true,
         ...overrides,
       });
     const statusOf = (events: ReticulumDmEvent[]) =>
@@ -286,10 +293,11 @@ describe('Reticulum DM delivery state in the UI', () => {
 
     const m1 = own('m1', 1, { localOwnDeviceCopiedAt: 5 });
     const m2 = own('m2', 2);
-    // A later sent message or a sent reaction both prove delivery.
+    // The engine marks every event a delivered page carried; an earlier one
+    // left pending was not on it (or its page never arrived).
     expect(
       statusOf([m1, m2, own('m3', 3, { localDeliveryStatus: 'sent' })])
-    ).toEqual({ m1: 'sent', m2: 'sent', m3: 'sent' });
+    ).toEqual({ m1: 'pending', m2: 'pending', m3: 'sent' });
     expect(
       statusOf([
         m1,
@@ -301,13 +309,51 @@ describe('Reticulum DM delivery state in the UI', () => {
           payload: JSON.stringify({ content: '👍' }),
         }),
       ])
-    ).toEqual({ m1: 'sent', m2: 'sent' });
-    // Anything after the newest sent event stays pending.
+    ).toEqual({ m1: 'pending', m2: 'pending' });
     expect(
       statusOf([own('m0', 0, { localDeliveryStatus: 'sent' }), m1, m2])
     ).toEqual({ m0: 'sent', m1: 'pending', m2: 'pending' });
-    // The stored events are not rewritten.
-    expect(m1.localDeliveryStatus).toBe('pending');
+  });
+
+  it('never shows a stranded own message older than the retry window as delivered', () => {
+    const now = Date.UTC(2026, 9, 5, 3, 0, 0);
+    setReticulumDmDeliveryTrackingSince(now - 30 * DAY_MS);
+    try {
+      // r was written on this phone 8 days ago and never reached Bob; h, 30
+      // minutes old, did (its page was delivered, or Bob's notify named it).
+      const r = event({
+        eventId: 'stranded-8d',
+        eventType: 'message',
+        senderAddress: 'alice',
+        timestamp: now - 8 * DAY_MS,
+        localDeliveryStatus: 'pending',
+        localOwnEvent: true,
+      });
+      const h = event({
+        eventId: 'head-30min',
+        eventType: 'message',
+        senderAddress: 'alice',
+        timestamp: now - 30 * 60_000,
+        localDeliveryStatus: 'sent',
+        localOwnEvent: true,
+      });
+      const byId = Object.fromEntries(
+        projectReticulumDmEvents([r, h]).messages.map((message) => [
+          message.eventId,
+          message,
+        ])
+      );
+      expect(byId[r.eventId].reticulumDeliveryStatus).toBe('pending');
+      // Past the retry window a pending row shows no glyph at all.
+      expect(getReticulumDmDeliveryState(byId[r.eventId], 'alice', now)).toBe(
+        null
+      );
+      expect(getReticulumDmDeliveryState(byId[h.eventId], 'alice', now)).toBe(
+        'delivered'
+      );
+    } finally {
+      setReticulumDmDeliveryTrackingSince(null);
+    }
   });
 
   it('never lets a peer event or a Saved Messages event vouch for delivery', () => {
@@ -339,6 +385,58 @@ describe('Reticulum DM delivery state in the UI', () => {
       selfDm,
     ]).messages;
     expect(message.reticulumDeliveryStatus).toBe('pending');
+  });
+
+  it('never lets a stored copy of an own message written elsewhere vouch for delivery', () => {
+    const pendingHere = event({
+      eventId: 'm1',
+      eventType: 'message',
+      senderAddress: 'alice',
+      timestamp: 1,
+      localDeliveryStatus: 'pending',
+      localOwnEvent: true,
+    });
+    // Our message written on the home Hub, stored here as a copy. Older
+    // builds marked such a copy 'sent' when they served it to the recipient.
+    const hubCopy = event({
+      eventId: 'h1',
+      eventType: 'message',
+      senderAddress: 'alice',
+      timestamp: 2,
+      localDeliveryStatus: 'sent',
+      localOwnEvent: false,
+    });
+    const messages = projectReticulumDmEvents([pendingHere, hubCopy]).messages;
+    const statusById = Object.fromEntries(
+      messages.map((message) => [
+        message.eventId,
+        message.reticulumDeliveryStatus,
+      ])
+    );
+    // The copy shows no delivery of its own and lifts nothing.
+    expect(statusById).toEqual({ m1: 'pending', h1: 'received' });
+    // An unmarked copy stays as stored.
+    const receivedCopy = reticulumDmEventToChatMessage({
+      ...hubCopy,
+      localDeliveryStatus: 'received',
+    });
+    expect(receivedCopy.reticulumDeliveryStatus).toBe('received');
+  });
+
+  it('keeps the own-event flag when a stale copy without it is merged', () => {
+    const fromDb = event({
+      eventId: 'own-4',
+      eventType: 'message',
+      senderAddress: 'alice',
+      localDeliveryStatus: 'sent',
+      localOwnEvent: true,
+    });
+    const optimistic = { ...fromDb, localDeliveryStatus: 'pending' as const };
+    delete (optimistic as Partial<ReticulumDmEvent>).localOwnEvent;
+    expect(mergeEvents([fromDb], [optimistic])[0]).toMatchObject({
+      localDeliveryStatus: 'sent',
+      localOwnEvent: true,
+    });
   });
 
   it('never walks delivery progress back on a stale copy of an event', () => {

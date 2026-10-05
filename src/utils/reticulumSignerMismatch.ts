@@ -1,11 +1,20 @@
+import i18n from '../i18n/i18n';
+
 /**
  * Builds the error shown when the background signer returns a different Qortal
  * address than the account the UI believes it is acting for.
  *
  * The bare "author mismatch" text gave field reports nothing to go on. The
- * message now carries the two (abbreviated) addresses so a report tells apart
- * a stale session for another account from a device deriving addresses wrongly,
- * and distinguishes both from the signer returning no address at all.
+ * message now carries the two (abbreviated) addresses, and distinguishes a
+ * signer that answered for another account from one that returned no address
+ * at all.
+ *
+ * Signing for another account no longer means a broken saved entry: unlock,
+ * session resume and the boot restore all refuse a key that is not the
+ * account's own, and that unlock error already says to re-add the account.
+ * What is left is stale session state (a send racing a logout or account
+ * switch), so every case here asks for a fresh unlock. Telling the user to
+ * remove the account would cost anyone without a seed phrase or backup it.
  */
 export function describeSignerMismatch(
   signed: unknown,
@@ -35,13 +44,30 @@ export function describeSignerMismatch(
         ? record.message
         : '';
   if (failure && !signer) {
-    return `Signing ${label} failed: ${failure}`;
+    return i18n.t('auth:wallet_errors.signer.failed', {
+      label,
+      reason: failure,
+      postProcess: 'capitalizeFirstChar',
+    });
   }
   if (!record) {
-    return `Signed ${label} author mismatch: the signer returned no response (expected ${short(expected)}). Log out and unlock the wallet again.`;
+    return i18n.t('auth:wallet_errors.signer.no_response', {
+      label,
+      account: short(expected),
+      postProcess: 'capitalizeSentenceStarts',
+    });
   }
   if (!signer) {
-    return `Signed ${label} author mismatch: the signer returned no address (expected ${short(expected)}). Log out and unlock the wallet again.`;
+    return i18n.t('auth:wallet_errors.signer.no_address', {
+      label,
+      account: short(expected),
+      postProcess: 'capitalizeSentenceStarts',
+    });
   }
-  return `Signed ${label} author mismatch: signer ${short(signer)} ≠ account ${short(expected)}. Log out and unlock the wallet again.`;
+  return i18n.t('auth:wallet_errors.signer.account_key_mismatch', {
+    label,
+    account: short(expected),
+    signer: short(signer),
+    postProcess: 'capitalizeSentenceStarts',
+  });
 }

@@ -13,19 +13,25 @@
  * when a size changes.
  */
 
-export type ReticulumTextScale = 'default' | 'medium' | 'high';
+import {
+  reticulumChatScaledPx,
+  type ReticulumChatTextScale,
+} from './reticulumChatTextScale';
+
+export type ReticulumTextScale = ReticulumChatTextScale;
 
 /** Font size for a Q-Chat text-scale setting, as the chat itself scales. */
-export const reticulumScaledTextSize = (
-  scale: ReticulumTextScale,
-  base: number
-) => (scale === 'high' ? base + 3 : scale === 'medium' ? base + 1.5 : base);
+export const reticulumScaledTextSize = reticulumChatScaledPx;
 
-/** Extra row height per text-scale step, so bigger text keeps its padding. */
+/**
+ * Row height per text-scale step, so bigger text keeps its padding. Phone
+ * rows never drop under the 44px touch target, so Small only tightens them on
+ * desktop.
+ */
 const ROW_HEIGHT_STEP_PX: Record<ReticulumTextScale, number> = {
+  small: -2,
   default: 0,
-  medium: 3,
-  high: 6,
+  large: 6,
 };
 
 /** Phone channel rows at the default text scale. */
@@ -73,7 +79,7 @@ export function reticulumChannelRowMetrics(
     dotSize: 9,
     fontSize: reticulumScaledTextSize(scale, 15),
     iconSize: 20,
-    minHeight: RETICULUM_CHANNEL_ROW_PHONE_MIN_PX + step,
+    minHeight: RETICULUM_CHANNEL_ROW_PHONE_MIN_PX + Math.max(0, step),
     paddingLeft: 12,
     paddingRight: 10,
   };

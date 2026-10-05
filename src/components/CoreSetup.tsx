@@ -26,6 +26,7 @@ import { CoreSettingUp } from './CoreSettingUp';
 import { useAuth } from '../hooks/useAuth';
 import { ensureElectronCertIfLocalPrivateHttps } from '../utils/helpers';
 import { useTranslation } from 'react-i18next';
+import { isElectron } from '../utils/platform';
 
 export const CoreSetup = () => {
   const theme = useTheme();
@@ -666,10 +667,15 @@ export const CoreSetup = () => {
     usingDefaultPublicNode,
   ]);
 
+  // Setting up, starting or downloading Core needs the desktop app: GO (and a
+  // plain browser) never shows this window, whatever sets the atom. The node
+  // and API key dialogs below stay on every platform.
+  const coreSetupAvailable = isElectron();
+
   return (
     <>
       <CoreSetupDialog
-        open={open}
+        open={coreSetupAvailable && open}
         startAtIntro={startCoreSetupAtIntro}
         actionLoading={!!actionLoading}
         onClose={() => {

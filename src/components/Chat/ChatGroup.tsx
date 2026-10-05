@@ -119,6 +119,7 @@ import ShortUniqueId from 'short-unique-id';
 import { ReplyPreview } from './MessageItem';
 import { ComposerDiscardButton } from './ComposerDiscardButton';
 import { ComposerReplyPreview } from './ComposerReplyPreview';
+import { ComposerEditBanner } from './ComposerEditBanner';
 import {
   COMPOSER_SEND_BUTTON_PX,
   COMPOSER_SEND_ICON_PX,
@@ -179,7 +180,10 @@ import {
   MessageSizeLimitLip,
   type MessageSplitError,
 } from './MessageSizeLimitLip';
-import { ReticulumUnreadCountBadge } from '../common/ReticulumUnreadCountBadge';
+import {
+  RETICULUM_NOTIFICATION_RED,
+  ReticulumUnreadCountBadge,
+} from '../common/ReticulumUnreadCountBadge';
 import { ReticulumModePill } from '../Group/ReticulumModePill';
 import {
   ReticulumDiscussionDialog,
@@ -231,7 +235,12 @@ import {
   reticulumChannelListPadding,
   reticulumChannelRowMetrics,
   reticulumOnboardingChannelAnchor,
+  type ReticulumTextScale,
 } from './reticulumChannelListLayout';
+import {
+  qchatMetaTextSize,
+  reticulumChatTextScaleClassName,
+} from './reticulumChatTextScale';
 import { RETICULUM_PHONE_CHAT_HEADER } from './reticulumGroupChatHeaderLayout';
 import { HOVER_CAPABLE_MEDIA } from './chatHeaderActionStyles';
 import { formatReticulumDurationLabel } from './reticulumDurationLabel';
@@ -1185,7 +1194,7 @@ type ReticulumSortableChannelButtonProps = {
   /** Phone drawer: thumb-sized row, bigger text and icons. */
   phone: boolean;
   selected: boolean;
-  textScale: 'default' | 'medium' | 'high';
+  textScale: ReticulumTextScale;
   unreadCount: number;
   replyCount: number;
 };
@@ -1490,6 +1499,32 @@ const reticulumCreateChannelButtonSx = (phone: boolean) => {
   } as const;
 };
 
+export type ReticulumOtherChannelsUnread = 'none' | 'unread' | 'mention';
+
+/**
+ * Whether a visible channel other than the open one has unread messages,
+ * with a mention outranking plain unread, as in the group list.
+ */
+export function getReticulumOtherChannelsUnread(
+  channels: ReadonlyArray<{ channelId: string }>,
+  summariesById: ReadonlyMap<string, ReticulumChatSummaryAtomEntry>,
+  openChannelId: string
+): ReticulumOtherChannelsUnread {
+  let state: ReticulumOtherChannelsUnread = 'none';
+  for (const channel of channels) {
+    if (channel.channelId === openChannelId) continue;
+    const summary = summariesById.get(channel.channelId);
+    if (
+      summary?.hasUnreadMention === true ||
+      Number(summary?.mentionCount) > 0
+    ) {
+      return 'mention';
+    }
+    if (Number(summary?.unreadCount) > 0) state = 'unread';
+  }
+  return state;
+}
+
 /**
  * The phone chat header's group identity: avatar and group name over the
  * active channel. The whole block opens the channel drawer. Sized by
@@ -1502,6 +1537,7 @@ export function ReticulumPhoneChannelOpener({
   groupName,
   onToggle,
   open,
+  otherChannelsUnread = 'none',
   sx,
 }: {
   avatarSrc?: string;
@@ -1509,16 +1545,29 @@ export function ReticulumPhoneChannelOpener({
   groupName: string;
   onToggle: () => void;
   open: boolean;
+  /**
+   * Something new in a channel other than the open one: a dot by the
+   * chevron, so the way to it is visible from the conversation. Red for a
+   * mention, like the group list.
+   */
+  otherChannelsUnread?: ReticulumOtherChannelsUnread;
   sx?: SxProps<MuiTheme>;
 }) {
   const theme = useTheme();
   const { t } = useTranslation(['group']);
   const h = RETICULUM_PHONE_CHAT_HEADER;
+  const showChannelsLabel = t('group:chat_group.show_channels');
 
   return (
     <ButtonBase
       aria-expanded={open}
-      aria-label={t('group:chat_group.show_channels')}
+      aria-label={
+        otherChannelsUnread === 'none'
+          ? showChannelsLabel
+          : `${showChannelsLabel}, ${t(
+              'group:chat_group.unread_in_other_channels'
+            )}`
+      }
       onClick={onToggle}
       sx={[
         {
@@ -1601,6 +1650,22 @@ export function ReticulumPhoneChannelOpener({
               transition: 'transform 200ms ease',
             }}
           />
+          {otherChannelsUnread !== 'none' && (
+            <Box
+              aria-hidden
+              data-other-channels-unread={otherChannelsUnread}
+              sx={{
+                backgroundColor:
+                  otherChannelsUnread === 'mention'
+                    ? RETICULUM_NOTIFICATION_RED
+                    : theme.palette.primary.main,
+                borderRadius: '50%',
+                flexShrink: 0,
+                height: 9,
+                width: 9,
+              }}
+            />
+          )}
         </Box>
       </Box>
     </ButtonBase>
@@ -2962,6 +3027,21 @@ export const ChatGroup = ({
           isReticulumChannelAdmin
       ),
     [isReticulumChannelAdmin, reticulumAllChannelsForSelectedGroup]
+  );
+  // The group list's dot can come from a channel other than the one that
+  // opens (General): phones then show it on the header's channel opener.
+  const reticulumOtherChannelsUnread = useMemo(
+    () =>
+      getReticulumOtherChannelsUnread(
+        reticulumChannelsForSelectedGroup,
+        reticulumChannelSummariesById,
+        selectedReticulumChannelId
+      ),
+    [
+      reticulumChannelSummariesById,
+      reticulumChannelsForSelectedGroup,
+      selectedReticulumChannelId,
+    ]
   );
   const reticulumCategoriesForSelectedGroup = useMemo(() => {
     if (isReticulumChannelAdmin)
@@ -10363,7 +10443,7 @@ export const ChatGroup = ({
     <div
       className={
         reticulumChatEnabled
-          ? `reticulum-chat-text-scale--${reticulumChatTextScale}`
+          ? reticulumChatTextScaleClassName(reticulumChatTextScale)
           : undefined
       }
       style={{
@@ -11048,6 +11128,7 @@ export const ChatGroup = ({
                 groupName={selectedGroupDisplayName}
                 onToggle={() => setReticulumChannelSidebarOpen((open) => !open)}
                 open={reticulumChannelSidebarOpen}
+                otherChannelsUnread={reticulumOtherChannelsUnread}
               />
               <Box
                 sx={{
@@ -11617,9 +11698,9 @@ export const ChatGroup = ({
                 sx={{
                   color: theme.palette.text.secondary,
                   flexShrink: 0,
-                  fontSize: '12px',
+                  fontSize: qchatMetaTextSize(12),
                   fontStyle: 'italic',
-                  lineHeight: '18px',
+                  lineHeight: 1.5,
                   overflow: 'hidden',
                   px: 2.25,
                   py: '4px',
@@ -11919,34 +12000,25 @@ export const ChatGroup = ({
                     )}
 
                     {onEditMessage && (
-                      <Box
-                        sx={{
-                          alignItems: 'flex-start',
-                          display: 'flex',
-                          gap: '5px',
-                          width: '100%',
+                      <ComposerEditBanner
+                        desktopIcon={<ExitIcon />}
+                        desktopPreview={
+                          <ReplyPreview
+                            isEdit
+                            message={onEditMessage}
+                            reticulumOnlyContent={reticulumChatEnabled}
+                          />
+                        }
+                        onCancel={() => {
+                          setReplyMessage(null);
+                          setOnEditMessage(null);
+                          setIsDeleteImage(false);
+                          setChatImagesToSave([]);
+                          setPendingLibraryGif(null);
+                          clearPendingReticulumFiles();
+                          clearEditorContent();
                         }}
-                      >
-                        <ReplyPreview
-                          isEdit
-                          message={onEditMessage}
-                          reticulumOnlyContent={reticulumChatEnabled}
-                        />
-
-                        <ComposerDismissButton
-                          desktopIcon={<ExitIcon />}
-                          label={t('group:chat_group.cancel_edit')}
-                          onClick={() => {
-                            setReplyMessage(null);
-                            setOnEditMessage(null);
-                            setIsDeleteImage(false);
-                            setChatImagesToSave([]);
-                            setPendingLibraryGif(null);
-                            clearPendingReticulumFiles();
-                            clearEditorContent();
-                          }}
-                        />
-                      </Box>
+                      />
                     )}
 
                     <ErrorBoundary

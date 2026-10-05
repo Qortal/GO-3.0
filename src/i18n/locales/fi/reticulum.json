@@ -279,17 +279,24 @@
     },
     "text_size": {
       "default": {
-        "detail": "Nykyinen keskustelun tekstikoko",
+        "detail": "Keskustelun tavallinen tekstikoko",
         "label": "Oletus"
       },
-      "description": "Valitse lukukoko Reticulum-viesteille, kanavien nimille ja jäsenlistalle. Kutsujen esikatselut säilyttävät kiinteän asettelunsa.",
-      "high": {
-        "detail": "Suurin luettava keskustelun teksti",
+      "description": "Määrittää tekstin koon ryhmäkeskusteluissa ja yksityisviesteissä, myös vastauksissa, viestikentässä, kanavien nimissä ja jäsenlistassa. Tiedostot, kutsut ja linkkien esikatselut säilyttävät asettelunsa.",
+      "large": {
+        "detail": "Suurempi ja helpommin luettava teksti",
         "label": "Suuri"
       },
-      "medium": {
-        "detail": "Miellyttävä suurennus",
-        "label": "Keskikokoinen"
+      "preview": {
+        "incoming": "Onko tätä tekstiä helppo lukea?",
+        "label": "Esikatselu",
+        "outgoing": "Kyllä, tämä koko sopii minulle.",
+        "sender": "Aino"
+      },
+      "sample": "Aa",
+      "small": {
+        "detail": "Näytölle mahtuu enemmän viestejä",
+        "label": "Pieni"
       },
       "title": "Tekstin koko"
     }

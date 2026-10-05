@@ -15,8 +15,8 @@ import { useTranslation } from 'react-i18next';
 import { saveFileToDisk } from '../../utils/generateWallet/generateWallet';
 import { useState } from 'react';
 import { decryptStoredWallet } from '../../utils/decryptWallet';
-import PhraseWallet from '../../utils/generateWallet/phrase-wallet';
-import { crypto, walletVersion } from '../../constants/decryptWallet';
+import { deriveVerifiedWalletKey } from '../../utils/generateWallet/verifiedWalletKey';
+import { crypto } from '../../constants/decryptWallet';
 import { executeEvent } from '../../utils/events';
 import { getWalletErrorMessage } from '../../utils/walletErrorMessages';
 import { useSecureScreen } from '../../hooks/useSecureScreen';
@@ -65,7 +65,11 @@ export const DownloadWallet = ({
     let wallet = structuredClone(rawWallet);
 
     const res = await decryptStoredWallet(password, wallet);
-    const wallet2 = new PhraseWallet(res, wallet?.version || walletVersion);
+    // The file holds this account's own key (with the version that derives
+    // it), or nothing: an entry whose key opens another account throws.
+    const wallet2 = deriveVerifiedWalletKey(res, wallet, {
+      qortOnly: true,
+    }).wallet;
     const passwordToUse = newPassword || password;
     wallet = await wallet2.generateSaveWalletData(
       passwordToUse,
@@ -73,14 +77,15 @@ export const DownloadWallet = ({
       () => {}
     );
 
+    // Named after the address written inside it.
     setWalletToBeDownloaded({
       wallet,
-      qortAddress: rawWallet.address0,
+      qortAddress: wallet.address0,
     });
 
     return {
       wallet,
-      qortAddress: rawWallet.address0,
+      qortAddress: wallet.address0,
     };
   };
 

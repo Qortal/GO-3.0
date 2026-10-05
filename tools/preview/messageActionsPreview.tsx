@@ -1,10 +1,11 @@
 /**
  * Dev-only preview of the Q-Chat message actions: reaction chips, the replies
- * chip, the tap toolbar, the long-press menu and a file offer's Accept
+ * chip, the phone popup (MessageActionsPopup) and a file offer's Accept
  * button. Run `npm run dev` and open
- * /tools/preview/message-actions.html. Phone sizes apply below 900px of
- * viewport width (tap a message for the toolbar, long-press or right-click
- * for the menu). Not a build input, so it never ships.
+ * /tools/preview/message-actions.html. Below 900px of viewport width a tap
+ * opens the short popup and a long press or right-click the full one with
+ * the details; wider, the desktop hover toolbar and right-click menu show.
+ * Not a build input, so it never ships.
  */
 import { useCallback, useState } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -67,13 +68,19 @@ const MESSAGES = [
     } as Reactions,
   },
   {
-    message: post(
-      'preview-2',
-      ME,
-      'me',
-      'Yes, the buttons are much easier to hit now.',
-      30
-    ),
+    // Own, edited and expiring: the long-press details show all three rows.
+    message: {
+      ...post(
+        'preview-2',
+        ME,
+        'me',
+        'Yes, the buttons are much easier to hit now.',
+        30
+      ),
+      editTimestamp: Date.now() - 20 * 60_000,
+      expiresAt: Date.now() + 3 * 24 * 60 * 60_000,
+      isEdit: true,
+    },
     replies: 1,
     reactions: { '❤️': [{ sender: ALICE, senderName: 'alice' }] } as Reactions,
   },

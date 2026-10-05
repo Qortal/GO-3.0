@@ -412,10 +412,12 @@ function ChannelList({
 function PhoneChatHeader({
   channelName,
   groupName,
+  otherChannelsUnread,
   width,
 }: {
   channelName: string;
   groupName: string;
+  otherChannelsUnread: 'none' | 'unread' | 'mention';
   width: number;
 }) {
   const h = RETICULUM_PHONE_CHAT_HEADER;
@@ -483,6 +485,7 @@ function PhoneChatHeader({
           groupName={groupName}
           onToggle={() => setOpen((value) => !value)}
           open={open}
+          otherChannelsUnread={otherChannelsUnread}
           // The app shows it below md only; the frames are phones.
           sx={{ display: { xs: 'flex', md: 'flex' } }}
         />
@@ -582,6 +585,10 @@ function Preview() {
     showAnchor: false,
   });
   const [log, setLog] = useState('tap a channel, or hold one to drag it');
+  // The dot the header's opener shows for news in another channel.
+  const [otherChannelsUnread, setOtherChannelsUnread] = useState<
+    'none' | 'unread' | 'mention'
+  >('unread');
   const update = (patch: Partial<ListState>) =>
     setState((current) => ({ ...current, ...patch }));
   const listProps = {
@@ -603,7 +610,7 @@ function Preview() {
       <div
         style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 8 }}
       >
-        {(['default', 'medium', 'high'] as const).map((scale) => (
+        {(['small', 'default', 'large'] as const).map((scale) => (
           <button
             key={scale}
             onClick={() => update({ scale })}
@@ -623,6 +630,19 @@ function Preview() {
         >
           default category name: {state.longDefaultName ? 'long' : 'short'}
         </button>
+        <button
+          onClick={() =>
+            setOtherChannelsUnread((current) =>
+              current === 'none'
+                ? 'unread'
+                : current === 'unread'
+                  ? 'mention'
+                  : 'none'
+            )
+          }
+        >
+          other channels: {otherChannelsUnread}
+        </button>
         <button onClick={toggleTheme}>{themeMode}</button>
         <span style={{ alignSelf: 'center', fontSize: 12, marginLeft: 8 }}>
           {log}
@@ -636,6 +656,7 @@ function Preview() {
             key={width}
             channelName="announcements"
             groupName="Qortal Hub Community Builders"
+            otherChannelsUnread={otherChannelsUnread}
             width={width}
           />
         ))}

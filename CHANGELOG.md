@@ -11,8 +11,54 @@ desktop Hub. The format is based on
 
 ## [Unreleased]
 
+## [0.0.15] — 2026-10-05 (GO 3.0)
+
 ### Changed
 
+- **Chat text size: Small, Default, Large** _(shared)_ — the Q-Chat setting
+  (chat settings → Text size) offered Default, Medium and High, where Medium
+  and High were only 1 and 2 px bigger and reached group message text, the
+  message box, channel rows and the members list. It now offers Small (14 px
+  message text), Default (16 px, the size the chat always had) and Large
+  (19 px), and the size reaches DMs and threads too, with sender names,
+  timestamps, "edited", reply cards, the typing line, call and friend rows,
+  the Select text sheet, and text not wrapped in a paragraph (headings and
+  code follow it). The small labels move a gentler step, so Small keeps them
+  legible; the message box hint stays at the default size on Large, so it
+  is not cut down to a few letters beside the phone's buttons. File,
+  invitation and link preview cards, reactions and buttons keep their
+  layout. The settings show a live preview of a chat at the chosen size and
+  an "Aa" at each size; the desktop dialog is taller so all three fit. A
+  saved Medium or High reads as Large. Strings in all 12 languages; dev
+  preview `tools/preview/chat-text-size.html`, and `chat-composer.html` takes
+  `?scale=small|large`.
+- **Message actions open like Telegram's** _(mobile)_ — tapping a chat
+  message no longer opens a bar under it that pushes the conversation down.
+  A popup floats where the message was touched instead: a pill of quick
+  reactions (👍 💯 😂 ❤️ 🔥 🙏 😮, six on narrow phones) above a short menu
+  with Reply, Reply in discussion (or View N replies), Copy, and Edit and
+  Delete on your own messages. The chevron at the end of the pill grows it
+  into a full emoji grid with category tabs and a Recently used row; emoji
+  newer than the phone's font are left out, so no empty boxes. A long press
+  opens the same popup with Select text added and a details card: when the
+  message was sent, when it was edited, and when it expires (or that it does
+  not). Reactions you already gave are marked and a tap takes them back.
+  Android back closes the grid, then the popup. Threads stay read-only: a
+  long press there only copies. The popup moves up to stay on screen for a
+  message near the bottom. A tap on a picture opens the picture, not the
+  popup, and the tap that closes a user card (or anything else drawn over a
+  message) no longer opens it either. The desktop hover bar and right-click
+  menu are unchanged. New strings in all 12 languages.
+- **Cancelling an edit is easier to find** _(mobile)_ — while a message is
+  being edited, the faint "EDITING MESSAGE:" line with a grey X is now a
+  card like the reply strip: an accent bar, a pencil and "Editing message"
+  in the accent colour, and the X on a filled round button. Desktop is
+  unchanged.
+- **Unread in another channel shows in the chat header** _(mobile)_ — a
+  group opens in its default channel, so when the new messages were in
+  another channel nothing in the conversation said so. The channel opener
+  under the group name now shows a dot by its arrow: blue for unread, red
+  for a mention, as in the group list. Only channels you can see count.
 - **Status follows the account across GO and Hub** _(shared)_ — picking
   Online, Busy or Offline (under the avatar on Home, or in the Hub account
   menu) now switches the account's other devices too. It travels as the
@@ -92,6 +138,91 @@ desktop Hub. The format is based on
   `tools/preview/approval-dialog.html` (`npm run dev`, never shipped).
 
 ### Fixed
+
+- **A saved account whose key belongs to another address** _(shared)_ — GO
+  unlocked a saved account by deriving its key from the encrypted seed and
+  never checked that the key's address matched the account. A saved copy
+  whose `version` or seed did not match its `address0` therefore signed as a
+  different address on every unlock: chat sends failed with "author
+  mismatch", every group stayed dark ("local signer is not a group member",
+  peers answering `requester_not_group_member`) and only the built-in
+  channels showed. Unlock now checks the derived address. When only the
+  wallet version is wrong it uses the right one and saves it (the unlock
+  timings note "version fixed"); otherwise it refuses with a message to
+  remove the account and add it again from the seed phrase or a fresh Hub
+  backup, and stores no key. The same check covers session resume, the
+  app's boot restore, sending QORT with a password, Backup wallet / Download
+  account (which wrote a file named after the account but holding the other
+  address) and the private key reveal (which showed the other address's
+  key). Signer error texts are translated in all 12 languages.
+- **Password login offline opened "Set up Qortal Core"** _(mobile)_ — with
+  no internet, a password unlock checked the node, found it unreachable,
+  opened the desktop Core download window and stopped the unlock; the
+  fingerprint unlock skipped that check and worked. On GO an unreachable node
+  no longer blocks a password unlock and the Core window never opens. Online,
+  a private or custom node that does not answer still says the URL is
+  invalid, and a node that rejects the API key still asks for it.
+- **DMs showed "delivered" but never arrived** _(shared)_ — a sent DM got
+  the double tick as soon as the sending device approved the recipient's
+  request for it, before anything was transferred. A slow phone often approved
+  too late for the desktop's 10 s deadline, so the transfer never happened,
+  yet the message showed delivered and was never offered again. The
+  recipient's sync then only asked a sender for messages newer than the
+  newest it already had, so once a newer message came from the sender's
+  other device (e.g. their Hub), the missed ones were skipped for good. Now:
+  - The double tick needs proof: the transfer finished at the recipient, or
+    the recipient's own signed notice names that message. Each message shows
+    its own state; a later delivered message no longer marks earlier ones,
+    and copies of your messages written on another device show no tick.
+  - GO, as the recipient, asks each sender device once (at most 3 tries per
+    run, never while another request to that device is open, progress saved)
+    for the 7 days behind its newest message, so skipped messages come back.
+    The desktop Hub does not do this.
+  - Re-announces of a message that is still waiting sometimes leave out the
+    "latest" hint so holders re-check from their own position; a phone always
+    leaves room for one newer message when it re-serves older waiting ones,
+    so older Hubs cannot loop.
+  - GO answers DM requests on the phone bridge's fast DM queue instead of
+    behind group history work; the log shows the requesting peer, how long
+    the answer took and whether delivery was confirmed.
+
+  Messages that earlier GO builds already marked delivered are not reset: a
+  GO recipient's look-back can still fetch them, a desktop Hub recipient
+  cannot.
+
+- **DM answers held up by a busy phone** _(mobile)_ — measured on a phone:
+  GO normally answers a desktop Hub's request for a DM page in under 3 s,
+  but during bursts of group traffic its Reticulum bridge fell 20–30 s
+  behind and the desktop gave up after 10 s. The bridge now keeps request
+  slots and capacity free for DM pages, limits how much group history it
+  serves at once (other devices are asked instead), lets its network reader
+  threads run more often and no longer makes them wait on the bridge's main
+  lock. Each DM answer is logged with a time breakdown (arrival, queue,
+  transport, build, authorize, first bytes).
+- **One-time repair of false "delivered" ticks** _(mobile)_ — DMs from the
+  last 7 days that earlier builds marked delivered as soon as a request was
+  approved go back to waiting (they do not count in "N waiting to send") and
+  are offered again, so a recipient that never got them, a desktop Hub
+  included, can fetch them. Ones the recipient already has get their tick
+  back once that is proven.
+- **Desktop Hubs flagged GO for "protocol violation"** _(shared)_ — since
+  v0.0.10 GO keeps group history up to 2 years old, and it served those old
+  reactions, edits and deletes in history pages. Desktop Hubs (3.0.x) refuse
+  anything older than 30 days and counted each one as a protocol violation,
+  aborted the page and put GO on a 5-minute cooldown, then asked again every
+  10–15 minutes. GO now serves only events newer than 29 days to every
+  device; older ones stay in GO's own history. Other GO devices no longer
+  get history older than 29 days from GO either.
+- **Author history sync never ran** _(shared)_ — author manifest sync treated
+  "peer identity already known" as a failure and paused with
+  `identity_unavailable` for nearly every peer.
+- **Read states for left groups resent forever** _(shared)_ — read states of
+  groups the account had left were replayed to the user's other devices on
+  every pass and always dropped there. They are now skipped.
+- **History requests built after they had expired** _(shared)_ — queued
+  history-page requests were kept for 30 s, but the bundled bridge stops
+  waiting for the answer after 15 s, so later ones could never be served;
+  they now expire at 15 s.
 
 - **Someone active on GO showed as Idle** _(mobile)_ — GO kept one presence
   entry per account, so whichever device spoke last won: an idle desktop Hub

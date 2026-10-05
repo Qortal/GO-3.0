@@ -74,7 +74,6 @@ import {
   qortalGroupSelfGcallRoomIdAtom,
   reticulumHighlightOwnMessagesAtom,
   reticulumLegacyThreadsEnabledAtom,
-  reticulumChatTextScaleAtom,
   timestampEnterDataSelector,
 } from '../../atoms/global';
 import { timeDifferenceForNotificationChats } from './groupConstants';
@@ -85,6 +84,7 @@ import { useAtom, useAtomValue } from 'jotai';
 import { useTranslation } from 'react-i18next';
 import { AvatarPreviewModal } from '../Chat/AvatarPreviewModal';
 import { getClickableAvatarSx } from '../Chat/clickableAvatarStyles';
+import { ReticulumTextSizeSettings } from '../Chat/ReticulumTextSizeSettings';
 import {
   meshCallActiveForMemberGroup,
   meshCallMaxParticipantsForMemberGroup,
@@ -144,9 +144,6 @@ const RETICULUM_CALL_GREEN = '#22c55e';
  * (same as the row's long-press menu). */
 const PIN_HOLD_SLOP_PX = 10;
 
-// Labels: reticulum:settings.text_size.<value>.label / .detail
-const reticulumTextScaleOptions = ['default', 'medium', 'high'] as const;
-
 const ReticulumChatSettingsDialog = ({
   open,
   onClose,
@@ -168,7 +165,6 @@ const ReticulumChatSettingsDialog = ({
   const accessibilityExpanded = isNarrow || accessibilityOpen;
   const notificationsExpanded = isNarrow || notificationsOpen;
   const legacyExpanded = isNarrow || legacyOpen;
-  const [textScale, setTextScale] = useAtom(reticulumChatTextScaleAtom);
   const [highlightOwnMessages, setHighlightOwnMessages] = useAtom(
     reticulumHighlightOwnMessagesAtom
   );
@@ -262,7 +258,8 @@ const ReticulumChatSettingsDialog = ({
           borderRadius: isNarrow ? 0 : '10px',
           boxShadow: isNarrow ? 'none' : '0 24px 70px rgba(0,0,0,0.45)',
           maxWidth: isNarrow ? '100%' : 'calc(100vw - 32px)',
-          height: isNarrow ? '100%' : 'min(530px, calc(100vh - 32px))',
+          // Tall enough for the text size preview and all three sizes.
+          height: isNarrow ? '100%' : 'min(620px, calc(100vh - 32px))',
           width: isNarrow ? '100%' : 700,
           // Full-screen on phones starts under the system bars.
           ...(isNarrow
@@ -425,88 +422,7 @@ const ReticulumChatSettingsDialog = ({
           sx={{ flex: 1, minHeight: 0, overflowY: 'auto', p: '28px' }}
         >
           {activeSection === 'text-size' ? (
-            <>
-              <Typography
-                component="h2"
-                sx={{
-                  color: 'text.primary',
-                  fontSize: 20,
-                  fontWeight: 650,
-                  lineHeight: '26px',
-                }}
-              >
-                {t('reticulum:settings.text_size.title')}
-              </Typography>
-              <Typography
-                sx={{
-                  color: 'text.secondary',
-                  fontSize: 14,
-                  fontWeight: 400,
-                  lineHeight: '20px',
-                  maxWidth: 460,
-                  mt: 0.75,
-                }}
-              >
-                {t('reticulum:settings.text_size.description')}
-              </Typography>
-              <Box sx={{ display: 'grid', gap: 1, mt: 2.5 }}>
-                {reticulumTextScaleOptions.map((option) => {
-                  const selected = textScale === option;
-                  return (
-                    <ButtonBase
-                      key={option}
-                      onClick={() => setTextScale(option)}
-                      sx={{
-                        alignItems: 'center',
-                        backgroundColor: selected
-                          ? theme.palette.action.hover
-                          : 'background.default',
-                        border: `1px solid ${selected ? theme.palette.primary.main : theme.palette.divider}`,
-                        borderRadius: '10px',
-                        display: 'flex',
-                        justifyContent: 'space-between',
-                        minHeight: 64,
-                        p: 1.25,
-                        textAlign: 'left',
-                      }}
-                    >
-                      <Box>
-                        <Typography
-                          sx={{
-                            color: 'text.primary',
-                            fontSize: 14,
-                            fontWeight: 600,
-                            lineHeight: '20px',
-                          }}
-                        >
-                          {t(`reticulum:settings.text_size.${option}.label`)}
-                        </Typography>
-                        <Typography
-                          sx={{
-                            color: 'text.secondary',
-                            fontSize: 13,
-                            mt: 0.25,
-                          }}
-                        >
-                          {t(`reticulum:settings.text_size.${option}.detail`)}
-                        </Typography>
-                      </Box>
-                      <Box
-                        sx={{
-                          backgroundColor: selected
-                            ? theme.palette.primary.main
-                            : 'transparent',
-                          border: `1px solid ${selected ? theme.palette.primary.main : theme.palette.text.secondary}`,
-                          borderRadius: '50%',
-                          height: 16,
-                          width: 16,
-                        }}
-                      />
-                    </ButtonBase>
-                  );
-                })}
-              </Box>
-            </>
+            <ReticulumTextSizeSettings />
           ) : activeSection === 'messages' ? (
             <>
               <Typography

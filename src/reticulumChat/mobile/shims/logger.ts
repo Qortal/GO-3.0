@@ -85,6 +85,18 @@ export const logThrottleKey = (level: string, args: unknown[]): string => {
 export type LogThrottleDecision = { emit: boolean; summary: string | null };
 
 /**
+ * DM page serve outcomes (`dm_page_link_authorized`, `_delivered`,
+ * `_delivery_failed`, `_skipped`, ...) are one line per live DM pull and are
+ * what proves a GO DM reached its recipient, so they never share a budget
+ * with noisy lines. They also do not use up the global budget.
+ */
+const UNTHROTTLED_TOKEN_PREFIXES = ['dm_page_link_'];
+const isUnthrottledLogKey = (key: string): boolean => {
+  const token = key.slice(key.indexOf(':') + 1);
+  return UNTHROTTLED_TOKEN_PREFIXES.some((prefix) => token.startsWith(prefix));
+};
+
+/**
  * Fixed-window console throttle: at most `perKey` lines per key and
  * `global` lines overall per window (the summary line counts towards the
  * latter). Suppressed lines are reported once, lazily, by the first call
@@ -140,6 +152,7 @@ export const createLogThrottle = (
       emitted = summary ? 1 : 0;
     }
     const key = logThrottleKey(level, args);
+    if (isUnthrottledLogKey(key)) return { emit: true, summary };
     let entry = seen.get(key);
     if (!entry) {
       if (seen.size >= maxKeys) {

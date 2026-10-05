@@ -36,6 +36,9 @@ import {
   RETICULUM_CHAT_GENERAL_CHANNEL_EXPIRY_MS,
   RETICULUM_CHAT_QORTAL_LAND_CHANNEL_ID,
   RETICULUM_CHAT_QORTAL_LAND_CHANNEL_EXPIRY_MS,
+  RETICULUM_DM_PENDING_NO_CURSOR_FIRST_ATTEMPT,
+  RETICULUM_DM_PREMATURE_SENT_REPAIR_FIRST_DUE_MS,
+  RETICULUM_DM_PREMATURE_SENT_REPAIR_SPACING_MS,
   normalizeReticulumChatAuthorStreamId,
   normalizeReticulumChatDisplayName,
   normalizeReticulumChatChannelId,
@@ -230,6 +233,13 @@ export interface ReticulumDmEvent {
   legacySignature?: string;
   localDeliveryStatus?: ReticulumDmDeliveryStatus;
   localDeliveryUpdatedAt?: number;
+  /**
+   * Local projection: true when this device authored the event (own_event),
+   * false for a stored copy (also of the account's own messages written on
+   * another device). Only authored events carry a real delivery status.
+   * Never on the wire.
+   */
+  localOwnEvent?: boolean;
   /**
    * Local projection (GO): when a verified own device of the account (a home
    * Hub) first pulled this own pending event. Never on the wire.
@@ -625,6 +635,8 @@ export interface ReticulumDmPageOffer {
   timestamp?: number;
   signature?: string;
   pullKey?: string;
+  /** Set on a non-self look-back page request (its look-back state key). */
+  lookbackKey?: string;
 }
 
 type ReticulumChatEventOfferOptions = {
@@ -1019,7 +1031,57 @@ type ReticulumDirectDmPullState = {
   force?: boolean;
   /** First page request starts here instead of at the local cursor. */
   initialAfter?: number;
+  /**
+   * Set only on a look-back pull (its own entry, key
+   * `<cursor pull key>${RETICULUM_CHAT_DM_LOOKBACK_PULL_SUFFIX}`): page
+   * requests start at `after` (continuations at `nextAfter`) and skip the
+   * already-have shortcuts. It sends a request only while no other pull to
+   * the same device is open, and is never retried (see
+   * RETICULUM_CHAT_DM_LOOKBACK_WINDOW_MS).
+   */
+  lookback?: { key: string; after: number };
   retryTimer: ReturnType<typeof setTimeout> | null;
+};
+
+/** One non-self DM look-back per source device and conversation, per process. */
+type ReticulumDirectDmLookbackState = {
+  sourcePeerHash: string;
+  conversationId: string;
+  /**
+   * Request cursor (sender cursor minus the window, at first use), moved
+   * forward past the pages a look-back that ended early imported.
+   */
+  after: number;
+  /** The sender cursor `after` was derived from (persisted on completion). */
+  cursor: number;
+  /**
+   * Look-back pulls counted so far (none of them retried; one that imported a
+   * page or gave way before asking anything is not counted).
+   */
+  pulls: number;
+  /** A look-back completed (more=false page or no events): never again. */
+  done: boolean;
+};
+
+/**
+ * A DM page this device authorized for a requester, remembered until the
+ * bridge reports the transfer's outcome. Only 'sent' (RNS proof of receipt)
+ * marks the page's own events delivered or copied.
+ */
+type ReticulumDmPageDeliveryTrack = {
+  conversationId: string;
+  requesterAddress: string;
+  authenticatedPeerHash: string;
+  eventIds: string[];
+  /** A verified own device pulled a non-self conversation. */
+  ownDeviceConversationPull: boolean;
+  /** A verified own device pulled Saved Messages. */
+  selfDm: boolean;
+  /** Bridge stamps of the request (Android bridge only), for the logs. */
+  arrivedAtMs?: number;
+  requestedAtMs?: number;
+  authorizedAt: number;
+  expiresAt: number;
 };
 
 type ReticulumChatLocalSignature = {
@@ -2467,6 +2529,14 @@ export interface ReticulumChatManagerOptions {
    * not act as a gossip hop. Defaults to true.
    */
   relayGroupControl?: boolean;
+  /**
+   * Once per signed-in address (guarded in the database), turn this
+   * device's recent own DMs that older builds marked 'sent' when the bridge
+   * accepted the authorize (before any byte arrived) back into 'pending', so
+   * the outbox re-announces them and the next page proves them. GO only;
+   * defaults to off.
+   */
+  repairPrematureDmSentOnce?: boolean;
 }
 
 /**
@@ -2485,6 +2555,10 @@ export interface ReticulumChatManagerOptions {
  *   has not confirmed (and may still be re-notified about), or a group notice
  *   owed to an own device. An old DM to a recipient who stays offline counts
  *   in pendingCount but does not keep `pending` true on its own.
+ *
+ * DMs the one-time premature-'sent' repair (GO) turned back into 'pending'
+ * count in none of these until a delivered page settles them: older builds
+ * showed them as sent, and most of them were.
  */
 export interface ReticulumChatOwnOutboxState {
   pending: boolean;
@@ -2501,7 +2575,35 @@ const RETICULUM_CHAT_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1_000;
 // re-pulling the same (known) pages from every peer for as long as it ran
 // (measured on a fresh phone: ~1 100 known events re-downloaded per 13 min).
 // Signature, group and read checks still apply to imported history.
+// Since the serve floor below, such older events reach a GO node only from a
+// 3.0.x Hub (which serves with no age bound): GO nodes no longer pass them to
+// each other. Two GO nodes whose windows differ by events older than the
+// floor now match only if a reachable Hub still holds the missing ones;
+// otherwise each re-pulls the other's known pages as described above, as GO
+// already does with Hubs, whose windows lack GO's older leftovers.
 const RETICULUM_CHAT_HISTORY_IMPORT_MAX_AGE_MS = 2 * 365 * 24 * 60 * 60 * 1_000;
+// What this node keeps (above) is not what it may hand to peers. Hub 3.0.x
+// refuses any event older than RETICULUM_CHAT_MAX_AGE_MS on every import path,
+// and on a history page counts each one as a protocol violation against the
+// provider (3 abort the page, 3 in a row cool the provider down). So history
+// pages, author ranges and single event serves carry only events newer than
+// this. The margin covers the requester checking an event later than this
+// node built the page (serve queue, transfer, its own import queue, deferred
+// membership checks) and a clock difference between the two devices of up to
+// most of a day. It costs little: an event in the margin is under a day from
+// the requester's own 30 day limit (and from general channel expiry).
+// The floor applies to every requester, GO nodes included, although they
+// import up to RETICULUM_CHAT_HISTORY_IMPORT_MAX_AGE_MS. So GO hands no GO
+// phone or GO-branch desktop anything older than it: channel metadata events,
+// messages in channels with no expiry, and their reactions and edits. Those
+// come only from a 3.0.x Hub that still holds them (and a scroll-back asks
+// only the first 3 interested peers). Lifting the floor for GO requesters
+// would take a new GO-only hello token checked with peerFeatureSupport in
+// these serves (3.0.3 pairs with unknown tokens, as with 'ds1'), at the cost
+// of 5-6 of the 7 bytes of hello headroom left; not done.
+const RETICULUM_CHAT_SERVE_AGE_MARGIN_MS = 24 * 60 * 60 * 1_000;
+export const RETICULUM_CHAT_SERVE_MAX_AGE_MS =
+  RETICULUM_CHAT_MAX_AGE_MS - RETICULUM_CHAT_SERVE_AGE_MARGIN_MS;
 const RETICULUM_CHAT_MAX_MENTION_ADDRESS_HASHES = 32;
 const RETICULUM_CHAT_CONTROL_MAX_AGE_MS = 2 * 60_000;
 const RETICULUM_CHAT_CONTROL_MAX_FUTURE_SKEW_MS = 30_000;
@@ -2891,7 +2993,16 @@ const RETICULUM_CHAT_DIRECT_HISTORY_PAGE_REQUEST_STALE_MS = 2 * 60_000;
 const RETICULUM_CHAT_HISTORY_SERVE_MAX_ACTIVE = 4;
 const RETICULUM_CHAT_HISTORY_SERVE_MAX_QUEUED = 128;
 const RETICULUM_CHAT_HISTORY_SERVE_MAX_QUEUED_PER_REQUESTER = 4;
-const RETICULUM_CHAT_HISTORY_SERVE_QUEUE_TTL_MS = 30_000;
+// The bundled Python bridges (electron/resources and android) hold an incoming
+// resource request open for _RESOURCE_SESSION_PROVIDER_AUTH_TIMEOUT_SECONDS
+// (15 s) while this engine authorizes it, then drop the waiter. A later
+// authorize only gets unknown_resource_request, so a queued history page older
+// than that window can never be served. Shed it instead of building it. (The
+// older-bridge 30 s compatibility note in the bridges is about requesters
+// waiting on remote providers, not about this provider's own bridge.)
+export const RETICULUM_CHAT_PROVIDER_AUTH_WINDOW_MS = 15_000;
+export const RETICULUM_CHAT_HISTORY_SERVE_QUEUE_TTL_MS =
+  RETICULUM_CHAT_PROVIDER_AUTH_WINDOW_MS;
 const RETICULUM_CHAT_HISTORY_LINK_FAILURE_BACKOFF_MS = [
   5_000,
   15_000,
@@ -3139,10 +3250,24 @@ const RETICULUM_CHAT_DM_PENDING_PER_ADDRESS_MAX = 16;
 const RETICULUM_CHAT_DM_PENDING_TRACKED_ATTEMPTS_MAX = 1;
 const RETICULUM_CHAT_DM_PENDING_TRACKED_MAX_AGE_MS = 10 * 60_000;
 const RETICULUM_CHAT_DM_PENDING_RECOVERY_MAX_HOPS = 2;
+// A pending head may already be held by the recipient (its page arrived, but
+// the transfer's outcome never reached us, or another device of ours relayed
+// it). With the head as `lc` every version ends its pull on "already have
+// it", and older pending events behind it are never asked for. Without `lc`
+// the recipient pulls from its cursor and a delivered page settles them all,
+// but so does every other device that holds the head, the sender's own Hub
+// included, for nothing. So the sweep and the early (forced) attempts leave
+// `lc` out only on attempts 4, 8, 16, 32, ... (minutes, then hours, then days
+// apart); the peer-spoke attempt (at most daily) always does. Shared with the
+// database (the premature-'sent' repair seeds attempts just below it).
+const RETICULUM_CHAT_DM_PENDING_NO_CURSOR_FIRST_ATTEMPT =
+  RETICULUM_DM_PENDING_NO_CURSOR_FIRST_ATTEMPT;
 // Slow tail after the 2 h window, up to 7 days (well inside the 30 day
 // validity limit of Hub 3.0.3): every 30 min until the event is a day old,
 // then every 2 h. It stops once an own device (home Hub) holds a copy: the
-// Hub's own summary and probe answers cover the recipient from then on. Tail
+// Hub's own summary and probe answers cover the recipient from then on (a
+// head the premature-'sent' repair re-pended keeps its tail slots until its
+// first re-announce without `lc`: see the database's pending heads). Tail
 // due times sit on one grid per account (the 2 h grid is a subset of the
 // 30 min one), so every tail conversation shares the same wakeups.
 const RETICULUM_CHAT_DM_PENDING_TAIL_MAX_AGE_MS = 7 * 24 * 60 * 60_000;
@@ -3274,6 +3399,62 @@ const RETICULUM_CHAT_DM_PULL_RETRY_DELAYS_MS = [
 ];
 const RETICULUM_CHAT_DM_PULL_MAX_AGE_MS = 2 * 60_000;
 const RETICULUM_CHAT_DM_PULL_MAX = 1024;
+// A served DM page counts as delivered only when the bridge reports the
+// transfer complete (RNS proved receipt), not when it accepts the authorize.
+// The transfer is remembered until then: at least as long as the page's
+// registration (RETICULUM_CHAT_RESOURCE_TTL_MS), plus margin for the bridge's
+// own start and stall timeouts. A 'failed' terminal, or no terminal at all,
+// leaves the events pending, so the outbox keeps retrying them.
+const RETICULUM_CHAT_DM_PAGE_DELIVERY_TRACK_TTL_MS =
+  RETICULUM_CHAT_RESOURCE_TTL_MS + 2 * 60_000;
+const RETICULUM_CHAT_DM_PAGE_DELIVERY_TRACK_MAX = 512;
+// The Android bridge reports an incoming resource request it stopped waiting
+// for ('auth_ended': link closed, requester cancelled, waiter timed out),
+// having already answered it on the wire. Remembered long enough for the
+// engine to skip any work still queued for it.
+const RETICULUM_CHAT_PROVIDER_AUTH_ENDED_TTL_MS = 60_000;
+const RETICULUM_CHAT_PROVIDER_AUTH_ENDED_MAX = 1024;
+// A DM page auth whose bridge waiter is this close to its 15 s window is not
+// built: the authorize would arrive after the waiter dropped it.
+const RETICULUM_CHAT_DM_PAGE_AUTH_STALE_MARGIN_MS = 250;
+// GO only, once per address: re-pend own DMs older builds marked 'sent' at
+// the authorize (see repairPrematureDmSentOnce). Runs a while after sign-in,
+// then the sweep re-announces one conversation every spacing, the first
+// one no earlier than the first-due delay.
+const RETICULUM_CHAT_DM_PREMATURE_SENT_REPAIR_DELAY_MS = 30_000;
+// Non-self DM look-back (requester side). Pulls ask for events after the
+// newest one held from the sender, on any of its devices. A message the
+// sender wrote on one device that could not serve us in time is older than a
+// later one from its other device, and that cursor skips it for good. Once per
+// source device and conversation per process, a cursor pull that ends (it ran
+// anyway) may start a look-back pull of its own that asks from a stable point
+// this far behind that cursor (old providers serve any `a`), until one
+// look-back completes (more=false).
+// Both bridges send DM page requests to one device over one link, one at a
+// time, so a look-back request delays any other request to that device. A
+// look-back therefore sends a request (first page or next page) only while no
+// other pull to that device is open, else it ends, and it is never retried:
+// a live notify's cursor pull is sent at once and waits for at most the one
+// look-back request already on the link.
+const RETICULUM_CHAT_DM_LOOKBACK_WINDOW_MS = 7 * 24 * 60 * 60_000;
+// A look-back can cost requests a pull would not have made, so at most one
+// starts per interval across all conversations, and a source that keeps
+// failing is given up for the process after this many look-back pulls (each
+// one request per page, never retried: at most 3 failed requests per source
+// and conversation per process, plus one per page imported). A pull that
+// imported a page saves its progress (the next one resumes after it) and, like
+// one that gave way before any request left, is not counted.
+const RETICULUM_CHAT_DM_LOOKBACK_MIN_INTERVAL_MS = 30_000;
+const RETICULUM_CHAT_DM_LOOKBACK_MAX_PULLS = 3;
+const RETICULUM_CHAT_DM_LOOKBACK_STATE_MAX = 4096;
+const RETICULUM_CHAT_DM_LOOKBACK_PULL_SUFFIX = ':lookback';
+// A completed look-back is remembered in the DB (the sender cursor it started
+// from), so a later process does not fetch the same 7 days again: it skips
+// the look-back while the cursor has not moved past that point, else it asks
+// only from that point minus this margin (clock differences between the
+// sender's devices). Forgotten after the DM validity limit.
+const RETICULUM_CHAT_DM_LOOKBACK_MARK_MARGIN_MS = 60 * 60_000;
+const RETICULUM_CHAT_DM_LOOKBACK_MARK_MAX_AGE_MS = 30 * 24 * 60 * 60_000;
 // Probes are the cheap periodic anti-entropy path. Full per-conversation
 // summaries are only a slower compatibility/safety net; live messages use the
 // immediate targeted notify path above.
@@ -3357,6 +3538,25 @@ type ReticulumChatResourcePayload = {
   auth?: Record<string, unknown>;
   reason?: string;
   canceled?: boolean;
+  // Provider timing stamps (local IPC only; the Android bridge and the GO
+  // worker add them, desktop bridges send none). All epoch ms on the
+  // provider device's clock, except requestedAtMs (the requester's clock).
+  /** Python: the request reached the bridge's provider generator. */
+  arrivedAtMs?: number;
+  /** The requester's own request time, as it sent it. */
+  requestedAtMs?: number;
+  linkRttMs?: number;
+  slotWaitMs?: number;
+  pendingAuthTotal?: number;
+  pendingAuthPeer?: number;
+  /** Python: just before it emitted this 'auth' (its waiter starts here). */
+  authStartedAtMs?: number;
+  /** GO worker: when the frame was queued / written / received. */
+  _pyQueuedAtMs?: number;
+  _pyWriteAtMs?: number;
+  _workerRecvAtMs?: number;
+  /** Android bridge, DM-page 'sent'/'failed': the transfer's timeline. */
+  providerTiming?: Record<string, unknown>;
 };
 
 type ReticulumChatEventSourcePeerRecord = {
@@ -4291,6 +4491,47 @@ function normalizeRoutePeerHash(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
   const fallback = value.trim().toLowerCase();
   return /^[a-z0-9._:-]{1,128}$/.test(fallback) ? fallback : undefined;
+}
+
+/** A bridge timing stamp (epoch ms): a finite positive number, else null. */
+function finiteStamp(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? value
+    : null;
+}
+
+/** `to - from` in whole ms for a log field; 'n/a' when either is missing. */
+function stampDeltaField(to: unknown, from: unknown): string {
+  const end = finiteStamp(to);
+  const start = finiteStamp(from);
+  return end === null || start === null
+    ? 'n/a'
+    : String(Math.round(end - start));
+}
+
+/**
+ * Where a served DM page's transfer spent its time, from the Android
+ * bridge's providerTiming (desktop bridges send none: 'n/a'), for
+ * dm_page_link_delivered / _delivery_failed. first_progress_ms ends when the
+ * requester first asked for parts, which is what stops a desktop requester's
+ * 10 s watchdog; e2e_raw_ms measures that from the requester's own request
+ * time (two devices' clocks, raw).
+ */
+function dmPageDeliveryTimingFields(
+  track: { arrivedAtMs?: number; requestedAtMs?: number },
+  timing: Record<string, unknown> | undefined
+): string {
+  const source = timing && typeof timing === 'object' ? timing : {};
+  const arrivedAt =
+    finiteStamp(source.arrivedAtMs) ?? finiteStamp(track.arrivedAtMs);
+  const requestedAt =
+    finiteStamp(source.requestedAtMs) ?? finiteStamp(track.requestedAtMs);
+  return [
+    `first_progress_ms=${stampDeltaField(source.firstProgressAtMs, arrivedAt)}`,
+    `e2e_raw_ms=${stampDeltaField(source.firstProgressAtMs, requestedAt)}`,
+    `cap_ms=${stampDeltaField(source.capAcquiredAtMs, source.authorizedAtMs)}`,
+    `adv_ms=${stampDeltaField(source.resourceFoundAtMs, source.capAcquiredAtMs)}`,
+  ].join(' ');
 }
 
 function reticulumResultReason(result: unknown): string {
@@ -7464,6 +7705,14 @@ export class ReticulumChatManager extends EventEmitter {
   private getAccountEndpointLeases?: () => ReticulumChatAccountEndpointLease[];
   private hasGoodOverlayHealth?: () => boolean;
   private relayGroupControl = true;
+  private repairPrematureDmSentOnce = false;
+  /** Address -> its scheduled premature-'sent' repair (one per sign-in). */
+  private prematureDmSentRepairTimers = new Map<
+    string,
+    { timer: ReturnType<typeof setTimeout>; generation: number }
+  >();
+  /** Addresses whose premature-'sent' repair ran in this process. */
+  private prematureDmSentRepairDone = new Set<string>();
   private resourceStore: ReticulumResourceStore | null;
   private bridge: ReticulumBridge | null;
   private resourceTransfer: ReticulumResourceTransferManager<ReticulumChatResourceRequestWire> | null =
@@ -8306,6 +8555,12 @@ export class ReticulumChatManager extends EventEmitter {
     pendingCount: 0,
     uncopiedCount: 0,
   };
+  /**
+   * Pending own DMs the premature-'sent' repair re-pended, left out of
+   * ownOutboxState's counts (countPendingOwnDirectEvents); as of the last
+   * recompute. Internal only.
+   */
+  private ownOutboxRepairedCount = 0;
   /** A microtask recompute is queued (coalesces bursts of triggers). */
   private ownOutboxRefreshQueued = false;
   /** Last lifecycle the host reported; 'unknown' on hosts that never do. */
@@ -8345,6 +8600,16 @@ export class ReticulumChatManager extends EventEmitter {
     ReticulumPendingDmNotifyDelivery
   >();
   private directDmPulls = new Map<string, ReticulumDirectDmPullState>();
+  /** `${source}|${conversation}` -> non-self DM look-back of this process. */
+  private directDmLookbacks = new Map<string, ReticulumDirectDmLookbackState>();
+  private lastDirectDmLookbackStartedAt = 0;
+  /** Provider side: authorized DM page transfer id -> what it carried. */
+  private dmPageDeliveries = new Map<string, ReticulumDmPageDeliveryTrack>();
+  /**
+   * Provider side: transfer id -> when the bridge said it stopped waiting for
+   * this incoming request ('auth_ended'; it already answered the requester).
+   */
+  private providerAuthEnded = new Map<string, number>();
   /** Self conversations that already did the wide (look-back) catch-up this process. */
   private selfConversationWideCatchupDone = new Set<string>();
   private pendingReadSync = new Map<string, ReticulumChatPendingReadSync>();
@@ -8440,6 +8705,7 @@ export class ReticulumChatManager extends EventEmitter {
     this.getAccountEndpointLeases = options.getAccountEndpointLeases;
     this.hasGoodOverlayHealth = options.hasGoodOverlayHealth;
     this.relayGroupControl = options.relayGroupControl !== false;
+    this.repairPrematureDmSentOnce = options.repairPrematureDmSentOnce === true;
     this.resourceStore = options.resourceStore ?? null;
     this.bridge = options.bridge ?? null;
     this.db = new ReticulumChatDatabase(this.dbPath);
@@ -9251,6 +9517,8 @@ export class ReticulumChatManager extends EventEmitter {
     this.stopDmDigestTimer();
     this.clearPendingDmNotifyDeliveries();
     this.clearDirectDmPulls();
+    this.directDmLookbacks.clear();
+    this.dmPageDeliveries.clear();
     this.cancelAllLinkedEventPulls('manager_closed');
     this.cancelAllDirectHistoryPageRequests('manager_closed');
     this.detachBridge();
@@ -10388,10 +10656,93 @@ export class ReticulumChatManager extends EventEmitter {
         this.scheduleSelfConversationCatchup();
       }, 5_000);
       timer.unref?.();
+      if (this.repairPrematureDmSentOnce) {
+        for (const address of this.localDmAddresses) {
+          this.schedulePrematureDmSentRepair(address, generation);
+        }
+      }
     } else {
       this.pendingInitialDmDiscovery = false;
       this.stopDmDigestTimer();
     }
+  }
+
+  /**
+   * repairPrematureDmSentOnce: a while after sign-in (leases and links
+   * settle first), unless the account changed meanwhile; a sign-in under a
+   * new account generation starts its own wait.
+   */
+  private schedulePrematureDmSentRepair(
+    address: string,
+    generation: number
+  ): void {
+    if (this.prematureDmSentRepairDone.has(address)) return;
+    const scheduled = this.prematureDmSentRepairTimers.get(address);
+    if (scheduled?.generation === generation) return;
+    if (scheduled) clearTimeout(scheduled.timer);
+    const timer = setTimeout(() => {
+      if (this.prematureDmSentRepairTimers.get(address)?.timer === timer) {
+        this.prematureDmSentRepairTimers.delete(address);
+      }
+      if (this.isClosed || generation !== this.localAccountGeneration) return;
+      this.runPrematureDmSentRepair(address);
+    }, RETICULUM_CHAT_DM_PREMATURE_SENT_REPAIR_DELAY_MS);
+    timer.unref?.();
+    this.prematureDmSentRepairTimers.set(address, { timer, generation });
+  }
+
+  /**
+   * Older builds marked a DM page's own events 'sent' as soon as the bridge
+   * accepted the authorize, before a byte arrived; a requester that had
+   * already given up never got them, and its cursor may have passed them
+   * since. Turn this address's recent ones back into 'pending' (guarded in
+   * the database, so once ever per address): the outbox re-announces them,
+   * one conversation every 75 s from 2 min on, the first time without `lc`
+   * so every recipient pulls from its own cursor, and passed-pending pages
+   * serve them again. Only a page whose transfer the bridge reports
+   * delivered marks them 'sent' again. They stay out of the outbox counts
+   * meanwhile (no "waiting to send" for messages older builds showed as
+   * sent).
+   */
+  private runPrematureDmSentRepair(address: string): void {
+    // Signed out meanwhile: the next sign-in schedules it again.
+    if (
+      this.isClosed ||
+      !this.repairPrematureDmSentOnce ||
+      !this.localDmAddresses.has(address)
+    ) {
+      return;
+    }
+    let result: ReturnType<ReticulumChatDatabase['repairPrematureDmSent']>;
+    try {
+      result = this.db.repairPrematureDmSent(address, this.now());
+    } catch (err) {
+      // Nothing was written (one transaction): the next sign-in retries.
+      this.countDelivery('dmPrematureSentRepairFailed');
+      loggerWarn(
+        `[ReticulumChat] dm_premature_sent_repair_failed address=${address} reason=${err instanceof Error ? err.message : String(err)}`
+      );
+      return;
+    }
+    this.prematureDmSentRepairDone.add(address);
+    if (!result) return;
+    if (result.rows > 0) {
+      this.dmPendingDeliveryAttempts.clear();
+      this.scheduleOwnOutboxStateRefresh();
+      for (const conversation of result.conversations) {
+        this.emit('directSummaryChanged', {
+          conversationId: conversation.conversationId,
+          peerAddress: conversation.recipientAddress,
+        });
+      }
+      this.pullDmPendingDeliverySweepForward(
+        RETICULUM_DM_PREMATURE_SENT_REPAIR_FIRST_DUE_MS
+      );
+      this.countDelivery('dmPrematureSentRepaired', result.rows);
+    }
+    loggerLog(
+      `[ReticulumChat] dm_premature_sent_repaired address=${address} rows=${result.rows} conversations=${result.conversations.length} first_due_ms=${RETICULUM_DM_PREMATURE_SENT_REPAIR_FIRST_DUE_MS} spacing_ms=${RETICULUM_DM_PREMATURE_SENT_REPAIR_SPACING_MS}`
+    );
   }
 
   /**
@@ -10424,6 +10775,9 @@ export class ReticulumChatManager extends EventEmitter {
     this.stopDmDigestTimer();
     this.clearPendingDmNotifyDeliveries();
     this.clearDirectDmPulls();
+    this.directDmLookbacks.clear();
+    this.lastDirectDmLookbackStartedAt = 0;
+    this.dmPageDeliveries.clear();
     this.clearActiveDirectChats();
     for (const timer of this.directTypingTimers.values()) clearTimeout(timer);
     this.directTypingTimers.clear();
@@ -16472,7 +16826,20 @@ export class ReticulumChatManager extends EventEmitter {
           return;
         // No own device to replay to: skip the 5,000-row read.
         if (this.ownDevicePeerHashes(ownerAddress).length === 0) continue;
-        const states = this.db.getDeviceReadStates(ownerAddress, 5_000);
+        // Rows for a group this account no longer follows here (a left group)
+        // are never pruned. Own devices drop them as unknown-group without an
+        // ACK, so replaying them repeated the same sends every pass forever.
+        // A membership update replays again, so a group that comes back (or
+        // memberships that load late) still gets its state sent.
+        const states = this.db
+          .getDeviceReadStates(ownerAddress, 5_000)
+          .filter(
+            (state) =>
+              state.scopeType !== 'group' ||
+              (state.groupId != null &&
+                this.localGroupIds.has(state.groupId) &&
+                this.localGroupAddresses.get(state.groupId) === ownerAddress)
+          );
         if (states.length === 0) continue;
         for (const peerHash of this.ownDevicePeerHashes(ownerAddress)) {
           const pending = states
@@ -19385,6 +19752,11 @@ export class ReticulumChatManager extends EventEmitter {
       typeof payload.status === 'string' ? payload.status.trim() : '';
     const transferId =
       typeof payload.transferId === 'string' ? payload.transferId.trim() : '';
+    if (status === 'auth_ended') {
+      // Not queued: it only cancels work still queued for that request.
+      this.noteProviderAuthEnded(transferId, payload.reason);
+      return;
+    }
     const resourceType = String(
       payload.resourceType ??
         payload.metadata?.resourceType ??
@@ -19425,6 +19797,103 @@ export class ReticulumChatManager extends EventEmitter {
     });
     this.logChatResourceQueuePressureIfNeeded();
     this.scheduleChatResourceQueue();
+  }
+
+  /**
+   * The Android bridge stopped waiting for an incoming resource request
+   * (link closed, requester cancelled, waiter timed out) and already
+   * answered it on the wire. Remember it for a minute, and drop what is
+   * still queued for it here: its 'auth' in the resource queue and a queued
+   * history page serve. Nothing is rejected (the bridge answered already).
+   * Desktop bridges never send this status.
+   */
+  private noteProviderAuthEnded(transferId: string, reason: unknown): void {
+    if (!transferId) return;
+    const now = this.now();
+    for (const [id, at] of this.providerAuthEnded) {
+      if (now - at < RETICULUM_CHAT_PROVIDER_AUTH_ENDED_TTL_MS) break;
+      this.providerAuthEnded.delete(id);
+    }
+    this.providerAuthEnded.delete(transferId);
+    this.providerAuthEnded.set(transferId, now);
+    while (
+      this.providerAuthEnded.size > RETICULUM_CHAT_PROVIDER_AUTH_ENDED_MAX
+    ) {
+      const oldest = this.providerAuthEnded.keys().next().value as
+        | string
+        | undefined;
+      if (oldest === undefined) break;
+      this.providerAuthEnded.delete(oldest);
+    }
+    const reasonKey =
+      typeof reason === 'string' && /^[a-z0-9_]{1,64}$/.test(reason)
+        ? reason
+        : 'unknown';
+    this.countDelivery('providerAuthEnded');
+    this.countDelivery(`providerAuthEnded_${reasonKey}`);
+    let removedQueued = 0;
+    for (const [key, item] of this.chatResourceItems) {
+      if (item.transferId !== transferId || item.status !== 'auth') continue;
+      this.chatResourceItems.delete(key);
+      removedQueued += 1;
+    }
+    if (removedQueued > 0) {
+      this.chatResourceQueue = this.chatResourceQueue.filter((key) =>
+        this.chatResourceItems.has(key)
+      );
+      this.countDelivery('providerAuthEndedQueuedDropped', removedQueued);
+    }
+    for (
+      let index = this.historyPageServeQueue.length - 1;
+      index >= 0;
+      index -= 1
+    ) {
+      const item = this.historyPageServeQueue[index];
+      if (item.transferId !== transferId) continue;
+      this.historyPageServeQueue.splice(index, 1);
+      if (
+        this.historyPageServePendingBySemanticKey.get(item.semanticKey) ===
+        transferId
+      ) {
+        this.historyPageServePendingBySemanticKey.delete(item.semanticKey);
+      }
+      this.countDelivery('providerAuthEndedHistoryDropped');
+    }
+  }
+
+  /**
+   * Why a DM page auth is no longer worth building, or null: the bridge said
+   * it stopped waiting ('auth_ended'), or its waiter (started when the
+   * bridge emitted the auth, same device clock) is about to time out
+   * ('auth_stale'). Requests without the bridge stamps (desktop bridges)
+   * are never stale here.
+   */
+  private dmPageAuthGone(
+    payload: ReticulumChatResourcePayload
+  ): { reason: 'auth_ended' | 'auth_stale'; ageMs: number | null } | null {
+    const startedAt =
+      finiteStamp(payload.authStartedAtMs) ?? finiteStamp(payload.arrivedAtMs);
+    const now = this.now();
+    const ageMs = startedAt === null ? null : now - startedAt;
+    const transferId = String(payload.transferId || '');
+    const endedAt = transferId
+      ? this.providerAuthEnded.get(transferId)
+      : undefined;
+    if (
+      endedAt !== undefined &&
+      now - endedAt < RETICULUM_CHAT_PROVIDER_AUTH_ENDED_TTL_MS
+    ) {
+      return { reason: 'auth_ended', ageMs };
+    }
+    if (
+      ageMs !== null &&
+      ageMs >=
+        RETICULUM_CHAT_PROVIDER_AUTH_WINDOW_MS -
+          RETICULUM_CHAT_DM_PAGE_AUTH_STALE_MARGIN_MS
+    ) {
+      return { reason: 'auth_stale', ageMs };
+    }
+    return null;
   }
 
   private findDroppableChatResourceQueueKey(): string | null {
@@ -19490,7 +19959,10 @@ export class ReticulumChatManager extends EventEmitter {
   ): void {
     const startedAt = Date.now();
     try {
-      this.handleResourceEvent(item.payload, { useWorkerPrep: true });
+      this.handleResourceEvent(item.payload, {
+        useWorkerPrep: true,
+        receivedAt: item.enqueuedAt,
+      });
     } catch (err) {
       loggerWarn(
         `[ReticulumChat] Failed to process chat resource transfer=${item.transferId || 'unknown'} status=${item.status || 'unknown'}:`,
@@ -22356,7 +22828,10 @@ export class ReticulumChatManager extends EventEmitter {
       {
         requestId: pull.activeRequestId,
         pullKey: key,
-        afterOverride: pull.nextAfter ?? pull.initialAfter,
+        afterOverride: pull.lookback
+          ? (pull.nextAfter ?? pull.lookback.after)
+          : (pull.nextAfter ?? pull.initialAfter),
+        ...(pull.lookback ? { lookbackKey: pull.lookback.key } : {}),
         ...(pull.force ? { force: true } : {}),
       }
     );
@@ -22367,9 +22842,217 @@ export class ReticulumChatManager extends EventEmitter {
     pull.activeRequestId = '';
     if (result === 'complete') {
       this.completeDirectDmPull(key);
+      // Nothing to fetch after the cursor (or already asked): the pull that
+      // ran anyway may still owe its one look-back behind the cursor.
+      if (!pull.lookback) this.startDirectDmLookback(pull);
       return;
     }
     this.scheduleDirectDmPullRetry(key, result, requestedId);
+  }
+
+  /**
+   * Start the one non-self look-back owed by a cursor pull that is ending:
+   * a pull entry of its own (RETICULUM_CHAT_DM_LOOKBACK_PULL_SUFFIX) for the
+   * same source and conversation, asked from a stable point
+   * RETICULUM_CHAT_DM_LOOKBACK_WINDOW_MS behind the sender cursor, or from a
+   * completed earlier look-back's mark. Only when no other pull to that
+   * device is open (its requests would share the one link). Only a pull that
+   * runs anyway gets here (never a timer of its own), at most one look-back
+   * starts per RETICULUM_CHAT_DM_LOOKBACK_MIN_INTERVAL_MS across all
+   * conversations, and each source and conversation gets at most
+   * RETICULUM_CHAT_DM_LOOKBACK_MAX_PULLS counted look-back pulls per process
+   * until one completes (see scheduleDirectDmPullRetry for the ones not
+   * counted). Returns true when a look-back pull started.
+   */
+  private startDirectDmLookback(pull: ReticulumDirectDmPullState): boolean {
+    if (this.isClosed || pull.lookback) return false;
+    // Self conversations have their own look-back (own-device catch-up),
+    // and a cursor of our own address (own-device catch-ups, own devices'
+    // notifies) is not a remote sender's.
+    if (pull.addressA === pull.addressB) return false;
+    if (ownAddressMatches(this.localDmAddresses, pull.addressA)) return false;
+    if (!this.localDmAddressForConversation(pull.addressA, pull.addressB)) {
+      return false;
+    }
+    const source = pull.sourcePeerHash;
+    if (!source || source === this.getLocalResourcePeerHash()) return false;
+    // Another pull to this device (this look-back already running included):
+    // stay owed, nothing is spent.
+    if (this.hasOtherDirectDmPullTo(source, pull.key)) return false;
+    const pullKey = `${this.directDmPullKey(source, pull.conversationId)}${RETICULUM_CHAT_DM_LOOKBACK_PULL_SUFFIX}`;
+    const key = `${source}|${pull.conversationId}`;
+    let state = this.directDmLookbacks.get(key);
+    if (state?.done) return false;
+    if (state && state.pulls >= RETICULUM_CHAT_DM_LOOKBACK_MAX_PULLS) {
+      return false;
+    }
+    const now = this.now();
+    if (
+      this.lastDirectDmLookbackStartedAt > 0 &&
+      now - this.lastDirectDmLookbackStartedAt <
+        RETICULUM_CHAT_DM_LOOKBACK_MIN_INTERVAL_MS
+    ) {
+      return false;
+    }
+    if (!state) {
+      const cursor =
+        this.db.getDirectSyncCursorFromSender(
+          pull.conversationId,
+          pull.addressA
+        ) ??
+        this.db.getDirectLatestEventFromSender(
+          pull.conversationId,
+          pull.addressA
+        );
+      const cursorTimestamp = Math.floor(Number(cursor?.timestamp) || 0);
+      // Nothing held from this sender yet: every pull already asks from 0.
+      if (cursorTimestamp <= 0) return false;
+      // An earlier process completed a look-back from this source up to
+      // `mark`: what it could still owe us is newer than that.
+      const mark = this.readDirectDmLookbackMark(source, pull.conversationId);
+      state = {
+        sourcePeerHash: source,
+        conversationId: pull.conversationId,
+        after: Math.max(
+          0,
+          cursorTimestamp - RETICULUM_CHAT_DM_LOOKBACK_WINDOW_MS,
+          mark !== null ? mark - RETICULUM_CHAT_DM_LOOKBACK_MARK_MARGIN_MS : 0
+        ),
+        cursor: cursorTimestamp,
+        pulls: 0,
+        // The cursor has not moved since: cursor pulls cover the rest.
+        done: mark !== null && cursorTimestamp <= mark,
+      };
+      this.directDmLookbacks.set(key, state);
+      while (
+        this.directDmLookbacks.size > RETICULUM_CHAT_DM_LOOKBACK_STATE_MAX
+      ) {
+        const oldest = this.directDmLookbacks.keys().next().value as
+          | string
+          | undefined;
+        if (!oldest || oldest === key) break;
+        this.directDmLookbacks.delete(oldest);
+      }
+      if (state.done) {
+        this.countDelivery('dmLookbackSkipped');
+        return false;
+      }
+    }
+    state.pulls += 1;
+    this.lastDirectDmLookbackStartedAt = now;
+    // The ending cursor pull is gone before the look-back runs (a
+    // no_dm_events answer ends it only here), so the look-back does not give
+    // way to it.
+    if (this.directDmPulls.get(pull.key) === pull) {
+      this.completeDirectDmPull(pull.key);
+    }
+    while (this.directDmPulls.size >= RETICULUM_CHAT_DM_PULL_MAX) {
+      const oldestKey = this.directDmPulls.keys().next().value as
+        | string
+        | undefined;
+      if (!oldestKey) break;
+      this.completeDirectDmPull(oldestKey);
+    }
+    this.directDmPulls.set(pullKey, {
+      key: pullKey,
+      conversationId: pull.conversationId,
+      addressA: pull.addressA,
+      addressB: pull.addressB,
+      sourcePeerHash: source,
+      remoteEventId: pull.remoteEventId,
+      remoteTimestamp: pull.remoteTimestamp,
+      requestId: pull.requestId,
+      attempts: 0,
+      createdAt: now,
+      inFlight: false,
+      activeRequestId: '',
+      retryTimer: null,
+      lookback: { key, after: state.after },
+    });
+    this.countDelivery('dmLookbackStarted');
+    loggerLog(
+      `[ReticulumChat] dm_lookback_started conversation=${pull.conversationId.slice(0, 16)} peer=${source.slice(0, 16)} after=${state.after} try=${state.pulls}`
+    );
+    void this.runDirectDmPull(pullKey);
+    return true;
+  }
+
+  /** Sender cursor a completed look-back from `source` started at, or null. */
+  private readDirectDmLookbackMark(
+    source: string,
+    conversationId: string
+  ): number | null {
+    try {
+      const mark = this.db.getDirectDmLookbackMark(source, conversationId);
+      return typeof mark === 'number' && Number.isFinite(mark) && mark > 0
+        ? mark
+        : null;
+    } catch (err) {
+      loggerWarn(
+        `[ReticulumChat] dm_lookback_mark_read_failed reason=${err instanceof Error ? err.message : String(err)}`
+      );
+      return null;
+    }
+  }
+
+  /**
+   * A look-back request got its final answer (a page with more=false, or no
+   * events at all): it is done for this process, and remembered in the DB
+   * for later ones.
+   */
+  private completeDirectDmLookback(lookbackKey: string, detail: string): void {
+    const state = this.directDmLookbacks.get(lookbackKey);
+    if (!state || state.done) return;
+    state.done = true;
+    this.countDelivery('dmLookbackCompleted');
+    const now = this.now();
+    try {
+      this.db.setDirectDmLookbackMark(
+        state.sourcePeerHash,
+        state.conversationId,
+        state.cursor,
+        now,
+        now - RETICULUM_CHAT_DM_LOOKBACK_MARK_MAX_AGE_MS
+      );
+    } catch (err) {
+      loggerWarn(
+        `[ReticulumChat] dm_lookback_mark_write_failed reason=${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+    loggerLog(
+      `[ReticulumChat] dm_lookback_completed conversation=${state.conversationId.slice(0, 16)} peer=${state.sourcePeerHash.slice(0, 16)} after=${state.after} ${detail}`
+    );
+  }
+
+  /**
+   * "No events after `after`" is a final answer, not a transient failure.
+   * For a look-back it completes the look-back (and its pull); for a cursor
+   * pull of a remote source it ends the pull when its look-back starts,
+   * which asks a superset of what a retry would. Returns true when the pull
+   * was handled here (no retry is scheduled).
+   */
+  private settleDirectDmLookbackNoEvents(
+    request: ReticulumDmPageOffer,
+    reason: string
+  ): boolean {
+    if (reason !== 'no_dm_events' || !request.pullKey) return false;
+    const pull = this.directDmPulls.get(request.pullKey);
+    if (request.lookbackKey) {
+      this.completeDirectDmLookback(request.lookbackKey, 'events=0');
+      if (pull?.lookback?.key === request.lookbackKey) {
+        this.completeDirectDmPull(pull.key);
+      }
+      return true;
+    }
+    if (
+      !pull ||
+      pull.lookback ||
+      normalizeReticulumControlRequestId(request.requestId) !== pull.requestId
+    ) {
+      return false;
+    }
+    // A look-back that starts ends this pull (startDirectDmLookback).
+    return this.startDirectDmLookback(pull);
   }
 
   private scheduleDirectDmPullRetry(
@@ -22382,6 +23065,33 @@ export class ReticulumChatManager extends EventEmitter {
     pull.inFlight = false;
     pull.activeRequestId = '';
     if (pull.retryTimer) return;
+    if (pull.lookback) {
+      // Never retried (a slow device's deadline, a refusal, or it gave way
+      // to another pull to that device): it ends here and stays owed, and the
+      // next cursor pull that ends may start it again (a try is spent).
+      const state = this.directDmLookbacks.get(pull.lookback.key);
+      if (state && !state.done) {
+        if (pull.nextAfter !== undefined && pull.nextAfter > state.after) {
+          // Pages up to nextAfter were imported: the next try resumes there,
+          // and a try that moved `after` forward is not counted (bounded by
+          // the window's pages and the start interval).
+          state.after = pull.nextAfter;
+          state.pulls = Math.max(0, state.pulls - 1);
+        } else if (
+          reason === 'lookback_gave_way' &&
+          pull.nextAfter === undefined
+        ) {
+          // It gave way before its first request left: nothing was asked of
+          // the device, so no try is spent (the start interval still is).
+          state.pulls = Math.max(0, state.pulls - 1);
+        }
+      }
+      loggerLog(
+        `[ReticulumChat] dm_lookback_ended conversation=${pull.conversationId.slice(0, 16)} peer=${pull.sourcePeerHash.slice(0, 16)} reason=${reason}`
+      );
+      this.completeDirectDmPull(key);
+      return;
+    }
     // A newer cursor may have replaced the request while it was in flight;
     // an empty answer to the old request says nothing about the new one.
     if (
@@ -22521,6 +23231,22 @@ export class ReticulumChatManager extends EventEmitter {
     this.directDmPulls.delete(key);
   }
 
+  /**
+   * True when a pull other than `exceptKey` is open to `sourcePeerHash`: a
+   * request in flight, a retry waiting, or about to send.
+   */
+  private hasOtherDirectDmPullTo(
+    sourcePeerHash: string,
+    exceptKey: string
+  ): boolean {
+    for (const [key, pull] of this.directDmPulls) {
+      if (key !== exceptKey && pull.sourcePeerHash === sourcePeerHash) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   private clearDirectDmPulls(): void {
     for (const key of [...this.directDmPulls.keys()]) {
       this.completeDirectDmPull(key);
@@ -22539,9 +23265,12 @@ export class ReticulumChatManager extends EventEmitter {
       requestId?: string;
       pullKey?: string;
       afterOverride?: number;
+      /** A non-self look-back: skip the already-have shortcuts. */
+      lookbackKey?: string;
     } = {}
   ): Promise<'complete' | 'started' | string> {
     const tracePrefix = `[ReticulumChat] dm_link_pull conversation=${conversationId.slice(0, 16)} source=${String(sourcePeerHash || '').slice(0, 16)} rid=${String(options.requestId || '').slice(0, 12)}`;
+    const accountGeneration = this.localAccountGeneration;
     const localLatest = this.db.getDirectLatestEvent(conversationId);
     const senderLatest =
       this.db.getDirectSyncCursorFromSender(conversationId, addressA) ??
@@ -22559,7 +23288,31 @@ export class ReticulumChatManager extends EventEmitter {
     ) {
       this.markDirectEventSent(localLatest);
     }
+    // The recipient's own signed notify (its answer to our probe) names our
+    // still-pending newest event as its newest: it holds it, even though the
+    // outcome of the page that carried it never reached us (a lost terminal
+    // event, an engine restart, a lost RNS proof). Only an event this device
+    // authored, and only for the account it was addressed to. It proves
+    // nothing about older own events: they stay pending (the UI shows each
+    // event's own state), and the next sweep re-announces the newest of them.
     if (
+      localLatest &&
+      localLatest.localOwnEvent === true &&
+      localLatest.localDeliveryStatus === 'pending' &&
+      localLatest.recipientAddress === addressA &&
+      localLatest.senderAddress !== addressA &&
+      ownAddressMatches(this.localDmAddresses, localLatest.senderAddress) &&
+      remoteEventId.startsWith('cursor:') &&
+      this.dmNotifyLatestCursor(localLatest) === remoteEventId.slice(7)
+    ) {
+      this.countDelivery('dmPendingHeldByRecipient');
+      this.markDirectEventSent(localLatest);
+    }
+    // A look-back asks for what lies behind the cursor, which "the source's
+    // latest is ours" says nothing about.
+    const lookback = !!options.lookbackKey;
+    if (
+      !lookback &&
       cursorLatest &&
       remoteEventId.startsWith('cursor:') &&
       this.dmNotifyLatestCursor(cursorLatest) === remoteEventId.slice(7)
@@ -22567,6 +23320,7 @@ export class ReticulumChatManager extends EventEmitter {
       return 'complete';
     }
     if (
+      !lookback &&
       cursorLatest &&
       remoteTimestamp < Number.MAX_SAFE_INTEGER &&
       (cursorLatest.timestamp > remoteTimestamp ||
@@ -22630,6 +23384,14 @@ export class ReticulumChatManager extends EventEmitter {
       }
       return 'complete';
     }
+    // A look-back gives way to another open pull to this device before it
+    // prepares or signs anything (re-checked below, right before sending).
+    if (
+      lookback &&
+      this.hasOtherDirectDmPullTo(sourcePeerHash, options.pullKey ?? '')
+    ) {
+      return 'lookback_gave_way';
+    }
     this.pruneDmDiscoveryRoutes(now);
     let linkedIdentity = '';
     let linkedSessionReady = false;
@@ -22680,6 +23442,27 @@ export class ReticulumChatManager extends EventEmitter {
     if (!this.bridge || !linkedSessionReady) {
       return 'session_prepare_failed';
     }
+    // The pull was dropped, or the account changed (its runtime state was
+    // cleared), while the request was prepared and signed: send nothing and
+    // register no transfer.
+    if (
+      this.isClosed ||
+      accountGeneration !== this.localAccountGeneration ||
+      !this.localDmAddressForConversation(addressA, addressB) ||
+      (options.pullKey && !this.directDmPulls.has(options.pullKey))
+    ) {
+      return 'pull_closed';
+    }
+    // A look-back request (first or next page) is sent only while no other
+    // pull to this device is open, checked right before the bridge gets it
+    // (a notify may have opened one while this request was prepared).
+    // Otherwise the look-back ends (scheduleDirectDmPullRetry).
+    if (
+      lookback &&
+      this.hasOtherDirectDmPullTo(sourcePeerHash, options.pullKey ?? '')
+    ) {
+      return 'lookback_gave_way';
+    }
     // The notification id remains stable for correlation, while every link
     // attempt gets a fresh transfer id so a failed response cannot poison a
     // later retry on the reusable resource session.
@@ -22709,6 +23492,7 @@ export class ReticulumChatManager extends EventEmitter {
       timestamp: Number(request.q.n || 0),
       signature: typeof request.q.z === 'string' ? request.q.z : '',
       pullKey: options.pullKey,
+      ...(options.lookbackKey ? { lookbackKey: options.lookbackKey } : {}),
     });
     if (RETICULUM_CHAT_TRACE) {
       loggerLog(
@@ -25434,6 +26218,15 @@ export class ReticulumChatManager extends EventEmitter {
     };
   }
 
+  /**
+   * A history page as served to a peer: nothing older than `minTimestamp`
+   * (see RETICULUM_CHAT_SERVE_MAX_AGE_MS). The floor is part of the query, so
+   * the fetch (callers ask for their page size + 1 as a probe) is not spent on
+   * events that would be dropped: an `after` page starts at the floor rather
+   * than at an older cursor, and a `before` page, read newest first, can only
+   * lose its oldest end (the probe first, so a page that reaches the floor
+   * reports no `more`).
+   */
   private getFeedPageEvents(
     groupId: number,
     channelId: string,
@@ -25441,27 +26234,46 @@ export class ReticulumChatManager extends EventEmitter {
     after: ReticulumChatFeedCursor | null,
     includeBeforeCursor: boolean,
     limit: number,
+    minTimestamp: number,
     priority?: ReticulumChatFeedPriority
   ): ReticulumChatEvent[] {
+    if (before && before.feedTimestamp < minTimestamp) return [];
+    // "After (floor, '')" is every event at or past the floor: ids are never
+    // empty.
+    const servedAfter: ReticulumChatFeedCursor =
+      after && after.feedTimestamp >= minTimestamp
+        ? after
+        : { feedTimestamp: minTimestamp, eventId: '' };
+    let events: ReticulumChatEvent[];
     if (priority === 'metadata') {
-      if (before) {
-        return includeBeforeCursor
+      events = before
+        ? includeBeforeCursor
           ? this.db.getChannelMetadataPageAtOrBefore(groupId, before, limit)
-          : this.db.getChannelMetadataPageBefore(groupId, before, limit);
-      }
-      return this.db.getChannelMetadataPageAfter(groupId, after, limit);
+          : this.db.getChannelMetadataPageBefore(groupId, before, limit)
+        : this.db.getChannelMetadataPageAfter(groupId, servedAfter, limit);
+    } else {
+      events =
+        channelId === RETICULUM_CHAT_ALL_CHANNELS_ID
+          ? before
+            ? includeBeforeCursor
+              ? this.db.getGroupFeedPageAtOrBefore(groupId, before, limit)
+              : this.db.getGroupFeedPageBefore(groupId, before, limit)
+            : this.db.getGroupFeedPageAfter(groupId, servedAfter, limit)
+          : before
+            ? includeBeforeCursor
+              ? this.db.getFeedPageAtOrBefore(groupId, channelId, before, limit)
+              : this.db.getFeedPageBefore(groupId, channelId, before, limit)
+            : this.db.getFeedPageAfter(groupId, channelId, servedAfter, limit);
     }
-    return channelId === RETICULUM_CHAT_ALL_CHANNELS_ID
-      ? before
-        ? includeBeforeCursor
-          ? this.db.getGroupFeedPageAtOrBefore(groupId, before, limit)
-          : this.db.getGroupFeedPageBefore(groupId, before, limit)
-        : this.db.getGroupFeedPageAfter(groupId, after, limit)
-      : before
-        ? includeBeforeCursor
-          ? this.db.getFeedPageAtOrBefore(groupId, channelId, before, limit)
-          : this.db.getFeedPageBefore(groupId, channelId, before, limit)
-        : this.db.getFeedPageAfter(groupId, channelId, after, limit);
+    return events.filter((event) => event.timestamp >= minTimestamp);
+  }
+
+  /**
+   * Oldest event timestamp this node serves to a peer (history pages, author
+   * ranges, single events). See RETICULUM_CHAT_SERVE_MAX_AGE_MS.
+   */
+  private serveMinEventTimestamp(): number {
+    return Math.ceil(this.now() - RETICULUM_CHAT_SERVE_MAX_AGE_MS);
   }
 
   private isChannelAdminPrivate(groupId: number, channelId: string): boolean {
@@ -31040,14 +31852,23 @@ export class ReticulumChatManager extends EventEmitter {
         this.persistDmPendingState(event.eventId, state);
         let delivered = false;
         try {
+          // Now and then without `lc`: the recipient may hold the head
+          // already (RETICULUM_CHAT_DM_PENDING_NO_CURSOR_FIRST_ATTEMPT). A
+          // recipient that lacks it pulls either way.
+          const omitLatestCursor = this.dmPendingReannounceOmitsCursor(
+            state.attempts
+          );
           const notify = await this.buildSignedDirectNotifyWire(
             event.senderAddress,
             event.recipientAddress,
             event,
             undefined,
             tracked
-              ? {}
-              : { maxHops: RETICULUM_CHAT_DM_PENDING_RECOVERY_MAX_HOPS }
+              ? { omitLatestCursor }
+              : {
+                  maxHops: RETICULUM_CHAT_DM_PENDING_RECOVERY_MAX_HOPS,
+                  omitLatestCursor,
+                }
           );
           if (
             this.isClosed ||
@@ -31108,7 +31929,12 @@ export class ReticulumChatManager extends EventEmitter {
    * while the outbox reports nothing pending.
    */
   private noteDmPeerSpoke(event: ReticulumDmEvent): void {
-    if (this.isClosed || this.ownOutboxState.pendingCount <= 0) return;
+    if (
+      this.isClosed ||
+      this.ownOutboxState.pendingCount + this.ownOutboxRepairedCount <= 0
+    ) {
+      return;
+    }
     if (ownAddressMatches(this.localDmAddresses, event.senderAddress)) return;
     if (!this.localDmAddresses.has(event.recipientAddress)) return;
     if (
@@ -31211,12 +32037,18 @@ export class ReticulumChatManager extends EventEmitter {
       this.persistDmPendingState(event.eventId, state);
       let delivered = false;
       try {
+        // Always without `lc` (the sweep only now and then): the peer just
+        // spoke, so a page to it is likely to land, and this runs at most
+        // once a day per head.
         const notify = await this.buildSignedDirectNotifyWire(
           event.senderAddress,
           event.recipientAddress,
           event,
           undefined,
-          { maxHops: RETICULUM_CHAT_DM_PENDING_RECOVERY_MAX_HOPS }
+          {
+            maxHops: RETICULUM_CHAT_DM_PENDING_RECOVERY_MAX_HOPS,
+            omitLatestCursor: true,
+          }
         );
         if (
           this.isClosed ||
@@ -31298,6 +32130,19 @@ export class ReticulumChatManager extends EventEmitter {
         2 ** Math.min(8, Math.max(0, attempts - 1))
     );
     return at + backoff + Math.floor(Math.random() * (backoff / 4));
+  }
+
+  /**
+   * Whether re-announce number `attempt` of a pending head leaves `lc` out
+   * (RETICULUM_CHAT_DM_PENDING_NO_CURSOR_FIRST_ATTEMPT): attempts 4, 8, 16...
+   */
+  private dmPendingReannounceOmitsCursor(attempt: number): boolean {
+    const n = Math.floor(Number(attempt) || 0);
+    return (
+      n >= RETICULUM_CHAT_DM_PENDING_NO_CURSOR_FIRST_ATTEMPT &&
+      n <= 0x40000000 &&
+      (n & (n - 1)) === 0
+    );
   }
 
   /**
@@ -31997,12 +32842,19 @@ export class ReticulumChatManager extends EventEmitter {
           return announced;
         }
         const signStartedAt = this.now();
+        // Without `lc` on the same attempts as the sweep (this is the next
+        // attempt brought forward).
         const notify = await this.buildSignedDirectNotifyWire(
           event.senderAddress,
           event.recipientAddress,
           event,
           undefined,
-          { maxHops: RETICULUM_CHAT_DM_FORCED_REDELIVER_MAX_HOPS }
+          {
+            maxHops: RETICULUM_CHAT_DM_FORCED_REDELIVER_MAX_HOPS,
+            omitLatestCursor: this.dmPendingReannounceOmitsCursor(
+              state.attempts + 1
+            ),
+          }
         );
         if (options.budget) {
           this.noteOutboundSignature(
@@ -32204,7 +33056,8 @@ export class ReticulumChatManager extends EventEmitter {
   /** Recompute and emit 'ownOutboxState' when any field changed. */
   private refreshOwnOutboxState(): void {
     if (this.isClosed) return;
-    const next = this.computeOwnOutboxState();
+    const { repairedCount, ...next } = this.computeOwnOutboxState();
+    this.ownOutboxRepairedCount = repairedCount;
     const previous = this.ownOutboxState;
     if (
       next.pending === previous.pending &&
@@ -32221,13 +33074,21 @@ export class ReticulumChatManager extends EventEmitter {
    * One indexed count per signed-in address, plus in-memory checks. The
    * Saved Messages check reads cursors only with an admitted own link.
    */
-  private computeOwnOutboxState(): ReticulumChatOwnOutboxState {
+  private computeOwnOutboxState(): ReticulumChatOwnOutboxState & {
+    repairedCount: number;
+  } {
     if (this.localDmAddresses.size === 0) {
-      return { pending: false, pendingCount: 0, uncopiedCount: 0 };
+      return {
+        pending: false,
+        pendingCount: 0,
+        uncopiedCount: 0,
+        repairedCount: 0,
+      };
     }
     const now = this.now();
     let pendingCount = 0;
     let uncopiedCount = 0;
+    let repairedCount = 0;
     let pending = false;
     try {
       for (const localAddress of this.localDmAddresses) {
@@ -32239,6 +33100,7 @@ export class ReticulumChatManager extends EventEmitter {
         );
         pendingCount += counts.pending;
         uncopiedCount += counts.uncopied;
+        repairedCount += Math.max(0, Number(counts.repaired) || 0);
         // Same gate as the re-push loop: a linked own device that left too
         // many pushes unanswered is not a target, and a head its cursor has
         // already passed is not pushed again, so neither keeps anything
@@ -32259,14 +33121,17 @@ export class ReticulumChatManager extends EventEmitter {
         `[ReticulumChat] own_outbox_count_failed reason=${err instanceof Error ? err.message : String(err)}`
       );
       // Unknown: keep the last reported counts and pending flag.
-      return { ...this.ownOutboxState };
+      return {
+        ...this.ownOutboxState,
+        repairedCount: this.ownOutboxRepairedCount,
+      };
     }
     if (!pending) {
       pending =
         this.hasPayableOwedOwnDeviceGroupNotices(now) ||
         this.hasUnconfirmedSelfDmForLinkedOwnDevice();
     }
-    return { pending, pendingCount, uncopiedCount };
+    return { pending, pendingCount, uncopiedCount, repairedCount };
   }
 
   /** The device network came back: the resume hook, at most every 30 s. */
@@ -33027,7 +33892,14 @@ export class ReticulumChatManager extends EventEmitter {
     addressB: string,
     latest: ReticulumDmEvent,
     probeRequestId?: string,
-    options: { maxHops?: number } = {}
+    options: {
+      maxHops?: number;
+      /**
+       * Leave `lc` out (it is optional and signed as ''): every version then
+       * pulls from its cursor instead of ending on "I hold that already".
+       */
+      omitLatestCursor?: boolean;
+    } = {}
   ): Promise<Extract<ReticulumChatWire, { k: 'dm_notify' }> | null> {
     if (!this.signLocalFields) return null;
     const conversationId = reticulumDmConversationId(addressA, addressB);
@@ -33053,7 +33925,9 @@ export class ReticulumChatManager extends EventEmitter {
         : RETICULUM_CHAT_DM_NOTIFY_MAX_HOPS;
     const normalizedProbeRequestId =
       normalizeReticulumControlRequestId(probeRequestId);
-    const latestCursor = this.dmNotifyLatestCursor(latest);
+    const latestCursor = options.omitLatestCursor
+      ? ''
+      : this.dmNotifyLatestCursor(latest);
     const signed = await this.signLocalFields({
       type: 'RCHAT_DM_NOTIFY',
       peerAddress,
@@ -33078,7 +33952,7 @@ export class ReticulumChatManager extends EventEmitter {
         b: peerAddress,
         sp: this.compactResourcePeerHash(sourcePeerHash),
         q: requestId,
-        lc: latestCursor,
+        ...(latestCursor ? { lc: latestCursor } : {}),
         ...(maxHops !== RETICULUM_CHAT_DM_NOTIFY_MAX_HOPS
           ? { m: maxHops }
           : {}),
@@ -36596,7 +37470,9 @@ export class ReticulumChatManager extends EventEmitter {
         peer,
         'author-manifest-resource'
       );
-      if (!resolved) {
+      // '' means the bridge already knows this peer's identity; only null is
+      // a failed lookup. Treating '' as a failure paused every manifest sync.
+      if (resolved === null) {
         this.failAuthorManifestSync(session.key, 'identity_unavailable');
         return;
       }
@@ -40582,6 +41458,10 @@ export class ReticulumChatManager extends EventEmitter {
       );
       return;
     }
+    // Older than the serve floor (RETICULUM_CHAT_SERVE_MAX_AGE_MS, applied to
+    // every requester): a 3.0.x requester refuses it from this node or any
+    // other, so it is neither served nor relayed.
+    if (!(event.timestamp >= this.serveMinEventTimestamp())) return;
     const requesterIsMember = await this.isValidatedRequesterGroupMember(
       groupId,
       request.a,
@@ -41155,7 +42035,8 @@ export class ReticulumChatManager extends EventEmitter {
     events: ReticulumChatEvent[],
     hasMore: boolean,
     direction: 'after' | 'before' | 'range',
-    priority?: ReticulumChatFeedPriority
+    priority?: ReticulumChatFeedPriority,
+    minTimestamp = this.serveMinEventTimestamp()
   ): {
     pageEvents: ReticulumChatEvent[];
     orderedPageEvents: ReticulumChatEvent[];
@@ -41169,6 +42050,11 @@ export class ReticulumChatManager extends EventEmitter {
     const selectedEvents: ReticulumChatEvent[] = [];
     for (const event of boundedEvents) {
       if (event.groupId !== groupId) continue;
+      // Every page served to a peer passes here. Callers that fetch their
+      // own events apply the same floor first, so a page is not emptied (or
+      // its `more` misreported) here; start, end and wh below cover only the
+      // events that remain.
+      if (!(event.timestamp >= minTimestamp)) continue;
       if (this.db.isEventPayloadScrubbed(event.eventId)) continue;
       if (
         priority === 'metadata' &&
@@ -42723,7 +43609,11 @@ export class ReticulumChatManager extends EventEmitter {
 
   handleResourceEvent(
     payload: ReticulumChatResourcePayload,
-    options: { useWorkerPrep?: boolean } = {}
+    options: {
+      useWorkerPrep?: boolean;
+      /** When the event reached this engine (its resource queue). */
+      receivedAt?: number;
+    } = {}
   ): void {
     const isAuthorManifestResource =
       payload?.metadata?.logicalResourceType ===
@@ -42773,6 +43663,12 @@ export class ReticulumChatManager extends EventEmitter {
       this.outboundRelayStoreEventResources.delete(payload.transferId);
       this.outboundRelayCachedEventResources.delete(payload.transferId);
       this.logLiveEventResourceTerminal(payload);
+      this.settleDmPageDelivery(
+        payload.transferId,
+        payload.status === 'sent',
+        typeof payload.reason === 'string' ? payload.reason : '',
+        payload.providerTiming
+      );
       const calendarResource = this.outboundCalendarResources.get(
         payload.transferId
       );
@@ -42819,7 +43715,9 @@ export class ReticulumChatManager extends EventEmitter {
       if (payload.status === 'sent') return;
     }
     if (payload?.status === 'auth' && payload.linkId && payload.transferId) {
-      void this.authorizeResource(payload);
+      void this.authorizeResource(payload, options.receivedAt).catch((err) =>
+        this.handleProviderAuthorizeException(payload, err)
+      );
       return;
     }
     if (payload?.status === 'failed' && payload.transferId) {
@@ -42855,7 +43753,10 @@ export class ReticulumChatManager extends EventEmitter {
         if (request && reason === 'no_dm_events') {
           this.noteDirectDmPageNoEvents(request);
         }
-        if (request?.pullKey) {
+        if (
+          request?.pullKey &&
+          !this.settleDirectDmLookbackNoEvents(request, reason)
+        ) {
           this.scheduleDirectDmPullRetry(
             request.pullKey,
             reason,
@@ -43447,10 +44348,18 @@ export class ReticulumChatManager extends EventEmitter {
           'accepted_false'
         );
       }
+      if (request.lookbackKey && parsed.more !== true) {
+        this.completeDirectDmLookback(
+          request.lookbackKey,
+          `events=${parsed.events.length} accepted=${accepted}`
+        );
+      }
+      // A look-back page comes back to its own pull entry, never to the
+      // cursor pull of the same source and conversation.
+      const pull = request.pullKey
+        ? this.directDmPulls.get(request.pullKey)
+        : undefined;
       if (parsed.more === true && lastEvent && request.sourcePeerHash) {
-        const pull = request.pullKey
-          ? this.directDmPulls.get(request.pullKey)
-          : undefined;
         if (pull) {
           pull.nextAfter = lastEvent.timestamp;
           pull.inFlight = false;
@@ -43461,16 +44370,20 @@ export class ReticulumChatManager extends EventEmitter {
         }
       } else if (parsed.more === true && request.pullKey) {
         this.scheduleDirectDmPullRetry(request.pullKey, 'page_no_progress');
-      } else if (request.pullKey) {
-        const pull = this.directDmPulls.get(request.pullKey);
-        if (pull && pull.requestId !== request.requestId) {
+      } else if (request.pullKey && pull) {
+        if (pull.lookback) {
+          // The look-back's last page.
+          this.completeDirectDmPull(pull.key);
+        } else if (pull.requestId !== request.requestId) {
           pull.inFlight = false;
           pull.activeRequestId = '';
           pull.attempts = 0;
           pull.createdAt = this.now();
           void this.runDirectDmPull(pull.key);
         } else {
-          this.completeDirectDmPull(request.pullKey);
+          this.completeDirectDmPull(pull.key);
+          // The cursor pull is done; it may still owe its look-back.
+          this.startDirectDmLookback(pull);
         }
       }
     } catch (err) {
@@ -44805,8 +45718,47 @@ export class ReticulumChatManager extends EventEmitter {
     if (woke) this.scheduleEventPullQueue();
   }
 
+  /**
+   * An authorize that threw left its bridge waiter (and, for a DM page, the
+   * requester's link slot) held until the 15 s window ends. A DM page is
+   * answered at once with the bridge's own default refusal instead.
+   */
+  private handleProviderAuthorizeException(
+    payload: ReticulumChatResourcePayload,
+    err: unknown
+  ): void {
+    const auth =
+      payload.auth && typeof payload.auth === 'object' ? payload.auth : {};
+    const isDmPage =
+      auth.type === 'RETICULUM_CHAT_DM_PAGE_REQUEST' ||
+      payload.metadata?.logicalResourceType === 'reticulum_chat_dm_page';
+    this.countDelivery('providerAuthorizeException');
+    loggerWarn(
+      `[ReticulumChat] provider_authorize_exception transfer=${payload.transferId} peer=${String(payload.peerPresenceHash || '').slice(0, 16) || 'unknown'} type=${isDmPage ? 'dm_page' : String(auth.type || payload.resourceType || 'unknown').slice(0, 64)} reason=${err instanceof Error ? err.message : String(err)}`
+    );
+    if (!isDmPage || this.isClosed || !payload.linkId || !payload.transferId)
+      return;
+    // A plain object: the desktop bridge's type does not list the lane field.
+    const rejectPayload = {
+      linkId: payload.linkId,
+      transferId: payload.transferId,
+      reason: 'resource_request_rejected',
+      logicalResourceType: 'reticulum_chat_dm_page',
+    };
+    Promise.resolve()
+      .then(() =>
+        this.bridge?.rejectReticulumChatResourceDetailed?.(rejectPayload)
+      )
+      .catch((rejectErr) => {
+        loggerWarn(
+          `[ReticulumChat] provider_authorize_exception_reject_failed transfer=${payload.transferId} reason=${rejectErr instanceof Error ? rejectErr.message : String(rejectErr)}`
+        );
+      });
+  }
+
   private async authorizeResource(
-    payload: ReticulumChatResourcePayload
+    payload: ReticulumChatResourcePayload,
+    receivedAt?: number
   ): Promise<void> {
     if (!this.bridge || !payload.linkId || !payload.transferId) return;
     const auth =
@@ -44994,7 +45946,7 @@ export class ReticulumChatManager extends EventEmitter {
       return;
     }
     if (auth.type === 'RETICULUM_CHAT_DM_PAGE_REQUEST') {
-      await this.authorizeDirectDmPageResource(payload, auth);
+      await this.authorizeDirectDmPageResource(payload, auth, receivedAt);
       return;
     }
     if (auth.type === 'RETICULUM_CHAT_AUTHOR_MANIFEST_REQUEST') {
@@ -45526,10 +46478,14 @@ export class ReticulumChatManager extends EventEmitter {
       return;
     }
     const event = this.db.getEvent(request.eventId);
+    // An event older than the serve floor (RETICULUM_CHAT_SERVE_MAX_AGE_MS,
+    // applied to every requester) is reported as unknown: every version
+    // treats that reason as final for this provider and stops asking it.
     if (
       !event ||
       event.groupId !== request.groupId ||
-      this.db.isEventPayloadScrubbed(request.eventId)
+      this.db.isEventPayloadScrubbed(request.eventId) ||
+      !(event.timestamp >= this.serveMinEventTimestamp())
     ) {
       await reject('unknown_event');
       return;
@@ -45621,17 +46577,33 @@ export class ReticulumChatManager extends EventEmitter {
 
   private async authorizeDirectDmPageResource(
     payload: ReticulumChatResourcePayload,
-    auth: Record<string, unknown>
+    auth: Record<string, unknown>,
+    receivedAt?: number
   ): Promise<void> {
     if (!this.bridge || !payload.linkId || !payload.transferId) return;
+    const startedAt = this.now();
+    // The Android bridge already answered this request (auth_ended), or its
+    // waiter is about to drop it: no work, no bridge call, no reject.
+    const goneAtEntry = this.dmPageAuthGone(payload);
+    if (goneAtEntry) {
+      this.skipGoneDmPageAuth(payload, goneAtEntry, 'entry');
+      return;
+    }
+    // The logical type routes the answer on the bridge's DM-page lane (the
+    // Android bridge), the lane the page's own registration already uses,
+    // instead of behind group history work. Bridges ignore unknown fields.
     const reject = async (reason: string) => {
       this.countDelivery('dmPageRefused');
       this.countDelivery(`dmPageRefused_${reason}`);
-      await this.bridge?.rejectReticulumChatResourceDetailed?.({
+      // A plain object, not a literal: the desktop bridge's type does not
+      // list the lane field (it ignores it), and that file is not GO code.
+      const rejectPayload = {
         linkId: payload.linkId!,
         transferId: payload.transferId!,
         reason,
-      });
+        logicalResourceType: 'reticulum_chat_dm_page',
+      };
+      await this.bridge?.rejectReticulumChatResourceDetailed?.(rejectPayload);
     };
     if (typeof this.bridge.sendReticulumChatResourceDetailed !== 'function') {
       await reject('send_unavailable');
@@ -45788,13 +46760,29 @@ export class ReticulumChatManager extends EventEmitter {
         : '';
     if (passedSender && after > 0) {
       const now = this.now();
-      const passed = this.db.listPendingOwnDirectEventsBetween(
+      const pendingPassed = this.db.listPendingOwnDirectEventsBetween(
         passedSender,
         conversationId,
         now - RETICULUM_CHAT_DM_PENDING_TAIL_MAX_AGE_MS,
         after,
         { uncopiedOnly: ownDeviceConversationPull, limit, now }
       );
+      // A requester continues a page with `more` from the page's newest
+      // event. A page of passed events alone would hand it a cursor at or
+      // below its `after` (older Hubs then ask for the same page again), so
+      // always leave room for one event newer than `after` when there is one;
+      // without one the page is final (`more` is false). Passed events left
+      // out stay pending and come on a later pull.
+      const passed =
+        events.length > 0
+          ? pendingPassed.slice(0, Math.max(0, limit - 1))
+          : pendingPassed;
+      if (passed.length < pendingPassed.length) {
+        this.countDelivery(
+          'dmPagePassedPendingDeferred',
+          pendingPassed.length - passed.length
+        );
+      }
       if (passed.length > 0) {
         const seen = new Set(passed.map((event) => event.eventId));
         events = [
@@ -45816,8 +46804,16 @@ export class ReticulumChatManager extends EventEmitter {
       events.length > pageEvents.length,
       true
     );
+    const builtAt = this.now();
     if (!page) {
       await reject('dm_page_too_large');
+      return;
+    }
+    // Checked again before anything is staged: the bridge may have given up
+    // on the request while the page was read and built.
+    const goneBeforeStage = this.dmPageAuthGone(payload);
+    if (goneBeforeStage) {
+      this.skipGoneDmPageAuth(payload, goneBeforeStage, 'pre_stage');
       return;
     }
     const { filePath } = this.tryWriteTempEventBlob(
@@ -45847,23 +46843,64 @@ export class ReticulumChatManager extends EventEmitter {
       },
       expiresAt: this.now() + RETICULUM_CHAT_RESOURCE_TTL_MS,
     });
+    const registeredAt = this.now();
     if (!registered.ok) {
       this.safeUnlink(filePath);
       await reject('dm_page_register_failed');
       return;
     }
-    const authorized = await this.bridge.authorizeReticulumChatResourceDetailed(
-      {
-        linkId: payload.linkId,
-        transferId: payload.transferId,
-      }
-    );
+    // Nothing is marked yet: the authorize reply only says the bridge
+    // handed the page to its link, not that a byte arrived (the requester
+    // may already have given up). The bridge's terminal event for this
+    // transfer settles it (settleDmPageDelivery): 'sent' after RNS proved
+    // receipt, else the events stay pending and are retried. Remembered
+    // before the call, so a reply that times out here cannot lose a real
+    // delivery; a refused authorize gets a 'failed' terminal or ages out.
+    this.trackDmPageDelivery(payload.transferId, {
+      conversationId,
+      requesterAddress,
+      authenticatedPeerHash,
+      eventIds: page.pageEvents.map((event) => event.eventId),
+      ownDeviceConversationPull,
+      selfDm: requesterAddress === peerAddress,
+      ...(finiteStamp(payload.arrivedAtMs) !== null
+        ? { arrivedAtMs: payload.arrivedAtMs }
+        : {}),
+      ...(finiteStamp(payload.requestedAtMs) !== null
+        ? { requestedAtMs: payload.requestedAtMs }
+        : {}),
+    });
+    // Plain object for the same reason as rejectPayload above.
+    const authorizePayload = {
+      linkId: payload.linkId,
+      transferId: payload.transferId,
+      logicalResourceType: 'reticulum_chat_dm_page',
+    };
+    const authorized =
+      await this.bridge.authorizeReticulumChatResourceDetailed(
+        authorizePayload
+      );
+    const authorizedAt = this.now();
+    const authMs =
+      Number.isFinite(receivedAt) && Number(receivedAt) > 0
+        ? String(Math.max(0, authorizedAt - Number(receivedAt)))
+        : 'n/a';
+    const timing = this.dmPageAuthTimingFields(payload, {
+      receivedAt,
+      startedAt,
+      builtAt,
+      registeredAt,
+      authorizedAt,
+    });
     if (!authorized.ok) {
       loggerWarn(
-        `[ReticulumChat] dm_page_link_authorize_failed conversation=${conversationId.slice(0, 16)} requester=${requesterAddress} transfer=${payload.transferId} reason=${reticulumResultReason(authorized)}`
+        `[ReticulumChat] dm_page_link_authorize_failed conversation=${conversationId.slice(0, 16)} requester=${requesterAddress} peer=${authenticatedPeerHash.slice(0, 16)} transfer=${payload.transferId} auth_ms=${authMs} reason=${reticulumResultReason(authorized)} ${timing}`
       );
       return;
     }
+    // The recipient's signed request with the notify's id proves the notify
+    // arrived: stop its retries now (the page's delivery settles the events
+    // separately, above).
     if (
       notificationId &&
       pendingNotification &&
@@ -45877,29 +46914,152 @@ export class ReticulumChatManager extends EventEmitter {
         ? 'dmPageServedToOwnDevice'
         : 'dmPageServedToRecipient'
     );
-    for (const event of page.pageEvents) {
+    loggerLog(
+      `[ReticulumChat] dm_page_link_authorized conversation=${conversationId.slice(0, 16)} requester=${requesterAddress} peer=${authenticatedPeerHash.slice(0, 16)} transfer=${payload.transferId} auth_ms=${authMs} events=${page.eventCount} more=${page.hasMore === true} ${timing}`
+    );
+  }
+
+  /** dm_page_link_skipped: a DM page auth dropped before any bridge call. */
+  private skipGoneDmPageAuth(
+    payload: ReticulumChatResourcePayload,
+    gone: { reason: 'auth_ended' | 'auth_stale'; ageMs: number | null },
+    stage: 'entry' | 'pre_stage'
+  ): void {
+    this.countDelivery('dmPageAuthSkipped');
+    this.countDelivery(`dmPageAuthSkipped_${gone.reason}`);
+    loggerLog(
+      `[ReticulumChat] dm_page_link_skipped transfer=${payload.transferId} peer=${String(payload.peerPresenceHash || '').slice(0, 16) || 'unknown'} reason=${gone.reason} stage=${stage} age_ms=${gone.ageMs === null ? 'n/a' : Math.round(gone.ageMs)}`
+    );
+  }
+
+  /**
+   * Where a DM page authorize spent its time, for dm_page_link_authorized
+   * and _authorize_failed. The bridge stamps come from the Android bridge
+   * and the GO worker only; a missing one prints 'n/a' (desktop bridges).
+   * req_lag_ms compares two devices' clocks (raw, skew included).
+   */
+  private dmPageAuthTimingFields(
+    payload: ReticulumChatResourcePayload,
+    at: {
+      receivedAt?: number;
+      startedAt: number;
+      builtAt: number;
+      registeredAt: number;
+      authorizedAt: number;
+    }
+  ): string {
+    const rtt =
+      typeof payload.linkRttMs === 'number' &&
+      Number.isFinite(payload.linkRttMs) &&
+      payload.linkRttMs >= 0
+        ? String(Math.round(payload.linkRttMs))
+        : 'n/a';
+    return [
+      `total_ms=${stampDeltaField(at.authorizedAt, payload.arrivedAtMs)}`,
+      `py_pre_ms=${stampDeltaField(payload.authStartedAtMs, payload.arrivedAtMs)}`,
+      `py_q_ms=${stampDeltaField(payload._pyWriteAtMs, payload._pyQueuedAtMs)}`,
+      `xport_ms=${stampDeltaField(payload._workerRecvAtMs, payload._pyWriteAtMs)}`,
+      `eq_ms=${stampDeltaField(at.startedAt, at.receivedAt)}`,
+      `build_ms=${stampDeltaField(at.builtAt, at.startedAt)}`,
+      `reg_ms=${stampDeltaField(at.registeredAt, at.builtAt)}`,
+      `authz_ms=${stampDeltaField(at.authorizedAt, at.registeredAt)}`,
+      `req_lag_ms=${stampDeltaField(payload.arrivedAtMs, payload.requestedAtMs)}`,
+      `rtt_ms=${rtt}`,
+    ].join(' ');
+  }
+
+  private pruneDmPageDeliveries(now = this.now()): void {
+    for (const [transferId, track] of this.dmPageDeliveries) {
+      if (track.expiresAt <= now) this.dmPageDeliveries.delete(transferId);
+    }
+    while (
+      this.dmPageDeliveries.size > RETICULUM_CHAT_DM_PAGE_DELIVERY_TRACK_MAX
+    ) {
+      const oldest = this.dmPageDeliveries.keys().next().value as
+        | string
+        | undefined;
+      if (!oldest) break;
+      this.dmPageDeliveries.delete(oldest);
+    }
+  }
+
+  private trackDmPageDelivery(
+    transferId: string,
+    track: Omit<ReticulumDmPageDeliveryTrack, 'authorizedAt' | 'expiresAt'>
+  ): void {
+    const now = this.now();
+    this.dmPageDeliveries.delete(transferId);
+    this.dmPageDeliveries.set(transferId, {
+      ...track,
+      authorizedAt: now,
+      expiresAt: now + RETICULUM_CHAT_DM_PAGE_DELIVERY_TRACK_TTL_MS,
+    });
+    this.pruneDmPageDeliveries(now);
+  }
+
+  /**
+   * The bridge's terminal event for a DM page this device authorized. Only
+   * 'sent' (the requester's RNS stack proved receipt) counts: then the page's
+   * pending events this device authored for that requester become 'sent'
+   * (delivered), an own device's pull records its copy and a self-DM cursor
+   * is confirmed. Anything else leaves every event as it was, so the outbox
+   * keeps retrying it. (The notify the page answered was already confirmed
+   * by the authorized request itself.)
+   */
+  private settleDmPageDelivery(
+    transferId: string,
+    delivered: boolean,
+    reason = '',
+    providerTiming?: Record<string, unknown>
+  ): void {
+    const track = this.dmPageDeliveries.get(transferId);
+    if (!track) return;
+    this.dmPageDeliveries.delete(transferId);
+    if (this.isClosed) return;
+    const now = this.now();
+    const peer = track.authenticatedPeerHash.slice(0, 16);
+    const timing = dmPageDeliveryTimingFields(track, providerTiming);
+    if (!delivered) {
+      this.countDelivery('dmPageDeliveryFailed');
+      loggerLog(
+        `[ReticulumChat] dm_page_link_delivery_failed conversation=${track.conversationId.slice(0, 16)} requester=${track.requesterAddress} peer=${peer} transfer=${transferId} after_ms=${Math.max(0, now - track.authorizedAt)} reason=${reason || 'resource_failed'} ${timing}`
+      );
+      return;
+    }
+    this.countDelivery('dmPageDelivered');
+    // Current rows, not the page as built: a row may have changed since.
+    const events: ReticulumDmEvent[] = [];
+    for (const eventId of track.eventIds) {
+      const event = this.db.getDirectEvent(eventId);
+      if (event) events.push(event);
+    }
+    let marked = 0;
+    for (const event of events) {
       if (
+        // Only an event this device authored has a delivery to report; a
+        // stored copy (also of our own message written on another device)
+        // stays 'received'. Self-DMs are born 'sent'.
+        event.localOwnEvent === true &&
+        event.localDeliveryStatus === 'pending' &&
         ownAddressMatches(this.localDmAddresses, event.senderAddress) &&
-        event.recipientAddress === requesterAddress &&
-        // Already 'sent' (every self-DM, and re-served pages): marking again
-        // only costs a DB write, two emits and a summaries refresh.
-        event.localDeliveryStatus !== 'sent'
+        event.recipientAddress === track.requesterAddress
       ) {
         this.markDirectEventSent(event);
+        marked += 1;
       }
     }
-    if (ownDeviceConversationPull) {
-      this.markOwnDeviceCopiedFromPage(requesterAddress, page.pageEvents);
-    } else if (requesterAddress === peerAddress) {
+    if (track.ownDeviceConversationPull) {
+      this.markOwnDeviceCopiedFromPage(track.requesterAddress, events);
+    } else if (track.selfDm) {
       // A verified own device pulled Saved Messages: what it got is confirmed.
       this.confirmSelfDmCursorsFromEvents(
-        requesterAddress,
-        authenticatedPeerHash,
-        page.pageEvents
+        track.requesterAddress,
+        track.authenticatedPeerHash,
+        events
       );
     }
     loggerLog(
-      `[ReticulumChat] dm_page_link_authorized conversation=${conversationId.slice(0, 16)} requester=${requesterAddress} transfer=${payload.transferId} events=${page.eventCount} more=${page.hasMore === true}`
+      `[ReticulumChat] dm_page_link_delivered conversation=${track.conversationId.slice(0, 16)} requester=${track.requesterAddress} peer=${peer} transfer=${transferId} after_ms=${Math.max(0, now - track.authorizedAt)} events=${track.eventIds.length} marked=${marked} ${timing}`
     );
   }
 
@@ -46212,14 +47372,21 @@ export class ReticulumChatManager extends EventEmitter {
       1,
       Math.min(RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS, Math.floor(request.limit))
     );
-    const eventsWithProbe = this.db.getAuthorEventsRange(
-      request.groupId,
-      range.a,
-      range.s,
-      range.from,
-      range.to,
-      limit + 1
-    );
+    // The range is read newest seq first, so the serve floor
+    // (RETICULUM_CHAT_SERVE_MAX_AGE_MS) only trims its oldest end, probe
+    // first. Nothing new enough means the range is unavailable here, which a
+    // 3.0.x requester records for this provider (no violation).
+    const minTimestamp = this.serveMinEventTimestamp();
+    const eventsWithProbe = this.db
+      .getAuthorEventsRange(
+        request.groupId,
+        range.a,
+        range.s,
+        range.from,
+        range.to,
+        limit + 1
+      )
+      .filter((event) => event.timestamp >= minTimestamp);
     if (eventsWithProbe.length === 0) {
       await reject('no_history_events');
       return;
@@ -46239,7 +47406,9 @@ export class ReticulumChatManager extends EventEmitter {
       RETICULUM_CHAT_ALL_CHANNELS_ID,
       readableEvents,
       eventsWithProbe.length > events.length,
-      'range'
+      'range',
+      undefined,
+      minTimestamp
     );
     if (!page) {
       await reject('history_page_too_large');
@@ -46640,6 +47809,11 @@ export class ReticulumChatManager extends EventEmitter {
       await reject('invalid_history_priority');
       return;
     }
+    // One floor for the fetch and the page (RETICULUM_CHAT_SERVE_MAX_AGE_MS).
+    // A page with nothing new enough is answered no_history_events, which a
+    // 3.0.x requester counts as no progress from this provider, not as a
+    // violation.
+    const minTimestamp = this.serveMinEventTimestamp();
     const events = this.getFeedPageEvents(
       groupId,
       channelId,
@@ -46647,6 +47821,7 @@ export class ReticulumChatManager extends EventEmitter {
       after,
       includeBeforeCursor,
       limit + 1,
+      minTimestamp,
       priority
     );
     const hasMore = events.length > limit;
@@ -46671,7 +47846,8 @@ export class ReticulumChatManager extends EventEmitter {
       readableEvents,
       hasMore,
       direction,
-      priority
+      priority,
+      minTimestamp
     );
     if (!pageResource) {
       await reject('history_page_too_large');
@@ -48660,6 +49836,7 @@ export function startReticulumChatManager(
     | 'resourceStore'
     | 'relayGroupControl'
     | 'localNotifyScanIntervalMs'
+    | 'repairPrematureDmSentOnce'
   > = {}
 ): ReticulumChatManager {
   if (singleton) {
@@ -48679,6 +49856,7 @@ export function startReticulumChatManager(
     resourceStore: options.resourceStore,
     relayGroupControl: options.relayGroupControl,
     localNotifyScanIntervalMs: options.localNotifyScanIntervalMs,
+    repairPrematureDmSentOnce: options.repairPrematureDmSentOnce,
   });
   loggerLog('[ReticulumChat] Manager started');
   return singleton;

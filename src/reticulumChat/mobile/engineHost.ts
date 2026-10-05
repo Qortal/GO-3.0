@@ -366,8 +366,40 @@ function handleSocketFrame(raw: string): void {
   if (type === 'event') {
     const eventName = String(frame.event || '');
     if (!PY_EVENTS_FOR_ENGINE.has(eventName)) return;
-    handlePythonEvent(eventName, frame.payload ?? {});
+    const payload = frame.payload ?? {};
+    stampProviderAuthTiming(eventName, frame, payload);
+    handlePythonEvent(eventName, payload);
   }
+}
+
+const finiteStampValue = (value: unknown): number | null =>
+  typeof value === 'number' && Number.isFinite(value) ? value : null;
+
+/**
+ * Provider request events ('auth', 'auth_ended') carry Python's own queue and
+ * write stamps on the frame. Copy them into the payload with this worker's
+ * receive time, so the engine can tell bridge queueing from transport delay
+ * on a DM page serve. Local IPC only; nothing here reaches the wire.
+ */
+function stampProviderAuthTiming(
+  eventName: string,
+  frame: Record<string, unknown>,
+  payload: unknown
+): void {
+  if (
+    eventName !== 'reticulum_chat_resource' &&
+    eventName !== 'reticulum_resource'
+  ) {
+    return;
+  }
+  if (!payload || typeof payload !== 'object') return;
+  const target = payload as Record<string, unknown>;
+  if (target.status !== 'auth' && target.status !== 'auth_ended') return;
+  const queuedAt = finiteStampValue(frame._queuedAtMs);
+  const writeAt = finiteStampValue(frame._writeAtMs);
+  if (queuedAt !== null) target._pyQueuedAtMs = queuedAt;
+  if (writeAt !== null) target._pyWriteAtMs = writeAt;
+  target._workerRecvAtMs = Date.now();
 }
 
 function connectBridgeSocket(): void {
@@ -953,6 +985,10 @@ export function startEngine(initial: unknown): void {
     // would wake the worker 1,800 times an hour (worker timers are not
     // throttled while hidden).
     localNotifyScanIntervalMs: 60_000,
+    // Older GO builds marked own DMs 'sent' when the bridge accepted the
+    // authorize, before any byte arrived. Re-pend those once per address so
+    // they are served again and only marked delivered on transport proof.
+    repairPrematureDmSentOnce: true,
   });
   attachManagerListeners(manager);
   post({ t: 'engine-ready' });

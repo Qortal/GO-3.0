@@ -53,8 +53,18 @@ import {
   getAvailableMemberActions,
   prunePendingMemberActions,
 } from './memberAdminActions';
+import {
+  reticulumMemberNamePx,
+  type ReticulumChatTextScale,
+} from '../Chat/reticulumChatTextScale';
 
 const MEMBER_ROW_HEIGHT = 64;
+/** Q-Chat member rows grow and shrink with the chat's text size. */
+const COMPACT_MEMBER_ROW_HEIGHT_PX: Record<ReticulumChatTextScale, number> = {
+  small: 48,
+  default: 52,
+  large: 60,
+};
 const QORTAL_LAND_REMOTE_TTL_MS = 30_000;
 // Re-read the member list this often while a promotion, demotion, kick or ban
 // waits for a block, so the row flips as soon as Core reports the change.
@@ -170,18 +180,8 @@ const ListOfMembers = ({
   const statusMap = useAtomValue(statusMapAtom);
   const currentAddress = useAtomValue(userInfoAtom)?.address;
   const reticulumTextScale = useAtomValue(reticulumChatTextScaleAtom);
-  const compactTextSize =
-    reticulumTextScale === 'high'
-      ? 16
-      : reticulumTextScale === 'medium'
-        ? 14.5
-        : 13;
-  const compactRowHeight =
-    reticulumTextScale === 'high'
-      ? 62
-      : reticulumTextScale === 'medium'
-        ? 57
-        : 52;
+  const compactTextSize = reticulumMemberNamePx(reticulumTextScale);
+  const compactRowHeight = COMPACT_MEMBER_ROW_HEIGHT_PX[reticulumTextScale];
   const categorizedReticulumMembers = compact && reticulumUserCards;
 
   useEffect(() => {

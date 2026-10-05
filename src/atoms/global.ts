@@ -13,6 +13,10 @@ import { LOCALHOST } from '../constants/constants';
 import { GlobalDownloadEntry } from '../types/resources';
 import { defaultPinnedApps } from '../components/Apps/config/officialApps';
 import { getElectronPersistentStorage } from '../utils/electronPersistentStorage';
+import {
+  normalizeReticulumChatTextScale,
+  type ReticulumChatTextScale,
+} from '../components/Chat/reticulumChatTextScale';
 import type { QuitterDashboardFeedCache } from '../components/Widgets/quitter/quitterFeedTypes';
 import type { P2pHealthLevel } from '../lib/p2pHealth';
 
@@ -214,14 +218,25 @@ export const memberGroupsWithReticulumChatAtom = atom((get) => {
 // When in Electron, use appStorage-backed persistence; otherwise Jotai uses localStorage (undefined = default).
 const electronStorage = getElectronPersistentStorage();
 
-export type ReticulumChatTextScale = 'default' | 'medium' | 'high';
-/** Persisted, Reticulum-only chat reading size preference. */
-export const reticulumChatTextScaleAtom =
-  atomWithStorage<ReticulumChatTextScale>(
-    'qortal_reticulum_chat_text_scale',
-    'default',
-    electronStorage as any
-  );
+export type { ReticulumChatTextScale };
+// Read on init: the chat that opens first must not show one frame at Default.
+const reticulumChatTextScaleStoredAtom = atomWithStorage<string>(
+  'qortal_reticulum_chat_text_scale',
+  'default',
+  electronStorage as any,
+  { getOnInit: true }
+);
+/**
+ * Persisted, Reticulum-only chat reading size preference. A Medium or High
+ * saved by an older build reads as Large until the next choice replaces it.
+ */
+export const reticulumChatTextScaleAtom = atom(
+  (get): ReticulumChatTextScale =>
+    normalizeReticulumChatTextScale(get(reticulumChatTextScaleStoredAtom)),
+  (_get, set, next: ReticulumChatTextScale) => {
+    set(reticulumChatTextScaleStoredAtom, next);
+  }
+);
 
 /** Persisted, Reticulum-only preference for subtly distinguishing sent messages. */
 export const reticulumHighlightOwnMessagesAtom = atomWithStorage<boolean>(

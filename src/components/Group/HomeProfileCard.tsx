@@ -68,7 +68,7 @@ import {
   useAccountStatusOptions,
 } from '../common/accountStatus';
 import { QORTAL_APP_CONTEXT } from '../../App';
-import { getFee, walletVersion } from '../../background/background.ts';
+import { getFee } from '../../background/background.ts';
 import Base58 from '../../encryption/Base58';
 import ImageUploader from '../../common/ImageUploader';
 import {
@@ -77,7 +77,7 @@ import {
 } from '../../constants/constants.ts';
 import { decryptStoredWallet } from '../../utils/decryptWallet';
 import { fileToBase64 } from '../../utils/fileReading';
-import PhraseWallet from '../../utils/generateWallet/phrase-wallet';
+import { deriveVerifiedWalletKey } from '../../utils/generateWallet/verifiedWalletKey';
 import { isCapacitor } from '../../utils/platform';
 import { useSecureScreen } from '../../hooks/useSecureScreen';
 import { WALLET_PASSWORD_INPUT_PROPS } from '../PasswordField/noAutofill';
@@ -1551,10 +1551,11 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
         securityPassword,
         walletCopy
       );
-      const phraseWallet = new PhraseWallet(
-        decryptedSeed,
-        walletCopy?.version || walletVersion
-      );
+      // Only the account's own key: an entry whose key opens another account
+      // throws instead of showing that account's private key.
+      const phraseWallet = deriveVerifiedWalletKey(decryptedSeed, walletCopy, {
+        qortOnly: true,
+      }).wallet;
       const derivedPrivateKey = Base58.encode(
         phraseWallet._addresses[0].keyPair.privateKey
       );

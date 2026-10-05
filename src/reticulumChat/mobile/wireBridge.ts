@@ -291,7 +291,9 @@ export class MobileReticulumBridge extends EventEmitter {
         typeof frame.senderDestinationHash === 'string'
           ? frame.senderDestinationHash
           : '',
-        typeof frame.peerPresenceHash === 'string' ? frame.peerPresenceHash : '',
+        typeof frame.peerPresenceHash === 'string'
+          ? frame.peerPresenceHash
+          : '',
         typeof frame.linkId === 'string' ? frame.linkId : '',
         frame.landStateFastForwarded === true,
         typeof frame.landStateForwardingRevision === 'number'
@@ -532,7 +534,8 @@ export class MobileReticulumBridge extends EventEmitter {
     payload: Record<string, unknown>
   ): Promise<ReticulumSendResult> {
     let staged = payload;
-    const filePath = typeof payload.filePath === 'string' ? payload.filePath : '';
+    const filePath =
+      typeof payload.filePath === 'string' ? payload.filePath : '';
     if (this.staging && filePath) {
       try {
         staged = {
@@ -559,7 +562,8 @@ export class MobileReticulumBridge extends EventEmitter {
     payload: Record<string, unknown>
   ): Promise<ReticulumSendResult> {
     let staged = payload;
-    const savePath = typeof payload.savePath === 'string' ? payload.savePath : '';
+    const savePath =
+      typeof payload.savePath === 'string' ? payload.savePath : '';
     if (this.staging && savePath) {
       try {
         staged = {
@@ -580,6 +584,8 @@ export class MobileReticulumBridge extends EventEmitter {
   async authorizeReticulumChatResourceDetailed(payload: {
     linkId: string;
     transferId: string;
+    /** Routes the command on the bridge's DM-page lane where it has one. */
+    logicalResourceType?: string;
   }): Promise<ReticulumSendResult> {
     return this.sendDetailed('authorize_reticulum_chat_resource', payload);
   }
@@ -588,6 +594,8 @@ export class MobileReticulumBridge extends EventEmitter {
     linkId: string;
     transferId: string;
     reason: string;
+    /** Routes the command on the bridge's DM-page lane where it has one. */
+    logicalResourceType?: string;
   }): Promise<ReticulumSendResult> {
     return this.sendDetailed('reject_reticulum_chat_resource', payload);
   }
@@ -976,10 +984,7 @@ export class MobileReticulumBridge extends EventEmitter {
     Array<{ host: string; port: number; expiresAt: number }>
   > {
     if (this.state !== 'ready') return [];
-    const resp = await this.sendCommand(
-      'get_community_stun_endpoints',
-      {}
-    );
+    const resp = await this.sendCommand('get_community_stun_endpoints', {});
     if (!resp.ok || !Array.isArray(resp.payload?.endpoints)) return [];
     return resp.payload.endpoints.filter(
       (value): value is { host: string; port: number; expiresAt: number } =>

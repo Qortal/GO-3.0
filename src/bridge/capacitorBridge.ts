@@ -53,10 +53,17 @@ import {
   type FragmentMeta,
 } from './groupCallWire';
 
-/** True when running inside the native Capacitor Android/iOS WebView. */
+/**
+ * True when running inside the native Capacitor Android/iOS WebView. Not on
+ * the Electron desktop, whose preload names the platform 'electron', which
+ * Capacitor also counts as native (same rule as utils/platform).
+ */
 export const isCapacitor = (): boolean => {
   try {
-    return Capacitor?.isNativePlatform?.() === true;
+    return (
+      Capacitor?.isNativePlatform?.() === true &&
+      Capacitor.getPlatform?.() !== 'electron'
+    );
   } catch {
     return false;
   }

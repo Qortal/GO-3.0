@@ -63,6 +63,55 @@ describe('mobile worker log throttle', () => {
     ).toBeNull();
   });
 
+  it('never throttles DM page serve outcomes, nor counts them', () => {
+    const decide = createLogThrottle();
+    const dmLine = (name: string, i: number) => [
+      '[MobileChat]',
+      `[ReticulumChat] ${name} conversation=abc transfer=t${i} auth_ms=3`,
+    ];
+    let dmEmitted = 0;
+    for (let i = 0; i < 40; i++) {
+      for (const name of [
+        'dm_page_link_authorized',
+        'dm_page_link_delivered',
+        'dm_page_link_delivery_failed',
+        'dm_page_link_skipped',
+      ]) {
+        if (decide('log', dmLine(name, i), 1_000 + i).emit) dmEmitted++;
+      }
+    }
+    expect(dmEmitted).toBe(160);
+    // Other lines still get their full budgets in the same window.
+    let other = 0;
+    for (let i = 0; i < 20; i++) {
+      if (
+        decide(
+          'log',
+          ['[MobileChat]', `[ReticulumChat] event_${i % 4} x=1`],
+          1_100 + i
+        ).emit
+      )
+        other++;
+    }
+    expect(other).toBe(15);
+    // A similar but different event name is throttled as usual.
+    let page = 0;
+    for (let i = 0; i < 8; i++) {
+      if (
+        decide(
+          'warn',
+          ['[MobileChat]', '[ReticulumChat] dm_page_reject'],
+          1_200 + i
+        ).emit
+      )
+        page++;
+    }
+    expect(page).toBe(0);
+    // Nothing exempt shows up in the suppression summary.
+    const next = decide('log', ['[MobileChat]', '[ReticulumChat] x'], 20_000);
+    expect(next.summary).not.toContain('dm_page_link_');
+  });
+
   it('prunes the key map but still counts pruned suppressions', () => {
     const decide = createLogThrottle({ maxKeys: 4, global: 1 });
     for (let i = 0; i < 10; i++) {

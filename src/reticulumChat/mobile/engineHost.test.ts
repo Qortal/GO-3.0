@@ -2,10 +2,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // The engine, resource store and wire bridge are heavy (fs/sqlite on load);
 // these tests only drive the worker message router and the bridge socket.
-const engine = vi.hoisted(() => ({ manager: undefined as any }));
+const engine = vi.hoisted(() => ({
+  manager: undefined as any,
+  startOptions: [] as any[],
+  dispatched: [] as Array<{ event: string; payload: any }>,
+}));
 
 vi.mock('../../../electron/src/reticulum-chat', () => ({
-  startReticulumChatManager: vi.fn(() => engine.manager),
+  startReticulumChatManager: vi.fn(
+    (_bridge: unknown, _dbPath: unknown, options: unknown) => {
+      engine.startOptions.push(options);
+      return engine.manager;
+    }
+  ),
   stopReticulumChatManager: vi.fn(),
   getReticulumChatManager: () => engine.manager,
 }));
@@ -16,6 +25,9 @@ vi.mock('./wireBridge', () => ({
   MobileReticulumBridge: class {
     on(): void {}
     markStopped(): void {}
+    dispatchPythonEvent(event: string, payload: unknown): void {
+      engine.dispatched.push({ event, payload });
+    }
   },
 }));
 vi.mock('./resourceStaging', () => ({ ReticulumResourceStaging: class {} }));
@@ -70,6 +82,8 @@ beforeEach(async () => {
   vi.spyOn(console, 'log').mockImplementation(() => {});
   vi.spyOn(console, 'warn').mockImplementation(() => {});
   engine.manager = makeManager();
+  engine.startOptions = [];
+  engine.dispatched = [];
   ({ handleMainMessage, startEngine } = await import('./engineHost'));
 });
 
@@ -265,5 +279,96 @@ describe('own outbox forwarding', () => {
     expect(outboxPosts()).toEqual([
       { t: 'own-outbox', pending: false, pendingCount: 0, uncopiedCount: 0 },
     ]);
+  });
+});
+
+describe('provider auth timing stamps', () => {
+  const startWithSocket = () => {
+    engine.manager = { on: vi.fn() };
+    startEngine({ apiBase: 'http://127.0.0.1:12391' });
+    connect();
+    latestSocket().accept();
+  };
+  const sendFrame = (frame: Record<string, unknown>) =>
+    latestSocket().onmessage?.({ data: JSON.stringify(frame) });
+  const frame = (event: string, payload: Record<string, unknown>) => ({
+    type: 'event',
+    event,
+    _queuedAtMs: 1_000,
+    _writeAtMs: 1_040,
+    payload,
+  });
+
+  it('copies the bridge stamps onto auth and auth_ended only', () => {
+    startWithSocket();
+    vi.setSystemTime(5_000);
+    sendFrame(
+      frame('reticulum_chat_resource', { status: 'auth', transferId: 't1' })
+    );
+    sendFrame(
+      frame('reticulum_resource', { status: 'auth_ended', transferId: 't2' })
+    );
+    sendFrame(
+      frame('reticulum_chat_resource', { status: 'sent', transferId: 't3' })
+    );
+    sendFrame(
+      frame('reticulum_chat_message', { status: 'auth', transferId: 't4' })
+    );
+    expect(engine.dispatched).toEqual([
+      {
+        event: 'reticulum_chat_resource',
+        payload: {
+          status: 'auth',
+          transferId: 't1',
+          _pyQueuedAtMs: 1_000,
+          _pyWriteAtMs: 1_040,
+          _workerRecvAtMs: 5_000,
+        },
+      },
+      {
+        event: 'reticulum_resource',
+        payload: {
+          status: 'auth_ended',
+          transferId: 't2',
+          _pyQueuedAtMs: 1_000,
+          _pyWriteAtMs: 1_040,
+          _workerRecvAtMs: 5_000,
+        },
+      },
+      {
+        event: 'reticulum_chat_resource',
+        payload: { status: 'sent', transferId: 't3' },
+      },
+      {
+        event: 'reticulum_chat_message',
+        payload: { status: 'auth', transferId: 't4' },
+      },
+    ]);
+  });
+
+  it('copies only finite stamps', () => {
+    startWithSocket();
+    vi.setSystemTime(7_000);
+    sendFrame({
+      type: 'event',
+      event: 'reticulum_chat_resource',
+      _queuedAtMs: 'soon',
+      payload: { status: 'auth', transferId: 't5' },
+    });
+    expect(engine.dispatched).toEqual([
+      {
+        event: 'reticulum_chat_resource',
+        payload: { status: 'auth', transferId: 't5', _workerRecvAtMs: 7_000 },
+      },
+    ]);
+  });
+
+  it('asks the engine for the one-time premature-sent repair', () => {
+    engine.manager = { on: vi.fn() };
+    startEngine({ apiBase: 'http://127.0.0.1:12391' });
+    expect(engine.startOptions).toHaveLength(1);
+    expect(engine.startOptions[0]).toMatchObject({
+      repairPrematureDmSentOnce: true,
+    });
   });
 });

@@ -279,17 +279,24 @@
     },
     "text_size": {
       "default": {
-        "detail": "当前的聊天文字大小",
+        "detail": "常规的聊天文字大小",
         "label": "默认"
       },
-      "description": "为 Reticulum 消息、频道标签和成员列表选择阅读大小。邀请预览保持其固定布局。",
-      "high": {
-        "detail": "在保持易读的前提下最大的聊天文字",
+      "description": "设置群聊和私信中的文字大小，包括回复、消息输入框、频道名称和成员列表。文件、邀请和链接预览保持原有布局。",
+      "large": {
+        "detail": "更大、更易读的文字",
         "label": "大"
       },
-      "medium": {
-        "detail": "适度放大",
-        "label": "中"
+      "preview": {
+        "incoming": "这些文字容易阅读吗？",
+        "label": "预览",
+        "outgoing": "是的，这个大小正合适。",
+        "sender": "小林"
+      },
+      "sample": "字",
+      "small": {
+        "detail": "屏幕上可显示更多消息",
+        "label": "小"
       },
       "title": "文字大小"
     }

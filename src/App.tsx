@@ -28,8 +28,8 @@ import {
   saveFileToDisk,
   saveSeedPhraseToDisk,
 } from './utils/generateWallet/generateWallet';
-import { crypto, walletVersion } from './constants/decryptWallet';
-import PhraseWallet from './utils/generateWallet/phrase-wallet';
+import { crypto } from './constants/decryptWallet';
+import { deriveVerifiedWalletKey } from './utils/generateWallet/verifiedWalletKey';
 import { AppContainer } from './styles/App-styles.ts';
 import { Loader } from './components/Loader';
 import ErrorBoundary from './common/ErrorBoundary';
@@ -194,7 +194,7 @@ import {
 initMobileSafeAreaInsets();
 import { biometricUnlockWallet } from './utils/walletBiometricAuth';
 import { allowReticulumStart } from './components/Reticulum/reticulumStatus';
-import { isCapacitor } from './utils/platform';
+import { isCapacitor, isGoApp } from './utils/platform';
 import { pauseReticulumNetworkForLogout } from './bridge/capacitorBridge';
 import { noteIdlePauseActivity } from './utils/idleAnimationPause';
 import { appLockedAtom, isIdleAtom } from './atoms/presence';
@@ -642,7 +642,7 @@ function App() {
   const [receiveQortAddress, setReceiveQortAddress] = useState('');
   const [selectedNode, setSelectedNode] = useAtom(selectedNodeInfoAtom);
   const {
-    isNodeValid,
+    checkNodeBeforeUnlock,
     authenticate,
     getBalanceFunc,
     handleSaveNodeInfo,
@@ -1151,7 +1151,9 @@ function App() {
     let wallet = structuredClone(rawWallet);
 
     const res = await decryptStoredWallet(password, wallet);
-    const wallet2 = new PhraseWallet(res, wallet?.version || walletVersion);
+    const wallet2 = deriveVerifiedWalletKey(res, wallet, {
+      qortOnly: true,
+    }).wallet;
     wallet = await wallet2.generateSaveWalletData(
       password,
       crypto.kdfThreads,
@@ -1160,11 +1162,11 @@ function App() {
 
     setWalletToBeDownloaded({
       wallet,
-      qortAddress: rawWallet.address0,
+      qortAddress: wallet.address0,
     });
     return {
       wallet,
-      qortAddress: rawWallet.address0,
+      qortAddress: wallet.address0,
     };
   };
 
@@ -1595,9 +1597,13 @@ function App() {
     }
     try {
       if (checkNode) {
-        // authenticate() fetches user info itself after the decrypt.
-        const isValid = await isNodeValid({ refreshUserInfo: false });
-        if (!isValid) {
+        // authenticate() fetches user info itself after the decrypt. On GO a
+        // node that cannot be reached does not stop the unlock (as with the
+        // fingerprint); a rejected key does.
+        const mayUnlock = await checkNodeBeforeUnlock({
+          refreshUserInfo: false,
+        });
+        if (!mayUnlock) {
           setIsLoading(false);
           return;
         }
@@ -1949,9 +1955,17 @@ function App() {
       canEnter: false,
       shouldOpenCoreSetupAfterEntry: false,
     };
+    // GO has no Core to set up: a node it cannot reach does not keep the new
+    // account out (as with an unlock).
+    const enterWithoutNode = {
+      canEnter: true,
+      shouldOpenCoreSetupAfterEntry: false,
+    };
+    const goApp = isGoApp();
 
     if (usingDefaultPublic) {
       if (!(await isPublicNodeReachable())) {
+        if (goApp) return enterWithoutNode;
         setPublicNodeUnavailable(true);
         setOpenCoreSetup(true);
         return blockedEntry;
@@ -1977,6 +1991,7 @@ function App() {
         };
       }
 
+      if (goApp) return enterWithoutNode;
       setPublicNodeUnavailable(true);
       setOpenCoreSetup(true);
       return blockedEntry;

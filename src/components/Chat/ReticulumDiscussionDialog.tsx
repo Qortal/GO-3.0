@@ -32,6 +32,7 @@ import type { ReticulumChannelLinkAccess } from './MessageDisplay';
 import { ReticulumGifCompressionStatus } from './ReticulumGifCompressionStatus';
 import { ReticulumMessageExpiryButton } from './ReticulumMessageExpiryButton';
 import { resolveReticulumPreferredMessageExpiryDurationMs } from './reticulumMessageExpiry';
+import { reticulumChatTextScaleClassName } from './reticulumChatTextScale';
 import { ReactionPicker } from '../ReactionPicker';
 import { fetchLibraryGifFile, type LibraryGif } from './gifs/libraryGifs';
 import { MessageSizeLimitLip } from './MessageSizeLimitLip';
@@ -289,7 +290,7 @@ export const ReticulumDiscussionDialog = ({
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
   const { t } = useTranslation(['core', 'group', 'reticulum']);
-  // The chat's reading size reaches the phone composer, as in the chat.
+  // The chat's text size reaches the thread's messages and composers.
   const textScale = useAtomValue(reticulumChatTextScaleAtom);
   const [editor, setEditor] = useState<Editor | null>(null);
   const [expiryDurationMs, setExpiryDurationMs] = useState<
@@ -824,6 +825,7 @@ export const ReticulumDiscussionDialog = ({
       onClose={closeDisabled ? undefined : onClose}
       open={open}
       PaperProps={{
+        className: reticulumChatTextScaleClassName(textScale),
         sx: {
           background:
             theme.palette.mode === 'dark'
@@ -1108,7 +1110,7 @@ export const ReticulumDiscussionDialog = ({
         // chips and the formatting tray take their rows out of the text's
         // room rather than squeezing the thread away.
         <Box
-          className={`reticulum-discussion-composer reticulum-discussion-composer--corners reticulum-chat-text-scale--${textScale}`}
+          className="reticulum-discussion-composer reticulum-discussion-composer--corners"
           sx={{
             boxSizing: 'border-box',
             display: 'flex',

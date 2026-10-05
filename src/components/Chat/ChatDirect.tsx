@@ -13,6 +13,7 @@ import {
   balanceAtom,
   dmFriendsByAddressAtom,
   p2pHealthAtom,
+  reticulumChatTextScaleAtom,
 } from '../../atoms/global';
 import { ChatList } from './ChatList';
 import { useFullscreenComposerAttachmentSlot } from './composerSlots';
@@ -84,6 +85,7 @@ import { ExitIcon } from '../../assets/Icons/ExitIcon';
 import { ReplyPreview } from './MessageItem';
 import { ComposerDiscardButton } from './ComposerDiscardButton';
 import { ComposerReplyPreview } from './ComposerReplyPreview';
+import { ComposerEditBanner } from './ComposerEditBanner';
 import { DirectChatHeader } from './DirectChatHeader';
 import {
   COMPOSER_SEND_BUTTON_PX,
@@ -134,6 +136,10 @@ import { stripImageFileMetadata } from '../../utils/imageCompression';
 import { ReticulumLargeImageDialog } from './ReticulumLargeImageDialog';
 import { shouldBlockChatForLowBalance } from './chatTransportBalance';
 import { ReticulumMessageExpiryButton } from './ReticulumMessageExpiryButton';
+import {
+  qchatMetaTextSize,
+  reticulumChatTextScaleClassName,
+} from './reticulumChatTextScale';
 import { ReactionPicker } from '../ReactionPicker';
 
 const uid = new ShortUniqueId({ length: 5 });
@@ -625,6 +631,8 @@ export const ChatDirect = ({
   const [composerOpenLandscape, setComposerOpenLandscape] = useState(false);
   const keyboardOpen = useSoftKeyboardOpen();
   const p2pHealth = useAtomValue(p2pHealthAtom);
+  // The Q-Chat text size reaches DMs as it does group chats.
+  const reticulumChatTextScale = useAtomValue(reticulumChatTextScaleAtom);
 
   const {
     callState,
@@ -3708,6 +3716,11 @@ export const ChatDirect = ({
 
   return (
     <Box
+      className={
+        reticulumDirectUiEnabled
+          ? reticulumChatTextScaleClassName(reticulumChatTextScale)
+          : undefined
+      }
       style={{
         background: theme.palette.background.default,
         boxSizing: 'border-box',
@@ -4107,9 +4120,9 @@ export const ChatDirect = ({
           sx={{
             color: 'text.secondary',
             flexShrink: 0,
-            fontSize: '12px',
+            fontSize: qchatMetaTextSize(12),
             fontStyle: 'italic',
-            lineHeight: '18px',
+            lineHeight: 1.5,
             overflow: 'hidden',
             px: 2.25,
             py: '4px',
@@ -4457,30 +4470,21 @@ export const ChatDirect = ({
             />
           )}
           {onEditMessage && (
-            <Box
-              sx={{
-                alignItems: 'flex-start',
-                display: 'flex',
-                gap: '5px',
-                width: '100%',
+            <ComposerEditBanner
+              desktopIcon={<ExitIcon />}
+              desktopPreview={
+                <ReplyPreview
+                  isEdit
+                  message={onEditMessage}
+                  reticulumOnlyContent={reticulumDirectUiEnabled}
+                />
+              }
+              onCancel={() => {
+                setReplyMessage(null);
+                setOnEditMessage(null);
+                clearEditorContent();
               }}
-            >
-              <ReplyPreview
-                isEdit
-                message={onEditMessage}
-                reticulumOnlyContent={reticulumDirectUiEnabled}
-              />
-
-              <ComposerDismissButton
-                desktopIcon={<ExitIcon />}
-                label={t('group:chat_group.cancel_edit')}
-                onClick={() => {
-                  setReplyMessage(null);
-                  setOnEditMessage(null);
-                  clearEditorContent();
-                }}
-              />
-            </Box>
+            />
           )}
 
           <Box

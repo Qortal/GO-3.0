@@ -77,6 +77,7 @@ import { listNamePathSegment } from '../qortal/qappNodePaths';
 import { createTransaction } from '../transactions/transactions';
 import { getData, storeData } from '../utils/chromeStorage';
 import publicKeyToAddress from '../utils/generateWallet/publicKeyToAddress';
+import { storedKeyPairMatchesAccount } from '../utils/generateWallet/verifiedWalletKey';
 import { getWalletErrorMessage } from '../utils/walletErrorMessages.ts';
 import {
   assertAllowedPresenceSigningPayload,
@@ -213,10 +214,14 @@ export async function tryResumeWalletSessionCase(request, event) {
     const keyPair = await getData('keyPair').catch(() => null);
     const walletInfo = await getData('walletInfo').catch(() => null);
     const storedAddress = walletInfo?.address0?.trim?.() || '';
+    // A stored key that is not the account's own (an inconsistent saved
+    // entry, unlocked by an older build) must not sign again: the normal
+    // password or fingerprint unlock checks the entry instead.
     const canResume =
       Boolean(keyPair) &&
       Boolean(walletInfo) &&
-      (!requestedAddress || storedAddress === requestedAddress);
+      (!requestedAddress || storedAddress === requestedAddress) &&
+      storedKeyPairMatchesAccount(keyPair, storedAddress);
 
     event.source.postMessage(
       {
@@ -256,7 +261,15 @@ export async function getWalletInfoCase(request, event) {
           {
             requestId: request.requestId,
             action: 'getWalletInfo',
-            payload: { walletInfo, hasKeyPair: true },
+            payload: {
+              walletInfo,
+              // Restoring a session at boot needs the stored key to be this
+              // account's own.
+              hasKeyPair: storedKeyPairMatchesAccount(
+                response,
+                walletInfo?.address0
+              ),
+            },
             type: 'backgroundMessageResponse',
           },
           event.origin
