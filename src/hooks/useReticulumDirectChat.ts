@@ -3,9 +3,20 @@ import { getPrimaryNamesForAddresses } from '../components/Group/groupApi';
 import { mergeReticulumPayloadWithVerifiedEnvelope } from '../utils/reticulumEventEnvelope';
 import { describeSignerMismatch } from '../utils/reticulumSignerMismatch';
 import { TIME_MONTHS_1_IN_MILLISECONDS } from '../constants/constants';
+import {
+  getKnownReticulumChatEnabled,
+  markWarmChatOpen,
+  readWarmDirectHistory,
+  warmDirectChatKey,
+  readWarmName,
+  setKnownReticulumChatEnabled,
+  writeWarmDirectHistory,
+  writeWarmName,
+} from '../reticulumChat/chatWarmCache';
 
 const RETICULUM_DIRECT_EVENT_BATCH_MS = 250;
-const directHistoryCache = new Map<string, ReticulumDmEvent[]>();
+/** As many events as one history read brings (getDirectHistory). */
+const RETICULUM_DIRECT_HISTORY_LIMIT = 200;
 
 export type ReticulumDmEvent = {
   eventId: string;
@@ -240,6 +251,54 @@ export const projectReticulumDmEvents = (events: ReticulumDmEvent[]) => {
   return { messages, chatReferences };
 };
 
+/** Names seen in an earlier chat need no new lookup. */
+const rememberKnownNames = (
+  addresses: readonly string[],
+  primaryNameCache: Map<string, string>
+) => {
+  for (const address of addresses) {
+    if (primaryNameCache.has(address)) continue;
+    const known = readWarmName(address);
+    if (known) primaryNameCache.set(address, known);
+  }
+};
+
+/**
+ * The names already known, put on at once (no lookup), and whether any
+ * sender still needs one looked up.
+ */
+const withKnownDirectNames = (
+  events: ReticulumDmEvent[],
+  primaryNameCache: Map<string, string>
+): { events: ReticulumDmEvent[]; missing: boolean } => {
+  const addresses = Array.from(
+    new Set(
+      events
+        .map((event) => event.senderAddress)
+        .filter(
+          (address): address is string =>
+            typeof address === 'string' && !!address
+        )
+    )
+  );
+  rememberKnownNames(addresses, primaryNameCache);
+  return {
+    events: events.map((event) => {
+      const primaryName =
+        primaryNameCache.get(event.senderAddress)?.trim() || '';
+      if (!primaryName || event.authorPrimaryName === primaryName) {
+        return event;
+      }
+      return {
+        ...event,
+        authorPrimaryName: primaryName,
+        senderName: event.senderName?.trim() || primaryName,
+      };
+    }),
+    missing: addresses.some((address) => !primaryNameCache.has(address)),
+  };
+};
+
 const addPrimaryNamesToDirectEvents = async (
   events: ReticulumDmEvent[],
   primaryNameCache: Map<string, string>
@@ -256,6 +315,7 @@ const addPrimaryNamesToDirectEvents = async (
   );
   if (addresses.length === 0) return events;
 
+  rememberKnownNames(addresses, primaryNameCache);
   const missingAddresses = addresses.filter(
     (address) => !primaryNameCache.has(address)
   );
@@ -264,7 +324,9 @@ const addPrimaryNamesToDirectEvents = async (
     try {
       const primaryNames = await getPrimaryNamesForAddresses(missingAddresses);
       for (const address of missingAddresses) {
-        primaryNameCache.set(address, primaryNames[address]?.trim() || '');
+        const primaryName = primaryNames[address]?.trim() || '';
+        primaryNameCache.set(address, primaryName);
+        if (primaryName) writeWarmName(address, primaryName);
       }
     } catch (error) {
       console.error(
@@ -338,9 +400,24 @@ export function useReticulumDirectChat(
   myAddress?: string,
   peerAddress?: string
 ) {
-  const [enabled, setEnabled] = useState(false);
-  const [events, setEvents] = useState<ReticulumDmEvent[]>([]);
-  const [loadedInitialHistoryKey, setLoadedInitialHistoryKey] = useState('');
+  // Reticulum chat known to be on: no wait for the settings, and a copy of
+  // this chat from earlier (or the warm-up) shows on the first render.
+  const [enabled, setEnabled] = useState(
+    () => getKnownReticulumChatEnabled() === true
+  );
+  const [warmStart] = useState(() =>
+    getKnownReticulumChatEnabled() === true && myAddress && peerAddress
+      ? readWarmDirectHistory<ReticulumDmEvent>(myAddress, peerAddress)
+      : null
+  );
+  const [events, setEvents] = useState<ReticulumDmEvent[]>(
+    () => warmStart ?? []
+  );
+  const eventsRef = useRef(events);
+  eventsRef.current = events;
+  const [loadedInitialHistoryKey, setLoadedInitialHistoryKey] = useState(() =>
+    warmStart ? `${myAddress}:${peerAddress}` : ''
+  );
   const [typingUsers, setTypingUsers] = useState<Set<string>>(new Set());
   const pendingRef = useRef<ReticulumDmEvent[]>([]);
   const batchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -395,6 +472,7 @@ export function useReticulumDirectChat(
     let cancelled = false;
     void (async () => {
       const value = await window.reticulumChat?.isEnabled?.();
+      setKnownReticulumChatEnabled(value === true);
       if (cancelled) return;
       const nextEnabled = value === true;
       setEnabled(nextEnabled);
@@ -418,10 +496,18 @@ export function useReticulumDirectChat(
       return;
     }
     const cacheKey = `${myAddress}:${peerAddress}`;
-    const cached = directHistoryCache.get(cacheKey);
+    // On screen: the warm-up waits (see markWarmChatOpen).
+    const closeWarmChat = markWarmChatOpen(warmDirectChatKey(peerAddress));
+    // A current copy shows at once (on mount the first render has it).
+    const cached = readWarmDirectHistory<ReticulumDmEvent>(
+      myAddress,
+      peerAddress
+    );
+    let historyShown = false;
     if (cached?.length) {
       setEvents(cached);
       setLoadedInitialHistoryKey(cacheKey);
+      historyShown = true;
     }
     const generation = activeConversationGenerationRef.current + 1;
     activeConversationGenerationRef.current = generation;
@@ -436,41 +522,53 @@ export function useReticulumDirectChat(
     });
     const refreshHistory = (reconcileExpiry = false, attempt = 0) => {
       const expectedVisibilityRevision = visibilityRevisionRef.current;
+      const stillCurrent = () =>
+        !cancelled &&
+        activeConversationGenerationRef.current === generation &&
+        visibilityRevisionRef.current === expectedVisibilityRevision;
       return window.reticulumChat
-        ?.getDirectHistory?.(myAddress, peerAddress, 200)
+        ?.getDirectHistory?.(
+          myAddress,
+          peerAddress,
+          RETICULUM_DIRECT_HISTORY_LIMIT
+        )
         ?.then((history) => {
           if (cancelled || !Array.isArray(history)) return;
-          void addPrimaryNamesToDirectEvents(
+          if (!stillCurrent()) return;
+          // The messages show now, with the names already known; names
+          // still to look up (the Qortal node) follow without holding
+          // them back.
+          const named = withKnownDirectNames(
             history as ReticulumDmEvent[],
             primaryNameCacheRef.current
+          );
+          const ownStream = named.events.find(
+            (event) => event.senderAddress === myAddress && event.senderStreamId
+          )?.senderStreamId;
+          if (ownStream) senderStreamIdRef.current = ownStream;
+          if (reconcileExpiry) {
+            const now = Date.now();
+            setEvents((previous) =>
+              mergeEvents(
+                named.events,
+                previous.filter(
+                  (event) => event.expiresAt == null || event.expiresAt > now
+                )
+              )
+            );
+          } else {
+            setEvents((previous) => mergeEvents(previous, named.events));
+          }
+          writeWarmDirectHistory(myAddress, peerAddress, named.events);
+          setLoadedInitialHistoryKey(`${myAddress}:${peerAddress}`);
+          historyShown = true;
+          if (!named.missing) return;
+          void addPrimaryNamesToDirectEvents(
+            named.events,
+            primaryNameCacheRef.current
           ).then((enriched) => {
-            if (
-              !cancelled &&
-              activeConversationGenerationRef.current === generation &&
-              visibilityRevisionRef.current === expectedVisibilityRevision
-            ) {
-              const ownStream = enriched.find(
-                (event) =>
-                  event.senderAddress === myAddress && event.senderStreamId
-              )?.senderStreamId;
-              if (ownStream) senderStreamIdRef.current = ownStream;
-              if (reconcileExpiry) {
-                const now = Date.now();
-                setEvents((previous) =>
-                  mergeEvents(
-                    enriched,
-                    previous.filter(
-                      (event) =>
-                        event.expiresAt == null || event.expiresAt > now
-                    )
-                  )
-                );
-              } else {
-                setEvents((previous) => mergeEvents(previous, enriched));
-              }
-              directHistoryCache.set(`${myAddress}:${peerAddress}`, enriched);
-              setLoadedInitialHistoryKey(`${myAddress}:${peerAddress}`);
-            }
+            if (!stillCurrent()) return;
+            setEvents((previous) => mergeEvents(previous, enriched));
           });
         })
         .catch((error) => {
@@ -617,6 +715,15 @@ export function useReticulumDirectChat(
     );
     return () => {
       cancelled = true;
+      closeWarmChat();
+      // Kept for the next time this chat opens, with what came in live.
+      if (historyShown) {
+        writeWarmDirectHistory(
+          myAddress,
+          peerAddress,
+          eventsRef.current.slice(-RETICULUM_DIRECT_HISTORY_LIMIT)
+        );
+      }
       document.removeEventListener('visibilitychange', onVisible);
       activeConversationGenerationRef.current += 1;
       off?.();
@@ -777,7 +884,7 @@ export function useReticulumDirectChat(
       setEvents((prev) => {
         const next = mergeEvents(prev, [optimisticEvent]);
         if (myAddress && actualPeerAddress) {
-          directHistoryCache.set(`${myAddress}:${actualPeerAddress}`, next);
+          writeWarmDirectHistory(myAddress, actualPeerAddress, next);
         }
         return next;
       });
@@ -839,9 +946,44 @@ export function useReticulumDirectChat(
     [enabled, myAddress, peerAddress]
   );
 
+  /**
+   * Adds the conversation from the message `fromEventId` on to what is
+   * loaded (a search result older than the latest history). Resolves
+   * whether it did.
+   */
+  const loadHistoryFrom = useCallback(
+    async (fromEventId: string): Promise<boolean> => {
+      if (!enabled || !myAddress || !peerAddress || !fromEventId) return false;
+      const generation = activeConversationGenerationRef.current;
+      const visibilityRevision = visibilityRevisionRef.current;
+      const stillCurrent = () =>
+        activeConversationGenerationRef.current === generation &&
+        visibilityRevisionRef.current === visibilityRevision;
+      try {
+        const history = await window.reticulumChat?.getDirectHistoryFrom?.(
+          myAddress,
+          peerAddress,
+          fromEventId
+        );
+        if (!Array.isArray(history) || !stillCurrent()) return false;
+        const enriched = await addPrimaryNamesToDirectEvents(
+          history as ReticulumDmEvent[],
+          primaryNameCacheRef.current
+        );
+        if (!stillCurrent()) return false;
+        setEvents((previous) => mergeEvents(previous, enriched));
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    [enabled, myAddress, peerAddress]
+  );
+
   return {
     enabled,
     events,
+    loadHistoryFrom,
     initialHistoryReady:
       activeHistoryKey !== '' && loadedInitialHistoryKey === activeHistoryKey,
     messages,

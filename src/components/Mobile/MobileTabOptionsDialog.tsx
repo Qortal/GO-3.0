@@ -106,7 +106,8 @@ type MobileTabOptionsDialogProps = {
   onAddToFolder: (folderId: string) => void;
   onRemoveFromFolder: () => void;
   onRename: () => void;
-  onChangeAddress: () => void;
+  /** Leave out to hide the address row. */
+  onChangeAddress?: () => void;
   onRestoreName: () => void;
 };
 
@@ -210,7 +211,7 @@ export function MobileTabOptionsDialog({
             label="Rename tab"
             onClick={onRename}
           />
-          {!isInternal ? (
+          {!isInternal && onChangeAddress ? (
             <OptionRow
               delayMs={nextDelay()}
               icon={LinkRoundedIcon}

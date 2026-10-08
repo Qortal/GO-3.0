@@ -84,6 +84,16 @@ const MESSAGES = [
     replies: 1,
     reactions: { '❤️': [{ sender: ALICE, senderName: 'alice' }] } as Reactions,
   },
+  ...[
+    'Double tap any message to react with the chat’s double-tap emoji.',
+    'Long press an emoji in the pill to make it the double-tap one.',
+    'The gear in the full emoji panel has the reaction settings.',
+    'Reacting to the last message scrolls its reaction into view.',
+  ].map((text, index) => ({
+    message: post(`preview-filler-${index}`, ALICE, 'alice', text, 20 - index),
+    replies: 0,
+    reactions: {} as Reactions,
+  })),
   {
     message: post('preview-3', BOB, 'bob', 'Nice, no reactions here yet.', 5),
     replies: 0,
@@ -131,18 +141,25 @@ function Preview() {
   const handleReaction = useCallback(
     (emoji: string, message: { id: string }, add: boolean) => {
       setLastAction(`${add ? 'react' : 'unreact'} ${emoji}`);
-      setReactionsById((current) => {
-        const list = (current[message.id]?.[emoji] || []).filter(
-          (item) => item.sender !== ME
-        );
-        return {
-          ...current,
-          [message.id]: {
-            ...current[message.id],
-            [emoji]: add ? [...list, { sender: ME, senderName: 'me' }] : list,
-          },
-        };
-      });
+      // Like the send queue: the chip shows a moment after the tap.
+      window.setTimeout(
+        () =>
+          setReactionsById((current) => {
+            const list = (current[message.id]?.[emoji] || []).filter(
+              (item) => item.sender !== ME
+            );
+            return {
+              ...current,
+              [message.id]: {
+                ...current[message.id],
+                [emoji]: add
+                  ? [...list, { sender: ME, senderName: 'me' }]
+                  : list,
+              },
+            };
+          }),
+        120
+      );
     },
     []
   );
@@ -167,7 +184,15 @@ function Preview() {
         </Box>
         <Box
           data-reticulum-chat-root="true"
-          sx={{ bgcolor: 'background.default', mt: 1, py: 1 }}
+          sx={{
+            bgcolor: 'background.default',
+            // A chat-like scroller, so a reaction under the last message
+            // has to scroll into view.
+            height: 'calc(100vh - 48px)',
+            mt: 1,
+            overflowY: 'auto',
+            py: 1,
+          }}
         >
           {MESSAGES.map(({ message, replies, extraProps }) => (
             <MessageItem
@@ -184,6 +209,7 @@ function Preview() {
                   setLastAction('open discussion'),
                 onReply: () => setLastAction('reply'),
                 onSeen: () => {},
+                reactionChatKey: 'group:preview',
                 reactions: reactionsById[message.id],
                 reticulumChatEnabled: true,
                 reticulumDiscussionReplyCount: replies,

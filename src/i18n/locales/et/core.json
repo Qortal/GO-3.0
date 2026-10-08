@@ -575,7 +575,8 @@
     "stage_gathering": "Kogumine QDN-ist",
     "stage_saving": "Telefoni salvestamine",
     "storage_permission": "GO vajab salvestusruumi luba, et salvestada faile kausta Documents.",
-    "tap_to_open": "Puuduta avamiseks · {{location}}"
+    "tap_to_open": "Puuduta avamiseks · {{location}}",
+    "tap_to_open_or_share": "Puuduta avamiseks või jagamiseks"
   },
   "filter": {
     "all": "kõik",
@@ -630,7 +631,7 @@
     "loading_versions": "Versioonide laadimine QDN-ist…",
     "no_notes": "Selle versiooni kohta ei lisatud väljalaskemärkmeid.",
     "no_versions": "GO 3.0 versioone pole veel avaldatud.",
-    "open_in_qshare": "Ava Q-Share+'is",
+    "open_in_qshare": "Ava Q-Share'is",
     "progress": {
       "assembling": "Versiooni kokkupanek",
       "bytes_of_total": "{{done}} / {{total}}",
@@ -806,6 +807,7 @@
       "new_notification": "Uus teavitus",
       "new_notification_from": "Uus teavitus: {{ appName }}",
       "new_payment_body": "Said kätte {{ amount }} QORTi.",
+      "new_payment_from": "Makse kasutajalt {{ name }}",
       "new_payment_received": "Uus makse laekus",
       "new_qmail": "Sul on uus Q-Mail",
       "no_app_notifications": "Rakenduse teavitusi pole veel",
@@ -1009,6 +1011,17 @@
   "payment": "makse",
   "payment_notification": "Saabunud maksed",
   "payments_count": "Maksed ({{count}})",
+  "pdf_reader": {
+    "gesture_hint": "Puuduta täisekraaniks · topeltpuuduta või näpista suumimiseks",
+    "gesture_hint_pages": "Libista lehe pööramiseks · puuduta täisekraaniks · topeltpuuduta suumimiseks",
+    "look_dim": "Tuhm",
+    "look_dim_hint": "Tume raam, leht muutmata",
+    "look_light": "Hele",
+    "look_light_hint": "Hele raam ja valge leht",
+    "look_smart": "Nutikas",
+    "look_smart_hint": "Tekstilehed tumedaks, fotod jäävad samaks",
+    "page_look": "Lehe välimus"
+  },
   "poll_embed": "küsitluse manustamine",
   "port": "port",
   "presence": {
@@ -1052,7 +1065,7 @@
     "modules_hotkeys_label": "Hotkeys",
     "modules_music_description": "A compact Earbump player with search and quick playback.",
     "modules_music_label": "Music player",
-    "modules_suggest_description": "Compose > Add Subject + Message & Send it our way!",
+    "modules_suggest_description": "Liitu grupiga GO 3.0 ja ütle meile, mida järgmiseks ehitada.",
     "modules_suggest_label": "Suggest a module",
     "music_empty_title": "EarBump library",
     "music_empty_uploaded": "Waiting for library",
@@ -1143,6 +1156,10 @@
   "receiver": "saaja",
   "remaining_to_level": "Jäänud tasemeni {{level}}",
   "retry": "proovi uuesti",
+  "search": {
+    "apps_and_websites": "rakendused ja veebisaidid",
+    "suggested": "soovitused"
+  },
   "sender": "saatja",
   "server": "server",
   "service_type": "teenuse tüüp",
@@ -1162,7 +1179,32 @@
     "categories": "kategooriad",
     "community_apps": "kogukonna rakendused",
     "my_apps": "minu rakendused",
-    "official_apps": "ametlikud rakendused"
+    "official_apps": "ametlikud rakendused",
+    "pinned": "kinnitatud"
+  },
+  "tabs_home": {
+    "app_name": "rakenduse nimi",
+    "browse_apps": "sirvi rakendusi",
+    "close_all": "sulge kõik",
+    "close_folder": "sulge kaust",
+    "close_tab": "sulge vaheleht",
+    "delete_folder": "kustuta kaust",
+    "empty_hint": "puuduta raamatukogus mis tahes rakenduse nõela. Need kaustad on samad mis vahelehtedes.",
+    "empty_title": "siin on sinu kinnitatud rakendused",
+    "folder_empty_hint": "vajuta pikalt avatud vahelehte ja vali see kaust, et see siia lisada.",
+    "folder_name": "kausta nimi",
+    "folder_options": "kausta valikud",
+    "make_large": "suur kaust",
+    "make_small": "väike kaust",
+    "more_apps": "veel {{amount}} rakendust",
+    "new_folder": "uus kaust",
+    "new_folder_name": "uus kaust",
+    "open_folder": "ava {{name}}",
+    "open_tabs": "avatud vahelehed",
+    "remove_from_folder": "eemalda kaustast",
+    "rename_app": "nimeta rakendus ümber",
+    "rename_folder": "nimeta kaust ümber",
+    "window_n": "aken {{amount}}"
   },
   "tabs_overlay": {
     "delete_folder_body_one": "sellesse salvestatud {{count}} rakendus eemaldatakse vahelehtedest. Avatud vahelehed jäävad avatuks.",

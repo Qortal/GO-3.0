@@ -69,6 +69,14 @@
     "empty": "Derzeit keine privaten Nachrichten.",
     "subtitle": "Private Reticulum-Chats"
   },
+  "dm_search": {
+    "clear": "Suche löschen",
+    "empty": "keine Nachrichten gefunden",
+    "hint": "gib mindestens 2 Zeichen ein, um deine Direktnachrichten zu durchsuchen",
+    "placeholder": "deine Direktnachrichten durchsuchen",
+    "title": "Nachrichten durchsuchen",
+    "unavailable": "die Nachrichtensuche ist gerade nicht verfügbar"
+  },
   "event_preview": {
     "all_day": "all day",
     "calendar_unavailable": "calendar is unavailable",
@@ -152,11 +160,14 @@
     "copy_failed": "unable to copy image",
     "download": "download image",
     "download_failed": "unable to download image",
+    "newer": "neuer",
+    "older": "älter",
     "prepare_failed": "unable to prepare image for clipboard",
     "read_failed": "unable to read image",
     "save": "bild speichern",
     "share": "bild teilen",
     "share_failed": "bild konnte nicht geteilt werden",
+    "video": "Video",
     "zoom_in": "zoom in",
     "zoom_out": "zoom out"
   },
@@ -300,6 +311,21 @@
       },
       "title": "Textgröße"
     }
+  },
+  "share": {
+    "cancel": "Teilen abbrechen",
+    "cannot_write": "in diesem Kanal können nur Admins schreiben: geh zurück und wähle einen anderen Chat",
+    "chip_label": "{{what}} zum Teilen: tippe auf einen Chat, um es hinzuzufügen",
+    "kind_file": "Datei",
+    "kind_link": "Link",
+    "kind_photo": "Foto",
+    "kind_text": "Text",
+    "kind_video": "Video",
+    "notice_extra_files": "nur die erste Datei wurde hinzugefügt: eine Nachricht enthält eine Datei.",
+    "notice_too_large": "eine Datei über {{max}} MB wurde weggelassen.",
+    "notice_unreadable": "die geteilte Datei konnte nicht gelesen werden.",
+    "notice_unsafe_image": "das Bild konnte nicht von Standortdaten bereinigt werden und wurde weggelassen.",
+    "pick_chat": "Chat wählen"
   },
   "status_badge": {
     "copy_diagnostics": "Diagnose kopieren",

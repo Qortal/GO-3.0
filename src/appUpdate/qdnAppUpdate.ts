@@ -1,6 +1,6 @@
 /**
- * Finds the newest Qortal GO build published to QDN with Q-Share+ (or the
- * original Q-Share: both write the same share data).
+ * Finds the newest Qortal GO build published to QDN with Q-Share (or
+ * Q-Share+: both write the same share data).
  *
  * Q-Share mints a random identifier per file (`qshare_file_<name>_aB12Cd`) and
  * writes one DOCUMENT per share (`…_metadata`) listing what that share
@@ -20,10 +20,10 @@ export const APP_UPDATE_QDN_NAME = 'GO 3.0';
 
 /**
  * The Q-App that opens a build's share page. Builds are published with
- * Q-Share+, which reads the same share data as Q-Share and serves the same
- * `share/<name>/<id>` route. The literal `+` is the app's QDN name.
+ * Q-Share, which now does what Q-Share+ did; both read the same share data
+ * and serve the same `share/<name>/<id>` route.
  */
-export const APP_UPDATE_SHARE_APP = 'Q-Share+';
+export const APP_UPDATE_SHARE_APP = 'Q-Share';
 
 const QSHARE_PREFIX = 'qshare_file_';
 const METADATA_SUFFIX = '_metadata';

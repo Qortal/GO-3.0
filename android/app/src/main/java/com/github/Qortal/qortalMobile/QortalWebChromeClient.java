@@ -166,6 +166,8 @@ public class QortalWebChromeClient extends BridgeWebChromeClient {
         }
         if (visible) {
             controller.show(WindowInsetsCompat.Type.systemBars());
+            // Immersive mode keeps the status bar hidden after the video.
+            ImmersivePlugin.applyStatusBar(activity);
         } else {
             controller.setSystemBarsBehavior(
                 WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE

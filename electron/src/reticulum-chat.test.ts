@@ -11697,7 +11697,11 @@ describe('reticulum chat manager', () => {
       'before',
       false,
       'history-read',
-      'peer-history'
+      'peer-history',
+      undefined,
+      undefined,
+      0,
+      []
     );
     expect(direct.some((item) => item.wire.k === 'state_heads_req_v3')).toBe(
       true
@@ -11751,7 +11755,11 @@ describe('reticulum chat manager', () => {
       'before',
       false,
       'search-read',
-      'peer-search'
+      'peer-search',
+      undefined,
+      undefined,
+      0,
+      []
     );
     expect(
       direct
@@ -26395,6 +26403,183 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  describe('older history paging and provider reserve', () => {
+    const setup = async (
+      pageEvent: (target: ReticulumChatEvent) => ReticulumChatEvent,
+      alternates: string[]
+    ) => {
+      const dbPath = tempDbPath();
+      const manager = new ReticulumChatManager({
+        dbPath,
+        bridge: { on: () => undefined, off: () => undefined } as any,
+        now: () => 100_000,
+        validateGroupMember: async () => true,
+      });
+      manager.setLocalGroupMemberships([59]);
+      manager.subscribeGroup(59);
+      const target = signedEvent({
+        eventId: 'older-message',
+        groupId: 59,
+        timestamp: 80_000,
+      });
+      expect(
+        await (manager as any).acceptValidatedEvent(target, false, {
+          emitSummary: false,
+        })
+      ).toBe(true);
+      const event = pageEvent(target);
+      const page = {
+        v: 1,
+        g: 59,
+        c: '*',
+        d: 'before',
+        more: true,
+        start: { id: event.eventId, ts: event.timestamp },
+        end: { id: event.eventId, ts: event.timestamp },
+        wh: (manager as any).db.computeWindowHash([event]),
+        events: [event],
+      };
+      const blob = JSON.stringify(page);
+      const transferId = `stale-read-${event.eventId}`;
+      const filePath = path.join(path.dirname(dbPath), `${transferId}.json`);
+      fs.writeFileSync(filePath, blob, 'utf8');
+      (manager as any).trackDirectHistoryPageRequest(
+        `${transferId}-request`,
+        `read|59|${transferId}`,
+        {
+          transferId,
+          groupId: 59,
+          channelId: '*',
+          direction: 'before',
+          pageHash: nodeCrypto
+            .createHash('sha256')
+            .update(blob, 'utf8')
+            .digest('hex'),
+          sizeBytes: Buffer.byteLength(blob, 'utf8'),
+          eventCount: 1,
+          start: { eventId: 'read-cursor', feedTimestamp: 100_000 },
+          sourcePeerHash: 'peer-stale',
+          alternateSourcePeerHashes: alternates,
+          requestedAt: 100_000,
+        }
+      );
+      const request = vi
+        .spyOn(manager as any, 'requestLinkedHistoryPage')
+        .mockResolvedValue(undefined);
+      await (manager as any).importReceivedEventPageResource({
+        status: 'received',
+        path: filePath,
+        transferId,
+        peerPresenceHash: 'peer-stale',
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect((manager as any).db.hasEvent(event.eventId)).toBe(true);
+      return { manager, request, event };
+    };
+    const reactionTo = (target: ReticulumChatEvent) =>
+      signedEvent({
+        eventId: 'older-reaction',
+        groupId: 59,
+        timestamp: 90_000,
+        eventType: 'reaction_add',
+        targetEventId: target.eventId,
+      });
+
+    it('keeps paging the same provider when a page brings only reactions', async () => {
+      // Asking the next provider instead lost the continuation when every
+      // provider held only reactions or deletes for that stretch.
+      const { manager, request, event } = await setup(reactionTo, [
+        'peer-fresh',
+      ]);
+      expect(request).toHaveBeenCalledTimes(1);
+      expect(request.mock.calls[0][0]).toBe('peer-stale');
+      expect(request.mock.calls[0][3]).toEqual({
+        eventId: event.eventId,
+        feedTimestamp: event.timestamp,
+      });
+      expect(request.mock.calls[0][6]).toBe('event-page-more');
+      manager.close();
+    });
+
+    it('keeps paging the same provider when the page brought messages', async () => {
+      const { manager, request, event } = await setup(
+        () =>
+          signedEvent({
+            eventId: 'older-message-2',
+            groupId: 59,
+            timestamp: 90_000,
+          }),
+        ['peer-fresh']
+      );
+      expect(request).toHaveBeenCalledTimes(1);
+      expect(request).toHaveBeenCalledWith(
+        'peer-stale',
+        59,
+        '*',
+        { eventId: event.eventId, feedTimestamp: event.timestamp },
+        'before',
+        false,
+        'event-page-more',
+        'peer-stale',
+        undefined,
+        undefined,
+        0
+      );
+      manager.close();
+    });
+
+    it('keeps up to six providers in reserve for a history read', () => {
+      const manager = new ReticulumChatManager({
+        dbPath: tempDbPath(),
+        bridge: { on: () => undefined, off: () => undefined } as any,
+        now: () => 100_000,
+      });
+      manager.setLocalGroupMemberships([59]);
+      manager.subscribeGroup(59);
+      const peers = Array.from({ length: 8 }, (_, i) => `peer-${i + 1}`);
+      vi.spyOn(manager as any, 'getInterestedPeers').mockReturnValue(peers);
+      const heads = vi
+        .spyOn(manager as any, 'requestStateHeadsFromPeer')
+        .mockImplementation(() => undefined);
+      const request = vi
+        .spyOn(manager as any, 'requestLinkedHistoryPage')
+        .mockResolvedValue(undefined);
+
+      (manager as any).requestNetworkHistoryForRead(
+        59,
+        'general',
+        [],
+        { beforeTimestamp: 100_000, beforeEventId: 'cursor-event' },
+        'test-read',
+        'before'
+      );
+
+      expect(heads).toHaveBeenCalledTimes(3);
+      expect(request).toHaveBeenCalledTimes(3);
+      expect(request.mock.calls[0][0]).toBe('peer-1');
+      expect(request.mock.calls[0][11]).toEqual([
+        'peer-2',
+        'peer-3',
+        'peer-4',
+        'peer-5',
+        'peer-6',
+      ]);
+      manager.close();
+    });
+
+    it('keeps paging the same provider when there is no other one', async () => {
+      const { manager, request, event } = await setup(reactionTo, []);
+      expect(request).toHaveBeenCalledTimes(1);
+      expect(request.mock.calls[0][0]).toBe('peer-stale');
+      expect(request.mock.calls[0][3]).toEqual({
+        eventId: event.eventId,
+        feedTimestamp: event.timestamp,
+      });
+      expect(request.mock.calls[0][6]).toBe('event-page-more');
+      manager.close();
+    });
+  });
+
   it('suppresses an unchanged no-progress digest repair when the peer head is behind', () => {
     const manager = new ReticulumChatManager({
       dbPath: tempDbPath(),
@@ -36591,7 +36776,11 @@ describe('reticulum chat manager', () => {
       'after',
       false,
       'message-history-read',
-      'peer-history'
+      'peer-history',
+      undefined,
+      undefined,
+      0,
+      []
     );
     manager.close();
   });

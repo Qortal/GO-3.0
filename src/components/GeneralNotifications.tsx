@@ -58,6 +58,12 @@ import {
   markSavedQdnFilesSeen,
 } from '../utils/qdnDownloadNotifications';
 import { recordNotificationHistory } from '../utils/notificationHistory';
+import { openQWalletsTab } from '../utils/openQWalletsTab';
+import {
+  formatPaymentAmount,
+  isPaymentNotification,
+  paymentSenderLabel,
+} from '../utils/paymentNotifications';
 import { DragToClosePanel } from './Notifications/DragToClosePanel';
 import {
   NotificationAppIdentity,
@@ -239,6 +245,7 @@ export const GeneralNotifications = forwardRef<
       (notifications ?? []).filter(
         (item) =>
           (item?.event === RESOURCE_EVENT ||
+            isPaymentNotification(item) ||
             (reticulumEnabled &&
               (isQChatMentionNotification(item) ||
                 isReticulumDmMissedCallNotification(item) ||
@@ -255,6 +262,7 @@ export const GeneralNotifications = forwardRef<
       (notifications ?? []).filter(
         (item) =>
           item?.event === RESOURCE_EVENT ||
+          isPaymentNotification(item) ||
           (reticulumEnabled &&
             (isQChatMentionNotification(item) ||
               isReticulumDmMissedCallNotification(item) ||
@@ -357,13 +365,20 @@ export const GeneralNotifications = forwardRef<
   };
 
   const describeNotification = (notification) =>
-    getNotificationMessage(
-      notification?.message,
-      i18n.language,
-      t('message.generic.new_notification', {
-        defaultValue: 'New notification',
-      })
-    );
+    isPaymentNotification(notification)
+      ? t('core:message.generic.new_payment_body', {
+          amount: formatPaymentAmount(
+            notification?.data?.amount ?? 0,
+            i18n.language
+          ),
+        })
+      : getNotificationMessage(
+          notification?.message,
+          i18n.language,
+          t('message.generic.new_notification', {
+            defaultValue: 'New notification',
+          })
+        );
 
   /** What tapping an item does, in the panel and in the history alike. */
   const openNotification = (notification) => {
@@ -419,6 +434,10 @@ export const GeneralNotifications = forwardRef<
     }
     if (hasNewNotifications) setLastSeenTimestamp(Date.now());
     setAnchorEl(null);
+    if (isPaymentNotification(notification)) {
+      openQWalletsTab();
+      return;
+    }
     const link = notification?.link;
     if (!link) return;
     const data = extractComponents(link);
@@ -881,6 +900,7 @@ export const GeneralNotifications = forwardRef<
                   notification?.notificationId === 'q-mail-notification' ||
                   notification?.appName === 'Q-Mail';
                 const isQChatMention = isQChatMentionNotification(notification);
+                const isPayment = isPaymentNotification(notification);
                 const timestamp = getNotificationTimestamp(notification);
                 const unseen =
                   timestamp != null &&
@@ -942,7 +962,9 @@ export const GeneralNotifications = forwardRef<
                           alt={
                             isQChatMention
                               ? notification?.data?.groupName
-                              : notification?.appName || 'App'
+                              : isPayment
+                                ? paymentSenderLabel(notification)
+                                : notification?.appName || 'App'
                           }
                           isQChatMention={isQChatMention}
                           isQMail={isQMail}
@@ -974,6 +996,8 @@ export const GeneralNotifications = forwardRef<
                             >
                               {isQChatMention ? (
                                 notification?.data?.groupName
+                              ) : isPayment ? (
+                                paymentSenderLabel(notification)
                               ) : (
                                 <RegisteredNameText
                                   name={notification?.appName || 'Q-App'}
@@ -1004,13 +1028,7 @@ export const GeneralNotifications = forwardRef<
                               wordBreak: 'break-word',
                             }}
                           >
-                            {getNotificationMessage(
-                              notification?.message,
-                              i18n.language,
-                              t('message.generic.new_notification', {
-                                defaultValue: 'New notification',
-                              })
-                            )}
+                            {describeNotification(notification)}
                           </Typography>
                         </Box>
                       </Card>

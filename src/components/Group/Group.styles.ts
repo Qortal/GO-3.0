@@ -32,7 +32,8 @@ export const CenterBox = styled(Box)({
 });
 
 export const FloatingButtonContainerBox = styled(Box)({
-  bottom: '25px',
+  // Above the floating tab buttons on phones (0px elsewhere).
+  bottom: 'calc(25px + var(--go-tab-bar-space, 0px))',
   display: 'flex',
   position: 'absolute',
   right: '25px',

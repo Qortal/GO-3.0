@@ -69,6 +69,14 @@
     "empty": "現在、プライベートメッセージはありません。",
     "subtitle": "Reticulum のプライベートチャット"
   },
+  "dm_search": {
+    "clear": "検索をクリア",
+    "empty": "メッセージが見つかりません",
+    "hint": "2文字以上入力してダイレクトメッセージを検索",
+    "placeholder": "ダイレクトメッセージを検索",
+    "title": "メッセージを検索",
+    "unavailable": "現在メッセージ検索は利用できません"
+  },
   "event_preview": {
     "all_day": "all day",
     "calendar_unavailable": "calendar is unavailable",
@@ -152,11 +160,14 @@
     "copy_failed": "unable to copy image",
     "download": "download image",
     "download_failed": "unable to download image",
+    "newer": "新しい",
+    "older": "古い",
     "prepare_failed": "unable to prepare image for clipboard",
     "read_failed": "unable to read image",
     "save": "画像を保存",
     "share": "画像を共有",
     "share_failed": "画像を共有できませんでした",
+    "video": "動画",
     "zoom_in": "zoom in",
     "zoom_out": "zoom out"
   },
@@ -300,6 +311,21 @@
       },
       "title": "文字サイズ"
     }
+  },
+  "share": {
+    "cancel": "共有をキャンセル",
+    "cannot_write": "このチャンネルに書き込めるのは管理者だけです。戻って別のチャットを選んでください",
+    "chip_label": "共有する{{what}}：チャットをタップして追加",
+    "kind_file": "ファイル",
+    "kind_link": "リンク",
+    "kind_photo": "写真",
+    "kind_text": "テキスト",
+    "kind_video": "動画",
+    "notice_extra_files": "最初のファイルだけを追加しました。1つのメッセージに入るファイルは1つです。",
+    "notice_too_large": "{{max}} MBを超えるファイルは除外しました。",
+    "notice_unreadable": "共有されたファイルを読み込めませんでした。",
+    "notice_unsafe_image": "画像から位置情報を削除できなかったため、除外しました。",
+    "pick_chat": "チャットを選択"
   },
   "status_badge": {
     "copy_diagnostics": "診断情報をコピー",

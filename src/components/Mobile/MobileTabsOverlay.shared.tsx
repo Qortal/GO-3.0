@@ -34,11 +34,14 @@ export const TabAvatar = ({
   title,
   color,
   size = 38,
+  radius,
 }: {
   tab: OpenTab;
   title: string;
   color: string;
   size?: number;
+  /** Corner radius in px; the default suits the 38 px list avatar. */
+  radius?: number;
 }) => {
   // The src that failed to load: a new src (e.g. the live icon replacing the
   // bundled one) gets its own chance.
@@ -64,7 +67,7 @@ export const TabAvatar = ({
       sx={{
         width: size,
         height: size,
-        borderRadius: 1.5,
+        borderRadius: radius != null ? `${radius}px` : 1.5,
         backgroundColor: color,
         color: '#fff',
         display: 'flex',
@@ -94,7 +97,7 @@ export const TabAvatar = ({
       sx={{
         width: size,
         height: size,
-        borderRadius: 1.5,
+        borderRadius: radius != null ? `${radius}px` : 1.5,
         objectFit: 'cover',
         flexShrink: 0,
         backgroundColor: `${color}22`,

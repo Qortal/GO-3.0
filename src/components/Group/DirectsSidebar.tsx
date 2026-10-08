@@ -58,6 +58,7 @@ import {
   getChatListSubtitleSx,
   getChatListTitleSx,
 } from './chatListRowStyles';
+import { withTabBarSpace } from '../Mobile/mobileBarHeights';
 
 /** Renders only the presence badge for a single DM address.
  * Subscribes to per-address atoms so a change to any other peer
@@ -109,6 +110,9 @@ export interface DirectsSidebarProps {
   isRunningPublicNode: boolean;
   setIsOpenBlockedUserModal: (value: boolean) => void;
   reticulumChatEnabled?: boolean;
+  /** Phones: the header with the Groups / DMs switch sits above both lists
+   * (MobileChatListHeader), so the list leaves out its own. */
+  hideMobileHeader?: boolean;
 }
 
 export const DirectsSidebar = (props: DirectsSidebarProps) => {
@@ -131,6 +135,7 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
     isRunningPublicNode,
     setIsOpenBlockedUserModal,
     reticulumChatEnabled = false,
+    hideMobileHeader = false,
   } = props;
 
   const theme = useTheme();
@@ -379,7 +384,7 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
           </ButtonBase>
         </Box>
       )}
-      {reticulumChatEnabled && (
+      {reticulumChatEnabled && !(hideMobileHeader && isMobileWidth) && (
         <Box
           sx={{
             ...chatListHeaderSx,
@@ -471,6 +476,13 @@ export const DirectsSidebar = (props: DirectsSidebarProps) => {
               ? chatListScrollPadding
               : '10px'
             : '12px 8px',
+          // The last chat scrolls clear of the floating tab buttons.
+          ...(isMobileWidth && {
+            paddingBottom: withTabBarSpace(
+              reticulumChatEnabled ? 10 : 12,
+              reticulumChatEnabled ? '10px' : '12px'
+            ),
+          }),
           width: compactToggle ? 'auto' : '100%',
         }}
       >

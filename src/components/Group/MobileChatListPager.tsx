@@ -2,16 +2,26 @@ import { Box, useMediaQuery } from '@mui/material';
 import {
   useCallback,
   useEffect,
+  useImperativeHandle,
   useRef,
   useState,
   type ReactNode,
+  type Ref,
 } from 'react';
-import { PAGER_SCROLLER_ATTR } from '../../hooks/horizontalPagerSwipe';
-import { useHorizontalPagerSwipe } from '../../hooks/useHorizontalPagerSwipe';
-import type { ChatScope } from './ChatScopeSwitch';
+import {
+  PAGER_SCROLLER_ATTR,
+  PAGER_SLIDE_EASING,
+} from '../../hooks/horizontalPagerSwipe';
+import {
+  useHorizontalPagerSwipe,
+  type TrackPositionListener,
+} from '../../hooks/useHorizontalPagerSwipe';
+import { CHAT_SCOPES, type ChatScope } from './ChatScopeSwitch';
+import {
+  SECTION_SURFACE_TOUCH_ACTION,
+  SECTION_SWIPE_COOPERATIVE_ATTR,
+} from '../Mobile/sectionSwipe/sectionSwipe';
 
-/** Left to right, as on the Groups / DMs switch. */
-const PAGE_SCOPES: readonly ChatScope[] = ['groups', 'directs'];
 /** The page beside the one showing is built this long after the lists come
  * up (and once the phone is idle), so it never slows the list sliding in. */
 const NEIGHBOR_WARM_DELAY_MS = 250;
@@ -63,6 +73,31 @@ export interface MobileChatListPagerProps {
   renderGroups: (beside: boolean) => ReactNode;
   /** The DMs page. `mounted`: whether to render it at all. */
   renderDirects: (mounted: boolean) => ReactNode;
+  /** Where the pages are while they move (0 = Groups, 1 = DMs), for the
+   * header above them. */
+  onTrackPosition?: TrackPositionListener;
+  /**
+   * Stays still above the pages (the Groups / DMs switch and buttons). A
+   * sideways swipe on it moves the pages too.
+   */
+  header?: ReactNode;
+  ref?: Ref<MobileChatListPagerHandle>;
+}
+
+export interface MobileChatListPagerHandle {
+  /**
+   * With the swipe off (a chat open over the lists): show `scope`'s list
+   * instead of the current one, or the current one again for `null`. For a
+   * swipe out of a group chat to the DMs, which slides that list in under
+   * it before the scope changes.
+   */
+  preview: (scope: ChatScope | null) => void;
+  /**
+   * Switch to `scope` the way a swipe does: the pages glide there first,
+   * and the switch happens once that is on screen (taps on the Groups / DMs
+   * switch). With the swipe off, it just switches.
+   */
+  slideTo: (scope: ChatScope) => void;
 }
 
 /**
@@ -78,7 +113,10 @@ export interface MobileChatListPagerProps {
  * track's transform. The page out of view is inert.
  */
 export function MobileChatListPager({
+  header,
+  ref,
   onScopeChange,
+  onTrackPosition,
   renderDirects,
   renderGroups,
   scope,
@@ -92,6 +130,18 @@ export function MobileChatListPager({
   });
   // Whether the page out of view is built and laid out beside this one.
   const [neighborReady, setNeighborReady] = useState(false);
+  const [previewScope, setPreviewScope] = useState<ChatScope | null>(null);
+  const previewing = !swipeEnabled && previewScope !== null;
+  const shownPage = previewing ? CHAT_SCOPES.indexOf(previewScope) : page;
+  const onTrackPositionRef = useRef(onTrackPosition);
+  onTrackPositionRef.current = onTrackPosition;
+  const pageRef = useRef(page);
+  pageRef.current = page;
+
+  // A preview only stands in until the scope itself changes.
+  useEffect(() => {
+    setPreviewScope(null);
+  }, [scope, swipeEnabled]);
 
   useEffect(() => {
     if (neighborReady === swipeEnabled) return;
@@ -104,24 +154,46 @@ export function MobileChatListPager({
   const onScopeChangeRef = useRef(onScopeChange);
   onScopeChangeRef.current = onScopeChange;
   const handlePageChange = useCallback((next: number) => {
-    const nextScope = PAGE_SCOPES[next];
+    const nextScope = CHAT_SCOPES[next];
     if (nextScope) onScopeChangeRef.current(nextScope);
   }, []);
   // A swipe that beats the warm-up builds the other list at once.
   const handleDragStart = useCallback(() => setNeighborReady(true), []);
 
-  useHorizontalPagerSwipe(viewportRef, trackRef, {
+  const { slideTo } = useHorizontalPagerSwipe(viewportRef, trackRef, {
     animatePageChange: neighborReady,
     enabled: swipeEnabled,
     onDragStart: handleDragStart,
     onPageChange: handlePageChange,
+    onTrackPosition,
     page,
-    pageCount: PAGE_SCOPES.length,
+    pageCount: CHAT_SCOPES.length,
     reducedMotion,
+    // Swiping right on Groups goes on to Apps (the section swipe).
+    releaseEdges: true,
   });
 
+  const slideToRef = useRef(slideTo);
+  slideToRef.current = slideTo;
+  useImperativeHandle(
+    ref,
+    () => ({
+      slideTo: (scope) => {
+        const target = CHAT_SCOPES.indexOf(scope);
+        if (target >= 0) slideToRef.current(target);
+      },
+      preview: (next) => {
+        setPreviewScope(next);
+        // The switch's pill moves to the list on show.
+        const position = next ? CHAT_SCOPES.indexOf(next) : pageRef.current;
+        onTrackPositionRef.current?.(position, 0, PAGER_SLIDE_EASING);
+      },
+    }),
+    []
+  );
+
   const pageSx = (index: number) => {
-    const current = index === page;
+    const current = index === shownPage;
     return {
       // Side by side every page keeps its place in the row, built or not,
       // so the track's -100% always lands on the DM page.
@@ -142,9 +214,12 @@ export function MobileChatListPager({
     <Box
       ref={viewportRef}
       data-chat-list-pager={swipeEnabled ? 'swipe' : 'single'}
+      // Claims its own swipes; the section swipe takes the rest.
+      {...{ [SECTION_SWIPE_COOPERATIVE_ATTR]: '' }}
       sx={{
         display: 'flex',
         flex: '1 1 auto',
+        flexDirection: 'column',
         height: '100%',
         minHeight: 0,
         minWidth: 0,
@@ -155,35 +230,47 @@ export function MobileChatListPager({
         ...(swipeEnabled
           ? {
               // The browser keeps vertical scrolling and never starts one
-              // for a sideways swipe. Lists are scroll containers, which
-              // re-enable panning for their content, so they (and their
-              // direct children) are marked too.
-              touchAction: 'pan-y',
+              // for a sideways swipe (see SECTION_SURFACE_TOUCH_ACTION).
+              // Lists are scroll containers, which re-enable panning for
+              // their content, so they (and their direct children) are
+              // marked too.
+              touchAction: SECTION_SURFACE_TOUCH_ACTION,
               [`& ${scrollerSelector}, & ${scrollerSelector} > *`]: {
-                touchAction: 'pan-y',
+                touchAction: SECTION_SURFACE_TOUCH_ACTION,
               },
             }
           : {}),
       }}
     >
+      {header}
       <Box
         ref={trackRef}
         sx={{
           display: 'flex',
           flex: '1 1 auto',
-          height: '100%',
           minHeight: 0,
           minWidth: 0,
+          width: '100%',
           willChange: swipeEnabled ? 'transform' : undefined,
         }}
       >
         {/* The page out of view is inert: no taps, focus or screen
             reader. */}
-        <Box data-chat-list-page="groups" inert={page !== 0} sx={pageSx(0)}>
-          {renderGroups(neighborReady)}
+        <Box
+          data-chat-list-page="groups"
+          inert={shownPage !== 0}
+          sx={pageSx(0)}
+        >
+          {renderGroups(neighborReady || previewScope === 'groups')}
         </Box>
-        <Box data-chat-list-page="directs" inert={page !== 1} sx={pageSx(1)}>
-          {renderDirects(page === 1 || neighborReady)}
+        <Box
+          data-chat-list-page="directs"
+          inert={shownPage !== 1}
+          sx={pageSx(1)}
+        >
+          {renderDirects(
+            page === 1 || neighborReady || previewScope === 'directs'
+          )}
         </Box>
       </Box>
     </Box>

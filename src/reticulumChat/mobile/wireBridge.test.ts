@@ -243,3 +243,109 @@ describe('MobileReticulumBridge resource sessions', () => {
     });
   });
 });
+
+describe('MobileReticulumBridge overlay availability', () => {
+  const linkState = (
+    bridge: MobileReticulumBridge,
+    linkId: string,
+    peerPresenceHash: string,
+    state: { established: boolean; overlayTransportAdmitted?: boolean }
+  ) =>
+    bridge.dispatchPythonEvent('overlay_link_state', {
+      linkId,
+      peerPresenceHash,
+      ...state,
+    });
+
+  it('fires once when the first link is admitted and once when the last one goes', () => {
+    const { bridge } = makeBridge();
+    const changes: boolean[] = [];
+    bridge.on('overlay-availability', ({ available }) => {
+      changes.push(available);
+    });
+
+    // Established but not yet admitted: python would refuse to send on it.
+    linkState(bridge, 'l1', PEER_B, { established: true });
+    expect(bridge.hasAdmittedOverlayLink()).toBe(false);
+    linkState(bridge, 'l1', PEER_B, {
+      established: true,
+      overlayTransportAdmitted: true,
+    });
+    linkState(bridge, 'l2', PEER_C, {
+      established: true,
+      overlayTransportAdmitted: true,
+    });
+    // Later ping/pong snapshots of a live link change nothing.
+    linkState(bridge, 'l1', PEER_B, {
+      established: true,
+      overlayTransportAdmitted: true,
+    });
+    expect(changes).toEqual([true]);
+
+    linkState(bridge, 'l1', PEER_B, { established: false });
+    expect(bridge.hasAdmittedOverlayLink()).toBe(true);
+    linkState(bridge, 'l2', PEER_C, { established: false });
+    expect(bridge.hasAdmittedOverlayLink()).toBe(false);
+    expect(changes).toEqual([true, false]);
+  });
+
+  it('reports the loss when python stops with links up', () => {
+    const { bridge } = makeBridge();
+    const changes: boolean[] = [];
+    bridge.on('overlay-availability', ({ available }) => {
+      changes.push(available);
+    });
+    bridge.markStopped();
+    expect(changes).toEqual([]);
+    linkState(bridge, 'l1', PEER_B, {
+      established: true,
+      overlayTransportAdmitted: true,
+    });
+    bridge.markStopped();
+    expect(changes).toEqual([true, false]);
+    expect(bridge.hasAdmittedOverlayLink()).toBe(false);
+  });
+});
+
+describe('MobileReticulumBridge chat fanout', () => {
+  const wire = { t: 'RCHAT', k: 'dm_probe' };
+
+  it('passes the bounded gossip width and selection key to python', async () => {
+    const { bridge, sendCommand } = makeBridge();
+    await expect(
+      bridge.fanoutReticulumChatDetailed([wire], [PEER_B], {
+        maxPeerCount: 4,
+        selectionKey: 'group-sub:abc:1',
+      })
+    ).resolves.toEqual({ ok: true });
+    expect(sendCommand).toHaveBeenCalledWith(
+      'fanout_reticulum_chat',
+      {
+        messages: [wire],
+        excludePeerPresenceHashes: [PEER_B],
+        maxPeerCount: 4,
+        selectionKey: 'group-sub:abc:1',
+      },
+      undefined
+    );
+  });
+
+  it('keeps a full fanout when no usable width is given', async () => {
+    const { bridge, sendCommand } = makeBridge();
+    await bridge.fanoutReticulumChatDetailed([wire]);
+    await bridge.fanoutReticulumChatDetailed([wire], [], {
+      maxPeerCount: 0,
+      selectionKey: '',
+    });
+    await bridge.fanoutReticulumChatDetailed([wire], [], {
+      maxPeerCount: 2.5,
+    });
+    for (const [, payload] of sendCommand.mock.calls) {
+      expect(payload).toEqual({
+        messages: [wire],
+        excludePeerPresenceHashes: [],
+      });
+    }
+    expect(sendCommand).toHaveBeenCalledTimes(3);
+  });
+});

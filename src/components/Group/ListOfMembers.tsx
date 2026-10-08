@@ -57,6 +57,7 @@ import {
   reticulumMemberNamePx,
   type ReticulumChatTextScale,
 } from '../Chat/reticulumChatTextScale';
+import { immersiveMotionReduced } from '../Mobile/immersive/useImmersiveBars';
 
 const MEMBER_ROW_HEIGHT = 64;
 /** Q-Chat member rows grow and shrink with the chat's text size. */
@@ -69,6 +70,41 @@ const QORTAL_LAND_REMOTE_TTL_MS = 30_000;
 // Re-read the member list this often while a promotion, demotion, kick or ban
 // waits for a block, so the row flips as soon as Core reports the change.
 const PENDING_MEMBER_REFRESH_MS = 15_000;
+/** How long a member picked in the search stays marked in the list. */
+const MEMBER_FOCUS_HOLD_MS = 2_000;
+const MEMBER_FOCUS_PULSE_MS = 1_200;
+
+const MEMBER_SECTION_KEYS = [
+  'admins',
+  'lounge',
+  'park',
+  'members',
+  'offline',
+] as const;
+type MemberSectionKey = (typeof MEMBER_SECTION_KEYS)[number];
+const MEMBER_SECTION_LABEL_KEY: Record<MemberSectionKey, string> = {
+  admins: 'group:member_category.admins',
+  lounge: 'group:member_category.lounge',
+  park: 'group:member_category.park',
+  members: 'group:member_category.members',
+  offline: 'group:member_category.offline',
+};
+
+/** A section header or a member row in the virtualized list. */
+type MemberListRow = {
+  type: 'section' | 'member';
+  member?: any;
+  offline?: boolean;
+  section?: MemberSectionKey;
+  count?: number;
+  totalCount?: number;
+  expanded?: boolean;
+  first?: boolean;
+  label?: string;
+};
+
+/** Ask the list to scroll to a member and mark it; a new nonce asks again. */
+export type MemberFocusRequest = { address: string; nonce: number };
 
 // Broadcast-but-unconfirmed actions per group. Kept outside the component so
 // closing and reopening the Members screen still shows "pending" instead of
@@ -130,6 +166,7 @@ const ListOfMembers = ({
   compact = false,
   reticulumUserCards = false,
   onRefreshMembers = undefined,
+  focusMemberRequest = null,
 }: {
   members: any[];
   groupId: number | string;
@@ -142,6 +179,8 @@ const ListOfMembers = ({
   compact?: boolean;
   reticulumUserCards?: boolean;
   onRefreshMembers?: () => unknown;
+  /** Scroll to this member and mark the row (the Members search). */
+  focusMemberRequest?: MemberFocusRequest | null;
 }) => {
   // One action menu for the whole list, opened from a row's ⋮ button or by
   // holding / right-clicking the row.
@@ -317,10 +356,9 @@ const ListOfMembers = ({
       });
     });
   }, [members, ownerAddress]);
-  const categorizedRows = useMemo(() => {
-    if (!categorizedReticulumMembers) {
-      return sortedMembers.map((member) => ({ member, type: 'member' }));
-    }
+  // Who sits in which section, whether or not the section is folded.
+  const memberSections = useMemo(() => {
+    if (!categorizedReticulumMembers) return null;
 
     const labelForMember = (member) =>
       (member?.primaryName || member?.name || member?.member || '').toString();
@@ -386,86 +424,153 @@ const ListOfMembers = ({
       .filter((member) => !isMemberOnline(member))
       .sort(sortByName);
 
-    return [
-      {
-        count: admins.length,
-        totalCount: allAdmins.length,
-        expanded: expandedSections.admins,
-        first: true,
-        label: t('group:member_category.admins'),
-        section: 'admins',
-        type: 'section',
-      },
-      ...(expandedSections.admins
-        ? admins.map((member) => ({ member, type: 'member' }))
-        : []),
-      {
-        count: loungeMembers.length,
-        totalCount: allRegularMembers.length,
-        expanded: expandedSections.lounge,
-        first: false,
-        label: t('group:member_category.lounge'),
-        section: 'lounge',
-        type: 'section',
-      },
-      ...(expandedSections.lounge
-        ? loungeMembers.map((member) => ({ member, type: 'member' }))
-        : []),
-      {
-        count: parkMembers.length,
-        totalCount: allRegularMembers.length,
-        expanded: expandedSections.park,
-        first: false,
-        label: t('group:member_category.park'),
-        section: 'park',
-        type: 'section',
-      },
-      ...(expandedSections.park
-        ? parkMembers.map((member) => ({ member, type: 'member' }))
-        : []),
-      {
-        count: remainingMembers.length,
-        totalCount: allRegularMembers.length,
-        expanded: expandedSections.members,
-        first: false,
-        label: t('group:member_category.members'),
-        section: 'members',
-        type: 'section',
-      },
-      ...(expandedSections.members
-        ? remainingMembers.map((member) => ({ member, type: 'member' }))
-        : []),
-      {
-        count: offlineMembers.length,
-        expanded: expandedSections.offline,
-        first: false,
-        label: t('group:member_category.offline'),
-        section: 'offline',
-        type: 'section',
-      },
-      ...(expandedSections.offline
-        ? offlineMembers.map((member) => ({
-            member,
-            offline: true,
-            type: 'member',
-          }))
-        : []),
-    ];
+    return {
+      admins,
+      lounge: loungeMembers,
+      park: parkMembers,
+      members: remainingMembers,
+      offline: offlineMembers,
+      adminsTotal: allAdmins.length,
+      regularTotal: allRegularMembers.length,
+    };
   }, [
     categorizedReticulumMembers,
-    expandedSections.admins,
-    expandedSections.lounge,
-    expandedSections.members,
-    expandedSections.offline,
-    expandedSections.park,
     landPresenceByAddress,
     members,
     onlineAddresses,
     ownerAddress,
-    sortedMembers,
     statusMap,
-    t,
   ]);
+  const memberSectionsRef = useRef(memberSections);
+  memberSectionsRef.current = memberSections;
+
+  const categorizedRows = useMemo<MemberListRow[]>(() => {
+    if (!memberSections) {
+      return sortedMembers.map((member) => ({ member, type: 'member' }));
+    }
+    const sectionRows = (
+      section: MemberSectionKey,
+      totalCount: number | undefined
+    ): MemberListRow[] => {
+      const list = memberSections[section];
+      const expanded = expandedSections[section];
+      return [
+        {
+          count: list.length,
+          totalCount,
+          expanded,
+          first: section === 'admins',
+          label: t(MEMBER_SECTION_LABEL_KEY[section]),
+          section,
+          type: 'section',
+        },
+        ...(expanded
+          ? list.map(
+              (member): MemberListRow => ({
+                member,
+                type: 'member',
+                ...(section === 'offline' ? { offline: true } : {}),
+              })
+            )
+          : []),
+      ];
+    };
+    return [
+      ...sectionRows('admins', memberSections.adminsTotal),
+      ...sectionRows('lounge', memberSections.regularTotal),
+      ...sectionRows('park', memberSections.regularTotal),
+      ...sectionRows('members', memberSections.regularTotal),
+      ...sectionRows('offline', undefined),
+    ];
+  }, [expandedSections, memberSections, sortedMembers, t]);
+
+  // The Members search picked someone: unfold their section, scroll them to
+  // the middle of the list and mark the row for a moment.
+  const [focusTarget, setFocusTarget] = useState<MemberFocusRequest | null>(
+    null
+  );
+  const scrolledFocusNonceRef = useRef<number | null>(null);
+  const listBoxRef = useRef<HTMLDivElement>(null);
+  const focusAddress = focusMemberRequest?.address;
+  const focusNonce = focusMemberRequest?.nonce;
+  useEffect(() => {
+    if (!focusAddress) return;
+    const sections = memberSectionsRef.current;
+    const section = sections
+      ? MEMBER_SECTION_KEYS.find((key) =>
+          sections[key].some((member) => member?.member === focusAddress)
+        )
+      : undefined;
+    if (section) {
+      setExpandedSections((current) =>
+        current[section] ? current : { ...current, [section]: true }
+      );
+    }
+    setFocusTarget({ address: focusAddress, nonce: focusNonce });
+    const timer = window.setTimeout(() => {
+      setFocusTarget((current) =>
+        current?.nonce === focusNonce ? null : current
+      );
+    }, MEMBER_FOCUS_HOLD_MS);
+    return () => window.clearTimeout(timer);
+  }, [focusAddress, focusNonce]);
+
+  const scrollRowToCentre = (index: number) => {
+    const list = listRef.current;
+    if (!list || index < 0) return;
+    // Row heights depend on what each index holds, which shifts when a
+    // section folds or a member changes section.
+    list.recomputeRowHeights?.();
+    const top = list.getOffsetForRow?.({ alignment: 'center', index });
+    if (typeof top !== 'number' || !Number.isFinite(top)) return;
+    const scroller = listBoxRef.current?.querySelector<HTMLElement>(
+      '.ReactVirtualized__List'
+    );
+    if (
+      scroller &&
+      typeof scroller.scrollTo === 'function' &&
+      !immersiveMotionReduced()
+    ) {
+      scroller.scrollTo({ top, behavior: 'smooth' });
+    } else {
+      list.scrollToPosition?.(top);
+    }
+  };
+  const focusRowIndex = (address?: string) =>
+    address
+      ? categorizedRows.findIndex(
+          (row) => row.type === 'member' && row.member?.member === address
+        )
+      : -1;
+
+  useEffect(() => {
+    if (!focusTarget || scrolledFocusNonceRef.current === focusTarget.nonce) {
+      return;
+    }
+    const index = focusRowIndex(focusTarget.address);
+    if (index < 0) return;
+    scrolledFocusNonceRef.current = focusTarget.nonce;
+    scrollRowToCentre(index);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [categorizedRows, focusTarget]);
+
+  // The keyboard going away (or the search bar giving way to the tabs)
+  // resizes the list mid-scroll: keep the picked member in the middle.
+  const recentreFocusedRow = () => {
+    if (!focusTarget) return;
+    scrollRowToCentre(focusRowIndex(focusTarget.address));
+  };
+
+  const focusPulseSx = {
+    '@keyframes memberFocusPulse': {
+      '0%': { backgroundColor: alpha(theme.palette.primary.main, 0) },
+      '15%': { backgroundColor: alpha(theme.palette.primary.main, 0.26) },
+      '55%': { backgroundColor: alpha(theme.palette.primary.main, 0.2) },
+      '100%': { backgroundColor: alpha(theme.palette.primary.main, 0) },
+    },
+    animation: `memberFocusPulse ${MEMBER_FOCUS_PULSE_MS}ms ease-out`,
+    borderRadius: '8px',
+  };
 
   const groupMemberAddresses = useMemo(
     () =>
@@ -948,10 +1053,17 @@ const ListOfMembers = ({
     );
 
     const rowHasActions = getMemberActions(member).length > 0;
+    const isFocusTarget =
+      Boolean(focusTarget) && focusTarget.address === member?.member;
 
     return (
       <div key={semanticRowKey} style={style}>
-        <ListItem key={member?.member} disablePadding>
+        <ListItem
+          key={member?.member}
+          data-member-focus={isFocusTarget ? 'true' : undefined}
+          disablePadding
+          sx={isFocusTarget ? focusPulseSx : undefined}
+        >
           {reticulumUserCard ? (
             <Box sx={{ display: 'flex', flex: 1, minWidth: 0 }}>
               <WrapperUserAction
@@ -1034,6 +1146,7 @@ const ListOfMembers = ({
         </p>
       )}
       <div
+        ref={listBoxRef}
         style={{
           display: 'flex',
           flexDirection: 'column',
@@ -1046,7 +1159,7 @@ const ListOfMembers = ({
           width: '100%',
         }}
       >
-        <AutoSizer>
+        <AutoSizer onResize={recentreFocusedRow}>
           {({ height, width }) => (
             <List
               height={height}

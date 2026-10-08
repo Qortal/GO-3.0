@@ -16,7 +16,11 @@ import {
   vi,
 } from 'vitest';
 import i18n from '../../i18n/i18n';
-import { MessageItem } from './MessageItem';
+import { DOUBLE_TAP_WINDOW_MS, MessageItem } from './MessageItem';
+import {
+  resetReactionPrefsCache,
+  setDoubleTapReaction,
+} from './reactionPreferences';
 
 // Phone vs desktop sizing of the message action surfaces. Heavy children are
 // stubs; the emoji picker stub exposes the size MessageItem asks it for.
@@ -162,6 +166,20 @@ const reactionChip = () =>
 const row = (container: HTMLElement) =>
   container.querySelector('.message-item-row') as HTMLElement;
 
+// A single tap waits to see whether a second (double) tap follows.
+const waitOutDoubleTap = () =>
+  act(
+    () =>
+      new Promise<void>((resolve) =>
+        setTimeout(resolve, DOUBLE_TAP_WINDOW_MS + 30)
+      )
+  );
+
+const tapRow = async (container: HTMLElement, clientX = 120, clientY = 300) => {
+  fireEvent.click(row(container), { clientX, clientY });
+  await waitOutDoubleTap();
+};
+
 // jsdom does no layout, so a test gives the row the width a host would.
 const setRowWidth = (element: HTMLElement, width: number) =>
   Object.defineProperty(element, 'clientWidth', {
@@ -217,6 +235,8 @@ describe('MessageItem touch targets', () => {
 
   beforeEach(() => {
     document.body.innerHTML = '';
+    window.localStorage.clear();
+    resetReactionPrefsCache();
   });
 
   afterEach(() => {
@@ -245,9 +265,9 @@ describe('MessageItem touch targets', () => {
       expect(getComputedStyle(chip).height).toBe('36px');
     });
 
-    it('opens the Telegram-style popup on a tap, not a bar under it', () => {
+    it('opens the Telegram-style popup on a tap, not a bar under it', async () => {
       const { container } = renderItem(post());
-      fireEvent.click(row(container), { clientX: 120, clientY: 300 });
+      await tapRow(container, 120, 300);
       expect(container.querySelector('.message-item-toolbar')).toBeNull();
       const pill = screen.getByRole('group', { name: 'Quick reactions' });
       const pillButtons = within(pill).getAllByRole('button');
@@ -264,22 +284,22 @@ describe('MessageItem touch targets', () => {
       expect(screen.queryByText('Sent')).not.toBeInTheDocument();
     });
 
-    it('adds edit and delete to the tap popup of your own message', () => {
+    it('adds edit and delete to the tap popup of your own message', async () => {
       const { container } = renderItem(post({ sender: ME, senderAddress: ME }));
-      fireEvent.click(row(container), { clientX: 300, clientY: 300 });
+      await tapRow(container, 300, 300);
       expect(
         screen.getAllByRole('menuitem').map((item) => item.textContent)
       ).toEqual(['Reply', 'View 3 replies', 'Copy', 'Edit', 'Delete']);
     });
 
-    it('offers to start a discussion when there are no replies yet', () => {
+    it('offers to start a discussion when there are no replies yet', async () => {
       const onOpenReticulumDiscussion = vi.fn();
       const message = post();
       const { container } = renderItem(message, {
         onOpenReticulumDiscussion,
         reticulumDiscussionReplyCount: 0,
       });
-      fireEvent.click(row(container), { clientX: 120, clientY: 300 });
+      await tapRow(container, 120, 300);
       fireEvent.click(
         screen.getByRole('menuitem', { name: 'Reply in discussion' })
       );
@@ -290,7 +310,7 @@ describe('MessageItem touch targets', () => {
       const handleReaction = vi.fn();
       const message = post();
       const { container } = renderItem(message, { handleReaction });
-      fireEvent.click(row(container), { clientX: 120, clientY: 300 });
+      await tapRow(container, 120, 300);
       fireEvent.click(screen.getByRole('button', { name: 'React with 🔥' }));
       expect(handleReaction).toHaveBeenCalledWith('🔥', message, true);
       await waitFor(() =>
@@ -298,14 +318,14 @@ describe('MessageItem touch targets', () => {
       );
     });
 
-    it('takes your reaction back from the pill', () => {
+    it('takes your reaction back from the pill', async () => {
       const handleReaction = vi.fn();
       const message = post();
       const { container } = renderItem(message, {
         handleReaction,
         reactions: { '👍': [{ sender: ME, senderName: 'me' }] },
       });
-      fireEvent.click(row(container), { clientX: 120, clientY: 300 });
+      await tapRow(container, 120, 300);
       const thumbs = screen.getByRole('button', { name: 'React with 👍' });
       expect(thumbs).toHaveAttribute('aria-pressed', 'true');
       fireEvent.click(thumbs);
@@ -355,14 +375,14 @@ describe('MessageItem touch targets', () => {
       expect(screen.getByText('No expiry')).toBeInTheDocument();
     });
 
-    it('keeps a thread read-only: no tap popup, a long press only copies', () => {
+    it('keeps a thread read-only: no tap popup, a long press only copies', async () => {
       const { container } = renderItem(
         post({ sender: ME, senderAddress: ME }),
         {
           reticulumDiscussionView: true,
         }
       );
-      fireEvent.click(row(container), { clientX: 120, clientY: 300 });
+      await tapRow(container, 120, 300);
       expect(screen.queryByRole('menu')).not.toBeInTheDocument();
       fireEvent.contextMenu(row(container), { clientX: 120, clientY: 300 });
       expect(
@@ -373,11 +393,12 @@ describe('MessageItem touch targets', () => {
       ).not.toBeInTheDocument();
     });
 
-    it('lets a tap on a picture open the picture, not the popup', () => {
+    it('lets a tap on a picture open the picture, not the popup', async () => {
       const { container } = renderItem(post());
       const picture = document.createElement('img');
       row(container).appendChild(picture);
       fireEvent.click(picture, { clientX: 120, clientY: 300 });
+      await waitOutDoubleTap();
       expect(screen.queryByRole('menu')).not.toBeInTheDocument();
     });
 
@@ -394,12 +415,89 @@ describe('MessageItem touch targets', () => {
       // The card is drawn in a portal, but React still hands the tap on its
       // backdrop to the message row it belongs to.
       fireEvent.click(backdrop, { clientX: 120, clientY: 600 });
+      await waitOutDoubleTap();
       expect(screen.queryByRole('menu')).not.toBeInTheDocument();
     });
 
-    it('makes the popup menu rows at least 48px tall', () => {
+    it('only closes the who-reacted list when You tap back in the chat', async () => {
       const { container } = renderItem(post());
+      fireEvent.contextMenu(reactionChip());
+      const list = screen.getByText('peer', {
+        selector: '.MuiListItemText-primary',
+      });
+      // A tap inside the list leaves it open.
+      fireEvent.click(list);
+      expect(list).toBeInTheDocument();
+      await tapRow(container, 120, 300);
+      expect(
+        screen.queryByText('peer', { selector: '.MuiListItemText-primary' })
+      ).not.toBeInTheDocument();
+      expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+      // The next tap is an ordinary one again.
+      await tapRow(container, 120, 300);
+      expect(screen.getByRole('menu')).toBeInTheDocument();
+    });
+
+    it('reacts with thumbs up on a double tap, without the popup', async () => {
+      const handleReaction = vi.fn();
+      const message = post();
+      const { container } = renderItem(message, {
+        handleReaction,
+        reactions: {},
+      });
       fireEvent.click(row(container), { clientX: 120, clientY: 300 });
+      fireEvent.click(row(container), { clientX: 124, clientY: 302 });
+      expect(handleReaction).toHaveBeenCalledWith('👍', message, true);
+      await waitOutDoubleTap();
+      expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+    });
+
+    it('double taps with the emoji chosen for this chat', async () => {
+      setDoubleTapReaction('group:7', '🔥');
+      const handleReaction = vi.fn();
+      const message = post();
+      const { container } = renderItem(message, {
+        handleReaction,
+        reactionChatKey: 'group:7',
+      });
+      fireEvent.click(row(container), { clientX: 120, clientY: 300 });
+      fireEvent.click(row(container), { clientX: 120, clientY: 300 });
+      expect(handleReaction).toHaveBeenCalledWith('🔥', message, true);
+      // Other chats keep thumbs up.
+      handleReaction.mockClear();
+      const other = renderItem(message, {
+        handleReaction,
+        reactionChatKey: 'direct:QSomeone',
+      });
+      fireEvent.click(row(other.container), { clientX: 120, clientY: 300 });
+      fireEvent.click(row(other.container), { clientX: 120, clientY: 300 });
+      expect(handleReaction).toHaveBeenCalledWith('👍', message, true);
+    });
+
+    it('takes the double-tap reaction back when it is already yours', () => {
+      const handleReaction = vi.fn();
+      const message = post();
+      const { container } = renderItem(message, {
+        handleReaction,
+        reactions: { '👍': [{ sender: ME, senderName: 'me' }] },
+      });
+      fireEvent.click(row(container), { clientX: 120, clientY: 300 });
+      fireEvent.click(row(container), { clientX: 120, clientY: 300 });
+      expect(handleReaction).toHaveBeenCalledWith('👍', message, false);
+    });
+
+    it('treats two taps far apart as a tap, not a double tap', async () => {
+      const handleReaction = vi.fn();
+      const { container } = renderItem(post(), { handleReaction });
+      fireEvent.click(row(container), { clientX: 60, clientY: 200 });
+      await tapRow(container, 260, 420);
+      expect(handleReaction).not.toHaveBeenCalled();
+      expect(screen.getByRole('menu')).toBeInTheDocument();
+    });
+
+    it('makes the popup menu rows at least 48px tall', async () => {
+      const { container } = renderItem(post());
+      await tapRow(container, 120, 300);
       expect(cssRulesFor(screen.getAllByRole('menuitem')[0])).toMatch(
         /min-height:\s*48px/
       );

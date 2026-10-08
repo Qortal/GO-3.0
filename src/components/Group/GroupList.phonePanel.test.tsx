@@ -160,6 +160,15 @@ describe('GroupList phone panel', () => {
     expect(props.setOpenFindGroup).toHaveBeenCalledWith(true);
   });
 
+  it('leaves its header to the shared phone header above the pager', () => {
+    renderPanel({ hideMobileHeader: true });
+
+    expect(screen.queryByRole('button', { name: 'Find Groups' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Create group' })).toBeNull();
+    // The list itself is still there.
+    expect(screen.getAllByText('Hikers').length).toBeGreaterThan(0);
+  });
+
   it('gives the Q-Chat settings screen a 44px translated close button', async () => {
     renderPanel();
 

@@ -2,6 +2,7 @@
 import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 import { resolve } from 'node:path';
+import { readFileSync } from 'node:fs';
 // Import path module for resolving file paths
 import fixReactVirtualized from 'esbuild-plugin-react-virtualized';
 import wasm from 'vite-plugin-wasm';
@@ -46,6 +47,22 @@ function mobileChatWorkerPoolPlugin() {
     },
   };
 }
+
+/**
+ * Measurement builds only (VITE_GO_PERF=1): put the React commit inspector
+ * (tools/perf/goPerfHook.js) in the page before any module runs.
+ */
+const goPerfHookPlugin = () => ({
+  name: 'go-perf-hook',
+  transformIndexHtml(html: string) {
+    if (process.env.VITE_GO_PERF !== '1') return html;
+    const hook = readFileSync(
+      resolve(__dirname, 'tools/perf/goPerfHook.js'),
+      'utf8'
+    );
+    return html.replace('<head>', `<head><script>${hook}</script>`);
+  },
+});
 
 export default defineConfig({
   server: {
@@ -110,11 +127,13 @@ export default defineConfig({
               __dirname,
               'src/reticulumChat/mobile/shims/worker_threads.ts'
             ),
-            zlib: resolve(
-              __dirname,
-              'src/reticulumChat/mobile/shims/zlib.ts'
-            ),
+            zlib: resolve(__dirname, 'src/reticulumChat/mobile/shims/zlib.ts'),
             path: 'path-browserify',
+            // Measurement builds only (VITE_GO_PERF=1): React's profiling
+            // build, so the PerfProfiler wrappers report render timings.
+            ...(process.env.VITE_GO_PERF === '1'
+              ? { 'react-dom/client': 'react-dom/profiling' }
+              : {}),
           },
   },
   // Capacitor serves the bundle from the WebView's local http origin, so relative
@@ -181,6 +200,7 @@ export default defineConfig({
   } as any,
   assetsInclude: ['**/*.wasm'],
   plugins: [
+    goPerfHookPlugin(),
     inlineResizeImageIconsPlugin(),
     mobileChatWorkerPoolPlugin(),
     react(),

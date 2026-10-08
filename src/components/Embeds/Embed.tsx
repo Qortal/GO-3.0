@@ -452,6 +452,7 @@ export const Embed = ({ embedLink }) => {
       {parsedType === 'IMAGE' && (
         <ImageCard
           image={imageUrl}
+          resource={resourceData}
           owner={parsedData?.name}
           fetchImage={fetchImage}
           refresh={refreshImage}

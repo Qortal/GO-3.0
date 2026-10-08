@@ -4,9 +4,9 @@
  * Touching the app behind the panel closes it. But when the panel holds a
  * long, scrolling list it reaches down to a thin strip right above the bottom
  * tab bar, and the overlay's transparent backdrop covers both the strip and
- * the tab bar. A swipe up from there is aimed at the list, so it scrolls the
- * list instead of closing the panel. A tap there still closes it (the
- * backdrop's click).
+ * the tab bar. A swipe from there is aimed at the list, so it is left to the
+ * list's own swipe (useTabsSwipeClose: a small one scrolls the list, a big
+ * one closes). A tap there still closes it (the backdrop's click).
  */
 export interface BackgroundGestureOptions {
   getPanel: () => HTMLElement | null;
@@ -23,11 +23,11 @@ export const createBackgroundGesture = ({
   isExempt,
   onClose,
 }: BackgroundGestureOptions) => {
-  /** Last finger position while a swipe below the panel scrolls the list. */
-  let scrollingFromY: number | null = null;
+  /** Set while a swipe below the panel belongs to the list. */
+  let leftToList = false;
 
   const onTouchStart = (event: TouchEvent) => {
-    scrollingFromY = null;
+    leftToList = false;
     if (isExempt(event.target)) return;
     const touch = event.touches[0];
     const panel = getPanel();
@@ -35,24 +35,17 @@ export const createBackgroundGesture = ({
     if (!touch || !panel || !list) return;
     const canScroll = list.scrollHeight > list.clientHeight + 1;
     if (canScroll && touch.clientY >= panel.getBoundingClientRect().bottom) {
-      scrollingFromY = touch.clientY;
+      leftToList = true;
     }
   };
 
   const onTouchMove = (event: TouchEvent) => {
-    if (isExempt(event.target)) return;
-    const touch = event.touches[0];
-    const list = getList();
-    if (scrollingFromY != null && touch && list) {
-      list.scrollTop -= touch.clientY - scrollingFromY;
-      scrollingFromY = touch.clientY;
-      return;
-    }
+    if (isExempt(event.target) || leftToList) return;
     onClose();
   };
 
   const onTouchEnd = () => {
-    scrollingFromY = null;
+    leftToList = false;
   };
 
   const onWheel = (event: Event) => {

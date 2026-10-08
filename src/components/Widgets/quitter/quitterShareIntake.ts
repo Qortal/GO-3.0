@@ -18,6 +18,7 @@ import { getDefaultStore } from 'jotai';
 import { composerTargetAtom, syncComposerShareTarget } from './composerTarget';
 import { QUITTER_MAX_IMAGES } from './quitterPublish';
 import { TORQ_MAX_IMAGES } from './torqPublish';
+import { drainRevShare } from './torqRevShare';
 
 export type SharedComposerVideo = {
   /** Native cache path — the compress/publish pipeline reads it directly. */
@@ -120,7 +121,15 @@ export function initQuitterShareIntake(): void {
   initialized = true;
   syncComposerShareTarget();
   void drainNativeQueue().catch(() => undefined);
-  void ShareReceiver.addShareListener(() => {
+  void drainRevShare().catch(() => undefined);
+  void ShareReceiver.addShareListener((event) => {
+    // Shares into a group or a DM have their own intake (chatShareIntake).
+    if (event?.kind === 'chat') return;
+    // "Torq Rev": Torq's own Rev editor, not the Home composer.
+    if (event?.kind === 'rev') {
+      void drainRevShare().catch(() => undefined);
+      return;
+    }
     void drainNativeQueue().catch(() => undefined);
   });
 }

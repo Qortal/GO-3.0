@@ -105,6 +105,29 @@ export function openOrSelectTab(tab: OpenTab) {
   });
 }
 
+/**
+ * An app icon tapped (a Pinned folder, a Tabs folder): like a launcher, it
+ * opens the app, and opens it again in another window when one is already
+ * open. Open windows are switched to from their tab cards instead. Private
+ * apps keep their single window (they reopen through their decrypt path).
+ */
+export function launchAppWindow(tab: OpenTab) {
+  const isLive =
+    Boolean(tab.tabId) && !String(tab.tabId).startsWith('saved:');
+  if (!isLive || tab.internal || getPrivateAppIdentity(tab)) {
+    openOrSelectTab(tab);
+    return;
+  }
+  executeEvent('addTab', {
+    data: {
+      service: tab.service,
+      name: tab.name,
+      identifier: tab.identifier,
+      label: tab.label,
+    },
+  });
+}
+
 export function updateOpenTab(
   tabId: string | undefined,
   patch: Partial<OpenTab>

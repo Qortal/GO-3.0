@@ -31,6 +31,16 @@ import { ChatOptions } from './ChatOptions';
 import ErrorBoundary from '../../common/ErrorBoundary';
 import { useTranslation } from 'react-i18next';
 import { mobileChatHeaderCollapsedAtom } from '../../atoms/global';
+import {
+  applyOwnReactions,
+  isReactionQueueItem,
+  OptimisticReactionTracker,
+} from './optimisticReactions';
+import {
+  ChatMediaGalleryContext,
+  collectChatMedia,
+  type ChatMediaGallerySource,
+} from './chatMediaGallery';
 
 type ReactionItem = {
   sender: string;
@@ -366,6 +376,16 @@ export const ChatList = ({
     if (selectedGroup?.id != null) return `group:${selectedGroup.id}`;
     return 'chat';
   }, [chatId, selectedGroup?.groupId, selectedGroup?.id]);
+  // Which double-tap reaction applies: one per group (all its channels share
+  // it) and one per DM.
+  const reactionChatKey = useMemo(() => {
+    if (selectedGroup != null && typeof selectedGroup !== 'object') {
+      return `group:${selectedGroup}`;
+    }
+    if (selectedGroup?.groupId != null) return `group:${selectedGroup.groupId}`;
+    if (typeof chatId === 'string' && chatId) return `direct:${chatId}`;
+    return undefined;
+  }, [chatId, selectedGroup]);
   const mountedChatIdentityRef = useRef(chatIdentity);
   const reticulumScrollTargetKey = scrollToMessageId
     ? `${scrollToMessageId}:${scrollToMessageNonce ?? 0}`
@@ -1735,6 +1755,40 @@ export const ChatList = ({
     tempMessages,
   ]);
 
+  // The viewer's own reactions show at once, before the send queue has
+  // published them (see optimisticReactions.ts).
+  const optimisticReactionsRef = useRef<OptimisticReactionTracker | null>(null);
+  if (!optimisticReactionsRef.current) {
+    optimisticReactionsRef.current = new OptimisticReactionTracker();
+  }
+  const [optimisticReactionsClock, setOptimisticReactionsClock] = useState(0);
+  const ownReactionChanges = useMemo(
+    () =>
+      optimisticReactionsRef.current!.update(
+        tempChatReferences,
+        (signature, emoji) =>
+          Boolean(
+            (
+              chatReferences?.[signature]?.reactions?.[emoji] as
+                | ReactionItem[]
+                | undefined
+            )?.some((item) => item?.sender === myAddress)
+          ),
+        Date.now()
+      ),
+    // The clock re-runs it when a held reaction's grace runs out.
+    [chatReferences, myAddress, optimisticReactionsClock, tempChatReferences]
+  );
+  useEffect(() => {
+    const wait = optimisticReactionsRef.current?.msUntilNextExpiry(Date.now());
+    if (wait == null) return;
+    const timer = window.setTimeout(
+      () => setOptimisticReactionsClock((tick) => tick + 1),
+      wait + 20
+    );
+    return () => window.clearTimeout(timer);
+  }, [ownReactionChanges]);
+
   // Memoize per-row payload so MessageItem receives stable references and memo can skip re-renders
   const processedRows = useMemo(() => {
     const messageIndexBySignature = new Map<string, number>();
@@ -1749,6 +1803,13 @@ export const ChatList = ({
     });
     const updatingReferenceIds = new Set(
       (tempChatReferences || [])
+        // A reaction shows on its own (see ownReactionChanges); dimming the
+        // whole message while it sends only made the message blink. One that
+        // failed for good still marks the message.
+        .filter(
+          (item) =>
+            !isReactionQueueItem(item) || item?.status === 'failed-permanent'
+        )
         .map((item) => item?.chatReference)
         .filter(
           (signature): signature is string => typeof signature === 'string'
@@ -1868,6 +1929,15 @@ export const ChatList = ({
               };
             }
           }
+          const ownChanges = ownReactionChanges.get(message?.signature);
+          if (ownChanges) {
+            reactions = applyOwnReactions(
+              reactions,
+              ownChanges,
+              myAddress,
+              typeof myName === 'string' ? myName : undefined
+            );
+          }
           if (updatingReferenceIds.has(message?.signature)) {
             isUpdating = true;
           }
@@ -1893,10 +1963,24 @@ export const ChatList = ({
   }, [
     chatReferences,
     messages,
+    myAddress,
+    myName,
+    ownReactionChanges,
     reticulumChatEnabled,
     reticulumUnreadBoundaryIndex,
     tempChatReferences,
   ]);
+
+  // The full-screen viewer swipes through this chat's pictures and videos.
+  const processedRowsRef = useRef(processedRows);
+  processedRowsRef.current = processedRows;
+  const mediaGallery = useMemo<ChatMediaGallerySource>(
+    () => ({
+      getItems: () =>
+        collectChatMedia(processedRowsRef.current.map((row) => row.message)),
+    }),
+    []
+  );
 
   useLayoutEffect(() => {
     if (
@@ -1962,390 +2046,405 @@ export const ChatList = ({
   const { t } = useTranslation(['auth', 'core', 'group', 'question']);
 
   return (
-    <Box
-      data-reticulum-chat-root={reticulumChatEnabled ? 'true' : undefined}
-      sx={{
-        display: 'flex',
-        flex: 1,
-        height: '100%',
-        minHeight: 0,
-        minWidth: 0,
-        // Anchor for the mobile ChatOptions overlay (floating strip + panels).
-        position: 'relative',
-        width: '100%',
-      }}
-    >
+    <ChatMediaGalleryContext.Provider value={mediaGallery}>
       <Box
-        style={{
+        data-reticulum-chat-root={reticulumChatEnabled ? 'true' : undefined}
+        sx={{
           display: 'flex',
-          flexDirection: 'column',
+          flex: 1,
           height: '100%',
           minHeight: 0,
           minWidth: 0,
+          // Anchor for the mobile ChatOptions overlay (floating strip + panels).
           position: 'relative',
           width: '100%',
         }}
       >
         <Box
-          data-reticulum-chat-scroll-viewport={
-            reticulumChatEnabled ? 'true' : undefined
-          }
-          ref={parentRef}
-          onScroll={handleScroll}
-          onWheel={handleReticulumWheel}
-          onTouchStart={cancelReticulumScrollRetries}
-          onTouchMove={beginReticulumReaderScroll}
-          onPointerDown={handleReticulumPointerDown}
           style={{
             display: 'flex',
-            flexGrow: 1,
-            height: '0px',
-            overflow: 'auto',
-            overflowAnchor: 'none',
-            overflowX: reticulumChatEnabled ? 'hidden' : undefined,
+            flexDirection: 'column',
+            height: '100%',
+            minHeight: 0,
+            minWidth: 0,
             position: 'relative',
-            visibility:
-              reticulumChatEnabled &&
-              (positionedReticulumChatIdentity !== chatIdentity ||
-                reticulumNavigationPending ||
-                (reticulumScrollTargetKey &&
-                  positionedReticulumScrollTargetKey !==
-                    reticulumScrollTargetKey))
-                ? 'hidden'
-                : 'visible',
+            width: '100%',
           }}
-          sx={
-            reticulumChatEnabled
-              ? {
-                  scrollbarColor: 'transparent transparent',
-                  scrollbarWidth: 'thin',
-                  '&::-webkit-scrollbar': { width: '6px' },
-                  '&::-webkit-scrollbar-button, &::-webkit-scrollbar-button:single-button':
-                    {
-                      display: 'none',
-                      height: 0,
-                      width: 0,
-                    },
-                  '&::-webkit-scrollbar-track': {
-                    backgroundColor: 'transparent',
-                  },
-                  '&::-webkit-scrollbar-thumb': {
-                    backgroundColor: 'transparent',
-                    backgroundClip: 'padding-box',
-                    border: '1px solid transparent',
-                    borderRadius: '999px',
-                    minHeight: '40px',
-                  },
-                  '&:hover': {
-                    scrollbarColor: `${alpha(theme.palette.text.secondary, 0.42)} transparent`,
-                    '&::-webkit-scrollbar-thumb': {
-                      backgroundColor: alpha(
-                        theme.palette.text.secondary,
-                        0.42
-                      ),
-                      backgroundClip: 'padding-box',
-                    },
-                    '&::-webkit-scrollbar-thumb:hover': {
-                      backgroundColor: alpha(
-                        theme.palette.text.secondary,
-                        0.59
-                      ),
-                      backgroundClip: 'padding-box',
-                    },
-                  },
-                }
-              : undefined
-          }
         >
           <Box
-            sx={{
-              height: virtualContentHeight + landscapeBottomPad,
-              width: '100%',
+            data-reticulum-chat-scroll-viewport={
+              reticulumChatEnabled ? 'true' : undefined
+            }
+            ref={parentRef}
+            onScroll={handleScroll}
+            onWheel={handleReticulumWheel}
+            onTouchStart={cancelReticulumScrollRetries}
+            onTouchMove={beginReticulumReaderScroll}
+            onPointerDown={handleReticulumPointerDown}
+            style={{
+              display: 'flex',
+              flexGrow: 1,
+              height: '0px',
+              overflow: 'auto',
+              overflowAnchor: 'none',
+              overflowX: reticulumChatEnabled ? 'hidden' : undefined,
+              position: 'relative',
+              visibility:
+                reticulumChatEnabled &&
+                (positionedReticulumChatIdentity !== chatIdentity ||
+                  reticulumNavigationPending ||
+                  (reticulumScrollTargetKey &&
+                    positionedReticulumScrollTargetKey !==
+                      reticulumScrollTargetKey))
+                  ? 'hidden'
+                  : 'visible',
             }}
+            sx={
+              reticulumChatEnabled
+                ? {
+                    scrollbarColor: 'transparent transparent',
+                    scrollbarWidth: 'thin',
+                    '&::-webkit-scrollbar': { width: '6px' },
+                    '&::-webkit-scrollbar-button, &::-webkit-scrollbar-button:single-button':
+                      {
+                        display: 'none',
+                        height: 0,
+                        width: 0,
+                      },
+                    '&::-webkit-scrollbar-track': {
+                      backgroundColor: 'transparent',
+                    },
+                    '&::-webkit-scrollbar-thumb': {
+                      backgroundColor: 'transparent',
+                      backgroundClip: 'padding-box',
+                      border: '1px solid transparent',
+                      borderRadius: '999px',
+                      minHeight: '40px',
+                    },
+                    '&:hover': {
+                      scrollbarColor: `${alpha(theme.palette.text.secondary, 0.42)} transparent`,
+                      '&::-webkit-scrollbar-thumb': {
+                        backgroundColor: alpha(
+                          theme.palette.text.secondary,
+                          0.42
+                        ),
+                        backgroundClip: 'padding-box',
+                      },
+                      '&::-webkit-scrollbar-thumb:hover': {
+                        backgroundColor: alpha(
+                          theme.palette.text.secondary,
+                          0.59
+                        ),
+                        backgroundClip: 'padding-box',
+                      },
+                    },
+                  }
+                : undefined
+            }
           >
             <Box
               sx={{
-                left: 0,
-                position: 'absolute',
-                top: 0,
+                height: virtualContentHeight + landscapeBottomPad,
                 width: '100%',
               }}
             >
-              {rowVirtualizer.getVirtualItems().map((virtualRow) => {
-                const index = virtualRow.index;
-                const rowPayload = processedRows[index];
-                if (!rowPayload) {
+              <Box
+                sx={{
+                  left: 0,
+                  position: 'absolute',
+                  top: 0,
+                  width: '100%',
+                }}
+              >
+                {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+                  const index = virtualRow.index;
+                  const rowPayload = processedRows[index];
+                  if (!rowPayload) {
+                    return (
+                      <Box
+                        key={virtualRow.index}
+                        sx={{
+                          alignItems: 'center',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: '5px',
+                          left: '50%',
+                          padding: '10px 0',
+                          position: 'absolute',
+                          top: 0,
+                          transform: `translateY(${virtualRow.start}px) translateX(-50%)`,
+                          width: '100%',
+                        }}
+                      >
+                        <Typography>
+                          {t('core:message.error.message_loading', {
+                            postProcess: 'capitalizeFirstChar',
+                          })}
+                        </Typography>
+                      </Box>
+                    );
+                  }
+                  const {
+                    message,
+                    reply,
+                    replyIndex,
+                    replyExpiredMeta,
+                    reactions,
+                    isUpdating,
+                  } = rowPayload;
+                  const isGroupedWithPrevious =
+                    reticulumChatEnabled &&
+                    isReticulumMessageContinuation(
+                      processedRows[index - 1]?.message,
+                      message
+                    );
+                  const rowKey = getMessageKey(
+                    messages[virtualRow.index],
+                    virtualRow.index
+                  );
+                  if (!message) {
+                    return (
+                      <Box
+                        key={rowKey}
+                        sx={{
+                          alignItems: 'center',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: '5px',
+                          left: '50%',
+                          padding: '10px 0',
+                          position: 'absolute',
+                          top: 0,
+                          transform: `translateY(${virtualRow.start}px) translateX(-50%)`,
+                          width: '100%',
+                        }}
+                      >
+                        <Typography>
+                          {t('core:message.error.message_loading', {
+                            postProcess: 'capitalizeFirstChar',
+                          })}
+                        </Typography>
+                      </Box>
+                    );
+                  }
+
                   return (
                     <Box
-                      key={virtualRow.index}
-                      sx={{
-                        alignItems: 'center',
-                        display: 'flex',
-                        flexDirection: 'column',
-                        gap: '5px',
-                        left: '50%',
-                        padding: '10px 0',
-                        position: 'absolute',
-                        top: 0,
-                        transform: `translateY(${virtualRow.start}px) translateX(-50%)`,
-                        width: '100%',
-                      }}
-                    >
-                      <Typography>
-                        {t('core:message.error.message_loading', {
-                          postProcess: 'capitalizeFirstChar',
-                        })}
-                      </Typography>
-                    </Box>
-                  );
-                }
-                const {
-                  message,
-                  reply,
-                  replyIndex,
-                  replyExpiredMeta,
-                  reactions,
-                  isUpdating,
-                } = rowPayload;
-                const isGroupedWithPrevious =
-                  reticulumChatEnabled &&
-                  isReticulumMessageContinuation(
-                    processedRows[index - 1]?.message,
-                    message
-                  );
-                const rowKey = getMessageKey(
-                  messages[virtualRow.index],
-                  virtualRow.index
-                );
-                if (!message) {
-                  return (
-                    <Box
+                      data-index={virtualRow.index} //needed for dynamic row height measurement
+                      ref={rowVirtualizer.measureElement} //measure dynamic row height
                       key={rowKey}
                       sx={{
                         alignItems: 'center',
                         display: 'flex',
                         flexDirection: 'column',
                         gap: '5px',
-                        left: '50%',
-                        padding: '10px 0',
+                        left: '50%', // Move to the center horizontally
+                        overscrollBehavior: 'none',
+                        padding: reticulumChatEnabled ? '3px 0' : '10px 0',
                         position: 'absolute',
                         top: 0,
-                        transform: `translateY(${virtualRow.start}px) translateX(-50%)`,
+                        transform: `translateY(${virtualRow.start}px) translateX(-50%)`, // Adjust for centering
                         width: '100%',
+                        maxWidth: '100%',
+                        minWidth: 0,
+                        boxSizing: 'border-box',
                       }}
                     >
-                      <Typography>
-                        {t('core:message.error.message_loading', {
-                          postProcess: 'capitalizeFirstChar',
-                        })}
-                      </Typography>
+                      <ErrorBoundary
+                        fallback={
+                          <Typography>
+                            {t('group:message.generic.invalid_data', {
+                              postProcess: 'capitalizeFirstChar',
+                            })}
+                          </Typography>
+                        }
+                      >
+                        {message?.directCallHistory ? (
+                          <DirectCallHistoryRow
+                            record={message.directCallHistory}
+                          />
+                        ) : message?.type === 'dm_friend_added' ||
+                          message?.dmFriendEvent ? (
+                          <DirectFriendEventRow
+                            message={message}
+                            myAddress={myAddress}
+                          />
+                        ) : (
+                          <MessageItem
+                            key={rowKey}
+                            handleReaction={handleReaction}
+                            isLast={index === messages.length - 1}
+                            isGroupedWithPrevious={isGroupedWithPrevious}
+                            isPrivate={isPrivate}
+                            isScrollTarget={
+                              highlightedMessageIndex === virtualRow.index
+                            }
+                            isTemp={!!message?.isTemp}
+                            isUpdating={isUpdating}
+                            lastSignature={lastSignature}
+                            message={message}
+                            myAddress={myAddress}
+                            selectedGroup={selectedGroup}
+                            secretKeyObject={secretKeyObject}
+                            onEdit={onEdit}
+                            onDelete={onDelete}
+                            onReply={onReply}
+                            onAcceptQchatFileTransfer={
+                              onAcceptQchatFileTransfer
+                            }
+                            qchatFileTransferStates={qchatFileTransferStates}
+                            qchatCompletedTransfers={qchatCompletedTransfers}
+                            onSeen={handleMessageSeen}
+                            reactions={reactions}
+                            reply={reply}
+                            replyIndex={replyIndex}
+                            replyExpiredMeta={replyExpiredMeta}
+                            reticulumChatEnabled={reticulumChatEnabled}
+                            reticulumDiscussionReplyCount={
+                              reticulumDiscussionReplyCounts?.[
+                                String(message?.signature || '')
+                              ] || 0
+                            }
+                            onOpenReticulumDiscussion={
+                              onOpenReticulumDiscussion
+                            }
+                            reticulumGroupAvatarOwnerName={
+                              reticulumGroupAvatarOwnerName
+                            }
+                            reticulumGroupDisplayName={
+                              reticulumGroupDisplayName
+                            }
+                            reticulumMentionUsers={reticulumMentionUsers}
+                            reticulumChannelLinkAccess={
+                              reticulumChannelLinkAccess
+                            }
+                            reticulumMemberJoinedByAddress={
+                              reticulumMemberJoinedByAddress
+                            }
+                            reticulumMemberRolesByAddress={
+                              reticulumMemberRolesByAddress
+                            }
+                            reticulumMemberRolesReady={
+                              reticulumMemberRolesReady
+                            }
+                            reactionChatKey={reactionChatKey}
+                            scrollToItem={goToMessage}
+                          />
+                        )}
+                      </ErrorBoundary>
                     </Box>
                   );
-                }
-
-                return (
-                  <Box
-                    data-index={virtualRow.index} //needed for dynamic row height measurement
-                    ref={rowVirtualizer.measureElement} //measure dynamic row height
-                    key={rowKey}
-                    sx={{
-                      alignItems: 'center',
-                      display: 'flex',
-                      flexDirection: 'column',
-                      gap: '5px',
-                      left: '50%', // Move to the center horizontally
-                      overscrollBehavior: 'none',
-                      padding: reticulumChatEnabled ? '3px 0' : '10px 0',
-                      position: 'absolute',
-                      top: 0,
-                      transform: `translateY(${virtualRow.start}px) translateX(-50%)`, // Adjust for centering
-                      width: '100%',
-                      maxWidth: '100%',
-                      minWidth: 0,
-                      boxSizing: 'border-box',
-                    }}
-                  >
-                    <ErrorBoundary
-                      fallback={
-                        <Typography>
-                          {t('group:message.generic.invalid_data', {
-                            postProcess: 'capitalizeFirstChar',
-                          })}
-                        </Typography>
-                      }
-                    >
-                      {message?.directCallHistory ? (
-                        <DirectCallHistoryRow
-                          record={message.directCallHistory}
-                        />
-                      ) : message?.type === 'dm_friend_added' ||
-                        message?.dmFriendEvent ? (
-                        <DirectFriendEventRow
-                          message={message}
-                          myAddress={myAddress}
-                        />
-                      ) : (
-                        <MessageItem
-                          key={rowKey}
-                          handleReaction={handleReaction}
-                          isLast={index === messages.length - 1}
-                          isGroupedWithPrevious={isGroupedWithPrevious}
-                          isPrivate={isPrivate}
-                          isScrollTarget={
-                            highlightedMessageIndex === virtualRow.index
-                          }
-                          isTemp={!!message?.isTemp}
-                          isUpdating={isUpdating}
-                          lastSignature={lastSignature}
-                          message={message}
-                          myAddress={myAddress}
-                          selectedGroup={selectedGroup}
-                          secretKeyObject={secretKeyObject}
-                          onEdit={onEdit}
-                          onDelete={onDelete}
-                          onReply={onReply}
-                          onAcceptQchatFileTransfer={onAcceptQchatFileTransfer}
-                          qchatFileTransferStates={qchatFileTransferStates}
-                          qchatCompletedTransfers={qchatCompletedTransfers}
-                          onSeen={handleMessageSeen}
-                          reactions={reactions}
-                          reply={reply}
-                          replyIndex={replyIndex}
-                          replyExpiredMeta={replyExpiredMeta}
-                          reticulumChatEnabled={reticulumChatEnabled}
-                          reticulumDiscussionReplyCount={
-                            reticulumDiscussionReplyCounts?.[
-                              String(message?.signature || '')
-                            ] || 0
-                          }
-                          onOpenReticulumDiscussion={onOpenReticulumDiscussion}
-                          reticulumGroupAvatarOwnerName={
-                            reticulumGroupAvatarOwnerName
-                          }
-                          reticulumGroupDisplayName={reticulumGroupDisplayName}
-                          reticulumMentionUsers={reticulumMentionUsers}
-                          reticulumChannelLinkAccess={
-                            reticulumChannelLinkAccess
-                          }
-                          reticulumMemberJoinedByAddress={
-                            reticulumMemberJoinedByAddress
-                          }
-                          reticulumMemberRolesByAddress={
-                            reticulumMemberRolesByAddress
-                          }
-                          reticulumMemberRolesReady={reticulumMemberRolesReady}
-                          scrollToItem={goToMessage}
-                        />
-                      )}
-                    </ErrorBoundary>
-                  </Box>
-                );
-              })}
+                })}
+              </Box>
             </Box>
           </Box>
-        </Box>
 
-        {(showScrollButton || hasNewerMessages) &&
-          (useCompactScrollButton ? (
-            <Button
-              onClick={() => void handleGoToLatest()}
-              onMouseDown={keepComposerFocus}
-              onPointerDown={keepComposerFocus}
-              disabled={hasNewerMessages && isLoadingNewerMessages}
-              aria-label={
-                hasNewerMessages
+          {(showScrollButton || hasNewerMessages) &&
+            (useCompactScrollButton ? (
+              <Button
+                onClick={() => void handleGoToLatest()}
+                onMouseDown={keepComposerFocus}
+                onPointerDown={keepComposerFocus}
+                disabled={hasNewerMessages && isLoadingNewerMessages}
+                aria-label={
+                  hasNewerMessages
+                    ? t('group:action.jump_latest', {
+                        defaultValue: 'Jump to latest',
+                        postProcess: 'capitalizeFirstChar',
+                      })
+                    : t('group:action.scroll_unread_messages', {
+                        postProcess: 'capitalizeFirstChar',
+                      })
+                }
+                sx={{
+                  ...scrollButtonCompactSx,
+                  backgroundColor: theme.palette.primary.dark,
+                  color: theme.palette.primary.contrastText,
+                  border: `1px solid ${theme.palette.primary.main}`,
+                }}
+              >
+                <KeyboardArrowDownRoundedIcon sx={{ fontSize: 22 }} />
+              </Button>
+            ) : (
+              <Button
+                onClick={() => void handleGoToLatest()}
+                onMouseDown={keepComposerFocus}
+                onPointerDown={keepComposerFocus}
+                disabled={hasNewerMessages && isLoadingNewerMessages}
+                startIcon={
+                  <KeyboardArrowDownRoundedIcon sx={{ fontSize: 20 }} />
+                }
+                sx={{
+                  ...scrollButtonSx,
+                  backgroundColor: theme.palette.primary.dark,
+                  color: theme.palette.primary.contrastText,
+                  border: `1px solid ${theme.palette.primary.main}`,
+                  '&:hover': {
+                    ...scrollButtonSx['&:hover'],
+                    backgroundColor: theme.palette.primary.main,
+                    color: theme.palette.primary.contrastText,
+                  },
+                }}
+              >
+                {hasNewerMessages
                   ? t('group:action.jump_latest', {
                       defaultValue: 'Jump to latest',
                       postProcess: 'capitalizeFirstChar',
                     })
                   : t('group:action.scroll_unread_messages', {
                       postProcess: 'capitalizeFirstChar',
-                    })
-              }
-              sx={{
-                ...scrollButtonCompactSx,
-                backgroundColor: theme.palette.primary.dark,
-                color: theme.palette.primary.contrastText,
-                border: `1px solid ${theme.palette.primary.main}`,
-              }}
-            >
-              <KeyboardArrowDownRoundedIcon sx={{ fontSize: 22 }} />
-            </Button>
-          ) : (
-            <Button
-              onClick={() => void handleGoToLatest()}
-              onMouseDown={keepComposerFocus}
-              onPointerDown={keepComposerFocus}
-              disabled={hasNewerMessages && isLoadingNewerMessages}
-              startIcon={<KeyboardArrowDownRoundedIcon sx={{ fontSize: 20 }} />}
-              sx={{
-                ...scrollButtonSx,
-                backgroundColor: theme.palette.primary.dark,
-                color: theme.palette.primary.contrastText,
-                border: `1px solid ${theme.palette.primary.main}`,
-                '&:hover': {
-                  ...scrollButtonSx['&:hover'],
-                  backgroundColor: theme.palette.primary.main,
-                  color: theme.palette.primary.contrastText,
-                },
-              }}
-            >
-              {hasNewerMessages
-                ? t('group:action.jump_latest', {
-                    defaultValue: 'Jump to latest',
-                    postProcess: 'capitalizeFirstChar',
-                  })
-                : t('group:action.scroll_unread_messages', {
-                    postProcess: 'capitalizeFirstChar',
-                  })}
-            </Button>
-          ))}
+                    })}
+              </Button>
+            ))}
 
-        {showScrollDownButton &&
-          !showScrollButton &&
-          !hasNewerMessages &&
-          (useCompactScrollButton ? (
-            <Button
-              onClick={() => void handleGoToLatest()}
-              onMouseDown={keepComposerFocus}
-              onPointerDown={keepComposerFocus}
-              aria-label={t('group:action.scroll_bottom', {
-                postProcess: 'capitalizeFirstChar',
-              })}
-              sx={scrollButtonCompactSx}
-            >
-              <KeyboardArrowDownRoundedIcon sx={{ fontSize: 22 }} />
-            </Button>
-          ) : (
-            <Button
-              onClick={() => void handleGoToLatest()}
-              onMouseDown={keepComposerFocus}
-              onPointerDown={keepComposerFocus}
-              startIcon={<KeyboardArrowDownRoundedIcon sx={{ fontSize: 20 }} />}
-              sx={scrollButtonSx}
-            >
-              {t('group:action.scroll_bottom', {
-                postProcess: 'capitalizeFirstChar',
-              })}
-            </Button>
-          ))}
+          {showScrollDownButton &&
+            !showScrollButton &&
+            !hasNewerMessages &&
+            (useCompactScrollButton ? (
+              <Button
+                onClick={() => void handleGoToLatest()}
+                onMouseDown={keepComposerFocus}
+                onPointerDown={keepComposerFocus}
+                aria-label={t('group:action.scroll_bottom', {
+                  postProcess: 'capitalizeFirstChar',
+                })}
+                sx={scrollButtonCompactSx}
+              >
+                <KeyboardArrowDownRoundedIcon sx={{ fontSize: 22 }} />
+              </Button>
+            ) : (
+              <Button
+                onClick={() => void handleGoToLatest()}
+                onMouseDown={keepComposerFocus}
+                onPointerDown={keepComposerFocus}
+                startIcon={
+                  <KeyboardArrowDownRoundedIcon sx={{ fontSize: 20 }} />
+                }
+                sx={scrollButtonSx}
+              >
+                {t('group:action.scroll_bottom', {
+                  postProcess: 'capitalizeFirstChar',
+                })}
+              </Button>
+            ))}
+        </Box>
+
+        {enableMentions &&
+          !reticulumChatEnabled &&
+          (hasSecretKey || isPrivate === false) && (
+            <ChatOptions
+              goToMessage={goToMessage}
+              isPrivate={isPrivate}
+              members={members}
+              messages={messages}
+              myName={myName}
+              openQManager={openQManager}
+              hideTriggers={chatOptionsHideTriggers}
+              reticulumChatEnabled={reticulumChatEnabled}
+              selectedGroup={selectedGroup}
+            />
+          )}
       </Box>
-
-      {enableMentions &&
-        !reticulumChatEnabled &&
-        (hasSecretKey || isPrivate === false) && (
-          <ChatOptions
-            goToMessage={goToMessage}
-            isPrivate={isPrivate}
-            members={members}
-            messages={messages}
-            myName={myName}
-            openQManager={openQManager}
-            hideTriggers={chatOptionsHideTriggers}
-            reticulumChatEnabled={reticulumChatEnabled}
-            selectedGroup={selectedGroup}
-          />
-        )}
-    </Box>
+    </ChatMediaGalleryContext.Provider>
   );
 };

@@ -599,7 +599,8 @@
     "stage_gathering": "جارٍ التجميع من QDN",
     "stage_saving": "جارٍ الحفظ على الهاتف",
     "storage_permission": "يحتاج GO إلى إذن التخزين لحفظ الملفات في Documents.",
-    "tap_to_open": "انقر للفتح · {{location}}"
+    "tap_to_open": "انقر للفتح · {{location}}",
+    "tap_to_open_or_share": "انقر للفتح أو المشاركة"
   },
   "filter": {
     "all": "الكل",
@@ -654,7 +655,7 @@
     "loading_versions": "جارٍ تحميل الإصدارات من QDN…",
     "no_notes": "لم تُضف ملاحظات لهذا الإصدار.",
     "no_versions": "لم يُنشر أي إصدار من GO 3.0 بعد.",
-    "open_in_qshare": "فتح في Q-Share+",
+    "open_in_qshare": "فتح في Q-Share",
     "progress": {
       "assembling": "جارٍ تجميع الإصدار",
       "bytes_of_total": "{{done}} من {{total}}",
@@ -830,6 +831,7 @@
       "new_notification": "إشعار جديد",
       "new_notification_from": "إشعار جديد من {{ appName }}",
       "new_payment_body": "لقد استلمت {{ amount }} QORT.",
+      "new_payment_from": "دفعة من {{ name }}",
       "new_payment_received": "تم استلام دفعة جديدة",
       "new_qmail": "لديك بريد Q-Mail جديد",
       "no_app_notifications": "لا توجد إشعارات تطبيقات بعد",
@@ -1033,6 +1035,17 @@
   "payment": "دفع",
   "payment_notification": "إشعار الدفع",
   "payments_count": "المدفوعات ({{count}})",
+  "pdf_reader": {
+    "gesture_hint": "انقر لملء الشاشة · انقر مرتين أو اقرص للتكبير",
+    "gesture_hint_pages": "اسحب لتقليب الصفحات · انقر لملء الشاشة · انقر مرتين للتكبير",
+    "look_dim": "خافت",
+    "look_dim_hint": "إطار داكن، الصفحة دون تغيير",
+    "look_light": "فاتح",
+    "look_light_hint": "إطار فاتح وصفحة بيضاء",
+    "look_smart": "ذكي",
+    "look_smart_hint": "صفحات داكنة للنص، والصور تبقى كما هي",
+    "page_look": "مظهر الصفحة"
+  },
   "poll_embed": "تضمين استطلاع رأي",
   "port": "منفذ",
   "presence": {
@@ -1076,7 +1089,7 @@
     "modules_hotkeys_label": "Hotkeys",
     "modules_music_description": "A compact Earbump player with search and quick playback.",
     "modules_music_label": "Music player",
-    "modules_suggest_description": "Compose > Add Subject + Message & Send it our way!",
+    "modules_suggest_description": "انضم إلى مجموعة GO 3.0 وأخبرنا بما نبنيه بعد ذلك.",
     "modules_suggest_label": "Suggest a module",
     "music_empty_title": "EarBump library",
     "music_empty_uploaded": "Waiting for library",
@@ -1167,6 +1180,10 @@
   "receiver": "المستقبِل",
   "remaining_to_level": "المتبقي للمستوى {{level}}",
   "retry": "إعادة المحاولة",
+  "search": {
+    "apps_and_websites": "التطبيقات والمواقع",
+    "suggested": "مقترحات"
+  },
   "sender": "المرسِل",
   "server": "الخادم",
   "service_type": "نوع الخدمة",
@@ -1186,7 +1203,32 @@
     "categories": "الفئات",
     "community_apps": "تطبيقات المجتمع",
     "my_apps": "تطبيقاتي",
-    "official_apps": "التطبيقات الرسمية"
+    "official_apps": "التطبيقات الرسمية",
+    "pinned": "المثبتة"
+  },
+  "tabs_home": {
+    "app_name": "اسم التطبيق",
+    "browse_apps": "تصفح التطبيقات",
+    "close_all": "إغلاق الكل",
+    "close_folder": "إغلاق المجلد",
+    "close_tab": "إغلاق علامة التبويب",
+    "delete_folder": "حذف المجلد",
+    "empty_hint": "اضغط على الدبوس بجانب أي تطبيق في المكتبة. هذه المجلدات هي نفسها الموجودة في علامات التبويب.",
+    "empty_title": "تطبيقاتك المثبتة تجدها هنا",
+    "folder_empty_hint": "اضغط مطولًا على علامة تبويب مفتوحة واختر هذا المجلد لإضافتها هنا.",
+    "folder_name": "اسم المجلد",
+    "folder_options": "خيارات المجلد",
+    "make_large": "مجلد كبير",
+    "make_small": "مجلد صغير",
+    "more_apps": "تطبيقات أخرى: {{amount}}",
+    "new_folder": "مجلد جديد",
+    "new_folder_name": "مجلد جديد",
+    "open_folder": "فتح {{name}}",
+    "open_tabs": "علامات التبويب المفتوحة",
+    "remove_from_folder": "إزالة من المجلد",
+    "rename_app": "إعادة تسمية التطبيق",
+    "rename_folder": "إعادة تسمية المجلد",
+    "window_n": "النافذة {{amount}}"
   },
   "tabs_overlay": {
     "delete_folder_body_few": "ستتم إزالة التطبيقات المحفوظة فيه ({{count}}) من علامات التبويب. تبقى علامات التبويب المفتوحة مفتوحة.",

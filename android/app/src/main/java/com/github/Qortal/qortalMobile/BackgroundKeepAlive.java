@@ -155,6 +155,12 @@ public final class BackgroundKeepAlive {
     private final Object freezeLogLock = new Object();
     private final Runnable evaluateRunnable = this::evaluate;
     private final Runnable deadlineRunnable = this::evaluate;
+    private final DefaultNetworkSwitch defaultNetworkSwitch = new DefaultNetworkSwitch();
+    private final NetworkRefreshPacer networkRefreshPacer = new NetworkRefreshPacer();
+    private final Runnable networkRefreshRunnable = () -> ReticulumPlugin.refreshNetwork(
+        "default_network_changed",
+        networkRefreshPacer.onRun(SystemClock.elapsedRealtime())
+    );
     private final Runnable batteryPauseCheckRunnable = this::checkBatteryPause;
     /**
      * The immediate evaluate after onStop runs before the framework's hide
@@ -873,6 +879,18 @@ public final class BackgroundKeepAlive {
         if (cm == null) return;
         ConnectivityManager.NetworkCallback callback = new ConnectivityManager.NetworkCallback() {
             @Override
+            public void onAvailable(Network network) {
+                // A Wi-Fi <-> mobile switch keeps the phone "online", so
+                // nothing else notices that the hub sockets sit on the old
+                // network: redial them on the new one.
+                if (defaultNetworkSwitch.onAvailable(network.getNetworkHandle())) {
+                    long wait = networkRefreshPacer.onSwitch(SystemClock.elapsedRealtime());
+                    mainHandler.removeCallbacks(networkRefreshRunnable);
+                    mainHandler.postDelayed(networkRefreshRunnable, wait);
+                }
+            }
+
+            @Override
             public void onCapabilitiesChanged(Network network, NetworkCapabilities caps) {
                 setUnmetered(isUnmetered(caps));
             }
@@ -881,8 +899,14 @@ public final class BackgroundKeepAlive {
             public void onLost(Network network) {
                 // The next default network reports its own capabilities.
                 setUnmetered(false);
+                defaultNetworkSwitch.onLost(network.getNetworkHandle());
             }
         };
+        try {
+            if (cm.getActiveNetwork() == null) defaultNetworkSwitch.seedNoNetwork();
+        } catch (RuntimeException error) {
+            Log.w(TAG, "Active network not readable", error);
+        }
         try {
             cm.registerDefaultNetworkCallback(callback);
         } catch (RuntimeException error) {

@@ -31,6 +31,11 @@ import { useRegisteredName } from '../../utils/qdnNameDisplay';
 import { SAFE_AREA_BOTTOM, SAFE_AREA_TOP } from '../../utils/mobileSafeArea';
 import { formatDate } from '../../utils/time';
 import { AppThumbnailAvatar } from '../Apps/AppThumbnailAvatar';
+import {
+  isPaymentNotification,
+  paymentSenderLabel,
+} from '../../utils/paymentNotifications';
+import { NotificationAppAvatar } from './NotificationAppAvatar';
 import { SavedQdnFileRow } from '../Transfers/QdnDownloadsNotice';
 
 type Row =
@@ -85,12 +90,15 @@ function HistoryNotificationRow({
   const theme = useTheme();
   const notification = entry.notification;
   const group = isGroupItem(notification);
+  const payment = isPaymentNotification(notification);
   const appName = useRegisteredName(
-    group ? '' : notification?.appName || 'Q-App'
+    group || payment ? '' : notification?.appName || 'Q-App'
   );
   const title = group
     ? String(notification?.data?.groupName || '')
-    : appName || 'Q-App';
+    : payment
+      ? paymentSenderLabel(notification)
+      : appName || 'Q-App';
   const dark = theme.palette.mode === 'dark';
 
   return (
@@ -128,6 +136,20 @@ function HistoryNotificationRow({
             style={{ height: 'auto', width: 20 }}
           />
         </Avatar>
+      ) : payment ? (
+        <NotificationAppAvatar
+          alt={title}
+          isQChatMention={false}
+          isQMail={false}
+          notification={notification}
+          sx={{
+            bgcolor: dark
+              ? alpha('#FFFFFF', 0.06)
+              : alpha(theme.palette.primary.main, 0.08),
+            height: 34,
+            width: 34,
+          }}
+        />
       ) : (
         <AppThumbnailAvatar
           alt={title}

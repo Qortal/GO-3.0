@@ -397,6 +397,8 @@ const AccountPanelSurface = ({
         initial="hidden"
         animate="show"
         exit="exit"
+        // Immersive mode keeps the bars out while this is open.
+        data-immersive-hold
         style={{
           inset: 0,
           pointerEvents: interactive,

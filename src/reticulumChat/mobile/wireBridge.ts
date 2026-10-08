@@ -150,9 +150,11 @@ export class MobileReticulumBridge extends EventEmitter {
 
   markStopped(): void {
     this.state = 'idle';
+    const hadAdmittedLink = this.hasAdmittedOverlayLink();
     this.overlayLinkSnapshots.clear();
     // A restarted Python bridge starts with an empty identity cache.
     this.peerIdentityKnownUntil.clear();
+    this.emitOverlayAvailabilityChange(hadAdmittedLink);
   }
 
   getOverlayLinkSnapshots(): Array<{
@@ -165,6 +167,30 @@ export class MobileReticulumBridge extends EventEmitter {
     lastActivityAt: number;
   }> {
     return [...this.overlayLinkSnapshots.values()];
+  }
+
+  /**
+   * Python sends chat frames only on admitted overlay links
+   * (`_send_wire_to_overlay_peer`), so without one nothing the engine sends
+   * can leave the phone.
+   */
+  hasAdmittedOverlayLink(): boolean {
+    for (const snap of this.overlayLinkSnapshots.values()) {
+      if (snap.overlayTransportAdmitted) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Raises `overlay-availability` when the first admitted link appears or
+   * the last one goes, so the host can resume deferred DM work exactly when
+   * the overlay becomes usable.
+   */
+  private emitOverlayAvailabilityChange(hadAdmittedLink: boolean): void {
+    const available = this.hasAdmittedOverlayLink();
+    if (available !== hadAdmittedLink) {
+      this.emit('overlay-availability', { available });
+    }
   }
 
   private hasAdmittedOverlaySnapshotForPeer(peerPresenceHash: string): boolean {
@@ -194,8 +220,10 @@ export class MobileReticulumBridge extends EventEmitter {
       .trim()
       .toLowerCase();
     const established = frame.established === true;
+    const hadAdmittedLink = this.hasAdmittedOverlayLink();
     if (!established) {
       this.overlayLinkSnapshots.delete(linkId);
+      this.emitOverlayAvailabilityChange(hadAdmittedLink);
       return;
     }
     const admittedNow = frame.overlayTransportAdmitted === true;
@@ -220,6 +248,7 @@ export class MobileReticulumBridge extends EventEmitter {
         source: String(frame.reason || 'overlay-link-state'),
       });
     }
+    this.emitOverlayAvailabilityChange(hadAdmittedLink);
   }
 
   /**
@@ -432,7 +461,12 @@ export class MobileReticulumBridge extends EventEmitter {
 
   async fanoutReticulumChatDetailed(
     messages: Record<string, unknown>[],
-    excludePeerPresenceHashes: string[] = []
+    excludePeerPresenceHashes: string[] = [],
+    // Bounded gossip (dm_probe / dm_notify / group_sub at width 4). Python
+    // picks that many neighbours by rendezvous order; dropping the options
+    // here sent every "width 4" round to all 12-20 overlay links. Same
+    // forwarding as electron/src/reticulum-bridge.ts.
+    options: { maxPeerCount?: number; selectionKey?: string } = {}
   ): Promise<ReticulumSendResult> {
     if (messages.length === 0) {
       return {
@@ -444,6 +478,13 @@ export class MobileReticulumBridge extends EventEmitter {
     return this.sendDetailed('fanout_reticulum_chat', {
       messages,
       excludePeerPresenceHashes,
+      ...(Number.isInteger(options.maxPeerCount) &&
+      Number(options.maxPeerCount) > 0
+        ? { maxPeerCount: Number(options.maxPeerCount) }
+        : {}),
+      ...(typeof options.selectionKey === 'string' && options.selectionKey
+        ? { selectionKey: options.selectionKey }
+        : {}),
     });
   }
 

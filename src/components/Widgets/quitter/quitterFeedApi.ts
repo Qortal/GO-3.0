@@ -23,9 +23,17 @@ export const QUITTER_PUBLIC_FEED_SEARCH_ENDPOINT =
 const QUITTER_PUBLIC_FEED_SEARCH_LIMIT = 10;
 const QUITTER_WIDGET_ITEM_LIMIT = 6;
 const QUITTER_MAX_PAGINATION_PASSES = 4;
-const QUITTER_FOLLOWING_SCAN_TOTAL_LIMIT = 60;
 const QUITTER_FOLLOW_CANDIDATE_MAX_SIZE = 160;
-const QUITTER_FOLLOW_CANDIDATE_LIMIT = 24;
+/**
+ * Follows read per on-chain batch. All of them count, as in Torq (it reads
+ * every follow); only a runaway list is cut, to keep the search URL sane.
+ */
+const QUITTER_FOLLOW_BATCH_SIZE = 100;
+const QUITTER_FOLLOWING_MAX_NAMES = 400;
+/** A deleted post: republished as the 1-byte "RA==" (Quitter, Torq). */
+const QUITTER_DELETED_RESOURCE_SIZE = 32;
+/** qapp-core's lists skip anything this big before downloading it. */
+const QUITTER_MAX_POST_BYTES = 5 * 1024 * 1024;
 const QUITTER_FOLLOWING_CACHE_TTL_MS = 5 * 60 * 1000;
 /** Max entries; LRU eviction. Payloads can be large (e.g. embedded images). */
 const QUITTER_DOCUMENT_PAYLOAD_CACHE_MAX_ENTRIES = 250;
@@ -444,6 +452,7 @@ const fetchFollowedNames = async (
   const response = await fetch(
     `${getBaseApiReact()}/arbitrary/resources/onchain/data`,
     {
+      signal,
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(
@@ -495,6 +504,10 @@ export const fetchQuitterFeed = async ({
 
   return page.items;
 };
+
+export const isListablePostResource = (resource: QuitterFeedSearchResource) =>
+  resource.size !== QUITTER_DELETED_RESOURCE_SIZE &&
+  resource.size < QUITTER_MAX_POST_BYTES;
 
 export const fetchQuitterFeedPage = async ({
   allowedAuthors,
@@ -554,6 +567,9 @@ export const fetchQuitterFeedPage = async ({
         resourceIndex,
       }))
       .filter(({ resource }) => {
+        // Deleted and oversized posts are skipped before downloading, as in
+        // Torq's feed (qapp-core lists).
+        if (!isListablePostResource(resource)) return false;
         // Hidden publishers are skipped before their posts are downloaded,
         // so the page still fills with everyone else.
         if (hiddenAuthorsSet.has(hiddenUserKey(resource.name))) return false;
@@ -642,33 +658,38 @@ export const fetchQuitterFollowedNames = async (
   }
 
   const followedNames = new Set<string>();
+  // Every follow, as Torq reads them (limit 0 is no limit). An unfollow is
+  // the follow republished empty (size 32).
   const resources = await fetchQuitterUserResources(
     normalizedUserName,
-    QUITTER_FOLLOWING_SCAN_TOTAL_LIMIT,
+    0,
     0,
     signal
   );
 
-  const candidateResources = resources
-    .filter(
-      (resource) =>
-        resource.size <= QUITTER_FOLLOW_CANDIDATE_MAX_SIZE &&
-        resource.size !== 32
-    )
-    .sort((left, right) => left.size - right.size)
-    .slice(0, QUITTER_FOLLOW_CANDIDATE_LIMIT);
+  const candidateResources = resources.filter(
+    (resource) =>
+      resource.size <= QUITTER_FOLLOW_CANDIDATE_MAX_SIZE &&
+      resource.size !== QUITTER_DELETED_RESOURCE_SIZE
+  );
 
-  const settled = await fetchFollowedNames(candidateResources, signal);
-
-  for (const result of settled) {
-    if (!result || result === normalizedUserName) {
-      continue;
+  for (
+    let start = 0;
+    start < candidateResources.length &&
+    followedNames.size < QUITTER_FOLLOWING_MAX_NAMES;
+    start += QUITTER_FOLLOW_BATCH_SIZE
+  ) {
+    const batch = candidateResources.slice(
+      start,
+      start + QUITTER_FOLLOW_BATCH_SIZE
+    );
+    for (const result of await fetchFollowedNames(batch, signal)) {
+      if (!result || result === normalizedUserName) continue;
+      followedNames.add(result);
     }
-
-    followedNames.add(result);
   }
 
-  const names = [...followedNames];
+  const names = [...followedNames].slice(0, QUITTER_FOLLOWING_MAX_NAMES);
   followedNamesCache.set(normalizedUserName, {
     fetchedAt: Date.now(),
     names,

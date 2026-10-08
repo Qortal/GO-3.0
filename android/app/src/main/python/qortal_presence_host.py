@@ -23,6 +23,7 @@ Kotlin lifecycle:
     line = poll(timeout_ms)   # read one outbound JSON frame ("" when idle)
     pause_network()           # hub sockets down, bridge stays up (no GO screen)
     resume_network()          # redial the hubs after pause_network()
+    refresh_network(reason)   # redial the hubs after a switch of default network
     stop()                    # EOF the bridge and let main() unwind
 """
 
@@ -398,6 +399,11 @@ def _install_reconnect_backoff(client_cls):
             time.sleep(wait)
             if _network_paused or generation != _network_generation:
                 return
+            if self.online:
+                # A refresh or resume dialled meanwhile (and tunnelled):
+                # dialling again would leave two sockets on one interface.
+                self.reconnecting = False
+                return
             attempts += 1
             if self.max_reconnect_tries is not None and attempts > self.max_reconnect_tries:
                 RNS.log("Max reconnection attempts reached for " + str(self), RNS.LOG_WARNING)
@@ -448,12 +454,27 @@ def _install_reconnect_backoff(client_cls):
             sock = _connect_current(self, generation, initial=True)
         except Exception as exc:  # noqa: BLE001 - connect(initial) returns False
             _log_host(f"initial connect failed for {self}: {exc}")
-        if _network_paused or generation != _network_generation:
-            # resume_network() redials this interface itself.
+        if _network_paused:
+            # A pause landed while RNS was still building this interface,
+            # so pause_network() did not see it: park it here so that
+            # resume_network() redials it.
             if sock is not None:
                 with _interface_lock(self):
                     _drop_stale_socket(self, sock)
+            with _lock:
+                self.detached = True
+                if not any(item[0] is self for item in _paused_interfaces):
+                    _paused_interfaces.append((self, None, None))
             return
+        if generation != _network_generation:
+            # A refresh (or a pause and resume) landed during the dial;
+            # neither knew this interface yet. Dial for the current one.
+            generation = _network_generation
+            try:
+                sock = _connect_current(self, generation, initial=True)
+            except Exception as exc:  # noqa: BLE001 - as above
+                _log_host(f"initial connect retry failed for {self}: {exc}")
+                sock = None
         if sock is None:
             threading.Thread(target=self.reconnect, daemon=True).start()
         else:
@@ -789,14 +810,15 @@ def _connect_current(interface, generation, initial=False):
         if not interface.connect(initial=initial):
             return None
         sock = interface.socket
+        interface._qortal_dialed_at = time.monotonic()
         if _network_paused or generation != _network_generation:
             _drop_stale_socket(interface, sock)
             return None
         return sock
 
 
-def _drop_stale_socket(interface, sock):
-    """Close ``sock``, which a stale dial opened; hold the interface lock."""
+def _forget_socket(interface, sock):
+    """Take ``sock`` out of the Backbone I/O loop; it stays open."""
     if sock is None:
         return
     try:
@@ -809,6 +831,22 @@ def _drop_stale_socket(interface, sock):
             BackboneInterface.deregister_fileno(fileno)
     except Exception:
         pass
+
+
+def _close_quietly(sock):
+    if sock is None:
+        return
+    try:
+        sock.close()
+    except Exception:
+        pass
+
+
+def _drop_stale_socket(interface, sock):
+    """Close ``sock``, which a stale dial opened; hold the interface lock."""
+    if sock is None:
+        return
+    _forget_socket(interface, sock)
     if interface.socket is sock:
         if _network_paused:
             _detach_for_pause(interface)
@@ -908,7 +946,7 @@ def _after_network_resumed(generation):
         _log_host(f"overlay maintenance after resume failed: {exc}")
 
 
-def _reattach_interface(interface, generation):
+def _reattach_interface(interface, generation, after_first_dial=None):
     import RNS
 
     sock = None
@@ -916,6 +954,9 @@ def _reattach_interface(interface, generation):
         sock = _connect_current(interface, generation, initial=True)
     except Exception as exc:  # noqa: BLE001 - falls back to the retry loop
         _log_host(f"reconnect failed for {interface}: {exc}")
+    finally:
+        if after_first_dial is not None:
+            after_first_dial()
     if _network_paused or generation != _network_generation:
         if sock is not None:
             with _interface_lock(interface):
@@ -974,6 +1015,114 @@ def resume_network():
         ).start()
     _log_host(f"network resumed interfaces={len(seen)}")
     return True
+
+
+def _refresh_interface(interface, generation):
+    """Close one hub socket and dial it again at once (see refresh_network)."""
+    with _interface_lock(interface):
+        if _network_paused or generation != _network_generation:
+            return
+        # Offline first, so nothing queues data for the old socket; then out
+        # of the Backbone I/O loop, so the loop starts no backed-off redial of
+        # its own. The old socket stays open until the new one is dialled:
+        # closing it first would let the new socket reuse its fd number while
+        # the I/O loop may still hold an event for that number.
+        interface.online = False
+        old_socket = getattr(interface, "socket", None)
+        _forget_socket(interface, old_socket)
+        interface.socket = None
+        # A reconnect loop from before the switch may still be asleep in its
+        # backoff; the newer generation makes it give up when it wakes.
+        interface.reconnecting = False
+        interface.frame_buffer = b""
+        interface.transmit_buffer = b""
+        # A socket error under the I/O loop tears an interface down (IN and
+        # OUT False) for good; every GO hub interface is configured both ways.
+        interface.IN = True
+        interface.OUT = True
+    _reattach_interface(
+        interface, generation, after_first_dial=lambda: _close_quietly(old_socket)
+    )
+
+
+def refresh_network(reason="network_change", since_switch_seconds=0.0):
+    """Redial the hub sockets now, after the phone switched networks.
+
+    Moving between Wi-Fi and mobile data leaves the hub sockets on a network
+    that is gone, or still up but no longer the default (Wi-Fi without
+    internet). TCP keepalive notices a silent one only after 45 s plus four
+    15 s probes, and the reconnect loop then waits out its 5-60 s backoff, so
+    chat could stay deaf for about two minutes. Kotlin calls this once the
+    default network has settled.
+
+    Hub sockets dialled after the switch are on the new network already and
+    are left alone. Every RNS link through a hub that is redialled is torn
+    down first: a hub only forwards link traffic that arrives on the exact
+    connection the link came in on, so those links are dead even though the
+    phone still counts them as up. The overlay maintenance that follows the
+    first hub back dials the neighbours again at once. Hubs that are offline
+    (waiting in their backoff) are dialled now as well.
+
+    The dials run on one thread per hub, so a dial stuck in DNS never blocks
+    the caller. Returns how many hubs are being redialled.
+    """
+    global _network_generation
+    import RNS
+
+    with _lock:
+        if not _started or _network_paused:
+            return 0
+        if not getattr(RNS.Transport, "ready", False):
+            # RNS is still building its interfaces; they dial on their own.
+            return 0
+        cutoff = time.monotonic() - max(0.0, float(since_switch_seconds or 0.0))
+        targets = []
+        replaced = []
+        for interface in list(getattr(RNS.Transport, "interfaces", []) or []):
+            if not getattr(interface, "initiator", False):
+                continue
+            if getattr(interface, "detached", False):
+                continue
+            if getattr(interface, "online", False):
+                if getattr(interface, "_qortal_dialed_at", 0.0) >= cutoff:
+                    continue
+                replaced.append(interface)
+            targets.append(interface)
+        if not targets:
+            return 0
+        _network_generation += 1
+        generation = _network_generation
+
+    closed = 0
+    if replaced:
+        replaced_ids = {id(interface) for interface in replaced}
+        links = list(getattr(RNS.Transport, "active_links", []) or [])
+        links += list(getattr(RNS.Transport, "pending_links", []) or [])
+        for link in links:
+            attached = getattr(link, "attached_interface", None)
+            if attached is not None and id(attached) not in replaced_ids:
+                continue
+            try:
+                link.teardown()
+                closed += 1
+            except Exception:
+                pass
+        if closed:
+            # Same window pause_network() gives teardown packets.
+            time.sleep(0.15)
+
+    for interface in targets:
+        threading.Thread(
+            target=_refresh_interface,
+            args=(interface, generation),
+            name="presence-host-refresh",
+            daemon=True,
+        ).start()
+    _log_host(
+        f"network refresh reason={reason} interfaces={len(targets)} "
+        f"replaced={len(replaced)} links_closed={closed}"
+    )
+    return len(targets)
 
 
 def stop():

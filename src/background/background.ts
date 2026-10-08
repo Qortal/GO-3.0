@@ -314,7 +314,7 @@ function showBackgroundOsNotification(
   notificationId,
   icon?,
   fromAddress?: string,
-  notificationType?: 'direct' | 'group' | 'general',
+  notificationType?: 'direct' | 'group' | 'general' | 'payment',
   alertKey?: string
 ) {
   if (alertKey) {
@@ -3934,7 +3934,7 @@ export type FireOsNotificationOptions = {
   /** Stable per-conversation key; enables in-place update and later dismiss. */
   alertKey?: string;
   fromAddress?: string;
-  notificationType?: 'direct' | 'group' | 'general';
+  notificationType?: 'direct' | 'group' | 'general' | 'payment';
 };
 
 export const fireOsNotificationPayment = async (

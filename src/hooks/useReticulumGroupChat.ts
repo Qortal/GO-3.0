@@ -6,6 +6,18 @@ import {
   useState,
 } from 'react';
 import { getPrimaryNamesForAddresses } from '../components/Group/groupApi';
+import {
+  getKnownReticulumChatEnabled,
+  markWarmChatOpen,
+  readWarmGroupHistory,
+  warmGroupChatKey,
+  readWarmName,
+  setKnownReticulumChatEnabled,
+  withWarmNames,
+  writeWarmGroupHistory,
+  writeWarmName,
+  type WarmGroupHistory,
+} from '../reticulumChat/chatWarmCache';
 
 const RETICULUM_CHAT_EVENT_BATCH_MS = 400;
 const RETICULUM_CHAT_INITIAL_HISTORY_LIMIT = 200;
@@ -199,6 +211,12 @@ const addPrimaryNamesToEvents = async (
   );
   if (addresses.length === 0) return events;
 
+  // Names seen in an earlier chat need no new lookup.
+  for (const address of addresses) {
+    if (primaryNameCache.has(address)) continue;
+    const known = readWarmName(address);
+    if (known) primaryNameCache.set(address, known);
+  }
   const missingAddresses = addresses.filter(
     (address) => !primaryNameCache.has(address)
   );
@@ -209,7 +227,10 @@ const addPrimaryNamesToEvents = async (
       for (const address of missingAddresses) {
         const primaryName = primaryNames[address]?.trim();
         // A missing result can be transient. Do not cache it so it can resolve later.
-        if (primaryName) primaryNameCache.set(address, primaryName);
+        if (primaryName) {
+          primaryNameCache.set(address, primaryName);
+          writeWarmName(address, primaryName);
+        }
       }
     } catch (error) {
       console.error(
@@ -234,6 +255,46 @@ const addPrimaryNamesToEvents = async (
   });
 };
 
+const sameEventIds = (left: readonly unknown[], right: readonly unknown[]) =>
+  left.length === right.length &&
+  left.every(
+    (item, index) =>
+      (item as ReticulumChatHookEvent)?.eventId ===
+      (right[index] as ReticulumChatHookEvent)?.eventId
+  );
+
+/**
+ * The newest page of a window, the way the engine reads one: its latest
+ * `limit` messages and what targets them. For keeping a window the user
+ * scrolled far back in.
+ */
+export const latestHistoryWindow = (
+  events: readonly unknown[],
+  limit = RETICULUM_CHAT_INITIAL_HISTORY_LIMIT
+): WarmGroupHistory => {
+  const messageIds = (events as ReticulumChatHookEvent[])
+    .filter(
+      (event) =>
+        event?.eventType === 'message' ||
+        event?.eventType === 'attachment_manifest'
+    )
+    .map((event) => event.eventId)
+    .filter((eventId): eventId is string => typeof eventId === 'string');
+  if (messageIds.length <= limit) {
+    return { events: events.slice(), hasOlder: false };
+  }
+  const kept = new Set(messageIds.slice(-limit));
+  return {
+    events: (events as ReticulumChatHookEvent[]).filter(
+      (event) =>
+        (typeof event?.eventId === 'string' && kept.has(event.eventId)) ||
+        (typeof event?.targetEventId === 'string' &&
+          kept.has(event.targetEventId))
+    ),
+    hasOlder: true,
+  };
+};
+
 export function useReticulumGroupChat(
   groupId?: number | string | null,
   channelId = 'general'
@@ -248,18 +309,36 @@ export function useReticulumGroupChat(
     Number.isInteger(numericGroupId) && Number(numericGroupId) > 0
       ? Number(numericGroupId)
       : null;
-  const [enabled, setEnabled] = useState(false);
-  const [events, setEvents] = useState<unknown[]>([]);
+  // Reticulum chat known to be on: no wait for the settings, and a copy of
+  // this channel from earlier (or the warm-up) shows on the first render.
+  const [enabled, setEnabled] = useState(
+    () => getKnownReticulumChatEnabled() === true
+  );
+  const [warmStart] = useState(() =>
+    getKnownReticulumChatEnabled() === true
+      ? readWarmGroupHistory(validGroupId, normalizedChannelId)
+      : null
+  );
+  const warmStartRef = useRef<WarmGroupHistory | null>(warmStart);
+  const [events, setEvents] = useState<unknown[]>(
+    () => warmStart?.events ?? []
+  );
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [loadingNewer, setLoadingNewer] = useState(false);
-  const [hasOlder, setHasOlder] = useState(false);
+  const [hasOlder, setHasOlder] = useState(() => warmStart?.hasOlder ?? false);
+  const hasOlderRef = useRef(hasOlder);
+  hasOlderRef.current = hasOlder;
   const [hasNewer, setHasNewer] = useState(false);
   const [historyMode, setHistoryMode] =
     useState<ReticulumHistoryMode>('latest');
   const [historyWindowRevision, setHistoryWindowRevision] = useState(0);
-  const [loadedInitialHistoryKey, setLoadedInitialHistoryKey] = useState('');
+  const [loadedInitialHistoryKey, setLoadedInitialHistoryKey] = useState(() =>
+    warmStart && validGroupId != null
+      ? `${validGroupId}:${normalizedChannelId}`
+      : ''
+  );
   const [typing, setTyping] = useState<Record<string, boolean>>({});
-  const eventsRef = useRef<unknown[]>([]);
+  const eventsRef = useRef<unknown[]>(warmStart?.events ?? []);
   const activeChatKeyRef = useRef('');
   const pendingEventsRef = useRef<ReticulumChatHookEvent[]>([]);
   const batchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -394,6 +473,7 @@ export function useReticulumGroupChat(
     let cancelled = false;
     void (async () => {
       const value = await window.reticulumChat?.isEnabled?.();
+      setKnownReticulumChatEnabled(value === true);
       if (!cancelled) setEnabled(value === true);
     })();
     return () => {
@@ -454,6 +534,7 @@ export function useReticulumGroupChat(
       if (eventsToMerge.length !== pending.length) updateHasNewer(true);
     }
     if (eventsToMerge.length === 0) return;
+    eventsToMerge = withWarmNames(eventsToMerge, 'authorAddress');
     mergeEvents(eventsToMerge, expectedChatKey);
     if (
       oldestVisibleCursor &&
@@ -496,21 +577,42 @@ export function useReticulumGroupChat(
     let cancelled = false;
     const expectedChatKey = `${validGroupId}:${normalizedChannelId}`;
     const historyWindowGeneration = ++historyWindowGenerationRef.current;
+    // On screen: the warm-up waits (see markWarmChatOpen).
+    const closeWarmChat = markWarmChatOpen(warmGroupChatKey(validGroupId));
     void window.reticulumChat?.subscribeGroup?.(validGroupId);
     void window.reticulumChat?.subscribeChannel?.(
       validGroupId,
       normalizedChannelId
     );
-    // Clear the authoritative ref immediately, but leave the previous React
-    // snapshot in place until the local history read resolves. Consumers gate
-    // it with initialHistoryReady, so publishing an intermediate empty array
-    // only caused an extra full chat render between selection and history.
-    eventsRef.current = [];
+    // A current copy of this channel (from earlier, or the warm-up) shows at
+    // once; the read below then refreshes it. Without one, clear the
+    // authoritative ref immediately, but leave the previous React snapshot in
+    // place until the local history read resolves. Consumers gate it with
+    // initialHistoryReady, so publishing an intermediate empty array only
+    // caused an extra full chat render between selection and history.
+    const warm = readWarmGroupHistory(validGroupId, normalizedChannelId);
+    const warmEventIds = warm
+      ? new Set(
+          (warm.events as ReticulumChatHookEvent[])
+            .map((event) => event.eventId)
+            .filter((eventId): eventId is string => typeof eventId === 'string')
+        )
+      : null;
+    // On mount the first render already shows it.
+    const warmAlreadyShown =
+      !!warm && warmStartRef.current?.events === warm.events;
+    warmStartRef.current = null;
+    eventsRef.current = warm ? warm.events : [];
     setVisibilityChange(null);
     setTyping((current) => (Object.keys(current).length === 0 ? current : {}));
     setLoadingOlder(false);
     setLoadingNewer(false);
-    setHasOlder(false);
+    setHasOlder(warm?.hasOlder ?? false);
+    if (warm && !warmAlreadyShown) {
+      setEvents(warm.events);
+      setHistoryWindowRevision((revision) => revision + 1);
+      setLoadedInitialHistoryKey(expectedChatKey);
+    }
     updateHasNewer(false);
     updateHistoryMode('latest');
     loadingOlderRef.current = false;
@@ -546,17 +648,47 @@ export function useReticulumGroupChat(
             hasOlder: Array.isArray(history) && history.length > 0,
           }));
     };
+    let showingWarmCopy = warmEventIds !== null;
     const applyLatestHistoryPage = (historyPage: {
       events: unknown[];
       hasOlder: boolean;
     }) => {
-      const historyEvents = historyPage.events as ReticulumChatHookEvent[];
+      const historyEvents = withWarmNames(
+        historyPage.events as ReticulumChatHookEvent[],
+        'authorAddress'
+      );
       setHasOlder(historyPage.hasOlder);
-      mergeEvents(historyEvents, expectedChatKey);
-      updateHistoryMode('latest');
-      setHistoryWindowRevision((revision) => revision + 1);
+      if (showingWarmCopy && warmEventIds) {
+        showingWarmCopy = false;
+        // The copy shown stands in for this read: the read replaces it
+        // (whatever left the channel since goes too), keeping what arrived
+        // live meanwhile. The same events: nothing to redo on screen.
+        const concurrentEvents = concurrentEventsForReplacement(
+          eventsRef.current as ReticulumChatHookEvent[],
+          historyEvents,
+          warmEventIds,
+          true
+        );
+        if (
+          concurrentEvents.length > 0 ||
+          !sameEventIds(eventsRef.current, historyEvents)
+        ) {
+          replaceHistoryWindow(historyEvents, expectedChatKey, 'latest');
+          if (concurrentEvents.length > 0) {
+            mergeEvents(concurrentEvents, expectedChatKey);
+          }
+        }
+      } else {
+        mergeEvents(historyEvents, expectedChatKey);
+        updateHistoryMode('latest');
+        setHistoryWindowRevision((revision) => revision + 1);
+      }
       void enrichVisibleEvents(historyEvents, expectedChatKey);
       setLoadedInitialHistoryKey(expectedChatKey);
+      writeWarmGroupHistory(validGroupId, normalizedChannelId, {
+        events: eventsRef.current,
+        hasOlder: historyPage.hasOlder,
+      });
     };
 
     // The first read can come back empty while the network request it
@@ -667,7 +799,9 @@ export function useReticulumGroupChat(
           applyLatestHistoryPage(historyPage);
         })
         .catch((error) => {
-          const timedOut = String(error?.message || error).includes('timed out');
+          const timedOut = String(error?.message || error).includes(
+            'timed out'
+          );
           if (
             timedOut &&
             attempt < 2 &&
@@ -844,6 +978,21 @@ export function useReticulumGroupChat(
 
     return () => {
       cancelled = true;
+      closeWarmChat();
+      // Kept for the next time this channel opens (its latest page only,
+      // and never a window anchored back in time). The ref still holds this
+      // channel's events here: the next channel's run resets it.
+      if (
+        !showingWarmCopy &&
+        historyModeRef.current === 'latest' &&
+        !hasNewerRef.current
+      ) {
+        const kept = latestHistoryWindow(eventsRef.current);
+        writeWarmGroupHistory(validGroupId, normalizedChannelId, {
+          events: kept.events,
+          hasOlder: kept.hasOlder || hasOlderRef.current,
+        });
+      }
       if (emptyRereadTimer !== null) {
         window.clearTimeout(emptyRereadTimer);
         emptyRereadTimer = null;

@@ -1,5 +1,6 @@
 import {
   memo,
+  type ComponentProps,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -80,12 +81,19 @@ import {
 import {
   closeAllOpenTabs,
   closeOpenTab,
+  launchAppWindow,
   openOrSelectTab,
   useOpenTabs,
   type OpenTab,
 } from './useOpenTabs';
 import { buildTabQortalUrl } from './tabQortalLink';
 import { createBackgroundGesture } from './tabsOverlayBackgroundGesture';
+import { setTabsPanelElement } from './tabsPull';
+import { useTabsSwipeClose } from './tabsSwipeClose';
+import { TabPreviewCard } from './tabsHome/TabPreviewCard';
+import { useShownWindows } from './tabsHome/useShownWindows';
+import { groupTabsIntoStacks, type TabStack } from './tabsHome/tabStacks';
+import { measureBoxes, playFlip } from './tabsHome/flip';
 import { BACK_PRIORITY, useAndroidBack } from '../../utils/androidBack';
 import { filterAppTabsForMobile, isQChatOpenTab } from '../../utils/openQChatTab';
 import { MOBILE_TAB_BAR_HEIGHT_PX } from './MobileTabBar';
@@ -100,6 +108,12 @@ import {
 type MobileTabsOverlayProps = {
   open: boolean;
   onClose: () => void;
+  /**
+   * Opened by a pull down from a list (tabsPull): shown at once, with no
+   * slide of its own, while the pull moves its panel with the finger; and
+   * the touch doing it never counts as a tap behind the panel.
+   */
+  pulling?: boolean;
 };
 
 const LONG_PRESS_MS = 500;
@@ -430,6 +444,7 @@ const SortableFolderChip = memo(function SortableFolderChip({
   onRemove: () => void;
 }) {
   const theme = useTheme();
+  const { t } = useTranslation(['core']);
   const { active } = useDndContext();
   const sortableId = folderDragId(folderId);
   const dropTargetId = folderDropId(folderId);
@@ -476,7 +491,7 @@ const SortableFolderChip = memo(function SortableFolderChip({
       sx={{
         flexShrink: 0,
         pb: 0.25,
-        pt: 0.25,
+        pt: 0.5,
       }}
     >
       <Box
@@ -493,113 +508,123 @@ const SortableFolderChip = memo(function SortableFolderChip({
         }}
         sx={{
           alignItems: 'center',
-          backgroundColor: isTabDropTarget
-            ? `${theme.palette.primary.main}28`
-            : editMode
-              ? `${theme.palette.primary.main}10`
-              : selected
-                ? `${theme.palette.primary.main}18`
-                : theme.palette.background.paper,
-          border: isTabDropTarget
-            ? `2px solid ${theme.palette.primary.main}`
-            : editMode
-              ? `1px dashed ${theme.palette.primary.main}`
-              : selected
-                ? `1.5px solid ${theme.palette.primary.main}`
-                : `1px solid ${theme.palette.divider}`,
-          borderRadius: 2,
-          boxShadow: isTabDropTarget
-            ? `0 0 0 3px ${theme.palette.primary.main}22`
-            : 'none',
           cursor: editMode ? (isDragging ? 'grabbing' : 'grab') : 'pointer',
           display: 'flex',
           flexDirection: 'column',
-          gap: 0.5,
-          minWidth: 84,
+          gap: 0.6,
           position: 'relative',
-          px: 1,
-          py: 0.85,
+          px: 0.5,
           touchAction: editMode ? 'none' : 'pan-x',
           userSelect: 'none',
+          width: 76,
           willChange: 'transform',
-          transition:
-            'background-color 140ms ease, border-color 140ms ease, box-shadow 140ms ease',
         }}
       >
-      {editMode ? (
-        <IconButton
-          aria-label="Remove folder"
-          size="small"
-          onClick={(event) => {
-            event.stopPropagation();
-            onRemove();
-          }}
-          onPointerDown={(event) => event.stopPropagation()}
+        <Box
           sx={{
-            backgroundColor: alpha(theme.palette.error.main, 0.12),
-            color: theme.palette.error.main,
-            height: 22,
-            position: 'absolute',
-            right: 2,
-            top: 2,
-            width: 22,
-            zIndex: 2,
+            borderRadius: '15px',
+            boxShadow: isTabDropTarget
+              ? `0 0 0 3px ${theme.palette.primary.main}`
+              : selected
+                ? `0 0 0 2px ${theme.palette.primary.main}`
+                : editMode
+                  ? `0 0 0 1px ${alpha(theme.palette.primary.main, 0.6)}`
+                  : 'none',
+            lineHeight: 0,
+            transform: isTabDropTarget ? 'scale(1.1)' : 'none',
+            transition:
+              'box-shadow 140ms ease, transform 200ms cubic-bezier(0.2, 0.9, 0.25, 1)',
+            '&:active': editMode ? undefined : { transform: 'scale(0.93)' },
           }}
         >
-          <CloseRoundedIcon sx={{ fontSize: 14 }} />
-        </IconButton>
-      ) : null}
-      <FolderCompositeAvatar tabs={tabs} getTitle={getTitle} size={40} />
-      <Typography
-        sx={{
-          fontSize: 11,
-          fontWeight: 600,
-          maxWidth: 76,
-          overflow: 'hidden',
-          textAlign: 'center',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap',
-        }}
-      >
-        {name}
-      </Typography>
+          <FolderCompositeAvatar tabs={tabs} getTitle={getTitle} size={54} />
+        </Box>
+        {editMode ? (
+          <IconButton
+            aria-label={t('core:tabs_home.delete_folder', {
+              postProcess: 'capitalizeFirstChar',
+            })}
+            size="small"
+            onClick={(event) => {
+              event.stopPropagation();
+              onRemove();
+            }}
+            onPointerDown={(event) => event.stopPropagation()}
+            sx={{
+              backgroundColor: theme.palette.background.paper,
+              boxShadow: `0 0 0 1px ${theme.palette.divider}`,
+              color: theme.palette.error.main,
+              height: 22,
+              left: 0,
+              position: 'absolute',
+              top: -6,
+              width: 22,
+              zIndex: 2,
+              '&:hover': { backgroundColor: theme.palette.background.paper },
+            }}
+          >
+            <CloseRoundedIcon sx={{ fontSize: 14 }} />
+          </IconButton>
+        ) : null}
+        <Typography
+          sx={{
+            color: selected ? theme.palette.primary.main : 'text.primary',
+            fontSize: 11.5,
+            fontWeight: selected ? 700 : 500,
+            maxWidth: 72,
+            overflow: 'hidden',
+            textAlign: 'center',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {name}
+        </Typography>
       </Box>
     </Box>
   );
 });
 
-const SortableTabCard = ({
+type LongPressProps = {
+  onContextMenu: (e: React.MouseEvent) => void;
+  onSelectStart: (e: React.SyntheticEvent) => void;
+  onTouchStart: (e: React.TouchEvent) => void;
+  onTouchMove: () => void;
+  onTouchEnd: () => void;
+};
+
+/** An open tab as a browser-style card with a picture of the page. */
+const SortableTabPreview = ({
   tab,
   title,
-  color,
+  stackKey,
+  windowProps,
   isActive,
-  isSavedOnly,
   editMode,
-  showQuickClose,
+  index,
+  closing,
+  closeLabel,
   onSelect,
   onClose,
   longPressProps,
 }: {
   tab: OpenTab;
   title: string;
-  color: string;
+  stackKey: string;
+  /** Several windows of one app: their avatars under the card. */
+  windowProps: Pick<
+    ComponentProps<typeof TabPreviewCard>,
+    'windows' | 'activeWindowId' | 'onPickWindow' | 'windowLabel' | 'colorKey'
+  >;
   isActive: boolean;
-  isSavedOnly: boolean;
   editMode: boolean;
-  showQuickClose?: boolean;
+  index: number;
+  closing: boolean;
+  closeLabel: string;
   onSelect: () => void;
   onClose: (e: React.MouseEvent) => void;
-  longPressProps: {
-    onContextMenu: (e: React.MouseEvent) => void;
-    onSelectStart: (e: React.SyntheticEvent) => void;
-    onTouchStart: (e: React.TouchEvent) => void;
-    onTouchMove: () => void;
-    onTouchEnd: () => void;
-  };
+  longPressProps: LongPressProps;
 }) => {
-  const theme = useTheme();
-  const sortableId = tabDragId(tab);
-  const displayTitle = shortenTabDisplayTitle(title);
   const {
     attributes,
     listeners,
@@ -607,17 +632,14 @@ const SortableTabCard = ({
     transform,
     transition,
     isDragging,
-  } = useSortable({ id: sortableId, disabled: !editMode });
-
-  const dragListeners = editMode ? listeners : undefined;
-  const showCloseButton = editMode || showQuickClose;
+  } = useSortable({ id: tabDragId(tab), disabled: !editMode });
 
   return (
     <Box
       ref={setNodeRef}
+      data-overlay-card={stackKey}
       {...(editMode ? attributes : {})}
-      {...(dragListeners ?? {})}
-      onClick={editMode ? undefined : onSelect}
+      {...(editMode ? listeners : {})}
       {...(editMode ? {} : longPressProps)}
       style={{
         transform: CSS.Transform.toString(transform),
@@ -628,113 +650,171 @@ const SortableTabCard = ({
         zIndex: isDragging ? 0 : 1,
       }}
       sx={{
-        position: 'relative',
-        display: 'flex',
-        alignItems: 'center',
-        gap: 1,
-        pl: 1,
-        pr: showCloseButton ? 3 : 1,
-        py: 0.85,
-        borderRadius: 2,
-        cursor: editMode ? 'grab' : 'pointer',
         minWidth: 0,
-        maxWidth: '100%',
-        overflow: 'hidden',
-        width: '100%',
-        ...noTextSelectionSx,
-        border: editMode
-          ? `1px dashed ${alpha(theme.palette.primary.main, 0.55)}`
-          : isActive
-          ? `1.5px solid ${theme.palette.primary.main}`
-          : isSavedOnly
-            ? `1px dashed ${theme.palette.divider}`
-            : `1px solid ${theme.palette.divider}`,
-        backgroundColor: editMode
-          ? `${theme.palette.primary.main}08`
-          : isActive
-          ? `${theme.palette.primary.main}14`
-          : isSavedOnly
-            ? `${theme.palette.action.hover}`
-            : theme.palette.background.paper,
+        position: 'relative',
         touchAction: editMode ? 'none' : 'manipulation',
-        willChange: 'transform',
-        '&:active': !editMode ? { transform: 'scale(0.97)' } : undefined,
+        ...noTextSelectionSx,
       }}
     >
-      <TabAvatar tab={tab} title={title} color={color} />
-      <Box sx={{ minWidth: 0, flex: 1, overflow: 'hidden' }}>
-        <Typography
-          title={title !== displayTitle ? title : undefined}
-          sx={{
-            fontSize: 12.5,
-            fontWeight: 600,
-            whiteSpace: 'nowrap',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            lineHeight: 1.2,
-            maxWidth: '100%',
-            ...noTextSelectionSx,
-          }}
-        >
-          {displayTitle}
-        </Typography>
-        <Typography
-          sx={{
-            fontSize: 9.5,
-            opacity: isActive ? 0.9 : 0.55,
-            color: isActive ? theme.palette.primary.main : 'inherit',
-            textTransform: 'uppercase',
-            letterSpacing: 0.3,
-            whiteSpace: 'nowrap',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            ...noTextSelectionSx,
-          }}
-        >
-          {isActive
-            ? 'Active'
-            : isSavedOnly
-              ? 'Tap to open'
-              : tab.internal
-                ? 'Built-in'
-                : tab.service || 'App'}
-        </Typography>
-      </Box>
-      {showCloseButton ? (
-        <IconButton
-          size="small"
-          onClick={onClose}
-          onPointerDown={(event) => event.stopPropagation()}
-          onTouchStart={(event) => event.stopPropagation()}
-          aria-label={editMode ? 'Remove app' : 'Close tab'}
-          sx={{
-            position: 'absolute',
-            ...(showQuickClose && !editMode
-              ? { top: 4, right: 4 }
-              : {
-                  top: '50%',
-                  right: 2,
-                  transform: 'translateY(-50%)',
-                }),
-            zIndex: 2,
-            ...(showQuickClose && !editMode
-              ? {
-                  backgroundColor: alpha(theme.palette.error.main, 0.14),
-                  height: 20,
-                  width: 20,
-                }
-              : {}),
-            color: theme.palette.error.main,
-          }}
-        >
-          <CloseRoundedIcon sx={{ fontSize: showQuickClose && !editMode ? 13 : 15 }} />
-        </IconButton>
-      ) : null}
+      <TabPreviewCard
+        closeLabel={closeLabel}
+        closing={closing}
+        editMode={editMode}
+        index={index}
+        isActive={isActive}
+        onClose={onClose}
+        onSelect={editMode ? undefined : onSelect}
+        {...windowProps}
+        tab={tab}
+        title={title}
+      />
     </Box>
   );
 };
 
-export const MobileTabsOverlay = ({ open, onClose }: MobileTabsOverlayProps) => {
+/** An app inside a folder, as an icon on a phone's home screen. */
+const SortableFolderAppIcon = ({
+  tab,
+  title,
+  isActive,
+  isOpen,
+  editMode,
+  removeLabel,
+  onSelect,
+  onRemove,
+  longPressProps,
+}: {
+  tab: OpenTab;
+  title: string;
+  isActive: boolean;
+  isOpen: boolean;
+  editMode: boolean;
+  removeLabel: string;
+  onSelect: () => void;
+  onRemove: (e: React.MouseEvent) => void;
+  longPressProps: LongPressProps;
+}) => {
+  const theme = useTheme();
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: tabDragId(tab), disabled: !editMode });
+
+  return (
+    <Box
+      ref={setNodeRef}
+      {...(editMode ? attributes : {})}
+      {...(editMode ? listeners : {})}
+      {...(editMode ? {} : longPressProps)}
+      onClick={editMode ? undefined : onSelect}
+      style={{
+        transform: CSS.Transform.toString(transform),
+        transition:
+          transition ||
+          'transform 220ms cubic-bezier(0.2, 0, 0, 1), opacity 180ms ease',
+        opacity: isDragging ? 0.28 : 1,
+      }}
+      sx={{
+        alignItems: 'center',
+        cursor: editMode ? 'grab' : 'pointer',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 0.75,
+        minWidth: 0,
+        position: 'relative',
+        py: 0.75,
+        touchAction: editMode ? 'none' : 'manipulation',
+        ...noTextSelectionSx,
+        '&:active > .go-folder-app-icon': editMode
+          ? undefined
+          : { transform: 'scale(0.92)' },
+      }}
+    >
+      <Box
+        className="go-folder-app-icon"
+        sx={{
+          borderRadius: '16px',
+          boxShadow: isActive
+            ? `0 0 0 2.5px ${theme.palette.primary.main}`
+            : 'none',
+          lineHeight: 0,
+          position: 'relative',
+          transition: 'transform 160ms ease',
+        }}
+      >
+        <TabAvatar
+          color={colorFor(title)}
+          radius={15}
+          size={54}
+          tab={tab}
+          title={title}
+        />
+        {isOpen ? (
+          <Box
+            component="span"
+            sx={{
+              backgroundColor: 'primary.main',
+              borderRadius: '50%',
+              bottom: -6,
+              height: 5,
+              left: '50%',
+              position: 'absolute',
+              transform: 'translateX(-50%)',
+              width: 5,
+            }}
+          />
+        ) : null}
+      </Box>
+      {editMode ? (
+        <IconButton
+          aria-label={removeLabel}
+          size="small"
+          onClick={onRemove}
+          onPointerDown={(event) => event.stopPropagation()}
+          onTouchStart={(event) => event.stopPropagation()}
+          sx={{
+            backgroundColor: theme.palette.background.paper,
+            boxShadow: `0 0 0 1px ${theme.palette.divider}`,
+            color: theme.palette.error.main,
+            height: 22,
+            left: 'calc(50% - 36px)',
+            position: 'absolute',
+            top: 0,
+            width: 22,
+            zIndex: 2,
+            '&:hover': { backgroundColor: theme.palette.background.paper },
+          }}
+        >
+          <CloseRoundedIcon sx={{ fontSize: 14 }} />
+        </IconButton>
+      ) : null}
+      <Typography
+        sx={{
+          fontSize: 11.5,
+          fontWeight: 500,
+          maxWidth: '100%',
+          overflow: 'hidden',
+          textAlign: 'center',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+          ...noTextSelectionSx,
+        }}
+      >
+        {title}
+      </Typography>
+    </Box>
+  );
+};
+
+export const MobileTabsOverlay = ({
+  open,
+  onClose,
+  pulling = false,
+}: MobileTabsOverlayProps) => {
   const theme = useTheme();
   const { t } = useTranslation(['core']);
   const isLandscape = useMediaQuery('(orientation: landscape)');
@@ -787,7 +867,25 @@ export const MobileTabsOverlay = ({ open, onClose }: MobileTabsOverlayProps) => 
   const dragEndedRef = useRef(false);
   const tabsRef = useRef(tabs);
   const tabsPanelRef = useRef<HTMLDivElement | null>(null);
+  // Also handed to a pull down from a list, which moves it (tabsPull).
+  // State too, so the slide-up-to-close listeners follow a new panel.
+  const [tabsPanelEl, setTabsPanelEl] = useState<HTMLDivElement | null>(null);
+  const setTabsPanel = useCallback((element: HTMLDivElement | null) => {
+    tabsPanelRef.current = element;
+    setTabsPanelElement(element);
+    setTabsPanelEl(element);
+  }, []);
   const tabsListRef = useRef<HTMLDivElement | null>(null);
+  // The strip below the panel: a swipe there over a long list is a swipe on it.
+  const [tabsBelowEl, setTabsBelowEl] = useState<HTMLDivElement | null>(null);
+  const cardsGridRef = useRef<HTMLDivElement | null>(null);
+  const [closingStackKeys, setClosingStackKeys] = useState<Set<string>>(
+    () => new Set()
+  );
+  const pendingCardFlipRef = useRef<{
+    at: number;
+    boxes: Map<string, DOMRect>;
+  } | null>(null);
 
   tabsRef.current = tabs;
 
@@ -833,9 +931,19 @@ export const MobileTabsOverlay = ({ open, onClose }: MobileTabsOverlayProps) => 
     [folderTabsMap, selectedFolder, tabs]
   );
 
+  // Root: several tabs of one app are one stacked card.
+  const rootStacks = useMemo(
+    () => groupTabsIntoStacks(tabs, selectedTab?.tabId ?? null),
+    [selectedTab?.tabId, tabs]
+  );
+  const { shownFor, pick } = useShownWindows(open);
+
   const sortableTabIds = useMemo(
-    () => visibleTabs.map((tab) => tabDragId(tab)),
-    [visibleTabs]
+    () =>
+      selectedFolder
+        ? visibleTabs.map((tab) => tabDragId(tab))
+        : rootStacks.map((stack) => tabDragId(stack.lead)),
+    [rootStacks, selectedFolder, visibleTabs]
   );
 
   const folderRowCount = org.organization.folderRowCount ?? 1;
@@ -848,6 +956,25 @@ export const MobileTabsOverlay = ({ open, onClose }: MobileTabsOverlayProps) => 
     if (!open || !org.ready) return;
     org.syncOpenTabSnapshots(tabsRef.current);
   }, [open, org.ready, org.syncOpenTabSnapshots]);
+
+  const openTabIdsKey = tabs.map((tab) => tab.tabId).join('|');
+  useLayoutEffect(() => {
+    const before = pendingCardFlipRef.current;
+    pendingCardFlipRef.current = null;
+    if (before && performance.now() - before.at < 1500) {
+      playFlip(cardsGridRef.current, 'data-overlay-card', before.boxes, {
+        duration: 300,
+      });
+    }
+    setClosingStackKeys((prev) => {
+      if (prev.size === 0) return prev;
+      const stillOpen = new Set(rootStacks.map((stack) => stack.key));
+      const next = new Set([...prev].filter((key) => stillOpen.has(key)));
+      return next.size === prev.size ? prev : next;
+    });
+    // Only a change in which tabs are open plays it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openTabIdsKey]);
 
   const resolveTabByKey = useCallback(
     (tabKey: string): OpenTab | null =>
@@ -926,21 +1053,20 @@ export const MobileTabsOverlay = ({ open, onClose }: MobileTabsOverlayProps) => 
     if (open) setOverlayMounted(true);
   }, [open]);
 
+  // Every open starts on all tabs, never inside the folder left open.
   const wasOpenRef = useRef(open);
   useLayoutEffect(() => {
     const justOpened = open && !wasOpenRef.current;
     wasOpenRef.current = open;
-    if (!justOpened || !selectedFolder) return;
-    const activeKey = selectedTab ? getOpenTabKey(selectedTab) : null;
-    if (!activeKey || !selectedFolder.tabKeys.includes(activeKey)) {
-      setSelectedFolderId(null);
-    }
-  }, [open, selectedFolder, selectedTab]);
+    if (justOpened) setSelectedFolderId(null);
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
     if (detailsOpen || tabOptionsOpen || renameOpen || addressOpen) return;
     if (draggedTab || draggedFolderId) return;
+    // The finger pulling it down is still on the page behind.
+    if (pulling) return;
     // While arranging tabs/folders the @dnd-kit TouchSensor has a 180ms
     // activation delay; during it draggedTab is still null, so an early
     // touchmove would otherwise background-close the overlay mid-drag.
@@ -987,6 +1113,7 @@ export const MobileTabsOverlay = ({ open, onClose }: MobileTabsOverlayProps) => 
     draggedTab,
     onClose,
     open,
+    pulling,
     renameOpen,
     tabOptionsOpen,
     tabsEditMode,
@@ -1270,10 +1397,56 @@ export const MobileTabsOverlay = ({ open, onClose }: MobileTabsOverlayProps) => 
     onClose();
   };
 
-  const handleQuickClose = (e: React.MouseEvent, tab: OpenTab) => {
-    e.stopPropagation();
-    if (isSavedOnlyTab(tab)) return;
-    closeOpenTab(tab.tabId);
+  // An app icon in a folder launches it, again in a new window when it is
+  // already open (its card in all tabs switches to the open one).
+  const handleLaunch = (tab: OpenTab) => {
+    if (tabsEditMode) return;
+    if (dragEndedRef.current || longPressTriggeredRef.current) {
+      longPressTriggeredRef.current = false;
+      return;
+    }
+    launchAppWindow(tab);
+    onClose();
+  };
+
+  useTabsSwipeClose({
+    enabled:
+      open &&
+      !pulling &&
+      !tabsEditMode &&
+      !detailsOpen &&
+      !tabOptionsOpen &&
+      !renameOpen &&
+      !addressOpen &&
+      !folderPendingDelete,
+    below: tabsBelowEl,
+    getList: () => tabsListRef.current,
+    onClose,
+    panel: tabsPanelEl,
+  });
+
+  // A closed card shrinks away, then the others glide into its place. With
+  // several windows of one app only the shown one closes; the card stays.
+  const closeStackAnimated = (stack: TabStack) => {
+    const flipBefore = () => {
+      pendingCardFlipRef.current = {
+        at: performance.now(),
+        boxes: measureBoxes(cardsGridRef.current, 'data-overlay-card'),
+      };
+    };
+    if (stack.tabs.length > 1) {
+      flipBefore();
+      closeOpenTab(shownFor(stack).tabId);
+      return;
+    }
+    if (closingStackKeys.has(stack.key)) return;
+    setClosingStackKeys((prev) => new Set(prev).add(stack.key));
+    window.setTimeout(() => {
+      flipBefore();
+      stack.tabs.forEach((tab) => {
+        if (!isSavedOnlyTab(tab)) closeOpenTab(tab.tabId);
+      });
+    }, 170);
   };
 
   const handleClose = (e: React.MouseEvent, tab: OpenTab) => {
@@ -1469,6 +1642,8 @@ export const MobileTabsOverlay = ({ open, onClose }: MobileTabsOverlayProps) => 
         <Slide
           direction="down"
           in={open}
+          // A pull moves the panel itself.
+          timeout={pulling ? 0 : undefined}
           mountOnEnter
           unmountOnExit
           onExited={() => setOverlayMounted(false)}
@@ -1482,7 +1657,7 @@ export const MobileTabsOverlay = ({ open, onClose }: MobileTabsOverlayProps) => 
             }}
           >
             <Box
-              ref={tabsPanelRef}
+              ref={setTabsPanel}
               sx={{
                 backgroundColor:
                   theme.palette.mode === 'dark'
@@ -1617,7 +1792,6 @@ export const MobileTabsOverlay = ({ open, onClose }: MobileTabsOverlayProps) => 
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexShrink: 0 }}>
               {tabs.length > 0 && !selectedFolder ? (
                 <ButtonBase
-                  aria-label="Close all tabs"
                   onClick={(event) => {
                     event.stopPropagation();
                     closeAllOpenTabs();
@@ -1639,7 +1813,9 @@ export const MobileTabsOverlay = ({ open, onClose }: MobileTabsOverlayProps) => 
                   }}
                 >
                   <ClearAllRoundedIcon sx={{ fontSize: 18 }} />
-                  Close all
+                  {t('core:tabs_home.close_all', {
+                    postProcess: 'capitalizeFirstChar',
+                  })}
                 </ButtonBase>
               ) : null}
               {!selectedFolder ? tabsEditButton : null}
@@ -1713,9 +1889,11 @@ export const MobileTabsOverlay = ({ open, onClose }: MobileTabsOverlayProps) => 
                   key={`folder-row-${rowIndex}`}
                   sx={{
                     overflowX: 'auto',
+                    scrollbarWidth: 'none',
                     touchAction: 'pan-x',
                     WebkitOverflowScrolling: 'touch',
                     width: '100%',
+                    '&::-webkit-scrollbar': { display: 'none' },
                   }}
                 >
                   <SortableContext
@@ -1871,43 +2049,91 @@ export const MobileTabsOverlay = ({ open, onClose }: MobileTabsOverlayProps) => 
                 items={sortableTabIds}
                 strategy={rectSortingStrategy}
               >
-                <Box
-                  sx={{
-                    display: 'grid',
-                    gridTemplateColumns: isLandscape
-                      ? 'repeat(4, minmax(0, 1fr))'
-                      : 'repeat(2, minmax(0, 1fr))',
-                    gap: 1,
-                    minWidth: 0,
-                    width: '100%',
-                  }}
-                >
-                  {visibleTabs.map((tab) => {
-                    const title = org.getTabTitle(tab);
-                    const isActive = selectedTab?.tabId === tab.tabId;
-                    const isSavedOnly = isSavedOnlyTab(tab);
-                    const color = colorFor(title);
-                    return (
-                      <SortableTabCard
-                        key={tab.tabId || getOpenTabKey(tab)}
-                        tab={tab}
-                        title={title}
-                        color={color}
-                        isActive={isActive}
-                        isSavedOnly={isSavedOnly}
-                        editMode={tabEditMode}
-                        showQuickClose={!tabEditMode && !isSavedOnly}
-                        longPressProps={bindLongPress(tab)}
-                        onClose={(e) =>
-                          tabEditMode
-                            ? handleClose(e, tab)
-                            : handleQuickClose(e, tab)
-                        }
-                        onSelect={() => handleSelect(tab)}
-                      />
-                    );
-                  })}
-                </Box>
+                {selectedFolder ? (
+                  <Box
+                    sx={{
+                      columnGap: 1,
+                      display: 'grid',
+                      gridTemplateColumns: isLandscape
+                        ? 'repeat(6, minmax(0, 1fr))'
+                        : 'repeat(4, minmax(0, 1fr))',
+                      minWidth: 0,
+                      rowGap: 1.25,
+                      width: '100%',
+                    }}
+                  >
+                    {visibleTabs.map((tab) => {
+                      const key = getOpenTabKey(tab);
+                      return (
+                        <SortableFolderAppIcon
+                          key={tab.tabId || key}
+                          editMode={tabEditMode}
+                          isActive={selectedTab?.tabId === tab.tabId}
+                          isOpen={!isSavedOnlyTab(tab)}
+                          longPressProps={bindLongPress(tab)}
+                          onRemove={(e) => handleClose(e, tab)}
+                          onSelect={() => handleLaunch(tab)}
+                          removeLabel={t('core:tabs_home.remove_from_folder', {
+                            postProcess: 'capitalizeFirstChar',
+                          })}
+                          tab={tab}
+                          title={org.getTabTitle(tab)}
+                        />
+                      );
+                    })}
+                  </Box>
+                ) : (
+                  <Box
+                    ref={cardsGridRef}
+                    sx={{
+                      display: 'grid',
+                      gap: '10px',
+                      gridTemplateColumns: isLandscape
+                        ? 'repeat(4, minmax(0, 1fr))'
+                        : 'repeat(2, minmax(0, 1fr))',
+                      minWidth: 0,
+                      width: '100%',
+                    }}
+                  >
+                    {rootStacks.map((stack, index) => {
+                      const shown = shownFor(stack);
+                      return (
+                        <SortableTabPreview
+                          key={stack.key}
+                          closeLabel={t('core:tabs_home.close_tab', {
+                            postProcess: 'capitalizeFirstChar',
+                          })}
+                          closing={closingStackKeys.has(stack.key)}
+                          editMode={tabEditMode}
+                          index={index}
+                          isActive={selectedTab?.tabId === shown.tabId}
+                          longPressProps={bindLongPress(shown)}
+                          onClose={(e) => {
+                            e.stopPropagation();
+                            closeStackAnimated(stack);
+                          }}
+                          onSelect={() => handleSelect(shown)}
+                          stackKey={stack.key}
+                          tab={shown}
+                          title={org.getTabTitle(shown)}
+                          windowProps={{
+                            activeWindowId: selectedTab?.tabId
+                              ? String(selectedTab.tabId)
+                              : null,
+                            colorKey: org.getTabTitle(stack.lead),
+                            onPickWindow: (tab) => pick(stack.key, tab),
+                            windowLabel: (position) =>
+                              t('core:tabs_home.window_n', {
+                                amount: position,
+                                postProcess: 'capitalizeFirstChar',
+                              }),
+                            windows: stack.tabs,
+                          }}
+                        />
+                      );
+                    })}
+                  </Box>
+                )}
               </SortableContext>
             )}
           </Box>
@@ -1941,10 +2167,34 @@ export const MobileTabsOverlay = ({ open, onClose }: MobileTabsOverlayProps) => 
           </DragOverlay>
           </DndContext>
           </Box>
-            </Box>
-            {/* A swipe here is handled by the document listeners above, which
-                scroll a long list instead of closing; a tap closes. */}
+          {/* Slide up here (or on the header) to close; on the list a big
+              swipe closes and a small one scrolls (useTabsSwipeClose). */}
+          <Box
+            aria-hidden
+            sx={{
+              display: 'flex',
+              flexShrink: 0,
+              justifyContent: 'center',
+              pb: 1,
+              pt: 0.75,
+              touchAction: 'none',
+            }}
+          >
             <Box
+              sx={{
+                backgroundColor: alpha(theme.palette.text.primary, 0.28),
+                borderRadius: 999,
+                height: 4,
+                width: 38,
+              }}
+            />
+          </Box>
+            </Box>
+            {/* Over a long list a swipe here is one on the list (a small one
+                scrolls it, a big one closes); otherwise the document
+                listeners above close on any swipe. A tap closes. */}
+            <Box
+              ref={setTabsBelowEl}
               aria-label="Close tabs"
               onClick={onClose}
               sx={{

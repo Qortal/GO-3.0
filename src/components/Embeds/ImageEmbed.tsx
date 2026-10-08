@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useContext, useEffect, useRef, useState } from 'react';
 import {
   Card,
   CardContent,
@@ -11,6 +11,7 @@ import {
   Snackbar,
   Alert,
   CircularProgress,
+  useMediaQuery,
   useTheme,
 } from '@mui/material';
 import RefreshIcon from '@mui/icons-material/Refresh';
@@ -24,6 +25,12 @@ import { decodeIfEncoded } from '../../utils/decode';
 import { useTranslation } from 'react-i18next';
 import { appHeighOffsetPx } from '../Desktop/CustomTitleBar';
 import { isCapacitor } from '../../utils/platform';
+import { ReticulumImageViewer } from '../Chat/ReticulumImageViewer';
+import {
+  ChatMediaGalleryContext,
+  findChatMediaIndex,
+  type ChatMediaItem,
+} from '../Chat/chatMediaGallery';
 import {
   mobileSaveLocationLabelFor,
   saveBlobToMobileDocuments,
@@ -31,6 +38,7 @@ import {
 
 export const ImageCard = ({
   image,
+  resource = null,
   fetchImage,
   owner,
   refresh,
@@ -206,7 +214,7 @@ export const ImageCard = ({
             height: '100%',
           }}
         >
-          <ImageViewer src={image} />
+          <ImageViewer resource={resource} src={image} />
         </CardContent>
       </Box>
     </Card>
@@ -394,11 +402,7 @@ function ZoomableImage({ src, alt }: { src: string | null; alt: string }) {
   const handleWheel = (e: React.WheelEvent) => {
     e.preventDefault();
     const delta = -e.deltaY * 0.0018;
-    const nextScale = clamp(
-      tf.current.scale * (1 + delta),
-      MIN_ZOOM,
-      MAX_ZOOM
-    );
+    const nextScale = clamp(tf.current.scale * (1 + delta), MIN_ZOOM, MAX_ZOOM);
     if (nextScale <= 1.01) reset(true);
     else zoomTo(nextScale, e.clientX, e.clientY);
   };
@@ -445,8 +449,26 @@ function ZoomableImage({ src, alt }: { src: string | null; alt: string }) {
   );
 }
 
-export function ImageViewer({ src = null, alt = '' }) {
+export function ImageViewer({
+  src = null,
+  alt = '',
+  resource = null,
+}: {
+  src?: string | null;
+  alt?: string;
+  /** The QDN picture, to find it among the chat's for swiping. */
+  resource?: { service?: string; name?: string; identifier?: string } | null;
+}) {
   const [isFullscreen, setIsFullscreen] = useState(false);
+  // In a chat (and on any phone) the chat's own full-screen viewer opens:
+  // copy, share, save, and swiping through the chat's pictures.
+  const mediaGallery = useContext(ChatMediaGalleryContext);
+  const viewerTheme = useTheme();
+  const isPhone = useMediaQuery(viewerTheme.breakpoints.down('md'));
+  const [chatViewer, setChatViewer] = useState<{
+    container: HTMLElement | null;
+    gallery: { items: ChatMediaItem[]; index: number } | null;
+  } | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [snack, setSnack] = useState<{
     open: boolean;
@@ -511,7 +533,28 @@ export function ImageViewer({ src = null, alt = '' }) {
           maxWidth: '100%', // Prevent horizontal overflow
           height: '100%',
         }}
-        onClick={handleOpenFullscreen}
+        onClick={(event) => {
+          const container = event.currentTarget.closest<HTMLElement>(
+            '[data-reticulum-chat-root="true"]'
+          );
+          if (!src || (!isPhone && !container)) {
+            handleOpenFullscreen();
+            return;
+          }
+          const items = mediaGallery?.getItems() ?? [];
+          const index = resource
+            ? findChatMediaIndex(items, {
+                messageKey:
+                  event.currentTarget.closest('.message-item-row')?.id ||
+                  undefined,
+                qdn: resource,
+              })
+            : -1;
+          setChatViewer({
+            container,
+            gallery: index >= 0 ? { items, index } : null,
+          });
+        }}
       >
         <img
           src={src}
@@ -523,6 +566,17 @@ export function ImageViewer({ src = null, alt = '' }) {
           }}
         />
       </Box>
+
+      {chatViewer && src && (
+        <ReticulumImageViewer
+          alt={alt || undefined}
+          containerElement={chatViewer.container}
+          gallery={chatViewer.gallery}
+          onClose={() => setChatViewer(null)}
+          open
+          src={src}
+        />
+      )}
 
       {/* Fullscreen Viewer */}
       <Dialog

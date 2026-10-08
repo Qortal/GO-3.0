@@ -69,6 +69,14 @@
     "empty": "Sem mensagens privadas de momento.",
     "subtitle": "Chats privados do Reticulum"
   },
+  "dm_search": {
+    "clear": "limpar pesquisa",
+    "empty": "nenhuma mensagem encontrada",
+    "hint": "digite pelo menos 2 caracteres para pesquisar nas suas mensagens diretas",
+    "placeholder": "pesquise nas suas mensagens diretas",
+    "title": "pesquisar mensagens",
+    "unavailable": "a pesquisa de mensagens não está disponível no momento"
+  },
   "event_preview": {
     "all_day": "all day",
     "calendar_unavailable": "calendar is unavailable",
@@ -152,11 +160,14 @@
     "copy_failed": "unable to copy image",
     "download": "download image",
     "download_failed": "unable to download image",
+    "newer": "mais recente",
+    "older": "mais antigo",
     "prepare_failed": "unable to prepare image for clipboard",
     "read_failed": "unable to read image",
     "save": "salvar imagem",
     "share": "compartilhar imagem",
     "share_failed": "não foi possível compartilhar a imagem",
+    "video": "vídeo",
     "zoom_in": "zoom in",
     "zoom_out": "zoom out"
   },
@@ -300,6 +311,21 @@
       },
       "title": "Tamanho do texto"
     }
+  },
+  "share": {
+    "cancel": "cancelar compartilhamento",
+    "cannot_write": "só admins podem escrever neste canal: volte e escolha outra conversa",
+    "chip_label": "{{what}} para compartilhar: toque em uma conversa para adicionar",
+    "kind_file": "arquivo",
+    "kind_link": "link",
+    "kind_photo": "foto",
+    "kind_text": "texto",
+    "kind_video": "vídeo",
+    "notice_extra_files": "só o primeiro ficheiro foi adicionado: uma mensagem leva um ficheiro.",
+    "notice_too_large": "um ficheiro com mais de {{max}} MB foi deixado de fora.",
+    "notice_unreadable": "não foi possível ler o ficheiro partilhado.",
+    "notice_unsafe_image": "não foi possível limpar os dados de localização da imagem, por isso foi deixada de fora.",
+    "pick_chat": "escolha uma conversa"
   },
   "status_badge": {
     "copy_diagnostics": "Copiar diagnóstico",

@@ -37,6 +37,24 @@ export function isBareQortalNameQuery(query: string): boolean {
   return !trimmed.includes('/');
 }
 
+/**
+ * `text` split around the first place `query` appears in it (any case), for
+ * drawing the matched letters differently. No match: all of it in `before`.
+ */
+export function splitFirstMatch(
+  text: string,
+  query: string
+): { before: string; match: string; after: string } {
+  const needle = (query || '').trim().toLowerCase();
+  const at = needle ? text.toLowerCase().indexOf(needle) : -1;
+  if (at < 0) return { before: text, match: '', after: '' };
+  return {
+    before: text.slice(0, at),
+    match: text.slice(at, at + needle.length),
+    after: text.slice(at + needle.length),
+  };
+}
+
 export type AppsSearchSuggestion =
   | { type: 'link'; label: string }
   | { type: 'app'; app: any };

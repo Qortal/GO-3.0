@@ -1,4 +1,11 @@
-import { useEffect, useRef, useState, useMemo, type MouseEvent } from 'react';
+import {
+  useEffect,
+  useRef,
+  useState,
+  useMemo,
+  type MouseEvent,
+  type ReactNode,
+} from 'react';
 import {
   Box,
   Dialog,
@@ -10,7 +17,12 @@ import {
   useMediaQuery,
   useTheme,
 } from '@mui/material';
-import { alpha, keyframes } from '@mui/material/styles';
+import {
+  ThemeProvider,
+  alpha,
+  keyframes,
+  type Theme,
+} from '@mui/material/styles';
 import AccountBalanceWalletRoundedIcon from '@mui/icons-material/AccountBalanceWalletRounded';
 import SendRoundedIcon from '@mui/icons-material/SendRounded';
 import PersonSearchRoundedIcon from '@mui/icons-material/PersonSearchRounded';
@@ -30,7 +42,16 @@ import {
   appUpdateSeenVersionAtom,
 } from '../../appUpdate/appUpdateAtoms';
 import { openAppUpdateWindow } from '../../appUpdate/appUpdateController';
-import { nodeInfosAtom, p2pHealthAtom, rawWalletAtom, selectedNodeInfoAtom, mobileChatComposeActiveAtom, mobileFullscreenComposerActiveAtom, mobileGroupPanelOpenAtom, navigationControllerAtom } from '../../atoms/global';
+import {
+  nodeInfosAtom,
+  p2pHealthAtom,
+  rawWalletAtom,
+  selectedNodeInfoAtom,
+  mobileChatComposeActiveAtom,
+  mobileFullscreenComposerActiveAtom,
+  mobileGroupPanelOpenAtom,
+  navigationControllerAtom,
+} from '../../atoms/global';
 import { computeP2pHealth } from '../../lib/p2pHealth';
 import { onMobileReticulumStatus } from '../../bridge/capacitorBridge';
 import { CoreSyncStatus } from '../CoreSyncStatus';
@@ -41,7 +62,10 @@ import {
   GeneralNotifications,
   type GeneralNotificationsHandle,
 } from '../GeneralNotifications';
-import { filterAppTabsForMobile, isQChatOpenTab } from '../../utils/openQChatTab';
+import {
+  filterAppTabsForMobile,
+  isQChatOpenTab,
+} from '../../utils/openQChatTab';
 import { executeEvent } from '../../utils/events';
 import { useOpenTabs } from './useOpenTabs';
 import { liveTabQortalUrl } from './tabQortalLink';
@@ -51,7 +75,12 @@ import {
   claimVendorFreezeCardPop,
   useVendorFreezeHint,
 } from './vendorFreezeHintStore';
-import { getWalletAvatarCache, fetchWalletAvatarDataUrl, setWalletAvatarCache, type WalletAvatarCacheEntry } from '../../utils/walletAvatarCache';
+import {
+  getWalletAvatarCache,
+  fetchWalletAvatarDataUrl,
+  setWalletAvatarCache,
+  type WalletAvatarCacheEntry,
+} from '../../utils/walletAvatarCache';
 import { getPrimaryNameForAvatar } from '../Group/groupApi';
 import { useUnseenNotificationCount } from '../../hooks/useUnseenNotificationCount';
 import { HTTPS_EXT_NODE_QORTAL_LINK } from '../../constants/constants';
@@ -59,12 +88,13 @@ import { MintingPublicNodeDialog } from './MintingPublicNodeDialog';
 import { MobileAccountPanel, type AccountAction } from './MobileAccountPanel';
 import { MobileTopBarSearch } from './MobileTopBarSearch';
 import { MobileTabBar } from './MobileTabBar';
-import {
-  dialogContentSx,
-  getDialogPaperSx,
-} from '../App/dialogSurface';
+import { dialogContentSx, getDialogPaperSx } from '../App/dialogSurface';
 import { MOBILE_CHAT_TOOLBAR_SLOT_ID } from './mobileChatCompose';
-import { SAFE_AREA_LEFT, SAFE_AREA_RIGHT, SAFE_AREA_TOP } from '../../utils/mobileSafeArea';
+import {
+  SAFE_AREA_LEFT,
+  SAFE_AREA_RIGHT,
+  SAFE_AREA_TOP,
+} from '../../utils/mobileSafeArea';
 import { MOBILE_TOP_BAR_HEIGHT_PX } from './mobileBarHeights';
 
 // Tall enough for the two-row formatting toolbar (2 × 40px buttons + gap +
@@ -95,6 +125,14 @@ type MobileTopBarProps = {
   tabsOverlayOpen?: boolean;
   desktopViewMode?: string;
   setDesktopViewMode?: (mode: string) => void;
+  /**
+   * The theme to draw the bar's own controls in, when that differs from
+   * GO's (immersive mode, see-through on a page of the other brightness).
+   * What they open (menus, dialogs, the bell) keeps GO's theme.
+   */
+  barTheme?: Theme;
+  /** Floats see-through on the page's colour (immersive mode). */
+  floating?: boolean;
 };
 
 /**
@@ -117,17 +155,21 @@ export const MobileTopBar = ({
   tabsOverlayOpen = false,
   desktopViewMode = 'home',
   setDesktopViewMode,
+  barTheme,
+  floating = false,
 }: MobileTopBarProps) => {
-  const theme = useTheme();
+  const appTheme = useTheme();
+  // The bar and its controls; what they open uses `appTheme` (inAppTheme).
+  const theme = barTheme ?? appTheme;
+  const inAppTheme = (node: ReactNode) =>
+    barTheme ? <ThemeProvider theme={appTheme}>{node}</ThemeProvider> : node;
   const { t } = useTranslation(['core']);
   // In landscape the bottom Home/Apps/Chat bar is hidden (vertical room is
   // scarce); we surface those controls inline here, left of the avatar.
   const isLandscape = useMediaQuery('(orientation: landscape)');
   // Landscape compose collapses the formatting toolbar to a single row, so the
   // top bar only needs one row of height instead of two.
-  const composeBarHeight = isLandscape
-    ? 56
-    : MOBILE_TOP_BAR_COMPOSE_HEIGHT_PX;
+  const composeBarHeight = isLandscape ? 56 : MOBILE_TOP_BAR_COMPOSE_HEIGHT_PX;
   const [accountOpen, setAccountOpen] = useState(false);
   const [coreOpen, setCoreOpen] = useState(false);
   const [searchExpanded, setSearchExpanded] = useState(false);
@@ -442,14 +484,12 @@ export const MobileTopBar = ({
   // the slim compose strip behind would show as a grey band above it.
   if (fullscreenComposerActive) return null;
 
-  return (
+  const bar = (
     <Box
       sx={{
         flexShrink: 0,
         boxSizing: 'content-box',
-        height: chatComposeActive
-          ? composeBarHeight
-          : MOBILE_TOP_BAR_HEIGHT_PX,
+        height: chatComposeActive ? composeBarHeight : MOBILE_TOP_BAR_HEIGHT_PX,
         minHeight: chatComposeActive
           ? composeBarHeight
           : MOBILE_TOP_BAR_HEIGHT_PX,
@@ -462,7 +502,11 @@ export const MobileTopBar = ({
         gap: 0.5,
         position: chatComposeActive ? 'sticky' : 'relative',
         top: chatComposeActive ? 0 : undefined,
-        zIndex: chatComposeActive ? 1400 : tabsOverlayOpen ? MOBILE_TOP_BAR_TABS_OPEN_Z : undefined,
+        zIndex: chatComposeActive
+          ? 1400
+          : tabsOverlayOpen
+            ? MOBILE_TOP_BAR_TABS_OPEN_Z
+            : undefined,
         backgroundColor:
           theme.palette.mode === 'dark'
             ? 'rgb(28, 30, 36)'
@@ -486,435 +530,447 @@ export const MobileTopBar = ({
       />
       {!chatComposeActive && (
         <>
-      <Box
-        sx={{
-          alignItems: 'center',
-          display: 'flex',
-          flexShrink: hideBrandCluster ? 0 : 1,
-          gap: 0.5,
-          maxWidth: hideBrandCluster ? 0 : 240,
-          minWidth: 0,
-          opacity: hideBrandCluster ? 0 : 1,
-          overflow: 'hidden',
-          pointerEvents: hideBrandCluster ? 'none' : 'auto',
-          transition:
-            'opacity 180ms ease, max-width 220ms ease, width 220ms ease',
-          width: hideBrandCluster ? 0 : 'auto',
-        }}
-      >
-        <Box
-          onClick={() => setCoreOpen(true)}
-          role="button"
-          aria-label="Core connection status"
-          sx={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 0.5,
-            px: 0.5,
-            py: 0.4,
-            borderRadius: 999,
-            cursor: 'pointer',
-            '&:active': { opacity: 0.7 },
-          }}
-        >
-          <Box sx={{ position: 'relative', flexShrink: 0, lineHeight: 0 }}>
-            <Box
-              component="img"
-              src={qortalLogo}
-              alt="Qortal"
-              sx={{ width: 24, height: 24, objectFit: 'contain' }}
-            />
-            <Box
-              sx={{
-                position: 'absolute',
-                bottom: -1,
-                right: -1,
-                width: 9,
-                height: 9,
-                borderRadius: '50%',
-                backgroundColor: coreDotColor,
-                border: `2px solid ${
-                  theme.palette.mode === 'dark'
-                    ? 'rgb(28, 30, 36)'
-                    : theme.palette.background.paper
-                }`,
-              }}
-            />
-          </Box>
-          <Typography
-            sx={{
-              fontSize: 14,
-              fontWeight: 700,
-              letterSpacing: '0.02em',
-              display: { xs: 'none', sm: 'block' },
-            }}
-          >
-            Qortal
-          </Typography>
-        </Box>
-        <ReticulumTopBadge />
-      </Box>
-
-      <MobileTopBarSearch
-        activeTabUrl={desktopViewMode === 'apps' ? activeTabUrl : ''}
-        activeTabTitle={
-          activeAppTab
-            ? String(
-                activeAppTab.label ||
-                  (activeAppTab as { metadata?: { title?: string } }).metadata
-                    ?.title ||
-                  activeAppTab.name ||
-                  ''
-              )
-            : ''
-        }
-        activeTabId={activeAppTab?.tabId ? String(activeAppTab.tabId) : ''}
-        onRefreshActiveTab={
-          activeAppTab?.tabId
-            ? () => {
-                const tab = activeAppTab as {
-                  tabId?: string;
-                  refreshFunc?: (tabId?: string) => void;
-                };
-                if (tab.refreshFunc) {
-                  tab.refreshFunc(tab.tabId);
-                  return;
-                }
-                executeEvent('refreshApp', { tabId: tab.tabId });
-              }
-            : undefined
-        }
-        expanded={searchExpanded}
-        onExpandedChange={setSearchExpanded}
-        showActiveTabUrl={showActiveTabUrl}
-        tabsOverlayOpen={tabsOverlayOpen}
-      />
-
-      <Box
-        sx={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 0.25,
-          flexShrink: 0,
-          opacity: searchExpanded ? 0 : 1,
-          pointerEvents: searchExpanded ? 'none' : 'auto',
-          transition: 'opacity 160ms ease',
-        }}
-      >
-        {isLandscape && setDesktopViewMode && (
-          <MobileTabBar
-            variant="inline"
-            desktopViewMode={desktopViewMode}
-            setDesktopViewMode={setDesktopViewMode}
-          />
-        )}
-        <Box
-          onClick={onOpenTabs}
-          role="button"
-          aria-label={tabsOverlayOpen ? 'Close tabs' : 'Open tabs'}
-          aria-pressed={tabsOverlayOpen}
-          sx={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 0.5,
-            px: 0.85,
-            py: 0.4,
-            borderRadius: 999,
-            cursor: 'pointer',
-            border: `1px solid ${
-              tabsOverlayOpen ? theme.palette.primary.main : theme.palette.divider
-            }`,
-            backgroundColor: tabsOverlayOpen
-              ? 'rgba(91,141,239,0.22)'
-              : appTabs.length > 0
-                ? 'rgba(91,141,239,0.12)'
-                : 'transparent',
-            '&:active': { opacity: 0.7 },
-          }}
-        >
-          <LayersRoundedIcon
-            sx={{
-              fontSize: 18,
-              color:
-                tabsOverlayOpen || appTabs.length > 0
-                  ? theme.palette.primary.main
-                  : theme.palette.text.secondary,
-            }}
-          />
-          <Typography
-            sx={{
-              fontSize: 12,
-              fontWeight: 700,
-              color:
-                tabsOverlayOpen || appTabs.length > 0
-                  ? theme.palette.primary.main
-                  : theme.palette.text.secondary,
-            }}
-          >
-            Tabs
-          </Typography>
           <Box
-            component="span"
             sx={{
-              ml: 0.5,
-              display: appTabs.length ? 'inline-flex' : 'none',
               alignItems: 'center',
-              justifyContent: 'center',
-              fontSize: 10,
-              fontWeight: 700,
-              height: 16,
-              minWidth: 16,
-              px: 0.5,
-              borderRadius: 999,
-              bgcolor: theme.palette.primary.main,
-              color: theme.palette.primary.contrastText,
+              display: 'flex',
+              flexShrink: hideBrandCluster ? 0 : 1,
+              gap: 0.5,
+              maxWidth: hideBrandCluster ? 0 : 240,
+              minWidth: 0,
+              opacity: hideBrandCluster ? 0 : 1,
+              overflow: 'hidden',
+              pointerEvents: hideBrandCluster ? 'none' : 'auto',
+              transition:
+                'opacity 180ms ease, max-width 220ms ease, width 220ms ease',
+              width: hideBrandCluster ? 0 : 'auto',
             }}
           >
-            {appTabs.length}
-          </Box>
-        </Box>
-
-        <Box
-          data-go-notifications-anchor=""
-          sx={{ position: 'relative', flexShrink: 0 }}
-        >
-          <IconButton
-            ref={avatarButtonRef}
-            size="small"
-            aria-label="Account menu"
-            aria-expanded={accountOpen}
-            onClick={toggleAccount}
-            sx={{
-              p: 0.35,
-              borderRadius: '50%',
-              border: `1.5px solid ${
-                theme.palette.mode === 'dark'
-                  ? alpha(theme.palette.common.white, 0.18)
-                  : alpha(theme.palette.common.black, 0.08)
-              }`,
-              '&:active': { opacity: 0.75, transform: 'scale(0.96)' },
-            }}
-          >
-            <QortalUserAvatar
-              key={`${address}-${effectivePrimaryName}`}
-              primaryName={effectivePrimaryName}
-              walletAddress={address}
-              cachedAvatarEntry={cachedAvatarEntry}
-              ownAvatar
-              fallbackIconSize={20}
-              sx={{
-                width: 32,
-                height: 32,
-                bgcolor:
-                  theme.palette.mode === 'dark'
-                    ? alpha(theme.palette.common.white, 0.1)
-                    : alpha(theme.palette.common.black, 0.06),
-                fontSize: 14,
-                fontWeight: 700,
-              }}
-            />
-          </IconButton>
-
-          {hasNewNotifications && (
             <Box
-              key={bellPop}
+              onClick={() => setCoreOpen(true)}
               role="button"
-              aria-label="New notifications"
-              onClick={openNotifications}
+              aria-label="Core connection status"
               sx={{
-                // Waits for the card to arrive before it pops.
-                animation:
-                  bellPop > 0
-                    ? `${bellPopKeyframes} 600ms ease-out 450ms both`
-                    : 'none',
-                position: 'absolute',
-                top: -2,
-                right: -2,
-                width: 18,
-                height: 18,
-                borderRadius: '50%',
                 display: 'flex',
                 alignItems: 'center',
-                justifyContent: 'center',
-                bgcolor: theme.palette.success.main,
-                color: '#fff',
-                border: `2px solid ${
-                  theme.palette.mode === 'dark'
-                    ? 'rgb(28, 30, 36)'
-                    : theme.palette.background.paper
-                }`,
-                boxShadow: `0 1px 4px ${alpha(theme.palette.success.main, 0.45)}`,
+                gap: 0.5,
+                px: 0.5,
+                py: 0.4,
+                borderRadius: 999,
                 cursor: 'pointer',
-                zIndex: 1,
-                '&:active': { transform: 'scale(0.92)' },
+                '&:active': { opacity: 0.7 },
               }}
             >
-              <NotificationsActiveRoundedIcon sx={{ fontSize: 11 }} />
+              <Box sx={{ position: 'relative', flexShrink: 0, lineHeight: 0 }}>
+                <Box
+                  component="img"
+                  src={qortalLogo}
+                  alt="Qortal"
+                  sx={{ width: 24, height: 24, objectFit: 'contain' }}
+                />
+                <Box
+                  sx={{
+                    position: 'absolute',
+                    bottom: -1,
+                    right: -1,
+                    width: 9,
+                    height: 9,
+                    borderRadius: '50%',
+                    backgroundColor: coreDotColor,
+                    border: `2px solid ${
+                      theme.palette.mode === 'dark'
+                        ? 'rgb(28, 30, 36)'
+                        : theme.palette.background.paper
+                    }`,
+                  }}
+                />
+              </Box>
+              <Typography
+                sx={{
+                  fontSize: 14,
+                  fontWeight: 700,
+                  letterSpacing: '0.02em',
+                  display: { xs: 'none', sm: 'block' },
+                }}
+              >
+                Qortal
+              </Typography>
             </Box>
-          )}
+            <ReticulumTopBadge />
+          </Box>
 
-          {updateUnseen && (
-            <Box
-              aria-label={t('core:go_updates.update_marker')}
-              role="img"
-              sx={{
-                // Taps fall through to the avatar, which opens the menu with
-                // GO 3.0 Updates in it.
-                pointerEvents: 'none',
-                position: 'absolute',
-                bottom: -1,
-                right: -2,
-                width: 16,
-                height: 16,
-                borderRadius: '50%',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                bgcolor: theme.palette.primary.main,
-                color: theme.palette.primary.contrastText,
-                border: `2px solid ${
-                  theme.palette.mode === 'dark'
-                    ? 'rgb(28, 30, 36)'
-                    : theme.palette.background.paper
-                }`,
-                zIndex: 1,
-              }}
-            >
-              <SystemUpdateAltRoundedIcon sx={{ fontSize: 9 }} />
-            </Box>
-          )}
-
-          <GeneralNotifications
-            ref={notifRef}
-            compact
-            hideTrigger
-            tooltipPlacement="bottom"
-            buttonSx={{
-              position: 'absolute',
-              top: 4,
-              right: 4,
-              width: 32,
-              height: 32,
-              opacity: 0,
-              pointerEvents: 'none',
-            }}
+          <MobileTopBarSearch
+            activeTabUrl={desktopViewMode === 'apps' ? activeTabUrl : ''}
+            activeTabTitle={
+              activeAppTab
+                ? String(
+                    activeAppTab.label ||
+                      (activeAppTab as { metadata?: { title?: string } })
+                        .metadata?.title ||
+                      activeAppTab.name ||
+                      ''
+                  )
+                : ''
+            }
+            activeTabId={activeAppTab?.tabId ? String(activeAppTab.tabId) : ''}
+            onRefreshActiveTab={
+              activeAppTab?.tabId
+                ? () => {
+                    const tab = activeAppTab as {
+                      tabId?: string;
+                      refreshFunc?: (tabId?: string) => void;
+                    };
+                    if (tab.refreshFunc) {
+                      tab.refreshFunc(tab.tabId);
+                      return;
+                    }
+                    executeEvent('refreshApp', { tabId: tab.tabId });
+                  }
+                : undefined
+            }
+            expanded={searchExpanded}
+            onExpandedChange={setSearchExpanded}
+            showActiveTabUrl={showActiveTabUrl}
+            tabsOverlayOpen={tabsOverlayOpen}
+            floating={floating}
           />
-        </Box>
-      </Box>
 
-      <Dialog
-        open={coreOpen}
-        onClose={() => setCoreOpen(false)}
-        fullWidth
-        maxWidth="xs"
-        disableAutoFocus
-        PaperProps={{
-          sx: getDialogPaperSx(theme, { maxWidth: 420, radius: 20 }),
-        }}
-      >
-        <DialogTitle
-          sx={{
-            alignItems: 'center',
-            borderBottom: `1px solid ${alpha(
-              theme.palette.divider,
-              theme.palette.mode === 'light' ? 0.9 : 0.35
-            )}`,
-            color: theme.palette.text.primary,
-            display: 'flex',
-            fontSize: '1.02rem',
-            fontWeight: 700,
-            justifyContent: 'space-between',
-            letterSpacing: '-0.01em',
-            pb: 1,
-            pt: 1.25,
-            px: 2.5,
-          }}
-        >
-          Core & settings
-          <IconButton
-            size="small"
-            onClick={() => setCoreOpen(false)}
-            aria-label="Close"
-          >
-            <CloseRoundedIcon />
-          </IconButton>
-        </DialogTitle>
-        <DialogContent sx={{ ...dialogContentSx, px: 2.5, pt: 1.25, pb: 2 }}>
           <Box
             sx={{
               display: 'flex',
-              flexDirection: 'column',
-              gap: 1.25,
-              width: '100%',
+              alignItems: 'center',
+              gap: 0.25,
+              flexShrink: 0,
+              opacity: searchExpanded ? 0 : 1,
+              pointerEvents: searchExpanded ? 'none' : 'auto',
+              transition: 'opacity 160ms ease',
             }}
           >
-            <CoreSyncStatus useExternalTooltip compact />
-            <Divider
-              flexItem
-              sx={{
-                borderColor: alpha(
-                  theme.palette.divider,
-                  theme.palette.mode === 'light' ? 0.9 : 0.35
-                ),
-              }}
-            />
+            {isLandscape && setDesktopViewMode && (
+              <MobileTabBar
+                variant="inline"
+                desktopViewMode={desktopViewMode}
+                setDesktopViewMode={setDesktopViewMode}
+              />
+            )}
             <Box
+              onClick={onOpenTabs}
+              role="button"
+              aria-label={tabsOverlayOpen ? 'Close tabs' : 'Open tabs'}
+              aria-pressed={tabsOverlayOpen}
               sx={{
-                alignItems: 'flex-start',
                 display: 'flex',
-                gap: 3,
-                justifyContent: 'center',
+                alignItems: 'center',
+                gap: 0.5,
+                px: 0.85,
+                py: 0.4,
+                borderRadius: 999,
+                cursor: 'pointer',
+                border: `1px solid ${
+                  tabsOverlayOpen
+                    ? theme.palette.primary.main
+                    : theme.palette.divider
+                }`,
+                backgroundColor: tabsOverlayOpen
+                  ? 'rgba(91,141,239,0.22)'
+                  : appTabs.length > 0
+                    ? 'rgba(91,141,239,0.12)'
+                    : 'transparent',
+                '&:active': { opacity: 0.7 },
               }}
             >
-              <Box sx={{ textAlign: 'center' }}>
-                <LanguageSelector sidebar />
-                <Typography
-                  sx={{
-                    color: theme.palette.text.secondary,
-                    fontSize: '0.6875rem',
-                    fontWeight: 600,
-                    mt: 0.5,
-                  }}
-                >
-                  Language
-                </Typography>
-              </Box>
-              <Box sx={{ textAlign: 'center' }}>
-                <ThemeSelector sidebar />
-                <Typography
-                  sx={{
-                    color: theme.palette.text.secondary,
-                    fontSize: '0.6875rem',
-                    fontWeight: 600,
-                    mt: 0.5,
-                  }}
-                >
-                  Theme
-                </Typography>
+              <LayersRoundedIcon
+                sx={{
+                  fontSize: 18,
+                  color:
+                    tabsOverlayOpen || appTabs.length > 0
+                      ? theme.palette.primary.main
+                      : theme.palette.text.secondary,
+                }}
+              />
+              <Typography
+                sx={{
+                  fontSize: 12,
+                  fontWeight: 700,
+                  color:
+                    tabsOverlayOpen || appTabs.length > 0
+                      ? theme.palette.primary.main
+                      : theme.palette.text.secondary,
+                }}
+              >
+                Tabs
+              </Typography>
+              <Box
+                component="span"
+                sx={{
+                  ml: 0.5,
+                  display: appTabs.length ? 'inline-flex' : 'none',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontSize: 10,
+                  fontWeight: 700,
+                  height: 16,
+                  minWidth: 16,
+                  px: 0.5,
+                  borderRadius: 999,
+                  bgcolor: theme.palette.primary.main,
+                  color: theme.palette.primary.contrastText,
+                }}
+              >
+                {appTabs.length}
               </Box>
             </Box>
+
+            <Box
+              data-go-notifications-anchor=""
+              sx={{ position: 'relative', flexShrink: 0 }}
+            >
+              <IconButton
+                ref={avatarButtonRef}
+                size="small"
+                aria-label="Account menu"
+                aria-expanded={accountOpen}
+                onClick={toggleAccount}
+                sx={{
+                  p: 0.35,
+                  borderRadius: '50%',
+                  border: `1.5px solid ${
+                    theme.palette.mode === 'dark'
+                      ? alpha(theme.palette.common.white, 0.18)
+                      : alpha(theme.palette.common.black, 0.08)
+                  }`,
+                  '&:active': { opacity: 0.75, transform: 'scale(0.96)' },
+                }}
+              >
+                <QortalUserAvatar
+                  key={`${address}-${effectivePrimaryName}`}
+                  primaryName={effectivePrimaryName}
+                  walletAddress={address}
+                  cachedAvatarEntry={cachedAvatarEntry}
+                  ownAvatar
+                  fallbackIconSize={20}
+                  sx={{
+                    width: 32,
+                    height: 32,
+                    bgcolor:
+                      theme.palette.mode === 'dark'
+                        ? alpha(theme.palette.common.white, 0.1)
+                        : alpha(theme.palette.common.black, 0.06),
+                    fontSize: 14,
+                    fontWeight: 700,
+                  }}
+                />
+              </IconButton>
+
+              {hasNewNotifications && (
+                <Box
+                  key={bellPop}
+                  role="button"
+                  aria-label="New notifications"
+                  onClick={openNotifications}
+                  sx={{
+                    // Waits for the card to arrive before it pops.
+                    animation:
+                      bellPop > 0
+                        ? `${bellPopKeyframes} 600ms ease-out 450ms both`
+                        : 'none',
+                    position: 'absolute',
+                    top: -2,
+                    right: -2,
+                    width: 18,
+                    height: 18,
+                    borderRadius: '50%',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    bgcolor: theme.palette.success.main,
+                    color: '#fff',
+                    border: `2px solid ${
+                      theme.palette.mode === 'dark'
+                        ? 'rgb(28, 30, 36)'
+                        : theme.palette.background.paper
+                    }`,
+                    boxShadow: `0 1px 4px ${alpha(theme.palette.success.main, 0.45)}`,
+                    cursor: 'pointer',
+                    zIndex: 1,
+                    '&:active': { transform: 'scale(0.92)' },
+                  }}
+                >
+                  <NotificationsActiveRoundedIcon sx={{ fontSize: 11 }} />
+                </Box>
+              )}
+
+              {updateUnseen && (
+                <Box
+                  aria-label={t('core:go_updates.update_marker')}
+                  role="img"
+                  sx={{
+                    // Taps fall through to the avatar, which opens the menu with
+                    // GO 3.0 Updates in it.
+                    pointerEvents: 'none',
+                    position: 'absolute',
+                    bottom: -1,
+                    right: -2,
+                    width: 16,
+                    height: 16,
+                    borderRadius: '50%',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    bgcolor: theme.palette.primary.main,
+                    color: theme.palette.primary.contrastText,
+                    border: `2px solid ${
+                      theme.palette.mode === 'dark'
+                        ? 'rgb(28, 30, 36)'
+                        : theme.palette.background.paper
+                    }`,
+                    zIndex: 1,
+                  }}
+                >
+                  <SystemUpdateAltRoundedIcon sx={{ fontSize: 9 }} />
+                </Box>
+              )}
+
+              {inAppTheme(
+                <GeneralNotifications
+                  ref={notifRef}
+                  compact
+                  hideTrigger
+                  tooltipPlacement="bottom"
+                  buttonSx={{
+                    position: 'absolute',
+                    top: 4,
+                    right: 4,
+                    width: 32,
+                    height: 32,
+                    opacity: 0,
+                    pointerEvents: 'none',
+                  }}
+                />
+              )}
+            </Box>
           </Box>
-        </DialogContent>
-      </Dialog>
 
-      <MobileAccountPanel
-        open={accountOpen}
-        anchor={panelAnchor}
-        actions={accountActions}
-        address={address}
-        primaryName={effectivePrimaryName}
-        cachedAvatarEntry={cachedAvatarEntry}
-        onClose={closeAccount}
-      />
+          {inAppTheme(
+            <>
+              <Dialog
+                open={coreOpen}
+                onClose={() => setCoreOpen(false)}
+                fullWidth
+                maxWidth="xs"
+                disableAutoFocus
+                PaperProps={{
+                  sx: getDialogPaperSx(appTheme, { maxWidth: 420, radius: 20 }),
+                }}
+              >
+                <DialogTitle
+                  sx={{
+                    alignItems: 'center',
+                    borderBottom: `1px solid ${alpha(
+                      appTheme.palette.divider,
+                      appTheme.palette.mode === 'light' ? 0.9 : 0.35
+                    )}`,
+                    color: appTheme.palette.text.primary,
+                    display: 'flex',
+                    fontSize: '1.02rem',
+                    fontWeight: 700,
+                    justifyContent: 'space-between',
+                    letterSpacing: '-0.01em',
+                    pb: 1,
+                    pt: 1.25,
+                    px: 2.5,
+                  }}
+                >
+                  Core & settings
+                  <IconButton
+                    size="small"
+                    onClick={() => setCoreOpen(false)}
+                    aria-label="Close"
+                  >
+                    <CloseRoundedIcon />
+                  </IconButton>
+                </DialogTitle>
+                <DialogContent
+                  sx={{ ...dialogContentSx, px: 2.5, pt: 1.25, pb: 2 }}
+                >
+                  <Box
+                    sx={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 1.25,
+                      width: '100%',
+                    }}
+                  >
+                    <CoreSyncStatus useExternalTooltip compact />
+                    <Divider
+                      flexItem
+                      sx={{
+                        borderColor: alpha(
+                          appTheme.palette.divider,
+                          appTheme.palette.mode === 'light' ? 0.9 : 0.35
+                        ),
+                      }}
+                    />
+                    <Box
+                      sx={{
+                        alignItems: 'flex-start',
+                        display: 'flex',
+                        gap: 3,
+                        justifyContent: 'center',
+                      }}
+                    >
+                      <Box sx={{ textAlign: 'center' }}>
+                        <LanguageSelector sidebar />
+                        <Typography
+                          sx={{
+                            color: appTheme.palette.text.secondary,
+                            fontSize: '0.6875rem',
+                            fontWeight: 600,
+                            mt: 0.5,
+                          }}
+                        >
+                          Language
+                        </Typography>
+                      </Box>
+                      <Box sx={{ textAlign: 'center' }}>
+                        <ThemeSelector sidebar />
+                        <Typography
+                          sx={{
+                            color: appTheme.palette.text.secondary,
+                            fontSize: '0.6875rem',
+                            fontWeight: 600,
+                            mt: 0.5,
+                          }}
+                        >
+                          Theme
+                        </Typography>
+                      </Box>
+                    </Box>
+                  </Box>
+                </DialogContent>
+              </Dialog>
 
-      <MintingPublicNodeDialog
-        open={mintingPublicOpen}
-        onClose={() => setMintingPublicOpen(false)}
-      />
-      </>
+              <MobileAccountPanel
+                open={accountOpen}
+                anchor={panelAnchor}
+                actions={accountActions}
+                address={address}
+                primaryName={effectivePrimaryName}
+                cachedAvatarEntry={cachedAvatarEntry}
+                onClose={closeAccount}
+              />
+
+              <MintingPublicNodeDialog
+                open={mintingPublicOpen}
+                onClose={() => setMintingPublicOpen(false)}
+              />
+            </>
+          )}
+        </>
       )}
     </Box>
   );
+  return barTheme ? <ThemeProvider theme={barTheme}>{bar}</ThemeProvider> : bar;
 };
 
 export default MobileTopBar;

@@ -33,6 +33,8 @@ import { pickTopRated } from '../../utils/appRatingScore';
 import type { AppRatingData } from '../../types/ratings';
 import { SortDropdown } from './Filters';
 import { VirtualAppGrid } from './AppsLibrary/VirtualAppGrid';
+import { withTabBarSpace } from '../Mobile/mobileBarHeights';
+import { SECTION_SURFACE_TOUCH_ACTION } from '../Mobile/sectionSwipe/sectionSwipe';
 
 const LIST_ITEM_HEIGHT = 72;
 const TABLET_LIST_GAP = 12;
@@ -280,7 +282,14 @@ export const AppsCategoryDesktop = ({
             minHeight: 0,
             overflowX: 'hidden',
             overflowY: 'auto',
-            pb: 'calc(32px + var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px)))',
+            // A sideways start is the section swipe's, never a scroll; the
+            // carousels inside keep their own sideways scrolling.
+            touchAction: isMobile ? SECTION_SURFACE_TOUCH_ACTION : undefined,
+            // Clear of the floating tab buttons while they are over it.
+            pb: withTabBarSpace(
+              32,
+              'calc(32px + var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px)))'
+            ),
             px: 2,
           }}
         >

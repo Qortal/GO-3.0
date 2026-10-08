@@ -57,6 +57,7 @@ import {
 } from './components/App';
 
 import { LazyAuthenticatedShell } from './components/App/LazyAuthenticatedShell';
+import { PerfProfiler } from './utils/perfProfiler';
 import { AppLockLayer } from './components/App/AppLockLayer';
 import {
   MobileTabBar,
@@ -68,7 +69,37 @@ import {
   useSoftKeyboardInset,
 } from './hooks/useSoftKeyboardInset';
 import { MobileTopBar } from './components/Mobile/MobileTopBar';
+import { GO_TAB_BAR_SPACE_VAR } from './components/Mobile/mobileBarHeights';
+import {
+  mobileQappFrameShowingAtom,
+  qappFullScreenTabAtom,
+} from './components/Mobile/mobileQappFrame';
+import { ImmersivePill } from './components/Mobile/immersive/ImmersivePill';
+import { ImmersiveEdges } from './components/Mobile/immersive/ImmersiveEdges';
+import { useImmersiveBarTheme } from './components/Mobile/immersive/useImmersiveBarTheme';
+import {
+  immersiveEdgeColorAtom,
+  immersiveModeAtom,
+  isImmersiveSurface,
+} from './components/Mobile/immersive/immersiveMode';
+import {
+  immersiveMotionReduced,
+  useImmersiveBars,
+} from './components/Mobile/immersive/useImmersiveBars';
+import { useTabsPullDown } from './components/Mobile/tabsPull';
+import {
+  immersiveContentTop,
+  immersiveTabBarProps,
+  immersiveTopBarSx,
+} from './components/Mobile/immersive/immersiveStyles';
 import { MobileTabsOverlay } from './components/Mobile/MobileTabsOverlay';
+import { ChatShareHost } from './components/Chat/share/ChatShareHost';
+import { initChatShareIntake } from './components/Chat/share/chatShareIntake';
+import { isShareReceiverAvailable } from './plugins/ShareReceiver';
+import {
+  TabSnapshotScheduler,
+  captureVisibleTabSnapshot,
+} from './components/Mobile/tabsHome/TabSnapshotScheduler';
 import { MobileBackgroundSetup } from './components/Mobile/MobileBackgroundSetup';
 import { MobileIncomingCallBridge } from './components/Mobile/MobileIncomingCallBridge';
 import { MobileAlertNotificationBridge } from './components/Mobile/MobileAlertNotificationBridge';
@@ -93,6 +124,7 @@ import { useAppModals } from './hooks/useAppModals';
 import { useAppReset } from './hooks/useAppReset';
 import { useAppMessageHandler } from './hooks/useAppMessageHandler';
 import { QortinoNotificationHost } from './components/Snackbar/QortinoNotificationHost';
+import { SavedFileActionsSheet } from './components/Mobile/SavedFileActionsSheet';
 import { AppUpdateWindow } from './components/AppUpdate/AppUpdateWindow';
 import { useAppUpdateWatcher } from './appUpdate/useAppUpdateWatcher';
 import { getWallets, storeWallets } from './background/background.ts';
@@ -128,6 +160,7 @@ import {
   mobileChatComposeActiveAtom,
   mobileGroupPanelOpenAtom,
   mobileEmojiPanelOpenAtom,
+  mobileFullscreenComposerActiveAtom,
 } from './atoms/global';
 import { NotAuthenticated } from './components/NotAuthenticated.tsx';
 import { useFetchResources } from './hooks/useFetchResources.tsx';
@@ -219,6 +252,7 @@ import {
 } from './lib/appLock';
 import { useAppLock } from './hooks/useAppLock';
 import { useQdnAvatarPrewarm } from './lib/qdnAvatars/useQdnAvatarPrewarm';
+import { useChatHistoryWarmUp } from './reticulumChat/useChatHistoryWarmUp';
 import { clearQdnAvatarPrewarmPeerNames } from './lib/qdnAvatars/prewarmSources';
 import { useSendQortOverlay } from './hooks/useSendQortOverlay';
 
@@ -485,6 +519,21 @@ function App() {
   // Threads / Qortal Land / Members fill the screen, so the tab bar steps aside.
   const mobileGroupPanelOpen = useAtomValue(mobileGroupPanelOpenAtom);
   const [tabsGridOpen, setTabsGridOpen] = useState(false);
+  const tabsGridOpeningRef = useRef(false);
+  // The tab cards show a picture of each page: take one of the page on
+  // screen before the Tabs panel covers it (waits at most a few frames).
+  const toggleTabsGrid = useCallback(() => {
+    if (tabsGridOpen) {
+      setTabsGridOpen(false);
+      return;
+    }
+    if (tabsGridOpeningRef.current) return;
+    tabsGridOpeningRef.current = true;
+    void captureVisibleTabSnapshot(160).finally(() => {
+      tabsGridOpeningRef.current = false;
+      setTabsGridOpen(true);
+    });
+  }, [tabsGridOpen]);
   // The in-app emoji keyboard replaces the soft keyboard *and* the tab bar it
   // was sitting above (if any), so the composer above it does not move when
   // they swap.
@@ -688,6 +737,12 @@ function App() {
   // DMs and groups) in the background, so lists keep their icons when the
   // node is slow. Starts a few seconds after login, never while locked.
   useQdnAvatarPrewarm({ enabled: walletUnlocked, address: userInfo?.address });
+  // Phones: the most recently active chats open with their messages already
+  // on screen (local reads only, memory only, emptied on lock and logout).
+  useChatHistoryWarmUp({
+    enabled: walletUnlocked && isMobile,
+    address: userInfo?.address,
+  });
 
   useEffect(() => {
     if (extState !== 'authenticated') {
@@ -1746,6 +1801,9 @@ function App() {
       void import('./components/Widgets/quitter/quitterShareIntake')
         .then(({ initQuitterShareIntake }) => initQuitterShareIntake())
         .catch(() => undefined);
+      // Text, links and files shared into a group or a DM ("GO Groups" /
+      // "GO DMs" in the share sheet); ChatShareHost below shows the picker.
+      initChatShareIntake();
     }
 
     return () => {
@@ -2094,6 +2152,113 @@ function App() {
     (window.matchMedia('(prefers-reduced-motion: reduce)').matches ||
       window.localStorage.getItem('hub_ui_animations_enabled') === 'false');
 
+  // Immersive mode (GO phones): the bars slide away so an open Q-App or
+  // website gets the whole screen. Home, Chat, the Q-Apps library and the
+  // full-screen panels keep the normal layout.
+  const immersiveMode = useAtomValue(immersiveModeAtom);
+  // A Q-App or website frame is what is on screen (not the library).
+  const qappFrameOnScreen = useAtomValue(mobileQappFrameShowingAtom);
+  // A Q-App asked for full screen (SET_FULL_SCREEN) for its viewer.
+  const qappFullScreenTab = useAtomValue(qappFullScreenTabAtom);
+  const immersiveEdgeColor = useAtomValue(immersiveEdgeColorAtom);
+  const mobileFullscreenComposerActive = useAtomValue(
+    mobileFullscreenComposerActiveAtom
+  );
+  const immersive = useImmersiveBars({
+    mode: immersiveMode,
+    eligible:
+      isMobile &&
+      isAuthenticated &&
+      isMainWindow &&
+      !lockScreenActive &&
+      !globalRuntimeFault &&
+      isImmersiveSurface(desktopViewMode) &&
+      // The Q-Apps library keeps its bars; only an open app goes full screen.
+      qappFrameOnScreen &&
+      !mobileChatComposeActive &&
+      !mobileGroupPanelOpen &&
+      !mobileFullscreenComposerActive,
+    surfaceKey: desktopViewMode,
+    holdOpen: tabsGridOpen,
+    forceHidden: Boolean(qappFullScreenTab),
+    // With immersive mode on, the whole Apps section (the library too, which
+    // keeps its bars) goes without the phone's status bar.
+    hideStatusBar:
+      immersiveMode !== 'off' &&
+      isMobile &&
+      isAuthenticated &&
+      isMainWindow &&
+      !lockScreenActive &&
+      !globalRuntimeFault &&
+      isImmersiveSurface(desktopViewMode),
+  });
+  // Immersive mode: the top bar floats see-through on the page's colour and
+  // draws its controls for it (a light page gets a light bar even in the
+  // dark theme). Not over the Tabs grid, which has GO's own background.
+  const immersiveBarTheme = useImmersiveBarTheme(
+    immersiveEdgeColor,
+    theme.palette.mode,
+    immersive.active && !tabsGridOpen
+  );
+
+  // Pulling down from the top of Home, the Q-Apps library or the chat lists
+  // brings the Tabs window down with the finger (see tabsPull).
+  const [tabsPulling, setTabsPulling] = useState(false);
+  useTabsPullDown({
+    enabled: isMobile && isAuthenticated && isMainWindow,
+    canStart:
+      !tabsGridOpen &&
+      !lockScreenActive &&
+      !globalRuntimeFault &&
+      !showEmojiPanel &&
+      !mobileGroupPanelOpen,
+    // Apps only shows a list (the library) with no Q-App on screen; open
+    // chats are marked to keep their own gestures.
+    sections: qappFrameOnScreen ? ['home', 'chat'] : ['home', 'apps', 'chat'],
+    onPullStart: () => {
+      // The tab cards' pictures: the page on screen, before the panel
+      // covers it (as the Tabs button does).
+      void captureVisibleTabSnapshot();
+      setTabsPulling(true);
+      setTabsGridOpen(true);
+    },
+    onPullEnd: (open) => {
+      setTabsPulling(false);
+      if (!open) setTabsGridOpen(false);
+    },
+    reducedMotion: immersiveMotionReduced(),
+  });
+  const mobileTabBarSlotShown =
+    showMobileBottomBar &&
+    !mobileChatComposeActive &&
+    !mobileGroupPanelOpen &&
+    !tabBarHiddenByKeyboard;
+  // The tab bar is three floating round buttons on a see-through bar. With
+  // immersive mode on, GO's own screens (Home, Chat, the Apps library) scroll
+  // on behind it and pad their lists by --go-tab-bar-space. With it off, and
+  // always for a Q-App or website frame (its own bottom menu would sit under
+  // the buttons), the content ends above them and the buttons sit on the
+  // page colour.
+  const qappFrameShowing =
+    (desktopViewMode === 'apps' || desktopViewMode === 'dev') &&
+    qappFrameOnScreen;
+  const contentBehindTabBar =
+    immersiveMode !== 'off' &&
+    isMobile &&
+    isAuthenticated &&
+    isMainWindow &&
+    mobileTabBarSlotShown &&
+    !showEmojiPanel &&
+    !qappFrameShowing;
+  useEffect(() => {
+    document.documentElement.style.setProperty(
+      GO_TAB_BAR_SPACE_VAR,
+      contentBehindTabBar
+        ? `calc(${MOBILE_TAB_BAR_HEIGHT_PX}px + ${SAFE_AREA_BOTTOM})`
+        : '0px'
+    );
+  }, [contentBehindTabBar]);
+
   const mainContent = (
     <>
       <PdfViewer />
@@ -2208,31 +2373,33 @@ function App() {
                         },
                       }}
                     >
-                      <LazyAuthenticatedShell
-                        balance={balance}
-                        desktopViewMode={desktopViewMode}
-                        isMain={true}
-                        logoutFunc={logoutFunc}
-                        myAddress={address}
-                        setDesktopViewMode={setDesktopViewMode}
-                        userInfo={userInfo}
-                        rawWallet={rawWallet}
-                        qortBalanceLoading={qortBalanceLoading}
-                        setOpenSnack={setOpenSnack}
-                        setInfoSnack={setInfoSnack}
-                        onRefreshBalance={getBalanceAndUserInfoFunc}
-                        onOpenSendQort={onOpenSendQort}
-                        onOpenRegisterName={onOpenRegisterName}
-                        extState={extState}
-                        isMainWindow={isMainWindow}
-                        onOpenSettings={onOpenSettings}
-                        onOpenDrawerLookup={onOpenDrawerLookup}
-                        onOpenWalletsApp={onOpenWalletsApp}
-                        getUserInfo={getUserInfo}
-                        onOpenMinting={onOpenMinting}
-                        onBackupWallet={onBackupWallet}
-                        showTutorial={showTutorial}
-                      />
+                      <PerfProfiler id="shell">
+                        <LazyAuthenticatedShell
+                          balance={balance}
+                          desktopViewMode={desktopViewMode}
+                          isMain={true}
+                          logoutFunc={logoutFunc}
+                          myAddress={address}
+                          setDesktopViewMode={setDesktopViewMode}
+                          userInfo={userInfo}
+                          rawWallet={rawWallet}
+                          qortBalanceLoading={qortBalanceLoading}
+                          setOpenSnack={setOpenSnack}
+                          setInfoSnack={setInfoSnack}
+                          onRefreshBalance={getBalanceAndUserInfoFunc}
+                          onOpenSendQort={onOpenSendQort}
+                          onOpenRegisterName={onOpenRegisterName}
+                          extState={extState}
+                          isMainWindow={isMainWindow}
+                          onOpenSettings={onOpenSettings}
+                          onOpenDrawerLookup={onOpenDrawerLookup}
+                          onOpenWalletsApp={onOpenWalletsApp}
+                          getUserInfo={getUserInfo}
+                          onOpenMinting={onOpenMinting}
+                          onBackupWallet={onBackupWallet}
+                          showTutorial={showTutorial}
+                        />
+                      </PerfProfiler>
                     </Box>
                     {reticulumEnabled && (
                       <>
@@ -2502,6 +2669,8 @@ function App() {
           setInfo={setInfoSnack}
         />
 
+        <SavedFileActionsSheet />
+
         <AppUpdateWindow />
 
         <UserLookup
@@ -2585,28 +2754,58 @@ function App() {
         />
       )}
       {isMobile && extState === 'authenticated' && isMainWindow && (
-        <MobileTopBar
-          userInfo={userInfo}
-          onOpenWalletsApp={onOpenWalletsApp}
-          onOpenSendQort={onOpenSendQort}
-          onOpenDrawerLookup={onOpenDrawerLookup}
-          onOpenMinting={onOpenMinting}
-          onOpenSettings={onOpenSettings}
-          onLogout={logoutFunc}
-          onOpenTabs={() => setTabsGridOpen((open) => !open)}
-          tabsOverlayOpen={tabsGridOpen}
-          desktopViewMode={desktopViewMode}
-          setDesktopViewMode={setDesktopViewMode}
-        />
+        <Box
+          ref={immersive.topBarRef}
+          // Over the Tabs grid while it is open, as the bar always is; see-
+          // through on the page's colour (its controls drawn for that
+          // colour, immersiveBarTheme). On Home, in Chat and on the Q-Apps
+          // library the bar takes the page's own background, so it blends
+          // into the page; all three share the plain page colour.
+          sx={immersiveTopBarSx(immersive, {
+            raisedZIndex: tabsGridOpen ? 2001 : undefined,
+            transparent: true,
+            pageBackground:
+              desktopViewMode === 'home' ||
+              desktopViewMode === 'chat' ||
+              !qappFrameOnScreen
+                ? theme.palette.background.default
+                : undefined,
+          })}
+        >
+          <MobileTopBar
+            barTheme={immersiveBarTheme}
+            floating={immersive.active && !tabsGridOpen}
+            userInfo={userInfo}
+            onOpenWalletsApp={onOpenWalletsApp}
+            onOpenSendQort={onOpenSendQort}
+            onOpenDrawerLookup={onOpenDrawerLookup}
+            onOpenMinting={onOpenMinting}
+            onOpenSettings={onOpenSettings}
+            onLogout={logoutFunc}
+            onOpenTabs={toggleTabsGrid}
+            tabsOverlayOpen={tabsGridOpen}
+            desktopViewMode={desktopViewMode}
+            setDesktopViewMode={setDesktopViewMode}
+          />
+        </Box>
       )}
+      {extState === 'authenticated' &&
+        isMainWindow &&
+        address &&
+        isShareReceiverAvailable() && <ChatShareHost account={address} />}
       {isMobile && extState === 'authenticated' && isMainWindow && (
-        <MobileTabsOverlay
-          open={tabsGridOpen}
-          onClose={() => setTabsGridOpen(false)}
-        />
+        <>
+          <MobileTabsOverlay
+            open={tabsGridOpen}
+            pulling={tabsPulling}
+            onClose={() => setTabsGridOpen(false)}
+          />
+          <TabSnapshotScheduler paused={tabsGridOpen} />
+        </>
       )}
 
       <Box
+        ref={immersive.contentRef}
         sx={{
           flex: 1,
           minHeight: 0,
@@ -2619,12 +2818,15 @@ function App() {
               alignItems: 'stretch',
               pb: showEmojiPanel
                 ? `calc(${emojiPanelReservePx}px + ${SAFE_AREA_BOTTOM})`
-                : mobileChatComposeActive ||
-                    mobileGroupPanelOpen ||
-                    tabBarHiddenByKeyboard ||
-                    !showMobileBottomBar
-                  ? SAFE_AREA_BOTTOM
-                  : `calc(${MOBILE_TAB_BAR_HEIGHT_PX}px + ${SAFE_AREA_BOTTOM})`,
+                : contentBehindTabBar
+                  ? 0
+                  : !mobileTabBarSlotShown ||
+                      (immersive.active && !immersive.layoutShown)
+                    ? SAFE_AREA_BOTTOM
+                    : `calc(${MOBILE_TAB_BAR_HEIGHT_PX}px + ${SAFE_AREA_BOTTOM})`,
+              // Immersive: the top bar floats, so the content makes room for
+              // it only while it is out, and clears the camera strip otherwise.
+              ...(immersive.active && { pt: immersiveContentTop(immersive) }),
             }),
           ...(!isMobile || extState !== 'authenticated' || !isMainWindow
             ? { alignItems: 'center' }
@@ -2736,18 +2938,43 @@ function App() {
           mainContent
         )}
       </Box>
-      {showMobileBottomBar &&
+      {mobileTabBarSlotShown &&
         extState === 'authenticated' &&
         isMainWindow &&
-        !mobileChatComposeActive &&
-        !mobileGroupPanelOpen &&
-        !tabBarHiddenByKeyboard &&
         !showEmojiPanel && (
           <MobileTabBar
             desktopViewMode={desktopViewMode}
             setDesktopViewMode={setDesktopViewMode}
+            immersive={immersiveTabBarProps(immersive)}
+            floating
+            stripTakesTouches={!contentBehindTabBar}
           />
         )}
+      {immersive.active && (
+        <ImmersiveEdges
+          barsShown={immersive.barsShown}
+          topBarHeight={immersive.topBarHeight}
+          tabBarSlot={
+            mobileTabBarSlotShown && !showEmojiPanel && !contentBehindTabBar
+          }
+          showMs={immersive.showMs}
+          hideMs={immersive.hideMs}
+        />
+      )}
+      {immersive.active && (
+        <ImmersivePill
+          // Manual only: Auto brings the bars back with a downward swipe.
+          visible={
+            immersiveMode === 'manual' &&
+            !immersive.barsShown &&
+            !immersive.forced &&
+            !showEmojiPanel &&
+            keyboardInset === 0
+          }
+          onReveal={immersive.reveal}
+          pillRef={immersive.pillRef}
+        />
+      )}
       {showEmojiPanel && (
         <MobileEmojiPanel
           heightPx={emojiPanelHeightPx}

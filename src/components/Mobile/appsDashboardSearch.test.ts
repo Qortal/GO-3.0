@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  splitFirstMatch,
   appMatchesSearchQuery,
   buildAppsSearchSuggestions,
   isBareQortalNameQuery,
@@ -86,5 +87,33 @@ describe('appsDashboardSearch matching', () => {
     expect(isBareQortalNameQuery('qortal://QWB')).toBe(true);
     expect(isBareQortalNameQuery('APP/QWB')).toBe(false);
     expect(isBareQortalNameQuery('qortal://APP/QWB')).toBe(false);
+  });
+});
+
+describe('splitFirstMatch', () => {
+  it('splits around the first match, any case', () => {
+    expect(splitFirstMatch('Q-Tube test', 'TEST')).toEqual({
+      before: 'Q-Tube ',
+      match: 'test',
+      after: '',
+    });
+    expect(splitFirstMatch('testing test', 'test')).toEqual({
+      before: '',
+      match: 'test',
+      after: 'ing test',
+    });
+  });
+
+  it('keeps the whole text when nothing matches', () => {
+    expect(splitFirstMatch('Q-Mail', 'zz')).toEqual({
+      before: 'Q-Mail',
+      match: '',
+      after: '',
+    });
+    expect(splitFirstMatch('Q-Mail', '  ')).toEqual({
+      before: 'Q-Mail',
+      match: '',
+      after: '',
+    });
   });
 });

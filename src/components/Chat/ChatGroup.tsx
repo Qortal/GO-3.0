@@ -87,6 +87,12 @@ import {
   groupDraftKey,
 } from '../../utils/chatPersistence';
 import {
+  insertSharedText,
+  returnChatShare,
+  useChatShareInbox,
+} from './share/chatShareInbox';
+import { showChatShareNotices } from './share/chatShareNotices';
+import {
   Avatar,
   Box,
   Button,
@@ -174,6 +180,7 @@ import {
   isDisabledTyping,
   useReticulumGroupChat,
 } from '../../hooks/useReticulumGroupChat';
+import { writeWarmNames } from '../../reticulumChat/chatWarmCache';
 import { usePageVisible } from '../../hooks/usePageVisible';
 import { ReticulumGifCompressionStatus } from './ReticulumGifCompressionStatus';
 import {
@@ -277,6 +284,8 @@ import {
   isReticulumMessageExpiryOptionAllowed,
   RETICULUM_MESSAGE_EXPIRY_OPTIONS,
 } from './reticulumMessageExpiry';
+import { withTabBarSpace } from '../Mobile/mobileBarHeights';
+import { SECTION_SWIPE_IGNORE_ATTR } from '../Mobile/sectionSwipe/sectionSwipe';
 
 type PendingReticulumResourceFile = {
   filePath?: string;
@@ -3811,6 +3820,11 @@ export const ChatGroup = ({
     !reticulumChatEnabled ||
     selectedReticulumChannelWriteMode !== RETICULUM_CHANNEL_WRITE_MODE_ADMINS ||
     isReticulumChannelAdmin;
+  // Phones show just a one-line notice in an admins-only channel instead of
+  // the composer card. The card stays mounted but hidden, because reply,
+  // edit and draft code keep using its editor.
+  const showReadOnlyComposerNotice =
+    reticulumChatEnabled && isMobile && !canWriteSelectedReticulumChannel;
 
   useEffect(() => {
     const groupId = Number(selectedGroup);
@@ -3885,6 +3899,12 @@ export const ChatGroup = ({
         setReticulumGroupOwnerName(ownerName);
         setReticulumPrivilegedMemberRolesByAddress(privilegedRoles);
         setGroupMentionMembers(membersWithNames);
+        // Known for the next chat that opens (shown at once, see
+        // chatWarmCache), and for this one's next open.
+        writeWarmNames(membersWithNames);
+        if (ownerAddress && ownerName) {
+          writeWarmNames([{ address: ownerAddress, name: ownerName }]);
+        }
         setReticulumMemberDataGroupId(groupId);
         setReticulumMemberRolesReady(true);
       })
@@ -7526,21 +7546,21 @@ export const ChatGroup = ({
         const images = libraryGifImages.length
           ? libraryGifImages
           : reticulumImages
-          ? reticulumImages
-          : imagesToPublish?.length > 0
-            ? imagesToPublish.map((item) => {
-                return {
-                  name: item.name,
-                  identifier: item.identifier,
-                  service: item.service,
-                  timestamp: Date.now(),
-                };
-              })
-            : chatReference
-              ? isDeleteImage
-                ? []
-                : onEditMessage?.images || []
-              : [];
+            ? reticulumImages
+            : imagesToPublish?.length > 0
+              ? imagesToPublish.map((item) => {
+                  return {
+                    name: item.name,
+                    identifier: item.identifier,
+                    service: item.service,
+                    timestamp: Date.now(),
+                  };
+                })
+              : chatReference
+                ? isDeleteImage
+                  ? []
+                  : onEditMessage?.images || []
+                : [];
 
         // One queue item per part, all built before any is queued, so the
         // parts go out in order and a failure while building queues none.
@@ -7782,6 +7802,8 @@ export const ChatGroup = ({
         setComposerHasText(false);
       }
       draftContextRef.current = { account: myAddress, key };
+      // The draft is in: a share from another app can go in after it.
+      markShareReady(key);
     };
     // Apply immediately when possible to avoid flashing the previous chat's
     // draft into this conversation.
@@ -8718,6 +8740,42 @@ export const ChatGroup = ({
       reticulumChatEnabled,
       t,
     ]
+  );
+
+  // Text, a link or a file shared from another app into this group (tapped in
+  // the Groups list after "GO Groups" in the share sheet); see
+  // share/chatShareInbox.ts. It waits for the group's channels and the
+  // user's rights in them, so it lands in the channel that stays open and
+  // only where the user can write.
+  const markShareReady = useChatShareInbox(
+    selectedGroup != null ? groupDraftKey(selectedGroup) : null,
+    async (content) => {
+      const files = await content.files;
+      if (!canWriteSelectedReticulumChannel) {
+        // Back to the list header, for another chat.
+        returnChatShare(content);
+        executeEvent('openGlobalSnackBar', {
+          message: t('reticulum:share.cannot_write', {
+            postProcess: 'capitalizeFirstChar',
+          }),
+          type: 'error',
+        });
+        return;
+      }
+      if (insertSharedText(editorRef.current, content.text)) {
+        setComposerHasText(true);
+        setIsFocusedParent(true);
+        setComposerOpenLandscape(true);
+      }
+      if (files.length) await insertFiles(files);
+      showChatShareNotices(content.notices);
+    },
+    {
+      ready:
+        !reticulumChatEnabled ||
+        (reticulumChannelStateGroupId === selectedReticulumGroupKey &&
+          reticulumChannelAccessReady),
+    }
   );
 
   const isReticulumFileDrag = useCallback(
@@ -10489,6 +10547,10 @@ export const ChatGroup = ({
         {reticulumChatEnabled && (
           <Box
             data-tour="hub-channel-list"
+            // Its own swipe closes it: no swiping out of the chat from here.
+            {...(isMobile && reticulumChannelSidebarOpen
+              ? { [SECTION_SWIPE_IGNORE_ATTR]: '' }
+              : {})}
             onContextMenu={openReticulumChannelAreaContextMenu}
             onTouchStart={
               isMobile && reticulumChannelSidebarOpen
@@ -11691,7 +11753,6 @@ export const ChatGroup = ({
                     scrollToMessageNonce={reticulumSearchScrollTarget?.nonce}
                   />
                 )}
-
             </Box>
             {reticulumChatEnabled && Boolean(reticulumTypingText) && (
               <Typography
@@ -11709,6 +11770,27 @@ export const ChatGroup = ({
                 }}
               >
                 {reticulumTypingText}
+              </Typography>
+            )}
+
+            {!shouldSuppressLegacyGroupChat && showReadOnlyComposerNotice && (
+              <Typography
+                sx={{
+                  color: theme.palette.text.secondary,
+                  flexShrink: 0,
+                  fontSize: qchatMetaTextSize(13),
+                  lineHeight: 1.4,
+                  pt: '10px',
+                  px: 2,
+                  // Above the floating tab buttons, like the composer.
+                  paddingBottom: withTabBarSpace(
+                    10,
+                    'max(10px, var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px)))'
+                  ),
+                  textAlign: 'center',
+                }}
+              >
+                {t('group:chat_group.admins_only_write')}
               </Typography>
             )}
 
@@ -11744,7 +11826,7 @@ export const ChatGroup = ({
                     // only, otherwise it floats over the message list on phones.
                     bottom: isFocusedParent && !isMobile ? '0px' : 'unset',
                     boxSizing: 'border-box',
-                    display: 'flex',
+                    display: showReadOnlyComposerNotice ? 'none' : 'flex',
                     flexDirection: 'row',
                     flexShrink: 0,
                     gap: reticulumChatEnabled
@@ -11776,9 +11858,13 @@ export const ChatGroup = ({
                         ? '6px 8px'
                         : '8px 12px'
                       : '16px 20px 20px',
+                    // Above the floating tab buttons while they are shown.
                     paddingBottom:
                       reticulumChatEnabled && isMobile
-                        ? 'max(6px, var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px)))'
+                        ? withTabBarSpace(
+                            6,
+                            'max(6px, var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px)))'
+                          )
                         : undefined,
                     position:
                       isFocusedParent && !isMobile ? 'fixed' : 'relative',

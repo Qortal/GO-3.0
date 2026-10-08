@@ -575,7 +575,8 @@
     "stage_gathering": "正在从QDN收集",
     "stage_saving": "正在保存到手机",
     "storage_permission": "GO需要存储权限才能将文件保存到Documents。",
-    "tap_to_open": "点按打开 · {{location}}"
+    "tap_to_open": "点按打开 · {{location}}",
+    "tap_to_open_or_share": "点按以打开或分享"
   },
   "filter": {
     "all": "全部",
@@ -630,7 +631,7 @@
     "loading_versions": "正在从 QDN 加载版本…",
     "no_notes": "此版本没有添加更新说明。",
     "no_versions": "尚未发布任何 GO 3.0 版本。",
-    "open_in_qshare": "在 Q-Share+ 中打开",
+    "open_in_qshare": "在 Q-Share 中打开",
     "progress": {
       "assembling": "正在组装版本",
       "bytes_of_total": "{{done}} / {{total}}",
@@ -806,6 +807,7 @@
       "new_notification": "新通知",
       "new_notification_from": "来自 {{ appName }} 的新通知",
       "new_payment_body": "您收到了 {{ amount }} QORT。",
+      "new_payment_from": "来自 {{ name }} 的付款",
       "new_payment_received": "收到新的付款",
       "new_qmail": "您收到了新的 Q-Mail",
       "no_app_notifications": "尚无应用通知",
@@ -1009,6 +1011,17 @@
   "payment": "支付",
   "payment_notification": "付款通知",
   "payments_count": "付款 ({{count}})",
+  "pdf_reader": {
+    "gesture_hint": "点按进入全屏 · 双击或双指缩放",
+    "gesture_hint_pages": "滑动翻页 · 点按进入全屏 · 双击缩放",
+    "look_dim": "暗淡",
+    "look_dim_hint": "深色边框，页面不变",
+    "look_light": "浅色",
+    "look_light_hint": "浅色边框和白色页面",
+    "look_smart": "智能",
+    "look_smart_hint": "文字页面变暗，照片保持原样",
+    "page_look": "页面外观"
+  },
   "poll_embed": "嵌入民意测验",
   "port": "港口",
   "presence": {
@@ -1052,7 +1065,7 @@
     "modules_hotkeys_label": "Hotkeys",
     "modules_music_description": "A compact Earbump player with search and quick playback.",
     "modules_music_label": "Music player",
-    "modules_suggest_description": "Compose > Add Subject + Message & Send it our way!",
+    "modules_suggest_description": "加入 GO 3.0 群组，告诉我们接下来该做什么。",
     "modules_suggest_label": "Suggest a module",
     "music_empty_title": "EarBump library",
     "music_empty_uploaded": "Waiting for library",
@@ -1143,6 +1156,10 @@
   "receiver": "接收者",
   "remaining_to_level": "距等级 {{level}} 剩余",
   "retry": "重试",
+  "search": {
+    "apps_and_websites": "应用和网站",
+    "suggested": "推荐"
+  },
   "sender": "发件人",
   "server": "服务器",
   "service_type": "服务类型",
@@ -1162,7 +1179,32 @@
     "categories": "分类",
     "community_apps": "社区应用",
     "my_apps": "我的应用",
-    "official_apps": "官方应用"
+    "official_apps": "官方应用",
+    "pinned": "已固定"
+  },
+  "tabs_home": {
+    "app_name": "应用名称",
+    "browse_apps": "浏览应用",
+    "close_all": "全部关闭",
+    "close_folder": "关闭文件夹",
+    "close_tab": "关闭标签页",
+    "delete_folder": "删除文件夹",
+    "empty_hint": "在应用库中点按任意应用的图钉。这里的文件夹与标签页中的相同。",
+    "empty_title": "你固定的应用都在这里",
+    "folder_empty_hint": "长按一个打开的标签页并选择此文件夹，即可添加到这里。",
+    "folder_name": "文件夹名称",
+    "folder_options": "文件夹选项",
+    "make_large": "大文件夹",
+    "make_small": "小文件夹",
+    "more_apps": "另外 {{amount}} 个应用",
+    "new_folder": "新建文件夹",
+    "new_folder_name": "新文件夹",
+    "open_folder": "打开{{name}}",
+    "open_tabs": "打开的标签页",
+    "remove_from_folder": "从文件夹中移除",
+    "rename_app": "重命名应用",
+    "rename_folder": "重命名文件夹",
+    "window_n": "窗口 {{amount}}"
   },
   "tabs_overlay": {
     "delete_folder_body_one": "其中保存的 {{count}} 个应用将从标签页中移除。已打开的标签页会保持打开。",

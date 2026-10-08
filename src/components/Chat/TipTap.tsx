@@ -98,6 +98,18 @@ import {
   useSoftKeyboardInset,
 } from '../../hooks/useSoftKeyboardInset';
 import { useAndroidBack, BACK_PRIORITY } from '../../utils/androidBack';
+import {
+  claimKeyboardImageTarget,
+  hasNativeClipboardImages,
+  noteClipboardIssue,
+  readClipboardImageFile,
+} from '../../utils/nativeClipboardImage';
+import { ClipboardImagePasteChip } from './ClipboardImagePasteChip';
+import {
+  cleanPastedFiles,
+  describeLastCleanFailure,
+} from '../../utils/cleanPastedImage';
+import { executeEvent } from '../../utils/events';
 import { useTranslation } from 'react-i18next';
 import i18n from 'i18next';
 
@@ -1142,6 +1154,52 @@ const Tiptap = ({
   const theme = useTheme();
   const { t } = useTranslation(['core', 'group']);
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
+  // Pictures from the Android clipboard and keyboards (nativeClipboardImage).
+  const [composerRoot, setComposerRoot] = useState<HTMLDivElement | null>(null);
+  const [composerFocused, setComposerFocused] = useState(false);
+  const insertFilesRef = useRef(insertFiles);
+  insertFilesRef.current = insertFiles;
+  const takesPastedImages =
+    isChat &&
+    !readOnly &&
+    typeof insertFiles === 'function' &&
+    hasNativeClipboardImages();
+  // Every pasted or keyboard-inserted file is cleaned of tracing data first
+  // (cleanPastedImage.ts); a picture that can't be cleaned is not used.
+  const insertPastedFiles = useCallback(
+    async (
+      files: File[],
+      deliver?: (files: File[]) => void,
+      route = 'paste'
+    ) => {
+      const cleaned = await cleanPastedFiles(files);
+      if (cleaned.length < files.length) {
+        noteClipboardIssue(
+          `paste refused (${route}): ${describeLastCleanFailure()}`
+        );
+        executeEvent('openGlobalSnackBar', {
+          message: t('group:chat_group.paste_image_unsafe', {
+            postProcess: 'capitalizeFirstChar',
+          }),
+          type: 'error',
+        });
+      }
+      if (cleaned.length === 0) return;
+      if (deliver) deliver(cleaned);
+      else void insertFilesRef.current?.(cleaned);
+    },
+    [t]
+  );
+  const insertPastedImage = useCallback(
+    (file: File) => {
+      void insertPastedFiles([file], undefined, 'keyboard or chip');
+    },
+    [insertPastedFiles]
+  );
+  useEffect(() => {
+    if (!takesPastedImages || !composerFocused) return;
+    return claimKeyboardImageTarget(insertPastedImage);
+  }, [composerFocused, insertPastedImage, takesPastedImages]);
   const setMobileComposeActive = useSetAtom(mobileChatComposeActiveAtom);
   const emojiPanelOpen = useAtomValue(mobileEmojiPanelOpenAtom);
   const setEmojiPanelOpen = useSetAtom(mobileEmojiPanelOpenAtom);
@@ -1710,7 +1768,13 @@ const Tiptap = ({
       setEmojiPanelHandler(null);
       setGifPanelHandler(null);
     };
-  }, [insertEmoji, insertGif, setEmojiPanelOpen, useEmojiKeyboardPanel, emojiPanelOpen]);
+  }, [
+    insertEmoji,
+    insertGif,
+    setEmojiPanelOpen,
+    useEmojiKeyboardPanel,
+    emojiPanelOpen,
+  ]);
 
   // Closing the chat must not strand the panel over the next screen.
   useEffect(() => {
@@ -1763,13 +1827,9 @@ const Tiptap = ({
       setEmojiPanelOpen(false);
     };
     document.addEventListener('pointerdown', onPointerDown, true);
-    return () => document.removeEventListener('pointerdown', onPointerDown, true);
-  }, [
-    emojiPanelOpen,
-    keyboardInset,
-    setEmojiPanelOpen,
-    useEmojiKeyboardPanel,
-  ]);
+    return () =>
+      document.removeEventListener('pointerdown', onPointerDown, true);
+  }, [emojiPanelOpen, keyboardInset, setEmojiPanelOpen, useEmojiKeyboardPanel]);
 
   // The panel stands in for the keyboard, so a tap that would have closed the
   // keyboard closes it too, instead of it hanging on until the next send.
@@ -2151,14 +2211,33 @@ const Tiptap = ({
       if (!isChat) return false;
       const items = event.clipboardData?.items;
       if (!items) return false;
+      const files = Array.from(event.clipboardData?.files || []);
+      const pastedText = event.clipboardData?.getData('text/plain');
 
-      if (typeof insertFiles === 'function') {
-        const files = Array.from(event.clipboardData?.files || []);
-        if (files.length > 0) {
-          event.preventDefault();
-          void insertFiles(files);
-          return true;
-        }
+      // On Android a picture is read from the clipboard by the app itself:
+      // what the WebView hands over may be missing, or a file that can no
+      // longer be read once the paste is over. The WebView's own file is
+      // only the fallback.
+      if (
+        takesPastedImages &&
+        !pastedText &&
+        !event.clipboardData?.getData('text/html') &&
+        files.every((file) => file.type?.startsWith('image/'))
+      ) {
+        event.preventDefault();
+        void readClipboardImageFile().then((file) => {
+          if (file) void insertPastedFiles([file], undefined, 'clipboard');
+          else if (files.length > 0) {
+            void insertPastedFiles(files, undefined, 'webview');
+          }
+        });
+        return true;
+      }
+
+      if (typeof insertFiles === 'function' && files.length > 0) {
+        event.preventDefault();
+        void insertPastedFiles(files);
+        return true;
       }
 
       if (typeof insertImage !== 'function') return false;
@@ -2168,14 +2247,16 @@ const Tiptap = ({
           const file = item.getAsFile();
           if (file) {
             event.preventDefault(); // Block the default paste
-            handleImageUpload(file); // Custom handler
+            void insertPastedFiles([file], ([clean]) =>
+              handleImageUpload(clean)
+            );
             return true; // Let ProseMirror know we handled it
           }
         }
       }
 
       // Preserve paragraph spacing when pasting plain text (double newline = new paragraph)
-      const text = event.clipboardData?.getData('text/plain');
+      const text = pastedText;
       if (text != null && text !== '') {
         event.preventDefault();
         const schema = view.state.schema;
@@ -2254,6 +2335,10 @@ const Tiptap = ({
       }}
       onFocus={() => {
         handleFocus();
+        setComposerFocused(true);
+      }}
+      onBlur={() => {
+        setComposerFocused(false);
       }}
       onUpdate={({ editor }) => {
         onContentUpdate?.(editor);
@@ -2766,6 +2851,7 @@ const Tiptap = ({
 
   return (
     <Box
+      ref={setComposerRoot}
       className={
         useComposerLook
           ? mobileChatCompose
@@ -2792,6 +2878,13 @@ const Tiptap = ({
       }}
     >
       {editorProvider}
+      {takesPastedImages && (
+        <ClipboardImagePasteChip
+          active={composerFocused}
+          anchorEl={composerRoot}
+          onPaste={insertPastedImage}
+        />
+      )}
     </Box>
   );
 };

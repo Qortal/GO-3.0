@@ -11,14 +11,18 @@ export type ComposerAppName = 'Quitter' | 'Torq';
 
 const TARGET_STORAGE_KEY = 'go-home-composer-target';
 
+/** Until the user picks one; a saved Quitter stays Quitter. */
+export const DEFAULT_COMPOSER_TARGET: ComposerTarget = 'torq';
+
 /** Quitter or Torq, as the user last chose it (survives restarts). */
 export function readComposerTarget(): ComposerTarget {
   try {
-    return localStorage.getItem(TARGET_STORAGE_KEY) === 'torq'
-      ? 'torq'
-      : 'quitter';
+    const stored = localStorage.getItem(TARGET_STORAGE_KEY);
+    return stored === 'quitter' || stored === 'torq'
+      ? stored
+      : DEFAULT_COMPOSER_TARGET;
   } catch {
-    return 'quitter';
+    return DEFAULT_COMPOSER_TARGET;
   }
 }
 

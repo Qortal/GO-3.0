@@ -146,6 +146,20 @@ import {
   MessageActionsPopup,
   type MessageActionsPopupAction,
 } from './MessageActionsPopup';
+import { ReactionChip } from './ReactionChip';
+import {
+  ChatMediaGalleryContext,
+  findChatMediaIndex,
+  type ChatMediaItem,
+} from './chatMediaGallery';
+import { requestLibraryGifUrl } from './gifs/gifMediaCache';
+import { rememberRecentReaction } from './reactionEmojiData';
+import { requestReactionLanding } from './reactionLanding';
+import {
+  getDoubleTapReaction,
+  readReactionPrefs,
+  recordReactionUse,
+} from './reactionPreferences';
 import { executeEvent } from '../../utils/events';
 import { useAtomValue } from 'jotai';
 import {
@@ -212,6 +226,14 @@ const formatMessageDetailMoment = (value: unknown): string => {
       });
 };
 const RETICULUM_QUICK_REACTIONS = ['👍', '💯', '😂', '❤️'] as const;
+/**
+ * A second tap this soon (and this close) is a double tap: it reacts with
+ * the chat's double-tap emoji. A single tap waits this long for its popup.
+ */
+export const DOUBLE_TAP_WINDOW_MS = 280;
+const DOUBLE_TAP_SLOP_PX = 36;
+/** The emoji that pops up under the finger on a double tap, in px. */
+const DOUBLE_TAP_EMOJI_PX = 40;
 
 const reticulumImageRequestGate = createReticulumImageRequestGate(
   RETICULUM_IMAGE_REQUEST_BACKOFF_MS,
@@ -451,6 +473,8 @@ type MessageItemProps = {
   reticulumMemberJoinedByAddress?: Record<string, number>;
   reticulumMemberRolesByAddress?: Record<string, 'owner' | 'admin'>;
   reticulumMemberRolesReady?: boolean;
+  /** This DM or group (`direct:<address>`, `group:<id>`): its double tap. */
+  reactionChatKey?: string;
   scrollToItem: (index: number) => void;
 };
 
@@ -491,6 +515,7 @@ export const MessageItemComponent = ({
   reticulumMemberJoinedByAddress,
   reticulumMemberRolesByAddress,
   reticulumMemberRolesReady = true,
+  reactionChatKey,
   scrollToItem,
 }: MessageItemProps) => {
   const { getIndividualUserInfo } = useContext(QORTAL_APP_CONTEXT);
@@ -529,6 +554,13 @@ export const MessageItemComponent = ({
   const [expiryClockMs, setExpiryClockMs] = useState(Date.now());
   const [reticulumMessageMenuPosition, setReticulumMessageMenuPosition] =
     useState<{ mouseX: number; mouseY: number } | null>(null);
+  // Reactions already there when the row mounted don't animate in.
+  const [mountedAt] = useState(Date.now);
+  const pendingTapRef = useRef<{
+    timer: number;
+    x: number;
+    y: number;
+  } | null>(null);
   // Touch equivalent of right-clicking a reaction chip to see who reacted.
   // A single set of refs is enough since only one finger can hold at a time.
   const reactionHold = useRef<{
@@ -873,6 +905,49 @@ export const MessageItemComponent = ({
 
   const theme = useTheme();
   const isMobileLayout = useMediaQuery(theme.breakpoints.down('md'));
+  const reactionListRef = useRef<HTMLDivElement | null>(null);
+  const closeReactionList = useCallback(() => {
+    setAnchorEl(null);
+    setSelectedReaction(null);
+  }, []);
+  // On phones the first touch outside the "who reacted" list only closes it,
+  // like Telegram. Caught on the document before React sees it, so the tap
+  // never reaches the message underneath (which would open its popup) and a
+  // long press there doesn't arm either. Scrolling still works: nothing is
+  // prevented on touchstart, and a drag ends without a click.
+  const isReactionListOpen = Boolean(selectedReaction && anchorEl);
+  useEffect(() => {
+    if (!isMobileLayout || !isReactionListOpen) return;
+    const isInsideList = (target: EventTarget | null) =>
+      target instanceof Node &&
+      Boolean(reactionListRef.current?.contains(target));
+    const swallowTouchStart = (event: TouchEvent) => {
+      if (isInsideList(event.target)) return;
+      event.stopPropagation();
+    };
+    const closeOnOutside = (event: MouseEvent) => {
+      if (isInsideList(event.target)) return;
+      // Android's long-press contextmenu on the chip is what opened the list.
+      if (
+        event.type === 'contextmenu' &&
+        event.target instanceof Node &&
+        anchorEl?.contains(event.target)
+      ) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      closeReactionList();
+    };
+    document.addEventListener('touchstart', swallowTouchStart, true);
+    document.addEventListener('click', closeOnOutside, true);
+    document.addEventListener('contextmenu', closeOnOutside, true);
+    return () => {
+      document.removeEventListener('touchstart', swallowTouchStart, true);
+      document.removeEventListener('click', closeOnOutside, true);
+      document.removeEventListener('contextmenu', closeOnOutside, true);
+    };
+  }, [anchorEl, closeReactionList, isMobileLayout, isReactionListOpen]);
   const messageRowLongPress = useLongPress(
     ({ clientX, clientY }) => {
       if (isMobileLayout) {
@@ -895,6 +970,55 @@ export const MessageItemComponent = ({
   // A tap anywhere on a message that is not a link, a control or a picture
   // opens the short popup; a picture opens itself. Threads open read-only, so
   // they skip the tap version.
+  // `message` is typed loosely upstream; read the signature through a view.
+  const rawSignature = (message as unknown as { signature?: unknown } | null)
+    ?.signature;
+  const messageSignature = typeof rawSignature === 'string' ? rawSignature : '';
+  const canDoubleTapReact = Boolean(
+    handleReaction && messageSignature && !reticulumDiscussionView && !isTemp
+  );
+  // A double tap reacts with this chat's double-tap emoji (thumbs up unless
+  // changed), or takes it back if it is already there, like Telegram.
+  const reactWithDoubleTap = useCallback(
+    (x: number, y: number) => {
+      const emoji = getDoubleTapReaction(readReactionPrefs(), reactionChatKey);
+      const alreadyMine = Boolean(
+        reactions?.[emoji]?.some((item) => item?.sender === myAddress)
+      );
+      if (!alreadyMine) {
+        rememberRecentReaction(emoji);
+        recordReactionUse(emoji);
+        requestReactionLanding(messageSignature, emoji, {
+          x,
+          y,
+          size: DOUBLE_TAP_EMOJI_PX,
+          pop: true,
+        });
+      }
+      try {
+        navigator.vibrate?.(8);
+      } catch {
+        // Vibration is a nicety; some WebViews refuse it.
+      }
+      handleReaction(emoji, message, !alreadyMine);
+    },
+    [
+      handleReaction,
+      message,
+      messageSignature,
+      myAddress,
+      reactionChatKey,
+      reactions,
+    ]
+  );
+  useEffect(
+    () => () => {
+      if (pendingTapRef.current) {
+        window.clearTimeout(pendingTapRef.current.timer);
+      }
+    },
+    []
+  );
   const handleMobileActionsTap = useCallback(
     (event: React.MouseEvent) => {
       if (reticulumDiscussionView) return;
@@ -907,9 +1031,37 @@ export const MessageItemComponent = ({
       ) {
         return;
       }
-      openPhoneActions('tap', event.clientX, event.clientY);
+      const x = event.clientX;
+      const y = event.clientY;
+      if (!canDoubleTapReact) {
+        openPhoneActions('tap', x, y);
+        return;
+      }
+      const pending = pendingTapRef.current;
+      if (pending) {
+        window.clearTimeout(pending.timer);
+        pendingTapRef.current = null;
+        if (Math.hypot(x - pending.x, y - pending.y) <= DOUBLE_TAP_SLOP_PX) {
+          reactWithDoubleTap(x, y);
+          return;
+        }
+      }
+      // Wait to see whether a second tap follows before opening the popup.
+      pendingTapRef.current = {
+        x,
+        y,
+        timer: window.setTimeout(() => {
+          pendingTapRef.current = null;
+          openPhoneActions('tap', x, y);
+        }, DOUBLE_TAP_WINDOW_MS),
+      };
     },
-    [openPhoneActions, reticulumDiscussionView]
+    [
+      canDoubleTapReact,
+      openPhoneActions,
+      reactWithDoubleTap,
+      reticulumDiscussionView,
+    ]
   );
   const reticulumMemberRole = reticulumChatEnabled
     ? reticulumMemberRolesByAddress?.[message?.sender]
@@ -1122,6 +1274,10 @@ export const MessageItemComponent = ({
   >(null);
   const [reticulumImageViewerContainer, setReticulumImageViewerContainer] =
     useState<HTMLElement | null>(null);
+  // The chat's pictures and videos, to swipe through from this one.
+  const chatMediaGallery = useContext(ChatMediaGalleryContext);
+  const [reticulumImageViewerGallery, setReticulumImageViewerGallery] =
+    useState<{ items: ChatMediaItem[]; index: number } | null>(null);
   const displayImageUrl = localResourceImageUrl || imageEmbedLink;
   useEffect(() => {
     setLoadedResourceImageSize(null);
@@ -1190,11 +1346,50 @@ export const MessageItemComponent = ({
         setLocalResourceImageUrl(refreshed.url);
       }
       if (!viewerSrc) return;
+      const galleryItems = chatMediaGallery?.getItems() ?? [];
+      const galleryIndex = galleryItems.findIndex(
+        (item) =>
+          item.kind === 'image' &&
+          item.fileHash === imageResourceId &&
+          item.messageKey === messageSignature
+      );
+      setReticulumImageViewerGallery(
+        galleryIndex >= 0 ? { items: galleryItems, index: galleryIndex } : null
+      );
       setReticulumImageViewerContainer(containerElement);
       setReticulumImageViewerSrc(viewerSrc);
       setIsReticulumImageViewerOpen(true);
     },
-    [displayImageUrl, imageResourceId, localResourceImageUrl]
+    [
+      chatMediaGallery,
+      displayImageUrl,
+      imageResourceId,
+      localResourceImageUrl,
+      messageSignature,
+    ]
+  );
+  // A library GIF opens in the same viewer: copy, save, swipe on.
+  const openLibraryGifViewer = useCallback(
+    async (containerElement: HTMLElement | null) => {
+      if (!libraryGifImage) return;
+      if (!isMobileLayout && !containerElement) return;
+      const url = await requestLibraryGifUrl(libraryGifImage, 12).catch(
+        () => ''
+      );
+      if (!url) return;
+      const galleryItems = chatMediaGallery?.getItems() ?? [];
+      const galleryIndex = findChatMediaIndex(galleryItems, {
+        messageKey: messageSignature,
+        gif: true,
+      });
+      setReticulumImageViewerGallery(
+        galleryIndex >= 0 ? { items: galleryItems, index: galleryIndex } : null
+      );
+      setReticulumImageViewerContainer(containerElement);
+      setReticulumImageViewerSrc(url);
+      setIsReticulumImageViewerOpen(true);
+    },
+    [chatMediaGallery, isMobileLayout, libraryGifImage, messageSignature]
   );
   const [fileResourceStatus, setFileResourceStatus] = useState<
     'idle' | 'downloading' | 'ready' | 'saving' | 'error'
@@ -3966,20 +4161,37 @@ export const MessageItemComponent = ({
             )}
 
             {libraryGifImage ? (
-              <GifImage
-                fit="contain"
-                gif={libraryGifImage}
-                spinnerSize={20}
+              <Box
+                onClick={(event) =>
+                  void openLibraryGifViewer(
+                    event.currentTarget.closest<HTMLElement>(
+                      '[data-reticulum-chat-root="true"]'
+                    )
+                  )
+                }
                 sx={{
                   alignSelf: ownAligned ? 'flex-end' : 'flex-start',
-                  borderRadius: '8px',
+                  cursor: 'zoom-in',
+                  display: 'flex',
                   margin: '8px 0 0',
-                  maxHeight: 280,
                   maxWidth: 'min(100%, 240px)',
                 }}
-              />
-            ) : (displayImageUrl ||
-              (isReticulumResourceImage && shouldAutoDownloadReticulumImage)) &&
+              >
+                <GifImage
+                  fit="contain"
+                  gif={libraryGifImage}
+                  spinnerSize={20}
+                  sx={{
+                    borderRadius: '8px',
+                    maxHeight: 280,
+                    maxWidth: '100%',
+                  }}
+                />
+              </Box>
+            ) : (
+              (displayImageUrl ||
+                (isReticulumResourceImage &&
+                  shouldAutoDownloadReticulumImage)) &&
               (displayImageUrl &&
               (localResourceImageUrl ||
                 displayImageUrl.startsWith('data:image/')) ? (
@@ -4144,7 +4356,8 @@ export const MessageItemComponent = ({
                     </>
                   )}
                 </Box>
-              ) : null)}
+              ) : null)
+            )}
 
             {reticulumDownloadAttachment && (
               <Box
@@ -4698,67 +4911,32 @@ export const MessageItemComponent = ({
                     (item) => item?.sender === myAddress
                   );
                   return (
-                    <ButtonBase
+                    <ReactionChip
+                      count={numberOfReactions}
+                      isMine={isMine}
+                      othersCount={
+                        reactions[reaction].filter(
+                          (item) => item?.sender !== myAddress
+                        ).length
+                      }
                       key={reaction}
-                      sx={{
-                        background: isMine
-                          ? `${theme.palette.primary.main}22`
-                          : theme.palette.background.surface,
-                        border: '1px solid',
-                        borderColor: isMine
-                          ? theme.palette.primary.main
-                          : theme.palette.divider,
-                        borderRadius: `${chipSizes.reactionChipHeightPx / 2}px`,
-                        height: `${chipSizes.reactionChipHeightPx}px`,
-                        minWidth: `${chipSizes.reactionChipMinWidthPx}px`,
-                        padding: `0 ${chipSizes.reactionChipPaddingXPx}px`,
-                        transition:
-                          'background-color 0.1s ease, border-color 0.1s ease',
-                        '&:hover': {
-                          backgroundColor: theme.palette.action.hover,
-                        },
-                      }}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        handleReaction(reaction, message, !isMine);
-                      }}
-                      onContextMenu={(event) => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        setAnchorEl(event.currentTarget);
+                      messageKey={messageSignature}
+                      mountedAt={mountedAt}
+                      onShowWho={(anchor) => {
+                        setAnchorEl(anchor);
                         setSelectedReaction(reaction);
                       }}
+                      onToggle={() =>
+                        handleReaction(reaction, message, !isMine)
+                      }
+                      onTouchEnd={endReactionHold}
+                      onTouchMove={moveReactionHold}
                       onTouchStart={(event) =>
                         startReactionHold(event, reaction)
                       }
-                      onTouchMove={moveReactionHold}
-                      onTouchEnd={endReactionHold}
-                      onTouchCancel={endReactionHold}
-                    >
-                      <span
-                        style={{
-                          fontSize: `${chipSizes.reactionChipEmojiPx}px`,
-                          lineHeight: 1,
-                        }}
-                      >
-                        {reaction}
-                      </span>
-                      {numberOfReactions > 1 && (
-                        <Typography
-                          sx={{
-                            color: isMine
-                              ? theme.palette.primary.main
-                              : theme.palette.text.secondary,
-                            fontFamily: 'Inter',
-                            fontSize: `${chipSizes.reactionChipCountPx}px`,
-                            fontWeight: 600,
-                            marginLeft: '4px',
-                          }}
-                        >
-                          {numberOfReactions}
-                        </Typography>
-                      )}
-                    </ButtonBase>
+                      reaction={reaction}
+                      sizes={chipSizes}
+                    />
                   );
                 })}
 
@@ -4821,12 +4999,13 @@ export const MessageItemComponent = ({
                 sx={{ zIndex: 1400 }}
               >
                 <ClickAwayListener
-                  onClickAway={() => {
-                    setAnchorEl(null);
-                    setSelectedReaction(null);
-                  }}
+                  // Phones close it from the document listener above instead.
+                  mouseEvent={isMobileLayout ? false : 'onClick'}
+                  touchEvent={isMobileLayout ? false : 'onTouchEnd'}
+                  onClickAway={closeReactionList}
                 >
                   <Box
+                    ref={reactionListRef}
                     sx={{
                       backgroundColor:
                         theme.palette.mode === 'dark'
@@ -4948,12 +5127,17 @@ export const MessageItemComponent = ({
           alt={message?.senderName}
           onClose={closeAvatarPreview}
         />
-        {canOpenReticulumImage && reticulumImageViewerSrc && (
+        {reticulumImageViewerSrc && (
           <ReticulumImageViewer
             alt={reticulumImageFileName}
             containerElement={reticulumImageViewerContainer}
-            fileName={reticulumImageFileName}
-            mimeType={reticulumImageMimeType}
+            fileName={
+              libraryGifImage
+                ? `${libraryGifImage.identifier}.gif`
+                : reticulumImageFileName
+            }
+            gallery={reticulumImageViewerGallery}
+            mimeType={libraryGifImage ? 'image/gif' : reticulumImageMimeType}
             open={isReticulumImageViewerOpen}
             src={reticulumImageViewerSrc}
             onClose={() => {
@@ -5577,15 +5761,17 @@ export const MessageItemComponent = ({
           onExited={() => setPhoneActions(null)}
           onReact={
             phoneActionsInteractive && handleReaction
-              ? (emoji) =>
-                  handleReaction(
-                    emoji,
-                    message,
-                    !myReactionEmojis.includes(emoji)
-                  )
+              ? (emoji, source) => {
+                  const adding = !myReactionEmojis.includes(emoji);
+                  if (adding && source && messageSignature) {
+                    requestReactionLanding(messageSignature, emoji, source);
+                  }
+                  handleReaction(emoji, message, adding);
+                }
               : undefined
           }
           open={phoneActionsOpen}
+          reactionChatKey={reactionChatKey}
         />
       )}
     </>

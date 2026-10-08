@@ -8,6 +8,7 @@ import {
   notificationSeenInAppKeyTimesAtom,
   paymentNotificationsAtom,
 } from '../atoms/global';
+import { isPaymentNotification } from '../utils/paymentNotifications';
 
 const RESOURCE_EVENT = 'RESOURCE_PUBLISHED';
 
@@ -37,7 +38,7 @@ export function useUnseenNotificationCount() {
     () =>
       (notifications ?? []).filter(
         (item) =>
-          item?.event === RESOURCE_EVENT &&
+          (item?.event === RESOURCE_EVENT || isPaymentNotification(item)) &&
           !isNotificationPanelDismissed(item, panelDismissals)
       ),
     [notifications, panelDismissals]

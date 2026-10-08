@@ -5,6 +5,8 @@
 
 export type PdfJsLib = {
   GlobalWorkerOptions: { workerSrc: string };
+  /** Operator codes, for walking a page's operator list. */
+  OPS?: Record<string, number>;
   getDocument: (src: {
     data: ArrayBuffer;
     /** false: fonts are drawn without compiling code from the PDF. */
@@ -16,7 +18,12 @@ export type PdfJsLib = {
         getViewport: (opts: { scale: number }) => {
           width: number;
           height: number;
+          transform: number[];
         };
+        getOperatorList?: () => Promise<{
+          fnArray: ArrayLike<number>;
+          argsArray: ArrayLike<unknown>;
+        }>;
         render: (opts: {
           canvasContext: CanvasRenderingContext2D;
           viewport: { width: number; height: number };

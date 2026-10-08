@@ -39,6 +39,7 @@ vi.mock('../../../plugins/ShareReceiver', () => {
         return items;
       }),
       consumeSharedFile: vi.fn(async () => undefined),
+      getPendingRevShare: vi.fn(async () => null),
       setShareTarget: (target: string) => share.setShareTarget!(target),
       addShareListener: vi.fn(async (listener: () => void) => {
         share.listener = listener;
@@ -95,7 +96,8 @@ describe('Share to Quitter / Torq intake', () => {
     expect(body).not.toContain('GPSSECRET');
     expect(body).not.toContain('PrivateModel');
     // The share-sheet entry is renamed after the composer's app at boot.
-    expect(share.setShareTarget).toHaveBeenCalledWith('quitter');
+    // Torq unless Quitter was chosen.
+    expect(share.setShareTarget).toHaveBeenCalledWith('torq');
   });
 
   it('takes up to 10 shared photos for Torq, 2 for Quitter', async () => {

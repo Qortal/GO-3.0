@@ -1,4 +1,11 @@
-import { useEffect, useLayoutEffect, useRef, type RefObject } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  type RefObject,
+} from 'react';
+import { flushSync } from 'react-dom';
 import {
   PAGER_IGNORE_ATTR,
   PAGER_RELEASE_EASING,
@@ -11,6 +18,7 @@ import {
   pagerDragOffset,
   pagerLiftVelocity,
   pagerSettleDurationMs,
+  pagerTargetForDrag,
   pagerTrackTransform,
   pagerTranslateX,
   pagerTravelForOffset,
@@ -19,6 +27,13 @@ import {
   type PagerAxis,
   type PagerSample,
 } from './horizontalPagerSwipe';
+import { claimHorizontalGesture } from './horizontalGestureClaim';
+
+export type TrackPositionListener = (
+  position: number,
+  durationMs: number,
+  easing: string
+) => void;
 
 export interface HorizontalPagerSwipeOptions {
   /** Pages side by side and the swipe on. Off: the track is left alone. */
@@ -26,7 +41,11 @@ export interface HorizontalPagerSwipeOptions {
   /** The page showing (index from the left). */
   page: number;
   pageCount: number;
-  /** A swipe was let go past the threshold: switch to `page`. */
+  /**
+   * A swipe was let go past the threshold: switch to `page`. Should a tap
+   * land on that page before the switch has rendered, it is called again
+   * for the same page, so it must set the page, not toggle it.
+   */
   onPageChange: (page: number) => void;
   /** A touch has just locked to a horizontal drag (once per gesture). */
   onDragStart?: () => void;
@@ -36,10 +55,37 @@ export interface HorizontalPagerSwipeOptions {
   /** prefers-reduced-motion: no follow-the-finger motion and no slides; a
    * swipe past the threshold just switches. */
   reducedMotion?: boolean;
+  /**
+   * A swipe towards no page (past the first or last) is left to whatever
+   * holds the pager, here the swipe between Home, Apps and Chat, instead of
+   * rubber-banding. Swipes the pager does take are claimed
+   * (horizontalGestureClaim) so that outer swipe leaves them alone.
+   */
+  releaseEdges?: boolean;
+  /**
+   * Where the pages are, as a fractional page index (0 = first page), each
+   * time the track moves: per frame while dragging (`durationMs` 0), and at
+   * the start of each glide with that glide's length and easing. Lets
+   * something outside the track (the header's switch) move with it. With
+   * the swipe off, a page change reports a glide too, though only that
+   * something moves.
+   */
+  onTrackPosition?: TrackPositionListener;
 }
 
 /** Length of the slide when the page changes from a tap. */
 export const PAGER_PAGE_CHANGE_SLIDE_MS = 260;
+/** How long a glide waits, at most, for the parent to take the page it
+ * asked for before going back to the page the parent shows. */
+const PARENT_CATCH_UP_MS = 1500;
+
+export interface HorizontalPagerSwipeControls {
+  /**
+   * Glide to `page` now, as a released swipe does, and tell the parent once
+   * the glide is on screen (a tap on the Groups / DMs switch).
+   */
+  slideTo: (page: number) => void;
+}
 /** After a horizontal drag, a click this soon belongs to the drag (longer
  * than any glide that follows it). */
 export const PAGER_CLICK_GUARD_MS = 400;
@@ -100,15 +146,18 @@ function settleTrack(
   target: number,
   durationMs: number,
   easing = PAGER_SLIDE_EASING,
-  onSettled?: () => void
+  onSettled?: () => void,
+  onPosition?: TrackPositionListener
 ) {
   stopSettle(motion);
   motion.page = target;
   if (durationMs <= 0) {
     track.style.transition = 'none';
     track.style.transform = pagerTrackTransform(target);
+    onPosition?.(target, 0, easing);
     return;
   }
+  onPosition?.(target, durationMs, easing);
   track.style.transition = `transform ${durationMs}ms ${easing}`;
   track.style.transform = pxTransform(-target * trackWidth(track));
   motion.settle = {
@@ -129,20 +178,83 @@ function settleTrack(
  * Listeners are native and passive: React's synthetic touch events would
  * also bubble in from portals (menus, dialogs), and nothing here ever needs
  * to cancel a touch. Vertical scrolling is left to the browser: the pager
- * marks the viewport and its lists `touch-action: pan-y`, so a swipe that
- * starts sideways never scrolls a list, and one that starts vertically is
- * never taken over. Only the track's transform is written per frame.
+ * marks the viewport and its lists (SECTION_SURFACE_TOUCH_ACTION) so a
+ * swipe that starts sideways never scrolls a list, and one that starts
+ * vertically is never taken over. Only the track's transform is written per frame.
  */
 export function useHorizontalPagerSwipe(
   viewportRef: RefObject<HTMLElement | null>,
   trackRef: RefObject<HTMLElement | null>,
   options: HorizontalPagerSwipeOptions
-): void {
+): HorizontalPagerSwipeControls {
   const { enabled, page } = options;
   const optionsRef = useRef(options);
   optionsRef.current = options;
   const motionRef = useRef<PagerMotion>({ page, settle: null });
+  /**
+   * A page this pager asked the parent for, until the parent shows it.
+   * Asked only once the glide is on screen: the parent's re-render (the
+   * whole chat on a phone) would otherwise hold the first frame back, and
+   * the pages would sit still under the lifted finger, then jump.
+   */
+  const pendingPageRef = useRef<{ page: number; since: number } | null>(null);
+  const requestPageChange = (target: number) => {
+    const asked = { page: target, since: performance.now() };
+    pendingPageRef.current = asked;
+    const ask = () => {
+      if (pendingPageRef.current !== asked) return;
+      if (optionsRef.current.page === target) {
+        pendingPageRef.current = null;
+        return;
+      }
+      optionsRef.current.onPageChange(target);
+    };
+    // After the next frame (the glide's first, sent to the compositor,
+    // which runs it on its own from there).
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(() => window.setTimeout(ask, 0));
+    } else {
+      window.setTimeout(ask, 0);
+    }
+  };
+  const reportPosition: TrackPositionListener = (
+    position,
+    durationMs,
+    easing
+  ) => optionsRef.current.onTrackPosition?.(position, durationMs, easing);
   const gestureRef = useRef<Gesture | null>(null);
+
+  /**
+   * When a glide ends: should the parent not show the page it went to, the
+   * track goes back to the page the parent does show, once the parent had
+   * time to take the one asked for. Never under a finger or another glide
+   * (those end here again).
+   */
+  const followParent = () => {
+    const track = trackRef.current;
+    const motion = motionRef.current;
+    const latest = optionsRef.current;
+    if (!track || !latest.enabled || latest.page === motion.page) return;
+    if (motion.settle || gestureRef.current?.axis === 'horizontal') return;
+    const pending = pendingPageRef.current;
+    if (
+      pending?.page === motion.page &&
+      performance.now() - pending.since < PARENT_CATCH_UP_MS
+    ) {
+      window.setTimeout(followParent, 120);
+      return;
+    }
+    pendingPageRef.current = null;
+    settleTrack(
+      track,
+      motion,
+      latest.page,
+      PAGER_PAGE_CHANGE_SLIDE_MS,
+      undefined,
+      undefined,
+      reportPosition
+    );
+  };
   /** The page shown the last time the pager was laid out while enabled. */
   const shownPageRef = useRef<number | null>(null);
 
@@ -153,14 +265,23 @@ export function useHorizontalPagerSwipe(
     const motion = motionRef.current;
     if (!track) return;
     if (!enabled) {
+      const changed = motion.page !== page;
       stopSettle(motion);
       gestureRef.current = null;
       shownPageRef.current = null;
       motion.page = page;
       track.style.transition = '';
       track.style.transform = '';
+      reportPosition(
+        page,
+        changed && !optionsRef.current.reducedMotion
+          ? PAGER_PAGE_CHANGE_SLIDE_MS
+          : 0,
+        PAGER_SLIDE_EASING
+      );
       return;
     }
+    if (pendingPageRef.current?.page === page) pendingPageRef.current = null;
     const previous = shownPageRef.current;
     shownPageRef.current = page;
     // A swipe already let go towards this page: the track is there, or
@@ -175,16 +296,25 @@ export function useHorizontalPagerSwipe(
       !animatePageChange ||
       reducedMotion
     ) {
-      settleTrack(track, motion, page, 0);
+      settleTrack(track, motion, page, 0, undefined, undefined, reportPosition);
       return;
     }
     if (!motion.settle) {
       // Slide in from the page being left (mid-glide, from where it is).
       track.style.transition = 'none';
       track.style.transform = pxTransform(-previous * trackWidth(track));
+      reportPosition(previous, 0, PAGER_SLIDE_EASING);
       flushStyle(track);
     }
-    settleTrack(track, motion, page, PAGER_PAGE_CHANGE_SLIDE_MS);
+    settleTrack(
+      track,
+      motion,
+      page,
+      PAGER_PAGE_CHANGE_SLIDE_MS,
+      undefined,
+      undefined,
+      reportPosition
+    );
   }, [enabled, page, trackRef]);
 
   useEffect(() => {
@@ -206,6 +336,11 @@ export function useHorizontalPagerSwipe(
       track.style.transform = pxTransform(
         -gesture.page * gesture.width + gesture.offset
       );
+      reportPosition(
+        gesture.page - gesture.offset / gesture.width,
+        0,
+        PAGER_SLIDE_EASING
+      );
     };
 
     const cancelFrame = () => {
@@ -214,22 +349,21 @@ export function useHorizontalPagerSwipe(
       frame = null;
     };
 
-    // Should the parent not take the page a swipe chose, the track goes
-    // back to the page it does show.
-    const followParent = () => {
-      const latest = optionsRef.current;
-      if (latest.enabled && latest.page !== motion.page) {
-        settleTrack(track, motion, latest.page, PAGER_PAGE_CHANGE_SLIDE_MS);
-      }
-    };
-
     /** End a horizontal drag: glide to `target` from where the drag left
      * the content. */
     const release = (ended: Gesture, target: number, velocity: number) => {
       cancelFrame();
       clickGuardUntil = now() + PAGER_CLICK_GUARD_MS;
       if (optionsRef.current.reducedMotion) {
-        settleTrack(track, motion, target, 0);
+        settleTrack(
+          track,
+          motion,
+          target,
+          0,
+          undefined,
+          undefined,
+          reportPosition
+        );
         return;
       }
       const from = -ended.page * ended.width + ended.offset;
@@ -245,7 +379,8 @@ export function useHorizontalPagerSwipe(
         target,
         pagerSettleDurationMs(to - from, velocity, ended.width),
         PAGER_RELEASE_EASING,
-        followParent
+        followParent,
+        reportPosition
       );
     };
 
@@ -304,6 +439,11 @@ export function useHorizontalPagerSwipe(
         track.style.transform = pxTransform(
           -gesture.page * gesture.width + gesture.offset
         );
+        reportPosition(
+          gesture.page - gesture.offset / gesture.width,
+          0,
+          PAGER_SLIDE_EASING
+        );
       }
     };
 
@@ -315,9 +455,10 @@ export function useHorizontalPagerSwipe(
       }
       gestureRef.current = null;
       // A touch on still content is a tap again, whatever came before. One
-      // on pages still gliding from a drag keeps that drag's click guard:
-      // its tap would land on a moving row. After a tap on the switch there
-      // is no guard, so a row tapped straight after it opens.
+      // on pages still gliding from a drag keeps that drag's click guard
+      // until it turns out to be a tap: then the pages land first (see
+      // landForTap). After a tap on the switch there is no guard, so a row
+      // tapped straight after it opens.
       if (!motion.settle) clickGuardUntil = 0;
       const touch = event.touches[0];
       if (isInPagerEdgeZone(touch.clientX, window.innerWidth)) return;
@@ -371,6 +512,17 @@ export function useHorizontalPagerSwipe(
         if (axis === null) return;
         gesture.axis = axis;
         if (axis !== 'horizontal') return;
+        const { pageCount, releaseEdges } = optionsRef.current;
+        if (
+          releaseEdges &&
+          !motion.settle &&
+          pagerTargetForDrag(gesture.page, dx, pageCount) === null
+        ) {
+          // No page that way: the section swipe's gesture, not ours.
+          gesture.axis = 'vertical';
+          return;
+        }
+        if (releaseEdges) claimHorizontalGesture(gesture.startT);
         lockDrag(gesture, touch.clientX);
         optionsRef.current.onDragStart?.();
       } else if (hasScrolled(gesture)) {
@@ -390,16 +542,52 @@ export function useHorizontalPagerSwipe(
       if (frame === null) frame = requestAnimationFrame(writeFrame);
     };
 
+    /**
+     * A tap while the pages still glide, or before the parent has switched
+     * to the page a swipe went to (until then that page is inert): the
+     * pages land and the parent switches now, before the tap's click, so
+     * the click opens the row it landed on instead of being lost.
+     */
+    const landForTap = () => {
+      if (motion.settle) {
+        settleTrack(
+          track,
+          motion,
+          motion.page,
+          0,
+          undefined,
+          undefined,
+          reportPosition
+        );
+        clickGuardUntil = 0;
+      }
+      const pending = pendingPageRef.current;
+      if (
+        pending?.page === motion.page &&
+        optionsRef.current.page !== pending.page
+      ) {
+        flushSync(() => optionsRef.current.onPageChange(pending.page));
+      }
+      // (Should the parent have kept its page after all.)
+      followParent();
+    };
+
     const onTouchEnd = (event: TouchEvent) => {
       const ended = gestureRef.current;
       if (!ended) return;
       gestureRef.current = null;
-      if (ended.axis !== 'horizontal') return;
+      if (ended.axis !== 'horizontal') {
+        // Neither a swipe nor a scroll: a tap, or a press and hold.
+        if (ended.axis !== 'vertical' && event.type === 'touchend') {
+          landForTap();
+        }
+        return;
+      }
       if (event.type === 'touchcancel') {
         release(ended, ended.page, 0);
         return;
       }
-      const { onPageChange, pageCount } = optionsRef.current;
+      const { pageCount } = optionsRef.current;
       // The lift is a sample too: a finger that rested before it sent no
       // moves, and its last moves would otherwise still read as a flick.
       const lifted = event.changedTouches?.[0];
@@ -418,7 +606,7 @@ export function useHorizontalPagerSwipe(
         width: ended.width,
       });
       release(ended, target, velocity);
-      if (target !== ended.page) onPageChange(target);
+      if (target !== ended.page) requestPageChange(target);
     };
 
     // A drag never also opens the row under the finger, nor one on the
@@ -450,4 +638,54 @@ export function useHorizontalPagerSwipe(
     const motion = motionRef.current;
     return () => stopSettle(motion);
   }, []);
+
+  const slideTo = useCallback(
+    (target: number) => {
+      const track = trackRef.current;
+      const motion = motionRef.current;
+      const latest = optionsRef.current;
+      if (
+        !track ||
+        !latest.enabled ||
+        !latest.animatePageChange ||
+        latest.reducedMotion
+      ) {
+        // Nothing glides (only one list shows, the other page is not built
+        // yet, or reduced motion): the parent just switches.
+        if (target !== latest.page) latest.onPageChange(target);
+        return;
+      }
+      if (target === motion.page) {
+        // Already there or gliding there (a swipe the parent has not taken
+        // yet, say).
+        if (target !== latest.page) requestPageChange(target);
+        return;
+      }
+      // A drag under way no longer applies.
+      gestureRef.current = null;
+      if (!motion.settle) {
+        // From the page showing (mid-glide, the transition carries on from
+        // wherever it has the track).
+        track.style.transition = 'none';
+        track.style.transform = pxTransform(-motion.page * trackWidth(track));
+        reportPosition(motion.page, 0, PAGER_SLIDE_EASING);
+        flushStyle(track);
+      }
+      settleTrack(
+        track,
+        motion,
+        target,
+        PAGER_PAGE_CHANGE_SLIDE_MS,
+        undefined,
+        followParent,
+        reportPosition
+      );
+      requestPageChange(target);
+    },
+    // Reads everything through refs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [trackRef]
+  );
+
+  return { slideTo };
 }

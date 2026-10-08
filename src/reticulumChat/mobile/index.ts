@@ -90,6 +90,8 @@ const INVOKE_METHODS = [
   'setCalendarReminder',
   'sendDirectTyping',
   'getDirectHistory',
+  'searchDirectMessages',
+  'getDirectHistoryFrom',
   'getDirectSummaries',
   'getDirectCallHistory',
   'markDirectRead',

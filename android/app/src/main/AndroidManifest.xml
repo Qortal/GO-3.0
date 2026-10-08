@@ -111,7 +111,7 @@
             android:targetActivity=".ShareTrampolineActivity"
             android:label="Quitter"
             android:icon="@mipmap/ic_launcher"
-            android:enabled="true"
+            android:enabled="false"
             android:exported="true">
             <intent-filter android:label="Quitter">
                 <action android:name="android.intent.action.SEND" />
@@ -131,7 +131,7 @@
             android:targetActivity=".ShareTrampolineActivity"
             android:label="Torq"
             android:icon="@mipmap/ic_launcher"
-            android:enabled="false"
+            android:enabled="true"
             android:exported="true">
             <intent-filter android:label="Torq">
                 <action android:name="android.intent.action.SEND" />
@@ -144,6 +144,80 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="image/*" />
                 <data android:mimeType="video/*" />
+            </intent-filter>
+        </activity-alias>
+        <!-- "Torq Rev": one photo or video opens Torq's Rev editor with it.
+             On only while Torq is the composer's app, with "Torq" above. -->
+        <activity-alias
+            android:name=".TorqRevShareActivity"
+            android:targetActivity=".ShareTrampolineActivity"
+            android:label="@string/share_target_torq_rev"
+            android:icon="@mipmap/ic_launcher"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter android:label="@string/share_target_torq_rev">
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
+                <data android:mimeType="video/*" />
+            </intent-filter>
+        </activity-alias>
+
+        <!-- "GO Groups" / "GO DMs" / "GO Self-DM" in the share sheet: text,
+             links, photos, videos and files go into a chat. Groups and DMs
+             open that list in Q-Chat with the share in its header, and the
+             chat tapped there gets it in its composer; Self-DM opens Saved
+             Messages with it. No single chats are offered in the share sheet
+             or the launcher. Same trampoline as above; always on. -->
+        <activity-alias
+            android:name=".GroupsShareActivity"
+            android:targetActivity=".ShareTrampolineActivity"
+            android:label="@string/share_target_groups"
+            android:icon="@mipmap/ic_launcher"
+            android:exported="true">
+            <intent-filter android:label="@string/share_target_groups">
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+            <intent-filter android:label="@string/share_target_groups">
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+        </activity-alias>
+        <activity-alias
+            android:name=".DirectsShareActivity"
+            android:targetActivity=".ShareTrampolineActivity"
+            android:label="@string/share_target_directs"
+            android:icon="@mipmap/ic_launcher"
+            android:exported="true">
+            <intent-filter android:label="@string/share_target_directs">
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+            <intent-filter android:label="@string/share_target_directs">
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+        </activity-alias>
+        <activity-alias
+            android:name=".SelfShareActivity"
+            android:targetActivity=".ShareTrampolineActivity"
+            android:label="@string/share_target_self"
+            android:icon="@mipmap/ic_launcher"
+            android:exported="true">
+            <intent-filter android:label="@string/share_target_self">
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+            <intent-filter android:label="@string/share_target_self">
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
             </intent-filter>
         </activity-alias>
 

@@ -133,10 +133,8 @@ import {
   movePinnedGroup,
   usePinnedGroupIds,
 } from '../../utils/pinnedGroups';
-import {
-  SAFE_AREA_BOTTOM,
-  SAFE_AREA_TOP,
-} from '../../utils/mobileSafeArea';
+import { SAFE_AREA_BOTTOM, SAFE_AREA_TOP } from '../../utils/mobileSafeArea';
+import { withTabBarSpace } from '../Mobile/mobileBarHeights';
 
 const RETICULUM_ACTIVE_BLUE = '#2563eb';
 const RETICULUM_CALL_GREEN = '#22c55e';
@@ -144,7 +142,7 @@ const RETICULUM_CALL_GREEN = '#22c55e';
  * (same as the row's long-press menu). */
 const PIN_HOLD_SLOP_PX = 10;
 
-const ReticulumChatSettingsDialog = ({
+export const ReticulumChatSettingsDialog = ({
   open,
   onClose,
 }: {
@@ -840,6 +838,9 @@ const GroupListInner = ({
   // Phones: show the named group list even while DMs are the current scope,
   // for the Groups / DMs pager that keeps it right beside them.
   keepPhoneList = false,
+  // Phones: the header with the Groups / DMs switch sits above both lists
+  // (MobileChatListHeader), so the list leaves out its own.
+  hideMobileHeader = false,
 }) => {
   const theme = useTheme();
   // Compact the Groups/DM toggle on landscape phones, where the tall stacked
@@ -887,10 +888,7 @@ const GroupListInner = ({
       pinnedGroupIds
     );
   }, [groups, manualGroupOrder, pinnedGroupIds, railMode]);
-  const pinnedIdSet = useMemo(
-    () => new Set(pinnedGroupIds),
-    [pinnedGroupIds]
-  );
+  const pinnedIdSet = useMemo(() => new Set(pinnedGroupIds), [pinnedGroupIds]);
   const pinnedGroups = useMemo(
     () =>
       orderedGroups.filter((group: any) =>
@@ -1322,42 +1320,44 @@ const GroupListInner = ({
             minWidth: 0,
           }}
         >
-          <Box sx={chatListHeaderSx}>
-            <ChatScopeSwitch
-              directHasUnread={directChatHasUnread}
-              directUnreadCount={directChatUnreadCount}
-              onChange={setDesktopSideView}
-              value="groups"
-            />
-            <Box sx={chatListHeaderActionsSx}>
-              {/* The onboarding tour's "find groups" step points here on
+          {!hideMobileHeader && (
+            <Box sx={chatListHeaderSx}>
+              <ChatScopeSwitch
+                directHasUnread={directChatHasUnread}
+                directUnreadCount={directChatUnreadCount}
+                onChange={setDesktopSideView}
+                value="groups"
+              />
+              <Box sx={chatListHeaderActionsSx}>
+                {/* The onboarding tour's "find groups" step points here on
                   phones; the hidden rail keeps the desktop anchor. */}
-              <IconButton
-                aria-label={t('reticulum:rail.find_groups')}
-                data-tour="hub-group-discovery"
-                onClick={() => setOpenFindGroup(true)}
-                sx={chatListHeaderButtonSx}
-              >
-                <SearchRoundedIcon sx={chatListHeaderIconSx} />
-              </IconButton>
-              <IconButton
-                aria-label={t('group:action.create_group', {
-                  postProcess: 'capitalizeFirstChar',
-                })}
-                onClick={() => setOpenAddGroup(true)}
-                sx={chatListHeaderButtonSx}
-              >
-                <AddCircleOutlineIcon sx={chatListHeaderIconSx} />
-              </IconButton>
-              <IconButton
-                aria-label={t('reticulum:rail.group_settings')}
-                onClick={() => setReticulumSettingsOpen(true)}
-                sx={chatListHeaderButtonSx}
-              >
-                <SettingsOutlinedIcon sx={chatListHeaderIconSx} />
-              </IconButton>
+                <IconButton
+                  aria-label={t('reticulum:rail.find_groups')}
+                  data-tour="hub-group-discovery"
+                  onClick={() => setOpenFindGroup(true)}
+                  sx={chatListHeaderButtonSx}
+                >
+                  <SearchRoundedIcon sx={chatListHeaderIconSx} />
+                </IconButton>
+                <IconButton
+                  aria-label={t('group:action.create_group', {
+                    postProcess: 'capitalizeFirstChar',
+                  })}
+                  onClick={() => setOpenAddGroup(true)}
+                  sx={chatListHeaderButtonSx}
+                >
+                  <AddCircleOutlineIcon sx={chatListHeaderIconSx} />
+                </IconButton>
+                <IconButton
+                  aria-label={t('reticulum:rail.group_settings')}
+                  onClick={() => setReticulumSettingsOpen(true)}
+                  sx={chatListHeaderButtonSx}
+                >
+                  <SettingsOutlinedIcon sx={chatListHeaderIconSx} />
+                </IconButton>
+              </Box>
             </Box>
-          </Box>
+          )}
           <Box
             // The phone Groups / DMs pager keeps sideways swipes off this
             // list.
@@ -1367,6 +1367,8 @@ const GroupListInner = ({
               minHeight: 0,
               overflowY: 'auto',
               padding: chatListScrollPadding,
+              // The last group scrolls clear of the floating tab buttons.
+              paddingBottom: withTabBarSpace(10, '10px'),
             }}
           >
             {orderedGroups.length === 0 && (
@@ -1709,7 +1711,12 @@ const GroupListInner = ({
                 onClick={() => {
                   setIsOpenBlockedUserModal(true);
                 }}
-                sx={{ flex: '0 0 auto', minWidth: 'unset', padding: '8px', width: '100%' }}
+                sx={{
+                  flex: '0 0 auto',
+                  minWidth: 'unset',
+                  padding: '8px',
+                  width: '100%',
+                }}
               >
                 <PersonOffIcon
                   sx={{ color: theme.palette.text.secondary, fontSize: '20px' }}
@@ -2627,8 +2634,9 @@ const GroupItem = memo(
                   sx={{
                     ...chatListRowEdgeActionSx,
                     // A swipe that starts on the pin still scrolls the list
-                    // (the browser cancels the hold when it takes over).
-                    touchAction: 'pan-y',
+                    // (the browser cancels the hold when it takes over), or
+                    // goes sideways like one on the rest of the row.
+                    touchAction: 'pan-x pan-y',
                   }}
                 >
                   <PushPinRoundedIcon

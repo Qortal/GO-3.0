@@ -30,7 +30,7 @@ const setup = ({ listScrolls }: { listScrolls: boolean }) => {
 };
 
 describe('createBackgroundGesture', () => {
-  it('scrolls a long list when the swipe starts below the panel', () => {
+  it('leaves a swipe below a long list to the list', () => {
     const { backdrop, gesture, list, onClose, touch } = setup({
       listScrolls: true,
     });
@@ -39,7 +39,8 @@ describe('createBackgroundGesture', () => {
     gesture.onTouchMove(touch(backdrop, 650));
 
     expect(onClose).not.toHaveBeenCalled();
-    expect(list.scrollTop).toBe(710);
+    // The list's own swipe (useTabsSwipeClose) scrolls it, not this.
+    expect(list.scrollTop).toBe(600);
   });
 
   it('still closes for a swipe on the app behind a short panel', () => {

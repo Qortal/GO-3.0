@@ -116,21 +116,21 @@ describe('GO 3.0 Updates screen', () => {
         within(item).queryByRole('button', { name: /Install/ })
       ).toBeNull();
       expect(
-        within(item).getByRole('button', { name: /Open in Q-Share\+/ })
+        within(item).getByRole('button', { name: /Open in Q-Share/ })
       ).toBeInTheDocument();
     }
   });
 
-  it('opens a version in Q-Share+', () => {
+  it('opens a version in Q-Share', () => {
     render(<AppUpdateWindow />);
     const older = screen.getAllByRole('listitem')[2];
     fireEvent.click(
-      within(older).getByRole('button', { name: /Open in Q-Share\+/ })
+      within(older).getByRole('button', { name: /Open in Q-Share/ })
     );
     expect(controller.closeAppUpdateWindow).toHaveBeenCalled();
     expect(events.executeEvent).toHaveBeenCalledWith('addTab', {
       data: {
-        name: 'Q-Share+',
+        name: 'Q-Share',
         navigateIfAlreadyOpen: true,
         path: 'share/GO%203.0/qshare_file_go-30-0.0.9_metadata',
         service: 'APP',

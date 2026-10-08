@@ -276,3 +276,82 @@ describe('ListOfMembers avatars', () => {
     );
   });
 });
+
+describe('ListOfMembers search focus', () => {
+  const originalScrollTo = HTMLElement.prototype.scrollTo;
+
+  beforeEach(() => {
+    setQdnAvatarCacheForTests(
+      createAvatarTestHarness({
+        handler: (_url, { name }) => notPublishedResponse(name),
+      }).cache
+    );
+  });
+  afterEach(() => {
+    HTMLElement.prototype.scrollTo = originalScrollTo;
+    vi.useRealTimers();
+    setQdnAvatarCacheForTests(null);
+  });
+
+  const renderFocusable = () => {
+    const store = createStore();
+    store.set(userInfoAtom, { address: MEMBER });
+    const ui = (focusMemberRequest = null) => (
+      <Provider store={store}>
+        <ListOfMembers
+          compact
+          reticulumUserCards
+          focusMemberRequest={focusMemberRequest}
+          groupId={42}
+          members={members}
+          ownerAddress={OWNER}
+          setInfoSnack={vi.fn()}
+          setOpenSnack={vi.fn()}
+          show={vi.fn()}
+        />
+      </Provider>
+    );
+    const utils = render(ui());
+    return {
+      ...utils,
+      focus: (address: string, nonce: number) =>
+        utils.rerender(ui({ address, nonce })),
+    };
+  };
+
+  it('unfolds the member’s section, scrolls to them and marks the row briefly', () => {
+    vi.useFakeTimers();
+    const scrollTo = vi.fn();
+    HTMLElement.prototype.scrollTo = scrollTo;
+    const { container, focus } = renderFocusable();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse members' }));
+    expect(screen.queryByText('Member Name')).toBeNull();
+
+    focus(MEMBER, 1);
+
+    expect(screen.getByText('Member Name')).toBeInTheDocument();
+    const marked = container.querySelector('[data-member-focus="true"]');
+    expect(marked).toHaveTextContent('Member Name');
+    expect(scrollTo).toHaveBeenCalledWith(
+      expect.objectContaining({ behavior: 'smooth' })
+    );
+
+    act(() => {
+      vi.advanceTimersByTime(2_000);
+    });
+    expect(container.querySelector('[data-member-focus="true"]')).toBeNull();
+  });
+
+  it('asks again for the same member with a new nonce', () => {
+    const scrollTo = vi.fn();
+    HTMLElement.prototype.scrollTo = scrollTo;
+    const { focus } = renderFocusable();
+
+    focus(ADMIN, 1);
+    focus(ADMIN, 1);
+    expect(scrollTo).toHaveBeenCalledTimes(1);
+    focus(ADMIN, 2);
+    expect(scrollTo).toHaveBeenCalledTimes(2);
+  });
+});

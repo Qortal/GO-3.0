@@ -102,7 +102,7 @@ const sectionLabelSx = (theme: Theme) => ({
   textTransform: 'uppercase' as const,
 });
 
-/** Opens the build's share page in Q-Share+, in a tab like any Q-App link. */
+/** Opens the build's share page in Q-Share, in a tab like any Q-App link. */
 const openInQShare = (release: AppRelease) => {
   const path = qShareSharePath(release);
   if (!path) return;
@@ -542,7 +542,7 @@ function InstallJobCard() {
 /**
  * GO 3.0 Updates: the check, the update on offer (with the bell), whatever is
  * being installed, and every build published under the name with its notes
- * and a link to it in Q-Share+. Only newer builds can be installed from here.
+ * and a link to it in Q-Share. Only newer builds can be installed from here.
  *
  * Closing it never stops a download; the progress is here when it reopens.
  */

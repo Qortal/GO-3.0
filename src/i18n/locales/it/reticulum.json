@@ -69,6 +69,14 @@
     "empty": "Nessun messaggio privato al momento.",
     "subtitle": "Chat Reticulum private"
   },
+  "dm_search": {
+    "clear": "cancella ricerca",
+    "empty": "nessun messaggio trovato",
+    "hint": "digita almeno 2 caratteri per cercare nei tuoi messaggi diretti",
+    "placeholder": "cerca nei tuoi messaggi diretti",
+    "title": "cerca messaggi",
+    "unavailable": "la ricerca dei messaggi non è disponibile al momento"
+  },
   "event_preview": {
     "all_day": "all day",
     "calendar_unavailable": "calendar is unavailable",
@@ -152,11 +160,14 @@
     "copy_failed": "unable to copy image",
     "download": "download image",
     "download_failed": "unable to download image",
+    "newer": "più recente",
+    "older": "più vecchio",
     "prepare_failed": "unable to prepare image for clipboard",
     "read_failed": "unable to read image",
     "save": "salva immagine",
     "share": "condividi immagine",
     "share_failed": "impossibile condividere l'immagine",
+    "video": "video",
     "zoom_in": "zoom in",
     "zoom_out": "zoom out"
   },
@@ -300,6 +311,21 @@
       },
       "title": "Dimensione del testo"
     }
+  },
+  "share": {
+    "cancel": "annulla la condivisione",
+    "cannot_write": "solo gli admin possono scrivere in questo canale: torna indietro e scegli un'altra chat",
+    "chip_label": "{{what}} da condividere: tocca una chat per aggiungerlo",
+    "kind_file": "file",
+    "kind_link": "link",
+    "kind_photo": "foto",
+    "kind_text": "testo",
+    "kind_video": "video",
+    "notice_extra_files": "è stato aggiunto solo il primo file: un messaggio contiene un file.",
+    "notice_too_large": "un file oltre {{max}} MB è stato escluso.",
+    "notice_unreadable": "non è stato possibile leggere il file condiviso.",
+    "notice_unsafe_image": "non è stato possibile rimuovere i dati di posizione dall'immagine, quindi è stata esclusa.",
+    "pick_chat": "scegli una chat"
   },
   "status_badge": {
     "copy_diagnostics": "Copia diagnostica",

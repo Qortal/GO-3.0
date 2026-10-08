@@ -52,6 +52,15 @@ describe('composer target', () => {
     expect(setShareTarget).toHaveBeenLastCalledWith('quitter');
   });
 
+  it('starts on Torq until something is chosen, and keeps a saved Quitter', () => {
+    localStorage.removeItem('go-home-composer-target');
+    expect(readComposerTarget()).toBe('torq');
+    localStorage.setItem('go-home-composer-target', 'quitter');
+    expect(readComposerTarget()).toBe('quitter');
+    localStorage.setItem('go-home-composer-target', 'nonsense');
+    expect(readComposerTarget()).toBe('torq');
+  });
+
   it('re-applies the stored choice to the share sheet at boot', () => {
     getDefaultStore().set(composerTargetAtom, 'torq');
     syncComposerShareTarget();

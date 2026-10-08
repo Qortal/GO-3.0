@@ -157,25 +157,113 @@ export const buildReactionEmojiSections = (
       .map((entry) => unifiedToNative(entry.u)),
   })).filter((section) => section.emojis.length > 0);
 
-let sectionsPromise: Promise<ReactionEmojiSection[]> | null = null;
+/**
+ * Each emoji's English names, lowercased and joined by " | " (the plainest
+ * first), for the search box.
+ */
+export const buildReactionEmojiNames = (
+  data: RawEmojiData
+): Map<string, string> => {
+  const names = new Map<string, string>();
+  for (const id of REACTION_EMOJI_CATEGORIES) {
+    for (const entry of Array.isArray(data?.[id]) ? data[id] : []) {
+      if (typeof entry?.u !== 'string' || !entry.u) continue;
+      const words = Array.isArray(entry.n)
+        ? entry.n.filter((name) => typeof name === 'string')
+        : [];
+      names.set(unifiedToNative(entry.u), words.join(' | ').toLowerCase());
+    }
+  }
+  return names;
+};
 
-export const loadReactionEmojiSections = (): Promise<
-  ReactionEmojiSection[]
-> => {
-  if (!sectionsPromise) {
-    sectionsPromise = import('emoji-picker-react/src/data/emojis.json').then(
-      (module) =>
-        buildReactionEmojiSections(
-          (module.default ?? module) as RawEmojiData,
-          getMaxSupportedEmojiVersion()
-        )
+export type ReactionEmojiData = {
+  sections: ReactionEmojiSection[];
+  names: Map<string, string>;
+};
+
+let dataPromise: Promise<ReactionEmojiData> | null = null;
+
+export const loadReactionEmojiData = (): Promise<ReactionEmojiData> => {
+  if (!dataPromise) {
+    dataPromise = import('emoji-picker-react/src/data/emojis.json').then(
+      (module) => {
+        const raw = (module.default ?? module) as RawEmojiData;
+        return {
+          sections: buildReactionEmojiSections(
+            raw,
+            getMaxSupportedEmojiVersion()
+          ),
+          names: buildReactionEmojiNames(raw),
+        };
+      }
     );
     // A failed chunk load (offline dev server) may succeed on the next open.
-    sectionsPromise.catch(() => {
-      sectionsPromise = null;
+    dataPromise.catch(() => {
+      dataPromise = null;
     });
   }
-  return sectionsPromise;
+  return dataPromise;
+};
+
+export const loadReactionEmojiSections = (): Promise<ReactionEmojiSection[]> =>
+  loadReactionEmojiData().then((data) => data.sections);
+
+/**
+ * Emoji whose names match every word typed, best first: a whole word of the
+ * name, then the start of one, then anywhere in it. Typing an emoji finds it.
+ */
+export const searchReactionEmojis = (
+  query: string,
+  sections: readonly ReactionEmojiSection[],
+  names: ReadonlyMap<string, string>,
+  limit = 120
+): string[] => {
+  const trimmed = query.trim();
+  const words = trimmed.toLowerCase().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return [];
+  const scored: {
+    emoji: string;
+    score: number;
+    length: number;
+    order: number;
+  }[] = [];
+  const seen = new Set<string>();
+  for (const section of sections) {
+    for (const emoji of section.emojis) {
+      if (seen.has(emoji)) continue;
+      seen.add(emoji);
+      if (trimmed === emoji) {
+        scored.push({ emoji, score: -1, length: 0, order: scored.length });
+        continue;
+      }
+      const name = names.get(emoji);
+      if (!name) continue;
+      const parts = name.split(/[\s_|-]+/).filter(Boolean);
+      let score = 0;
+      for (const word of words) {
+        if (parts.includes(word)) continue;
+        if (parts.some((part) => part.startsWith(word))) score += 1;
+        else if (name.includes(word)) score += 2;
+        else {
+          score = Infinity;
+          break;
+        }
+      }
+      if (score !== Infinity) {
+        // Shorter plain names first: "red heart" before "smiling face
+        // with heart-eyes".
+        const length = name.split(' | ')[0].split(/[\s_-]+/).length;
+        scored.push({ emoji, score, length, order: scored.length });
+      }
+    }
+  }
+  return scored
+    .sort(
+      (a, b) => a.score - b.score || a.length - b.length || a.order - b.order
+    )
+    .slice(0, limit)
+    .map((entry) => entry.emoji);
 };
 
 const isStoredEmoji = (value: unknown): value is string =>

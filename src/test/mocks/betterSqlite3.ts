@@ -58,6 +58,24 @@ const DEVICE_STATE_TABLE = /\brchat_device_state\b/;
 const DEVICE_STATE_ACK_TABLE = /\brchat_device_state_ack\b/;
 const PENDING_DEVICE_STATE_TABLE = /\brchat_pending_device_state\b/;
 
+/** What DM search matches in a payload: its messageText when it is JSON
+ * (as `json_extract(payload, '$.messageText')`), else the payload itself. */
+function searchableDirectText(payload: unknown): string {
+  const raw = String(payload ?? '');
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return raw;
+  }
+  const text =
+    parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>).messageText
+      : undefined;
+  if (text == null) return '';
+  return typeof text === 'string' ? text : JSON.stringify(text);
+}
+
 function deviceStateNotExpired(row: ReticulumChatRow, now: number): boolean {
   return row.expires_at == null || Number(row.expires_at) > Number(now);
 }
@@ -372,6 +390,57 @@ class Statement {
         .slice(0, Number(limit));
     }
     if (this.sql.includes('FROM rchat_dm_events')) {
+      // searchDirectMessages: the same rules as its SQL (checked against
+      // real SQLite): the account's messages and edits whose message text
+      // holds the query, not expired, not deleted, newest text only, newest
+      // first.
+      if (this.sql.includes("json_extract(e.payload, '$.messageText')")) {
+        const [sender, recipient, now, pattern, limit = 60] = args;
+        const needle = String(pattern)
+          .slice(1, -1)
+          .replace(/\\([\\%_])/g, '$1')
+          .toLowerCase();
+        const rows = this.store.reticulumDmEvents;
+        const targetOf = (row: ReticulumChatRow) =>
+          row.target_event_id ?? row.event_id;
+        return rows
+          .filter((row) => {
+            if (
+              (row.sender_address !== sender &&
+                row.recipient_address !== recipient) ||
+              (row.event_type !== 'message' && row.event_type !== 'edit') ||
+              (row.expires_at != null &&
+                Number(row.expires_at) <= Number(now)) ||
+              !searchableDirectText(row.payload).toLowerCase().includes(needle)
+            ) {
+              return false;
+            }
+            const target = targetOf(row);
+            const deleted = rows.some(
+              (other) =>
+                other.conversation_id === row.conversation_id &&
+                other.event_type === 'delete' &&
+                other.target_event_id === target
+            );
+            const superseded = rows.some(
+              (other) =>
+                other.conversation_id === row.conversation_id &&
+                other.event_type === 'edit' &&
+                other.target_event_id === target &&
+                (row.event_type === 'message' ||
+                  Number(other.timestamp) > Number(row.timestamp) ||
+                  (Number(other.timestamp) === Number(row.timestamp) &&
+                    String(other.event_id) > String(row.event_id)))
+            );
+            return !deleted && !superseded;
+          })
+          .sort(
+            (a, b) =>
+              Number(b.timestamp) - Number(a.timestamp) ||
+              String(b.event_id).localeCompare(String(a.event_id))
+          )
+          .slice(0, Number(limit));
+      }
       if (
         this.sql.includes("event_type = 'message'") &&
         this.sql.includes('expires_at <= ?')
@@ -434,6 +503,36 @@ class Statement {
             Number(b.timestamp) - Number(a.timestamp) ||
             String(b.event_id).localeCompare(String(a.event_id))
         );
+      }
+      // getDirectHistoryFrom: events from a moment on (oldest first), or
+      // the ones just before it (newest first).
+      if (
+        this.sql.includes('WHERE conversation_id = ?') &&
+        (this.sql.includes('AND timestamp >= ?') ||
+          this.sql.includes('AND timestamp < ?'))
+      ) {
+        const [conversationId, now, from] = args;
+        const limit = Number(args[args.length - 1]) || Infinity;
+        const excluded = new Set(args.slice(3, -1).map(String));
+        const fromOn = this.sql.includes('AND timestamp >= ?');
+        const direction = fromOn ? 1 : -1;
+        return this.store.reticulumDmEvents
+          .filter(
+            (row) =>
+              row.conversation_id === conversationId &&
+              (row.expires_at == null ||
+                Number(row.expires_at) > Number(now)) &&
+              (fromOn
+                ? Number(row.timestamp) >= Number(from)
+                : Number(row.timestamp) < Number(from)) &&
+              !excluded.has(String(row.sender_address))
+          )
+          .sort(
+            (a, b) =>
+              direction * (Number(a.timestamp) - Number(b.timestamp)) ||
+              direction * String(a.event_id).localeCompare(String(b.event_id))
+          )
+          .slice(0, limit);
       }
       if (this.sql.includes('WHERE conversation_id = ?')) {
         const conversationId = args[0];
@@ -1446,7 +1545,10 @@ class Statement {
       }
       if (this.sql.includes('WHERE event_id = ?')) {
         const row = this.store.reticulumDmEvents.find(
-          (item) => item.event_id === args[0]
+          (item) =>
+            item.event_id === args[0] &&
+            (!this.sql.includes('AND conversation_id = ?') ||
+              item.conversation_id === args[1])
         );
         return this.sql.includes('SELECT 1') && row ? { 1: 1 } : row;
       }

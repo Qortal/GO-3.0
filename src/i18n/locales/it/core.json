@@ -575,7 +575,8 @@
     "stage_gathering": "Raccolta da QDN",
     "stage_saving": "Salvataggio sul telefono",
     "storage_permission": "GO ha bisogno dell'autorizzazione di archiviazione per salvare i file in Documents.",
-    "tap_to_open": "Tocca per aprire · {{location}}"
+    "tap_to_open": "Tocca per aprire · {{location}}",
+    "tap_to_open_or_share": "Tocca per aprire o condividere"
   },
   "filter": {
     "all": "tutti",
@@ -630,7 +631,7 @@
     "loading_versions": "Caricamento delle versioni da QDN…",
     "no_notes": "Per questa versione non sono state aggiunte note di rilascio.",
     "no_versions": "Non è ancora stata pubblicata nessuna versione di GO 3.0.",
-    "open_in_qshare": "Apri in Q-Share+",
+    "open_in_qshare": "Apri in Q-Share",
     "progress": {
       "assembling": "Assemblaggio della versione",
       "bytes_of_total": "{{done}} di {{total}}",
@@ -806,6 +807,7 @@
       "new_notification": "Nuova notifica",
       "new_notification_from": "Nuova notifica da {{ appName }}",
       "new_payment_body": "Hai ricevuto {{ amount }} QORT.",
+      "new_payment_from": "Pagamento da {{ name }}",
       "new_payment_received": "Nuovo pagamento ricevuto",
       "new_qmail": "Hai un nuovo Q-Mail",
       "no_app_notifications": "Nessuna notifica dell’app al momento",
@@ -1009,6 +1011,17 @@
   "payment": "pagamento",
   "payment_notification": "notifica di pagamento",
   "payments_count": "Pagamenti ({{count}})",
+  "pdf_reader": {
+    "gesture_hint": "Tocca per lo schermo intero · doppio tocco o pizzica per ingrandire",
+    "gesture_hint_pages": "Scorri per girare pagina · tocca per lo schermo intero · doppio tocco per ingrandire",
+    "look_dim": "Attenuato",
+    "look_dim_hint": "Cornice scura, pagina invariata",
+    "look_light": "Chiaro",
+    "look_light_hint": "Cornice chiara e pagina bianca",
+    "look_smart": "Smart",
+    "look_smart_hint": "Pagine scure per il testo, foto lasciate come sono",
+    "page_look": "Aspetto pagina"
+  },
   "poll_embed": "sondaggio incorporato",
   "port": "porta",
   "presence": {
@@ -1052,7 +1065,7 @@
     "modules_hotkeys_label": "Scorciatoie",
     "modules_music_description": "Lettore Earbump compatto con ricerca e riproduzione rapida.",
     "modules_music_label": "Lettore musicale",
-    "modules_suggest_description": "Scrivi > Aggiungi oggetto + messaggio e mandacelo!",
+    "modules_suggest_description": "Unisciti al gruppo GO 3.0 e dicci cosa costruire dopo.",
     "modules_suggest_label": "Suggerisci un modulo",
     "music_empty_title": "Libreria EarBump",
     "music_empty_uploaded": "In attesa della libreria",
@@ -1143,6 +1156,10 @@
   "receiver": "ricevitore",
   "remaining_to_level": "Mancanti al livello {{level}}",
   "retry": "riprova",
+  "search": {
+    "apps_and_websites": "app e siti web",
+    "suggested": "suggerimenti"
+  },
   "sender": "mittente",
   "server": "server",
   "service_type": "tipo di servizio",
@@ -1162,7 +1179,32 @@
     "categories": "categorie",
     "community_apps": "app della community",
     "my_apps": "le mie app",
-    "official_apps": "app ufficiali"
+    "official_apps": "app ufficiali",
+    "pinned": "fissate"
+  },
+  "tabs_home": {
+    "app_name": "nome dell'app",
+    "browse_apps": "sfoglia le app",
+    "close_all": "chiudi tutte",
+    "close_folder": "chiudi cartella",
+    "close_tab": "chiudi scheda",
+    "delete_folder": "elimina cartella",
+    "empty_hint": "tocca la puntina di qualsiasi app nella libreria. Queste cartelle sono le stesse delle schede.",
+    "empty_title": "qui vivono le tue app fissate",
+    "folder_empty_hint": "tieni premuta una scheda aperta e scegli questa cartella per aggiungerla qui.",
+    "folder_name": "nome della cartella",
+    "folder_options": "opzioni della cartella",
+    "make_large": "cartella grande",
+    "make_small": "cartella piccola",
+    "more_apps": "altre {{amount}} app",
+    "new_folder": "nuova cartella",
+    "new_folder_name": "nuova cartella",
+    "open_folder": "apri {{name}}",
+    "open_tabs": "schede aperte",
+    "remove_from_folder": "rimuovi dalla cartella",
+    "rename_app": "rinomina app",
+    "rename_folder": "rinomina cartella",
+    "window_n": "finestra {{amount}}"
   },
   "tabs_overlay": {
     "delete_folder_body_one": "l’app salvata al suo interno ({{count}}) verrà rimossa dalle schede. Le schede aperte restano aperte.",

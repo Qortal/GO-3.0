@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import {
   Box,
   ButtonBase,
@@ -14,6 +21,8 @@ import SearchIcon from '@mui/icons-material/Search';
 import ArrowOutwardIcon from '@mui/icons-material/ArrowOutward';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import LinkIcon from '@mui/icons-material/Link';
+import LanguageRoundedIcon from '@mui/icons-material/LanguageRounded';
+import AppsRoundedIcon from '@mui/icons-material/AppsRounded';
 import ShareRoundedIcon from '@mui/icons-material/ShareRounded';
 import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded';
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded';
@@ -26,7 +35,11 @@ import { AppThumbnailAvatar } from '../Apps/AppThumbnailAvatar';
 import IconClearInput from '../../assets/svgs/ClearInput.svg';
 import { executeEvent } from '../../utils/events';
 import { getBaseApiReact } from '../../utils/globalApi';
-import { MOBILE_TOP_BAR_HEIGHT_PX } from './mobileBarHeights';
+import {
+  MOBILE_TAB_BAR_HEIGHT_PX,
+  MOBILE_TOP_BAR_HEIGHT_PX,
+} from './mobileBarHeights';
+import { useSoftKeyboardInset } from '../../hooks/useSoftKeyboardInset';
 import { MOBILE_TABS_OVERLAY_Z } from './mobileLayout';
 import {
   SAFE_AREA_LEFT,
@@ -40,7 +53,25 @@ import {
   normalizeQortalInput,
   openAppsSearchApp,
   openAppsSearchLink,
+  splitFirstMatch,
 } from './appsDashboardSearch';
+
+/** Space left between the results and the keyboard (or the tab buttons). */
+const RESULTS_GAP_PX = 10;
+const RESULTS_MIN_HEIGHT_PX = 160;
+
+const readSafeAreaBottom = () => {
+  try {
+    const value = Number.parseFloat(
+      getComputedStyle(document.documentElement).getPropertyValue(
+        '--safe-area-inset-bottom'
+      )
+    );
+    return Number.isFinite(value) ? value : 0;
+  } catch {
+    return 0;
+  }
+};
 
 type MobileTopBarSearchProps = {
   activeTabUrl?: string;
@@ -51,6 +82,9 @@ type MobileTopBarSearchProps = {
   onExpandedChange: (expanded: boolean) => void;
   showActiveTabUrl?: boolean;
   tabsOverlayOpen?: boolean;
+  /** The bar floats see-through on a page's own colour (immersive mode):
+   * the field is a neutral tint of it, not GO's paper. */
+  floating?: boolean;
 };
 
 export const MobileTopBarSearch = ({
@@ -62,6 +96,7 @@ export const MobileTopBarSearch = ({
   onExpandedChange,
   showActiveTabUrl = false,
   tabsOverlayOpen = false,
+  floating = false,
 }: MobileTopBarSearchProps) => {
   const theme = useTheme();
   // Tablet tier (600-900px): give the collapsed search more room.
@@ -80,7 +115,11 @@ export const MobileTopBarSearch = ({
   // Top-bar search can open before the Apps library has filled the catalog.
   // Fetch once so queries like "QWB" can match published apps.
   useEffect(() => {
-    if (!expanded || availableQapps.length > 0 || appsCatalogFetchStartedRef.current) {
+    if (
+      !expanded ||
+      availableQapps.length > 0 ||
+      appsCatalogFetchStartedRef.current
+    ) {
       return;
     }
     appsCatalogFetchStartedRef.current = true;
@@ -197,10 +236,49 @@ export const MobileTopBarSearch = ({
   const currentUrl = (query.trim() || activeTabUrl).trim();
   // Only while the address field is open for editing — never while browsing.
   const showUrlActions = expanded && Boolean(activeTabUrl);
+
+  // The results reach down to just above the keyboard (the visible part of
+  // the screen), or above the round tab buttons while it is closed.
+  const keyboardInset = useSoftKeyboardInset();
+  const resultsBoxRef = useRef<HTMLDivElement | null>(null);
+  const [panelMaxHeight, setPanelMaxHeight] = useState<number | null>(null);
+  useLayoutEffect(() => {
+    if (!showDropdown) return;
+    const measure = () => {
+      const box = resultsBoxRef.current;
+      if (!box) return;
+      const top = box.getBoundingClientRect().top;
+      const viewport = window.visualViewport;
+      const visibleBottom = viewport
+        ? viewport.offsetTop + viewport.height
+        : window.innerHeight;
+      const reserve =
+        keyboardInset > 0
+          ? RESULTS_GAP_PX
+          : MOBILE_TAB_BAR_HEIGHT_PX + readSafeAreaBottom() + RESULTS_GAP_PX;
+      setPanelMaxHeight(
+        Math.max(
+          RESULTS_MIN_HEIGHT_PX,
+          Math.floor(visibleBottom - top - reserve)
+        )
+      );
+    };
+    measure();
+    const viewport = window.visualViewport;
+    viewport?.addEventListener('resize', measure);
+    viewport?.addEventListener('scroll', measure);
+    window.addEventListener('resize', measure);
+    return () => {
+      viewport?.removeEventListener('resize', measure);
+      viewport?.removeEventListener('scroll', measure);
+      window.removeEventListener('resize', measure);
+    };
+  }, [keyboardInset, showDropdown, showUrlActions]);
   const displayTitle =
     activeTabTitle.trim() ||
     (activeTabUrl ? activeTabUrl.replace(/^qortal:\/\//i, '') : '');
 
+  // Share / Copy / Refresh each close the address window once tapped.
   const handleCopyUrl = useCallback(async () => {
     if (!currentUrl) return;
     try {
@@ -208,10 +286,13 @@ export const MobileTopBarSearch = ({
     } catch {
       // Clipboard can fail in locked WebViews; ignore quietly.
     }
-  }, [currentUrl]);
+    collapse();
+  }, [collapse, currentUrl]);
 
   const handleShareUrl = useCallback(async () => {
     if (!currentUrl) return;
+    // Close first so the share sheet opens over the page, not the edit bar.
+    collapse();
     try {
       // Native Android/iOS share sheet (chooser). Prefer Capacitor over
       // navigator.share — WebView often lacks a real OS share target list.
@@ -232,16 +313,18 @@ export const MobileTopBarSearch = ({
     } catch {
       // User cancelled the share sheet — do nothing.
     }
-  }, [currentUrl, displayTitle]);
+  }, [collapse, currentUrl, displayTitle]);
 
   const handleRefresh = useCallback(() => {
     if (onRefreshActiveTab) {
       onRefreshActiveTab();
+    } else if (activeTabId) {
+      executeEvent('refreshApp', { tabId: activeTabId });
+    } else {
       return;
     }
-    if (!activeTabId) return;
-    executeEvent('refreshApp', { tabId: activeTabId });
-  }, [activeTabId, onRefreshActiveTab]);
+    collapse();
+  }, [activeTabId, collapse, onRefreshActiveTab]);
 
   const urlActionButtonSx = {
     borderRadius: '50%',
@@ -372,7 +455,9 @@ export const MobileTopBarSearch = ({
         backgroundColor:
           theme.palette.mode === 'dark'
             ? 'rgba(255,255,255,0.06)'
-            : theme.palette.background.paper,
+            : floating && !expanded
+              ? alpha(theme.palette.common.black, 0.045)
+              : theme.palette.background.paper,
         border: `1px solid ${
           expanded ? theme.palette.primary.main : theme.palette.divider
         }`,
@@ -392,9 +477,17 @@ export const MobileTopBarSearch = ({
     >
       {!expanded ? (
         showActiveTabUrl ? (
-          <LinkIcon sx={{ color: theme.palette.primary.main, flexShrink: 0, fontSize: 16 }} />
+          <LinkIcon
+            sx={{
+              color: theme.palette.primary.main,
+              flexShrink: 0,
+              fontSize: 16,
+            }}
+          />
         ) : (
-          <SearchIcon sx={{ color: theme.palette.text.secondary, fontSize: 16 }} />
+          <SearchIcon
+            sx={{ color: theme.palette.text.secondary, fontSize: 16 }}
+          />
         )
       ) : null}
       <InputBase
@@ -417,7 +510,9 @@ export const MobileTopBarSearch = ({
           }
         }}
         onKeyDown={handleKeyDown}
-        placeholder={showActiveTabUrl ? undefined : MOBILE_APPS_SEARCH_PLACEHOLDER}
+        placeholder={
+          showActiveTabUrl ? undefined : MOBILE_APPS_SEARCH_PLACEHOLDER
+        }
         autoComplete="off"
         autoCorrect="off"
         inputProps={{
@@ -464,7 +559,9 @@ export const MobileTopBarSearch = ({
           onClick={handleSubmit}
           sx={{
             borderRadius: '50%',
-            color: query ? theme.palette.primary.main : theme.palette.text.secondary,
+            color: query
+              ? theme.palette.primary.main
+              : theme.palette.text.secondary,
             flexShrink: 0,
             p: 0.75,
           }}
@@ -481,8 +578,124 @@ export const MobileTopBarSearch = ({
     ? `calc(${MOBILE_TOP_BAR_HEIGHT_PX}px + ${SAFE_AREA_TOP} + 48px)`
     : `calc(${MOBILE_TOP_BAR_HEIGHT_PX}px + ${SAFE_AREA_TOP})`;
 
+  const panelSurface =
+    theme.palette.mode === 'dark'
+      ? alpha('rgb(30, 32, 38)', 0.94)
+      : alpha(theme.palette.background.paper, 0.96);
+
+  // The typed letters stand out a little (brighter and bolder), the way a
+  // search box marks them; the rest of the line keeps its colour.
+  const highlightedText = (text: string) => {
+    const { before, match, after } = splitFirstMatch(text, query);
+    if (!match) return text;
+    return (
+      <>
+        {before}
+        <Box
+          component="span"
+          sx={{ color: theme.palette.text.primary, fontWeight: 800 }}
+        >
+          {match}
+        </Box>
+        {after}
+      </>
+    );
+  };
+
+  const rowSx = (index: number) => {
+    const active = highlightedIndex === index;
+    return {
+      // Stagger the first rows like the account menu; cap so long lists
+      // don't take forever to settle. `both` (not an `opacity: 0` base) so
+      // rows stay visible on WebViews that never run CSS animations.
+      '@keyframes searchItemIn': {
+        from: { opacity: 0, transform: 'translateY(-8px)' },
+        to: { opacity: 1, transform: 'translateY(0)' },
+      },
+      animation: `searchItemIn 200ms cubic-bezier(0.22, 1, 0.36, 1) ${
+        40 + Math.min(index, 8) * 30
+      }ms both`,
+      alignItems: 'center',
+      backgroundColor: active
+        ? alpha(theme.palette.primary.main, 0.12)
+        : 'transparent',
+      borderRadius: '14px',
+      display: 'flex',
+      gap: 1.5,
+      justifyContent: 'flex-start',
+      minHeight: 58,
+      mx: 0.75,
+      px: 1.25,
+      py: 0.875,
+      textAlign: 'left',
+      transition: 'background-color 120ms ease',
+      width: 'calc(100% - 12px)',
+      '&:active': {
+        backgroundColor: alpha(theme.palette.text.primary, 0.08),
+      },
+    } as const;
+  };
+
+  // The row the keyboard's Go key opens (see handleSubmit).
+  const goMark = (index: number) =>
+    highlightedIndex === index ? (
+      <ArrowOutwardIcon
+        aria-hidden
+        sx={{ color: theme.palette.primary.main, flexShrink: 0, fontSize: 18 }}
+      />
+    ) : null;
+
+  const tileSx = {
+    alignItems: 'center',
+    border: `1px solid ${alpha(theme.palette.text.primary, 0.08)}`,
+    borderRadius: '12px',
+    display: 'flex',
+    flexShrink: 0,
+    height: 42,
+    justifyContent: 'center',
+    overflow: 'hidden',
+    width: 42,
+  } as const;
+
+  const typeTag = (service: string) => {
+    const website = String(service || '').toUpperCase() === 'WEBSITE';
+    return (
+      <Box
+        component="span"
+        sx={{
+          alignItems: 'center',
+          backgroundColor: website
+            ? alpha(theme.palette.text.primary, 0.08)
+            : alpha(theme.palette.primary.main, 0.14),
+          borderRadius: '6px',
+          color: website
+            ? theme.palette.text.secondary
+            : theme.palette.primary.main,
+          display: 'inline-flex',
+          flexShrink: 0,
+          fontSize: 10.5,
+          fontWeight: 700,
+          gap: 0.375,
+          height: 18,
+          letterSpacing: '0.02em',
+          px: 0.75,
+        }}
+      >
+        {website ? (
+          <LanguageRoundedIcon sx={{ fontSize: 12 }} />
+        ) : (
+          <AppsRoundedIcon sx={{ fontSize: 12 }} />
+        )}
+        {website
+          ? t('core:website', { postProcess: 'capitalizeFirstChar' })
+          : t('core:app', { postProcess: 'capitalizeFirstChar' })}
+      </Box>
+    );
+  };
+
   const resultsPanel = showDropdown ? (
     <Box
+      ref={resultsBoxRef}
       sx={{
         left: `max(10px, ${SAFE_AREA_LEFT})`,
         position: 'fixed',
@@ -497,7 +710,7 @@ export const MobileTopBarSearch = ({
           '@keyframes searchPanelIn': {
             from: {
               opacity: 0,
-              transform: 'scale(0.96) translateY(-10px)',
+              transform: 'scale(0.97) translateY(-8px)',
             },
             to: {
               opacity: 1,
@@ -506,183 +719,194 @@ export const MobileTopBarSearch = ({
           },
           animation:
             'searchPanelIn 220ms cubic-bezier(0.22, 1, 0.36, 1) forwards',
-          backgroundColor:
-            theme.palette.mode === 'dark'
-              ? 'rgb(34, 36, 42)'
-              : theme.palette.background.paper,
+          backdropFilter: 'blur(18px) saturate(140%)',
+          backgroundColor: panelSurface,
           backgroundImage: 'none',
-          border: `1px solid ${theme.palette.divider}`,
-          borderRadius: '16px',
+          border: `1px solid ${alpha(theme.palette.text.primary, 0.08)}`,
+          borderRadius: '20px',
           boxShadow:
             theme.palette.mode === 'dark'
-              ? `0 16px 40px ${alpha('#000', 0.45)}`
-              : `0 14px 36px ${alpha('#1E3248', 0.14)}`,
+              ? `0 18px 48px ${alpha('#000', 0.5)}`
+              : `0 16px 40px ${alpha('#1E3248', 0.16)}`,
           boxSizing: 'border-box',
-          maxHeight: `calc(100dvh - ${MOBILE_TOP_BAR_HEIGHT_PX}px - ${SAFE_AREA_TOP} - 72px)`,
-          overflowX: 'hidden',
-          overflowY: 'auto',
-          py: 0.5,
+          display: 'flex',
+          flexDirection: 'column',
+          // Down to just above the keyboard, or above the round tab buttons
+          // while it is closed (measured, see panelMaxHeight).
+          maxHeight:
+            panelMaxHeight !== null
+              ? `${panelMaxHeight}px`
+              : `calc(100dvh - ${MOBILE_TOP_BAR_HEIGHT_PX}px - ${SAFE_AREA_TOP} - 72px)`,
+          overflow: 'hidden',
           transformOrigin: 'top center',
           width: '100%',
         }}
       >
-        {suggestions.length === 0 ? (
-          <Box sx={{ color: theme.palette.text.secondary, fontSize: 14, px: 2, py: 2 }}>
-            {t('core:action.search_apps', { postProcess: 'capitalizeFirstChar' })}
-          </Box>
-        ) : null}
-        {suggestions.map((item, index) => {
-          // Stagger the first rows like the account menu; cap so long lists
-          // don't take forever to settle.
-          const itemAnimationSx = {
-            '@keyframes searchItemIn': {
-              from: {
-                opacity: 0,
-                transform: 'translateY(-10px)',
-              },
-              to: {
-                opacity: 1,
-                transform: 'translateY(0)',
-              },
+        <Box
+          sx={{
+            color: theme.palette.text.secondary,
+            flexShrink: 0,
+            fontSize: 11.5,
+            fontWeight: 700,
+            letterSpacing: '0.06em',
+            pb: 0.5,
+            pt: 1.25,
+            px: 2,
+            textTransform: 'uppercase',
+          }}
+        >
+          {query.trim()
+            ? t('core:search.apps_and_websites')
+            : t('core:search.suggested')}
+        </Box>
+        <Box
+          sx={{
+            flex: 1,
+            minHeight: 0,
+            overflowX: 'hidden',
+            overflowY: 'auto',
+            overscrollBehavior: 'contain',
+            pb: 0.75,
+            scrollbarWidth: 'thin',
+            '&::-webkit-scrollbar': { width: 3 },
+            '&::-webkit-scrollbar-thumb': {
+              backgroundColor: alpha(theme.palette.text.primary, 0.2),
+              borderRadius: 3,
             },
-            // `both` (not an `opacity: 0` base) so rows stay visible on
-            // WebViews that never run CSS animations.
-            animation: `searchItemIn 200ms cubic-bezier(0.22, 1, 0.36, 1) ${
-              40 + Math.min(index, 8) * 35
-            }ms both`,
-          };
-
-          if (item.type === 'link') {
-            return (
-              <ButtonBase
-                key="qortal-link"
-                onClick={openAsLink}
-                sx={{
-                  ...itemAnimationSx,
-                  backgroundColor:
-                    highlightedIndex === index
-                      ? theme.palette.action.hover
-                      : 'transparent',
-                  borderRadius: '12px',
-                  gap: 1.25,
-                  justifyContent: 'flex-start',
-                  mx: 0.75,
-                  px: 1.25,
-                  py: 1.1,
-                  textAlign: 'left',
-                  transition: 'background-color 120ms ease',
-                  width: 'calc(100% - 12px)',
-                  '&:active': {
-                    backgroundColor: alpha(theme.palette.text.primary, 0.08),
-                  },
-                }}
-              >
-                <Box
-                  sx={{
-                    alignItems: 'center',
-                    backgroundColor: alpha(theme.palette.primary.main, 0.1),
-                    borderRadius: '10px',
-                    color: theme.palette.primary.main,
-                    display: 'flex',
-                    flexShrink: 0,
-                    height: 36,
-                    justifyContent: 'center',
-                    width: 36,
-                  }}
-                >
-                  <LinkIcon sx={{ fontSize: 20 }} />
-                </Box>
-                <Box
-                  sx={{
-                    color: theme.palette.text.primary,
-                    flexShrink: 0,
-                    fontSize: 14,
-                    fontWeight: 600,
-                  }}
-                >
-                  {item.label}
-                </Box>
-                <Box
-                  sx={{
-                    color: theme.palette.text.secondary,
-                    fontSize: 12,
-                    minWidth: 0,
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    whiteSpace: 'nowrap',
-                  }}
-                >
-                  {normalizeQortalInput(query)}
-                </Box>
-              </ButtonBase>
-            );
-          }
-
-          const app = item.app;
-          const title = app?.metadata?.title || app?.name || '';
-          return (
-            <ButtonBase
-              key={`${app?.service}-${app?.name}`}
-              onClick={() => openApp(app)}
+          }}
+        >
+          {suggestions.length === 0 ? (
+            <Box
               sx={{
-                ...itemAnimationSx,
                 alignItems: 'center',
-                backgroundColor:
-                  highlightedIndex === index
-                    ? theme.palette.action.hover
-                    : 'transparent',
-                borderRadius: '12px',
-                gap: 1.25,
-                justifyContent: 'flex-start',
-                mx: 0.75,
-                px: 1.25,
-                py: 0.9,
-                textAlign: 'left',
-                transition: 'background-color 120ms ease',
-                width: 'calc(100% - 12px)',
-                '&:active': {
-                  backgroundColor: alpha(theme.palette.text.primary, 0.08),
-                },
+                color: theme.palette.text.secondary,
+                display: 'flex',
+                fontSize: 14,
+                gap: 1,
+                px: 2,
+                py: 2,
               }}
             >
-              <AppThumbnailAvatar
-                alt={title}
-                appName={app?.privateAppProperties?.logo ? undefined : app?.name}
-                fallbackSize={24}
-                privateLogo={app?.privateAppProperties?.logo}
-                sx={{ flexShrink: 0, height: 36, width: 36 }}
-                variant="rounded"
-              />
-              <Box sx={{ flex: 1, minWidth: 0, overflow: 'hidden' }}>
-                <Box
-                  sx={{
-                    color: theme.palette.text.primary,
-                    fontSize: 14,
-                    fontWeight: 600,
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    whiteSpace: 'nowrap',
-                  }}
+              <SearchIcon sx={{ fontSize: 18, opacity: 0.7 }} />
+              {t('core:action.search_apps', {
+                postProcess: 'capitalizeFirstChar',
+              })}
+            </Box>
+          ) : null}
+          {suggestions.map((item, index) => {
+            if (item.type === 'link') {
+              return (
+                <ButtonBase
+                  key="qortal-link"
+                  onClick={openAsLink}
+                  sx={rowSx(index)}
                 >
-                  {title}
-                </Box>
-                {app?.name ? (
                   <Box
                     sx={{
-                      color: theme.palette.text.secondary,
-                      fontSize: 12,
+                      ...tileSx,
+                      backgroundColor: alpha(theme.palette.primary.main, 0.12),
+                      color: theme.palette.primary.main,
+                    }}
+                  >
+                    <LinkIcon sx={{ fontSize: 22 }} />
+                  </Box>
+                  <Box sx={{ flex: 1, minWidth: 0 }}>
+                    <Box
+                      sx={{
+                        color: theme.palette.text.primary,
+                        fontSize: 15,
+                        fontWeight: 600,
+                        lineHeight: 1.3,
+                      }}
+                    >
+                      {item.label}
+                    </Box>
+                    <Box
+                      sx={{
+                        color: theme.palette.text.secondary,
+                        fontFamily:
+                          'ui-monospace, SFMono-Regular, SF Mono, Menlo, monospace',
+                        fontSize: 12,
+                        mt: 0.25,
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {normalizeQortalInput(query)}
+                    </Box>
+                  </Box>
+                  {goMark(index)}
+                </ButtonBase>
+              );
+            }
+
+            const app = item.app;
+            const title = app?.metadata?.title || app?.name || '';
+            return (
+              <ButtonBase
+                key={`${app?.service}-${app?.name}`}
+                onClick={() => openApp(app)}
+                sx={rowSx(index)}
+              >
+                <Box sx={tileSx}>
+                  <AppThumbnailAvatar
+                    alt={title}
+                    appName={
+                      app?.privateAppProperties?.logo ? undefined : app?.name
+                    }
+                    fallbackSize={26}
+                    privateLogo={app?.privateAppProperties?.logo}
+                    sx={{ borderRadius: 0, height: 42, width: 42 }}
+                    variant="rounded"
+                  />
+                </Box>
+                <Box sx={{ flex: 1, minWidth: 0 }}>
+                  <Box
+                    sx={{
+                      color: theme.palette.text.primary,
+                      fontSize: 15,
+                      fontWeight: 600,
+                      lineHeight: 1.3,
                       overflow: 'hidden',
                       textOverflow: 'ellipsis',
                       whiteSpace: 'nowrap',
                     }}
                   >
-                    {app.name}
+                    {highlightedText(title)}
                   </Box>
-                ) : null}
-              </Box>
-            </ButtonBase>
-          );
-        })}
+                  <Box
+                    sx={{
+                      alignItems: 'center',
+                      display: 'flex',
+                      gap: 0.75,
+                      minWidth: 0,
+                      mt: 0.375,
+                    }}
+                  >
+                    {typeTag(app?.service)}
+                    {app?.name ? (
+                      <Box
+                        component="span"
+                        sx={{
+                          color: theme.palette.text.secondary,
+                          fontSize: 12.5,
+                          minWidth: 0,
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {highlightedText(app.name)}
+                      </Box>
+                    ) : null}
+                  </Box>
+                </Box>
+                {goMark(index)}
+              </ButtonBase>
+            );
+          })}
+        </Box>
       </Paper>
     </Box>
   ) : null;
@@ -719,9 +943,11 @@ export const MobileTopBarSearch = ({
   if (expanded) {
     return (
       <>
-        {/* Covers the open app/page below so scroll/touch dismisses search. */}
+        {/* Covers the open app/page below so scroll/touch dismisses search.
+            Also keeps immersive mode's bars out while search is open. */}
         <Box
           aria-hidden
+          data-immersive-hold
           onClick={collapse}
           onWheel={collapse}
           onTouchMove={collapse}

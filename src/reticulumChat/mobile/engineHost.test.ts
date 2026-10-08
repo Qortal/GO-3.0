@@ -6,6 +6,8 @@ const engine = vi.hoisted(() => ({
   manager: undefined as any,
   startOptions: [] as any[],
   dispatched: [] as Array<{ event: string; payload: any }>,
+  bridge: undefined as any,
+  admittedLink: false,
 }));
 
 vi.mock('../../../electron/src/reticulum-chat', () => ({
@@ -23,7 +25,22 @@ vi.mock('../../../electron/src/reticulum-resource-store', () => ({
 }));
 vi.mock('./wireBridge', () => ({
   MobileReticulumBridge: class {
-    on(): void {}
+    private readonly listeners = new Map<
+      string,
+      Array<(payload: any) => void>
+    >();
+    constructor() {
+      engine.bridge = this;
+    }
+    on(name: string, fn: (payload: any) => void): void {
+      this.listeners.set(name, [...(this.listeners.get(name) ?? []), fn]);
+    }
+    emit(name: string, payload: unknown): void {
+      for (const fn of this.listeners.get(name) ?? []) fn(payload);
+    }
+    hasAdmittedOverlayLink(): boolean {
+      return engine.admittedLink;
+    }
     markStopped(): void {}
     dispatchPythonEvent(event: string, payload: unknown): void {
       engine.dispatched.push({ event, payload });
@@ -84,6 +101,8 @@ beforeEach(async () => {
   engine.manager = makeManager();
   engine.startOptions = [];
   engine.dispatched = [];
+  engine.bridge = undefined;
+  engine.admittedLink = false;
   ({ handleMainMessage, startEngine } = await import('./engineHost'));
 });
 
@@ -370,5 +389,145 @@ describe('provider auth timing stamps', () => {
     expect(engine.startOptions[0]).toMatchObject({
       repairPrematureDmSentOnce: true,
     });
+  });
+});
+
+describe('overlay usability and subscription replays', () => {
+  function makeGroupManager(initialGroups: number[] = []) {
+    const subscribed = new Set(initialGroups);
+    return {
+      on: vi.fn(),
+      notifyOverlayHealthChanged: vi.fn(),
+      reannounceSubscriptions: vi.fn(),
+      getSubscriptions: vi.fn(() => [...subscribed].sort((a, b) => a - b)),
+      subscribeGroup: vi.fn((groupId: number) => {
+        subscribed.add(groupId);
+      }),
+    };
+  }
+
+  const start = (manager: ReturnType<typeof makeGroupManager>) => {
+    engine.manager = manager;
+    startEngine({ apiBase: 'http://127.0.0.1:12391' });
+  };
+  const engineHealth = () =>
+    (engine.startOptions[0].hasGoodOverlayHealth as () => boolean)();
+  const setAdmittedLink = (available: boolean) => {
+    engine.admittedLink = available;
+    engine.bridge.emit('overlay-availability', { available });
+  };
+  let rpcId = 0;
+  const openChat = (groupId: number) =>
+    handleMainMessage({
+      t: 'rpc',
+      id: ++rpcId,
+      method: 'subscribeGroup',
+      args: [groupId],
+    });
+
+  it('stays unhealthy on a presence snapshot alone, and recovers on the first admitted link', () => {
+    const m = makeGroupManager([5]);
+    start(m);
+    // Saved endpoints make the main thread's snapshot "healthy" at once.
+    handleMainMessage({
+      t: 'presence-state',
+      healthy: true,
+      peers: [{ destinationHash: 'a'.repeat(32), lastSeen: 1 }],
+      leases: [],
+    });
+    vi.advanceTimersByTime(5_000);
+    expect(engineHealth()).toBe(false);
+    expect(m.notifyOverlayHealthChanged).not.toHaveBeenCalled();
+    expect(m.reannounceSubscriptions).not.toHaveBeenCalled();
+
+    setAdmittedLink(true);
+    expect(engineHealth()).toBe(true);
+    vi.advanceTimersByTime(0);
+    expect(m.notifyOverlayHealthChanged).toHaveBeenCalledWith(true);
+    vi.advanceTimersByTime(1_500);
+    expect(m.reannounceSubscriptions).toHaveBeenCalledTimes(1);
+
+    setAdmittedLink(false);
+    expect(engineHealth()).toBe(false);
+  });
+
+  it('does not replay every subscription when an already subscribed chat opens', () => {
+    const m = makeGroupManager([5]);
+    start(m);
+    setAdmittedLink(true);
+    vi.advanceTimersByTime(2_000);
+    expect(m.reannounceSubscriptions).toHaveBeenCalledTimes(1);
+
+    openChat(5);
+    vi.advanceTimersByTime(2_000);
+    openChat(5);
+    vi.advanceTimersByTime(2_000);
+    expect(m.subscribeGroup).toHaveBeenCalledTimes(2);
+    expect(m.reannounceSubscriptions).toHaveBeenCalledTimes(1);
+
+    // A newly joined group still gets the full replay.
+    openChat(6);
+    vi.advanceTimersByTime(2_000);
+    expect(m.reannounceSubscriptions).toHaveBeenCalledTimes(2);
+  });
+
+  it('lets one chat open replay after a link flap skipped the recovery replay', () => {
+    const m = makeGroupManager([5]);
+    start(m);
+    setAdmittedLink(true);
+    vi.advanceTimersByTime(2_000);
+    setAdmittedLink(false);
+    setAdmittedLink(true);
+    vi.advanceTimersByTime(2_000);
+    // Recovery replays are at least 30 s apart.
+    expect(m.reannounceSubscriptions).toHaveBeenCalledTimes(1);
+
+    openChat(5);
+    vi.advanceTimersByTime(2_000);
+    expect(m.reannounceSubscriptions).toHaveBeenCalledTimes(2);
+    openChat(5);
+    vi.advanceTimersByTime(2_000);
+    expect(m.reannounceSubscriptions).toHaveBeenCalledTimes(2);
+  });
+
+  it('replays on a membership change, not when the same groups are re-applied', () => {
+    const m = {
+      ...makeGroupManager([5]),
+      setLocalGroupMemberships: vi.fn(),
+    };
+    start(m);
+    setAdmittedLink(true);
+    vi.advanceTimersByTime(2_000);
+    expect(m.reannounceSubscriptions).toHaveBeenCalledTimes(1);
+    const applyMemberships = (groups: Array<{ groupId: number }>) => {
+      handleMainMessage({
+        t: 'rpc',
+        id: ++rpcId,
+        method: 'setLocalGroupMemberships',
+        args: [groups],
+      });
+      vi.advanceTimersByTime(2_000);
+    };
+
+    // The first list since start counts as a change.
+    applyMemberships([{ groupId: 5 }]);
+    expect(m.reannounceSubscriptions).toHaveBeenCalledTimes(2);
+    applyMemberships([{ groupId: 5 }]);
+    applyMemberships([{ groupId: 5 }]);
+    expect(m.setLocalGroupMemberships).toHaveBeenCalledTimes(3);
+    expect(m.reannounceSubscriptions).toHaveBeenCalledTimes(2);
+
+    applyMemberships([{ groupId: 6 }, { groupId: 5 }]);
+    expect(m.reannounceSubscriptions).toHaveBeenCalledTimes(3);
+  });
+
+  it('sends no replay while no link is admitted', () => {
+    const m = makeGroupManager([5]);
+    start(m);
+    openChat(5);
+    openChat(6);
+    vi.advanceTimersByTime(5_000);
+    expect(m.subscribeGroup).toHaveBeenCalledTimes(2);
+    expect(m.reannounceSubscriptions).not.toHaveBeenCalled();
   });
 });

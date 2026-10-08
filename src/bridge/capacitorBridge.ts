@@ -2565,6 +2565,20 @@ export function installReticulumBridges(): void {
         // and time out. Bounded so a stalled boot degrades to a retry instead
         // of hanging.
         await waitForBridgeReady(30_000);
+        // The wait also ends without `ready`, and nothing asks again: a
+        // `ready` sent while this page was not listening yet (GO rebuilt the
+        // screen while the first start was still running) left presence at
+        // "0, connecting" until a restart, because without our destination
+        // hash presence never announces. presenceStart on a running bridge
+        // re-sends `ready`.
+        for (let attempt = 0; !bridgeReady && attempt < 3; attempt += 1) {
+          console.warn(
+            `[Presence] Bridge ready not seen; asking again (${attempt + 1}/3)`
+          );
+          await Reticulum.presenceStart();
+          await waitForBridgeReady(10_000);
+        }
+        if (!bridgeReady) bridgeStartPromise = null;
       } catch (err) {
         console.error('[Presence] presenceStart failed:', err);
         bridgeError = describePresenceBridgeFailure(err);

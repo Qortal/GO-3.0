@@ -575,7 +575,8 @@
     "stage_gathering": "Wird aus QDN gesammelt",
     "stage_saving": "Wird auf dem Telefon gespeichert",
     "storage_permission": "GO benötigt die Speicherberechtigung, um Dateien im Ordner Documents zu speichern.",
-    "tap_to_open": "Zum Öffnen tippen · {{location}}"
+    "tap_to_open": "Zum Öffnen tippen · {{location}}",
+    "tap_to_open_or_share": "Tippen zum Öffnen oder Teilen"
   },
   "filter": {
     "all": "alle",
@@ -630,7 +631,7 @@
     "loading_versions": "Versionen werden aus QDN geladen…",
     "no_notes": "Für diese Version wurden keine Versionshinweise hinzugefügt.",
     "no_versions": "Es wurden noch keine GO 3.0-Versionen veröffentlicht.",
-    "open_in_qshare": "In Q-Share+ öffnen",
+    "open_in_qshare": "In Q-Share öffnen",
     "progress": {
       "assembling": "Version wird zusammengesetzt",
       "bytes_of_total": "{{done}} von {{total}}",
@@ -806,6 +807,7 @@
       "new_notification": "Neue Benachrichtigung",
       "new_notification_from": "Neue Benachrichtigung von {{ appName }}",
       "new_payment_body": "Sie haben {{ amount }} QORT erhalten.",
+      "new_payment_from": "Zahlung von {{ name }}",
       "new_payment_received": "Neue Zahlung erhalten",
       "new_qmail": "Du hast eine neue Q-Mail",
       "no_app_notifications": "Noch keine App-Benachrichtigungen",
@@ -1009,6 +1011,17 @@
   "payment": "Zahlung",
   "payment_notification": "Zahlungsbenachrichtigung",
   "payments_count": "Zahlungen ({{count}})",
+  "pdf_reader": {
+    "gesture_hint": "Tippen für Vollbild · Doppeltippen oder Ziehen mit zwei Fingern zum Zoomen",
+    "gesture_hint_pages": "Wischen zum Blättern · Tippen für Vollbild · Doppeltippen zum Zoomen",
+    "look_dim": "Gedimmt",
+    "look_dim_hint": "Dunkler Rahmen, Seite unverändert",
+    "look_light": "Hell",
+    "look_light_hint": "Heller Rahmen und weiße Seite",
+    "look_smart": "Smart",
+    "look_smart_hint": "Dunkle Seiten für Text, Fotos bleiben, wie sie sind",
+    "page_look": "Seitenansicht"
+  },
   "poll_embed": "Umfrage Einbettung",
   "port": "Hafen",
   "presence": {
@@ -1052,7 +1065,7 @@
     "modules_hotkeys_label": "Hotkeys",
     "modules_music_description": "Ein kompakter Earbump-Player mit Suche und schneller Wiedergabe.",
     "modules_music_label": "Musikplayer",
-    "modules_suggest_description": "Verfassen > Betreff + Nachricht hinzufügen & an uns senden!",
+    "modules_suggest_description": "Tritt der Gruppe GO 3.0 bei und sag uns, was wir als Nächstes bauen sollen.",
     "modules_suggest_label": "Modul vorschlagen",
     "music_empty_title": "EarBump-Bibliothek",
     "music_empty_uploaded": "Warte auf Bibliothek",
@@ -1143,6 +1156,10 @@
   "receiver": "Empfänger",
   "remaining_to_level": "Verbleibend bis Level {{level}}",
   "retry": "wiederholen",
+  "search": {
+    "apps_and_websites": "Apps & Websites",
+    "suggested": "Vorschläge"
+  },
   "sender": "Absender",
   "server": "Server",
   "service_type": "Service -Typ",
@@ -1162,7 +1179,32 @@
     "categories": "Kategorien",
     "community_apps": "Community-Apps",
     "my_apps": "meine Apps",
-    "official_apps": "offizielle Apps"
+    "official_apps": "offizielle Apps",
+    "pinned": "angeheftet"
+  },
+  "tabs_home": {
+    "app_name": "App-Name",
+    "browse_apps": "Apps entdecken",
+    "close_all": "alle schließen",
+    "close_folder": "Ordner schließen",
+    "close_tab": "Tab schließen",
+    "delete_folder": "Ordner löschen",
+    "empty_hint": "tippe in der Bibliothek bei einer App auf die Nadel. Diese Ordner sind dieselben wie in den Tabs.",
+    "empty_title": "hier wohnen deine angehefteten Apps",
+    "folder_empty_hint": "drücke lange auf einen offenen Tab und wähle diesen Ordner, um ihn hier hinzuzufügen.",
+    "folder_name": "Ordnername",
+    "folder_options": "Ordneroptionen",
+    "make_large": "großer Ordner",
+    "make_small": "kleiner Ordner",
+    "more_apps": "{{amount}} weitere Apps",
+    "new_folder": "neuer Ordner",
+    "new_folder_name": "neuer Ordner",
+    "open_folder": "{{name}} öffnen",
+    "open_tabs": "offene Tabs",
+    "remove_from_folder": "aus dem Ordner entfernen",
+    "rename_app": "App umbenennen",
+    "rename_folder": "Ordner umbenennen",
+    "window_n": "Fenster {{amount}}"
   },
   "tabs_overlay": {
     "delete_folder_body_one": "die {{count}} darin gespeicherte App wird aus den Tabs entfernt. Geöffnete Tabs bleiben offen.",

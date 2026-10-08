@@ -4442,6 +4442,143 @@ export class ReticulumChatDatabase {
     return rows.map(rowToDirectEvent);
   }
 
+  /**
+   * A DM conversation from the event `fromEventId` on, oldest first (at most
+   * `limit` events), after up to `before` events just ahead of it for
+   * context: what a search result older than the loaded history opens at.
+   * Empty when the conversation has no such event.
+   */
+  getDirectHistoryFrom(
+    conversationId: string,
+    fromEventId: string,
+    limit = 1000,
+    before = 20,
+    excludedSenderAddresses: readonly string[] = []
+  ): ReticulumDmEvent[] {
+    const normalized = normalizeReticulumDmConversationId(conversationId);
+    const eventId = String(fromEventId || '').trim();
+    if (!normalized || !eventId) return [];
+    const now = Date.now();
+    this.pruneExpiredDirectMessagesThrottled(now);
+    const anchor = this.db
+      .prepare(
+        `SELECT timestamp FROM rchat_dm_events WHERE event_id = ? AND conversation_id = ?`
+      )
+      .get(eventId, normalized) as { timestamp?: number } | undefined;
+    const from = Number(anchor?.timestamp);
+    if (!Number.isFinite(from)) return [];
+    const safeLimit = Math.max(1, Math.min(2000, Math.floor(limit) || 1));
+    const safeBefore = Math.max(0, Math.min(100, Math.floor(before) || 0));
+    const excludedSenders = [
+      ...new Set(
+        excludedSenderAddresses
+          .map((address) => String(address || '').trim())
+          .filter(Boolean)
+      ),
+    ].slice(0, 100);
+    const excludedClause = excludedSenders.length
+      ? `AND sender_address NOT IN (${excludedSenders.map(() => '?').join(', ')})`
+      : '';
+    const fromRows = this.db
+      .prepare(
+        `
+        SELECT * FROM rchat_dm_events
+        WHERE conversation_id = ?
+          AND (expires_at IS NULL OR expires_at > ?)
+          AND timestamp >= ?
+          ${excludedClause}
+        ORDER BY timestamp ASC, event_id ASC
+        LIMIT ?
+      `
+      )
+      .all(
+        normalized,
+        now,
+        from,
+        ...excludedSenders,
+        safeLimit
+      ) as DirectEventRow[];
+    const beforeRows =
+      safeBefore > 0
+        ? (this.db
+            .prepare(
+              `
+        SELECT * FROM rchat_dm_events
+        WHERE conversation_id = ?
+          AND (expires_at IS NULL OR expires_at > ?)
+          AND timestamp < ?
+          ${excludedClause}
+        ORDER BY timestamp DESC, event_id DESC
+        LIMIT ?
+      `
+            )
+            .all(
+              normalized,
+              now,
+              from,
+              ...excludedSenders,
+              safeBefore
+            ) as DirectEventRow[])
+        : [];
+    return [...beforeRows.reverse(), ...fromRows].map(rowToDirectEvent);
+  }
+
+  /**
+   * The account's direct messages whose text contains `query`, newest first:
+   * messages and edits (an edited message is found by its latest text only),
+   * not deleted, not expired. The payload is matched as stored JSON, so the
+   * caller checks the visible text and builds the snippet. Local only.
+   */
+  searchDirectMessages(
+    myAddress: string,
+    query: string,
+    limit = 60
+  ): ReticulumDmEvent[] {
+    const address = String(myAddress || '').trim();
+    const needle = String(query || '').trim();
+    if (!address || needle.length < 2) return [];
+    const now = Date.now();
+    this.pruneExpiredDirectMessagesThrottled(now);
+    const safeLimit = Math.max(1, Math.min(200, Math.floor(limit)));
+    const pattern = `%${needle.replace(/[\\%_]/g, (match) => `\\${match}`)}%`;
+    const rows = this.db
+      .prepare(
+        `
+        SELECT e.* FROM rchat_dm_events e
+        WHERE (e.sender_address = ? OR e.recipient_address = ?)
+          AND e.event_type IN ('message', 'edit')
+          AND (e.expires_at IS NULL OR e.expires_at > ?)
+          AND (
+            CASE WHEN json_valid(e.payload)
+              THEN COALESCE(json_extract(e.payload, '$.messageText'), '')
+              ELSE e.payload
+            END
+          ) LIKE ? ESCAPE '\\'
+          AND NOT EXISTS (
+            SELECT 1 FROM rchat_dm_events d
+            WHERE d.conversation_id = e.conversation_id
+              AND d.event_type = 'delete'
+              AND d.target_event_id = COALESCE(e.target_event_id, e.event_id)
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM rchat_dm_events x
+            WHERE x.conversation_id = e.conversation_id
+              AND x.event_type = 'edit'
+              AND x.target_event_id = COALESCE(e.target_event_id, e.event_id)
+              AND (
+                e.event_type = 'message'
+                OR x.timestamp > e.timestamp
+                OR (x.timestamp = e.timestamp AND x.event_id > e.event_id)
+              )
+          )
+        ORDER BY e.timestamp DESC, e.event_id DESC
+        LIMIT ?
+      `
+      )
+      .all(address, address, now, pattern, safeLimit) as DirectEventRow[];
+    return rows.map(rowToDirectEvent);
+  }
+
   getDirectEventsAfter(
     conversationId: string,
     afterTimestamp: number,

@@ -21,6 +21,7 @@ import VideocamOutlinedIcon from '@mui/icons-material/VideocamOutlined';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import SendRoundedIcon from '@mui/icons-material/SendRounded';
 import ExpandMoreRoundedIcon from '@mui/icons-material/ExpandMoreRounded';
+import AddCircleOutlineRoundedIcon from '@mui/icons-material/AddCircleOutlineRounded';
 import EditRoundedIcon from '@mui/icons-material/EditRounded';
 import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded';
 import GifBoxOutlinedIcon from '@mui/icons-material/GifBoxOutlined';
@@ -40,6 +41,7 @@ import {
   subscribeToEvent,
   unsubscribeFromEvent,
 } from '../../../utils/events';
+import { openTorqRevComposer } from './torqRevShare';
 import { detachStreamedChunkUpload } from '../../../utils/streamedChunkUpload';
 import { ChatGifPicker } from '../../Chat/gifs/ChatGifPicker';
 import { libraryGifKey, type LibraryGif } from '../../Chat/gifs/libraryGifs';
@@ -169,9 +171,7 @@ export const HomeQuitterComposer = ({
     [t]
   );
   const userInfo = useAtomValue(userInfoAtom);
-  const userName = String(
-    userInfo?.name || userInfo?.primaryName || ''
-  ).trim();
+  const userName = String(userInfo?.name || userInfo?.primaryName || '').trim();
   const hasName = Boolean(userName);
 
   const session = getQuitterComposerSession();
@@ -321,7 +321,8 @@ export const HomeQuitterComposer = ({
       URL.revokeObjectURL(video.previewUrl);
     }
     images.forEach((img) => {
-      if (img.previewUrl.startsWith('blob:')) URL.revokeObjectURL(img.previewUrl);
+      if (img.previewUrl.startsWith('blob:'))
+        URL.revokeObjectURL(img.previewUrl);
     });
     files.forEach((item) => revokeBlobUrl(item.thumbnailPreview));
     publishAbortRef.current?.abort();
@@ -497,9 +498,7 @@ export const HomeQuitterComposer = ({
 
   const saveFileDetails = (id: string, title: string, filename: string) => {
     setFiles((prev) =>
-      prev.map((item) =>
-        item.id === id ? { ...item, title, filename } : item
-      )
+      prev.map((item) => (item.id === id ? { ...item, title, filename } : item))
     );
     setEditingFileId(null);
   };
@@ -528,9 +527,9 @@ export const HomeQuitterComposer = ({
 
   // Media shared from other apps via the Android "Quitter" share target:
   // expand the composer and pre-attach the photo(s) / video.
-  const applySharedMediaRef = useRef<(media: SharedComposerMedia | null) => void>(
-    () => undefined
-  );
+  const applySharedMediaRef = useRef<
+    (media: SharedComposerMedia | null) => void
+  >(() => undefined);
   applySharedMediaRef.current = (media) => {
     if (!media) return;
     setExpanded(true);
@@ -583,7 +582,10 @@ export const HomeQuitterComposer = ({
   const handlePickVideo = async (fileList: FileList | null) => {
     const file = fileList?.[0];
     if (!file) return;
-    if (!file.type.startsWith('video/') && !/\.(mp4|mov|webm|mkv|3gp|m4v|avi)$/i.test(file.name)) {
+    if (
+      !file.type.startsWith('video/') &&
+      !/\.(mp4|mov|webm|mkv|3gp|m4v|avi)$/i.test(file.name)
+    ) {
       setError(tc('error.not_a_video'));
       return;
     }
@@ -1065,8 +1067,12 @@ export const HomeQuitterComposer = ({
           '50%': { transform: 'translate3d(-12px, 10px, 0) rotate(-4deg)' },
         },
         '@keyframes quitterLogoFloat2': {
-          '0%, 100%': { transform: 'translate3d(0, 0, 0) scale(1) rotate(-3deg)' },
-          '50%': { transform: 'translate3d(8px, 12px, 0) scale(1.06) rotate(6deg)' },
+          '0%, 100%': {
+            transform: 'translate3d(0, 0, 0) scale(1) rotate(-3deg)',
+          },
+          '50%': {
+            transform: 'translate3d(8px, 12px, 0) scale(1.06) rotate(6deg)',
+          },
         },
         '@keyframes quitterLogoFloat3': {
           '0%, 100%': { transform: 'translate3d(0, 0, 0) rotate(5deg)' },
@@ -1091,10 +1097,38 @@ export const HomeQuitterComposer = ({
         }}
       >
         {[
-          { top: '8%', left: '72%', size: 56, anim: 0, dur: '11s', opacity: 0.14 },
-          { top: '42%', left: '78%', size: 40, anim: 1, dur: '15s', opacity: 0.1 },
-          { top: '18%', left: '58%', size: 34, anim: 2, dur: '13s', opacity: 0.08 },
-          { top: '62%', left: '64%', size: 48, anim: 3, dur: '17s', opacity: 0.11 },
+          {
+            top: '8%',
+            left: '72%',
+            size: 56,
+            anim: 0,
+            dur: '11s',
+            opacity: 0.14,
+          },
+          {
+            top: '42%',
+            left: '78%',
+            size: 40,
+            anim: 1,
+            dur: '15s',
+            opacity: 0.1,
+          },
+          {
+            top: '18%',
+            left: '58%',
+            size: 34,
+            anim: 2,
+            dur: '13s',
+            opacity: 0.08,
+          },
+          {
+            top: '62%',
+            left: '64%',
+            size: 48,
+            anim: 3,
+            dur: '17s',
+            opacity: 0.11,
+          },
         ].map((logo) => (
           <Box
             key={logo.anim}
@@ -1158,7 +1192,10 @@ export const HomeQuitterComposer = ({
               appName={appName}
               fallbackSize={22}
               sx={{
-                bgcolor: alpha(theme.palette.common.black, isDark ? 0.25 : 0.06),
+                bgcolor: alpha(
+                  theme.palette.common.black,
+                  isDark ? 0.25 : 0.06
+                ),
                 border: `1px solid ${alpha(theme.palette.common.white, isDark ? 0.12 : 0.5)}`,
                 boxShadow: `0 4px 14px ${alpha(hazeAccent, 0.18)}`,
                 height: 36,
@@ -1190,33 +1227,65 @@ export const HomeQuitterComposer = ({
             </Typography>
           </Box>
         </Box>
-        <Button
-          size="small"
-          endIcon={
-            <ExpandMoreRoundedIcon
-              sx={{
-                transform: expanded ? 'rotate(180deg)' : 'none',
-                transition: 'transform 160ms ease',
-              }}
-            />
-          }
-          onClick={() => {
-            setLastPublished(null);
-            setStatus('');
-            setExpanded((v) => !v);
-          }}
+        <Box
+          // Rev above Compose, the same width.
           sx={{
-            borderRadius: '10px',
+            alignItems: 'stretch',
+            display: 'flex',
+            flexDirection: 'column',
             flexShrink: 0,
-            fontWeight: 600,
-            px: 1.25,
-            textTransform: 'none',
+            gap: 0.5,
           }}
         >
-          {expanded
-            ? t('core:action.hide', { postProcess: 'capitalizeFirstChar' })
-            : tc('action_compose')}
-        </Button>
+          {isTorq ? (
+            // Torq's own Rev editor (torqRevShare).
+            <Button
+              size="small"
+              variant="outlined"
+              aria-label={tc('rev_aria')}
+              startIcon={<AddCircleOutlineRoundedIcon />}
+              onClick={() => void openTorqRevComposer()}
+              sx={{
+                borderRadius: '10px',
+                flexShrink: 0,
+                fontWeight: 600,
+                minWidth: 0,
+                px: 1.1,
+                textTransform: 'none',
+                '& .MuiButton-startIcon': { mr: 0.5 },
+              }}
+            >
+              {tc('action_rev')}
+            </Button>
+          ) : null}
+          <Button
+            size="small"
+            endIcon={
+              <ExpandMoreRoundedIcon
+                sx={{
+                  transform: expanded ? 'rotate(180deg)' : 'none',
+                  transition: 'transform 160ms ease',
+                }}
+              />
+            }
+            onClick={() => {
+              setLastPublished(null);
+              setStatus('');
+              setExpanded((v) => !v);
+            }}
+            sx={{
+              borderRadius: '10px',
+              flexShrink: 0,
+              fontWeight: 600,
+              px: 1.25,
+              textTransform: 'none',
+            }}
+          >
+            {expanded
+              ? t('core:action.hide', { postProcess: 'capitalizeFirstChar' })
+              : tc('action_compose')}
+          </Button>
+        </Box>
       </Box>
 
       {lastPublished ? (
@@ -1629,7 +1698,9 @@ export const HomeQuitterComposer = ({
               {isTorq ? (
                 <IconButton
                   aria-label={tc('add_gif')}
-                  disabled={!hasName || publishing || gifs.length >= TORQ_MAX_GIFS}
+                  disabled={
+                    !hasName || publishing || gifs.length >= TORQ_MAX_GIFS
+                  }
                   onClick={() => setGifDialogOpen(true)}
                 >
                   <GifBoxOutlinedIcon />
@@ -1667,7 +1738,10 @@ export const HomeQuitterComposer = ({
                         setPollAnonymous(false);
                       } else {
                         setPollChoices(
-                          Array.from({ length: TORQ_MIN_POLL_OPTIONS }, () => '')
+                          Array.from(
+                            { length: TORQ_MIN_POLL_OPTIONS },
+                            () => ''
+                          )
                         );
                       }
                     }}

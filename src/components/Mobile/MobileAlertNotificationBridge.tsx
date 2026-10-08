@@ -1,6 +1,8 @@
 import { useEffect, useRef } from 'react';
 import { QortalBackground } from '../../plugins/QortalBackground';
 import { executeEvent } from '../../utils/events';
+import { openQWalletsTab } from '../../utils/openQWalletsTab';
+import { PAYMENT_ALERT_TYPE } from '../../utils/paymentNotifications';
 import { isCapacitor } from '../../utils/platform';
 
 const openDirectFromNotification = (fromAddress: string) => {
@@ -29,6 +31,11 @@ const openFromAlert = (
   }
   if (type === 'group') {
     openGroupFromNotification(target);
+    return true;
+  }
+  // `fromAddress` is the payer; the wallet shows the payment.
+  if (type === PAYMENT_ALERT_TYPE) {
+    openQWalletsTab();
     return true;
   }
   return false;

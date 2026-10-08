@@ -575,7 +575,8 @@
     "stage_gathering": "QDNから収集中",
     "stage_saving": "端末に保存中",
     "storage_permission": "Documentsにファイルを保存するには、GOにストレージの権限が必要です。",
-    "tap_to_open": "タップして開く · {{location}}"
+    "tap_to_open": "タップして開く · {{location}}",
+    "tap_to_open_or_share": "タップして開くか共有"
   },
   "filter": {
     "all": "すべて",
@@ -630,7 +631,7 @@
     "loading_versions": "QDNからバージョンを読み込み中…",
     "no_notes": "このバージョンにはリリースノートがありません。",
     "no_versions": "GO 3.0のビルドはまだ公開されていません。",
-    "open_in_qshare": "Q-Share+で開く",
+    "open_in_qshare": "Q-Shareで開く",
     "progress": {
       "assembling": "ビルドを組み立て中",
       "bytes_of_total": "{{done}} / {{total}}",
@@ -806,6 +807,7 @@
       "new_notification": "新しい通知",
       "new_notification_from": "{{ appName }}からの新しい通知",
       "new_payment_body": "{{ amount }} QORTを受け取りました。",
+      "new_payment_from": "{{ name }} からの入金",
       "new_payment_received": "新しい入金を受信しました",
       "new_qmail": "新しいQ-Mailが届きました",
       "no_app_notifications": "アプリの通知はまだありません",
@@ -1009,6 +1011,17 @@
   "payment": "支払い",
   "payment_notification": "支払い通知",
   "payments_count": "支払い ({{count}})",
+  "pdf_reader": {
+    "gesture_hint": "タップで全画面 · ダブルタップかピンチでズーム",
+    "gesture_hint_pages": "スワイプでページ送り · タップで全画面 · ダブルタップでズーム",
+    "look_dim": "ディム",
+    "look_dim_hint": "暗い枠、ページはそのまま",
+    "look_light": "ライト",
+    "look_light_hint": "明るい枠と白いページ",
+    "look_smart": "スマート",
+    "look_smart_hint": "文字のページは暗く、写真はそのまま",
+    "page_look": "ページの表示"
+  },
   "poll_embed": "投票埋め込み",
   "port": "ポート",
   "presence": {
@@ -1052,7 +1065,7 @@
     "modules_hotkeys_label": "Hotkeys",
     "modules_music_description": "A compact Earbump player with search and quick playback.",
     "modules_music_label": "Music player",
-    "modules_suggest_description": "Compose > Add Subject + Message & Send it our way!",
+    "modules_suggest_description": "GO 3.0 グループに参加して、次に作ってほしいものを教えてください。",
     "modules_suggest_label": "Suggest a module",
     "music_empty_title": "EarBump library",
     "music_empty_uploaded": "Waiting for library",
@@ -1143,6 +1156,10 @@
   "receiver": "受信機",
   "remaining_to_level": "レベル{{level}}まで残り",
   "retry": "再試行",
+  "search": {
+    "apps_and_websites": "アプリとウェブサイト",
+    "suggested": "おすすめ"
+  },
   "sender": "送信者",
   "server": "サーバ",
   "service_type": "サービスタイプ",
@@ -1162,7 +1179,32 @@
     "categories": "カテゴリ",
     "community_apps": "コミュニティアプリ",
     "my_apps": "マイアプリ",
-    "official_apps": "公式アプリ"
+    "official_apps": "公式アプリ",
+    "pinned": "ピン留め"
+  },
+  "tabs_home": {
+    "app_name": "アプリ名",
+    "browse_apps": "アプリを探す",
+    "close_all": "すべて閉じる",
+    "close_folder": "フォルダを閉じる",
+    "close_tab": "タブを閉じる",
+    "delete_folder": "フォルダを削除",
+    "empty_hint": "ライブラリでアプリのピンをタップしてください。ここのフォルダはタブと同じです。",
+    "empty_title": "ピン留めしたアプリはここに並びます",
+    "folder_empty_hint": "開いているタブを長押しして、このフォルダを選ぶとここに追加されます。",
+    "folder_name": "フォルダ名",
+    "folder_options": "フォルダのオプション",
+    "make_large": "大きいフォルダ",
+    "make_small": "小さいフォルダ",
+    "more_apps": "ほか{{amount}}個のアプリ",
+    "new_folder": "新しいフォルダ",
+    "new_folder_name": "新しいフォルダ",
+    "open_folder": "{{name}}を開く",
+    "open_tabs": "開いているタブ",
+    "remove_from_folder": "フォルダから外す",
+    "rename_app": "アプリ名を変更",
+    "rename_folder": "フォルダ名を変更",
+    "window_n": "ウィンドウ {{amount}}"
   },
   "tabs_overlay": {
     "delete_folder_body_one": "このフォルダに保存されている {{count}} 個のアプリはタブから削除されます。開いているタブはそのままです。",

@@ -7,6 +7,7 @@ import {
   getQdnAvatarSeedUrl,
 } from '../lib/qdnAvatars/seeds';
 import { createAvatarTestHarness } from '../lib/qdnAvatars/testHarness';
+import { resetChatWarmCacheForTests } from '../reticulumChat/chatWarmCache';
 
 Object.defineProperties(HTMLMediaElement.prototype, {
   load: {
@@ -59,6 +60,8 @@ const bundledAvatarSeeds = Object.fromEntries(
 );
 
 beforeEach(() => {
+  // Recent chats kept in memory: none carried from one test to the next.
+  resetChatWarmCacheForTests();
   setQdnAvatarCacheForTests(
     createAvatarTestHarness({
       handler: () => new Promise<Response>(() => {}),

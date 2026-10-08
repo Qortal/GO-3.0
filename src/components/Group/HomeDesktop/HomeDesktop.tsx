@@ -1,23 +1,33 @@
 import { Box, Typography, useMediaQuery, useTheme } from '@mui/material';
 import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded';
 import ForumRoundedIcon from '@mui/icons-material/ForumRounded';
+import AccountBalanceWalletRoundedIcon from '@mui/icons-material/AccountBalanceWalletRounded';
+import AppsRoundedIcon from '@mui/icons-material/AppsRounded';
+import DynamicFeedRoundedIcon from '@mui/icons-material/DynamicFeedRounded';
+import EditRoundedIcon from '@mui/icons-material/EditRounded';
+import MonitorHeartRoundedIcon from '@mui/icons-material/MonitorHeartRounded';
+import PersonRoundedIcon from '@mui/icons-material/PersonRounded';
+import StarRoundedIcon from '@mui/icons-material/StarRounded';
+import WidgetsRoundedIcon from '@mui/icons-material/WidgetsRounded';
 import { alpha, darken } from '@mui/material/styles';
 import {
-  Activity,
+  memo,
   useCallback,
   useEffect,
   useLayoutEffect,
   useRef,
   useState,
 } from 'react';
+import {
+  SECTION_ATTR,
+  SECTION_SURFACE_TOUCH_ACTION,
+  SECTION_SWIPE_SURFACE_ATTR,
+} from '../../Mobile/sectionSwipe/sectionSwipe';
 import ErrorBoundary from '../../../common/ErrorBoundary';
 import { Spacer } from '../../../common/Spacer';
 import { HomeProfileCard } from '../HomeProfileCard';
 import { GETTING_STARTED_LS_KEY } from '../gettingStartedStorage';
-import {
-  HomeQortinoWorkspaceCard,
-  QortinoMusicPlaybackController,
-} from '../HomeQortinoWorkspaceCard';
+import { HomeQortinoWorkspaceCard } from '../HomeQortinoWorkspaceCard';
 import { HomeQuickToolsPad } from '../HomeQuickToolsPad';
 import { HomeFeaturedApps } from '../HomeFeaturedApps';
 import { HomeQuitterComposer } from '../../Widgets/quitter/HomeQuitterComposer';
@@ -46,17 +56,14 @@ import {
   HOME_CUSTOMIZABLE_CARD_MIN_HEIGHTS,
   HOME_CUSTOMIZABLE_CARD_ORDER_DEFAULT,
   HOME_CUSTOMIZABLE_CARD_RESIZE_STEP_PX,
-  HOME_DASHBOARD_MODULE_VISIBILITY_CHANGE_EVENT,
   HOME_DASHBOARD_VERTICAL_GAP_PX,
   HOME_DASHBOARD_WIDGET_DISPLAY_MODE,
   HOME_DASHBOARD_WIDGET_HEIGHT_PX,
   HOME_EMBEDDED_QAPP_PANEL_HEIGHT_PX,
   HOME_GROUP_ACTIVITY_CARD_DEFAULT_HEIGHT_PX,
-  HOME_GROUP_ACTIVITY_VISIBLE_STORAGE_KEY,
   HOME_INFO_COLLAPSED_VISIBLE_HEIGHT_PX,
   HOME_LEFT_CENTER_GRID_TEMPLATE_COLUMNS,
   HOME_LEFT_CENTER_LOWER_ROW_GRID_TEMPLATE_COLUMNS,
-  HOME_QUITTER_FEED_VISIBLE_STORAGE_KEY,
   HOME_QUITTER_WIDGET_INITIAL_BATCH_SIZES,
   HOME_QUITTER_WIDGET_LOAD_MORE_BATCH_SIZES,
   HOME_QUITTER_WIDGET_SEARCH_LIMITS,
@@ -81,19 +88,17 @@ import {
   composerAppName,
   useComposerTarget,
 } from '../../Widgets/quitter/composerTarget';
+import {
+  HOME_WINDOW_ORDER_DEFAULT,
+  type HomeWindowId,
+  mergeVisibleWindowOrder,
+  readHomeWindowOrder,
+  useHomeModuleVisibility,
+  writeHomeWindowOrder,
+} from './homeLayout';
+import { type HomeWindow, HomeWindowStack } from './HomeWindowStack';
 
-const readStoredDashboardModuleVisible = (key: string): boolean => {
-  if (typeof window === 'undefined') return true;
-  try {
-    const raw = window.localStorage.getItem(key);
-    if (raw === null) return true;
-    return JSON.parse(raw) !== false;
-  } catch {
-    return true;
-  }
-};
-
-export const HomeDesktop = ({
+const HomeDesktopInner = ({
   myAddress,
   setGroupSection,
   setDesktopViewMode,
@@ -125,13 +130,11 @@ export const HomeDesktop = ({
         localStorage.getItem(HOME_CUSTOMIZABLE_CARD_LAYOUT_STORAGE_KEY)
       )
     );
-  const [isGroupActivityModuleVisible, setIsGroupActivityModuleVisible] =
-    useState(() =>
-      readStoredDashboardModuleVisible(HOME_GROUP_ACTIVITY_VISIBLE_STORAGE_KEY)
-    );
-  const [isQuitterFeedModuleVisible, setIsQuitterFeedModuleVisible] = useState(
-    () => readStoredDashboardModuleVisible(HOME_QUITTER_FEED_VISIBLE_STORAGE_KEY)
-  );
+  // What Home shows (Profile settings) and, on a phone, in which order.
+  const moduleVisibility = useHomeModuleVisibility();
+  const isGroupActivityModuleVisible = moduleVisibility.groupActivity;
+  const isQuitterFeedModuleVisible = moduleVisibility.feed;
+  const [homeScroller, setHomeScroller] = useState<HTMLDivElement | null>(null);
   const [groupWidgetRefreshToken, setGroupWidgetRefreshToken] = useState(0);
   const [isGroupWidgetRefreshing, setIsGroupWidgetRefreshing] = useState(false);
   const [quitterWidgetRefreshToken, setQuitterWidgetRefreshToken] = useState(0);
@@ -140,8 +143,8 @@ export const HomeDesktop = ({
   const reduce = useReducedMotion();
   const { t } = useTranslation(['core', 'group', 'tutorial', 'auth']);
   const td = useCallback(
-    (key: string, defaultValue: string) =>
-      t(`group:dashboard.${key}`, { defaultValue }),
+    (key: string, defaultValue: string, options: Record<string, string> = {}) =>
+      t(`group:dashboard.${key}`, { defaultValue, ...options }),
     [t]
   );
   const theme = useTheme();
@@ -210,32 +213,6 @@ export const HomeDesktop = ({
       JSON.stringify(customizableCardsLayout)
     );
   }, [customizableCardsLayout]);
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-
-    const syncModuleVisibility = () => {
-      setIsGroupActivityModuleVisible(
-        readStoredDashboardModuleVisible(HOME_GROUP_ACTIVITY_VISIBLE_STORAGE_KEY)
-      );
-      setIsQuitterFeedModuleVisible(
-        readStoredDashboardModuleVisible(HOME_QUITTER_FEED_VISIBLE_STORAGE_KEY)
-      );
-    };
-
-    window.addEventListener(
-      HOME_DASHBOARD_MODULE_VISIBILITY_CHANGE_EVENT,
-      syncModuleVisibility
-    );
-    window.addEventListener('storage', syncModuleVisibility);
-    return () => {
-      window.removeEventListener(
-        HOME_DASHBOARD_MODULE_VISIBILITY_CHANGE_EVENT,
-        syncModuleVisibility
-      );
-      window.removeEventListener('storage', syncModuleVisibility);
-    };
-  }, []);
 
   useEffect(() => {
     setCustomizableCardsLayout((currentLayout) => {
@@ -571,47 +548,263 @@ export const HomeDesktop = ({
     HOME_QUITTER_WIDGET_SEARCH_LIMITS[HOME_DASHBOARD_WIDGET_DISPLAY_MODE];
   const areBothDashboardModulesVisible =
     isGroupActivityModuleVisible && isQuitterFeedModuleVisible;
+  const isFeaturedAppsVisible = moduleVisibility.featured;
+  const isStatusVisible = moduleVisibility.status;
+  // Phones: one column of windows in the user's order (long press one to
+  // move it). Wider screens keep the dashboard layout.
+  const isPhoneStack = !isSplitDashboardLayout;
+
+  const handlePhoneReorder = useCallback((visibleOrder: HomeWindowId[]) => {
+    writeHomeWindowOrder(
+      mergeVisibleWindowOrder(readHomeWindowOrder(), visibleOrder)
+    );
+  }, []);
+
+  const qortinoWorkspaceCard = (
+    // The card stays built while Home is parked (its <Activity> stops the
+    // card's work), so Home keeps its layout: unmounting it collapsed Home
+    // by the card's height, and Home came back (or slid in with the section
+    // swipe) shifted from where it was left. Its sheet lives on Group.
+    <ErrorBoundary fallback={qortinoWorkspaceShellFallback}>
+      <HomeQortinoWorkspaceCard
+        onGettingStartedComplete={handleGettingStartedComplete}
+        onOpenAppsPanel={handleOpenAppsPanel}
+        showQortino={moduleVisibility.qortino}
+      />
+    </ErrorBoundary>
+  );
+  const profileCard = <HomeProfileCard onOpenReceive={handleOpenReceiveQort} />;
+  const composerCard = (
+    <HomeQuitterComposer onPublished={handleRefreshQuitterWidget} />
+  );
+  const quickToolsCard = (
+    <HomeQuickToolsPad
+      fillHeight={false}
+      onOpenApps={handleOpenAppsPanel}
+      onOpenChat={handleOpenQChatPanel}
+      onOpenQortalLand={onOpenQortalLand}
+      onOpenSettings={onOpenSettings}
+    />
+  );
+  const featuredAppsSx = {
+    display: 'flex',
+    height:
+      resolvedWideLeftLowerRowPanelHeightPx != null
+        ? `${resolvedWideLeftLowerRowPanelHeightPx}px`
+        : undefined,
+    minWidth: 0,
+    overflow: 'visible',
+    position: 'relative',
+    width: '100%',
+    '& > *': {
+      height: '100%',
+      position: 'relative',
+      width: '100%',
+      zIndex: 1,
+    },
+  } as const;
+  const statusPanel = (
+    <InfoPreviewPanel maxExpandedHeightPx={infoPanelMaxExpandedHeightPx} />
+  );
+  const groupActivityCard = (
+    <DashboardWidgetFrame
+      actionIcon={<ForumRoundedIcon sx={{ fontSize: '0.86rem' }} />}
+      actionLabel={td('open_in_q_chat', 'Open in Q-Chat')}
+      height={HOME_DASHBOARD_WIDGET_HEIGHT_PX}
+      onAction={handleOpenGroupsWidget}
+      onRefresh={handleRefreshGroupActivity}
+      onSwap={
+        areBothDashboardModulesVisible && !isPhoneStack
+          ? handleSwapDashboardWidgets
+          : undefined
+      }
+      order={isPhoneStack ? undefined : groupActivityCardOrder}
+      panelRef={assignGroupActivityPanelNode}
+      refreshing={isGroupWidgetRefreshing}
+      title={t('group:home.group_activity', {
+        postProcess: 'capitalizeFirstChar',
+      })}
+      widgetId="groups"
+    >
+      <GroupsWidget
+        displayMode={HOME_DASHBOARD_WIDGET_DISPLAY_MODE}
+        myAddress={myAddress}
+        onRefreshStateChange={setIsGroupWidgetRefreshing}
+        refreshToken={groupWidgetRefreshToken}
+      />
+    </DashboardWidgetFrame>
+  );
+  const feedTitle =
+    feedApp === 'Torq'
+      ? td('torq_feed', 'Torq Feed')
+      : td('quitter_feed', 'Quitter Feed');
+  const feedCard = (
+    <DashboardWidgetFrame
+      actionIcon={<OpenInNewRoundedIcon sx={{ fontSize: '0.86rem' }} />}
+      actionLabel={td('open_in_q_apps', 'Open in Q-Apps')}
+      height={HOME_DASHBOARD_WIDGET_HEIGHT_PX}
+      onAction={handleOpenEmbeddedQuitter}
+      onRefresh={handleRefreshQuitterWidget}
+      onSwap={
+        areBothDashboardModulesVisible && !isPhoneStack
+          ? handleSwapDashboardWidgets
+          : undefined
+      }
+      order={isPhoneStack ? undefined : quitterCardOrder}
+      panelRef={quitterCardHeightRef}
+      refreshing={isQuitterWidgetRefreshing}
+      title={feedTitle}
+      widgetId="quitter"
+    >
+      <QuitterFeedWidget
+        batchSize={quitterWidgetLoadMoreBatchSize}
+        displayMode={HOME_DASHBOARD_WIDGET_DISPLAY_MODE}
+        initialBatchSize={quitterWidgetInitialBatchSize}
+        onRefreshStateChange={setIsQuitterWidgetRefreshing}
+        refreshToken={quitterWidgetRefreshToken}
+        searchLimit={quitterWidgetSearchLimit}
+      />
+    </DashboardWidgetFrame>
+  );
+
+  const phoneWindows: HomeWindow[] = [];
+  if (isPhoneStack) {
+    const byId: Partial<Record<HomeWindowId, Omit<HomeWindow, 'id'>>> = {
+      workspace: {
+        icon: <AppsRoundedIcon fontSize="small" />,
+        label: moduleVisibility.qortino
+          ? td('home_window_hotkeys_qortino', 'Hotkeys and Qortino')
+          : td('home_window_hotkeys', 'Hotkeys'),
+        node: qortinoWorkspaceCard,
+      },
+      account: {
+        icon: <PersonRoundedIcon fontSize="small" />,
+        label: td('account_overview', 'Account Overview'),
+        node: profileCard,
+      },
+      composer: {
+        icon: <EditRoundedIcon fontSize="small" />,
+        label: td('home_window_composer', 'Post to {{app}}', {
+          app: feedApp,
+        }),
+        node: composerCard,
+      },
+      tools: {
+        icon: <WidgetsRoundedIcon fontSize="small" />,
+        label: td('home_window_quick_tools', 'Quick tools'),
+        node: quickToolsCard,
+      },
+      featured: isFeaturedAppsVisible
+        ? {
+            icon: <StarRoundedIcon fontSize="small" />,
+            label: td('featured_q_apps', 'Featured Q-Apps'),
+            node: (
+              <Box sx={featuredAppsSx}>
+                <HomeFeaturedApps />
+              </Box>
+            ),
+          }
+        : undefined,
+      status: isStatusVisible
+        ? {
+            icon: <MonitorHeartRoundedIcon fontSize="small" />,
+            label: td('home_window_status', 'Status'),
+            node: <Box sx={{ '& > *': { height: '100%' } }}>{statusPanel}</Box>,
+          }
+        : undefined,
+      wallet: {
+        icon: <AccountBalanceWalletRoundedIcon fontSize="small" />,
+        label: td('wallet_activity', 'Wallet Activity'),
+        node: (
+          <Box sx={{ minHeight: '182px', '& > *': { height: '100%' } }}>
+            <HomeDesktopWalletActivity />
+          </Box>
+        ),
+      },
+      groupActivity: isGroupActivityModuleVisible
+        ? {
+            icon: <ForumRoundedIcon fontSize="small" />,
+            label: t('group:home.group_activity', {
+              postProcess: 'capitalizeFirstChar',
+            }),
+            node: groupActivityCard,
+          }
+        : undefined,
+      feed: isQuitterFeedModuleVisible
+        ? {
+            icon: <DynamicFeedRoundedIcon fontSize="small" />,
+            label: feedTitle,
+            node: feedCard,
+          }
+        : undefined,
+    };
+    // In a fixed order: the stack shows them in the saved one (CSS order),
+    // so a new order never re-renders Home.
+    HOME_WINDOW_ORDER_DEFAULT.forEach((id) => {
+      const entry = byId[id];
+      if (entry) phoneWindows.push({ id, ...entry });
+    });
+  }
+
   return (
+    // Shown and hidden by the <Activity> around it in Group: this component
+    // is only ever on screen as Home, and never re-renders just to switch.
     <LazyMotion features={domAnimation}>
-      {desktopViewMode !== 'home' ? <QortinoMusicPlaybackController /> : null}
-      <Activity mode={desktopViewMode === 'home' ? 'visible' : 'hidden'}>
-        <motion.div
-          data-tour="hub-home-page"
-          key="home"
-          initial={{ opacity: 0, scale: 1 }}
-          animate={{ opacity: 1, scale: 1 }}
-          transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
-          custom={reduce}
-          style={{
-            alignItems: 'center',
-            display: desktopViewMode === 'home' ? 'flex' : 'none',
+      <motion.div
+        ref={setHomeScroller}
+        data-tour="hub-home-page"
+        // The sideways swipe between Home, Apps and Chat (phones).
+        {...{
+          [SECTION_ATTR]: 'home',
+          [SECTION_SWIPE_SURFACE_ATTR]: '',
+        }}
+        key="home"
+        initial={{ opacity: 0, scale: 1 }}
+        animate={{ opacity: 1, scale: 1 }}
+        transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
+        custom={reduce}
+        style={{
+          alignItems: 'center',
+          display: 'flex',
+          flexDirection: 'column',
+          height: '100%',
+          overflowX: 'hidden',
+          overflowY: 'auto',
+          scrollbarGutter: 'stable',
+          // A sideways start never scrolls the page: it is the section
+          // swipe's (carousels inside keep their own sideways scroll).
+          touchAction: SECTION_SURFACE_TOUCH_ACTION,
+          width: '100%',
+          willChange: 'opacity',
+          backfaceVisibility: 'hidden',
+        }}
+      >
+        <Spacer height="20px" />
+        <Box
+          ref={homeLayoutDebugRootRef}
+          sx={{
+            alignItems: 'flex-start',
+            display: 'flex',
             flexDirection: 'column',
-            height: '100%',
-            overflowX: 'hidden',
-            overflowY: 'auto',
-            scrollbarGutter: 'stable',
+            gap: `${HOME_DASHBOARD_VERTICAL_GAP_PX}px`,
+            maxWidth: '1320px',
+            padding: { xs: '0 12px', sm: '0 20px' },
+            position: 'relative',
             width: '100%',
-            willChange: 'opacity',
-            backfaceVisibility: 'hidden',
+            [theme.breakpoints.up(HOME_WIDE_DASHBOARD_MIN_WIDTH_PX)]: {
+              maxWidth: '1520px',
+            },
           }}
         >
-            <Spacer height="20px" />
-            <Box
-              ref={homeLayoutDebugRootRef}
-              sx={{
-                alignItems: 'flex-start',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: `${HOME_DASHBOARD_VERTICAL_GAP_PX}px`,
-                maxWidth: '1320px',
-                padding: { xs: '0 12px', sm: '0 20px' },
-                position: 'relative',
-                width: '100%',
-                [theme.breakpoints.up(HOME_WIDE_DASHBOARD_MIN_WIDTH_PX)]: {
-                  maxWidth: '1520px',
-                },
-              }}
-            >
+          {isPhoneStack ? (
+            <HomeWindowStack
+              gap={HOME_DASHBOARD_VERTICAL_GAP_PX}
+              onReorder={handlePhoneReorder}
+              scroller={homeScroller}
+              windows={phoneWindows}
+            />
+          ) : (
+            <>
               <Box
                 sx={{
                   alignItems: 'start',
@@ -675,19 +868,7 @@ export const HomeDesktop = ({
                               '& > *': { height: '100%' },
                             }}
                           >
-                            {/* Sheet lives on Group; workspace card only needed on home. */}
-                            {desktopViewMode === 'home' ? (
-                              <ErrorBoundary
-                                fallback={qortinoWorkspaceShellFallback}
-                              >
-                                <HomeQortinoWorkspaceCard
-                                  onGettingStartedComplete={
-                                    handleGettingStartedComplete
-                                  }
-                                  onOpenAppsPanel={handleOpenAppsPanel}
-                                />
-                              </ErrorBoundary>
-                            ) : null}
+                            {qortinoWorkspaceCard}
                           </Box>
                           <Box
                             ref={toolsDebugRef}
@@ -698,13 +879,7 @@ export const HomeDesktop = ({
                               width: '100%',
                             }}
                           >
-                            <HomeQuickToolsPad
-                              fillHeight={false}
-                              onOpenApps={handleOpenAppsPanel}
-                              onOpenChat={handleOpenQChatPanel}
-                              onOpenQortalLand={onOpenQortalLand}
-                              onOpenSettings={onOpenSettings}
-                            />
+                            {quickToolsCard}
                           </Box>
                         </Box>
                         <Box
@@ -726,9 +901,7 @@ export const HomeDesktop = ({
                               '& > *': { width: '100%' },
                             }}
                           >
-                            <HomeProfileCard
-                              onOpenReceive={handleOpenReceiveQort}
-                            />
+                            {profileCard}
                           </Box>
                           <Box
                             sx={{
@@ -739,32 +912,13 @@ export const HomeDesktop = ({
                               '& > *': { width: '100%' },
                             }}
                           >
-                            <HomeQuitterComposer
-                              onPublished={handleRefreshQuitterWidget}
-                            />
+                            {composerCard}
                           </Box>
-                          <Box
-                            ref={featuredAppsDebugRef}
-                            sx={{
-                              display: 'flex',
-                              height:
-                                resolvedWideLeftLowerRowPanelHeightPx != null
-                                  ? `${resolvedWideLeftLowerRowPanelHeightPx}px`
-                                  : undefined,
-                              minWidth: 0,
-                              overflow: 'visible',
-                              position: 'relative',
-                              width: '100%',
-                              '& > *': {
-                                height: '100%',
-                                position: 'relative',
-                                width: '100%',
-                                zIndex: 1,
-                              },
-                            }}
-                          >
-                            <HomeFeaturedApps />
-                          </Box>
+                          {isFeaturedAppsVisible ? (
+                            <Box ref={featuredAppsDebugRef} sx={featuredAppsSx}>
+                              <HomeFeaturedApps />
+                            </Box>
+                          ) : null}
                         </Box>
                       </Box>
                     ) : (
@@ -792,18 +946,7 @@ export const HomeDesktop = ({
                               '& > *': { height: '100%' },
                             }}
                           >
-                            {desktopViewMode === 'home' ? (
-                              <ErrorBoundary
-                                fallback={qortinoWorkspaceShellFallback}
-                              >
-                                <HomeQortinoWorkspaceCard
-                                  onGettingStartedComplete={() => {
-                                    setIsOnboardingComplete(true);
-                                  }}
-                                  onOpenAppsPanel={handleOpenAppsPanel}
-                                />
-                              </ErrorBoundary>
-                            ) : null}
+                            {qortinoWorkspaceCard}
                           </Box>
                           <Box
                             ref={profileCardDebugRef}
@@ -815,9 +958,7 @@ export const HomeDesktop = ({
                               '& > *': { width: '100%' },
                             }}
                           >
-                            <HomeProfileCard
-                              onOpenReceive={handleOpenReceiveQort}
-                            />
+                            {profileCard}
                           </Box>
                         </Box>
                         <Box
@@ -837,9 +978,7 @@ export const HomeDesktop = ({
                               '& > *': { width: '100%' },
                             }}
                           >
-                            <HomeQuitterComposer
-                              onPublished={handleRefreshQuitterWidget}
-                            />
+                            {composerCard}
                           </Box>
                           <Box
                             sx={{
@@ -860,36 +999,16 @@ export const HomeDesktop = ({
                                 width: '100%',
                               }}
                             >
-                              <HomeQuickToolsPad
-                                fillHeight={false}
-                                onOpenApps={handleOpenAppsPanel}
-                                onOpenChat={handleOpenQChatPanel}
-                                onOpenQortalLand={onOpenQortalLand}
-                                onOpenSettings={onOpenSettings}
-                              />
+                              {quickToolsCard}
                             </Box>
-                            <Box
-                              ref={featuredAppsDebugRef}
-                              sx={{
-                                display: 'flex',
-                                height:
-                                  resolvedWideLeftLowerRowPanelHeightPx != null
-                                    ? `${resolvedWideLeftLowerRowPanelHeightPx}px`
-                                    : undefined,
-                                minWidth: 0,
-                                overflow: 'visible',
-                                position: 'relative',
-                                width: '100%',
-                                '& > *': {
-                                  height: '100%',
-                                  position: 'relative',
-                                  width: '100%',
-                                  zIndex: 1,
-                                },
-                              }}
-                            >
-                              <HomeFeaturedApps />
-                            </Box>
+                            {isFeaturedAppsVisible ? (
+                              <Box
+                                ref={featuredAppsDebugRef}
+                                sx={featuredAppsSx}
+                              >
+                                <HomeFeaturedApps />
+                              </Box>
+                            ) : null}
                           </Box>
                         </Box>
                       </>
@@ -908,7 +1027,11 @@ export const HomeDesktop = ({
                     [theme.breakpoints.up(HOME_WIDE_DASHBOARD_MIN_WIDTH_PX)]: {
                       display: 'grid',
                       gap: `${HOME_DASHBOARD_VERTICAL_GAP_PX}px`,
-                      gridTemplateRows: `${HOME_INFO_COLLAPSED_VISIBLE_HEIGHT_PX}px ${
+                      gridTemplateRows: `${
+                        isStatusVisible
+                          ? `${HOME_INFO_COLLAPSED_VISIBLE_HEIGHT_PX}px `
+                          : ''
+                      }${
                         resolvedWalletActivityHeightPx != null
                           ? `${resolvedWalletActivityHeightPx}px`
                           : 'auto'
@@ -917,19 +1040,19 @@ export const HomeDesktop = ({
                     },
                   }}
                 >
-                  <Box
-                    ref={infoDebugRef}
-                    sx={{
-                      minWidth: 0,
-                      position: 'relative',
-                      width: '100%',
-                      '& > *': { height: '100%' },
-                    }}
-                  >
-                    <InfoPreviewPanel
-                      maxExpandedHeightPx={infoPanelMaxExpandedHeightPx}
-                    />
-                  </Box>
+                  {isStatusVisible ? (
+                    <Box
+                      ref={infoDebugRef}
+                      sx={{
+                        minWidth: 0,
+                        position: 'relative',
+                        width: '100%',
+                        '& > *': { height: '100%' },
+                      }}
+                    >
+                      {statusPanel}
+                    </Box>
+                  ) : null}
                   <Box
                     ref={walletActivityDebugRef}
                     sx={{
@@ -964,77 +1087,42 @@ export const HomeDesktop = ({
                     },
                   }}
                 >
-                  {isGroupActivityModuleVisible ? (
-                    <DashboardWidgetFrame
-                      actionIcon={
-                        <ForumRoundedIcon sx={{ fontSize: '0.86rem' }} />
-                      }
-                      actionLabel={td('open_in_q_chat', 'Open in Q-Chat')}
-                      height={HOME_DASHBOARD_WIDGET_HEIGHT_PX}
-                      onAction={handleOpenGroupsWidget}
-                      onRefresh={handleRefreshGroupActivity}
-                      onSwap={
-                        areBothDashboardModulesVisible
-                          ? handleSwapDashboardWidgets
-                          : undefined
-                      }
-                      order={groupActivityCardOrder}
-                      panelRef={assignGroupActivityPanelNode}
-                      refreshing={isGroupWidgetRefreshing}
-                      title={t('group:home.group_activity', {
-                        postProcess: 'capitalizeFirstChar',
-                      })}
-                      widgetId="groups"
-                    >
-                      <GroupsWidget
-                        displayMode={HOME_DASHBOARD_WIDGET_DISPLAY_MODE}
-                        myAddress={myAddress}
-                        onRefreshStateChange={setIsGroupWidgetRefreshing}
-                        refreshToken={groupWidgetRefreshToken}
-                      />
-                    </DashboardWidgetFrame>
-                  ) : null}
-
-                  {isQuitterFeedModuleVisible ? (
-                    <DashboardWidgetFrame
-                      actionIcon={
-                        <OpenInNewRoundedIcon sx={{ fontSize: '0.86rem' }} />
-                      }
-                      actionLabel={td('open_in_q_apps', 'Open in Q-Apps')}
-                      height={HOME_DASHBOARD_WIDGET_HEIGHT_PX}
-                      onAction={handleOpenEmbeddedQuitter}
-                      onRefresh={handleRefreshQuitterWidget}
-                      onSwap={
-                        areBothDashboardModulesVisible
-                          ? handleSwapDashboardWidgets
-                          : undefined
-                      }
-                      order={quitterCardOrder}
-                      panelRef={quitterCardHeightRef}
-                      refreshing={isQuitterWidgetRefreshing}
-                      title={
-                        feedApp === 'Torq'
-                          ? td('torq_feed', 'Torq Feed')
-                          : td('quitter_feed', 'Quitter Feed')
-                      }
-                      widgetId="quitter"
-                    >
-                      <QuitterFeedWidget
-                        batchSize={quitterWidgetLoadMoreBatchSize}
-                        displayMode={HOME_DASHBOARD_WIDGET_DISPLAY_MODE}
-                        initialBatchSize={quitterWidgetInitialBatchSize}
-                        onRefreshStateChange={setIsQuitterWidgetRefreshing}
-                        refreshToken={quitterWidgetRefreshToken}
-                        searchLimit={quitterWidgetSearchLimit}
-                      />
-                    </DashboardWidgetFrame>
-                  ) : null}
+                  {isGroupActivityModuleVisible ? groupActivityCard : null}
+                  {isQuitterFeedModuleVisible ? feedCard : null}
                 </Box>
               ) : null}
-            </Box>
-            <Spacer height="120px" />
-          </motion.div>
-      </Activity>
+            </>
+          )}
+        </Box>
+        <Spacer height="120px" />
+      </motion.div>
     </LazyMotion>
   );
 };
+
+type HomeDesktopProps = {
+  myAddress?: string;
+  setGroupSection?: unknown;
+  setDesktopViewMode?: unknown;
+  desktopViewMode?: string;
+  onOpenSettings?: unknown;
+  onOpenQortalLand?: unknown;
+  [other: string]: unknown;
+};
+
+/**
+ * Home re-renders only for its own inputs. It is always given
+ * desktopViewMode 'home' (Group's <Activity> shows and hides it), and the
+ * rest of what Group passes is unused: without this, every Group update and
+ * every section switch re-rendered the whole Home page, hidden or not, right
+ * as a swipe needed the time.
+ */
+export const HomeDesktop = memo(
+  HomeDesktopInner,
+  (prev: HomeDesktopProps, next: HomeDesktopProps) =>
+    prev.myAddress === next.myAddress &&
+    prev.setGroupSection === next.setGroupSection &&
+    prev.setDesktopViewMode === next.setDesktopViewMode &&
+    prev.onOpenSettings === next.onOpenSettings &&
+    prev.onOpenQortalLand === next.onOpenQortalLand
+);

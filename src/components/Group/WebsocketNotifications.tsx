@@ -22,6 +22,7 @@ import {
   createChatAlertCoalescer,
   isChatAlertCatchUp,
   readChatAlertLastRunMark,
+  rememberShownAlert,
   reticulumDmAlertKey,
   reticulumMentionAlertKey,
   unreadDirectMessageCount,
@@ -46,6 +47,16 @@ import {
   shouldNotifyForReticulumDm,
 } from '../../utils/reticulumDmNotifications';
 import { getReticulumNotificationChannelLabel } from '../../utils/reticulumNotificationChannel';
+import {
+  applyKnownPaymentSenders,
+  formatPaymentAmount,
+  lookupPaymentSenderName,
+  PAYMENT_ALERT_TYPE,
+  PAYMENT_RECEIVED_EVENT,
+  paymentAvatarPath,
+  paymentSenderLabel,
+  resolvePaymentSenders,
+} from '../../utils/paymentNotifications';
 
 const isQChatMentionNotification = (notification: any) =>
   notification?.appName === QCHAT_MENTION_NOTIFICATION_APP_NAME &&
@@ -1026,30 +1037,71 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
                       listOfMyNamesRef.current.includes(n?.data?.name)
                     )
                 );
-                setPaymentNotifications((previous) => [
-                  ...previous.filter(isQChatMentionNotification),
-                  ...trimNotificationsToLast3Days(filtered),
-                ]);
+                setPaymentNotifications((previous) =>
+                  applyKnownPaymentSenders([
+                    ...previous.filter(isQChatMentionNotification),
+                    ...trimNotificationsToLast3Days(filtered),
+                  ])
+                );
+                void resolvePaymentSenders(filtered).then((found) => {
+                  if (found && isCurrentConnection(socket)) {
+                    setPaymentNotifications(applyKnownPaymentSenders);
+                  }
+                });
               }
-              if (data?.event === 'PAYMENT_RECEIVED' && data?.data) {
-                const tx = data;
+              if (data?.event === PAYMENT_RECEIVED_EVENT && data?.data) {
+                const signature = data.data.signature;
+                const sender = String(data.data.sender ?? '').trim();
+                const alertKey = signature ? `payment-${signature}` : undefined;
                 setPaymentNotifications((prev) => {
                   const trimmed = trimNotificationsToLast3Days(prev);
                   const alreadyExists = trimmed.some(
-                    (n) => n.signature === tx.data?.signature
+                    (n) =>
+                      n?.event === PAYMENT_RECEIVED_EVENT &&
+                      n?.data?.signature === signature
                   );
                   if (alreadyExists) return trimmed;
-                  return [tx, ...trimmed];
+                  return applyKnownPaymentSenders([data, ...trimmed]);
                 });
-                fireOsNotificationPayment(
-                  tx,
-                  i18n.t('core:message.generic.new_payment_received'),
-                  i18n.t('core:message.generic.new_payment_body', {
-                    amount: tx?.data?.amount ?? 0,
-                  }),
-                  `${getBaseApiReact()}/arbitrary/THUMBNAIL/Q-Wallets/qortal_avatar?async=true`,
-                  tx?.link
-                );
+                // One tray alert per payment, however often Core sends it.
+                const alertDue = !alertKey || !wasAlertShown(alertKey);
+                if (alertKey) rememberShownAlert(alertKey);
+                if (alertDue)
+                  void (async () => {
+                    // Who paid: name and avatar, when the node knows them in
+                    // time; otherwise the short address and the Q-Wallets icon.
+                    const senderName = sender
+                      ? await lookupPaymentSenderName(sender)
+                      : '';
+                    if (!isCurrentConnection(socket)) return;
+                    if (senderName) {
+                      setPaymentNotifications(applyKnownPaymentSenders);
+                    }
+                    const tx = applyKnownPaymentSenders([data])[0];
+                    const label = paymentSenderLabel(tx);
+                    fireOsNotificationPayment(
+                      tx,
+                      label
+                        ? i18n.t('core:message.generic.new_payment_from', {
+                            name: label,
+                          })
+                        : i18n.t('core:message.generic.new_payment_received'),
+                      i18n.t('core:message.generic.new_payment_body', {
+                        amount: formatPaymentAmount(
+                          tx?.data?.amount ?? 0,
+                          i18n.language
+                        ),
+                      }),
+                      `${getBaseApiReact()}${paymentAvatarPath(senderName)}`,
+                      undefined,
+                      { openWallets: true },
+                      {
+                        alertKey,
+                        fromAddress: sender || 'Q-Wallets',
+                        notificationType: PAYMENT_ALERT_TYPE,
+                      }
+                    );
+                  })();
               }
               if (data?.event === 'RESOURCE_PUBLISHED' && data?.data) {
                 const tx = { ...data };

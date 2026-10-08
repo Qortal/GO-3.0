@@ -34,6 +34,8 @@ i18n.init({
       group: {
         home_composer: {
           action_compose: 'compose',
+          action_rev: 'Rev',
+          rev_aria: 'make a Rev in Torq',
           open_app: 'open {{app}}',
           post_to: 'post to {{app}}',
           subtitle_quitter: 'quitter subtitle',
@@ -102,6 +104,26 @@ describe('HomeQuitterComposer target', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Open Torq' }));
     expect(mockExecuteEvent).toHaveBeenCalledWith('addTab', {
       data: { identifier: '', name: 'Torq', service: 'APP' },
+    });
+    expect(mockExecuteEvent).toHaveBeenCalledWith('open-apps-mode', {});
+  });
+
+  it("offers a Rev only with Torq, opening Torq's Rev editor", () => {
+    renderComposer();
+    expect(
+      screen.queryByRole('button', { name: 'Make a Rev in Torq' })
+    ).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Torq' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Make a Rev in Torq' }));
+    expect(mockExecuteEvent).toHaveBeenCalledWith('addTab', {
+      data: {
+        identifier: '',
+        name: 'Torq',
+        navigateIfAlreadyOpen: true,
+        path: 'rev/new',
+        service: 'APP',
+      },
     });
     expect(mockExecuteEvent).toHaveBeenCalledWith('open-apps-mode', {});
   });

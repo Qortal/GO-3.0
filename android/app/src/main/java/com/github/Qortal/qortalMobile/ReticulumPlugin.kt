@@ -57,6 +57,13 @@ class ReticulumPlugin : Plugin() {
         // A reader from a destroyed Activity may still sit in poll() when the
         // next one starts; it exits once it sees a newer generation.
         @Volatile private var presenceReaderGeneration = 0
+        // The plugin instance of the live page. The reader delivers to this
+        // one, not to the instance that started it: a start still in
+        // flight when the Activity is recreated (after a WebView renderer
+        // crash) used to start the reader on the destroyed instance, and
+        // every Python event then went to the dead page while the new page
+        // waited for `ready` forever (presence stuck at "0, connecting").
+        @Volatile private var activePlugin: ReticulumPlugin? = null
         private val presenceReaderLock = Any()
         // Direct worker <-> bridge channel; process-lifetime like the reader.
         @Volatile private var bridgeSocket: BridgeSocketServer? = null
@@ -129,6 +136,33 @@ class ReticulumPlugin : Plugin() {
                     host.callAttr("feed", frame)
                 } catch (t: Throwable) {
                     Log.e(TAG, "Presence command failed ($reason)", t)
+                }
+            }
+        }
+
+        /**
+         * The phone switched its default network (Wi-Fi <-> mobile data):
+         * redial the hub sockets now instead of waiting for TCP keepalive
+         * and the reconnect backoff (up to about two minutes). A no-op while
+         * paused or before the bridge runs; Python dials on its own threads,
+         * so presenceWorker is not held.
+         */
+        @JvmStatic
+        fun refreshNetwork(reason: String, sinceSwitchMs: Long) {
+            presenceWorker.execute {
+                val host = presenceHost
+                if (host == null || !presenceStarted || networkPaused) return@execute
+                try {
+                    // Hubs dialled after the switch are on the new network
+                    // already; Python leaves those alone.
+                    val hubs = host.callAttr(
+                        "refresh_network",
+                        reason,
+                        sinceSwitchMs / 1000.0
+                    )?.toInt() ?: 0
+                    Log.i(TAG, "Presence network refreshed ($reason, $hubs hubs)")
+                } catch (t: Throwable) {
+                    Log.e(TAG, "Presence network refresh failed ($reason)", t)
                 }
             }
         }
@@ -1049,7 +1083,7 @@ class ReticulumPlugin : Plugin() {
                         // a queue hand-off, whereas notifyListeners posts to the
                         // (possibly saturated) WebView main thread.
                         bridgeSocket?.broadcast(frame)
-                        notifyListeners("presence", JSObject().put("frame", frame))
+                        activePlugin?.deliverPresenceFrame(frame)
                     }
                 } catch (t: Throwable) {
                     Log.e(TAG, "Presence reader error", t)
@@ -1057,6 +1091,10 @@ class ReticulumPlugin : Plugin() {
                 }
             }
         }, "presence-reader").apply { isDaemon = true; start() }
+    }
+
+    private fun deliverPresenceFrame(frame: String) {
+        notifyListeners("presence", JSObject().put("frame", frame))
     }
 
     /** handle_start is idempotent and re-emits `ready` for a new WebView. */
@@ -1111,6 +1149,7 @@ class ReticulumPlugin : Plugin() {
 
     override fun load() {
         super.load()
+        activePlugin = this
         if (presenceStarted && !presenceReaderRunning) {
             startPresenceReader()
             reemitPresenceReady()
@@ -1121,6 +1160,7 @@ class ReticulumPlugin : Plugin() {
         // Detach the JS pump only. Stopping Python/RNS here blocked the UI
         // thread and left the process unable to start a new Activity.
         presenceReaderRunning = false
+        if (activePlugin === this) activePlugin = null
         super.handleOnDestroy()
     }
 }

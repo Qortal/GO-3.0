@@ -1,7 +1,9 @@
 import {
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react';
@@ -20,8 +22,26 @@ import { alpha, type Theme } from '@mui/material/styles';
 import KeyboardArrowDownRoundedIcon from '@mui/icons-material/KeyboardArrowDownRounded';
 import { useTranslation } from 'react-i18next';
 import { BACK_PRIORITY, useAndroidBack } from '../../utils/androidBack';
+import { useLongPress } from '../../hooks/useLongPress';
 import { ReactionEmojiGrid } from './ReactionEmojiGrid';
-import { QUICK_REACTIONS, rememberRecentReaction } from './reactionEmojiData';
+import {
+  ReactionSettingsPanel,
+  type ReactionPickTarget,
+} from './ReactionSettingsPanel';
+import { rememberRecentReaction } from './reactionEmojiData';
+import {
+  getDoubleTapReaction,
+  pickPillReactions,
+  QUICK_REACTION_SLOTS,
+  recordReactionUse,
+  setDoubleTapReaction,
+  setQuickReactionSlot,
+  useReactionPrefs,
+} from './reactionPreferences';
+import {
+  landingSourceFromElement,
+  type ReactionLandingSource,
+} from './reactionLanding';
 import {
   getPillWidth,
   getQuickReactionCount,
@@ -51,8 +71,13 @@ export type MessageActionsPopupProps = {
   alignEnd?: boolean;
   /** Emoji the viewer already reacted with: shown picked, a tap removes. */
   myReactions?: readonly string[];
-  /** Left out where reacting isn't possible; the pill is not shown then. */
-  onReact?: (emoji: string) => void;
+  /**
+   * Left out where reacting isn't possible; the pill is not shown then.
+   * `source` is where the picked emoji sat, for the landing animation.
+   */
+  onReact?: (emoji: string, source?: ReactionLandingSource) => void;
+  /** This DM or group (`direct:<address>`, `group:<id>`): its double tap. */
+  reactionChatKey?: string;
   actions: MessageActionsPopupAction[];
   /** Card under the menu; the long-press version puts the details here. */
   details?: ReactNode;
@@ -91,6 +116,102 @@ const readViewport = (): Viewport => {
 };
 
 const EXPAND_EASE = 'cubic-bezier(0.2, 0.8, 0.2, 1)';
+const HINT_MS = 2200;
+
+/** The expanded panel: the grid, the gear's settings, or picking for one. */
+type ExpandedView =
+  | { kind: 'grid' }
+  | { kind: 'settings' }
+  | { kind: 'pick'; target: ReactionPickTarget };
+
+type PillReactionButtonProps = {
+  emoji: string;
+  index: number;
+  picked: boolean;
+  isDoubleTap: boolean;
+  label: string;
+  onReact: (emoji: string, node: HTMLElement | null) => void;
+  onLongPress: (emoji: string) => void;
+};
+
+/** One quick reaction: a tap reacts, a long press makes it the double tap. */
+const PillReactionButton = ({
+  emoji,
+  index,
+  picked,
+  isDoubleTap,
+  label,
+  onReact,
+  onLongPress,
+}: PillReactionButtonProps) => {
+  const theme = useTheme();
+  const emojiRef = useRef<HTMLSpanElement | null>(null);
+  const longPress = useLongPress(() => onLongPress(emoji), {
+    stopPropagation: true,
+  });
+  return (
+    <ButtonBase
+      aria-label={label}
+      aria-pressed={picked}
+      data-double-tap={isDoubleTap ? 'true' : undefined}
+      {...longPress}
+      onClick={() => onReact(emoji, emojiRef.current)}
+      // Android sends this for a long press too; same meaning.
+      onContextMenu={(event) => {
+        event.preventDefault();
+        onLongPress(emoji);
+      }}
+      sx={{
+        backgroundColor: picked
+          ? alpha(theme.palette.primary.main, 0.26)
+          : 'transparent',
+        borderRadius: '50%',
+        flexShrink: 0,
+        fontSize: '28px',
+        height: PILL_CELL_PX,
+        lineHeight: 1,
+        position: 'relative',
+        userSelect: 'none',
+        WebkitTouchCallout: 'none',
+        width: PILL_CELL_PX,
+        // The double-tap emoji wears a blue ring; it springs onto a new one.
+        '&::after': {
+          borderRadius: '50%',
+          boxShadow: `inset 0 0 0 2px ${theme.palette.primary.main}`,
+          content: '""',
+          inset: '2px',
+          opacity: isDoubleTap ? 1 : 0,
+          pointerEvents: 'none',
+          position: 'absolute',
+          transform: isDoubleTap ? 'scale(1)' : 'scale(0.6)',
+          transition:
+            'opacity 160ms ease, transform 260ms cubic-bezier(0.2, 0.9, 0.25, 1.3)',
+        },
+        '& .message-pill-emoji': {
+          display: 'block',
+          transition: 'transform 120ms ease',
+        },
+        '&:active .message-pill-emoji': {
+          transform: 'scale(0.82)',
+        },
+        '@keyframes messagePillEmojiIn': {
+          from: { opacity: 0, transform: 'scale(0.3)' },
+          '70%': { opacity: 1, transform: 'scale(1.14)' },
+          to: { opacity: 1, transform: 'scale(1)' },
+        },
+        animation: `messagePillEmojiIn 320ms ease-out ${60 + index * 28}ms both`,
+        '@media (prefers-reduced-motion: reduce)': {
+          animation: 'none',
+          '&::after': { transition: 'none' },
+        },
+      }}
+    >
+      <span className="message-pill-emoji" ref={emojiRef}>
+        {emoji}
+      </span>
+    </ButtonBase>
+  );
+};
 
 const popupSurfaceSx = (theme: Theme) => {
   const isDark = theme.palette.mode === 'dark';
@@ -118,6 +239,7 @@ export const MessageActionsPopup = ({
   alignEnd = false,
   myReactions,
   onReact,
+  reactionChatKey,
   actions,
   details,
   onClose,
@@ -128,7 +250,17 @@ export const MessageActionsPopup = ({
   const isDark = theme.palette.mode === 'dark';
   const [viewport, setViewport] = useState<Viewport>(readViewport);
   const [bodyHeight, setBodyHeight] = useState<number | null>(null);
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpandedState] = useState(false);
+  const [view, setView] = useState<ExpandedView>({ kind: 'grid' });
+  const [hint, setHint] = useState<string | null>(null);
+  const hintTimerRef = useRef<number | null>(null);
+  const lastLongPressRef = useRef<{ emoji: string; at: number } | null>(null);
+  const { prefs, quickReactions: preferredQuick } = useReactionPrefs();
+  const doubleTapEmoji = getDoubleTapReaction(prefs, reactionChatKey);
+  const setExpanded = useCallback((next: boolean) => {
+    setExpandedState(next);
+    setView({ kind: 'grid' });
+  }, []);
   // A state, not a ref: the Modal's portal mounts the content one render
   // after this component, and the measuring below has to run again then.
   const [bodyNode, setBodyNode] = useState<HTMLDivElement | null>(null);
@@ -136,9 +268,13 @@ export const MessageActionsPopup = ({
 
   const canReact = typeof onReact === 'function';
   const quickCount = canReact
-    ? getQuickReactionCount(viewport.width, QUICK_REACTIONS.length)
+    ? getQuickReactionCount(viewport.width, QUICK_REACTION_SLOTS)
     : 0;
-  const quickReactions = QUICK_REACTIONS.slice(0, quickCount);
+  const quickReactions = pickPillReactions(
+    preferredQuick,
+    quickCount,
+    doubleTapEmoji
+  );
   const pillWidth = canReact ? getPillWidth(quickCount) : 0;
   const bodyWidth = Math.min(
     MENU_CARD_WIDTH_PX,
@@ -201,6 +337,14 @@ export const MessageActionsPopup = ({
 
   useAndroidBack(
     () => {
+      if (expanded && view.kind === 'pick') {
+        setView({ kind: 'settings' });
+        return true;
+      }
+      if (expanded && view.kind === 'settings') {
+        setView({ kind: 'grid' });
+        return true;
+      }
       if (expanded) {
         setExpanded(false);
         return true;
@@ -211,12 +355,91 @@ export const MessageActionsPopup = ({
     { enabled: open, priority: BACK_PRIORITY.dialog }
   );
 
-  const react = (emoji: string) => {
-    if (!onReact) return;
-    if (!mine.has(emoji)) rememberRecentReaction(emoji);
-    onClose();
-    onReact(emoji);
+  useEffect(
+    () => () => {
+      if (hintTimerRef.current !== null) {
+        window.clearTimeout(hintTimerRef.current);
+      }
+    },
+    []
+  );
+
+  const showHint = (text: string) => {
+    setHint(text);
+    if (hintTimerRef.current !== null) {
+      window.clearTimeout(hintTimerRef.current);
+    }
+    hintTimerRef.current = window.setTimeout(() => {
+      hintTimerRef.current = null;
+      setHint(null);
+    }, HINT_MS);
   };
+
+  const react = (emoji: string, node?: HTMLElement | null) => {
+    if (!onReact) return;
+    if (!mine.has(emoji)) {
+      rememberRecentReaction(emoji);
+      recordReactionUse(emoji);
+    }
+    const source = landingSourceFromElement(node);
+    // The emoji takes off from here (reactionLanding.ts); the copy left in
+    // the fading popup would look like a ghost of it.
+    if (source && !mine.has(emoji) && node) node.style.visibility = 'hidden';
+    onClose();
+    onReact(emoji, source);
+  };
+
+  // A long press on an emoji makes it what a double tap sends in this chat.
+  // Android may report one press twice (touch hold and contextmenu).
+  const makeDoubleTap = (emoji: string) => {
+    const last = lastLongPressRef.current;
+    const now = Date.now();
+    if (last && last.emoji === emoji && now - last.at < 800) return;
+    lastLongPressRef.current = { emoji, at: now };
+    setDoubleTapReaction(reactionChatKey, emoji);
+    try {
+      navigator.vibrate?.(12);
+    } catch {
+      // Vibration is a nicety; some WebViews refuse it.
+    }
+    showHint(
+      t('group:message_item.double_tap_set', {
+        emoji,
+        postProcess: 'capitalizeFirstChar',
+      })
+    );
+  };
+
+  const pickFor = (target: ReactionPickTarget, emoji: string) => {
+    if (target.kind === 'double_tap') {
+      setDoubleTapReaction(target.chatKey, emoji);
+    } else {
+      setQuickReactionSlot(target.slot, emoji);
+    }
+    setView({ kind: 'settings' });
+  };
+
+  const pickTitle = (target: ReactionPickTarget) => {
+    if (target.kind === 'quick_slot') {
+      return t('group:message_item.choose_quick_reaction', {
+        number: target.slot + 1,
+        postProcess: 'capitalizeFirstChar',
+      });
+    }
+    return t(
+      target.chatKey === reactionChatKey
+        ? 'group:message_item.choose_double_tap_this_chat'
+        : 'group:message_item.choose_double_tap_other_chats',
+      { postProcess: 'capitalizeFirstChar' }
+    );
+  };
+
+  const pickSelection = (target: ReactionPickTarget) =>
+    new Set([
+      target.kind === 'quick_slot'
+        ? preferredQuick[target.slot]
+        : getDoubleTapReaction(prefs, target.chatKey),
+    ]);
 
   const pillBox = layout ? (expanded ? layout.expanded : layout.pill) : null;
   const pillOriginX = layout
@@ -293,9 +516,33 @@ export const MessageActionsPopup = ({
                 },
               }}
             >
-              {expanded && layout ? (
+              {expanded && layout && view.kind === 'settings' ? (
+                <ReactionSettingsPanel
+                  chatKey={reactionChatKey}
+                  height={layout.expanded.height}
+                  onBack={() => setView({ kind: 'grid' })}
+                  onPick={(target) => setView({ kind: 'pick', target })}
+                  prefs={prefs}
+                  quickReactions={preferredQuick}
+                  width={pillWidth}
+                />
+              ) : expanded && layout && view.kind === 'pick' ? (
                 <ReactionEmojiGrid
                   height={layout.expanded.height}
+                  key={`pick-${JSON.stringify(view.target)}`}
+                  onBack={() => setView({ kind: 'settings' })}
+                  onPick={(emoji) => pickFor(view.target, emoji)}
+                  pickerTitle={pickTitle(view.target)}
+                  selected={pickSelection(view.target)}
+                  width={pillWidth}
+                />
+              ) : expanded && layout ? (
+                <ReactionEmojiGrid
+                  doubleTapEmoji={doubleTapEmoji}
+                  height={layout.expanded.height}
+                  key="react"
+                  onLongPressEmoji={makeDoubleTap}
+                  onOpenSettings={() => setView({ kind: 'settings' })}
                   onPick={react}
                   selected={mine}
                   width={pillWidth}
@@ -309,52 +556,22 @@ export const MessageActionsPopup = ({
                     px: `${PILL_PADDING_X_PX}px`,
                   }}
                 >
-                  {quickReactions.map((emoji, index) => {
-                    const picked = mine.has(emoji);
-                    return (
-                      <ButtonBase
-                        aria-label={t('group:message_item.react_with', {
-                          defaultValue: 'react with {{emoji}}',
-                          emoji,
-                          postProcess: 'capitalizeFirstChar',
-                        })}
-                        aria-pressed={picked}
-                        key={emoji}
-                        onClick={() => react(emoji)}
-                        sx={{
-                          backgroundColor: picked
-                            ? alpha(theme.palette.primary.main, 0.26)
-                            : 'transparent',
-                          borderRadius: '50%',
-                          flexShrink: 0,
-                          fontSize: '28px',
-                          height: PILL_CELL_PX,
-                          lineHeight: 1,
-                          width: PILL_CELL_PX,
-                          '& .message-pill-emoji': {
-                            display: 'block',
-                            transition: 'transform 120ms ease',
-                          },
-                          '&:active .message-pill-emoji': {
-                            transform: 'scale(0.82)',
-                          },
-                          '@keyframes messagePillEmojiIn': {
-                            from: { opacity: 0, transform: 'scale(0.3)' },
-                            '70%': { opacity: 1, transform: 'scale(1.14)' },
-                            to: { opacity: 1, transform: 'scale(1)' },
-                          },
-                          animation: `messagePillEmojiIn 320ms ease-out ${
-                            60 + index * 28
-                          }ms both`,
-                          '@media (prefers-reduced-motion: reduce)': {
-                            animation: 'none',
-                          },
-                        }}
-                      >
-                        <span className="message-pill-emoji">{emoji}</span>
-                      </ButtonBase>
-                    );
-                  })}
+                  {quickReactions.map((emoji, index) => (
+                    <PillReactionButton
+                      emoji={emoji}
+                      index={index}
+                      isDoubleTap={emoji === doubleTapEmoji}
+                      key={emoji}
+                      label={t('group:message_item.react_with', {
+                        defaultValue: 'react with {{emoji}}',
+                        emoji,
+                        postProcess: 'capitalizeFirstChar',
+                      })}
+                      onLongPress={makeDoubleTap}
+                      onReact={react}
+                      picked={mine.has(emoji)}
+                    />
+                  ))}
                   <ButtonBase
                     aria-expanded={false}
                     aria-label={t('group:message_item.more_reactions', {
@@ -496,6 +713,37 @@ export const MessageActionsPopup = ({
                   </Box>
                 )}
               </Box>
+            </Box>
+          )}
+          {hint && (
+            <Box
+              aria-live="polite"
+              role="status"
+              sx={{
+                ...popupSurfaceSx(theme),
+                borderRadius: '14px',
+                bottom: viewport.bottomInset + 18,
+                color: 'text.primary',
+                fontSize: '14px',
+                fontWeight: 500,
+                left: '50%',
+                maxWidth: `calc(100% - ${4 * POPUP_EDGE_MARGIN_PX}px)`,
+                position: 'absolute',
+                px: '14px',
+                py: '10px',
+                textAlign: 'center',
+                transform: 'translateX(-50%)',
+                '@keyframes reactionHintIn': {
+                  from: { opacity: 0, transform: 'translate(-50%, 10px)' },
+                  to: { opacity: 1, transform: 'translate(-50%, 0)' },
+                },
+                animation: 'reactionHintIn 200ms ease-out both',
+                '@media (prefers-reduced-motion: reduce)': {
+                  animation: 'none',
+                },
+              }}
+            >
+              {hint}
             </Box>
           )}
         </Box>

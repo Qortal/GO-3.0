@@ -54,6 +54,9 @@ import {
 } from './AppsLibrary';
 import { LibraryTabPanel } from './AppsLibrary/LibraryTabPanel';
 import { AppCardEnhanced, AppCardListItem } from './AppCard';
+import { withTabBarSpace } from '../Mobile/mobileBarHeights';
+import { SECTION_SURFACE_TOUCH_ACTION } from '../Mobile/sectionSwipe/sectionSwipe';
+import { PinnedHome } from '../Mobile/tabsHome/PinnedHome';
 
 const EMPTY_RATINGS_MAP = new Map<string, AppRatingData>();
 
@@ -75,14 +78,20 @@ export const AppsLibraryDesktop = ({
   myAddress,
   isShow,
   isMobile = false,
+  // Apps is the section on screen (phones keep the library laid out while
+  // another section shows).
+  isSectionActive = true,
   categories,
   getQapps,
   externalSearchRequest,
   contentHeight,
 }) => {
-  const [currentTab, setCurrentTab] = useState<AppsLibraryTabValue>('official');
+  // Phones open on the Pinned home, the Tabs folders full screen.
+  const [currentTab, setCurrentTab] = useState<AppsLibraryTabValue>(() =>
+    isMobile ? 'pinned' : 'official'
+  );
   const [mountedTabs, setMountedTabs] = useState<Set<AppsLibraryTabValue>>(
-    () => new Set(['official'])
+    () => new Set([isMobile ? 'pinned' : 'official'])
   );
   // Every tab shares one scroll container; remember each tab's position.
   const tabScrollTopRef = useRef<Partial<Record<AppsLibraryTabValue, number>>>(
@@ -159,10 +168,41 @@ export const AppsLibraryDesktop = ({
     return () => scrollParent.removeEventListener('scroll', onScroll);
   }, [scrollParent]);
 
+  // Phones: the section buttons hide while scrolling down and come back
+  // on any scroll up (or near the top).
+  const [sectionsHidden, setSectionsHidden] = useState(false);
+  const ignoreScrollUntilRef = useRef(0);
+
   useLayoutEffect(() => {
     if (!scrollParent || isSearchResultsActive) return;
+    // A jump to the tab's own place is not the user scrolling.
+    ignoreScrollUntilRef.current = performance.now() + 150;
+    setSectionsHidden(false);
     scrollParent.scrollTop = tabScrollTopRef.current[currentTab] ?? 0;
   }, [currentTab, isSearchResultsActive, scrollParent]);
+
+  useEffect(() => {
+    if (!isMobile || !scrollParent) return;
+    let last = scrollParent.scrollTop;
+    let run = 0;
+    const onScroll = () => {
+      const top = scrollParent.scrollTop;
+      const delta = top - last;
+      last = top;
+      if (performance.now() < ignoreScrollUntilRef.current) return;
+      if (top < 96) {
+        run = 0;
+        setSectionsHidden(false);
+        return;
+      }
+      // Count travel in one direction, so a small wobble changes nothing.
+      run = Math.sign(delta) === Math.sign(run) ? run + delta : delta;
+      if (run > 28) setSectionsHidden(true);
+      else if (run < -28) setSectionsHidden(false);
+    };
+    scrollParent.addEventListener('scroll', onScroll, { passive: true });
+    return () => scrollParent.removeEventListener('scroll', onScroll);
+  }, [isMobile, scrollParent]);
 
   // Ratings only matter (and only re-render the library) for a rating sort
   // of search results.
@@ -255,6 +295,26 @@ export const AppsLibraryDesktop = ({
 
     return (
       <>
+        {isMobile ? (
+          <LibraryTabPanel
+            activeTab={currentTab}
+            isMounted={mountedTabs.has('pinned')}
+            isSearchActive={isSearchResultsActive}
+            tab="pinned"
+          >
+            <PinnedHome
+              isVisible={
+                Boolean(isShow) &&
+                isSectionActive &&
+                isTabActive('pinned') &&
+                !isSearchResultsActive
+              }
+              onBrowseApps={() => handleTabChange('official')}
+              scrollParent={scrollParent}
+            />
+          </LibraryTabPanel>
+        ) : null}
+
         <LibraryTabPanel
           activeTab={currentTab}
           isMounted={mountedTabs.has('official')}
@@ -345,7 +405,8 @@ export const AppsLibraryDesktop = ({
         paddingTop: isMobile ? 0 : '30px',
       }}
     >
-      {/* Fixed Header Section */}
+      {/* Fixed Header Section (wide screens; phones put the section buttons
+          in the scroller, see below) */}
       <Box
         sx={{
           position: 'sticky',
@@ -353,7 +414,7 @@ export const AppsLibraryDesktop = ({
           zIndex: 1,
           backgroundColor: 'background.default',
           width: '100%',
-          display: 'flex',
+          display: isMobile ? 'none' : 'flex',
           flexDirection: 'column',
           alignItems: 'center',
         }}
@@ -367,35 +428,8 @@ export const AppsLibraryDesktop = ({
           }}
         >
           {isMobile ? (
-            compactHeader ? null : (
-              <Box
-                sx={{
-                  alignItems: 'center',
-                  display: 'flex',
-                  justifyContent: 'center',
-                  pb: 2.5,
-                  pt: 3.5,
-                  width: '100%',
-                }}
-              >
-                <Box
-                  sx={{
-                    display: 'flex',
-                    justifyContent: 'center',
-                    lineHeight: 0,
-                    width: '100%',
-                    '& svg': {
-                      display: 'block',
-                      height: 'auto',
-                      margin: '0 auto',
-                      maxWidth: 'min(100%, 301px)',
-                    },
-                  }}
-                >
-                  <QappLibraryText />
-                </Box>
-              </Box>
-            )
+            // Phones: no big title; the section buttons get the room.
+            <Box sx={{ height: compactHeader ? 4 : 10 }} />
           ) : (
             <AppsWidthLimiter isMobile={isMobile}>
               <Box
@@ -449,13 +483,14 @@ export const AppsLibraryDesktop = ({
               width: '100%',
             }}
           >
-            <AppsTabs
-              currentTab={currentTab}
-              isMobile={isMobile}
-              isSearchActive={isSearchActive}
-              onTabChange={handleTabChange}
-              onTabReselect={handleTabReselect}
-            />
+            {!isMobile ? (
+              <AppsTabs
+                currentTab={currentTab}
+                isSearchActive={isSearchActive}
+                onTabChange={handleTabChange}
+                onTabReselect={handleTabReselect}
+              />
+            ) : null}
 
             <Box
               sx={{
@@ -562,10 +597,17 @@ export const AppsLibraryDesktop = ({
             // stops the width jitter that made the community grid glitch.
             overflowX: 'hidden',
             overflowY: 'auto',
+            // A sideways start is the section swipe's, never a scroll; the
+            // carousels inside keep their own sideways scrolling.
+            touchAction: isMobile ? SECTION_SURFACE_TOUCH_ACTION : undefined,
             // Landscape has spare width; pull the content in from the edges.
             px: isMobile ? (compactHeader ? 3 : 2) : 0,
+            // Clear of the floating tab buttons while they are over it.
             pb: isMobile
-              ? 'calc(32px + var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px)))'
+              ? withTabBarSpace(
+                  32,
+                  'calc(32px + var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px)))'
+                )
               : 0,
             scrollbarWidth: showLibraryScrollbar ? 'auto' : 'none',
             width: isMobile ? '100%' : '90%',
@@ -580,6 +622,30 @@ export const AppsLibraryDesktop = ({
             },
           }}
         >
+          {isMobile ? (
+            // Phones: the section buttons scroll with the page and step
+            // aside while scrolling down; scrolling up brings them back.
+            <Box
+              sx={{
+                backgroundColor: 'background.default',
+                pb: 1.5,
+                position: 'sticky',
+                pt: compactHeader ? 0.5 : 1.25,
+                top: 0,
+                transform: sectionsHidden ? 'translateY(-100%)' : 'none',
+                transition: 'transform 280ms cubic-bezier(0.2, 0.9, 0.25, 1)',
+                zIndex: 3,
+              }}
+            >
+              <AppsTabs
+                currentTab={currentTab}
+                isMobile
+                isSearchActive={isSearchActive}
+                onTabChange={handleTabChange}
+                onTabReselect={handleTabReselect}
+              />
+            </Box>
+          ) : null}
           {renderTabContent()}
         </AppsDesktopLibraryBody>
       </AppsDesktopLibraryBody>

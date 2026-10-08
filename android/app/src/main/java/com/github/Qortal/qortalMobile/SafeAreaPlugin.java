@@ -43,7 +43,11 @@ public class SafeAreaPlugin extends Plugin {
           call.resolve(ret);
           return;
         }
-        int top = insets.getInsets(WindowInsetsCompat.Type.statusBars()).top;
+        // Hidden status bar (immersive mode): the cutout still counts.
+        int top = Math.max(
+          insets.getInsets(WindowInsetsCompat.Type.statusBars()).top,
+          insets.getInsets(WindowInsetsCompat.Type.displayCutout()).top
+        );
         // Keyboard open: the WebView is already shrunk above the IME and the
         // nav bar sits below the keyboard — no bottom inset (must match
         // MainActivity.applySafeAreaInsets, which writes the same CSS vars).

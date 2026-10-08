@@ -2666,6 +2666,9 @@ const RETICULUM_CHAT_SEARCH_NETWORK_POLL_MS = 200;
 const RETICULUM_CHAT_EVENT_PAGE_IMPORT_YIELD_EVERY = 20;
 const RETICULUM_CHAT_EVENT_PAGE_MAX_PROTOCOL_REJECTIONS = 3;
 const RETICULUM_CHAT_DIGEST_REPAIR_MAX_CANDIDATE_PEERS = 32;
+// Providers a history read keeps in reserve (peers often serve a stale copy
+// of a channel: one test needed the sixth provider for the messages).
+const RETICULUM_CHAT_HISTORY_READ_MAX_PROVIDERS = 6;
 const RETICULUM_CHAT_DIGEST_REPAIR_OBSERVATION_TTL_MS = 10 * 60_000;
 const RETICULUM_CHAT_DIGEST_REPAIR_OBSERVATION_RETRY_MS = 5_000;
 const RETICULUM_CHAT_DIGEST_REPAIR_OBSERVATION_MAX = 4096;
@@ -2721,6 +2724,9 @@ const RETICULUM_CHAT_PULL_THROTTLE_MS = 2_000;
 const RETICULUM_CHAT_PULL_RETRY_MS = 2_000;
 const RETICULUM_CHAT_PULL_MAX_ATTEMPTS = 8;
 const RETICULUM_CHAT_PULL_QUEUE_CONCURRENCY = 3;
+// Event pull starts (identity, link setup, request) running at once, at most
+// one per peer: the bridge serves one request per peer session anyway.
+const RETICULUM_CHAT_PULL_MAX_STARTS = 4;
 const RETICULUM_CHAT_PULL_QUEUE_TICK_MS = 250;
 // An authoritative non-member result is final for the complete period in
 // which that event can pass protocol age validation. The small skew margin
@@ -3126,6 +3132,14 @@ const RETICULUM_CHAT_CONTROL_RETRY_TICK_MS = 250;
 const RETICULUM_CHAT_CONTROL_RETRY_MAX_ATTEMPTS = 10;
 const RETICULUM_CHAT_CONTROL_RETRY_MAX = 512;
 const RETICULUM_CHAT_CONTROL_RETRY_MAX_DIGESTS = 128;
+// When the bridge reports its queues full, retries pause instead of piling
+// more sends onto it: 3, 6, 12, then 20 s, which stays inside the 25 s a
+// queued dm_notify or dm_probe has before it goes stale.
+const RETICULUM_CHAT_CONTROL_RETRY_PRESSURE_MAX_MS = 20_000;
+// After the bridge reports pressure, relaying other peers' group control
+// (digests, notices, group_sub) pauses this long: it is best effort for
+// them, and our own DMs and open chat need the bridge first.
+const RETICULUM_CHAT_BRIDGE_PRESSURE_RELAY_PAUSE_MS = 10_000;
 const RETICULUM_CHAT_DIGEST_REPAIR_QUEUE_MAX = 500;
 const RETICULUM_CHAT_DIGEST_REPAIR_QUEUE_BUDGET_MS = 8;
 const RETICULUM_CHAT_DIGEST_REPAIR_SLOW_MS = 50;
@@ -4456,6 +4470,56 @@ function compactPeerHashForWire(peerHash: string): string {
     .replace(/\+/g, '-')
     .replace(/\//g, '_')
     .replace(/=+$/g, '');
+}
+
+/** `compactPeerHashForWire` of a 16-byte destination hash. */
+const RETICULUM_CHAT_COMPACT_PEER_HASH_CHARS = 22;
+/** `nextSubscriptionAdvertisementId`: a 16-character sha256 hex prefix. */
+const RETICULUM_CHAT_SUBSCRIPTION_ADVERTISEMENT_ID_CHARS = 16;
+
+/**
+ * Splits group ids into `group_sub` pages that still fit one packet after a
+ * relay adds its fields. Relays re-send a page with `o` (compact origin
+ * hash), `h`, `q` and `fw`, and drop it without a log once it no longer fits
+ * (`forwardGroupSub` -> `fanoutDiscoveryOnce` -> wire-too-large). With
+ * 4-digit group ids a full page of 50 is 376 bytes at the origin but 411
+ * relayed, so the subscriptions of an account with 45+ groups never got
+ * past one hop. Receivers take any page of up to
+ * RETICULUM_CHAT_MAX_GROUPS_PER_SUB_PAGE groups, so this is wire-compatible.
+ * When this node is the relay, `relay` carries the fields it will send.
+ */
+export function paginateReticulumChatGroupSubIds(
+  groupIds: readonly number[],
+  mode: 'summary' | 'active',
+  relay: { o?: string; h?: number; q?: string; fw?: number } = {}
+): number[][] {
+  const fitsOnceRelayed = (groups: number[]): boolean =>
+    groups.length <= RETICULUM_CHAT_MAX_GROUPS_PER_SUB_PAGE &&
+    wireFitsReticulumChat({
+      t: 'RCHAT',
+      k: 'group_sub',
+      groups,
+      mode,
+      o: relay.o || 'x'.repeat(RETICULUM_CHAT_COMPACT_PEER_HASH_CHARS),
+      h: relay.h ?? RETICULUM_CHAT_GROUP_ROUTE_MAX_HOPS,
+      q:
+        relay.q ||
+        'x'.repeat(RETICULUM_CHAT_SUBSCRIPTION_ADVERTISEMENT_ID_CHARS),
+      fw: relay.fw || RETICULUM_CHAT_DISCOVERY_GOSSIP_WIDTH,
+    });
+  const pages: number[][] = [];
+  let page: number[] = [];
+  for (const groupId of groupIds) {
+    const candidate = [...page, groupId];
+    if (page.length > 0 && !fitsOnceRelayed(candidate)) {
+      pages.push(page);
+      page = [groupId];
+    } else {
+      page = candidate;
+    }
+  }
+  if (page.length > 0) pages.push(page);
+  return pages;
 }
 
 function compactSha256ForWire(hash: string): string {
@@ -7864,6 +7928,11 @@ export class ReticulumChatManager extends EventEmitter {
   private backgroundAuthorGapRepairDueAt = 0;
   private eventPullQueueTimer: ReturnType<typeof setTimeout> | null = null;
   private controlRetryQueue = new Map<string, ReticulumChatControlRetryItem>();
+  /** Control retries wait until then after a bridge-pressure failure. */
+  private controlRetryPressureUntil = 0;
+  private controlRetryPressureStreak = 0;
+  /** Relaying for other peers waits until then (bridge pressure). */
+  private relayPausedUntil = 0;
   private controlRetryTimer: ReturnType<typeof setTimeout> | null = null;
   private controlRetryActive = false;
   private digestRepairQueue: string[] = [];
@@ -8062,6 +8131,8 @@ export class ReticulumChatManager extends EventEmitter {
   private subscriptionDigestRefreshOffset = 0;
   private subscriptionAdvertisementSequence = 0;
   private eventPullQueueActive = false;
+  /** Peers with an event pull start in progress (see processEventPullQueue). */
+  private readonly eventPullStartingPeers = new Set<string>();
   private recentGroupRepairRequests = new Map<string, number>();
   private recentMetadataRepairRequests = new Map<string, number>();
   private recentStateHeadsRequests = new Map<string, number>();
@@ -8316,7 +8387,6 @@ export class ReticulumChatManager extends EventEmitter {
   private lastTypingSentAt = new Map<string, number>();
   private typingTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private directTypingTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  private observedDbEventIds = new Set<string>();
   private chatWorkerPool = new ReticulumChatWorkerPool(
     'reticulum-chat',
     1,
@@ -11503,6 +11573,59 @@ export class ReticulumChatManager extends EventEmitter {
     }
   }
 
+  /**
+   * Direct messages of `myAddress` containing `query` (local search, newest
+   * first), without messages from people the account has silenced.
+   */
+  searchDirectMessages(
+    myAddress: string,
+    query: string,
+    limit = 60
+  ): ReticulumDmEvent[] {
+    const address = String(myAddress || '').trim();
+    if (!address) return [];
+    return this.db
+      .searchDirectMessages(address, query, limit)
+      .filter(
+        (event) =>
+          event.senderAddress === address ||
+          !this.isAuthorSilenced(
+            address,
+            event.senderAddress,
+            'dm',
+            event.conversationId
+          )
+      );
+  }
+
+  /**
+   * A conversation from the event `fromEventId` on (with a little before
+   * it), for a search result older than the history a chat loads.
+   */
+  getDirectHistoryFrom(
+    myAddress: string,
+    peerAddress: string,
+    fromEventId: string,
+    limit = 1000
+  ): ReticulumDmEvent[] {
+    const conversationId = reticulumDmConversationId(myAddress, peerAddress);
+    const excludedSenders = this.isAuthorSilenced(
+      myAddress,
+      peerAddress,
+      'dm',
+      conversationId
+    )
+      ? [peerAddress]
+      : [];
+    return this.db.getDirectHistoryFrom(
+      conversationId,
+      fromEventId,
+      limit,
+      20,
+      excludedSenders
+    );
+  }
+
   getDirectHistory(
     myAddress: string,
     peerAddress: string,
@@ -13680,16 +13803,7 @@ export class ReticulumChatManager extends EventEmitter {
     if (!peer || this.isClosed) return;
     const groups = this.getSubscriptions();
     const wires: ReticulumChatWire[] = [this.buildHelloWire()];
-    for (
-      let offset = 0;
-      offset < groups.length;
-      offset += RETICULUM_CHAT_MAX_GROUPS_PER_SUB_PAGE
-    ) {
-      const page = groups.slice(
-        offset,
-        offset + RETICULUM_CHAT_MAX_GROUPS_PER_SUB_PAGE
-      );
-      if (!page.length) continue;
+    for (const page of paginateReticulumChatGroupSubIds(groups, 'summary')) {
       wires.push({
         t: 'RCHAT',
         k: 'group_sub',
@@ -13713,16 +13827,22 @@ export class ReticulumChatManager extends EventEmitter {
 
   private announceGroupSubscription(groupId: number): void {
     void this.ensureGroupKeyState(groupId);
-    this.enqueueSubscriptionFanouts([
-      this.buildHelloWire(),
-      {
-        t: 'RCHAT',
-        k: 'group_sub',
-        groups: [groupId],
-        mode: 'summary',
-        q: this.nextSubscriptionAdvertisementId(),
-      },
-    ]);
+    // Sign-in subscribes every group, one call each, which sent one
+    // full-fanout group_sub per group (43 for a 43-group account). The queue
+    // sends 8 frames per 200 ms, so later groups join a summary page that is
+    // still waiting in it instead.
+    if (!this.mergeIntoQueuedSubscriptionPage(groupId)) {
+      this.enqueueSubscriptionFanouts([
+        this.buildHelloWire(),
+        {
+          t: 'RCHAT',
+          k: 'group_sub',
+          groups: [groupId],
+          mode: 'summary',
+          q: this.nextSubscriptionAdvertisementId(),
+        },
+      ]);
+    }
     this.enqueueDigestSend({
       mode: 'subscription',
       groupId,
@@ -16069,7 +16189,14 @@ export class ReticulumChatManager extends EventEmitter {
     if (options.repairNetwork === false) return;
     if (!this.localGroupIds.has(groupId) || !this.subscribedGroups.has(groupId))
       return;
-    const peers = this.getInterestedPeers(groupId).slice(0, 3);
+    // Only the first peer gets the request; the others stand by in case it
+    // fails or serves an out-of-date copy. Peers often hold stale copies of
+    // a channel, so keep up to six in reserve (only three ask for heads).
+    const candidates = this.getInterestedPeers(groupId).slice(
+      0,
+      RETICULUM_CHAT_HISTORY_READ_MAX_PROVIDERS
+    );
+    const peers = candidates.slice(0, 3);
     if (peers.length === 0) return;
     const normalizedChannelId =
       channelId == null
@@ -16102,7 +16229,11 @@ export class ReticulumChatManager extends EventEmitter {
         direction,
         false,
         reason,
-        peer
+        peer,
+        undefined,
+        undefined,
+        0,
+        candidates.filter((candidate) => candidate !== peer)
       );
     }
   }
@@ -21594,21 +21725,37 @@ export class ReticulumChatManager extends EventEmitter {
     if (!origin || !inbound || (local && origin === local)) return;
     if (hops >= RETICULUM_CHAT_GROUP_ROUTE_MAX_HOPS) return;
     if (!groups.length) return;
-    for (
-      let offset = 0;
-      offset < groups.length;
-      offset += RETICULUM_CHAT_MAX_GROUPS_PER_SUB_PAGE
-    ) {
-      const page = groups.slice(
-        offset,
-        offset + RETICULUM_CHAT_MAX_GROUPS_PER_SUB_PAGE
-      );
+    if (this.isRelayPausedForBridgePressure()) {
+      // The origin re-sends within its 5-minute refresh.
+      for (const { groupId, leaseId } of groups) {
+        this.releaseGroupSubForward(
+          groupId,
+          origin,
+          leaseId,
+          mode,
+          advertisementId
+        );
+      }
+      return;
+    }
+    const compactOrigin = this.compactRoutePeerHash(origin);
+    // A full 50-group page from the origin no longer fits once `o` and `h`
+    // are added; split it instead of losing the whole page.
+    const pages = paginateReticulumChatGroupSubIds(
+      groups.map(({ groupId }) => groupId),
+      mode,
+      { o: compactOrigin, h: hops + 1, q: advertisementId, fw: fanoutWidth }
+    );
+    let offset = 0;
+    for (const pageGroupIds of pages) {
+      const page = groups.slice(offset, offset + pageGroupIds.length);
+      offset += pageGroupIds.length;
       const wire: ReticulumChatWire = {
         t: 'RCHAT',
         k: 'group_sub',
-        groups: page.map(({ groupId }) => groupId),
+        groups: pageGroupIds,
         mode,
-        o: this.compactRoutePeerHash(origin),
+        o: compactOrigin,
         h: hops + 1,
         ...(advertisementId ? { q: advertisementId } : {}),
         ...(fanoutWidth > 0 ? { fw: fanoutWidth } : {}),
@@ -21654,6 +21801,7 @@ export class ReticulumChatManager extends EventEmitter {
     // does not re-send it to every interest route. Measured on a phone this
     // relaying was 350-580 sends a minute, 5x its own protocol traffic.
     if (!this.relayGroupControl) return;
+    if (this.isRelayPausedForBridgePressure()) return;
     const inbound = this.routePeerHash(inboundPeerHash);
     if (!inbound) return;
     this.pruneGroupInterestRoutes();
@@ -30030,7 +30178,6 @@ export class ReticulumChatManager extends EventEmitter {
         });
       }
       this.queueChannelMetadataProjection(event);
-      this.observedDbEventIds.add(event.eventId);
       this.recordPublicGroupActivity(event);
       this.writeLocalEventNotification(event);
       if (options.emitSummary !== false) {
@@ -31045,10 +31192,9 @@ export class ReticulumChatManager extends EventEmitter {
   }
 
   private markGroupHistoryObserved(groupId: number): void {
+    // This also read the group's 500 newest events into a set nothing ever
+    // read, on every subscribe (so on every chat open); that set is gone.
     this.activeDigestGroups.set(groupId, this.now());
-    for (const event of this.db.getRecentEvents(groupId, 500, null)) {
-      this.observedDbEventIds.add(event.eventId);
-    }
   }
 
   private canServeGroupHistory(groupId: number): boolean {
@@ -31482,7 +31628,6 @@ export class ReticulumChatManager extends EventEmitter {
       ) {
         this.schedulePrivilegedMentionValidationRetry(event, 0);
       }
-      this.observedDbEventIds.add(event.eventId);
       // Another manager instance may have completed this event while this
       // instance still had a dedicated receive in flight. Release that
       // redundant transfer as soon as the shared database notification lands.
@@ -38807,13 +38952,27 @@ export class ReticulumChatManager extends EventEmitter {
     this.eventPullQueueTimer.unref?.();
   }
 
+  private isOpenChatGroup(groupId: number): boolean {
+    return (this.activeChannelSubscriptions.get(groupId)?.size ?? 0) > 0;
+  }
+
+  /** Pulls for an open chat first, then everything else in arrival order. */
+  private eventPullQueueOrder(): Array<[string, ReticulumChatPullQueueItem]> {
+    const open: Array<[string, ReticulumChatPullQueueItem]> = [];
+    const rest: Array<[string, ReticulumChatPullQueueItem]> = [];
+    for (const entry of this.pendingEventPulls) {
+      (this.isOpenChatGroup(entry[1].hint.groupId) ? open : rest).push(entry);
+    }
+    return open.length > 0 ? [...open, ...rest] : rest;
+  }
+
   private async processEventPullQueue(): Promise<void> {
     if (this.eventPullQueueActive || this.isClosed) return;
     this.eventPullQueueActive = true;
     try {
       const now = this.now();
       let dispatched = 0;
-      for (const [queueKey, item] of this.pendingEventPulls) {
+      for (const [queueKey, item] of this.eventPullQueueOrder()) {
         if (this.isClosed) break;
         if (dispatched >= RETICULUM_CHAT_PULL_QUEUE_CONCURRENCY) break;
         if (item.inFlight || item.nextAttemptAt > now) continue;
@@ -38853,10 +39012,32 @@ export class ReticulumChatManager extends EventEmitter {
           this.pendingEventPulls.delete(queueKey);
           continue;
         }
+        // A start (peer identity, link setup, request) can take up to the
+        // bridge's 30 s path wait for a peer that is gone. Awaiting each one
+        // in turn held every other pull behind it, the open chat's new
+        // messages included; now only pulls from that same peer wait.
+        if (this.eventPullStartingPeers.has(peerKey)) continue;
+        // The open chat is exempt from the overall cap: four slow starts to
+        // peers that are gone must not hold back its new messages.
+        if (
+          !this.isOpenChatGroup(item.hint.groupId) &&
+          this.eventPullStartingPeers.size >= RETICULUM_CHAT_PULL_MAX_STARTS
+        ) {
+          continue;
+        }
         item.inFlight = true;
         item.linkedAttemptStartedAt = now;
         dispatched += 1;
-        await this.requestEventPull(peerKey, item);
+        this.eventPullStartingPeers.add(peerKey);
+        void this.requestEventPull(peerKey, item)
+          .catch((err) => {
+            loggerWarn(
+              `[ReticulumChat] event_pull_start_failed event=${item.hint.eventId} error=${err instanceof Error ? err.message : String(err)}`
+            );
+          })
+          .finally(() => {
+            this.eventPullStartingPeers.delete(peerKey);
+          });
       }
     } finally {
       this.eventPullQueueActive = false;
@@ -48636,17 +48817,68 @@ export class ReticulumChatManager extends EventEmitter {
     if (index >= 0) this.subscriptionFanoutQueue[index] = wire;
   }
 
-  private removeQueuedSubscriptionFanouts(groupId: number): void {
-    this.subscriptionFanoutQueue = this.subscriptionFanoutQueue.filter(
-      (wire) => {
-        const remove = this.getWireGroupIds(wire).includes(groupId);
-        if (remove) {
-          const key = this.subscriptionFanoutKey(wire);
-          if (key) this.subscriptionFanoutQueuedKeys.delete(key);
-        }
-        return !remove;
+  /**
+   * Adds `groupId` to an unsent summary page of our own subscriptions (no
+   * relay fields, no gossip width) if the page still fits once relayed.
+   * Returns false when no queued page can take it.
+   */
+  private mergeIntoQueuedSubscriptionPage(groupId: number): boolean {
+    for (let i = this.subscriptionFanoutQueue.length - 1; i >= 0; i -= 1) {
+      const wire = this.subscriptionFanoutQueue[i];
+      if (
+        wire.k !== 'group_sub' ||
+        wire.mode !== 'summary' ||
+        wire.o !== undefined ||
+        wire.h !== undefined ||
+        wire.fw !== undefined
+      ) {
+        continue;
       }
-    );
+      if (wire.groups.includes(groupId)) return true;
+      const groups = [...wire.groups, groupId];
+      if (paginateReticulumChatGroupSubIds(groups, 'summary').length !== 1) {
+        continue;
+      }
+      const merged: ReticulumChatWire = { ...wire, groups };
+      const mergedKey = this.subscriptionFanoutKey(merged);
+      this.subscriptionFanoutQueuedKeys.delete(
+        this.subscriptionFanoutKey(wire)
+      );
+      if (this.subscriptionFanoutQueuedKeys.has(mergedKey)) {
+        // The same page is already waiting further up.
+        this.subscriptionFanoutQueue.splice(i, 1);
+        return true;
+      }
+      this.subscriptionFanoutQueuedKeys.add(mergedKey);
+      this.subscriptionFanoutQueue[i] = merged;
+      return true;
+    }
+    return false;
+  }
+
+  private removeQueuedSubscriptionFanouts(groupId: number): void {
+    const kept: ReticulumChatWire[] = [];
+    for (const wire of this.subscriptionFanoutQueue) {
+      if (!this.getWireGroupIds(wire).includes(groupId)) {
+        kept.push(wire);
+        continue;
+      }
+      const key = this.subscriptionFanoutKey(wire);
+      if (key) this.subscriptionFanoutQueuedKeys.delete(key);
+      // A page that also announces other groups keeps them.
+      if (wire.k === 'group_sub' && wire.groups.length > 1) {
+        const rest: ReticulumChatWire = {
+          ...wire,
+          groups: wire.groups.filter((id) => id !== groupId),
+        };
+        const restKey = this.subscriptionFanoutKey(rest);
+        if (!this.subscriptionFanoutQueuedKeys.has(restKey)) {
+          this.subscriptionFanoutQueuedKeys.add(restKey);
+          kept.push(rest);
+        }
+      }
+    }
+    this.subscriptionFanoutQueue = kept;
   }
 
   private scheduleSubscriptionFanoutDrain(): void {
@@ -48736,24 +48968,15 @@ export class ReticulumChatManager extends EventEmitter {
     this.prunePeerSubscriptions();
     const groups = this.getSubscriptions();
     const wires: ReticulumChatWire[] = [];
-    for (
-      let offset = 0;
-      offset < groups.length;
-      offset += RETICULUM_CHAT_MAX_GROUPS_PER_SUB_PAGE
-    ) {
-      const page = groups.slice(
-        offset,
-        offset + RETICULUM_CHAT_MAX_GROUPS_PER_SUB_PAGE
-      );
-      if (page.length)
-        wires.push({
-          t: 'RCHAT',
-          k: 'group_sub',
-          groups: page,
-          mode: 'summary',
-          q: this.nextSubscriptionAdvertisementId(),
-          ...(bounded ? { fw: RETICULUM_CHAT_DISCOVERY_GOSSIP_WIDTH } : {}),
-        });
+    for (const page of paginateReticulumChatGroupSubIds(groups, 'summary')) {
+      wires.push({
+        t: 'RCHAT',
+        k: 'group_sub',
+        groups: page,
+        mode: 'summary',
+        q: this.nextSubscriptionAdvertisementId(),
+        ...(bounded ? { fw: RETICULUM_CHAT_DISCOVERY_GOSSIP_WIDTH } : {}),
+      });
     }
     this.enqueueSubscriptionFanouts(wires);
     for (const groupId of this.getDigestRefreshGroups(groups)) {
@@ -49036,13 +49259,15 @@ export class ReticulumChatManager extends EventEmitter {
         error: 'Bridge chat fanout unavailable',
       };
     }
-    return this.bridge.fanoutReticulumChatDetailed(
-      [wire],
-      excludePeerPresenceHashes,
-      {
-        maxPeerCount: Math.max(1, Math.floor(maxPeerCount)),
-        selectionKey,
-      }
+    return this.noteBridgeSendResult(
+      await this.bridge.fanoutReticulumChatDetailed(
+        [wire],
+        excludePeerPresenceHashes,
+        {
+          maxPeerCount: Math.max(1, Math.floor(maxPeerCount)),
+          selectionKey,
+        }
+      )
     );
   }
 
@@ -49069,9 +49294,11 @@ export class ReticulumChatManager extends EventEmitter {
         error: 'Bridge chat fanout unavailable',
       };
     }
-    return this.bridge.fanoutReticulumChatDetailed(
-      wires,
-      excludePeerPresenceHashes
+    return this.noteBridgeSendResult(
+      await this.bridge.fanoutReticulumChatDetailed(
+        wires,
+        excludePeerPresenceHashes
+      )
     );
   }
 
@@ -49116,6 +49343,32 @@ export class ReticulumChatManager extends EventEmitter {
     return result;
   }
 
+  /**
+   * Every send result passes through here: an overloaded or silent bridge
+   * pauses relaying for other peers for a moment.
+   */
+  private noteBridgeSendResult(
+    result: ReticulumSendResult
+  ): ReticulumSendResult {
+    if (result.ok) this.controlRetryPressureStreak = 0;
+    if (
+      result.ok === false &&
+      (result.reason === 'bridge-overloaded' ||
+        result.reason === 'bridge-timeout')
+    ) {
+      this.countDelivery('bridgePressureFailure');
+      this.relayPausedUntil =
+        this.now() + RETICULUM_CHAT_BRIDGE_PRESSURE_RELAY_PAUSE_MS;
+    }
+    return result;
+  }
+
+  private isRelayPausedForBridgePressure(): boolean {
+    if (this.now() >= this.relayPausedUntil) return false;
+    this.countDelivery('relaySkippedBridgePressure');
+    return true;
+  }
+
   private async sendToPeerOnce(
     peerHash: string,
     wire: ReticulumChatWire
@@ -49139,7 +49392,9 @@ export class ReticulumChatManager extends EventEmitter {
         error: 'Bridge chat send unavailable',
       };
     }
-    return this.bridge.sendReticulumChatDetailed(key, wire);
+    return this.noteBridgeSendResult(
+      await this.bridge.sendReticulumChatDetailed(key, wire)
+    );
   }
 
   private shouldRetryControlSend(
@@ -49385,6 +49640,12 @@ export class ReticulumChatManager extends EventEmitter {
 
   private async drainControlRetryQueue(): Promise<void> {
     if (this.controlRetryActive) return;
+    if (this.now() < this.controlRetryPressureUntil) {
+      this.scheduleControlRetryQueue(
+        this.controlRetryPressureUntil - this.now()
+      );
+      return;
+    }
     this.controlRetryActive = true;
     try {
       const now = this.now();
@@ -49437,6 +49698,7 @@ export class ReticulumChatManager extends EventEmitter {
           continue;
         }
         if (result.ok) {
+          this.controlRetryPressureStreak = 0;
           this.dropControlRetry(item, false);
           continue;
         }
@@ -49451,6 +49713,8 @@ export class ReticulumChatManager extends EventEmitter {
           this.dropControlRetry(item, true);
           continue;
         }
+        const bridgeOverloaded =
+          result.ok === false && result.reason === 'bridge-overloaded';
         if (
           result.ok === false &&
           (item.attempts >= this.controlRetryMaxAttempts(attemptedWire) ||
@@ -49461,16 +49725,58 @@ export class ReticulumChatManager extends EventEmitter {
             `[ReticulumChat] Control retry dropped kind=${attemptedWire.k} attempts=${item.attempts}:`,
             result.error ?? result.reason
           );
+          if (bridgeOverloaded) {
+            this.pauseControlRetriesForBridgePressure();
+            break;
+          }
           continue;
+        }
+        if (bridgeOverloaded) {
+          // The bridge, not the peer, is the bottleneck: every other due
+          // retry would fail the same way and only add to its backlog.
+          this.pauseControlRetriesForBridgePressure();
+          item.nextAttemptAt = this.controlRetryPressureUntil;
+          break;
         }
         item.nextAttemptAt = this.now() + RETICULUM_CHAT_CONTROL_RETRY_MS;
       }
     } finally {
       this.controlRetryActive = false;
       if (this.controlRetryQueue.size > 0) {
-        this.scheduleControlRetryQueue(RETICULUM_CHAT_CONTROL_RETRY_TICK_MS);
+        this.scheduleControlRetryQueue(
+          Math.max(
+            RETICULUM_CHAT_CONTROL_RETRY_TICK_MS,
+            this.controlRetryPressureUntil - this.now()
+          )
+        );
       }
     }
+  }
+
+  /**
+   * Pauses the whole retry queue after the bridge reported its queues
+   * full, longer each time it stays jammed; a pause that ended a while
+   * ago (or any delivered send since) starts over at 3 s.
+   */
+  private pauseControlRetriesForBridgePressure(): void {
+    const now = this.now();
+    if (
+      now - this.controlRetryPressureUntil >
+      RETICULUM_CHAT_CONTROL_RETRY_PRESSURE_MAX_MS
+    ) {
+      this.controlRetryPressureStreak = 0;
+    }
+    this.controlRetryPressureStreak = Math.min(
+      this.controlRetryPressureStreak + 1,
+      8
+    );
+    this.controlRetryPressureUntil =
+      now +
+      Math.min(
+        RETICULUM_CHAT_CONTROL_RETRY_MS *
+          2 ** (this.controlRetryPressureStreak - 1),
+        RETICULUM_CHAT_CONTROL_RETRY_PRESSURE_MAX_MS
+      );
   }
 
   private isTimedControlWireStale(

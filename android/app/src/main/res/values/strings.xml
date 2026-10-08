@@ -22,4 +22,11 @@
     </plurals>
     <!-- Same count, short, after the status on the one-line collapsed notification. -->
     <string name="status_waiting_short">%1$d unsent</string>
+    <!-- Share-sheet entries that send what is shared into a group or a DM. -->
+    <string name="share_target_groups">GO Groups</string>
+    <string name="share_target_directs">GO DMs</string>
+    <!-- Share-sheet entry that sends what is shared into Saved Messages (the chat with yourself). -->
+    <string name="share_target_self">GO Self-DM</string>
+    <!-- A Rev is Torq's story post; the name stays the same in every language. -->
+    <string name="share_target_torq_rev" translatable="false">Torq Rev</string>
 </resources>

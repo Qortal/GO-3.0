@@ -18,6 +18,8 @@ export const APP_LOCK_GATED_EVENTS = [
   'openPdf',
   'openUserLookupDrawer',
   'globalActionJoinGroup',
+  // Something shared from another app: the chat picker or the chat it opens.
+  'chat-share-request',
 ] as const;
 
 export const APP_LOCK_EVENT_TTL_MS = 5 * 60 * 1_000;

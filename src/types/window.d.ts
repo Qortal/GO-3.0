@@ -905,6 +905,19 @@ declare global {
         peerAddress: string,
         limit?: number
       ) => Promise<unknown[]>;
+      /** GO: a DM conversation from one message on (a search result). */
+      getDirectHistoryFrom?: (
+        myAddress: string,
+        peerAddress: string,
+        fromEventId: string,
+        limit?: number
+      ) => Promise<unknown[]>;
+      /** GO: local search of the account's direct messages (newest first). */
+      searchDirectMessages?: (
+        myAddress: string,
+        query: string,
+        limit?: number
+      ) => Promise<unknown[]>;
       getDirectSummaries: (
         myAddress: string,
         peerAddress?: string

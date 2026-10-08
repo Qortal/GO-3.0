@@ -64,14 +64,30 @@ const isFiniteCssAnimation = (animation: Animation): boolean => {
 };
 
 /**
+ * Already on its last frame. The idle rule pauses finished animations too
+ * (a `fill: both` entrance stays in getAnimations() and reads `paused`, not
+ * `finished`), and `play()` rewinds one at its end: the dashboard fade would
+ * start again from opacity 0, a black flash 10 s after the last touch.
+ */
+const isAtEnd = (animation: Animation): boolean => {
+  const end = animation.effect?.getComputedTiming().endTime;
+  const time = animation.currentTime;
+  if (typeof end !== 'number' || typeof time !== 'number') return false;
+  return animation.playbackRate < 0 ? time <= 0 : time >= end;
+};
+
+/**
  * Let every finite CSS animation the idle rule froze run to its end. Only
- * `paused` ones are touched: `play()` on a finished animation would replay it.
+ * `paused` ones that still have frames to play are touched: `play()` on a
+ * finished animation would replay it. Ones left paused at their end show the
+ * same last frame, and leaving idle resumes them without a rewind.
  */
 export function resumeFiniteAnimations(): void {
   if (typeof document.getAnimations !== 'function') return;
   for (const animation of document.getAnimations()) {
     if (animation.playState !== 'paused') continue;
     if (!isFiniteCssAnimation(animation)) continue;
+    if (isAtEnd(animation)) continue;
     animation.play();
   }
 }

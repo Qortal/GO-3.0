@@ -69,6 +69,14 @@
     "empty": "Praegu pole privaatsõnumeid.",
     "subtitle": "Privaatsed Reticulumi vestlused"
   },
+  "dm_search": {
+    "clear": "tühjenda otsing",
+    "empty": "sõnumeid ei leitud",
+    "hint": "sisesta vähemalt 2 tähemärki, et otsida oma otsesõnumitest",
+    "placeholder": "otsi oma otsesõnumitest",
+    "title": "otsi sõnumeid",
+    "unavailable": "sõnumite otsing pole praegu saadaval"
+  },
   "event_preview": {
     "all_day": "all day",
     "calendar_unavailable": "calendar is unavailable",
@@ -152,11 +160,14 @@
     "copy_failed": "unable to copy image",
     "download": "download image",
     "download_failed": "unable to download image",
+    "newer": "uuem",
+    "older": "vanem",
     "prepare_failed": "unable to prepare image for clipboard",
     "read_failed": "unable to read image",
     "save": "salvesta pilt",
     "share": "jaga pilti",
     "share_failed": "pilti ei õnnestunud jagada",
+    "video": "video",
     "zoom_in": "zoom in",
     "zoom_out": "zoom out"
   },
@@ -300,6 +311,21 @@
       },
       "title": "Teksti suurus"
     }
+  },
+  "share": {
+    "cancel": "tühista jagamine",
+    "cannot_write": "selles kanalis saavad kirjutada ainult adminid: mine tagasi ja vali teine vestlus",
+    "chip_label": "jagamiseks {{what}}: puuduta vestlust, et see lisada",
+    "kind_file": "fail",
+    "kind_link": "link",
+    "kind_photo": "foto",
+    "kind_text": "tekst",
+    "kind_video": "video",
+    "notice_extra_files": "lisati ainult esimene fail: sõnumis on üks fail.",
+    "notice_too_large": "üle {{max}} MB fail jäeti välja.",
+    "notice_unreadable": "jagatud faili ei õnnestunud lugeda.",
+    "notice_unsafe_image": "pildilt ei õnnestunud asukohaandmeid eemaldada, seega jäeti see välja.",
+    "pick_chat": "vali vestlus"
   },
   "status_badge": {
     "copy_diagnostics": "Kopeeri diagnostika",

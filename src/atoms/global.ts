@@ -713,6 +713,11 @@ export function getNotificationPanelDismissKey(notification: {
     if (data?.identifier == null && data?.created == null) return null;
     return getNotificationSeenKey(notification as any);
   }
+  if (notification?.event === 'PAYMENT_RECEIVED') {
+    return (data as { signature?: string })?.signature
+      ? getNotificationSeenKey(notification as any)
+      : null;
+  }
   return null;
 }
 
@@ -1094,6 +1099,9 @@ export const infoSnackGlobalAtom = atomWithReset<{
   sourceId?: string;
   actionLabel?: string;
   actionEvent?: string;
+  /** Tapping the popup runs this (e.g. open or share a saved file). */
+  onTap?: () => void;
+  tapHint?: string;
 } | null>(null);
 
 // Tutorial state (reduces context re-renders for tutorial UI)

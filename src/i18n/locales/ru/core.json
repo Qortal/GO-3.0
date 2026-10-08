@@ -589,7 +589,8 @@
     "stage_gathering": "Сбор из QDN",
     "stage_saving": "Сохранение на телефон",
     "storage_permission": "GO нужно разрешение на доступ к хранилищу, чтобы сохранять файлы в Documents.",
-    "tap_to_open": "Нажмите, чтобы открыть · {{location}}"
+    "tap_to_open": "Нажмите, чтобы открыть · {{location}}",
+    "tap_to_open_or_share": "Нажмите, чтобы открыть или поделиться"
   },
   "filter": {
     "all": "все",
@@ -644,7 +645,7 @@
     "loading_versions": "Загрузка версий из QDN…",
     "no_notes": "Для этой версии не добавлено описание изменений.",
     "no_versions": "Версии GO 3.0 ещё не публиковались.",
-    "open_in_qshare": "Открыть в Q-Share+",
+    "open_in_qshare": "Открыть в Q-Share",
     "progress": {
       "assembling": "Сборка версии",
       "bytes_of_total": "{{done}} из {{total}}",
@@ -820,6 +821,7 @@
       "new_notification": "Новое уведомление",
       "new_notification_from": "Новое уведомление от {{ appName }}",
       "new_payment_body": "Вы получили {{ amount }} QORT.",
+      "new_payment_from": "Платёж от {{ name }}",
       "new_payment_received": "Получен новый платёж",
       "new_qmail": "У вас новое сообщение Q-Mail",
       "no_app_notifications": "Пока нет уведомлений приложений",
@@ -1023,6 +1025,17 @@
   "payment": "оплата",
   "payment_notification": "уведомление о платеже",
   "payments_count": "Платежи ({{count}})",
+  "pdf_reader": {
+    "gesture_hint": "Нажмите для полноэкранного режима · двойное нажатие или щипок для масштаба",
+    "gesture_hint_pages": "Проведите, чтобы листать · нажмите для полноэкранного режима · двойное нажатие для масштаба",
+    "look_dim": "Приглушённый",
+    "look_dim_hint": "Тёмная рамка, страница без изменений",
+    "look_light": "Светлый",
+    "look_light_hint": "Светлая рамка и белая страница",
+    "look_smart": "Умный",
+    "look_smart_hint": "Тёмные страницы для текста, фото остаются как есть",
+    "page_look": "Вид страницы"
+  },
   "poll_embed": "Опрос встроен",
   "port": "порт",
   "presence": {
@@ -1066,7 +1079,7 @@
     "modules_hotkeys_label": "Hotkeys",
     "modules_music_description": "A compact Earbump player with search and quick playback.",
     "modules_music_label": "Music player",
-    "modules_suggest_description": "Compose > Add Subject + Message & Send it our way!",
+    "modules_suggest_description": "Вступите в группу GO 3.0 и расскажите, что нам сделать дальше.",
     "modules_suggest_label": "Suggest a module",
     "music_empty_title": "EarBump library",
     "music_empty_uploaded": "Waiting for library",
@@ -1157,6 +1170,10 @@
   "receiver": "приемник",
   "remaining_to_level": "Осталось до уровня {{level}}",
   "retry": "повторить",
+  "search": {
+    "apps_and_websites": "приложения и сайты",
+    "suggested": "рекомендуемое"
+  },
   "sender": "отправитель",
   "server": "сервер",
   "service_type": "тип обслуживания",
@@ -1176,7 +1193,32 @@
     "categories": "категории",
     "community_apps": "приложения сообщества",
     "my_apps": "мои приложения",
-    "official_apps": "официальные приложения"
+    "official_apps": "официальные приложения",
+    "pinned": "закреплённые"
+  },
+  "tabs_home": {
+    "app_name": "название приложения",
+    "browse_apps": "смотреть приложения",
+    "close_all": "закрыть все",
+    "close_folder": "закрыть папку",
+    "close_tab": "закрыть вкладку",
+    "delete_folder": "удалить папку",
+    "empty_hint": "нажмите на булавку у любого приложения в библиотеке. Эти папки те же, что и во вкладках.",
+    "empty_title": "здесь живут ваши закреплённые приложения",
+    "folder_empty_hint": "нажмите и удерживайте открытую вкладку и выберите эту папку, чтобы добавить её сюда.",
+    "folder_name": "название папки",
+    "folder_options": "настройки папки",
+    "make_large": "большая папка",
+    "make_small": "маленькая папка",
+    "more_apps": "ещё приложений: {{amount}}",
+    "new_folder": "новая папка",
+    "new_folder_name": "новая папка",
+    "open_folder": "открыть {{name}}",
+    "open_tabs": "открытые вкладки",
+    "remove_from_folder": "убрать из папки",
+    "rename_app": "переименовать приложение",
+    "rename_folder": "переименовать папку",
+    "window_n": "окно {{amount}}"
   },
   "tabs_overlay": {
     "delete_folder_body_few": "сохранённые в ней приложения ({{count}}) будут убраны из вкладок. Открытые вкладки останутся открытыми.",

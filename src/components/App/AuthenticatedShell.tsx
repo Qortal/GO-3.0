@@ -1,4 +1,5 @@
 import { Box } from '@mui/material';
+import { shellWashGradient } from './shellBackground';
 import { Group } from '../Group/Group';
 import { ReticulumGroupAboutModal } from '../Group/ReticulumGroupAbout';
 import { AuthenticatedProfile } from '../Profile';
@@ -71,15 +72,15 @@ export function AuthenticatedShell({
         width: '100%',
         willChange: 'opacity, transform',
         '&::before': {
-          background:
-            theme.palette.mode === 'dark'
-              ? 'linear-gradient(to bottom, rgba(255, 255, 255, 0.03), rgba(9, 11, 15, 0.02))'
-              : 'linear-gradient(to bottom, rgba(255, 255, 255, 0.18), rgba(255, 255, 255, 0.08))',
+          background: shellWashGradient(theme),
           content: '""',
           inset: 0,
           pointerEvents: 'none',
           position: 'absolute',
           zIndex: 0,
+          // Phones: Home has the plain page colour, as the Q-Apps library and
+          // Chat do, so the sections match side by side.
+          [theme.breakpoints.down('md')]: { display: 'none' },
         },
         '& > *': {
           position: 'relative',

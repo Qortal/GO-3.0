@@ -19,6 +19,7 @@ import { useAtom, useAtomValue } from 'jotai';
 import {
   type DragEvent as ReactDragEvent,
   type PointerEvent as ReactPointerEvent,
+  type TouchEvent as ReactTouchEvent,
   type ReactNode,
   memo,
   useContext,
@@ -39,6 +40,7 @@ import EditRoundedIcon from '@mui/icons-material/EditRounded';
 import GraphicEqRoundedIcon from '@mui/icons-material/GraphicEqRounded';
 import ForumRoundedIcon from '@mui/icons-material/ForumRounded';
 import MailOutlineRoundedIcon from '@mui/icons-material/MailOutlineRounded';
+import GroupAddRoundedIcon from '@mui/icons-material/GroupAddRounded';
 import PlayArrowRoundedIcon from '@mui/icons-material/PlayArrowRounded';
 import ShoppingBagRoundedIcon from '@mui/icons-material/ShoppingBagRounded';
 import SpaRoundedIcon from '@mui/icons-material/SpaRounded';
@@ -71,6 +73,7 @@ import {
   subscribeToEvent,
   unsubscribeFromEvent,
 } from '../../utils/events';
+import { handleQortalDeepLink } from '../../utils/paymentLink';
 import { openHttpUrlExternally } from '../../utils/openExternalHttp';
 import {
   dashboardPanelSx,
@@ -148,10 +151,13 @@ const QORTINO_MASCOT_VERTICAL_LIFT_PX = 12;
 const QORTINO_WORKSPACE_BAY_HEIGHT_PX = 251;
 const HOTKEY_SLOT_COUNT = 6;
 const HOTKEY_PICKER_SEARCH_DEBOUNCE_MS = 320;
+/** "Suggest a module": the GO 3.0 group's invite in Q-Chat. */
+const GO_GROUP_INVITE_LINK = 'qortal://use-group/action-join/groupid-1152';
 const CURATED_HOTKEY_APP_NAMES = [
   'Q-Tube',
-  'Quitter',
-  'Q-Mail',
+  'Torq',
+  'Q-Share+',
+  'Q-Mail+',
   'Q-Blog',
   'Q-Trade',
   'Ear-Bump',
@@ -190,6 +196,9 @@ type WorkspaceState = {
 type HomeQortinoWorkspaceCardProps = {
   onGettingStartedComplete?: () => void;
   onOpenAppsPanel?: () => void;
+  /** Qortino under the hotkeys (Home's Qortino AI module); off, the card
+   * is the workspace bay alone. */
+  showQortino?: boolean;
 };
 
 type QortinoSectionRuntimeFallbackProps = {
@@ -202,6 +211,8 @@ type QortinoSectionRuntimeFallbackProps = {
 type WorkspaceModuleDefinition = {
   appName?: string;
   appPath?: string;
+  /** A qortal:// link GO opens itself (handleQortalDeepLink). */
+  link?: string;
   description: string;
   icon: typeof AppsRoundedIcon;
   key: string;
@@ -1667,6 +1678,8 @@ const SparkDecoration = ({ left, top }: { left: string; top: string }) => (
 );
 
 const HOTKEY_PICKER_VIRTUAL_GAP_PX = 7;
+/** Finger travel on the results before the keyboard closes. */
+const HOTKEY_PICKER_KEYBOARD_CLOSE_PX = 8;
 
 const HotkeyPickerVirtualScroll = memo(function HotkeyPickerVirtualScroll({
   rows,
@@ -1676,6 +1689,26 @@ const HotkeyPickerVirtualScroll = memo(function HotkeyPickerVirtualScroll({
   renderRow: (row: HotkeyPickerRow) => ReactNode;
 }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const touchStartYRef = useRef<number | null>(null);
+
+  // Scrolling the results closes the keyboard, so the list gets the room.
+  const handleTouchStart = useCallback((event: ReactTouchEvent) => {
+    touchStartYRef.current = event.touches[0]?.clientY ?? null;
+  }, []);
+  const handleTouchMove = useCallback((event: ReactTouchEvent) => {
+    const startY = touchStartYRef.current;
+    const y = event.touches[0]?.clientY;
+    if (startY == null || y == null) return;
+    if (Math.abs(y - startY) < HOTKEY_PICKER_KEYBOARD_CLOSE_PX) return;
+    touchStartYRef.current = null;
+    const active = document.activeElement;
+    if (
+      active instanceof HTMLInputElement ||
+      active instanceof HTMLTextAreaElement
+    ) {
+      active.blur();
+    }
+  }, []);
 
   const estimateSize = useCallback(
     (index: number) => {
@@ -1734,6 +1767,8 @@ const HotkeyPickerVirtualScroll = memo(function HotkeyPickerVirtualScroll({
   return (
     <Box
       ref={scrollRef}
+      onTouchMove={handleTouchMove}
+      onTouchStart={handleTouchStart}
       sx={{
         display: 'flex',
         flex: 1,
@@ -1796,6 +1831,7 @@ const HotkeyPickerVirtualScroll = memo(function HotkeyPickerVirtualScroll({
 export const HomeQortinoWorkspaceCard = ({
   onGettingStartedComplete,
   onOpenAppsPanel,
+  showQortino = true,
 }: HomeQortinoWorkspaceCardProps) => {
   const { t } = useTranslation(['group', 'core']);
   const qw = useCallback(
@@ -1860,15 +1896,14 @@ export const HomeQortinoWorkspaceCard = ({
         mode: 'music',
       },
       {
-        appName: 'q-mail',
-        appPath: 'to/Qortino',
         description: qw(
           'modules_suggest_description',
-          'Compose > Add Subject + Message & Send it our way!'
+          'Join the GO 3.0 group and tell us what to build next.'
         ),
-        icon: MailOutlineRoundedIcon,
+        icon: GroupAddRoundedIcon,
         key: 'suggest-module',
         label: qw('modules_suggest_label', 'Suggest a module'),
+        link: GO_GROUP_INVITE_LINK,
       },
     ],
     [qw]
@@ -3432,8 +3467,7 @@ export const HomeQortinoWorkspaceCard = ({
         (left, right) =>
           (featuredOrder.get(left.appName.toLowerCase()) ?? 999) -
           (featuredOrder.get(right.appName.toLowerCase()) ?? 999)
-      )
-      .slice(0, HOTKEY_SLOT_COUNT);
+      );
   }, [filteredHotkeyCatalog]);
 
   const featuredHotkeyCatalogKeys = useMemo(
@@ -4020,6 +4054,15 @@ export const HomeQortinoWorkspaceCard = ({
   );
   const handleSelectWorkspaceModule = useCallback(
     (module: WorkspaceModuleDefinition) => {
+      if (module.link) {
+        const link = module.link;
+        setOpenModulePickerDialog(false);
+        window.requestAnimationFrame(() => {
+          handleQortalDeepLink(link);
+        });
+        return;
+      }
+
       if (module.appName) {
         console.log('going through');
         setOpenModulePickerDialog(false);
@@ -4582,6 +4625,8 @@ export const HomeQortinoWorkspaceCard = ({
         '&::after': {
           background: alpha(theme.palette.common.white, 0.05),
           content: '""',
+          // The line over Qortino; nothing under it without him.
+          display: showQortino ? undefined : 'none',
           height: '1px',
           left: '18px',
           position: 'absolute',
@@ -5795,7 +5840,9 @@ export const HomeQortinoWorkspaceCard = ({
           containerName: 'qortino-card',
           containerType: 'inline-size',
           display: 'grid',
-          gridTemplateRows: `${workspaceBayHeightPx}px minmax(0, 1fr)`,
+          gridTemplateRows: showQortino
+            ? `${workspaceBayHeightPx}px minmax(0, 1fr)`
+            : `minmax(${workspaceBayHeightPx}px, 1fr)`,
           height: '100%',
           overflow: 'hidden',
           position: 'relative',
@@ -5823,21 +5870,26 @@ export const HomeQortinoWorkspaceCard = ({
           {workspaceBaySection}
         </ErrorBoundary>
 
-        <ErrorBoundary
-          fallback={
-            <QortinoSectionRuntimeFallback
-              body={qw(
-                'runtime_qortino_body',
-                'The workspace bay above is still safe. Refresh GO and if this keeps happening we will trace the exact crash from here.'
-              )}
-              theme={theme}
-              title={qw('runtime_qortino_title', 'QORTINO hit a runtime snag.')}
-              variant="qortino"
-            />
-          }
-        >
-          {qortinoCompanionSection}
-        </ErrorBoundary>
+        {showQortino ? (
+          <ErrorBoundary
+            fallback={
+              <QortinoSectionRuntimeFallback
+                body={qw(
+                  'runtime_qortino_body',
+                  'The workspace bay above is still safe. Refresh GO and if this keeps happening we will trace the exact crash from here.'
+                )}
+                theme={theme}
+                title={qw(
+                  'runtime_qortino_title',
+                  'QORTINO hit a runtime snag.'
+                )}
+                variant="qortino"
+              />
+            }
+          >
+            {qortinoCompanionSection}
+          </ErrorBoundary>
+        ) : null}
       </Box>
       {qortinoDonationOverlay}
       {openModulePickerDialog ? (

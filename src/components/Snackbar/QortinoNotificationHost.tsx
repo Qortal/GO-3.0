@@ -2,7 +2,7 @@ import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import { Box, Button, IconButton, Typography, useMediaQuery, useTheme } from '@mui/material';
 import { alpha } from '@mui/material/styles';
 import { AnimatePresence, motion } from 'framer-motion';
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type RefObject } from 'react';
 import { MOBILE_TOP_BAR_HEIGHT_PX } from '../Mobile/MobileTopBar';
 import { DEFAULT_QORTINO_LOOK_DEBUG_SETTINGS } from '../Group/qortinoLookDebug';
 import {
@@ -28,6 +28,8 @@ type NotificationInfo = {
   type?: string;
   actionLabel?: string;
   actionEvent?: string;
+  onTap?: () => void;
+  tapHint?: string;
 } | null;
 
 type QortinoNotificationHostProps = {
@@ -46,7 +48,14 @@ type NotificationPayload = {
   type?: string;
   actionLabel?: string;
   actionEvent?: string;
+  /** Runs when the banner itself is tapped (not dragged, not the X). */
+  onTap?: () => void;
+  /** Small line under the message saying what a tap does. */
+  tapHint?: string;
 };
+
+/** A press that moved further than this was a drag, not a tap. */
+const TAP_MAX_MOVE_PX = 10;
 
 const runNotificationAction = (actionEvent?: string) => {
   if (actionEvent === 'openCustomNodeGuideWebsite') {
@@ -652,6 +661,7 @@ const MobileNotificationBanner = ({
   notificationType,
   onAction,
   palette,
+  tapHint,
   theme,
 }: {
   actionLabel?: string;
@@ -666,6 +676,7 @@ const MobileNotificationBanner = ({
   notificationType: NotificationType;
   onAction?: () => void;
   palette: ReturnType<typeof getNotificationPalette>;
+  tapHint?: string;
   theme: ReturnType<typeof useTheme>;
 }) => {
   const bannerRef = useRef<HTMLDivElement>(null);
@@ -862,6 +873,24 @@ const MobileNotificationBanner = ({
       >
         {message}
       </Typography>
+      {tapHint ? (
+        <Typography
+          sx={{
+            color: isDarkMode
+              ? alpha('#E8F0FF', 0.62)
+              : alpha(theme.palette.text.primary, 0.6),
+            fontFamily: 'Inter',
+            fontSize: '0.75rem',
+            fontWeight: 500,
+            lineHeight: 1.3,
+            maxWidth: maxTextWidthCh,
+            position: 'relative',
+            zIndex: 0,
+          }}
+        >
+          {tapHint}
+        </Typography>
+      ) : null}
       {actionLabel && onAction ? (
         <Button
           onClick={onAction}
@@ -961,6 +990,8 @@ export const QortinoNotificationHost = ({
         message?: string;
         sourceId?: string;
         type?: string;
+        onTap?: () => void;
+        tapHint?: string;
       }>
     ) => {
       const payload = event.detail?.data ?? event.detail ?? {};
@@ -977,6 +1008,8 @@ export const QortinoNotificationHost = ({
         type: normalizeNotificationType(payload.type),
         actionLabel: payload.actionLabel,
         actionEvent: payload.actionEvent,
+        onTap: typeof payload.onTap === 'function' ? payload.onTap : undefined,
+        tapHint: payload.onTap ? payload.tapHint : undefined,
       });
       setOpen(true);
     };
@@ -1030,6 +1063,26 @@ export const QortinoNotificationHost = ({
       runNotificationAction(actionEvent);
     });
   }, [closeNotification, info?.actionEvent]);
+  // The banner can be dragged, so a tap is a press that ended where it
+  // started. Buttons inside it (X, action) keep their own job.
+  const pressStartRef = useRef<{ x: number; y: number } | null>(null);
+  const onTap = info?.onTap;
+  const handleBannerClick = useCallback(
+    (event: ReactMouseEvent) => {
+      const start = pressStartRef.current;
+      pressStartRef.current = null;
+      if (!onTap || !start) return;
+      const moved = Math.hypot(
+        event.clientX - start.x,
+        event.clientY - start.y
+      );
+      if (!(moved <= TAP_MAX_MOVE_PX)) return;
+      if ((event.target as Element | null)?.closest?.('button')) return;
+      closeNotification();
+      onTap();
+    },
+    [closeNotification, onTap]
+  );
   const isDarkMode = theme.palette.mode === 'dark';
   const frameChrome = useMemo(
     () => getNotificationFrameChrome(notificationType, isDarkMode),
@@ -1108,8 +1161,12 @@ export const QortinoNotificationHost = ({
           animate={{ opacity: 1, y: 0, scale: 1 }}
           exit={{ opacity: 0, y: isMobile ? -10 : -12, scale: 0.99 }}
           transition={{ duration: 0.22, ease: 'easeOut' }}
+          onPointerDown={(event) => {
+            pressStartRef.current = { x: event.clientX, y: event.clientY };
+          }}
+          onClick={handleBannerClick}
           style={{
-            cursor: 'grab',
+            cursor: onTap ? 'pointer' : 'grab',
             maxWidth: '100%',
             pointerEvents: 'auto',
             position: 'relative',
@@ -1133,6 +1190,7 @@ export const QortinoNotificationHost = ({
               notificationType={notificationType}
               onAction={actionLabel ? handleNotificationAction : undefined}
               palette={palette}
+              tapHint={info?.tapHint}
               theme={theme}
             />
           ) : (

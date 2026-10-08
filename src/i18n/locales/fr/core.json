@@ -575,7 +575,8 @@
     "stage_gathering": "Collecte depuis QDN",
     "stage_saving": "Enregistrement sur le téléphone",
     "storage_permission": "GO a besoin de l'autorisation de stockage pour enregistrer des fichiers dans Documents.",
-    "tap_to_open": "Touchez pour ouvrir · {{location}}"
+    "tap_to_open": "Touchez pour ouvrir · {{location}}",
+    "tap_to_open_or_share": "Touchez pour ouvrir ou partager"
   },
   "filter": {
     "all": "tous",
@@ -630,7 +631,7 @@
     "loading_versions": "Chargement des versions depuis QDN…",
     "no_notes": "Aucune note de version n'a été ajoutée pour cette version.",
     "no_versions": "Aucune version de GO 3.0 n'a encore été publiée.",
-    "open_in_qshare": "Ouvrir dans Q-Share+",
+    "open_in_qshare": "Ouvrir dans Q-Share",
     "progress": {
       "assembling": "Assemblage de la version",
       "bytes_of_total": "{{done}} sur {{total}}",
@@ -806,6 +807,7 @@
       "new_notification": "Nouvelle notification",
       "new_notification_from": "Nouvelle notification de {{ appName }}",
       "new_payment_body": "Vous avez reçu {{ amount }} QORT.",
+      "new_payment_from": "Paiement de {{ name }}",
       "new_payment_received": "Nouveau paiement reçu",
       "new_qmail": "Vous avez un nouveau Q-Mail",
       "no_app_notifications": "Pas encore de notifications d’applications",
@@ -1009,6 +1011,17 @@
   "payment": "paiement",
   "payment_notification": "Notification de paiement",
   "payments_count": "Paiements ({{count}})",
+  "pdf_reader": {
+    "gesture_hint": "Touchez pour le plein écran · touchez deux fois ou pincez pour zoomer",
+    "gesture_hint_pages": "Balayez pour tourner les pages · touchez pour le plein écran · touchez deux fois pour zoomer",
+    "look_dim": "Atténué",
+    "look_dim_hint": "Cadre sombre, page inchangée",
+    "look_light": "Clair",
+    "look_light_hint": "Cadre clair et page blanche",
+    "look_smart": "Intelligent",
+    "look_smart_hint": "Pages sombres pour le texte, photos conservées telles quelles",
+    "page_look": "Aspect de la page"
+  },
   "poll_embed": "sondage",
   "port": "port",
   "presence": {
@@ -1052,7 +1065,7 @@
     "modules_hotkeys_label": "Raccourcis",
     "modules_music_description": "Un lecteur Earbump compact avec recherche et lecture rapide.",
     "modules_music_label": "Lecteur musique",
-    "modules_suggest_description": "Rédiger > Ajouter sujet + message et envoyez-nous !",
+    "modules_suggest_description": "Rejoignez le groupe GO 3.0 et dites-nous quoi construire ensuite.",
     "modules_suggest_label": "Suggérer un module",
     "music_empty_title": "Bibliothèque EarBump",
     "music_empty_uploaded": "En attente de la bibliothèque",
@@ -1143,6 +1156,10 @@
   "receiver": "récepteur",
   "remaining_to_level": "Restant pour niveau {{level}}",
   "retry": "réessayer",
+  "search": {
+    "apps_and_websites": "applis et sites web",
+    "suggested": "suggestions"
+  },
   "sender": "expéditeur",
   "server": "serveur",
   "service_type": "type de service",
@@ -1162,7 +1179,32 @@
     "categories": "catégories",
     "community_apps": "apps communautaires",
     "my_apps": "mes apps",
-    "official_apps": "apps officielles"
+    "official_apps": "apps officielles",
+    "pinned": "épinglées"
+  },
+  "tabs_home": {
+    "app_name": "nom de l'app",
+    "browse_apps": "parcourir les apps",
+    "close_all": "tout fermer",
+    "close_folder": "fermer le dossier",
+    "close_tab": "fermer l'onglet",
+    "delete_folder": "supprimer le dossier",
+    "empty_hint": "touchez l'épingle de n'importe quelle app dans la bibliothèque. Ces dossiers sont les mêmes que dans les onglets.",
+    "empty_title": "vos apps épinglées vivent ici",
+    "folder_empty_hint": "appuyez longuement sur un onglet ouvert et choisissez ce dossier pour l'ajouter ici.",
+    "folder_name": "nom du dossier",
+    "folder_options": "options du dossier",
+    "make_large": "grand dossier",
+    "make_small": "petit dossier",
+    "more_apps": "{{amount}} apps de plus",
+    "new_folder": "nouveau dossier",
+    "new_folder_name": "nouveau dossier",
+    "open_folder": "ouvrir {{name}}",
+    "open_tabs": "onglets ouverts",
+    "remove_from_folder": "retirer du dossier",
+    "rename_app": "renommer l'app",
+    "rename_folder": "renommer le dossier",
+    "window_n": "fenêtre {{amount}}"
   },
   "tabs_overlay": {
     "delete_folder_body_one": "l’app qui y est enregistrée ({{count}}) sera retirée des onglets. Les onglets ouverts restent ouverts.",

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import i18n from 'i18next';
 import { executeEvent } from '../utils/events';
 import {
@@ -12,10 +12,12 @@ import { mimeToExtensionMap } from '../utils/memeTypes';
 import FileSaver from 'file-saver';
 import { isCapacitor } from '../utils/platform';
 import {
+  describeMobileSave,
   isSilentSaveFile,
   mobileSaveLocationLabelFor,
   saveBlobToMobileDocuments,
 } from '../utils/mobileFileSave';
+import { openSavedFileActions } from '../components/Mobile/SavedFileActionsSheet';
 import { isAndroidPackageFile } from '../utils/androidPackageFiles';
 import {
   beginQdnSaveNotification,
@@ -27,7 +29,9 @@ import {
   finishQdnSaveNotification,
   reportQdnTransferProgress,
 } from '../utils/qdnDownloadNotifications';
-import { useAtomValue, useSetAtom } from 'jotai';
+import { useAtom, useAtomValue, useSetAtom } from 'jotai';
+import { qappFullScreenTabAtom } from '../components/Mobile/mobileQappFrame';
+import { BACK_PRIORITY, useAndroidBack } from '../utils/androidBack';
 import {
   QORTAL_PROTOCOL,
   TIME_HOURS_1_IN_MILLISECONDS,
@@ -520,14 +524,27 @@ export const showSaveFilePicker = async (
         return;
       }
       if (silent) return;
+      const savedName = describeMobileSave(
+        saved,
+        filename,
+        mimeType || blob?.type
+      );
       setInfoSnackCustom({
         type: 'success',
         message: i18n.t('core:file_transfer.saved_to', {
-          location: mobileSaveLocationLabelFor(
-            filename,
-            mimeType || blob?.type
-          ),
+          location: savedName.folder,
         }),
+        // Tapping the popup offers to open the file in another app or share it.
+        duration: 7000,
+        tapHint: i18n.t('core:file_transfer.tap_to_open_or_share'),
+        onTap: () =>
+          openSavedFileActions({
+            fileName: savedName.name,
+            folder: savedName.folder,
+            uri: saved?.uri,
+            mimeType: mimeType || blob?.type,
+            blob,
+          }),
       });
       setOpenSnackGlobal(true);
       return;
@@ -658,6 +675,48 @@ export const useQortalMessageListener = (
     isDOMContentLoaded: false,
   });
   const setHasSettingsChangedAtom = useSetAtom(navigationControllerAtom);
+
+  // SET_FULL_SCREEN: this app's viewer wants the whole screen (GO phones
+  // hide their bars). See qappFullScreenTabAtom.
+  const [fullScreenTab, setFullScreenTab] = useAtom(qappFullScreenTabAtom);
+  const isFullScreen = Boolean(tabId) && fullScreenTab === tabId;
+  const wasFullScreenRef = useRef(false);
+  useEffect(() => {
+    // Ended by anything (the app itself, back, leaving or closing the tab):
+    // tell the app, so a viewer that is still open can close too.
+    if (wasFullScreenRef.current && !isFullScreen) {
+      try {
+        const frame = iframeRef?.current;
+        if (frame?.contentWindow && frame.src) {
+          frame.contentWindow.postMessage(
+            {
+              action: 'FULL_SCREEN_CHANGED',
+              requestedHandler: 'UI',
+              payload: { enabled: false },
+            },
+            new URL(frame.src).origin
+          );
+        }
+      } catch {
+        /* frame already gone */
+      }
+    }
+    wasFullScreenRef.current = isFullScreen;
+  }, [iframeRef, isFullScreen]);
+  // The tab closes: its full screen goes with it.
+  useEffect(
+    () => () =>
+      setFullScreenTab((current) => (current === tabId ? null : current)),
+    [setFullScreenTab, tabId]
+  );
+  // Back always brings the bars back, even if the app never says so.
+  useAndroidBack(
+    () => {
+      setFullScreenTab(null);
+      return true;
+    },
+    { priority: BACK_PRIORITY.overlay, enabled: isFullScreen }
+  );
 
   const openSnackGlobal = useAtomValue(openSnackGlobalAtom);
   const setOpenSnackGlobal = useSetAtom(openSnackGlobalAtom);
@@ -1040,6 +1099,18 @@ export const useQortalMessageListener = (
         if (event.ports[0]) {
           event.ports[0].postMessage({ result: true, error: null });
         }
+      } else if (event?.data?.action === 'SET_FULL_SCREEN') {
+        // { action: 'SET_FULL_SCREEN', enabled: boolean }. Phones hide the
+        // bars for this tab; elsewhere it is simply acknowledged.
+        const enabled = Boolean(
+          event?.data?.enabled ?? event?.data?.payload?.enabled
+        );
+        if (tabId) {
+          setFullScreenTab((current) =>
+            enabled ? tabId : current === tabId ? null : current
+          );
+        }
+        event.ports?.[0]?.postMessage({ result: true, error: null });
       } else if (event?.data?.action === 'SET_TAB' && !isDevMode) {
         // GO-21: a Q-App may only say which app to open (service, name,
         // identifier, path). It never sets the tab's URL or preview flag, and a
@@ -1084,7 +1155,7 @@ export const useQortalMessageListener = (
     return () => {
       frameWindow.removeEventListener('message', listener);
     };
-  }, [isDevMode, appName, appService, tabId]); // Empty dependency array to run once when the component mounts
+  }, [isDevMode, appName, appService, tabId, setFullScreenTab]); // Empty dependency array to run once when the component mounts
 
   return { path, history, resetHistory, changeCurrentIndex };
 };

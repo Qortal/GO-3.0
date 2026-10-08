@@ -11,6 +11,307 @@ desktop Hub. The format is based on
 
 ## [Unreleased]
 
+## [0.0.16] — 2026-10-08 (GO 3.0)
+
+### Added
+
+- **Chats open with their messages** _(shared)_ — a chat opened before shows
+  its messages at once and then refreshes them quietly. On phones GO also
+  reads ahead the 6 most recently active groups and 6 most recent DMs in
+  idle moments, so they open ready too: messages from the phone's own chat
+  database only, sender names from your own Qortal node. Kept in memory only
+  (never on disk), emptied on lock, logout and account switch, paused while a
+  chat is open; a chat with newer messages than its copy opens the usual way
+  (unread marker in place), and expired disappearing messages never show.
+- **Share into GO chats** _(GO)_ — the Android share sheet has "GO Groups",
+  "GO DMs" and "GO Self-DM" for photos, videos, files, links and text from
+  other apps. Groups and DMs open that list in Q-Chat with the shared item
+  where the search, new and settings buttons are (an X or back drops it);
+  the chat tapped takes it into its composer, and a picture there asks to
+  compress or send as a file, as when attached. Self-DM puts it straight
+  into Saved Messages. The item waits until the chat can take files, so it
+  is no longer lost when a group or DM was still opening, when the list was
+  slid over an open chat, or when Chat was in the background. No single
+  chats are offered in the share sheet or the launcher (earlier test builds
+  did; their entries are removed).
+- **Immersive mode** _(GO)_ — Home settings → System → Immersive mode: Off,
+  Auto or Manual, for open Q-Apps and websites (the Q-Apps library keeps its
+  bars). Auto slides the top bar and the
+  bottom tab bar away when scrolling down and brings them back when scrolling
+  up, at the top of a list and on a new screen. Manual keeps them hidden. In
+  both, the Android status bar is hidden (a swipe from the top shows it for a
+  moment); content stays clear of the camera, and the strip around it takes
+  the page's own background colour (read on the phone from the screen edges,
+  where cards and pictures usually stop) and fades out over the top of the
+  content, so it stays one calm colour per Q-App or website and posts and
+  pictures slide under it. When a photo or video reaches the sides (a
+  full-screen viewer, a story), it takes the colour right under it instead
+  (a viewer's black header), or black, never a colour out of the picture. While the bars are out, that colour also fills the
+  top bar's area, with the bar itself see-through (search field, Tabs and
+  avatar float on the app's colour; on a light page in the dark theme the bar
+  keeps its own background so its controls stay readable). In Manual, a
+  small floating button brings the bars back for
+  4 seconds; using the bars keeps them out longer and a tap on the content
+  puts them away. The button can be dragged along either edge and remembers
+  where it was left, fades when left alone, and carries a dot for new chats
+  or bell items; a one-time bubble explains it. Q-Apps and websites resize to
+  fit (once per change, never under a bar), and scrolling inside them is
+  followed through the finger's direction, since their frames hide it from
+  GO. Home, Chat, full-screen panels, the lock screen and the full-screen
+  composer keep the normal layout.
+- **Floating tab buttons** _(GO)_ — the bottom bar is now three round glass
+  buttons (Home, Apps, Chat; icons only), everywhere. With immersive mode on, Home, the
+  Chat lists and conversations, and the Apps library scroll on behind them,
+  with room at the end of each list and the chat message box kept above them;
+  taps between the buttons reach the content. With it off, and always in a
+  Q-App or website (so its own bottom menu is never covered), the content
+  ends above the buttons, which sit on the page colour. On Home,
+  in Chat and on the Q-Apps library the top bar takes the page's own
+  background (on Home including the shell's soft wash) and loses its divider,
+  so it blends into the page. With immersive mode on, the phone's status bar
+  is also hidden on the Q-Apps library, which keeps GO's own bars.
+- **Swipe between Home, Apps and Chat** _(GO)_ — a sideways swipe moves to
+  the next section like turning a page: the current one follows the finger
+  and the next slides in beside it with its real content (Home, the Q-Apps
+  library or Your last Q-App, the chat lists), then it lands where the round
+  buttons would take You. A quick flick is enough; a short, slow drag
+  springs back, and Home and Chat stretch a little at the ends. Swipes stay
+  with whatever handles its own: Q-Apps and websites, carousels such as
+  Featured apps, sliders, text fields and open chats; in Chat the
+  Groups / DMs swipe keeps working and hands over at its edge (swiping right
+  on Groups goes to Apps). Chat is now kept in the background like Home
+  (built once soon after start), so coming back to it is instant, and every
+  section, the Q-Apps library included, comes back scrolled where You
+  left it. Home keeps its exact
+  layout while parked (the Qortino card stays built, Wallet Activity keeps
+  its last entry while refreshing), so it slides in and lands precisely where
+  it was left.
+- **Settings on phones** _(GO)_ — Android back (the side swipe) closes
+  Settings and returns to Home instead of leaving GO; the close button is a
+  big round one at the bottom right; a sideways swipe on the page moves
+  between the tabs (the page slides out and the next tab slides in, the
+  open tab's chip scrolls into view).
+- **Swipe between tabs** _(GO)_ — a group's Members panel (members,
+  invite, invites, bans, join requests) moves between its tabs with a
+  sideways swipe, like Settings.
+- **Swipe out of a chat** _(GO)_ — on an open DM or Saved Messages, a
+  swipe to the right takes You back to the DM list, like the system back;
+  on a group chat, to the right goes to the Groups list and to the left to
+  the DMs (in the order of the Groups / DMs switch). The chat follows the
+  finger off the screen and the list it leads to comes out from under it. A
+  short, slow drag springs back; the message box, pictures, the channel
+  list and anything that scrolls sideways keep their own drags. It replaces
+  the edge swipe that slid the list over an open chat.
+- **One Q-Chat header on phones** _(GO)_ — the Groups and DMs lists now sit
+  under one header that stays still while only the lists slide: the
+  Groups / DMs switch's pill follows the finger and glides to where the
+  swipe lands, and the buttons belong to the list showing (the new-group and
+  new-chat icons cross-fade on the way). Q-Chat settings are on both lists.
+- **Search your DMs** _(GO)_ — the search button on the DMs list searches
+  the text of every direct message on the phone (Saved Messages included):
+  newest first, with who it is with, when, and the words around the match
+  highlighted. Tapping a result opens that chat at the message, loading
+  older history when the message is further back than the chat loads.
+  Edited messages are found by their current text; deleted ones, and
+  messages from people You silenced, are not.
+
+- **Pull down for Tabs** _(GO)_ — on Home, the Q-Apps library and the chat
+  lists, pulling down when the list is already at the top brings the Tabs
+  window down with the finger. Let go past about a third of it (or flick
+  down) and it stays open; otherwise it slides back up. The list under the
+  finger holds still meanwhile. Sideways swipes, long presses and lists
+  scrolled down are left alone, and so is Home scrolled down, even on a
+  window with its own list at its top (the feeds used to pull Tabs down from
+  the bottom of Home).
+- **Search a group's members** _(GO)_ — the Members screen of a group chat
+  has a search button: suggestions show as You type (names starting with it
+  first, then names containing it, then addresses), each with the avatar, the
+  typed letters picked out, an Owner or Admin tag and a short address, up to
+  eight and "N more". Tapping one (or the keyboard's Enter for the first)
+  takes You to that member in the list, opening their folded section if
+  needed, with a short highlight. Android back closes the search first.
+- **Rearrange Home** _(GO)_ — long press the background of any Home window
+  (not a button or link) and every window folds into a short labelled strip,
+  the held one under the finger; drag it up or down, the others make room,
+  let go and they unfold in the new order, the moved window where the
+  finger left it. Saved on the device; Profile settings can reset it. The
+  strips only move and fade, and the windows take their new places without
+  being redrawn, so it stays smooth on phones.
+- **Torq Revs from GO** _(GO)_ — with Torq chosen on Home, the Post to
+  Torq panel has a Rev button that opens Torq's own Rev editor, and the
+  Android share sheet gets a "Torq Rev" entry next to "Torq": one photo or
+  video opens the Rev editor with it (photos lose their location data first;
+  videos over 100 MB get a note and an empty editor). With Quitter chosen,
+  neither Torq entry shows. Needs Torq 1.3 (its rev/new link and
+  OPEN_REV_COMPOSER message).
+- **Wallet Activity history** _(shared)_ — under the latest payment, a
+  Transaction history row opens the account's payments, newest first: who,
+  sent or received, when, and the amount, 20 at a time with Show more. Tap a
+  name to look the account up. It refreshes when the balance changes.
+- **More Home switches** _(shared)_ — Qortino AI, Featured Q-Apps and Status
+  can now be turned off too, next to Group Activity and the Torq/Quitter
+  feed. Turning off Qortino AI keeps the hotkeys.
+
+### Changed
+
+- **Updates open in Q-Share** _(GO)_ — GO 3.0 Updates links each build to
+  Q-Share again ("Open in Q-Share"), which now does what Q-Share+ did.
+- **Names at once** _(shared)_ — a sender name GO has seen (a lookup, a
+  group's member list, the DM list, your own) shows from the first frame in
+  every chat, also for new messages; DMs show their messages without waiting
+  for the name lookup.
+- **Tabs: a small swipe scrolls, a big one closes** _(GO)_ — on the open Tabs
+  window a short swipe up scrolls the tabs and a long one closes the window,
+  also on the strip below the panel.
+- **Torq Feed reads like Torq** _(shared)_ — Following counts every account
+  You follow (it stopped at the newest 24), and deleted or oversized posts
+  are skipped before they are downloaded, as in Torq's own feed.
+- **Immersive mode starts on Auto** _(GO)_ — new installs (and anyone who
+  never picked a mode) get Auto; a saved Off or Manual is kept.
+- **Torq is Home's default** _(shared)_ — Home's composer, feed, Featured
+  Q-Apps and the share sheet start on Torq; a saved Quitter choice is kept.
+  The Post to Torq panel says "Harness Your unmutable momentum!" and its Rev
+  button sits above Compose.
+- **Suggest a module** _(shared)_ — opens the GO 3.0 group's invite in Q-Chat
+  instead of a Q-Mail draft.
+- **Home switches moved to Profile** _(shared)_ — the Modules tab is gone:
+  the switches for what Home shows sit in Home settings → Profile, under the
+  wallet address.
+- **Recommended hotkeys** _(shared)_ — Torq instead of Quitter, Q-Share+ and
+  Q-Mail+ instead of Q-Mail; all recommended apps are listed (it stopped at
+  six). Scrolling the Select hotkeys results closes the keyboard.
+
+- **Search suggestions on phones** _(GO)_ — the results under the top
+  bar search reach down to just above the keyboard (or the round tab
+  buttons when it is closed) instead of stopping short, and look cleaner:
+  bigger icons, the typed letters picked out, an App or Website tag beside
+  each publisher (many results share a name), a small arrow on the result
+  the keyboard's Go key opens, and a quiet "Apps & websites" heading.
+- **Find Groups on phones** _(GO)_ — opens full screen with the panel header
+  the group panels use (Android back closes it); the rows fit a phone, with
+  the member count and score under the name and the filter chips in one
+  row that scrolls sideways (the whole panel stays within the screen).
+- **Smoother switching between Home, Apps and Chat** _(GO)_ — measured on a
+  phone frame by frame and reworked:
+  - GO's UI no longer re-renders as a whole when the shell changes (bars
+    sliding, the keyboard, balance updates), and a hidden Home or Chat no
+    longer re-renders in the background on every update (that alone kept
+    the phone busy for up to two seconds after a switch). Showing Home
+    again no longer rebuilds it.
+  - The sections beside the one showing are laid out and painted ahead of
+    time (just off screen, hidden from screen readers), so a swipe only
+    moves them: no hitch when the next section first appears (showing a
+    hidden one cost about 40 ms of style and paint right then). A section
+    that springs back, or stays beside the new one after a tap on the
+    buttons, keeps waiting where it is instead of being built again. The
+    next section never trails a frame behind.
+  - A quick second swipe while the first is still gliding now counts (the
+    first lands at once and the new one carries on from there), instead of
+    being ignored. The work after a swipe lands (the new section starting
+    up) now gives way to the finger, so a quick next swipe never waits for
+    it, and it no longer jolts a swipe already under way.
+  - A Q-App sliding in is already laid out as it stays: its own bottom menu
+    no longer jumps up after it lands.
+- **Smoother Groups ⇄ DMs** _(GO)_ — swiping (or tapping the switch)
+  between the Groups and DMs lists starts gliding at once: the switch
+  itself, which re-renders the whole chat, now happens once the glide is on
+  screen instead of holding its first frames back (the lists sat still
+  under the lifted finger, then jumped). The switch's pill glides on the GPU
+  too, so it no longer stutters while the chat catches up.
+- **Swipe along the bottom bar** _(GO)_ — swiping sideways on the round
+  Home / Apps / Chat buttons (or the whole bottom strip where nothing
+  scrolls behind it) switches sections too, also from inside a Q-App or
+  website, whose own swipes stay theirs.
+- **Immersive bars glide on the GPU** _(GO)_ — the content and the coloured
+  edge strips now slide on transforms, which keep moving even while a Q-App
+  keeps the page busy (before, the slide could drop to a few frames a
+  second), and start on the very next frame after the scroll or finger drag
+  that moves them, rather than after whatever else was waiting. The edge
+  colour is no longer read while the bars slide: a header passing through
+  the read band used to flash the strips and the see-through top bar dark
+  and back.
+- **Top bar blends into light Q-Apps** _(GO)_ — with immersive mode on, the
+  top bar now floats see-through on every Q-App's own colour, light pages
+  included: its search field, Tabs button and avatar are drawn light over a
+  light page (even in GO's dark theme) and dark over a dark one, switching
+  halfway through the colour's cross-fade so they always read. Before, a
+  light page kept GO's dark bar on top of it. The search field is a soft
+  tint of the page instead of GO's paper colour. Menus and dialogs opened
+  from the bar keep GO's own theme.
+
+### Fixed
+
+- **The first tap after a swipe works** _(GO)_ — after swiping to Chat, between
+  Groups and DMs, or back out of a chat, the first tap on a group or DM did
+  nothing. The sideways swipe left an invisible scroll fling behind in the
+  browser engine, and the tap that stopped it was thrown away. Fixed (the
+  lists allow sideways panning, which nothing there uses), and a tap while a
+  switch is still settling now finishes it at once.
+- **No stray full download when a group opens** _(shared)_ — for a moment on
+  every open, a group chat also fetched all of its messages from the node and
+  opened a live connection, only to throw them away.
+- **No more "black and back" flashes** _(shared)_ — every few minutes, and
+  after each start, the screen went black for a moment: the idle-time
+  animation pause replayed entrance animations that had already finished.
+- **Phone gossip goes to 4 neighbours, not all of them** _(GO)_ — DM
+  notices, DM probes and group subscriptions that Hub sends to 4 neighbours
+  went to every neighbour from a phone (up to 12 on battery, 20 while
+  charging on Wi-Fi), because the phone's bridge dropped the limit. Now they
+  go to 4, as on Hub. A DM the other side hasn't confirmed still goes to
+  everyone after 3 seconds.
+- **Opening a chat no longer resends every group subscription** _(GO)_ —
+  each time a group chat, a channel, the members list or Qortal Land opened,
+  and each time the group list refreshed, GO sent a hello, all its group
+  subscriptions and up to 20 group digests to every neighbour, right while
+  the chat was loading its own messages. Now that happens only when the
+  groups change, and once after the network comes up.
+- **Admins-only channels show just a notice on phones** _(GO)_ — in a
+  channel where only admins can write, members saw the composer frame with
+  its buttons behind the "Only group admins can write in this channel"
+  text. Now only that line shows, above the tab buttons.
+- **DMs after a restart wait for a real connection** _(GO)_ — at start GO
+  counted the peers it had seen in the last hour as live, so it thought it
+  was connected before any link was up. The first DM catch-up then went
+  nowhere and the next try came about 15 minutes later, and a phone that
+  had been offline could stop retrying a DM for up to 2 hours. GO now waits
+  for the first real link and starts the catch-up the moment it is up.
+- **Accounts with 45 or more groups reach Hubs further away** _(shared)_ —
+  a list of 45–50 groups was too big for one packet once a Hub passed it
+  on, so it was dropped without a word and Hubs further away never learned
+  that the account wanted those groups. Group lists now go out in pages
+  that still fit after relaying, and a list that is too big is split when
+  GO passes it on.
+- **Lighter sign-in** _(shared)_ — signing in announced every group to
+  every neighbour one by one (43 messages for a 43-group account) before
+  sending them all again in one go. Groups that join while the first ones
+  are still going out now share one message.
+- **Faster back online after switching networks** _(GO)_ — moving between
+  Wi-Fi and mobile data kept the phone "online", so GO noticed the dead
+  hub connections only after up to about two minutes. It now reconnects to
+  the hubs as soon as the phone settles on the new network.
+- **Opening a chat is lighter** _(shared)_ — every open also read the
+  group's 500 newest messages into a list nothing used.
+- **New messages in the open chat come first** _(shared)_ — downloads for
+  all groups waited in one line, and one unreachable peer could hold up
+  every download, the open chat's new messages included, for up to 30
+  seconds. The open chat now goes first, and a slow peer only holds up
+  its own downloads.
+- **More peers to ask for older messages** _(shared)_ — scrolling up asked
+  one peer and kept two others in reserve in case it failed. GO now keeps up
+  to five in reserve, since peers often hold an incomplete copy of a
+  channel.
+- **No pile-up when the phone's chat bridge is full** _(shared)_ — failed
+  sends were retried every 3 seconds even when the bridge itself reported
+  its queues full, adding to its backlog. Retries now wait (3 to 20
+  seconds) while it stays full, and relaying other people's group traffic
+  pauses for a few seconds so Your own messages get through first.
+- **Online count comes back after GO's screen reloads** _(GO)_ — when
+  Android restarted GO's web view in the second right after sign-in, while
+  presence was still starting, everything presence sent went to the closed
+  screen: the new one showed 0 online and "connecting" until GO was
+  restarted. Presence now always talks to the current screen, and a screen
+  that hears nothing asks presence again (up to 3 times).
+
 ## [0.0.15] — 2026-10-05 (GO 3.0)
 
 ### Changed

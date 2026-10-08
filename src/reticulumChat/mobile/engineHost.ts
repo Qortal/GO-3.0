@@ -596,7 +596,6 @@ export type EngineDiagnosticsSnapshot = {
 
 let presencePeers: Array<Record<string, unknown>> = [];
 let presenceLeases: Array<Record<string, unknown>> = [];
-let overlayHealthy = false;
 
 // ── Qortal group validation (port of setup.ts validateQortalGroupMember) ────
 
@@ -823,11 +822,48 @@ const MEMBERSHIP_REANNOUNCE_DEBOUNCE_MS = 1_500;
 let overlayRecoveryReplayTimer: ReturnType<typeof setTimeout> | null = null;
 let lastOverlayRecoveryReplayAt = 0;
 let membershipReannounceTimer: ReturnType<typeof setTimeout> | null = null;
+/** A full subscription replay went out since the overlay became usable. */
+let reannouncedSinceUsable = false;
+
+/**
+ * The engine's "overlay healthy": python has at least one admitted overlay
+ * link, the only kind it sends chat frames on. The presence snapshot's own
+ * `healthy` also counts account endpoints kept for an hour and connected hub
+ * interfaces, so it read true at app start before any link existed: sign-in
+ * DM discovery, the DM summary and the pending sweep then ran into a bridge
+ * with no links, and backed off for 15 min (summary) or up to 2 h (sweep).
+ * Now they wait for the first link (`overlay-availability`).
+ */
+function isOverlayUsable(): boolean {
+  return bridge?.hasAdmittedOverlayLink?.() === true;
+}
 
 function subscribedGroupCount(): number {
   const m = getReticulumChatManager() as any;
   const subs = m?.getSubscriptions?.();
   return Array.isArray(subs) ? subs.length : 0;
+}
+
+function isSubscribedGroup(m: any, groupId: unknown): boolean {
+  const subs = m?.getSubscriptions?.();
+  return Array.isArray(subs) && subs.includes(Number(groupId));
+}
+
+/** Sorted group ids of the last `setLocalGroupMemberships`; null before it. */
+let lastMembershipGroupIdsKey: string | null = null;
+
+function membershipGroupIdsKey(memberships: unknown[]): string {
+  return memberships
+    .map((entry) =>
+      Number(
+        entry && typeof entry === 'object'
+          ? (entry as { groupId?: unknown }).groupId
+          : entry
+      )
+    )
+    .filter((groupId) => Number.isInteger(groupId) && groupId > 0)
+    .sort((a, b) => a - b)
+    .join(',');
 }
 
 /**
@@ -840,11 +876,12 @@ function scheduleMembershipReannounce(reason: string): void {
   membershipReannounceTimer = setTimeout(() => {
     membershipReannounceTimer = null;
     const m = getReticulumChatManager() as any;
-    if (!m || !overlayHealthy) return;
+    if (!m || !isOverlayUsable()) return;
     const count = subscribedGroupCount();
     if (count === 0) return;
     try {
       m.reannounceSubscriptions();
+      reannouncedSinceUsable = true;
       console.log(
         `[MobileChat] membership_reannounce reason=${reason} groups=${count}`
       );
@@ -934,6 +971,7 @@ function onOverlayHealthRecovered(): void {
     lastOverlayRecoveryReplayAt = Date.now();
     try {
       (getReticulumChatManager() as any)?.reannounceSubscriptions();
+      reannouncedSinceUsable = true;
       console.log('[MobileChat] overlay_recovered_subscriptions_replayed');
     } catch (err) {
       console.warn('[MobileChat] subscription replay failed', err);
@@ -967,6 +1005,17 @@ export function startEngine(initial: unknown): void {
       console.warn('[MobileChat] overlay admitted introduction failed', err);
     }
   });
+  // The first admitted link is when the overlay really becomes usable: the
+  // engine resumes deferred DM discovery and the pending sweep, and the
+  // subscriptions are replayed. Losing the last link re-arms the replay.
+  bridge.on('overlay-availability', ({ available }: { available: boolean }) => {
+    if (!available) {
+      reannouncedSinceUsable = false;
+      return;
+    }
+    introduceNewOwnDevicePeers();
+    setTimeout(() => onOverlayHealthRecovered(), 0);
+  });
   resourceStore = new ReticulumResourceStore({
     policy: { limitBytes: MOBILE_RESOURCE_LIMIT_BYTES },
   });
@@ -976,7 +1025,7 @@ export function startEngine(initial: unknown): void {
     validateGroupAdmin,
     getVerifiedReticulumPeers: () => presencePeers as any,
     getAccountEndpointLeases: () => presenceLeases as any,
-    hasGoodOverlayHealth: () => overlayHealthy,
+    hasGoodOverlayHealth: () => isOverlayUsable(),
     resourceStore,
     // A phone is a leaf: it consumes group digests/notices but does not relay
     // them along interest routes (that was ~6-10 bridge sends a second).
@@ -1076,8 +1125,18 @@ const handlers: Record<string, Handler> = {
   setLocalGroupMemberships: (groupIds) => {
     const m = manager();
     if (!m) return notRunning;
-    m.setLocalGroupMemberships(Array.isArray(groupIds) ? groupIds : []);
-    if (overlayHealthy) scheduleMembershipReannounce('memberships_applied');
+    const memberships = Array.isArray(groupIds) ? groupIds : [];
+    m.setLocalGroupMemberships(memberships);
+    // Group.tsx re-applies the memberships whenever its group list renders
+    // again, nearly always with the same groups. Replay everything only when
+    // the groups changed, or when no replay has gone out since the overlay
+    // came up (first session: links before memberships).
+    const key = membershipGroupIdsKey(memberships);
+    const changed = key !== lastMembershipGroupIdsKey;
+    lastMembershipGroupIdsKey = key;
+    if (isOverlayUsable() && (changed || !reannouncedSinceUsable)) {
+      scheduleMembershipReannounce('memberships_applied');
+    }
     return { success: true };
   },
   setPublicGroupDirectory: (groupIds) => {
@@ -1255,6 +1314,19 @@ const handlers: Record<string, Handler> = {
   },
   getDirectHistory: (myAddress, peerAddress, limit) =>
     manager()?.getDirectHistory(myAddress, peerAddress, limit) ?? [],
+  getDirectHistoryFrom: (myAddress, peerAddress, fromEventId, limit) =>
+    manager()?.getDirectHistoryFrom(
+      String(myAddress || '').trim(),
+      String(peerAddress || '').trim(),
+      String(fromEventId || ''),
+      Number(limit) || 1000
+    ) ?? [],
+  searchDirectMessages: (myAddress, query, limit) =>
+    manager()?.searchDirectMessages(
+      String(myAddress || '').trim(),
+      String(query || ''),
+      Number(limit) || 60
+    ) ?? [],
   getDirectSummaries: (myAddress, peerAddress) => {
     const m = manager();
     if (!m) return [];
@@ -1317,8 +1389,21 @@ const handlers: Record<string, Handler> = {
     const m = manager();
     if (!m) return notRunning;
     try {
+      const wasSubscribed = isSubscribedGroup(m, groupId);
       m.subscribeGroup(groupId);
-      if (overlayHealthy) scheduleMembershipReannounce('subscribe_group');
+      // Opening a chat, a channel, the members list or Qortal Land calls this
+      // for a group that is already subscribed; subscribeChannel then sends
+      // the open group's active subscription. A full replay (hello + every
+      // group page + 20 digests to every neighbour) is only for a new group,
+      // and for the first session, where the overlay comes up before
+      // Group.tsx has subscribed anything.
+      if (
+        isOverlayUsable() &&
+        (!reannouncedSinceUsable ||
+          (!wasSubscribed && isSubscribedGroup(m, groupId)))
+      ) {
+        scheduleMembershipReannounce('subscribe_group');
+      }
       return { success: true };
     } catch (err) {
       return {
@@ -2112,12 +2197,10 @@ export function handleMainMessage(data: any): void {
   if (data.t === 'presence-state') {
     presencePeers = Array.isArray(data.peers) ? data.peers : [];
     presenceLeases = Array.isArray(data.leases) ? data.leases : [];
-    const wasHealthy = overlayHealthy;
-    overlayHealthy = data.healthy === true;
-    if (overlayHealthy && !wasHealthy) {
-      setTimeout(() => onOverlayHealthRecovered(), 0);
-    }
-    if (overlayHealthy) introduceNewOwnDevicePeers();
+    // `data.healthy` is not used for the engine: it counts saved endpoints,
+    // so it is true before any link exists (see isOverlayUsable). Recovery
+    // runs on the bridge's `overlay-availability` instead.
+    if (isOverlayUsable()) introduceNewOwnDevicePeers();
     // Leases are what make an own device pinnable and pullable; the engine
     // throttles the resulting reconcile/catch-up itself.
     try {

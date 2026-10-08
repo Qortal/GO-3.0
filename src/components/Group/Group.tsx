@@ -10,6 +10,7 @@ import {
 } from '@mui/material';
 import { alpha } from '@mui/material/styles';
 import {
+  Activity,
   lazy,
   memo,
   Profiler,
@@ -24,6 +25,21 @@ import {
   type ReactNode,
 } from 'react';
 import { ChatGroup } from '../Chat/ChatGroup';
+import {
+  SECTION_ATTR,
+  SECTION_SURFACE_TOUCH_ACTION,
+  SECTION_SWIPE_IGNORE_ATTR,
+} from '../Mobile/sectionSwipe/sectionSwipe';
+import { useSectionSwipe } from '../Mobile/sectionSwipe/useSectionSwipe';
+import { GO_TAB_BAR_SPACE } from '../Mobile/mobileBarHeights';
+import { mobileTabBarElementAtom } from '../Mobile/mobileTabBarElement';
+import { IMMERSIVE_SLIDE_TARGET_ATTR } from '../Mobile/immersive/useImmersiveBars';
+import {
+  mobileTabForViewMode,
+  useMobileTabNavigation,
+} from '../Mobile/useMobileTabNavigation';
+import { mobileQappFrameShowingAtom } from '../Mobile/mobileQappFrame';
+import { immersiveMotionReduced } from '../Mobile/immersive/useImmersiveBars';
 import { CreateCommonSecret } from '../Chat/CreateCommonSecret';
 import { base64ToUint8Array } from '../../qdn/encryption/group-encryption';
 import { uint8ArrayToObject } from '../../encryption/encryption';
@@ -163,16 +179,33 @@ import { DirectsSidebar } from './DirectsSidebar';
 import {
   MobileChatListPager,
   isChatListSwipeEnabled,
+  type MobileChatListPagerHandle,
 } from './MobileChatListPager';
+import {
+  MobileChatListHeader,
+  type MobileChatListHeaderHandle,
+} from './MobileChatListHeader';
+import { DirectMessageSearchPanel } from './DirectMessageSearchPanel';
+import type { DirectSearchHit } from './directMessageSearch';
+import { directMessageJumpAtom } from '../Chat/directMessageJump';
+import { pendingChatShareAtom } from '../Chat/share/chatShareState';
+import { queueChatShareFor } from '../Chat/share/chatShareInbox';
+import {
+  chatShareKey,
+  type ChatShareChat,
+} from '../Chat/share/chatShareTarget';
+import { getChatListPanelSx } from './chatListRowStyles';
+import { useSwipeBackToList } from './useSwipeBackToList';
+import { PerfProfiler } from '../../utils/perfProfiler';
+import { useLatestCallback } from '../../hooks/useLatestCallback';
+import { FreezeWhenHidden } from '../Mobile/FreezeWhenHidden';
+import { QortinoMusicPlaybackController } from './HomeQortinoWorkspaceCard';
 import { GlobalChatWidget } from './GlobalChatWidget';
 import { openQChatTab, QCHAT_INTERNAL_TAB_ID } from '../../utils/openQChatTab';
 import { HubOnboardingTour } from '../Onboarding/HubOnboardingTour';
 import { OnboardingQChatPreview } from '../Onboarding/OnboardingQChatPreview';
 import { QORTAL_PROJECT_GROUP_ID } from './findGroupsPinned';
-import {
-  getLastOpenChat,
-  setLastOpenChat,
-} from '../../utils/chatPersistence';
+import { getLastOpenChat, setLastOpenChat } from '../../utils/chatPersistence';
 import { mobileAppsShellSx } from '../Mobile/mobileLayout';
 import { rememberQdnAvatarPrewarmPeerNames } from '../../lib/qdnAvatars/prewarmSources';
 import {
@@ -943,7 +976,7 @@ function ReticulumGroupSectionHeader({
   );
 }
 
-export const Group = ({
+const GroupInner = ({
   myAddress,
   setDesktopViewMode,
   desktopViewMode,
@@ -1049,6 +1082,17 @@ export const Group = ({
   const [mobileListPanelOpen, setMobileListPanelOpen] = useState(false);
   const mobileEdgeSwipeRef = useRef<{ x: number; y: number } | null>(null);
   const mobilePanelSwipeRef = useRef<{ x: number; y: number } | null>(null);
+  // Phones: the header over the Groups / DMs pages, moved with them.
+  const mobileChatListHeaderRef = useRef<MobileChatListHeaderHandle>(null);
+  const phoneChatListPagerRef = useRef<MobileChatListPagerHandle>(null);
+  const [directMessageSearchOpen, setDirectMessageSearchOpen] = useState(false);
+  // Phones: the open conversation and the list panel, for the swipe back from
+  // a DM to the DM list.
+  const [phoneChatDetailEl, setPhoneChatDetailEl] =
+    useState<HTMLElement | null>(null);
+  const [phoneChatListPanelEl, setPhoneChatListPanelEl] =
+    useState<HTMLElement | null>(null);
+  const setDirectMessageJump = useSetAtom(directMessageJumpAtom);
   const [reticulumSearchOverlayOpen, setReticulumSearchOverlayOpen] =
     useState(false);
   const [reticulumJoinRequestCount, setReticulumJoinRequestCount] = useState(0);
@@ -3207,62 +3251,64 @@ export const Group = ({
     groupsPropertiesRef.current = groupsProperties;
   }, [groupsProperties]);
 
-  const getGroupsProperties = useCallback(async (address) => {
-    try {
-      const url = `${getBaseApiReact()}/groups/member/${address}`;
-      const response = await fetch(url);
-      if (!response.ok) throw new Error('Cannot get group properties');
-      const data = await response.json();
-      const transformToObject = data.reduce((result, item) => {
-        result[item.groupId] = item;
-        return result;
-      }, {});
-      setGroupsProperties(transformToObject);
+  const getGroupsProperties = useCallback(
+    async (address) => {
+      try {
+        const url = `${getBaseApiReact()}/groups/member/${address}`;
+        const response = await fetch(url);
+        if (!response.ok) throw new Error('Cannot get group properties');
+        const data = await response.json();
+        const transformToObject = data.reduce((result, item) => {
+          result[item.groupId] = item;
+          return result;
+        }, {});
+        setGroupsProperties(transformToObject);
 
-      const ownerNamesFromApi: Record<string, string> = {};
-      const addressesToResolve: string[] = [];
+        const ownerNamesFromApi: Record<string, string> = {};
+        const addressesToResolve: string[] = [];
 
-      Object.keys(transformToObject).forEach((key) => {
-        const item = transformToObject[key];
-        const primary = item?.ownerPrimaryName?.trim();
-        if (primary) {
-          ownerNamesFromApi[key] = primary;
-          groupsOwnerNamesRef.current[key] = primary;
-          return;
-        }
-        const ownerAddress =
-          typeof item?.owner === 'string' ? item.owner.trim() : '';
-        if (ownerAddress) {
-          addressesToResolve.push(ownerAddress);
-        }
-      });
+        Object.keys(transformToObject).forEach((key) => {
+          const item = transformToObject[key];
+          const primary = item?.ownerPrimaryName?.trim();
+          if (primary) {
+            ownerNamesFromApi[key] = primary;
+            groupsOwnerNamesRef.current[key] = primary;
+            return;
+          }
+          const ownerAddress =
+            typeof item?.owner === 'string' ? item.owner.trim() : '';
+          if (ownerAddress) {
+            addressesToResolve.push(ownerAddress);
+          }
+        });
 
-      if (addressesToResolve.length > 0) {
-        try {
-          const namesByAddress = await getPrimaryNamesForAddresses(
-            addressesToResolve
-          );
-          Object.keys(transformToObject).forEach((key) => {
-            if (ownerNamesFromApi[key]) return;
-            const ownerAddress = transformToObject[key]?.owner;
-            const resolved = namesByAddress[ownerAddress]?.trim();
-            if (resolved) {
-              ownerNamesFromApi[key] = resolved;
-              groupsOwnerNamesRef.current[key] = resolved;
-            }
-          });
-        } catch (resolveError) {
-          console.log(resolveError);
+        if (addressesToResolve.length > 0) {
+          try {
+            const namesByAddress =
+              await getPrimaryNamesForAddresses(addressesToResolve);
+            Object.keys(transformToObject).forEach((key) => {
+              if (ownerNamesFromApi[key]) return;
+              const ownerAddress = transformToObject[key]?.owner;
+              const resolved = namesByAddress[ownerAddress]?.trim();
+              if (resolved) {
+                ownerNamesFromApi[key] = resolved;
+                groupsOwnerNamesRef.current[key] = resolved;
+              }
+            });
+          } catch (resolveError) {
+            console.log(resolveError);
+          }
         }
+
+        if (Object.keys(ownerNamesFromApi).length > 0) {
+          setGroupsOwnerNames((prev) => ({ ...prev, ...ownerNamesFromApi }));
+        }
+      } catch (error) {
+        console.log(error);
       }
-
-      if (Object.keys(ownerNamesFromApi).length > 0) {
-        setGroupsOwnerNames((prev) => ({ ...prev, ...ownerNamesFromApi }));
-      }
-    } catch (error) {
-      console.log(error);
-    }
-  }, [setGroupsOwnerNames, setGroupsProperties]);
+    },
+    [setGroupsOwnerNames, setGroupsProperties]
+  );
 
   const getGroupsWhereIAmAMember = useCallback(
     async (_groups) => {
@@ -4799,6 +4845,46 @@ export const Group = ({
     !mobileDirectConversationOpen &&
     !mobileListPanelOpen &&
     (mobileSectionPanelOpen || reticulumMembersPanelOpen);
+  // Phones: sideways swipes on an open chat lead back to the lists, like the
+  // system back. On a DM (Saved Messages included) a swipe to the right goes
+  // to the DM list; on a group chat to the right goes to the Groups list and
+  // to the left to the DMs (the Groups / DMs switch's order). The list being
+  // swiped to slides in under the chat. Replaces the edge swipe that slid
+  // the list over a chat.
+  const swipeBackFrom: 'direct' | 'group' | null =
+    !isMobile || !reticulumChatEnabled || newChat
+      ? null
+      : selectedDirect && desktopSideView === 'directs'
+        ? 'direct'
+        : selectedGroup && !selectedDirect
+          ? 'group'
+          : null;
+  const openDirectsFromGroupChat = useCallback(() => {
+    setSelectedGroup(null);
+    setSelectedDirect(null);
+    setNewChat(false);
+    setMobileListPanelOpen(false);
+    setDesktopSideView('directs');
+  }, []);
+  useSwipeBackToList(phoneChatDetailEl, phoneChatListPanelEl, {
+    enabled:
+      swipeBackFrom !== null &&
+      !mobileListPanelOpen &&
+      !mobileGroupPanelOpen &&
+      desktopViewMode === 'chat',
+    onBack: closeMobileChatDetail,
+    onForward: swipeBackFrom === 'group' ? openDirectsFromGroupChat : undefined,
+    onReveal: (direction) =>
+      phoneChatListPagerRef.current?.preview(
+        direction === null
+          ? null
+          : direction === 'forward' || swipeBackFrom === 'direct'
+            ? 'directs'
+            : 'groups'
+      ),
+    reducedMotion: immersiveMotionReduced(),
+  });
+
   useLayoutEffect(() => {
     setMobileGroupPanelOpen(mobileGroupPanelOpen);
   }, [mobileGroupPanelOpen, setMobileGroupPanelOpen]);
@@ -4806,6 +4892,65 @@ export const Group = ({
     () => () => setMobileGroupPanelOpen(false),
     [setMobileGroupPanelOpen]
   );
+
+  // Phones build Chat once, soon after start, at normal priority and out of
+  // sight, then park it like Home. React would otherwise build a hidden
+  // <Activity> only in idle time, which on a busy start can take many
+  // seconds, and a swipe or tap to Chat would meet an empty screen.
+  const [chatWarmUp, setChatWarmUp] = useState(false);
+  const chatBuiltRef = useRef(false);
+  useEffect(() => {
+    if (!isMobile || chatBuiltRef.current) return;
+    if (desktopViewMode === 'chat') {
+      chatBuiltRef.current = true;
+      return;
+    }
+    const id = window.setTimeout(() => {
+      chatBuiltRef.current = true;
+      setChatWarmUp(true);
+    }, 1200);
+    return () => window.clearTimeout(id);
+  }, [desktopViewMode, isMobile]);
+  useEffect(() => {
+    if (!chatWarmUp) return;
+    // Built and committed: park it (effects stop until Chat is opened).
+    const id = window.requestAnimationFrame(() => setChatWarmUp(false));
+    return () => window.cancelAnimationFrame(id);
+  }, [chatWarmUp]);
+
+  // Phones: a sideways swipe moves between Home, Apps and Chat, landing
+  // where the tab buttons would. Not over a Q-App (its frame owns its
+  // swipes), not on full-screen group panels.
+  const mainContentRef = useRef<HTMLDivElement | null>(null);
+  const qappFrameOnScreen = useAtomValue(mobileQappFrameShowingAtom);
+  const { go: goToMobileTab } = useMobileTabNavigation(
+    desktopViewMode,
+    setDesktopViewMode
+  );
+  const currentMobileTab = mobileTabForViewMode(desktopViewMode);
+  // Swipes along the bottom bar switch sections too, even over a Q-App.
+  const mobileTabBarElement = useAtomValue(mobileTabBarElementAtom);
+  useSectionSwipe(mainContentRef, {
+    enabled:
+      isMobile &&
+      currentMobileTab !== null &&
+      desktopViewMode !== 'dev' &&
+      !(currentMobileTab === 'apps' && qappFrameOnScreen) &&
+      !mobileGroupPanelOpen,
+    bar: mobileTabBarElement,
+    barEnabled:
+      isMobile &&
+      currentMobileTab !== null &&
+      desktopViewMode !== 'dev' &&
+      !mobileGroupPanelOpen,
+    current: currentMobileTab,
+    onNavigate: goToMobileTab,
+    reducedMotion: immersiveMotionReduced(),
+    // A Q-App ends above the round buttons once Apps is current; Home and
+    // Chat (immersive mode on) scroll on behind them (GO_TAB_BAR_SPACE is
+    // that room, 0 when they don't).
+    peekPaddingBottom: qappFrameOnScreen ? { apps: GO_TAB_BAR_SPACE } : {},
+  });
 
   const setDesktopSideViewFromRail = useCallback(
     (view: 'groups' | 'directs') => {
@@ -4838,6 +4983,31 @@ export const Group = ({
     setMobileListPanelOpen(false);
     setNewChat(value);
   }, []);
+
+  // A DM message search result: open that chat, scrolled to the message
+  // (ChatDirect takes the jump), the way a tap on its list row opens it.
+  const openDirectSearchResult = useCallback(
+    (hit: DirectSearchHit, direct: { address?: string }) => {
+      setDirectMessageSearchOpen(false);
+      setDirectMessageJump({
+        address: hit.peerAddress,
+        eventId: hit.messageId,
+        nonce: Date.now(),
+      });
+      setMobileListPanelOpen(false);
+      setSelectedDirect({ ...direct, address: hit.peerAddress });
+      setNewChat(false);
+      setIsOpenDrawer(false);
+      window
+        .sendMessage?.('addTimestampEnterChat', {
+          timestamp: Date.now(),
+          groupId: hit.peerAddress,
+        })
+        ?.catch?.(() => undefined);
+      getTimestampEnterChat();
+    },
+    [getTimestampEnterChat, setDirectMessageJump]
+  );
 
   const handleNotifyAdminClick = useCallback(
     (e: { currentTarget: HTMLElement | null }) => {
@@ -4883,6 +5053,114 @@ export const Group = ({
     [bumpReticulumReadEntryToken]
   );
 
+  // Something shared from another app ("GO Groups", "GO DMs" or "GO Self-DM"
+  // in the share sheet, see Chat/share/): the Groups or DM list comes up with
+  // the share in its header, and the chat tapped there takes it. Self-DM puts
+  // it straight into Saved Messages.
+  const [pendingChatShare, setPendingChatShare] = useAtom(pendingChatShareAtom);
+  const pendingChatShareRef = useRef(pendingChatShare);
+  pendingChatShareRef.current = pendingChatShare;
+  const handOverChatShare = useCallback(
+    (chat: ChatShareChat) => {
+      const share = pendingChatShareRef.current;
+      if (!share) return;
+      pendingChatShareRef.current = null;
+      setPendingChatShare(null);
+      // Queued before the chat opens: it goes in once the chat's draft is.
+      queueChatShareFor(chatShareKey(chat), share);
+    },
+    [setPendingChatShare]
+  );
+  // Row taps in the lists (not the other ways a chat opens) take the share.
+  const selectGroupFromList = useCallback(
+    (group) => {
+      const groupId = String(group?.groupId ?? '');
+      if (/^[1-9]\d*$/.test(groupId)) {
+        handOverChatShare({ kind: 'group', groupId });
+      }
+      selectGroupFunc(group);
+    },
+    [handOverChatShare, selectGroupFunc]
+  );
+  const selectDirectFromShareList = useCallback(
+    (direct) => {
+      if (typeof direct?.address === 'string' && direct.address) {
+        handOverChatShare({ kind: 'dm', address: direct.address });
+      }
+      selectDirectFromList(direct);
+    },
+    [handOverChatShare, selectDirectFromList]
+  );
+  const handledChatShareIdRef = useRef<number | null>(null);
+  useEffect(() => {
+    const share = pendingChatShare;
+    if (!share || handledChatShareIdRef.current === share.id) return;
+    // The lists and Saved Messages are the Reticulum chat's.
+    if (!reticulumChatEnabled || !myAddress) return;
+    handledChatShareIdRef.current = share.id;
+    openQChatTab();
+    // The list itself: no chat, panel or dialog over it.
+    setSelectedGroup(null);
+    setSelectedDirect(null);
+    setNewChat(false);
+    setMobileListPanelOpen(false);
+    setGroupSection('chat');
+    setDirectMessageSearchOpen(false);
+    setOpenFindGroup(false);
+    setOpenAddGroup(false);
+    if (share.scope === 'groups') {
+      setChatMode('groups');
+      setDesktopSideView('groups');
+      return;
+    }
+    setDesktopSideView('directs');
+    if (share.scope !== 'self') return;
+    const savedMessages = displayDirects?.find(
+      (direct) => direct?.savedMessages === true
+    ) ?? {
+      address: myAddress,
+      name: 'Saved Messages',
+      reticulumDirect: true,
+      savedMessages: true,
+      unreadCount: 0,
+    };
+    handOverChatShare({ kind: 'dm', address: myAddress });
+    // As a tap on its row.
+    selectDirectFromList(savedMessages);
+    window
+      .sendMessage?.('addTimestampEnterChat', {
+        timestamp: Date.now(),
+        groupId: myAddress,
+      })
+      ?.catch?.(() => undefined);
+    getTimestampEnterChat();
+  }, [
+    displayDirects,
+    getTimestampEnterChat,
+    handOverChatShare,
+    myAddress,
+    pendingChatShare,
+    reticulumChatEnabled,
+    selectDirectFromList,
+  ]);
+  // Back on the list drops the waiting share, like the X beside it.
+  useAndroidBack(
+    () => {
+      setPendingChatShare(null);
+      return true;
+    },
+    {
+      priority: BACK_PRIORITY.sheet,
+      enabled:
+        isMobile &&
+        Boolean(pendingChatShare) &&
+        desktopViewMode === 'chat' &&
+        !selectedGroup &&
+        !selectedDirect &&
+        !newChat,
+    }
+  );
+
   const openTopGroupQortalLand = useCallback(() => {
     if (!reticulumEnabled) {
       executeEvent('openGlobalSnackBar', {
@@ -4924,6 +5202,10 @@ export const Group = ({
     reticulumEnabled,
     selectGroupFunc,
   ]);
+  // Home is memoized: hand it one function that stays the same.
+  const openTopGroupQortalLandForHome = useLatestCallback(
+    openTopGroupQortalLand
+  );
 
   const selectedGroupIdKey = selectedGroup?.groupId
     ? String(selectedGroup.groupId)
@@ -5027,9 +5309,12 @@ export const Group = ({
   const renderQChatTabContent = ({
     hide = false,
     isSelected,
+    phoneSection = false,
   }: {
     hide?: boolean;
     isSelected: boolean;
+    /** The phone's Chat section (not a desktop Q-Chat tab). */
+    phoneSection?: boolean;
   }) => {
     const isVisible = isSelected && !hide;
     const isInQChatSurface =
@@ -5051,7 +5336,7 @@ export const Group = ({
 
     const renderGroupList = (keepPhoneList: boolean) => (
       <GroupList
-        selectGroupFunc={selectGroupFunc}
+        selectGroupFunc={selectGroupFromList}
         setDesktopSideView={setDesktopSideViewFromRail}
         desktopSideView={desktopSideView}
         directChatHasUnread={directChatHasUnread}
@@ -5065,6 +5350,7 @@ export const Group = ({
         myAddress={myAddress}
         reticulumChatEnabled={reticulumChatEnabled}
         keepPhoneList={keepPhoneList}
+        hideMobileHeader={isMobile && reticulumChatEnabled}
       />
     );
     const renderDirectsSidebar = () => (
@@ -5074,7 +5360,7 @@ export const Group = ({
         directChatHasUnread={directChatHasUnread}
         directs={displayDirects}
         dmFriendsByAddress={dmFriendsByAddress}
-        setSelectedDirect={selectDirectFromList}
+        setSelectedDirect={selectDirectFromShareList}
         setNewChat={startNewChatFromList}
         setIsOpenDrawer={setIsOpenDrawer}
         getTimestampEnterChat={getTimestampEnterChat}
@@ -5085,13 +5371,22 @@ export const Group = ({
         isRunningPublicNode={isRunningPublicNode}
         setIsOpenBlockedUserModal={setIsOpenBlockedUserModal}
         reticulumChatEnabled={reticulumChatEnabled}
+        hideMobileHeader={isMobile && reticulumChatEnabled}
       />
     );
 
     return (
       <Box
+        // An open chat keeps its own sideways gestures (the list's edge
+        // swipe, messages): no switching sections from there.
+        {...(isMobile && inChatDetail
+          ? { [SECTION_SWIPE_IGNORE_ATTR]: '' }
+          : {})}
         onTouchStart={
-          isMobile && inChatDetail && !mobileListPanelOpen
+          isMobile &&
+          inChatDetail &&
+          !mobileListPanelOpen &&
+          swipeBackFrom === null
             ? (event) => {
                 const touch = event.touches[0];
                 mobileEdgeSwipeRef.current =
@@ -5102,7 +5397,10 @@ export const Group = ({
             : undefined
         }
         onTouchMove={
-          isMobile && inChatDetail && !mobileListPanelOpen
+          isMobile &&
+          inChatDetail &&
+          !mobileListPanelOpen &&
+          swipeBackFrom === null
             ? (event) => {
                 const start = mobileEdgeSwipeRef.current;
                 const touch = event.touches[0];
@@ -5134,6 +5432,15 @@ export const Group = ({
             <LazyFindGroupOverviewModal />
           </Suspense>
         )}
+        {isMobile && reticulumChatEnabled && (
+          <DirectMessageSearchPanel
+            open={directMessageSearchOpen}
+            onClose={() => setDirectMessageSearchOpen(false)}
+            myAddress={myAddress}
+            directs={displayDirects}
+            onOpenResult={openDirectSearchResult}
+          />
+        )}
         {isMobile && inChatDetail && mobileListPanelOpen && (
           <Box
             onClick={() => setMobileListPanelOpen(false)}
@@ -5164,6 +5471,7 @@ export const Group = ({
           />
         )}
         <Box
+          ref={phoneSection ? setPhoneChatListPanelEl : undefined}
           onTouchStart={
             isMobile && inChatDetail && mobileListPanelOpen
               ? (event) => {
@@ -5224,15 +5532,69 @@ export const Group = ({
             // Phones: Groups and DMs are two pages side by side on the home
             // screen, so a sideways swipe moves between them like the switch
             // does. Over an open chat only the current list shows, as before.
-            <MobileChatListPager
-              swipeEnabled={isChatListSwipeEnabled({ inChatDetail, isVisible })}
-              scope={desktopSideView === 'directs' ? 'directs' : 'groups'}
-              onScopeChange={setDesktopSideViewFromRail}
-              renderGroups={renderGroupList}
-              renderDirects={(mounted) =>
-                mounted ? renderDirectsSidebar() : null
-              }
-            />
+            // One header stays above both: only the lists slide, and the
+            // switch's pill moves with them.
+            <Box
+              sx={{
+                ...getChatListPanelSx(theme),
+                display: 'flex',
+                flex: '1 1 auto',
+                flexDirection: 'column',
+                minHeight: 0,
+                minWidth: 0,
+                width: '100%',
+              }}
+            >
+              <MobileChatListPager
+                ref={phoneSection ? phoneChatListPagerRef : undefined}
+                header={
+                  <MobileChatListHeader
+                    ref={mobileChatListHeaderRef}
+                    scope={desktopSideView === 'directs' ? 'directs' : 'groups'}
+                    // The lists glide over first, then the scope switches
+                    // (re-rendering the chat would hold the slide back).
+                    onScopeChange={(scope) => {
+                      const pager = phoneSection
+                        ? phoneChatListPagerRef.current
+                        : null;
+                      if (pager) pager.slideTo(scope);
+                      else setDesktopSideViewFromRail(scope);
+                    }}
+                    directHasUnread={directChatHasUnread}
+                    directUnreadCount={reticulumDirectUnreadCount}
+                    onFindGroups={() => setOpenFindGroup(true)}
+                    onCreateGroup={() => setOpenAddGroup(true)}
+                    onSearchMessages={() => setDirectMessageSearchOpen(true)}
+                    onNewChat={() => {
+                      startNewChatFromList(true);
+                      selectDirectFromList(null);
+                      setIsOpenDrawer(false);
+                    }}
+                    share={pendingChatShare}
+                    onCancelShare={() => setPendingChatShare(null)}
+                  />
+                }
+                swipeEnabled={isChatListSwipeEnabled({
+                  inChatDetail,
+                  isVisible,
+                })}
+                scope={desktopSideView === 'directs' ? 'directs' : 'groups'}
+                // Sets the list (never toggles it, as the desktop rail
+                // does): the pager may ask twice for the same one.
+                onScopeChange={setDesktopSideView}
+                onTrackPosition={(position, durationMs, easing) =>
+                  mobileChatListHeaderRef.current?.setPosition(
+                    position,
+                    durationMs,
+                    easing
+                  )
+                }
+                renderGroups={renderGroupList}
+                renderDirects={(mounted) =>
+                  mounted ? renderDirectsSidebar() : null
+                }
+              />
+            </Box>
           ) : (
             <>
               {!showDirectsList || reticulumChatEnabled ? (
@@ -5253,6 +5615,7 @@ export const Group = ({
         </Box>
 
         <Box
+          ref={phoneSection ? setPhoneChatDetailEl : undefined}
           sx={{
             flex: 1,
             height: '100%',
@@ -5262,6 +5625,14 @@ export const Group = ({
             position: 'relative',
             display: isMobile && !inChatDetail ? 'none' : 'block',
             ...(isMobile ? { width: '100%' } : {}),
+            // The swipe back from a DM: a sideways drag never scrolls the
+            // messages (vertical scrolling stays the browser's).
+            ...(phoneSection && swipeBackFrom !== null
+              ? {
+                  '& [data-reticulum-chat-scroll-viewport], & [data-reticulum-chat-scroll-viewport] > *':
+                    { touchAction: SECTION_SURFACE_TOUCH_ACTION },
+                }
+              : {}),
           }}
         >
           {newChat && (!reticulumChatEnabled || reticulumDirectsInline) && (
@@ -5556,9 +5927,7 @@ export const Group = ({
                     }
                     onQortalLandClick={goToQortalLand}
                     onThreadsClick={goToThreads}
-                    onMobileBack={
-                      isMobile ? openMobileListPanel : undefined
-                    }
+                    onMobileBack={isMobile ? openMobileListPanel : undefined}
                     onMembersClick={toggleReticulumMembersPanel}
                     membersPanelOpen={reticulumMembersPanelOpen}
                     membersNotificationCount={reticulumJoinRequestCount}
@@ -6199,7 +6568,16 @@ export const Group = ({
           />
         )}
 
-        <MainContentBox>
+        <MainContentBox
+          ref={mainContentRef}
+          // Immersive mode slides this (on the GPU) when the bars come and
+          // go, rather than the shell's whole content box.
+          {...{ [IMMERSIVE_SLIDE_TARGET_ATTR]: '' }}
+          // Phones: the sections waiting beside the current one sit just off
+          // screen. Clipped (not a scroll box), nothing in them, a focused
+          // field say, can ever scroll the page sideways to them.
+          sx={isMobile ? { overflowX: 'clip' } : undefined}
+        >
           {openAddGroup && (
             <Suspense fallback={null}>
               <LazyAddGroup
@@ -6221,55 +6599,92 @@ export const Group = ({
             </Suspense>
           )}
 
-          <AppsDesktop
-            desktopViewMode={desktopViewMode}
-            setDesktopViewMode={setDesktopViewMode}
-            devMode={appsModeDev}
-            setDevMode={setAppsModeDev}
-            mode={appsMode}
-            setMode={setAppsMode}
-            onInternalTabVisibilityChange={({ isVisible, tab }) => {
-              if (isMobile) return;
-              setIsQChatTabActive(
-                isVisible && tab?.internal === QCHAT_INTERNAL_TAB_ID
-              );
-            }}
-            renderInternalTab={({ hide, isSelected, tab }) =>
-              tab?.internal === QCHAT_INTERNAL_TAB_ID
-                ? renderQChatTabContent({ hide, isSelected })
-                : null
-            }
-            show={desktopViewMode === 'apps' || desktopViewMode === 'dev'}
-          />
-
-          {isMobile && desktopViewMode === 'chat' ? (
-            <Box
-              sx={{
-                ...mobileAppsShellSx,
-                display: 'flex',
-                flexDirection: 'column',
-                overflow: 'hidden',
+          <PerfProfiler id="apps">
+            <AppsDesktop
+              desktopViewMode={desktopViewMode}
+              setDesktopViewMode={setDesktopViewMode}
+              devMode={appsModeDev}
+              setDevMode={setAppsModeDev}
+              mode={appsMode}
+              setMode={setAppsMode}
+              onInternalTabVisibilityChange={({ isVisible, tab }) => {
+                if (isMobile) return;
+                setIsQChatTabActive(
+                  isVisible && tab?.internal === QCHAT_INTERNAL_TAB_ID
+                );
               }}
+              renderInternalTab={({ hide, isSelected, tab }) =>
+                tab?.internal === QCHAT_INTERNAL_TAB_ID
+                  ? renderQChatTabContent({ hide, isSelected })
+                  : null
+              }
+              show={desktopViewMode === 'apps' || desktopViewMode === 'dev'}
+            />
+          </PerfProfiler>
+
+          {isMobile ? (
+            // Kept alive while hidden, like Home: coming back is instant and
+            // the sideways swipe can slide it in live (scrolled where it was).
+            <Activity
+              mode={
+                desktopViewMode === 'chat' || chatWarmUp ? 'visible' : 'hidden'
+              }
             >
-              {renderQChatTabContent({ hide: false, isSelected: true })}
-            </Box>
+              <Box
+                {...{ [SECTION_ATTR]: 'chat' }}
+                // Out of sight while the warm-up builds it.
+                style={
+                  desktopViewMode === 'chat' ? undefined : { display: 'none' }
+                }
+                sx={{
+                  ...mobileAppsShellSx,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  overflow: 'hidden',
+                }}
+              >
+                <PerfProfiler id="chat">
+                  {/* Parked behind Home or Apps it keeps its last screen
+                      (and its scroll) without re-rendering on every Group
+                      update; it catches up the moment it shows. */}
+                  <FreezeWhenHidden
+                    hidden={desktopViewMode !== 'chat' && !chatWarmUp}
+                  >
+                    {renderQChatTabContent({
+                      hide: false,
+                      isSelected: true,
+                      phoneSection: true,
+                    })}
+                  </FreezeWhenHidden>
+                </PerfProfiler>
+              </Box>
+            </Activity>
           ) : null}
 
-          <HomeDesktop
-            refreshHomeDataFunc={refreshHomeDataFunc}
-            myAddress={myAddress}
-            isLoadingGroups={isLoadingGroups}
-            onOpenSettings={onOpenSettings}
-            setGroupSection={setGroupSection}
-            getTimestampEnterChat={getTimestampEnterChat}
-            setOpenManageMembers={setOpenManageMembers}
-            setOpenAddGroup={setOpenAddGroup}
-            setOpenAddGroupTab={setOpenAddGroupTab}
-            setMobileViewMode={setMobileViewMode}
-            setDesktopViewMode={setDesktopViewMode}
-            desktopViewMode={desktopViewMode}
-            onOpenQortalLand={openTopGroupQortalLand}
-          />
+          {desktopViewMode !== 'home' ? (
+            <QortinoMusicPlaybackController />
+          ) : null}
+          {/* Home stays built while hidden (effects paused) and is never
+              re-rendered just to show or hide it. */}
+          <Activity mode={desktopViewMode === 'home' ? 'visible' : 'hidden'}>
+            <PerfProfiler id="home">
+              <HomeDesktop
+                refreshHomeDataFunc={refreshHomeDataFunc}
+                myAddress={myAddress}
+                isLoadingGroups={isLoadingGroups}
+                onOpenSettings={onOpenSettings}
+                setGroupSection={setGroupSection}
+                getTimestampEnterChat={getTimestampEnterChat}
+                setOpenManageMembers={setOpenManageMembers}
+                setOpenAddGroup={setOpenAddGroup}
+                setOpenAddGroupTab={setOpenAddGroupTab}
+                setMobileViewMode={setMobileViewMode}
+                setDesktopViewMode={setDesktopViewMode}
+                desktopViewMode="home"
+                onOpenQortalLand={openTopGroupQortalLandForHome}
+              />
+            </PerfProfiler>
+          </Activity>
         </MainContentBox>
 
         <LoadingSnackbar
@@ -6320,3 +6735,10 @@ export const Group = ({
     </>
   );
 };
+
+/**
+ * Memoized: the app shell re-renders for its own reasons (immersive bars
+ * sliding, the keyboard, balance updates) and Group is the whole UI below
+ * it, so it re-renders only when one of its own props changes.
+ */
+export const Group = memo(GroupInner);

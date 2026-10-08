@@ -1,4 +1,11 @@
-import { forwardRef, useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  forwardRef,
+  type MutableRefObject,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from 'react';
 import { Box } from '@mui/material';
 import { getBaseApiReact } from '../../App';
 import { subscribeToEvent, unsubscribeFromEvent } from '../../utils/events';
@@ -409,6 +416,28 @@ export const AppViewer = forwardRef<HTMLIFrameElement, AppViewerProps>(
       },
       [app, frameWindow, iframeRef, isDevMode, url, themeMode, currentLang]
     );
+
+    // A message from GO itself (sendToApp in AppsDesktop), to the app's
+    // own origin only. Q-Apps cannot raise GO's events.
+    useEffect(() => {
+      if (!app?.tabId) return;
+      const eventName = `postToApp-${app.tabId}`;
+      const postToApp = (e) => {
+        const message = e.detail?.message;
+        const iframe = (iframeRef as MutableRefObject<HTMLIFrameElement | null>)
+          ?.current;
+        if (!message || !iframe?.contentWindow) return;
+        let targetOrigin;
+        try {
+          targetOrigin = new URL(iframe.src).origin;
+        } catch {
+          return;
+        }
+        iframe.contentWindow.postMessage(message, targetOrigin);
+      };
+      subscribeToEvent(eventName, postToApp);
+      return () => unsubscribeFromEvent(eventName, postToApp);
+    }, [app?.tabId, iframeRef]);
 
     useEffect(() => {
       if (!app?.tabId) return;

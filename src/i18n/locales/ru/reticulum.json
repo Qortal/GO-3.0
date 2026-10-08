@@ -69,6 +69,14 @@
     "empty": "Сейчас нет личных сообщений.",
     "subtitle": "Личные чаты Reticulum"
   },
+  "dm_search": {
+    "clear": "очистить поиск",
+    "empty": "сообщения не найдены",
+    "hint": "введите не менее 2 символов для поиска по личным сообщениям",
+    "placeholder": "поиск по личным сообщениям",
+    "title": "поиск сообщений",
+    "unavailable": "поиск сообщений сейчас недоступен"
+  },
   "event_preview": {
     "all_day": "all day",
     "calendar_unavailable": "calendar is unavailable",
@@ -152,11 +160,14 @@
     "copy_failed": "unable to copy image",
     "download": "download image",
     "download_failed": "unable to download image",
+    "newer": "новее",
+    "older": "старее",
     "prepare_failed": "unable to prepare image for clipboard",
     "read_failed": "unable to read image",
     "save": "сохранить изображение",
     "share": "поделиться изображением",
     "share_failed": "не удалось поделиться изображением",
+    "video": "видео",
     "zoom_in": "zoom in",
     "zoom_out": "zoom out"
   },
@@ -300,6 +311,21 @@
       },
       "title": "Размер текста"
     }
+  },
+  "share": {
+    "cancel": "отменить отправку",
+    "cannot_write": "в этом канале могут писать только админы: вернитесь и выберите другой чат",
+    "chip_label": "{{what}} для отправки: нажмите на чат, чтобы добавить",
+    "kind_file": "файл",
+    "kind_link": "ссылка",
+    "kind_photo": "фото",
+    "kind_text": "текст",
+    "kind_video": "видео",
+    "notice_extra_files": "добавлен только первый файл: в сообщении может быть один файл.",
+    "notice_too_large": "файл больше {{max}} МБ не добавлен.",
+    "notice_unreadable": "не удалось прочитать общий файл.",
+    "notice_unsafe_image": "не удалось удалить данные о местоположении из изображения, поэтому оно не добавлено.",
+    "pick_chat": "выберите чат"
   },
   "status_badge": {
     "copy_diagnostics": "Скопировать диагностику",

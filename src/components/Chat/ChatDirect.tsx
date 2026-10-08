@@ -7,7 +7,7 @@ import {
   useState,
 } from 'react';
 import { createPortal } from 'react-dom';
-import { useAtom, useAtomValue } from 'jotai';
+import { useAtom, useAtomValue, useSetAtom } from 'jotai';
 import {
   userInfoAtom,
   balanceAtom,
@@ -77,6 +77,8 @@ import {
   directDraftKey,
   isEmptyChatHtml,
 } from '../../utils/chatPersistence';
+import { insertSharedText, useChatShareInbox } from './share/chatShareInbox';
+import { showChatShareNotices } from './share/chatShareNotices';
 import { QdnNameAvatar } from '../common/QdnNameAvatar';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import CreateRoundedIcon from '@mui/icons-material/CreateRounded';
@@ -141,6 +143,15 @@ import {
   reticulumChatTextScaleClassName,
 } from './reticulumChatTextScale';
 import { ReactionPicker } from '../ReactionPicker';
+import { withTabBarSpace } from '../Mobile/mobileBarHeights';
+import {
+  readWarmDirectCalls,
+  writeWarmDirectCalls,
+} from '../../reticulumChat/chatWarmCache';
+import {
+  directMessageJumpAtom,
+  type DirectMessageJump,
+} from './directMessageJump';
 
 const uid = new ShortUniqueId({ length: 5 });
 const RETICULUM_ACTIVE_BLUE = '#2563eb';
@@ -860,7 +871,46 @@ export const ChatDirect = ({
     publish: publishReticulumDirectEvent,
     markRead: markReticulumDirectRead,
     sendTyping: sendReticulumDirectTyping,
+    loadHistoryFrom: loadReticulumDirectHistoryFrom,
   } = useReticulumDirectChat(myAddress, selectedDirect?.address);
+  // A message search result opened this chat: scroll to that message,
+  // loading the conversation from it on when it is older than the history
+  // the chat loads.
+  const directMessageJump = useAtomValue(directMessageJumpAtom);
+  const setDirectMessageJump = useSetAtom(directMessageJumpAtom);
+  const [messageScrollTarget, setMessageScrollTarget] =
+    useState<DirectMessageJump | null>(null);
+  useEffect(() => {
+    const address = selectedDirect?.address;
+    if (!directMessageJump || !address) return;
+    if (directMessageJump.address !== address) return;
+    setMessageScrollTarget(directMessageJump);
+    setDirectMessageJump(null);
+  }, [directMessageJump, selectedDirect?.address, setDirectMessageJump]);
+  const activeMessageScrollTarget =
+    messageScrollTarget?.address === selectedDirect?.address
+      ? messageScrollTarget
+      : null;
+  const loadedScrollTargetRef = useRef('');
+  useEffect(() => {
+    if (!activeMessageScrollTarget || !reticulumDirectInitialHistoryReady) {
+      return;
+    }
+    const key = `${activeMessageScrollTarget.eventId}:${activeMessageScrollTarget.nonce}`;
+    if (loadedScrollTargetRef.current === key) return;
+    loadedScrollTargetRef.current = key;
+    const loaded = reticulumDirectMessages.some(
+      (message) => message?.signature === activeMessageScrollTarget.eventId
+    );
+    if (!loaded) {
+      void loadReticulumDirectHistoryFrom(activeMessageScrollTarget.eventId);
+    }
+  }, [
+    activeMessageScrollTarget,
+    loadReticulumDirectHistoryFrom,
+    reticulumDirectInitialHistoryReady,
+    reticulumDirectMessages,
+  ]);
   // Phone keep-alive runs this page while GO is off screen; an open chat
   // must not mark what arrives then as read.
   const pageVisible = usePageVisible();
@@ -895,11 +945,19 @@ export const ChatDirect = ({
       // The notice can still be dismissed for this session when storage is unavailable.
     }
   }, [myAddress]);
+  // A copy from earlier (or the warm-up) shows at once; the read below
+  // refreshes it.
+  const [warmDirectCalls] = useState(() =>
+    readWarmDirectCalls<any>(
+      String(myAddress || '').trim(),
+      String(selectedDirect?.address || '').trim()
+    )
+  );
   const [reticulumDirectCallHistory, setReticulumDirectCallHistory] = useState<
     any[]
-  >([]);
+  >(() => warmDirectCalls ?? []);
   const [reticulumDirectCallHistoryReady, setReticulumDirectCallHistoryReady] =
-    useState(false);
+    useState(() => warmDirectCalls !== null);
   useEffect(() => {
     const ownerAddress = String(myAddress || '').trim();
     const peerAddress = String(selectedDirect?.address || '').trim();
@@ -909,11 +967,18 @@ export const ChatDirect = ({
       return;
     }
     let cancelled = false;
-    setReticulumDirectCallHistoryReady(false);
+    const warmCalls = readWarmDirectCalls<any>(ownerAddress, peerAddress);
+    if (warmCalls) {
+      setReticulumDirectCallHistory(warmCalls);
+      setReticulumDirectCallHistoryReady(true);
+    } else {
+      setReticulumDirectCallHistoryReady(false);
+    }
     const reload = async () => {
       const records = await window.reticulumChat
         ?.getDirectCallHistory(ownerAddress, peerAddress, 100)
-        .catch(() => []);
+        .catch(() => null);
+      if (records) writeWarmDirectCalls(ownerAddress, peerAddress, records);
       if (!cancelled) {
         setReticulumDirectCallHistory(records || []);
         setReticulumDirectCallHistoryReady(true);
@@ -2999,6 +3064,27 @@ export const ChatDirect = ({
     ]
   );
 
+  // Text, a link or a file shared from another app into this DM (tapped in
+  // the DM list after "GO DMs", or Saved Messages for "GO Self-DM"); see
+  // share/chatShareInbox.ts. A DM just opened checks for Reticulum first,
+  // and its composer refuses files until that is done: the share waits.
+  const markShareReady = useChatShareInbox(
+    !isNewChat && selectedDirect?.address
+      ? directDraftKey(selectedDirect.address)
+      : null,
+    async (content) => {
+      const files = await content.files;
+      if (insertSharedText(editorRef.current, content.text)) {
+        setComposerHasText(true);
+        setIsFocusedParent(true);
+        setComposerOpenLandscape(true);
+      }
+      if (files.length) await insertFiles(files);
+      showChatShareNotices(content.notices);
+    },
+    { ready: reticulumDirectEnabled }
+  );
+
   const insertLibraryGif = useCallback(
     (gif: LibraryGif) => {
       if (pendingReticulumFiles.length > 0 || pendingLibraryGif) {
@@ -3250,6 +3336,8 @@ export const ChatDirect = ({
         setComposerHasText(false);
       }
       draftContextRef.current = { account: myAddress, key };
+      // The draft is in: a share from another app can go in after it.
+      markShareReady(key);
     };
     applyConversationDraft();
     return () => {
@@ -4112,6 +4200,12 @@ export const ChatDirect = ({
             reticulumDirectInitialHistoryReady &&
             reticulumDirectCallHistoryReady
           }
+          scrollToMessageId={
+            reticulumDirectUiEnabled
+              ? activeMessageScrollTarget?.eventId
+              : undefined
+          }
+          scrollToMessageNonce={activeMessageScrollTarget?.nonce}
         />
       </Box>
       {reticulumDirectUiEnabled && reticulumDirectTypingUsers.size > 0 && (
@@ -4345,12 +4439,19 @@ export const ChatDirect = ({
             : isMobile
               ? '10px'
               : '16px 20px 20px',
+          // On phones, above the floating tab buttons while they are shown.
           paddingBottom: reticulumDirectUiEnabled
             ? isMobile
-              ? 'max(6px, var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px)))'
+              ? withTabBarSpace(
+                  6,
+                  'max(6px, var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px)))'
+                )
               : 'max(8px, var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px)))'
             : isMobile
-              ? 'max(10px, var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px)))'
+              ? withTabBarSpace(
+                  10,
+                  'max(10px, var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px)))'
+                )
               : undefined,
           position:
             reticulumDirectUiEnabled && isFocusedParent && !isMobile

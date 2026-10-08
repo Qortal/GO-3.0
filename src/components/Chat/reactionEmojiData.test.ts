@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  buildReactionEmojiNames,
   buildReactionEmojiSections,
   DEFAULT_RECENT_REACTIONS,
   getMaxSupportedEmojiVersion,
@@ -11,6 +12,7 @@ import {
   RECENT_REACTIONS_STORAGE_KEY,
   REACTION_EMOJI_CATEGORIES,
   rememberRecentReaction,
+  searchReactionEmojis,
   unifiedToNative,
 } from './reactionEmojiData';
 
@@ -109,5 +111,62 @@ describe('recent reactions', () => {
       JSON.stringify(['🔥', 42, '', 'x'.repeat(100)])
     );
     expect(readRecentReactions()).toEqual(['🔥']);
+  });
+});
+
+describe('searchReactionEmojis', () => {
+  const data = {
+    smileys_people: [
+      { n: ['grinning', 'grinning face'], u: '1f600', a: '1.0' },
+      { n: ['joy', 'face with tears of joy'], u: '1f602', a: '0.6' },
+    ],
+    travel_places: [{ n: ['fire'], u: '1f525', a: '0.6' }],
+    objects: [{ n: ['fire extinguisher'], u: '1f9ef', a: '11.0' }],
+    symbols: [{ n: ['spitfire badge'], u: '1f4db', a: '0.6' }],
+  };
+  const sections = buildReactionEmojiSections(data);
+  const names = buildReactionEmojiNames(data);
+
+  it('ranks a whole word, then the start of one, then anywhere', () => {
+    expect(searchReactionEmojis('fire', sections, names)).toEqual([
+      '🔥',
+      '🧯',
+      '📛',
+    ]);
+    expect(searchReactionEmojis('fir', sections, names)).toEqual([
+      '🔥',
+      '🧯',
+      '📛',
+    ]);
+    expect(searchReactionEmojis('face', sections, names)).toEqual(['😀', '😂']);
+  });
+
+  it('puts plain short names first among equal matches', () => {
+    const hearts = {
+      smileys_people: [
+        { n: ['smiling face with heart-eyes'], u: '1f60d', a: '0.6' },
+      ],
+      symbols: [{ n: ['red heart', 'heart'], u: '2764-fe0f', a: '0.6' }],
+    };
+    expect(
+      searchReactionEmojis(
+        'heart',
+        buildReactionEmojiSections(hearts),
+        buildReactionEmojiNames(hearts)
+      )
+    ).toEqual(['❤️', '😍']);
+  });
+
+  it('needs every word typed, in any order, any case', () => {
+    expect(searchReactionEmojis('Tears JOY', sections, names)).toEqual(['😂']);
+    expect(searchReactionEmojis('face fire', sections, names)).toEqual([]);
+  });
+
+  it('finds an emoji typed or pasted in', () => {
+    expect(searchReactionEmojis('😀', sections, names)).toEqual(['😀']);
+  });
+
+  it('finds nothing for an empty query', () => {
+    expect(searchReactionEmojis('   ', sections, names)).toEqual([]);
   });
 });

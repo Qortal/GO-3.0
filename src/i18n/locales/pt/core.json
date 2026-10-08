@@ -575,7 +575,8 @@
     "stage_gathering": "Reunindo da QDN",
     "stage_saving": "Salvando no telefone",
     "storage_permission": "O GO precisa de permissão de armazenamento para salvar arquivos em Documents.",
-    "tap_to_open": "Toque para abrir · {{location}}"
+    "tap_to_open": "Toque para abrir · {{location}}",
+    "tap_to_open_or_share": "Toque para abrir ou compartilhar"
   },
   "filter": {
     "all": "todos",
@@ -630,7 +631,7 @@
     "loading_versions": "Carregando versões do QDN…",
     "no_notes": "Nenhuma nota foi adicionada para esta versão.",
     "no_versions": "Nenhuma versão do GO 3.0 foi publicada ainda.",
-    "open_in_qshare": "Abrir no Q-Share+",
+    "open_in_qshare": "Abrir no Q-Share",
     "progress": {
       "assembling": "Montando a versão",
       "bytes_of_total": "{{done}} de {{total}}",
@@ -806,6 +807,7 @@
       "new_notification": "Nova notificação",
       "new_notification_from": "Nova notificação de {{ appName }}",
       "new_payment_body": "Você recebeu {{ amount }} QORT.",
+      "new_payment_from": "Pagamento de {{ name }}",
       "new_payment_received": "Novo pagamento recebido",
       "new_qmail": "Você recebeu um novo Q-Mail",
       "no_app_notifications": "Ainda não há notificações de aplicativos",
@@ -1009,6 +1011,17 @@
   "payment": "pagamento",
   "payment_notification": "notificação de pagamento",
   "payments_count": "Pagamentos ({{count}})",
+  "pdf_reader": {
+    "gesture_hint": "Toque para tela cheia · toque duas vezes ou faça pinça para ampliar",
+    "gesture_hint_pages": "Deslize para virar a página · toque para tela cheia · toque duas vezes para ampliar",
+    "look_dim": "Escurecido",
+    "look_dim_hint": "Moldura escura, página inalterada",
+    "look_light": "Claro",
+    "look_light_hint": "Moldura clara e página branca",
+    "look_smart": "Inteligente",
+    "look_smart_hint": "Páginas escuras para texto, fotos mantidas como estão",
+    "page_look": "Aparência da página"
+  },
   "poll_embed": "enquere incorporada",
   "port": "porta",
   "presence": {
@@ -1052,7 +1065,7 @@
     "modules_hotkeys_label": "Atalhos",
     "modules_music_description": "Player Earbump compacto com busca e reprodução rápida.",
     "modules_music_label": "Player de música",
-    "modules_suggest_description": "Escreva > Adicione assunto + mensagem e envie para nós!",
+    "modules_suggest_description": "Entre no grupo GO 3.0 e diga o que devemos criar a seguir.",
     "modules_suggest_label": "Sugerir um módulo",
     "music_empty_title": "Biblioteca EarBump",
     "music_empty_uploaded": "Aguardando biblioteca",
@@ -1143,6 +1156,10 @@
   "receiver": "destinatário",
   "remaining_to_level": "Restante para nível {{level}}",
   "retry": "tentar novamente",
+  "search": {
+    "apps_and_websites": "apps e sites",
+    "suggested": "sugestões"
+  },
   "sender": "remetente",
   "server": "servidor",
   "service_type": "tipo de serviço",
@@ -1162,7 +1179,32 @@
     "categories": "categorias",
     "community_apps": "apps da comunidade",
     "my_apps": "meus apps",
-    "official_apps": "apps oficiais"
+    "official_apps": "apps oficiais",
+    "pinned": "fixados"
+  },
+  "tabs_home": {
+    "app_name": "nome do app",
+    "browse_apps": "explorar apps",
+    "close_all": "fechar todas",
+    "close_folder": "fechar pasta",
+    "close_tab": "fechar aba",
+    "delete_folder": "excluir pasta",
+    "empty_hint": "toque no alfinete de qualquer app na biblioteca. Estas pastas são as mesmas das abas.",
+    "empty_title": "seus apps fixados ficam aqui",
+    "folder_empty_hint": "toque e segure uma aba aberta e escolha esta pasta para adicioná-la aqui.",
+    "folder_name": "nome da pasta",
+    "folder_options": "opções da pasta",
+    "make_large": "pasta grande",
+    "make_small": "pasta pequena",
+    "more_apps": "mais {{amount}} apps",
+    "new_folder": "nova pasta",
+    "new_folder_name": "nova pasta",
+    "open_folder": "abrir {{name}}",
+    "open_tabs": "abas abertas",
+    "remove_from_folder": "remover da pasta",
+    "rename_app": "renomear app",
+    "rename_folder": "renomear pasta",
+    "window_n": "janela {{amount}}"
   },
   "tabs_overlay": {
     "delete_folder_body_one": "o {{count}} app salvo nela será removido das abas. As abas abertas continuam abertas.",

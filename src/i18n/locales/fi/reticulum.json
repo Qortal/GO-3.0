@@ -69,6 +69,14 @@
     "empty": "Ei yksityisviestejä tällä hetkellä.",
     "subtitle": "Yksityiset Reticulum-keskustelut"
   },
+  "dm_search": {
+    "clear": "tyhjennä haku",
+    "empty": "viestejä ei löytynyt",
+    "hint": "kirjoita vähintään 2 merkkiä hakeaksesi yksityisviesteistäsi",
+    "placeholder": "hae yksityisviesteistäsi",
+    "title": "hae viesteistä",
+    "unavailable": "viestihaku ei ole juuri nyt käytettävissä"
+  },
   "event_preview": {
     "all_day": "all day",
     "calendar_unavailable": "calendar is unavailable",
@@ -152,11 +160,14 @@
     "copy_failed": "unable to copy image",
     "download": "download image",
     "download_failed": "unable to download image",
+    "newer": "uudempi",
+    "older": "vanhempi",
     "prepare_failed": "unable to prepare image for clipboard",
     "read_failed": "unable to read image",
     "save": "tallenna kuva",
     "share": "jaa kuva",
     "share_failed": "kuvaa ei voitu jakaa",
+    "video": "video",
     "zoom_in": "zoom in",
     "zoom_out": "zoom out"
   },
@@ -300,6 +311,21 @@
       },
       "title": "Tekstin koko"
     }
+  },
+  "share": {
+    "cancel": "peruuta jakaminen",
+    "cannot_write": "vain ylläpitäjät voivat kirjoittaa tälle kanavalle: palaa takaisin ja valitse toinen keskustelu",
+    "chip_label": "jaettava {{what}}: lisää se napauttamalla keskustelua",
+    "kind_file": "tiedosto",
+    "kind_link": "linkki",
+    "kind_photo": "kuva",
+    "kind_text": "teksti",
+    "kind_video": "video",
+    "notice_extra_files": "vain ensimmäinen tiedosto lisättiin: viestissä voi olla yksi tiedosto.",
+    "notice_too_large": "yli {{max}} Mt:n tiedosto jätettiin pois.",
+    "notice_unreadable": "jaettua tiedostoa ei voitu lukea.",
+    "notice_unsafe_image": "kuvasta ei saatu poistettua sijaintitietoja, joten se jätettiin pois.",
+    "pick_chat": "valitse keskustelu"
   },
   "status_badge": {
     "copy_diagnostics": "Kopioi diagnostiikka",

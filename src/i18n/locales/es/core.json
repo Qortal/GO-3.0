@@ -575,7 +575,8 @@
     "stage_gathering": "Reuniendo desde QDN",
     "stage_saving": "Guardando en el teléfono",
     "storage_permission": "GO necesita permiso de almacenamiento para guardar archivos en Documents.",
-    "tap_to_open": "Toca para abrir · {{location}}"
+    "tap_to_open": "Toca para abrir · {{location}}",
+    "tap_to_open_or_share": "Toca para abrir o compartir"
   },
   "filter": {
     "all": "todos",
@@ -630,7 +631,7 @@
     "loading_versions": "Cargando versiones desde QDN…",
     "no_notes": "No se añadieron notas para esta versión.",
     "no_versions": "Aún no se ha publicado ninguna versión de GO 3.0.",
-    "open_in_qshare": "Abrir en Q-Share+",
+    "open_in_qshare": "Abrir en Q-Share",
     "progress": {
       "assembling": "Montando la versión",
       "bytes_of_total": "{{done}} de {{total}}",
@@ -806,6 +807,7 @@
       "new_notification": "Nueva notificación",
       "new_notification_from": "Nueva notificación de {{ appName }}",
       "new_payment_body": "Has recibido {{ amount }} QORT.",
+      "new_payment_from": "Pago de {{ name }}",
       "new_payment_received": "Nuevo pago recibido",
       "new_qmail": "Tienes un nuevo Q-Mail",
       "no_app_notifications": "Aún no hay notificaciones de aplicaciones",
@@ -1009,6 +1011,17 @@
   "payment": "pago",
   "payment_notification": "notificación de pago",
   "payments_count": "Pagos ({{count}})",
+  "pdf_reader": {
+    "gesture_hint": "Toca para pantalla completa · doble toque o pellizca para ampliar",
+    "gesture_hint_pages": "Desliza para pasar página · toca para pantalla completa · doble toque para ampliar",
+    "look_dim": "Atenuado",
+    "look_dim_hint": "Marco oscuro, página sin cambios",
+    "look_light": "Claro",
+    "look_light_hint": "Marco claro y página blanca",
+    "look_smart": "Inteligente",
+    "look_smart_hint": "Páginas oscuras para texto, las fotos se mantienen igual",
+    "page_look": "Aspecto de la página"
+  },
   "poll_embed": "encuesta",
   "port": "puerto",
   "presence": {
@@ -1052,7 +1065,7 @@
     "modules_hotkeys_label": "Atajos",
     "modules_music_description": "Un reproductor Earbump compacto con búsqueda y reproducción rápida.",
     "modules_music_label": "Reproductor de música",
-    "modules_suggest_description": "Redacta > Añade asunto + mensaje y ¡envíanoslo!",
+    "modules_suggest_description": "Únete al grupo GO 3.0 y dinos qué construir después.",
     "modules_suggest_label": "Sugerir un módulo",
     "music_empty_title": "Biblioteca EarBump",
     "music_empty_uploaded": "Esperando biblioteca",
@@ -1143,6 +1156,10 @@
   "receiver": "receptor",
   "remaining_to_level": "Restante para nivel {{level}}",
   "retry": "reintentar",
+  "search": {
+    "apps_and_websites": "apps y sitios web",
+    "suggested": "sugerencias"
+  },
   "sender": "remitente",
   "server": "servidor",
   "service_type": "tipo de servicio",
@@ -1162,7 +1179,32 @@
     "categories": "categorías",
     "community_apps": "apps de la comunidad",
     "my_apps": "mis apps",
-    "official_apps": "apps oficiales"
+    "official_apps": "apps oficiales",
+    "pinned": "fijadas"
+  },
+  "tabs_home": {
+    "app_name": "nombre de la app",
+    "browse_apps": "explorar apps",
+    "close_all": "cerrar todas",
+    "close_folder": "cerrar carpeta",
+    "close_tab": "cerrar pestaña",
+    "delete_folder": "eliminar carpeta",
+    "empty_hint": "toca el pin de cualquier app en la biblioteca. Estas carpetas son las mismas que en Pestañas.",
+    "empty_title": "aquí viven tus apps fijadas",
+    "folder_empty_hint": "mantén pulsada una pestaña abierta y elige esta carpeta para añadirla aquí.",
+    "folder_name": "nombre de la carpeta",
+    "folder_options": "opciones de la carpeta",
+    "make_large": "carpeta grande",
+    "make_small": "carpeta pequeña",
+    "more_apps": "{{amount}} apps más",
+    "new_folder": "nueva carpeta",
+    "new_folder_name": "nueva carpeta",
+    "open_folder": "abrir {{name}}",
+    "open_tabs": "pestañas abiertas",
+    "remove_from_folder": "quitar de la carpeta",
+    "rename_app": "renombrar app",
+    "rename_folder": "renombrar carpeta",
+    "window_n": "ventana {{amount}}"
   },
   "tabs_overlay": {
     "delete_folder_body_one": "se quitará de Pestañas la {{count}} app guardada en ella. Las pestañas abiertas seguirán abiertas.",

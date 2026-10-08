@@ -575,7 +575,8 @@
     "stage_gathering": "Kerätään QDN:stä",
     "stage_saving": "Tallennetaan puhelimeen",
     "storage_permission": "GO tarvitsee tallennustilan käyttöoikeuden tallentaakseen tiedostoja kansioon Documents.",
-    "tap_to_open": "Avaa napauttamalla · {{location}}"
+    "tap_to_open": "Avaa napauttamalla · {{location}}",
+    "tap_to_open_or_share": "Napauta avataksesi tai jakaaksesi"
   },
   "filter": {
     "all": "kaikki",
@@ -630,7 +631,7 @@
     "loading_versions": "Ladataan versioita QDN:stä…",
     "no_notes": "Tälle versiolle ei lisätty julkaisutietoja.",
     "no_versions": "GO 3.0 -versioita ei ole vielä julkaistu.",
-    "open_in_qshare": "Avaa Q-Share+:ssa",
+    "open_in_qshare": "Avaa Q-Sharessa",
     "progress": {
       "assembling": "Kootaan versiota",
       "bytes_of_total": "{{done}} / {{total}}",
@@ -806,6 +807,7 @@
       "new_notification": "Uusi ilmoitus",
       "new_notification_from": "Uusi ilmoitus: {{ appName }}",
       "new_payment_body": "Vastaanotit {{ amount }} QORTia.",
+      "new_payment_from": "Maksu käyttäjältä {{ name }}",
       "new_payment_received": "Uusi maksu vastaanotettu",
       "new_qmail": "Sinulle on uusi Q-Mail",
       "no_app_notifications": "Ei sovellusilmoituksia vielä",
@@ -1009,6 +1011,17 @@
   "payment": "maksu",
   "payment_notification": "maksuilmoitus",
   "payments_count": "Maksut ({{count}})",
+  "pdf_reader": {
+    "gesture_hint": "Napauta koko näyttöön · kaksoisnapauta tai nipistä zoomataksesi",
+    "gesture_hint_pages": "Pyyhkäise kääntääksesi sivua · napauta koko näyttöön · kaksoisnapauta zoomataksesi",
+    "look_dim": "Himmeä",
+    "look_dim_hint": "Tumma kehys, sivu ennallaan",
+    "look_light": "Vaalea",
+    "look_light_hint": "Vaalea kehys ja valkoinen sivu",
+    "look_smart": "Älykäs",
+    "look_smart_hint": "Tekstisivut tummiksi, kuvat pysyvät ennallaan",
+    "page_look": "Sivun ulkoasu"
+  },
   "poll_embed": "kyselyn upotus",
   "port": "portti",
   "presence": {
@@ -1052,7 +1065,7 @@
     "modules_hotkeys_label": "Pikanäppäimet",
     "modules_music_description": "Kompakti Earbump-soitin haulle ja napakkaan toistoon.",
     "modules_music_label": "Musiikkisoitin",
-    "modules_suggest_description": "Kirjoita > Lisää otsikko + viesti ja lähetä meille!",
+    "modules_suggest_description": "Liity GO 3.0 -ryhmään ja kerro, mitä rakennamme seuraavaksi.",
     "modules_suggest_label": "Ehdota moduulia",
     "music_empty_title": "EarBump-kirjasto",
     "music_empty_uploaded": "Odotetaan kirjastoa",
@@ -1143,6 +1156,10 @@
   "receiver": "vastaanottaja",
   "remaining_to_level": "Jäljellä tasolle {{level}}",
   "retry": "yritä uudelleen",
+  "search": {
+    "apps_and_websites": "sovellukset ja verkkosivustot",
+    "suggested": "ehdotukset"
+  },
   "sender": "lähettäjä",
   "server": "palvelin",
   "service_type": "palvelutyyppi",
@@ -1162,7 +1179,32 @@
     "categories": "kategoriat",
     "community_apps": "yhteisösovellukset",
     "my_apps": "omat sovellukset",
-    "official_apps": "viralliset sovellukset"
+    "official_apps": "viralliset sovellukset",
+    "pinned": "kiinnitetyt"
+  },
+  "tabs_home": {
+    "app_name": "sovelluksen nimi",
+    "browse_apps": "selaa sovelluksia",
+    "close_all": "sulje kaikki",
+    "close_folder": "sulje kansio",
+    "close_tab": "sulje välilehti",
+    "delete_folder": "poista kansio",
+    "empty_hint": "napauta minkä tahansa kirjaston sovelluksen nastaa. Nämä kansiot ovat samat kuin välilehdissä.",
+    "empty_title": "kiinnitetyt sovelluksesi asuvat täällä",
+    "folder_empty_hint": "paina pitkään avointa välilehteä ja valitse tämä kansio lisätäksesi sen tänne.",
+    "folder_name": "kansion nimi",
+    "folder_options": "kansion asetukset",
+    "make_large": "suuri kansio",
+    "make_small": "pieni kansio",
+    "more_apps": "{{amount}} sovellusta lisää",
+    "new_folder": "uusi kansio",
+    "new_folder_name": "uusi kansio",
+    "open_folder": "avaa {{name}}",
+    "open_tabs": "avoimet välilehdet",
+    "remove_from_folder": "poista kansiosta",
+    "rename_app": "nimeä sovellus uudelleen",
+    "rename_folder": "nimeä kansio uudelleen",
+    "window_n": "ikkuna {{amount}}"
   },
   "tabs_overlay": {
     "delete_folder_body_one": "siihen tallennettu {{count}} sovellus poistetaan välilehdistä. Avoimet välilehdet pysyvät auki.",

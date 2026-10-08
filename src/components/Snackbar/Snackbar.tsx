@@ -33,6 +33,7 @@ export const CustomizedSnackbars = ({
       compact: info?.compact ?? false,
       duration: info?.duration ?? undefined,
       message: displayMessage,
+      tapHint: info?.tapHint,
       type: info?.type ?? 'info',
     });
 
@@ -43,6 +44,8 @@ export const CustomizedSnackbars = ({
       compact: info?.compact,
       duration: info?.duration,
       message: displayMessage,
+      onTap: info?.onTap,
+      tapHint: info?.tapHint,
       type: info?.type,
     });
 
@@ -52,6 +55,8 @@ export const CustomizedSnackbars = ({
     info?.compact,
     info?.duration,
     info?.message,
+    info?.onTap,
+    info?.tapHint,
     info?.type,
     open,
     setInfo,

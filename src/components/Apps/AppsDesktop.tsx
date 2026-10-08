@@ -92,6 +92,15 @@ import {
 import { getPrivateAppIdentity } from '../Mobile/privateAppTabIdentity';
 import { useHandlePrivateApps } from '../../hooks/useHandlePrivateApps';
 import { useAtom, useAtomValue, useSetAtom } from 'jotai';
+import {
+  mobileQappFrameShowingAtom,
+  qappFullScreenTabAtom,
+} from '../Mobile/mobileQappFrame';
+import { GO_TAB_BAR_SPACE } from '../Mobile/mobileBarHeights';
+import {
+  SECTION_ATTR,
+  SECTION_SURFACE_TOUCH_ACTION,
+} from '../Mobile/sectionSwipe/sectionSwipe';
 import { useTranslation } from 'react-i18next';
 import {
   TIME_MINUTES_2_IN_MILLISECONDS,
@@ -518,6 +527,37 @@ export const AppsDesktop = ({
       }
     };
   }, [show, tabs, selectedTab, isNewTabWindow]);
+
+  // Tell the phone shell whether a frame is what is on screen (the same
+  // test as isTabActive below), so it keeps room above the tab buttons.
+  const setQappFrameShowing = useSetAtom(mobileQappFrameShowingAtom);
+  const qappFrameShowing =
+    Boolean(selectedTab) &&
+    !isNewTabWindow &&
+    !(desktopViewMode === 'dev' && devMode === 'home');
+  useEffect(() => {
+    setQappFrameShowing(qappFrameShowing);
+  }, [qappFrameShowing, setQappFrameShowing]);
+  useEffect(() => () => setQappFrameShowing(false), [setQappFrameShowing]);
+  // A Q-App's full screen (SET_FULL_SCREEN) ends once its tab is left: another
+  // tab, the library, or another section.
+  const [qappFullScreenTab, setQappFullScreenTab] = useAtom(
+    qappFullScreenTabAtom
+  );
+  useEffect(() => {
+    if (!qappFullScreenTab) return;
+    const stillOnScreen =
+      qappFrameShowing &&
+      (desktopViewMode === 'apps' || desktopViewMode === 'dev') &&
+      selectedTab?.tabId === qappFullScreenTab;
+    if (!stillOnScreen) setQappFullScreenTab(null);
+  }, [
+    desktopViewMode,
+    qappFrameShowing,
+    qappFullScreenTab,
+    selectedTab,
+    setQappFullScreenTab,
+  ]);
 
   useEffect(() => {
     if (desktopViewMode !== 'dev' || devMode !== 'home' || isNewTabWindow) {
@@ -1078,6 +1118,30 @@ export const AppsDesktop = ({
     };
   }, [tabs]);
 
+  // GO's own message for an open Q-App ({ service, name, message }), such as
+  // a shared photo for Torq's Rev editor: to that app's shown tab, else its
+  // first one (the tab addTab's navigateIfAlreadyOpen goes to).
+  const tabsForMessagesRef = useRef(tabs);
+  tabsForMessagesRef.current = tabs;
+  const selectedTabForMessagesRef = useRef(selectedTab);
+  selectedTabForMessagesRef.current = selectedTab;
+  useEffect(() => {
+    const sendToApp = (e) => {
+      const { service, name, message } = e.detail ?? {};
+      if (!service || !name || !message) return;
+      const isTarget = (tab) =>
+        tab?.service === service &&
+        tab?.name?.toLowerCase() === String(name).toLowerCase();
+      const selected = selectedTabForMessagesRef.current;
+      const tab = isTarget(selected)
+        ? selected
+        : tabsForMessagesRef.current.find(isTarget);
+      if (tab?.tabId) executeEvent(`postToApp-${tab.tabId}`, { message });
+    };
+    subscribeToEvent('sendToApp', sendToApp);
+    return () => unsubscribeFromEvent('sendToApp', sendToApp);
+  }, []);
+
   // Q-Chat belongs on the mobile bottom panel, not in the Apps tab strip.
   useEffect(() => {
     if (!isMobile) return;
@@ -1346,6 +1410,10 @@ export const AppsDesktop = ({
       nextTab =
         pickNextTabFromMru(copyTabs, recentTabIdsRef.current) ||
         positionalTabAfterClose(copyTabs, tabId, tabs);
+    } else if (isNewTabWindow) {
+      // Closed from the library / new-tab window: stay there, with no tab
+      // picked behind it (the phone library hides while one is).
+      nextTab = null;
     } else {
       nextTab = copyTabs[0] ?? null;
     }
@@ -1353,6 +1421,8 @@ export const AppsDesktop = ({
     setTabs(copyTabs);
     setSelectedTab(nextTab);
     if (wasClosingActive && nextTab) {
+      // The next tab shows now, so no new-tab window may stay over it.
+      setIsNewTabWindow(false);
       if (isLocalDevTab(nextTab)) {
         setDesktopViewMode('dev');
         setDevMode('viewer');
@@ -1402,21 +1472,23 @@ export const AppsDesktop = ({
     setPendingTabToRemove(null);
   };
 
+  // Always the latest handler: one subscribed only when `tabs` changed kept
+  // an old selected tab, so closing a tab from the library (nothing on
+  // screen) counted as closing the active one and brought back a stale
+  // new-tab window (the Apps Dashboard).
+  const removeTabFuncRef = useRef(removeTabFunc);
+  removeTabFuncRef.current = removeTabFunc;
+
   useEffect(() => {
-    subscribeToEvent('removeTab', removeTabFunc);
+    const handler = (e) => removeTabFuncRef.current(e);
+    subscribeToEvent('removeTab', handler);
+    subscribeToEvent('removeTabDevMode', handler);
 
     return () => {
-      unsubscribeFromEvent('removeTab', removeTabFunc);
+      unsubscribeFromEvent('removeTab', handler);
+      unsubscribeFromEvent('removeTabDevMode', handler);
     };
-  }, [tabs]);
-
-  useEffect(() => {
-    subscribeToEvent('removeTabDevMode', removeTabFunc);
-
-    return () => {
-      unsubscribeFromEvent('removeTabDevMode', removeTabFunc);
-    };
-  }, [tabs]);
+  }, []);
 
   const setNewTabWindowFunc = () => {
     setIsNewTabWindow(true);
@@ -1724,6 +1796,11 @@ export const AppsDesktop = ({
 
   const hasOpenTabs = tabs.length > 0;
   const hideAppsShellOffScreen = !show && hasOpenTabs;
+  // Phones keep the Apps page that was showing (library, a category, app
+  // info) laid out while another section is up: the whole Apps shell is
+  // hidden or off-screen then, and the sideways swipe between sections can
+  // slide it in with its content, scrolled where it was.
+  const appsPagesLive = desktopViewMode === 'apps' || isMobile;
   const appsShellPosition = hideAppsShellOffScreen ? 'absolute' : 'relative';
 
   const mobileAppsActive = isMobile && show && !hideAppsShellOffScreen;
@@ -1731,6 +1808,8 @@ export const AppsDesktop = ({
   return (
     <AppsParent
       aria-hidden={!show}
+      // The sideways swipe between Home, Apps and Chat (phones).
+      {...{ [SECTION_ATTR]: 'apps' }}
       sx={{
         alignItems: isMobile ? 'stretch' : undefined,
         display: hideAppsShellOffScreen || show ? 'flex' : 'none',
@@ -1955,6 +2034,10 @@ export const AppsDesktop = ({
                   flexDirection: 'column',
                   height: appsContentHeight,
                   overflow: 'auto',
+                  pb: isMobile ? GO_TAB_BAR_SPACE : undefined,
+                  touchAction: isMobile
+                    ? SECTION_SURFACE_TOUCH_ACTION
+                    : undefined,
                   pl: `${DEV_MODE_SIDEBAR_SAFE_INSET_PX}px`,
                   pr: '24px',
                   width: '100%',
@@ -1983,20 +2066,24 @@ export const AppsDesktop = ({
               refreshRatings();
             }}
             hasPublishApp={!!(myApp || myWebsite)}
-            isShow={
-              desktopViewMode === 'apps' && mode === 'library' && !selectedTab
-            }
+            isShow={appsPagesLive && mode === 'library' && !selectedTab}
             isMobile={isMobile}
+            isSectionActive={desktopViewMode === 'apps'}
             myName={myName}
             myAddress={myAddress}
             setMode={setMode}
           />
 
-          {desktopViewMode === 'apps' && mode === 'appInfo' && !selectedTab && (
+          {appsPagesLive && mode === 'appInfo' && !selectedTab && (
             <Box
               sx={{
                 height: appsContentHeight,
                 overflow: 'auto',
+                // Room to scroll the end clear of the floating tab buttons.
+                pb: isMobile ? GO_TAB_BAR_SPACE : undefined,
+                touchAction: isMobile
+                  ? SECTION_SURFACE_TOUCH_ACTION
+                  : undefined,
                 width: '100%',
               }}
             >
@@ -2004,13 +2091,17 @@ export const AppsDesktop = ({
             </Box>
           )}
 
-          {desktopViewMode === 'apps' &&
+          {appsPagesLive &&
             mode === 'appInfo-from-category' &&
             !selectedTab && (
               <Box
                 sx={{
                   height: appsContentHeight,
                   overflow: 'auto',
+                  pb: isMobile ? GO_TAB_BAR_SPACE : undefined,
+                  touchAction: isMobile
+                    ? SECTION_SURFACE_TOUCH_ACTION
+                    : undefined,
                   width: '100%',
                 }}
               >
@@ -2024,18 +2115,14 @@ export const AppsDesktop = ({
             <AppsCategoryDesktop
               availableQapps={availableQapps}
               contentHeight={appsContentHeight}
-              isShow={
-                desktopViewMode === 'apps' &&
-                mode === 'category' &&
-                !selectedTab
-              }
+              isShow={appsPagesLive && mode === 'category' && !selectedTab}
               isMobile={isMobile}
               category={selectedCategory}
               myName={myName}
             />
           ) : null}
 
-          {desktopViewMode === 'apps' &&
+          {appsPagesLive &&
             (mode === 'publish' ||
               mode === 'publish-app' ||
               mode === 'publish-website') &&
@@ -2044,6 +2131,10 @@ export const AppsDesktop = ({
                 sx={{
                   height: appsContentHeight,
                   overflow: 'auto',
+                  pb: isMobile ? GO_TAB_BAR_SPACE : undefined,
+                  touchAction: isMobile
+                    ? SECTION_SURFACE_TOUCH_ACTION
+                    : undefined,
                   width: '100%',
                 }}
               >
@@ -2169,6 +2260,10 @@ export const AppsDesktop = ({
                   flexDirection: 'column',
                   height: appsContentHeight,
                   overflow: 'auto',
+                  pb: isMobile ? GO_TAB_BAR_SPACE : undefined,
+                  touchAction: isMobile
+                    ? SECTION_SURFACE_TOUCH_ACTION
+                    : undefined,
                   width: '100%',
                 }}
               >
@@ -2194,6 +2289,10 @@ export const AppsDesktop = ({
                   flexDirection: 'column',
                   height: appsContentHeight,
                   overflow: 'auto',
+                  pb: isMobile ? GO_TAB_BAR_SPACE : undefined,
+                  touchAction: isMobile
+                    ? SECTION_SURFACE_TOUCH_ACTION
+                    : undefined,
                   width: '100%',
                 }}
               >

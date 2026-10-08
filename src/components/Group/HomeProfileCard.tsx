@@ -45,10 +45,13 @@ import PersonIcon from '@mui/icons-material/Person';
 import QrCode2RoundedIcon from '@mui/icons-material/QrCode2Rounded';
 import SettingsRoundedIcon from '@mui/icons-material/SettingsRounded';
 import TuneRoundedIcon from '@mui/icons-material/TuneRounded';
-import ViewModuleRoundedIcon from '@mui/icons-material/ViewModuleRounded';
+import DragIndicatorRoundedIcon from '@mui/icons-material/DragIndicatorRounded';
 import VisibilityOffOutlinedIcon from '@mui/icons-material/VisibilityOffOutlined';
 import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
+import { ImmersiveModeSetting } from '../Mobile/immersive/ImmersiveModeSetting';
+import { BACK_PRIORITY, useAndroidBack } from '../../utils/androidBack';
+import { useSwipeBetweenTabs } from '../../hooks/useSwipeBetweenTabs';
 import { useAtom, useAtomValue, useSetAtom } from 'jotai';
 import { useTranslation } from 'react-i18next';
 import {
@@ -105,12 +108,15 @@ import TiltedCard from '../common/TiltedCard';
 import { GROUP_ACTIVITY_BLUE } from './groupActivityColorSystem';
 import { Save } from '../Save/Save';
 import { useBlockedAddresses } from '../../hooks/useBlockUsers';
+import { HOME_WIDE_DASHBOARD_MIN_WIDTH_PX } from './HomeDesktop/homeDesktopConstants';
 import {
-  HOME_DASHBOARD_MODULE_VISIBILITY_CHANGE_EVENT,
-  HOME_GROUP_ACTIVITY_VISIBLE_STORAGE_KEY,
-  HOME_QUITTER_FEED_VISIBLE_STORAGE_KEY,
-  HOME_WIDE_DASHBOARD_MIN_WIDTH_PX,
-} from './HomeDesktop/homeDesktopConstants';
+  type HomeModuleId,
+  isDefaultHomeWindowOrder,
+  setHomeModuleVisible,
+  useHomeModuleVisibility,
+  useHomeWindowOrder,
+  writeHomeWindowOrder,
+} from './HomeDesktop/homeLayout';
 import {
   AUTO_LOCK_TIMEOUT_OPTIONS,
   normalizeAutoLockTimeoutMinutes,
@@ -147,7 +153,6 @@ type AccountSettingsTab =
   | 'blocked'
   | 'developer'
   | 'help'
-  | 'modules'
   | 'profile'
   | 'reticulum'
   | 'security'
@@ -325,13 +330,11 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
   const [areUiAnimationsEnabled, setAreUiAnimationsEnabled] = useState(() =>
     readStoredBoolean(ACCOUNT_SETTINGS_UI_ANIMATIONS_STORAGE_KEY, true)
   );
-  const [isGroupActivityModuleVisible, setIsGroupActivityModuleVisible] =
-    useState(() =>
-      readStoredBoolean(HOME_GROUP_ACTIVITY_VISIBLE_STORAGE_KEY, true)
-    );
-  const [isQuitterFeedModuleVisible, setIsQuitterFeedModuleVisible] = useState(
-    () => readStoredBoolean(HOME_QUITTER_FEED_VISIBLE_STORAGE_KEY, true)
-  );
+  // What Home shows (Profile tab), and the phone order of its windows.
+  const homeModuleVisibility = useHomeModuleVisibility();
+  const homeWindowOrder = useHomeWindowOrder();
+  // Home is one column of windows a long press moves below md (HomeDesktop).
+  const isPhoneHomeLayout = !useMediaQuery(theme.breakpoints.up('md'));
   const [closeAction, setCloseAction] = useState<CloseAction>('ask');
   const [reticulumManagedConfigEnabled, setReticulumManagedConfigEnabled] =
     useState(true);
@@ -482,6 +485,57 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
     [t]
   );
   const feedApp = composerAppName(useComposerTarget());
+  const homeModuleRows = useMemo(
+    (): Array<{ id: HomeModuleId; title: string; description: string }> => [
+      {
+        id: 'qortino',
+        title: td('home_module_qortino', 'Qortino AI'),
+        description: td(
+          'home_module_qortino_desc',
+          'Qortino under your hotkeys. Tap him to ask anything.'
+        ),
+      },
+      {
+        id: 'featured',
+        title: td('featured_q_apps', 'Featured Q-Apps'),
+        description: td(
+          'home_module_featured_desc',
+          'Community apps worth trying, one tap away.'
+        ),
+      },
+      {
+        id: 'status',
+        title: td('home_module_status', 'Status'),
+        description: td(
+          'home_module_status_desc',
+          'Your balance, node, sync and minting at a glance.'
+        ),
+      },
+      {
+        id: 'groupActivity',
+        title: td('group_activity_module', 'Group Activity'),
+        description: td(
+          'home_module_group_activity_desc',
+          'The latest messages from your groups.'
+        ),
+      },
+      {
+        id: 'feed',
+        title:
+          feedApp === 'Torq'
+            ? td('torq_feed', 'Torq Feed')
+            : td('quitter_feed_module', 'Quitter Feed'),
+        description: td(
+          'home_module_feed_desc',
+          'The newest posts on {{app}}.',
+          {
+            app: feedApp,
+          }
+        ),
+      },
+    ],
+    [feedApp, td]
+  );
   const accountSettingsTabs = useMemo(
     () =>
       [
@@ -534,16 +588,6 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
           key: 'system' as const,
           label: td('system', 'System'),
           title: td('system_settings', 'System Settings'),
-        },
-        {
-          description: td(
-            'modules_settings_description',
-            'Choose which dashboard modules are shown on Home.'
-          ),
-          icon: ViewModuleRoundedIcon,
-          key: 'modules' as const,
-          label: td('modules', 'Modules'),
-          title: td('modules_settings', 'Modules Settings'),
         },
         {
           description: td(
@@ -770,43 +814,6 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
         }
       `;
   }, [areUiAnimationsEnabled]);
-
-  const persistDashboardModuleVisibility = useCallback(
-    (storageKey: string, visible: boolean) => {
-      if (typeof window === 'undefined') return;
-      try {
-        window.localStorage.setItem(storageKey, JSON.stringify(visible));
-        window.dispatchEvent(
-          new CustomEvent(HOME_DASHBOARD_MODULE_VISIBILITY_CHANGE_EVENT)
-        );
-      } catch (error) {
-        console.warn('Unable to persist dashboard module preference.', error);
-      }
-    },
-    []
-  );
-
-  const handleToggleGroupActivityModule = useCallback(
-    (_event: ChangeEvent<HTMLInputElement>, checked: boolean) => {
-      setIsGroupActivityModuleVisible(checked);
-      persistDashboardModuleVisibility(
-        HOME_GROUP_ACTIVITY_VISIBLE_STORAGE_KEY,
-        checked
-      );
-    },
-    [persistDashboardModuleVisibility]
-  );
-
-  const handleToggleQuitterFeedModule = useCallback(
-    (_event: ChangeEvent<HTMLInputElement>, checked: boolean) => {
-      setIsQuitterFeedModuleVisible(checked);
-      persistDashboardModuleVisibility(
-        HOME_QUITTER_FEED_VISIBLE_STORAGE_KEY,
-        checked
-      );
-    },
-    [persistDashboardModuleVisibility]
-  );
 
   const loadAppNotificationsPreference = useCallback(async () => {
     try {
@@ -2181,6 +2188,64 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
     accountSettingsTabs.find((tab) => tab.key === activeSettingsTab) ??
     accountSettingsTabs[0];
   const ActiveSettingsIcon = activeSettingsMeta.icon;
+
+  // Phones: Android back (the side swipe) closes Settings, back to Home,
+  // instead of leaving GO; a swipe sideways on the page moves between tabs.
+  useAndroidBack(
+    () => {
+      closeAccountSettingsModal();
+      return true;
+    },
+    { priority: BACK_PRIORITY.dialog, enabled: isAccountSettingsOpen }
+  );
+  useAndroidBack(
+    () => {
+      closeReticulumDetails();
+      return true;
+    },
+    { priority: BACK_PRIORITY.dialog + 1, enabled: isReticulumDetailsOpen }
+  );
+  useAndroidBack(
+    () => {
+      setReticulumDisableConfirmOpen(false);
+      return true;
+    },
+    {
+      priority: BACK_PRIORITY.dialog + 2,
+      enabled: reticulumDisableConfirmOpen,
+    }
+  );
+  const [settingsPageEl, setSettingsPageEl] = useState<HTMLElement | null>(
+    null
+  );
+  const activeSettingsIndex = Math.max(
+    0,
+    accountSettingsTabs.findIndex((tab) => tab.key === activeSettingsTab)
+  );
+  useSwipeBetweenTabs(settingsPageEl, {
+    enabled: isAccountSettingsOpen && isCompactSettingsLayout,
+    index: activeSettingsIndex,
+    count: accountSettingsTabs.length,
+    onChange: (next) => {
+      const tab = accountSettingsTabs[next];
+      if (tab) setActiveSettingsTab(tab.key);
+    },
+    reducedMotion: Boolean(prefersReducedMotion) || !areUiAnimationsEnabled,
+  });
+  // The tab strip scrolls sideways on phones: keep the open tab's chip in
+  // view when a swipe changes it.
+  const settingsTabStripRef = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    if (!isAccountSettingsOpen || !isCompactSettingsLayout) return;
+    const chip = settingsTabStripRef.current?.querySelector<HTMLElement>(
+      `[data-settings-tab="${activeSettingsTab}"]`
+    );
+    chip?.scrollIntoView?.({
+      behavior: 'smooth',
+      block: 'nearest',
+      inline: 'center',
+    });
+  }, [activeSettingsTab, isAccountSettingsOpen, isCompactSettingsLayout]);
   const settingsSwitchSx = {
     '& .MuiSwitch-switchBase': {
       '&.Mui-checked': {
@@ -3014,11 +3079,13 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
             display: 'flex',
             flexDirection: isCompactSettingsLayout ? 'column' : 'row',
             minHeight: isCompactSettingsLayout ? 0 : 530,
+            position: 'relative',
             ...(isCompactSettingsLayout ? { height: '100%' } : {}),
             width: '100%',
           }}
         >
           <Box
+            ref={settingsTabStripRef}
             sx={{
               background: settingsSidebarSurface,
               borderRight: isCompactSettingsLayout
@@ -3052,6 +3119,7 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
               return (
                 <ButtonBase
                   key={tab.key}
+                  data-settings-tab={tab.key}
                   onClick={() => setActiveSettingsTab(tab.key)}
                   sx={{
                     alignItems: 'center',
@@ -3152,13 +3220,21 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
           </Box>
 
           <Box
+            ref={setSettingsPageEl}
             sx={{
               display: 'flex',
               flex: 1,
               flexDirection: 'column',
               minWidth: 0,
               ...(isCompactSettingsLayout
-                ? { minHeight: 0, overflowY: 'auto' }
+                ? {
+                    minHeight: 0,
+                    overflowY: 'auto',
+                    // A sideways start is the tab swipe's, never a scroll
+                    // (and never a lost tap after it: see
+                    // SECTION_SURFACE_TOUCH_ACTION).
+                    touchAction: 'pan-x pan-y pinch-zoom',
+                  }
                 : {}),
             }}
           >
@@ -3211,6 +3287,8 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                 sx={{
                   borderRadius: '8px',
                   color: theme.palette.text.secondary,
+                  // Phones get the big round one at the bottom right.
+                  display: isCompactSettingsLayout ? 'none' : undefined,
                   height: 30,
                   width: 30,
                   '&:hover': {
@@ -3235,7 +3313,8 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                 gap: 1.25,
                 overflowY: 'auto',
                 px: 2.3,
-                pb: 2.2,
+                // Phones: the last setting scrolls clear of the round X.
+                pb: isCompactSettingsLayout ? '96px' : 2.2,
                 pt: 1.9,
               }}
             >
@@ -3346,6 +3425,131 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                         {address ?? td('unavailable', 'Unavailable')}
                       </Typography>
                     </Box>
+                  </Box>
+
+                  <Box sx={{ display: 'grid', gap: 0.9 }}>
+                    <Typography
+                      sx={{
+                        color: theme.palette.text.secondary,
+                        fontSize: '0.7rem',
+                        fontWeight: 600,
+                        letterSpacing: '0.03em',
+                        textTransform: 'uppercase',
+                      }}
+                    >
+                      {td('home_modules', 'On Home')}
+                    </Typography>
+                    <Box
+                      sx={{
+                        background: avatarModalSurfaceSoft,
+                        border: `1px solid ${avatarFieldBorder}`,
+                        borderRadius: '12px',
+                        overflow: 'hidden',
+                      }}
+                    >
+                      {homeModuleRows.map((row, index) => (
+                        <Box key={row.id}>
+                          {index > 0 ? (
+                            <Box
+                              sx={{
+                                borderTop: `1px solid ${avatarSectionDivider}`,
+                                mx: 1.35,
+                              }}
+                            />
+                          ) : null}
+                          <Box
+                            component="label"
+                            sx={{
+                              alignItems: 'center',
+                              cursor: 'pointer',
+                              display: 'flex',
+                              gap: 1.2,
+                              justifyContent: 'space-between',
+                              px: 1.35,
+                              py: 1.05,
+                            }}
+                          >
+                            <Box sx={{ minWidth: 0 }}>
+                              <Typography
+                                sx={{
+                                  color: theme.palette.text.primary,
+                                  fontSize: '0.82rem',
+                                  fontWeight: 700,
+                                  letterSpacing: '0.01em',
+                                }}
+                              >
+                                {row.title}
+                              </Typography>
+                              <Typography
+                                sx={{
+                                  color: theme.palette.text.secondary,
+                                  fontSize: '0.74rem',
+                                  lineHeight: 1.42,
+                                  mt: 0.3,
+                                }}
+                              >
+                                {row.description}
+                              </Typography>
+                            </Box>
+                            <Switch
+                              checked={homeModuleVisibility[row.id]}
+                              inputProps={{ 'aria-label': row.title }}
+                              onChange={(_event, checked) =>
+                                setHomeModuleVisible(row.id, checked)
+                              }
+                              sx={settingsSwitchSx}
+                            />
+                          </Box>
+                        </Box>
+                      ))}
+                    </Box>
+                    {isPhoneHomeLayout ? (
+                      <Box
+                        sx={{
+                          alignItems: 'center',
+                          display: 'flex',
+                          gap: 1,
+                          px: 0.25,
+                        }}
+                      >
+                        <DragIndicatorRoundedIcon
+                          sx={{
+                            color: alpha(theme.palette.text.secondary, 0.8),
+                            flexShrink: 0,
+                            fontSize: 18,
+                          }}
+                        />
+                        <Typography
+                          sx={{
+                            color: theme.palette.text.secondary,
+                            flex: 1,
+                            fontSize: '0.74rem',
+                            lineHeight: 1.45,
+                          }}
+                        >
+                          {td(
+                            'home_reorder_hint',
+                            'To move a window, long press its background on Home and drag it up or down.'
+                          )}
+                        </Typography>
+                        {!isDefaultHomeWindowOrder(homeWindowOrder) ? (
+                          <ButtonBase
+                            onClick={() => writeHomeWindowOrder(null)}
+                            sx={{
+                              borderRadius: '8px',
+                              color: theme.palette.primary.light,
+                              flexShrink: 0,
+                              fontSize: '0.76rem',
+                              fontWeight: 600,
+                              px: 0.75,
+                              py: 0.5,
+                            }}
+                          >
+                            {td('home_reorder_reset', 'Reset order')}
+                          </ButtonBase>
+                        ) : null}
+                      </Box>
+                    ) : null}
                   </Box>
 
                   <Box
@@ -4559,6 +4763,19 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                       }}
                     />
 
+                    {/* Phones only: the bars it hides are GO's. */}
+                    {isGoApp && (
+                      <>
+                        <ImmersiveModeSetting />
+                        <Box
+                          sx={{
+                            borderTop: `1px solid ${avatarSectionDivider}`,
+                            mx: 1.35,
+                          }}
+                        />
+                      </>
+                    )}
+
                     <Box
                       sx={{
                         alignItems: 'center',
@@ -4681,117 +4898,6 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                         </Box>
                       </>
                     )}
-                  </Box>
-                </Box>
-              ) : null}
-
-              {activeSettingsTab === 'modules' ? (
-                <Box sx={{ display: 'grid', gap: 1.4 }}>
-                  <Box
-                    sx={{
-                      background: avatarModalSurfaceSoft,
-                      border: `1px solid ${avatarFieldBorder}`,
-                      borderRadius: '12px',
-                      overflow: 'hidden',
-                    }}
-                  >
-                    <Box
-                      sx={{
-                        alignItems: 'center',
-                        display: 'flex',
-                        gap: 1.2,
-                        justifyContent: 'space-between',
-                        px: 1.35,
-                        py: 1.2,
-                      }}
-                    >
-                      <Box sx={{ minWidth: 0 }}>
-                        <Typography
-                          sx={{
-                            color: theme.palette.text.primary,
-                            fontSize: '0.82rem',
-                            fontWeight: 700,
-                            letterSpacing: '0.01em',
-                          }}
-                        >
-                          {td('group_activity_module', 'Group Activity')}
-                        </Typography>
-                        <Typography
-                          sx={{
-                            color: theme.palette.text.secondary,
-                            fontSize: '0.75rem',
-                            lineHeight: 1.45,
-                            mt: 0.4,
-                          }}
-                        >
-                          {td(
-                            'group_activity_module_desc',
-                            'Show the Group Activity module on Home. Turn off to stop rendering it.'
-                          )}
-                        </Typography>
-                      </Box>
-                      <Switch
-                        checked={isGroupActivityModuleVisible}
-                        onChange={handleToggleGroupActivityModule}
-                        sx={settingsSwitchSx}
-                      />
-                    </Box>
-
-                    <Box
-                      sx={{
-                        borderTop: `1px solid ${avatarSectionDivider}`,
-                        mx: 1.35,
-                      }}
-                    />
-
-                    <Box
-                      sx={{
-                        alignItems: 'center',
-                        display: 'flex',
-                        gap: 1.2,
-                        justifyContent: 'space-between',
-                        px: 1.35,
-                        py: 1.2,
-                      }}
-                    >
-                      <Box sx={{ minWidth: 0 }}>
-                        <Typography
-                          sx={{
-                            color: theme.palette.text.primary,
-                            fontSize: '0.82rem',
-                            fontWeight: 700,
-                            letterSpacing: '0.01em',
-                          }}
-                        >
-                          {feedApp === 'Torq'
-                            ? td('torq_feed', 'Torq Feed')
-                            : td('quitter_feed_module', 'Quitter Feed')}
-                        </Typography>
-                        <Typography
-                          sx={{
-                            color: theme.palette.text.secondary,
-                            fontSize: '0.75rem',
-                            lineHeight: 1.45,
-                            mt: 0.4,
-                          }}
-                        >
-                          {feedApp === 'Torq'
-                            ? td(
-                                'torq_feed_module_desc',
-                                'Show the Torq Feed module on Home. Turn off to stop rendering it.'
-                              )
-                            : td(
-                                'quitter_feed_module_desc',
-                                'Show the Quitter Feed module on Home. Turn off to stop rendering it.'
-                              )}
-                        </Typography>
-                      </Box>
-                      <Switch
-                        checked={isQuitterFeedModuleVisible}
-                        onChange={handleToggleQuitterFeedModule}
-                        sx={settingsSwitchSx}
-                      />
-                    </Box>
                   </Box>
                 </Box>
               ) : null}
@@ -5293,6 +5399,41 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
               ) : null}
             </Box>
           </Box>
+          {isCompactSettingsLayout ? (
+            // Phones: a big round close button at the bottom right, in the
+            // thumb's reach, glass like the Home / Apps / Chat buttons.
+            <ButtonBase
+              onClick={closeAccountSettingsModal}
+              disabled={isChangeNameLoading}
+              aria-label={td('close_settings', 'Close settings')}
+              sx={{
+                backdropFilter: 'blur(14px) saturate(140%)',
+                WebkitBackdropFilter: 'blur(14px) saturate(140%)',
+                backgroundColor: isDarkMode
+                  ? alpha(theme.palette.background.paper, 0.82)
+                  : alpha(theme.palette.background.paper, 0.92),
+                border: `1px solid ${alpha(
+                  theme.palette.text.primary,
+                  isDarkMode ? 0.14 : 0.1
+                )}`,
+                borderRadius: '50%',
+                bottom: 18,
+                boxShadow: isDarkMode
+                  ? '0 8px 22px rgba(0,0,0,0.5)'
+                  : '0 8px 22px rgba(15,20,30,0.18)',
+                color: theme.palette.text.primary,
+                height: 60,
+                position: 'absolute',
+                right: 18,
+                transition: 'transform 120ms ease',
+                width: 60,
+                zIndex: 3,
+                '&:active': { transform: 'scale(0.92)' },
+              }}
+            >
+              <CloseIcon sx={{ fontSize: 28 }} />
+            </ButtonBase>
+          ) : null}
         </Box>
       </Dialog>
 

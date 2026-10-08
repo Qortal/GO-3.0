@@ -65,15 +65,20 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(AudioRoutingPlugin.class);
         registerPlugin(QortalBiometricPlugin.class);
         registerPlugin(SafeAreaPlugin.class);
+        // Immersive mode: status bar hiding + finger direction over frames.
+        registerPlugin(ImmersivePlugin.class);
         registerPlugin(VideoCompressPlugin.class);
         registerPlugin(QortinoLlmPlugin.class);
         registerPlugin(ShareReceiverPlugin.class);
+        registerPlugin(QortalClipboardPlugin.class);
         registerPlugin(SoftKeyboardPlugin.class);
         registerPlugin(AppUpdatePlugin.class);
         // Replaces Capacitor's own "WebView" plugin (N-18): see the class.
         registerPlugin(LockedWebViewPlugin.class);
         // FLAG_SECURE and overlay protection for sensitive screens (GO-37).
         registerPlugin(ScreenSecurityPlugin.class);
+        // Small in-memory pictures of open Q-Apps for the tab cards.
+        registerPlugin(TabSnapshotPlugin.class);
         super.onCreate(savedInstanceState);
         // Home and VPN node addresses never go to a carrier or Wi-Fi proxy.
         WebViewProxyBypass.start(this);
@@ -449,7 +454,12 @@ public class MainActivity extends BridgeActivity {
         float density = getResources().getDisplayMetrics().density;
         if (density <= 0) density = 1f;
         boolean imeVisible = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom > 0;
-        int top = Math.round(insets.getInsets(WindowInsetsCompat.Type.statusBars()).top / density);
+        // Immersive mode hides the status bar; the camera cutout still keeps
+        // content clear of the punch hole.
+        int top = Math.round(Math.max(
+            insets.getInsets(WindowInsetsCompat.Type.statusBars()).top,
+            insets.getInsets(WindowInsetsCompat.Type.displayCutout()).top
+        ) / density);
         // With the keyboard open the WebView already ends above it (IME
         // padding) — the nav bar sits below the keyboard, so no bottom inset.
         int bottom = imeVisible

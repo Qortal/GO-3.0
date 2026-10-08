@@ -600,7 +600,9 @@ export const AddGroupList = ({
               columnGap: { xs: 1.25, sm: 1.75, md: 2.5 },
               display: 'grid',
               gridTemplateColumns: {
-                xs: '46px minmax(0, 1fr) 36px 72px',
+                // Phones: the score sits in the line under the name, so the
+                // name gets the width.
+                xs: '46px minmax(0, 1fr) 72px',
                 sm: '46px minmax(0, 1fr) 36px 88px 76px',
                 md: '52px minmax(0, 1fr) 38px 108px 80px',
               },
@@ -733,24 +735,49 @@ export const AddGroupList = ({
                   </Typography>
                 </Tooltip>
               )}
-              <Typography
-                noWrap
+              <Box
                 sx={{
-                  color: 'text.secondary',
-                  display: { xs: 'block', sm: 'none' },
-                  fontSize: 11.5,
-                  lineHeight: '16px',
-                  mt: 0.15,
+                  alignItems: 'center',
+                  display: { xs: 'flex', sm: 'none' },
+                  gap: 0.75,
+                  mt: 0.35,
+                  minWidth: 0,
                 }}
               >
-                {formatMemberCount(memberCount)}{' '}
-                {t('group:group.member', { count: memberCount })}
-              </Typography>
+                <Typography
+                  noWrap
+                  sx={{
+                    color: 'text.secondary',
+                    fontSize: 11.5,
+                    lineHeight: '16px',
+                    minWidth: 0,
+                  }}
+                >
+                  {formatMemberCount(memberCount)}{' '}
+                  {t('group:group.member', { count: memberCount })}
+                </Typography>
+                {groupScore ? (
+                  <Box
+                    // The badge opens its score details; the row behind it
+                    // opens the group.
+                    onClick={(event) => event.stopPropagation()}
+                    sx={{ display: 'flex', flexShrink: 0 }}
+                  >
+                    <GroupScoreBadge
+                      circleSize={22}
+                      popoverAlign="center"
+                      score={groupScore}
+                      size="compact"
+                      triggerVariant="circle"
+                    />
+                  </Box>
+                ) : null}
+              </Box>
             </Box>
             <Box
               sx={{
                 alignItems: 'center',
-                display: 'flex',
+                display: { xs: 'none', sm: 'flex' },
                 justifyContent: 'center',
               }}
             >
@@ -1387,6 +1414,9 @@ export const AddGroupList = ({
             flexGrow: 1,
             gap: 1.5,
             minHeight: 0,
+            // A flex item: without this the one-row filter chips (phones)
+            // would widen the whole list past the screen.
+            minWidth: 0,
           }}
         >
           <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.1 }}>
@@ -1444,8 +1474,15 @@ export const AddGroupList = ({
               sx={{
                 alignItems: 'center',
                 display: 'flex',
-                flexWrap: 'wrap',
-                gap: 1.25,
+                flexWrap: { xs: 'nowrap', sm: 'wrap' },
+                gap: { xs: 1, sm: 1.25 },
+                // Phones: one row that scrolls sideways, not three rows.
+                mx: { xs: -1.5, sm: 0 },
+                overflowX: { xs: 'auto', sm: 'visible' },
+                px: { xs: 1.5, sm: 0 },
+                scrollbarWidth: 'none',
+                '&::-webkit-scrollbar': { display: 'none' },
+                '& > *': { flexShrink: 0 },
               }}
             >
               {[
@@ -1498,7 +1535,7 @@ export const AddGroupList = ({
                     fontSize: 14,
                     fontWeight: 600,
                     gap: 1,
-                    height: 40,
+                    height: { xs: 36, sm: 40 },
                     letterSpacing: '-0.01em',
                     px: 1.75,
                     '&:hover': {
@@ -1527,7 +1564,7 @@ export const AddGroupList = ({
                   fontSize: 14,
                   fontWeight: 600,
                   gap: 1,
-                  height: 40,
+                  height: { xs: 36, sm: 40 },
                   letterSpacing: '-0.01em',
                   px: 1.75,
                   '&:hover': {
@@ -1562,7 +1599,7 @@ export const AddGroupList = ({
                       fontSize: 14,
                       fontWeight: 600,
                       gap: 1,
-                      height: 40,
+                      height: { xs: 36, sm: 40 },
                       letterSpacing: '-0.01em',
                       px: 1.75,
                       '&:hover': {

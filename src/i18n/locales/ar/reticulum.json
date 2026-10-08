@@ -69,6 +69,14 @@
     "empty": "لا توجد رسائل خاصة حاليًا.",
     "subtitle": "دردشات Reticulum خاصة"
   },
+  "dm_search": {
+    "clear": "مسح البحث",
+    "empty": "لم يتم العثور على رسائل",
+    "hint": "اكتب حرفين على الأقل للبحث في رسائلك المباشرة",
+    "placeholder": "ابحث في رسائلك المباشرة",
+    "title": "البحث في الرسائل",
+    "unavailable": "البحث في الرسائل غير متاح حاليًا"
+  },
   "event_preview": {
     "all_day": "all day",
     "calendar_unavailable": "calendar is unavailable",
@@ -152,11 +160,14 @@
     "copy_failed": "unable to copy image",
     "download": "download image",
     "download_failed": "unable to download image",
+    "newer": "أحدث",
+    "older": "أقدم",
     "prepare_failed": "unable to prepare image for clipboard",
     "read_failed": "unable to read image",
     "save": "حفظ الصورة",
     "share": "مشاركة الصورة",
     "share_failed": "تعذّرت مشاركة الصورة",
+    "video": "فيديو",
     "zoom_in": "zoom in",
     "zoom_out": "zoom out"
   },
@@ -300,6 +311,21 @@
       },
       "title": "حجم النص"
     }
+  },
+  "share": {
+    "cancel": "إلغاء المشاركة",
+    "cannot_write": "يمكن للمشرفين فقط الكتابة في هذه القناة: ارجع واختر محادثة أخرى",
+    "chip_label": "{{what}} للمشاركة: اضغط على محادثة لإضافته",
+    "kind_file": "ملف",
+    "kind_link": "رابط",
+    "kind_photo": "صورة",
+    "kind_text": "نص",
+    "kind_video": "فيديو",
+    "notice_extra_files": "تمت إضافة الملف الأول فقط: تحمل الرسالة ملفًا واحدًا.",
+    "notice_too_large": "تم استبعاد ملف أكبر من {{max}} ميغابايت.",
+    "notice_unreadable": "تعذرت قراءة الملف المشارك.",
+    "notice_unsafe_image": "تعذر تنظيف الصورة من بيانات الموقع، لذلك تم استبعادها.",
+    "pick_chat": "اختر محادثة"
   },
   "status_badge": {
     "copy_diagnostics": "نسخ التشخيص",

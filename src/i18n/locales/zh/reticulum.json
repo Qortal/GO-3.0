@@ -69,6 +69,14 @@
     "empty": "当前没有私信。",
     "subtitle": "Reticulum 私密聊天"
   },
+  "dm_search": {
+    "clear": "清除搜索",
+    "empty": "未找到消息",
+    "hint": "输入至少2个字符以搜索你的私信",
+    "placeholder": "搜索你的私信",
+    "title": "搜索消息",
+    "unavailable": "消息搜索暂时不可用"
+  },
   "event_preview": {
     "all_day": "all day",
     "calendar_unavailable": "calendar is unavailable",
@@ -152,11 +160,14 @@
     "copy_failed": "unable to copy image",
     "download": "download image",
     "download_failed": "unable to download image",
+    "newer": "较新",
+    "older": "较早",
     "prepare_failed": "unable to prepare image for clipboard",
     "read_failed": "unable to read image",
     "save": "保存图片",
     "share": "分享图片",
     "share_failed": "无法分享图片",
+    "video": "视频",
     "zoom_in": "zoom in",
     "zoom_out": "zoom out"
   },
@@ -300,6 +311,21 @@
       },
       "title": "文字大小"
     }
+  },
+  "share": {
+    "cancel": "取消分享",
+    "cannot_write": "只有管理员可以在此频道发言：请返回并选择其他聊天",
+    "chip_label": "要分享的{{what}}：点按一个聊天即可添加",
+    "kind_file": "文件",
+    "kind_link": "链接",
+    "kind_photo": "照片",
+    "kind_text": "文本",
+    "kind_video": "视频",
+    "notice_extra_files": "只添加了第一个文件：一条消息只能带一个文件。",
+    "notice_too_large": "已略过一个超过 {{max}} MB 的文件。",
+    "notice_unreadable": "无法读取分享的文件。",
+    "notice_unsafe_image": "无法清除图片中的位置信息，因此已略过。",
+    "pick_chat": "选择一个聊天"
   },
   "status_badge": {
     "copy_diagnostics": "复制诊断信息",

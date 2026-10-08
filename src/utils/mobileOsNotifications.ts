@@ -11,7 +11,7 @@ type OsNotificationOptions = {
   id?: string;
   iconUrl?: string;
   fromAddress?: string;
-  notificationType?: 'direct' | 'group' | 'general';
+  notificationType?: 'direct' | 'group' | 'general' | 'payment';
   onClick?: () => void;
 };
 

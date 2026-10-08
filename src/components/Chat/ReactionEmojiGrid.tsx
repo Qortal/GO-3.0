@@ -5,11 +5,24 @@ import {
   useRef,
   useState,
   type MouseEvent,
+  type PointerEvent,
   type ReactNode,
 } from 'react';
-import { Box, ButtonBase, CircularProgress, useTheme } from '@mui/material';
+import {
+  Box,
+  ButtonBase,
+  CircularProgress,
+  IconButton,
+  InputBase,
+  Typography,
+  useTheme,
+} from '@mui/material';
 import { alpha } from '@mui/material/styles';
 import AccessTimeRoundedIcon from '@mui/icons-material/AccessTimeRounded';
+import ArrowBackRoundedIcon from '@mui/icons-material/ArrowBackRounded';
+import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
+import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
+import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined';
 import EmojiEmotionsOutlinedIcon from '@mui/icons-material/EmojiEmotionsOutlined';
 import EmojiEventsOutlinedIcon from '@mui/icons-material/EmojiEventsOutlined';
 import EmojiFlagsOutlinedIcon from '@mui/icons-material/EmojiFlagsOutlined';
@@ -21,9 +34,10 @@ import EmojiTransportationOutlinedIcon from '@mui/icons-material/EmojiTransporta
 import { useTranslation } from 'react-i18next';
 import {
   getRecentReactionsForPicker,
-  loadReactionEmojiSections,
+  loadReactionEmojiData,
+  searchReactionEmojis,
   type ReactionEmojiCategory,
-  type ReactionEmojiSection,
+  type ReactionEmojiData,
 } from './reactionEmojiData';
 import {
   EXPANDED_GRID_PADDING_X_PX,
@@ -57,15 +71,29 @@ const TAB_ORDER: SectionId[] = [
 ];
 
 const TAB_ROW_HEIGHT_PX = 46;
+const SEARCH_ROW_HEIGHT_PX = 48;
+const PICKER_TITLE_HEIGHT_PX = 44;
 export const EMOJI_CELL_HEIGHT_PX = 42;
 const SECTION_TITLE_HEIGHT_PX = 30;
+const LONG_PRESS_MS = 450;
+const LONG_PRESS_SLOP_PX = 10;
 
 type ReactionEmojiGridProps = {
   width: number;
   height: number;
   /** Emoji the viewer already reacted with on this message. */
   selected: ReadonlySet<string>;
-  onPick: (emoji: string) => void;
+  /** `cell` is the button picked, for the landing animation's start. */
+  onPick: (emoji: string, cell?: HTMLElement) => void;
+  /** Ringed in blue: what a double tap on a message sends here. */
+  doubleTapEmoji?: string;
+  /** Long press on an emoji; makes it the double-tap one. */
+  onLongPressEmoji?: (emoji: string) => void;
+  /** Shows the gear that opens the reaction settings. */
+  onOpenSettings?: () => void;
+  /** Picking for a setting: a title row with a back arrow on top. */
+  pickerTitle?: string;
+  onBack?: () => void;
 };
 
 /**
@@ -80,25 +108,39 @@ export const ReactionEmojiGrid = ({
   height,
   selected,
   onPick,
+  doubleTapEmoji,
+  onLongPressEmoji,
+  onOpenSettings,
+  pickerTitle,
+  onBack,
 }: ReactionEmojiGridProps) => {
   const theme = useTheme();
-  const { t } = useTranslation(['group']);
+  const { t } = useTranslation(['core', 'group']);
   const isDark = theme.palette.mode === 'dark';
   const columns = getExpandedGridColumns(width);
   const [recent] = useState(getRecentReactionsForPicker);
-  const [sections, setSections] = useState<ReactionEmojiSection[] | null>(null);
+  const [data, setData] = useState<ReactionEmojiData | null>(null);
+  const sections = data?.sections ?? null;
   const [failed, setFailed] = useState(false);
   const [mountedCount, setMountedCount] = useState(0);
   const [activeId, setActiveId] = useState<SectionId>('recent');
+  const [query, setQuery] = useState('');
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const pendingJumpRef = useRef<SectionId | null>(null);
   const scrollFrameRef = useRef<number | null>(null);
+  const holdRef = useRef<{
+    timer: number | null;
+    x: number;
+    y: number;
+    fired: boolean;
+  }>({ timer: null, x: 0, y: 0, fired: false });
+  const searching = query.trim().length > 0;
 
   useEffect(() => {
     let cancelled = false;
-    loadReactionEmojiSections()
+    loadReactionEmojiData()
       .then((loaded) => {
-        if (!cancelled) setSections(loaded);
+        if (!cancelled) setData(loaded);
       })
       .catch(() => {
         if (!cancelled) setFailed(true);
@@ -194,14 +236,85 @@ export const ReactionEmojiGrid = ({
     scrollFrameRef.current = window.requestAnimationFrame(syncActiveTab);
   };
 
+  const results = useMemo(
+    () =>
+      searching && data
+        ? searchReactionEmojis(query, data.sections, data.names)
+        : [],
+    [data, query, searching]
+  );
+
+  // Back to the top for every new search, not left halfway down.
+  useEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollTop = 0;
+  }, [query]);
+
+  const cancelHold = () => {
+    if (holdRef.current.timer !== null) {
+      window.clearTimeout(holdRef.current.timer);
+      holdRef.current.timer = null;
+    }
+  };
+
+  useEffect(() => cancelHold, []);
+
+  const cellFrom = (target: EventTarget | null) =>
+    (target as HTMLElement | null)?.closest?.<HTMLElement>('[data-emoji]') ??
+    null;
+
+  // A long press on any emoji makes it the double-tap one. Scrolling the grid
+  // moves the finger (or cancels the pointer), which calls it off.
+  const handlePointerDown = (event: PointerEvent<HTMLDivElement>) => {
+    holdRef.current.fired = false;
+    if (!onLongPressEmoji) return;
+    const emoji = cellFrom(event.target)?.dataset.emoji;
+    if (!emoji) return;
+    cancelHold();
+    holdRef.current.x = event.clientX;
+    holdRef.current.y = event.clientY;
+    holdRef.current.timer = window.setTimeout(() => {
+      holdRef.current.timer = null;
+      holdRef.current.fired = true;
+      onLongPressEmoji(emoji);
+    }, LONG_PRESS_MS);
+  };
+
+  const handlePointerMove = (event: PointerEvent<HTMLDivElement>) => {
+    if (holdRef.current.timer === null) return;
+    if (
+      Math.abs(event.clientX - holdRef.current.x) > LONG_PRESS_SLOP_PX ||
+      Math.abs(event.clientY - holdRef.current.y) > LONG_PRESS_SLOP_PX
+    ) {
+      cancelHold();
+    }
+  };
+
   // One listener for ~1,800 cells instead of one per button.
   const handleGridClick = (event: MouseEvent<HTMLDivElement>) => {
-    const cell = (event.target as HTMLElement | null)?.closest<HTMLElement>(
-      '[data-emoji]'
-    );
+    if (holdRef.current.fired) {
+      holdRef.current.fired = false;
+      return;
+    }
+    const cell = cellFrom(event.target);
     const emoji = cell?.dataset.emoji;
-    if (emoji) onPick(emoji);
+    if (emoji) onPick(emoji, cell ?? undefined);
   };
+
+  const renderCell = (emoji: string) => (
+    <button
+      aria-pressed={selected.has(emoji)}
+      data-double-tap={emoji === doubleTapEmoji ? 'true' : undefined}
+      data-emoji={emoji}
+      key={emoji}
+      type="button"
+    >
+      {emoji}
+    </button>
+  );
+
+  const searchLabel = t('group:message_item.search_emoji', {
+    postProcess: 'capitalizeFirstChar',
+  });
 
   const availableTabs = TAB_ORDER.filter(
     (id) =>
@@ -225,6 +338,113 @@ export const ReactionEmojiGrid = ({
         '@media (prefers-reduced-motion: reduce)': { animation: 'none' },
       }}
     >
+      {pickerTitle && (
+        <Box
+          sx={{
+            alignItems: 'center',
+            display: 'flex',
+            flexShrink: 0,
+            gap: '4px',
+            height: PICKER_TITLE_HEIGHT_PX,
+            pl: '4px',
+            pr: '12px',
+          }}
+        >
+          {onBack && (
+            <IconButton
+              aria-label={t('core:action.back', {
+                postProcess: 'capitalizeFirstChar',
+              })}
+              onClick={onBack}
+              size="small"
+              sx={{ height: 40, width: 40 }}
+            >
+              <ArrowBackRoundedIcon />
+            </IconButton>
+          )}
+          <Typography
+            noWrap
+            sx={{ fontSize: '15px', fontWeight: 600, minWidth: 0 }}
+          >
+            {pickerTitle}
+          </Typography>
+        </Box>
+      )}
+      <Box
+        sx={{
+          alignItems: 'center',
+          display: 'flex',
+          flexShrink: 0,
+          gap: '4px',
+          height: SEARCH_ROW_HEIGHT_PX,
+          pl: `${EXPANDED_GRID_PADDING_X_PX + 4}px`,
+          pr: onOpenSettings ? '2px' : `${EXPANDED_GRID_PADDING_X_PX + 4}px`,
+          pt: '6px',
+        }}
+      >
+        <Box
+          sx={{
+            alignItems: 'center',
+            backgroundColor: alpha(
+              theme.palette.text.primary,
+              isDark ? 0.08 : 0.06
+            ),
+            borderRadius: '12px',
+            color: 'text.secondary',
+            display: 'flex',
+            flex: 1,
+            gap: '6px',
+            height: 38,
+            minWidth: 0,
+            pl: '10px',
+            pr: searching ? '2px' : '10px',
+            '& svg': { fontSize: 20 },
+          }}
+        >
+          <SearchRoundedIcon />
+          <InputBase
+            inputProps={{
+              'aria-label': searchLabel,
+              enterKeyHint: 'search',
+              type: 'search',
+            }}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder={searchLabel}
+            sx={{
+              color: 'text.primary',
+              flex: 1,
+              fontSize: '15px',
+              minWidth: 0,
+              '& input': { p: 0 },
+              '& input::-webkit-search-cancel-button': { display: 'none' },
+            }}
+            value={query}
+          />
+          {searching && (
+            <IconButton
+              aria-label={t('group:message_item.clear_search', {
+                postProcess: 'capitalizeFirstChar',
+              })}
+              onClick={() => setQuery('')}
+              size="small"
+              sx={{ height: 34, width: 34 }}
+            >
+              <CloseRoundedIcon />
+            </IconButton>
+          )}
+        </Box>
+        {onOpenSettings && (
+          <IconButton
+            aria-label={t('group:message_item.reaction_settings', {
+              postProcess: 'capitalizeFirstChar',
+            })}
+            onClick={onOpenSettings}
+            sx={{ color: 'text.secondary', height: 44, width: 44 }}
+          >
+            <SettingsOutlinedIcon />
+          </IconButton>
+        )}
+      </Box>
       <Box
         aria-label={t('group:message_item.emoji_categories', {
           postProcess: 'capitalizeFirstChar',
@@ -234,7 +454,8 @@ export const ReactionEmojiGrid = ({
           alignItems: 'center',
           borderBottom: '1px solid',
           borderColor: alpha(theme.palette.text.primary, isDark ? 0.08 : 0.1),
-          display: 'flex',
+          // Search results replace the categories, so their tabs step aside.
+          display: searching ? 'none' : 'flex',
           flexShrink: 0,
           gap: '2px',
           height: TAB_ROW_HEIGHT_PX,
@@ -273,6 +494,21 @@ export const ReactionEmojiGrid = ({
       </Box>
       <Box
         onClick={handleGridClick}
+        // Android reports a long press as a context menu too, maybe before
+        // the hold timer; either way it is the same long press.
+        onContextMenu={(event) => {
+          event.preventDefault();
+          const emoji = cellFrom(event.target)?.dataset.emoji;
+          if (!onLongPressEmoji || !emoji) return;
+          cancelHold();
+          holdRef.current.fired = true;
+          onLongPressEmoji(emoji);
+        }}
+        onPointerCancel={cancelHold}
+        onPointerDown={handlePointerDown}
+        onPointerLeave={cancelHold}
+        onPointerMove={handlePointerMove}
+        onPointerUp={cancelHold}
         onScroll={handleScroll}
         ref={scrollRef}
         sx={{
@@ -316,63 +552,91 @@ export const ReactionEmojiGrid = ({
           '& [data-emoji][aria-pressed="true"]': {
             backgroundColor: alpha(theme.palette.primary.main, 0.24),
           },
+          '& [data-emoji][data-double-tap="true"]': {
+            borderRadius: '50%',
+            boxShadow: `inset 0 0 0 2px ${theme.palette.primary.main}`,
+          },
+          // Long-pressing an emoji must not start a text selection.
+          userSelect: 'none',
+          WebkitTouchCallout: 'none',
+          WebkitUserSelect: 'none',
         }}
       >
-        {visibleSections.map((section, index) => (
-          <Box
-            aria-label={labelFor(section.id)}
-            component="section"
-            data-emoji-section={section.id}
-            key={section.id}
-            sx={{
-              // Off-screen categories skip layout and paint; the exact size
-              // keeps the scroll height (and the tab jumps) right.
-              containIntrinsicSize: `auto ${
-                (index > 0 ? SECTION_TITLE_HEIGHT_PX : 4) +
-                Math.ceil(section.emojis.length / columns) *
-                  EMOJI_CELL_HEIGHT_PX
-              }px`,
-              contentVisibility: index > 0 ? 'auto' : 'visible',
-            }}
-          >
-            {index > 0 ? (
+        {searching && (
+          <Box component="section" sx={{ pt: '4px' }}>
+            {results.length > 0 ? (
               <Box
-                aria-hidden="true"
                 sx={{
-                  alignItems: 'flex-end',
-                  color: 'text.secondary',
-                  display: 'flex',
-                  fontSize: '12.5px',
-                  fontWeight: 600,
-                  height: SECTION_TITLE_HEIGHT_PX,
-                  pb: '5px',
-                  px: '6px',
+                  display: 'grid',
+                  gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
                 }}
               >
-                {labelFor(section.id)}
+                {results.map(renderCell)}
               </Box>
-            ) : (
-              <Box sx={{ height: 4 }} />
-            )}
+            ) : data ? (
+              <Typography
+                sx={{
+                  color: 'text.secondary',
+                  fontSize: '14px',
+                  px: '8px',
+                  py: '24px',
+                  textAlign: 'center',
+                }}
+              >
+                {t('group:message_item.no_emoji_found', {
+                  postProcess: 'capitalizeFirstChar',
+                })}
+              </Typography>
+            ) : null}
+          </Box>
+        )}
+        {!searching &&
+          visibleSections.map((section, index) => (
             <Box
+              aria-label={labelFor(section.id)}
+              component="section"
+              data-emoji-section={section.id}
+              key={section.id}
               sx={{
-                display: 'grid',
-                gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
+                // Off-screen categories skip layout and paint; the exact size
+                // keeps the scroll height (and the tab jumps) right.
+                containIntrinsicSize: `auto ${
+                  (index > 0 ? SECTION_TITLE_HEIGHT_PX : 4) +
+                  Math.ceil(section.emojis.length / columns) *
+                    EMOJI_CELL_HEIGHT_PX
+                }px`,
+                contentVisibility: index > 0 ? 'auto' : 'visible',
               }}
             >
-              {section.emojis.map((emoji) => (
-                <button
-                  aria-pressed={selected.has(emoji)}
-                  data-emoji={emoji}
-                  key={emoji}
-                  type="button"
+              {index > 0 ? (
+                <Box
+                  aria-hidden="true"
+                  sx={{
+                    alignItems: 'flex-end',
+                    color: 'text.secondary',
+                    display: 'flex',
+                    fontSize: '12.5px',
+                    fontWeight: 600,
+                    height: SECTION_TITLE_HEIGHT_PX,
+                    pb: '5px',
+                    px: '6px',
+                  }}
                 >
-                  {emoji}
-                </button>
-              ))}
+                  {labelFor(section.id)}
+                </Box>
+              ) : (
+                <Box sx={{ height: 4 }} />
+              )}
+              <Box
+                sx={{
+                  display: 'grid',
+                  gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
+                }}
+              >
+                {section.emojis.map(renderCell)}
+              </Box>
             </Box>
-          </Box>
-        ))}
+          ))}
         {!sections && !failed && (
           <Box sx={{ display: 'flex', justifyContent: 'center', py: 2 }}>
             <CircularProgress size={22} />

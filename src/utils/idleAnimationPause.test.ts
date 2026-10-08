@@ -5,7 +5,12 @@ vi.mock('./platform', () => ({ isCapacitor: () => true }));
 type FakeAnimation = {
   animationName?: string;
   playState: AnimationPlayState;
-  effect: { getTiming: () => { iterations: number } } | null;
+  currentTime: number | null;
+  playbackRate: number;
+  effect: {
+    getTiming: () => { iterations: number };
+    getComputedTiming: () => { endTime: number };
+  } | null;
   play: ReturnType<typeof vi.fn>;
 };
 
@@ -13,15 +18,24 @@ const fakeAnimation = ({
   css = true,
   iterations,
   playState,
+  currentTime = 0,
+  endTime = 720,
 }: {
   css?: boolean;
   iterations: number;
   playState: AnimationPlayState;
+  currentTime?: number | null;
+  endTime?: number;
 }): FakeAnimation => {
   const animation: FakeAnimation = {
     ...(css ? { animationName: 'anim' } : {}),
     playState,
-    effect: { getTiming: () => ({ iterations }) },
+    currentTime,
+    playbackRate: 1,
+    effect: {
+      getTiming: () => ({ iterations }),
+      getComputedTiming: () => ({ endTime }),
+    },
     play: vi.fn(),
   };
   animation.play.mockImplementation(() => {
@@ -85,6 +99,31 @@ describe('installIdleAnimationPause', () => {
     expect(loop.play).not.toHaveBeenCalled();
     expect(finished.play).not.toHaveBeenCalled();
     expect(waapi.play).not.toHaveBeenCalled();
+  });
+
+  it('does not replay an entrance the idle rule paused on its last frame', async () => {
+    // The dashboard fade (fill: both) is paused at its end when the document
+    // goes idle; play() would rewind it to opacity 0: a black flash.
+    const done = fakeAnimation({
+      iterations: 1,
+      playState: 'paused',
+      currentTime: 720,
+      endTime: 720,
+    });
+    const halfway = fakeAnimation({
+      iterations: 1,
+      playState: 'paused',
+      currentTime: 300,
+      endTime: 720,
+    });
+    animations = [done, halfway];
+    await install();
+    vi.advanceTimersByTime(10_000);
+    expect(done.play).not.toHaveBeenCalled();
+    expect(halfway.play).toHaveBeenCalledTimes(1);
+    // A later entrance starting while idle must not replay it either.
+    document.body.dispatchEvent(new Event('animationstart', { bubbles: true }));
+    expect(done.play).not.toHaveBeenCalled();
   });
 
   it('plays a finite animation that starts while idle (the post-login dashboard fade)', async () => {

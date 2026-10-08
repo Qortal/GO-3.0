@@ -1,4 +1,5 @@
 import { createRoot } from 'react-dom/client';
+import { PerfProfiler } from './utils/perfProfiler';
 import {
   installCapacitorBridge,
   installReticulumBridges,
@@ -69,7 +70,9 @@ createRoot(document.getElementById('root')!).render(
     <ThemeProvider>
       <CssBaseline />
       <MessageQueueProvider>
-        <App />
+        <PerfProfiler id="root">
+          <App />
+        </PerfProfiler>
         <ReticulumStatusChip />
       </MessageQueueProvider>
     </ThemeProvider>

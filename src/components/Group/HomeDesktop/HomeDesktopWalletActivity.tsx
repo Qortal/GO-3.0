@@ -11,6 +11,7 @@ import { executeEvent } from '../../../utils/events';
 import { useTranslation } from 'react-i18next';
 import { DashboardUtilityPanel } from './DashboardUtilityPanel';
 import { WalletActionButton } from './WalletActionButton';
+import { WalletActivityHistory } from './WalletActivityHistory';
 import {
   HOME_WIDE_DASHBOARD_MIN_WIDTH_PX,
   WALLET_ACTIVITY_RECENT_PAYMENT_FETCH_LIMIT,
@@ -65,6 +66,11 @@ export const HomeDesktopWalletActivity = () => {
   const [isWalletActivityLoading, setIsWalletActivityLoading] = useState(false);
   const [walletActivityRelativeTimeNow, setWalletActivityRelativeTimeNow] =
     useState(() => Date.now());
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+  const toggleHistory = useCallback(
+    () => setIsHistoryOpen((current) => !current),
+    []
+  );
 
   const walletActivitySecondaryTextColor = alpha(
     theme.palette.text.primary,
@@ -224,6 +230,7 @@ export const HomeDesktopWalletActivity = () => {
         counterpartyAddress,
         counterpartyLabel,
         direction,
+        signature: resolvedTransaction.signature,
         timestamp,
       } satisfies WalletActivityEntry;
     },
@@ -307,6 +314,7 @@ export const HomeDesktopWalletActivity = () => {
 
   useEffect(() => {
     setRecentWalletActivity(null);
+    setIsHistoryOpen(false);
     lastWalletActivityBalanceRef.current = null;
   }, [userAddress]);
 
@@ -347,6 +355,9 @@ export const HomeDesktopWalletActivity = () => {
         gap: '12px',
         height: '100%',
         minHeight: '182px',
+        // A fixed-height card (wide desktop) scrolls its open history; on a
+        // phone the card grows with it.
+        overflowY: isHistoryOpen ? 'auto' : undefined,
         padding: '14px 16px 16px',
       }}
     >
@@ -434,7 +445,9 @@ export const HomeDesktopWalletActivity = () => {
         >
           {td('recent_transaction', 'Recent Transaction')}
         </Typography>
-        {isWalletActivityLoading ? (
+        {/* A refresh keeps the last entry on screen: swapping it for the
+            loading line changed the card's height under the reader. */}
+        {isWalletActivityLoading && !recentWalletActivity ? (
           <Typography
             sx={{
               color: theme.palette.text.secondary,
@@ -586,6 +599,15 @@ export const HomeDesktopWalletActivity = () => {
             )}
           </Typography>
         </Box>
+        <WalletActivityHistory
+          excludeSignature={recentWalletActivity?.signature}
+          onOpenCounterparty={handleOpenWalletActivityCounterparty}
+          onToggle={toggleHistory}
+          open={isHistoryOpen}
+          refreshKey={balance == null ? null : String(balance)}
+          resolveLabel={resolveWalletActivityAddressLabel}
+          userAddress={userAddress}
+        />
       </Box>
     </DashboardUtilityPanel>
   );

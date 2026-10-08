@@ -17,6 +17,7 @@ i18n.init({
         'tabs.categories': 'categories',
         'tabs.my_apps': 'my apps',
         'tabs.add_private': '+ private app',
+        'tabs.pinned': 'pinned',
       },
     },
   },
@@ -135,6 +136,59 @@ describe('AppsTabs', () => {
       // Should render without errors (5 tabs: official, community, categories, my-apps, private)
       expect(screen.getAllByRole('tab').length).toBe(5);
       unmount();
+    });
+  });
+
+  describe('on phones', () => {
+    it('shows six buttons with Pinned first and marks the current one', () => {
+      render(
+        <TestWrapper>
+          <AppsTabs currentTab="pinned" isMobile onTabChange={vi.fn()} />
+        </TestWrapper>
+      );
+      const tabs = screen.getAllByRole('tab');
+      expect(tabs).toHaveLength(6);
+      expect(tabs[0]).toHaveTextContent(/pinned/i);
+      expect(tabs[0]).toHaveAttribute('aria-selected', 'true');
+      expect(tabs[1]).toHaveAttribute('aria-selected', 'false');
+    });
+
+    it('switches on tap and reports a tap on the current one', async () => {
+      const user = userEvent.setup();
+      const onTabChange = vi.fn();
+      const onTabReselect = vi.fn();
+      render(
+        <TestWrapper>
+          <AppsTabs
+            currentTab="pinned"
+            isMobile
+            onTabChange={onTabChange}
+            onTabReselect={onTabReselect}
+          />
+        </TestWrapper>
+      );
+      await user.click(screen.getByText(/community apps/i));
+      expect(onTabChange).toHaveBeenCalledWith('community');
+      await user.click(screen.getByText(/pinned/i));
+      expect(onTabReselect).toHaveBeenCalledWith('pinned');
+    });
+
+    it('marks nothing while search results show', () => {
+      render(
+        <TestWrapper>
+          <AppsTabs
+            currentTab="official"
+            isMobile
+            isSearchActive
+            onTabChange={vi.fn()}
+          />
+        </TestWrapper>
+      );
+      screen
+        .getAllByRole('tab')
+        .forEach((tab) =>
+          expect(tab).toHaveAttribute('aria-selected', 'false')
+        );
     });
   });
 });

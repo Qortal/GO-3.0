@@ -575,7 +575,8 @@
     "stage_gathering": "Gathering from QDN",
     "stage_saving": "Saving to the phone",
     "storage_permission": "GO needs storage permission to save files to Documents.",
-    "tap_to_open": "Tap to open · {{location}}"
+    "tap_to_open": "Tap to open · {{location}}",
+    "tap_to_open_or_share": "Tap to open or share"
   },
   "filter": {
     "all": "all",
@@ -630,7 +631,7 @@
     "loading_versions": "Loading versions from QDN…",
     "no_notes": "No release notes were added for this version.",
     "no_versions": "No GO 3.0 builds have been published yet.",
-    "open_in_qshare": "Open in Q-Share+",
+    "open_in_qshare": "Open in Q-Share",
     "progress": {
       "assembling": "Assembling the build",
       "bytes_of_total": "{{done}} of {{total}}",
@@ -806,6 +807,7 @@
       "new_notification": "New notification",
       "new_notification_from": "New notification from {{ appName }}",
       "new_payment_body": "You received {{ amount }} QORT.",
+      "new_payment_from": "Payment from {{ name }}",
       "new_payment_received": "New payment received",
       "new_qmail": "You got a new qmail",
       "no_app_notifications": "No app notifications yet",
@@ -1014,6 +1016,17 @@
   "payment": "payment",
   "payment_notification": "payment notification",
   "payments_count": "Payments ({{count}})",
+  "pdf_reader": {
+    "gesture_hint": "Tap for full screen · double-tap or pinch to zoom",
+    "gesture_hint_pages": "Swipe to turn pages · tap for full screen · double-tap to zoom",
+    "look_dim": "Dim",
+    "look_dim_hint": "Dark frame, page unchanged",
+    "look_light": "Light",
+    "look_light_hint": "Light frame and white page",
+    "look_smart": "Smart",
+    "look_smart_hint": "Dark pages for text, photos kept as they are",
+    "page_look": "Page look"
+  },
   "poll_embed": "poll embed",
   "port": "port",
   "presence": {
@@ -1057,7 +1070,7 @@
     "modules_hotkeys_label": "Hotkeys",
     "modules_music_description": "A compact Earbump player with search and quick playback.",
     "modules_music_label": "Music player",
-    "modules_suggest_description": "Compose > Add Subject + Message & Send it our way!",
+    "modules_suggest_description": "Join the GO 3.0 group and tell us what to build next.",
     "modules_suggest_label": "Suggest a module",
     "music_empty_title": "EarBump library",
     "music_empty_uploaded": "Waiting for library",
@@ -1148,6 +1161,10 @@
   "receiver": "receiver",
   "remaining_to_level": "Remaining to level {{level}}",
   "retry": "retry",
+  "search": {
+    "apps_and_websites": "apps & websites",
+    "suggested": "suggested"
+  },
   "sender": "sender",
   "server": "server",
   "service_type": "service type",
@@ -1167,7 +1184,32 @@
     "categories": "categories",
     "community_apps": "community apps",
     "my_apps": "my apps",
-    "official_apps": "official apps"
+    "official_apps": "official apps",
+    "pinned": "pinned"
+  },
+  "tabs_home": {
+    "app_name": "app name",
+    "browse_apps": "browse apps",
+    "close_all": "close all",
+    "close_folder": "close folder",
+    "close_tab": "close tab",
+    "delete_folder": "delete folder",
+    "empty_hint": "tap the pin on any app in the library. These folders are the same as in Tabs.",
+    "empty_title": "your pinned apps live here",
+    "folder_empty_hint": "long-press an open tab and pick this folder to add it here.",
+    "folder_name": "folder name",
+    "folder_options": "folder options",
+    "make_large": "large folder",
+    "make_small": "small folder",
+    "more_apps": "{{amount}} more apps",
+    "new_folder": "new folder",
+    "new_folder_name": "new folder",
+    "open_folder": "open {{name}}",
+    "open_tabs": "open tabs",
+    "remove_from_folder": "remove from folder",
+    "rename_app": "rename app",
+    "rename_folder": "rename folder",
+    "window_n": "window {{amount}}"
   },
   "tabs_overlay": {
     "delete_folder_body_one": "its {{count}} saved app will be removed from Tabs. Open tabs stay open.",

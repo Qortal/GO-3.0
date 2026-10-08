@@ -147,6 +147,25 @@ describe('DirectsSidebar', () => {
     expect(header.parentElement).toHaveStyle({ flexDirection: 'column' });
   });
 
+  it('leaves its phone header to the shared header above the pager', async () => {
+    mockViewport(true);
+    renderList({ hideMobileHeader: true });
+    await settle();
+
+    expect(screen.queryByRole('button', { name: 'New chat' })).toBeNull();
+    expect(screen.getByText('Alice')).toBeInTheDocument();
+  });
+
+  it('keeps its header in the desktop column', async () => {
+    mockViewport(false);
+    renderList({ hideMobileHeader: true });
+    await settle();
+
+    expect(
+      screen.getByRole('button', { name: 'New chat' })
+    ).toBeInTheDocument();
+  });
+
   it('adds a friend from a desktop row without opening the chat', async () => {
     mockViewport(false);
     const onAddFriend = vi.fn();

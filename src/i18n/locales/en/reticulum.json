@@ -69,6 +69,14 @@
     "empty": "No current private messages.",
     "subtitle": "Private Reticulum chats"
   },
+  "dm_search": {
+    "clear": "clear search",
+    "empty": "no messages found",
+    "hint": "type at least 2 characters to search your direct messages",
+    "placeholder": "search your direct messages",
+    "title": "search messages",
+    "unavailable": "message search is not available right now"
+  },
   "event_preview": {
     "all_day": "all day",
     "calendar_unavailable": "calendar is unavailable",
@@ -152,11 +160,14 @@
     "copy_failed": "unable to copy image",
     "download": "download image",
     "download_failed": "unable to download image",
+    "newer": "newer",
+    "older": "older",
     "prepare_failed": "unable to prepare image for clipboard",
     "read_failed": "unable to read image",
     "save": "save image",
     "share": "share image",
     "share_failed": "unable to share image",
+    "video": "video",
     "zoom_in": "zoom in",
     "zoom_out": "zoom out"
   },
@@ -300,6 +311,21 @@
       },
       "title": "Text size"
     }
+  },
+  "share": {
+    "cancel": "cancel sharing",
+    "cannot_write": "only admins can write in this channel: go back and pick another chat",
+    "chip_label": "{{what}} to share: tap a chat to add it",
+    "kind_file": "file",
+    "kind_link": "link",
+    "kind_photo": "photo",
+    "kind_text": "text",
+    "kind_video": "video",
+    "notice_extra_files": "only the first file was added: a message holds one file.",
+    "notice_too_large": "a file over {{max}} MB was left out.",
+    "notice_unreadable": "the shared file could not be read.",
+    "notice_unsafe_image": "the picture could not be cleaned of location data, so it was left out.",
+    "pick_chat": "pick a chat"
   },
   "status_badge": {
     "copy_diagnostics": "Copy diagnostics",

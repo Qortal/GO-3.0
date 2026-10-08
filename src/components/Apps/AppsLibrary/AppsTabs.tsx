@@ -1,7 +1,16 @@
-import { Box, Tab, Tabs, styled } from '@mui/material';
+import { Box, ButtonBase, Tab, Tabs, styled, useTheme } from '@mui/material';
+import { alpha, type Theme } from '@mui/material/styles';
+import PushPinRoundedIcon from '@mui/icons-material/PushPinRounded';
+import VerifiedRoundedIcon from '@mui/icons-material/VerifiedRounded';
+import PublicRoundedIcon from '@mui/icons-material/PublicRounded';
+import CategoryRoundedIcon from '@mui/icons-material/CategoryRounded';
+import RocketLaunchRoundedIcon from '@mui/icons-material/RocketLaunchRounded';
+import LockRoundedIcon from '@mui/icons-material/LockRounded';
+import type { SvgIconComponent } from '@mui/icons-material';
 import { useTranslation } from 'react-i18next';
 
 export type AppsLibraryTabValue =
+  | 'pinned'
   | 'official'
   | 'community'
   | 'categories'
@@ -81,6 +90,195 @@ const TabsContainer = styled(Box, {
   width: '100%',
 }));
 
+type MobileTabItem = {
+  value: AppsLibraryTabValue;
+  labelKey: string;
+  icon: SvgIconComponent;
+  tone: (theme: Theme) => string;
+};
+
+const MOBILE_TABS: MobileTabItem[] = [
+  {
+    value: 'pinned',
+    labelKey: 'core:tabs.pinned',
+    icon: PushPinRoundedIcon,
+    tone: (theme) => theme.palette.warning.main,
+  },
+  {
+    value: 'official',
+    labelKey: 'core:tabs.official_apps',
+    icon: VerifiedRoundedIcon,
+    tone: (theme) => theme.palette.primary.main,
+  },
+  {
+    value: 'community',
+    labelKey: 'core:tabs.community_apps',
+    icon: PublicRoundedIcon,
+    tone: (theme) => theme.palette.success.main,
+  },
+  {
+    value: 'categories',
+    labelKey: 'core:tabs.categories',
+    icon: CategoryRoundedIcon,
+    tone: (theme) => theme.palette.info.main,
+  },
+  {
+    value: 'my-apps',
+    labelKey: 'core:tabs.my_apps',
+    icon: RocketLaunchRoundedIcon,
+    tone: (theme) => theme.palette.secondary.main,
+  },
+  {
+    value: 'private',
+    labelKey: 'core:tabs.add_private',
+    icon: LockRoundedIcon,
+    tone: (theme) => theme.palette.error.light,
+  },
+];
+
+const MOBILE_TAB_GAP = 8;
+
+/**
+ * Phones: the library's sections as two rows of buttons, each with its own
+ * coloured icon. A soft highlight glides to the chosen one.
+ */
+const MobileLibraryTabs = ({
+  currentTab,
+  isSearchActive,
+  onTabChange,
+  onTabReselect,
+}: Omit<AppsTabsProps, 'isMobile'>) => {
+  const theme = useTheme();
+  const { t } = useTranslation(['core']);
+  const selectedIndex = isSearchActive
+    ? -1
+    : MOBILE_TABS.findIndex((item) => item.value === currentTab);
+  const columns = 3;
+  const column = Math.max(0, selectedIndex) % columns;
+  const row = Math.floor(Math.max(0, selectedIndex) / columns);
+  const isDark = theme.palette.mode === 'dark';
+
+  return (
+    <Box
+      role="tablist"
+      aria-label={t('core:aria.apps_library_tabs', {
+        defaultValue: 'Apps library navigation tabs',
+      })}
+      sx={{
+        display: 'grid',
+        gap: `${MOBILE_TAB_GAP}px`,
+        // Equal rows, so the highlight fits whichever row it is on.
+        gridAutoRows: '1fr',
+        gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
+        position: 'relative',
+        py: 0.5,
+        width: '100%',
+      }}
+    >
+      {/* The highlight behind the chosen button, one cell in size. */}
+      <Box
+        aria-hidden
+        sx={{
+          backgroundColor: alpha(
+            theme.palette.primary.main,
+            isDark ? 0.16 : 0.12
+          ),
+          border: `1px solid ${alpha(theme.palette.primary.main, 0.55)}`,
+          borderRadius: '16px',
+          boxShadow: `0 6px 18px ${alpha(theme.palette.primary.main, 0.18)}`,
+          boxSizing: 'border-box',
+          height: `calc((100% - ${theme.spacing(1)} - ${MOBILE_TAB_GAP}px) / 2)`,
+          left: 0,
+          opacity: selectedIndex === -1 ? 0 : 1,
+          pointerEvents: 'none',
+          position: 'absolute',
+          top: theme.spacing(0.5),
+          transform: `translate(calc(${column} * (100% + ${MOBILE_TAB_GAP}px)), calc(${row} * (100% + ${MOBILE_TAB_GAP}px)))`,
+          transition:
+            'transform 320ms cubic-bezier(0.2, 0.9, 0.25, 1), opacity 160ms ease',
+          width: `calc((100% - ${2 * MOBILE_TAB_GAP}px) / 3)`,
+          zIndex: 0,
+        }}
+      />
+      {MOBILE_TABS.map((item, index) => {
+        const selected = index === selectedIndex;
+        const Icon = item.icon;
+        const tone = item.tone(theme);
+        return (
+          <ButtonBase
+            key={item.value}
+            role="tab"
+            aria-selected={selected}
+            data-tab-value={item.value}
+            onClick={() => {
+              if (selected) onTabReselect?.(item.value);
+              else onTabChange(item.value);
+            }}
+            sx={{
+              alignItems: 'center',
+              backgroundColor: selected
+                ? 'transparent'
+                : alpha(theme.palette.text.primary, isDark ? 0.05 : 0.04),
+              border: `1px solid ${
+                selected
+                  ? 'transparent'
+                  : alpha(theme.palette.text.primary, isDark ? 0.06 : 0.05)
+              }`,
+              borderRadius: '16px',
+              color: selected ? 'text.primary' : 'text.secondary',
+              display: 'flex',
+              gap: 0.75,
+              justifyContent: 'flex-start',
+              minHeight: 50,
+              minWidth: 0,
+              px: 0.75,
+              py: 0.75,
+              textAlign: 'left',
+              transition:
+                'background-color 200ms ease, border-color 200ms ease, color 200ms ease, transform 140ms ease',
+              zIndex: 1,
+              '&:active': { transform: 'scale(0.96)' },
+            }}
+          >
+            <Box
+              sx={{
+                alignItems: 'center',
+                backgroundColor: alpha(tone, selected ? 0.24 : 0.14),
+                borderRadius: '10px',
+                color: tone,
+                display: 'flex',
+                flexShrink: 0,
+                height: 28,
+                justifyContent: 'center',
+                transition: 'background-color 200ms ease, transform 260ms ease',
+                transform: selected ? 'scale(1.06)' : 'none',
+                width: 28,
+              }}
+            >
+              <Icon sx={{ fontSize: 17 }} />
+            </Box>
+            <Box
+              component="span"
+              sx={{
+                display: '-webkit-box',
+                fontSize: 12,
+                fontWeight: selected ? 700 : 600,
+                lineHeight: 1.2,
+                minWidth: 0,
+                overflow: 'hidden',
+                WebkitBoxOrient: 'vertical',
+                WebkitLineClamp: 2,
+              }}
+            >
+              {t(item.labelKey, { postProcess: 'capitalizeFirstChar' })}
+            </Box>
+          </ButtonBase>
+        );
+      })}
+    </Box>
+  );
+};
+
 export const AppsTabs = ({
   currentTab,
   isMobile = false,
@@ -89,6 +287,17 @@ export const AppsTabs = ({
   onTabReselect,
 }: AppsTabsProps) => {
   const { t } = useTranslation(['core']);
+
+  if (isMobile) {
+    return (
+      <MobileLibraryTabs
+        currentTab={currentTab}
+        isSearchActive={isSearchActive}
+        onTabChange={onTabChange}
+        onTabReselect={onTabReselect}
+      />
+    );
+  }
 
   const handleChange = (_event: React.SyntheticEvent, newValue: string) => {
     onTabChange(newValue as AppsLibraryTabValue);

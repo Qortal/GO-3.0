@@ -1,11 +1,22 @@
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
-import { Box, Dialog, IconButton, Typography } from '@mui/material';
+import TravelExploreRoundedIcon from '@mui/icons-material/TravelExploreRounded';
+import {
+  Box,
+  Dialog,
+  IconButton,
+  Typography,
+  useMediaQuery,
+  useTheme,
+} from '@mui/material';
 import { Fragment, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AddGroupList } from './AddGroupList';
 import { CustomizedSnackbars } from '../Snackbar/Snackbar';
 import { refreshReticulumGroupScores } from './reticulumGroupScore';
 import { subscribeToEvent, unsubscribeFromEvent } from '../../utils/events';
+import { MobilePanelHeader } from '../Mobile/MobilePanelHeader';
+import { BACK_PRIORITY, useAndroidBack } from '../../utils/androidBack';
+import { SAFE_AREA_BOTTOM } from '../../utils/mobileSafeArea';
 
 type FindGroupModalProps = {
   open: boolean;
@@ -21,6 +32,17 @@ export function FindGroupModal({
   const { t } = useTranslation(['group']);
   const [openSnack, setOpenSnack] = useState(false);
   const [infoSnack, setInfoSnack] = useState(null);
+  const theme = useTheme();
+  // Phones: a full-screen panel like the other group panels (Members,
+  // Calendar, Files), with the shared header; Android back closes it.
+  const isPhone = useMediaQuery(theme.breakpoints.down('sm'));
+  useAndroidBack(
+    () => {
+      setOpen(false);
+      return true;
+    },
+    { priority: BACK_PRIORITY.dialog, enabled: open }
+  );
 
   useEffect(() => {
     if (!open) return;
@@ -52,29 +74,47 @@ export function FindGroupModal({
           }
         }}
         open={open}
+        fullScreen={isPhone}
         PaperProps={{
-          sx: {
-            backgroundColor: 'background.paper',
-            backgroundImage: 'none',
-            border: '1px solid',
-            borderColor: 'divider',
-            borderRadius: '12px',
-            boxShadow: '0 24px 70px rgba(0, 0, 0, 0.45)',
-            display: 'flex',
-            flexDirection: 'column',
-            height: 'min(760px, calc(100vh - 32px))',
-            m: 2,
-            maxHeight: 'min(760px, calc(100vh - 32px))',
-            maxWidth: 'none',
-            overflow: 'hidden',
-            width: 'min(920px, calc(100vw - 32px))',
-          },
+          sx: isPhone
+            ? {
+                backgroundColor: 'background.paper',
+                backgroundImage: 'none',
+                display: 'flex',
+                flexDirection: 'column',
+                overflow: 'hidden',
+                paddingBottom: SAFE_AREA_BOTTOM,
+              }
+            : {
+                backgroundColor: 'background.paper',
+                backgroundImage: 'none',
+                border: '1px solid',
+                borderColor: 'divider',
+                borderRadius: '12px',
+                boxShadow: '0 24px 70px rgba(0, 0, 0, 0.45)',
+                display: 'flex',
+                flexDirection: 'column',
+                height: 'min(760px, calc(100vh - 32px))',
+                m: 2,
+                maxHeight: 'min(760px, calc(100vh - 32px))',
+                maxWidth: 'none',
+                overflow: 'hidden',
+                width: 'min(920px, calc(100vw - 32px))',
+              },
         }}
       >
+        {isPhone ? (
+          <MobilePanelHeader
+            icon={<TravelExploreRoundedIcon />}
+            title={t('group:find_groups.title')}
+            onClose={() => setOpen(false)}
+            safeAreaTop
+          />
+        ) : null}
         <Box
           component="header"
           sx={{
-            display: 'flex',
+            display: isPhone ? 'none' : 'flex',
             justifyContent: 'space-between',
             px: { xs: 2.5, sm: 4 },
             pt: { xs: 2.5, sm: 3.5 },
@@ -136,9 +176,9 @@ export function FindGroupModal({
             flex: 1,
             minHeight: 0,
             overflow: 'hidden',
-            px: { xs: 2.5, sm: 4 },
-            pb: 3,
-            pt: 2.25,
+            px: { xs: 1.5, sm: 4 },
+            pb: isPhone ? 0 : 3,
+            pt: isPhone ? 1.5 : 2.25,
           }}
         >
           <AddGroupList

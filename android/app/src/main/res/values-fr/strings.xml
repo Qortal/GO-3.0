@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Share-sheet entries (same words as the Groups / DMs switch in Q-Chat). -->
+    <string name="share_target_groups">GO Groupes</string>
+    <string name="share_target_directs">GO MP</string>
+    <string name="share_target_self">GO Pour moi</string>
+</resources>

@@ -3,13 +3,21 @@ import {
   Box,
   Button,
   CircularProgress,
+  Collapse,
   IconButton,
+  ListItemIcon,
+  ListItemText,
+  Menu,
+  MenuItem,
   Snackbar,
   Typography,
+  useTheme,
 } from '@mui/material';
 import { Capacitor } from '@capacitor/core';
 import ChevronLeftRoundedIcon from '@mui/icons-material/ChevronLeftRounded';
+import CheckRoundedIcon from '@mui/icons-material/CheckRounded';
 import ChevronRightRoundedIcon from '@mui/icons-material/ChevronRightRounded';
+import ContrastRoundedIcon from '@mui/icons-material/ContrastRounded';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import DownloadRoundedIcon from '@mui/icons-material/DownloadRounded';
 import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded';
@@ -31,6 +39,11 @@ import {
 import { saveFileToDiskGeneric } from '../utils/generateWallet/generateWallet';
 import { normalizeFilename } from '../utils/downloadFromLocation';
 import { QortinoZoomableBox } from '../components/Group/QortinoAgent/QortinoZoomableBox';
+import {
+  applySmartDark,
+  pageImageRects,
+  type PixelRect,
+} from '../utils/pdfSmartDark';
 
 type OpenPdfDetail = {
   blob?: Blob;
@@ -44,11 +57,40 @@ type OpenPdfDetail = {
     title?: string;
   };
   /**
-   * Set for files that live only in memory (chat attachments): enables Share
-   * and "Open with" on Android. Identifies the file so both reuse one copy.
+   * Identifies the file so Share and "Open with" reuse one cached copy.
+   * Without one, each opened PDF gets its own.
    */
   shareKey?: string;
 };
+
+let pdfOpenSequence = 0;
+
+/**
+ * How a page is shown: as printed on a light frame, as printed on a dark
+ * frame, or with text pages turned dark and photos kept (pdfSmartDark).
+ */
+type PageLook = 'light' | 'dim' | 'smart';
+const PAGE_LOOKS: PageLook[] = ['light', 'dim', 'smart'];
+const PAGE_LOOK_KEY = 'go-pdf-reader-page-look';
+
+/** The look picked earlier, or null to follow the app theme. */
+function readPageLook(): PageLook | null {
+  try {
+    const saved = localStorage.getItem(PAGE_LOOK_KEY);
+    if (PAGE_LOOKS.includes(saved as PageLook)) return saved as PageLook;
+  } catch {
+    // Storage blocked: follow the theme.
+  }
+  return null;
+}
+
+function savePageLook(look: PageLook) {
+  try {
+    localStorage.setItem(PAGE_LOOK_KEY, look);
+  } catch {
+    // Only a convenience.
+  }
+}
 
 /**
  * In-app PDF book reader (page-by-page). Uses bundled pdf.js so Android
@@ -56,7 +98,7 @@ type OpenPdfDetail = {
  * Supports pinch/double-tap zoom and save-to-device.
  */
 export const PdfViewer = () => {
-  const { t } = useTranslation(['reticulum']);
+  const { t } = useTranslation(['core', 'reticulum']);
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState('Document');
   const [page, setPage] = useState(1);
@@ -68,6 +110,15 @@ export const PdfViewer = () => {
   const [shareKey, setShareKey] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [zoomTick, setZoomTick] = useState(0);
+  const isDarkTheme = useTheme().palette.mode === 'dark';
+  const [pickedLook, setPickedLook] = useState<PageLook | null>(readPageLook);
+  // Until one is picked: Dim on the dark theme, Light on the light one.
+  const pageLook: PageLook = pickedLook ?? (isDarkTheme ? 'dim' : 'light');
+  const [lookMenu, setLookMenu] = useState<HTMLElement | null>(null);
+  // Full screen: a tap on the page hides the bars, another brings them back.
+  const [chromeHidden, setChromeHidden] = useState(false);
+  const pageLookRef = useRef(pageLook);
+  pageLookRef.current = pageLook;
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const blobRef = useRef<Blob | null>(null);
   const saveItemRef = useRef<OpenPdfDetail['saveItem']>(null);
@@ -82,6 +133,9 @@ export const PdfViewer = () => {
     docRef.current = null;
     blobRef.current = null;
     saveItemRef.current = null;
+    turnGateRef.current = null;
+    turnDrawnRef.current?.();
+    turnDrawnRef.current = null;
     setOpen(false);
     setTitle('Document');
     setPage(1);
@@ -93,6 +147,8 @@ export const PdfViewer = () => {
     setShareKey(null);
     setToast(null);
     setZoomTick(0);
+    setLookMenu(null);
+    setChromeHidden(false);
   }, []);
 
   useAndroidBack(
@@ -107,6 +163,10 @@ export const PdfViewer = () => {
   // a document asks for page 1 twice (the load path and the page effect), so
   // renders run one after another and a superseded one is skipped.
   const renderChainRef = useRef<Promise<void>>(Promise.resolve());
+  // A swipe turn: the new page waits for the old one to slide out
+  // (turnGate), then says it is drawn so it can slide in (turnDrawn).
+  const turnGateRef = useRef<Promise<void> | null>(null);
+  const turnDrawnRef = useRef<(() => void) | null>(null);
 
   const renderPage = useCallback((pageNum: number) => {
     const gen = ++renderGen.current;
@@ -128,19 +188,68 @@ export const PdfViewer = () => {
         // Render sharper than fit so pinch zoom stays crisp up to ~2.5×.
         const scale = fit * 1.75;
         const viewport = pdfPage.getViewport({ scale });
+        // Drawn off screen first, so a dark page never flashes white.
+        const scratch = document.createElement('canvas');
+        scratch.width = Math.floor(viewport.width);
+        scratch.height = Math.floor(viewport.height);
+        const scratchCtx = scratch.getContext('2d', {
+          alpha: false,
+          willReadFrequently: true,
+        });
+        if (!scratchCtx) return;
+        await pdfPage.render({ canvasContext: scratchCtx, viewport }).promise;
+        if (gen !== renderGen.current) return;
+        if (pageLookRef.current === 'smart') {
+          let pictures: PixelRect[] = [];
+          const ops = pdfjsRef.current?.OPS;
+          if (ops && pdfPage.getOperatorList) {
+            try {
+              pictures = pageImageRects(
+                await pdfPage.getOperatorList(),
+                ops,
+                viewport.transform,
+                scratch.width,
+                scratch.height
+              );
+            } catch {
+              // Without picture boxes the whole page is judged as paper.
+            }
+          }
+          if (gen !== renderGen.current) return;
+          const image = scratchCtx.getImageData(
+            0,
+            0,
+            scratch.width,
+            scratch.height
+          );
+          applySmartDark(image.data, scratch.width, scratch.height, pictures);
+          scratchCtx.putImageData(image, 0, 0);
+        }
+        if (turnGateRef.current) {
+          await turnGateRef.current;
+          turnGateRef.current = null;
+          if (gen !== renderGen.current) return;
+        }
         const ctx = canvas.getContext('2d');
         if (!ctx) return;
-        canvas.width = Math.floor(viewport.width);
-        canvas.height = Math.floor(viewport.height);
+        canvas.width = scratch.width;
+        canvas.height = scratch.height;
         // Display at fit width; CSS zoom handles pinch.
         const displayW = unscaled.width * fit;
         const displayH = unscaled.height * fit;
         canvas.style.width = `${displayW}px`;
         canvas.style.height = `${displayH}px`;
-        await pdfPage.render({ canvasContext: ctx, viewport }).promise;
+        ctx.drawImage(scratch, 0, 0);
+        scratch.width = 0;
+        scratch.height = 0;
       } catch (e) {
         if (gen !== renderGen.current) return;
         setError(e instanceof Error ? e.message : 'Could not render page');
+      } finally {
+        if (gen === renderGen.current) {
+          turnDrawnRef.current?.();
+          turnDrawnRef.current = null;
+        }
       }
     };
     renderChainRef.current = renderChainRef.current.then(run, run);
@@ -154,7 +263,7 @@ export const PdfViewer = () => {
       if (!blob) return;
       blobRef.current = blob;
       saveItemRef.current = detail?.saveItem || null;
-      setShareKey(detail?.shareKey || null);
+      setShareKey(detail?.shareKey || `pdf-viewer:${++pdfOpenSequence}`);
       setOpen(true);
       setLoading(true);
       setError(null);
@@ -201,6 +310,46 @@ export const PdfViewer = () => {
     setZoomTick((t) => t + 1);
     void renderPage(page);
   }, [open, page, pageCount, loading, renderPage]);
+
+  // A new look redraws the page in place, keeping the zoom.
+  const lookRendered = useRef(pageLook);
+  useEffect(() => {
+    if (lookRendered.current === pageLook) return;
+    lookRendered.current = pageLook;
+    if (!open || !pageCount || loading) return;
+    void renderPage(page);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pageLook]);
+
+  const pageRef = useRef(page);
+  pageRef.current = page;
+  const pageCountRef = useRef(pageCount);
+  pageCountRef.current = pageCount;
+
+  const canTurn = (direction: 'next' | 'prev') =>
+    direction === 'next'
+      ? pageRef.current < pageCountRef.current
+      : pageRef.current > 1;
+
+  const turnBySwipe = (direction: 'next' | 'prev', slidOut: Promise<void>) => {
+    if (!canTurn(direction)) return undefined;
+    turnGateRef.current = slidOut;
+    const drawn = new Promise<void>((resolve) => {
+      turnDrawnRef.current = resolve;
+    });
+    setPage((p) =>
+      direction === 'next'
+        ? Math.min(pageCountRef.current || 1, p + 1)
+        : Math.max(1, p - 1)
+    );
+    return drawn;
+  };
+
+  const chooseLook = (look: PageLook) => {
+    setLookMenu(null);
+    setPickedLook(look);
+    savePageLook(look);
+  };
 
   const pdfFileName = () =>
     normalizeFilename(
@@ -302,6 +451,7 @@ export const PdfViewer = () => {
         paddingBottom: SAFE_AREA_BOTTOM,
       }}
     >
+      <Collapse in={!chromeHidden} sx={{ flexShrink: 0 }}>
       <Box
         sx={{
           alignItems: 'center',
@@ -329,6 +479,15 @@ export const PdfViewer = () => {
             {title}
           </Typography>
         </Box>
+        <IconButton
+          aria-label={t('core:pdf_reader.page_look')}
+          aria-haspopup="menu"
+          disabled={loading || !!error}
+          onClick={(event) => setLookMenu(event.currentTarget)}
+          sx={{ color: '#f2f4f8' }}
+        >
+          <ContrastRoundedIcon />
+        </IconButton>
         {canHandOff ? (
           <>
             <IconButton
@@ -354,7 +513,7 @@ export const PdfViewer = () => {
           </>
         ) : null}
         <IconButton
-          aria-label="Save to device"
+          aria-label={t('core:file_transfer.save_to_device')}
           disabled={loading || saving || !!error}
           onClick={() => void handleSave()}
           sx={{ color: '#f2f4f8' }}
@@ -373,6 +532,7 @@ export const PdfViewer = () => {
           <CloseRoundedIcon />
         </IconButton>
       </Box>
+      </Collapse>
 
       <Box
         sx={{
@@ -384,6 +544,8 @@ export const PdfViewer = () => {
           overflow: 'hidden',
           px: 0.5,
           py: 0.75,
+          backgroundColor: pageLook === 'light' ? '#dfe3e8' : 'transparent',
+          transition: 'background-color 0.2s ease',
         }}
       >
         {loading ? (
@@ -396,11 +558,20 @@ export const PdfViewer = () => {
             </Button>
           </Box>
         ) : (
-          <QortinoZoomableBox resetKey={`${page}-${zoomTick}`}>
+          <QortinoZoomableBox
+            resetKey={`${page}-${zoomTick}`}
+            onSingleTap={() => {
+              setLookMenu(null);
+              setChromeHidden((hidden) => !hidden);
+            }}
+            canSwipe={canTurn}
+            onSwipe={turnBySwipe}
+          >
             <canvas
               ref={canvasRef}
               style={{
-                background: '#fff',
+                // Smart pages are darkened to rgb(20, 20, 20) paper.
+                background: pageLook === 'smart' ? '#141414' : '#fff',
                 borderRadius: 8,
                 boxShadow: '0 8px 28px rgba(0,0,0,0.45)',
                 display: 'block',
@@ -411,6 +582,7 @@ export const PdfViewer = () => {
         )}
       </Box>
 
+      <Collapse in={!chromeHidden} sx={{ flexShrink: 0 }}>
       {!loading && !error ? (
         <Typography
           sx={{
@@ -422,7 +594,11 @@ export const PdfViewer = () => {
             textAlign: 'center',
           }}
         >
-          Pinch or double-tap to zoom · drag to pan
+          {t(
+            pageCount > 1
+              ? 'core:pdf_reader.gesture_hint_pages'
+              : 'core:pdf_reader.gesture_hint'
+          )}
         </Typography>
       ) : null}
 
@@ -457,32 +633,43 @@ export const PdfViewer = () => {
           Next
         </Button>
       </Box>
+      </Collapse>
 
-      {!loading && !error ? (
-        <Box sx={{ px: 1.25, pb: 1.1 }}>
-          <Button
-            fullWidth
-            variant="contained"
-            disabled={saving}
-            startIcon={
-              saving ? (
-                <CircularProgress size={16} sx={{ color: 'inherit' }} />
-              ) : (
-                <DownloadRoundedIcon />
-              )
-            }
-            onClick={() => void handleSave()}
-            sx={{
-              background: '#3B82F6',
-              fontWeight: 800,
-              textTransform: 'none',
-              '&:hover': { background: '#2563EB' },
-            }}
+      <Menu
+        anchorEl={lookMenu}
+        open={!!lookMenu}
+        onClose={() => setLookMenu(null)}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+        transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+        sx={{ zIndex: 990000001 }}
+        slotProps={{
+          paper: { sx: { maxWidth: 'min(280px, calc(100vw - 32px))' } },
+        }}
+      >
+        {PAGE_LOOKS.map((look) => (
+          <MenuItem
+            key={look}
+            role="menuitemradio"
+            aria-checked={pageLook === look}
+            dense
+            selected={pageLook === look}
+            sx={{ whiteSpace: 'normal' }}
+            onClick={() => chooseLook(look)}
           >
-            {saving ? 'Saving…' : 'Save to device'}
-          </Button>
-        </Box>
-      ) : null}
+            <ListItemIcon>
+              {pageLook === look ? <CheckRoundedIcon fontSize="small" /> : null}
+            </ListItemIcon>
+            <ListItemText
+              primary={t(`core:pdf_reader.look_${look}`)}
+              secondary={t(`core:pdf_reader.look_${look}_hint`)}
+              slotProps={{
+                primary: { sx: { fontSize: '0.9rem', fontWeight: 600 } },
+                secondary: { sx: { fontSize: '0.75rem', lineHeight: 1.3 } },
+              }}
+            />
+          </MenuItem>
+        ))}
+      </Menu>
 
       <Snackbar
         open={!!toast}

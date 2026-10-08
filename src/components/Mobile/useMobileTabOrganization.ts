@@ -14,6 +14,7 @@ import {
   resolveFolderRowCount,
   snapshotFromTab,
   sortFolders,
+  type FolderSize,
   type MobileTabOrganization,
   type TabFolder,
 } from './mobileTabOrganization';
@@ -113,6 +114,50 @@ export function useMobileTabOrganization() {
           ...prev,
           folders: prev.folders.map((item) =>
             item.id === folderId ? { ...item, name: nextName } : item
+          ),
+        };
+      });
+    },
+    [persist]
+  );
+
+  const setFolderSize = useCallback(
+    (folderId: string, size: FolderSize) => {
+      persist((prev) => {
+        const folder = prev.folders.find((item) => item.id === folderId);
+        if (!folder || (folder.size === 'small' ? 'small' : 'large') === size) {
+          return prev;
+        }
+        return {
+          ...prev,
+          folders: prev.folders.map((item) =>
+            item.id === folderId
+              ? { ...item, size: size === 'small' ? 'small' : undefined }
+              : item
+          ),
+        };
+      });
+    },
+    [persist]
+  );
+
+  /** Puts a folder's apps in exactly this order (keys not in it are kept last). */
+  const setFolderTabOrder = useCallback(
+    (folderId: string, tabKeys: string[]) => {
+      persist((prev) => {
+        const folder = prev.folders.find((item) => item.id === folderId);
+        if (!folder) return prev;
+        const known = new Set(folder.tabKeys);
+        const ordered = tabKeys.filter((key) => known.has(key));
+        const rest = folder.tabKeys.filter((key) => !ordered.includes(key));
+        const next = [...ordered, ...rest];
+        if (next.every((key, index) => key === folder.tabKeys[index])) {
+          return prev;
+        }
+        return {
+          ...prev,
+          folders: prev.folders.map((item) =>
+            item.id === folderId ? { ...item, tabKeys: next } : item
           ),
         };
       });
@@ -551,6 +596,8 @@ export function useMobileTabOrganization() {
     createFolder,
     renameFolder,
     reorderFoldersInRow,
+    setFolderSize,
+    setFolderTabOrder,
     insertFolderRowAfter,
     moveFolderToRow,
     removeFolderRow,

@@ -6,6 +6,9 @@ import {
 } from './privateAppTabIdentity';
 import type { OpenTab } from './useOpenTabs';
 
+/** How a folder looks on the Pinned home: one cell, or two by two. */
+export type FolderSize = 'small' | 'large';
+
 export type TabFolder = {
   id: string;
   name: string;
@@ -13,6 +16,8 @@ export type TabFolder = {
   order: number;
   /** Row index for multi-row folder layout (0-based). */
   row?: number;
+  /** Pinned home tile size; folders without one are large. */
+  size?: FolderSize;
 };
 
 /** Persisted app/website metadata so folder members survive app restarts. */
@@ -83,6 +88,9 @@ export const emptyOrganization = (): MobileTabOrganization => ({
 });
 
 export const getFolderRow = (folder: TabFolder): number => folder.row ?? 0;
+
+export const getFolderSize = (folder: TabFolder): FolderSize =>
+  folder.size === 'small' ? 'small' : 'large';
 
 export function resolveFolderRowCount(
   folders: TabFolder[],
@@ -215,6 +223,7 @@ export async function loadMobileTabOrganization(
       ? stored.folders.map((folder) => ({
           ...folder,
           row: typeof folder.row === 'number' ? folder.row : 0,
+          size: folder.size === 'small' ? 'small' : undefined,
         }))
       : [],
     tabOverrides:

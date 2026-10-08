@@ -133,7 +133,7 @@ export interface QortalBackgroundPlugin {
     body?: string;
     iconUrl?: string;
     fromAddress?: string;
-    notificationType?: 'direct' | 'group' | 'general';
+    notificationType?: 'direct' | 'group' | 'general' | 'payment';
   }): Promise<{ success: boolean }>;
 
   showTransferNotification(options: {

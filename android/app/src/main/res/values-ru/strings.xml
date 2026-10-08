@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Share-sheet entries (same words as the Groups / DMs switch in Q-Chat). -->
+    <string name="share_target_groups">GO Группы</string>
+    <string name="share_target_directs">GO Личные</string>
+    <string name="share_target_self">GO Себе</string>
+</resources>
