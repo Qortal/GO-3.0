@@ -17,8 +17,8 @@ vi.mock('../../utils/platform', () => ({ isCapacitor: () => true }));
 vi.mock('../../utils/mobileFileSave', () => ({
   openSavedMobileFile: mocks.openSavedMobileFile,
 }));
-vi.mock('../../utils/qappFetchReporter', () => ({
-  installQappFetchReporter: vi.fn(async () => undefined),
+vi.mock('../../utils/qappFrameScripts', () => ({
+  installQappFrameScripts: vi.fn(async () => undefined),
 }));
 vi.mock('../../utils/qappFetchProgress', () => ({
   startQappFetchProgressListener: vi.fn(() => () => undefined),

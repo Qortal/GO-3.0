@@ -90,7 +90,9 @@ import {
   insertSharedText,
   returnChatShare,
   useChatShareInbox,
+  type ChatShareContent,
 } from './share/chatShareInbox';
+import { useChatShareChannelDelivery } from './share/useChatShareChannelDelivery';
 import { showChatShareNotices } from './share/chatShareNotices';
 import {
   Avatar,
@@ -276,6 +278,7 @@ import {
 } from './reticulumInitialHistory';
 import { normalizeReticulumChatHtmlContent } from './reticulumMessageHtml';
 import { mergeReticulumPayloadWithVerifiedEnvelope } from '../../utils/reticulumEventEnvelope';
+import { reticulumPostDeliveryItemFields } from './reticulumPostDeliveryState';
 import { describeSignerMismatch } from '../../utils/reticulumSignerMismatch';
 import { GO_INTERNAL_APP_INFO } from '../../utils/qappApproval';
 import {
@@ -284,8 +287,13 @@ import {
   isReticulumMessageExpiryOptionAllowed,
   RETICULUM_MESSAGE_EXPIRY_OPTIONS,
 } from './reticulumMessageExpiry';
-import { withTabBarSpace } from '../Mobile/mobileBarHeights';
+import {
+  COMPOSER_SAFE_BOTTOM,
+  withTabBarSpace,
+} from '../Mobile/mobileBarHeights';
 import { SECTION_SWIPE_IGNORE_ATTR } from '../Mobile/sectionSwipe/sectionSwipe';
+import { isGoLayout } from '../../layout/goLayout';
+import { composerFabModeFor } from './landscapeComposer';
 
 type PendingReticulumResourceFile = {
   filePath?: string;
@@ -1206,6 +1214,11 @@ type ReticulumSortableChannelButtonProps = {
   textScale: ReticulumTextScale;
   unreadCount: number;
   replyCount: number;
+  /**
+   * The share's channel step (Chat/share/ChatShareChannelStep): a channel
+   * that cannot take the share is greyed out with this short reason.
+   */
+  disabledReason?: string;
 };
 
 function ReticulumChannelAutoDeleteIcon({ size = 13 }: { size?: number }) {
@@ -1244,6 +1257,7 @@ export function ReticulumSortableChannelButton({
   textScale,
   unreadCount,
   replyCount,
+  disabledReason,
 }: ReticulumSortableChannelButtonProps) {
   const { i18n, t } = useTranslation(['group']);
   const { attributes, listeners, setNodeRef, isDragging } = useSortable({
@@ -1251,8 +1265,13 @@ export function ReticulumSortableChannelButton({
     disabled: !isAdmin,
   });
   const metrics = reticulumChannelRowMetrics(textScale, phone);
-  const hasUnread = unreadCount > 0 || hasUnreadMention;
+  const disabled = Boolean(disabledReason);
+  const hasUnread = !disabled && (unreadCount > 0 || hasUnreadMention);
   const emphasized = selected || hasUnread;
+  // A greyed-out row shows its reason instead of the unread badges.
+  const showMentionBadge = !disabled && hasUnreadMention;
+  const showUnreadBadge =
+    !disabled && (replyCount > 0 || (unreadCount > 0 && !hasUnreadMention));
   const channelTypeOption = reticulumChannelTypeOptionByAccess(
     reticulumChannelAccessFromModes(channel.writeMode, channel.readMode)
   );
@@ -1271,6 +1290,10 @@ export function ReticulumSortableChannelButton({
       ref={setNodeRef}
       {...attributes}
       {...listeners}
+      // A row that cannot be dragged (members) can still be tapped: dnd-kit's
+      // "disabled" is about dragging only.
+      aria-disabled={disabled || undefined}
+      disabled={disabled}
       onClick={() => onSelect(channel.channelId)}
       onContextMenu={(event) => {
         if (!isAdmin) return;
@@ -1280,7 +1303,11 @@ export function ReticulumSortableChannelButton({
         alignItems: 'center',
         backgroundColor: selected ? 'action.selected' : 'transparent',
         borderRadius: '6px',
-        color: emphasized ? 'text.primary' : 'text.secondary',
+        color: disabled
+          ? 'text.disabled'
+          : emphasized
+            ? 'text.primary'
+            : 'text.secondary',
         cursor: 'pointer',
         display: 'flex',
         fontSize: metrics.fontSize,
@@ -1380,7 +1407,20 @@ export function ReticulumSortableChannelButton({
             </Box>
           </Tooltip>
         )}
-        {hasUnreadMention && (
+        {disabled && (
+          <Box
+            component="span"
+            sx={{
+              color: 'text.secondary',
+              fontSize: metrics.badgeFontSize,
+              fontWeight: 600,
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {disabledReason}
+          </Box>
+        )}
+        {showMentionBadge && (
           <Tooltip
             title={
               mentionCount > 1
@@ -1419,7 +1459,7 @@ export function ReticulumSortableChannelButton({
             </Box>
           </Tooltip>
         )}
-        {(replyCount > 0 || (unreadCount > 0 && !hasUnreadMention)) && (
+        {showUnreadBadge && (
           <Tooltip
             title={
               replyCount > 1
@@ -2021,8 +2061,13 @@ export const ChatGroup = ({
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
   const isLandscape = useMediaQuery('(orientation: landscape)');
   // In landscape the composer is hidden behind a pen FAB so it never covers
-  // the last messages; tapping the FAB expands it from the corner.
-  const composerFabMode = isMobile && isLandscape;
+  // the last messages; tapping the FAB expands it from the corner. Not on
+  // GO, whose composer stays in flow at every size.
+  const composerFabMode = composerFabModeFor({
+    go: isGoLayout(),
+    isMobile,
+    isLandscape,
+  });
   const [composerOpenLandscape, setComposerOpenLandscape] = useState(false);
   const { show } = useContext(QORTAL_APP_CONTEXT);
   const jotaiStore = useStore();
@@ -5656,6 +5701,9 @@ export const ChatGroup = ({
         privilegedMentionAuthorized: event.privilegedMentionAuthorized === true,
         reticulumChat: true,
         syntheticReticulumCalendarSystem: false,
+        // Own post written on this phone (GO): when, and whether a node
+        // fetched it from here yet. Absent on every other row.
+        ...reticulumPostDeliveryItemFields(event),
       };
       let decryptedData = null;
       if (reticulumChatEnabled || isPrivate === false) {
@@ -8747,34 +8795,57 @@ export const ChatGroup = ({
   // share/chatShareInbox.ts. It waits for the group's channels and the
   // user's rights in them, so it lands in the channel that stays open and
   // only where the user can write.
+  const insertChatShare = async (content: ChatShareContent) => {
+    const files = await content.files;
+    if (!canWriteSelectedReticulumChannel) {
+      // Back to the list header, for another chat.
+      returnChatShare(content);
+      executeEvent('openGlobalSnackBar', {
+        message: t('reticulum:share.cannot_write', {
+          postProcess: 'capitalizeFirstChar',
+        }),
+        type: 'error',
+      });
+      return;
+    }
+    if (insertSharedText(editorRef.current, content.text)) {
+      setComposerHasText(true);
+      setIsFocusedParent(true);
+      setComposerOpenLandscape(true);
+    }
+    if (files.length) await insertFiles(files);
+    showChatShareNotices(content.notices);
+  };
+  // The channel picked in the share's channel step (ChatShareChannelStep)
+  // opens first; the share goes in once it is the channel on screen.
+  const deliverChatShare = useChatShareChannelDelivery({
+    enabled: reticulumChatEnabled,
+    groupKey: selectedReticulumGroupKey,
+    selectedChannelId: selectedReticulumChannelId,
+    channelIds: reticulumChannelsForSelectedGroup.map(
+      (channel) => channel.channelId
+    ),
+    openChannel: (channelId) => selectReticulumChannelFromList(channelId),
+    insert: insertChatShare,
+    onChannelUnavailable: () =>
+      executeEvent('openGlobalSnackBar', {
+        message: t('reticulum:share.channel_unavailable', {
+          postProcess: 'capitalizeFirstChar',
+        }),
+        type: 'error',
+      }),
+  });
   const markShareReady = useChatShareInbox(
     selectedGroup != null ? groupDraftKey(selectedGroup) : null,
-    async (content) => {
-      const files = await content.files;
-      if (!canWriteSelectedReticulumChannel) {
-        // Back to the list header, for another chat.
-        returnChatShare(content);
-        executeEvent('openGlobalSnackBar', {
-          message: t('reticulum:share.cannot_write', {
-            postProcess: 'capitalizeFirstChar',
-          }),
-          type: 'error',
-        });
-        return;
-      }
-      if (insertSharedText(editorRef.current, content.text)) {
-        setComposerHasText(true);
-        setIsFocusedParent(true);
-        setComposerOpenLandscape(true);
-      }
-      if (files.length) await insertFiles(files);
-      showChatShareNotices(content.notices);
-    },
+    deliverChatShare,
     {
+      // Channels known from the group's signed layout (not the stand-in
+      // while it loads), and the user's rights in them.
       ready:
         !reticulumChatEnabled ||
         (reticulumChannelStateGroupId === selectedReticulumGroupKey &&
-          reticulumChannelAccessReady),
+          reticulumChannelAccessReady &&
+          isReticulumChannelMetadataVisible),
     }
   );
 
@@ -11785,7 +11856,7 @@ export const ChatGroup = ({
                   // Above the floating tab buttons, like the composer.
                   paddingBottom: withTabBarSpace(
                     10,
-                    'max(10px, var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px)))'
+                    `max(10px, ${COMPOSER_SAFE_BOTTOM})`
                   ),
                   textAlign: 'center',
                 }}
@@ -11863,7 +11934,7 @@ export const ChatGroup = ({
                       reticulumChatEnabled && isMobile
                         ? withTabBarSpace(
                             6,
-                            'max(6px, var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px)))'
+                            `max(6px, ${COMPOSER_SAFE_BOTTOM})`
                           )
                         : undefined,
                     position:

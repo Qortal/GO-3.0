@@ -21,8 +21,6 @@ import {
   SelectChangeEvent,
   TextField,
   Tooltip,
-  useMediaQuery,
-  useTheme,
 } from '@mui/material';
 import { UserListOfInvites } from './UserListOfInvites';
 import { CustomizedSnackbars } from '../Snackbar/Snackbar';
@@ -33,6 +31,7 @@ import {
   SAFE_AREA_BOTTOM,
   SAFE_AREA_TOP,
 } from '../../utils/mobileSafeArea';
+import { useSheetFullScreen } from '../../layout/goLayout';
 import { useTranslation } from 'react-i18next';
 import { useSetAtom } from 'jotai';
 import { txListAtom } from '../../atoms/global';
@@ -96,8 +95,8 @@ const GROUP_MODAL_CONTROL_SX = {
 export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
   const { show } = useContext(QORTAL_APP_CONTEXT);
   const setTxList = useSetAtom(txListAtom);
-  const theme = useTheme();
-  const isNarrow = useMediaQuery(theme.breakpoints.down('sm'));
+  // Phones and short GO windows: full screen with the compact header.
+  const isNarrow = useSheetFullScreen();
 
   const [openAdvance, setOpenAdvance] = useState(false);
   const [name, setName] = useState('');

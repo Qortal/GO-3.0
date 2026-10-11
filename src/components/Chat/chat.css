@@ -733,7 +733,7 @@
    the viewport gets — the buttons are easier to find in a fixed grid than in a
    strip that has to be scrolled. */
 @media (orientation: landscape) {
-  .chat-format-toolbar--two-rows {
+  :where(html:not([data-go-layout])) .chat-format-toolbar--two-rows {
     flex-direction: row;
     flex-wrap: nowrap;
     gap: 2px;
@@ -741,16 +741,58 @@
     scrollbar-width: none;
   }
 
-  .chat-format-toolbar--two-rows::-webkit-scrollbar {
+  :where(html:not([data-go-layout]))
+    .chat-format-toolbar--two-rows::-webkit-scrollbar {
     display: none;
   }
 
-  .chat-format-toolbar--two-rows .chat-format-toolbar-row {
+  :where(html:not([data-go-layout]))
+    .chat-format-toolbar--two-rows
+    .chat-format-toolbar-row {
     flex: 0 0 auto;
     flex-wrap: nowrap;
     justify-content: flex-start;
     width: auto;
   }
+}
+
+/* GO decides from the keyboard-proof layout store instead (goLayout.ts): the
+   keyboard shrinking a phone in portrait must not flip it into one row, and
+   tablets have the width for one row in any orientation. :where() keeps the
+   specificity equal to the Hub rules above. */
+:where(
+    html[data-go-short],
+    html[data-go-width='medium'],
+    html[data-go-width='expanded']
+  )
+  .chat-format-toolbar--two-rows {
+  flex-direction: row;
+  flex-wrap: nowrap;
+  gap: 2px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+:where(
+    html[data-go-short],
+    html[data-go-width='medium'],
+    html[data-go-width='expanded']
+  )
+  .chat-format-toolbar--two-rows::-webkit-scrollbar {
+  display: none;
+}
+
+:where(
+    html[data-go-short],
+    html[data-go-width='medium'],
+    html[data-go-width='expanded']
+  )
+  .chat-format-toolbar--two-rows
+  .chat-format-toolbar-row {
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  justify-content: flex-start;
+  width: auto;
 }
 
 .tiptap-chat-composer--mobile-focus {
@@ -789,6 +831,21 @@
     min-height: var(--composer-text-floor);
     padding: calc(var(--composer-text-pad) / 2) 12px;
   }
+}
+
+/* GO keeps the phone composer at every width (tablets too); same values and
+   specificity as the block above. composerCornerLayout.ts assumes them. */
+:where(html[data-go-layout])
+  .tiptap-chat-composer:not(.tiptap-chat-composer--mobile-focus) {
+  --composer-text-floor: 44px;
+  --composer-text-pad: 20px;
+}
+
+:where(html[data-go-layout])
+  .tiptap-chat-composer:not(.tiptap-chat-composer--mobile-focus)
+  .tiptap-prosemirror {
+  min-height: var(--composer-text-floor);
+  padding: calc(var(--composer-text-pad) / 2) 12px;
 }
 
 .tiptap-chat-composer--compact {

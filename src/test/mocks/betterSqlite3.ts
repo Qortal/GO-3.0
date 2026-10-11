@@ -35,6 +35,7 @@ type MockStore = {
   reticulumDeviceStates: ReticulumChatRow[];
   reticulumPendingDeviceStates: ReticulumChatRow[];
   reticulumDeviceStateAcks: ReticulumChatRow[];
+  reticulumOwnPostDelivery: ReticulumChatRow[];
   reticulumResources: ReticulumResourceRow[];
   reticulumResourceChunks: ReticulumResourceChunkRow[];
   reticulumResourceRanges: ReticulumResourceStateRow[];
@@ -57,6 +58,10 @@ const storesByPath = new Map<string, MockStore>();
 const DEVICE_STATE_TABLE = /\brchat_device_state\b/;
 const DEVICE_STATE_ACK_TABLE = /\brchat_device_state_ack\b/;
 const PENDING_DEVICE_STATE_TABLE = /\brchat_pending_device_state\b/;
+// Own post delivery proofs (GO). Matched before any other handler, so the
+// generic `WHERE event_id = ?` shapes elsewhere never see these statements.
+const OWN_POST_DELIVERY_TABLE =
+  /\b(?:FROM|INTO|UPDATE)\s+rchat_own_post_delivery\b/;
 
 /** What DM search matches in a payload: its messageText when it is JSON
  * (as `json_extract(payload, '$.messageText')`), else the payload itself. */
@@ -106,6 +111,17 @@ class Statement {
           name,
         })
       );
+    }
+    if (OWN_POST_DELIVERY_TABLE.test(this.sql)) {
+      const [sinceMs] = args;
+      return this.store.reticulumOwnPostDelivery
+        .filter((row) => Number(row.created_at) >= Number(sinceMs))
+        .sort(
+          (a, b) =>
+            Number(a.created_at) - Number(b.created_at) ||
+            String(a.event_id).localeCompare(String(b.event_id))
+        )
+        .map((row) => ({ ...row }));
     }
     if (this.sql.includes('FROM rchat_known_unavailable_ranges')) {
       const [groupId] = args;
@@ -1930,6 +1946,9 @@ class Statement {
   }
 
   run(...args: any[]) {
+    if (OWN_POST_DELIVERY_TABLE.test(this.sql)) {
+      return this.runOwnPostDelivery(args);
+    }
     if (this.sql.includes('INSERT INTO rchat_channel_summary_cache')) {
       const row = (args[0] ?? {}) as Record<string, any>;
       const index = this.store.reticulumChannelSummaryCache.findIndex(
@@ -4024,6 +4043,82 @@ class Statement {
     }
     return { changes: 0, lastInsertRowid: 0 };
   }
+
+  private runOwnPostDelivery(args: any[]) {
+    const rows = this.store.reticulumOwnPostDelivery;
+    if (this.sql.includes('INSERT OR IGNORE INTO rchat_own_post_delivery')) {
+      const [
+        eventId,
+        scope,
+        groupId,
+        channelId,
+        conversationId,
+        authorAddress,
+        createdAt,
+      ] = args;
+      if (rows.some((row) => row.event_id === eventId)) {
+        return { changes: 0, lastInsertRowid: 0 };
+      }
+      rows.push({
+        event_id: eventId,
+        scope,
+        group_id: groupId ?? null,
+        channel_id: channelId ?? null,
+        conversation_id: conversationId ?? null,
+        author_address: authorAddress,
+        created_at: createdAt,
+        own_device_at: null,
+        member_at: null,
+        member_peer_hash: null,
+        proof_kind: null,
+      });
+      return { changes: 1, lastInsertRowid: rows.length };
+    }
+    if (this.sql.includes('SET own_device_at')) {
+      const [ownDeviceAt, proofKind, eventId] = args;
+      const row = rows.find(
+        (item) => item.event_id === eventId && item.own_device_at == null
+      );
+      if (!row) return { changes: 0, lastInsertRowid: 0 };
+      row.own_device_at = ownDeviceAt;
+      row.proof_kind = row.proof_kind ?? proofKind ?? null;
+      return { changes: 1, lastInsertRowid: 0 };
+    }
+    if (this.sql.includes('SET member_at')) {
+      const [memberAt, peerHash, proofKind, eventId] = args;
+      const row = rows.find(
+        (item) => item.event_id === eventId && item.member_at == null
+      );
+      if (!row) return { changes: 0, lastInsertRowid: 0 };
+      row.member_at = memberAt;
+      row.member_peer_hash = peerHash ?? null;
+      row.proof_kind = proofKind ?? null;
+      return { changes: 1, lastInsertRowid: 0 };
+    }
+    if (this.sql.includes('WHERE event_id = ?')) {
+      const [eventId] = args;
+      const before = rows.length;
+      this.store.reticulumOwnPostDelivery = rows.filter(
+        (row) => row.event_id !== eventId
+      );
+      return {
+        changes: before - this.store.reticulumOwnPostDelivery.length,
+        lastInsertRowid: 0,
+      };
+    }
+    if (this.sql.includes('WHERE created_at < ?')) {
+      const [beforeMs] = args;
+      const before = rows.length;
+      this.store.reticulumOwnPostDelivery = rows.filter(
+        (row) => Number(row.created_at) >= Number(beforeMs)
+      );
+      return {
+        changes: before - this.store.reticulumOwnPostDelivery.length,
+        lastInsertRowid: 0,
+      };
+    }
+    return { changes: 0, lastInsertRowid: 0 };
+  }
 }
 
 class MockDatabase {
@@ -4063,6 +4158,7 @@ class MockDatabase {
       reticulumDeviceStates: [],
       reticulumPendingDeviceStates: [],
       reticulumDeviceStateAcks: [],
+      reticulumOwnPostDelivery: [],
       reticulumResources: [],
       reticulumResourceChunks: [],
       reticulumResourceRanges: [],

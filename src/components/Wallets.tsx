@@ -1060,6 +1060,12 @@ export const Wallets = ({
               minHeight: ENTRY_WALLET_SCROLL_HEIGHT_PX,
               overflowY: 'auto',
               pr: 0.35,
+              // Short GO windows (phone landscape): a fixed 292px list would
+              // fill three quarters of the screen, even for one account.
+              'html[data-go-short] &': {
+                maxHeight: 'min(292px, 45dvh)',
+                minHeight: 0,
+              },
             }
           : {
               maxHeight: 'none',

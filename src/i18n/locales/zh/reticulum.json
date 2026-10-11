@@ -152,7 +152,7 @@
   },
   "image_viewer": {
     "actions": "image actions",
-    "chat_image": "chat image",
+    "chat_image": "聊天图片",
     "clipboard_unavailable": "image clipboard is unavailable",
     "close": "close image viewer",
     "copied": "image copied",
@@ -201,6 +201,36 @@
     "subtitle": "看来你还没有加入任何社区。现在就开始吧。",
     "title": "欢迎使用全新升级的 Q-Chat",
     "whats_new_button": "新功能"
+  },
+  "post_delivery": {
+    "delivered_member": {
+      "hint": "一位群组成员的节点已从此手机获取它。这并不表示有人已读过。",
+      "label": "已送达"
+    },
+    "delivered_own_device": {
+      "hint": "你的其他设备（如你的 Hub）已从此手机获取它。",
+      "label": "已送达"
+    },
+    "delivered_own_device_self_dm": {
+      "hint": "你的其他设备（如你的 Hub）已从此手机获取它。",
+      "label": "已送达"
+    },
+    "not_picked_up": {
+      "hint": "还没有其他节点从此手机获取它。成员的节点在上线且此手机可以连接时会获取它。",
+      "label": "尚未被获取"
+    },
+    "not_picked_up_self_dm": {
+      "hint": "你的其他设备都还没有从此手机获取它。它们在上线且此手机可以连接时会获取它。",
+      "label": "尚未被获取"
+    },
+    "sending": {
+      "hint": "在线成员的节点通常会在几秒内获取它。",
+      "label": "发送中"
+    },
+    "sending_self_dm": {
+      "hint": "你在线的其他设备通常会在几秒内获取它。",
+      "label": "发送中"
+    }
   },
   "qapp_preview": {
     "check_again": "check again",
@@ -313,18 +343,25 @@
     }
   },
   "share": {
+    "admins_only": "仅限管理员",
     "cancel": "取消分享",
     "cannot_write": "只有管理员可以在此频道发言：请返回并选择其他聊天",
+    "channel_step_label": "在{{group}}中选择一个频道",
+    "channel_unavailable": "该频道已不存在：请返回并选择其他频道",
     "chip_label": "要分享的{{what}}：点按一个聊天即可添加",
+    "chip_label_channel": "要分享的{{what}}：点按一个频道即可添加",
     "kind_file": "文件",
     "kind_link": "链接",
     "kind_photo": "照片",
     "kind_text": "文本",
     "kind_video": "视频",
+    "loading_channels": "正在加载频道",
+    "no_channel_to_post": "只有管理员可以在此群组的频道中发言。",
     "notice_extra_files": "只添加了第一个文件：一条消息只能带一个文件。",
     "notice_too_large": "已略过一个超过 {{max}} MB 的文件。",
     "notice_unreadable": "无法读取分享的文件。",
     "notice_unsafe_image": "无法清除图片中的位置信息，因此已略过。",
+    "pick_channel": "选择一个频道",
     "pick_chat": "选择一个聊天"
   },
   "status_badge": {

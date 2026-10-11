@@ -152,7 +152,7 @@
   },
   "image_viewer": {
     "actions": "image actions",
-    "chat_image": "chat image",
+    "chat_image": "keskustelun kuva",
     "clipboard_unavailable": "image clipboard is unavailable",
     "close": "close image viewer",
     "copied": "image copied",
@@ -201,6 +201,36 @@
     "subtitle": "Näyttää siltä, ettet kuulu vielä mihinkään yhteisöön. Korjataan se.",
     "title": "Tervetuloa uuteen, parannettuun Q-Chatiin",
     "whats_new_button": "Mitä uutta?"
+  },
+  "post_delivery": {
+    "delivered_member": {
+      "hint": "Ryhmän jäsenen solmu nouti sen tästä puhelimesta. Se ei tarkoita, että kukaan olisi lukenut sitä.",
+      "label": "toimitettu"
+    },
+    "delivered_own_device": {
+      "hint": "Toinen laitteesi (kuten Hubisi) nouti sen tästä puhelimesta.",
+      "label": "toimitettu"
+    },
+    "delivered_own_device_self_dm": {
+      "hint": "Toinen laitteesi (kuten Hubisi) nouti sen tästä puhelimesta.",
+      "label": "toimitettu"
+    },
+    "not_picked_up": {
+      "hint": "Mikään muu solmu ei ole vielä noutanut sitä tästä puhelimesta. Jäsenten solmut noutavat sen, kun ne tulevat verkkoon tämän puhelimen ollessa tavoitettavissa.",
+      "label": "ei vielä noudettu"
+    },
+    "not_picked_up_self_dm": {
+      "hint": "Mikään muista laitteistasi ei ole vielä noutanut sitä tästä puhelimesta. Ne noutavat sen, kun ne tulevat verkkoon tämän puhelimen ollessa tavoitettavissa.",
+      "label": "ei vielä noudettu"
+    },
+    "sending": {
+      "hint": "Verkossa olevien jäsenten solmut noutavat sen yleensä muutamassa sekunnissa.",
+      "label": "lähetetään"
+    },
+    "sending_self_dm": {
+      "hint": "Muut verkossa olevat laitteesi noutavat sen yleensä muutamassa sekunnissa.",
+      "label": "lähetetään"
+    }
   },
   "qapp_preview": {
     "check_again": "check again",
@@ -313,18 +343,25 @@
     }
   },
   "share": {
+    "admins_only": "vain ylläpitäjät",
     "cancel": "peruuta jakaminen",
     "cannot_write": "vain ylläpitäjät voivat kirjoittaa tälle kanavalle: palaa takaisin ja valitse toinen keskustelu",
+    "channel_step_label": "valitse kanava ryhmästä {{group}}",
+    "channel_unavailable": "kanavaa ei ole enää: palaa takaisin ja valitse toinen",
     "chip_label": "jaettava {{what}}: lisää se napauttamalla keskustelua",
+    "chip_label_channel": "jaettava {{what}}: lisää se napauttamalla kanavaa",
     "kind_file": "tiedosto",
     "kind_link": "linkki",
     "kind_photo": "kuva",
     "kind_text": "teksti",
     "kind_video": "video",
+    "loading_channels": "ladataan kanavia",
+    "no_channel_to_post": "vain ylläpitäjät voivat julkaista tämän ryhmän kanavilla.",
     "notice_extra_files": "vain ensimmäinen tiedosto lisättiin: viestissä voi olla yksi tiedosto.",
     "notice_too_large": "yli {{max}} Mt:n tiedosto jätettiin pois.",
     "notice_unreadable": "jaettua tiedostoa ei voitu lukea.",
     "notice_unsafe_image": "kuvasta ei saatu poistettua sijaintitietoja, joten se jätettiin pois.",
+    "pick_channel": "valitse kanava",
     "pick_chat": "valitse keskustelu"
   },
   "status_badge": {

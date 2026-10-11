@@ -26,6 +26,19 @@ const MAX_EVENTS = 24;
 const MAX_DETAIL_LENGTH = 160;
 
 let events: UnlockTimingEvent[] | null = null;
+let deviceProbe: (() => Promise<string | null>) | null = null;
+
+/**
+ * Device facts (charger, temperature, thermal, power save) to store as a
+ * 'device' row after each 'unlock' step, so a slow login reported later shows
+ * how warm or busy the phone was. Registered by the native bridge; null
+ * (the default, and on desktop/web) records nothing extra.
+ */
+export function setUnlockDeviceProbe(
+  probe: (() => Promise<string | null>) | null
+): void {
+  deviceProbe = typeof probe === 'function' ? probe : null;
+}
 
 function load(): UnlockTimingEvent[] {
   if (events) return events;
@@ -78,6 +91,25 @@ export function recordUnlockTiming(
   } catch {
     /* diagnostics must never break unlock */
   }
+  if (step === 'unlock') noteUnlockDevice();
+}
+
+/** Fire and forget: a 'device' row (ms n/a) once the probe answers. */
+function noteUnlockDevice(): void {
+  const probe = deviceProbe;
+  if (!probe) return;
+  try {
+    void Promise.resolve()
+      .then(() => probe())
+      .then((device) => {
+        if (typeof device === 'string' && device) {
+          recordUnlockTiming('device', Number.NaN, device);
+        }
+      })
+      .catch(() => {});
+  } catch {
+    /* diagnostics must never break unlock */
+  }
 }
 
 /** Oldest first. */
@@ -88,6 +120,7 @@ export function getUnlockTimingSnapshot(): UnlockTimingSnapshot {
 /** Test helper: forget the in-memory copy and the stored one. */
 export function resetUnlockTimingsForTests(): void {
   events = null;
+  deviceProbe = null;
   try {
     window.localStorage?.removeItem(STORAGE_KEY);
   } catch {

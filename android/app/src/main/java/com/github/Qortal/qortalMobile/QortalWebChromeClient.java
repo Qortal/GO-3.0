@@ -26,7 +26,8 @@ import java.util.Arrays;
  * onShowCustomView immediately calls onCustomViewHidden), so videos play
  * letterboxed inside the page with the status bar still showing. This subclass
  * implements true fullscreen: the video's custom view fills the whole screen,
- * the system bars hide (immersive), and we rotate to landscape while playing.
+ * the system bars hide (immersive), and phones rotate to landscape while
+ * playing (tablets are left as they are held).
  *
  * It also limits what pages may ask for (N-19): only GO's own page gets the
  * microphone and camera, and nobody gets location, DRM ids or MIDI.
@@ -40,6 +41,8 @@ public class QortalWebChromeClient extends BridgeWebChromeClient {
     private CustomViewCallback customViewCallback;
     private FrameLayout fullscreenContainer;
     private int originalOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED;
+    /** True while this client turned a phone to landscape for a video. */
+    private boolean orientationForced = false;
 
     public QortalWebChromeClient(Bridge bridge) {
         super(bridge);
@@ -97,7 +100,6 @@ public class QortalWebChromeClient extends BridgeWebChromeClient {
 
         customView = view;
         customViewCallback = callback;
-        originalOrientation = activity.getRequestedOrientation();
 
         ViewGroup decor = (ViewGroup) activity.getWindow().getDecorView();
         fullscreenContainer = new FrameLayout(activity);
@@ -124,8 +126,14 @@ public class QortalWebChromeClient extends BridgeWebChromeClient {
         }
 
         activity.getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-        // Video reads best landscape; let the sensor pick the side.
-        activity.setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
+        // Video reads best landscape on a phone; let the sensor pick the side.
+        // Tablets fit a video either way, and forcing them would re-lay out
+        // the whole page under the video for nothing.
+        if (activity.getResources().getConfiguration().smallestScreenWidthDp < 600) {
+            originalOrientation = activity.getRequestedOrientation();
+            orientationForced = true;
+            activity.setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
+        }
         setSystemBarsVisible(activity, false);
     }
 
@@ -148,7 +156,10 @@ public class QortalWebChromeClient extends BridgeWebChromeClient {
         }
 
         activity.getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-        activity.setRequestedOrientation(originalOrientation);
+        if (orientationForced) {
+            orientationForced = false;
+            activity.setRequestedOrientation(originalOrientation);
+        }
         setSystemBarsVisible(activity, true);
 
         if (customViewCallback != null) {

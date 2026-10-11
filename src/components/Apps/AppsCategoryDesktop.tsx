@@ -35,6 +35,11 @@ import { SortDropdown } from './Filters';
 import { VirtualAppGrid } from './AppsLibrary/VirtualAppGrid';
 import { withTabBarSpace } from '../Mobile/mobileBarHeights';
 import { SECTION_SURFACE_TOUCH_ACTION } from '../Mobile/sectionSwipe/sectionSwipe';
+import { useGoLayout } from '../../layout/goLayout';
+import {
+  libraryListColumns,
+  selectGoLibraryWide,
+} from '../Mobile/tabsHome/goTabsGrid';
 
 const LIST_ITEM_HEIGHT = 72;
 const TABLET_LIST_GAP = 12;
@@ -56,6 +61,8 @@ export const AppsCategoryDesktop = ({
   const theme = useTheme();
   // Tablet tier (600-900px): two columns of list items instead of one.
   const isTablet = useMediaQuery(theme.breakpoints.between('sm', 'md'));
+  // GO from 1000px wide: as many 340px columns as fit.
+  const wideLibrary = useGoLayout(selectGoLibraryWide);
   const { t } = useTranslation(['core']);
 
   const title = t('core:app_category.title', {
@@ -300,7 +307,7 @@ export const AppsCategoryDesktop = ({
             {searchedAndSortedList.length > 0 ? (
               <VirtualAppGrid
                 apps={searchedAndSortedList}
-                columns={isTablet ? 2 : 1}
+                columns={libraryListColumns(isTablet, wideLibrary)}
                 enabled={!!isShow}
                 gap={isTablet ? TABLET_LIST_GAP : 0}
                 itemHeight={LIST_ITEM_HEIGHT}

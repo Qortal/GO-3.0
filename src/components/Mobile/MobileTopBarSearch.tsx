@@ -35,11 +35,10 @@ import { AppThumbnailAvatar } from '../Apps/AppThumbnailAvatar';
 import IconClearInput from '../../assets/svgs/ClearInput.svg';
 import { executeEvent } from '../../utils/events';
 import { getBaseApiReact } from '../../utils/globalApi';
-import {
-  MOBILE_TAB_BAR_HEIGHT_PX,
-  MOBILE_TOP_BAR_HEIGHT_PX,
-} from './mobileBarHeights';
+import { MOBILE_TOP_BAR_HEIGHT_PX } from './mobileBarHeights';
 import { useSoftKeyboardInset } from '../../hooks/useSoftKeyboardInset';
+import { isGoLayout, useGoLayout } from '../../layout/goLayout';
+import { computeSearchResultsMaxHeight } from './goShellLayout';
 import { MOBILE_TABS_OVERLAY_Z } from './mobileLayout';
 import {
   SAFE_AREA_LEFT,
@@ -55,10 +54,6 @@ import {
   openAppsSearchLink,
   splitFirstMatch,
 } from './appsDashboardSearch';
-
-/** Space left between the results and the keyboard (or the tab buttons). */
-const RESULTS_GAP_PX = 10;
-const RESULTS_MIN_HEIGHT_PX = 160;
 
 const readSafeAreaBottom = () => {
   try {
@@ -240,6 +235,8 @@ export const MobileTopBarSearch = ({
   // The results reach down to just above the keyboard (the visible part of
   // the screen), or above the round tab buttons while it is closed.
   const keyboardInset = useSoftKeyboardInset();
+  // GO: no bottom bar to clear while the nav sits in the top bar.
+  const navInTopBar = useGoLayout((l) => l.navInTopBar);
   const resultsBoxRef = useRef<HTMLDivElement | null>(null);
   const [panelMaxHeight, setPanelMaxHeight] = useState<number | null>(null);
   useLayoutEffect(() => {
@@ -252,15 +249,15 @@ export const MobileTopBarSearch = ({
       const visibleBottom = viewport
         ? viewport.offsetTop + viewport.height
         : window.innerHeight;
-      const reserve =
-        keyboardInset > 0
-          ? RESULTS_GAP_PX
-          : MOBILE_TAB_BAR_HEIGHT_PX + readSafeAreaBottom() + RESULTS_GAP_PX;
       setPanelMaxHeight(
-        Math.max(
-          RESULTS_MIN_HEIGHT_PX,
-          Math.floor(visibleBottom - top - reserve)
-        )
+        computeSearchResultsMaxHeight({
+          visibleBottom,
+          top,
+          keyboardInset,
+          navInTopBar,
+          safeBottom: readSafeAreaBottom(),
+          go: isGoLayout(),
+        })
       );
     };
     measure();
@@ -273,7 +270,9 @@ export const MobileTopBarSearch = ({
       viewport?.removeEventListener('scroll', measure);
       window.removeEventListener('resize', measure);
     };
-  }, [keyboardInset, showDropdown, showUrlActions]);
+  }, [keyboardInset, navInTopBar, showDropdown, showUrlActions]);
+  // GO tablets and landscape: a readable column, not a full-width strip.
+  const resultsNarrow = useGoLayout((l) => l.go && l.widthClass !== 'compact');
   const displayTitle =
     activeTabTitle.trim() ||
     (activeTabUrl ? activeTabUrl.replace(/^qortal:\/\//i, '') : '');
@@ -699,8 +698,9 @@ export const MobileTopBarSearch = ({
       sx={{
         left: `max(10px, ${SAFE_AREA_LEFT})`,
         position: 'fixed',
-        right: `max(10px, ${SAFE_AREA_RIGHT})`,
+        right: resultsNarrow ? 'auto' : `max(10px, ${SAFE_AREA_RIGHT})`,
         top: `calc(${resultsTop} + 6px)`,
+        width: resultsNarrow ? 'min(640px, calc(100% - 20px))' : undefined,
         zIndex: searchChromeZ + 2,
       }}
     >

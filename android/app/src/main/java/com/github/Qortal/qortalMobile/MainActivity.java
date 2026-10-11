@@ -48,6 +48,8 @@ public class MainActivity extends BridgeActivity {
     private long lastWebViewRedrawAtMs = 0L;
     /** Set once a renderer death is being recovered from, to avoid re-entry. */
     private boolean recoveringRenderProcess = false;
+    /** Last window metrics handed to the page; identical pushes are skipped. */
+    private SafeAreaInsetsPolicy.Metrics lastWindowMetrics = null;
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
@@ -79,6 +81,9 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(ScreenSecurityPlugin.class);
         // Small in-memory pictures of open Q-Apps for the tab cards.
         registerPlugin(TabSnapshotPlugin.class);
+        // Private Q-Apps unpacked on the phone and served from memory (a
+        // public node cannot build them, and should not see them decrypted).
+        registerPlugin(PrivateQappPlugin.class);
         super.onCreate(savedInstanceState);
         // Home and VPN node addresses never go to a carrier or Wi-Fi proxy.
         WebViewProxyBypass.start(this);
@@ -156,6 +161,10 @@ public class MainActivity extends BridgeActivity {
                     // The screens that held FLAG_SECURE are gone with the old
                     // page; the new page asks again for what it shows (GO-37).
                     ScreenSecurityPlugin.onPageStarted(MainActivity.this.bridge);
+                    // The new document has no metrics yet; the next push must
+                    // not be skipped as a repeat (SafeArea.getInsets also
+                    // hands them over at boot).
+                    lastWindowMetrics = null;
                 }
 
                 @Override
@@ -243,6 +252,15 @@ public class MainActivity extends BridgeActivity {
         super.onConfigurationChanged(newConfig);
         // Rotation keeps this activity alive (configChanges in the manifest), so
         // re-apply insets and force the WebView to re-measure for the new size.
+        // Insets first: side margins depend on the orientation, and the page's
+        // layout store wants the new smallestScreenWidthDp right away.
+        if (this.bridge != null && this.bridge.getWebView() != null && !recoveringRenderProcess) {
+            final WebView webView = this.bridge.getWebView();
+            webView.post(() -> {
+                ViewCompat.requestApplyInsets(webView);
+                pushWindowMetrics(webView, null);
+            });
+        }
         forceWebViewRedraw();
     }
 
@@ -295,7 +313,7 @@ public class MainActivity extends BridgeActivity {
                 null
             );
         }
-        applySafeAreaInsets(webView);
+        applySafeAreaInsets(webView, null);
     }
 
     /**
@@ -419,9 +437,13 @@ public class MainActivity extends BridgeActivity {
         }
     }
 
-    /** Push status/navigation bar insets into CSS variables for the WebView. */
+    /**
+     * Push status/navigation bar insets into CSS variables for the WebView,
+     * shrink it by the keyboard (and, in landscape, by side system bars), and
+     * hand the window metrics to the page (see SafeAreaInsetsPolicy).
+     */
     private void installSafeAreaInsetBridge(WebView webView) {
-        Runnable apply = () -> applySafeAreaInsets(webView);
+        Runnable apply = () -> applySafeAreaInsets(webView, null);
         webView.post(apply);
         ViewCompat.setOnApplyWindowInsetsListener(webView, (v, insets) -> {
             // Edge-to-edge windows ignore adjustResize, so the keyboard would
@@ -429,54 +451,104 @@ public class MainActivity extends BridgeActivity {
             // IME overlap ourselves so the page resizes like adjustResize.
             // NOTE: must be a layout margin — WebView ignores padding for
             // content layout.
-            int imeBottom = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom;
-            int margin = Math.max(0, imeBottom);
+            SafeAreaInsetsPolicy.Result r =
+                SafeAreaInsetsPolicy.fromInsets(insets, isLandscape(), density());
             android.view.ViewGroup.LayoutParams rawParams = v.getLayoutParams();
             if (rawParams instanceof android.view.ViewGroup.MarginLayoutParams) {
                 android.view.ViewGroup.MarginLayoutParams params =
                     (android.view.ViewGroup.MarginLayoutParams) rawParams;
-                if (params.bottomMargin != margin) {
-                    params.bottomMargin = margin;
+                if (params.bottomMargin != r.marginBottom
+                        || params.leftMargin != r.marginLeft
+                        || params.rightMargin != r.marginRight) {
+                    params.bottomMargin = r.marginBottom;
+                    params.leftMargin = r.marginLeft;
+                    params.rightMargin = r.marginRight;
                     v.setLayoutParams(params);
                 }
             }
-            applySafeAreaInsets(webView);
+            applySafeAreaInsets(webView, insets);
+            pushWindowMetrics(webView, insets);
             return insets;
         });
+        // Split screen, folds and freeform windows can change the size with
+        // no insets change; the page's layout store still needs the height.
+        ViewParent parent = webView.getParent();
+        if (parent instanceof View) {
+            ((View) parent).addOnLayoutChangeListener(
+                (view, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) -> {
+                    if (right - left != oldRight - oldLeft || bottom - top != oldBottom - oldTop) {
+                        pushWindowMetrics(webView, null);
+                    }
+                }
+            );
+        }
     }
 
-    private void applySafeAreaInsets(WebView webView) {
-        WindowInsetsCompat insets = ViewCompat.getRootWindowInsets(webView);
+    private boolean isLandscape() {
+        return getResources().getConfiguration().orientation == Configuration.ORIENTATION_LANDSCAPE;
+    }
+
+    /** WindowInsets are physical pixels; CSS needs density-independent px. */
+    private float density() {
+        float density = getResources().getDisplayMetrics().density;
+        return density > 0 ? density : 1f;
+    }
+
+    private void applySafeAreaInsets(WebView webView, WindowInsetsCompat given) {
+        WindowInsetsCompat insets = given != null ? given : ViewCompat.getRootWindowInsets(webView);
         if (insets == null) {
             return;
         }
-        // WindowInsets are physical pixels; CSS needs density-independent px.
-        float density = getResources().getDisplayMetrics().density;
-        if (density <= 0) density = 1f;
-        boolean imeVisible = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom > 0;
         // Immersive mode hides the status bar; the camera cutout still keeps
-        // content clear of the punch hole.
-        int top = Math.round(Math.max(
-            insets.getInsets(WindowInsetsCompat.Type.statusBars()).top,
-            insets.getInsets(WindowInsetsCompat.Type.displayCutout()).top
-        ) / density);
-        // With the keyboard open the WebView already ends above it (IME
-        // padding) — the nav bar sits below the keyboard, so no bottom inset.
-        int bottom = imeVisible
-            ? 0
-            : Math.round(insets.getInsets(WindowInsetsCompat.Type.navigationBars()).bottom / density);
-        int left = Math.round(insets.getInsets(WindowInsetsCompat.Type.displayCutout()).left / density);
-        int right = Math.round(insets.getInsets(WindowInsetsCompat.Type.displayCutout()).right / density);
+        // content clear of the punch hole. With the keyboard open the WebView
+        // already ends above it, so no bottom inset. In landscape the side
+        // margins cover the nav bar and cutout, so the sides are 0.
+        SafeAreaInsetsPolicy.Result r =
+            SafeAreaInsetsPolicy.fromInsets(insets, isLandscape(), density());
         // Redraw and focus callbacks can land before the WebView has a document,
         // so bail out rather than throwing on a null documentElement.
         String js = String.format(
+            java.util.Locale.ROOT,
             "(function(){var r=document.documentElement;if(!r)return;"
                 + "r.style.setProperty('--safe-area-inset-top','%dpx');"
                 + "r.style.setProperty('--safe-area-inset-bottom','%dpx');"
                 + "r.style.setProperty('--safe-area-inset-left','%dpx');"
                 + "r.style.setProperty('--safe-area-inset-right','%dpx');})();",
-            top, bottom, left, right
+            r.cssTop, r.cssBottom, r.cssLeft, r.cssRight
         );
         webView.evaluateJavascript(js, null);
+    }
+
+    /**
+     * Hands the window size, keyboard height and side margins to the page's
+     * layout store (src/layout/goLayout.ts) so its layout never mistakes the
+     * keyboard for a smaller window. Skipped when nothing changed.
+     */
+    private void pushWindowMetrics(WebView webView, WindowInsetsCompat given) {
+        if (recoveringRenderProcess) {
+            return;
+        }
+        ViewParent rawParent = webView.getParent();
+        if (!(rawParent instanceof View)) {
+            return;
+        }
+        View parent = (View) rawParent;
+        WindowInsetsCompat insets = given != null ? given : ViewCompat.getRootWindowInsets(webView);
+        if (insets == null) {
+            return;
+        }
+        float density = density();
+        SafeAreaInsetsPolicy.Metrics m = SafeAreaInsetsPolicy.metrics(
+            parent.getWidth(),
+            parent.getHeight(),
+            SafeAreaInsetsPolicy.fromInsets(insets, isLandscape(), density),
+            density,
+            getResources().getConfiguration().smallestScreenWidthDp
+        );
+        if (m == null || m.equals(lastWindowMetrics)) {
+            return;
+        }
+        lastWindowMetrics = m;
+        webView.evaluateJavascript(SafeAreaInsetsPolicy.metricsScript(m), null);
     }
 }

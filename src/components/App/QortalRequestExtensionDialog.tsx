@@ -39,8 +39,7 @@ import {
 } from '../../utils/qappApproval';
 import { DECLINE_GUARD_MS } from '../../utils/qappApprovalQueue';
 import { BACK_PRIORITY, useAndroidBack } from '../../utils/androidBack';
-import { useQdnAvatar } from '../../lib/qdnAvatars';
-import LogoSelected from '../../assets/svgs/LogoSelected.svg';
+import { QappIcon, QappIconFrame } from './QappIcon';
 
 const QORTAL_REQUEST_DIALOG_Z_INDEX = 11000;
 
@@ -984,90 +983,9 @@ function RequestingAppAvatar({
   // decline the request, so it falls back to the Qortal logo instead. Keyed
   // by app, so a request from another app never shows the last app's icon.
   return (
-    <ErrorBoundary key={name} fallback={<AppIconFrame sx={avatarSx} />}>
-      <AppIcon name={name} sx={avatarSx} />
+    <ErrorBoundary key={name} fallback={<QappIconFrame sx={avatarSx} />}>
+      <QappIcon name={name} sx={avatarSx} testId="qortal-request-app-icon" />
     </ErrorBoundary>
-  );
-}
-
-/** The icon box with the Qortal logo, and the app's icon on top once loaded. */
-function AppIconFrame({
-  sx,
-  children,
-  showLogo = true,
-}: {
-  sx: Record<string, unknown>;
-  children?: ReactNode;
-  showLogo?: boolean;
-}) {
-  return (
-    <Box
-      sx={{
-        ...sx,
-        alignItems: 'center',
-        display: 'flex',
-        justifyContent: 'center',
-        overflow: 'hidden',
-        position: 'relative',
-      }}
-    >
-      {showLogo ? (
-        <img
-          src={LogoSelected}
-          alt=""
-          style={{ height: 'auto', objectFit: 'contain', width: '30px' }}
-        />
-      ) : null}
-      {children}
-    </Box>
-  );
-}
-
-/**
- * The app's icon from GO's avatar cache (or the icon GO ships for well-known
- * Q-Apps), fetched first when not cached yet. The Qortal logo shows until it
- * has loaded, and when there is none: an icon that is still loading (or never
- * answers) never shows as an empty box.
- */
-function AppIcon({ name, sx }: { name: string; sx: Record<string, unknown> }) {
-  const { src } = useQdnAvatar(name, { priority: 'high' });
-  // Per src, so the live icon replacing the bundled one gets its own chance.
-  const [loadedSrc, setLoadedSrc] = useState<string | null>(null);
-  const [failedSrc, setFailedSrc] = useState<string | null>(null);
-  const showIcon = Boolean(src) && failedSrc !== src;
-  const loaded = showIcon && loadedSrc === src;
-  // The icon on screen (e.g. the bundled one) stays under a new one until
-  // that has loaded, so the swap never flashes the Qortal logo.
-  const previous = !loaded && loadedSrc && loadedSrc !== src ? loadedSrc : null;
-  const layers: { layerSrc: string; current: boolean }[] = [];
-  if (previous) layers.push({ layerSrc: previous, current: false });
-  if (showIcon && src) layers.push({ layerSrc: src, current: true });
-  return (
-    <AppIconFrame sx={sx} showLogo={!loaded && !previous}>
-      {/* Keyed by src: the loaded image stays the same element underneath. */}
-      {layers.map(({ layerSrc, current }) => (
-        <img
-          key={layerSrc}
-          src={layerSrc}
-          alt=""
-          data-testid={
-            current
-              ? 'qortal-request-app-icon'
-              : 'qortal-request-app-icon-previous'
-          }
-          onLoad={current ? () => setLoadedSrc(layerSrc) : undefined}
-          onError={current ? () => setFailedSrc(layerSrc) : undefined}
-          style={{
-            height: '100%',
-            inset: 0,
-            objectFit: 'cover',
-            opacity: current && !loaded ? 0 : 1,
-            position: 'absolute',
-            width: '100%',
-          }}
-        />
-      ))}
-    </AppIconFrame>
   );
 }
 

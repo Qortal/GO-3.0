@@ -95,6 +95,7 @@ import {
   uint8ArrayToBase64,
 } from '../qdn/encryption/group-encryption.ts';
 import { publishData } from '../qdn/publish/publish.ts';
+import { startQappPublishTracker } from '../qdn/publish/qappPublishTracker.ts';
 import {
   isPublishAborted,
   PublishAbortedError,
@@ -122,6 +123,7 @@ import { RequestQueueWithPromise } from '../utils/queue/queue.ts';
 import utils from '../utils/utils.ts';
 import ShortUniqueId from 'short-unique-id';
 import {
+  isValidBase64,
   isValidBase64WithDecode,
   validateAesCtrIvAndKey,
 } from '../utils/decode.ts';
@@ -921,8 +923,7 @@ export const encryptQortalGroupData = async (data, sender) => {
         }?encoding=base64&rebuild=true`
       );
 
-      const res = await fetch(url);
-      const resData = await res.text();
+      const resData = await fetchGroupKeyPublish(url);
 
       const decryptedKey: any = await decryptResource(resData, true);
 
@@ -969,8 +970,7 @@ export const encryptQortalGroupData = async (data, sender) => {
         }?encoding=base64&rebuild=true`
       );
 
-      const res = await fetch(url);
-      const resData = await res.text();
+      const resData = await fetchGroupKeyPublish(url);
       const decryptedKey: any = await decryptResource(resData, true);
       const dataint8Array = base64ToUint8Array(decryptedKey.data);
       const decryptedKeyToObject = uint8ArrayToObject(dataint8Array);
@@ -1003,6 +1003,30 @@ export const encryptQortalGroupData = async (data, sender) => {
       })
     );
   }
+};
+
+/**
+ * A group key publish (base64) from the node. A node that cannot get the
+ * publish answers with an error, and a public node often does (404 "Data
+ * unavailable. Please try again later."); decoding that text as the key used
+ * to fail with "Failed to execute 'atob'".
+ */
+export const fetchGroupKeyPublish = async (url: string): Promise<string> => {
+  let text = '';
+  try {
+    const res = await fetch(url);
+    text = res.ok ? (await res.text()).trim() : '';
+  } catch {
+    text = '';
+  }
+  if (!text || !isValidBase64(text)) {
+    throw new Error(
+      i18n.t('question:message.error.group_key_unavailable', {
+        postProcess: 'capitalizeFirstChar',
+      })
+    );
+  }
+  return text;
 };
 
 export const decryptQortalGroupData = async (data, sender) => {
@@ -1067,8 +1091,7 @@ export const decryptQortalGroupData = async (data, sender) => {
         }?encoding=base64&rebuild=true`
       );
 
-      const res = await fetch(url);
-      const resData = await res.text();
+      const resData = await fetchGroupKeyPublish(url);
       const decryptedKey: any = await decryptResource(resData, true);
 
       const dataint8Array = base64ToUint8Array(decryptedKey.data);
@@ -1112,8 +1135,7 @@ export const decryptQortalGroupData = async (data, sender) => {
         }?encoding=base64&rebuild=true`
       );
 
-      const res = await fetch(url);
-      const resData = await res.text();
+      const resData = await fetchGroupKeyPublish(url);
       const decryptedKey: any = await decryptResource(resData, true);
 
       const dataint8Array = base64ToUint8Array(decryptedKey.data);
@@ -1910,8 +1932,12 @@ export const publishQDNResource = async (
   }
 
   if (acceptVar) {
+    // GO's publish window (qdn/publish/publishJobs.ts) follows it from here.
+    const publishTracker = startQappPublishTracker(appInfo, [data]);
+    publishTracker?.rowStarted(0);
     try {
       const resPublish = await publishData({
+        onProgress: publishTracker?.progressFor(0),
         registeredName: encodeURIComponent(name),
         data: data64 ? data64 : file,
         service: service,
@@ -1936,6 +1962,8 @@ export const publishQDNResource = async (
         withFee: true,
         encryption: isStreamedEncryption ? encryption : null,
       });
+      if (resPublish?.signature) publishTracker?.rowPublished(0);
+      publishTracker?.finish();
       if (resPublish?.signature && hasAppFee && checkbox1Var) {
         void payAppFeeAfterPublish({
           amount: appFee,
@@ -1945,6 +1973,8 @@ export const publishQDNResource = async (
       }
       return resPublish;
     } catch (error) {
+      publishTracker?.rowFailed(0, error);
+      publishTracker?.finish();
       throw new Error(error?.message || 'Upload failed');
     }
   } else {
@@ -2338,9 +2368,18 @@ export const publishMultipleQDNResources = async (
     reason: string;
     identifier: any;
     service: any;
+    name?: any;
   };
 
+  // GO's publish window (qdn/publish/publishJobs.ts) follows it from here.
+  const publishTracker = startQappPublishTracker(appInfo, resources);
+  let resourceIndex = -1;
+
   const failedPublishesIdentifiers: FailedPublish[] = [];
+  const recordFailed = (failure: FailedPublish) => {
+    failedPublishesIdentifiers.push(failure);
+    publishTracker?.rowFailed(resourceIndex, failure.reason);
+  };
   const publishedResponses = [];
   const publishedResources: {
     service: string;
@@ -2365,10 +2404,12 @@ export const publishMultipleQDNResources = async (
   };
 
   for (const resource of resources) {
+    resourceIndex += 1;
     if (isPublishAborted() || aborted) {
       aborted = true;
       break;
     }
+    publishTracker?.rowStarted(resourceIndex);
     try {
       const requiredFields = ['service'];
       const missingFields: string[] = [];
@@ -2383,7 +2424,7 @@ export const publishMultipleQDNResources = async (
           fields: missingFieldsString,
           postProcess: 'capitalizeFirstChar',
         });
-        failedPublishesIdentifiers.push({
+        recordFailed({
           reason: errorMsg,
           identifier: resource.identifier,
           service: resource.service,
@@ -2398,6 +2439,7 @@ export const publishMultipleQDNResources = async (
           const stashed = takePublishFile(String(resource.fileId));
           if (stashed) {
             resource.file = stashed;
+            publishTracker?.rowBytes(resourceIndex, stashed.size);
           }
         } catch {
           // fall through to missing-file error below
@@ -2410,7 +2452,7 @@ export const publishMultipleQDNResources = async (
             postProcess: 'capitalizeFirstChar',
           }
         );
-        failedPublishesIdentifiers.push({
+        recordFailed({
           reason: errorMsg,
           identifier: resource.identifier,
           service: resource.service,
@@ -2453,7 +2495,7 @@ export const publishMultipleQDNResources = async (
         const errorMsg = i18n.t('question:message.error.only_encrypted_data', {
           postProcess: 'capitalizeFirstChar',
         });
-        failedPublishesIdentifiers.push({
+        recordFailed({
           reason: errorMsg,
           identifier: resource.identifier,
           service: resource.service,
@@ -2489,7 +2531,7 @@ export const publishMultipleQDNResources = async (
             i18n.t('question:message.error.upload_encryption', {
               postProcess: 'capitalizeFirstChar',
             });
-          failedPublishesIdentifiers.push({
+          recordFailed({
             reason: errorMsg,
             identifier: resource.identifier,
             service: resource.service,
@@ -2541,6 +2583,7 @@ export const publishMultipleQDNResources = async (
           withFee: true,
           appInfo,
           encryption: encryption || null,
+          onProgress: publishTracker?.progressFor(resourceIndex),
         });
         if (response?.signature) {
           publishedResponses.push(response);
@@ -2549,6 +2592,7 @@ export const publishMultipleQDNResources = async (
             name: resource?.name || name,
             identifier,
           });
+          publishTracker?.rowPublished(resourceIndex);
         }
         await new Promise((res) => {
           setTimeout(() => {
@@ -2562,7 +2606,7 @@ export const publishMultipleQDNResources = async (
           isPublishAborted()
         ) {
           aborted = true;
-          failedPublishesIdentifiers.push({
+          recordFailed({
             reason: 'Publish cancelled',
             identifier: resource.identifier,
             service: resource.service,
@@ -2575,7 +2619,7 @@ export const publishMultipleQDNResources = async (
           i18n.t('question:message.error.upload', {
             postProcess: 'capitalizeFirstChar',
           });
-        failedPublishesIdentifiers.push({
+        recordFailed({
           reason: errorMsg,
           identifier: resource.identifier,
           service: resource.service,
@@ -2589,7 +2633,7 @@ export const publishMultipleQDNResources = async (
         isPublishAborted()
       ) {
         aborted = true;
-        failedPublishesIdentifiers.push({
+        recordFailed({
           reason: 'Publish cancelled',
           identifier: resource.identifier,
           service: resource.service,
@@ -2597,7 +2641,7 @@ export const publishMultipleQDNResources = async (
         });
         break;
       }
-      failedPublishesIdentifiers.push({
+      recordFailed({
         reason:
           error?.message ||
           i18n.t('question:message.error.unknown_error', {
@@ -2609,6 +2653,7 @@ export const publishMultipleQDNResources = async (
       });
     }
   }
+  publishTracker?.finish({ aborted: aborted || isPublishAborted() });
 
   if (aborted || isPublishAborted()) {
     await cleanupPublishedOnAbort();
@@ -9610,8 +9655,7 @@ export const reEncryptQortalKeys = async (data, isFromExtension, appInfo) => {
       }?encoding=base64&rebuild=true`
     );
 
-    const res = await fetch(url);
-    const resData = await res.text();
+    const resData = await fetchGroupKeyPublish(url);
 
     const decryptedKey: any = await decryptResource(resData, true);
 

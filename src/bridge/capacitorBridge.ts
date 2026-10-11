@@ -30,6 +30,7 @@ import {
   openFileInViewerApp,
 } from '../utils/nativeFileOpen';
 import { cleanFileName } from '../utils/receivedFileName';
+import { setUnlockDeviceProbe } from '../utils/unlockTimings';
 import { P2P_HEALTH_RECEIVING_STABLE_MS } from '../lib/p2pHealth';
 import {
   encodeJoinWire,
@@ -493,12 +494,20 @@ export function subscribeDeviceNetworkRegained(
 // the phone stays a leaf.
 
 let relayProfile: RelayProfile = 'leaf';
+/** Date.now() of the last real change on this page; null before the first. */
+let relayProfileSince: number | null = null;
 let relayProfileSeq = 0;
 let backgroundSyncWatcherBound = false;
 const relayProfileListeners = new Set<(profile: RelayProfile) => void>();
 let pushOverlayProfileRef: ((profile: RelayProfile) => void) | null = null;
 
 export const getRelayProfile = (): RelayProfile => relayProfile;
+
+/**
+ * Copy diagnostics: when the relay profile last really changed on this page
+ * (Date.now()), or null while it has not changed since the page started.
+ */
+export const getRelayProfileSince = (): number | null => relayProfileSince;
 
 /** Test hook: stand in for the bridge's configure_overlay_profile push. */
 export function setOverlayProfilePushForTests(
@@ -516,6 +525,7 @@ export function reportRelayProfile(profile: unknown): boolean {
   const next: RelayProfile = profile === 'full' ? 'full' : 'leaf';
   if (next === relayProfile) return false;
   relayProfile = next;
+  relayProfileSince = Date.now();
   pushOverlayProfileRef?.(next);
   for (const listener of [...relayProfileListeners]) {
     try {
@@ -553,6 +563,16 @@ function bindBackgroundSyncWatcher(): void {
       subscribeAppLifecycle((state) => {
         if (state === 'foreground') refresh(false);
       });
+      // Copy diagnostics: device facts stored with each unlock (one native
+      // read per unlock, fire and forget; nothing periodic).
+      setUnlockDeviceProbe(() =>
+        Promise.all([
+          import('../components/Mobile/backgroundSync'),
+          QortalBackground.getBackgroundSyncState(),
+        ]).then(([sync, raw]) =>
+          sync.formatUnlockDeviceDetail(sync.normalizeBackgroundSyncState(raw))
+        )
+      );
       void Promise.resolve(
         QortalBackground.addListener('relayProfileChanged', (event) => {
           reportRelayProfile(event?.profile);

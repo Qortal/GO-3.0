@@ -23,6 +23,11 @@ import { Spacer } from '../../../common/Spacer';
 import { pickTopRated } from '../../../utils/appRatingScore';
 import { VirtualAppGrid } from './VirtualAppGrid';
 import { isAppProbablyOnNode, useAppNodeStatusVersion } from '../appNodeStatus';
+import { useGoLayout } from '../../../layout/goLayout';
+import {
+  libraryListColumns,
+  selectGoLibraryWide,
+} from '../../Mobile/tabsHome/goTabsGrid';
 
 const CARD_MIN_WIDTH = 320;
 const CARD_HEIGHT = 220;
@@ -74,6 +79,8 @@ export const CommunityAppsTab = ({
   const theme = useTheme();
   // Tablet tier (600-900px): two columns of list items instead of one.
   const isTablet = useMediaQuery(theme.breakpoints.between('sm', 'md'));
+  // GO from 1000px wide: as many 340px columns as fit.
+  const wideLibrary = useGoLayout(selectGoLibraryWide);
   const { t } = useTranslation(['core']);
   const isRatingSort =
     sortValue === 'highest_rated' || sortValue === 'most_rated';
@@ -176,7 +183,7 @@ export const CommunityAppsTab = ({
         isMobile ? (
           <VirtualAppGrid
             apps={filteredAndSortedApps}
-            columns={isTablet ? 2 : 1}
+            columns={libraryListColumns(isTablet, wideLibrary)}
             enabled={isActive !== false}
             gap={isTablet ? TABLET_LIST_GAP : 0}
             itemHeight={LIST_ITEM_HEIGHT}

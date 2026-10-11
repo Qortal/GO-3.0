@@ -202,7 +202,10 @@ class ReticulumPlugin : Plugin() {
 
     @PluginMethod
     fun getStatus(call: PluginCall) {
-        call.resolve(statusObject())
+        // `detail` only from Copy diagnostics; the badge poll sends no
+        // options and gets exactly the fields it always got.
+        val detail = call.getBoolean("detail", false) == true
+        call.resolve(statusObject(detail))
     }
 
     @PluginMethod
@@ -1116,7 +1119,13 @@ class ReticulumPlugin : Plugin() {
         }
     }
 
-    private fun statusObject(): JSObject {
+    /**
+     * The status badge snapshot. [detail] (Copy diagnostics only) adds
+     * `native` (process start, bridge socket counters; present without
+     * Python too) and `bridge` (Python lane and queue counters from the same
+     * direct transport_status call, no lane command).
+     */
+    private fun statusObject(detail: Boolean = false): JSObject {
         val result = JSObject()
             .put("started", started)
             .put("online", false)
@@ -1126,10 +1135,25 @@ class ReticulumPlugin : Plugin() {
             .put("announces", 0)
             .put("rxBytes", 0L)
             .put("txBytes", 0L)
+        if (detail) {
+            try {
+                result.put("native", nativeDiagnostics())
+            } catch (t: Throwable) {
+                Log.w(TAG, "native diagnostics failed: ${t.message}")
+            }
+        }
         val host = presenceHost ?: return result
         if (!presenceStarted) return result
         return try {
-            val snapshot = JSONObject(host.callAttr("transport_status").toString())
+            val raw = if (detail) {
+                host.callAttr("transport_status", true)
+            } else {
+                host.callAttr("transport_status")
+            }
+            val snapshot = JSONObject(raw.toString())
+            if (detail) {
+                result.put("bridge", snapshot.optJSONObject("bridge") ?: JSONObject())
+            }
             result
                 .put("online", snapshot.optBoolean("online", false))
                 .put("ifacSize", snapshot.optInt("ifacSize", 0))
@@ -1145,6 +1169,15 @@ class ReticulumPlugin : Plugin() {
             Log.w(TAG, "transport_status failed: ${t.message}")
             result
         }
+    }
+
+    /** Copy diagnostics: when this app process started (epoch ms) and the bridge socket counters. */
+    private fun nativeDiagnostics(): JSONObject {
+        val startedAt = System.currentTimeMillis() -
+            (android.os.SystemClock.elapsedRealtime() - android.os.Process.getStartElapsedRealtime())
+        return JSONObject()
+            .put("processStartedAtMs", startedAt)
+            .put("socket", bridgeSocket?.diagnostics() ?: JSONObject.NULL)
     }
 
     override fun load() {

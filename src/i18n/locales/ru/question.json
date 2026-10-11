@@ -55,6 +55,7 @@
       "gateway_retrieve_balance": "получение баланса {{ token }} через шлюз запрещено",
       "gateway_wallet_local_node": "нельзя просмотреть кошелек {{ token }} через шлюз. Используйте локальный узел.",
       "get_foreign_fee": "ошибка при получении внешней комиссии",
+      "group_key_unavailable": "не удалось скачать ключ группы с узла. Попробуйте позже",
       "insufficient_balance": "недостаточно средств на счете",
       "insufficient_balance_qort": "недостаточно QORT на балансе",
       "insufficient_funds": "недостаточно средств",

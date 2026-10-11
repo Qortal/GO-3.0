@@ -1,4 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useSyncExternalStore } from 'react';
+import { isGoLayout } from '../layout/goLayout';
+import {
+  getSoftKeyboardGatedInset,
+  subscribeSoftKeyboard,
+} from './useSoftKeyboardInset';
+
+const noopSubscribe = () => () => {};
 
 /**
  * Detects whether the on-screen (soft) keyboard is currently open.
@@ -10,11 +17,21 @@ import { useEffect, useState } from 'react';
  * mode (resizes-content vs overlays-content).
  *
  * Falls back to `false` on platforms without VisualViewport (older browsers).
+ *
+ * On GO it reads the shared keyboard store instead, whose baseline survives
+ * rotation, folds and split-screen resizes. Both paths' hooks always run.
  */
 export function useSoftKeyboardOpen(thresholdPx = 160): boolean {
+  const go = isGoLayout();
   const [open, setOpen] = useState(false);
+  const goOpen = useSyncExternalStore(
+    go ? subscribeSoftKeyboard : noopSubscribe,
+    () => go && getSoftKeyboardGatedInset() > thresholdPx,
+    () => false
+  );
 
   useEffect(() => {
+    if (go) return;
     const vv =
       typeof window !== 'undefined' ? window.visualViewport : undefined;
     if (!vv) return;
@@ -33,9 +50,9 @@ export function useSoftKeyboardOpen(thresholdPx = 160): boolean {
     return () => {
       vv.removeEventListener('resize', update);
     };
-  }, [thresholdPx]);
+  }, [thresholdPx, go]);
 
-  return open;
+  return go ? goOpen : open;
 }
 
 export default useSoftKeyboardOpen;

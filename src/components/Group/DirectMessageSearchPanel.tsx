@@ -7,7 +7,6 @@ import {
   LinearProgress,
   TextField,
   Typography,
-  useMediaQuery,
   useTheme,
 } from '@mui/material';
 import { alpha } from '@mui/material/styles';
@@ -17,6 +16,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { BACK_PRIORITY, useAndroidBack } from '../../utils/androidBack';
 import { SAFE_AREA_BOTTOM } from '../../utils/mobileSafeArea';
+import { useSheetFullScreen } from '../../layout/goLayout';
 import { MobilePanelHeader } from '../Mobile/MobilePanelHeader';
 import { DirectRowAvatar } from './DirectRowAvatar';
 import { formatEmailDate } from './qmailUtils';
@@ -66,7 +66,8 @@ export function DirectMessageSearchPanel({
 }: DirectMessageSearchPanelProps) {
   const theme = useTheme();
   const { t } = useTranslation(['core', 'group', 'reticulum']);
-  const isPhone = useMediaQuery(theme.breakpoints.down('sm'));
+  // Short GO windows (phone landscape) get the full-screen panel too.
+  const isPhone = useSheetFullScreen();
   const [query, setQuery] = useState('');
   const [searchedQuery, setSearchedQuery] = useState('');
   const [hits, setHits] = useState<DirectSearchHit[]>([]);

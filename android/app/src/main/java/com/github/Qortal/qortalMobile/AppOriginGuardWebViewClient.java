@@ -32,6 +32,9 @@ import java.util.Map;
  *   <li>No service worker can be installed: one could answer a Q-App's page
  *   loads without GO's policy. GO itself uses none.</li>
  *   <li>No prefetch to another origin: no policy covers prefetch.</li>
+ *   <li>Private Q-Apps that GO unpacked itself are answered from memory at
+ *   their address on the node ({@link PrivateQappStore}), with the node's
+ *   policy and GO's.</li>
  * </ul>
  * The decisions themselves, and their order, are in {@link QappFramePolicy#decide}.
  */
@@ -63,7 +66,14 @@ public class AppOriginGuardWebViewClient extends BridgeWebViewClient {
         req.path = url.getPath();
         req.mainFrame = request.isForMainFrame();
         req.headers = request.getRequestHeaders();
-        switch (QappFramePolicy.decide(req, request.getMethod(), appScheme, appHost, appPort)) {
+        QappFramePolicy.Decision decision = QappFramePolicy.decide(req, request.getMethod(), appScheme, appHost, appPort);
+        if (decision == QappFramePolicy.Decision.FETCH_FRAME_PAGE || decision == QappFramePolicy.Decision.PASS) {
+            WebResourceResponse privateApp = privateAppReply(request, req);
+            if (privateApp != null) {
+                return privateApp;
+            }
+        }
+        switch (decision) {
             case REFUSE_APP_ORIGIN:
                 Log.w(TAG, "Refused " + (req.mainFrame ? "page" : "frame/resource") + " load of " + req.path);
                 return refusal();
@@ -79,6 +89,45 @@ public class AppOriginGuardWebViewClient extends BridgeWebViewClient {
             }
             default:
                 return super.shouldInterceptRequest(view, request);
+        }
+    }
+
+    /**
+     * A private Q-App that GO unpacked itself answers its own addresses on the
+     * node ({@link PrivateQappStore}): the page and its files come from memory,
+     * nothing goes to the network. Null for every other request.
+     */
+    private static WebResourceResponse privateAppReply(WebResourceRequest request, AppOriginGuardPolicy.Request req) {
+        if (req.mainFrame || !"GET".equalsIgnoreCase(request.getMethod())) {
+            return null;
+        }
+        Uri url = request.getUrl();
+        PrivateQappRenderer.Reply reply = PrivateQappStore.shared().respond(
+            req.scheme,
+            req.host,
+            req.port,
+            req.path,
+            queryParameter(url, "theme"),
+            queryParameter(url, "lang")
+        );
+        if (reply == null) {
+            return null;
+        }
+        return new WebResourceResponse(
+            reply.mimeType,
+            reply.charset,
+            reply.status,
+            reply.reason,
+            reply.headers,
+            new ByteArrayInputStream(reply.body)
+        );
+    }
+
+    private static String queryParameter(Uri url, String name) {
+        try {
+            return url.getQueryParameter(name);
+        } catch (RuntimeException e) {
+            return null;
         }
     }
 

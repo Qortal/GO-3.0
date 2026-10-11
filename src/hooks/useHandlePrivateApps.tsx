@@ -11,8 +11,17 @@ import {
 import { saveToLocalStorage } from '../components/Apps/AppsNavBarDesktop';
 import { base64ToUint8Array } from '../qdn/encryption/group-encryption';
 import { uint8ArrayToObject } from '../encryption/encryption.ts';
+import { isValidBase64 } from '../utils/decode.ts';
+import {
+  buildPrivateAppOnDevice,
+  canBuildPrivateAppsOnDevice,
+} from '../plugins/PrivateQappHost';
 import { useAtom, useSetAtom } from 'jotai';
 import { useTranslation } from 'react-i18next';
+
+/** What the node answers for a preview it built: /render/hash/<hash>?secret=<secret>. */
+const NODE_PREVIEW_PATH =
+  /^\/render\/hash\/[1-9A-HJ-NP-Za-km-z]+\?secret=[1-9A-HJ-NP-Za-km-z]+$/;
 
 export const useHandlePrivateApps = () => {
   const [status, setStatus] = useState('');
@@ -21,6 +30,57 @@ export const useHandlePrivateApps = () => {
   const setSortablePinnedApps = useSetAtom(sortablePinnedAppsAtom);
   const setSettingsLocalLastUpdated = useSetAtom(settingsLocalLastUpdatedAtom);
   const { t } = useTranslation(['auth', 'core', 'group', 'question']);
+
+  /**
+   * The address to show the decrypted app at. On Android GO builds it itself
+   * and serves it from memory (plugins/PrivateQappHost): a public node cannot
+   * build it (that takes the node's API key) and no node sees it decrypted.
+   * Elsewhere the node builds a preview, which needs a node with its API key.
+   */
+  const buildPrivateApp = async (
+    name: string,
+    appBase64: string
+  ): Promise<string> => {
+    if (canBuildPrivateAppsOnDevice()) {
+      try {
+        return (await buildPrivateAppOnDevice(getBaseApiReact(), appBase64))
+          .url;
+      } catch (error) {
+        console.warn('Private Q-App not built on this device', error);
+        throw new Error(
+          t('core:message.error.build_app', {
+            postProcess: 'capitalizeFirstChar',
+          })
+        );
+      }
+    }
+
+    const endpoint = await createEndpoint(
+      `/arbitrary/APP/${encodeURIComponent(name)}/zip?preview=true`
+    );
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'text/plain',
+      },
+      body: appBase64,
+    });
+    const previewPath = response.ok ? (await response.text()).trim() : '';
+    if (!NODE_PREVIEW_PATH.test(previewPath)) {
+      const needsKey = response.status === 401 || response.status === 403;
+      throw new Error(
+        t(
+          needsKey
+            ? 'core:message.error.private_app_needs_own_node'
+            : 'core:message.error.build_app',
+          { postProcess: 'capitalizeFirstChar' }
+        )
+      );
+    }
+    // The node authorizes its own preview, so the frame's address carries
+    // no API key (createEndpoint would add it, for the app to read).
+    return `${getBaseApiReact()}${previewPath}`;
+  };
 
   const openApp = async (
     privateAppProperties,
@@ -51,40 +111,13 @@ export const useHandlePrivateApps = () => {
       }?encoding=base64`;
       let data;
       try {
-        const responseData = await fetch(urlData, {
-          method: 'GET',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-        });
-
-        if (!responseData?.ok) {
-          if (setLoadingStatePrivateApp) {
-            setLoadingStatePrivateApp(
-              t('core:message.error.download_private_app', {
-                postProcess: 'capitalizeFirstChar',
-              })
-            );
-          }
-
+        const responseData = await fetch(urlData);
+        // A node that cannot get the app answers with an error (a public node
+        // often: 404 "Data unavailable"); never treat that text as the app.
+        data = responseData?.ok ? (await responseData.text()).trim() : '';
+        if (!data || !isValidBase64(data)) {
           throw new Error(
-            t('core:message.error.fetch_app', {
-              postProcess: 'capitalizeFirstChar',
-            })
-          );
-        }
-
-        data = await responseData.text();
-        if (data?.error) {
-          if (setLoadingStatePrivateApp) {
-            setLoadingStatePrivateApp(
-              t('core:message.error.download_private_app', {
-                postProcess: 'capitalizeFirstChar',
-              })
-            );
-          }
-          throw new Error(
-            t('core:message.error.fetch_app', {
+            t('core:message.error.private_app_not_available', {
               postProcess: 'capitalizeFirstChar',
             })
           );
@@ -132,6 +165,13 @@ export const useHandlePrivateApps = () => {
         const UintToObject = uint8ArrayToObject(convertToUint);
 
         if (decryptedData) {
+          if (typeof UintToObject?.app !== 'string' || !UintToObject.app) {
+            throw new Error(
+              t('core:message.error.build_app', {
+                postProcess: 'capitalizeFirstChar',
+              })
+            );
+          }
           setInfoSnackCustom({
             type: 'info',
             message: t('core:message.generic.building_app', {
@@ -139,53 +179,39 @@ export const useHandlePrivateApps = () => {
             }),
           });
 
-          const endpoint = await createEndpoint(
-            `/arbitrary/APP/${privateAppProperties?.name}/zip?preview=true`
+          const previewUrl = await buildPrivateApp(
+            privateAppProperties?.name,
+            UintToObject.app
           );
 
-          const response = await fetch(endpoint, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'text/plain',
-            },
-            body: UintToObject?.app,
-          });
-
-          const previewPath = await response.text();
-
-          const refreshfunc = async (tabId, privateAppProperties) => {
-            const checkIfPreviewLinkStillWorksUrl = await createEndpoint(
-              `/render/hash/HmtnZpcRPwisMfprUXuBp27N2xtv5cDiQjqGZo8tbZS?secret=E39WTiG4qBq3MFcMPeRZabtQuzyfHg9ZuR5SgY7nW1YH`
-            );
-            const res = await fetch(checkIfPreviewLinkStillWorksUrl);
-            if (res.ok) {
-              executeEvent('refreshApp', {
-                tabId: tabId,
+          // Refresh builds the app again (on the phone: a new address, so the
+          // frame reloads) and AppsDesktop swaps the tab's address.
+          const refreshFunc = async (tabId) => {
+            try {
+              setOpenSnackGlobal(true);
+              setInfoSnackCustom({
+                type: 'info',
+                message: t('core:message.generic.building_app', {
+                  postProcess: 'capitalizeFirstChar',
+                }),
               });
-            } else {
-              const endpoint = await createEndpoint(
-                `/arbitrary/APP/${privateAppProperties?.name}/zip?preview=true`
-              );
-
-              const response = await fetch(endpoint, {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'text/plain',
-                },
-                body: UintToObject?.app,
-              });
-
-              const previewPath = await response.text();
               executeEvent('updateAppUrl', {
-                tabId: tabId,
-                url: await createEndpoint(previewPath),
+                tabId,
+                url: await buildPrivateApp(
+                  privateAppProperties?.name,
+                  UintToObject.app
+                ),
               });
-
-              setTimeout(() => {
-                executeEvent('refreshApp', {
-                  tabId: tabId,
-                });
-              }, 300);
+            } catch (error) {
+              setOpenSnackGlobal(true);
+              setInfoSnackCustom({
+                type: 'error',
+                message:
+                  error?.message ||
+                  t('core:message.error.build_app', {
+                    postProcess: 'capitalizeFirstChar',
+                  }),
+              });
             }
           };
 
@@ -195,10 +221,7 @@ export const useHandlePrivateApps = () => {
             : null;
 
           const dataBody = {
-            identifier: privateAppProperties?.identifier,
-            name: privateAppProperties?.name,
-            service: privateAppProperties?.service,
-            url: await createEndpoint(previewPath),
+            url: previewUrl,
             isPreview: true,
             isPrivate: true,
             // Lift identity to top-level so session restore, tab keys, and
@@ -210,7 +233,7 @@ export const useHandlePrivateApps = () => {
             privateAppProperties: { ...privateAppProperties, logo, appName },
             filePath: '',
             refreshFunc: (tabId) => {
-              refreshfunc(tabId, privateAppProperties);
+              void refreshFunc(tabId);
             },
           };
           executeEvent('addTab', {
@@ -226,7 +249,22 @@ export const useHandlePrivateApps = () => {
             setLoadingStatePrivateApp(``);
           }
           if (addToPinnedApps) {
+            let pinned = false;
             setSortablePinnedApps((prev) => {
+              // Adding the same private app again opens it; it is pinned once.
+              const samePrivateApp = (pinned) => {
+                const props = pinned?.privateAppProperties;
+                return (
+                  pinned?.isPrivate === true &&
+                  props?.service === privateAppProperties?.service &&
+                  props?.name === privateAppProperties?.name &&
+                  props?.identifier === privateAppProperties?.identifier &&
+                  String(props?.groupId) ===
+                    String(privateAppProperties?.groupId)
+                );
+              };
+              if (prev.some(samePrivateApp)) return prev;
+              pinned = true;
               const updatedApps = [
                 ...prev,
                 {
@@ -247,7 +285,7 @@ export const useHandlePrivateApps = () => {
               );
               return updatedApps;
             });
-            setSettingsLocalLastUpdated(Date.now());
+            if (pinned) setSettingsLocalLastUpdated(Date.now());
           }
         }
       } catch (error) {

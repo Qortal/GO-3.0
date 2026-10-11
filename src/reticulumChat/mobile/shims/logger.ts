@@ -3,6 +3,8 @@
  * userData/logs via Node `fs`/`module`/`util`; on mobile we simply forward to
  * the worker console (surfaced in the WebView remote console during bring-up).
  */
+import { isEngineFaultLine } from '../engineLogFaults';
+
 const PREFIX = '[MobileChat]';
 
 /**
@@ -14,34 +16,91 @@ const PREFIX = '[MobileChat]';
 const RECENT_LOG_MAX = 600;
 const recentLogs: string[] = [];
 /**
- * The first warnings/errors since the worker booted. A busy engine cycles the
+ * The first fault lines since the worker booted. A busy engine cycles the
  * recent ring in well under a minute, which loses whatever went wrong at
  * startup by the time a user copies diagnostics. Bounded in lines and length.
+ * Fault lines only (isEngineFaultLine): perf noise (`*_slow`,
+ * `*_worker_fallback`) filled all 150 slots within minutes of boot.
  */
 const BOOT_FAULT_MAX = 150;
 const BOOT_FAULT_LINE_MAX_CHARS = 1_000;
 const bootFaultLogs: string[] = [];
+/** Fault lines not kept because the boot buffer was full. */
+let bootFaultOverflow = 0;
+/**
+ * Lines per throttle key (`level:token`, no values) since boot, so a report
+ * shows what the engine logged most even after the ring has cycled.
+ */
+const LOG_KEY_COUNT_MAX = 256;
+const logKeyCounts = new Map<
+  string,
+  { n: number; firstAt: number; lastAt: number }
+>();
+let logKeyOverflow = 0;
 const remember = (level: string, args: unknown[]): void => {
   try {
     const text = args
       .map((a) => (typeof a === 'string' ? a : JSON.stringify(a)))
       .join(' ');
-    const line = `${new Date().toISOString()} ${level} ${text}`;
+    const date = new Date();
+    const line = `${date.toISOString()} ${level} ${text}`;
     recentLogs.push(line);
     if (recentLogs.length > RECENT_LOG_MAX) {
       recentLogs.splice(0, recentLogs.length - RECENT_LOG_MAX);
     }
     if (
-      (level === 'warn' || level === 'error') &&
-      bootFaultLogs.length < BOOT_FAULT_MAX
+      (level === 'warn' || level === 'error' || text.includes('deferred=')) &&
+      isEngineFaultLine(line)
     ) {
-      bootFaultLogs.push(line.slice(0, BOOT_FAULT_LINE_MAX_CHARS));
+      if (bootFaultLogs.length < BOOT_FAULT_MAX) {
+        bootFaultLogs.push(line.slice(0, BOOT_FAULT_LINE_MAX_CHARS));
+      } else {
+        bootFaultOverflow += 1;
+      }
+    }
+    // logThrottleKey is declared further down; remember only runs after the
+    // module has initialised.
+    const key = logThrottleKey(level, args);
+    const at = date.getTime();
+    const counted = logKeyCounts.get(key);
+    if (counted) {
+      counted.n += 1;
+      counted.lastAt = at;
+    } else if (logKeyCounts.size < LOG_KEY_COUNT_MAX) {
+      logKeyCounts.set(key, { n: 1, firstAt: at, lastAt: at });
+    } else {
+      logKeyOverflow += 1;
     }
   } catch {
     /* logging must never throw */
   }
 };
 export const getBootFaultLogs = (): string[] => [...bootFaultLogs];
+export const getBootFaultOverflow = (): number => bootFaultOverflow;
+export type LogKeyCount = {
+  key: string;
+  n: number;
+  firstAt: number;
+  lastAt: number;
+};
+/** Most frequent keys first; keys past the cap are summed into `other`. */
+export const getLogKeyCounts = (limit = 40): LogKeyCount[] => {
+  const rows = [...logKeyCounts]
+    .map(([key, v]) => ({ key, ...v }))
+    .sort((a, b) => b.n - a.n)
+    .slice(0, Math.max(0, limit));
+  if (logKeyOverflow > 0) {
+    rows.push({ key: 'other', n: logKeyOverflow, firstAt: 0, lastAt: 0 });
+  }
+  return rows;
+};
+export const __resetLoggerForTests = (): void => {
+  recentLogs.length = 0;
+  bootFaultLogs.length = 0;
+  bootFaultOverflow = 0;
+  logKeyCounts.clear();
+  logKeyOverflow = 0;
+};
 export const getRecentLogs = (filter?: string): string[] => {
   if (!filter) return [...recentLogs];
   let re: RegExp | null = null;

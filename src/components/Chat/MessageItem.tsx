@@ -105,6 +105,11 @@ import { isLibraryGifImage } from './gifs/libraryGifs';
 import { GifImage } from './gifs/GifImage';
 import { useTranslation } from 'react-i18next';
 import { ReactionsMap } from './ChatList';
+import {
+  isReactorItem,
+  NO_REACTORS,
+  normalizeReactionsMap,
+} from './normalizeReactions';
 import { AvatarPreviewModal } from '../Chat/AvatarPreviewModal';
 import { useStatus } from '../../hooks/usePresence';
 import { useLongPress } from '../../hooks/useLongPress';
@@ -127,10 +132,18 @@ import {
 } from './ReticulumEventLinkPreview';
 import { CustomStyledMenu } from '../ContextMenu';
 import FormatQuoteRoundedIcon from '@mui/icons-material/FormatQuoteRounded';
+import { ReplyImageThumbnail } from './ReplyImageThumbnail';
+import {
+  getReplyMedia,
+  hasReplyPreviewText,
+  replyMediaLabelKey,
+} from './replyMedia';
 import { ReticulumRoleBadge } from './ReticulumRoleBadge';
 import { createReticulumImageRequestGate } from './reticulumImageRequestGate';
 import { ReticulumDmDeliveryGlyph } from './ReticulumDmDeliveryGlyph';
 import { hasReticulumDmDeliveryState } from './reticulumDmDeliveryState';
+import { ReticulumPostDeliveryGlyph } from './ReticulumPostDeliveryGlyph';
+import { hasReticulumPostDeliveryState } from './reticulumPostDeliveryState';
 import {
   DESKTOP_MESSAGE_ACTION_SIZES,
   getMessageActionSizes,
@@ -499,7 +512,7 @@ export const MessageItemComponent = ({
   selectedGroup,
   secretKeyObject,
   onSeen,
-  reactions,
+  reactions: rawReactions,
   reply,
   replyIndex,
   replyExpiredMeta,
@@ -519,6 +532,12 @@ export const MessageItemComponent = ({
   scrollToItem,
 }: MessageItemProps) => {
   const { getIndividualUserInfo } = useContext(QORTAL_APP_CONTEXT);
+  // Every reaction entry as a non-empty list of reactor objects, whatever the
+  // map held (null, an object, an empty list), so no read below can throw.
+  const reactions = useMemo(
+    () => normalizeReactionsMap(rawReactions),
+    [rawReactions]
+  );
   // Queue-side fields on an optimistic row (see MessageQueueContext); the
   // row is typed loosely upstream, so read them through a narrow view.
   const queuedRow = message as unknown as
@@ -803,6 +822,29 @@ export const MessageItemComponent = ({
     }
   }, [reply?.messageText, reply?.text, reply?.editTimestamp]);
 
+  // The quoted message's picture for the reply card, from local caches only.
+  // (MessageItemProps types `reply` as a string; it is the original's row.)
+  const replyRow: any = reply;
+  const replyMedia = useMemo(
+    () => getReplyMedia(replyRow),
+    [replyRow?.images, replyRow?.attachments, replyRow?.deleted]
+  );
+  // Only read when there is a picture: it decides the alt text and whether
+  // "Photo" stands in for missing text.
+  const replyHasText = useMemo(
+    () =>
+      replyMedia
+        ? hasReplyPreviewText(
+            htmlReply ||
+              (replyRow?.decryptedData?.type === 'notification'
+                ? replyRow?.decryptedData?.data?.message
+                : '') ||
+              replyRow?.text
+          )
+        : false,
+    [replyMedia, htmlReply, replyRow?.decryptedData, replyRow?.text]
+  );
+
   const htmlReplyExpired = useMemo(() => {
     if (!replyExpiredMeta) return null;
     const source = replyExpiredMeta?.messageText;
@@ -910,6 +952,18 @@ export const MessageItemComponent = ({
     setAnchorEl(null);
     setSelectedReaction(null);
   }, []);
+  // Who reacted with the selected emoji, from the live map. Its last reactor
+  // can go while the list is open (an own reaction that failed or outlived
+  // its grace, a remove by its author): the list then closes instead of
+  // reading a reaction that is gone.
+  const whoReacted = useMemo(() => {
+    const list = selectedReaction ? reactions?.[selectedReaction] : undefined;
+    return Array.isArray(list) ? list.filter(isReactorItem) : NO_REACTORS;
+  }, [reactions, selectedReaction]);
+  const whoReactedCount = whoReacted.length;
+  useEffect(() => {
+    if (selectedReaction && whoReactedCount === 0) closeReactionList();
+  }, [closeReactionList, selectedReaction, whoReactedCount]);
   // On phones the first touch outside the "who reacted" list only closes it,
   // like Telegram. Caught on the document before React sees it, so the tap
   // never reaches the message underneath (which would open its popup) and a
@@ -2617,16 +2671,25 @@ export const MessageItemComponent = ({
       </Typography>
     </Tooltip>
   ) : null;
-  // Own DM delivery state (Sending / Only on this phone / On your other
-  // device / Delivered). Saved Messages and group posts show nothing. Only
-  // engine-built lists qualify: a legacy Core DM payload can set these fields.
+  // Own delivery state. A DM to someone else: Sending / Only on this phone /
+  // On your other device / Delivered. A group post or Saved Message written
+  // on this phone (GO): Sending / Not picked up yet / Delivered. Rows the
+  // engine does not track show nothing. Only engine-built lists qualify: a
+  // legacy Core DM payload can set these fields.
+  const showsReticulumDeliveryGlyph =
+    reticulumChatEnabled && !isShowingAsReply && !isTemp && !isUpdating;
+  const reticulumDeliveryGlyphKind = !showsReticulumDeliveryGlyph
+    ? null
+    : hasReticulumDmDeliveryState(message, myAddress)
+      ? 'dm'
+      : hasReticulumPostDeliveryState(message, myAddress)
+        ? 'post'
+        : null;
   const reticulumDeliveryGlyph =
-    reticulumChatEnabled &&
-    !isShowingAsReply &&
-    !isTemp &&
-    !isUpdating &&
-    hasReticulumDmDeliveryState(message, myAddress) ? (
+    reticulumDeliveryGlyphKind === 'dm' ? (
       <ReticulumDmDeliveryGlyph message={message} myAddress={myAddress} />
+    ) : reticulumDeliveryGlyphKind === 'post' ? (
+      <ReticulumPostDeliveryGlyph message={message} myAddress={myAddress} />
     ) : null;
   // A grouped message has no header row, so its labels trail the text.
   const collapsedTrailingContent =
@@ -3637,8 +3700,12 @@ export const MessageItemComponent = ({
                   minWidth: reticulumChatEnabled ? 'min(540px, 100%)' : 0,
                   maxWidth: '100%',
                   overflow: 'hidden',
+                  // With a picture the text column already gives up 52 px;
+                  // 52 px on the right still clears the quote icon.
                   padding: reticulumChatEnabled
-                    ? '10px 100px 10px 14px'
+                    ? replyMedia
+                      ? '10px 52px 10px 14px'
+                      : '10px 100px 10px 14px'
                     : '4px 0 4px 10px',
                   position: 'relative',
                   textAlign: 'left',
@@ -3680,6 +3747,17 @@ export const MessageItemComponent = ({
                     }}
                   />
                 )}
+                {replyMedia && (
+                  <ReplyImageThumbnail
+                    media={replyMedia}
+                    decorative={!replyHasText}
+                    size={reticulumChatEnabled ? qchatTextSize(40) : '36px'}
+                    sx={{
+                      alignSelf: 'center',
+                      marginRight: reticulumChatEnabled ? '12px' : '8px',
+                    }}
+                  />
+                )}
                 <Box sx={{ minWidth: 0, overflow: 'hidden', width: '100%' }}>
                   <Box
                     sx={{
@@ -3687,6 +3765,7 @@ export const MessageItemComponent = ({
                       display: 'flex',
                       gap: '6px',
                       marginBottom: '2px',
+                      minWidth: 0,
                     }}
                   >
                     <ReplyIcon
@@ -3717,6 +3796,12 @@ export const MessageItemComponent = ({
                           : isRepliedToMe
                             ? 600
                             : 500,
+                        // One line: a long name ends in an ellipsis instead of
+                        // wrapping or being cut mid-word.
+                        minWidth: 0,
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
                         ...(hasUnsafeReplyName
                           ? {
                               textDecorationLine: 'line-through',
@@ -3728,12 +3813,16 @@ export const MessageItemComponent = ({
                     >
                       {reticulumChatEnabled
                         ? isRepliedToMe
-                          ? 'Replying to you'
-                          : `Replying to ${
-                              reply?.senderName ||
-                              reply?.senderAddress ||
-                              'message'
-                            }`
+                          ? t('core:message.generic.replying_to_you', {
+                              postProcess: 'capitalizeFirstChar',
+                            })
+                          : t('core:message.generic.replying_to', {
+                              name:
+                                replyRow?.senderName ||
+                                replyRow?.senderAddress ||
+                                t('core:message.message'),
+                              postProcess: 'capitalizeFirstChar',
+                            })
                         : isRepliedToMe
                           ? t('core:message.generic.replied_to_you', {
                               postProcess: 'capitalizeFirstChar',
@@ -3773,6 +3862,21 @@ export const MessageItemComponent = ({
                       reticulumChannelLinkAccess={reticulumChannelLinkAccess}
                     />
                   ) : null}
+                  {replyMedia && !replyHasText && (
+                    <Typography
+                      sx={{
+                        color: 'text.secondary',
+                        fontSize: reticulumChatEnabled
+                          ? qchatTextSize(14)
+                          : '13px',
+                        lineHeight: 1.35,
+                      }}
+                    >
+                      {t(replyMediaLabelKey(replyMedia.kind), {
+                        postProcess: 'capitalizeFirstChar',
+                      })}
+                    </Typography>
+                  )}
                 </Box>
               </ButtonBase>
             )}
@@ -4904,20 +5008,20 @@ export const MessageItemComponent = ({
                     </Tooltip>
                   )}
 
-                {Object.keys(reactions || {}).map((reaction) => {
-                  const numberOfReactions = reactions[reaction]?.length;
-                  if (numberOfReactions === 0) return null;
-                  const isMine = !!reactions[reaction]?.find(
+                {Object.entries(reactions || {}).map(([reaction, reactors]) => {
+                  if (!Array.isArray(reactors) || reactors.length === 0) {
+                    return null;
+                  }
+                  const isMine = reactors.some(
                     (item) => item?.sender === myAddress
                   );
                   return (
                     <ReactionChip
-                      count={numberOfReactions}
+                      count={reactors.length}
                       isMine={isMine}
                       othersCount={
-                        reactions[reaction].filter(
-                          (item) => item?.sender !== myAddress
-                        ).length
+                        reactors.filter((item) => item?.sender !== myAddress)
+                          .length
                       }
                       key={reaction}
                       messageKey={messageSignature}
@@ -5072,15 +5176,22 @@ export const MessageItemComponent = ({
                         overflow: 'auto',
                       }}
                     >
-                      {reactions[selectedReaction]?.map((reactionItem) => {
+                      {whoReacted.map((reactionItem, reactorIndex) => {
+                        const reactorName =
+                          typeof reactionItem.senderName === 'string'
+                            ? reactionItem.senderName
+                            : '';
+                        const reactorAddress =
+                          typeof reactionItem.sender === 'string'
+                            ? reactionItem.sender
+                            : '';
                         const hasUnsafeReactionName = Boolean(
-                          reactionItem.senderName &&
-                          hasInvisibleCharacters(reactionItem.senderName)
+                          reactorName && hasInvisibleCharacters(reactorName)
                         );
 
                         return (
                           <ListItem
-                            key={reactionItem.sender}
+                            key={reactorAddress || `reactor-${reactorIndex}`}
                             disablePadding
                             sx={{
                               borderRadius: '8px',
@@ -5092,9 +5203,7 @@ export const MessageItemComponent = ({
                             }}
                           >
                             <ListItemText
-                              primary={
-                                reactionItem.senderName || reactionItem.sender
-                              }
+                              primary={reactorName || reactorAddress}
                               primaryTypographyProps={{
                                 sx: {
                                   fontSize: '14px',

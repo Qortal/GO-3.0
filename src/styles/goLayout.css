@@ -1,0 +1,21 @@
+/* GO-only layout rules. The html[data-go-*] attributes are written by
+   src/layout/goLayout.ts and never exist on the Hub. */
+
+/* Home/Apps/Chat in the top bar: no bottom bar, and the shell's content box
+   already pads the bottom safe area, so chat composers don't add it again
+   (COMPOSER_SAFE_BOTTOM in mobileBarHeights.ts). */
+:where(html[data-go-nav='top']) {
+  --go-composer-safe-bottom: 0px;
+}
+
+/* Short windows (phone landscape, split screen): MUI's 32px dialog margins
+   eat a third of the height, so keep just the safe areas plus a little. */
+:where(html[data-go-short])
+  .MuiDialog-paperScrollPaper:not(.MuiDialog-paperFullScreen) {
+  margin: max(8px, var(--safe-area-inset-top, 0px)) 8px
+    max(8px, var(--safe-area-inset-bottom, 0px));
+  max-height: calc(
+    100% - max(8px, var(--safe-area-inset-top, 0px)) -
+      max(8px, var(--safe-area-inset-bottom, 0px))
+  );
+}

@@ -11,7 +11,14 @@
  *    `signReticulumChatEvent` background case, and Qortal group member/admin
  *    validation via direct core API calls.
  */
-import { getBootFaultLogs, getRecentLogs } from './shims/logger';
+import {
+  getBootFaultLogs,
+  getBootFaultOverflow,
+  getLogKeyCounts,
+  getRecentLogs,
+  warn as logWarn,
+  type LogKeyCount,
+} from './shims/logger';
 import {
   apiHostOf,
   apiSchemeOf,
@@ -19,6 +26,7 @@ import {
   GROUP_VALIDATION_TIMEOUT_MS,
   membershipProbeResult,
   recordGroupValidation,
+  redactDiagnosticText,
   runGroupValidationRequest,
   toWorkerNodeConfig,
   type GroupValidationRow,
@@ -31,11 +39,32 @@ import {
   stopReticulumChatManager,
   getReticulumChatManager,
 } from '../../../electron/src/reticulum-chat';
+import type {
+  ReticulumChatAuthorGapScannerDiagnostics,
+  ReticulumChatDigestQueueDiagnostics,
+  ReticulumChatEngineQueueDiagnostics,
+} from '../../../electron/src/reticulum-chat';
 import * as fs from 'fs';
 import { ReticulumResourceStore } from '../../../electron/src/reticulum-resource-store';
 import { MobileReticulumBridge } from './wireBridge';
+import type { ServingStats } from './wireBridge';
 import { ReticulumResourceStaging } from './resourceStaging';
 import type { NativeFsFn } from './resourceStaging';
+import {
+  createLatencyStats,
+  noteLatency,
+  summarizeLatency,
+  type LatencySummary,
+} from './latencyStats';
+import {
+  getLoopLagSnapshot,
+  runTimedTask,
+  type LoopLagSnapshot,
+} from './loopLag';
+import {
+  createNativeRequestStats,
+  type NativeRequestSnapshot,
+} from './nativeRequestStats';
 
 type WorkerOut =
   | { t: 'evt'; channel: string; payload: unknown }
@@ -211,8 +240,28 @@ setInterval(flushBridgeTraffic, BRIDGE_TRAFFIC_REPORT_MS);
 let nextOutId = 1;
 const pendingOut = new Map<
   number,
-  { resolve: (v: any) => void; reject: (e: Error) => void }
+  {
+    resolve: (v: any) => void;
+    reject: (e: Error) => void;
+    /** Command action, `nativefs:<op>` or `sign` (no ids), for diagnostics. */
+    label: string;
+    startedAt: number;
+  }
 >();
+
+/**
+ * Worker -> native round trips, timeouts and late replies (Copy diagnostics).
+ * Round trips are recorded only where a real reply arrives, never in the
+ * shared resolve/reject wrappers.
+ */
+const nativeRequests = createNativeRequestStats();
+
+function nativeRequestSnapshot(now = Date.now()): NativeRequestSnapshot {
+  return nativeRequests.snapshot(
+    [...pendingSocket.values(), ...pendingOut.values()],
+    now
+  );
+}
 
 function requestMain<T>(
   msg:
@@ -222,9 +271,17 @@ function requestMain<T>(
   timeoutMs = 30_000
 ): Promise<T> {
   const id = nextOutId++;
+  const label =
+    msg.t === 'cmd'
+      ? String((msg as any).action || 'cmd')
+      : msg.t === 'nativefs'
+        ? `nativefs:${(msg as any).op}`
+        : msg.t;
+  const startedAt = Date.now();
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => {
       pendingOut.delete(id);
+      nativeRequests.timedOut(`m-${id}`, label);
       reject(
         new Error(
           `worker->main request timed out: ${(msg as any).action ?? msg.t}`
@@ -240,6 +297,8 @@ function requestMain<T>(
         clearTimeout(timer);
         reject(e);
       },
+      label,
+      startedAt,
     });
     post({ ...(msg as any), id });
   });
@@ -267,6 +326,13 @@ const PY_EVENTS_FOR_ENGINE = new Set([
   'overlay_link_state',
 ]);
 
+/** Python's stall watchdog events: logged by the host, not engine input. */
+const PY_DIAGNOSTIC_EVENTS = new Set([
+  'bridge_stall_diagnostic',
+  'bridge_executor_recovered',
+  'bridge_thread_population',
+]);
+
 const SOCKET_RECONNECT_MIN_MS = 1_000;
 const SOCKET_RECONNECT_MAX_MS = 30_000;
 // Loopback socket to the native bridge: no NAT or proxy to keep alive, the
@@ -290,6 +356,9 @@ const pendingSocket = new Map<
     resolve: (v: any) => void;
     reject: (e: Error) => void;
     timer: ReturnType<typeof setTimeout>;
+    /** Command action or `nativefs:<op>` (no ids), for diagnostics. */
+    label: string;
+    startedAt: number;
   }
 >();
 
@@ -298,6 +367,7 @@ function bridgeSocketAvailable(): boolean {
 }
 
 function failPendingSocketRequests(reason: string): void {
+  nativeRequests.lostOnClose(pendingSocket.size);
   for (const [id, pending] of pendingSocket) {
     clearTimeout(pending.timer);
     pendingSocket.delete(id);
@@ -311,9 +381,11 @@ function socketRequest<T>(
   timeoutMs: number,
   label: string
 ): Promise<T> {
+  const startedAt = Date.now();
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => {
       pendingSocket.delete(id);
+      nativeRequests.timedOut(id, label);
       reject(new Error(`worker->native request timed out: ${label}`));
     }, timeoutMs);
     pendingSocket.set(id, {
@@ -326,6 +398,8 @@ function socketRequest<T>(
         reject(e);
       },
       timer,
+      label,
+      startedAt,
     });
     try {
       socket!.send(JSON.stringify(frame));
@@ -347,24 +421,41 @@ function handleSocketFrame(raw: string): void {
   if (!frame || typeof frame !== 'object') return;
   const type = frame.type;
   if (type === 'resp') {
-    const pending = pendingSocket.get(String(frame.id ?? ''));
+    const id = String(frame.id ?? '');
+    const pending = pendingSocket.get(id);
     if (pending) {
-      pendingSocket.delete(String(frame.id));
+      pendingSocket.delete(id);
+      nativeRequests.replied(pending.label, pending.startedAt);
       pending.resolve(frame);
+    } else if (id.startsWith('w-')) {
+      // A reply to one of our commands after it timed out (or was lost).
+      // Responses to the main thread's own commands ('cmd-…', Kotlin's) are
+      // not ours; ignore them.
+      nativeRequests.unknownReply(id);
     }
-    // Responses to the main thread's own commands are not ours; ignore.
     return;
   }
   if (type === 'fsres') {
-    const pending = pendingSocket.get(String(frame.id ?? ''));
-    if (!pending) return;
-    pendingSocket.delete(String(frame.id));
+    const id = String(frame.id ?? '');
+    const pending = pendingSocket.get(id);
+    if (!pending) {
+      if (id.startsWith('fs-')) nativeRequests.unknownReply(id);
+      return;
+    }
+    pendingSocket.delete(id);
+    nativeRequests.replied(pending.label, pending.startedAt);
     if (frame.error) pending.reject(new Error(String(frame.error)));
     else pending.resolve(frame.result ?? {});
     return;
   }
   if (type === 'event') {
+    noteBridgeEventTiming(frame);
     const eventName = String(frame.event || '');
+    // Python's stall watchdog: logged here, never handed to the engine.
+    if (PY_DIAGNOSTIC_EVENTS.has(eventName)) {
+      handlePythonEvent(eventName, frame.payload ?? {});
+      return;
+    }
     if (!PY_EVENTS_FOR_ENGINE.has(eventName)) return;
     const payload = frame.payload ?? {};
     stampProviderAuthTiming(eventName, frame, payload);
@@ -374,6 +465,33 @@ function handleSocketFrame(raw: string): void {
 
 const finiteStampValue = (value: unknown): number | null =>
   typeof value === 'number' && Number.isFinite(value) ? value : null;
+
+/**
+ * Python event timing on the direct socket path (Copy diagnostics): Python
+ * stamps `_queuedAtMs` when it queues an event and `_writeAtMs` when it writes
+ * it, both on the device wall clock. `toWorker` covers Python stdout, Kotlin,
+ * the WebSocket and the wait in this worker's queue.
+ */
+const bridgeEventToWorker = createLatencyStats();
+const bridgePythonQueue = createLatencyStats();
+const BRIDGE_STAMP_MAX_SKEW_MS = 10 * 60_000;
+
+function noteBridgeEventTiming(frame: Record<string, unknown>): void {
+  const writeAt = finiteStampValue(frame._writeAtMs);
+  if (writeAt === null) return;
+  const now = Date.now();
+  const recv = now - writeAt;
+  if (recv >= -1_000 && recv <= BRIDGE_STAMP_MAX_SKEW_MS) {
+    noteLatency(bridgeEventToWorker, Math.max(0, recv), now);
+  }
+  const queuedAt = finiteStampValue(frame._queuedAtMs);
+  if (queuedAt !== null) {
+    const q = writeAt - queuedAt;
+    if (q >= 0 && q <= BRIDGE_STAMP_MAX_SKEW_MS) {
+      noteLatency(bridgePythonQueue, q, now);
+    }
+  }
+}
 
 /**
  * Provider request events ('auth', 'auth_ended') carry Python's own queue and
@@ -437,7 +555,10 @@ function connectBridgeSocket(): void {
     }, SOCKET_KEEPALIVE_MS);
   };
   ws.onmessage = (ev) => {
-    if (typeof ev.data === 'string') handleSocketFrame(ev.data);
+    if (typeof ev.data === 'string') {
+      const raw = ev.data;
+      runTimedTask('socket', () => handleSocketFrame(raw));
+    }
   };
   ws.onerror = () => {
     /* onclose follows */
@@ -594,6 +715,194 @@ export type EngineDiagnosticsSnapshot = {
   bootFaultLogs: string[];
 };
 
+/**
+ * `debug:sync-health` payload: everything new in Copy diagnostics, in one RPC
+ * (`debug:diagnostics` is unchanged apart from the validator snapshot).
+ * Read-only: counters and summaries of work that already ran.
+ */
+export type EngineSyncHealthSnapshot = {
+  at: number;
+  /** How long this RPC waited in the worker before running: the engine's backlog right now. */
+  rpcQueueMs: number | null;
+  /** When startEngine ran in this worker. */
+  workerStartedAt: number;
+  loop: LoopLagSnapshot;
+  bridgeEvents: {
+    toWorker: LatencySummary | null;
+    toWorkerRecent: LatencySummary | null;
+    pythonQueue: LatencySummary | null;
+  };
+  native: NativeRequestSnapshot;
+  serving: ServingStats | null;
+  /** Null when no manager is running. */
+  engine: {
+    scanner: ReticulumChatAuthorGapScannerDiagnostics | null;
+    digestQueues: ReticulumChatDigestQueueDiagnostics | null;
+    queues: ReticulumChatEngineQueueDiagnostics | null;
+    /** Non-zero delivery counters, top 40 by value. */
+    counters: Record<string, number>;
+  } | null;
+  /** The first engine getter that threw: `<getter>: <redacted message>`. The others are still filled. */
+  engineError?: string;
+  log: { bootFaultOverflow: number; keyCounts: LogKeyCount[] };
+};
+
+const SYNC_HEALTH_COUNTERS_MAX = 40;
+const SYNC_HEALTH_RECENT_MS = 600_000;
+
+type SyncHealthManager = {
+  getAuthorGapScannerDiagnostics?: () => ReticulumChatAuthorGapScannerDiagnostics;
+  getDigestQueueDiagnostics?: () => ReticulumChatDigestQueueDiagnostics;
+  getEngineQueueDiagnostics?: () => ReticulumChatEngineQueueDiagnostics;
+  getDeliveryCounters?: () => Record<string, number>;
+};
+
+function topDeliveryCounters(
+  counters: Record<string, number> | null | undefined
+): Record<string, number> {
+  return Object.fromEntries(
+    Object.entries(counters ?? {})
+      .map(([key, value]) => [key, Number(value)] as [string, number])
+      .filter(([, value]) => Number.isFinite(value) && value > 0)
+      .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+      .slice(0, SYNC_HEALTH_COUNTERS_MAX)
+  );
+}
+
+/** The engine part of `debug:sync-health`; every getter in its own try/catch. */
+function readEngineSyncHealth(): Pick<
+  EngineSyncHealthSnapshot,
+  'engine' | 'engineError'
+> {
+  const m = getReticulumChatManager() as unknown as
+    | SyncHealthManager
+    | undefined;
+  if (!m) return { engine: null };
+  let engineError: string | undefined;
+  const read = <T>(getter: string, fn: () => T, fallback: T): T => {
+    try {
+      return fn();
+    } catch (err) {
+      engineError ??= `${getter}: ${redactDiagnosticText(
+        err instanceof Error ? err.message : String(err)
+      ).slice(0, 160)}`;
+      return fallback;
+    }
+  };
+  const engine = {
+    scanner: read(
+      'getAuthorGapScannerDiagnostics',
+      () => m.getAuthorGapScannerDiagnostics?.() ?? null,
+      null
+    ),
+    digestQueues: read(
+      'getDigestQueueDiagnostics',
+      () => m.getDigestQueueDiagnostics?.() ?? null,
+      null
+    ),
+    queues: read(
+      'getEngineQueueDiagnostics',
+      () => m.getEngineQueueDiagnostics?.() ?? null,
+      null
+    ),
+    counters: read(
+      'getDeliveryCounters',
+      () => topDeliveryCounters(m.getDeliveryCounters?.()),
+      {}
+    ),
+  };
+  return { engine, ...(engineError ? { engineError } : {}) };
+}
+
+function emptyLoopLagSnapshot(): LoopLagSnapshot {
+  return {
+    installed: false,
+    since: 0,
+    lag: null,
+    lagRecent: null,
+    lagPerMinute: [],
+    longestTaskMs: 0,
+    longestTaskKind: null,
+    longestTaskAt: null,
+    tasksOver50Ms: 0,
+    tasksOver1s: 0,
+    suspendedCount: 0,
+    suspendedMaxMs: 0,
+  };
+}
+
+function emptyNativeRequestSnapshot(): NativeRequestSnapshot {
+  return {
+    pending: 0,
+    oldestPending: [],
+    rtt: null,
+    rttRecent: null,
+    byLabel: [],
+    timeouts: 0,
+    lateReplies: 0,
+    lateByMaxMs: 0,
+    unmatchedReplies: 0,
+    lostOnClose: 0,
+  };
+}
+
+function safeRead<T>(fn: () => T, fallback: T): T {
+  try {
+    return fn();
+  } catch {
+    return fallback;
+  }
+}
+
+function snapshotSyncHealth(options?: {
+  sentAt?: unknown;
+}): EngineSyncHealthSnapshot {
+  const now = Date.now();
+  const sentAt = Number(options?.sentAt);
+  const { engine, engineError } = readEngineSyncHealth();
+  return {
+    at: now,
+    rpcQueueMs:
+      Number.isFinite(sentAt) && sentAt > 0 ? Math.max(0, now - sentAt) : null,
+    workerStartedAt: engineStartedAt,
+    loop: safeRead(() => getLoopLagSnapshot(now), emptyLoopLagSnapshot()),
+    bridgeEvents: safeRead(
+      () => ({
+        toWorker: summarizeLatency(bridgeEventToWorker, now),
+        toWorkerRecent: summarizeLatency(
+          bridgeEventToWorker,
+          now,
+          SYNC_HEALTH_RECENT_MS
+        ),
+        pythonQueue:
+          summarizeLatency(bridgePythonQueue, now, SYNC_HEALTH_RECENT_MS) ??
+          summarizeLatency(bridgePythonQueue, now),
+      }),
+      { toWorker: null, toWorkerRecent: null, pythonQueue: null }
+    ),
+    native: safeRead(
+      () => nativeRequestSnapshot(now),
+      emptyNativeRequestSnapshot()
+    ),
+    serving: safeRead(
+      () =>
+        (
+          bridge as { getServingStats?: (now?: number) => ServingStats } | null
+        )?.getServingStats?.(now) ?? null,
+      null
+    ),
+    engine,
+    ...(engineError ? { engineError } : {}),
+    log: safeRead(
+      () => ({
+        bootFaultOverflow: getBootFaultOverflow(),
+        keyCounts: getLogKeyCounts(40),
+      }),
+      { bootFaultOverflow: 0, keyCounts: [] }
+    ),
+  };
+}
+
 let presencePeers: Array<Record<string, unknown>> = [];
 let presenceLeases: Array<Record<string, unknown>> = [];
 
@@ -630,17 +939,81 @@ async function fetchGroupValidationRow(
   groupId: number,
   address: string
 ): Promise<GroupValidationRow | null> {
-  const outcome = await runGroupValidationRequest(
-    config.apiBase,
-    groupId,
-    address
+  validatorInFlight += 1;
+  groupValidatorStats.maxInFlight = Math.max(
+    groupValidatorStats.maxInFlight ?? 0,
+    validatorInFlight
   );
-  recordGroupValidation(
-    groupValidatorStats,
-    outcome,
-    apiHostOf(config.apiBase)
-  );
-  return outcome.row;
+  try {
+    const outcome = await runGroupValidationRequest(
+      config.apiBase,
+      groupId,
+      address
+    );
+    recordGroupValidation(
+      groupValidatorStats,
+      outcome,
+      apiHostOf(config.apiBase),
+      Date.now(),
+      { own: isLocalSignerAddress(groupId, address) }
+    );
+    return outcome.row;
+  } finally {
+    validatorInFlight -= 1;
+  }
+}
+
+/** Validator fetches in flight right now (engine checks only). */
+let validatorInFlight = 0;
+
+/** Whether `address` is this account's own (the probe target reads the same fields). */
+function isLocalSignerAddress(groupId: number, address: string): boolean {
+  const m = getReticulumChatManager() as unknown as
+    | {
+        localGroupAddresses?: Map<number, string>;
+        getLocalDmAddresses?: () => string[];
+      }
+    | undefined;
+  if (!m) return false;
+  try {
+    if (
+      m.localGroupAddresses instanceof Map &&
+      m.localGroupAddresses.get(groupId) === address
+    ) {
+      return true;
+    }
+    return m.getLocalDmAddresses?.().includes(address) ?? false;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The validator counters for `debug:diagnostics`, with the engine's own-address
+ * counters (answered from the group list, boot waits, Core denials) merged in.
+ * The arrays are copied so postMessage clones a stable snapshot.
+ */
+function snapshotValidatorStats(): GroupValidatorStats {
+  let counters: Record<string, number> = {};
+  try {
+    counters =
+      (
+        getReticulumChatManager() as unknown as
+          | { getDeliveryCounters?: () => Record<string, number> }
+          | undefined
+      )?.getDeliveryCounters?.() ?? {};
+  } catch {
+    counters = {};
+  }
+  return {
+    ...groupValidatorStats,
+    recentNetworkMs: [...(groupValidatorStats.recentNetworkMs ?? [])],
+    recentWorkerWaitMs: [...(groupValidatorStats.recentWorkerWaitMs ?? [])],
+    ownListAnswers: counters.ownMembershipLocalAnswer ?? 0,
+    ownBootWaits: counters.ownMembershipBootWaitReady ?? 0,
+    ownBootWaitTimeouts: counters.ownMembershipBootWaitTimeout ?? 0,
+    ownCoreDenied: counters.ownMembershipCoreDenied ?? 0,
+  };
 }
 
 async function validateGroupRole(
@@ -979,7 +1352,11 @@ function onOverlayHealthRecovered(): void {
   }, OVERLAY_RECOVERY_REPLAY_DEBOUNCE_MS);
 }
 
+/** When startEngine ran in this worker (ms since epoch); 0 before. */
+let engineStartedAt = 0;
+
 export function startEngine(initial: unknown): void {
+  engineStartedAt = Date.now();
   config = toWorkerNodeConfig(initial);
   bridge = new MobileReticulumBridge(
     sendPythonCommand,
@@ -1038,6 +1415,14 @@ export function startEngine(initial: unknown): void {
     // authorize, before any byte arrived. Re-pend those once per address so
     // they are served again and only marked delivered on transport proof.
     repairPrematureDmSentOnce: true,
+    // Delivery ticks for own group posts and Saved Messages: proof is a
+    // completed fetch from this phone (own device or member's node), from
+    // transfers the bridge already reports. Nothing new on the wire.
+    trackOwnPostDelivery: true,
+    // A send, an own-Hub serve or an outgoing request never waits on the
+    // worker's membership fetch for this account's own address; the pushed
+    // group list answers and Core is refreshed in the background.
+    ownMembershipLocalFirst: true,
   });
   attachManagerListeners(manager);
   post({ t: 'engine-ready' });
@@ -1060,6 +1445,7 @@ const MANAGER_EVENTS = [
   'silenceChanged',
   'calendarChanged',
   'calendarReminderDue',
+  'ownPostDelivery',
 ] as const;
 
 function attachManagerListeners(manager: any): void {
@@ -1895,11 +2281,17 @@ const resourceHandlers: Record<string, Handler> = {
       apiHost: apiHostOf(config.apiBase),
       apiScheme: apiSchemeOf(config.apiBase),
       apiKeyConfigured: config.apiKeyConfigured,
-      validator: { ...groupValidatorStats },
+      validator: snapshotValidatorStats(),
       resourceSessions,
       bootFaultLogs: getBootFaultLogs(),
     };
   },
+  // "Copy diagnostics", everything added in v0.0.17: loop lag, bridge and
+  // native request timing, serving, engine queues and counters, log counts.
+  // Counters only; nothing here does work of its own.
+  'debug:sync-health': (options?: {
+    sentAt?: unknown;
+  }): EngineSyncHealthSnapshot => snapshotSyncHealth(options),
   // One live membership check for the local signer (optionally in `groupId`).
   'debug:membership-probe': (options?: {
     groupId?: unknown;
@@ -2166,12 +2558,15 @@ export function handleMainMessage(data: any): void {
     const pending = pendingOut.get(data.id);
     if (pending) {
       pendingOut.delete(data.id);
+      nativeRequests.replied(pending.label, pending.startedAt);
       if (data.t === 'cmdres') pending.resolve(data.frame);
       else if (data.t === 'signres' && data.error && !data.result) {
         pending.reject(new Error(String(data.error)));
       } else {
         pending.resolve(data.result);
       }
+    } else {
+      nativeRequests.unknownReply(`m-${data.id}`);
     }
     return;
   }
@@ -2179,8 +2574,11 @@ export function handleMainMessage(data: any): void {
     const pending = pendingOut.get(data.id);
     if (pending) {
       pendingOut.delete(data.id);
+      nativeRequests.replied(pending.label, pending.startedAt);
       if (data.error) pending.reject(new Error(String(data.error)));
       else pending.resolve(data.result ?? {});
+    } else {
+      nativeRequests.unknownReply(`m-${data.id}`);
     }
     return;
   }
@@ -2273,25 +2671,125 @@ function handlePythonEvent(event: string, payload: unknown): void {
     }
     return;
   }
-  if (
-    event === 'bridge_stall_diagnostic' ||
-    event === 'bridge_executor_recovered' ||
-    event === 'bridge_thread_population'
-  ) {
-    // Python's stall watchdog. Logcat is muted on some vendor builds, so the
-    // stacks are surfaced here where remote devtools can see them.
+  if (PY_DIAGNOSTIC_EVENTS.has(event)) {
+    // Python's stall watchdog. One compact line goes through the engine
+    // logger, so it reaches the log ring and Copy diagnostics (logcat is
+    // muted on some vendor builds).
     const detail = (payload ?? {}) as Record<string, unknown>;
     const stacks = detail.stacks;
-    const { stacks: _omit, ...summary } = detail;
-    console.warn(`[MobileChat] ${event}`, JSON.stringify(summary));
-    if (stacks && typeof stacks === 'object') {
+    logWarn(
+      `[MobileChat] ${event} ${summarizeBridgeDiagnosticEvent(event, payload)}`
+    );
+    // Stacks for remote devtools only (logcat already has them from Python);
+    // stall dumps only, at most 6.
+    if (
+      event === 'bridge_stall_diagnostic' &&
+      stacks &&
+      typeof stacks === 'object'
+    ) {
       for (const [thread, stack] of Object.entries(
         stacks as Record<string, string>
-      )) {
+      ).slice(0, 6)) {
         console.warn(`[MobileChat] ${event} thread=${thread}\n${stack}`);
       }
     }
     return;
   }
   bridge?.dispatchPythonEvent(event, payload);
+}
+
+const bridgeTaskLabelPartIsWord = (part: string): boolean =>
+  part.length > 0 &&
+  part.length <= 40 &&
+  !(part.length >= 6 && /^[0-9a-f]+$/i.test(part)) &&
+  /^[a-z][a-z_-]*$/.test(part);
+
+/**
+ * A lane task name without the ids some names carry (peer prefixes, envelope
+ * ids, route keys): the kind, plus the second part only when it is a plain
+ * word. Same rule as `_task_label` in qortal_presence_host.py.
+ */
+function bridgeTaskLabel(name: unknown): string {
+  const parts = String(name ?? '').split(':');
+  let head = parts[0].slice(0, 32);
+  if (
+    !head
+      .replace(/_/g, '-')
+      .split('-')
+      .every(
+        (word) => bridgeTaskLabelPartIsWord(word) || /^\d{1,3}$/.test(word)
+      )
+  ) {
+    head = 'task';
+  }
+  if (parts.length > 1 && bridgeTaskLabelPartIsWord(parts[1])) {
+    return `${head}:${parts[1]}`.slice(0, 48);
+  }
+  return head;
+}
+
+/**
+ * Python's str(exc) from the RNS executor loop: keep the wording, drop the
+ * values it can carry (bytes reprs of destination hashes, quoted keys and
+ * text, long hex or numbers, addresses).
+ */
+function scrubBridgeErrorText(text: unknown): string {
+  return redactDiagnosticText(String(text ?? ''))
+    .replace(/\s+/g, ' ')
+    .replace(/\bb(["'])(?:\\.|(?!\1)[^\\])*\1/g, '<bytes>')
+    .replace(/(?:\\x[0-9a-f]{2})+/gi, '<bytes>')
+    .replace(/"[^"]*"/g, '"…"')
+    .replace(/'([^']*)'/g, (match, inner: string) =>
+      /^[A-Za-z_]{1,24}$/.test(inner) ? match : "'…'"
+    )
+    .replace(/\bQ[1-9A-HJ-NP-Za-km-z]{25,40}\b/g, '<address>')
+    .replace(/\b\d{5,}\b/g, '<n>')
+    .replace(/\b(?:0x)?[0-9a-f]{8,}\b/gi, '<hex>')
+    .trim()
+    .slice(0, 160);
+}
+
+/** One compact line per watchdog event: lanes, queues and CPU tops, never stacks or tracebacks. */
+export function summarizeBridgeDiagnosticEvent(
+  event: string,
+  payload: unknown
+): string {
+  const p = (payload && typeof payload === 'object' ? payload : {}) as Record<
+    string,
+    any
+  >;
+  const int = (v: unknown) =>
+    Number.isFinite(Number(v)) ? Math.round(Number(v)) : 0;
+  const list = (v: unknown): any[] => (Array.isArray(v) ? v : []);
+  if (event === 'bridge_stall_diagnostic') {
+    const stuck =
+      list(p.stuckLanes)
+        .slice(0, 6)
+        .map(
+          (l: any) =>
+            `${String(l?.lane ?? '')}:${bridgeTaskLabel(l?.task)}:${
+              Number(l?.seconds) || 0
+            }s:q${int(l?.queueDepth)}`
+        )
+        .join(',') || 'none';
+    return `executor_stalled=${p.executorStalled === true} executor_idle_s=${
+      Number(p.executorIdleSeconds) || 0
+    } cmd_q=${int(p.cmdQueueDepth)}/${int(p.cmdQueueMax)} threads=${int(
+      p.threadCount
+    )} stuck=${stuck}`;
+  }
+  if (event === 'bridge_executor_recovered') {
+    return `error=${scrubBridgeErrorText(p.error)}`;
+  }
+  const cpuTop = list(p.cpuTicksByGroup)
+    .slice(0, 5)
+    .map((g: any) => `${String(g?.name ?? '')}:${int(g?.ticks)}`)
+    .join(',');
+  const groupsTop = list(p.groups)
+    .slice(0, 5)
+    .map((g: any) => `${String(g?.name ?? '')}:${int(g?.count)}`)
+    .join(',');
+  return `threads=${int(p.threadCount)} cpu_total=${int(
+    p.totalCpuTicks
+  )} cpu_top=${cpuTop} groups_top=${groupsTop}`;
 }

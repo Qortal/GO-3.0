@@ -702,7 +702,7 @@ def poll(timeout_ms=250):
         return ""
 
 
-def transport_status():
+def transport_status(detail=False):
     """Snapshot of the bridge's own RNS hub interfaces, as a JSON string.
 
     The Kotlin plugin used to run a second, independent Reticulum stack
@@ -710,6 +710,10 @@ def transport_status():
     stack held two more TCP sockets to the hubs, ran its own keepalives and
     decrypted every announce on the mesh a second time. Reading the counters
     off this instance costs one GIL acquisition per poll instead.
+
+    ``detail`` (Copy diagnostics only, never the badge poll) adds
+    ``result["bridge"]`` from :func:`_bridge_detail`. It is a direct call,
+    not a lane command: nothing is queued and no bridge lock is taken.
     """
     import json
 
@@ -762,7 +766,118 @@ def transport_status():
         ]
     except Exception as exc:  # noqa: BLE001 - status is best effort
         result["error"] = str(exc)
+    if detail:
+        try:
+            result["bridge"] = _bridge_detail()
+        except Exception as exc:  # noqa: BLE001 - diagnostics are best effort
+            result["bridge"] = {"error": str(exc)[:160]}
     return json.dumps(result)
+
+
+_TASK_LABEL_HEX = frozenset("0123456789abcdefABCDEF")
+_BRIDGE_LANE_KEYS = (
+    "lane",
+    "queueDepth",
+    "queueDepthHighWater",
+    "queueMax",
+    "dwellMsMax",
+    "busyMsMax",
+    "droppedTasks",
+    "slowTaskCount",
+    "completedTasks",
+)
+
+
+def _task_label_part_is_word(part):
+    """A plain lower-case word (a command action or a reason), not an id."""
+    if not part or len(part) > 40 or not ("a" <= part[0] <= "z"):
+        return False
+    if len(part) >= 6 and all(c in _TASK_LABEL_HEX for c in part):
+        return False
+    return all(("a" <= c <= "z") or c in "_-" for c in part)
+
+
+def _task_label(name):
+    """A lane task name without the ids some names carry.
+
+    Names such as ``overlay-open:<reason>:<peer prefix>`` or
+    ``<traffic>:<envelope id>:<peer prefix>`` hold id prefixes. Copy
+    diagnostics keeps the kind, plus the second part only when it is a plain
+    word (``cmd:send_reticulum_chat``, ``overlay-open:announce``).
+    """
+    parts = str(name or "").split(":")
+    head = parts[0][:32]
+    # The kind is a fixed name ("cmd", "rns-packet", "presence_announce_replay",
+    # "land-state-forward-3"); anything else is replaced, not shown.
+    words = head.replace("_", "-").split("-")
+    if not all(
+        _task_label_part_is_word(word) or (word.isdigit() and len(word) <= 3)
+        for word in words
+    ):
+        head = "task"
+    if len(parts) > 1 and _task_label_part_is_word(parts[1]):
+        return f"{head}:{parts[1]}"[:48]
+    return head
+
+
+def _bridge_detail():
+    """Read-only bridge counters for Copy diagnostics.
+
+    Never takes ``_state_lock`` (a stall may be holding it), never imports
+    presence_bridge (only reads it when start() already did) and sends
+    nothing. ``_scheduler_diagnostics`` takes only its leaf stats lock.
+    Lane maxima and high-water marks count since the bridge started, which
+    outlives the page.
+    """
+    out = {}
+    rns = sys.modules.get("RNS")
+    start_time = (
+        getattr(getattr(rns, "Transport", None), "start_time", None) if rns else None
+    )
+    if start_time:
+        try:
+            out["transportStartedAtMs"] = int(float(start_time) * 1000)
+        except (TypeError, ValueError):
+            pass
+    pb = sys.modules.get("presence_bridge")
+    if pb is None:
+        return out
+    now = time.monotonic()
+    lanes = []
+    for stats in pb._scheduler_diagnostics():
+        lane = {key: stats.get(key) for key in _BRIDGE_LANE_KEYS}
+        task = str(stats.get("currentTask") or "")
+        started = float(stats.get("currentTaskStartedAt") or 0.0)
+        if task and started > 0:
+            lane["currentTask"] = _task_label(task)
+            lane["runningMs"] = max(0, int((now - started) * 1000))
+        lanes.append(lane)
+    out["lanes"] = lanes
+    for attr, key in (
+        ("_cmd_queue_bounded", "cmdQueue"),
+        ("_json_event_queue", "eventQueue"),
+        ("_json_priority_event_queue", "priorityEventQueue"),
+        ("_json_resp_queue", "respQueue"),
+    ):
+        q = getattr(pb, attr, None)
+        if q is not None:
+            out[key] = q.qsize()
+    out["cmdQueueMax"] = getattr(pb, "_CMD_QUEUE_MAX", None)
+    last = float(getattr(pb, "_rns_executor_last_loop_at", 0.0) or 0.0)
+    if last > 0:
+        out["executorIdleMs"] = max(0, int((now - last) * 1000))
+    out["gilLagMsMax"] = float(getattr(pb, "_gil_probe_lag_ms_max", 0.0) or 0.0)
+    waiters = getattr(pb, "_resource_session_provider_waiters", None)
+    if waiters is not None:
+        # len() is atomic under the GIL; no lock.
+        out["providerPendingAuth"] = len(waiters)
+    refused = getattr(pb, "_provider_refused_counts", None)
+    if isinstance(refused, dict):
+        out["providerRefused"] = {
+            str(k): int(v or 0) for k, v in dict(refused).items()
+        }
+    out["jsonOutDrops"] = int(getattr(pb, "_audio_drops_json_out", 0) or 0)
+    return out
 
 
 def _log_host(message):

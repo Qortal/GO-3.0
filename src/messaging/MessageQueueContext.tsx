@@ -6,7 +6,12 @@ import {
   useRef,
 } from 'react';
 import ShortUniqueId from 'short-unique-id';
-import { describeSendError, recordSendFailure } from './sendFailureLog';
+import {
+  describeSendError,
+  recordSendFailure,
+  recordSendRecovered,
+  recordSendTiming,
+} from './sendFailureLog';
 
 const MessageQueueContext = createContext(null);
 const uid = new ShortUniqueId({ length: 8 });
@@ -53,6 +58,9 @@ export const MessageQueueProvider = ({ children }) => {
         groupDirectId,
         specialId: messageObj?.message?.specialId,
         attempts: 0,
+        // Diagnostics only (Copy diagnostics > Recent send failures).
+        attemptLog: [],
+        firstAttemptAt: 0,
       });
 
       // Start processing the queue
@@ -99,6 +107,11 @@ export const MessageQueueProvider = ({ children }) => {
       const currentMessage = messageQueueRef.current[0]; // Get the first message in the queue
       const { groupDirectId, identifier } = currentMessage;
       currentMessage.attempts = (currentMessage.attempts || 0) + 1;
+      const attemptStartedAt = Date.now();
+      if (!currentMessage.firstAttemptAt) {
+        currentMessage.firstAttemptAt = attemptStartedAt;
+      }
+      const attemptLog = (currentMessage.attemptLog ||= []);
 
       // Update the chat status to 'sending'
       patchQueuedChat(groupDirectId, identifier, {
@@ -110,6 +123,27 @@ export const MessageQueueProvider = ({ children }) => {
         // Execute the function stored in the messageQueueRef
 
         const result = await currentMessage.func();
+
+        // Diagnostics bookkeeping. It must never throw into this try: the
+        // send already went through, and the catch below would retry it.
+        try {
+          const finishedAt = Date.now();
+          recordSendTiming(finishedAt - currentMessage.firstAttemptAt);
+          if (attemptLog.length > 0) {
+            attemptLog.push({
+              ms: finishedAt - attemptStartedAt,
+              error: null,
+              ...(result?.duplicate === true ? { duplicate: true } : {}),
+            });
+            recordSendRecovered(
+              groupDirectId,
+              currentMessage.attempts,
+              attemptLog
+            );
+          }
+        } catch {
+          // ignore
+        }
 
         if (result?.clearQueueOnSuccess) {
           setQueueChats((prev) => {
@@ -138,6 +172,10 @@ export const MessageQueueProvider = ({ children }) => {
         // Carry the reason with the row: "failed to send" alone gives a phone
         // user (and a screenshot) nothing to act on.
         const sendError = describeSendError(error);
+        attemptLog.push({
+          ms: Date.now() - attemptStartedAt,
+          error: sendError,
+        });
         if (attempts <= maxRetries) {
           patchQueuedChat(groupDirectId, identifier, {
             retries: attempts,
@@ -150,7 +188,7 @@ export const MessageQueueProvider = ({ children }) => {
           continue;
         }
 
-        recordSendFailure(groupDirectId, attempts, error);
+        recordSendFailure(groupDirectId, attempts, error, attemptLog);
         patchQueuedChat(groupDirectId, identifier, {
           retries: attempts,
           status: 'failed-permanent',

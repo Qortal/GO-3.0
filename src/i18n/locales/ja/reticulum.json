@@ -152,7 +152,7 @@
   },
   "image_viewer": {
     "actions": "image actions",
-    "chat_image": "chat image",
+    "chat_image": "チャット画像",
     "clipboard_unavailable": "image clipboard is unavailable",
     "close": "close image viewer",
     "copied": "image copied",
@@ -201,6 +201,36 @@
     "subtitle": "まだどのコミュニティにも参加していないようです。さっそく参加しましょう。",
     "title": "新しく生まれ変わったQ-Chatへようこそ",
     "whats_new_button": "新着情報"
+  },
+  "post_delivery": {
+    "delivered_member": {
+      "hint": "グループメンバーのノードがこのスマホから取得しました。誰かが読んだという意味ではありません。",
+      "label": "配信済み"
+    },
+    "delivered_own_device": {
+      "hint": "他のデバイス（Hubなど）がこのスマホから取得しました。",
+      "label": "配信済み"
+    },
+    "delivered_own_device_self_dm": {
+      "hint": "他のデバイス（Hubなど）がこのスマホから取得しました。",
+      "label": "配信済み"
+    },
+    "not_picked_up": {
+      "hint": "まだ他のノードがこのスマホから取得していません。メンバーのノードは、このスマホに接続できる間にオンラインになると取得します。",
+      "label": "未取得"
+    },
+    "not_picked_up_self_dm": {
+      "hint": "まだ他のどのデバイスもこのスマホから取得していません。このスマホに接続できる間にオンラインになると取得します。",
+      "label": "未取得"
+    },
+    "sending": {
+      "hint": "オンラインのメンバーのノードは、通常数秒以内にこれを取得します。",
+      "label": "送信中"
+    },
+    "sending_self_dm": {
+      "hint": "オンラインの他のデバイスは、通常数秒以内にこれを取得します。",
+      "label": "送信中"
+    }
   },
   "qapp_preview": {
     "check_again": "check again",
@@ -313,18 +343,25 @@
     }
   },
   "share": {
+    "admins_only": "管理者のみ",
     "cancel": "共有をキャンセル",
     "cannot_write": "このチャンネルに書き込めるのは管理者だけです。戻って別のチャットを選んでください",
+    "channel_step_label": "{{group}}のチャンネルを選択",
+    "channel_unavailable": "そのチャンネルはもうありません。戻って別のチャンネルを選んでください",
     "chip_label": "共有する{{what}}：チャットをタップして追加",
+    "chip_label_channel": "共有する{{what}}：チャンネルをタップして追加",
     "kind_file": "ファイル",
     "kind_link": "リンク",
     "kind_photo": "写真",
     "kind_text": "テキスト",
     "kind_video": "動画",
+    "loading_channels": "チャンネルを読み込み中",
+    "no_channel_to_post": "このグループのチャンネルに投稿できるのは管理者だけです。",
     "notice_extra_files": "最初のファイルだけを追加しました。1つのメッセージに入るファイルは1つです。",
     "notice_too_large": "{{max}} MBを超えるファイルは除外しました。",
     "notice_unreadable": "共有されたファイルを読み込めませんでした。",
     "notice_unsafe_image": "画像から位置情報を削除できなかったため、除外しました。",
+    "pick_channel": "チャンネルを選択",
     "pick_chat": "チャットを選択"
   },
   "status_badge": {

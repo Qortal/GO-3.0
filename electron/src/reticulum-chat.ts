@@ -1,6 +1,7 @@
 import * as nodeCrypto from 'crypto';
 import { EventEmitter } from 'events';
 import { performance } from 'perf_hooks';
+import { createMinuteCounters } from './reticulum-minute-counters';
 import { app } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -25,6 +26,7 @@ import {
   type ReticulumChatMetadataSnapshotRecord,
   type ReticulumChatMetadataEntityRevision,
   type ReticulumChatMissingRangeState,
+  type ReticulumChatMissingRangeStateCounts,
   type ReticulumChatRelayCacheEntry,
   type ReticulumChatRelayDigestEntry,
   RETICULUM_CHAT_CHANNEL_READ_MODE_ADMINS,
@@ -67,6 +69,8 @@ import {
   type ReticulumChatSilenceScope,
   type ReticulumPublicGroupActivitySummary,
   type ReticulumDmExpiryPreference,
+  type ReticulumOwnPostDeliveryMark,
+  type ReticulumOwnPostDeliveryScope,
   type ReticulumPendingOwnDirectHead,
 } from './reticulum-chat-db';
 import {
@@ -245,6 +249,15 @@ export interface ReticulumDmEvent {
    * Hub) first pulled this own pending event. Never on the wire.
    */
   localOwnDeviceCopiedAt?: number;
+  /**
+   * Local projection (GO, trackOwnPostDelivery): a Saved Messages post
+   * written on this device (since: when) and when another own device fetched
+   * it from here. localPostMemberAt is never set on a Saved Messages post.
+   * Never on the wire.
+   */
+  localPostDeliverySince?: number;
+  localPostOwnDeviceAt?: number;
+  localPostMemberAt?: number;
   /** Local projection hint: this event is at or below a synchronized read watermark. */
   readByOwner?: true;
   /** Local database projection; derived from the signed payload, never trusted from wire input. */
@@ -351,6 +364,8 @@ interface ReticulumChatQueuedDigestRepair {
   localRevision: number;
   repairFingerprint?: string;
   notBefore?: number;
+  /** Set once when the item is created; coalescing never resets it. */
+  firstEnqueuedAt?: number;
 }
 
 interface ReticulumChatDigestRepairObservation {
@@ -369,6 +384,49 @@ interface ReticulumChatDigestRepairObservation {
   expiresAt: number;
 }
 
+/** Where a peer's advertised newest group event stands against ours. */
+export type ReticulumChatDigestHeadRelation =
+  | 'ahead'
+  | 'equal'
+  | 'behind'
+  | 'none';
+
+/** Read-only digest queue numbers for Copy diagnostics (no ids). */
+export type ReticulumChatDigestQueueDiagnostics = {
+  repair: {
+    queued: number;
+    oldestQueuedMs: number | null;
+    processed: number;
+    coalesced: number;
+    dropped: number;
+    byRelation: Record<ReticulumChatDigestHeadRelation, number>;
+    equalHeadSkips: number;
+    budgetSpent: number;
+    budgetOpenChat: number;
+    budgetHeld: number;
+    budgetSlotBusy: number;
+    budgetResets: number;
+    groupsWaiting: number;
+    maxStreak: number;
+  };
+  send: {
+    queued: number;
+    oldestQueuedMs: number | null;
+    processed: number;
+    coalesced: number;
+    dropped: number;
+  };
+  recent: { minutes: number } & Record<ReticulumChatDigestQueueMinuteKey, number>;
+};
+
+/**
+ * publishEvent result. `duplicate`: this exact signed event (same id and
+ * signature) was already stored here by an earlier attempt.
+ */
+export type ReticulumChatPublishResult =
+  | ReticulumSendResult
+  | { ok: true; duplicate: true };
+
 interface ReticulumChatDigestRepairStats {
   authorGapRequested: boolean;
   metadataRepairRequested: boolean;
@@ -379,6 +437,11 @@ interface ReticulumChatDigestRepairStats {
   windowRepairRequests: number;
   peerBehindDigestQueued: boolean;
   digestPageRequests: number;
+  headRelation?: ReticulumChatDigestHeadRelation;
+  /** Gate A: equal heads and equal channel heads, so no page repair at all. */
+  equalHeadsSkipped?: boolean;
+  /** How the per-group non-ahead page-repair budget treated this item. */
+  pageRepairBudget?: 'spent' | 'open-chat' | 'held' | 'slot-busy';
 }
 
 interface ReticulumChatMetadataSnapshotDownloadCandidate {
@@ -432,6 +495,8 @@ interface ReticulumChatQueuedDigestSend {
   routeKnownAtEnqueue: boolean;
   enqueuedAt: number;
   coalescedCount: number;
+  /** Set once when the item is created; coalescing never resets it. */
+  firstEnqueuedAt?: number;
 }
 
 interface ReticulumChatQueuedDigestSnapshotBuild {
@@ -1083,6 +1148,56 @@ type ReticulumDmPageDeliveryTrack = {
   authorizedAt: number;
   expiresAt: number;
 };
+
+/**
+ * GO (trackOwnPostDelivery): the in-memory copy of one rchat_own_post_delivery
+ * row, an own post written on this device. `ownDeviceAt` / `memberAt` are set
+ * once a device of the same account / another member's node fetched it from
+ * here (RNS proved receipt), and never change after that.
+ */
+type ReticulumOwnPostDeliveryEntry = {
+  scope: ReticulumOwnPostDeliveryScope;
+  groupId?: number;
+  channelId?: string;
+  conversationId?: string;
+  author: string;
+  /** When this device wrote it (not the signed timestamp). */
+  since: number;
+  ownDeviceAt?: number;
+  memberAt?: number;
+};
+
+/**
+ * A group serve this device authorized that carries own tracked posts (a
+ * live event, a history page or an author range), remembered until the
+ * bridge reports the transfer's outcome. Only 'sent' marks them.
+ */
+type ReticulumOwnPostServeTrack = {
+  groupId: number;
+  eventIds: string[];
+  /** Signed requester address: our own address means an own device. */
+  requesterAddress: string;
+  /** The authenticated link peer the bytes were bound to. */
+  peerHash: string;
+  via: 'live' | 'page' | 'range';
+  authorizedAt: number;
+  expiresAt: number;
+};
+
+/**
+ * One own post another node fetched from this device, in the manager event
+ * 'ownPostDelivery' ({ updates }). Carries the post's current proofs, which
+ * only ever move forward.
+ */
+export interface ReticulumOwnPostDeliveryUpdate {
+  eventId: string;
+  scope: ReticulumOwnPostDeliveryScope;
+  groupId?: number;
+  channelId?: string;
+  conversationId?: string;
+  ownDeviceAt?: number;
+  memberAt?: number;
+}
 
 type ReticulumChatLocalSignature = {
   authorAddress: string;
@@ -2537,6 +2652,27 @@ export interface ReticulumChatManagerOptions {
    * defaults to off.
    */
   repairPrematureDmSentOnce?: boolean;
+  /**
+   * Record which own posts written on this device another node fetched from
+   * here: group messages and attachments (thread replies included) and
+   * Saved Messages. The proof is the bridge's terminal 'sent' (RNS proved
+   * receipt) for a serve this device authorized; a requester signed with our
+   * own address is an own device (a home Hub), any other one a member's
+   * node. Nothing new goes on the wire. Tracked posts carry
+   * localPostDeliverySince / localPostOwnDeviceAt / localPostMemberAt to the
+   * renderer, and proofs are emitted as 'ownPostDelivery'. GO only; defaults
+   * to off.
+   */
+  trackOwnPostDelivery?: boolean;
+  /**
+   * Answer the local signer's own group membership from the list the host
+   * pushed (Core's group list for this account) instead of waiting on the
+   * membership validator; Core is still asked in the background and a Core
+   * "not a member" wins. At boot an own-address check waits briefly for that
+   * list. Peers still check our events against their own Core. GO only;
+   * defaults to off.
+   */
+  ownMembershipLocalFirst?: boolean;
 }
 
 /**
@@ -3061,9 +3197,60 @@ const RETICULUM_CHAT_BACKGROUND_AUTHOR_GAP_REPAIR_DELAY_MS = 60_000;
 const RETICULUM_CHAT_BACKGROUND_AUTHOR_GAP_REPAIR_INTERVAL_MS = 60_000;
 const RETICULUM_CHAT_BACKGROUND_AUTHOR_GAP_REPAIR_LIMIT = 4;
 const RETICULUM_CHAT_BACKGROUND_AUTHOR_GAP_REPAIR_MIN_RETRY_MS = 250;
+/** Copy diagnostics: background author-gap scanner (getAuthorGapScannerDiagnostics). */
+export type ReticulumChatAuthorGapScannerDiagnostics = {
+  runsSinceBoot: number;
+  runsLastMinute: number;
+  slowRuns: number;
+  failedRuns: number;
+  lastRunAgoMs: number | null;
+  lastDurationMs: number | null;
+  maxDurationMs: number;
+  lastWrites: number;
+  totalWrites: number;
+  lastSent: number;
+  totalSent: number;
+  lastTried: number;
+  lastScanned: number;
+  lastEligibleGroups: number;
+  nextWakeInMs: number | null;
+  rows: ReticulumChatMissingRangeStateCounts | null;
+};
+/** Copy diagnostics: engine work queues (getEngineQueueDiagnostics). */
+export type ReticulumChatEngineQueueDiagnostics = {
+  chatResource: {
+    queued: number;
+    items: number;
+    oldestQueuedMs: number | null;
+    active: boolean;
+    processed: number;
+    coalesced: number;
+    dropped: number;
+    protectedOverflow: number;
+  };
+  /** pendingEventPulls.size, requestedEventPulls.size */
+  eventPulls: { pending: number; requested: number };
+  /** historyPageServeQueue.length */
+  historyServeQueue: number;
+  relayGroupControl: boolean;
+};
+/** Per-group author-gap candidate inputs (buildAuthorGapCandidateContext). */
+type AuthorGapCandidateContext = {
+  groupId: number;
+  local: string;
+  subscribedPeers: string[];
+  endpointsByAuthor: Map<string, string[]>;
+};
 // Background history cleanup must not let one inconsistent group occupy the
 // shared resource-link pool. Live event-gap recovery bypasses this cooldown.
 const RETICULUM_CHAT_BACKGROUND_AUTHOR_GAP_GROUP_INTERVAL_MS = 5_000;
+// Peer lookups per background author-gap run. The rest wait for the 250 ms
+// follow-up run, so one run stays a short task.
+const RETICULUM_CHAT_BACKGROUND_AUTHOR_GAP_MAX_GROUPS_PER_RUN = 16;
+// Background author-gap runs longer than this are logged even when they sent
+// nothing.
+const RETICULUM_CHAT_BACKGROUND_AUTHOR_GAP_SLOW_RUN_MS = 50;
+const RETICULUM_CHAT_BACKGROUND_AUTHOR_GAP_RUN_HISTORY = 256;
 const RETICULUM_CHAT_AUTHOR_GAP_RESPONSE_TIMEOUT_MS = 20_000;
 const RETICULUM_CHAT_AUTHOR_GAP_MAX_CONTROL_SENDS_PER_PEER = 4;
 const RETICULUM_CHAT_AUTHOR_GAP_ROUTE_BACKOFF_MS = [
@@ -3079,6 +3266,33 @@ const RETICULUM_CHAT_HISTORY_PAGE_NO_PROGRESS_TTL_MS = 10 * 60_000;
 const RETICULUM_CHAT_HISTORY_PAGE_NO_PROGRESS_MAX = 4096;
 const RETICULUM_CHAT_DIGEST_REPAIR_NO_PROGRESS_TTL_MS =
   RETICULUM_CHAT_HISTORY_PAGE_NO_PROGRESS_TTL_MS;
+// Page repairs for a peer that cannot hold anything newer than us (same newest
+// event, behind us, or no head) are rationed per group: one attempt, then wait
+// 10 min, 30 min, then 120 min while attempts bring nothing. A digest page that
+// inserts an event resets the wait. Remote-ahead repairs never use this.
+const RETICULUM_CHAT_DIGEST_PAGE_REPAIR_BUDGET_STEPS_MS = [
+  10 * 60_000,
+  30 * 60_000,
+  120 * 60_000,
+] as const;
+const RETICULUM_CHAT_DIGEST_PAGE_REPAIR_BUDGET_MAX_STEP_MS = 120 * 60_000;
+/** Opening a chat grants one immediate page-repair attempt, at most once a minute per group. */
+const RETICULUM_CHAT_DIGEST_PAGE_REPAIR_OPEN_CHAT_GRANT_MIN_MS = 60_000;
+/** digest_repair_equal_heads_skipped is logged at most once per group per this window. */
+const RETICULUM_CHAT_DIGEST_EQUAL_HEADS_SKIP_LOG_MS = 10 * 60_000;
+const RETICULUM_CHAT_DIGEST_QUEUE_MINUTE_KEYS = [
+  'repairProcessed',
+  'repairCoalesced',
+  'repairDropped',
+  'equalHeadSkips',
+  'budgetHeld',
+  'budgetSpent',
+  'sendProcessed',
+  'sendCoalesced',
+  'sendDropped',
+] as const;
+type ReticulumChatDigestQueueMinuteKey =
+  (typeof RETICULUM_CHAT_DIGEST_QUEUE_MINUTE_KEYS)[number];
 const RETICULUM_CHAT_DIGEST_REPAIR_NO_PROGRESS_MAX = 4096;
 const RETICULUM_CHAT_DIGEST_REPAIR_MAX_PAGES = Math.max(
   1,
@@ -3096,6 +3310,12 @@ const RETICULUM_CHAT_DM_PAGE_NO_PROGRESS_MAX = 4096;
 const RETICULUM_CHAT_MEMBER_CACHE_TTL_MS = 5 * 60_000;
 const RETICULUM_CHAT_ADMIN_CACHE_TTL_MS = 30_000;
 const RETICULUM_CHAT_VALIDATION_UNAVAILABLE_RETRY_MS = 10_000;
+/** ownMembershipLocalFirst: how long an own-address check at boot waits for the pushed group list. */
+const RETICULUM_CHAT_OWN_MEMBERSHIP_BOOT_WAIT_MS = 2_500;
+/** Own publishes remembered for the one duplicate re-fanout each may get. */
+const RETICULUM_CHAT_PUBLISH_REFANOUT_MEMORY = 256;
+/** A publish this slow logs where its time went. */
+const RETICULUM_CHAT_SLOW_PUBLISH_LOG_MS = 10_000;
 // Repeated membership deferrals of one queued event double from the retry
 // window up to this cap, so a node that never answers cannot keep the pull
 // queue re-downloading the same events every 10 s.
@@ -3422,6 +3642,17 @@ const RETICULUM_CHAT_DM_PULL_MAX = 1024;
 const RETICULUM_CHAT_DM_PAGE_DELIVERY_TRACK_TTL_MS =
   RETICULUM_CHAT_RESOURCE_TTL_MS + 2 * 60_000;
 const RETICULUM_CHAT_DM_PAGE_DELIVERY_TRACK_MAX = 512;
+// Own post delivery (trackOwnPostDelivery): a group serve carrying own
+// tracked posts is remembered like a DM page until its terminal. Proofs are
+// written and handed to the page in one batch, at most every 500 ms (a
+// one-shot timer armed by the first proof, never periodic). Entries older
+// than RETICULUM_CHAT_MAX_AGE_MS leave the in-memory copy when a post starts,
+// at most hourly.
+const RETICULUM_CHAT_OWN_POST_SERVE_TRACK_TTL_MS =
+  RETICULUM_CHAT_DM_PAGE_DELIVERY_TRACK_TTL_MS;
+const RETICULUM_CHAT_OWN_POST_SERVE_TRACK_MAX = 512;
+const RETICULUM_CHAT_OWN_POST_DELIVERY_FLUSH_MS = 500;
+const RETICULUM_CHAT_OWN_POST_DELIVERY_AGE_SWEEP_MS = 60 * 60_000;
 // The Android bridge reports an incoming resource request it stopped waiting
 // for ('auth_ended': link closed, requester cancelled, waiter timed out),
 // having already answered it on the wire. Remembered long enough for the
@@ -7770,6 +8001,8 @@ export class ReticulumChatManager extends EventEmitter {
   private hasGoodOverlayHealth?: () => boolean;
   private relayGroupControl = true;
   private repairPrematureDmSentOnce = false;
+  private trackOwnPostDelivery = false;
+  private ownMembershipLocalFirst = false;
   /** Address -> its scheduled premature-'sent' repair (one per sign-in). */
   private prematureDmSentRepairTimers = new Map<
     string,
@@ -7841,6 +8074,21 @@ export class ReticulumChatManager extends EventEmitter {
     Promise<boolean | null>
   >();
   private groupMemberValidationUnavailableUntil = new Map<string, number>();
+  /**
+   * ownMembershipLocalFirst: `${groupId}:${address}` of the local signer ->
+   * when Core said not a member. The list is not trusted for it until Core
+   * says member.
+   */
+  private ownMembershipCoreDenied = new Map<string, number>();
+  /** Resolvers waiting for the first setLocalGroupMemberships. */
+  private localGroupMembershipWaiters = new Set<() => void>();
+  private ownMembershipBootWaitTimeoutLogged = false;
+  /** Own publishes whose fanout (first or repeated) is running now. */
+  private publishFanoutInFlight = new Set<string>();
+  /** Own publishes whose fanout reached someone; a duplicate needs no re-fanout. Bounded. */
+  private publishFanoutDelivered = new Set<string>();
+  /** Own publishes that already had their one duplicate re-fanout. Bounded. */
+  private publishRefanoutDone = new Set<string>();
   private groupAdminValidationCache = new Map<
     string,
     { isAdmin: boolean; expiresAt: number }
@@ -7948,6 +8196,40 @@ export class ReticulumChatManager extends EventEmitter {
     coalesced: 0,
     dropped: 0,
   };
+  /** Per-group budget for non-ahead page repairs (equal / behind / no head). */
+  private digestPageRepairBudgets = new Map<
+    number,
+    {
+      /** this.now() ms; 0 = allowed. */
+      nextAllowedAt: number;
+      /** Attempts since the last inserting digest page. */
+      zeroStreak: number;
+      lastAttemptAt: number;
+      /** Opening the chat granted one attempt; 0 = none unused. */
+      openChatTokenAt: number;
+      lastOpenChatGrantAt: number;
+    }
+  >();
+  private digestRepairGateStats = {
+    equalHeadSkips: 0,
+    budgetSpent: 0,
+    budgetOpenChat: 0,
+    budgetHeld: 0,
+    budgetSlotBusy: 0,
+    budgetResets: 0,
+  };
+  private digestRepairRelationStats: Record<
+    ReticulumChatDigestHeadRelation,
+    number
+  > = { ahead: 0, equal: 0, behind: 0, none: 0 };
+  private digestEqualHeadSkipLog = new Map<
+    number,
+    { loggedAt: number; skipped: number }
+  >();
+  private digestQueueMinuteCounters = createMinuteCounters(
+    RETICULUM_CHAT_DIGEST_QUEUE_MINUTE_KEYS,
+    10
+  );
   private digestSnapshotCache = new Map<
     number,
     { snapshot: ReticulumChatDigestSnapshot; expiresAt: number }
@@ -8191,6 +8473,25 @@ export class ReticulumChatManager extends EventEmitter {
   >();
   private authorGapControlSendsInFlight = new Map<string, number>();
   private backgroundAuthorGapGroupNextAttemptAt = new Map<number, number>();
+  /** Groups whose last own-account pick sent nothing; their next pick is the plain oldest row. */
+  private backgroundAuthorGapOwnRowStalledGroups = new Set<number>();
+  /** Background author-gap scanner run counters (Copy diagnostics). Never reset. */
+  private backgroundAuthorGapRunStats = {
+    runs: 0,
+    slowRuns: 0,
+    failedRuns: 0,
+    lastRunAt: 0,
+    lastDurationMs: null as number | null,
+    maxDurationMs: 0,
+    lastWrites: 0,
+    totalWrites: 0,
+    lastSent: 0,
+    totalSent: 0,
+    lastTried: 0,
+    lastScanned: 0,
+    lastEligibleGroups: 0,
+    recentRunAt: [] as number[],
+  };
   private peerProtocolFeatures = new Map<
     string,
     Set<ReticulumChatProtocolFeature>
@@ -8676,6 +8977,32 @@ export class ReticulumChatManager extends EventEmitter {
   /** Provider side: authorized DM page transfer id -> what it carried. */
   private dmPageDeliveries = new Map<string, ReticulumDmPageDeliveryTrack>();
   /**
+   * trackOwnPostDelivery: event id -> own post written on this device, the
+   * working copy of rchat_own_post_delivery (loaded once at start, oldest
+   * first). Every hot-path check is a lookup here, never SQL.
+   */
+  private ownPostDeliveries = new Map<string, ReticulumOwnPostDeliveryEntry>();
+  /** Provider side: authorized group serve transfer id -> own posts in it. */
+  private ownPostServeDeliveries = new Map<
+    string,
+    ReticulumOwnPostServeTrack
+  >();
+  /** Proofs waiting for the next batched write and emit, by event id. */
+  private ownPostDeliveryQueue = new Map<
+    string,
+    ReticulumOwnPostDeliveryMark
+  >();
+  private ownPostDeliveryFlushTimer: ReturnType<typeof setTimeout> | null =
+    null;
+  private ownPostDeliveryAgeSweptAt = 0;
+  /**
+   * trackOwnPostDelivery: account address -> when another own device last
+   * pulled its Saved Messages from here (a delivered page; after a restart,
+   * the newest proof among the tracked posts). Such an account has another
+   * device even while no lease is current.
+   */
+  private ownSelfDmDeviceFetchedAt = new Map<string, number>();
+  /**
    * Provider side: transfer id -> when the bridge said it stopped waiting for
    * this incoming request ('auth_ended'; it already answered the requester).
    */
@@ -8776,6 +9103,8 @@ export class ReticulumChatManager extends EventEmitter {
     this.hasGoodOverlayHealth = options.hasGoodOverlayHealth;
     this.relayGroupControl = options.relayGroupControl !== false;
     this.repairPrematureDmSentOnce = options.repairPrematureDmSentOnce === true;
+    this.trackOwnPostDelivery = options.trackOwnPostDelivery === true;
+    this.ownMembershipLocalFirst = options.ownMembershipLocalFirst === true;
     this.resourceStore = options.resourceStore ?? null;
     this.bridge = options.bridge ?? null;
     this.db = new ReticulumChatDatabase(this.dbPath);
@@ -8783,6 +9112,7 @@ export class ReticulumChatManager extends EventEmitter {
       this.now(),
       RETICULUM_CHAT_REJECTED_EVENT_RETENTION_MS
     );
+    if (this.trackOwnPostDelivery) this.loadOwnPostDeliveries();
     this.scheduleNextDirectExpiry();
     for (const record of this.db.getPublicGroupActivityRecords(1000)) {
       if (!record.localStateJson) continue;
@@ -9540,6 +9870,7 @@ export class ReticulumChatManager extends EventEmitter {
       this.groupMemberValidationCache.clear();
       this.groupMemberValidationInflight.clear();
       this.groupMemberValidationUnavailableUntil.clear();
+      this.ownMembershipCoreDenied.clear();
     }
     if (validateGroupAdminChanged) {
       this.groupAdminValidationCache.clear();
@@ -9566,6 +9897,11 @@ export class ReticulumChatManager extends EventEmitter {
 
   close(): void {
     this.isClosed = true;
+    this.releaseLocalGroupMembershipWaiters();
+    this.ownMembershipCoreDenied.clear();
+    this.publishFanoutInFlight.clear();
+    this.publishFanoutDelivered.clear();
+    this.publishRefanoutDone.clear();
     if (this.readSyncRetryTimer) clearTimeout(this.readSyncRetryTimer);
     this.readSyncRetryTimer = null;
     this.pendingReadSync.clear();
@@ -9589,6 +9925,10 @@ export class ReticulumChatManager extends EventEmitter {
     this.clearDirectDmPulls();
     this.directDmLookbacks.clear();
     this.dmPageDeliveries.clear();
+    // Proofs already settled are kept (written now, the database is still
+    // open); serves still in flight are dropped.
+    this.ownPostServeDeliveries.clear();
+    this.flushOwnPostDeliveries(false);
     this.cancelAllLinkedEventPulls('manager_closed');
     this.cancelAllDirectHistoryPageRequests('manager_closed');
     this.detachBridge();
@@ -10006,6 +10346,19 @@ export class ReticulumChatManager extends EventEmitter {
     );
     this.localGroupIds = new Set(nextGroupIds);
     this.localGroupMembershipsInitialized = true;
+    // ownMembershipLocalFirst: a Core denial only holds while the pushed list
+    // still names that (group, address) for this account.
+    for (const key of [...this.ownMembershipCoreDenied.keys()]) {
+      const sep = key.indexOf(':');
+      if (
+        sep <= 0 ||
+        this.localGroupAddresses.get(Number(key.slice(0, sep))) !==
+          key.slice(sep + 1)
+      ) {
+        this.ownMembershipCoreDenied.delete(key);
+      }
+    }
+    this.releaseLocalGroupMembershipWaiters();
     let wokeKnownUnavailableRanges = false;
     for (const groupId of groupsWithExpandedHistoryAccess) {
       wokeKnownUnavailableRanges =
@@ -10829,6 +11182,8 @@ export class ReticulumChatManager extends EventEmitter {
   }
 
   private clearLocalAccountRuntimeState(): void {
+    // An account boundary: a Core denial belonged to the previous signer.
+    this.ownMembershipCoreDenied.clear();
     this.selfConversationWideCatchupDone.clear();
     this.lastUntargetedSelfCatchupAt.clear();
     if (this.readSyncRetryTimer) clearTimeout(this.readSyncRetryTimer);
@@ -10848,6 +11203,10 @@ export class ReticulumChatManager extends EventEmitter {
     this.directDmLookbacks.clear();
     this.lastDirectDmLookbackStartedAt = 0;
     this.dmPageDeliveries.clear();
+    // The tracked posts stay (they are this device's, and only ever shown to
+    // their author); serves in flight are dropped, settled proofs written.
+    this.ownPostServeDeliveries.clear();
+    this.flushOwnPostDeliveries(false);
     this.clearActiveDirectChats();
     for (const timer of this.directTypingTimers.values()) clearTimeout(timer);
     this.directTypingTimers.clear();
@@ -11617,12 +11976,16 @@ export class ReticulumChatManager extends EventEmitter {
     )
       ? [peerAddress]
       : [];
-    return this.db.getDirectHistoryFrom(
-      conversationId,
-      fromEventId,
-      limit,
-      20,
-      excludedSenders
+    return this.directRowsForRenderer(
+      myAddress,
+      peerAddress,
+      this.db.getDirectHistoryFrom(
+        conversationId,
+        fromEventId,
+        limit,
+        20,
+        excludedSenders
+      )
     );
   }
 
@@ -11640,7 +12003,27 @@ export class ReticulumChatManager extends EventEmitter {
     )
       ? [peerAddress]
       : [];
-    return this.db.getDirectHistory(conversationId, limit, excludedSenders);
+    return this.directRowsForRenderer(
+      myAddress,
+      peerAddress,
+      this.db.getDirectHistory(conversationId, limit, excludedSenders)
+    );
+  }
+
+  /** Only Saved Messages with tracked own posts are mapped (GO). */
+  private directRowsForRenderer(
+    myAddress: string,
+    peerAddress: string,
+    rows: ReticulumDmEvent[]
+  ): ReticulumDmEvent[] {
+    if (
+      !this.trackOwnPostDelivery ||
+      myAddress !== peerAddress ||
+      this.ownPostDeliveries.size === 0
+    ) {
+      return rows;
+    }
+    return rows.map((row) => this.directEventForRenderer(row));
   }
 
   private scheduleNextDirectExpiry(): void {
@@ -11662,6 +12045,11 @@ export class ReticulumChatManager extends EventEmitter {
         this.directExpiryAt = 0;
         if (this.isClosed) return;
         const pruned = this.db.pruneExpiredDirectMessages(this.now());
+        if (this.ownPostDeliveries.size > 0) {
+          for (const eventId of pruned.eventIds) {
+            this.ownPostDeliveries.delete(eventId);
+          }
+        }
         for (const conversation of pruned.conversations) {
           for (const localAddress of this.localDmAddresses) {
             if (!conversation.peerAddresses.includes(localAddress)) continue;
@@ -13910,8 +14298,10 @@ export class ReticulumChatManager extends EventEmitter {
     const activeChannels =
       this.activeChannelSubscriptions.get(groupId) ?? new Set<string>();
     const alreadyActive = activeChannels.has(normalizedChannelId);
+    const groupWasOpen = activeChannels.size > 0;
     activeChannels.add(normalizedChannelId);
     this.activeChannelSubscriptions.set(groupId, activeChannels);
+    if (!groupWasOpen) this.grantDigestPageRepairOpenChatAttempt(groupId);
     if (!this.localGroupMembershipsInitialized) {
       this.deferGroupSubscriptionUntilMembershipSync(groupId);
       return;
@@ -13925,11 +14315,17 @@ export class ReticulumChatManager extends EventEmitter {
     const activeChannels = this.activeChannelSubscriptions.get(groupId);
     if (!activeChannels) return;
     activeChannels.delete(normalizedChannelId);
-    if (activeChannels.size === 0)
+    if (activeChannels.size === 0) {
       this.activeChannelSubscriptions.delete(groupId);
+      // Closing the chat revokes an unused open-chat page-repair attempt.
+      const budget = this.digestPageRepairBudgets.get(groupId);
+      if (budget) budget.openChatTokenAt = 0;
+    }
   }
 
-  async publishEvent(event: ReticulumChatEvent): Promise<ReticulumSendResult> {
+  async publishEvent(
+    event: ReticulumChatEvent
+  ): Promise<ReticulumChatPublishResult> {
     if (!Number.isInteger(event?.groupId) || event.groupId <= 0) {
       return {
         ok: false,
@@ -13937,6 +14333,13 @@ export class ReticulumChatManager extends EventEmitter {
         error: 'Cannot publish Reticulum chat event: invalid group id',
       };
     }
+    // A retry of an event this device already stored (same id and same
+    // signature) is a success, not 'Invalid event': the page republishes the
+    // exact event it signed when an earlier attempt's answer was lost (RPC
+    // timeout, worker stall). The stored copy was validated when it was stored.
+    const storedDuplicate = this.duplicatePublishResult(event, 'retry');
+    if (storedDuplicate) return storedDuplicate;
+    const publishStartedAt = this.now();
     const channelId = normalizeReticulumChatChannelId(event.channelId);
     if (!CHANNEL_METADATA_EVENT_TYPES.has(event.eventType)) {
       const channel = this.db.getChannel(event.groupId, channelId);
@@ -13999,16 +14402,32 @@ export class ReticulumChatManager extends EventEmitter {
         };
       }
     }
+    const validatedAt = this.now();
     const accepted = await this.acceptEvent(event, true);
     if (!accepted) {
+      // A concurrent attempt of the same signed event stored it while this
+      // one waited.
+      const raced = this.duplicatePublishResult(event, 'concurrent');
+      if (raced) return raced;
+      this.logRefusedPublish(event);
       return {
         ok: false,
         reason: 'send-command-failed',
         error: 'Invalid event',
       };
     }
+    const storedAt = this.now();
     this.countDelivery('groupEventPublished');
-    const fanoutResult = await this.fanoutPublishedEvent(event, channelId);
+    this.publishFanoutInFlight.add(event.eventId);
+    let fanoutResult: ReticulumSendResult;
+    try {
+      fanoutResult = await this.fanoutPublishedEvent(event, channelId);
+    } finally {
+      this.publishFanoutInFlight.delete(event.eventId);
+    }
+    if (fanoutResult.ok) {
+      this.addBoundedId(this.publishFanoutDelivered, event.eventId);
+    }
     if (!fanoutResult.ok) {
       const failed = fanoutResult as Exclude<ReticulumSendResult, { ok: true }>;
       loggerWarn(
@@ -14016,8 +14435,142 @@ export class ReticulumChatManager extends EventEmitter {
         failed.error ?? failed.reason
       );
     }
+    const doneAt = this.now();
+    if (doneAt - publishStartedAt >= RETICULUM_CHAT_SLOW_PUBLISH_LOG_MS) {
+      loggerWarn(
+        `[ReticulumChat] slow_publish group=${event.groupId} event=${event.eventId.slice(0, 12)} duration_ms=${doneAt - publishStartedAt} validate_ms=${validatedAt - publishStartedAt} store_ms=${storedAt - validatedAt} fanout_ms=${doneAt - storedAt} fanout_ok=${fanoutResult.ok ? 1 : 0}`
+      );
+    }
     void this.replicateEventToRelayCache(event);
     return { ok: true };
+  }
+
+  /**
+   * publishEvent: `{ ok: true, duplicate: true }` when this exact signed event
+   * (same id and same signature) is already stored, else null. A 'retry' may
+   * start the one detached re-fanout; a 'concurrent' duplicate never does (the
+   * attempt that stored it fans out).
+   */
+  private duplicatePublishResult(
+    candidate: ReticulumChatEvent,
+    phase: 'retry' | 'concurrent'
+  ): ReticulumChatPublishResult | null {
+    const eventId =
+      typeof candidate?.eventId === 'string' ? candidate.eventId : '';
+    const signature =
+      typeof candidate?.signature === 'string' ? candidate.signature : '';
+    if (!eventId || !signature || !this.db.hasEvent(eventId)) return null;
+    if (this.db.getEventSignature(eventId) !== signature) return null;
+    this.countDelivery('groupEventPublishDuplicate');
+    const refanout =
+      phase === 'retry' && this.startDuplicatePublishRefanout(eventId);
+    loggerWarn(
+      `[ReticulumChat] publish_retry_after_page_failure group=${candidate.groupId} event=${eventId.slice(0, 12)} phase=${phase} refanout=${refanout ? 1 : 0}`
+    );
+    return { ok: true, duplicate: true };
+  }
+
+  /**
+   * One detached re-send of the identical notice + digest for a stored own
+   * event whose first fanout is not known to have reached anyone.
+   */
+  private startDuplicatePublishRefanout(eventId: string): boolean {
+    if (this.isClosed) return false;
+    if (this.publishFanoutInFlight.has(eventId)) return false;
+    if (this.publishFanoutDelivered.has(eventId)) return false;
+    if (this.publishRefanoutDone.has(eventId)) return false;
+    const stored = this.db.getEvent(eventId);
+    if (
+      !stored ||
+      !this.localGroupIds.has(stored.groupId) ||
+      this.db.isEventPayloadScrubbed(eventId)
+    ) {
+      return false;
+    }
+    // Only this account's own posts: the notice is signed by the local signer.
+    const author = String(stored.authorAddress || '').trim();
+    if (
+      !author ||
+      (this.localGroupAddresses.get(stored.groupId) !== author &&
+        !this.localDmAddresses.has(author))
+    ) {
+      return false;
+    }
+    this.addBoundedId(this.publishRefanoutDone, eventId);
+    this.publishFanoutInFlight.add(eventId);
+    this.countDelivery('groupEventPublishRefanout');
+    const tag = `group=${stored.groupId} event=${eventId.slice(0, 12)}`;
+    let fanout: Promise<ReticulumSendResult>;
+    try {
+      fanout = this.fanoutPublishedEvent(
+        stored,
+        normalizeReticulumChatChannelId(stored.channelId)
+      );
+    } catch (err) {
+      fanout = Promise.reject(err);
+    }
+    void fanout
+      .then((result) => {
+        if (result.ok) {
+          this.addBoundedId(this.publishFanoutDelivered, eventId);
+          return;
+        }
+        const failed = result as Exclude<ReticulumSendResult, { ok: true }>;
+        loggerWarn(
+          `[ReticulumChat] publish_refanout_failed ${tag} reason=${failed.reason}`
+        );
+      })
+      .catch((err) => {
+        loggerWarn(
+          `[ReticulumChat] publish_refanout_failed ${tag} reason=${err instanceof Error ? err.message : String(err)}`
+        );
+      })
+      .finally(() => this.publishFanoutInFlight.delete(eventId));
+    return true;
+  }
+
+  /** Diagnostics for a true 'Invalid event'; the user-visible error text stays the same. */
+  private logRefusedPublish(event: ReticulumChatEvent): void {
+    let reason = 'not_accepted';
+    try {
+      if (
+        typeof event?.eventId === 'string' &&
+        this.db.hasEvent(event.eventId)
+      ) {
+        reason = 'event_id_taken';
+      } else if (
+        typeof event?.authorAddress === 'string' &&
+        Number.isInteger(event?.authorSeq) &&
+        event.authorSeq > 0
+      ) {
+        const [occupant] = this.db.getAuthorEventsRange(
+          event.groupId,
+          event.authorAddress,
+          event.authorStreamId,
+          event.authorSeq,
+          event.authorSeq,
+          1
+        );
+        if (occupant && occupant.eventId !== event.eventId) {
+          reason = 'seq_already_used';
+        }
+      }
+    } catch {
+      // diagnostics only
+    }
+    loggerWarn(
+      `[ReticulumChat] Refusing publish group=${event?.groupId} event=${String(event?.eventId ?? '').slice(0, 12)} seq=${event?.authorSeq} reason=${reason}`
+    );
+  }
+
+  private addBoundedId(set: Set<string>, id: string): void {
+    if (set.has(id)) {
+      set.delete(id);
+    } else if (set.size >= RETICULUM_CHAT_PUBLISH_REFANOUT_MEMORY) {
+      const oldest = set.values().next().value;
+      if (typeof oldest === 'string') set.delete(oldest);
+    }
+    set.add(id);
   }
 
   async reserveAuthorSequence(
@@ -15994,6 +16547,9 @@ export class ReticulumChatManager extends EventEmitter {
     privilegedMentionAuthorized?: true;
     replyTargetDeleted?: true;
     readByOwner?: true;
+    localPostDeliverySince?: number;
+    localPostOwnDeviceAt?: number;
+    localPostMemberAt?: number;
   } {
     const authorizationEventId =
       this.db.getCurrentProjectedEventId(event.eventId) || event.eventId;
@@ -16021,6 +16577,13 @@ export class ReticulumChatManager extends EventEmitter {
           localAddress
         );
     const expiresAt = this.db.getEventExpiresAtForRenderer(event);
+    // Own posts written on this device (trackOwnPostDelivery): a Map lookup.
+    const ownPostDelivery =
+      this.trackOwnPostDelivery &&
+      !!localAddress &&
+      event.authorAddress === localAddress
+        ? this.ownPostDeliveryRendererFields(event.eventId, 'group')
+        : null;
     const rendererEvent = {
       ...event,
       expiresAt: undefined,
@@ -16028,6 +16591,9 @@ export class ReticulumChatManager extends EventEmitter {
       privilegedMentionAuthorized: undefined,
       replyTargetDeleted: undefined,
       readByOwner: undefined,
+      localPostDeliverySince: undefined,
+      localPostOwnDeviceAt: undefined,
+      localPostMemberAt: undefined,
     };
     return {
       ...rendererEvent,
@@ -16040,6 +16606,50 @@ export class ReticulumChatManager extends EventEmitter {
         : {}),
       ...(replyTargetDeleted ? { replyTargetDeleted: true as const } : {}),
       ...(readByOwner ? { readByOwner: true as const } : {}),
+      ...(ownPostDelivery ?? {}),
+    };
+  }
+
+  /**
+   * A DM row for the renderer. Saved Messages posts written on this device
+   * (trackOwnPostDelivery) get their delivery fields from the Map; every
+   * other row is returned as it is.
+   */
+  private directEventForRenderer(event: ReticulumDmEvent): ReticulumDmEvent {
+    if (
+      !this.trackOwnPostDelivery ||
+      event.senderAddress !== event.recipientAddress
+    ) {
+      return event;
+    }
+    const {
+      localPostDeliverySince: _since,
+      localPostOwnDeviceAt: _ownDeviceAt,
+      localPostMemberAt: _memberAt,
+      ...rest
+    } = event;
+    const fields = this.localDmAddresses.has(event.senderAddress)
+      ? this.ownPostDeliveryRendererFields(event.eventId, 'self_dm')
+      : null;
+    return fields ? { ...rest, ...fields } : rest;
+  }
+
+  private ownPostDeliveryRendererFields(
+    eventId: string,
+    scope: ReticulumOwnPostDeliveryScope
+  ): {
+    localPostDeliverySince: number;
+    localPostOwnDeviceAt?: number;
+    localPostMemberAt?: number;
+  } | null {
+    const entry = this.ownPostDeliveries.get(eventId);
+    if (!entry || entry.scope !== scope) return null;
+    return {
+      localPostDeliverySince: entry.since,
+      ...(entry.ownDeviceAt ? { localPostOwnDeviceAt: entry.ownDeviceAt } : {}),
+      ...(entry.memberAt && scope === 'group'
+        ? { localPostMemberAt: entry.memberAt }
+        : {}),
     };
   }
 
@@ -18788,6 +19398,7 @@ export class ReticulumChatManager extends EventEmitter {
       this.digestRepairObservations.delete(key);
     }
     this.digestRepairQueueStats.dropped += 1;
+    this.countDigestQueue('repairDropped');
     return true;
   }
 
@@ -18933,6 +19544,7 @@ export class ReticulumChatManager extends EventEmitter {
       existing.enqueuedAt = this.now();
       existing.coalescedCount += 1;
       this.digestRepairQueueStats.coalesced += 1;
+      this.countDigestQueue('repairCoalesced');
       return;
     }
     this.compactDigestRepairObservations(now);
@@ -18959,6 +19571,7 @@ export class ReticulumChatManager extends EventEmitter {
       const retryDue = observed.status === 'failed' && observed.retryAt <= now;
       if (!retryPeer && !retryDue) {
         this.digestRepairQueueStats.coalesced += 1;
+        this.countDigestQueue('repairCoalesced');
         return;
       }
       observed.status = 'queued';
@@ -19002,6 +19615,7 @@ export class ReticulumChatManager extends EventEmitter {
     this.digestRepairQueue.push(key);
     const queuedItem: ReticulumChatQueuedDigestRepair = {
       ...item,
+      firstEnqueuedAt: now,
       key,
       peerHash: peer,
       providerPeerHash: providerPeer,
@@ -19162,7 +19776,10 @@ export class ReticulumChatManager extends EventEmitter {
       }
       const durationMs = Date.now() - startedAt;
       this.digestRepairQueueStats.processed += 1;
+      this.countDigestQueue('repairProcessed');
       if (durationMs >= RETICULUM_CHAT_DIGEST_REPAIR_SLOW_MS) {
+        // Appended fields only (lab parsers read the existing ones by name):
+        // first_queued_ms is the age coalescing never resets.
         loggerWarn(
           `[ReticulumChat] digest_repair_slow duration_ms=${durationMs} queued_ms=${Math.max(
             0,
@@ -19170,7 +19787,14 @@ export class ReticulumChatManager extends EventEmitter {
           )} queue_size=${this.digestRepairQueue.length} group=${item.groupId} peer=${item.peerHash.slice(
             0,
             16
-          )} providers=${item.candidatePeerHashes?.length ?? 1} coalesced=${item.coalescedCount} processed=${this.digestRepairQueueStats.processed} dropped=${this.digestRepairQueueStats.dropped} actions=${JSON.stringify(stats ?? {})}`
+          )} providers=${item.candidatePeerHashes?.length ?? 1} coalesced=${item.coalescedCount} processed=${this.digestRepairQueueStats.processed} dropped=${this.digestRepairQueueStats.dropped} actions=${JSON.stringify(stats ?? {})} first_queued_ms=${Math.max(
+            0,
+            this.now() - (item.firstEnqueuedAt ?? item.enqueuedAt)
+          )} relation=${stats?.headRelation ?? 'n/a'} gate=${
+            stats?.equalHeadsSkipped
+              ? 'channel-heads-equal'
+              : (stats?.pageRepairBudget ?? 'none')
+          }`
         );
       }
     }
@@ -19264,6 +19888,10 @@ export class ReticulumChatManager extends EventEmitter {
       }
     }
     this.digestRepairGroupRateWindows.delete(groupId);
+    // Per-group page-repair budget and its proof-log state (kept across a
+    // bridge reset on purpose, so a reconnect does not cause a burst).
+    this.digestPageRepairBudgets.delete(groupId);
+    this.digestEqualHeadSkipLog.delete(groupId);
   }
 
   private reconcileDigestRepairsAfterProgress(
@@ -19533,6 +20161,7 @@ export class ReticulumChatManager extends EventEmitter {
         this.getGroupInterestNextHops(groupId).length > 0,
       enqueuedAt: this.now(),
       coalescedCount: 0,
+      firstEnqueuedAt: this.now(),
     });
   }
 
@@ -19544,6 +20173,7 @@ export class ReticulumChatManager extends EventEmitter {
       existing.enqueuedAt = item.enqueuedAt;
       existing.coalescedCount += 1;
       this.digestSendQueueStats.coalesced += 1;
+      this.countDigestQueue('sendCoalesced');
       return;
     }
     while (
@@ -19553,6 +20183,7 @@ export class ReticulumChatManager extends EventEmitter {
       if (!droppedKey) break;
       if (this.digestSendItems.delete(droppedKey)) {
         this.digestSendQueueStats.dropped += 1;
+        this.countDigestQueue('sendDropped');
       }
     }
     this.digestSendQueue.push(item.key);
@@ -19651,6 +20282,7 @@ export class ReticulumChatManager extends EventEmitter {
     } finally {
       const durationMs = Date.now() - startedAt;
       this.digestSendQueueStats.processed += 1;
+      this.countDigestQueue('sendProcessed');
       if (durationMs >= RETICULUM_CHAT_DIGEST_SEND_SLOW_MS) {
         loggerWarn(
           `[ReticulumChat] digest_send_slow duration_ms=${durationMs} queued_ms=${Math.max(
@@ -19707,6 +20339,7 @@ export class ReticulumChatManager extends EventEmitter {
       existing.enqueuedAt = item.enqueuedAt;
       existing.coalescedCount += item.coalescedCount + 1;
       this.digestSendQueueStats.coalesced += 1;
+      this.countDigestQueue('sendCoalesced');
       return;
     }
     pending.set(item.key, item);
@@ -25984,6 +26617,44 @@ export class ReticulumChatManager extends EventEmitter {
       (!localGroupLatest ||
         this.compareCursors(remoteGroupLatest, localGroupLatest) > 0 ||
         (remoteDigestNeedsRepair && !digestRepairSuppressed));
+    const headRelation = this.digestHeadRelation(
+      remoteGroupLatest,
+      localGroupLatest
+    );
+    stats.headRelation = headRelation;
+    this.digestRepairRelationStats[headRelation] += 1;
+    // Page repairs for a peer that cannot hold anything newer than us (equal,
+    // behind, no head) go through gate A and the per-group budget. Remote-ahead
+    // repairs never call the gate. Everything above (state hints, author gaps,
+    // author manifest, the peer-behind digest send) has already run.
+    const nonAheadPageRepairVia =
+      headRelation !== 'ahead' &&
+      remoteDigestNeedsRepair &&
+      !digestRepairSuppressed
+        ? this.checkDigestPageRepairGate(
+            groupId,
+            headRelation,
+            wire,
+            providerPeerHash || peerHash,
+            stats
+          )
+        : null;
+    const nonAheadPageRepairAllowed = nonAheadPageRepairVia !== null;
+    let nonAheadPageRepairSpent = false;
+    // At most one spend per item: metadata-first plus group-window for one
+    // remote-behind item count as one attempt (they share the group slot).
+    const spendNonAheadPageRepair = (reason: string): void => {
+      if (nonAheadPageRepairSpent || nonAheadPageRepairVia === null) return;
+      nonAheadPageRepairSpent = true;
+      this.spendDigestPageRepairBudget(
+        groupId,
+        headRelation,
+        nonAheadPageRepairVia,
+        reason
+      );
+      stats.pageRepairBudget =
+        nonAheadPageRepairVia === 'open-chat' ? 'open-chat' : 'spent';
+    };
     if (
       needsNewestGroupRepair &&
       remoteGroupLatest &&
@@ -26014,8 +26685,12 @@ export class ReticulumChatManager extends EventEmitter {
       !digestRepairSuppressed &&
       remoteGroupLatest &&
       !needsNewestGroupRepair &&
+      // Only reachable when headRelation === 'behind'. The budget is checked
+      // first so a held budget leaves the 5 s debounce key unspent.
+      nonAheadPageRepairAllowed &&
       this.shouldRequestMetadataRepair(providerPeerHash || peerHash, groupId)
     ) {
+      spendNonAheadPageRepair('metadata-first-digest-repair');
       void this.requestLinkedHistoryPage(
         providerPeerHash || peerHash,
         groupId,
@@ -26034,14 +26709,20 @@ export class ReticulumChatManager extends EventEmitter {
       stats.metadataRepairRequested = true;
     }
     let newestGroupRepairRequested = false;
+    // Equal heads with a digest mismatch are rationed; remote-ahead is not.
+    const newestGroupRepairRationed = headRelation === 'equal';
     if (
       needsNewestGroupRepair &&
+      (!newestGroupRepairRationed || nonAheadPageRepairAllowed) &&
       this.shouldRequestGroupRepair(
         peerHash,
         groupId,
         RETICULUM_CHAT_ALL_CHANNELS_ID
       )
     ) {
+      if (newestGroupRepairRationed) {
+        spendNonAheadPageRepair('newest-group-repair');
+      }
       void this.requestLinkedHistoryPage(
         providerPeerHash || peerHash,
         groupId,
@@ -26161,7 +26842,8 @@ export class ReticulumChatManager extends EventEmitter {
       remoteDigestNeedsRepair &&
       !digestRepairSuppressed &&
       !!remoteGroupLatest &&
-      !!localGroupLatest
+      !!localGroupLatest &&
+      (headRelation === 'ahead' || nonAheadPageRepairAllowed)
     ) {
       const repaired = this.requestVisibleWindowRepair(
         peerHash,
@@ -26173,6 +26855,9 @@ export class ReticulumChatManager extends EventEmitter {
         digestRepairFingerprint
       );
       if (repaired) {
+        if (headRelation !== 'ahead') {
+          spendNonAheadPageRepair('group-window-mismatch');
+        }
         requestedFromChannelDigest = true;
         requestedWindowRepair = true;
         stats.windowRepairRequests += 1;
@@ -26183,9 +26868,14 @@ export class ReticulumChatManager extends EventEmitter {
       ((remoteGroupLatest &&
         (!localGroupLatest ||
           this.compareCursors(remoteGroupLatest, localGroupLatest) > 0)) ||
-        (!remoteGroupLatest && remoteDigestNeedsRepair))
+        (!remoteGroupLatest &&
+          remoteDigestNeedsRepair &&
+          nonAheadPageRepairAllowed))
     ) {
       if (this.shouldRequestGroupRepair(peerHash, groupId)) {
+        if (headRelation === 'none') {
+          spendNonAheadPageRepair('group-digest-repair');
+        }
         const channelsToRepair = this.db
           .getChannels(groupId, true)
           .filter(
@@ -27229,10 +27919,12 @@ export class ReticulumChatManager extends EventEmitter {
     const now = this.now();
     const revision = this.db.getGroupDigestRevision(groupId);
     const existing = this.recentAuthorGapDiscoveryByGroup.get(groupId);
+    // Discovery is a backstop. A gap made by a new event is already recorded
+    // and requested by the incoming_event_gap path, so a changed revision
+    // does not need an early re-scan.
     if (
       !force &&
       existing &&
-      existing.revision === revision &&
       now - existing.requestedAt <
         RETICULUM_CHAT_BACKGROUND_AUTHOR_GAP_REPAIR_INTERVAL_MS
     ) {
@@ -27627,6 +28319,247 @@ export class ReticulumChatManager extends EventEmitter {
     return `${this.digestRepairPeerGroupKey(peerHash, groupId)}:${fingerprint}`;
   }
 
+  /**
+   * Digest queue numbers for Copy diagnostics. Read-only: no writes, logs or
+   * timers; O(queued items + budgeted groups); holds no ids.
+   */
+  getDigestQueueDiagnostics(): ReticulumChatDigestQueueDiagnostics {
+    const now = this.now();
+    const oldest = (
+      items: Iterable<{ firstEnqueuedAt?: number; enqueuedAt: number }>
+    ): number | null => {
+      let min = Number.POSITIVE_INFINITY;
+      for (const item of items) {
+        const at = Number(item.firstEnqueuedAt ?? item.enqueuedAt);
+        if (Number.isFinite(at)) min = Math.min(min, at);
+      }
+      return Number.isFinite(min) ? Math.max(0, now - min) : null;
+    };
+    let groupsWaiting = 0;
+    let maxStreak = 0;
+    for (const budget of this.digestPageRepairBudgets.values()) {
+      if (budget.nextAllowedAt > now) groupsWaiting += 1;
+      maxStreak = Math.max(maxStreak, budget.zeroStreak);
+    }
+    const recent = this.digestQueueMinuteCounters.snapshot(now);
+    return {
+      repair: {
+        queued: this.digestRepairQueue.length,
+        oldestQueuedMs: oldest(this.digestRepairItems.values()),
+        ...this.digestRepairQueueStats,
+        byRelation: { ...this.digestRepairRelationStats },
+        ...this.digestRepairGateStats,
+        groupsWaiting,
+        maxStreak,
+      },
+      send: {
+        queued: this.digestSendQueue.length,
+        oldestQueuedMs: oldest(this.digestSendItems.values()),
+        ...this.digestSendQueueStats,
+      },
+      recent: { minutes: recent.minutes, ...recent.counts },
+    };
+  }
+
+  private countDigestQueue(
+    key: ReticulumChatDigestQueueMinuteKey,
+    n = 1
+  ): void {
+    this.digestQueueMinuteCounters.bump(this.now(), key, n);
+  }
+
+  private digestHeadRelation(
+    remote: ReticulumChatFeedCursor | null,
+    local: ReticulumChatFeedCursor | null
+  ): ReticulumChatDigestHeadRelation {
+    if (!remote) return 'none';
+    if (!local) return 'ahead';
+    const order = this.compareCursors(remote, local);
+    return order > 0 ? 'ahead' : order === 0 ? 'equal' : 'behind';
+  }
+
+  private digestWireChannelHeadsHash(wire: Record<string, unknown>): string {
+    const state = wire?.d;
+    if (!state || typeof state !== 'object' || Array.isArray(state)) return '';
+    const value = (state as Partial<ReticulumChatGroupStateDigestWire>)
+      .channelHeadsHash;
+    return typeof value === 'string' ? value.trim().toLowerCase() : '';
+  }
+
+  /** digest_repair_equal_heads_skipped, at most once per group per 10 min. */
+  private logEqualHeadsSkip(groupId: number, peerHash: string): void {
+    const now = this.now();
+    const entry = this.digestEqualHeadSkipLog.get(groupId) ?? {
+      loggedAt: 0,
+      skipped: 0,
+    };
+    entry.skipped += 1;
+    if (
+      entry.loggedAt > 0 &&
+      now >= entry.loggedAt &&
+      now - entry.loggedAt < RETICULUM_CHAT_DIGEST_EQUAL_HEADS_SKIP_LOG_MS
+    ) {
+      this.digestEqualHeadSkipLog.set(groupId, entry);
+      return;
+    }
+    loggerLog(
+      `[ReticulumChat] digest_repair_equal_heads_skipped group=${groupId} peer=${(peerHash || '').slice(0, 16)} skipped=${entry.skipped} reason=channel-heads-equal`
+    );
+    this.digestEqualHeadSkipLog.set(groupId, { loggedAt: now, skipped: 0 });
+  }
+
+  /** The group's background digest page slot holds a request under 120 s old. */
+  private isDigestRepairSlotBusy(groupId: number): boolean {
+    const transferId = this.directHistoryPageSemanticKeys.get(
+      `digest-repair|${groupId}`
+    );
+    if (!transferId) return false;
+    const offer = this.directHistoryPageRequests.get(transferId);
+    const requestedAt = Number(offer?.requestedAt ?? 0);
+    return (
+      !!offer &&
+      requestedAt > 0 &&
+      this.now() - requestedAt <
+        RETICULUM_CHAT_DIRECT_HISTORY_PAGE_REQUEST_STALE_MS
+    );
+  }
+
+  /**
+   * How a non-ahead page repair may run now ('time' or 'open-chat'), or null.
+   * Gate A first: equal heads AND equal channel heads mean no page repair of
+   * any kind. Counts only; no budget is spent here.
+   */
+  private checkDigestPageRepairGate(
+    groupId: number,
+    relation: Exclude<ReticulumChatDigestHeadRelation, 'ahead'>,
+    wire: Record<string, unknown>,
+    peerHash: string,
+    stats: ReticulumChatDigestRepairStats
+  ): 'time' | 'open-chat' | null {
+    if (relation === 'equal') {
+      const remoteHeads = this.digestWireChannelHeadsHash(wire);
+      if (
+        remoteHeads &&
+        remoteHeads ===
+          String(this.getStateHeadsCache(groupId).channelHash || '')
+            .trim()
+            .toLowerCase()
+      ) {
+        stats.equalHeadsSkipped = true;
+        this.digestRepairGateStats.equalHeadSkips += 1;
+        this.countDigestQueue('equalHeadSkips');
+        this.logEqualHeadsSkip(groupId, peerHash);
+        return null;
+      }
+    }
+    if (this.isDigestRepairSlotBusy(groupId)) {
+      // The request would only dedupe behind the in-flight objective.
+      stats.pageRepairBudget = 'slot-busy';
+      this.digestRepairGateStats.budgetSlotBusy += 1;
+      this.countDigestQueue('budgetHeld');
+      return null;
+    }
+    const now = this.now();
+    const budget = this.digestPageRepairBudgets.get(groupId);
+    if (
+      budget &&
+      budget.nextAllowedAt - now >
+        RETICULUM_CHAT_DIGEST_PAGE_REPAIR_BUDGET_MAX_STEP_MS
+    ) {
+      // The wall clock went back: never wait longer than the longest step.
+      budget.nextAllowedAt = now;
+    }
+    if (!budget || budget.nextAllowedAt <= now) return 'time';
+    if (budget.openChatTokenAt > 0 && this.isOpenChatGroup(groupId)) {
+      return 'open-chat';
+    }
+    stats.pageRepairBudget = 'held';
+    this.digestRepairGateStats.budgetHeld += 1;
+    this.countDigestQueue('budgetHeld');
+    return null;
+  }
+
+  private spendDigestPageRepairBudget(
+    groupId: number,
+    relation: ReticulumChatDigestHeadRelation,
+    via: 'time' | 'open-chat',
+    reason: string
+  ): void {
+    const now = this.now();
+    const budget = this.digestPageRepairBudgets.get(groupId) ?? {
+      nextAllowedAt: 0,
+      zeroStreak: 0,
+      lastAttemptAt: 0,
+      openChatTokenAt: 0,
+      lastOpenChatGrantAt: 0,
+    };
+    const steps = RETICULUM_CHAT_DIGEST_PAGE_REPAIR_BUDGET_STEPS_MS;
+    const waitMs = steps[Math.min(budget.zeroStreak, steps.length - 1)];
+    budget.zeroStreak += 1;
+    budget.lastAttemptAt = now;
+    budget.nextAllowedAt = now + waitMs;
+    // Any attempt while the chat is open uses up the open-chat attempt.
+    budget.openChatTokenAt = 0;
+    this.digestPageRepairBudgets.set(groupId, budget);
+    this.digestRepairGateStats.budgetSpent += 1;
+    if (via === 'open-chat') this.digestRepairGateStats.budgetOpenChat += 1;
+    this.countDigestQueue('budgetSpent');
+    loggerLog(
+      `[ReticulumChat] digest_page_repair_budget_spent group=${groupId} relation=${relation} via=${via} reason=${reason} streak=${budget.zeroStreak} next_in_ms=${waitMs}`
+    );
+  }
+
+  /** A digest-fingerprinted page of the group inserted events: the wait starts over. */
+  private noteDigestPageRepairProgress(
+    groupId: number,
+    insertedCount: number
+  ): void {
+    if (!(insertedCount > 0)) return;
+    const budget = this.digestPageRepairBudgets.get(groupId);
+    if (
+      !budget ||
+      (budget.zeroStreak === 0 && budget.nextAllowedAt <= this.now())
+    ) {
+      return;
+    }
+    const streakWas = budget.zeroStreak;
+    budget.zeroStreak = 0;
+    budget.nextAllowedAt = 0;
+    this.digestRepairGateStats.budgetResets += 1;
+    loggerLog(
+      `[ReticulumChat] digest_page_repair_budget_reset group=${groupId} inserted=${insertedCount} streak_was=${streakWas}`
+    );
+  }
+
+  /** Opening a rationed group's chat allows one immediate page-repair attempt. */
+  private grantDigestPageRepairOpenChatAttempt(groupId: number): void {
+    const budget = this.digestPageRepairBudgets.get(groupId);
+    const now = this.now();
+    // Nothing spent, or the wait is over: the next attempt is allowed anyway.
+    if (!budget || budget.nextAllowedAt <= now) return;
+    if (
+      budget.lastOpenChatGrantAt > 0 &&
+      now >= budget.lastOpenChatGrantAt &&
+      now - budget.lastOpenChatGrantAt <
+        RETICULUM_CHAT_DIGEST_PAGE_REPAIR_OPEN_CHAT_GRANT_MIN_MS
+    ) {
+      return;
+    }
+    budget.lastOpenChatGrantAt = now;
+    budget.openChatTokenAt = now;
+    // A state examined in the last 10 min would only be coalesced; let the
+    // next digest for this group be looked at again so the attempt can happen.
+    for (const [key, observation] of this.digestRepairObservations) {
+      if (
+        observation.groupId === groupId &&
+        observation.status === 'processed' &&
+        observation.repairFingerprint
+      ) {
+        this.digestRepairObservations.delete(key);
+      }
+    }
+  }
+
   private digestRepairFingerprint(
     remoteDigestHash: string,
     localDigestHash: string,
@@ -27926,125 +28859,145 @@ export class ReticulumChatManager extends EventEmitter {
     ) {
       return 0;
     }
-    const nextAttemptAt =
-      this.now() + RETICULUM_CHAT_BACKGROUND_AUTHOR_GAP_REPAIR_DELAY_MS;
     let recorded = 0;
     const eligibleRanges = ranges.flatMap((range) =>
       this.excludeRejectedAuthorSequences(groupId, range)
     );
-    for (const range of eligibleRanges) {
-      const normalized = normalizeReticulumChatAuthorRange(range);
-      if (!normalized) continue;
-      const existing = this.db.getMissingRange(
-        groupId,
-        normalized.a,
-        normalized.s,
-        normalized.from,
-        normalized.to
-      );
-      const eligiblePeers = this.getAuthorGapRepairCandidates(
-        groupId,
-        normalized,
-        peer
-      );
-      const knownUnavailable = this.db.getMissingRangeKnownUnavailable(
-        groupId,
-        normalized.a,
-        normalized.s,
-        normalized.from,
-        normalized.to
-      );
-      const isNewProviderForKnownUnavailable = Boolean(
-        knownUnavailable &&
-        eligiblePeers.includes(peer) &&
-        !knownUnavailable.peerHashes.includes(peer) &&
-        peer
-      );
-      if (isNewProviderForKnownUnavailable) {
-        // A newly attributable provider is new evidence. Wake the range once
-        // instead of waiting for the periodic long recheck. The provider must
-        // still pass the normal authenticated range request and event checks.
-        this.db.clearMissingRangeKnownUnavailable(
+    if (eligibleRanges.length === 0) return 0;
+    const startedPerf = performance.now();
+    const writesBefore = this.db.getMissingRangeWriteCount();
+    // The candidate inputs are per group: build them once, not once per gap.
+    const candidateContext = this.buildAuthorGapCandidateContext(groupId);
+    let unchanged = 0;
+    // One batch: on GO's OPFS rollback journal every autocommit write costs
+    // about 5 flushes, one batch about 5 in total.
+    this.db.runWriteBatch(() => {
+      // Equal within one synchronous call; identical under an injected clock.
+      const now = this.now();
+      const nextAttemptAt =
+        now + RETICULUM_CHAT_BACKGROUND_AUTHOR_GAP_REPAIR_DELAY_MS;
+      for (const range of eligibleRanges) {
+        const normalized = normalizeReticulumChatAuthorRange(range);
+        if (!normalized) continue;
+        const existing = this.db.getMissingRange(
           groupId,
           normalized.a,
           normalized.s,
           normalized.from,
           normalized.to
         );
-        this.db.rescheduleMissingRange(
+        const eligiblePeers = this.authorGapCandidatesFromContext(
+          candidateContext,
+          normalized,
+          peer
+        );
+        const knownUnavailable = this.db.getMissingRangeKnownUnavailable(
           groupId,
           normalized.a,
           normalized.s,
           normalized.from,
-          normalized.to,
-          peer,
-          this.now()
+          normalized.to
         );
-      }
-      const eligiblePeerCount = eligiblePeers.length;
-      const quarantineThreshold = Math.min(
-        RETICULUM_CHAT_AUTHOR_GAP_QUARANTINE_PEERS,
-        Math.max(1, eligiblePeerCount)
-      );
-      const unavailablePeerCount = this.countUnavailableAuthorGapCandidates(
-        groupId,
-        normalized,
-        eligiblePeers
-      );
-      const isQuarantined = unavailablePeerCount >= quarantineThreshold;
-      const newlyObservedPeer =
-        existing != null &&
-        isQuarantined &&
-        existing.nextAttemptAt >
-          this.now() + RETICULUM_CHAT_AUTHOR_GAP_NO_PROGRESS_TTL_MS &&
-        !this.db.hasMissingRangePeerUnavailable(
+        const isNewProviderForKnownUnavailable = Boolean(
+          knownUnavailable &&
+          eligiblePeers.includes(peer) &&
+          !knownUnavailable.peerHashes.includes(peer) &&
+          peer
+        );
+        if (isNewProviderForKnownUnavailable) {
+          // A newly attributable provider is new evidence. Wake the range once
+          // instead of waiting for the periodic long recheck. The provider must
+          // still pass the normal authenticated range request and event checks.
+          this.db.clearMissingRangeKnownUnavailable(
+            groupId,
+            normalized.a,
+            normalized.s,
+            normalized.from,
+            normalized.to
+          );
+          this.db.rescheduleMissingRange(
+            groupId,
+            normalized.a,
+            normalized.s,
+            normalized.from,
+            normalized.to,
+            peer,
+            now
+          );
+        }
+        const eligiblePeerCount = eligiblePeers.length;
+        const quarantineThreshold = Math.min(
+          RETICULUM_CHAT_AUTHOR_GAP_QUARANTINE_PEERS,
+          Math.max(1, eligiblePeerCount)
+        );
+        const unavailablePeerCount = this.countUnavailableAuthorGapCandidates(
           groupId,
-          normalized.a,
-          normalized.s,
-          normalized.from,
-          normalized.to,
-          peer,
-          this.now() - RETICULUM_CHAT_AUTHOR_GAP_QUARANTINE_MS
+          normalized,
+          eligiblePeers
         );
-      if (newlyObservedPeer || isNewProviderForKnownUnavailable) {
-        this.db.rescheduleMissingRange(
-          groupId,
-          normalized.a,
-          normalized.s,
-          normalized.from,
-          normalized.to,
-          peer,
-          this.now()
-        );
-      }
-      const scheduledPeer =
-        existing &&
-        existing.nextAttemptAt > 0 &&
-        !newlyObservedPeer &&
-        !isNewProviderForKnownUnavailable
-          ? existing.preferredPeer
-          : peer;
-      this.db.scheduleMissingRange(
-        groupId,
-        normalized.a,
-        normalized.s,
-        normalized.from,
-        normalized.to,
-        scheduledPeer,
-        existing &&
+        const isQuarantined = unavailablePeerCount >= quarantineThreshold;
+        const newlyObservedPeer =
+          existing != null &&
+          isQuarantined &&
+          existing.nextAttemptAt >
+            now + RETICULUM_CHAT_AUTHOR_GAP_NO_PROGRESS_TTL_MS &&
+          !this.db.hasMissingRangePeerUnavailable(
+            groupId,
+            normalized.a,
+            normalized.s,
+            normalized.from,
+            normalized.to,
+            peer,
+            now - RETICULUM_CHAT_AUTHOR_GAP_QUARANTINE_MS
+          );
+        if (newlyObservedPeer || isNewProviderForKnownUnavailable) {
+          this.db.rescheduleMissingRange(
+            groupId,
+            normalized.a,
+            normalized.s,
+            normalized.from,
+            normalized.to,
+            peer,
+            now
+          );
+        }
+        const keepsSchedule =
+          existing != null &&
           existing.nextAttemptAt > 0 &&
           !newlyObservedPeer &&
-          !isNewProviderForKnownUnavailable
-          ? existing.nextAttemptAt
-          : isNewProviderForKnownUnavailable
-            ? this.now()
-            : nextAttemptAt
-      );
-      recorded += 1;
-    }
+          !isNewProviderForKnownUnavailable;
+        if (
+          keepsSchedule &&
+          (!knownUnavailable ||
+            existing!.nextAttemptAt >= knownUnavailable.recheckAt)
+        ) {
+          // Same peer and same next attempt: scheduleMissingRange would only
+          // rewrite the row's own values. Count it as recorded and write
+          // nothing.
+          recorded += 1;
+          unchanged += 1;
+          continue;
+        }
+        const scheduledPeer = keepsSchedule ? existing!.preferredPeer : peer;
+        this.db.scheduleMissingRange(
+          groupId,
+          normalized.a,
+          normalized.s,
+          normalized.from,
+          normalized.to,
+          scheduledPeer,
+          keepsSchedule
+            ? existing!.nextAttemptAt
+            : isNewProviderForKnownUnavailable
+              ? now
+              : nextAttemptAt
+        );
+        recorded += 1;
+      }
+    });
     if (recorded > 0) {
       loggerLog(
-        `[ReticulumChat] author_gap_repair_deferred group=${groupId} peer=${peer.slice(0, 16)} gaps=${recorded} delay_ms=${RETICULUM_CHAT_BACKGROUND_AUTHOR_GAP_REPAIR_DELAY_MS} reason=${reason}`
+        `[ReticulumChat] author_gap_repair_deferred group=${groupId} peer=${peer.slice(0, 16)} gaps=${recorded} unchanged=${unchanged} writes=${this.db.getMissingRangeWriteCount() - writesBefore} duration_ms=${Math.round(performance.now() - startedPerf)} delay_ms=${RETICULUM_CHAT_BACKGROUND_AUTHOR_GAP_REPAIR_DELAY_MS} reason=${reason}`
       );
     }
     return recorded;
@@ -28113,20 +29066,40 @@ export class ReticulumChatManager extends EventEmitter {
     range: ReticulumChatAuthorRange,
     preferredPeer = ''
   ): string[] {
+    return this.authorGapCandidatesFromContext(
+      this.buildAuthorGapCandidateContext(groupId),
+      range,
+      preferredPeer
+    );
+  }
+
+  /**
+   * The per-group part of getAuthorGapRepairCandidates: verified peers with a
+   * current subscription to the group (lastSeen desc) and every author's
+   * endpoint leases (lastSeen desc). Build it once to rank many ranges.
+   */
+  private buildAuthorGapCandidateContext(
+    groupId: number
+  ): AuthorGapCandidateContext {
     const now = this.now();
     const verified = (this.getVerifiedReticulumPeers?.() ?? []).sort(
       (a, b) => Number(b.lastSeen || 0) - Number(a.lastSeen || 0)
     );
-    const authorEndpoints = this.getAccountEndpointLeasesForRouting()
-      .filter((candidate) => candidate.address?.trim() === range.a)
-      .sort((a, b) => Number(b.lastSeen || 0) - Number(a.lastSeen || 0));
-    const authorPeers = new Set(
-      authorEndpoints
-        .map((candidate) =>
-          this.normalizeResourcePeerHash(candidate.destinationHash)
-        )
-        .filter((peer): peer is string => Boolean(peer))
-    );
+    // A stable sort of the whole lease list keeps each author's lastSeen-desc
+    // order, as filtering first and sorting after did.
+    const endpointsByAuthor = new Map<string, string[]>();
+    for (const candidate of [...this.getAccountEndpointLeasesForRouting()].sort(
+      (a, b) => Number(b.lastSeen || 0) - Number(a.lastSeen || 0)
+    )) {
+      const author = candidate.address?.trim();
+      const endpoint = this.normalizeResourcePeerHash(
+        candidate.destinationHash
+      );
+      if (!author || !endpoint) continue;
+      const list = endpointsByAuthor.get(author) ?? [];
+      if (!list.includes(endpoint)) list.push(endpoint);
+      endpointsByAuthor.set(author, list);
+    }
     const subscribedPeers = verified
       .map((candidate) =>
         this.normalizeResourcePeerHash(candidate.destinationHash)
@@ -28138,21 +29111,34 @@ export class ReticulumChatManager extends EventEmitter {
           this.hasCurrentPeerSubscription(peer, groupId, now)
         );
       });
+    return {
+      groupId,
+      local: this.localPeerHash() ?? '',
+      subscribedPeers,
+      endpointsByAuthor,
+    };
+  }
+
+  private authorGapCandidatesFromContext(
+    ctx: AuthorGapCandidateContext,
+    range: ReticulumChatAuthorRange,
+    preferredPeer = ''
+  ): string[] {
+    const authorPeers = new Set(ctx.endpointsByAuthor.get(range.a) ?? []);
     const normalizedPreferred = this.normalizeResourcePeerHash(preferredPeer);
     const preferredIsAttributable = Boolean(
       normalizedPreferred &&
       (authorPeers.has(normalizedPreferred) ||
-        subscribedPeers.includes(normalizedPreferred))
+        ctx.subscribedPeers.includes(normalizedPreferred))
     );
     const candidates = [
       ...authorPeers,
       ...(preferredIsAttributable && normalizedPreferred
         ? [normalizedPreferred]
         : []),
-      ...subscribedPeers,
+      ...ctx.subscribedPeers,
     ];
-    const local = this.localPeerHash() ?? '';
-    return [...new Set(candidates)].filter((peer) => peer !== local);
+    return [...new Set(candidates)].filter((peer) => peer !== ctx.local);
   }
 
   private countUnavailableAuthorGapCandidates(
@@ -28174,167 +29160,380 @@ export class ReticulumChatManager extends EventEmitter {
     ).length;
   }
 
-  private processBackgroundAuthorGapRepair(): void {
-    if (this.isClosed) return;
-    const now = this.now();
-    this.expirePendingAuthorRangeRequests(now);
-    let sent = 0;
-    let skipped = 0;
-    let scanned = 0;
-    const attemptedGroups = new Set<number>();
-    const activeRepairGroups = this.activeAuthorGapRepairGroups(now);
-    for (const [groupId, retryAt] of this
-      .backgroundAuthorGapGroupNextAttemptAt) {
-      if (retryAt <= now) {
-        this.backgroundAuthorGapGroupNextAttemptAt.delete(groupId);
-      }
+  /** Own account addresses: the local group signers and the DM accounts. */
+  private ownAuthorGapAddresses(): Set<string> {
+    const own = new Set<string>();
+    for (const address of this.localGroupAddresses.values()) {
+      if (address) own.add(address);
     }
-    for (
-      let pass = 0;
-      pass < 5 && sent < RETICULUM_CHAT_BACKGROUND_AUTHOR_GAP_REPAIR_LIMIT;
-      pass += 1
+    for (const address of this.localDmAddresses) {
+      if (address) own.add(address);
+    }
+    return own;
+  }
+
+  /**
+   * Next background author-gap scanner wake, computed in memory from the
+   * group gates and each group's earliest row; untried rows are never pushed
+   * forward. Rows without a preferred peer never wake it.
+   */
+  private nextBackgroundAuthorGapWakeAt(now = this.now()): number | null {
+    const groups = [...this.localGroupIds].filter((groupId) =>
+      this.subscribedGroups.has(groupId)
+    );
+    if (groups.length === 0) return null;
+    const rowNextByGroup = this.db.getNextMissingRangeAttemptsByGroup(groups);
+    if (rowNextByGroup.size === 0) return null;
+    const active = this.activeAuthorGapRepairGroups(now);
+    let wakeAt: number | null = null;
+    for (const [groupId, rowNext] of rowNextByGroup) {
+      const gate = Math.max(
+        this.backgroundAuthorGapGroupNextAttemptAt.get(groupId) ?? 0,
+        active.has(groupId)
+          ? now + RETICULUM_CHAT_BACKGROUND_AUTHOR_GAP_GROUP_INTERVAL_MS
+          : 0
+      );
+      const groupWake = Math.max(rowNext, gate);
+      if (wakeAt == null || groupWake < wakeAt) wakeAt = groupWake;
+    }
+    return wakeAt;
+  }
+
+  private noteBackgroundAuthorGapRun(run: {
+    durationMs: number;
+    writes: number;
+    sent: number;
+    tried: number;
+    scanned: number;
+    eligible: number;
+    failed: boolean;
+  }): void {
+    const s = this.backgroundAuthorGapRunStats;
+    s.runs += 1;
+    if (run.failed) s.failedRuns += 1;
+    if (run.durationMs > RETICULUM_CHAT_BACKGROUND_AUTHOR_GAP_SLOW_RUN_MS) {
+      s.slowRuns += 1;
+    }
+    s.lastRunAt = this.now();
+    s.lastDurationMs = run.durationMs;
+    s.maxDurationMs = Math.max(s.maxDurationMs, run.durationMs);
+    s.lastWrites = run.writes;
+    s.totalWrites += run.writes;
+    s.lastSent = run.sent;
+    s.totalSent += run.sent;
+    s.lastTried = run.tried;
+    s.lastScanned = run.scanned;
+    s.lastEligibleGroups = run.eligible;
+    s.recentRunAt.push(s.lastRunAt);
+    if (
+      s.recentRunAt.length > RETICULUM_CHAT_BACKGROUND_AUTHOR_GAP_RUN_HISTORY
     ) {
-      const ranges = this.db.getReadyMissingRanges(now, 100);
-      if (ranges.length === 0) break;
-      scanned += ranges.length;
-      for (const range of ranges) {
-        if (
-          !this.localGroupIds.has(range.groupId) ||
-          !this.subscribedGroups.has(range.groupId)
-        ) {
-          this.db.scheduleMissingRange(
-            range.groupId,
-            range.authorAddress,
-            range.authorStreamId,
-            range.fromSeq,
-            range.toSeq,
-            range.preferredPeer,
-            now + RETICULUM_CHAT_BACKGROUND_AUTHOR_GAP_REPAIR_INTERVAL_MS
-          );
-          skipped += 1;
-          continue;
-        }
-        const groupRetryAt =
-          this.backgroundAuthorGapGroupNextAttemptAt.get(range.groupId) ?? 0;
-        const activeGroupRepair = activeRepairGroups.has(range.groupId);
-        if (
-          attemptedGroups.has(range.groupId) ||
-          activeGroupRepair ||
-          groupRetryAt > now
-        ) {
-          this.db.scheduleMissingRange(
-            range.groupId,
-            range.authorAddress,
-            range.authorStreamId,
-            range.fromSeq,
-            range.toSeq,
-            range.preferredPeer,
-            Math.max(
-              groupRetryAt,
-              now +
-                (activeGroupRepair
-                  ? RETICULUM_CHAT_BACKGROUND_AUTHOR_GAP_GROUP_INTERVAL_MS
-                  : RETICULUM_CHAT_BACKGROUND_AUTHOR_GAP_REPAIR_MIN_RETRY_MS)
-            )
-          );
-          skipped += 1;
-          continue;
-        }
-        const requestedRange = {
-          a: range.authorAddress,
-          s: range.authorStreamId,
-          from: range.fromSeq,
-          to: range.toSeq,
-        };
-        // A failed peer lookup can be almost as expensive as starting a Link.
-        // Count it as this group's attempt for the current pass so a group
-        // with many unresolved rows cannot monopolize the repair scan while
-        // no attributable provider is reachable.
-        attemptedGroups.add(range.groupId);
-        const nextGroupAttemptAt =
-          now + RETICULUM_CHAT_BACKGROUND_AUTHOR_GAP_GROUP_INTERVAL_MS;
-        this.backgroundAuthorGapGroupNextAttemptAt.set(
-          range.groupId,
-          nextGroupAttemptAt
-        );
-        const peer = this.selectAuthorGapRepairPeer(
-          range.groupId,
-          requestedRange,
-          '',
-          range.preferredPeer
-        );
-        if (!peer) {
-          const routeRetryAt = this.nextAuthorGapRouteRetryAt(
-            range.groupId,
-            now
-          );
-          this.db.scheduleMissingRange(
-            range.groupId,
-            range.authorAddress,
-            range.authorStreamId,
-            range.fromSeq,
-            range.toSeq,
-            range.preferredPeer,
-            routeRetryAt ?? nextGroupAttemptAt
-          );
-          skipped += 1;
-          continue;
-        }
-        const sentBefore = sent;
-        sent += this.sendAuthorRangeRepairRequests(
-          range.groupId,
-          peer,
-          [requestedRange],
-          'background_author_gap'
-        );
-        if (sent > sentBefore) {
-          activeRepairGroups.add(range.groupId);
-          // One successful page can satisfy every stored range that overlaps
-          // it. Keep those aliases behind the active request rather than
-          // opening redundant resource links to other providers.
-          for (const overlap of this.db.getMissingRangeOverlaps(
-            range.groupId,
-            range.authorAddress,
-            range.authorStreamId,
-            range.fromSeq,
-            range.toSeq
-          )) {
-            if (
-              overlap.fromSeq === range.fromSeq &&
-              overlap.toSeq === range.toSeq
-            ) {
-              continue;
-            }
-            this.db.scheduleMissingRange(
-              overlap.groupId,
-              overlap.authorAddress,
-              overlap.authorStreamId,
-              overlap.fromSeq,
-              overlap.toSeq,
-              overlap.preferredPeer || peer,
-              now + RETICULUM_CHAT_AUTHOR_GAP_RESPONSE_TIMEOUT_MS
-            );
-          }
-        }
-        if (sent >= RETICULUM_CHAT_BACKGROUND_AUTHOR_GAP_REPAIR_LIMIT) break;
-      }
-    }
-    if (sent > 0) {
-      loggerLog(
-        `[ReticulumChat] background_author_gap_repair sent=${sent} skipped=${skipped} scanned=${scanned}`
+      s.recentRunAt.splice(
+        0,
+        s.recentRunAt.length - RETICULUM_CHAT_BACKGROUND_AUTHOR_GAP_RUN_HISTORY
       );
     }
-    const nextAttemptAt = this.db.getNextMissingRangeAttemptAt(
-      [...this.localGroupIds].filter((groupId) =>
-        this.subscribedGroups.has(groupId)
-      )
-    );
-    if (nextAttemptAt != null) {
-      this.scheduleBackgroundAuthorGapRepair(
-        Math.max(
+  }
+
+  /**
+   * Copy diagnostics: background author-gap scanner counters plus the
+   * missing-range rows by state. Read-only: counters change only inside
+   * scanner runs, and the row aggregate runs only here.
+   */
+  getAuthorGapScannerDiagnostics(): ReticulumChatAuthorGapScannerDiagnostics {
+    const now = this.now();
+    const s = this.backgroundAuthorGapRunStats;
+    let rows: ReticulumChatMissingRangeStateCounts | null = null;
+    try {
+      rows = this.db.getMissingRangeStateCounts({
+        now,
+        eligibleGroupIds: [...this.localGroupIds].filter((groupId) =>
+          this.subscribedGroups.has(groupId)
+        ),
+        backoffUntil:
+          now + Math.max(...RETICULUM_CHAT_AUTHOR_GAP_BACKOFF_MS) + 60_000,
+        oldBefore: now - RETICULUM_CHAT_SERVE_MAX_AGE_MS,
+      });
+    } catch {
+      rows = null;
+    }
+    return {
+      runsSinceBoot: s.runs,
+      runsLastMinute: s.recentRunAt.filter((at) => now - at < 60_000).length,
+      slowRuns: s.slowRuns,
+      failedRuns: s.failedRuns,
+      lastRunAgoMs: s.runs ? Math.max(0, now - s.lastRunAt) : null,
+      lastDurationMs: s.lastDurationMs,
+      maxDurationMs: s.maxDurationMs,
+      lastWrites: s.lastWrites,
+      totalWrites: s.totalWrites,
+      lastSent: s.lastSent,
+      totalSent: s.totalSent,
+      lastTried: s.lastTried,
+      lastScanned: s.lastScanned,
+      lastEligibleGroups: s.lastEligibleGroups,
+      nextWakeInMs: this.backgroundAuthorGapRepairTimer
+        ? Math.max(0, this.backgroundAuthorGapRepairDueAt - now)
+        : null,
+      rows,
+    };
+  }
+
+  /**
+   * Copy diagnostics: resource event queue, event pulls, history serve queue
+   * and the relay flag. Read-only: no writes, logs, timers or events.
+   */
+  getEngineQueueDiagnostics(): ReticulumChatEngineQueueDiagnostics {
+    const now = this.now();
+    let oldest = Number.POSITIVE_INFINITY;
+    for (const item of this.chatResourceItems.values()) {
+      const enqueuedAt = Number(item?.enqueuedAt);
+      if (Number.isFinite(enqueuedAt) && enqueuedAt < oldest) {
+        oldest = enqueuedAt;
+      }
+    }
+    const stats = this.chatResourceQueueStats;
+    return {
+      chatResource: {
+        queued: this.chatResourceQueue.length,
+        items: this.chatResourceItems.size,
+        oldestQueuedMs: Number.isFinite(oldest)
+          ? Math.max(0, now - oldest)
+          : null,
+        active: this.chatResourceQueueActive,
+        processed: Number(stats.processed) || 0,
+        coalesced: Number(stats.coalesced) || 0,
+        dropped: Number(stats.dropped) || 0,
+        protectedOverflow: Number(stats.protectedOverflow) || 0,
+      },
+      eventPulls: {
+        pending: this.pendingEventPulls.size,
+        requested: this.requestedEventPulls.size,
+      },
+      historyServeQueue: this.historyPageServeQueue.length,
+      relayGroupControl: this.relayGroupControl,
+    };
+  }
+
+  private processBackgroundAuthorGapRepair(): void {
+    if (this.isClosed) return;
+    // Drop own-row stall flags of groups that left or were unsubscribed.
+    for (const groupId of this.backgroundAuthorGapOwnRowStalledGroups) {
+      if (
+        !this.localGroupIds.has(groupId) ||
+        !this.subscribedGroups.has(groupId)
+      ) {
+        this.backgroundAuthorGapOwnRowStalledGroups.delete(groupId);
+      }
+    }
+    const startedPerf = performance.now();
+    const writesBefore = this.db.getMissingRangeWriteCount();
+    const now = this.now();
+    let sent = 0;
+    let tried = 0;
+    let scanned = 0;
+    let eligibleCount = 0;
+    let failure: unknown = null;
+    try {
+      // One batch: claims and no-peer retries commit together (about 5 OPFS
+      // flushes on GO instead of 5 per row); a run that writes nothing costs
+      // none. Untried rows are not written at all.
+      this.db.runWriteBatch(() => {
+        this.expirePendingAuthorRangeRequests(now);
+        for (const [groupId, retryAt] of this
+          .backgroundAuthorGapGroupNextAttemptAt) {
+          if (retryAt <= now) {
+            this.backgroundAuthorGapGroupNextAttemptAt.delete(groupId);
+          }
+        }
+        const activeRepairGroups = this.activeAuthorGapRepairGroups(now);
+        // Eligible = local, subscribed, no repair in flight, outside its 5 s
+        // interval.
+        const eligible = [...this.localGroupIds].filter(
+          (groupId) =>
+            this.subscribedGroups.has(groupId) &&
+            !activeRepairGroups.has(groupId) &&
+            !this.backgroundAuthorGapGroupNextAttemptAt.has(groupId)
+        );
+        eligibleCount = eligible.length;
+        if (eligible.length === 0) return;
+        const pick = this.db.getBackgroundMissingRangeCandidates(
+          now,
+          eligible,
+          this.ownAuthorGapAddresses()
+        );
+        scanned = pick.scanned;
+        // Groups whose mirror check budget ran out before they had a pick
+        // are gated like tried groups; the next run checks the rest.
+        const attempted = new Set<number>(pick.staleGroupIds);
+        const noPeer: Array<{
+          range: ReticulumChatMissingRangeState;
+          retryAt: number | null;
+        }> = [];
+        // Open chat first, then own-account picks, then oldest due. Within a
+        // group the own row goes first unless its last pick stalled; then
+        // the plain oldest row gets the turn, so an unrepairable own row
+        // takes at most half of them.
+        const ordered = [...pick.candidates.entries()]
+          .map(([groupId, candidate]) => {
+            const own =
+              candidate.ownOldest != null &&
+              !this.backgroundAuthorGapOwnRowStalledGroups.has(groupId);
+            return {
+              groupId,
+              own,
+              open: this.isOpenChatGroup(groupId),
+              range: own ? candidate.ownOldest! : candidate.oldest,
+            };
+          })
+          .sort(
+            (a, b) =>
+              Number(b.open) - Number(a.open) ||
+              Number(b.own) - Number(a.own) ||
+              a.range.nextAttemptAt - b.range.nextAttemptAt ||
+              a.groupId - b.groupId
+          );
+        for (const { groupId, own, range } of ordered) {
+          if (
+            sent >= RETICULUM_CHAT_BACKGROUND_AUTHOR_GAP_REPAIR_LIMIT ||
+            tried >= RETICULUM_CHAT_BACKGROUND_AUTHOR_GAP_MAX_GROUPS_PER_RUN
+          ) {
+            break;
+          }
+          tried += 1;
+          // A failed peer lookup can be almost as expensive as starting a
+          // Link. Count it as this group's attempt so a group with many
+          // unresolved rows cannot monopolize the scan while no attributable
+          // provider is reachable.
+          attempted.add(groupId);
+          const requestedRange = {
+            a: range.authorAddress,
+            s: range.authorStreamId,
+            from: range.fromSeq,
+            to: range.toSeq,
+          };
+          const peer = this.selectAuthorGapRepairPeer(
+            groupId,
+            requestedRange,
+            '',
+            range.preferredPeer
+          );
+          let sentForGroup = 0;
+          if (!peer) {
+            noPeer.push({
+              range,
+              retryAt: this.nextAuthorGapRouteRetryAt(groupId, now),
+            });
+          } else {
+            sentForGroup = this.sendAuthorRangeRepairRequests(
+              groupId,
+              peer,
+              [requestedRange],
+              'background_author_gap'
+            );
+            sent += sentForGroup;
+            if (sentForGroup > 0) {
+              // One successful page can satisfy every stored range that
+              // overlaps it. Keep those aliases behind the active request
+              // rather than opening redundant resource links to other
+              // providers.
+              for (const overlap of this.db.getMissingRangeOverlaps(
+                groupId,
+                range.authorAddress,
+                range.authorStreamId,
+                range.fromSeq,
+                range.toSeq
+              )) {
+                if (
+                  overlap.fromSeq === range.fromSeq &&
+                  overlap.toSeq === range.toSeq
+                ) {
+                  continue;
+                }
+                this.db.scheduleMissingRange(
+                  overlap.groupId,
+                  overlap.authorAddress,
+                  overlap.authorStreamId,
+                  overlap.fromSeq,
+                  overlap.toSeq,
+                  overlap.preferredPeer || peer,
+                  now + RETICULUM_CHAT_AUTHOR_GAP_RESPONSE_TIMEOUT_MS
+                );
+              }
+            }
+          }
+          if (own && sentForGroup === 0) {
+            this.backgroundAuthorGapOwnRowStalledGroups.add(groupId);
+          } else {
+            this.backgroundAuthorGapOwnRowStalledGroups.delete(groupId);
+          }
+        }
+        // Gates and no-peer retries count from the END of the run, so a slow
+        // run cannot leave everything due again at once.
+        const finishedAt = this.now();
+        const nextGroupAttemptAt =
+          finishedAt + RETICULUM_CHAT_BACKGROUND_AUTHOR_GAP_GROUP_INTERVAL_MS;
+        for (const { range, retryAt } of noPeer) {
+          this.db.scheduleMissingRange(
+            range.groupId,
+            range.authorAddress,
+            range.authorStreamId,
+            range.fromSeq,
+            range.toSeq,
+            range.preferredPeer,
+            retryAt ?? nextGroupAttemptAt
+          );
+        }
+        for (const groupId of attempted) {
+          this.backgroundAuthorGapGroupNextAttemptAt.set(
+            groupId,
+            nextGroupAttemptAt
+          );
+        }
+      });
+    } catch (error) {
+      failure = error;
+    }
+    let nextDelayMs: number | null = null;
+    if (failure == null) {
+      const wakeAt = this.nextBackgroundAuthorGapWakeAt();
+      if (wakeAt != null) {
+        nextDelayMs = Math.max(
           RETICULUM_CHAT_BACKGROUND_AUTHOR_GAP_REPAIR_MIN_RETRY_MS,
-          nextAttemptAt - this.now()
-        )
+          wakeAt - this.now()
+        );
+      }
+    } else {
+      // SQLite rolled back (an exception, a shim corruption repair, or
+      // SQLITE_BUSY on a shared desktop DB). Retry in a minute instead of
+      // dying in an uncaught timer error; other triggers can wake it sooner.
+      nextDelayMs = RETICULUM_CHAT_BACKGROUND_AUTHOR_GAP_REPAIR_INTERVAL_MS;
+    }
+    if (nextDelayMs != null) {
+      this.scheduleBackgroundAuthorGapRepair(nextDelayMs);
+    }
+    const durationMs = Math.round(performance.now() - startedPerf);
+    const writes = this.db.getMissingRangeWriteCount() - writesBefore;
+    this.noteBackgroundAuthorGapRun({
+      durationMs,
+      writes,
+      sent,
+      tried,
+      scanned,
+      eligible: eligibleCount,
+      failed: failure != null,
+    });
+    if (failure != null) {
+      loggerWarn(
+        `[ReticulumChat] background_author_gap_repair_failed duration_ms=${durationMs} writes=${writes}:`,
+        failure
+      );
+    } else if (
+      sent > 0 ||
+      durationMs > RETICULUM_CHAT_BACKGROUND_AUTHOR_GAP_SLOW_RUN_MS
+    ) {
+      loggerLog(
+        `[ReticulumChat] background_author_gap_repair sent=${sent} skipped=${Math.max(0, scanned - tried)} scanned=${scanned} tried=${tried} groups=${eligibleCount} writes=${writes} duration_ms=${durationMs} next_ms=${nextDelayMs ?? 'none'}`
       );
     }
   }
@@ -30095,6 +31294,7 @@ export class ReticulumChatManager extends EventEmitter {
         this.noteDmPeerSpoke(event);
       }
       if (ownEvent) this.scheduleOwnOutboxStateRefresh();
+      if (ownEvent) this.startOwnSelfDmPostDelivery(event);
       this.scheduleNextDirectExpiry();
       const storedEvent = this.db.getDirectEvent(event.eventId) ?? event;
       this.syncDirectResourceReferences(storedEvent, ownEvent);
@@ -30114,7 +31314,7 @@ export class ReticulumChatManager extends EventEmitter {
       const peerAddress = this.localDmAddresses.has(event.senderAddress)
         ? event.recipientAddress
         : event.senderAddress;
-      this.emitDirectEventIfVisible(emittedEvent);
+      this.emitDirectEventIfVisible(this.directEventForRenderer(emittedEvent));
       this.emit('directSummaryChanged', {
         conversationId: event.conversationId,
         peerAddress,
@@ -30179,6 +31379,9 @@ export class ReticulumChatManager extends EventEmitter {
       }
       this.queueChannelMetadataProjection(event);
       this.recordPublicGroupActivity(event);
+      // Before the local notify, so the renderer's copy carries it, and
+      // before the fanout, so a page served in between is tracked too.
+      if (ownEvent) this.startOwnGroupPostDelivery(event);
       this.writeLocalEventNotification(event);
       if (options.emitSummary !== false) {
         this.emitSummaryChanged(event.groupId, event);
@@ -31235,6 +32438,10 @@ export class ReticulumChatManager extends EventEmitter {
     groupId: number,
     address: string
   ): Promise<boolean | null> {
+    if (this.ownMembershipLocalFirst) {
+      const own = await this.ownMembershipFromLocalList(groupId, address);
+      if (own !== undefined) return own;
+    }
     const isMember = await this.getCoreValidatedGroupMembership(
       groupId,
       address
@@ -31245,7 +32452,147 @@ export class ReticulumChatManager extends EventEmitter {
     // still come from the membership list the host pushed for this account.
     // The unavailable marker stays so Core is asked again, nothing is cached
     // as a Core answer, and an explicit Core `false` is never overridden.
-    return this.isLocalSignerGroupMember(groupId, address.trim()) ? true : null;
+    // After a Core "not a member" (ownMembershipLocalFirst) the list is not
+    // trusted for that group until Core says member again.
+    const normalized = address.trim();
+    return this.isLocalSignerGroupMember(groupId, normalized) &&
+      !this.ownMembershipCoreDenied.has(`${groupId}:${normalized}`)
+      ? true
+      : null;
+  }
+
+  /**
+   * ownMembershipLocalFirst: the local signer's own membership from the
+   * pushed list. A cached Core answer is returned as is (a Core `false` wins);
+   * after a Core "not a member" the list is not trusted for that group until
+   * Core says member. Otherwise answer `true` now and ask Core in the
+   * background: the same request the awaited path makes (one in flight per
+   * key, none for 10 s after a failure), so no extra Core traffic.
+   * `undefined` = not the local signer here; the caller uses Core.
+   */
+  private async ownMembershipFromLocalList(
+    groupId: number,
+    address: string
+  ): Promise<boolean | null | undefined> {
+    if (!this.validateGroupMember) return undefined;
+    if (!Number.isInteger(groupId) || groupId <= 0) return undefined;
+    const normalized = String(address || '').trim();
+    if (!normalized) return undefined;
+    if (!this.localGroupMembershipsInitialized) {
+      if (!this.localDmAddresses.has(normalized)) return undefined;
+      // A fresh Core answer needs no wait: the Core path returns it at once.
+      const bootCached = this.groupMemberValidationCache.get(
+        `${groupId}:${normalized}`
+      );
+      if (bootCached && bootCached.expiresAt > this.now()) return undefined;
+      // Boot: the page pushes the list a moment after sign-in. Ask Core now
+      // (the awaited path below joins this request) and give the list a short
+      // head start instead of refusing our own Hub. A Core answer that comes
+      // first ends the wait; the Core path then returns it from the cache.
+      const prewarm = this.getCoreValidatedGroupMembership(
+        groupId,
+        normalized,
+        true
+      );
+      const outcome = await this.waitForLocalGroupMemberships(
+        RETICULUM_CHAT_OWN_MEMBERSHIP_BOOT_WAIT_MS,
+        prewarm
+      );
+      if (this.isClosed || outcome === 'core') return undefined;
+      const ready = outcome === 'ready';
+      this.countDelivery(
+        ready ? 'ownMembershipBootWaitReady' : 'ownMembershipBootWaitTimeout'
+      );
+      if (!ready) {
+        if (!this.ownMembershipBootWaitTimeoutLogged) {
+          this.ownMembershipBootWaitTimeoutLogged = true;
+          loggerWarn(
+            `[ReticulumChat] own_membership_boot_wait_timeout group=${groupId} wait_ms=${RETICULUM_CHAT_OWN_MEMBERSHIP_BOOT_WAIT_MS}: group list not pushed yet, asking Core`
+          );
+        }
+        return undefined;
+      }
+    }
+    if (!this.isLocalSignerGroupMember(groupId, normalized)) return undefined;
+    const cacheKey = `${groupId}:${normalized}`;
+    const cached = this.groupMemberValidationCache.get(cacheKey);
+    if (cached && cached.expiresAt > this.now()) return cached.isMember;
+    if (this.ownMembershipCoreDenied.has(cacheKey)) return undefined;
+    void this.getCoreValidatedGroupMembership(groupId, normalized, true);
+    this.countDelivery('ownMembershipLocalAnswer');
+    return true;
+  }
+
+  /**
+   * One-shot boot wait for the first setLocalGroupMemberships (no timer
+   * otherwise). It also ends when coreAnswer resolves to a Core answer
+   * (true/false); a Core null keeps waiting for the list.
+   */
+  private waitForLocalGroupMemberships(
+    maxMs: number,
+    coreAnswer?: Promise<boolean | null>
+  ): Promise<'ready' | 'core' | 'timeout'> {
+    if (this.localGroupMembershipsInitialized) return Promise.resolve('ready');
+    if (this.isClosed) return Promise.resolve('timeout');
+    return new Promise<'ready' | 'core' | 'timeout'>((resolve) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let settled = false;
+      const done = (outcome: 'ready' | 'core' | 'timeout'): void => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        this.localGroupMembershipWaiters.delete(onReady);
+        resolve(outcome);
+      };
+      const onReady = (): void =>
+        done(
+          this.localGroupMembershipsInitialized && !this.isClosed
+            ? 'ready'
+            : 'timeout'
+        );
+      this.localGroupMembershipWaiters.add(onReady);
+      timer = setTimeout(() => done('timeout'), Math.max(0, maxMs));
+      timer.unref?.();
+      coreAnswer?.then(
+        (isMember) => {
+          if (isMember !== null) done('core');
+        },
+        () => undefined
+      );
+    });
+  }
+
+  private releaseLocalGroupMembershipWaiters(): void {
+    for (const onReady of [...this.localGroupMembershipWaiters]) onReady();
+  }
+
+  /**
+   * ownMembershipLocalFirst: a Core answer for the local signer's own
+   * (group, address). "Not a member" stops the pushed list from answering for
+   * it; "member" lifts that again.
+   */
+  private noteOwnMembershipCoreAnswer(
+    groupId: number,
+    normalizedAddress: string,
+    cacheKey: string,
+    isMember: boolean
+  ): void {
+    if (!this.ownMembershipLocalFirst) return;
+    if (isMember) {
+      this.ownMembershipCoreDenied.delete(cacheKey);
+      return;
+    }
+    if (
+      this.ownMembershipCoreDenied.has(cacheKey) ||
+      !this.isLocalSignerGroupMember(groupId, normalizedAddress)
+    ) {
+      return;
+    }
+    this.ownMembershipCoreDenied.set(cacheKey, this.now());
+    this.countDelivery('ownMembershipCoreDenied');
+    loggerWarn(
+      `[ReticulumChat] own_membership_core_denied group=${groupId}: Core says the local signer is not a member; the group list is not trusted for it until Core says member`
+    );
   }
 
   private isLocalSignerGroupMember(
@@ -31268,7 +32615,8 @@ export class ReticulumChatManager extends EventEmitter {
 
   private async getCoreValidatedGroupMembership(
     groupId: number,
-    address: string
+    address: string,
+    background = false
   ): Promise<boolean | null> {
     if (!Number.isInteger(groupId) || groupId <= 0) return false;
     const normalizedAddress = address.trim();
@@ -31298,7 +32646,7 @@ export class ReticulumChatManager extends EventEmitter {
           cacheKey
         );
         loggerWarn(
-          `[ReticulumChat] Group membership validation failed for group=${groupId} address=${normalizedAddress}:`,
+          `[ReticulumChat] Group membership validation failed for group=${groupId} address=${normalizedAddress}${background ? ' background=1' : ''}:`,
           err
         );
         return null;
@@ -31309,7 +32657,7 @@ export class ReticulumChatManager extends EventEmitter {
           cacheKey
         );
         loggerWarn(
-          `[ReticulumChat] Group membership validation unavailable for group=${groupId} address=${normalizedAddress}`
+          `[ReticulumChat] Group membership validation unavailable for group=${groupId} address=${normalizedAddress}${background ? ' background=1' : ''}`
         );
         return null;
       }
@@ -31318,6 +32666,12 @@ export class ReticulumChatManager extends EventEmitter {
         expiresAt: this.now() + RETICULUM_CHAT_MEMBER_CACHE_TTL_MS,
       });
       this.groupMemberValidationUnavailableUntil.delete(cacheKey);
+      this.noteOwnMembershipCoreAnswer(
+        groupId,
+        normalizedAddress,
+        cacheKey,
+        isMember
+      );
       // Core answers again, so events that were backing off on an
       // unavailable membership check for this group can retry now.
       this.wakeMembershipDeferredEventPulls(groupId);
@@ -43850,6 +45204,11 @@ export class ReticulumChatManager extends EventEmitter {
         typeof payload.reason === 'string' ? payload.reason : '',
         payload.providerTiming
       );
+      this.settleOwnPostServe(
+        payload.transferId,
+        payload.status === 'sent',
+        payload.peerPresenceHash
+      );
       const calendarResource = this.outboundCalendarResources.get(
         payload.transferId
       );
@@ -45136,6 +46495,7 @@ export class ReticulumChatManager extends EventEmitter {
       );
       if (!invalidPageAborted) {
         if (insertedCount > 0 && offer.digestRepairFingerprint) {
+          this.noteDigestPageRepairProgress(offer.groupId, insertedCount);
           this.reconcileDigestRepairsAfterProgress(
             offer.groupId,
             payload.transferId,
@@ -46737,6 +48097,16 @@ export class ReticulumChatManager extends EventEmitter {
       eventId: event.eventId,
       expiresAt,
     });
+    // An own tracked post: its terminal 'sent' proves the requester's node
+    // got it from here. Remembered before the call (as for DM pages).
+    this.trackOwnPostServe(
+      payload.transferId,
+      event.groupId,
+      [event],
+      request.authorAddress,
+      authenticatedPeerHash,
+      'live'
+    );
     const authorized = await this.bridge.authorizeReticulumChatResourceDetailed(
       {
         linkId: payload.linkId,
@@ -46744,6 +48114,7 @@ export class ReticulumChatManager extends EventEmitter {
       }
     );
     if (!authorized.ok) {
+      this.forgetRefusedOwnPostServe(payload.transferId, authorized);
       this.cleanupOutboundControlResource(payload.transferId);
       loggerWarn(
         `[ReticulumChat] linked_event_authorize_failed group=${event.groupId} event=${event.eventId} peer=${authenticatedPeerHash.slice(0, 16)} reason=${reticulumResultReason(authorized)}`
@@ -47170,6 +48541,8 @@ export class ReticulumChatManager extends EventEmitter {
   ): void {
     const now = this.now();
     this.dmPageDeliveries.delete(transferId);
+    // A group serve track left on this id must not settle on the DM page.
+    this.ownPostServeDeliveries.delete(transferId);
     this.dmPageDeliveries.set(transferId, {
       ...track,
       authorizedAt: now,
@@ -47238,10 +48611,447 @@ export class ReticulumChatManager extends EventEmitter {
         track.authenticatedPeerHash,
         events
       );
+      if (this.trackOwnPostDelivery) {
+        this.noteOwnSelfDmDeviceFetch(track.requesterAddress, now);
+        this.markOwnSelfDmPostDelivery(track, transferId, events, now);
+      }
     }
     loggerLog(
       `[ReticulumChat] dm_page_link_delivered conversation=${track.conversationId.slice(0, 16)} requester=${track.requesterAddress} peer=${peer} transfer=${transferId} after_ms=${Math.max(0, now - track.authorizedAt)} events=${track.eventIds.length} marked=${marked} ${timing}`
     );
+  }
+
+  /**
+   * trackOwnPostDelivery: the in-memory copy, once at start. Rows older than
+   * the 30 day history limit are dropped first.
+   */
+  private loadOwnPostDeliveries(): void {
+    const now = this.now();
+    const cutoff = now - RETICULUM_CHAT_MAX_AGE_MS;
+    this.ownPostDeliveryAgeSweptAt = now;
+    try {
+      this.db.pruneOwnPostDelivery(cutoff);
+      for (const record of this.db.listOwnPostDelivery(cutoff)) {
+        this.ownPostDeliveries.set(record.eventId, {
+          scope: record.scope,
+          ...(record.groupId !== null ? { groupId: record.groupId } : {}),
+          ...(record.channelId !== null ? { channelId: record.channelId } : {}),
+          ...(record.conversationId !== null
+            ? { conversationId: record.conversationId }
+            : {}),
+          author: record.authorAddress,
+          since: record.createdAt,
+          ...(record.ownDeviceAt !== null
+            ? { ownDeviceAt: record.ownDeviceAt }
+            : {}),
+          ...(record.memberAt !== null ? { memberAt: record.memberAt } : {}),
+        });
+        if (record.scope === 'self_dm' && record.ownDeviceAt !== null) {
+          this.noteOwnSelfDmDeviceFetch(
+            record.authorAddress,
+            record.ownDeviceAt
+          );
+        }
+      }
+    } catch (error) {
+      loggerWarn('[ReticulumChat] own_post_delivery_load_failed:', error);
+    }
+  }
+
+  /**
+   * An own post this device just wrote: one row (a failed write only costs
+   * the proof after a restart) and the Map entry. No backfill: posts from
+   * before the option, or written on another device, are never tracked.
+   */
+  private startOwnPostDelivery(
+    eventId: string,
+    entry: ReticulumOwnPostDeliveryEntry
+  ): void {
+    if (this.ownPostDeliveries.has(eventId)) return;
+    this.sweepOwnPostDeliveriesByAge(entry.since);
+    try {
+      this.db.startOwnPostDelivery({
+        eventId,
+        scope: entry.scope,
+        groupId: entry.groupId,
+        channelId: entry.channelId,
+        conversationId: entry.conversationId,
+        authorAddress: entry.author,
+        createdAt: entry.since,
+      });
+    } catch (error) {
+      loggerWarn(
+        `[ReticulumChat] own_post_delivery_start_failed scope=${entry.scope} event=${eventId.slice(0, 12)}:`,
+        error
+      );
+    }
+    this.ownPostDeliveries.set(eventId, entry);
+  }
+
+  /** Group messages and attachments, thread replies included. */
+  private startOwnGroupPostDelivery(event: ReticulumChatEvent): void {
+    if (
+      !this.trackOwnPostDelivery ||
+      (event.eventType !== 'message' &&
+        event.eventType !== 'attachment_manifest')
+    ) {
+      return;
+    }
+    this.startOwnPostDelivery(event.eventId, {
+      scope: 'group',
+      groupId: event.groupId,
+      channelId: normalizeReticulumChatChannelId(event.channelId),
+      author: event.authorAddress,
+      since: this.now(),
+    });
+  }
+
+  /**
+   * A Saved Messages post. Only for an account known to have another device:
+   * one pulled its Saved Messages from here in the last 30 days, or one
+   * holds a current endpoint lease (the devices this one pins for Saved
+   * Messages). A phone on its own would otherwise show every post as not
+   * picked up. The pull history keeps posts written while the Hub sleeps,
+   * or before presence is up after a cold start, tracked.
+   */
+  private startOwnSelfDmPostDelivery(event: ReticulumDmEvent): void {
+    if (
+      !this.trackOwnPostDelivery ||
+      event.eventType !== 'message' ||
+      event.senderAddress !== event.recipientAddress ||
+      !this.localDmAddresses.has(event.senderAddress) ||
+      !this.hasOtherOwnSelfDmDevice(event.senderAddress)
+    ) {
+      return;
+    }
+    this.startOwnPostDelivery(event.eventId, {
+      scope: 'self_dm',
+      conversationId: event.conversationId,
+      author: event.senderAddress,
+      since: this.now(),
+    });
+  }
+
+  private hasOtherOwnSelfDmDevice(ownerAddress: string): boolean {
+    const fetchedAt = this.ownSelfDmDeviceFetchedAt.get(ownerAddress);
+    if (fetchedAt && this.now() - fetchedAt < RETICULUM_CHAT_MAX_AGE_MS) {
+      return true;
+    }
+    return this.selfDmWarmLinkPeers().some(
+      (peer) => peer.accountAddress === ownerAddress
+    );
+  }
+
+  private noteOwnSelfDmDeviceFetch(ownerAddress: string, at: number): void {
+    if ((this.ownSelfDmDeviceFetchedAt.get(ownerAddress) ?? 0) >= at) return;
+    this.ownSelfDmDeviceFetchedAt.set(ownerAddress, at);
+  }
+
+  /**
+   * Drops Map entries past the 30 day history limit (oldest first, so it
+   * stops at the first younger one), at most hourly and only on a new post.
+   */
+  private sweepOwnPostDeliveriesByAge(now: number): void {
+    if (
+      now - this.ownPostDeliveryAgeSweptAt <
+      RETICULUM_CHAT_OWN_POST_DELIVERY_AGE_SWEEP_MS
+    ) {
+      return;
+    }
+    this.ownPostDeliveryAgeSweptAt = now;
+    const cutoff = now - RETICULUM_CHAT_MAX_AGE_MS;
+    let removed = 0;
+    for (const [eventId, entry] of this.ownPostDeliveries) {
+      if (entry.since >= cutoff) break;
+      this.ownPostDeliveries.delete(eventId);
+      removed += 1;
+    }
+    if (removed === 0) return;
+    try {
+      this.db.pruneOwnPostDelivery(cutoff);
+    } catch (error) {
+      loggerWarn('[ReticulumChat] own_post_delivery_prune_failed:', error);
+    }
+  }
+
+  /**
+   * Whether a fetch by `requesterAddress` would still tell us something: an
+   * own device's first fetch before any member's, or a member's first fetch.
+   */
+  private ownPostDeliveryOpen(
+    entry: ReticulumOwnPostDeliveryEntry,
+    requesterAddress: string
+  ): boolean {
+    if (entry.memberAt) return false;
+    return requesterAddress === entry.author ? !entry.ownDeviceAt : true;
+  }
+
+  /**
+   * Who a history page serve can be credited to: its signed requester, but
+   * only when the link peer the bytes are bound to is one of that account's
+   * devices (a current endpoint lease). Else '' (proves nothing).
+   */
+  private ownPostPageRequester(
+    requesterAddress: string,
+    peerHash: string
+  ): string {
+    if (!this.trackOwnPostDelivery || this.ownPostDeliveries.size === 0) {
+      return '';
+    }
+    const peer =
+      this.routePeerHash(peerHash) ??
+      this.normalizeResourcePeerHash(peerHash) ??
+      '';
+    if (!peer || peer === this.localPeerHash()) return '';
+    return this.getVerifiedDmPeerHashes(requesterAddress).includes(peer)
+      ? requesterAddress
+      : '';
+  }
+
+  /**
+   * Remembers which own tracked posts a group serve carries, before its
+   * authorize call. Map lookups only; a serve with none is not tracked.
+   * An empty `requesterAddress` (nobody known got the bytes) tracks nothing.
+   */
+  private trackOwnPostServe(
+    transferId: string,
+    groupId: number,
+    events: ReticulumChatEvent[],
+    requesterAddress: string,
+    peerHash: string,
+    via: ReticulumOwnPostServeTrack['via']
+  ): void {
+    if (!this.trackOwnPostDelivery || !transferId) return;
+    // A new serve on this id replaces an older track even when it carries no
+    // tracked post, so that track can never settle on this serve's bytes.
+    this.ownPostServeDeliveries.delete(transferId);
+    if (this.ownPostDeliveries.size === 0 || !requesterAddress || !peerHash) {
+      return;
+    }
+    const eventIds: string[] = [];
+    for (const event of events) {
+      const entry = this.ownPostDeliveries.get(event.eventId);
+      if (
+        entry?.scope === 'group' &&
+        entry.groupId === groupId &&
+        this.ownPostDeliveryOpen(entry, requesterAddress)
+      ) {
+        eventIds.push(event.eventId);
+      }
+    }
+    if (eventIds.length === 0) return;
+    const now = this.now();
+    this.ownPostServeDeliveries.set(transferId, {
+      groupId,
+      eventIds,
+      requesterAddress,
+      peerHash,
+      via,
+      authorizedAt: now,
+      expiresAt: now + RETICULUM_CHAT_OWN_POST_SERVE_TRACK_TTL_MS,
+    });
+    this.pruneOwnPostServeDeliveries(now);
+  }
+
+  private pruneOwnPostServeDeliveries(now = this.now()): void {
+    for (const [transferId, track] of this.ownPostServeDeliveries) {
+      if (track.expiresAt <= now)
+        this.ownPostServeDeliveries.delete(transferId);
+    }
+    while (
+      this.ownPostServeDeliveries.size > RETICULUM_CHAT_OWN_POST_SERVE_TRACK_MAX
+    ) {
+      const oldest = this.ownPostServeDeliveries.keys().next().value as
+        | string
+        | undefined;
+      if (!oldest) break;
+      this.ownPostServeDeliveries.delete(oldest);
+    }
+  }
+
+  /**
+   * The bridge refused a tracked serve's authorize, so that transfer can
+   * never send: its track goes now rather than wait for a terminal on a
+   * reused id. A timeout or exception keeps it (the bridge may have
+   * authorized anyway, and then its 'sent' is a real proof).
+   */
+  private forgetRefusedOwnPostServe(
+    transferId: string,
+    authorized: ReticulumSendResult
+  ): void {
+    if (authorized.ok || this.ownPostServeDeliveries.size === 0) return;
+    const reason = reticulumResultReason(authorized);
+    if (reason === 'bridge-timeout' || reason === 'bridge-exception') return;
+    this.ownPostServeDeliveries.delete(transferId);
+  }
+
+  /**
+   * The bridge's terminal event for a group serve carrying own tracked
+   * posts. Only 'sent' (the requester's RNS stack proved receipt) counts:
+   * a requester signed with the post's author address is an own device, any
+   * other one a member's node. Anything else changes nothing, and so does a
+   * terminal naming another peer than the one the serve was bound to (some
+   * other transfer that reused the id).
+   */
+  private settleOwnPostServe(
+    transferId: string,
+    delivered: boolean,
+    peerPresenceHash?: string
+  ): void {
+    if (this.ownPostServeDeliveries.size === 0) return;
+    const track = this.ownPostServeDeliveries.get(transferId);
+    if (!track) return;
+    this.ownPostServeDeliveries.delete(transferId);
+    if (!delivered || this.isClosed) return;
+    const terminalPeer = String(peerPresenceHash || '')
+      .trim()
+      .toLowerCase();
+    if (terminalPeer && terminalPeer !== track.peerHash.toLowerCase()) return;
+    const now = this.now();
+    const proved = {
+      member: { count: 0, oldestSince: now },
+      own_device: { count: 0, oldestSince: now },
+    };
+    for (const eventId of track.eventIds) {
+      const entry = this.ownPostDeliveries.get(eventId);
+      if (
+        entry?.scope !== 'group' ||
+        !this.ownPostDeliveryOpen(entry, track.requesterAddress)
+      ) {
+        continue;
+      }
+      const kind =
+        track.requesterAddress === entry.author ? 'own_device' : 'member';
+      if (kind === 'own_device') {
+        entry.ownDeviceAt = now;
+        this.queueOwnPostDelivery({
+          eventId,
+          ownDeviceAt: now,
+          proofKind: track.via,
+        });
+      } else {
+        entry.memberAt = now;
+        this.queueOwnPostDelivery({
+          eventId,
+          memberAt: now,
+          memberPeerHash: track.peerHash,
+          proofKind: track.via,
+        });
+      }
+      proved[kind].count += 1;
+      proved[kind].oldestSince = Math.min(
+        proved[kind].oldestSince,
+        entry.since
+      );
+    }
+    for (const kind of ['member', 'own_device'] as const) {
+      const { count, oldestSince } = proved[kind];
+      if (count === 0) continue;
+      this.countDelivery(
+        kind === 'member'
+          ? 'ownPostDeliveredMember'
+          : 'ownPostDeliveredOwnDevice',
+        count
+      );
+      loggerLog(
+        `[ReticulumChat] own_post_delivery_proved scope=group group=${track.groupId} events=${count} kind=${kind} via=${track.via} peer=${track.peerHash.slice(0, 16)} transfer=${transferId} after_ms=${Math.max(0, now - oldestSince)}`
+      );
+    }
+  }
+
+  /**
+   * A delivered Saved Messages page for a verified own device: each tracked
+   * post in the page as sent (and still stored) was fetched from here. A
+   * cursor an own device only named in its notify proves nothing.
+   */
+  private markOwnSelfDmPostDelivery(
+    track: ReticulumDmPageDeliveryTrack,
+    transferId: string,
+    events: ReticulumDmEvent[],
+    now: number
+  ): void {
+    if (this.ownPostDeliveries.size === 0) return;
+    const present = new Set(events.map((event) => event.eventId));
+    let count = 0;
+    let oldestSince = now;
+    for (const eventId of track.eventIds) {
+      const entry = this.ownPostDeliveries.get(eventId);
+      if (
+        entry?.scope !== 'self_dm' ||
+        entry.ownDeviceAt ||
+        entry.author !== track.requesterAddress ||
+        !present.has(eventId)
+      ) {
+        continue;
+      }
+      entry.ownDeviceAt = now;
+      this.queueOwnPostDelivery({
+        eventId,
+        ownDeviceAt: now,
+        proofKind: 'dm_page',
+      });
+      count += 1;
+      oldestSince = Math.min(oldestSince, entry.since);
+    }
+    if (count === 0) return;
+    this.countDelivery('ownPostDeliveredOwnDevice', count);
+    loggerLog(
+      `[ReticulumChat] own_post_delivery_proved scope=self_dm conversation=${track.conversationId.slice(0, 16)} events=${count} kind=own_device via=dm_page peer=${track.authenticatedPeerHash.slice(0, 16)} transfer=${transferId} after_ms=${Math.max(0, now - oldestSince)}`
+    );
+  }
+
+  /** Queues a proof for the next batch; the first one arms the flush. */
+  private queueOwnPostDelivery(mark: ReticulumOwnPostDeliveryMark): void {
+    const queued = this.ownPostDeliveryQueue.get(mark.eventId);
+    this.ownPostDeliveryQueue.set(
+      mark.eventId,
+      queued ? { ...queued, ...mark } : mark
+    );
+    if (this.ownPostDeliveryFlushTimer || this.isClosed) return;
+    this.ownPostDeliveryFlushTimer = setTimeout(() => {
+      this.ownPostDeliveryFlushTimer = null;
+      this.flushOwnPostDeliveries(true);
+    }, RETICULUM_CHAT_OWN_POST_DELIVERY_FLUSH_MS);
+    this.ownPostDeliveryFlushTimer.unref?.();
+  }
+
+  /**
+   * Writes the queued proofs in one transaction and, with `emit`, hands them
+   * to the renderer in one 'ownPostDelivery' event. A failed write keeps the
+   * proofs in memory for this process.
+   */
+  private flushOwnPostDeliveries(emit: boolean): void {
+    if (this.ownPostDeliveryFlushTimer) {
+      clearTimeout(this.ownPostDeliveryFlushTimer);
+      this.ownPostDeliveryFlushTimer = null;
+    }
+    if (this.ownPostDeliveryQueue.size === 0) return;
+    const marks = [...this.ownPostDeliveryQueue.values()];
+    this.ownPostDeliveryQueue.clear();
+    try {
+      this.db.markOwnPostDelivery(marks);
+    } catch (error) {
+      loggerWarn(
+        `[ReticulumChat] own_post_delivery_write_failed events=${marks.length}:`,
+        error
+      );
+    }
+    if (!emit || this.isClosed) return;
+    const updates: ReticulumOwnPostDeliveryUpdate[] = [];
+    for (const mark of marks) {
+      const entry = this.ownPostDeliveries.get(mark.eventId);
+      if (!entry) continue;
+      updates.push({
+        eventId: mark.eventId,
+        scope: entry.scope,
+        ...(entry.scope === 'group'
+          ? { groupId: entry.groupId, channelId: entry.channelId }
+          : { conversationId: entry.conversationId }),
+        ...(entry.ownDeviceAt ? { ownDeviceAt: entry.ownDeviceAt } : {}),
+        ...(entry.memberAt ? { memberAt: entry.memberAt } : {}),
+      });
+    }
+    if (updates.length > 0) this.emit('ownPostDelivery', { updates });
   }
 
   private authorManifestCacheKey(
@@ -47639,6 +49449,16 @@ export class ReticulumChatManager extends EventEmitter {
       await reject('history_page_register_failed');
       return;
     }
+    // Own tracked posts in the range as built (not readableEvents: the
+    // builder drops some of them).
+    this.trackOwnPostServe(
+      payload.transferId,
+      request.groupId,
+      page.pageEvents,
+      request.authorAddress,
+      requesterPeerHash,
+      'range'
+    );
     let authorized: ReticulumSendResult;
     try {
       authorized = await this.bridge.authorizeReticulumChatResourceDetailed({
@@ -47653,6 +49473,7 @@ export class ReticulumChatManager extends EventEmitter {
       };
     }
     if (!authorized.ok) {
+      this.forgetRefusedOwnPostServe(payload.transferId, authorized);
       this.releaseTempEventBlob(payload.transferId, filePath);
       await reject('history_page_authorize_failed');
       loggerWarn(
@@ -48107,6 +49928,18 @@ export class ReticulumChatManager extends EventEmitter {
       this.releaseTempEventBlob(payload.transferId, filePath);
       return;
     }
+    // Own tracked posts in the page as built. request.a is signed, but unlike
+    // a live or range request its signature does not cover the link peer, so
+    // a fresh request can be replayed over someone else's link. The fetch is
+    // credited to request.a only when the link peer is one of its devices.
+    this.trackOwnPostServe(
+      payload.transferId,
+      groupId,
+      pageResource.pageEvents,
+      this.ownPostPageRequester(request.a, requesterPeerHash),
+      requesterPeerHash,
+      'page'
+    );
     let authorized: ReticulumSendResult = { ok: true };
     try {
       authorized = (await this.bridge.authorizeReticulumChatResourceDetailed?.({
@@ -48121,6 +49954,7 @@ export class ReticulumChatManager extends EventEmitter {
       };
     }
     if (!authorized.ok) {
+      this.forgetRefusedOwnPostServe(payload.transferId, authorized);
       this.releaseTempEventBlob(payload.transferId, filePath);
       loggerWarn(
         `[ReticulumChat] history_page_link_authorize_failed group=${groupId} peer=${requesterPeerHash.slice(0, 16)} transfer=${payload.transferId} reason=${reticulumResultReason(authorized)}`
@@ -50143,6 +51977,8 @@ export function startReticulumChatManager(
     | 'relayGroupControl'
     | 'localNotifyScanIntervalMs'
     | 'repairPrematureDmSentOnce'
+    | 'trackOwnPostDelivery'
+    | 'ownMembershipLocalFirst'
   > = {}
 ): ReticulumChatManager {
   if (singleton) {
@@ -50163,6 +51999,8 @@ export function startReticulumChatManager(
     relayGroupControl: options.relayGroupControl,
     localNotifyScanIntervalMs: options.localNotifyScanIntervalMs,
     repairPrematureDmSentOnce: options.repairPrematureDmSentOnce,
+    trackOwnPostDelivery: options.trackOwnPostDelivery,
+    ownMembershipLocalFirst: options.ownMembershipLocalFirst,
   });
   loggerLog('[ReticulumChat] Manager started');
   return singleton;

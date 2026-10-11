@@ -13,7 +13,6 @@ import {
   DialogContent,
   LinearProgress,
   Typography,
-  useMediaQuery,
   useTheme,
 } from '@mui/material';
 import { alpha, type Theme } from '@mui/material/styles';
@@ -53,6 +52,7 @@ import {
 import { BACK_PRIORITY, useAndroidBack } from '../../utils/androidBack';
 import { executeEvent } from '../../utils/events';
 import { SAFE_AREA_BOTTOM, SAFE_AREA_TOP } from '../../utils/mobileSafeArea';
+import { useSheetFullScreen } from '../../layout/goLayout';
 import { getDialogPaperSx } from '../App/dialogSurface';
 import { MobilePanelHeader } from '../Mobile/MobilePanelHeader';
 import {
@@ -549,7 +549,8 @@ function InstallJobCard() {
 export const AppUpdateWindow = () => {
   const theme = useTheme();
   const { t, i18n } = useTranslation(['core']);
-  const fullScreen = useMediaQuery(theme.breakpoints.down('sm'));
+  // Phones and short GO windows (phone landscape) get it full screen.
+  const fullScreen = useSheetFullScreen();
   const open = useAtomValue(appUpdateWindowOpenAtom);
   const offered = useAtomValue(appUpdateReleaseAtom);
   const target = useAtomValue(appUpdateTargetAtom);

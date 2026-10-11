@@ -97,6 +97,17 @@ export const MobileEmojiPanel = ({
           justifyContent: 'center !important',
           justifyItems: 'center !important',
         },
+        // GO landscape and tablets: 8 columns spread across a wide panel
+        // read badly, so fill the width with more of them instead.
+        'html[data-go-width="medium"] & .epr-emoji-category-content, html[data-go-width="expanded"] & .epr-emoji-category-content':
+          {
+            gridTemplateColumns:
+              'repeat(auto-fill, minmax(var(--epr-emoji-fullsize), 1fr)) !important',
+          },
+        // Short screens: the category row would take a third of the panel.
+        'html[data-go-short] & .epr-category-nav': {
+          display: 'none !important',
+        },
         ...(searchLifted
           ? {
               '& .epr-category-nav': { display: 'none !important' },

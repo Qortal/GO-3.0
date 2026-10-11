@@ -12,6 +12,7 @@ import {
 } from '@mui/material/styles';
 import { lightThemeOptions } from '../../styles/theme-light';
 import { darkThemeOptions } from '../../styles/theme-dark';
+import { withGoBreakpoints } from '../../layout/goBreakpoints';
 import i18n from '../../i18n/i18n';
 
 export const ENABLE_CUSTOM_THEMES = false;
@@ -52,10 +53,12 @@ export const ThemeProvider = ({ children }) => {
     const palette =
       themeMode === 'light' ? activeTheme.light : activeTheme.dark;
 
-    return createTheme({
-      ...baseThemeOptions,
-      palette,
-    });
+    return withGoBreakpoints(
+      createTheme({
+        ...baseThemeOptions,
+        palette,
+      })
+    );
   }, [themeMode, currentTheme]);
 
   const saveSettings = (

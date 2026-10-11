@@ -34,7 +34,7 @@ import { SAFE_AREA_TOP } from '../../utils/mobileSafeArea';
 import { isCapacitor } from '../../utils/platform';
 import { isAndroidPackageFile } from '../../utils/androidPackageFiles';
 import { openSavedMobileFile } from '../../utils/mobileFileSave';
-import { installQappFetchReporter } from '../../utils/qappFetchReporter';
+import { installQappFrameScripts } from '../../utils/qappFrameScripts';
 import { startQappFetchProgressListener } from '../../utils/qappFetchProgress';
 import {
   dismissQdnTransfer,
@@ -391,7 +391,7 @@ export function QdnTransfersOverlay() {
 
   useEffect(() => {
     if (!isCapacitor()) return undefined;
-    void installQappFetchReporter();
+    void installQappFrameScripts();
     return startQappFetchProgressListener();
   }, []);
 

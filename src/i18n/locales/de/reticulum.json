@@ -152,7 +152,7 @@
   },
   "image_viewer": {
     "actions": "image actions",
-    "chat_image": "chat image",
+    "chat_image": "Chat-Bild",
     "clipboard_unavailable": "image clipboard is unavailable",
     "close": "close image viewer",
     "copied": "image copied",
@@ -201,6 +201,36 @@
     "subtitle": "Sieht so aus, als wärst du noch in keiner Community. Ändern wir das.",
     "title": "Willkommen beim neuen, verbesserten Q-Chat",
     "whats_new_button": "Was ist neu?"
+  },
+  "post_delivery": {
+    "delivered_member": {
+      "hint": "Der Knoten eines Gruppenmitglieds hat sie von diesem Handy abgerufen. Das heißt nicht, dass sie schon jemand gelesen hat.",
+      "label": "zugestellt"
+    },
+    "delivered_own_device": {
+      "hint": "Dein anderes Gerät (z. B. dein Hub) hat sie von diesem Handy abgerufen.",
+      "label": "zugestellt"
+    },
+    "delivered_own_device_self_dm": {
+      "hint": "Dein anderes Gerät (z. B. dein Hub) hat sie von diesem Handy abgerufen.",
+      "label": "zugestellt"
+    },
+    "not_picked_up": {
+      "hint": "Noch hat kein anderer Knoten sie von diesem Handy abgerufen. Die Knoten der Mitglieder rufen sie ab, wenn sie online kommen und dieses Handy erreichbar ist.",
+      "label": "noch nicht abgerufen"
+    },
+    "not_picked_up_self_dm": {
+      "hint": "Noch hat keines deiner anderen Geräte sie von diesem Handy abgerufen. Sie rufen sie ab, wenn sie online kommen und dieses Handy erreichbar ist.",
+      "label": "noch nicht abgerufen"
+    },
+    "sending": {
+      "hint": "Knoten von Mitgliedern, die online sind, rufen sie meist innerhalb weniger Sekunden ab.",
+      "label": "wird gesendet"
+    },
+    "sending_self_dm": {
+      "hint": "Deine anderen Geräte, die online sind, rufen sie meist innerhalb weniger Sekunden ab.",
+      "label": "wird gesendet"
+    }
   },
   "qapp_preview": {
     "check_again": "check again",
@@ -313,18 +343,25 @@
     }
   },
   "share": {
+    "admins_only": "nur Admins",
     "cancel": "Teilen abbrechen",
     "cannot_write": "in diesem Kanal können nur Admins schreiben: geh zurück und wähle einen anderen Chat",
+    "channel_step_label": "Kanal in {{group}} wählen",
+    "channel_unavailable": "diesen Kanal gibt es nicht mehr: geh zurück und wähle einen anderen",
     "chip_label": "{{what}} zum Teilen: tippe auf einen Chat, um es hinzuzufügen",
+    "chip_label_channel": "{{what}} zum Teilen: tippe auf einen Kanal, um es hinzuzufügen",
     "kind_file": "Datei",
     "kind_link": "Link",
     "kind_photo": "Foto",
     "kind_text": "Text",
     "kind_video": "Video",
+    "loading_channels": "Kanäle werden geladen",
+    "no_channel_to_post": "in den Kanälen dieser Gruppe können nur Admins posten.",
     "notice_extra_files": "nur die erste Datei wurde hinzugefügt: eine Nachricht enthält eine Datei.",
     "notice_too_large": "eine Datei über {{max}} MB wurde weggelassen.",
     "notice_unreadable": "die geteilte Datei konnte nicht gelesen werden.",
     "notice_unsafe_image": "das Bild konnte nicht von Standortdaten bereinigt werden und wurde weggelassen.",
+    "pick_channel": "Kanal wählen",
     "pick_chat": "Chat wählen"
   },
   "status_badge": {

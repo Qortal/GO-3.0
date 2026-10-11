@@ -20,6 +20,7 @@ import {
   getDialogPaperSx,
 } from '../App/dialogSurface';
 import { MOBILE_TABS_DIALOG_Z } from './mobileLayout';
+import { isGoLayout } from '../../layout/goLayout';
 import type { TabFolder } from './mobileTabOrganization';
 import type { OpenTab } from './useOpenTabs';
 
@@ -128,6 +129,9 @@ export function MobileTabOptionsDialog({
 }: MobileTabOptionsDialogProps) {
   const theme = useTheme();
   const isInternal = Boolean(tab?.internal);
+  // GO: the paper caps at the window height and clips (overflow hidden), and
+  // in landscape the rows and folders run past it, so the body scrolls.
+  const scrollBody = isGoLayout();
   let optionIndex = 0;
   const nextDelay = () => 50 + optionIndex++ * 40;
 
@@ -148,10 +152,18 @@ export function MobileTabOptionsDialog({
         sx: {
           ...getDialogPaperSx(theme, { maxWidth: 360, radius: 20 }),
           mx: 'auto',
+          ...(scrollBody ? { display: 'flex', flexDirection: 'column' } : null),
         },
       }}
     >
-      <Box sx={{ px: 2, pt: 1.75, pb: 2 }}>
+      <Box
+        sx={{
+          px: 2,
+          pt: 1.75,
+          pb: 2,
+          ...(scrollBody ? { minHeight: 0, overflowY: 'auto' } : null),
+        }}
+      >
         <Box
           sx={{
             alignItems: 'center',

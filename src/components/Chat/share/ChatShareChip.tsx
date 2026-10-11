@@ -61,13 +61,16 @@ function useSharedPicture(share: PreparedChatShare): string | null {
  * What was shared from another app, while it waits for a chat: in the phone
  * Q-Chat header, where the search, new and settings buttons are. A picture
  * shows as a thumbnail, anything else as its kind; the X drops the share.
- * The chat tapped in the list below takes it.
+ * The chat tapped in the list below takes it; in a group's channel step
+ * (`picking` 'channel'), the channel tapped.
  */
 export function ChatShareChip({
   share,
+  picking = 'chat',
   onCancel,
 }: {
   share: PreparedChatShare;
+  picking?: 'chat' | 'channel';
   onCancel: () => void;
 }) {
   const theme = useTheme();
@@ -87,7 +90,12 @@ export function ChatShareChip({
   return (
     <Box
       role="group"
-      aria-label={t('reticulum:share.chip_label', { ...sentence, what })}
+      aria-label={t(
+        picking === 'channel'
+          ? 'reticulum:share.chip_label_channel'
+          : 'reticulum:share.chip_label',
+        { ...sentence, what }
+      )}
       data-chat-share-chip=""
       sx={{
         '@keyframes chatShareChipIn': {
@@ -147,7 +155,12 @@ export function ChatShareChip({
           noWrap
           sx={{ color: 'text.secondary', fontSize: 11.5, lineHeight: 1.25 }}
         >
-          {t('reticulum:share.pick_chat', sentence)}
+          {t(
+            picking === 'channel'
+              ? 'reticulum:share.pick_channel'
+              : 'reticulum:share.pick_chat',
+            sentence
+          )}
         </Typography>
       </Box>
       <IconButton

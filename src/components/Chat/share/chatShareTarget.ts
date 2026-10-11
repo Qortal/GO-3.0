@@ -9,7 +9,8 @@ import { directDraftKey, groupDraftKey } from '../../../utils/chatPersistence';
 export type ChatShareScope = 'groups' | 'directs' | 'self';
 
 export type ChatShareChat =
-  | { kind: 'group'; groupId: string }
+  /** `channelId`: the channel picked in the share's channel step. */
+  | { kind: 'group'; groupId: string; channelId?: string }
   | { kind: 'dm'; address: string };
 
 /** ShareReceiverPlugin's target for each entry (ShareTrampolineActivity). */

@@ -29,6 +29,8 @@ import ChatBubbleRoundedIcon from '@mui/icons-material/ChatBubbleRounded';
 import { useSetAtom } from 'jotai';
 import { ChatOptions } from './ChatOptions';
 import ErrorBoundary from '../../common/ErrorBoundary';
+import { recordAppError } from '../../utils/appErrorRing';
+import { describeChatRowShape } from './chatRowShape';
 import { useTranslation } from 'react-i18next';
 import { mobileChatHeaderCollapsedAtom } from '../../atoms/global';
 import {
@@ -41,6 +43,8 @@ import {
   collectChatMedia,
   type ChatMediaGallerySource,
 } from './chatMediaGallery';
+import { isGoLayout } from '../../layout/goLayout';
+import { landscapeListPadFor } from './landscapeComposer';
 
 type ReactionItem = {
   sender: string;
@@ -65,6 +69,10 @@ const getReactionLayoutSignature = (reactions: ReactionsMap | null) => {
     .filter(([, count]) => count > 0);
   return visibleReactions.length > 0 ? JSON.stringify(visibleReactions) : '';
 };
+
+// Any row fault is worth a redraw: a remount clears row state (an open
+// who-reacted list), and ErrorBoundary caps the retries.
+const recoverChatRowFault = () => true;
 
 const getMessageTimestampMs = (message: any): number | null => {
   const value = Number(message?.timestamp);
@@ -278,8 +286,12 @@ export const ChatList = ({
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
   const isLandscape = useMediaQuery('(orientation: landscape)');
   // Extra scroll room at the bottom so the last (possibly long) message can be
-  // scrolled clear of the floating landscape composer / pen FAB.
-  const landscapeBottomPad = isMobile && isLandscape ? 96 : 0;
+  // scrolled clear of the floating landscape composer / pen FAB (none on GO).
+  const landscapeBottomPad = landscapeListPadFor({
+    go: isGoLayout(),
+    isMobile,
+    isLandscape,
+  });
   const parentRef = useRef(null);
   const [messages, setMessages] = useState(initialMessages);
   const appliedInitialMessagesRef = useRef(initialMessages);
@@ -1852,6 +1864,8 @@ export const ChatList = ({
               reply.text = edit?.message;
               reply.messageText = edit?.messageText;
               reply.editTimestamp = edit?.timestamp;
+              // The quote shows the edited pictures, like the edited row.
+              if (Array.isArray(edit?.images)) reply.images = edit.images;
             }
           } else if (message?.repliedTo && replyIndex === -1) {
             const editMeta = chatReferences?.[message?.repliedTo]?.edit;
@@ -2250,13 +2264,59 @@ export const ChatList = ({
                         boxSizing: 'border-box',
                       }}
                     >
+                      {/* A row that throws is drawn again, at once a few
+                          times, then whenever its data changes (at most 3
+                          times a minute); the fault and the row's
+                          content-free shape go to Copy diagnostics. */}
                       <ErrorBoundary
+                        name="chat-row"
+                        isRecoverable={recoverChatRowFault}
+                        resetKeys={[
+                          message,
+                          reactions,
+                          reply,
+                          replyExpiredMeta,
+                          isUpdating,
+                        ]}
+                        onCatch={(error, componentStack) =>
+                          recordAppError({
+                            kind: 'caught',
+                            error,
+                            componentStack,
+                            boundary: 'chat-row',
+                            shape: describeChatRowShape({
+                              message,
+                              reactions,
+                              reply,
+                              replyExpiredMeta,
+                              isUpdating,
+                              isGroupedWithPrevious,
+                              index,
+                              total: messages.length,
+                              chatIdentity,
+                            }),
+                          })
+                        }
                         fallback={
                           <Typography>
                             {t('group:message.generic.invalid_data', {
                               postProcess: 'capitalizeFirstChar',
                             })}
                           </Typography>
+                        }
+                        // While a timed retry is pending: an empty box of the
+                        // row's last height, so the list does not jump.
+                        retryFallback={
+                          <Box
+                            aria-hidden
+                            sx={{
+                              height: Math.max(
+                                0,
+                                virtualRow.size -
+                                  (reticulumChatEnabled ? 6 : 20)
+                              ),
+                            }}
+                          />
                         }
                       >
                         {message?.directCallHistory ? (

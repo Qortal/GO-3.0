@@ -1,6 +1,7 @@
 import { createTheme, ThemeOptions } from '@mui/material/styles';
 import { commonThemeOptions, getCommonGlobalStyles } from './theme-common';
 import { APP_BLUE } from './blueMaterial';
+import { withGoBreakpoints } from '../layout/goBreakpoints';
 
 export const darkThemeOptions: ThemeOptions = {
   ...commonThemeOptions,
@@ -109,6 +110,6 @@ export const darkThemeOptions: ThemeOptions = {
   },
 };
 
-const darkTheme = createTheme(darkThemeOptions);
+const darkTheme = withGoBreakpoints(createTheme(darkThemeOptions));
 
 export { darkTheme };

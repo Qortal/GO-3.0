@@ -6,6 +6,7 @@ import { SAFE_AREA_BOTTOM, SAFE_AREA_TOP } from '../../../utils/mobileSafeArea';
 import { immersiveEdgeColorAtom } from './immersiveMode';
 import { listenImmersiveEdge } from './immersiveNative';
 import { IMMERSIVE_EASING } from './useImmersiveBars';
+import { useGoLayout } from '../../../layout/goLayout';
 
 /** Under the floating bars (1200 tab bar, 1250 top bar), over the content. */
 const EDGE_Z = 1190;
@@ -115,6 +116,9 @@ export const ImmersiveEdges = ({
   const nextKeyRef = useRef(0);
   const bottomOut = barsShown && tabBarSlot;
   const sampledOnceRef = useRef(false);
+  // GO: rotation, a fold or a split resize moves the band that is read.
+  const layoutEpoch = useGoLayout((l) => l.epoch);
+  const stableHeight = useGoLayout((l) => l.stableHeight);
 
   // Read between the strips, never the strips themselves. When the bars
   // come or go, wait until they have: mid-slide the content moves through
@@ -156,7 +160,16 @@ export const ImmersiveEdges = ({
       window.clearTimeout(timer);
       stop?.();
     };
-  }, [barsShown, bottomOut, hideMs, setEdgeColor, showMs, topBarHeight]);
+  }, [
+    barsShown,
+    bottomOut,
+    hideMs,
+    layoutEpoch,
+    setEdgeColor,
+    showMs,
+    stableHeight,
+    topBarHeight,
+  ]);
 
   useEffect(() => () => setEdgeColor(null), [setEdgeColor]);
 

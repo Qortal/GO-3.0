@@ -182,6 +182,28 @@ public final class KeepAlivePolicy {
     }
 
     /**
+     * Copy diagnostics name for ACTION_BATTERY_CHANGED's EXTRA_PLUGGED
+     * (BatteryManager.BATTERY_PLUGGED_*): "none", "ac", "usb", "wireless",
+     * "dock", "other" for an unknown value, "unknown" when it is missing.
+     */
+    public static String plugTypeName(int plugged) {
+        switch (plugged) {
+            case 0:
+                return "none";
+            case 1:
+                return "ac";
+            case 2:
+                return "usb";
+            case 4:
+                return "wireless";
+            case 8:
+                return "dock";
+            default:
+                return plugged < 0 ? "unknown" : "other";
+        }
+    }
+
+    /**
      * Charger bookkeeping for {@link #shouldPauseOnBattery}: whether the
      * phone charges, and when it was last unplugged
      * ({@link Inputs#unpluggedAtMs}).

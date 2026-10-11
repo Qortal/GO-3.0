@@ -17,6 +17,12 @@
 
 /** Per-request budget; matches the engine's expectations for a slow node. */
 export const GROUP_VALIDATION_TIMEOUT_MS = 12_000;
+/** An abort timer this late found the worker stalled, not Core slow. */
+export const GROUP_VALIDATION_LATE_TIMER_MS = 1_000;
+/** One extra wait for a reply that may already sit behind that stall. */
+export const GROUP_VALIDATION_GRACE_MS = 1_500;
+/** How many recent answers keep their network / worker-wait times. */
+export const GROUP_VALIDATION_RECENT_TIMINGS = 32;
 
 export type GroupValidationRow = { isMember: boolean; isAdmin: boolean };
 
@@ -124,9 +130,104 @@ export type GroupValidationOutcome = {
   /** `Name: message` of the failure, `null` on success. */
   error: string | null;
   ms: number;
+  /**
+   * Browser-side request time (Resource Timing responseEnd - startTime:
+   * socket wait + Core), unaffected by worker stalls; null/absent when not
+   * measured.
+   */
+  networkMs?: number | null;
+  /** The abort timer ran late (worker stall) and was re-armed once. */
+  graced?: boolean;
+  /** How late that timer ran, ms (graced only). */
+  timerLateMs?: number;
+  /** Ended by the abort timer. */
+  timedOut?: boolean;
 };
 
 type FetchLike = (url: string, init: RequestInit) => Promise<Response>;
+
+type ResourceTimingEntryLike = { startTime: number; responseEnd?: number };
+/** The part of `performance` the network-time read uses (injectable for tests). */
+export type ResourceTimingSource = {
+  now(): number;
+  getEntriesByName(
+    name: string,
+    type?: string
+  ): ArrayLike<ResourceTimingEntryLike>;
+  getEntriesByType?(type: string): ArrayLike<unknown>;
+  clearResourceTimings?(): void;
+};
+
+function defaultResourceTiming(): ResourceTimingSource | null {
+  const perf = (globalThis as { performance?: Partial<ResourceTimingSource> })
+    .performance;
+  return perf &&
+    typeof perf.now === 'function' &&
+    typeof perf.getEntriesByName === 'function'
+    ? (perf as ResourceTimingSource)
+    : null;
+}
+
+const claimedTimingEntries = new WeakSet<object>();
+/** Chromium buffers 250 resource entries, then drops new ones; nothing else in the worker reads them. */
+const RESOURCE_TIMING_CLEAR_AT = 200;
+
+/**
+ * The request's own Resource Timing entry: the earliest unclaimed one for
+ * this URL that started at or after the request did. Null when the browser
+ * keeps none (jsdom, Node, an old WebView) or none matches.
+ */
+function readNetworkMs(
+  perf: ResourceTimingSource | null,
+  url: string,
+  perfStart: number
+): number | null {
+  if (!perf) return null;
+  try {
+    let name = url;
+    try {
+      name = new URL(url).href;
+    } catch {
+      /* keep url */
+    }
+    let best: ResourceTimingEntryLike | null = null;
+    for (const entry of Array.from(perf.getEntriesByName(name, 'resource'))) {
+      if (claimedTimingEntries.has(entry as object)) continue;
+      const end = Number(entry.responseEnd);
+      if (
+        !(entry.startTime >= perfStart - 1) ||
+        !(end > 0) ||
+        end < entry.startTime
+      ) {
+        continue;
+      }
+      if (!best || entry.startTime < best.startTime) best = entry;
+    }
+    if (best) claimedTimingEntries.add(best as object);
+    // Also when nothing matched: a full buffer records no new entries, so
+    // nothing would ever match (and clear it) again.
+    trimResourceTimings(perf);
+    if (!best) return null;
+    return Math.max(0, Math.round(Number(best.responseEnd) - best.startTime));
+  } catch {
+    return null;
+  }
+}
+
+/** Keeps room in the buffer: Chromium drops new entries once it is full. */
+function trimResourceTimings(perf: ResourceTimingSource | null): void {
+  if (!perf) return;
+  try {
+    if (
+      (perf.getEntriesByType?.('resource')?.length ?? 0) >
+      RESOURCE_TIMING_CLEAR_AT
+    ) {
+      perf.clearResourceTimings?.();
+    }
+  } catch {
+    /* timing is best effort */
+  }
+}
 
 /** Run the production request once. Never throws. */
 export async function runGroupValidationRequest(
@@ -137,6 +238,8 @@ export async function runGroupValidationRequest(
     fetchImpl?: FetchLike;
     timeoutMs?: number;
     now?: () => number;
+    /** Network-time source; `undefined` = the global `performance`, `null` = off. */
+    resourceTiming?: ResourceTimingSource | null;
   } = {}
 ): Promise<GroupValidationOutcome> {
   const now = options.now ?? Date.now;
@@ -147,13 +250,41 @@ export async function runGroupValidationRequest(
   const fetchImpl: FetchLike =
     options.fetchImpl ?? ((url, init) => fetch(url, init));
   const timeoutMs = options.timeoutMs ?? GROUP_VALIDATION_TIMEOUT_MS;
+  const perf =
+    options.resourceTiming === undefined
+      ? defaultResourceTiming()
+      : options.resourceTiming;
   const { url, init } = buildGroupValidationRequest(apiBase, groupId, address);
   const controller = new AbortController();
   let timedOut = false;
-  const timer = setTimeout(() => {
+  let graced = false;
+  let timerLateMs = 0;
+  const deadline = started + timeoutMs;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const onTimer = () => {
+    const late = now() - deadline;
+    if (!graced && late > GROUP_VALIDATION_LATE_TIMER_MS) {
+      // The worker was busy past the deadline, so a reply may already be
+      // queued behind this timer task (Chromium runs the late timer first).
+      graced = true;
+      timerLateMs = Math.round(late);
+      timer = setTimeout(onTimer, GROUP_VALIDATION_GRACE_MS);
+      return;
+    }
     timedOut = true;
     controller.abort();
-  }, timeoutMs);
+  };
+  timer = setTimeout(onTimer, timeoutMs);
+  let perfStart = 0;
+  try {
+    perfStart = perf ? perf.now() : 0;
+  } catch {
+    perfStart = 0;
+  }
+  const flags = () => ({
+    ...(graced ? { graced: true, timerLateMs } : {}),
+    ...(timedOut ? { timedOut: true } : {}),
+  });
   let status: number | null = null;
   try {
     const res = await fetchImpl(url, { ...init, signal: controller.signal });
@@ -164,15 +295,20 @@ export async function runGroupValidationRequest(
         status,
         error: `HTTP ${status}`,
         ms: now() - started,
+        networkMs: readNetworkMs(perf, url, perfStart),
+        ...flags(),
       };
     }
     const rows = await res.json();
+    const networkMs = readNetworkMs(perf, url, perfStart);
     if (!Array.isArray(rows)) {
       return {
         row: null,
         status,
         error: 'unexpected response body',
         ms: now() - started,
+        networkMs,
+        ...flags(),
       };
     }
     const row = rows.find(
@@ -183,18 +319,26 @@ export async function runGroupValidationRequest(
       status,
       error: null,
       ms: now() - started,
+      networkMs,
+      ...flags(),
     };
   } catch (err) {
+    // A body that does not parse (a captive portal's HTML) or a network
+    // error leaves its entry unread; keep the buffer from filling up.
+    trimResourceTimings(perf);
     return {
       row: null,
       status,
       error: timedOut
-        ? `AbortError: no answer in ${timeoutMs} ms`
+        ? graced
+          ? `AbortError: no answer in ${timeoutMs} ms (worker stalled ${timerLateMs} ms; grace ${GROUP_VALIDATION_GRACE_MS} ms)`
+          : `AbortError: no answer in ${timeoutMs} ms`
         : describeError(err),
       ms: now() - started,
+      ...flags(),
     };
   } finally {
-    clearTimeout(timer);
+    if (timer) clearTimeout(timer);
   }
 }
 
@@ -210,6 +354,28 @@ export type GroupValidatorStats = {
   lastErrorAt: number | null;
   /** `host:port` of the last request. */
   host: string;
+  // Optional, so reports from an older worker (and old fixtures) still fit.
+  timedOutCount?: number;
+  gracedCount?: number;
+  /** Graced requests that still got their answer. */
+  gracedKeptCount?: number;
+  maxTimerLateMs?: number;
+  /** Most validator fetches in flight at once (Chromium allows 6 per HTTP/1.1 host, shared with the page). */
+  maxInFlight?: number;
+  /** Requests for the local signer's own address. */
+  ownCount?: number;
+  ownUnavailableCount?: number;
+  /** Engine counters merged in at snapshot time (1.4). */
+  ownListAnswers?: number;
+  ownBootWaits?: number;
+  ownBootWaitTimeouts?: number;
+  ownCoreDenied?: number;
+  /**
+   * Last GROUP_VALIDATION_RECENT_TIMINGS answers with a Resource Timing
+   * entry: network time, and the time the answer then waited for the worker.
+   */
+  recentNetworkMs?: number[];
+  recentWorkerWaitMs?: number[];
 };
 
 export function createGroupValidatorStats(): GroupValidatorStats {
@@ -222,6 +388,19 @@ export function createGroupValidatorStats(): GroupValidatorStats {
     lastError: null,
     lastErrorAt: null,
     host: '',
+    timedOutCount: 0,
+    gracedCount: 0,
+    gracedKeptCount: 0,
+    maxTimerLateMs: 0,
+    maxInFlight: 0,
+    ownCount: 0,
+    ownUnavailableCount: 0,
+    ownListAnswers: 0,
+    ownBootWaits: 0,
+    ownBootWaitTimeouts: 0,
+    ownCoreDenied: 0,
+    recentNetworkMs: [],
+    recentWorkerWaitMs: [],
   };
 }
 
@@ -229,7 +408,8 @@ export function recordGroupValidation(
   stats: GroupValidatorStats,
   outcome: GroupValidationOutcome,
   host: string,
-  at = Date.now()
+  at = Date.now(),
+  options: { own?: boolean } = {}
 ): void {
   if (outcome.row) stats.okCount += 1;
   else stats.unavailableCount += 1;
@@ -240,6 +420,36 @@ export function recordGroupValidation(
   if (outcome.error) {
     stats.lastError = outcome.error;
     stats.lastErrorAt = at;
+  }
+  if (outcome.timedOut) stats.timedOutCount = (stats.timedOutCount ?? 0) + 1;
+  if (outcome.graced) {
+    stats.gracedCount = (stats.gracedCount ?? 0) + 1;
+    if (outcome.row) stats.gracedKeptCount = (stats.gracedKeptCount ?? 0) + 1;
+    stats.maxTimerLateMs = Math.max(
+      stats.maxTimerLateMs ?? 0,
+      Math.round(outcome.timerLateMs ?? 0)
+    );
+  }
+  if (options.own) {
+    stats.ownCount = (stats.ownCount ?? 0) + 1;
+    if (!outcome.row) {
+      stats.ownUnavailableCount = (stats.ownUnavailableCount ?? 0) + 1;
+    }
+  }
+  if (
+    typeof outcome.networkMs === 'number' &&
+    Number.isFinite(outcome.networkMs)
+  ) {
+    const net = (stats.recentNetworkMs ??= []);
+    const wait = (stats.recentWorkerWaitMs ??= []);
+    net.push(outcome.networkMs);
+    wait.push(Math.max(0, Math.round(outcome.ms - outcome.networkMs)));
+    if (net.length > GROUP_VALIDATION_RECENT_TIMINGS) {
+      net.splice(0, net.length - GROUP_VALIDATION_RECENT_TIMINGS);
+    }
+    if (wait.length > GROUP_VALIDATION_RECENT_TIMINGS) {
+      wait.splice(0, wait.length - GROUP_VALIDATION_RECENT_TIMINGS);
+    }
   }
 }
 

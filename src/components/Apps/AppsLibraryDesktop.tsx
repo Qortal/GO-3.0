@@ -20,7 +20,6 @@ import {
   InputBase,
   Tooltip,
   styled,
-  useMediaQuery,
   useTheme,
 } from '@mui/material';
 import RefreshIcon from '@mui/icons-material/Refresh';
@@ -57,6 +56,11 @@ import { AppCardEnhanced, AppCardListItem } from './AppCard';
 import { withTabBarSpace } from '../Mobile/mobileBarHeights';
 import { SECTION_SURFACE_TOUCH_ACTION } from '../Mobile/sectionSwipe/sectionSwipe';
 import { PinnedHome } from '../Mobile/tabsHome/PinnedHome';
+import {
+  libraryScrollerMaxWidth,
+  selectGoLibraryWide,
+} from '../Mobile/tabsHome/goTabsGrid';
+import { useGoLayout, useShortLandscape } from '../../layout/goLayout';
 
 const EMPTY_RATINGS_MAP = new Map<string, AppRatingData>();
 
@@ -105,9 +109,11 @@ export const AppsLibraryDesktop = ({
   const [scrollParent, setScrollParent] = useState<HTMLDivElement | null>(null);
   const theme = useTheme();
   // In landscape the big library logo wastes scarce vertical space, so hide it
-  // and let the app grid start higher.
-  const isLandscape = useMediaQuery('(orientation: landscape)');
-  const compactHeader = isMobile && isLandscape;
+  // and let the app grid start higher. GO: only when the window is short, so
+  // tablets in landscape keep the full header.
+  const isShortLandscape = useShortLandscape();
+  const compactHeader = isMobile && isShortLandscape;
+  const wideLibrary = useGoLayout(selectGoLibraryWide);
   const isSearchActive = searchValue.trim().length > 0;
   const showLibraryScrollbar = currentTab === 'community' && !isSearchActive;
   const { t } = useTranslation(['auth', 'core', 'group', 'question']);
@@ -589,7 +595,7 @@ export const AppsLibraryDesktop = ({
             alignItems: 'center',
             boxSizing: 'border-box',
             flex: 1,
-            maxWidth: '1500px',
+            maxWidth: libraryScrollerMaxWidth(wideLibrary),
             minHeight: 0,
             msOverflowStyle: 'none',
             // Only scroll vertically; clipping horizontal overflow keeps app

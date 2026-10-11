@@ -184,6 +184,9 @@ export const TabPreviewCard = memo(function TabPreviewCard({
             overflow: 'hidden',
             position: 'relative',
             width: '100%',
+            // GO short windows: a landscape card, so a whole row of cards
+            // fits under the Tabs header (the picture is landscape too).
+            'html[data-go-short] &': { aspectRatio: '16 / 10' },
           }}
         >
           {snapshot ? (

@@ -19,7 +19,6 @@ import {
   Tooltip,
   Typography,
   alpha,
-  useMediaQuery,
   useTheme,
 } from '@mui/material';
 import { AnimatePresence } from 'framer-motion';
@@ -85,6 +84,7 @@ import {
 } from '../utils/events';
 import { formatDate } from '../utils/time';
 import { SAFE_AREA_BOTTOM, SAFE_AREA_TOP } from '../utils/mobileSafeArea';
+import { useSheetFullScreen } from '../layout/goLayout';
 
 export type GeneralNotificationsHandle = {
   open: () => void;
@@ -204,8 +204,9 @@ export const GeneralNotifications = forwardRef<
   const vendorFreezeBadge = useVendorFreezeBellBadge();
   const theme = useTheme();
   const isDarkMode = theme.palette.mode === 'dark';
-  // Phones get the settings full screen, like GO's other settings screens.
-  const isNarrowSettings = useMediaQuery(theme.breakpoints.down('sm'));
+  // Phones (and short GO windows) get the settings full screen, like GO's
+  // other settings screens.
+  const isNarrowSettings = useSheetFullScreen();
   const { t, i18n } = useTranslation(['core', 'group']);
 
   useEffect(() => {

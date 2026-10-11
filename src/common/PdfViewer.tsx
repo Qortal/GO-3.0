@@ -38,12 +38,25 @@ import {
 } from '../utils/mobileFileSave';
 import { saveFileToDiskGeneric } from '../utils/generateWallet/generateWallet';
 import { normalizeFilename } from '../utils/downloadFromLocation';
-import { QortinoZoomableBox } from '../components/Group/QortinoAgent/QortinoZoomableBox';
+import {
+  QortinoZoomableBox,
+  ZOOMABLE_BOX_LIMITS,
+  type QortinoZoomableBoxControl,
+} from '../components/Group/QortinoAgent/QortinoZoomableBox';
 import {
   applySmartDark,
   pageImageRects,
   type PixelRect,
 } from '../utils/pdfSmartDark';
+import { getGoLayout, isGoLayout, subscribeGoLayout } from '../layout/goLayout';
+import {
+  computePdfFit,
+  computePdfRenderScale,
+  pdfFitBoost,
+  pdfFitChanged,
+  pdfWidthFit,
+  pdfZoomLimits,
+} from './pdfFit';
 
 type OpenPdfDetail = {
   blob?: Blob;
@@ -92,6 +105,98 @@ function savePageLook(look: PageLook) {
   }
 }
 
+/** GO re-fits the page once the page area has stopped resizing this long. */
+const REFIT_DEBOUNCE_MS = 150;
+
+/** Width of the box the page is centred in. */
+const fitBoxWidth = (canvas: HTMLCanvasElement) =>
+  Math.min(
+    canvas.parentElement?.parentElement?.clientWidth ||
+      canvas.parentElement?.clientWidth ||
+      window.innerWidth,
+    window.innerWidth
+  );
+
+/** A page's fit, measured from the page area as it is now. */
+type MeasuredFit = {
+  fit: number;
+  /** Width of the box the page is centred in. */
+  W: number;
+  widthFit: number;
+  renderScale: number;
+  /** The whole page is fitted (GO landscape), not just its width. */
+  contain: boolean;
+};
+
+const measureFit = (
+  canvas: HTMLCanvasElement,
+  area: HTMLElement | null,
+  pageW: number,
+  pageH: number
+): MeasuredFit => {
+  const go = isGoLayout();
+  const input = {
+    W: fitBoxWidth(canvas),
+    H: area?.clientHeight ?? 0,
+    pageW,
+    pageH,
+    go,
+    landscape: go && getGoLayout().landscape,
+  };
+  return {
+    fit: computePdfFit(input),
+    W: input.W,
+    widthFit: pdfWidthFit(input.W, pageW),
+    renderScale: computePdfRenderScale(input),
+    contain: input.landscape,
+  };
+};
+
+/** The page on screen, its fit, and what that was measured from. */
+type DrawnFit = {
+  page: number;
+  fit: number;
+  W: number;
+  pageW: number;
+  pageH: number;
+};
+
+/** How the zoom box treats the shown page (see pdfZoomLimits). */
+type ZoomFit = { boost: number; contain: boolean };
+const WIDTH_ZOOM_FIT: ZoomFit = { boost: 1, contain: false };
+
+/** The zoom box's view of `m`; the same object while nothing changes. */
+const nextZoomFit =
+  (m: MeasuredFit) =>
+  (prev: ZoomFit): ZoomFit => {
+    const boost = pdfFitBoost(m.fit, m.widthFit);
+    return prev.boost === boost && prev.contain === m.contain
+      ? prev
+      : { boost, contain: m.contain };
+  };
+
+/**
+ * Sizes the canvas for `m` and returns what it now shows. With `prevFit`
+ * (the same page in the same window), a zoomed-in page keeps its size on
+ * screen.
+ */
+const showFit = (
+  canvas: HTMLCanvasElement,
+  zoom: QortinoZoomableBoxControl | null,
+  page: number,
+  pageW: number,
+  pageH: number,
+  m: MeasuredFit,
+  prevFit: number | null
+): DrawnFit => {
+  canvas.style.width = `${pageW * m.fit}px`;
+  canvas.style.height = `${pageH * m.fit}px`;
+  if (prevFit && pdfFitChanged(prevFit, m.fit, pageW, pageH)) {
+    zoom?.contentResized(m.fit / prevFit);
+  }
+  return { page, fit: m.fit, W: m.W, pageW, pageH };
+};
+
 /**
  * In-app PDF book reader (page-by-page). Uses bundled pdf.js so Android
  * WebView does not need iframe + blob URL (unreliable on Capacitor).
@@ -110,6 +215,7 @@ export const PdfViewer = () => {
   const [shareKey, setShareKey] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [zoomTick, setZoomTick] = useState(0);
+  const [zoomFit, setZoomFit] = useState<ZoomFit>(WIDTH_ZOOM_FIT);
   const isDarkTheme = useTheme().palette.mode === 'dark';
   const [pickedLook, setPickedLook] = useState<PageLook | null>(readPageLook);
   // Until one is picked: Dim on the dark theme, Light on the light one.
@@ -120,6 +226,11 @@ export const PdfViewer = () => {
   const pageLookRef = useRef(pageLook);
   pageLookRef.current = pageLook;
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const pageAreaRef = useRef<HTMLDivElement | null>(null);
+  const drawnFitRef = useRef<DrawnFit | null>(null);
+  /** The width the newest bitmap is drawn, or being drawn, for. */
+  const renderWRef = useRef(0);
+  const zoomControlRef = useRef<QortinoZoomableBoxControl | null>(null);
   const blobRef = useRef<Blob | null>(null);
   const saveItemRef = useRef<OpenPdfDetail['saveItem']>(null);
   const docRef = useRef<Awaited<
@@ -131,6 +242,7 @@ export const PdfViewer = () => {
   const close = useCallback(() => {
     renderGen.current += 1;
     docRef.current = null;
+    drawnFitRef.current = null;
     blobRef.current = null;
     saveItemRef.current = null;
     turnGateRef.current = null;
@@ -147,6 +259,7 @@ export const PdfViewer = () => {
     setShareKey(null);
     setToast(null);
     setZoomTick(0);
+    setZoomFit(WIDTH_ZOOM_FIT);
     setLookMenu(null);
     setChromeHidden(false);
   }, []);
@@ -171,22 +284,23 @@ export const PdfViewer = () => {
   const renderPage = useCallback((pageNum: number) => {
     const gen = ++renderGen.current;
     const run = async () => {
+      let redraw = false;
       const doc = docRef.current;
       const canvas = canvasRef.current;
       if (!doc || !canvas || gen !== renderGen.current) return;
       try {
         const pdfPage = await doc.getPage(pageNum);
         if (gen !== renderGen.current) return;
-        const containerWidth = Math.min(
-          canvas.parentElement?.parentElement?.clientWidth ||
-            canvas.parentElement?.clientWidth ||
-            window.innerWidth,
-          window.innerWidth
-        );
         const unscaled = pdfPage.getViewport({ scale: 1 });
-        const fit = Math.max(0.75, (containerWidth - 24) / unscaled.width);
-        // Render sharper than fit so pinch zoom stays crisp up to ~2.5×.
-        const scale = fit * 1.75;
+        // A landscape GO window fits the whole page; otherwise the width.
+        const measured = measureFit(
+          canvas,
+          pageAreaRef.current,
+          unscaled.width,
+          unscaled.height
+        );
+        renderWRef.current = measured.W;
+        const scale = measured.renderScale;
         const viewport = pdfPage.getViewport({ scale });
         // Drawn off screen first, so a dark page never flashes white.
         const scratch = document.createElement('canvas');
@@ -234,14 +348,35 @@ export const PdfViewer = () => {
         if (!ctx) return;
         canvas.width = scratch.width;
         canvas.height = scratch.height;
-        // Display at fit width; CSS zoom handles pinch.
-        const displayW = unscaled.width * fit;
-        const displayH = unscaled.height * fit;
-        canvas.style.width = `${displayW}px`;
-        canvas.style.height = `${displayH}px`;
+        // Display at fit; CSS zoom handles pinch. GO measures again: the
+        // window may have turned, or the bars moved, while the page drew.
+        const go = isGoLayout();
+        const shown = go
+          ? measureFit(
+              canvas,
+              pageAreaRef.current,
+              unscaled.width,
+              unscaled.height
+            )
+          : measured;
+        const prev = drawnFitRef.current;
+        drawnFitRef.current = showFit(
+          canvas,
+          zoomControlRef.current,
+          pageNum,
+          unscaled.width,
+          unscaled.height,
+          shown,
+          prev?.page === pageNum && Math.abs(prev.W - shown.W) <= 1
+            ? prev.fit
+            : null
+        );
+        setZoomFit(nextZoomFit(shown));
         ctx.drawImage(scratch, 0, 0);
         scratch.width = 0;
         scratch.height = 0;
+        // Drawn for another width: shown now, drawn again sharp after.
+        redraw = go && Math.abs(shown.W - measured.W) > 1;
       } catch (e) {
         if (gen !== renderGen.current) return;
         setError(e instanceof Error ? e.message : 'Could not render page');
@@ -249,6 +384,7 @@ export const PdfViewer = () => {
         if (gen === renderGen.current) {
           turnDrawnRef.current?.();
           turnDrawnRef.current = null;
+          if (redraw) void renderPage(pageNum);
         }
       }
     };
@@ -325,6 +461,63 @@ export const PdfViewer = () => {
   pageRef.current = page;
   const pageCountRef = useRef(pageCount);
   pageCountRef.current = pageCount;
+
+  // GO: rotation, split screen and the bars sliding away resize the page
+  // area, and the window's orientation can settle a moment later (goLayout
+  // holds it mid-rotation). Once both settle the page takes its new size at
+  // once. A new width (the window changed) starts again at fit and draws a
+  // sharp bitmap for it; a new height (the bars) only changes the shown
+  // size, and a zoomed-in page keeps its size on screen. In portrait the
+  // width decides, so nothing changes.
+  useEffect(() => {
+    if (!open || loading || error || !isGoLayout()) return;
+    const area = pageAreaRef.current;
+    if (!area || typeof ResizeObserver === 'undefined') return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const refit = () => {
+      timer = null;
+      const drawn = drawnFitRef.current;
+      const canvas = canvasRef.current;
+      // Nothing shown yet: the render in flight measures again as it draws.
+      if (!drawn || !canvas) return;
+      const next = measureFit(canvas, area, drawn.pageW, drawn.pageH);
+      const resized = pdfFitChanged(
+        drawn.fit,
+        next.fit,
+        drawn.pageW,
+        drawn.pageH
+      );
+      // Against the newest render, so one already drawing for this width
+      // is not started again.
+      const redraw = Math.abs(next.W - renderWRef.current) > 1;
+      if (!resized && !redraw) return;
+      const newWindow = Math.abs(next.W - drawn.W) > 1;
+      drawnFitRef.current = showFit(
+        canvas,
+        zoomControlRef.current,
+        drawn.page,
+        drawn.pageW,
+        drawn.pageH,
+        next,
+        newWindow ? null : drawn.fit
+      );
+      setZoomFit(nextZoomFit(next));
+      if (newWindow) setZoomTick((t) => t + 1);
+      if (redraw) void renderPage(pageRef.current);
+    };
+    const schedule = () => {
+      if (timer !== null) clearTimeout(timer);
+      timer = setTimeout(refit, REFIT_DEBOUNCE_MS);
+    };
+    const observer = new ResizeObserver(schedule);
+    observer.observe(area);
+    const unsubscribe = subscribeGoLayout(schedule);
+    return () => {
+      observer.disconnect();
+      unsubscribe();
+      if (timer !== null) clearTimeout(timer);
+    };
+  }, [open, loading, error, renderPage]);
 
   const canTurn = (direction: 'next' | 'prev') =>
     direction === 'next'
@@ -426,6 +619,7 @@ export const PdfViewer = () => {
   };
 
   const canHandOff = !!shareKey && Capacitor.isNativePlatform();
+  const zoomLimits = pdfZoomLimits(zoomFit.boost, ZOOMABLE_BOX_LIMITS);
 
   if (!open) return null;
 
@@ -535,6 +729,7 @@ export const PdfViewer = () => {
       </Collapse>
 
       <Box
+        ref={pageAreaRef}
         sx={{
           alignItems: 'center',
           display: 'flex',
@@ -559,7 +754,11 @@ export const PdfViewer = () => {
           </Box>
         ) : (
           <QortinoZoomableBox
+            controlRef={zoomControlRef}
             resetKey={`${page}-${zoomTick}`}
+            maxZoom={zoomLimits.maxZoom}
+            doubleTapScale={zoomLimits.doubleTapScale}
+            clampToContent={zoomFit.contain}
             onSingleTap={() => {
               setLookMenu(null);
               setChromeHidden((hidden) => !hidden);

@@ -65,6 +65,28 @@ export type BackgroundSyncState = {
    * native builds.
    */
   ignoringBatteryOptimizations?: boolean | null;
+  /**
+   * Device facts for Copy diagnostics, read on each call; missing on older
+   * native builds or when the phone cannot say. PowerManager thermal status
+   * 0 (none) to 6 (shutdown), Android 10+ only.
+   */
+  thermalStatus?: number | null;
+  /** Android's battery saver is on. */
+  powerSave?: boolean | null;
+  /** Battery temperature in °C (EXTRA_TEMPERATURE / 10). */
+  batteryTempC?: number | null;
+  /** EXTRA_PLUGGED by name; 'none' on battery, 'unknown' when missing. */
+  plugType?:
+    | 'none'
+    | 'ac'
+    | 'usb'
+    | 'wireless'
+    | 'dock'
+    | 'other'
+    | 'unknown'
+    | null;
+  /** Battery level 0-100. */
+  batteryPct?: number | null;
 };
 
 export type VendorFreezeDetectedEvent = {

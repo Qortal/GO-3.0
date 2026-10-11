@@ -15,6 +15,77 @@ export interface ReticulumStatus {
   txBytes: number;
 }
 
+/**
+ * One Python bridge lane (presence_bridge._scheduler_diagnostics). Maxima,
+ * high-water marks and task counts are cumulative since the bridge started,
+ * which outlives the page. `currentTask` is the kind of the running task
+ * (ids stripped), `runningMs` how long it has run.
+ */
+export type PythonBridgeLaneDetail = {
+  lane: string;
+  queueDepth?: number;
+  queueDepthHighWater?: number;
+  queueMax?: number;
+  dwellMsMax?: number;
+  busyMsMax?: number;
+  droppedTasks?: number;
+  slowTaskCount?: number;
+  completedTasks?: number;
+  currentTask?: string;
+  runningMs?: number;
+};
+
+/**
+ * Python bridge counters for Copy diagnostics (getStatus({ detail: true })).
+ * Only `error` when reading them failed; only `transportStartedAtMs` before
+ * presence_bridge is loaded.
+ */
+export type PythonBridgeDetail = {
+  error?: string;
+  /** RNS.Transport.start_time, epoch ms. */
+  transportStartedAtMs?: number;
+  lanes?: PythonBridgeLaneDetail[];
+  cmdQueue?: number;
+  cmdQueueMax?: number | null;
+  eventQueue?: number;
+  priorityEventQueue?: number;
+  respQueue?: number;
+  /** Time since the RNS executor loop last went round. */
+  executorIdleMs?: number;
+  /** Worst GIL probe lag since the last bridge_pressure log. */
+  gilLagMsMax?: number;
+  providerPendingAuth?: number;
+  providerRefused?: Record<string, number>;
+  jsonOutDrops?: number;
+};
+
+/** BridgeSocketServer.diagnostics(): the worker socket's frame counters. */
+export type KotlinSocketDetail = {
+  clients: number;
+  /** Frames dropped on a full worker queue since the socket started. */
+  dropped: number;
+  queued: number;
+  /** Largest single worker queue now. */
+  queuedMax: number;
+  queueCapacity: number;
+  /** Frames kept for the next worker while none is connected. */
+  handoverFrames: number;
+};
+
+/** Native process facts for Copy diagnostics, present without Python too. */
+export type NativeProcessDetail = {
+  /** When this app process started, epoch ms. */
+  processStartedAtMs?: number;
+  /** Null before the worker socket was first asked for. */
+  socket?: KotlinSocketDetail | null;
+};
+
+/** getStatus({ detail: true }); `bridge` only once the Python bridge started. */
+export type ReticulumStatusDetail = ReticulumStatus & {
+  bridge?: PythonBridgeDetail;
+  native?: NativeProcessDetail;
+};
+
 export interface ReticulumAnnounceEvent {
   destinationHash: string;
 }
@@ -37,8 +108,12 @@ export interface ReticulumPlugin {
   /** Mark the transport status feed active; the bridge itself is started by presenceStart(). */
   start(options?: { networkName?: string }): Promise<ReticulumStatus>;
 
-  /** Current transport status (online, byte counters, announce count). */
-  getStatus(): Promise<ReticulumStatus>;
+  /**
+   * Current transport status (online, byte counters, announce count). The
+   * badge polls it without options. `detail: true` (Copy diagnostics only)
+   * adds `bridge` and `native` counters; older native builds ignore it.
+   */
+  getStatus(options?: { detail?: boolean }): Promise<ReticulumStatusDetail>;
 
   /** Stop the transport and release the network interfaces. */
   stop(): Promise<{ stopped: boolean }>;

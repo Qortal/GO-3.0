@@ -32,16 +32,19 @@ const NEIGHBOR_COOL_DELAY_MS = 600;
 /**
  * The phone lists swipe between Groups and DMs only on the full-screen
  * Q-Chat home: not over an open chat (the list swiped in from the edge has
- * its own swipe to close) and not while the Q-Chat surface is hidden.
+ * its own swipe to close) and not while the Q-Chat surface is hidden. A list
+ * pinned beside the chat (GO two-pane) keeps its swipes.
  */
 export function isChatListSwipeEnabled({
   inChatDetail,
   isVisible,
+  twoPane = false,
 }: {
   inChatDetail: boolean;
   isVisible: boolean;
+  twoPane?: boolean;
 }): boolean {
-  return isVisible && !inChatDetail;
+  return isVisible && (twoPane || !inChatDetail);
 }
 
 /** Runs `run` after `delayMs`, at the next idle moment. Returns a cancel. */

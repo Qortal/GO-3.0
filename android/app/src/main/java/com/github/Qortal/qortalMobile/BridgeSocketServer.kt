@@ -89,6 +89,29 @@ class BridgeSocketServer(
 
     fun clientCount(): Int = clients.size
 
+    /**
+     * Copy diagnostics: read-only counters (connected workers, frames waiting
+     * per worker, frames dropped on a full queue since this server started,
+     * frames kept for the next worker). Changes nothing.
+     */
+    fun diagnostics(): org.json.JSONObject {
+        var queued = 0
+        var largest = 0
+        for (client in clients) {
+            val n = client.queuedFrames()
+            queued += n
+            if (n > largest) largest = n
+        }
+        val kept = synchronized(handoverLock) { handover.size }
+        return org.json.JSONObject()
+            .put("clients", clients.size)
+            .put("dropped", dropped.get())
+            .put("queued", queued)
+            .put("queuedMax", largest)
+            .put("queueCapacity", OUTBOUND_QUEUE_CAPACITY)
+            .put("handoverFrames", kept)
+    }
+
     /** Fan a Python frame out to every connected worker. Never blocks the caller. */
     fun broadcast(frame: String) {
         val held = Held(frame, SystemClock.elapsedRealtime())
@@ -151,6 +174,9 @@ class BridgeSocketServer(
                 Log.w(TAG, "rejecting bridge socket client origin=$origin tokenOk=${presented == token}")
             }
         }
+
+        /** Copy diagnostics: frames waiting for this worker's writer. */
+        fun queuedFrames(): Int = outbound.size
 
         /** Queue a frame for this client; drops the oldest frame if the worker is stalled. */
         fun enqueue(frame: String) {

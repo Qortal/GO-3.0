@@ -35,7 +35,10 @@ export const isCapacitor = (): boolean => {
  */
 export const isGoApp = (): boolean => isCapacitor() && !isElectron();
 
-/** True on a phone-sized viewport (mobile chrome). */
+/**
+ * True on a phone-sized viewport (mobile chrome). GO runs the phone shell at
+ * every size, tablets included.
+ */
 export const isMobileViewport = (): boolean =>
   typeof window !== 'undefined' &&
-  window.matchMedia('(max-width: 899px)').matches;
+  (isGoApp() || window.matchMedia('(max-width: 899px)').matches);

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getPrimaryNamesForAddresses } from '../components/Group/groupApi';
 import { mergeReticulumPayloadWithVerifiedEnvelope } from '../utils/reticulumEventEnvelope';
+import { reticulumPostDeliveryItemFields } from '../components/Chat/reticulumPostDeliveryState';
 import { describeSignerMismatch } from '../utils/reticulumSignerMismatch';
 import { TIME_MONTHS_1_IN_MILLISECONDS } from '../constants/constants';
 import {
@@ -46,6 +47,13 @@ export type ReticulumDmEvent = {
   localOwnEvent?: boolean;
   /** An own device (the home Hub) pulled this pending own event. */
   localOwnDeviceCopiedAt?: number;
+  /**
+   * GO, Saved Messages written on this device: when it was published here,
+   * and when another own device (like the home Hub) fetched it from here.
+   */
+  localPostDeliverySince?: number;
+  localPostOwnDeviceAt?: number;
+  localPostMemberAt?: number;
   expiresAt?: number | null;
 };
 
@@ -178,6 +186,7 @@ export const reticulumDmEventToChatMessage = (event: ReticulumDmEvent) => {
         : event.localDeliveryStatus,
     reticulumDeliveryUpdatedAt: event.localDeliveryUpdatedAt,
     reticulumOwnDeviceCopiedAt: event.localOwnDeviceCopiedAt,
+    ...reticulumPostDeliveryItemFields(event),
     expiresAt:
       event.expiresAt == null || !Number.isFinite(Number(event.expiresAt))
         ? null
@@ -370,6 +379,17 @@ const keepDeliveryProgress = (
   }
   if (existing.localOwnDeviceCopiedAt && !incoming.localOwnDeviceCopiedAt) {
     next = { ...next, localOwnDeviceCopiedAt: existing.localOwnDeviceCopiedAt };
+  }
+  // Saved Messages delivery (GO): the optimistic row has none of it, and a
+  // cached or older copy may lack the own-device fetch seen since.
+  for (const field of [
+    'localPostDeliverySince',
+    'localPostOwnDeviceAt',
+    'localPostMemberAt',
+  ] as const) {
+    if (existing[field] && !incoming[field]) {
+      next = { ...next, [field]: existing[field] };
+    }
   }
   if (
     existing.localOwnEvent !== undefined &&

@@ -30,6 +30,7 @@ vi.mock('../../plugins/QortalBackground', () => ({
 import {
   fetchBackgroundSyncState,
   fetchIgnoringBatteryOptimizations,
+  formatUnlockDeviceDetail,
   normalizeBackgroundSyncState,
   normalizeVendorFreezeEvent,
   normalizeVendorFreezeRecords,
@@ -97,7 +98,176 @@ describe('normalizeBackgroundSyncState', () => {
     expect(normalizeBackgroundSyncState({ mode: 'charging' })).toMatchObject({
       vendorFreezeRecent: [],
       ignoringBatteryOptimizations: null,
+      thermalStatus: null,
+      powerSave: null,
+      batteryTempC: null,
+      plugType: null,
+      batteryPct: null,
     });
+  });
+
+  it('keeps valid device facts', () => {
+    expect(
+      normalizeBackgroundSyncState({
+        mode: 'charging',
+        thermalStatus: 2,
+        powerSave: true,
+        batteryTempC: 31.2,
+        plugType: 'usb',
+        batteryPct: 64,
+      })
+    ).toMatchObject({
+      thermalStatus: 2,
+      powerSave: true,
+      batteryTempC: 31.2,
+      plugType: 'usb',
+      batteryPct: 64,
+    });
+    // The edges of each range, and every plug type native sends.
+    expect(
+      normalizeBackgroundSyncState({
+        thermalStatus: 0,
+        powerSave: false,
+        batteryTempC: -40,
+        plugType: 'none',
+        batteryPct: 0,
+      })
+    ).toMatchObject({
+      thermalStatus: 0,
+      powerSave: false,
+      batteryTempC: -40,
+      plugType: 'none',
+      batteryPct: 0,
+    });
+    expect(
+      normalizeBackgroundSyncState({
+        thermalStatus: 6,
+        batteryTempC: 120,
+        batteryPct: 100,
+      })
+    ).toMatchObject({ thermalStatus: 6, batteryTempC: 120, batteryPct: 100 });
+    for (const plugType of [
+      'none',
+      'ac',
+      'usb',
+      'wireless',
+      'dock',
+      'other',
+      'unknown',
+    ]) {
+      expect(normalizeBackgroundSyncState({ plugType })?.plugType).toBe(
+        plugType
+      );
+    }
+  });
+
+  it('drops device facts that are out of range or the wrong type', () => {
+    expect(
+      normalizeBackgroundSyncState({
+        mode: 'charging',
+        thermalStatus: 9,
+        powerSave: 'yes',
+        batteryTempC: 'hot',
+        plugType: 'magic',
+        batteryPct: 140,
+      })
+    ).toMatchObject({
+      thermalStatus: null,
+      powerSave: null,
+      batteryTempC: null,
+      plugType: null,
+      batteryPct: null,
+    });
+    expect(
+      normalizeBackgroundSyncState({
+        thermalStatus: 1.5,
+        powerSave: 1,
+        batteryTempC: Number.NaN,
+        plugType: 'USB',
+        batteryPct: 64.5,
+      })
+    ).toMatchObject({
+      thermalStatus: null,
+      powerSave: null,
+      batteryTempC: null,
+      plugType: null,
+      batteryPct: null,
+    });
+    expect(
+      normalizeBackgroundSyncState({
+        thermalStatus: -1,
+        batteryTempC: 121,
+        batteryPct: -1,
+      })
+    ).toMatchObject({
+      thermalStatus: null,
+      batteryTempC: null,
+      batteryPct: null,
+    });
+    expect(
+      normalizeBackgroundSyncState({
+        thermalStatus: '2',
+        batteryTempC: '31.2',
+        batteryPct: '64',
+      })
+    ).toMatchObject({
+      thermalStatus: null,
+      batteryTempC: null,
+      batteryPct: null,
+    });
+  });
+});
+
+describe('formatUnlockDeviceDetail', () => {
+  it('summarises the device facts on one line', () => {
+    expect(
+      formatUnlockDeviceDetail(
+        normalizeBackgroundSyncState({
+          charging: true,
+          plugType: 'usb',
+          batteryPct: 64,
+          batteryTempC: 31.2,
+          thermalStatus: 2,
+          powerSave: false,
+        })
+      )
+    ).toBe(
+      'charging usb, battery 64%, 31.2 °C, thermal moderate, power save off'
+    );
+    expect(
+      formatUnlockDeviceDetail(
+        normalizeBackgroundSyncState({
+          charging: false,
+          plugType: 'none',
+          batteryTempC: 38,
+          thermalStatus: 6,
+          powerSave: true,
+        })
+      )
+    ).toBe('on battery, 38.0 °C, thermal shutdown, power save on');
+  });
+
+  it('says unknown for facts a phone does not give', () => {
+    // Android 9: no thermal status.
+    expect(
+      formatUnlockDeviceDetail(
+        normalizeBackgroundSyncState({
+          charging: true,
+          plugType: 'unknown',
+          powerSave: false,
+        })
+      )
+    ).toBe('charging, thermal unknown, power save off');
+  });
+
+  it('gives nothing for an older native build or no state', () => {
+    expect(
+      formatUnlockDeviceDetail(
+        normalizeBackgroundSyncState({ mode: 'charging', charging: true })
+      )
+    ).toBeNull();
+    expect(formatUnlockDeviceDetail(null)).toBeNull();
+    expect(formatUnlockDeviceDetail(undefined)).toBeNull();
   });
 });
 

@@ -210,6 +210,37 @@ describe('isChatListSwipeEnabled', () => {
       isChatListSwipeEnabled({ inChatDetail: false, isVisible: false })
     ).toBe(false);
   });
+
+  it('stays on beside an open chat when the list is pinned (two-pane)', () => {
+    expect(
+      isChatListSwipeEnabled({
+        inChatDetail: true,
+        isVisible: true,
+        twoPane: true,
+      })
+    ).toBe(true);
+    expect(
+      isChatListSwipeEnabled({
+        inChatDetail: false,
+        isVisible: true,
+        twoPane: true,
+      })
+    ).toBe(true);
+    expect(
+      isChatListSwipeEnabled({
+        inChatDetail: true,
+        isVisible: false,
+        twoPane: true,
+      })
+    ).toBe(false);
+    expect(
+      isChatListSwipeEnabled({
+        inChatDetail: true,
+        isVisible: true,
+        twoPane: false,
+      })
+    ).toBe(false);
+  });
 });
 
 describe('MobileChatListPager', () => {

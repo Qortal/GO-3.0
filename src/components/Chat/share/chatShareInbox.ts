@@ -28,6 +28,11 @@ export type ChatShareContent = {
   files: Promise<File[]>;
   /** Told once the share is in the composer. */
   notices: ChatShareNotice[];
+  /**
+   * For a group: the channel picked in the share's channel step, opened
+   * before the share goes in. None: the channel that opens takes it.
+   */
+  channelId?: string;
 };
 
 export const CHAT_SHARE_DELIVER_EVENT = 'chat-share-deliver';

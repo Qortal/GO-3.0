@@ -1,5 +1,30 @@
 import { describe, expect, it, vi } from 'vitest';
 
+// Off Android by default, as jsdom is; the native-bridge probe tests switch it.
+const nativeProbe = vi.hoisted(() => ({
+  platform: 'web',
+  getStatus: vi.fn(async (_options?: unknown): Promise<unknown> => ({})),
+}));
+vi.mock('@capacitor/core', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@capacitor/core')>();
+  return {
+    ...actual,
+    Capacitor: Object.create(actual.Capacitor, {
+      isNativePlatform: { value: () => nativeProbe.platform !== 'web' },
+      getPlatform: { value: () => nativeProbe.platform },
+    }),
+  };
+});
+vi.mock('../../plugins/Reticulum', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('../../plugins/Reticulum')>();
+  return {
+    ...actual,
+    Reticulum: {
+      getStatus: (options?: unknown) => nativeProbe.getStatus(options),
+    },
+  };
+});
 vi.mock('../../reticulumChat/mobile', () => ({
   getMobileReticulumChatDiagnostics: async () => null,
 }));
@@ -11,20 +36,38 @@ vi.mock('../../utils/nativeBcrypt', () => ({
 }));
 
 import { getNativeBcryptRuntimeInfo } from '../../utils/nativeBcrypt';
+import type { EngineSyncHealthSnapshot } from '../../reticulumChat/mobile/engineHost';
+import type { AppErrorDiagnostics } from '../../utils/appErrorRing';
 import {
   buildReticulumDiagnosticsReport,
   collapseEngineLogLines,
   diagnosticsFileName,
   diagnosticsReportToMarkdown,
+  formatAuthorGapScannerLines,
   formatBackgroundSyncLines,
+  formatDeviceLines,
+  formatDigestQueueLines,
+  formatEngineCounterLines,
+  formatEngineLoopLines,
+  formatEngineQueueLines,
   formatMembershipProbeLine,
+  formatNativeRequestLines,
+  formatPythonBridgeLines,
   formatResourceSessionsLine,
+  formatSendAttempts,
+  formatSendTimesLine,
+  formatServingLines,
+  formatSyncHealthLines,
   formatUnlockLines,
   formatValidatorLine,
+  formatValidatorTimingLine,
   isEngineFaultLine,
   jitVerdict,
+  probeNativeBridge,
   probeUnlockRuntime,
   selectEngineLogLines,
+  type BackgroundSyncDiagnostics,
+  type NativeBridgeDiagnostics,
   type ReticulumDiagnosticsInput,
 } from './reticulumDiagnostics';
 
@@ -95,6 +138,10 @@ function readyEngine(
       error: 'TypeError: Failed to fetch',
       ms: 3,
     },
+    // An engine without the sync-health answer, bridge traffic or old RPCs.
+    syncHealth: null,
+    bridgeTraffic: [],
+    oldestRpc: null,
     ...overrides,
   };
 }
@@ -188,6 +235,9 @@ describe('reticulumDiagnostics', () => {
         validator: null,
         resourceSessions: null,
         membershipProbe: null,
+        syncHealth: null,
+        bridgeTraffic: [],
+        oldestRpc: null,
       },
       coreApi: {
         host: '127.0.0.1:12391',
@@ -570,8 +620,14 @@ describe('reticulumDiagnostics', () => {
     });
     const lines = report.split('\n');
     const start = lines.indexOf('--- Unlock ---');
-    // Right after the WebView section.
-    expect(lines[start - 2]).toMatch(/^JS loop probe:/);
+    // After the WebView and Device sections.
+    expect(lines.slice(start - 5, start)).toEqual([
+      expect.stringMatching(/^JS loop probe:/),
+      '',
+      '--- Device ---',
+      'Not reported (not native Android, or an older app)',
+      '',
+    ]);
     expect(lines.slice(start + 1, start + 8)).toEqual([
       'App build: DEBUG (debuggable): on GrapheneOS all Java runs interpreted',
       'Java speed probe: bcrypt cost 6 in 83 ms (compiled is a few ms; 50 ms or more means Java runs interpreted)',
@@ -777,5 +833,1241 @@ describe('reticulumDiagnostics', () => {
     expect(markdown).toContain(
       '`````text\nerror: ```x``` and ````y````\n`````'
     );
+  });
+});
+
+// ── Batch 1 diagnostics (validator, send log, sync health, device, bridge) ──
+
+const NOW = Date.UTC(2026, 9, 11, 23, 40, 0);
+const AT = (h: number, m: number, s: number) => Date.UTC(2026, 9, 11, h, m, s);
+
+const SCANNER = {
+  runsSinceBoot: 412,
+  runsLastMinute: 11,
+  slowRuns: 0,
+  failedRuns: 0,
+  lastRunAgoMs: 4_000,
+  lastDurationMs: 6,
+  maxDurationMs: 48,
+  lastWrites: 2,
+  totalWrites: 310,
+  lastSent: 1,
+  totalSent: 57,
+  lastTried: 3,
+  lastScanned: 12,
+  lastEligibleGroups: 5,
+  nextWakeInMs: 4_200,
+  rows: {
+    source: 'sql' as const,
+    total: 812,
+    notEligible: 52,
+    parked: 400,
+    due: 40,
+    backoff: 300,
+    quarantined: 20,
+    fromSeqOne: 52,
+    noPeer: 30,
+    olderThanServeAge: 210,
+    topGroups: [
+      { groupId: 694, rows: 500, due: 30, eligible: true },
+      { groupId: 581, rows: 52, due: 0, eligible: false },
+    ],
+  },
+};
+
+const DIGEST = {
+  repair: {
+    queued: 3,
+    oldestQueuedMs: 1_311_000,
+    processed: 1234,
+    coalesced: 5000,
+    dropped: 29,
+    byRelation: { ahead: 40, equal: 900, behind: 200, none: 94 },
+    equalHeadSkips: 456,
+    budgetSpent: 12,
+    budgetOpenChat: 1,
+    budgetHeld: 786,
+    budgetSlotBusy: 3,
+    budgetResets: 1,
+    groupsWaiting: 7,
+    maxStreak: 3,
+  },
+  send: {
+    queued: 0,
+    oldestQueuedMs: null,
+    processed: 300,
+    coalesced: 4,
+    dropped: 0,
+  },
+  recent: {
+    minutes: 10,
+    repairProcessed: 120,
+    repairCoalesced: 301,
+    repairDropped: 0,
+    equalHeadSkips: 21,
+    budgetHeld: 50,
+    budgetSpent: 2,
+    sendProcessed: 32,
+    sendCoalesced: 4,
+    sendDropped: 0,
+  },
+};
+
+const DIGEST_LINES = [
+  'Digest repair queue: 3 queued (oldest 22 min); per min (last 10 min): processed 12.0, coalesced 30.1, dropped 0.0',
+  'Digest repair totals: processed 1234 (ahead 40, equal 900, behind 200, no head 94), coalesced 5000, dropped 29',
+  'Digest page repairs: equal-head skips 456 (2.1/min), spent 12 (open chat 1), held 789 (slot busy 3), resets 1; groups waiting 7, longest streak 3',
+  'Digest send queue: 0 queued; per min (last 10 min): processed 3.2, coalesced 0.4, dropped 0.0',
+];
+
+const QUEUES = {
+  chatResource: {
+    queued: 4,
+    items: 4,
+    oldestQueuedMs: 12_300,
+    active: true,
+    processed: 900,
+    coalesced: 30,
+    dropped: 2,
+    protectedOverflow: 1,
+  },
+  eventPulls: { pending: 3, requested: 7 },
+  historyServeQueue: 2,
+  relayGroupControl: false,
+};
+
+const COUNTERS = {
+  ownMembershipLocalAnswer: 85,
+  dmPageDelivered: 40,
+  providerAuthEnded: 12,
+  groupEventPublished: 9,
+  ownDeviceCopied: 5,
+  resumeHook: 4,
+  dmNotifySent: 3,
+  backgroundFlush: 2,
+  selfDmNotifySent: 1,
+  dmLookbackSkipped: 0,
+};
+
+const summary = (n: number, p50: number, p95: number, max: number) => ({
+  n,
+  p50,
+  p95,
+  max,
+  maxAt: AT(23, 38, 36),
+});
+
+const LOOP = {
+  installed: true,
+  since: AT(22, 0, 0),
+  lag: summary(52_000, 3, 800, 9_400),
+  lagRecent: summary(4210, 3, 1_200, 9_400),
+  lagPerMinute: [12, null, 9_400, 30],
+  longestTaskMs: 7_500,
+  longestTaskKind: 'timer' as const,
+  longestTaskAt: AT(23, 38, 29),
+  tasksOver50Ms: 412,
+  tasksOver1s: 37,
+  suspendedCount: 0,
+  suspendedMaxMs: 0,
+};
+
+const NATIVE_REQUESTS = {
+  pending: 7,
+  oldestPending: [
+    { label: 'prepare_reticulum_resource_session', count: 3, oldestMs: 24_100 },
+    { label: 'nativefs:path', count: 1, oldestMs: 12_000 },
+  ],
+  rtt: summary(5_000, 100, 8_000, 25_000),
+  rttRecent: summary(812, 120, 20_000, 25_000),
+  byLabel: [
+    {
+      label: 'prepare_reticulum_resource_session',
+      n: 88,
+      p50: 120,
+      p95: 20_000,
+      max: 25_000,
+      timeouts: 40,
+      late: 33,
+    },
+    { label: 'sign', n: 0, p50: 0, p95: 0, max: 0, timeouts: 1, late: 0 },
+  ],
+  timeouts: 73,
+  lateReplies: 61,
+  lateByMaxMs: 14_000,
+  unmatchedReplies: 0,
+  lostOnClose: 0,
+};
+
+const SERVING = {
+  byType: {
+    reticulum_chat_linked_event: {
+      received: 4,
+      authorized: 4,
+      rejected: 0,
+      failed: 0,
+      late: 0,
+      ended: 0,
+    },
+    reticulum_chat_history_page: {
+      received: 40,
+      authorized: 22,
+      rejected: 3,
+      failed: 6,
+      late: 5,
+      ended: 9,
+    },
+  },
+  endedReasons: { resource_authorization_timeout: 31 },
+  failedReasons: { unknown_resource_request: 6 },
+  totalMs: summary(26, 3_000, 20_000, 26_000),
+  engineMs: summary(26, 2_000, 12_000, 14_000),
+  pythonMs: summary(44, 5, 20, 40),
+  toWorkerMs: summary(44, 500, 5_000, 8_000),
+  waiting: 3,
+  oldestWaitingMs: 9_100,
+};
+
+const HEALTH = {
+  at: NOW,
+  rpcQueueMs: 50,
+  workerStartedAt: AT(22, 0, 0),
+  loop: LOOP,
+  bridgeEvents: {
+    toWorker: summary(20_000, 40, 3_000, 11_000),
+    toWorkerRecent: summary(8123, 40, 5_000, 11_000),
+    pythonQueue: summary(8123, 3, 30, 2_000),
+  },
+  native: NATIVE_REQUESTS,
+  serving: SERVING,
+  engine: {
+    scanner: SCANNER,
+    digestQueues: DIGEST,
+    queues: QUEUES,
+    counters: COUNTERS,
+  },
+  log: {
+    bootFaultOverflow: 230,
+    keyCounts: [
+      {
+        key: 'log:background_author_gap_repair',
+        n: 812,
+        firstAt: AT(22, 57, 41),
+        lastAt: AT(23, 38, 36),
+      },
+    ],
+  },
+} as unknown as EngineSyncHealthSnapshot;
+
+const PYTHON_BRIDGE: NativeBridgeDiagnostics = {
+  bridge: {
+    transportStartedAtMs: AT(22, 0, 0),
+    lanes: [
+      {
+        lane: 'presence',
+        queueDepth: 0,
+        queueDepthHighWater: 3,
+        queueMax: 64,
+        dwellMsMax: 12,
+        busyMsMax: 30,
+        droppedTasks: 0,
+        slowTaskCount: 0,
+        completedTasks: 50,
+      },
+      {
+        lane: 'control-send',
+        queueDepth: 12,
+        queueDepthHighWater: 256,
+        queueMax: 256,
+        dwellMsMax: 31_000,
+        busyMsMax: 1_200,
+        droppedTasks: 0,
+        slowTaskCount: 3,
+        completedTasks: 900,
+        currentTask: 'cmd:send_reticulum_chat',
+        runningMs: 4_100,
+      },
+    ],
+    cmdQueue: 2,
+    cmdQueueMax: 256,
+    eventQueue: 0,
+    priorityEventQueue: 0,
+    respQueue: 1,
+    executorIdleMs: 20,
+    gilLagMsMax: 35,
+    providerPendingAuth: 1,
+    providerRefused: { history: 12 },
+    jsonOutDrops: 0,
+  },
+  processStartedAtMs: AT(21, 58, 0),
+  socket: {
+    clients: 1,
+    dropped: 0,
+    queued: 0,
+    queuedMax: 0,
+    queueCapacity: 8192,
+    handoverFrames: 0,
+  },
+};
+
+const DEVICE_SYNC: BackgroundSyncDiagnostics = {
+  mode: 'charging',
+  ignoringBatteryOptimizations: true,
+  vendorFreezeCount: 0,
+  vendorFreezeRecent: [],
+  charging: true,
+  unmetered: true,
+  relayProfile: 'leaf',
+  keepAliveActive: true,
+  thermalStatus: 2,
+  powerSave: false,
+  batteryTempC: 31.2,
+  plugType: 'usb',
+  batteryPct: 64,
+};
+
+const PARTNER_ADDRESS = 'QRj9ttCJoCmV4kb9GxSHP75ZQWWi7LqPQG';
+
+const APP_ERRORS: AppErrorDiagnostics = {
+  recent: [
+    {
+      firstAt: AT(23, 30, 0),
+      lastAt: AT(23, 31, 0),
+      count: 3,
+      healed: 1,
+      kind: 'caught',
+      boundary: 'chat-row',
+      name: 'TypeError',
+      message: `Cannot read properties of undefined (reading 'length') for ${PARTNER_ADDRESS}`,
+      frames: ['MessageItemComponent@MessageItem-Bx12abCD.js:345:24'],
+      components: ['MessageItem', 'ChatList'],
+      shape: 'surface:group reactions:object last:yes fromEnd:0',
+    },
+  ],
+  fatal: [
+    {
+      at: '2026-10-10T10:00:00.000Z',
+      kind: 'unhandledrejection',
+      message: 'boom "secret text" https://node.example.com/x',
+    },
+  ],
+};
+
+function fullInput(
+  overrides: Partial<ReticulumDiagnosticsInput> = {}
+): ReticulumDiagnosticsInput {
+  return {
+    now: NOW,
+    version: '0.0.17',
+    state: ONLINE_STATE,
+    onlineCount: 51,
+    deviceOnline: true,
+    webView: WEBVIEW,
+    engine: readyEngine({
+      pendingRpcCount: 2,
+      validator: {
+        okCount: 40,
+        unavailableCount: 64,
+        timedOutCount: 50,
+        gracedCount: 12,
+        gracedKeptCount: 9,
+        ownCount: 30,
+        ownUnavailableCount: 12,
+        ownListAnswers: 85,
+        ownCoreDenied: 0,
+        lastStatus: 200,
+        lastMs: 18_300,
+        lastAt: NOW - 8_000,
+        lastError: null,
+        lastErrorAt: null,
+        host: 'localhost:52391',
+        recentNetworkMs: [100, 200, 300],
+        recentWorkerWaitMs: [0, 6_000, 9_000],
+        maxTimerLateMs: 9_000,
+        maxInFlight: 7,
+      },
+      engineLogs: [
+        `${ts(1)} warn [ReticulumChat] Refusing history page group=694: reason=requester_membership_unavailable`,
+      ],
+      syncHealth: HEALTH,
+      bridgeTraffic: [
+        'bridge_traffic 60s out{ send_reticulum_chat=3 } in{ reticulum_chat_message=12 }',
+      ],
+      oldestRpc: { method: 'getDirectHistory', ageMs: 4_100 },
+    } as Partial<EngineDiagnostics>),
+    coreApi: { host: 'localhost:52391', ok: true, httpStatus: 200, ms: 151 },
+    sendFailures: [
+      {
+        at: NOW - 60_000,
+        target: 'group-1',
+        attempts: 2,
+        error: 'x',
+        outcome: 'recovered',
+        attemptLog: [
+          { ms: 45_000, error: 'reticulumChat:publishEvent timed out' },
+          { ms: 120, error: null, duplicate: true },
+        ],
+      },
+    ],
+    sendTimings: [300, 500, 46_000],
+    backgroundSync: DEVICE_SYNC,
+    nativeBridge: PYTHON_BRIDGE,
+    relayProfileSince: NOW - 12 * 60_000,
+    pageStartedAt: AT(22, 0, 0),
+    appErrors: APP_ERRORS,
+    ...overrides,
+  };
+}
+
+/** The lines of one `--- Name ---` section, without its heading. */
+function sectionLines(report: string, name: string): string[] {
+  const lines = report.split('\n');
+  const start = lines.indexOf(`--- ${name} ---`);
+  if (start < 0) return [];
+  const end = lines.findIndex((l, i) => i > start && l.startsWith('--- '));
+  return lines.slice(start + 1, end < 0 ? undefined : end).filter(Boolean);
+}
+
+describe('reticulumDiagnostics validator and send log', () => {
+  it('extends the validator line with timeouts, graces and the own-address share', () => {
+    expect(
+      formatValidatorLine(
+        {
+          okCount: 40,
+          unavailableCount: 64,
+          timedOutCount: 50,
+          gracedCount: 12,
+          gracedKeptCount: 9,
+          ownCount: 30,
+          ownUnavailableCount: 12,
+          ownListAnswers: 85,
+          ownCoreDenied: 0,
+          lastStatus: 200,
+          lastMs: 18_300,
+          lastAt: 92_000,
+          lastError: null,
+          lastErrorAt: null,
+          host: 'h',
+        },
+        100_000
+      )
+    ).toBe(
+      'Membership validator: 40 ok, 64 unavailable (50 timed out), 12 graced (9 kept); own address 30 of 104 requests (12 unavailable), 85 answered from the group list; last HTTP 200 in 18.3 s, 8 s ago via h'
+    );
+    const base = {
+      okCount: 1,
+      unavailableCount: 0,
+      lastStatus: 200,
+      lastMs: 10,
+      lastAt: 90_000,
+      lastError: null,
+      lastErrorAt: null,
+      host: '',
+    };
+    expect(
+      formatValidatorLine(
+        {
+          ...base,
+          ownCount: 1,
+          ownBootWaits: 2,
+          ownBootWaitTimeouts: 1,
+          ownCoreDenied: 3,
+        },
+        100_000
+      )
+    ).toBe(
+      'Membership validator: 1 ok, 0 unavailable; own address 1 of 1 requests, boot waits 2 ok, 1 timed out, Core said not a member 3x; last HTTP 200 in 10 ms, 10 s ago'
+    );
+    expect(
+      formatValidatorLine(
+        { ...base, okCount: 0, ownListAnswers: 4, gracedCount: 0 },
+        100_000
+      )
+    ).toBe(
+      'Membership validator: no checks yet; own address 4 answered from the group list'
+    );
+  });
+
+  it('formats membership timing only when there is something to say', () => {
+    const stats = {
+      okCount: 3,
+      unavailableCount: 0,
+      lastStatus: 200,
+      lastMs: 10,
+      lastAt: 0,
+      lastError: null,
+      lastErrorAt: null,
+      host: 'h',
+    };
+    expect(
+      formatValidatorTimingLine({
+        ...stats,
+        recentNetworkMs: [100, 200, 300],
+        recentWorkerWaitMs: [0, 6_000, 9_000],
+        maxTimerLateMs: 9_000,
+        maxInFlight: 7,
+      })
+    ).toBe(
+      'Membership timing (last 3 answers): network median 200 ms, max 300 ms; waiting on the engine median 6.0 s, max 9.0 s; worst late timer 9.0 s; up to 7 in flight'
+    );
+    expect(formatValidatorTimingLine(null)).toBeNull();
+    expect(formatValidatorTimingLine(stats)).toBeNull();
+    expect(
+      formatValidatorTimingLine({
+        ...stats,
+        recentNetworkMs: [],
+        recentWorkerWaitMs: [],
+        maxTimerLateMs: 0,
+        maxInFlight: 1,
+      })
+    ).toBeNull();
+    // Right after the validator line in the report.
+    const lines = buildReticulumDiagnosticsReport(fullInput()).split('\n');
+    const at = lines.findIndex((l) => l.startsWith('Membership validator:'));
+    expect(lines[at]).toContain('(50 timed out), 12 graced (9 kept)');
+    expect(lines[at + 1]).toBe(
+      'Membership timing (last 3 answers): network median 200 ms, max 300 ms; waiting on the engine median 6.0 s, max 9.0 s; worst late timer 9.0 s; up to 7 in flight'
+    );
+  });
+
+  it('prints every send attempt, recovered sends and the send times', () => {
+    expect(formatSendAttempts(undefined)).toBe('');
+    expect(formatSendAttempts([])).toBe('');
+    expect(
+      formatSendAttempts([
+        { ms: 45_000, error: 'reticulumChat:publishEvent timed out' },
+        { ms: 120, error: null, duplicate: true },
+        { ms: 80, error: null },
+      ])
+    ).toBe(
+      ' [1: 45.0 s reticulumChat:publishEvent timed out; 2: 120 ms ok (already stored); 3: 80 ms ok]'
+    );
+    expect(formatSendTimesLine(undefined)).toBeNull();
+    expect(formatSendTimesLine([Number.NaN])).toBeNull();
+    expect(formatSendTimesLine([300, 500, 46_000])).toBe(
+      'Send times (last 3): median 500 ms, max 46.0 s'
+    );
+    const report = buildReticulumDiagnosticsReport(fullInput());
+    expect(report).toContain(
+      '--- Recent send failures ---\nSend times (last 3): median 500 ms, max 46.0 s\n'
+    );
+    expect(report).toMatch(
+      /target=<id-[0-9a-f]{6}> attempts=2 recovered \[1: 45\.0 s reticulumChat:publishEvent timed out; 2: 120 ms ok \(already stored\)\]/
+    );
+    // A plain failure keeps today's line, plus its attempts when it has them.
+    const failed = buildReticulumDiagnosticsReport(
+      fullInput({
+        sendTimings: [],
+        sendFailures: [
+          { at: NOW, target: 'group-1', attempts: 3, error: 'Invalid event' },
+          {
+            at: NOW,
+            target: 'group-1',
+            attempts: 2,
+            error: 'Invalid event',
+            attemptLog: [
+              { ms: 10, error: 'Invalid event' },
+              { ms: 20, error: 'Invalid event' },
+            ],
+          },
+        ],
+      })
+    );
+    expect(failed).not.toContain('Send times');
+    expect(failed).toMatch(
+      /target=<id-[0-9a-f]{6}> attempts=3: Invalid event\n/
+    );
+    expect(failed).toMatch(
+      /target=<id-[0-9a-f]{6}> attempts=2: Invalid event \[1: 10 ms Invalid event; 2: 20 ms Invalid event\]/
+    );
+  });
+});
+
+describe('reticulumDiagnostics sync health', () => {
+  it('formats the gap scanner, its rows and the top groups', () => {
+    expect(formatAuthorGapScannerLines(SCANNER)).toEqual([
+      'Gap scanner: 11 runs/min (412 since boot), last 6 ms, max 48 ms, slow 0, failed 0; writes last 2 total 310; sent last 1 total 57; next in 4.2 s',
+      'Gap scanner last run: 4.0 s ago, scanned 12 rows, tried 3 of 5 eligible groups',
+      'Gap rows: 812 (due 40, backoff 300, quarantined 20, parked 400, not subscribed 52); from=1 52, no peer 30, older than 29 d 210',
+      'Gap rows top groups: group=694 rows=500 due=30, group=581 rows=52 due=0 not subscribed',
+    ]);
+    expect(formatAuthorGapScannerLines(null)).toEqual([
+      'Gap scanner: not reported',
+    ]);
+    expect(
+      formatAuthorGapScannerLines({
+        ...SCANNER,
+        runsSinceBoot: 0,
+        runsLastMinute: 0,
+        nextWakeInMs: null,
+        rows: null,
+      })
+    ).toEqual([
+      'Gap scanner: 0 runs/min (0 since boot), last 6 ms, max 48 ms, slow 0, failed 0; writes last 2 total 310; sent last 1 total 57; not scheduled',
+      'Gap rows: not reported',
+    ]);
+    expect(
+      formatAuthorGapScannerLines({
+        ...SCANNER,
+        rows: { ...SCANNER.rows, source: 'memory', topGroups: [] },
+      })[2]
+    ).toMatch(/older than 29 d 210 \(memory mirror\)$/);
+  });
+
+  it('formats the digest queues with the D13-5 strings', () => {
+    expect(formatDigestQueueLines(null)).toEqual([
+      'Digest queues: not reported',
+    ]);
+    expect(formatDigestQueueLines(DIGEST)).toEqual(DIGEST_LINES);
+    expect(formatDigestQueueLines({ ...DIGEST, send: undefined })[3]).toBe(
+      'Digest send queue: not reported'
+    );
+  });
+
+  it('formats engine queues and counters', () => {
+    expect(formatEngineQueueLines(QUEUES)).toEqual([
+      'Resource event queue: 4 waiting (oldest 12.3 s), running; processed 900, coalesced 30, dropped 2, protected overflow 1',
+      'Event pulls: 3 pending, 7 requested; history serve queue: 2; group control relaying: off',
+    ]);
+    expect(
+      formatEngineQueueLines({
+        ...QUEUES,
+        chatResource: {
+          ...QUEUES.chatResource,
+          queued: 0,
+          oldestQueuedMs: null,
+          active: false,
+        },
+        relayGroupControl: true,
+      })
+    ).toEqual([
+      'Resource event queue: 0 waiting, idle; processed 900, coalesced 30, dropped 2, protected overflow 1',
+      'Event pulls: 3 pending, 7 requested; history serve queue: 2; group control relaying: on',
+    ]);
+    expect(formatEngineQueueLines(null)).toEqual([
+      'Engine queues: not reported',
+    ]);
+    expect(formatEngineCounterLines(COUNTERS)).toEqual([
+      'Engine counters since start: ownMembershipLocalAnswer=85 dmPageDelivered=40 providerAuthEnded=12 groupEventPublished=9 ownDeviceCopied=5 resumeHook=4 dmNotifySent=3 backgroundFlush=2',
+      '  selfDmNotifySent=1',
+    ]);
+    expect(formatEngineCounterLines({})).toEqual([
+      'Engine counters since start: none',
+    ]);
+    expect(formatEngineCounterLines(undefined)).toEqual([
+      'Engine counters since start: none',
+    ]);
+  });
+
+  it('composes the section and keeps a broken part to its own line', () => {
+    expect(formatSyncHealthLines(HEALTH)).toEqual([
+      ...formatAuthorGapScannerLines(SCANNER),
+      ...DIGEST_LINES,
+      ...formatEngineQueueLines(QUEUES),
+      ...formatEngineCounterLines(COUNTERS),
+    ]);
+    const broken = {
+      ...HEALTH,
+      engineError: 'scanner: fetch https://node.example.com/x failed',
+      engine: {
+        ...HEALTH.engine,
+        scanner: Object.defineProperty({}, 'runsSinceBoot', {
+          get() {
+            throw new Error('boom');
+          },
+        }),
+      },
+    } as unknown as EngineSyncHealthSnapshot;
+    const lines = formatSyncHealthLines(broken);
+    expect(lines[0]).toBe('Engine getter failed: scanner: fetch <url> failed');
+    expect(lines[1]).toBe('Gap scanner: format error');
+    expect(lines.slice(2, 6)).toEqual(DIGEST_LINES);
+    expect(
+      formatSyncHealthLines({
+        ...HEALTH,
+        engine: null,
+      } as unknown as EngineSyncHealthSnapshot)
+    ).toEqual(['Chat manager: not running']);
+  });
+
+  it('reports only the digest lines a manager gives (D13-5 fixture)', () => {
+    const report = readyReport(
+      readyEngine({
+        syncHealth: {
+          ...HEALTH,
+          engine: {
+            digestQueues: DIGEST,
+            scanner: null,
+            queues: null,
+            counters: {},
+          },
+        },
+      } as Partial<EngineDiagnostics>)
+    );
+    const sync = sectionLines(report, 'Sync health');
+    expect(sync).toEqual([
+      'Gap scanner: not reported',
+      ...DIGEST_LINES,
+      'Engine queues: not reported',
+      'Engine counters since start: none',
+    ]);
+    expect(report).toContain('Digest page repairs: equal-head skips 456');
+  });
+});
+
+describe('reticulumDiagnostics engine loop, worker->native and serving', () => {
+  it('formats the engine loop, longest task, RPC wait and bridge events', () => {
+    expect(formatEngineLoopLines(HEALTH, NOW)).toEqual([
+      'Engine loop: lag p50 ~3 ms, p95 ~1.2 s, max 9.4 s at 23:38:36 (last 10 min, 4210 timers); since start p95 ~800 ms, max 9.4 s',
+      'Engine loop per minute (max lag, oldest first): 12 ms, -, 9.4 s, 30 ms',
+      'Longest task: 7.5 s (timer) at 23:38:29; tasks over 1 s: 37, over 50 ms: 412',
+      'Diagnostics request waited 50 ms in the engine queue',
+      'Bridge events: Python queue p95 ~30 ms, max 2.0 s; Python to engine p95 ~5.0 s, max 11.0 s (last 10 min, 8123 events)',
+    ]);
+    const quiet = {
+      ...HEALTH,
+      rpcQueueMs: null,
+      loop: {
+        ...LOOP,
+        lagRecent: null,
+        lagPerMinute: [null, null],
+        longestTaskMs: 0,
+        longestTaskKind: null,
+        longestTaskAt: null,
+        suspendedCount: 2,
+        suspendedMaxMs: 300_000,
+      },
+      bridgeEvents: {
+        toWorker: summary(20_000, 40, 3_000, 11_000),
+        toWorkerRecent: null,
+        pythonQueue: null,
+      },
+    } as unknown as EngineSyncHealthSnapshot;
+    expect(formatEngineLoopLines(quiet, NOW)).toEqual([
+      'Engine loop: no timers in the last 10 min; since start p95 ~800 ms, max 9.4 s at 23:38:36; frozen 2x (a timer 60 s or more late, longest 300.0 s)',
+      'Longest task: none over 50 ms',
+      'Bridge events: Python to engine p95 ~3.0 s, max 11.0 s (since start, 20000 events)',
+    ]);
+    expect(
+      formatEngineLoopLines(
+        {
+          ...HEALTH,
+          loop: { ...LOOP, installed: false },
+          bridgeEvents: {
+            toWorker: null,
+            toWorkerRecent: null,
+            pythonQueue: null,
+          },
+        } as unknown as EngineSyncHealthSnapshot,
+        NOW
+      )
+    ).toEqual([
+      'Engine loop: not measured (probe not installed)',
+      'Engine loop per minute (max lag, oldest first): 12 ms, -, 9.4 s, 30 ms',
+      'Longest task: 7.5 s (timer) at 23:38:29; tasks over 1 s: 37, over 50 ms: 412',
+      'Diagnostics request waited 50 ms in the engine queue',
+      'Bridge events: no samples',
+    ]);
+  });
+
+  it('formats worker->native pending, round trips, timeouts and late replies', () => {
+    expect(formatNativeRequestLines(NATIVE_REQUESTS)).toEqual([
+      'Worker->native: 7 pending (oldest prepare_reticulum_resource_session x3 24.1 s, nativefs:path 12.0 s); round trip p50 ~120 ms, p95 ~20.0 s, max 25.0 s (last 10 min, 812)',
+      'Worker->native since start: timeouts 73, late replies 61 (up to 14.0 s after the timeout), unmatched 0, lost on socket close 0',
+      'Worker->native by command: prepare_reticulum_resource_session n=88 p95 ~20.0 s max 25.0 s timeouts=40 late=33; sign n=0 timeouts=1',
+    ]);
+    expect(
+      formatNativeRequestLines({
+        pending: 0,
+        oldestPending: [],
+        rtt: null,
+        rttRecent: null,
+        byLabel: [],
+        timeouts: 0,
+        lateReplies: 0,
+        lateByMaxMs: 0,
+        unmatchedReplies: 2,
+        lostOnClose: 1,
+      })
+    ).toEqual([
+      'Worker->native: 0 pending; round trip no replies yet',
+      'Worker->native since start: timeouts 0, late replies 0, unmatched 2, lost on socket close 1',
+      'Worker->native by command: none',
+    ]);
+    expect(formatNativeRequestLines(null)).toEqual([
+      'Worker->native: not reported',
+    ]);
+  });
+
+  it('formats serving per type, reasons, step timing and waiting answers', () => {
+    expect(formatServingLines(SERVING)).toEqual([
+      'history_page: received 40, authorized 22, rejected 3, failed 6 (late 5), ended by Python 9',
+      'linked_event: received 4, authorized 4, rejected 0, failed 0, ended by Python 0',
+      'Ended by Python: resource_authorization_timeout=31',
+      'Authorize failures: unknown_resource_request=6',
+      'Timing: arrival to answer p50 ~3.0 s, p95 ~20.0 s, max 26.0 s; Python admission p95 ~20 ms, max 40 ms; Python to engine p95 ~5.0 s, max 8.0 s; in the engine p95 ~12.0 s, max 14.0 s',
+      'Waiting for an answer now: 3 (oldest 9.1 s)',
+    ]);
+    expect(
+      formatServingLines({
+        byType: {},
+        endedReasons: {},
+        failedReasons: {},
+        totalMs: null,
+        engineMs: null,
+        pythonMs: null,
+        toWorkerMs: null,
+        waiting: 0,
+        oldestWaitingMs: null,
+      })
+    ).toEqual([
+      'Requests served: none yet',
+      'Ended by Python: none',
+      'Authorize failures: none',
+      'Timing: no samples',
+      'Waiting for an answer now: 0',
+    ]);
+    expect(formatServingLines(null)).toEqual(['Serving: not reported']);
+  });
+});
+
+describe('reticulumDiagnostics device and native bridge', () => {
+  it('formats the device facts (D8)', () => {
+    expect(
+      formatDeviceLines(
+        DEVICE_SYNC,
+        { since: NOW - 12 * 60_000, pageStartedAt: 0, engineRelaying: false },
+        NOW
+      )
+    ).toEqual([
+      'Power: charging via usb, battery 64%, 31.2 °C, power save off, thermal moderate',
+      'Network: unmetered yes; relay profile leaf since 12 min ago (engine relays group control: no)',
+      'Keep-alive: active',
+    ]);
+    expect(
+      formatDeviceLines(
+        {
+          mode: 'off',
+          ignoringBatteryOptimizations: null,
+          vendorFreezeCount: 0,
+          vendorFreezeRecent: [],
+          charging: false,
+        },
+        { since: null, pageStartedAt: NOW - 300_000, engineRelaying: null },
+        NOW
+      )
+    ).toEqual([
+      'Power: on battery, power save unknown, thermal unknown',
+      'Network: unmetered unknown; relay profile unknown since page start, 5 min ago',
+      'Keep-alive: unknown',
+    ]);
+    expect(
+      formatDeviceLines(
+        null,
+        { since: null, pageStartedAt: 0, engineRelaying: null },
+        NOW
+      )
+    ).toEqual(['Not reported (not native Android, or an older app)']);
+  });
+
+  it('formats the Python bridge lanes, queues and Kotlin socket (D9)', () => {
+    expect(formatPythonBridgeLines(PYTHON_BRIDGE, NOW)).toEqual([
+      'Transport started 22:00:00 (100 min ago); app process started 21:58:00 (102 min ago)',
+      'Queues now: commands 2 of 256, events 0, priority events 0, replies 1; executor idle 20 ms; provider auths waiting 1; GIL lag (recent) 35 ms; event drops 0',
+      'Lanes (max since bridge start, worst dwell first):',
+      '  control-send now 12, high 256 of 256, dwell max 31.0 s, busy max 1.2 s, slow 3, dropped 0, running cmd:send_reticulum_chat 4.1 s',
+      '  (+1 quiet lanes)',
+      'Provider refused: history=12',
+      'Kotlin socket: 1 client(s), queued 0 (largest 0 of 8192), dropped 0, kept for handover 0',
+    ]);
+    expect(
+      formatPythonBridgeLines(
+        {
+          bridge: {
+            lanes: [{ lane: 'presence', dwellMsMax: 3, queueDepth: 0 }],
+          },
+          processStartedAtMs: null,
+          socket: null,
+        },
+        NOW
+      )
+    ).toEqual([
+      'Transport started unknown; app process started unknown',
+      'Queues now: commands n/a of n/a, events n/a, priority events n/a, replies n/a; executor idle n/a; provider auths waiting n/a; GIL lag (recent) n/a; event drops n/a',
+      'Lanes: all quiet (max dwell under 50 ms)',
+      'Kotlin socket: not reported',
+    ]);
+    expect(
+      formatPythonBridgeLines(
+        {
+          bridge: null,
+          processStartedAtMs: AT(21, 58, 0),
+          socket: PYTHON_BRIDGE.socket,
+        },
+        NOW
+      )
+    ).toEqual([
+      'Transport started unknown; app process started 21:58:00 (102 min ago)',
+      'Python bridge: not reported (bridge not started)',
+      'Kotlin socket: 1 client(s), queued 0 (largest 0 of 8192), dropped 0, kept for handover 0',
+    ]);
+    expect(
+      formatPythonBridgeLines(
+        {
+          bridge: { error: 'boom' },
+          processStartedAtMs: null,
+          socket: null,
+        },
+        NOW
+      ).slice(1, 3)
+    ).toEqual([
+      'Python bridge detail failed: boom',
+      'Queues now: commands n/a of n/a, events n/a, priority events n/a, replies n/a; executor idle n/a; provider auths waiting n/a; GIL lag (recent) n/a; event drops n/a',
+    ]);
+    expect(formatPythonBridgeLines(null, NOW)).toEqual([
+      'Not reported (bridge not started, or an older app)',
+    ]);
+  });
+
+  it('asks the native bridge once with detail on Android, bounded by a timeout', async () => {
+    nativeProbe.getStatus.mockClear();
+    nativeProbe.platform = 'web';
+    try {
+      await expect(probeNativeBridge()).resolves.toBeNull();
+      expect(nativeProbe.getStatus).not.toHaveBeenCalled();
+
+      nativeProbe.platform = 'android';
+      nativeProbe.getStatus.mockResolvedValueOnce({
+        started: true,
+        online: true,
+        bridge: {
+          cmdQueue: 2,
+          cmdQueueMax: 256,
+          gilLagMsMax: 'slow',
+          lanes: [
+            { lane: 'control-send', queueDepth: 12, dwellMsMax: 31_000 },
+            null,
+          ],
+          providerRefused: { history: 12, dm: 'x' },
+        },
+        native: {
+          processStartedAtMs: 1_700_000_000_000,
+          socket: {
+            clients: 1,
+            dropped: 2,
+            queued: 3,
+            queuedMax: 3,
+            queueCapacity: 8192,
+            handoverFrames: 0,
+          },
+        },
+      });
+      await expect(probeNativeBridge()).resolves.toEqual({
+        bridge: {
+          cmdQueue: 2,
+          cmdQueueMax: 256,
+          lanes: [{ lane: 'control-send', queueDepth: 12, dwellMsMax: 31_000 }],
+          providerRefused: { history: 12 },
+        },
+        processStartedAtMs: 1_700_000_000_000,
+        socket: {
+          clients: 1,
+          dropped: 2,
+          queued: 3,
+          queuedMax: 3,
+          queueCapacity: 8192,
+          handoverFrames: 0,
+        },
+      });
+      expect(nativeProbe.getStatus).toHaveBeenLastCalledWith({ detail: true });
+
+      // An older app: the plain status, without either part.
+      nativeProbe.getStatus.mockResolvedValueOnce({ started: true });
+      await expect(probeNativeBridge()).resolves.toBeNull();
+      nativeProbe.getStatus.mockRejectedValueOnce(new Error('not implemented'));
+      await expect(probeNativeBridge()).resolves.toBeNull();
+
+      vi.useFakeTimers();
+      try {
+        nativeProbe.getStatus.mockReturnValueOnce(new Promise(() => {}));
+        const pending = probeNativeBridge(3_000);
+        await vi.advanceTimersByTimeAsync(3_000);
+        await expect(pending).resolves.toBeNull();
+      } finally {
+        vi.useRealTimers();
+      }
+    } finally {
+      nativeProbe.platform = 'web';
+    }
+  });
+});
+
+describe('reticulumDiagnostics engine log extras', () => {
+  it('counts the stall watchdog lines as faults, not install lines', () => {
+    expect(
+      isEngineFaultLine(
+        'warn [MobileChat] bridge_stall_diagnostic executor_stalled=true executor_idle_s=21.3 cmd_q=40/256 threads=63 stuck=none'
+      )
+    ).toBe(true);
+    expect(
+      isEngineFaultLine(
+        'warn [MobileChat] bridge_thread_population threads=63 cpu_total=100 cpu_top= groups_top='
+      )
+    ).toBe(true);
+    expect(isEngineFaultLine('warn [MobileChat] engine install ok')).toBe(
+      false
+    );
+  });
+
+  it('says what the caps elided, the boot overflow and the line counts', () => {
+    const boot = Array.from(
+      { length: 45 },
+      (_, i) => `${ts(i)} warn [ReticulumChat] boot_fault_${i} failed`
+    );
+    const bootOnly = selectEngineLogLines([], boot);
+    expect(bootOnly[0]).toBe('-- first warnings since boot --');
+    expect(bootOnly).toHaveLength(42);
+    expect(bootOnly[40]).toBe(boot[39]);
+    expect(bootOnly[41]).toBe('… 5 more elided');
+
+    const ringFaults = Array.from(
+      { length: 45 },
+      (_, i) => `${ts(i)} warn [ReticulumChat] ring_fault_${i} failed`
+    );
+    const ring = [
+      ...ringFaults,
+      ...Array.from(
+        { length: 60 },
+        () => `${ts(100)} log [ReticulumChat] presence_seen hops=2`
+      ),
+    ];
+    const withFaults = selectEngineLogLines(ring);
+    expect(withFaults.slice(0, 3)).toEqual([
+      '-- recent faults --',
+      '… 5 earlier elided',
+      ringFaults[5],
+    ]);
+    // Header, marker, then the last 40 faults.
+    expect(withFaults[41]).toBe(ringFaults[44]);
+    expect(withFaults[42]).toBe('-- last 60 lines --');
+
+    expect(selectEngineLogLines([], [], { bootOverflow: 230 })).toEqual([
+      '-- first warnings since boot --',
+      'Boot buffer full: 230 later warnings not kept',
+    ]);
+    const counted = selectEngineLogLines(ring.slice(-60), [], {
+      keyCounts: [
+        {
+          key: 'log:background_author_gap_repair',
+          n: 812,
+          firstAt: AT(22, 57, 41),
+          lastAt: AT(23, 38, 36),
+        },
+        { key: 'other', n: 44, firstAt: 0, lastAt: 0 },
+      ],
+    });
+    expect(counted.slice(0, 4)).toEqual([
+      '-- line counts since boot --',
+      'x812 log:background_author_gap_repair (first 22:57:41.000, last 23:38:36.000)',
+      'x44 other',
+      '-- last 60 lines --',
+    ]);
+    // Without extras or elisions the output is what it was.
+    expect(selectEngineLogLines(ring.slice(-60), [], {})).toEqual(
+      selectEngineLogLines(ring.slice(-60))
+    );
+  });
+});
+
+describe('reticulumDiagnostics report layout', () => {
+  it('prints the sections in the Batch 1 order', () => {
+    const report = buildReticulumDiagnosticsReport(fullInput());
+    expect(report.split('\n').filter((l) => l.startsWith('--- '))).toEqual([
+      '--- WebView ---',
+      '--- Device ---',
+      '--- Unlock ---',
+      '--- Reticulum radio ---',
+      '--- Chat engine ---',
+      '--- Sync health ---',
+      '--- Serving ---',
+      '--- Python bridge ---',
+      '--- Background sync ---',
+      '--- Core API ---',
+      '--- Recent send failures ---',
+      '--- Recent app errors ---',
+      '--- Engine log (faults, then tail) ---',
+    ]);
+    expect(sectionLines(report, 'Device')).toEqual([
+      'Power: charging via usb, battery 64%, 31.2 °C, power save off, thermal moderate',
+      'Network: unmetered yes; relay profile leaf since 12 min ago (engine relays group control: no)',
+      'Keep-alive: active',
+    ]);
+    const chat = sectionLines(report, 'Chat engine');
+    expect(chat[2]).toBe(
+      'Worker alive: yes, direct bridge socket: yes, RPCs in flight: 2 (oldest getDirectHistory 4.1 s)'
+    );
+    expect(chat.slice(3, 11)).toEqual([
+      ...formatEngineLoopLines(HEALTH, NOW),
+      ...formatNativeRequestLines(NATIVE_REQUESTS),
+    ]);
+    expect(chat[11]).toMatch(/^Resource sessions:/);
+    expect(chat[12]).toBe(
+      'Bridge traffic: bridge_traffic 60s out{ send_reticulum_chat=3 } in{ reticulum_chat_message=12 }'
+    );
+    const sync = sectionLines(report, 'Sync health');
+    expect(sync[0]).toMatch(/^Gap scanner: 11 runs\/min/);
+    expect(sync[3]).toMatch(
+      /^Gap rows top groups: group=<id-[0-9a-f]{6}> rows=500 due=30, group=<id-[0-9a-f]{6}> rows=52 due=0 not subscribed$/
+    );
+    expect(sync.slice(4, 8)).toEqual(DIGEST_LINES);
+    expect(sectionLines(report, 'Serving')[0]).toBe(
+      'history_page: received 40, authorized 22, rejected 3, failed 6 (late 5), ended by Python 9'
+    );
+    expect(sectionLines(report, 'Serving')).toContain(
+      'Authorize failures: unknown_resource_request=6'
+    );
+    expect(sectionLines(report, 'Python bridge')).toEqual(
+      formatPythonBridgeLines(PYTHON_BRIDGE, NOW)
+    );
+    const log = sectionLines(report, 'Engine log (faults, then tail)');
+    expect(log).toContain('Boot buffer full: 230 later warnings not kept');
+    expect(log).toContain(
+      'x812 log:background_author_gap_repair (first 22:57:41.000, last 23:38:36.000)'
+    );
+    expect(log.indexOf('-- line counts since boot --')).toBeLessThan(
+      log.indexOf('-- last 1 lines --')
+    );
+  });
+
+  it('keeps ids, addresses, URLs and quoted text out of the new sections', () => {
+    const report = buildReticulumDiagnosticsReport(
+      fullInput({
+        engine: readyEngine({
+          syncHealth: {
+            ...HEALTH,
+            engineError:
+              'scanner: fetch https://node.example.com/x?apiKey=SECRET failed',
+          },
+        } as Partial<EngineDiagnostics>),
+      })
+    );
+    expect(report).not.toMatch(/\b694\b/);
+    expect(report).not.toMatch(/\b581\b/);
+    expect(report).toContain('group=<id-');
+    expect(report).not.toContain(PARTNER_ADDRESS);
+    expect(report).toContain('<addr-');
+    expect(report).not.toContain('https://');
+    expect(report).not.toContain('SECRET');
+    expect(report).not.toContain('secret text');
+    expect(report).toContain(
+      'Engine getter failed: scanner: fetch <url> failed'
+    );
+  });
+
+  it('lists recent app errors and the saved crash log, scrubbed (1.7-G)', () => {
+    const report = buildReticulumDiagnosticsReport(fullInput());
+    expect(report).toContain('--- Recent app errors ---');
+    expect(report).toContain('caught in chat-row, 3x until');
+    expect(report).toContain('healed 1x');
+    expect(report).toContain('  row: surface:group');
+    expect(report).toContain('MessageItem-Bx12abCD.js:345:24');
+    expect(report).toContain(
+      'Saved crash log (kept across restarts), newest first:'
+    );
+    expect(report).toContain('<addr-');
+    expect(report).not.toContain(PARTNER_ADDRESS);
+    expect(report).not.toContain('secret text');
+    expect(report).not.toContain('https://');
+    expect(readyReport(readyEngine())).toContain(
+      '--- Recent app errors ---\nThis session: none\nSaved crash log: none'
+    );
+  });
+
+  it('says "not reported" for every new part an older engine or caller leaves out', () => {
+    const report = readyReport(readyEngine());
+    for (const [name, line] of [
+      ['Device', 'Not reported (not native Android, or an older app)'],
+      ['Sync health', 'Not reported (no sync-health answer from this engine)'],
+      ['Serving', 'Not reported (no sync-health answer from this engine)'],
+      ['Python bridge', 'Not reported (bridge not started, or an older app)'],
+    ]) {
+      expect(sectionLines(report, name)).toEqual([line]);
+    }
+    expect(report).toContain(
+      'Worker alive: yes, direct bridge socket: yes, RPCs in flight: 0\n'
+    );
+    expect(report).not.toContain('Engine loop');
+    expect(report).not.toContain('Membership timing');
+    expect(report).not.toContain('Bridge traffic');
+    expect(report).not.toContain('Send times');
+    expect(report).not.toContain('-- line counts since boot --');
+    // The RPC failed: both sections say why.
+    const failed = readyReport(
+      readyEngine({
+        syncHealth: null,
+        syncHealthError: 'reticulumChat:debug:sync-health timed out',
+      } as Partial<EngineDiagnostics>)
+    );
+    expect(sectionLines(failed, 'Sync health')).toEqual([
+      'Not reported (reticulumChat:debug:sync-health timed out)',
+    ]);
+    expect(sectionLines(failed, 'Serving')).toEqual([
+      'Not reported (reticulumChat:debug:sync-health timed out)',
+    ]);
+    // Engine not ready: no RPC was sent.
+    const starting = buildReticulumDiagnosticsReport({
+      ...fullInput(),
+      engine: readyEngine({
+        readiness: { state: 'starting', revision: 3, since: 0 },
+        syncHealth: HEALTH,
+      } as Partial<EngineDiagnostics>),
+    });
+    expect(sectionLines(starting, 'Sync health')).toEqual([
+      'Not reported (engine not ready)',
+    ]);
+    expect(sectionLines(starting, 'Serving')).toEqual([
+      'Not reported (engine not ready)',
+    ]);
+    expect(starting).not.toContain('Digest');
+    expect(starting).not.toContain('Engine loop');
+    // Without the engine RPC the device line has no relaying part.
+    expect(sectionLines(starting, 'Device')[1]).toBe(
+      'Network: unmetered yes; relay profile leaf since 12 min ago'
+    );
+  });
+
+  it('prints only the last 3 bridge traffic lines', () => {
+    const report = readyReport(
+      readyEngine({
+        bridgeTraffic: [1, 2, 3, 4].map(
+          (i) => `[MobileChat] bridge_traffic ${i}0s out{ } in{ }`
+        ),
+      } as Partial<EngineDiagnostics>)
+    );
+    expect(
+      report.split('\n').filter((l) => l.startsWith('Bridge traffic:'))
+    ).toEqual([
+      'Bridge traffic: bridge_traffic 20s out{ } in{ }',
+      'Bridge traffic: bridge_traffic 30s out{ } in{ }',
+      'Bridge traffic: bridge_traffic 40s out{ } in{ }',
+    ]);
+  });
+
+  it('turns the new sections and subsections into Markdown headings', () => {
+    const markdown = diagnosticsReportToMarkdown(
+      buildReticulumDiagnosticsReport(fullInput())
+    );
+    for (const heading of [
+      '## Device',
+      '## Sync health',
+      '## Serving',
+      '## Python bridge',
+      '## Recent app errors',
+      '### line counts since boot',
+    ]) {
+      expect(markdown).toContain(`\n${heading}\n`);
+    }
+    // Continuation lines keep their indent inside the text block.
+    expect(markdown).toContain('\n  selfDmNotifySent=1\n');
   });
 });

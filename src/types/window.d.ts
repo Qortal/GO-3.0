@@ -1164,6 +1164,23 @@ declare global {
       ) => () => void;
       onCalendarReminderDue: (cb: (payload: unknown) => void) => () => void;
       onDirectEvent: (cb: (payload: { event: unknown }) => void) => () => void;
+      /**
+       * GO only: another node fetched the user's own group posts or Saved
+       * Messages from this phone (batched). Desktop has no such event.
+       */
+      onOwnPostDelivery?: (
+        cb: (payload: {
+          updates: Array<{
+            eventId: string;
+            scope: 'group' | 'self_dm';
+            groupId?: number;
+            channelId?: string;
+            conversationId?: string;
+            ownDeviceAt?: number;
+            memberAt?: number;
+          }>;
+        }) => void
+      ) => () => void;
       onDirectCallHistory: (
         cb: (payload: { record: unknown }) => void
       ) => () => void;

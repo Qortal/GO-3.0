@@ -1,7 +1,14 @@
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+} from '@testing-library/react';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { ANDROID_BACK_EVENT } from '../../bridge/capacitorBridge';
 import i18n from '../../i18n/i18n';
+import { __setGoLayoutForTests } from '../../layout/goLayout';
 import { setQdnAvatarCacheForTests } from '../../lib/qdnAvatars/defaultCache';
 import {
   createAvatarTestHarness,
@@ -307,6 +314,86 @@ describe('DirectChatHeader', () => {
       expect(
         screen.queryByRole('button', { name: 'Start voice call' })
       ).toBeNull();
+    });
+  });
+
+  describe('in the GO layout', () => {
+    const backButton = () => screen.queryByRole('button', { name: 'Back' });
+
+    afterEach(() => {
+      // Unmount first: the reset notifies every mounted reader.
+      cleanup();
+      __setGoLayoutForTests(null);
+    });
+
+    it.each([
+      ['a tablet in landscape', 1280, 800],
+      ['a tablet in portrait', 800, 1280],
+      ['an unfolded fold', 841, 701],
+    ])('has no back in two-pane on %s', async (_label, width, stableHeight) => {
+      setQdnAvatarCacheForTests(
+        createAvatarTestHarness({ handler: never }).cache
+      );
+      __setGoLayoutForTests({ go: true, width, stableHeight });
+      renderHeader();
+      await settle();
+
+      expect(backButton()).toBeNull();
+      // The rest of the phone header stays.
+      expectPhoneTarget(button('Start voice call'));
+    });
+
+    it.each([
+      ['a phone in portrait', 393, 873],
+      ['a phone in landscape', 873, 393],
+      ['a fold held upright', 673, 841],
+    ])(
+      'keeps the back in one column on %s',
+      async (_label, width, stableHeight) => {
+        setQdnAvatarCacheForTests(
+          createAvatarTestHarness({ handler: never }).cache
+        );
+        __setGoLayoutForTests({ go: true, width, stableHeight });
+        const { props } = renderHeader();
+        await settle();
+
+        fireEvent.click(button('Back'));
+        expect(props.onClose).toHaveBeenCalledTimes(1);
+      }
+    );
+
+    it('drops and brings back the back on rotation, without a remount', async () => {
+      setQdnAvatarCacheForTests(
+        createAvatarTestHarness({ handler: never }).cache
+      );
+      __setGoLayoutForTests({ go: true, width: 800, stableHeight: 1280 });
+      renderHeader();
+      await settle();
+      const header = screen.getByText('Alice');
+      expect(backButton()).toBeNull();
+
+      act(() => {
+        __setGoLayoutForTests({ go: true, width: 393, stableHeight: 873 });
+      });
+      expect(backButton()).not.toBeNull();
+      expect(screen.getByText('Alice')).toBe(header);
+
+      act(() => {
+        __setGoLayoutForTests({ go: true, width: 1280, stableHeight: 800 });
+      });
+      expect(backButton()).toBeNull();
+      expect(screen.getByText('Alice')).toBe(header);
+    });
+
+    it('keeps the back off GO', async () => {
+      setQdnAvatarCacheForTests(
+        createAvatarTestHarness({ handler: never }).cache
+      );
+      __setGoLayoutForTests({ go: false });
+      renderHeader();
+      await settle();
+
+      expect(backButton()).not.toBeNull();
     });
   });
 

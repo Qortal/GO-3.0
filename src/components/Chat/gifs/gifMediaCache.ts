@@ -142,7 +142,28 @@ const putMemory = (key: string, blob: Blob) => {
   }
   const url = URL.createObjectURL(blob);
   memory.set(key, { blob, lastAccess: Date.now(), url });
+  cachedListeners.forEach((cb) => {
+    try {
+      cb();
+    } catch {
+      /* a listener must never fail the GIF load */
+    }
+  });
   return url;
+};
+
+const cachedListeners = new Set<() => void>();
+
+/** The GIF's object URL if it is already in memory. Never downloads, never touches IndexedDB. */
+export const peekLibraryGifUrl = (gif: GifRef): string | null =>
+  memory.get(libraryGifKey(gif))?.url ?? null;
+
+/** Called whenever a GIF's object URL enters memory. */
+export const subscribeLibraryGifCached = (cb: () => void) => {
+  cachedListeners.add(cb);
+  return () => {
+    cachedListeners.delete(cb);
+  };
 };
 
 const downloadGifBlob = async (gif: GifRef): Promise<Blob> => {

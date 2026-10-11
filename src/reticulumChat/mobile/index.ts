@@ -29,6 +29,7 @@ import {
 import { getBaseApiReact } from '../../App';
 import { Reticulum } from '../../plugins/Reticulum';
 import { preferHttpForLocalPrivateUrl } from '../../utils/helpers';
+import { startOwnPostDeliveryListener } from '../ownPostDeliveryStore';
 import {
   apiHostOf,
   apiSchemeOf,
@@ -37,13 +38,30 @@ import {
 } from './groupValidation';
 import type {
   EngineDiagnosticsSnapshot,
+  EngineSyncHealthSnapshot,
   ResourceSessionStats,
 } from './engineHost';
+import type { LatencySummary } from './latencyStats';
+import type { LoopLagSnapshot } from './loopLag';
+import type {
+  NativeRequestLabelStats,
+  NativeRequestSnapshot,
+} from './nativeRequestStats';
+import type { LogKeyCount } from './shims/logger';
+import type { ServingStats, ServingTypeStats } from './wireBridge';
 
 export type {
+  EngineSyncHealthSnapshot,
   GroupValidatorStats,
+  LatencySummary,
+  LogKeyCount,
+  LoopLagSnapshot,
   MembershipProbeResult,
+  NativeRequestLabelStats,
+  NativeRequestSnapshot,
   ResourceSessionStats,
+  ServingStats,
+  ServingTypeStats,
 };
 
 type ReadinessState = 'idle' | 'starting' | 'ready' | 'failed';
@@ -141,6 +159,7 @@ const EVENT_SUBSCRIPTIONS: Record<string, string> = {
   onDirectCallHistory: 'reticulumChat:directCallHistory',
   onDirectTyping: 'reticulumChat:directTyping',
   onDirectSummaryChanged: 'reticulumChat:directSummaryChanged',
+  onOwnPostDelivery: 'reticulumChat:ownPostDelivery',
   onDeviceStateChanged: 'reticulumChat:deviceStateChanged',
   onSilenceChanged: 'reticulumChat:silenceChanged',
   onResource: 'reticulumChat:resource',
@@ -150,6 +169,12 @@ const EVENT_SUBSCRIPTIONS: Record<string, string> = {
   onLandAction: 'reticulumChat:landAction',
   onLandCall: 'reticulumChat:landCall',
 };
+
+/**
+ * Subscriptions that do not start the engine: their events only exist while
+ * it runs for another reason anyway.
+ */
+const PASSIVE_EVENT_SUBSCRIPTIONS = new Set(['onOwnPostDelivery']);
 
 // Boot budget for the engine worker. Covers sqlite-wasm instantiation plus
 // schema migration of a large history DB; hardened WebViews that run wasm in
@@ -166,6 +191,20 @@ const PY_EVENTS_FOR_WORKER = new Set([
   'qchat_file_transfer',
   'overlay_link_state',
 ]);
+
+/**
+ * Python's stall watchdog events. The worker logs one summary line for each
+ * (Copy diagnostics); stacks and thread dumps stay out of the copy.
+ */
+const PY_DIAGNOSTIC_EVENTS_FOR_WORKER = new Set([
+  'bridge_stall_diagnostic',
+  'bridge_executor_recovered',
+  'bridge_thread_population',
+]);
+
+/** The last bridge_traffic summaries (kinds and counts only), for Copy diagnostics. */
+const BRIDGE_TRAFFIC_KEEP = 3;
+const recentBridgeTraffic: string[] = [];
 
 let worker: Worker | null = null;
 let rpcPort: MessagePort | null = null;
@@ -185,7 +224,13 @@ const eventSubscribers = new Map<string, Set<(payload: unknown) => void>>();
 let nextRpcId = 1;
 const pendingRpc = new Map<
   number,
-  { resolve: (v: unknown) => void; reject: (e: Error) => void }
+  {
+    resolve: (v: unknown) => void;
+    reject: (e: Error) => void;
+    /** For Copy diagnostics' oldest RPC in flight. */
+    method: string;
+    startedAt: number;
+  }
 >();
 
 let startPromise: Promise<void> | null = null;
@@ -591,9 +636,15 @@ function handleWorkerMessage(event: MessageEvent): void {
         Array.isArray(data.delivery) && data.delivery.length > 0
           ? ` delivery{ ${fmt(data.delivery)} }`
           : '';
-      console.info(
-        `[MobileChat] bridge_traffic ${data.seconds}s out{ ${fmt(data.commands)} } in{ ${fmt(data.events)} }${bytes}${delivery}`
-      );
+      const line = `bridge_traffic ${data.seconds}s out{ ${fmt(data.commands)} } in{ ${fmt(data.events)} }${bytes}${delivery}`;
+      console.info(`[MobileChat] ${line}`);
+      recentBridgeTraffic.push(line);
+      if (recentBridgeTraffic.length > BRIDGE_TRAFFIC_KEEP) {
+        recentBridgeTraffic.splice(
+          0,
+          recentBridgeTraffic.length - BRIDGE_TRAFFIC_KEEP
+        );
+      }
       break;
     }
     default:
@@ -674,6 +725,8 @@ function rpc(
             window.clearTimeout(timer);
             reject(e);
           },
+          method,
+          startedAt: Date.now(),
         });
         const target = rpcPort || worker;
         target.postMessage({ t: 'rpc', id, method, args });
@@ -759,6 +812,21 @@ function ensureStarted(): Promise<void> {
     untapPython = registerPythonEventTap((frame) => {
       if (workerHasDirectBridge) return;
       const eventName = String(frame.event || '');
+      if (PY_DIAGNOSTIC_EVENTS_FOR_WORKER.has(eventName)) {
+        // Summary fields only: no stacks or thread dumps cross over.
+        const {
+          stacks: _stacks,
+          threads: _threads,
+          detail: _detail,
+          ...summary
+        } = (frame.payload ?? {}) as Record<string, unknown>;
+        worker?.postMessage({
+          t: 'pyevent',
+          event: eventName,
+          payload: summary,
+        });
+        return;
+      }
       if (!PY_EVENTS_FOR_WORKER.has(eventName)) return;
       worker?.postMessage({
         t: 'pyevent',
@@ -899,10 +967,36 @@ export type MobileReticulumChatDiagnostics = {
   resourceSessions: ResourceSessionStats | null;
   /** One live membership check; `null` when the engine is not ready. */
   membershipProbe: MembershipProbeResult | null;
+  // The v0.0.17 fields below are always filled by
+  // getMobileReticulumChatDiagnostics; optional so older snapshots and
+  // fixtures still fit.
+  /** `debug:sync-health`; `null` when the engine is not ready or the RPC failed. */
+  syncHealth?: EngineSyncHealthSnapshot | null;
+  /** Why `debug:sync-health` gave nothing (e.g. it timed out). */
+  syncHealthError?: string;
+  /** The last bridge_traffic summaries, without the `[MobileChat] ` prefix. */
+  bridgeTraffic?: string[];
+  /** The longest-waiting page -> engine RPC (diagnostics RPCs excluded). */
+  oldestRpc?: { method: string; ageMs: number } | null;
 };
 
 /** The probe's own fetch budget; the RPC gets a little more on top. */
 const DIAGNOSTICS_MEMBERSHIP_PROBE_TIMEOUT_MS = 6_000;
+/** More than the other diagnostics RPCs, so a stalled engine can still answer. */
+const DIAGNOSTICS_SYNC_HEALTH_TIMEOUT_MS = 10_000;
+
+function oldestPendingRpc(
+  now = Date.now()
+): { method: string; ageMs: number } | null {
+  let oldest: { method: string; startedAt: number } | null = null;
+  for (const pending of pendingRpc.values()) {
+    if (pending.method.startsWith('debug:')) continue;
+    if (!oldest || pending.startedAt < oldest.startedAt) oldest = pending;
+  }
+  return oldest
+    ? { method: oldest.method, ageMs: Math.max(0, now - oldest.startedAt) }
+    : null;
+}
 
 /**
  * One-call snapshot of the chat engine for the "Copy diagnostics" action in
@@ -917,9 +1011,11 @@ export async function getMobileReticulumChatDiagnostics(): Promise<MobileReticul
   let validator: GroupValidatorStats | null = null;
   let resourceSessions: ResourceSessionStats | null = null;
   let membershipProbe: MembershipProbeResult | null = null;
+  let syncHealth: EngineSyncHealthSnapshot | null = null;
+  let syncHealthError: string | undefined;
   if (worker && readiness.state === 'ready') {
     const probeStarted = Date.now();
-    const [logs, snapshot, probe] = await Promise.all([
+    const [logs, snapshot, probe, health] = await Promise.all([
       rpc('debug:logs', [], 8_000).catch(
         (err) => [`debug:logs unavailable: ${String(err)}`] as unknown
       ),
@@ -943,7 +1039,22 @@ export async function getMobileReticulumChatDiagnostics(): Promise<MobileReticul
           ms: Date.now() - probeStarted,
         })
       ),
+      // Never rejects: a failure is reported, the rest of the copy stays.
+      (
+        rpc(
+          'debug:sync-health',
+          [{ sentAt: Date.now() }],
+          DIAGNOSTICS_SYNC_HEALTH_TIMEOUT_MS
+        ) as Promise<EngineSyncHealthSnapshot>
+      ).then(
+        (v): { v?: EngineSyncHealthSnapshot; err?: string } => ({ v }),
+        (err): { v?: EngineSyncHealthSnapshot; err?: string } => ({
+          err: err instanceof Error ? err.message : String(err),
+        })
+      ),
     ]);
+    if (health.err !== undefined) syncHealthError = health.err;
+    else if (health.v && typeof health.v === 'object') syncHealth = health.v;
     if (Array.isArray(logs)) engineLogs = logs.map((l) => String(l));
     if (snapshot && typeof snapshot === 'object') {
       if (snapshot.apiHost) apiHost = snapshot.apiHost;
@@ -975,6 +1086,10 @@ export async function getMobileReticulumChatDiagnostics(): Promise<MobileReticul
     validator,
     resourceSessions,
     membershipProbe,
+    syncHealth,
+    ...(syncHealthError !== undefined ? { syncHealthError } : {}),
+    bridgeTraffic: [...recentBridgeTraffic],
+    oldestRpc: oldestPendingRpc(),
   };
 }
 
@@ -1042,7 +1157,9 @@ export function installMobileReticulumChat(): void {
         eventSubscribers.set(channel, subs);
       }
       subs.add(cb);
-      void ensureStarted().catch(() => {});
+      if (!PASSIVE_EVENT_SUBSCRIPTIONS.has(name)) {
+        void ensureStarted().catch(() => {});
+      }
       return () => {
         subs?.delete(cb);
       };
@@ -1050,6 +1167,11 @@ export function installMobileReticulumChat(): void {
   }
 
   (window as any).reticulumChat = api;
+  // Own post fetch proofs reach the page store from the first one on, not
+  // only once a delivery glyph mounts: a warm copy of a group shown again is
+  // not re-read row by row, so an earlier proof would be lost until a fresh
+  // read. Passive, so this does not start the engine.
+  startOwnPostDeliveryListener();
   installMobileReticulumResources();
 }
 
@@ -1080,6 +1202,40 @@ function installMobileReticulumResources(): void {
       binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
     }
     return btoa(binary);
+  };
+
+  type BlobUrlResult = {
+    success: boolean;
+    url?: string;
+    manifest?: unknown;
+    error?: string;
+  };
+  const pendingUrls = new Map<string, Promise<BlobUrlResult>>();
+  const loadBlobUrl = async (hash: string): Promise<BlobUrlResult> => {
+    let res: {
+      success: boolean;
+      bytes?: Uint8Array;
+      manifest?: { mimeType?: string };
+      error?: string;
+    };
+    try {
+      res = (await rpc('resource:bytes', [hash])) as typeof res;
+    } catch (err) {
+      return {
+        success: false,
+        error: err instanceof Error ? err.message : 'Resource unavailable',
+      };
+    }
+    if (!res?.success || !res.bytes) {
+      return { success: false, error: res?.error || 'Resource unavailable' };
+    }
+    const url = URL.createObjectURL(
+      new Blob([res.bytes], {
+        type: res.manifest?.mimeType || 'application/octet-stream',
+      })
+    );
+    blobUrls.set(hash, url);
+    return { success: true, url, manifest: res.manifest };
   };
 
   const resources = {
@@ -1139,30 +1295,17 @@ function installMobileReticulumResources(): void {
         )) as { manifest?: unknown } | null;
         return { success: true, url: cached, manifest: status?.manifest };
       }
-      let res: {
-        success: boolean;
-        bytes?: Uint8Array;
-        manifest?: { mimeType?: string };
-        error?: string;
-      };
+      // A reply thumbnail and its picture row can miss at the same moment:
+      // read the file once and hand both the same blob URL.
+      const pending = pendingUrls.get(hash);
+      if (pending) return pending;
+      const load = loadBlobUrl(hash);
+      pendingUrls.set(hash, load);
       try {
-        res = (await rpc('resource:bytes', [hash])) as typeof res;
-      } catch (err) {
-        return {
-          success: false,
-          error: err instanceof Error ? err.message : 'Resource unavailable',
-        };
+        return await load;
+      } finally {
+        pendingUrls.delete(hash);
       }
-      if (!res?.success || !res.bytes) {
-        return { success: false, error: res?.error || 'Resource unavailable' };
-      }
-      const url = URL.createObjectURL(
-        new Blob([res.bytes], {
-          type: res.manifest?.mimeType || 'application/octet-stream',
-        })
-      );
-      blobUrls.set(hash, url);
-      return { success: true, url, manifest: res.manifest };
     },
 
     getStatus: (fileHash: string) => rpc('resource:getStatus', [fileHash]),

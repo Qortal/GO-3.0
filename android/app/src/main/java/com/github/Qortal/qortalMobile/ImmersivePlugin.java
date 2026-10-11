@@ -3,6 +3,7 @@ package com.github.Qortal.qortalMobile;
 import android.app.Activity;
 import android.graphics.Bitmap;
 import android.graphics.Rect;
+import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.MotionEvent;
@@ -152,6 +153,72 @@ public class ImmersivePlugin extends Plugin {
       }
     });
     call.resolve();
+  }
+
+  /**
+   * Status and navigation bar icon colour follows GO's theme (dark icons on
+   * the light theme, over see-through bars only: see barSeeThrough), and the
+   * window behind the WebView takes the page background, so the landscape
+   * side gutters (SafeAreaInsetsPolicy margins) match the page instead of the
+   * splash colour.
+   */
+  @PluginMethod
+  public void setBarAppearance(PluginCall call) {
+    final boolean lightStatus = Boolean.TRUE.equals(call.getBoolean("lightStatus", false));
+    final boolean lightNav = Boolean.TRUE.equals(call.getBoolean("lightNav", false));
+    final Integer background = parseRgb(call.getString("background"));
+    Activity activity = getActivity();
+    if (activity != null) {
+      activity.runOnUiThread(() -> {
+        Window window = activity.getWindow();
+        if (window == null) return;
+        View decor = window.getDecorView();
+        WindowInsetsControllerCompat controller = WindowCompat.getInsetsController(window, decor);
+        if (controller != null) {
+          controller.setAppearanceLightStatusBars(lightStatus && statusBarSeeThrough(window));
+          controller.setAppearanceLightNavigationBars(lightNav && navBarSeeThrough(window));
+        }
+        if (background != null) {
+          decor.setBackgroundColor(background);
+          View webView = getBridge() == null ? null : getBridge().getWebView();
+          if (webView != null && webView.getParent() instanceof View) {
+            ((View) webView.getParent()).setBackgroundColor(background);
+          }
+        }
+      });
+    }
+    call.resolve();
+  }
+
+  /** "#rrggbb" to an opaque colour, else null (nothing is changed). */
+  static Integer parseRgb(String value) {
+    if (value == null || value.length() != 7 || value.charAt(0) != '#') return null;
+    try {
+      return 0xff000000 | Integer.parseInt(value.substring(1), 16);
+    } catch (NumberFormatException error) {
+      return null;
+    }
+  }
+
+  /**
+   * Whether the page shows through a bar, so dark icons on the light theme
+   * can be read. Android 15+ always draws GO edge to edge with see-through
+   * bars. Below that the theme's opaque bars stay (black nav bar, black or
+   * grey status bar), and dark icons would vanish on them, so those keep
+   * today's light icons.
+   */
+  static boolean barSeeThrough(int sdkInt, int barColor) {
+    return sdkInt >= Build.VERSION_CODES.VANILLA_ICE_CREAM || (barColor >>> 24) == 0;
+  }
+
+  @SuppressWarnings("deprecation") // Ignored on 15+, which barSeeThrough checks first.
+  private static boolean statusBarSeeThrough(Window window) {
+    return barSeeThrough(Build.VERSION.SDK_INT, window.getStatusBarColor());
+  }
+
+  @SuppressWarnings("deprecation")
+  private static boolean navBarSeeThrough(Window window) {
+    return barSeeThrough(Build.VERSION.SDK_INT, window.getNavigationBarColor());
   }
 
   @Override

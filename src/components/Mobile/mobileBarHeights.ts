@@ -22,3 +22,12 @@ export const GO_TAB_BAR_SPACE = `var(${GO_TAB_BAR_SPACE_VAR}, 0px)`;
  */
 export const withTabBarSpace = (extraPx: number, fallback: string): string =>
   `max(calc(${extraPx}px + ${GO_TAB_BAR_SPACE}), ${fallback})`;
+
+/**
+ * The bottom safe area for a phone chat composer. On GO with Home/Apps/Chat in
+ * the top bar (landscape) the shell's content box already pads the safe area,
+ * so goLayout.css sets --go-composer-safe-bottom to 0 and it isn't taken
+ * twice. Everywhere else (portrait, the Hub) it is the plain safe area.
+ */
+export const COMPOSER_SAFE_BOTTOM =
+  'var(--go-composer-safe-bottom, var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px)))';

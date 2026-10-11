@@ -29,6 +29,7 @@ import ZoomOutRoundedIcon from '@mui/icons-material/ZoomOutRounded';
 import { Capacitor } from '@capacitor/core';
 import { BACK_PRIORITY, useAndroidBack } from '../../utils/androidBack';
 import { SAFE_AREA_BOTTOM, SAFE_AREA_TOP } from '../../utils/mobileSafeArea';
+import { isGoLayout, useGoLayout, type GoLayout } from '../../layout/goLayout';
 import {
   hasNativeClipboardImages,
   noteClipboardIssue,
@@ -82,6 +83,23 @@ const ZOOM_STEP = 0.5;
 const DOUBLE_TAP_MS = 300;
 /** The fade out before the viewer goes, so closing doesn't snap. */
 const CLOSE_MS = 170;
+/** Height kept clear of the close button and the action bar on a phone. */
+const CHROME_RESERVE_PX = 168;
+/** GO on a short screen: a slimmer margin, since height is what it lacks. */
+const SHORT_CHROME_RESERVE_PX = 96;
+
+const selectShort = (layout: GoLayout) => layout.short;
+
+/**
+ * Height the full-screen viewer keeps clear of its buttons. On a short GO
+ * window (phone landscape) the picture takes the whole height while the
+ * buttons are hidden.
+ */
+export const fullScreenChromeReservePx = (
+  goShort: boolean,
+  controlsHidden: boolean
+) =>
+  goShort ? (controlsHidden ? 0 : SHORT_CHROME_RESERVE_PX) : CHROME_RESERVE_PX;
 /**
  * Behind the picture the chat is blurred and dimmed, so the eye goes to the
  * picture; the extra darkening is the contrast that keeps a light photo from
@@ -165,6 +183,8 @@ export const ReticulumImageViewer = ({
   const { t } = useTranslation(['core', 'reticulum']);
   // Phones get the whole screen; the desktop keeps it inside the chat panel.
   const fullScreen = useMediaQuery(theme.breakpoints.down('md'));
+  // Always false on the Hub.
+  const goShort = useGoLayout(selectShort) && isGoLayout();
   const [closing, setClosing] = useState(false);
   const closeTimerRef = useRef<number | null>(null);
   const items = gallery && gallery.items.length > 0 ? gallery.items : null;
@@ -995,9 +1015,14 @@ export const ReticulumImageViewer = ({
   // Sized to stay clear of the close button and the action bar on a phone.
   const mediaSizeSx = {
     maxHeight: fullScreen
-      ? `calc(100% - ${SAFE_AREA_TOP} - ${SAFE_AREA_BOTTOM} - 168px)`
+      ? `calc(100% - ${SAFE_AREA_TOP} - ${SAFE_AREA_BOTTOM} - ${fullScreenChromeReservePx(
+          goShort,
+          controlsHidden
+        )}px)`
       : 'calc(100% - 64px)',
     maxWidth: fullScreen ? 'calc(100% - 24px)' : 'calc(100% - 64px)',
+    // Short GO screens: the picture eases into the room the buttons leave.
+    ...(goShort && { transition: 'max-height 200ms ease' }),
   };
   const mediaSurfaceSx = {
     borderRadius: '6px',
@@ -1130,7 +1155,11 @@ export const ReticulumImageViewer = ({
           touchAction: 'none',
           transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
           transformOrigin: 'center',
-          transition: isDragging ? 'none' : 'transform 150ms ease',
+          transition: isDragging
+            ? 'none'
+            : goShort
+              ? 'transform 150ms ease, max-height 200ms ease'
+              : 'transform 150ms ease',
           userSelect: 'none',
         }}
       />

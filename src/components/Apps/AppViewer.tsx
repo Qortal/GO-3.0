@@ -16,8 +16,10 @@ import { useTranslation } from 'react-i18next';
 import { QORTAL_PROTOCOL } from '../../constants/constants';
 import { appHeighOffsetPx } from '../Desktop/CustomTitleBar';
 import { buildQappRenderUrl, isSafeQappPath } from '../../utils/qappPath';
+import { buildPreviewUrl } from './appPreviewUrl';
 import { useSetAtom } from 'jotai';
 import { infoSnackGlobalAtom, openSnackGlobalAtom } from '../../atoms/global';
+import { useQappPublishWindowBridge } from './useQappPublishWindowBridge';
 
 const identifierParam = (identifier: unknown): string =>
   identifier != null && identifier != 'null'
@@ -100,7 +102,13 @@ export const AppViewer = forwardRef<HTMLIFrameElement, AppViewerProps>(
     useEffect(() => {
       if (app?.isPreview && app?.url) {
         resetHistory();
-        setUrl(app.url + `&theme=${themeMode}&lang=${currentLang}`);
+        // A private app built on the phone has no query of its own yet.
+        setUrl(
+          buildPreviewUrl(app.url, {
+            language: currentLang,
+            theme: themeMode,
+          })
+        );
       }
     }, [app?.url, app?.isPreview]);
 
@@ -111,14 +119,28 @@ export const AppViewer = forwardRef<HTMLIFrameElement, AppViewerProps>(
     const refreshAppFunc = (e) => {
       const { tabId } = e.detail;
       if (tabId === app?.tabId) {
+        // A preview (a private app) reloads its own address; building a
+        // /render/<service>/<name> address would show its encrypted file.
+        if (app?.isPreview && app?.url) {
+          resetHistory();
+          setUrl(
+            buildPreviewUrl(app.url, {
+              cacheBuster: Date.now(),
+              language: currentLang,
+              theme: themeMode,
+            })
+          );
+          return;
+        }
         if (isDevMode) {
           resetHistory();
-          if (!app?.isPreview || app?.isPrivate) {
-            setUrl(
-              app?.url +
-                `?time=${Date.now()}&theme=${themeMode}&lang=${currentLang}`
-            );
-          }
+          setUrl(
+            buildPreviewUrl(app?.url, {
+              cacheBuster: Date.now(),
+              language: currentLang,
+              theme: themeMode,
+            })
+          );
           return;
         }
         const constructUrl = renderUrl(
@@ -251,6 +273,12 @@ export const AppViewer = forwardRef<HTMLIFrameElement, AppViewerProps>(
         unsubscribeFromEvent('receiveChunks', receiveChunksFunc);
       };
     }, [receiveChunksFunc]);
+
+    // GO's publish window takes the app's own one off the screen meanwhile.
+    useQappPublishWindowBridge(
+      iframeRef as MutableRefObject<HTMLIFrameElement | null>,
+      app?.tabId
+    );
 
     // Function to navigate back in iframe
     const navigateBackInIframe = async () => {

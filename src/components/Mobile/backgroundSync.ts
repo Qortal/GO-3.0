@@ -41,7 +41,72 @@ export type BackgroundSyncState = {
   vendorFreezeRecent: VendorFreezeRecord[];
   /** Current exemption; null when an older native build does not say. */
   ignoringBatteryOptimizations: boolean | null;
+  /**
+   * Device facts for Copy diagnostics, read when the state is fetched. Each
+   * is null when the phone or an older native build does not say.
+   * PowerManager thermal status 0 (none) to 6 (shutdown), Android 10+.
+   */
+  thermalStatus: number | null;
+  /** Android's battery saver is on. */
+  powerSave: boolean | null;
+  /** Battery temperature in °C, -40 to 120. */
+  batteryTempC: number | null;
+  /** What the phone charges from ('none' on battery). */
+  plugType: BackgroundSyncPlugType | null;
+  /** Battery level 0-100. */
+  batteryPct: number | null;
 };
+
+export type BackgroundSyncPlugType =
+  | 'none'
+  | 'ac'
+  | 'usb'
+  | 'wireless'
+  | 'dock'
+  | 'other'
+  | 'unknown';
+
+const PLUG_TYPES: readonly BackgroundSyncPlugType[] = [
+  'none',
+  'ac',
+  'usb',
+  'wireless',
+  'dock',
+  'other',
+  'unknown',
+];
+
+/** Highest PowerManager.THERMAL_STATUS_* value (THERMAL_STATUS_SHUTDOWN). */
+const THERMAL_STATUS_MAX = 6;
+
+const deviceThermalStatus = (value: unknown): number | null =>
+  typeof value === 'number' &&
+  Number.isInteger(value) &&
+  value >= 0 &&
+  value <= THERMAL_STATUS_MAX
+    ? value
+    : null;
+
+const deviceBatteryTempC = (value: unknown): number | null =>
+  typeof value === 'number' &&
+  Number.isFinite(value) &&
+  value >= -40 &&
+  value <= 120
+    ? value
+    : null;
+
+const devicePlugType = (value: unknown): BackgroundSyncPlugType | null =>
+  typeof value === 'string' && (PLUG_TYPES as readonly string[]).includes(value)
+    ? (value as BackgroundSyncPlugType)
+    : null;
+
+const deviceBatteryPct = (value: unknown): number | null =>
+  typeof value === 'number' &&
+  Number.isInteger(value) &&
+  value >= 0 &&
+  value <= 100
+    ? value
+    : null;
 
 export type VendorFreezeEvent = {
   count: number;
@@ -153,7 +218,66 @@ export const normalizeBackgroundSyncState = (
       typeof value.ignoringBatteryOptimizations === 'boolean'
         ? value.ignoringBatteryOptimizations
         : null,
+    thermalStatus: deviceThermalStatus(value.thermalStatus),
+    powerSave: typeof value.powerSave === 'boolean' ? value.powerSave : null,
+    batteryTempC: deviceBatteryTempC(value.batteryTempC),
+    plugType: devicePlugType(value.plugType),
+    batteryPct: deviceBatteryPct(value.batteryPct),
   };
+};
+
+const THERMAL_STATUS_NAMES = [
+  'none',
+  'light',
+  'moderate',
+  'severe',
+  'critical',
+  'emergency',
+  'shutdown',
+];
+
+/**
+ * Compact device facts for the Unlock rows of Copy diagnostics (technical
+ * English, like the rest of the report), e.g. `charging usb, battery 64%,
+ * 31.2 °C, thermal moderate, power save off`. Null when native gave none of
+ * the device facts (an older build).
+ */
+export const formatUnlockDeviceDetail = (
+  state: BackgroundSyncState | null | undefined
+): string | null => {
+  if (!state) return null;
+  if (
+    state.plugType == null &&
+    state.batteryPct == null &&
+    state.batteryTempC == null &&
+    state.thermalStatus == null &&
+    state.powerSave == null
+  ) {
+    return null;
+  }
+  const plug =
+    state.plugType && state.plugType !== 'none' && state.plugType !== 'unknown'
+      ? ` ${state.plugType}`
+      : '';
+  const parts = [state.charging ? `charging${plug}` : 'on battery'];
+  if (state.batteryPct != null) parts.push(`battery ${state.batteryPct}%`);
+  if (state.batteryTempC != null) {
+    parts.push(`${state.batteryTempC.toFixed(1)} °C`);
+  }
+  parts.push(
+    `thermal ${
+      state.thermalStatus == null
+        ? 'unknown'
+        : (THERMAL_STATUS_NAMES[state.thermalStatus] ??
+          String(state.thermalStatus))
+    }`
+  );
+  parts.push(
+    `power save ${
+      state.powerSave == null ? 'unknown' : state.powerSave ? 'on' : 'off'
+    }`
+  );
+  return parts.join(', ');
 };
 
 /** The live event's payload; fields an older native build omits are null. */

@@ -152,7 +152,7 @@
   },
   "image_viewer": {
     "actions": "image actions",
-    "chat_image": "chat image",
+    "chat_image": "imagem do chat",
     "clipboard_unavailable": "image clipboard is unavailable",
     "close": "close image viewer",
     "copied": "image copied",
@@ -201,6 +201,36 @@
     "subtitle": "Parece que ainda não faz parte de nenhuma comunidade. Vamos mudar isso.",
     "title": "Bem-vindo ao novo e melhorado Q-Chat",
     "whats_new_button": "Novidades?"
+  },
+  "post_delivery": {
+    "delivered_member": {
+      "hint": "O nó de um membro do grupo a buscou deste telefone. Isso não significa que alguém a leu.",
+      "label": "entregue"
+    },
+    "delivered_own_device": {
+      "hint": "Seu outro dispositivo (como seu Hub) a buscou deste telefone.",
+      "label": "entregue"
+    },
+    "delivered_own_device_self_dm": {
+      "hint": "Seu outro dispositivo (como seu Hub) a buscou deste telefone.",
+      "label": "entregue"
+    },
+    "not_picked_up": {
+      "hint": "Nenhum outro nó a buscou deste telefone ainda. Os nós dos membros a buscam quando ficam online enquanto este telefone está acessível.",
+      "label": "ainda não buscada"
+    },
+    "not_picked_up_self_dm": {
+      "hint": "Nenhum dos seus outros dispositivos a buscou deste telefone ainda. Eles a buscam quando ficam online enquanto este telefone está acessível.",
+      "label": "ainda não buscada"
+    },
+    "sending": {
+      "hint": "Os nós dos membros que estão online costumam buscá-la em poucos segundos.",
+      "label": "enviando"
+    },
+    "sending_self_dm": {
+      "hint": "Seus outros dispositivos que estão online costumam buscá-la em poucos segundos.",
+      "label": "enviando"
+    }
   },
   "qapp_preview": {
     "check_again": "check again",
@@ -313,18 +343,25 @@
     }
   },
   "share": {
+    "admins_only": "só admins",
     "cancel": "cancelar compartilhamento",
     "cannot_write": "só admins podem escrever neste canal: volte e escolha outra conversa",
+    "channel_step_label": "escolha um canal em {{group}}",
+    "channel_unavailable": "esse canal não existe mais: volte e escolha outro",
     "chip_label": "{{what}} para compartilhar: toque em uma conversa para adicionar",
+    "chip_label_channel": "{{what}} para compartilhar: toque em um canal para adicionar",
     "kind_file": "arquivo",
     "kind_link": "link",
     "kind_photo": "foto",
     "kind_text": "texto",
     "kind_video": "vídeo",
+    "loading_channels": "carregando canais",
+    "no_channel_to_post": "só admins podem publicar nos canais deste grupo.",
     "notice_extra_files": "só o primeiro ficheiro foi adicionado: uma mensagem leva um ficheiro.",
     "notice_too_large": "um ficheiro com mais de {{max}} MB foi deixado de fora.",
     "notice_unreadable": "não foi possível ler o ficheiro partilhado.",
     "notice_unsafe_image": "não foi possível limpar os dados de localização da imagem, por isso foi deixada de fora.",
+    "pick_channel": "escolha um canal",
     "pick_chat": "escolha uma conversa"
   },
   "status_badge": {

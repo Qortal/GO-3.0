@@ -97,6 +97,14 @@ import {
   getLastSoftKeyboardHeight,
   useSoftKeyboardInset,
 } from '../../hooks/useSoftKeyboardInset';
+import {
+  getGoLayout,
+  isGoLayout,
+  useGoLayout,
+  useShortLandscape,
+  type GoLayout,
+} from '../../layout/goLayout';
+import { layoutSettleWaitMs, LAYOUT_SETTLE_MS } from './landscapeComposer';
 import { useAndroidBack, BACK_PRIORITY } from '../../utils/androidBack';
 import {
   claimKeyboardImageTarget,
@@ -117,6 +125,8 @@ import i18n from 'i18next';
  *  Empty TipTap docs are "" or newline-only; those stay unsendable. */
 export const composerHasSendableText = (text: string | null | undefined) =>
   /[^\n]/.test(String(text ?? ''));
+
+const selectLayoutEpoch = (l: GoLayout) => l.epoch;
 
 const MenuBar = memo(
   ({
@@ -1557,7 +1567,9 @@ const Tiptap = ({
     isDisabledEditorEnterAtom
   );
 
-  const isLandscape = useMediaQuery('(orientation: landscape)');
+  // GO: a short window, which the keyboard cannot fake (it shrinks the
+  // WebView) and a tablet in landscape is not. The Hub: the orientation query.
+  const isLandscape = useShortLandscape();
   const keyboardOpen = useSoftKeyboardOpen();
   const keyboardInset = useSoftKeyboardInset();
   // Whether the *expanded* mobile compose layout should be shown: the formatting
@@ -1567,6 +1579,20 @@ const Tiptap = ({
   // and restores the normal panels — without clearing focus or the draft.
   const [keyboardActive, setKeyboardActive] = useState(false);
   const keyboardWasOpenRef = useRef(false);
+
+  // GO: when the window last changed shape, so the keyboard effect below can
+  // tell a re-baselining keyboard store from the user closing the keyboard.
+  const layoutEpoch = useGoLayout(selectLayoutEpoch);
+  const layoutEpochSeenRef = useRef<number | null>(null);
+  const layoutChangedAtRef = useRef(0);
+  const [layoutSettleCheck, setLayoutSettleCheck] = useState(0);
+  useLayoutEffect(() => {
+    const seen = layoutEpochSeenRef.current;
+    if (seen !== null && seen !== layoutEpoch) {
+      layoutChangedAtRef.current = Date.now();
+    }
+    layoutEpochSeenRef.current = layoutEpoch;
+  }, [layoutEpoch]);
 
   // The expanded layout takes over the app's top bar, which only makes sense
   // for the main chat composer. Inside a modal the bar is covered by the
@@ -1627,6 +1653,24 @@ const Tiptap = ({
       return;
     }
     if (!keyboardWasOpenRef.current) return;
+    // GO: right after a rotation, fold or split resize the keyboard store
+    // reports a keyboard that is still up as closed until it re-baselines.
+    // Wait that out (keeping the layout) instead of blurring the composer,
+    // which would take the keyboard away for good; an epoch not rendered yet
+    // means the change has only just happened.
+    if (isGoLayout() && !emojiPanelOpen) {
+      const wait =
+        getGoLayout().epoch !== layoutEpochSeenRef.current
+          ? LAYOUT_SETTLE_MS
+          : layoutSettleWaitMs(Date.now(), layoutChangedAtRef.current);
+      if (wait > 0) {
+        const timer = window.setTimeout(
+          () => setLayoutSettleCheck((n) => n + 1),
+          wait
+        );
+        return () => window.clearTimeout(timer);
+      }
+    }
     keyboardWasOpenRef.current = false;
     if (emojiPanelOpen) return;
     if (isLandscape) {
@@ -1656,7 +1700,14 @@ const Tiptap = ({
       setKeyboardActive(false);
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [emojiPanelOpen, keyboardOpen, isLandscape, isMobile, isChat]);
+  }, [
+    emojiPanelOpen,
+    keyboardOpen,
+    isLandscape,
+    isMobile,
+    isChat,
+    layoutSettleCheck,
+  ]);
 
   const handleImageUpload = useCallback(
     async (file) => {

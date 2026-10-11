@@ -14,6 +14,12 @@ import {
   COMPOSER_DISMISS_BUTTON_PX,
   COMPOSER_DISMISS_ICON_PX,
 } from './composerCornerLayout';
+import { ReplyImageThumbnail } from './ReplyImageThumbnail';
+import {
+  extractReplyPreviewText,
+  getReplyMedia,
+  replyMediaLabelKey,
+} from './replyMedia';
 
 type ComposerReplyPreviewProps = {
   /** The message being replied to. */
@@ -24,32 +30,6 @@ type ComposerReplyPreviewProps = {
   /** Phone composers render the strip as a card inside the rounded bubble. */
   rounded?: boolean;
 };
-
-/**
- * Reads as plain text so the strip stays one predictable size no matter what
- * the original message contained. Block-level tags become line breaks, which is
- * what makes a multi-paragraph quote readable when it is scrolled.
- */
-function extractPreviewText(raw: unknown): string {
-  if (typeof raw !== 'string' || !raw.trim()) return '';
-  try {
-    const parsed = new DOMParser().parseFromString(raw, 'text/html');
-    parsed.body
-      .querySelectorAll('br')
-      .forEach((element) =>
-        element.replaceWith(parsed.createTextNode('\n'))
-      );
-    parsed.body
-      .querySelectorAll('p, div, li, blockquote, pre')
-      .forEach((element) => element.append(parsed.createTextNode('\n')));
-    return (parsed.body.textContent || '')
-      .replace(/[ \t]+\n/g, '\n')
-      .replace(/\n{3,}/g, '\n\n')
-      .trim();
-  } catch {
-    return raw.trim();
-  }
-}
 
 export const ComposerReplyPreview = ({
   message,
@@ -63,12 +43,19 @@ export const ComposerReplyPreview = ({
 
   const previewText = useMemo(
     () =>
-      extractPreviewText(
+      extractReplyPreviewText(
         message?.messageText ||
           message?.text ||
           message?.decryptedData?.data?.message
       ),
     [message?.messageText, message?.text, message?.decryptedData?.data?.message]
+  );
+
+  // The quoted message's picture, shown Telegram style between the accent
+  // bar and the text. Only what this device already has; never downloaded.
+  const media = useMemo(
+    () => getReplyMedia(message),
+    [message?.images, message?.attachments, message?.deleted]
   );
 
   const attachmentCount =
@@ -106,6 +93,20 @@ export const ComposerReplyPreview = ({
           width: '3px',
         }}
       />
+
+      {media && (
+        <ReplyImageThumbnail
+          media={media}
+          size="36px"
+          decorative={!previewText}
+          onClick={onJumpToMessage}
+          sx={{
+            alignSelf: 'center',
+            cursor: onJumpToMessage ? 'pointer' : 'default',
+            ...(rounded && { borderRadius: '8px' }),
+          }}
+        />
+      )}
 
       <Box
         onClick={onJumpToMessage}
@@ -174,18 +175,22 @@ export const ComposerReplyPreview = ({
             }}
           >
             {previewText ||
-              (attachmentCount > 1
-                ? t('core:composer.attachment_count', {
-                    count: attachmentCount,
+              (media && media.kind !== 'file'
+                ? t(replyMediaLabelKey(media.kind), {
                     postProcess: 'capitalizeFirstChar',
                   })
-                : attachmentCount === 1
-                  ? t('core:attachment', {
+                : attachmentCount > 1
+                  ? t('core:composer.attachment_count', {
+                      count: attachmentCount,
                       postProcess: 'capitalizeFirstChar',
                     })
-                  : t('core:message.message', {
-                      postProcess: 'capitalizeFirstChar',
-                    }))}
+                  : attachmentCount === 1
+                    ? t('core:attachment', {
+                        postProcess: 'capitalizeFirstChar',
+                      })
+                    : t('core:message.message', {
+                        postProcess: 'capitalizeFirstChar',
+                      }))}
           </Typography>
         </Box>
       </Box>

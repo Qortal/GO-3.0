@@ -15,12 +15,16 @@ import {
 } from './useMobileTabNavigation';
 import { SAFE_AREA_BOTTOM } from '../../utils/mobileSafeArea';
 import { MOBILE_TAB_BAR_HEIGHT_PX } from './mobileBarHeights';
+import { useGoLayout } from '../../layout/goLayout';
 
 // Defined in mobileBarHeights.ts so mobileLayout.ts needn't import this
 // component; re-exported for existing importers.
 export { MOBILE_TAB_BAR_HEIGHT_PX };
 
 type TabKey = MobileTabKey;
+
+/** Width of the centred Home/Apps/Chat cluster on wide GO screens. */
+export const GO_TAB_CLUSTER_WIDTH_PX = 440;
 
 type MobileTabBarProps = {
   desktopViewMode: string;
@@ -96,6 +100,9 @@ export const MobileTabBar = ({
   stripTakesTouches = false,
 }: MobileTabBarProps) => {
   const theme = useTheme();
+  // GO landscape and tablets: three buttons spread over a wide screen are a
+  // reach apart, so they sit in a centred cluster instead.
+  const centredCluster = useGoLayout((l) => l.go && l.widthClass !== 'compact');
   // The swipe between sections listens on the bar too (useSectionSwipe).
   const setTabBarElement = useSetAtom(mobileTabBarElementAtom);
   const immersiveBarRef = immersive?.barRef;
@@ -247,6 +254,11 @@ export const MobileTabBar = ({
         justifyContent: floating ? 'space-around' : undefined,
         height: `calc(${MOBILE_TAB_BAR_HEIGHT_PX}px + ${SAFE_AREA_BOTTOM})`,
         paddingBottom: SAFE_AREA_BOTTOM,
+        ...(centredCluster
+          ? {
+              paddingInline: `max(0px, calc((100% - ${GO_TAB_CLUSTER_WIDTH_PX}px) / 2))`,
+            }
+          : {}),
         ...(floating
           ? // Taps between the buttons reach the content behind them; with
             // nothing behind, the strip itself takes swipes.

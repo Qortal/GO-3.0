@@ -15,13 +15,15 @@ type Ack = { ok: boolean; error?: string; payload?: Record<string, any> };
  */
 function makeBridge() {
   const calls: Call[] = [];
-  const acks: Ack[] = [];
+  const acks: Array<Ack | Error> = [];
   let nextLink = 0;
   const sendCommand = vi.fn(
     async (action: string, payload: Record<string, unknown>): Promise<Ack> => {
       calls.push({ action, payload });
       if (action !== 'prepare_reticulum_resource_session') return { ok: true };
       const queued = acks.shift();
+      // A queued Error is the worker's own command timeout (no ack at all).
+      if (queued instanceof Error) throw queued;
       if (queued) return queued;
       nextLink += 1;
       return {
@@ -208,9 +210,28 @@ describe('MobileReticulumBridge resource sessions', () => {
     });
     expect(
       bridge.getResourceSessionStats().results[
-        'reticulum_chat_metadata_snapshot:bridge-timeout'
+        'reticulum_chat_metadata_snapshot:ready-timeout'
       ]
     ).toBe(1);
+  });
+
+  it('counts a command-ack timeout apart from a ready timeout', async () => {
+    const { bridge, acks } = makeBridge();
+    acks.push(
+      new Error(
+        'worker->native request timed out: prepare_reticulum_resource_session'
+      )
+    );
+    await expect(
+      ensure(bridge, PEER_C, 'reticulum_chat_author_range')
+    ).resolves.toEqual({
+      ok: false,
+      reason: 'bridge-timeout',
+      error:
+        'worker->native request timed out: prepare_reticulum_resource_session',
+    });
+    const { results } = bridge.getResourceSessionStats();
+    expect(results).toEqual({ 'reticulum_chat_author_range:ack-timeout': 1 });
   });
 
   it('caps the number of distinct outcome keys', async () => {
@@ -347,5 +368,146 @@ describe('MobileReticulumBridge chat fanout', () => {
       });
     }
     expect(sendCommand).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('MobileReticulumBridge serving stats', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const META = { logicalResourceType: 'reticulum_chat_history_page' };
+
+  function makeServingBridge() {
+    const replies = new Map<string, Ack[]>();
+    const sendCommand = vi.fn(async (action: string): Promise<Ack> => {
+      return replies.get(action)?.shift() ?? { ok: true };
+    });
+    const bridge = new MobileReticulumBridge(sendCommand);
+    bridge.markReady({});
+    const reply = (action: string, ack: Ack) =>
+      replies.set(action, [...(replies.get(action) ?? []), ack]);
+    const auth = (transferId: string, extra: Record<string, unknown> = {}) =>
+      bridge.dispatchPythonEvent('reticulum_chat_resource', {
+        status: 'auth',
+        transferId,
+        resourceType: 'reticulum_chat_event',
+        metadata: META,
+        ...extra,
+      });
+    const authorize = (transferId: string) =>
+      bridge.authorizeReticulumChatResourceDetailed({
+        linkId: 'link-1',
+        transferId,
+      });
+    return { bridge, reply, auth, authorize, sendCommand };
+  }
+
+  it('counts requests, answers, late answers and step times per type', async () => {
+    const { bridge, reply, auth, authorize } = makeServingBridge();
+    vi.setSystemTime(1_500);
+    auth('t1', {
+      arrivedAtMs: 1_000,
+      authStartedAtMs: 1_020,
+      _workerRecvAtMs: 1_500,
+    });
+    vi.setSystemTime(4_000);
+    reply('authorize_reticulum_chat_resource', { ok: true });
+    await expect(authorize('t1')).resolves.toEqual({ ok: true });
+
+    // Python gave up before the answer: the authorize fails and is late.
+    auth('t2');
+    bridge.dispatchPythonEvent('reticulum_chat_resource', {
+      status: 'auth_ended',
+      transferId: 't2',
+      reason: 'resource_authorization_timeout',
+      metadata: META,
+    });
+    reply('authorize_reticulum_chat_resource', {
+      ok: false,
+      payload: { code: 'unknown_resource_request' },
+    });
+    await expect(authorize('t2')).resolves.toEqual({
+      ok: false,
+      reason: 'send-command-failed',
+    });
+
+    // An answer for a request this bridge never saw changes nothing.
+    await expect(authorize('t9')).resolves.toEqual({ ok: true });
+
+    auth('t3');
+    await expect(
+      bridge.rejectReticulumChatResourceDetailed({
+        linkId: 'link-1',
+        transferId: 't3',
+        reason: 'no_history_events',
+      })
+    ).resolves.toEqual({ ok: true });
+
+    const stats = bridge.getServingStats();
+    expect(stats.byType).toEqual({
+      reticulum_chat_history_page: {
+        received: 3,
+        authorized: 1,
+        rejected: 1,
+        failed: 1,
+        late: 1,
+        ended: 1,
+      },
+    });
+    expect(stats.endedReasons).toEqual({ resource_authorization_timeout: 1 });
+    expect(stats.failedReasons).toEqual({ unknown_resource_request: 1 });
+    expect(stats.totalMs?.max).toBe(3_000);
+    expect(stats.engineMs?.max).toBe(2_500);
+    expect(stats.pythonMs?.max).toBe(20);
+    expect(stats.toWorkerMs?.max).toBe(480);
+    expect(stats.waiting).toBe(0);
+    expect(stats.oldestWaitingMs).toBeNull();
+  });
+
+  it('reports requests still waiting for an answer', () => {
+    const { bridge, auth } = makeServingBridge();
+    vi.setSystemTime(10_000);
+    auth('t1');
+    vi.setSystemTime(12_500);
+    auth('t2');
+    // Re-sent auth for the same transfer replaces the earlier one.
+    auth('t2');
+    expect(bridge.getServingStats(13_000)).toMatchObject({
+      waiting: 2,
+      oldestWaitingMs: 3_000,
+      byType: { reticulum_chat_history_page: { received: 3 } },
+    });
+    // Ignored past the two-minute bookkeeping window.
+    expect(bridge.getServingStats(10_000 + 130_000).waiting).toBe(0);
+  });
+
+  it('counts an answer that failed in the bridge by its reason', async () => {
+    const { bridge, auth } = makeServingBridge();
+    auth('t1');
+    bridge.markStopped();
+    await expect(
+      bridge.authorizeReticulumChatResourceDetailed({
+        linkId: 'l',
+        transferId: 't1',
+      })
+    ).resolves.toEqual({ ok: false, reason: 'bridge-not-ready' });
+    expect(bridge.getServingStats()).toMatchObject({
+      byType: { reticulum_chat_history_page: { failed: 1, late: 0 } },
+      failedReasons: { 'bridge-not-ready': 1 },
+    });
+  });
+
+  it('still hands every resource event to the engine unchanged', () => {
+    const { bridge } = makeServingBridge();
+    const seen: unknown[] = [];
+    bridge.on('reticulum-chat-resource', (p) => seen.push(p));
+    const odd = { status: 'auth', transferId: 7, metadata: 'x' };
+    bridge.dispatchPythonEvent('reticulum_chat_resource', odd);
+    expect(seen).toEqual([odd]);
+    expect(bridge.getServingStats().byType).toEqual({});
   });
 });

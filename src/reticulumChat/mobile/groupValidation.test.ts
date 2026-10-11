@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   apiHostOf,
@@ -71,7 +71,7 @@ describe('groupValidation', () => {
       config.apiBase,
       1144,
       ADDRESS,
-      { fetchImpl }
+      { fetchImpl, resourceTiming: null }
     );
     expect(outcome.row).toEqual({ isMember: true, isAdmin: false });
     expect(outcome.status).toBe(200);
@@ -114,7 +114,10 @@ describe('groupValidation', () => {
       'http://localhost:52391',
       1144,
       ADDRESS,
-      { fetchImpl: async () => jsonResponse({ error: 'nope' }, 404) }
+      {
+        fetchImpl: async () => jsonResponse({ error: 'nope' }, 404),
+        resourceTiming: null,
+      }
     );
     expect(outcome).toMatchObject({
       row: null,
@@ -134,6 +137,7 @@ describe('groupValidation', () => {
             'Failed to fetch http://localhost:52391/x?apiKey=SECRET'
           );
         },
+        resourceTiming: null,
       }
     );
     expect(outcome.row).toBeNull();
@@ -157,6 +161,7 @@ describe('groupValidation', () => {
                 reject(new DOMException('aborted', 'AbortError'))
               );
             }),
+          resourceTiming: null,
         }
       );
       await vi.advanceTimersByTimeAsync(1_000);
@@ -173,7 +178,10 @@ describe('groupValidation', () => {
       'http://localhost:52391',
       1,
       ADDRESS,
-      { fetchImpl: async () => jsonResponse({ isMember: true }) }
+      {
+        fetchImpl: async () => jsonResponse({ isMember: true }),
+        resourceTiming: null,
+      }
     );
     expect(odd).toMatchObject({
       row: null,
@@ -183,6 +191,7 @@ describe('groupValidation', () => {
     const fetchImpl = vi.fn();
     const noBase = await runGroupValidationRequest('', 1, ADDRESS, {
       fetchImpl,
+      resourceTiming: null,
     });
     expect(noBase).toMatchObject({ row: null, error: 'no Core API base' });
     expect(fetchImpl).not.toHaveBeenCalled();
@@ -193,9 +202,248 @@ describe('groupValidation', () => {
       'http://localhost:52391',
       1,
       ADDRESS,
-      { fetchImpl: async () => jsonResponse([]) }
+      { fetchImpl: async () => jsonResponse([]), resourceTiming: null }
     );
     expect(outcome.row).toEqual({ isMember: false, isAdmin: false });
+  });
+
+  describe('a timer that fires late (worker stall)', () => {
+    let resolveFetch: ((res: Response) => void) | null;
+    const deferredFetch = (_url: string, init: RequestInit) =>
+      new Promise<Response>((resolve, reject) => {
+        resolveFetch = resolve;
+        init.signal?.addEventListener('abort', () =>
+          reject(new DOMException('aborted', 'AbortError'))
+        );
+      });
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+      resolveFetch = null;
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('keeps an answer that lands while the worker is stalled past the deadline', async () => {
+      let clock = 0;
+      const pending = runGroupValidationRequest(
+        'http://localhost:52391',
+        1,
+        ADDRESS,
+        {
+          timeoutMs: 1_000,
+          now: () => clock,
+          fetchImpl: deferredFetch,
+          resourceTiming: null,
+        }
+      );
+      clock = 2_600;
+      // The timer sees itself 1,600 ms late and re-arms once.
+      await vi.advanceTimersByTimeAsync(1_000);
+      resolveFetch!(
+        jsonResponse([{ address: ADDRESS, isMember: true, isAdmin: false }])
+      );
+      const outcome = await pending;
+      expect(outcome).toMatchObject({
+        row: { isMember: true, isAdmin: false },
+        error: null,
+        graced: true,
+        timerLateMs: 1_600,
+      });
+      expect(outcome.timedOut).toBeUndefined();
+    });
+
+    it('grants the grace only once', async () => {
+      let clock = 0;
+      const pending = runGroupValidationRequest(
+        'http://localhost:52391',
+        1,
+        ADDRESS,
+        {
+          timeoutMs: 1_000,
+          now: () => clock,
+          fetchImpl: deferredFetch,
+          resourceTiming: null,
+        }
+      );
+      clock = 2_600;
+      await vi.advanceTimersByTimeAsync(1_000);
+      clock = 5_000;
+      await vi.advanceTimersByTimeAsync(1_500);
+      const outcome = await pending;
+      expect(outcome).toMatchObject({
+        row: null,
+        graced: true,
+        timedOut: true,
+        error:
+          'AbortError: no answer in 1000 ms (worker stalled 1600 ms; grace 1500 ms)',
+      });
+    });
+
+    it('aborts on time when the timer is not late', async () => {
+      const pending = runGroupValidationRequest(
+        'http://localhost:52391',
+        1,
+        ADDRESS,
+        {
+          timeoutMs: 1_000,
+          now: () => Date.now(),
+          fetchImpl: deferredFetch,
+          resourceTiming: null,
+        }
+      );
+      await vi.advanceTimersByTimeAsync(1_000);
+      const outcome = await pending;
+      expect(outcome.error).toBe('AbortError: no answer in 1000 ms');
+      expect(outcome.graced).toBeUndefined();
+      expect(outcome.timedOut).toBe(true);
+    });
+  });
+
+  it('measures the network time from Resource Timing', async () => {
+    // The browser hands out the same entry objects on every read.
+    const entries = [
+      { startTime: 5, responseEnd: 40 },
+      { startTime: 12, responseEnd: 62 },
+    ];
+    const perf = {
+      now: () => 10,
+      getEntriesByName: vi.fn(() => entries),
+      getEntriesByType: () => new Array(201),
+      clearResourceTimings: vi.fn(),
+    };
+    const fetchImpl = async () =>
+      jsonResponse([{ address: ADDRESS, isMember: true, isAdmin: false }]);
+    const first = await runGroupValidationRequest(
+      'http://localhost:52391',
+      1,
+      ADDRESS,
+      { fetchImpl, resourceTiming: perf }
+    );
+    // The entry that started before the request (5 < 10 - 1) is not ours.
+    expect(first.networkMs).toBe(50);
+    expect(perf.getEntriesByName).toHaveBeenCalledWith(
+      'http://localhost:52391/groups/members/1/validate',
+      'resource'
+    );
+    expect(perf.clearResourceTimings).toHaveBeenCalledTimes(1);
+    // Same entries again: the matching one is already claimed.
+    const second = await runGroupValidationRequest(
+      'http://localhost:52391',
+      1,
+      ADDRESS,
+      { fetchImpl, resourceTiming: perf }
+    );
+    expect(second.networkMs).toBeNull();
+    expect(second.row).toEqual({ isMember: true, isAdmin: false });
+  });
+
+  it('keeps the timing buffer from filling up with unread entries', async () => {
+    // Like Chromium: 250 entries, then new ones are dropped until cleared.
+    let t = 0;
+    const entries: Array<{
+      name: string;
+      startTime: number;
+      responseEnd: number;
+    }> = [];
+    const perf = {
+      now: () => (t += 3),
+      getEntriesByName: (name: string) =>
+        entries.filter((entry) => entry.name === name),
+      getEntriesByType: () => entries,
+      clearResourceTimings: vi.fn(() => {
+        entries.length = 0;
+      }),
+    };
+    const answer = (json: () => Promise<unknown>) => async (url: string) => {
+      t += 10;
+      if (entries.length < 250) {
+        entries.push({ name: url, startTime: t, responseEnd: t + 5 });
+      }
+      return { ok: true, status: 200, json } as unknown as Response;
+    };
+    // A captive portal answers 200 with HTML: the body never parses.
+    for (let i = 0; i < 300; i += 1) {
+      const outcome = await runGroupValidationRequest(
+        'http://127.0.0.1:12391',
+        694,
+        ADDRESS,
+        {
+          resourceTiming: perf,
+          fetchImpl: answer(async () => {
+            throw new SyntaxError('Unexpected token <');
+          }),
+        }
+      );
+      expect(outcome.row).toBeNull();
+    }
+    expect(entries.length).toBeLessThanOrEqual(201);
+    expect(perf.clearResourceTimings).toHaveBeenCalled();
+    const healthy = await runGroupValidationRequest(
+      'http://127.0.0.1:12391',
+      694,
+      ADDRESS,
+      { resourceTiming: perf, fetchImpl: answer(async () => []) }
+    );
+    expect(healthy.networkMs).toBe(5);
+  });
+
+  it('counts graced, timed out and own requests and keeps 32 timings', () => {
+    const stats = createGroupValidatorStats();
+    const ok = { isMember: true, isAdmin: false };
+    recordGroupValidation(
+      stats,
+      {
+        row: ok,
+        status: 200,
+        error: null,
+        ms: 9_050,
+        networkMs: 50,
+        graced: true,
+        timerLateMs: 1_600,
+      },
+      'h',
+      1,
+      { own: true }
+    );
+    expect(stats.recentWorkerWaitMs).toEqual([9_000]);
+    recordGroupValidation(
+      stats,
+      {
+        row: null,
+        status: null,
+        error: 'AbortError: no answer in 12000 ms',
+        ms: 12_000,
+        timedOut: true,
+      },
+      'h',
+      2,
+      { own: true }
+    );
+    for (let i = 0; i < 40; i++) {
+      recordGroupValidation(
+        stats,
+        { row: ok, status: 200, error: null, ms: 20, networkMs: 10 },
+        'h',
+        3 + i
+      );
+    }
+    expect(stats).toMatchObject({
+      okCount: 41,
+      unavailableCount: 1,
+      gracedCount: 1,
+      gracedKeptCount: 1,
+      timedOutCount: 1,
+      maxTimerLateMs: 1_600,
+      ownCount: 2,
+      ownUnavailableCount: 1,
+    });
+    expect(stats.recentNetworkMs).toHaveLength(32);
+    expect(stats.recentNetworkMs![31]).toBe(10);
+    expect(stats.recentWorkerWaitMs).toHaveLength(32);
+    expect(stats.recentWorkerWaitMs![31]).toBe(10);
+    expect(stats.recentWorkerWaitMs).not.toContain(9_000);
   });
 
   it('counts outcomes and keeps the last error after a later success', () => {
@@ -226,6 +474,19 @@ describe('groupValidation', () => {
       lastError: 'TypeError: Failed to fetch',
       lastErrorAt: 1_000,
       host: 'localhost:52391',
+      timedOutCount: 0,
+      gracedCount: 0,
+      gracedKeptCount: 0,
+      maxTimerLateMs: 0,
+      maxInFlight: 0,
+      ownCount: 0,
+      ownUnavailableCount: 0,
+      ownListAnswers: 0,
+      ownBootWaits: 0,
+      ownBootWaitTimeouts: 0,
+      ownCoreDenied: 0,
+      recentNetworkMs: [],
+      recentWorkerWaitMs: [],
     });
   });
 

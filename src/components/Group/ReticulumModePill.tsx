@@ -147,11 +147,13 @@ export function ReticulumModePill({ target, onClick }: ReticulumModePillProps) {
           '& .reticulum-mode-label-compact': {
             display: 'none',
           },
-          '@media (max-width: 1199.95px)': {
+          // Theme queries (the same strings on the Hub) so GO's phone-shell
+          // breakpoints apply here too.
+          [theme.breakpoints.down('lg')]: {
             '& .reticulum-mode-label-full': { display: 'none' },
             '& .reticulum-mode-label-compact': { display: 'inline' },
           },
-          '@media (max-width: 899.95px)': {
+          [theme.breakpoints.down('md')]: {
             '& .reticulum-mode-label-compact': { display: 'none' },
           },
         }}

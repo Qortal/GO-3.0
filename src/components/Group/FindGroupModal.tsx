@@ -1,13 +1,6 @@
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import TravelExploreRoundedIcon from '@mui/icons-material/TravelExploreRounded';
-import {
-  Box,
-  Dialog,
-  IconButton,
-  Typography,
-  useMediaQuery,
-  useTheme,
-} from '@mui/material';
+import { Box, Dialog, IconButton, Typography } from '@mui/material';
 import { Fragment, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AddGroupList } from './AddGroupList';
@@ -17,6 +10,7 @@ import { subscribeToEvent, unsubscribeFromEvent } from '../../utils/events';
 import { MobilePanelHeader } from '../Mobile/MobilePanelHeader';
 import { BACK_PRIORITY, useAndroidBack } from '../../utils/androidBack';
 import { SAFE_AREA_BOTTOM } from '../../utils/mobileSafeArea';
+import { useSheetFullScreen } from '../../layout/goLayout';
 
 type FindGroupModalProps = {
   open: boolean;
@@ -32,10 +26,10 @@ export function FindGroupModal({
   const { t } = useTranslation(['group']);
   const [openSnack, setOpenSnack] = useState(false);
   const [infoSnack, setInfoSnack] = useState(null);
-  const theme = useTheme();
-  // Phones: a full-screen panel like the other group panels (Members,
-  // Calendar, Files), with the shared header; Android back closes it.
-  const isPhone = useMediaQuery(theme.breakpoints.down('sm'));
+  // Phones (and short GO windows): a full-screen panel like the other group
+  // panels (Members, Calendar, Files), with the shared header; Android back
+  // closes it.
+  const isPhone = useSheetFullScreen();
   useAndroidBack(
     () => {
       setOpen(false);

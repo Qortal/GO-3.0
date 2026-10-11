@@ -77,6 +77,8 @@ export interface MobileChatListHeaderProps {
    * shows in place of the buttons, with an X (`onCancelShare`) to drop it.
    */
   share?: PreparedChatShare | null;
+  /** The share's channel step is up: the share asks for a channel. */
+  sharePicksChannel?: boolean;
   onCancelShare?: () => void;
 }
 
@@ -100,6 +102,7 @@ export function MobileChatListHeader({
   onSearchMessages,
   onNewChat,
   share = null,
+  sharePicksChannel = false,
   onCancelShare,
 }: MobileChatListHeaderProps) {
   const { t } = useTranslation(['core', 'group', 'reticulum']);
@@ -160,7 +163,11 @@ export function MobileChatListHeader({
         value={scope}
       />
       {share ? (
-        <ChatShareChip share={share} onCancel={() => onCancelShare?.()} />
+        <ChatShareChip
+          share={share}
+          picking={sharePicksChannel ? 'channel' : 'chat'}
+          onCancel={() => onCancelShare?.()}
+        />
       ) : null}
       {/* Hidden, not removed, while a share waits: the middle button's icons
           keep the place the pages gave them. */}

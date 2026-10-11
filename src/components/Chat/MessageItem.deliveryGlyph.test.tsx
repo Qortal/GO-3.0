@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import '../../i18n/i18n';
 import { MessageItem } from './MessageItem';
 import { setReticulumDmDeliveryTrackingSince } from './reticulumDmDeliveryState';
+import { resetOwnPostDeliveryStoreForTests } from '../../reticulumChat/ownPostDeliveryStore';
 
 // The glyph gating lives in MessageItem; its heavy children are reduced to
 // stubs. MessageDisplay keeps rendering its trailing content, which is where
@@ -106,7 +107,7 @@ describe('MessageItem Reticulum DM delivery glyph', () => {
     expect(screen.getByTestId('message-display')).toContainElement(glyph);
   });
 
-  it('shows no glyph for group posts, Saved Messages or incoming DMs', () => {
+  it('shows no glyph for untracked group posts or Saved Messages, or incoming DMs', () => {
     for (const message of [
       dm({ reticulumDirect: false }),
       dm({ recipientAddress: ME, reticulumDeliveryStatus: 'sent' }),
@@ -146,5 +147,119 @@ describe('MessageItem Reticulum DM delivery glyph', () => {
       expect(glyphsIn(container)).toHaveLength(0);
       unmount();
     }
+  });
+});
+
+describe('MessageItem Reticulum post delivery glyph', () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(NOW);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    resetOwnPostDeliveryStoreForTests();
+  });
+
+  const glyphsIn = (container: HTMLElement) =>
+    container.querySelectorAll('[data-delivery-state]');
+
+  // An own group post as ChatGroup builds it from a tracked engine event.
+  const groupPost = (overrides: Record<string, unknown> = {}) => ({
+    id: 'post-1',
+    signature: 'post-1',
+    timestamp: NOW,
+    sender: ME,
+    senderName: ME,
+    groupId: 7,
+    channelId: 'general',
+    text: '<p>hello</p>',
+    message: '<p>hello</p>',
+    messageText: 'hello',
+    reticulumChat: true,
+    reticulumPostDeliverySince: NOW,
+    ...overrides,
+  });
+
+  it('shows exactly one glyph in the header of a tracked own group post', () => {
+    const { container } = renderItem(groupPost(), { isPrivate: false });
+    expect(glyphsIn(container)).toHaveLength(1);
+    const glyph = screen.getByRole('img', { name: 'Sending' });
+    expect(glyph).toHaveAttribute('data-delivery-kind', 'post');
+    expect(screen.getByTestId('message-display')).not.toContainElement(glyph);
+  });
+
+  it('shows exactly one glyph after the text of a grouped group post', () => {
+    const { container } = renderItem(
+      groupPost({ reticulumPostMemberAt: NOW }),
+      { isGroupedWithPrevious: true, isPrivate: false }
+    );
+    expect(glyphsIn(container)).toHaveLength(1);
+    const glyph = screen.getByRole('img', { name: 'Delivered' });
+    expect(screen.getByTestId('message-display')).toContainElement(glyph);
+  });
+
+  it('shows the glyph in a thread too', () => {
+    const { container } = renderItem(groupPost(), {
+      isPrivate: false,
+      reticulumDiscussionRootId: 'root-1',
+      reticulumDiscussionView: true,
+    });
+    expect(glyphsIn(container)).toHaveLength(1);
+  });
+
+  it('shows the post glyph, not the DM one, on a tracked Saved Message', () => {
+    const saved = dm({
+      recipientAddress: ME,
+      reticulumDeliveryStatus: 'sent',
+      reticulumPostDeliverySince: NOW - 60_000,
+    });
+    for (const isGroupedWithPrevious of [false, true]) {
+      const { container, unmount } = renderItem(saved, {
+        isGroupedWithPrevious,
+      });
+      expect(glyphsIn(container)).toHaveLength(1);
+      const glyph = screen.getByRole('img', { name: 'Not picked up yet' });
+      expect(glyph).toHaveAttribute('data-delivery-kind', 'post');
+      unmount();
+    }
+  });
+
+  it('keeps the DM glyph for a DM to someone else, whatever post fields it has', () => {
+    const { container } = renderItem(
+      dm({ reticulumPostDeliverySince: NOW, reticulumPostOwnDeviceAt: NOW })
+    );
+    expect(glyphsIn(container)).toHaveLength(1);
+    expect(screen.getByRole('img', { name: 'Sending' })).toHaveAttribute(
+      'data-delivery-kind',
+      'dm'
+    );
+  });
+
+  it('shows no glyph on temp, updating or reply-preview rows', () => {
+    for (const message of [groupPost(), dm({ recipientAddress: ME })]) {
+      for (const props of [
+        { isTemp: true },
+        { isUpdating: true },
+        { isShowingAsReply: true },
+      ]) {
+        const { container, unmount } = renderItem(
+          { ...message, reticulumPostDeliverySince: NOW },
+          props
+        );
+        expect(glyphsIn(container)).toHaveLength(0);
+        unmount();
+      }
+    }
+  });
+
+  it('shows no glyph outside a Reticulum list or on posts of others', () => {
+    const outside = renderItem(groupPost(), { reticulumChatEnabled: false });
+    expect(glyphsIn(outside.container)).toHaveLength(0);
+    outside.unmount();
+    const others = renderItem(
+      groupPost({ sender: PEER, senderName: PEER, senderAddress: PEER })
+    );
+    expect(glyphsIn(others.container)).toHaveLength(0);
   });
 });

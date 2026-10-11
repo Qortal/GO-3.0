@@ -41,6 +41,7 @@ import {
   SAFE_AREA_BOTTOM,
   SAFE_AREA_TOP,
 } from '../../../utils/mobileSafeArea';
+import { getGoLayout, isGoLayout } from '../../../layout/goLayout';
 
 type Props = {
   item: QdnMediaItem;
@@ -73,6 +74,9 @@ const SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2] as const;
 
 async function lockOrientationForVideo(video: HTMLVideoElement | null) {
   if (!video || !Capacitor.isNativePlatform()) return;
+  // GO tablets show video well either way up; turning one would only
+  // reflow the whole app behind the player.
+  if (isGoLayout() && getGoLayout().largeScreen) return;
   const w = video.videoWidth;
   const h = video.videoHeight;
   if (!w || !h) return;

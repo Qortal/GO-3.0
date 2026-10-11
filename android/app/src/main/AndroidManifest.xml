@@ -22,7 +22,7 @@
         android:requestLegacyExternalStorage="true"
         android:usesCleartextTraffic="true">
         <activity
-            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode|density|navigation|touchscreen"
             android:windowSoftInputMode="adjustResize"
             android:screenOrientation="unspecified"
             android:name=".MainActivity"
@@ -224,12 +224,14 @@
         <activity
             android:name="ee.forgr.biometric.AuthActivity"
             android:exported="false"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|keyboard|uiMode|density"
             android:theme="@style/QortalBiometricAuthTheme"
             tools:replace="android:theme" />
 
         <activity
             android:name=".QortalBiometricAuthActivity"
             android:exported="false"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|keyboard|uiMode|density"
             android:theme="@style/QortalBiometricAuthTheme" />
 
         <provider

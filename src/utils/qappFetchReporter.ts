@@ -4,15 +4,14 @@
  * Q-Share fetches the whole file (`/arbitrary/FILE/...`) inside its frame and
  * only then asks GO to save it. On mobile data that is minutes with nothing on
  * screen. The script below runs at document start in Q-App frames (installed
- * natively, since those frames are cross-origin) and reports the progress of
- * large QDN GETs to GO's window. GO turns the reports into the same progress
- * card and tray notification its own saves use.
+ * natively, since those frames are cross-origin; see qappFrameScripts.ts) and
+ * reports the progress of large QDN GETs to GO's window. GO turns the reports
+ * into the same progress card and tray notification its own saves use.
  *
  * Only responses of at least {@link QAPP_FETCH_MIN_BYTES} are touched. Their
  * body is passed through a pull-based counter: nothing is read ahead of the
  * app, so an app that never reads the body downloads nothing extra.
  */
-import { installNativeFrameScript } from '../plugins/FileWriter';
 
 export const QAPP_FETCH_MIN_BYTES = 4 * 1024 * 1024;
 /** Marks the reporter's postMessages; nothing else in GO uses this key. */
@@ -304,19 +303,4 @@ export function parseQappFetchMessage(data: unknown): QappFetchMessage | null {
       ? { message: text(raw.message, 200) }
       : {}),
   };
-}
-
-let installed: Promise<boolean> | null = null;
-
-/** Installs the reporter for Q-App frames loaded from now on. Native only. */
-export function installQappFetchReporter(): Promise<boolean> {
-  if (!installed) {
-    const script = buildQappFetchReporterScript(window.location.origin);
-    installed = installNativeFrameScript(script).catch((error) => {
-      console.warn('[QappFetchReporter] not installed', error);
-      installed = null;
-      return false;
-    });
-  }
-  return installed;
 }

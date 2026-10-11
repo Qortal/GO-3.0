@@ -152,7 +152,7 @@
   },
   "image_viewer": {
     "actions": "image actions",
-    "chat_image": "chat image",
+    "chat_image": "vestluse pilt",
     "clipboard_unavailable": "image clipboard is unavailable",
     "close": "close image viewer",
     "copied": "image copied",
@@ -201,6 +201,36 @@
     "subtitle": "Tundub, et sa ei kuulu veel ühessegi kogukonda. Muudame seda.",
     "title": "Tere tulemast uude ja paremasse Q-Chati",
     "whats_new_button": "Mis on uut?"
+  },
+  "post_delivery": {
+    "delivered_member": {
+      "hint": "Grupi liikme sõlm tõi selle sellest telefonist ära. See ei tähenda, et keegi oleks seda lugenud.",
+      "label": "kohale toimetatud"
+    },
+    "delivered_own_device": {
+      "hint": "Sinu teine seade (näiteks sinu Hub) tõi selle sellest telefonist ära.",
+      "label": "kohale toimetatud"
+    },
+    "delivered_own_device_self_dm": {
+      "hint": "Sinu teine seade (näiteks sinu Hub) tõi selle sellest telefonist ära.",
+      "label": "kohale toimetatud"
+    },
+    "not_picked_up": {
+      "hint": "Ükski teine sõlm pole seda veel sellest telefonist ära toonud. Liikmete sõlmed toovad selle ära, kui nad võrku tulevad ja see telefon on kättesaadav.",
+      "label": "pole veel ära toodud"
+    },
+    "not_picked_up_self_dm": {
+      "hint": "Ükski sinu teistest seadmetest pole seda veel sellest telefonist ära toonud. Need toovad selle ära, kui nad võrku tulevad ja see telefon on kättesaadav.",
+      "label": "pole veel ära toodud"
+    },
+    "sending": {
+      "hint": "Võrgus olevate liikmete sõlmed toovad selle tavaliselt mõne sekundiga ära.",
+      "label": "saatmine"
+    },
+    "sending_self_dm": {
+      "hint": "Sinu teised seadmed, mis on võrgus, toovad selle tavaliselt mõne sekundiga ära.",
+      "label": "saatmine"
+    }
   },
   "qapp_preview": {
     "check_again": "check again",
@@ -313,18 +343,25 @@
     }
   },
   "share": {
+    "admins_only": "ainult adminid",
     "cancel": "tühista jagamine",
     "cannot_write": "selles kanalis saavad kirjutada ainult adminid: mine tagasi ja vali teine vestlus",
+    "channel_step_label": "vali kanal grupis {{group}}",
+    "channel_unavailable": "seda kanalit enam pole: mine tagasi ja vali teine",
     "chip_label": "jagamiseks {{what}}: puuduta vestlust, et see lisada",
+    "chip_label_channel": "jagamiseks {{what}}: puuduta kanalit, et see lisada",
     "kind_file": "fail",
     "kind_link": "link",
     "kind_photo": "foto",
     "kind_text": "tekst",
     "kind_video": "video",
+    "loading_channels": "kanalite laadimine",
+    "no_channel_to_post": "selle grupi kanalites saavad postitada ainult adminid.",
     "notice_extra_files": "lisati ainult esimene fail: sõnumis on üks fail.",
     "notice_too_large": "üle {{max}} MB fail jäeti välja.",
     "notice_unreadable": "jagatud faili ei õnnestunud lugeda.",
     "notice_unsafe_image": "pildilt ei õnnestunud asukohaandmeid eemaldada, seega jäeti see välja.",
+    "pick_channel": "vali kanal",
     "pick_chat": "vali vestlus"
   },
   "status_badge": {

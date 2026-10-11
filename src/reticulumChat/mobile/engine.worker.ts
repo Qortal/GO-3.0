@@ -7,6 +7,7 @@
  */
 import { Buffer } from 'buffer';
 import { createLogThrottle } from './shims/logger';
+import { installLoopLagProbe, runTimedTask } from './loopLag';
 
 (globalThis as any).Buffer = (globalThis as any).Buffer || Buffer;
 (globalThis as any).process = (globalThis as any).process || {
@@ -49,6 +50,9 @@ function throttleWorkerConsole(): void {
 }
 
 throttleWorkerConsole();
+// Loop lag for Copy diagnostics: every existing timer reports how late it
+// fired. Wraps the timers before the engine is imported; adds none.
+installLoopLagProbe();
 
 type BootMessage = {
   t: 'boot';
@@ -133,7 +137,7 @@ function enqueueWorkerMessage(data: any): void {
 
 function attachRpcPort(port: MessagePort): void {
   port.onmessage = (event: MessageEvent) => {
-    handler(event.data);
+    runTimedTask('message', () => handler(event.data));
   };
 }
 
@@ -142,5 +146,5 @@ self.onmessage = (event: MessageEvent) => {
     attachRpcPort(event.ports[0]);
     return;
   }
-  enqueueWorkerMessage(event.data);
+  runTimedTask('message', () => enqueueWorkerMessage(event.data));
 };

@@ -58,7 +58,6 @@ import {
   HOME_CUSTOMIZABLE_CARD_RESIZE_STEP_PX,
   HOME_DASHBOARD_VERTICAL_GAP_PX,
   HOME_DASHBOARD_WIDGET_DISPLAY_MODE,
-  HOME_DASHBOARD_WIDGET_HEIGHT_PX,
   HOME_EMBEDDED_QAPP_PANEL_HEIGHT_PX,
   HOME_GROUP_ACTIVITY_CARD_DEFAULT_HEIGHT_PX,
   HOME_INFO_COLLAPSED_VISIBLE_HEIGHT_PX,
@@ -97,6 +96,8 @@ import {
   writeHomeWindowOrder,
 } from './homeLayout';
 import { type HomeWindow, HomeWindowStack } from './HomeWindowStack';
+import { useGoLayout } from '../../../layout/goLayout';
+import { goHomeMaxWidth, goHomeWidgetHeight } from './goHomeLayout';
 
 const HomeDesktopInner = ({
   myAddress,
@@ -153,6 +154,12 @@ const HomeDesktopInner = ({
   const isSplitDashboardLayout = useMediaQuery(theme.breakpoints.up('md'));
   const isWideDashboardLayout = useMediaQuery(
     theme.breakpoints.up(HOME_WIDE_DASHBOARD_MIN_WIDTH_PX)
+  );
+  // GO tablets and landscape: a centred column and feed widgets that fit a
+  // short window. Off GO these are the Hub's 1320px and 612.
+  const homeMaxWidth = useGoLayout((l) => goHomeMaxWidth(l.go, l.width));
+  const dashboardWidgetHeightPx = useGoLayout((l) =>
+    goHomeWidgetHeight(l.go, l.short, l.stableHeight)
   );
   const resolvedWideLeftLowerRowPanelHeightPx = isWideDashboardLayout
     ? HOME_SHARED_LEFT_LOWER_ROW_PANEL_HEIGHT_PX
@@ -610,7 +617,7 @@ const HomeDesktopInner = ({
     <DashboardWidgetFrame
       actionIcon={<ForumRoundedIcon sx={{ fontSize: '0.86rem' }} />}
       actionLabel={td('open_in_q_chat', 'Open in Q-Chat')}
-      height={HOME_DASHBOARD_WIDGET_HEIGHT_PX}
+      height={dashboardWidgetHeightPx}
       onAction={handleOpenGroupsWidget}
       onRefresh={handleRefreshGroupActivity}
       onSwap={
@@ -642,7 +649,7 @@ const HomeDesktopInner = ({
     <DashboardWidgetFrame
       actionIcon={<OpenInNewRoundedIcon sx={{ fontSize: '0.86rem' }} />}
       actionLabel={td('open_in_q_apps', 'Open in Q-Apps')}
-      height={HOME_DASHBOARD_WIDGET_HEIGHT_PX}
+      height={dashboardWidgetHeightPx}
       onAction={handleOpenEmbeddedQuitter}
       onRefresh={handleRefreshQuitterWidget}
       onSwap={
@@ -787,7 +794,7 @@ const HomeDesktopInner = ({
             display: 'flex',
             flexDirection: 'column',
             gap: `${HOME_DASHBOARD_VERTICAL_GAP_PX}px`,
-            maxWidth: '1320px',
+            maxWidth: homeMaxWidth,
             padding: { xs: '0 12px', sm: '0 20px' },
             position: 'relative',
             width: '100%',

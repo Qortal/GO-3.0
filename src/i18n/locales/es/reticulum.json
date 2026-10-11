@@ -152,7 +152,7 @@
   },
   "image_viewer": {
     "actions": "image actions",
-    "chat_image": "chat image",
+    "chat_image": "imagen del chat",
     "clipboard_unavailable": "image clipboard is unavailable",
     "close": "close image viewer",
     "copied": "image copied",
@@ -201,6 +201,36 @@
     "subtitle": "Parece que aún no formas parte de ninguna comunidad. Vamos a cambiarlo.",
     "title": "Te damos la bienvenida al nuevo y mejorado Q-Chat",
     "whats_new_button": "¿Qué hay de nuevo?"
+  },
+  "post_delivery": {
+    "delivered_member": {
+      "hint": "El nodo de un miembro del grupo lo obtuvo de este teléfono. Esto no significa que alguien lo haya leído.",
+      "label": "entregado"
+    },
+    "delivered_own_device": {
+      "hint": "Tu otro dispositivo (como tu Hub) lo obtuvo de este teléfono.",
+      "label": "entregado"
+    },
+    "delivered_own_device_self_dm": {
+      "hint": "Tu otro dispositivo (como tu Hub) lo obtuvo de este teléfono.",
+      "label": "entregado"
+    },
+    "not_picked_up": {
+      "hint": "Ningún otro nodo lo ha obtenido aún de este teléfono. Los nodos de los miembros lo obtienen cuando se conectan mientras este teléfono está accesible.",
+      "label": "aún no recogido"
+    },
+    "not_picked_up_self_dm": {
+      "hint": "Ninguno de tus otros dispositivos lo ha obtenido aún de este teléfono. Lo obtienen cuando se conectan mientras este teléfono está accesible.",
+      "label": "aún no recogido"
+    },
+    "sending": {
+      "hint": "Los nodos de los miembros que están en línea suelen obtenerlo en pocos segundos.",
+      "label": "enviando"
+    },
+    "sending_self_dm": {
+      "hint": "Tus otros dispositivos que están en línea suelen obtenerlo en pocos segundos.",
+      "label": "enviando"
+    }
   },
   "qapp_preview": {
     "check_again": "check again",
@@ -313,18 +343,25 @@
     }
   },
   "share": {
+    "admins_only": "solo admins",
     "cancel": "cancelar el uso compartido",
     "cannot_write": "solo los admins pueden escribir en este canal: vuelve y elige otro chat",
+    "channel_step_label": "elige un canal en {{group}}",
+    "channel_unavailable": "ese canal ya no existe: vuelve y elige otro",
     "chip_label": "{{what}} para compartir: toca un chat para añadirlo",
+    "chip_label_channel": "{{what}} para compartir: toca un canal para añadirlo",
     "kind_file": "archivo",
     "kind_link": "enlace",
     "kind_photo": "foto",
     "kind_text": "texto",
     "kind_video": "vídeo",
+    "loading_channels": "cargando canales",
+    "no_channel_to_post": "solo los admins pueden publicar en los canales de este grupo.",
     "notice_extra_files": "solo se añadió el primer archivo: un mensaje lleva un archivo.",
     "notice_too_large": "se omitió un archivo de más de {{max}} MB.",
     "notice_unreadable": "no se pudo leer el archivo compartido.",
     "notice_unsafe_image": "no se pudieron quitar los datos de ubicación de la imagen, así que se omitió.",
+    "pick_channel": "elige un canal",
     "pick_chat": "elige un chat"
   },
   "status_badge": {

@@ -14,6 +14,10 @@ import {
 } from '../../utils/publishAbort';
 import { takeStreamedChunkUpload } from '../../utils/streamedChunkUpload';
 import { qdnResourcePath } from '../../utils/qdnPath';
+import {
+  QDN_PUBLISH_CHUNK_BYTES,
+  type PublishProgress,
+} from './publishProgress';
 import aesjs from 'aes-js';
 
 async function encryptAesCtrChunkWithFallback(
@@ -123,7 +127,13 @@ async function reusablePostStream(endpoint, _body) {
   return response; // return the actual response so calling code can use response.ok
 }
 
-async function uploadChunkWithRetry(endpoint, formData, index, maxRetries = 3) {
+async function uploadChunkWithRetry(
+  endpoint,
+  formData,
+  index,
+  maxRetries = 3,
+  onRetry?: () => void
+) {
   let attempt = 0;
   while (attempt < maxRetries) {
     try {
@@ -141,6 +151,7 @@ async function uploadChunkWithRetry(endpoint, formData, index, maxRetries = 3) {
       if (attempt >= maxRetries) {
         throw new Error(`Chunk ${index} failed after ${maxRetries} attempts`);
       }
+      onRetry?.();
       // Wait 25 seconds before next retry
       await new Promise((res) => setTimeout(res, 25_000));
     }
@@ -152,7 +163,8 @@ async function resuablePostRetry(
   body,
   maxRetries = 3,
   appInfo,
-  resourceInfo
+  resourceInfo,
+  onRetry?: () => void
 ) {
   let attempt = 0;
   while (attempt < maxRetries) {
@@ -180,6 +192,7 @@ async function resuablePostRetry(
           retry: true,
         });
       }
+      onRetry?.();
       // Wait 10 seconds before next retry
       await new Promise((res) => setTimeout(res, 25_000));
     }
@@ -214,7 +227,19 @@ export const publishData = async ({
   withFee,
   appInfo,
   encryption,
+  onProgress,
 }: any) => {
+  // GO's publish window must never break a publish.
+  const report = (progress: PublishProgress) => {
+    if (typeof onProgress !== 'function') return;
+    try {
+      onProgress(progress);
+    } catch {
+      /* ignore */
+    }
+  };
+  const reportRetry = () => report({ stage: 'retrying' });
+
   const validateName = async (receiverName: string) => {
     return await reusableGet(`/names/${receiverName}`);
   };
@@ -225,7 +250,8 @@ export const publishData = async ({
       transactionBytesBase58,
       3,
       appInfo,
-      { identifier, name: registeredName, service }
+      { identifier, name: registeredName, service },
+      reportRetry
     );
   };
 
@@ -288,7 +314,8 @@ export const publishData = async ({
       Base58.encode(bytes),
       3,
       appInfo,
-      { identifier, name: registeredName, service }
+      { identifier, name: registeredName, service },
+      reportRetry
     );
   };
 
@@ -354,6 +381,7 @@ export const publishData = async ({
     } else if (transactionBytes.includes('Error 500 Internal Server Error')) {
       throw new Error('Error when uploading');
     }
+    report({ stage: 'processing' });
 
     let signAndProcessRes;
 
@@ -364,6 +392,7 @@ export const publishData = async ({
     if (signAndProcessRes?.error) {
       throw new Error('Error when signing');
     }
+    report({ stage: 'published' });
     if (appInfo?.tabId) {
       executeEvent('receiveChunks', {
         tabId: appInfo.tabId,
@@ -471,11 +500,15 @@ export const publishData = async ({
           filename: filename || title || `${service}-${identifier || ''}`,
         });
       }
-      return await resuablePostRetry(uploadDataUrl, postBody, 3, appInfo, {
-        identifier,
-        name: registeredName,
-        service,
-      });
+      report({ stage: 'uploading', sentChunks: 0, totalChunks: 1 });
+      return await resuablePostRetry(
+        uploadDataUrl,
+        postBody,
+        3,
+        appInfo,
+        { identifier, name: registeredName, service },
+        reportRetry
+      );
     }
 
     const file = data;
@@ -501,11 +534,15 @@ export const publishData = async ({
           filename: filename || title || `${service}-${identifier || ''}`,
         });
       }
-      return await resuablePostRetry(uploadDataUrl, postBody, 3, appInfo, {
-        identifier,
-        name: registeredName,
-        service,
-      });
+      report({ stage: 'uploading', sentChunks: 0, totalChunks: 1 });
+      return await resuablePostRetry(
+        uploadDataUrl,
+        postBody,
+        3,
+        appInfo,
+        { identifier, name: registeredName, service },
+        reportRetry
+      );
     }
     const urlCheck = `/arbitrary/check/tmp?totalSize=${file.size}`;
 
@@ -516,7 +553,7 @@ export const publishData = async ({
     }
 
     const chunkUrl = uploadDataUrl + `/chunk`;
-    const chunkSize = 5 * 1024 * 1024; // 5MB
+    const chunkSize = QDN_PUBLISH_CHUNK_BYTES;
 
     if (streamed && encryption == null) {
       await streamed.complete({
@@ -526,10 +563,11 @@ export const publishData = async ({
           const formData = new FormData();
           formData.append('chunk', chunk, file.name);
           formData.append('index', index);
-          await uploadChunkWithRetry(chunkUrl, formData, index);
+          await uploadChunkWithRetry(chunkUrl, formData, index, 3, reportRetry);
         },
         throwIfAborted: throwIfPublishAborted,
         onProgress: (done, total) => {
+          report({ stage: 'uploading', sentChunks: done, totalChunks: total });
           if (!appInfo?.tabId) return;
           executeEvent('receiveChunks', {
             tabId: appInfo.tabId,
@@ -546,6 +584,7 @@ export const publishData = async ({
         },
       });
       throwIfPublishAborted();
+      report({ stage: 'processing' });
       return await finalizeChunkedUpload(uploadDataUrl, paramQueries);
     }
     streamed?.cancel();
@@ -566,6 +605,7 @@ export const publishData = async ({
           file?.name || filename || title || `${service}-${identifier || ''}`,
       });
     }
+    report({ stage: 'uploading', sentChunks: 0, totalChunks });
     const keyBytes = encryption?.key || null;
     const ivBytes = encryption?.iv || null;
 
@@ -605,8 +645,9 @@ export const publishData = async ({
       formData.append('chunk', chunkToUpload, file.name);
       formData.append('index', index);
 
-      await uploadChunkWithRetry(chunkUrl, formData, index);
+      await uploadChunkWithRetry(chunkUrl, formData, index, 3, reportRetry);
       throwIfPublishAborted();
+      report({ stage: 'uploading', sentChunks: index + 1, totalChunks });
 
       if (appInfo?.tabId) {
         executeEvent('receiveChunks', {
@@ -618,6 +659,7 @@ export const publishData = async ({
       }
     }
     throwIfPublishAborted();
+    report({ stage: 'processing' });
     return await finalizeChunkedUpload(uploadDataUrl, paramQueries);
   };
 

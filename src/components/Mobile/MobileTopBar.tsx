@@ -14,7 +14,6 @@ import {
   Divider,
   IconButton,
   Typography,
-  useMediaQuery,
   useTheme,
 } from '@mui/material';
 import {
@@ -96,6 +95,11 @@ import {
   SAFE_AREA_TOP,
 } from '../../utils/mobileSafeArea';
 import { MOBILE_TOP_BAR_HEIGHT_PX } from './mobileBarHeights';
+import {
+  useGoLayout,
+  useNavInTopBar,
+  useToolbarOneRow,
+} from '../../layout/goLayout';
 
 // Tall enough for the two-row formatting toolbar (2 × 40px buttons + gap +
 // shell padding) so every action is visible without horizontal scrolling.
@@ -133,6 +137,11 @@ type MobileTopBarProps = {
   barTheme?: Theme;
   /** Floats see-through on the page's colour (immersive mode). */
   floating?: boolean;
+  /**
+   * GO short screens while typing in a chat: shrink to the status-bar strip
+   * so the conversation gets the room. Ignored while the search is open.
+   */
+  collapsed?: boolean;
 };
 
 /**
@@ -157,6 +166,7 @@ export const MobileTopBar = ({
   setDesktopViewMode,
   barTheme,
   floating = false,
+  collapsed = false,
 }: MobileTopBarProps) => {
   const appTheme = useTheme();
   // The bar and its controls; what they open uses `appTheme` (inAppTheme).
@@ -166,10 +176,19 @@ export const MobileTopBar = ({
   const { t } = useTranslation(['core']);
   // In landscape the bottom Home/Apps/Chat bar is hidden (vertical room is
   // scarce); we surface those controls inline here, left of the avatar.
-  const isLandscape = useMediaQuery('(orientation: landscape)');
-  // Landscape compose collapses the formatting toolbar to a single row, so the
-  // top bar only needs one row of height instead of two.
-  const composeBarHeight = isLandscape ? 56 : MOBILE_TOP_BAR_COMPOSE_HEIGHT_PX;
+  // GO decides it from the window, so the keyboard never moves it.
+  const navInTopBar = useNavInTopBar();
+  // A one-row formatting toolbar (landscape, GO tablets) only needs one row
+  // of height instead of two; matches chat.css.
+  const composeBarHeight = useToolbarOneRow()
+    ? 56
+    : MOBILE_TOP_BAR_COMPOSE_HEIGHT_PX;
+  // GO tablets: the search stops at 420 px, so the controls would end
+  // mid-bar; keep them (and the account panel anchored to the avatar) at the
+  // right edge.
+  const pinControlsRight = useGoLayout(
+    (l) => l.go && l.widthClass !== 'compact'
+  );
   const [accountOpen, setAccountOpen] = useState(false);
   const [coreOpen, setCoreOpen] = useState(false);
   const [searchExpanded, setSearchExpanded] = useState(false);
@@ -259,6 +278,9 @@ export const MobileTopBar = ({
   // A group panel (Threads, Qortal Land, Members) fills the screen with its own
   // header. Hidden rather than unmounted, so the bell and search keep state.
   const groupPanelOpen = useAtomValue(mobileGroupPanelOpenAtom);
+  // The compose strip carries the legacy formatting toolbar, so it never
+  // collapses; nor does an open search, which is what is being typed in.
+  const collapseBar = collapsed && !searchExpanded && !chatComposeActive;
 
   useEffect(() => {
     return onMobileReticulumStatus((s) => {
@@ -513,6 +535,17 @@ export const MobileTopBar = ({
             : theme.palette.background.paper,
         borderBottom: `1px solid ${theme.palette.border?.subtle ?? 'rgba(255,255,255,0.08)'}`,
         overflow: chatComposeActive ? 'hidden' : undefined,
+        // Down to the status-bar strip (paddingTop stays); the controls stay
+        // mounted so the bell, search and menus keep their state.
+        ...(collapseBar
+          ? {
+              height: 0,
+              minHeight: 0,
+              borderBottom: 'none',
+              overflow: 'hidden',
+              '& > *': { visibility: 'hidden' },
+            }
+          : {}),
       }}
     >
       <Box
@@ -641,12 +674,13 @@ export const MobileTopBar = ({
               alignItems: 'center',
               gap: 0.25,
               flexShrink: 0,
+              ...(pinControlsRight ? { marginLeft: 'auto' } : {}),
               opacity: searchExpanded ? 0 : 1,
               pointerEvents: searchExpanded ? 'none' : 'auto',
               transition: 'opacity 160ms ease',
             }}
           >
-            {isLandscape && setDesktopViewMode && (
+            {navInTopBar && setDesktopViewMode && (
               <MobileTabBar
                 variant="inline"
                 desktopViewMode={desktopViewMode}

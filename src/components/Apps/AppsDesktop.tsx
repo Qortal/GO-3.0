@@ -91,6 +91,10 @@ import {
 } from '../Mobile/mobileOpenTabsSession';
 import { getPrivateAppIdentity } from '../Mobile/privateAppTabIdentity';
 import { useHandlePrivateApps } from '../../hooks/useHandlePrivateApps';
+import {
+  privateAppIdFromUrl,
+  retainPrivateAppsOnDevice,
+} from '../../plugins/PrivateQappHost';
 import { useAtom, useAtomValue, useSetAtom } from 'jotai';
 import {
   mobileQappFrameShowingAtom,
@@ -1207,6 +1211,39 @@ export const AppsDesktop = ({
       unsubscribeFromEvent('appsDevModeUpdateTab', updateDevTabFunc);
     };
   }, [tabs]);
+
+  // A private app's refresh builds it again at a new address (see
+  // useHandlePrivateApps); the tab keeps everything else.
+  const updateAppUrlFunc = useCallback((e) => {
+    const { tabId, url } = e.detail ?? {};
+    if (!tabId || !url) return;
+
+    setTabs((currentTabs) =>
+      currentTabs.map((tab) => (tab?.tabId === tabId ? { ...tab, url } : tab))
+    );
+    setSelectedTab((currentTab) =>
+      currentTab?.tabId === tabId ? { ...currentTab, url } : currentTab
+    );
+  }, []);
+
+  useEffect(() => {
+    subscribeToEvent('updateAppUrl', updateAppUrlFunc);
+
+    return () => {
+      unsubscribeFromEvent('updateAppUrl', updateAppUrlFunc);
+    };
+  }, [updateAppUrlFunc]);
+
+  // Private apps built on the phone stay in memory only while a tab shows them.
+  const privateAppIdsKey = tabs
+    .map((tab) => privateAppIdFromUrl(tab?.url))
+    .filter(Boolean)
+    .join('|');
+  useEffect(() => {
+    retainPrivateAppsOnDevice(
+      privateAppIdsKey ? privateAppIdsKey.split('|') : []
+    );
+  }, [privateAppIdsKey]);
 
   const setSelectedTabFunc = (e) => {
     const data = e.detail?.data;

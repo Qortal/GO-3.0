@@ -104,6 +104,11 @@ import {
   SAFE_AREA_BOTTOM,
   SAFE_AREA_TOP,
 } from './mobileLayout';
+import { isGoLayout, useGoLayout, useNavInTopBar } from '../../layout/goLayout';
+import {
+  tabsCardColumnsTemplate,
+  tabsFolderIconColumnsTemplate,
+} from './tabsHome/goTabsGrid';
 
 type MobileTabsOverlayProps = {
   open: boolean;
@@ -817,7 +822,11 @@ export const MobileTabsOverlay = ({
 }: MobileTabsOverlayProps) => {
   const theme = useTheme();
   const { t } = useTranslation(['core']);
+  // The Hub's grids follow orientation; GO's follow the width (goTabsGrid).
   const isLandscape = useMediaQuery('(orientation: landscape)');
+  const goGrid = isGoLayout();
+  const navInTopBar = useNavInTopBar();
+  const isShortWindow = useGoLayout((l) => l.short);
   const { tabs: rawTabs, selectedTab: rawSelectedTab } = useOpenTabs();
   const tabs = useMemo(() => filterAppTabsForMobile(rawTabs), [rawTabs]);
   const selectedTab = useMemo(
@@ -1622,8 +1631,9 @@ export const MobileTabsOverlay = ({
   );
 
   const tabsPanelTop = `calc(${MOBILE_TOP_BAR_HEIGHT_PX}px + ${SAFE_AREA_TOP})`;
-  // In landscape the bottom tab bar is hidden, so its height is not reserved.
-  const tabsPanelMaxHeight = `calc(100dvh - ${MOBILE_TOP_BAR_HEIGHT_PX}px - ${SAFE_AREA_TOP} - ${isLandscape ? 0 : MOBILE_TAB_BAR_HEIGHT_PX}px - ${SAFE_AREA_BOTTOM} - 24px)`;
+  // With the nav in the top bar the bottom tab bar is hidden, so its height
+  // is not reserved. A short window (GO) keeps only a sliver of gap.
+  const tabsPanelMaxHeight = `calc(100dvh - ${MOBILE_TOP_BAR_HEIGHT_PX}px - ${SAFE_AREA_TOP} - ${navInTopBar ? 0 : MOBILE_TAB_BAR_HEIGHT_PX}px - ${SAFE_AREA_BOTTOM} - ${isShortWindow ? 8 : 24}px)`;
 
   return (
     <>
@@ -2054,9 +2064,10 @@ export const MobileTabsOverlay = ({
                     sx={{
                       columnGap: 1,
                       display: 'grid',
-                      gridTemplateColumns: isLandscape
-                        ? 'repeat(6, minmax(0, 1fr))'
-                        : 'repeat(4, minmax(0, 1fr))',
+                      gridTemplateColumns: tabsFolderIconColumnsTemplate(
+                        goGrid,
+                        isLandscape
+                      ),
                       minWidth: 0,
                       rowGap: 1.25,
                       width: '100%',
@@ -2088,9 +2099,10 @@ export const MobileTabsOverlay = ({
                     sx={{
                       display: 'grid',
                       gap: '10px',
-                      gridTemplateColumns: isLandscape
-                        ? 'repeat(4, minmax(0, 1fr))'
-                        : 'repeat(2, minmax(0, 1fr))',
+                      gridTemplateColumns: tabsCardColumnsTemplate(
+                        goGrid,
+                        isLandscape
+                      ),
                       minWidth: 0,
                       width: '100%',
                     }}

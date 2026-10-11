@@ -23,6 +23,7 @@ import { PasswordField } from '../index';
 import { getBlueTier1ButtonSx } from '../../styles/blueMaterial';
 import { getWalletErrorMessage } from '../../utils/walletErrorMessages';
 import { useSecureScreen } from '../../hooks/useSecureScreen';
+import { isGoLayout } from '../../layout/goLayout';
 
 type BackupWalletModalProps = {
   onClose: () => void;
@@ -228,6 +229,9 @@ export const BackupWalletModal = ({
           background: modalSurface,
           display: 'flex',
           flexDirection: 'column',
+          // GO: in landscape or with the keyboard up the paper is shorter
+          // than the form, so it scrolls to keep the Backup button reachable.
+          ...(isGoLayout() ? { minHeight: 0, overflowY: 'auto' } : {}),
         }}
       >
         <Box

@@ -182,6 +182,13 @@ import {
   type MobileChatListPagerHandle,
 } from './MobileChatListPager';
 import {
+  CHAT_LIST_PANE_WIDTH,
+  getChatPaneLayout,
+  sideViewOnCloseDetail,
+  sideViewOnTwoPaneExit,
+} from './chatPaneLayout';
+import { useGoLayout, type GoLayout } from '../../layout/goLayout';
+import {
   MobileChatListHeader,
   type MobileChatListHeaderHandle,
 } from './MobileChatListHeader';
@@ -194,6 +201,7 @@ import {
   chatShareKey,
   type ChatShareChat,
 } from '../Chat/share/chatShareTarget';
+import { ChatShareChannelStep } from '../Chat/share/ChatShareChannelStep';
 import { getChatListPanelSx } from './chatListRowStyles';
 import { useSwipeBackToList } from './useSwipeBackToList';
 import { PerfProfiler } from '../../utils/perfProfiler';
@@ -243,6 +251,7 @@ const RETICULUM_ACTIVE_BLUE = '#2563eb';
 const EDGE_SWIPE_ZONE_PX = 24;
 /** Horizontal travel from that edge before the list panel opens. */
 const EDGE_SWIPE_OPEN_PX = 44;
+const selectChatTwoPane = (l: GoLayout) => l.chatTwoPane;
 
 // Keeps the Reticulum chat tree out of unrelated Group-shell re-renders. The
 // legacy ChatGroup instance below deliberately retains its existing behavior.
@@ -1032,6 +1041,23 @@ const GroupInner = ({
   );
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
+  // GO tablets and wide windows: the chat list pinned beside the chat
+  // (always false on the Hub).
+  const chatTwoPane = useGoLayout(selectChatTwoPane);
+  // Leaving two-pane with a DM open beside the Groups list: turn the list to
+  // DMs in this same render, before the open DM would unmount. (A
+  // previous-value tracker, not state seeded from a signal.)
+  const [chatTwoPaneBefore, setChatTwoPaneBefore] = useState(chatTwoPane);
+  if (chatTwoPaneBefore !== chatTwoPane) {
+    setChatTwoPaneBefore(chatTwoPane);
+    const sideView = sideViewOnTwoPaneExit({
+      wasTwoPane: chatTwoPaneBefore,
+      twoPane: chatTwoPane,
+      directOpen: !!(selectedDirect || newChat),
+      desktopSideView,
+    });
+    if (sideView) setDesktopSideView(sideView);
+  }
 
   const [defaultThread, setDefaultThread] = useState(null);
   const [, setIsOpenDrawer] = useState(false);
@@ -4114,18 +4140,21 @@ const GroupInner = ({
   }, [handleMobileChatTab]);
 
   // Leaving a conversation on mobile returns to the list it came from, so a
-  // group never drops the user into the DM list (or vice versa).
+  // group never drops the user into the DM list (or vice versa). A pinned
+  // list (GO two-pane; on GO Chat lives only in the phone section) stays on
+  // the page the user chose.
   const closeMobileChatDetail = useCallback(() => {
-    if (selectedGroupRef.current) {
-      setDesktopSideView('groups');
-    } else if (selectedDirectRef.current || newChatRef.current) {
-      setDesktopSideView('directs');
-    }
+    const sideView = sideViewOnCloseDetail({
+      twoPane: chatTwoPane,
+      groupOpen: !!selectedGroupRef.current,
+      directOpen: !!(selectedDirectRef.current || newChatRef.current),
+    });
+    if (sideView) setDesktopSideView(sideView);
     setSelectedGroup(null);
     setSelectedDirect(null);
     setNewChat(false);
     setMobileListPanelOpen(false);
-  }, []);
+  }, [chatTwoPane]);
 
   // The slide-in list sits above the conversation, so back dismisses it before
   // the thread underneath.
@@ -4140,6 +4169,12 @@ const GroupInner = ({
       enabled: isMobile && mobileListPanelOpen,
     }
   );
+
+  // A pinned list (GO two-pane) has nothing to slide over: drop a slide-over
+  // left open from the single column, e.g. by rotating a tablet.
+  useEffect(() => {
+    if (chatTwoPane && mobileListPanelOpen) setMobileListPanelOpen(false);
+  }, [chatTwoPane, mobileListPanelOpen]);
 
   // About Group is opened from the long-press menu on this panel — tuck the
   // panel away so the dialog is not obscured by the slide-over surface.
@@ -4850,9 +4885,9 @@ const GroupInner = ({
   // to the DM list; on a group chat to the right goes to the Groups list and
   // to the left to the DMs (the Groups / DMs switch's order). The list being
   // swiped to slides in under the chat. Replaces the edge swipe that slid
-  // the list over a chat.
+  // the list over a chat. Off while the list is pinned beside the chat.
   const swipeBackFrom: 'direct' | 'group' | null =
-    !isMobile || !reticulumChatEnabled || newChat
+    !isMobile || !reticulumChatEnabled || newChat || chatTwoPane
       ? null
       : selectedDirect && desktopSideView === 'directs'
         ? 'direct'
@@ -5067,20 +5102,70 @@ const GroupInner = ({
       pendingChatShareRef.current = null;
       setPendingChatShare(null);
       // Queued before the chat opens: it goes in once the chat's draft is.
-      queueChatShareFor(chatShareKey(chat), share);
+      // A group's channel step names the channel to open first; a share a
+      // chat handed back forgets the one picked then.
+      queueChatShareFor(chatShareKey(chat), {
+        ...share,
+        channelId: chat.kind === 'group' ? chat.channelId : undefined,
+      });
     },
     [setPendingChatShare]
   );
+  // The group tapped while a share waits (phones): its channels come up over
+  // the Groups list first (ChatShareChannelStep), and the channel tapped
+  // there takes the share; a group with one channel to post in goes
+  // straight in.
+  const [shareChannelGroup, setShareChannelGroup] = useState<any>(null);
   // Row taps in the lists (not the other ways a chat opens) take the share.
   const selectGroupFromList = useCallback(
     (group) => {
       const groupId = String(group?.groupId ?? '');
-      if (/^[1-9]\d*$/.test(groupId)) {
-        handOverChatShare({ kind: 'group', groupId });
+      const isGroupId = /^[1-9]\d*$/.test(groupId);
+      if (
+        isGroupId &&
+        pendingChatShareRef.current &&
+        isMobile &&
+        reticulumChatEnabled
+      ) {
+        setShareChannelGroup(group);
+        return;
       }
+      if (isGroupId) handOverChatShare({ kind: 'group', groupId });
       selectGroupFunc(group);
     },
-    [handOverChatShare, selectGroupFunc]
+    [handOverChatShare, isMobile, reticulumChatEnabled, selectGroupFunc]
+  );
+  const pickShareChannel = useCallback(
+    (channelId: string | null) => {
+      const group = shareChannelGroup;
+      setShareChannelGroup(null);
+      if (!group) return;
+      handOverChatShare({
+        kind: 'group',
+        groupId: String(group.groupId),
+        ...(channelId ? { channelId } : {}),
+      });
+      selectGroupFunc(group);
+    },
+    [handOverChatShare, selectGroupFunc, shareChannelGroup]
+  );
+  // The step belongs to the waiting share and the Groups list: it closes
+  // with the share (X, sent, account switch) or on a swipe to the DMs.
+  useEffect(() => {
+    if (!pendingChatShare || desktopSideView !== 'groups') {
+      setShareChannelGroup(null);
+    }
+  }, [desktopSideView, pendingChatShare]);
+  // Back on the channel step goes back to the Groups list; the share waits.
+  useAndroidBack(
+    () => {
+      setShareChannelGroup(null);
+      return true;
+    },
+    {
+      priority: BACK_PRIORITY.overlay,
+      enabled: isMobile && Boolean(shareChannelGroup),
+    }
   );
   const selectDirectFromShareList = useCallback(
     (direct) => {
@@ -5099,7 +5184,8 @@ const GroupInner = ({
     if (!reticulumChatEnabled || !myAddress) return;
     handledChatShareIdRef.current = share.id;
     openQChatTab();
-    // The list itself: no chat, panel or dialog over it.
+    // The list itself: no chat, panel, dialog or older channel step over it.
+    setShareChannelGroup(null);
     setSelectedGroup(null);
     setSelectedDirect(null);
     setNewChat(false);
@@ -5325,12 +5411,25 @@ const GroupInner = ({
     // single column (list OR chat detail) so the chat pane is actually visible.
     const inChatDetail = !!(selectedDirect || selectedGroup || newChat);
     const showMobileListPanel = !inChatDetail || mobileListPanelOpen;
+    // GO tablets: the list pinned beside the chat. Same elements either way;
+    // with twoPane false every field is the old single-column expression.
+    const twoPane = chatTwoPane && phoneSection;
+    const chatPane = getChatPaneLayout({
+      twoPane,
+      isMobile,
+      inChatDetail,
+      directOpen: !!(selectedDirect || newChat),
+      desktopSideView,
+      mobileListPanelOpen,
+      mobileGroupPanelOpen,
+    });
+    const { dmSideView, listPinned } = chatPane;
     const isGroupContentVisible =
       isVisible &&
       !isReticulumDirectOverlayOpen &&
       !(
         (!reticulumChatEnabled || reticulumDirectsInline) &&
-        desktopSideView === 'directs' &&
+        dmSideView === 'directs' &&
         (newChat || selectedDirect)
       );
 
@@ -5342,7 +5441,8 @@ const GroupInner = ({
         directChatHasUnread={directChatHasUnread}
         directChatUnreadCount={reticulumDirectUnreadCount}
         chatMode={chatMode}
-        selectedGroup={selectedGroup}
+        // Two-pane with a DM on the right: no group highlighted beside it.
+        selectedGroup={chatPane.suppressGroupHighlight ? null : selectedGroup}
         getUserSettings={getUserSettings}
         setOpenAddGroup={setOpenAddGroup}
         setOpenFindGroup={setOpenFindGroup}
@@ -5378,15 +5478,13 @@ const GroupInner = ({
     return (
       <Box
         // An open chat keeps its own sideways gestures (the list's edge
-        // swipe, messages): no switching sections from there.
-        {...(isMobile && inChatDetail
+        // swipe, messages): no switching sections from there. A pinned list
+        // moves this onto the detail pane.
+        {...(chatPane.ignoreSectionSwipeOnRoot
           ? { [SECTION_SWIPE_IGNORE_ATTR]: '' }
           : {})}
         onTouchStart={
-          isMobile &&
-          inChatDetail &&
-          !mobileListPanelOpen &&
-          swipeBackFrom === null
+          chatPane.edgeSwipeEnabled && swipeBackFrom === null
             ? (event) => {
                 const touch = event.touches[0];
                 mobileEdgeSwipeRef.current =
@@ -5397,10 +5495,7 @@ const GroupInner = ({
             : undefined
         }
         onTouchMove={
-          isMobile &&
-          inChatDetail &&
-          !mobileListPanelOpen &&
-          swipeBackFrom === null
+          chatPane.edgeSwipeEnabled && swipeBackFrom === null
             ? (event) => {
                 const start = mobileEdgeSwipeRef.current;
                 const touch = event.touches[0];
@@ -5441,7 +5536,7 @@ const GroupInner = ({
             onOpenResult={openDirectSearchResult}
           />
         )}
-        {isMobile && inChatDetail && mobileListPanelOpen && (
+        {chatPane.listOverlayOpen && (
           <Box
             onClick={() => setMobileListPanelOpen(false)}
             onTouchStart={(event) => {
@@ -5473,7 +5568,7 @@ const GroupInner = ({
         <Box
           ref={phoneSection ? setPhoneChatListPanelEl : undefined}
           onTouchStart={
-            isMobile && inChatDetail && mobileListPanelOpen
+            chatPane.listOverlayOpen
               ? (event) => {
                   const touch = event.touches[0];
                   mobilePanelSwipeRef.current = touch
@@ -5483,7 +5578,7 @@ const GroupInner = ({
               : undefined
           }
           onTouchMove={
-            isMobile && inChatDetail && mobileListPanelOpen
+            chatPane.listOverlayOpen
               ? (event) => {
                   const start = mobilePanelSwipeRef.current;
                   const touch = event.touches[0];
@@ -5524,6 +5619,21 @@ const GroupInner = ({
                   transition: 'transform 220ms cubic-bezier(0.2, 0, 0, 1)',
                   width: inChatDetail ? '86%' : '100%',
                   zIndex: 40,
+                }
+              : {}),
+            // GO two-pane: a fixed column beside the chat, in the flow.
+            ...(listPinned
+              ? {
+                  borderRight: `1px solid ${theme.palette.divider}`,
+                  boxShadow: 'none',
+                  flexBasis: CHAT_LIST_PANE_WIDTH,
+                  maxWidth: 'none',
+                  pointerEvents: 'auto',
+                  position: 'relative',
+                  transform: 'none',
+                  transition: 'none',
+                  width: CHAT_LIST_PANE_WIDTH,
+                  zIndex: 'auto',
                 }
               : {}),
           }}
@@ -5571,12 +5681,14 @@ const GroupInner = ({
                       setIsOpenDrawer(false);
                     }}
                     share={pendingChatShare}
+                    sharePicksChannel={Boolean(shareChannelGroup)}
                     onCancelShare={() => setPendingChatShare(null)}
                   />
                 }
                 swipeEnabled={isChatListSwipeEnabled({
                   inChatDetail,
                   isVisible,
+                  twoPane: listPinned,
                 })}
                 scope={desktopSideView === 'directs' ? 'directs' : 'groups'}
                 // Sets the list (never toggles it, as the desktop rail
@@ -5589,7 +5701,21 @@ const GroupInner = ({
                     easing
                   )
                 }
-                renderGroups={renderGroupList}
+                renderGroups={(keepPhoneList) => (
+                  <>
+                    {renderGroupList(keepPhoneList)}
+                    {shareChannelGroup && pendingChatShare ? (
+                      <ChatShareChannelStep
+                        group={shareChannelGroup}
+                        isAdmin={reticulumAdminGroupIds.has(
+                          Number(shareChannelGroup.groupId)
+                        )}
+                        onBack={() => setShareChannelGroup(null)}
+                        onPick={pickShareChannel}
+                      />
+                    ) : null}
+                  </>
+                )}
                 renderDirects={(mounted) =>
                   mounted ? renderDirectsSidebar() : null
                 }
@@ -5616,6 +5742,9 @@ const GroupInner = ({
 
         <Box
           ref={phoneSection ? setPhoneChatDetailEl : undefined}
+          {...(chatPane.ignoreSectionSwipeOnDetail
+            ? { [SECTION_SWIPE_IGNORE_ATTR]: '' }
+            : {})}
           sx={{
             flex: 1,
             height: '100%',
@@ -5623,8 +5752,11 @@ const GroupInner = ({
             minWidth: 0,
             overflow: 'hidden',
             position: 'relative',
-            display: isMobile && !inChatDetail ? 'none' : 'block',
-            ...(isMobile ? { width: '100%' } : {}),
+            // Two-pane: always shown; with nothing open the empty states
+            // fill it. Never container-type here: it would trap the
+            // position:fixed composer and popups inside the pane.
+            display: chatPane.showDetail ? 'block' : 'none',
+            ...(isMobile ? { width: listPinned ? 'auto' : '100%' } : {}),
             // The swipe back from a DM: a sideways drag never scrolls the
             // messages (vertical scrolling stays the browser's).
             ...(phoneSection && swipeBackFrom !== null
@@ -5927,7 +6059,9 @@ const GroupInner = ({
                     }
                     onQortalLandClick={goToQortalLand}
                     onThreadsClick={goToThreads}
-                    onMobileBack={isMobile ? openMobileListPanel : undefined}
+                    onMobileBack={
+                      chatPane.phoneBackArrows ? openMobileListPanel : undefined
+                    }
                     onMembersClick={toggleReticulumMembersPanel}
                     membersPanelOpen={reticulumMembersPanelOpen}
                     membersNotificationCount={reticulumJoinRequestCount}
@@ -6493,9 +6627,11 @@ const GroupInner = ({
             </Box>
           )}
 
+          {/* Two-pane: the selection decides (dmSideView), so the DM stays,
+              and keeps marking messages read, while the list shows Groups. */}
           {selectedDirect &&
             !newChat &&
-            desktopSideView === 'directs' &&
+            dmSideView === 'directs' &&
             (!reticulumChatEnabled || reticulumDirectsInline) && (
               <SelectedDirectOverlay isChatMode={isVisible}>
                 <InnerChatBox>
@@ -6508,7 +6644,7 @@ const GroupInner = ({
                     getTimestampEnterChat={getTimestampEnterChat}
                     close={closeChatDirect}
                     setMobileViewModeKeepOpen={setMobileViewModeKeepOpen}
-                    isActive={isVisible && desktopSideView === 'directs'}
+                    isActive={isVisible && dmSideView === 'directs'}
                     reticulumEnabled={reticulumEnabled}
                     reticulumChatEnabled={reticulumChatEnabled}
                   />

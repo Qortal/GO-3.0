@@ -152,7 +152,7 @@
   },
   "image_viewer": {
     "actions": "image actions",
-    "chat_image": "chat image",
+    "chat_image": "صورة الدردشة",
     "clipboard_unavailable": "image clipboard is unavailable",
     "close": "close image viewer",
     "copied": "image copied",
@@ -201,6 +201,36 @@
     "subtitle": "يبدو أنك لست عضوًا في أي مجتمع بعد. لنغيّر ذلك.",
     "title": "مرحبًا بك في Q-Chat الجديد والمحسّن",
     "whats_new_button": "ما الجديد؟"
+  },
+  "post_delivery": {
+    "delivered_member": {
+      "hint": "جلبتها عقدة أحد أعضاء المجموعة من هذا الهاتف. هذا لا يعني أن أحدًا قرأها.",
+      "label": "تم التسليم"
+    },
+    "delivered_own_device": {
+      "hint": "جلبها جهازك الآخر (مثل Hub الخاص بك) من هذا الهاتف.",
+      "label": "تم التسليم"
+    },
+    "delivered_own_device_self_dm": {
+      "hint": "جلبها جهازك الآخر (مثل Hub الخاص بك) من هذا الهاتف.",
+      "label": "تم التسليم"
+    },
+    "not_picked_up": {
+      "hint": "لم تجلبها أي عقدة أخرى من هذا الهاتف بعد. تجلبها عُقد الأعضاء عندما تتصل بالشبكة بينما يكون هذا الهاتف متاحًا.",
+      "label": "لم تُجلب بعد"
+    },
+    "not_picked_up_self_dm": {
+      "hint": "لم يجلبها أي من أجهزتك الأخرى من هذا الهاتف بعد. تجلبها عندما تتصل بالشبكة بينما يكون هذا الهاتف متاحًا.",
+      "label": "لم تُجلب بعد"
+    },
+    "sending": {
+      "hint": "عادةً ما تجلبها عُقد الأعضاء المتصلة خلال بضع ثوانٍ.",
+      "label": "جارٍ الإرسال"
+    },
+    "sending_self_dm": {
+      "hint": "عادةً ما تجلبها أجهزتك الأخرى المتصلة خلال بضع ثوانٍ.",
+      "label": "جارٍ الإرسال"
+    }
   },
   "qapp_preview": {
     "check_again": "check again",
@@ -313,18 +343,25 @@
     }
   },
   "share": {
+    "admins_only": "للمشرفين فقط",
     "cancel": "إلغاء المشاركة",
     "cannot_write": "يمكن للمشرفين فقط الكتابة في هذه القناة: ارجع واختر محادثة أخرى",
+    "channel_step_label": "اختر قناة في {{group}}",
+    "channel_unavailable": "لم تعد هذه القناة موجودة: ارجع واختر قناة أخرى",
     "chip_label": "{{what}} للمشاركة: اضغط على محادثة لإضافته",
+    "chip_label_channel": "{{what}} للمشاركة: اضغط على قناة لإضافته",
     "kind_file": "ملف",
     "kind_link": "رابط",
     "kind_photo": "صورة",
     "kind_text": "نص",
     "kind_video": "فيديو",
+    "loading_channels": "جارٍ تحميل القنوات",
+    "no_channel_to_post": "يمكن للمشرفين فقط النشر في قنوات هذه المجموعة.",
     "notice_extra_files": "تمت إضافة الملف الأول فقط: تحمل الرسالة ملفًا واحدًا.",
     "notice_too_large": "تم استبعاد ملف أكبر من {{max}} ميغابايت.",
     "notice_unreadable": "تعذرت قراءة الملف المشارك.",
     "notice_unsafe_image": "تعذر تنظيف الصورة من بيانات الموقع، لذلك تم استبعادها.",
+    "pick_channel": "اختر قناة",
     "pick_chat": "اختر محادثة"
   },
   "status_badge": {

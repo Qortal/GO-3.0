@@ -498,6 +498,20 @@ public class KeepAlivePolicyTest {
     }
 
     @Test
+    public void plugTypeNamesForCopyDiagnostics() {
+        assertEquals("none", KeepAlivePolicy.plugTypeName(0));
+        assertEquals("ac", KeepAlivePolicy.plugTypeName(1));
+        assertEquals("usb", KeepAlivePolicy.plugTypeName(2));
+        assertEquals("wireless", KeepAlivePolicy.plugTypeName(4));
+        assertEquals("dock", KeepAlivePolicy.plugTypeName(8));
+        // A value a newer Android adds, or a vendor combination.
+        assertEquals("other", KeepAlivePolicy.plugTypeName(16));
+        assertEquals("other", KeepAlivePolicy.plugTypeName(3));
+        // EXTRA_PLUGGED missing (getIntExtra default -1).
+        assertEquals("unknown", KeepAlivePolicy.plugTypeName(-1));
+    }
+
+    @Test
     public void vendorBatteryPageOnlyForVivoAndIqoo() {
         for (String maker : new String[] {"vivo", "VIVO", " Vivo ", "iQOO", "iqoo"}) {
             KeepAlivePolicy.VendorBatteryIntentSpec spec =

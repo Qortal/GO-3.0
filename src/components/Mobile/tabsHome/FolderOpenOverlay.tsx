@@ -45,6 +45,8 @@ import {
 } from './flip';
 import { moveId } from './homeGrid';
 import { useLongPressReorder } from './useLongPressReorder';
+import { useGoLayout } from '../../../layout/goLayout';
+import { folderPanelGeometry, selectGoFolderPanelWide } from './goTabsGrid';
 
 /** Above the phone bars (1200) and below the Tabs overlay and its dialogs. */
 export const FOLDER_OVERLAY_Z = 1990;
@@ -145,8 +147,12 @@ export function FolderOpenOverlay({
     if (!editingName) setNameDraft(name);
   }, [editingName, name]);
 
-  const panelWidth = Math.min(viewport.width - 36, 400);
-  const columns = panelWidth >= 300 ? 4 : 3;
+  // GO tablets and landscape: a wider panel with more columns.
+  const widePanel = useGoLayout(selectGoFolderPanelWide);
+  const { panelWidth, columns } = folderPanelGeometry(
+    viewport.width,
+    widePanel
+  );
   const cellWidth = (panelWidth - 24) / columns;
   const iconSize = Math.round(Math.min(60, cellWidth * 0.72));
   const iconRadius = Math.round(iconSize * 0.27);

@@ -11,6 +11,11 @@ import {
   getCacheKey,
   useAppRatings,
 } from '../../../hooks/useAppRatings';
+import { useGoLayout } from '../../../layout/goLayout';
+import {
+  libraryListGridTemplate,
+  selectGoLibraryWide,
+} from '../../Mobile/tabsHome/goTabsGrid';
 
 const AppsGrid = styled(Box, {
   shouldForwardProp: (prop) => prop !== 'isMobile',
@@ -50,6 +55,8 @@ const OfficialAppsTabInner = ({
   // Tablet tier (600-900px): show the app list in two columns to use the
   // extra width instead of a single narrow column.
   const isTablet = useMediaQuery(theme.breakpoints.between('sm', 'md'));
+  // GO from 1000px wide: as many 340px columns as fit.
+  const wideLibrary = useGoLayout(selectGoLibraryWide);
   const { t } = useTranslation(['core']);
   const { fetchRating } = useAppRatings();
   const fetchedAppsRef = useRef<Set<string>>(new Set());
@@ -181,7 +188,7 @@ const OfficialAppsTabInner = ({
             isTablet
               ? {
                   display: 'grid',
-                  gridTemplateColumns: 'repeat(2, 1fr)',
+                  gridTemplateColumns: libraryListGridTemplate(wideLibrary),
                   gap: '12px',
                 }
               : undefined

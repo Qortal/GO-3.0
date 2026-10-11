@@ -7,6 +7,8 @@ const bridge = vi.hoisted(() => ({
   lifecycle: 'foreground' as 'foreground' | 'background',
   relayListeners: [] as Array<(profile: 'full' | 'leaf') => void>,
   reportOwnOutboxPending: (() => {}) as (pending: boolean) => void,
+  /** The main-thread Python event relay registered by the host. */
+  tap: null as null | ((frame: Record<string, unknown>) => void),
 }));
 
 vi.mock('../../bridge/capacitorBridge', () => ({
@@ -20,7 +22,10 @@ vi.mock('../../bridge/capacitorBridge', () => ({
   }),
   isCapacitor: () => true,
   presenceCommandWithResult: () => new Promise(() => {}),
-  registerPythonEventTap: () => () => {},
+  registerPythonEventTap: (tap: (frame: Record<string, unknown>) => void) => {
+    bridge.tap = tap;
+    return () => {};
+  },
   reportOwnOutboxPending: (pending: boolean) =>
     bridge.reportOwnOutboxPending(pending),
   subscribeAppLifecycle: () => () => {},
@@ -72,6 +77,7 @@ beforeEach(async () => {
   bridge.relayProfile = 'leaf';
   bridge.lifecycle = 'foreground';
   bridge.relayListeners = [];
+  bridge.tap = null;
   reported = [];
   bridge.reportOwnOutboxPending = (pending) => reported.push(pending);
   portPosts = [];
@@ -84,6 +90,7 @@ beforeEach(async () => {
   (window as any).sendMessage = vi.fn(() => new Promise(() => {}));
   vi.spyOn(console, 'log').mockImplementation(() => {});
   vi.spyOn(console, 'warn').mockImplementation(() => {});
+  vi.spyOn(console, 'info').mockImplementation(() => {});
   mod = await import('./index');
   mod.installMobileReticulumChat();
 });
@@ -168,5 +175,319 @@ describe('app lifecycle at boot', () => {
     await startWorker();
     expect(FakeWorker.instances).toHaveLength(2);
     expect(portPosts.filter((m) => m?.t === 'lifecycle')).toHaveLength(2);
+  });
+});
+
+describe('own post delivery events', () => {
+  it('fills the page store from the first proof on, without starting the engine', async () => {
+    // Same module registry as the index import (reset per test).
+    const store = await import('../ownPostDeliveryStore');
+    // Installing the API listens already, but boots no worker for it.
+    expect(FakeWorker.instances).toHaveLength(0);
+
+    // A proof before any delivery glyph has mounted.
+    const worker = await startWorker();
+    worker.send({
+      t: 'evt',
+      channel: 'reticulumChat:ownPostDelivery',
+      payload: {
+        updates: [
+          { eventId: 'post-1', scope: 'group', groupId: 7, memberAt: 5 },
+        ],
+      },
+    });
+    expect(store.getOwnPostDelivery('post-1')).toEqual({ memberAt: 5 });
+  });
+
+  it('hands the engine event to onOwnPostDelivery subscribers', async () => {
+    const worker = await startWorker();
+    const seen: unknown[] = [];
+    const off = (window as any).reticulumChat.onOwnPostDelivery(
+      (payload: unknown) => seen.push(payload)
+    );
+    const payload = {
+      updates: [
+        { eventId: 'post-1', scope: 'group', groupId: 7, memberAt: 1 },
+        {
+          eventId: 'saved-1',
+          scope: 'self_dm',
+          conversationId: 'c1',
+          ownDeviceAt: 2,
+        },
+      ],
+    };
+    worker.send({
+      t: 'evt',
+      channel: 'reticulumChat:ownPostDelivery',
+      payload,
+    });
+    expect(seen).toEqual([payload]);
+    off();
+    worker.send({
+      t: 'evt',
+      channel: 'reticulumChat:ownPostDelivery',
+      payload,
+    });
+    expect(seen).toHaveLength(1);
+  });
+});
+
+describe('Copy diagnostics', () => {
+  const rpcPosts = () => portPosts.filter((m) => m?.t === 'rpc');
+  const VALUES: Record<string, unknown> = {
+    'debug:logs': ['2026-10-11T10:00:00.000Z log x'],
+    'debug:diagnostics': {
+      apiHost: '127.0.0.1:12391',
+      apiScheme: 'http',
+      apiKeyConfigured: false,
+      validator: { okCount: 1, unavailableCount: 0 },
+      resourceSessions: null,
+      bootFaultLogs: ['warn y'],
+    },
+    'debug:membership-probe': {
+      host: '127.0.0.1:12391',
+      groupId: 7,
+      status: 200,
+      ok: true,
+      isMember: true,
+      error: null,
+      ms: 5,
+    },
+    'debug:sync-health': { at: 1 },
+  };
+
+  /** Answer every RPC posted so far; `fail` names methods that error. */
+  async function answerRpcs(
+    worker: FakeWorker,
+    fail: Record<string, string> = {}
+  ): Promise<void> {
+    await vi.advanceTimersByTimeAsync(0);
+    for (const msg of rpcPosts()) {
+      if (fail[msg.method]) {
+        worker.send({
+          t: 'rpcres',
+          id: msg.id,
+          ok: false,
+          error: fail[msg.method],
+        });
+      } else {
+        worker.send({
+          t: 'rpcres',
+          id: msg.id,
+          ok: true,
+          value: VALUES[msg.method],
+        });
+      }
+    }
+  }
+
+  it('asks for sync health with the time it was sent and passes it through', async () => {
+    const worker = await startWorker();
+    const pending = mod.getMobileReticulumChatDiagnostics();
+    await vi.advanceTimersByTimeAsync(0);
+    const request = rpcPosts().find((m) => m.method === 'debug:sync-health');
+    expect(typeof request?.args[0].sentAt).toBe('number');
+    await answerRpcs(worker);
+    const diagnostics = await pending;
+    expect(diagnostics.syncHealth).toEqual({ at: 1 });
+    expect(diagnostics.syncHealthError).toBeUndefined();
+    expect(diagnostics.validator).toEqual({ okCount: 1, unavailableCount: 0 });
+    expect(diagnostics.engineLogs).toEqual(['2026-10-11T10:00:00.000Z log x']);
+  });
+
+  it('reports a failed sync-health request and keeps the rest', async () => {
+    const worker = await startWorker();
+    const pending = mod.getMobileReticulumChatDiagnostics();
+    await answerRpcs(worker, { 'debug:sync-health': 'x' });
+    const diagnostics = await pending;
+    expect(diagnostics.syncHealth).toBeNull();
+    expect(diagnostics.syncHealthError).toBe('x');
+    expect(diagnostics.validator).toEqual({ okCount: 1, unavailableCount: 0 });
+    expect(diagnostics.engineBootFaults).toEqual(['warn y']);
+    expect(diagnostics.membershipProbe).toMatchObject({ ok: true });
+    expect(diagnostics.apiHost).toBe('127.0.0.1:12391');
+  });
+
+  it('reports a timed-out sync-health request by its error', async () => {
+    const worker = await startWorker();
+    const pending = mod.getMobileReticulumChatDiagnostics();
+    await vi.advanceTimersByTimeAsync(0);
+    // Every other diagnostics RPC answers; sync health never does.
+    for (const msg of rpcPosts()) {
+      if (msg.method === 'debug:sync-health') continue;
+      worker.send({
+        t: 'rpcres',
+        id: msg.id,
+        ok: true,
+        value: VALUES[msg.method],
+      });
+    }
+    await vi.advanceTimersByTimeAsync(10_000);
+    const diagnostics = await pending;
+    expect(diagnostics.syncHealth).toBeNull();
+    expect(diagnostics.syncHealthError).toBe(
+      'reticulumChat:debug:sync-health timed out'
+    );
+    expect(diagnostics.membershipProbe).toMatchObject({ ok: true });
+  });
+
+  it('sends no RPC while the engine is not ready', async () => {
+    const diagnostics = await mod.getMobileReticulumChatDiagnostics();
+    expect(rpcPosts()).toEqual([]);
+    expect(diagnostics).toMatchObject({
+      syncHealth: null,
+      bridgeTraffic: [],
+      oldestRpc: null,
+    });
+    expect(diagnostics.syncHealthError).toBeUndefined();
+  });
+
+  it('keeps the last three bridge traffic summaries', async () => {
+    const worker = await startWorker();
+    for (let i = 1; i <= 4; i++) {
+      worker.send({
+        t: 'bridge-traffic',
+        seconds: 60 + i,
+        commands: [['send_reticulum_chat', 3]],
+        events: [],
+        resourceBytes: [],
+      });
+    }
+    expect(console.info).toHaveBeenLastCalledWith(
+      '[MobileChat] bridge_traffic 64s out{ send_reticulum_chat=3 } in{  } resource_bytes{  }'
+    );
+    const pending = mod.getMobileReticulumChatDiagnostics();
+    await answerRpcs(worker);
+    const { bridgeTraffic } = await pending;
+    expect(bridgeTraffic).toEqual([
+      'bridge_traffic 62s out{ send_reticulum_chat=3 } in{  } resource_bytes{  }',
+      'bridge_traffic 63s out{ send_reticulum_chat=3 } in{  } resource_bytes{  }',
+      'bridge_traffic 64s out{ send_reticulum_chat=3 } in{  } resource_bytes{  }',
+    ]);
+  });
+
+  it('names the oldest page RPC still waiting, not the diagnostics ones', async () => {
+    const worker = await startWorker();
+    const api = (window as any).reticulumChat;
+    void api.getDirectHistory('Qa', 'Qb', 50).catch(() => {});
+    await vi.advanceTimersByTimeAsync(4_100);
+    void api.getSubscriptions().catch(() => {});
+    const pending = mod.getMobileReticulumChatDiagnostics();
+    await vi.advanceTimersByTimeAsync(0);
+    for (const msg of rpcPosts()) {
+      if (!String(msg.method).startsWith('debug:')) continue;
+      worker.send({
+        t: 'rpcres',
+        id: msg.id,
+        ok: true,
+        value: VALUES[msg.method],
+      });
+    }
+    const diagnostics = await pending;
+    expect(diagnostics.pendingRpcCount).toBe(2);
+    expect(diagnostics.oldestRpc).toEqual({
+      method: 'getDirectHistory',
+      ageMs: 4_100,
+    });
+  });
+});
+
+describe('Python stall watchdog relay', () => {
+  it('forwards the summary fields only', async () => {
+    const worker = await startWorker();
+    expect(bridge.tap).toBeTypeOf('function');
+    bridge.tap!({
+      event: 'bridge_stall_diagnostic',
+      payload: {
+        executorStalled: true,
+        threadCount: 63,
+        stacks: { t1: 'TRACE' },
+        threads: [{ name: 'x' }],
+        detail: { big: true },
+      },
+    });
+    bridge.tap!({ event: 'presence_snapshot', payload: {} });
+    expect(worker.posted.filter((m) => m?.t === 'pyevent')).toEqual([
+      {
+        t: 'pyevent',
+        event: 'bridge_stall_diagnostic',
+        payload: { executorStalled: true, threadCount: 63 },
+      },
+    ]);
+  });
+
+  it('leaves them to the worker socket when it has one', async () => {
+    const worker = await startWorker();
+    worker.send({ t: 'direct-bridge', connected: true });
+    bridge.tap!({ event: 'bridge_thread_population', payload: {} });
+    expect(worker.posted.filter((m) => m?.t === 'pyevent')).toEqual([]);
+  });
+});
+
+describe('resource blob URLs', () => {
+  it('reads a file once for callers that miss the cache together', async () => {
+    const worker = await startWorker();
+    const created: string[] = [];
+    const original = URL.createObjectURL;
+    URL.createObjectURL = vi.fn(() => {
+      const url = `blob:test/${created.length + 1}`;
+      created.push(url);
+      return url;
+    }) as typeof URL.createObjectURL;
+    try {
+      const resources = (window as any).reticulumResources;
+      // A reply thumbnail and its picture row mount in the same moment.
+      const first = resources.getUrl('hash-1');
+      const second = resources.getUrl('hash-1');
+      await vi.advanceTimersByTimeAsync(0);
+      const reads = portPosts.filter(
+        (m) => m?.t === 'rpc' && m.method === 'resource:bytes'
+      );
+      expect(reads).toHaveLength(1);
+      worker.send({
+        t: 'rpcres',
+        id: reads[0].id,
+        ok: true,
+        value: {
+          success: true,
+          bytes: new Uint8Array([1, 2, 3]),
+          manifest: { mimeType: 'image/png' },
+        },
+      });
+      const [a, b] = await Promise.all([first, second]);
+      expect(a).toEqual({
+        success: true,
+        url: 'blob:test/1',
+        manifest: { mimeType: 'image/png' },
+      });
+      expect(b).toEqual(a);
+      expect(created).toEqual(['blob:test/1']);
+
+      // A failed read is not remembered: the next call asks again.
+      const third = resources.getUrl('hash-2');
+      await vi.advanceTimersByTimeAsync(0);
+      const failed = portPosts.filter(
+        (m) => m?.t === 'rpc' && m.method === 'resource:bytes'
+      );
+      expect(failed).toHaveLength(2);
+      worker.send({
+        t: 'rpcres',
+        id: failed[1].id,
+        ok: true,
+        value: { success: false, error: 'missing' },
+      });
+      await expect(third).resolves.toEqual({
+        success: false,
+        error: 'missing',
+      });
+      const fourth = resources.getUrl('hash-2');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(
+        portPosts.filter((m) => m?.t === 'rpc' && m.method === 'resource:bytes')
+      ).toHaveLength(3);
+      void fourth.catch(() => {});
+    } finally {
+      URL.createObjectURL = original;
+    }
   });
 });

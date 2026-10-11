@@ -1,5 +1,82 @@
-import { describe, expect, it } from 'vitest';
-import { createLogThrottle, logThrottleKey } from './logger';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  __resetLoggerForTests,
+  createLogThrottle,
+  getBootFaultLogs,
+  getBootFaultOverflow,
+  getLogKeyCounts,
+  getRecentLogs,
+  log,
+  logThrottleKey,
+  warn,
+} from './logger';
+
+describe('mobile worker log capture', () => {
+  beforeEach(() => {
+    __resetLoggerForTests();
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    __resetLoggerForTests();
+  });
+
+  it('keeps fault lines in the boot buffer, not timing noise', () => {
+    warn('[ReticulumChat] digest_send_slow duration_ms=714');
+    expect(getBootFaultLogs()).toEqual([]);
+    warn('[ReticulumChat] Refusing history page group=1: reason=x');
+    expect(getBootFaultLogs()).toHaveLength(1);
+    expect(getBootFaultLogs()[0]).toMatch(
+      /^\d{4}-\d\d-\d\dT\S+ warn \[ReticulumChat\] Refusing history page group=1: reason=x$/
+    );
+    // Both still reach the recent ring.
+    expect(getRecentLogs()).toHaveLength(2);
+  });
+
+  it('keeps a log-level line with a non-zero membership deferral', () => {
+    log('[ReticulumChat] event_page_imported membership_deferred=0');
+    log('[ReticulumChat] event_page_imported membership_deferred=3');
+    expect(getBootFaultLogs()).toHaveLength(1);
+    expect(getBootFaultLogs()[0]).toContain('membership_deferred=3');
+  });
+
+  it('counts the fault lines a full boot buffer could not keep', () => {
+    for (let i = 0; i < 151; i++) {
+      warn(`[ReticulumChat] Refusing history page group=${i}: reason=x`);
+    }
+    expect(getBootFaultLogs()).toHaveLength(150);
+    expect(getBootFaultOverflow()).toBe(1);
+  });
+
+  it('counts lines per key since boot, without values', () => {
+    for (let i = 0; i < 3; i++) {
+      log(`[ReticulumChat] background_author_gap_repair sent=${i}`);
+    }
+    warn('[ReticulumChat] digest_repair_slow duration_ms=9000');
+    const counts = getLogKeyCounts();
+    expect(counts).toHaveLength(2);
+    expect(counts[0]).toMatchObject({
+      key: 'log:background_author_gap_repair',
+      n: 3,
+    });
+    expect(counts[0].lastAt).toBeGreaterThanOrEqual(counts[0].firstAt);
+    expect(counts[1]).toMatchObject({ key: 'warn:digest_repair_slow', n: 1 });
+  });
+
+  it('caps the key map and sums the rest into "other"', () => {
+    for (let i = 0; i < 300; i++) log(`[ReticulumChat] event_${i}_seen x=1`);
+    const counts = getLogKeyCounts(1_000);
+    expect(counts).toHaveLength(257);
+    expect(counts[counts.length - 1]).toEqual({
+      key: 'other',
+      n: 44,
+      firstAt: 0,
+      lastAt: 0,
+    });
+    expect(getLogKeyCounts(40)).toHaveLength(41);
+  });
+});
 
 describe('mobile worker log throttle', () => {
   it('keys engine lines by event name, not by the shared prefix', () => {

@@ -7,6 +7,12 @@
  */
 import { EventEmitter } from 'events';
 import type { ReticulumResourceStaging } from './resourceStaging';
+import {
+  createLatencyStats,
+  noteLatency,
+  summarizeLatency,
+  type LatencySummary,
+} from './latencyStats';
 
 export type ReticulumSendFailureReason =
   | 'bridge-not-started'
@@ -93,6 +99,50 @@ export type ResourceSessionStats = {
 
 const RESOURCE_SESSION_RESULT_KEYS_MAX = 64;
 
+/** What this phone did with resource requests from peers, per logical type. */
+export type ServingTypeStats = {
+  /** `auth` events (a peer asked for a resource). */
+  received: number;
+  authorized: number;
+  rejected: number;
+  /** Authorize commands that failed. */
+  failed: number;
+  /** Failed because Python had already given up on the request. */
+  late: number;
+  /** `auth_ended` events (Python ended the request, e.g. its 15 s timeout). */
+  ended: number;
+};
+
+/** Serving counters and step timing for Copy diagnostics (since the worker started). */
+export type ServingStats = {
+  byType: Record<string, ServingTypeStats>;
+  endedReasons: Record<string, number>;
+  failedReasons: Record<string, number>;
+  /** Request arrival in Python to the authorize command. */
+  totalMs: LatencySummary | null;
+  /** Worker receive to the authorize command. */
+  engineMs: LatencySummary | null;
+  /** Python's own admission (arrival to the auth event). */
+  pythonMs: LatencySummary | null;
+  /** Python's auth event to the worker receiving it. */
+  toWorkerMs: LatencySummary | null;
+  /** Requests still waiting for an answer. */
+  waiting: number;
+  oldestWaitingMs: number | null;
+};
+
+const SERVING_TYPES_MAX = 24;
+const SERVING_AUTHS_MAX = 256;
+const SERVING_AUTH_TTL_MS = 120_000;
+const SERVING_REASONS_MAX = 32;
+
+/** Count `key`, folding new keys into `other` once the map is full. */
+function bumpCapped(map: Map<string, number>, key: string): void {
+  const k =
+    !map.has(key) && map.size >= SERVING_REASONS_MAX - 1 ? 'other' : key;
+  map.set(k, (map.get(k) ?? 0) + 1);
+}
+
 function resourceSessionStatsType(payload: {
   resourceType?: string;
   logicalResourceType?: string;
@@ -116,6 +166,29 @@ export class MobileReticulumBridge extends EventEmitter {
     { type: string; startedAt: number }
   >();
   private readonly resourceSessionResults = new Map<string, number>();
+  /**
+   * Stats-only refinement of a result's reason (`ready-timeout` /
+   * `ack-timeout` for a `bridge-timeout`); the result itself never changes.
+   */
+  private readonly resourceSessionStatsReasons = new WeakMap<object, string>();
+  /** Peer resource requests waiting for this phone's answer, by transfer id. */
+  private readonly servingAuths = new Map<
+    string,
+    {
+      type: string;
+      arrivedAt: number | null;
+      emittedAt: number | null;
+      recvAt: number;
+      ended: boolean;
+    }
+  >();
+  private readonly servingByType = new Map<string, ServingTypeStats>();
+  private readonly servingEndedReasons = new Map<string, number>();
+  private readonly servingFailedReasons = new Map<string, number>();
+  private readonly servingTotalMs = createLatencyStats();
+  private readonly servingEngineMs = createLatencyStats();
+  private readonly servingPythonMs = createLatencyStats();
+  private readonly servingToWorkerMs = createLatencyStats();
   /** Established overlay links by link id (desktop: `overlayLinkSnapshots`). */
   private readonly overlayLinkSnapshots = new Map<
     string,
@@ -363,6 +436,7 @@ export class MobileReticulumBridge extends EventEmitter {
 
   private emitResourceEvent(channel: string, payload: unknown): void {
     const frame = (payload ?? {}) as Record<string, unknown>;
+    this.noteServingEvent(frame);
     const nativePath = typeof frame.path === 'string' ? frame.path : '';
     const status = String(frame.status ?? '');
     if (!this.staging || !nativePath) {
@@ -386,6 +460,168 @@ export class MobileReticulumBridge extends EventEmitter {
       .catch((err) => {
         console.warn('[MobileChat] resource event staging failed', err);
       });
+  }
+
+  // ── serving stats (Copy diagnostics; bookkeeping only) ────────────────────
+
+  private servingType(raw: string): ServingTypeStats {
+    let type = raw;
+    if (
+      !this.servingByType.has(type) &&
+      this.servingByType.size >= SERVING_TYPES_MAX
+    ) {
+      type = 'other';
+    }
+    let stats = this.servingByType.get(type);
+    if (!stats) {
+      stats = {
+        received: 0,
+        authorized: 0,
+        rejected: 0,
+        failed: 0,
+        late: 0,
+        ended: 0,
+      };
+      this.servingByType.set(type, stats);
+    }
+    return stats;
+  }
+
+  private pruneServingAuths(now: number): void {
+    for (const [transferId, entry] of this.servingAuths) {
+      if (now - entry.recvAt > SERVING_AUTH_TTL_MS) {
+        this.servingAuths.delete(transferId);
+      }
+    }
+    while (this.servingAuths.size >= SERVING_AUTHS_MAX) {
+      this.servingAuths.delete(this.servingAuths.keys().next().value as string);
+    }
+  }
+
+  /** A peer's resource request (`auth`) or Python ending it (`auth_ended`). Read-only. */
+  private noteServingEvent(frame: Record<string, unknown>): void {
+    try {
+      const status = frame.status;
+      const transferId =
+        typeof frame.transferId === 'string' ? frame.transferId : '';
+      if (!transferId || (status !== 'auth' && status !== 'auth_ended')) {
+        return;
+      }
+      const meta = (
+        frame.metadata && typeof frame.metadata === 'object'
+          ? frame.metadata
+          : {}
+      ) as Record<string, unknown>;
+      const type = resourceSessionStatsType({
+        resourceType: String(frame.resourceType ?? ''),
+        logicalResourceType: String(
+          meta.logicalResourceType ?? frame.logicalResourceType ?? ''
+        ),
+      });
+      const now = Date.now();
+      const num = (v: unknown) =>
+        typeof v === 'number' && Number.isFinite(v) ? v : null;
+      if (status === 'auth') {
+        this.servingType(type).received += 1;
+        const arrivedAt = num(frame.arrivedAtMs);
+        const emittedAt = num(frame.authStartedAtMs);
+        const recvAt = num(frame._workerRecvAtMs) ?? now;
+        if (arrivedAt !== null && emittedAt !== null) {
+          noteLatency(this.servingPythonMs, emittedAt - arrivedAt, now);
+        }
+        if (emittedAt !== null) {
+          noteLatency(this.servingToWorkerMs, recvAt - emittedAt, now);
+        }
+        this.pruneServingAuths(now);
+        // The latest auth for a transfer replaces an earlier one.
+        this.servingAuths.delete(transferId);
+        this.servingAuths.set(transferId, {
+          type,
+          arrivedAt,
+          emittedAt,
+          recvAt,
+          ended: false,
+        });
+        return;
+      }
+      const entry = this.servingAuths.get(transferId);
+      this.servingType(entry?.type ?? type).ended += 1;
+      bumpCapped(
+        this.servingEndedReasons,
+        /^[a-z0-9_]{1,64}$/.test(String(frame.reason))
+          ? String(frame.reason)
+          : 'unknown'
+      );
+      if (entry) entry.ended = true;
+    } catch {
+      /* diagnostics must never disturb event routing */
+    }
+  }
+
+  /** This phone's answer to a request it saw (`auth`); unseen ones are not counted. */
+  private noteServingAnswer(
+    transferId: string,
+    kind: 'authorize' | 'reject',
+    sentAt: number,
+    result: ReticulumSendResult,
+    code: unknown
+  ): void {
+    try {
+      const entry = this.servingAuths.get(String(transferId ?? ''));
+      if (!entry) return;
+      this.servingAuths.delete(String(transferId));
+      const stats = this.servingType(entry.type);
+      if (kind === 'reject') {
+        stats.rejected += 1;
+        return;
+      }
+      if (entry.arrivedAt !== null) {
+        noteLatency(this.servingTotalMs, sentAt - entry.arrivedAt, sentAt);
+      }
+      noteLatency(this.servingEngineMs, sentAt - entry.recvAt, sentAt);
+      if (result.ok) {
+        stats.authorized += 1;
+        return;
+      }
+      stats.failed += 1;
+      if (entry.ended || code === 'unknown_resource_request') stats.late += 1;
+      bumpCapped(
+        this.servingFailedReasons,
+        typeof code === 'string' && /^[a-z0-9_]{1,48}$/.test(code)
+          ? code
+          : result.ok === false
+            ? result.reason
+            : 'unknown'
+      );
+    } catch {
+      /* diagnostics only */
+    }
+  }
+
+  getServingStats(now = Date.now()): ServingStats {
+    let waiting = 0;
+    let oldestRecvAt: number | null = null;
+    for (const entry of this.servingAuths.values()) {
+      if (entry.ended || now - entry.recvAt > SERVING_AUTH_TTL_MS) continue;
+      waiting += 1;
+      if (oldestRecvAt === null || entry.recvAt < oldestRecvAt) {
+        oldestRecvAt = entry.recvAt;
+      }
+    }
+    return {
+      byType: Object.fromEntries(
+        [...this.servingByType].map(([type, stats]) => [type, { ...stats }])
+      ),
+      endedReasons: Object.fromEntries(this.servingEndedReasons),
+      failedReasons: Object.fromEntries(this.servingFailedReasons),
+      totalMs: summarizeLatency(this.servingTotalMs, now),
+      engineMs: summarizeLatency(this.servingEngineMs, now),
+      pythonMs: summarizeLatency(this.servingPythonMs, now),
+      toWorkerMs: summarizeLatency(this.servingToWorkerMs, now),
+      waiting,
+      oldestWaitingMs:
+        oldestRecvAt === null ? null : Math.max(0, now - oldestRecvAt),
+    };
   }
 
   getState(): string {
@@ -628,7 +864,20 @@ export class MobileReticulumBridge extends EventEmitter {
     /** Routes the command on the bridge's DM-page lane where it has one. */
     logicalResourceType?: string;
   }): Promise<ReticulumSendResult> {
-    return this.sendDetailed('authorize_reticulum_chat_resource', payload);
+    const sentAt = Date.now();
+    // With the payload, so a late answer ('unknown_resource_request') counts.
+    const { result, payload: reply } = await this.sendDetailedWithPayload(
+      'authorize_reticulum_chat_resource',
+      payload
+    );
+    this.noteServingAnswer(
+      payload.transferId,
+      'authorize',
+      sentAt,
+      result,
+      reply?.code
+    );
+    return result;
   }
 
   async rejectReticulumChatResourceDetailed(payload: {
@@ -638,7 +887,19 @@ export class MobileReticulumBridge extends EventEmitter {
     /** Routes the command on the bridge's DM-page lane where it has one. */
     logicalResourceType?: string;
   }): Promise<ReticulumSendResult> {
-    return this.sendDetailed('reject_reticulum_chat_resource', payload);
+    const sentAt = Date.now();
+    const result = await this.sendDetailed(
+      'reject_reticulum_chat_resource',
+      payload
+    );
+    this.noteServingAnswer(
+      payload.transferId,
+      'reject',
+      sentAt,
+      result,
+      undefined
+    );
+    return result;
   }
 
   async cancelReticulumResourceDetailed(payload: {
@@ -674,7 +935,19 @@ export class MobileReticulumBridge extends EventEmitter {
     linkId: string;
     transferId: string;
   }): Promise<ReticulumSendResult> {
-    return this.sendDetailed('authorize_reticulum_resource', payload);
+    const sentAt = Date.now();
+    const { result, payload: reply } = await this.sendDetailedWithPayload(
+      'authorize_reticulum_resource',
+      payload
+    );
+    this.noteServingAnswer(
+      payload.transferId,
+      'authorize',
+      sentAt,
+      result,
+      reply?.code
+    );
+    return result;
   }
 
   async rejectReticulumResourceDetailed(payload: {
@@ -682,7 +955,19 @@ export class MobileReticulumBridge extends EventEmitter {
     transferId: string;
     reason: string;
   }): Promise<ReticulumSendResult> {
-    return this.sendDetailed('reject_reticulum_resource', payload);
+    const sentAt = Date.now();
+    const result = await this.sendDetailed(
+      'reject_reticulum_resource',
+      payload
+    );
+    this.noteServingAnswer(
+      payload.transferId,
+      'reject',
+      sentAt,
+      result,
+      undefined
+    );
+    return result;
   }
 
   private async stagePathField(
@@ -795,7 +1080,11 @@ export class MobileReticulumBridge extends EventEmitter {
     type: string,
     result: ReticulumSendResult
   ): void {
-    let key = `${type}:${result.ok === false ? result.reason : 'ok'}`;
+    const outcome =
+      result.ok === false
+        ? (this.resourceSessionStatsReasons.get(result) ?? result.reason)
+        : 'ok';
+    let key = `${type}:${outcome}`;
     // Leave one slot for the overflow bucket so the map never exceeds the cap.
     if (
       !this.resourceSessionResults.has(key) &&
@@ -837,11 +1126,14 @@ export class MobileReticulumBridge extends EventEmitter {
       let expectedLinkId = '';
       let expectedLane = lane;
       const pending: SessionState[] = [];
-      const finish = (result: ReticulumSendResult) => {
+      const finish = (result: ReticulumSendResult, statsReason?: string) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
         this.off('reticulum-resource-session', onSessionState);
+        if (statsReason) {
+          this.resourceSessionStatsReasons.set(result, statsReason);
+        }
         resolve(result);
       };
       const onSessionState = (state: SessionState) => {
@@ -870,12 +1162,18 @@ export class MobileReticulumBridge extends EventEmitter {
           });
         }
       };
+      // A `bridge-timeout` is counted apart in the stats only: `ready-timeout`
+      // when the link never became ready, `ack-timeout` when the command itself
+      // got no answer (the local bridge or engine, not the peer).
       const timer = setTimeout(() => {
-        finish({
-          ok: false,
-          reason: 'bridge-timeout',
-          error: 'Reticulum resource session preparation timed out',
-        });
+        finish(
+          {
+            ok: false,
+            reason: 'bridge-timeout',
+            error: 'Reticulum resource session preparation timed out',
+          },
+          'ready-timeout'
+        );
       }, timeoutMs);
       this.on('reticulum-resource-session', onSessionState);
       void this.sendDetailedWithPayload('prepare_reticulum_resource_session', {
@@ -884,7 +1182,13 @@ export class MobileReticulumBridge extends EventEmitter {
       })
         .then((resp) => {
           if (!resp.result.ok) {
-            finish(resp.result);
+            finish(
+              resp.result,
+              resp.result.ok === false &&
+                resp.result.reason === 'bridge-timeout'
+                ? 'ack-timeout'
+                : undefined
+            );
             return;
           }
           expectedLinkId = String(resp.payload?.linkId ?? '');
@@ -905,13 +1209,16 @@ export class MobileReticulumBridge extends EventEmitter {
         })
         .catch((err) => {
           const message = err instanceof Error ? err.message : String(err);
-          finish({
-            ok: false,
-            reason: message.includes('timed out')
-              ? 'bridge-timeout'
-              : 'bridge-exception',
-            error: message,
-          });
+          finish(
+            {
+              ok: false,
+              reason: message.includes('timed out')
+                ? 'bridge-timeout'
+                : 'bridge-exception',
+              error: message,
+            },
+            message.includes('timed out') ? 'ack-timeout' : undefined
+          );
         });
     });
   }

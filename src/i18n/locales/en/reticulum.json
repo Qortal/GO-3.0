@@ -202,6 +202,36 @@
     "title": "Welcome to the new, improved Q-Chat",
     "whats_new_button": "What's New?"
   },
+  "post_delivery": {
+    "delivered_member": {
+      "hint": "A group member's node fetched it from this phone. This does not mean anyone has read it.",
+      "label": "delivered"
+    },
+    "delivered_own_device": {
+      "hint": "Your other device (like Your Hub) fetched it from this phone.",
+      "label": "delivered"
+    },
+    "delivered_own_device_self_dm": {
+      "hint": "Your other device (like Your Hub) fetched it from this phone.",
+      "label": "delivered"
+    },
+    "not_picked_up": {
+      "hint": "No other node has fetched it from this phone yet. Members' nodes fetch it when they come online while this phone is reachable.",
+      "label": "not picked up yet"
+    },
+    "not_picked_up_self_dm": {
+      "hint": "None of Your other devices has fetched it from this phone yet. They fetch it when they come online while this phone is reachable.",
+      "label": "not picked up yet"
+    },
+    "sending": {
+      "hint": "Members' nodes that are online usually fetch it within a few seconds.",
+      "label": "sending"
+    },
+    "sending_self_dm": {
+      "hint": "Your other devices that are online usually fetch it within a few seconds.",
+      "label": "sending"
+    }
+  },
   "qapp_preview": {
     "check_again": "check again",
     "no_resource": "no Q-App resource was found for this link.",
@@ -313,18 +343,25 @@
     }
   },
   "share": {
+    "admins_only": "admins only",
     "cancel": "cancel sharing",
     "cannot_write": "only admins can write in this channel: go back and pick another chat",
+    "channel_step_label": "pick a channel in {{group}}",
+    "channel_unavailable": "that channel is not there any more: go back and pick another one",
     "chip_label": "{{what}} to share: tap a chat to add it",
+    "chip_label_channel": "{{what}} to share: tap a channel to add it",
     "kind_file": "file",
     "kind_link": "link",
     "kind_photo": "photo",
     "kind_text": "text",
     "kind_video": "video",
+    "loading_channels": "loading channels",
+    "no_channel_to_post": "only admins can post in the channels of this group.",
     "notice_extra_files": "only the first file was added: a message holds one file.",
     "notice_too_large": "a file over {{max}} MB was left out.",
     "notice_unreadable": "the shared file could not be read.",
     "notice_unsafe_image": "the picture could not be cleaned of location data, so it was left out.",
+    "pick_channel": "pick a channel",
     "pick_chat": "pick a chat"
   },
   "status_badge": {

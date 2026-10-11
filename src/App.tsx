@@ -71,6 +71,11 @@ import {
 import { MobileTopBar } from './components/Mobile/MobileTopBar';
 import { GO_TAB_BAR_SPACE_VAR } from './components/Mobile/mobileBarHeights';
 import {
+  shouldCollapseForTyping,
+  useChatComposerFocus,
+} from './components/Mobile/goShellLayout';
+import { useGoLayout, useNavInTopBar } from './layout/goLayout';
+import {
   mobileQappFrameShowingAtom,
   qappFullScreenTabAtom,
 } from './components/Mobile/mobileQappFrame';
@@ -175,6 +180,7 @@ import { BuyQortInformation } from './components/BuyQortInformation';
 import { PdfViewer } from './common/PdfViewer';
 import { ReticulumFileViewer } from './components/Chat/ReticulumFileViewer';
 import { QdnTransfersOverlay } from './components/Transfers/QdnTransfersOverlay';
+import { QdnPublishWindow } from './components/Transfers/QdnPublishWindow';
 import { useTranslation } from 'react-i18next';
 import { DownloadWallet } from './components/Auth/DownloadWallet.tsx';
 import { BackupWalletModal } from './components/Auth/BackupWalletModal.tsx';
@@ -513,8 +519,9 @@ function App() {
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
   // In landscape we move the Home/Apps/Chat nav into the top bar and drop the
   // bottom bar so the conversation/app content gets the vertical space back.
-  const isLandscape = useMediaQuery('(orientation: landscape)');
-  const showMobileBottomBar = isMobile && !isLandscape;
+  // GO decides it from the window size, so the keyboard never moves it.
+  const navInTopBar = useNavInTopBar();
+  const showMobileBottomBar = isMobile && !navInTopBar;
   const mobileChatComposeActive = useAtomValue(mobileChatComposeActiveAtom);
   // Threads / Qortal Land / Members fill the screen, so the tab bar steps aside.
   const mobileGroupPanelOpen = useAtomValue(mobileGroupPanelOpenAtom);
@@ -549,6 +556,10 @@ function App() {
   const tabBarHiddenByKeyboard = keyboardOwnsTabBarSlot && keyboardInset > 0;
   const showEmojiPanel =
     emojiPanelOpen && isMobile && isAuthenticated && isMainWindow;
+  // Inputs to collapseTopBarForTyping, which is worked out further down once
+  // the lock state exists.
+  const goShort = useGoLayout((l) => l.go && l.short);
+  const chatComposerFocused = useChatComposerFocus(goShort);
   const [emojiSearchFocused, setEmojiSearchFocused] = useState(false);
   useEffect(() => {
     if (!showEmojiPanel) {
@@ -2164,6 +2175,16 @@ function App() {
   const mobileFullscreenComposerActive = useAtomValue(
     mobileFullscreenComposerActiveAtom
   );
+  // GO short screens: while typing in a chat the top bar and status bar step
+  // aside, the way portrait drops the tab bar for the keyboard.
+  const collapseTopBarForTyping = shouldCollapseForTyping({
+    goShort,
+    desktopViewMode,
+    keyboardInset,
+    composerFocused: chatComposerFocused,
+    emojiPanelOpen: showEmojiPanel,
+    appCovered: lockScreenActive || Boolean(globalRuntimeFault),
+  });
   const immersive = useImmersiveBars({
     mode: immersiveMode,
     eligible:
@@ -2183,14 +2204,16 @@ function App() {
     forceHidden: Boolean(qappFullScreenTab),
     // With immersive mode on, the whole Apps section (the library too, which
     // keeps its bars) goes without the phone's status bar.
+    // Typing on a GO short screen hides it too (collapseTopBarForTyping).
     hideStatusBar:
-      immersiveMode !== 'off' &&
-      isMobile &&
-      isAuthenticated &&
-      isMainWindow &&
-      !lockScreenActive &&
-      !globalRuntimeFault &&
-      isImmersiveSurface(desktopViewMode),
+      (immersiveMode !== 'off' &&
+        isMobile &&
+        isAuthenticated &&
+        isMainWindow &&
+        !lockScreenActive &&
+        !globalRuntimeFault &&
+        isImmersiveSurface(desktopViewMode)) ||
+      collapseTopBarForTyping,
   });
   // Immersive mode: the top bar floats see-through on the page's colour and
   // draws its controls for it (a light page gets a light bar even in the
@@ -2264,6 +2287,9 @@ function App() {
       <PdfViewer />
       <ReticulumFileViewer />
       <QdnTransfersOverlay />
+      <QdnPublishWindow
+        enabled={isAuthenticated && isMainWindow && !lockScreenActive}
+      />
 
       <QORTAL_APP_CONTEXT.Provider value={contextValue as AppContextInterface}>
         <ElectronPersistentStorageHydration />
@@ -2786,6 +2812,7 @@ function App() {
             tabsOverlayOpen={tabsGridOpen}
             desktopViewMode={desktopViewMode}
             setDesktopViewMode={setDesktopViewMode}
+            collapsed={collapseTopBarForTyping}
           />
         </Box>
       )}

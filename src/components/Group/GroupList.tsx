@@ -134,6 +134,7 @@ import {
   usePinnedGroupIds,
 } from '../../utils/pinnedGroups';
 import { SAFE_AREA_BOTTOM, SAFE_AREA_TOP } from '../../utils/mobileSafeArea';
+import { useSheetFullScreen } from '../../layout/goLayout';
 import { withTabBarSpace } from '../Mobile/mobileBarHeights';
 
 const RETICULUM_ACTIVE_BLUE = '#2563eb';
@@ -151,7 +152,7 @@ export const ReticulumChatSettingsDialog = ({
 }) => {
   const theme = useTheme();
   const { t } = useTranslation(['core', 'reticulum']);
-  const isNarrow = useMediaQuery(theme.breakpoints.down('sm'));
+  const isNarrow = useSheetFullScreen();
   const [activeSection, setActiveSection] = useState<
     'text-size' | 'messages' | 'notifications' | 'legacy-threads'
   >('text-size');

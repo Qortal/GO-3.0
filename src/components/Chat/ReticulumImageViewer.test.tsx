@@ -1,7 +1,11 @@
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import i18n from '../../i18n/i18n';
-import { ReticulumImageViewer } from './ReticulumImageViewer';
+import { __setGoLayoutForTests } from '../../layout/goLayout';
+import {
+  fullScreenChromeReservePx,
+  ReticulumImageViewer,
+} from './ReticulumImageViewer';
 
 const setPhone = (phone: boolean) => {
   window.matchMedia = vi.fn().mockImplementation((query: string) => ({
@@ -165,6 +169,59 @@ describe('ReticulumImageViewer', () => {
     expect(
       within(bar).getByRole('button', { name: 'Close image viewer' })
     ).toBeInTheDocument();
+  });
+});
+
+describe('ReticulumImageViewer on short GO screens', () => {
+  const originalMatchMedia = window.matchMedia;
+
+  beforeAll(async () => {
+    await i18n.changeLanguage('en');
+  });
+
+  afterEach(() => {
+    window.matchMedia = originalMatchMedia;
+    __setGoLayoutForTests(null);
+  });
+
+  const pictureMaxHeight = (overlay: HTMLElement) =>
+    /max-height:\s*([^;]+);/.exec(
+      cssRulesFor(overlay.querySelector('img')!)
+    )?.[1] ?? '';
+
+  it('keeps room for the buttons only while they show', () => {
+    expect(fullScreenChromeReservePx(false, false)).toBe(168);
+    expect(fullScreenChromeReservePx(false, true)).toBe(168);
+    expect(fullScreenChromeReservePx(true, false)).toBe(96);
+    expect(fullScreenChromeReservePx(true, true)).toBe(0);
+  });
+
+  it('gives the picture the whole height in phone landscape once tapped', () => {
+    __setGoLayoutForTests({ go: true, width: 873, stableHeight: 393 });
+    setPhone(true);
+    const { overlay } = renderViewer();
+    expect(pictureMaxHeight(overlay)).toMatch(/- 96px\)$/);
+    fireEvent.click(overlay);
+    expect(overlay).toHaveAttribute('data-controls-hidden', 'true');
+    expect(pictureMaxHeight(overlay)).toMatch(/- 0px\)$/);
+  });
+
+  it('keeps the phone margin on a tall GO screen', () => {
+    __setGoLayoutForTests({ go: true, width: 393, stableHeight: 873 });
+    setPhone(true);
+    const { overlay } = renderViewer();
+    expect(pictureMaxHeight(overlay)).toMatch(/- 168px\)$/);
+    fireEvent.click(overlay);
+    expect(pictureMaxHeight(overlay)).toMatch(/- 168px\)$/);
+  });
+
+  it('keeps the phone margin on the Hub, buttons hidden or not', () => {
+    __setGoLayoutForTests({ go: false });
+    setPhone(true);
+    const { overlay } = renderViewer();
+    expect(pictureMaxHeight(overlay)).toMatch(/- 168px\)$/);
+    fireEvent.click(overlay);
+    expect(pictureMaxHeight(overlay)).toMatch(/- 168px\)$/);
   });
 });
 

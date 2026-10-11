@@ -148,6 +148,12 @@ export const shortUidFactory = () => ({
   }),
 });
 export const decodeFactory = () => ({
+  isValidBase64: vi.fn(
+    (str: string) =>
+      typeof str === 'string' &&
+      str.length % 4 === 0 &&
+      /^[A-Za-z0-9+/]*={0,2}$/.test(str)
+  ),
   isValidBase64WithDecode: vi.fn(),
   validateAesCtrIvAndKey: vi.fn(),
 });

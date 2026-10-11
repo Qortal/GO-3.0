@@ -3,6 +3,7 @@ import {
   getReticulumDmDeliveryState,
   setReticulumDmDeliveryTrackingSince,
 } from '../components/Chat/reticulumDmDeliveryState';
+import { getReticulumPostDelivery } from '../components/Chat/reticulumPostDeliveryState';
 import {
   isReticulumDmEventForConversation,
   mergeEvents,
@@ -466,5 +467,105 @@ describe('Reticulum DM delivery state in the UI', () => {
     });
     // Forward progress still applies.
     expect(mergeEvents([pending], [sent])[0].localDeliveryStatus).toBe('sent');
+  });
+});
+
+describe('Reticulum Saved Messages delivery in the UI', () => {
+  const NOW = Date.UTC(2026, 9, 11, 9, 0, 0);
+  const saved = (overrides: Partial<ReticulumDmEvent> = {}) =>
+    event({
+      eventId: 'saved-1',
+      eventType: 'message',
+      senderAddress: 'alice',
+      recipientAddress: 'alice',
+      timestamp: NOW,
+      localDeliveryStatus: 'sent',
+      localOwnEvent: true,
+      ...overrides,
+    });
+
+  it('maps the engine fields onto the chat message as a Saved Messages post', () => {
+    const message = reticulumDmEventToChatMessage(
+      saved({ localPostDeliverySince: NOW, localPostOwnDeviceAt: NOW + 900 })
+    );
+    expect(message).toMatchObject({
+      reticulumPostDeliverySince: NOW,
+      reticulumPostOwnDeviceAt: NOW + 900,
+    });
+    expect(message).not.toHaveProperty('reticulumPostMemberAt');
+    expect(getReticulumPostDelivery(message, 'alice', NOW + 60_000)).toEqual({
+      scope: 'self_dm',
+      state: 'delivered',
+      via: 'own_device',
+    });
+    // Saved Messages never get the DM glyph.
+    expect(getReticulumDmDeliveryState(message, 'alice', NOW)).toBeNull();
+  });
+
+  it('adds nothing to untracked rows', () => {
+    const message = reticulumDmEventToChatMessage(saved());
+    expect(message).not.toHaveProperty('reticulumPostDeliverySince');
+    expect(getReticulumPostDelivery(message, 'alice', NOW)).toBeNull();
+  });
+
+  it('does not let a payload forge a Saved Messages tick', () => {
+    const message = reticulumDmEventToChatMessage(
+      saved({
+        payload: JSON.stringify({
+          messageText: 'hi',
+          otherData: {
+            reticulumPostDeliverySince: NOW,
+            reticulumPostOwnDeviceAt: NOW,
+            localPostDeliverySince: NOW,
+            localPostOwnDeviceAt: NOW,
+          },
+        }),
+      })
+    );
+    expect(message.reticulumPostDeliverySince).toBeUndefined();
+    expect(message.reticulumPostOwnDeviceAt).toBeUndefined();
+    expect(message.localPostDeliverySince).toBeUndefined();
+    expect(getReticulumPostDelivery(message, 'alice', NOW)).toBeNull();
+  });
+
+  it('never gives a DM to someone else a post state', () => {
+    const message = reticulumDmEventToChatMessage(
+      event({
+        eventId: 'dm-1',
+        eventType: 'message',
+        senderAddress: 'alice',
+        recipientAddress: 'bob',
+        localDeliveryStatus: 'pending',
+        localPostDeliverySince: NOW,
+        localPostOwnDeviceAt: NOW,
+      })
+    );
+    expect(getReticulumPostDelivery(message, 'alice', NOW)).toBeNull();
+  });
+
+  it('keeps the tracking when the optimistic row or a cached copy is merged', () => {
+    // The optimistic row has none of it; the engine echo brings it.
+    const optimistic = saved();
+    const echo = saved({ localPostDeliverySince: NOW + 5 });
+    expect(mergeEvents([optimistic], [echo])[0].localPostDeliverySince).toBe(
+      NOW + 5
+    );
+    // A stale copy without it (warm cache, older emit) takes nothing back.
+    const fetched = saved({
+      localPostDeliverySince: NOW + 5,
+      localPostOwnDeviceAt: NOW + 900,
+    });
+    expect(mergeEvents([fetched], [optimistic])[0]).toMatchObject({
+      localPostDeliverySince: NOW + 5,
+      localPostOwnDeviceAt: NOW + 900,
+    });
+    expect(mergeEvents([fetched], [echo])[0]).toMatchObject({
+      localPostDeliverySince: NOW + 5,
+      localPostOwnDeviceAt: NOW + 900,
+    });
+    // Forward progress still applies.
+    expect(mergeEvents([echo], [fetched])[0].localPostOwnDeviceAt).toBe(
+      NOW + 900
+    );
   });
 });

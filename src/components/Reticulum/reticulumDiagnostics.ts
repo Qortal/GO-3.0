@@ -2,7 +2,12 @@
  * "Copy diagnostics" for the Reticulum badge: one plain-text report a phone
  * user can paste into a chat, covering the radio, the chat engine, the
  * WebView's capabilities and speed, Core API reachability, the last send
- * failures, the last unlock timings and the engine's own log tail.
+ * failures, the last unlock timings and the engine's own log tail. On GO it
+ * adds the device's power state, the engine's sync health (gap scanner,
+ * digest and resource queues, loop lag, worker->native timing), what the
+ * phone served to peers, the Android bridge's lanes and recent app errors.
+ * All of it is read only when the report is copied: no timers, no new
+ * periodic work.
  *
  * Built for remote reports (GrapheneOS in particular, where WebView JIT can
  * be off per app): every value here is one the app cannot otherwise show and
@@ -16,10 +21,13 @@
  * pseudonym key; only the probes and `collectReticulumDiagnostics` touch the
  * environment.
  */
+import { Capacitor } from '@capacitor/core';
 import { GO_VERSION } from '../../appVersion';
 import { getBaseApiReact } from '../../utils/globalApi';
 import {
   getRecentSendFailures,
+  getRecentSendTimings,
+  type SendAttemptRecord,
   type SendFailureRecord,
 } from '../../messaging/sendFailureLog';
 import {
@@ -30,6 +38,34 @@ import {
   type ResourceSessionStats,
 } from '../../reticulumChat/mobile';
 import { redactDiagnosticText } from '../../reticulumChat/mobile/groupValidation';
+import {
+  engineLogLineKey,
+  isEngineFaultLine,
+} from '../../reticulumChat/mobile/engineLogFaults';
+import type { EngineSyncHealthSnapshot } from '../../reticulumChat/mobile/engineHost';
+import type { LatencySummary } from '../../reticulumChat/mobile/latencyStats';
+import type { LoopLagSnapshot } from '../../reticulumChat/mobile/loopLag';
+import type { NativeRequestSnapshot } from '../../reticulumChat/mobile/nativeRequestStats';
+import type { LogKeyCount } from '../../reticulumChat/mobile/shims/logger';
+import type { ServingStats } from '../../reticulumChat/mobile/wireBridge';
+import type {
+  ReticulumChatAuthorGapScannerDiagnostics,
+  ReticulumChatDigestQueueDiagnostics,
+  ReticulumChatEngineQueueDiagnostics,
+} from '../../../electron/src/reticulum-chat';
+import type { ReticulumChatMissingRangeStateCounts } from '../../../electron/src/reticulum-chat-db';
+import {
+  Reticulum,
+  type KotlinSocketDetail,
+  type PythonBridgeDetail,
+  type PythonBridgeLaneDetail,
+} from '../../plugins/Reticulum';
+import { getRelayProfileSince } from '../../bridge/capacitorBridge';
+import {
+  collectAppErrorDiagnostics,
+  formatAppErrorLines,
+  type AppErrorDiagnostics,
+} from '../../utils/appErrorRing';
 import { createDiagnosticPseudonymizer } from './diagnosticPseudonyms';
 import {
   fetchBackgroundSyncState,
@@ -88,7 +124,31 @@ export type BackgroundSyncDiagnostics = Pick<
   | 'ignoringBatteryOptimizations'
   | 'vendorFreezeCount'
   | 'vendorFreezeRecent'
->;
+> &
+  Partial<
+    Pick<
+      BackgroundSyncState,
+      | 'charging'
+      | 'unmetered'
+      | 'relayProfile'
+      | 'keepAliveActive'
+      | 'thermalStatus'
+      | 'powerSave'
+      | 'batteryTempC'
+      | 'plugType'
+      | 'batteryPct'
+    >
+  >;
+
+/** The Android bridge's own counters (Reticulum.getStatus({ detail: true })). */
+export type NativeBridgeDiagnostics = {
+  /** Python bridge lanes and queues; null when Python is not started. */
+  bridge: PythonBridgeDetail | null;
+  /** When the app process started (ms since epoch). */
+  processStartedAtMs: number | null;
+  /** Kotlin's bridge socket; null when it is not running. */
+  socket: KotlinSocketDetail | null;
+};
 
 export type ReticulumDiagnosticsInput = {
   now: number;
@@ -103,6 +163,16 @@ export type ReticulumDiagnosticsInput = {
   unlock?: UnlockDiagnostics | null;
   /** Native Android only; null or missing elsewhere. */
   backgroundSync?: BackgroundSyncDiagnostics | null;
+  /** First attempt to success of the last few sends (ms); missing in older callers. */
+  sendTimings?: number[];
+  /** Renderer faults this session plus the saved crash log; missing in older callers. */
+  appErrors?: AppErrorDiagnostics | null;
+  /** Native Android only: Python lanes and Kotlin socket counters. */
+  nativeBridge?: NativeBridgeDiagnostics | null;
+  /** When the relay profile last changed on this page; null = not since page start. */
+  relayProfileSince?: number | null;
+  /** When this page started (ms since epoch). */
+  pageStartedAt?: number;
   /** Key for the identifier pseudonyms; random per report unless a test fixes it. */
   pseudonymKey?: Uint8Array;
 };
@@ -282,65 +352,89 @@ function fmtAgo(at: number | null | undefined, now: number): string {
   return `${Math.round(sec / 3_600)} h ago`;
 }
 
+/** Ages that can run to minutes: `840 ms`, `12.3 s`, `22 min`. */
+function fmtAge(ms: number | null | undefined): string {
+  if (typeof ms !== 'number' || !Number.isFinite(ms)) return 'n/a';
+  if (ms < 1000) return `${Math.round(ms)} ms`;
+  if (ms < 120_000) return `${(ms / 1000).toFixed(1)} s`;
+  return `${Math.round(ms / 60_000)} min`;
+}
+
+/** A bucketed percentile: rounded up to its histogram bound. */
+function fmtP(ms: number | null | undefined): string {
+  return `~${fmtMs(ms)}`;
+}
+
+function median(values: number[]): number {
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+/** A count from another thread or an older build: anything else is 0. */
+function count(value: unknown): number {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : 0;
+}
+
+/** A finite number, or null. */
+function numOrNull(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+/** A label from another thread (lane, command, reason, counter): no spaces or odd characters. */
+function safeLabel(value: unknown, max = 64): string {
+  const text = String(value ?? '')
+    .replace(/[^\w:.-]/g, '_')
+    .slice(0, max);
+  return text || '?';
+}
+
+/** `p50 ~X, p95 ~Y, max Z` of a latency summary. */
+function fmtLatency(summary: LatencySummary | null | undefined): string {
+  return `p50 ${fmtP(summary?.p50)}, p95 ${fmtP(summary?.p95)}, max ${fmtMs(
+    summary?.max
+  )}`;
+}
+
+function hasSamples(
+  summary: LatencySummary | null | undefined
+): summary is LatencySummary {
+  return Boolean(
+    summary && typeof summary === 'object' && count(summary.n) > 0
+  );
+}
+
+/** `k=v k=v` of the non-zero entries, largest first; `none` when empty. */
+function fmtCountMap(record: unknown, max = 8): string {
+  if (!record || typeof record !== 'object') return 'none';
+  const entries = Object.entries(record as Record<string, unknown>)
+    .map(([key, value]): [string, number] => [safeLabel(key), count(value)])
+    .filter(([, n]) => n > 0)
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  if (!entries.length) return 'none';
+  const shown = entries.slice(0, max).map(([key, n]) => `${key}=${n}`);
+  if (entries.length > max) shown.push(`+${entries.length - max} more`);
+  return shown.join(' ');
+}
+
+/**
+ * Lines from one formatter; a formatter bug costs its own lines, never the
+ * whole report.
+ */
+function safeLines(section: string, build: () => string[]): string[] {
+  try {
+    return build();
+  } catch {
+    return [`${section}: format error`];
+  }
+}
+
 // ── engine log selection ─────────────────────────────────────────────────────
 
-/**
- * Engine log lines worth keeping when the ring has scrolled past them. Covers
- * membership, bridge overload/pauses, peer violations, refusals and give-ups.
- */
-const ENGINE_FAULT_RE =
-  /error|fail|slow_|timed out|membership|validat|corrupt|unavailable|overloaded|paused|violation|refusing|not a group member|giving up|deferred=[1-9]/i;
-/** Zero counters (`membership_deferred=0` on every page import) are not faults. */
-const ZERO_DEFERRED_RE = /\b\w*deferred=0\b/gi;
-const NONZERO_DEFERRED_RE = /deferred=[1-9]/i;
-/** Level token after the optional timestamp, as written by the worker logger. */
-const LOG_LEVEL_RE =
-  /^(?:\d{4}-\d\d-\d\dT\S+\s+)?(log|info|debug|warn|error)\s/i;
-/**
- * Timing warnings (`digest_send_slow`, `author_tree_worker_fallback`) fill the
- * first seconds after every boot on a healthy phone and say nothing about why
- * chat fails; boot time and sqlite init already cover slowness.
- */
-const PERF_NOISE_RE = /_slow\b|_worker_fallback\b/i;
-
-/**
- * Only warn/error lines are faults. Log-level lines such as
- * `author_gap_link_unavailable reason=no_history_events` are routine answers
- * from peers; the exception is a non-zero membership deferral count.
- */
-export function isEngineFaultLine(line: string): boolean {
-  const text = String(line).replace(ZERO_DEFERRED_RE, '');
-  if (NONZERO_DEFERRED_RE.test(text)) return true;
-  const level = LOG_LEVEL_RE.exec(text)?.[1]?.toLowerCase();
-  if (level && level !== 'warn' && level !== 'error') return false;
-  if (PERF_NOISE_RE.test(text)) return false;
-  return ENGINE_FAULT_RE.test(text);
-}
-
-/** `key=value` pairs whose value names a group, peer, author, transfer or id. */
-const ENGINE_LOG_ID_PAIR_RE =
-  /\b(group(?:_?id)?|peer|active_?peer|author|address|requester|root|transfer|id|event_?id|link_?id|request_?id|dest(?:ination)?(?:_?hash)?|hash)=[^\s,;:&)\]]+/gi;
-
-/**
- * What makes two log lines "the same" for collapsing: the text without its
- * timestamp, with identifiers blanked out (timestamps, addresses, UUIDs, hex
- * hashes, group/peer/id values). Counters, durations and status codes stay,
- * so `inserted=0` never merges into `inserted=20` and HTTP 404 never hides a
- * later HTTP 500. Hex needs one letter to count as a hash, not a counter.
- */
-export function engineLogLineKey(line: string): string {
-  return String(line)
-    .replace(/^\d{4}-\d\d-\d\dT\S+\s+/, '')
-    .replace(/\b\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z?/g, 'T')
-    .replace(/\b1[5-9]\d{11}\b/g, 'T')
-    .replace(ENGINE_LOG_ID_PAIR_RE, '$1=*')
-    .replace(/\bQ[1-9A-HJ-NP-Za-km-z]{25,34}\b/g, 'Q*')
-    .replace(
-      /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi,
-      '#'
-    )
-    .replace(/\b(?=[0-9a-f]*[a-f])[0-9a-f]{8,}\b/gi, '#');
-}
+// The fault predicate and line key live with the worker logger, which keeps
+// fault lines only in its boot buffer; re-exported for the report's callers.
+export { engineLogLineKey, isEngineFaultLine };
 
 function logLineTime(line: string): string {
   return /^\d{4}-\d\d-\d\dT(\d\d:\d\d:\d\d(?:\.\d+)?)/.exec(line)?.[1] ?? '';
@@ -403,15 +497,34 @@ export function collapseEngineLogLines(lines: string[], window = 1): string[] {
 export const ENGINE_LOG_TAIL_LINES = 60;
 const ENGINE_LOG_MAX_FAULT_ENTRIES = 40;
 const ENGINE_LOG_MAX_BOOT_ENTRIES = 40;
+const ENGINE_LOG_MAX_KEY_COUNTS = 25;
+
+export type EngineLogExtras = {
+  /** Fault lines the worker's full boot buffer did not keep. */
+  bootOverflow?: number;
+  /** Lines per `level:token` since boot, most first. */
+  keyCounts?: LogKeyCount[];
+};
+
+/** `22:57:41.000` of a millisecond timestamp. */
+function clockTime(at: number): string {
+  try {
+    return logLineTime(new Date(at).toISOString());
+  } catch {
+    return '';
+  }
+}
 
 /**
  * The "Engine log" section: first warnings since boot that the recent ring no
- * longer holds, then faults from the ring before its tail, then the tail.
- * Repeats are collapsed in each part.
+ * longer holds, then faults from the ring before its tail, then line counts
+ * since boot, then the tail. Repeats are collapsed in each part, and a part
+ * cut at its cap says how much it left out.
  */
 export function selectEngineLogLines(
   ring: string[],
-  bootFaults: string[] = []
+  bootFaults: string[] = [],
+  extras: EngineLogExtras = {}
 ): string[] {
   const lines = ring.map((l) => String(l));
   const tail = lines.slice(-ENGINE_LOG_TAIL_LINES);
@@ -422,17 +535,52 @@ export function selectEngineLogLines(
     .map((l) => String(l))
     .filter((l) => !ringStart || (/^\S+/.exec(l)?.[0] ?? '') < ringStart)
     .filter(isEngineFaultLine);
-  const boot = collapseEngineLogLines(bootOnly, 3).slice(
-    0,
-    ENGINE_LOG_MAX_BOOT_ENTRIES
-  );
-  const faults = collapseEngineLogLines(
+  const bootAll = collapseEngineLogLines(bootOnly, 3);
+  const boot = bootAll.slice(0, ENGINE_LOG_MAX_BOOT_ENTRIES);
+  if (bootAll.length > ENGINE_LOG_MAX_BOOT_ENTRIES) {
+    boot.push(`… ${bootAll.length - ENGINE_LOG_MAX_BOOT_ENTRIES} more elided`);
+  }
+  const bootOverflow = count(extras?.bootOverflow);
+  if (bootOverflow > 0) {
+    boot.push(`Boot buffer full: ${bootOverflow} later warnings not kept`);
+  }
+  const faultsAll = collapseEngineLogLines(
     beforeTail.filter(isEngineFaultLine),
     3
-  ).slice(-ENGINE_LOG_MAX_FAULT_ENTRIES);
+  );
+  const faults = faultsAll.slice(-ENGINE_LOG_MAX_FAULT_ENTRIES);
+  if (faultsAll.length > ENGINE_LOG_MAX_FAULT_ENTRIES) {
+    faults.unshift(
+      `… ${faultsAll.length - ENGINE_LOG_MAX_FAULT_ENTRIES} earlier elided`
+    );
+  }
+  const keyCounts = (Array.isArray(extras?.keyCounts) ? extras.keyCounts : [])
+    .filter((c) => c && typeof c === 'object' && count(c.n) > 0)
+    .slice(0, ENGINE_LOG_MAX_KEY_COUNTS);
   const out: string[] = [];
   if (boot.length) out.push('-- first warnings since boot --', ...boot);
   if (faults.length) out.push('-- recent faults --', ...faults);
+  if (keyCounts.length) {
+    out.push(
+      '-- line counts since boot --',
+      ...keyCounts.map((c) => {
+        const firstAt = count(c.firstAt);
+        const lastAt = count(c.lastAt);
+        const span =
+          firstAt > 0
+            ? ` (first ${clockTime(firstAt)}, last ${clockTime(lastAt)})`
+            : '';
+        // Keys are `level:first words` (logThrottleKey); the final pass
+        // still pseudonymises anything that looks like an id.
+        const key =
+          String(c.key ?? '')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .slice(0, 96) || '?';
+        return `x${count(c.n)} ${key}${span}`;
+      })
+    );
+  }
   if (tail.length) {
     if (out.length) out.push(`-- last ${tail.length} lines --`);
     out.push(...collapseEngineLogLines(tail, 1));
@@ -486,12 +634,40 @@ export function formatValidatorLine(
   now: number
 ): string {
   if (!stats) return 'Membership validator: not reported';
+  // Optional counters (validator-spec D1): an older worker leaves them out.
+  const ownListAnswers = count(stats.ownListAnswers);
   if (stats.okCount === 0 && stats.unavailableCount === 0) {
-    return 'Membership validator: no checks yet';
+    return ownListAnswers > 0
+      ? `Membership validator: no checks yet; own address ${ownListAnswers} answered from the group list`
+      : 'Membership validator: no checks yet';
   }
+  const timedOut = count(stats.timedOutCount);
+  const graced = count(stats.gracedCount);
   const parts = [
-    `Membership validator: ${stats.okCount} ok, ${stats.unavailableCount} unavailable`,
+    `Membership validator: ${stats.okCount} ok, ${stats.unavailableCount} unavailable${
+      timedOut > 0 ? ` (${timedOut} timed out)` : ''
+    }${graced > 0 ? `, ${graced} graced (${count(stats.gracedKeptCount)} kept)` : ''}`,
   ];
+  const ownCount = count(stats.ownCount);
+  if (ownCount > 0 || ownListAnswers > 0) {
+    const ownUnavailable = count(stats.ownUnavailableCount);
+    const bootWaits = count(stats.ownBootWaits);
+    const bootWaitTimeouts = count(stats.ownBootWaitTimeouts);
+    const coreDenied = count(stats.ownCoreDenied);
+    const own = [
+      `own address ${ownCount} of ${count(stats.okCount) + count(stats.unavailableCount)} requests${
+        ownUnavailable > 0 ? ` (${ownUnavailable} unavailable)` : ''
+      }`,
+    ];
+    if (ownListAnswers > 0) {
+      own.push(`${ownListAnswers} answered from the group list`);
+    }
+    if (bootWaits > 0 || bootWaitTimeouts > 0) {
+      own.push(`boot waits ${bootWaits} ok, ${bootWaitTimeouts} timed out`);
+    }
+    if (coreDenied > 0) own.push(`Core said not a member ${coreDenied}x`);
+    parts.push(own.join(', '));
+  }
   parts.push(
     `last ${
       stats.lastStatus != null ? `HTTP ${stats.lastStatus}` : 'no response'
@@ -508,6 +684,46 @@ export function formatValidatorLine(
     );
   }
   return parts.join('; ');
+}
+
+/**
+ * Network time against the time an answer then waited for the worker, for
+ * the last answers with a Resource Timing entry. Null when there is nothing
+ * to say.
+ */
+export function formatValidatorTimingLine(
+  stats: GroupValidatorStats | null | undefined
+): string | null {
+  if (!stats) return null;
+  const finite = (values: unknown): number[] =>
+    (Array.isArray(values) ? values : [])
+      .map(Number)
+      .filter((n) => Number.isFinite(n));
+  const net = finite(stats.recentNetworkMs);
+  const wait = finite(stats.recentWorkerWaitMs);
+  const parts: string[] = [];
+  if (net.length) {
+    parts.push(
+      `network median ${fmtMs(median(net))}, max ${fmtMs(Math.max(...net))}`
+    );
+  }
+  if (wait.length) {
+    parts.push(
+      `waiting on the engine median ${fmtMs(median(wait))}, max ${fmtMs(
+        Math.max(...wait)
+      )}`
+    );
+  }
+  if (count(stats.maxTimerLateMs) > 0) {
+    parts.push(`worst late timer ${fmtMs(count(stats.maxTimerLateMs))}`);
+  }
+  if (count(stats.maxInFlight) > 1) {
+    parts.push(`up to ${count(stats.maxInFlight)} in flight`);
+  }
+  if (!parts.length) return null;
+  return `Membership timing${
+    net.length ? ` (last ${net.length} answers)` : ''
+  }: ${parts.join('; ')}`;
 }
 
 function countEntries(record: unknown): Array<[string, number]> {
@@ -659,6 +875,787 @@ export function formatBackgroundSyncLines(
   return lines;
 }
 
+// ── send attempts ────────────────────────────────────────────────────────────
+
+/** ` [1: 45.0 s <error>; 2: 120 ms ok (already stored)]`, or '' without a log. */
+export function formatSendAttempts(log?: SendAttemptRecord[] | null): string {
+  if (!Array.isArray(log) || log.length === 0) return '';
+  return ` [${log
+    .map(
+      (attempt, i) =>
+        `${i + 1}: ${fmtMs(attempt?.ms)} ${
+          attempt?.error === null
+            ? attempt?.duplicate
+              ? 'ok (already stored)'
+              : 'ok'
+            : String(attempt?.error ?? 'unknown error')
+        }`
+    )
+    .join('; ')}]`;
+}
+
+/** First attempt to success of the last few sends; null when there are none. */
+export function formatSendTimesLine(timings?: number[] | null): string | null {
+  const values = (Array.isArray(timings) ? timings : []).filter(
+    (n) => typeof n === 'number' && Number.isFinite(n)
+  );
+  if (!values.length) return null;
+  return `Send times (last ${values.length}): median ${fmtMs(
+    median(values)
+  )}, max ${fmtMs(Math.max(...values))}`;
+}
+
+// ── sync health (debug:sync-health) ─────────────────────────────────────────
+
+/**
+ * The background author-gap scanner and the gap rows it works on. Group ids
+ * only as `group=` pairs, which the report's final pass pseudonymises.
+ */
+export function formatAuthorGapScannerLines(
+  stats: ReticulumChatAuthorGapScannerDiagnostics | null | undefined
+): string[] {
+  if (!stats || typeof stats !== 'object') return ['Gap scanner: not reported'];
+  const next = numOrNull(stats.nextWakeInMs);
+  const runs = count(stats.runsSinceBoot);
+  const lines = [
+    `Gap scanner: ${count(stats.runsLastMinute)} runs/min (${runs} since boot), last ${fmtMs(
+      numOrNull(stats.lastDurationMs)
+    )}, max ${fmtMs(count(stats.maxDurationMs))}, slow ${count(
+      stats.slowRuns
+    )}, failed ${count(stats.failedRuns)}; writes last ${count(
+      stats.lastWrites
+    )} total ${count(stats.totalWrites)}; sent last ${count(
+      stats.lastSent
+    )} total ${count(stats.totalSent)}; ${
+      next == null ? 'not scheduled' : `next in ${fmtMs(next)}`
+    }`,
+  ];
+  if (runs > 0) {
+    lines.push(
+      `Gap scanner last run: ${fmtAge(
+        numOrNull(stats.lastRunAgoMs)
+      )} ago, scanned ${count(stats.lastScanned)} rows, tried ${count(
+        stats.lastTried
+      )} of ${count(stats.lastEligibleGroups)} eligible groups`
+    );
+  }
+  lines.push(...formatGapRowLines(stats.rows));
+  return lines;
+}
+
+function formatGapRowLines(
+  rows: ReticulumChatMissingRangeStateCounts | null | undefined
+): string[] {
+  if (!rows || typeof rows !== 'object') return ['Gap rows: not reported'];
+  const lines = [
+    `Gap rows: ${count(rows.total)} (due ${count(rows.due)}, backoff ${count(
+      rows.backoff
+    )}, quarantined ${count(rows.quarantined)}, parked ${count(
+      rows.parked
+    )}, not subscribed ${count(rows.notEligible)}); from=1 ${count(
+      rows.fromSeqOne
+    )}, no peer ${count(rows.noPeer)}, older than 29 d ${count(
+      rows.olderThanServeAge
+    )}${rows.source === 'memory' ? ' (memory mirror)' : ''}`,
+  ];
+  const top = (Array.isArray(rows.topGroups) ? rows.topGroups : [])
+    .filter((g) => g && typeof g === 'object' && numOrNull(g.groupId) != null)
+    .slice(0, 5);
+  if (top.length) {
+    lines.push(
+      `Gap rows top groups: ${top
+        .map(
+          (g) =>
+            `group=${Math.trunc(g.groupId)} rows=${count(g.rows)} due=${count(
+              g.due
+            )}${g.eligible ? '' : ' not subscribed'}`
+        )
+        .join(', ')}`
+    );
+  }
+  return lines;
+}
+
+/** Digest repair and digest send queues (spec D13-5 strings). */
+export function formatDigestQueueLines(
+  stats: ReticulumChatDigestQueueDiagnostics | null | undefined
+): string[] {
+  if (!stats || typeof stats !== 'object' || !stats.repair || !stats.recent) {
+    return ['Digest queues: not reported'];
+  }
+  const r = stats.repair;
+  const s = stats.send;
+  const recent = stats.recent;
+  const minutes = Math.max(1, Number(recent.minutes) || 1);
+  const perMin = (n: number) => (Number(n || 0) / minutes).toFixed(1);
+  const window = `per min (last ${minutes} min)`;
+  return [
+    `Digest repair queue: ${count(r.queued)} queued${
+      numOrNull(r.oldestQueuedMs) != null
+        ? ` (oldest ${fmtAge(r.oldestQueuedMs)})`
+        : ''
+    }; ${window}: processed ${perMin(recent.repairProcessed)}, coalesced ${perMin(
+      recent.repairCoalesced
+    )}, dropped ${perMin(recent.repairDropped)}`,
+    `Digest repair totals: processed ${count(r.processed)} (ahead ${count(
+      r.byRelation?.ahead
+    )}, equal ${count(r.byRelation?.equal)}, behind ${count(
+      r.byRelation?.behind
+    )}, no head ${count(r.byRelation?.none)}), coalesced ${count(
+      r.coalesced
+    )}, dropped ${count(r.dropped)}`,
+    `Digest page repairs: equal-head skips ${count(r.equalHeadSkips)} (${perMin(
+      recent.equalHeadSkips
+    )}/min), spent ${count(r.budgetSpent)} (open chat ${count(
+      r.budgetOpenChat
+    )}), held ${count(r.budgetHeld) + count(r.budgetSlotBusy)} (slot busy ${count(
+      r.budgetSlotBusy
+    )}), resets ${count(r.budgetResets)}; groups waiting ${count(
+      r.groupsWaiting
+    )}, longest streak ${count(r.maxStreak)}`,
+    s && typeof s === 'object'
+      ? `Digest send queue: ${count(s.queued)} queued${
+          numOrNull(s.oldestQueuedMs) != null
+            ? ` (oldest ${fmtAge(s.oldestQueuedMs)})`
+            : ''
+        }; ${window}: processed ${perMin(recent.sendProcessed)}, coalesced ${perMin(
+          recent.sendCoalesced
+        )}, dropped ${perMin(recent.sendDropped)}`
+      : 'Digest send queue: not reported',
+  ];
+}
+
+/** Resource event queue, event pulls, history serving and group-control relaying. */
+export function formatEngineQueueLines(
+  queues: ReticulumChatEngineQueueDiagnostics | null | undefined
+): string[] {
+  if (!queues || typeof queues !== 'object') {
+    return ['Engine queues: not reported'];
+  }
+  const lines: string[] = [];
+  const q = queues.chatResource;
+  if (q && typeof q === 'object') {
+    const oldest = numOrNull(q.oldestQueuedMs);
+    lines.push(
+      `Resource event queue: ${count(q.queued)} waiting${
+        oldest != null ? ` (oldest ${fmtAge(oldest)})` : ''
+      }, ${q.active ? 'running' : 'idle'}; processed ${count(
+        q.processed
+      )}, coalesced ${count(q.coalesced)}, dropped ${count(
+        q.dropped
+      )}, protected overflow ${count(q.protectedOverflow)}`
+    );
+  } else {
+    lines.push('Resource event queue: not reported');
+  }
+  lines.push(
+    `Event pulls: ${count(queues.eventPulls?.pending)} pending, ${count(
+      queues.eventPulls?.requested
+    )} requested; history serve queue: ${count(
+      queues.historyServeQueue
+    )}; group control relaying: ${queues.relayGroupControl ? 'on' : 'off'}`
+  );
+  return lines;
+}
+
+const ENGINE_COUNTERS_MAX = 40;
+const ENGINE_COUNTERS_PER_LINE = 8;
+
+/** Non-zero engine counters, largest first, 8 pairs per line. */
+export function formatEngineCounterLines(counters: unknown): string[] {
+  const entries =
+    counters && typeof counters === 'object'
+      ? Object.entries(counters as Record<string, unknown>)
+          .map(([key, value]): [string, number] => [
+            safeLabel(key),
+            count(value),
+          ])
+          .filter(([, n]) => n > 0)
+          .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+          .slice(0, ENGINE_COUNTERS_MAX)
+      : [];
+  if (!entries.length) return ['Engine counters since start: none'];
+  const lines: string[] = [];
+  for (let i = 0; i < entries.length; i += ENGINE_COUNTERS_PER_LINE) {
+    const pairs = entries
+      .slice(i, i + ENGINE_COUNTERS_PER_LINE)
+      .map(([key, n]) => `${key}=${n}`)
+      .join(' ');
+    lines.push(
+      i === 0 ? `Engine counters since start: ${pairs}` : `  ${pairs}`
+    );
+  }
+  return lines;
+}
+
+/** The "Sync health" section from a `debug:sync-health` answer. */
+export function formatSyncHealthLines(
+  health: EngineSyncHealthSnapshot | null | undefined
+): string[] {
+  if (!health || typeof health !== 'object') return ['Not reported'];
+  const lines: string[] = [];
+  if (health.engineError) {
+    lines.push(
+      `Engine getter failed: ${redactDiagnosticText(
+        String(health.engineError)
+      ).slice(0, 200)}`
+    );
+  }
+  const engine = health.engine;
+  if (!engine || typeof engine !== 'object') {
+    lines.push('Chat manager: not running');
+    return lines;
+  }
+  lines.push(
+    ...safeLines('Gap scanner', () =>
+      formatAuthorGapScannerLines(engine.scanner)
+    ),
+    ...safeLines('Digest queues', () =>
+      formatDigestQueueLines(engine.digestQueues)
+    ),
+    ...safeLines('Engine queues', () => formatEngineQueueLines(engine.queues)),
+    ...safeLines('Engine counters', () =>
+      formatEngineCounterLines(engine.counters)
+    )
+  );
+  return lines;
+}
+
+// ── engine loop and worker->native (debug:sync-health) ──────────────────────
+
+/**
+ * Engine loop lag (how late the worker's own timers fired), the longest
+ * task, this request's wait in the worker, and bridge event delivery times.
+ */
+export function formatEngineLoopLines(
+  health: EngineSyncHealthSnapshot | null | undefined,
+  now: number
+): string[] {
+  if (!health || typeof health !== 'object') {
+    return ['Engine loop: not reported'];
+  }
+  const lines: string[] = [];
+  const loop: LoopLagSnapshot | null | undefined = health.loop;
+  if (!loop || typeof loop !== 'object') {
+    lines.push('Engine loop: not reported');
+  } else {
+    if (!loop.installed) {
+      lines.push('Engine loop: not measured (probe not installed)');
+    } else if (!hasSamples(loop.lagRecent) && !hasSamples(loop.lag)) {
+      lines.push('Engine loop: no timer samples yet');
+    } else {
+      const recent = loop.lagRecent;
+      const all = loop.lag;
+      const parts = [
+        hasSamples(recent)
+          ? `lag p50 ${fmtP(recent.p50)}, p95 ${fmtP(recent.p95)}, max ${fmtMs(
+              recent.max
+            )} at ${fmtEventTime(recent.maxAt, now)} (last 10 min, ${count(
+              recent.n
+            )} timers)`
+          : 'no timers in the last 10 min',
+      ];
+      if (hasSamples(all)) {
+        parts.push(
+          `since start p95 ${fmtP(all.p95)}, max ${fmtMs(all.max)}${
+            hasSamples(recent) ? '' : ` at ${fmtEventTime(all.maxAt, now)}`
+          }`
+        );
+      }
+      if (count(loop.suspendedCount) > 0) {
+        parts.push(
+          `frozen ${count(loop.suspendedCount)}x (a timer 60 s or more late, longest ${fmtMs(
+            count(loop.suspendedMaxMs)
+          )})`
+        );
+      }
+      lines.push(`Engine loop: ${parts.join('; ')}`);
+    }
+    const perMinute = Array.isArray(loop.lagPerMinute) ? loop.lagPerMinute : [];
+    if (perMinute.some((ms) => numOrNull(ms) != null)) {
+      lines.push(
+        `Engine loop per minute (max lag, oldest first): ${perMinute
+          .map((ms) => (numOrNull(ms) != null ? fmtMs(ms) : '-'))
+          .join(', ')}`
+      );
+    }
+    const longest = count(loop.longestTaskMs);
+    lines.push(
+      longest > 0
+        ? `Longest task: ${fmtMs(longest)}${
+            loop.longestTaskKind
+              ? ` (${safeLabel(loop.longestTaskKind, 16)})`
+              : ''
+          }${
+            numOrNull(loop.longestTaskAt) != null
+              ? ` at ${fmtEventTime(loop.longestTaskAt, now)}`
+              : ''
+          }; tasks over 1 s: ${count(loop.tasksOver1s)}, over 50 ms: ${count(
+            loop.tasksOver50Ms
+          )}`
+        : 'Longest task: none over 50 ms'
+    );
+  }
+  const queued = numOrNull(health.rpcQueueMs);
+  if (queued != null) {
+    lines.push(
+      `Diagnostics request waited ${fmtMs(queued)} in the engine queue`
+    );
+  }
+  const events = health.bridgeEvents;
+  const parts: string[] = [];
+  if (events && typeof events === 'object') {
+    if (hasSamples(events.pythonQueue)) {
+      parts.push(
+        `Python queue p95 ${fmtP(events.pythonQueue.p95)}, max ${fmtMs(
+          events.pythonQueue.max
+        )}`
+      );
+    }
+    const toWorker = hasSamples(events.toWorkerRecent)
+      ? { s: events.toWorkerRecent, window: 'last 10 min' }
+      : hasSamples(events.toWorker)
+        ? { s: events.toWorker, window: 'since start' }
+        : null;
+    if (toWorker) {
+      parts.push(
+        `Python to engine p95 ${fmtP(toWorker.s.p95)}, max ${fmtMs(
+          toWorker.s.max
+        )} (${toWorker.window}, ${count(toWorker.s.n)} events)`
+      );
+    }
+  }
+  lines.push(
+    `Bridge events: ${parts.length ? parts.join('; ') : 'no samples'}`
+  );
+  return lines;
+}
+
+/** Worker->native requests: pending now, round trips, timeouts and late replies. */
+export function formatNativeRequestLines(
+  native: NativeRequestSnapshot | null | undefined
+): string[] {
+  if (!native || typeof native !== 'object') {
+    return ['Worker->native: not reported'];
+  }
+  const oldest = (
+    Array.isArray(native.oldestPending) ? native.oldestPending : []
+  )
+    .filter((p) => p && typeof p === 'object')
+    .map(
+      (p) =>
+        `${safeLabel(p.label)}${count(p.count) > 1 ? ` x${count(p.count)}` : ''} ${fmtMs(
+          count(p.oldestMs)
+        )}`
+    );
+  const rtt = hasSamples(native.rttRecent)
+    ? `${fmtLatency(native.rttRecent)} (last 10 min, ${count(native.rttRecent.n)})`
+    : hasSamples(native.rtt)
+      ? `${fmtLatency(native.rtt)} (since start, ${count(native.rtt.n)})`
+      : 'no replies yet';
+  const late = count(native.lateReplies);
+  const byLabel = (Array.isArray(native.byLabel) ? native.byLabel : [])
+    .filter((e) => e && typeof e === 'object')
+    .map((e) => {
+      const n = count(e.n);
+      return `${safeLabel(e.label)} n=${n}${
+        n > 0 ? ` p95 ${fmtP(e.p95)} max ${fmtMs(e.max)}` : ''
+      }${count(e.timeouts) > 0 ? ` timeouts=${count(e.timeouts)}` : ''}${
+        count(e.late) > 0 ? ` late=${count(e.late)}` : ''
+      }`;
+    });
+  return [
+    `Worker->native: ${count(native.pending)} pending${
+      oldest.length ? ` (oldest ${oldest.join(', ')})` : ''
+    }; round trip ${rtt}`,
+    `Worker->native since start: timeouts ${count(
+      native.timeouts
+    )}, late replies ${late}${
+      late > 0
+        ? ` (up to ${fmtMs(count(native.lateByMaxMs))} after the timeout)`
+        : ''
+    }, unmatched ${count(native.unmatchedReplies)}, lost on socket close ${count(
+      native.lostOnClose
+    )}`,
+    `Worker->native by command: ${byLabel.length ? byLabel.join('; ') : 'none'}`,
+  ];
+}
+
+// ── serving (debug:sync-health) ──────────────────────────────────────────────
+
+const SERVING_TYPE_LINES = 8;
+
+/** What this phone served to peers: answers per resource type and step timing. */
+export function formatServingLines(
+  serving: ServingStats | null | undefined
+): string[] {
+  if (!serving || typeof serving !== 'object') return ['Serving: not reported'];
+  const lines: string[] = [];
+  const types = Object.entries(
+    serving.byType && typeof serving.byType === 'object' ? serving.byType : {}
+  )
+    .filter(([, s]) => s && typeof s === 'object')
+    .sort(
+      (a, b) =>
+        count(b[1].received) - count(a[1].received) || a[0].localeCompare(b[0])
+    );
+  if (!types.length) lines.push('Requests served: none yet');
+  for (const [type, s] of types.slice(0, SERVING_TYPE_LINES)) {
+    const late = count(s.late);
+    lines.push(
+      `${safeLabel(type).replace(/^reticulum_chat_/, '')}: received ${count(
+        s.received
+      )}, authorized ${count(s.authorized)}, rejected ${count(
+        s.rejected
+      )}, failed ${count(s.failed)}${late > 0 ? ` (late ${late})` : ''}, ended by Python ${count(
+        s.ended
+      )}`
+    );
+  }
+  if (types.length > SERVING_TYPE_LINES) {
+    lines.push(`(+${types.length - SERVING_TYPE_LINES} more types)`);
+  }
+  lines.push(`Ended by Python: ${fmtCountMap(serving.endedReasons)}`);
+  lines.push(`Authorize failures: ${fmtCountMap(serving.failedReasons)}`);
+  const timing: string[] = [];
+  if (hasSamples(serving.totalMs)) {
+    timing.push(`arrival to answer ${fmtLatency(serving.totalMs)}`);
+  }
+  if (hasSamples(serving.pythonMs)) {
+    timing.push(
+      `Python admission p95 ${fmtP(serving.pythonMs.p95)}, max ${fmtMs(
+        serving.pythonMs.max
+      )}`
+    );
+  }
+  if (hasSamples(serving.toWorkerMs)) {
+    timing.push(
+      `Python to engine p95 ${fmtP(serving.toWorkerMs.p95)}, max ${fmtMs(
+        serving.toWorkerMs.max
+      )}`
+    );
+  }
+  if (hasSamples(serving.engineMs)) {
+    timing.push(
+      `in the engine p95 ${fmtP(serving.engineMs.p95)}, max ${fmtMs(
+        serving.engineMs.max
+      )}`
+    );
+  }
+  lines.push(`Timing: ${timing.length ? timing.join('; ') : 'no samples'}`);
+  const waiting = count(serving.waiting);
+  const oldestWaiting = numOrNull(serving.oldestWaitingMs);
+  lines.push(
+    `Waiting for an answer now: ${waiting}${
+      waiting > 0 && oldestWaiting != null
+        ? ` (oldest ${fmtMs(oldestWaiting)})`
+        : ''
+    }`
+  );
+  return lines;
+}
+
+// ── Python bridge and Kotlin socket (Reticulum.getStatus({ detail: true })) ─
+
+const NATIVE_BRIDGE_PROBE_TIMEOUT_MS = 3_000;
+const PYTHON_LANE_LINES = 6;
+const PYTHON_LANE_QUIET_DWELL_MS = 50;
+
+function sanitizeLane(raw: unknown): PythonBridgeLaneDetail | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const lane = raw as Record<string, unknown>;
+  const out: PythonBridgeLaneDetail = { lane: safeLabel(lane.lane, 48) };
+  for (const key of [
+    'queueDepth',
+    'queueDepthHighWater',
+    'queueMax',
+    'dwellMsMax',
+    'busyMsMax',
+    'droppedTasks',
+    'slowTaskCount',
+    'completedTasks',
+    'runningMs',
+  ] as const) {
+    const n = numOrNull(lane[key]);
+    if (n != null) out[key] = n;
+  }
+  if (typeof lane.currentTask === 'string' && lane.currentTask) {
+    out.currentTask = safeLabel(lane.currentTask, 48);
+  }
+  return out;
+}
+
+function sanitizeBridgeDetail(raw: unknown): PythonBridgeDetail | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const detail = raw as Record<string, unknown>;
+  const out: PythonBridgeDetail = {};
+  if (typeof detail.error === 'string' && detail.error) {
+    out.error = redactDiagnosticText(detail.error).slice(0, 160);
+  }
+  for (const key of [
+    'transportStartedAtMs',
+    'cmdQueue',
+    'eventQueue',
+    'priorityEventQueue',
+    'respQueue',
+    'executorIdleMs',
+    'gilLagMsMax',
+    'providerPendingAuth',
+    'jsonOutDrops',
+  ] as const) {
+    const n = numOrNull(detail[key]);
+    if (n != null) out[key] = n;
+  }
+  const cmdQueueMax = numOrNull(detail.cmdQueueMax);
+  if (cmdQueueMax != null) out.cmdQueueMax = cmdQueueMax;
+  if (Array.isArray(detail.lanes)) {
+    out.lanes = detail.lanes
+      .map(sanitizeLane)
+      .filter((lane): lane is PythonBridgeLaneDetail => lane != null);
+  }
+  if (detail.providerRefused && typeof detail.providerRefused === 'object') {
+    const refused: Record<string, number> = {};
+    for (const [key, value] of Object.entries(
+      detail.providerRefused as Record<string, unknown>
+    ).slice(0, 16)) {
+      const n = numOrNull(value);
+      if (n != null) refused[safeLabel(key, 32)] = n;
+    }
+    out.providerRefused = refused;
+  }
+  return out;
+}
+
+function sanitizeSocketDetail(raw: unknown): KotlinSocketDetail | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const socket = raw as Record<string, unknown>;
+  return {
+    clients: count(socket.clients),
+    dropped: count(socket.dropped),
+    queued: count(socket.queued),
+    queuedMax: count(socket.queuedMax),
+    queueCapacity: count(socket.queueCapacity),
+    handoverFrames: count(socket.handoverFrames),
+  };
+}
+
+/**
+ * The Android bridge's lanes, queues and socket, read once for the report.
+ * The plugin call can wait behind a Python stall (the GIL), so it is bounded.
+ * Null off Android, on an older app, on a plugin error or a timeout.
+ */
+export async function probeNativeBridge(
+  timeoutMs = NATIVE_BRIDGE_PROBE_TIMEOUT_MS
+): Promise<NativeBridgeDiagnostics | null> {
+  try {
+    if (
+      !Capacitor.isNativePlatform() ||
+      Capacitor.getPlatform() !== 'android'
+    ) {
+      return null;
+    }
+  } catch {
+    return null;
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), timeoutMs);
+  });
+  try {
+    const status = (await Promise.race([
+      Promise.resolve()
+        .then(() => Reticulum.getStatus({ detail: true }))
+        .catch(() => null),
+      timeout,
+    ])) as Record<string, unknown> | null;
+    if (!status || typeof status !== 'object') return null;
+    const nativeDetail =
+      status.native && typeof status.native === 'object'
+        ? (status.native as Record<string, unknown>)
+        : null;
+    const result: NativeBridgeDiagnostics = {
+      bridge: sanitizeBridgeDetail(status.bridge),
+      processStartedAtMs: numOrNull(nativeDetail?.processStartedAtMs),
+      socket: sanitizeSocketDetail(nativeDetail?.socket),
+    };
+    // An older app answers without either part: say "not reported".
+    if (!result.bridge && result.processStartedAtMs == null && !result.socket) {
+      return null;
+    }
+    return result;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** The "Python bridge" section: lanes, queues and the Kotlin socket. */
+export function formatPythonBridgeLines(
+  native: NativeBridgeDiagnostics | null | undefined,
+  now: number
+): string[] {
+  if (!native || typeof native !== 'object') {
+    return ['Not reported (bridge not started, or an older app)'];
+  }
+  const lines: string[] = [];
+  const bridge = native.bridge;
+  const started = (at: number | null | undefined) =>
+    numOrNull(at) != null
+      ? `${fmtEventTime(at as number, now)} (${fmtAgo(at, now)})`
+      : 'unknown';
+  lines.push(
+    `Transport started ${started(bridge?.transportStartedAtMs)}; app process started ${started(
+      native.processStartedAtMs
+    )}`
+  );
+  if (!bridge) {
+    lines.push('Python bridge: not reported (bridge not started)');
+  } else {
+    if (bridge.error) {
+      lines.push(`Python bridge detail failed: ${bridge.error}`);
+    }
+    const n = (value: number | null | undefined) =>
+      numOrNull(value) != null ? String(value) : 'n/a';
+    lines.push(
+      `Queues now: commands ${n(bridge.cmdQueue)} of ${n(
+        bridge.cmdQueueMax
+      )}, events ${n(bridge.eventQueue)}, priority events ${n(
+        bridge.priorityEventQueue
+      )}, replies ${n(bridge.respQueue)}; executor idle ${fmtMs(
+        bridge.executorIdleMs
+      )}; provider auths waiting ${n(
+        bridge.providerPendingAuth
+      )}; GIL lag (recent) ${fmtMs(bridge.gilLagMsMax)}; event drops ${n(
+        bridge.jsonOutDrops
+      )}`
+    );
+    const lanes = Array.isArray(bridge.lanes) ? bridge.lanes : [];
+    const busy = lanes
+      .filter(
+        (lane) =>
+          count(lane.dwellMsMax) >= PYTHON_LANE_QUIET_DWELL_MS ||
+          count(lane.queueDepth) > 0 ||
+          count(lane.droppedTasks) > 0
+      )
+      .sort((a, b) => count(b.dwellMsMax) - count(a.dwellMsMax));
+    if (!lanes.length) {
+      lines.push('Lanes: not reported');
+    } else if (!busy.length) {
+      lines.push(
+        `Lanes: all quiet (max dwell under ${PYTHON_LANE_QUIET_DWELL_MS} ms)`
+      );
+    } else {
+      lines.push('Lanes (max since bridge start, worst dwell first):');
+      for (const lane of busy.slice(0, PYTHON_LANE_LINES)) {
+        lines.push(
+          `  ${lane.lane} now ${count(lane.queueDepth)}, high ${count(
+            lane.queueDepthHighWater
+          )} of ${n(lane.queueMax)}, dwell max ${fmtMs(
+            count(lane.dwellMsMax)
+          )}, busy max ${fmtMs(count(lane.busyMsMax))}, slow ${count(
+            lane.slowTaskCount
+          )}, dropped ${count(lane.droppedTasks)}${
+            lane.currentTask
+              ? `, running ${lane.currentTask} ${fmtMs(lane.runningMs)}`
+              : ''
+          }`
+        );
+      }
+      const quiet = lanes.length - busy.length;
+      const moreBusy = busy.length - Math.min(busy.length, PYTHON_LANE_LINES);
+      if (moreBusy > 0) lines.push(`  (+${moreBusy} more busy lanes)`);
+      if (quiet > 0) lines.push(`  (+${quiet} quiet lanes)`);
+    }
+    const refused = fmtCountMap(bridge.providerRefused, 12);
+    if (refused !== 'none') lines.push(`Provider refused: ${refused}`);
+  }
+  const socket = native.socket;
+  lines.push(
+    socket
+      ? `Kotlin socket: ${count(socket.clients)} client(s), queued ${count(
+          socket.queued
+        )} (largest ${count(socket.queuedMax)} of ${count(
+          socket.queueCapacity
+        )}), dropped ${count(socket.dropped)}, kept for handover ${count(
+          socket.handoverFrames
+        )}`
+      : 'Kotlin socket: not reported'
+  );
+  return lines;
+}
+
+// ── device facts ─────────────────────────────────────────────────────────────
+
+const THERMAL_NAMES = [
+  'none',
+  'light',
+  'moderate',
+  'severe',
+  'critical',
+  'emergency',
+  'shutdown',
+];
+
+/**
+ * The "Device" section: the power state now (not the background-sync
+ * setting), the network and relay profile, and the keep-alive service.
+ */
+export function formatDeviceLines(
+  sync: BackgroundSyncDiagnostics | null | undefined,
+  relay: {
+    since: number | null;
+    pageStartedAt: number | null | undefined;
+    engineRelaying: boolean | null;
+  },
+  now: number
+): string[] {
+  if (!sync) return ['Not reported (not native Android, or an older app)'];
+  const power = [
+    sync.charging == null
+      ? 'charging unknown'
+      : sync.charging
+        ? `charging${
+            sync.plugType && sync.plugType !== 'none'
+              ? ` via ${safeLabel(sync.plugType, 16)}`
+              : ''
+          }`
+        : 'on battery',
+  ];
+  const batteryPct = numOrNull(sync.batteryPct);
+  if (batteryPct != null) power.push(`battery ${batteryPct}%`);
+  const batteryTempC = numOrNull(sync.batteryTempC);
+  if (batteryTempC != null) power.push(`${batteryTempC.toFixed(1)} °C`);
+  power.push(
+    `power save ${sync.powerSave == null ? 'unknown' : sync.powerSave ? 'on' : 'off'}`
+  );
+  const thermal = numOrNull(sync.thermalStatus);
+  power.push(
+    `thermal ${thermal == null ? 'unknown' : (THERMAL_NAMES[thermal] ?? String(thermal))}`
+  );
+  const since =
+    relay?.since != null
+      ? `since ${fmtAgo(relay.since, now)}`
+      : `since page start, ${fmtAgo(relay?.pageStartedAt, now)}`;
+  return [
+    `Power: ${power.join(', ')}`,
+    `Network: unmetered ${
+      sync.unmetered == null ? 'unknown' : sync.unmetered ? 'yes' : 'no'
+    }; relay profile ${sync.relayProfile ? safeLabel(sync.relayProfile, 16) : 'unknown'} ${since}${
+      relay?.engineRelaying == null
+        ? ''
+        : ` (engine relays group control: ${relay.engineRelaying ? 'yes' : 'no'})`
+    }`,
+    `Keep-alive: ${
+      sync.keepAliveActive == null
+        ? 'unknown'
+        : sync.keepAliveActive
+          ? 'active'
+          : 'off'
+    }`,
+  ];
+}
+
 export function buildReticulumDiagnosticsReport(
   input: ReticulumDiagnosticsInput
 ): string {
@@ -667,6 +1664,19 @@ export function buildReticulumDiagnosticsReport(
   const displayPhase = state.bridgeError
     ? 'error'
     : reticulumDisplayPhase(state.phase, input.onlineCount, input.deviceOnline);
+  const engineReady = engine?.readiness.state === 'ready';
+  // debug:sync-health (only asked for when the engine is ready).
+  const syncHealth: EngineSyncHealthSnapshot | null =
+    engineReady && engine?.syncHealth && typeof engine.syncHealth === 'object'
+      ? engine.syncHealth
+      : null;
+  const syncHealthMissing = !engineReady
+    ? 'Not reported (engine not ready)'
+    : `Not reported (${
+        engine?.syncHealthError
+          ? redactDiagnosticText(String(engine.syncHealthError)).slice(0, 200)
+          : 'no sync-health answer from this engine'
+      })`;
   const lines: string[] = [];
   lines.push('Qortal GO diagnostics');
   lines.push(`GO version: ${input.version}`);
@@ -695,6 +1705,24 @@ export function buildReticulumDiagnosticsReport(
   lines.push(`JIT: ${jit.verdict} (${jit.basis})`);
   lines.push(
     `JS loop probe: ${webView.jsLoopMs} ms (weak hint only; CPU speed and load move it as much as JIT does)`
+  );
+  lines.push('');
+  lines.push('--- Device ---');
+  lines.push(
+    ...safeLines('Device', () =>
+      formatDeviceLines(
+        input.backgroundSync,
+        {
+          since: numOrNull(input.relayProfileSince),
+          pageStartedAt: numOrNull(input.pageStartedAt),
+          engineRelaying:
+            typeof syncHealth?.engine?.queues?.relayGroupControl === 'boolean'
+              ? syncHealth.engine.queues.relayGroupControl
+              : null,
+        },
+        input.now
+      )
+    )
   );
   lines.push('');
   lines.push('--- Unlock ---');
@@ -729,15 +1757,42 @@ export function buildReticulumDiagnosticsReport(
       engine?.sqliteInitMs
     )} (stock WebView well under 1 s; several seconds usually mean no JIT)`
   );
-  const engineReady = engine?.readiness.state === 'ready';
   if (engine) {
+    const oldestRpc =
+      engine.oldestRpc && typeof engine.oldestRpc === 'object'
+        ? engine.oldestRpc
+        : null;
     lines.push(
       `Worker alive: ${engine.workerAlive ? 'yes' : 'no'}, direct bridge socket: ${
         engine.workerHasDirectBridge ? 'yes' : 'no'
-      }, RPCs in flight: ${engine.pendingRpcCount}`
+      }, RPCs in flight: ${engine.pendingRpcCount}${
+        oldestRpc
+          ? ` (oldest ${safeLabel(oldestRpc.method)} ${fmtMs(
+              count(oldestRpc.ageMs)
+            )})`
+          : ''
+      }`
     );
+    if (syncHealth) {
+      lines.push(
+        ...safeLines('Engine loop', () =>
+          formatEngineLoopLines(syncHealth, input.now)
+        ),
+        ...safeLines('Worker->native', () =>
+          formatNativeRequestLines(syncHealth.native)
+        )
+      );
+    }
     if (engineReady) {
       lines.push(formatResourceSessionsLine(engine.resourceSessions));
+    }
+    const bridgeTraffic = Array.isArray(engine.bridgeTraffic)
+      ? engine.bridgeTraffic.slice(-3)
+      : [];
+    for (const traffic of bridgeTraffic) {
+      lines.push(
+        `Bridge traffic: ${String(traffic).replace(/^\[MobileChat\]\s*/, '')}`
+      );
     }
     if (engine.readiness.error) {
       lines.push(`Engine error: ${engine.readiness.error}`);
@@ -745,6 +1800,27 @@ export function buildReticulumDiagnosticsReport(
   }
   if (state.bridgeWarning) lines.push(`Warning: ${state.bridgeWarning}`);
   if (state.bridgeError) lines.push(`Bridge error: ${state.bridgeError}`);
+  lines.push('');
+  lines.push('--- Sync health ---');
+  lines.push(
+    ...(syncHealth
+      ? safeLines('Sync health', () => formatSyncHealthLines(syncHealth))
+      : [syncHealthMissing])
+  );
+  lines.push('');
+  lines.push('--- Serving ---');
+  lines.push(
+    ...(syncHealth
+      ? safeLines('Serving', () => formatServingLines(syncHealth.serving))
+      : [syncHealthMissing])
+  );
+  lines.push('');
+  lines.push('--- Python bridge ---');
+  lines.push(
+    ...safeLines('Python bridge', () =>
+      formatPythonBridgeLines(input.nativeBridge, input.now)
+    )
+  );
   lines.push('');
   lines.push('--- Background sync ---');
   lines.push(...formatBackgroundSyncLines(input.backgroundSync, input.now));
@@ -802,23 +1878,50 @@ export function buildReticulumDiagnosticsReport(
           input.now
         )
       );
-    }
-  }
-  lines.push('');
-  lines.push('--- Recent send failures ---');
-  if (input.sendFailures.length === 0) {
-    lines.push('none this session');
-  } else {
-    for (const failure of input.sendFailures.slice(-10)) {
       lines.push(
-        `${new Date(failure.at).toISOString()} target=${failure.target} attempts=${failure.attempts}: ${failure.error}`
+        ...safeLines('Membership timing', () => {
+          const timing = formatValidatorTimingLine(validator);
+          return timing ? [timing] : [];
+        })
       );
     }
   }
   lines.push('');
+  lines.push('--- Recent send failures ---');
+  lines.push(
+    ...safeLines('Send times', () => {
+      const sendTimes = formatSendTimesLine(input.sendTimings);
+      return sendTimes ? [sendTimes] : [];
+    })
+  );
+  if (input.sendFailures.length === 0) {
+    lines.push('none this session');
+  } else {
+    for (const failure of input.sendFailures.slice(-10)) {
+      const at = new Date(failure.at).toISOString();
+      let trail = '';
+      try {
+        trail = formatSendAttempts(failure.attemptLog);
+      } catch {
+        trail = ' [attempts: format error]';
+      }
+      lines.push(
+        failure.outcome === 'recovered'
+          ? `${at} target=${failure.target} attempts=${failure.attempts} recovered${trail}`
+          : `${at} target=${failure.target} attempts=${failure.attempts}: ${failure.error}${trail}`
+      );
+    }
+  }
+  lines.push('');
+  lines.push('--- Recent app errors ---');
+  lines.push(...formatAppErrorLines(input.appErrors));
+  lines.push('');
   lines.push('--- Engine log (faults, then tail) ---');
   const engineLogLines = engine
-    ? selectEngineLogLines(engine.engineLogs ?? [], engine.engineBootFaults)
+    ? selectEngineLogLines(engine.engineLogs ?? [], engine.engineBootFaults, {
+        bootOverflow: syncHealth?.log?.bootFaultOverflow,
+        keyCounts: syncHealth?.log?.keyCounts,
+      })
     : [];
   if (engineLogLines.length) {
     lines.push(...engineLogLines);
@@ -905,12 +2008,22 @@ export async function collectReticulumDiagnostics(
   deviceOnline: boolean
 ): Promise<string> {
   const webView = probeWebView();
-  const [engine, coreApi, unlockRuntime, backgroundSync] = await Promise.all([
-    getMobileReticulumChatDiagnostics().catch(() => null),
-    probeCoreApi().catch(() => null),
-    probeUnlockRuntime().catch(() => null),
-    fetchBackgroundSyncState().catch(() => null),
-  ]);
+  const [engine, coreApi, unlockRuntime, backgroundSync, nativeBridge] =
+    await Promise.all([
+      getMobileReticulumChatDiagnostics().catch(() => null),
+      probeCoreApi().catch(() => null),
+      probeUnlockRuntime().catch(() => null),
+      fetchBackgroundSyncState().catch(() => null),
+      probeNativeBridge().catch(() => null),
+    ]);
+  // Each extra is best effort: a failure costs its lines, never the report.
+  const attempt = <T>(read: () => T, fallback: T): T => {
+    try {
+      return read();
+    } catch {
+      return fallback;
+    }
+  };
   return buildReticulumDiagnosticsReport({
     now: Date.now(),
     version: GO_VERSION,
@@ -921,10 +2034,18 @@ export async function collectReticulumDiagnostics(
     engine,
     coreApi,
     sendFailures: getRecentSendFailures(),
+    sendTimings: attempt(() => getRecentSendTimings(), []),
+    appErrors: attempt(() => collectAppErrorDiagnostics(), null),
     unlock: {
       events: getUnlockTimingSnapshot().events,
       runtime: unlockRuntime,
     },
     backgroundSync,
+    nativeBridge,
+    relayProfileSince: attempt(() => getRelayProfileSince(), null),
+    pageStartedAt: attempt(
+      () => Math.round(performance.timeOrigin || Date.now()),
+      undefined
+    ),
   });
 }

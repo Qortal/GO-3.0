@@ -95,4 +95,44 @@ describe('reticulum chat DB schema migrations', () => {
     expect(retryColumnAdds()).toBe(2);
     second.close();
   });
+
+  it('creates the own post delivery table once per database', () => {
+    const execSpy = vi.spyOn(Database.prototype as any, 'exec');
+    const tableCreates = () =>
+      execSpy.mock.calls.filter(([sql]) =>
+        /CREATE TABLE IF NOT EXISTS rchat_own_post_delivery\b/.test(String(sql))
+      ).length;
+    const columns = (db: ReticulumChatDatabase) =>
+      (
+        rawDb(db)
+          .prepare('PRAGMA table_info(rchat_own_post_delivery)')
+          .all() as Array<{ name: string }>
+      ).map((column) => column.name);
+
+    const dbPath = tempDbPath();
+    const first = new ReticulumChatDatabase(dbPath);
+    expect(tableCreates()).toBe(1);
+    expect(columns(first)).toEqual(
+      expect.arrayContaining([
+        'event_id',
+        'scope',
+        'conversation_id',
+        'own_device_at',
+        'member_at',
+        'proof_kind',
+      ])
+    );
+    first.close();
+
+    const second = new ReticulumChatDatabase(dbPath);
+    expect(tableCreates()).toBe(1);
+    // A database from before the table existed gets it on its next open.
+    rawDb(second).exec('DROP TABLE IF EXISTS rchat_own_post_delivery');
+    second.close();
+
+    const third = new ReticulumChatDatabase(dbPath);
+    expect(tableCreates()).toBe(2);
+    expect(columns(third)).toContain('member_peer_hash');
+    third.close();
+  });
 });

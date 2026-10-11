@@ -1,8 +1,12 @@
 import type { WidgetDisplayMode } from '../../Widgets/DashboardWidgetFrame';
 import type { HomeCustomizableCardId } from './types';
+import { isGoLayout } from '../../../layout/goLayout';
 
-/** Wide hub layout activates at this min viewport width (below theme xl / 1536). */
-export const HOME_WIDE_DASHBOARD_MIN_WIDTH_PX = 1250;
+/**
+ * Wide hub layout activates at this min viewport width (below theme xl / 1536).
+ * GO keeps the phone Home on tablets, so there it is out of reach.
+ */
+export const HOME_WIDE_DASHBOARD_MIN_WIDTH_PX = isGoLayout() ? 100003 : 1250;
 
 export const INFO_PANEL_EXPAND_OPEN_DELAY_MS = 35;
 export const INFO_PANEL_EXPAND_CLOSE_DELAY_MS = 60;

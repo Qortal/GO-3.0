@@ -1,5 +1,12 @@
 import { useEffect, useId, useReducer } from 'react';
-import { Box, Tooltip, Typography, useTheme } from '@mui/material';
+import {
+  Box,
+  darken,
+  Tooltip,
+  Typography,
+  useTheme,
+  type Theme,
+} from '@mui/material';
 import CloudOffRoundedIcon from '@mui/icons-material/CloudOffRounded';
 import DevicesRoundedIcon from '@mui/icons-material/DevicesRounded';
 import DoneAllRoundedIcon from '@mui/icons-material/DoneAllRounded';
@@ -26,6 +33,15 @@ type Props = {
 };
 
 /**
+ * The 'delivered' tick colour. On the light chat background primary.main is
+ * about 1.6:1; darkened it is about 3.4:1 (3:1 is the floor for icons).
+ */
+export const deliveredGlyphColor = (theme: Theme): string =>
+  theme.palette.mode === 'light'
+    ? darken(theme.palette.primary.main, 0.35)
+    : theme.palette.primary.main;
+
+/**
  * Small static status glyph for the user's own Reticulum DM. No spinner: a
  * message can stay pending for hours, so every state is a still icon. The
  * only clock is the shared one-shot boundary timer ('sending' ->
@@ -35,7 +51,6 @@ export const ReticulumDmDeliveryGlyph = ({ message, myAddress }: Props) => {
   const { t } = useTranslation(['reticulum']);
   const theme = useTheme();
   const [, wake] = useReducer((tick: number) => tick + 1, 0);
-  const hintId = useId();
   const state = getReticulumDmDeliveryState(message, myAddress, Date.now());
   const boundaryAt = reticulumDmDeliveryBoundaryAt(message, state);
 
@@ -50,7 +65,6 @@ export const ReticulumDmDeliveryGlyph = ({ message, myAddress }: Props) => {
   }, [boundaryAt]);
 
   if (!state) return null;
-  const Icon = GLYPHS[state];
   // The desktop Hub renders the same list; it is not a phone there.
   const labelState =
     state === 'only_on_this_phone' && !isCapacitor()
@@ -64,10 +78,46 @@ export const ReticulumDmDeliveryGlyph = ({ message, myAddress }: Props) => {
   });
   const color =
     state === 'delivered'
-      ? theme.palette.primary.main
+      ? deliveredGlyphColor(theme)
       : state === 'only_on_this_phone'
         ? theme.palette.warning.main
         : theme.palette.text.secondary;
+
+  return (
+    <ReticulumDeliveryGlyphView
+      color={color}
+      hint={hint}
+      Icon={GLYPHS[state]}
+      label={label}
+      state={state}
+    />
+  );
+};
+
+type ViewProps = {
+  color: string;
+  hint: string;
+  Icon: typeof ScheduleRoundedIcon;
+  /** 'post' for group posts and Saved Messages (ReticulumPostDeliveryGlyph). */
+  kind?: 'dm' | 'post';
+  label: string;
+  state: string;
+};
+
+/**
+ * The still icon with its tooltip, touch target and accessible name and
+ * description, shared by the DM and the post delivery glyphs.
+ */
+export const ReticulumDeliveryGlyphView = ({
+  color,
+  hint,
+  Icon,
+  kind = 'dm',
+  label,
+  state,
+}: ViewProps) => {
+  const theme = useTheme();
+  const hintId = useId();
 
   return (
     <Tooltip
@@ -100,6 +150,7 @@ export const ReticulumDmDeliveryGlyph = ({ message, myAddress }: Props) => {
         aria-describedby={hintId}
         aria-label={label}
         component="span"
+        data-delivery-kind={kind}
         data-delivery-state={state}
         onClick={(event) => event.stopPropagation()}
         role="img"

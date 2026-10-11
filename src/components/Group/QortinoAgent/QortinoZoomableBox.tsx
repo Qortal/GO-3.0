@@ -2,12 +2,23 @@
  * Pinch / double-tap / wheel zoom for arbitrary content (PDF canvas, etc.).
  * Same gesture model as QortinoZoomableImage, applied to a wrapper Box.
  */
-import { useEffect, useRef, type ReactNode } from 'react';
+import {
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  type ReactNode,
+  type Ref,
+} from 'react';
 import { Box } from '@mui/material';
 
 const MIN_ZOOM = 1;
 const MAX_ZOOM = 5;
 const DOUBLE_TAP_SCALE = 2.5;
+/** The zoom limits when the owner does not set its own. */
+export const ZOOMABLE_BOX_LIMITS = {
+  maxZoom: MAX_ZOOM,
+  doubleTapScale: DOUBLE_TAP_SCALE,
+} as const;
 const ZOOM_EASING = 'transform 0.26s cubic-bezier(0.22, 0.61, 0.36, 1)';
 /** A second tap within this long is a double tap. */
 const DOUBLE_TAP_MS = 300;
@@ -43,6 +54,15 @@ const SPRING_BACK =
 
 type SwipeDirection = 'next' | 'prev';
 
+export type QortinoZoomableBoxControl = {
+  /**
+   * The owner just resized the content by `ratio` (new / old size). While
+   * zoomed in, the zoom shrinks by the same ratio, so what is on screen
+   * keeps its size; at fit nothing changes.
+   */
+  contentResized: (ratio: number) => void;
+};
+
 const wait = (ms: number) =>
   new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -67,6 +87,15 @@ type Props = {
     direction: SwipeDirection,
     slidOut: Promise<void>
   ) => Promise<void> | void;
+  /** Pinch limit and double-tap zoom, relative to the content at fit. */
+  maxZoom?: number;
+  doubleTapScale?: number;
+  /**
+   * Pans stop where the content's edge meets the box's edge. For content
+   * much smaller than the box, which the default limit lets leave the view.
+   */
+  clampToContent?: boolean;
+  controlRef?: Ref<QortinoZoomableBoxControl>;
 };
 
 export function QortinoZoomableBox({
@@ -75,6 +104,10 @@ export function QortinoZoomableBox({
   onSingleTap,
   onSwipe,
   canSwipe,
+  maxZoom = MAX_ZOOM,
+  doubleTapScale = DOUBLE_TAP_SCALE,
+  clampToContent = false,
+  controlRef,
 }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const contentRef = useRef<HTMLDivElement | null>(null);
@@ -170,8 +203,15 @@ export function QortinoZoomableBox({
 
   const clampTranslate = (nextScale: number, x: number, y: number) => {
     const { width, height } = getRect();
-    const maxX = (width * (nextScale - 1)) / 2;
-    const maxY = (height * (nextScale - 1)) / 2;
+    let maxX = (width * (nextScale - 1)) / 2;
+    let maxY = (height * (nextScale - 1)) / 2;
+    const content = contentRef.current;
+    if (clampToContent && content) {
+      // Layout size, without the transform; a side that still fits stays
+      // centred.
+      maxX = Math.max(0, (content.offsetWidth * nextScale - width) / 2);
+      maxY = Math.max(0, (content.offsetHeight * nextScale - height) / 2);
+    }
     return { x: clamp(x, -maxX, maxX), y: clamp(y, -maxY, maxY) };
   };
 
@@ -257,8 +297,28 @@ export function QortinoZoomableBox({
 
   const doubleTapZoom = (focalX: number, focalY: number) => {
     if (tf.current.scale > 1.01) reset(true);
-    else zoomTo(DOUBLE_TAP_SCALE, focalX, focalY);
+    else zoomTo(doubleTapScale, focalX, focalY);
   };
+
+  useImperativeHandle(controlRef, () => ({
+    contentResized: (ratio: number) => {
+      if (!(ratio > 0) || !Number.isFinite(ratio) || turningRef.current) {
+        return;
+      }
+      const { scale, x, y } = tf.current;
+      if (scale <= 1.01) return;
+      const nextScale = scale / ratio;
+      if (nextScale <= 1.01) {
+        reset(false);
+        return;
+      }
+      // The content stays centred in the box, so the same translate keeps
+      // the same spot under the finger.
+      const clamped = clampTranslate(nextScale, x, y);
+      tf.current = { scale: nextScale, x: clamped.x, y: clamped.y };
+      paint(false);
+    },
+  }));
 
   const handleTouchStart = (e: React.TouchEvent) => {
     const g = gesture.current;
@@ -356,7 +416,7 @@ export function QortinoZoomableBox({
       const nextScale = clamp(
         g.startScale * (dist / g.startDist),
         MIN_ZOOM,
-        MAX_ZOOM
+        maxZoom
       );
       const { cx, cy } = getRect();
       const fx = g.focalX - cx;
@@ -435,7 +495,7 @@ export function QortinoZoomableBox({
   const handleWheel = (e: React.WheelEvent) => {
     e.preventDefault();
     const delta = -e.deltaY * 0.0018;
-    const nextScale = clamp(tf.current.scale * (1 + delta), MIN_ZOOM, MAX_ZOOM);
+    const nextScale = clamp(tf.current.scale * (1 + delta), MIN_ZOOM, maxZoom);
     if (nextScale <= 1.01) reset(true);
     else zoomTo(nextScale, e.clientX, e.clientY);
   };

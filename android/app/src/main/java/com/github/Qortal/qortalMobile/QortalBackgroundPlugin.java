@@ -11,7 +11,9 @@ import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.Uri;
+import android.os.BatteryManager;
 import android.os.Build;
+import android.os.PowerManager;
 import android.provider.Settings;
 import android.util.Log;
 
@@ -579,7 +581,58 @@ public class QortalBackgroundPlugin extends Plugin {
                 ? (Object) state.ignoringBatteryOptimizations
                 : org.json.JSONObject.NULL
         );
+        putDeviceFacts(ret, context);
         call.resolve(ret);
+    }
+
+    /**
+     * Device facts for Copy diagnostics: one sticky battery read (no
+     * receiver is registered) and two PowerManager getters. Read only, no
+     * listeners, no new state; a key a phone cannot give is left out.
+     */
+    private static void putDeviceFacts(JSObject ret, Context context) {
+        try {
+            Intent battery = context.registerReceiver(
+                null,
+                new IntentFilter(Intent.ACTION_BATTERY_CHANGED)
+            );
+            if (battery != null) {
+                ret.put(
+                    "plugType",
+                    KeepAlivePolicy.plugTypeName(
+                        battery.getIntExtra(BatteryManager.EXTRA_PLUGGED, -1)
+                    )
+                );
+                int tenths = battery.getIntExtra(
+                    BatteryManager.EXTRA_TEMPERATURE,
+                    Integer.MIN_VALUE
+                );
+                ret.put(
+                    "batteryTempC",
+                    tenths == Integer.MIN_VALUE
+                        ? org.json.JSONObject.NULL
+                        : (Object) (tenths / 10.0)
+                );
+                int pct = KeepAlivePolicy.batteryPercent(
+                    battery.getIntExtra(BatteryManager.EXTRA_LEVEL, -1),
+                    battery.getIntExtra(BatteryManager.EXTRA_SCALE, -1)
+                );
+                ret.put("batteryPct", pct < 0 ? org.json.JSONObject.NULL : (Object) pct);
+            }
+        } catch (RuntimeException ignored) {
+            // Diagnostics only.
+        }
+        try {
+            PowerManager pm = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
+            if (pm != null) {
+                ret.put("powerSave", pm.isPowerSaveMode());
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    ret.put("thermalStatus", pm.getCurrentThermalStatus());
+                }
+            }
+        } catch (RuntimeException ignored) {
+            // Diagnostics only.
+        }
     }
 
     /** True while own messages still wait to leave the phone (engine's ownOutboxState). */

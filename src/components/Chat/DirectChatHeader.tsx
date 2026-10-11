@@ -18,6 +18,7 @@ import PersonAddRoundedIcon from '@mui/icons-material/PersonAddRounded';
 import PersonRemoveRoundedIcon from '@mui/icons-material/PersonRemoveRounded';
 import VisibilityRoundedIcon from '@mui/icons-material/VisibilityRounded';
 import { useShownQdnAvatarSrc } from '../../hooks/useShownQdnAvatarSrc';
+import { type GoLayout, useGoLayout } from '../../layout/goLayout';
 import { BACK_PRIORITY, useAndroidBack } from '../../utils/androidBack';
 import { getBaseApiReact } from '../../utils/globalApi';
 import { buildUserAvatarPreviewUrl } from '../Group/avatarPreviewUrls';
@@ -39,6 +40,7 @@ import { useAvatarPreviewSrc } from './useAvatarPreviewSrc';
 export const DIRECT_HEADER_AVATAR_PX = 36;
 /** Glyph size of the desktop header icons, kept as it was. */
 const DESKTOP_ICON_PX = 20;
+const selectChatTwoPane = (l: GoLayout) => l.chatTwoPane;
 
 export type DirectChatHeaderPartner = {
   name?: string | null;
@@ -185,6 +187,8 @@ export function DirectChatHeader({
 }: DirectChatHeaderProps) {
   const theme = useTheme();
   const { t } = useTranslation(['core', 'group']);
+  // Always false off GO.
+  const chatTwoPane = useGoLayout(selectChatTwoPane);
   const { iconPx: phoneIconPx } = getChatHeaderActionMetrics(true);
   const iconPx = isMobile ? phoneIconPx : DESKTOP_ICON_PX;
   // Phones only: desktop keeps MUI's small round icon buttons.
@@ -282,8 +286,9 @@ export function DirectChatHeader({
           : { gap: '8px', padding: '12px 16px' }),
       }}
     >
-      {/* The Reticulum desktop layout has no back: the list stays beside. */}
-      {isMobile && reticulumDirectUiEnabled && (
+      {/* The Reticulum desktop layout and GO two-pane have no back: the list
+          stays beside. */}
+      {isMobile && reticulumDirectUiEnabled && !chatTwoPane && (
         // The group header's back: round, rounded arrow, same size.
         <Tooltip
           title={t('core:action.back', { postProcess: 'capitalizeFirstChar' })}

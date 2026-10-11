@@ -86,6 +86,10 @@ export function AuthFrame({
           justifyContent: 'center',
           px: { xs: 2.5, md: 3.5 },
           py: { xs: 7, md: 8 },
+          // Short GO windows (phone landscape) trim only the bottom: the
+          // account picker's logo hangs ~56px above its card and the top
+          // padding is what keeps it inside the (unscrollable-up) frame.
+          'html[data-go-short] &': { pb: 2 },
           position: 'relative',
           zIndex: 1,
         }}

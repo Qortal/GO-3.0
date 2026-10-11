@@ -14,8 +14,16 @@ export type ImmersiveTouchEvent =
   | { phase: 'down'; x: number; y: number }
   | { phase: 'drag'; direction: 'up' | 'down' };
 
+/** Dark icons on light bars; `background` (#rrggbb) also fills the gutters. */
+export interface SystemBarAppearance {
+  lightStatus: boolean;
+  lightNav: boolean;
+  background?: string;
+}
+
 interface ImmersivePlugin {
   setStatusBarHidden(options: { hidden: boolean }): Promise<void>;
+  setBarAppearance(options: SystemBarAppearance): Promise<void>;
   setTouchReports(options: { enabled: boolean }): Promise<void>;
   setEdgeSampling(options: {
     enabled: boolean;
@@ -44,6 +52,16 @@ export function setImmersiveStatusBarHidden(hidden: boolean): void {
   statusBarHidden = hidden;
   // Older shells without the plugin keep their status bar; nothing else breaks.
   void Immersive.setStatusBarHidden({ hidden }).catch(() => undefined);
+}
+
+/**
+ * Status/nav bar icon colour and the window colour behind the WebView
+ * (landscape side gutters). Android only; older shells without the method
+ * keep their bars as they are.
+ */
+export function setSystemBarAppearance(options: SystemBarAppearance): void {
+  if (!isAndroidNative()) return;
+  void Immersive.setBarAppearance(options).catch(() => undefined);
 }
 
 /**

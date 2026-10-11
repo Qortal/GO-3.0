@@ -119,6 +119,11 @@ import { buildDirectVoiceCallChatId } from '../../lib/call/directVoiceCallChatId
 import { useIsOnline } from '../../hooks/usePresence';
 import { useSoftKeyboardOpen } from '../../hooks/useSoftKeyboardOpen';
 import { usePageVisible } from '../../hooks/usePageVisible';
+import { isGoLayout, useShortLandscape } from '../../layout/goLayout';
+import {
+  composerFabModeFor,
+  legacyComposerCompactFor,
+} from './landscapeComposer';
 import { hasInvisibleCharacters } from '../../utils/hasInvisibleCharacters';
 import { useReticulumDirectChat } from '../../hooks/useReticulumDirectChat';
 import { fileToBase64 } from '../../utils/fileReading';
@@ -143,7 +148,10 @@ import {
   reticulumChatTextScaleClassName,
 } from './reticulumChatTextScale';
 import { ReactionPicker } from '../ReactionPicker';
-import { withTabBarSpace } from '../Mobile/mobileBarHeights';
+import {
+  COMPOSER_SAFE_BOTTOM,
+  withTabBarSpace,
+} from '../Mobile/mobileBarHeights';
 import {
   readWarmDirectCalls,
   writeWarmDirectCalls,
@@ -637,9 +645,16 @@ export const ChatDirect = ({
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
   const isLandscape = useMediaQuery('(orientation: landscape)');
   // In landscape the composer is hidden behind a pen FAB so it never covers
-  // the last messages; tapping the FAB expands it from the corner.
-  const composerFabMode = isMobile && isLandscape;
+  // the last messages; tapping the FAB expands it from the corner. Not on
+  // GO, whose composer stays in flow at every size.
+  const composerFabMode = composerFabModeFor({
+    go: isGoLayout(),
+    isMobile,
+    isLandscape,
+  });
   const [composerOpenLandscape, setComposerOpenLandscape] = useState(false);
+  // The rule TipTap keeps its expanded compose layout by.
+  const composerShortLandscape = useShortLandscape();
   const keyboardOpen = useSoftKeyboardOpen();
   const p2pHealth = useAtomValue(p2pHealthAtom);
   // The Q-Chat text size reaches DMs as it does group chats.
@@ -751,8 +766,13 @@ export const ChatDirect = ({
   const [isFocusedParent, setIsFocusedParent] = useState(false);
   // Composer is focused but the soft keyboard is dismissed in portrait: keep it
   // compact and show the send/close/share buttons alongside the retained text.
-  const composerCompact =
-    isMobile && !composerFabMode && isFocusedParent && !keyboardOpen;
+  // A short landscape window keeps TipTap expanded, so not there.
+  const composerCompact = legacyComposerCompactFor({
+    isMobile,
+    shortLandscape: composerShortLandscape,
+    isFocusedParent,
+    keyboardOpen,
+  });
   const [onEditMessage, setOnEditMessage] = useState(null);
   const [messages, setMessages] = useState([]);
   const [isSending, setIsSending] = useState(false);
@@ -4444,13 +4464,13 @@ export const ChatDirect = ({
             ? isMobile
               ? withTabBarSpace(
                   6,
-                  'max(6px, var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px)))'
+                  `max(6px, ${COMPOSER_SAFE_BOTTOM})`
                 )
               : 'max(8px, var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px)))'
             : isMobile
               ? withTabBarSpace(
                   10,
-                  'max(10px, var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px)))'
+                  `max(10px, ${COMPOSER_SAFE_BOTTOM})`
                 )
               : undefined,
           position:

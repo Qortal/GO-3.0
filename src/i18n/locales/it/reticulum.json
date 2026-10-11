@@ -152,7 +152,7 @@
   },
   "image_viewer": {
     "actions": "image actions",
-    "chat_image": "chat image",
+    "chat_image": "immagine della chat",
     "clipboard_unavailable": "image clipboard is unavailable",
     "close": "close image viewer",
     "copied": "image copied",
@@ -201,6 +201,36 @@
     "subtitle": "Sembra che tu non faccia ancora parte di nessuna community. Rimediamo.",
     "title": "Benvenuto nel nuovo Q-Chat migliorato",
     "whats_new_button": "Novità?"
+  },
+  "post_delivery": {
+    "delivered_member": {
+      "hint": "Il nodo di un membro del gruppo l'ha recuperato da questo telefono. Questo non significa che qualcuno l'abbia letto.",
+      "label": "consegnato"
+    },
+    "delivered_own_device": {
+      "hint": "Il tuo altro dispositivo (come il tuo Hub) l'ha recuperato da questo telefono.",
+      "label": "consegnato"
+    },
+    "delivered_own_device_self_dm": {
+      "hint": "Il tuo altro dispositivo (come il tuo Hub) l'ha recuperato da questo telefono.",
+      "label": "consegnato"
+    },
+    "not_picked_up": {
+      "hint": "Nessun altro nodo l'ha ancora recuperato da questo telefono. I nodi dei membri lo recuperano quando tornano online, finché questo telefono è raggiungibile.",
+      "label": "non ancora recuperato"
+    },
+    "not_picked_up_self_dm": {
+      "hint": "Nessuno dei tuoi altri dispositivi l'ha ancora recuperato da questo telefono. Lo recuperano quando tornano online, finché questo telefono è raggiungibile.",
+      "label": "non ancora recuperato"
+    },
+    "sending": {
+      "hint": "I nodi dei membri online di solito lo recuperano in pochi secondi.",
+      "label": "invio in corso"
+    },
+    "sending_self_dm": {
+      "hint": "I tuoi altri dispositivi online di solito lo recuperano in pochi secondi.",
+      "label": "invio in corso"
+    }
   },
   "qapp_preview": {
     "check_again": "check again",
@@ -313,18 +343,25 @@
     }
   },
   "share": {
+    "admins_only": "solo admin",
     "cancel": "annulla la condivisione",
     "cannot_write": "solo gli admin possono scrivere in questo canale: torna indietro e scegli un'altra chat",
+    "channel_step_label": "scegli un canale in {{group}}",
+    "channel_unavailable": "quel canale non c'è più: torna indietro e scegline un altro",
     "chip_label": "{{what}} da condividere: tocca una chat per aggiungerlo",
+    "chip_label_channel": "{{what}} da condividere: tocca un canale per aggiungerlo",
     "kind_file": "file",
     "kind_link": "link",
     "kind_photo": "foto",
     "kind_text": "testo",
     "kind_video": "video",
+    "loading_channels": "caricamento dei canali",
+    "no_channel_to_post": "solo gli admin possono pubblicare nei canali di questo gruppo.",
     "notice_extra_files": "è stato aggiunto solo il primo file: un messaggio contiene un file.",
     "notice_too_large": "un file oltre {{max}} MB è stato escluso.",
     "notice_unreadable": "non è stato possibile leggere il file condiviso.",
     "notice_unsafe_image": "non è stato possibile rimuovere i dati di posizione dall'immagine, quindi è stata esclusa.",
+    "pick_channel": "scegli un canale",
     "pick_chat": "scegli una chat"
   },
   "status_badge": {

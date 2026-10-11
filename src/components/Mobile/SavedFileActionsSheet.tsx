@@ -18,6 +18,7 @@ import {
 import { BACK_PRIORITY, useAndroidBack } from '../../utils/androidBack';
 import { SAFE_AREA_BOTTOM } from '../../utils/mobileSafeArea';
 import { isRefusedForOpen } from '../../utils/nativeFileOpen';
+import { useGoLayout } from '../../layout/goLayout';
 
 const OPEN_EVENT = 'openSavedFileActions';
 
@@ -50,6 +51,8 @@ export const SavedFileActionsSheet = () => {
     (SavedFileActionsDetail & { shareKey: string }) | null
   >(null);
   const [busy, setBusy] = useState<'open' | 'share' | null>(null);
+  // GO tablets and landscape: a centred sheet, not rows across the screen.
+  const centredSheet = useGoLayout((l) => l.go && l.widthClass !== 'compact');
 
   const close = useCallback(() => {
     setFile(null);
@@ -183,6 +186,7 @@ export const SavedFileActionsSheet = () => {
           borderTopRightRadius: 20,
           color: 'text.primary',
           paddingBottom: `calc(${SAFE_AREA_BOTTOM} + 12px)`,
+          ...(centredSheet ? { maxWidth: 560, mx: 'auto' } : {}),
         },
       }}
     >

@@ -1,6 +1,7 @@
-import { act, render } from '@testing-library/react';
+import { act, cleanup, render } from '@testing-library/react';
 import { Provider, createStore } from 'jotai';
 import { describe, expect, it, vi } from 'vitest';
+import { __setGoLayoutForTests } from '../../../layout/goLayout';
 import { ImmersiveEdges, edgeControlsMode, edgeStrip } from './ImmersiveEdges';
 import { immersiveEdgeColorAtom } from './immersiveMode';
 
@@ -106,5 +107,32 @@ describe('ImmersiveEdges', () => {
     expect(store.get(immersiveEdgeColorAtom)).toBe('#555555');
     unmount();
     expect(store.get(immersiveEdgeColorAtom)).toBeNull();
+  });
+
+  it('reads the band again after a GO rotation or resize', () => {
+    vi.useFakeTimers();
+    try {
+      __setGoLayoutForTests({ go: true, width: 393, stableHeight: 873 });
+      renderEdges();
+      expect(native.listening).toBe(1);
+      // Rotation: a new epoch (and height) re-subscribes, once settled.
+      act(() => {
+        __setGoLayoutForTests({
+          go: true,
+          width: 873,
+          stableHeight: 393,
+          epoch: 1,
+        });
+      });
+      expect(native.listening).toBe(0);
+      act(() => {
+        vi.advanceTimersByTime(240 + 180);
+      });
+      expect(native.listening).toBe(1);
+    } finally {
+      cleanup();
+      __setGoLayoutForTests(null);
+      vi.useRealTimers();
+    }
   });
 });

@@ -39,11 +39,13 @@ void i18n.init({
         share: {
           cancel: 'cancel sharing',
           chip_label: '{{what}} to share: tap a chat to add it',
+          chip_label_channel: '{{what}} to share: tap a channel to add it',
           kind_file: 'file',
           kind_link: 'link',
           kind_photo: 'photo',
           kind_text: 'text',
           kind_video: 'video',
+          pick_channel: 'pick a channel',
           pick_chat: 'pick a chat',
         },
       },
@@ -53,7 +55,8 @@ void i18n.init({
 
 const renderHeader = (
   scope: ChatScope,
-  share: PreparedChatShare | null = null
+  share: PreparedChatShare | null = null,
+  sharePicksChannel = false
 ) => {
   const props = {
     onScopeChange: vi.fn(),
@@ -71,6 +74,7 @@ const renderHeader = (
           ref={ref}
           scope={scope}
           share={next}
+          sharePicksChannel={sharePicksChannel}
           {...props}
         />
       </ThemeProvider>
@@ -224,6 +228,17 @@ describe('MobileChatListHeader', () => {
     expect(
       screen.getByRole('group', { name: 'Link to share: tap a chat to add it' })
     ).toBeInTheDocument();
+  });
+
+  it("asks for a channel while a group's channel step is up", () => {
+    renderHeader('groups', sharing(), true);
+    expect(
+      screen.getByRole('group', {
+        name: 'Photo to share: tap a channel to add it',
+      })
+    ).toBeInTheDocument();
+    expect(screen.getByText('Pick a channel')).toBeInTheDocument();
+    expect(screen.queryByText('Pick a chat')).toBeNull();
   });
 
   it('keeps one icon whole near either page', () => {

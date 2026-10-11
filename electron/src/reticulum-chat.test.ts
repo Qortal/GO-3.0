@@ -20514,10 +20514,21 @@ describe('reticulum chat manager', () => {
           range.nextAttemptAt >= now + 20_000
       )
     ).toHaveLength(1);
+    // An untried row is not written: it stays due behind its group's gate.
     expect(
       (manager as any).db.getMissingRange(72, author, stream, 10, 10)
         .nextAttemptAt
-    ).toBeGreaterThanOrEqual(now + 5_000);
+    ).toBe(now);
+    expect((manager as any).backgroundAuthorGapGroupNextAttemptAt.get(72)).toBe(
+      now + 5_000
+    );
+    expect((manager as any).backgroundAuthorGapGroupNextAttemptAt.get(73)).toBe(
+      now + 5_000
+    );
+
+    (manager as any).processBackgroundAuthorGapRepair();
+
+    expect(send).toHaveBeenCalledTimes(2);
     manager.close();
   });
 
@@ -20554,7 +20565,12 @@ describe('reticulum chat manager', () => {
     (manager as any).processBackgroundAuthorGapRepair();
 
     expect(selectPeer).toHaveBeenCalledTimes(1);
-    for (let sequence = 1; sequence <= 10; sequence += 1) {
+    // Only the tried row is written; the rest stay due behind the gate.
+    expect(
+      (manager as any).db.getMissingRange(72, author, stream, 1, 1)
+        .nextAttemptAt
+    ).toBeGreaterThanOrEqual(now + 5_000);
+    for (let sequence = 2; sequence <= 10; sequence += 1) {
       expect(
         (manager as any).db.getMissingRange(
           72,
@@ -20563,8 +20579,15 @@ describe('reticulum chat manager', () => {
           sequence,
           sequence
         ).nextAttemptAt
-      ).toBeGreaterThanOrEqual(now + 5_000);
+      ).toBe(now);
     }
+    expect((manager as any).backgroundAuthorGapGroupNextAttemptAt.get(72)).toBe(
+      now + 5_000
+    );
+
+    (manager as any).processBackgroundAuthorGapRepair();
+
+    expect(selectPeer).toHaveBeenCalledTimes(1);
     manager.close();
   });
 
@@ -28666,10 +28689,16 @@ describe('reticulum chat manager', () => {
       } as any,
       now: () => now,
     });
+    manager.setLocalGroupMemberships([72]);
+    manager.subscribeGroup(72);
     vi.spyOn(
       (manager as any).db,
-      'getNextMissingRangeAttemptAt'
-    ).mockReturnValue(now);
+      'getBackgroundMissingRangeCandidates'
+    ).mockReturnValue({ candidates: new Map(), staleGroupIds: [], scanned: 0 });
+    vi.spyOn(
+      (manager as any).db,
+      'getNextMissingRangeAttemptsByGroup'
+    ).mockReturnValue(new Map([[72, now]]));
 
     (manager as any).processBackgroundAuthorGapRepair();
 

@@ -11,6 +11,133 @@ desktop Hub. The format is based on
 
 ## [Unreleased]
 
+## [0.0.17] — 2026-10-11 (GO 3.0)
+
+### Added
+
+- **QDN publish window you can minimize** _(GO)_ — when a Q-App publishes
+  a big file (5 MB or more) or a publish takes over 8 seconds, GO's own
+  "Publishing to QDN" window takes the place of the app's progress window
+  (qapp-core's "Publishing Status", Q-Share's list and the like). It shows
+  the overall percent, MB sent, speed and time left, and each file's state.
+  "Keep using <app>", the arrow, a pull down, Android back or a tap beside
+  it shrinks the window into a round bubble on the screen edge, and the app
+  can be used while the files go up. The bubble shows the app's icon in a
+  ring that fills as parts reach the node, spins while the node builds the
+  file, and turns green with a tick (then leaves) or red with "!". Drag it
+  anywhere; it settles on the nearer edge and keeps that place. Tap it to
+  open the window again; from another screen, "Open <app>" goes back to the
+  app. When the publish ends, the app gets its own window back if it still
+  shows one (a failure with Retry, say). An app whose own window GO cannot
+  find only gets the bubble. GO's own publishes (Home composer, chat images)
+  are unchanged, and Q-Apps still get their PUBLISH_STATUS messages as
+  before.
+- **Pick the channel when sharing into a group** _(GO)_ — after "GO Groups"
+  in the share sheet, the group tapped in the list shows its channels over
+  the list (the group's own channel list: categories, unread badges), with
+  the shared item still waiting in the header ("pick a channel"). The
+  channel tapped opens with the item in its composer; before, it always
+  went into General. A channel only admins post in is greyed out ("admins
+  only") for members. A group with one channel you can post in goes
+  straight in, as before. Back (or the arrow) returns to the Groups list
+  with the item still waiting; back again drops it.
+- **Delivery ticks for group posts and Saved Messages** _(GO)_ — Your own
+  posts in groups (thread replies and attachments too) and in Saved
+  Messages now show a small icon beside the time. A clock ("sending")
+  for the first 12 seconds; then a crossed-out cloud in warning colour
+  ("not picked up yet") while no other node has fetched the post from
+  this phone; a double tick
+  ("delivered") once one has. A group member's node counts, and so does
+  Your own Hub or another of Your devices; the icon is the same, and the
+  tooltip says which. "Delivered" means a node got it, not that anyone read
+  it. The tick only comes when a transfer this phone sent was confirmed by
+  the other side, never from a guess or a claim. Saved Messages get the
+  icon only once GO knows You have another device that pulls them (Your
+  Hub, say), so a phone-only account sees no warning cloud. GO sends
+  nothing extra over the network for this and needs no update on the
+  Hubs. Posts from before this update, and posts written on Your other
+  devices, show nothing. The cloud goes after 29 days for groups and 48
+  hours for Saved Messages, when this phone stops offering the post. DMs
+  to other people keep their ticks as before.
+- **Picture in reply quotes** _(shared)_ — replying to a message with a
+  picture shows a small thumbnail of it in the reply strip above the
+  composer and in the quote on the sent reply (GIFs too; videos show a
+  video icon). It only uses pictures already on the device, so nothing
+  extra is downloaded. Image-only quotes now say "Photo"/"GIF" instead of
+  "Attachment".
+- **Copy diagnostics: much more detail** _(mobile)_ — new Device, Sync
+  health, Serving, Python bridge and Recent app errors sections; engine
+  loop lag, worker→native timing and late replies, membership timing and
+  own-address share, every send attempt and send times, log line counts,
+  stall-watchdog lines. Numbers and per-report pseudonyms only.
+- **Landscape and tablets** _(GO)_ — GO keeps its own phone layout at
+  every size and in both orientations; on tablets turned sideways the chat
+  used to go blank. Tablets show the chat list and the open chat side by
+  side (from 760 px wide), and turning the phone keeps the open chat. In
+  landscape Home/Apps/Chat sit in the top bar, the side navigation bar and
+  the camera cutout get room, the composer is always there, and the
+  keyboard height is remembered per orientation. Dialogs, Home, Tabs and
+  the PDF and picture viewers fit short screens; full-screen video no
+  longer forces landscape on tablets.
+
+### Changed
+
+- **Chat engine no longer rewrites gap bookkeeping it doesn't use**
+  _(shared)_ — the background "missing messages" check picks one row per
+  group in one query and writes only the rows it really tries; it used to
+  rewrite every waiting row every few seconds, which froze the engine for
+  seconds on slow phones. Waits count from the end of a run. Own posts and
+  the open chat go first.
+- **Fewer useless writes from peers' gap lists** _(shared)_ — gaps GO
+  already knows cost no writes, the rest go in one write, and the check
+  runs at most once per group per minute.
+- **No endless page repairs at equal heads** _(shared)_ — when a peer's
+  newest message and channel heads match, GO skips page repairs; other
+  equal or behind cases get one try per group, then wait 10, 30 and 120
+  min while tries bring nothing. An inserting repair resets the wait, and
+  opening the chat allows one try at once.
+- **Sending doesn't wait on the node for Your own membership** _(mobile)_
+  — GO answers from Your group list and asks the node in the background; a
+  node "not a member" still wins. At start GO waits up to 2.5 s for the
+  list instead of refusing Your own Hub.
+
+### Fixed
+
+- **Membership answers kept when the phone was busy** _(mobile)_ — a late
+  12 s timer waits 1.5 s more once.
+- **"Invalid event" after a retry** _(shared)_ — a retried message the
+  phone already saved counts as sent, and is re-sent once if the first send
+  reached no one; real failures keep the old text and log why.
+- **"Invalid Data" boxes clear themselves** _(shared)_ — a row that fails
+  to draw is tried again, then redrawn when its data changes (at most 3
+  times a minute). Bad reaction data no longer breaks a row, and the
+  who-reacted list closes when its last reaction goes.
+- **No full-screen "GO runtime error" for a drawing hiccup React recovered
+  from** _(shared)_.
+- **Translated reply and viewer labels** _(shared)_ — the quote header on
+  replies ("Replying to you", "Replying to <name>") was English in every
+  language and is now translated; so is the image viewer's picture label
+  (read out by screen readers), and Chinese "attachment" no longer reads as
+  "emotional attachment".
+- **Private Q-Apps open on a public node** _(mobile)_ — GO now builds a
+  private Q-App on the phone instead of asking the node to. The node needs
+  its API key for that, so a public node always refused. The decrypted app
+  stays in memory and is served to its frame at the node's own preview
+  address, with the same additions (q-apps.js) and policies as a node-built
+  preview. No node sees the decrypted app, and nothing is written to disk.
+  An app is dropped when its tab closes. Refresh builds it again.
+- **Clear errors instead of "Failed to execute 'atob'"** _(shared)_ — when
+  the node cannot get a private app or the group's key, as a public node
+  often cannot, GO now says so ("couldn't download … from the node, try
+  again later"). Before, it decoded the node's error text as if it were the
+  data. This also covers Q-Apps that encrypt or decrypt for a group.
+- **Private Q-App frame address without the API key** _(shared)_ — on
+  desktop, the node-built preview's address no longer carries the node's
+  API key, which the app could read.
+- **Private Q-Apps pinned once** _(shared)_ — adding the same private app
+  again opens it without pinning it again. Groups whose privacy is not
+  cached yet now show in the private app dialog (from upstream).
+
 ## [0.0.16] — 2026-10-08 (GO 3.0)
 
 ### Added

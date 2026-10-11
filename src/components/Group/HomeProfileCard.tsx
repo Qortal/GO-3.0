@@ -82,6 +82,7 @@ import { decryptStoredWallet } from '../../utils/decryptWallet';
 import { fileToBase64 } from '../../utils/fileReading';
 import { deriveVerifiedWalletKey } from '../../utils/generateWallet/verifiedWalletKey';
 import { isCapacitor } from '../../utils/platform';
+import { isGoLayout, useSheetFullScreen } from '../../layout/goLayout';
 import { useSecureScreen } from '../../hooks/useSecureScreen';
 import { WALLET_PASSWORD_INPUT_PROPS } from '../PasswordField/noAutofill';
 import {
@@ -245,8 +246,8 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
   const theme = useTheme();
   // Phones: the two-pane settings dialog (200px nav + content) does not fit a
   // ~390px viewport, so the nav becomes a horizontal strip and the dialog
-  // goes full screen.
-  const isCompactSettingsLayout = useMediaQuery(theme.breakpoints.down('sm'));
+  // goes full screen. Short GO windows (phone landscape) too.
+  const isCompactSettingsLayout = useSheetFullScreen();
   // GO (Android): settings that only reach the Electron shell are left out.
   const isGoApp = isCapacitor();
   // Same rule as isRunningGateway: no own node URL, or the public gateway.
@@ -3078,7 +3079,14 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
             background: avatarModalSurface,
             display: 'flex',
             flexDirection: isCompactSettingsLayout ? 'column' : 'row',
-            minHeight: isCompactSettingsLayout ? 0 : 530,
+            // GO tablets: with the keyboard up the paper can be under 530px,
+            // so the row shrinks to it (MUI's 32px margins) and both panes
+            // scroll instead of clipping the last settings.
+            minHeight: isCompactSettingsLayout
+              ? 0
+              : isGoLayout()
+                ? 'min(530px, calc(100dvh - 64px))'
+                : 530,
             position: 'relative',
             ...(isCompactSettingsLayout ? { height: '100%' } : {}),
             width: '100%',
@@ -3109,7 +3117,10 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                     scrollbarWidth: 'none',
                     '&::-webkit-scrollbar': { display: 'none' },
                   }
-                : {}),
+                : isGoLayout()
+                  ? // A shrunken row keeps the privacy toggle reachable.
+                    { overflowX: 'hidden', overflowY: 'auto' }
+                  : {}),
             }}
           >
             {accountSettingsTabs.map((tab) => {

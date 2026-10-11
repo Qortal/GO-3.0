@@ -842,6 +842,7 @@ export const ChatOptions = ({
                           }}
                         >
                           <ErrorBoundary
+                            name="chat-search-row"
                             fallback={
                               <Typography>
                                 {t('group:message.generic.invalid_data', {
