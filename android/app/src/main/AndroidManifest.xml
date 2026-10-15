@@ -273,6 +273,22 @@
             android:enabled="true"
             android:exported="false"
             android:foregroundServiceType="dataSync|remoteMessaging" />
+
+        <!-- Qortal Card (testing): another GO phone reads this phone's payment
+             request by tapping. Only the system's NFC service can bind it
+             (BIND_NFC_SERVICE); it answers only while the page has a request
+             out, and only on an unlocked phone (res/xml/qortal_hce_service). -->
+        <service
+            android:name=".QortalHceService"
+            android:exported="true"
+            android:permission="android.permission.BIND_NFC_SERVICE">
+            <intent-filter>
+                <action android:name="android.nfc.cardemulation.action.HOST_APDU_SERVICE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.nfc.cardemulation.host_apdu_service"
+                android:resource="@xml/qortal_hce_service" />
+        </service>
     </application>
 
     <!-- Permissions -->
@@ -288,6 +304,13 @@
          jsQR entirely offline — no Google Play Services / ML Kit. -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <!-- Qortal Card (testing): APDUs to a contactless card through Android's own
+         NFC API, only while the Qortal Card screen waits for a tap. A normal
+         permission, granted at install. No NFC intent filters, so no tag opens
+         GO by itself. Phones without NFC still install GO. -->
+    <uses-permission android:name="android.permission.NFC" />
+    <uses-feature android:name="android.hardware.nfc" android:required="false" />
+    <uses-feature android:name="android.hardware.nfc.hce" android:required="false" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"/>
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />

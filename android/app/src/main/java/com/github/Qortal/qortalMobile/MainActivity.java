@@ -84,6 +84,9 @@ public class MainActivity extends BridgeActivity {
         // Private Q-Apps unpacked on the phone and served from memory (a
         // public node cannot build them, and should not see them decrypted).
         registerPlugin(PrivateQappPlugin.class);
+        // Qortal Card (testing): APDUs to a contactless card, only while the
+        // Qortal Card screen waits for a tap.
+        registerPlugin(QortalNfcPlugin.class);
         super.onCreate(savedInstanceState);
         // Home and VPN node addresses never go to a carrier or Wi-Fi proxy.
         WebViewProxyBypass.start(this);
@@ -161,6 +164,8 @@ public class MainActivity extends BridgeActivity {
                     // The screens that held FLAG_SECURE are gone with the old
                     // page; the new page asks again for what it shows (GO-37).
                     ScreenSecurityPlugin.onPageStarted(MainActivity.this.bridge);
+                    // No card reading for a page that never asked for it.
+                    QortalNfcPlugin.onPageStarted(MainActivity.this.bridge);
                     // The new document has no metrics yet; the next push must
                     // not be skipped as a repeat (SafeArea.getInsets also
                     // hands them over at boot).

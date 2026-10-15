@@ -28,15 +28,43 @@ export type LongPressReorderOptions = {
   onLift?: (id: string) => void;
   onMenu: (id: string, element: HTMLElement) => void;
   onMove: (id: string, overId: string) => void;
-  onDrop: (id: string) => void;
+  /**
+   * The item was let go. Return a box to land it there instead of in its
+   * slot (it shrinks into the box and fades: dropped into another folder).
+   */
+  onDrop: (id: string) => LandingBox | void;
   onEnd?: () => void;
+  /**
+   * Every frame of a drag, with the finger. Return true while the drag is
+   * somewhere else (it left the grid): no reordering or edge scrolling here.
+   */
+  onDragFrame?: (id: string, x: number, y: number) => boolean | void;
 };
+
+export type LandingBox = Pick<DOMRect, 'left' | 'top' | 'width' | 'height'>;
 
 const MOVE_CANCEL_PX = 7;
 const DRAG_START_PX = 8;
 const REORDER_HYSTERESIS_PX = 14;
 const EDGE_SCROLL_PX = 64;
 const EDGE_SCROLL_MAX = 14;
+/**
+ * How far to scroll this frame for a finger at `y` in a scroller spanning
+ * `bounds`: up to EDGE_SCROLL_MAX px near either edge, 0 elsewhere.
+ */
+export function edgeScrollStep(
+  bounds: Pick<DOMRect, 'top' | 'bottom'>,
+  y: number
+): number {
+  let step = 0;
+  if (y < bounds.top + EDGE_SCROLL_PX) {
+    step = -((bounds.top + EDGE_SCROLL_PX - y) / EDGE_SCROLL_PX);
+  } else if (y > bounds.bottom - EDGE_SCROLL_PX) {
+    step = (y - (bounds.bottom - EDGE_SCROLL_PX)) / EDGE_SCROLL_PX;
+  }
+  return Math.max(-1, Math.min(1, step)) * EDGE_SCROLL_MAX;
+}
+
 /** Mouse events that Android sends after a touch are not a second press. */
 const TOUCH_MOUSE_GUARD_MS = 900;
 
@@ -122,14 +150,42 @@ export function useLongPressReorder(options: LongPressReorderOptions): void {
       if (current.frame !== null) cancelAnimationFrame(current.frame);
       unlockScroller(current);
       if (current.dragging) {
-        if (drop) optionsRef.current.onDrop(current.id);
+        const landing = drop ? optionsRef.current.onDrop(current.id) : null;
         const { ghost, element } = current;
         const settle = () => {
           ghost?.remove();
           element.style.opacity = '';
           element.removeAttribute('data-reorder-dragging');
         };
-        if (ghost && !prefersReducedMotion()) {
+        if (ghost && landing && !prefersReducedMotion()) {
+          // Into a box somewhere else: shrink into its middle and fade.
+          const box = ghost.getBoundingClientRect();
+          const dx =
+            landing.left + landing.width / 2 - (box.left + box.width / 2);
+          const dy =
+            landing.top + landing.height / 2 - (box.top + box.height / 2);
+          const scale = Math.max(
+            0.2,
+            Math.min(1, (landing.width * 0.45) / Math.max(1, box.width))
+          );
+          const fromX = current.x - current.startX;
+          const fromY = current.y - current.startY;
+          const animation = ghost.animate(
+            [
+              {
+                opacity: 1,
+                transform: `translate3d(${fromX}px, ${fromY}px, 0) scale(1.08)`,
+              },
+              {
+                opacity: 0,
+                transform: `translate3d(${fromX + dx}px, ${fromY + dy}px, 0) scale(${scale})`,
+              },
+            ],
+            { duration: 260, easing: FLIP_EASE, fill: 'forwards' }
+          );
+          animation.onfinish = settle;
+          animation.oncancel = settle;
+        } else if (ghost && !landing && !prefersReducedMotion()) {
           // The dropped item lands in its slot: measured after the drop
           // re-rendered, so it is the final place.
           requestAnimationFrame(() => {
@@ -228,25 +284,21 @@ export function useLongPressReorder(options: LongPressReorderOptions): void {
         if (current.ghost) {
           current.ghost.style.transform = `translate3d(${dx}px, ${dy}px, 0) scale(1.08)`;
         }
+        const away = optionsRef.current.onDragFrame?.(
+          current.id,
+          current.x,
+          current.y
+        );
         const scroller = optionsRef.current.scroller;
-        if (scroller) {
-          const bounds = scroller.getBoundingClientRect();
-          let step = 0;
-          if (current.y < bounds.top + EDGE_SCROLL_PX) {
-            step = -(
-              (bounds.top + EDGE_SCROLL_PX - current.y) /
-              EDGE_SCROLL_PX
-            );
-          } else if (current.y > bounds.bottom - EDGE_SCROLL_PX) {
-            step =
-              (current.y - (bounds.bottom - EDGE_SCROLL_PX)) / EDGE_SCROLL_PX;
-          }
-          if (step !== 0) {
-            scroller.scrollTop +=
-              Math.max(-1, Math.min(1, step)) * EDGE_SCROLL_MAX;
-          }
+        if (scroller && !away) {
+          const step = edgeScrollStep(
+            scroller.getBoundingClientRect(),
+            current.y
+          );
+          if (step !== 0) scroller.scrollTop += step;
         }
-        hitTest(current);
+        if (away) current.lastOver = null;
+        else hitTest(current);
         tick(current);
       });
     };

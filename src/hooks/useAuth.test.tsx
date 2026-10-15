@@ -38,12 +38,23 @@ const LOCAL_NODE = { url: 'http://127.0.0.1:12391', apikey: '' };
 const PUBLIC_NODE = { url: HTTPS_EXT_NODE_QORTAL_LINK, apikey: '' };
 // A private Core reached over an SSH tunnel on another port (a custom node).
 const TUNNEL_NODE = { url: 'http://127.0.0.1:12398', apikey: 'test-key' };
+// What Core answers a wrong key with.
+const KEY_REFUSED = {
+  status: 403,
+  body: '{"error":4,"message":"API key invalid"}',
+};
+// What nginx in front of a busy or restarting node answers with.
+const BAD_GATEWAY = {
+  status: 502,
+  body: '<html><head><title>502 Bad Gateway</title></head></html>',
+};
 
-type FetchRoute = 'hang' | string;
+type FetchRoute = 'hang' | string | { status: number; body: string };
 
 /**
  * fetch stub keyed by path. 'hang' never answers but rejects like a real
- * fetch when its AbortSignal fires.
+ * fetch when its AbortSignal fires; { status, body } answers with that HTTP
+ * status, a plain string with 200.
  */
 function stubFetch(routes: Record<string, FetchRoute>) {
   const fetchMock = vi.fn((input: string, init?: RequestInit) => {
@@ -59,10 +70,13 @@ function stubFetch(routes: Record<string, FetchRoute>) {
         });
       });
     }
+    const { status, body } =
+      typeof route === 'string' ? { status: 200, body: route } : route;
     return Promise.resolve({
-      ok: true,
-      text: async () => route,
-      json: async () => JSON.parse(route),
+      ok: status >= 200 && status < 300,
+      status,
+      text: async () => body,
+      json: async () => JSON.parse(body),
     } as Response);
   });
   vi.stubGlobal('fetch', fetchMock);
@@ -438,7 +452,7 @@ describe('useAuth', () => {
     });
 
     it.each([
-      ['the public node', PUBLIC_NODE, 'remote node'],
+      ['the public node', PUBLIC_NODE, 'public node'],
       ['a private node over a tunnel', TUNNEL_NODE, 'remote node'],
       ['a local node', LOCAL_NODE, 'local node'],
     ])(
@@ -549,6 +563,85 @@ describe('useAuth', () => {
 
       expect(unlocked).toBe(true);
       expect(store.get(isOpenDialogCustomApikey)).toBe(false);
+    });
+
+    it('unlocks on the public node with no key dialog when it answers with an error page', async () => {
+      stubFetch({
+        '/admin/status': '{}',
+        '/admin/settings/localAuthBypassEnabled': BAD_GATEWAY,
+        '/admin/apikey/test': BAD_GATEWAY,
+      });
+      stubSendMessage({ decryptWallet: true });
+      const { result, store } = renderUseAuth(
+        { address0: 'Qtest' },
+        PUBLIC_NODE
+      );
+      store.set(authenticatePasswordAtom, 'pw');
+
+      expect(await passwordUnlock(result)).toBe(true);
+
+      expect(store.get(extStateAtom)).toBe('authenticated');
+      expect(store.get(isOpenDialogCustomApikey)).toBe(false);
+      expect(timingSteps()[0]).toEqual([
+        'node-check',
+        'failed (unreachable), public node',
+      ]);
+    });
+
+    it('unlocks on the public node with no key dialog even when it refuses', async () => {
+      stubFetch({
+        '/admin/status': '{}',
+        '/admin/settings/localAuthBypassEnabled': 'false',
+        '/admin/apikey/test': KEY_REFUSED,
+      });
+      stubSendMessage({ decryptWallet: true });
+      const { result, store } = renderUseAuth(
+        { address0: 'Qtest' },
+        PUBLIC_NODE
+      );
+      store.set(authenticatePasswordAtom, 'pw');
+
+      expect(await passwordUnlock(result)).toBe(true);
+
+      expect(store.get(extStateAtom)).toBe('authenticated');
+      expect(store.get(isOpenDialogCustomApikey)).toBe(false);
+      expect(timingSteps()[0]).toEqual([
+        'node-check',
+        'failed (key-rejected), public node',
+      ]);
+    });
+
+    it('unlocks without a key dialog when a node answers the key test with a server error', async () => {
+      stubFetch({
+        '/admin/status': '{}',
+        '/admin/settings/localAuthBypassEnabled': 'false',
+        '/admin/apikey/test': { status: 503, body: 'Service Unavailable' },
+      });
+      stubSendMessage({ decryptWallet: true });
+      const { result, store } = renderUseAuth({ address0: 'Qtest' });
+
+      expect(await passwordUnlock(result)).toBe(true);
+
+      expect(store.get(isOpenDialogCustomApikey)).toBe(false);
+      expect(timingSteps()[0]).toEqual([
+        'node-check',
+        'failed (unreachable), remote node',
+      ]);
+    });
+
+    it('still asks for the key when the node refuses it with 403', async () => {
+      stubFetch({
+        '/admin/status': '{}',
+        '/admin/settings/localAuthBypassEnabled': 'false',
+        '/admin/apikey/test': KEY_REFUSED,
+      });
+      const sendMessage = stubSendMessage({ decryptWallet: true });
+      const { result, store } = renderUseAuth({ address0: 'Qtest' });
+
+      expect(await passwordUnlock(result)).toBe(false);
+
+      expect(store.get(isOpenDialogCustomApikey)).toBe(true);
+      expect(sendMessage).not.toHaveBeenCalled();
     });
 
     it('still asks for the key when the node rejects it', async () => {

@@ -23,6 +23,7 @@ import { MOBILE_TABS_DIALOG_Z } from './mobileLayout';
 import { isGoLayout } from '../../layout/goLayout';
 import type { TabFolder } from './mobileTabOrganization';
 import type { OpenTab } from './useOpenTabs';
+import { isDevZipTab } from './devMode/devModeApp';
 
 type OptionRowProps = {
   icon: typeof CreateNewFolderRoundedIcon;
@@ -129,6 +130,8 @@ export function MobileTabOptionsDialog({
 }: MobileTabOptionsDialogProps) {
   const theme = useTheme();
   const isInternal = Boolean(tab?.internal);
+  // A Dev Mode app lives in memory only: no folder, no qortal:// address.
+  const isDevZip = isDevZipTab(tab);
   // GO: the paper caps at the window height and clips (overflow hidden), and
   // in landscape the rows and folders run past it, so the body scrolls.
   const scrollBody = isGoLayout();
@@ -211,19 +214,21 @@ export function MobileTabOptionsDialog({
         </Box>
 
         <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.25 }}>
-          <OptionRow
-            delayMs={nextDelay()}
-            icon={CreateNewFolderRoundedIcon}
-            label="New folder & add"
-            onClick={onCreateFolder}
-          />
+          {!isDevZip ? (
+            <OptionRow
+              delayMs={nextDelay()}
+              icon={CreateNewFolderRoundedIcon}
+              label="New folder & add"
+              onClick={onCreateFolder}
+            />
+          ) : null}
           <OptionRow
             delayMs={nextDelay()}
             icon={DriveFileRenameOutlineRoundedIcon}
             label="Rename tab"
             onClick={onRename}
           />
-          {!isInternal && onChangeAddress ? (
+          {!isInternal && !isDevZip && onChangeAddress ? (
             <OptionRow
               delayMs={nextDelay()}
               icon={LinkRoundedIcon}
@@ -251,7 +256,7 @@ export function MobileTabOptionsDialog({
           ) : null}
         </Box>
 
-        {folders.length > 0 ? (
+        {folders.length > 0 && !isDevZip ? (
           <>
             <Divider sx={{ my: 1.5, opacity: 0.65 }} />
             <Typography

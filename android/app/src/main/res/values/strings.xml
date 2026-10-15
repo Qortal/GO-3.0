@@ -29,4 +29,5 @@
     <string name="share_target_self">GO Self-DM</string>
     <!-- A Rev is Torq's story post; the name stays the same in every language. -->
     <string name="share_target_torq_rev" translatable="false">Torq Rev</string>
+    <string name="qortal_hce_description">GO payment requests (testing)</string>
 </resources>

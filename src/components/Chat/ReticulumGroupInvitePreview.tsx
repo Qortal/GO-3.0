@@ -14,12 +14,16 @@ import {
   Skeleton,
   Tooltip,
   Typography,
+  alpha,
   useTheme,
 } from '@mui/material';
+import CheckRoundedIcon from '@mui/icons-material/CheckRounded';
 import ErrorOutlineRoundedIcon from '@mui/icons-material/ErrorOutlineRounded';
+import GroupAddRoundedIcon from '@mui/icons-material/GroupAddRounded';
 import GroupsRoundedIcon from '@mui/icons-material/GroupsRounded';
 import LockRoundedIcon from '@mui/icons-material/LockRounded';
 import PublicRoundedIcon from '@mui/icons-material/PublicRounded';
+import ScheduleRoundedIcon from '@mui/icons-material/ScheduleRounded';
 import { useAtomValue } from 'jotai';
 import { QORTAL_APP_CONTEXT } from '../../App';
 import { getFee } from '../../background/background';
@@ -290,6 +294,8 @@ function InviteCard({ groupId }: { groupId: string }) {
           boxSizing: 'border-box',
           display: 'grid',
           gap: 0.75,
+          // Same minimum height as the loaded card, so the chat row does not
+          // resize when the group details arrive.
           minHeight: 192,
           mt: 1,
           p: 1.15,
@@ -325,6 +331,11 @@ function InviteCard({ groupId }: { groupId: string }) {
               postProcess: 'capitalizeFirstChar',
             });
   const actionDisabled = isMember || actionState !== 'idle' || isJoining;
+  // Joined reads green, everything still to do (join, apply, pending) blue.
+  const joinColor =
+    isMember || actionState === 'joined'
+      ? theme.palette.success.main
+      : theme.palette.primary.main;
   return (
     <Box
       sx={{
@@ -356,9 +367,9 @@ function InviteCard({ groupId }: { groupId: string }) {
           display: 'flex',
           fontSize: 12,
           fontWeight: 700,
-          height: 45,
+          height: 38,
           letterSpacing: '0.1em',
-          px: 2.25,
+          px: 2,
         }}
       >
         <Typography
@@ -374,167 +385,199 @@ function InviteCard({ groupId }: { groupId: string }) {
       </Box>
       <Box
         sx={{
-          alignItems: 'center',
+          alignItems: 'flex-start',
           boxSizing: 'border-box',
           display: 'flex',
-          height: 147,
-          px: 2.25,
+          gap: 1.5,
+          px: 2,
           py: 1.6,
         }}
       >
-        <Box
+        <Avatar
+          alt={group.groupName}
+          imgProps={{
+            onError: () => setAvatarLoaded(false),
+            onLoad: () => setAvatarLoaded(true),
+          }}
+          src={avatarUrl}
           sx={{
-            alignItems: 'flex-start',
-            display: 'flex',
-            gap: 2.1,
-            width: '100%',
+            backgroundColor: 'action.hover',
+            border: 0,
+            borderRadius: '16px',
+            flexShrink: 0,
+            fontSize: 21,
+            fontWeight: 800,
+            height: 62,
+            width: 62,
           }}
         >
-          <Avatar
-            alt={group.groupName}
-            imgProps={{
-              onError: () => setAvatarLoaded(false),
-              onLoad: () => setAvatarLoaded(true),
-            }}
-            src={avatarUrl}
+          {!avatarLoaded ? (
+            <Box
+              alt=""
+              aria-hidden
+              component="img"
+              src={qortalOfficialLogo}
+              sx={{
+                height: '42%',
+                objectFit: 'contain',
+                opacity: theme.palette.mode === 'dark' ? 0.28 : 0.5,
+                width: '42%',
+              }}
+            />
+          ) : null}
+        </Avatar>
+        <Box sx={{ flex: 1, minWidth: 0 }}>
+          <Typography
             sx={{
-              backgroundColor: 'action.hover',
-              border: 0,
-              borderRadius: '19px',
-              flexShrink: 0,
-              fontSize: 23,
-              fontWeight: 800,
-              height: 77,
-              width: 77,
+              display: '-webkit-box',
+              fontSize: 17,
+              fontWeight: 650,
+              lineHeight: 1.25,
+              overflow: 'hidden',
+              overflowWrap: 'anywhere',
+              WebkitBoxOrient: 'vertical',
+              WebkitLineClamp: 2,
             }}
           >
-            {!avatarLoaded ? (
-              <Box
-                alt=""
-                aria-hidden
-                component="img"
-                src={qortalOfficialLogo}
+            {group.groupName}
+            {isOpen ? (
+              <PublicRoundedIcon
+                aria-label={t('reticulum:invite.open_group', {
+                  postProcess: 'capitalizeFirstChar',
+                })}
                 sx={{
-                  height: '42%',
-                  objectFit: 'contain',
-                  opacity: theme.palette.mode === 'dark' ? 0.28 : 0.5,
-                  width: '42%',
+                  color: 'text.secondary',
+                  fontSize: 15,
+                  ml: 0.6,
+                  verticalAlign: '-2px',
                 }}
               />
-            ) : null}
-          </Avatar>
-          <Box sx={{ flex: 1, minWidth: 0 }}>
-            <Box
-              sx={{
-                alignItems: 'center',
-                display: 'flex',
-                gap: 0.65,
-                minWidth: 0,
-              }}
-            >
-              <Typography
+            ) : (
+              <LockRoundedIcon
+                aria-label={t('reticulum:invite.closed_group', {
+                  postProcess: 'capitalizeFirstChar',
+                })}
                 sx={{
-                  fontSize: 18,
-                  fontWeight: 650,
-                  lineHeight: 1.2,
-                  minWidth: 0,
+                  color: 'text.secondary',
+                  fontSize: 15,
+                  ml: 0.6,
+                  verticalAlign: '-2px',
                 }}
-                noWrap
-              >
-                {group.groupName}
-              </Typography>
-              {isOpen ? (
-                <PublicRoundedIcon
-                  aria-label={t('reticulum:invite.open_group', {
-                    postProcess: 'capitalizeFirstChar',
-                  })}
-                  sx={{ color: 'text.secondary', flexShrink: 0, fontSize: 16 }}
-                />
-              ) : (
-                <LockRoundedIcon
-                  aria-label={t('reticulum:invite.closed_group', {
-                    postProcess: 'capitalizeFirstChar',
-                  })}
-                  sx={{ color: 'text.secondary', flexShrink: 0, fontSize: 16 }}
-                />
-              )}
-            </Box>
-            {description && (
-              <Tooltip
-                arrow
-                disableHoverListener={!descriptionOverflowing}
-                title={
-                  <Box
-                    sx={{
-                      maxHeight: 180,
-                      maxWidth: 360,
-                      overflow: 'auto',
-                      whiteSpace: 'pre-wrap',
-                    }}
-                  >
-                    {description}
-                  </Box>
-                }
-              >
-                <Typography
-                  ref={descriptionRef}
-                  tabIndex={descriptionOverflowing ? 0 : -1}
+              />
+            )}
+          </Typography>
+          {description && (
+            <Tooltip
+              arrow
+              disableHoverListener={!descriptionOverflowing}
+              title={
+                <Box
                   sx={{
-                    WebkitBoxOrient: 'vertical',
-                    WebkitLineClamp: 2,
-                    color: 'text.secondary',
-                    display: '-webkit-box',
-                    fontSize: 12,
-                    letterSpacing: '0.01em',
-                    lineHeight: 1.45,
-                    mt: 0.45,
-                    overflow: 'hidden',
+                    maxHeight: 180,
+                    maxWidth: 360,
+                    overflow: 'auto',
+                    whiteSpace: 'pre-wrap',
                   }}
                 >
                   {description}
-                </Typography>
-              </Tooltip>
-            )}
-            <Box sx={{ mt: 0.8 }}>
-              <GroupScoreBadge score={groupScore} size="compact" />
-            </Box>
-            <Box
-              sx={{
-                alignItems: 'center',
-                color: 'text.secondary',
-                display: 'flex',
-                gap: 0.5,
-                mt: 0.85,
-              }}
+                </Box>
+              }
             >
-              <GroupsRoundedIcon sx={{ fontSize: 14 }} />
-              <Typography sx={{ fontSize: 12.5 }}>
-                {memberCount} {memberCount === 1 ? 'member' : 'members'}
+              <Typography
+                ref={descriptionRef}
+                tabIndex={descriptionOverflowing ? 0 : -1}
+                sx={{
+                  WebkitBoxOrient: 'vertical',
+                  WebkitLineClamp: 2,
+                  color: 'text.secondary',
+                  display: '-webkit-box',
+                  fontSize: 12.5,
+                  letterSpacing: '0.01em',
+                  lineHeight: 1.4,
+                  mt: 0.4,
+                  overflow: 'hidden',
+                }}
+              >
+                {description}
               </Typography>
-            </Box>
-          </Box>
-          <Button
-            disabled={actionDisabled}
-            onClick={() => void join()}
-            variant="contained"
+            </Tooltip>
+          )}
+          <Box
             sx={{
-              alignSelf: 'flex-start',
-              borderRadius: '6px',
-              flexShrink: 0,
-              fontSize: 12,
-              fontWeight: 600,
-              minHeight: 38,
-              minWidth: 88,
-              mt: 2.65,
-              textTransform: 'none',
+              alignItems: 'center',
+              display: 'flex',
+              // Join stays beside the score; on a very narrow card its label
+              // shortens instead of dropping to its own line.
+              flexWrap: 'nowrap',
+              gap: 0.6,
+              mt: 1,
+              minWidth: 0,
             }}
           >
-            {isJoining ? (
-              <CircularProgress size={17} sx={{ color: 'inherit' }} />
-            ) : (
-              actionLabel
-            )}
-          </Button>
+            <GroupScoreBadge score={groupScore} size="compact" />
+            <Button
+              disabled={actionDisabled}
+              onClick={() => void join()}
+              startIcon={
+                isJoining ? (
+                  <CircularProgress size={12} sx={{ color: 'inherit' }} />
+                ) : isMember || actionState === 'joined' ? (
+                  <CheckRoundedIcon />
+                ) : actionState === 'pending' ? (
+                  <ScheduleRoundedIcon />
+                ) : (
+                  <GroupAddRoundedIcon />
+                )
+              }
+              sx={{
+                backgroundColor: alpha(joinColor, 0.12),
+                border: `0.75px solid ${alpha(joinColor, 0.78)}`,
+                borderRadius: '6px',
+                color: joinColor,
+                flexShrink: 1,
+                fontSize: 12,
+                fontWeight: 600,
+                height: 26,
+                lineHeight: 1,
+                minHeight: 26,
+                minWidth: 0,
+                overflow: 'hidden',
+                px: 0.85,
+                textOverflow: 'ellipsis',
+                textTransform: 'none',
+                whiteSpace: 'nowrap',
+                '& .MuiButton-startIcon': { ml: 0, mr: 0.5 },
+                '& .MuiButton-startIcon > svg': { fontSize: 15 },
+                '&:hover': { backgroundColor: alpha(joinColor, 0.2) },
+                '&.Mui-disabled': {
+                  backgroundColor: alpha(joinColor, 0.06),
+                  borderColor: alpha(joinColor, 0.4),
+                  color: alpha(joinColor, 0.85),
+                },
+              }}
+            >
+              <Box
+                component="span"
+                sx={{ overflow: 'hidden', textOverflow: 'ellipsis' }}
+              >
+                {actionLabel}
+              </Box>
+            </Button>
+          </Box>
+          <Box
+            sx={{
+              alignItems: 'center',
+              color: 'text.secondary',
+              display: 'flex',
+              gap: 0.5,
+              mt: 0.9,
+            }}
+          >
+            <GroupsRoundedIcon sx={{ fontSize: 14 }} />
+            <Typography sx={{ fontSize: 12.5 }}>
+              {memberCount} {memberCount === 1 ? 'member' : 'members'}
+            </Typography>
+          </Box>
         </Box>
       </Box>
     </Box>

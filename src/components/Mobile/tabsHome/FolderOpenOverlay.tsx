@@ -44,7 +44,7 @@ import {
   prefersReducedMotion,
 } from './flip';
 import { moveId } from './homeGrid';
-import { useLongPressReorder } from './useLongPressReorder';
+import { useLongPressReorder, type LandingBox } from './useLongPressReorder';
 import { useGoLayout } from '../../../layout/goLayout';
 import { folderPanelGeometry, selectGoFolderPanelWide } from './goTabsGrid';
 
@@ -56,6 +56,10 @@ const ICON_ATTR = 'data-panel-icon';
 const LABEL_ATTR = 'data-panel-label';
 const OPEN_MS = 380;
 const CLOSE_MS = 300;
+/** A dragged app held this long off the panel takes the folder away. */
+const LEAVE_MS = 260;
+/** The panel's side padding counts as off it: phones leave only ~18 px. */
+const LEAVE_EDGE_PX = 10;
 
 type FolderOpenOverlayProps = {
   name: string;
@@ -73,6 +77,16 @@ type FolderOpenOverlayProps = {
   onOpenApp: (tab: OpenTab) => void;
   onAppMenu: (tab: OpenTab) => void;
   onReorder: (tabKeys: string[]) => void;
+  /**
+   * A dragged app left the panel: the folder closes (fading, so the home
+   * grid shows) while the finger keeps the app. The drag then reports to
+   * onCarryMove and ends in onCarryDrop (the box to land in) and onCarryEnd;
+   * the overlay stays mounted, unseen, until then, since it holds the touch.
+   */
+  onDragOut?: (tabKey: string) => void;
+  onCarryMove?: (tabKey: string, x: number, y: number) => void;
+  onCarryDrop?: (tabKey: string) => LandingBox | null;
+  onCarryEnd?: () => void;
   onRename: (name: string) => void;
   onSetSize: (size: FolderSize) => void;
   onDelete: () => void;
@@ -105,6 +119,10 @@ export function FolderOpenOverlay({
   onOpenApp,
   onAppMenu,
   onReorder,
+  onDragOut,
+  onCarryMove,
+  onCarryDrop,
+  onCarryEnd,
   onRename,
   onSetSize,
   onDelete,
@@ -136,6 +154,11 @@ export function FolderOpenOverlay({
   const [dragKeys, setDragKeys] = useState<string[] | null>(null);
   const keys = dragKeys ?? propKeys;
   const pendingFlip = useRef<Map<string, DOMRect> | null>(null);
+  // An app dragged out of the folder, still under the finger.
+  const [carrying, setCarrying] = useState(false);
+  const carryingRef = useRef(false);
+  const leaveSince = useRef<number | null>(null);
+  const exitAfterCarry = useRef(false);
 
   useEffect(() => {
     const onResize = () => setViewport({ width: window.innerWidth });
@@ -234,6 +257,11 @@ export function FolderOpenOverlay({
     if (open) return;
     const done = () => {
       if (exitedRef.current) return;
+      if (carryingRef.current) {
+        // Unmounting would drop the touch the carried app hangs on.
+        exitAfterCarry.current = true;
+        return;
+      }
       exitedRef.current = true;
       onExited();
     };
@@ -264,9 +292,16 @@ export function FolderOpenOverlay({
         })
       );
     const scrolled = (scrollerRef.current?.scrollTop ?? 0) > 2;
-    if (!tile || !bgRef.current || !gridRef.current || scrolled) {
-      // No tile to land in (the folder went away), or the panel was
-      // scrolled: shrink and fade where it is.
+    if (
+      carryingRef.current ||
+      !tile ||
+      !bgRef.current ||
+      !gridRef.current ||
+      scrolled
+    ) {
+      // An app was dragged out (the home grid shows at once), no tile to
+      // land in (the folder went away), or the panel was scrolled: shrink
+      // and fade where it is.
       [bgRef.current, gridRef.current].forEach((element) =>
         animations.push(
           element?.animate?.(
@@ -354,11 +389,42 @@ export function FolderOpenOverlay({
     setGridEl(node);
   }, []);
 
+  // Off the panel (past its sides, above or below it) for LEAVE_MS: the
+  // app is carried out to the home grid.
+  const dragFrame = (key: string, x: number, y: number): boolean => {
+    if (carryingRef.current) {
+      onCarryMove?.(key, x, y);
+      return true;
+    }
+    const panel = bgRef.current?.getBoundingClientRect();
+    if (!onDragOut || !panel || !open) return false;
+    const outside =
+      x < panel.left + LEAVE_EDGE_PX ||
+      x > panel.right - LEAVE_EDGE_PX ||
+      y < panel.top ||
+      y > panel.bottom;
+    if (!outside) {
+      leaveSince.current = null;
+      return false;
+    }
+    const now = performance.now();
+    leaveSince.current ??= now;
+    if (now - leaveSince.current < LEAVE_MS) return true;
+    leaveSince.current = null;
+    carryingRef.current = true;
+    setCarrying(true);
+    navigator.vibrate?.(8);
+    onDragOut(key);
+    onCarryMove?.(key, x, y);
+    return true;
+  };
+
   useLongPressReorder({
     container: gridEl,
     scroller,
     itemAttr: APP_ATTR,
-    enabled: open && settled,
+    // Still on while carrying: turning it off would end the drag.
+    enabled: (open && settled) || carrying,
     onMenu: (key) => {
       const tab = tabsByKey.get(key);
       if (tab) onAppMenu(tab);
@@ -370,10 +436,23 @@ export function FolderOpenOverlay({
       pendingFlip.current = measureBoxes(gridRef.current, APP_ATTR);
       setDragKeys(next);
     },
-    onDrop: () => {
+    onDragFrame: dragFrame,
+    onDrop: (key) => {
+      if (carryingRef.current) return onCarryDrop?.(key) ?? undefined;
       if (dragKeys) onReorder(dragKeys);
     },
-    onEnd: () => setDragKeys(null),
+    onEnd: () => {
+      setDragKeys(null);
+      leaveSince.current = null;
+      if (!carryingRef.current) return;
+      carryingRef.current = false;
+      setCarrying(false);
+      onCarryEnd?.();
+      if (exitAfterCarry.current && !exitedRef.current) {
+        exitedRef.current = true;
+        onExited();
+      }
+    },
   });
 
   const commitName = () => {

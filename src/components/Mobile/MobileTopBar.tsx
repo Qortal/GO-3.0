@@ -32,9 +32,14 @@ import LayersRoundedIcon from '@mui/icons-material/LayersRounded';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import NotificationsActiveRoundedIcon from '@mui/icons-material/NotificationsActiveRounded';
 import NotificationsRoundedIcon from '@mui/icons-material/NotificationsRounded';
+import ContactlessRoundedIcon from '@mui/icons-material/ContactlessRounded';
 import ChevronRightRoundedIcon from '@mui/icons-material/ChevronRightRounded';
 import SystemUpdateAltRoundedIcon from '@mui/icons-material/SystemUpdateAltRounded';
 import { useAtomValue, useSetAtom } from 'jotai';
+import {
+  openQortalCardWindow,
+  qortalCardEnabledAtom,
+} from '../../atoms/qortalCard';
 import { useTranslation } from 'react-i18next';
 import {
   appUpdateReleaseAtom,
@@ -174,6 +179,8 @@ export const MobileTopBar = ({
   const inAppTheme = (node: ReactNode) =>
     barTheme ? <ThemeProvider theme={appTheme}>{node}</ThemeProvider> : node;
   const { t } = useTranslation(['core']);
+  // Settings → System → Qortal Card (testing).
+  const qortalCardEnabled = useAtomValue(qortalCardEnabledAtom);
   // In landscape the bottom Home/Apps/Chat bar is hidden (vertical room is
   // scarce); we surface those controls inline here, left of the avatar.
   // GO decides it from the window, so the keyboard never moves it.
@@ -461,6 +468,15 @@ export const MobileTopBar = ({
       accent: hasNewNotifications,
       ...(hasNewNotifications ? { badge: unseenCount } : {}),
     },
+    ...(qortalCardEnabled
+      ? [
+          {
+            icon: ContactlessRoundedIcon,
+            label: t('core:qortal_card.title'),
+            onClick: () => openQortalCardWindow(),
+          },
+        ]
+      : []),
     {
       icon: AccountBalanceWalletRoundedIcon,
       label: 'Wallets',

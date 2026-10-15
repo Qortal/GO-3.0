@@ -8,7 +8,7 @@ Reticulum — plus a mobile-first UI, OS notifications, biometric login, and bat
 background behavior.
 
 **Repository:** https://gitea.qortal.link/simon/GO-3.0  
-**Current APK:** GO 3.0 **v0.0.17** (`versionName` 0.0.17, `versionCode` 20), a release (non-debuggable) build — shown in-app as **GO version** (Core & settings). Chat engine matches Hub v3.0.3.
+**Current APK:** GO 3.0 **v0.0.18** (`versionName` 0.0.18, `versionCode` 21), a release (non-debuggable) build — shown in-app as **GO version** (Core & settings). Chat engine matches Hub v3.0.3.
 
 > **For Hub developers**
 >
@@ -61,6 +61,15 @@ cd android && ./gradlew assembleRelease
 # → app/build/outputs/apk/release/app-release.apk, published as "GO 3.0 v<versionName>.apk"
 app/release-web-assets-test/check-apk.sh app/build/outputs/apk/release/app-release.apk  # must print OK
 ```
+
+From v0.0.18 every release is also a Gitea release (tag `v<versionName>`) with the APK attached
+as `GO-3.0.apk`. Gitea serves the newest release's file at one fixed address, which qortal.dev
+links to:
+
+    https://gitea.qortal.link/simon/GO-3.0/releases/download/latest/GO-3.0.apk
+
+Releases must not be marked pre-release or draft: `latest` skips those. The file name must stay
+`GO-3.0.apk` in every release, or the fixed address stops working.
 
 Release APKs leave out the web bundle's source maps and the debug-only pages (GO-40);
 debug APKs keep them. `assembleRelease` checks the packaged APK itself and fails if a map or a
@@ -130,6 +139,7 @@ Every field build is published on Q-Share (Q-Share+ from v0.0.13) under the name
 | **v0.0.15** | Security and privacy release (Capacitor CVE fix, origin guard, Q-Apps limited to the node, screen protection, no Google code, no location in shared media, no tracking images); Telegram-style message popup, chat text size Small/Default/Large, truthful DM delivery ticks with 7-day re-send, no more "protocol violation" from desktop Hubs, status synced across devices, wallet key check at unlock, avatar/icon cache |
 | **v0.0.16** | Chats open with their messages (recent chats read ahead in memory only, names at once), the first tap after a swipe works, share into GO Groups / DMs / Saved Messages from other apps, swipe between Home, Apps and Chat, immersive mode, Torq-first Home, DM search, Tabs swipe to close, no more black flashes; updates linked in Q-Share again |
 | **v0.0.17** | Sync on slow phones: background gap bookkeeping cut to a few ms, no endless equal-head repairs, sends no longer wait on the node for Your own membership, retried sends no longer fail as "Invalid event", "Invalid Data" rows heal; delivery ticks for group posts, reply image thumbnails, channel pick when sharing, QDN publish bubble, private Q-Apps on public nodes, landscape and tablet layout; much richer Copy diagnostics |
+| **v0.0.18** | Qortal Card (testing, off by default): tap-to-pay with Qortal test cards and between two GO phones over NFC; Dev Mode for trying a Q-App .zip before publishing; drafts kept per channel, chats come back in their channel with their text; Home/Apps/Chat buttons step aside for the channel list and in-chat search; drag apps out of an open folder; no chat jump near group invites; no false "apikey invalid" on public nodes; Torq notifications open Torq. First build with a fixed Gitea download link |
 
 ---
 

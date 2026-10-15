@@ -97,6 +97,8 @@ export function useSendQortOverlay({
   const close = useCallback(() => {
     setIsOpen(false);
     resetFields();
+    // Screens that opened Send (Qortal Card's top up) come back.
+    executeEvent('sendQortFinished', { sent: false });
   }, [resetFields]);
 
   /** Send button on Home: always an empty form. */
@@ -117,6 +119,7 @@ export function useSendQortOverlay({
   const continueAfterSuccess = useCallback(() => {
     setIsSuccessOpen(false);
     resetFields();
+    executeEvent('sendQortFinished', { sent: true });
   }, [resetFields]);
 
   /** Logout and the like: Send and its success screen belong to the wallet. */

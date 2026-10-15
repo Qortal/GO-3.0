@@ -2,7 +2,9 @@
  * Dev-only preview of the Q-Apps library's Pinned home (phone-style folders,
  * open folder animation, tab cards) and the Tabs overlay, with made-up
  * folders and open tabs. Opening an app only logs. Run `npm run dev` and open
- * /tools/preview/pinned-home.html (add ?overlay=1 for the Tabs overlay).
+ * /tools/preview/pinned-home.html (add ?overlay=1 for the Tabs overlay,
+ * ?devmode=1 for the Dev Mode button: the page then passes for the Android
+ * app, without its native side, so a picked zip ends in the build error).
  * Not a build input, so it never ships.
  */
 import { useEffect, useState } from 'react';
@@ -28,9 +30,16 @@ import {
 } from '../../src/components/Apps/AppsLibrary';
 import { MobileTabsOverlay } from '../../src/components/Mobile/MobileTabsOverlay';
 import { executeEvent, subscribeToEvent } from '../../src/utils/events';
+import { goDevModeEnabledAtom } from '../../src/components/Mobile/devMode/devModeApp';
 
 const WALLET = 'QpreviewWallet';
 const store = getDefaultStore();
+if (new URLSearchParams(location.search).has('devmode')) {
+  (window as unknown as { androidBridge?: unknown }).androidBridge = {
+    postMessage: () => undefined,
+  };
+  store.set(goDevModeEnabledAtom, true);
+}
 store.set(userInfoAtom, { address: WALLET, name: 'preview' } as never);
 
 const apps = (names: string[]) =>

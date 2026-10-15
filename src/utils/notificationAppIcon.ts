@@ -1,4 +1,5 @@
 import { QDN_AVATAR_DEFAULT_IDENTIFIER } from '../lib/qdnAvatars/keys';
+import { pinNotificationToOwnerApp } from './notificationOwnerApp';
 import { parseQdnThumbnailRef, type QdnThumbnailRef } from './qdnThumbnailRef';
 
 export type NotificationAppIcon = {
@@ -15,13 +16,23 @@ const HAS_SCHEME = /^[a-z][a-z0-9+.-]*:|^\/\//i;
  * Icon of a bell notification: the app's QDN avatar (shown from the device
  * cache, so it does not depend on the node), another node image path, a
  * bundled asset or an inline image. Images on other hosts are dropped (they
- * could track the user). Q-Chat mentions have no app icon.
+ * could track the user). Q-Chat mentions have no app icon. A Q-App's icon
+ * that names another app shows the Q-App's own avatar instead.
  */
 export function getNotificationAppIcon(
-  notification: { appName?: unknown; image?: unknown } | null | undefined,
+  raw:
+    | {
+        event?: unknown;
+        appName?: unknown;
+        image?: unknown;
+        data?: { name?: unknown } | null;
+      }
+    | null
+    | undefined,
   options: { isQChatMention: boolean; getApiBase: () => string }
 ): NotificationAppIcon {
   if (options.isQChatMention) return { avatar: null };
+  const notification = raw ? pinNotificationToOwnerApp(raw) : raw;
   const image =
     typeof notification?.image === 'string' ? notification.image.trim() : '';
   if (!image) {

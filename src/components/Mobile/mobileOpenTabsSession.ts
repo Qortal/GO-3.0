@@ -4,6 +4,7 @@ import {
   isPrivateAppTab,
   serializePrivateAppProperties,
 } from './privateAppTabIdentity';
+import { isDevZipTab } from './devMode/devModeApp';
 
 export type PersistedOpenTab = {
   tabId: string;
@@ -38,6 +39,9 @@ const emptySession = (): MobileOpenTabsSession => ({
 export function serializeTabForSession(tab: Record<string, unknown>): PersistedOpenTab | null {
   const tabId = typeof tab.tabId === 'string' ? tab.tabId : '';
   if (!tabId) return null;
+  // A Dev Mode app lives in memory only; restored, its name would open as a
+  // published app.
+  if (isDevZipTab(tab)) return null;
 
   const identity = getTabAppIdentity(tab);
   const privateAppProperties = serializePrivateAppProperties(tab);

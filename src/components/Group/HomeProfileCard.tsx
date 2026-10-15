@@ -50,6 +50,9 @@ import VisibilityOffOutlinedIcon from '@mui/icons-material/VisibilityOffOutlined
 import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import { ImmersiveModeSetting } from '../Mobile/immersive/ImmersiveModeSetting';
+import { QortalCardSetting } from '../QortalCard/QortalCardSetting';
+import { DevModeSetting } from '../Mobile/devMode/DevModeSetting';
+import { canOpenDevZips } from '../Mobile/devMode/devModeApp';
 import { BACK_PRIORITY, useAndroidBack } from '../../utils/androidBack';
 import { useSwipeBetweenTabs } from '../../hooks/useSwipeBetweenTabs';
 import { useAtom, useAtomValue, useSetAtom } from 'jotai';
@@ -4784,6 +4787,26 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                             mx: 1.35,
                           }}
                         />
+                        {/* Testing: NFC payments with Qortal test cards. */}
+                        <QortalCardSetting switchSx={settingsSwitchSx} />
+                        <Box
+                          sx={{
+                            borderTop: `1px solid ${avatarSectionDivider}`,
+                            mx: 1.35,
+                          }}
+                        />
+                        {/* Q-App developers: open an app's zip from the phone. */}
+                        {canOpenDevZips() ? (
+                          <>
+                            <DevModeSetting switchSx={settingsSwitchSx} />
+                            <Box
+                              sx={{
+                                borderTop: `1px solid ${avatarSectionDivider}`,
+                                mx: 1.35,
+                              }}
+                            />
+                          </>
+                        ) : null}
                       </>
                     )}
 

@@ -6,7 +6,15 @@ import { getBaseApiReact } from '../../utils/globalApi';
 import { QdnNameAvatar } from '../common/QdnNameAvatar';
 
 type NotificationAppAvatarProps = Omit<AvatarProps, 'src' | 'children'> & {
-  notification: { appName?: unknown; image?: unknown } | null | undefined;
+  notification:
+    | {
+        event?: unknown;
+        appName?: unknown;
+        image?: unknown;
+        data?: { name?: unknown } | null;
+      }
+    | null
+    | undefined;
   isQChatMention: boolean;
   isQMail: boolean;
 };

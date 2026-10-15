@@ -5,12 +5,18 @@ import {
   useLayoutEffect,
   useRef,
   useMemo,
+  useReducer,
 } from 'react';
+import { flushSync } from 'react-dom';
 import type {
   PointerEvent as ReactPointerEvent,
   WheelEvent as ReactWheelEvent,
 } from 'react';
-import { defaultRangeExtractor, useVirtualizer } from '@tanstack/react-virtual';
+import {
+  defaultRangeExtractor,
+  measureElement as measureVirtualRow,
+  useVirtualizer,
+} from '@tanstack/react-virtual';
 import { MessageItem } from './MessageItem';
 import { DirectCallHistoryRow } from './DirectCallHistoryRow';
 import { DirectFriendEventRow } from './DirectFriendEventRow';
@@ -559,6 +565,39 @@ export const ChatList = ({
     [pendingReticulumScrollTargetIndex]
   );
 
+  // A row that changes height after it mounted (an invite card or image
+  // finishing, a reaction) is reported by the virtualizer's ResizeObserver.
+  // TanStack moves scrollTop for rows above the viewport right there, but only
+  // schedules the re-render that moves the rows, so one frame is painted with
+  // everything shifted by the size change: a visible jump on phones. Render the
+  // rows before that frame is painted instead.
+  const [, layoutVirtualRows] = useReducer((count: number) => count + 1, 0);
+  const virtualRowResizedRef = useRef(false);
+  const measureVirtualRowSize = useCallback(
+    (
+      element: Element,
+      entry: ResizeObserverEntry | undefined,
+      instance: Parameters<typeof measureVirtualRow>[2]
+    ) => {
+      if (entry) {
+        virtualRowResizedRef.current = true;
+        queueMicrotask(() => {
+          virtualRowResizedRef.current = false;
+        });
+      }
+      return measureVirtualRow(element, entry, instance);
+    },
+    []
+  );
+  const handleVirtualizerChange = useCallback(
+    (_instance: unknown, sync: boolean) => {
+      if (sync || !virtualRowResizedRef.current) return;
+      virtualRowResizedRef.current = false;
+      flushSync(layoutVirtualRows);
+    },
+    []
+  );
+
   // Initialize the virtualizer
   const rowVirtualizer = useVirtualizer({
     count: messages.length,
@@ -580,6 +619,8 @@ export const ChatList = ({
           estimateReticulumMessageHeight(messages[initialReticulumLandingIndex])
         : 0,
     rangeExtractor: extractVirtualRows,
+    measureElement: measureVirtualRowSize,
+    onChange: handleVirtualizerChange,
     overscan: reticulumChatEnabled ? 5 : 10,
     useAnimationFrameWithResizeObserver: false,
     // Keep the visible Reticulum content anchored when a reply preview or image

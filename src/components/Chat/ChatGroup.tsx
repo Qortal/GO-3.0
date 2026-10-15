@@ -84,9 +84,21 @@ import {
   getChatDraft,
   setChatDraft,
   clearChatDraft,
+  groupChannelDraftKey,
+  groupDraftChannelIds,
   groupDraftKey,
+  latestGroupDraftChannel,
 } from '../../utils/chatPersistence';
+import { useChatDraftKeys } from '../../hooks/useChatDraftKeys';
+import { useEffectOnKeyChange } from '../../hooks/useEffectOnKeyChange';
+import { DraftBadge } from './DraftBadge';
+import { useCoverMobileTabBar } from '../Mobile/mobileTabBarCover';
 import {
+  swapParkedAttachments,
+  type ComposerAttachments,
+} from './composerAttachmentParking';
+import {
+  hasChatShareFor,
   insertSharedText,
   returnChatShare,
   useChatShareInbox,
@@ -308,6 +320,20 @@ type PendingReticulumResourceFile = {
   temporaryFilePath?: string;
 };
 
+/** Lets go of composer attachments that will not be sent from it. */
+const releasePendingReticulumFiles = (
+  files: readonly PendingReticulumResourceFile[]
+) => {
+  files.forEach((file) => {
+    if (file.previewUrl) URL.revokeObjectURL(file.previewUrl);
+    if (file.temporaryFilePath) {
+      void window.reticulumResources?.releaseConvertedMedia?.(
+        file.temporaryFilePath
+      );
+    }
+  });
+};
+
 type ReticulumGroupChannel = {
   channelId: string;
   groupId: number;
@@ -517,6 +543,26 @@ const HIDDEN_RETICULUM_DEFAULT_CATEGORY_NAME = 'QCHAT_DEFAULT_CATEGORY_HIDDEN';
 const isReticulumSystemChannelId = (channelId: string) =>
   channelId === DEFAULT_RETICULUM_CHANNEL_ID ||
   channelId === QORTAL_LAND_RETICULUM_CHANNEL_ID;
+/**
+ * The channel a group opens in: the one with the draft typed in last, so an
+ * unsent message is found where it was started (General otherwise). A tapped
+ * notification or a share waiting for the group picks its channel itself.
+ */
+export const reticulumChannelToOpen = (
+  account: string | null | undefined,
+  groupId: string | number | null | undefined,
+  notificationChannelId?: string | null
+): string => {
+  if (groupId == null || groupId === '' || !account || notificationChannelId) {
+    return DEFAULT_RETICULUM_CHANNEL_ID;
+  }
+  if (hasChatShareFor(groupDraftKey(groupId))) {
+    return DEFAULT_RETICULUM_CHANNEL_ID;
+  }
+  return (
+    latestGroupDraftChannel(account, groupId) ?? DEFAULT_RETICULUM_CHANNEL_ID
+  );
+};
 const RETICULUM_CHANNEL_LOAD_RETRY_DELAYS_MS = [100, 250, 500, 1_000];
 const RETICULUM_CHANNEL_DRAG_PREFIX = 'reticulum-channel:';
 const RETICULUM_CATEGORY_DRAG_PREFIX = 'reticulum-category-drag:';
@@ -1219,6 +1265,8 @@ type ReticulumSortableChannelButtonProps = {
    * that cannot take the share is greyed out with this short reason.
    */
   disabledReason?: string;
+  /** The channel holds an unsent draft (shown like the Groups list's). */
+  hasDraft?: boolean;
 };
 
 function ReticulumChannelAutoDeleteIcon({ size = 13 }: { size?: number }) {
@@ -1258,6 +1306,7 @@ export function ReticulumSortableChannelButton({
   unreadCount,
   replyCount,
   disabledReason,
+  hasDraft = false,
 }: ReticulumSortableChannelButtonProps) {
   const { i18n, t } = useTranslation(['group']);
   const { attributes, listeners, setNodeRef, isDragging } = useSortable({
@@ -1419,6 +1468,9 @@ export function ReticulumSortableChannelButton({
           >
             {disabledReason}
           </Box>
+        )}
+        {hasDraft && !disabled && (
+          <DraftBadge fontSize={metrics.badgeFontSize - 1} />
         )}
         {showMentionBadge && (
           <Tooltip
@@ -2123,6 +2175,8 @@ export const ChatGroup = ({
   const reticulumDiscussionLoadSequenceRef = useRef(0);
   const reticulumDiscussionFileSequenceRef = useRef(0);
   const [onEditMessage, setOnEditMessage] = useState(null);
+  const onEditMessageRef = useRef(onEditMessage);
+  onEditMessageRef.current = onEditMessage;
   const [groupMentionMembers, setGroupMentionMembers] = useState<
     {
       name: string;
@@ -2226,6 +2280,10 @@ export const ChatGroup = ({
   const [pendingLibraryGif, setPendingLibraryGif] = useState<LibraryGif | null>(
     null
   );
+  // Also moved at once by a channel switch (the draft restore), so a share
+  // that goes in before the next render sees the new channel's attachments.
+  const pendingLibraryGifRef = useRef(pendingLibraryGif);
+  pendingLibraryGifRef.current = pendingLibraryGif;
   const [pendingReticulumFiles, setPendingReticulumFiles] = useState<
     PendingReticulumResourceFile[]
   >([]);
@@ -2266,8 +2324,20 @@ export const ChatGroup = ({
   ] = useState('');
   const reticulumChannelSnapshotGroupIdRef = useRef('');
   const [selectedReticulumChannelId, setSelectedReticulumChannelId] = useState(
-    DEFAULT_RETICULUM_CHANNEL_ID
+    () =>
+      reticulumChannelToOpen(
+        myAddress,
+        selectedGroup,
+        notificationReticulumChannelId
+      )
   );
+  // A group opened in its draft's channel (reticulumChannelToOpen) stays there
+  // while its channel layout and the user's rights load, instead of falling
+  // back to General; once they are in, a channel that is gone still does.
+  const reticulumDraftChannelOpeningRef = useRef<{
+    groupKey: string;
+    channelId: string;
+  } | null>(null);
   const [reticulumChannelSidebarOpen, setReticulumChannelSidebarOpen] =
     useState(false);
   const channelPanelSwipeRef = useRef<{ x: number; y: number } | null>(null);
@@ -2526,15 +2596,28 @@ export const ChatGroup = ({
   const [isCompressingReticulumGif, setIsCompressingReticulumGif] =
     useState(false);
   const pendingReticulumFilesRef = useRef<PendingReticulumResourceFile[]>([]);
+  // The attachments of the channels not on screen, by draft key, and the
+  // draft key of the channel the composer is on now (it moves before a new
+  // render, see composerAttachmentParking and the draft restore below).
+  const parkedComposerAttachmentsRef = useRef(
+    new Map<
+      string,
+      ComposerAttachments<PendingReticulumResourceFile, LibraryGif>
+    >()
+  );
+  const composerKeyRef = useRef<string | null>(null);
+  // The chat's outer element: still on the page while the Chat section is
+  // only hidden, gone once the chat closes.
+  const chatRootRef = useRef<HTMLDivElement | null>(null);
   const reticulumGifConversionSequenceRef = useRef(0);
   const reticulumGifConversionContextRef = useRef('');
   reticulumGifConversionContextRef.current = `${selectedGroup || ''}:${
     selectedReticulumChannelId || DEFAULT_RETICULUM_CHANNEL_ID
   }`;
-  useEffect(() => {
+  useEffectOnKeyChange(`${selectedGroup}:${selectedReticulumChannelId}`, () => {
     reticulumGifConversionSequenceRef.current += 1;
     setIsCompressingReticulumGif(false);
-  }, [selectedGroup, selectedReticulumChannelId]);
+  });
   const reticulumChannelRefreshSeqRef = useRef(0);
   const reticulumChannelMetadataRefreshTimerRef = useRef<ReturnType<
     typeof setTimeout
@@ -2653,6 +2736,30 @@ export const ChatGroup = ({
     reticulumChatEnabled && selectedGroup
       ? `${selectedGroup}:${selectedReticulumChannelId}`
       : selectedGroup;
+  // Each channel keeps its own unsent draft (text, and attachments while the
+  // group is open), so it is never sent from another channel. General keeps
+  // the group's own key, as does a group chat without channels.
+  const composerDraftKey =
+    selectedGroup == null
+      ? null
+      : groupChannelDraftKey(
+          selectedGroup,
+          reticulumChatEnabled ? selectedReticulumChannelId : null
+        );
+  // The group's channels with a draft, marked in the channel list.
+  const chatDraftKeys = useChatDraftKeys(myAddress);
+  const draftChannelIds = useMemo(
+    () =>
+      selectedGroup == null
+        ? new Set<string>()
+        : groupDraftChannelIds(chatDraftKeys, selectedGroup),
+    [chatDraftKeys, selectedGroup]
+  );
+  // The phone channel list reaches the bottom of the screen: the floating
+  // Home/Apps/Chat buttons step aside while it is open on the chat shown.
+  useCoverMobileTabBar(
+    isMobile && reticulumChatEnabled && reticulumChannelSidebarOpen && isActive
+  );
   const reticulumChatEnabledRef = useRef(false);
   const [, forceUpdate] = useReducer((x) => x + 1, 0);
   const lastReadTimestamp = useRef(null);
@@ -2878,20 +2985,30 @@ export const ChatGroup = ({
     getTimestampEnterChat(selectedGroup);
   }, [selectedGroup, isActive]);
 
-  useEffect(() => {
+  useEffectOnKeyChange(String(selectedGroup ?? ''), () => {
     // A channel selection belongs to the group, not to the asynchronous
     // Reticulum-enabled probe. The Reticulum and legacy ChatGroup instances
     // are mounted separately when that mode changes, so resetting here on a
     // late mode update only overrides a channel the reader already selected.
+    // Nor on showing the parked Chat section again: same group, same channel.
     reticulumChannelRefreshSeqRef.current += 1;
     setReticulumChannels([]);
     setReticulumCategories([]);
     setReticulumChannelMetadataVisibleGroupId('');
     reticulumChannelSnapshotGroupIdRef.current = '';
-    setSelectedReticulumChannelId(DEFAULT_RETICULUM_CHANNEL_ID);
+    const openingChannelId = reticulumChannelToOpen(
+      myAddress,
+      selectedGroup,
+      notificationReticulumChannelId
+    );
+    reticulumDraftChannelOpeningRef.current =
+      openingChannelId === DEFAULT_RETICULUM_CHANNEL_ID
+        ? null
+        : { groupKey: String(selectedGroup), channelId: openingChannelId };
+    setSelectedReticulumChannelId(openingChannelId);
     setReticulumChannelSettingsOpen(false);
     setEditingReticulumChannel(null);
-  }, [selectedGroup]);
+  });
 
   const refreshReticulumChannels = useCallback(async (): Promise<boolean> => {
     const groupId = Number(selectedGroup);
@@ -2924,8 +3041,14 @@ export const ChatGroup = ({
     );
     setReticulumCategories(parsedCategories);
     setReticulumChannels(availableChannels);
+    const metadataReady = metadata?.ready === true;
+    // The channel a draft opened stays while only a stand-in layout is in.
+    const opening = reticulumDraftChannelOpeningRef.current;
     setSelectedReticulumChannelId((current) =>
-      availableChannels.some((channel) => channel.channelId === current)
+      availableChannels.some((channel) => channel.channelId === current) ||
+      (!metadataReady &&
+        opening?.groupKey === String(groupId) &&
+        opening.channelId === current)
         ? current
         : (availableChannels.find(
             (channel) => channel.channelId === DEFAULT_RETICULUM_CHANNEL_ID
@@ -2933,7 +3056,6 @@ export const ChatGroup = ({
           availableChannels[0]?.channelId ??
           DEFAULT_RETICULUM_CHANNEL_ID)
     );
-    const metadataReady = metadata?.ready === true;
     if (metadataReady) {
       setReticulumChannelMetadataVisibleGroupId(String(groupId));
     }
@@ -3116,10 +3238,25 @@ export const ChatGroup = ({
 
   useEffect(() => {
     if (!reticulumChatEnabled) return;
+    const opening = reticulumDraftChannelOpeningRef.current;
+    const layoutKnown =
+      isReticulumChannelMetadataVisible && reticulumChannelAccessReady;
+    if (opening && layoutKnown) reticulumDraftChannelOpeningRef.current = null;
     if (
       reticulumChannelsForSelectedGroup.some(
         (channel) => channel.channelId === selectedReticulumChannelId
       )
+    ) {
+      return;
+    }
+    // Opened in its draft's channel: it stays while the channels load (on a
+    // group switch the first render can still hold the last group's channel,
+    // before any of this group's channels are in).
+    if (
+      !layoutKnown &&
+      opening?.groupKey === selectedReticulumGroupKey &&
+      (opening.channelId === selectedReticulumChannelId ||
+        reticulumChannelsForSelectedGroup.length === 0)
     ) {
       return;
     }
@@ -3131,9 +3268,54 @@ export const ChatGroup = ({
         DEFAULT_RETICULUM_CHANNEL_ID
     );
   }, [
+    isReticulumChannelMetadataVisible,
+    reticulumChannelAccessReady,
     reticulumChannelsForSelectedGroup,
     reticulumChatEnabled,
     selectedReticulumChannelId,
+  ]);
+
+  // A draft left in a channel an admin has deleted since can never be seen or
+  // sent again: it goes, so the group keeps no "Draft" mark for it (and does
+  // not open in that channel each time).
+  useEffect(() => {
+    if (!reticulumChatEnabled || !myAddress) return;
+    if (!isReticulumChannelMetadataVisible) return;
+    const groupId = Number(selectedGroup);
+    if (!Number.isInteger(groupId) || groupId <= 0) return;
+    const availableIds = new Set(
+      reticulumAllChannelsForSelectedGroup.map((channel) => channel.channelId)
+    );
+    const missingIds = [...draftChannelIds].filter(
+      (channelId) =>
+        channelId !== DEFAULT_RETICULUM_CHANNEL_ID &&
+        !availableIds.has(channelId)
+    );
+    if (missingIds.length === 0) return;
+    let cancelled = false;
+    void Promise.resolve(window.reticulumChat?.getChannels?.(groupId, true))
+      .then((channels) => {
+        if (cancelled || !Array.isArray(channels)) return;
+        for (const channel of channels as ReticulumGroupChannel[]) {
+          if (channel?.archived && missingIds.includes(channel.channelId)) {
+            clearChatDraft(
+              myAddress,
+              groupChannelDraftKey(groupId, channel.channelId)
+            );
+          }
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    draftChannelIds,
+    isReticulumChannelMetadataVisible,
+    myAddress,
+    reticulumAllChannelsForSelectedGroup,
+    reticulumChatEnabled,
+    selectedGroup,
   ]);
 
   const reticulumChannelsByCategory = useMemo(() => {
@@ -3211,9 +3393,9 @@ export const ChatGroup = ({
         ? TIME_DAYS_1_IN_MILLISECONDS
         : undefined);
 
-  useEffect(() => {
+  useEffectOnKeyChange(`${selectedGroup}:${selectedReticulumChannelId}`, () => {
     setReticulumMessageExpiryDurationMs(undefined);
-  }, [selectedGroup, selectedReticulumChannelId]);
+  });
 
   useEffect(() => {
     setReticulumMessageExpiryDurationMs((current) =>
@@ -4480,11 +4662,15 @@ export const ChatGroup = ({
     reticulumHiddenAuthorAddresses,
   ]);
 
-  useEffect(() => {
-    // Draft text is intentionally shared, but a reply target belongs to one channel.
-    if (!reticulumChatEnabled) return;
-    setReplyMessage(null);
-  }, [reticulumChatEnabled, selectedGroup, selectedReticulumChannelId]);
+  useEffectOnKeyChange(
+    `${reticulumChatEnabled}:${selectedGroup}:${selectedReticulumChannelId}`,
+    () => {
+      // A reply target belongs to one channel, like its draft
+      // (composerDraftKey).
+      if (!reticulumChatEnabled) return;
+      setReplyMessage(null);
+    }
+  );
 
   useEffect(() => {
     if (!reticulumChatEnabled || !notificationReticulumChannelId) return;
@@ -6930,8 +7116,11 @@ export const ChatGroup = ({
       } else {
         editorRef.current.commands.clearContent();
       }
-      if (myAddress && selectedGroup != null) {
-        clearChatDraft(myAddress, groupDraftKey(selectedGroup));
+      if (myAddress && composerDraftKey) {
+        // A save still waiting would put the text just sent (or thrown
+        // away) back as the draft.
+        saveDraftRef.current?.cancel();
+        clearChatDraft(myAddress, composerDraftKey);
       }
     }
   };
@@ -6944,14 +7133,7 @@ export const ChatGroup = ({
   }, [isMobile]);
   const clearPendingReticulumFiles = useCallback(() => {
     setPendingReticulumFiles((prev) => {
-      prev.forEach((file) => {
-        if (file.previewUrl) URL.revokeObjectURL(file.previewUrl);
-        if (file.temporaryFilePath) {
-          void window.reticulumResources?.releaseConvertedMedia?.(
-            file.temporaryFilePath
-          );
-        }
-      });
+      releasePendingReticulumFiles(prev);
       return [];
     });
   }, []);
@@ -6961,15 +7143,18 @@ export const ChatGroup = ({
   }, [pendingReticulumFiles]);
 
   useEffect(() => {
+    const parked = parkedComposerAttachmentsRef.current;
+    const root = chatRootRef.current;
     return () => {
-      pendingReticulumFilesRef.current.forEach((file) => {
-        if (file.previewUrl) URL.revokeObjectURL(file.previewUrl);
-        if (file.temporaryFilePath) {
-          void window.reticulumResources?.releaseConvertedMedia?.(
-            file.temporaryFilePath
-          );
-        }
-      });
+      // Hiding the phone's Chat section (an <Activity>) runs this too, with
+      // the chat still on the page: its attachments wait for it then. Only a
+      // chat that is gone lets go of them.
+      if (root?.isConnected) return;
+      releasePendingReticulumFiles(pendingReticulumFilesRef.current);
+      parked.forEach((attachments) =>
+        releasePendingReticulumFiles(attachments.files)
+      );
+      parked.clear();
     };
   }, []);
 
@@ -7733,15 +7918,27 @@ export const ChatGroup = ({
           }, 150);
         }
 
-        clearEditorContent();
-        setReplyMessage(null);
-        setOnEditMessage(null);
-        setIsDeleteImage(false);
-        setChatImagesToSave([]);
-        setPendingLibraryGif(null);
-        closeMobileCompose();
-        clearPendingReticulumFiles();
-        setReticulumMessageExpiryDurationMs(undefined);
+        if (composerKeyRef.current !== composerDraftKey) {
+          // Another channel opened while this was prepared: the composer holds
+          // that channel's draft now, so only what was sent is let go.
+          if (myAddress && composerDraftKey) {
+            clearChatDraft(myAddress, composerDraftKey);
+            const sent =
+              parkedComposerAttachmentsRef.current.get(composerDraftKey);
+            parkedComposerAttachmentsRef.current.delete(composerDraftKey);
+            if (sent) releasePendingReticulumFiles(sent.files);
+          }
+        } else {
+          clearEditorContent();
+          setReplyMessage(null);
+          setOnEditMessage(null);
+          setIsDeleteImage(false);
+          setChatImagesToSave([]);
+          setPendingLibraryGif(null);
+          closeMobileCompose();
+          clearPendingReticulumFiles();
+          setReticulumMessageExpiryDurationMs(undefined);
+        }
       }
       // send chat message
     } catch (error) {
@@ -7764,8 +7961,13 @@ export const ChatGroup = ({
 
   // Active group draft target. Null while switching conversations so an editor
   // update cannot persist chat A's text under chat B's draft key.
-  const draftRestoredRef = useRef<string | null>(null);
+  const draftRestoredRef = useRef<{ token: string; editor: unknown } | null>(
+    null
+  );
   const draftContextRef = useRef<{ account: string; key: string } | null>(null);
+  // The throttled draft save: flushed before the composer moves to another
+  // channel, dropped when its text is sent or thrown away.
+  const saveDraftRef = useRef<ReturnType<typeof throttle> | null>(null);
 
   useEffect(() => {
     if (!editorInstance) return;
@@ -7782,38 +7984,97 @@ export const ChatGroup = ({
     currentEditor.on('update', handleUpdateRef.current);
 
     // Persist whatever is typed (but not sent) so it survives leaving and
-    // returning to this group, keyed per-group and per-account. The active
+    // returning to this group, keyed per channel and per account. The active
     // draft key comes from draftContextRef so a mid-switch editor update
-    // cannot write chat A's text into chat B's draft slot.
-    const saveDraft = throttle(() => {
+    // cannot write chat A's text into chat B's draft slot. Each save carries
+    // the key and text of the keystroke, so one that runs late (the
+    // throttle's last call, or a flush) cannot store what the composer shows
+    // by then: another channel's draft, or a read-only composer emptied.
+    const saveDraft = throttle(
+      (ctx: { account: string; key: string }, html: string) => {
+        try {
+          setChatDraft(ctx.account, ctx.key, html);
+        } catch {
+          /* ignore */
+        }
+      },
+      400
+    );
+    const saveTypedDraft = ({
+      transaction,
+    }: {
+      transaction?: { docChanged?: boolean };
+    }) => {
+      // Typed changes only: setEditable() reports an update without one.
+      if (!transaction?.docChanged) return;
       const ctx = draftContextRef.current;
-      if (!ctx) return;
-      try {
-        setChatDraft(ctx.account, ctx.key, currentEditor.getHTML());
-      } catch {
-        /* ignore */
-      }
-    }, 400);
-    currentEditor.on('update', saveDraft);
+      // A message being edited is not a draft: its text is never stored.
+      if (!ctx || onEditMessageRef.current) return;
+      saveDraft(ctx, currentEditor.getHTML());
+    };
+    saveDraftRef.current = saveDraft;
+    currentEditor.on('update', saveTypedDraft);
 
     return () => {
       currentEditor.off('update', handleUpdateRef.current);
-      currentEditor.off('update', saveDraft);
-      saveDraft.cancel();
+      currentEditor.off('update', saveTypedDraft);
+      // The last keystrokes still go to the draft they were typed for.
+      saveDraft.flush();
+      if (saveDraftRef.current === saveDraft) saveDraftRef.current = null;
     };
   }, [editorInstance, setMessageSize, isPrivate, myAddress, selectedGroup]);
 
-  // Restore a previously saved draft for this group once the editor is ready.
-  // Always replace editor contents on conversation change — including clearing
-  // when there is no draft — so one group's typed text cannot leak into another.
+  // Restore a previously saved draft for this group channel once the editor
+  // is ready. Always replace editor contents on conversation or channel
+  // change — including clearing when there is no draft — so one channel's
+  // typed text cannot leak into another (and be sent there).
   useEffect(() => {
-    setPendingLibraryGif(null);
-    if (selectedGroup == null || !myAddress) return;
-    const key = groupDraftKey(selectedGroup);
+    if (composerDraftKey == null) {
+      setPendingLibraryGif(null);
+      return;
+    }
+    const key = composerDraftKey;
+    const keyChanged = composerKeyRef.current !== key;
+    // TipTap builds a new, empty editor when the parked Chat section is shown
+    // again: the same channel's draft goes back into it.
+    const restored = draftRestoredRef.current;
+    const editorReplaced =
+      !keyChanged &&
+      Boolean(editorInstance && restored?.editor) &&
+      restored.editor !== editorInstance;
+    // Attachments stay with the channel they were picked in, like its text.
+    if (keyChanged) {
+      const next = swapParkedAttachments(
+        parkedComposerAttachmentsRef.current,
+        composerKeyRef.current,
+        key,
+        { files: pendingReticulumFilesRef.current, gif: pendingLibraryGif }
+      );
+      composerKeyRef.current = key;
+      if (next.files.length || pendingReticulumFilesRef.current.length) {
+        setPendingReticulumFiles(next.files);
+      }
+      setPendingLibraryGif(next.gif);
+      pendingReticulumFilesRef.current = next.files;
+      pendingLibraryGifRef.current = next.gif;
+    }
+    if (keyChanged || editorReplaced) {
+      // An edit belongs to its message's channel and to the editor holding
+      // its text: either going ends it, and the draft takes the composer.
+      if (editLoadTimerRef.current) {
+        clearTimeout(editLoadTimerRef.current);
+        editLoadTimerRef.current = null;
+      }
+      setOnEditMessage(null);
+      setIsDeleteImage(false);
+    }
+    if (!myAddress) return;
     const token = `${myAddress}:${key}`;
-    if (draftRestoredRef.current === token) return;
+    if (restored?.token === token && !editorReplaced) return;
 
-    // Pause persistence until this conversation's editor state is applied.
+    // The last keystrokes go to the draft they belong to, then persistence
+    // pauses until this channel's editor state is applied.
+    saveDraftRef.current?.flush();
     draftContextRef.current = null;
     const draft = getChatDraft(myAddress, key);
 
@@ -7825,7 +8086,7 @@ export const ChatGroup = ({
         if (tries++ < 30) setTimeout(applyConversationDraft, 100);
         return;
       }
-      draftRestoredRef.current = token;
+      draftRestoredRef.current = { token, editor: editorRef.current };
       if (draft) {
         editorRef.current.commands.setContent(draft);
         // setContent does not emit an update, so the send button would stay
@@ -7840,9 +8101,12 @@ export const ChatGroup = ({
         setMessageSize(0);
         void measureComposerRef.current();
         // Surface the composer (and the restored text) so the user can keep
-        // typing right away, without forcing the keyboard open.
-        setIsFocusedParent(true);
-        setComposerOpenLandscape(true);
+        // typing right away, without forcing the keyboard open. Not when the
+        // same chat only comes back on screen.
+        if (!editorReplaced) {
+          setIsFocusedParent(true);
+          setComposerOpenLandscape(true);
+        }
       } else {
         editorRef.current.commands.clearContent(true);
         setMessageSize(0);
@@ -7850,8 +8114,9 @@ export const ChatGroup = ({
         setComposerHasText(false);
       }
       draftContextRef.current = { account: myAddress, key };
-      // The draft is in: a share from another app can go in after it.
-      markShareReady(key);
+      // The draft is in: a share from another app can go in after it (shares
+      // go to the group; useChatShareChannelDelivery picks the channel).
+      markShareReady(groupDraftKey(selectedGroup));
     };
     // Apply immediately when possible to avoid flashing the previous chat's
     // draft into this conversation.
@@ -7859,7 +8124,24 @@ export const ChatGroup = ({
     return () => {
       cancelled = true;
     };
-  }, [selectedGroup, myAddress]);
+  }, [composerDraftKey, editorInstance, myAddress]);
+
+  // Turning read-only empties the composer (TipTap) while the channel's draft
+  // stays stored: once the user can write there again (rights that loaded
+  // late), the draft comes back instead of being typed over.
+  useEffect(() => {
+    if (!canWriteSelectedReticulumChannel) return;
+    const editor = editorRef.current;
+    const ctx = draftContextRef.current;
+    if (!editor || editor.isDestroyed || !ctx || !editor.isEmpty) return;
+    const draft = getChatDraft(ctx.account, ctx.key);
+    if (!draft) return;
+    editor.commands.setContent(draft);
+    setComposerHasText(composerHasSendableText(editor.getText()));
+    resetComposerMeasure();
+    setMessageSize(0);
+    void measureComposerRef.current();
+  }, [canWriteSelectedReticulumChannel]);
 
   useEffect(() => {
     if (hide) {
@@ -8653,10 +8935,12 @@ export const ChatGroup = ({
       if (isCompressingReticulumImage || isCompressingReticulumGif) return;
       const file = files.find((item) => item && item.size >= 0);
       if (!file) return;
+      // Refs: a share can arrive in the same commit as the channel switch
+      // that brought this channel's own attachments back.
       if (
         chatImagesToSave?.length > 0 ||
-        pendingLibraryGif ||
-        pendingReticulumFiles.length > 0 ||
+        pendingLibraryGifRef.current ||
+        pendingReticulumFilesRef.current.length > 0 ||
         (messageHasImage(onEditMessage) && !isDeleteImage)
       ) {
         setInfoSnack({
@@ -9076,6 +9360,10 @@ export const ChatGroup = ({
   const useReticulumCompressedImage = useCallback(async () => {
     const choice = reticulumLargeImageChoice;
     if (!choice || isCompressingReticulumImage) return;
+    // The picture belongs to the channel it was picked in: a switch while it
+    // is compressed drops it there, as insertFiles does.
+    const attachSequence = reticulumGifConversionSequenceRef.current;
+    const attachContext = reticulumGifConversionContextRef.current;
     setIsCompressingReticulumImage(true);
     if (choice.target === 'discussion') {
       setIsPreparingReticulumDiscussionFile(true);
@@ -9087,7 +9375,10 @@ export const ChatGroup = ({
           expectedSequence: reticulumDiscussionFileSequenceRef.current,
         });
       } else {
-        await addPendingReticulumFile(compressed);
+        await addPendingReticulumFile(compressed, {
+          expectedSequence: attachSequence,
+          expectedContext: attachContext,
+        });
       }
       setReticulumLargeImageChoice(null);
     } catch (error) {
@@ -9123,6 +9414,8 @@ export const ChatGroup = ({
         : await addPendingReticulumFile(choice.file, {
             asAttachment: true,
             filePathOverride: choice.filePath,
+            expectedSequence: reticulumGifConversionSequenceRef.current,
+            expectedContext: reticulumGifConversionContextRef.current,
           });
     if (added) {
       setReticulumLargeImageChoice(null);
@@ -10164,12 +10457,18 @@ export const ChatGroup = ({
         textScale={reticulumChatTextScale}
         unreadCount={unreadCount}
         replyCount={replyCount}
+        hasDraft={draftChannelIds.has(channel.channelId)}
       />
     );
   };
 
+  // A group can open in its draft's channel before the channel list is in:
+  // its generated id ("ch-…") is not shown as its name meanwhile.
   const selectedReticulumChannelName =
-    selectedReticulumChannel?.name || selectedReticulumChannelId;
+    selectedReticulumChannel?.name ||
+    (selectedReticulumChannelId.startsWith('ch-')
+      ? ''
+      : selectedReticulumChannelId);
   const selectedGroupDisplayName =
     selectedGroupName || t('reticulum:group_fallback_name');
   const reticulumMembersLabel = t('group:member_category.members', {
@@ -10570,6 +10869,7 @@ export const ChatGroup = ({
 
   return (
     <div
+      ref={chatRootRef}
       className={
         reticulumChatEnabled
           ? reticulumChatTextScaleClassName(reticulumChatTextScale)

@@ -4,4 +4,5 @@
     <string name="share_target_groups">GO Rühmad</string>
     <string name="share_target_directs">GO Sõnumid</string>
     <string name="share_target_self">GO Endale</string>
+    <string name="qortal_hce_description">GO maksetaotlused (testimine)</string>
 </resources>

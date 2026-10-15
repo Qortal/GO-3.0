@@ -78,7 +78,7 @@ import {
 } from '../../atoms/global';
 import { timeDifferenceForNotificationChats } from './groupConstants';
 import { useChatDraftKeys } from '../../hooks/useChatDraftKeys';
-import { groupDraftKey } from '../../utils/chatPersistence';
+import { groupIdsWithDrafts } from '../../utils/chatPersistence';
 import { DraftBadge } from '../Chat/DraftBadge';
 import { useAtom, useAtomValue } from 'jotai';
 import { useTranslation } from 'react-i18next';
@@ -864,6 +864,11 @@ const GroupListInner = ({
   const groupChatHasUnread = useAtomValue(groupChatHasUnreadAtom);
   const groupsAnnHasUnread = useAtomValue(groupsAnnHasUnreadAtom);
   const draftKeys = useChatDraftKeys(myAddress);
+  // A draft in any of a group's channels marks the group.
+  const draftGroupIds = useMemo(
+    () => groupIdsWithDrafts(draftKeys),
+    [draftKeys]
+  );
   const railMode = Boolean(reticulumChatEnabled);
   // On phones the rail alone gives no readable group names, so pair it with a
   // list panel unless the DM list already owns that space.
@@ -1449,7 +1454,7 @@ const GroupListInner = ({
                         selectedGroupId={selectedGroup?.groupId ?? null}
                         getUserSettings={getUserSettings}
                         myAddress={myAddress}
-                        hasDraft={draftKeys.has(groupDraftKey(group.groupId))}
+                        hasDraft={draftGroupIds.has(String(group.groupId))}
                         reticulumChatEnabled={reticulumChatEnabled}
                         isPinned
                         canReorderPins={pinnedGroups.length > 1}
@@ -1471,7 +1476,7 @@ const GroupListInner = ({
                   selectedGroupId={selectedGroup?.groupId ?? null}
                   getUserSettings={getUserSettings}
                   myAddress={myAddress}
-                  hasDraft={draftKeys.has(groupDraftKey(group.groupId))}
+                  hasDraft={draftGroupIds.has(String(group.groupId))}
                   reticulumChatEnabled={reticulumChatEnabled}
                 />
               ))}
@@ -1762,7 +1767,7 @@ const GroupListInner = ({
               selectedGroupId={selectedGroup?.groupId ?? null}
               getUserSettings={getUserSettings}
               myAddress={myAddress}
-              hasDraft={draftKeys.has(groupDraftKey(group.groupId))}
+              hasDraft={draftGroupIds.has(String(group.groupId))}
               reticulumChatEnabled={reticulumChatEnabled}
             />
           ))}

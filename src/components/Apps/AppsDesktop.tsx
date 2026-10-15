@@ -90,6 +90,7 @@ import {
   type PersistedOpenTab,
 } from '../Mobile/mobileOpenTabsSession';
 import { getPrivateAppIdentity } from '../Mobile/privateAppTabIdentity';
+import { isDevZipTab } from '../Mobile/devMode/devModeApp';
 import { useHandlePrivateApps } from '../../hooks/useHandlePrivateApps';
 import {
   privateAppIdFromUrl,
@@ -274,6 +275,7 @@ export const AppsDesktop = ({
     (tab: Record<string, unknown> | null | undefined) => {
       if (!isMobile || !myAddress || isRestoringSessionRef.current || !tab)
         return;
+      if (isDevZipTab(tab)) return;
       setAppOpenCounts((prev) => {
         const next = incrementAppOpenCount(prev, tab);
         void saveAppOpenCounts(myAddress, next);

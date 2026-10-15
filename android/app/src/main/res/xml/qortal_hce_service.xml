@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- GO's payment request AID: F0 + "QORTALP" (unregistered proprietary range).
+     "other" category, so it never competes with the phone's payment app. -->
+<host-apdu-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:description="@string/qortal_hce_description"
+    android:requireDeviceUnlock="true">
+    <aid-group
+        android:category="other"
+        android:description="@string/qortal_hce_description">
+        <aid-filter android:name="F0514F5254414C50" />
+    </aid-group>
+</host-apdu-service>

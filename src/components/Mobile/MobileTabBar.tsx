@@ -16,6 +16,7 @@ import {
 import { SAFE_AREA_BOTTOM } from '../../utils/mobileSafeArea';
 import { MOBILE_TAB_BAR_HEIGHT_PX } from './mobileBarHeights';
 import { useGoLayout } from '../../layout/goLayout';
+import { tabBarCoverMotion } from './mobileTabBarCover';
 
 // Defined in mobileBarHeights.ts so mobileLayout.ts needn't import this
 // component; re-exported for existing importers.
@@ -57,6 +58,12 @@ type MobileTabBarProps = {
    * Home, Apps and Chat, not only the round buttons.
    */
   stripTakesTouches?: boolean;
+  /**
+   * A panel is open over the bottom of the screen (useCoverMobileTabBar):
+   * the bar slides off the bottom edge like immersive mode's, and comes back
+   * when it closes.
+   */
+  covered?: boolean;
 };
 
 const chatUnreadDot = (dotColor: string, ringColor: string) => ({
@@ -98,6 +105,7 @@ export const MobileTabBar = ({
   immersive,
   floating = false,
   stripTakesTouches = false,
+  covered = false,
 }: MobileTabBarProps) => {
   const theme = useTheme();
   // GO landscape and tablets: three buttons spread over a wide screen are a
@@ -218,21 +226,23 @@ export const MobileTabBar = ({
     );
   }
 
-  const immersiveSx = immersive
-    ? immersive.hidden
+  // Off the bottom edge in immersive mode's full screen, or while a panel is
+  // open over the bottom of the screen; mounted all along, so it glides back.
+  const slide = immersive ?? tabBarCoverMotion();
+  const immersiveSx =
+    immersive?.hidden || covered
       ? {
           // Past the edge by the shadow's reach too, so no glow is left.
           transform: 'translateY(calc(100% + 28px))',
           visibility: 'hidden' as const,
           pointerEvents: 'none' as const,
-          transition: `transform ${immersive.hideMs}ms ${immersive.easing}, visibility 0s linear ${immersive.hideMs}ms`,
+          transition: `transform ${slide.hideMs}ms ${slide.easing}, visibility 0s linear ${slide.hideMs}ms`,
         }
       : {
           transform: 'none',
           visibility: 'visible' as const,
-          transition: `transform ${immersive.showMs}ms ${immersive.easing}`,
-        }
-    : {};
+          transition: `transform ${slide.showMs}ms ${slide.easing}`,
+        };
 
   const isDark = theme.palette.mode === 'dark';
   const glass = isDark

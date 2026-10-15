@@ -11,6 +11,97 @@ desktop Hub. The format is based on
 
 ## [Unreleased]
 
+## [0.0.18] — 2026-10-15 (GO 3.0)
+
+### Added
+
+- **Qortal Card (testing)** _(GO)_ — pay and take payments by tapping, with
+  a Qortal test card or between two GO phones (NFC). Off until switched on
+  in Settings → System; then Qortal Card shows in the avatar menu, below
+  Notifications. My card connects a card in one tap: a blank card gets its
+  own account, with a key GO makes from the wallet for that card (never
+  the main key, so GO can move its QORT back if the card is lost) or a key
+  made on the card. Cards can be topped up, renamed, given a name on chain
+  and an avatar (avatar needs Your own node), saved as a password-protected
+  backup file (wallet-key cards), moved back by All, Amount or Percent, and
+  switched from an on-card key to one GO can restore. Take payment charges
+  a card held to the phone: GO checks the card's signature and balance
+  before it sends anything, and a failed send retries the same signed
+  payment. Phone to phone: one phone asks for QORT (2 minutes), the other
+  taps it and confirms in GO's own Send QORT. GO never replaces a key on a
+  card, never reuses a card key index, reads NFC only while a tap is
+  expected and answers taps from other phones only while it is asking and
+  unlocked. Test cards have no PIN yet, so keep only a few QORT on one. The
+  APK now asks for the NFC permission; phones without NFC still install GO.
+- **Dev Mode for Q-App developers** _(GO)_ — Settings → System → Dev Mode
+  adds a Dev Mode button next to New folder in the library's Pinned tab.
+  It picks a Q-App's .zip on the phone and opens it in a tab, unpacked the
+  way the node would serve it once published. GO builds it itself, in
+  memory, like a private Q-App, so it works on a public node and no node
+  sees the zip. Refresh reads the zip again, so a zip replaced on the phone
+  shows its new version. A dev app is named "Dev: <file name>", so it never
+  gets the permissions of a published app with the same name, and it is
+  not kept in folders or reopened after a restart.
+
+### Changed
+
+- **Drag apps out of an open folder** _(GO)_ — in the library's Pinned
+  tab, an app dragged off an open folder's panel (and held there for a
+  quarter second) closes the folder and keeps moving over the main grid.
+  The folder under the finger lights up, and dropping the app on it moves
+  the app there; dropping it anywhere else puts it back in its own folder.
+- **Group invite cards in chat** _(GO)_ — the full group name (two lines,
+  with the public/private icon inline) and two lines of description; a
+  small Join / Apply / Pending button sits beside the Group Score, with
+  the member count under it.
+
+### Fixed
+
+- **Chat no longer jumps near group invites** _(shared)_ — when a message
+  above the screen changed height (an invite card loading, say), the chat
+  showed everything shifted for one frame and flickered while the finger
+  was still. The rows now redraw in the same frame as the scroll fix, and
+  the invite placeholder has the loaded card's height.
+- **No "Your apikey is invalid" on public nodes** _(GO)_ — an error page
+  from a busy public node at login was read as a refused key, so GO showed
+  the API key dialog and stopped the unlock until the app was reopened a
+  few times. Only a real refusal (HTTP 401/403) counts now; on a public
+  node GO never asks for a key, and a node that does not answer goes on
+  as unreachable. Unlock diagnostics say "public node".
+- **Torq notifications open Torq** _(GO)_ — Torq's mention, reply and
+  follow alerts showed Quitter's avatar and opened Quitter, because the
+  app's own rules point there. The bell, the history and the phone
+  alerts now use the avatar and link of the app that set the rule, keeping
+  the post's path (or that app's start page), and show its registered
+  name.
+- **Drafts stay in the channel they were started in** _(GO)_ — an unsent
+  message was saved for the whole group and a group always opened in
+  General, so tapping a group marked "Draft" put the draft into General,
+  where it could be sent by mistake. Each channel now keeps its own draft
+  (its text, and its attachments while the group is open), and a group
+  with a draft opens in the channel of the draft typed last; a tapped
+  notification or a share still picks its own channel. Channels with a
+  draft are marked "Draft" in the channel list, and switching channels
+  swaps the composer to that channel's draft. Switching channels also ends
+  a message edit, and the text of a message being edited is no longer
+  saved as a draft. A draft in a channel that was deleted since is
+  dropped. Drafts saved before this stay with General.
+- **Coming back to Chat keeps the channel and the text** _(GO)_ — going to
+  Home or Apps and back put the open group back in General, emptied the
+  composer (the draft was still stored, and the next keystroke wrote over
+  it), and dropped the reply being written and the expiry picked. The
+  chat now comes back in the channel it was in, with its draft, reply and
+  attachments; a message being edited ends then, with the draft back in
+  the composer. A composer that turned read-only while the user's rights
+  were loading gets its draft back once they can write.
+- **Home, Apps and Chat buttons step aside for panels** _(GO)_ — the
+  floating round buttons covered the last rows of the phone channel list
+  and the in-chat message search (its last results and page buttons).
+  While one of those is open, the buttons slide off the bottom edge and
+  come back when it closes; nothing behind the panel moves. On tablets in
+  portrait, the Q-Chat overview beside the lists can now scroll its last
+  cards out from under the buttons.
+
 ## [0.0.17] — 2026-10-11 (GO 3.0)
 
 ### Added

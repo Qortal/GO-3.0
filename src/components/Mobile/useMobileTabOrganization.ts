@@ -26,6 +26,7 @@ import {
 import type { SerializedPinnedApp } from '../../hooks/qdnSavedSettings';
 import type { OpenTab } from './useOpenTabs';
 import { updateOpenTab } from './useOpenTabs';
+import { isDevZipTab } from './devMode/devModeApp';
 
 const EMPTY_ORGANIZATION = emptyOrganization();
 
@@ -70,9 +71,12 @@ export function useMobileTabOrganization() {
   const createFolder = useCallback(
     async (name: string, initialTab?: OpenTab, row = 0) => {
       let folderId = '';
+      // A Dev Mode app lives in memory only, so it never goes in a folder.
+      const folderTab =
+        initialTab && !isDevZipTab(initialTab) ? initialTab : undefined;
       await persist((prev) => {
         folderId = createFolderId();
-        const tabKey = initialTab ? getOpenTabKey(initialTab) : null;
+        const tabKey = folderTab ? getOpenTabKey(folderTab) : null;
         const foldersInRow = prev.folders.filter(
           (folder) => getFolderRow(folder) === row
         );
@@ -85,9 +89,9 @@ export function useMobileTabOrganization() {
         };
         const tabFolderMap = { ...prev.tabFolderMap };
         const savedTabs = { ...prev.savedTabs };
-        if (initialTab && tabKey) {
+        if (folderTab && tabKey) {
           tabFolderMap[tabKey] = folderId;
-          savedTabs[tabKey] = snapshotFromTab(initialTab);
+          savedTabs[tabKey] = snapshotFromTab(folderTab);
         }
         const folders = [...prev.folders, folder];
         return {
@@ -299,6 +303,7 @@ export function useMobileTabOrganization() {
 
   const addTabToFolder = useCallback(
     async (tab: OpenTab, folderId: string) => {
+      if (isDevZipTab(tab)) return;
       const tabKey = getOpenTabKey(tab);
       await persist((prev) => {
         const tabFolderMap = { ...prev.tabFolderMap, [tabKey]: folderId };

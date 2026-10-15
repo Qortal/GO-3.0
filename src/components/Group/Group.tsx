@@ -33,6 +33,7 @@ import {
 import { useSectionSwipe } from '../Mobile/sectionSwipe/useSectionSwipe';
 import { GO_TAB_BAR_SPACE } from '../Mobile/mobileBarHeights';
 import { mobileTabBarElementAtom } from '../Mobile/mobileTabBarElement';
+import { useCoverMobileTabBar } from '../Mobile/mobileTabBarCover';
 import { IMMERSIVE_SLIDE_TARGET_ATTR } from '../Mobile/immersive/useImmersiveBars';
 import {
   mobileTabForViewMode,
@@ -4880,6 +4881,20 @@ const GroupInner = ({
     !mobileDirectConversationOpen &&
     !mobileListPanelOpen &&
     (mobileSectionPanelOpen || reticulumMembersPanelOpen);
+  // The group chat's message search runs to the bottom of the phone screen
+  // (its results and page buttons), so the floating Home/Apps/Chat buttons
+  // step aside while it is open on the chat on screen, and come back over the
+  // list that slides in over it.
+  useCoverMobileTabBar(
+    isMobile &&
+      reticulumChatEnabled &&
+      desktopViewMode === 'chat' &&
+      Boolean(selectedGroup) &&
+      groupSection === 'chat' &&
+      !mobileDirectConversationOpen &&
+      !mobileListPanelOpen &&
+      reticulumSearchOverlayOpen
+  );
   // Phones: sideways swipes on an open chat lead back to the lists, like the
   // system back. On a DM (Saved Messages included) a swipe to the right goes
   // to the DM list; on a group chat to the right goes to the Groups list and

@@ -4,4 +4,5 @@
     <string name="share_target_groups">GO Gruppi</string>
     <string name="share_target_directs">GO DM</string>
     <string name="share_target_self">GO Per me</string>
+    <string name="qortal_hce_description">Richieste di pagamento GO (test)</string>
 </resources>

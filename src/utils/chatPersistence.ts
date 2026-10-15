@@ -1,7 +1,7 @@
 // Lightweight, localStorage-backed persistence for the mobile chat experience:
 //  - the last-opened conversation (so the Chat tab can resume where the user
 //    left off, even after the app was minimised / killed), and
-//  - per-conversation unsent draft messages.
+//  - per-conversation unsent draft messages (one per group channel).
 //
 // Everything is namespaced by account address so switching wallets never leaks
 // one account's drafts or last-opened chat into another.
@@ -74,7 +74,10 @@ function readDrafts(account?: string | null): DraftMap {
 
 function writeDrafts(account: string | null | undefined, map: DraftMap): void {
   try {
-    localStorage.setItem(accountKey(DRAFTS_PREFIX, account), JSON.stringify(map));
+    localStorage.setItem(
+      accountKey(DRAFTS_PREFIX, account),
+      JSON.stringify(map)
+    );
     try {
       window.dispatchEvent(new Event(DRAFTS_CHANGED_EVENT));
     } catch {
@@ -112,6 +115,72 @@ export function isEmptyChatHtml(html?: string | null): boolean {
 export const groupDraftKey = (groupId: string | number) => `group:${groupId}`;
 export const directDraftKey = (address: string) => `direct:${address}`;
 
+// The channel a group chat opens in. Its draft keeps the group's own key, so
+// drafts saved before every channel had its own stay with General (and a
+// group chat without channels uses the same one).
+const GROUP_MAIN_CHANNEL_ID = 'general';
+
+/** One draft per group channel: "group:<id>" or "group:<id>/<channel>". */
+export const groupChannelDraftKey = (
+  groupId: string | number,
+  channelId?: string | null
+) =>
+  !channelId || channelId === GROUP_MAIN_CHANNEL_ID
+    ? groupDraftKey(groupId)
+    : `${groupDraftKey(groupId)}/${channelId}`;
+
+/** The group and channel a draft key belongs to; null for a DM's key. */
+export function parseGroupDraftKey(
+  key: string
+): { groupId: string; channelId: string } | null {
+  const match = /^group:([^/]+)(?:\/(.+))?$/.exec(key);
+  if (!match) return null;
+  return { groupId: match[1], channelId: match[2] || GROUP_MAIN_CHANNEL_ID };
+}
+
+/** The groups with a draft in any channel, from useChatDraftKeys' keys. */
+export function groupIdsWithDrafts(keys: Iterable<string>): Set<string> {
+  const groupIds = new Set<string>();
+  for (const key of keys) {
+    const parsed = parseGroupDraftKey(key);
+    if (parsed) groupIds.add(parsed.groupId);
+  }
+  return groupIds;
+}
+
+/** The channels of one group that hold a draft, from useChatDraftKeys' keys. */
+export function groupDraftChannelIds(
+  keys: Iterable<string>,
+  groupId: string | number
+): Set<string> {
+  const channelIds = new Set<string>();
+  for (const key of keys) {
+    const parsed = parseGroupDraftKey(key);
+    if (parsed?.groupId === String(groupId)) channelIds.add(parsed.channelId);
+  }
+  return channelIds;
+}
+
+/**
+ * The channel of the group's draft typed in last (drafts are stored newest
+ * last, see setChatDraft), or null when the group has none.
+ */
+export function latestGroupDraftChannel(
+  account: string | null | undefined,
+  groupId: string | number
+): string | null {
+  const map = readDrafts(account);
+  let latest: string | null = null;
+  for (const key of Object.keys(map)) {
+    const parsed = parseGroupDraftKey(key);
+    if (parsed?.groupId !== String(groupId) || isEmptyChatHtml(map[key])) {
+      continue;
+    }
+    latest = parsed.channelId;
+  }
+  return latest;
+}
+
 export function getChatDraft(
   account: string | null | undefined,
   key: string
@@ -131,6 +200,8 @@ export function setChatDraft(
     delete map[key];
   } else {
     if (map[key] === html) return;
+    // Moved to the end, so the order says which draft was typed in last.
+    delete map[key];
     map[key] = html;
   }
   writeDrafts(account, map);

@@ -4,4 +4,5 @@
     <string name="share_target_groups">GO Ryhmät</string>
     <string name="share_target_directs">GO Viestit</string>
     <string name="share_target_self">GO Itselle</string>
+    <string name="qortal_hce_description">GO-maksupyynnöt (testaus)</string>
 </resources>

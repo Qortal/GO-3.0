@@ -4,4 +4,5 @@
     <string name="share_target_groups">GO Группы</string>
     <string name="share_target_directs">GO Личные</string>
     <string name="share_target_self">GO Себе</string>
+    <string name="qortal_hce_description">Запросы на оплату GO (тест)</string>
 </resources>

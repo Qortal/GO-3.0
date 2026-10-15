@@ -48,6 +48,11 @@ import {
 } from '../../utils/reticulumDmNotifications';
 import { getReticulumNotificationChannelLabel } from '../../utils/reticulumNotificationChannel';
 import {
+  getNotificationOwnerApp,
+  getNotificationOwnerSpelling,
+  pinNotificationToOwnerApp,
+} from '../../utils/notificationOwnerApp';
+import {
   applyKnownPaymentSenders,
   formatPaymentAmount,
   lookupPaymentSenderName,
@@ -1119,15 +1124,25 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
                   if (alreadyExists) return trimmed;
                   return [tx, ...trimmed];
                 });
-                fireOsNotificationPayment(
-                  tx,
-                  i18n.t('core:message.generic.new_notification_from', {
-                    appName: tx.appName ?? 'App',
-                  }),
-                  getNotificationMessage(tx.message),
-                  `${getBaseApiReact()}${tx.image}`,
-                  tx?.link
-                );
+                // The alert shows and opens the Q-App that asked for it,
+                // under its registered name.
+                void (async () => {
+                  const owner = getNotificationOwnerApp(tx);
+                  const spelling = owner
+                    ? await getNotificationOwnerSpelling(owner.name)
+                    : '';
+                  if (!isCurrentConnection(socket)) return;
+                  const owned = pinNotificationToOwnerApp(tx, spelling);
+                  fireOsNotificationPayment(
+                    owned,
+                    i18n.t('core:message.generic.new_notification_from', {
+                      appName: spelling || tx.appName || 'App',
+                    }),
+                    getNotificationMessage(owned.message),
+                    `${getBaseApiReact()}${owned.image}`,
+                    owned?.link
+                  );
+                })();
               }
             }
           } catch (error) {

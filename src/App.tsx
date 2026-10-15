@@ -70,6 +70,7 @@ import {
 } from './hooks/useSoftKeyboardInset';
 import { MobileTopBar } from './components/Mobile/MobileTopBar';
 import { GO_TAB_BAR_SPACE_VAR } from './components/Mobile/mobileBarHeights';
+import { mobileTabBarCoveredAtom } from './components/Mobile/mobileTabBarCover';
 import {
   shouldCollapseForTyping,
   useChatComposerFocus,
@@ -131,6 +132,7 @@ import { useAppMessageHandler } from './hooks/useAppMessageHandler';
 import { QortinoNotificationHost } from './components/Snackbar/QortinoNotificationHost';
 import { SavedFileActionsSheet } from './components/Mobile/SavedFileActionsSheet';
 import { AppUpdateWindow } from './components/AppUpdate/AppUpdateWindow';
+import { QortalCardWindow } from './components/QortalCard/QortalCardWindow';
 import { useAppUpdateWatcher } from './appUpdate/useAppUpdateWatcher';
 import { getWallets, storeWallets } from './background/background.ts';
 import {
@@ -525,6 +527,9 @@ function App() {
   const mobileChatComposeActive = useAtomValue(mobileChatComposeActiveAtom);
   // Threads / Qortal Land / Members fill the screen, so the tab bar steps aside.
   const mobileGroupPanelOpen = useAtomValue(mobileGroupPanelOpenAtom);
+  // A panel open over the bottom of the screen (the channel list drawer and
+  // the like): the buttons slide away while the layout stays.
+  const mobileTabBarCovered = useAtomValue(mobileTabBarCoveredAtom);
   const [tabsGridOpen, setTabsGridOpen] = useState(false);
   const tabsGridOpeningRef = useRef(false);
   // The tab cards show a picture of each page: take one of the page on
@@ -2699,6 +2704,11 @@ function App() {
 
         <AppUpdateWindow />
 
+        {/* Qortal Card (testing): opened from the avatar menu. */}
+        {isGoApp() && isAuthenticated && address && (
+          <QortalCardWindow address={address} />
+        )}
+
         <UserLookup
           isOpenDrawerLookup={isOpenDrawerLookup}
           setIsOpenDrawerLookup={setIsOpenDrawerLookup}
@@ -2975,6 +2985,7 @@ function App() {
             immersive={immersiveTabBarProps(immersive)}
             floating
             stripTakesTouches={!contentBehindTabBar}
+            covered={mobileTabBarCovered}
           />
         )}
       {immersive.active && (

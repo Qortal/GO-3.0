@@ -23,6 +23,7 @@ import {
   subscribeToReticulumGroupOrder,
 } from './reticulumGroupRail';
 import { QChatWhatsNewDialog } from './QChatWhatsNewDialog';
+import { GO_TAB_BAR_SPACE } from '../Mobile/mobileBarHeights';
 
 const RETICULUM_NOTIFICATION_RED = '#f23f42';
 const RETICULUM_UNREAD_BLUE = '#168bff';
@@ -297,6 +298,9 @@ export function ReturningUserActivityDashboard({
         minHeight: 0,
         overflowX: 'hidden',
         overflowY: 'auto',
+        // GO tablets in portrait: the floating Home/Apps/Chat buttons sit
+        // over the end of this pane, so it can scroll out from under them.
+        pb: GO_TAB_BAR_SPACE,
         position: 'relative',
         scrollbarWidth: 'none',
         width: '100%',

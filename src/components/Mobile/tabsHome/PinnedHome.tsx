@@ -24,6 +24,7 @@ import {
   useTheme,
 } from '@mui/material';
 import { alpha } from '@mui/material/styles';
+import { useAtomValue } from 'jotai';
 import AddRoundedIcon from '@mui/icons-material/AddRounded';
 import ClearAllRoundedIcon from '@mui/icons-material/ClearAllRounded';
 import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded';
@@ -64,12 +65,22 @@ import { TabPreviewCard } from './TabPreviewCard';
 import { useShownWindows } from './useShownWindows';
 import { groupTabsIntoStacks, type TabStack } from './tabStacks';
 import { measureBoxes, playFlip } from './flip';
-import { homeGridMetrics, moveId, rowPlacementForFlatOrder } from './homeGrid';
-import { useLongPressReorder } from './useLongPressReorder';
+import {
+  hitTestSlot,
+  homeGridMetrics,
+  moveId,
+  rowPlacementForFlatOrder,
+} from './homeGrid';
+import { edgeScrollStep, useLongPressReorder } from './useLongPressReorder';
+import { DevModeButton } from '../devMode/DevModeButton';
+import { canOpenDevZips, goDevModeEnabledAtom } from '../devMode/devModeApp';
 
 const FOLDER_ATTR = 'data-home-folder';
 const FLIP_STALE_MS = 700;
 const CARD_ATTR = 'data-home-tab';
+const CARRY_OVER_ATTR = 'data-carry-over';
+/** A carried app counts as over a folder this far around its tile. */
+const CARRY_HIT_SLOP_PX = 10;
 
 type PinnedHomeProps = {
   /** The library and this tab are on screen. */
@@ -80,7 +91,10 @@ type PinnedHomeProps = {
   onBrowseApps: () => void;
 };
 
-type OpenFolderState = { id: string; open: boolean } | null;
+/** `carried`: closed by dragging an app out; its tile shows at once. */
+type OpenFolderState = { id: string; open: boolean; carried?: boolean } | null;
+/** An app dragged out of an open folder, still under the finger. */
+type CarryState = { tabKey: string; fromId: string } | null;
 
 /**
  * The Q-Apps library's first tab on phones: the Tabs folders full screen,
@@ -153,6 +167,11 @@ export function PinnedHome({
   const [closingStackKeys, setClosingStackKeys] = useState<Set<string>>(
     () => new Set()
   );
+  const [carry, setCarry] = useState<CarryState>(null);
+  const [carryOverId, setCarryOverId] = useState<string | null>(null);
+  // Refs as well: the drag reports every frame, before a render catches up.
+  const carryRef = useRef<CarryState>(null);
+  const carryOverRef = useRef<string | null>(null);
 
   useLayoutEffect(() => {
     const node = rootRef.current;
@@ -269,6 +288,71 @@ export function PinnedHome({
     launchAppWindow(tab);
   }, []);
 
+  const getFolderTile = useCallback(
+    (folderId: string) =>
+      getFolderElement(folderId)?.querySelector<HTMLElement>(
+        `[${FOLDER_TILE_ATTR}]`
+      ) ?? null,
+    [getFolderElement]
+  );
+
+  // An app dragged out of an open folder: the folder fades, the home grid
+  // shows, and the app goes into whichever folder it is let go over.
+  const startCarry = (tabKey: string) => {
+    if (!openFolder) return;
+    const next = { tabKey, fromId: openFolder.id };
+    carryRef.current = next;
+    setCarry(next);
+    setOpenFolder((prev) =>
+      prev ? { ...prev, open: false, carried: true } : prev
+    );
+  };
+
+  const moveCarry = (x: number, y: number) => {
+    const current = carryRef.current;
+    if (!current) return;
+    if (scrollParent) {
+      const step = edgeScrollStep(scrollParent.getBoundingClientRect(), y);
+      if (step !== 0) scrollParent.scrollTop += step;
+    }
+    const tiles = Array.from(
+      gridRef.current?.querySelectorAll<HTMLElement>(`[${FOLDER_ATTR}]`) ?? []
+    ).map((element) => ({
+      id: element.getAttribute(FOLDER_ATTR) || '',
+      rect: (
+        element.querySelector(`[${FOLDER_TILE_ATTR}]`) ?? element
+      ).getBoundingClientRect(),
+    }));
+    const overId = hitTestSlot(tiles, x, y, current.fromId, -CARRY_HIT_SLOP_PX);
+    if (overId !== carryOverRef.current) {
+      carryOverRef.current = overId;
+      setCarryOverId(overId);
+      if (overId) navigator.vibrate?.(6);
+    }
+  };
+
+  const dropCarry = (tabKey: string) => {
+    const current = carryRef.current;
+    if (!current) return null;
+    const targetId = carryOverRef.current;
+    const tab = folderTabsMap
+      .get(current.fromId)
+      ?.find((item) => getOpenTabKey(item) === tabKey);
+    if (targetId && tab && foldersById.has(targetId)) {
+      void org.addTabToFolder(tab, targetId);
+      return getFolderTile(targetId)?.getBoundingClientRect() ?? null;
+    }
+    // Let go over nothing: back into its own folder.
+    return getFolderTile(current.fromId)?.getBoundingClientRect() ?? null;
+  };
+
+  const endCarry = () => {
+    carryRef.current = null;
+    carryOverRef.current = null;
+    setCarry(null);
+    setCarryOverId(null);
+  };
+
   useLongPressReorder({
     container: gridEl,
     scroller: scrollParent,
@@ -374,6 +458,22 @@ export function PinnedHome({
   const menuFolder = folderMenu ? foldersById.get(folderMenu.id) : null;
   const deleteText = pendingDelete ?? lastPendingDelete.current;
   const hasFolders = org.folders.length > 0;
+  const showDevMode = useAtomValue(goDevModeEnabledAtom) && canOpenDevZips();
+  const pillSx = {
+    alignItems: 'center',
+    border: `1px dashed ${alpha(theme.palette.text.primary, 0.22)}`,
+    borderRadius: 999,
+    color: 'text.secondary',
+    display: 'inline-flex',
+    fontSize: 13,
+    fontWeight: 600,
+    gap: 0.6,
+    px: 1.75,
+    py: 0.75,
+    '&:active': {
+      backgroundColor: alpha(theme.palette.text.primary, 0.06),
+    },
+  } as const;
 
   return (
     <Box
@@ -384,6 +484,13 @@ export function PinnedHome({
         // The lift of a long-pressed folder.
         [`[data-reorder-lifted] .${LIFT_CLASS}`]: {
           transform: 'scale(1.08)',
+        },
+        // The folder a carried app would go into.
+        [`[${CARRY_OVER_ATTR}] .${LIFT_CLASS}`]: {
+          transform: 'scale(1.1)',
+        },
+        [`[${CARRY_OVER_ATTR}] [${FOLDER_TILE_ATTR}]`]: {
+          boxShadow: `0 0 0 2.5px ${theme.palette.primary.main}`,
         },
       }}
     >
@@ -407,10 +514,12 @@ export function PinnedHome({
               if (!folder) return null;
               const size = getFolderSize(folder);
               const span = size === 'large' ? 2 : 1;
+              const folderTabs = folderTabsMap.get(id) || [];
               return (
                 <Box
                   key={id}
                   {...{ [FOLDER_ATTR]: id }}
+                  {...(carryOverId === id ? { [CARRY_OVER_ATTR]: 'true' } : {})}
                   sx={{
                     display: 'flex',
                     gridColumn: `span ${span}`,
@@ -421,14 +530,20 @@ export function PinnedHome({
                   <FolderTile
                     folderId={id}
                     getTitle={org.getTabTitle}
-                    hidden={openFolder?.id === id}
+                    hidden={openFolder?.id === id && !openFolder.carried}
                     metrics={metrics}
                     name={folder.name}
                     onOpenApp={handleOpenApp}
                     onOpenFolder={handleOpenFolder}
                     openKeys={openKeys}
                     size={size}
-                    tabs={folderTabsMap.get(id) || []}
+                    tabs={
+                      carry?.fromId === id
+                        ? folderTabs.filter(
+                            (tab) => getOpenTabKey(tab) !== carry.tabKey
+                          )
+                        : folderTabs
+                    }
                   />
                 </Box>
               );
@@ -440,31 +555,27 @@ export function PinnedHome({
         </Box>
       )}
 
-      {hasFolders ? (
-        <Box sx={{ display: 'flex', justifyContent: 'center', mb: 1, mt: 0.5 }}>
-          <ButtonBase
-            onClick={() => void createFolder()}
-            sx={{
-              alignItems: 'center',
-              border: `1px dashed ${alpha(theme.palette.text.primary, 0.22)}`,
-              borderRadius: 999,
-              color: 'text.secondary',
-              display: 'inline-flex',
-              fontSize: 13,
-              fontWeight: 600,
-              gap: 0.6,
-              px: 1.75,
-              py: 0.75,
-              '&:active': {
-                backgroundColor: alpha(theme.palette.text.primary, 0.06),
-              },
-            }}
-          >
-            <AddRoundedIcon sx={{ fontSize: 18 }} />
-            {t('core:tabs_home.new_folder', {
-              postProcess: 'capitalizeFirstChar',
-            })}
-          </ButtonBase>
+      {hasFolders || showDevMode ? (
+        <Box
+          sx={{
+            display: 'flex',
+            flexWrap: 'wrap',
+            gap: 1,
+            justifyContent: 'center',
+            mb: 1,
+            mt: 0.5,
+          }}
+        >
+          {hasFolders ? (
+            <ButtonBase onClick={() => void createFolder()} sx={pillSx}>
+              <AddRoundedIcon sx={{ fontSize: 18 }} />
+              {t('core:tabs_home.new_folder', {
+                postProcess: 'capitalizeFirstChar',
+              })}
+            </ButtonBase>
+          ) : null}
+          {/* Settings → System: open a Q-App zip from the phone. */}
+          {showDevMode ? <DevModeButton sx={pillSx} /> : null}
         </Box>
       ) : null}
 
@@ -580,18 +691,18 @@ export function PinnedHome({
       {openFolder && openFolderData ? (
         <FolderOpenOverlay
           activeKey={activeKey}
-          getSourceTile={() =>
-            getFolderElement(openFolder.id)?.querySelector<HTMLElement>(
-              `[${FOLDER_TILE_ATTR}]`
-            ) ?? null
-          }
+          getSourceTile={() => getFolderTile(openFolder.id)}
           getTitle={org.getTabTitle}
           name={openFolderData.name}
           onAppMenu={(tab) => setOptionsTab(tab)}
+          onCarryDrop={dropCarry}
+          onCarryEnd={endCarry}
+          onCarryMove={(_key, x, y) => moveCarry(x, y)}
           onDelete={() => requestDelete(openFolder.id)}
           onExited={() => setOpenFolder(null)}
           onOpenApp={handleOpenApp}
           onRename={(name) => void org.renameFolder(openFolder.id, name)}
+          onDragOut={startCarry}
           onReorder={(keys) => org.setFolderTabOrder(openFolder.id, keys)}
           onRequestClose={() =>
             setOpenFolder((prev) => (prev ? { ...prev, open: false } : prev))

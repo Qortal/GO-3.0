@@ -4,4 +4,5 @@
     <string name="share_target_groups">GO المجموعات</string>
     <string name="share_target_directs">GO الرسائل</string>
     <string name="share_target_self">GO لنفسي</string>
+    <string name="qortal_hce_description">طلبات الدفع في GO (تجريبي)</string>
 </resources>

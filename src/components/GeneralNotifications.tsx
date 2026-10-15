@@ -57,6 +57,7 @@ import {
   markSavedQdnFilesSeen,
 } from '../utils/qdnDownloadNotifications';
 import { recordNotificationHistory } from '../utils/notificationHistory';
+import { pinNotificationToOwnerAppSpelled } from '../utils/notificationOwnerApp';
 import { openQWalletsTab } from '../utils/openQWalletsTab';
 import {
   formatPaymentAmount,
@@ -439,14 +440,16 @@ export const GeneralNotifications = forwardRef<
       openQWalletsTab();
       return;
     }
-    const link = notification?.link;
-    if (!link) return;
-    const data = extractComponents(link);
-    if (!data) return;
-    executeEvent('addTab', {
-      data: { ...data, navigateIfAlreadyOpen: true },
+    if (!notification?.link) return;
+    // A Q-App's notification opens that Q-App, whatever app its rule names.
+    void pinNotificationToOwnerAppSpelled(notification).then((owned) => {
+      const data = extractComponents(owned?.link);
+      if (!data) return;
+      executeEvent('addTab', {
+        data: { ...data, navigateIfAlreadyOpen: true },
+      });
+      executeEvent('open-apps-mode', {});
     });
-    executeEvent('open-apps-mode', {});
   };
 
   useImperativeHandle(ref, () => ({

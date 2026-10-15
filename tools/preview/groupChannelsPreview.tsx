@@ -15,7 +15,8 @@
  * devtools) hold a row still for 300ms first. A held tap still selects the
  * channel. "tour anchor" outlines the box the onboarding tour points at; it
  * should sit on the first channel row. The group-name bar above the list is
- * a stand-in (it lives inline in ChatGroup).
+ * a stand-in (it lives inline in ChatGroup). #random, #show-and-tell… and
+ * #qortal-go hold an unsent draft (the "Draft" marker).
  */
 import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -173,13 +174,14 @@ const INITIAL_CHANNELS: Record<string, Channel[]> = {
 
 const BADGES: Record<
   string,
-  { mentions?: number; replies?: number; unread?: number }
+  { draft?: boolean; mentions?: number; replies?: number; unread?: number }
 > = {
   announcements: { unread: 4 },
+  random: { draft: true },
   help: { mentions: 2, unread: 3 },
-  show: { replies: 3, unread: 1 },
+  show: { draft: true, replies: 3, unread: 1 },
   torq: { mentions: 1, unread: 1 },
-  go: { unread: 2 },
+  go: { draft: true, unread: 2 },
 };
 
 type ListState = {
@@ -281,6 +283,7 @@ function ChannelList({
         selected={state.selected === item.channelId}
         textScale={state.scale}
         unreadCount={badge.unread ?? 0}
+        hasDraft={badge.draft === true}
       />
     );
   };

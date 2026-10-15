@@ -106,12 +106,34 @@ async function withFetchTimeout<T>(
   }
 }
 
+type NodeTextAnswer = { ok: boolean; status: number; text: string };
+
 /** GET `url` and read the body as text, aborting both after `timeoutMs`. */
-function fetchTextWithTimeout(url: string, timeoutMs: number): Promise<string> {
+function fetchTextWithTimeout(
+  url: string,
+  timeoutMs: number
+): Promise<NodeTextAnswer> {
   return withFetchTimeout(timeoutMs, async (signal) => {
     const response = await fetch(url, { signal });
-    return response.text();
+    return {
+      ok: response.ok,
+      status: response.status,
+      text: (await response.text()).trim(),
+    };
   });
+}
+
+/**
+ * Core refuses a key with 401/403 ("API key invalid"). Anything else that is
+ * not 'true' (a 502/503/504 page from the proxy in front of a busy node, a
+ * 429) is no answer, not a refused key.
+ */
+function isKeyRefusal(answer: NodeTextAnswer) {
+  return (
+    answer.status === 401 ||
+    answer.status === 403 ||
+    (answer.ok && answer.text === 'false')
+  );
 }
 
 function isLocalCoreStatusSynced(status: any) {
@@ -326,7 +348,11 @@ export const useAuth = () => {
         let data: string;
         try {
           // Assuming the response is in plain text and will be 'true' or 'false'
-          data = await fetchTextWithTimeout(url, ADMIN_AUTH_FETCH_TIMEOUT_MS);
+          const bypass = await fetchTextWithTimeout(
+            url,
+            ADMIN_AUTH_FETCH_TIMEOUT_MS
+          );
+          data = bypass.ok ? bypass.text : '';
         } catch (error) {
           // The node stopped answering: no key test and no dialog.
           return {
@@ -335,21 +361,23 @@ export const useAuth = () => {
             failure: 'unreachable',
           };
         }
-        // False when the key test got no answer (network error or timeout).
+        // False when the key test got no answer (network error, timeout, or
+        // an error page instead of Core's answer).
         let keyTestAnswered = false;
         if (data && data === 'true') {
           isValid = true;
         } else {
           try {
             const url2 = `${baseUrl}/admin/apikey/test?apiKey=${encodeURIComponent(validatedNodeInfo?.apikey)}`;
-            // Assuming the response is in plain text and will be 'true' or 'false'
-            const data2 = await fetchTextWithTimeout(
+            const keyTest = await fetchTextWithTimeout(
               url2,
               ADMIN_AUTH_FETCH_TIMEOUT_MS
             );
-            keyTestAnswered = true;
-            if (data2 === 'true') {
+            if (keyTest.ok && keyTest.text === 'true') {
               isValid = true;
+              keyTestAnswered = true;
+            } else if (isKeyRefusal(keyTest)) {
+              keyTestAnswered = true;
             }
           } catch (error) {
             // Network error or timeout: the key stays untested (isValid false).
@@ -363,6 +391,9 @@ export const useAuth = () => {
             failure: 'unreachable',
           };
         }
+        // GO on the public node: there is no key the user could type in, so a
+        // refusal does not ask for one (checkNodeBeforeUnlock goes on too).
+        const askForKey = !(goApp && isGatewayNode(validatedNodeInfo));
         if (!isValid && isLocal && !isElectron) {
           const resGenerateApiKey = await generateApiKey();
           if (resGenerateApiKey) {
@@ -372,7 +403,7 @@ export const useAuth = () => {
         }
         if (!isValid && isLocal && !disablePopup) {
           setIsOpenResetApikey(true);
-        } else if (!isValid && !isLocal && !disablePopup) {
+        } else if (!isValid && !isLocal && !disablePopup && askForKey) {
           setIsOpenCustomApikeyDialog(true);
         }
         if (isValid && !isElectron && isLocal && !disablePopup) {
@@ -482,10 +513,13 @@ export const useAuth = () => {
     async (options?: NodeCheckOptions): Promise<NodeCheckResult> => {
       const startedAt = performance.now();
       let isCurrentLocalNode = false;
+      let isCurrentPublicNode = false;
       let result: NodeCheckResult = { ok: false, failure: 'error' };
       try {
         const currentSelectedNode = store.get(selectedNodeInfoAtom);
         isCurrentLocalNode = isLocalNodeUrl(currentSelectedNode?.url);
+        isCurrentPublicNode =
+          !isCurrentLocalNode && isGatewayNode(currentSelectedNode);
 
         const payload = isCurrentLocalNode
           ? {
@@ -512,10 +546,15 @@ export const useAuth = () => {
           : isGoApp()
             ? `failed (${result.failure})`
             : 'failed';
+        const nodeKind = isCurrentLocalNode
+          ? 'local node'
+          : isCurrentPublicNode && isGoApp()
+            ? 'public node'
+            : 'remote node';
         recordUnlockTiming(
           'node-check',
           performance.now() - startedAt,
-          `${outcome}, ${isCurrentLocalNode ? 'local node' : 'remote node'}`
+          `${outcome}, ${nodeKind}`
         );
       }
     },
@@ -532,15 +571,21 @@ export const useAuth = () => {
    * The password unlock's node check: true when the unlock may go on. GO goes
    * on without a node it cannot reach (offline, public node down, SSH tunnel
    * down), like its fingerprint unlock; a rejected key still stops it with
-   * the key dialog. Elsewhere the node must work, as before.
+   * the key dialog, except on the public node, which has no key to ask for.
+   * Elsewhere the node must work, as before.
    */
   const checkNodeBeforeUnlock = useCallback(
     async (options?: NodeCheckOptions): Promise<boolean> => {
       const result = await checkNode(options);
       if (result.ok) return true;
-      return isGoApp() && result.failure === 'unreachable';
+      if (!isGoApp()) return false;
+      return (
+        result.failure === 'unreachable' ||
+        (result.failure === 'key-rejected' &&
+          isGatewayNode(store.get(selectedNodeInfoAtom)))
+      );
     },
-    [checkNode]
+    [checkNode, store]
   );
 
   const balanceSetInterval = useCallback(() => {

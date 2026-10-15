@@ -4,4 +4,5 @@
     <string name="share_target_groups">GO 群组</string>
     <string name="share_target_directs">GO 私信</string>
     <string name="share_target_self">GO 发给自己</string>
+    <string name="qortal_hce_description">GO 付款请求（测试）</string>
 </resources>
