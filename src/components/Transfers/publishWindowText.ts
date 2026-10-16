@@ -64,6 +64,14 @@ export function isRetrying(jobs: PublishJob[]): boolean {
   );
 }
 
+/** A publish stopped because the node needs its API key. */
+export function needsNodeKey(jobs: PublishJob[]): boolean {
+  return jobs.some(
+    (job) =>
+      job.outcome !== 'running' && job.rows.some((row) => row.needsNodeKey)
+  );
+}
+
 export function windowTitle(outcome: PublishJobOutcome, t: TFunction): string {
   switch (outcome) {
     case 'published':

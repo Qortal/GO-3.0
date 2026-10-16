@@ -38,10 +38,17 @@ const LOCAL_NODE = { url: 'http://127.0.0.1:12391', apikey: '' };
 const PUBLIC_NODE = { url: HTTPS_EXT_NODE_QORTAL_LINK, apikey: '' };
 // A private Core reached over an SSH tunnel on another port (a custom node).
 const TUNNEL_NODE = { url: 'http://127.0.0.1:12398', apikey: 'test-key' };
+// A private Core on the home network, with no key saved in GO yet.
+const LAN_NODE = { url: 'http://192.168.1.20:12391', apikey: '' };
 // What Core answers a wrong key with.
 const KEY_REFUSED = {
   status: 403,
   body: '{"error":4,"message":"API key invalid"}',
+};
+// What Core answers a call with no key from outside loopback with.
+const KEY_MISSING = {
+  status: 401,
+  body: `{"error":4,"message":"Missing 'X-API-KEY' header"}`,
 };
 // What nginx in front of a busy or restarting node answers with.
 const BAD_GATEWAY = {
@@ -717,6 +724,105 @@ describe('useAuth', () => {
       expect(unlocked).toBe(false);
       expect(store.get(isOpenSyncingDialogAtom)).toBe(true);
       expect(sendMessage).not.toHaveBeenCalled();
+    });
+  });
+
+  // Core's local auth bypass only covers requests from a loopback address: a
+  // node further away with it on still refuses keyless writes (a publish).
+  describe('local auth bypass', () => {
+    const fetchedPaths = (fetchMock: ReturnType<typeof stubFetch>) =>
+      fetchMock.mock.calls.map(([input]) => new URL(input).pathname);
+
+    it('asks for the key on a LAN node with the bypass on and no key', async () => {
+      runAsGo();
+      const fetchMock = stubFetch({
+        '/admin/status': '{}',
+        '/admin/settings/localAuthBypassEnabled': 'true',
+        '/admin/apikey/test': KEY_MISSING,
+      });
+      const sendMessage = stubSendMessage({ decryptWallet: true });
+      const { result, store } = renderUseAuth({ address0: 'Qtest' }, LAN_NODE);
+
+      expect(await passwordUnlock(result)).toBe(false);
+
+      expect(fetchedPaths(fetchMock)).toContain('/admin/apikey/test');
+      expect(store.get(isOpenDialogCustomApikey)).toBe(true);
+      // Not saved as a node that works.
+      expect(sendMessage).not.toHaveBeenCalled();
+      expect(timingSteps()[0]).toEqual([
+        'node-check',
+        'failed (key-rejected), remote node',
+      ]);
+    });
+
+    it('asks for the key on the desktop too', async () => {
+      stubFetch({
+        '/admin/status': '{}',
+        '/admin/settings/localAuthBypassEnabled': 'true',
+        '/admin/apikey/test': KEY_MISSING,
+      });
+      const { result, store } = renderUseAuth(undefined, LAN_NODE);
+
+      await expect(
+        result.current.validateApiKey({ ...LAN_NODE })
+      ).resolves.toMatchObject({ isValid: false, failure: 'key-rejected' });
+      expect(store.get(isOpenDialogCustomApikey)).toBe(true);
+    });
+
+    it('accepts a LAN node with the bypass on once its key works', async () => {
+      stubFetch({
+        '/admin/status': '{}',
+        '/admin/settings/localAuthBypassEnabled': 'true',
+        '/admin/apikey/test': 'true',
+      });
+      const { result, store } = renderUseAuth(undefined, REMOTE_NODE);
+
+      await expect(
+        result.current.validateApiKey({ ...REMOTE_NODE })
+      ).resolves.toMatchObject({ isValid: true });
+      expect(store.get(isOpenDialogCustomApikey)).toBe(false);
+    });
+
+    it.each([
+      ['an SSH tunnel on 127.0.0.1', 'http://127.0.0.1:12398'],
+      ['localhost', 'http://localhost:12391'],
+      ['::1', 'http://[::1]:12391'],
+    ])(
+      'still trusts the bypass on %s, with no key test',
+      async (_label, url) => {
+        const fetchMock = stubFetch({
+          '/admin/status': '{}',
+          '/admin/settings/localAuthBypassEnabled': 'true',
+        });
+        const node = { url, apikey: '' };
+        const { result, store } = renderUseAuth(undefined, node);
+
+        await expect(
+          result.current.validateApiKey({ ...node })
+        ).resolves.toMatchObject({ isValid: true });
+        expect(fetchedPaths(fetchMock)).not.toContain('/admin/apikey/test');
+        expect(store.get(isOpenDialogCustomApikey)).toBe(false);
+      }
+    );
+
+    it('never asks for a key on the public node, bypass or not', async () => {
+      runAsGo();
+      stubFetch({
+        '/admin/status': '{}',
+        '/admin/settings/localAuthBypassEnabled': 'true',
+        '/admin/apikey/test': KEY_MISSING,
+      });
+      stubSendMessage({ decryptWallet: true });
+      const { result, store } = renderUseAuth(
+        { address0: 'Qtest' },
+        PUBLIC_NODE
+      );
+      store.set(authenticatePasswordAtom, 'pw');
+
+      expect(await passwordUnlock(result)).toBe(true);
+
+      expect(store.get(extStateAtom)).toBe('authenticated');
+      expect(store.get(isOpenDialogCustomApikey)).toBe(false);
     });
   });
 

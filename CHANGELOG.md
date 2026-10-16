@@ -11,6 +11,29 @@ desktop Hub. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- **Publishing works on a private node on the network** _(shared)_ — on a
+  node reached by its LAN or remote address that had Core's local auth
+  bypass on, GO counted the node as connected without testing the API key
+  and never asked for it. The bypass only covers requests from the node's
+  own machine, so every QDN publish (a Q-Mintership+ vote, say) was
+  refused with "Missing 'X-API-KEY' header". GO now trusts the bypass only
+  for a node reached over loopback (127.0.0.1, localhost, ::1, so the
+  local node and SSH tunnels); any other private node gets the real key
+  test and the API key dialog when its key is missing or refused. The
+  public node still never asks for a key.
+- **A refused publish says why, at once** _(shared)_ — a publish the node
+  refused for want of its API key (HTTP 401/403) was tried three times,
+  25 seconds apart, under "Your node did not answer", then failed with
+  Core's raw answer. It now stops at the first refusal with "Your node
+  needs its API key to publish. Add it in node settings.", and GO's
+  publish window opens with an Open node settings button, however small
+  the publish. Other refusals (HTTP 4xx) also fail at once with Core's
+  own words. "Your node did not answer. Trying again shortly…" now shows
+  only when the node really did not answer (network error, timeout, 5xx,
+  408, 429), and only those are tried again.
+
 ## [0.0.18] — 2026-10-15 (GO 3.0)
 
 ### Added

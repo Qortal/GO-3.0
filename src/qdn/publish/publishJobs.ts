@@ -68,9 +68,14 @@ export type PublishRow = {
   sentChunks: number;
   totalChunks: number;
   state: PublishRowState;
-  /** A part or a node call failed and is about to be tried again. */
+  /** A part or a node call got no answer and is about to be tried again. */
   retrying: boolean;
   error: string | null;
+  /**
+   * The node refused it for want of its API key: the window offers node
+   * settings.
+   */
+  needsNodeKey: boolean;
 };
 
 export type PublishJobOutcome =
@@ -342,6 +347,7 @@ export function beginPublishJob(
       state: 'waiting',
       retrying: false,
       error: null,
+      needsNodeKey: false,
     })),
     startedAt: now,
     finishedAt: null,
@@ -461,16 +467,22 @@ export function notePublishRowPublished(jobId: string, index: number): void {
 export function notePublishRowFailed(
   jobId: string,
   index: number,
-  reason: string
+  reason: string,
+  options: { needsNodeKey?: boolean } = {}
 ): void {
+  const needsNodeKey = options.needsNodeKey === true;
   if (
     patchRow(jobId, index, () => ({
       state: 'failed',
       retrying: false,
       error: reason ? String(reason).slice(0, 300) : null,
+      needsNodeKey,
     }))
   ) {
     emit();
+    // Only the person can fix this, in node settings: GO shows it however
+    // small and quick the publish was.
+    if (needsNodeKey) takeOver(jobId);
   }
 }
 
@@ -513,8 +525,11 @@ export function finishPublishJob(
   } satisfies AppWindowCommandDetail);
   if (!decided.has(jobId)) {
     decided.add(jobId);
-    if (job.appWindow === 'hidden') view = 'expanded';
-    else if (view === 'closed') view = 'minimized';
+    // A publish that needs the node's API key opens, with the way to node
+    // settings in view.
+    if (job.appWindow === 'hidden' || rows.some((row) => row.needsNodeKey)) {
+      view = 'expanded';
+    } else if (view === 'closed') view = 'minimized';
   }
   if (outcome === 'published') {
     addTimer(

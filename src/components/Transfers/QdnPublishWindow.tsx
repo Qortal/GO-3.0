@@ -33,6 +33,7 @@ import ErrorRoundedIcon from '@mui/icons-material/ErrorRounded';
 import ImageRoundedIcon from '@mui/icons-material/ImageRounded';
 import InsertDriveFileRoundedIcon from '@mui/icons-material/InsertDriveFileRounded';
 import KeyboardArrowDownRoundedIcon from '@mui/icons-material/KeyboardArrowDownRounded';
+import KeyRoundedIcon from '@mui/icons-material/KeyRounded';
 import LanguageRoundedIcon from '@mui/icons-material/LanguageRounded';
 import MovieRoundedIcon from '@mui/icons-material/MovieRounded';
 import { useAtomValue } from 'jotai';
@@ -57,6 +58,7 @@ import {
   type PublishWindowView,
 } from '../../qdn/publish/publishJobs';
 import { BACK_PRIORITY, useAndroidBack } from '../../utils/androidBack';
+import { executeEvent } from '../../utils/events';
 import {
   SAFE_AREA_BOTTOM,
   SAFE_AREA_LEFT,
@@ -79,6 +81,7 @@ import {
   combinedProgress,
   isProcessing,
   isRetrying,
+  needsNodeKey,
   percentText,
   filesPublishedText,
   rowPercent,
@@ -621,6 +624,7 @@ function PublishCard({
   const progress = combinedProgress(jobs);
   const processing = isProcessing(jobs);
   const retrying = isRetrying(jobs);
+  const nodeKeyNeeded = needsNodeKey(jobs);
   const running = outcome === 'running';
   const failed =
     outcome === 'failed' || outcome === 'partial' || outcome === 'cancelled';
@@ -966,30 +970,53 @@ function PublishCard({
                 ) : null}
               </>
             ) : (
-              <Button
-                variant={failed ? 'contained' : 'outlined'}
-                color={failed ? 'error' : 'primary'}
-                disableElevation
-                onClick={() => {
-                  onOpenApp?.();
-                  dismissPublishWindow();
-                }}
-                sx={{
-                  borderRadius: '14px',
-                  fontWeight: 700,
-                  py: 1.1,
-                  textTransform: 'none',
-                }}
-              >
-                {failed
-                  ? t(
-                      onOpenApp
-                        ? 'core:qdn_publish.open_app'
-                        : 'core:qdn_publish.back_to_app',
-                      { app: appName }
-                    )
-                  : t('core:qdn_publish.done')}
-              </Button>
+              <>
+                {nodeKeyNeeded ? (
+                  <Button
+                    variant="contained"
+                    disableElevation
+                    startIcon={<KeyRoundedIcon />}
+                    onClick={() => {
+                      executeEvent('openNodeSettings', null);
+                      dismissPublishWindow();
+                    }}
+                    sx={{
+                      borderRadius: '14px',
+                      fontWeight: 700,
+                      py: 1.1,
+                      textTransform: 'none',
+                    }}
+                  >
+                    {t('core:qdn_publish.open_node_settings')}
+                  </Button>
+                ) : null}
+                <Button
+                  variant={
+                    nodeKeyNeeded ? 'text' : failed ? 'contained' : 'outlined'
+                  }
+                  color={failed && !nodeKeyNeeded ? 'error' : 'primary'}
+                  disableElevation
+                  onClick={() => {
+                    onOpenApp?.();
+                    dismissPublishWindow();
+                  }}
+                  sx={{
+                    borderRadius: '14px',
+                    fontWeight: 700,
+                    py: 1.1,
+                    textTransform: 'none',
+                  }}
+                >
+                  {failed
+                    ? t(
+                        onOpenApp
+                          ? 'core:qdn_publish.open_app'
+                          : 'core:qdn_publish.back_to_app',
+                        { app: appName }
+                      )
+                    : t('core:qdn_publish.done')}
+                </Button>
+              </>
             )}
           </Box>
         </motion.div>

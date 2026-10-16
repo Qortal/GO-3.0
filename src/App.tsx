@@ -1903,15 +1903,23 @@ function App() {
     setIsBackupWalletModalOpen(false);
   }, []);
 
+  // GO keeps its node settings in Settings; the desktop in Core setup.
+  const onOpenNodeSettings = useCallback(() => {
+    if (isGoApp()) setIsSettingsOpen(true);
+    else setOpenCoreSetup(true);
+  }, [setOpenCoreSetup]);
+
   useEffect(() => {
     subscribeToEvent('openMintingPanel', onOpenMinting);
     subscribeToEvent('openBackupWallet', onBackupWallet);
+    subscribeToEvent('openNodeSettings', onOpenNodeSettings);
 
     return () => {
       unsubscribeFromEvent('openMintingPanel', onOpenMinting);
       unsubscribeFromEvent('openBackupWallet', onBackupWallet);
+      unsubscribeFromEvent('openNodeSettings', onOpenNodeSettings);
     };
-  }, [onBackupWallet, onOpenMinting]);
+  }, [onBackupWallet, onOpenMinting, onOpenNodeSettings]);
 
   const onOkQortalRequestAccepted = useCallback(
     () => onOkQortalRequest('accepted'),

@@ -15,6 +15,16 @@ import {
 import { takeStreamedChunkUpload } from '../../utils/streamedChunkUpload';
 import { qdnResourcePath } from '../../utils/qdnPath';
 import {
+  fetchFromNode,
+  isNodeApiKeyRequiredError,
+  isNodeKeyRefusal,
+  NodeApiKeyRequiredError,
+  nodeAnswerError,
+  NodeNoAnswerError,
+  noAnswerError,
+  refusalBody,
+} from './nodeAnswer';
+import {
   QDN_PUBLISH_CHUNK_BYTES,
   type PublishProgress,
 } from './publishProgress';
@@ -93,7 +103,7 @@ export async function reusableGet(endpoint) {
 async function reusablePost(endpoint, _body) {
   // const validApi = await findUsableApi();
   const url = await createEndpoint(endpoint);
-  const response = await fetch(url, {
+  const response = await fetchFromNode(url, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -101,14 +111,18 @@ async function reusablePost(endpoint, _body) {
     body: _body,
   });
   if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(errorText);
+    throw nodeAnswerError(response.status, await refusalBody(response));
   }
   let data;
   try {
     data = await response.clone().json();
   } catch (e) {
-    data = await response.text();
+    try {
+      data = await response.text();
+    } catch (error) {
+      // Cut off on the way: no answer, as when the request itself fails.
+      throw noAnswerError(error);
+    }
   }
   return data;
 }
@@ -118,7 +132,7 @@ async function reusablePostStream(endpoint, _body) {
 
   const headers = {};
 
-  const response = await fetch(url, {
+  const response = await fetchFromNode(url, {
     method: 'POST',
     headers,
     body: _body,
@@ -139,11 +153,13 @@ async function uploadChunkWithRetry(
     try {
       const response = await reusablePostStream(endpoint, formData);
       if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(errorText);
+        throw nodeAnswerError(response.status, await refusalBody(response));
       }
       return; // Success
     } catch (err) {
+      // Only a node that did not answer is asked again: one that refused
+      // (no API key, a bad request) would refuse again.
+      if (!(err instanceof NodeNoAnswerError)) throw err;
       attempt++;
       console.warn(
         `Chunk ${index} failed (attempt ${attempt}): ${err.message}`
@@ -173,6 +189,9 @@ async function resuablePostRetry(
 
       return response;
     } catch (err) {
+      // Only a node that did not answer is asked again: one that refused
+      // (no API key, a bad request) would refuse again.
+      if (!(err instanceof NodeNoAnswerError)) throw err;
       attempt++;
       if (attempt >= maxRetries) {
         throw new Error(
@@ -549,6 +568,9 @@ export const publishData = async ({
     const checkEndpoint = await createEndpoint(urlCheck);
     const checkRes = await fetch(checkEndpoint);
     if (!checkRes.ok) {
+      if (isNodeKeyRefusal(checkRes.status, await refusalBody(checkRes))) {
+        throw new NodeApiKeyRequiredError();
+      }
       throw new Error('Not enough space on your hard drive');
     }
 
@@ -675,6 +697,9 @@ export const publishData = async ({
 
     if (!response?.ok) {
       const errorText = await response.text();
+      if (isNodeKeyRefusal(response.status, errorText)) {
+        throw new NodeApiKeyRequiredError();
+      }
       throw new Error(`Finalize failed: ${errorText}`);
     }
 
@@ -687,7 +712,9 @@ export const publishData = async ({
   } catch (error: any) {
     if (
       error instanceof PublishAbortedError ||
-      error?.name === 'PublishAbortedError'
+      error?.name === 'PublishAbortedError' ||
+      // Kept as it is: GO's publish window offers node settings for it.
+      isNodeApiKeyRequiredError(error)
     ) {
       throw error;
     }

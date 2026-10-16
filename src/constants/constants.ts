@@ -221,6 +221,26 @@ export const getDefaultLocalNodeUrl = (): string => {
 export const isLocalNodeUrl = (url: string | undefined): boolean =>
   url === HTTP_LOCALHOST_12391 || url === HTTPS_LOCALHOST_12391;
 
+/**
+ * True if the node is reached over loopback: 127.x.x.x, localhost or ::1, on
+ * any port (the local node, or an SSH tunnel to a node). Core's local auth
+ * bypass only covers requests from a loopback address.
+ */
+export const isLoopbackNodeUrl = (url: string | undefined): boolean => {
+  if (!url) return false;
+  let host: string;
+  try {
+    host = new URL(url).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  return (
+    host === 'localhost' ||
+    host === '[::1]' ||
+    /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)
+  );
+};
+
 /** True when connected to the shared public gateway (not local or custom private node). */
 export const isPublicGatewayNodeUrl = (url: string | undefined): boolean => {
   const nodeUrl = url?.trim() || HTTPS_EXT_NODE_QORTAL_LINK;

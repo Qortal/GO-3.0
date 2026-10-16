@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import '../../i18n/i18n';
+import { NodeApiKeyRequiredError } from './nodeAnswer';
 import {
   getPublishWindowSnapshot,
   resetPublishWindowForTests,
@@ -61,6 +63,35 @@ describe('Q-App publish tracker', () => {
     const [job] = getPublishWindowSnapshot().jobs;
     // A small quick publish is never shown, so it is gone at once.
     expect(job).toBeUndefined();
+  });
+
+  it('shows a quick publish the node refused for want of its API key', () => {
+    const tracker = startQappPublishTracker(app, [
+      { service: 'DOCUMENT_PRIVATE', base64: 'aGVsbG8=' },
+    ])!;
+    tracker.rowStarted(0);
+    tracker.rowFailed(0, new NodeApiKeyRequiredError());
+    tracker.finish();
+    const { jobs, view } = getPublishWindowSnapshot();
+    // Opened, with the way to node settings, however small and quick.
+    expect(view).toBe('expanded');
+    expect(jobs[0]).toMatchObject({ outcome: 'failed', shown: true });
+    expect(jobs[0].rows[0]).toMatchObject({
+      state: 'failed',
+      needsNodeKey: true,
+      error: 'Your node needs its API key to publish. Add it in node settings.',
+    });
+  });
+
+  it('knows the key refusal behind a reason given as text', () => {
+    const tracker = startQappPublishTracker(app, [
+      { service: 'IMAGE', base64: 'aGVsbG8=' },
+      { service: 'DOCUMENT', base64: 'aGVsbG8=' },
+    ])!;
+    tracker.rowFailed(0, 'Not enough QORT', new Error('Not enough QORT'));
+    tracker.rowFailed(1, 'Needs the key', new NodeApiKeyRequiredError());
+    const [job] = getPublishWindowSnapshot().jobs;
+    expect(job.rows.map((row) => row.needsNodeKey)).toEqual([false, true]);
   });
 
   it('names and sizes resources the way a person would know them', () => {

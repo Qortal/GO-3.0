@@ -151,6 +151,55 @@ describe('QdnPublishWindow', () => {
     );
   });
 
+  it('offers node settings when the node needs its API key', async () => {
+    const opened = vi.fn();
+    document.addEventListener('openNodeSettings', opened);
+    try {
+      render(<QdnPublishWindow enabled />);
+      act(() => {
+        const id = beginPublishJob({
+          tabId: 'tab-1',
+          appName: 'Q-Mintership+',
+          rows: [{ service: 'DOCUMENT_PRIVATE', label: 'vote', bytes: 300 }],
+        });
+        notePublishRowFailed(
+          id,
+          0,
+          'Your node needs its API key to publish. Add it in node settings.',
+          { needsNodeKey: true }
+        );
+        finishPublishJob(id);
+      });
+      const dialog = screen.getByRole('dialog', { name: 'Publish failed' });
+      expect(dialog.textContent).toContain(
+        'Your node needs its API key to publish. Add it in node settings.'
+      );
+      expect(dialog.textContent).not.toContain('did not answer');
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Open node settings' })
+      );
+      expect(opened).toHaveBeenCalledTimes(1);
+      expect(getPublishWindowSnapshot().view).toBe('closed');
+      await waitFor(() =>
+        expect(screen.queryByTestId('qdn-publish-window')).toBeNull()
+      );
+    } finally {
+      document.removeEventListener('openNodeSettings', opened);
+    }
+  });
+
+  it('offers no node settings for other failures', () => {
+    render(<QdnPublishWindow enabled />);
+    const id = startPublish('hidden');
+    act(() => {
+      notePublishRowFailed(id, 0, 'Not enough QORT for the publish fee');
+      finishPublishJob(id);
+    });
+    expect(
+      screen.queryByRole('button', { name: 'Open node settings' })
+    ).toBeNull();
+  });
+
   it('shows nothing while GO is locked', () => {
     render(<QdnPublishWindow enabled={false} />);
     startPublish('hidden');

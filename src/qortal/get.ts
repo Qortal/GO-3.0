@@ -2376,9 +2376,9 @@ export const publishMultipleQDNResources = async (
   let resourceIndex = -1;
 
   const failedPublishesIdentifiers: FailedPublish[] = [];
-  const recordFailed = (failure: FailedPublish) => {
+  const recordFailed = (failure: FailedPublish, cause?: unknown) => {
     failedPublishesIdentifiers.push(failure);
-    publishTracker?.rowFailed(resourceIndex, failure.reason);
+    publishTracker?.rowFailed(resourceIndex, failure.reason, cause);
   };
   const publishedResponses = [];
   const publishedResources: {
@@ -2619,12 +2619,15 @@ export const publishMultipleQDNResources = async (
           i18n.t('question:message.error.upload', {
             postProcess: 'capitalizeFirstChar',
           });
-        recordFailed({
-          reason: errorMsg,
-          identifier: resource.identifier,
-          service: resource.service,
-          name: resource?.name || name,
-        });
+        recordFailed(
+          {
+            reason: errorMsg,
+            identifier: resource.identifier,
+            service: resource.service,
+            name: resource?.name || name,
+          },
+          error
+        );
       }
     } catch (error) {
       if (
@@ -2641,16 +2644,19 @@ export const publishMultipleQDNResources = async (
         });
         break;
       }
-      recordFailed({
-        reason:
-          error?.message ||
-          i18n.t('question:message.error.unknown_error', {
-            postProcess: 'capitalizeFirstChar',
-          }),
-        identifier: resource.identifier,
-        service: resource.service,
-        name: resource?.name || name,
-      });
+      recordFailed(
+        {
+          reason:
+            error?.message ||
+            i18n.t('question:message.error.unknown_error', {
+              postProcess: 'capitalizeFirstChar',
+            }),
+          identifier: resource.identifier,
+          service: resource.service,
+          name: resource?.name || name,
+        },
+        error
+      );
     }
   }
   publishTracker?.finish({ aborted: aborted || isPublishAborted() });

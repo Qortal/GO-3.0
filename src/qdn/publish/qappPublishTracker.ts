@@ -13,6 +13,7 @@ import {
   notePublishRowStarted,
   type PublishRowInput,
 } from './publishJobs';
+import { isNodeApiKeyRequiredError } from './nodeAnswer';
 import type { PublishProgress } from './publishProgress';
 
 export type QappPublishTracker = {
@@ -22,7 +23,8 @@ export type QappPublishTracker = {
   /** For publishData's onProgress. */
   progressFor: (index: number) => (progress: PublishProgress) => void;
   rowPublished: (index: number) => void;
-  rowFailed: (index: number, reason: unknown) => void;
+  /** `cause`: the error behind a `reason` given as text, when there is one. */
+  rowFailed: (index: number, reason: unknown, cause?: unknown) => void;
   finish: (options?: { aborted?: boolean }) => void;
 };
 
@@ -122,7 +124,7 @@ export function startQappPublishTracker(
     rowPublished: safe((index: number) =>
       notePublishRowPublished(jobId, index)
     ),
-    rowFailed: safe((index: number, reason: unknown) =>
+    rowFailed: safe((index: number, reason: unknown, cause?: unknown) =>
       notePublishRowFailed(
         jobId,
         index,
@@ -130,7 +132,8 @@ export function startQappPublishTracker(
           ? reason
           : reason instanceof Error
             ? reason.message
-            : ''
+            : '',
+        { needsNodeKey: isNodeApiKeyRequiredError(cause ?? reason) }
       )
     ),
     finish: safe((options?: { aborted?: boolean }) =>

@@ -5,6 +5,7 @@ import {
   HTTP_LOCALHOST_12391,
   HTTPS_EXT_NODE_QORTAL_LINK,
   isLocalNodeUrl,
+  isLoopbackNodeUrl,
   TIME_MINUTES_2_IN_MILLISECONDS,
   TIME_SECONDS_40_IN_MILLISECONDS,
 } from '../constants/constants';
@@ -364,7 +365,11 @@ export const useAuth = () => {
         // False when the key test got no answer (network error, timeout, or
         // an error page instead of Core's answer).
         let keyTestAnswered = false;
-        if (data && data === 'true') {
+        // Core skips the key only for requests from a loopback address. A
+        // node on the LAN or further away that has the bypass on still
+        // refuses keyless writes (a QDN publish), so its key is tested.
+        const bypassCoversUs = isLoopbackNodeUrl(validatedNodeInfo?.url);
+        if (bypassCoversUs && data === 'true') {
           isValid = true;
         } else {
           try {
