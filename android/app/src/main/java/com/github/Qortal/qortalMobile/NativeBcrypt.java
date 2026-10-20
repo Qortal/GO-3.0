@@ -1,7 +1,10 @@
 package com.github.Qortal.qortalMobile;
 
 import android.content.pm.ApplicationInfo;
+import android.content.pm.PackageInfo;
+import android.os.Environment;
 import android.util.Log;
+import android.webkit.WebView;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
@@ -151,7 +154,12 @@ public class NativeBcrypt extends Plugin {
             });
     }
 
-    /** Build and Java speed facts for Copy diagnostics. */
+    /**
+     * Build, Java speed and WebView facts for Copy diagnostics.
+     * webViewJitRestricted is GrapheneOS's own "WebView JIT" switch for GO
+     * (null when the OS has no such flag); webViewPackage/webViewVersion name
+     * the WebView provider.
+     */
     @PluginMethod
     public void runtimeInfo(PluginCall call) {
         final boolean debuggable = isDebuggable();
@@ -173,6 +181,21 @@ public class NativeBcrypt extends Plugin {
                     Runtime.getRuntime().availableProcessors()
                 );
                 result.put("probeMs", probeMs);
+                Boolean jitRestricted = EnvironmentFlag.read(
+                    Environment.class,
+                    EnvironmentFlag.WEBVIEW_DCL_RESTRICTED
+                );
+                // An explicit null tells "this OS has no flag" apart from an
+                // older app that never sent the field.
+                result.put(
+                    "webViewJitRestricted",
+                    jitRestricted != null ? jitRestricted : JSONObject.NULL
+                );
+                PackageInfo webView = currentWebViewPackage();
+                if (webView != null) {
+                    result.put("webViewPackage", webView.packageName);
+                    result.put("webViewVersion", webView.versionName);
+                }
                 getActivity().runOnUiThread(() -> call.resolve(result));
             } catch (Exception e) {
                 getActivity()
@@ -181,6 +204,15 @@ public class NativeBcrypt extends Plugin {
                     );
             }
         }, "NativeBcrypt-probe").start();
+    }
+
+    /** The WebView provider in use; null if Android cannot say. */
+    private static PackageInfo currentWebViewPackage() {
+        try {
+            return WebView.getCurrentWebViewPackage();
+        } catch (Throwable ignored) {
+            return null;
+        }
     }
 
     private boolean isDebuggable() {

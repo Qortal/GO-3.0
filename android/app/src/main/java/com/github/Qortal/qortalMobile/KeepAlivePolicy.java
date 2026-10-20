@@ -87,6 +87,19 @@ public final class KeepAlivePolicy {
         public boolean suspended;
         /** Build.VERSION.SDK_INT (0 = unknown: no battery pause). */
         public int sdkInt;
+        /** A voice call (1:1 or group) is dialing or running (QortalCall.setCallActive). */
+        public boolean callActive;
+        /** An incoming call rings (native ring or the page's own). */
+        public boolean callRinging;
+    }
+
+    /**
+     * A call needs the page in every mode, even "off": its audio, signalling
+     * and timers all run in the page, which Chromium freezes 60 s after GO
+     * leaves the screen.
+     */
+    public static boolean callNeedsPage(Inputs in) {
+        return in != null && (in.callActive || in.callRinging);
     }
 
     /** Within the 3-minute window for own messages that still wait to leave. */
@@ -100,10 +113,12 @@ public final class KeepAlivePolicy {
     /**
      * Keep the WebView visible to Chromium while GO is off screen:
      * mode always, or mode charging while charging, or own messages pending
-     * within {@link #OUTBOX_WINDOW_MS} of leaving the screen (any mode but off).
+     * within {@link #OUTBOX_WINDOW_MS} of leaving the screen (any mode but off),
+     * or a call rings or runs (any mode, see {@link #callNeedsPage}).
      */
     public static boolean shouldKeepVisible(Inputs in) {
         if (in == null || !in.activityStopped || !in.sessionActive || in.suspended) return false;
+        if (callNeedsPage(in)) return true;
         String mode = modeOrDefault(in.mode);
         if (MODE_ALWAYS.equals(mode)) return true;
         if (MODE_CHARGING.equals(mode) && in.charging) return true;
@@ -113,8 +128,12 @@ public final class KeepAlivePolicy {
     /**
      * Partial wake lock only while kept alive on the charger or during the
      * outbox window. "always" on battery holds none (the CPU may sleep).
+     * A call holds it on screen too: the proximity sensor turns the screen off
+     * at the ear without GO leaving the screen, and the CPU must not sleep
+     * under the call's audio.
      */
     public static boolean shouldHoldWakeLock(Inputs in) {
+        if (in != null && callNeedsPage(in) && in.sessionActive && !in.suspended) return true;
         if (!shouldKeepVisible(in)) return false;
         return in.charging || outboxWindowActive(in);
     }
@@ -160,11 +179,13 @@ public final class KeepAlivePolicy {
      * break. Only from Android 15 on ({@link #DATA_SYNC_TIME_LIMIT_MIN_SDK}),
      * the releases where GO gave up Android's limit by switching to
      * remoteMessaging; older releases never had one and keep running as
-     * before. Never in mode always (the user asked for it to run), and not
-     * again while already paused.
+     * before. Never in mode always (the user asked for it to run), not
+     * again while already paused, and never during a call (the pause would
+     * cut it).
      */
     public static boolean shouldPauseOnBattery(Inputs in) {
         if (in == null || in.suspended) return false;
+        if (callNeedsPage(in)) return false;
         if (in.sdkInt < DATA_SYNC_TIME_LIMIT_MIN_SDK) return false;
         if (MODE_ALWAYS.equals(modeOrDefault(in.mode))) return false;
         long since = batteryStretchStartMs(in);

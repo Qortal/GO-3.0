@@ -29,6 +29,7 @@ import {
 import { createQappRequestLockGate } from '../lib/appLockQappGate';
 import { ANDROID_BACK_EVENT } from '../bridge/capacitorBridge';
 import { subscribeToEvent, unsubscribeFromEvent } from '../utils/events';
+import { goCallRingOverAppLock } from '../components/Mobile/call/goCallUi';
 
 /** An approval dialog that must not wait behind the lock. */
 export type LockedApproval = { open: boolean; decline: () => void };
@@ -192,10 +193,13 @@ export function useAppLock({
   useEffect(() => () => qappGate.release(), [qappGate]);
 
   // The back button minimizes GO while locked; nothing under the lock reacts.
+  // GO: a call ringing over the lock takes back itself (it silences the
+  // ring); its handler is the highest back priority and always consumes, so
+  // nothing under the lock reacts then either. Never set on desktop.
   useEffect(
     () =>
       installBackButtonLockGate({
-        isLocked: () => lockScreenActiveRef.current,
+        isLocked: () => lockScreenActiveRef.current && !goCallRingOverAppLock(),
         eventName: ANDROID_BACK_EVENT,
       }),
     []

@@ -13,6 +13,7 @@ import { LOCALHOST } from '../constants/constants';
 import { GlobalDownloadEntry } from '../types/resources';
 import { defaultPinnedApps } from '../components/Apps/config/officialApps';
 import { getElectronPersistentStorage } from '../utils/electronPersistentStorage';
+import { isGoApp } from '../utils/platform';
 import {
   normalizeReticulumChatTextScale,
   type ReticulumChatTextScale,
@@ -75,7 +76,14 @@ export const reticulumGroupAboutAtom = atom<any>(null);
 export const groupsOwnerNamesAtom = atomWithReset({});
 export const groupsPropertiesAtom = atomWithReset({});
 export const hasSettingsChangedAtom = atomWithReset(false);
-export const isDisabledEditorEnterAtom = atomWithReset(false);
+/**
+ * True when Enter in a chat composer types a new line instead of sending.
+ * GO starts there, like other phone chat apps: the keyboard's return key
+ * shows a new-line arrow and the composer has its own send button. The
+ * desktop keeps Enter = send. A saved choice ('settings-disable-editor-enter')
+ * wins over both.
+ */
+export const isDisabledEditorEnterAtom = atomWithReset(isGoApp());
 
 /** True while mobile chat compose keyboard mode is active (hides tab bar, swaps top bar). */
 export const mobileChatComposeActiveAtom = atomWithReset(false);
@@ -161,6 +169,15 @@ export const settingsLocalLastUpdatedAtom = atomWithReset(0);
 export const settingsQDNLastUpdatedAtom = atomWithReset(-100);
 export const timestampEnterDataAtom = atomWithReset({});
 
+// A row depends only on its group object, its summary and the chat switch.
+// Summary refreshes keep unchanged summaries' identity, so reusing the row
+// here lets the memo'ed GroupItem rows skip re-rendering when another group
+// changed.
+const memberGroupWithReticulumChatRows = new WeakMap<
+  object,
+  { summary: unknown; reticulumChatEnabled: boolean; row: any }
+>();
+
 export const memberGroupsWithReticulumChatAtom = atom((get) => {
   const groups = get(memberGroupsAtom);
   const reticulumSummaries = get(reticulumChatSummariesAtom);
@@ -174,36 +191,30 @@ export const memberGroupsWithReticulumChatAtom = atom((get) => {
           ? String(numericGroupId)
           : String(group?.groupId ?? '');
       const summary = reticulumSummaries[groupId];
-      const lastEvent = summary?.lastEvent;
-      const reticulumTimestamp =
-        typeof summary?.updatedAt === 'number'
-          ? summary.updatedAt
-          : typeof lastEvent?.timestamp === 'number'
-            ? lastEvent.timestamp
-            : 0;
-      if (reticulumChatEnabled) {
-        return {
-          ...group,
-          data: reticulumTimestamp
-            ? lastEvent?.encryptedPayload || 'reticulum-chat'
-            : undefined,
-          reticulumChatSummary: summary,
-          sender: reticulumTimestamp ? lastEvent?.authorAddress : undefined,
-          timestamp: reticulumTimestamp || undefined,
-        };
+      const cachedRow =
+        group && typeof group === 'object'
+          ? memberGroupWithReticulumChatRows.get(group)
+          : undefined;
+      if (
+        cachedRow &&
+        cachedRow.summary === summary &&
+        cachedRow.reticulumChatEnabled === reticulumChatEnabled
+      ) {
+        return cachedRow.row;
       }
-      const coreTimestamp =
-        typeof group?.timestamp === 'number' ? group.timestamp : 0;
-      if (!reticulumTimestamp || reticulumTimestamp < coreTimestamp) {
-        return summary ? { ...group, reticulumChatSummary: summary } : group;
+      const row = memberGroupWithReticulumChatRow(
+        group,
+        summary,
+        reticulumChatEnabled
+      );
+      if (group && typeof group === 'object') {
+        memberGroupWithReticulumChatRows.set(group, {
+          summary,
+          reticulumChatEnabled,
+          row,
+        });
       }
-      return {
-        ...group,
-        data: lastEvent?.encryptedPayload || group?.data || 'reticulum-chat',
-        reticulumChatSummary: summary,
-        sender: lastEvent?.authorAddress || group?.sender,
-        timestamp: reticulumTimestamp,
-      };
+      return row;
     })
     .sort((a: any, b: any) => {
       const timestampA = typeof a?.timestamp === 'number' ? a.timestamp : 0;
@@ -214,6 +225,43 @@ export const memberGroupsWithReticulumChatAtom = atom((get) => {
       );
     });
 });
+
+function memberGroupWithReticulumChatRow(
+  group: any,
+  summary: ReticulumChatSummaryAtomEntry | undefined,
+  reticulumChatEnabled: boolean
+): any {
+  const lastEvent = summary?.lastEvent;
+  const reticulumTimestamp =
+    typeof summary?.updatedAt === 'number'
+      ? summary.updatedAt
+      : typeof lastEvent?.timestamp === 'number'
+        ? lastEvent.timestamp
+        : 0;
+  if (reticulumChatEnabled) {
+    return {
+      ...group,
+      data: reticulumTimestamp
+        ? lastEvent?.encryptedPayload || 'reticulum-chat'
+        : undefined,
+      reticulumChatSummary: summary,
+      sender: reticulumTimestamp ? lastEvent?.authorAddress : undefined,
+      timestamp: reticulumTimestamp || undefined,
+    };
+  }
+  const coreTimestamp =
+    typeof group?.timestamp === 'number' ? group.timestamp : 0;
+  if (!reticulumTimestamp || reticulumTimestamp < coreTimestamp) {
+    return summary ? { ...group, reticulumChatSummary: summary } : group;
+  }
+  return {
+    ...group,
+    data: lastEvent?.encryptedPayload || group?.data || 'reticulum-chat',
+    reticulumChatSummary: summary,
+    sender: lastEvent?.authorAddress || group?.sender,
+    timestamp: reticulumTimestamp,
+  };
+}
 
 // When in Electron, use appStorage-backed persistence; otherwise Jotai uses localStorage (undefined = default).
 const electronStorage = getElectronPersistentStorage();

@@ -11,6 +11,7 @@ import {
   createLatencyStats,
   noteLatency,
   summarizeLatency,
+  type LatencyStats,
   type LatencySummary,
 } from './latencyStats';
 
@@ -80,6 +81,34 @@ function mapSendFailureReason(frame: RespFrame): ReticulumSendFailureReason {
 const DESTINATION_HASH_RE = /^[0-9a-f]{32}$/;
 
 /**
+ * A peer hash as wires carry it (hex, or the compact base64url of 16 bytes;
+ * normalizePeerHashFromWire in reticulum-chat.ts) as lowercase hex, or ''.
+ */
+function peerHashFromWire(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  const trimmed = value.trim();
+  if (/^[0-9a-f]{16,64}$/i.test(trimmed)) return trimmed.toLowerCase();
+  if (!/^[A-Za-z0-9_-]{21,24}={0,2}$/.test(trimmed)) return '';
+  try {
+    const base64 = trimmed
+      .replace(/=+$/, '')
+      .replace(/-/g, '+')
+      .replace(/_/g, '/');
+    const binary = atob(
+      `${base64}${'='.repeat((4 - (base64.length % 4)) % 4)}`
+    );
+    if (binary.length !== 16) return '';
+    let hex = '';
+    for (let i = 0; i < binary.length; i += 1) {
+      hex += binary.charCodeAt(i).toString(16).padStart(2, '0');
+    }
+    return hex;
+  } catch {
+    return '';
+  }
+}
+
+/**
  * Resource-session counters for Copy diagnostics. Types are the caller's
  * `logicalResourceType`, or its `resourceType` when it has none. Every caller
  * counts, including ones that joined another caller's pending preparation.
@@ -105,12 +134,25 @@ export type ServingTypeStats = {
   received: number;
   authorized: number;
   rejected: number;
+  /**
+   * Rejects (part of `rejected`) sent after Python had already given up on
+   * the request: the requester got Python's own timeout, not this reason.
+   */
+  lateRejected: number;
+  /** `rejected` by the reason this phone sent (capped like the other maps). */
+  rejectedReasons: Record<string, number>;
   /** Authorize commands that failed. */
   failed: number;
   /** Failed because Python had already given up on the request. */
   late: number;
   /** `auth_ended` events (Python ended the request, e.g. its 15 s timeout). */
   ended: number;
+  /**
+   * Python's auth event (the start of its 15 s answer window) to the worker
+   * receiving it, for this type: which requests reach the engine too late.
+   * Only in getServingStats' copy; absent from older workers.
+   */
+  authArrivalMs?: LatencySummary | null;
 };
 
 /** Serving counters and step timing for Copy diagnostics (since the worker started). */
@@ -143,6 +185,15 @@ function bumpCapped(map: Map<string, number>, key: string): void {
   map.set(k, (map.get(k) ?? 0) + 1);
 }
 
+/** {@link bumpCapped} for a plain record. */
+function bumpCappedRecord(record: Record<string, number>, key: string): void {
+  const k =
+    !(key in record) && Object.keys(record).length >= SERVING_REASONS_MAX - 1
+      ? 'other'
+      : key;
+  record[k] = (record[k] ?? 0) + 1;
+}
+
 function resourceSessionStatsType(payload: {
   resourceType?: string;
   logicalResourceType?: string;
@@ -154,6 +205,9 @@ function resourceSessionStatsType(payload: {
 
 export class MobileReticulumBridge extends EventEmitter {
   private state: 'idle' | 'ready' = 'idle';
+  /** The native staging sweep ran (sweepStagingOnce). */
+  private stagingSwept = false;
+  private stagingSweepInFlight = false;
   private localDestinationHash: string | undefined;
   private localIdentityPublicKeyBase64: string | null = null;
   private readonly resourceSessionPreparations = new Map<
@@ -189,6 +243,8 @@ export class MobileReticulumBridge extends EventEmitter {
   private readonly servingEngineMs = createLatencyStats();
   private readonly servingPythonMs = createLatencyStats();
   private readonly servingToWorkerMs = createLatencyStats();
+  /** servingToWorkerMs per type (the same keys as servingByType). */
+  private readonly servingArrivalByType = new Map<string, LatencyStats>();
   /** Established overlay links by link id (desktop: `overlayLinkSnapshots`). */
   private readonly overlayLinkSnapshots = new Map<
     string,
@@ -218,7 +274,26 @@ export class MobileReticulumBridge extends EventEmitter {
       payload.destinationHash,
       payload.identityPublicKeyBase64
     );
+    this.sweepStagingOnce();
     this.emit('ready', payload);
+  }
+
+  /**
+   * Deletes staged copies a previous worker left behind (it never saw their
+   * terminal status), once per worker. Only the bridge socket route knows
+   * 'sweep', and `ready` can arrive before that socket is open, so a sweep
+   * that got no answer runs again on the next `ready` or when the socket
+   * opens (engineHost calls this then).
+   */
+  sweepStagingOnce(): void {
+    if (this.stagingSwept || this.stagingSweepInFlight || !this.staging) return;
+    this.stagingSweepInFlight = true;
+    void Promise.resolve(this.staging.sweepStale?.())
+      .catch(() => false)
+      .then((swept) => {
+        this.stagingSweepInFlight = false;
+        if (swept === true) this.stagingSwept = true;
+      });
   }
 
   markStopped(): void {
@@ -227,6 +302,9 @@ export class MobileReticulumBridge extends EventEmitter {
     this.overlayLinkSnapshots.clear();
     // A restarted Python bridge starts with an empty identity cache.
     this.peerIdentityKnownUntil.clear();
+    this.peerIdentityUnknownUntil.clear();
+    this.peerIdentityChecks.clear();
+    this.peerIdentityEpoch += 1;
     this.emitOverlayAvailabilityChange(hadAdmittedLink);
   }
 
@@ -315,6 +393,10 @@ export class MobileReticulumBridge extends EventEmitter {
       lastRxAt: now,
       lastActivityAt: now,
     });
+    // Python holds the identity of a peer it admitted a link from.
+    if (admittedNow && peerPresenceHash) {
+      this.forgetUnknownPeerIdentity(peerPresenceHash);
+    }
     if (admittedNow && peerPresenceHash && !peerWasAlreadyAdmitted) {
       this.emit('overlay-peer-admitted', {
         peerHash: peerPresenceHash,
@@ -387,6 +469,12 @@ export class MobileReticulumBridge extends EventEmitter {
       const frame = (payload ?? {}) as Record<string, unknown>;
       const wire = frame.wire;
       if (!wire || typeof wire !== 'object') return;
+      if ((wire as Record<string, unknown>).k === 'identity_offer') {
+        // The engine registers the offered key next: ask Python afresh.
+        this.forgetUnknownPeerIdentity(
+          peerHashFromWire((wire as Record<string, unknown>).d)
+        );
+      }
       this.emit(
         'reticulum-chat-message',
         wire as Record<string, unknown>,
@@ -439,6 +527,13 @@ export class MobileReticulumBridge extends EventEmitter {
     this.noteServingEvent(frame);
     const nativePath = typeof frame.path === 'string' ? frame.path : '';
     const status = String(frame.status ?? '');
+    if (status === 'sent' || status === 'failed' || status === 'cancelled') {
+      // An outbound send's terminal status names only the transfer: Python
+      // has finished reading its staged copy, which can go now.
+      const transferId =
+        typeof frame.transferId === 'string' ? frame.transferId : '';
+      if (transferId) void this.staging?.discardOutboundTransfer?.(transferId);
+    }
     if (!this.staging || !nativePath) {
       this.emit(channel, frame);
       return;
@@ -454,8 +549,21 @@ export class MobileReticulumBridge extends EventEmitter {
     }
     this.resourceEventChain = this.resourceEventChain
       .then(async () => {
-        const opfsPath = await this.staging?.completeInbound(nativePath);
-        this.emit(channel, opfsPath ? { ...frame, path: opfsPath } : frame);
+        const staged = await this.staging?.completeInbound(nativePath);
+        if (staged && typeof staged === 'object') {
+          // The bytes arrived but could not be copied where the engine reads
+          // them. Report a local failure rather than the native path, which
+          // the engine cannot open: its ENOENT used to be charged to the
+          // peer that sent them (page_import_failed, peer backoff).
+          this.emit(channel, {
+            ...frame,
+            status: 'failed',
+            reason: staged.reason,
+            path: undefined,
+          });
+          return;
+        }
+        this.emit(channel, staged ? { ...frame, path: staged } : frame);
       })
       .catch((err) => {
         console.warn('[MobileChat] resource event staging failed', err);
@@ -478,6 +586,8 @@ export class MobileReticulumBridge extends EventEmitter {
         received: 0,
         authorized: 0,
         rejected: 0,
+        lateRejected: 0,
+        rejectedReasons: {},
         failed: 0,
         late: 0,
         ended: 0,
@@ -523,6 +633,7 @@ export class MobileReticulumBridge extends EventEmitter {
         typeof v === 'number' && Number.isFinite(v) ? v : null;
       if (status === 'auth') {
         this.servingType(type).received += 1;
+        const typeKey = this.servingByType.has(type) ? type : 'other';
         const arrivedAt = num(frame.arrivedAtMs);
         const emittedAt = num(frame.authStartedAtMs);
         const recvAt = num(frame._workerRecvAtMs) ?? now;
@@ -531,6 +642,12 @@ export class MobileReticulumBridge extends EventEmitter {
         }
         if (emittedAt !== null) {
           noteLatency(this.servingToWorkerMs, recvAt - emittedAt, now);
+          let arrival = this.servingArrivalByType.get(typeKey);
+          if (!arrival) {
+            arrival = createLatencyStats();
+            this.servingArrivalByType.set(typeKey, arrival);
+          }
+          noteLatency(arrival, recvAt - emittedAt, now);
         }
         this.pruneServingAuths(now);
         // The latest auth for a transfer replaces an earlier one.
@@ -558,13 +675,18 @@ export class MobileReticulumBridge extends EventEmitter {
     }
   }
 
-  /** This phone's answer to a request it saw (`auth`); unseen ones are not counted. */
+  /**
+   * This phone's answer to a request it saw (`auth`); unseen ones are not
+   * counted. `code` is Python's reply code, `rejectReason` the reason a
+   * reject sent.
+   */
   private noteServingAnswer(
     transferId: string,
     kind: 'authorize' | 'reject',
     sentAt: number,
     result: ReticulumSendResult,
-    code: unknown
+    code: unknown,
+    rejectReason?: unknown
   ): void {
     try {
       const entry = this.servingAuths.get(String(transferId ?? ''));
@@ -573,6 +695,16 @@ export class MobileReticulumBridge extends EventEmitter {
       const stats = this.servingType(entry.type);
       if (kind === 'reject') {
         stats.rejected += 1;
+        if (entry.ended || code === 'unknown_resource_request') {
+          stats.lateRejected += 1;
+        }
+        bumpCappedRecord(
+          stats.rejectedReasons,
+          typeof rejectReason === 'string' &&
+            /^[a-z0-9_]{1,64}$/.test(rejectReason)
+            ? rejectReason
+            : 'unknown'
+        );
         return;
       }
       if (entry.arrivedAt !== null) {
@@ -610,7 +742,21 @@ export class MobileReticulumBridge extends EventEmitter {
     }
     return {
       byType: Object.fromEntries(
-        [...this.servingByType].map(([type, stats]) => [type, { ...stats }])
+        [...this.servingByType].map(
+          ([type, stats]): [string, ServingTypeStats] => {
+            const arrival = this.servingArrivalByType.get(type);
+            return [
+              type,
+              {
+                ...stats,
+                rejectedReasons: { ...stats.rejectedReasons },
+                ...(arrival
+                  ? { authArrivalMs: summarizeLatency(arrival, now) }
+                  : {}),
+              },
+            ];
+          }
+        )
       ),
       endedReasons: Object.fromEntries(this.servingEndedReasons),
       failedReasons: Object.fromEntries(this.servingFailedReasons),
@@ -663,6 +809,9 @@ export class MobileReticulumBridge extends EventEmitter {
       };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      if (message.includes('timed out')) {
+        this.watchLateSendReply(action, payload, err);
+      }
       return {
         result: {
           ok: false,
@@ -673,6 +822,60 @@ export class MobileReticulumBridge extends EventEmitter {
         },
       };
     }
+  }
+
+  /**
+   * A chat send that timed out here may still have gone out: the host's
+   * timeout error carries `lateReply` (engineHost withLateReply). When that
+   * reply turns out ok, `reticulum-late-send-ok` tells the engine, which
+   * then drops the retry it queued for the timeout instead of sending the
+   * same wire twice. Only chat sends; other commands have no retry queue.
+   * A multi-target send reports only the peers Python delivered to (as
+   * `peerPresenceHashes`); peers that failed keep their retry.
+   */
+  private watchLateSendReply(
+    action: string,
+    payload: Record<string, unknown>,
+    err: unknown
+  ): void {
+    if (
+      action !== 'send_reticulum_chat' &&
+      action !== 'fanout_reticulum_chat' &&
+      action !== 'send_reticulum_chat_targets'
+    ) {
+      return;
+    }
+    const lateReply = (err as { lateReply?: unknown } | null)?.lateReply;
+    if (
+      !lateReply ||
+      typeof (lateReply as Promise<unknown>).then !== 'function'
+    ) {
+      return;
+    }
+    void (lateReply as Promise<unknown>).then(
+      (frame) => {
+        const resp = frame as RespFrame | null;
+        if (resp?.ok !== true) return;
+        if (action === 'send_reticulum_chat_targets') {
+          const delivered: unknown[] = Array.isArray(
+            resp.payload?.deliveredPeerHashes
+          )
+            ? resp.payload.deliveredPeerHashes
+            : [];
+          const peerPresenceHashes = delivered
+            .filter((p): p is string => typeof p === 'string' && !!p.trim())
+            .map((p) => p.trim().toLowerCase());
+          if (peerPresenceHashes.length === 0) return;
+          this.emit('reticulum-late-send-ok', {
+            action,
+            payload: { message: payload.message, peerPresenceHashes },
+          });
+          return;
+        }
+        this.emit('reticulum-late-send-ok', { action, payload });
+      },
+      () => undefined
+    );
   }
 
   async sendReticulumChatDetailed(
@@ -792,13 +995,22 @@ export class MobileReticulumBridge extends EventEmitter {
         : [];
       return { ok: true, deliveredPeerHashes, failures };
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      if (errorMessage.includes('timed out')) {
+        // The engine queues a retry per next hop on this timeout; a late ok
+        // tells it which of them really went out.
+        this.watchLateSendReply(
+          'send_reticulum_chat_targets',
+          { peerPresenceHashes: peers, message },
+          err
+        );
+      }
       return {
         ok: false,
-        reason: message.includes('timed out')
+        reason: errorMessage.includes('timed out')
           ? 'bridge-timeout'
           : 'bridge-exception',
-        error: message,
+        error: errorMessage,
       };
     }
   }
@@ -817,7 +1029,12 @@ export class MobileReticulumBridge extends EventEmitter {
       try {
         staged = {
           ...payload,
-          filePath: await this.staging.stageOutbound(filePath),
+          filePath: await this.staging.stageOutbound(
+            filePath,
+            typeof payload.transferId === 'string'
+              ? payload.transferId
+              : undefined
+          ),
         };
       } catch (err) {
         return {
@@ -888,7 +1105,8 @@ export class MobileReticulumBridge extends EventEmitter {
     logicalResourceType?: string;
   }): Promise<ReticulumSendResult> {
     const sentAt = Date.now();
-    const result = await this.sendDetailed(
+    // With the payload, so a late answer ('unknown_resource_request') counts.
+    const { result, payload: reply } = await this.sendDetailedWithPayload(
       'reject_reticulum_chat_resource',
       payload
     );
@@ -897,7 +1115,8 @@ export class MobileReticulumBridge extends EventEmitter {
       'reject',
       sentAt,
       result,
-      undefined
+      reply?.code,
+      payload.reason
     );
     return result;
   }
@@ -956,7 +1175,7 @@ export class MobileReticulumBridge extends EventEmitter {
     reason: string;
   }): Promise<ReticulumSendResult> {
     const sentAt = Date.now();
-    const result = await this.sendDetailed(
+    const { result, payload: reply } = await this.sendDetailedWithPayload(
       'reject_reticulum_resource',
       payload
     );
@@ -965,7 +1184,8 @@ export class MobileReticulumBridge extends EventEmitter {
       'reject',
       sentAt,
       result,
-      undefined
+      reply?.code,
+      payload.reason
     );
     return result;
   }
@@ -982,7 +1202,12 @@ export class MobileReticulumBridge extends EventEmitter {
     try {
       const nativePath =
         direction === 'outbound'
-          ? await this.staging.stageOutbound(value as string)
+          ? await this.staging.stageOutbound(
+              value as string,
+              typeof payload.transferId === 'string'
+                ? payload.transferId
+                : undefined
+            )
           : await this.staging.reserveInbound(value as string);
       return { payload: { ...payload, [field]: nativePath } };
     } catch (err) {
@@ -1227,6 +1452,31 @@ export class MobileReticulumBridge extends EventEmitter {
   // the engine asked ~40 times a minute for the same handful of peers.
   private static readonly PEER_IDENTITY_KNOWN_TTL_MS = 10 * 60_000;
   private readonly peerIdentityKnownUntil = new Map<string, number>();
+  // Python's "unknown" answer is kept for 30 s too: a busy engine asked again
+  // for the same unknown peers within seconds (one report: 137 checks, 75 of
+  // them timed out in the queue). It is forgotten as soon as the answer can
+  // change here: a register, an identity_offer naming the peer, an admitted
+  // link to it, or a Python restart.
+  private static readonly PEER_IDENTITY_UNKNOWN_TTL_MS = 30_000;
+  private static readonly PEER_IDENTITY_CACHE_MAX = 512;
+  private readonly peerIdentityUnknownUntil = new Map<string, number>();
+  /** One ensure_peer_identity per peer at a time; later callers share it. */
+  private readonly peerIdentityChecks = new Map<string, Promise<boolean>>();
+  /** Bumped by every forget, so a check that raced one caches nothing. */
+  private peerIdentityEpoch = 0;
+
+  /** An answer about `peer` may have changed: ask Python again next time. */
+  private forgetUnknownPeerIdentity(peer: string): void {
+    if (
+      !this.peerIdentityUnknownUntil.has(peer) &&
+      !this.peerIdentityChecks.has(peer)
+    ) {
+      return;
+    }
+    this.peerIdentityEpoch += 1;
+    this.peerIdentityUnknownUntil.delete(peer);
+    this.peerIdentityChecks.delete(peer);
+  }
 
   async ensurePeerIdentityKnown(peerPresenceHash: string): Promise<boolean> {
     const peer = peerPresenceHash.trim().toLowerCase();
@@ -1237,10 +1487,51 @@ export class MobileReticulumBridge extends EventEmitter {
       if (knownUntil > now) return true;
       this.peerIdentityKnownUntil.delete(peer);
     }
+    const unknownUntil = this.peerIdentityUnknownUntil.get(peer);
+    if (unknownUntil !== undefined) {
+      if (unknownUntil > now) return false;
+      this.peerIdentityUnknownUntil.delete(peer);
+    }
+    const inFlight = this.peerIdentityChecks.get(peer);
+    if (inFlight) return inFlight;
+    const check = this.askPeerIdentity(peer, now);
+    this.peerIdentityChecks.set(peer, check);
+    void check.finally(() => {
+      if (this.peerIdentityChecks.get(peer) === check) {
+        this.peerIdentityChecks.delete(peer);
+      }
+    });
+    return check;
+  }
+
+  private async askPeerIdentity(peer: string, now: number): Promise<boolean> {
+    const epoch = this.peerIdentityEpoch;
     try {
       const resp = await this.sendCommand('ensure_peer_identity', {
         peerPresenceHash: peer,
       });
+      if (
+        resp.ok !== true &&
+        resp.payload?.code === 'unknown_peer_identity' &&
+        epoch === this.peerIdentityEpoch
+      ) {
+        // Only Python's own "unknown": a full queue or a timeout says
+        // nothing about the peer.
+        const answeredAt = Date.now();
+        const unknown = this.peerIdentityUnknownUntil;
+        if (unknown.size >= MobileReticulumBridge.PEER_IDENTITY_CACHE_MAX) {
+          for (const [key, until] of unknown) {
+            if (until <= answeredAt) unknown.delete(key);
+          }
+          if (unknown.size >= MobileReticulumBridge.PEER_IDENTITY_CACHE_MAX) {
+            unknown.delete(unknown.keys().next().value as string);
+          }
+        }
+        unknown.set(
+          peer,
+          answeredAt + MobileReticulumBridge.PEER_IDENTITY_UNKNOWN_TTL_MS
+        );
+      }
       if (resp.ok === true) {
         if (this.peerIdentityKnownUntil.size >= 512) {
           for (const [key, until] of this.peerIdentityKnownUntil) {
@@ -1269,6 +1560,11 @@ export class MobileReticulumBridge extends EventEmitter {
     reticulumIdentityPublicKeyBase64: string
   ): Promise<boolean> {
     if (this.state !== 'ready') return false;
+    const peer = String(peerPresenceHash ?? '')
+      .trim()
+      .toLowerCase();
+    // Before and after: a check answered in between may predate the register.
+    this.forgetUnknownPeerIdentity(peer);
     try {
       const resp = await this.sendCommand('register_peer_identity', {
         peerPresenceHash,
@@ -1277,6 +1573,8 @@ export class MobileReticulumBridge extends EventEmitter {
       return resp.ok === true;
     } catch {
       return false;
+    } finally {
+      this.forgetUnknownPeerIdentity(peer);
     }
   }
 

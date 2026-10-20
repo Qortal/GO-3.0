@@ -21,7 +21,11 @@ import {
   type PagerSample,
 } from '../../../hooks/horizontalPagerSwipe';
 import { isHorizontalGestureClaimed } from '../../../hooks/horizontalGestureClaim';
-import { MOBILE_TAB_ORDER, type MobileTabKey } from '../useMobileTabNavigation';
+import {
+  MOBILE_TAB_ORDER,
+  type MobileSectionKey,
+} from '../useMobileTabNavigation';
+import type { ExternalTouchSource } from '../widgets/widgetSwipeZone';
 import {
   SECTION_ATTR,
   findHorizontalOwner,
@@ -32,8 +36,6 @@ import {
 export const SECTION_CLICK_GUARD_MS = 400;
 /** If the switch never shows up, the sections are put back after this. */
 const COMMIT_FALLBACK_MS = 1200;
-
-const SECTION_COUNT = MOBILE_TAB_ORDER.length;
 
 type StyleEntry = { value: string; priority: string };
 
@@ -65,6 +67,9 @@ const newStyled = (el: HTMLElement): Styled => ({
 
 interface Gesture {
   axis: PagerAxis | null;
+  /** Handed over by Android (externalTouches): the page's own events for
+   * that touch (its cancel, say) never touch it. */
+  external: boolean;
   index: number;
   offset: number;
   /** The offset last written to the sections (what is on screen). */
@@ -88,13 +93,13 @@ export interface SectionSwipeOptions {
   /** Phones, on Home, Apps (without a Q-App on screen) or Chat. */
   enabled: boolean;
   /** The section showing. */
-  current: MobileTabKey | null;
+  current: MobileSectionKey | null;
   /**
    * A swipe was let go past the threshold: go there. Runs in a transition;
    * should a tap land on the new section before that has rendered, it runs
    * again for the same tab, synchronously, so it must be safe to repeat.
    */
-  onNavigate: (tab: MobileTabKey) => void;
+  onNavigate: (tab: MobileSectionKey) => void;
   /** No follow-the-finger motion; a swipe past the threshold just switches. */
   reducedMotion?: boolean;
   /**
@@ -111,7 +116,24 @@ export interface SectionSwipeOptions {
    * it waits beside the current one and slides in, so it arrives laid out
    * as it stays (a Q-App's own bottom menu never jumps up on landing).
    */
-  peekPaddingBottom?: Partial<Record<MobileTabKey, string>>;
+  peekPaddingBottom?: Partial<Record<MobileSectionKey, string>>;
+  /**
+   * The sections left to right, as the round buttons sit (the user can
+   * rearrange them); MOBILE_TAB_ORDER when not given. A change puts every
+   * section back and parks the new neighbours on their new sides.
+   */
+  order?: readonly MobileSectionKey[];
+  /**
+   * Swipes Android took from frames on their way to the page (GO widgets,
+   * widgetSwipeZone): they drive the swipe like the page's own touches.
+   */
+  externalTouches?: ExternalTouchSource;
+  /**
+   * Where Android watches for those (the widgets screen): the page's own
+   * touches starting in it are left to the native swipe, so none is taken
+   * twice.
+   */
+  nativeZone?: HTMLElement | null;
 }
 
 const pxTransform = (x: number) =>
@@ -222,14 +244,31 @@ export function useSectionSwipe(
   rootRef: RefObject<HTMLElement | null>,
   options: SectionSwipeOptions
 ): void {
-  const { enabled, current, bar = null, barEnabled = false } = options;
+  const {
+    enabled,
+    current,
+    bar = null,
+    barEnabled = false,
+    externalTouches,
+  } = options;
   const barActive = Boolean(barEnabled && bar);
   const anyActive = enabled || barActive;
   const optionsRef = useRef(options);
   optionsRef.current = options;
+  const orderKey = (options.order ?? MOBILE_TAB_ORDER).join(',');
+  /** The tab at `index` in the order as it is now (and back). */
+  const tabAt = (index: number): MobileSectionKey | undefined =>
+    (optionsRef.current.order ?? MOBILE_TAB_ORDER)[index];
+  /** How many sections there are now (the widgets screen makes four). */
+  const sectionCount = (): number =>
+    (optionsRef.current.order ?? MOBILE_TAB_ORDER).length;
+  const indexOfTab = (tab: MobileSectionKey | null | undefined): number =>
+    (optionsRef.current.order ?? MOBILE_TAB_ORDER).indexOf(
+      tab as MobileSectionKey
+    );
   const gestureRef = useRef<Gesture | null>(null);
   const styledRef = useRef<Map<number, Styled>>(new Map());
-  const pendingRef = useRef<{ target: MobileTabKey; timer: number } | null>(
+  const pendingRef = useRef<{ target: MobileSectionKey; timer: number } | null>(
     null
   );
   const settleTimerRef = useRef<number | null>(null);
@@ -290,7 +329,9 @@ export function useSectionSwipe(
       }
     }
     const padBottom =
-      optionsRef.current.peekPaddingBottom?.[MOBILE_TAB_ORDER[index]] ?? '';
+      optionsRef.current.peekPaddingBottom?.[
+        tabAt(index) as MobileSectionKey
+      ] ?? '';
     const padded = styled.mine.get('padding-bottom')?.value ?? '';
     const before = styled.before.get('padding-bottom');
     if (padBottom && padded !== padBottom) {
@@ -379,17 +420,13 @@ export function useSectionSwipe(
   useLayoutEffect(() => {
     const previous = shownRef.current;
     shownRef.current = current;
-    const index = MOBILE_TAB_ORDER.indexOf(current as MobileTabKey);
+    const index = indexOfTab(current);
     const pending = pendingRef.current;
     if (pending && pending.target === current) {
       // A next swipe may already be under way from here: it goes on, from
       // where the finger has it in this very frame (not a frame of the
       // sections back where React put them).
-      settleRef.current(
-        index,
-        true,
-        MOBILE_TAB_ORDER.indexOf(previous as MobileTabKey)
-      );
+      settleRef.current(index, true, indexOfTab(previous));
       resumeDragRef.current?.();
       return;
     }
@@ -398,12 +435,19 @@ export function useSectionSwipe(
       cleanupRef.current();
       return;
     }
-    settleRef.current(
-      index,
-      false,
-      MOBILE_TAB_ORDER.indexOf(previous as MobileTabKey)
-    );
+    settleRef.current(index, false, indexOfTab(previous));
   }, [current]);
+
+  // Rearranged buttons: the sections beside the current one are others now,
+  // on other sides. Everything goes back to React before the next paint
+  // (parked sections are keyed by their place), and the new neighbours are
+  // parked again below.
+  const orderKeyRef = useRef(orderKey);
+  useLayoutEffect(() => {
+    if (orderKeyRef.current === orderKey) return;
+    orderKeyRef.current = orderKey;
+    cleanupRef.current();
+  }, [orderKey]);
 
   // The new section's neighbours, laid out ahead of the next swipe.
   const scheduleParkRef = useRef(schedulePark);
@@ -412,7 +456,7 @@ export function useSectionSwipe(
   useEffect(() => {
     if (!anyActive) return;
     scheduleParkRef.current();
-  }, [anyActive, current, peekKey]);
+  }, [anyActive, current, peekKey, orderKey]);
 
   useEffect(() => {
     if (!anyActive) {
@@ -428,9 +472,7 @@ export function useSectionSwipe(
       typeof performance !== 'undefined' ? performance.now() : Date.now();
 
     const sectionElement = (index: number) =>
-      root.querySelector<HTMLElement>(
-        `[${SECTION_ATTR}="${MOBILE_TAB_ORDER[index]}"]`
-      );
+      root.querySelector<HTMLElement>(`[${SECTION_ATTR}="${tabAt(index)}"]`);
 
     const styledSection = (index: number, peek: boolean): Styled | null => {
       const existing = styledRef.current.get(index);
@@ -479,12 +521,10 @@ export function useSectionSwipe(
       ) {
         return;
       }
-      const index = MOBILE_TAB_ORDER.indexOf(
-        optionsRef.current.current as MobileTabKey
-      );
+      const index = indexOfTab(optionsRef.current.current);
       if (index < 0) return;
       for (const neighbour of [index - 1, index + 1]) {
-        if (neighbour < 0 || neighbour >= SECTION_COUNT) continue;
+        if (neighbour < 0 || neighbour >= sectionCount()) continue;
         const existing = styledRef.current.get(neighbour);
         if (existing) {
           // Keeps up with a change in the room it will have.
@@ -550,7 +590,7 @@ export function useSectionSwipe(
       gesture.offset = pagerDragOffset(
         gesture.index,
         gesture.travel,
-        SECTION_COUNT,
+        sectionCount(),
         gesture.width
       );
       // Bring in the neighbour on the side the content is moving away from.
@@ -560,7 +600,7 @@ export function useSectionSwipe(
           : gesture.offset > 0
             ? gesture.index - 1
             : null;
-      if (neighbour !== null && neighbour >= 0 && neighbour < SECTION_COUNT) {
+      if (neighbour !== null && neighbour >= 0 && neighbour < sectionCount()) {
         reveal(neighbour);
       }
     };
@@ -592,7 +632,7 @@ export function useSectionSwipe(
           scheduleParkRef.current();
           return;
         }
-        const tab = MOBILE_TAB_ORDER[target];
+        const tab = tabAt(target) as MobileSectionKey;
         // The section landed on takes touches from now on, not only once
         // React has switched to it: a list there scrolls, and a tap on it
         // brings the switch forward (see onTouchEnd).
@@ -710,7 +750,8 @@ export function useSectionSwipe(
       );
     };
 
-    const onTouchStart = (event: TouchEvent) => {
+    const onTouchStart = (event: TouchEvent, external = false) => {
+      if (!external && gestureRef.current?.external) return;
       if (event.touches.length !== 1) {
         cancelGesture();
         return;
@@ -720,15 +761,26 @@ export function useSectionSwipe(
       fastForward();
       gestureRef.current = null;
       clickGuardUntil = 0;
+      // Android takes swipes starting here (over GO widgets) and hands them
+      // over through externalTouches; the page's own copy is left alone.
+      const zone = optionsRef.current.nativeZone;
+      if (
+        !external &&
+        zone &&
+        event.target instanceof Node &&
+        zone.contains(event.target)
+      ) {
+        return;
+      }
       const touch = event.touches[0];
       if (isInPagerEdgeZone(touch.clientX, window.innerWidth)) return;
-      const index = MOBILE_TAB_ORDER.indexOf(
-        (pendingRef.current?.target ??
-          optionsRef.current.current) as MobileTabKey
+      const index = indexOfTab(
+        pendingRef.current?.target ?? optionsRef.current.current
       );
       if (index < 0 || !sectionElement(index)) return;
       gestureRef.current = {
         axis: null,
+        external,
         index,
         offset: 0,
         painted: 0,
@@ -745,8 +797,9 @@ export function useSectionSwipe(
       };
     };
 
-    const onTouchMove = (event: TouchEvent) => {
+    const onTouchMove = (event: TouchEvent, external = false) => {
       const gesture = gestureRef.current;
+      if (gesture && gesture.external !== external) return;
       if (
         !gesture ||
         (gesture.axis !== null && gesture.axis !== 'horizontal')
@@ -824,9 +877,11 @@ export function useSectionSwipe(
       flushSync(() => optionsRef.current.onNavigate(pending.target));
     };
 
-    const onTouchEnd = (event: TouchEvent) => {
+    const onTouchEnd = (event: TouchEvent, external = false) => {
       const gesture = gestureRef.current;
       if (!gesture) return;
+      // Android's cancel to the page, for the swipe it handed over: not ours.
+      if (gesture.external !== external) return;
       if (gesture.axis !== 'horizontal') {
         gestureRef.current = null;
         // Neither a swipe nor a scroll: a tap, or a press and hold.
@@ -850,7 +905,7 @@ export function useSectionSwipe(
       const target = resolvePagerRelease({
         dx: gesture.travel,
         page: gesture.index,
-        pageCount: SECTION_COUNT,
+        pageCount: sectionCount(),
         velocity,
         width: gesture.width,
       });
@@ -863,6 +918,29 @@ export function useSectionSwipe(
       event.preventDefault();
       event.stopPropagation();
     };
+
+    // Swipes Android took from widget frames: the same handlers, fed by hand.
+    const unsubscribeExternal = enabled
+      ? externalTouches?.subscribe((touch) => {
+          const point = {
+            clientX: touch.x,
+            clientY: touch.y,
+            target: touch.target,
+          };
+          const ended =
+            touch.type === 'touchend' || touch.type === 'touchcancel';
+          const event = {
+            type: touch.type,
+            timeStamp: touch.timeStamp,
+            target: touch.target,
+            touches: ended ? [] : [point],
+            changedTouches: [point],
+          } as unknown as TouchEvent;
+          if (touch.type === 'touchstart') onTouchStart(event, true);
+          else if (touch.type === 'touchmove') onTouchMove(event, true);
+          else onTouchEnd(event, true);
+        })
+      : undefined;
 
     const passive = { passive: true } as const;
     const surfaces = [
@@ -877,6 +955,7 @@ export function useSectionSwipe(
       surface.addEventListener('click', onClickCapture, true);
     }
     return () => {
+      unsubscribeExternal?.();
       for (const surface of surfaces) {
         surface.removeEventListener('touchstart', onTouchStart);
         surface.removeEventListener('touchmove', onTouchMove);
@@ -888,7 +967,7 @@ export function useSectionSwipe(
       // A switch already on its way finishes; anything else is put back.
       if (!pendingRef.current) cleanupRef.current();
     };
-  }, [anyActive, enabled, barActive, bar, rootRef]);
+  }, [anyActive, enabled, barActive, bar, rootRef, externalTouches]);
 
   useEffect(() => () => cleanupRef.current(), []);
 }

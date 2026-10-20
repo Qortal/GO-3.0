@@ -251,6 +251,13 @@
     "blocked_public_node_title": "パブリックノードを使用中です",
     "blocked_settings": "ブロック済みアカウント",
     "blocked_settings_description": "このウォレットまたはこのデバイス全体でブロックした名前とアドレスを管理します。",
+    "bottom_buttons": "下部ボタン",
+    "bottom_buttons_apps": "アプリ",
+    "bottom_buttons_chat": "チャット",
+    "bottom_buttons_desc": "ホーム、アプリ、チャットを好きな順番にドラッグしてください。横スワイプでの切り替えも同じ順番になります。",
+    "bottom_buttons_home": "ホーム",
+    "bottom_buttons_item_label": "{{name}}、{{total}}個中{{place}}番目。左右の矢印キーで移動します。",
+    "bottom_buttons_reset": "リセット",
     "buy": "購入",
     "change_node": "ノードを変更",
     "close_action_update_error": "ウィンドウを閉じるときの動作を今は更新できませんでした。",
@@ -482,7 +489,9 @@
     "wallet_password": "ウォレットのパスワード",
     "wallet_password_placeholder": "ウォレットのパスワードを入力",
     "wallet_password_required": "秘密鍵を復号するにはウォレットのパスワードを入力してください。",
-    "wallet_unavailable_error": "ウォレットデータは現在利用できません。"
+    "wallet_unavailable_error": "ウォレットデータは現在利用できません。",
+    "widgets_screen": "ウィジェット画面",
+    "widgets_screen_desc": "最初のセクションの左にあるウィジェット用の画面：時刻、天気、Torq のニュースなど、GO 3.0 向けの小さな Q-App。右にスワイプして開きます。"
   },
   "dm": {
     "add_friend_before_calling": "通話する前にこのユーザーを友だちに追加してください",
@@ -1322,5 +1331,27 @@
     "intro_title": "Qortalでの会話の新しい基盤",
     "title": "Q-Chatの新着情報",
     "version": "バージョン {{version}}"
+  },
+  "widgets": {
+    "add": "ウィジェットを追加",
+    "add_short": "追加",
+    "added": "追加済み",
+    "by": "{{name}} 作",
+    "done": "完了",
+    "empty_hint": "あとでウィジェットか空いている場所を長押しすると、追加・移動・サイズ変更ができます。下の「削除」までドラッグすると削除できます。",
+    "limit": "ウィジェットは最大 {{max}} 個まで追加できます。",
+    "open_app": "{{name}} を開く",
+    "picker_developers": "Q-App 開発者の方へ：ウィジェットは go-widget タグ付き、または go-widget で始まる識別子の APP として公開してください。",
+    "picker_empty": "公開されているウィジェットはまだありません。",
+    "picker_error": "ウィジェットを読み込めませんでした。ノードへの接続を確認してください。",
+    "picker_none_found": "一致するウィジェットはありません。",
+    "picker_note": "ウィジェットは GO 向けの Q-App です。表示やアプリを開くことはできますが、支払い・公開・署名はできません。",
+    "picker_search": "ウィジェットを検索",
+    "picker_title": "ウィジェットを追加",
+    "reload": "再読み込み",
+    "remove": "削除",
+    "resize": "サイズ変更",
+    "retry": "再試行",
+    "title": "ウィジェット"
   }
 }

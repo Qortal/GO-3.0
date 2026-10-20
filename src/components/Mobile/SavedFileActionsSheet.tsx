@@ -16,6 +16,7 @@ import {
   unsubscribeFromEvent,
 } from '../../utils/events';
 import { BACK_PRIORITY, useAndroidBack } from '../../utils/androidBack';
+import { useCloseWithGoWindows } from '../../utils/closeGoWindows';
 import { SAFE_AREA_BOTTOM } from '../../utils/mobileSafeArea';
 import { isRefusedForOpen } from '../../utils/nativeFileOpen';
 import { useGoLayout } from '../../layout/goLayout';
@@ -77,6 +78,7 @@ export const SavedFileActionsSheet = () => {
     },
     { priority: BACK_PRIORITY.sheet, enabled: !!file }
   );
+  useCloseWithGoWindows(!!file, close);
 
   const notifyError = (key: string) =>
     executeEvent('openGlobalSnackBar', {

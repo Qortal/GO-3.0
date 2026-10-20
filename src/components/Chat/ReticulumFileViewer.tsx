@@ -36,6 +36,7 @@ import {
   type FileViewerRequest,
 } from '../../utils/fileViewerEvents';
 import { BACK_PRIORITY, useAndroidBack } from '../../utils/androidBack';
+import { useCloseWithGoWindows } from '../../utils/closeGoWindows';
 import {
   SAFE_AREA_BOTTOM,
   SAFE_AREA_LEFT,
@@ -248,6 +249,7 @@ export const ReticulumFileViewer = () => {
     },
     { priority: BACK_PRIORITY.call, enabled: isOpen }
   );
+  useCloseWithGoWindows(isOpen, close);
 
   useEffect(() => {
     if (!isOpen) return;

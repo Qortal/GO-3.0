@@ -54,6 +54,10 @@ import {
 import { AppsLibraryDesktop } from './AppsLibraryDesktop';
 import { AppsCategoryDesktop } from './AppsCategoryDesktop';
 import { invalidateAppNodeStatuses, watchAppNodeStatus } from './appNodeStatus';
+import {
+  afterPublicNodeOpen,
+  beforePublicNodeOpen,
+} from '../../publicNode/publicNodeWatch';
 import AddRoundedIcon from '@mui/icons-material/AddRounded';
 import { CustomizedSnackbars } from '../Snackbar/Snackbar';
 import {
@@ -1066,6 +1070,22 @@ export const AppsDesktop = ({
         return;
       }
     }
+    // GO on the public node: while it is down the app waits for it, named in
+    // the "public node unavailable" window, instead of opening onto an error.
+    const opensFromNode =
+      !data?.internal &&
+      !data?.isPreview &&
+      (data?.service === 'APP' || data?.service === 'WEBSITE');
+    if (
+      opensFromNode &&
+      !beforePublicNodeOpen({
+        service: data.service,
+        name: data.name,
+        retry: () => executeEvent('addTab', { data }),
+      })
+    ) {
+      return;
+    }
     const newTab = {
       ...data,
       tabId: uid.rnd(),
@@ -1105,6 +1125,13 @@ export const AppsDesktop = ({
       (newTab.service === 'APP' || newTab.service === 'WEBSITE')
     ) {
       watchAppNodeStatus(newTab.service, newTab.name);
+    }
+    if (opensFromNode) {
+      afterPublicNodeOpen({
+        service: newTab.service,
+        name: newTab.name,
+        reload: () => executeEvent('refreshApp', { tabId: newTab.tabId }),
+      });
     }
     if (shouldUseSmoothHandoff) {
       scheduleVisualTabActivation(newTab.tabId);

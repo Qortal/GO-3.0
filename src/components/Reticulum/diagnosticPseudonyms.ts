@@ -49,6 +49,28 @@ const QORTAL_ADDRESS_RE = /^Q[1-9A-HJ-NP-Za-km-z]{33}$/;
 const ID_PAIR_RE =
   /\b(group(?:_?id)?|peer(?:_?address)?|active_?peer|provider|next_?hop|responder|author|address|requester|sender|recipient|member|owner|root|transfer|old_?transfer|file|rid|request(?:_?id)?|conversation(?:_?id)?|event(?:_?id)?|cursor|message(?:_?id)?|channel(?:_?id)?|session(?:_?id)?|target(?:_?session)?|source_?session|call(?:_?id)?|key(?:_?id)?|link(?:_?id)?|dest(?:ination)?(?:_?hash)?|hash|blob|thread|identity|id)=([^\s,;&)\]]+)/gi;
 
+/**
+ * `host=<host[:port]>` in engine lines (`membership_fetch_failed … host=…`):
+ * the value goes through the same host rule as the report's own node lines,
+ * so public nodes and loopback stay readable and a private node does not.
+ */
+const HOST_PAIR_RE = /\bhost=([^\s,;&)\]]+)/gi;
+
+/**
+ * `bridge_traffic` keys such as `reticulum_chat_resource:receiving:event=145`
+ * hold a count after `:event=`, not an event id (event ids are base58, never
+ * a plain number).
+ */
+const isEventCountPair = (
+  key: string,
+  value: string,
+  offset: number,
+  whole: string
+): boolean =>
+  key.toLowerCase() === 'event' &&
+  whole[offset - 1] === ':' &&
+  /^\d+$/.test(value);
+
 /** Values that are not identifiers, whatever key they follow. */
 const PLAIN_VALUES = new Set([
   '',
@@ -348,9 +370,15 @@ export function createDiagnosticPseudonymizer(
           number: string | undefined
         ) => jsonPair(key, separator, quoted, number)
       )
+      .replace(HOST_PAIR_RE, (match, value: string) =>
+        plainValue(value) ? match : `host=${host(value)}`
+      )
       .replace(
         ID_PAIR_RE,
-        (_m, key: string, value: string) => `${key}=${pairValue(value, key)}`
+        (match, key: string, value: string, offset: number, whole: string) =>
+          isEventCountPair(key, value, offset, whole)
+            ? match
+            : `${key}=${pairValue(value, key)}`
       )
       .replace(
         GROUP_WORD_RE,

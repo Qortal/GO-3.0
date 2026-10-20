@@ -17,7 +17,14 @@ export const QAPP_FETCH_MIN_BYTES = 4 * 1024 * 1024;
 /** Marks the reporter's postMessages; nothing else in GO uses this key. */
 export const QAPP_FETCH_MESSAGE_KEY = '__goQdnFetch';
 
-export type QappFetchPhase = 'start' | 'progress' | 'done' | 'error' | 'cancel';
+export type QappFetchPhase =
+  | 'start'
+  | 'progress'
+  | 'done'
+  | 'error'
+  | 'cancel'
+  /** A QDN load got no answer from the node (nginx 502-504 or no reply). */
+  | 'node-trouble';
 
 export type QappFetchMessage = {
   phase: QappFetchPhase;
@@ -58,6 +65,25 @@ function qappFetchReporter(
     } catch {
       /* reporting must never break the app */
     }
+  };
+  // The node gave no answer to a QDN load: GO checks the node and may say
+  // it is down. Once in 20 s is plenty; GO checks at most every 15 s.
+  let troubleAt = 0;
+  const gatewayError = (status: number) =>
+    status === 502 || status === 503 || status === 504;
+  const nodeTrouble = (where: any) => {
+    const now = Date.now();
+    if (now - troubleAt < 20000) return;
+    troubleAt = now;
+    post({
+      phase: 'node-trouble',
+      id: newId(),
+      service: where.service,
+      name: where.name,
+      identifier: where.identifier,
+      loaded: 0,
+      total: 0,
+    });
   };
   const qdnTarget = (url: string) => {
     try {
@@ -188,13 +214,20 @@ function qappFetchReporter(
         where = null;
       }
       if (!where) return pending;
-      return pending.then((res: any) => {
-        try {
-          return track(res, where);
-        } catch {
-          return res;
+      return pending.then(
+        (res: any) => {
+          if (res && gatewayError(res.status)) nodeTrouble(where);
+          try {
+            return track(res, where);
+          } catch {
+            return res;
+          }
+        },
+        (err: any) => {
+          if (!err || err.name !== 'AbortError') nodeTrouble(where);
+          throw err;
         }
-      });
+      );
     };
   }
 
@@ -218,6 +251,10 @@ function qappFetchReporter(
     XHR.prototype.send = function () {
       const where = this.__goQdnTarget;
       if (where) {
+        this.addEventListener('error', () => nodeTrouble(where));
+        this.addEventListener('load', () => {
+          if (gatewayError(this.status)) nodeTrouble(where);
+        });
         let id: string | null = null;
         let lastAt = 0;
         let loaded = 0;
@@ -278,6 +315,7 @@ export function parseQappFetchMessage(data: unknown): QappFetchMessage | null {
     'done',
     'error',
     'cancel',
+    'node-trouble',
   ];
   const phase = raw.phase as QappFetchPhase;
   if (!phases.includes(phase)) return null;

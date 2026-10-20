@@ -21,9 +21,9 @@ import {
   groupQManagerPopupSizeAtom,
   reticulumChatTextScaleAtom,
   reticulumLegacyThreadsEnabledAtom,
-  reticulumChatSummariesAtom,
   type ReticulumChatSummaryAtomEntry,
 } from '../../atoms/global';
+import { useReticulumOpenGroupSummary } from './reticulumOpenGroupSummary';
 import {
   decodeBase64ForUIChatMessages,
   objectToBase64,
@@ -304,6 +304,8 @@ import {
   withTabBarSpace,
 } from '../Mobile/mobileBarHeights';
 import { SECTION_SWIPE_IGNORE_ATTR } from '../Mobile/sectionSwipe/sectionSwipe';
+import { isGoCallUi } from '../Mobile/call/goCallUi';
+import { openGoCallScreen, showCallHint } from '../Mobile/call/callHints';
 import { isGoLayout } from '../../layout/goLayout';
 import { composerFabModeFor } from './landscapeComposer';
 
@@ -2778,7 +2780,9 @@ export const ChatGroup = ({
     typeof setTimeout
   > | null>(null);
   const reticulumTypingActiveRef = useRef(false);
-  const reticulumChatSummaries = useAtomValue(reticulumChatSummariesAtom);
+  // Only the open group's per-channel badge fields: a refresh that changes
+  // another group does not re-render the open chat.
+  const reticulumOpenGroupSummary = useReticulumOpenGroupSummary(selectedGroup);
   const [windowSize, setWindowSize] = useState(() =>
     typeof window !== 'undefined'
       ? {
@@ -3156,7 +3160,7 @@ export const ChatGroup = ({
     if (!Number.isInteger(groupId) || groupId <= 0) {
       return new Map<string, ReticulumChatSummaryAtomEntry>();
     }
-    const summary = reticulumChatSummaries?.[String(groupId)];
+    const summary = reticulumOpenGroupSummary;
     const channels = Array.isArray(summary?.channels) ? summary.channels : [];
     const entries: Array<[string, ReticulumChatSummaryAtomEntry]> = [];
     for (const channelSummary of channels) {
@@ -3166,7 +3170,7 @@ export const ChatGroup = ({
       entries.push([channelId, channelSummary]);
     }
     return new Map(entries);
-  }, [reticulumChatSummaries, selectedGroup]);
+  }, [reticulumOpenGroupSummary, selectedGroup]);
 
   const selectedReticulumGroupKey = selectedGroup ? String(selectedGroup) : '';
   const reticulumAllChannelsForSelectedGroup =
@@ -10633,6 +10637,7 @@ export const ChatGroup = ({
     showLabel = false,
     tooltip = '',
     secondary = false,
+    onDisabledTap,
   }: {
     active?: boolean;
     label: string;
@@ -10643,11 +10648,17 @@ export const ChatGroup = ({
     tooltip?: string;
     /** Moved into the channel overflow menu on phones to keep the name legible. */
     secondary?: boolean;
+    /** GO only: a tap on the greyed action (phones have no hover tooltip). */
+    onDisabledTap?: () => void;
   }) => {
     if (typeof onClick !== 'function') return null;
     const button = (
       <Box
         component="span"
+        // GO: a disabled action has no hover tooltip on a phone; a tap on it
+        // says why (e.g. "finish your other call first"). Only actions that
+        // pass onDisabledTap (the group call) do this.
+        onClick={disabled && onDisabledTap ? onDisabledTap : undefined}
         sx={{
           display: secondary
             ? { xs: 'none', md: 'inline-flex' }
@@ -11665,6 +11676,19 @@ export const ChatGroup = ({
                   onClick: onGroupCallClick,
                   disabled: groupCallDisabled || groupCallJoining,
                   tooltip: groupCallTooltip || t('group:chat_group.group_call'),
+                  // GO: joining brings the call screen back; blocked by
+                  // another call says so.
+                  onDisabledTap: isGoCallUi()
+                    ? () => {
+                        if (groupCallJoining && !groupCallDisabled) {
+                          openGoCallScreen();
+                          return;
+                        }
+                        showCallHint(
+                          groupCallTooltip || t('group:chat_group.group_call')
+                        );
+                      }
+                    : undefined,
                 })}
                 {renderReticulumHeaderAction({
                   active: reticulumCalendarOpen,

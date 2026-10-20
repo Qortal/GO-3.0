@@ -3,10 +3,13 @@
  *
  * Node worker_threads are unavailable in the engine worker, and every chat
  * pool call site has an inline fallback for a null result (the pool is a
- * best-effort accelerator on desktop). Additionally the engine runs with
- * process.env.VITEST set, which routes the digest/author-tree builds through
- * their inline branches — required here because the pooled variants open the
- * SQLite file from a second connection, which the OPFS SAH-pool VFS forbids.
+ * best-effort accelerator on desktop). The digest/author-tree builds never
+ * call this on GO: engineHost sets mobileProfile.inlineDigestBuilds, which
+ * routes them through their inline branches (the pooled variants open the
+ * SQLite file from a second connection, which the OPFS SAH-pool VFS forbids).
+ * The engine.worker.ts `process.env.VITEST` value does not do this in built
+ * bundles: Vite replaces `process.env` there with an empty object, so before
+ * that option every build here returned null and logged a worker fallback.
  */
 
 export type ReticulumChatWorkerTask = { id: number; kind: string } & Record<

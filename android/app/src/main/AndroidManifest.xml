@@ -267,12 +267,21 @@
             android:name="android.webkit.WebView.EnableSafeBrowsing"
             android:value="false" />
 
-        <!-- Qortal Reticulum / presence foreground service -->
+        <!-- Qortal Reticulum / presence foreground service. During a voice
+             call it also runs as "microphone" (CallSession / Android 11+
+             silences the mic of an app off screen otherwise), with the call
+             notification; back to dataSync / remoteMessaging after it. -->
         <service
             android:name=".QortalForegroundService"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="dataSync|remoteMessaging" />
+            android:foregroundServiceType="dataSync|remoteMessaging|microphone" />
+
+        <!-- Decline / Hang up / Mute on the call notifications. Not exported:
+             only GO's own PendingIntents (explicit component) reach it. -->
+        <receiver
+            android:name=".CallActionReceiver"
+            android:exported="false" />
 
         <!-- Qortal Card (testing): another GO phone reads this phone's payment
              request by tapping. Only the system's NFC service can bind it
@@ -299,6 +308,37 @@
          WebView audio resource after these runtime permissions are held). -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <!-- Calls work on phones and tablets without a microphone too (listen only). -->
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
+    <!-- Voice calls on a Bluetooth headset. Android 12+ routes the call with
+         setCommunicationDevice, which needs no Bluetooth permission: GO never
+         declares or asks for BLUETOOTH_CONNECT (the "Nearby devices" prompt).
+         Android 11 and older grant BLUETOOTH at install (SCO audio), no prompt. -->
+    <uses-permission
+        android:name="android.permission.BLUETOOTH"
+        android:maxSdkVersion="30" />
+    <!-- Never the "Nearby devices" prompt: these are that group's runtime
+         permissions. tools:node="remove" drops them from the merged manifest
+         even if a library or Capacitor plugin declares one, so Android can
+         never ask for them. Bluetooth call audio needs none of them. -->
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_CONNECT"
+        tools:node="remove" />
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_SCAN"
+        tools:node="remove" />
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_ADVERTISE"
+        tools:node="remove" />
+    <uses-permission
+        android:name="android.permission.NEARBY_WIFI_DEVICES"
+        tools:node="remove" />
+    <uses-permission
+        android:name="android.permission.UWB_RANGING"
+        tools:node="remove" />
+    <uses-permission
+        android:name="android.permission.RANGING"
+        tools:node="remove" />
     <!-- In-app QR scanner: WebView getUserMedia camera capture (Capacitor grants
          the WebView video resource after this runtime permission is held). Uses
          jsQR entirely offline — no Google Play Services / ML Kit. -->
@@ -329,6 +369,9 @@
     <!-- remoteMessaging (Android 14+) has no daily time limit: the status
          service type on Android 14+; dataSync before, and as a fallback. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_REMOTE_MESSAGING" />
+    <!-- Voice calls (Android 14+): the status service adds the microphone
+         type while a call runs, so the mic keeps working off screen. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />

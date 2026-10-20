@@ -8,7 +8,7 @@ import {
 } from '../../hooks/horizontalPagerSwipe';
 import { isHorizontalGestureClaimed } from '../../hooks/horizontalGestureClaim';
 import { SECTION_ATTR } from './sectionSwipe/sectionSwipe';
-import type { MobileTabKey } from './useMobileTabNavigation';
+import type { MobileSectionKey } from './useMobileTabNavigation';
 
 /**
  * Pulling down from the top of Home, the Q-Apps library or the chat lists
@@ -112,7 +112,7 @@ export interface TabsPullDownOptions {
    * sections. Read when a finger comes down. */
   canStart: boolean;
   /** The sections a pull may start in (where they show their lists). */
-  sections: readonly MobileTabKey[];
+  sections: readonly MobileSectionKey[];
   /** Open the Tabs window for a pull: shown at once, no slide of its own. */
   onPullStart: () => void;
   /** The pull was let go: the window stays open (true) or closes. */
@@ -225,7 +225,7 @@ export function useTabsPullDown(options: TabsPullDownOptions): void {
     const sectionAllows = (target: Element | null) => {
       const section = target
         ?.closest(`[${SECTION_ATTR}]`)
-        ?.getAttribute(SECTION_ATTR) as MobileTabKey | undefined;
+        ?.getAttribute(SECTION_ATTR) as MobileSectionKey | undefined;
       return Boolean(section && optionsRef.current.sections.includes(section));
     };
 

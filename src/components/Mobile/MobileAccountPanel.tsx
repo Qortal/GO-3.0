@@ -30,6 +30,7 @@ import {
 import { QortalUserAvatar } from '../QortalUserAvatar';
 import type { WalletAvatarCacheEntry } from '../../utils/walletAvatarCache';
 import { BACK_PRIORITY, useAndroidBack } from '../../utils/androidBack';
+import { useCloseWithGoWindows } from '../../utils/closeGoWindows';
 import { requestAppLockNow } from '../../lib/appLock';
 
 export type AccountAction = {
@@ -202,6 +203,7 @@ export const MobileAccountPanel = ({
     },
     { priority: BACK_PRIORITY.overlay, enabled: open }
   );
+  useCloseWithGoWindows(open, onClose);
 
   return (
     <AnimatePresence>

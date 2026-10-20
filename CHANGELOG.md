@@ -11,8 +11,138 @@ desktop Hub. The format is based on
 
 ## [Unreleased]
 
+## [0.0.19] — 2026-10-20 (GO 3.0)
+
+### Added
+
+- **Voice calls work** _(mobile)_ — calls from GO never reached audio:
+  GO's join message carried a field its own signing rules refuse, the
+  Python bridge had lost its audio path in the Hub v3.0.1 merge, and GO
+  could not send WebRTC signals. GO now runs the Hub's own call code,
+  unchanged, so 1:1 and group calls with Hubs and other GO phones follow
+  exactly the Hub's protocol (signatures, pinned delivery, heartbeats,
+  decline reasons, group rules). 1:1 calls try a direct WebRTC link first
+  and fall back to Reticulum by themselves. GO never sends or uses local,
+  LAN, CGNAT or IPv6 addresses, only the other side's public IPv4, and
+  never offers itself as a STUN server; STUN servers heard on Reticulum are
+  kept for 24 h (at most 32) and checked before use. Settings → **Calls**:
+  Direct (faster, the other side sees Your IP address) or Private
+  (Reticulum only, groups too). On Android: a ringing notification with
+  the caller's avatar and Accept / Decline, a full-screen ring, answering
+  over the lock screen (only the call screen shows, GO stays locked), an
+  ongoing-call notification with Mute / Hang up, the microphone kept on in
+  the background, earpiece and proximity for 1:1 calls, speaker for group
+  calls, and switching to a Bluetooth or wired headset (the mic restarts on
+  the new device). GO does not ask for the "Nearby devices" permission for
+  Bluetooth. New full-screen call screen ("Encrypted · Direct" or
+  "Relayed"), a small call strip on every section, an audio route sheet,
+  a group call stage, and a Calls section in Copy diagnostics (WebRTC
+  stats without addresses). Calls get ready about half a minute after GO
+  connects, and the two accounts must be DM friends, as on the Hub. Tested
+  on a phone on mobile data with a desktop Hub: direct link in about 7 s,
+  no packets lost. In all 12 languages.
+- **Widgets screen** _(mobile)_ — a new screen left of the first section
+  (swipe right from Home) for GO 3.0 widgets: small Q-Apps made for GO, like
+  the time, the weather or news from Torq. **+** lists the widgets published
+  on QDN: APP resources tagged `go-widget`, or with an identifier starting
+  with `go-widget` (`go-widget-news`), which Core filters on the node and lets
+  a name publish its widget next to its main app. Nothing runs until the user
+  adds it. The screen shows only the widgets (an empty one, a round **+**).
+  Widgets sit on a 4-column grid; holding a widget picks it up (Android takes
+  the long press from its frame) to move it (others make room, same-size ones
+  swap) or drop it on **Remove** at the bottom; holding an empty spot
+  arranges too, with **Add widget** / **Done** at the bottom; drag a corner
+  to resize, × to remove, tap for Open / Reload / Remove. A
+  widget may suggest its size (`GO_WIDGET_SET_SIZE`) until the user resizes
+  it. Widgets get a strict request allowlist: they can show things and open
+  apps, but never pay, publish, sign, decrypt, save, notify or go full
+  screen, and anything that asks the user or opens something only works
+  while the screen is showing; frames have no pop-up dialogs, downloads or
+  clipboard. Sideways swipes over widgets still switch sections: Android
+  takes a swipe once it is clearly sideways (after the page confirms the
+  widgets screen is on top under the finger) and hands it to the section
+  swipe, while taps, typing and vertical scrolling stay the widget's. Widgets
+  load the first time the screen is shown and are unloaded 3 minutes after
+  it was last seen. Settings → System → **Widgets screen** turns it off.
+  Developer guide: `docs/go-widgets.md`; example widget:
+  `qapps/go-widget-clock`.
+- **Rearrange the bottom buttons** _(mobile)_ — Settings → System → Bottom
+  buttons (above Immersive mode): drag the round Home, Apps and Chat buttons
+  into any order (or move one with the arrow keys; Reset puts them back).
+  The bottom bar and the landscape top-bar buttons use it, and so does the
+  sideways swipe between sections: the section beside the current one is
+  always the button beside its button, the first and last ones rubber-band,
+  and the neighbours GO lays out ahead of a swipe are parked again on their
+  new sides. The bar takes the new order when a drag ends, not on every step
+  of it. Saved on the device (`go_tab_bar_order`).
+- **"Public node unavailable" window** _(mobile)_ — on the public node
+  (ext-node.qortal.link), a Q-App or website opened while the node is down
+  used to show a blank or error page. Now a window names the app, says the
+  public node is not answering, and offers to wait or to use a private node
+  (opens node settings). While it waits, GO checks the node every few
+  seconds (4 s, then backing off to 30 s, only while on screen; "Check now"
+  asks at once), and when the node is back the window turns green and the
+  app opens. An app tapped with no recent answer from the node opens at once
+  and is checked behind it; if the node turns out to be down, the window
+  says so and GO reloads the app once the node is back. GO's own QDN loads
+  (avatars, the Torq feed, private Q-Apps) and a Q-App's QDN loads inside
+  its frame report failed loads too; those show the window at most once per
+  outage, with "Don't show again". Nothing extra is sent while the node
+  answers: the node status socket's pongs and ordinary loads say it is up,
+  and a sign of trouble is confirmed with `/admin/status` (a lone 502 is
+  asked twice) before anything shows. A phone with no network never blames
+  the node. Preview: `tools/preview/public-node-down.html`.
+- **Optional notice when WebView JIT is off** _(mobile)_ — on GrapheneOS
+  with "WebView JIT" turned off for GO, chats and the chat database run in
+  a slower mode, mostly right after start. GO now shows one calm card in
+  the bell (no pop-up, no outside links) that says so, gives the two steps
+  to change it (Settings > Apps > GO > "Exploit protection" > "WebView
+  JIT"), and says it is a security setting and the choice is Yours: faster
+  with JIT, extra hardening without it. The card shows only when GO can
+  tell JIT is off, and "Don't show again" keeps it away. In all 12
+  languages.
+
 ### Fixed
 
+- **Sharing into GO while it is open in another window** _(mobile)_ — a
+  photo or file shared to "GO Groups" / "GO DMs" / "GO Self-DM" while GO sat
+  in the background with Tabs, Settings, the account panel, a viewer or a
+  sheet open opened the chat list under that window, so the share never
+  showed. GO's own windows now close when a share arrives (the QDN publish
+  window shrinks to its bubble, Qortino is parked); Q-App approvals, calls
+  and the Qortal Card stay. Home's Settings also no longer leaves an
+  invisible layer over Chat that took every tap: it went on fading out
+  inside the hidden Home, which finishes that only in idle time.
+- **No more endless Qortal logo at start** — the start-up logo was only
+  taken away by the app's own code, which runs after the whole bundle has
+  loaded. A bundle that failed while loading (or a page rebuilt after the
+  WebView crashed, under memory pressure) could leave the logo up until GO
+  was force-closed. A small script that runs before the bundle now notices
+  an error or a start over 25 s, keeps the reason in the saved crash log
+  (Copy diagnostics), and shows "GO is having trouble starting" with a
+  Restart button on the logo screen, in the 12 languages. Restart goes back
+  through the fingerprint or password unlock, like the crash screen.
+- **Faster start: the QortalLand game engine no longer runs at every
+  start** — the shared CommonJS helpers had landed in the Phaser chunk, so
+  the main bundle imported it and all of Phaser (1.7 MB, with canvas and
+  WebGL probes) was parsed and run on every start, before the logo could go.
+  The helpers now have their own 1 KB chunk; Phaser loads only when
+  QortalLand opens.
+- **Bottom of long lists can be tapped with the 3 navigation buttons**
+  _(mobile)_ — GO draws under Android's navigation bar and leaves each
+  screen to keep clear of it. With gesture navigation taps under the handle
+  still reach GO, but the 3 buttons (or 2) take every touch, so whatever a
+  screen did not pad was stuck under them: the last channels in a group's
+  channel list (Qortal Public Square), the bottom of Home, a Q-App's own
+  bottom bar in full screen, the bottom row of the emoji panel. With button
+  navigation GO's view now ends above the bar, and the page colour shows
+  behind the buttons. Gesture navigation is exactly as before (same view
+  size, same 24 px inset, same keyboard heights; checked on the emulator in
+  both modes), and so is a phone turned sideways, where the bar sits at the
+  side. Button navigation is told apart by the bar holding tappable buttons
+  and having no back-swipe zones at the sides; the keyboard's own buttons
+  under gestures never count. A tablet taskbar kept on screen under gesture
+  navigation also stays as it was.
 - **Publishing works on a private node on the network** _(shared)_ — on a
   node reached by its LAN or remote address that had Core's local auth
   bypass on, GO counted the node as connected without testing the API key
@@ -33,6 +163,152 @@ desktop Hub. The format is based on
   own words. "Your node did not answer. Trying again shortly…" now shows
   only when the node really did not answer (network error, timeout, 5xx,
   408, 429), and only those are tried again.
+- **Channels keep loading after long use** _(mobile)_ — GO wrote a small
+  wake-up file for every message it stored and kept each one open until
+  the page restarted. After a day of use or a big catch-up the phone ran
+  out of file handles, every downloaded history page was thrown away, and
+  the peer that sent it was blamed, so channels in some groups never
+  filled. Wake-up notes now stay in memory (the old folder is cleared
+  once), the file handle pool refills earlier and in small steps and
+  retries on its own when opening fails, and a page that could not be
+  saved on the phone is asked for again from the same peer a minute later
+  without counting against it.
+- **Channel lists that depend on snapshots** _(mobile)_ — channel edits
+  skipped as "author not admin" are tried again when the admin status
+  changes, and every 30 minutes. A channel snapshot GO already has is no
+  longer asked for again every minute. A failed snapshot download is asked
+  for again (from the same peer, or from the group's other providers)
+  instead of waiting for the next update. An old snapshot signed by
+  someone who is no longer an admin is ignored quietly instead of putting
+  the peer that passed it on in a 5-minute time-out. An admin's phone shows
+  the member channels until the full snapshot arrives.
+- **A failed admin list no longer hides channels** _(shared)_ — when the
+  list of groups You admin failed to load, GO counted You as admin of
+  nothing, and the chat engine skipped Your own channel edits without
+  asking the node. The list is now cut off after 15 s, the last good list
+  is kept, and until the first list has loaded the engine asks the node.
+- **Messages are not lost while the node can't check membership**
+  _(mobile)_ — during a node outage, messages waiting for a membership
+  check were dropped after 64 per peer, and a gap page that came back
+  with only such messages used up a try. They now stay queued and the try
+  is given back. Membership checks for a page go to the node in one
+  request per group (up to 50 addresses) instead of one per message, own
+  membership re-checks back off up to 5 minutes while the node fails, a
+  check cut off by a frozen engine is sent again, and checks at start
+  wait for the node settings.
+- **GO answers Hubs faster** _(mobile)_ — requests for history from Hubs
+  and other phones are handled when they arrive instead of queuing behind
+  other chat work, requests the other side has already given up on are
+  dropped without work, and a busy GO now tells the other side to try
+  another node. Files staged for sending are deleted once sent, and old
+  ones are cleared at start.
+- **Rejected transfers no longer spin** _(mobile)_ — the Reticulum version
+  in GO gave "rejected" the same code as "not started", so the watchdog of
+  a rejected outgoing transfer never stopped, and a reply in several parts
+  could fail while its next part had not started yet. GO now uses the
+  value newer Reticulum versions use.
+- **Correct JIT line in Copy diagnostics** _(mobile)_ — on GrapheneOS with
+  WebView JIT off for GO, the report said "JIT: likely on". It now reads
+  GrapheneOS's own setting (on, off, likely off or unclear) and names the
+  WebView package and version; the speed probe numbers are still shown.
+- **Faster chat database that is not damaged when GO is killed**
+  _(mobile)_ — GO's chat database could be left damaged when Android
+  killed GO in the middle of a save, which later showed up as a rebuilt
+  database and lost history. GO's databases now use write-ahead logging
+  (WAL) with the file held by GO alone. In lab tests that killed GO
+  mid-save, the old setup damaged the database 17 times in 60 and the new
+  one never. Saves are also quicker, and the queries GO runs most are
+  prepared once and reused. If WAL cannot be turned on, GO stays in the
+  old mode and notes it in the log; it never wipes the database. Note for
+  testers: an older GO build cannot open the new database file (nothing is
+  lost; a newer build opens it again).
+- **Channels kept when a current admin's snapshot lists them**
+  _(mobile)_ — a channel created by someone who is no longer an admin of
+  the group stopped taking edits (rename, archive, order) from the
+  current admins, because its first version came from a non-admin. When
+  a channel snapshot signed by a current admin (checked with the node)
+  lists the channel, GO now uses it as the channel's base and applies the
+  current admins' later edits on top. If the node cannot say whether the
+  signer is still an admin, GO waits instead of guessing.
+- **Hubs can fetch Your new posts from a busy phone** _(mobile)_ — a Hub
+  fetching a new post from GO now gets 30 s instead of 15 s, and the
+  request is judged by the time it reached the phone, so a short freeze
+  no longer makes a valid request look too old (signatures are still
+  fully checked). When GO is busy or its chat engine is stuck, requests
+  for older history are turned away at once as "busy", so the Hub asks
+  another node. New posts, direct messages and requests for Your own
+  messages are never turned away.
+- **Recent history still served while the node is down** _(mobile)_ —
+  when the Qortal node cannot answer membership checks, GO keeps
+  answering history requests from members the node confirmed within the
+  last hour. A "not a member" answer from the node always wins at once.
+  This never applies to accepting messages, calendars or admin channels.
+- **Replies first after a freeze** _(mobile)_ — after the phone had
+  frozen GO, the chat engine worked through the whole backlog of network
+  chatter before it saw the replies to its own requests, so sends and
+  downloads timed out. Replies are now handled first, outdated typing
+  notices and DM nudges are dropped, and repeated group status updates
+  from the same peer are merged while the backlog is large. Messages and
+  membership news are never dropped, and their order is kept.
+- **No resend after a late "delivered"** _(mobile)_ — a message whose
+  delivery was confirmed after GO had stopped waiting was sent again up
+  to 10 times. A late confirmation now cancels the resends still waiting,
+  and a slow answer no longer pauses relaying as if Reticulum were
+  overloaded. A peer that Reticulum does not know is not looked up again
+  for 30 s, unless it introduces itself sooner.
+
+### Changed
+
+- **Enter types a new line in chats** _(mobile)_ — like Telegram and other
+  phone chat apps, the keyboard's return key now starts a new line and the
+  send button sends. Anyone who picked "Enter: send" in the Aa toolbar keeps
+  it, and then the keyboard shows a send key instead of the new-line arrow
+  (`enterkeyhint`). The toggle label is in all 12 languages. The desktop
+  keeps Enter = send.
+- **Faster sync on slow phones and with WebView JIT off** _(mobile)_ —
+  each stored message is handled and announced once (it was twice), the
+  chat list re-indexes only messages it has not seen, summary refreshes
+  run one at a time and are grouped for 1-3 s during bursts (badges after
+  reading a chat still update at once), file hashing uses the WebView's
+  built-in SHA-256, which stays fast with JIT off, and on GrapheneOS with
+  WebView JIT off the app waits longer for the chat engine before giving
+  up on a request.
+- **Fewer database writes per message** _(shared)_ — each stored message
+  is written in one transaction instead of many small writes, a re-index
+  that changes nothing writes nothing (and no longer scans the whole
+  search index), chat summaries look up a group's recent messages
+  directly instead of scanning all of them, and gap bookkeeping after a
+  failed request is one write. Results are the same as before.
+- **Less useless background repair** _(mobile)_ — gaps that no peer has
+  are tried much less often: a peer that answered "no history" is not
+  asked again in that group for an hour, three refusals in a row hold a
+  gap for 5 minutes, doubling up to 6 hours (kept across restarts), and
+  recent gaps are tried before gaps older than 29 days.
+- **Richer Copy diagnostics** _(mobile)_ — new lines for chat storage
+  (file handles, spares, "too many open files"), membership checks
+  (requests, biggest batch, failures by reason, last 8 failures), node
+  sync, the admin list, channel metadata per group (problem groups first),
+  serving rejects by reason and request arrival times, gap repair results
+  and kinds of waiting gaps, engine time per call, database writes per
+  minute and size, long tasks on the page, summary refreshes, the Python
+  bridge (threads, queues, links, open files, CPU), the resource staging
+  folder, and whether the previous page crashed. Numbers and per-report
+  pseudonyms only, as before.
+- **Old history no longer retried in the background** _(mobile)_ — gaps
+  in history older than 29 days (GO phones only serve the last 29 days)
+  are now asked only of Hubs, each Hub once, at most 3 a round, and then
+  rest for 30 days. They wake at most once a day when a new Hub shows up,
+  or when You get more access (joining, becoming admin). Scrolling back
+  in a chat still loads old pages as before.
+- **Lighter start-up re-index** _(mobile)_ — at start GO re-reads recent
+  messages of each group for mentions and search. Groups with nothing new
+  since the last run are now skipped without asking the chat engine, and
+  the rest are read after the first screen is drawn, when the phone is
+  idle, two groups at a time.
+- **More in Copy diagnostics** _(mobile)_ — new lines for the socket
+  event queue (backlog, wait times, dropped and merged chatter) and for
+  serving decisions (history turned away as busy, served on a recent
+  member answer, judged by arrival time).
 
 ## [0.0.18] — 2026-10-15 (GO 3.0)
 

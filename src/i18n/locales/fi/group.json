@@ -251,6 +251,13 @@
     "blocked_public_node_title": "Käytät julkista noodia",
     "blocked_settings": "Estetyt tilit",
     "blocked_settings_description": "Hallitse estettyjä nimiä ja osoitteita tälle lompakolle tai koko laitteella.",
+    "bottom_buttons": "Alapainikkeet",
+    "bottom_buttons_apps": "Sovellukset",
+    "bottom_buttons_chat": "Chat",
+    "bottom_buttons_desc": "Vedä Koti, Sovellukset ja Chat haluamaasi järjestykseen. Sivuttainen pyyhkäisy niiden välillä noudattaa samaa järjestystä.",
+    "bottom_buttons_home": "Koti",
+    "bottom_buttons_item_label": "{{name}}, {{place}}/{{total}}. Siirrä vasemmalla ja oikealla nuolinäppäimellä.",
+    "bottom_buttons_reset": "Palauta",
     "buy": "Osta",
     "change_node": "Vaihda noodia",
     "close_action_update_error": "Ikkunan sulkemisen toimintaa ei voitu päivittää juuri nyt.",
@@ -482,7 +489,9 @@
     "wallet_password": "Lompakon salasana",
     "wallet_password_placeholder": "Syötä lompakon salasana",
     "wallet_password_required": "Syötä lompakon salasana yksityisen avaimen salauksen purkamiseen.",
-    "wallet_unavailable_error": "Lompakon tiedot eivät ole juuri nyt saatavilla."
+    "wallet_unavailable_error": "Lompakon tiedot eivät ole juuri nyt saatavilla.",
+    "widgets_screen": "Widgettinäkymä",
+    "widgets_screen_desc": "Ensimmäisen osion vasemmalla puolella oleva näkymä widgeteille: pieniä GO 3.0:lle tehtyjä Q-sovelluksia, kuten kellonaika, sää tai Torqin uutiset. Pyyhkäise oikealle päästäksesi sinne."
   },
   "dm": {
     "add_friend_before_calling": "Lisää tämä käyttäjä kaveriksi ennen soittamista",
@@ -1322,5 +1331,27 @@
     "intro_title": "Uusi perusta Qortal-keskusteluille",
     "title": "Mitä uutta Q-Chatissa",
     "version": "Versio {{version}}"
+  },
+  "widgets": {
+    "add": "Lisää widget",
+    "add_short": "Lisää",
+    "added": "Lisätty",
+    "by": "tekijä {{name}}",
+    "done": "Valmis",
+    "empty_hint": "Myöhemmin: pidä widgettiä tai tyhjää kohtaa painettuna lisätäksesi, siirtääksesi tai muuttaaksesi kokoa. Poista vetämällä se alas kohtaan Poista.",
+    "limit": "Voit lisätä enintään {{max}} widgettiä.",
+    "open_app": "Avaa {{name}}",
+    "picker_developers": "Q-sovelluskehittäjät: julkaise widget APP-resurssina tunnisteella go-widget tai identifierillä, joka alkaa go-widget.",
+    "picker_empty": "Widgettejä ei ole vielä julkaistu.",
+    "picker_error": "Widgettejä ei voitu ladata. Tarkista yhteys solmuun.",
+    "picker_none_found": "Yksikään widget ei vastaa hakua.",
+    "picker_note": "Widgetit ovat GO:lle tehtyjä Q-sovelluksia. Ne voivat näyttää asioita ja avata sovelluksia, mutta eivät voi maksaa, julkaista tai allekirjoittaa mitään.",
+    "picker_search": "Hae widgettejä",
+    "picker_title": "Lisää widget",
+    "reload": "Lataa uudelleen",
+    "remove": "Poista",
+    "resize": "Muuta kokoa",
+    "retry": "Yritä uudelleen",
+    "title": "Widgetit"
   }
 }

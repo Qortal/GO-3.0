@@ -7,11 +7,16 @@ import {
   apiSchemeOf,
   buildGroupValidationRequest,
   createGroupValidatorStats,
+  groupValidationFailReason,
   membershipProbeResult,
   recordGroupValidation,
+  recordGroupValidationBatch,
+  recordGroupValidationUnsent,
   redactDiagnosticText,
+  runGroupValidationBatchRequest,
   runGroupValidationRequest,
   toWorkerNodeConfig,
+  type GroupValidationOutcome,
 } from './groupValidation';
 
 const ADDRESS = 'QfdpbaGasRtFSYyFu73xsnghgXHcRYrLTP';
@@ -197,14 +202,19 @@ describe('groupValidation', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it('reads a missing row as "not a member"', async () => {
+  it('reads a missing row as unknown, never as "not a member"', async () => {
     const outcome = await runGroupValidationRequest(
       'http://localhost:52391',
       1,
       ADDRESS,
       { fetchImpl: async () => jsonResponse([]), resourceTiming: null }
     );
-    expect(outcome.row).toEqual({ isMember: false, isAdmin: false });
+    expect(outcome).toMatchObject({
+      row: null,
+      status: 200,
+      error: 'address missing from answer',
+      reason: 'missing_row',
+    });
   });
 
   describe('a timer that fires late (worker stall)', () => {
@@ -487,6 +497,12 @@ describe('groupValidation', () => {
       ownCoreDenied: 0,
       recentNetworkMs: [],
       recentWorkerWaitMs: [],
+      requestCount: 2,
+      maxBatchSize: 1,
+      failByReason: { network: 1 },
+      firstFailAt: 1_000,
+      lastOkAt: 2_000,
+      recentFailures: [{ at: 1_000, reason: 'network', addresses: 1 }],
     });
   });
 
@@ -535,5 +551,382 @@ describe('groupValidation', () => {
   it('keeps the worker membership request free of API keys', () => {
     const source = readFileSync(resolve(__dirname, 'engineHost.ts'), 'utf8');
     expect(source).not.toMatch(/x-api-key|[?&]apiKey=|config\.apiKey\b/i);
+  });
+});
+
+const SECOND = 'QM8eUjZLNTQS9wosWJbcvPEtAUeMkcEraS';
+const THIRD = 'QZm1JUnN9aB8Tbi7Csx1mcVYmz5i6Ad2Wz';
+
+describe('batched group validation', () => {
+  it('sends the addresses as one list and maps the rows back per address', async () => {
+    const fetchImpl = vi.fn(async (_url: string, _init: RequestInit) =>
+      // Out of order, an extra row and a duplicate: only the address counts.
+      jsonResponse([
+        { address: THIRD, isMember: false, isAdmin: null },
+        { address: ADDRESS, isMember: true, isAdmin: true },
+        { address: 'QOther', isMember: true, isAdmin: false },
+        { address: ADDRESS, isMember: false, isAdmin: false },
+      ])
+    );
+    const outcome = await runGroupValidationBatchRequest(
+      'http://localhost:52391',
+      1144,
+      [ADDRESS, SECOND, THIRD, ADDRESS],
+      { fetchImpl, resourceTiming: null }
+    );
+    const [url, init] = fetchImpl.mock.calls[0];
+    expect(url).toBe('http://localhost:52391/groups/members/1144/validate');
+    expect(JSON.parse(String(init.body))).toEqual([ADDRESS, SECOND, THIRD]);
+    expect(headerNames(init)).toEqual(['content-type']);
+    expect([...outcome.rows]).toEqual([
+      [ADDRESS, { isMember: true, isAdmin: true }],
+      // Left out of the answer: unknown, not "not a member".
+      [SECOND, null],
+      [THIRD, { isMember: false, isAdmin: false }],
+    ]);
+    expect(outcome).toMatchObject({
+      status: 200,
+      reason: 'missing_row',
+      error: '1 of 3 addresses missing from answer',
+    });
+  });
+
+  it('answers every address unknown on a 200 []', async () => {
+    const outcome = await runGroupValidationBatchRequest(
+      'http://localhost:52391',
+      1,
+      [ADDRESS, SECOND],
+      { fetchImpl: async () => jsonResponse([]), resourceTiming: null }
+    );
+    expect([...outcome.rows.values()]).toEqual([null, null]);
+    expect(outcome.reason).toBe('missing_row');
+  });
+
+  it('leaves the whole list unknown on a 400, for the host to split', async () => {
+    const outcome = await runGroupValidationBatchRequest(
+      'http://localhost:52391',
+      1,
+      [ADDRESS, 'not-an-address'],
+      {
+        fetchImpl: async () =>
+          jsonResponse({ error: 102, message: 'invalid address' }, 400),
+        resourceTiming: null,
+      }
+    );
+    expect(outcome).toMatchObject({
+      status: 400,
+      reason: 'http:400',
+      error: 'HTTP 400',
+    });
+    expect([...outcome.rows.values()]).toEqual([null, null]);
+  });
+
+  it("names Core's GROUP_UNKNOWN 404 apart from any other 404", async () => {
+    const unknownGroup = await runGroupValidationRequest(
+      'http://localhost:52391',
+      99_999,
+      ADDRESS,
+      {
+        fetchImpl: async () =>
+          jsonResponse({ error: 1101, message: 'group unknown' }, 404),
+        resourceTiming: null,
+      }
+    );
+    expect(unknownGroup).toMatchObject({
+      row: null,
+      status: 404,
+      reason: 'group_unknown',
+      error: 'HTTP 404 (group unknown)',
+    });
+    const oldNode = await runGroupValidationRequest(
+      'http://localhost:52391',
+      1,
+      ADDRESS,
+      {
+        fetchImpl: async () => new Response('Not Found', { status: 404 }),
+        resourceTiming: null,
+      }
+    );
+    expect(oldNode).toMatchObject({ reason: 'http:404', error: 'HTTP 404' });
+  });
+
+  it('gives every failure its reason', async () => {
+    const run = (
+      fetchImpl: (url: string, init: RequestInit) => Promise<Response>
+    ) =>
+      runGroupValidationRequest('http://localhost:52391', 1, ADDRESS, {
+        fetchImpl,
+        resourceTiming: null,
+      });
+    expect(
+      (
+        await run(async () => {
+          throw new TypeError('Failed to fetch');
+        })
+      ).reason
+    ).toBe('network');
+    expect((await run(async () => jsonResponse({}, 500))).reason).toBe(
+      'http:500'
+    );
+    expect((await run(async () => jsonResponse({ rows: [] }))).reason).toBe(
+      'bad_body'
+    );
+    expect(
+      (await run(async () => new Response('<html>', { status: 200 }))).reason
+    ).toBe('bad_body');
+    expect(
+      (
+        await runGroupValidationRequest('', 1, ADDRESS, {
+          resourceTiming: null,
+        })
+      ).reason
+    ).toBe('no_base');
+    expect(
+      (
+        await run(async () =>
+          jsonResponse([{ address: ADDRESS, isMember: true, isAdmin: false }])
+        )
+      ).reason
+    ).toBeNull();
+  });
+
+  it('fills failByReason and the ring from real request outcomes', async () => {
+    const stats = createGroupValidatorStats();
+    const run = (
+      fetchImpl: (url: string, init: RequestInit) => Promise<Response>
+    ) =>
+      runGroupValidationRequest('http://localhost:52391', 1, ADDRESS, {
+        fetchImpl,
+        resourceTiming: null,
+      });
+    const outcomes: GroupValidationOutcome[] = [
+      await run(async () => {
+        throw new TypeError('Failed to fetch');
+      }),
+      await run(async () => jsonResponse({ error: 'boom' }, 500)),
+      await run(async () => jsonResponse({ error: 2 }, 404)),
+      await run(async () => jsonResponse({ rows: [] })),
+    ];
+    vi.useFakeTimers();
+    try {
+      let clock = 0;
+      const pending = runGroupValidationRequest(
+        'http://localhost:52391',
+        1,
+        ADDRESS,
+        {
+          timeoutMs: 1_000,
+          now: () => clock,
+          fetchImpl: (_url, init) =>
+            new Promise((_resolve, reject) => {
+              init.signal?.addEventListener('abort', () =>
+                reject(new DOMException('aborted', 'AbortError'))
+              );
+            }),
+          resourceTiming: null,
+        }
+      );
+      clock = 2_600;
+      await vi.advanceTimersByTimeAsync(1_000);
+      clock = 5_000;
+      await vi.advanceTimersByTimeAsync(1_500);
+      outcomes.push(await pending);
+    } finally {
+      vi.useRealTimers();
+    }
+    outcomes.forEach((outcome, i) =>
+      recordGroupValidation(stats, outcome, 'localhost:52391', 10_000 + i)
+    );
+    expect(stats.failByReason).toEqual({
+      network: 1,
+      'http:500': 1,
+      'http:404': 1,
+      bad_body: 1,
+      stall_abort: 1,
+    });
+    expect(stats.recentFailures).toEqual([
+      { at: 10_000, reason: 'network', addresses: 1 },
+      { at: 10_001, reason: 'http:500', addresses: 1 },
+      { at: 10_002, reason: 'http:404', addresses: 1 },
+      { at: 10_003, reason: 'bad_body', addresses: 1 },
+      { at: 10_004, reason: 'stall_abort', addresses: 1 },
+    ]);
+    expect(stats).toMatchObject({
+      firstFailAt: 10_000,
+      lastOkAt: null,
+      requestCount: 5,
+      unavailableCount: 5,
+      gracedCount: 1,
+    });
+  });
+
+  it('calls a timeout after a worker stall a stall_abort', async () => {
+    vi.useFakeTimers();
+    try {
+      let clock = 0;
+      const pending = runGroupValidationRequest(
+        'http://localhost:52391',
+        1,
+        ADDRESS,
+        {
+          timeoutMs: 1_000,
+          now: () => clock,
+          fetchImpl: (_url, init) =>
+            new Promise((_resolve, reject) => {
+              init.signal?.addEventListener('abort', () =>
+                reject(new DOMException('aborted', 'AbortError'))
+              );
+            }),
+          resourceTiming: null,
+        }
+      );
+      clock = 2_600;
+      await vi.advanceTimersByTimeAsync(1_000);
+      clock = 5_000;
+      await vi.advanceTimersByTimeAsync(1_500);
+      const outcome = await pending;
+      expect(outcome).toMatchObject({
+        row: null,
+        timedOut: true,
+        graced: true,
+        reason: 'stall_abort',
+      });
+      const plain = runGroupValidationRequest(
+        'http://localhost:52391',
+        1,
+        ADDRESS,
+        {
+          timeoutMs: 1_000,
+          fetchImpl: (_url, init) =>
+            new Promise((_resolve, reject) => {
+              init.signal?.addEventListener('abort', () =>
+                reject(new DOMException('aborted', 'AbortError'))
+              );
+            }),
+          resourceTiming: null,
+        }
+      );
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect((await plain).reason).toBe('timeout');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('counts addresses, requests, reasons and the last 8 failures', () => {
+    const stats = createGroupValidatorStats();
+    const own = (address: string) => address === ADDRESS;
+    const row = { isMember: true, isAdmin: false };
+    recordGroupValidationBatch(
+      stats,
+      {
+        rows: new Map([
+          [ADDRESS, row],
+          [SECOND, null],
+          [THIRD, row],
+        ]),
+        status: 200,
+        error: '1 of 3 addresses missing from answer',
+        reason: 'missing_row',
+        ms: 30,
+      },
+      'h',
+      1_000,
+      { own }
+    );
+    expect(stats).toMatchObject({
+      okCount: 2,
+      unavailableCount: 1,
+      ownCount: 1,
+      ownUnavailableCount: 0,
+      requestCount: 1,
+      maxBatchSize: 3,
+      failByReason: { missing_row: 1 },
+      firstFailAt: 1_000,
+      lastOkAt: 1_000,
+      recentFailures: [{ at: 1_000, reason: 'missing_row', addresses: 1 }],
+    });
+    // A request that is asked again does not count its addresses.
+    recordGroupValidationBatch(
+      stats,
+      {
+        rows: new Map([
+          [ADDRESS, null],
+          [SECOND, null],
+        ]),
+        status: null,
+        error: 'AbortError: no answer in 12000 ms',
+        ms: 400_000,
+        timedOut: true,
+        graced: true,
+        timerLateMs: 388_000,
+      },
+      'h',
+      2_000,
+      { own, retried: true }
+    );
+    expect(stats).toMatchObject({
+      okCount: 2,
+      unavailableCount: 1,
+      ownCount: 1,
+      requestCount: 2,
+      timedOutCount: 1,
+      gracedCount: 1,
+      gracedKeptCount: 0,
+      failByReason: { missing_row: 1, stall_abort: 1 },
+    });
+    // Hand-built outcomes (no reason field) are classified too.
+    const failures: Array<[Partial<GroupValidationOutcome>, string]> = [
+      [{ status: null, error: 'TypeError: Failed to fetch' }, 'network'],
+      [{ status: 500, error: 'HTTP 500' }, 'http:500'],
+      [{ status: 404, error: 'HTTP 404' }, 'http:404'],
+      [{ status: 200, error: 'unexpected response body' }, 'bad_body'],
+      [{ status: null, error: 'no Core API base' }, 'no_base'],
+      [{ status: null, error: 'AbortError', timedOut: true }, 'timeout'],
+    ];
+    failures.forEach(([fields, reason], i) => {
+      expect(
+        groupValidationFailReason({ status: null, error: null, ...fields })
+      ).toBe(reason);
+      recordGroupValidation(
+        stats,
+        { row: null, status: null, error: null, ms: 1, ...fields },
+        'h',
+        3_000 + i
+      );
+    });
+    recordGroupValidationUnsent(stats, [SECOND, ADDRESS], 'queue_full', 9_000, {
+      own,
+    });
+    expect(stats.failByReason).toEqual({
+      missing_row: 1,
+      stall_abort: 1,
+      network: 1,
+      'http:500': 1,
+      'http:404': 1,
+      bad_body: 1,
+      no_base: 1,
+      timeout: 1,
+      queue_full: 1,
+    });
+    expect(stats).toMatchObject({
+      unavailableCount: 9,
+      ownCount: 2,
+      ownUnavailableCount: 1,
+      firstFailAt: 1_000,
+      lastOkAt: 1_000,
+    });
+    expect(stats.recentFailures).toHaveLength(8);
+    // Nine failures: the oldest (missing_row) has dropped out.
+    expect(stats.recentFailures![0]).toEqual({
+      at: 2_000,
+      reason: 'stall_abort',
+      addresses: 2,
+    });
+    expect(stats.recentFailures![7]).toEqual({
+      at: 9_000,
+      reason: 'queue_full',
+      addresses: 2,
+    });
   });
 });

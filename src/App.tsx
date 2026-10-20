@@ -107,7 +107,9 @@ import {
   captureVisibleTabSnapshot,
 } from './components/Mobile/tabsHome/TabSnapshotScheduler';
 import { MobileBackgroundSetup } from './components/Mobile/MobileBackgroundSetup';
-import { MobileIncomingCallBridge } from './components/Mobile/MobileIncomingCallBridge';
+import { MobileCallRoot } from './components/Mobile/call/MobileCallRoot';
+import { MobileCallStripSlot } from './components/Mobile/call/MobileCallStrip';
+import { isGoCallUi } from './components/Mobile/call/goCallUi';
 import { MobileAlertNotificationBridge } from './components/Mobile/MobileAlertNotificationBridge';
 import { MintingPublicNodeDialog } from './components/Mobile/MintingPublicNodeDialog';
 import { SupportChat, SUPPORT_ADDRESSES } from './components/Chat/SupportChat';
@@ -141,6 +143,7 @@ import {
   unsubscribeFromEvent,
 } from './utils/events';
 import { useAndroidBack, BACK_PRIORITY } from './utils/androidBack';
+import { useCloseWithGoWindows } from './utils/closeGoWindows';
 import { stopSharedEarbumpPlayback } from './components/Group/earbumpSharedAudio';
 import { Settings } from './components/Group/Settings';
 import { useRetrieveDataLocalStorage } from './hooks/useRetrieveDataLocalStorage.tsx';
@@ -183,6 +186,7 @@ import { PdfViewer } from './common/PdfViewer';
 import { ReticulumFileViewer } from './components/Chat/ReticulumFileViewer';
 import { QdnTransfersOverlay } from './components/Transfers/QdnTransfersOverlay';
 import { QdnPublishWindow } from './components/Transfers/QdnPublishWindow';
+import { PublicNodeDownWindow } from './components/Mobile/PublicNodeDownWindow';
 import { useTranslation } from 'react-i18next';
 import { DownloadWallet } from './components/Auth/DownloadWallet.tsx';
 import { BackupWalletModal } from './components/Auth/BackupWalletModal.tsx';
@@ -914,6 +918,21 @@ function App() {
     {
       priority: BACK_PRIORITY.overlay,
       enabled: isMobile && isAuthenticated,
+    }
+  );
+  // A share from another app opens the chat lists: these must not cover it.
+  useCloseWithGoWindows(
+    tabsGridOpen ||
+      isSettingsOpen ||
+      isOpenDrawerLookup ||
+      mintingPublicNodeDialogOpen ||
+      isOpenMinting,
+    () => {
+      setTabsGridOpen(false);
+      setIsSettingsOpen(false);
+      setIsOpenDrawerLookup(false);
+      setMintingPublicNodeDialogOpen(false);
+      setIsOpenMinting(false);
     }
   );
   useAndroidBack(
@@ -2250,7 +2269,9 @@ function App() {
       !mobileGroupPanelOpen,
     // Apps only shows a list (the library) with no Q-App on screen; open
     // chats are marked to keep their own gestures.
-    sections: qappFrameOnScreen ? ['home', 'chat'] : ['home', 'apps', 'chat'],
+    sections: qappFrameOnScreen
+      ? ['widgets', 'home', 'chat']
+      : ['widgets', 'home', 'apps', 'chat'],
     onPullStart: () => {
       // The tab cards' pictures: the page on screen, before the panel
       // covers it (as the Tabs button does).
@@ -2303,6 +2324,11 @@ function App() {
       <QdnPublishWindow
         enabled={isAuthenticated && isMainWindow && !lockScreenActive}
       />
+      {isGoApp() ? (
+        <PublicNodeDownWindow
+          enabled={isAuthenticated && isMainWindow && !lockScreenActive}
+        />
+      ) : null}
 
       <QORTAL_APP_CONTEXT.Provider value={contextValue as AppContextInterface}>
         <ElectronPersistentStorageHydration />
@@ -2444,15 +2470,25 @@ function App() {
                       <>
                         <QortalGroupVoiceCallNavWidget />
                         <DirectVoiceCallNavWidget />
-                        <MobileVoiceCallBar />
-                        <QortalGroupVoiceCallStage />
-                        <DirectVoiceCallGlobalOverlay
-                          isAppLocked={isAppLocked}
-                        />
+                        {isGoCallUi() ? (
+                          // GO app: one phone call UI (full screen, strip,
+                          // ring screen that also shows over the lock).
+                          <MobileCallRoot
+                            isAppLocked={lockScreenActive}
+                            onHomeSection={desktopViewMode === 'home'}
+                          />
+                        ) : (
+                          <>
+                            <MobileVoiceCallBar />
+                            <QortalGroupVoiceCallStage />
+                            <DirectVoiceCallGlobalOverlay
+                              isAppLocked={isAppLocked}
+                            />
+                          </>
+                        )}
                         <DirectVoiceScreenShareOverlay
                           isAppLocked={isAppLocked}
                         />
-                        <MobileIncomingCallBridge />
                         <MobileAlertNotificationBridge />
                       </>
                     )}
@@ -2810,6 +2846,7 @@ function App() {
             transparent: true,
             pageBackground:
               desktopViewMode === 'home' ||
+              desktopViewMode === 'widgets' ||
               desktopViewMode === 'chat' ||
               !qappFrameOnScreen
                 ? theme.palette.background.default
@@ -2832,6 +2869,17 @@ function App() {
             setDesktopViewMode={setDesktopViewMode}
             collapsed={collapseTopBarForTyping}
           />
+          {/* GO: a minimized call as a bar in the top bar's flow (it pushes
+              the page down instead of covering headers). Only while the top
+              bar is drawn: in immersive mode it floats over the Q-App, and a
+              full-screen group panel or composer hides it (the slot would
+              sit under the status bar), so the call floats as a pill. */}
+          {isGoCallUi() &&
+          !immersive.active &&
+          !mobileGroupPanelOpen &&
+          !mobileFullscreenComposerActive ? (
+            <MobileCallStripSlot />
+          ) : null}
         </Box>
       )}
       {extState === 'authenticated' &&

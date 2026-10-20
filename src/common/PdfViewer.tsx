@@ -25,6 +25,7 @@ import ShareRoundedIcon from '@mui/icons-material/ShareRounded';
 import { useTranslation } from 'react-i18next';
 import { subscribeToEvent, unsubscribeFromEvent } from '../utils/events';
 import { BACK_PRIORITY, useAndroidBack } from '../utils/androidBack';
+import { useCloseWithGoWindows } from '../utils/closeGoWindows';
 import { appHeighOffsetPx } from '../components/Desktop/CustomTitleBar';
 import { SAFE_AREA_BOTTOM, SAFE_AREA_TOP } from '../utils/mobileSafeArea';
 import {
@@ -271,6 +272,7 @@ export const PdfViewer = () => {
     },
     { priority: BACK_PRIORITY.call, enabled: open }
   );
+  useCloseWithGoWindows(open, close);
 
   // pdf.js rejects a render() on a canvas that is still drawing, and opening
   // a document asks for page 1 twice (the load path and the page effect), so

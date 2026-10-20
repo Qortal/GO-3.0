@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { assertAllowedPresenceSigningPayload } from '../../background/reticulum-signing-policy';
 import {
   joinDirectVoiceReticulumRoom,
   leaveDirectVoiceReticulumRoom,
@@ -169,5 +170,69 @@ describe('directVoiceReticulumMedia', () => {
       expect.any(Number)
     );
     expect(setLocalAddresses).toHaveBeenCalledWith([], 'dm');
+  });
+
+  it('asks the wallet to sign only payloads its policy allows, with or without an RNS identity key', async () => {
+    // A real 64-byte RNS identity key (GO's bridge reports one on `ready`).
+    const rk = btoa(
+      String.fromCharCode(...Array.from({ length: 64 }, (_, i) => i + 1))
+    );
+    const signed: Array<Record<string, unknown>> = [];
+    Object.assign(window as any, {
+      // Same gate the background signer applies (background-cases.ts):
+      // a payload the policy rejects never gets a signature.
+      sendMessage: vi.fn(async (_type: string, fields: unknown) => {
+        assertAllowedPresenceSigningPayload(fields);
+        signed.push(fields as Record<string, unknown>);
+        return { signature: `sig-${signed.length}` };
+      }),
+    });
+
+    for (const joinGeneration of [undefined, 1234]) {
+      signed.length = 0;
+      const signatures = await signGcJoin({
+        roomId: 'dmv:0123456789abcdef01',
+        chatId: 'direct:Qa:Qb',
+        fromAddress: 'Qa',
+        fromPublicKey: 'qortal-pub',
+        timestamp: 1_234,
+        reticulumDestinationHash: 'a'.repeat(32),
+        reticulumIdentityPublicKeyBase64: rk,
+        joinGeneration,
+      });
+
+      expect(signatures).toEqual({ joinSig: 'sig-1', joinRkSig: 'sig-2' });
+      // GC_JOIN never covers the identity key (Hub 3.0.3 rebuilds GC_JOIN from
+      // a GJ that carries no rk); the key is signed separately as GC_JOIN_RK.
+      expect(signed[0]).toEqual({
+        type: 'GC_JOIN',
+        roomId: 'dmv:0123456789abcdef01',
+        chatId: 'd:0123456789abcdef01',
+        fromAddress: 'Qa',
+        fromPublicKey: 'qortal-pub',
+        timestamp: 1_234,
+        reticulumDestinationHash: 'a'.repeat(32),
+        ...(joinGeneration === undefined ? {} : { joinGeneration }),
+      });
+      expect(signed[1]).toEqual({
+        ...signed[0],
+        type: 'GC_JOIN_RK',
+        reticulumIdentityPublicKeyBase64: rk.replace(/=+$/u, ''),
+      });
+    }
+
+    // The old GO payload (rk inside GC_JOIN) is exactly what the policy refuses.
+    expect(() =>
+      assertAllowedPresenceSigningPayload({
+        type: 'GC_JOIN',
+        roomId: 'dmv:0123456789abcdef01',
+        chatId: 'd:0123456789abcdef01',
+        fromAddress: 'Qa',
+        fromPublicKey: 'qortal-pub',
+        timestamp: 1_234,
+        reticulumDestinationHash: 'a'.repeat(32),
+        reticulumIdentityPublicKeyBase64: rk,
+      })
+    ).toThrow(/not allowed: GC_JOIN/);
   });
 });

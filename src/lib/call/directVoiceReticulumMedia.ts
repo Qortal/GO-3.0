@@ -12,7 +12,6 @@ import {
   compactDmVoiceJoinWireChatId,
   DM_VOICE_ROOM_PREFIX,
 } from './dmVoiceWire';
-import { isRnsIdentityPublicKeyBase64 } from '../../bridge/groupCallWire';
 import { buildMediaKeyCommitmentHex } from '../group-call/mediaKeyCommitment';
 
 export { DM_VOICE_ROOM_PREFIX };
@@ -220,15 +219,6 @@ export async function signGcJoin(params: {
 }): Promise<{ joinSig: string; joinRkSig?: string } | null> {
   const wireChatId = compactDmVoiceJoinWireChatId(params.roomId, params.chatId);
   const jg = params.joinGeneration;
-  // The GJ wire carries `rk` (our RNS identity key) inline, and the Hub's
-  // buildGcJoinSignedFields INCLUDES reticulumIdentityPublicKeyBase64 in the
-  // signed payload whenever the wire has a valid `rk`. So the GC_JOIN signature
-  // MUST cover the same rk (verbatim, as it appears on the wire) or the Hub's
-  // Ed25519 verify fails → the audio link is never verified → GC_KEY is dropped
-  // and the call never gets audio. Mirror the wire's rk-inclusion exactly.
-  const rkForWire = params.reticulumIdentityPublicKeyBase64;
-  const includeRk =
-    typeof rkForWire === 'string' && isRnsIdentityPublicKeyBase64(rkForWire);
   const joinSig = await signGroupCallFields({
     type: 'GC_JOIN',
     roomId: params.roomId,
@@ -237,7 +227,6 @@ export async function signGcJoin(params: {
     fromPublicKey: params.fromPublicKey,
     timestamp: params.timestamp,
     reticulumDestinationHash: params.reticulumDestinationHash,
-    ...(includeRk ? { reticulumIdentityPublicKeyBase64: rkForWire } : {}),
     ...(typeof jg === 'number' && Number.isFinite(jg) ? { joinGeneration: jg } : {}),
   }).catch(() => '');
   if (!joinSig) return null;

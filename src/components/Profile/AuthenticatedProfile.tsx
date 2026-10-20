@@ -32,7 +32,8 @@ export const AuthenticatedProfile = ({
     desktopViewMode !== 'apps' &&
     desktopViewMode !== 'dev' &&
     desktopViewMode !== 'chat' &&
-    desktopViewMode !== 'home';
+    desktopViewMode !== 'home' &&
+    desktopViewMode !== 'widgets';
 
   if (!showLeftColumn) {
     return null;

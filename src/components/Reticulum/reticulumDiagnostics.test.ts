@@ -61,9 +61,12 @@ import {
   formatUnlockLines,
   formatValidatorLine,
   formatValidatorTimingLine,
+  formatWebViewProvider,
   isEngineFaultLine,
+  jitProbeRatio,
   jitVerdict,
   probeNativeBridge,
+  probeWebView,
   probeUnlockRuntime,
   selectEngineLogLines,
   type BackgroundSyncDiagnostics,
@@ -163,34 +166,156 @@ function readyReport(
   });
 }
 
+/** The readyReport input, for tests that change one part of it. */
+function readyReportInput(): ReticulumDiagnosticsInput {
+  return {
+    now: 401_000,
+    version: '0.0.13',
+    state: ONLINE_STATE,
+    onlineCount: 51,
+    deviceOnline: true,
+    webView: WEBVIEW,
+    engine: readyEngine(),
+    coreApi: { host: 'localhost:52391', ok: true, httpStatus: 200, ms: 151 },
+    sendFailures: [],
+  };
+}
+
 const ts = (s: number) =>
   `2026-09-30T03:${String(49 + Math.floor(s / 60)).padStart(2, '0')}:${String(
     s % 60
   ).padStart(2, '0')}.000Z`;
 
 describe('reticulumDiagnostics', () => {
-  it('bases the JIT verdict on WebAssembly and engine timings, not the loop probe', () => {
-    expect(jitVerdict({ webAssembly: false, sqliteInitMs: 100 })).toEqual({
-      verdict: 'likely off',
-      basis: 'WebAssembly missing',
+  it.each([
+    // GrapheneOS's own flag decides, whatever else is seen.
+    [
+      { webViewJitRestricted: true, webAssembly: true, probeRatio: 1.0 },
+      'off',
+      'GrapheneOS: WebView JIT is off for GO',
+    ],
+    [
+      { webViewJitRestricted: true, webAssembly: false },
+      'off',
+      'GrapheneOS: WebView JIT is off for GO',
+    ],
+    [
+      { webViewJitRestricted: false, webAssembly: true, probeRatio: 3.1 },
+      'on',
+      'GrapheneOS: WebView JIT is allowed for GO',
+    ],
+    [
+      { webViewJitRestricted: false, webAssembly: false },
+      'on',
+      'GrapheneOS: WebView JIT is allowed for GO',
+    ],
+    // No flag (stock Android, older GrapheneOS, desktop).
+    [
+      { webViewJitRestricted: null, webAssembly: false, probeRatio: 1.0 },
+      'likely off',
+      'WebAssembly missing',
+    ],
+    [{ webAssembly: false }, 'likely off', 'WebAssembly missing'],
+    [
+      { webViewJitRestricted: null, webAssembly: true, probeRatio: 2.834 },
+      'unclear',
+      'no GrapheneOS flag; same-thread JS loop / builtin ratio 2.83, not calibrated yet',
+    ],
+    [
+      { webAssembly: true, probeRatio: 0.97 },
+      'unclear',
+      'no GrapheneOS flag; same-thread JS loop / builtin ratio 0.97, not calibrated yet',
+    ],
+    [
+      { webAssembly: true },
+      'unclear',
+      'no GrapheneOS flag; same-thread probe ratio not measured',
+    ],
+    [
+      { webAssembly: true, probeRatio: Number.NaN },
+      'unclear',
+      'no GrapheneOS flag; same-thread probe ratio not measured',
+    ],
+  ] as const)('JIT verdict %#: %o is %s', (evidence, verdict, basis) => {
+    expect(jitVerdict(evidence)).toEqual({ verdict, basis });
+  });
+
+  it('no longer reads fast sqlite init and boot as JIT on', () => {
+    // Vanadium keeps WebAssembly with JIT off; these were a GrapheneOS
+    // tester's JIT-off numbers. They are printed but decide nothing.
+    const report = buildReticulumDiagnosticsReport({
+      ...readyReportInput(),
+      webView: { ...WEBVIEW, jsLoopMs: 403, builtinRefMs: 130 },
+      engine: readyEngine({ sqliteInitMs: 100, bootMs: 3_000 }),
     });
-    expect(jitVerdict({ webAssembly: true, sqliteInitMs: 164 }).verdict).toBe(
-      'likely on'
+    expect(report).toContain(
+      'JIT: unclear (no GrapheneOS flag; same-thread JS loop / builtin ratio 3.10, not calibrated yet)'
     );
-    expect(jitVerdict({ webAssembly: true, sqliteInitMs: 23_000 })).toEqual({
-      verdict: 'likely off',
-      basis: 'sqlite-wasm init 23.0 s',
-    });
-    expect(
-      jitVerdict({ webAssembly: true, sqliteInitMs: null, bootMs: 1_700 })
-    ).toEqual({
-      verdict: 'likely on',
-      basis: 'WebAssembly present, engine boot 1.7 s',
-    });
-    expect(jitVerdict({ webAssembly: true }).verdict).toBe('unclear');
-    expect(jitVerdict({ webAssembly: true, sqliteInitMs: 2_500 }).verdict).toBe(
-      'unclear'
+    expect(report).toContain(
+      'JS loop probe: 403 ms, builtin reference: 130 ms, ratio 3.10 (same thread;'
     );
+    expect(report).toContain('Last boot: 3.0 s, sqlite-wasm init: 100 ms\n');
+    expect(report).not.toContain('several seconds usually mean no JIT');
+    expect(report).not.toContain('JIT: likely on');
+    expect(report).toContain('WebView: unknown');
+  });
+
+  it('takes the JIT line and the WebView provider from the native runtime info', () => {
+    const report = buildReticulumDiagnosticsReport({
+      ...readyReportInput(),
+      webView: { ...WEBVIEW, jsLoopMs: 135, builtinRefMs: 45 },
+      unlock: {
+        events: [],
+        runtime: {
+          debuggable: false,
+          poolSize: 7,
+          cores: 8,
+          probeMs: 10,
+          webViewJitRestricted: true,
+          webViewPackage: 'app.vanadium.webview',
+          webViewVersion: '141.0.7390.43',
+        },
+      },
+    });
+    const lines = report.split('\n');
+    const start = lines.indexOf('--- WebView ---');
+    expect(lines.slice(start + 1, start + 7)).toEqual([
+      `User agent: ${WEBVIEW.userAgent}`,
+      'WebView: app.vanadium.webview 141.0.7390.43',
+      'CPU cores: 8, device memory: 8 GB',
+      'WebAssembly: yes, OPFS storage: yes, cross-origin isolated: no',
+      'JIT: off (GrapheneOS: WebView JIT is off for GO)',
+      'JS loop probe: 135 ms, builtin reference: 45 ms, ratio 3.00 (same thread; node: ~1 with JIT, ~3 without; not calibrated on phones yet)',
+    ]);
+    const allowed = buildReticulumDiagnosticsReport({
+      ...readyReportInput(),
+      unlock: {
+        events: [],
+        runtime: {
+          debuggable: false,
+          poolSize: 7,
+          cores: 8,
+          probeMs: 10,
+          webViewJitRestricted: false,
+          webViewPackage: 'com.google.android.webview',
+        },
+      },
+    });
+    expect(allowed).toContain('WebView: com.google.android.webview\n');
+    expect(allowed).toContain(
+      'JIT: on (GrapheneOS: WebView JIT is allowed for GO)'
+    );
+  });
+
+  it('measures the builtin reference right after the loop', () => {
+    const probe = probeWebView();
+    expect(probe.jsLoopMs).toBeGreaterThanOrEqual(0);
+    expect(probe.builtinRefMs).toBeGreaterThan(0);
+    expect(jitProbeRatio(probe.jsLoopMs, probe.builtinRefMs)).not.toBeNull();
+    expect(jitProbeRatio(30, 0)).toBeNull();
+    expect(jitProbeRatio(30, null)).toBeNull();
+    expect(jitProbeRatio(30, 10)).toBe(3);
+    expect(formatWebViewProvider(null)).toBe('unknown');
   });
 
   it('builds a report that names the engine state, timings, node and send failures', () => {
@@ -258,8 +383,11 @@ describe('reticulumDiagnostics', () => {
     expect(report).toContain('GO version: 0.0.12');
     expect(report).toContain('State: starting for 60 s');
     expect(report).toContain('sqlite-wasm init: 23.0 s');
-    expect(report).toContain('JIT: likely off (sqlite-wasm init 23.0 s)');
-    expect(report).toContain('JS loop probe: 410 ms (weak hint only');
+    // A slow sqlite init is printed but is no JIT evidence any more.
+    expect(report).toContain(
+      'JIT: unclear (no GrapheneOS flag; same-thread probe ratio not measured)'
+    );
+    expect(report).toContain('JS loop probe: 410 ms (no builtin reference)');
     expect(report).not.toContain('a few ms');
     expect(report).toContain(
       'Network: qortal-hub, IFAC: 16 B, hubs: 2, known paths: 144'
@@ -296,7 +424,7 @@ describe('reticulumDiagnostics', () => {
       })
     );
     expect(report).toContain(
-      'JIT: likely on (WebAssembly present, sqlite-wasm init 164 ms)'
+      'JIT: unclear (no GrapheneOS flag; same-thread probe ratio not measured)'
     );
     expect(report).toContain('Node API key: set');
     expect(report).toMatch(
@@ -1005,6 +1133,8 @@ const SERVING = {
       received: 4,
       authorized: 4,
       rejected: 0,
+      lateRejected: 0,
+      rejectedReasons: {},
       failed: 0,
       late: 0,
       ended: 0,
@@ -1013,6 +1143,8 @@ const SERVING = {
       received: 40,
       authorized: 22,
       rejected: 3,
+      lateRejected: 0,
+      rejectedReasons: {},
       failed: 6,
       late: 5,
       ended: 9,

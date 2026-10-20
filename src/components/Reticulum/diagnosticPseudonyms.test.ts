@@ -148,6 +148,40 @@ describe('createDiagnosticPseudonymizer', () => {
     for (const line of lines) expect(p.line(line)).toBe(line);
   });
 
+  it('keeps the counts after :event= in bridge_traffic keys', () => {
+    const p = createDiagnosticPseudonymizer(KEY_A);
+    const line =
+      'bridge_traffic 60s out{ accept=57 } in{ reticulum_chat_resource:receiving:event=145 reticulum_chat_resource:failed:event=3 }';
+    expect(p.line(line)).toBe(line);
+    // An event id after a plain `event=` is still an id.
+    expect(p.line('page event=145abcXYZ')).not.toContain('145abcXYZ');
+    expect(p.line('page_skipped event=2048')).toMatch(
+      /^page_skipped event=<id-/
+    );
+  });
+
+  it('runs host= values through the host rule', () => {
+    const p = createDiagnosticPseudonymizer(KEY_A);
+    const own = p.line(
+      'membership_fetch_failed reason=network host=node.example.com:12391 addresses=4'
+    );
+    expect(own).not.toContain('node.example.com');
+    expect(own).toMatch(
+      /^membership_fetch_failed reason=network host=<node-[0-9a-f]{6}>:12391 addresses=4$/
+    );
+    for (const kept of [
+      'membership_fetch_failed reason=timeout host=127.0.0.1:12391',
+      'membership_fetch_failed reason=http:500 host=ext-node.qortal.link',
+      'membership_fetch_failed reason=no_base host=unknown',
+    ]) {
+      expect(p.line(kept)).toBe(kept);
+    }
+    // The same host elsewhere on a later line gets the same pseudonym.
+    expect(p.line('Node: node.example.com:12391')).toBe(
+      `Node: ${own.match(/<node-[0-9a-f]{6}>/)?.[0]}:12391`
+    );
+  });
+
   it('drops secrets outright', () => {
     const p = createDiagnosticPseudonymizer(KEY_A);
     expect(p.line('socket token=abc123secret ready')).toBe(

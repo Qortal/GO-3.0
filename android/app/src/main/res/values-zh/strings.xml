@@ -5,4 +5,23 @@
     <string name="share_target_directs">GO 私信</string>
     <string name="share_target_self">GO 发给自己</string>
     <string name="qortal_hce_description">GO 付款请求（测试）</string>
+    <!-- Voice calls (CallNotifications). -->
+    <string name="call_channel_ringing_name">通话</string>
+    <string name="call_channel_ringing_description">语音来电使用手机铃声响铃。</string>
+    <string name="call_channel_ongoing_name">通话中</string>
+    <string name="call_channel_ongoing_description">通话期间显示语音通话，可静音和挂断。</string>
+    <string name="call_incoming_title">来电</string>
+    <string name="call_incoming_text">GO 语音通话</string>
+    <string name="call_action_accept">接听</string>
+    <string name="call_action_decline">拒绝</string>
+    <string name="call_action_hang_up">挂断</string>
+    <string name="call_action_leave">退出</string>
+    <string name="call_action_mute">静音</string>
+    <string name="call_action_unmute">取消静音</string>
+    <string name="call_status_calling">正在呼叫…</string>
+    <string name="call_status_connecting">正在连接…</string>
+    <string name="call_status_ongoing">通话中</string>
+    <string name="call_status_group">群组通话</string>
+    <string name="call_status_muted">已静音</string>
+    <string name="call_unknown_caller">未知来电者</string>
 </resources>

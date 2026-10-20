@@ -6,7 +6,9 @@
  * request can be tested without a worker.
  *
  * `POST /groups/members/{id}/validate` is public on Core and needs no API key.
- * Sending one is not just unnecessary: the worker's fetch is a real
+ * Its body is a list of addresses and the answer has one row per address, so
+ * the host batches the checks of one group into a single request.
+ * Sending a key is not just unnecessary: the worker's fetch is a real
  * cross-origin WebView request (page origin http://localhost, Core on
  * localhost:<port> or a remote host), and Core's CORS preflight does not allow
  * the X-API-KEY header. A keyed request failed with "Failed to fetch" before it
@@ -23,8 +25,40 @@ export const GROUP_VALIDATION_LATE_TIMER_MS = 1_000;
 export const GROUP_VALIDATION_GRACE_MS = 1_500;
 /** How many recent answers keep their network / worker-wait times. */
 export const GROUP_VALIDATION_RECENT_TIMINGS = 32;
+/**
+ * Most addresses one request carries. Core's validate endpoint takes a list
+ * (`List<String>`, one IN query) and answers one row per address it was sent.
+ */
+export const GROUP_VALIDATION_BATCH_MAX = 50;
+/** How many recent failures Copy diagnostics keeps (newest last). */
+export const GROUP_VALIDATION_RECENT_FAILURES = 8;
+/** Core's ApiError.GROUP_UNKNOWN code (sent with HTTP 404). */
+const CORE_ERROR_GROUP_UNKNOWN = 1101;
 
 export type GroupValidationRow = { isMember: boolean; isAdmin: boolean };
+
+/**
+ * Why a check came back unknown:
+ * - `http:<status>`: Core (or a proxy) answered with that status;
+ * - `group_unknown`: Core's 404 GROUP_UNKNOWN for the group id;
+ * - `network`: no HTTP answer at all (refused, reset, tunnel down, CORS);
+ * - `timeout`: the abort timer ended the request;
+ * - `stall_abort`: the abort timer fired after a worker stall (asked again);
+ * - `bad_body`: a 2xx answer that is not a list of rows;
+ * - `missing_row`: a list that left the address out (unknown, not "no");
+ * - `no_base`: no Core URL known yet;
+ * - `queue_full`: the host's batch queue was full, nothing was sent;
+ * - `split_stopped`: a 400 split into single requests stopped early.
+ */
+export type GroupValidationFailReason = string;
+
+/** One entry of the recent-failures ring. */
+export type GroupValidationFailure = {
+  at: number;
+  reason: GroupValidationFailReason;
+  /** Addresses the failure left unknown. */
+  addresses: number;
+};
 
 /** Node settings the worker needs. The API key itself never crosses over. */
 export type WorkerNodeConfig = {
@@ -77,14 +111,17 @@ export function apiSchemeOf(apiBase: string): string {
 }
 
 /**
- * The validation request. Only scheme, host and path of `apiBase` are kept, so
- * nothing in its query string (or userinfo) is ever forwarded.
+ * The validation request for one address or a list of them (duplicates are
+ * sent once). Only scheme, host and path of `apiBase` are kept, so nothing in
+ * its query string (or userinfo) is ever forwarded.
  */
 export function buildGroupValidationRequest(
   apiBase: string,
   groupId: number,
-  address: string
+  addresses: string | readonly string[]
 ): { url: string; init: RequestInit } {
+  const list =
+    typeof addresses === 'string' ? [addresses] : [...new Set(addresses)];
   let base = String(apiBase || '').trim();
   try {
     const parsed = new URL(base);
@@ -98,7 +135,7 @@ export function buildGroupValidationRequest(
     init: {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify([address]),
+      body: JSON.stringify(list),
     },
   };
 }
@@ -142,6 +179,20 @@ export type GroupValidationOutcome = {
   timerLateMs?: number;
   /** Ended by the abort timer. */
   timedOut?: boolean;
+  /** Why `row` is null; absent on success (and in older fixtures). */
+  reason?: GroupValidationFailReason | null;
+};
+
+/** One request for several addresses of one group. */
+export type GroupValidationBatchOutcome = Omit<
+  GroupValidationOutcome,
+  'row'
+> & {
+  /**
+   * Every queried address, in request order: its row, or `null` (unknown)
+   * when the request failed or the answer left that address out.
+   */
+  rows: Map<string, GroupValidationRow | null>;
 };
 
 type FetchLike = (url: string, init: RequestInit) => Promise<Response>;
@@ -229,23 +280,67 @@ function trimResourceTimings(perf: ResourceTimingSource | null): void {
   }
 }
 
-/** Run the production request once. Never throws. */
+type GroupValidationRequestOptions = {
+  fetchImpl?: FetchLike;
+  timeoutMs?: number;
+  now?: () => number;
+  /** Network-time source; `undefined` = the global `performance`, `null` = off. */
+  resourceTiming?: ResourceTimingSource | null;
+};
+
+/** Run the production request once for one address. Never throws. */
 export async function runGroupValidationRequest(
   apiBase: string,
   groupId: number,
   address: string,
-  options: {
-    fetchImpl?: FetchLike;
-    timeoutMs?: number;
-    now?: () => number;
-    /** Network-time source; `undefined` = the global `performance`, `null` = off. */
-    resourceTiming?: ResourceTimingSource | null;
-  } = {}
+  options: GroupValidationRequestOptions = {}
 ): Promise<GroupValidationOutcome> {
+  const { rows, ...rest } = await runGroupValidationBatchRequest(
+    apiBase,
+    groupId,
+    [address],
+    options
+  );
+  return { row: rows.get(address) ?? null, ...rest };
+}
+
+/** Core's error code from a non-OK answer body, `null` when it has none. */
+async function readCoreErrorCode(res: Response): Promise<number | null> {
+  try {
+    const body = await res.json();
+    const code = Number(body?.error);
+    return Number.isFinite(code) ? code : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * One request for the addresses of one group (up to
+ * GROUP_VALIDATION_BATCH_MAX). Never throws. Rows are matched back by the
+ * `address` Core echoes. An address the answer leaves out stays unknown
+ * (`null`), never "not a member": a short or odd answer must not hide anyone's
+ * messages for the life of a rejection marker.
+ */
+export async function runGroupValidationBatchRequest(
+  apiBase: string,
+  groupId: number,
+  addresses: readonly string[],
+  options: GroupValidationRequestOptions = {}
+): Promise<GroupValidationBatchOutcome> {
   const now = options.now ?? Date.now;
   const started = now();
+  const queried = [...new Set(addresses)];
+  const unknownRows = () =>
+    new Map<string, GroupValidationRow | null>(queried.map((a) => [a, null]));
   if (!String(apiBase || '').trim()) {
-    return { row: null, status: null, error: 'no Core API base', ms: 0 };
+    return {
+      rows: unknownRows(),
+      status: null,
+      error: 'no Core API base',
+      ms: 0,
+      reason: 'no_base',
+    };
   }
   const fetchImpl: FetchLike =
     options.fetchImpl ?? ((url, init) => fetch(url, init));
@@ -254,7 +349,7 @@ export async function runGroupValidationRequest(
     options.resourceTiming === undefined
       ? defaultResourceTiming()
       : options.resourceTiming;
-  const { url, init } = buildGroupValidationRequest(apiBase, groupId, address);
+  const { url, init } = buildGroupValidationRequest(apiBase, groupId, queried);
   const controller = new AbortController();
   let timedOut = false;
   let graced = false;
@@ -290,34 +385,59 @@ export async function runGroupValidationRequest(
     const res = await fetchImpl(url, { ...init, signal: controller.signal });
     status = res.status;
     if (!res.ok) {
+      // Core's 404 also means "no such endpoint" on an old node; only its
+      // GROUP_UNKNOWN body names the group.
+      const groupUnknown =
+        status === 404 &&
+        (await readCoreErrorCode(res)) === CORE_ERROR_GROUP_UNKNOWN;
       return {
-        row: null,
+        rows: unknownRows(),
         status,
-        error: `HTTP ${status}`,
+        error: groupUnknown
+          ? `HTTP ${status} (group unknown)`
+          : `HTTP ${status}`,
+        reason: groupUnknown ? 'group_unknown' : `http:${status}`,
         ms: now() - started,
         networkMs: readNetworkMs(perf, url, perfStart),
         ...flags(),
       };
     }
-    const rows = await res.json();
+    const body = await res.json();
     const networkMs = readNetworkMs(perf, url, perfStart);
-    if (!Array.isArray(rows)) {
+    if (!Array.isArray(body)) {
       return {
-        row: null,
+        rows: unknownRows(),
         status,
         error: 'unexpected response body',
+        reason: 'bad_body',
         ms: now() - started,
         networkMs,
         ...flags(),
       };
     }
-    const row = rows.find(
-      (item: any) => String(item?.address || '').trim() === address
+    const answered = new Map<string, GroupValidationRow>();
+    for (const item of body) {
+      const address = String(item?.address || '').trim();
+      if (!address || answered.has(address)) continue;
+      answered.set(address, {
+        isAdmin: item?.isAdmin === true,
+        isMember: item?.isMember === true,
+      });
+    }
+    const rows = new Map<string, GroupValidationRow | null>(
+      queried.map((a) => [a, answered.get(a) ?? null])
     );
+    const missing = queried.filter((a) => !answered.has(a)).length;
     return {
-      row: { isAdmin: row?.isAdmin === true, isMember: row?.isMember === true },
+      rows,
       status,
-      error: null,
+      error:
+        missing === 0
+          ? null
+          : queried.length === 1
+            ? 'address missing from answer'
+            : `${missing} of ${queried.length} addresses missing from answer`,
+      reason: missing === 0 ? null : 'missing_row',
       ms: now() - started,
       networkMs,
       ...flags(),
@@ -327,13 +447,20 @@ export async function runGroupValidationRequest(
     // error leaves its entry unread; keep the buffer from filling up.
     trimResourceTimings(perf);
     return {
-      row: null,
+      rows: unknownRows(),
       status,
       error: timedOut
         ? graced
           ? `AbortError: no answer in ${timeoutMs} ms (worker stalled ${timerLateMs} ms; grace ${GROUP_VALIDATION_GRACE_MS} ms)`
           : `AbortError: no answer in ${timeoutMs} ms`
         : describeError(err),
+      reason: timedOut
+        ? graced
+          ? 'stall_abort'
+          : 'timeout'
+        : status !== null
+          ? 'bad_body'
+          : 'network',
       ms: now() - started,
       ...flags(),
     };
@@ -342,7 +469,12 @@ export async function runGroupValidationRequest(
   }
 }
 
-/** What the engine's membership checks have seen since the worker booted. */
+/**
+ * What the engine's membership checks have seen since the worker booted.
+ * `okCount`/`unavailableCount` and the own-address counters count addresses
+ * (one request can carry many); the timer, timing and failure fields count
+ * requests.
+ */
 export type GroupValidatorStats = {
   okCount: number;
   unavailableCount: number;
@@ -376,6 +508,22 @@ export type GroupValidatorStats = {
    */
   recentNetworkMs?: number[];
   recentWorkerWaitMs?: number[];
+  /** Requests sent (a batch is one). */
+  requestCount?: number;
+  /** Most addresses one request carried. */
+  maxBatchSize?: number;
+  /**
+   * Failed requests by reason (see GroupValidationFailReason); a request that
+   * answered some addresses but not others counts once as `missing_row`.
+   * `stall_abort` requests were asked again, so their addresses are not in
+   * `unavailableCount` unless the second request failed too.
+   */
+  failByReason?: Record<string, number>;
+  firstFailAt?: number | null;
+  /** Last request that answered at least one address. */
+  lastOkAt?: number | null;
+  /** The last GROUP_VALIDATION_RECENT_FAILURES failures, newest last. */
+  recentFailures?: GroupValidationFailure[];
 };
 
 export function createGroupValidatorStats(): GroupValidatorStats {
@@ -401,18 +549,107 @@ export function createGroupValidatorStats(): GroupValidatorStats {
     ownCoreDenied: 0,
     recentNetworkMs: [],
     recentWorkerWaitMs: [],
+    requestCount: 0,
+    maxBatchSize: 0,
+    failByReason: {},
+    firstFailAt: null,
+    lastOkAt: null,
+    recentFailures: [],
   };
 }
 
+/**
+ * The reason of a failed outcome. Outcomes from the request functions carry
+ * one; this reads it back from the other fields for hand-built ones.
+ */
+export function groupValidationFailReason(
+  outcome: Pick<GroupValidationOutcome, 'status' | 'error' | 'reason'> & {
+    timedOut?: boolean;
+    graced?: boolean;
+  }
+): GroupValidationFailReason {
+  if (outcome.reason) return outcome.reason;
+  if (outcome.timedOut) return outcome.graced ? 'stall_abort' : 'timeout';
+  if (outcome.error === 'no Core API base') return 'no_base';
+  if (outcome.status == null) return 'network';
+  if (outcome.status < 200 || outcome.status > 299) {
+    return `http:${outcome.status}`;
+  }
+  return 'bad_body';
+}
+
+function noteGroupValidationFailure(
+  stats: GroupValidatorStats,
+  reason: GroupValidationFailReason,
+  addresses: number,
+  at: number
+): void {
+  const byReason = (stats.failByReason ??= {});
+  byReason[reason] = (byReason[reason] ?? 0) + 1;
+  stats.firstFailAt ??= at;
+  const ring = (stats.recentFailures ??= []);
+  ring.push({ at, reason, addresses });
+  if (ring.length > GROUP_VALIDATION_RECENT_FAILURES) {
+    ring.splice(0, ring.length - GROUP_VALIDATION_RECENT_FAILURES);
+  }
+}
+
+/** One single-address request (the probe and older callers). */
 export function recordGroupValidation(
   stats: GroupValidatorStats,
   outcome: GroupValidationOutcome,
   host: string,
   at = Date.now(),
-  options: { own?: boolean } = {}
+  options: { own?: boolean; retried?: boolean } = {}
 ): void {
-  if (outcome.row) stats.okCount += 1;
-  else stats.unavailableCount += 1;
+  const { row, ...rest } = outcome;
+  recordGroupValidationBatch(
+    stats,
+    { ...rest, rows: new Map([['', row]]) },
+    host,
+    at,
+    { own: () => options.own === true, retried: options.retried }
+  );
+}
+
+/**
+ * One request, for any number of addresses. `retried`: this request is asked
+ * again (a stall abort, or a 400 split into single requests), so its
+ * addresses are not counted here; the follow-up request counts them.
+ */
+export function recordGroupValidationBatch(
+  stats: GroupValidatorStats,
+  outcome: GroupValidationBatchOutcome,
+  host: string,
+  at = Date.now(),
+  options: { own?: (address: string) => boolean; retried?: boolean } = {}
+): void {
+  let answered = 0;
+  let unknown = 0;
+  for (const [address, row] of outcome.rows) {
+    if (row) answered += 1;
+    else unknown += 1;
+    if (options.retried) continue;
+    if (row) stats.okCount += 1;
+    else stats.unavailableCount += 1;
+    if (options.own?.(address)) {
+      stats.ownCount = (stats.ownCount ?? 0) + 1;
+      if (!row) {
+        stats.ownUnavailableCount = (stats.ownUnavailableCount ?? 0) + 1;
+      }
+    }
+  }
+  stats.requestCount = (stats.requestCount ?? 0) + 1;
+  stats.maxBatchSize = Math.max(stats.maxBatchSize ?? 0, outcome.rows.size);
+  if (answered > 0) stats.lastOkAt = at;
+  if (unknown > 0) {
+    noteGroupValidationFailure(
+      stats,
+      groupValidationFailReason(outcome),
+      unknown,
+      at
+    );
+  }
   stats.lastStatus = outcome.status;
   stats.lastMs = outcome.ms;
   stats.lastAt = at;
@@ -424,17 +661,13 @@ export function recordGroupValidation(
   if (outcome.timedOut) stats.timedOutCount = (stats.timedOutCount ?? 0) + 1;
   if (outcome.graced) {
     stats.gracedCount = (stats.gracedCount ?? 0) + 1;
-    if (outcome.row) stats.gracedKeptCount = (stats.gracedKeptCount ?? 0) + 1;
+    if (answered > 0) {
+      stats.gracedKeptCount = (stats.gracedKeptCount ?? 0) + 1;
+    }
     stats.maxTimerLateMs = Math.max(
       stats.maxTimerLateMs ?? 0,
       Math.round(outcome.timerLateMs ?? 0)
     );
-  }
-  if (options.own) {
-    stats.ownCount = (stats.ownCount ?? 0) + 1;
-    if (!outcome.row) {
-      stats.ownUnavailableCount = (stats.ownUnavailableCount ?? 0) + 1;
-    }
   }
   if (
     typeof outcome.networkMs === 'number' &&
@@ -451,6 +684,29 @@ export function recordGroupValidation(
       wait.splice(0, wait.length - GROUP_VALIDATION_RECENT_TIMINGS);
     }
   }
+}
+
+/**
+ * Checks answered unknown without a request of their own (the host's queue
+ * was full, or a split stopped early): counted as unavailable, and once in
+ * the failure counters under `reason`.
+ */
+export function recordGroupValidationUnsent(
+  stats: GroupValidatorStats,
+  addresses: readonly string[],
+  reason: GroupValidationFailReason,
+  at = Date.now(),
+  options: { own?: (address: string) => boolean } = {}
+): void {
+  if (addresses.length === 0) return;
+  for (const address of addresses) {
+    stats.unavailableCount += 1;
+    if (options.own?.(address)) {
+      stats.ownCount = (stats.ownCount ?? 0) + 1;
+      stats.ownUnavailableCount = (stats.ownUnavailableCount ?? 0) + 1;
+    }
+  }
+  noteGroupValidationFailure(stats, reason, addresses.length, at);
 }
 
 /** Result of the `debug:membership-probe` worker RPC. */

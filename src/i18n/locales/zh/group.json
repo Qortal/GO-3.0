@@ -251,6 +251,13 @@
     "blocked_public_node_title": "你正在使用公共节点",
     "blocked_settings": "已屏蔽账户",
     "blocked_settings_description": "管理此钱包或此设备上的已屏蔽名称和地址。",
+    "bottom_buttons": "底部按钮",
+    "bottom_buttons_apps": "应用",
+    "bottom_buttons_chat": "聊天",
+    "bottom_buttons_desc": "将主页、应用和聊天拖动到你喜欢的顺序。在它们之间左右滑动也遵循相同的顺序。",
+    "bottom_buttons_home": "主页",
+    "bottom_buttons_item_label": "{{name}}，第 {{place}} 个，共 {{total}} 个。使用左右方向键移动。",
+    "bottom_buttons_reset": "重置",
     "buy": "购买",
     "change_node": "更换节点",
     "close_action_update_error": "目前无法更新关闭窗口的行为。",
@@ -482,7 +489,9 @@
     "wallet_password": "钱包密码",
     "wallet_password_placeholder": "输入钱包密码",
     "wallet_password_required": "输入钱包密码以解密私钥。",
-    "wallet_unavailable_error": "钱包数据暂时不可用。"
+    "wallet_unavailable_error": "钱包数据暂时不可用。",
+    "widgets_screen": "小组件屏幕",
+    "widgets_screen_desc": "位于第一个分区左侧的小组件屏幕：为 GO 3.0 打造的小型 Q-App，例如时间、天气或 Torq 新闻。向右滑动即可进入。"
   },
   "dm": {
     "add_friend_before_calling": "通话前请先将此用户加为好友",
@@ -1322,5 +1331,27 @@
     "intro_title": "Qortal 对话的全新基础",
     "title": "Q-Chat 新功能",
     "version": "版本 {{version}}"
+  },
+  "widgets": {
+    "add": "添加小组件",
+    "add_short": "添加",
+    "added": "已添加",
+    "by": "来自 {{name}}",
+    "done": "完成",
+    "empty_hint": "之后，长按小组件或空白处即可添加、移动或调整大小。拖到下方的“移除”即可删除。",
+    "limit": "最多可以添加 {{max}} 个小组件。",
+    "open_app": "打开 {{name}}",
+    "picker_developers": "Q-App 开发者：请将小组件以 APP 发布，并带上 go-widget 标签，或使用以 go-widget 开头的标识符。",
+    "picker_empty": "还没有已发布的小组件。",
+    "picker_error": "无法加载小组件。请检查节点连接。",
+    "picker_none_found": "没有匹配的小组件。",
+    "picker_note": "小组件是为 GO 打造的 Q-App。它们可以显示内容和打开应用，但不能付款、发布或签名。",
+    "picker_search": "搜索小组件",
+    "picker_title": "添加小组件",
+    "reload": "重新加载",
+    "remove": "移除",
+    "resize": "调整大小",
+    "retry": "重试",
+    "title": "小组件"
   }
 }

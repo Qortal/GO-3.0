@@ -9,11 +9,49 @@
 /**
  * Engine log lines worth keeping when the ring has scrolled past them. Covers
  * membership, bridge overload/pauses, peer violations, refusals and give-ups,
- * and Python's stall watchdog. The watchdog tokens are explicit: a bare
- * `stall` would also match `install`.
+ * Python's stall watchdog, and the worker's own storage: the OPFS handle
+ * pool (`[mobile-fs]`, e.g. a top-up that is stuck or opens nothing) and
+ * copying a received resource into OPFS. The watchdog tokens are explicit:
+ * a bare `stall` would also match `install`. Channel metadata that was
+ * skipped or refused (an author or snapshot signer that is not a group admin)
+ * is why a group's channels do not load, so those lines count too.
  */
 const ENGINE_FAULT_RE =
-  /error|fail|slow_|timed out|membership|validat|corrupt|unavailable|overloaded|paused|violation|refusing|not a group member|giving up|deferred=[1-9]|bridge_stall|executor_stalled|executor_recovered|thread_population/i;
+  /error|fail|slow_|timed out|membership|validat|corrupt|unavailable|overloaded|paused|violation|refusing|not a group member|giving up|deferred=[1-9]|bridge_stall|executor_stalled|executor_recovered|thread_population|\[mobile-fs\]|inbound resource staging failed|projection_skipped|not_group_admin|non_admin|full_snapshot_admin_required/i;
+
+/**
+ * Fault lines that come once per event, snapshot, statement or OPFS handle
+ * top-up retry and can fill the worker's 150-line boot buffer within minutes
+ * of a boot: the buffer keeps only the first few per kind and group (see
+ * `bootFaultRepeatKey`). The `[mobile-fs]` ones repeat on every retry while
+ * OPFS keeps failing; the "Chat storage" line carries their totals.
+ */
+const BOOT_FAULT_REPEAT_TOKEN_RE =
+  /\b(channel_metadata_projection_skipped|channel_metadata_projection_deferred|metadata_snapshot_ignored|metadata_snapshot_request_ignored|slow_statement|slot_open_failed|handle_top_up_stuck|handle_top_up_failed|index_persist_failed)\b/;
+/** Lines kept in the boot buffer per `bootFaultRepeatKey`. */
+export const BOOT_FAULT_REPEATS_PER_KEY = 3;
+/**
+ * Lines kept per kind across all groups: skips in 60 groups would otherwise
+ * still take 180 lines.
+ */
+export const BOOT_FAULT_REPEATS_PER_KIND = 20;
+/**
+ * Such per-event lines kept in all, so the rest of the boot buffer stays for
+ * faults that come once (EMFILE, membership, refusals).
+ */
+export const BOOT_FAULT_REPEAT_LINES_MAX = 60;
+
+/**
+ * `<kind>|<group>` for fault lines that repeat per event (channel metadata
+ * skips and deferrals, ignored snapshots, slow statements); null for every
+ * other line, which the boot buffer keeps as before.
+ */
+export function bootFaultRepeatKey(line: string): string | null {
+  const text = String(line);
+  const kind = BOOT_FAULT_REPEAT_TOKEN_RE.exec(text)?.[1];
+  if (!kind) return null;
+  return `${kind}|${/\bgroup=(\d+)/.exec(text)?.[1] ?? ''}`;
+}
 /** Zero counters (`membership_deferred=0` on every page import) are not faults. */
 const ZERO_DEFERRED_RE = /\b\w*deferred=0\b/gi;
 const NONZERO_DEFERRED_RE = /deferred=[1-9]/i;

@@ -98,6 +98,9 @@ createRoot(document.getElementById('root')!, rootErrorHooks).render(
   </ErrorBoundary>
 );
 
+// The whole bundle loaded and ran: public/boot-guard.js can stand down.
+(window as Window & { __goBootDone?: () => void }).__goBootDone?.();
+
 // Reveal the app once React has painted, keeping a short minimum so the
 // branded intro doesn't flash. The native splash hides on its own timer.
 requestAnimationFrame(() => {

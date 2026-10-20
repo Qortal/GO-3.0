@@ -18,10 +18,17 @@ import {
 } from '../plugins/PrivateQappHost';
 import { useAtom, useSetAtom } from 'jotai';
 import { useTranslation } from 'react-i18next';
+import {
+  beforePublicNodeOpen,
+  observePublicNodeFetch,
+} from '../publicNode/publicNodeWatch';
 
 /** What the node answers for a preview it built: /render/hash/<hash>?secret=<secret>. */
 const NODE_PREVIEW_PATH =
   /^\/render\/hash\/[1-9A-HJ-NP-Za-km-z]+\?secret=[1-9A-HJ-NP-Za-km-z]+$/;
+
+/** Loads from the public node tell GO's node watch how it is doing. */
+const nodeFetch = observePublicNodeFetch((input: string) => fetch(input));
 
 export const useHandlePrivateApps = () => {
   const [status, setStatus] = useState('');
@@ -87,6 +94,25 @@ export const useHandlePrivateApps = () => {
     addToPinnedApps,
     setLoadingStatePrivateApp
   ) => {
+    // GO on the public node: while it is down the app waits for it, named in
+    // the "public node unavailable" window, and opens once the node is back.
+    if (
+      !beforePublicNodeOpen({
+        service: privateAppProperties?.service || 'APP',
+        name: privateAppProperties?.appName || privateAppProperties?.name,
+        retry: () => {
+          openApp(
+            privateAppProperties,
+            addToPinnedApps,
+            setLoadingStatePrivateApp
+          ).catch(() => {
+            /* openApp shows its own errors */
+          });
+        },
+      })
+    ) {
+      return;
+    }
     try {
       if (setLoadingStatePrivateApp) {
         setLoadingStatePrivateApp(
@@ -111,7 +137,7 @@ export const useHandlePrivateApps = () => {
       }?encoding=base64`;
       let data;
       try {
-        const responseData = await fetch(urlData);
+        const responseData = await nodeFetch(urlData);
         // A node that cannot get the app answers with an error (a public node
         // often: 404 "Data unavailable"); never treat that text as the app.
         data = responseData?.ok ? (await responseData.text()).trim() : '';

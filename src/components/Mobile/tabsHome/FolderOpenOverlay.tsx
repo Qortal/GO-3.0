@@ -34,6 +34,7 @@ import {
   SAFE_AREA_TOP,
 } from '../mobileLayout';
 import { BACK_PRIORITY, useAndroidBack } from '../../../utils/androidBack';
+import { useCloseWithGoWindows } from '../../../utils/closeGoWindows';
 import { MOSAIC_KEY_ATTR, LIFT_CLASS, RunningDot } from './FolderTile';
 import {
   FLIP_EASE,
@@ -371,6 +372,7 @@ export function FolderOpenOverlay({
     },
     { priority: BACK_PRIORITY.overlay }
   );
+  useCloseWithGoWindows(open, onRequestClose);
 
   const bindScroller = useCallback((node: HTMLDivElement | null) => {
     scrollerRef.current = node;

@@ -3,8 +3,9 @@ import HomeRoundedIcon from '@mui/icons-material/HomeRounded';
 import AppsRoundedIcon from '@mui/icons-material/AppsRounded';
 import ChatRoundedIcon from '@mui/icons-material/ChatRounded';
 import { useAtomValue, useSetAtom } from 'jotai';
-import { useCallback } from 'react';
+import { useCallback, useMemo } from 'react';
 import { mobileTabBarElementAtom } from './mobileTabBarElement';
+import { mobileTabOrderAtom } from './mobileTabOrder';
 import {
   directChatHasUnreadAtom,
   groupChatHasUnreadExcludingMutedAtom,
@@ -23,6 +24,18 @@ import { tabBarCoverMotion } from './mobileTabBarCover';
 export { MOBILE_TAB_BAR_HEIGHT_PX };
 
 type TabKey = MobileTabKey;
+
+type TabItem = {
+  key: TabKey;
+  label: string;
+  Icon: typeof HomeRoundedIcon;
+};
+
+const TAB_ITEMS: Record<TabKey, TabItem> = {
+  home: { key: 'home', label: 'Home', Icon: HomeRoundedIcon },
+  apps: { key: 'apps', label: 'Apps', Icon: AppsRoundedIcon },
+  chat: { key: 'chat', label: 'Chat', Icon: ChatRoundedIcon },
+};
 
 /** Width of the centred Home/Apps/Chat cluster on wide GO screens. */
 export const GO_TAB_CLUSTER_WIDTH_PX = 440;
@@ -128,15 +141,9 @@ export const MobileTabBar = ({
     setDesktopViewMode
   );
 
-  const items: Array<{
-    key: TabKey;
-    label: string;
-    Icon: typeof HomeRoundedIcon;
-  }> = [
-    { key: 'home', label: 'Home', Icon: HomeRoundedIcon },
-    { key: 'apps', label: 'Apps', Icon: AppsRoundedIcon },
-    { key: 'chat', label: 'Chat', Icon: ChatRoundedIcon },
-  ];
+  // As the user arranged them (Settings → System → Bottom buttons).
+  const order = useAtomValue(mobileTabOrderAtom);
+  const items = useMemo(() => order.map((key) => TAB_ITEMS[key]), [order]);
 
   const dotRingColor =
     theme.palette.mode === 'dark'

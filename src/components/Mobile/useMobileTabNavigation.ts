@@ -16,15 +16,20 @@ import {
   closeQortinoAgentSheet,
   restoreQortinoAgentSheet,
 } from '../../qortinoAgent/qortinoSheetNav';
+import {
+  DEFAULT_MOBILE_TAB_ORDER,
+  type MobileSectionKey,
+  type MobileTabKey,
+} from './mobileTabOrder';
 
-export type MobileTabKey = 'home' | 'apps' | 'chat';
+export type { MobileSectionKey, MobileTabKey };
 
-/** Left to right, as the round buttons sit. */
-export const MOBILE_TAB_ORDER: readonly MobileTabKey[] = [
-  'home',
-  'apps',
-  'chat',
-] as const;
+/**
+ * The buttons' default order, left to right. The user can rearrange them
+ * (mobileTabOrderAtom); read that for what is on screen.
+ */
+export const MOBILE_TAB_ORDER: readonly MobileTabKey[] =
+  DEFAULT_MOBILE_TAB_ORDER;
 
 /** The phone section a desktopViewMode belongs to, if any. */
 export const mobileTabForViewMode = (
@@ -38,6 +43,14 @@ export const mobileTabForViewMode = (
         ? 'apps'
         : null;
 
+/** The phone section a desktopViewMode shows (the widgets screen too). */
+export const mobileSectionForViewMode = (
+  desktopViewMode: string
+): MobileSectionKey | null =>
+  desktopViewMode === 'widgets'
+    ? 'widgets'
+    : mobileTabForViewMode(desktopViewMode);
+
 /**
  * Going to Home, Apps or Chat on a phone, as the round tab buttons do it
  * (Apps brings back the last app or the library, Chat resumes the open
@@ -47,8 +60,9 @@ export const mobileTabForViewMode = (
 export function useMobileTabNavigation(
   desktopViewMode: string,
   setDesktopViewMode: (mode: string) => void
-): { active: MobileTabKey; go: (tab: MobileTabKey) => void } {
-  const [active, setActive] = useState<MobileTabKey>('home');
+): { active: MobileTabKey | null; go: (tab: MobileTabKey) => void } {
+  // null on the widgets screen, which has no button.
+  const [active, setActive] = useState<MobileTabKey | null>('home');
   const isNewTabWindow = useAtomValue(isNewTabWindowAtom);
   const qortinoOpen = useAtomValue(qortinoAgentOpenAtom);
   const qortinoParked = useAtomValue(qortinoAgentParkedAtom);
@@ -68,6 +82,7 @@ export function useMobileTabNavigation(
     else if (desktopViewMode === 'chat') setActive('chat');
     else if (desktopViewMode === 'apps' || desktopViewMode === 'dev')
       setActive('apps');
+    else if (desktopViewMode === 'widgets') setActive(null);
   }, [desktopViewMode]);
 
   const go = (tab: MobileTabKey) => {

@@ -200,6 +200,145 @@ def test_not_started_returns_early_without_bridge():
     assert "bridge" not in status
 
 
+class _FakeResource:
+    NONE = 0x00
+    REJECTED = 0x09
+
+    def __init__(self, status):
+        self.status = status
+
+    def watchdog_job(self, stop):
+        stop.wait(5)
+
+
+def _fake_rns_with_links():
+    rns = _fake_rns()
+    rns.Transport.active_links = [object(), object(), object()]
+    rns.Transport.pending_links = [object()]
+    rns.Resource = _FakeResource
+    return rns
+
+
+def _fake_bridge_with_links():
+    pb = _fake_bridge()
+    pb._overlay_links_by_id = {"a": {}, "b": {}}
+    pb._audio_links_by_id = {}
+    pb._pending_inbound_classify_link_ids = {11, 12, 13}
+    pb._qchat_file_links_by_id = {
+        "s1": {"manager_kind": "resource_session", "incoming": True, "sessionLane": "fast"},
+        "s2": {"manager_kind": "resource_session", "incoming": True, "sessionLane": "fast"},
+        "s3": {"manager_kind": "resource_session", "incoming": False, "sessionLane": "bulk"},
+        "s4": {"manager_kind": "resource_session", "incoming": False, "sessionLane": "x y/z"},
+        "f1": {"manager_kind": "file", "incoming": True},
+    }
+    pb._provider_refused_by_busy_kind = {"history:history_budget": 7, "dm:pending_peer": 1}
+    return pb
+
+
+def test_detail_adds_threads_links_queue_fds_cpu_and_refusal_kinds():
+    import threading
+
+    h = _host()
+    stop = threading.Event()
+    rejected = _FakeResource(_FakeResource.REJECTED)
+    running = _FakeResource(_FakeResource.NONE)
+    threads = [
+        threading.Thread(target=rejected.watchdog_job, args=(stop,), daemon=True),
+        threading.Thread(target=running.watchdog_job, args=(stop,), daemon=True),
+    ]
+    for thread in threads:
+        thread.start()
+    saved = (h._out_queue_high_water, h._out_queue_drops, h._process_cpu_prev)
+    try:
+        h._out_queue_high_water = 0
+        h._out_queue_drops = 0
+        # Earlier checks in this process already took a CPU sample.
+        h._process_cpu_prev = None
+        for i in range(3):
+            h._put_out_frame(f"frame-{i}")
+        assert h._out_queue_high_water >= 3
+        with _Modules(
+            presence_bridge=_fake_bridge_with_links(), RNS=_fake_rns_with_links()
+        ):
+            first = json.loads(_with_started(h, lambda: h.transport_status(True)))
+            second = json.loads(_with_started(h, lambda: h.transport_status(True)))
+    finally:
+        stop.set()
+        for thread in threads:
+            thread.join(2)
+        while not h._out_queue.empty():
+            h._out_queue.get_nowait()
+        h._out_queue_high_water, h._out_queue_drops, h._process_cpu_prev = saved
+    bridge = first["bridge"]
+    assert bridge["threadCount"] >= 3, bridge
+    assert bridge["outQueue"] >= 3 and bridge["outQueueHighWater"] >= 3, bridge
+    assert bridge["outQueueDrops"] == 0
+    if os.path.isdir("/proc/self/fd"):
+        assert bridge["openFds"] > 0
+        assert bridge["processCpuMs"] >= 0
+        assert "processCpuDeltaMs" not in bridge
+        assert second["bridge"]["processCpuDeltaMs"] >= 0
+        assert second["bridge"]["processCpuWindowMs"] >= 0
+    assert bridge["links"] == {
+        "overlay": 2,
+        "audio": 0,
+        "inboundHandshakes": 3,
+        "resourceSessions": {"in:fast": 2, "out:bulk": 1, "out:other": 1},
+        "fileLinks": 1,
+        "rnsActive": 3,
+        "rnsPending": 1,
+    }, bridge["links"]
+    # Only the watchdog of the rejected resource counts.
+    assert bridge["rejectedResourceWatchdogs"] == 1, bridge
+    assert bridge["providerRefusedByBusyKind"] == {
+        "history:history_budget": 7,
+        "dm:pending_peer": 1,
+    }
+
+
+def test_out_queue_counts_drops_at_the_cap():
+    h = _host()
+    saved = (h._OUT_QUEUE_MAX_FRAMES, h._out_queue_high_water, h._out_queue_drops)
+    try:
+        h._OUT_QUEUE_MAX_FRAMES = 4
+        h._out_queue_high_water = 0
+        h._out_queue_drops = 0
+        for i in range(10):
+            h._put_out_frame(f"frame-{i}")
+        assert h._out_queue.qsize() == 4
+        assert h._out_queue_drops == 6
+        assert h._out_queue_high_water == 4
+        # The oldest frames went first.
+        assert h._out_queue.get_nowait() == "frame-6"
+    finally:
+        while not h._out_queue.empty():
+            h._out_queue.get_nowait()
+        h._OUT_QUEUE_MAX_FRAMES, h._out_queue_high_water, h._out_queue_drops = saved
+
+
+def test_lane_names_its_slowest_task_without_ids():
+    h = _host()
+
+    def diagnostics():
+        return [
+            {
+                "lane": "rns-overlay-callback-2",
+                "queueDepth": 0,
+                "busyMsMax": 559.0,
+                "busyMaxTask": "overlay-open:announce:1a2b3c4d",
+                "currentTask": "",
+                "currentTaskStartedAt": 0.0,
+            },
+            {"lane": "presence", "queueDepth": 0, "busyMsMax": 0.0},
+        ]
+
+    with _Modules(presence_bridge=_fake_bridge(diagnostics), RNS=_fake_rns()):
+        status = json.loads(_with_started(h, lambda: h.transport_status(True)))
+    lanes = status["bridge"]["lanes"]
+    assert lanes[0]["busyMaxTask"] == "overlay-open:announce", lanes[0]
+    assert "busyMaxTask" not in lanes[1]
+
+
 def test_task_labels_drop_ids():
     h = _host()
     assert h._task_label("cmd:send_reticulum_chat") == "cmd:send_reticulum_chat"
@@ -227,5 +366,8 @@ if __name__ == "__main__":
     test_scheduler_failure_reports_an_error_only()
     test_bridge_not_imported_gives_transport_start_only()
     test_not_started_returns_early_without_bridge()
+    test_detail_adds_threads_links_queue_fds_cpu_and_refusal_kinds()
+    test_out_queue_counts_drops_at_the_cap()
+    test_lane_names_its_slowest_task_without_ids()
     test_task_labels_drop_ids()
     print("ok")

@@ -2,6 +2,7 @@
  * GO's end of the Q-App download reports (see qappFetchReporter.ts): each
  * report becomes a stage of the transfer card and tray notification.
  */
+import { reportPublicNodeTrouble } from '../publicNode/publicNodeWatch';
 import { getBaseApiReact } from './globalApi';
 import {
   parseQappFetchMessage,
@@ -76,6 +77,9 @@ export function handleQappFetchMessage(message: QappFetchMessage): void {
       break;
     case 'cancel':
       cancelQdnSaveNotification(id);
+      break;
+    case 'node-trouble':
+      reportPublicNodeTrouble();
       break;
   }
 }

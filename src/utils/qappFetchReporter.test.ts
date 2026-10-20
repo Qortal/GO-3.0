@@ -91,6 +91,48 @@ describe('Q-App fetch reporter', () => {
     });
   });
 
+  it('reports a QDN load the node gave no answer to, at most once in 20 s', async () => {
+    let answer = async (): Promise<Response> =>
+      new Response('', { status: 502 });
+    const frame = runInQappFrame(() => answer());
+
+    const first = await frame.fetch('/arbitrary/THUMBNAIL/Some%20Name/thumb');
+    expect(first.status).toBe(502);
+    answer = async () => {
+      throw new TypeError('Failed to fetch');
+    };
+    await expect(
+      frame.fetch('/arbitrary/IMAGE/Some%20Name/picture')
+    ).rejects.toThrow('Failed to fetch');
+
+    const trouble = frame.posted.filter((p) => p.msg.phase === 'node-trouble');
+    expect(trouble).toHaveLength(1);
+    expect(parseQappFetchMessage(trouble[0].msg)).toMatchObject({
+      phase: 'node-trouble',
+      service: 'THUMBNAIL',
+      name: 'Some Name',
+    });
+  });
+
+  it('says nothing about answers, aborted loads or other addresses', async () => {
+    const answered = runInQappFrame(
+      async () => new Response('missing', { status: 404 })
+    );
+    await answered.fetch('/arbitrary/IMAGE/name/id');
+    const aborted = runInQappFrame(async () => {
+      throw new DOMException('The user aborted a request.', 'AbortError');
+    });
+    await expect(aborted.fetch('/arbitrary/IMAGE/name/id')).rejects.toThrow();
+    const other = runInQappFrame(async () => new Response('', { status: 502 }));
+    await other.fetch('/admin/status');
+
+    expect([
+      ...answered.posted,
+      ...aborted.posted,
+      ...other.posted,
+    ]).toHaveLength(0);
+  });
+
   it('leaves small responses, other URLs and posts alone', async () => {
     const small = fileResponse(1000);
     const frame = runInQappFrame(async () => small);

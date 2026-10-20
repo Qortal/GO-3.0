@@ -21,7 +21,9 @@ import com.getcapacitor.CapacitorWebView;
  * Every other call goes straight to the WebView's own input connection.
  *
  * Also shows every touch to {@link ImmersivePlugin} first (it only reads
- * them), so immersive mode can tell scrolling inside Q-App frames.
+ * them), so immersive mode can tell scrolling inside Q-App frames, and to
+ * {@link SectionSwipePlugin}, which takes sideways swipes over GO widgets
+ * for the swipe between sections.
  *
  * Swapped in for Capacitor's through res/layout/bridge_layout_main.xml.
  */
@@ -41,7 +43,30 @@ public class GoWebView extends CapacitorWebView {
   @Override
   public boolean dispatchTouchEvent(MotionEvent event) {
     ImmersivePlugin.onWebViewTouch(this, event);
+    SectionSwipeClaim.Decision decision = SectionSwipePlugin.onWebViewTouch(this, event);
+    if (decision == SectionSwipeClaim.Decision.CLAIM) {
+      // From here the swipe between sections has it: the page (and the
+      // widget under the finger) gets a cancel, as when a scroll takes over.
+      MotionEvent cancel = MotionEvent.obtain(event);
+      cancel.setAction(MotionEvent.ACTION_CANCEL);
+      super.dispatchTouchEvent(cancel);
+      cancel.recycle();
+      return true;
+    }
+    if (decision == SectionSwipeClaim.Decision.SWALLOW) return true;
     return super.dispatchTouchEvent(event);
+  }
+
+  /**
+   * Cancels the touch under way for the page (and the frame under it) from
+   * outside a touch event: a long press GO takes over (SectionSwipePlugin).
+   * Straight to the WebView, past the hooks above.
+   */
+  void cancelPageTouch(long downTime) {
+    long now = android.os.SystemClock.uptimeMillis();
+    MotionEvent cancel = MotionEvent.obtain(downTime, now, MotionEvent.ACTION_CANCEL, 0f, 0f, 0);
+    super.dispatchTouchEvent(cancel);
+    cancel.recycle();
   }
 
   @Override

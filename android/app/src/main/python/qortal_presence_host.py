@@ -15,7 +15,9 @@ and no separate daemon: Chaquopy runs CPython *in-process*, so this adapter
     real stdio to Logcat / EOF), so Kotlin drives the bridge by calling
     :func:`feed` and reads frames by calling :func:`poll`;
   * disables the call-audio FD3 threads, which assume Unix pipe file
-    descriptors that do not exist in the embedded interpreter.
+    descriptors that do not exist in the embedded interpreter, and carries
+    call audio-link frames as JSON instead: ``group_audio_packet`` events
+    out, ``send_group_audio`` commands in (see :func:`_install_json_audio_io`).
 
 Kotlin lifecycle:
     start(config_dir)         # once
@@ -27,13 +29,18 @@ Kotlin lifecycle:
     stop()                    # EOF the bridge and let main() unwind
 """
 
+import base64
+import inspect
 import io
+import json
+import math
 import os
 import queue
 import sys
 import threading
 import time
 import traceback
+import zlib
 
 # Must mirror the desktop Hub's BackboneInterface hub set (electron
 # DEFAULT_RETICULUM_HUBS) so mobile joins the SAME Reticulum mesh. The desktop
@@ -56,6 +63,13 @@ _main_thread = None
 # Kotlin stops polling while no Activity is attached (GO swiped away), so the
 # backlog must not grow for hours. Matches the bridge socket's client queue.
 _OUT_QUEUE_MAX_FRAMES = 8192
+# Copy diagnostics: the deepest the queue to Kotlin got, and the frames
+# dropped at the cap (both since the bridge started; plain int updates).
+_out_queue_high_water = 0
+_out_queue_drops = 0
+# /proc/self/stat utime+stime and the monotonic time at the last detail
+# read, for the process CPU share between two Copy diagnostics.
+_process_cpu_prev = None
 
 # Network pause (see pause_network). The generation changes on every pause and
 # resume so a reconnect loop from an earlier phase notices it is stale.
@@ -123,12 +137,17 @@ class _StdoutShim(io.TextIOBase):
 
 def _put_out_frame(line):
     """Queue one frame for Kotlin, dropping the oldest once nobody drains."""
+    global _out_queue_high_water, _out_queue_drops
     while _out_queue.qsize() >= _OUT_QUEUE_MAX_FRAMES:
         try:
             _out_queue.get_nowait()
         except queue.Empty:
             break
+        _out_queue_drops += 1
     _out_queue.put(line)
+    size = _out_queue.qsize()
+    if size > _out_queue_high_water:
+        _out_queue_high_water = size
 
 
 def _write_reticulum_config(config_dir):
@@ -267,6 +286,42 @@ def _patch_rns_no_exit():
     RNS.exit = _safe_exit
 
 
+# RNS 1.4.2's value. The vendored 1.3.4 ships Resource.REJECTED = 0x00,
+# the same value as Resource.NONE.
+_RNS_RESOURCE_REJECTED = 0x09
+
+
+def _patch_rns_resource_rejected():
+    """Give RNS.Resource.REJECTED its own status value, as upstream RNS 1.4.2
+    does.
+
+    With REJECTED equal to NONE (0), a rejected outgoing Resource's watchdog
+    never leaves its ``status < ASSEMBLING`` loop: it wakes every 1 ms for the
+    life of the process and keeps the Resource (and a split send's open
+    file) alive. presence_bridge's provider response watcher also reads a
+    next segment that is not advertised yet (status NONE) as rejected and
+    fails the response. The status never goes on the wire, and Resource.py
+    and presence_bridge only read it through the class attribute, so setting
+    it before the bridge creates any Resource is enough. A vendored RNS that
+    already has a distinct value is left alone.
+    """
+    try:
+        import RNS
+
+        resource_class = RNS.Resource
+        if getattr(resource_class, "REJECTED", None) == getattr(
+            resource_class, "NONE", None
+        ):
+            resource_class.REJECTED = _RNS_RESOURCE_REJECTED
+    except Exception as exc:  # noqa: BLE001 - best effort, like the tuning
+        try:
+            sys.stderr.write(
+                f"[presence_bridge] rns Resource.REJECTED fix skipped: {exc}\n"
+            )
+        except Exception:
+            pass
+
+
 def _tune_rns_for_battery():
     """Relax RNS transport timers that were sized for a mains-powered desktop.
 
@@ -277,8 +332,11 @@ def _tune_rns_for_battery():
     detects a dead hub in about two minutes; the bridge's own overlay pings
     and the JS presence heartbeat notice peer loss well before that. RNS's
     250 ms job loop and 5 s per-link watchdogs are desktop-sized: 1 s / 30 s
-    only add jitter to timeout detection, not to delivery.
+    only add jitter to timeout detection, not to delivery. A rejected
+    Resource's 1 ms watchdog spin is fixed here too, on its own so a tuning
+    failure cannot skip it.
     """
+    _patch_rns_resource_rejected()
     try:
         import RNS
         from RNS.Interfaces.BackboneInterface import BackboneClientInterface
@@ -636,6 +694,1367 @@ def _install_network_pause_gates(pb):
     gate("_ping_established_overlay_links", 0)
 
 
+# Community STUN discovery query (bridge command get_community_stun_endpoints).
+# The bridge answers with its live endpoint list and also sends one
+# {"v":1,"q":true} announce from its community-STUN destination, which lives
+# 24 h. RNS transport nodes rate-limit announces per destination (default
+# announce_rate_target 3600 s, grace 5): after about 6 the hubs drop GO's
+# queries for an hour. GO asks for ICE servers at every bridge `ready` and
+# whenever a call wants them (a call that finds the pool empty asks every
+# 750 ms for 12 s, directVoiceWebRtcTransport.ts), which spent that allowance
+# in seconds. So the query goes out at most once per interval, and only while
+# a hub interface is online; every other call gets the same pruned reply
+# without the announce. GO never contributes an endpoint itself (no
+# configure_community_stun), so nothing else announces from that destination.
+_COMMUNITY_STUN_QUERY_MIN_INTERVAL_SECONDS = 10 * 60
+_community_stun_query_lock = threading.Lock()
+_community_stun_last_query_at = None  # _community_stun_clock() of the last query
+_community_stun_query_stats = {"sent": 0, "throttled": 0, "offline": 0}
+
+
+def _pick_community_stun_clock():
+    """Seconds that keep counting while the phone sleeps.
+
+    time.monotonic() is CLOCK_MONOTONIC on Linux/Android, which stops in
+    suspend (Doze): after hours asleep it could still hold back the first
+    query. The hubs' announce rate limit runs on wall time. CLOCK_BOOTTIME
+    counts suspend and never jumps back; monotonic only where it is missing.
+    """
+    clock_id = getattr(time, "CLOCK_BOOTTIME", None)
+    if clock_id is not None:
+        try:
+            time.clock_gettime(clock_id)
+            return lambda: time.clock_gettime(clock_id)
+        except (AttributeError, OSError):
+            pass
+    return time.monotonic
+
+
+_community_stun_clock = _pick_community_stun_clock()
+
+
+def _community_stun_query_reachable():
+    """True when a query announce can reach a hub (best effort)."""
+    if _network_paused:
+        return False
+    try:
+        import RNS
+
+        return any(
+            getattr(iface, "online", False)
+            and (getattr(iface, "IN", False) or getattr(iface, "OUT", False))
+            for iface in list(getattr(RNS.Transport, "interfaces", []) or [])
+        )
+    except Exception:  # noqa: BLE001 - unknown: let the bridge send it
+        return True
+
+
+def _install_community_stun_query_throttle(pb):
+    """Send the bridge's community-STUN query announce at most every 10 min.
+
+    ``handle_command`` looks ``handle_get_community_stun_endpoints`` up as a
+    module global at call time, so replacing it covers every caller.
+    Idempotent; skipped (bridge unchanged) if the names it needs are gone.
+    """
+    original = getattr(pb, "handle_get_community_stun_endpoints", None)
+    if original is None or getattr(original, "_qortal_query_throttle", False):
+        return
+    required = (
+        "_state_lock",
+        "_community_stun_recent_endpoints",
+        "_community_stun_seen_endpoints",
+        "emit_resp",
+    )
+    missing = [name for name in required if not hasattr(pb, name)]
+    if missing:
+        _log_host(
+            "community stun query throttle skipped, bridge names changed: "
+            + ",".join(missing)
+        )
+        return
+
+    def handle_get_community_stun_endpoints(req_id, *args, **kwargs):
+        global _community_stun_last_query_at
+        with _community_stun_query_lock:
+            now = _community_stun_clock()
+            last = _community_stun_last_query_at
+            due = (
+                last is None
+                or now < last
+                or now - last >= _COMMUNITY_STUN_QUERY_MIN_INTERVAL_SECONDS
+            )
+            reachable = due and _community_stun_query_reachable()
+            if reachable:
+                _community_stun_last_query_at = now
+                _community_stun_query_stats["sent"] += 1
+            elif due:
+                _community_stun_query_stats["offline"] += 1
+            else:
+                _community_stun_query_stats["throttled"] += 1
+        if reachable:
+            return original(req_id, *args, **kwargs)
+        # The bridge handler's pruning and reply, without the query announce.
+        now_ms = int(time.time() * 1000)
+        with pb._state_lock:
+            recent = pb._community_stun_recent_endpoints
+            expired = [
+                key
+                for key, value in recent.items()
+                if int(value.get("expiresAt") or 0) <= now_ms
+            ]
+            for key in expired:
+                recent.pop(key, None)
+                pb._community_stun_seen_endpoints.pop(key, None)
+            endpoints = list(recent.values())[:128]
+        pb.emit_resp(req_id, True, payload={"endpoints": endpoints})
+        return None
+
+    handle_get_community_stun_endpoints._qortal_query_throttle = True
+    handle_get_community_stun_endpoints.__wrapped__ = original
+    pb.handle_get_community_stun_endpoints = handle_get_community_stun_endpoints
+
+
+# ---------------------------------------------------------------------------
+# Call audio-link I/O for the WebView
+#
+# On the desktop the Electron main process exchanges call audio-link frames
+# with the bridge over two binary pipes: FD3 carries outbound QAUD batches
+# into ``_process_audio_input_frames`` and FD4 carries every inbound frame,
+# media *and* link control (link-auth GC_JOIN, GC_KEY, GC_KEY_REQUEST, the
+# GO0/GO1 fragments of WebRTC signals and DM hang-ups), out of
+# ``_emit_binary_audio``. Embedded CPython has no such pipes, so GO carries
+# the same frames as JSON:
+#
+#   * inbound: ``_emit_binary_audio`` is replaced. Each QAUD batch it is
+#     handed is split back into frames and every frame becomes one
+#     ``group_audio_packet`` event {linkId, roomId, peerPresenceHash,
+#     peerDestinationHash, receivedAtWallMs, data(base64)}, the shape
+#     capacitorBridge.handleGroupAudioPacket reads. The bridge's call sites
+#     look the name up as a module global at call time, so they all go
+#     through the replacement.
+#   * outbound: the ``send_group_audio`` command {linkId, roomId,
+#     peerPresenceHash, peerDestinationHash, receivedAtWallMs, data(base64)}
+#     is answered here in feed(), before the stdin queue, so a voice frame
+#     never waits behind chat sends on the bridge's command lanes. It enters
+#     the bridge exactly where an FD3 frame would. ``receivedAtWallMs`` 0
+#     (used for link-control frames) skips the 320 ms live-audio deadline.
+#
+# GO lost this path once already when an upstream bridge merge replaced
+# presence_bridge.py (Hub 3.0.1, 8f029ab4), which is why it lives here and
+# start() checks it: a merge that renames the hooked functions shows up in
+# logcat and Copy diagnostics instead of as silent calls.
+# ---------------------------------------------------------------------------
+
+_SEND_GROUP_AUDIO_ACTION = "send_group_audio"
+# Kotlin serialises commands with org.json: `"action":"send_group_audio"`.
+# The closing quote keeps send_group_audio_link_control/_heartbeat out.
+_SEND_GROUP_AUDIO_MARKER = '"' + _SEND_GROUP_AUDIO_ACTION + '"'
+# presenceCommandWithResult (capacitorBridge.ts) ids; Kotlin's own are UUIDs.
+# Only a caller that waits for an answer gets one: a resp per voice frame
+# would double the JNI and WebView traffic of a call.
+_CORRELATED_COMMAND_ID_PREFIX = "cmd-"
+_GROUP_AUDIO_PACKET_EVENT = "group_audio_packet"
+_GC_LINK_CONTROL_MAGIC = b"QGCCTL1\x00"
+# Shares of the bridge's priority event queue (512) that inbound audio may
+# fill; the rest stays free for link lifecycle events. Half is ~5 s of one
+# peer's media at 50 frames/s, far more than is worth playing late.
+_JSON_AUDIO_MEDIA_PRIORITY_SHARE = 0.5
+_JSON_AUDIO_CONTROL_PRIORITY_SHARE = 0.875
+_JSON_AUDIO_HOOK_FLAG = "_qortal_json_audio_io"
+_JSON_AUDIO_REQUIRED_ATTRS = (
+    "AUDIO_MAGIC",
+    "AUDIO_HEADER_BYTES",
+    "AUDIO_MAX_PAYLOAD",
+    "AUDIO_MAX_LINK_ID_LEN",
+    "AUDIO_MAX_ROOM_ID_LEN",
+    "AUDIO_MAX_HASH_LEN",
+    "_parse_audio_batch_body",
+    "_encode_audio_batch_binary",
+    "_process_audio_input_frames",
+    "_json_priority_event_queue",
+    "_json_event_queue",
+    "emit_resp",
+)
+
+# Counters for Copy diagnostics (transport_status detail). Plain ints under
+# the GIL; an occasional lost increment does not matter for diagnostics.
+_json_audio_stats = {
+    "rxFrames": 0,
+    "rxControl": 0,
+    "rxDropped": 0,
+    "rxMediaShed": 0,
+    "rxBadBatch": 0,
+    "txFrames": 0,
+    "txControl": 0,
+    "txNotQueued": 0,
+    "txRejected": 0,
+}
+_json_audio_last_error = ""
+_json_audio_self_check = None  # {"ok": bool, "problems": [...]} after start()
+
+
+class _SendGroupAudioError(ValueError):
+    """A send_group_audio command that cannot become an audio frame."""
+
+
+def _audio_chunk_frames(pb, chunk):
+    """Split one QAUD batch (as given to ``_emit_binary_audio``) into frames.
+
+    Returns ``[(linkId, roomId, peerPresenceHash, peerDestinationHash,
+    receivedAtWallMs, raw)]``; raises ValueError for a malformed batch.
+    """
+    data = bytes(chunk)
+    header = int(pb.AUDIO_HEADER_BYTES)
+    if len(data) < header or data[:4] != pb.AUDIO_MAGIC:
+        raise ValueError("not a QAUD batch")
+    body_len = int.from_bytes(data[5:9], "big")
+    body = data[header:]
+    if body_len != len(body):
+        raise ValueError("QAUD length mismatch")
+    return pb._parse_audio_batch_body(body)
+
+
+def _priority_headroom_limit(q, fraction_of_max):
+    """How deep ``q`` may get before audio frames stop using it."""
+    maxsize = int(getattr(q, "maxsize", 0) or 0)
+    if maxsize <= 0:
+        return None  # unbounded
+    return max(1, int(maxsize * fraction_of_max))
+
+
+def _queue_json_audio_event(pb, frame, is_control):
+    """Queue one ``group_audio_packet`` ahead of ordinary events.
+
+    Never blocks the RNS callback that delivered the packet. The bridge's
+    priority queue also carries link lifecycle events
+    (group_audio_link_established / _closed, error, ready) that cannot be
+    coalesced and are lost when it is full, and the call code depends on
+    them (a lost "closed" leaves a ghost link, a lost "established" skips
+    link-auth). So audio frames never fill it: live media uses at most half
+    of it and is dropped beyond that (it would be stale by the time it
+    played); link control may go deeper but leaves a reserve, then falls
+    back to the ordinary event queue, because a lost link-auth or room key
+    stalls the whole call.
+    """
+    priority = pb._json_priority_event_queue
+    limit = _priority_headroom_limit(
+        priority,
+        _JSON_AUDIO_CONTROL_PRIORITY_SHARE if is_control else _JSON_AUDIO_MEDIA_PRIORITY_SHARE,
+    )
+    queued = False
+    if limit is None or priority.qsize() < limit:
+        try:
+            priority.put_nowait(frame)
+            queued = True
+        except queue.Full:
+            queued = False
+    if not queued:
+        if not is_control:
+            _json_audio_stats["rxDropped"] += 1
+            _json_audio_stats["rxMediaShed"] += 1
+            return False
+        try:
+            pb._json_event_queue.put_nowait(frame)
+        except queue.Full:
+            _json_audio_stats["rxDropped"] += 1
+            return False
+    available = getattr(pb, "_json_out_available", None)
+    if available is not None:
+        available.set()
+    return True
+
+
+def _emit_json_audio_chunk(pb, chunk):
+    """``_emit_binary_audio`` replacement: QAUD batch -> group_audio_packet."""
+    try:
+        frames = _audio_chunk_frames(pb, chunk)
+    except Exception:  # noqa: BLE001 - a bad batch must not break the RNS callback
+        _json_audio_stats["rxBadBatch"] += 1
+        return False
+    queued_all = True
+    for link_id, room_id, pph, pch, received_at_wall_ms, raw in frames:
+        raw = bytes(raw)
+        is_control = raw[: len(_GC_LINK_CONTROL_MAGIC)] == _GC_LINK_CONTROL_MAGIC
+        # `type` and `event` first: Kotlin reads the event name off the
+        # frame prefix without parsing (BridgeSocketServer).
+        frame = {
+            "type": "event",
+            "event": _GROUP_AUDIO_PACKET_EVENT,
+            "payload": {
+                "linkId": str(link_id or ""),
+                "roomId": str(room_id or ""),
+                "peerPresenceHash": str(pph or ""),
+                "peerDestinationHash": str(pch or ""),
+                "receivedAtWallMs": int(received_at_wall_ms or 0),
+                "data": base64.b64encode(raw).decode("ascii"),
+            },
+        }
+        if _queue_json_audio_event(pb, frame, is_control):
+            _json_audio_stats["rxFrames"] += 1
+            if is_control:
+                _json_audio_stats["rxControl"] += 1
+        else:
+            queued_all = False
+    return queued_all
+
+
+def _install_json_audio_io(pb):
+    """Route inbound audio-link frames to ``group_audio_packet``. Idempotent."""
+    original = getattr(pb, "_emit_binary_audio", None)
+    if original is not None and getattr(original, _JSON_AUDIO_HOOK_FLAG, False):
+        return
+
+    def _emit_binary_audio(chunk):
+        return _emit_json_audio_chunk(pb, chunk)
+
+    setattr(_emit_binary_audio, _JSON_AUDIO_HOOK_FLAG, True)
+    _emit_binary_audio.__wrapped__ = original
+    pb._emit_binary_audio = _emit_binary_audio
+
+
+def _bounded_text(value, max_bytes, what, lower=False):
+    text = str(value or "").strip()
+    if lower:
+        text = text.lower()
+    if len(text.encode("utf-8")) > int(max_bytes):
+        raise _SendGroupAudioError(f"{what} too long")
+    return text
+
+
+def _send_group_audio_frame(pb, payload):
+    """Validate a send_group_audio payload into one FD3-style audio frame."""
+    if not isinstance(payload, dict):
+        raise _SendGroupAudioError("missing payload")
+    data_b64 = payload.get("data")
+    if not isinstance(data_b64, str) or not data_b64:
+        raise _SendGroupAudioError("missing audio data")
+    try:
+        raw = base64.b64decode(data_b64)
+    except (ValueError, TypeError) as exc:
+        raise _SendGroupAudioError(f"invalid base64 audio: {exc}") from None
+    if not raw or len(raw) > int(pb.AUDIO_MAX_PAYLOAD):
+        raise _SendGroupAudioError("audio payload empty or too large")
+    link_id = _bounded_text(payload.get("linkId"), pb.AUDIO_MAX_LINK_ID_LEN, "linkId")
+    room_id = _bounded_text(payload.get("roomId"), pb.AUDIO_MAX_ROOM_ID_LEN, "roomId")
+    if not room_id:
+        raise _SendGroupAudioError("missing roomId")
+    peer_presence_hash = _bounded_text(
+        payload.get("peerPresenceHash"), pb.AUDIO_MAX_HASH_LEN, "peerPresenceHash", True
+    )
+    peer_destination_hash = _bounded_text(
+        payload.get("peerDestinationHash"),
+        pb.AUDIO_MAX_HASH_LEN,
+        "peerDestinationHash",
+        True,
+    )
+    if not (link_id or peer_presence_hash or peer_destination_hash):
+        raise _SendGroupAudioError("missing linkId or peer hash")
+    received = payload.get("receivedAtWallMs")
+    try:
+        received_at_wall_ms = (
+            0 if received is None or isinstance(received, bool) else int(received)
+        )
+    except (TypeError, ValueError):
+        received_at_wall_ms = 0
+    return (
+        link_id,
+        room_id,
+        peer_presence_hash,
+        peer_destination_hash,
+        max(0, received_at_wall_ms),
+        raw,
+    )
+
+
+def _handle_send_group_audio(pb, message):
+    """Queue one outbound audio-link frame, as an FD3 batch of one would be."""
+    global _json_audio_last_error
+    req_id = str(message.get("id") or "")
+    error = None
+    queued = False
+    try:
+        frame = _send_group_audio_frame(pb, message.get("payload"))
+        is_control = (
+            frame[5][: len(_GC_LINK_CONTROL_MAGIC)] == _GC_LINK_CONTROL_MAGIC
+        )
+        queued = bool(pb._process_audio_input_frames([frame], time.monotonic()))
+        if queued:
+            _json_audio_stats["txFrames"] += 1
+            if is_control:
+                _json_audio_stats["txControl"] += 1
+        else:
+            # Missed the live deadline or the decoded queue was full; the
+            # bridge counts the reason in its own audio diagnostics.
+            _json_audio_stats["txNotQueued"] += 1
+    except _SendGroupAudioError as exc:
+        error = str(exc)
+        _json_audio_stats["txRejected"] += 1
+    except Exception as exc:  # noqa: BLE001 - never take the feed thread down
+        error = f"queue audio failed: {exc}"
+        _json_audio_stats["txRejected"] += 1
+    if error:
+        _json_audio_last_error = error[:160]
+    if req_id.startswith(_CORRELATED_COMMAND_ID_PREFIX):
+        if error:
+            pb.emit_resp(req_id, False, payload={"code": "invalid_audio_frame"}, error=error)
+        else:
+            pb.emit_resp(req_id, True, payload={"queued": queued})
+
+
+def _feed_send_group_audio(line):
+    """Answer a send_group_audio command line; False leaves it to the bridge."""
+    pb = sys.modules.get("presence_bridge")
+    if pb is None:
+        return False
+    try:
+        message = json.loads(line)
+    except ValueError:
+        return False
+    if not isinstance(message, dict) or message.get("action") != _SEND_GROUP_AUDIO_ACTION:
+        return False
+    _handle_send_group_audio(pb, message)
+    return True
+
+
+def _json_audio_io_problems(pb):
+    """What stops call audio I/O from working with this bridge (empty = ok)."""
+    problems = [
+        f"presence_bridge.{name} missing"
+        for name in _JSON_AUDIO_REQUIRED_ATTRS
+        if not hasattr(pb, name)
+    ]
+    emit = getattr(pb, "_emit_binary_audio", None)
+    if emit is None or not getattr(emit, _JSON_AUDIO_HOOK_FLAG, False):
+        problems.append("_emit_binary_audio is not routed to group_audio_packet")
+    if problems:
+        return problems
+    sample = (
+        "selfcheck",
+        "dmv:selfcheck",
+        "a" * 32,
+        "b" * 32,
+        0,
+        _GC_LINK_CONTROL_MAGIC + b'{"t":"GAC"}',
+    )
+    try:
+        chunk = pb._encode_audio_batch_binary([sample])
+        if [tuple(frame) for frame in _audio_chunk_frames(pb, chunk)] != [sample]:
+            problems.append("QAUD batch round trip changed the frame")
+    except Exception as exc:  # noqa: BLE001 - reported, not raised
+        problems.append(f"QAUD batch round trip failed: {exc}")
+    return problems
+
+
+def _run_json_audio_self_check(pb):
+    global _json_audio_self_check
+    problems = _json_audio_io_problems(pb)
+    _json_audio_self_check = {"ok": not problems, "problems": problems[:8]}
+    if problems:
+        _log_host("CALL AUDIO I/O SELF-CHECK FAILED: " + "; ".join(problems))
+    else:
+        _log_host("call audio I/O ready (group_audio_packet / send_group_audio)")
+    return not problems
+
+
+def _install_call_heartbeat_lane(pb):
+    """Answer audio-link heartbeats off the chat lane.
+
+    The bridge runs ``send_group_audio_link_heartbeat`` on ``control-send``,
+    the lane every chat send uses. A Hub PINGs each call link every 5 s and
+    marks it unready after two missed PONGs (group-call.ts:8418-8459), and on
+    a busy phone that lane can be seconds deep. ``audio-control`` (link
+    open/close only) is idle during a call. Idempotent.
+    """
+    original = getattr(pb, "_scheduler_lane_for_command", None)
+    if original is None or getattr(original, "_qortal_call_lanes", False):
+        return
+
+    def _scheduler_lane_for_command(action, message=None):
+        if str(action or "") == "send_group_audio_link_heartbeat":
+            return "audio-control"
+        return original(action, message)
+
+    _scheduler_lane_for_command._qortal_call_lanes = True
+    _scheduler_lane_for_command.__wrapped__ = original
+    pb._scheduler_lane_for_command = _scheduler_lane_for_command
+
+
+# ---------------------------------------------------------------------------
+# WebRTC signalling over a slow mobile uplink (gcall control channel)
+#
+# Every WebRTC signal of a call (capability, offer, answer, candidates, ack,
+# reconnect) and every DM call-control frame leaves as one GO0 + n GO1
+# bundle on the audio link's reliable RNS Channel
+# (presence_bridge._send_group_audio_control_bundle). Measured on the vivo
+# on mobile data (2026-10-19): a link whose handshake rtt was above 1.45 s
+# (RNS Channel.RTT_SLOW) got a window of 1 for its whole life, the bridge
+# waited a fixed 6 s per frame and dropped bundles half-way, and the
+# bundles that did complete left the phone 21-30 s after they were signed.
+# The unmodified Hub drops RTC signals older than 20 s
+# (GCALL_RTC_SIGNAL_TTL_MS, group-call.ts isValidRtcSignalInput) and DM
+# call-control older than 30 s (verifyAndDeliverDmCallLinkControl), so it
+# never got one GO signal and WebRTC never came up.
+#
+# presence_bridge.py is left exactly as the upstream copy, so GO wraps it
+# here. The wire does not change (same GO0/GO1 frames, same signed
+# GC_RTC_SIGNAL):
+#   * window floor: a control channel that RNS built with window_max < 2
+#     gets window = window_min = 2 and window_max = WINDOW_MAX_SLOW. This is
+#     sender side only; the receiving Channel accepts up to WINDOW_MAX ahead.
+#   * one deadline per bundle instead of 6 s per frame, from the signed
+#     timestamp inside the deflated signal JSON: TTL (20 s RTC, 30 s
+#     call-control) minus max(2 s, median audio-link RTT) minus 1 s clock
+#     skew.
+#   * feasibility before the first frame: an RTC bundle that cannot reach
+#     the channel before its deadline (ceil(frames / window) rounds of the
+#     median RTT, frames already in flight included) is not started, so it
+#     never leaves half a bundle in the window. Call-control (hang-ups) is
+#     never skipped and never waits less per frame than the bridge did.
+#   * latest wins for capability/ack/reconnect/offer/answer: a newer signal
+#     for the same link:room:session:type:inner kind:recipient replaces a
+#     queued one in place (the inner kind keeps a DM's voice and
+#     screen-share offers/answers apart; unreadable signals are never
+#     coalesced). The queued task sends the newest payload; a later task
+#     whose payload was already superseded and sent does nothing.
+#   * one ``gcall_control_bundle_result`` event per bundle {signalId,
+#     signalType, roomId, ok, reason, ...}, so the audio surface can
+#     re-offer or re-answer at once (capacitorBridge.ts forwards it as the
+#     window event ``go-gcall-control-bundle-result``).
+# ---------------------------------------------------------------------------
+
+_GCALL_CONTROL_HOOK_FLAG = "_qortal_gcall_control"
+_GCALL_WINDOW_FLOOR_HOOK_FLAG = "_qortal_gcall_window_floor"
+_GCALL_BUNDLE_RESULT_EVENT = "gcall_control_bundle_result"
+_GCALL_RTC_SIGNAL_TYPES = frozenset(
+    ("capability", "offer", "answer", "candidate", "candidates", "ack", "reconnect")
+)
+_GCALL_CALL_CONTROL_TYPE = "call-control"
+_GCALL_LATEST_WINS_TYPES = frozenset(("capability", "ack", "reconnect", "offer", "answer"))
+# group-call.ts GCALL_RTC_SIGNAL_TTL_MS / verifyAndDeliverDmCallLinkControl.
+_GCALL_RTC_SIGNAL_TTL_SECONDS = 20.0
+_GCALL_CALL_CONTROL_TTL_SECONDS = 30.0
+_GCALL_DEADLINE_MIN_RTT_MARGIN_SECONDS = 2.0
+_GCALL_CLOCK_SKEW_SECONDS = 1.0
+# The bridge's own wait per frame; call-control never waits less.
+_GCALL_LEGACY_FRAME_WAIT_SECONDS = 6.0
+# The Hub inflates with maxOutputLength 96 KB (GCALL_RTC_SIGNAL_MAX_PAYLOAD_BYTES).
+_GCALL_SIGNAL_MAX_BYTES = 96 * 1024
+# A timestamp further than this from our clock is not trusted as one.
+_GCALL_SIGNAL_TIMESTAMP_MAX_SKEW_SECONDS = 24 * 3600
+_GCALL_RECORDS_MAX = 256
+_GCALL_RECORD_MAX_AGE_SECONDS = 120.0
+_GCALL_PRUNE_INTERVAL_SECONDS = 10.0
+_GCALL_CHANNEL_WINDOW_FLOOR = 2
+_GCALL_CHANNEL_WINDOW_FLEXIBILITY = 3
+_GCALL_GO0_MAX_PARTS = 1024
+_GCALL_CONTROL_REQUIRED_ATTRS = (
+    "handle_send_group_audio_link_control",
+    "_send_group_audio_control_bundle_task",
+    "_send_group_audio_control_bundle",
+    "_send_group_audio_control_channel_message",
+    "emit_audio_link_closed",
+    "_group_audio_control_pending_dedupe",
+    "_state_lock",
+    "get_audio_link_state",
+    "emit_event",
+    "_decode_group_audio_wire",
+    "_GC_LINK_CONTROL_MAGIC",
+)
+# What the bridge's bundle task may touch: anything more and replacing it
+# would drop behaviour, so the hooks stay off (see _gcall_control_problems).
+_GCALL_TASK_EXPECTED_NAMES = frozenset(
+    (
+        "_group_audio_control_pending_dedupe",
+        "_send_group_audio_control_bundle",
+        "_state_lock",
+        "discard",
+    )
+)
+
+_gcall_lock = threading.Lock()
+_gcall_tls = threading.local()
+_gcall_seq = 0
+_gcall_last_prune_at = 0.0
+# signalId -> record of a send_group_audio_link_control request (see
+# _gcall_register_request). Latest-wins records keep their payload.
+_gcall_records = {}
+# latest-wins key -> newest record for it
+_gcall_latest = {}
+# (task link id, latest-wins key) -> (record seq handed to the channel, at)
+_gcall_attempted = {}
+_gcall_stats = {
+    "bundlesSent": 0,
+    "bundlesFailed": 0,
+    "expired": 0,
+    "infeasible": 0,
+    "linkFailed": 0,
+    "notSent": 0,
+    "superseded": 0,
+    "coalesced": 0,
+    "windowFloorApplied": 0,
+    "resultEventsDropped": 0,
+}
+_gcall_self_check = None  # {"ok": bool, "problems": [...]} after start()
+
+
+class _GcallBundle:
+    """One bundle being handed to the control channel (thread-local)."""
+
+    __slots__ = (
+        "link_id",
+        "room_id",
+        "signal_type",
+        "signal_id",
+        "signed_at",
+        "rtt",
+        "deadline_mono",
+        "never_skip",
+        "total",
+        "attempted",
+        "sent",
+        "reason",
+        "needed",
+        "started_mono",
+    )
+
+    def __init__(self, link_id, room_id, signal_type, signal_id, signed_at, rtt, deadline_mono, never_skip):
+        self.link_id = link_id
+        self.room_id = room_id
+        self.signal_type = signal_type
+        self.signal_id = signal_id
+        self.signed_at = signed_at
+        self.rtt = rtt
+        self.deadline_mono = deadline_mono
+        self.never_skip = never_skip
+        self.total = 0
+        self.attempted = 0
+        self.sent = 0
+        self.reason = ""
+        self.needed = None
+        self.started_mono = time.monotonic()
+
+
+def _gcall_finite_positive(value):
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+        and value > 0
+    )
+
+
+def _gcall_inflate_signal(raw):
+    """The signal JSON object in a raw-deflated bundle payload, else None.
+
+    GroupCallManager sends deflateRawSync(JSON.stringify(signal)) for both
+    GC_RTC_SIGNAL (sendRtcSignal) and DM call-control
+    (sendDmCallLinkControl). Inflation is bounded like the Hub's.
+    """
+    try:
+        inflater = zlib.decompressobj(-zlib.MAX_WBITS)
+        text = inflater.decompress(bytes(raw), _GCALL_SIGNAL_MAX_BYTES)
+        if inflater.unconsumed_tail:
+            return None
+        doc = json.loads(text.decode("utf-8"))
+    except Exception:  # noqa: BLE001 - not a signal we can read
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
+def _gcall_signed_at(raw, now=None, doc=None):
+    """Wall-clock seconds of the signed ``timestamp`` in a deflated signal.
+
+    Both signal kinds carry the signer's Date.now(), which on GO is this
+    device's clock. ``doc`` is the already inflated signal, if there is one.
+    Anything unreadable counts as signed now.
+    """
+    now = time.time() if now is None else float(now)
+    if doc is None:
+        doc = _gcall_inflate_signal(raw)
+    ts = doc.get("timestamp") if isinstance(doc, dict) else None
+    if not _gcall_finite_positive(ts):
+        return now
+    signed_at = float(ts) / 1000.0
+    if abs(now - signed_at) > _GCALL_SIGNAL_TIMESTAMP_MAX_SKEW_SECONDS:
+        return now
+    return min(signed_at, now)
+
+
+def _gcall_signal_variant(doc):
+    """(inner kind, latest-wins variant) of a GC_RTC_SIGNAL; (None, None)
+    when the inner signal cannot be read.
+
+    signalType alone does not say which transport a signal belongs to: in a
+    DM call the voice WebRTC signals ('description', 'ice-refresh-request')
+    and the screen-share signals ('screen-description', 'screen-stop') go
+    out with the same room, session and signalType ('offer'/'answer',
+    'reconnect'). Group calls name it ``type`` instead of ``kind``. The
+    recipient keeps two accounts behind one link apart. A signal whose
+    variant is unknown is not coalesced at all (as upstream).
+    """
+    if not isinstance(doc, dict):
+        return None, None
+    inner = doc.get("payload")
+    if not isinstance(inner, str) or not inner:
+        return None, None
+    try:
+        signal = json.loads(inner)
+    except Exception:  # noqa: BLE001 - opaque payload: no variant
+        return None, None
+    if not isinstance(signal, dict):
+        return None, None
+    kind = signal.get("kind")
+    if not isinstance(kind, str) or not kind:
+        kind = signal.get("type")
+    if not isinstance(kind, str) or not kind or len(kind) > 64:
+        return None, None
+    to_address = doc.get("toAddress")
+    to_address = to_address.strip() if isinstance(to_address, str) else ""
+    if len(to_address) > 128:
+        return kind, None
+    return kind, f"{kind}:{to_address}"
+
+
+def _gcall_link_rtt_seconds(state):
+    """Median audio-link RTT (the bridge's probes), else the handshake RTT."""
+    if not isinstance(state, dict):
+        return None
+    for key in ("rtt_median_ms", "rtt_handshake_ms"):
+        value = state.get(key)
+        if _gcall_finite_positive(value):
+            return float(value) / 1000.0
+    rtt = getattr(state.get("link"), "rtt", None)
+    if _gcall_finite_positive(rtt):
+        return float(rtt)
+    return None
+
+
+def _gcall_bundle_deadline(signal_type, signed_at, rtt):
+    """Wall-clock time by which the last frame must reach the channel."""
+    ttl = (
+        _GCALL_RTC_SIGNAL_TTL_SECONDS
+        if signal_type in _GCALL_RTC_SIGNAL_TYPES
+        else _GCALL_CALL_CONTROL_TTL_SECONDS
+    )
+    margin = max(_GCALL_DEADLINE_MIN_RTT_MARGIN_SECONDS, rtt or 0.0) + _GCALL_CLOCK_SKEW_SECONDS
+    return signed_at + ttl - margin
+
+
+def _gcall_prune_locked(now_mono, force=False):
+    global _gcall_last_prune_at
+    if (
+        not force
+        and len(_gcall_records) <= _GCALL_RECORDS_MAX
+        and now_mono - _gcall_last_prune_at < _GCALL_PRUNE_INTERVAL_SECONDS
+    ):
+        return
+    _gcall_last_prune_at = now_mono
+    cutoff = now_mono - _GCALL_RECORD_MAX_AGE_SECONDS
+    for signal_id, record in list(_gcall_records.items()):
+        if record["registeredAt"] < cutoff:
+            del _gcall_records[signal_id]
+    for key, record in list(_gcall_latest.items()):
+        if record["registeredAt"] < cutoff:
+            del _gcall_latest[key]
+    for key, (_seq, at) in list(_gcall_attempted.items()):
+        if at < cutoff:
+            del _gcall_attempted[key]
+    while len(_gcall_records) > _GCALL_RECORDS_MAX:
+        del _gcall_records[next(iter(_gcall_records))]
+    while len(_gcall_attempted) > _GCALL_RECORDS_MAX:
+        del _gcall_attempted[next(iter(_gcall_attempted))]
+
+
+def _gcall_register_request(payload, max_room_bytes=255):
+    """Remember one send_group_audio_link_control request before the bridge
+    queues it: its signed time and, for latest-wins types, its payload.
+
+    Runs on the command lane ahead of the bridge's handler, so the record
+    exists before the bundle task can. A request the bridge then refuses
+    (link not ready) stays a valid newer signal for a queued task of the
+    same key; anything malformed is not recorded.
+    """
+    global _gcall_seq
+    if not isinstance(payload, dict):
+        return None
+    signal_type = str(payload.get("signalType") or "")
+    if signal_type not in _GCALL_RTC_SIGNAL_TYPES and signal_type != _GCALL_CALL_CONTROL_TYPE:
+        return None
+    signal_id = str(payload.get("signalId") or "")
+    room_id = str(payload.get("roomId") or "")
+    session_id = str(payload.get("callSessionId") or "")
+    encoded = payload.get("payload")
+    if (
+        not signal_id
+        or len(signal_id) > 128
+        or not room_id
+        or len(room_id.encode("utf-8")) > int(max_room_bytes)
+        or not session_id
+        or len(session_id) > 128
+        or not isinstance(encoded, str)
+        or not encoded
+        or len(encoded) > (_GCALL_SIGNAL_MAX_BYTES * 4) // 3 + 4
+    ):
+        return None
+    try:
+        raw = base64.b64decode(encoded, validate=True)
+    except (ValueError, TypeError):
+        return None
+    if not raw or len(raw) > _GCALL_SIGNAL_MAX_BYTES:
+        return None
+    doc = _gcall_inflate_signal(raw)
+    signed_at = _gcall_signed_at(raw, doc=doc)
+    signal_kind, variant = _gcall_signal_variant(doc)
+    route = str(payload.get("linkId") or "").strip()
+    if not route:
+        route = "peer:" + str(payload.get("peerPresenceHash") or "").strip().lower()
+    key = (
+        f"{route}:{room_id}:{session_id}:{signal_type}:{variant}"
+        if signal_type in _GCALL_LATEST_WINS_TYPES and variant
+        else ""
+    )
+    now_mono = time.monotonic()
+    with _gcall_lock:
+        _gcall_seq += 1
+        record = {
+            "seq": _gcall_seq,
+            "key": key,
+            "route": route,
+            "signalId": signal_id,
+            "signalType": signal_type,
+            "signalKind": signal_kind or "",
+            "roomId": room_id,
+            "signedAt": signed_at,
+            "payload": raw if key else None,
+            "registeredAt": now_mono,
+        }
+        _gcall_records.pop(signal_id, None)
+        _gcall_records[signal_id] = record
+        if key:
+            _gcall_latest[key] = record
+        _gcall_prune_locked(now_mono)
+    return record
+
+
+def _gcall_take_latest(link_id, room_id, payload, signal_type, signal_id):
+    """(payload, signalId) a bundle task should send, None if superseded."""
+    with _gcall_lock:
+        own = _gcall_records.get(signal_id)
+        if (
+            own is None
+            or not own["key"]
+            or own["signalType"] != signal_type
+            or own["roomId"] != room_id
+        ):
+            return payload, signal_id
+        latest = _gcall_latest.get(own["key"])
+        chosen = latest if latest is not None and latest["seq"] > own["seq"] else own
+        attempted_key = (str(link_id or ""), own["key"])
+        attempted = _gcall_attempted.get(attempted_key)
+        if attempted is not None and attempted[0] >= chosen["seq"]:
+            return None
+        _gcall_attempted[attempted_key] = (chosen["seq"], time.monotonic())
+        if chosen is own:
+            return payload, signal_id
+        _gcall_stats["coalesced"] += 1
+        return chosen["payload"], chosen["signalId"]
+
+
+def _gcall_signed_at_for(signal_id, payload):
+    with _gcall_lock:
+        record = _gcall_records.get(signal_id)
+        signed_at = record["signedAt"] if record is not None else None
+    return signed_at if signed_at is not None else _gcall_signed_at(payload)
+
+
+def _gcall_signal_kind_for(signal_id):
+    """Inner signal kind of a registered request ('' when unknown)."""
+    with _gcall_lock:
+        record = _gcall_records.get(signal_id)
+        return str(record.get("signalKind") or "") if record is not None else ""
+
+
+def _gcall_forget_link(link_id):
+    """Drop latest-wins state for a closed audio link."""
+    link = str(link_id or "")
+    if not link:
+        return
+    with _gcall_lock:
+        for key in [key for key in _gcall_attempted if key[0] == link]:
+            del _gcall_attempted[key]
+        for key, record in list(_gcall_latest.items()):
+            if record["route"] == link:
+                del _gcall_latest[key]
+        for signal_id, record in list(_gcall_records.items()):
+            if record["route"] == link:
+                del _gcall_records[signal_id]
+
+
+def _gcall_bundle_frame_total(pb, wire):
+    """Frames in a bundle (GO0 + parts) read off its first frame, 0 if unknown."""
+    try:
+        decoded = pb._decode_group_audio_wire(wire)
+        if not decoded:
+            return 0
+        raw = bytes(decoded[2])
+        magic = bytes(pb._GC_LINK_CONTROL_MAGIC)
+        if raw[: len(magic)] != magic:
+            return 0
+        frame = json.loads(raw[len(magic):].decode("utf-8"))
+    except Exception:  # noqa: BLE001 - unknown: send without the check
+        return 0
+    if not isinstance(frame, dict) or frame.get("t") != "GO0":
+        return 0
+    parts = frame.get("n")
+    if isinstance(parts, bool) or not isinstance(parts, int):
+        return 0
+    if parts < 1 or parts > _GCALL_GO0_MAX_PARTS:
+        return 0
+    return parts + 1
+
+
+def _gcall_bundle_feasible(pb, bundle):
+    """Can every frame reach the channel before the bundle's deadline?"""
+    if bundle.total <= 0 or not bundle.rtt:
+        return True
+    state = pb.get_audio_link_state(bundle.link_id)
+    channel = (state or {}).get("control_channel")
+    try:
+        window = max(1, int(getattr(channel, "window", 1) or 1))
+    except (TypeError, ValueError):
+        window = 1
+    try:
+        in_flight = len(getattr(channel, "_tx_ring", None) or ())
+    except TypeError:
+        in_flight = 0
+    rounds = math.ceil((bundle.total + in_flight) / window)
+    bundle.needed = rounds * bundle.rtt
+    return bundle.needed <= bundle.deadline_mono - time.monotonic()
+
+
+def _gcall_send_channel_message(pb, original, link_id, kind, data, wait_seconds, *args, **kwargs):
+    """Per-frame send inside a bundle: the bundle's deadline, not 6 s."""
+    bundle = getattr(_gcall_tls, "bundle", None)
+    if bundle is None or bundle.link_id != link_id:
+        return original(link_id, kind, data, wait_seconds, *args, **kwargs)
+    if bundle.reason:
+        return False
+    if bundle.attempted == 0:
+        bundle.total = _gcall_bundle_frame_total(pb, data)
+        if not bundle.never_skip and not _gcall_bundle_feasible(pb, bundle):
+            bundle.reason = "infeasible"
+            return False
+    bundle.attempted += 1
+    remaining = bundle.deadline_mono - time.monotonic()
+    if bundle.never_skip:
+        remaining = max(remaining, _GCALL_LEGACY_FRAME_WAIT_SECONDS)
+    elif remaining <= 0:
+        bundle.reason = "expired"
+        return False
+    ok = original(link_id, kind, data, remaining, *args, **kwargs)
+    if ok:
+        bundle.sent += 1
+        return ok
+    if bundle.never_skip:
+        bundle.reason = "link"
+    else:
+        bundle.reason = "expired" if time.monotonic() >= bundle.deadline_mono else "link"
+    return ok
+
+
+def _gcall_queue_result_event(pb, frame):
+    """Queue a bundle result ahead of chat events (link-lifecycle share)."""
+    priority = getattr(pb, "_json_priority_event_queue", None)
+    if priority is not None:
+        limit = _priority_headroom_limit(priority, _JSON_AUDIO_CONTROL_PRIORITY_SHARE)
+        if limit is None or priority.qsize() < limit:
+            try:
+                priority.put_nowait(frame)
+                available = getattr(pb, "_json_out_available", None)
+                if available is not None:
+                    available.set()
+                return True
+            except queue.Full:
+                pass
+    try:
+        pb.emit_event(frame["event"], frame["payload"])
+        return True
+    except Exception:  # noqa: BLE001 - diagnostics must not break the lane
+        return False
+
+
+def _gcall_report_bundle(pb, bundle):
+    if bundle.reason:
+        ok, reason = False, bundle.reason
+    elif bundle.attempted == 0:
+        state = pb.get_audio_link_state(bundle.link_id)
+        gone = (
+            state is None
+            or state.get("closing") is True
+            or state.get("control_channel") is None
+        )
+        ok, reason = False, ("link" if gone else "not-sent")
+    elif bundle.total and bundle.sent < bundle.total:
+        ok, reason = False, "not-sent"
+    else:
+        ok, reason = True, "sent"
+    if ok:
+        _gcall_stats["bundlesSent"] += 1
+    else:
+        _gcall_stats["bundlesFailed"] += 1
+        counter = {
+            "expired": "expired",
+            "infeasible": "infeasible",
+            "link": "linkFailed",
+        }.get(reason, "notSent")
+        _gcall_stats[counter] += 1
+    now_wall = time.time()
+    age_ms = max(0, int((now_wall - bundle.signed_at) * 1000))
+    elapsed_ms = max(0, int((time.monotonic() - bundle.started_mono) * 1000))
+    if not ok or elapsed_ms >= 1000:
+        needed = (
+            f" needed_ms={int(bundle.needed * 1000)}" if bundle.needed is not None else ""
+        )
+        rtt = f"{int(bundle.rtt * 1000)}" if bundle.rtt else "na"
+        _log_host(
+            f"gcall-control bundle_{'sent' if ok else 'failed'} reason={reason} "
+            f"link={str(bundle.link_id)[:16]} signal={bundle.signal_type} "
+            f"id={str(bundle.signal_id)[:12]} sent={bundle.sent} total={bundle.total} "
+            f"age_ms={age_ms} elapsed_ms={elapsed_ms} rtt_ms={rtt}{needed}"
+        )
+    frame = {
+        "type": "event",
+        "event": _GCALL_BUNDLE_RESULT_EVENT,
+        "payload": {
+            "signalId": str(bundle.signal_id),
+            "signalType": str(bundle.signal_type),
+            # 'description' (voice) vs 'screen-description' (screen share)
+            # share signalType 'offer'/'answer'; '' when unknown.
+            "signalKind": _gcall_signal_kind_for(bundle.signal_id),
+            "roomId": str(bundle.room_id),
+            "linkId": str(bundle.link_id),
+            "ok": ok,
+            "reason": reason,
+            "sent": int(bundle.sent),
+            "total": int(bundle.total),
+            "ageMs": age_ms,
+        },
+    }
+    if not _gcall_queue_result_event(pb, frame):
+        _gcall_stats["resultEventsDropped"] += 1
+    return ok
+
+
+def _gcall_send_bundle(pb, original, link_id, room_id, payload, signal_type, signal_id, *args, **kwargs):
+    """The bridge's bundle send under one deadline, with a result event."""
+    signed_at = _gcall_signed_at_for(signal_id, payload)
+    rtt = _gcall_link_rtt_seconds(pb.get_audio_link_state(link_id))
+    deadline_wall = _gcall_bundle_deadline(signal_type, signed_at, rtt)
+    now_wall = time.time()
+    bundle = _GcallBundle(
+        link_id,
+        room_id,
+        signal_type,
+        signal_id,
+        signed_at,
+        rtt,
+        time.monotonic() + (deadline_wall - now_wall),
+        signal_type not in _GCALL_RTC_SIGNAL_TYPES,
+    )
+    if not bundle.never_skip and deadline_wall <= now_wall:
+        bundle.reason = "expired"
+    else:
+        previous = getattr(_gcall_tls, "bundle", None)
+        _gcall_tls.bundle = bundle
+        try:
+            original(link_id, room_id, payload, signal_type, signal_id, *args, **kwargs)
+        finally:
+            _gcall_tls.bundle = previous
+    _gcall_report_bundle(pb, bundle)
+    return None
+
+
+def _gcall_run_bundle_task(pb, link_id, room_id, payload, signal_type, signal_id, dedupe_key):
+    """The bridge's bundle task, latest wins.
+
+    The bridge frees its capability/reconnect dedupe slot only after the
+    send, so a newer request arriving during a slow send was coalesced into
+    a slot nobody read any more. It is freed first here: a request during
+    the send queues its own task, which sends the newer payload.
+    """
+    if dedupe_key:
+        with pb._state_lock:
+            pb._group_audio_control_pending_dedupe.discard(dedupe_key)
+    choice = _gcall_take_latest(link_id, room_id, payload, signal_type, signal_id)
+    if choice is None:
+        _gcall_stats["superseded"] += 1
+        _log_host(
+            f"gcall-control bundle_superseded link={str(link_id)[:16]} "
+            f"signal={signal_type} id={str(signal_id)[:12]}"
+        )
+        return None
+    payload, signal_id = choice
+    return pb._send_group_audio_control_bundle(link_id, room_id, payload, signal_type, signal_id)
+
+
+def _gcall_original(pb, name, flag=_GCALL_CONTROL_HOOK_FLAG):
+    fn = getattr(pb, name, None)
+    while fn is not None and getattr(fn, flag, False):
+        fn = getattr(fn, "__wrapped__", None)
+    return fn
+
+
+def _gcall_param_names(fn):
+    try:
+        return [
+            p.name
+            for p in inspect.signature(fn).parameters.values()
+            if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+        ]
+    except (TypeError, ValueError):
+        return None
+
+
+def _gcall_global_names(fn):
+    code = getattr(fn, "__code__", None)
+    return set(code.co_names) if code is not None else set()
+
+
+def _gcall_control_problems(pb):
+    """Why the bundle hooks cannot wrap this bridge safely (empty = ok)."""
+    problems = [
+        f"presence_bridge.{name} missing"
+        for name in _GCALL_CONTROL_REQUIRED_ATTRS
+        if not hasattr(pb, name)
+    ]
+    if problems:
+        return problems
+    handler = _gcall_original(pb, "handle_send_group_audio_link_control")
+    task = _gcall_original(pb, "_send_group_audio_control_bundle_task")
+    bundle = _gcall_original(pb, "_send_group_audio_control_bundle")
+    message = _gcall_original(pb, "_send_group_audio_control_channel_message")
+    closed = _gcall_original(pb, "emit_audio_link_closed")
+    if _gcall_param_names(handler) != ["req_id", "payload"]:
+        problems.append("handle_send_group_audio_link_control signature changed")
+    if "_send_group_audio_control_bundle_task" not in _gcall_global_names(handler):
+        problems.append("handle_send_group_audio_link_control no longer queues the bundle task")
+    if _gcall_param_names(task) != [
+        "link_id",
+        "room_id",
+        "payload",
+        "signal_type",
+        "signal_id",
+        "dedupe_key",
+    ]:
+        problems.append("_send_group_audio_control_bundle_task signature changed")
+    task_names = _gcall_global_names(task)
+    if "_send_group_audio_control_bundle" not in task_names or not task_names <= _GCALL_TASK_EXPECTED_NAMES:
+        problems.append("_send_group_audio_control_bundle_task does more than send the bundle")
+    if _gcall_param_names(bundle) != ["link_id", "room_id", "payload", "signal_type", "signal_id"]:
+        problems.append("_send_group_audio_control_bundle signature changed")
+    if "_send_group_audio_control_channel_message" not in _gcall_global_names(bundle):
+        problems.append("_send_group_audio_control_bundle no longer sends per channel message")
+    if (_gcall_param_names(message) or [])[:4] != ["link_id", "kind", "data", "wait_seconds"]:
+        problems.append("_send_group_audio_control_channel_message signature changed")
+    if (_gcall_param_names(closed) or [])[:1] != ["link_id"]:
+        problems.append("emit_audio_link_closed signature changed")
+    if not isinstance(getattr(pb, "_group_audio_control_pending_dedupe", None), set):
+        problems.append("_group_audio_control_pending_dedupe is not a set")
+    return problems
+
+
+def _install_gcall_control_bundles(pb):
+    """Deadline, feasibility, latest wins and result events for the bridge's
+    gcall control bundles. Idempotent; leaves the bridge as it is (and says
+    so in logcat and Copy diagnostics) when its names or shapes changed.
+    """
+    if getattr(getattr(pb, "_send_group_audio_control_bundle", None), _GCALL_CONTROL_HOOK_FLAG, False):
+        return True
+    problems = _gcall_control_problems(pb)
+    if problems:
+        _log_host("gcall control slow-link hooks skipped: " + "; ".join(problems[:6]))
+        return False
+    orig_handler = pb.handle_send_group_audio_link_control
+    orig_task = pb._send_group_audio_control_bundle_task
+    orig_bundle = pb._send_group_audio_control_bundle
+    orig_message = pb._send_group_audio_control_channel_message
+    orig_closed = pb.emit_audio_link_closed
+    max_room_bytes = int(getattr(pb, "AUDIO_MAX_ROOM_ID_LEN", 255) or 255)
+
+    def handle_send_group_audio_link_control(req_id, payload, *args, **kwargs):
+        try:
+            _gcall_register_request(payload, max_room_bytes)
+        except Exception as exc:  # noqa: BLE001 - the bridge still sends it
+            _log_host(f"gcall-control register failed: {str(exc)[:120]}")
+        return orig_handler(req_id, payload, *args, **kwargs)
+
+    def _send_group_audio_control_bundle_task(
+        link_id, room_id, payload, signal_type, signal_id, dedupe_key="", *args, **kwargs
+    ):
+        return _gcall_run_bundle_task(
+            pb, link_id, room_id, payload, signal_type, signal_id, dedupe_key
+        )
+
+    def _send_group_audio_control_bundle(link_id, room_id, payload, signal_type, signal_id, *args, **kwargs):
+        return _gcall_send_bundle(
+            pb, orig_bundle, link_id, room_id, payload, signal_type, signal_id, *args, **kwargs
+        )
+
+    def _send_group_audio_control_channel_message(link_id, kind, data=b"", wait_seconds=2.0, *args, **kwargs):
+        return _gcall_send_channel_message(
+            pb, orig_message, link_id, kind, data, wait_seconds, *args, **kwargs
+        )
+
+    def emit_audio_link_closed(link_id, *args, **kwargs):
+        try:
+            return orig_closed(link_id, *args, **kwargs)
+        finally:
+            _gcall_forget_link(link_id)
+
+    for name, wrapper, original in (
+        ("handle_send_group_audio_link_control", handle_send_group_audio_link_control, orig_handler),
+        ("_send_group_audio_control_bundle_task", _send_group_audio_control_bundle_task, orig_task),
+        ("_send_group_audio_control_channel_message", _send_group_audio_control_channel_message, orig_message),
+        ("emit_audio_link_closed", emit_audio_link_closed, orig_closed),
+        # Last: it is the "already installed" marker above.
+        ("_send_group_audio_control_bundle", _send_group_audio_control_bundle, orig_bundle),
+    ):
+        setattr(wrapper, _GCALL_CONTROL_HOOK_FLAG, True)
+        wrapper.__wrapped__ = original
+        setattr(pb, name, wrapper)
+    return True
+
+
+def _apply_gcall_channel_window_floor(pb, link_id):
+    """Raise a window-1 control channel to the RNS slow-link window.
+
+    RNS gives a Channel window 1 (window_max 1) for the link's whole life
+    when the handshake rtt is above Channel.RTT_SLOW, so every frame waits
+    for the proof of the one before it. The floor is sender side only: the
+    receiving Channel accepts up to WINDOW_MAX sequence numbers ahead.
+    Returns True when it raised the window, None when there is no channel.
+    """
+    state = pb.get_audio_link_state(link_id)
+    channel = (state or {}).get("control_channel")
+    lock = getattr(channel, "_lock", None)
+    if channel is None or lock is None:
+        return None
+    if not all(
+        hasattr(channel, name)
+        for name in ("window", "window_max", "window_min", "window_flexibility")
+    ):
+        return None
+    slow_max = getattr(type(channel), "WINDOW_MAX_SLOW", 5)
+    if not isinstance(slow_max, int) or slow_max < _GCALL_CHANNEL_WINDOW_FLOOR:
+        slow_max = 5
+    with lock:
+        raised = int(channel.window_max) < _GCALL_CHANNEL_WINDOW_FLOOR
+        if raised:
+            channel.window = _GCALL_CHANNEL_WINDOW_FLOOR
+            channel.window_min = _GCALL_CHANNEL_WINDOW_FLOOR
+            channel.window_max = slow_max
+            channel.window_flexibility = _GCALL_CHANNEL_WINDOW_FLEXIBILITY
+        window, window_max = channel.window, channel.window_max
+    rtt = _gcall_link_rtt_seconds(state)
+    _log_host(
+        f"gcall-control channel link={str(link_id)[:16]} "
+        f"rtt_ms={int(rtt * 1000) if rtt else 'na'} window={window} "
+        f"window_max={window_max} floor={'raised' if raised else 'no'}"
+    )
+    if raised:
+        _gcall_stats["windowFloorApplied"] += 1
+    return raised
+
+
+def _install_gcall_control_window_floor(pb):
+    """Apply the window floor whenever the bridge sets up a control channel."""
+    original = getattr(pb, "_configure_group_audio_control_channel", None)
+    if original is None or getattr(original, _GCALL_WINDOW_FLOOR_HOOK_FLAG, False):
+        return original is not None
+    if _gcall_param_names(original) != ["link", "link_id"] or not hasattr(pb, "get_audio_link_state"):
+        _log_host("gcall control window floor skipped: bridge names changed")
+        return False
+
+    def _configure_group_audio_control_channel(link, link_id, *args, **kwargs):
+        result = original(link, link_id, *args, **kwargs)
+        try:
+            _apply_gcall_channel_window_floor(pb, link_id)
+        except Exception as exc:  # noqa: BLE001 - keep RNS's own window
+            _log_host(f"gcall-control window floor failed: {str(exc)[:120]}")
+        return result
+
+    setattr(_configure_group_audio_control_channel, _GCALL_WINDOW_FLOOR_HOOK_FLAG, True)
+    _configure_group_audio_control_channel.__wrapped__ = original
+    pb._configure_group_audio_control_channel = _configure_group_audio_control_channel
+    return True
+
+
+def _gcall_control_hook_problems(pb):
+    """Which slow-link hooks are not in place (empty = all of them)."""
+    problems = []
+    for name in (
+        "handle_send_group_audio_link_control",
+        "_send_group_audio_control_bundle_task",
+        "_send_group_audio_control_bundle",
+        "_send_group_audio_control_channel_message",
+        "emit_audio_link_closed",
+    ):
+        if not getattr(getattr(pb, name, None), _GCALL_CONTROL_HOOK_FLAG, False):
+            problems.append(f"{name} not hooked")
+    configure = getattr(pb, "_configure_group_audio_control_channel", None)
+    if not getattr(configure, _GCALL_WINDOW_FLOOR_HOOK_FLAG, False):
+        problems.append("_configure_group_audio_control_channel not hooked")
+    sample = {
+        "timestamp": 1_700_000_000_000,
+        "signalType": "offer",
+        "toAddress": "Qpeer",
+        "payload": json.dumps({"kind": "screen-description", "generation": "g"}),
+    }
+    deflater = zlib.compressobj(wbits=-zlib.MAX_WBITS)
+    raw = deflater.compress(json.dumps(sample).encode("utf-8")) + deflater.flush()
+    if _gcall_signed_at(raw, now=1_700_000_005.0) != 1_700_000_000.0:
+        problems.append("signed timestamp round trip failed")
+    if _gcall_signal_variant(_gcall_inflate_signal(raw)) != (
+        "screen-description",
+        "screen-description:Qpeer",
+    ):
+        problems.append("signal variant round trip failed")
+    return problems
+
+
+def _run_gcall_control_self_check(pb):
+    global _gcall_self_check
+    problems = _gcall_control_hook_problems(pb)
+    if not problems:
+        problems = _gcall_control_problems(pb)
+    _gcall_self_check = {"ok": not problems, "problems": problems[:8]}
+    if problems:
+        _log_host("GCALL CONTROL SLOW-LINK SELF-CHECK FAILED: " + "; ".join(problems[:6]))
+    else:
+        _log_host("gcall control slow-link hooks ready (deadline, window floor, latest wins)")
+    return not problems
+
+
+def _gcall_control_detail():
+    out = dict(_gcall_stats)
+    if _gcall_self_check is not None:
+        out["selfCheckOk"] = bool(_gcall_self_check.get("ok"))
+        if _gcall_self_check.get("problems"):
+            out["selfCheckProblems"] = list(_gcall_self_check["problems"])
+    return out
+
+
+def _json_audio_detail():
+    out = dict(_json_audio_stats)
+    if _json_audio_self_check is not None:
+        out["selfCheckOk"] = bool(_json_audio_self_check.get("ok"))
+        if _json_audio_self_check.get("problems"):
+            out["selfCheckProblems"] = list(_json_audio_self_check["problems"])
+    if _json_audio_last_error:
+        out["lastError"] = _json_audio_last_error
+    return out
+
+
 def start(config_dir):
     """Initialise stdio shims + RNS config and launch the bridge main loop."""
     global _started, _stdin_shim, _main_thread
@@ -663,10 +2082,17 @@ def start(config_dir):
 
         _disable_audio_fd_threads(pb)
         # Route call audio over base64 JSON events/commands instead of FD3/FD4.
-        pb._MOBILE_JSON_AUDIO = True
+        _install_json_audio_io(pb)
+        _install_call_heartbeat_lane(pb)
+        _run_json_audio_self_check(pb)
+        # WebRTC signalling that survives a slow mobile uplink.
+        _install_gcall_control_window_floor(pb)
+        _install_gcall_control_bundles(pb)
+        _run_gcall_control_self_check(pb)
         _apply_mobile_overlay_limits(pb)
         _install_overlay_profile_command(pb)
         _install_network_pause_gates(pb)
+        _install_community_stun_query_throttle(pb)
 
         def _run():
             try:
@@ -689,9 +2115,16 @@ def start(config_dir):
 
 
 def feed(line):
-    """Submit one command frame (JSON string) to the bridge's stdin."""
-    if _stdin_shim is not None:
-        _stdin_shim.feed(line)
+    """Submit one command frame (JSON string) to the bridge's stdin.
+
+    ``send_group_audio`` (call audio and link control, up to 50 frames a
+    second each way) is queued for the RNS executor right here instead.
+    """
+    if _stdin_shim is None:
+        return
+    if _SEND_GROUP_AUDIO_MARKER in line and _feed_send_group_audio(line):
+        return
+    _stdin_shim.feed(line)
 
 
 def poll(timeout_ms=250):
@@ -851,6 +2284,9 @@ def _bridge_detail():
         if task and started > 0:
             lane["currentTask"] = _task_label(task)
             lane["runningMs"] = max(0, int((now - started) * 1000))
+        busy_task = str(stats.get("busyMaxTask") or "")
+        if busy_task:
+            lane["busyMaxTask"] = _task_label(busy_task)
         lanes.append(lane)
     out["lanes"] = lanes
     for attr, key in (
@@ -877,7 +2313,137 @@ def _bridge_detail():
             str(k): int(v or 0) for k, v in dict(refused).items()
         }
     out["jsonOutDrops"] = int(getattr(pb, "_audio_drops_json_out", 0) or 0)
+    out["callAudioIo"] = _json_audio_detail()
+    out["gcallControl"] = _gcall_control_detail()
+    _bridge_detail_process(out, pb, rns)
     return out
+
+
+def _bridge_detail_process(out, pb, rns):
+    """Thread, link, queue, fd and CPU counters for Copy diagnostics.
+
+    Each read is lock-free and on its own: a failure costs its key only. The
+    /proc reads happen here, so only when diagnostics are copied.
+    """
+    try:
+        out["threadCount"] = threading.active_count()
+    except Exception:
+        pass
+    try:
+        out["outQueue"] = _out_queue.qsize()
+        out["outQueueHighWater"] = int(_out_queue_high_water)
+        out["outQueueDrops"] = int(_out_queue_drops)
+    except Exception:
+        pass
+    try:
+        out["openFds"] = len(os.listdir("/proc/self/fd"))
+    except Exception:
+        pass
+    try:
+        cpu = _process_cpu_detail()
+        if cpu:
+            out.update(cpu)
+    except Exception:
+        pass
+    try:
+        links = _bridge_link_counts(pb, rns)
+        if links:
+            out["links"] = links
+    except Exception:
+        pass
+    try:
+        out["rejectedResourceWatchdogs"] = _rejected_resource_watchdogs(rns)
+    except Exception:
+        pass
+    try:
+        refused = getattr(pb, "_provider_refused_by_busy_kind", None)
+        if isinstance(refused, dict):
+            out["providerRefusedByBusyKind"] = {
+                str(k)[:48]: int(v or 0) for k, v in list(refused.items())[:32]
+            }
+    except Exception:
+        pass
+
+
+def _process_cpu_detail():
+    """Process CPU ticks (utime+stime) in total and since the last read."""
+    global _process_cpu_prev
+    with open("/proc/self/stat", "rb") as fh:
+        raw = fh.read().decode("ascii", "replace")
+    # comm may contain spaces; the fields after the closing paren are stable.
+    rest = raw[raw.rfind(")") + 2 :].split()
+    ticks = int(rest[11]) + int(rest[12])
+    try:
+        hz = int(os.sysconf("SC_CLK_TCK")) or 100
+    except (ValueError, OSError, AttributeError):
+        hz = 100
+    now = time.monotonic()
+    result = {"processCpuMs": int(ticks * 1000 / hz)}
+    prev = _process_cpu_prev
+    _process_cpu_prev = (ticks, now)
+    if prev is not None and now > prev[1]:
+        result["processCpuDeltaMs"] = int(max(0, ticks - prev[0]) * 1000 / hz)
+        result["processCpuWindowMs"] = int((now - prev[1]) * 1000)
+    return result
+
+
+def _bridge_link_counts(pb, rns):
+    """Open links by kind; resource sessions by direction and lane."""
+    links = {}
+    for attr, key in (
+        ("_overlay_links_by_id", "overlay"),
+        ("_audio_links_by_id", "audio"),
+        ("_pending_inbound_classify_link_ids", "inboundHandshakes"),
+    ):
+        value = getattr(pb, attr, None)
+        if value is not None:
+            links[key] = len(value)
+    files = getattr(pb, "_qchat_file_links_by_id", None)
+    if files is not None:
+        sessions = {}
+        other = 0
+        # list() copies the values in one step under the GIL; no lock.
+        for state in list(files.values()):
+            if not isinstance(state, dict):
+                continue
+            if state.get("manager_kind") != "resource_session":
+                other += 1
+                continue
+            direction = "in" if state.get("incoming") is True else "out"
+            lane = str(state.get("sessionLane") or "none").strip().lower()[:16]
+            if not lane.replace("_", "").replace("-", "").isalnum():
+                lane = "other"
+            key = f"{direction}:{lane}"
+            sessions[key] = sessions.get(key, 0) + 1
+        links["resourceSessions"] = sessions
+        links["fileLinks"] = other
+    transport = getattr(rns, "Transport", None) if rns else None
+    if transport is not None:
+        for attr, key in (("active_links", "rnsActive"), ("pending_links", "rnsPending")):
+            value = getattr(transport, attr, None)
+            if value is not None:
+                links[key] = len(value)
+    return links
+
+
+def _rejected_resource_watchdogs(rns):
+    """Threads still running the watchdog of a Resource that was rejected.
+
+    Before REJECTED had its own value (see _patch_rns_resource_rejected) a
+    rejected resource's watchdog spun forever; this counts any left.
+    """
+    resource_cls = getattr(rns, "Resource", None) if rns else None
+    if not isinstance(resource_cls, type):
+        return 0
+    rejected = getattr(resource_cls, "REJECTED", None)
+    if rejected is None:
+        return 0
+    count = 0
+    for thread in threading.enumerate():
+        owner = getattr(getattr(thread, "_target", None), "__self__", None)
+        if isinstance(owner, resource_cls) and getattr(owner, "status", None) == rejected:
+            count += 1
+    return count
 
 
 def _log_host(message):

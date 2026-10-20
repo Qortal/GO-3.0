@@ -78,13 +78,65 @@ async function sha256HexUtf8(s: string): Promise<string> {
     .join('');
 }
 
+/** Compact 16-byte destination, used only when a GJ would exceed the MDU. */
+function compactRnsDestinationHashForWire(destinationHash: string): string {
+  const hex = destinationHash.trim().toLowerCase();
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < bytes.length; i++) {
+    bytes[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  }
+  return uint8ToBase64(bytes)
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/u, '');
+}
+
+/**
+ * A GJ/GI `d`: 32 hex, or the 22-char base64url form Hub 3.0.3 uses when the
+ * hex GJ would not fit (electron/src/group-call-wire-reticulum.ts). Returns
+ * lowercase hex or null.
+ */
+export function rnsDestinationHashFromWire(value: unknown): string | null {
+  if (isRnsDestinationHashHex(value)) return value.trim().toLowerCase();
+  if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{22}$/.test(value)) {
+    return null;
+  }
+  try {
+    const bytes = base64ToUint8(value);
+    if (bytes.length !== 16) return null;
+    return Array.from(bytes)
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+  } catch {
+    return null;
+  }
+}
+
+/** Same set as Hub 3.0.3 (electron/src/group-call-wire-reticulum.ts). */
 export const GROUP_CALL_RETICULUM_WIRE_TYPES = new Set<string>([
   'GA', 'GAC', 'GJ', 'GI', 'GL', 'GH', 'GK', 'GK0', 'GK1', 'GQ', 'GQ0', 'GQ1',
-  'GT', 'GT0', 'GT1', 'GR', 'GR0', 'GR1',
+  'GT', 'GT0', 'GT1', 'GR', 'GR0', 'GR1', 'GO0', 'GO1',
 ]);
 
 export const isGroupCallReticulumWireType = (t: unknown): boolean =>
   typeof t === 'string' && GROUP_CALL_RETICULUM_WIRE_TYPES.has(t);
+
+/**
+ * Types the bridge still routes as group-call wires but no Hub handles:
+ * GroupCallManager returns on them without a word (group-call.ts, end of
+ * handleReticulumGroupCallWire). GO drops them the same way instead of
+ * passing them on as audio.
+ */
+export const IGNORED_GROUP_CALL_WIRE_TYPES = new Set<string>([
+  'GX', 'GO', 'GE', 'GE0', 'GE1', 'GF',
+]);
+
+export const isIgnoredGroupCallWireType = (t: unknown): boolean =>
+  typeof t === 'string' && IGNORED_GROUP_CALL_WIRE_TYPES.has(t);
+
+/** GO0/GO1: fragments of a deflated GC_RTC_SIGNAL or DM call-control body. */
+export const isGroupCallLinkControlFragmentType = (t: unknown): boolean =>
+  t === 'GO0' || t === 'GO1';
 
 // ── Join / leave ────────────────────────────────────────────────────────────
 
@@ -117,6 +169,15 @@ export function encodeJoinWire(env: {
   }
   if (typeof env.joinGeneration === 'number' && Number.isFinite(env.joinGeneration)) {
     o.j = env.joinGeneration;
+  }
+  // As Hub 3.0.3: keep the hex form unless the overlay packet would exceed
+  // the MDU, then send the same 16 bytes as base64url. Signatures always
+  // cover the hex form (receivers decode `d` before verifying).
+  if (
+    isRnsDestinationHashHex(o.d) &&
+    byteLengthUtf8JsonWithBridgeSender(o) > RT_RETICULUM_MAX_WIRE_JSON_BYTES
+  ) {
+    o.d = compactRnsDestinationHashForWire(o.d as string);
   }
   return o;
 }
@@ -157,11 +218,12 @@ export function decodeJoinWire(raw: Record<string, unknown>): {
   joinGeneration?: number;
 } | null {
   if (raw.t !== 'GJ') return null;
-  const { R, H, a, k, m, g, d, rk, j } = raw;
+  const { R, H, a, k, m, g, rk, j } = raw;
+  const d = rnsDestinationHashFromWire(raw.d);
   if (
     typeof R !== 'string' || typeof H !== 'string' || typeof a !== 'string' ||
     typeof k !== 'string' || typeof m !== 'number' || typeof g !== 'string' ||
-    !isRnsDestinationHashHex(d)
+    !d
   ) {
     return null;
   }
@@ -174,7 +236,7 @@ export function decodeJoinWire(raw: Record<string, unknown>): {
     fromPublicKey: k,
     signature: g,
     timestamp: m,
-    reticulumDestinationHash: (d as string).trim().toLowerCase(),
+    reticulumDestinationHash: d,
     ...(typeof rk === 'string' && isRnsIdentityPublicKeyBase64(rk)
       ? { reticulumIdentityPublicKeyBase64: rk }
       : {}),

@@ -33,6 +33,22 @@ export type PythonBridgeLaneDetail = {
   completedTasks?: number;
   currentTask?: string;
   runningMs?: number;
+  /** Kind of the task behind `busyMsMax` (ids stripped). */
+  busyMaxTask?: string;
+};
+
+/** Python's open links by kind (transport_status detail `links`). */
+export type PythonBridgeLinkCounts = {
+  overlay?: number;
+  audio?: number;
+  /** Inbound links still being classified. */
+  inboundHandshakes?: number;
+  /** Resource sessions as `<in|out>:<lane>` -> count. */
+  resourceSessions?: Record<string, number>;
+  fileLinks?: number;
+  /** RNS.Transport.active_links / pending_links. */
+  rnsActive?: number;
+  rnsPending?: number;
 };
 
 /**
@@ -57,6 +73,21 @@ export type PythonBridgeDetail = {
   providerPendingAuth?: number;
   providerRefused?: Record<string, number>;
   jsonOutDrops?: number;
+  /** Refusals as `<dm|history|other>:<busy_kind>` since the bridge started. */
+  providerRefusedByBusyKind?: Record<string, number>;
+  threadCount?: number;
+  /** Frames queued for Kotlin's poll now, the most ever, and dropped at the cap. */
+  outQueue?: number;
+  outQueueHighWater?: number;
+  outQueueDrops?: number;
+  openFds?: number;
+  /** Process CPU in total, and since the previous detail read over that window. */
+  processCpuMs?: number;
+  processCpuDeltaMs?: number;
+  processCpuWindowMs?: number;
+  links?: PythonBridgeLinkCounts;
+  /** Watchdog threads of rejected RNS resources still running. */
+  rejectedResourceWatchdogs?: number;
 };
 
 /** BridgeSocketServer.diagnostics(): the worker socket's frame counters. */
@@ -78,12 +109,18 @@ export type NativeProcessDetail = {
   processStartedAtMs?: number;
   /** Null before the worker socket was first asked for. */
   socket?: KotlinSocketDetail | null;
+  /** The last WebView renderer death (kept across restarts); null when none. */
+  rendererGone?: { at: number; crashed: boolean; count: number } | null;
 };
 
 /** getStatus({ detail: true }); `bridge` only once the Python bridge started. */
 export type ReticulumStatusDetail = ReticulumStatus & {
   bridge?: PythonBridgeDetail;
   native?: NativeProcessDetail;
+  /** Packets by `<rx|tx>:<type>/<destination type>/<context>`, most bytes first. */
+  packetMix?: Array<{ key: string; count: number; bytes: number }>;
+  /** RNS crypto provider in use (e.g. `internal`, `PyCA`). */
+  cryptoBackend?: string;
 };
 
 export interface ReticulumAnnounceEvent {

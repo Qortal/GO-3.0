@@ -1,7 +1,12 @@
 import { act, render } from '@testing-library/react';
 import i18n from 'i18next';
-import { createStore, Provider } from 'jotai';
+import { createStore, getDefaultStore, Provider } from 'jotai';
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import {
+  qortinoAgentOpenAtom,
+  qortinoAgentParkedAtom,
+} from '../../../atoms/global';
+import { CLOSE_GO_WINDOWS_EVENT } from '../../../utils/closeGoWindows';
 import { subscribeToEvent, unsubscribeFromEvent } from '../../../utils/events';
 import { ChatShareHost } from './ChatShareHost';
 import { resetChatShareInbox, returnChatShare } from './chatShareInbox';
@@ -77,6 +82,28 @@ describe('ChatShareHost', () => {
     expect(share?.text).toBe('https://qortal.dev');
   });
 
+  it("closes GO's windows before the share goes up", () => {
+    // Chat would open under Tabs, Settings or a viewer left open, and in
+    // the same render as Home hiding, Home's Settings would not close.
+    const sharesSeenByClose: unknown[] = [];
+    const onClose = () =>
+      sharesSeenByClose.push(store.get(pendingChatShareAtom));
+    subscribeToEvent(CLOSE_GO_WINDOWS_EVENT, onClose);
+    const qortino = getDefaultStore();
+    qortino.set(qortinoAgentOpenAtom, true);
+    renderHost();
+    act(() =>
+      routeChatShare({ target: 'chats:directs', items: [], text: 'hi' })
+    );
+    expect(sharesSeenByClose).toEqual([null]);
+    expect(store.get(pendingChatShareAtom)?.text).toBe('hi');
+    // Qortino keeps its session; Home brings it back.
+    expect(qortino.get(qortinoAgentOpenAtom)).toBe(false);
+    expect(qortino.get(qortinoAgentParkedAtom)).toBe(true);
+    qortino.set(qortinoAgentParkedAtom, false);
+    unsubscribeFromEvent(CLOSE_GO_WINDOWS_EVENT, onClose);
+  });
+
   it('takes a share that came before it mounted (cold start)', () => {
     routeChatShare({ target: 'chats:self', items: [], text: 'note' });
     renderHost();
@@ -96,6 +123,7 @@ describe('ChatShareHost', () => {
 
   it('says why when nothing usable came, and puts nothing up', () => {
     const snacks = listen('openGlobalSnackBar');
+    const closes = listen(CLOSE_GO_WINDOWS_EVENT);
     renderHost();
     act(() =>
       routeChatShare({
@@ -108,7 +136,10 @@ describe('ChatShareHost', () => {
     expect(snacks.calls).toEqual([
       { message: 'the shared file could not be read.', type: 'error' },
     ]);
+    // Nothing to show: whatever was open stays.
+    expect(closes.calls).toEqual([]);
     snacks.stop();
+    closes.stop();
   });
 
   it('puts a share a chat handed back up again', () => {

@@ -4,6 +4,7 @@ import {
   createLogThrottle,
   getBootFaultLogs,
   getBootFaultOverflow,
+  getBootFaultRepeatsFolded,
   getLogKeyCounts,
   getRecentLogs,
   log,
@@ -39,6 +40,95 @@ describe('mobile worker log capture', () => {
     log('[ReticulumChat] event_page_imported membership_deferred=3');
     expect(getBootFaultLogs()).toHaveLength(1);
     expect(getBootFaultLogs()[0]).toContain('membership_deferred=3');
+  });
+
+  it('keeps the first 3 channel-metadata skips per group and counts the rest', () => {
+    const skip = (group: number, event: string) =>
+      warn(
+        `[ReticulumChat] channel_metadata_projection_skipped event=${event} group=${group} type=channel_create author=QRj9ttCJoCmV4kb9GxSHP75ZQWWi7LqPQG reason=author_not_group_admin decision=core author_role=other`
+      );
+    for (let i = 0; i < 200; i++) skip(694, `e${i}`);
+    for (let i = 0; i < 2; i++) skip(581, `f${i}`);
+    warn('[ReticulumChat] Refusing history page group=1: reason=x');
+    const kept = getBootFaultLogs();
+    expect(
+      kept.filter(
+        (l) => l.includes('projection_skipped') && /group=694\b/.test(l)
+      )
+    ).toHaveLength(3);
+    expect(
+      kept.filter(
+        (l) => l.includes('projection_skipped') && /group=581\b/.test(l)
+      )
+    ).toHaveLength(2);
+    // A later, different fault still has room.
+    expect(kept.some((l) => l.includes('Refusing history page'))).toBe(true);
+    expect(getBootFaultRepeatsFolded()).toBe(197);
+    expect(getBootFaultOverflow()).toBe(0);
+  });
+
+  it('caps skips spread over many groups, so a later EMFILE still lands', () => {
+    // Report A's order: skips in 62 groups first, EMFILE two minutes later.
+    for (let group = 1; group <= 62; group++) {
+      for (let i = 0; i < 4; i++) {
+        warn(
+          `[ReticulumChat] channel_metadata_projection_skipped event=e${group}-${i} group=${group} type=channel_create reason=author_not_group_admin`
+        );
+      }
+    }
+    for (let group = 1; group <= 62; group++) {
+      warn(
+        `[ReticulumChat] metadata_snapshot_ignored group=${group} peer=ab hash=cd reason=metadata_snapshot_non_admin`
+      );
+    }
+    warn(
+      '[ReticulumChat] Failed to write local event notification: {"code":"EMFILE"}'
+    );
+    warn('[mobile-fs] handle_top_up_failed error=NoModificationAllowedError');
+    const kept = getBootFaultLogs();
+    expect(kept.filter((l) => l.includes('projection_skipped'))).toHaveLength(
+      20
+    );
+    expect(
+      kept.filter((l) => l.includes('metadata_snapshot_ignored'))
+    ).toHaveLength(20);
+    expect(kept.some((l) => l.includes('EMFILE'))).toBe(true);
+    expect(kept.some((l) => l.includes('handle_top_up_failed'))).toBe(true);
+    expect(getBootFaultRepeatsFolded()).toBe(62 * 4 - 20 + 62 - 20);
+    expect(getBootFaultOverflow()).toBe(0);
+  });
+
+  it('keeps at most 60 per-event lines of all kinds together', () => {
+    const kinds = [
+      'channel_metadata_projection_skipped',
+      'channel_metadata_projection_deferred',
+      'metadata_snapshot_ignored',
+      'metadata_snapshot_request_ignored',
+    ];
+    for (const kind of kinds) {
+      for (let group = 1; group <= 30; group++) {
+        warn(
+          `[ReticulumChat] ${kind} group=${group} reason=admin_validation_unavailable`
+        );
+      }
+    }
+    warn('[ReticulumChat] Refusing history page group=1: reason=x');
+    const kept = getBootFaultLogs();
+    expect(kept).toHaveLength(61);
+    expect(kept[60]).toContain('Refusing history page');
+    expect(getBootFaultRepeatsFolded()).toBe(120 - 60);
+  });
+
+  it('keeps the first 3 OPFS top-up failures of a retry loop and counts the rest', () => {
+    for (let i = 0; i < 100; i++) {
+      warn(
+        '[mobile-fs] slot_open_failed failed=32 of=32 error=NoModificationAllowedError'
+      );
+    }
+    expect(
+      getBootFaultLogs().filter((l) => l.includes('slot_open_failed'))
+    ).toHaveLength(3);
+    expect(getBootFaultRepeatsFolded()).toBe(97);
   });
 
   it('counts the fault lines a full boot buffer could not keep', () => {

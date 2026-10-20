@@ -259,6 +259,13 @@
     "blocked_public_node_title": "أنت تستخدم عقدة عامة",
     "blocked_settings": "الحسابات المحظورة",
     "blocked_settings_description": "إدارة الأسماء والعناوين المحظورة لهذه المحفظة أو عبر هذا الجهاز.",
+    "bottom_buttons": "الأزرار السفلية",
+    "bottom_buttons_apps": "التطبيقات",
+    "bottom_buttons_chat": "الدردشة",
+    "bottom_buttons_desc": "اسحب الرئيسية والتطبيقات والدردشة إلى الترتيب الذي تفضله. التمرير الجانبي بينها يتبع الترتيب نفسه.",
+    "bottom_buttons_home": "الرئيسية",
+    "bottom_buttons_item_label": "{{name}}، {{place}} من {{total}}. استخدم مفتاحي السهم الأيسر والأيمن لتحريكه.",
+    "bottom_buttons_reset": "إعادة تعيين",
     "buy": "شراء",
     "change_node": "تغيير العقدة",
     "close_action_update_error": "تعذّر تحديث سلوك إغلاق النافذة الآن.",
@@ -490,7 +497,9 @@
     "wallet_password": "كلمة مرور المحفظة",
     "wallet_password_placeholder": "أدخل كلمة مرور المحفظة",
     "wallet_password_required": "أدخل كلمة مرور المحفظة لفك تشفير المفتاح الخاص.",
-    "wallet_unavailable_error": "بيانات المحفظة غير متاحة حالياً."
+    "wallet_unavailable_error": "بيانات المحفظة غير متاحة حالياً.",
+    "widgets_screen": "شاشة الأدوات",
+    "widgets_screen_desc": "شاشة على يسار القسم الأول للأدوات: تطبيقات Q صغيرة مصممة لـ GO 3.0، مثل الوقت أو الطقس أو أخبار Torq. اسحب لليمين للوصول إليها."
   },
   "dm": {
     "add_friend_before_calling": "أضف هذا المستخدم كصديق قبل الاتصال",
@@ -1338,5 +1347,27 @@
     "intro_title": "أساس جديد لمحادثات Qortal",
     "title": "ما الجديد في Q-Chat",
     "version": "الإصدار {{version}}"
+  },
+  "widgets": {
+    "add": "إضافة أداة",
+    "add_short": "إضافة",
+    "added": "تمت الإضافة",
+    "by": "من {{name}}",
+    "done": "تم",
+    "empty_hint": "لاحقًا، اضغط مطولًا على أداة أو مكان فارغ لإضافة الأدوات أو نقلها أو تغيير حجمها. اسحبها إلى «إزالة» في الأسفل لحذفها.",
+    "limit": "يمكنك إضافة حتى {{max}} أدوات.",
+    "open_app": "فتح {{name}}",
+    "picker_developers": "لمطوري تطبيقات Q: انشروا الأداة كـ APP مع الوسم go-widget، أو بمعرّف يبدأ بـ go-widget.",
+    "picker_empty": "لم تُنشر أي أدوات بعد.",
+    "picker_error": "تعذر تحميل الأدوات. تحقق من الاتصال بالعقدة.",
+    "picker_none_found": "لا توجد أدوات مطابقة.",
+    "picker_note": "الأدوات هي تطبيقات Q مصممة لـ GO. يمكنها عرض المعلومات وفتح التطبيقات، لكنها لا تستطيع الدفع أو النشر أو التوقيع.",
+    "picker_search": "البحث عن أدوات",
+    "picker_title": "إضافة أداة",
+    "reload": "إعادة التحميل",
+    "remove": "إزالة",
+    "resize": "تغيير الحجم",
+    "retry": "حاول مرة أخرى",
+    "title": "الأدوات"
   }
 }

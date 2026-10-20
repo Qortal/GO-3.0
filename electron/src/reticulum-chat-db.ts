@@ -75,6 +75,43 @@ function normalizeExcludedAuthors(addresses: readonly string[]): string[] {
   ].slice(0, 100);
 }
 
+type ReticulumChatMentionRecord = {
+  groupId: number;
+  mentionedAddress: string;
+  channelId: string;
+  authorAddress: string;
+  timestamp: number;
+  readAt: number;
+};
+
+/** Same mention records, in any order (one per mentioned address). */
+function sameMentionRecords(
+  left: readonly ReticulumChatMentionRecord[],
+  right: readonly ReticulumChatMentionRecord[]
+): boolean {
+  if (left.length !== right.length) return false;
+  const byAddress = new Map(
+    right.map((record) => [record.mentionedAddress, record])
+  );
+  if (byAddress.size !== right.length) return false;
+  if (
+    new Set(left.map((record) => record.mentionedAddress)).size !== left.length
+  ) {
+    return false;
+  }
+  return left.every((record) => {
+    const other = byAddress.get(record.mentionedAddress);
+    return (
+      !!other &&
+      record.groupId === other.groupId &&
+      record.channelId === other.channelId &&
+      record.authorAddress === other.authorAddress &&
+      record.timestamp === other.timestamp &&
+      record.readAt === other.readAt
+    );
+  });
+}
+
 const RETICULUM_CHAT_METADATA_EVENT_TYPES = new Set([
   'channel_create',
   'channel_update',
@@ -579,6 +616,15 @@ export type ReticulumChatMissingRangeStateCounts = {
   noPeer: number;
   /** Stored neighbour at to_seq+1 older than the serve floor. */
   olderThanServeAge: number;
+  // Optional tags over all rows, so an older engine's answer still fits
+  // (memory mirror: 0, it has no neighbour timestamps).
+  /** olderThanServeAge rows that are due now / parked (known-unavailable marker). */
+  olderThanServeAgeDue?: number;
+  olderThanServeAgeParked?: number;
+  /** No stored message at to_seq+1: a tail row, or its neighbour was rejected. */
+  noStoredNeighbour?: number;
+  /** One missing sequence between two stored ones (from = to > 1, neighbour stored). */
+  singleSeqInterior?: number;
   /** At most 5, rows desc then groupId asc. */
   topGroups: Array<{
     groupId: number;
@@ -591,6 +637,28 @@ export type ReticulumChatMissingRangeStateCounts = {
 const RETICULUM_CHAT_MISSING_RANGE_TOP_GROUPS = 5;
 /** Exact SQL reads per group per scanner pick for due mirror-only rows. */
 const RETICULUM_CHAT_MISSING_RANGE_MIRROR_PICK_CHECKS = 8;
+// GO (authorGapAgeAware) asked lists: rows kept, peers kept per row, and how
+// often rows whose gap is gone (or past the cap) are dropped. Losing a row
+// costs at most one more ask per peer.
+const RETICULUM_CHAT_OLD_GAP_ASKS_MAX_ROWS = 8_192;
+const RETICULUM_CHAT_OLD_GAP_ASKS_MAX_PEERS = 64;
+const RETICULUM_CHAT_OLD_GAP_ASKS_PRUNE_INTERVAL_MS = 60 * 60_000;
+
+function parseOldGapAskPeers(value: unknown): string[] {
+  try {
+    const parsed = JSON.parse(String(value ?? '[]'));
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((peer) =>
+        String(peer || '')
+          .trim()
+          .toLowerCase()
+      )
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
 
 function sameMissingRangeState(
   a: ReticulumChatMissingRangeState,
@@ -630,6 +698,19 @@ export type ReticulumChatKnownUnavailableRange = {
   confirmedAt: number;
   recheckAt: number;
   peerHashes: string[];
+};
+
+/**
+ * GO (mobileProfile authorGapAgeAware): what an old gap row (its next stored
+ * message is older than the serve floor) has been through.
+ */
+export type ReticulumChatOldGapAskState = {
+  /** Peers that already answered for this row or a range covering it. */
+  askedPeers: string[];
+  /** Answers since the row was last parked. */
+  cycleAsks: number;
+  /** When a new provider last woke the row (0 = never). */
+  wokenAt: number;
 };
 
 export type ReticulumChatMetadataSnapshotRecord = {
@@ -1827,6 +1908,80 @@ function buildPlainSnippet(text: string, terms: string[]): string {
   }`;
 }
 
+/**
+ * ReticulumChatDatabase.memoryEvents: every event stored this session, also
+ * indexed by group. Chat summaries asked once per group for that group's
+ * events, which walked the whole session (groups x events per refresh, tens
+ * of ms on a phone after a busy hour). set/delete/clear keep the index, so no
+ * call site can miss it; a group's events come back in the map's own order.
+ */
+class ReticulumChatMemoryEvents extends Map<string, ReticulumChatEvent> {
+  private readonly eventIdsByGroup = new Map<number, Set<string>>();
+
+  set(eventId: string, event: ReticulumChatEvent): this {
+    const previous = this.get(eventId);
+    super.set(eventId, event);
+    if (previous && previous.groupId !== event.groupId) {
+      // Event ids hash the signed fields, group included, so this does not
+      // happen; if it did, the moved id keeps its first insertion position.
+      this.dropFromGroup(previous.groupId, eventId);
+      this.rebuildGroup(event.groupId);
+      return this;
+    }
+    let ids = this.eventIdsByGroup.get(event.groupId);
+    if (!ids) {
+      ids = new Set();
+      this.eventIdsByGroup.set(event.groupId, ids);
+    }
+    ids.add(eventId);
+    return this;
+  }
+
+  delete(eventId: string): boolean {
+    const previous = this.get(eventId);
+    if (!super.delete(eventId)) return false;
+    if (previous) this.dropFromGroup(previous.groupId, eventId);
+    return true;
+  }
+
+  clear(): void {
+    super.clear();
+    this.eventIdsByGroup.clear();
+  }
+
+  /** The group's events, in insertion order (as values() would list them). */
+  eventsInGroup(groupId: number): ReticulumChatEvent[] {
+    const ids = this.eventIdsByGroup.get(groupId);
+    if (!ids) return [];
+    const events: ReticulumChatEvent[] = [];
+    for (const eventId of ids) {
+      const event = this.get(eventId);
+      if (event) events.push(event);
+    }
+    return events;
+  }
+
+  /** Groups with at least one event in the map. */
+  groupIds(): IterableIterator<number> {
+    return this.eventIdsByGroup.keys();
+  }
+
+  private dropFromGroup(groupId: number, eventId: string): void {
+    const ids = this.eventIdsByGroup.get(groupId);
+    if (!ids) return;
+    ids.delete(eventId);
+    if (ids.size === 0) this.eventIdsByGroup.delete(groupId);
+  }
+
+  private rebuildGroup(groupId: number): void {
+    const ids = new Set<string>();
+    for (const [eventId, event] of this) {
+      if (event.groupId === groupId) ids.add(eventId);
+    }
+    this.eventIdsByGroup.set(groupId, ids);
+  }
+}
+
 export class ReticulumChatDatabase {
   private static sharedRelayCaches = new Map<
     string,
@@ -1838,7 +1993,7 @@ export class ReticulumChatDatabase {
     .toString('hex');
   private db: DB;
   private readonly relayCacheKey: string;
-  private memoryEvents = new Map<string, ReticulumChatEvent>();
+  private memoryEvents = new ReticulumChatMemoryEvents();
   private memoryGroupKeys = new Map<string, ReticulumChatGroupKey>();
   private memoryGroupKeyDigests = new Map<
     string,
@@ -1922,6 +2077,7 @@ export class ReticulumChatDatabase {
   private stmtGetMissingByAuthor: Statement;
   private stmtGetGroupSeqs: Statement;
   private stmtGetKnownGroups: Statement;
+  private stmtHasGroupEvents: Statement;
   private stmtGetKnownChannels: Statement;
   private stmtGetKnownMessageChannels: Statement;
   private stmtGetLastDisplayEvent: Statement;
@@ -1950,6 +2106,25 @@ export class ReticulumChatDatabase {
   private stmtInsertScrubbedEvent: Statement;
   private stmtUpsertSearchMirror: Statement;
   private stmtDeleteSearchMirror: Statement;
+  private stmtGetSearchMirrorRow: Statement;
+  private stmtGetMentionRows: Statement;
+  /** See getIndexWriteStats. */
+  private readonly indexWriteStats = {
+    searchWritten: 0,
+    searchUnchanged: 0,
+    searchNoMirror: 0,
+    mentionsWritten: 0,
+    mentionsUnchanged: 0,
+    ftsCheck: {
+      state: 'unchecked' as 'unchecked' | 'trusted' | 'untrusted',
+      mirrorRows: null as number | null,
+      ftsRows: null as number | null,
+      rebuilt: false,
+    },
+  };
+  // ensureSearchFtsMatchesMirror's check, waiting for the end of the
+  // transaction that first needed it.
+  private ftsCheckTimer: ReturnType<typeof setTimeout> | null = null;
   private stmtSearchMirror: Statement;
   private stmtUpsertSearchText: Statement;
   private stmtDeleteSearchText: Statement;
@@ -1988,6 +2163,33 @@ export class ReticulumChatDatabase {
   // Diagnostics only (Copy diagnostics): prepared on first use.
   private stmtCountMissingRangeStates: Statement | null = null;
   private stmtCountMissingRangeTopGroups: Statement | null = null;
+  /** Copy diagnostics only (gapOutcomeAges); prepared on first use. */
+  private stmtGetAuthorSeqTimestamp: Statement | null = null;
+  /** Copy diagnostics: event and search row counts, read once per open. */
+  private storageRowCounts: {
+    events: number | null;
+    searchRows: number | null;
+    countedAt: number;
+  } | null = null;
+  // GO only (mobileProfile recentGapsFirst / gapDenialBackoff / refunds):
+  // prepared on first use, so desktop never prepares or runs them.
+  private stmtGetBackgroundMissingRangeCandidatesRecentFirst: Statement | null =
+    null;
+  private stmtBumpMissingRangeDenialStreak: Statement | null = null;
+  private stmtGetMissingRangeDenialStreak: Statement | null = null;
+  private stmtGetMissingRangeLastUnavailableAt: Statement | null = null;
+  /** observedAt of the last global peer-observation prune (0 = never). */
+  private missingRangeObservationPrunedAt = 0;
+  // GO only (mobileProfile authorGapAgeAware): the old-row asked list lives
+  // in its own table, created on first use, so desktop never creates it.
+  private oldGapAskSchemaReady = false;
+  private stmtGetMissingRangeNeighbourTimestamp: Statement | null = null;
+  private stmtGetOldGapAsksCovering: Statement | null = null;
+  private stmtGetOldGapAskExact: Statement | null = null;
+  private stmtUpsertOldGapAsk: Statement | null = null;
+  private stmtClearOldGapAsksForGroup: Statement | null = null;
+  /** now of the last old-gap asked-list prune (0 = never). */
+  private oldGapAskPrunedAt = 0;
   private stmtGetPresentSeqsInRange: Statement;
   private stmtPruneMissingRangePeerUnavailable: Statement;
   private stmtUpsertMissingRangePeerUnavailable: Statement;
@@ -2433,6 +2635,9 @@ export class ReticulumChatDatabase {
       SELECT DISTINCT group_id FROM reticulum_chat_events
       ORDER BY group_id ASC
     `);
+    this.stmtHasGroupEvents = this.db.prepare(`
+      SELECT 1 FROM reticulum_chat_events WHERE group_id = ? LIMIT 1
+    `);
     this.stmtGetKnownChannels = this.db.prepare(`
       SELECT DISTINCT channel_id FROM reticulum_chat_events
       WHERE group_id = ?
@@ -2616,6 +2821,16 @@ export class ReticulumChatDatabase {
     this.stmtDeleteSearchMirror = this.db.prepare(
       'DELETE FROM reticulum_chat_search_index WHERE event_id = ?'
     );
+    this.stmtGetSearchMirrorRow = this.db.prepare(`
+      SELECT group_id, channel_id, author_address, timestamp, event_type, search_text
+      FROM reticulum_chat_search_index
+      WHERE event_id = ?
+    `);
+    this.stmtGetMentionRows = this.db.prepare(`
+      SELECT group_id, channel_id, mentioned_address, author_address, timestamp, read_at
+      FROM reticulum_chat_mentions
+      WHERE event_id = ?
+    `);
     this.stmtUpsertSearchText = this.db.prepare(`
       INSERT INTO reticulum_chat_search_fts
         (event_id, group_id, channel_id, author_address, timestamp, event_type, search_text)
@@ -3307,6 +3522,8 @@ export class ReticulumChatDatabase {
         this.sequenceLeaseOwnerId
       );
       this.channelSummaryCache.clear();
+      if (this.ftsCheckTimer) clearTimeout(this.ftsCheckTimer);
+      this.ftsCheckTimer = null;
       this.db.close();
     }
   }
@@ -6808,6 +7025,40 @@ export class ReticulumChatDatabase {
     if (!this.isAuthorizedMessageMutation(event)) return false;
     const now = Date.now();
     this.pruneExpiredMessagesThrottled(now);
+    // The event row and everything derived from it (v2 header, projection,
+    // search text, mentions, scrubs, relay cache trim) commit together. Each
+    // was its own autocommit: on GO's OPFS rollback journal that is about 5
+    // flushes apiece, ~25 per stored message, ~5 now. Same rows either way;
+    // inside another transaction this is a savepoint.
+    const hadMemoryEvent = this.memoryEvents.has(event.eventId);
+    try {
+      return this.runWriteBatch(() =>
+        this.insertEventRows(
+          event,
+          ownEvent,
+          privilegedMentionStatus,
+          authorStreamId,
+          now
+        )
+      );
+    } catch (err) {
+      // The rows rolled back. A copy left in memory would make hasEvent say
+      // stored, and the event could not be stored again this session.
+      if (!hadMemoryEvent) {
+        this.memoryEvents.delete(event.eventId);
+        this.memoryMeta.delete(event.eventId);
+      }
+      throw err;
+    }
+  }
+
+  private insertEventRows(
+    event: ReticulumChatEvent,
+    ownEvent: boolean,
+    privilegedMentionStatus: number,
+    authorStreamId: string,
+    now: number
+  ): boolean {
     const feedTimestamp = this.normalizeFeedTimestamp(event.timestamp, now);
     const rootExpiryState =
       event.eventType === 'message' || event.eventType === 'attachment_manifest'
@@ -8436,28 +8687,159 @@ export class ReticulumChatDatabase {
     const normalized = normalizeSearchText(text);
     const rootEventId = projection.root_event_id;
     this.memorySearchText.delete(rootEventId);
-    this.stmtDeleteSearchText.run(rootEventId);
-    this.stmtDeleteSearchMirror.run(rootEventId);
-    if (!normalized) return;
-    this.memorySearchText.set(rootEventId, normalized);
-    this.stmtUpsertSearchMirror.run(
+    if (normalized) this.memorySearchText.set(rootEventId, normalized);
+    const row = [
       rootEventId,
       projection.group_id,
       normalizeReticulumChatChannelId(projection.channel_id),
       projection.author_address,
       projection.created_at,
       projection.root_event_type,
-      normalized
-    );
-    this.stmtUpsertSearchText.run(
-      rootEventId,
-      projection.group_id,
-      normalizeReticulumChatChannelId(projection.channel_id),
-      projection.author_address,
-      projection.created_at,
-      projection.root_event_type,
-      normalized
-    );
+      normalized,
+    ] as const;
+    // The FTS table finds a row by event_id only with a full scan (the
+    // column is UNINDEXED), and this runs for every stored message and every
+    // re-index from the UI. The mirror row (a primary key lookup) says
+    // whether there is anything to replace; ensureSearchFtsMatchesMirror
+    // made sure the two tables agree.
+    if (this.ensureSearchFtsMatchesMirror()) {
+      const mirror = this.stmtGetSearchMirrorRow.get(rootEventId) as
+        | {
+            group_id?: number;
+            channel_id?: string;
+            author_address?: string;
+            timestamp?: number;
+            event_type?: string;
+            search_text?: string;
+          }
+        | undefined;
+      if (!mirror) {
+        this.indexWriteStats.searchNoMirror += 1;
+        if (!normalized) return;
+        this.runWriteBatch(() => {
+          this.stmtUpsertSearchMirror.run(...row);
+          this.stmtUpsertSearchText.run(...row);
+        });
+        return;
+      }
+      if (
+        normalized &&
+        Number(mirror.group_id) === Number(row[1]) &&
+        mirror.channel_id === row[2] &&
+        mirror.author_address === row[3] &&
+        Number(mirror.timestamp) === Number(row[4]) &&
+        mirror.event_type === row[5] &&
+        mirror.search_text === normalized
+      ) {
+        // Rewriting would store the very same mirror and FTS rows.
+        this.indexWriteStats.searchUnchanged += 1;
+        return;
+      }
+    }
+    this.indexWriteStats.searchWritten += 1;
+    this.runWriteBatch(() => {
+      this.stmtDeleteSearchText.run(rootEventId);
+      this.stmtDeleteSearchMirror.run(rootEventId);
+      if (!normalized) return;
+      this.stmtUpsertSearchMirror.run(...row);
+      this.stmtUpsertSearchText.run(...row);
+    });
+  }
+
+  /**
+   * True once the FTS table is known to hold exactly the mirror's rows, which
+   * upsertProjectedSearchText's shortcuts rely on ("no mirror row, no FTS
+   * row"). Every writer adds and removes the two together, but a database
+   * from an older build may not have. Checked once per open, on first use:
+   * if the row counts differ, the FTS table is rebuilt from the mirror. If
+   * the counts cannot be read, the shortcuts stay off.
+   */
+  private ensureSearchFtsMatchesMirror(): boolean {
+    const check = this.indexWriteStats.ftsCheck;
+    if (check.state !== 'unchecked') return check.state === 'trusted';
+    // Usually the first use is inside insertEvent's transaction. A rebuild
+    // there would roll back with a failed insert while the state already
+    // said trusted, so this write takes the full path and the check runs
+    // right after the transaction, which also keeps the two counts off that
+    // message's commit.
+    if (this.db.inTransaction) {
+      if (!this.ftsCheckTimer) {
+        this.ftsCheckTimer = setTimeout(() => {
+          this.ftsCheckTimer = null;
+          this.ensureSearchFtsMatchesMirror();
+        }, 0);
+        (this.ftsCheckTimer as { unref?: () => void }).unref?.();
+      }
+      return false;
+    }
+    check.state = 'untrusted';
+    try {
+      const mirrorRows = Number(
+        (
+          this.db
+            .prepare(
+              'SELECT COUNT(*) AS mirror_rows FROM reticulum_chat_search_index'
+            )
+            .get() as { mirror_rows?: number } | undefined
+        )?.mirror_rows
+      );
+      const ftsRows = Number(
+        (
+          this.db
+            .prepare(
+              'SELECT COUNT(*) AS fts_rows FROM reticulum_chat_search_fts'
+            )
+            .get() as { fts_rows?: number } | undefined
+        )?.fts_rows
+      );
+      if (!Number.isFinite(mirrorRows) || !Number.isFinite(ftsRows))
+        return false;
+      check.mirrorRows = mirrorRows;
+      check.ftsRows = ftsRows;
+      if (mirrorRows !== ftsRows) {
+        this.runWriteBatch(() => {
+          this.db.prepare('DELETE FROM reticulum_chat_search_fts').run();
+          this.db
+            .prepare(
+              `
+                INSERT INTO reticulum_chat_search_fts
+                  (event_id, group_id, channel_id, author_address, timestamp, event_type, search_text)
+                SELECT event_id, group_id, channel_id, author_address, timestamp, event_type, search_text
+                FROM reticulum_chat_search_index
+              `
+            )
+            .run();
+        });
+        check.rebuilt = true;
+      }
+      check.state = 'trusted';
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Counters for the search/mention write shortcuts (plain increments) and
+   * the FTS check, for diagnostics.
+   */
+  getIndexWriteStats(): {
+    searchWritten: number;
+    searchUnchanged: number;
+    searchNoMirror: number;
+    mentionsWritten: number;
+    mentionsUnchanged: number;
+    ftsCheck: {
+      state: 'unchecked' | 'trusted' | 'untrusted';
+      mirrorRows: number | null;
+      ftsRows: number | null;
+      rebuilt: boolean;
+    };
+  } {
+    return {
+      ...this.indexWriteStats,
+      ftsCheck: { ...this.indexWriteStats.ftsCheck },
+    };
   }
 
   private refreshMessageProjectionIndexes(event: ReticulumChatEvent): void {
@@ -8522,18 +8904,37 @@ export class ReticulumChatDatabase {
     eventId: string,
     mentionedAddresses: string[]
   ): boolean {
-    const event = this.getEvent(eventId);
-    if (!event) return false;
-    const projection = this.currentMessageProjectionForIndexEvent(event);
-    if (!projection) return false;
-    this.replaceMentionsForProjection(projection, mentionedAddresses);
-    return true;
+    return this.replaceMentionsForEventDetailed(eventId, mentionedAddresses)
+      .applied;
   }
 
+  /**
+   * replaceMentionsForEvent, also saying whether the stored mentions
+   * changed: the UI re-sends the same mentions for events the engine already
+   * indexed, and an unchanged set needs no summary refresh.
+   */
+  replaceMentionsForEventDetailed(
+    eventId: string,
+    mentionedAddresses: string[]
+  ): { applied: boolean; changed: boolean } {
+    const event = this.getEvent(eventId);
+    if (!event) return { applied: false, changed: false };
+    const projection = this.currentMessageProjectionForIndexEvent(event);
+    if (!projection) return { applied: false, changed: false };
+    return {
+      applied: true,
+      changed: this.replaceMentionsForProjection(
+        projection,
+        mentionedAddresses
+      ),
+    };
+  }
+
+  /** False when the stored rows already were exactly these (nothing written). */
   private replaceMentionsForProjection(
     projection: MessageProjectionRow,
     mentionedAddresses: string[]
-  ): void {
+  ): boolean {
     const rootEventId = projection.root_event_id;
     const mentionTargets = parseMentionTargets(projection.mention_targets);
     const hasPrivilegedTarget =
@@ -8561,17 +8962,33 @@ export class ReticulumChatDatabase {
           )
       ),
     ];
-    this.memoryMentions.set(
-      rootEventId,
-      uniqueMentionedAddresses.map((mentionedAddress) => ({
+    const previousMemoryMentions = this.memoryMentions.get(rootEventId);
+    const nextMemoryMentions = uniqueMentionedAddresses.map(
+      (mentionedAddress) => ({
         groupId: projection.group_id,
         channelId: normalizeReticulumChatChannelId(projection.channel_id),
         mentionedAddress,
         authorAddress: projection.author_address,
         timestamp: projection.updated_at,
         readAt: 0,
-      }))
+      })
     );
+    this.memoryMentions.set(rootEventId, nextMemoryMentions);
+    // Unchanged only if the session copy (when there is one) and the stored
+    // rows both already hold exactly this.
+    if (
+      (previousMemoryMentions === undefined ||
+        sameMentionRecords(previousMemoryMentions, nextMemoryMentions)) &&
+      this.storedMentionRowsMatch(
+        rootEventId,
+        projection,
+        uniqueMentionedAddresses
+      )
+    ) {
+      this.indexWriteStats.mentionsUnchanged += 1;
+      return false;
+    }
+    this.indexWriteStats.mentionsWritten += 1;
     const tx = this.db.transaction(() => {
       this.stmtDeleteMentionsForEvent.run(rootEventId);
       for (const mentionedAddress of uniqueMentionedAddresses) {
@@ -8587,6 +9004,42 @@ export class ReticulumChatDatabase {
     });
     tx();
     this.invalidateChatSummaryCache(projection.group_id, projection.channel_id);
+    return true;
+  }
+
+  /**
+   * True when the event's stored mention rows are exactly the rows
+   * replaceMentionsForProjection would write (same addresses, fields and an
+   * unread read_at), so deleting and re-inserting them would change nothing.
+   */
+  private storedMentionRowsMatch(
+    rootEventId: string,
+    projection: MessageProjectionRow,
+    mentionedAddresses: readonly string[]
+  ): boolean {
+    const rows = this.stmtGetMentionRows.all(rootEventId) as Array<{
+      group_id?: number;
+      channel_id?: string;
+      mentioned_address?: string;
+      author_address?: string;
+      timestamp?: number;
+      read_at?: number;
+    }>;
+    if (!Array.isArray(rows) || rows.length !== mentionedAddresses.length) {
+      return false;
+    }
+    const wanted = new Set(mentionedAddresses);
+    const channelId = normalizeReticulumChatChannelId(projection.channel_id);
+    return rows.every(
+      (row) =>
+        typeof row.mentioned_address === 'string' &&
+        wanted.has(row.mentioned_address) &&
+        Number(row.group_id) === Number(projection.group_id) &&
+        row.channel_id === channelId &&
+        row.author_address === projection.author_address &&
+        Number(row.timestamp) === Number(projection.updated_at) &&
+        Number(row.read_at) === 0
+    );
   }
 
   deleteMentionsForEvent(eventId: string): boolean {
@@ -9026,7 +9479,8 @@ export class ReticulumChatDatabase {
         ) as EventRow[];
       return this.mergeWindowEvents(
         rows.map(rowToEvent),
-        [...this.memoryEvents.values()]
+        this.memoryEvents
+          .eventsInGroup(groupId)
           .filter(
             (event) =>
               event.groupId === groupId &&
@@ -9060,7 +9514,8 @@ export class ReticulumChatDatabase {
         .all(groupId, limit) as EventRow[];
       return this.mergeWindowEvents(
         rows.map(rowToEvent),
-        [...this.memoryEvents.values()]
+        this.memoryEvents
+          .eventsInGroup(groupId)
           .filter(
             (event) => event.groupId === groupId && this.eventIsVisible(event)
           )
@@ -9080,7 +9535,8 @@ export class ReticulumChatDatabase {
           limit
         ) as EventRow[]
       ).map(rowToEvent),
-      [...this.memoryEvents.values()]
+      this.memoryEvents
+        .eventsInGroup(groupId)
         .filter(
           (event) =>
             event.groupId === groupId &&
@@ -9642,13 +10098,16 @@ export class ReticulumChatDatabase {
     const seen = new Set(rows.map((row) => row.event_id));
     return [
       ...rows.map(rowToEvent),
-      ...[...this.memoryEvents.values()].filter(
-        (event) =>
-          event.groupId === groupId &&
-          event.eventType === 'channel_create' &&
-          !this.getChannel(groupId, event.channelId) &&
-          !seen.has(event.eventId)
-      ),
+      // The group's own session events only (same result as a full scan).
+      ...this.memoryEvents
+        .eventsInGroup(groupId)
+        .filter(
+          (event) =>
+            event.groupId === groupId &&
+            event.eventType === 'channel_create' &&
+            !this.getChannel(groupId, event.channelId) &&
+            !seen.has(event.eventId)
+        ),
     ]
       .sort(
         (a, b) =>
@@ -10879,8 +11338,21 @@ export class ReticulumChatDatabase {
     const oldestAcceptedAt = Number.isFinite(observationMaxAgeMs)
       ? Math.floor(observedAt) - Math.max(0, Math.floor(observationMaxAgeMs))
       : Number.NEGATIVE_INFINITY;
-    if (Number.isFinite(oldestAcceptedAt)) {
+    // The prune is a whole-table DELETE and every reader already filters by
+    // the cutoff, so once a minute is enough: on GO's rollback journal it was
+    // one more autocommit write (about 5 flushes) per denial.
+    if (
+      Number.isFinite(oldestAcceptedAt) &&
+      (this.missingRangeObservationPrunedAt === 0 ||
+        Math.abs(
+          Math.floor(observedAt) - this.missingRangeObservationPrunedAt
+        ) >= 60_000)
+    ) {
       this.stmtPruneMissingRangePeerUnavailable.run(oldestAcceptedAt);
+      this.missingRangeObservationPrunedAt = Math.max(
+        1,
+        Math.floor(observedAt)
+      );
     }
     this.stmtUpsertMissingRangePeerUnavailable.run(
       groupId,
@@ -10974,7 +11446,10 @@ export class ReticulumChatDatabase {
     peerHashes: string[],
     confirmedAt: number,
     recheckAt: number,
-    maxRecords = 4_096
+    maxRecords = 4_096,
+    // GO (authorGapAgeAware): an old row parks even when no peer was asked
+    // (only GO peers around, which never serve it).
+    allowNoPeers = false
   ): ReticulumChatKnownUnavailableRange | null {
     const author = String(authorAddress || '').trim();
     const stream = normalizeReticulumChatAuthorStreamId(authorStreamId);
@@ -10990,7 +11465,7 @@ export class ReticulumChatDatabase {
       !Number.isInteger(groupId) ||
       groupId <= 0 ||
       !author ||
-      peers.length === 0
+      (peers.length === 0 && !allowNoPeers)
     )
       return null;
     const confirmed = Math.max(0, Math.floor(confirmedAt));
@@ -11149,6 +11624,335 @@ export class ReticulumChatDatabase {
     return markerRows.length;
   }
 
+  /**
+   * GO (mobileProfile authorGapAgeAware): the own timestamp of the stored
+   * message right after a gap row (author_seq = toSeq + 1), or null when none
+   * is stored (a tail row, or its neighbour was rejected). SQL only, one read
+   * on the unique author-sequence index: getAuthorSeqTimestamp also walks the
+   * session's events, too costly on every peer pick.
+   */
+  getMissingRangeNeighbourTimestamp(
+    groupId: number,
+    authorAddress: string,
+    authorStreamId: string | undefined,
+    toSeq: number
+  ): number | null {
+    const author = String(authorAddress || '').trim();
+    const seq = Math.max(1, Math.floor(toSeq)) + 1;
+    if (!Number.isInteger(groupId) || groupId <= 0 || !author) return null;
+    if (!Number.isSafeInteger(seq)) return null;
+    this.stmtGetMissingRangeNeighbourTimestamp ??= this.db.prepare(`
+      SELECT timestamp FROM rchat_event_headers
+      WHERE group_id = ? AND author_address = ? AND author_stream_id = ?
+        AND author_seq = ?
+      LIMIT 1
+    `);
+    const row = this.stmtGetMissingRangeNeighbourTimestamp.get(
+      groupId,
+      author,
+      normalizeReticulumChatAuthorStreamId(authorStreamId),
+      seq
+    ) as { timestamp?: unknown } | undefined;
+    const at = Number(row?.timestamp);
+    return row && Number.isFinite(at) && at > 0 ? at : null;
+  }
+
+  // GO (mobileProfile authorGapAgeAware): who already answered for an old gap
+  // row, how many answers its current round had and when a new provider last
+  // woke it. Its own table, so a group-wide wake (which clears the
+  // known-unavailable markers on an access change) does not forget who was
+  // asked. Created on first use: desktop never creates or reads it.
+  private ensureOldGapAskSchema(): void {
+    if (this.oldGapAskSchemaReady) return;
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS rchat_old_gap_asks (
+        group_id INTEGER NOT NULL,
+        author_address TEXT NOT NULL,
+        author_stream_id TEXT NOT NULL,
+        from_seq INTEGER NOT NULL,
+        to_seq INTEGER NOT NULL,
+        peer_hashes_json TEXT NOT NULL DEFAULT '[]',
+        cycle_asks INTEGER NOT NULL DEFAULT 0,
+        woken_at INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (group_id, author_address, author_stream_id, from_seq, to_seq)
+      );
+      CREATE INDEX IF NOT EXISTS idx_rchat_old_gap_asks_updated
+        ON rchat_old_gap_asks (updated_at);
+    `);
+    // Inside a write batch the CREATE is undone if the batch rolls back, so
+    // only a CREATE outside any transaction counts as done; until then each
+    // call runs the (cheap, idempotent) CREATE again.
+    if (!this.db.inTransaction) this.oldGapAskSchemaReady = true;
+  }
+
+  private getOldGapAskExactRow(
+    groupId: number,
+    author: string,
+    stream: string,
+    from: number,
+    to: number
+  ):
+    | {
+        peer_hashes_json?: string;
+        cycle_asks?: number;
+        woken_at?: number;
+      }
+    | undefined {
+    this.ensureOldGapAskSchema();
+    this.stmtGetOldGapAskExact ??= this.db.prepare(`
+      SELECT peer_hashes_json, cycle_asks, woken_at
+      FROM rchat_old_gap_asks
+      WHERE group_id = ? AND author_address = ? AND author_stream_id = ?
+        AND from_seq = ? AND to_seq = ?
+      LIMIT 1
+    `);
+    return this.stmtGetOldGapAskExact.get(groupId, author, stream, from, to) as
+      | {
+          peer_hashes_json?: string;
+          cycle_asks?: number;
+          woken_at?: number;
+        }
+      | undefined;
+  }
+
+  private writeOldGapAsk(
+    groupId: number,
+    author: string,
+    stream: string,
+    from: number,
+    to: number,
+    peers: string[],
+    cycleAsks: number,
+    wokenAt: number,
+    now: number
+  ): void {
+    this.stmtUpsertOldGapAsk ??= this.db.prepare(`
+      INSERT INTO rchat_old_gap_asks
+        (group_id, author_address, author_stream_id, from_seq, to_seq,
+         peer_hashes_json, cycle_asks, woken_at, updated_at)
+      VALUES
+        (@group_id, @author_address, @author_stream_id, @from_seq, @to_seq,
+         @peer_hashes_json, @cycle_asks, @woken_at, @updated_at)
+      ON CONFLICT(group_id, author_address, author_stream_id, from_seq, to_seq)
+      DO UPDATE SET
+        peer_hashes_json = excluded.peer_hashes_json,
+        cycle_asks = excluded.cycle_asks,
+        woken_at = excluded.woken_at,
+        updated_at = excluded.updated_at
+    `);
+    this.stmtUpsertOldGapAsk.run({
+      group_id: groupId,
+      author_address: author,
+      author_stream_id: stream,
+      from_seq: from,
+      to_seq: to,
+      peer_hashes_json: JSON.stringify(
+        peers.slice(-RETICULUM_CHAT_OLD_GAP_ASKS_MAX_PEERS)
+      ),
+      cycle_asks: Math.max(0, Math.floor(cycleAsks)),
+      woken_at: Math.max(0, Math.floor(wokenAt)),
+      updated_at: Math.max(0, Math.floor(now)),
+    });
+    this.missingRangeWrites += 1;
+    this.pruneOldGapAsks(now);
+  }
+
+  // At most once an hour: rows whose gap is gone (every row they cover was
+  // filled) and rows past the cap, least recently touched first.
+  private pruneOldGapAsks(now: number): void {
+    const at = Math.floor(now);
+    if (
+      this.oldGapAskPrunedAt !== 0 &&
+      Math.abs(at - this.oldGapAskPrunedAt) <
+        RETICULUM_CHAT_OLD_GAP_ASKS_PRUNE_INTERVAL_MS
+    ) {
+      return;
+    }
+    this.oldGapAskPrunedAt = Math.max(1, at);
+    this.db
+      .prepare(
+        `
+      DELETE FROM rchat_old_gap_asks
+      WHERE NOT EXISTS (
+        SELECT 1 FROM rchat_missing_stream_ranges r
+        WHERE r.group_id = rchat_old_gap_asks.group_id
+          AND r.author_address = rchat_old_gap_asks.author_address
+          AND r.author_stream_id = rchat_old_gap_asks.author_stream_id
+          AND r.from_seq >= rchat_old_gap_asks.from_seq
+          AND r.to_seq <= rchat_old_gap_asks.to_seq
+      )
+    `
+      )
+      .run();
+    this.db
+      .prepare(
+        `
+      DELETE FROM rchat_old_gap_asks
+      WHERE rowid NOT IN (
+        SELECT rowid FROM rchat_old_gap_asks
+        ORDER BY updated_at DESC, rowid DESC
+        LIMIT ?
+      )
+    `
+      )
+      .run(RETICULUM_CHAT_OLD_GAP_ASKS_MAX_ROWS);
+    this.missingRangeWrites += 2;
+  }
+
+  /**
+   * GO (mobileProfile authorGapAgeAware): the old row's asked peers (from its
+   * own entry and from any entry covering it: a peer that had none of a range
+   * has none of a part of it), its round's answer count and last wake.
+   */
+  getOldGapAskState(
+    groupId: number,
+    authorAddress: string,
+    authorStreamId: string | undefined,
+    fromSeq: number,
+    toSeq: number
+  ): ReticulumChatOldGapAskState {
+    const author = String(authorAddress || '').trim();
+    if (!Number.isInteger(groupId) || groupId <= 0 || !author) {
+      return { askedPeers: [], cycleAsks: 0, wokenAt: 0 };
+    }
+    this.ensureOldGapAskSchema();
+    const stream = normalizeReticulumChatAuthorStreamId(authorStreamId);
+    const from = Math.max(1, Math.floor(fromSeq));
+    const to = Math.max(from, Math.floor(toSeq));
+    this.stmtGetOldGapAsksCovering ??= this.db.prepare(`
+      SELECT from_seq, to_seq, peer_hashes_json, cycle_asks, woken_at
+      FROM rchat_old_gap_asks
+      WHERE group_id = ? AND author_address = ? AND author_stream_id = ?
+        AND from_seq <= ? AND to_seq >= ?
+      ORDER BY from_seq DESC
+      LIMIT 32
+    `);
+    const rows = (this.stmtGetOldGapAsksCovering.all(
+      groupId,
+      author,
+      stream,
+      from,
+      to
+    ) ?? []) as Array<{
+      from_seq?: number;
+      to_seq?: number;
+      peer_hashes_json?: string;
+      cycle_asks?: number;
+      woken_at?: number;
+    }>;
+    const peers = new Set<string>();
+    let cycleAsks = 0;
+    let wokenAt = 0;
+    for (const row of rows) {
+      for (const peer of parseOldGapAskPeers(row.peer_hashes_json)) {
+        peers.add(peer);
+      }
+      if (Number(row.from_seq) === from && Number(row.to_seq) === to) {
+        cycleAsks = Math.max(0, Math.floor(Number(row.cycle_asks) || 0));
+        wokenAt = Math.max(0, Math.floor(Number(row.woken_at) || 0));
+      }
+    }
+    return { askedPeers: [...peers], cycleAsks, wokenAt };
+  }
+
+  /**
+   * GO (mobileProfile authorGapAgeAware): `peerHash` answered that it has
+   * none of this old row. Remembers the peer and counts the answer in the
+   * row's round; returns the round's answer count after it.
+   */
+  noteOldGapAnswer(
+    groupId: number,
+    authorAddress: string,
+    authorStreamId: string | undefined,
+    fromSeq: number,
+    toSeq: number,
+    peerHash: string,
+    now: number
+  ): number {
+    const author = String(authorAddress || '').trim();
+    if (!Number.isInteger(groupId) || groupId <= 0 || !author) return 0;
+    const stream = normalizeReticulumChatAuthorStreamId(authorStreamId);
+    const from = Math.max(1, Math.floor(fromSeq));
+    const to = Math.max(from, Math.floor(toSeq));
+    const exact = this.getOldGapAskExactRow(groupId, author, stream, from, to);
+    const peers = parseOldGapAskPeers(exact?.peer_hashes_json);
+    const peer = String(peerHash || '')
+      .trim()
+      .toLowerCase();
+    if (peer && !peers.includes(peer)) peers.push(peer);
+    const cycleAsks =
+      Math.max(0, Math.floor(Number(exact?.cycle_asks) || 0)) + 1;
+    this.writeOldGapAsk(
+      groupId,
+      author,
+      stream,
+      from,
+      to,
+      peers,
+      cycleAsks,
+      Math.max(0, Math.floor(Number(exact?.woken_at) || 0)),
+      now
+    );
+    return cycleAsks;
+  }
+
+  /**
+   * GO (mobileProfile authorGapAgeAware): set an old row's round answer count
+   * (0 when it parks) and, for a wake, when it was woken. The asked peers are
+   * kept. A row with nothing to remember is not written.
+   */
+  setOldGapAskRound(
+    groupId: number,
+    authorAddress: string,
+    authorStreamId: string | undefined,
+    fromSeq: number,
+    toSeq: number,
+    cycleAsks: number,
+    now: number,
+    wokenAt?: number
+  ): void {
+    const author = String(authorAddress || '').trim();
+    if (!Number.isInteger(groupId) || groupId <= 0 || !author) return;
+    const stream = normalizeReticulumChatAuthorStreamId(authorStreamId);
+    const from = Math.max(1, Math.floor(fromSeq));
+    const to = Math.max(from, Math.floor(toSeq));
+    const cycle = Math.max(0, Math.floor(cycleAsks));
+    const exact = this.getOldGapAskExactRow(groupId, author, stream, from, to);
+    const storedCycle = Math.max(0, Math.floor(Number(exact?.cycle_asks) || 0));
+    if (wokenAt == null && storedCycle === cycle) return;
+    this.writeOldGapAsk(
+      groupId,
+      author,
+      stream,
+      from,
+      to,
+      parseOldGapAskPeers(exact?.peer_hashes_json),
+      cycle,
+      wokenAt ?? Math.max(0, Math.floor(Number(exact?.woken_at) || 0)),
+      now
+    );
+  }
+
+  /**
+   * GO (mobileProfile authorGapAgeAware): forget who was asked for the
+   * group's old rows. A Hub's "none" can depend on this account's read
+   * access (it filters admin-only channels), so after access grows each Hub
+   * may be asked once more. Returns the number of entries removed.
+   */
+  clearOldGapAsksForGroup(groupId: number): number {
+    if (!Number.isInteger(groupId) || groupId <= 0) return 0;
+    this.ensureOldGapAskSchema();
+    this.stmtClearOldGapAsksForGroup ??= this.db.prepare(
+      'DELETE FROM rchat_old_gap_asks WHERE group_id = ?'
+    );
+    const changes = Number(
+      this.stmtClearOldGapAsksForGroup.run(groupId)?.changes ?? 0
+    );
+    if (changes > 0) this.missingRangeWrites += 1;
+    return changes;
+  }
+
   getMissingRange(
     groupId: number,
     authorAddress: string,
@@ -11232,6 +12036,175 @@ export class ReticulumChatDatabase {
       updated
     );
     return updated;
+  }
+
+  /**
+   * GO (mobileProfile keepMembershipDeferredPulls): gives back the attempt a
+   * claim took when the page came back with every event waiting on the
+   * membership check. Sets attempts and the next try as given; a
+   * known-unavailable marker still holds the row until its recheck.
+   */
+  restoreMissingRangeAttempt(
+    groupId: number,
+    authorAddress: string,
+    authorStreamId: string | undefined,
+    fromSeq: number,
+    toSeq: number,
+    attempts: number,
+    nextAttemptAt: number
+  ): ReticulumChatMissingRangeState | null {
+    const current = this.getMissingRange(
+      groupId,
+      authorAddress,
+      authorStreamId,
+      fromSeq,
+      toSeq
+    );
+    if (!current) return null;
+    const knownUnavailable = this.getMissingRangeKnownUnavailable(
+      current.groupId,
+      current.authorAddress,
+      current.authorStreamId,
+      current.fromSeq,
+      current.toSeq
+    );
+    const restoredAttempts = Math.max(0, Math.floor(attempts || 0));
+    const next = Math.max(
+      knownUnavailable?.recheckAt ?? 0,
+      Math.max(0, Math.floor(nextAttemptAt))
+    );
+    if (
+      restoredAttempts === current.attempts &&
+      next === current.nextAttemptAt
+    ) {
+      return current;
+    }
+    this.stmtUpdateMissingRangeAttempt.run({
+      group_id: current.groupId,
+      author_address: current.authorAddress,
+      author_stream_id: current.authorStreamId,
+      from_seq: current.fromSeq,
+      to_seq: current.toSeq,
+      preferred_peer: null,
+      attempts: restoredAttempts,
+      next_attempt_at: next,
+    });
+    this.missingRangeWrites += 1;
+    const updated = {
+      ...current,
+      attempts: restoredAttempts,
+      nextAttemptAt: next,
+    };
+    this.memoryMissingRanges.set(
+      this.missingRangeKey(
+        current.groupId,
+        current.authorAddress,
+        current.authorStreamId,
+        current.fromSeq,
+        current.toSeq
+      ),
+      updated
+    );
+    return updated;
+  }
+
+  /**
+   * GO (mobileProfile gapDenialBackoff): one more explicit "no such events"
+   * from a provider for this exact row; returns the row's denial streak after
+   * it (0 when the row is gone). The streak is not the lifetime attempts
+   * count: local, route and auth failures never touch it, and a row that is
+   * rewritten or split (an event in it arrived) starts again at 0.
+   */
+  noteMissingRangeDenial(
+    groupId: number,
+    authorAddress: string,
+    authorStreamId: string | undefined,
+    fromSeq: number,
+    toSeq: number
+  ): number {
+    const author = String(authorAddress || '').trim();
+    const stream = normalizeReticulumChatAuthorStreamId(authorStreamId);
+    const from = Math.max(1, Math.floor(fromSeq));
+    const to = Math.max(from, Math.floor(toSeq));
+    if (!Number.isInteger(groupId) || groupId <= 0 || !author) return 0;
+    if (!this.stmtBumpMissingRangeDenialStreak) {
+      this.stmtBumpMissingRangeDenialStreak = this.db.prepare(`
+        UPDATE rchat_missing_stream_ranges
+        SET denial_streak = denial_streak + 1
+        WHERE group_id = ? AND author_address = ? AND author_stream_id = ?
+          AND from_seq = ? AND to_seq = ?
+      `);
+    }
+    const result = this.stmtBumpMissingRangeDenialStreak.run(
+      groupId,
+      author,
+      stream,
+      from,
+      to
+    );
+    if (!(Number(result?.changes) > 0)) return 0;
+    this.missingRangeWrites += 1;
+    return this.getMissingRangeDenialStreak(groupId, author, stream, from, to);
+  }
+
+  getMissingRangeDenialStreak(
+    groupId: number,
+    authorAddress: string,
+    authorStreamId: string | undefined,
+    fromSeq: number,
+    toSeq: number
+  ): number {
+    const from = Math.max(1, Math.floor(fromSeq));
+    if (!this.stmtGetMissingRangeDenialStreak) {
+      this.stmtGetMissingRangeDenialStreak = this.db.prepare(`
+        SELECT denial_streak
+        FROM rchat_missing_stream_ranges
+        WHERE group_id = ? AND author_address = ? AND author_stream_id = ?
+          AND from_seq = ? AND to_seq = ?
+        LIMIT 1
+      `);
+    }
+    const row = this.stmtGetMissingRangeDenialStreak.get(
+      groupId,
+      String(authorAddress || '').trim(),
+      normalizeReticulumChatAuthorStreamId(authorStreamId),
+      from,
+      Math.max(from, Math.floor(toSeq))
+    ) as { denial_streak?: number | null } | undefined;
+    return Math.max(0, Math.floor(Number(row?.denial_streak ?? 0) || 0));
+  }
+
+  /**
+   * Newest unavailable observation (any peer) covering the range at or after
+   * observedAfter, or null. GO uses it to date a row's last denial.
+   */
+  getMissingRangeLastUnavailableAt(
+    groupId: number,
+    authorAddress: string,
+    authorStreamId: string | undefined,
+    fromSeq: number,
+    toSeq: number,
+    observedAfter = 0
+  ): number | null {
+    const from = Math.max(1, Math.floor(fromSeq));
+    if (!this.stmtGetMissingRangeLastUnavailableAt) {
+      this.stmtGetMissingRangeLastUnavailableAt = this.db.prepare(`
+        SELECT MAX(observed_at) AS last_observed_at
+        FROM rchat_missing_range_peer_observations
+        WHERE group_id = ? AND author_address = ? AND author_stream_id = ?
+          AND from_seq <= ? AND to_seq >= ? AND observed_at >= ?
+      `);
+    }
+    const row = this.stmtGetMissingRangeLastUnavailableAt.get(
+      groupId,
+      String(authorAddress || '').trim(),
+      normalizeReticulumChatAuthorStreamId(authorStreamId),
+      from,
+      Math.max(from, Math.floor(toSeq)),
+      Math.max(0, Math.floor(observedAfter))
+    ) as { last_observed_at?: number | null } | undefined;
+    const at = Number(row?.last_observed_at);
+    return Number.isFinite(at) && at > 0 ? at : null;
   }
 
   deferMissingRange(
@@ -11701,7 +12674,8 @@ export class ReticulumChatDatabase {
   getBackgroundMissingRangeCandidates(
     now: number,
     groupIds: Iterable<number>,
-    ownAddresses: Iterable<string>
+    ownAddresses: Iterable<string>,
+    oldBefore = 0
   ): {
     candidates: Map<number, ReticulumChatBackgroundMissingRangeCandidate>;
     staleGroupIds: number[];
@@ -11719,11 +12693,43 @@ export class ReticulumChatDatabase {
       [...ownAddresses].map((a) => String(a || '').trim()).filter(Boolean)
     );
     const safeNow = Math.max(0, Math.floor(now));
-    const rows = this.stmtGetBackgroundMissingRangeCandidates.all({
+    // GO (recentGapsFirst): oldBefore > 0 dates each row by its stored event
+    // at to_seq + 1, and rows older than that go after every other due row of
+    // their group, so a recent missing message does not wait behind hundreds
+    // of old rows that peers can no longer serve. A row with no stored
+    // neighbour counts as recent. 0 keeps the upstream statement and order.
+    const safeOldBefore = Math.max(0, Math.floor(Number(oldBefore) || 0));
+    const recentFirst = safeOldBefore > 0;
+    const params = {
       now: safeNow,
       group_ids: JSON.stringify([...groups]),
       own_addresses: JSON.stringify([...own]),
-    }) as ReticulumChatMissingRangeRow[];
+    };
+    const rows = (
+      recentFirst
+        ? this.backgroundMissingRangeCandidatesRecentFirst().all({
+            ...params,
+            old_before: safeOldBefore,
+          })
+        : this.stmtGetBackgroundMissingRangeCandidates.all(params)
+    ) as Array<ReticulumChatMissingRangeRow & { aged?: number }>;
+    const fromSql = new WeakSet<ReticulumChatMissingRangeState>();
+    const agedSql = new WeakSet<ReticulumChatMissingRangeState>();
+    // A mirror-only row has no date. It ranks with the old rows, so a mirror
+    // copy of a row SQL holds can never jump ahead of SQL's recent pick and
+    // cost an exact read each run (the mirror is not dated).
+    const isAged = (range: ReticulumChatMissingRangeState): boolean =>
+      recentFirst && (fromSql.has(range) ? agedSql.has(range) : true);
+    const scanOrder = (
+      a: ReticulumChatMissingRangeState,
+      b: ReticulumChatMissingRangeState
+    ): number => {
+      if (recentFirst) {
+        const aAged = isAged(a);
+        if (aAged !== isAged(b)) return aAged ? 1 : -1;
+      }
+      return compareMissingRangeScanOrder(a, b);
+    };
     const consider = (range: ReticulumChatMissingRangeState): void => {
       if (!groups.has(range.groupId) || range.nextAttemptAt > safeNow) return;
       const isOwn = own.has(range.authorAddress);
@@ -11735,13 +12741,12 @@ export class ReticulumChatDatabase {
         });
         return;
       }
-      if (compareMissingRangeScanOrder(range, entry.oldest) < 0) {
+      if (scanOrder(range, entry.oldest) < 0) {
         entry.oldest = range;
       }
       if (
         isOwn &&
-        (!entry.ownOldest ||
-          compareMissingRangeScanOrder(range, entry.ownOldest) < 0)
+        (!entry.ownOldest || scanOrder(range, entry.ownOldest) < 0)
       ) {
         entry.ownOldest = range;
       }
@@ -11749,6 +12754,10 @@ export class ReticulumChatDatabase {
     const sqlKeys = new Set<string>();
     for (const row of rows) {
       const state = this.missingRangeRowToState(row);
+      if (recentFirst) {
+        fromSql.add(state);
+        if (Number(row.aged) === 1) agedSql.add(state);
+      }
       const key = this.missingRangeKey(
         state.groupId,
         state.authorAddress,
@@ -11786,16 +12795,15 @@ export class ReticulumChatDatabase {
     }
     const held = new Set<number>();
     for (const [groupId, list] of mirrorOnly) {
-      list.sort((a, b) => compareMissingRangeScanOrder(a.range, b.range));
+      list.sort((a, b) => scanOrder(a.range, b.range));
       let checks = 0;
       for (const { key, range } of list) {
         const entry = candidates.get(groupId);
         const wins =
           !entry ||
-          compareMissingRangeScanOrder(range, entry.oldest) < 0 ||
+          scanOrder(range, entry.oldest) < 0 ||
           (own.has(range.authorAddress) &&
-            (!entry.ownOldest ||
-              compareMissingRangeScanOrder(range, entry.ownOldest) < 0));
+            (!entry.ownOldest || scanOrder(range, entry.ownOldest) < 0));
         if (!wins) continue;
         if (checks >= RETICULUM_CHAT_MISSING_RANGE_MIRROR_PICK_CHECKS) {
           held.add(groupId);
@@ -11828,6 +12836,67 @@ export class ReticulumChatDatabase {
       staleGroupIds: [...held].filter((g) => !candidates.has(g)),
       scanned,
     };
+  }
+
+  /**
+   * stmtGetBackgroundMissingRangeCandidates with old rows last in both picks:
+   * aged = 1 when the stored event at to_seq + 1 (the unique author-sequence
+   * index) is older than @old_before. Measured ~0.4 ms per run at 1,162 rows.
+   */
+  private backgroundMissingRangeCandidatesRecentFirst(): Statement {
+    if (!this.stmtGetBackgroundMissingRangeCandidatesRecentFirst) {
+      this.stmtGetBackgroundMissingRangeCandidatesRecentFirst = this.db
+        .prepare(`
+        SELECT group_id, author_address, author_stream_id, from_seq, to_seq,
+               preferred_peer, attempts, next_attempt_at, own_row, aged
+        FROM (
+          SELECT r.group_id, r.author_address, r.author_stream_id, r.from_seq,
+                 r.to_seq, r.preferred_peer, r.attempts, r.next_attempt_at,
+                 0 AS own_row,
+                 CASE WHEN h.timestamp IS NOT NULL AND h.timestamp < @old_before
+                      THEN 1 ELSE 0 END AS aged,
+                 ROW_NUMBER() OVER (
+                   PARTITION BY r.group_id
+                   ORDER BY CASE WHEN h.timestamp IS NOT NULL
+                                  AND h.timestamp < @old_before
+                                 THEN 1 ELSE 0 END ASC,
+                            r.next_attempt_at ASC, r.author_address ASC,
+                            r.author_stream_id ASC, r.from_seq ASC, r.to_seq ASC
+                 ) AS rn
+          FROM rchat_missing_stream_ranges r
+          LEFT JOIN rchat_event_headers h
+            ON h.group_id = r.group_id AND h.author_address = r.author_address
+           AND h.author_stream_id = r.author_stream_id
+           AND h.author_seq = r.to_seq + 1
+          WHERE r.next_attempt_at <= @now
+            AND r.group_id IN (SELECT value FROM json_each(@group_ids))
+          UNION ALL
+          SELECT o.group_id, o.author_address, o.author_stream_id, o.from_seq,
+                 o.to_seq, o.preferred_peer, o.attempts, o.next_attempt_at,
+                 1 AS own_row,
+                 CASE WHEN h2.timestamp IS NOT NULL AND h2.timestamp < @old_before
+                      THEN 1 ELSE 0 END AS aged,
+                 ROW_NUMBER() OVER (
+                   PARTITION BY o.group_id
+                   ORDER BY CASE WHEN h2.timestamp IS NOT NULL
+                                  AND h2.timestamp < @old_before
+                                 THEN 1 ELSE 0 END ASC,
+                            o.next_attempt_at ASC, o.author_address ASC,
+                            o.author_stream_id ASC, o.from_seq ASC, o.to_seq ASC
+                 ) AS rn
+          FROM rchat_missing_stream_ranges o
+          LEFT JOIN rchat_event_headers h2
+            ON h2.group_id = o.group_id AND h2.author_address = o.author_address
+           AND h2.author_stream_id = o.author_stream_id
+           AND h2.author_seq = o.to_seq + 1
+          WHERE o.next_attempt_at <= @now
+            AND o.group_id IN (SELECT value FROM json_each(@group_ids))
+            AND o.author_address IN (SELECT value FROM json_each(@own_addresses))
+        )
+        WHERE rn = 1
+      `);
+    }
+    return this.stmtGetBackgroundMissingRangeCandidatesRecentFirst;
   }
 
   /** Per group, the earliest next attempt of a row with a preferred peer. */
@@ -11896,6 +12965,7 @@ export class ReticulumChatDatabase {
       this.stmtCountMissingRangeStates = this.db.prepare(`
         WITH classified AS (
           SELECT r.from_seq AS from_seq,
+                 r.to_seq AS to_seq,
                  r.preferred_peer AS preferred_peer,
                  r.next_attempt_at AS next_attempt_at,
                  CASE WHEN r.group_id IN (SELECT value FROM json_each(@eligible_group_ids)) THEN 1 ELSE 0 END AS eligible,
@@ -11919,7 +12989,11 @@ export class ReticulumChatDatabase {
           COALESCE(SUM(CASE WHEN eligible = 1 AND parked = 0 AND next_attempt_at > @backoff_until THEN 1 ELSE 0 END), 0) AS quarantined,
           COALESCE(SUM(CASE WHEN from_seq = 1 THEN 1 ELSE 0 END), 0) AS from_seq_one,
           COALESCE(SUM(CASE WHEN TRIM(COALESCE(preferred_peer, '')) = '' THEN 1 ELSE 0 END), 0) AS no_peer,
-          COALESCE(SUM(CASE WHEN neighbour_ts IS NOT NULL AND neighbour_ts < @old_before THEN 1 ELSE 0 END), 0) AS older_than_serve_age
+          COALESCE(SUM(CASE WHEN neighbour_ts IS NOT NULL AND neighbour_ts < @old_before THEN 1 ELSE 0 END), 0) AS older_than_serve_age,
+          COALESCE(SUM(CASE WHEN neighbour_ts IS NOT NULL AND neighbour_ts < @old_before AND eligible = 1 AND parked = 0 AND next_attempt_at <= @now THEN 1 ELSE 0 END), 0) AS older_due,
+          COALESCE(SUM(CASE WHEN neighbour_ts IS NOT NULL AND neighbour_ts < @old_before AND eligible = 1 AND parked = 1 THEN 1 ELSE 0 END), 0) AS older_parked,
+          COALESCE(SUM(CASE WHEN neighbour_ts IS NULL THEN 1 ELSE 0 END), 0) AS no_neighbour,
+          COALESCE(SUM(CASE WHEN neighbour_ts IS NOT NULL AND from_seq = to_seq AND from_seq > 1 THEN 1 ELSE 0 END), 0) AS single_seq_interior
         FROM classified
       `);
     }
@@ -11953,6 +13027,10 @@ export class ReticulumChatDatabase {
         fromSeqOne: Number(row.from_seq_one) || 0,
         noPeer: Number(row.no_peer) || 0,
         olderThanServeAge: Number(row.older_than_serve_age) || 0,
+        olderThanServeAgeDue: Number(row.older_due) || 0,
+        olderThanServeAgeParked: Number(row.older_parked) || 0,
+        noStoredNeighbour: Number(row.no_neighbour) || 0,
+        singleSeqInterior: Number(row.single_seq_interior) || 0,
         topGroups: topRows
           .map((top) => {
             const groupId = Number(top.group_id) || 0;
@@ -12020,6 +13098,96 @@ export class ReticulumChatDatabase {
         eligible: eligible.has(groupId),
       }));
     return counts;
+  }
+
+  /**
+   * Copy diagnostics: when the stored message at `seq` of an author stream
+   * was written (its own timestamp), or null when none is stored. One read
+   * on the unique (group, author, stream, seq) index; the session mirror is
+   * checked when SQL has no row.
+   */
+  getAuthorSeqTimestamp(
+    groupId: number,
+    authorAddress: string,
+    authorStreamId: string,
+    seq: number
+  ): number | null {
+    if (!Number.isInteger(seq) || seq <= 0) return null;
+    this.stmtGetAuthorSeqTimestamp ??= this.db.prepare(`
+      SELECT timestamp FROM rchat_event_headers
+      WHERE group_id = ? AND author_address = ? AND author_stream_id = ?
+        AND author_seq = ?
+      LIMIT 1
+    `);
+    const row = this.stmtGetAuthorSeqTimestamp.get(
+      groupId,
+      authorAddress,
+      authorStreamId,
+      seq
+    ) as { timestamp?: unknown } | undefined;
+    const at = Number(row?.timestamp);
+    if (row && Number.isFinite(at)) return at;
+    for (const event of this.memoryEvents.eventsInGroup(groupId)) {
+      if (
+        event.authorAddress === authorAddress &&
+        normalizeReticulumChatAuthorStreamId(event.authorStreamId) ===
+          authorStreamId &&
+        event.authorSeq === seq
+      ) {
+        return event.timestamp;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Copy diagnostics: database file size from its page counts (cheap), and
+   * the stored event and search row counts. The counts walk an index, so
+   * they are read once per open, on the first call (not at boot, where they
+   * would delay the engine start), and then reported with their time.
+   */
+  getStorageDiagnostics(now = Date.now()): {
+    sizeBytes: number | null;
+    freeBytes: number | null;
+    events: number | null;
+    searchRows: number | null;
+    countedAt: number;
+  } {
+    const pragmaNumber = (name: string): number | null => {
+      try {
+        const value = Number(this.db.pragma(name, { simple: true }));
+        return Number.isFinite(value) ? value : null;
+      } catch {
+        return null;
+      }
+    };
+    const pageSize = pragmaNumber('page_size');
+    const pageCount = pragmaNumber('page_count');
+    const freePages = pragmaNumber('freelist_count');
+    const count = (sql: string): number | null => {
+      try {
+        const value = Number(
+          (this.db.prepare(sql).get() as { n?: unknown } | undefined)?.n
+        );
+        return Number.isFinite(value) ? value : null;
+      } catch {
+        return null;
+      }
+    };
+    this.storageRowCounts ??= {
+      events: count('SELECT COUNT(*) AS n FROM rchat_event_headers'),
+      searchRows: count(
+        'SELECT COUNT(*) AS n FROM reticulum_chat_search_index'
+      ),
+      countedAt: now,
+    };
+    return {
+      sizeBytes:
+        pageSize != null && pageCount != null ? pageSize * pageCount : null,
+      freeBytes:
+        pageSize != null && freePages != null ? pageSize * freePages : null,
+      ...this.storageRowCounts,
+    };
   }
 
   getAuthorMaxSeq(
@@ -13362,12 +14530,23 @@ export class ReticulumChatDatabase {
       const groupId = Number(row.group_id);
       if (Number.isInteger(groupId) && groupId > 0) groupIds.add(groupId);
     }
-    for (const event of this.memoryEvents.values()) {
-      if (Number.isInteger(event.groupId) && event.groupId > 0) {
-        groupIds.add(event.groupId);
-      }
+    for (const groupId of this.memoryEvents.groupIds()) {
+      if (Number.isInteger(groupId) && groupId > 0) groupIds.add(groupId);
     }
     return [...groupIds].sort((a, b) => a - b);
+  }
+
+  /**
+   * Whether getKnownGroupIds() would list groupId: one indexed row lookup
+   * instead of listing every group.
+   */
+  hasGroupEvents(groupId: number): boolean {
+    if (!Number.isInteger(groupId) || groupId <= 0) return false;
+    if (this.stmtHasGroupEvents.get(groupId)) return true;
+    for (const event of this.memoryEvents.values()) {
+      if (event.groupId === groupId) return true;
+    }
+    return false;
   }
 
   getPublicGroupActivityRecords(
@@ -13543,7 +14722,7 @@ export class ReticulumChatDatabase {
     for (const channel of this.getChannels(groupId, false)) {
       channels.add(channel.channelId);
     }
-    for (const event of this.memoryEvents.values()) {
+    for (const event of this.memoryEvents.eventsInGroup(groupId)) {
       if (event.groupId !== groupId) continue;
       const channelId = normalizeReticulumChatChannelId(event.channelId);
       if (!archivedChannels.has(channelId)) channels.add(channelId);
@@ -13914,7 +15093,7 @@ export class ReticulumChatDatabase {
         }
         collectTargetCandidate(event);
       }
-      for (const event of this.memoryEvents.values()) {
+      for (const event of this.memoryEvents.eventsInGroup(groupId)) {
         if (
           event.groupId !== groupId ||
           normalizeReticulumChatChannelId(event.channelId) !==
@@ -15428,6 +16607,14 @@ export class ReticulumChatDatabase {
       'rchat_author_sequence_leases',
       'owner_pid',
       `ALTER TABLE rchat_author_sequence_leases ADD COLUMN owner_pid INTEGER NOT NULL DEFAULT 0`
+    );
+    // Explicit provider denials in a row for one gap row (GO backs off on it,
+    // see noteMissingRangeDenial). Desktop never writes it; the default keeps
+    // every existing statement and an older build reading this file working.
+    this.ensureColumn(
+      'rchat_missing_stream_ranges',
+      'denial_streak',
+      `ALTER TABLE rchat_missing_stream_ranges ADD COLUMN denial_streak INTEGER NOT NULL DEFAULT 0`
     );
   }
 

@@ -180,6 +180,9 @@ public final class BackgroundKeepAlive {
     private boolean activityStopped;
     private long stoppedAtMs;
     private boolean outboxPending;
+    /** A call dials or runs / an incoming call rings (CallSession). */
+    private boolean callActive;
+    private boolean callRinging;
     private boolean sessionActive;
     private boolean suspended;
     private boolean serviceRunning;
@@ -326,6 +329,21 @@ public final class BackgroundKeepAlive {
         requestEvaluate();
     }
 
+    /**
+     * A call dials or runs, or an incoming call rings (CallSession): keeps the
+     * page running off screen in every mode, holds the CPU awake and skips
+     * GO's battery pause (KeepAlivePolicy.callNeedsPage).
+     */
+    public void setCallState(boolean active, boolean ringing) {
+        synchronized (this) {
+            if (callActive == active && callRinging == ringing) return;
+            callActive = active;
+            callRinging = ringing;
+        }
+        Log.i(TAG, "Call state for keep-alive: active=" + active + " ringing=" + ringing);
+        requestEvaluate();
+    }
+
     /** Kept for older pages; harmless (the flag is never set any more). */
     public void acknowledgeVendorFreezeHint() {
         prefs.edit().remove(KEY_FREEZE_HINT_PENDING).apply();
@@ -456,6 +474,8 @@ public final class BackgroundKeepAlive {
         in.unpluggedAtMs = battery.unpluggedAtMs();
         in.suspended = suspended;
         in.sdkInt = Build.VERSION.SDK_INT;
+        in.callActive = callActive;
+        in.callRinging = callRinging;
         return in;
     }
 
@@ -511,6 +531,8 @@ public final class BackgroundKeepAlive {
             in.outboxPending = outboxPending;
             in.sessionActive = sessionActive && webView != null;
             in.suspended = suspended;
+            in.callActive = callActive;
+            in.callRinging = callRinging;
             keep = KeepAlivePolicy.shouldKeepVisible(in);
             holdLock = serviceRunning && KeepAlivePolicy.shouldHoldWakeLock(in);
             stopped = activityStopped;

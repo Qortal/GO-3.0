@@ -24,6 +24,7 @@ import { isGoLayout } from '../../layout/goLayout';
 import type { TabFolder } from './mobileTabOrganization';
 import type { OpenTab } from './useOpenTabs';
 import { isDevZipTab } from './devMode/devModeApp';
+import { useCloseWithGoWindows } from '../../utils/closeGoWindows';
 
 type OptionRowProps = {
   icon: typeof CreateNewFolderRoundedIcon;
@@ -129,6 +130,7 @@ export function MobileTabOptionsDialog({
   onRestoreName,
 }: MobileTabOptionsDialogProps) {
   const theme = useTheme();
+  useCloseWithGoWindows(open, onClose);
   const isInternal = Boolean(tab?.internal);
   // A Dev Mode app lives in memory only: no folder, no qortal:// address.
   const isDevZip = isDevZipTab(tab);

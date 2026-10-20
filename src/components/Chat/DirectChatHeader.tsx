@@ -35,6 +35,12 @@ import {
   HOVER_CAPABLE_MEDIA,
 } from './chatHeaderActionStyles';
 import { useAvatarPreviewSrc } from './useAvatarPreviewSrc';
+import { isGoCallUi } from '../Mobile/call/goCallUi';
+import {
+  isCallNetworkWarmingUp,
+  openGoCallScreen,
+  showCallHint,
+} from '../Mobile/call/callHints';
 
 /** Partner picture in the phone DM header, the size of the group's. */
 export const DIRECT_HEADER_AVATAR_PX = 36;
@@ -238,6 +244,28 @@ export function DirectChatHeader({
             : t('group:dm.start_voice_call', {
                 postProcess: 'capitalizeFirstChar',
               });
+  // GO: a greyed call button has no hover tooltip on a phone, so a tap on it
+  // says why (the network is still warming up, offline, not a friend); while
+  // ringing out it brings the call screen back. The Hub keeps its tooltip.
+  const onDisabledCallTap =
+    callDisabled && isGoCallUi()
+      ? () => {
+          if (call.ringing) {
+            openGoCallScreen();
+            return;
+          }
+          // Warming up (peers receiving, not steady yet): "try again
+          // shortly". No receiving peers at all: the Hub's own reason.
+          showCallHint(
+            peerOnline &&
+              !call.blockedByFriend &&
+              call.blockedByP2p &&
+              isCallNetworkWarmingUp()
+              ? t('core:go_call.calls_not_ready')
+              : callTooltip
+          );
+        }
+      : undefined;
   const callLabel = call.connected
     ? t('group:dm.end_call', { postProcess: 'capitalizeFirstChar' })
     : t('group:dm.start_voice_call', { postProcess: 'capitalizeFirstChar' });
@@ -535,7 +563,11 @@ export function DirectChatHeader({
           </Tooltip>
           {call.enabled && (
             <Tooltip title={callTooltip}>
-              <Box component="span" sx={tooltipTargetSx}>
+              <Box
+                component="span"
+                sx={tooltipTargetSx}
+                onClick={onDisabledCallTap}
+              >
                 <IconButton
                   aria-label={callLabel}
                   size="small"

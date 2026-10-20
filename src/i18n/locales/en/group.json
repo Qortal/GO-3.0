@@ -251,6 +251,13 @@
     "blocked_public_node_title": "You're on a public node",
     "blocked_settings": "Blocked Accounts",
     "blocked_settings_description": "Manage blocked names and addresses for this wallet or across this device.",
+    "bottom_buttons": "Bottom buttons",
+    "bottom_buttons_apps": "Apps",
+    "bottom_buttons_chat": "Chat",
+    "bottom_buttons_desc": "Drag Home, Apps and Chat into the order you like. Swiping sideways between them follows the same order.",
+    "bottom_buttons_home": "Home",
+    "bottom_buttons_item_label": "{{name}}, {{place}} of {{total}}. Use the left and right arrow keys to move it.",
+    "bottom_buttons_reset": "Reset",
     "buy": "Buy",
     "change_node": "Change node",
     "close_action_update_error": "We could not update close window behavior right now.",
@@ -482,7 +489,9 @@
     "wallet_password": "Wallet password",
     "wallet_password_placeholder": "Enter your wallet password",
     "wallet_password_required": "Enter your wallet password to decrypt the private key.",
-    "wallet_unavailable_error": "Wallet data is unavailable right now."
+    "wallet_unavailable_error": "Wallet data is unavailable right now.",
+    "widgets_screen": "Widgets screen",
+    "widgets_screen_desc": "A screen left of the first section for widgets: small Q-Apps made for GO 3.0, like the time, the weather or news from Torq. Swipe right to get there."
   },
   "dm": {
     "add_friend_before_calling": "Add this user as a friend before calling",
@@ -1328,5 +1337,27 @@
     "intro_title": "A new foundation for Qortal conversations",
     "title": "What's new in Q-Chat",
     "version": "Version {{version}}"
+  },
+  "widgets": {
+    "add": "Add widget",
+    "add_short": "Add",
+    "added": "Added",
+    "by": "by {{name}}",
+    "done": "Done",
+    "empty_hint": "Later, hold a widget or an empty spot to add, move or resize widgets. Drag one down to Remove to take it away.",
+    "limit": "You can have up to {{max}} widgets.",
+    "open_app": "Open {{name}}",
+    "picker_developers": "Q-App developers: publish a widget as an APP with the tag go-widget, or with an identifier starting with go-widget.",
+    "picker_empty": "No widgets published yet.",
+    "picker_error": "Couldn't load the widgets. Check the node connection.",
+    "picker_none_found": "No widgets match.",
+    "picker_note": "Widgets are Q-Apps made for GO. They can show things and open apps, but they can't pay, publish or sign anything.",
+    "picker_search": "Search widgets",
+    "picker_title": "Add a widget",
+    "reload": "Reload",
+    "remove": "Remove",
+    "resize": "Resize",
+    "retry": "Try again",
+    "title": "Widgets"
   }
 }

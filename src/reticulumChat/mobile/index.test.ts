@@ -36,6 +36,18 @@ vi.mock('../../bridge/capacitorBridge', () => ({
   },
 }));
 vi.mock('../../App', () => ({ getBaseApiReact: () => 'http://127.0.0.1:1' }));
+// GrapheneOS's WebView JIT flag as NativeBcrypt.runtimeInfo reports it.
+const native = vi.hoisted(() => ({ jitRestricted: null as boolean | null }));
+vi.mock('../../utils/nativeBcrypt', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../utils/nativeBcrypt')>()),
+  getNativeBcryptRuntimeInfo: async () => ({
+    debuggable: false,
+    poolSize: 2,
+    cores: 4,
+    probeMs: 3,
+    webViewJitRestricted: native.jitRestricted,
+  }),
+}));
 vi.mock('../../plugins/Reticulum', () => ({ Reticulum: {} }));
 
 class FakeWorker {
@@ -74,6 +86,7 @@ beforeEach(async () => {
   vi.useFakeTimers();
   vi.resetModules();
   FakeWorker.instances = [];
+  native.jitRestricted = null;
   bridge.relayProfile = 'leaf';
   bridge.lifecycle = 'foreground';
   bridge.relayListeners = [];
@@ -117,6 +130,64 @@ describe('own outbox forwarding', () => {
     mod.stopMobileReticulumChat();
     worker.send({ t: 'own-outbox', pending: true });
     expect(reported).toEqual([true, false]);
+  });
+});
+
+describe('RPCs across an engine stop', () => {
+  it('rejects the ones the stopped worker never answered once it is terminated', async () => {
+    const worker = await startWorker();
+    const api = (window as any).reticulumChat;
+    const answered = api.getSubscriptions();
+    const unanswered = api.getDirectHistory('Qa', 'Qb', 50);
+    unanswered.catch(() => {});
+    await vi.advanceTimersByTimeAsync(0);
+    const rpcs = portPosts.filter((m) => m?.t === 'rpc');
+    const idOf = (method: string) => rpcs.find((m) => m.method === method).id;
+    mod.stopMobileReticulumChat();
+    // The stopping worker may still answer during its grace.
+    worker.send({
+      t: 'rpcres',
+      id: idOf('getSubscriptions'),
+      ok: true,
+      value: ['7'],
+    });
+    await expect(answered).resolves.toEqual(['7']);
+    let settled = false;
+    unanswered
+      .finally(() => {
+        settled = true;
+      })
+      .catch(() => {});
+    await vi.advanceTimersByTimeAsync(499);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(unanswered).rejects.toThrow('Reticulum chat engine stopped');
+  });
+});
+
+describe('RPC budget', () => {
+  async function timesOutAfter(): Promise<number> {
+    await startWorker();
+    const api = (window as any).reticulumChat;
+    let failedAt = 0;
+    const startedAt = Date.now();
+    api.getSubscriptions().catch(() => {
+      failedAt = Date.now();
+    });
+    for (let i = 0; i < 100 && !failedAt; i++) {
+      await vi.advanceTimersByTimeAsync(1_000);
+    }
+    return failedAt - startedAt;
+  }
+
+  it('is 45 s on a WebView with JIT', async () => {
+    native.jitRestricted = false;
+    expect(await timesOutAfter()).toBe(45_000);
+  });
+
+  it('is 90 s when GrapheneOS reports the WebView JIT off for GO', async () => {
+    native.jitRestricted = true;
+    expect(await timesOutAfter()).toBe(90_000);
   });
 });
 

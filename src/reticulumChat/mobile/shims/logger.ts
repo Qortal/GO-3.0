@@ -3,7 +3,13 @@
  * userData/logs via Node `fs`/`module`/`util`; on mobile we simply forward to
  * the worker console (surfaced in the WebView remote console during bring-up).
  */
-import { isEngineFaultLine } from '../engineLogFaults';
+import {
+  BOOT_FAULT_REPEAT_LINES_MAX,
+  BOOT_FAULT_REPEATS_PER_KEY,
+  BOOT_FAULT_REPEATS_PER_KIND,
+  bootFaultRepeatKey,
+  isEngineFaultLine,
+} from '../engineLogFaults';
 
 const PREFIX = '[MobileChat]';
 
@@ -27,6 +33,18 @@ const BOOT_FAULT_LINE_MAX_CHARS = 1_000;
 const bootFaultLogs: string[] = [];
 /** Fault lines not kept because the boot buffer was full. */
 let bootFaultOverflow = 0;
+/**
+ * Per-event fault lines (bootFaultRepeatKey) seen per kind and group; past
+ * BOOT_FAULT_REPEATS_PER_KEY they are only counted, so one group's channel
+ * skips cannot push every later fault out of the buffer. The per-kind and
+ * overall caps do the same for skips spread over many groups.
+ */
+const BOOT_FAULT_REPEAT_KEYS_MAX = 512;
+const bootFaultRepeats = new Map<string, number>();
+/** Per-event lines kept, per kind and in all. */
+const bootFaultRepeatKindsKept = new Map<string, number>();
+let bootFaultRepeatLinesKept = 0;
+let bootFaultRepeatsFolded = 0;
 /**
  * Lines per throttle key (`level:token`, no values) since boot, so a report
  * shows what the engine logged most even after the ring has cycled.
@@ -52,8 +70,26 @@ const remember = (level: string, args: unknown[]): void => {
       (level === 'warn' || level === 'error' || text.includes('deferred=')) &&
       isEngineFaultLine(line)
     ) {
-      if (bootFaultLogs.length < BOOT_FAULT_MAX) {
+      const repeatKey = bootFaultRepeatKey(text);
+      const seen = repeatKey ? (bootFaultRepeats.get(repeatKey) ?? 0) : 0;
+      if (repeatKey && bootFaultRepeats.size < BOOT_FAULT_REPEAT_KEYS_MAX) {
+        bootFaultRepeats.set(repeatKey, seen + 1);
+      }
+      const kind = repeatKey ? repeatKey.slice(0, repeatKey.indexOf('|')) : '';
+      const keptOfKind = kind ? (bootFaultRepeatKindsKept.get(kind) ?? 0) : 0;
+      if (
+        repeatKey &&
+        (seen >= BOOT_FAULT_REPEATS_PER_KEY ||
+          keptOfKind >= BOOT_FAULT_REPEATS_PER_KIND ||
+          bootFaultRepeatLinesKept >= BOOT_FAULT_REPEAT_LINES_MAX)
+      ) {
+        bootFaultRepeatsFolded += 1;
+      } else if (bootFaultLogs.length < BOOT_FAULT_MAX) {
         bootFaultLogs.push(line.slice(0, BOOT_FAULT_LINE_MAX_CHARS));
+        if (kind) {
+          bootFaultRepeatKindsKept.set(kind, keptOfKind + 1);
+          bootFaultRepeatLinesKept += 1;
+        }
       } else {
         bootFaultOverflow += 1;
       }
@@ -77,6 +113,8 @@ const remember = (level: string, args: unknown[]): void => {
 };
 export const getBootFaultLogs = (): string[] => [...bootFaultLogs];
 export const getBootFaultOverflow = (): number => bootFaultOverflow;
+/** Per-event fault lines counted but not kept (see bootFaultRepeatKey). */
+export const getBootFaultRepeatsFolded = (): number => bootFaultRepeatsFolded;
 export type LogKeyCount = {
   key: string;
   n: number;
@@ -98,6 +136,10 @@ export const __resetLoggerForTests = (): void => {
   recentLogs.length = 0;
   bootFaultLogs.length = 0;
   bootFaultOverflow = 0;
+  bootFaultRepeats.clear();
+  bootFaultRepeatKindsKept.clear();
+  bootFaultRepeatLinesKept = 0;
+  bootFaultRepeatsFolded = 0;
   logKeyCounts.clear();
   logKeyOverflow = 0;
 };

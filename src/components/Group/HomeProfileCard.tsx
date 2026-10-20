@@ -50,10 +50,14 @@ import VisibilityOffOutlinedIcon from '@mui/icons-material/VisibilityOffOutlined
 import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import { ImmersiveModeSetting } from '../Mobile/immersive/ImmersiveModeSetting';
+import { MobileTabOrderSetting } from '../Mobile/MobileTabOrderSetting';
+import { WidgetsScreenSetting } from '../Mobile/widgets/WidgetsScreenSetting';
+import { GoCallPrivacySetting } from '../Mobile/call/GoCallPrivacySetting';
 import { QortalCardSetting } from '../QortalCard/QortalCardSetting';
 import { DevModeSetting } from '../Mobile/devMode/DevModeSetting';
 import { canOpenDevZips } from '../Mobile/devMode/devModeApp';
 import { BACK_PRIORITY, useAndroidBack } from '../../utils/androidBack';
+import { useCloseWithGoWindows } from '../../utils/closeGoWindows';
 import { useSwipeBetweenTabs } from '../../hooks/useSwipeBetweenTabs';
 import { useAtom, useAtomValue, useSetAtom } from 'jotai';
 import { useTranslation } from 'react-i18next';
@@ -2219,6 +2223,23 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
       enabled: reticulumDisableConfirmOpen,
     }
   );
+  // A share from another app opens the chat lists over Settings' place.
+  // Home hides right after, and a hidden Home finishes the dialogs' fade only
+  // in idle time: until then an invisible dialog would cover Chat and take
+  // its taps. A new key drops them at once instead, without the fade.
+  const [settingsDialogsKey, setSettingsDialogsKey] = useState(0);
+  useCloseWithGoWindows(
+    isAccountSettingsOpen ||
+      isReticulumDetailsOpen ||
+      reticulumDisableConfirmOpen,
+    () => {
+      setReticulumDisableConfirmOpen(false);
+      if (isReticulumDetailsOpen) closeReticulumDetails();
+      if (isAccountSettingsOpen) closeAccountSettingsModal();
+      // A name change in flight keeps Settings open (and its dialog).
+      if (!isChangeNameLoading) setSettingsDialogsKey((key) => key + 1);
+    }
+  );
   const [settingsPageEl, setSettingsPageEl] = useState<HTMLElement | null>(
     null
   );
@@ -3022,6 +3043,7 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
       </Menu>
 
       <Dialog
+        key={`account-settings-${settingsDialogsKey}`}
         open={isAccountSettingsOpen}
         onClose={closeAccountSettingsModal}
         aria-labelledby="account-settings-dialog-title"
@@ -4780,7 +4802,31 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                     {/* Phones only: the bars it hides are GO's. */}
                     {isGoApp && (
                       <>
+                        {/* The widgets screen left of the first section. */}
+                        <WidgetsScreenSetting switchSx={settingsSwitchSx} />
+                        <Box
+                          sx={{
+                            borderTop: `1px solid ${avatarSectionDivider}`,
+                            mx: 1.35,
+                          }}
+                        />
+                        {/* The round Home, Apps and Chat buttons' order. */}
+                        <MobileTabOrderSetting />
+                        <Box
+                          sx={{
+                            borderTop: `1px solid ${avatarSectionDivider}`,
+                            mx: 1.35,
+                          }}
+                        />
                         <ImmersiveModeSetting />
+                        <Box
+                          sx={{
+                            borderTop: `1px solid ${avatarSectionDivider}`,
+                            mx: 1.35,
+                          }}
+                        />
+                        {/* Calls: Direct (WebRTC, IP visible) or Private. */}
+                        <GoCallPrivacySetting />
                         <Box
                           sx={{
                             borderTop: `1px solid ${avatarSectionDivider}`,
@@ -5472,6 +5518,7 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
       </Dialog>
 
       <Dialog
+        key={`reticulum-disable-${settingsDialogsKey}`}
         open={reticulumDisableConfirmOpen}
         onClose={() => setReticulumDisableConfirmOpen(false)}
         maxWidth="xs"
@@ -5516,6 +5563,7 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
       </Dialog>
 
       <Dialog
+        key={`reticulum-details-${settingsDialogsKey}`}
         open={isReticulumDetailsOpen}
         onClose={closeReticulumDetails}
         aria-labelledby="reticulum-details-dialog-title"

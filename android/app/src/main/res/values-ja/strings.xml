@@ -5,4 +5,23 @@
     <string name="share_target_directs">GO DM</string>
     <string name="share_target_self">GO 自分宛て</string>
     <string name="qortal_hce_description">GOの支払いリクエスト（テスト）</string>
+    <!-- Voice calls (CallNotifications). -->
+    <string name="call_channel_ringing_name">通話</string>
+    <string name="call_channel_ringing_description">音声通話の着信を端末の着信音で知らせます。</string>
+    <string name="call_channel_ongoing_name">通話中</string>
+    <string name="call_channel_ongoing_description">通話中の音声通話を表示します（ミュート・終了）。</string>
+    <string name="call_incoming_title">着信</string>
+    <string name="call_incoming_text">GO 音声通話</string>
+    <string name="call_action_accept">応答</string>
+    <string name="call_action_decline">拒否</string>
+    <string name="call_action_hang_up">終了</string>
+    <string name="call_action_leave">退出</string>
+    <string name="call_action_mute">ミュート</string>
+    <string name="call_action_unmute">ミュート解除</string>
+    <string name="call_status_calling">発信中…</string>
+    <string name="call_status_connecting">接続中…</string>
+    <string name="call_status_ongoing">通話中</string>
+    <string name="call_status_group">グループ通話</string>
+    <string name="call_status_muted">ミュート中</string>
+    <string name="call_unknown_caller">不明な発信者</string>
 </resources>

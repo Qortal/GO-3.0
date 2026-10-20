@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>GO Clock</title>
+    <!--
+      GO 3.0 widget example: a clock. One file, no build step.
+      Publish as an APP with the identifier "go-widget-clock" (or tag go-widget).
+      The whole contract: Qortal-Hub/docs/go-widgets.md (GO 3.0 widgets).
+    -->
+    <style>
+      :root {
+        --fg: #f2f4f8;
+        --muted: rgba(242, 244, 248, 0.62);
+        --accent: #7aa7f7;
+      }
+      :root[data-theme='light'] {
+        --fg: #15181e;
+        --muted: rgba(21, 24, 30, 0.6);
+        --accent: #2f6fe0;
+      }
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        /* GO draws the card behind the widget: stay see-through. */
+        background: transparent;
+        color: var(--fg);
+        font-family:
+          system-ui,
+          -apple-system,
+          'Segoe UI',
+          Roboto,
+          sans-serif;
+        overflow: hidden;
+        -webkit-tap-highlight-color: transparent;
+        user-select: none;
+      }
+      main {
+        box-sizing: border-box;
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 0.2em;
+        padding: 8px;
+        /* Scales with the widget's size: GO lets the user resize it. */
+        font-size: clamp(11px, min(9vw, 18vh), 40px);
+        text-align: center;
+        cursor: pointer;
+      }
+      .time {
+        font-size: 2.2em;
+        font-weight: 750;
+        font-variant-numeric: tabular-nums;
+        letter-spacing: -0.02em;
+        line-height: 1;
+      }
+      .seconds {
+        color: var(--accent);
+        font-size: 0.45em;
+        margin-left: 0.15em;
+        vertical-align: super;
+      }
+      .date {
+        color: var(--muted);
+        font-size: 0.62em;
+        font-weight: 600;
+      }
+      /* Opened as a normal app (not in GO's widgets screen). */
+      body.app main {
+        font-size: clamp(16px, 8vw, 64px);
+      }
+    </style>
+  </head>
+  <body>
+    <main id="clock" role="timer" aria-live="off">
+      <div class="time"><span id="hm">--:--</span><span id="s" class="seconds">--</span></div>
+      <div id="date" class="date"></div>
+    </main>
+    <script>
+      (() => {
+        const params = new URLSearchParams(location.search);
+        const inGo = params.get('goWidget') === '1';
+        const lang = params.get('lang') || navigator.language || 'en';
+        document.body.classList.toggle('app', !inGo);
+
+        const setTheme = (theme) => {
+          document.documentElement.dataset.theme = theme === 'light' ? 'light' : 'dark';
+        };
+        setTheme(params.get('theme'));
+
+        /**
+         * qortalRequest when Core's q-apps.js is there (always, when loaded
+         * from a node); a direct message to the parent otherwise (local dev).
+         */
+        const request = (data) => {
+          if (typeof window.qortalRequest === 'function') {
+            return window.qortalRequest(data);
+          }
+          return new Promise((resolve, reject) => {
+            const channel = new MessageChannel();
+            channel.port1.onmessage = ({ data: answer }) => {
+              channel.port1.close();
+              if (answer?.error) reject(answer.error);
+              else resolve(answer?.result);
+            };
+            window.parent.postMessage({ ...data, requestedHandler: 'UI' }, '*', [channel.port2]);
+          });
+        };
+
+        // 24 h or 12 h, remembered by the widget itself.
+        let hour12 = localStorage.getItem('go-clock-12h') === '1';
+        let visible = true;
+        let timer = null;
+
+        const hm = document.getElementById('hm');
+        const s = document.getElementById('s');
+        const date = document.getElementById('date');
+
+        const draw = () => {
+          const now = new Date();
+          hm.textContent = now.toLocaleTimeString(lang, {
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12,
+          });
+          s.textContent = String(now.getSeconds()).padStart(2, '0');
+          date.textContent = now.toLocaleDateString(lang, {
+            weekday: 'long',
+            day: 'numeric',
+            month: 'long',
+          });
+        };
+
+        // Ticks only while someone can see it (GO tells us; so does the page).
+        const run = () => {
+          clearTimeout(timer);
+          if (!visible || document.visibilityState === 'hidden') return;
+          draw();
+          timer = setTimeout(run, 1000 - (Date.now() % 1000));
+        };
+
+        window.addEventListener('message', (event) => {
+          const message = event.data || {};
+          if (message.action === 'GO_WIDGET_VISIBILITY') {
+            visible = Boolean(message.payload?.visible);
+            run();
+          } else if (message.action === 'THEME_CHANGED') {
+            setTheme(message.theme);
+          } else if (message.action === 'LANGUAGE_CHANGED' && message.language) {
+            // A new language: the next tick writes in it.
+          }
+        });
+        document.addEventListener('visibilitychange', run);
+
+        document.getElementById('clock').addEventListener('click', () => {
+          hour12 = !hour12;
+          localStorage.setItem('go-clock-12h', hour12 ? '1' : '0');
+          draw();
+        });
+
+        run();
+
+        // Our natural size: half the width, about 140 px tall. GO takes it
+        // until the user resizes the widget themselves.
+        if (inGo) {
+          request({ action: 'GO_WIDGET_SET_SIZE', width: 'half', height: 140 }).catch(() => {});
+        }
+      })();
+    </script>
+  </body>
+</html>

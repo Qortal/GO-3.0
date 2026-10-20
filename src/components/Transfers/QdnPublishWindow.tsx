@@ -58,6 +58,7 @@ import {
   type PublishWindowView,
 } from '../../qdn/publish/publishJobs';
 import { BACK_PRIORITY, useAndroidBack } from '../../utils/androidBack';
+import { useCloseWithGoWindows } from '../../utils/closeGoWindows';
 import { executeEvent } from '../../utils/events';
 import {
   SAFE_AREA_BOTTOM,
@@ -300,6 +301,8 @@ export function QdnPublishWindow({ enabled }: { enabled: boolean }) {
     },
     { priority: BACK_PRIORITY.dialog, enabled: enabled && view === 'expanded' }
   );
+  // Shrinks to its bubble (the publish goes on) when a share opens a chat.
+  useCloseWithGoWindows(enabled && view === 'expanded', minimizePublishWindow);
 
   // "Open <app>" when the app that publishes is not the one on screen.
   const { tabs, selectedTab } = useOpenTabs();

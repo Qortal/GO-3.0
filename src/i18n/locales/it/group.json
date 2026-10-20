@@ -251,6 +251,13 @@
     "blocked_public_node_title": "Stai usando un nodo pubblico",
     "blocked_settings": "Account bloccati",
     "blocked_settings_description": "Gestisci nomi e indirizzi bloccati per questo wallet o su questo dispositivo.",
+    "bottom_buttons": "Pulsanti in basso",
+    "bottom_buttons_apps": "App",
+    "bottom_buttons_chat": "Chat",
+    "bottom_buttons_desc": "Trascina Home, App e Chat nell’ordine che preferisci. Lo scorrimento laterale tra di essi segue lo stesso ordine.",
+    "bottom_buttons_home": "Home",
+    "bottom_buttons_item_label": "{{name}}, {{place}} di {{total}}. Usa le frecce sinistra e destra per spostarlo.",
+    "bottom_buttons_reset": "Ripristina",
     "buy": "Compra",
     "change_node": "Cambia nodo",
     "close_action_update_error": "Non è stato possibile aggiornare il comportamento alla chiusura della finestra in questo momento.",
@@ -482,7 +489,9 @@
     "wallet_password": "Password del wallet",
     "wallet_password_placeholder": "Inserisci la password del wallet",
     "wallet_password_required": "Inserisci la password del wallet per decifrare la chiave privata.",
-    "wallet_unavailable_error": "I dati del wallet non sono disponibili al momento."
+    "wallet_unavailable_error": "I dati del wallet non sono disponibili al momento.",
+    "widgets_screen": "Schermata widget",
+    "widgets_screen_desc": "Una schermata a sinistra della prima sezione per i widget: piccole Q-App fatte per GO 3.0, come l’ora, il meteo o le notizie da Torq. Scorri verso destra per arrivarci."
   },
   "dm": {
     "add_friend_before_calling": "Aggiungi questo utente agli amici prima di chiamare",
@@ -1322,5 +1331,27 @@
     "intro_title": "Una nuova base per le conversazioni Qortal",
     "title": "Novità di Q-Chat",
     "version": "Versione {{version}}"
+  },
+  "widgets": {
+    "add": "Aggiungi widget",
+    "add_short": "Aggiungi",
+    "added": "Aggiunto",
+    "by": "di {{name}}",
+    "done": "Fatto",
+    "empty_hint": "Poi tieni premuto un widget o uno spazio vuoto per aggiungere, spostare o ridimensionare. Trascinalo in basso su Rimuovi per toglierlo.",
+    "limit": "Puoi avere fino a {{max}} widget.",
+    "open_app": "Apri {{name}}",
+    "picker_developers": "Sviluppatori di Q-App: pubblicate un widget come APP con il tag go-widget, oppure con un identificatore che inizia con go-widget.",
+    "picker_empty": "Nessun widget ancora pubblicato.",
+    "picker_error": "Impossibile caricare i widget. Controlla la connessione al nodo.",
+    "picker_none_found": "Nessun widget corrisponde.",
+    "picker_note": "I widget sono Q-App fatte per GO. Possono mostrare cose e aprire app, ma non possono pagare, pubblicare o firmare nulla.",
+    "picker_search": "Cerca widget",
+    "picker_title": "Aggiungi un widget",
+    "reload": "Ricarica",
+    "remove": "Rimuovi",
+    "resize": "Ridimensiona",
+    "retry": "Riprova",
+    "title": "Widget"
   }
 }

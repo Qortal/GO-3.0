@@ -421,6 +421,38 @@ _RESOURCE_SESSION_LIVE_DM_INITIAL_RESPONSE_TIMEOUT_SECONDS = 30.0
 # the same instant that a valid authorization result arrives. Receivers retain
 # a longer compatibility deadline for older bridges that still use 30 seconds.
 _RESOURCE_SESSION_PROVIDER_AUTH_TIMEOUT_SECONDS = 15.0
+# A live event is often the only copy of someone's new message, and a slow
+# phone engine (WebView JIT off, a burst after a freeze) can need more than
+# 15 s to answer it. Every Hub release waits 60 s for a response, so give live
+# events 30 s. The cost is a longer hold on that Hub's one fast session to us,
+# so every other type keeps 15 s. The engine reads the deadline from the auth
+# (authDeadlineAtMs) and judges signature freshness at arrival, which keeps
+# 90 s of Hub dispatch plus this hold inside the 120 s signature limit.
+_RESOURCE_SESSION_PROVIDER_LIVE_EVENT_AUTH_TIMEOUT_SECONDS = 30.0
+# Engine-stalled breaker. When the engine has let this many waiters in a row
+# time out and has answered nothing for the silence below, a frozen or
+# backlogged worker would only hold each new history request for its full
+# window and then fail it. Refuse new history-class requests at once with the
+# existing busy reason, so the requesting Hub moves to another provider, and
+# let one through every probe interval to notice the engine coming back. Live
+# events, DM pages and requests for this account's own author data are never
+# refused here: a Hub retries a refused sole-holder event quickly and gives up
+# after a few attempts, and here GO is often the only holder.
+_PROVIDER_ENGINE_BREAKER_MIN_TIMEOUTS = 3
+_PROVIDER_ENGINE_BREAKER_SILENCE_SECONDS = 15.0
+_PROVIDER_ENGINE_BREAKER_PROBE_SECONDS = 5.0
+# Timeouts older than this are no evidence about the engine now: after a quiet
+# spell the next request goes to the engine instead of being refused on what
+# happened minutes ago. Probes and live events refresh it while stalled.
+_PROVIDER_ENGINE_BREAKER_EVIDENCE_MAX_AGE_SECONDS = 60.0
+_PROVIDER_ENGINE_BREAKER_LOGICAL_TYPES = frozenset(
+    {
+        "reticulum_chat_history_page",
+        "reticulum_chat_author_range",
+        "reticulum_chat_event_page",
+        "reticulum_chat_author_manifest",
+    }
+)
 _RESOURCE_SESSION_PRIMARY_IDLE_TIMEOUT_SECONDS = 2 * 60.0
 _RESOURCE_SESSION_OVERFLOW_IDLE_TIMEOUT_SECONDS = 30.0
 # Providers must not expire an incoming session before its requester-side
@@ -1419,6 +1451,26 @@ _provider_request_lag_window: Dict[str, Any] = {
     "dmMax": None,
 }
 _provider_refused_counts: Dict[str, int] = {"dm": 0, "history": 0, "other": 0}
+# The same refusals as "<dm|history|other>:<busy_kind>" (local reasons only,
+# never on the wire), for Copy diagnostics. Bounded: new keys past the cap
+# count under "<kind>:other".
+_provider_refused_by_busy_kind: Dict[str, int] = {}
+_PROVIDER_REFUSED_BUSY_KIND_KEYS_MAX = 32
+# Engine-stalled breaker state (see _PROVIDER_ENGINE_BREAKER_*). Guarded by
+# its own leaf lock: it is read inside _state_lock and never takes it.
+_provider_engine_breaker_lock = threading.Lock()
+_provider_engine_last_answer_mono: Optional[float] = None
+_provider_engine_last_timeout_mono = 0.0
+_provider_engine_timeout_streak = 0
+_provider_engine_breaker_open = False
+_provider_engine_breaker_last_probe_mono = 0.0
+_provider_engine_breaker_refused_since_open = 0
+_provider_engine_breaker_opens = 0
+# This account's Qortal address, from the local presence it publishes (an
+# "Appear offline" publish included); empty until the first publish and after
+# the bridge stops. Used only to keep the breaker away from requests for our
+# own author data.
+_provider_local_account_address = ""
 _gil_probe_lag_ms_max = 0.0
 _gil_probe_state_lock_wait_ms_max = 0.0
 _gil_probe_generation = 0
@@ -2312,6 +2364,9 @@ def _note_scheduler_complete(lane: str, name: str, queued_at: float, started_at:
         stats["queueDepth"] = q.qsize() if q is not None else int(stats.get("queueDepth") or 0)
         stats["completedTasks"] = int(stats.get("completedTasks") or 0) + 1
         stats["dwellMsMax"] = max(float(stats.get("dwellMsMax") or 0.0), dwell_ms)
+        if duration_ms > float(stats.get("busyMsMax") or 0.0):
+            # Copy diagnostics names the task behind the lane's worst run.
+            stats["busyMaxTask"] = str(name or "")[:80]
         stats["busyMsMax"] = max(float(stats.get("busyMsMax") or 0.0), duration_ms)
         stats["lastTask"] = str(name or "")[:80]
         if duration_ms >= _SCHEDULER_SLOW_TASK_LOG_THRESHOLD_MS:
@@ -22841,6 +22896,7 @@ def handle_publish_presence(req_id: str, payload: Dict[str, Any]) -> None:
         env_addr = ""
         if isinstance(env_payload, dict) and isinstance(env_payload.get("address"), str):
             env_addr = str(env_payload.get("address"))
+        _provider_note_local_account_address(env_type, env_addr)
         verbose_presence_log(
             "[presence_bridge] target=presence-reticulum publish_fanout "
             f"peers={len(peer_hashes)} local_presence_hash={local_hex} "
@@ -23126,6 +23182,9 @@ def handle_stop(req_id: str) -> None:
         _land_state_forwarding_plans = {}
         _land_state_auth_sessions = {}
         _land_state_forward_pending = {}
+    # The next session has a new engine and maybe a new account.
+    _provider_engine_breaker_reset()
+    _provider_forget_local_account_address()
     with _state_lock:
         _pinned_chat_overlay_peers.clear()
         _pinned_call_overlay_peers.clear()
@@ -26132,6 +26191,194 @@ def _resource_session_link_rtt_ms(link: Any) -> Optional[int]:
     return int(round(value))
 
 
+def _resource_session_provider_auth_window_seconds(logical_resource_type: str) -> float:
+    """How long this provider waits for the engine to answer one request."""
+    if str(logical_resource_type or "").strip().lower() == "reticulum_chat_live_event":
+        return float(_RESOURCE_SESSION_PROVIDER_LIVE_EVENT_AUTH_TIMEOUT_SECONDS)
+    return float(_RESOURCE_SESSION_PROVIDER_AUTH_TIMEOUT_SECONDS)
+
+
+def _provider_note_local_account_address(envelope_type: str, address: Any) -> None:
+    """Remember this account's address from the presence it publishes.
+
+    Every envelope type counts, PRESENCE_OFFLINE too: "Appear offline"
+    publishes OFFLINE (with the address) and then stops heartbeats, and this
+    account's own author data must still pass the breaker meanwhile. Only a
+    bridge stop forgets it (_provider_forget_local_account_address); a stale
+    address could only exempt that account's own data, which is harmless.
+    """
+    global _provider_local_account_address
+    del envelope_type  # kept for the call sites; the type no longer matters
+    value = str(address or "").strip() if isinstance(address, str) else ""
+    if value:
+        _provider_local_account_address = value
+
+
+def _provider_forget_local_account_address() -> None:
+    """The bridge stopped: the next session may be another account."""
+    global _provider_local_account_address
+    _provider_local_account_address = ""
+
+
+# Author ranges and author manifests can be for this account's own data;
+# history and event pages cover a whole channel or group.
+_PROVIDER_OWN_DATA_LOGICAL_TYPES = frozenset(
+    {
+        "reticulum_chat_author_range",
+        "reticulum_chat_author_manifest",
+    }
+)
+
+
+def _provider_auth_is_own_author_data(logical_resource_type: str, auth: Any) -> bool:
+    """True when a request is for this account's own data.
+
+    The same rule as the engine's isOwnHistoryServeRequest: an author range
+    or author manifest pulled by this account's own other device (the
+    request's authorAddress), or an author range of this account's own
+    stream (range.a). History pages and event pages cover a whole channel or
+    group, so Python cannot tell. The engine still verifies the signature.
+    """
+    logical = str(logical_resource_type or "").strip().lower()
+    if logical not in _PROVIDER_OWN_DATA_LOGICAL_TYPES:
+        return False
+    own = _provider_local_account_address
+    if not own or not isinstance(auth, dict):
+        return False
+    requester = auth.get("authorAddress")
+    if isinstance(requester, str) and requester.strip() == own:
+        return True
+    if logical != "reticulum_chat_author_range":
+        return False
+    requested = auth.get("range")
+    if not isinstance(requested, dict):
+        return False
+    author = requested.get("a")
+    return isinstance(author, str) and author.strip() == own
+
+
+def _provider_engine_breaker_note_answer(now: Optional[float] = None) -> None:
+    """The engine answered a waiting request (authorize or reject): it is alive."""
+    global _provider_engine_last_answer_mono, _provider_engine_timeout_streak
+    global _provider_engine_breaker_open, _provider_engine_breaker_refused_since_open
+    at = time.monotonic() if now is None else float(now)
+    closed_refused = -1
+    with _provider_engine_breaker_lock:
+        _provider_engine_last_answer_mono = at
+        _provider_engine_timeout_streak = 0
+        if _provider_engine_breaker_open:
+            _provider_engine_breaker_open = False
+            closed_refused = _provider_engine_breaker_refused_since_open
+            _provider_engine_breaker_refused_since_open = 0
+    if closed_refused >= 0:
+        log(
+            "[presence_bridge] provider_engine_breaker closed reason=engine_answered "
+            f"refused={closed_refused}"
+        )
+
+
+def _provider_engine_breaker_note_timeout(now: Optional[float] = None) -> None:
+    """A request ran out its window with no answer from the engine."""
+    global _provider_engine_timeout_streak, _provider_engine_last_timeout_mono
+    at = time.monotonic() if now is None else float(now)
+    with _provider_engine_breaker_lock:
+        _provider_engine_timeout_streak += 1
+        _provider_engine_last_timeout_mono = at
+
+
+def _provider_engine_breaker_refuses(
+    logical_resource_type: str,
+    auth: Any,
+    now: Optional[float] = None,
+) -> bool:
+    """True to refuse this request at once because the engine looks stalled.
+
+    Only history-class requests are refused. Live events, DM pages, other
+    types and our own author data (_provider_auth_is_own_author_data) always
+    reach the engine. While open, one
+    history-class request per probe interval still goes through, so an engine
+    that is back answers it and closes the breaker.
+    """
+    global _provider_engine_breaker_open, _provider_engine_breaker_last_probe_mono
+    global _provider_engine_breaker_refused_since_open, _provider_engine_breaker_opens
+    global _provider_engine_timeout_streak
+    logical = str(logical_resource_type or "").strip().lower()
+    if logical not in _PROVIDER_ENGINE_BREAKER_LOGICAL_TYPES:
+        return False
+    if _provider_auth_is_own_author_data(logical, auth):
+        return False
+    at = time.monotonic() if now is None else float(now)
+    log_line = ""
+    with _provider_engine_breaker_lock:
+        if (
+            _provider_engine_timeout_streak > 0
+            and at - _provider_engine_last_timeout_mono
+            > _PROVIDER_ENGINE_BREAKER_EVIDENCE_MAX_AGE_SECONDS
+        ):
+            _provider_engine_timeout_streak = 0
+            if _provider_engine_breaker_open:
+                _provider_engine_breaker_open = False
+                log_line = (
+                    "[presence_bridge] provider_engine_breaker closed reason=stale "
+                    f"refused={_provider_engine_breaker_refused_since_open}"
+                )
+                _provider_engine_breaker_refused_since_open = 0
+        last_answer = _provider_engine_last_answer_mono
+        stalled = _provider_engine_timeout_streak >= _PROVIDER_ENGINE_BREAKER_MIN_TIMEOUTS and (
+            last_answer is None
+            or at - last_answer >= _PROVIDER_ENGINE_BREAKER_SILENCE_SECONDS
+        )
+        if not stalled:
+            refuse = False
+        elif not _provider_engine_breaker_open:
+            _provider_engine_breaker_open = True
+            _provider_engine_breaker_opens += 1
+            _provider_engine_breaker_refused_since_open = 1
+            _provider_engine_breaker_last_probe_mono = at
+            silence = "n/a" if last_answer is None else str(int((at - last_answer) * 1000))
+            log_line = (
+                "[presence_bridge] provider_engine_breaker opened "
+                f"timeouts={_provider_engine_timeout_streak} silence_ms={silence} "
+                f"opens={_provider_engine_breaker_opens}"
+            )
+            refuse = True
+        elif at - _provider_engine_breaker_last_probe_mono >= _PROVIDER_ENGINE_BREAKER_PROBE_SECONDS:
+            # Probe: this one goes to the engine.
+            _provider_engine_breaker_last_probe_mono = at
+            refuse = False
+        else:
+            _provider_engine_breaker_refused_since_open += 1
+            refuse = True
+    if log_line:
+        log(log_line)
+    return refuse
+
+
+def _provider_engine_breaker_reset() -> None:
+    """Forget the engine's history (bridge stop): a new session starts closed."""
+    global _provider_engine_last_answer_mono, _provider_engine_timeout_streak
+    global _provider_engine_breaker_open, _provider_engine_breaker_last_probe_mono
+    global _provider_engine_breaker_refused_since_open, _provider_engine_last_timeout_mono
+    with _provider_engine_breaker_lock:
+        _provider_engine_last_answer_mono = None
+        _provider_engine_last_timeout_mono = 0.0
+        _provider_engine_timeout_streak = 0
+        _provider_engine_breaker_open = False
+        _provider_engine_breaker_last_probe_mono = 0.0
+        _provider_engine_breaker_refused_since_open = 0
+
+
+def _provider_engine_breaker_snapshot() -> Dict[str, Any]:
+    """Breaker state for diagnostics and tests."""
+    with _provider_engine_breaker_lock:
+        return {
+            "open": bool(_provider_engine_breaker_open),
+            "opens": int(_provider_engine_breaker_opens),
+            "timeoutStreak": int(_provider_engine_timeout_streak),
+            "refusedSinceOpen": int(_provider_engine_breaker_refused_since_open),
+        }
+
+
 def _resource_session_provider_note_refusal(
     peer_hash: str,
     transfer_id: str,
@@ -26149,9 +26396,21 @@ def _resource_session_provider_note_refusal(
     so the line goes straight to stderr, past log()'s per-kind rate limit.
     The wire reason is unchanged; busy_kind is local only.
     """
-    _note_provider_refused(
-        "dm" if dm_page else ("history" if history_budget else "other")
-    )
+    kind = "dm" if dm_page else ("history" if history_budget else "other")
+    _note_provider_refused(kind)
+    busy_key = str(busy_kind or "unknown").strip().lower()[:32] or "unknown"
+    if not all(c.isalnum() or c in "_-" for c in busy_key):
+        busy_key = "unknown"
+    with _scheduler_stats_lock:
+        key = f"{kind}:{busy_key}"
+        if (
+            key not in _provider_refused_by_busy_kind
+            and len(_provider_refused_by_busy_kind) >= _PROVIDER_REFUSED_BUSY_KIND_KEYS_MAX
+        ):
+            key = f"{kind}:other"
+        _provider_refused_by_busy_kind[key] = (
+            int(_provider_refused_by_busy_kind.get(key) or 0) + 1
+        )
     if not dm_page:
         return
     peer_key = str(peer_hash or "").strip().lower()
@@ -26287,6 +26546,21 @@ def _resource_session_response_generator(
                 f"generation={int(state.get('generation') or 0)} "
                 f"logical={_resource_session_trace_logical_type({'resourceType': resource_type, 'metadata': metadata})}"
             )
+        # Before taking a Link slot: a stalled engine would only hold this
+        # request for its whole window. Same wire reason as the other caps.
+        if _provider_engine_breaker_refuses(logical_resource_type, auth):
+            _resource_session_provider_note_refusal(
+                identified_peer_hash,
+                transfer_id,
+                "resource_provider_busy",
+                "engine_stalled",
+                is_dm_page,
+                history_budget_request,
+                arrived_at_ms,
+                requested_at_ms,
+                None,
+            )
+            return {"ok": False, "reason": "resource_provider_busy"}
         slot_detail: Dict[str, Any] = {}
         slot_started_at = time.monotonic()
         link_slot_reason = _resource_session_provider_acquire_link_slot(
@@ -26435,7 +26709,14 @@ def _resource_session_response_generator(
         # all on this device's wall clock except requestedAtMs, which is the
         # requester's own stamp).
         auth_started_at_ms = _now_wall_ms()
+        auth_window_seconds = _resource_session_provider_auth_window_seconds(
+            logical_resource_type
+        )
+        # When this waiter gives up (same clock as authStartedAtMs), so the
+        # engine stops work on it at the right time for each type.
+        auth_deadline_at_ms = auth_started_at_ms + int(auth_window_seconds * 1000)
         waiter["authStartedAtMs"] = auth_started_at_ms
+        waiter["authDeadlineAtMs"] = auth_deadline_at_ms
         auth_payload: Dict[str, Any] = {
             "linkId": link_id,
             "transferId": transfer_id,
@@ -26451,13 +26732,16 @@ def _resource_session_response_generator(
             "pendingAuthTotal": pending_auth_total,
             "pendingAuthPeer": pending_auth_peer,
             "authStartedAtMs": auth_started_at_ms,
+            "authDeadlineAtMs": auth_deadline_at_ms,
         }
         if requested_at_ms is not None:
             auth_payload["requestedAtMs"] = requested_at_ms
         if link_rtt_ms is not None:
             auth_payload["linkRttMs"] = link_rtt_ms
         _qchat_file_emit("auth", auth_payload)
-        if not waiter["event"].wait(_RESOURCE_SESSION_PROVIDER_AUTH_TIMEOUT_SECONDS):
+        if not waiter["event"].wait(auth_window_seconds):
+            if waiter.get("engineAnswered") is not True:
+                _provider_engine_breaker_note_timeout()
             _resource_session_provider_emit_auth_ended(
                 waiter,
                 "resource_authorization_timeout",
@@ -26973,6 +27257,7 @@ def handle_authorize_qchat_file_resource(req_id: str, payload: Dict[str, Any]) -
         waiter["authorized"] = True
         waiter["reason"] = ""
         waiter["event"].set()
+        _provider_engine_breaker_note_answer()
         _qchat_file_emit(
             "authorized",
             {
@@ -27047,6 +27332,7 @@ def handle_reject_qchat_file_resource(req_id: str, payload: Dict[str, Any]) -> N
         waiter["authorized"] = False
         waiter["reason"] = reason
         waiter["event"].set()
+        _provider_engine_breaker_note_answer()
         emit_resp(req_id, True)
         return
     link = state.get("link")

@@ -33,8 +33,6 @@ import { cleanFileName } from '../utils/receivedFileName';
 import { setUnlockDeviceProbe } from '../utils/unlockTimings';
 import { P2P_HEALTH_RECEIVING_STABLE_MS } from '../lib/p2pHealth';
 import {
-  encodeJoinWire,
-  encodeJoinIdentityWire,
   encodeLeaveWire,
   encodeKeyWire,
   encodeKeyRequestWire,
@@ -46,13 +44,48 @@ import {
   parseFragmentMeta,
   parseFragmentPart,
   reassembleBody,
-  isGroupCallReticulumWireType,
+  isGroupCallLinkControlFragmentType,
+  isIgnoredGroupCallWireType,
+  rnsDestinationHashFromWire,
   uint8ToBase64,
   base64ToUint8,
   type GcKeyDecoded,
   type GcKeyRequestDecoded,
   type FragmentMeta,
 } from './groupCallWire';
+import {
+  buildCallRejectSignatures,
+  buildGacPongPayload,
+  buildGroupCallJoinWires,
+  classifyAudioLinkPayload,
+  dmAudioLinkOpenDelayMs,
+  encodeGcLinkControlFrame,
+  getRouteBoundCallDestinationHash,
+  isLinkAuthAcceptedEvidence,
+  parseGroupCallJoinArgs,
+  prunePendingIncoming,
+  resolveSignedJoinGeneration,
+} from './callBridgeHelpers';
+import {
+  createLazyHubCallApis,
+  type LazyHubCallApis,
+} from './hubCall/lazyHubCallApis';
+import type { HostedCallStack } from './hubCall/hostedCallManagers';
+// No deps (MessageChannel macrotasks, unthrottled in a hidden page).
+import { sharedMacrotaskQueue } from './hubCall/macrotask';
+import type {
+  HubCallPythonTransport,
+  PythonEventFrame,
+  PythonRespFrame,
+} from './hubCall/pythonTransport';
+import type { MobilePresenceSource } from './hubCall/mobilePresenceAdapter';
+import {
+  isWebRtcCallTransportAllowed,
+  subscribeCallTransportPreference,
+} from './callTransportPreference';
+import { installWebRtcPrivacyGuard } from './webrtcPrivacy';
+import { createCommunityStunCache } from './communityStunCache';
+import { setNativeRingAddresses } from './nativeCallSession';
 
 /**
  * True when running inside the native Capacitor Android/iOS WebView. Not on
@@ -726,6 +759,63 @@ const asUserStatus = (v: unknown): UserStatus | null =>
   v === 'online' || v === 'busy' || v === 'idle' ? v : null;
 
 /**
+ * Window event for python's `gcall_control_bundle_result` (one per WebRTC
+ * signal bundle on a call link's control channel, qortal_presence_host.py).
+ * The audio surface re-offers or re-answers at once when a bundle could not
+ * be sent before the Hub's signal TTL, instead of waiting for a watchdog.
+ * detail: { signalId, signalType, ok, reason, roomId, sent, total, ageMs }.
+ */
+export const GO_GCALL_CONTROL_BUNDLE_RESULT_EVENT =
+  'go-gcall-control-bundle-result';
+
+export type GoGcallControlBundleResult = {
+  signalId: string;
+  signalType: string;
+  /**
+   * Inner signal kind: 'description' (voice) or 'screen-description'
+   * (screen share) both travel as signalType 'offer'/'answer'; '' if unknown.
+   */
+  signalKind: string;
+  ok: boolean;
+  reason: string;
+  roomId: string;
+  sent: number;
+  total: number;
+  ageMs: number;
+};
+
+/** Validate one python bundle result and dispatch it on window. */
+export function forwardGcallControlBundleResult(payload: unknown): boolean {
+  const p = asObject(payload);
+  const signalType = asString(p?.signalType);
+  const roomId = asString(p?.roomId);
+  if (!p || !signalType || roomId === undefined || typeof p.ok !== 'boolean') {
+    return false;
+  }
+  const count = (v: unknown): number =>
+    typeof v === 'number' && Number.isFinite(v) ? v : 0;
+  const detail: GoGcallControlBundleResult = {
+    signalId: asString(p.signalId) ?? '',
+    signalType,
+    signalKind: asString(p.signalKind) ?? '',
+    ok: p.ok,
+    reason: asString(p.reason) ?? '',
+    roomId,
+    sent: count(p.sent),
+    total: count(p.total),
+    ageMs: count(p.ageMs),
+  };
+  if (typeof window === 'undefined') return false;
+  window.dispatchEvent(
+    new CustomEvent<GoGcallControlBundleResult>(
+      GO_GCALL_CONTROL_BUNDLE_RESULT_EVENT,
+      { detail }
+    )
+  );
+  return true;
+}
+
+/**
  * Reticulum overlay health snapshot for the mobile shell.
  *
  * The desktop renderer reads `window.electronAPI.reticulumGetStatus()` to drive
@@ -971,38 +1061,197 @@ const resolveCommandResp = (frame: Record<string, unknown>): void => {
   if (resolve) resolve(frame);
 };
 
-const communityIceServers: { urls: string }[] = [];
+/**
+ * Announced community STUN servers WebRTC uses. `expiresAt` is the
+ * announcement's own expiry (ms; 0 = none given) and is checked on every
+ * read, so a server whose contributor stopped announcing leaves the list
+ * within its TTL (python accepts at most 1 h). `seenAt` > 0 marks a server
+ * learned from a single `community_stun_endpoint` event.
+ */
+type CommunityIceServer = { urls: string; expiresAt: number; seenAt: number };
+const communityIceServers: CommunityIceServer[] = [];
 
-const iceUrlFromEndpoint = (value: unknown): string => {
-  if (!value || typeof value !== 'object') return '';
-  const endpoint = value as { host?: unknown; port?: unknown; expiresAt?: unknown };
+const communityIceServerFromEndpoint = (
+  value: unknown,
+  now: number,
+  seenAt: number
+): CommunityIceServer | null => {
+  if (!value || typeof value !== 'object') return null;
+  const endpoint = value as {
+    host?: unknown;
+    port?: unknown;
+    expiresAt?: unknown;
+  };
   const host = typeof endpoint.host === 'string' ? endpoint.host.trim() : '';
   const port = Number(endpoint.port);
-  if (!host || !Number.isFinite(port) || port < 1 || port > 65535) return '';
-  if (
+  if (!host || !Number.isFinite(port) || port < 1 || port > 65535) return null;
+  const expiresAt =
     typeof endpoint.expiresAt === 'number' &&
-    endpoint.expiresAt > 0 &&
-    endpoint.expiresAt <= Date.now()
-  ) {
-    return '';
-  }
-  return `stun:${host}:${port}`;
+    Number.isFinite(endpoint.expiresAt) &&
+    endpoint.expiresAt > 0
+      ? endpoint.expiresAt
+      : 0;
+  if (expiresAt > 0 && expiresAt <= now) return null;
+  return { urls: `stun:${host}:${port}`, expiresAt, seenAt };
 };
 
-const rememberCommunityIceServers = (endpoints: unknown): { urls: string }[] => {
-  if (!Array.isArray(endpoints)) return communityIceServers;
-  const next: { urls: string }[] = [];
-  const seen = new Set<string>();
+const isLiveCommunityIceServer = (
+  server: CommunityIceServer,
+  now: number
+): boolean => server.expiresAt <= 0 || server.expiresAt > now;
+
+/** Hub stun-coordinator.ts keeps its top 6; more only slows ICE gathering. */
+const MAX_COMMUNITY_ICE_SERVERS = 6;
+
+/** The live list as RTCPeerConnection takes it (`{urls}` only); prunes expired. */
+const liveCommunityIceServers = (): { urls: string }[] => {
+  const now = Date.now();
+  const live = communityIceServers.filter((server) =>
+    isLiveCommunityIceServer(server, now)
+  );
+  if (live.length !== communityIceServers.length) {
+    communityIceServers.splice(0, communityIceServers.length, ...live);
+  }
+  return live.map((server) => ({ urls: server.urls }));
+};
+
+/**
+ * One announced endpoint (`community_stun_endpoint` event): newest first,
+ * the older live servers kept behind it, deduped, at most
+ * MAX_COMMUNITY_ICE_SERVERS. (Such an event used to replace the whole list
+ * with that one server.)
+ */
+const rememberCommunityIceEndpoint = (endpoint: unknown): void => {
+  const now = Date.now();
+  const server = communityIceServerFromEndpoint(endpoint, now, now);
+  if (!server) return;
+  const next = [
+    server,
+    ...communityIceServers.filter(
+      (old) => old.urls !== server.urls && isLiveCommunityIceServer(old, now)
+    ),
+  ];
+  communityIceServers.splice(
+    0,
+    communityIceServers.length,
+    ...next.slice(0, MAX_COMMUNITY_ICE_SERVERS)
+  );
+};
+
+/**
+ * Python's `get_community_stun_endpoints` reply is the complete live list (it
+ * prunes expired endpoints first, presence_bridge.py
+ * handle_get_community_stun_endpoints), so it REPLACES ours: a server that
+ * is no longer announced drops out. Python lists first-seen first (a
+ * re-announce keeps its slot but gets a later expiry), so the latest expiry
+ * goes first before the cap. Kept besides the reply: servers that single
+ * events announced after the request was sent (the reply may predate them).
+ * An empty reply keeps the cached live servers, as before (python just
+ * restarted, discovery answers still on their way).
+ */
+const replaceCommunityIceServers = (
+  endpoints: unknown,
+  requestedAt: number
+): void => {
+  if (!Array.isArray(endpoints)) return;
+  const now = Date.now();
+  const byUrl = new Map<string, CommunityIceServer>();
   for (const endpoint of endpoints) {
-    const url = iceUrlFromEndpoint(endpoint);
-    if (!url || seen.has(url)) continue;
-    seen.add(url);
-    next.push({ urls: url });
+    const server = communityIceServerFromEndpoint(endpoint, now, 0);
+    if (!server) continue;
+    const previous = byUrl.get(server.urls);
+    if (!previous || server.expiresAt > previous.expiresAt) {
+      byUrl.set(server.urls, server);
+    }
   }
-  if (next.length > 0) {
-    communityIceServers.splice(0, communityIceServers.length, ...next);
+  if (byUrl.size === 0) return;
+  const fromReply = [...byUrl.values()].sort(
+    (a, b) => b.expiresAt - a.expiresAt
+  );
+  const announcedSince = communityIceServers.filter(
+    (server) =>
+      server.seenAt >= requestedAt &&
+      !byUrl.has(server.urls) &&
+      isLiveCommunityIceServer(server, now)
+  );
+  communityIceServers.splice(
+    0,
+    communityIceServers.length,
+    ...[...announcedSince, ...fromReply].slice(0, MAX_COMMUNITY_ICE_SERVERS)
+  );
+};
+
+/**
+ * Every endpoint GO hears is also remembered across announce leases and
+ * restarts, and served once a STUN probe verified it (communityStunCache.ts):
+ * RNS hubs pass on about one announce per contributor an hour, so the live
+ * list alone is usually 0-3 servers. Probes run only from getIceServers()
+ * (a call asking), never in "Private calls". GO never contributes itself.
+ */
+const communityStunCache = createCommunityStunCache({
+  probingAllowed: () => isWebRtcCallTransportAllowed(),
+});
+/** Nothing usable at all: wait this long for the first probe round (1.5 s). */
+const COMMUNITY_STUN_EMPTY_POOL_WAIT_MS = 1_600;
+/** get_community_stun_endpoints from a call: python answers from memory. */
+const COMMUNITY_STUN_PULL_TIMEOUT_MS = 5_000;
+
+/** Live announced servers first, then probe-verified cached ones; at most 6. */
+const communityIceServersForCalls = (): { urls: string }[] => {
+  const out = liveCommunityIceServers();
+  const seen = new Set(out.map((server) => server.urls));
+  for (const server of communityStunCache.verifiedIceServers(
+    MAX_COMMUNITY_ICE_SERVERS
+  )) {
+    if (out.length >= MAX_COMMUNITY_ICE_SERVERS) break;
+    if (seen.has(server.urls)) continue;
+    seen.add(server.urls);
+    out.push(server);
   }
-  return communityIceServers;
+  return out;
+};
+
+/**
+ * Python's live list replaces ours (replaceCommunityIceServers) and every
+ * endpoint in it is remembered. No probing here. qortal_presence_host.py
+ * sends python's discovery query announce at most every 10 min; other pulls
+ * get the reply from memory.
+ */
+const pullCommunityStunEndpoints = async (
+  timeoutMs?: number
+): Promise<void> => {
+  const requestedAt = Date.now();
+  const frame = await presenceCommandWithResult(
+    'get_community_stun_endpoints',
+    {},
+    timeoutMs
+  );
+  const endpoints = asObject(frame.payload)?.endpoints;
+  replaceCommunityIceServers(endpoints, requestedAt);
+  communityStunCache.noteHeardAll(endpoints);
+};
+
+/**
+ * The servers for a call. Fewer than 6: probe cached endpoints in the
+ * background (the next ask gets them). None at all: wait up to
+ * COMMUNITY_STUN_EMPTY_POOL_WAIT_MS for that first probe round.
+ */
+const communityIceServersWithProbing = async (): Promise<
+  { urls: string }[]
+> => {
+  const servers = communityIceServersForCalls();
+  if (servers.length >= MAX_COMMUNITY_ICE_SERVERS) return servers;
+  const probing = communityStunCache.refresh();
+  if (servers.length > 0) return servers;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([
+    probing,
+    new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, COMMUNITY_STUN_EMPTY_POOL_WAIT_MS);
+    }),
+  ]);
+  if (timer !== undefined) clearTimeout(timer);
+  return communityIceServersForCalls();
 };
 
 /**
@@ -1482,6 +1731,115 @@ const setLocalReticulumIdentity = (b64: string): void => {
   getMobileReticulumInfo().identityPublicKeyBase64 = b64;
 };
 
+// ── Hosted Hub call managers (src/bridge/hubCall) ───────────────────────────
+// GO runs the UNMODIFIED Hub 3.0.3 CallManager + GroupCallManager in this page
+// (hubCall/hostedCallManagers.ts, a lazily loaded chunk) behind window.call /
+// window.groupCall: Hub-exact CALL_* / GC_* verification, endpoint pinning,
+// link-auth, room keys, heartbeats, DM WebRTC signalling (GO0/GO1) and group
+// calls. The hand-written port in installReticulumBridges() stays reachable
+// with the flag off for one release; the two never run side by side (both
+// would answer the same python frames).
+const HOSTED_HUB_CALLS = true;
+let hostedHubCallsEnabled = HOSTED_HUB_CALLS;
+let hostedHubCalls: LazyHubCallApis | null = null;
+/** Last list handed to the native ring sniffer, and when (see below). */
+let nativeRingAddressesKey: string | null = null;
+let nativeRingAddressesAt = 0;
+/** Re-push an unchanged list this often (heals a [] pushed by a UI unmount). */
+const NATIVE_RING_ADDRESSES_REFRESH_MS = 30_000;
+
+/** Test hook: pick the port before installReticulumBridges() runs. */
+export function __setHostedHubCallsForTests(enabled: boolean): void {
+  hostedHubCallsEnabled = enabled;
+}
+
+/** True when window.call / window.groupCall are the hosted Hub managers. */
+export const isHostedHubCallsActive = (): boolean => hostedHubCalls !== null;
+
+/** The hosted stack once its chunk has loaded (null on the old port / before). */
+export const getHostedHubCallStack = (): HostedCallStack | null =>
+  hostedHubCalls?.getLoaded() ?? null;
+
+/**
+ * "You're relaying audio": this phone forwards another participant's audio
+ * to a third one in a joined group room (Hub's forwarding rule; never in a
+ * 2-person room or a 1:1 call). Re-check on gcall:topology and
+ * gcall:participant-joined / -left.
+ */
+export const isGoCallRelayingAudio = (roomId?: string): boolean => {
+  try {
+    return getHostedHubCallStack()?.isRelayingAudio(roomId) === true;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Call diagnostics for Copy diagnostics / the lab (`__qgoBridgeDiag.calls()`
+ * in remote devtools): which port runs, whether WebRTC signalling is offered,
+ * and the adapter's frame counters.
+ */
+export const getGoCallDiagnostics = (): Record<string, unknown> => {
+  const stack = getHostedHubCallStack();
+  return {
+    port: hostedHubCalls ? 'hosted-hub-managers' : 'legacy',
+    loaded: Boolean(stack),
+    rtcSignalExposed: hostedHubCalls?.isRtcSignalExposed() ?? false,
+    hardenedGcSignatureCache: stack?.hardenedGcSignatureCache ?? null,
+    directVoiceRoom: stack?.hasActiveDirectVoiceRoom() ?? false,
+    relayingAudio: stack?.isRelayingAudio() ?? false,
+    bridge: stack ? { ...stack.bridge.stats } : null,
+  };
+};
+
+/**
+ * Native ring (CallSession.sniffPresenceFrame) rings only for these
+ * addresses while the page is frozen. useVoiceCall re-asserts its address
+ * every 2.5 s; only a change (or a stale push) reaches native.
+ */
+const syncNativeRingAddresses = (addresses: readonly unknown[]): void => {
+  const list = [
+    ...new Set(
+      addresses.filter((a): a is string => typeof a === 'string' && !!a)
+    ),
+  ].sort();
+  const key = list.join(',');
+  const now = Date.now();
+  if (
+    key === nativeRingAddressesKey &&
+    (list.length === 0 ||
+      now - nativeRingAddressesAt < NATIVE_RING_ADDRESSES_REFRESH_MS)
+  ) {
+    return;
+  }
+  nativeRingAddressesKey = key;
+  nativeRingAddressesAt = now;
+  void setNativeRingAddresses(list).catch(() => {});
+};
+
+/**
+ * Drops call frames held for managers that are still loading (or waiting
+ * for their replay); set by installReticulumBridges().
+ */
+let clearHubCallEarlyFrames: (() => void) | null = null;
+
+/**
+ * Logout boundary (desktop setup.ts reticulumChat:clearLocalAccountState
+ * clears the call managers there too): no call, ring, key or member
+ * refresh of the old account survives into the next login. That includes
+ * frames held while the managers load: desktop drops its held requests at
+ * this boundary (call.ts clearLocalAccountState).
+ */
+export function clearHostedHubCallAccountState(): void {
+  clearHubCallEarlyFrames?.();
+  try {
+    getHostedHubCallStack()?.clearLocalAccountState();
+  } catch (err) {
+    console.warn('[GO call] clearing call account state failed', err);
+  }
+  syncNativeRingAddresses([]);
+}
+
 /**
  * Phase 3a — presence over the native Reticulum transport.
  *
@@ -1505,13 +1863,22 @@ const setLocalReticulumIdentity = (b64: string): void => {
  * Ed25519 signature in JS (the bridge already drops malformed packets; presence
  * is broadcast online-status). Full per-peer verification is a follow-up.
  *
- * window.chat / window.call / window.groupCall remain undefined (Phases 3b/3c).
+ * window.call / window.groupCall: the hosted, unmodified Hub call managers
+ * (HOSTED_HUB_CALLS, src/bridge/hubCall), or the old hand-written port below.
  */
 export function installReticulumBridges(): void {
   if (!PRESENCE_BRIDGE_ENABLED) return;
   if (reticulumBridgesInstalled) return;
   if (!isCapacitor()) return;
   reticulumBridgesInstalled = true;
+  // Before any call code can build an RTCPeerConnection in GO's window: no
+  // host/private/IPv6 candidate is ever signalled or checked (webrtcPrivacy.ts).
+  // installMobileAudioSurface() installs it too; idempotent.
+  try {
+    installWebRtcPrivacyGuard();
+  } catch (err) {
+    console.warn('[GO call] WebRTC privacy guard failed to install', err);
+  }
 
   const startedCallbacks = new Set<() => void>();
   let bridgeReady = false;
@@ -2044,6 +2411,13 @@ export function installReticulumBridges(): void {
     chatId: string;
     direction: CallDirection;
     state: 'pending' | 'active' | 'ended';
+    /**
+     * The peer device's Reticulum destination for this call: the caller's,
+     * bound into its call id (inbound), or the `r` of the CALL_ACCEPT
+     * (outbound). DM media pins its audio link to it, like the Hub does with
+     * CallManager.getActiveMediaPeerDestinationHash (setup.ts:6806-6838).
+     */
+    peerDestinationHash?: string;
     cleanupTimer?: ReturnType<typeof setTimeout>;
     repeatTimers?: Set<ReturnType<typeof setTimeout>>;
   };
@@ -2077,6 +2451,21 @@ export function installReticulumBridges(): void {
     call.repeatTimers?.forEach((t) => clearTimeout(t));
     call.repeatTimers?.clear();
   };
+
+  // A call nobody answered within the Hub's 60 s window. The Hub drops it
+  // without telling its UI (call.ts:1520-1527, 1823-1830); GO's hook would
+  // keep calling / ringing and Decline would hit an unknown call, so end it.
+  const expirePendingCall = (callId: string): void => {
+    const call = activeCalls.get(callId);
+    if (!call || call.state !== 'pending') return;
+    clearCallTimers(call);
+    call.state = 'ended';
+    activeCalls.delete(callId);
+    emitCall('call:hangup', { callId });
+  };
+
+  const callPeerDestinationHash = (callId: string | undefined): string | null =>
+    (callId && activeCalls.get(callId)?.peerDestinationHash) || null;
 
   const encodeCallWire = (env: CallEnvelope): Record<string, unknown> => {
     switch (env.type) {
@@ -2268,12 +2657,21 @@ export function installReticulumBridges(): void {
   };
 
   const applyIncomingRequest = (
-    env: Extract<CallEnvelope, { type: 'CALL_REQUEST' }>
+    env: Extract<CallEnvelope, { type: 'CALL_REQUEST' }>,
+    senderHash = '',
+    receivedAt = Date.now()
   ): void => {
     if (activeCalls.has(env.callId)) return;
     const localRecipient = localCallRecipient(env);
     if (!localRecipient) return;
+    // The caller's 60 s started when its request arrived (call.ts:1823-1830),
+    // also for one held while no account was signed in here.
+    const ttlLeftMs = CALL_TTL_MS - Math.max(0, Date.now() - receivedAt);
+    if (ttlLeftMs <= 0) return;
 
+    // Hub takes the caller's endpoint from the route-bound call id, not
+    // from the relayed frame (call.ts:2254-2263); `r` only for older ids.
+    const sender = senderHash.trim().toLowerCase();
     const record: CallRecord = {
       callId: env.callId,
       localAddress: localRecipient,
@@ -2281,12 +2679,14 @@ export function installReticulumBridges(): void {
       chatId: env.chatId,
       direction: 'inbound',
       state: 'pending',
+      peerDestinationHash:
+        getRouteBoundCallDestinationHash(env.callId) ??
+        (DEST_HASH_RE.test(sender) ? sender : undefined),
     };
-    record.cleanupTimer = setTimeout(() => {
-      if (activeCalls.get(env.callId)?.state === 'pending') {
-        activeCalls.delete(env.callId);
-      }
-    }, CALL_TTL_MS);
+    record.cleanupTimer = setTimeout(
+      () => expirePendingCall(env.callId),
+      ttlLeftMs
+    );
     activeCalls.set(env.callId, record);
     emitCall('call:incoming', {
       callId: env.callId,
@@ -2297,12 +2697,10 @@ export function installReticulumBridges(): void {
 
   const flushPendingIncoming = (): void => {
     if (callLocalAddresses.size === 0) return;
-    const pending = pendingIncoming;
+    const pending = prunePendingIncoming(pendingIncoming, Date.now());
     pendingIncoming = [];
-    const now = Date.now();
     for (const p of pending) {
-      if (now - p.receivedAt > CALL_TTL_MS) continue;
-      applyIncomingRequest(p.env);
+      applyIncomingRequest(p.env, p.senderHash, p.receivedAt);
     }
   };
 
@@ -2314,21 +2712,26 @@ export function installReticulumBridges(): void {
       const skew = Date.now() - env.timestamp;
       if (skew > 30_000 || skew < -10_000) return;
       if (callLocalAddresses.size === 0) {
-        pendingIncoming = pendingIncoming.filter(
-          (p) => p.env.callId !== env.callId
+        // Held until an account registers its addresses; bounded, and
+        // expired entries go on every insert.
+        pendingIncoming = prunePendingIncoming(
+          [...pendingIncoming, { env, senderHash, receivedAt: Date.now() }],
+          Date.now()
         );
-        pendingIncoming.push({ env, senderHash, receivedAt: Date.now() });
         return;
       }
-      applyIncomingRequest(env);
+      applyIncomingRequest(env, senderHash);
       return;
     }
     const call = activeCalls.get(env.callId);
     if (!call) return;
     if (env.type === 'CALL_ACCEPT') {
-      if (call.direction !== 'outbound') return;
+      // The callee repeats CA (×5 pinned + flood): only the first one counts.
+      if (call.direction !== 'outbound' || call.state !== 'pending') return;
       clearCallTimers(call);
       call.state = 'active';
+      const sender = senderHash.trim().toLowerCase();
+      if (DEST_HASH_RE.test(sender)) call.peerDestinationHash = sender;
       emitCall('call:accepted', { callId: env.callId });
     } else if (env.type === 'CALL_REJECT') {
       clearCallTimers(call);
@@ -2373,6 +2776,20 @@ export function installReticulumBridges(): void {
     handleCallEnvelope(env, senderHash);
   };
 
+  // Hosted Hub call managers (see HOSTED_HUB_CALLS): readiness callbacks of
+  // their python transport, fired from the `ready` / host_fatal frames below.
+  const useHostedHubCalls = hostedHubCallsEnabled;
+  const hubCallReadyListeners = new Set<(ready: boolean) => void>();
+  const notifyHubCallReady = (ready: boolean): void => {
+    for (const cb of [...hubCallReadyListeners]) {
+      try {
+        cb(ready);
+      } catch (err) {
+        console.warn('[GO call] ready listener failed', err);
+      }
+    }
+  };
+
   const handleFrame = (frameStr: string): void => {
     let frame: Record<string, unknown> | undefined;
     try {
@@ -2412,6 +2829,7 @@ export function installReticulumBridges(): void {
             errPayload?.detail
           );
           refreshMobileStatus();
+          notifyHubCallReady(false);
         }
         break;
       }
@@ -2441,6 +2859,13 @@ export function installReticulumBridges(): void {
             /* ignore */
           }
         });
+        if (useHostedHubCalls) {
+          // Re-attach a loaded stack (Python restarted), and load it now if
+          // nothing asked yet, so the managers are listening before the
+          // first CALL_REQUEST frame (desktop starts them with the bridge).
+          notifyHubCallReady(true);
+          void hostedHubCalls?.ensureLoaded();
+        }
         refreshMobileStatus();
         void pushOverlaySync();
         // Python may outlive the page (Activity recreated, task swiped away
@@ -2448,7 +2873,8 @@ export function installReticulumBridges(): void {
         // profile, a stale 'full' must drop back to leaf. Idempotent.
         pushOverlayProfile(relayProfile);
         hydrateQchatPendingSends();
-        void window.hub?.getIceServers?.().catch(() => {});
+        // Fill the community STUN pool early; probes wait for a call.
+        void pullCommunityStunEndpoints().catch(() => {});
         break;
       }
       case 'transport_state': {
@@ -2464,48 +2890,37 @@ export function installReticulumBridges(): void {
       case 'presence_message':
         handlePresenceMessage(asObject(frame.payload) ?? {});
         break;
+      // Call frames: with the hosted managers they arrive through the python
+      // event tap above (hubCall/mobileReticulumBridgeAdapter.ts) and the old
+      // port below must not answer them too.
       case 'call_message':
-        handleCallMessage(asObject(frame.payload) ?? {});
+        if (!useHostedHubCalls) {
+          handleCallMessage(asObject(frame.payload) ?? {});
+        }
         break;
       case 'group_call_message':
-        void handleGroupCallMessage(asObject(frame.payload) ?? {});
+        if (!useHostedHubCalls) {
+          void handleGroupCallMessage(asObject(frame.payload) ?? {});
+        }
         break;
       case 'qchat_file_transfer':
         handleQchatFileTransferEvent(asObject(frame.payload) ?? {});
         break;
       case 'group_audio_packet':
-        handleGroupAudioPacket(asObject(frame.payload) ?? {});
-        break;
-      case 'group_audio_link_established': {
-        const lp = asObject(frame.payload);
-        const peer = asString(lp?.peerPresenceHash)?.toLowerCase();
-        const linkId = asString(lp?.linkId);
-        if (peer && linkId) {
-          establishedLinkIdByPeer.set(peer, linkId);
-          console.log(
-            '[GCall] audio link established peer=%s link=%s',
-            peer.slice(0, 8),
-            linkId.slice(0, 8)
-          );
-          // Authenticate every room this peer participates in (the link must be
-          // verified before the Hub will deliver GC_KEY over it).
-          for (const [rid, byAddr] of gcPeersByRoom) {
-            for (const p of byAddr.values()) {
-              if (p.destinationHash?.toLowerCase() === peer) {
-                void sendLinkAuthForRoom(rid);
-                break;
-              }
-            }
-          }
+        if (!useHostedHubCalls) {
+          handleGroupAudioPacket(asObject(frame.payload) ?? {});
         }
         break;
-      }
-      case 'group_audio_link_closed': {
-        const lp = asObject(frame.payload);
-        const peer = asString(lp?.peerPresenceHash)?.toLowerCase();
-        if (peer) establishedLinkIdByPeer.delete(peer);
+      case 'group_audio_link_established':
+        if (!useHostedHubCalls) {
+          handleGroupAudioLinkEstablished(asObject(frame.payload) ?? {});
+        }
         break;
-      }
+      case 'group_audio_link_closed':
+        if (!useHostedHubCalls) {
+          handleGroupAudioLinkClosed(asObject(frame.payload) ?? {});
+        }
+        break;
       case 'group_audio_send_failed': {
         // The bridge drops an outbound audio packet (link not ready / closed /
         // generation changed / overlay congestion). The renderer's tx counter
@@ -2534,9 +2949,13 @@ export function installReticulumBridges(): void {
         break;
       }
       case 'community_stun_endpoint': {
-        rememberCommunityIceServers([asObject(frame.payload)]);
+        rememberCommunityIceEndpoint(frame.payload);
+        communityStunCache.noteHeard(frame.payload);
         break;
       }
+      case 'gcall_control_bundle_result':
+        forwardGcallControlBundleResult(frame.payload);
+        break;
       default:
         break;
     }
@@ -2717,6 +3136,7 @@ export function installReticulumBridges(): void {
     threadReport: () =>
       presenceCommandWithResult('debug_thread_report', {}, 15_000),
     wireMix: () => presenceCommandWithResult('debug_wire_mix', {}, 15_000),
+    calls: () => getGoCallDiagnostics(),
   };
 
   window.presence = {
@@ -2762,27 +3182,225 @@ export function installReticulumBridges(): void {
   };
 
   window.hub = {
-    getBootstrapIceServers: () => communityIceServers.map((server) => ({ ...server })),
+    getBootstrapIceServers: () => communityIceServersForCalls(),
     getIceServers: async () => {
       try {
-        const frame = await presenceCommandWithResult(
-          'get_community_stun_endpoints',
-          {}
-        );
-        const payload = asObject(frame.payload);
-        rememberCommunityIceServers(payload?.endpoints);
+        await pullCommunityStunEndpoints(COMMUNITY_STUN_PULL_TIMEOUT_MS);
       } catch {
         // Cached community servers (if any) still let WebRTC try; Reticulum
         // remains the media fallback when ICE is empty.
       }
-      return communityIceServers.map((server) => ({ ...server }));
+      return communityIceServersWithProbing();
     },
     reportStunCallOutcome: async () => ({ ok: true }),
     reportObservedStunSources: async () => ({ ok: true }),
   };
 
+  // ── Hosted Hub call managers (HOSTED_HUB_CALLS) ─────────────────────────
+  // Call frames that arrive before the managers subscribe (their chunk starts
+  // loading at `ready`, which takes a moment) are kept briefly and replayed,
+  // so a CALL_REQUEST right after `ready` still rings. Hub verifies a CR only
+  // up to 30 s old, hence the TTL.
+  const HUB_CALL_EARLY_FRAME_MAX = 64;
+  const HUB_CALL_EARLY_FRAME_TTL_MS = 30_000;
+  // Ed25519 verify takes ~1-3 ms on a phone; 64 frames replay in <= 6.4 s.
+  const HUB_CALL_REPLAY_MAX_GAP_MS = 100;
+  type HeldHubCallFrame = { at: number; frame: Record<string, unknown> };
+  const isHubCallFrame = (frame: Record<string, unknown>): boolean =>
+    frame.event === 'call_message' || frame.event === 'group_call_message';
+  let hubCallEarlyFrames: HeldHubCallFrame[] | null = useHostedHubCalls
+    ? []
+    : null;
+  // Between the managers' subscribe and the replay: the buffered frames, then
+  // every live frame in arrival order (see onEvent below).
+  let hubCallReplayQueue: HeldHubCallFrame[] | null = null;
+  const stopHubCallEarlyTap = useHostedHubCalls
+    ? registerPythonEventTap((frame) => {
+        if (!hubCallEarlyFrames || !isHubCallFrame(frame)) return;
+        hubCallEarlyFrames.push({ at: Date.now(), frame });
+        if (hubCallEarlyFrames.length > HUB_CALL_EARLY_FRAME_MAX) {
+          hubCallEarlyFrames.shift();
+        }
+      })
+    : null;
+  // Logout: held call frames belong to the old account. Other held frames
+  // (link up/down, audio) keep their place so the adapter's link state stays
+  // in step with python.
+  clearHubCallEarlyFrames = useHostedHubCalls
+    ? () => {
+        if (hubCallEarlyFrames) hubCallEarlyFrames.length = 0;
+        if (hubCallReplayQueue) {
+          const kept = hubCallReplayQueue.filter(
+            ({ frame }) => !isHubCallFrame(frame)
+          );
+          hubCallReplayQueue.splice(0, hubCallReplayQueue.length, ...kept);
+        }
+      }
+    : null;
+  // The only seam between the managers and Python (hubCall/pythonTransport.ts).
+  const hubCallTransport: HubCallPythonTransport = {
+    commandWithResult: (action, payload, timeoutMs) =>
+      presenceCommandWithResult(
+        action,
+        payload,
+        timeoutMs
+      ) as Promise<PythonRespFrame>,
+    // Fire-and-forget: every voice frame each way (send_group_audio, 50/s).
+    // Kotlin stamps a UUID id, and qortal_presence_host.py answers only
+    // `cmd-` ids, so no resp frame comes back per frame.
+    command: (action, payload) =>
+      Reticulum.presenceCommand({ action, payload }).then(() => undefined),
+    // Taps get the frame handleFrame already parsed (one JSON.parse per frame).
+    onEvent: (cb) => {
+      const deliver = (frame: Record<string, unknown>): void =>
+        cb(frame as unknown as PythonEventFrame);
+      const early = hubCallEarlyFrames;
+      hubCallEarlyFrames = null;
+      stopHubCallEarlyTap?.();
+      if (!early || early.length === 0) return registerPythonEventTap(deliver);
+      // The replay starts after the managers' start() (it runs right after
+      // this subscribe). Until it has finished, live frames queue BEHIND the
+      // buffered ones: a CANCEL/HANGUP must never reach CallManager before
+      // the CALL_REQUEST it ends (Hub sends the CH only once).
+      hubCallReplayQueue = early;
+      let subscribed = true;
+      const stopTap = registerPythonEventTap((frame) => {
+        if (hubCallReplayQueue) {
+          hubCallReplayQueue.push({ at: Date.now(), frame });
+          return;
+        }
+        deliver(frame);
+      });
+      // Replayed with the frames' real spacing (capped), never back to back:
+      // the managers verify signatures asynchronously, so a CH delivered
+      // right behind its CR would find no call yet and be dropped (call.ts
+      // handleHangup), the same as if the frames had really come that close.
+      const macrotasks = sharedMacrotaskQueue();
+      let previousAt: number | null = null;
+      let previousDeliveredAt = 0;
+      const replayNext = (): void => {
+        if (!subscribed || !hubCallReplayQueue) return;
+        const next = hubCallReplayQueue[0];
+        if (!next) {
+          hubCallReplayQueue = null;
+          return;
+        }
+        if (previousAt !== null) {
+          const spacing = Math.min(
+            Math.max(next.at - previousAt, 0),
+            HUB_CALL_REPLAY_MAX_GAP_MS
+          );
+          const wait = previousDeliveredAt + spacing - Date.now();
+          if (wait > 0) {
+            setTimeout(replayNext, wait);
+            return;
+          }
+        }
+        hubCallReplayQueue.shift();
+        previousAt = next.at;
+        previousDeliveredAt = Date.now();
+        if (previousDeliveredAt - next.at <= HUB_CALL_EARLY_FRAME_TTL_MS) {
+          try {
+            deliver(next.frame);
+          } catch (err) {
+            console.warn('[GO call] early call frame replay failed', err);
+          }
+        }
+        // A macrotask, not setTimeout(0): not throttled in a hidden page.
+        macrotasks.set(replayNext);
+      };
+      macrotasks.set(replayNext);
+      return () => {
+        subscribed = false;
+        hubCallReplayQueue = null;
+        stopTap();
+      };
+    },
+    isReady: () => bridgeReady,
+    onReadyChange: (cb) => {
+      hubCallReadyListeners.add(cb);
+      return () => {
+        hubCallReadyListeners.delete(cb);
+      };
+    },
+    getLocalDestinationHash: () =>
+      getMobileReticulumInfo().destinationHash ?? undefined,
+  };
+  // Presence routes of an account = its devices' presence destinations, as
+  // the desktop PresenceManager hands them to CallManager / GroupCallManager.
+  const hubCallPresenceSource: MobilePresenceSource = {
+    getEndpoints: (address) => {
+      const endpoints = accountEndpoints.get(address);
+      if (!endpoints) return [];
+      const out: Array<{ destinationHash: string; lastSeen: number }> = [];
+      for (const [destinationHash, entry] of endpoints) {
+        out.push({ destinationHash, lastSeen: entry.lastSeen });
+      }
+      return out;
+    },
+  };
+  // WebRTC only when the audio surface (mobileAudioSurface.ts) is installed
+  // to run start-direct-voice-rtc, and the user did not pick "Private calls
+  // (Reticulum only)". Read on every access of groupCall.sendRtcSignal, so it
+  // also covers the group runtime's DataChannel edges.
+  const directVoiceRtcSupported = (): boolean =>
+    typeof window.audioSurface?.sendCommand === 'function' &&
+    typeof (globalThis as { RTCPeerConnection?: unknown }).RTCPeerConnection ===
+      'function';
+  if (useHostedHubCalls) {
+    hostedHubCalls = createLazyHubCallApis(
+      async () => {
+        const { createHostedCallManagers } =
+          await import('./hubCall/hostedCallManagers');
+        return createHostedCallManagers({
+          transport: hubCallTransport,
+          presenceSource: hubCallPresenceSource,
+          // Desktop: ReticulumChatManager.recordDirectCallHistory
+          // (setup.ts attachCallListeners); GO's chat engine runs the same
+          // manager in its worker.
+          onCallHistory: async (update) => {
+            await window.reticulumChat?.recordDirectCallHistory?.(update);
+          },
+          // QortalLand DM voice: the default engine lookup
+          // (window.reticulumChat.getActiveLandCallMediaPeerDestinationHash).
+          fetchQortalGroupMemberAddresses: async (groupId) => {
+            const { getGroupMembers } =
+              await import('../components/Group/groupApi');
+            const data = await getGroupMembers(groupId);
+            if (!Array.isArray(data?.members)) return null;
+            return data.members
+              .map((entry) =>
+                typeof entry?.member === 'string' ? entry.member.trim() : ''
+              )
+              .filter(Boolean);
+          },
+        });
+      },
+      {
+        exposeRtcSignal: isWebRtcCallTransportAllowed(),
+        isRtcSignalSupported: directVoiceRtcSupported,
+        onLoadError: (error) =>
+          console.error(
+            '[GO call] hosted Hub call managers failed to load',
+            error
+          ),
+      }
+    );
+    subscribeCallTransportPreference(() => {
+      hostedHubCalls?.setRtcSignalExposed(isWebRtcCallTransportAllowed());
+    });
+  }
+  /** Calls placed/joined before Python is up wait for it (bounded). */
+  const CALL_BRIDGE_READY_WAIT_MS = 10_000;
+  const waitForCallBridge = async (): Promise<void> => {
+    if (bridgeReady) return;
+    void ensureBridgeStarted();
+    await waitForBridgeReady(CALL_BRIDGE_READY_WAIT_MS);
+  };
+
   // ── window.call — 1:1 voice call signaling over Reticulum ──────────────
-  window.call = {
+  // (the hand-written port; used only with HOSTED_HUB_CALLS off)
+  const legacyCallApi: NonNullable<Window['call']> = {
     initiate: async (
       targetAddress: string,
       chatId: string,
@@ -2802,11 +3420,10 @@ export function installReticulumBridges(): void {
           direction: 'outbound',
           state: 'pending',
         };
-        record.cleanupTimer = setTimeout(() => {
-          if (activeCalls.get(callId)?.state === 'pending') {
-            activeCalls.delete(callId);
-          }
-        }, CALL_TTL_MS);
+        record.cleanupTimer = setTimeout(
+          () => expirePendingCall(callId),
+          CALL_TTL_MS
+        );
         activeCalls.set(callId, record);
         sendCallEnvelope(targetAddress, {
           type: 'CALL_REQUEST',
@@ -2862,21 +3479,34 @@ export function installReticulumBridges(): void {
       reason?: string,
       signature?: string,
       publicKey?: string,
-      timestamp?: number
+      timestamp?: number,
+      reasonSignature?: string
     ) => {
       const call = activeCalls.get(callId);
-      if (!call) return { success: false };
+      // Like the desktop IPC (setup.ts:6563-6573): a call that already
+      // ended is declined too, or the hook keeps ringing (useVoiceCall.ts
+      // rejectCall stays in `ringing` when this fails).
+      if (!call) return { success: true };
       clearCallTimers(call);
       call.state = 'ended';
       activeCalls.delete(callId);
-      sendCallEnvelope(call.remoteAddress, {
-        type: 'CALL_REJECT',
-        callId,
+      // Reason-signed CX first, then the legacy one older callers verify
+      // (call.ts:1603-1620). Each goes out as its own flood (own `X`).
+      const rejectTimestamp = timestamp ?? Date.now();
+      for (const signed of buildCallRejectSignatures({
         reason,
-        fromPublicKey: publicKey ?? '',
-        signature: signature ?? '',
-        timestamp: timestamp ?? Date.now(),
-      });
+        signature,
+        reasonSignature,
+      })) {
+        sendCallEnvelope(call.remoteAddress, {
+          type: 'CALL_REJECT',
+          callId,
+          ...(signed.reason ? { reason: signed.reason } : {}),
+          fromPublicKey: publicKey ?? '',
+          signature: signed.signature,
+          timestamp: rejectTimestamp,
+        });
+      }
       return { success: true };
     },
     hangup: async (
@@ -2886,7 +3516,8 @@ export function installReticulumBridges(): void {
       timestamp: number
     ) => {
       const call = activeCalls.get(callId);
-      if (!call) return { success: false };
+      // Desktop parity (setup.ts call:hangup): nothing left to hang up.
+      if (!call) return { success: true };
       clearCallTimers(call);
       call.state = 'ended';
       activeCalls.delete(callId);
@@ -2904,6 +3535,7 @@ export function installReticulumBridges(): void {
       for (const a of addresses) {
         if (typeof a === 'string' && a) next.add(a);
       }
+      syncNativeRingAddresses([...next]);
       // useVoiceCall re-asserts this every 2.5 s as a bridge-restart guard.
       // On mobile the set lives in this same JS context, so an unchanged set
       // needs no work (and no logcat line).
@@ -2935,7 +3567,29 @@ export function installReticulumBridges(): void {
       }
       return () => callEventCbs.delete(cb);
     },
+    // The legacy CALL_RTC_SIGNAL path; no renderer uses it (DM WebRTC goes
+    // through window.groupCall.sendRtcSignal, hosted managers only).
+    sendRtcSignal: async () => ({
+      success: false,
+      error: 'unsupported-on-legacy-call-port',
+    }),
   };
+  if (hostedHubCalls) {
+    const hostedCall = hostedHubCalls.call;
+    window.call = {
+      ...hostedCall,
+      initiate: async (...args) => {
+        await waitForCallBridge();
+        return hostedCall.initiate(...args);
+      },
+      setLocalAddresses: async (addresses, source) => {
+        syncNativeRingAddresses(Array.isArray(addresses) ? addresses : []);
+        return hostedCall.setLocalAddresses(addresses, source);
+      },
+    };
+  } else {
+    window.call = legacyCallApi;
+  }
 
   // ── window.groupCall — DM (1:1) voice media coordination over Reticulum ──
   // Port of the desktop GroupCallManager, reduced to the 2-party DM path:
@@ -2952,7 +3606,35 @@ export function installReticulumBridges(): void {
     chatId: string;
     callSessionId: string;
     mediaSessionGeneration: number;
+    joinedAtMs: number;
+    localAddress: string;
+    /** DM rooms: who opens the audio link (useVoiceCall: callee opener, caller waiter). */
+    dmRole?: 'opener' | 'waiter';
+    /** DM rooms: the call's peer device; links go to it only. */
+    dmPeerDestinationHash?: string;
+    /** DM rooms: the other address of the `direct:` chat. */
+    dmPeerAddress?: string;
+    openTimer?: ReturnType<typeof setTimeout>;
   };
+  // Audio links python reported (group_audio_link_established) or that
+  // carried frames, by link id.
+  type GcAudioLink = {
+    linkId: string;
+    peerPresenceHash: string;
+    peerDestinationHash: string;
+    incoming: boolean;
+  };
+  const gcAudioLinks = new Map<string, GcAudioLink>();
+  const gcLinkOpenRequestedAt = new Map<string, number>();
+  const GC_LINK_OPEN_MIN_INTERVAL_MS = 5_000;
+  // GJ frames for a room this side has not joined yet (the Hub sends its
+  // link-auth GJ once per link, possibly before our join lands).
+  const GC_EARLY_JOIN_TTL_MS = 30_000;
+  const gcEarlyJoinsByRoom = new Map<
+    string,
+    Array<{ payload: Record<string, unknown>; at: number }>
+  >();
+  let gcDroppedLinkControlCount = 0;
   type GcPeer = {
     address: string;
     destinationHash: string;
@@ -3097,20 +3779,30 @@ export function installReticulumBridges(): void {
     return allOk;
   };
 
-  // Hub v2.0 gates inbound link audio behind an audio-link auth: the peer must
-  // send `QGCCTL1\0` + a signed GC_JOIN *over the audio link* (decodeGcLinkControlWire
-  // → handleReticulumLinkAuthJoinWire), otherwise the Hub closes the link with
-  // `audio-unverified-address` and drops our audio. The desktop sends this through
-  // the same enqueueGroupAudio path, so we replay our cached signed GJ as an opaque
-  // audio frame (the bridge wraps QGAU, the peer bridge unwraps → the Hub sees the
-  // QGCCTL1 frame). No Python bridge change needed.
-  const GC_LINK_CONTROL_MAGIC = new TextEncoder().encode('QGCCTL1\u0000');
-  // Per-room bounded resend of the link-auth (handles packet loss / the link
-  // establishing without a renderer-visible event).
-  const gcLinkAuthTimers = new Map<string, ReturnType<typeof setInterval>>();
+  // Hub 3.0.3 accepts link control (room keys, key requests) and audio on an
+  // audio link only after the peer authenticated that link: `QGCCTL1\0` + its
+  // signed GC_JOIN sent over the link itself (link-auth, group-call.ts
+  // 7877-7939 send, 11865-12021 receive). Until then it drops our control
+  // frames and closes the link after ~10 s. GO sends the cached GJ (no `rk`,
+  // the same frame as the overlay join) on the room's link to each room peer
+  // (one per peer, see roomLinks) as soon as python reports it or it carries
+  // frames (incoming links too), and repeats it until the Hub shows it
+  // accepted that link (a key, a key request or media on it), within a
+  // bounded number of attempts per link. Acceptance is per link id: a
+  // replacement link to the same peer needs its own link-auth.
+  const GC_LINK_AUTH_RESEND_MS = 1_500;
+  const GC_LINK_AUTH_MAX_ATTEMPTS_PER_LINK = 20;
+  type GcLinkAuthState = {
+    attemptsByLink: Map<string, number>;
+    acceptedLinks: Set<string>;
+    timer: ReturnType<typeof setInterval> | null;
+  };
+  const gcLinkAuthByRoom = new Map<string, GcLinkAuthState>();
 
   // Resolve the routable peer destination for a room (from any learned peer).
   const peerDestForRoomAny = (roomId: string): string => {
+    const pinned = gcRooms.get(roomId)?.dmPeerDestinationHash;
+    if (pinned) return pinned;
     const byAddr = gcPeersByRoom.get(roomId);
     if (!byAddr) return '';
     for (const peer of byAddr.values()) {
@@ -3121,113 +3813,210 @@ export function installReticulumBridges(): void {
     return '';
   };
 
-  // Send our cached signed GC_JOIN as a `QGCCTL1\0` link-control frame over the
-  // same audio path the media uses. An empty linkId lets the bridge route it
-  // over the peer's active audio link (identical to how audio frames flow), so
-  // this does not depend on a renderer-visible `group_audio_link_established`.
-  // All real audio links that might reach the peer for this room. The peer's
-  // AUDIO reticulum destination often differs from its presence hash, and the
-  // link can be inbound (Hub→us) or outbound (us→peer-audio-dest), so we collect
-  // every established link plus the inbound link seen for the room. In a 1:1 DM
-  // these all lead to the same peer, so fanning out is safe and robust.
-  const candidateLinkIdsForRoom = (roomId: string): string[] => {
-    const linkIds = new Set<string>();
-    const peerDest = peerDestForRoomAny(roomId);
-    if (peerDest) {
-      const direct = establishedLinkIdByPeer.get(peerDest);
-      if (direct) linkIds.add(direct);
+  // Reticulum destinations this room's audio goes to: the pinned call peer
+  // for a DM room, else every learned participant destination.
+  const roomPeerHashes = (roomId: string): Set<string> => {
+    const out = new Set<string>();
+    const pinned = gcRooms.get(roomId)?.dmPeerDestinationHash;
+    if (pinned) {
+      out.add(pinned);
+      return out;
     }
-    for (const id of establishedLinkIdByPeer.values()) linkIds.add(id);
-    const inbound = inboundAudioLinkIdByRoom.get(roomId);
-    if (inbound) linkIds.add(inbound);
-    return [...linkIds];
+    for (const peer of gcPeersByRoom.get(roomId)?.values() ?? []) {
+      const hash = peer.destinationHash?.toLowerCase();
+      if (hash && DEST_HASH_RE.test(hash)) out.add(hash);
+    }
+    return out;
   };
 
-  // Send group-call control wires (GC_JOIN auth, GC_KEY, GC_KEY_REQUEST) over the
-  // established RNS audio link(s) as `QGCCTL1\0`+JSON link-control frames. The Hub
-  // delivers AND accepts GC_KEY / GC_KEY_REQUEST *only* over these link-control
-  // frames (electron group-call.ts sendKey → sendReticulumLinkControlToAddresses;
-  // inbound via decodeGcLinkControlWire) — never over the overlay. So the room
-  // key only crosses to the Hub when we ride the verified link here.
+  const linkPeerKey = (link: GcAudioLink): string =>
+    link.peerPresenceHash || link.peerDestinationHash;
+
+  const linkServesPeers = (link: GcAudioLink, peers: Set<string>): boolean =>
+    peers.has(link.peerPresenceHash) || peers.has(link.peerDestinationHash);
+
+  // A DM room pinned to the call's peer device takes links only from that
+  // device (the Hub ignores other devices the same way, setup.ts:6806-6838).
+  // A link whose peer python could not name yet cannot be ruled out.
+  const linkPeerFitsRoom = (roomId: string, ...hashes: unknown[]): boolean => {
+    const pinned = gcRooms.get(roomId)?.dmPeerDestinationHash;
+    if (!pinned) return true;
+    const known = hashes
+      .map((h) => (typeof h === 'string' ? h.trim().toLowerCase() : ''))
+      .filter(Boolean);
+    return known.length === 0 || known.includes(pinned);
+  };
+
+  const hasAudioLinkTo = (peerHash: string): boolean => {
+    for (const link of gcAudioLinks.values()) {
+      if (link.peerPresenceHash === peerHash) return true;
+      if (link.peerDestinationHash === peerHash) return true;
+    }
+    return false;
+  };
+
+  // One link per room peer (python sends on its canonical link for the peer
+  // whatever id we name, so a second send would only duplicate the frame):
+  // the most recently reported link wins, plus the link the room's inbound
+  // frames arrived on when python never named its peer. A known link to a
+  // device outside the room's peers is never used.
+  const roomLinks = (roomId: string): GcAudioLink[] => {
+    const peers = roomPeerHashes(roomId);
+    const byPeer = new Map<string, GcAudioLink>();
+    for (const link of gcAudioLinks.values()) {
+      if (linkServesPeers(link, peers)) byPeer.set(linkPeerKey(link), link);
+    }
+    const inbound = inboundAudioLinkIdByRoom.get(roomId);
+    const fallbackPeer = [...peers][0] ?? '';
+    if (
+      inbound &&
+      fallbackPeer &&
+      !gcAudioLinks.has(inbound) &&
+      !byPeer.has(fallbackPeer)
+    ) {
+      byPeer.set(fallbackPeer, {
+        linkId: inbound,
+        peerPresenceHash: fallbackPeer,
+        peerDestinationHash: fallbackPeer,
+        incoming: true,
+      });
+    }
+    return [...byPeer.values()];
+  };
+
+  const sendFrameOnLink = async (
+    roomId: string,
+    link: GcAudioLink,
+    frame: Record<string, unknown>
+  ): Promise<boolean> => {
+    try {
+      await Reticulum.presenceCommand({
+        action: 'send_group_audio',
+        payload: {
+          linkId: link.linkId,
+          roomId,
+          peerPresenceHash: link.peerPresenceHash || link.peerDestinationHash,
+          peerDestinationHash: link.peerDestinationHash || link.peerPresenceHash,
+          // Control frames are not live audio: 0 skips python's 320 ms
+          // deadline (a late room key is still a room key).
+          receivedAtWallMs: 0,
+          data: uint8ToBase64(encodeGcLinkControlFrame(frame)),
+        },
+      });
+      return true;
+    } catch (err) {
+      console.error('[GCall] control-over-link send failed:', err);
+      return false;
+    }
+  };
+
+  // Send group-call control wires (GC_KEY, GC_KEY_REQUEST) over the room's
+  // audio links as `QGCCTL1\0`+JSON link-control frames, the way the Hub
+  // sends them (sendReticulumLinkControlToAddresses / ...DmLinkControl...).
   const sendControlFramesOverLinks = async (
     roomId: string,
     frames: Record<string, unknown>[]
   ): Promise<boolean> => {
     if (frames.length === 0) return false;
-    const linkIds = candidateLinkIdsForRoom(roomId);
-    if (linkIds.length === 0) return false; // no real link yet
-    const peerDest = peerDestForRoomAny(roomId);
-    if (!peerDest) return false;
+    const links = roomLinks(roomId);
+    if (links.length === 0) return false; // no real link yet
     let sentAny = false;
     for (const frame of frames) {
-      const body = new TextEncoder().encode(JSON.stringify(frame));
-      const buf = new Uint8Array(GC_LINK_CONTROL_MAGIC.length + body.length);
-      buf.set(GC_LINK_CONTROL_MAGIC, 0);
-      buf.set(body, GC_LINK_CONTROL_MAGIC.length);
-      const b64 = uint8ToBase64(buf);
-      for (const linkId of linkIds) {
-        try {
-          await Reticulum.presenceCommand({
-            action: 'send_group_audio',
-            payload: {
-              linkId,
-              roomId,
-              peerPresenceHash: peerDest,
-              peerDestinationHash: peerDest,
-              receivedAtWallMs: Date.now(),
-              data: b64,
-            },
-          });
-          sentAny = true;
-        } catch (err) {
-          console.error('[GCall] control-over-link send failed:', err);
-        }
+      for (const link of links) {
+        if (await sendFrameOnLink(roomId, link, frame)) sentAny = true;
       }
     }
     return sentAny;
   };
 
-  const sendLinkAuthForRoom = async (roomId: string): Promise<void> => {
-    const gj = gcJoinWireByRoom.get(roomId);
-    if (!gj) return;
-    const ok = await sendControlFramesOverLinks(roomId, [gj]);
-    if (ok) {
-      const linkIds = candidateLinkIdsForRoom(roomId);
-      console.log(
-        '[GCall] link-auth GJ sent room=%s peer=%s links=%d',
-        roomId.slice(0, 12),
-        peerDestForRoomAny(roomId).slice(0, 8),
-        linkIds.length
-      );
+  const linkAuthStateFor = (roomId: string): GcLinkAuthState => {
+    let state = gcLinkAuthByRoom.get(roomId);
+    if (!state) {
+      state = { attemptsByLink: new Map(), acceptedLinks: new Set(), timer: null };
+      gcLinkAuthByRoom.set(roomId, state);
     }
+    return state;
   };
 
-  // Begin resending link-auth for a room: fast (every 1.5s) so a verified link
-  // comes up quickly through packet loss, bounded so we never spam forever. The
-  // Hub only delivers GC_KEY over a *verified* link, so without this the room
-  // key never crosses and audio never decrypts.
-  const startLinkAuthForRoom = (roomId: string): void => {
-    if (gcLinkAuthTimers.has(roomId)) return;
-    let ticks = 0;
-    void sendLinkAuthForRoom(roomId);
-    const timer = setInterval(() => {
-      ticks += 1;
-      if (ticks > 30 || !gcJoinWireByRoom.has(roomId)) {
-        clearInterval(timer);
-        gcLinkAuthTimers.delete(roomId);
-        return;
+  // One link-auth round; true while some link still waits for acceptance.
+  // `onlyNew`: just the links that never got one (a link reported while the
+  // resend timer runs is authenticated at once, not on the next tick).
+  const sendLinkAuthRound = (roomId: string, onlyNew = false): boolean => {
+    const gj = gcJoinWireByRoom.get(roomId);
+    if (!gj || !gcRooms.has(roomId)) return false;
+    const state = linkAuthStateFor(roomId);
+    let waiting = false;
+    for (const link of roomLinks(roomId)) {
+      if (state.acceptedLinks.has(link.linkId)) continue;
+      const attempts = state.attemptsByLink.get(link.linkId) ?? 0;
+      if (attempts >= GC_LINK_AUTH_MAX_ATTEMPTS_PER_LINK) continue;
+      waiting = true;
+      if (onlyNew && attempts > 0) continue;
+      state.attemptsByLink.set(link.linkId, attempts + 1);
+      if (attempts === 0) {
+        console.log(
+          '[GCall] link-auth GJ room=%s peer=%s link=%s incoming=%s',
+          roomId.slice(0, 12),
+          linkPeerKey(link).slice(0, 8),
+          link.linkId.slice(0, 8),
+          link.incoming
+        );
       }
-      void sendLinkAuthForRoom(roomId);
-    }, 1500);
-    gcLinkAuthTimers.set(roomId, timer);
+      void sendFrameOnLink(roomId, link, gj);
+    }
+    return waiting;
+  };
+
+  const startLinkAuthForRoom = (roomId: string): void => {
+    if (!gcJoinWireByRoom.has(roomId) || !gcRooms.has(roomId)) return;
+    const state = linkAuthStateFor(roomId);
+    if (state.timer) {
+      sendLinkAuthRound(roomId, true);
+      return;
+    }
+    if (!sendLinkAuthRound(roomId)) return;
+    state.timer = setInterval(() => {
+      if (!sendLinkAuthRound(roomId)) {
+        if (state.timer) clearInterval(state.timer);
+        state.timer = null;
+      }
+    }, GC_LINK_AUTH_RESEND_MS);
   };
 
   const stopLinkAuthForRoom = (roomId: string): void => {
-    const timer = gcLinkAuthTimers.get(roomId);
-    if (timer) {
-      clearInterval(timer);
-      gcLinkAuthTimers.delete(roomId);
+    const state = gcLinkAuthByRoom.get(roomId);
+    if (state?.timer) clearInterval(state.timer);
+    gcLinkAuthByRoom.delete(roomId);
+  };
+
+  // A link GO had not seen before (reported by python or learned from its
+  // frames): every joined room it serves sends it link-auth.
+  const startLinkAuthForNewLink = (link: GcAudioLink): void => {
+    for (const roomId of gcRooms.keys()) {
+      if (linkServesPeers(link, roomPeerHashes(roomId))) {
+        startLinkAuthForRoom(roomId);
+      }
     }
+  };
+
+  // The Hub resolved our address on this link (it only sends keys, key
+  // requests and audio on a link it adopted): stop resending there.
+  const noteLinkAuthAccepted = (
+    roomId: string,
+    linkId: string,
+    peerHash: string
+  ): void => {
+    if (!linkId || !gcRooms.has(roomId)) return;
+    const state = linkAuthStateFor(roomId);
+    if (state.acceptedLinks.has(linkId)) return;
+    state.acceptedLinks.add(linkId);
+    const link = gcAudioLinks.get(linkId);
+    console.log(
+      '[GCall] link-auth accepted room=%s peer=%s link=%s',
+      roomId.slice(0, 12),
+      (link ? linkPeerKey(link) : peerHash).slice(0, 8),
+      linkId.slice(0, 8)
+    );
   };
 
   const registerPeerIdentity = async (
@@ -3254,24 +4043,60 @@ export function installReticulumBridges(): void {
   const openAudioLinkForPeer = async (peerHash: string): Promise<void> => {
     const key = peerHash.trim().toLowerCase();
     if (!DEST_HASH_RE.test(key)) return;
+    const now = Date.now();
+    const last = gcLinkOpenRequestedAt.get(key) ?? 0;
+    if (now - last < GC_LINK_OPEN_MIN_INTERVAL_MS) return;
+    gcLinkOpenRequestedAt.set(key, now);
     // Fire-and-forget: the established linkId arrives via the
     // `group_audio_link_established` event (presenceCommand does not return the
-    // bridge's resp payload). Opening warms the RNS path for the packet send too.
+    // bridge's resp payload). `activeCall` lets python keep retrying past its
+    // usual four attempts while a call needs the link (as the Hub does).
     try {
       await Reticulum.presenceCommand({
         action: 'open_group_audio_link',
-        payload: { peerPresenceHash: key },
+        payload: { peerPresenceHash: key, activeCall: true },
       });
     } catch (err) {
       console.error('[GCall] open_group_audio_link failed:', err);
     }
   };
 
-  const recordPeerFromJoin = (
-    roomId: string,
-    peer: GcPeer,
-    peerPresenceHash: string
-  ): void => {
+  // Open the room's audio link(s) if this side should. DM rooms follow the
+  // Hub's roles: the opener opens to the pinned call peer at once, the waiter
+  // only when no link arrived within 4 s (group-call.ts:372, 382-399,
+  // 6985-7023); other rooms open to every participant.
+  const ensureRoomLinks = (roomId: string): void => {
+    const room = gcRooms.get(roomId);
+    if (!room) return;
+    if (!roomId.startsWith(DM_ROOM_PREFIX)) {
+      for (const hash of roomPeerHashes(roomId)) {
+        if (!hasAudioLinkTo(hash)) void openAudioLinkForPeer(hash);
+      }
+      return;
+    }
+    const peer = peerDestForRoomAny(roomId);
+    if (!peer || hasAudioLinkTo(peer)) return;
+    const delay = dmAudioLinkOpenDelayMs({
+      role: room.dmRole,
+      joinedAtMs: room.joinedAtMs,
+      nowMs: Date.now(),
+      localAddress: room.localAddress,
+      peerAddress: room.dmPeerAddress,
+    });
+    if (delay === null) return;
+    if (delay > 0) {
+      if (!room.openTimer) {
+        room.openTimer = setTimeout(() => {
+          room.openTimer = undefined;
+          if (gcRooms.get(roomId) === room) ensureRoomLinks(roomId);
+        }, delay);
+      }
+      return;
+    }
+    void openAudioLinkForPeer(peer);
+  };
+
+  const recordPeerFromJoin = (roomId: string, peer: GcPeer): void => {
     let byAddr = gcPeersByRoom.get(roomId);
     if (!byAddr) {
       byAddr = new Map();
@@ -3285,11 +4110,123 @@ export function installReticulumBridges(): void {
       }
     }
     byAddr.set(peer.address, peer);
-    const hash = (peerPresenceHash || peer.destinationHash).toLowerCase();
+    // The identity key belongs to the signed `d`, never to the overlay
+    // neighbour that relayed the frame (python refuses a mismatched hash).
+    const hash = peer.destinationHash.toLowerCase();
     if (peer.identityPublicKeyBase64) {
       void registerPeerIdentity(hash, peer.identityPublicKeyBase64);
     }
-    void openAudioLinkForPeer(hash);
+    ensureRoomLinks(roomId);
+    startLinkAuthForRoom(roomId);
+  };
+
+  const handleGroupAudioLinkEstablished = (
+    payload: Record<string, unknown>
+  ): void => {
+    // Python names an incoming link's peer from its identity, which can be
+    // unknown at first (find_peer_hash_for_identity); it emits the event
+    // again once the peer identifies. Either hash is enough to place it.
+    const presence = (asString(payload.peerPresenceHash) ?? '').toLowerCase();
+    const destination = (
+      asString(payload.peerDestinationHash) ?? ''
+    ).toLowerCase();
+    const peer = presence || destination;
+    const linkId = asString(payload.linkId);
+    if (!peer || !linkId) return;
+    const link: GcAudioLink = {
+      linkId,
+      peerPresenceHash: peer,
+      peerDestinationHash: destination || peer,
+      incoming: payload.incoming === true,
+    };
+    gcAudioLinks.set(linkId, link);
+    establishedLinkIdByPeer.set(peer, linkId);
+    console.log(
+      '[GCall] audio link established peer=%s link=%s incoming=%s',
+      peer.slice(0, 8),
+      linkId.slice(0, 8),
+      payload.incoming === true
+    );
+    // A new link to a peer needs its own link-auth before the Hub accepts
+    // anything on it (acceptance is per link id).
+    startLinkAuthForNewLink(link);
+  };
+
+  const handleGroupAudioLinkClosed = (payload: Record<string, unknown>): void => {
+    const peer = (asString(payload.peerPresenceHash) ?? '').toLowerCase();
+    const linkId = asString(payload.linkId);
+    const closed = linkId ? gcAudioLinks.get(linkId) : undefined;
+    if (linkId) {
+      gcAudioLinks.delete(linkId);
+      for (const state of gcLinkAuthByRoom.values()) {
+        state.attemptsByLink.delete(linkId);
+        state.acceptedLinks.delete(linkId);
+      }
+      for (const [roomId, id] of [...inboundAudioLinkIdByRoom]) {
+        if (id === linkId) inboundAudioLinkIdByRoom.delete(roomId);
+      }
+    }
+    const peerKey = peer || closed?.peerPresenceHash || '';
+    if (peerKey && (!linkId || establishedLinkIdByPeer.get(peerKey) === linkId)) {
+      let next = '';
+      for (const link of gcAudioLinks.values()) {
+        if (link.peerPresenceHash === peerKey) next = link.linkId;
+      }
+      if (next) establishedLinkIdByPeer.set(peerKey, next);
+      else establishedLinkIdByPeer.delete(peerKey);
+    }
+    // The opener of a DM room re-opens (python also re-arms its own
+    // desired link); a waiter waits for the peer again.
+    for (const roomId of gcRooms.keys()) {
+      if (peerKey && roomPeerHashes(roomId).has(peerKey)) ensureRoomLinks(roomId);
+    }
+  };
+
+  // Hub GC_RETICULUM_LEAVE_LINK_DRAIN_MS (group-call.ts:307): time for the
+  // GC_LEAVE sent over the links to go out before they close.
+  const GC_LEAVE_LINK_DRAIN_MS = 350;
+
+  // After leaving a room: close the links that served it and tell python to
+  // stop wanting a link to its peers (reset_group_audio_peer_state with the
+  // peer hash, as the Hub does: group-call.ts:7100-7146, 7511-7522). Without
+  // the reset python keeps the peer "desired" from open_group_audio_link and
+  // re-dials it every time the peer closes its side. close_group_audio_link
+  // by link id also covers a link python keys under another hash. Peers that
+  // a room still joined uses keep their links (Hub: state.rooms.size > 0).
+  const releaseRoomAudioLinks = (
+    peerHashes: Set<string>,
+    links: GcAudioLink[]
+  ): void => {
+    const stillUsed = (...hashes: string[]): boolean => {
+      for (const roomId of gcRooms.keys()) {
+        const peers = roomPeerHashes(roomId);
+        if (hashes.some((h) => !!h && peers.has(h))) return true;
+      }
+      return false;
+    };
+    const resetHashes = new Set<string>(peerHashes);
+    for (const link of links) {
+      if (stillUsed(link.peerPresenceHash, link.peerDestinationHash)) continue;
+      resetHashes.add(link.peerPresenceHash);
+      if (!gcAudioLinks.has(link.linkId)) continue; // already closed
+      gcAudioLinks.delete(link.linkId);
+      for (const [rid, id] of [...inboundAudioLinkIdByRoom]) {
+        if (id === link.linkId) inboundAudioLinkIdByRoom.delete(rid);
+      }
+      void Reticulum.presenceCommand({
+        action: 'close_group_audio_link',
+        payload: { linkId: link.linkId, reason: 'local_close' },
+      }).catch(() => {});
+    }
+    for (const hash of resetHashes) {
+      if (!DEST_HASH_RE.test(hash) || stillUsed(hash)) continue;
+      establishedLinkIdByPeer.delete(hash);
+      gcLinkOpenRequestedAt.delete(hash);
+      void Reticulum.presenceCommand({
+        action: 'reset_group_audio_peer_state',
+        payload: { peerPresenceHash: hash, reason: 'call-left' },
+      }).catch(() => {});
+    }
   };
 
   const DM_ROOM_PREFIX = 'dmv:';
@@ -3309,11 +4246,12 @@ export function installReticulumBridges(): void {
       gcPeersByRoom.set(roomId, byAddr);
     }
     if (byAddr.has(address)) return;
-    // Adopt a destination already learned from audio (stashed under its hash).
-    let dest = '';
+    // Adopt a destination already learned from audio (stashed under its hash),
+    // else the call's pinned peer device.
+    let dest = gcRooms.get(roomId)?.dmPeerDestinationHash ?? '';
     for (const [k, p] of [...byAddr]) {
       if (!p.address && p.destinationHash) {
-        dest = p.destinationHash;
+        if (!dest) dest = p.destinationHash;
         byAddr.delete(k);
         break;
       }
@@ -3329,6 +4267,10 @@ export function installReticulumBridges(): void {
     if (!roomId.startsWith(DM_ROOM_PREFIX)) return;
     const hash = (destHash || '').trim().toLowerCase();
     if (!DEST_HASH_RE.test(hash)) return;
+    // A room pinned to the call's peer device never follows another hash
+    // (the Hub ignores other devices the same way, setup.ts:6806-6838).
+    const pinned = gcRooms.get(roomId)?.dmPeerDestinationHash;
+    if (pinned && pinned !== hash) return;
     let byAddr = gcPeersByRoom.get(roomId);
     if (!byAddr) {
       byAddr = new Map();
@@ -3341,9 +4283,11 @@ export function installReticulumBridges(): void {
       existing = p;
       break;
     }
+    let learned = false;
     if (existing) {
       if (!existing.destinationHash) {
         existing.destinationHash = hash;
+        learned = true;
       } else if (authoritative && existing.destinationHash !== hash) {
         // The peer's audio destination CHANGES between calls (per-session RNS
         // destination). The room id doesn't, so a destination learned in a
@@ -3360,14 +4304,23 @@ export function installReticulumBridges(): void {
         );
         existing.destinationHash = hash;
         establishedLinkIdByPeer.delete(old);
+        learned = true;
       }
     } else {
       byAddr.set(hash, { address: '', destinationHash: hash });
+      learned = true;
     }
-    void openAudioLinkForPeer(hash);
+    // Runs for every inbound frame: only a newly learned peer needs a link
+    // (by the room's role) and link-auth.
+    if (learned) {
+      ensureRoomLinks(roomId);
+      startLinkAuthForRoom(roomId);
+    }
   };
 
   const peerDestForRoom = (roomId: string, toAddress: string): string | null => {
+    const pinned = gcRooms.get(roomId)?.dmPeerDestinationHash;
+    if (pinned) return pinned;
     const byAddr = gcPeersByRoom.get(roomId);
     const peer = byAddr?.get(toAddress);
     if (peer?.destinationHash) return peer.destinationHash.toLowerCase();
@@ -3468,6 +4421,39 @@ export function installReticulumBridges(): void {
     }
   };
 
+  // A GJ for a room this side has not joined yet, kept briefly: the Hub
+  // sends its link-auth GJ once per link, and the link can beat our join.
+  const holdEarlyJoin = (roomId: string, payload: Record<string, unknown>): void => {
+    const now = Date.now();
+    for (const [rid, list] of [...gcEarlyJoinsByRoom]) {
+      const fresh = list.filter((e) => now - e.at <= GC_EARLY_JOIN_TTL_MS);
+      if (fresh.length > 0) gcEarlyJoinsByRoom.set(rid, fresh);
+      else gcEarlyJoinsByRoom.delete(rid);
+    }
+    if (!roomId.startsWith(DM_ROOM_PREFIX)) return;
+    const list = gcEarlyJoinsByRoom.get(roomId) ?? [];
+    list.push({ payload, at: now });
+    gcEarlyJoinsByRoom.set(roomId, list.slice(-4));
+    while (gcEarlyJoinsByRoom.size > 8) {
+      const oldest = gcEarlyJoinsByRoom.keys().next().value;
+      if (oldest === undefined) break;
+      gcEarlyJoinsByRoom.delete(oldest);
+    }
+  };
+
+  const replayEarlyJoins = (roomId: string): void => {
+    const list = gcEarlyJoinsByRoom.get(roomId);
+    gcEarlyJoinsByRoom.delete(roomId);
+    const now = Date.now();
+    for (const entry of list ?? []) {
+      if (now - entry.at > GC_EARLY_JOIN_TTL_MS) continue;
+      // Its overlay id was marked seen on arrival; replay without it.
+      const wire = { ...(asObject(entry.payload.wire) ?? {}) };
+      delete wire.X;
+      void handleGroupCallMessage({ ...entry.payload, wire });
+    }
+  };
+
   const handleGroupCallMessage = async (
     payload: Record<string, unknown>
   ): Promise<void> => {
@@ -3476,32 +4462,52 @@ export function installReticulumBridges(): void {
     if (typeof wire.X === 'string' && seenGcOverlayId(wire.X)) return;
     const peerPresenceHash = (asString(payload.peerPresenceHash) ?? '').toLowerCase();
     const t = asString(wire.t);
-    // Learn the Hub's inbound RNS audio link for this room so we can reply with
-    // link-auth over it (see inboundAudioLinkIdByRoom).
     const inLinkId = asString(payload.linkId);
     const inRoom = asString(wire.R);
-    if (inLinkId && inRoom) {
+    const explicitLinkDest =
+      asString(payload.senderDestinationHash) ||
+      asString(payload.peerDestinationHash) ||
+      '';
+    const knownLink = inLinkId ? gcAudioLinks.get(inLinkId) : undefined;
+    const linkFitsRoom =
+      !!inRoom &&
+      linkPeerFitsRoom(
+        inRoom,
+        peerPresenceHash,
+        explicitLinkDest,
+        knownLink?.peerPresenceHash,
+        knownLink?.peerDestinationHash
+      );
+    if (inLinkId && inRoom && linkFitsRoom) {
+      // Frames that arrive on an audio link (GAC heartbeats, link control)
+      // tell which link and peer serve the room.
       inboundAudioLinkIdByRoom.set(inRoom, inLinkId);
-      // When mobile is the CALLER, the Hub's overlay GJ (which carries its audio
-      // destination) often never arrives — but its link-control frames (GAC etc.)
-      // do, and they carry the Hub's dest in senderDestinationHash. Learn it here
-      // so the peer becomes routable and link-auth can ride this link. Without
-      // this, peerDest stays empty → sendControlFramesOverLinks bails → no
-      // link-auth is ever sent and readiness times out with establishedLinks=0.
-      const explicitLinkDest =
-        asString(payload.senderDestinationHash) ||
-        asString(payload.peerDestinationHash) ||
-        '';
       const learnedLinkDest = explicitLinkDest || peerPresenceHash || '';
       if (learnedLinkDest) {
         // Frames that name their sender's destination are authoritative and may
         // replace a stale destination from a previous call to the same room.
         noteDmPeerDestination(inRoom, learnedLinkDest, !!explicitLinkDest);
       }
-      // Kick off (idempotent) link-auth over this newly-known link so the Hub
-      // verifies us and flips from "connecting" to connected. No-op if we never
-      // joined this room (gcJoinWireByRoom empty).
-      startLinkAuthForRoom(inRoom);
+    }
+    if (t === 'GAC') {
+      // Hub PINGs each audio link every 5 s and marks it unready after two
+      // missed PONGs with no other traffic (group-call.ts:8418-8459) — which
+      // is every call that moved its audio to WebRTC. Like the Hub
+      // (group-call.ts:11726-11738) GO answers only for a room it is in, so a
+      // link left over from an ended call goes quiet and the Hub drops it.
+      const pong =
+        inRoom && gcRooms.has(inRoom) && linkFitsRoom
+          ? buildGacPongPayload(wire, inLinkId, peerPresenceHash)
+          : null;
+      if (pong) {
+        void Reticulum.presenceCommand({
+          action: 'send_group_audio_link_heartbeat',
+          payload: pong,
+        }).catch((err) => {
+          console.error('[GCall] GAC PONG failed:', err);
+        });
+      }
+      return;
     }
     if (t && t !== 'GJ' && t !== 'GI') {
       console.log(
@@ -3514,16 +4520,15 @@ export function installReticulumBridges(): void {
     if (t === 'GJ') {
       const join = decodeJoinWire(wire);
       if (!join) return;
-      if (!gcRooms.has(join.roomId)) return; // not a room we're in
-      recordPeerFromJoin(
-        join.roomId,
-        {
-          address: join.fromAddress,
-          destinationHash: join.reticulumDestinationHash,
-          identityPublicKeyBase64: join.reticulumIdentityPublicKeyBase64,
-        },
-        peerPresenceHash
-      );
+      if (!gcRooms.has(join.roomId)) {
+        holdEarlyJoin(join.roomId, payload);
+        return;
+      }
+      recordPeerFromJoin(join.roomId, {
+        address: join.fromAddress,
+        destinationHash: join.reticulumDestinationHash,
+        identityPublicKeyBase64: join.reticulumIdentityPublicKeyBase64,
+      });
       emitGc('gcall:participant-joined', {
         roomId: join.roomId,
         chatId: join.chatId,
@@ -3537,9 +4542,10 @@ export function installReticulumBridges(): void {
       return;
     }
     if (t === 'GI') {
-      const d = asString(wire.d)?.toLowerCase();
+      // The key belongs to the signed `d`, not to the relaying neighbour.
+      const d = rnsDestinationHashFromWire(wire.d);
       const rk = asString(wire.rk);
-      if (d && rk) void registerPeerIdentity(peerPresenceHash || d, rk);
+      if (d && rk) void registerPeerIdentity(d, rk);
       return;
     }
     if (t === 'GK') {
@@ -3564,6 +4570,23 @@ export function installReticulumBridges(): void {
       await ingestFragment(wire, 'GQ');
       return;
     }
+    if (isGroupCallLinkControlFragmentType(t)) {
+      // GO0/GO1: a Hub's WebRTC signal or DM hang-up, fragmented on the
+      // link's reliable channel. This old port does not reassemble them (the
+      // hosted Hub managers do), so with it GO never advertises WebRTC (no
+      // sendRtcSignal) and the Hub falls back to its overlay hang-up; drop
+      // instead of handing them on as audio.
+      gcDroppedLinkControlCount += 1;
+      if (gcDroppedLinkControlCount === 1 || gcDroppedLinkControlCount % 50 === 0) {
+        console.log(
+          '[GCall] link control %s dropped (not supported yet) total=%d',
+          t,
+          gcDroppedLinkControlCount
+        );
+      }
+      return;
+    }
+    if (isIgnoredGroupCallWireType(t)) return; // GX/GO/GE*/GF: no Hub uses them
     // GL / GH / GT etc.: not needed for DM media.
   };
 
@@ -3571,76 +4594,94 @@ export function installReticulumBridges(): void {
     const roomId = asString(payload.roomId) ?? '';
     const dataB64 = asString(payload.data);
     const inLinkId = asString(payload.linkId);
-    if (inLinkId && roomId) inboundAudioLinkIdByRoom.set(roomId, inLinkId);
-    // Learn the peer's Reticulum AUDIO destination from EVERY inbound frame —
-    // including link-control frames (the Hub sends only key-requests over the
-    // link until it has the key, so if we only learned the dest from raw audio
-    // the caller could never open an outbound link, leaving establishedLinks=0
-    // and timing out media readiness). This opens our link back to the right
-    // audio dest (which differs from the presence hash).
-    const explicitDestEarly = asString(payload.peerDestinationHash) || '';
-    const learnedDestEarly =
-      explicitDestEarly || asString(payload.peerPresenceHash) || '';
-    if (roomId && learnedDestEarly) {
-      noteDmPeerDestination(roomId, learnedDestEarly, !!explicitDestEarly);
-    }
-    if (!dataB64) return;
-    let bytes: Uint8Array;
-    try {
-      bytes = base64ToUint8(dataB64);
-    } catch {
-      return;
-    }
-    // The Hub delivers GK/GQ control frames over the audio link as a link-control
-    // wire: the bridge unwraps the QGAU envelope and hands us the inner payload,
-    // which is either bare JSON or `QGCCTL1\0` + JSON (decodeGcLinkControlWire on
-    // desktop). Detect both, strip the magic, and reroute to the control handler
-    // instead of treating it as (undecodable) audio.
-    let jsonBytes: Uint8Array | null = null;
-    if (bytes.length > 1 && bytes[0] === 0x7b /* '{' */) {
-      jsonBytes = bytes;
-    } else if (
-      bytes.length > GC_LINK_CONTROL_MAGIC.length &&
-      GC_LINK_CONTROL_MAGIC.every((b, i) => bytes[i] === b)
-    ) {
-      jsonBytes = bytes.subarray(GC_LINK_CONTROL_MAGIC.length);
-    }
-    if (jsonBytes) {
-      try {
-        const obj = JSON.parse(new TextDecoder().decode(jsonBytes));
-        if (obj && isGroupCallReticulumWireType(obj.t)) {
-          void handleGroupCallMessage({
-            wire: obj,
-            senderDestinationHash: payload.peerDestinationHash,
-            peerPresenceHash: payload.peerPresenceHash,
-            linkId: payload.linkId,
-          });
-          return;
+    const peerPresenceHash = (asString(payload.peerPresenceHash) ?? '').toLowerCase();
+    const explicitDest = (asString(payload.peerDestinationHash) ?? '').toLowerCase();
+    let newLink: GcAudioLink | null = null;
+    if (inLinkId && roomId) {
+      const linkPeer = peerPresenceHash || explicitDest;
+      if (!gcAudioLinks.has(inLinkId) && DEST_HASH_RE.test(linkPeer)) {
+        // A link that carries frames is established even if its event was
+        // missed (page reloaded while python kept the link).
+        newLink = {
+          linkId: inLinkId,
+          peerPresenceHash: linkPeer,
+          peerDestinationHash: explicitDest || linkPeer,
+          incoming: true,
+        };
+        gcAudioLinks.set(inLinkId, newLink);
+        if (!establishedLinkIdByPeer.has(linkPeer)) {
+          establishedLinkIdByPeer.set(linkPeer, inLinkId);
         }
-      } catch {
-        /* not JSON → real audio */
+      }
+      // Only a link from the room's pinned device (or one python cannot
+      // name yet) becomes the room's reply link.
+      if (linkPeerFitsRoom(roomId, peerPresenceHash, explicitDest)) {
+        inboundAudioLinkIdByRoom.set(roomId, inLinkId);
       }
     }
-    // Learn the peer's Reticulum destination from the (reliable) audio data-plane
-    // so readiness can pass and outbound audio can be routed even when the
-    // overlay GJ never arrived.
-    const explicitDest = asString(payload.peerDestinationHash) || '';
-    const learnedDest =
-      explicitDest || asString(payload.peerPresenceHash) || '';
+    // Learn the peer's Reticulum destination from EVERY inbound frame —
+    // including link-control frames (the Hub sends only key-requests over the
+    // link until it has the key).
+    const learnedDest = explicitDest || peerPresenceHash;
     if (roomId && learnedDest) {
       noteDmPeerDestination(roomId, learnedDest, !!explicitDest);
+    }
+    let bytes: Uint8Array | null = null;
+    if (dataB64) {
+      try {
+        bytes = base64ToUint8(dataB64);
+      } catch {
+        bytes = null;
+      }
+    }
+    // Link control (`QGCCTL1\0`+JSON: link-auth GJ, GK/GQ, GO0/GO1) goes to
+    // the control handler; only media reaches the audio surface.
+    const classified = bytes ? classifyAudioLinkPayload(bytes) : null;
+    if (
+      classified &&
+      inLinkId &&
+      roomId &&
+      isLinkAuthAcceptedEvidence(classified) &&
+      linkPeerFitsRoom(roomId, peerPresenceHash, explicitDest)
+    ) {
+      noteLinkAuthAccepted(roomId, inLinkId, peerPresenceHash || explicitDest);
+    }
+    // A link first seen through its frames gets link-auth like a reported one
+    // (unless the frame above already showed the Hub accepted it).
+    if (newLink) startLinkAuthForNewLink(newLink);
+    if (!bytes || !classified) return;
+    if (classified.kind === 'control') {
+      void handleGroupCallMessage({
+        wire: classified.wire,
+        senderDestinationHash: payload.peerDestinationHash,
+        peerPresenceHash: payload.peerPresenceHash,
+        linkId: payload.linkId,
+      });
+      return;
+    }
+    if (classified.kind === 'drop') {
+      gcDroppedLinkControlCount += 1;
+      if (gcDroppedLinkControlCount === 1 || gcDroppedLinkControlCount % 50 === 0) {
+        console.log(
+          '[GCall] link control dropped reason=%s total=%d',
+          classified.reason,
+          gcDroppedLinkControlCount
+        );
+      }
+      return;
     }
     emitGc('gcall:audio', {
       roomId,
       data: bytes,
-      transport: asString(payload.linkId) ? 'link' : 'packet',
+      transport: inLinkId ? 'link' : 'packet',
       peerPresenceHash: asString(payload.peerPresenceHash) ?? '',
       peerDestinationHash: asString(payload.peerDestinationHash) ?? '',
       bridgeReceivedAtWallMs: Number(payload.receivedAtWallMs) || Date.now(),
     });
   };
 
-  window.groupCall = {
+  // (the hand-written port; used only with HOSTED_HUB_CALLS off)
+  const legacyGroupCallApi = {
     setLocalAddresses: async (addresses: string[]) => {
       gcLocalAddresses.clear();
       for (const a of addresses) {
@@ -3648,30 +4689,35 @@ export function installReticulumBridges(): void {
       }
       return { success: true };
     },
-    join: async (
-      roomId: string,
-      chatId: string,
-      fromAddress: string,
-      signature: string,
-      fromPublicKey: string,
-      timestamp: number,
-      reticulumDestinationHash: string,
-      _topologyHint?: unknown,
-      joinGeneration?: number,
-      reticulumIdentityPublicKeyBase64?: string,
-      joinRkSignature?: string
-    ) => {
+    // Positional arguments exactly as electron/src/group-call-ipc-contract.ts
+    // (roomId, chatId, localAddress, signature, publicKey, timestamp,
+    // reticulumDestinationHash, joinGeneration, topologyEpochFloor,
+    // reticulumIdentityPublicKeyBase64, joinRkSignature, dmVoiceAudioLinkRole,
+    // takeover, dmVoicePeerDestinationHash, dmVoiceCallId).
+    join: async (...rawArgs: unknown[]) => {
       try {
+        const args = parseGroupCallJoinArgs(rawArgs);
+        const {
+          roomId,
+          chatId,
+          localAddress: fromAddress,
+          signature,
+          publicKey: fromPublicKey,
+          timestamp,
+          reticulumDestinationHash,
+        } = args;
         await ensureBridgeStarted();
+        const isDm = roomId.startsWith(DM_ROOM_PREFIX);
         const existing = gcRooms.get(roomId);
         const room: GcRoom = existing ?? {
           chatId,
           callSessionId: randomUuid(),
           mediaSessionGeneration: 1,
+          joinedAtMs: Date.now(),
+          localAddress: fromAddress,
         };
         gcRooms.set(roomId, room);
         gcLocalAddresses.add(fromAddress);
-        const isDm = roomId.startsWith('dmv:');
         // The DM room id is stable across calls (derived from the address
         // pair), so per-room link/peer state from a previous call is stale by
         // definition when a NEW call session starts: the inbound link is dead
@@ -3692,35 +4738,48 @@ export function installReticulumBridges(): void {
             }
           }
         }
-        const wireChatId = compactDmVoiceJoinWireChatId(roomId, chatId);
-        const gj = encodeJoinWire({
+        if (isDm) {
+          // The Hub pins DM media to the device its call manager accepted
+          // (setup.ts:6806-6838); GO takes it from its own call record, else
+          // from the caller-supplied hash.
+          const pinned =
+            callPeerDestinationHash(args.dmVoiceCallId) ??
+            args.dmVoicePeerDestinationHash;
+          if (pinned) room.dmPeerDestinationHash = pinned;
+          if (args.dmVoiceAudioLinkRole) room.dmRole = args.dmVoiceAudioLinkRole;
+          if (chatId.startsWith('direct:')) {
+            room.dmPeerAddress = chatId
+              .slice('direct:'.length)
+              .split(':')
+              .find((address) => address && address !== fromAddress);
+          }
+        }
+        const signedJoinGeneration = resolveSignedJoinGeneration(
+          args.joinGeneration,
+          args.takeover === true
+        );
+        // GJ never carries `rk` (GC_JOIN is signed without it); the identity
+        // key goes in the separately signed GI, as GroupCallManager.joinRoom
+        // floods them (group-call.ts:5487-5530).
+        const { joinWire, identityWire } = buildGroupCallJoinWires({
           roomId,
-          chatId: wireChatId,
+          wireChatId: compactDmVoiceJoinWireChatId(roomId, chatId),
           fromAddress,
           fromPublicKey,
           signature,
           timestamp,
           reticulumDestinationHash,
-          reticulumIdentityPublicKeyBase64,
-          // DM joins are signed WITHOUT joinGeneration → omit it on the wire.
-          ...(isDm ? {} : { joinGeneration }),
+          signedJoinGeneration,
+          reticulumIdentityPublicKeyBase64: args.reticulumIdentityPublicKeyBase64,
+          joinRkSignature: args.joinRkSignature,
         });
-        const messages: Record<string, unknown>[] = [gj];
-        if (reticulumIdentityPublicKeyBase64 && joinRkSignature) {
-          const gi = encodeJoinIdentityWire({
-            fromAddress,
-            signature: joinRkSignature,
-            timestamp,
-            reticulumDestinationHash,
-            reticulumIdentityPublicKeyBase64,
-            ...(isDm ? {} : { joinGeneration }),
-          });
-          if (gi) messages.push(gi);
-        }
-        // Cache our signed join so it can be replayed as the Hub's required
-        // QGCCTL1 audio-link auth, and start resending it over the audio path so
-        // the Hub verifies our link and begins delivering GC_KEY over it.
-        gcJoinWireByRoom.set(roomId, gj);
+        const messages: Record<string, unknown>[] = [joinWire];
+        if (identityWire) messages.push(identityWire);
+        // The same GJ is the audio-link auth (getLocalReticulumLinkAuthJoinWire,
+        // group-call.ts:7877-7892).
+        gcJoinWireByRoom.set(roomId, joinWire);
+        replayEarlyJoins(roomId);
+        ensureRoomLinks(roomId);
         startLinkAuthForRoom(roomId);
         await fanoutGroupCall(messages);
         return {
@@ -3740,32 +4799,43 @@ export function installReticulumBridges(): void {
       fromPublicKey: string,
       timestamp: number
     ) => {
-      const peers = gcPeersByRoom.get(roomId);
+      const room = gcRooms.get(roomId);
+      if (room?.openTimer) clearTimeout(room.openTimer);
+      // Everything that served the room, read before its state goes.
+      const peerHashes = roomPeerHashes(roomId);
+      const sentLinks = signature ? roomLinks(roomId) : [];
+      const servingLinks = [...gcAudioLinks.values()].filter((link) =>
+        linkServesPeers(link, peerHashes)
+      );
+      const leaveWire = encodeLeaveWire({
+        roomId,
+        fromAddress,
+        fromPublicKey,
+        signature,
+        timestamp,
+      });
+      // Like GroupCallManager.leaveRoom (group-call.ts:5559-5655): GC_LEAVE
+      // over the room's audio links (reliable, reaches the peer before the
+      // links go) and the overlay; the links close after a short drain.
+      for (const link of sentLinks) {
+        void sendFrameOnLink(roomId, link, leaveWire);
+      }
       stopLinkAuthForRoom(roomId);
       gcRooms.delete(roomId);
       gcPeersByRoom.delete(roomId);
       gcJoinWireByRoom.delete(roomId);
       inboundAudioLinkIdByRoom.delete(roomId);
+      gcEarlyJoinsByRoom.delete(roomId);
       try {
-        await fanoutGroupCall([
-          encodeLeaveWire({ roomId, fromAddress, fromPublicKey, signature, timestamp }),
-        ]);
+        if (signature) await fanoutGroupCall([leaveWire]);
       } catch {
         /* ignore */
       }
-      if (peers) {
-        for (const peer of peers.values()) {
-          const hash = peer.destinationHash.toLowerCase();
-          establishedLinkIdByPeer.delete(hash);
-          try {
-            await Reticulum.presenceCommand({
-              action: 'close_group_audio_link',
-              payload: { peerPresenceHash: hash },
-            });
-          } catch {
-            /* ignore */
-          }
-        }
+      const teardown = () => releaseRoomAudioLinks(peerHashes, servingLinks);
+      if (sentLinks.length > 0) {
+        setTimeout(teardown, GC_LEAVE_LINK_DRAIN_MS);
+      } else {
+        teardown();
       }
       return { success: true };
     },
@@ -3853,21 +4923,12 @@ export function installReticulumBridges(): void {
     sendAudio: async (roomId: string, toAddress: string, data: Uint8Array) => {
       const peerDest = peerDestForRoom(roomId, toAddress);
       if (!peerDest) return { sent: 0, reason: 'no_peer' };
-      // Ride a real established audio link so our audio is on a verified link
-      // (the Hub drops audio from an unverified link / the data-plane). The
-      // peer's AUDIO reticulum dest often differs from its presence hash, so
-      // fall back to ANY established link for the call, then the inbound link.
-      const candidates = candidateLinkIdsForRoom(roomId);
-      // Prefer the Hub's INBOUND link — the one its GAC/link-control arrives on
-      // and the one we send link-auth over, so the Hub verifies it. RNS links
-      // are bidirectional, so sending audio back over that same link lands on
-      // the link the Hub associates with us. Sending over our own separately
-      // established link (establishedLinkIdByPeer) lands the audio on a link the
-      // Hub never verified → it drops it as unverified and stays "connecting".
+      // Name the room's link to the peer (python sends on its canonical link
+      // for the peer anyway); without one python falls back to the peer hash.
       const linkId =
         inboundAudioLinkIdByRoom.get(roomId) ||
         establishedLinkIdByPeer.get(peerDest) ||
-        candidates[0] ||
+        roomLinks(roomId)[0]?.linkId ||
         '';
       try {
         await Reticulum.presenceCommand({
@@ -3928,13 +4989,15 @@ export function installReticulumBridges(): void {
       // so the readiness gate can recognize the peer once its destination is
       // learned from the inbound audio data-plane.
       noteDmPeerAddress(roomId, toAddress);
-      const peerDest = peerDestForRoom(roomId, toAddress);
-      if (peerDest) {
-        await openAudioLinkForPeer(peerDest);
-        // Ensure link-auth is running for this room (no-op if already started).
-        startLinkAuthForRoom(roomId);
-        void sendLinkAuthForRoom(roomId);
-      }
+      // Re-open the room's link if this side owns it (a waiter still waits
+      // out its grace) and authenticate the room's links again with a fresh
+      // budget: media is not flowing, so an earlier acceptance may be stale
+      // (the next key, key request or media frame marks it accepted again).
+      ensureRoomLinks(roomId);
+      const linkAuth = gcLinkAuthByRoom.get(roomId);
+      linkAuth?.attemptsByLink.clear();
+      linkAuth?.acceptedLinks.clear();
+      startLinkAuthForRoom(roomId);
       return { success: true };
     },
     reportTransportHealth: async (_roomId: string, _peers: string[]) => {
@@ -3945,6 +5008,22 @@ export function installReticulumBridges(): void {
       return () => gcEventCbs.delete(cb);
     },
   } as unknown as Window['groupCall'];
+  if (hostedHubCalls) {
+    // The lazy object itself: its sendRtcSignal getter must stay on it.
+    const hostedGroupCall = hostedHubCalls.groupCall;
+    const lazyJoin = hostedGroupCall.join;
+    hostedGroupCall.join = async (...args) => {
+      await waitForCallBridge();
+      return lazyJoin(...args);
+    };
+    // GO-only, synchronous (Track E's relaying note, goCallUi.ts
+    // readHostedGroupRelaying): null until the managers are loaded.
+    hostedGroupCall.isRelayingAudio = (roomId?: string) =>
+      getHostedHubCallStack() ? isGoCallRelayingAudio(roomId) : null;
+    window.groupCall = hostedGroupCall;
+  } else {
+    window.groupCall = legacyGroupCallApi;
+  }
 
   // window.audioSurface — in-WebView WebCodecs/AudioWorklet duplex engine that
   // rides on the window.groupCall transport above (installed only when the
@@ -3956,7 +5035,7 @@ export function installReticulumBridges(): void {
   // the call buttons stay disabled far longer than they need to. Once settled
   // (or the screen is off) a slower tick is enough — visibilitychange below
   // snaps back to fresh numbers the moment the user looks at the app.
-  let statusRefreshTimer: ReturnType<typeof setInterval> | null = null;
+  let statusRefreshTimer: number | null = null;
   const armStatusRefresh = (): void => {
     if (statusRefreshTimer != null) {
       window.clearInterval(statusRefreshTimer);

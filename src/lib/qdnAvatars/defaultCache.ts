@@ -4,6 +4,7 @@
  * itself with setQdnAvatarApiBaseResolver: importing it here would pull
  * background/background.ts into every avatar component.
  */
+import { observePublicNodeFetch } from '../../publicNode/publicNodeWatch';
 import { createQdnAvatarCache, type QdnAvatarCache } from './avatarCache';
 import { qdnAvatarSeedUrlForKey } from './seeds';
 
@@ -26,6 +27,10 @@ const readApiBase = (): string => (apiBaseResolver ? apiBaseResolver() : '');
 export function getQdnAvatarCache(): QdnAvatarCache {
   if (!instance) {
     instance = createQdnAvatarCache({
+      // Avatar loads double as a sign of how the public node is doing.
+      fetch: observePublicNodeFetch((input, init) =>
+        globalThis.fetch(input, init)
+      ),
       getApiBase: readApiBase,
       seedUrlFor: qdnAvatarSeedUrlForKey,
     });

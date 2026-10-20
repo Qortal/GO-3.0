@@ -79,6 +79,30 @@ import {
   DirectScreenShareWebRtcTransport,
   type DirectScreenShareRtcSignal,
 } from '../lib/call/directScreenShareWebRtcTransport';
+import { isCapacitor } from '../utils/platform';
+
+const DIRECT_VOICE_CAPABILITY_RETRY_DELAYS_MS: readonly number[] = [
+  1_000, 1_500, 2_500, 4_000, 6_000, 8_000, 10_000,
+];
+// GO only: a Hub answers WebRTC only after a capability it can verify, and
+// on a slow mobile uplink every early copy may reach it after its 20 s
+// signal TTL. Keep advertising (the bridge sends only the newest copy) while
+// there is no ack and no open WebRTC, about 2 min in all instead of 33 s.
+const GO_DIRECT_VOICE_CAPABILITY_EXTRA_RETRY_DELAYS_MS: readonly number[] = [
+  15_000, 20_000, 30_000, 30_000,
+];
+
+/** Waits between native-audio capability adverts (the loop stops on ack/open). */
+export function directVoiceCapabilityRetryDelaysMs(
+  go: boolean
+): readonly number[] {
+  return go
+    ? [
+        ...DIRECT_VOICE_CAPABILITY_RETRY_DELAYS_MS,
+        ...GO_DIRECT_VOICE_CAPABILITY_EXTRA_RETRY_DELAYS_MS,
+      ]
+    : DIRECT_VOICE_CAPABILITY_RETRY_DELAYS_MS;
+}
 
 const DM_MEDIA_RECOVERY_REQUEST_COOLDOWN_MS = 4_000;
 const DM_ROOM_KEY_REPLAY_RETRY_MS = 750;
@@ -609,7 +633,8 @@ export function useVoiceCall(
         keyCommitment: string;
         fromAddress: string;
       },
-      decryptedKeyB64: string
+      decryptedKeyB64: string,
+      keySession?: { endEpoch: number; callId: string | null } | null
     ) => Promise<void>
   >(async () => {});
   const startReticulumCaptureRef = useRef<() => Promise<void>>(async () => {});
@@ -619,6 +644,14 @@ export function useVoiceCall(
   const dmRtcOpenRef = useRef(false);
   const dmRtcOpenWaitersRef = useRef(new Set<(ready: boolean) => void>());
   const dmRtcLifecycleGenerationRef = useRef(0);
+  // GO race guard: endCall (and the unmount cleanup) bumps this synchronously
+  // on entry, before any await; each DM media session takes a token when it
+  // starts (startReticulumMediaSession). See isGoDmMediaSessionEnding.
+  const dmCallEndEpochRef = useRef(0);
+  const dmMediaSessionTokenRef = useRef<{
+    endEpoch: number;
+    callId: string | null;
+  } | null>(null);
   const dmRtcStartPromiseRef = useRef<Promise<boolean> | null>(null);
   const dmRtcPeerNativeCapabilityCallIdRef = useRef<string | null>(null);
   const dmRtcLocalCapabilityRef = useRef<{
@@ -678,6 +711,32 @@ export function useVoiceCall(
     }
     return directVoiceOwnerIdRef.current;
   }, []);
+
+  /**
+   * GO only (always false elsewhere): the call of this DM media session has
+   * started ending — endCall ran (a remote hang-up keeps callIdRef and
+   * callState 'connected' until teardown finishes), another call or session
+   * took over. Media/RTC starts and the room-key path check it so a hang-up
+   * at any point of the start (GC_JOIN, key decrypt, readiness, the
+   * screen-share reset before teardown's RTC bump) neither opens the mic for
+   * an ended call nor reports "Voice call failed" and hangs up again.
+   */
+  const isGoDmMediaSessionEnding = useCallback(
+    (
+      token: {
+        endEpoch: number;
+        callId: string | null;
+      } | null = dmMediaSessionTokenRef.current
+    ): boolean => {
+      if (!isCapacitor() || !token) return false;
+      return (
+        token !== dmMediaSessionTokenRef.current ||
+        token.endEpoch !== dmCallEndEpochRef.current ||
+        token.callId !== callIdRef.current
+      );
+    },
+    []
+  );
 
   const updateCallState = useCallback((nextState: CallState) => {
     callStateRef.current = nextState;
@@ -889,6 +948,13 @@ export function useVoiceCall(
     const startAttempt = (async (): Promise<boolean> => {
       const roomId = dmRoomIdRef.current;
       const peer = peerAddressRef.current;
+      // GO: only this call's media session counts (a capability can arrive
+      // before it starts; the lifecycle check below covers that case).
+      const rtcSession = dmMediaSessionTokenRef.current;
+      const goCallEnding = (): boolean =>
+        rtcSession?.callId === callIdRef.current &&
+        isGoDmMediaSessionEnding(rtcSession);
+      if (goCallEnding()) return false;
       const ownerId = ensureDirectVoiceOwnerId();
       if (!window.audioSurface || !ownerId || !roomId || !peer) return false;
       const lifecycleGeneration = dmRtcLifecycleGenerationRef.current;
@@ -903,7 +969,8 @@ export function useVoiceCall(
       if (
         lifecycleGeneration !== dmRtcLifecycleGenerationRef.current ||
         roomId !== dmRoomIdRef.current ||
-        peer !== peerAddressRef.current
+        peer !== peerAddressRef.current ||
+        goCallEnding()
       ) {
         return false;
       }
@@ -922,7 +989,8 @@ export function useVoiceCall(
       if (
         lifecycleGeneration !== dmRtcLifecycleGenerationRef.current ||
         roomId !== dmRoomIdRef.current ||
-        peer !== peerAddressRef.current
+        peer !== peerAddressRef.current ||
+        goCallEnding()
       ) {
         if (response.ok) {
           await window.audioSurface
@@ -951,6 +1019,7 @@ export function useVoiceCall(
   }, [
     applyDirectVoiceRtcSignalOnAudioSurface,
     ensureDirectVoiceOwnerId,
+    isGoDmMediaSessionEnding,
     prefersDirectVoiceWebRtc,
   ]);
 
@@ -1126,7 +1195,7 @@ export function useVoiceCall(
     // bundle. Retry until the remote application confirms that it accepted
     // this exact, session-bound capability. The bounded backoff avoids control
     // churn while recovering room/link initialization races.
-    const retryDelaysMs = [1_000, 1_500, 2_500, 4_000, 6_000, 8_000, 10_000];
+    const retryDelaysMs = directVoiceCapabilityRetryDelaysMs(isCapacitor());
     for (let attempt = 0; attempt < retryDelaysMs.length; attempt += 1) {
       if (
         callIdRef.current !== expectedCallId ||
@@ -1539,6 +1608,12 @@ export function useVoiceCall(
   );
 
   const startDirectVoiceMediaOnAudioSurface = useCallback(async () => {
+    // GO: never open the mic for a call that has started ending (a hang-up
+    // during GC_JOIN, the key decrypt or readiness). Teardown may already
+    // have skipped its stop (nothing was running) and would not clear an
+    // owner created here, so the start would outlive the call.
+    const mediaSession = dmMediaSessionTokenRef.current;
+    if (isGoDmMediaSessionEnding(mediaSession)) return false;
     const ownerId = ensureDirectVoiceOwnerId();
     const roomId = dmRoomIdRef.current;
     const peer = peerAddressRef.current;
@@ -1556,6 +1631,9 @@ export function useVoiceCall(
       return false;
     }
     const keyBuffer = roomKey.slice().buffer as ArrayBuffer;
+    // Teardown bumps the RTC lifecycle before it stops media (see
+    // stopDirectVoiceRtcOnAudioSurface); a change means the call is ending.
+    const teardownGenerationAtStart = dmRtcLifecycleGenerationRef.current;
     const response = await window.audioSurface
       .sendCommand({
         type: 'start-direct-voice-media',
@@ -1574,6 +1652,23 @@ export function useVoiceCall(
         ok: false as const,
         error: error instanceof Error ? error.message : String(error),
       }));
+    if (
+      isCapacitor() &&
+      (isGoDmMediaSessionEnding(mediaSession) ||
+        dmRtcLifecycleGenerationRef.current !== teardownGenerationAtStart)
+    ) {
+      // GO: the call began ending while this start ran. Teardown's stop may
+      // already have skipped media that was not up yet (or an earlier start
+      // of this call that this one replaced), so stop this owner's media here
+      // instead of leaving the mic and call audio running after hang-up. An
+      // owner that holds nothing gets a harmless 'stale-owner' answer.
+      dmMediaOnAudioSurfaceRef.current = false;
+      dmReceiveOnAudioSurfaceRef.current = false;
+      await window.audioSurface
+        .sendCommand({ type: 'stop-direct-voice-media', ownerId })
+        .catch(() => {});
+      return false;
+    }
     dmMediaOnAudioSurfaceRef.current = response.ok === true;
     dmReceiveOnAudioSurfaceRef.current = response.ok === true;
     if (!response.ok) {
@@ -1582,7 +1677,7 @@ export function useVoiceCall(
       });
     }
     return response.ok === true;
-  }, [ensureDirectVoiceOwnerId, userInfo?.address]);
+  }, [ensureDirectVoiceOwnerId, isGoDmMediaSessionEnding, userInfo?.address]);
 
   const updateDirectVoiceMediaOnAudioSurface = useCallback(async () => {
     if (
@@ -2116,6 +2211,7 @@ export function useVoiceCall(
 
   useEffect(() => {
     unmountVoiceCallCleanupRef.current = () => {
+      dmCallEndEpochRef.current += 1;
       clearDurationTimer();
       const id = callIdRef.current;
       const state = callStateRef.current;
@@ -2140,6 +2236,9 @@ export function useVoiceCall(
 
   const endCall = useCallback(
     async (sendHangup = false) => {
+      // Before any await: the call is ending from here on (only read on GO,
+      // see isGoDmMediaSessionEnding).
+      dmCallEndEpochRef.current += 1;
       const id = callIdRef.current;
       clearDurationTimer();
 
@@ -2404,8 +2503,17 @@ export function useVoiceCall(
         keyCommitment: string;
         fromAddress: string;
       },
-      decryptedKeyB64: string
+      decryptedKeyB64: string,
+      keySession?: { endEpoch: number; callId: string | null } | null
     ) => {
+      // GO: a hang-up while this key is decrypted or applied ends the call;
+      // stop quietly then instead of reporting "Voice call failed" and
+      // hanging up a call that is already over. The media session is the one
+      // the key arrived in (taken before the decrypt round trip).
+      const session =
+        keySession === undefined ? dmMediaSessionTokenRef.current : keySession;
+      const callEndedDuringKey = (): boolean =>
+        isGoDmMediaSessionEnding(session);
       const raw = atob(decryptedKeyB64);
       const keyBytes = new Uint8Array(raw.length);
       for (let i = 0; i < raw.length; i++) keyBytes[i] = raw.charCodeAt(i);
@@ -2435,6 +2543,7 @@ export function useVoiceCall(
         });
         return;
       }
+      if (callEndedDuringKey()) return;
 
       resetDmVoiceMediaSession();
       roomKeyRef.current = keyBytes;
@@ -2445,6 +2554,7 @@ export function useVoiceCall(
         peerAddressRef.current ?? '',
         'key-applied'
       );
+      if (callEndedDuringKey()) return;
       if (!ready) {
         showGlobalCallSnack(
           'info',
@@ -2456,6 +2566,7 @@ export function useVoiceCall(
       }
       const mediaStarted = await startDirectVoiceMediaOnAudioSurface();
       if (!mediaStarted) {
+        if (callEndedDuringKey()) return;
         showGlobalCallSnack(
           'info',
           i18n.t('core:voice_call.failed') ??
@@ -2478,6 +2589,7 @@ export function useVoiceCall(
     [
       clearDmRoomKeyRequestTimers,
       endCall,
+      isGoDmMediaSessionEnding,
       resetDmVoiceMediaSession,
       showGlobalCallSnack,
       startDirectVoiceMediaOnAudioSurface,
@@ -2612,6 +2724,9 @@ export function useVoiceCall(
         return;
       }
 
+      // GO race guard: the media session this key arrived in, taken before
+      // the decrypt round trip (up to 10 s) a hang-up can land in.
+      const keySession = dmMediaSessionTokenRef.current;
       pushDirectVoiceUiLog('log', 'gcall:key decrypt…', {
         fromTrunc: (p.fromAddress ?? '').slice(0, 8),
         sessionTrunc: String(p.callSessionId).slice(0, 8),
@@ -2642,7 +2757,8 @@ export function useVoiceCall(
               keyCommitment: p.keyCommitment,
               fromAddress: p.fromAddress ?? '',
             },
-            result.decryptedKey as string
+            result.decryptedKey as string,
+            keySession
           );
           if (callStateRef.current === 'connected' && roomKeyRef.current) {
             pushDirectVoiceUiLog('log', 'starting capture after key');
@@ -2689,6 +2805,13 @@ export function useVoiceCall(
 
   /** After CALL_ACCEPT / call:accepted: join GC room, exchange key, start capture. */
   const startReticulumMediaSession = useCallback(async () => {
+    // GO race guard: this session's token, taken before any await so a
+    // hang-up during the wait for the previous teardown counts too.
+    const mediaSession = {
+      endEpoch: dmCallEndEpochRef.current,
+      callId: callIdRef.current,
+    };
+    dmMediaSessionTokenRef.current = mediaSession;
     await reticulumTeardownChainRef.current.catch(() => {});
     clearDirectVoiceUiLogs();
     dmVoiceAudioPacketCountRef.current = 0;
@@ -2735,6 +2858,7 @@ export function useVoiceCall(
 
     const retHash = await fetchLocalReticulumDestinationHash();
     if (!retHash) {
+      if (isGoDmMediaSessionEnding(mediaSession)) return;
       pushDirectVoiceUiLog('warn', 'Reticulum destination hash unavailable');
       showGlobalCallSnack(
         'info',
@@ -2770,6 +2894,14 @@ export function useVoiceCall(
       peerDestinationHash: optionsRef.current.getPeerDestinationHash?.(peer),
       callId: callIdRef.current ?? undefined,
     });
+
+    if (isGoDmMediaSessionEnding(mediaSession)) {
+      // GO: hung up while joining. Teardown owns the room and its leave;
+      // marking the session active, announcing WebRTC or sending the room
+      // key now would only act for a call that is over.
+      pushDirectVoiceUiLog('log', 'media session start abandoned (call ended)');
+      return;
+    }
 
     if (!joinRes.success || !joinRes.callSessionId) {
       pushDirectVoiceUiLog('warn', 'GC_JOIN failed', {
@@ -2823,6 +2955,10 @@ export function useVoiceCall(
       roomKeyRef.current = roomKey;
       void sendCurrentDmRoomKey('dm-call-start').catch(() => {});
       scheduleDmRoomKeyReplays('dm-call-start');
+      // GO: a remote hang-up keeps callState 'connected' until teardown
+      // finishes; the session token sees it from endCall's first line.
+      const callerCallEnding = (): boolean =>
+        isGoDmMediaSessionEnding(mediaSession);
       const ready = await waitForDmMediaTransportReadiness(
         roomId,
         peer,
@@ -2832,7 +2968,8 @@ export function useVoiceCall(
         callStateRef.current !== 'connected' ||
         !reticulumSessionActiveRef.current ||
         dmRoomIdRef.current !== roomId ||
-        peerAddressRef.current !== peer
+        peerAddressRef.current !== peer ||
+        callerCallEnding()
       ) {
         return;
       }
@@ -2847,6 +2984,7 @@ export function useVoiceCall(
       }
       const mediaStarted = await startDirectVoiceMediaOnAudioSurface();
       if (!mediaStarted) {
+        if (callerCallEnding()) return;
         showGlobalCallSnack(
           'info',
           i18n.t('core:voice_call.failed') ??
@@ -2872,6 +3010,7 @@ export function useVoiceCall(
     announceDirectVoiceNativeAudioCapability,
     endCall,
     flushPendingDmVoiceGcallKey,
+    isGoDmMediaSessionEnding,
     requestDmPeerMediaWarmup,
     scheduleDmRoomKeyReplays,
     scheduleDmRoomKeyRequests,

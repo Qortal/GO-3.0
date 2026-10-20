@@ -30,6 +30,7 @@ import {
 import { initMobileTransferNotifications } from '../../utils/mobileTransferNotifications';
 import { isCapacitor } from '../../utils/platform';
 import { startVendorFreezeHintStore } from './vendorFreezeHintStore';
+import { startWebViewJitNoticeStore } from './webViewJitNoticeStore';
 import { dialogContentSx, getDialogPaperSx } from '../App/dialogSurface';
 
 type MobileBackgroundSetupProps = {
@@ -127,6 +128,13 @@ export const MobileBackgroundSetup = ({
   useEffect(() => {
     if (!enabled || !isCapacitor()) return undefined;
     return startVendorFreezeHintStore();
+  }, [enabled]);
+
+  // "GO runs slower with WebView JIT off" for the bell panel (GrapheneOS
+  // only; reads the flag a few seconds after start, a no-op elsewhere).
+  useEffect(() => {
+    if (!enabled || !isCapacitor()) return undefined;
+    return startWebViewJitNoticeStore();
   }, [enabled]);
 
   // Also on back / tap outside: the prompt waits 14 days, not one restart.

@@ -5,4 +5,23 @@
     <string name="share_target_directs">GO الرسائل</string>
     <string name="share_target_self">GO لنفسي</string>
     <string name="qortal_hce_description">طلبات الدفع في GO (تجريبي)</string>
+    <!-- Voice calls (CallNotifications). -->
+    <string name="call_channel_ringing_name">المكالمات</string>
+    <string name="call_channel_ringing_description">ترن المكالمات الصوتية الواردة بنغمة رنين الهاتف.</string>
+    <string name="call_channel_ongoing_name">مكالمة جارية</string>
+    <string name="call_channel_ongoing_description">يعرض المكالمة الصوتية أثناء جريانها، مع كتم الصوت وإنهاء المكالمة.</string>
+    <string name="call_incoming_title">مكالمة واردة</string>
+    <string name="call_incoming_text">مكالمة صوتية عبر GO</string>
+    <string name="call_action_accept">قبول</string>
+    <string name="call_action_decline">رفض</string>
+    <string name="call_action_hang_up">إنهاء المكالمة</string>
+    <string name="call_action_leave">مغادرة</string>
+    <string name="call_action_mute">كتم الصوت</string>
+    <string name="call_action_unmute">إلغاء كتم الصوت</string>
+    <string name="call_status_calling">جارٍ الاتصال…</string>
+    <string name="call_status_connecting">جارٍ التوصيل…</string>
+    <string name="call_status_ongoing">مكالمة جارية</string>
+    <string name="call_status_group">مكالمة جماعية</string>
+    <string name="call_status_muted">الصوت مكتوم</string>
+    <string name="call_unknown_caller">متصل غير معروف</string>
 </resources>

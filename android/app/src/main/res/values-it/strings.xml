@@ -5,4 +5,23 @@
     <string name="share_target_directs">GO DM</string>
     <string name="share_target_self">GO Per me</string>
     <string name="qortal_hce_description">Richieste di pagamento GO (test)</string>
+    <!-- Voice calls (CallNotifications). -->
+    <string name="call_channel_ringing_name">Chiamate</string>
+    <string name="call_channel_ringing_description">Le chiamate vocali in arrivo squillano con la suoneria del telefono.</string>
+    <string name="call_channel_ongoing_name">Chiamata in corso</string>
+    <string name="call_channel_ongoing_description">Mostra la chiamata vocale mentre è in corso, con Disattiva audio e Riaggancia.</string>
+    <string name="call_incoming_title">Chiamata in arrivo</string>
+    <string name="call_incoming_text">Chiamata vocale GO</string>
+    <string name="call_action_accept">Rispondi</string>
+    <string name="call_action_decline">Rifiuta</string>
+    <string name="call_action_hang_up">Riaggancia</string>
+    <string name="call_action_leave">Esci</string>
+    <string name="call_action_mute">Disattiva audio</string>
+    <string name="call_action_unmute">Riattiva audio</string>
+    <string name="call_status_calling">Chiamata…</string>
+    <string name="call_status_connecting">Connessione…</string>
+    <string name="call_status_ongoing">Chiamata in corso</string>
+    <string name="call_status_group">Chiamata di gruppo</string>
+    <string name="call_status_muted">Audio disattivato</string>
+    <string name="call_unknown_caller">Chiamante sconosciuto</string>
 </resources>

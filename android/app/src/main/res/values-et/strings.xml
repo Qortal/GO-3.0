@@ -5,4 +5,23 @@
     <string name="share_target_directs">GO Sõnumid</string>
     <string name="share_target_self">GO Endale</string>
     <string name="qortal_hce_description">GO maksetaotlused (testimine)</string>
+    <!-- Voice calls (CallNotifications). -->
+    <string name="call_channel_ringing_name">Kõned</string>
+    <string name="call_channel_ringing_description">Sissetulevad häälkõned helisevad telefoni helinaga.</string>
+    <string name="call_channel_ongoing_name">Käimasolev kõne</string>
+    <string name="call_channel_ongoing_description">Näitab häälkõnet selle ajal, nuppudega Vaigista ja Lõpeta.</string>
+    <string name="call_incoming_title">Sissetulev kõne</string>
+    <string name="call_incoming_text">GO häälkõne</string>
+    <string name="call_action_accept">Vasta</string>
+    <string name="call_action_decline">Keeldu</string>
+    <string name="call_action_hang_up">Lõpeta</string>
+    <string name="call_action_leave">Lahku</string>
+    <string name="call_action_mute">Vaigista</string>
+    <string name="call_action_unmute">Tühista vaigistus</string>
+    <string name="call_status_calling">Helistamine…</string>
+    <string name="call_status_connecting">Ühendamine…</string>
+    <string name="call_status_ongoing">Käimasolev kõne</string>
+    <string name="call_status_group">Grupikõne</string>
+    <string name="call_status_muted">Vaigistatud</string>
+    <string name="call_unknown_caller">Tundmatu helistaja</string>
 </resources>

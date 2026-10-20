@@ -16,6 +16,7 @@
 import {
   ensureReticulumBridgeStarted,
   getAppLifecycleState,
+  clearHostedHubCallAccountState,
   getRelayProfile,
   getReticulumChatPresenceSnapshot,
   isCapacitor,
@@ -29,6 +30,7 @@ import {
 import { getBaseApiReact } from '../../App';
 import { Reticulum } from '../../plugins/Reticulum';
 import { preferHttpForLocalPrivateUrl } from '../../utils/helpers';
+import { getNativeBcryptRuntimeInfo } from '../../utils/nativeBcrypt';
 import { startOwnPostDeliveryListener } from '../ownPostDeliveryStore';
 import {
   apiHostOf,
@@ -49,6 +51,7 @@ import type {
 } from './nativeRequestStats';
 import type { LogKeyCount } from './shims/logger';
 import type { ServingStats, ServingTypeStats } from './wireBridge';
+import { installPageLongTaskProbe } from './pageLongTasks';
 
 export type {
   EngineSyncHealthSnapshot,
@@ -112,6 +115,9 @@ const INVOKE_METHODS = [
   'getDirectHistoryFrom',
   'getDirectSummaries',
   'getDirectCallHistory',
+  // GO-only engine RPCs for the hosted Hub call managers (src/bridge/hubCall).
+  'recordDirectCallHistory',
+  'getActiveLandCallMediaPeerDestinationHash',
   'markDirectRead',
   'setDeviceState',
   'getDeviceStates',
@@ -246,12 +252,14 @@ let presenceFeedTimer: number | null = null;
 let dbRebuildRestarts = 0;
 const MAX_DB_REBUILD_RESTARTS = 2;
 
-// Non-fatal condition worth showing the user (e.g. interpreted wasm because
-// the WebView runs without JIT). Cleared when the engine is stopped.
-let readinessWarning: string | undefined;
+// GrapheneOS's own "WebView JIT" flag for GO (NativeBcrypt.runtimeInfo):
+// true when all JS and wasm run interpreted. Read once per page load; it
+// only lengthens the RPC and signing budgets. (sqlite-wasm's init time used
+// to stand in for it, but stays short on these phones.)
+let webViewJitOff = false;
+let webViewJitChecked = false;
 
 function setReadiness(state: ReadinessState, error?: string): void {
-  if (state === 'idle') readinessWarning = undefined;
   const changed = state !== readiness.state;
   if (changed && state === 'starting') bootStartedAt = Date.now();
   if (changed && state === 'ready' && bootStartedAt) {
@@ -262,7 +270,6 @@ function setReadiness(state: ReadinessState, error?: string): void {
     revision: readiness.revision + 1,
     since: changed ? Date.now() : readiness.since,
     ...(error ? { error } : {}),
-    ...(readinessWarning ? { warning: readinessWarning } : {}),
     ...(lastBootMs != null ? { bootMs: lastBootMs } : {}),
   };
   for (const cb of [...readinessSubscribers]) {
@@ -295,7 +302,7 @@ async function answerSignRequest(id: number, fields: Record<string, unknown>) {
   // thread; the old 10 s cap returned null and dropped every
   // history/group_sub/DM-probe signature. Stock Android signs in
   // milliseconds, so a longer budget does not change it.
-  const signTimeoutMs = readinessWarning ? 45_000 : 30_000;
+  const signTimeoutMs = webViewJitOff ? 45_000 : 30_000;
   try {
     const response = await window.sendMessage(
       'signReticulumChatEvent',
@@ -581,15 +588,6 @@ function handleWorkerMessage(event: MessageEvent): void {
     case 'engine-timing':
       lastSqliteInitMs = Number(data.sqliteInitMs) || undefined;
       break;
-    case 'engine-slow':
-      // sqlite-wasm took seconds to start: interpreted wasm (WebView JIT off).
-      // Re-publish readiness with the hint; state is unchanged.
-      console.warn(
-        `[MobileChat] slow engine runtime ms=${data.ms}: ${data.hint}`
-      );
-      readinessWarning = String(data.hint || '');
-      setReadiness(readiness.state, readiness.error);
-      break;
     case 'db-rebuilt':
       // The SQLite shim discarded an unrecoverably corrupt file. Restart the
       // engine on a fresh DB; history re-syncs from peers.
@@ -663,9 +661,14 @@ function pushBridgeSocket(target: Worker): void {
   void plugin
     .bridgeSocket()
     .then((info) => {
-      const { url, token } = (info ?? {}) as { url?: string; token?: string };
+      const { url, token, stagingDir } = (info ?? {}) as {
+        url?: string;
+        token?: string;
+        /** Kotlin's chat-resource staging folder (see stagedFileName.ts). */
+        stagingDir?: string;
+      };
       if (worker !== target || !url || !token) return;
-      target.postMessage({ t: 'bridge-socket', url, token });
+      target.postMessage({ t: 'bridge-socket', url, token, stagingDir });
     })
     .catch((err) => {
       console.warn('[MobileChat] bridge socket unavailable', err);
@@ -703,7 +706,7 @@ function rpc(
 ): Promise<unknown> {
   // Interpreted wasm (GrapheneOS JIT off) makes history reads slow; stock
   // Android still returns in milliseconds and never uses this extra budget.
-  const budget = timeoutMs ?? (readinessWarning ? 90_000 : 45_000);
+  const budget = timeoutMs ?? (webViewJitOff ? 90_000 : 45_000);
   return ensureStarted().then(
     () =>
       new Promise((resolve, reject) => {
@@ -763,6 +766,14 @@ function ensureStarted(): Promise<void> {
   if (startPromise) return startPromise;
   setReadiness('starting');
   startPromise = (async () => {
+    if (!webViewJitChecked) {
+      webViewJitChecked = true;
+      void getNativeBcryptRuntimeInfo()
+        .then((info) => {
+          webViewJitOff = info?.webViewJitRestricted === true;
+        })
+        .catch(() => {});
+    }
     // Local history lives in the worker SQLite DB. Do not wait for the
     // Python radio bridge (or Core API key) before booting it — those can
     // sit for tens of seconds and leave the DM screen empty.
@@ -924,6 +935,11 @@ export function stopMobileReticulumChat(): void {
   // Nothing leaves once the engine stops (logout); do not hold the page.
   reportOwnOutboxPending(false);
   reportOwnOutboxCount(0);
+  // RPCs the stopping worker has not answered by the time it is terminated
+  // would otherwise wait out their whole timer (45 s), and so would callers
+  // that queue behind one, such as the single-flight summaries refresh after
+  // a db-rebuilt restart.
+  const stoppingRpcIds = [...pendingRpc.keys()];
   window.setTimeout(() => {
     try {
       stoppingPort?.close();
@@ -931,6 +947,12 @@ export function stopMobileReticulumChat(): void {
       /* already closed */
     }
     stoppingWorker?.terminate();
+    for (const id of stoppingRpcIds) {
+      const pending = pendingRpc.get(id);
+      if (!pending) continue;
+      pendingRpc.delete(id);
+      pending.reject(new Error('Reticulum chat engine stopped'));
+    }
   }, 500);
   startPromise = null;
   lastAckedIdentityKey = '';
@@ -1096,6 +1118,8 @@ export async function getMobileReticulumChatDiagnostics(): Promise<MobileReticul
 /** Install the preload-twin API. Safe to call once at bridge install time. */
 export function installMobileReticulumChat(): void {
   if (!isCapacitor()) return;
+  // Copy diagnostics: main-thread long tasks from page start on.
+  installPageLongTaskProbe();
 
   const api: Record<string, unknown> = {
     isEnabled: async () => {
@@ -1139,10 +1163,21 @@ export function installMobileReticulumChat(): void {
     if (clearing && !startPromise) return Promise.resolve({ success: true });
     return rpc('setLocalDmAddresses', args);
   };
-  api.clearLocalAccountState = () =>
-    startPromise
+  api.clearLocalAccountState = () => {
+    // Desktop clears the call managers at this same boundary
+    // (setup.ts reticulumChat:clearLocalAccountState); GO hosts them in the
+    // page (src/bridge/hubCall), so clear them here, engine running or not.
+    // Never in the way of a logout (it catches its own errors; the guard is
+    // for bridge stand-ins without it).
+    try {
+      clearHostedHubCallAccountState();
+    } catch (err) {
+      console.warn('[MobileChat] clearing call account state failed', err);
+    }
+    return startPromise
       ? rpc('clearLocalAccountState', [])
       : Promise.resolve({ success: true });
+  };
   // Diagnostics (read-only): self-DM state as the engine sees it.
   api.debugSelfDm = () => rpc('debug:selfDm', []);
   api.debugLogs = (filter?: string) => rpc('debug:logs', [filter]);

@@ -40,6 +40,11 @@ import {
 } from '../constants/constants';
 import { buildQortalResourceLink } from '../utils/qortalLink';
 import { isSafeQappPath, pickQappTabTarget } from '../utils/qappPath';
+import {
+  WIDGET_REFUSED_MESSAGES,
+  widgetRequestVerdict,
+  type QappWidgetPolicy,
+} from '../components/Mobile/widgets/widgetRequests';
 
 /** Below this a save is over before a notification would be read. */
 const NOTIFY_SAVE_MIN_BYTES = 4 * 1024 * 1024;
@@ -666,8 +671,15 @@ export const useQortalMessageListener = (
   isDevMode,
   appName,
   appService,
-  appIdentifier
+  appIdentifier,
+  /**
+   * A GO widget's frame (widgets screen): only the requests widgetRequests
+   * allows get through, and its own GO_WIDGET_* ones are answered by it.
+   */
+  widget?: QappWidgetPolicy
 ) => {
+  const widgetRef = useRef(widget);
+  widgetRef.current = widget;
   const [path, setPath] = useState('');
   const [history, setHistory] = useState({
     customQDNHistoryPaths: [],
@@ -724,6 +736,8 @@ export const useQortalMessageListener = (
   const setInfoSnackCustom = useSetAtom(infoSnackGlobalAtom);
 
   useEffect(() => {
+    // A widget is no tab: no back/forward or link for the tab bar to show.
+    if (widgetRef.current) return;
     if (tabId && !isNaN(history?.currentIndex)) {
       setHasSettingsChangedAtom((prev) => {
         // Preserve identifier in qortal:// links when present because QDN
@@ -842,6 +856,33 @@ export const useQortalMessageListener = (
       if (appOrigin && event.origin !== appOrigin) return;
 
       const eventPort = event.ports?.[0];
+
+      // Widgets: refused unless widgetRequests allows it (answered with an
+      // error, so the widget's qortalRequest settles); their own requests
+      // are answered here.
+      const widgetPolicy = widgetRef.current;
+      if (widgetPolicy) {
+        const action = event.data.action;
+        const verdict = widgetRequestVerdict(action, widgetPolicy.isOnScreen());
+        if (verdict.kind === 'own') {
+          let result = null;
+          try {
+            result = widgetPolicy.answer(action, event.data) ?? null;
+          } catch {
+            result = null;
+          }
+          eventPort?.postMessage({ result, error: null });
+          return;
+        }
+        if (verdict.kind === 'refuse') {
+          const message = WIDGET_REFUSED_MESSAGES[verdict.reason];
+          eventPort?.postMessage({
+            result: null,
+            error: { error: message, message },
+          });
+          return;
+        }
+      }
 
       const sendMessageToRuntime = (message, eventPort) => {
         if (!eventPort) return;

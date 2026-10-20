@@ -10,6 +10,10 @@ import {
   unsubscribeFromEvent,
 } from '../../utils/events';
 import { coreWebsocketPingMs } from '../../utils/coreWebsocketPing';
+import {
+  notePublicNodeAnswered,
+  notePublicNodeSilent,
+} from '../../publicNode/publicNodeWatch';
 import { useAtomValue, useSetAtom } from 'jotai';
 import { nodeInfosAtom, selectedNodeInfoAtom } from '../../atoms/global';
 
@@ -110,6 +114,7 @@ export const useWebsocketStatus = () => {
           if (!isCurrentConnection(socket)) return;
           try {
             if (e.data === 'pong') {
+              notePublicNodeAnswered(selectedNodeUrl);
               clearTimeout(timeoutIdRef.current);
               groupSocketTimeoutRef.current = setTimeout(
                 () => pingHeads(socket),
@@ -119,6 +124,7 @@ export const useWebsocketStatus = () => {
             }
             const data = JSON.parse(e.data);
             if (data?.height) {
+              notePublicNodeAnswered(selectedNodeUrl);
               setNodeInfos({
                 ...data,
                 sourceNodeUrl: selectedNodeUrl,
@@ -135,6 +141,7 @@ export const useWebsocketStatus = () => {
           clearTimeout(timeoutIdRef.current);
           clearTimeout(groupSocketTimeoutRef.current);
           setNodeInfos({});
+          if (event.reason !== 'forced') notePublicNodeSilent(selectedNodeUrl);
           console.warn(`WebSocket closed: ${event.reason || 'unknown reason'}`);
           if (event.reason !== 'forced' && event.code !== 1000) {
             if (!lastPopup.current || Date.now() - lastPopup.current > 600000) {

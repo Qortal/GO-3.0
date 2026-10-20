@@ -51,6 +51,7 @@ public class QortalForegroundService extends Service {
     // for private messages vs group chat (and mute one without the other).
     public static final String CHANNEL_ALERTS_PM_ID = "qortal_alerts_pm";
     public static final String CHANNEL_ALERTS_GROUP_ID = "qortal_alerts_group";
+    /** Old "Incoming calls" channel: no longer used, removed on start (calls use CallNotifications' channels). */
     public static final String CHANNEL_CALLS_ID = "qortal_calls";
     public static final String CHANNEL_TRANSFERS_ID = "qortal_transfers";
     // Progress stays quiet on the transfers channel; a file that lands while
@@ -61,7 +62,6 @@ public class QortalForegroundService extends Service {
     private static final String CHANNEL_ALERTS_NAME = "Qortal alerts";
     private static final String CHANNEL_ALERTS_PM_NAME = "Private messages";
     private static final String CHANNEL_ALERTS_GROUP_NAME = "Group messages";
-    private static final String CHANNEL_CALLS_NAME = "Incoming calls";
     private static final String CHANNEL_TRANSFERS_NAME = "File transfers";
     private static final String CHANNEL_FILES_SAVED_NAME = "Saved files";
 
@@ -92,6 +92,14 @@ public class QortalForegroundService extends Service {
         "com.github.Qortal.qortalMobile.QORTAL_FGS_UPDATE_TRANSFER";
     public static final String ACTION_DISMISS_TRANSFER =
         "com.github.Qortal.qortalMobile.QORTAL_FGS_DISMISS_TRANSFER";
+    /**
+     * A call started, changed or ended (CallSession) while the service was
+     * not running: start it and show the call (see syncCallForegroundOnMain).
+     */
+    public static final String ACTION_CALL_SYNC =
+        "com.github.Qortal.qortalMobile.QORTAL_FGS_CALL_SYNC";
+    /** syncCallForegroundOnMain: the service is being started; the result comes later. */
+    public static final int CALL_FOREGROUND_PENDING = -2;
 
     public static final String BROADCAST_INCOMING_CALL_ACTION =
         "com.github.Qortal.qortalMobile.BROADCAST_INCOMING_CALL_ACTION";
@@ -177,6 +185,13 @@ public class QortalForegroundService extends Service {
     private String statusPeersLabel = "0 connected peers";
     private String statusKind = "starting";
     private boolean isRunning = false;
+    /**
+     * The call notification is the foreground notification right now (a call
+     * runs): the status notification stays down until the call ends.
+     */
+    private boolean callForegroundShown = false;
+    /** Service type flags held with the call notification (valid while callForegroundShown). */
+    private int callForegroundTypes = 0;
     private boolean connectivityWatchersRegistered = false;
     /** Last StatusHonesty state drawn, to log only its flips. */
     private String lastHonestState = StatusHonesty.LIVE;
@@ -292,6 +307,7 @@ public class QortalForegroundService extends Service {
                 isRunning = false;
                 clearRunningInstance();
                 BackgroundKeepAlive.get(this).setServiceRunning(false);
+                dropCallForeground();
                 break;
             case ACTION_SHOW_ALERT:
                 showAlertNotification(
@@ -308,17 +324,30 @@ public class QortalForegroundService extends Service {
                 }
                 break;
             case ACTION_SHOW_INCOMING_CALL:
-                showIncomingCallNotification(
+                // Older callers (an intent queued before an update): the ring
+                // is CallSession's now; it needs no running service.
+                CallSession.get(this).showIncomingFromPage(
                     safeString(intent.getStringExtra(EXTRA_CALL_ID), ""),
                     safeString(intent.getStringExtra(EXTRA_CALL_FROM), ""),
-                    safeString(intent.getStringExtra(EXTRA_CALL_FROM_NAME), "Unknown caller")
+                    intent.getStringExtra(EXTRA_CALL_FROM_NAME),
+                    null,
+                    false,
+                    CallSession.SOURCE_LEGACY
                 );
                 if (!isRunning) {
                     startStatusForegroundOrStop(startId);
                 }
                 break;
             case ACTION_DISMISS_INCOMING_CALL:
-                dismissIncomingCallNotification();
+                CallSession.get(this).cancelIncomingFromPage(null, "legacy-dismiss");
+                break;
+            case ACTION_CALL_SYNC:
+                if (!isRunning) {
+                    startStatusForegroundOrStop(startId);
+                }
+                if (isRunning) {
+                    CallSession.get(this).onCallForegroundApplied(applyCallForeground());
+                }
                 break;
             case ACTION_DISMISS_CHAT_ALERTS:
                 dismissChatAlertNotifications();
@@ -428,6 +457,9 @@ public class QortalForegroundService extends Service {
     @Override
     public void onTaskRemoved(Intent rootIntent) {
         Log.i(TAG, "Task removed; stopping the status service and the network layer");
+        // The page and any call in it are gone: no ring, no call
+        // notification, no lock-screen flags, audio mode back to normal.
+        CallSession.get(this).onTaskRemoved();
         ReticulumPlugin.pauseNetwork("task_removed", 0L);
         leaveForeground();
         stopSelf();
@@ -445,6 +477,15 @@ public class QortalForegroundService extends Service {
         isRunning = false;
         clearRunningInstance();
         BackgroundKeepAlive.get(this).setServiceRunning(false);
+        dropCallForeground();
+    }
+
+    /** The call notification left with the foreground (stopForeground removed it). */
+    private void dropCallForeground() {
+        if (!callForegroundShown) return;
+        callForegroundShown = false;
+        callForegroundTypes = 0;
+        CallSession.get(this).onCallForegroundApplied(-1);
     }
 
     /** One quiet notice that GO stopped; a tap opens GO, which reconnects. */
@@ -512,6 +553,7 @@ public class QortalForegroundService extends Service {
         isRunning = false;
         clearRunningInstance();
         BackgroundKeepAlive.get(this).setServiceRunning(false);
+        dropCallForeground();
         super.onDestroy();
     }
 
@@ -611,7 +653,135 @@ public class QortalForegroundService extends Service {
 
     private String lastPostedStatusKey = "";
 
+    /**
+     * Show, update or remove the call notification as the foreground
+     * notification. During a call the service is a microphone foreground
+     * service (Android 11+ silences the mic of an app off screen otherwise)
+     * with the call notification; after it, the status notification and the
+     * base type come back. Main thread. Returns the type flags in use with
+     * the call notification (0 before Android 10), or -1 when no call
+     * notification is the foreground one (no call, or Android refused it).
+     */
+    private int applyCallForeground() {
+        CallNotifications.OngoingSpec call = CallSession.get(this).activeSnapshotOnMain();
+        int base = resolveForegroundTypeFlag();
+        if (call == null) {
+            if (callForegroundShown) {
+                callForegroundShown = false;
+                callForegroundTypes = 0;
+                // Status notification back as the foreground one, base type only.
+                lastPostedStatusKey = "";
+                try {
+                    startForegroundTyped(buildStatusNotification(), base);
+                } catch (IllegalStateException | SecurityException error) {
+                    Log.w(TAG, "Status foreground after the call refused: " + error.getMessage());
+                }
+                Log.i(TAG, "Call over; status notification is the foreground one again");
+            }
+            // Also a plain call entry posted when the foreground was refused.
+            CallNotifications.cancelOngoing(this);
+            return -1;
+        }
+        boolean micGranted = androidx.core.content.ContextCompat.checkSelfPermission(
+            this,
+            android.Manifest.permission.RECORD_AUDIO
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED;
+        int wanted = CallSessionPolicy.foregroundTypeFlags(base, true, micGranted, Build.VERSION.SDK_INT);
+        Notification notification = CallNotifications.buildOngoing(this, call, true);
+        if (callForegroundShown) {
+            // Already the foreground notification: phase, mute, name or
+            // avatar changed. startForeground again only to add a type the
+            // service lacks (the microphone after a refusal off screen), and
+            // never with fewer types than it holds.
+            int held = callForegroundTypes;
+            int next = CallSessionPolicy.callForegroundUpdateTypes(held, wanted, Build.VERSION.SDK_INT);
+            if (next != held && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                try {
+                    startForeground(CallNotifications.NOTIFICATION_ID_ONGOING, notification, next);
+                    callForegroundTypes = next;
+                    Log.i(TAG, "Call foreground types now " + next);
+                    return next;
+                } catch (IllegalStateException | SecurityException error) {
+                    Log.w(TAG, "Microphone foreground type still refused: " + error.getMessage());
+                }
+            }
+            NotificationManager manager = getSystemService(NotificationManager.class);
+            if (manager != null) {
+                try {
+                    manager.notify(CallNotifications.NOTIFICATION_ID_ONGOING, notification);
+                } catch (RuntimeException error) {
+                    Log.w(TAG, "Call notification not updated", error);
+                }
+            }
+            return held;
+        }
+        int used = -1;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && wanted != 0) {
+            try {
+                startForeground(CallNotifications.NOTIFICATION_ID_ONGOING, notification, wanted);
+                used = wanted;
+            } catch (IllegalStateException | SecurityException error) {
+                // Android 14+ refuses the microphone type off screen; the call
+                // still shows, and GO retries when it comes on screen.
+                Log.w(TAG, "Microphone foreground type refused: " + error.getMessage());
+                if (wanted != base) {
+                    try {
+                        startForeground(CallNotifications.NOTIFICATION_ID_ONGOING, notification, base);
+                        used = base;
+                    } catch (IllegalStateException | SecurityException again) {
+                        Log.w(TAG, "Call foreground refused: " + again.getMessage());
+                    }
+                }
+            }
+        } else {
+            try {
+                startForeground(CallNotifications.NOTIFICATION_ID_ONGOING, notification);
+                used = 0;
+            } catch (IllegalStateException | SecurityException error) {
+                Log.w(TAG, "Call foreground refused: " + error.getMessage());
+            }
+        }
+        if (used < 0) {
+            // Not the foreground notification: a plain tray entry instead.
+            callForegroundShown = false;
+            callForegroundTypes = 0;
+            CallNotifications.postOngoingPlain(this, call);
+            return -1;
+        }
+        Log.i(TAG, "Call notification is the foreground one (types " + used + ")");
+        callForegroundShown = true;
+        callForegroundTypes = used;
+        return used;
+    }
+
+    /**
+     * CallSession's call state changed. Main thread. Returns the type flags
+     * now used with the call notification, -1 when it is not the foreground
+     * notification, or {@link #CALL_FOREGROUND_PENDING} when the service had
+     * to be started (CallSession hears the result from onStartCommand).
+     */
+    public static int syncCallForegroundOnMain(Context context) {
+        QortalForegroundService service = runningInstance;
+        if (service != null && service.isRunning) {
+            return service.applyCallForeground();
+        }
+        if (!CallSession.get(context).hasActiveCall()) {
+            CallNotifications.cancelOngoing(context);
+            return -1;
+        }
+        Intent intent = new Intent(context, QortalForegroundService.class);
+        intent.setAction(ACTION_CALL_SYNC);
+        startServiceCompat(context, intent);
+        return CALL_FOREGROUND_PENDING;
+    }
+
     private void updateStatusNotification() {
+        if (callForegroundShown) {
+            // The call notification stands in for it until the call ends
+            // (applyCallForeground then posts the status again).
+            lastPostedStatusKey = "";
+            return;
+        }
         StatusDisplay display = resolveStatusDisplay();
         // Paused hides the page's last Node/Sync/Peers rows, so their text
         // changing then does not need a redraw.
@@ -1257,70 +1427,9 @@ public class QortalForegroundService extends Service {
         }
     }
 
-    private void showIncomingCallNotification(String callId, String fromAddress, String fromName) {
-        NotificationManager manager = getSystemService(NotificationManager.class);
-        if (manager == null) return;
-
-        Intent openIntent = new Intent(this, MainActivity.class);
-        openIntent.setFlags(
-            Intent.FLAG_ACTIVITY_SINGLE_TOP |
-            Intent.FLAG_ACTIVITY_CLEAR_TOP |
-            Intent.FLAG_ACTIVITY_NEW_TASK
-        );
-        openIntent.putExtra(EXTRA_CALL_ID, callId);
-        openIntent.putExtra(EXTRA_CALL_ACTION, "open");
-
-        PendingIntent contentIntent = PendingIntent.getActivity(
-            this,
-            1,
-            openIntent,
-            PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT
-        );
-
-        PendingIntent acceptIntent = buildCallActionPendingIntent(ACTION_INCOMING_CALL_ACCEPT, callId, 2);
-        PendingIntent declineIntent = buildCallActionPendingIntent(ACTION_INCOMING_CALL_DECLINE, callId, 3);
-
-        RemoteViews contentView = buildBrandedContentView("Incoming call", fromName);
-
-        NotificationCompat.Builder builder = baseNotificationBuilder(CHANNEL_CALLS_ID)
-            .setContentTitle("Incoming call")
-            .setContentText(fromName)
-            .setCustomContentView(contentView)
-            .setCustomBigContentView(contentView)
-            .setContentIntent(contentIntent)
-            .setAutoCancel(false)
-            .setOngoing(true)
-            .setPriority(NotificationCompat.PRIORITY_MAX)
-            .setCategory(NotificationCompat.CATEGORY_CALL)
-            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-            .addAction(android.R.drawable.ic_menu_call, "Accept", acceptIntent)
-            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Decline", declineIntent);
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            builder.setFullScreenIntent(contentIntent, true);
-        }
-
-        manager.notify(NOTIFICATION_ID_INCOMING_CALL, builder.build());
-    }
-
-    private PendingIntent buildCallActionPendingIntent(String action, String callId, int requestCode) {
-        Intent intent = new Intent(this, QortalForegroundService.class);
-        intent.setAction(action);
-        intent.putExtra(EXTRA_CALL_ID, callId);
-        return PendingIntent.getService(
-            this,
-            requestCode,
-            intent,
-            PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT
-        );
-    }
-
-    private void dismissIncomingCallNotification() {
-        NotificationManager manager = getSystemService(NotificationManager.class);
-        if (manager != null) {
-            manager.cancel(NOTIFICATION_ID_INCOMING_CALL);
-        }
-    }
+    // The ringing notification is CallSession / CallNotifications' now:
+    // Accept is an Activity PendingIntent (Android 12+ blocks the old service
+    // trampoline) and Decline a broadcast that leaves GO where it is.
 
     /** Clear tray notifications for Groups / DMs (not the persistent status or transfers). */
     private void dismissChatAlertNotifications() {
@@ -1494,22 +1603,18 @@ public class QortalForegroundService extends Service {
         manager.cancel(notificationIdForTransfer(transferId));
     }
 
+    /**
+     * Accept / Decline from a ringing notification posted by an older build
+     * (its service PendingIntents may still be in the tray after an update).
+     * Handled like the new buttons; no activity start from here (Android 12+
+     * blocks that trampoline, and Decline must not open GO anyway).
+     */
     private void handleIncomingCallAction(Intent intent) {
         String callId = safeString(intent.getStringExtra(EXTRA_CALL_ID), "");
-        String action = ACTION_INCOMING_CALL_ACCEPT.equals(intent.getAction()) ? "accept" : "decline";
-
-        Intent broadcast = new Intent(BROADCAST_INCOMING_CALL_ACTION);
-        broadcast.putExtra(EXTRA_CALL_ID, callId);
-        broadcast.putExtra(EXTRA_CALL_ACTION, action);
-        LocalBroadcastManager.getInstance(this).sendBroadcast(broadcast);
-
-        dismissIncomingCallNotification();
-
-        Intent openIntent = new Intent(this, MainActivity.class);
-        openIntent.setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_NEW_TASK);
-        openIntent.putExtra(EXTRA_CALL_ID, callId);
-        openIntent.putExtra(EXTRA_CALL_ACTION, action);
-        startActivity(openIntent);
+        String action = ACTION_INCOMING_CALL_ACCEPT.equals(intent.getAction())
+            ? CallSessionPolicy.ACTION_ACCEPT
+            : CallSessionPolicy.ACTION_DECLINE;
+        CallSession.get(this).onAction(action, callId, "legacy-notification");
     }
 
     private void createNotificationChannels() {
@@ -1547,14 +1652,6 @@ public class QortalForegroundService extends Service {
         );
         alertsGroupChannel.setDescription("Group chat messages and mentions");
 
-        NotificationChannel callsChannel = new NotificationChannel(
-            CHANNEL_CALLS_ID,
-            CHANNEL_CALLS_NAME,
-            NotificationManager.IMPORTANCE_HIGH
-        );
-        callsChannel.setDescription("Incoming voice calls");
-        callsChannel.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
-
         NotificationChannel transfersChannel = new NotificationChannel(
             CHANNEL_TRANSFERS_ID,
             CHANNEL_TRANSFERS_NAME,
@@ -1580,8 +1677,19 @@ public class QortalForegroundService extends Service {
         manager.createNotificationChannel(alertsChannel);
         manager.createNotificationChannel(alertsPmChannel);
         manager.createNotificationChannel(alertsGroupChannel);
-        manager.createNotificationChannel(callsChannel);
         manager.createNotificationChannel(transfersChannel);
+        // Calls ring on CallNotifications' own channels now ("Calls", "Call in
+        // progress"). The old "Incoming calls" category carried nothing any
+        // more but still showed in GO's notification settings, where turning
+        // it off silenced no call: remove it.
+        try {
+            if (manager.getNotificationChannel(CHANNEL_CALLS_ID) != null) {
+                manager.deleteNotificationChannel(CHANNEL_CALLS_ID);
+            }
+        } catch (RuntimeException error) {
+            Log.w(TAG, "Old calls channel not removed", error);
+        }
+        CallNotifications.ensureChannels(this);
         manager.createNotificationChannel(filesSavedChannel);
     }
 
@@ -1803,18 +1911,26 @@ public class QortalForegroundService extends Service {
         startServiceCompat(context, intent);
     }
 
+    /**
+     * QortalBackground.showIncomingCallNotification (the page's older call
+     * bridge). The ring is CallSession's: posted directly (no service start,
+     * which Android refuses from the background), only while GO is off
+     * screen or locked, with the ringtone and Accept that opens GO.
+     */
     public static void showIncomingCall(
         Context context,
         String callId,
         String fromAddress,
         String fromName
     ) {
-        Intent intent = new Intent(context, QortalForegroundService.class);
-        intent.setAction(ACTION_SHOW_INCOMING_CALL);
-        intent.putExtra(EXTRA_CALL_ID, callId);
-        intent.putExtra(EXTRA_CALL_FROM, fromAddress);
-        intent.putExtra(EXTRA_CALL_FROM_NAME, fromName);
-        startServiceCompat(context, intent);
+        CallSession.get(context).showIncomingFromPage(
+            callId,
+            fromAddress,
+            fromName,
+            null,
+            false,
+            CallSession.SOURCE_LEGACY
+        );
     }
 
     public static void dismissChatAlerts(Context context) {
@@ -1823,10 +1939,9 @@ public class QortalForegroundService extends Service {
         context.startService(intent);
     }
 
+    /** QortalBackground.dismissIncomingCallNotification: ends a ring the page confirmed (see CallSession). */
     public static void dismissIncomingCall(Context context) {
-        Intent intent = new Intent(context, QortalForegroundService.class);
-        intent.setAction(ACTION_DISMISS_INCOMING_CALL);
-        context.startService(intent);
+        CallSession.get(context).cancelIncomingFromPage(null, "legacy-dismiss");
     }
 
     public static void updateTransfer(

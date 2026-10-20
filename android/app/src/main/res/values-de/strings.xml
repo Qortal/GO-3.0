@@ -5,4 +5,23 @@
     <string name="share_target_directs">GO DMs</string>
     <string name="share_target_self">GO An mich</string>
     <string name="qortal_hce_description">GO-Zahlungsanforderungen (Test)</string>
+    <!-- Voice calls (CallNotifications). -->
+    <string name="call_channel_ringing_name">Anrufe</string>
+    <string name="call_channel_ringing_description">Eingehende Sprachanrufe klingeln mit dem Klingelton des Telefons.</string>
+    <string name="call_channel_ongoing_name">Laufender Anruf</string>
+    <string name="call_channel_ongoing_description">Zeigt den Sprachanruf, solange er läuft, mit Stumm und Auflegen.</string>
+    <string name="call_incoming_title">Eingehender Anruf</string>
+    <string name="call_incoming_text">GO-Sprachanruf</string>
+    <string name="call_action_accept">Annehmen</string>
+    <string name="call_action_decline">Ablehnen</string>
+    <string name="call_action_hang_up">Auflegen</string>
+    <string name="call_action_leave">Verlassen</string>
+    <string name="call_action_mute">Stumm</string>
+    <string name="call_action_unmute">Ton an</string>
+    <string name="call_status_calling">Wird angerufen…</string>
+    <string name="call_status_connecting">Verbindung wird hergestellt…</string>
+    <string name="call_status_ongoing">Laufender Anruf</string>
+    <string name="call_status_group">Gruppenanruf</string>
+    <string name="call_status_muted">Stumm</string>
+    <string name="call_unknown_caller">Unbekannter Anrufer</string>
 </resources>

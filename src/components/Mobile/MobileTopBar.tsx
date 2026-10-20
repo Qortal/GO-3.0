@@ -79,6 +79,7 @@ import {
   claimVendorFreezeCardPop,
   useVendorFreezeHint,
 } from './vendorFreezeHintStore';
+import { useWebViewJitNoticeBellBadge } from './webViewJitNoticeStore';
 import {
   getWalletAvatarCache,
   fetchWalletAvatarDataUrl,
@@ -252,12 +253,19 @@ export const MobileTopBar = ({
   const unseenVendorFreezeCardAt = vendorFreezeBell?.badge
     ? vendorFreezeBell.shownAt
     : null;
+  // "GO runs slower with WebView JIT off" (GrapheneOS): 1 until seen; it
+  // never pops the bell (advice, not news).
+  const webViewJitBadge = useWebViewJitNoticeBellBadge();
   const unseenCount =
-    appUnseenCount + downloadsBadge.unseen + vendorFreezeBadge;
+    appUnseenCount +
+    downloadsBadge.unseen +
+    vendorFreezeBadge +
+    webViewJitBadge;
   const hasNewNotifications =
     hasNewAppNotifications ||
     downloadsBadge.unseen > 0 ||
-    vendorFreezeBadge > 0;
+    vendorFreezeBadge > 0 ||
+    webViewJitBadge > 0;
   // A newer GO build rings its own bell on GO 3.0 Updates in the account
   // menu (and marks the avatar until that screen has shown it).
   const updateRelease = useAtomValue(appUpdateReleaseAtom);

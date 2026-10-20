@@ -45,6 +45,10 @@ vi.mock('./wireBridge', () => ({
       return engine.admittedLink;
     }
     markStopped(): void {}
+    stagingSweeps = 0;
+    sweepStagingOnce(): void {
+      this.stagingSweeps += 1;
+    }
     dispatchPythonEvent(event: string, payload: unknown): void {
       engine.dispatched.push({ event, payload });
     }
@@ -111,8 +115,12 @@ beforeEach(async () => {
   engine.bridge = undefined;
   engine.sendCommand = undefined;
   engine.admittedLink = false;
-  ({ handleMainMessage, startEngine, summarizeBridgeDiagnosticEvent } =
-    await import('./engineHost'));
+  const host = await import('./engineHost');
+  ({ handleMainMessage, startEngine, summarizeBridgeDiagnosticEvent } = host);
+  // Socket event frames are handed to the engine as they arrive here, so
+  // these tests can check routing right after a frame; the queue itself is
+  // covered in engineHost.socketPump.test.ts.
+  host.setSocketEventScheduleForTests((run) => run());
 });
 
 afterEach(() => {
@@ -188,6 +196,15 @@ describe('bridge socket reopen hook', () => {
     connect();
     latestSocket().accept();
     expect(engine.manager.notifyBridgeSocketReopened).not.toHaveBeenCalled();
+  });
+
+  it('gives the staging sweep its chance each time the socket opens', () => {
+    engine.manager = { on: vi.fn() };
+    startEngine({ apiBase: 'http://127.0.0.1:12391' });
+    connect();
+    expect(engine.bridge.stagingSweeps).toBe(0);
+    latestSocket().accept();
+    expect(engine.bridge.stagingSweeps).toBe(1);
   });
 
   it('runs once when the endpoint changes under an open socket', () => {
@@ -632,13 +649,18 @@ describe('membership validator diagnostics', () => {
       return { ok: true, status: 200, json: async () => rows };
     });
     vi.stubGlobal('fetch', fetchMock);
-    startEngine({ apiBase: 'http://127.0.0.1:12391' });
+    // The boot config already says whether a key is set: no config hold.
+    startEngine({ apiBase: 'http://127.0.0.1:12391', apiKeyConfigured: false });
     const validate = engine.startOptions[0].validateGroupMember as (
       groupId: number,
       address: string
     ) => Promise<boolean | null>;
-    await expect(validate(7, OWN)).resolves.toBe(true);
-    await expect(validate(7, OTHER)).resolves.toBe(true);
+    const ownCheck = validate(7, OWN);
+    await vi.advanceTimersByTimeAsync(15);
+    await expect(ownCheck).resolves.toBe(true);
+    const otherCheck = validate(7, OTHER);
+    await vi.advanceTimersByTimeAsync(15);
+    await expect(otherCheck).resolves.toBe(true);
     expect(fetchMock).toHaveBeenCalledTimes(2);
     const snapshot = await rpcCall('debug:diagnostics');
     expect(snapshot.validator).toMatchObject({
@@ -679,10 +701,11 @@ describe('membership validator diagnostics', () => {
           })
       )
     );
-    startEngine({ apiBase: 'http://127.0.0.1:12391' });
+    startEngine({ apiBase: 'http://127.0.0.1:12391', apiKeyConfigured: false });
     const validate = engine.startOptions[0].validateGroupMember;
+    // Three groups: three requests, one per group.
     const checks = [validate(7, OWN), validate(8, OWN), validate(9, OTHER)];
-    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(15);
     for (const answer of answers) answer();
     await expect(Promise.all(checks)).resolves.toEqual([false, false, false]);
     const snapshot = await rpcCall('debug:diagnostics');
@@ -692,6 +715,314 @@ describe('membership validator diagnostics', () => {
       maxInFlight: 3,
       ownListAnswers: 0,
     });
+  });
+});
+
+describe('membership validator batching', () => {
+  /** Distinct valid-looking test addresses (Core is mocked). */
+  const addr = (i: number) => `QBatchAuthor${String(i).padStart(22, '0')}`;
+  type Call = {
+    url: string;
+    body: string[];
+    answer: (status?: number) => void;
+  };
+  /** Lets the promise chains behind an answer run (no timers move). */
+  const settle = async () => {
+    for (let i = 0; i < 50; i += 1) await Promise.resolve();
+  };
+  const groupsAsked = (calls: Call[]) =>
+    calls.map((call) => call.url.split('/')[5]);
+
+  /** A fetch whose answers the test releases; rows say member for everyone. */
+  function heldFetch() {
+    const calls: Call[] = [];
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const fetchMock = vi.fn(
+      (url: string, init: RequestInit) =>
+        new Promise((resolve, reject) => {
+          const body = JSON.parse(String(init.body)) as string[];
+          inFlight += 1;
+          maxInFlight = Math.max(maxInFlight, inFlight);
+          init.signal?.addEventListener('abort', () => {
+            inFlight -= 1;
+            reject(new DOMException('aborted', 'AbortError'));
+          });
+          let answered = false;
+          calls.push({
+            url,
+            body,
+            answer: (status = 200) => {
+              if (answered) return;
+              answered = true;
+              inFlight -= 1;
+              resolve({
+                ok: status >= 200 && status < 300,
+                status,
+                json: async () =>
+                  body.map((address) => ({
+                    address,
+                    isMember: true,
+                    isAdmin: false,
+                  })),
+              });
+            },
+          });
+        })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    return { calls, fetchMock, maxInFlight: () => maxInFlight };
+  }
+
+  const start = (config: Record<string, unknown> = {}) => {
+    engine.manager = { on: vi.fn() };
+    startEngine({
+      apiBase: 'http://127.0.0.1:12391',
+      apiKeyConfigured: false,
+      ...config,
+    });
+    return engine.startOptions[0].validateGroupMember as (
+      groupId: number,
+      address: string
+    ) => Promise<boolean | null>;
+  };
+
+  it('sends 30 concurrent checks for one group as one request', async () => {
+    const held = heldFetch();
+    const validate = start();
+    const checks = Array.from({ length: 30 }, (_, i) => validate(7, addr(i)));
+    // Repeats while the first ones are out share their request.
+    checks.push(validate(7, addr(0)), validate(7, addr(29)));
+    await vi.advanceTimersByTimeAsync(15);
+    expect(held.fetchMock).toHaveBeenCalledTimes(1);
+    expect(held.calls[0].url).toBe(
+      'http://127.0.0.1:12391/groups/members/7/validate'
+    );
+    expect(held.calls[0].body).toEqual(
+      Array.from({ length: 30 }, (_, i) => addr(i))
+    );
+    held.calls[0].answer();
+    await expect(Promise.all(checks)).resolves.toEqual(
+      new Array(32).fill(true)
+    );
+    // Cached per address afterwards.
+    await expect(validate(7, addr(3))).resolves.toBe(true);
+    expect(held.fetchMock).toHaveBeenCalledTimes(1);
+    const snapshot = await rpcCall('debug:diagnostics');
+    expect(snapshot.validator).toMatchObject({
+      okCount: 30,
+      unavailableCount: 0,
+      requestCount: 1,
+      maxBatchSize: 30,
+      maxInFlight: 1,
+    });
+  });
+
+  it('keeps at most 3 requests out and merges checks that arrive meanwhile', async () => {
+    const held = heldFetch();
+    const validate = start();
+    const checks: Array<Promise<boolean | null>> = [];
+    for (let group = 1; group <= 6; group += 1) {
+      checks.push(validate(group, addr(group)));
+    }
+    await vi.advanceTimersByTimeAsync(15);
+    expect(groupsAsked(held.calls)).toEqual(['1', '2', '3']);
+    // Group 1's request is out: these wait for it and then go together.
+    checks.push(validate(1, addr(100)), validate(1, addr(101)));
+    await vi.advanceTimersByTimeAsync(50);
+    expect(held.calls).toHaveLength(3);
+    held.calls[0].answer();
+    await settle();
+    // The freed slot goes to the oldest waiting group, not the latecomers.
+    expect(groupsAsked(held.calls)).toEqual(['1', '2', '3', '4']);
+    for (const i of [1, 2, 3]) {
+      held.calls[i].answer();
+      await settle();
+    }
+    expect(groupsAsked(held.calls)).toEqual([
+      '1',
+      '2',
+      '3',
+      '4',
+      '5',
+      '6',
+      '1',
+    ]);
+    expect(held.calls[6].body).toEqual([addr(100), addr(101)]);
+    for (const call of held.calls) call.answer();
+    await expect(Promise.all(checks)).resolves.toEqual(new Array(8).fill(true));
+    expect(held.maxInFlight()).toBe(3);
+    const snapshot = await rpcCall('debug:diagnostics');
+    expect(snapshot.validator).toMatchObject({
+      okCount: 8,
+      requestCount: 7,
+      maxInFlight: 3,
+    });
+  });
+
+  it('asks again at once when a worker stall cut the request', async () => {
+    const held = heldFetch();
+    const validate = start();
+    const check = validate(7, OTHER);
+    await vi.advanceTimersByTimeAsync(15);
+    expect(held.calls).toHaveLength(1);
+    // The worker freezes for 400 s; Core's answer would have come in time.
+    vi.setSystemTime(Date.now() + 400_000);
+    await vi.advanceTimersByTimeAsync(12_000);
+    // The late abort timer re-arms once (grace), then aborts.
+    await vi.advanceTimersByTimeAsync(1_500);
+    await settle();
+    expect(held.calls).toHaveLength(2);
+    expect(held.calls[1].body).toEqual([OTHER]);
+    held.calls[1].answer();
+    await expect(check).resolves.toBe(true);
+    const snapshot = await rpcCall('debug:diagnostics');
+    expect(snapshot.validator).toMatchObject({
+      okCount: 1,
+      unavailableCount: 0,
+      requestCount: 2,
+      timedOutCount: 1,
+      gracedCount: 1,
+      failByReason: { stall_abort: 1 },
+    });
+    expect(snapshot.validator.recentFailures).toEqual([
+      expect.objectContaining({ reason: 'stall_abort', addresses: 1 }),
+    ]);
+    // The follow-up answered: no fault line for the boot buffer.
+    const { getRecentLogs } = await import('./shims/logger');
+    expect(
+      getRecentLogs().filter((l) => l.includes('membership_fetch_failed'))
+    ).toEqual([]);
+  });
+
+  it('sends nothing before the main thread pushes the node, and then to that node', async () => {
+    const held = heldFetch();
+    // Boot base before getApiKey answered: the public node.
+    const validate = start({
+      apiBase: 'https://ext-node.qortal.link',
+      apiKeyConfigured: null,
+    });
+    const check = validate(7, OTHER);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(held.fetchMock).not.toHaveBeenCalled();
+    handleMainMessage({
+      t: 'config',
+      config: { apiBase: 'http://127.0.0.1:12391', apiKeyConfigured: true },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(held.calls.map((call) => call.url)).toEqual([
+      'http://127.0.0.1:12391/groups/members/7/validate',
+    ]);
+    held.calls[0].answer();
+    await expect(check).resolves.toBe(true);
+  });
+
+  it('stops holding checks 3 s after boot when no config arrives', async () => {
+    const held = heldFetch();
+    const validate = start({ apiKeyConfigured: null });
+    const check = validate(7, OTHER);
+    await vi.advanceTimersByTimeAsync(2_900);
+    expect(held.fetchMock).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(held.fetchMock).toHaveBeenCalledTimes(1);
+    held.calls[0].answer();
+    await expect(check).resolves.toBe(true);
+  });
+
+  it('splits a list Core refused with 400 into single requests', async () => {
+    const bad = 'not-an-address';
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as string[];
+      if (body.includes(bad)) {
+        return {
+          ok: false,
+          status: 400,
+          json: async () => ({ error: 102, message: 'invalid address' }),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () =>
+          body.map((address) => ({ address, isMember: true, isAdmin: false })),
+      };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const validate = start();
+    const checks = [validate(7, OWN), validate(7, bad), validate(7, OTHER)];
+    await vi.advanceTimersByTimeAsync(15);
+    await expect(Promise.all(checks)).resolves.toEqual([true, null, true]);
+    expect(
+      fetchMock.mock.calls.map((call) => JSON.parse(String(call[1].body)))
+    ).toEqual([[OWN, bad, OTHER], [OWN], [bad], [OTHER]]);
+    const snapshot = await rpcCall('debug:diagnostics');
+    expect(snapshot.validator).toMatchObject({
+      okCount: 2,
+      unavailableCount: 1,
+      requestCount: 4,
+      failByReason: { 'http:400': 2 },
+    });
+    // One fault line, for the address that stayed unknown, not for the
+    // list the singles answered.
+    const { getRecentLogs } = await import('./shims/logger');
+    const lines = getRecentLogs().filter((l) =>
+      l.includes('membership_fetch_failed')
+    );
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatch(/reason=http:400 host=\S+ addresses=1$/);
+  });
+
+  it('stops a split when the node itself fails', async () => {
+    let call = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        call += 1;
+        if (call === 1) {
+          return { ok: false, status: 400, json: async () => ({}) };
+        }
+        throw new TypeError('Failed to fetch');
+      })
+    );
+    const validate = start();
+    const checks = [validate(7, OWN), validate(7, OTHER), validate(7, addr(1))];
+    await vi.advanceTimersByTimeAsync(15);
+    await expect(Promise.all(checks)).resolves.toEqual([null, null, null]);
+    expect(call).toBe(2);
+    const snapshot = await rpcCall('debug:diagnostics');
+    expect(snapshot.validator).toMatchObject({
+      okCount: 0,
+      unavailableCount: 3,
+      failByReason: { 'http:400': 1, network: 1, split_stopped: 1 },
+    });
+  });
+
+  it('answers unknown at once when the queue is full', async () => {
+    const held = heldFetch();
+    // Held by the boot config wait: nothing leaves the queue.
+    const validate = start({ apiKeyConfigured: null });
+    const checks: Array<Promise<boolean | null>> = [];
+    for (let i = 0; i < 512; i += 1) {
+      checks.push(validate(1 + (i % 20), addr(i)));
+    }
+    await expect(validate(99, addr(9_999))).resolves.toBeNull();
+    expect(held.fetchMock).not.toHaveBeenCalled();
+    const snapshot = await rpcCall('debug:diagnostics');
+    expect(snapshot.validator).toMatchObject({
+      unavailableCount: 1,
+      failByReason: { queue_full: 1 },
+    });
+    handleMainMessage({ t: 'config', config: { apiKeyConfigured: false } });
+    await vi.advanceTimersByTimeAsync(15);
+    for (let round = 0; round < 30; round += 1) {
+      for (const pending of held.calls) pending.answer();
+      await settle();
+    }
+    expect(held.calls).toHaveLength(20);
+    expect(held.maxInFlight()).toBe(3);
+    await expect(Promise.all(checks)).resolves.toEqual(
+      new Array(512).fill(true)
+    );
   });
 });
 
@@ -1049,5 +1380,171 @@ describe('Python stall watchdog events', () => {
     expect(
       summarizeBridgeDiagnosticEvent('bridge_thread_population', 'x')
     ).toBe('threads=0 cpu_total=0 cpu_top= groups_top=');
+  });
+});
+
+describe('debug:sync-health diagnostics additions', () => {
+  it('adds channels, database, focus counters, RPC time and log folding', async () => {
+    const channels = { subscribedGroups: 1, groups: [{ groupId: 694 }] };
+    const db = { sizeBytes: 4_096, events: 3, searchRows: 2, countedAt: 1 };
+    engine.manager = {
+      on: vi.fn(),
+      getDeliveryCounters: () => ({
+        membershipDeferred: 4,
+        membershipNullFromBackoff: 0,
+        providerAuthSkipped_live_event_entry: 2,
+        localImportFailure: 1,
+        unrelated: 9,
+      }),
+      getChannelMetadataDiagnostics: vi.fn(() => channels),
+      getStorageDiagnostics: vi.fn(() => db),
+    };
+    startEngine({ apiBase: 'http://127.0.0.1:12391' });
+    await rpcCall('debug:logs');
+    const health = await rpcCall('debug:sync-health', [{ sentAt: 1 }]);
+    expect(health.engine.channels).toEqual(channels);
+    expect(health.engine.db).toEqual(db);
+    expect(health.engine.focusCounters).toEqual({
+      membershipDeferred: 4,
+      providerAuthSkipped_live_event_entry: 2,
+      localImportFailure: 1,
+    });
+    expect(health.log.bootFaultRepeatsFolded).toBe(0);
+    // The RPC before this one was timed.
+    expect(health.io.rpc.methods.map((m: any) => m.method)).toContain(
+      'debug:logs'
+    );
+    // No OPFS sync handles under jsdom: the probe says so.
+    expect(health.io.flush.installed).toBe(false);
+    // The node fs module has no handle pool: no storage line.
+    expect(health.storage).toBeNull();
+    expect(health.pythonCpuStacks).toBeNull();
+  });
+
+  it('reports a getter that throws and leaves the others filled', async () => {
+    engine.manager = {
+      on: vi.fn(),
+      getDeliveryCounters: () => ({}),
+      getChannelMetadataDiagnostics: () => {
+        throw new Error('channels broke');
+      },
+      getStorageDiagnostics: () => ({ sizeBytes: 1 }),
+    };
+    startEngine({ apiBase: 'http://127.0.0.1:12391' });
+    const health = await rpcCall('debug:sync-health');
+    expect(health.engineError).toBe(
+      'getChannelMetadataDiagnostics: channels broke'
+    );
+    expect(health.engine.channels).toBeNull();
+    expect(health.engine.db).toEqual({ sizeBytes: 1 });
+    expect(health.engine.focusCounters).toBeUndefined();
+  });
+
+  it('reads the fs shim pool stats when the worker has them', async () => {
+    const stats = { files: 3, spares: 4 };
+    vi.resetModules();
+    vi.doMock('fs', async (importOriginal) => ({
+      ...(await importOriginal<typeof import('fs')>()),
+      getMobileFsStats: () => stats,
+    }));
+    try {
+      const host = await import('./engineHost');
+      engine.manager = { on: vi.fn() };
+      host.startEngine({ apiBase: 'http://127.0.0.1:12391' });
+      const id = ++nextRpcCallId;
+      host.handleMainMessage({ t: 'rpc', id, method: 'debug:sync-health' });
+      await vi.advanceTimersByTimeAsync(0);
+      const reply = (
+        self.postMessage as unknown as { mock: { calls: any[][] } }
+      ).mock.calls
+        .map((call) => call[0])
+        .find((msg) => msg?.t === 'rpcres' && msg.id === id);
+      expect(reply.value.storage).toEqual(stats);
+      host.handleMainMessage({ t: 'stop' });
+    } finally {
+      vi.doUnmock('fs');
+    }
+  });
+
+  it('keeps the top frames of Python CPU samples, never code or paths', async () => {
+    engine.manager = { on: vi.fn() };
+    startEngine({ apiBase: 'http://127.0.0.1:12391' });
+    connect();
+    latestSocket().accept();
+    latestSocket().onmessage?.({
+      data: JSON.stringify({
+        type: 'event',
+        event: 'bridge_thread_population',
+        payload: {
+          threadCount: 63,
+          totalCpuTicks: 340,
+          cpuTicksByGroup: [{ name: 'Thread (__job)', ticks: 210 }],
+          stacks: {
+            'Thread (__job)':
+              '  File "/data/user/0/app/files/chaquopy/RNS/Transport.py", line 1, in loop\n    secret = 1\n',
+            'Thread (__job)#cpu1':
+              '  File "/data/user/0/app/files/chaquopy/RNS/Transport.py", line 1234, in inbound\n    peer_hash = "QRj9ttCJoCmV4kb9GxSHP75ZQWWi7LqPQG"\n  File "/data/user/0/app/files/chaquopy/RNS/Packet.py", line 88, in unpack\n    x = 1\n',
+          },
+        },
+      }),
+    });
+    const health = await rpcCall('debug:sync-health');
+    expect(health.pythonCpuStacks).toMatchObject({
+      totalCpuTicks: 340,
+      cpuTicksByGroup: [{ name: 'Thread (__job)', ticks: 210 }],
+      samples: [
+        {
+          group: 'Thread (__job)',
+          frames: ['unpack (Packet.py:88)', 'inbound (Transport.py:1234)'],
+        },
+      ],
+    });
+    const text = JSON.stringify(health.pythonCpuStacks);
+    expect(text).not.toContain('/data/');
+    expect(text).not.toContain('QRj9tt');
+    expect(text).not.toContain('secret');
+  });
+
+  it('logs membership fetch failures at most once a minute per reason', async () => {
+    const { getRecentLogs, getBootFaultLogs } = await import('./shims/logger');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new TypeError('Failed to fetch');
+      })
+    );
+    engine.manager = { on: vi.fn() };
+    startEngine({
+      apiBase: 'http://node.example.com:12391',
+      apiKeyConfigured: false,
+    });
+    const validate = engine.startOptions[0].validateGroupMember as (
+      groupId: number,
+      address: string
+    ) => Promise<boolean | null>;
+    const lines = () =>
+      getRecentLogs().filter((l) => l.includes('membership_fetch_failed'));
+    await Promise.all([
+      validate(7, 'QAddressA0000000000000000000000000'),
+      vi.advanceTimersByTimeAsync(20),
+    ]);
+    await Promise.all([
+      validate(8, 'QAddressB0000000000000000000000000'),
+      vi.advanceTimersByTimeAsync(20),
+    ]);
+    expect(lines()).toHaveLength(1);
+    expect(lines()[0]).toMatch(
+      /warn \[MobileChat\] membership_fetch_failed reason=network host=node\.example\.com:12391 addresses=1$/
+    );
+    expect(
+      getBootFaultLogs().some((l) => l.includes('membership_fetch_failed'))
+    ).toBe(true);
+    await vi.advanceTimersByTimeAsync(60_000);
+    await Promise.all([
+      validate(9, 'QAddressC0000000000000000000000000'),
+      vi.advanceTimersByTimeAsync(20),
+    ]);
+    expect(lines()).toHaveLength(2);
+    expect(lines()[1]).toMatch(/addresses=1 suppressed=1$/);
   });
 });

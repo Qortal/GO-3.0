@@ -14,21 +14,35 @@
 import {
   getBootFaultLogs,
   getBootFaultOverflow,
+  getBootFaultRepeatsFolded,
   getLogKeyCounts,
   getRecentLogs,
   warn as logWarn,
   type LogKeyCount,
 } from './shims/logger';
 import {
+  getEngineIoStats,
+  installOpfsFlushProbe,
+  noteEngineRpc,
+  noteSocketFrame,
+  type EngineIoStats,
+} from './engineIoStats';
+import type { MobileFsStats } from './shims/fs';
+import {
   apiHostOf,
   apiSchemeOf,
   createGroupValidatorStats,
+  GROUP_VALIDATION_BATCH_MAX,
   GROUP_VALIDATION_TIMEOUT_MS,
+  groupValidationFailReason,
   membershipProbeResult,
-  recordGroupValidation,
+  recordGroupValidationBatch,
+  recordGroupValidationUnsent,
   redactDiagnosticText,
+  runGroupValidationBatchRequest,
   runGroupValidationRequest,
   toWorkerNodeConfig,
+  type GroupValidationBatchOutcome,
   type GroupValidationRow,
   type GroupValidatorStats,
   type MembershipProbeResult,
@@ -41,10 +55,14 @@ import {
 } from '../../../electron/src/reticulum-chat';
 import type {
   ReticulumChatAuthorGapScannerDiagnostics,
+  ReticulumChatChannelMetadataDiagnostics,
   ReticulumChatDigestQueueDiagnostics,
   ReticulumChatEngineQueueDiagnostics,
 } from '../../../electron/src/reticulum-chat';
 import * as fs from 'fs';
+// Aliased to the sqlite-wasm shim in the worker build (a mock in tests).
+import * as sqliteShim from 'better-sqlite3';
+import type { MobileSqliteStats } from './shims/better-sqlite3';
 import { ReticulumResourceStore } from '../../../electron/src/reticulum-resource-store';
 import { MobileReticulumBridge } from './wireBridge';
 import type { ServingStats } from './wireBridge';
@@ -65,6 +83,11 @@ import {
   createNativeRequestStats,
   type NativeRequestSnapshot,
 } from './nativeRequestStats';
+import {
+  createMacrotaskScheduler,
+  SocketEventPump,
+  type SocketEventFrame,
+} from './socketEventPump';
 
 type WorkerOut =
   | { t: 'evt'; channel: string; payload: unknown }
@@ -263,6 +286,64 @@ function nativeRequestSnapshot(now = Date.now()): NativeRequestSnapshot {
   );
 }
 
+/**
+ * Commands that ran out of time here while their reply may still come: in
+ * the field every timed-out command got its reply, up to 40 s late. The
+ * timeout error carries `lateReply`, which resolves with that reply, or with
+ * null once none can come (LATE_REPLY_WAIT_MS passed, the socket closed, or
+ * more than LATE_REPLY_WAITERS_MAX are waiting). The bridge uses it so a
+ * send that did go out is not sent again.
+ */
+const LATE_REPLY_WAIT_MS = 120_000;
+const LATE_REPLY_WAITERS_MAX = 256;
+const lateReplyWaiters = new Map<
+  string,
+  { at: number; resolve: (frame: unknown) => void }
+>();
+
+function pruneLateReplyWaiters(now: number): void {
+  for (const [key, waiter] of lateReplyWaiters) {
+    if (now - waiter.at < LATE_REPLY_WAIT_MS) break;
+    lateReplyWaiters.delete(key);
+    waiter.resolve(null);
+  }
+  while (lateReplyWaiters.size >= LATE_REPLY_WAITERS_MAX) {
+    const [key, waiter] = lateReplyWaiters.entries().next().value as [
+      string,
+      { resolve: (frame: unknown) => void },
+    ];
+    lateReplyWaiters.delete(key);
+    waiter.resolve(null);
+  }
+}
+
+/** `err` with a non-enumerable `lateReply` promise for the command `key`. */
+function withLateReply(err: Error, key: string): Error {
+  const now = Date.now();
+  pruneLateReplyWaiters(now);
+  const lateReply = new Promise<unknown>((resolve) => {
+    lateReplyWaiters.set(key, { at: now, resolve });
+  });
+  Object.defineProperty(err, 'lateReply', { value: lateReply });
+  return err;
+}
+
+/** A reply to `key` arrived after its timeout (null: it never will). */
+function settleLateReply(key: string, frame: unknown): void {
+  const waiter = lateReplyWaiters.get(key);
+  if (!waiter) return;
+  lateReplyWaiters.delete(key);
+  waiter.resolve(frame);
+}
+
+function abandonLateReplies(prefix: string): void {
+  for (const [key, waiter] of lateReplyWaiters) {
+    if (!key.startsWith(prefix)) continue;
+    lateReplyWaiters.delete(key);
+    waiter.resolve(null);
+  }
+}
+
 function requestMain<T>(
   msg:
     | Omit<Extract<WorkerOut, { t: 'cmd' }>, 'id'>
@@ -282,11 +363,10 @@ function requestMain<T>(
     const timer = setTimeout(() => {
       pendingOut.delete(id);
       nativeRequests.timedOut(`m-${id}`, label);
-      reject(
-        new Error(
-          `worker->main request timed out: ${(msg as any).action ?? msg.t}`
-        )
+      const err = new Error(
+        `worker->main request timed out: ${(msg as any).action ?? msg.t}`
       );
+      reject(msg.t === 'cmd' ? withLateReply(err, `m-${id}`) : err);
     }, timeoutMs);
     pendingOut.set(id, {
       resolve: (v) => {
@@ -315,6 +395,13 @@ function requestMain<T>(
 // to the main-thread relay when it is not.
 
 type BridgeSocketInfo = { url: string; token: string };
+
+/**
+ * Kotlin's chat-resource staging folder, sent once with the bridge socket
+ * info; '' until then. Resource staging builds new native paths in it
+ * instead of asking Kotlin for each one (resourceStaging.ts allocate).
+ */
+let stagingNativeDir = '';
 
 const PY_EVENTS_FOR_ENGINE = new Set([
   'ready',
@@ -367,6 +454,8 @@ function bridgeSocketAvailable(): boolean {
 }
 
 function failPendingSocketRequests(reason: string): void {
+  // Replies still owed on this socket died with it.
+  abandonLateReplies('w-');
   nativeRequests.lostOnClose(pendingSocket.size);
   for (const [id, pending] of pendingSocket) {
     clearTimeout(pending.timer);
@@ -386,7 +475,9 @@ function socketRequest<T>(
     const timer = setTimeout(() => {
       pendingSocket.delete(id);
       nativeRequests.timedOut(id, label);
-      reject(new Error(`worker->native request timed out: ${label}`));
+      const err = new Error(`worker->native request timed out: ${label}`);
+      // Commands only ('w-'); a late staging reply has no use.
+      reject(id.startsWith('w-') ? withLateReply(err, id) : err);
     }, timeoutMs);
     pendingSocket.set(id, {
       resolve: (v) => {
@@ -432,6 +523,7 @@ function handleSocketFrame(raw: string): void {
       // Responses to the main thread's own commands ('cmd-…', Kotlin's) are
       // not ours; ignore them.
       nativeRequests.unknownReply(id);
+      settleLateReply(id, frame);
     }
     return;
   }
@@ -449,18 +541,61 @@ function handleSocketFrame(raw: string): void {
     return;
   }
   if (type === 'event') {
-    noteBridgeEventTiming(frame);
     const eventName = String(frame.event || '');
-    // Python's stall watchdog: logged here, never handed to the engine.
-    if (PY_DIAGNOSTIC_EVENTS.has(eventName)) {
-      handlePythonEvent(eventName, frame.payload ?? {});
+    if (
+      !PY_EVENTS_FOR_ENGINE.has(eventName) &&
+      !PY_DIAGNOSTIC_EVENTS.has(eventName)
+    ) {
+      // Not for this worker (the main thread gets every frame anyway).
+      noteBridgeEventTiming(frame);
       return;
     }
-    if (!PY_EVENTS_FOR_ENGINE.has(eventName)) return;
-    const payload = frame.payload ?? {};
-    stampProviderAuthTiming(eventName, frame, payload);
-    handlePythonEvent(eventName, payload);
+    // Replies above settle at once; events wait their turn in order, so a
+    // reply never queues behind a backlog of engine work (socketEventPump.ts).
+    socketEvents.push(frame, Date.now());
   }
+}
+
+/** One Python event frame from the socket, handed to the engine in order. */
+function handleSocketEventFrame(frame: SocketEventFrame): void {
+  // Timed here, not on receipt: "Python to engine" includes the queue wait.
+  noteBridgeEventTiming(frame);
+  const eventName = String(frame.event || '');
+  // Python's stall watchdog: logged here, never handed to the engine.
+  if (PY_DIAGNOSTIC_EVENTS.has(eventName)) {
+    handlePythonEvent(eventName, frame.payload ?? {});
+    return;
+  }
+  if (!PY_EVENTS_FOR_ENGINE.has(eventName)) return;
+  const payload = frame.payload ?? {};
+  stampProviderAuthTiming(eventName, frame, payload);
+  handlePythonEvent(eventName, payload);
+}
+
+/** Runs the event pump's slices; tests swap it for a synchronous or manual one. */
+let socketEventSchedule: (run: () => void) => void = createMacrotaskScheduler();
+
+const socketEvents = new SocketEventPump({
+  handle: handleSocketEventFrame,
+  schedule: (run) =>
+    socketEventSchedule(() => runTimedTask('socket', () => run())),
+  onError: (err) =>
+    logWarn(
+      `[MobileChat] socket_event_failed error=${redactDiagnosticText(
+        err instanceof Error ? err.message : String(err)
+      ).slice(0, 160)}`
+    ),
+});
+
+/**
+ * Tests: how the socket event pump runs its slices (`null` restores the
+ * MessageChannel scheduler). Returns the pump for its stats and drainAll.
+ */
+export function setSocketEventScheduleForTests(
+  schedule: ((run: () => void) => void) | null
+): SocketEventPump {
+  socketEventSchedule = schedule ?? createMacrotaskScheduler();
+  return socketEvents;
 }
 
 const finiteStampValue = (value: unknown): number | null =>
@@ -539,6 +674,8 @@ function connectBridgeSocket(): void {
     socketReconnectDelay = SOCKET_RECONNECT_MIN_MS;
     console.log('[MobileChat] bridge_socket_connected');
     post({ t: 'direct-bridge', connected: true });
+    // The staging sweep needs this socket; a `ready` may have come first.
+    bridge?.sweepStagingOnce();
     if (socketReopenPending) {
       socketReopenPending = false;
       callManagerHook('notifyBridgeSocketReopened');
@@ -557,7 +694,10 @@ function connectBridgeSocket(): void {
   ws.onmessage = (ev) => {
     if (typeof ev.data === 'string') {
       const raw = ev.data;
+      const startedAt = performance.now();
       runTimedTask('socket', () => handleSocketFrame(raw));
+      // Frames handled back to back were queued behind each other.
+      noteSocketFrame(startedAt, performance.now());
     }
   };
   ws.onerror = () => {
@@ -741,10 +881,70 @@ export type EngineSyncHealthSnapshot = {
     queues: ReticulumChatEngineQueueDiagnostics | null;
     /** Non-zero delivery counters, top 40 by value. */
     counters: Record<string, number>;
+    // Optional below: present only when the engine has the getter, so an
+    // older engine's answer (and its report) is unchanged.
+    /** Per subscribed group: admin flags, snapshots, skipped/deferred metadata. */
+    channels?: ReticulumChatChannelMetadataDiagnostics | null;
+    /** Database size, event and search rows, search/mention write shortcuts. */
+    db?: EngineDbDiagnostics | null;
+    /**
+     * Membership, local-storage and serving counters the report always shows,
+     * even when they are not in the top 40 (non-zero ones only).
+     */
+    focusCounters?: Record<string, number>;
   } | null;
   /** The first engine getter that threw: `<getter>: <redacted message>`. The others are still filled. */
   engineError?: string;
-  log: { bootFaultOverflow: number; keyCounts: LogKeyCount[] };
+  log: {
+    bootFaultOverflow: number;
+    keyCounts: LogKeyCount[];
+    /** Per-event fault lines the boot buffer counted but did not keep. */
+    bootFaultRepeatsFolded?: number;
+  };
+  // Optional below (an older worker leaves them out).
+  /** The OPFS handle pool and file index of the fs shim (getMobileFsStats). */
+  storage?: MobileFsStats | null;
+  /** Journal mode per open database, SAH pool slots, statement cache. */
+  sqlite?: MobileSqliteStats | null;
+  /** RPC time per method, OPFS flushes, SQLite commits, socket backlog. */
+  io?: EngineIoStats | null;
+  /** Python's last CPU-hungry window: the hottest thread families' top frames. */
+  pythonCpuStacks?: PythonCpuStacks | null;
+};
+
+/** The manager's getStorageDiagnostics (database size, rows, index writes). */
+export type EngineDbDiagnostics = {
+  sizeBytes: number | null;
+  freeBytes: number | null;
+  events: number | null;
+  searchRows: number | null;
+  countedAt: number;
+  indexWrites?: {
+    searchWritten?: number;
+    searchUnchanged?: number;
+    searchNoMirror?: number;
+    mentionsWritten?: number;
+    mentionsUnchanged?: number;
+    ftsCheck?: {
+      state?: string;
+      mirrorRows?: number | null;
+      ftsRows?: number | null;
+      rebuilt?: boolean;
+    };
+  };
+};
+
+/**
+ * Stack samples Python takes of its busiest thread families when a window
+ * used a lot of CPU (bridge_thread_population `#cpu` stacks), cut to file and
+ * function names, innermost frame first. No values, paths or code text.
+ */
+export type PythonCpuStacks = {
+  at: number;
+  /** Process CPU in that window (1/100 s ticks) and per family, top 5. */
+  totalCpuTicks: number;
+  cpuTicksByGroup: Array<{ name: string; ticks: number }>;
+  samples: Array<{ group: string; frames: string[] }>;
 };
 
 const SYNC_HEALTH_COUNTERS_MAX = 40;
@@ -755,7 +955,59 @@ type SyncHealthManager = {
   getDigestQueueDiagnostics?: () => ReticulumChatDigestQueueDiagnostics;
   getEngineQueueDiagnostics?: () => ReticulumChatEngineQueueDiagnostics;
   getDeliveryCounters?: () => Record<string, number>;
+  getChannelMetadataDiagnostics?: () => ReticulumChatChannelMetadataDiagnostics;
+  getStorageDiagnostics?: () => EngineDbDiagnostics;
 };
+
+/**
+ * Counters the report prints on their own lines (membership deferrals,
+ * local storage failures, provider auths skipped as stale), whatever their
+ * rank among all counters.
+ */
+const SYNC_HEALTH_FOCUS_COUNTERS = new Set([
+  'membershipDeferred',
+  'membershipDeferredDropped',
+  'membershipDeferredEvicted',
+  'membershipNullFromBackoff',
+  'membershipPrefetchPages',
+  'membershipPrefetchAuthors',
+  'authorGapMembershipRefund',
+  'localImportFailure',
+  'providerAuthSkipped',
+  'providerAuthEndedQueuedDropped',
+  'dmNotifyStale',
+  'providerServeShed',
+  'requesterMembershipStaleAllowed',
+  'serveFreshOnlyAtArrival',
+  // A local timeout whose reply came late but ok: its retry was not sent.
+  'controlRetryLateOkCancelled',
+  'bridgeLocalTimeout',
+]);
+const SYNC_HEALTH_FOCUS_PREFIXES = [
+  'providerAuthSkipped_',
+  'providerServeShed_',
+];
+const SYNC_HEALTH_FOCUS_MAX = 40;
+
+function focusDeliveryCounters(
+  counters: Record<string, number> | null | undefined
+): Record<string, number> {
+  return Object.fromEntries(
+    Object.entries(counters ?? {})
+      .filter(
+        ([key, value]) =>
+          (SYNC_HEALTH_FOCUS_COUNTERS.has(key) ||
+            SYNC_HEALTH_FOCUS_PREFIXES.some((prefix) =>
+              key.startsWith(prefix)
+            )) &&
+          Number.isFinite(Number(value)) &&
+          Number(value) > 0
+      )
+      .map(([key, value]) => [key, Number(value)] as [string, number])
+      .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+      .slice(0, SYNC_HEALTH_FOCUS_MAX)
+  );
+}
 
 function topDeliveryCounters(
   counters: Record<string, number> | null | undefined
@@ -811,7 +1063,33 @@ function readEngineSyncHealth(): Pick<
       {}
     ),
   };
-  return { engine, ...(engineError ? { engineError } : {}) };
+  const extra: Pick<
+    NonNullable<EngineSyncHealthSnapshot['engine']>,
+    'channels' | 'db' | 'focusCounters'
+  > = {};
+  if (typeof m.getChannelMetadataDiagnostics === 'function') {
+    extra.channels = read(
+      'getChannelMetadataDiagnostics',
+      () => m.getChannelMetadataDiagnostics!(),
+      null
+    );
+  }
+  if (typeof m.getStorageDiagnostics === 'function') {
+    extra.db = read(
+      'getStorageDiagnostics',
+      () => m.getStorageDiagnostics!(),
+      null
+    );
+  }
+  const focus = safeRead(
+    () => focusDeliveryCounters(m.getDeliveryCounters?.()),
+    {}
+  );
+  if (Object.keys(focus).length) extra.focusCounters = focus;
+  return {
+    engine: { ...engine, ...extra },
+    ...(engineError ? { engineError } : {}),
+  };
 }
 
 function emptyLoopLagSnapshot(): LoopLagSnapshot {
@@ -897,9 +1175,34 @@ function snapshotSyncHealth(options?: {
       () => ({
         bootFaultOverflow: getBootFaultOverflow(),
         keyCounts: getLogKeyCounts(40),
+        bootFaultRepeatsFolded: getBootFaultRepeatsFolded(),
       }),
-      { bootFaultOverflow: 0, keyCounts: [] }
+      { bootFaultOverflow: 0, keyCounts: [], bootFaultRepeatsFolded: 0 }
     ),
+    storage: safeRead(
+      () =>
+        (
+          fs as unknown as { getMobileFsStats?: () => MobileFsStats }
+        ).getMobileFsStats?.() ?? null,
+      null
+    ),
+    sqlite: safeRead(
+      () =>
+        (
+          sqliteShim as unknown as {
+            getMobileSqliteStats?: () => MobileSqliteStats;
+          }
+        ).getMobileSqliteStats?.() ?? null,
+      null
+    ),
+    io: safeRead(
+      () => ({
+        ...getEngineIoStats(now),
+        socketQueue: safeRead(() => socketEvents.stats(now), null),
+      }),
+      null
+    ),
+    pythonCpuStacks: lastPythonCpuStacks,
   };
 }
 
@@ -910,6 +1213,17 @@ let presenceLeases: Array<Record<string, unknown>> = [];
 
 const GROUP_VALIDATION_TTL_MS = 5 * 60_000;
 const GROUP_VALIDATION_NEGATIVE_TTL_MS = 30_000;
+/** Checks for one group that arrive this close together share a request. */
+const GROUP_VALIDATION_BATCH_WINDOW_MS = 15;
+/**
+ * Validate requests out at once. Chromium allows 6 sockets per HTTP/1.1 host
+ * and the page fetches avatars and QDN data from the same node.
+ */
+const GROUP_VALIDATION_MAX_IN_FLIGHT = 3;
+/** Checks waiting for a request; past this a check answers "unknown". */
+const GROUP_VALIDATION_QUEUE_MAX = 512;
+/** Longest a cold boot holds checks back until the main thread names the node. */
+const GROUP_VALIDATION_CONFIG_WAIT_MS = 3_000;
 
 /** Engine-driven checks only; the diagnostics probe does not count here. */
 const groupValidatorStats = createGroupValidatorStats();
@@ -923,48 +1237,303 @@ const groupValidationInFlight = new Map<
   Promise<GroupValidationRow | null>
 >();
 
+/** Validator fetches in flight right now (engine checks only). */
+let validatorInFlight = 0;
+
+type GroupValidationWaiter = {
+  address: string;
+  resolve: (row: GroupValidationRow | null) => void;
+};
+
+type GroupValidationQueue = {
+  waiting: GroupValidationWaiter[];
+  /** The merge window for the next request is open. */
+  windowTimer: ReturnType<typeof setTimeout> | null;
+  /** This group's requests out now. */
+  inFlight: number;
+};
+
+const groupValidationQueues = new Map<number, GroupValidationQueue>();
+/** Groups whose next request may go as soon as a slot is free, oldest first. */
+const groupValidationReady = new Set<number>();
+/** Checks waiting in any group's queue. */
+let groupValidationWaiting = 0;
+/** The main thread has pushed its node config ('config' message). */
+let validatorConfigPushed = false;
+let validatorConfigTimer: ReturnType<typeof setTimeout> | null = null;
+
 /**
- * Core's bulk endpoint answers a single address directly. Walking the whole
+ * One Core answer for (group, address), batched per group.
+ *
+ * Core's validate endpoint answers the addresses it is sent. Walking the whole
  * member list instead (the obvious `/groups/members/{id}?limit=0`) downloads
  * megabytes for large groups and routinely times out, which reads as
  * "membership unavailable" and silently stops this device from advertising
  * the attachments it already holds.
+ *
+ * Page imports ask about many authors of one group at once. As one POST each,
+ * every answer then waited its turn in the busy worker (median 1.3 s in
+ * reports), so checks for one group that arrive within
+ * GROUP_VALIDATION_BATCH_WINDOW_MS, or while that group's request is out,
+ * share one request of up to GROUP_VALIDATION_BATCH_MAX addresses, with at
+ * most GROUP_VALIDATION_MAX_IN_FLIGHT requests out. The 12 s timer starts when
+ * a request is sent, not while it queues.
  *
  * No API key (CORS rejects it; see groupValidation.ts). Unlike desktop there is
  * deliberately no fallback to the public node: users on a private node (e.g.
  * over an SSH tunnel) chose it for privacy, and a fallback would send their
  * group ids and member addresses to ext-node.qortal.link.
  */
-async function fetchGroupValidationRow(
+function fetchGroupValidationRow(
   groupId: number,
   address: string
 ): Promise<GroupValidationRow | null> {
-  validatorInFlight += 1;
-  groupValidatorStats.maxInFlight = Math.max(
-    groupValidatorStats.maxInFlight ?? 0,
-    validatorInFlight
-  );
-  try {
-    const outcome = await runGroupValidationRequest(
-      config.apiBase,
-      groupId,
-      address
-    );
-    recordGroupValidation(
+  if (groupValidationWaiting >= GROUP_VALIDATION_QUEUE_MAX) {
+    // Unknown, not "no": the engine asks again after its retry window.
+    recordGroupValidationUnsent(
       groupValidatorStats,
-      outcome,
-      apiHostOf(config.apiBase),
+      [address],
+      'queue_full',
       Date.now(),
-      { own: isLocalSignerAddress(groupId, address) }
+      { own: (a) => isLocalSignerAddress(groupId, a) }
     );
-    return outcome.row;
-  } finally {
-    validatorInFlight -= 1;
+    noteMembershipFetchFailure('queue_full', 1);
+    return Promise.resolve(null);
+  }
+  return new Promise((resolve) => {
+    const queue: GroupValidationQueue = groupValidationQueues.get(groupId) ?? {
+      waiting: [],
+      windowTimer: null,
+      inFlight: 0,
+    };
+    groupValidationQueues.set(groupId, queue);
+    queue.waiting.push({ address, resolve });
+    groupValidationWaiting += 1;
+    if (queue.waiting.length >= GROUP_VALIDATION_BATCH_MAX) {
+      markGroupValidationReady(groupId);
+    } else if (queue.inFlight === 0 && !queue.windowTimer) {
+      queue.windowTimer = setTimeout(() => {
+        queue.windowTimer = null;
+        markGroupValidationReady(groupId);
+      }, GROUP_VALIDATION_BATCH_WINDOW_MS);
+    }
+    // Otherwise this group's request is out: the check rides on the next one.
+  });
+}
+
+function markGroupValidationReady(groupId: number): void {
+  const queue = groupValidationQueues.get(groupId);
+  if (!queue) return;
+  if (queue.windowTimer) {
+    clearTimeout(queue.windowTimer);
+    queue.windowTimer = null;
+  }
+  groupValidationReady.add(groupId);
+  pumpGroupValidation();
+}
+
+/**
+ * Whether checks may go out. At a cold boot the worker's base can still be the
+ * public node while the main thread's getApiKey is pending; a private-node
+ * user's group ids and member addresses must not go there. So checks wait
+ * for the main thread's config push (or a boot config that already says
+ * whether a key is set), for GROUP_VALIDATION_CONFIG_WAIT_MS at most.
+ */
+function validatorConfigSettled(): boolean {
+  return (
+    validatorConfigPushed ||
+    config.apiKeyConfigured !== null ||
+    Date.now() - engineStartedAt >= GROUP_VALIDATION_CONFIG_WAIT_MS
+  );
+}
+
+/** The 'config' message arrived: checks held at boot can go now. */
+function releaseValidatorConfigHold(): void {
+  validatorConfigPushed = true;
+  if (validatorConfigTimer) {
+    clearTimeout(validatorConfigTimer);
+    validatorConfigTimer = null;
+  }
+  pumpGroupValidation();
+}
+
+/** Send ready batches while request slots are free. */
+function pumpGroupValidation(): void {
+  if (!validatorConfigSettled()) {
+    validatorConfigTimer ??= setTimeout(
+      () => {
+        validatorConfigTimer = null;
+        pumpGroupValidation();
+      },
+      Math.max(
+        0,
+        engineStartedAt + GROUP_VALIDATION_CONFIG_WAIT_MS - Date.now()
+      )
+    );
+    return;
+  }
+  for (const groupId of groupValidationReady) {
+    if (validatorInFlight >= GROUP_VALIDATION_MAX_IN_FLIGHT) return;
+    groupValidationReady.delete(groupId);
+    const queue = groupValidationQueues.get(groupId);
+    if (!queue || queue.waiting.length === 0) continue;
+    const waiters = queue.waiting.splice(0, GROUP_VALIDATION_BATCH_MAX);
+    groupValidationWaiting -= waiters.length;
+    // A second full batch need not wait for this one.
+    if (queue.waiting.length >= GROUP_VALIDATION_BATCH_MAX) {
+      groupValidationReady.add(groupId);
+    }
+    queue.inFlight += 1;
+    validatorInFlight += 1;
+    groupValidatorStats.maxInFlight = Math.max(
+      groupValidatorStats.maxInFlight ?? 0,
+      validatorInFlight
+    );
+    void runGroupValidationBatch(groupId, waiters).finally(() => {
+      validatorInFlight -= 1;
+      queue.inFlight -= 1;
+      if (queue.waiting.length > 0) {
+        // Checks that arrived while this request was out go next.
+        groupValidationReady.add(groupId);
+      } else if (queue.inFlight === 0 && !queue.windowTimer) {
+        groupValidationQueues.delete(groupId);
+      }
+      pumpGroupValidation();
+    });
   }
 }
 
-/** Validator fetches in flight right now (engine checks only). */
-let validatorInFlight = 0;
+function requestGroupValidation(
+  groupId: number,
+  addresses: string[]
+): Promise<GroupValidationBatchOutcome> {
+  return runGroupValidationBatchRequest(config.apiBase, groupId, addresses);
+}
+
+function recordGroupValidationOutcome(
+  groupId: number,
+  outcome: GroupValidationBatchOutcome,
+  retried = false
+): void {
+  recordGroupValidationBatch(
+    groupValidatorStats,
+    outcome,
+    apiHostOf(config.apiBase),
+    Date.now(),
+    { own: (address) => isLocalSignerAddress(groupId, address), retried }
+  );
+  // A retried request (stall re-fetch, a 400 split into singles) is answered
+  // by its follow-up, which logs if it fails too; the counters above still
+  // record this one's reason.
+  if (retried) return;
+  let unknown = 0;
+  for (const row of outcome.rows.values()) if (!row) unknown += 1;
+  if (unknown > 0) {
+    noteMembershipFetchFailure(groupValidationFailReason(outcome), unknown);
+  }
+}
+
+/** One fault line per failure reason per minute, at most. */
+const MEMBERSHIP_FETCH_FAIL_LOG_MS = 60_000;
+const membershipFetchFailLog = new Map<
+  string,
+  { at: number; suppressed: number }
+>();
+
+/**
+ * A throttled fault line for membership checks that came back unknown, so the
+ * first ones land in the worker's boot buffer with their reason and node
+ * (Copy diagnostics pseudonymises a private node host).
+ */
+function noteMembershipFetchFailure(reason: string, addresses: number): void {
+  const now = Date.now();
+  const key = /^[\w:-]{1,32}$/.test(reason) ? reason : 'other';
+  const entry = membershipFetchFailLog.get(key);
+  if (entry && now - entry.at < MEMBERSHIP_FETCH_FAIL_LOG_MS) {
+    entry.suppressed += 1;
+    return;
+  }
+  if (!entry && membershipFetchFailLog.size >= 32) return;
+  logWarn(
+    `[MobileChat] membership_fetch_failed reason=${key} host=${
+      apiHostOf(config.apiBase) || 'none'
+    } addresses=${addresses}${entry?.suppressed ? ` suppressed=${entry.suppressed}` : ''}`
+  );
+  membershipFetchFailLog.set(key, { at: now, suppressed: 0 });
+}
+
+/**
+ * One batch for one group. Every waiter is resolved, `null` (unknown) for
+ * whatever stays unanswered. Two follow-ups:
+ * - the abort timer fired after a worker stall (timedOut + graced): Core most
+ *   likely answered in time and the reply sat behind the stall, so ask once
+ *   more at once instead of arming the engine's 10 s refusal for every
+ *   address; the first request counts as `stall_abort`, not unavailable;
+ * - Core refused the list with 400 (INVALID_ADDRESS fails the whole list):
+ *   ask one address at a time so the valid ones still get answers.
+ */
+async function runGroupValidationBatch(
+  groupId: number,
+  waiters: GroupValidationWaiter[]
+): Promise<void> {
+  const addresses = waiters.map((waiter) => waiter.address);
+  let rows = new Map<string, GroupValidationRow | null>();
+  try {
+    let outcome = await requestGroupValidation(groupId, addresses);
+    if (outcome.timedOut && outcome.graced) {
+      recordGroupValidationOutcome(groupId, outcome, true);
+      outcome = await requestGroupValidation(groupId, addresses);
+    }
+    if (outcome.status === 400 && outcome.rows.size > 1) {
+      recordGroupValidationOutcome(groupId, outcome, true);
+      rows = await validateGroupAddressesSingly(groupId, addresses);
+    } else {
+      recordGroupValidationOutcome(groupId, outcome);
+      rows = outcome.rows;
+    }
+  } catch (err) {
+    console.warn('[MobileChat] group validation batch failed', err);
+  } finally {
+    for (const waiter of waiters) {
+      waiter.resolve(rows.get(waiter.address) ?? null);
+    }
+  }
+}
+
+/**
+ * After a 400 for a list: one request per address, in turn, inside the
+ * batch's slot. A failure that is not about the address (no answer, 5xx,
+ * group unknown) would repeat for every other one, a timeout each, so the
+ * rest stay unknown instead.
+ */
+async function validateGroupAddressesSingly(
+  groupId: number,
+  addresses: string[]
+): Promise<Map<string, GroupValidationRow | null>> {
+  const rows = new Map<string, GroupValidationRow | null>();
+  for (let i = 0; i < addresses.length; i += 1) {
+    const address = addresses[i];
+    const outcome = await requestGroupValidation(groupId, [address]);
+    recordGroupValidationOutcome(groupId, outcome);
+    const row = outcome.rows.get(address) ?? null;
+    rows.set(address, row);
+    if (row || outcome.status === 400 || outcome.reason === 'missing_row') {
+      continue;
+    }
+    recordGroupValidationUnsent(
+      groupValidatorStats,
+      addresses.slice(i + 1),
+      'split_stopped',
+      Date.now(),
+      { own: (a) => isLocalSignerAddress(groupId, a) }
+    );
+    if (i + 1 < addresses.length) {
+      noteMembershipFetchFailure('split_stopped', addresses.length - i - 1);
+    }
+    break;
+  }
+  return rows;
+}
 
 /** Whether `address` is this account's own (the probe target reads the same fields). */
 function isLocalSignerAddress(groupId: number, address: string): boolean {
@@ -1009,6 +1578,10 @@ function snapshotValidatorStats(): GroupValidatorStats {
     ...groupValidatorStats,
     recentNetworkMs: [...(groupValidatorStats.recentNetworkMs ?? [])],
     recentWorkerWaitMs: [...(groupValidatorStats.recentWorkerWaitMs ?? [])],
+    failByReason: { ...(groupValidatorStats.failByReason ?? {}) },
+    recentFailures: (groupValidatorStats.recentFailures ?? []).map(
+      (failure) => ({ ...failure })
+    ),
     ownListAnswers: counters.ownMembershipLocalAnswer ?? 0,
     ownBootWaits: counters.ownMembershipBootWaitReady ?? 0,
     ownBootWaitTimeouts: counters.ownMembershipBootWaitTimeout ?? 0,
@@ -1358,9 +1931,11 @@ let engineStartedAt = 0;
 export function startEngine(initial: unknown): void {
   engineStartedAt = Date.now();
   config = toWorkerNodeConfig(initial);
+  // Copy diagnostics: count and time OPFS flushes (SQLite syncs).
+  installOpfsFlushProbe();
   bridge = new MobileReticulumBridge(
     sendPythonCommand,
-    new ReticulumResourceStaging(nativeFs as NativeFsFn)
+    new ReticulumResourceStaging(nativeFs as NativeFsFn, () => stagingNativeDir)
   );
   // Desktop wires this through PresenceManager's `reticulum-peer-verified`:
   // every newly admitted overlay neighbour gets a targeted hello_v3 plus our
@@ -1423,6 +1998,33 @@ export function startEngine(initial: unknown): void {
     // worker's membership fetch for this account's own address; the pushed
     // group list answers and Core is refreshed in the background.
     ownMembershipLocalFirst: true,
+    // Phone-only engine habits (one manager, private OPFS, slow worker):
+    // see ReticulumChatMobileProfile. Desktop leaves every flag off.
+    mobileProfile: {
+      localNotifyInMemory: true,
+      localFailuresAreLocal: true,
+      reprojectSkippedChannelMetadata: true,
+      metadataSnapshotRecovery: true,
+      lenientStaleSnapshotSigner: true,
+      adminPublicSnapshotFallback: true,
+      keepMembershipDeferredPulls: true,
+      prefetchPageAuthorMemberships: true,
+      authorGapNoHistoryExclusion: true,
+      recentGapsFirst: true,
+      gapDenialBackoff: true,
+      immediateProviderAuth: true,
+      rotatableServeBusy: true,
+      inlineDigestBuilds: true,
+      gapOutcomeAges: true,
+      authorGapAgeAware: true,
+      snapshotVouchedChannelRows: true,
+      // Covers a phone waking or the node restarting; a member kicked in the
+      // last hour could at most read recent history during the outage.
+      staleMemberServeTtlMs: 60 * 60 * 1000,
+      shedHistoryServesUnderLoad: true,
+      verifyServeAtArrival: true,
+      lateOkCancelsRetry: true,
+    },
   });
   attachManagerListeners(manager);
   post({ t: 'engine-ready' });
@@ -1730,6 +2332,41 @@ const handlers: Record<string, Handler> = {
       Number(limit) || 100,
       unreadOnly === true
     ) ?? [],
+  // GO's hosted Hub CallManager (page, src/bridge/hubCall) reports call
+  // outcomes here, as desktop setup.ts attachCallListeners does in main.
+  recordDirectCallHistory: async (update) => {
+    const m = manager();
+    if (!m) return notRunning;
+    const u = (update ?? {}) as Record<string, unknown>;
+    const outcome = String(u.outcome || '');
+    const direction = u.direction === 'inbound' ? 'inbound' : 'outbound';
+    if (
+      !['answered', 'declined', 'missed', 'cancelled', 'no_answer'].includes(
+        outcome
+      ) ||
+      (u.direction !== 'inbound' && u.direction !== 'outbound')
+    ) {
+      return { success: false, error: 'invalid call history update' };
+    }
+    await m.recordDirectCallHistory({
+      callId: String(u.callId || '').trim(),
+      localAddress: String(u.localAddress || '').trim(),
+      remoteAddress: String(u.remoteAddress || '').trim(),
+      direction,
+      outcome,
+      startedAt: Number(u.startedAt) || 0,
+      endedAt: Number(u.endedAt) || 0,
+    });
+    return { success: true };
+  },
+  // QortalLand DM voice: the endpoint the signed Land call authenticated
+  // (desktop setup.ts gcall:join reads it in main). Null when unknown.
+  getActiveLandCallMediaPeerDestinationHash: (chatId, localAddress, callId) =>
+    manager()?.getActiveLandCallMediaPeerDestinationHash?.(
+      String(chatId || ''),
+      String(localAddress || ''),
+      String(callId || '')
+    ) ?? null,
   markDirectRead: (myAddress, peerAddress, upToTimestamp) => {
     const m = manager();
     if (!m) return notRunning;
@@ -2537,12 +3174,19 @@ export function handleMainMessage(data: any): void {
   if (data.t === 'rpc') {
     const { id, method, args } = data;
     void (async () => {
+      // Copy diagnostics: time per method, and the part that blocks the worker.
+      const startedAt = performance.now();
+      let syncMs = 0;
+      let ok = false;
       try {
         const handler = handlers[method];
         if (!handler)
           throw new Error(`Unknown reticulumChat method: ${method}`);
-        const value = await handler(...(Array.isArray(args) ? args : []));
+        const pending = handler(...(Array.isArray(args) ? args : []));
+        syncMs = performance.now() - startedAt;
+        const value = await pending;
         post({ t: 'rpcres', id, ok: true, value });
+        ok = true;
       } catch (err) {
         post({
           t: 'rpcres',
@@ -2550,6 +3194,17 @@ export function handleMainMessage(data: any): void {
           ok: false,
           error: err instanceof Error ? err.message : String(err),
         });
+      } finally {
+        try {
+          noteEngineRpc(
+            String(method),
+            syncMs || performance.now() - startedAt,
+            performance.now() - startedAt,
+            ok
+          );
+        } catch {
+          /* diagnostics only */
+        }
       }
     })();
     return;
@@ -2567,6 +3222,7 @@ export function handleMainMessage(data: any): void {
       }
     } else {
       nativeRequests.unknownReply(`m-${data.id}`);
+      if (data.t === 'cmdres') settleLateReply(`m-${data.id}`, data.frame);
     }
     return;
   }
@@ -2587,6 +3243,12 @@ export function handleMainMessage(data: any): void {
     return;
   }
   if (data.t === 'bridge-socket') {
+    if (
+      typeof data.stagingDir === 'string' &&
+      data.stagingDir.startsWith('/')
+    ) {
+      stagingNativeDir = data.stagingDir;
+    }
     if (typeof data.url === 'string' && typeof data.token === 'string') {
       setBridgeSocketInfo({ url: data.url, token: data.token });
     }
@@ -2616,6 +3278,7 @@ export function handleMainMessage(data: any): void {
     // Pick known fields rather than spreading, so no key from an older push
     // can linger in the worker.
     config = toWorkerNodeConfig(data.config, config);
+    releaseValidatorConfigHold();
     return;
   }
   if (data.t === 'local-identity') {
@@ -2641,6 +3304,8 @@ export function handleMainMessage(data: any): void {
   }
   if (data.t === 'stop') {
     closeBridgeSocket();
+    // Frames still queued were for the engine that is stopping now.
+    socketEvents.clear();
     try {
       stopReticulumChatManager();
       resourceStore?.close?.();
@@ -2677,6 +3342,11 @@ function handlePythonEvent(event: string, payload: unknown): void {
     // muted on some vendor builds).
     const detail = (payload ?? {}) as Record<string, unknown>;
     const stacks = detail.stacks;
+    if (event === 'bridge_thread_population') {
+      // Copy diagnostics keeps the top frames of the CPU samples only.
+      lastPythonCpuStacks =
+        pythonCpuStacksFromPayload(payload, Date.now()) ?? lastPythonCpuStacks;
+    }
     logWarn(
       `[MobileChat] ${event} ${summarizeBridgeDiagnosticEvent(event, payload)}`
     );
@@ -2747,6 +3417,73 @@ function scrubBridgeErrorText(text: unknown): string {
     .replace(/\b(?:0x)?[0-9a-f]{8,}\b/gi, '<hex>')
     .trim()
     .slice(0, 160);
+}
+
+/** The last bridge_thread_population window that had CPU stack samples. */
+let lastPythonCpuStacks: PythonCpuStacks | null = null;
+const PYTHON_CPU_STACK_FRAMES = 4;
+const PYTHON_CPU_STACK_SAMPLES = 12;
+const PYTHON_STACK_FRAME_RE = /File "([^"]*)", line (\d+), in ([^\s]+)/g;
+
+/**
+ * The `#cpu<n>` stack samples of a bridge_thread_population event as
+ * `function (file.py:line)` frames, innermost first: file base names and
+ * function names only, never paths, code text or values. Null when the event
+ * has no CPU samples.
+ */
+export function pythonCpuStacksFromPayload(
+  payload: unknown,
+  at: number
+): PythonCpuStacks | null {
+  const p = (payload && typeof payload === 'object' ? payload : {}) as Record<
+    string,
+    unknown
+  >;
+  const stacks =
+    p.stacks && typeof p.stacks === 'object'
+      ? (p.stacks as Record<string, unknown>)
+      : {};
+  const samples: PythonCpuStacks['samples'] = [];
+  for (const [key, text] of Object.entries(stacks)) {
+    const cpu = /^(.*)#cpu\d+$/.exec(key);
+    if (!cpu || typeof text !== 'string') continue;
+    const frames: string[] = [];
+    for (const match of text.matchAll(PYTHON_STACK_FRAME_RE)) {
+      const file = (match[1].split(/[\\/]/).pop() ?? '').replace(
+        /[^\w.-]/g,
+        '_'
+      );
+      const fn = match[3].replace(/[^\w<>.]/g, '_').slice(0, 48);
+      frames.push(`${fn} (${file.slice(0, 48)}:${match[2]})`);
+    }
+    if (!frames.length) continue;
+    samples.push({
+      group: cpu[1].replace(/[^\w ()_.-]/g, '_').slice(0, 48),
+      frames: frames.reverse().slice(0, PYTHON_CPU_STACK_FRAMES),
+    });
+    if (samples.length >= PYTHON_CPU_STACK_SAMPLES) break;
+  }
+  if (!samples.length) return null;
+  const list = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
+  return {
+    at,
+    totalCpuTicks: Math.max(0, Math.round(Number(p.totalCpuTicks) || 0)),
+    cpuTicksByGroup: list(p.cpuTicksByGroup)
+      .slice(0, 5)
+      .map((g) => {
+        const entry = (g && typeof g === 'object' ? g : {}) as Record<
+          string,
+          unknown
+        >;
+        return {
+          name: String(entry.name ?? '')
+            .replace(/[^\w ()_.-]/g, '_')
+            .slice(0, 48),
+          ticks: Math.max(0, Math.round(Number(entry.ticks) || 0)),
+        };
+      }),
+    samples,
+  };
 }
 
 /** One compact line per watchdog event: lanes, queues and CPU tops, never stacks or tracebacks. */

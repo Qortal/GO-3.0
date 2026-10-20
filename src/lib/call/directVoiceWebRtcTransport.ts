@@ -34,6 +34,18 @@ type DirectVoiceWebRtcTransportOptions = {
   onRemoteStream: (stream: MediaStream) => void;
   onState?: (state: DirectVoiceRtcState) => void;
   onDiagnostic?: (stage: string, detail: Record<string, unknown>) => void;
+  /**
+   * Offerer only, opt-in (GO's audio surface passes it; desktop leaves it
+   * unset and nothing changes). Waits before re-sending an offer that still
+   * has no answer: each re-offer is an ICE restart with a new generation,
+   * which an unmodified Hub answers like any reoffer. After the last re-offer
+   * one more wait of the last delay, then 'offer-unanswered-gave-up'. A lost
+   * offer otherwise left the connection in have-local-offer for good: the
+   * recovery below only reacts to failed/disconnected. Re-offers asked for
+   * through retryUnansweredOffer do not use up these steps; each new offer
+   * waits the current step again.
+   */
+  unansweredOfferRetryDelaysMs?: readonly number[];
 };
 
 const ICE_DISCONNECT_GRACE_MS = 3_000;
@@ -48,6 +60,17 @@ const ICE_SERVER_REFRESH_WINDOW_MS = 12_000;
 // delayed and candidates are never assumed to be embedded in that SDP.
 const LOCAL_ICE_CANDIDATE_BATCH_MS = 75;
 const MAX_PENDING_ICE_CANDIDATES = 128;
+// Opt-in recovery of a lost offer / answer (GO, see the options above and
+// retryUnansweredOffer / resendCurrentAnswer). Re-sends are bounded and
+// spaced so a signal path that fails at once cannot spin.
+// Re-offers asked for by retryUnansweredOffer (a signal bundle reported
+// lost) have their own cap per unanswered offer, apart from the slow
+// timer's steps: those failures come in quick bursts while the uplink is
+// bad, and must not use up the timer's later, wider-spaced re-offers.
+const UNANSWERED_OFFER_EVENT_MAX_RETRIES = 5;
+const UNANSWERED_OFFER_MIN_DELAY_MS = 1_000;
+const SIGNAL_RESEND_MIN_INTERVAL_MS = 2_000;
+const ANSWER_RESEND_MAX_PER_GENERATION = 4;
 
 function nextGeneration(): string {
   return crypto.randomUUID();
@@ -91,6 +114,19 @@ export class DirectVoiceWebRtcTransport {
   private localCandidateBatchTimer: ReturnType<typeof setTimeout> | null = null;
   private operationChain: Promise<void> = Promise.resolve();
   private retiredGenerations = new Set<string>();
+  private unansweredOfferTimer: ReturnType<typeof setTimeout> | null = null;
+  // Slow timer steps used (indexes unansweredOfferRetryDelaysMs).
+  private unansweredOfferRetries = 0;
+  // retryUnansweredOffer re-offers (own cap, never moves the timer's step).
+  private unansweredOfferEventRetries = 0;
+  private unansweredOfferGaveUp = false;
+  private lastOfferSignaledAt = 0;
+  private answerSignaledGeneration = '';
+  private lastAnswerSignaledAt = 0;
+  private answerResendGeneration = '';
+  private answerResends = 0;
+  private answerResendTimer: ReturnType<typeof setTimeout> | null = null;
+  private answerResendTimerGeneration = '';
 
   constructor(private readonly options: DirectVoiceWebRtcTransportOptions) {}
 
@@ -142,6 +178,83 @@ export class DirectVoiceWebRtcTransport {
 
   async handleSignal(signal: DirectVoiceRtcSignal): Promise<void> {
     return this.enqueueOperation(() => this.handleSignalInternal(signal));
+  }
+
+  /**
+   * Re-offer now (ICE restart, new generation) because the current offer is
+   * known to be lost, e.g. its signal bundle could not be sent in time.
+   * Offerer only, while the offer is unanswered (have-local-offer, no remote
+   * description, not open). Has its own small cap per unanswered offer and
+   * does not use up the slow timer's steps: the new offer re-arms the
+   * timer's current step, so the timer's later re-offers still come after
+   * a burst of quick failures. Never sooner than 2 s after the previous
+   * offer (a request inside that window is deferred to its end). Returns
+   * false when there is nothing to retry or its cap is spent.
+   */
+  retryUnansweredOffer(reason: string): boolean {
+    if (!this.hasUnansweredOffer() || this.unansweredOfferGaveUp) return false;
+    if (
+      this.unansweredOfferEventRetries >= UNANSWERED_OFFER_EVENT_MAX_RETRIES
+    ) {
+      // The slow timer, when configured, keeps going on its own schedule.
+      if (!this.hasUnansweredOfferTimerSchedule()) {
+        this.noteUnansweredOfferGaveUp(reason);
+      }
+      return false;
+    }
+    const generation = this.generation;
+    const wait = Math.max(
+      0,
+      this.lastOfferSignaledAt + SIGNAL_RESEND_MIN_INTERVAL_MS - Date.now()
+    );
+    // Only the deferral replaces the timer for a moment; the re-offer
+    // (or, if none is made, retryUnansweredOfferNow) arms it again.
+    this.clearUnansweredOfferTimer();
+    if (wait > 0) {
+      this.unansweredOfferTimer = setTimeout(() => {
+        this.unansweredOfferTimer = null;
+        void this.retryUnansweredOfferNow(generation, reason, wait, 'event');
+      }, wait);
+      return true;
+    }
+    void this.retryUnansweredOfferNow(generation, reason, 0, 'event');
+    return true;
+  }
+
+  /**
+   * Signal the current answer again: same generation and SDP, which by now
+   * carries the candidates gathered so far. Answerer only, before ICE has
+   * connected, for an answer that may have been lost (its bundle could not
+   * be sent in time). An offerer that already applied the first copy rejects
+   * the duplicate in its own signalling state, so it is safe. Bounded per
+   * generation and never sooner than 2 s after the previous copy (deferred
+   * instead). Returns false when there is no answer to resend.
+   */
+  resendCurrentAnswer(reason = 'requested'): boolean {
+    if (!this.canResendAnswer()) return false;
+    const generation = this.generation;
+    if (this.answerResendGeneration !== generation) {
+      this.answerResendGeneration = generation;
+      this.answerResends = 0;
+    }
+    if (this.answerResends >= ANSWER_RESEND_MAX_PER_GENERATION) return false;
+    if (this.answerResendTimer) {
+      if (this.answerResendTimerGeneration === generation) return true;
+      this.clearAnswerResendTimer();
+    }
+    const wait = Math.max(
+      0,
+      this.lastAnswerSignaledAt + SIGNAL_RESEND_MIN_INTERVAL_MS - Date.now()
+    );
+    if (wait > 0) {
+      this.answerResendTimerGeneration = generation;
+      this.answerResendTimer = setTimeout(() => {
+        this.answerResendTimer = null;
+        this.resendAnswerNow(generation, reason, wait);
+      }, wait);
+      return true;
+    }
+    return this.resendAnswerNow(generation, reason, 0);
   }
 
   private async handleSignalInternal(
@@ -197,6 +310,10 @@ export class DirectVoiceWebRtcTransport {
       if (!this.options.offerer || signal.generation !== this.generation)
         return;
       await pc.setRemoteDescription(description);
+      this.clearUnansweredOfferTimer();
+      this.unansweredOfferRetries = 0;
+      this.unansweredOfferEventRetries = 0;
+      this.unansweredOfferGaveUp = false;
       await this.flushPendingCandidates();
       if (this.pendingLateIceRestart) {
         this.pendingLateIceRestart = false;
@@ -268,6 +385,8 @@ export class DirectVoiceWebRtcTransport {
     this.closed = true;
     this.clearDisconnectTimer();
     this.clearIceServerRefreshTimer();
+    this.clearUnansweredOfferTimer();
+    this.clearAnswerResendTimer();
     this.pendingCandidates = [];
     this.earlyCandidatesByGeneration.clear();
     this.retiredGenerations.clear();
@@ -384,6 +503,8 @@ export class DirectVoiceWebRtcTransport {
       this.restartAttempts = 0;
       this.clearDisconnectTimer();
       this.clearIceServerRefreshTimer();
+      this.clearUnansweredOfferTimer();
+      this.clearAnswerResendTimer();
       this.setState(this.remoteAudioTrackSeen ? 'open' : 'connecting');
       return;
     }
@@ -466,6 +587,8 @@ export class DirectVoiceWebRtcTransport {
     this.remoteAudioTrackSeen = false;
     this.localDescriptionSignalPending = false;
     this.clearLocalCandidateBatch();
+    this.clearUnansweredOfferTimer();
+    this.clearAnswerResendTimer();
     if (pc) {
       pc.ontrack = null;
       pc.onicecandidate = null;
@@ -506,6 +629,13 @@ export class DirectVoiceWebRtcTransport {
         description: pc.localDescription.toJSON(),
       });
       descriptionSignaled = true;
+      if (description.type === 'offer') {
+        this.lastOfferSignaledAt = Date.now();
+        this.armUnansweredOfferTimer(generation);
+      } else if (description.type === 'answer') {
+        this.answerSignaledGeneration = generation;
+        this.lastAnswerSignaledAt = Date.now();
+      }
       this.emitDiagnostic('local-description-signaled', {
         type: description.type,
         gatheringState: pc.iceGatheringState,
@@ -692,6 +822,189 @@ export class DirectVoiceWebRtcTransport {
       kind: 'ice-refresh-request',
       generation: this.generation,
     });
+  }
+
+  /** An offer of ours that no answer has been applied to yet. */
+  private hasUnansweredOffer(): boolean {
+    const pc = this.pc;
+    return (
+      !!pc &&
+      !this.closed &&
+      this.options.offerer &&
+      !!this.generation &&
+      !this.localDescriptionSignalPending &&
+      !this.isOpen() &&
+      pc.signalingState === 'have-local-offer' &&
+      !pc.remoteDescription &&
+      pc.connectionState !== 'connected'
+    );
+  }
+
+  /** Whether the slow unanswered-offer timer is configured (GO). */
+  private hasUnansweredOfferTimerSchedule(): boolean {
+    const delays = this.options.unansweredOfferRetryDelaysMs;
+    return !!delays && delays.length > 0;
+  }
+
+  /** Put the slow timer back on its current step if nothing holds it. */
+  private rearmUnansweredOfferTimerIfIdle(): void {
+    if (
+      this.unansweredOfferTimer ||
+      this.unansweredOfferGaveUp ||
+      !this.hasUnansweredOffer()
+    ) {
+      return;
+    }
+    this.armUnansweredOfferTimer(this.generation);
+  }
+
+  private armUnansweredOfferTimer(generation: string): void {
+    const delays = this.options.unansweredOfferRetryDelaysMs;
+    if (!delays || delays.length === 0) return;
+    if (!this.options.offerer || this.closed) return;
+    this.clearUnansweredOfferTimer();
+    const finalWait = this.unansweredOfferRetries >= delays.length;
+    const configured = Number(
+      delays[Math.min(this.unansweredOfferRetries, delays.length - 1)]
+    );
+    const delay = Number.isFinite(configured)
+      ? Math.max(UNANSWERED_OFFER_MIN_DELAY_MS, configured)
+      : UNANSWERED_OFFER_MIN_DELAY_MS;
+    this.unansweredOfferTimer = setTimeout(() => {
+      this.unansweredOfferTimer = null;
+      if (this.generation !== generation || !this.hasUnansweredOffer()) return;
+      if (finalWait) {
+        this.noteUnansweredOfferGaveUp('timer');
+        return;
+      }
+      void this.retryUnansweredOfferNow(generation, 'timer', delay, 'timer');
+    }, delay);
+  }
+
+  private retryUnansweredOfferNow(
+    generation: string,
+    reason: string,
+    waitedMs: number,
+    source: 'timer' | 'event'
+  ): Promise<void> {
+    return this.enqueueOperation(async () => {
+      if (this.generation !== generation || !this.hasUnansweredOffer()) {
+        // A newer offer arms the timer itself; a deferred request that
+        // found nothing to do must not leave the timer off.
+        this.rearmUnansweredOfferTimerIfIdle();
+        return;
+      }
+      if (source === 'timer') {
+        const steps = this.options.unansweredOfferRetryDelaysMs?.length ?? 0;
+        if (this.unansweredOfferRetries >= steps) {
+          this.noteUnansweredOfferGaveUp(reason);
+          return;
+        }
+        // The next timer step.
+        this.unansweredOfferRetries += 1;
+      } else {
+        if (
+          this.unansweredOfferEventRetries >= UNANSWERED_OFFER_EVENT_MAX_RETRIES
+        ) {
+          if (this.hasUnansweredOfferTimerSchedule()) {
+            this.rearmUnansweredOfferTimerIfIdle();
+          } else {
+            this.noteUnansweredOfferGaveUp(reason);
+          }
+          return;
+        }
+        // Not a timer step: the new offer re-arms the current step.
+        this.unansweredOfferEventRetries += 1;
+      }
+      this.emitDiagnostic('offer-unanswered-retry', {
+        attempt: this.unansweredOfferRetries + this.unansweredOfferEventRetries,
+        reason,
+        waitedMs,
+      });
+      // A new generation; signalling it arms the timer on its current step.
+      await this.sendOffer(true);
+    }).catch((error) => {
+      this.emitDiagnostic('offer-unanswered-retry-failed', {
+        reason,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      if (this.hasUnansweredOffer()) {
+        this.armUnansweredOfferTimer(this.generation);
+      }
+    });
+  }
+
+  private noteUnansweredOfferGaveUp(reason: string): void {
+    if (this.unansweredOfferGaveUp) return;
+    this.unansweredOfferGaveUp = true;
+    this.clearUnansweredOfferTimer();
+    this.emitDiagnostic('offer-unanswered-gave-up', {
+      retries: this.unansweredOfferRetries + this.unansweredOfferEventRetries,
+      reason,
+    });
+  }
+
+  private clearUnansweredOfferTimer(): void {
+    if (!this.unansweredOfferTimer) return;
+    clearTimeout(this.unansweredOfferTimer);
+    this.unansweredOfferTimer = null;
+  }
+
+  private canResendAnswer(): boolean {
+    const pc = this.pc;
+    return (
+      !!pc &&
+      !this.closed &&
+      !this.options.offerer &&
+      !!this.generation &&
+      this.answerSignaledGeneration === this.generation &&
+      !this.localDescriptionSignalPending &&
+      !this.isOpen() &&
+      pc.signalingState === 'stable' &&
+      pc.localDescription?.type === 'answer' &&
+      pc.connectionState !== 'connected' &&
+      pc.iceConnectionState !== 'connected' &&
+      pc.iceConnectionState !== 'completed'
+    );
+  }
+
+  private resendAnswerNow(
+    generation: string,
+    reason: string,
+    waitedMs: number
+  ): boolean {
+    const pc = this.pc;
+    if (!pc || this.generation !== generation || !this.canResendAnswer()) {
+      return false;
+    }
+    if (
+      this.answerResendGeneration !== generation ||
+      this.answerResends >= ANSWER_RESEND_MAX_PER_GENERATION
+    ) {
+      return false;
+    }
+    const description = pc.localDescription;
+    if (!description || description.type !== 'answer') return false;
+    this.answerResends += 1;
+    this.lastAnswerSignaledAt = Date.now();
+    this.options.onSignal({
+      kind: 'description',
+      generation,
+      description: description.toJSON(),
+    });
+    this.emitDiagnostic('answer-resent', {
+      attempt: this.answerResends,
+      reason,
+      waitedMs,
+      gatheringState: pc.iceGatheringState,
+    });
+    return true;
+  }
+
+  private clearAnswerResendTimer(): void {
+    if (!this.answerResendTimer) return;
+    clearTimeout(this.answerResendTimer);
+    this.answerResendTimer = null;
   }
 
   private clearIceServerRefreshTimer(): void {

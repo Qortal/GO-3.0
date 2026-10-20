@@ -928,6 +928,29 @@ declare global {
         limit?: number,
         unreadOnly?: boolean
       ) => Promise<unknown[]>;
+      /**
+       * GO only (mobile chat engine RPC; desktop records in the main
+       * process): stores a call outcome from the hosted CallManager.
+       */
+      recordDirectCallHistory?: (update: {
+        callId: string;
+        localAddress: string;
+        remoteAddress: string;
+        chatId?: string;
+        direction: 'inbound' | 'outbound';
+        outcome: 'answered' | 'declined' | 'missed' | 'cancelled' | 'no_answer';
+        startedAt: number;
+        endedAt: number;
+      }) => Promise<{ success: boolean; error?: string }>;
+      /**
+       * GO only: the peer endpoint a signed QortalLand call authenticated
+       * (desktop setup.ts reads it in the main process).
+       */
+      getActiveLandCallMediaPeerDestinationHash?: (
+        chatId: string,
+        localAddress: string,
+        callId: string
+      ) => Promise<string | null>;
       markDirectRead: (
         myAddress: string,
         peerAddress: string,
@@ -1883,6 +1906,12 @@ declare global {
       }>;
       /** Replays retained verified keys from main (use after join if initial replay was empty). */
       requestRetainedKeyReplay?: () => void;
+      /**
+       * GO only (hosted Hub managers): this device forwards other
+       * participants' audio in the room (Hub's forwarding rule). null while
+       * the managers are not loaded.
+       */
+      isRelayingAudio?: (roomId?: string) => boolean | null;
       onEvent: (cb: (event: string, payload: unknown) => void) => () => void;
     };
     audioSurface?: {

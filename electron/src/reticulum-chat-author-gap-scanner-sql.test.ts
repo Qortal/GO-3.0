@@ -585,10 +585,55 @@ describe.skipIf(!DatabaseSync)('author-gap scanner (real SQL)', () => {
       fromSeqOne: 2,
       noPeer: 1,
       olderThanServeAge: 1,
+      // The old row waits in backoff: neither due nor parked.
+      olderThanServeAgeDue: 0,
+      olderThanServeAgeParked: 0,
+      // Only from=10 and from=60 have a stored message right after them.
+      noStoredNeighbour: 7,
+      singleSeqInterior: 2,
       topGroups: [
         { groupId: 1, rows: 7, due: 3, eligible: true },
         { groupId: 2, rows: 2, due: 1, eligible: false },
       ],
+    });
+  });
+
+  it('splits old rows into due and parked for Copy diagnostics', () => {
+    const db = openDb();
+    const now = 1_800_000_000_000;
+    insertRanges(db, [
+      range(1, 'Qa', 10, now - 1), // old, due
+      range(1, 'Qa', 20, now + 7 * DAY), // old, parked (marker below)
+      range(1, 'Qa', 30, now + 10 * MINUTE), // old, backoff
+      range(1, 'Qa', 40, now - 1, PROVIDER, 42), // recent neighbour, 3 seqs
+      range(2, 'Qa', 50, now - 1), // old, but not subscribed
+    ]);
+    raw(db)
+      .prepare(
+        `INSERT INTO rchat_known_unavailable_ranges
+          (group_id, author_address, author_stream_id, from_seq, to_seq,
+           confirmed_at, recheck_at, peer_hashes_json)
+         VALUES (1, 'Qa', ?, 20, 20, ?, ?, '[]')`
+      )
+      .run(STREAM, now, now + 7 * DAY);
+    for (const seq of [11, 21, 31]) {
+      insertHeader(db, 1, 'Qa', seq, now - 40 * DAY);
+    }
+    insertHeader(db, 1, 'Qa', 43, now - DAY);
+    insertHeader(db, 2, 'Qa', 51, now - 40 * DAY);
+    expect(
+      db.getMissingRangeStateCounts({
+        now,
+        eligibleGroupIds: [1],
+        backoffUntil: now + 2 * HOUR + MINUTE,
+        oldBefore: now - 29 * DAY,
+      })
+    ).toMatchObject({
+      olderThanServeAge: 4,
+      olderThanServeAgeDue: 1,
+      olderThanServeAgeParked: 1,
+      noStoredNeighbour: 0,
+      singleSeqInterior: 4,
     });
   });
 

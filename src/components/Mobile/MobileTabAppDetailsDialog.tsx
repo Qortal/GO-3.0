@@ -30,6 +30,7 @@ import { TabAvatar, colorFor } from './MobileTabsOverlay.shared';
 import { buildTabQortalUrl } from './tabQortalLink';
 import { MOBILE_TABS_DIALOG_Z } from './mobileLayout';
 import type { OpenTab } from './useOpenTabs';
+import { useCloseWithGoWindows } from '../../utils/closeGoWindows';
 
 type MobileTabAppDetailsDialogProps = {
   open: boolean;
@@ -74,6 +75,7 @@ export function MobileTabAppDetailsDialog({
   onOpenTabOptions,
 }: MobileTabAppDetailsDialogProps) {
   const theme = useTheme();
+  useCloseWithGoWindows(open, onClose);
   const isLight = theme.palette.mode === 'light';
   const [details, setDetails] = useState<TabAppDetails | null>(null);
   const [loading, setLoading] = useState(false);

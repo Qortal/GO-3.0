@@ -31493,9 +31493,12 @@ describe('reticulum chat manager', () => {
         requesterPeerHash,
       },
     });
-    await new Promise((resolve) => setTimeout(resolve, 20));
-
-    expect(sentResources).toHaveLength(1);
+    // The serve writes a temp file first; under the whole suite's load that
+    // can take longer than a fixed 20 ms.
+    await vi.waitFor(() => expect(sentResources).toHaveLength(1), {
+      timeout: 5_000,
+      interval: 10,
+    });
     const page = JSON.parse(
       fs.readFileSync(String(sentResources[0].filePath), 'utf8')
     ) as {

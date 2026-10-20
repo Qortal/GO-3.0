@@ -1,5 +1,7 @@
 import { useSetAtom } from 'jotai';
 import { useEffect } from 'react';
+import { parkQortinoAgentSheet } from '../../../qortinoAgent/qortinoSheetNav';
+import { closeGoWindows } from '../../../utils/closeGoWindows';
 import { subscribeToEvent, unsubscribeFromEvent } from '../../../utils/events';
 import { CHAT_SHARE_RETURN_EVENT } from './chatShareInbox';
 import {
@@ -26,6 +28,13 @@ export function ChatShareHost({ account }: { account: string }) {
         showChatShareNotices(request.notices, 'error');
         return;
       }
+      // GO may have been left in another window (Tabs, Settings, a viewer):
+      // those close, or Chat opens under them and the share is never seen.
+      // Here, in the render before Group switches to Chat: a window from a
+      // section that then hides (Home's Settings) would stay up until that
+      // hidden section renders again, in idle time.
+      closeGoWindows();
+      parkQortinoAgentSheet();
       setPendingShare(request.share);
     };
     const onReturn = (event: Event) => {

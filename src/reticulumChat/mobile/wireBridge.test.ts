@@ -371,6 +371,61 @@ describe('MobileReticulumBridge chat fanout', () => {
   });
 });
 
+describe('MobileReticulumBridge late ok after a timeout', () => {
+  // The host's timeout error carries the reply that may still come.
+  function timedOut(late: unknown) {
+    const err = new Error('worker->native request timed out: send');
+    Object.defineProperty(err, 'lateReply', { value: Promise.resolve(late) });
+    return err;
+  }
+  const wire = { t: 'RCHAT', k: 'event_notice_v3', g: 1 };
+
+  it('reports the peers a timed-out multi-target send delivered to', async () => {
+    const sendCommand = vi.fn(async () => {
+      throw timedOut({
+        ok: true,
+        payload: {
+          deliveredPeerHashes: [PEER_B.toUpperCase(), 5, ''],
+          failures: [{ peerPresenceHash: PEER_C, code: 'no_path' }],
+        },
+      });
+    });
+    const bridge = new MobileReticulumBridge(sendCommand as any);
+    bridge.markReady({});
+    const seen: unknown[] = [];
+    bridge.on('reticulum-late-send-ok', (info: unknown) => seen.push(info));
+    await expect(
+      bridge.sendReticulumChatTargetsDetailed([PEER_B, PEER_C], wire)
+    ).resolves.toMatchObject({ ok: false, reason: 'bridge-timeout' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(seen).toEqual([
+      {
+        action: 'send_reticulum_chat_targets',
+        payload: { message: wire, peerPresenceHashes: [PEER_B] },
+      },
+    ]);
+  });
+
+  it('stays quiet when the late reply failed or delivered to nobody', async () => {
+    for (const late of [
+      { ok: false, error: 'no path' },
+      { ok: true, payload: { deliveredPeerHashes: [] } },
+      null,
+    ]) {
+      const sendCommand = vi.fn(async () => {
+        throw timedOut(late);
+      });
+      const bridge = new MobileReticulumBridge(sendCommand as any);
+      bridge.markReady({});
+      const seen: unknown[] = [];
+      bridge.on('reticulum-late-send-ok', (info: unknown) => seen.push(info));
+      await bridge.sendReticulumChatTargetsDetailed([PEER_B, PEER_C], wire);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(seen).toEqual([]);
+    }
+  });
+});
+
 describe('MobileReticulumBridge serving stats', () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -453,9 +508,13 @@ describe('MobileReticulumBridge serving stats', () => {
         received: 3,
         authorized: 1,
         rejected: 1,
+        lateRejected: 0,
+        rejectedReasons: { no_history_events: 1 },
         failed: 1,
         late: 1,
         ended: 1,
+        // Only t1 carried Python's auth start.
+        authArrivalMs: expect.objectContaining({ n: 1, max: 480 }),
       },
     });
     expect(stats.endedReasons).toEqual({ resource_authorization_timeout: 1 });
@@ -498,6 +557,62 @@ describe('MobileReticulumBridge serving stats', () => {
     expect(bridge.getServingStats()).toMatchObject({
       byType: { reticulum_chat_history_page: { failed: 1, late: 0 } },
       failedReasons: { 'bridge-not-ready': 1 },
+    });
+  });
+
+  it('counts rejects Python no longer waited for as late, with their reasons', async () => {
+    const { bridge, reply, auth } = makeServingBridge();
+    const reject = (transferId: string, reason: string) =>
+      bridge.rejectReticulumChatResourceDetailed({
+        linkId: 'link-1',
+        transferId,
+        reason,
+      });
+
+    // Python ended the request first ('auth_ended'), then the reject came.
+    auth('t1');
+    bridge.dispatchPythonEvent('reticulum_chat_resource', {
+      status: 'auth_ended',
+      transferId: 't1',
+      reason: 'resource_authorization_timeout',
+      metadata: META,
+    });
+    reply('reject_reticulum_chat_resource', {
+      ok: false,
+      payload: { code: 'unknown_resource_request' },
+    });
+    await reject('t1', 'requester_membership_unavailable');
+
+    // No auth_ended seen yet, but Python no longer knew the request.
+    auth('t2');
+    reply('reject_reticulum_chat_resource', {
+      ok: false,
+      payload: { code: 'unknown_resource_request' },
+    });
+    await reject('t2', 'no_history_events');
+
+    // In time.
+    auth('t3');
+    await reject('t3', 'no_history_events');
+    // An odd reason string is counted, not kept.
+    auth('t4');
+    await reject('t4', 'Bad Reason!');
+
+    expect(bridge.getServingStats().byType).toEqual({
+      reticulum_chat_history_page: {
+        received: 4,
+        authorized: 0,
+        rejected: 4,
+        lateRejected: 2,
+        rejectedReasons: {
+          requester_membership_unavailable: 1,
+          no_history_events: 2,
+          unknown: 1,
+        },
+        failed: 0,
+        late: 0,
+        ended: 1,
+      },
     });
   });
 

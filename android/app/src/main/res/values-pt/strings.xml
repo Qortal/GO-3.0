@@ -5,4 +5,23 @@
     <string name="share_target_directs">GO MD</string>
     <string name="share_target_self">GO Para mim</string>
     <string name="qortal_hce_description">Pedidos de pagamento do GO (teste)</string>
+    <!-- Voice calls (CallNotifications). -->
+    <string name="call_channel_ringing_name">Chamadas</string>
+    <string name="call_channel_ringing_description">As chamadas de voz recebidas tocam com o toque do telefone.</string>
+    <string name="call_channel_ongoing_name">Chamada em andamento</string>
+    <string name="call_channel_ongoing_description">Mostra a chamada de voz enquanto ela dura, com Silenciar e Desligar.</string>
+    <string name="call_incoming_title">Chamada recebida</string>
+    <string name="call_incoming_text">Chamada de voz do GO</string>
+    <string name="call_action_accept">Atender</string>
+    <string name="call_action_decline">Recusar</string>
+    <string name="call_action_hang_up">Desligar</string>
+    <string name="call_action_leave">Sair</string>
+    <string name="call_action_mute">Silenciar</string>
+    <string name="call_action_unmute">Ativar som</string>
+    <string name="call_status_calling">Chamando…</string>
+    <string name="call_status_connecting">Conectando…</string>
+    <string name="call_status_ongoing">Chamada em andamento</string>
+    <string name="call_status_group">Chamada em grupo</string>
+    <string name="call_status_muted">Silenciado</string>
+    <string name="call_unknown_caller">Chamador desconhecido</string>
 </resources>

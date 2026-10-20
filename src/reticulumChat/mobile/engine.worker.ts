@@ -11,9 +11,12 @@ import { installLoopLagProbe, runTimedTask } from './loopLag';
 
 (globalThis as any).Buffer = (globalThis as any).Buffer || Buffer;
 (globalThis as any).process = (globalThis as any).process || {
-  // VITEST=1 deliberately routes the engine's digest/author-tree builds
-  // through their inline branches: the pooled variants open the SQLite file
-  // from a second connection, which the OPFS SAH-pool VFS cannot allow.
+  // Not what keeps the engine's digest/author-tree builds inline: Vite
+  // replaces `process.env` in the bundled engine with an empty object, so
+  // this value never reaches it. engineHost passes
+  // mobileProfile.inlineDigestBuilds for that (the pooled builds would open
+  // the SQLite file from a second connection, which the OPFS SAH-pool VFS
+  // cannot allow). Only code reading the global `process` at run time sees it.
   env: { VITEST: '1' },
   pid: 1,
   platform: 'android',

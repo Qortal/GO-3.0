@@ -557,7 +557,9 @@ const MenuBar = memo(
             }}
           >
             <KeyboardReturnRoundedIcon sx={{ fontSize: 16 }} />
-            {isDisabledEditorEnter ? 'Enter: new line' : 'Enter: send'}
+            {isDisabledEditorEnter
+              ? t('core:composer.enter_new_line')
+              : t('core:composer.enter_send')}
           </Box>
           {topBarExtraActions}
         </Box>
@@ -2353,10 +2355,15 @@ const Tiptap = ({
     },
   };
 
+  // The soft keyboard's return key shows what Enter does here: a send key
+  // when it sends, the new-line arrow when it types a new line.
+  const enterSends =
+    !disableEnter && !isDisabledEditorEnter && typeof onEnter === 'function';
   const editorProps = useMemo<ProseMirrorEditorProps>(
     () => ({
       attributes: {
         class: 'tiptap-prosemirror',
+        enterkeyhint: enterSends ? 'send' : 'enter',
         style: editorAttributeStyle,
       },
       handleDrop: (view, event, slice, moved) =>
@@ -2366,7 +2373,7 @@ const Tiptap = ({
       handlePaste: (view, event, slice) =>
         liveEditorHandlersRef.current?.handlePaste?.(view, event, slice),
     }),
-    [editorAttributeStyle]
+    [editorAttributeStyle, enterSends]
   );
 
   const editorProvider = (

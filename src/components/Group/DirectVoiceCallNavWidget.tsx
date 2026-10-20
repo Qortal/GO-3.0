@@ -21,6 +21,7 @@ import SpeakerPhoneRoundedIcon from '@mui/icons-material/SpeakerPhoneRounded';
 import PhoneInTalkRoundedIcon from '@mui/icons-material/PhoneInTalkRounded';
 import ScreenShareRoundedIcon from '@mui/icons-material/ScreenShareRounded';
 import { Capacitor } from '@capacitor/core';
+import { isCapacitor } from '../../utils/platform';
 import { useAtomValue, useSetAtom } from 'jotai';
 import { useTranslation } from 'react-i18next';
 import {
@@ -117,7 +118,13 @@ export function DirectVoiceCallNavWidget() {
         return;
       }
       if (p2pHealth !== 'good') {
-        showCallError('Voice calls are unavailable until P2P connectivity recovers.');
+        // GO only enables calls once its peer set has been stable for ~30 s
+        // after unlock, so on GO this is usually a warm-up, not an outage.
+        showCallError(
+          isCapacitor() && (p2pHealth === 'low' || p2pHealth === 'unknown')
+            ? t('core:go_call.calls_not_ready')
+            : 'Voice calls are unavailable until P2P connectivity recovers.'
+        );
         return;
       }
 
@@ -163,6 +170,7 @@ export function DirectVoiceCallNavWidget() {
     onlineAddresses,
     p2pHealth,
     showCallError,
+    t,
     userInfo?.publicKey,
   ]);
 

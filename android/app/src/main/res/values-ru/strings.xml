@@ -5,4 +5,23 @@
     <string name="share_target_directs">GO Личные</string>
     <string name="share_target_self">GO Себе</string>
     <string name="qortal_hce_description">Запросы на оплату GO (тест)</string>
+    <!-- Voice calls (CallNotifications). -->
+    <string name="call_channel_ringing_name">Звонки</string>
+    <string name="call_channel_ringing_description">Входящие голосовые звонки звучат мелодией вызова телефона.</string>
+    <string name="call_channel_ongoing_name">Текущий звонок</string>
+    <string name="call_channel_ongoing_description">Показывает голосовой звонок, пока он идёт, с кнопками «Без звука» и «Завершить».</string>
+    <string name="call_incoming_title">Входящий звонок</string>
+    <string name="call_incoming_text">Голосовой звонок GO</string>
+    <string name="call_action_accept">Принять</string>
+    <string name="call_action_decline">Отклонить</string>
+    <string name="call_action_hang_up">Завершить</string>
+    <string name="call_action_leave">Выйти</string>
+    <string name="call_action_mute">Без звука</string>
+    <string name="call_action_unmute">Включить звук</string>
+    <string name="call_status_calling">Вызов…</string>
+    <string name="call_status_connecting">Соединение…</string>
+    <string name="call_status_ongoing">Идёт звонок</string>
+    <string name="call_status_group">Групповой звонок</string>
+    <string name="call_status_muted">Микрофон выключен</string>
+    <string name="call_unknown_caller">Неизвестный абонент</string>
 </resources>

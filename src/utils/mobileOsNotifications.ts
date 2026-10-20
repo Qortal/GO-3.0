@@ -99,13 +99,8 @@ const ensureNotificationChannels = async (): Promise<void> => {
     importance: 4,
     visibility: 1,
   });
-  await LocalNotifications.createChannel({
-    id: 'qortal_calls',
-    name: 'Incoming calls',
-    description: 'Incoming voice calls',
-    importance: 5,
-    visibility: 1,
-  });
+  // No 'qortal_calls' channel: calls ring on the native call channels
+  // (CallNotifications.java), and the native service deletes the old one.
 
   channelsReady = true;
 };

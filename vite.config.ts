@@ -33,6 +33,12 @@ function mobileChatWorkerPoolPlugin() {
     ),
     // Desktop logger writes to userData via module/util/fs; forward to console.
     logger: resolve(__dirname, 'src/reticulumChat/mobile/shims/logger.ts'),
+    // Hub call managers hosted on GO (src/bridge/hubCall): no worker_threads,
+    // verify Ed25519 inline like the desktop pool's own fallback.
+    'verify-worker-pool': resolve(
+      __dirname,
+      'src/reticulumChat/mobile/shims/verify-worker-pool.ts'
+    ),
   };
   return {
     name: 'mobile-chat-worker-pools',
@@ -158,6 +164,13 @@ export default defineConfig({
         manualChunks(id: string) {
           if (id.includes('/node_modules/phaser/')) {
             return 'phaser';
+          }
+          // The CommonJS interop helpers every CJS dependency shares. Left
+          // alone, Rollup put them in the phaser chunk (its first CJS user),
+          // so the main chunk imported phaser and all of Phaser ran on every
+          // start, canvas and WebGL probes included.
+          if (id === '\0commonjsHelpers.js') {
+            return 'commonjsHelpers';
           }
           return undefined;
         },

@@ -1863,6 +1863,18 @@ class Statement {
       );
     }
     if (this.sql.includes('FROM reticulum_chat_events')) {
+      if (
+        this.sql.includes(
+          'SELECT 1 FROM reticulum_chat_events WHERE group_id = ? LIMIT 1'
+        )
+      ) {
+        const [groupId] = args;
+        return this.store.reticulumChatEvents.some(
+          (row) => row.group_id === groupId
+        )
+          ? { 1: 1 }
+          : undefined;
+      }
       if (this.sql.includes('SELECT MIN(expires_at) AS expires_at')) {
         const [groupId, channelId, now] = args;
         const expiries = this.store.reticulumChatEvents

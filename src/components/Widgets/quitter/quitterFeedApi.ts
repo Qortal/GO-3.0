@@ -16,6 +16,7 @@ import {
   QDN_AVATAR_DEFAULT_IDENTIFIER,
 } from '../../../lib/qdnAvatars';
 import { hiddenUserKey } from './torqHiddenUsers';
+import { observePublicNodeFetch } from '../../../publicNode/publicNodeWatch';
 
 export const QUITTER_PUBLIC_FEED_SEARCH_ENDPOINT =
   '/arbitrary/resources/search';
@@ -291,8 +292,13 @@ const getFollowedNameFromDocument = (document: unknown) => {
   return followedName || null;
 };
 
+/** Feed loads from the public node tell GO's node watch how it is doing. */
+const nodeFetch = observePublicNodeFetch(
+  (input: RequestInfo | URL, init?: RequestInit) => fetch(input, init)
+);
+
 const fetchText = async (url: string, signal?: AbortSignal) => {
-  const response = await fetch(url, {
+  const response = await nodeFetch(url, {
     cache: 'no-store',
     signal,
   });
@@ -305,7 +311,7 @@ const fetchText = async (url: string, signal?: AbortSignal) => {
 };
 
 const fetchJSON = async (url: string, signal?: AbortSignal) => {
-  const response = await fetch(url, {
+  const response = await nodeFetch(url, {
     cache: 'no-store',
     signal,
   });

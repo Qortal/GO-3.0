@@ -141,6 +141,22 @@ class ReticulumPlugin : Plugin() {
         }
 
         /**
+         * Hand one Python event [frame] the reader already relayed to the
+         * page's "presence" listeners once more, to the page that runs now
+         * (CallSession: the CALL_REQUEST of a call that still rings, for a
+         * page that started after the one that saw it). JS listeners only,
+         * never the worker socket. [keepIfUnheard]: with no "presence"
+         * listener at all yet, Capacitor keeps it for the page's first one.
+         * Returns false when no page plugin is up.
+         */
+        @JvmStatic
+        fun redeliverPresenceFrame(frame: String, keepIfUnheard: Boolean): Boolean {
+            val plugin = activePlugin ?: return false
+            plugin.redeliverPresenceFrameToPage(frame, keepIfUnheard)
+            return true
+        }
+
+        /**
          * The phone switched its default network (Wi-Fi <-> mobile data):
          * redial the hub sockets now instead of waiting for TCP keepalive
          * and the reconnect backoff (up to about two minutes). A no-op while
@@ -362,6 +378,11 @@ class ReticulumPlugin : Plugin() {
      * Returns the loopback WebSocket endpoint the chat engine worker uses to
      * reach the Python bridge without going through the WebView main thread.
      * Starts the server on first use. See BridgeSocketServer for the protocol.
+     *
+     * Also returns the chat-resource staging folder: the worker builds new
+     * staging paths in it itself (ChatResourceStagingPolicy) instead of one
+     * `path` round trip per transfer. Reads, writes and deletes are still
+     * confined to the folder here (resolveStagedFile).
      */
     @PluginMethod
     fun bridgeSocket(call: PluginCall) {
@@ -371,6 +392,7 @@ class ReticulumPlugin : Plugin() {
                 JSObject()
                     .put("url", server.url())
                     .put("token", server.token)
+                    .put("stagingDir", chatResourceStageDir().absolutePath)
             )
         } catch (t: Throwable) {
             Log.e(TAG, "bridgeSocket failed", t)
@@ -442,6 +464,16 @@ class ReticulumPlugin : Plugin() {
                         stagedResourceDelete(args.optString("path"))
                         JSONObject()
                     }
+                    // Once per worker bridge start: staged files older than the
+                    // resource TTL that no terminal status cleaned up.
+                    "sweep" -> JSONObject().put(
+                        "deleted",
+                        StagedResourceSweep.sweep(
+                            chatResourceStageDir(),
+                            System.currentTimeMillis(),
+                            args.optLong("maxAgeMs", StagedResourceSweep.MIN_AGE_MS),
+                        ),
+                    )
                     else -> throw IllegalArgumentException("unknown native fs op: $op")
                 }
                 reply.put("result", result)
@@ -620,16 +652,19 @@ class ReticulumPlugin : Plugin() {
     private fun chatResourceStageDir(): File =
         File(context.cacheDir, "reticulum-chat-resources").apply { mkdirs() }
 
-    /** Rejects paths outside the staging directory. */
-    private fun resolveStagedFile(path: String): File? {
-        val dir = chatResourceStageDir().canonicalFile
-        val file = File(path).canonicalFile
-        return if (file.parentFile == dir) file else null
-    }
+    /**
+     * Rejects paths outside the staging directory. The worker builds most
+     * staging paths itself now, so this check is what keeps them confined.
+     */
+    private fun resolveStagedFile(path: String): File? =
+        ChatResourceStagingPolicy.resolveInside(chatResourceStageDir(), path)
 
+    /** Kept for a worker that has no staging folder yet (no bridge socket). */
     private fun stagedResourcePath(name: String): JSONObject {
-        val requested = sanitizeFileName(name.ifBlank { "blob" })
-        val file = File(chatResourceStageDir(), "${UUID.randomUUID()}-$requested")
+        val file = File(
+            chatResourceStageDir(),
+            ChatResourceStagingPolicy.stagedName(UUID.randomUUID().toString(), name)
+        )
         return JSONObject().put("path", file.absolutePath)
     }
 
@@ -1084,9 +1119,15 @@ class ReticulumPlugin : Plugin() {
                     if (frame.isNotEmpty()) {
                         // The worker's direct socket gets the frame first: it is
                         // a queue hand-off, whereas notifyListeners posts to the
-                        // (possibly saturated) WebView main thread.
-                        bridgeSocket?.broadcast(frame)
+                        // (possibly saturated) WebView main thread. Call audio
+                        // frames skip the worker (it never reads them); the
+                        // page's call code still gets them below.
+                        if (BridgeWorkerFrames.forWorker(frame)) bridgeSocket?.broadcast(frame)
                         activePlugin?.deliverPresenceFrame(frame)
+                        // Incoming call while the page is frozen: native
+                        // rings and wakes the page (cheap substring check;
+                        // only call_message frames go further).
+                        CallSession.sniffPresenceFrame(frame)
                     }
                 } catch (t: Throwable) {
                     Log.e(TAG, "Presence reader error", t)
@@ -1098,6 +1139,16 @@ class ReticulumPlugin : Plugin() {
 
     private fun deliverPresenceFrame(frame: String) {
         notifyListeners("presence", JSObject().put("frame", frame))
+    }
+
+    /**
+     * [redeliverPresenceFrame]: with [keepIfUnheard] and no "presence"
+     * listener yet (the page subscribes when its bridge starts), Capacitor
+     * keeps it until one subscribes.
+     */
+    private fun redeliverPresenceFrameToPage(frame: String, keepIfUnheard: Boolean) {
+        val keep = keepIfUnheard && !hasListeners("presence")
+        notifyListeners("presence", JSObject().put("frame", frame), keep)
     }
 
     /** handle_start is idempotent and re-emits `ready` for a new WebView. */
@@ -1178,6 +1229,21 @@ class ReticulumPlugin : Plugin() {
         return JSONObject()
             .put("processStartedAtMs", startedAt)
             .put("socket", bridgeSocket?.diagnostics() ?: JSONObject.NULL)
+            // Call audio frames kept off the worker socket (BridgeWorkerFrames).
+            .put("socketCallMediaSkipped", BridgeWorkerFrames.skippedCount())
+            // The last WebView renderer death (MainActivity.onRenderProcessGone).
+            .put("rendererGone", context?.let { RendererGoneLog.read(it) } ?: JSONObject.NULL)
+            // What the resource staging folder holds now: files the worker
+            // never cleaned up show as a count that keeps growing.
+            .put(
+                "stagedResources",
+                StagedResourceSweep.stats(chatResourceStageDir(), System.currentTimeMillis()).let {
+                    JSONObject()
+                        .put("files", it.files)
+                        .put("bytes", it.bytes)
+                        .put("oldestAgeMs", it.oldestAgeMs)
+                },
+            )
     }
 
     override fun load() {

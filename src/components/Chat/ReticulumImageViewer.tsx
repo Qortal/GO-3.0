@@ -28,6 +28,7 @@ import ZoomInRoundedIcon from '@mui/icons-material/ZoomInRounded';
 import ZoomOutRoundedIcon from '@mui/icons-material/ZoomOutRounded';
 import { Capacitor } from '@capacitor/core';
 import { BACK_PRIORITY, useAndroidBack } from '../../utils/androidBack';
+import { useCloseWithGoWindows } from '../../utils/closeGoWindows';
 import { SAFE_AREA_BOTTOM, SAFE_AREA_TOP } from '../../utils/mobileSafeArea';
 import { isGoLayout, useGoLayout, type GoLayout } from '../../layout/goLayout';
 import {
@@ -586,6 +587,9 @@ export const ReticulumImageViewer = ({
     },
     { priority: BACK_PRIORITY.call, enabled: open }
   );
+  // At once, without the fade: the host may be Home, which hides right after
+  // and would run the fade's end only in idle time.
+  useCloseWithGoWindows(open, onClose);
 
   useEffect(() => {
     if (!open) return;

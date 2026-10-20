@@ -1,10 +1,14 @@
-import { act, render } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import { useRef, useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { claimHorizontalGesture } from '../../../hooks/horizontalGestureClaim';
-import type { MobileTabKey } from '../useMobileTabNavigation';
+import type { MobileSectionKey as MobileTabKey } from '../useMobileTabNavigation';
 import { SECTION_ATTR } from './sectionSwipe';
 import { useSectionSwipe } from './useSectionSwipe';
+import {
+  widgetSwipeFeed,
+  type ExternalTouchSource,
+} from '../widgets/widgetSwipeZone';
 
 // jsdom lays nothing out: the swipe falls back to the window width.
 const WIDTH = 1024;
@@ -12,16 +16,24 @@ const MID_Y = 300;
 
 let navigations: MobileTabKey[] = [];
 let setCurrentRef: ((tab: MobileTabKey) => void) | null = null;
+let setOrderRef: ((order: readonly MobileTabKey[]) => void) | null = null;
 
 const Harness = ({
   start = 'home' as MobileTabKey,
   peekPaddingBottom = {} as Partial<Record<MobileTabKey, string>>,
   /** How long the switch takes to render (0: at once). */
   switchMs = 0,
+  /** The round buttons' order (undefined: the default). */
+  order: initialOrder = undefined as readonly MobileTabKey[] | undefined,
+  externalTouches = undefined as ExternalTouchSource | undefined,
+  /** A section key whose element Android watches (see nativeZone). */
+  nativeZoneKey = undefined as MobileTabKey | undefined,
 }) => {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const [current, setCurrent] = useState<MobileTabKey>(start);
+  const [order, setOrder] = useState(initialOrder);
   setCurrentRef = setCurrent;
+  setOrderRef = setOrder;
   useSectionSwipe(rootRef, {
     enabled: true,
     current,
@@ -35,10 +47,17 @@ const Harness = ({
       } else setCurrent(tab);
     },
     peekPaddingBottom,
+    order,
+    externalTouches,
+    nativeZone: nativeZoneKey
+      ? document.querySelector<HTMLElement>(
+          `[${SECTION_ATTR}="${nativeZoneKey}"]`
+        )
+      : null,
   });
   return (
     <div ref={rootRef} data-testid="root">
-      {(['home', 'apps', 'chat'] as const).map((key) => (
+      {(['widgets', 'home', 'apps', 'chat'] as const).map((key) => (
         <div
           key={key}
           {...{ [SECTION_ATTR]: key }}
@@ -389,6 +408,173 @@ describe('useSectionSwipe', () => {
     });
     expect(section('chat').style.transform).toBe('translate3d(100%, 0, 0)');
     expect(section('home').style.transform).toBe('translate3d(-100%, 0, 0)');
+  });
+
+  it('puts the sections side by side as the buttons are arranged', () => {
+    const { getByTestId } = render(
+      <Harness start="home" order={['chat', 'home', 'apps']} />
+    );
+    act(() => {
+      vi.advanceTimersByTime(600);
+    });
+    // Chat's button is left of Home's now: Chat waits on Home's left.
+    expect(section('chat').style.transform).toBe('translate3d(-100%, 0, 0)');
+    expect(section('apps').style.transform).toBe('translate3d(100%, 0, 0)');
+
+    // Finger to the right brings in the section on the left: Chat.
+    drag(getByTestId('home-content'), 300, 800, { t0: 93000, step: 60 });
+    act(() => {
+      vi.advanceTimersByTime(400);
+    });
+    expect(navigations).toEqual(['chat']);
+
+    // Chat is first: nothing further left, it rubber-bands and stays.
+    drag(getByTestId('chat-content'), 300, 800, { t0: 94000, step: 60 });
+    act(() => {
+      vi.advanceTimersByTime(400);
+    });
+    expect(navigations).toEqual(['chat']);
+    expect(section('chat').style.transform).toBe('');
+
+    // ...and Home, its only neighbour, is the way back.
+    drag(getByTestId('chat-content'), 800, 300, { t0: 95000, step: 60 });
+    act(() => {
+      vi.advanceTimersByTime(400);
+    });
+    expect(navigations).toEqual(['chat', 'home']);
+  });
+
+  it('parks the new neighbours when the buttons are rearranged', () => {
+    render(<Harness start="home" />);
+    act(() => {
+      vi.advanceTimersByTime(600);
+    });
+    expect(section('apps').style.transform).toBe('translate3d(100%, 0, 0)');
+    expect(section('chat').style.display).toBe('none');
+
+    // Home, Apps, Chat → Apps, Chat, Home: Home is last, Chat its neighbour.
+    act(() => setOrderRef?.(['apps', 'chat', 'home']));
+    // Everything is React's again at once (Apps was parked on the wrong
+    // side), before the next paint.
+    expect(section('apps').style.display).toBe('none');
+    expect(section('apps').style.transform).toBe('');
+    expect(section('apps')).not.toHaveAttribute('aria-hidden');
+    act(() => {
+      vi.advanceTimersByTime(600);
+    });
+    expect(section('chat').style.transform).toBe('translate3d(-100%, 0, 0)');
+    expect(section('chat')).toHaveAttribute('aria-hidden', 'true');
+    // Apps is two away now: left to React.
+    expect(section('apps').style.display).toBe('none');
+    expect(section('apps').style.transform).toBe('');
+    // Home stays put, untouched.
+    expect(section('home').style.transform).toBe('');
+  });
+
+  it('takes a swipe Android handed over from a widget frame', () => {
+    render(
+      <Harness
+        start="widgets"
+        order={['widgets', 'home', 'apps', 'chat']}
+        externalTouches={widgetSwipeFeed}
+      />
+    );
+    const target = section('widgets');
+    const feed = (type: string, x: number, t: number) =>
+      act(() => {
+        widgetSwipeFeed.emit({
+          type: type as 'touchstart',
+          x,
+          y: MID_Y,
+          timeStamp: t,
+          target,
+        });
+      });
+    feed('touchstart', 800, 96000);
+    let x = 800;
+    let t = 96000;
+    while (x > 300) {
+      x -= 50;
+      t += 16;
+      feed('touchmove', x, t);
+    }
+    act(() => {
+      vi.advanceTimersByTime(16);
+    });
+    feed('touchend', x, t + 4);
+    act(() => {
+      vi.advanceTimersByTime(400);
+    });
+    expect(navigations).toEqual(['home']);
+  });
+
+  it('reaches the last of four sections (the widgets screen makes four)', () => {
+    const { getByTestId } = render(
+      <Harness start="apps" order={['widgets', 'home', 'apps', 'chat']} />
+    );
+    drag(getByTestId('apps-content'), 800, 300, { t0: 99000, step: 60 });
+    act(() => {
+      vi.advanceTimersByTime(400);
+    });
+    expect(navigations).toEqual(['chat']);
+    // Chat waits beside Apps ahead of the swipe, too.
+    act(() => setCurrentRef?.('apps'));
+    act(() => {
+      vi.advanceTimersByTime(600);
+    });
+    expect(section('chat').style.transform).toBe('translate3d(100%, 0, 0)');
+  });
+
+  it("keeps a handed-over swipe when the page's own cancel lands in it", () => {
+    render(
+      <Harness
+        start="widgets"
+        order={['widgets', 'home', 'apps', 'chat']}
+        externalTouches={widgetSwipeFeed}
+      />
+    );
+    const target = section('widgets');
+    const feed = (type: string, x: number, t: number) =>
+      act(() => {
+        widgetSwipeFeed.emit({
+          type: type as 'touchstart',
+          x,
+          y: MID_Y,
+          timeStamp: t,
+          target,
+        });
+      });
+    feed('touchstart', 800, 98000);
+    feed('touchmove', 760, 98016);
+    // Android cancels the touch for the page once it takes the swipe; that
+    // cancel may arrive after the swipe was handed over.
+    touch('touchcancel', target, [], 98020, [{ x: 760, y: MID_Y }]);
+    let x = 760;
+    let t = 98016;
+    while (x > 300) {
+      x -= 50;
+      t += 16;
+      feed('touchmove', x, t);
+    }
+    act(() => {
+      vi.advanceTimersByTime(16);
+    });
+    feed('touchend', x, t + 4);
+    act(() => {
+      vi.advanceTimersByTime(400);
+    });
+    expect(navigations).toEqual(['home']);
+  });
+
+  it("leaves the page's own copy of a touch in Android's zone alone", () => {
+    const { rerender } = render(<Harness start="home" />);
+    // The zone is the section showing (home stands in for widgets here).
+    rerender(<Harness start="home" nativeZoneKey="home" />);
+    drag(screen.getByTestId('home-content'), 800, 300, { t0: 97000, step: 60 });
+    act(() => {
+      vi.advanceTimersByTime(400);
+    });
+    expect(navigations).toEqual([]);
   });
 
   it('gives a waiting section the bottom room it will have once current', () => {

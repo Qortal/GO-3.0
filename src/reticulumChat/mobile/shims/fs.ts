@@ -12,6 +12,9 @@
  * The directory tree is virtual: an in-memory index (path -> slot/size/mtime)
  * persisted into a dedicated metadata handle so files survive restarts.
  */
+// The logger shim, not console: console output only reaches logcat, while
+// Copy diagnostics reads the logger's ring, boot-fault buffer and line counts.
+import { log, warn } from './logger';
 
 type IndexEntry = {
   slot: number;
@@ -34,7 +37,6 @@ const META_FILE = '__index__.json';
  * peers is normal, and running dry surfaces as EMFILE to the engine.
  */
 const SPARE_TARGET = 256;
-const SPARE_MIN = 64;
 /** Slots kept open beyond the target are closed and returned to disk reuse. */
 const SPARE_CEILING = SPARE_TARGET * 2;
 const INDEX_FLUSH_DEBOUNCE_MS = 200;
@@ -53,6 +55,31 @@ const MAX_RECLAIMABLE_SLOTS = 512;
 /** Slot deletions and handle opens run in batches so neither blocks a frame. */
 const SLOT_BATCH = 32;
 const QUOTA_REFRESH_MS = 30_000;
+/**
+ * Top-up starts as soon as one batch is missing, not at a quarter of the
+ * target: one history page stores up to 100 events, and on a busy worker the
+ * refill trails the writes by seconds. Starting at 64 left the pool empty for
+ * minutes during a catch-up (EMFILE on every write).
+ */
+const SPARE_REFILL_BELOW = SPARE_TARGET - SLOT_BATCH;
+/** A top-up that opened nothing tries again on its own: 1 s, doubling to 30 s. */
+const TOP_UP_RETRY_MIN_MS = 1_000;
+const TOP_UP_RETRY_MAX_MS = 30_000;
+/**
+ * A batch of opens still unsettled after this long counts as hung, so one
+ * createSyncAccessHandle that never answers cannot stop refills for the rest
+ * of the session.
+ */
+const TOP_UP_WATCHDOG_MS = 30_000;
+/**
+ * Files that belong to the page that wrote them: the engine's wake-up notes
+ * (it never replays a note older than its own start) and transfer temp files
+ * (their transfers died with the page). Dropped at boot, evicted first.
+ */
+const DISPOSABLE_DIR_PARTS = [
+  '/reticulum-chat-notify/',
+  '/reticulum-chat-temp/',
+];
 
 /**
  * OPFS synchronous access handles. Declared here because the TypeScript DOM lib
@@ -91,6 +118,29 @@ const spareSlots: number[] = [];
 const reclaimableSlots: number[] = [];
 let nextSlot = 1;
 let topUpInFlight = false;
+/** Bumped per top-up run; a run the watchdog replaced stops at its next batch. */
+let topUpGeneration = 0;
+let topUpStartedAt = 0;
+/** When the batch now being opened started (the watchdog reads it). */
+let topUpBatchStartedAt = 0;
+let topUpRetryTimer: ReturnType<typeof setTimeout> | null = null;
+let topUpRetryDelayMs = TOP_UP_RETRY_MIN_MS;
+
+/** Since this worker booted; read through getMobileFsStats(). */
+const counters = {
+  emfileCount: 0,
+  emfileFirstAt: 0,
+  emfileLastAt: 0,
+  topUpRuns: 0,
+  topUpOpened: 0,
+  topUpFailed: 0,
+  topUpMaxMs: 0,
+  topUpLastErrorName: '',
+  topUpWatchdogRestarts: 0,
+  bootDropped: 0,
+  bootEvicted: 0,
+  bootOpenFailed: 0,
+};
 
 const fds = new Map<number, { path: string; slot: number; pos: number }>();
 let nextFd = 11;
@@ -121,6 +171,25 @@ function slotName(slot: number): string {
   return `slot-${slot}.bin`;
 }
 
+/**
+ * Short name of a failure for logs and stats. OPFS failures are DOMExceptions
+ * (`TooManyOpenHandles`, `NoModificationAllowedError`), which JSON.stringify
+ * turns into `{}`.
+ */
+function errorName(err: unknown): string {
+  if (err && typeof err === 'object') {
+    const { code, name, message } = err as {
+      code?: unknown;
+      name?: unknown;
+      message?: unknown;
+    };
+    if (typeof code === 'string' && code) return code;
+    if (typeof name === 'string' && name && name !== 'Error') return name;
+    if (typeof message === 'string' && message) return message.slice(0, 80);
+  }
+  return String(err).slice(0, 80) || 'unknown';
+}
+
 function writeIndexNow(): void {
   if (!metaHandle) return;
   indexDirty = false;
@@ -136,7 +205,7 @@ function writeIndexNow(): void {
     metaHandle.write(payload, { at: 0 });
     metaHandle.flush();
   } catch (err) {
-    console.warn('[mobile-fs] failed to persist index', err);
+    warn(`[mobile-fs] index_persist_failed error=${errorName(err)}`);
   }
 }
 
@@ -180,9 +249,33 @@ async function openSlotHandle(
   return fh.createSyncAccessHandle();
 }
 
-/** Opens handles in parallel batches; one-at-a-time is far too slow at boot. */
-async function openSlots(slots: number[]): Promise<number[]> {
-  const opened: number[] = [];
+type OpenSlotsResult = {
+  opened: number[];
+  failed: number;
+  /** errorName of the last failed open, '' when none failed. */
+  lastErrorName: string;
+};
+
+/** Best effort: an orphan left behind is collected by the next boot's scan. */
+function removeSlotFile(slot: number): void {
+  const dir = rootDir;
+  if (!dir) return;
+  void dir.removeEntry(slotName(slot)).catch(() => {
+    /* never created, or already gone */
+  });
+}
+
+/**
+ * Opens handles in parallel batches; one-at-a-time is far too slow at boot.
+ * Slots numbered `freshFrom` or higher were minted for this call, so their
+ * files exist only because of it: one whose open fails is removed again
+ * rather than left on disk (a failing top-up used to leave thousands).
+ */
+async function openSlots(
+  slots: number[],
+  freshFrom = Number.POSITIVE_INFINITY
+): Promise<OpenSlotsResult> {
+  const result: OpenSlotsResult = { opened: [], failed: 0, lastErrorName: '' };
   for (let i = 0; i < slots.length; i += SLOT_BATCH) {
     const batch = slots.slice(i, i + SLOT_BATCH);
     const handles = await Promise.all(
@@ -190,7 +283,9 @@ async function openSlots(slots: number[]): Promise<number[]> {
         openSlotHandle(slot).then(
           (handle) => ({ slot, handle }),
           (err) => {
-            console.warn(`[mobile-fs] could not open slot ${slot}`, err);
+            result.failed += 1;
+            result.lastErrorName = errorName(err);
+            if (slot >= freshFrom) removeSlotFile(slot);
             return null;
           }
         )
@@ -199,20 +294,35 @@ async function openSlots(slots: number[]): Promise<number[]> {
     for (const entry of handles) {
       if (!entry) continue;
       slotHandles.set(entry.slot, entry.handle);
-      opened.push(entry.slot);
+      result.opened.push(entry.slot);
     }
   }
-  return opened;
+  // One line per call, not per slot: a failing OPFS fails every slot.
+  if (result.failed > 0) {
+    warn(
+      `[mobile-fs] slot_open_failed failed=${result.failed} of=${slots.length} error=${result.lastErrorName}`
+    );
+  }
+  return result;
+}
+
+/** A file only the page that wrote it could use (see DISPOSABLE_DIR_PARTS). */
+function isDisposablePath(path: string): boolean {
+  if (path.startsWith('/tmp/')) return true;
+  return DISPOSABLE_DIR_PARTS.some((part) => path.includes(part));
 }
 
 /**
- * How hard a file fights to keep its handle. Staging temp files are recreated
- * on the next import, and a resource's range map or half-finished download can
- * be re-derived by downloading again — but an assembled blob may be the only
- * copy of something this device published, so it is evicted last.
+ * How hard a file fights to keep its handle. Staging temp files and the
+ * engine's wake-up notes and transfer temp files are worthless to a new page,
+ * and a resource's range map or half-finished download can be re-derived by
+ * downloading again — but an assembled blob may be the only copy of something
+ * this device published, so it is evicted last. Wake-up notes used to rank
+ * with blobs: being the newest files, they filled the cap after a busy
+ * session and pushed every attachment out of the index.
  */
 function keepRank(path: string): number {
-  if (path.startsWith('/tmp/')) return 0;
+  if (isDisposablePath(path)) return 0;
   if (path.endsWith('/ranges.json') || path.endsWith('/download.partial')) {
     return 1;
   }
@@ -295,30 +405,101 @@ function nextFreeSlots(count: number): number[] {
   return slots;
 }
 
+/**
+ * Refills the spare pool. Called on every take (cheap when nothing is
+ * needed), by the retry timer, and never more than one run at a time unless
+ * the running one is hung (TOP_UP_WATCHDOG_MS).
+ */
 function scheduleTopUp(): void {
-  if (topUpInFlight || spareSlots.length >= SPARE_MIN) return;
+  if (spareSlots.length >= SPARE_REFILL_BELOW) return;
+  // After a run that opened nothing the retry timer owns the next attempt;
+  // starting a run per write would hammer an OPFS that is failing.
+  if (topUpRetryTimer) return;
+  if (topUpInFlight) {
+    const batchMs = Date.now() - topUpBatchStartedAt;
+    if (batchMs < TOP_UP_WATCHDOG_MS) return;
+    counters.topUpWatchdogRestarts += 1;
+    warn(
+      `[mobile-fs] handle_top_up_stuck batch_ms=${batchMs} spares=${spareSlots.length}; starting another`
+    );
+  }
+  topUpGeneration += 1;
+  void runTopUp(topUpGeneration);
+}
+
+/**
+ * Opens one batch at a time and publishes each batch as soon as it is open.
+ * Publishing only after the whole run (up to eight sequential batches) is
+ * what kept the pool empty on a congested worker even when refill could
+ * keep up on average.
+ */
+async function runTopUp(generation: number): Promise<void> {
   topUpInFlight = true;
-  void (async () => {
-    try {
-      while (spareSlots.length < SPARE_TARGET) {
-        const wanted = SPARE_TARGET - spareSlots.length;
-        const opened = await openSlots(nextFreeSlots(wanted));
-        if (opened.length === 0) break;
-        spareSlots.push(...opened);
+  const startedAt = Date.now();
+  topUpStartedAt = startedAt;
+  topUpBatchStartedAt = startedAt;
+  counters.topUpRuns += 1;
+  let openedNothing = false;
+  try {
+    while (generation === topUpGeneration && spareSlots.length < SPARE_TARGET) {
+      const wanted = Math.min(SLOT_BATCH, SPARE_TARGET - spareSlots.length);
+      const freshFrom = nextSlot;
+      topUpBatchStartedAt = Date.now();
+      const batch = await openSlots(nextFreeSlots(wanted), freshFrom);
+      // Opened handles are good even when the watchdog replaced this run.
+      spareSlots.push(...batch.opened);
+      counters.topUpOpened += batch.opened.length;
+      counters.topUpFailed += batch.failed;
+      if (batch.lastErrorName) {
+        counters.topUpLastErrorName = batch.lastErrorName;
       }
-      persistIndex();
-    } catch (err) {
-      console.warn('[mobile-fs] handle top-up failed', err);
-    } finally {
-      topUpInFlight = false;
+      if (batch.opened.length === 0) {
+        openedNothing = true;
+        break;
+      }
     }
-  })();
+    persistIndex();
+  } catch (err) {
+    openedNothing = true;
+    counters.topUpLastErrorName = errorName(err);
+    warn(
+      `[mobile-fs] handle_top_up_failed error=${counters.topUpLastErrorName}`
+    );
+  } finally {
+    counters.topUpMaxMs = Math.max(counters.topUpMaxMs, Date.now() - startedAt);
+    // A run the watchdog replaced leaves the flag and any retry to the run
+    // that replaced it.
+    if (generation === topUpGeneration) {
+      topUpInFlight = false;
+      if (openedNothing) armTopUpRetry();
+      else topUpRetryDelayMs = TOP_UP_RETRY_MIN_MS;
+    }
+  }
+}
+
+/**
+ * Before this timer existed a failed run waited for the next write, which
+ * then failed with EMFILE itself; now the pool refills once OPFS recovers
+ * even if nothing is written in between.
+ */
+function armTopUpRetry(): void {
+  if (topUpRetryTimer) return;
+  const delayMs = topUpRetryDelayMs;
+  topUpRetryDelayMs = Math.min(TOP_UP_RETRY_MAX_MS, delayMs * 2);
+  topUpRetryTimer = setTimeout(() => {
+    topUpRetryTimer = null;
+    scheduleTopUp();
+  }, delayMs);
 }
 
 function takeSpareSlot(): number {
   const slot = spareSlots.pop();
   scheduleTopUp();
   if (slot === undefined) {
+    const now = Date.now();
+    counters.emfileCount += 1;
+    if (!counters.emfileFirstAt) counters.emfileFirstAt = now;
+    counters.emfileLastAt = now;
     throw Object.assign(new Error('EMFILE: no spare OPFS handles'), {
       code: 'EMFILE',
     });
@@ -385,13 +566,31 @@ export async function initMobileFs(): Promise<void> {
       for (const d of parsed.dirs || []) dirs.add(d);
       for (const [p, e] of parsed.files || []) files.set(p, e);
     } catch (err) {
-      console.warn('[mobile-fs] index corrupt; starting fresh', err);
+      warn(`[mobile-fs] index_corrupt error=${errorName(err)}; starting fresh`);
     }
   }
 
+  // Wake-up notes and transfer temp files of the previous page are useless
+  // to this one, yet each would hold an open handle and a place under the
+  // cap. Forget them before the cap is applied; their slot files are not
+  // referenced any more, so the disk scan below collects them for reuse
+  // (pushing them onto the spare list here as well would hand one slot to
+  // two paths).
+  let dropped = 0;
+  for (const p of [...files.keys()]) {
+    if (!isDisposablePath(p)) continue;
+    files.delete(p);
+    dropped += 1;
+  }
+  counters.bootDropped = dropped;
+  if (dropped > 0) {
+    log(`[mobile-fs] boot_dropped_disposable files=${dropped}`);
+  }
+
   const evicted = evictOldestBeyondCap();
+  counters.bootEvicted = evicted;
   if (evicted > 0) {
-    console.warn(
+    warn(
       `[mobile-fs] dropped ${evicted} stale blobs to stay under ${MAX_INDEXED_FILES} open handles`
     );
   }
@@ -399,7 +598,9 @@ export async function initMobileFs(): Promise<void> {
   // Open handles for every indexed file up-front (sync APIs cannot await).
   const referenced = new Map<number, string>();
   for (const [p, entry] of files) referenced.set(entry.slot, p);
-  const opened = new Set(await openSlots([...referenced.keys()]));
+  const bootOpen = await openSlots([...referenced.keys()]);
+  counters.bootOpenFailed = bootOpen.failed;
+  const opened = new Set(bootOpen.opened);
   for (const [slot, p] of referenced) {
     if (!opened.has(slot)) files.delete(p);
   }
@@ -419,14 +620,94 @@ export async function initMobileFs(): Promise<void> {
       if (slot >= nextSlot) nextSlot = slot + 1;
     }
   } catch (err) {
-    console.warn('[mobile-fs] could not enumerate slot files', err);
+    warn(`[mobile-fs] slot_scan_failed error=${errorName(err)}`);
   }
 
   // Pre-provision spares with init so the first burst of writes never fails.
-  spareSlots.push(...(await openSlots(nextFreeSlots(SPARE_TARGET))));
+  const freshFrom = nextSlot;
+  spareSlots.push(
+    ...(await openSlots(nextFreeSlots(SPARE_TARGET), freshFrom)).opened
+  );
   writeIndexNow();
   refreshQuotaSnapshot();
   scheduleOrphanSlotCleanup();
+}
+
+/** Handle-pool state for Copy diagnostics ("Chat storage"). */
+export type MobileFsStats = {
+  files: number;
+  byArea: { notify: number; temp: number; resources: number; other: number };
+  /** Every open sync access handle: indexed files, spares, the index file. */
+  openHandles: number;
+  spares: number;
+  spareTarget: number;
+  /** Slot files on disk with no open handle, reused before minting. */
+  reclaimable: number;
+  /** Writes that found no spare handle; ms timestamps, 0 when none. */
+  emfile: { count: number; firstAt: number; lastAt: number };
+  topUp: {
+    inFlight: boolean;
+    /** How long the current run has been going, 0 when idle. */
+    inFlightMs: number;
+    /** Longest run since boot. Slow refills vs failing opens is the question. */
+    maxMs: number;
+    runs: number;
+    opened: number;
+    failed: number;
+    lastErrorName: string;
+    /** A run opened nothing and the retry timer is waiting. */
+    retryPending: boolean;
+    watchdogRestarts: number;
+  };
+  /** At this worker's boot. */
+  boot: {
+    /** Previous page's wake-up notes and temp files that were forgotten. */
+    dropped: number;
+    /** Files dropped from the index to stay under MAX_INDEXED_FILES. */
+    evicted: number;
+    /** Indexed files whose handle could not be opened (dropped too). */
+    openFailed: number;
+  };
+};
+
+/** Cheap enough for a diagnostics call: one pass over the index. */
+export function getMobileFsStats(now = Date.now()): MobileFsStats {
+  const byArea = { notify: 0, temp: 0, resources: 0, other: 0 };
+  for (const p of files.keys()) {
+    if (p.includes('/reticulum-chat-notify/')) byArea.notify += 1;
+    else if (isDisposablePath(p)) byArea.temp += 1;
+    else if (p.includes('/reticulum-resources/')) byArea.resources += 1;
+    else byArea.other += 1;
+  }
+  return {
+    files: files.size,
+    byArea,
+    openHandles: slotHandles.size + (metaHandle ? 1 : 0),
+    spares: spareSlots.length,
+    spareTarget: SPARE_TARGET,
+    reclaimable: reclaimableSlots.length,
+    emfile: {
+      count: counters.emfileCount,
+      firstAt: counters.emfileFirstAt,
+      lastAt: counters.emfileLastAt,
+    },
+    topUp: {
+      inFlight: topUpInFlight,
+      inFlightMs: topUpInFlight ? Math.max(0, now - topUpStartedAt) : 0,
+      maxMs: counters.topUpMaxMs,
+      runs: counters.topUpRuns,
+      opened: counters.topUpOpened,
+      failed: counters.topUpFailed,
+      lastErrorName: counters.topUpLastErrorName,
+      retryPending: topUpRetryTimer !== null,
+      watchdogRestarts: counters.topUpWatchdogRestarts,
+    },
+    boot: {
+      dropped: counters.bootDropped,
+      evicted: counters.bootEvicted,
+      openFailed: counters.bootOpenFailed,
+    },
+  };
 }
 
 // ── sync API ─────────────────────────────────────────────────────────────────

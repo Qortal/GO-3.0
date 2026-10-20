@@ -50,6 +50,7 @@ import {
   type AppRelease,
 } from '../../appUpdate/qdnAppUpdate';
 import { BACK_PRIORITY, useAndroidBack } from '../../utils/androidBack';
+import { useCloseWithGoWindows } from '../../utils/closeGoWindows';
 import { executeEvent } from '../../utils/events';
 import { SAFE_AREA_BOTTOM, SAFE_AREA_TOP } from '../../utils/mobileSafeArea';
 import { useSheetFullScreen } from '../../layout/goLayout';
@@ -574,6 +575,7 @@ export const AppUpdateWindow = () => {
     },
     { enabled: open, priority: BACK_PRIORITY.dialog }
   );
+  useCloseWithGoWindows(open, closeAppUpdateWindow);
 
   const jobBusy =
     progress.phase === 'preparing' || progress.phase === 'downloading';

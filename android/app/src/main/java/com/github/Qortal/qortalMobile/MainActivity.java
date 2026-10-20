@@ -69,6 +69,7 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(SafeAreaPlugin.class);
         // Immersive mode: status bar hiding + finger direction over frames.
         registerPlugin(ImmersivePlugin.class);
+        registerPlugin(SectionSwipePlugin.class);
         registerPlugin(VideoCompressPlugin.class);
         registerPlugin(QortinoLlmPlugin.class);
         registerPlugin(ShareReceiverPlugin.class);
@@ -87,7 +88,13 @@ public class MainActivity extends BridgeActivity {
         // Qortal Card (testing): APDUs to a contactless card, only while the
         // Qortal Card screen waits for a tap.
         registerPlugin(QortalNfcPlugin.class);
+        // Voice calls: ringing, call notification buttons, lock screen.
+        registerPlugin(QortalCallPlugin.class);
         super.onCreate(savedInstanceState);
+        // Voice calls: show over the lock screen while a call rings or runs,
+        // and Accept / a call notification tap that started GO (cold start).
+        CallSession.get(this).attachActivity(this);
+        CallSession.get(this).onLaunchIntent(getIntent(), savedInstanceState != null);
         // Home and VPN node addresses never go to a carrier or Wi-Fi proxy.
         WebViewProxyBypass.start(this);
         // "Share to Quitter": photos/videos shared from other apps (cold start).
@@ -166,6 +173,10 @@ public class MainActivity extends BridgeActivity {
                     ScreenSecurityPlugin.onPageStarted(MainActivity.this.bridge);
                     // No card reading for a page that never asked for it.
                     QortalNfcPlugin.onPageStarted(MainActivity.this.bridge);
+                    // A call ran in the old page (reload, crash fallback): it
+                    // is over; its microphone service, call notification and
+                    // call audio must not outlive it.
+                    CallSession.get(MainActivity.this).onPageGone("page-started");
                     // The new document has no metrics yet; the next push must
                     // not be skipped as a repeat (SafeArea.getInsets also
                     // hands them over at boot).
@@ -178,15 +189,19 @@ public class MainActivity extends BridgeActivity {
                         && detail != null
                         && detail.didCrash();
                     Log.w(TAG, "WebView render process gone (crashed=" + crashed + "); recovering");
+                    // The next page's Copy diagnostics says why it restarted.
+                    RendererGoneLog.record(MainActivity.this, crashed);
                     recoverFromRenderProcessGone(view);
                     return true;
                 }
             });
         }
 
-        // Request voice-call permissions up front so the WebView's getUserMedia()
-        // is allowed during a call. Android grants the WebView mic access only when
-        // the host app already holds RECORD_AUDIO at runtime.
+        // Notifications (Android 13+): incoming calls and messages ring through
+        // them. The microphone is not asked here: the first call (or voice
+        // message) asks for it when the page starts the microphone
+        // (QortalWebChromeClient -> Capacitor), instead of a prompt on every
+        // start while it is not granted.
         requestCallPermissions();
     }
 
@@ -195,18 +210,24 @@ public class MainActivity extends BridgeActivity {
         super.onNewIntent(intent);
         // "Share to Quitter" while the app is already running (singleTask).
         ShareReceiverPlugin.handleSendIntent(this, intent);
+        // Accept / a call notification tap while GO runs.
+        CallSession.get(this).onLaunchIntent(intent);
     }
 
     @Override
     public void onStart() {
         super.onStart();
         BackgroundKeepAlive.get(this).onActivityStart();
+        // A ring moves from the tray to the page's own call screen.
+        CallSession.get(this).onActivityVisibility(true);
     }
 
     @Override
     public void onStop() {
         super.onStop();
         BackgroundKeepAlive.get(this).onActivityStop();
+        // A ring the page showed moves to the tray (ringtone, lock screen).
+        CallSession.get(this).onActivityVisibility(false);
     }
 
     @Override
@@ -214,6 +235,7 @@ public class MainActivity extends BridgeActivity {
         if (this.bridge != null) {
             BackgroundKeepAlive.get(this).detachWebView(this.bridge.getWebView());
         }
+        CallSession.get(this).detachActivity(this);
         if (isFinishing()) WebViewProxyBypass.stop(this);
         super.onDestroy();
     }
@@ -424,10 +446,13 @@ public class MainActivity extends BridgeActivity {
 
     private void requestCallPermissions() {
         List<String> needed = new ArrayList<>();
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
-                != PackageManager.PERMISSION_GRANTED) {
-            needed.add(Manifest.permission.RECORD_AUDIO);
-        }
+        // RECORD_AUDIO is asked in context, when a call (or voice message)
+        // starts the microphone: Capacitor's onPermissionRequest asks Android
+        // for it, after QortalWebChromeClient allowed GO's own page. A call
+        // started off screen without it keeps the base service type
+        // (QortalForegroundService.applyCallForeground) and gets the
+        // microphone type once GO is back on screen with it granted
+        // (CallSession.onAppForeground).
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
                 && ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
                 != PackageManager.PERMISSION_GRANTED) {
@@ -444,8 +469,9 @@ public class MainActivity extends BridgeActivity {
 
     /**
      * Push status/navigation bar insets into CSS variables for the WebView,
-     * shrink it by the keyboard (and, in landscape, by side system bars), and
-     * hand the window metrics to the page (see SafeAreaInsetsPolicy).
+     * shrink it by the keyboard, by a nav bar with buttons (and, in
+     * landscape, by side system bars), and hand the window metrics to the
+     * page (see SafeAreaInsetsPolicy).
      */
     private void installSafeAreaInsetBridge(WebView webView) {
         Runnable apply = () -> applySafeAreaInsets(webView, null);
@@ -454,6 +480,9 @@ public class MainActivity extends BridgeActivity {
             // Edge-to-edge windows ignore adjustResize, so the keyboard would
             // cover the page (e.g. the chat input). Shrink the WebView by the
             // IME overlap ourselves so the page resizes like adjustResize.
+            // A 3-button (or 2-button) nav bar takes every touch, so the
+            // WebView ends above it too; the page colour (setBarAppearance)
+            // shows behind the buttons. Gesture navigation is unchanged.
             // NOTE: must be a layout margin — WebView ignores padding for
             // content layout.
             SafeAreaInsetsPolicy.Result r =
@@ -505,9 +534,10 @@ public class MainActivity extends BridgeActivity {
             return;
         }
         // Immersive mode hides the status bar; the camera cutout still keeps
-        // content clear of the punch hole. With the keyboard open the WebView
-        // already ends above it, so no bottom inset. In landscape the side
-        // margins cover the nav bar and cutout, so the sides are 0.
+        // content clear of the punch hole. With the keyboard open, or a nav
+        // bar with buttons, the WebView already ends above it, so no bottom
+        // inset. In landscape the side margins cover the nav bar and cutout,
+        // so the sides are 0.
         SafeAreaInsetsPolicy.Result r =
             SafeAreaInsetsPolicy.fromInsets(insets, isLandscape(), density());
         // Redraw and focus callbacks can land before the WebView has a document,

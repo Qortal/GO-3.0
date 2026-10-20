@@ -613,9 +613,11 @@ def check_auth_ended():
     ended = _events_for(req.tid, "auth_ended")
     assert [p["reason"] for p in ended] == ["resource_requester_cancelled"]
 
-    # Waiter timeout.
+    # Waiter timeout (live events have their own, longer window).
     saved = pb._RESOURCE_SESSION_PROVIDER_AUTH_TIMEOUT_SECONDS
+    saved_live = pb._RESOURCE_SESSION_PROVIDER_LIVE_EVENT_AUTH_TIMEOUT_SECONDS
     pb._RESOURCE_SESSION_PROVIDER_AUTH_TIMEOUT_SECONDS = 0.3
+    pb._RESOURCE_SESSION_PROVIDER_LIVE_EVENT_AUTH_TIMEOUT_SECONDS = 0.3
     try:
         req = start(_peer(5), LIVE)
         req.thread.join(2)
@@ -625,6 +627,7 @@ def check_auth_ended():
         assert ended[0]["metadata"] == {"logicalResourceType": LIVE}
     finally:
         pb._RESOURCE_SESSION_PROVIDER_AUTH_TIMEOUT_SECONDS = saved
+        pb._RESOURCE_SESSION_PROVIDER_LIVE_EVENT_AUTH_TIMEOUT_SECONDS = saved_live
 
     # Engine reject: nothing.
     req = start(_peer(5), DM)
@@ -751,6 +754,67 @@ def check_provider_timing():
             pb._RESOURCE_SESSION_RESPONSE_INITIAL_PROGRESS_TIMEOUT_SECONDS,
         ) = saved
     assert_counters_zero("provider timing")
+    reset_links()
+
+
+# ── 7. split response: next segment not advertised yet ───────────────────
+def check_next_segment_not_rejected():
+    """RNS 1.3.4 has Resource.REJECTED == NONE. A split response's next
+    segment sits in NONE until its advertise job runs, so the watcher failed
+    the response. The host's fix gives REJECTED its own value."""
+    had_host = "qortal_presence_host" in sys.modules
+    import qortal_presence_host as host
+
+    host._patch_rns_resource_rejected()
+    if not had_host:
+        sys.modules.pop("qortal_presence_host", None)
+    assert RNS.Resource.NONE != RNS.Resource.REJECTED
+
+    req = start(_peer(7), DM)
+    first = FakeResource(req.request_id)
+    first.total_segments = 2
+    second = FakeResource(req.request_id)
+    second.status = RNS.Resource.NONE
+    second.segment_index = 2
+    second.total_segments = 2
+    first.next_segment = second
+    link = req.state["link"]
+
+    def first_complete():
+        first.progress = 1.0
+        first.status = RNS.Resource.COMPLETE
+
+    def second_advertised():
+        # Still NONE for 0.4 s after the switch: several watcher polls.
+        assert not _events_for(req.tid, "failed"), _events_for(req.tid, "failed")
+        second.status = RNS.Resource.ADVERTISED
+
+    def second_progress():
+        second.progress = 0.5
+
+    def second_complete():
+        second.progress = 1.0
+        second.status = RNS.Resource.COMPLETE
+
+    handle = _serve(
+        req,
+        first,
+        [
+            (0.05, lambda: link.outgoing_resources.append(first)),
+            (0.15, first_complete),
+            (0.4, second_advertised),
+            (0.15, second_progress),
+            (0.15, second_complete),
+        ],
+    )
+    assert _wait_for(
+        lambda: _events_for(req.tid, "sent") or _events_for(req.tid, "failed")
+    )
+    handle.close()
+    assert _events_for(req.tid, "failed") == [], _events_for(req.tid, "failed")
+    assert _events_for(req.tid, "sent")
+    assert not first.cancelled and not second.cancelled
+    assert_counters_zero("next segment")
     reset_links()
 
 
@@ -946,6 +1010,7 @@ def test_provider_dm_latency():
         check_capacity_bypass()
         check_auth_ended()
         check_provider_timing()
+        check_next_segment_not_rejected()
         assert_counters_zero("end")
         check_bridge_pressure()
         check_reader_path_lock_free()

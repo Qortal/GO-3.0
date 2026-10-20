@@ -33,12 +33,26 @@ import {
 import { useSectionSwipe } from '../Mobile/sectionSwipe/useSectionSwipe';
 import { GO_TAB_BAR_SPACE } from '../Mobile/mobileBarHeights';
 import { mobileTabBarElementAtom } from '../Mobile/mobileTabBarElement';
+import {
+  mobileSectionOrder as mobileSectionOrderFor,
+  mobileTabOrderAtom,
+} from '../Mobile/mobileTabOrder';
 import { useCoverMobileTabBar } from '../Mobile/mobileTabBarCover';
 import { IMMERSIVE_SLIDE_TARGET_ATTR } from '../Mobile/immersive/useImmersiveBars';
 import {
-  mobileTabForViewMode,
+  mobileSectionForViewMode,
   useMobileTabNavigation,
+  type MobileSectionKey,
 } from '../Mobile/useMobileTabNavigation';
+import { WidgetsScreen } from '../Mobile/widgets/WidgetsScreen';
+import {
+  goWidgetsEditingAtom,
+  goWidgetsEnabledAtom,
+} from '../Mobile/widgets/goWidgets';
+import {
+  nativeSwipeZoneAtom,
+  widgetSwipeFeed,
+} from '../Mobile/widgets/widgetSwipeZone';
 import { mobileQappFrameShowingAtom } from '../Mobile/mobileQappFrame';
 import { immersiveMotionReduced } from '../Mobile/immersive/useImmersiveBars';
 import { CreateCommonSecret } from '../Chat/CreateCommonSecret';
@@ -165,8 +179,26 @@ import { FirstTimeQChatEmptyState } from './FirstTimeQChatEmptyState';
 import { ReturningUserActivityDashboard } from './ReturningUserActivityDashboard';
 import { ReturningUserCaughtUpState } from './ReturningUserCaughtUpState';
 import { startReticulumGroupScoreScheduler } from './reticulumGroupScore';
-import { reticulumVisibleSearchTextFromPayload } from './reticulumSearchText';
-import { useAtom, useSetAtom, useAtomValue } from 'jotai';
+import {
+  RETICULUM_GO_PREFETCH_CONCURRENCY,
+  createReticulumBackgroundEventTracker,
+  newestKnownReticulumPrefetchTimestamp,
+  prefetchReticulumBackgroundHistory,
+  processReticulumBackgroundIndexEvent,
+  waitForReticulumPrefetchFirstPaintThenIdle,
+  waitForReticulumPrefetchIdle,
+} from './reticulumBackgroundIndex';
+import {
+  fetchReticulumAdminGroups,
+  getGroupIdFromGroupLike,
+  getReticulumGroupMembershipsFromGroupLikeList,
+  noteReticulumAdminListAccountChanged,
+  noteReticulumAdminListFetchFailed,
+  noteReticulumAdminListFetchOk,
+  reticulumAdminGroupsAfterFailedFetch,
+} from './reticulumAdminList';
+import { isGoApp } from '../../utils/platform';
+import { useAtom, useSetAtom, useAtomValue, useStore } from 'jotai';
 import { useGroupCallContext } from '../../contexts/GroupCallContext';
 import { useCallSwitchGuard } from '../../contexts/CallSwitchGuardContext';
 import { traceGcallAudioSurface } from '../../lib/group-call/gcallAudioSurfaceTrace';
@@ -227,8 +259,14 @@ import {
 } from './reticulumGroupRail';
 import {
   beginReticulumSummaryRefresh,
+  createReticulumSummaryRefreshFlight,
   getReticulumMentionBadgeCount,
+  noteReticulumSummaryRefreshRun,
+  RETICULUM_SUMMARY_REFRESH_GO_DEBOUNCE_MS,
+  RETICULUM_SUMMARY_REFRESH_GO_MAX_WAIT_MS,
+  runReticulumSummaryRefreshSingleFlight,
   scheduleReticulumSummaryRefresh,
+  shareReticulumChatSummaries,
 } from './reticulumSummaryRefresh';
 import {
   AdminRowBox,
@@ -321,17 +359,6 @@ const RETICULUM_BACKGROUND_PROCESSED_EVENT_TTL_MS = 2 * 60 * 60_000;
 const RETICULUM_BACKGROUND_PROCESSED_EVENT_MAX = 10_000;
 const RETICULUM_DIRECT_NAME_RETRY_DELAY_MS = 5 * 60_000;
 
-const getGroupIdFromGroupLike = (group: unknown): number | null => {
-  if (!group || typeof group !== 'object') return null;
-  const candidate =
-    (group as { groupId?: unknown }).groupId ??
-    (group as { groupid?: unknown }).groupid ??
-    (group as { group_id?: unknown }).group_id ??
-    (group as { id?: unknown }).id;
-  const groupId = Number(candidate);
-  return Number.isInteger(groupId) && groupId > 0 ? groupId : null;
-};
-
 const getGroupIdsFromGroupLikeList = (groups: unknown): number[] => {
   if (!Array.isArray(groups)) return [];
   return [
@@ -341,63 +368,6 @@ const getGroupIdsFromGroupLikeList = (groups: unknown): number[] => {
         .filter((groupId): groupId is number => groupId != null)
     ),
   ];
-};
-
-const getReticulumGroupMembershipsFromGroupLikeList = (
-  groups: unknown,
-  groupsProperties: Record<string, unknown>,
-  localAddress: string | undefined,
-  adminGroupIds: ReadonlySet<number>
-): Array<{
-  groupId: number;
-  isPrivate: boolean;
-  isAdmin: boolean;
-  adminStatusAuthoritative: true;
-  joinedAt?: number;
-  localAddress?: string;
-}> => {
-  if (!Array.isArray(groups)) return [];
-  const byGroupId = new Map<
-    number,
-    { isPrivate: boolean; joinedAt?: number }
-  >();
-  const normalizedLocalAddress =
-    typeof localAddress === 'string' ? localAddress.trim() : '';
-  for (const group of groups) {
-    const groupId = getGroupIdFromGroupLike(group);
-    if (groupId == null) continue;
-    const groupObject =
-      group && typeof group === 'object'
-        ? (group as { isOpen?: unknown; isPrivate?: unknown })
-        : {};
-    const groupProperty = groupsProperties[String(groupId)] as
-      | { isOpen?: unknown; isPrivate?: unknown }
-      | undefined;
-    const isPrivate =
-      groupObject.isPrivate === true ||
-      groupProperty?.isPrivate === true ||
-      groupObject.isOpen === false ||
-      groupProperty?.isOpen === false;
-    const joinedAt = Number(
-      (group as { reticulumJoinedAt?: unknown; joinedAt?: unknown })
-        ?.reticulumJoinedAt ?? (group as { joinedAt?: unknown })?.joinedAt
-    );
-    const previous = byGroupId.get(groupId);
-    byGroupId.set(groupId, {
-      isPrivate: previous?.isPrivate === true || isPrivate,
-      joinedAt:
-        previous?.joinedAt ||
-        (Number.isFinite(joinedAt) && joinedAt > 0 ? joinedAt : undefined),
-    });
-  }
-  return [...byGroupId.entries()].map(([groupId, { isPrivate, joinedAt }]) => ({
-    groupId,
-    isPrivate,
-    isAdmin: adminGroupIds.has(groupId),
-    adminStatusAuthoritative: true,
-    ...(joinedAt ? { joinedAt } : {}),
-    ...(normalizedLocalAddress ? { localAddress: normalizedLocalAddress } : {}),
-  }));
 };
 
 const parseReticulumPublicPayload = (value: unknown): unknown => {
@@ -1163,8 +1133,14 @@ const GroupInner = ({
   const reticulumDirectNameResolutionsRef = useRef(new Set<string>());
   const reticulumDirectNameRetryAfterRef = useRef(new Map<string, number>());
   const reticulumSubscribedGroupIdsRef = useRef<Set<number>>(new Set());
-  const reticulumBackgroundProcessedEventIdsRef = useRef<Map<string, number>>(
-    new Map()
+  // Which events this page has indexed and which mention notifications it
+  // has recorded, kept apart: a repeated emission of an indexed event only
+  // records a missing notification and makes no index RPCs.
+  const [reticulumBackgroundEventTracker] = useState(() =>
+    createReticulumBackgroundEventTracker({
+      ttlMs: RETICULUM_BACKGROUND_PROCESSED_EVENT_TTL_MS,
+      maxEntries: RETICULUM_BACKGROUND_PROCESSED_EVENT_MAX,
+    })
   );
   const reticulumGroupMentionNameCacheRef = useRef<
     Map<number, Map<string, string>>
@@ -1175,10 +1151,23 @@ const GroupInner = ({
   const reticulumSummariesRefreshWindowStartedAtRef = useRef<number | null>(
     null
   );
+  // GO: a refresh asked for by a user action (a read) keeps the short
+  // cadence, in its own timer, so engine bursts on the long one cannot
+  // postpone it.
+  const reticulumSummariesSoonRefreshTimerRef = useRef<ReturnType<
+    typeof setTimeout
+  > | null>(null);
+  const reticulumSummariesSoonRefreshWindowStartedAtRef = useRef<number | null>(
+    null
+  );
   const reticulumDirectSummariesRefreshTimerRef = useRef<ReturnType<
     typeof setTimeout
   > | null>(null);
   const reticulumSummariesRefreshSequenceRef = useRef(0);
+  const [reticulumSummariesRefreshFlight] = useState(
+    createReticulumSummaryRefreshFlight
+  );
+  const jotaiStore = useStore();
 
   useEffect(() => {
     let cancelled = false;
@@ -1231,35 +1220,6 @@ const GroupInner = ({
   const bumpReticulumReadEntryToken = useCallback(() => {
     setReticulumReadEntryToken((token) => token + 1);
   }, []);
-  const pruneReticulumBackgroundProcessedEvents = useCallback(() => {
-    const now = Date.now();
-    const map = reticulumBackgroundProcessedEventIdsRef.current;
-    const cutoff = now - RETICULUM_BACKGROUND_PROCESSED_EVENT_TTL_MS;
-    for (const [eventId, seenAt] of map.entries()) {
-      if (seenAt < cutoff) map.delete(eventId);
-    }
-    if (map.size <= RETICULUM_BACKGROUND_PROCESSED_EVENT_MAX) return;
-    const excess = map.size - RETICULUM_BACKGROUND_PROCESSED_EVENT_MAX;
-    const oldest = [...map.entries()]
-      .sort((a, b) => a[1] - b[1])
-      .slice(0, excess);
-    for (const [eventId] of oldest) map.delete(eventId);
-  }, []);
-  const hasProcessedReticulumBackgroundEvent = useCallback(
-    (eventId: string) => {
-      pruneReticulumBackgroundProcessedEvents();
-      return reticulumBackgroundProcessedEventIdsRef.current.has(eventId);
-    },
-    [pruneReticulumBackgroundProcessedEvents]
-  );
-  const noteProcessedReticulumBackgroundEvent = useCallback(
-    (eventId: string) => {
-      if (!eventId) return;
-      reticulumBackgroundProcessedEventIdsRef.current.set(eventId, Date.now());
-      pruneReticulumBackgroundProcessedEvents();
-    },
-    [pruneReticulumBackgroundProcessedEvents]
-  );
   const setIsEnabledDevMode = useSetAtom(enabledDevModeAtom);
   const setIsDisabledEditorEnter = useSetAtom(isDisabledEditorEnterAtom);
 
@@ -1444,6 +1404,11 @@ const GroupInner = ({
     reticulumAdminGroupsLoadedAddress,
     setReticulumAdminGroupsLoadedAddress,
   ] = useState('');
+  // The account whose admin list last loaded successfully this session. Only
+  // then is the list authoritative for the engine (see reticulumAdminList).
+  const [reticulumAdminListOkAddress, setReticulumAdminListOkAddress] =
+    useState('');
+  const reticulumAdminListOkAddressRef = useRef('');
   const [reticulumMembershipsAppliedKey, setReticulumMembershipsAppliedKey] =
     useState('');
   const [
@@ -1519,8 +1484,8 @@ const GroupInner = ({
   }, [secretKey]);
 
   useEffect(() => {
-    reticulumBackgroundProcessedEventIdsRef.current.clear();
-  }, [myAddress]);
+    reticulumBackgroundEventTracker.clear();
+  }, [myAddress, reticulumBackgroundEventTracker]);
 
   // Track view modes to prevent marking messages as read when not viewing chat
   const desktopViewModeRef = useRef(desktopViewMode);
@@ -1721,7 +1686,7 @@ const GroupInner = ({
     []
   );
 
-  const refreshReticulumChatSummaries =
+  const refreshReticulumChatSummariesOnce =
     useCallback(async (): Promise<boolean> => {
       const refreshWasSuperseded = beginReticulumSummaryRefresh(
         reticulumSummariesRefreshSequenceRef
@@ -1747,7 +1712,9 @@ const GroupInner = ({
           );
           return false;
         }
+        const summariesStartedAt = Date.now();
         const summaries = await window.reticulumChat?.getSummaries?.(myAddress);
+        const summariesMs = Date.now() - summariesStartedAt;
         if (refreshWasSuperseded()) return true;
         if (!Array.isArray(summaries)) {
           console.error(
@@ -1758,16 +1725,12 @@ const GroupInner = ({
           void window.reticulumChat?.updateMentionBadge?.(0);
           return false;
         }
-        const next = summaries.reduce(
-          (acc, summary: any) => {
-            const groupId = Number(summary?.groupId);
-            if (!Number.isInteger(groupId) || groupId <= 0) return acc;
-            acc[String(groupId)] = summary;
-            return acc;
-          },
-          {} as Record<string, any>
-        );
-        setReticulumChatSummaries(next);
+        // Unchanged groups keep their summary objects and an unchanged
+        // result keeps the atom value, so nothing re-renders for it.
+        const previous = jotaiStore.get(reticulumChatSummariesAtom);
+        const next = shareReticulumChatSummaries<any>(previous, summaries);
+        if (next !== previous) setReticulumChatSummaries(next);
+        noteReticulumSummaryRefreshRun(summariesMs, next !== previous);
         syncReticulumMentionNotifications(next);
         void window.reticulumChat?.updateMentionBadge?.(
           getReticulumMentionBadgeCount(next)
@@ -1782,24 +1745,73 @@ const GroupInner = ({
         return false;
       }
     }, [
+      jotaiStore,
       myAddress,
       setReticulumChatEnabled,
       setReticulumChatSummaries,
       syncReticulumMentionNotifications,
     ]);
 
+  // Single-flight: getSummaries never runs twice at once on the engine; a
+  // request during a run gets one shared follow-up after it.
+  const refreshReticulumChatSummaries = useCallback(
+    (): Promise<boolean> =>
+      runReticulumSummaryRefreshSingleFlight(
+        reticulumSummariesRefreshFlight,
+        refreshReticulumChatSummariesOnce
+      ),
+    [refreshReticulumChatSummariesOnce, reticulumSummariesRefreshFlight]
+  );
+
+  const runScheduledReticulumChatSummariesRefresh = useCallback(() => {
+    // One refresh covers both timers' requests.
+    for (const timerRef of [
+      reticulumSummariesRefreshTimerRef,
+      reticulumSummariesSoonRefreshTimerRef,
+    ]) {
+      if (timerRef.current) clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+    reticulumSummariesRefreshWindowStartedAtRef.current = null;
+    reticulumSummariesSoonRefreshWindowStartedAtRef.current = null;
+    return refreshReticulumChatSummaries();
+  }, [refreshReticulumChatSummaries]);
+
   const scheduleReticulumChatSummariesRefresh = useCallback(() => {
+    const goCadence = isGoApp();
     scheduleReticulumSummaryRefresh(
       reticulumSummariesRefreshTimerRef,
       reticulumSummariesRefreshWindowStartedAtRef,
-      refreshReticulumChatSummaries
+      runScheduledReticulumChatSummariesRefresh,
+      goCadence ? RETICULUM_SUMMARY_REFRESH_GO_DEBOUNCE_MS : undefined,
+      goCadence ? RETICULUM_SUMMARY_REFRESH_GO_MAX_WAIT_MS : undefined
     );
-  }, [refreshReticulumChatSummaries]);
+  }, [runScheduledReticulumChatSummariesRefresh]);
+
+  // For refreshes a user action asked for (a read, a setting): on GO they
+  // keep the short cadence; elsewhere this is the one scheduler above.
+  const scheduleReticulumChatSummariesRefreshSoon = useCallback(() => {
+    if (!isGoApp()) {
+      scheduleReticulumChatSummariesRefresh();
+      return;
+    }
+    scheduleReticulumSummaryRefresh(
+      reticulumSummariesSoonRefreshTimerRef,
+      reticulumSummariesSoonRefreshWindowStartedAtRef,
+      runScheduledReticulumChatSummariesRefresh
+    );
+  }, [
+    runScheduledReticulumChatSummariesRefresh,
+    scheduleReticulumChatSummariesRefresh,
+  ]);
 
   useEffect(() => {
     reticulumSummariesRefreshSequenceRef.current += 1;
     myAddressRef.current = myAddress || '';
     setReticulumAdminGroupsLoadedAddress('');
+    reticulumAdminListOkAddressRef.current = '';
+    setReticulumAdminListOkAddress('');
+    noteReticulumAdminListAccountChanged();
     setReticulumMembershipsAppliedKey('');
     setReticulumSummariesLoadedMembershipKey('');
     if (!myAddress) {
@@ -1813,13 +1825,18 @@ const GroupInner = ({
         memberGroupsForReticulum,
         groupsProperties,
         myAddress,
-        reticulumAdminGroupIds
+        reticulumAdminGroupIds,
+        // Hysteresis: not authoritative until the first good admin list for
+        // this account, then authoritative for the session (a later failure
+        // keeps that list), so failed refreshes never flip every group.
+        !!myAddress && reticulumAdminListOkAddress === myAddress
       ),
     [
       groupsProperties,
       memberGroupsForReticulum,
       myAddress,
       reticulumAdminGroupIds,
+      reticulumAdminListOkAddress,
     ]
   );
   const reticulumMembershipsKey = useMemo(
@@ -2060,20 +2077,28 @@ const GroupInner = ({
       }
     );
     const refreshHandler = () => {
-      scheduleReticulumChatSummariesRefresh();
+      scheduleReticulumChatSummariesRefreshSoon();
     };
     subscribeToEvent('reticulum-chat-summaries-refresh', refreshHandler);
     void refreshReticulumChatSummaries();
     return () => {
       offSummaryChanged?.();
       unsubscribeFromEvent('reticulum-chat-summaries-refresh', refreshHandler);
-      if (reticulumSummariesRefreshTimerRef.current) {
-        clearTimeout(reticulumSummariesRefreshTimerRef.current);
-        reticulumSummariesRefreshTimerRef.current = null;
+      for (const timerRef of [
+        reticulumSummariesRefreshTimerRef,
+        reticulumSummariesSoonRefreshTimerRef,
+      ]) {
+        if (timerRef.current) clearTimeout(timerRef.current);
+        timerRef.current = null;
       }
       reticulumSummariesRefreshWindowStartedAtRef.current = null;
+      reticulumSummariesSoonRefreshWindowStartedAtRef.current = null;
     };
-  }, [refreshReticulumChatSummaries, scheduleReticulumChatSummariesRefresh]);
+  }, [
+    refreshReticulumChatSummaries,
+    scheduleReticulumChatSummariesRefresh,
+    scheduleReticulumChatSummariesRefreshSoon,
+  ]);
 
   const refreshReticulumDirectSummaries = useCallback(
     async (enabled = reticulumChatEnabled) => {
@@ -2887,9 +2912,17 @@ const GroupInner = ({
     [myAddress, userInfo?.name]
   );
 
+  // Keyed on which groups, not on the list object, which is rebuilt often.
+  const reticulumMentionNameCacheGroupsKey = useMemo(
+    () =>
+      getGroupIdsFromGroupLikeList(memberGroupsForReticulum)
+        .sort((left, right) => left - right)
+        .join(','),
+    [memberGroupsForReticulum]
+  );
   useEffect(() => {
     reticulumGroupMentionNameCacheRef.current.clear();
-  }, [memberGroupsForReticulum, myAddress, userInfo?.name]);
+  }, [reticulumMentionNameCacheGroupsKey, myAddress, userInfo?.name]);
 
   const recordReticulumMentionNotification = useCallback(
     (
@@ -2933,98 +2966,50 @@ const GroupInner = ({
   );
 
   const processReticulumBackgroundEvent = useCallback(
-    async (
+    (
       event: ReticulumBackgroundEvent,
       options: { recordMentionNotification?: boolean } = {}
-    ) => {
-      if (!event?.eventId || !event?.groupId || !event?.eventType) return;
-      const alreadyProcessed = hasProcessedReticulumBackgroundEvent(
-        event.eventId
-      );
-      if (alreadyProcessed && options.recordMentionNotification !== true) {
-        return;
-      }
-
-      if (event.eventType === 'delete') {
-        if (alreadyProcessed) return;
-        if (event.targetEventId) {
-          await window.reticulumChat?.deleteSearchText?.(event.targetEventId);
-          await window.reticulumChat?.deleteMentions?.(event.targetEventId);
-          noteProcessedReticulumBackgroundEvent(event.eventId);
-          scheduleReticulumChatSummariesRefresh();
-        }
-        return;
-      }
-
-      if (
-        event.eventType !== 'message' &&
-        event.eventType !== 'edit' &&
-        event.eventType !== 'attachment_manifest'
-      ) {
-        return;
-      }
-
-      const groupId = Number(event.groupId);
-      if (!Number.isInteger(groupId) || groupId <= 0) return;
-      const groupProperty = groupsPropertiesRef.current?.[String(groupId)] as
-        | { isOpen?: boolean }
-        | undefined;
-      if (groupProperty?.isOpen !== true && groupProperty?.isOpen !== false) {
-        return;
-      }
-
-      let payload: unknown = null;
-      try {
-        payload = JSON.parse(String(event.encryptedPayload || ''));
-      } catch {
-        payload = event.encryptedPayload || '';
-      }
-
-      const text = reticulumVisibleSearchTextFromPayload(payload);
-      const targetEventId =
-        event.eventType === 'edit' && event.targetEventId
-          ? event.targetEventId
-          : event.eventId;
-      if (!targetEventId || !text) {
-        noteProcessedReticulumBackgroundEvent(event.eventId);
-        scheduleReticulumChatSummariesRefresh();
-        return;
-      }
-
-      await window.reticulumChat?.indexSearchText?.(targetEventId, text);
-      const mentionMap = await getReticulumMentionNameMap(groupId);
-      const mentionedAddresses = [
-        ...new Set([
-          ...reticulumMentionedAddressesFromPayload(payload),
-          ...resolveReticulumMentionAddressesFromPayload(payload, mentionMap),
-        ]),
-      ];
-      await window.reticulumChat?.replaceMentions?.(
-        targetEventId,
-        mentionedAddresses
-      );
-      if (options.recordMentionNotification === true) {
-        const localAddress = myAddressRef.current || '';
-        const authorizedBroadcast = authorizedReticulumBroadcastApplies(event);
-        const directMention = event.directMentionAuthorized === true;
-        const notificationMentionedAddresses =
-          localAddress && (authorizedBroadcast || directMention)
+    ): Promise<void> =>
+      processReticulumBackgroundIndexEvent(event, options, {
+        tracker: reticulumBackgroundEventTracker,
+        bridge: window.reticulumChat,
+        isGroupReady: (groupId) => {
+          const groupProperty = groupsPropertiesRef.current?.[
+            String(groupId)
+          ] as { isOpen?: boolean } | undefined;
+          return (
+            groupProperty?.isOpen === true || groupProperty?.isOpen === false
+          );
+        },
+        mentionedAddresses: async (payload, groupId) => {
+          const mentionMap = await getReticulumMentionNameMap(groupId);
+          return [
+            ...new Set([
+              ...reticulumMentionedAddressesFromPayload(payload),
+              ...resolveReticulumMentionAddressesFromPayload(
+                payload,
+                mentionMap
+              ),
+            ]),
+          ];
+        },
+        notificationAddresses: (backgroundEvent) => {
+          const localAddress = myAddressRef.current || '';
+          const authorizedBroadcast =
+            authorizedReticulumBroadcastApplies(backgroundEvent);
+          const directMention =
+            backgroundEvent.directMentionAuthorized === true;
+          return localAddress && (authorizedBroadcast || directMention)
             ? [localAddress]
             : [];
-        recordReticulumMentionNotification(
-          event,
-          groupId,
-          notificationMentionedAddresses
-        );
-      }
-      noteProcessedReticulumBackgroundEvent(event.eventId);
-      scheduleReticulumChatSummariesRefresh();
-    },
+        },
+        recordMentionNotification: recordReticulumMentionNotification,
+        scheduleSummaryRefresh: scheduleReticulumChatSummariesRefresh,
+      }),
     [
       getReticulumMentionNameMap,
-      hasProcessedReticulumBackgroundEvent,
-      noteProcessedReticulumBackgroundEvent,
       recordReticulumMentionNotification,
+      reticulumBackgroundEventTracker,
       scheduleReticulumChatSummariesRefresh,
     ]
   );
@@ -3077,39 +3062,65 @@ const GroupInner = ({
     prefetchedReticulumHistoryGroupsRef.current.clear();
   }, [myAddress]);
 
+  // GO reads the summaries to skip unchanged groups, so it waits until they
+  // are loaded for the memberships the engine has now (a group missing from
+  // them then really has no chat message). Desktop does not wait.
+  const reticulumPrefetchSummariesReady =
+    !isGoApp() ||
+    (reticulumSummariesLoadedMembershipKey !== '' &&
+      reticulumSummariesLoadedMembershipKey === reticulumMembershipsKey);
+
   useEffect(() => {
     if (!myAddress || !reticulumBackgroundHistoryGroupsKey) return;
+    if (!reticulumPrefetchSummariesReady) return;
     const groupIds = reticulumBackgroundHistoryGroupsKey
       .split(',')
       .map((value) => Number(value))
       .filter((groupId) => Number.isInteger(groupId) && groupId > 0);
     if (groupIds.length === 0) return;
     let cancelled = false;
+    const goPrefetch = isGoApp();
     void (async () => {
       try {
         const enabled = await window.reticulumChat?.isEnabled?.();
         if (cancelled || enabled !== true) return;
-        for (const groupId of groupIds) {
+        if (goPrefetch) {
+          // A safety net, not urgent: never compete with the first screen.
+          await waitForReticulumPrefetchFirstPaintThenIdle();
           if (cancelled) return;
-          if (prefetchedReticulumHistoryGroupsRef.current.has(groupId)) {
-            continue;
-          }
-          try {
-            const history = await window.reticulumChat?.getHistory?.(
-              groupId,
-              'general',
-              50,
-              { repairNetwork: false }
-            );
-            if (cancelled || !Array.isArray(history)) continue;
-            for (const event of history as ReticulumBackgroundEvent[]) {
-              if (cancelled) return;
-              await processReticulumBackgroundEvent(event);
-            }
-            if (!cancelled) {
-              prefetchedReticulumHistoryGroupsRef.current.add(groupId);
-            }
-          } catch (error) {
+        }
+        await prefetchReticulumBackgroundHistory<ReticulumBackgroundEvent>({
+          groupIds,
+          getHistory: async (groupId) =>
+            window.reticulumChat?.getHistory?.(groupId, 'general', 50, {
+              repairNetwork: false,
+            }),
+          processEvent: (event) => processReticulumBackgroundEvent(event),
+          isCancelled: () => cancelled,
+          isPrefetched: (groupId) =>
+            prefetchedReticulumHistoryGroupsRef.current.has(groupId),
+          markPrefetched: (groupId) => {
+            prefetchedReticulumHistoryGroupsRef.current.add(groupId);
+          },
+          // GO: the engine indexes on insert, so each start only re-indexes
+          // messages newer than the last run (per account and group),
+          // instead of 50 messages of every group.
+          watermarkAddress: goPrefetch ? myAddress : null,
+          // GO: a group whose newest 'general' message (summaries, read
+          // fresh per group) is not past its watermark needs no getHistory.
+          // An emptied atom counts as unknown (read history).
+          newestKnownTimestamp: goPrefetch
+            ? (groupId) =>
+                newestKnownReticulumPrefetchTimestamp(
+                  jotaiStore.get(reticulumChatSummariesAtom),
+                  groupId
+                )
+            : undefined,
+          concurrency: goPrefetch ? RETICULUM_GO_PREFETCH_CONCURRENCY : 1,
+          beforeGroup: goPrefetch
+            ? () => waitForReticulumPrefetchIdle()
+            : undefined,
+          onGroupError: (groupId, error) => {
             // Timeouts after a long chat session are recoverable; never let
             // them become an unhandled rejection / full-screen runtime fault.
             console.warn(
@@ -3117,8 +3128,8 @@ const GroupInner = ({
               groupId,
               error
             );
-          }
-        }
+          },
+        });
       } catch (error) {
         console.warn(
           '[ReticulumChat] Background history prefetch aborted:',
@@ -3130,9 +3141,11 @@ const GroupInner = ({
       cancelled = true;
     };
   }, [
+    jotaiStore,
     myAddress,
     processReticulumBackgroundEvent,
     reticulumBackgroundHistoryGroupsKey,
+    reticulumPrefetchSummariesReady,
   ]);
 
   const getAdminsForGroup = useCallback(async (selectedGroup) => {
@@ -3342,15 +3355,12 @@ const GroupInner = ({
       if (!myAddress) return false;
       const requestedAddress = myAddress;
       try {
-        const response = await fetch(
+        // Times out after 15 s, so a stalled node counts as a failure.
+        const groupsAsAdmin = await fetchReticulumAdminGroups(
           `${getBaseApiReact()}/groups/member/${requestedAddress}?adminOnly=true`
         );
-        if (!response.ok) {
-          throw new Error(`Unable to load group admins: ${response.status}`);
-        }
-        const data = await response.json();
         if (myAddressRef.current !== requestedAddress) return false;
-        const groupsAsAdmin = Array.isArray(data) ? data : (data?.groups ?? []);
+        noteReticulumAdminListFetchOk();
         setMyGroupsWhereIAmAdmin((current) =>
           areKeysEqual(
             getGroupIdsFromGroupLikeList(current),
@@ -3360,6 +3370,8 @@ const GroupInner = ({
             : groupsAsAdmin
         );
         setReticulumAdminGroupsLoadedAddress(requestedAddress);
+        reticulumAdminListOkAddressRef.current = requestedAddress;
+        setReticulumAdminListOkAddress(requestedAddress);
         return true;
       } catch (error) {
         console.error(
@@ -3367,7 +3379,15 @@ const GroupInner = ({
           error
         );
         if (myAddressRef.current === requestedAddress) {
-          setMyGroupsWhereIAmAdmin([]);
+          noteReticulumAdminListFetchFailed(error);
+          // Keep the last good list for this account; before the first one
+          // the list is empty and pushed as non-authoritative, so the engine
+          // asks Core instead of reading "not admin" from it.
+          const listLoadedForAccount =
+            reticulumAdminListOkAddressRef.current === requestedAddress;
+          setMyGroupsWhereIAmAdmin((current) =>
+            reticulumAdminGroupsAfterFailedFetch(current, listLoadedForAccount)
+          );
           setReticulumAdminGroupsLoadedAddress(requestedAddress);
         }
         return false;
@@ -3859,7 +3879,7 @@ const GroupInner = ({
     setSecretKey(null);
     secretKeyRef.current = null;
     lastFetchedSecretKey.current = null;
-    reticulumBackgroundProcessedEventIdsRef.current.clear();
+    reticulumBackgroundEventTracker.clear();
     setSecretKeyPublishDate(null);
     setSecretKeyDetails(null);
     setNewEncryptionNotification(null);
@@ -4977,16 +4997,42 @@ const GroupInner = ({
     desktopViewMode,
     setDesktopViewMode
   );
-  const currentMobileTab = mobileTabForViewMode(desktopViewMode);
+  const currentMobileTab = mobileSectionForViewMode(desktopViewMode);
   // Swipes along the bottom bar switch sections too, even over a Q-App.
   const mobileTabBarElement = useAtomValue(mobileTabBarElementAtom);
+  // The sections sit side by side as the user arranged the round buttons,
+  // with the widgets screen (GO phones, unless switched off) left of them.
+  const mobileTabOrder = useAtomValue(mobileTabOrderAtom);
+  const widgetsEnabled = useAtomValue(goWidgetsEnabledAtom);
+  const showWidgets = isMobile && widgetsEnabled && isGoApp();
+  const widgetsEditing = useAtomValue(goWidgetsEditingAtom);
+  const widgetSwipeZone = useAtomValue(nativeSwipeZoneAtom);
+  const mobileSectionOrder = useMemo(
+    () => mobileSectionOrderFor(mobileTabOrder, showWidgets),
+    [showWidgets, mobileTabOrder]
+  );
+  const goToMobileSection = useCallback(
+    (section: MobileSectionKey) => {
+      if (section === 'widgets') setDesktopViewMode('widgets');
+      else goToMobileTab(section);
+    },
+    [goToMobileTab, setDesktopViewMode]
+  );
+  // Switched off while showing: back to Home.
+  useEffect(() => {
+    if (desktopViewMode === 'widgets' && !showWidgets) {
+      setDesktopViewMode('home');
+    }
+  }, [desktopViewMode, showWidgets, setDesktopViewMode]);
   useSectionSwipe(mainContentRef, {
     enabled:
       isMobile &&
       currentMobileTab !== null &&
       desktopViewMode !== 'dev' &&
       !(currentMobileTab === 'apps' && qappFrameOnScreen) &&
-      !mobileGroupPanelOpen,
+      !mobileGroupPanelOpen &&
+      // Arranging widgets: drags are the widgets'.
+      !(currentMobileTab === 'widgets' && widgetsEditing),
     bar: mobileTabBarElement,
     barEnabled:
       isMobile &&
@@ -4994,12 +5040,15 @@ const GroupInner = ({
       desktopViewMode !== 'dev' &&
       !mobileGroupPanelOpen,
     current: currentMobileTab,
-    onNavigate: goToMobileTab,
+    onNavigate: goToMobileSection,
+    externalTouches: widgetSwipeFeed,
+    nativeZone: widgetSwipeZone,
     reducedMotion: immersiveMotionReduced(),
     // A Q-App ends above the round buttons once Apps is current; Home and
     // Chat (immersive mode on) scroll on behind them (GO_TAB_BAR_SPACE is
     // that room, 0 when they don't).
     peekPaddingBottom: qappFrameOnScreen ? { apps: GO_TAB_BAR_SPACE } : {},
+    order: mobileSectionOrder,
   });
 
   const setDesktopSideViewFromRail = useCallback(
@@ -6810,6 +6859,12 @@ const GroupInner = ({
                 </PerfProfiler>
               </Box>
             </Activity>
+          ) : null}
+
+          {showWidgets ? (
+            <PerfProfiler id="widgets">
+              <WidgetsScreen active={desktopViewMode === 'widgets'} />
+            </PerfProfiler>
           ) : null}
 
           {desktopViewMode !== 'home' ? (

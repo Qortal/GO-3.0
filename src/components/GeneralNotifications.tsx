@@ -106,6 +106,11 @@ import {
   useVendorFreezeHint,
   vendorFreezeHintActions,
 } from './Mobile/vendorFreezeHintStore';
+import { WebViewJitNotice } from './Mobile/WebViewJitNotice';
+import {
+  useWebViewJitNotice,
+  webViewJitNoticeActions,
+} from './Mobile/webViewJitNoticeStore';
 import NotificationsActiveRoundedIcon from '@mui/icons-material/NotificationsActiveRounded';
 
 const RESOURCE_EVENT = 'RESOURCE_PUBLISHED';
@@ -203,6 +208,11 @@ export const GeneralNotifications = forwardRef<
   // Opening the panel alone does not count as seeing it.
   const vendorFreezeCardShown = useVendorFreezeHint().bell != null;
   const vendorFreezeBadge = useVendorFreezeBellBadge();
+  // "GO runs slower with WebView JIT off" (GrapheneOS only): +1 until the
+  // panel was seen with it (closing the panel counts) or the card was used.
+  const webViewJitCard = useWebViewJitNotice().card;
+  const webViewJitCardShown = webViewJitCard != null;
+  const webViewJitBadge = webViewJitCard?.badge ? 1 : 0;
   const theme = useTheme();
   const isDarkMode = theme.palette.mode === 'dark';
   // Phones (and short GO windows) get the settings full screen, like GO's
@@ -318,6 +328,7 @@ export const GeneralNotifications = forwardRef<
     hideSavedQdnFilesFromPanel();
     // The "GO was stopped" card goes too (X), like every other card.
     if (vendorFreezeCardShown) void vendorFreezeHintActions.closeCard();
+    if (webViewJitCardShown) void webViewJitNoticeActions.closeCard();
     setLastSeenTimestamp(Date.now());
   };
   const unseenCount = useMemo(() => {
@@ -340,15 +351,17 @@ export const GeneralNotifications = forwardRef<
   // have their own screen (GO 3.0 Updates), not a card here.
   const downloadsBadge = useQdnDownloadsBadge();
   const totalUnseenCount =
-    unseenCount + downloadsBadge.unseen + vendorFreezeBadge;
+    unseenCount + downloadsBadge.unseen + vendorFreezeBadge + webViewJitBadge;
   const hasAnyNotifications =
     resourceNotifications.length > 0 ||
     downloadsBadge.hasAny ||
-    vendorFreezeCardShown;
+    vendorFreezeCardShown ||
+    webViewJitCardShown;
   const canClearAll =
     resourceNotifications.length > 0 ||
     downloadsBadge.clearable > 0 ||
-    vendorFreezeCardShown;
+    vendorFreezeCardShown ||
+    webViewJitCardShown;
 
   const hasNewNotifications = totalUnseenCount > 0;
   const notificationsLabel = t('message.generic.notifications', {
@@ -365,6 +378,18 @@ export const GeneralNotifications = forwardRef<
     if (hasNewNotifications) setLastSeenTimestamp(Date.now());
     setAnchorEl(null);
   };
+
+  // The JIT card is advice only, nothing to act on: having seen it is
+  // enough. However the panel closes (outside tap, a row, History, a
+  // download card), its badge goes.
+  const panelWasOpenRef = useRef(false);
+  useEffect(() => {
+    const open = anchorEl != null;
+    if (panelWasOpenRef.current && !open && webViewJitBadge) {
+      void webViewJitNoticeActions.acknowledge();
+    }
+    panelWasOpenRef.current = open;
+  }, [anchorEl, webViewJitBadge]);
 
   const describeNotification = (notification) =>
     isPaymentNotification(notification)
@@ -818,6 +843,7 @@ export const GeneralNotifications = forwardRef<
             }}
           >
             <BackgroundStopNotice variant="bell" />
+            <WebViewJitNotice />
 
             <Box
               sx={{
@@ -828,7 +854,9 @@ export const GeneralNotifications = forwardRef<
                 gap: 1,
                 justifyContent: 'space-between',
                 mt:
-                  resourceNotifications.length || vendorFreezeCardShown
+                  resourceNotifications.length ||
+                  vendorFreezeCardShown ||
+                  webViewJitCardShown
                     ? 0
                     : 1.5,
                 px: 1.25,

@@ -42,14 +42,36 @@ import {
   engineLogLineKey,
   isEngineFaultLine,
 } from '../../reticulumChat/mobile/engineLogFaults';
-import type { EngineSyncHealthSnapshot } from '../../reticulumChat/mobile/engineHost';
+import type {
+  EngineDbDiagnostics,
+  EngineSyncHealthSnapshot,
+  PythonCpuStacks,
+} from '../../reticulumChat/mobile/engineHost';
+import type { EngineIoStats } from '../../reticulumChat/mobile/engineIoStats';
+import type { MobileFsStats } from '../../reticulumChat/mobile/shims/fs';
+import type { MobileSqliteStats } from '../../reticulumChat/mobile/shims/better-sqlite3';
+import {
+  getPageLongTaskStats,
+  type PageLongTaskStats,
+} from '../../reticulumChat/mobile/pageLongTasks';
+import {
+  getReticulumAdminListFetchStats,
+  type ReticulumAdminListFetchStats,
+} from '../Group/reticulumAdminList';
+import {
+  getReticulumSummaryRefreshStats,
+  type ReticulumSummaryRefreshStats,
+} from '../Group/reticulumSummaryRefresh';
 import type { LatencySummary } from '../../reticulumChat/mobile/latencyStats';
 import type { LoopLagSnapshot } from '../../reticulumChat/mobile/loopLag';
 import type { NativeRequestSnapshot } from '../../reticulumChat/mobile/nativeRequestStats';
 import type { LogKeyCount } from '../../reticulumChat/mobile/shims/logger';
 import type { ServingStats } from '../../reticulumChat/mobile/wireBridge';
 import type {
+  ReticulumChatAuthorGapOutcomes,
   ReticulumChatAuthorGapScannerDiagnostics,
+  ReticulumChatChannelMetadataDiagnostics,
+  ReticulumChatChannelMetadataGroupDiagnostics,
   ReticulumChatDigestQueueDiagnostics,
   ReticulumChatEngineQueueDiagnostics,
 } from '../../../electron/src/reticulum-chat';
@@ -59,6 +81,7 @@ import {
   type KotlinSocketDetail,
   type PythonBridgeDetail,
   type PythonBridgeLaneDetail,
+  type PythonBridgeLinkCounts,
 } from '../../plugins/Reticulum';
 import { getRelayProfileSince } from '../../bridge/capacitorBridge';
 import {
@@ -67,6 +90,12 @@ import {
   type AppErrorDiagnostics,
 } from '../../utils/appErrorRing';
 import { createDiagnosticPseudonymizer } from './diagnosticPseudonyms';
+import { isCapacitor } from '../../utils/platform';
+import { AudioRouting } from '../../plugins/AudioRouting';
+import { getNativeCallDiagnostics } from '../../bridge/nativeCallSession';
+import * as mobileAudioSurface from '../../bridge/mobileAudioSurface';
+import { getWebRtcPrivacyStats } from '../../bridge/webrtcPrivacy';
+import { getCallTransportPreference } from '../../bridge/callTransportPreference';
 import {
   fetchBackgroundSyncState,
   type BackgroundSyncState,
@@ -94,10 +123,19 @@ export type WebViewProbe = {
   opfs: boolean;
   crossOriginIsolated: boolean;
   /**
-   * Tight integer loop. A weak JIT hint only: CPU speed and load move it about
-   * as much as JIT does (node measured ~2.4x between JIT and --jitless).
+   * Tight integer loop. On its own a weak JIT hint: CPU speed and load move
+   * it about as much as JIT does (node measured ~2.4x between JIT and
+   * --jitless).
    */
   jsLoopMs: number;
+  /**
+   * Builtin-only work (Float64Array fill + sort, TextEncoder) run right after
+   * the loop on the same thread. Builtins are precompiled, so jitless V8
+   * barely slows them, and the loop / reference ratio cancels CPU speed:
+   * node 22 gives about 1 with JIT and about 3 with --jitless. Not calibrated
+   * on phones yet, so the report prints it and never decides on it.
+   */
+  builtinRefMs?: number | null;
 };
 
 export type CoreApiProbe = {
@@ -108,6 +146,16 @@ export type CoreApiProbe = {
   httpStatus: number | null;
   ms: number;
   error?: string;
+  /** The node's own sync state from the same /admin/status answer. */
+  status?: CoreNodeStatus | null;
+};
+
+/** Fields of Core's /admin/status answer; each null when missing or odd. */
+export type CoreNodeStatus = {
+  height: number | null;
+  syncPercent: number | null;
+  isSynchronizing: boolean | null;
+  numberOfConnections: number | null;
 };
 
 export type UnlockDiagnostics = {
@@ -148,6 +196,51 @@ export type NativeBridgeDiagnostics = {
   processStartedAtMs: number | null;
   /** Kotlin's bridge socket; null when it is not running. */
   socket: KotlinSocketDetail | null;
+  /** Python's call audio I/O counters (qortal_presence_host callAudioIo). */
+  callAudioIo?: CallAudioIoDiagnostics | null;
+  /** RNS crypto provider; packets by type, most bytes first (top 8). */
+  cryptoBackend?: string | null;
+  packetMix?: Array<{ key: string; count: number; bytes: number }>;
+  /** The last WebView renderer death, kept across restarts. */
+  rendererGone?: { at: number; crashed: boolean; count: number } | null;
+  /** Kotlin's resource staging folder (cacheDir/reticulum-chat-resources) now. */
+  stagedResources?: {
+    files: number;
+    bytes: number;
+    oldestAgeMs: number;
+  } | null;
+};
+
+/** Python's call audio I/O counters (transport_status detail `callAudioIo`). */
+export type CallAudioIoDiagnostics = {
+  rxFrames?: number;
+  rxControl?: number;
+  rxDropped?: number;
+  rxMediaShed?: number;
+  rxBadBatch?: number;
+  txFrames?: number;
+  txControl?: number;
+  txNotQueued?: number;
+  txRejected?: number;
+  selfCheckOk?: boolean;
+  selfCheckProblems?: string[];
+  lastError?: string;
+};
+
+/** GO's call plumbing, read once for the report (GO only). No ids. */
+export type CallDiagnostics = {
+  /** 'webrtc' (Direct) or 'reticulum' (Private calls). */
+  transportPreference: string | null;
+  /** QortalCall.getState(): ring, call, mic service, lock flags. */
+  native: Record<string, unknown> | null;
+  /** AudioRouting.getAudioRoutes(): route, focus, proximity. */
+  route: Record<string, unknown> | null;
+  /** The audio surface's own call counters, when this build has them. */
+  surface: Record<string, unknown> | null;
+  /** WebRTC privacy guard counters (candidates dropped / rewritten). */
+  webrtcPrivacy: Record<string, unknown> | null;
+  /** Community STUN servers GO can use right now (no probing to count). */
+  stunServers?: number | null;
 };
 
 export type ReticulumDiagnosticsInput = {
@@ -169,75 +262,112 @@ export type ReticulumDiagnosticsInput = {
   appErrors?: AppErrorDiagnostics | null;
   /** Native Android only: Python lanes and Kotlin socket counters. */
   nativeBridge?: NativeBridgeDiagnostics | null;
+  /**
+   * GO only: the call plumbing ("Calls" section). Left out (undefined) the
+   * section is not printed (desktop, older callers); null = not readable.
+   */
+  calls?: CallDiagnostics | null;
   /** When the relay profile last changed on this page; null = not since page start. */
   relayProfileSince?: number | null;
   /** When this page started (ms since epoch). */
   pageStartedAt?: number;
   /** Key for the identifier pseudonyms; random per report unless a test fixes it. */
   pseudonymKey?: Uint8Array;
+  // Page-side counters; left out (older callers) they print nothing.
+  /** The chat page's admin-list fetches (Group.tsx). */
+  adminList?: ReticulumAdminListFetchStats | null;
+  /** The chat page's getSummaries refreshes (Group.tsx). */
+  summaryRefresh?: ReticulumSummaryRefreshStats | null;
+  /** Main-thread long tasks since the page started (GO). */
+  pageLongTasks?: PageLongTaskStats | null;
 };
 
 export type JitEvidence = {
+  /**
+   * GrapheneOS's own "WebView JIT" switch for GO, read natively
+   * (NativeBcryptRuntimeInfo.webViewJitRestricted): true = off. Null or
+   * missing off GrapheneOS, on GrapheneOS before 2026050400 and off Android.
+   */
+  webViewJitRestricted?: boolean | null;
   webAssembly: boolean;
-  sqliteInitMs?: number | null;
-  bootMs?: number | null;
+  /** Same-thread JS loop / builtin reference ratio (`jitProbeRatio`). */
+  probeRatio?: number | null;
 };
 
 export type JitVerdict = {
-  verdict: 'likely on' | 'likely off' | 'unclear';
+  verdict: 'on' | 'off' | 'likely off' | 'unclear';
   basis: string;
 };
-
-/** sqlite-wasm init: stock WebViews take well under a second. */
-const JIT_ON_SQLITE_INIT_MS = 1_500;
-/** Same threshold as the slow-storage hint in shims/better-sqlite3.ts. */
-const JIT_OFF_SQLITE_INIT_MS = 4_000;
-const JIT_ON_BOOT_MS = 5_000;
-const JIT_OFF_BOOT_MS = 20_000;
 
 function finiteMs(ms: number | null | undefined): number | null {
   return typeof ms === 'number' && Number.isFinite(ms) && ms >= 0 ? ms : null;
 }
 
 /**
- * Whether the WebView runs with JIT, from the evidence that decides it:
- * WebAssembly presence, then the sqlite-wasm init time, then the engine boot
- * time. The JS loop probe is not used; it cannot tell the two apart reliably.
+ * Whether the WebView runs with JIT. Only GrapheneOS's flag decides it;
+ * without the flag only a missing WebAssembly still points one way.
+ *
+ * sqlite-wasm init and engine boot are not evidence: Vanadium keeps
+ * WebAssembly with JIT off (DrumBrake interpreter), and init stayed at
+ * 100-136 ms in JIT-off sessions. The same-thread probe ratio is printed for
+ * calibration and does not decide either.
  */
 export function jitVerdict(evidence: JitEvidence): JitVerdict {
+  if (evidence.webViewJitRestricted === true) {
+    return { verdict: 'off', basis: 'GrapheneOS: WebView JIT is off for GO' };
+  }
+  if (evidence.webViewJitRestricted === false) {
+    return {
+      verdict: 'on',
+      basis: 'GrapheneOS: WebView JIT is allowed for GO',
+    };
+  }
   if (!evidence.webAssembly) {
     return { verdict: 'likely off', basis: 'WebAssembly missing' };
   }
-  const sqlite = finiteMs(evidence.sqliteInitMs);
-  if (sqlite != null && sqlite <= JIT_ON_SQLITE_INIT_MS) {
-    return {
-      verdict: 'likely on',
-      basis: `WebAssembly present, sqlite-wasm init ${fmtMs(sqlite)}`,
-    };
-  }
-  if (sqlite != null && sqlite >= JIT_OFF_SQLITE_INIT_MS) {
-    return {
-      verdict: 'likely off',
-      basis: `sqlite-wasm init ${fmtMs(sqlite)}`,
-    };
-  }
-  const boot = finiteMs(evidence.bootMs);
-  if (boot != null && boot <= JIT_ON_BOOT_MS) {
-    return {
-      verdict: 'likely on',
-      basis: `WebAssembly present, engine boot ${fmtMs(boot)}`,
-    };
-  }
-  if (boot != null && boot >= JIT_OFF_BOOT_MS) {
-    return { verdict: 'likely off', basis: `engine boot ${fmtMs(boot)}` };
-  }
+  const ratio = evidence.probeRatio;
   return {
     verdict: 'unclear',
     basis:
-      sqlite != null || boot != null
-        ? `WebAssembly present; sqlite-wasm init ${fmtMs(sqlite)}, engine boot ${fmtMs(boot)}`
-        : 'WebAssembly present; no engine timings yet',
+      typeof ratio === 'number' && Number.isFinite(ratio) && ratio > 0
+        ? `no GrapheneOS flag; same-thread JS loop / builtin ratio ${ratio.toFixed(2)}, not calibrated yet`
+        : 'no GrapheneOS flag; same-thread probe ratio not measured',
   };
+}
+
+/** JS loop time over the builtin reference time; null if either is unusable. */
+export function jitProbeRatio(
+  jsLoopMs: number | null | undefined,
+  builtinRefMs: number | null | undefined
+): number | null {
+  const loop = finiteMs(jsLoopMs);
+  const reference = finiteMs(builtinRefMs);
+  if (loop == null || reference == null || reference <= 0) return null;
+  return loop / reference;
+}
+
+/** `app.vanadium.webview 141.0.7390.43`, from the native runtime info. */
+export function formatWebViewProvider(
+  runtime: NativeBcryptRuntimeInfo | null | undefined
+): string {
+  const name =
+    typeof runtime?.webViewPackage === 'string' ? runtime.webViewPackage : '';
+  if (!name) return 'unknown';
+  const version =
+    typeof runtime?.webViewVersion === 'string' ? runtime.webViewVersion : '';
+  return version ? `${name} ${version}` : name;
+}
+
+/** Both probe numbers and their ratio, for calibration against the flag. */
+export function formatJitProbeLine(
+  webView: Pick<WebViewProbe, 'jsLoopMs' | 'builtinRefMs'>,
+  ratio: number | null
+): string {
+  const loop = `JS loop probe: ${fmtMs(webView.jsLoopMs)}`;
+  if (ratio == null) return `${loop} (no builtin reference)`;
+  return `${loop}, builtin reference: ${fmtMs(
+    webView.builtinRefMs
+  )}, ratio ${ratio.toFixed(2)} (same thread; node: ~1 with JIT, ~3 without; not calibrated on phones yet)`;
 }
 
 export function jsLoopProbeMs(iterations = 3_000_000): number {
@@ -247,6 +377,29 @@ export function jsLoopProbeMs(iterations = 3_000_000): number {
   // Keep the loop observable so an optimiser cannot drop it.
   if (x === 0x7fffffff) console.debug('[ReticulumDiagnostics] probe', x);
   return Math.round(performance.now() - t0);
+}
+
+/**
+ * Builtin-only reference for `jsLoopProbeMs`: typed-array fill / reverse /
+ * sort and TextEncoder, all precompiled code that JIT barely changes.
+ */
+export function builtinReferenceProbeMs(): number {
+  const t0 = performance.now();
+  const values = new Float64Array(400_000);
+  let seed = 12345;
+  for (let i = 0; i < values.length; i += 4096) {
+    seed = (seed * 1103515245 + 12345) | 0;
+    values.fill(seed, i, i + 4096);
+  }
+  values.reverse();
+  values.sort();
+  const encoded = new TextEncoder().encode('x'.repeat(2_000_000));
+  const ms = performance.now() - t0;
+  // Keep the work observable so an optimiser cannot drop it.
+  if (encoded.length === 0 || values[0] === 0.5) {
+    console.debug('[ReticulumDiagnostics] reference', ms);
+  }
+  return Math.round(ms * 10) / 10;
 }
 
 export function probeWebView(): WebViewProbe {
@@ -264,8 +417,34 @@ export function probeWebView(): WebViewProbe {
     crossOriginIsolated: Boolean(
       (globalThis as { crossOriginIsolated?: boolean }).crossOriginIsolated
     ),
+    // Back to back on one thread, so both see the same core and clock.
     jsLoopMs: jsLoopProbeMs(),
+    builtinRefMs: builtinReferenceProbeMs(),
   };
+}
+
+/**
+ * Core's /admin/status body: `height`, `syncPercent`, `isSynchronizing` and
+ * `numberOfConnections`. Null when the body is not an object or has none of
+ * them; a missing or odd field is null on its own.
+ */
+export function parseCoreAdminStatus(body: unknown): CoreNodeStatus | null {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return null;
+  const record = body as Record<string, unknown>;
+  const num = (value: unknown): number | null =>
+    typeof value === 'number' && Number.isFinite(value) && value >= 0
+      ? value
+      : null;
+  const status: CoreNodeStatus = {
+    height: num(record.height),
+    syncPercent: num(record.syncPercent),
+    isSynchronizing:
+      typeof record.isSynchronizing === 'boolean'
+        ? record.isSynchronizing
+        : null,
+    numberOfConnections: num(record.numberOfConnections),
+  };
+  return Object.values(status).some((value) => value != null) ? status : null;
 }
 
 export async function probeCoreApi(timeoutMs = 6_000): Promise<CoreApiProbe> {
@@ -292,12 +471,22 @@ export async function probeCoreApi(timeoutMs = 6_000): Promise<CoreApiProbe> {
       method: 'GET',
       signal: controller.signal,
     });
+    const ms = Date.now() - t0;
+    // The same answer says whether the node itself is in sync (a node behind
+    // the chain answers memberships from old state).
+    const status = res.ok
+      ? await res
+          .json()
+          .then(parseCoreAdminStatus)
+          .catch(() => null)
+      : null;
     return {
       host,
       scheme,
       ok: res.ok,
       httpStatus: res.status,
-      ms: Date.now() - t0,
+      ms,
+      ...(status ? { status } : {}),
     };
   } catch (err) {
     return {
@@ -380,6 +569,24 @@ function count(value: unknown): number {
 /** A finite number, or null. */
 function numOrNull(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+/** `2,317`: a count with thousands separators (anything else is 0). */
+function fmtInt(value: unknown): string {
+  return Math.round(count(value)).toLocaleString('en-US');
+}
+
+/** `12.3 MB` for sizes that run to hundreds of MB. */
+function fmtBytes(bytes: unknown): string {
+  const n = count(bytes);
+  if (n >= 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  if (n >= 1024) return `${Math.round(n / 1024)} KB`;
+  return `${Math.round(n)} B`;
+}
+
+/** `3.9` per minute of `n` over `minutes`. */
+function perMinute(n: unknown, minutes: number): string {
+  return (count(n) / Math.max(1, minutes)).toFixed(1);
 }
 
 /** A label from another thread (lane, command, reason, counter): no spaces or odd characters. */
@@ -502,6 +709,8 @@ const ENGINE_LOG_MAX_KEY_COUNTS = 25;
 export type EngineLogExtras = {
   /** Fault lines the worker's full boot buffer did not keep. */
   bootOverflow?: number;
+  /** Per-event fault lines past the first few per kind and group (counted only). */
+  bootRepeatsFolded?: number;
   /** Lines per `level:token` since boot, most first. */
   keyCounts?: LogKeyCount[];
 };
@@ -543,6 +752,12 @@ export function selectEngineLogLines(
   const bootOverflow = count(extras?.bootOverflow);
   if (bootOverflow > 0) {
     boot.push(`Boot buffer full: ${bootOverflow} later warnings not kept`);
+  }
+  const bootRepeatsFolded = count(extras?.bootRepeatsFolded);
+  if (bootRepeatsFolded > 0) {
+    boot.push(
+      `Boot buffer: ${bootRepeatsFolded} more repeats of per-group channel metadata and slow statement warnings not kept (3 kept per kind and group)`
+    );
   }
   const faultsAll = collapseEngineLogLines(
     beforeTail.filter(isEngineFaultLine),
@@ -724,6 +939,99 @@ export function formatValidatorTimingLine(
   return `Membership timing${
     net.length ? ` (last ${net.length} answers)` : ''
   }: ${parts.join('; ')}`;
+}
+
+const VALIDATOR_RECENT_FAILURE_LINES = 8;
+
+/**
+ * Batched requests and why they failed: failed requests by reason (requests,
+ * not addresses), when failures began and the last request with an answer,
+ * then the last 8 failures. Nothing for an older worker without the counters.
+ */
+export function formatValidatorFailureLines(
+  stats: GroupValidatorStats | null | undefined,
+  now: number
+): string[] {
+  if (!stats || typeof stats !== 'object') return [];
+  const requests = numOrNull(stats.requestCount);
+  const reasons = fmtCountMap(stats.failByReason, 10);
+  const ring = (
+    Array.isArray(stats.recentFailures) ? stats.recentFailures : []
+  ).filter((f) => f && typeof f === 'object' && numOrNull(f.at) != null);
+  if (requests == null && reasons === 'none' && !ring.length) return [];
+  const first = numOrNull(stats.firstFailAt);
+  const lastOk = numOrNull(stats.lastOkAt);
+  const parts = [
+    requests != null
+      ? `${fmtInt(requests)} sent (largest batch ${count(stats.maxBatchSize)})`
+      : null,
+    reasons === 'none'
+      ? 'no failed requests'
+      : `failed requests by reason: ${reasons}`,
+    first != null ? `failing since ${fmtEventTime(first, now)}` : null,
+    reasons !== 'none' || lastOk != null
+      ? `last answer ${lastOk != null ? fmtEventTime(lastOk, now) : 'never'}`
+      : null,
+  ].filter((part): part is string => part != null);
+  const lines = [`Membership requests: ${parts.join('; ')}`];
+  if (ring.length) {
+    lines.push(
+      `Membership last failures: ${ring
+        .slice(-VALIDATOR_RECENT_FAILURE_LINES)
+        .map(
+          (f) =>
+            `${fmtEventTime(f.at, now)} ${safeLabel(f.reason, 32)} (${count(
+              f.addresses
+            )})`
+        )
+        .join(', ')}`
+    );
+  }
+  return lines;
+}
+
+/** `Node sync: height 2,123,456, 99.5% synced, synchronizing yes, 12 connections`. */
+export function formatCoreNodeStatusLine(
+  status: CoreNodeStatus | null | undefined
+): string | null {
+  if (!status || typeof status !== 'object') return null;
+  const parts: string[] = [];
+  const height = numOrNull(status.height);
+  if (height != null) parts.push(`height ${fmtInt(height)}`);
+  const percent = numOrNull(status.syncPercent);
+  if (percent != null) parts.push(`${percent}% synced`);
+  if (typeof status.isSynchronizing === 'boolean') {
+    parts.push(`synchronizing ${status.isSynchronizing ? 'yes' : 'no'}`);
+  }
+  const connections = numOrNull(status.numberOfConnections);
+  if (connections != null) parts.push(`${connections} connections`);
+  return parts.length ? `Node sync: ${parts.join(', ')}` : null;
+}
+
+/** The chat page's admin-list fetches (Group.tsx), GO only. */
+export function formatAdminListLine(
+  stats: ReticulumAdminListFetchStats | null | undefined,
+  now: number
+): string | null {
+  if (!stats || typeof stats !== 'object') return null;
+  const failed = count(stats.failed);
+  const timedOut = count(stats.timedOut);
+  const lastOkAt = count(stats.lastOkAt);
+  const lastErrorAt = count(stats.lastErrorAt);
+  const parts = [
+    `ok ${count(stats.ok)}, failed ${failed}${timedOut > 0 ? ` (${timedOut} timed out)` : ''}`,
+  ];
+  if (stats.lastError) {
+    parts.push(
+      `last error ${redactDiagnosticText(String(stats.lastError)).slice(
+        0,
+        120
+      )}${lastErrorAt > 0 ? `, ${fmtAgo(lastErrorAt, now)}` : ''}`
+    );
+  }
+  parts.push(`last ok ${lastOkAt > 0 ? fmtAgo(lastOkAt, now) : 'never'}`);
+  parts.push(`trusted ${stats.authoritative ? 'yes' : 'no'}`);
+  return `Admin list: ${parts.join('; ')}`;
 }
 
 function countEntries(record: unknown): Array<[string, number]> {
@@ -940,6 +1248,65 @@ export function formatAuthorGapScannerLines(
     );
   }
   lines.push(...formatGapRowLines(stats.rows));
+  lines.push(...formatAuthorGapOutcomeLines(stats.outcomes));
+  return lines;
+}
+
+/**
+ * What author-range repairs came to: per minute over the last 10 minutes and
+ * since start. A denial is sorted by the age of the stored message after the
+ * gap (old = past the 29-day serve floor, which Hubs no longer serve).
+ * Nothing for an older engine.
+ */
+export function formatAuthorGapOutcomeLines(
+  outcomes: ReticulumChatAuthorGapOutcomes | null | undefined
+): string[] {
+  if (!outcomes || typeof outcomes !== 'object') return [];
+  const minutes = count(outcomes.minutes);
+  const describe = (
+    record: Record<string, number> | null | undefined,
+    rate: boolean
+  ): string => {
+    const r = record && typeof record === 'object' ? record : {};
+    const value = (n: number) => (rate ? perMinute(n, minutes) : fmtInt(n));
+    const sumOf = (prefix: string) =>
+      Object.entries(r)
+        .filter(([key]) => key.startsWith(prefix))
+        .reduce((sum, [, n]) => sum + count(n), 0);
+    const old = count(r.unavailable_old);
+    const recent = count(r.unavailable_recent);
+    const undated = count(r.unavailable_undated);
+    const failed = Object.fromEntries(
+      Object.entries(r)
+        .filter(([key]) => key.startsWith('failed:'))
+        .map(([key, n]) => [key.slice('failed:'.length), n])
+    );
+    // Reasons as counts, so only on the since-start line.
+    const failedReasons = rate ? 'none' : fmtCountMap(failed, 4);
+    return `requested ${value(count(r.requested))}, unavailable ${value(
+      sumOf('unavailable')
+    )}${
+      old + recent + undated > 0
+        ? ` (old ${value(old)}, recent ${value(recent)}, undated ${value(undated)})`
+        : ''
+    }, link failed ${value(sumOf('failed:'))}${
+      failedReasons !== 'none' ? ` (${failedReasons})` : ''
+    }, imported ${value(count(r.imported))} pages (${value(
+      count(r.imported_events)
+    )} events)`;
+  };
+  const total =
+    outcomes.total && typeof outcomes.total === 'object' ? outcomes.total : {};
+  if (!Object.values(total).some((n) => count(n) > 0)) {
+    return ['Gap repairs since start: none'];
+  }
+  const lines: string[] = [];
+  if (minutes > 0) {
+    lines.push(
+      `Gap repairs per min (last ${minutes} min): ${describe(outcomes.recent, true)}`
+    );
+  }
+  lines.push(`Gap repairs since start: ${describe(total, false)}`);
   return lines;
 }
 
@@ -958,6 +1325,16 @@ function formatGapRowLines(
       rows.olderThanServeAge
     )}${rows.source === 'memory' ? ' (memory mirror)' : ''}`,
   ];
+  // Newer engines tag the rows further (old split due/parked, tails, holes).
+  if (numOrNull(rows.noStoredNeighbour) != null) {
+    lines.push(
+      `Gap row kinds: older than 29 d due ${count(
+        rows.olderThanServeAgeDue
+      )} / parked ${count(rows.olderThanServeAgeParked)}, no stored neighbour ${count(
+        rows.noStoredNeighbour
+      )}, single-seq holes ${count(rows.singleSeqInterior)}`
+    );
+  }
   const top = (Array.isArray(rows.topGroups) ? rows.topGroups : [])
     .filter((g) => g && typeof g === 'object' && numOrNull(g.groupId) != null)
     .slice(0, 5);
@@ -1088,12 +1465,222 @@ export function formatEngineCounterLines(counters: unknown): string[] {
   return lines;
 }
 
+/**
+ * The fs shim's OPFS handle pool and file index: refill that is slow and
+ * opens that fail look the same from outside (EMFILE), this separates them.
+ */
+export function formatChatStorageLine(
+  storage: MobileFsStats | null | undefined,
+  now: number
+): string | null {
+  if (!storage || typeof storage !== 'object') return null;
+  const area = storage.byArea ?? ({} as MobileFsStats['byArea']);
+  const emfile = storage.emfile ?? ({} as MobileFsStats['emfile']);
+  const topUp = storage.topUp ?? ({} as MobileFsStats['topUp']);
+  const boot = storage.boot ?? ({} as MobileFsStats['boot']);
+  const emfileCount = count(emfile.count);
+  const emfileLast = numOrNull(emfile.lastAt);
+  const parts = [
+    `files ${fmtInt(storage.files)} (notify ${fmtInt(area.notify)}, temp ${fmtInt(
+      area.temp
+    )}, resources ${fmtInt(area.resources)}, other ${fmtInt(area.other)})`,
+    `open handles ${fmtInt(storage.openHandles)}`,
+    `spares ${count(storage.spares)}/${count(storage.spareTarget)}${
+      count(storage.reclaimable) > 0
+        ? ` (reclaimable ${fmtInt(storage.reclaimable)})`
+        : ''
+    }`,
+    `EMFILE ${fmtInt(emfileCount)}${
+      emfileCount > 0 && emfileLast
+        ? ` (last ${fmtEventTime(emfileLast, now)})`
+        : ''
+    }`,
+    `top-up ${
+      topUp.inFlight ? `running ${fmtMs(count(topUp.inFlightMs))}` : 'idle'
+    } / max ${fmtMs(count(topUp.maxMs))}${
+      topUp.retryPending ? ', retry waiting' : ''
+    }${
+      count(topUp.watchdogRestarts) > 0
+        ? `, watchdog restarts ${count(topUp.watchdogRestarts)}`
+        : ''
+    }`,
+    `opened ${fmtInt(topUp.opened)}, failed ${fmtInt(topUp.failed)} (last error ${
+      topUp.lastErrorName ? safeLabel(topUp.lastErrorName, 32) : '-'
+    })`,
+    `boot dropped ${fmtInt(boot.dropped)}, evicted ${fmtInt(
+      boot.evicted
+    )}, open failed ${fmtInt(boot.openFailed)}`,
+  ];
+  return `Chat storage: ${parts.join(', ')}`;
+}
+
+/**
+ * The sqlite shim: whether each database really runs in WAL (a fallback to
+ * the old journal stays silent otherwise), how full the SAH pool is, and how
+ * often a cached statement saved a prepare. File names are left out.
+ */
+export function formatChatDatabaseLine(
+  sqlite: MobileSqliteStats | null | undefined
+): string | null {
+  if (!sqlite || typeof sqlite !== 'object') return null;
+  const databases = Array.isArray(sqlite.databases) ? sqlite.databases : [];
+  const modes = databases.map((db) =>
+    db && typeof db.journalMode === 'string'
+      ? safeLabel(db.journalMode, 12)
+      : '?'
+  );
+  let hits = 0;
+  let misses = 0;
+  for (const db of databases) {
+    hits += count(db?.statementHits);
+    misses += count(db?.statementMisses);
+  }
+  const parts = [
+    `journal ${modes.length > 0 ? modes.join(', ') : 'none open'}`,
+    sqlite.pool
+      ? `pool ${fmtInt(sqlite.pool.files)}/${fmtInt(sqlite.pool.capacity)} slots`
+      : 'pool n/a',
+    `statement cache ${fmtInt(hits)} hits / ${fmtInt(misses)} misses`,
+  ];
+  return `Chat database: ${parts.join(', ')}`;
+}
+
+/** Stages of the engine's stale-auth gate (`providerAuthSkipped_<type>_<stage>`). */
+const PROVIDER_AUTH_SKIP_STAGE_RE =
+  /_(entry|membership|read_check|built|pre_register|dequeue|queued)$/;
+
+/** `providerAuthSkipped_history_page_pre_register` -> `history_page:pre_register`. */
+function providerAuthSkipLabel(key: string): string {
+  const rest = key.slice('providerAuthSkipped_'.length);
+  const stage = PROVIDER_AUTH_SKIP_STAGE_RE.exec(rest);
+  return safeLabel(stage ? `${rest.slice(0, stage.index)}:${stage[1]}` : rest);
+}
+
+/**
+ * Counters the report always shows on their own lines: membership deferrals
+ * (not queued, evicted, unknown without asking Core),
+ * local storage failures, and provider auths skipped because the request was
+ * already gone. Nothing when all are 0 or the engine is older.
+ */
+export function formatFocusCounterLines(
+  focus: Record<string, number> | null | undefined
+): string[] {
+  if (!focus || typeof focus !== 'object') return [];
+  const c = (key: string) => count(focus[key]);
+  const lines: string[] = [];
+  const deferrals: Array<[string, string]> = [
+    ['deferred', 'membershipDeferred'],
+    // With keepMembershipDeferredPulls the per-peer cap no longer drops
+    // these; what is left is a pull queue with every item in flight.
+    ['not queued', 'membershipDeferredDropped'],
+    ['evicted', 'membershipDeferredEvicted'],
+    ['unknown from backoff', 'membershipNullFromBackoff'],
+    ['gap tries refunded', 'authorGapMembershipRefund'],
+  ];
+  if (deferrals.some(([, key]) => c(key) > 0)) {
+    lines.push(
+      `Membership deferrals: ${deferrals
+        .map(([label, key]) => `${label} ${fmtInt(c(key))}`)
+        .join(', ')}`
+    );
+  }
+  if (c('membershipPrefetchPages') > 0) {
+    lines.push(
+      `Membership prefetch: pages ${fmtInt(
+        c('membershipPrefetchPages')
+      )}, authors ${fmtInt(c('membershipPrefetchAuthors'))}`
+    );
+  }
+  if (c('localImportFailure') > 0) {
+    lines.push(
+      `Local storage failures (not charged to peers): ${fmtInt(
+        c('localImportFailure')
+      )}`
+    );
+  }
+  const skipped = Object.entries(focus)
+    .filter(([key]) => key.startsWith('providerAuthSkipped_'))
+    .map(([key, n]): [string, number] => [providerAuthSkipLabel(key), count(n)])
+    .filter(([, n]) => n > 0)
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  const skippedTotal = c('providerAuthSkipped');
+  if (skippedTotal > 0 || skipped.length) {
+    lines.push(
+      `Provider auths skipped (request already gone): ${fmtInt(skippedTotal)}${
+        skipped.length
+          ? ` (${skipped
+              .slice(0, 6)
+              .map(([label, n]) => `${label}=${n}`)
+              .join(
+                ' '
+              )}${skipped.length > 6 ? ` +${skipped.length - 6} more` : ''})`
+          : ''
+      }`
+    );
+  }
+  const queuedDropped = c('providerAuthEndedQueuedDropped');
+  const stale = c('dmNotifyStale');
+  if (queuedDropped > 0 || stale > 0) {
+    lines.push(
+      `Provider auths ended while queued: ${fmtInt(queuedDropped)}; stale DM notifies: ${fmtInt(stale)}`
+    );
+  }
+  // Serving policy (GO): history serves refused as busy, by type and why
+  // (`providerServeShed_<type>_<late|load>`); serves allowed on a recent Core
+  // "member" answer while Core was down; requests fresh only at arrival.
+  const shedByType = Object.entries(focus)
+    .filter(([key]) => key.startsWith('providerServeShed_'))
+    .map(([key, n]): [string, number] => {
+      const rest = key.slice('providerServeShed_'.length);
+      const why = /_(late|load)$/.exec(rest);
+      return [
+        safeLabel(why ? `${rest.slice(0, why.index)}:${why[1]}` : rest),
+        count(n),
+      ];
+    })
+    .filter(([, n]) => n > 0)
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  const shed = c('providerServeShed');
+  const staleMember = c('requesterMembershipStaleAllowed');
+  const atArrival = c('serveFreshOnlyAtArrival');
+  if (shed > 0 || shedByType.length || staleMember > 0 || atArrival > 0) {
+    lines.push(
+      `Serving policy: shed as busy ${fmtInt(shed)}${
+        shedByType.length
+          ? ` (${shedByType
+              .slice(0, 6)
+              .map(([label, n]) => `${label}=${n}`)
+              .join(' ')})`
+          : ''
+      }; served on a recent member answer ${fmtInt(
+        staleMember
+      )}; fresh only at arrival ${fmtInt(atArrival)}`
+    );
+  }
+  return lines;
+}
+
 /** The "Sync health" section from a `debug:sync-health` answer. */
 export function formatSyncHealthLines(
   health: EngineSyncHealthSnapshot | null | undefined
 ): string[] {
   if (!health || typeof health !== 'object') return ['Not reported'];
   const lines: string[] = [];
+  lines.push(
+    ...safeLines('Chat storage', () => {
+      const storage = formatChatStorageLine(
+        health.storage,
+        numOrNull(health.at) ?? Date.now()
+      );
+      return storage ? [storage] : [];
+    })
+  );
+  lines.push(
+    ...safeLines('Chat database', () => {
+      const database = formatChatDatabaseLine(health.sqlite);
+      return database ? [database] : [];
+    })
+  );
   if (health.engineError) {
     lines.push(
       `Engine getter failed: ${redactDiagnosticText(
@@ -1116,8 +1703,369 @@ export function formatSyncHealthLines(
     ...safeLines('Engine queues', () => formatEngineQueueLines(engine.queues)),
     ...safeLines('Engine counters', () =>
       formatEngineCounterLines(engine.counters)
+    ),
+    ...safeLines('Focus counters', () =>
+      formatFocusCounterLines(engine.focusCounters)
     )
   );
+  return lines;
+}
+
+// ── channel metadata (debug:sync-health engine.channels) ────────────────────
+
+const CHANNEL_METADATA_GROUP_LINES = 8;
+
+/** How much is wrong with one group's channel metadata; 0 = nothing. */
+function channelMetadataProblemScore(
+  group: ReticulumChatChannelMetadataGroupDiagnostics
+): number {
+  let score =
+    count(group.unprojectedCreates) * 4 +
+    count(group.skippedEvents) * 3 +
+    count(group.deferredProjections) * 2 +
+    count(group.deferredSnapshots) * 2 +
+    count(group.staleSignerSnapshots) +
+    count(group.unknownAdminAuthors);
+  if (group.lastSnapshotFailure) score += 1;
+  if (group.snapshotState === 'missing_snapshot') score += 2;
+  if (group.snapshotState === 'snapshot_stale') score += 1;
+  if (group.expectedScope == null) score += 1;
+  if (group.expectedScope === 'full' && group.fullVersion == null) score += 2;
+  if (group.signerAdmin === 'no') score += 1;
+  return score;
+}
+
+const SNAPSHOT_STATE_LABELS: Record<string, string> = {
+  missing_snapshot: 'missing',
+  snapshot_current: 'current',
+  snapshot_stale: 'stale',
+};
+
+function formatChannelMetadataGroup(
+  group: ReticulumChatChannelMetadataGroupDiagnostics,
+  now: number
+): string {
+  const version = (v: unknown) =>
+    numOrNull(v) != null ? `v${Math.trunc(v as number)}` : '-';
+  const parts = [
+    `admin ${group.localAdmin ? 'yes' : 'no'}${group.authoritative ? '' : ' (list not trusted)'}`,
+    `scope ${group.expectedScope ?? 'unknown'}`,
+    `snapshot ${
+      group.snapshotState
+        ? (SNAPSHOT_STATE_LABELS[group.snapshotState] ??
+          safeLabel(group.snapshotState, 24))
+        : 'none'
+    } (public ${version(group.publicVersion)}, full ${version(group.fullVersion)}${
+      group.signer
+        ? `, signer ${group.signer === 'own' ? 'own' : 'other'} admin ${
+            group.signerAdmin ?? 'unknown'
+          }`
+        : ''
+    })`,
+    `custom channels ${count(group.customChannels)}`,
+  ];
+  if (count(group.unprojectedCreates) > 0) {
+    parts.push(`unprojected creates ${count(group.unprojectedCreates)}`);
+  }
+  if (count(group.skippedEvents) > 0) {
+    parts.push(
+      `skipped ${count(group.skippedEvents)} (own ${count(
+        group.skippedOwn
+      )}, creates by others ${count(group.skippedCreatesByOthers)}, other ${count(
+        group.skippedOther
+      )})`
+    );
+  }
+  if (count(group.deferredProjections) > 0) {
+    parts.push(
+      `deferred ${count(group.deferredProjections)} (max ${count(
+        group.deferredProjectionMaxAttempts
+      )} tries)`
+    );
+  }
+  if (count(group.unknownAdminAuthors) > 0) {
+    parts.push(
+      `authors with unknown admin status ${count(group.unknownAdminAuthors)}`
+    );
+  }
+  if (count(group.deferredSnapshots) > 0) {
+    parts.push(
+      `deferred snapshots ${count(group.deferredSnapshots)} (max ${count(
+        group.deferredSnapshotMaxAttempts
+      )} tries)`
+    );
+  }
+  if (count(group.staleSignerSnapshots) > 0) {
+    parts.push(
+      `ex-admin snapshots ignored ${count(group.staleSignerSnapshots)}`
+    );
+  }
+  const failure = group.lastSnapshotFailure;
+  if (failure && typeof failure === 'object') {
+    parts.push(
+      `last snapshot failure ${safeLabel(failure.reason, 40)} ${fmtAgo(
+        failure.at,
+        now
+      )}`
+    );
+  }
+  return `group=${Math.trunc(count(group.groupId))}: ${parts.join(', ')}`;
+}
+
+/**
+ * The "Channel metadata" section: subscribed groups whose channels may not
+ * show, worst first, at most 8 lines; the rest summed up. Group ids are
+ * `group=` pairs, which the report pseudonymises.
+ */
+export function formatChannelMetadataLines(
+  channels: ReticulumChatChannelMetadataDiagnostics | null | undefined,
+  now: number
+): string[] {
+  if (!channels || typeof channels !== 'object') return ['Not reported'];
+  const groups = (Array.isArray(channels.groups) ? channels.groups : []).filter(
+    (g) => g && typeof g === 'object' && numOrNull(g.groupId) != null
+  );
+  const scored = groups
+    .map((group) => ({ group, score: channelMetadataProblemScore(group) }))
+    .sort(
+      (a, b) =>
+        b.score - a.score || count(a.group.groupId) - count(b.group.groupId)
+    );
+  const problems = scored.filter((entry) => entry.score > 0);
+  const subscribed = count(channels.subscribedGroups);
+  const lines = [
+    `Channel metadata: ${subscribed} subscribed groups${
+      subscribed > groups.length ? ` (${groups.length} checked)` : ''
+    }, ${problems.length} with problems`,
+  ];
+  for (const { group } of problems.slice(0, CHANNEL_METADATA_GROUP_LINES)) {
+    lines.push(formatChannelMetadataGroup(group, now));
+  }
+  if (problems.length > CHANNEL_METADATA_GROUP_LINES) {
+    lines.push(
+      `(+${problems.length - CHANNEL_METADATA_GROUP_LINES} more groups with problems)`
+    );
+  }
+  const fine = scored.filter((entry) => entry.score === 0);
+  if (fine.length) {
+    lines.push(
+      `(${fine.length} groups without problems: ${
+        fine.filter((entry) => count(entry.group.customChannels) > 0).length
+      } with custom channels, admin in ${
+        fine.filter((entry) => entry.group.localAdmin).length
+      })`
+    );
+  }
+  return lines;
+}
+
+// ── engine time and page activity ────────────────────────────────────────────
+
+/**
+ * Python events waiting for the engine on the bridge socket (replies skip
+ * this queue): how many now and at most, how long they waited, and the
+ * stale gossip (and older digests) never handed to the engine. Null for an
+ * older worker or before any event.
+ */
+export function formatSocketQueueLine(
+  queue: NonNullable<EngineIoStats['socketQueue']> | null | undefined,
+  now: number
+): string | null {
+  if (!queue || typeof queue !== 'object' || count(queue.enqueued) <= 0) {
+    return null;
+  }
+  const oldest = numOrNull(queue.oldestAgeMs);
+  const maxAt = numOrNull(queue.maxDepthAt);
+  const parts = [
+    `waiting ${fmtInt(queue.depth)}${oldest != null ? ` (oldest ${fmtMs(oldest)})` : ''}`,
+    `most ${fmtInt(queue.maxDepth)}${maxAt != null ? ` at ${fmtEventTime(maxAt, now)}` : ''}`,
+  ];
+  if (hasSamples(queue.wait)) {
+    parts.push(
+      `wait p95 ${fmtP(queue.wait.p95)} max ${fmtMs(queue.wait.max)}${
+        hasSamples(queue.waitRecent)
+          ? `, last 10 min p95 ${fmtP(queue.waitRecent.p95)}`
+          : ''
+      }`
+    );
+  }
+  if (count(queue.maxSliceMs) > 0) {
+    parts.push(`longest slice ${fmtMs(count(queue.maxSliceMs))}`);
+  }
+  const dropped = count(queue.staleGossipDropped);
+  parts.push(
+    dropped > 0
+      ? `stale gossip dropped ${fmtInt(dropped)} (${fmtCountMap(
+          queue.staleGossipByKind
+        )}${
+          count(queue.digestsCoalesced) > 0
+            ? `; ${fmtInt(queue.digestsCoalesced)} older digests merged`
+            : ''
+        })`
+      : 'stale gossip dropped 0'
+  );
+  return `Socket event queue: ${parts.join('; ')}`;
+}
+
+/**
+ * Where the engine's time goes: page -> engine RPCs per method (top 5 by
+ * total time), SQLite commits and OPFS flushes per minute, the database's
+ * size and rows, and the bridge socket's backlog. Nothing for an older
+ * worker.
+ */
+export function formatEngineIoLines(
+  io: EngineIoStats | null | undefined,
+  db: EngineDbDiagnostics | null | undefined,
+  now: number
+): string[] {
+  const lines: string[] = [];
+  if (io && typeof io === 'object') {
+    const methods = (Array.isArray(io.rpc?.methods) ? io.rpc.methods : [])
+      .filter((m) => m && typeof m === 'object')
+      .slice(0, 5);
+    lines.push(
+      methods.length
+        ? `Engine RPCs (${fmtInt(io.rpc.calls)} since start; top by time): ${methods
+            .map(
+              (m) =>
+                `${safeLabel(m.method, 40)} n=${fmtInt(m.n)} total ${fmtMs(
+                  count(m.totalMs)
+                )} p95 ${fmtP(m.p95)} max ${fmtMs(count(m.max))}${
+                  count(m.syncMaxMs) >= 50
+                    ? ` blocking max ${fmtMs(count(m.syncMaxMs))}`
+                    : ''
+                }${count(m.errors) > 0 ? ` errors ${count(m.errors)}` : ''}`
+            )
+            .join('; ')}`
+        : 'Engine RPCs: none yet'
+    );
+    const commits = io.commits;
+    const flush = io.flush;
+    const sqlite: string[] = [];
+    if (commits && typeof commits === 'object') {
+      sqlite.push(
+        count(commits.minutes) > 0
+          ? `commits ${perMinute(commits.recent, count(commits.minutes))}/min (last ${count(
+              commits.minutes
+            )} min, ${fmtInt(commits.total)} since start)`
+          : 'commits none yet'
+      );
+    }
+    if (flush && typeof flush === 'object') {
+      if (!flush.installed) {
+        sqlite.push('OPFS flushes not measured');
+      } else if (count(flush.rate?.minutes) > 0) {
+        sqlite.push(
+          `OPFS flushes ${perMinute(flush.rate.recent, count(flush.rate.minutes))}/min${
+            hasSamples(flush.recent)
+              ? `, flush p50 ${fmtP(flush.recent.p50)} p95 ${fmtP(
+                  flush.recent.p95
+                )} max ${fmtMs(flush.recent.max)}`
+              : ''
+          }`
+        );
+      } else {
+        sqlite.push('OPFS flushes none yet');
+      }
+    }
+    if (sqlite.length) lines.push(`SQLite: ${sqlite.join('; ')}`);
+    const frames = io.socketFrames;
+    if (frames && typeof frames === 'object' && count(frames.rate?.total) > 0) {
+      const at = numOrNull(frames.maxBackToBackAt);
+      lines.push(
+        `Socket frames: ${perMinute(
+          frames.rate.recent,
+          count(frames.rate.minutes)
+        )}/min (last ${count(frames.rate.minutes)} min); most handled back to back ${count(
+          frames.maxBackToBack
+        )}${at != null ? ` at ${fmtEventTime(at, now)}` : ''} (last 10 min ${count(
+          frames.recentMaxBackToBack
+        )})`
+      );
+    }
+    const queueLine = formatSocketQueueLine(io.socketQueue, now);
+    if (queueLine) lines.push(queueLine);
+  }
+  if (db && typeof db === 'object') {
+    const writes = db.indexWrites;
+    const fts = writes?.ftsCheck;
+    const countedAt = numOrNull(db.countedAt);
+    lines.push(
+      `Chat database: ${
+        numOrNull(db.sizeBytes) != null ? fmtBytes(db.sizeBytes) : 'size n/a'
+      }${numOrNull(db.freeBytes) ? ` (free ${fmtBytes(db.freeBytes)})` : ''}, events ${
+        numOrNull(db.events) != null ? fmtInt(db.events) : 'n/a'
+      }, search rows ${
+        numOrNull(db.searchRows) != null ? fmtInt(db.searchRows) : 'n/a'
+      }${countedAt != null ? ` (counted ${fmtEventTime(countedAt, now)})` : ''}${
+        writes && typeof writes === 'object'
+          ? `; search writes ${fmtInt(writes.searchWritten)} (unchanged ${fmtInt(
+              writes.searchUnchanged
+            )}), mention writes ${fmtInt(writes.mentionsWritten)} (unchanged ${fmtInt(
+              writes.mentionsUnchanged
+            )})${
+              fts && typeof fts === 'object'
+                ? `; search index check ${safeLabel(fts.state ?? 'unknown', 16)}${
+                    fts.rebuilt ? ', rebuilt' : ''
+                  }`
+                : ''
+            }`
+          : ''
+      }`
+    );
+  }
+  return lines;
+}
+
+/**
+ * The page's own work: main-thread long tasks (what users feel as lag) and
+ * the chat list's getSummaries refreshes. Nothing for older callers.
+ */
+export function formatPageActivityLines(
+  longTasks: PageLongTaskStats | null | undefined,
+  refresh: ReticulumSummaryRefreshStats | null | undefined,
+  now: number
+): string[] {
+  const lines: string[] = [];
+  if (longTasks && typeof longTasks === 'object') {
+    if (!longTasks.installed) {
+      lines.push('Page long tasks: not measured in this WebView');
+    } else {
+      const recent = longTasks.recent ?? {
+        minutes: 0,
+        count: 0,
+        totalMs: 0,
+        maxMs: 0,
+      };
+      const maxAt = numOrNull(longTasks.maxAt);
+      lines.push(
+        `Page long tasks: ${
+          count(recent.minutes) > 0
+            ? `${fmtInt(recent.count)} in the last ${count(recent.minutes)} min (${fmtMs(
+                count(recent.totalMs)
+              )} in all, longest ${fmtMs(count(recent.maxMs))}); `
+            : ''
+        }since page start ${fmtInt(longTasks.count)} (${fmtMs(
+          count(longTasks.totalMs)
+        )}, over 1 s ${count(longTasks.over1s)}, longest ${fmtMs(
+          count(longTasks.maxMs)
+        )}${maxAt != null ? ` at ${fmtEventTime(maxAt, now)}` : ''})`
+      );
+    }
+  }
+  if (refresh && typeof refresh === 'object' && count(refresh.runs) > 0) {
+    const runs = count(refresh.runs);
+    const lastAt = count(refresh.lastAt);
+    lines.push(
+      `Summary refreshes: ${fmtInt(runs)} (${fmtInt(
+        refresh.unchanged
+      )} unchanged, ${fmtInt(refresh.coalesced)} joined a queued one); time last ${fmtMs(
+        count(refresh.lastMs)
+      )}, average ${fmtMs(count(refresh.totalMs) / runs)}, max ${fmtMs(
+        count(refresh.maxMs)
+      )}${lastAt > 0 ? `; last ${fmtAgo(lastAt, now)}` : ''}`
+    );
+  }
   return lines;
 }
 
@@ -1311,6 +2259,26 @@ export function formatServingLines(
         s.ended
       )}`
     );
+    // Newer workers say why they rejected, and how many rejects came after
+    // Python had already given up (the peer saw Python's timeout instead).
+    const reasons = fmtCountMap(s.rejectedReasons, 6);
+    const lateRejected = count(s.lateRejected);
+    if (reasons !== 'none' || lateRejected > 0) {
+      lines.push(
+        `  rejected by reason: ${reasons}${
+          lateRejected > 0 ? `; ${lateRejected} after Python gave up` : ''
+        }`
+      );
+    }
+    // Python's auth event to the engine, per type: a p95 near Python's 15 s
+    // answer window means this type's requests mostly arrive too late.
+    if (hasSamples(s.authArrivalMs)) {
+      lines.push(
+        `  auth arrival p50 ${fmtP(s.authArrivalMs.p50)}, p95 ${fmtP(
+          s.authArrivalMs.p95
+        )}, max ${fmtMs(s.authArrivalMs.max)}`
+      );
+    }
   }
   if (types.length > SERVING_TYPE_LINES) {
     lines.push(`(+${types.length - SERVING_TYPE_LINES} more types)`);
@@ -1360,6 +2328,17 @@ export function formatServingLines(
 const NATIVE_BRIDGE_PROBE_TIMEOUT_MS = 3_000;
 const PYTHON_LANE_LINES = 6;
 const PYTHON_LANE_QUIET_DWELL_MS = 50;
+/** Packet mix entries the report keeps (most bytes first). */
+const PACKET_MIX_ENTRIES = 8;
+
+/** `rx:0/3/1` (direction, packet type, destination type, context): digits only. */
+function packetMixKey(raw: unknown): string {
+  return (
+    String(raw ?? '')
+      .replace(/[^\w:/]/g, '_')
+      .slice(0, 32) || '?'
+  );
+}
 
 function sanitizeLane(raw: unknown): PythonBridgeLaneDetail | null {
   if (!raw || typeof raw !== 'object') return null;
@@ -1382,7 +2361,46 @@ function sanitizeLane(raw: unknown): PythonBridgeLaneDetail | null {
   if (typeof lane.currentTask === 'string' && lane.currentTask) {
     out.currentTask = safeLabel(lane.currentTask, 48);
   }
+  if (typeof lane.busyMaxTask === 'string' && lane.busyMaxTask) {
+    out.busyMaxTask = safeLabel(lane.busyMaxTask, 48);
+  }
   return out;
+}
+
+/** A label -> count map from another process: safe keys, at most `max` entries. */
+function sanitizeCountRecord(
+  raw: unknown,
+  max = 16
+): Record<string, number> | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const out: Record<string, number> = {};
+  for (const [key, value] of Object.entries(
+    raw as Record<string, unknown>
+  ).slice(0, max)) {
+    const n = numOrNull(value);
+    if (n != null) out[safeLabel(key, 48)] = n;
+  }
+  return out;
+}
+
+function sanitizeLinkCounts(raw: unknown): PythonBridgeLinkCounts | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const links = raw as Record<string, unknown>;
+  const out: PythonBridgeLinkCounts = {};
+  for (const key of [
+    'overlay',
+    'audio',
+    'inboundHandshakes',
+    'fileLinks',
+    'rnsActive',
+    'rnsPending',
+  ] as const) {
+    const n = numOrNull(links[key]);
+    if (n != null) out[key] = n;
+  }
+  const sessions = sanitizeCountRecord(links.resourceSessions);
+  if (sessions) out.resourceSessions = sessions;
+  return Object.keys(out).length ? out : null;
 }
 
 function sanitizeBridgeDetail(raw: unknown): PythonBridgeDetail | null {
@@ -1402,10 +2420,26 @@ function sanitizeBridgeDetail(raw: unknown): PythonBridgeDetail | null {
     'gilLagMsMax',
     'providerPendingAuth',
     'jsonOutDrops',
+    'threadCount',
+    'outQueue',
+    'outQueueHighWater',
+    'outQueueDrops',
+    'openFds',
+    'processCpuMs',
+    'processCpuDeltaMs',
+    'processCpuWindowMs',
+    'rejectedResourceWatchdogs',
   ] as const) {
     const n = numOrNull(detail[key]);
     if (n != null) out[key] = n;
   }
+  const links = sanitizeLinkCounts(detail.links);
+  if (links) out.links = links;
+  const refusedByKind = sanitizeCountRecord(
+    detail.providerRefusedByBusyKind,
+    32
+  );
+  if (refusedByKind) out.providerRefusedByBusyKind = refusedByKind;
   const cmdQueueMax = numOrNull(detail.cmdQueueMax);
   if (cmdQueueMax != null) out.cmdQueueMax = cmdQueueMax;
   if (Array.isArray(detail.lanes)) {
@@ -1478,6 +2512,52 @@ export async function probeNativeBridge(
       processStartedAtMs: numOrNull(nativeDetail?.processStartedAtMs),
       socket: sanitizeSocketDetail(nativeDetail?.socket),
     };
+    const callAudioIo = sanitizeCallAudioIo(
+      status.bridge && typeof status.bridge === 'object'
+        ? (status.bridge as Record<string, unknown>).callAudioIo
+        : null
+    );
+    if (callAudioIo) result.callAudioIo = callAudioIo;
+    if (typeof status.cryptoBackend === 'string' && status.cryptoBackend) {
+      result.cryptoBackend = safeLabel(status.cryptoBackend, 32);
+    }
+    if (Array.isArray(status.packetMix)) {
+      result.packetMix = status.packetMix
+        .filter((entry): entry is Record<string, unknown> =>
+          Boolean(entry && typeof entry === 'object')
+        )
+        .map((entry) => ({
+          key: packetMixKey(entry.key),
+          count: count(entry.count),
+          bytes: count(entry.bytes),
+        }))
+        .sort((a, b) => b.bytes - a.bytes)
+        .slice(0, PACKET_MIX_ENTRIES);
+    }
+    const gone =
+      nativeDetail?.rendererGone &&
+      typeof nativeDetail.rendererGone === 'object'
+        ? (nativeDetail.rendererGone as Record<string, unknown>)
+        : null;
+    if (gone && numOrNull(gone.at) != null) {
+      result.rendererGone = {
+        at: gone.at as number,
+        crashed: gone.crashed === true,
+        count: count(gone.count),
+      };
+    }
+    const staged =
+      nativeDetail?.stagedResources &&
+      typeof nativeDetail.stagedResources === 'object'
+        ? (nativeDetail.stagedResources as Record<string, unknown>)
+        : null;
+    if (staged) {
+      result.stagedResources = {
+        files: count(staged.files),
+        bytes: count(staged.bytes),
+        oldestAgeMs: count(staged.oldestAgeMs),
+      };
+    }
     // An older app answers without either part: say "not reported".
     if (!result.bridge && result.processStartedAtMs == null && !result.socket) {
       return null;
@@ -1490,10 +2570,150 @@ export async function probeNativeBridge(
   }
 }
 
+/** A page that started this soon after a renderer death replaced that page. */
+const RENDERER_GONE_PAGE_WINDOW_MS = 5 * 60_000;
+
+/**
+ * The last WebView renderer death (MainActivity.onRenderProcessGone). When
+ * this page started right after it, that is why the page restarted.
+ */
+export function formatRendererGoneLine(
+  gone: NativeBridgeDiagnostics['rendererGone'],
+  pageStartedAt: number | null | undefined,
+  now: number
+): string | null {
+  if (!gone || typeof gone !== 'object' || numOrNull(gone.at) == null) {
+    return null;
+  }
+  const page = numOrNull(pageStartedAt);
+  const since = `${count(gone.count)} since install`;
+  if (
+    page != null &&
+    gone.at <= page &&
+    page - gone.at <= RENDERER_GONE_PAGE_WINDOW_MS
+  ) {
+    return `Previous page ended: renderer gone (crashed ${
+      gone.crashed ? 'yes' : 'no'
+    }) at ${fmtEventTime(gone.at, now)}; ${since}`;
+  }
+  return `Last renderer death: ${fmtEventTime(gone.at, now)} (${fmtAgo(
+    gone.at,
+    now
+  )}), crashed ${gone.crashed ? 'yes' : 'no'}; ${since}`;
+}
+
+/**
+ * Python's process and links: threads, open fds, CPU, the frame queue to
+ * Kotlin, spinning watchdogs of rejected resources, and open links by kind.
+ * Nothing for an older app.
+ */
+export function formatPythonProcessLines(
+  bridge: PythonBridgeDetail | null | undefined
+): string[] {
+  if (!bridge || typeof bridge !== 'object') return [];
+  const lines: string[] = [];
+  const parts: string[] = [];
+  if (numOrNull(bridge.threadCount) != null) {
+    parts.push(`threads ${count(bridge.threadCount)}`);
+  }
+  if (numOrNull(bridge.openFds) != null) {
+    parts.push(`open fds ${count(bridge.openFds)}`);
+  }
+  if (numOrNull(bridge.processCpuMs) != null) {
+    const window = count(bridge.processCpuWindowMs);
+    parts.push(
+      `CPU ${fmtMs(count(bridge.processCpuMs))} since start${
+        numOrNull(bridge.processCpuDeltaMs) != null && window > 0
+          ? `, ${Math.round(
+              (count(bridge.processCpuDeltaMs) / window) * 100
+            )}% of one core over the last ${fmtAge(window)}`
+          : ''
+      }`
+    );
+  }
+  if (numOrNull(bridge.outQueue) != null) {
+    parts.push(
+      `frames to Kotlin ${count(bridge.outQueue)} (most ${count(
+        bridge.outQueueHighWater
+      )}, dropped ${count(bridge.outQueueDrops)})`
+    );
+  }
+  if (numOrNull(bridge.rejectedResourceWatchdogs) != null) {
+    parts.push(
+      `rejected resource watchdogs ${count(bridge.rejectedResourceWatchdogs)}`
+    );
+  }
+  if (parts.length) lines.push(`Python process: ${parts.join(', ')}`);
+  const links = bridge.links;
+  if (links && typeof links === 'object') {
+    const sessions = fmtCountMap(links.resourceSessions, 8);
+    lines.push(
+      `Python links: overlay ${count(links.overlay)}, audio ${count(
+        links.audio
+      )}, inbound handshakes ${count(links.inboundHandshakes)}, resource sessions ${
+        sessions === 'none' ? '0' : sessions
+      }, file links ${count(links.fileLinks)}; RNS active ${count(
+        links.rnsActive
+      )}, pending ${count(links.rnsPending)}`
+    );
+  }
+  return lines;
+}
+
+/** Python CPU samples printed (the RNS packet thread first). */
+const PYTHON_CPU_SAMPLE_LINES = 4;
+const PYTHON_PACKET_THREAD = 'Thread (__job)';
+
+/**
+ * Where Python spent its CPU in the last CPU-hungry window: ticks per thread
+ * family, then the top frames of a few stack samples, the RNS packet thread
+ * (`Thread (__job)`) first. Nothing when Python sent no samples.
+ */
+export function formatPythonCpuStackLines(
+  stacks: PythonCpuStacks | null | undefined,
+  now: number
+): string[] {
+  if (!stacks || typeof stacks !== 'object') return [];
+  const samples = (Array.isArray(stacks.samples) ? stacks.samples : []).filter(
+    (s) => s && typeof s === 'object' && Array.isArray(s.frames)
+  );
+  if (!samples.length) return [];
+  const families = (
+    Array.isArray(stacks.cpuTicksByGroup) ? stacks.cpuTicksByGroup : []
+  )
+    .filter((g) => g && typeof g === 'object')
+    .map((g) => `${String(g.name).slice(0, 48)} ${count(g.ticks)}`)
+    .join(', ');
+  const ordered = [
+    ...samples.filter((s) => s.group === PYTHON_PACKET_THREAD),
+    ...samples.filter((s) => s.group !== PYTHON_PACKET_THREAD),
+  ];
+  const lines = [
+    `Python CPU samples (${
+      numOrNull(stacks.at) != null ? fmtEventTime(stacks.at, now) : 'n/a'
+    }; ticks of 10 ms: total ${count(stacks.totalCpuTicks)}${
+      families ? `, ${families}` : ''
+    }):`,
+  ];
+  for (const sample of ordered.slice(0, PYTHON_CPU_SAMPLE_LINES)) {
+    lines.push(
+      `  ${String(sample.group).slice(0, 48)}: ${sample.frames
+        .slice(0, 4)
+        .map((frame) => String(frame).slice(0, 80))
+        .join(' < ')}`
+    );
+  }
+  if (ordered.length > PYTHON_CPU_SAMPLE_LINES) {
+    lines.push(`  (+${ordered.length - PYTHON_CPU_SAMPLE_LINES} more samples)`);
+  }
+  return lines;
+}
+
 /** The "Python bridge" section: lanes, queues and the Kotlin socket. */
 export function formatPythonBridgeLines(
   native: NativeBridgeDiagnostics | null | undefined,
-  now: number
+  now: number,
+  pageStartedAt?: number | null
 ): string[] {
   if (!native || typeof native !== 'object') {
     return ['Not reported (bridge not started, or an older app)'];
@@ -1509,6 +2729,21 @@ export function formatPythonBridgeLines(
       native.processStartedAtMs
     )}`
   );
+  const rendererGone = formatRendererGoneLine(
+    native.rendererGone,
+    pageStartedAt,
+    now
+  );
+  if (rendererGone) lines.push(rendererGone);
+  const staged = native.stagedResources;
+  if (staged && typeof staged === 'object') {
+    const files = count(staged.files);
+    lines.push(
+      `Resource staging folder: ${fmtInt(files)} files, ${fmtBytes(
+        staged.bytes
+      )}${files > 0 ? `, oldest ${fmtAge(count(staged.oldestAgeMs))}` : ''}`
+    );
+  }
   if (!bridge) {
     lines.push('Python bridge: not reported (bridge not started)');
   } else {
@@ -1530,6 +2765,7 @@ export function formatPythonBridgeLines(
         bridge.jsonOutDrops
       )}`
     );
+    lines.push(...formatPythonProcessLines(bridge));
     const lanes = Array.isArray(bridge.lanes) ? bridge.lanes : [];
     const busy = lanes
       .filter(
@@ -1559,7 +2795,7 @@ export function formatPythonBridgeLines(
             lane.currentTask
               ? `, running ${lane.currentTask} ${fmtMs(lane.runningMs)}`
               : ''
-          }`
+          }${lane.busyMaxTask ? `, slowest ${lane.busyMaxTask}` : ''}`
         );
       }
       const quiet = lanes.length - busy.length;
@@ -1569,6 +2805,34 @@ export function formatPythonBridgeLines(
     }
     const refused = fmtCountMap(bridge.providerRefused, 12);
     if (refused !== 'none') lines.push(`Provider refused: ${refused}`);
+    const refusedByKind = fmtCountMap(bridge.providerRefusedByBusyKind, 12);
+    if (refusedByKind !== 'none') {
+      lines.push(
+        `Provider refused by busy kind (since ${
+          numOrNull(bridge.transportStartedAtMs) != null
+            ? fmtEventTime(bridge.transportStartedAtMs as number, now)
+            : 'bridge start'
+        }): ${refusedByKind}`
+      );
+    }
+  }
+  if (native.cryptoBackend) {
+    lines.push(`Crypto backend: ${safeLabel(native.cryptoBackend, 32)}`);
+  }
+  const mix = (Array.isArray(native.packetMix) ? native.packetMix : [])
+    .filter((entry) => entry && typeof entry === 'object')
+    .slice(0, PACKET_MIX_ENTRIES);
+  if (mix.length) {
+    lines.push(
+      `Packet mix (most bytes first; dir:type/destination/context): ${mix
+        .map(
+          (entry) =>
+            `${packetMixKey(entry.key)} ${fmtInt(entry.count)}x ${fmtBytes(
+              entry.bytes
+            )}`
+        )
+        .join(', ')}`
+    );
   }
   const socket = native.socket;
   lines.push(
@@ -1583,6 +2847,423 @@ export function formatPythonBridgeLines(
       : 'Kotlin socket: not reported'
   );
   return lines;
+}
+
+// ── Calls (GO): Python audio I/O, Android call session, route, surface ───────
+
+const CALL_AUDIO_IO_COUNTERS = [
+  'rxFrames',
+  'rxControl',
+  'rxDropped',
+  'rxMediaShed',
+  'rxBadBatch',
+  'txFrames',
+  'txControl',
+  'txNotQueued',
+  'txRejected',
+] as const;
+
+function sanitizeCallAudioIo(raw: unknown): CallAudioIoDiagnostics | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const io = raw as Record<string, unknown>;
+  const out: CallAudioIoDiagnostics = {};
+  for (const key of CALL_AUDIO_IO_COUNTERS) {
+    const n = numOrNull(io[key]);
+    if (n != null) out[key] = n;
+  }
+  if (typeof io.selfCheckOk === 'boolean') out.selfCheckOk = io.selfCheckOk;
+  if (Array.isArray(io.selfCheckProblems)) {
+    out.selfCheckProblems = io.selfCheckProblems
+      .filter((p): p is string => typeof p === 'string' && !!p)
+      .slice(0, 6)
+      .map((p) => redactDiagnosticText(p).slice(0, 120));
+  }
+  if (typeof io.lastError === 'string' && io.lastError) {
+    out.lastError = redactDiagnosticText(io.lastError).slice(0, 160);
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+/** Keys that could carry an id, an address or a key: never printed. */
+const CALL_PRIVATE_KEY_RE =
+  /(id|ids|address|addresses|peer|room|chat|owner|hash|key|keys|name|names|url|sdp|candidate)$/i;
+/**
+ * A property-like key. A map keyed by addresses or short ids (an object
+ * with any other key, e.g. the group runtime's WebRTC edges) is summed up
+ * instead of walked, so its keys never reach the report.
+ */
+const CALL_SAFE_KEY_RE = /^[A-Za-z][A-Za-z0-9_]{0,31}$/;
+/** A long run of base58 / hex in a text value: an address, key or id. */
+const CALL_TOKEN_RE = /[A-Za-z0-9]{20,}/g;
+const CALL_RECORD_MAX_DEPTH = 3;
+const CALL_RECORD_MAX_ENTRIES = 40;
+
+function fmtCallValue(value: unknown): string | null {
+  if (typeof value === 'boolean') return value ? 'yes' : 'no';
+  if (typeof value === 'number') {
+    return Number.isFinite(value)
+      ? String(Math.round(value * 100) / 100)
+      : null;
+  }
+  if (typeof value === 'string') {
+    return value
+      ? safeLabel(redactDiagnosticText(value).replace(CALL_TOKEN_RE, 'id'), 40)
+      : null;
+  }
+  if (value === null) return 'none';
+  return null;
+}
+
+/** `open:2/connecting:1` for a map of states, else its size `[n]`. */
+function summariseCallMap(map: Record<string, unknown>): string {
+  const values = Object.values(map);
+  if (!values.length || !values.every((v) => typeof v === 'string')) {
+    return `[${values.length}]`;
+  }
+  const tally = new Map<string, number>();
+  for (const v of values as string[]) {
+    const label = safeLabel(v, 16);
+    tally.set(label, (tally.get(label) ?? 0) + 1);
+  }
+  return [...tally.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([label, n]) => `${label}:${n}`)
+    .join('/');
+}
+
+export type FormatCallRecordOptions = {
+  /** Dotted keys left out (with everything under them). */
+  skip?: readonly string[];
+  /**
+   * Numbers with 4 significant digits instead of 2 decimals (WebRTC levels
+   * and energies are small fractions: 0.0004 must not print as 0).
+   */
+  precise?: boolean;
+};
+
+/** A finite number with 4 significant digits (integers as they are). */
+function fmtPreciseNumber(value: number): string {
+  if (Number.isInteger(value)) return String(value);
+  return String(Number(value.toPrecision(4)));
+}
+
+/**
+ * `key=value` pairs of a record, nested objects flattened to dotted keys
+ * (up to three levels: `tx.sentPackets`, `rtc.state`). Ids, addresses,
+ * keys and names are left out: by key name (any level), maps keyed by them
+ * are summed up, and long tokens in text values are masked.
+ */
+export function formatCallRecord(
+  record: unknown,
+  options: FormatCallRecordOptions = {}
+): string {
+  if (!record || typeof record !== 'object' || Array.isArray(record)) {
+    return 'none';
+  }
+  const skip = new Set(options.skip ?? []);
+  const parts: string[] = [];
+  const push = (part: string) => {
+    if (parts.length < CALL_RECORD_MAX_ENTRIES) parts.push(part);
+  };
+  const walk = (
+    node: Record<string, unknown>,
+    prefix: string,
+    depth: number
+  ) => {
+    for (const [key, value] of Object.entries(node)) {
+      if (parts.length >= CALL_RECORD_MAX_ENTRIES) return;
+      if (!CALL_SAFE_KEY_RE.test(key) || CALL_PRIVATE_KEY_RE.test(key)) {
+        continue;
+      }
+      const path = prefix ? `${prefix}.${key}` : key;
+      if (skip.has(path)) continue;
+      if (Array.isArray(value)) {
+        push(`${path}=[${value.length}]`);
+      } else if (value && typeof value === 'object') {
+        const inner = value as Record<string, unknown>;
+        const keys = Object.keys(inner);
+        if (!keys.length || keys.some((k) => !CALL_SAFE_KEY_RE.test(k))) {
+          push(`${path}=${summariseCallMap(inner)}`);
+        } else if (depth < CALL_RECORD_MAX_DEPTH) {
+          walk(inner, path, depth + 1);
+        }
+      } else {
+        const text =
+          options.precise && typeof value === 'number' && Number.isFinite(value)
+            ? fmtPreciseNumber(value)
+            : fmtCallValue(value);
+        if (text != null) push(`${path}=${text}`);
+      }
+    }
+  };
+  walk(record as Record<string, unknown>, '', 1);
+  return parts.length ? parts.join(', ') : 'none';
+}
+
+/**
+ * The audio surface's snapshot (mobileAudioSurface
+ * getMobileCallAudioDiagnostics): route and mic on one line, the 1:1 call,
+ * its Reticulum leg counters and the group runtime on their own lines. The
+ * privacy counters and the setting have their own lines already, and
+ * `route.native` is what the "Audio route" line reads live from Android
+ * (kept only when that read failed).
+ */
+function formatSurfaceLines(
+  surface: Record<string, unknown>,
+  routeReported: boolean
+): string[] {
+  const skip = ['at', 'privacy', 'transportPreference', 'direct', 'group'];
+  if (routeReported) skip.push('route.native');
+  const lines = [`Audio surface: ${formatCallRecord(surface, { skip })}`];
+  if ('direct' in surface) {
+    const direct = plainRecord(surface.direct);
+    lines.push(
+      `Audio surface 1:1: ${
+        direct
+          ? formatCallRecord(direct, { skip: ['reticulum', 'rtcStats'] })
+          : 'none'
+      }`
+    );
+    // RTP counters of the WebRTC leg (getStats, numbers only).
+    const rtcStats = direct ? plainRecord(direct.rtcStats) : null;
+    if (rtcStats) {
+      lines.push(
+        `Audio surface 1:1 WebRTC stats: ${formatCallRecord(rtcStats, {
+          precise: true,
+        })}`
+      );
+    }
+    const reticulum = direct ? plainRecord(direct.reticulum) : null;
+    if (reticulum) {
+      lines.push(`Audio surface 1:1 Reticulum: ${formatCallRecord(reticulum)}`);
+    }
+  }
+  if ('group' in surface) {
+    const group = plainRecord(surface.group);
+    lines.push(
+      `Audio surface group: ${group ? formatCallRecord(group) : 'none'}`
+    );
+  }
+  return lines;
+}
+
+/** A short label, or `fallback` when there is no value. */
+function optLabel(value: unknown, max: number, fallback: string): string {
+  return typeof value === 'string' && value ? safeLabel(value, max) : fallback;
+}
+
+function yesNoUnknown(value: unknown): string {
+  return value === true ? 'yes' : value === false ? 'no' : 'unknown';
+}
+
+/** The "Calls" section (GO). */
+export function formatCallLines(
+  calls: CallDiagnostics | null | undefined,
+  callAudioIo: CallAudioIoDiagnostics | null | undefined
+): string[] {
+  const lines: string[] = [];
+  const preference = calls?.transportPreference;
+  lines.push(
+    `Setting: ${
+      preference === 'reticulum'
+        ? 'Private calls (Reticulum only)'
+        : preference === 'webrtc'
+          ? 'Direct (WebRTC first, Reticulum fallback)'
+          : 'unknown'
+    }`
+  );
+  if (typeof calls?.stunServers === 'number') {
+    lines.push(
+      `STUN servers known: ${calls.stunServers}${
+        calls.stunServers === 0 ? ' (calls stay on Reticulum for now)' : ''
+      }`
+    );
+  }
+
+  const native = calls?.native;
+  if (!native || typeof native !== 'object') {
+    lines.push('Android call session: not reported');
+  } else {
+    const ring =
+      native.ringing === true
+        ? `ringing (source ${optLabel(native.ringSource, 16, '?')}, posted ${yesNoUnknown(
+            native.ringPosted
+          )}, confirmed ${yesNoUnknown(native.ringConfirmed)}, silenced ${yesNoUnknown(
+            native.ringSilenced
+          )})`
+        : 'not ringing';
+    const active =
+      native.callActive === true
+        ? `call active (${optLabel(native.callKind, 8, '?')}, ${optLabel(
+            native.callPhase,
+            16,
+            '?'
+          )})`
+        : 'no call';
+    const typeFlags = numOrNull(native.foregroundTypeFlags);
+    lines.push(
+      `Android call session: ${ring}; ${active}; mic service ${yesNoUnknown(
+        native.micForeground
+      )}${typeFlags != null ? ` (types 0x${typeFlags.toString(16)})` : ''}; ring addresses ${count(
+        native.ringAddresses
+      )}; over lock ${yesNoUnknown(native.showWhenLocked)}; keyguard ${yesNoUnknown(
+        native.keyguardLocked
+      )}; screen on ${yesNoUnknown(native.interactive)}; Wi-Fi lock ${yesNoUnknown(
+        native.wifiLock
+      )}`
+    );
+  }
+
+  const route = calls?.route;
+  if (!route || typeof route !== 'object') {
+    lines.push('Audio route: not reported');
+  } else {
+    const routes = Array.isArray(route.routes)
+      ? route.routes
+          .filter((r): r is string => typeof r === 'string')
+          .map((r) => safeLabel(r, 12))
+          .join(', ')
+      : '';
+    lines.push(
+      `Audio route: ${optLabel(route.route, 12, 'none')} of [${routes || 'none'}]; in call ${yesNoUnknown(
+        route.active
+      )} (owners ${count(route.owners)}, kind ${optLabel(route.kind, 8, 'none')}); hand pick ${optLabel(
+        route.explicitChoice,
+        12,
+        'none'
+      )}; focus ${optLabel(route.focus, 16, 'none')}; proximity ${yesNoUnknown(
+        route.proximity
+      )}; mode ${numOrNull(route.mode) ?? 'n/a'}`
+    );
+  }
+
+  if (!callAudioIo) {
+    lines.push(
+      'Python call audio: not reported (older app or bridge not started)'
+    );
+  } else {
+    const n = (value: number | undefined) =>
+      value != null ? String(value) : 'n/a';
+    lines.push(
+      `Python call audio: rx ${n(callAudioIo.rxFrames)} frames (control ${n(
+        callAudioIo.rxControl
+      )}), dropped ${n(callAudioIo.rxDropped)} (shed ${n(
+        callAudioIo.rxMediaShed
+      )}), bad batches ${n(callAudioIo.rxBadBatch)}; tx ${n(
+        callAudioIo.txFrames
+      )} frames (control ${n(callAudioIo.txControl)}), not queued ${n(
+        callAudioIo.txNotQueued
+      )}, rejected ${n(callAudioIo.txRejected)}; self-check ${
+        callAudioIo.selfCheckOk === true
+          ? 'ok'
+          : callAudioIo.selfCheckOk === false
+            ? `FAILED${
+                callAudioIo.selfCheckProblems?.length
+                  ? ` (${callAudioIo.selfCheckProblems.join('; ')})`
+                  : ''
+              }`
+            : 'not run'
+      }`
+    );
+    if (callAudioIo.lastError) {
+      lines.push(`Python call audio last error: ${callAudioIo.lastError}`);
+    }
+  }
+
+  if (calls?.surface) {
+    lines.push(
+      ...formatSurfaceLines(
+        calls.surface,
+        Boolean(calls.route && typeof calls.route === 'object')
+      )
+    );
+  } else {
+    lines.push(
+      'Audio surface: not reported (no call audio counters in this build)'
+    );
+  }
+  lines.push(
+    calls?.webrtcPrivacy
+      ? `WebRTC privacy guard: ${formatCallRecord(calls.webrtcPrivacy)}`
+      : 'WebRTC privacy guard: not reported'
+  );
+  return lines;
+}
+
+const CALL_PROBE_TIMEOUT_MS = 2_000;
+
+function settleWithin<T>(
+  run: () => Promise<T> | T,
+  timeoutMs: number
+): Promise<T | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), timeoutMs);
+  });
+  return Promise.race([
+    Promise.resolve()
+      .then(run)
+      .catch(() => null),
+    timeout,
+  ]).finally(() => clearTimeout(timer));
+}
+
+const plainRecord = (value: unknown): Record<string, unknown> | null =>
+  value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+
+/**
+ * GO's call plumbing for the "Calls" section; undefined off GO (no section).
+ * Each part is bounded and optional: a stalled plugin costs its line only.
+ */
+export async function probeCallDiagnostics(
+  timeoutMs = CALL_PROBE_TIMEOUT_MS
+): Promise<CallDiagnostics | undefined> {
+  if (!isCapacitor()) return undefined;
+  const surfaceReader = (
+    mobileAudioSurface as unknown as {
+      getMobileCallAudioDiagnostics?: () => unknown;
+    }
+  ).getMobileCallAudioDiagnostics;
+  const [native, route, surface] = await Promise.all([
+    settleWithin(() => getNativeCallDiagnostics(), timeoutMs),
+    settleWithin(() => AudioRouting.getAudioRoutes(), timeoutMs),
+    typeof surfaceReader === 'function'
+      ? settleWithin(() => surfaceReader() as Promise<unknown>, timeoutMs)
+      : Promise.resolve(null),
+  ]);
+  let transportPreference: string | null = null;
+  try {
+    transportPreference = getCallTransportPreference();
+  } catch {
+    transportPreference = null;
+  }
+  let webrtcPrivacy: Record<string, unknown> | null = null;
+  try {
+    webrtcPrivacy = plainRecord(getWebRtcPrivacyStats());
+  } catch {
+    webrtcPrivacy = null;
+  }
+  let stunServers: number | null = null;
+  try {
+    const known = (
+      window as unknown as {
+        hub?: { getBootstrapIceServers?: () => unknown };
+      }
+    ).hub?.getBootstrapIceServers?.();
+    stunServers = Array.isArray(known) ? known.length : null;
+  } catch {
+    stunServers = null;
+  }
+  return {
+    transportPreference,
+    native: plainRecord(native),
+    route: plainRecord(route),
+    surface: plainRecord(surface),
+    webrtcPrivacy,
+    stunServers,
+  };
 }
 
 // ── device facts ─────────────────────────────────────────────────────────────
@@ -1687,6 +3368,8 @@ export function buildReticulumDiagnosticsReport(
   lines.push('');
   lines.push('--- WebView ---');
   lines.push(`User agent: ${webView.userAgent || 'unknown'}`);
+  const nativeRuntime = input.unlock?.runtime ?? null;
+  lines.push(`WebView: ${formatWebViewProvider(nativeRuntime)}`);
   lines.push(
     `CPU cores: ${webView.hardwareConcurrency ?? 'n/a'}, device memory: ${
       webView.deviceMemoryGb != null ? `${webView.deviceMemoryGb} GB` : 'n/a'
@@ -1697,15 +3380,14 @@ export function buildReticulumDiagnosticsReport(
       webView.opfs ? 'yes' : 'NO'
     }, cross-origin isolated: ${webView.crossOriginIsolated ? 'yes' : 'no'}`
   );
+  const probeRatio = jitProbeRatio(webView.jsLoopMs, webView.builtinRefMs);
   const jit = jitVerdict({
+    webViewJitRestricted: nativeRuntime?.webViewJitRestricted,
     webAssembly: webView.webAssembly,
-    sqliteInitMs: engine?.sqliteInitMs,
-    bootMs: engine?.bootMs ?? state.chatEngineBootMs,
+    probeRatio,
   });
   lines.push(`JIT: ${jit.verdict} (${jit.basis})`);
-  lines.push(
-    `JS loop probe: ${webView.jsLoopMs} ms (weak hint only; CPU speed and load move it as much as JIT does)`
-  );
+  lines.push(formatJitProbeLine(webView, probeRatio));
   lines.push('');
   lines.push('--- Device ---');
   lines.push(
@@ -1755,7 +3437,7 @@ export function buildReticulumDiagnosticsReport(
   lines.push(
     `Last boot: ${fmtMs(engine?.bootMs ?? state.chatEngineBootMs)}, sqlite-wasm init: ${fmtMs(
       engine?.sqliteInitMs
-    )} (stock WebView well under 1 s; several seconds usually mean no JIT)`
+    )}`
   );
   if (engine) {
     const oldestRpc =
@@ -1794,10 +3476,30 @@ export function buildReticulumDiagnosticsReport(
         `Bridge traffic: ${String(traffic).replace(/^\[MobileChat\]\s*/, '')}`
       );
     }
+    if (syncHealth) {
+      lines.push(
+        ...safeLines('Engine time', () =>
+          formatEngineIoLines(
+            syncHealth.io,
+            syncHealth.engine?.db ?? null,
+            input.now
+          )
+        )
+      );
+    }
     if (engine.readiness.error) {
       lines.push(`Engine error: ${engine.readiness.error}`);
     }
   }
+  lines.push(
+    ...safeLines('Page activity', () =>
+      formatPageActivityLines(
+        input.pageLongTasks,
+        input.summaryRefresh,
+        input.now
+      )
+    )
+  );
   if (state.bridgeWarning) lines.push(`Warning: ${state.bridgeWarning}`);
   if (state.bridgeError) lines.push(`Bridge error: ${state.bridgeError}`);
   lines.push('');
@@ -1808,6 +3510,16 @@ export function buildReticulumDiagnosticsReport(
       : [syncHealthMissing])
   );
   lines.push('');
+  // Newer engines only: an older one's report keeps its section list.
+  if (syncHealth?.engine && syncHealth.engine.channels !== undefined) {
+    lines.push('--- Channel metadata ---');
+    lines.push(
+      ...safeLines('Channel metadata', () =>
+        formatChannelMetadataLines(syncHealth.engine?.channels, input.now)
+      )
+    );
+    lines.push('');
+  }
   lines.push('--- Serving ---');
   lines.push(
     ...(syncHealth
@@ -1818,10 +3530,26 @@ export function buildReticulumDiagnosticsReport(
   lines.push('--- Python bridge ---');
   lines.push(
     ...safeLines('Python bridge', () =>
-      formatPythonBridgeLines(input.nativeBridge, input.now)
+      formatPythonBridgeLines(
+        input.nativeBridge,
+        input.now,
+        numOrNull(input.pageStartedAt)
+      )
+    ),
+    ...safeLines('Python CPU samples', () =>
+      formatPythonCpuStackLines(syncHealth?.pythonCpuStacks, input.now)
     )
   );
   lines.push('');
+  if (input.calls !== undefined) {
+    lines.push('--- Calls ---');
+    lines.push(
+      ...safeLines('Calls', () =>
+        formatCallLines(input.calls, input.nativeBridge?.callAudioIo)
+      )
+    );
+    lines.push('');
+  }
   lines.push('--- Background sync ---');
   lines.push(...formatBackgroundSyncLines(input.backgroundSync, input.now));
   lines.push('');
@@ -1836,6 +3564,8 @@ export function buildReticulumDiagnosticsReport(
             : `unreachable (${redactDiagnosticText(coreApi.error || 'error')})`
       } in ${fmtMs(coreApi.ms)}`
     );
+    const nodeSync = formatCoreNodeStatusLine(coreApi.status);
+    if (nodeSync) lines.push(nodeSync);
   } else {
     lines.push('Not probed');
   }
@@ -1882,10 +3612,19 @@ export function buildReticulumDiagnosticsReport(
         ...safeLines('Membership timing', () => {
           const timing = formatValidatorTimingLine(validator);
           return timing ? [timing] : [];
-        })
+        }),
+        ...safeLines('Membership failures', () =>
+          formatValidatorFailureLines(validator, input.now)
+        )
       );
     }
   }
+  lines.push(
+    ...safeLines('Admin list', () => {
+      const adminList = formatAdminListLine(input.adminList, input.now);
+      return adminList ? [adminList] : [];
+    })
+  );
   lines.push('');
   lines.push('--- Recent send failures ---');
   lines.push(
@@ -1921,6 +3660,7 @@ export function buildReticulumDiagnosticsReport(
     ? selectEngineLogLines(engine.engineLogs ?? [], engine.engineBootFaults, {
         bootOverflow: syncHealth?.log?.bootFaultOverflow,
         keyCounts: syncHealth?.log?.keyCounts,
+        bootRepeatsFolded: syncHealth?.log?.bootFaultRepeatsFolded,
       })
     : [];
   if (engineLogLines.length) {
@@ -2008,13 +3748,14 @@ export async function collectReticulumDiagnostics(
   deviceOnline: boolean
 ): Promise<string> {
   const webView = probeWebView();
-  const [engine, coreApi, unlockRuntime, backgroundSync, nativeBridge] =
+  const [engine, coreApi, unlockRuntime, backgroundSync, nativeBridge, calls] =
     await Promise.all([
       getMobileReticulumChatDiagnostics().catch(() => null),
       probeCoreApi().catch(() => null),
       probeUnlockRuntime().catch(() => null),
       fetchBackgroundSyncState().catch(() => null),
       probeNativeBridge().catch(() => null),
+      probeCallDiagnostics().catch(() => null),
     ]);
   // Each extra is best effort: a failure costs its lines, never the report.
   const attempt = <T>(read: () => T, fallback: T): T => {
@@ -2042,10 +3783,14 @@ export async function collectReticulumDiagnostics(
     },
     backgroundSync,
     nativeBridge,
+    calls,
     relayProfileSince: attempt(() => getRelayProfileSince(), null),
     pageStartedAt: attempt(
       () => Math.round(performance.timeOrigin || Date.now()),
       undefined
     ),
+    adminList: attempt(() => getReticulumAdminListFetchStats(), null),
+    summaryRefresh: attempt(() => getReticulumSummaryRefreshStats(), null),
+    pageLongTasks: attempt(() => getPageLongTaskStats(), null),
   });
 }

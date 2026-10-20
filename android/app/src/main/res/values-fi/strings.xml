@@ -5,4 +5,23 @@
     <string name="share_target_directs">GO Viestit</string>
     <string name="share_target_self">GO Itselle</string>
     <string name="qortal_hce_description">GO-maksupyynnöt (testaus)</string>
+    <!-- Voice calls (CallNotifications). -->
+    <string name="call_channel_ringing_name">Puhelut</string>
+    <string name="call_channel_ringing_description">Saapuvat äänipuhelut soivat puhelimen soittoäänellä.</string>
+    <string name="call_channel_ongoing_name">Puhelu käynnissä</string>
+    <string name="call_channel_ongoing_description">Näyttää äänipuhelun sen ajan, painikkeilla Mykistä ja Lopeta.</string>
+    <string name="call_incoming_title">Saapuva puhelu</string>
+    <string name="call_incoming_text">GO-äänipuhelu</string>
+    <string name="call_action_accept">Vastaa</string>
+    <string name="call_action_decline">Hylkää</string>
+    <string name="call_action_hang_up">Lopeta puhelu</string>
+    <string name="call_action_leave">Poistu</string>
+    <string name="call_action_mute">Mykistä</string>
+    <string name="call_action_unmute">Poista mykistys</string>
+    <string name="call_status_calling">Soitetaan…</string>
+    <string name="call_status_connecting">Yhdistetään…</string>
+    <string name="call_status_ongoing">Puhelu käynnissä</string>
+    <string name="call_status_group">Ryhmäpuhelu</string>
+    <string name="call_status_muted">Mykistetty</string>
+    <string name="call_unknown_caller">Tuntematon soittaja</string>
 </resources>

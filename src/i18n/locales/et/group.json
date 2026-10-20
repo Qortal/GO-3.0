@@ -251,6 +251,13 @@
     "blocked_public_node_title": "Kasutad avalikku sõlme",
     "blocked_settings": "Blokeeritud kontod",
     "blocked_settings_description": "Halda selle rahakoti või kogu seadme blokeeritud nimesid ja aadresse.",
+    "bottom_buttons": "Alumised nupud",
+    "bottom_buttons_apps": "Rakendused",
+    "bottom_buttons_chat": "Vestlus",
+    "bottom_buttons_desc": "Lohista Avaleht, Rakendused ja Vestlus soovitud järjekorda. Külgsuunas pühkimine nende vahel järgib sama järjekorda.",
+    "bottom_buttons_home": "Avaleht",
+    "bottom_buttons_item_label": "{{name}}, {{place}}/{{total}}. Liiguta vasaku ja parema nooleklahviga.",
+    "bottom_buttons_reset": "Lähtesta",
     "buy": "Osta",
     "change_node": "Muuda sõlme",
     "close_action_update_error": "Akna sulgemise käitumist ei õnnestunud praegu uuendada.",
@@ -482,7 +489,9 @@
     "wallet_password": "Rahakoti parool",
     "wallet_password_placeholder": "Sisesta rahakoti parool",
     "wallet_password_required": "Privaatvõtme dekrüpteerimiseks sisesta rahakoti parool.",
-    "wallet_unavailable_error": "Rahakoti andmed pole praegu saadaval."
+    "wallet_unavailable_error": "Rahakoti andmed pole praegu saadaval.",
+    "widgets_screen": "Vidinate ekraan",
+    "widgets_screen_desc": "Esimesest jaotisest vasakul olev ekraan vidinatele: väikesed GO 3.0 jaoks tehtud Q-rakendused, näiteks kellaaeg, ilm või Torqi uudised. Sinna jõudmiseks pühi paremale."
   },
   "dm": {
     "add_friend_before_calling": "Lisa see kasutaja enne helistamist sõbraks",
@@ -1322,5 +1331,27 @@
     "intro_title": "Uus alus Qortali vestlustele",
     "title": "Mis on Q-Chatis uut",
     "version": "Versioon {{version}}"
+  },
+  "widgets": {
+    "add": "Lisa vidin",
+    "add_short": "Lisa",
+    "added": "Lisatud",
+    "by": "autor {{name}}",
+    "done": "Valmis",
+    "empty_hint": "Hiljem hoia vidinat või tühja kohta all, et vidinaid lisada, liigutada või nende suurust muuta. Eemaldamiseks lohista see alla nupule Eemalda.",
+    "limit": "Sul võib olla kuni {{max}} vidinat.",
+    "open_app": "Ava {{name}}",
+    "picker_developers": "Q-rakenduste arendajad: avaldage vidin APP-ina sildiga go-widget või identifikaatoriga, mis algab go-widget.",
+    "picker_empty": "Vidinaid pole veel avaldatud.",
+    "picker_error": "Vidinaid ei õnnestunud laadida. Kontrolli ühendust sõlmega.",
+    "picker_none_found": "Ükski vidin ei sobi.",
+    "picker_note": "Vidinad on GO jaoks tehtud Q-rakendused. Need saavad asju näidata ja rakendusi avada, kuid ei saa maksta, avaldada ega allkirjastada.",
+    "picker_search": "Otsi vidinaid",
+    "picker_title": "Lisa vidin",
+    "reload": "Laadi uuesti",
+    "remove": "Eemalda",
+    "resize": "Muuda suurust",
+    "retry": "Proovi uuesti",
+    "title": "Vidinad"
   }
 }

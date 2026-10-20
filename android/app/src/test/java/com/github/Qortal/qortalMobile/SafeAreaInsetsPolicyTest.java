@@ -128,6 +128,113 @@ public class SafeAreaInsetsPolicyTest {
         assertTrue(SafeAreaInsetsPolicy.SIDE_MARGINS);
     }
 
+    // ---- Button navigation (3-button / 2-button): the WebView ends above it.
+
+    /** Portrait 3-button phone: nav bar 48 dp = 132 px. */
+    private static SafeAreaInsetsPolicy.Result buttons(int ime) {
+        return SafeAreaInsetsPolicy.compute(true, true, 66, 80, 0, 0, 0, 0, 132, ime, false, D);
+    }
+
+    @Test
+    public void buttonNavEndsTheWebViewAboveTheBar() {
+        SafeAreaInsetsPolicy.Result r = buttons(0);
+        assertEquals(132, r.marginBottom);
+        assertEquals(132, r.navMarginBottom);
+        // Nothing of the page is under the buttons, so CSS pads nothing.
+        assertEquals(0, r.cssBottom);
+        assertEquals(29, r.cssTop);
+        assertEquals(0, r.marginLeft);
+        assertEquals(0, r.marginRight);
+    }
+
+    @Test
+    public void buttonNavWithTheKeyboardShrinksByTheKeyboard() {
+        // The IME inset runs to the screen bottom, nav bar included.
+        SafeAreaInsetsPolicy.Result r = buttons(880);
+        assertEquals(880, r.marginBottom);
+        assertEquals(132, r.navMarginBottom);
+        assertEquals(0, r.cssBottom);
+    }
+
+    @Test
+    public void gestureNavIsExactlyAsBefore() {
+        // The old overloads and navButtons=false are the same maths.
+        for (int ime : new int[] {0, 880}) {
+            SafeAreaInsetsPolicy.Result before = portrait(0, 0, ime);
+            SafeAreaInsetsPolicy.Result now =
+                SafeAreaInsetsPolicy.compute(true, false, 66, 80, 0, 0, 0, 0, 66, ime, false, D);
+            assertEquals(before.marginBottom, now.marginBottom);
+            assertEquals(0, now.navMarginBottom);
+            assertEquals(before.cssBottom, now.cssBottom);
+            assertEquals(before.cssTop, now.cssTop);
+            SafeAreaInsetsPolicy.Metrics mb = SafeAreaInsetsPolicy.metrics(1080, 2400, before, D, 392);
+            SafeAreaInsetsPolicy.Metrics mn = SafeAreaInsetsPolicy.metrics(1080, 2400, now, D, 392);
+            assertEquals(mb, mn);
+        }
+        assertEquals(24, portrait(0, 0, 0).cssBottom);
+    }
+
+    @Test
+    public void buttonNavMetricsAreTheWebViewAboveTheBar() {
+        // Resting: the page's window is the part above the buttons, no keyboard.
+        SafeAreaInsetsPolicy.Metrics rest =
+            SafeAreaInsetsPolicy.metrics(1080, 2400, buttons(0), D, 392);
+        assertEquals(393, rest.width);
+        assertEquals(825, rest.height); // (2400 - 132) / 2.75 = 824.7
+        assertEquals(0, rest.ime);
+        // Keyboard up: same height; the keyboard covers 880 - 132 of it.
+        SafeAreaInsetsPolicy.Metrics typing =
+            SafeAreaInsetsPolicy.metrics(1080, 2400, buttons(880), D, 392);
+        assertEquals(825, typing.height);
+        assertEquals(272, typing.ime); // 748 / 2.75
+    }
+
+    @Test
+    public void tabletLandscapeButtonsAtTheBottomBecomeABottomMargin() {
+        SafeAreaInsetsPolicy.Result r =
+            SafeAreaInsetsPolicy.compute(true, true, 48, 0, 0, 0, 0, 0, 96, 0, true, 2f);
+        assertEquals(96, r.marginBottom);
+        assertEquals(0, r.marginLeft);
+        assertEquals(0, r.marginRight);
+        assertEquals(0, r.cssBottom);
+    }
+
+    @Test
+    public void onlyButtonsAtTheBottomCount() {
+        // 3-button, portrait: tappable bar, no back-swipe zones.
+        assertTrue(SafeAreaInsetsPolicy.hasNavButtonsAtBottom(132, 132, 0, 0));
+        // Gesture navigation: nothing tappable at the bottom, back zones at the sides.
+        assertFalse(SafeAreaInsetsPolicy.hasNavButtonsAtBottom(66, 0, 66, 66));
+        // Gesture modes without side zones (some OEMs): still not tappable.
+        assertFalse(SafeAreaInsetsPolicy.hasNavButtonsAtBottom(40, 0, 0, 0));
+        // Tablet taskbar kept on screen under gesture navigation: as before.
+        assertFalse(SafeAreaInsetsPolicy.hasNavButtonsAtBottom(120, 120, 64, 64));
+        // Landscape phone, 3 buttons at a side: the side margins handle it.
+        assertFalse(SafeAreaInsetsPolicy.hasNavButtonsAtBottom(0, 0, 0, 0));
+        // Bars hidden (full-screen video): nothing to avoid.
+        assertFalse(SafeAreaInsetsPolicy.hasNavButtonsAtBottom(0, 132, 0, 0));
+    }
+
+    @Test
+    public void theKeyboardsOwnButtonsNeverReadAsButtonNavigation() {
+        SafeAreaInsetsPolicy.resetNavButtonsSeenForTests();
+        // Gesture navigation, keyboard down: no buttons.
+        assertFalse(SafeAreaInsetsPolicy.navButtonsAtBottom(false, 66, 0, 66, 66));
+        // Keyboard up brings a hide-keyboard button: the answer is kept.
+        assertFalse(SafeAreaInsetsPolicy.navButtonsAtBottom(true, 66, 132, 0, 0));
+        // 3-button navigation is kept while the keyboard is up, too.
+        assertTrue(SafeAreaInsetsPolicy.navButtonsAtBottom(false, 132, 132, 0, 0));
+        assertTrue(SafeAreaInsetsPolicy.navButtonsAtBottom(true, 132, 0, 66, 66));
+        // Switched to gestures in Settings: read again once the keyboard is down.
+        assertFalse(SafeAreaInsetsPolicy.navButtonsAtBottom(false, 66, 0, 66, 66));
+        SafeAreaInsetsPolicy.resetNavButtonsSeenForTests();
+    }
+
+    @Test
+    public void navButtonKillSwitchIsOn() {
+        assertTrue(SafeAreaInsetsPolicy.NAV_BUTTON_MARGIN);
+    }
+
     @Test
     public void badDensityFallsBackToOne() {
         SafeAreaInsetsPolicy.Result r =
