@@ -1297,7 +1297,7 @@ export type QdnScanDepth = 'quick' | 'full';
 
 type QdnScanProgress = (detail: string) => void;
 
-/** Who-is / person lookup shape (name present) — depth choice needs a tx-count check too. */
+/** Who-is / person lookup shape (name present). */
 function wantsQdnPersonDepthChoice(query: string): boolean {
   const t = query.trim();
   if (!t) return false;
@@ -1312,7 +1312,7 @@ async function fetchTxSample(
   signal?: AbortSignal,
   onProgress?: QdnScanProgress
 ): Promise<TxRow[]> {
-  // quick = light sample; full = deep page (also used auto when account ≤1000 txs).
+  // quick = light sample; full = deep page.
   // Quick still single-request, but a bigger page sees further back in time.
   const pageSize = depth === 'full' ? 100 : 150;
   const maxTotal = depth === 'full' ? 1000 : 150;
