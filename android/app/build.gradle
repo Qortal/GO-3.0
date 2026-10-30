@@ -51,11 +51,10 @@ android {
             pip {
                 // RNS itself is vendored from the Qortal Reticulum fork
                 // (src/main/python/RNS) so the on-wire protocol matches the
-                // live Qortal mesh exactly. Only its native/runtime deps come
-                // from pip: cryptography is a Chaquopy prebuilt wheel; pyserial
-                // is pure-python (serial interfaces are unused on Android).
+                // live Qortal mesh exactly. Only cryptography comes from pip
+                // (a Chaquopy prebuilt wheel); GO never configures serial
+                // interfaces, so pyserial is not installed.
                 install "cryptography"
-                install "pyserial"
             }
         }
     }
@@ -104,11 +103,6 @@ dependencies {
     implementation project(':capacitor-android')
     implementation 'androidx.biometric:biometric:1.1.0'
     implementation "org.mindrot:jbcrypt:0.4"
-    implementation "at.favre.lib:bcrypt:0.10.2"
-    implementation 'com.password4j:password4j:1.8.2'
-    implementation 'com.dylibso.chicory:runtime:1.0.0-M1'
-    implementation 'org.bouncycastle:bcprov-jdk15to18:1.76'
-    implementation 'com.google.guava:guava:32.1.2-jre'
     implementation 'org.nanohttpd:nanohttpd:2.3.1'
     // Loopback WebSocket that lets the chat engine worker talk to the Python
     // bridge without crossing the WebView main thread (see BridgeSocketServer).
@@ -132,3 +126,10 @@ apply from: 'capacitor.build.gradle'
 // After any AGP or Gradle upgrade, run app/release-web-assets-test/run.sh and
 // app/release-web-assets-test/check-apk.sh on the new release APK.
 apply from: 'release-web-assets.gradle'
+
+// @evva/capacitor-secure-storage-plugin declares androidx.test:monitor as an
+// implementation dependency but never uses it; keep it out of the app (test
+// classpaths still get it).
+configurations.matching { it.name.endsWith('RuntimeClasspath') && !it.name.toLowerCase().contains('test') }.configureEach {
+    exclude group: 'androidx.test', module: 'monitor'
+}
