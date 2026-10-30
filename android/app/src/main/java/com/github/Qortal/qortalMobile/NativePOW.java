@@ -7,8 +7,6 @@ import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 import android.util.Log;
 
-import com.github.Qortal.qortalMobile.MemoryPoW;
-
 import java.util.Iterator;
 
 @CapacitorPlugin(name = "NativePOW")

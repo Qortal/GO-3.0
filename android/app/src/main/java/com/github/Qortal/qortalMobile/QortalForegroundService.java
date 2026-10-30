@@ -153,7 +153,6 @@ public class QortalForegroundService extends Service {
     public static final String EXTRA_ALERT_TITLE = "alert_title";
     public static final String EXTRA_ALERT_BODY = "alert_body";
     public static final String EXTRA_ALERT_ICON_URL = "alert_icon_url";
-    public static final String EXTRA_ALERT_ICON_BASE64 = "alert_icon_base64";
     public static final String EXTRA_ALERT_FROM_ADDRESS = "alert_from_address";
     public static final String EXTRA_ALERT_TYPE = "alert_type";
     /** Stable per-conversation tag; tray identity becomes (tag, id) when present. */
@@ -817,16 +816,6 @@ public class QortalForegroundService extends Service {
             .setColor(brandColor);
     }
 
-    private String buildStatusExpandedText() {
-        return resolveDisplayDetail()
-            + "\n\nNode: "
-            + statusNodeLabel
-            + "\nSync: "
-            + statusSyncLabel
-            + "\nPeers: "
-            + statusPeersLabel;
-    }
-
     private static Boolean skinInjectsAppIconCached;
 
     /**
@@ -970,10 +959,6 @@ public class QortalForegroundService extends Service {
 
     private String resolveDisplayKind() {
         return resolveStatusDisplay().kind;
-    }
-
-    private String resolveDisplayDetail() {
-        return resolveStatusDisplay().detail;
     }
 
     private int statusDotColor() {

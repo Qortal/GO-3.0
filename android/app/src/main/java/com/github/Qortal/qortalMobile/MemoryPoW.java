@@ -1,10 +1,5 @@
 package com.github.Qortal.qortalMobile;
 
-
-import com.github.Qortal.qortalMobile.NTP;
-import com.github.Qortal.qortalMobile.Crypto;
-
-
 import java.nio.ByteBuffer;
 import java.util.concurrent.TimeoutException;
 
@@ -40,7 +35,7 @@ public class MemoryPoW {
 	 * @throws TimeoutException
 	 */
 	public static Integer compute2(byte[] data, int workBufferLength, long difficulty, Long timeout) throws TimeoutException {
-        long startTime = NTP.getTime() != null ? NTP.getTime() : System.currentTimeMillis();
+        long startTime = System.currentTimeMillis();
     
         // Hash data with SHA256
         byte[] hash = Crypto.digest(data);
@@ -71,7 +66,7 @@ public class MemoryPoW {
                 return -1;
     
             if (timeout != null) {
-                long now = NTP.getTime() != null ? NTP.getTime() : System.currentTimeMillis();
+                long now = System.currentTimeMillis();
                 if (now > startTime + timeout) {
                     throw new TimeoutException("Timeout reached");
                 }
@@ -101,54 +96,6 @@ public class MemoryPoW {
         return nonce;
     }
     
-
-	public static boolean verify2(byte[] data, int workBufferLength, long difficulty, int nonce) {
-		return verify2(data, null, workBufferLength, difficulty, nonce);
-	}
-
-	public static boolean verify2(byte[] data, long[] workBuffer, int workBufferLength, long difficulty, int nonce) {
-		// Hash data with SHA256
-		byte[] hash = Crypto.digest(data);
-
-		long[] longHash = new long[4];
-		ByteBuffer byteBuffer = ByteBuffer.wrap(hash);
-		longHash[0] = byteBuffer.getLong();
-		longHash[1] = byteBuffer.getLong();
-		longHash[2] = byteBuffer.getLong();
-		longHash[3] = byteBuffer.getLong();
-		byteBuffer = null;
-
-		int longBufferLength = workBufferLength / 8;
-
-		if (workBuffer == null)
-			workBuffer = new long[longBufferLength];
-
-		long[] state = new long[4];
-
-		long seed = 8682522807148012L;
-		long seedMultiplier = 1181783497276652981L;
-
-		for (int i = 0; i <= nonce; ++i)
-			seed *= seedMultiplier;
-
-		state[0] = longHash[0] ^ seed;
-		state[1] = longHash[1] ^ seed;
-		state[2] = longHash[2] ^ seed;
-		state[3] = longHash[3] ^ seed;
-
-		// Fill work buffer with random
-		for (int i = 0; i < workBuffer.length; ++i)
-			workBuffer[i] = xoshiro256p(state);
-
-		// Random bounce through whole buffer
-		long result = workBuffer[0];
-		for (int i = 0; i < 1024; ++i) {
-			int index = (int) (xoshiro256p(state) & Integer.MAX_VALUE) % workBuffer.length;
-			result ^= workBuffer[index];
-		}
-
-		return Long.numberOfLeadingZeros(result) >= difficulty;
-	}
 
 	private static final long xoshiro256p(long[] state) {
 		final long result = state[0] + state[3];

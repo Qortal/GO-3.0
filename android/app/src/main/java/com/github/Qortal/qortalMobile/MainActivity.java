@@ -1,6 +1,5 @@
 package com.github.Qortal.qortalMobile;
 
-import com.github.Qortal.qortalMobile.QortalBiometricPlugin;
 import com.getcapacitor.BridgeActivity;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
@@ -8,12 +7,6 @@ import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.WebViewListener;
 import com.getcapacitor.annotation.CapacitorPlugin;
-import com.github.Qortal.qortalMobile.NativeBcrypt;
-import com.github.Qortal.qortalMobile.NativePOW;
-import com.github.Qortal.qortalMobile.FileWriter;
-import com.github.Qortal.qortalMobile.NetworkInfoPlugin;
-import com.github.Qortal.qortalMobile.ReticulumPlugin;
-import com.github.Qortal.qortalMobile.AudioRoutingPlugin;
 import android.Manifest;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -58,10 +51,6 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(NativeBcrypt.class);
         registerPlugin(NativePOW.class);
         registerPlugin(FileWriter.class);
-        // EncryptedMediaServerPlugin is not registered: no JS calls it
-        // (encrypted media playback is Electron-only), so it is only an
-        // unused local HTTP server reachable from page script.
-        registerPlugin(NetworkInfoPlugin.class);
         registerPlugin(QortalBackgroundPlugin.class);
         registerPlugin(ReticulumPlugin.class);
         registerPlugin(AudioRoutingPlugin.class);

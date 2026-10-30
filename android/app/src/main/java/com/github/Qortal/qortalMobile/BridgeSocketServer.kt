@@ -87,8 +87,6 @@ class BridgeSocketServer(
 
     fun url(): String = "ws://127.0.0.1:$listeningPort/bridge"
 
-    fun clientCount(): Int = clients.size
-
     /**
      * Copy diagnostics: read-only counters (connected workers, frames waiting
      * per worker, frames dropped on a full queue since this server started,

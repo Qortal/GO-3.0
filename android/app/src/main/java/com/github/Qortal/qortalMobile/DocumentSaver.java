@@ -37,49 +37,6 @@ public final class DocumentSaver {
 
     private DocumentSaver() {}
 
-    /**
-     * A file name safe to show and create: no bidi/control characters, path
-     * separators or leading dots ({@link SavedFilePolicy#cleanName}).
-     */
-    public static String safeName(String name) {
-        return SavedFilePolicy.cleanName(name);
-    }
-
-    /** Save raw bytes to Documents/<subFolder>/<displayName>. Returns the saved uri/path. */
-    public static String saveBytes(
-        Context context,
-        String subFolder,
-        String displayName,
-        byte[] bytes,
-        String mimeType
-    ) throws IOException {
-        SavedFilePolicy.Target target = SavedFilePolicy.forSave(displayName, mimeType, EXTENSION_TYPES);
-        displayName = target.name;
-        mimeType = target.mime;
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            Uri uri = createMediaStoreUri(context, subFolder, displayName, mimeType);
-            ContentResolver resolver = context.getContentResolver();
-            synchronized (FILE_LOCK) {
-                try (OutputStream os = resolver.openOutputStream(uri, "wt")) {
-                    if (os == null) {
-                        throw new IOException("Failed to open output stream");
-                    }
-                    os.write(bytes);
-                    os.flush();
-                }
-            }
-            return uri.toString();
-        }
-        File file = legacyTargetFile(subFolder, displayName);
-        synchronized (FILE_LOCK) {
-            try (FileOutputStream fos = new FileOutputStream(file, false)) {
-                fos.write(bytes);
-                fos.flush();
-            }
-        }
-        return file.getAbsolutePath();
-    }
-
     /** Stream an InputStream into Documents/<subFolder>/<displayName>. Returns the saved uri/path. */
     public static String saveStream(
         Context context,
