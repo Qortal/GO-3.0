@@ -121,10 +121,6 @@ export function setChatWarmCacheOwner(address: string): void {
   owner = next;
 }
 
-export function getChatWarmCacheOwner(): string {
-  return owner;
-}
-
 export function getKnownReticulumChatEnabled(): boolean | null {
   return knownEnabled;
 }

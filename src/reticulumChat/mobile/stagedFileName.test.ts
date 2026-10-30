@@ -21,7 +21,7 @@ function loadSharedCases(): Array<[string, string]> {
     'utf8'
   );
   const unescape = (s: string) =>
-    s.replace(/\\u([0-9A-Fa-f]{4})|\\\\/g, (match, hex: string | undefined) =>
+    s.replace(/\\u([0-9A-Fa-f]{4})|\\\\/g, (_match, hex: string | undefined) =>
       hex ? String.fromCharCode(parseInt(hex, 16)) : '\\'
     );
   return text

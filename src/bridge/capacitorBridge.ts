@@ -727,13 +727,6 @@ function forceWebViewReflow(): void {
 
 let reticulumBridgesInstalled = false;
 
-/**
- * Master switch for the native (Chaquopy) presence bridge. When false,
- * `window.presence` is never installed and the embedded Python/RNS transport is
- * never touched (the app behaves like the plain web build).
- */
-const PRESENCE_BRIDGE_ENABLED = true;
-
 /** Online entries expire if not refreshed within this window (heartbeats ~25 s). */
 const PRESENCE_TTL_MS = 90_000;
 /**
@@ -1753,9 +1746,6 @@ export function __setHostedHubCallsForTests(enabled: boolean): void {
   hostedHubCallsEnabled = enabled;
 }
 
-/** True when window.call / window.groupCall are the hosted Hub managers. */
-export const isHostedHubCallsActive = (): boolean => hostedHubCalls !== null;
-
 /** The hosted stack once its chunk has loaded (null on the old port / before). */
 export const getHostedHubCallStack = (): HostedCallStack | null =>
   hostedHubCalls?.getLoaded() ?? null;
@@ -1867,7 +1857,6 @@ export function clearHostedHubCallAccountState(): void {
  * (HOSTED_HUB_CALLS, src/bridge/hubCall), or the old hand-written port below.
  */
 export function installReticulumBridges(): void {
-  if (!PRESENCE_BRIDGE_ENABLED) return;
   if (reticulumBridgesInstalled) return;
   if (!isCapacitor()) return;
   reticulumBridgesInstalled = true;
@@ -1993,42 +1982,6 @@ export function installReticulumBridges(): void {
   } catch {
     /* corrupted store; start empty */
   }
-  const liveAccountEndpoints = (): Array<{
-    address: string;
-    destinationHash: string;
-    sessionId: string;
-    lastSeen: number;
-  }> => {
-    const now = Date.now();
-    const localHash = (
-      getMobileReticulumInfo().destinationHash || ''
-    ).toLowerCase();
-    const out: Array<{
-      address: string;
-      destinationHash: string;
-      sessionId: string;
-      lastSeen: number;
-    }> = [];
-    for (const [address, endpoints] of [...accountEndpoints]) {
-      for (const [hash, entry] of [...endpoints]) {
-        if (now - entry.lastSeen > PRESENCE_TTL_MS) {
-          endpoints.delete(hash);
-          continue;
-        }
-        // A looped-back announce of our own endpoint would otherwise look like
-        // a peer device to route to.
-        if (hash === localHash) continue;
-        out.push({
-          address,
-          destinationHash: hash,
-          sessionId: entry.sessionId,
-          lastSeen: entry.lastSeen,
-        });
-      }
-      if (endpoints.size === 0) accountEndpoints.delete(address);
-    }
-    return out;
-  };
   const overlaySyncAccountLeases = () => {
     const now = Date.now();
     const localHash = (

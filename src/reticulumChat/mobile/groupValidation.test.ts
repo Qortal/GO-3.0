@@ -9,7 +9,6 @@ import {
   createGroupValidatorStats,
   groupValidationFailReason,
   membershipProbeResult,
-  recordGroupValidation,
   recordGroupValidationBatch,
   recordGroupValidationUnsent,
   redactDiagnosticText,
@@ -17,9 +16,28 @@ import {
   runGroupValidationRequest,
   toWorkerNodeConfig,
   type GroupValidationOutcome,
+  type GroupValidatorStats,
 } from './groupValidation';
 
 const ADDRESS = 'QfdpbaGasRtFSYyFu73xsnghgXHcRYrLTP';
+
+/** One single-address request, recorded through the batch recorder. */
+function recordGroupValidation(
+  stats: GroupValidatorStats,
+  outcome: GroupValidationOutcome,
+  host: string,
+  at = Date.now(),
+  options: { own?: boolean; retried?: boolean } = {}
+): void {
+  const { row, ...rest } = outcome;
+  recordGroupValidationBatch(
+    stats,
+    { ...rest, rows: new Map([['', row]]) },
+    host,
+    at,
+    { own: () => options.own === true, retried: options.retried }
+  );
+}
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {

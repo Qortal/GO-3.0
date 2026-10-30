@@ -25,7 +25,7 @@ export function resolveReticulumChatWorkerPath(): string {
 
 export class ReticulumChatWorkerPool {
   constructor(
-    private readonly label = 'chat',
+    _label = 'chat',
     _workerCount?: number,
     _maxPending?: number,
     _slowTaskMs?: number

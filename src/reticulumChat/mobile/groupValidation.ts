@@ -594,24 +594,6 @@ function noteGroupValidationFailure(
   }
 }
 
-/** One single-address request (the probe and older callers). */
-export function recordGroupValidation(
-  stats: GroupValidatorStats,
-  outcome: GroupValidationOutcome,
-  host: string,
-  at = Date.now(),
-  options: { own?: boolean; retried?: boolean } = {}
-): void {
-  const { row, ...rest } = outcome;
-  recordGroupValidationBatch(
-    stats,
-    { ...rest, rows: new Map([['', row]]) },
-    host,
-    at,
-    { own: () => options.own === true, retried: options.retried }
-  );
-}
-
 /**
  * One request, for any number of addresses. `retried`: this request is asked
  * again (a stall abort, or a 400 split into single requests), so its

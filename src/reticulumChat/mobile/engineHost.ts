@@ -2109,7 +2109,6 @@ function ensureDeviceStateOwner(m: any, ownerAddress: unknown): string {
 }
 
 const handlers: Record<string, Handler> = {
-  isEnabled: () => true,
   setLocalGroupMemberships: (groupIds) => {
     const m = manager();
     if (!m) return notRunning;
