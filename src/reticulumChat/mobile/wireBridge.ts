@@ -129,7 +129,7 @@ export type ResourceSessionStats = {
 const RESOURCE_SESSION_RESULT_KEYS_MAX = 64;
 
 /** What this phone did with resource requests from peers, per logical type. */
-export type ServingTypeStats = {
+type ServingTypeStats = {
   /** `auth` events (a peer asked for a resource). */
   received: number;
   authorized: number;

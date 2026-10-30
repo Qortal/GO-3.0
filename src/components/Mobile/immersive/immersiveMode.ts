@@ -54,7 +54,7 @@ export const immersiveModeAtom = atom(
 /** Where the floating button rests: a screen side and a height fraction. */
 export type ImmersivePillPosition = { side: 'left' | 'right'; y: number };
 
-export const DEFAULT_IMMERSIVE_PILL_POSITION: ImmersivePillPosition = {
+const DEFAULT_IMMERSIVE_PILL_POSITION: ImmersivePillPosition = {
   side: 'right',
   y: 0.78,
 };

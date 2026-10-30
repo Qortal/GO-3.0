@@ -105,15 +105,6 @@ public final class PrivateQappStore {
         return id != null && apps.containsKey(id);
     }
 
-    public synchronized boolean release(String id) {
-        Entry gone = id == null ? null : apps.remove(id);
-        if (gone == null) {
-            return false;
-        }
-        totalBytes -= gone.archive.size();
-        return true;
-    }
-
     /** Releases every app not in {@code ids}, except ones added in the last {@link #NEW_APP_GRACE_MS}. */
     public synchronized int retainOnly(Collection<String> ids, long now) {
         Set<String> keep = ids == null ? new HashSet<>() : new HashSet<>(ids);

@@ -92,8 +92,6 @@ class _StdinShim(io.TextIOBase):
 
     def readline(self, size=-1):
         item = self._q.get()
-        if item is None:
-            return ""  # EOF
         if not item.endswith("\n"):
             item = item + "\n"
         return item

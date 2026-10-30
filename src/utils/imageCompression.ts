@@ -52,7 +52,7 @@ const runImageCompressor = (
   });
 
 /** Build a real, Blob-backed File with the right extension for its type. */
-export function blobToNamedImageFile(
+function blobToNamedImageFile(
   blob: Blob,
   fileName: string,
   mimeType: string

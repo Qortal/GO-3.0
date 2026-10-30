@@ -13,7 +13,7 @@ import {
   type LatencySummary,
 } from './latencyStats';
 
-export type NativeRequestLabelStats = {
+type NativeRequestLabelStats = {
   label: string;
   /** Replies received (round trips). */
   n: number;

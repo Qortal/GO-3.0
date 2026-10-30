@@ -107,22 +107,19 @@ public class PrivateQappStoreTest {
     }
 
     @Test
-    public void releaseAndRetainDropApps() throws Exception {
+    public void retainDropsApps() throws Exception {
         PrivateQappStore store = store();
         String a = store.add("https://ext-node.qortal.link", app(), T0);
         String b = store.add("https://ext-node.qortal.link", app(), T0);
         String c = store.add("https://ext-node.qortal.link", app(), T0);
 
-        assertTrue(store.release(a));
-        assertFalse(store.release(a));
-        assertFalse(store.has(a));
-        assertNull(store.respond("https", "ext-node.qortal.link", -1, "/render/hash/" + a, null, null));
-
         // Just added: kept while its tab opens, even when no tab names it yet.
         assertEquals(0, store.retainOnly(Collections.emptyList(), T0 + 1000));
-        assertEquals(1, store.retainOnly(Collections.singletonList(b), LATER));
+        assertEquals(2, store.retainOnly(Collections.singletonList(b), LATER));
         assertTrue(store.has(b));
+        assertFalse(store.has(a));
         assertFalse(store.has(c));
+        assertNull(store.respond("https", "ext-node.qortal.link", -1, "/render/hash/" + a, null, null));
 
         store.clear();
         assertEquals(0, store.size());
