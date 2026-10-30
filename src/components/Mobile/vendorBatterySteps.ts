@@ -84,12 +84,12 @@ const BRAND_LABEL: Record<VendorBatteryBrand, string | null> = {
 };
 
 /** Shown under every brand's steps, in this order. */
-export const VENDOR_BATTERY_NOTE_KEYS: readonly string[] = [
+const VENDOR_BATTERY_NOTE_KEYS: readonly string[] = [
   `${STEP_PREFIX}.note_menu_names`,
   `${STEP_PREFIX}.note_recents`,
 ];
 
-export type VendorBatterySteps = {
+type VendorBatterySteps = {
   brand: VendorBatteryBrand;
   /** e.g. 'vivo / iQOO'; null for generic phones. */
   brandLabel: string | null;

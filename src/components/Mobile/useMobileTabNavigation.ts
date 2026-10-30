@@ -32,9 +32,7 @@ export const MOBILE_TAB_ORDER: readonly MobileTabKey[] =
   DEFAULT_MOBILE_TAB_ORDER;
 
 /** The phone section a desktopViewMode belongs to, if any. */
-export const mobileTabForViewMode = (
-  desktopViewMode: string
-): MobileTabKey | null =>
+const mobileTabForViewMode = (desktopViewMode: string): MobileTabKey | null =>
   desktopViewMode === 'home'
     ? 'home'
     : desktopViewMode === 'chat'

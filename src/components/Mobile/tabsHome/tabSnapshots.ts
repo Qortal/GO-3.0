@@ -25,7 +25,7 @@ interface TabSnapshotPlugin {
 const TabSnapshotNative =
   registerPlugin<TabSnapshotPlugin>('QortalTabSnapshot');
 
-export type TabSnapshot = { url: string; at: number };
+type TabSnapshot = { url: string; at: number };
 
 const MAX_SNAPSHOTS = 24;
 const TARGET_WIDTH = 360;
@@ -33,7 +33,7 @@ const JPEG_QUALITY = 72;
 
 export const tabSnapshotsAtom = atom<Record<string, TabSnapshot>>({});
 
-export const tabSnapshotAtomFamily = atomFamily((tabId: string) =>
+const tabSnapshotAtomFamily = atomFamily((tabId: string) =>
   atom((get) => get(tabSnapshotsAtom)[tabId] ?? null)
 );
 
@@ -45,7 +45,7 @@ type Store = ReturnType<typeof getDefaultStore>;
 const isAndroidNative = () =>
   Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android';
 
-export const tabFrameId = (tabId: string) => `browser-iframe-${tabId}`;
+const tabFrameId = (tabId: string) => `browser-iframe-${tabId}`;
 
 type Box = { left: number; top: number; right: number; bottom: number };
 

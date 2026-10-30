@@ -25,7 +25,7 @@ import {
  * Nothing runs until the user adds it: the screen shows only the widgets in
  * the saved list, and the list only takes what the user picked.
  */
-export const GO_WIDGET_TAG = 'go-widget';
+const GO_WIDGET_TAG = 'go-widget';
 export const GO_WIDGET_IDENTIFIER_PREFIX = 'go-widget';
 
 /** One QDN APP resource, as /arbitrary/resources/search lists it. */

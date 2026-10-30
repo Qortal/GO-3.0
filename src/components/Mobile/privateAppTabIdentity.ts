@@ -1,6 +1,6 @@
 import type { OpenTab } from './useOpenTabs';
 
-export type PrivateAppProperties = {
+type PrivateAppProperties = {
   service?: string;
   name?: string;
   identifier?: string;
@@ -11,7 +11,7 @@ export type PrivateAppProperties = {
 };
 
 /** Identity fields needed to fetch/decrypt a private Q-App. */
-export type PrivateAppIdentity = {
+type PrivateAppIdentity = {
   service: string;
   name: string;
   identifier: string;
@@ -20,7 +20,7 @@ export type PrivateAppIdentity = {
   logo?: string;
 };
 
-export function getPrivateAppProperties(
+function getPrivateAppProperties(
   tab: OpenTab | Record<string, unknown> | null | undefined
 ): PrivateAppProperties | null {
   const props = tab?.privateAppProperties;

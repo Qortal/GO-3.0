@@ -4,7 +4,7 @@ import { SAFE_AREA_TOP } from '../../../utils/mobileSafeArea';
 import { IMMERSIVE_EASING, type ImmersiveBars } from './useImmersiveBars';
 
 /** z-index of the floating top bar: over content and tab bar, under dialogs. */
-export const IMMERSIVE_TOP_BAR_Z = 1250;
+const IMMERSIVE_TOP_BAR_Z = 1250;
 
 /**
  * Paint the bar (the wrapper's only child) with `background` (a colour or

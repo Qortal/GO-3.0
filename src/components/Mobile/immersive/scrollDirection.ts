@@ -6,17 +6,17 @@
  */
 export type ImmersiveScrollSignal = 'hide' | 'show';
 
-export type ScrollDirectionOptions = {
+type ScrollDirectionOptions = {
   /** Content moved up (You scrolled down) by this much: hide. */
   hideAfterPx?: number;
   /** Content moved down (You scrolled up) by this much: show. */
   showAfterPx?: number;
 };
 
-export const IMMERSIVE_HIDE_AFTER_PX = 32;
-export const IMMERSIVE_SHOW_AFTER_PX = 24;
+const IMMERSIVE_HIDE_AFTER_PX = 32;
+const IMMERSIVE_SHOW_AFTER_PX = 24;
 
-export type ScrollDirectionTracker = {
+type ScrollDirectionTracker = {
   /** delta > 0 = scrolled down (content moved up). */
   push: (delta: number) => ImmersiveScrollSignal | null;
   reset: () => void;

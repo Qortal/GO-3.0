@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { SAFE_AREA_TOP } from '../../utils/mobileSafeArea';
 
 /** The header row, without the status-bar inset or the divider under it. */
-export const MOBILE_PANEL_HEADER_HEIGHT_PX = 56;
+const MOBILE_PANEL_HEADER_HEIGHT_PX = 56;
 
 /** Where a panel's content starts under a header drawn with `safeAreaTop`. */
 export const MOBILE_PANEL_HEADER_OFFSET = `calc(${

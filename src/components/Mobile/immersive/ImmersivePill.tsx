@@ -21,7 +21,7 @@ import {
 } from './immersiveMode';
 import { immersiveMotionReduced } from './useImmersiveBars';
 
-export const IMMERSIVE_PILL_SIZE = 46;
+const IMMERSIVE_PILL_SIZE = 46;
 const EDGE_GAP = 12;
 /** Room kept clear above (where the top bar comes in) and below. */
 const TOP_CLEARANCE = 76;

@@ -14,7 +14,7 @@ import { FLIP_EASE, prefersReducedMotion } from './flip';
  * lift the scroller gets `overflow: hidden`, so the finger drags the item
  * instead of the list.
  */
-export type LongPressReorderOptions = {
+type LongPressReorderOptions = {
   /** The grid; an element (from a callback ref), so a remount re-binds. */
   container: HTMLElement | null;
   /** The element that scrolls the grid; it is locked while an item is held. */

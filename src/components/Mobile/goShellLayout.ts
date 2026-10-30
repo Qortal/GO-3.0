@@ -9,7 +9,7 @@ import { SECTION_ATTR } from './sectionSwipe/sectionSwipe';
  */
 
 /** A chat composer inside the Chat section (not one in a sheet or Q-App). */
-export const CHAT_COMPOSER_SELECTOR = `[${SECTION_ATTR}="chat"] .tiptap-chat-composer`;
+const CHAT_COMPOSER_SELECTOR = `[${SECTION_ATTR}="chat"] .tiptap-chat-composer`;
 
 const composerHasFocus = (): boolean => {
   if (typeof document === 'undefined') return false;
@@ -79,7 +79,7 @@ export function shouldCollapseForTyping({
 }
 
 /** Space left between the results and the keyboard (or the tab buttons). */
-export const SEARCH_RESULTS_GAP_PX = 10;
+const SEARCH_RESULTS_GAP_PX = 10;
 /** Hub floor: results never get shorter than this. */
 export const SEARCH_RESULTS_MIN_HEIGHT_PX = 160;
 /** GO floor: low enough that a landscape keyboard never covers the results. */

@@ -8,7 +8,7 @@ import { buildTabQortalUrl } from '../tabQortalLink';
 import { useTabSnapshot } from './tabSnapshots';
 
 /** Preview height over width, close to a phone screen cut short. */
-export const TAB_CARD_PREVIEW_RATIO = 1.18;
+const TAB_CARD_PREVIEW_RATIO = 1.18;
 
 type TabPreviewCardProps = {
   tab: OpenTab;

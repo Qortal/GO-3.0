@@ -15,7 +15,7 @@ export type ImmersiveTouchEvent =
   | { phase: 'drag'; direction: 'up' | 'down' };
 
 /** Dark icons on light bars; `background` (#rrggbb) also fills the gutters. */
-export interface SystemBarAppearance {
+interface SystemBarAppearance {
   lightStatus: boolean;
   lightNav: boolean;
   background?: string;

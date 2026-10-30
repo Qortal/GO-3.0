@@ -37,7 +37,7 @@ export const WEBVIEW_JIT_NOTICE_PREFS_KEY = 'go_webview_jit_notice_v1';
 export const WEBVIEW_JIT_NOTICE_READ_DELAY_MS = 8_000;
 
 /** Persisted per install. */
-export type WebViewJitNoticeUiState = {
+type WebViewJitNoticeUiState = {
   /** The "Don't show again" tick: no new card, ever. */
   dontShowAgain: boolean;
   /** When the current (or last) card appeared; null: never shown. */
@@ -50,14 +50,14 @@ export type WebViewJitNoticeUiState = {
   rearmed: boolean;
 };
 
-export type WebViewJitNoticeCard = {
+type WebViewJitNoticeCard = {
   shownAt: number;
   /** Counts 1 in the bell badge: not seen since it appeared. */
   badge: boolean;
 };
 
 /** The native flag: true = JIT off for GO, false = allowed, null = no flag. */
-export type WebViewJitFlag = boolean | null;
+type WebViewJitFlag = boolean | null;
 
 export const initialWebViewJitNoticeUi = (): WebViewJitNoticeUiState => ({
   dontShowAgain: false,
@@ -274,7 +274,7 @@ const loadUi = (): Promise<WebViewJitNoticeUiState | null> => {
 };
 
 /** Reads the native flag (and the stored state, if not read yet). */
-export const refreshWebViewJitNotice = async (): Promise<void> => {
+const refreshWebViewJitNotice = async (): Promise<void> => {
   if (!canUseNativeBcrypt()) return;
   const [info] = await Promise.all([
     getNativeBcryptRuntimeInfo().catch(() => null),
@@ -312,7 +312,7 @@ export const startWebViewJitNoticeStore = (
   };
 };
 
-export const subscribeWebViewJitNotice = (listener: () => void) => {
+const subscribeWebViewJitNotice = (listener: () => void) => {
   listeners.add(listener);
   return () => {
     listeners.delete(listener);

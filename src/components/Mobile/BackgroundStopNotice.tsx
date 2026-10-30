@@ -36,7 +36,7 @@ import {
   type VendorFreezeHintSnapshot,
 } from './vendorFreezeHintStore';
 
-export type BackgroundStopNoticeVariant = 'bell' | 'settings';
+type BackgroundStopNoticeVariant = 'bell' | 'settings';
 
 export type BackgroundStopNoticeActions = Pick<
   typeof vendorFreezeHintActions,
@@ -48,14 +48,14 @@ export type BackgroundStopNoticeActions = Pick<
 >;
 
 /** What the notice says; null when it has nothing to say. */
-export type BackgroundStopNoticeContent = {
+type BackgroundStopNoticeContent = {
   kind: 'fixable' | 'exempt_still_frozen';
   /** Significant stops in the last 7 days (0: say "stopped", no number). */
   count: number;
   lastAt: number | null;
 };
 
-export const backgroundStopNoticeContent = (
+const backgroundStopNoticeContent = (
   snapshot: VendorFreezeHintSnapshot,
   variant: BackgroundStopNoticeVariant
 ): BackgroundStopNoticeContent | null => {

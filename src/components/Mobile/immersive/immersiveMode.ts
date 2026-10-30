@@ -23,7 +23,7 @@ export const IMMERSIVE_MODES: readonly ImmersiveMode[] = [
 ] as const;
 
 /** Until the user picks one (a saved Off stays Off). */
-export const DEFAULT_IMMERSIVE_MODE: ImmersiveMode = 'auto';
+const DEFAULT_IMMERSIVE_MODE: ImmersiveMode = 'auto';
 
 export const normalizeImmersiveMode = (value: unknown): ImmersiveMode =>
   value === 'off' || value === 'auto' || value === 'manual'
@@ -32,7 +32,7 @@ export const normalizeImmersiveMode = (value: unknown): ImmersiveMode =>
 
 /** Device-wide, not per account: it is about the screen, not the wallet. */
 export const IMMERSIVE_MODE_STORAGE_KEY = 'go_immersive_mode';
-export const IMMERSIVE_PILL_POSITION_STORAGE_KEY = 'go_immersive_pill_position';
+const IMMERSIVE_PILL_POSITION_STORAGE_KEY = 'go_immersive_pill_position';
 export const IMMERSIVE_HINT_SEEN_STORAGE_KEY = 'go_immersive_hint_seen';
 
 const localJsonStorage = <T>() =>

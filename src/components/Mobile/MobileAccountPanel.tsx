@@ -41,7 +41,7 @@ export type AccountAction = {
   badge?: number;
 };
 
-export type AccountPanelAnchor = { top: number; right: number };
+type AccountPanelAnchor = { top: number; right: number };
 
 type MobileAccountPanelProps = {
   open: boolean;
@@ -104,9 +104,9 @@ const BACKDROP_Z = 1290;
 const PANEL_Z = 1291;
 
 /** Where a released swipe-up sends the travel, in px (negative). */
-export type Fling = { y: number };
+type Fling = { y: number };
 
-export type SwipeRelease = { kind: 'settle' } | ({ kind: 'fling' } & Fling);
+type SwipeRelease = { kind: 'settle' } | ({ kind: 'fling' } & Fling);
 
 const clamp = (value: number, min: number, max: number) =>
   Math.min(max, Math.max(min, value));

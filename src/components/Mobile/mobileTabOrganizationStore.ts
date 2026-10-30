@@ -16,7 +16,7 @@ import type { OpenTab } from './useOpenTabs';
 
 type JotaiStore = ReturnType<typeof useStore>;
 
-export type MobileTabOrganizationState = {
+type MobileTabOrganizationState = {
   walletAddress: string;
   organization: MobileTabOrganization;
   ready: boolean;

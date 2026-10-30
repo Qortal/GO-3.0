@@ -33,7 +33,7 @@ import {
 } from './sectionSwipe';
 
 /** After a section swipe, a click this soon belongs to the swipe. */
-export const SECTION_CLICK_GUARD_MS = 400;
+const SECTION_CLICK_GUARD_MS = 400;
 /** If the switch never shows up, the sections are put back after this. */
 const COMMIT_FALLBACK_MS = 1200;
 
@@ -89,7 +89,7 @@ interface Gesture {
   width: number;
 }
 
-export interface SectionSwipeOptions {
+interface SectionSwipeOptions {
   /** Phones, on Home, Apps (without a Q-App on screen) or Chat. */
   enabled: boolean;
   /** The section showing. */

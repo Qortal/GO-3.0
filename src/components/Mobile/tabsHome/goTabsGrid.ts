@@ -68,7 +68,7 @@ export const selectGoFolderPanelWide = (l: GoLayout): boolean =>
 // ---- Apps library -------------------------------------------------------
 
 /** From this width GO's library list fills the row with 340 px columns. */
-export const GO_LIBRARY_WIDE_MIN_PX = 1000;
+const GO_LIBRARY_WIDE_MIN_PX = 1000;
 export const GO_LIBRARY_COLUMN_MIN_PX = 340;
 const GO_LIBRARY_WIDE_COLUMNS: { minWidth: number } = Object.freeze({
   minWidth: GO_LIBRARY_COLUMN_MIN_PX,

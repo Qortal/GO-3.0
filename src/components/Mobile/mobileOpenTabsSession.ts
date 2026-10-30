@@ -20,7 +20,7 @@ export type PersistedOpenTab = {
   privateAppProperties?: Record<string, unknown>;
 };
 
-export type MobileOpenTabsSession = {
+type MobileOpenTabsSession = {
   tabs: PersistedOpenTab[];
   selectedTabId: string | null;
   viewerTabOrder: string[];

@@ -49,7 +49,7 @@ export const DEV_ZIP_ACCEPT =
  * saves are kept per app name, so a zip called "Q-Wallets.zip" must not get
  * what the real Q-Wallets was allowed.
  */
-export const DEV_APP_NAME_PREFIX = 'Dev: ';
+const DEV_APP_NAME_PREFIX = 'Dev: ';
 
 const MAX_LABEL_LENGTH = 40;
 

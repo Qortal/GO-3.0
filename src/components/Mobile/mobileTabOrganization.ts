@@ -21,7 +21,7 @@ export type TabFolder = {
 };
 
 /** Persisted app/website metadata so folder members survive app restarts. */
-export type SavedTabSnapshot = {
+type SavedTabSnapshot = {
   service?: string;
   name?: string;
   internal?: string;
@@ -32,7 +32,7 @@ export type SavedTabSnapshot = {
   privateAppProperties?: Record<string, unknown>;
 };
 
-export type TabOverride = {
+type TabOverride = {
   customLabel?: string;
   originalLabel?: string;
   customQortalUrl?: string;
@@ -187,7 +187,7 @@ export function pinnedAppToOpenTab(item: {
   };
 }
 
-export function savedTabToOpenTab(
+function savedTabToOpenTab(
   tabKey: string,
   snapshot: SavedTabSnapshot
 ): OpenTab {
@@ -298,7 +298,7 @@ export function renameTabKeyInOrganization(
   return { ...organization, folders, tabOverrides, tabFolderMap, savedTabs };
 }
 
-export function findFolderByName(
+function findFolderByName(
   folders: TabFolder[],
   name: string
 ): TabFolder | undefined {

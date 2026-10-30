@@ -90,7 +90,7 @@ const readPx = (value: string | null | undefined) => {
   return Number.isFinite(n) ? n : 0;
 };
 
-export type UseImmersiveBarsOptions = {
+type UseImmersiveBarsOptions = {
   mode: ImmersiveMode;
   /** The current screen may go full screen (section, not locked, etc.). */
   eligible: boolean;

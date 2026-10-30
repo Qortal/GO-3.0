@@ -71,7 +71,7 @@ import { WidgetPicker } from './WidgetPicker';
 import { useWidgetSwipeZone, widgetHoldFeed } from './widgetSwipeZone';
 
 /** Widgets stay loaded this long after their screen was last seen. */
-export const WIDGET_UNLOAD_AFTER_MS = 3 * 60_000;
+const WIDGET_UNLOAD_AFTER_MS = 3 * 60_000;
 const LONG_PRESS_MS = 450;
 const MOVE_SLOP_PX = 8;
 const AUTO_SCROLL_EDGE_PX = 72;

@@ -52,7 +52,7 @@ type NativeSwipeEvent = {
 };
 
 /** A claimed swipe's touch, for useSectionSwipe's `externalTouches`. */
-export type ExternalTouch = {
+type ExternalTouch = {
   type: 'touchstart' | 'touchmove' | 'touchend' | 'touchcancel';
   x: number;
   y: number;
@@ -80,7 +80,7 @@ export const widgetSwipeFeed: ExternalTouchSource & {
 };
 
 /** A long press Android took on the widgets screen, then its moves. */
-export type HoldTouch = {
+type HoldTouch = {
   type: 'hold' | 'move' | 'end' | 'cancel';
   x: number;
   y: number;

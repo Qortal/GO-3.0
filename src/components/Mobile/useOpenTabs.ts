@@ -15,7 +15,7 @@ export type OpenTab = {
   [key: string]: unknown;
 };
 
-export type OpenTabsState = {
+type OpenTabsState = {
   tabs: OpenTab[];
   selectedTab: OpenTab | null;
 };

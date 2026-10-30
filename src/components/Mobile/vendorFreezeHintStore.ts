@@ -344,7 +344,7 @@ export const startVendorFreezeHintStore = (): (() => void) => {
   };
 };
 
-export const subscribeVendorFreezeHint = (listener: () => void) => {
+const subscribeVendorFreezeHint = (listener: () => void) => {
   listeners.add(listener);
   return () => {
     listeners.delete(listener);

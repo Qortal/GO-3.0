@@ -11,7 +11,7 @@
 export const GRID_COLUMNS = 4;
 export const GRID_ROW_PX = 40;
 export const GRID_GAP_PX = 12;
-export const GRID_MIN_W = 1;
+const GRID_MIN_W = 1;
 export const GRID_MIN_H = 2;
 export const GRID_MAX_H = 14;
 export const GRID_DEFAULT_W = GRID_COLUMNS;
@@ -45,10 +45,10 @@ export const clampRect = (rect: Partial<GridRect>): GridRect => {
   return { x, y, w, h };
 };
 
-export const collides = (a: GridRect, b: GridRect): boolean =>
+const collides = (a: GridRect, b: GridRect): boolean =>
   a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
 
-export const layoutRows = (items: readonly GridRect[]): number =>
+const layoutRows = (items: readonly GridRect[]): number =>
   items.reduce((rows, item) => Math.max(rows, item.y + item.h), 0);
 
 /** Rows with nothing in them close up: everything below moves up. */

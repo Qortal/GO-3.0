@@ -15,7 +15,7 @@ const EDGE_Z = 1190;
  * reading past this (EDGE_SAMPLE_OFFSET_DP in ImmersivePlugin.java), so keep
  * the two in step.
  */
-export const IMMERSIVE_EDGE_FADE_PX = 14;
+const IMMERSIVE_EDGE_FADE_PX = 14;
 /** How long a new page colour takes to fade in. */
 export const EDGE_CROSSFADE_MS = 600;
 /** After the bars' slide, before the colour is read again. */

@@ -27,7 +27,7 @@ import {
   type WebViewJitNoticeSnapshot,
 } from './webViewJitNoticeStore';
 
-export type WebViewJitNoticeActions = Pick<
+type WebViewJitNoticeActions = Pick<
   typeof webViewJitNoticeActions,
   'closeCard' | 'setDontShowAgain'
 >;

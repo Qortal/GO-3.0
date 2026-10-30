@@ -8,7 +8,7 @@
  * list's own swipe (useTabsSwipeClose: a small one scrolls the list, a big
  * one closes). A tap there still closes it (the backdrop's click).
  */
-export interface BackgroundGestureOptions {
+interface BackgroundGestureOptions {
   getPanel: () => HTMLElement | null;
   /** The panel's scrolling list of apps. */
   getList: () => HTMLElement | null;

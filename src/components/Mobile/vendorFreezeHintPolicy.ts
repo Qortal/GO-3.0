@@ -32,13 +32,13 @@ const MINUTE_MS = 60_000;
 const DAY_MS = 24 * 60 * MINUTE_MS;
 
 /** A single freeze shorter than this is not worth a notice. */
-export const SIGNIFICANT_FREEZE_MS = 5 * MINUTE_MS;
+const SIGNIFICANT_FREEZE_MS = 5 * MINUTE_MS;
 /** Max screen-on time between two detections of one episode. */
-export const EPISODE_MERGE_MS = 2 * MINUTE_MS;
+const EPISODE_MERGE_MS = 2 * MINUTE_MS;
 /** The window episodes are counted in. */
 export const FREEZE_WINDOW_MS = 7 * DAY_MS;
 /** Episodes needed for a bell notice, and new ones after an acknowledgement. */
-export const BELL_MIN_EPISODES = 2;
+const BELL_MIN_EPISODES = 2;
 /** Quiet time after an acknowledgement. */
 export const ACK_COOLDOWN_MS = 14 * DAY_MS;
 /** Bell notices per install, ever. */
@@ -46,9 +46,9 @@ export const MAX_BELL_NOTICES = 3;
 /** A card leaves the bell panel this long after it appeared. */
 export const CARD_TTL_MS = 7 * DAY_MS;
 /** Episodes while exempt that show the exemption does not help. */
-export const EXEMPT_MIN_EPISODES = 2;
+const EXEMPT_MIN_EPISODES = 2;
 
-export type VendorFreezeEpisode = {
+type VendorFreezeEpisode = {
   /** `at` of the first detection (screen back on after the first freeze). */
   firstAt: number;
   /** `at` of the last detection. */
@@ -93,7 +93,7 @@ export type VendorFreezeHintUiState = {
   cardClosed: boolean;
 };
 
-export type VendorFreezeVariant = 'fixable' | 'exempt_still_frozen' | 'none';
+type VendorFreezeVariant = 'fixable' | 'exempt_still_frozen' | 'none';
 
 export type VendorFreezeBell = {
   /** Significant episodes since `since`. */
@@ -119,7 +119,7 @@ export type VendorFreezeSettings = {
   variant: VendorFreezeVariant;
 };
 
-export type VendorFreezeDecision = {
+type VendorFreezeDecision = {
   bell: VendorFreezeBell | null;
   settings: VendorFreezeSettings;
 };

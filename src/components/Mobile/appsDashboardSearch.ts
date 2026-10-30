@@ -55,7 +55,7 @@ export function splitFirstMatch(
   };
 }
 
-export type AppsSearchSuggestion =
+type AppsSearchSuggestion =
   | { type: 'link'; label: string }
   | { type: 'app'; app: any };
 

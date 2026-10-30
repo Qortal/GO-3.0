@@ -21,13 +21,11 @@ import {
 } from './widgetRequests';
 
 /** Posted to a widget when its screen comes into view or leaves it. */
-export const GO_WIDGET_VISIBILITY = 'GO_WIDGET_VISIBILITY';
+const GO_WIDGET_VISIBILITY = 'GO_WIDGET_VISIBILITY';
 
 /** The tab id a widget's requests carry (session permissions are per tab). */
-export const goWidgetTabId = (widget: {
-  name: string;
-  identifier: string | null;
-}) => `go-widget:${goWidgetKey(widget).replace('\u0000', ':')}`;
+const goWidgetTabId = (widget: { name: string; identifier: string | null }) =>
+  `go-widget:${goWidgetKey(widget).replace('\u0000', ':')}`;
 
 /**
  * The address a widget loads from: its app's /render address with the theme
@@ -35,7 +33,7 @@ export const goWidgetTabId = (widget: {
  * itself as a widget from the first frame. Null for a name that would leave
  * /render/APP/<name> (GO-21).
  */
-export const goWidgetUrl = (
+const goWidgetUrl = (
   widget: { name: string; identifier: string | null },
   {
     theme,
@@ -56,7 +54,7 @@ export const goWidgetUrl = (
   });
 
 /** What a widget asked for with GO_WIDGET_SET_SIZE, in grid cells. */
-export const askedWidgetSize = (
+const askedWidgetSize = (
   data: Record<string, unknown>
 ): { w: number | null; h: number } | null => {
   const payload = (data?.payload ?? {}) as Record<string, unknown>;

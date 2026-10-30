@@ -50,7 +50,7 @@ import { useGoLayout } from '../../../layout/goLayout';
 import { folderPanelGeometry, selectGoFolderPanelWide } from './goTabsGrid';
 
 /** Above the phone bars (1200) and below the Tabs overlay and its dialogs. */
-export const FOLDER_OVERLAY_Z = 1990;
+const FOLDER_OVERLAY_Z = 1990;
 
 const APP_ATTR = 'data-folder-app';
 const ICON_ATTR = 'data-panel-icon';

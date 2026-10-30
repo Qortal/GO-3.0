@@ -41,7 +41,7 @@ const ON_SCREEN = new Set([
   'SET_TAB',
 ]);
 
-export type WidgetRequestVerdict =
+type WidgetRequestVerdict =
   | { kind: 'allow' }
   | { kind: 'own' }
   | { kind: 'refuse'; reason: 'not_in_widgets' | 'not_on_screen' };

@@ -76,7 +76,7 @@ export function homeGridMetrics(width: number): HomeGridMetrics {
   };
 }
 
-export type MosaicPlan<T> = {
+type MosaicPlan<T> = {
   /** Shown in the tile itself, in folder order. */
   shown: T[];
   /**

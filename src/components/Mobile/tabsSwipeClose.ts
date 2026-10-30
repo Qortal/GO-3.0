@@ -44,7 +44,7 @@ const PAST_END_RESISTANCE = 0.35;
 /** Once a swipe on the list is big, letting go slowly closes the window
  * after the panel has moved this share of its height (not the third a
  * slide from the header takes). */
-export const BIG_SWIPE_CLOSE_RATIO = 0.12;
+const BIG_SWIPE_CLOSE_RATIO = 0.12;
 /** A flicked list glides on and slows to a stop with this time constant
  * (ms): it starts at the finger's speed and covers speed × this in all. */
 export const LIST_FLING_TIME_MS = 450;
@@ -121,7 +121,7 @@ export const swipeCloseShouldClose = (
   (velocity < TABS_PULL_FLING_VELOCITY &&
     -travel > (height > 0 ? height : 300) * ratio);
 
-export interface ListSwipeSplit {
+interface ListSwipeSplit {
   /** px to scroll the list from where the swipe began (+ is further down). */
   scroll: number;
   /** px to move the panel up. */
@@ -164,7 +164,7 @@ export const listFlingDistance = (velocity: number, elapsed: number): number =>
   velocity * LIST_FLING_TIME_MS * (1 - Math.exp(-elapsed / LIST_FLING_TIME_MS));
 
 /** A glide's speed (px/ms) after `elapsed` ms. */
-export const listFlingSpeed = (velocity: number, elapsed: number): number =>
+const listFlingSpeed = (velocity: number, elapsed: number): number =>
   velocity * Math.exp(-elapsed / LIST_FLING_TIME_MS);
 
 export function useTabsSwipeClose(options: TabsSwipeCloseOptions): void {

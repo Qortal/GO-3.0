@@ -23,7 +23,7 @@ import { useGoLayout } from '../../layout/goLayout';
 
 const OPEN_EVENT = 'openSavedFileActions';
 
-export type SavedFileActionsDetail = {
+type SavedFileActionsDetail = {
   /** The name the file was saved under. */
   fileName: string;
   /** Where it went, e.g. "Documents/Qortal Go/Documents". */

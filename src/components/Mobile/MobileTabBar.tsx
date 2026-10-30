@@ -38,7 +38,7 @@ const TAB_ITEMS: Record<TabKey, TabItem> = {
 };
 
 /** Width of the centred Home/Apps/Chat cluster on wide GO screens. */
-export const GO_TAB_CLUSTER_WIDTH_PX = 440;
+const GO_TAB_CLUSTER_WIDTH_PX = 440;
 
 type MobileTabBarProps = {
   desktopViewMode: string;
