@@ -1,25 +1,13 @@
 import { atom, getDefaultStore } from 'jotai';
-import { atomWithStorage, createJSONStorage } from 'jotai/utils';
+import { atomWithStorage } from 'jotai/utils';
 import type { CardAppletKind } from '../qortalCard/cardProtocol';
+import { localJsonStorage } from '../utils/localJsonStorage';
 
 /**
  * Qortal Card (testing): the settings switch, the window, and the cards
  * linked to each account. Nothing here is secret: cards hold their own keys,
  * and wallet card keys are rebuilt from the wallet when needed.
  */
-
-const localJsonStorage = <T>() =>
-  createJSONStorage<T>(() => {
-    try {
-      return window.localStorage;
-    } catch {
-      return {
-        getItem: () => null,
-        setItem: () => undefined,
-        removeItem: () => undefined,
-      } as unknown as Storage;
-    }
-  });
 
 /** Device-wide: off until turned on in Settings → System. */
 export const qortalCardEnabledAtom = atomWithStorage<boolean>(

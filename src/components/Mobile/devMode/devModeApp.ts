@@ -1,4 +1,5 @@
-import { atomWithStorage, createJSONStorage } from 'jotai/utils';
+import { atomWithStorage } from 'jotai/utils';
+import { localJsonStorage } from '../../../utils/localJsonStorage';
 import {
   buildPrivateAppOnDevice,
   canBuildPrivateAppsOnDevice,
@@ -12,19 +13,6 @@ import {
  * zip stays in memory on the phone and no node sees it, so it works on a
  * public node too.
  */
-
-const localJsonStorage = <T>() =>
-  createJSONStorage<T>(() => {
-    try {
-      return window.localStorage;
-    } catch {
-      return {
-        getItem: () => null,
-        setItem: () => undefined,
-        removeItem: () => undefined,
-      } as unknown as Storage;
-    }
-  });
 
 /** Device-wide: off until turned on in Settings → System. */
 export const goDevModeEnabledAtom = atomWithStorage<boolean>(

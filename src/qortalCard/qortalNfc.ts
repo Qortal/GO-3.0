@@ -1,9 +1,6 @@
-import {
-  Capacitor,
-  registerPlugin,
-  type PluginListenerHandle,
-} from '@capacitor/core';
+import { registerPlugin, type PluginListenerHandle } from '@capacitor/core';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
+import { isAndroidApp } from '../utils/androidApp';
 import { isGoApp } from '../utils/platform';
 import { CardError, type ApduTransport } from './cardProtocol';
 
@@ -36,8 +33,7 @@ const QortalNfc = registerPlugin<QortalNfcPlugin>('QortalNfc');
 
 type NfcState = 'unsupported' | 'off' | 'on';
 
-const canUseNfc = (): boolean =>
-  isGoApp() && Capacitor.getPlatform() === 'android';
+const canUseNfc = (): boolean => isGoApp() && isAndroidApp();
 
 export interface NfcCapabilities {
   state: NfcState;

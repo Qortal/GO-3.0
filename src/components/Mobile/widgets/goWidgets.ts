@@ -1,5 +1,6 @@
 import { atom } from 'jotai';
-import { atomWithStorage, createJSONStorage } from 'jotai/utils';
+import { atomWithStorage } from 'jotai/utils';
+import { localJsonStorage } from '../../../utils/localJsonStorage';
 import {
   GRID_DEFAULT_H,
   GRID_DEFAULT_W,
@@ -232,19 +233,6 @@ export const applyWidgetAskedSize = (
 /** Device-wide, like the other GO screen settings. */
 export const GO_WIDGETS_STORAGE_KEY = 'go_widgets';
 export const GO_WIDGETS_ENABLED_STORAGE_KEY = 'go_widgets_enabled';
-
-const localJsonStorage = <T>() =>
-  createJSONStorage<T>(() => {
-    try {
-      return window.localStorage;
-    } catch {
-      return {
-        getItem: () => null,
-        setItem: () => undefined,
-        removeItem: () => undefined,
-      } as unknown as Storage;
-    }
-  });
 
 // Read on init so the first frame after login already has the right screens.
 const widgetsEnabledStoredAtom = atomWithStorage<unknown>(

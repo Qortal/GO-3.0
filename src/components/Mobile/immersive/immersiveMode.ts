@@ -1,5 +1,6 @@
 import { atom } from 'jotai';
-import { atomWithReset, atomWithStorage, createJSONStorage } from 'jotai/utils';
+import { atomWithReset, atomWithStorage } from 'jotai/utils';
+import { localJsonStorage } from '../../../utils/localJsonStorage';
 
 /**
  * Immersive mode (GO phones): the top bar, the bottom tab bar and the Android
@@ -34,19 +35,6 @@ export const normalizeImmersiveMode = (value: unknown): ImmersiveMode =>
 export const IMMERSIVE_MODE_STORAGE_KEY = 'go_immersive_mode';
 const IMMERSIVE_PILL_POSITION_STORAGE_KEY = 'go_immersive_pill_position';
 export const IMMERSIVE_HINT_SEEN_STORAGE_KEY = 'go_immersive_hint_seen';
-
-const localJsonStorage = <T>() =>
-  createJSONStorage<T>(() => {
-    try {
-      return window.localStorage;
-    } catch {
-      return {
-        getItem: () => null,
-        setItem: () => undefined,
-        removeItem: () => undefined,
-      } as unknown as Storage;
-    }
-  });
 
 // Read on init so the first frame after login already has the right layout.
 const immersiveModeStoredAtom = atomWithStorage<string>(

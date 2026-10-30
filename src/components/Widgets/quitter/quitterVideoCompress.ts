@@ -6,6 +6,7 @@ import {
   type VideoCompressResult,
 } from '../../../plugins/VideoCompress';
 import { scrubVideoFileMetadata } from '../../../utils/stripVideoMetadata';
+import { isAndroidApp } from '../../../utils/androidApp';
 
 const MB = 1024 * 1024;
 
@@ -703,7 +704,7 @@ export function canUseNativeVideoCompress(): boolean {
 }
 
 export function isCapacitorAndroid(): boolean {
-  return Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android';
+  return isAndroidApp();
 }
 
 export async function pickVideoForQuitter(): Promise<{

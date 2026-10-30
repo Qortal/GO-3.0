@@ -1,7 +1,8 @@
-import { Capacitor, registerPlugin } from '@capacitor/core';
+import { registerPlugin } from '@capacitor/core';
 import { atom, getDefaultStore, useAtomValue } from 'jotai';
 import { atomFamily } from 'jotai/utils';
 import { screenProtectionHolds } from '../../../plugins/ScreenSecurity';
+import { isAndroidApp } from '../../../utils/androidApp';
 
 /**
  * Pictures of open Q-Apps and websites for the tab cards (as in a browser's
@@ -41,9 +42,6 @@ export const useTabSnapshot = (tabId: string | undefined): TabSnapshot | null =>
   useAtomValue(tabSnapshotAtomFamily(tabId || ''));
 
 type Store = ReturnType<typeof getDefaultStore>;
-
-const isAndroidNative = () =>
-  Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android';
 
 const tabFrameId = (tabId: string) => `browser-iframe-${tabId}`;
 
@@ -103,7 +101,7 @@ export async function captureTabSnapshot(
   tabId: string | null | undefined,
   store: Store = getDefaultStore()
 ): Promise<boolean> {
-  if (!tabId || !isAndroidNative() || inFlight.has(tabId)) return false;
+  if (!tabId || !isAndroidApp() || inFlight.has(tabId)) return false;
   if (typeof document === 'undefined' || document.hidden) return false;
   // Seed phrase, approval and lock screens never go into a picture.
   if (screenProtectionHolds('secure') > 0) return false;
@@ -186,7 +184,7 @@ export function captureTabSnapshotSoon(
   freshMs = 1500,
   store: Store = getDefaultStore()
 ): Promise<void> {
-  if (!tabId || !isAndroidNative()) return Promise.resolve();
+  if (!tabId || !isAndroidApp()) return Promise.resolve();
   const existing = store.get(tabSnapshotsAtom)[tabId];
   if (existing && Date.now() - existing.at < freshMs) return Promise.resolve();
   return new Promise((resolve) => {

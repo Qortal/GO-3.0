@@ -1,8 +1,5 @@
-import {
-  Capacitor,
-  registerPlugin,
-  type PluginListenerHandle,
-} from '@capacitor/core';
+import { registerPlugin, type PluginListenerHandle } from '@capacitor/core';
+import { isAndroidApp } from '../../../utils/androidApp';
 
 /**
  * Native half of immersive mode (Android): hides the status bar (a swipe from
@@ -42,13 +39,10 @@ interface ImmersivePlugin {
 
 const Immersive = registerPlugin<ImmersivePlugin>('Immersive');
 
-const isAndroidNative = () =>
-  Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android';
-
 let statusBarHidden: boolean | null = null;
 
 export function setImmersiveStatusBarHidden(hidden: boolean): void {
-  if (!isAndroidNative() || statusBarHidden === hidden) return;
+  if (!isAndroidApp() || statusBarHidden === hidden) return;
   statusBarHidden = hidden;
   // Older shells without the plugin keep their status bar; nothing else breaks.
   void Immersive.setStatusBarHidden({ hidden }).catch(() => undefined);
@@ -60,7 +54,7 @@ export function setImmersiveStatusBarHidden(hidden: boolean): void {
  * keep their bars as they are.
  */
 export function setSystemBarAppearance(options: SystemBarAppearance): void {
-  if (!isAndroidNative()) return;
+  if (!isAndroidApp()) return;
   void Immersive.setBarAppearance(options).catch(() => undefined);
 }
 
@@ -71,7 +65,7 @@ export function setSystemBarAppearance(options: SystemBarAppearance): void {
 export function listenImmersiveTouches(
   onEvent: (event: ImmersiveTouchEvent) => void
 ): () => void {
-  if (!isAndroidNative()) return () => undefined;
+  if (!isAndroidApp()) return () => undefined;
   let stopped = false;
   let handle: PluginListenerHandle | null = null;
   void Immersive.addListener('touch', onEvent)
@@ -100,7 +94,7 @@ export function listenImmersiveEdge(
   onColor: (color: string) => void,
   range: { fromCssPx?: number; toCssPx?: number } = {}
 ): () => void {
-  if (!isAndroidNative()) return () => undefined;
+  if (!isAndroidApp()) return () => undefined;
   let stopped = false;
   let handle: PluginListenerHandle | null = null;
   void Immersive.addListener('edge', (event) => {

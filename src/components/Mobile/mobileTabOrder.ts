@@ -1,5 +1,6 @@
 import { atom } from 'jotai';
-import { atomWithStorage, createJSONStorage } from 'jotai/utils';
+import { atomWithStorage } from 'jotai/utils';
+import { localJsonStorage } from '../../utils/localJsonStorage';
 
 /**
  * The order of the round Home, Apps and Chat buttons on phones (Settings →
@@ -74,19 +75,6 @@ export const moveMobileTab = (
   next.splice(to, 0, key);
   return next;
 };
-
-const localJsonStorage = <T>() =>
-  createJSONStorage<T>(() => {
-    try {
-      return window.localStorage;
-    } catch {
-      return {
-        getItem: () => null,
-        setItem: () => undefined,
-        removeItem: () => undefined,
-      } as unknown as Storage;
-    }
-  });
 
 // Read on init so the first frame after login already has the right order.
 const mobileTabOrderStoredAtom = atomWithStorage<unknown>(

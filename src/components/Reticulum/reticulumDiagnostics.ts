@@ -21,7 +21,6 @@
  * pseudonym key; only the probes and `collectReticulumDiagnostics` touch the
  * environment.
  */
-import { Capacitor } from '@capacitor/core';
 import { GO_VERSION } from '../../appVersion';
 import { getBaseApiReact } from '../../utils/globalApi';
 import {
@@ -90,6 +89,7 @@ import {
   type AppErrorDiagnostics,
 } from '../../utils/appErrorRing';
 import { createDiagnosticPseudonymizer } from './diagnosticPseudonyms';
+import { isAndroidApp } from '../../utils/androidApp';
 import { isCapacitor } from '../../utils/platform';
 import { AudioRouting } from '../../plugins/AudioRouting';
 import { getNativeCallDiagnostics } from '../../bridge/nativeCallSession';
@@ -2482,16 +2482,7 @@ function sanitizeSocketDetail(raw: unknown): KotlinSocketDetail | null {
 export async function probeNativeBridge(
   timeoutMs = NATIVE_BRIDGE_PROBE_TIMEOUT_MS
 ): Promise<NativeBridgeDiagnostics | null> {
-  try {
-    if (
-      !Capacitor.isNativePlatform() ||
-      Capacitor.getPlatform() !== 'android'
-    ) {
-      return null;
-    }
-  } catch {
-    return null;
-  }
+  if (!isAndroidApp()) return null;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<null>((resolve) => {
     timer = setTimeout(() => resolve(null), timeoutMs);

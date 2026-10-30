@@ -1,4 +1,5 @@
-import { Capacitor, registerPlugin, type PluginListenerHandle } from '@capacitor/core';
+import { registerPlugin, type PluginListenerHandle } from '@capacitor/core';
+import { isAndroidApp } from '../utils/androidApp';
 
 export type VideoCompressOptions = {
   /** Absolute filesystem path or content:// URI */
@@ -106,8 +107,7 @@ export interface VideoCompressPlugin {
 
 const VideoCompressNative = registerPlugin<VideoCompressPlugin>('VideoCompress');
 
-export const isNativeVideoCompressAvailable = () =>
-  Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android';
+export const isNativeVideoCompressAvailable = () => isAndroidApp();
 
 export const VideoCompress = {
   compress: async (

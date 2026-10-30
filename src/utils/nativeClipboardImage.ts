@@ -4,7 +4,8 @@
  * copy a picture nor be relied on to paste one. Elsewhere (desktop, browser)
  * every function here is a no-op and the web clipboard is used as before.
  */
-import { Capacitor, registerPlugin } from '@capacitor/core';
+import { registerPlugin } from '@capacitor/core';
+import { isAndroidApp } from './androidApp';
 import { createNamedFile } from './namedFile';
 import { isGoApp } from './platform';
 
@@ -30,7 +31,7 @@ const QortalClipboard =
   registerPlugin<QortalClipboardPlugin>('QortalClipboard');
 
 export const hasNativeClipboardImages = (): boolean =>
-  isGoApp() && Capacitor.getPlatform() === 'android';
+  isGoApp() && isAndroidApp();
 
 const toFile = (image: ClipboardImage): File | null => {
   if (!image?.base64 || !image.mimeType?.startsWith('image/')) return null;

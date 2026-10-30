@@ -1,4 +1,5 @@
-import { Capacitor, registerPlugin } from '@capacitor/core';
+import { registerPlugin } from '@capacitor/core';
+import { isAndroidApp } from './androidApp';
 
 /** Build and Java speed facts from the plugin, for Copy diagnostics. */
 export type NativeBcryptRuntimeInfo = {
@@ -42,13 +43,7 @@ interface NativeBcryptPlugin {
 const NativeBcrypt = registerPlugin<NativeBcryptPlugin>('NativeBcrypt');
 
 export function canUseNativeBcrypt(): boolean {
-  try {
-    return (
-      Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android'
-    );
-  } catch {
-    return false;
-  }
+  return isAndroidApp();
 }
 
 export async function nativeBcryptHash(

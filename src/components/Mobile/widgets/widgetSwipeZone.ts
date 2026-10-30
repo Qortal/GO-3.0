@@ -1,11 +1,8 @@
-import {
-  Capacitor,
-  registerPlugin,
-  type PluginListenerHandle,
-} from '@capacitor/core';
+import { registerPlugin, type PluginListenerHandle } from '@capacitor/core';
 import { useSetAtom } from 'jotai';
 import { atomWithReset } from 'jotai/utils';
 import { useEffect, useRef, type RefObject } from 'react';
+import { isAndroidApp } from '../../../utils/androidApp';
 
 /**
  * Sideways swipes over GO widgets (native half: SectionSwipePlugin).
@@ -107,9 +104,6 @@ export const nativeSwipeZoneAtom = atomWithReset<HTMLElement | null>(null);
 
 const SectionSwipe = registerPlugin<SectionSwipePlugin>('SectionSwipe');
 
-const isAndroidNative = () =>
-  Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android';
-
 const PHASES: Record<
   Exclude<NativeSwipeEvent['phase'], 'hold'>,
   ExternalTouch['type']
@@ -136,7 +130,7 @@ export function useWidgetSwipeZone(
 
   useEffect(() => {
     const element = ref.current;
-    if (!enabled || !element || !isAndroidNative()) return;
+    if (!enabled || !element || !isAndroidApp()) return;
     const canClaimRef = () => canClaimLatest.current();
     let stopped = false;
     const handles: PluginListenerHandle[] = [];

@@ -1,4 +1,5 @@
-import { Capacitor, registerPlugin } from '@capacitor/core';
+import { registerPlugin } from '@capacitor/core';
+import { isAndroidApp } from './androidApp';
 import {
   GO_WINDOW_METRICS_EVENT,
   type GoWindowMetrics,
@@ -98,9 +99,7 @@ let safeAreaInitialized = false;
 /** Populate --safe-area-inset-* from native (Android only; call once at app boot). */
 export function initMobileSafeAreaInsets(): void {
   if (safeAreaInitialized) return;
-  if (!Capacitor.isNativePlatform() || Capacitor.getPlatform() !== 'android') {
-    return;
-  }
+  if (!isAndroidApp()) return;
   safeAreaInitialized = true;
 
   void applyNativeInsets();

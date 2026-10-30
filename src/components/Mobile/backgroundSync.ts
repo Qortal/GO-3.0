@@ -1,10 +1,10 @@
-import { Capacitor } from '@capacitor/core';
 import type { PluginListenerHandle } from '@capacitor/core';
 import {
   QortalBackground,
   type VendorBatterySettingsPage,
   type VendorFreezeRecord,
 } from '../../plugins/QortalBackground';
+import { isAndroidApp } from '../../utils/androidApp';
 
 export type { VendorBatterySettingsPage, VendorFreezeRecord };
 
@@ -140,15 +140,7 @@ type BackgroundSyncPlugin = {
 
 const plugin = QortalBackground as unknown as BackgroundSyncPlugin;
 
-export const isNativeAndroid = (): boolean => {
-  try {
-    return (
-      Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android'
-    );
-  } catch {
-    return false;
-  }
-};
+export const isNativeAndroid = (): boolean => isAndroidApp();
 
 export const isBackgroundSyncMode = (
   value: unknown

@@ -1,8 +1,5 @@
-import {
-  Capacitor,
-  registerPlugin,
-  type PluginListenerHandle,
-} from '@capacitor/core';
+import { registerPlugin, type PluginListenerHandle } from '@capacitor/core';
+import { isAndroidApp } from '../utils/androidApp';
 
 /** A file shared into the app via an Android share-sheet entry. */
 export type SharedMediaItem = {
@@ -64,8 +61,7 @@ interface ShareReceiverNativePlugin {
 const ShareReceiverNative =
   registerPlugin<ShareReceiverNativePlugin>('ShareReceiver');
 
-export const isShareReceiverAvailable = () =>
-  Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android';
+export const isShareReceiverAvailable = () => isAndroidApp();
 
 export const ShareReceiver = {
   /** Drain queued shared media (returns [] when nothing is pending). */

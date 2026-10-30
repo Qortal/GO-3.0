@@ -67,7 +67,6 @@ import {
 } from '../../hooks/qdnSavedSettings';
 import { extractComponents } from '../Chat/MessageDisplay';
 import { CustomizedSnackbars } from '../Snackbar/Snackbar';
-import { QORTAL_PROTOCOL } from '../../constants/constants';
 import { FolderCompositeAvatar } from './FolderCompositeAvatar';
 import { MobileTabAppDetailsDialog } from './MobileTabAppDetailsDialog';
 import { MobileTabOptionsDialog } from './MobileTabOptionsDialog';
@@ -83,6 +82,7 @@ import {
   type OpenTab,
 } from './useOpenTabs';
 import { buildTabQortalUrl } from './tabQortalLink';
+import { normalizeQortalInput } from './appsDashboardSearch';
 import { createBackgroundGesture } from './tabsOverlayBackgroundGesture';
 import { setTabsPanelElement } from './tabsPull';
 import { useTabsSwipeClose } from './tabsSwipeClose';
@@ -92,8 +92,10 @@ import { groupTabsIntoStacks, type TabStack } from './tabsHome/tabStacks';
 import { measureBoxes, playFlip } from './tabsHome/flip';
 import { BACK_PRIORITY, useAndroidBack } from '../../utils/androidBack';
 import { filterAppTabsForMobile, isQChatOpenTab } from '../../utils/openQChatTab';
-import { MOBILE_TAB_BAR_HEIGHT_PX } from './MobileTabBar';
-import { MOBILE_TOP_BAR_HEIGHT_PX } from './MobileTopBar';
+import {
+  MOBILE_TAB_BAR_HEIGHT_PX,
+  MOBILE_TOP_BAR_HEIGHT_PX,
+} from './mobileBarHeights';
 import {
   MOBILE_TABS_DIALOG_Z,
   MOBILE_TABS_OVERLAY_Z,
@@ -264,13 +266,6 @@ const FolderDragPreview = ({
     </Typography>
   </Box>
 );
-
-function normalizeQortalInput(value: string) {
-  const trimmed = (value || '').trim();
-  if (!trimmed) return '';
-  if (/^qortal:\/\//i.test(trimmed)) return trimmed;
-  return `${QORTAL_PROTOCOL}${trimmed}`;
-}
 
 const FolderRowDropZone = ({ rowIndex }: { rowIndex: number }) => {
   const theme = useTheme();
