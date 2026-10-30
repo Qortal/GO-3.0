@@ -1106,17 +1106,32 @@ export function installMobileReticulumChat(): void {
   // Copy diagnostics: main-thread long tasks from page start on.
   installPageLongTaskProbe();
 
+  // Callers that ask together (Group's summary, membership, DM, mention and
+  // prefetch effects all mount with the shell) share one settings read
+  // instead of a background round trip each. Not cached: the next call after
+  // it settles reads again.
+  let isEnabledRead: Promise<boolean> | null = null;
+  const readChatEnabled = async (): Promise<boolean> => {
+    try {
+      const settings = await window.sendMessage('getUserSettings', {
+        key: 'reticulumChatEnabled',
+      });
+      if (settings === false) return false;
+    } catch {
+      /* default on */
+    }
+    return true;
+  };
+
   const api: Record<string, unknown> = {
-    isEnabled: async () => {
-      try {
-        const settings = await window.sendMessage('getUserSettings', {
-          key: 'reticulumChatEnabled',
+    isEnabled: () => {
+      if (!isEnabledRead) {
+        const read = readChatEnabled().finally(() => {
+          if (isEnabledRead === read) isEnabledRead = null;
         });
-        if (settings === false) return false;
-      } catch {
-        /* default on */
+        isEnabledRead = read;
       }
-      return true;
+      return isEnabledRead;
     },
     getReadinessStatus: async () => {
       // Kick the engine on first interest so the UI's readiness listeners

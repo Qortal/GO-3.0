@@ -116,6 +116,39 @@ afterEach(() => {
   delete (window as any).reticulumChat;
 });
 
+describe('isEnabled', () => {
+  it('shares one settings read between callers that ask together', async () => {
+    let answer: (value: unknown) => void = () => {};
+    const sendMessage = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          answer = resolve;
+        })
+    );
+    (window as any).sendMessage = sendMessage;
+    const api = (window as any).reticulumChat;
+    const first = api.isEnabled();
+    const second = api.isEnabled();
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(sendMessage).toHaveBeenCalledWith('getUserSettings', {
+      key: 'reticulumChatEnabled',
+    });
+    answer(false);
+    await expect(first).resolves.toBe(false);
+    await expect(second).resolves.toBe(false);
+    // Settled: the next call reads again (nothing is cached).
+    const third = api.isEnabled();
+    expect(sendMessage).toHaveBeenCalledTimes(2);
+    answer(null);
+    await expect(third).resolves.toBe(true);
+  });
+
+  it('defaults to on when the settings read fails', async () => {
+    (window as any).sendMessage = vi.fn(() => Promise.reject(new Error('x')));
+    await expect((window as any).reticulumChat.isEnabled()).resolves.toBe(true);
+  });
+});
+
 describe('own outbox forwarding', () => {
   it('reports the running engine outbox to the native keep-alive', async () => {
     const worker = await startWorker();

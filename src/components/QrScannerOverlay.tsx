@@ -9,7 +9,7 @@ import {
 } from '@mui/material';
 import CloseIcon from '@mui/icons-material/Close';
 import { useTranslation } from 'react-i18next';
-import jsQR from 'jsqr';
+import type jsQRDecode from 'jsqr';
 import { SAFE_AREA_TOP } from '../utils/mobileSafeArea';
 
 type QrScannerOverlayProps = {
@@ -48,6 +48,14 @@ export function QrScannerOverlay({
     setStatus('starting');
 
     let cancelled = false;
+    // jsQR (~130 KB) loads while the camera starts, not with GO's first screen.
+    let decode: typeof jsQRDecode | null = null;
+    const decoderReady = import('jsqr').then((m) => {
+      decode = m.default;
+    });
+    // start() awaits it; this only keeps a failed load from also being reported
+    // as unhandled when the camera failed first.
+    decoderReady.catch(() => {});
 
     const stop = () => {
       if (rafRef.current !== null) {
@@ -83,7 +91,11 @@ export function QrScannerOverlay({
       }
       ctx.drawImage(video, 0, 0, width, height);
       const imageData = ctx.getImageData(0, 0, width, height);
-      const code = jsQR(imageData.data, width, height, {
+      if (!decode) {
+        rafRef.current = requestAnimationFrame(tick);
+        return;
+      }
+      const code = decode(imageData.data, width, height, {
         inversionAttempts: 'dontInvert',
       });
       if (code && code.data && !resolvedRef.current) {
@@ -115,6 +127,7 @@ export function QrScannerOverlay({
           video.srcObject = stream;
           await video.play().catch(() => {});
         }
+        await decoderReady;
         if (!cancelled) setStatus('ready');
         rafRef.current = requestAnimationFrame(tick);
       } catch (err) {

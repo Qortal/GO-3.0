@@ -12,11 +12,11 @@ import {
   isNativeVideoCompressAvailable,
   VideoCompress,
 } from '../plugins/VideoCompress';
-import {
-  buildMediaStreamUrl,
-  waitForQdnResourceReady,
-  type QdnMediaItem,
-} from './qdnMedia';
+import type { QdnMediaItem } from './qdnMedia';
+
+// The QDN media helpers load on the first save or extract, not with the PDF
+// viewer that imports this file on GO's first screen.
+const loadQdnMedia = () => import('./qdnMedia');
 
 function extForKind(kind: QdnMediaItem['kind']): string {
   switch (kind) {
@@ -66,6 +66,7 @@ export async function saveQdnMediaToDevice(
   }
 ): Promise<{ message: string }> {
   options?.onProgress?.('Preparing download…');
+  const { buildMediaStreamUrl, waitForQdnResourceReady } = await loadQdnMedia();
   await waitForQdnResourceReady(item, {
     downloadResource: options?.downloadResource,
     timeoutMs: 120_000,
@@ -125,6 +126,7 @@ export async function extractAudioFromQdnVideo(
   }
 
   options?.onProgress?.('Waiting for video on QDN…');
+  const { waitForQdnResourceReady } = await loadQdnMedia();
   const { url } = await waitForQdnResourceReady(item, {
     downloadResource: options?.downloadResource,
     timeoutMs: 180_000,
