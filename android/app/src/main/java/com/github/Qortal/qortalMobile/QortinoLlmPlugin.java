@@ -42,12 +42,28 @@ import java.util.zip.ZipInputStream;
 public class QortinoLlmPlugin extends Plugin {
     private static final String TAG = "QortinoLlm";
 
-    static {
-        try {
-            System.loadLibrary("qortino_llm");
-        } catch (UnsatisfiedLinkError e) {
-            Log.e(TAG, "Failed to load qortino_llm native library", e);
+    /** Loads llama.cpp on first use (a plugin or executor thread), not at launch on the UI thread. */
+    private static final class NativeLib {
+        static final boolean LOADED = load();
+
+        private static boolean load() {
+            try {
+                System.loadLibrary("qortino_llm");
+                return true;
+            } catch (UnsatisfiedLinkError e) {
+                Log.e(TAG, "Failed to load qortino_llm native library", e);
+                return false;
+            }
         }
+    }
+
+    /** True once Qortino has asked for llama.cpp; native calls before that have nothing to act on. */
+    private static volatile boolean nativeRequested;
+
+    /** Loads llama.cpp on first use; waits if another thread is loading it. */
+    private static boolean ensureNativeLibrary() {
+        nativeRequested = true;
+        return NativeLib.LOADED;
     }
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
@@ -108,6 +124,7 @@ public class QortinoLlmPlugin extends Plugin {
     }
 
     private void ensureBackend() {
+        ensureNativeLibrary();
         if (backendReady.compareAndSet(false, true)) {
             try {
                 nativeInitBackend();
@@ -552,6 +569,11 @@ public class QortinoLlmPlugin extends Plugin {
     public void unload(PluginCall call) {
         executor.execute(() -> {
             try {
+                if (!nativeRequested) {
+                    call.resolve();
+                    return;
+                }
+                ensureNativeLibrary();
                 nativeCancel();
                 nativeUnload();
                 call.resolve();
@@ -564,6 +586,11 @@ public class QortinoLlmPlugin extends Plugin {
     @PluginMethod
     public void cancel(PluginCall call) {
         try {
+            if (!nativeRequested) {
+                call.resolve();
+                return;
+            }
+            ensureNativeLibrary();
             nativeCancel();
             call.resolve();
         } catch (Throwable t) {
@@ -650,10 +677,13 @@ public class QortinoLlmPlugin extends Plugin {
 
     @Override
     protected void handleOnDestroy() {
-        try {
-            nativeCancel();
-            nativeUnload();
-        } catch (Throwable ignored) {
+        if (nativeRequested) {
+            try {
+                ensureNativeLibrary();
+                nativeCancel();
+                nativeUnload();
+            } catch (Throwable ignored) {
+            }
         }
         executor.shutdownNow();
         super.handleOnDestroy();

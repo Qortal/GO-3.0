@@ -32,16 +32,24 @@ public class TabSnapshotPlugin extends Plugin {
 
   private HandlerThread thread;
   private Handler handler;
+  private boolean destroyed;
 
-  @Override
-  public void load() {
-    thread = new HandlerThread("QortalTabSnapshot");
-    thread.start();
-    handler = new Handler(thread.getLooper());
+  /** The PixelCopy thread, started on the first tab picture. Null once the plugin is destroyed. */
+  private synchronized Handler handler() {
+    if (destroyed) {
+      return null;
+    }
+    if (handler == null) {
+      thread = new HandlerThread("QortalTabSnapshot");
+      thread.start();
+      handler = new Handler(thread.getLooper());
+    }
+    return handler;
   }
 
   @Override
-  protected void handleOnDestroy() {
+  protected synchronized void handleOnDestroy() {
+    destroyed = true;
     if (thread != null) {
       thread.quitSafely();
     }
@@ -60,6 +68,11 @@ public class TabSnapshotPlugin extends Plugin {
     final Activity activity = getActivity();
     if (activity == null || width <= 0 || height <= 0) {
       call.reject("nothing to capture");
+      return;
+    }
+    final Handler h = handler();
+    if (h == null) {
+      call.reject("no window");
       return;
     }
 
@@ -109,7 +122,7 @@ public class TabSnapshotPlugin extends Plugin {
                   ret.put("height", outHeight);
                   call.resolve(ret);
                 },
-                handler);
+                h);
           } catch (Exception e) {
             call.reject("capture failed", e);
           }

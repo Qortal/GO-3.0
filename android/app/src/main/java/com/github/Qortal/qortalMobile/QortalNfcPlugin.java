@@ -52,7 +52,9 @@ public class QortalNfcPlugin extends Plugin implements NfcAdapter.ReaderCallback
 
     private final ExecutorService io = Executors.newSingleThreadExecutor();
     private final Object lock = new Object();
-    private NfcAdapter adapter;
+    /** Looked up on first Qortal Card use, not at launch. Read through {@link #adapter()}. */
+    private volatile NfcAdapter adapter;
+    private volatile boolean adapterChecked;
     /** The card in the field, connected. Guarded by {@link #lock}. */
     private IsoDep card;
     /** The page wants to read. Guarded by {@link #lock}. */
@@ -74,19 +76,28 @@ public class QortalNfcPlugin extends Plugin implements NfcAdapter.ReaderCallback
         }
     }
 
-    @Override
-    public void load() {
-        adapter = NfcAdapter.getDefaultAdapter(getContext());
+    /** This phone's NFC adapter, or null without NFC. */
+    private NfcAdapter adapter() {
+        if (!adapterChecked) {
+            synchronized (this) {
+                if (!adapterChecked) {
+                    adapter = NfcAdapter.getDefaultAdapter(getContext());
+                    adapterChecked = true;
+                }
+            }
+        }
+        return adapter;
     }
 
     @PluginMethod
     public void status(PluginCall call) {
+        NfcAdapter a = adapter();
         JSObject out = new JSObject();
-        out.put("supported", adapter != null);
-        out.put("enabled", adapter != null && adapter.isEnabled());
+        out.put("supported", a != null);
+        out.put("enabled", a != null && a.isEnabled());
         out.put(
             "hce",
-            adapter != null
+            a != null
                 && getContext()
                     .getPackageManager()
                     .hasSystemFeature(PackageManager.FEATURE_NFC_HOST_CARD_EMULATION)
@@ -142,11 +153,12 @@ public class QortalNfcPlugin extends Plugin implements NfcAdapter.ReaderCallback
 
     @PluginMethod
     public void startSession(PluginCall call) {
-        if (adapter == null) {
+        NfcAdapter a = adapter();
+        if (a == null) {
             call.reject("This phone has no NFC", "NFC_UNSUPPORTED");
             return;
         }
-        if (!adapter.isEnabled()) {
+        if (!a.isEnabled()) {
             call.reject("NFC is turned off", "NFC_DISABLED");
             return;
         }
@@ -288,11 +300,12 @@ public class QortalNfcPlugin extends Plugin implements NfcAdapter.ReaderCallback
 
     /** UI thread. */
     private void setReader(boolean on) {
-        Activity activity = getActivity();
-        if (adapter == null || activity == null) {
+        if (!on && !readerOn) {
             return;
         }
-        if (!on && !readerOn) {
+        Activity activity = getActivity();
+        NfcAdapter a = adapter();
+        if (a == null || activity == null) {
             return;
         }
         try {
@@ -302,9 +315,9 @@ public class QortalNfcPlugin extends Plugin implements NfcAdapter.ReaderCallback
                     NfcAdapter.EXTRA_READER_PRESENCE_CHECK_DELAY,
                     NfcApduPolicy.PRESENCE_CHECK_DELAY_MS
                 );
-                adapter.enableReaderMode(activity, this, READER_FLAGS, extras);
+                a.enableReaderMode(activity, this, READER_FLAGS, extras);
             } else {
-                adapter.disableReaderMode(activity);
+                a.disableReaderMode(activity);
             }
             readerOn = on;
         } catch (RuntimeException e) {
