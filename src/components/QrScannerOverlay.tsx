@@ -133,6 +133,8 @@ export function QrScannerOverlay({
       } catch (err) {
         console.error('[QR] camera start failed:', err);
         if (!cancelled) {
+          // A failed decoder load lands here with the camera already on.
+          stop();
           setError(
             t('core:message.error.camera_access', {
               defaultValue:
