@@ -3,6 +3,20 @@ import StarRoundedIcon from '@mui/icons-material/StarRounded';
 import { useTranslation } from 'react-i18next';
 import { useAppRating } from '../../../hooks/useAppRatings';
 
+// One score format per language, not one per render of every banner.
+const scoreFormats = new Map<string, Intl.NumberFormat>();
+const scoreFormat = (language: string): Intl.NumberFormat => {
+  let format = scoreFormats.get(language);
+  if (!format) {
+    format = new Intl.NumberFormat(language, {
+      maximumFractionDigits: 1,
+      minimumFractionDigits: 1,
+    });
+    scoreFormats.set(language, format);
+  }
+  return format;
+};
+
 /** Read-only gold stars with the average and the number of votes. */
 export const FeaturedAppStars = ({ app }: { app: any }) => {
   const theme = useTheme();
@@ -12,10 +26,7 @@ export const FeaturedAppStars = ({ app }: { app: any }) => {
 
   const votes = rating?.totalVotes ?? 0;
   const average = votes > 0 ? (rating?.averageRating ?? 0) : 0;
-  const score = new Intl.NumberFormat(i18n.language, {
-    maximumFractionDigits: 1,
-    minimumFractionDigits: 1,
-  }).format(average);
+  const score = scoreFormat(i18n.language).format(average);
 
   return (
     <Box

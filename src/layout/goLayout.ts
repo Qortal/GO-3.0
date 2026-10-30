@@ -251,10 +251,7 @@ function writeDom(l: GoLayout): void {
   flag('data-go-layout', true);
   root.setAttribute('data-go-width', l.widthClass);
   flag('data-go-short', l.short);
-  flag('data-go-landscape', l.landscape);
   root.setAttribute('data-go-nav', l.navInTopBar ? 'top' : 'bottom');
-  flag('data-go-two-pane', l.chatTwoPane);
-  root.style.setProperty('--go-stable-height', `${l.stableHeight}px`);
 }
 
 function clearDom(): void {
@@ -264,13 +261,10 @@ function clearDom(): void {
     'data-go-layout',
     'data-go-width',
     'data-go-short',
-    'data-go-landscape',
     'data-go-nav',
-    'data-go-two-pane',
   ]) {
     root.removeAttribute(name);
   }
-  root.style.removeProperty('--go-stable-height');
 }
 
 function publish(next: GoLayout): void {

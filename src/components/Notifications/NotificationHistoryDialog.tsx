@@ -57,7 +57,17 @@ const isGroupItem = (notification: Record<string, any>) =>
   notification?.data?.qChatMention === true ||
   notification?.data?.reticulumCalendarReminder === true;
 
-function dayLabel(at: number, language: string, t: (key: string) => string) {
+/**
+ * `formats` holds the date formats made so far in one pass over the list
+ * (one with the year, one without), so a long history does not build one
+ * per row.
+ */
+function dayLabel(
+  at: number,
+  language: string,
+  t: (key: string) => string,
+  formats: Map<boolean, Intl.DateTimeFormat>
+) {
   const day = new Date(at);
   const today = new Date();
   const startOf = (date: Date) =>
@@ -66,13 +76,17 @@ function dayLabel(at: number, language: string, t: (key: string) => string) {
   if (diffDays === 0) return t('core:notification_history.today');
   if (diffDays === 1) return t('core:notification_history.yesterday');
   try {
-    return new Intl.DateTimeFormat(language, {
-      day: 'numeric',
-      month: 'long',
-      ...(day.getFullYear() !== today.getFullYear()
-        ? { year: 'numeric' as const }
-        : {}),
-    }).format(day);
+    const withYear = day.getFullYear() !== today.getFullYear();
+    let format = formats.get(withYear);
+    if (!format) {
+      format = new Intl.DateTimeFormat(language, {
+        day: 'numeric',
+        month: 'long',
+        ...(withYear ? { year: 'numeric' as const } : {}),
+      });
+      formats.set(withYear, format);
+    }
+    return format.format(day);
   } catch {
     return day.toLocaleDateString();
   }
@@ -236,8 +250,9 @@ export function NotificationHistoryDialog({
       ),
     ].sort((a, b) => b.at - a.at);
     const grouped: Array<{ label: string; rows: Row[] }> = [];
+    const formats = new Map<boolean, Intl.DateTimeFormat>();
     for (const row of rows) {
-      const label = dayLabel(row.at, i18n.language, t);
+      const label = dayLabel(row.at, i18n.language, t, formats);
       const last = grouped[grouped.length - 1];
       if (last && last.label === label) last.rows.push(row);
       else grouped.push({ label, rows: [row] });

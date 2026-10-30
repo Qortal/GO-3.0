@@ -43,17 +43,38 @@ const useSavedFiles = () =>
     getSavedQdnFiles
   );
 
-/** What the downloads add to the bell: its badge count, and whether to list. */
-export const useQdnDownloadsBadge = () => {
-  const transfers = useTransfers();
-  const saved = useSavedFiles();
-  const listed = transfers.filter((transfer) =>
+// The badge as plain values: a download's progress (a new transfer list
+// every 150 ms) leaves them as they are, so the top bar and the bell do not
+// re-render with it.
+const unseenDownloadsSnapshot = () =>
+  countUnseenQdnDownloads(getQdnTransfers(), getSavedQdnFiles());
+const panelSavedCountSnapshot = () =>
+  getPanelSavedQdnFiles(getSavedQdnFiles()).length;
+const anyTransferListedSnapshot = () =>
+  getQdnTransfers().some((transfer) =>
     PANEL_TRANSFER_STAGES.has(transfer.stage)
   );
-  const panelSaved = getPanelSavedQdnFiles(saved).length;
+
+/** What the downloads add to the bell: its badge count, and whether to list. */
+export const useQdnDownloadsBadge = () => {
+  const unseen = useSyncExternalStore(
+    subscribeQdnTransfers,
+    unseenDownloadsSnapshot,
+    unseenDownloadsSnapshot
+  );
+  const panelSaved = useSyncExternalStore(
+    subscribeQdnTransfers,
+    panelSavedCountSnapshot,
+    panelSavedCountSnapshot
+  );
+  const anyListed = useSyncExternalStore(
+    subscribeQdnTransfers,
+    anyTransferListedSnapshot,
+    anyTransferListedSnapshot
+  );
   return {
-    unseen: countUnseenQdnDownloads(transfers, saved),
-    hasAny: listed.length > 0 || panelSaved > 0,
+    unseen,
+    hasAny: anyListed || panelSaved > 0,
     /** Saved files the panel's Clear all would move to the history. */
     clearable: panelSaved,
   };

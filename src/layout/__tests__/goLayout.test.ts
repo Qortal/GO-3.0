@@ -181,7 +181,6 @@ describe('store', () => {
     expect(add).not.toHaveBeenCalled();
     add.mockRestore();
     expect(html().hasAttribute('data-go-layout')).toBe(false);
-    expect(html().style.getPropertyValue('--go-stable-height')).toBe('');
     expect(window.__goLayout).toBeUndefined();
     expect(getGoLayout().go).toBe(false);
     expect(getGoLayout()).toBe(getGoLayout());
@@ -195,10 +194,7 @@ describe('store', () => {
     expect(html().hasAttribute('data-go-layout')).toBe(true);
     expect(html().dataset.goWidth).toBe('medium');
     expect(html().dataset.goNav).toBe('bottom');
-    expect(html().hasAttribute('data-go-two-pane')).toBe(true);
     expect(html().hasAttribute('data-go-short')).toBe(false);
-    expect(html().hasAttribute('data-go-landscape')).toBe(false);
-    expect(html().style.getPropertyValue('--go-stable-height')).toBe('1280px');
     expect(window.__goLayout?.()).toBe(getGoLayout());
 
     setScreen(1280, 800, 'landscape-primary');
@@ -207,9 +203,6 @@ describe('store', () => {
     expect(html().dataset.goWidth).toBe('expanded');
     expect(html().dataset.goNav).toBe('top');
     expect(html().hasAttribute('data-go-short')).toBe(true);
-    expect(html().hasAttribute('data-go-landscape')).toBe(true);
-    expect(html().hasAttribute('data-go-two-pane')).toBe(false);
-    expect(html().style.getPropertyValue('--go-stable-height')).toBe('393px');
   });
 
   it('is idempotent', () => {

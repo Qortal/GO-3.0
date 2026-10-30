@@ -2,6 +2,17 @@ import { CircularProgress } from '@mui/material';
 import { useTranslation } from 'react-i18next';
 import type { AppNodeStatus } from './appNodeStatus';
 
+// One percent format per language, not one per progress tick.
+const percentFormats = new Map<string, Intl.NumberFormat>();
+const percentFormat = (language: string): Intl.NumberFormat => {
+  let format = percentFormats.get(language);
+  if (!format) {
+    format = new Intl.NumberFormat(language, { style: 'percent' });
+    percentFormats.set(language, format);
+  }
+  return format;
+};
+
 /**
  * The text of an app's Open / Download button. The button does the same
  * thing either way (it opens the app, and the node fetches what it lacks);
@@ -19,9 +30,7 @@ export const AppAvailabilityLabel = ({ status }: { status: AppNodeStatus }) => {
       return (
         <>
           {status.percent != null
-            ? new Intl.NumberFormat(i18n.language, { style: 'percent' }).format(
-                status.percent / 100
-              )
+            ? percentFormat(i18n.language).format(status.percent / 100)
             : t('core:message.generic.downloading', {
                 postProcess: 'capitalizeFirstChar',
               })}
