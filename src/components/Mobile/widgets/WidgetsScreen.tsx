@@ -189,7 +189,10 @@ export const WidgetsScreen = memo(({ active }: WidgetsScreenProps) => {
   const [loaded, setLoaded] = useState<Record<string, boolean>>({});
   const [reloadKeys, setReloadKeys] = useState<Record<string, number>>({});
   useEffect(() => {
-    if (!framesMounted) setLoaded({});
+    // Already empty (always so on mount): no second render.
+    if (!framesMounted) {
+      setLoaded((prev) => (Object.keys(prev).length === 0 ? prev : {}));
+    }
   }, [framesMounted]);
   const onLoaded = useCallback(
     (key: string) => setLoaded((prev) => ({ ...prev, [key]: true })),

@@ -35,10 +35,16 @@ export function useOpenTabs(): OpenTabsState {
     const handler = (e: CustomEvent) => {
       const data = e.detail?.data;
       if (!data) return;
-      setState({
-        tabs: Array.isArray(data.tabs) ? data.tabs : [],
-        selectedTab: data.selectedTab ?? null,
-      });
+      const tabs = Array.isArray(data.tabs) ? data.tabs : [];
+      const selectedTab = data.selectedTab ?? null;
+      // AppsDesktop sends the same lists again (100 ms after every switch
+      // to or from Apps, and twice when a tab is picked); keeping the state
+      // spares every reader (Group among them) a render.
+      setState((prev) =>
+        prev.tabs === tabs && prev.selectedTab === selectedTab
+          ? prev
+          : { tabs, selectedTab }
+      );
     };
     subscribeToEvent('setTabsToNav', handler);
     return () => unsubscribeFromEvent('setTabsToNav', handler);

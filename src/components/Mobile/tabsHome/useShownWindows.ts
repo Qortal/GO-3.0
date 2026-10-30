@@ -12,7 +12,9 @@ export function useShownWindows(resetToken: unknown) {
   const [picked, setPicked] = useState<Record<string, string>>({});
 
   useEffect(() => {
-    setPicked({});
+    // Nothing picked yet (always so on mount): keep the same object, or the
+    // Tabs panel and the Pinned tab render twice each time they open.
+    setPicked((prev) => (Object.keys(prev).length === 0 ? prev : {}));
   }, [resetToken]);
 
   const shownFor = useCallback(

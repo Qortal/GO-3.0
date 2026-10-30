@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import { useAtomValue } from 'jotai';
 import { executeEvent } from '../../utils/events';
 import {
@@ -59,8 +59,11 @@ export function useMobileTabNavigation(
   desktopViewMode: string,
   setDesktopViewMode: (mode: string) => void
 ): { active: MobileTabKey | null; go: (tab: MobileTabKey) => void } {
-  // null on the widgets screen, which has no button.
-  const [active, setActive] = useState<MobileTabKey | null>('home');
+  // null on the widgets screen, which has no button. Every go() below
+  // switches desktopViewMode in the same render, so the section follows from
+  // it; kept as state it lagged one commit in every other user of this hook
+  // (Group, the bar) and cost each of them a second render per switch.
+  const active = mobileTabForViewMode(desktopViewMode);
   const isNewTabWindow = useAtomValue(isNewTabWindowAtom);
   const qortinoOpen = useAtomValue(qortinoAgentOpenAtom);
   const qortinoParked = useAtomValue(qortinoAgentParkedAtom);
@@ -75,16 +78,7 @@ export function useMobileTabNavigation(
     }
   }, [selectedTab]);
 
-  useEffect(() => {
-    if (desktopViewMode === 'home') setActive('home');
-    else if (desktopViewMode === 'chat') setActive('chat');
-    else if (desktopViewMode === 'apps' || desktopViewMode === 'dev')
-      setActive('apps');
-    else if (desktopViewMode === 'widgets') setActive(null);
-  }, [desktopViewMode]);
-
   const go = (tab: MobileTabKey) => {
-    setActive(tab);
     switch (tab) {
       case 'home':
         // Qortino loop: parked after Q-App → restore sheet; sheet open on home → dismiss.
