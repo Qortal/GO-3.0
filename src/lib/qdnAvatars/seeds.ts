@@ -3,13 +3,8 @@
  * Shown while there is no cached live icon, so app lists keep their icons on
  * a slow node and offline. Refresh with tools/qdnAvatarSeeds/refresh-seeds.mjs.
  */
-import {
-  QDN_AVATAR_SEEDS,
-  QDN_AVATAR_SEEDS_CAPTURED_AT,
-} from '../../assets/qdnAvatarSeeds/manifest';
+import { QDN_AVATAR_SEEDS } from '../../assets/qdnAvatarSeeds/manifest';
 import { qdnAvatarKey, type QdnAvatarKey } from './keys';
-
-export { QDN_AVATAR_SEEDS_CAPTURED_AT };
 
 let seedUrlsByKey: Map<QdnAvatarKey, string> | null = null;
 

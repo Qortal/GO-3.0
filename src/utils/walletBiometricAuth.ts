@@ -11,7 +11,6 @@ import {
 import {
   discardPersistedStorageKey,
   getData,
-  persistStorageKeyNow,
   removeData,
   storeData,
 } from './chromeStorage';
@@ -215,12 +214,7 @@ export function updateEarlyBiometricPromptForTopWallet(
   void setQortalBiometricAutoPrompt(enabled).catch(() => {});
 }
 
-export async function waitForNativeBiometricPrompt(
-  immediate = false
-): Promise<void> {
-  if (immediate) {
-    return;
-  }
+export async function waitForNativeBiometricPrompt(): Promise<void> {
   await new Promise<void>((resolve) => {
     window.requestAnimationFrame(() => resolve());
   });
@@ -465,34 +459,9 @@ async function promptBiometricEnableSheet(): Promise<void> {
   }
 }
 
-async function promptBiometricUnlockSheet(immediate = false): Promise<void> {
-  await waitForNativeBiometricPrompt(immediate);
-  try {
-    await verifyQortalBiometric({
-      title: 'Biometric unlock',
-      subtitle: 'Qortal Go',
-      description: 'Place your finger on the sensor to unlock',
-    });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    if (message.toLowerCase().includes('cancel')) {
-      throw new Error(
-        i18n.t('auth:mobile_login_settings.biometric_scan_cancelled')
-      );
-    }
-    throw err instanceof Error ? err : new Error(message);
-  }
-}
-
 export async function isBiometricHardwareAvailable(): Promise<boolean> {
   if (!isCapacitor()) return false;
   return isQortalBiometricHardwareAvailable();
-}
-
-export async function isBiometricEnabledForWallet(
-  address: string
-): Promise<boolean> {
-  return isBiometricUnlockConfigured(address);
 }
 
 export async function isBiometricUnlockConfigured(
@@ -556,42 +525,6 @@ export async function storeBiometricCredentials(
 
   await writeStoredPassword(trimmed, password);
   await markAddressEnabled(trimmed);
-}
-
-export async function finalizeBiometricUnlockStorage(
-  address: string,
-  password: string
-): Promise<void> {
-  if (!isCapacitor()) {
-    throw new Error('Biometric unlock is only available on the mobile app.');
-  }
-
-  const trimmed = normalizeAddress(address);
-  if (!trimmed) {
-    throw new Error('No wallet address provided.');
-  }
-
-  await promptBiometricEnableSheet();
-  await storeBiometricCredentials(trimmed, password);
-
-  // Make this session's storage key durable so the next cold start can
-  // resume the wallet session right after the fingerprint scan.
-  await persistStorageKeyNow().catch(() => {});
-}
-
-export async function enableBiometricUnlockForWallet(
-  address: string,
-  password: string,
-  wallet: Record<string, unknown>
-): Promise<void> {
-  const valid = await verifyWalletPassword(password, wallet);
-  if (!valid) {
-    throw new Error(
-      i18n.t('auth:mobile_login_settings.biometric_wrong_password')
-    );
-  }
-
-  await finalizeBiometricUnlockStorage(address, password);
 }
 
 export async function disableBiometricUnlock(address: string): Promise<void> {
@@ -831,16 +764,4 @@ export async function verifyBiometricUnlock(): Promise<void> {
     }
     throw err instanceof Error ? err : new Error(message);
   }
-}
-
-/** @deprecated Use biometricUnlockWallet */
-export async function unlockPasswordWithBiometric(
-  address: string,
-  wallet?: Record<string, unknown>
-): Promise<string> {
-  const result = await biometricUnlockWallet(address, wallet);
-  if (result === 'resume') {
-    throw new Error('Session resume expected; use biometricUnlockWallet');
-  }
-  return result;
 }

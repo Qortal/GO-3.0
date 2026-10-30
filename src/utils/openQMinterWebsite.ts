@@ -58,9 +58,6 @@ export const getQMinterWebsiteAvatarCandidates = (): string[] => {
   ];
 };
 
-export const getQMinterWebsiteAvatarUrl = () =>
-  getQMinterWebsiteAvatarCandidates()[0];
-
 /** Open the Q-Minter website (qortal://WEBSITE/Q-Minter) in the apps tab strip. */
 export const openQMinterWebsite = () => {
   executeEvent('addTab', {

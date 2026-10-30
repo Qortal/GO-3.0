@@ -85,8 +85,3 @@ export function splitFileNameForDisplay(name: unknown): {
   }
   return { stem: cleaned.slice(0, dot), extension: cleaned.slice(dot) };
 }
-
-/** "JPG" for "holiday.jpg"; empty when the name has no extension. */
-export function fileExtensionLabel(name: unknown): string {
-  return splitFileNameForDisplay(name).extension.slice(1).toUpperCase();
-}

@@ -403,7 +403,7 @@ describe('useAuth', () => {
         tryResumeWalletSession: { ok: false },
         decryptWallet: true,
       });
-      const { result, store } = renderUseAuth({ address0: 'Qtest' });
+      const { result } = renderUseAuth({ address0: 'Qtest' });
 
       await act(async () => {
         await result.current.authenticate(undefined, true);

@@ -54,5 +54,3 @@ export function useSoftKeyboardOpen(thresholdPx = 160): boolean {
 
   return go ? goOpen : open;
 }
-
-export default useSoftKeyboardOpen;

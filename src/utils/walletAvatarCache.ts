@@ -65,12 +65,6 @@ export function buildQortalAvatarUrl(
   return `${getBaseApiReactForAvatar()}/arbitrary/THUMBNAIL/${encoded}/qortal_avatar?async=true`;
 }
 
-/** QDN app/website thumbnail URL (avatar-friendly base + encoded name). */
-export function buildAppThumbnailUrl(appName: string): string {
-  const encoded = encodeURIComponent(appName.trim());
-  return `${getBaseApiReactForAvatar()}/arbitrary/THUMBNAIL/${encoded}/qortal_avatar?async=true`;
-}
-
 /** True when the QDN has a published qortal_avatar thumbnail. null = check failed (unknown). */
 export async function checkQortalAvatarExists(
   primaryName: string
@@ -170,13 +164,6 @@ export async function getWalletAvatarCacheEntries(): Promise<
     if (entry) entries[address] = entry;
   }
   return entries;
-}
-
-/** @deprecated Use getWalletAvatarCacheEntries */
-export async function getWalletAvatarCaches(): Promise<
-  Record<string, WalletAvatarCacheEntry>
-> {
-  return getWalletAvatarCacheEntries();
 }
 
 /** Remove a stale cached avatar for one wallet address. */

@@ -259,30 +259,6 @@ export function subscribeSoftKeyboard(listener: () => void): () => void {
   return subscribe(listener);
 }
 
-/**
- * Resolves once the keyboard has finished retracting, so the caller can reserve
- * its space without the two overlapping. Falls back to a timeout on platforms
- * that never report the resize.
- */
-export function waitForSoftKeyboardClose(timeoutMs = 400): Promise<void> {
-  start();
-  if (currentInset === 0) return Promise.resolve();
-  return new Promise((resolve) => {
-    let done = false;
-    const finish = () => {
-      if (done) return;
-      done = true;
-      unsubscribe();
-      window.clearTimeout(timer);
-      resolve();
-    };
-    const unsubscribe = subscribe(() => {
-      if (currentInset === 0) finish();
-    });
-    const timer = window.setTimeout(finish, timeoutMs);
-  });
-}
-
 /** Pixels the keyboard is covering right now, re-rendering as it animates. */
 export function useSoftKeyboardInset(): number {
   return useSyncExternalStore(subscribe, getSoftKeyboardInset, () => 0);
@@ -309,5 +285,3 @@ export function useLastSoftKeyboardHeight(): number {
     () => FALLBACK_KEYBOARD_PX
   );
 }
-
-export default useLastSoftKeyboardHeight;

@@ -1,5 +1,3 @@
-import { getDefaultStore } from 'jotai';
-import { appLockedAtom } from '../atoms/presence';
 import { executeEvent } from '../utils/events';
 import { isAutoLockDue, type AutoLockTimeoutMinutes } from './autoLock';
 
@@ -282,25 +280,4 @@ export function isPendingDeepLinkFresh(
 /** Ask App to lock now, exactly as the idle timer does. */
 export function requestAppLockNow(): void {
   executeEvent(LOCK_APP_NOW_EVENT, {});
-}
-
-/**
- * Is the lock screen up? For code outside React, such as the Q-App request
- * handlers: a request that runs without a prompt must not run while locked.
- */
-export function isAppLockedNow(): boolean {
-  return getDefaultStore().get(appLockedAtom);
-}
-
-/** Resolves once the app is unlocked (at once when it is not locked). */
-export function waitForAppUnlock(): Promise<void> {
-  const store = getDefaultStore();
-  if (!store.get(appLockedAtom)) return Promise.resolve();
-  return new Promise((resolve) => {
-    const unsubscribe = store.sub(appLockedAtom, () => {
-      if (store.get(appLockedAtom)) return;
-      unsubscribe();
-      resolve();
-    });
-  });
 }

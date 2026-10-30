@@ -21,14 +21,10 @@ import type {
 import { getQdnAvatarCache } from './defaultCache';
 
 export type {
-  QdnAvatarPrewarmEntry,
-  QdnAvatarPrewarmResult,
   QdnAvatarPriority,
   QdnAvatarSnapshot,
-  QdnAvatarSource,
   QdnAvatarStatus,
 } from './avatarCache';
-export { QDN_AVATAR_IDLE_SNAPSHOT } from './avatarCache';
 export {
   buildQdnAvatarUrl,
   qdnAvatarKey,
@@ -36,11 +32,7 @@ export {
   QDN_AVATAR_DEFAULT_IDENTIFIER,
   type QdnAvatarKey,
 } from './keys';
-export {
-  getQdnAvatarSeedNames,
-  getQdnAvatarSeedUrl,
-  QDN_AVATAR_SEEDS_CAPTURED_AT,
-} from './seeds';
+export { getQdnAvatarSeedUrl } from './seeds';
 export {
   useQdnAvatar,
   useQdnGroupAvatar,

@@ -1,9 +1,6 @@
 import { executeEvent } from './events';
 
-export const CUSTOM_NODE_GUIDE_WEBSITE_NAME =
-  'Custom Node on Qortal GO | GUIDE';
-
-export const CUSTOM_NODE_GUIDE_QORTAL_LINK = `qortal://WEBSITE/${encodeURIComponent(CUSTOM_NODE_GUIDE_WEBSITE_NAME)}`;
+const CUSTOM_NODE_GUIDE_WEBSITE_NAME = 'Custom Node on Qortal GO | GUIDE';
 
 const blurFocusedElement = () => {
   const active = document.activeElement;

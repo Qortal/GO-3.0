@@ -28,7 +28,7 @@ vi.mock('../../hooks/useSoftKeyboardOpen', async () => {
   const { useSyncExternalStore } = await import('react');
   const useSoftKeyboardOpen = () =>
     useSyncExternalStore(keyboard.subscribe, keyboard.get, keyboard.get);
-  return { useSoftKeyboardOpen, default: useSoftKeyboardOpen };
+  return { useSoftKeyboardOpen };
 });
 
 import Tiptap from './TipTap';

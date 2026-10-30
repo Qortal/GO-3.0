@@ -418,11 +418,6 @@ export function useGoLayout<T extends boolean | number | string>(
   return useSyncExternalStore(subscribeGoLayout, read, read);
 }
 
-/** Whole snapshot; its identity is stable until a field changes. */
-export function useGoLayoutSnapshot(): GoLayout {
-  return useSyncExternalStore(subscribeGoLayout, getGoLayout, getGoLayout);
-}
-
 // ---- Drop-in replacements -----------------------------------------------
 // Each calls both hooks every render (rules of hooks) and returns exactly the
 // old expression off GO.

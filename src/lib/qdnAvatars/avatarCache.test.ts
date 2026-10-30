@@ -82,7 +82,7 @@ describe('QDN avatar cache: fetching', () => {
   it('also tries the blocking fetch when the async request times out', async () => {
     const h = createAvatarTestHarness({
       limits: { asyncTimeoutMs: 10 },
-      handler: (url, { kind }) => {
+      handler: (_url, { kind }) => {
         if (kind === 'async') {
           return new Promise<Response>(() => {
             // never answers; the attempt times out

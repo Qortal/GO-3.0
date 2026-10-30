@@ -42,7 +42,6 @@ import {
   cleanQdnName,
   parseQdnAvatarKey,
   qdnAvatarKey,
-  QDN_AVATAR_DEFAULT_IDENTIFIER,
   type QdnAvatarKey,
   type QdnAvatarRef,
 } from './keys';
@@ -252,8 +251,6 @@ const IDLE_SNAPSHOT: QdnAvatarSnapshot = Object.freeze({
   status: 'idle',
   source: null,
 });
-
-export { IDLE_SNAPSHOT as QDN_AVATAR_IDLE_SNAPSHOT };
 
 function defaultCreateObjectUrl(blob: Blob): string | null {
   try {
@@ -1796,5 +1793,3 @@ export function createQdnAvatarCache(deps: QdnAvatarCacheDeps) {
     }),
   };
 }
-
-export { QDN_AVATAR_DEFAULT_IDENTIFIER };

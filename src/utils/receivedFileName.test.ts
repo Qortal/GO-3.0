@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
   cleanFileName,
-  fileExtensionLabel,
   MAX_FILE_NAME_LENGTH,
   splitFileNameForDisplay,
 } from './receivedFileName';
@@ -12,7 +11,6 @@ const RLO = '\u202E';
 describe('cleanFileName', () => {
   it('removes a right-to-left override, so the real extension shows', () => {
     expect(cleanFileName(`holiday${RLO}gpj.apk`)).toBe('holidaygpj.apk');
-    expect(fileExtensionLabel(`holiday${RLO}gpj.apk`)).toBe('APK');
   });
 
   it('removes other bidi, zero-width and control characters', () => {
@@ -91,10 +89,5 @@ describe('splitFileNameForDisplay', () => {
       stem: 'holidaygpj',
       extension: '.apk',
     });
-  });
-
-  it('labels the extension in capitals', () => {
-    expect(fileExtensionLabel('photo.jpeg')).toBe('JPEG');
-    expect(fileExtensionLabel('noext')).toBe('');
   });
 });

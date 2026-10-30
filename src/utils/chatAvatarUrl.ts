@@ -1,33 +1,10 @@
 /** Drop `async=true` so the node blocks until the thumbnail is actually fetched. */
-export function stripAvatarAsyncQuery(url: string): string {
+function stripAvatarAsyncQuery(url: string): string {
   return url
     .replace(/([?&])async=true(&?)/, (_m, sep, trailing) =>
       trailing ? sep : ''
     )
     .replace(/[?&]$/, '');
-}
-
-/** Thumbnail URL for a Qortal user's chat avatar (works in background + UI). */
-export function buildChatUserAvatarUrl(
-  apiBase: string,
-  name?: string | null,
-  address?: string | null
-): string {
-  const trimmed = name?.trim();
-  if (!apiBase || !trimmed) return '';
-  const base = `${apiBase.replace(/\/$/, '')}/arbitrary/THUMBNAIL/${encodeURIComponent(trimmed)}/qortal_avatar?async=true`;
-  const addr = address?.trim();
-  return addr ? `${base}&_=${encodeURIComponent(addr)}` : base;
-}
-
-/** Blocking chat avatar URL — avoids empty/404 `async=true` replies while the node caches. */
-export function buildChatUserAvatarUrlBlocking(
-  apiBase: string,
-  name?: string | null,
-  address?: string | null
-): string {
-  const url = buildChatUserAvatarUrl(apiBase, name, address);
-  return url ? stripAvatarAsyncQuery(url) : '';
 }
 
 /** Build avatar URL via createEndpoint so apiKey / node base are included. */
@@ -56,7 +33,12 @@ export async function buildChatUserAvatarNotificationUrl(
 function looksLikeImageBytes(head: Uint8Array): boolean {
   if (head.length < 4) return false;
   // PNG
-  if (head[0] === 0x89 && head[1] === 0x50 && head[2] === 0x4e && head[3] === 0x47) {
+  if (
+    head[0] === 0x89 &&
+    head[1] === 0x50 &&
+    head[2] === 0x4e &&
+    head[3] === 0x47
+  ) {
     return true;
   }
   // JPEG
@@ -102,14 +84,18 @@ export async function fetchChatAvatarDataUrl(
       if (!blob.size) continue;
       const head = new Uint8Array(await blob.slice(0, 16).arrayBuffer());
       if (!looksLikeImageBytes(head)) continue;
-      const dataUrl = await new Promise<string | undefined>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onloadend = () => {
-          resolve(typeof reader.result === 'string' ? reader.result : undefined);
-        };
-        reader.onerror = () => reject(reader.error);
-        reader.readAsDataURL(blob);
-      });
+      const dataUrl = await new Promise<string | undefined>(
+        (resolve, reject) => {
+          const reader = new FileReader();
+          reader.onloadend = () => {
+            resolve(
+              typeof reader.result === 'string' ? reader.result : undefined
+            );
+          };
+          reader.onerror = () => reject(reader.error);
+          reader.readAsDataURL(blob);
+        }
+      );
       if (dataUrl?.startsWith('data:')) {
         return dataUrl;
       }

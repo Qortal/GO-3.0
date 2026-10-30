@@ -25,7 +25,7 @@ describe('group member avatar presence', () => {
       json: async () => [{ name: 'Alice' }],
     }));
     vi.stubGlobal('fetch', fetchMock);
-    const { ensureAvatarPresence, getAvatarPresence, isAvatarKnownPresent } =
+    const { ensureAvatarPresence, getAvatarPresence } =
       await import('./groupMemberAvatars');
 
     expect(getAvatarPresence('Alice')).toBeUndefined();
@@ -37,7 +37,7 @@ describe('group member avatar presence', () => {
     expect(String(fetchMock.mock.calls[0][0])).toContain('name=Alice&name=bob');
     expect(onResolved).toHaveBeenCalledTimes(1);
     expect(getAvatarPresence('ALICE')).toBe(true);
-    expect(isAvatarKnownPresent('alice')).toBe(true);
+    expect(getAvatarPresence('alice')).toBe(true);
     expect(getAvatarPresence('Bob')).toBe(false);
     expect(getAvatarPresence('carol')).toBeUndefined();
     expect(getAvatarPresence('')).toBeUndefined();

@@ -280,7 +280,7 @@ describe('recipientFromNameRecord (GO-20)', () => {
 
 describe('recipientDisplayLabel', () => {
   it('shows name and full address for a name, the address otherwise', () => {
-    const t = (key: string, options?: Record<string, unknown>) =>
+    const t = (_key: string, options?: Record<string, unknown>) =>
       `${options?.name} (${options?.address})`;
     expect(
       recipientDisplayLabel({ address: ownerAddress, name: 'Alice' }, t)

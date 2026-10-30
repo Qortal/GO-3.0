@@ -503,38 +503,3 @@ describe('getLastSoftKeyboardHeight on GO', () => {
     expect(result.current).toBe(197);
   });
 });
-
-describe('waitForSoftKeyboardClose', () => {
-  beforeEach(() => {
-    goAt(393, 873);
-  });
-
-  it('resolves at once when the keyboard is closed', async () => {
-    const done = vi.fn();
-    await kb.waitForSoftKeyboardClose().then(done);
-    expect(done).toHaveBeenCalled();
-  });
-
-  it('resolves when the keyboard closes', async () => {
-    kb.getSoftKeyboardInset();
-    setViewport(573);
-    const done = vi.fn();
-    const p = kb.waitForSoftKeyboardClose(5000).then(done);
-    await Promise.resolve();
-    expect(done).not.toHaveBeenCalled();
-    setViewport(873);
-    await p;
-    expect(done).toHaveBeenCalled();
-  });
-
-  it('falls back to the timeout', async () => {
-    kb.getSoftKeyboardInset();
-    setViewport(573);
-    const done = vi.fn();
-    const p = kb.waitForSoftKeyboardClose(400).then(done);
-    vi.advanceTimersByTime(400);
-    await p;
-    expect(done).toHaveBeenCalled();
-    expect(kb.getSoftKeyboardInset()).toBe(300);
-  });
-});

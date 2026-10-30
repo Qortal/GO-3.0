@@ -12,10 +12,7 @@ import {
   imageResponse,
   PNG_BYTES,
 } from '../lib/qdnAvatars/testHarness';
-import {
-  getQMinterWebsiteAvatarCandidates,
-  getQMinterWebsiteAvatarUrl,
-} from './openQMinterWebsite';
+import { getQMinterWebsiteAvatarCandidates } from './openQMinterWebsite';
 
 const never = () => new Promise<Response>(() => {});
 
@@ -40,7 +37,6 @@ describe('Q-Minter website icon candidates', () => {
       'http://node:12391/site/Q-Minter/favicon.ico',
       'http://node:12391/render/WEBSITE/Q-Minter/favicon.ico',
     ]);
-    expect(getQMinterWebsiteAvatarUrl()).toBe('/seeds/q-minter.webp');
   });
 
   it('prefers the cached live icon', async () => {

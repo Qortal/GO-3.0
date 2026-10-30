@@ -633,10 +633,6 @@ export function declineQdnSave(
   });
 }
 
-export function canRetryQdnSave(id: string): boolean {
-  return retries.has(id);
-}
-
 /** Save a declined file after all. */
 export async function retryQdnSave(id: string): Promise<void> {
   const retry = retries.get(id);

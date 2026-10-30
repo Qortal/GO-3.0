@@ -1,6 +1,4 @@
-import { getDefaultStore } from 'jotai';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { appLockedAtom } from '../atoms/presence';
 import {
   APP_LOCK_LATCH_STORAGE_KEY,
   APP_UNLOCKED_SESSION_STORAGE_KEY,
@@ -9,7 +7,6 @@ import {
   canResumeSessionAtBoot,
   clearAppLockLatch,
   clearAppSessionUnlocked,
-  isAppLockedNow,
   isAppSessionUnlocked,
   isLockScreenActive,
   isPendingDeepLinkFresh,
@@ -20,7 +17,6 @@ import {
   readAppSessionUnlockedAddress,
   requestAppLockNow,
   resetWalletAutoSelectForReload,
-  waitForAppUnlock,
   writeAppLockLatch,
   type BootResumeInput,
 } from './appLock';
@@ -279,28 +275,5 @@ describe('requestAppLockNow', () => {
     requestAppLockNow();
     document.removeEventListener(LOCK_APP_NOW_EVENT, listener);
     expect(listener).toHaveBeenCalledTimes(1);
-  });
-});
-
-describe('lock state outside React', () => {
-  const store = getDefaultStore();
-  afterEach(() => store.set(appLockedAtom, false));
-
-  it('reports the lock and waits for the unlock', async () => {
-    expect(isAppLockedNow()).toBe(false);
-    await expect(waitForAppUnlock()).resolves.toBeUndefined();
-
-    store.set(appLockedAtom, true);
-    expect(isAppLockedNow()).toBe(true);
-    let released = false;
-    const waiting = waitForAppUnlock().then(() => {
-      released = true;
-    });
-    await Promise.resolve();
-    expect(released).toBe(false);
-
-    store.set(appLockedAtom, false);
-    await waiting;
-    expect(released).toBe(true);
   });
 });

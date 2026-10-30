@@ -155,9 +155,3 @@ export function subscribeNotificationHistory(listener: () => void) {
     listeners.delete(listener);
   };
 }
-
-/** Test hook. */
-export function resetNotificationHistoryForTests(): void {
-  cache.clear();
-  listeners.clear();
-}

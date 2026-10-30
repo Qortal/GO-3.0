@@ -1,4 +1,7 @@
-import { getArbitraryEndpointReact, getBaseApiReactForAvatar } from './globalApi';
+import {
+  getArbitraryEndpointReact,
+  getBaseApiReactForAvatar,
+} from './globalApi';
 import { RequestQueueWithPromise } from './queue/queue';
 
 /**
@@ -28,11 +31,6 @@ const BATCH_SIZE = 40;
 const normalize = (name?: string | null): string =>
   (name ?? '').trim().toLowerCase();
 
-export function isAvatarKnownPresent(name?: string | null): boolean {
-  const key = normalize(name);
-  return !!key && avatarPresenceCache.get(key) === true;
-}
-
 /**
  * What the node said about this name: true (has an avatar), false (has
  * none) or undefined (not asked yet, or the lookup failed).
@@ -43,9 +41,7 @@ export function getAvatarPresence(name?: string | null): boolean | undefined {
 }
 
 async function resolveBatch(names: string[]): Promise<void> {
-  const query = names
-    .map((n) => `name=${encodeURIComponent(n)}`)
-    .join('&');
+  const query = names.map((n) => `name=${encodeURIComponent(n)}`).join('&');
   const url =
     `${getBaseApiReactForAvatar()}${getArbitraryEndpointReact()}` +
     `?mode=ALL&service=THUMBNAIL&identifier=qortal_avatar` +
