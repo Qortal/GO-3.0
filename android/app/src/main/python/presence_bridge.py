@@ -7425,13 +7425,12 @@ def rns_callback_scheduler_monitor_loop() -> None:
     global _audio_rns_callback_scheduler_gap_over_1000_count
     interval = _AUDIO_RNS_CALLBACK_SCHEDULER_MONITOR_INTERVAL_SECONDS
     last_at = time.monotonic()
-    while not _shutdown.is_set():
+    while True:
         # This probe only measures GIL scheduling latency for live audio. With
         # no audio link it woke the CPU 20x a second for nothing; idle at the
         # slow cadence and rearm as soon as a call starts.
         if not _audio_links_by_id:
-            if _shutdown.wait(_AUDIO_IDLE_MONITOR_INTERVAL_SECONDS):
-                return
+            _shutdown.wait(_AUDIO_IDLE_MONITOR_INTERVAL_SECONDS)
             last_at = time.monotonic()
             continue
         time.sleep(interval)
