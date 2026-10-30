@@ -25,10 +25,7 @@ android {
         externalNativeBuild {
             cmake {
                 cppFlags "-O3 -DNDEBUG -fvisibility=hidden"
-                arguments "-DANDROID_STL=c++_shared",
-                        "-DBUILD_SHARED_LIBS=OFF",
-                        "-DGGML_OPENMP=OFF",
-                        "-DGGML_LLAMAFILE=OFF"
+                arguments "-DANDROID_STL=c++_static"
             }
         }
     }

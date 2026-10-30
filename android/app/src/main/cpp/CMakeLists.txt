@@ -36,3 +36,7 @@ target_link_libraries(qortino_llm
     ${log-lib}
     ${android-lib}
 )
+
+# libc++ is linked in statically (ANDROID_STL=c++_static); keep its symbols
+# private so libqortino_llm exports only the JNI entry points.
+target_link_options(qortino_llm PRIVATE "-Wl,--exclude-libs,ALL")
