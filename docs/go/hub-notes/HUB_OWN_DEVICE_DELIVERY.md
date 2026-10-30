@@ -9,7 +9,7 @@ How claims were checked:
 
 - Every statement about Hub 3.0.3 was checked against the release tag (`git show v3.0.3:electron/src/reticulum-chat.ts`, tag commit `f3b75daa`) and, for the link layer, `v3.0.3:electron/resources/presence_bridge.py`. Line numbers marked "v3.0.3 L…" refer to those files at that tag and do not drift. The locally fetched `hub-gh/develop` (`d1ac4adb`, 2026-09-19) has a byte-identical `reticulum-chat.ts`.
 - GO line numbers drift; grep for the identifiers.
-- Measurements come from one lab setup: a vivo V2511 phone (Android 16, WebView 153) running GO, and two Hub 3.0.3 instances (`hubA`, `hubB`) on one PC. Log excerpts are in the GO workspace, outside this repo (`chat-lab/logs/`), and the full investigation is in `reports/GO-delivery-reliability-plan-2026-09-30.md` there.
+- Measurements come from one lab setup: a vivo V2511 phone (Android 16, WebView 153) running GO, and two Hub 3.0.3 instances (`hubA`, `hubB`) on one PC.
 - "Verified" means seen in code or in logs. "Inferred" and "not measured" are marked as such.
 
 ---

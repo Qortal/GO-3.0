@@ -1,5 +1,5 @@
 /**
- * Honest delivery states for the user's own Reticulum DMs (plan item #13).
+ * Honest delivery states for the user's own Reticulum DMs.
  *
  * - delivered: the engine served the event on the recipient's own page
  *   request and the bridge reported that transfer complete ('sent', set once

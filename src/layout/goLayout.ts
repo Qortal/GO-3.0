@@ -8,7 +8,7 @@ import { useTheme } from '@mui/material/styles';
  * signals let tablets and landscape adapt inside it.
  *
  * Every signal is keyboard-proof: the usable height comes from native window
- * metrics (P3), falling back to the tallest innerHeight seen since the last
+ * metrics, falling back to the tallest innerHeight seen since the last
  * width/orientation change, so opening the keyboard never flips a layout.
  *
  * Leaf module: imports only react and @mui/material. It must never import
@@ -18,7 +18,7 @@ import { useTheme } from '@mui/material/styles';
 type GoWidthClass = 'compact' | 'medium' | 'expanded'; // <600 | 600–839 | ≥840
 export type GoDeviceOrientation = 'portrait' | 'landscape';
 
-/** Pushed by native (P3) and returned by SafeArea.getInsets; CSS px, integers. */
+/** Pushed by native and returned by SafeArea.getInsets; CSS px, integers. */
 export interface GoWindowMetrics {
   width: number; // WebView width after native side margins
   height: number; // window content height (WebView parent): the keyboard never changes it

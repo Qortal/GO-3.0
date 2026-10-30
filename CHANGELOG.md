@@ -64,8 +64,8 @@ desktop Hub. The format is based on
   swipe, while taps, typing and vertical scrolling stay the widget's. Widgets
   load the first time the screen is shown and are unloaded 3 minutes after
   it was last seen. Settings → System → **Widgets screen** turns it off.
-  Developer guide: `docs/go-widgets.md`; example widget:
-  `qapps/go-widget-clock`.
+  Developer guide: `docs/go/go-widgets.md`; example widget:
+  `tools/preview/fake-node/render/APP/GOClock.html`.
 - **Rearrange the bottom buttons** _(mobile)_ — Settings → System → Bottom
   buttons (above Immersive mode): drag the round Home, Apps and Chat buttons
   into any order (or move one with the arrow keys; Reset puts them back).
@@ -1175,7 +1175,6 @@ desktop Hub. The format is based on
   disabled, `.html`/`.svg` downloads saved as text, logging and WebView
   debugging off in the shipped config, Capacitor 6.2.2, markdown-it 14.3.2,
   DOMPurify 3.4.16, axios 1.20.0.
-- Full audit: `reports/GO-3.0-security-privacy-audit-2026-10-01.md`.
 
 ### Removed
 
@@ -1263,8 +1262,7 @@ version, so it installs over v0.0.13 with accounts and chats kept.
   GrapheneOS has no ART JIT, so all of GO's Java ran in the slowest
   interpreter there: the wallet key derivation took 10–25 s instead of under
   1 s, and the rest of the app was slower too. The per-app "WebView JIT"
-  setting could not help, because it only affects JavaScript. Investigation:
-  `reports/GO-GrapheneOS-slow-login-2026-10-01.md` in the GO folder.
+  setting could not help, because it only affects JavaScript.
 - **Fingerprint unlock did the slow part twice** _(shared)_ — the prewarm
   and the unlock itself each started the full wallet key derivation at the
   same time, and the account list could start it up to three more times.
@@ -1346,9 +1344,10 @@ Field / Q-Share build **GO 3.0 v0.0.13** (`versionName` 0.0.13, `versionCode` 16
   freeze apps when the screen turns off, even with background sync on. When
   GO notices this it shows a one-time notice with a button to the phone's
   battery settings and a link to dontkillmyapp.com for that brand.
-- **Note for Hub developers** — `HUB_OWN_DEVICE_DELIVERY.md` describes what
-  was measured, what GO now does on its own and which Hub changes would make
-  delivery through an own Hub reliable.
+- **Note for Hub developers** —
+  `docs/go/hub-notes/HUB_OWN_DEVICE_DELIVERY.md` describes what was measured,
+  what GO now does on its own and which Hub changes would make delivery
+  through an own Hub reliable.
 - **Long messages are split** _(shared)_ — a chat message over 4,000 bytes
   (DM, group or thread) is now sent as several consecutive messages, up to
   15, instead of being refused.
@@ -2117,7 +2116,7 @@ Gitea push of everything since v0.0.1 (`0bb0c74a`, 2026-08-09).
   Search and tag chips filter a cached catalog; a most-used row is stored on device;
   the grid is a 3-column masonry that keeps each GIF's real shape. Selecting a GIF
   attaches a QDN pointer (`libraryGif: true`), not a file over the mesh. Hub port:
-  [`HUB_GIF_PICKER.md`](HUB_GIF_PICKER.md).
+  [`HUB_GIF_PICKER.md`](docs/go/hub-notes/HUB_GIF_PICKER.md).
 - **Queued GIF media cache** _(shared)_ — at most two concurrent node fetches, memory
   - IndexedDB, in-view lazy load, prefetch of most-used tiles.
 - **GO version in Core & settings** _(mobile)_ — the old “UI version” label is now
@@ -2228,7 +2227,7 @@ mobile fork with Reticulum chat, group UI, calendar, and branding updates.
   Also accepts `qortal://send?to=…`, BIP21-style `qort:<address>?amount=…`,
   `qortal://<address>`, and bare addresses (via the in-app scanner). Recipient
   aliases: `recipient|to|address|r`; amount aliases: `amount|qty|qort|value`.
-  See [`docs/PAYMENT_QR_CODES.md`](docs/PAYMENT_QR_CODES.md) for the full
+  See [`docs/go/PAYMENT_QR_CODES.md`](docs/go/PAYMENT_QR_CODES.md) for the full
   developer guide.
 - **In-app QR scanner** _(mobile)_ — a full-screen camera scanner built purely
   in JavaScript (`getUserMedia` + `jsQR`), with **no Google Play Services / ML
@@ -2300,7 +2299,7 @@ app while keeping the desktop Hub in sync. Highlights, newest first:
 ### Notes
 
 - Upstream Hub (Electron) merge guidance for the voice / presence / dual-ring
-  work lives in [`HUB_DEV_NOTES.md`](HUB_DEV_NOTES.md). (`b06a2794`)
+  work lives in [`HUB_DEV_NOTES.md`](docs/go/hub-notes/HUB_DEV_NOTES.md). (`b06a2794`)
 
 ---
 

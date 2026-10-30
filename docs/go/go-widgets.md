@@ -346,7 +346,7 @@ visibility, sizing, and works outside GO too.
 ```
 
 A complete working example is the **GO Clock** widget,
-`qapps/go-widget-clock/index.html` in the Qortal GO workspace (publish it as
+`tools/preview/fake-node/render/APP/GOClock.html` in this repo (publish it as
 `APP / <your name> / go-widget-clock`).
 
 ### 2.3 Common patterns

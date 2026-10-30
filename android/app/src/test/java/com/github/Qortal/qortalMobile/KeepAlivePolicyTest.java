@@ -165,7 +165,7 @@ public class KeepAlivePolicyTest {
     }
 
     /**
-     * The overnight case from the review: off screen at 21:00 on battery,
+     * The overnight case: off screen at 21:00 on battery,
      * plugged in at 23:00 and unplugged at 07:00 while vivo held GO frozen,
      * screen on at 07:30. The first tick after the thaw reads "unplugged"
      * (no edge) before any queued power broadcast runs; the level shows the

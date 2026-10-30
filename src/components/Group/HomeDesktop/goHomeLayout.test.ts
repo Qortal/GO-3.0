@@ -7,7 +7,7 @@ import {
   goHomeWidgetHeight,
 } from './goHomeLayout';
 
-/** The real store's answer for a window, so the table follows §3.0. */
+/** The real store's answer for a window, so the table follows computeGoLayout. */
 const layoutFor = (width: number, stableHeight: number) =>
   computeGoLayout({
     go: true,

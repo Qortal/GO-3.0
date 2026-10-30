@@ -9,7 +9,7 @@ Companion to [`HUB_DEV_NOTES.md`](HUB_DEV_NOTES.md). Everything below is impleme
 2. **A delivered chat alert clears once you read the chat elsewhere.** Read state already syncs between own devices (`read_sync`, feature `read_sync_v2`) and clears badges, but a tray alert that was already shown stayed. Alerts for Reticulum DMs and group mentions now have a stable per-conversation id and are cancelled when the synced unread or mention count for that conversation reaches zero.
 3. **A "Synced across your devices" panel** in the notification settings that explains what is shared and shows the live state (engine starting, no other device online, other device too old, linked with N devices).
 
-Two facts from the investigation that shaped the design (details in the GO fork's report `reports/Hub-GO-notification-sync-feasibility-2026-09-29.md`, outside this repo):
+Two facts from the investigation that shaped the design:
 
 - The Reticulum chat engine never talks to a Core node, and phone and desktop dial the same public Reticulum hubs, so own-device sync works regardless of which node (public gateway or private) each device uses.
 - The Core `/websockets/notifications` endpoint on the public gateway (`ext-node.qortal.link`, `api.qortal.org`, core 6.1.9) accepts custom `RESOURCE_PUBLISHED` subscriptions and returns history exactly like a local node. So the notifications themselves never need relaying; only the device-local _state_ does.

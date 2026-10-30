@@ -13,8 +13,8 @@ background behavior.
 > **For Hub developers**
 >
 > 1. **Chat GIF picker** — copy `src/components/Chat/gifs/` and wire it as described in
->    [`HUB_GIF_PICKER.md`](HUB_GIF_PICKER.md). Same QDN pointers GO already sends; Hub
->    should display and send them the same way.
+>    [`HUB_GIF_PICKER.md`](docs/go/hub-notes/HUB_GIF_PICKER.md). Same QDN pointers GO
+>    already sends; Hub should display and send them the same way.
 > 2. **Voice + file-transfer interop** — two small Hub-side changes, still required.
 >    See [Required Hub changes](#required-hub-changes).
 >
@@ -33,7 +33,7 @@ background behavior.
 | `src/bridge/capacitorBridge.ts` | The mobile equivalent of Electron's main-process bridges: installs `window.presence` / `window.call` / `window.groupCall`, presence overlay coordinator, Q-Chat file transfer sender logic |
 | `src/plugins/Reticulum.ts` | Capacitor plugin typings for the native Reticulum bridge |
 | `src/utils/qchatFileApi.ts` | Unified desktop/mobile Q-Chat file transfer API (desktop → `electronAPI`, mobile → Capacitor) |
-| `src/components/Chat/gifs/` | QDN GIF library picker (catalog, cache, masonry, most-used). Hub-portable — see [`HUB_GIF_PICKER.md`](HUB_GIF_PICKER.md) |
+| `src/components/Chat/gifs/` | QDN GIF library picker (catalog, cache, masonry, most-used). Hub-portable — see [`HUB_GIF_PICKER.md`](docs/go/hub-notes/HUB_GIF_PICKER.md) |
 | `src/components/Mobile/` | Mobile shell: top bar, tab bar, tabs overlay with folders, etc. |
 | `src/appUpdate/` | In-app APK updates from Q-Share (`GO 3.0` on QDN) — Android only |
 | `android/` | Capacitor Android project |
@@ -42,6 +42,7 @@ background behavior.
 | `android/app/src/main/python/presence_bridge.py` | The full Reticulum protocol bridge (presence, calls, group audio, file transfer) — **shared with desktop**, runs under Chaquopy on Android |
 | `electron/resources/presence_bridge.py` | The **desktop copy** of the same bridge — kept in sync |
 | `electron/` | Desktop Electron shell |
+| `docs/go/` | GO's own docs (widgets guide, app links, payment QR codes); `docs/go/hub-notes/` holds the notes for Hub developers |
 
 ## Building the Android app
 
@@ -109,7 +110,7 @@ transfer Resources.
 | Q-Chat file transfer **mobile → Hub** | ✅ Works (mobile sender has the robustness fixes) |
 | Q-Chat file transfer **Hub → mobile**, large files | ⚠️ Reliable only after the Hub ships [Hub change #2](#2-file-transfer-ship-the-updated-presence_bridgepy) |
 | OS notifications (PM summary + sender avatar), biometric login, mobile tabs/folders | ✅ Mobile-only features |
-| Chat GIF library (QDN `gif-` IMAGE pointers) | ✅ Works on GO. Hub: copy picker + send/render — [`HUB_GIF_PICKER.md`](HUB_GIF_PICKER.md) |
+| Chat GIF library (QDN `gif-` IMAGE pointers) | ✅ Works on GO. Hub: copy picker + send/render — [`HUB_GIF_PICKER.md`](docs/go/hub-notes/HUB_GIF_PICKER.md) |
 | In-app APK updates from Q-Share | ✅ Mobile-only (checks `GO 3.0` on QDN) |
 | GO version in Core & settings | ✅ Matches `versionName` / this APK |
 
@@ -148,7 +149,7 @@ Every field build is published on Q-Share (Q-Share+ from v0.0.13) under the name
 
 ### 1. Voice calls: admit verified link-auth joins
 
-*(See `MOBILE_VOICE_HUB_DEV_NOTE.md` in this repo for the full write-up.)*
+*(See `docs/go/hub-notes/MOBILE_VOICE_HUB_DEV_NOTE.md` in this repo for the full write-up.)*
 
 **Symptom:** Hub → mobile calls connect with clean two-way audio. Mobile → Hub calls stay on
 "connecting…" on the Hub and drop after a few seconds — even though the phone sends the exact same
@@ -228,10 +229,11 @@ Hub → mobile transfers of large files only become reliable once the Hub ships 
   neighbour slide animation, portrait + landscape, phones + tablets).
 - **Payments:** `qortal://pay?…` / `qort:` deep links and payment QR codes open the app straight
   to a pre-filled Send screen; a de-Googled in-app QR scanner (`getUserMedia` + `jsQR`, no Play
-  Services) reads payment and address QRs. See [`docs/PAYMENT_QR_CODES.md`](docs/PAYMENT_QR_CODES.md).
+  Services) reads payment and address QRs. See
+  [`docs/go/PAYMENT_QR_CODES.md`](docs/go/PAYMENT_QR_CODES.md).
 - **Chat GIF library:** emoji button also opens a QDN GIF picker (`gif-` IMAGE resources).
   Search, tag chips, most-used, masonry layout, queued/cached loads. Sent as a QDN pointer,
-  not a mesh file. Hub port: [`HUB_GIF_PICKER.md`](HUB_GIF_PICKER.md).
+  not a mesh file. Hub port: [`HUB_GIF_PICKER.md`](docs/go/hub-notes/HUB_GIF_PICKER.md).
 - **In-app updates:** watches Q-Share publications under the `GO 3.0` name, shows notes +
   progress, and hands the APK to Android's installer.
 - **GO version:** Core & settings shows the same `versionName` as the installed APK.

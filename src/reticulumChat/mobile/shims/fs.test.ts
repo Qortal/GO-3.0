@@ -3,8 +3,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 /**
  * Fake OPFS for the mobile fs shim: directories, files, an exclusive lock per
  * file while a sync access handle is open, and switches for slow, failing or
- * hung opens. Based on the investigation harness that reproduced the EMFILE
- * cascade (report Graphene-1, 2026-10-19).
+ * hung opens. Based on the harness that reproduced the EMFILE cascade
+ * (October 2026).
  */
 type FakeOpfsOptions = {
   /** Delay of every createSyncAccessHandle, in ms (timer based). */

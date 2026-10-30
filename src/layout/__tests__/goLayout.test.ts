@@ -34,8 +34,8 @@ function input(width: number, stableHeight: number): GoLayoutInput {
 }
 
 describe('computeGoLayout', () => {
-  // §3.0 of the plan. 873x393 is 'expanded' by the ≥840 rule (the plan's
-  // table said medium, which contradicts its own class definition).
+  // Width classes: <600 compact, 600–839 medium, ≥840 expanded, so 873x393
+  // is 'expanded'.
   const rows: [
     string,
     GoLayout['widthClass'],

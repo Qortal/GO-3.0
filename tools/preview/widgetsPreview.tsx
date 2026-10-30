@@ -2,7 +2,7 @@
  * Dev-only preview of the widgets screen at phone width, with the real
  * floating bottom bar. ?seed=1 puts public Q-Apps on it as stand-in
  * widgets (none are published yet), ?fake=1 loads the example clock widget
- * (qapps/go-widget-clock) from a fake node under fake-node/, ?empty=1
+ * (GO Clock) from a fake node under fake-node/, ?empty=1
  * clears it, ?theme=light.
  * Run `npm run dev` and open /tools/preview/widgets.html. Not a build input,
  * so it never ships.

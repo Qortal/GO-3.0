@@ -46,7 +46,7 @@ is ever stood up.
 ## To make links auto-open (domain verification)
 
 App Links auto-open only after Android verifies the app owns the domain. Each
-gateway domain owner must serve this file (see `docs/assetlinks.json`) at:
+gateway domain owner must serve this file (see `docs/go/assetlinks.json`) at:
 
 ```
 https://<host>/.well-known/assetlinks.json
