@@ -1,14 +1,7 @@
 import { Box, Dialog, IconButton, useTheme } from '@mui/material';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import { useAtomValue } from 'jotai';
-import {
-  lazy,
-  Suspense,
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-} from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { qortinoAgentParkedAtom } from '../../../atoms/global';
 import { SAFE_AREA_BOTTOM, SAFE_AREA_TOP } from '../../../utils/mobileSafeArea';
 import {
@@ -18,8 +11,11 @@ import {
 } from '../../../qortinoAgent/store';
 import { QortinoAgentGate } from './QortinoAgentGate';
 
-const loadQortinoAgentChat = () => import('./QortinoAgentChat');
-const QortinoAgentChat = lazy(loadQortinoAgentChat);
+type ChatModule = typeof import('./QortinoAgentChat');
+
+/** The chat chunk loads on demand; the Gate never needs it. */
+const loadQortinoAgentChat = (): Promise<ChatModule> =>
+  import('./QortinoAgentChat');
 
 type Props = {
   open: boolean;
@@ -31,24 +27,34 @@ export function QortinoAgentSheet({ open, onClose }: Props) {
   const parked = useAtomValue(qortinoAgentParkedAtom);
   const [ready, setReady] = useState(false);
   const [install, setInstall] = useState<QortinoInstallState>({ installed: false });
+  // Held in state (not React.lazy) so the chat replaces the loading view or the
+  // Gate in one render, without a Suspense fallback in between.
+  const [chatModule, setChatModule] = useState<ChatModule | null>(null);
   /** Once the chat session has been assembled, keep it across park/restore. */
   const sessionReadyRef = useRef(false);
   const refreshGenRef = useRef(0);
+
+  const loadChat = useCallback(async () => {
+    const m = await loadQortinoAgentChat().catch(() => null);
+    if (m) setChatModule(m);
+  }, []);
 
   const refresh = useCallback(async () => {
     const gen = ++refreshGenRef.current;
     const state = await loadInstallState();
     if (gen !== refreshGenRef.current) return;
+    // Keep the loading view until the chat code is in, so the chat shows at once.
+    if (state.installed && state.llmPath) {
+      await loadChat();
+      if (gen !== refreshGenRef.current) return;
+    }
 
     setInstall(state);
-    if (state.installed && state.llmPath) {
-      void loadQortinoAgentChat().catch(() => undefined);
-    }
     setReady(true);
     if (state.installed && state.llmPath) {
       sessionReadyRef.current = true;
     }
-  }, []);
+  }, [loadChat]);
 
   useEffect(() => {
     if (!open) return;
@@ -57,7 +63,8 @@ export function QortinoAgentSheet({ open, onClose }: Props) {
       sessionReadyRef.current &&
       install.installed &&
       install.llmPath &&
-      ready
+      ready &&
+      chatModule
     ) {
       return;
     }
@@ -74,13 +81,17 @@ export function QortinoAgentSheet({ open, onClose }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- see above
   }, [open, refresh]);
 
-  const handleInstalled = useCallback((next: QortinoInstallState) => {
-    setInstall(next);
-    if (next.installed && next.llmPath) {
-      void loadQortinoAgentChat().catch(() => undefined);
-      sessionReadyRef.current = true;
-    }
-  }, []);
+  const handleInstalled = useCallback(
+    (next: QortinoInstallState) => {
+      setInstall(next);
+      if (next.installed && next.llmPath) {
+        // Normally already loaded when the assemble started.
+        void loadChat();
+        sessionReadyRef.current = true;
+      }
+    },
+    [loadChat]
+  );
 
   const handleClose = useCallback(async () => {
     if (install.installed) {
@@ -93,6 +104,7 @@ export function QortinoAgentSheet({ open, onClose }: Props) {
 
   // keepMounted while open OR parked so chat history + loaded model survive Q-App hops.
   const keepAlive = open || parked;
+  const Chat = chatModule?.QortinoAgentChat;
 
   const closeButton = (
     <IconButton
@@ -132,14 +144,14 @@ export function QortinoAgentSheet({ open, onClose }: Props) {
         {!ready ? (
           closeButton
         ) : install.installed && install.llmPath ? (
-          <Suspense fallback={closeButton}>
-            <QortinoAgentChat
-              install={install}
-              onClose={() => void handleClose()}
-            />
-          </Suspense>
+          Chat ? (
+            <Chat install={install} onClose={() => void handleClose()} />
+          ) : (
+            closeButton
+          )
         ) : (
           <QortinoAgentGate
+            onAssembleStart={() => void loadChat()}
             onInstalled={(next) => handleInstalled(next)}
             onCancel={() => void handleClose()}
           />

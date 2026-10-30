@@ -30,11 +30,17 @@ import type { QortinoInstallState } from '../../../qortinoAgent/store';
 import { executeEvent } from '../../../utils/events';
 
 type Props = {
+  /** Called as an assemble starts, so the sheet can load the chat code meanwhile. */
+  onAssembleStart?: () => void;
   onInstalled: (install: QortinoInstallState, manifest: QortinoAgentManifest) => void;
   onCancel: () => void;
 };
 
-export function QortinoAgentGate({ onInstalled, onCancel }: Props) {
+export function QortinoAgentGate({
+  onAssembleStart,
+  onInstalled,
+  onCancel,
+}: Props) {
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
   const isPublicNode = useAtomValue(isRunningPublicNodeAtom);
@@ -119,6 +125,7 @@ export function QortinoAgentGate({ onInstalled, onCancel }: Props) {
       );
       return;
     }
+    onAssembleStart?.();
     setInstalling(true);
     setError(null);
     abortRef.current?.abort();
@@ -144,7 +151,14 @@ export function QortinoAgentGate({ onInstalled, onCancel }: Props) {
     } finally {
       setInstalling(false);
     }
-  }, [blockPublicNode, manifest, notifyPublicNodeBlocked, onInstalled, selectedPack]);
+  }, [
+    blockPublicNode,
+    manifest,
+    notifyPublicNodeBlocked,
+    onAssembleStart,
+    onInstalled,
+    selectedPack,
+  ]);
 
   const progressRatio =
     progress && progress.bytesTotal > 0
