@@ -18,7 +18,7 @@ export const REACTION_EMOJI_CATEGORIES = [
 
 export type ReactionEmojiCategory = (typeof REACTION_EMOJI_CATEGORIES)[number];
 
-export type ReactionEmojiSection = {
+type ReactionEmojiSection = {
   id: ReactionEmojiCategory;
   emojis: string[];
 };

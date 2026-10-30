@@ -79,9 +79,9 @@ export function hasReticulumDragMoved(delta: { x: number; y: number }) {
 export const RETICULUM_HELD_TAP_CLICK_GUARD_MS = 600;
 
 /** What a finished drag turned out to be. */
-export type ReticulumChannelDragOutcome = 'cancel' | 'drop' | 'tap';
+type ReticulumChannelDragOutcome = 'cancel' | 'drop' | 'tap';
 
-export type ReticulumChannelDragTracker = {
+type ReticulumChannelDragTracker = {
   /** dnd-kit onDragStart. */
   begin(): void;
   /**

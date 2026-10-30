@@ -7,8 +7,8 @@ import type { Theme } from '@mui/material/styles';
  */
 export const CHAT_HEADER_ACTION_PHONE_PX = 44;
 export const CHAT_HEADER_ACTION_DESKTOP_PX = 36;
-export const CHAT_HEADER_ICON_PHONE_PX = 23;
-export const CHAT_HEADER_ICON_DESKTOP_PX = 19;
+const CHAT_HEADER_ICON_PHONE_PX = 23;
+const CHAT_HEADER_ICON_DESKTOP_PX = 19;
 /** Height and side gutters of a chat header bar on phones. */
 export const CHAT_HEADER_PHONE_HEIGHT_PX = 50;
 export const CHAT_HEADER_PHONE_GUTTER_PX = 12;
@@ -20,7 +20,7 @@ export const CHAT_HEADER_PHONE_GUTTER_PX = 12;
  */
 export const HOVER_CAPABLE_MEDIA = '@media (hover: hover)';
 
-export type ChatHeaderActionMetrics = {
+type ChatHeaderActionMetrics = {
   /** Width and height of an icon-only action. */
   sizePx: number;
   /** Glyph size of the icon inside it. */
@@ -38,7 +38,7 @@ export function getChatHeaderActionMetrics(
       };
 }
 
-export type ChatHeaderActionSxOptions = {
+type ChatHeaderActionSxOptions = {
   isMobile: boolean;
   /** Toggled on (an open panel): filled, white glyph. */
   active?: boolean;

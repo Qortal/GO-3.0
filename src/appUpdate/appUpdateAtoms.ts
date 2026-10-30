@@ -15,7 +15,7 @@ export type AppUpdatePhase =
   | 'installing'
   | 'error';
 
-export type AppUpdateProgress = {
+type AppUpdateProgress = {
   /** Free text under the bar: "12.4 MB of 88 MB", "Fetching from QDN…". */
   detail?: string;
   error?: string;
@@ -36,7 +36,7 @@ export const appUpdateReleaseAtom = atomWithReset<AppRelease | null>(null);
  */
 export const appUpdateTargetAtom = atomWithReset<AppRelease | null>(null);
 
-export type AppUpdateCheckStatus =
+type AppUpdateCheckStatus =
   | 'idle'
   | 'checking'
   | 'up-to-date'

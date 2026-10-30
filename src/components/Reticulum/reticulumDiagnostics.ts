@@ -115,7 +115,7 @@ import {
   type ReticulumState,
 } from './reticulumStatus';
 
-export type WebViewProbe = {
+type WebViewProbe = {
   userAgent: string;
   hardwareConcurrency: number | null;
   deviceMemoryGb: number | null;
@@ -138,7 +138,7 @@ export type WebViewProbe = {
   builtinRefMs?: number | null;
 };
 
-export type CoreApiProbe = {
+type CoreApiProbe = {
   host: string;
   /** `http` / `https`; compared with the membership checks' base. */
   scheme?: string;
@@ -151,14 +151,14 @@ export type CoreApiProbe = {
 };
 
 /** Fields of Core's /admin/status answer; each null when missing or odd. */
-export type CoreNodeStatus = {
+type CoreNodeStatus = {
   height: number | null;
   syncPercent: number | null;
   isSynchronizing: boolean | null;
   numberOfConnections: number | null;
 };
 
-export type UnlockDiagnostics = {
+type UnlockDiagnostics = {
   /** Oldest first, from `getUnlockTimingSnapshot`. */
   events: UnlockTimingEvent[];
   /** Null off native Android, on a plugin error or a timeout. */
@@ -212,7 +212,7 @@ export type NativeBridgeDiagnostics = {
 };
 
 /** Python's call audio I/O counters (transport_status detail `callAudioIo`). */
-export type CallAudioIoDiagnostics = {
+type CallAudioIoDiagnostics = {
   rxFrames?: number;
   rxControl?: number;
   rxDropped?: number;
@@ -282,7 +282,7 @@ export type ReticulumDiagnosticsInput = {
   pageLongTasks?: PageLongTaskStats | null;
 };
 
-export type JitEvidence = {
+type JitEvidence = {
   /**
    * GrapheneOS's own "WebView JIT" switch for GO, read natively
    * (NativeBcryptRuntimeInfo.webViewJitRestricted): true = off. Null or
@@ -294,7 +294,7 @@ export type JitEvidence = {
   probeRatio?: number | null;
 };
 
-export type JitVerdict = {
+type JitVerdict = {
   verdict: 'on' | 'off' | 'likely off' | 'unclear';
   basis: string;
 };
@@ -359,7 +359,7 @@ export function formatWebViewProvider(
 }
 
 /** Both probe numbers and their ratio, for calibration against the flag. */
-export function formatJitProbeLine(
+function formatJitProbeLine(
   webView: Pick<WebViewProbe, 'jsLoopMs' | 'builtinRefMs'>,
   ratio: number | null
 ): string {
@@ -370,7 +370,7 @@ export function formatJitProbeLine(
   )}, ratio ${ratio.toFixed(2)} (same thread; node: ~1 with JIT, ~3 without; not calibrated on phones yet)`;
 }
 
-export function jsLoopProbeMs(iterations = 3_000_000): number {
+function jsLoopProbeMs(iterations = 3_000_000): number {
   const t0 = performance.now();
   let x = 0;
   for (let i = 0; i < iterations; i++) x = (x * 31 + i) | 0;
@@ -383,7 +383,7 @@ export function jsLoopProbeMs(iterations = 3_000_000): number {
  * Builtin-only reference for `jsLoopProbeMs`: typed-array fill / reverse /
  * sort and TextEncoder, all precompiled code that JIT barely changes.
  */
-export function builtinReferenceProbeMs(): number {
+function builtinReferenceProbeMs(): number {
   const t0 = performance.now();
   const values = new Float64Array(400_000);
   let seed = 12345;
@@ -640,8 +640,9 @@ function safeLines(section: string, build: () => string[]): string[] {
 // ── engine log selection ─────────────────────────────────────────────────────
 
 // The fault predicate and line key live with the worker logger, which keeps
-// fault lines only in its boot buffer; re-exported for the report's callers.
-export { engineLogLineKey, isEngineFaultLine };
+// fault lines only in its boot buffer; the predicate is re-exported for the
+// report's callers.
+export { isEngineFaultLine };
 
 function logLineTime(line: string): string {
   return /^\d{4}-\d\d-\d\dT(\d\d:\d\d:\d\d(?:\.\d+)?)/.exec(line)?.[1] ?? '';
@@ -701,12 +702,12 @@ export function collapseEngineLogLines(lines: string[], window = 1): string[] {
   });
 }
 
-export const ENGINE_LOG_TAIL_LINES = 60;
+const ENGINE_LOG_TAIL_LINES = 60;
 const ENGINE_LOG_MAX_FAULT_ENTRIES = 40;
 const ENGINE_LOG_MAX_BOOT_ENTRIES = 40;
 const ENGINE_LOG_MAX_KEY_COUNTS = 25;
 
-export type EngineLogExtras = {
+type EngineLogExtras = {
   /** Fault lines the worker's full boot buffer did not keep. */
   bootOverflow?: number;
   /** Per-event fault lines past the first few per kind and group (counted only). */
@@ -805,7 +806,7 @@ export function selectEngineLogLines(
 
 // ── membership, node and bridge lines ────────────────────────────────────────
 
-export function formatNodeApiKeyLine(configured: boolean | null): string {
+function formatNodeApiKeyLine(configured: boolean | null): string {
   return `Node API key: ${
     configured === true ? 'set' : configured === false ? 'not set' : 'unknown'
   }`;
@@ -1146,7 +1147,7 @@ function fmtFrozen(ms: number): string {
   return `${Math.floor(min / 60)} h ${String(min % 60).padStart(2, '0')} min`;
 }
 
-export const BACKGROUND_SYNC_FREEZE_LINES = 5;
+const BACKGROUND_SYNC_FREEZE_LINES = 5;
 
 /**
  * The "Background sync" section: mode, exemption, how often the phone's own
@@ -2931,7 +2932,7 @@ function summariseCallMap(map: Record<string, unknown>): string {
     .join('/');
 }
 
-export type FormatCallRecordOptions = {
+type FormatCallRecordOptions = {
   /** Dotted keys left out (with everything under them). */
   skip?: readonly string[];
   /**

@@ -191,7 +191,7 @@ const StatRow = ({
   );
 };
 
-export const ReticulumTopBadge = () => {
+const ReticulumTopBadge = () => {
   const theme = useTheme();
   const { t } = useTranslation(['reticulum']);
   const reticulumState = useReticulumStatus();

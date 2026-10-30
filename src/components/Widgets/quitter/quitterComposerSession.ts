@@ -41,7 +41,7 @@ export type SessionVideoDraft = {
   compressLevel: CompressLevel;
 };
 
-export type QuitterComposerSession = {
+type QuitterComposerSession = {
   text: string;
   images: SessionImageDraft[];
   video: SessionVideoDraft | null;

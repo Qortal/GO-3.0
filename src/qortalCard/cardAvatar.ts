@@ -33,7 +33,7 @@ const defaultAvatarNode: AvatarNode = {
   broadcast: broadcastSignedTx,
 };
 
-export interface CardAvatarRequest {
+interface CardAvatarRequest {
   mainPrivateKey: Uint8Array;
   /** The card's wallet card-key index. */
   index: number;

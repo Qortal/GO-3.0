@@ -14,7 +14,7 @@ const INEFFICIENT_EXT =
 
 export type CompressLevel = 'high' | 'medium' | 'max' | 'none';
 
-export type CompressPlan = {
+type CompressPlan = {
   shouldCompress: boolean;
   /** Always true when source is not already an efficient MP4 container. */
   forceTranscode: boolean;
@@ -35,7 +35,7 @@ export type CompressPlan = {
   durationSec: number;
 };
 
-export type CompressPresetOption = {
+type CompressPresetOption = {
   level: Exclude<CompressLevel, 'none'>;
   label: string;
   detail: string;
@@ -70,7 +70,7 @@ export type VideoPrepareJob = {
   getOutputPath: () => string | null;
 };
 
-export function isEfficientQuitterVideoFormat(
+function isEfficientQuitterVideoFormat(
   mimeType?: string,
   fileName?: string
 ): boolean {
@@ -419,7 +419,7 @@ export type PrepareVideoResult = {
   skipped: boolean;
 };
 
-export type PrepareVideoOptions = {
+type PrepareVideoOptions = {
   file?: File | null;
   size: number;
   name: string;

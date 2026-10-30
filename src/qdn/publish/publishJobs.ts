@@ -21,7 +21,7 @@ import {
 } from './publishProgress';
 
 /** From this size on GO takes a publish over at once (one part or more). */
-export const PUBLISH_WINDOW_MIN_BYTES = QDN_PUBLISH_CHUNK_BYTES;
+const PUBLISH_WINDOW_MIN_BYTES = QDN_PUBLISH_CHUNK_BYTES;
 /** A smaller publish is taken over once it has been going this long. */
 export const PUBLISH_WINDOW_SLOW_MS = 8_000;
 /** How long GO waits to hear whether the app's own window was hidden. */
@@ -42,14 +42,14 @@ const MAX_JOBS = 12;
 
 /** GO → the Q-App frame (via AppViewer): hide or hand back its own window. */
 export const QDN_PUBLISH_APP_WINDOW_EVENT = 'qdnPublishAppWindow';
-export type AppWindowCommand = 'hide' | 'release';
+type AppWindowCommand = 'hide' | 'release';
 export type AppWindowCommandDetail = {
   tabId: string;
   jobId: string;
   command: AppWindowCommand;
 };
 
-export type PublishRowState =
+type PublishRowState =
   | 'waiting'
   | 'preparing'
   | 'uploading'
@@ -87,7 +87,7 @@ export type PublishJobOutcome =
   | 'cancelled';
 
 /** What the frame helper did with the app's own window. */
-export type AppWindowState = 'unknown' | 'hidden' | 'none';
+type AppWindowState = 'unknown' | 'hidden' | 'none';
 
 export type PublishJob = {
   id: string;
@@ -108,7 +108,7 @@ export type PublishJob = {
 /** closed: nothing on screen; minimized: the bubble. */
 export type PublishWindowView = 'closed' | 'expanded' | 'minimized';
 
-export type PublishWindowSnapshot = {
+type PublishWindowSnapshot = {
   jobs: PublishJob[];
   view: PublishWindowView;
 };
@@ -185,7 +185,7 @@ function forgetJob(jobId: string): void {
 }
 
 /** Bytes of a row already on the node. */
-export function rowSentBytes(row: PublishRow): number {
+function rowSentBytes(row: PublishRow): number {
   if (
     row.state === 'processing' ||
     row.state === 'published' ||

@@ -19,7 +19,7 @@ const FLING_SIDE_SPEED = 450;
 const FLING_CARRY_S = 0.12;
 const STORAGE_KEY = 'go-qdn-publish-bubble';
 
-export type BubbleSide = 'left' | 'right';
+type BubbleSide = 'left' | 'right';
 /** `ratio`: 0 at the top of the free strip, 1 at its bottom. */
 export type BubblePlacement = { side: BubbleSide; ratio: number };
 export type BubbleBounds = {
@@ -28,7 +28,7 @@ export type BubbleBounds = {
   minY: number;
   maxY: number;
 };
-export type ScreenInsets = {
+type ScreenInsets = {
   top: number;
   bottom: number;
   left: number;

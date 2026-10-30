@@ -34,34 +34,34 @@ import {
 
 export const TORQ_MAX_IMAGES = 10;
 /** Quitter's grid shows two rows of two and clips the rest. */
-export const QUITTER_VISIBLE_IMAGES = 4;
+const QUITTER_VISIBLE_IMAGES = 4;
 export const TORQ_MAX_GIFS = 4;
 export const TORQ_MIN_POLL_OPTIONS = 2;
 export const TORQ_MAX_POLL_OPTIONS = 6;
 export const TORQ_MAX_POLL_OPTION_LENGTH = 80;
 /** Torq rejects attachments of 2 GB and up. */
-export const TORQ_MAX_FILE_BYTES = 2 * 1024 ** 3 - 1;
+const TORQ_MAX_FILE_BYTES = 2 * 1024 ** 3 - 1;
 
 const QSHARE_FILE_PREFIX = 'qshare_file_';
 const QDN_DESCRIPTION_MAX_BYTES = 240;
 const HASHTAG_MAX_CHARS = 70;
 const qshareUid = new ShortUniqueId({ length: 6 });
 
-export type TorqPollOption = { id: string; text: string };
+type TorqPollOption = { id: string; text: string };
 
-export type TorqPoll = {
+type TorqPoll = {
   options: TorqPollOption[];
   anonymous?: true;
   voteKey?: string;
 };
 
-export type TorqAttachmentThumbnail = {
+type TorqAttachmentThumbnail = {
   name: string;
   service: 'IMAGE';
   identifier: string;
 };
 
-export type TorqPostAttachment = {
+type TorqPostAttachment = {
   name: string;
   service: string;
   identifier: string;
@@ -76,7 +76,7 @@ export type TorqPostAttachment = {
 };
 
 /** A file for the post, with the title, name and cover set in the composer. */
-export type TorqFileInput = {
+type TorqFileInput = {
   file: File;
   title?: string;
   filename?: string;
@@ -84,7 +84,7 @@ export type TorqFileInput = {
   thumbnail?: File | null;
 };
 
-export type TorqPublishInput = {
+type TorqPublishInput = {
   /** Plain body; paragraphs separated by blank lines. */
   text: string;
   /** Sanitized HTML, only when the post has formatting. */
@@ -126,10 +126,10 @@ export function needsTorqPostLink({
 export const buildTorqPostLink = (name: string, identifier: string) =>
   `qortal://APP/Torq/post/${encodeURIComponent(name)}/${encodeURIComponent(identifier)}`;
 
-export const createTorqPollOptionId = (index: number) => `opt_${index + 1}`;
+const createTorqPollOptionId = (index: number) => `opt_${index + 1}`;
 
 /** Torq anon polls: votes are sealed with this 32-byte key (base64). */
-export function createTorqAnonVoteKey(): string {
+function createTorqAnonVoteKey(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(32));
   let binary = '';
   bytes.forEach((byte) => {
@@ -184,14 +184,14 @@ export function packTorqHashtagKeywords(
   return chosen.map(wrap).join(',');
 }
 
-export function appendLinkIfMissing(text: string, url: string): string {
+function appendLinkIfMissing(text: string, url: string): string {
   const link = url.trim();
   if (!link || text.includes(link)) return text;
   const trimmed = text.replace(/\s+$/, '');
   return trimmed ? `${trimmed}\n\n${link}` : link;
 }
 
-export function buildTorqGifEmbed(gif: LibraryGif, timestamp: number): string {
+function buildTorqGifEmbed(gif: LibraryGif, timestamp: number): string {
   const params = new URLSearchParams({
     name: gif.name,
     identifier: gif.identifier,
@@ -255,7 +255,7 @@ export function buildQshareDescription(options: {
   return { body, resource: body.slice(0, QDN_DESCRIPTION_MAX_BYTES) };
 }
 
-export function sanitizeFileSlug(value: string): string {
+function sanitizeFileSlug(value: string): string {
   const slug = String(value || '')
     .replace(/[^a-zA-Z0-9\s-]/g, '')
     .replace(/\s+/g, '-')
@@ -265,7 +265,7 @@ export function sanitizeFileSlug(value: string): string {
   return slug.slice(0, 30) || 'file';
 }
 
-export function sanitizePublishFilename(filename: string): string {
+function sanitizePublishFilename(filename: string): string {
   return (
     String(filename || 'file').replace(/[\r\n/<>:"'\\*|?]+/g, '') || 'file'
   );
@@ -310,8 +310,8 @@ export function guessFileMime(file: File, filename: string): string {
   return known[ext] || type || 'application/octet-stream';
 }
 
-export const TORQ_THUMBNAIL_MAX_PX = 400;
-export const TORQ_THUMBNAIL_MAX_BYTES = 450_000;
+const TORQ_THUMBNAIL_MAX_PX = 400;
+const TORQ_THUMBNAIL_MAX_BYTES = 450_000;
 
 const IMAGE_EXT_MIME: Record<string, string> = {
   avif: 'image/avif',

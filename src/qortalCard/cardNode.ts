@@ -76,7 +76,7 @@ const FEE_TX_TYPES = {
   publish: 'ARBITRARY',
 } as const;
 
-export type FeeKind = CardTxKind | 'register-name' | 'publish';
+type FeeKind = CardTxKind | 'register-name' | 'publish';
 
 /** The node's fee for one transaction of this kind, in 1e-8 QORT. */
 export async function fetchUnitFee(kind: FeeKind): Promise<bigint> {
@@ -218,8 +218,8 @@ export async function isNameFree(name: string): Promise<boolean> {
   throw new Error(`Node answered ${response.status}`);
 }
 
-export const CARD_AVATAR_SERVICE = 'THUMBNAIL';
-export const CARD_AVATAR_IDENTIFIER = 'qortal_avatar';
+const CARD_AVATAR_SERVICE = 'THUMBNAIL';
+const CARD_AVATAR_IDENTIFIER = 'qortal_avatar';
 
 /**
  * Hands a picture (Base64) to the node as `name`'s avatar. The node stores

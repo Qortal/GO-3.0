@@ -24,9 +24,9 @@ import {
   isPublicGatewayNodeUrl,
 } from '../constants/constants';
 
-export type PublicNodeHealth = 'unknown' | 'up' | 'down';
+type PublicNodeHealth = 'unknown' | 'up' | 'down';
 
-export interface PublicNodeApp {
+interface PublicNodeApp {
   service: string;
   name: string;
   /** 'open': held, opens when the node is back; 'reload': opened, reloads. */
@@ -41,7 +41,7 @@ export interface PublicNodeWindow {
   app: PublicNodeApp | null;
 }
 
-export interface PublicNodeSnapshot {
+interface PublicNodeSnapshot {
   health: PublicNodeHealth;
   window: PublicNodeWindow | null;
   checking: boolean;
@@ -49,9 +49,9 @@ export interface PublicNodeSnapshot {
   nextCheckAt: number | null;
 }
 
-export type PublicNodeCheck = 'up' | 'down' | 'offline';
+type PublicNodeCheck = 'up' | 'down' | 'offline';
 
-export interface PublicNodeWatchConfig {
+interface PublicNodeWatchConfig {
   /** The node GO uses now; null before GO knows. */
   nodeUrl: () => string | null | undefined;
   /** False when the phone has no network: that says nothing about the node. */
@@ -60,24 +60,24 @@ export interface PublicNodeWatchConfig {
 }
 
 /** A node answer this recent lets a Q-App open without asking first. */
-export const ANSWER_FRESH_MS = 45_000;
-export const PROBE_TIMEOUT_MS = 8_000;
+const ANSWER_FRESH_MS = 45_000;
+const PROBE_TIMEOUT_MS = 8_000;
 /** A quick failure is asked once more after this. */
 export const CONFIRM_RETRY_MS = 800;
 /** Failed loads ask the node at most this often. */
-export const TROUBLE_PROBE_GAP_MS = 15_000;
+const TROUBLE_PROBE_GAP_MS = 15_000;
 /** While the node is down: the waits between checks (the last one repeats). */
 export const WATCH_INTERVALS_MS = [
   4_000, 6_000, 10_000, 15_000, 20_000, 30_000,
 ];
 /** A held app opens if the node is back within this; later it would surprise. */
 export const OPEN_WAIT_MAX_MS = 2 * 60_000;
-export const RELOAD_WAIT_MAX_MS = 10 * 60_000;
+const RELOAD_WAIT_MAX_MS = 10 * 60_000;
 /** How long "Public node is back" stays before the window goes. */
 export const BACK_SHOWN_MS = 1_600;
 /** The window for GO's own loading comes back at most this often. */
-export const QDN_REPEAT_GAP_MS = 10 * 60_000;
-export const QDN_NOTICE_HIDDEN_KEY = 'go_public_node_down_qdn_hidden';
+const QDN_REPEAT_GAP_MS = 10 * 60_000;
+const QDN_NOTICE_HIDDEN_KEY = 'go_public_node_down_qdn_hidden';
 
 const PUBLIC_ORIGIN = new URL(HTTPS_EXT_NODE_QORTAL_LINK).origin;
 
@@ -364,7 +364,7 @@ export function reportPublicNodeTrouble(): void {
   });
 }
 
-export interface PublicNodeOpenTarget {
+interface PublicNodeOpenTarget {
   service: string;
   name: string;
 }

@@ -33,7 +33,7 @@ export interface ReticulumState {
   chatEngineBootMs: number | null;
 }
 
-export type ChatEngineReadiness = {
+type ChatEngineReadiness = {
   state: string;
   revision: number;
   error?: string;

@@ -13,12 +13,12 @@ import type { PreparedChatShare } from './chatShareIntake';
 
 const sentence = { postProcess: 'capitalizeFirstChar' };
 
-export type ChatShareKind = 'photo' | 'video' | 'file' | 'link' | 'text';
+type ChatShareKind = 'photo' | 'video' | 'file' | 'link' | 'text';
 
 const LINK = /^(https?:\/\/|www\.)\S+$/i;
 
 /** What the share is, for its icon and label. */
-export function chatShareKind(share: PreparedChatShare): ChatShareKind {
+function chatShareKind(share: PreparedChatShare): ChatShareKind {
   const item = share.items[0];
   if (!item) return LINK.test(share.text.trim()) ? 'link' : 'text';
   const mime = item.mimeType ?? '';

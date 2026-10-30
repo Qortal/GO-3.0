@@ -33,7 +33,7 @@ export const RETICULUM_PHONE_CHAT_HEADER = {
 } as const;
 
 /** Buttons right of the opener on phones: call, search and "more". */
-export const RETICULUM_PHONE_CHAT_HEADER_TRAILING_ACTIONS = 3;
+const RETICULUM_PHONE_CHAT_HEADER_TRAILING_ACTIONS = 3;
 
 /**
  * Widths inside the opener on a phone `viewportWidth` wide, for checking that

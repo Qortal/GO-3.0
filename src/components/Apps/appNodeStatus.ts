@@ -13,7 +13,7 @@ import { createEndpoint } from '../../background/background';
  * library asks it about the apps on screen, a few at a time.
  */
 
-export type AppAvailability =
+type AppAvailability =
   /** On the node: opens straight away (at most a short build). */
   | 'ready'
   /** The node is fetching it now. */

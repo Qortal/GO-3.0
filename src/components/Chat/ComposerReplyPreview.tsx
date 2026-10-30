@@ -219,5 +219,3 @@ export const ComposerReplyPreview = ({
     </Box>
   );
 };
-
-export default ComposerReplyPreview;

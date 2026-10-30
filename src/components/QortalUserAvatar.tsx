@@ -9,8 +9,6 @@ import {
   type QdnAvatarSnapshot,
 } from '../lib/qdnAvatars';
 import {
-  buildQortalAvatarUrl,
-  resolveWalletAvatarSrc,
   walletAvatarCacheMatchesName,
   type WalletAvatarCacheEntry,
 } from '../utils/walletAvatarCache';
@@ -205,5 +203,3 @@ export const QortalUserAvatar = forwardRef<
 export function resetSharedWalletAvatarsForTests(): void {
   sharedWalletAvatars.clear();
 }
-
-export { buildQortalAvatarUrl, resolveWalletAvatarSrc };

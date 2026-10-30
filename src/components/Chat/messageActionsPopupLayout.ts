@@ -15,15 +15,15 @@ export const PILL_CELL_PX = 44;
 export const PILL_EXPAND_SLOT_PX = 44;
 export const PILL_PADDING_X_PX = 4;
 export const PILL_HEIGHT_PX = 52;
-export const MIN_QUICK_REACTIONS = 3;
+const MIN_QUICK_REACTIONS = 3;
 
 export const MENU_CARD_WIDTH_PX = 236;
 
 /** The emoji grid the pill grows into. */
 export const EXPANDED_MAX_HEIGHT_PX = 400;
 export const EXPANDED_GRID_PADDING_X_PX = 6;
-export const EXPANDED_MIN_CELL_PX = 40;
-export const EXPANDED_MAX_COLUMNS = 9;
+const EXPANDED_MIN_CELL_PX = 40;
+const EXPANDED_MAX_COLUMNS = 9;
 
 /**
  * How far the pill and the menu reach past the finger toward the message's
@@ -68,7 +68,7 @@ export const getExpandedGridColumns = (widthPx: number): number =>
     )
   );
 
-export type MessageActionsPopupLayoutInput = {
+type MessageActionsPopupLayoutInput = {
   anchorX: number;
   anchorY: number;
   viewportWidth: number;
@@ -85,7 +85,7 @@ export type MessageActionsPopupLayoutInput = {
   alignEnd?: boolean;
 };
 
-export type MessageActionsPopupLayout = {
+type MessageActionsPopupLayout = {
   pill: { left: number; top: number; width: number; height: number };
   body: { left: number; top: number; maxHeight: number };
   expanded: { left: number; top: number; width: number; height: number };

@@ -35,7 +35,7 @@ export type ChatShareContent = {
   channelId?: string;
 };
 
-export const CHAT_SHARE_DELIVER_EVENT = 'chat-share-deliver';
+const CHAT_SHARE_DELIVER_EVENT = 'chat-share-deliver';
 /** A chat that could not take its share hands it back to the lists. */
 export const CHAT_SHARE_RETURN_EVENT = 'chat-share-return';
 
@@ -78,7 +78,7 @@ export function resetChatShareInbox() {
   pending = null;
 }
 
-export type ChatShareInboxOptions = {
+type ChatShareInboxOptions = {
   /**
    * Whether the composer can take a share now (a DM's Reticulum check is
    * done, a group's channels are known). A share waits for it, but at most

@@ -5,7 +5,7 @@
  * says which shape of row breaks. Output is space-separated key:value pairs
  * (colons, never '=', so the report's pseudonymiser leaves it alone).
  */
-export type ChatRowShapeInput = {
+type ChatRowShapeInput = {
   message: unknown;
   reactions: unknown;
   reply: unknown;

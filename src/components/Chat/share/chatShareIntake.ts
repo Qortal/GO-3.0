@@ -26,7 +26,7 @@ export type PreparedChatShare = ChatShareContent & {
   items: SharedMediaItem[];
 };
 
-export type ChatShareRequest =
+type ChatShareRequest =
   | { kind: 'share'; share: PreparedChatShare }
   /** Nothing usable came (all files too large or unreadable): say why. */
   | { kind: 'nothing'; notices: ChatShareNotice[] };

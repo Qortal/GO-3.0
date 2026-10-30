@@ -43,12 +43,12 @@ import {
 } from '../Mobile/call/callHints';
 
 /** Partner picture in the phone DM header, the size of the group's. */
-export const DIRECT_HEADER_AVATAR_PX = 36;
+const DIRECT_HEADER_AVATAR_PX = 36;
 /** Glyph size of the desktop header icons, kept as it was. */
 const DESKTOP_ICON_PX = 20;
 const selectChatTwoPane = (l: GoLayout) => l.chatTwoPane;
 
-export type DirectChatHeaderPartner = {
+type DirectChatHeaderPartner = {
   name?: string | null;
   address?: string | null;
   /** The user's own "saved messages" chat. */

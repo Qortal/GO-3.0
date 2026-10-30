@@ -14,7 +14,7 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex, randomBytes, utf8ToBytes } from '@noble/hashes/utils.js';
 import { API_ENDPOINTS, EXT_NODE_QORTAL_LINK } from '../../constants/constants';
 
-export type DiagnosticPseudonymizer = {
+type DiagnosticPseudonymizer = {
   /**
    * A node host (`host`, `host:port` or `[v6]:port`) as the report shows it:
    * loopback and public Qortal nodes as they are, any other host as

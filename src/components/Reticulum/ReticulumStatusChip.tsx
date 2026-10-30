@@ -16,7 +16,7 @@ import { useOnlineAddresses } from '../../hooks/usePresence';
  * still mounts there so the shared transport lifecycle starts, but renders
  * nothing. On web (no native plugin) it stays hidden.
  */
-export const ReticulumStatusChip = () => {
+const ReticulumStatusChip = () => {
   const { phase, status, error } = useReticulumStatus();
   const onlineCount = useOnlineAddresses().size;
   const deviceOnline = useDeviceOnline();

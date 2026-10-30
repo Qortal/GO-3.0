@@ -18,7 +18,7 @@ const FETCH_TIMEOUT_MS = 6_000;
 const cache = new Map<string, { expiresAt: number; names: string[] }>();
 
 /** Torq's normalizeHiddenUser: trimmed, no leading @, single spaces. */
-export const normalizeHiddenUser = (value: string): string =>
+const normalizeHiddenUser = (value: string): string =>
   String(value || '')
     .trim()
     .replace(/^@+/, '')

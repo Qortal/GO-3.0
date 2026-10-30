@@ -19,10 +19,10 @@ import { Base58 } from './cryptoDeps';
  */
 
 /** F0 + "QORTALP": an unregistered proprietary AID, GO's own. */
-export const TAP_REQUEST_AID = hexToBytes('f0514f5254414c50');
-export const MAX_TAP_REQUEST_BYTES = 240;
+const TAP_REQUEST_AID = hexToBytes('f0514f5254414c50');
+const MAX_TAP_REQUEST_BYTES = 240;
 
-export interface TapRequest {
+interface TapRequest {
   address: string;
   /** In 1e-8 QORT, or null to let the payer type it. */
   amount: bigint | null;

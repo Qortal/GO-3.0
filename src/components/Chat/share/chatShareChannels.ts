@@ -17,7 +17,7 @@ export type ShareChannelLike = {
   readMode?: string;
 };
 
-export type ShareCategoryLike = {
+type ShareCategoryLike = {
   categoryId: string;
   name?: string;
 };
@@ -35,7 +35,7 @@ export type ShareChannelRow<T> = {
   canWrite: boolean;
 };
 
-export type ShareChannelSection<T> = {
+type ShareChannelSection<T> = {
   /** '' for the group's default category. */
   categoryId: string;
   /** The category header; null when the default category hides it. */
@@ -137,7 +137,7 @@ export function shareChannelSections<T extends ShareChannelLike>(
   return sections;
 }
 
-export type ShareChannelStep =
+type ShareChannelStep =
   /** Ask: several channels can take the share (or none can, which says so). */
   | { kind: 'pick' }
   /**

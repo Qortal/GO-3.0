@@ -132,8 +132,7 @@ export async function resolveLocalReticulumThumbnailUrl(
   }
 }
 
-export const forgetReticulumThumbnailUrl = (hash: string) =>
-  urlCache.delete(hash);
+const forgetReticulumThumbnailUrl = (hash: string) => urlCache.delete(hash);
 
 export const __resetReplyThumbnailCacheForTests = () => {
   urlCache.clear();
@@ -148,7 +147,7 @@ const noSnapshot = () => null;
  * src as failed; a Reticulum URL gets one fresh lookup first (an expired
  * desktop token).
  */
-export function useReplyThumbnailSrc(media: ReplyMedia | null): {
+function useReplyThumbnailSrc(media: ReplyMedia | null): {
   src: string | null;
   onError: () => void;
 } {
@@ -363,5 +362,3 @@ export function ReplyImageThumbnail({
     </Box>
   );
 }
-
-export default ReplyImageThumbnail;

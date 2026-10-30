@@ -15,7 +15,7 @@ import { cardErrorText } from './cardErrorText';
 import { noteSx, shortAddress, surfaceSx } from './cardStyles';
 
 /** How long a request stays out. */
-export const PHONE_REQUEST_TTL_MS = 120_000;
+const PHONE_REQUEST_TTL_MS = 120_000;
 const POLL_MS = 3_000;
 
 const pulse = keyframes`

@@ -50,7 +50,7 @@ const IMAGE_FIT_STEPS = [
 const videoUid = new ShortUniqueId({ length: 8 });
 const videoCodeUid = new ShortUniqueId({ length: 5 });
 
-export type QuitterVideoMetadata = {
+type QuitterVideoMetadata = {
   title: string;
   description?: string;
   duration?: number;
@@ -61,7 +61,7 @@ export type QuitterVideoMetadata = {
   extracts?: string[];
 };
 
-export type QuitterPublishImage = {
+type QuitterPublishImage = {
   file: File;
 };
 
@@ -74,7 +74,7 @@ export type QuitterPublishVideo = {
   streamedUpload?: StreamedChunkUpload | null;
 };
 
-export type QuitterPublishInput = {
+type QuitterPublishInput = {
   /**
    * Plain post body. Quitter renders with white-space: pre-wrap — do NOT send HTML.
    */
@@ -111,11 +111,11 @@ const throwIfPublishAborted = (signal?: AbortSignal) => {
   }
 };
 
-export type QuitterPublishResult = {
+type QuitterPublishResult = {
   postIdentifier: string;
 };
 
-export const stripHtmlTags = (html: string): string => {
+const stripHtmlTags = (html: string): string => {
   if (!html) return '';
   // Prefer regex so we can keep paragraph breaks (textContent collapses them).
   return html
@@ -135,7 +135,7 @@ export const stripHtmlTags = (html: string): string => {
 const normalizeKeywords = (keywords: string[]) =>
   keywords.map((tag) => `~${tag}~`).join(',');
 
-export const fileToRawBase64 = (file: Blob): Promise<string> =>
+const fileToRawBase64 = (file: Blob): Promise<string> =>
   new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => {
@@ -894,7 +894,7 @@ async function seekVideo(video: HTMLVideoElement, time: number): Promise<void> {
   });
 }
 
-export type ExtractVideoHoverFramesOptions = {
+type ExtractVideoHoverFramesOptions = {
   /**
    * Called as each frame is ready (first frame is near t≈0 so the editor can
    * show a cover immediately while the remaining hover frames finish).

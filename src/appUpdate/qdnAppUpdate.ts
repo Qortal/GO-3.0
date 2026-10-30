@@ -240,7 +240,7 @@ async function readShareRelease(
   };
 }
 
-export type LatestBuildLookup = {
+type LatestBuildLookup = {
   /** False when the node could not list the name's shares at all. */
   reachable: boolean;
   release: AppRelease | null;
@@ -266,7 +266,7 @@ export const compareReleasesNewestFirst = (
 ): number =>
   compareVersions(b.version, a.version) || b.publishedAt - a.publishedAt;
 
-export type PublishedBuildList = {
+type PublishedBuildList = {
   reachable: boolean;
   /** One per version, newest first. */
   releases: AppRelease[];
@@ -341,7 +341,7 @@ export async function requestResourceBuild(
   );
 }
 
-export type ResourceProgress = {
+type ResourceProgress = {
   percentLoaded: number;
   status: string;
 };

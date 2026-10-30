@@ -16,7 +16,7 @@ export type TorqDocNode = {
   content?: TorqDocNode[];
 };
 
-export type TorqPostBody = {
+type TorqPostBody = {
   text: string;
   /** Present only when the post has formatting. */
   richText?: string;

@@ -4,7 +4,7 @@ import type { ChatShareNotice } from './chatShareInbox';
 
 const sentence = { postProcess: 'capitalizeFirstChar' };
 
-export function chatShareNoticeText(notice: ChatShareNotice): string {
+function chatShareNoticeText(notice: ChatShareNotice): string {
   switch (notice.kind) {
     case 'extra_files':
       return i18n.t('reticulum:share.notice_extra_files', sentence);

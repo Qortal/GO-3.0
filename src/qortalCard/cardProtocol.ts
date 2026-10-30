@@ -18,7 +18,7 @@ export interface ApduTransport {
   transceive(apdu: Uint8Array): Promise<Uint8Array>;
 }
 
-export type CardErrorCode =
+type CardErrorCode =
   | 'NO_APPLET'
   | 'NO_KEY'
   | 'HAS_KEY'
@@ -123,7 +123,7 @@ export function buildApdu(
   );
 }
 
-export interface CardAnswer {
+interface CardAnswer {
   data: Uint8Array;
   sw: number;
 }
@@ -183,7 +183,7 @@ export async function selectApplet(
   throw new CardError('NO_APPLET');
 }
 
-export interface AppletKey {
+interface AppletKey {
   applet: CardApplet;
   /** RFC 8032 public key, or null while that applet has no key. */
   publicKey: Uint8Array | null;

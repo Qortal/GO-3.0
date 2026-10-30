@@ -9,9 +9,9 @@
 import { mediaKindOf } from './chatMediaGallery';
 import { isLibraryGifImage } from './gifs/libraryGifs';
 
-export type ReplyMediaKind = 'image' | 'gif' | 'video' | 'file';
+type ReplyMediaKind = 'image' | 'gif' | 'video' | 'file';
 
-export type ReplyMediaSource =
+type ReplyMediaSource =
   | { via: 'data'; src: string }
   | { via: 'reticulum'; fileHash: string }
   | { via: 'library-gif'; gif: { name: string; identifier: string } }

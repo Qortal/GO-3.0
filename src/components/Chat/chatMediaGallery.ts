@@ -14,9 +14,9 @@ import { parseQortalLink } from '../Embeds/embed-utils';
 import { requestLibraryGifUrl } from './gifs/gifMediaCache';
 import { isLibraryGifImage } from './gifs/libraryGifs';
 
-export type ChatMediaKind = 'image' | 'video';
+type ChatMediaKind = 'image' | 'video';
 
-export type QdnPicture = {
+type QdnPicture = {
   service: string;
   name: string;
   identifier: string;

@@ -20,7 +20,7 @@ import { QUITTER_MAX_IMAGES } from './quitterPublish';
 import { TORQ_MAX_IMAGES } from './torqPublish';
 import { drainRevShare } from './torqRevShare';
 
-export type SharedComposerVideo = {
+type SharedComposerVideo = {
   /** Native cache path — the compress/publish pipeline reads it directly. */
   nativePath: string;
   mimeType: string;
@@ -29,7 +29,7 @@ export type SharedComposerVideo = {
 };
 
 /** The mime comes from the native side — `File.type` is unreliable here. */
-export type SharedComposerImage = {
+type SharedComposerImage = {
   file: File;
   mimeType: string;
 };

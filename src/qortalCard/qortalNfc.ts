@@ -34,9 +34,9 @@ interface QortalNfcPlugin {
 
 const QortalNfc = registerPlugin<QortalNfcPlugin>('QortalNfc');
 
-export type NfcState = 'unsupported' | 'off' | 'on';
+type NfcState = 'unsupported' | 'off' | 'on';
 
-export const canUseNfc = (): boolean =>
+const canUseNfc = (): boolean =>
   isGoApp() && Capacitor.getPlatform() === 'android';
 
 export interface NfcCapabilities {

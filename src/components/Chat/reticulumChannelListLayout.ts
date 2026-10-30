@@ -35,10 +35,10 @@ const ROW_HEIGHT_STEP_PX: Record<ReticulumTextScale, number> = {
 };
 
 /** Phone channel rows at the default text scale. */
-export const RETICULUM_CHANNEL_ROW_PHONE_MIN_PX = 44;
+const RETICULUM_CHANNEL_ROW_PHONE_MIN_PX = 44;
 const RETICULUM_CHANNEL_ROW_DESKTOP_MIN_PX = 30;
 
-export type ReticulumChannelRowMetrics = {
+type ReticulumChannelRowMetrics = {
   /** The clock shown on channels whose messages auto-delete. */
   autoDeleteIconSize: number;
   badgeFontSize: number;
@@ -85,7 +85,7 @@ export function reticulumChannelRowMetrics(
   };
 }
 
-export type ReticulumCategoryHeaderMetrics = {
+type ReticulumCategoryHeaderMetrics = {
   chevronSize: number;
   /** The admin "Create channel" button; null keeps desktop's small one. */
   createButtonSize: number | null;

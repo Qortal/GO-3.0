@@ -10,7 +10,7 @@ import { QUICK_REACTIONS } from './reactionEmojiData';
 
 export const DEFAULT_DOUBLE_TAP_REACTION = '👍';
 export const REACTION_PREFS_STORAGE_KEY = 'qortal-hub:reaction-prefs';
-export const REACTION_USAGE_STORAGE_KEY = 'qortal-hub:reaction-usage';
+const REACTION_USAGE_STORAGE_KEY = 'qortal-hub:reaction-usage';
 /** Chats without their own double-tap emoji use this key's. */
 export const OTHER_CHATS_KEY = '*';
 /** As many as the widest pill can show. */
@@ -18,7 +18,7 @@ export const QUICK_REACTION_SLOTS = QUICK_REACTIONS.length;
 const USAGE_LIMIT = 64;
 const CHAT_LIMIT = 500;
 
-export type QuickReactionMode = 'custom' | 'most_used';
+type QuickReactionMode = 'custom' | 'most_used';
 
 export type ReactionPrefs = {
   /** Chat key (`group:<id>`, `direct:<address>`, or OTHER_CHATS_KEY) → emoji. */
@@ -246,7 +246,7 @@ export const pickPillReactions = (
   return [...visible.slice(0, count - 1), doubleTap];
 };
 
-export type ReactionPrefsView = {
+type ReactionPrefsView = {
   prefs: ReactionPrefs;
   quickReactions: string[];
 };

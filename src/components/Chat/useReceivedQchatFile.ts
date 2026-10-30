@@ -16,7 +16,7 @@ import {
  * - `gone`: removed from this device (logout deletes received files).
  * - `unknown`: not checked yet, or the check is not available.
  */
-export type ReceivedQchatFileState = 'unknown' | 'present' | 'legacy' | 'gone';
+type ReceivedQchatFileState = 'unknown' | 'present' | 'legacy' | 'gone';
 
 /** What the private copy and an older build's Downloads copy add up to. */
 export function receivedQchatFileState(

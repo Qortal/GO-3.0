@@ -11,9 +11,9 @@
 /** Space between two slides while they slide past each other. */
 export const SLIDE_GAP_PX = 24;
 /** A swipe past this share of the screen width moves on... */
-export const SWIPE_COMMIT_FRACTION = 0.22;
+const SWIPE_COMMIT_FRACTION = 0.22;
 /** ...and so does a quick flick, however short (px per ms). */
-export const SWIPE_COMMIT_VELOCITY = 0.45;
+const SWIPE_COMMIT_VELOCITY = 0.45;
 /** On a side with nothing more, the slide follows the finger this much. */
 export const EDGE_RESISTANCE = 0.28;
 /** Finger travel before the gesture picks an axis. */

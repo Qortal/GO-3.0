@@ -12,11 +12,11 @@ type ReactionItem = { sender: string; senderName?: string };
 type ReactionsMap = { [emoji: string]: ReactionItem[] };
 
 /** Queue item type for reaction sends (see MessageQueueContext.addToQueue). */
-export const REACTION_QUEUE_TYPE = 'chat-reaction';
+const REACTION_QUEUE_TYPE = 'chat-reaction';
 /** How long a sent reaction is shown before its confirmed copy arrives. */
 export const OPTIMISTIC_REACTION_GRACE_MS = 6_000;
 
-export type QueuedReaction = {
+type QueuedReaction = {
   signature: string;
   emoji: string;
   /** False: taking the reaction back. */

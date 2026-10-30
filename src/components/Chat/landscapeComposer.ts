@@ -28,7 +28,7 @@ export const composerFabModeFor = ({
 export const landscapeListPadFor = (input: LandscapeComposerInput): number =>
   composerFabModeFor(input) ? LANDSCAPE_LIST_PAD_PX : 0;
 
-export type LegacyComposerCompactInput = {
+type LegacyComposerCompactInput = {
   isMobile: boolean;
   /** useShortLandscape(): what TipTap keeps its expanded layout for. */
   shortLandscape: boolean;

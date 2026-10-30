@@ -12,11 +12,7 @@ import {
 import { isCapacitorAndroid, type VideoPrepareJob } from './quitterVideoCompress';
 
 /** Must equal the chunk URL publishData builds for this resource. */
-export const qdnChunkPath = (
-  service: string,
-  name: string,
-  identifier: string
-) =>
+const qdnChunkPath = (service: string, name: string, identifier: string) =>
   `/arbitrary/${service}/${encodeURIComponent(name)}/${encodeURIComponent(identifier)}/chunk`;
 
 function nativeGrowingFileSource(): GrowingFileSource {

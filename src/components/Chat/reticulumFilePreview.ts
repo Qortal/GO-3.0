@@ -13,7 +13,7 @@ export type FilePreviewKind =
   | 'other';
 
 /** Past this, text is cut off in the viewer (the full file still saves/shares). */
-export const TEXT_PREVIEW_MAX_BYTES = 2 * 1024 * 1024;
+const TEXT_PREVIEW_MAX_BYTES = 2 * 1024 * 1024;
 /** Past this, markdown is shown as plain text rather than parsed. */
 export const MARKDOWN_RENDER_MAX_BYTES = 1024 * 1024;
 /** How much of an unknown file is inspected to decide whether it is text. */

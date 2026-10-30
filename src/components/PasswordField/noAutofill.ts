@@ -13,7 +13,7 @@
  * Spread these into an `<input>` (MUI `inputProps` / `slotProps.htmlInput`)
  * after the caller's own props, so they always win.
  */
-export const PASSWORD_MANAGER_IGNORE_ATTRIBUTES = Object.freeze({
+const PASSWORD_MANAGER_IGNORE_ATTRIBUTES = Object.freeze({
   'data-1p-ignore': 'true',
   'data-bwignore': 'true',
   'data-form-type': 'other',

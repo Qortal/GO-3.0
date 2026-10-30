@@ -98,7 +98,7 @@ export function composerMediaGridSx(count: number) {
 }
 
 /** A cell may not be taller than its row (Torq's mediaCellMinHeight). */
-export const composerMediaCellMinHeight = (count: number) =>
+const composerMediaCellMinHeight = (count: number) =>
   count > 4 ? '140px' : '200px';
 
 type PreviewImage = { id: string; previewUrl: string };
@@ -258,7 +258,7 @@ const ARCHIVE_EXT = /\.(zip|apk|rar|7z|gz|tar|tgz)$/i;
 const TEXT_EXT =
   /\.(txt|md|markdown|json|csv|html?|xml|rtf|log|ya?ml|ini|toml)$/i;
 
-export function composerFileKind(draft: SessionFileDraft): FileKind {
+function composerFileKind(draft: SessionFileDraft): FileKind {
   const filename = draft.filename || draft.file.name;
   const mime = guessFileMime(draft.file, filename);
   if (mime.startsWith('audio/')) return 'audio';
@@ -277,7 +277,7 @@ const FileKindIcon = ({ kind }: { kind: FileKind }) => {
 };
 
 /** Torq's default card title: the file name without its extension. */
-export function draftTitle(draft: SessionFileDraft): string {
+function draftTitle(draft: SessionFileDraft): string {
   const custom = draft.title?.trim();
   if (custom) return custom;
   const name = (draft.filename || draft.file.name || '').trim();

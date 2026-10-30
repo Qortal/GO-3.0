@@ -15,7 +15,7 @@ type Watcher = (visible: boolean) => void;
 const watchers = new Map<Element, Watcher>();
 let observer: IntersectionObserver | null = null;
 
-export const canWatchViewport = () =>
+const canWatchViewport = () =>
   typeof window !== 'undefined' &&
   typeof window.IntersectionObserver === 'function';
 

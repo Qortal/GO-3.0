@@ -28,14 +28,14 @@ import {
   reticulumDmDeliveryWaiterCount,
 } from './reticulumDmDeliveryState';
 
-export type ReticulumPostDeliveryScope = 'group' | 'self_dm';
+type ReticulumPostDeliveryScope = 'group' | 'self_dm';
 
 export type ReticulumPostDeliveryState =
   | 'sending'
   | 'not_picked_up'
   | 'delivered';
 
-export type ReticulumPostDelivery = {
+type ReticulumPostDelivery = {
   scope: ReticulumPostDeliveryScope;
   state: ReticulumPostDeliveryState;
   /** Who fetched it, for 'delivered' only. */
@@ -43,7 +43,7 @@ export type ReticulumPostDelivery = {
 };
 
 /** A proof the engine reported after the row was read (ownPostDeliveryStore). */
-export type ReticulumPostDeliveryProof = {
+type ReticulumPostDeliveryProof = {
   ownDeviceAt?: number;
   memberAt?: number;
 };
@@ -106,7 +106,7 @@ export const reticulumPostDeliveryItemFields = (
  * 'self_dm' for Saved Messages, 'group' for a group post, null otherwise.
  * Both need the user as author; a DM to someone else is never a post.
  */
-export const reticulumPostDeliveryScope = (
+const reticulumPostDeliveryScope = (
   value: unknown,
   myAddress: string | undefined
 ): ReticulumPostDeliveryScope | null => {

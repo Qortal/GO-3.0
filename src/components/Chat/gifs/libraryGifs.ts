@@ -1,7 +1,7 @@
 import { getBaseApiReact } from '../../../utils/globalApi';
 
-export const LIBRARY_GIF_PREFIX = 'gif-';
-export const LIBRARY_GIF_SERVICE = 'IMAGE';
+const LIBRARY_GIF_PREFIX = 'gif-';
+const LIBRARY_GIF_SERVICE = 'IMAGE';
 
 const CATALOG_LIMIT = '100';
 const CATALOG_TTL_MS = 5 * 60 * 1000;
@@ -74,7 +74,7 @@ export type LibraryGif = {
   service: string;
 };
 
-export type LibraryGifChatImage = {
+type LibraryGifChatImage = {
   identifier: string;
   libraryGif: true;
   mimeType: 'image/gif';
@@ -152,7 +152,7 @@ const isUsefulWord = (word: string) =>
   !/^\d+$/.test(word) &&
   !JUNK_WORDS.has(word);
 
-export const tagsOf = (gif: { description?: string }): string[] => {
+const tagsOf = (gif: { description?: string }): string[] => {
   const seen = new Set<string>();
   const tags: string[] = [];
   String(gif.description || '')

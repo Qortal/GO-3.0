@@ -18,15 +18,15 @@ import {
   type PendingRevShare,
 } from '../../../plugins/ShareReceiver';
 
-export const TORQ_APP_NAME = 'Torq';
-export const TORQ_REV_COMPOSE_PATH = 'rev/new';
+const TORQ_APP_NAME = 'Torq';
+const TORQ_REV_COMPOSE_PATH = 'rev/new';
 export const OPEN_REV_COMPOSER_ACTION = 'OPEN_REV_COMPOSER';
 export const OPEN_REV_COMPOSER_RECEIVED_ACTION = 'OPEN_REV_COMPOSER_RECEIVED';
 /** Torq takes Rev videos up to 100 MB (REV_MAX_VIDEO_BYTES). */
-export const TORQ_REV_MAX_FILE_BYTES = 100 * 1024 * 1024;
+const TORQ_REV_MAX_FILE_BYTES = 100 * 1024 * 1024;
 /** How often, and for how long, the file is offered to a loading Torq. */
-export const REV_HANDOFF_RETRY_MS = 500;
-export const REV_HANDOFF_TIMEOUT_MS = 30_000;
+const REV_HANDOFF_RETRY_MS = 500;
+const REV_HANDOFF_TIMEOUT_MS = 30_000;
 
 const sentence = { postProcess: 'capitalizeFirstChar' };
 

@@ -22,7 +22,7 @@ export type ReactionLandingSource = {
 };
 
 /** Above the phone message popup (snackbar layer + 50). */
-export const LANDING_Z_INDEX = 1500;
+const LANDING_Z_INDEX = 1500;
 /** An emoji whose chip never shows (the send failed) fades after this. */
 const CLAIM_TTL_MS = 4_000;
 const LAUNCH_POP_MS = 260;
@@ -65,9 +65,7 @@ const isScrollable = (element: HTMLElement) => {
   );
 };
 
-export const findScrollParent = (
-  element: HTMLElement | null
-): HTMLElement | null => {
+const findScrollParent = (element: HTMLElement | null): HTMLElement | null => {
   let node = element?.parentElement ?? null;
   while (node && node !== document.body) {
     if (isScrollable(node)) return node;
@@ -263,7 +261,7 @@ const playImpact = (
 type LaunchEnd = { dx: number; dy: number; scale: number };
 
 /** An emoji in the air, waiting for its chip. */
-export type ReactionFlight = {
+type ReactionFlight = {
   source: ReactionLandingSource;
   layer: HTMLElement | null;
   /** Sits on the source's centre; its transform is the whole motion. */
@@ -443,7 +441,7 @@ const flightKeyframes = (
   return frames;
 };
 
-export type ReactionLandingOptions = {
+type ReactionLandingOptions = {
   chip: HTMLElement;
   /** The chip's emoji; hidden here until the flight lands. */
   emojiNode: HTMLElement;

@@ -82,7 +82,7 @@ export async function readCard(
   };
 }
 
-export interface SetUpOptions {
+interface SetUpOptions {
   /**
    * Overwrite a key already on the card. Off by default: the QORT on the
    * old key would be stranded.
@@ -165,7 +165,7 @@ export async function makeKeyOnCard(
   };
 }
 
-export type ConnectOutcome =
+type ConnectOutcome =
   /** The card already had a key; it is linked as it is. */
   | { kind: 'linked'; info: CardInfo }
   /** A blank card got its key in this same tap. */
@@ -185,7 +185,7 @@ export interface WalletKeyOffer {
  * The offer itself, or a promise of it, asked for only when a blank card
  * needs it: the offer can be got ready while the card is on its way.
  */
-export type WalletKeySource =
+type WalletKeySource =
   | WalletKeyOffer
   | null
   | (() => Promise<WalletKeyOffer | null>);
@@ -223,7 +223,7 @@ export async function connectCard(
   };
 }
 
-export interface ChargeRequest {
+interface ChargeRequest {
   recipient: string;
   /** In 1e-8 units of the coin. */
   amount: bigint;

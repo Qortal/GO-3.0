@@ -12,12 +12,12 @@ import { Base58, nacl } from './cryptoDeps';
  * A PAYMENT is 153 bytes, a TRANSFER_ASSET 161: both fit one short APDU.
  */
 
-export const QORT_UNITS = 100_000_000n;
-export const PAYMENT_TX_TYPE = 2;
-export const TRANSFER_ASSET_TX_TYPE = 12;
-export const PAYMENT_TX_BYTES = 153;
-export const TRANSFER_ASSET_TX_BYTES = 161;
-export const REGISTER_NAME_TX_TYPE = 3;
+const QORT_UNITS = 100_000_000n;
+const PAYMENT_TX_TYPE = 2;
+const TRANSFER_ASSET_TX_TYPE = 12;
+const PAYMENT_TX_BYTES = 153;
+const TRANSFER_ASSET_TX_BYTES = 161;
+const REGISTER_NAME_TX_TYPE = 3;
 
 /** The longest message a card signs: one short APDU. */
 export const MAX_CARD_MESSAGE_BYTES = 255;
@@ -31,7 +31,7 @@ export const DEFAULT_NAME_DATA = 'Registered Name on the Qortal Chain';
 
 export type CardTxKind = 'payment' | 'asset';
 
-export interface CardTxFields {
+interface CardTxFields {
   kind: CardTxKind;
   /** Milliseconds since 1970. */
   timestamp: number;
@@ -141,7 +141,7 @@ export function buildCardTxBytes(fields: CardTxFields): Uint8Array {
   return out;
 }
 
-export interface RegisterNameFields {
+interface RegisterNameFields {
   timestamp: number;
   /** 64 bytes, any value (see CardTxFields.reference). */
   reference: Uint8Array;

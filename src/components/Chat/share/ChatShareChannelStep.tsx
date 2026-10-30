@@ -48,7 +48,7 @@ const SHOW_LOADING_AFTER_MS = 250;
 
 const noop = () => undefined;
 
-export type ChatShareChannelStepGroup = {
+type ChatShareChannelStepGroup = {
   groupId: string | number;
   groupName?: string;
   name?: string;

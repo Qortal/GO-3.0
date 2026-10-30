@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { CardError } from '../../qortalCard/cardProtocol';
 import { waitForCard, type CardLink } from '../../qortalCard/qortalNfc';
 
-export type CardTapPhase = 'waiting' | 'working';
+type CardTapPhase = 'waiting' | 'working';
 
 export interface CardTapState {
   phase: CardTapPhase;
@@ -14,7 +14,7 @@ export interface CardTapState {
   retry: boolean;
 }
 
-export interface CardTapOptions {
+interface CardTapOptions {
   /**
    * How many times to wait for the card again when it moves away mid-read.
    * Safe for payments: nothing is sent before a checked signature is back.

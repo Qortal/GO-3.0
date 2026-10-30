@@ -17,12 +17,12 @@ const publicKeyToAddress = publicKeyToAddressUntyped as unknown as (
  *
  * One-way: a card key says nothing about the main key.
  */
-export const CARD_KEY_LABEL = 'Qortal card key v1';
+const CARD_KEY_LABEL = 'Qortal card key v1';
 
 /** Card key indexes GO tries when it recognises a card. */
 export const MAX_CARD_KEY_INDEX = 20;
 
-export interface CardKeyPair {
+interface CardKeyPair {
   /** NaCl form: seed, then public key (64 bytes). */
   privateKey: Uint8Array;
   publicKey: Uint8Array;

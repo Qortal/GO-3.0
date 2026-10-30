@@ -22,7 +22,7 @@ import { saveToLocalStorage } from './AppsNavBarDesktop';
 
 const PINNED_KEY_SEP = '\0';
 
-export type LibraryPinTarget = 'tabs' | 'dashboard';
+type LibraryPinTarget = 'tabs' | 'dashboard';
 
 /**
  * Pin state for a Q-Apps library entry. Phones have no Hub dashboard, so there

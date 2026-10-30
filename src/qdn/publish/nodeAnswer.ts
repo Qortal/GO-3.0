@@ -12,7 +12,7 @@ import i18n from 'i18next';
 
 const KEY_REFUSAL_TEXT = /Missing 'X-API-KEY' header|API key invalid/i;
 
-export const NODE_API_KEY_REQUIRED = 'NODE_API_KEY_REQUIRED';
+const NODE_API_KEY_REQUIRED = 'NODE_API_KEY_REQUIRED';
 
 /** The node turned the call down because it needs its API key. */
 export function isNodeKeyRefusal(status: number, body = ''): boolean {
@@ -20,7 +20,7 @@ export function isNodeKeyRefusal(status: number, body = ''): boolean {
 }
 
 /** A status that means the node is busy or did not finish, not "no". */
-export function isNodeBusyStatus(status: number): boolean {
+function isNodeBusyStatus(status: number): boolean {
   return status >= 500 || status === 408 || status === 429;
 }
 

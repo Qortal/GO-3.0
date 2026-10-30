@@ -234,5 +234,3 @@ export const WalletAccountEditDialog = ({
     </Dialog>
   );
 };
-
-export default WalletAccountEditDialog;

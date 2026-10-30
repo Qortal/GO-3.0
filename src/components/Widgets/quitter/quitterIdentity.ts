@@ -9,11 +9,11 @@
 
 import ShortUniqueId from 'short-unique-id';
 
-export const QUITTER_APP_NAME = 'quitter';
+const QUITTER_APP_NAME = 'quitter';
 export const QUITTER_PUBLIC_SALT =
   '6hMqDBxky6j1G2wZEHgIiOeApj3x3CP8LQwg0Ok0RVc=';
-export const QUITTER_ENTITY_POST = 'POST';
-export const QUITTER_ENTITY_ROOT = 'ROOT';
+const QUITTER_ENTITY_POST = 'POST';
+const QUITTER_ENTITY_ROOT = 'ROOT';
 export const QTUBE_VIDEO_BASE = 'qtube_vid_';
 
 const uid15 = new ShortUniqueId({ length: 15 });

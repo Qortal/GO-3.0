@@ -16,7 +16,7 @@ import {
 import { isNodeApiKeyRequiredError } from './nodeAnswer';
 import type { PublishProgress } from './publishProgress';
 
-export type QappPublishTracker = {
+type QappPublishTracker = {
   rowStarted: (index: number) => void;
   /** Size of a file GO resolved late (a stashed file). */
   rowBytes: (index: number, bytes: number) => void;
