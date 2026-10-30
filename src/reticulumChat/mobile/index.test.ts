@@ -594,4 +594,109 @@ describe('resource blob URLs', () => {
       URL.createObjectURL = original;
     }
   });
+
+  it('hands the viewer bytes without keeping an object URL', async () => {
+    const worker = await startWorker();
+    const createObjectURL = vi.fn(() => 'blob:test/kept');
+    const original = URL.createObjectURL;
+    URL.createObjectURL = createObjectURL as typeof URL.createObjectURL;
+    try {
+      const resources = (window as any).reticulumResources;
+      const read = resources.readBlob('hash-9');
+      await vi.advanceTimersByTimeAsync(0);
+      const reads = portPosts.filter(
+        (m) => m?.t === 'rpc' && m.method === 'resource:bytes'
+      );
+      expect(reads).toHaveLength(1);
+      worker.send({
+        t: 'rpcres',
+        id: reads[0].id,
+        ok: true,
+        value: {
+          success: true,
+          bytes: new Uint8Array([1, 2, 3]),
+          manifest: { mimeType: 'application/pdf', fileName: 'a.pdf' },
+        },
+      });
+      const result = await read;
+      expect(result.success).toBe(true);
+      expect(result.blob.size).toBe(3);
+      expect(result.blob.type).toBe('application/pdf');
+      expect(result.manifest).toEqual({
+        mimeType: 'application/pdf',
+        fileName: 'a.pdf',
+      });
+      expect(createObjectURL).not.toHaveBeenCalled();
+
+      // Nothing was cached, so chat asking for a URL reads the file again.
+      const later = resources.getUrl('hash-9');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(
+        portPosts.filter((m) => m?.t === 'rpc' && m.method === 'resource:bytes')
+      ).toHaveLength(2);
+      void later.catch(() => {});
+    } finally {
+      URL.createObjectURL = original;
+    }
+  });
+
+  it('reuses the copy chat already holds for the viewer', async () => {
+    const worker = await startWorker();
+    const original = URL.createObjectURL;
+    URL.createObjectURL = vi.fn(
+      () => 'blob:test/shown'
+    ) as typeof URL.createObjectURL;
+    const shown = new Blob([new Uint8Array([4, 5])], { type: 'video/mp4' });
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      blob: async () => shown,
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const resources = (window as any).reticulumResources;
+      const first = resources.getUrl('hash-1');
+      await vi.advanceTimersByTimeAsync(0);
+      const reads = portPosts.filter(
+        (m) => m?.t === 'rpc' && m.method === 'resource:bytes'
+      );
+      expect(reads).toHaveLength(1);
+      worker.send({
+        t: 'rpcres',
+        id: reads[0].id,
+        ok: true,
+        value: {
+          success: true,
+          bytes: new Uint8Array([4, 5]),
+          manifest: { mimeType: 'video/mp4' },
+        },
+      });
+      await first;
+
+      const read = resources.readBlob('hash-1');
+      await vi.advanceTimersByTimeAsync(0);
+      const status = portPosts.filter(
+        (m) => m?.t === 'rpc' && m.method === 'resource:getStatus'
+      );
+      expect(status).toHaveLength(1);
+      worker.send({
+        t: 'rpcres',
+        id: status[0].id,
+        ok: true,
+        value: { manifest: { mimeType: 'video/mp4' } },
+      });
+      const result = await read;
+      expect(result).toEqual({
+        success: true,
+        blob: shown,
+        manifest: { mimeType: 'video/mp4' },
+      });
+      expect(fetchMock).toHaveBeenCalledWith('blob:test/shown');
+      expect(
+        portPosts.filter((m) => m?.t === 'rpc' && m.method === 'resource:bytes')
+      ).toHaveLength(1);
+    } finally {
+      URL.createObjectURL = original;
+    }
+  });
 });

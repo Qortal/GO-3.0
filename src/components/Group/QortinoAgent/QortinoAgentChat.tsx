@@ -1013,6 +1013,15 @@ export function QortinoAgentChat({ install, onClose }: Props) {
     };
   }, [answerMode, loadForMode]);
 
+  // Closing the sheet unmounts the chat (parking keeps it mounted). The next
+  // open reloads the model anyway, so free its memory now.
+  useEffect(
+    () => () => {
+      void QortinoLlm.unload().catch(() => undefined);
+    },
+    []
+  );
+
   useEffect(() => {
     const el = listRef.current;
     if (!el || !stickToBottomRef.current) return;

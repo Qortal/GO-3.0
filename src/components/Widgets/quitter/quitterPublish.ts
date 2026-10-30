@@ -627,72 +627,72 @@ export async function publishQuitterPost(
   });
 
   let videoParts: QtubeVideoResources | null = null;
-  if (video) {
-    videoParts = await buildQtubeVideoResources({
-      video,
-      userName,
-      onProgress,
-      signal,
-    });
-    // VIDEO first — if it fails we must not leave a post pointing at nothing.
-    resources.push(...videoParts.resources);
-    postVideos.push({
-      identifier: videoParts.metadataIdentifier,
-      service: 'DOCUMENT',
-      name: userName,
-      mimeType: videoParts.mimeType,
-    });
-  }
-
-  const post = {
-    text: publishText,
-    timestamp: Date.now(),
-    name: userName,
-    ...(postImages.length > 0 ? { images: postImages } : {}),
-    ...(postVideos.length > 0 ? { videos: postVideos } : {}),
-  };
-
-  const hashtagMatches = publishText.match(/#\w+/g);
-  let keywordString = '';
-  if (hashtagMatches?.length) {
-    const keywords = hashtagMatches
-      .slice(0, 2)
-      .map((tag) => (tag.length > 70 ? tag.substring(0, 70) : tag));
-    keywordString = normalizeKeywords(keywords);
-  }
-  const mentionString = await firstMentionKeyword(publishText);
-
-  const postBase64 = String(await objectToBase64(post));
-  assertPostFitsQuitter(postBase64);
-  const postResource: Record<string, unknown> = {
-    identifier: postIdentifier,
-    service: 'DOCUMENT',
-    base64: postBase64,
-    name: userName,
-  };
-
-  const descriptionParts: string[] = [];
-  if (keywordString) descriptionParts.push(keywordString);
-  if (mentionString) descriptionParts.push(mentionString);
-  if (descriptionParts.length > 0) {
-    postResource.description = descriptionParts.join(',');
-  }
-
-  resources.push(postResource);
-
-  throwIfPublishAborted(signal);
-  onProgress?.(
-    i18n.t(
-      video
-        ? 'group:home_composer.progress.publishing_video'
-        : 'group:home_composer.progress.publishing_post',
-      { postProcess: 'capitalizeFirstChar' }
-    ),
-    video ? 35 : 70
-  );
-  // Video publishes can take longer on private/public nodes.
-  const timeoutMs = video ? 900_000 : 300_000;
   try {
+    if (video) {
+      videoParts = await buildQtubeVideoResources({
+        video,
+        userName,
+        onProgress,
+        signal,
+      });
+      // VIDEO first — if it fails we must not leave a post pointing at nothing.
+      resources.push(...videoParts.resources);
+      postVideos.push({
+        identifier: videoParts.metadataIdentifier,
+        service: 'DOCUMENT',
+        name: userName,
+        mimeType: videoParts.mimeType,
+      });
+    }
+
+    const post = {
+      text: publishText,
+      timestamp: Date.now(),
+      name: userName,
+      ...(postImages.length > 0 ? { images: postImages } : {}),
+      ...(postVideos.length > 0 ? { videos: postVideos } : {}),
+    };
+
+    const hashtagMatches = publishText.match(/#\w+/g);
+    let keywordString = '';
+    if (hashtagMatches?.length) {
+      const keywords = hashtagMatches
+        .slice(0, 2)
+        .map((tag) => (tag.length > 70 ? tag.substring(0, 70) : tag));
+      keywordString = normalizeKeywords(keywords);
+    }
+    const mentionString = await firstMentionKeyword(publishText);
+
+    const postBase64 = String(await objectToBase64(post));
+    assertPostFitsQuitter(postBase64);
+    const postResource: Record<string, unknown> = {
+      identifier: postIdentifier,
+      service: 'DOCUMENT',
+      base64: postBase64,
+      name: userName,
+    };
+
+    const descriptionParts: string[] = [];
+    if (keywordString) descriptionParts.push(keywordString);
+    if (mentionString) descriptionParts.push(mentionString);
+    if (descriptionParts.length > 0) {
+      postResource.description = descriptionParts.join(',');
+    }
+
+    resources.push(postResource);
+
+    throwIfPublishAborted(signal);
+    onProgress?.(
+      i18n.t(
+        video
+          ? 'group:home_composer.progress.publishing_video'
+          : 'group:home_composer.progress.publishing_post',
+        { postProcess: 'capitalizeFirstChar' }
+      ),
+      video ? 35 : 70
+    );
+    // Video publishes can take longer on private/public nodes.
+    const timeoutMs = video ? 900_000 : 300_000;
     const publishResult = await publishMultipleResources(
       resources,
       signal,

@@ -98,6 +98,14 @@ public class ShareReceiverPlugin extends Plugin {
         new Thread(() -> removeChatShortcuts(appContext), "chat-shortcuts-cleanup").start();
     }
 
+    @Override
+    protected void handleOnDestroy() {
+        synchronized (LOCK) {
+            if (instance == this) instance = null;
+        }
+        super.handleOnDestroy();
+    }
+
     /**
      * A test build published recent groups and DMs as dynamic shortcuts (the
      * share sheet's Direct Share row, the launcher's long-press menu). GO

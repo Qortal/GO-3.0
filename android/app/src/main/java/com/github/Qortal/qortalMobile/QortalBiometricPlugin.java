@@ -347,7 +347,6 @@ public class QortalBiometricPlugin extends Plugin {
     // wait would hang the unlock forever with no prompt — so a watchdog takes
     // over and shows a fresh prompt for this call.
     if (earlyPromptPending) {
-      call.setKeepAlive(true);
       android.util.Log.i("QortalBiometric", "verify waiting on early prompt");
       final AtomicBoolean handled = new AtomicBoolean(false);
       earlyResultListener = () -> {
@@ -410,7 +409,6 @@ public class QortalBiometricPlugin extends Plugin {
       return;
     }
 
-    call.setKeepAlive(true);
     final AtomicBoolean settled = new AtomicBoolean(false);
 
     android.util.Log.i("QortalBiometric", "verify received t=" + android.os.SystemClock.uptimeMillis());

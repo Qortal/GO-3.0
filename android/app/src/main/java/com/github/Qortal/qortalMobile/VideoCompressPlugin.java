@@ -124,7 +124,6 @@ public class VideoCompressPlugin extends Plugin {
             return;
         }
 
-        call.setKeepAlive(true);
         cancelRequested.set(false);
 
         long skipIfBelow = call.getLong("skipIfBelowBytes", DEFAULT_SKIP_BELOW);
@@ -412,7 +411,6 @@ public class VideoCompressPlugin extends Plugin {
         }
         String filename = call.getString("filename", "qdn-media-" + System.currentTimeMillis() + ".mp4");
         filename = filename.replaceAll("[\\\\/:?%*\"<>|]+", "_");
-        call.setKeepAlive(true);
         final String safeName = filename;
         final String sourceUrl = url;
         executor.execute(() -> {
@@ -480,7 +478,6 @@ public class VideoCompressPlugin extends Plugin {
             call.reject("A video job is already running");
             return;
         }
-        call.setKeepAlive(true);
         cancelRequested.set(false);
         activeCall = call;
         lastNotifiedProgress.set(-1);

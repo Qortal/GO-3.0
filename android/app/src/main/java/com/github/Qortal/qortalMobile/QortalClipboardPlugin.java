@@ -59,6 +59,12 @@ public class QortalClipboardPlugin extends Plugin {
     instance = this;
   }
 
+  @Override
+  protected void handleOnDestroy() {
+    if (instance == this) instance = null;
+    super.handleOnDestroy();
+  }
+
   private ClipboardManager clipboard() {
     return (ClipboardManager) getContext().getSystemService(
       Context.CLIPBOARD_SERVICE

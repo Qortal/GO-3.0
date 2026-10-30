@@ -136,7 +136,27 @@ export const ReticulumFileViewer = () => {
     async (next: FileViewerRequest, generation: number) => {
       let url = next.url || '';
       let manifest: { fileName?: string; mimeType?: string } | undefined;
-      if (next.fileHash) {
+      let blob: Blob | null = null;
+      // Mobile hands the bytes over directly, so no object URL stays behind
+      // for a file only this viewer reads. Desktop has no readBlob.
+      const resources = window.reticulumResources as
+        | {
+            readBlob?: (fileHash: string) => Promise<{
+              success: boolean;
+              blob?: Blob;
+              manifest?: unknown;
+              error?: string;
+            }>;
+          }
+        | undefined;
+      if (next.fileHash && typeof resources?.readBlob === 'function') {
+        const read = await resources.readBlob(next.fileHash);
+        if (!read?.success || !read.blob) {
+          throw new Error(read?.error || 'Resource unavailable');
+        }
+        blob = read.blob;
+        manifest = (read.manifest || undefined) as typeof manifest;
+      } else if (next.fileHash) {
         const resolved = await window.reticulumResources?.getUrl?.(
           next.fileHash
         );
@@ -146,9 +166,11 @@ export const ReticulumFileViewer = () => {
         url = resolved.url;
         manifest = (resolved.manifest || undefined) as typeof manifest;
       }
-      const response = await fetch(url);
-      if (!response.ok) throw new Error(`Read failed (${response.status})`);
-      const blob = await response.blob();
+      if (!blob) {
+        const response = await fetch(url);
+        if (!response.ok) throw new Error(`Read failed (${response.status})`);
+        blob = await response.blob();
+      }
       if (generation !== generationRef.current) return;
 
       // The sender picks the name; it is shown and saved without bidi or

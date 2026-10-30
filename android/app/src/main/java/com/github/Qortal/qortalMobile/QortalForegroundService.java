@@ -36,6 +36,7 @@ import androidx.core.app.NotificationCompat;
 import androidx.core.content.FileProvider;
 import androidx.localbroadcastmanager.content.LocalBroadcastManager;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
@@ -1138,6 +1139,27 @@ public class QortalForegroundService extends Service {
         return builder.build();
     }
 
+    // The tray shows the large icon at 64 dp at most (256 px at xxxhdpi), so
+    // alert avatars are decoded no smaller than that, never at full size.
+    private static final int ALERT_AVATAR_SIZE_PX = 256;
+    // Read-to-end needs a limit; this one is far above any real avatar.
+    private static final int MAX_ALERT_AVATAR_BYTES = 16 * 1024 * 1024;
+
+    private static Bitmap decodeSampled(byte[] bytes) {
+        BitmapFactory.Options bounds = new BitmapFactory.Options();
+        bounds.inJustDecodeBounds = true;
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.length, bounds);
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null;
+        int sample = 1;
+        while (bounds.outWidth / (sample * 2) >= ALERT_AVATAR_SIZE_PX
+            && bounds.outHeight / (sample * 2) >= ALERT_AVATAR_SIZE_PX) {
+            sample *= 2;
+        }
+        BitmapFactory.Options options = new BitmapFactory.Options();
+        options.inSampleSize = sample;
+        return BitmapFactory.decodeByteArray(bytes, 0, bytes.length, options);
+    }
+
     private Bitmap loadBitmapFromUrl(String urlString) {
         if (urlString == null || urlString.isEmpty()) {
             return null;
@@ -1148,7 +1170,9 @@ public class QortalForegroundService extends Service {
             for (String candidate : candidates) {
                 Bitmap bitmap = fetchBitmapFromUrl(candidate);
                 if (bitmap != null) {
-                    return toCircleBitmap(bitmap);
+                    Bitmap circle = toCircleBitmap(bitmap);
+                    if (circle != bitmap) bitmap.recycle();
+                    return circle;
                 }
             }
             if (attempt < 3) {
@@ -1201,9 +1225,25 @@ public class QortalForegroundService extends Service {
             if (contentLength == 0) {
                 return null;
             }
-            InputStream input = connection.getInputStream();
-            Bitmap bitmap = BitmapFactory.decodeStream(input);
-            input.close();
+            if (contentLength > MAX_ALERT_AVATAR_BYTES) {
+                return null;
+            }
+            byte[] bytes;
+            try (InputStream input = connection.getInputStream()) {
+                ByteArrayOutputStream out =
+                    new ByteArrayOutputStream(contentLength > 0 ? contentLength : 64 * 1024);
+                byte[] buf = new byte[16 * 1024];
+                int n;
+                while ((n = input.read(buf)) != -1) {
+                    if (out.size() + n > MAX_ALERT_AVATAR_BYTES) return null;
+                    out.write(buf, 0, n);
+                }
+                bytes = out.toByteArray();
+            }
+            if (bytes.length == 0) {
+                return null;
+            }
+            Bitmap bitmap = decodeSampled(bytes);
             if (bitmap == null || bitmap.getWidth() <= 0 || bitmap.getHeight() <= 0) {
                 return null;
             }
@@ -1261,8 +1301,11 @@ public class QortalForegroundService extends Service {
                 payload = payload.substring(comma + 1);
             }
             byte[] bytes = Base64.decode(payload, Base64.DEFAULT);
-            Bitmap bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
-            return bitmap != null ? toCircleBitmap(bitmap) : null;
+            Bitmap bitmap = decodeSampled(bytes);
+            if (bitmap == null) return null;
+            Bitmap circle = toCircleBitmap(bitmap);
+            if (circle != bitmap) bitmap.recycle();
+            return circle;
         } catch (Exception error) {
             Log.w(TAG, "Failed to decode notification avatar base64", error);
             return null;

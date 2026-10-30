@@ -443,215 +443,222 @@ export async function publishTorqPost(
   const postLink = buildTorqPostLink(userName, postIdentifier);
   const resources: Record<string, unknown>[] = [];
   const stashedIds: string[] = [];
-
-  // 1) Files → FILE resources + one Q-Share catalog, like Torq.
-  const attachments: TorqPostAttachment[] = [];
-  for (const item of files) {
-    throwIfAborted(signal);
-    // A photo or video attached as a file goes to public, permanent QDN:
-    // publish it without its GPS position, camera model and capture time.
-    // Name and type do not change, so they still come from item.file.
-    const file = await stripAttachmentMetadata(item.file);
-    throwIfAborted(signal);
-    const filename = sanitizePublishFilename(
-      item.filename?.trim() || item.file.name
-    );
-    const title = item.title?.trim() || item.file.name || filename || 'file';
-    const identifier = `${QSHARE_FILE_PREFIX}${sanitizeFileSlug(title)}_${qshareUid.rnd()}`;
-    const fileId = stashPublishFile(file);
-    stashedIds.push(fileId);
-    resources.push({
-      identifier,
-      service: 'FILE',
-      fileId,
-      name: userName,
-      title: title.slice(0, 50),
-      filename,
-      tag1: QSHARE_FILE_PREFIX,
-      description: buildQshareDescription({ title, postText: text, postLink })
-        .resource,
-    });
-    const attachment: TorqPostAttachment = {
-      name: userName,
-      service: 'FILE',
-      identifier,
-      filename,
-      mimeType: guessFileMime(item.file, filename),
-      size: file.size,
-      title,
-      source: 'upload',
-    };
-    if (item.thumbnail) {
-      // Torq's cover: its own IMAGE resource, named after the file.
-      const thumbId = `${identifier}_thumb`;
-      const thumbFileId = stashPublishFile(item.thumbnail);
-      stashedIds.push(thumbFileId);
+  let videoParts: QtubeVideoResources | null = null;
+  try {
+    // 1) Files → FILE resources + one Q-Share catalog, like Torq.
+    const attachments: TorqPostAttachment[] = [];
+    for (const item of files) {
+      throwIfAborted(signal);
+      // A photo or video attached as a file goes to public, permanent QDN:
+      // publish it without its GPS position, camera model and capture time.
+      // Name and type do not change, so they still come from item.file.
+      const file = await stripAttachmentMetadata(item.file);
+      throwIfAborted(signal);
+      const filename = sanitizePublishFilename(
+        item.filename?.trim() || item.file.name
+      );
+      const title = item.title?.trim() || item.file.name || filename || 'file';
+      const identifier = `${QSHARE_FILE_PREFIX}${sanitizeFileSlug(title)}_${qshareUid.rnd()}`;
+      const fileId = stashPublishFile(file);
+      stashedIds.push(fileId);
       resources.push({
-        identifier: thumbId,
-        service: 'IMAGE',
-        fileId: thumbFileId,
+        identifier,
+        service: 'FILE',
+        fileId,
         name: userName,
-        title: `${title.slice(0, 40)} cover`,
-        filename: item.thumbnail.name || 'cover.jpg',
+        title: title.slice(0, 50),
+        filename,
+        tag1: QSHARE_FILE_PREFIX,
+        description: buildQshareDescription({ title, postText: text, postLink })
+          .resource,
       });
-      attachment.thumbnail = {
+      const attachment: TorqPostAttachment = {
         name: userName,
-        service: 'IMAGE',
-        identifier: thumbId,
-      };
-    }
-    attachments.push(attachment);
-  }
-  if (attachments.length > 0) {
-    const title = attachments[0].title || attachments[0].filename || 'Files';
-    const idMeta = qshareUid.rnd();
-    const identifier = `${QSHARE_FILE_PREFIX}${sanitizeFileSlug(title)}_${idMeta}_metadata`;
-    const described = buildQshareDescription({ title, postText: text, postLink });
-    const cover = attachments.find((item) => item.thumbnail)?.thumbnail;
-    resources.push({
-      identifier,
-      service: 'DOCUMENT',
-      base64: await objectToBase64({
+        service: 'FILE',
+        identifier,
+        filename,
+        mimeType: guessFileMime(item.file, filename),
+        size: file.size,
         title,
-        version: 1,
-        fullDescription: described.body,
-        htmlDescription: described.body,
-        commentsId: `${QSHARE_FILE_PREFIX}_cm_${idMeta}`,
-        files: attachments.map((file) => ({
-          filename: file.filename,
-          identifier: file.identifier,
-          name: file.name,
-          service: file.service,
-          mimetype: file.mimeType,
-          size: file.size,
-        })),
-        ...(cover
-          ? {
-              videoImage: `qortal://${cover.service}/${encodeURIComponent(cover.name)}/${encodeURIComponent(cover.identifier)}`,
-            }
-          : {}),
-      }),
-      name: userName,
-      title: title.slice(0, 50),
-      description: described.resource,
-      filename: 'video_metadata.json',
-      tag1: QSHARE_FILE_PREFIX,
-    });
-    for (const attachment of attachments) {
-      attachment.shareIdentifier = identifier;
-      attachment.shareName = userName;
+        source: 'upload',
+      };
+      if (item.thumbnail) {
+        // Torq's cover: its own IMAGE resource, named after the file.
+        const thumbId = `${identifier}_thumb`;
+        const thumbFileId = stashPublishFile(item.thumbnail);
+        stashedIds.push(thumbFileId);
+        resources.push({
+          identifier: thumbId,
+          service: 'IMAGE',
+          fileId: thumbFileId,
+          name: userName,
+          title: `${title.slice(0, 40)} cover`,
+          filename: item.thumbnail.name || 'cover.jpg',
+        });
+        attachment.thumbnail = {
+          name: userName,
+          service: 'IMAGE',
+          identifier: thumbId,
+        };
+      }
+      attachments.push(attachment);
     }
-  }
+    if (attachments.length > 0) {
+      const title = attachments[0].title || attachments[0].filename || 'Files';
+      const idMeta = qshareUid.rnd();
+      const identifier = `${QSHARE_FILE_PREFIX}${sanitizeFileSlug(title)}_${idMeta}_metadata`;
+      const described = buildQshareDescription({
+        title,
+        postText: text,
+        postLink,
+      });
+      const cover = attachments.find((item) => item.thumbnail)?.thumbnail;
+      resources.push({
+        identifier,
+        service: 'DOCUMENT',
+        base64: await objectToBase64({
+          title,
+          version: 1,
+          fullDescription: described.body,
+          htmlDescription: described.body,
+          commentsId: `${QSHARE_FILE_PREFIX}_cm_${idMeta}`,
+          files: attachments.map((file) => ({
+            filename: file.filename,
+            identifier: file.identifier,
+            name: file.name,
+            service: file.service,
+            mimetype: file.mimeType,
+            size: file.size,
+          })),
+          ...(cover
+            ? {
+                videoImage: `qortal://${cover.service}/${encodeURIComponent(cover.name)}/${encodeURIComponent(cover.identifier)}`,
+              }
+            : {}),
+        }),
+        name: userName,
+        title: title.slice(0, 50),
+        description: described.resource,
+        filename: 'video_metadata.json',
+        tag1: QSHARE_FILE_PREFIX,
+      });
+      for (const attachment of attachments) {
+        attachment.shareIdentifier = identifier;
+        attachment.shareName = userName;
+      }
+    }
 
-  // 2) Images stay inline in the post, as raw base64.
-  const postImages: { src: string }[] = [];
-  for (let index = 0; index < images.length; index += 1) {
+    // 2) Images stay inline in the post, as raw base64.
+    const postImages: { src: string }[] = [];
+    for (let index = 0; index < images.length; index += 1) {
+      throwIfAborted(signal);
+      onProgress?.(
+        t('progress.compressing_images', {
+          current: index + 1,
+          total: images.length,
+        }),
+        8 + Math.round((index / Math.max(1, images.length)) * 12)
+      );
+      const prepared = await compressImageForTorq(images[index].file);
+      postImages.push({ src: await encodeImageForPost(prepared, index) });
+    }
+    // Ten full-size photos easily pass the 5 MiB Quitter lists allow.
+    const fitted = await shrinkPostImagesToBudget(
+      images.map((item) => item.file),
+      postImages.map((item) => item.src),
+      POST_IMAGE_BUDGET,
+      signal
+    );
+    fitted.forEach((src, index) => {
+      postImages[index] = { src };
+    });
+
+    // 3) Video → Q-Tube VIDEO + metadata, referenced by its metadata DOCUMENT.
+    const postVideos: Record<string, unknown>[] = [];
+    if (video) {
+      videoParts = await buildQtubeVideoResources({
+        video,
+        userName,
+        onProgress,
+        signal,
+      });
+      resources.push(...videoParts.resources);
+      postVideos.push({
+        identifier: videoParts.metadataIdentifier,
+        service: 'DOCUMENT',
+        name: userName,
+        mimeType: /webm/i.test(videoParts.mimeType)
+          ? 'video/webm'
+          : 'video/mp4',
+        source: 'upload',
+      });
+    }
+
+    // 4) GIFs are pointers into the GIFs Q-App library, never re-uploads.
+    const gifTimestamp = Date.now();
+    const postGifs = gifs.map((gif) => ({
+      identifier: gif.identifier,
+      libraryGif: true,
+      mimeType: 'image/gif',
+      name: gif.name,
+      service: 'IMAGE',
+      timestamp: gifTimestamp,
+      ...(gif.description ? { description: gif.description } : {}),
+    }));
+
+    // 5) Compat links for Quitter readers: Torq post link, then media links.
+    let publishedText = needsTorqPostLink({
+      hasPoll: Boolean(poll),
+      imageCount: postImages.length,
+      gifCount: gifs.length,
+      attachmentCount: attachments.length,
+    })
+      ? appendLinkIfMissing(text, postLink)
+      : text;
+    const sourceUrls = [
+      ...gifs.map((gif) => buildTorqGifEmbed(gif, gifTimestamp)),
+      ...attachments.map(buildTorqAttachmentEmbed),
+    ];
+    for (const url of sourceUrls) {
+      publishedText = appendLinkIfMissing(publishedText, url);
+    }
+
+    const post = {
+      text: publishedText,
+      timestamp: Date.now(),
+      name: userName,
+      ...(postImages.length > 0 ? { images: postImages } : {}),
+      ...(postVideos.length > 0 ? { videos: postVideos } : {}),
+      ...(postGifs.length > 0 ? { gifs: postGifs } : {}),
+      ...(attachments.length > 0 ? { attachments } : {}),
+      ...(poll ? { poll } : {}),
+      ...(input.richText ? { richText: input.richText } : {}),
+    };
+
+    const mentionString = await firstMentionKeyword(text);
+    const keywordString = packTorqHashtagKeywords(text.match(/#\w+/g) ?? [], [
+      mentionString,
+    ]);
+    const postBase64 = String(await objectToBase64(post));
+    assertPostFitsQuitter(postBase64);
+    const postResource: Record<string, unknown> = {
+      identifier: postIdentifier,
+      service: 'DOCUMENT',
+      base64: postBase64,
+      name: userName,
+    };
+    const description = [keywordString, mentionString]
+      .filter(Boolean)
+      .join(',');
+    if (description) postResource.description = description;
+    resources.push(postResource);
+
     throwIfAborted(signal);
     onProgress?.(
-      t('progress.compressing_images', {
-        current: index + 1,
-        total: images.length,
-      }),
-      8 + Math.round((index / Math.max(1, images.length)) * 12)
+      t(video ? 'progress.publishing_video' : 'progress.publishing_post'),
+      video ? 35 : 70
     );
-    const prepared = await compressImageForTorq(images[index].file);
-    postImages.push({ src: await encodeImageForPost(prepared, index) });
-  }
-  // Ten full-size photos easily pass the 5 MiB Quitter lists allow.
-  const fitted = await shrinkPostImagesToBudget(
-    images.map((item) => item.file),
-    postImages.map((item) => item.src),
-    POST_IMAGE_BUDGET,
-    signal
-  );
-  fitted.forEach((src, index) => {
-    postImages[index] = { src };
-  });
-
-  // 3) Video → Q-Tube VIDEO + metadata, referenced by its metadata DOCUMENT.
-  let videoParts: QtubeVideoResources | null = null;
-  const postVideos: Record<string, unknown>[] = [];
-  if (video) {
-    videoParts = await buildQtubeVideoResources({
-      video,
-      userName,
-      onProgress,
-      signal,
-    });
-    resources.push(...videoParts.resources);
-    postVideos.push({
-      identifier: videoParts.metadataIdentifier,
-      service: 'DOCUMENT',
-      name: userName,
-      mimeType: /webm/i.test(videoParts.mimeType) ? 'video/webm' : 'video/mp4',
-      source: 'upload',
-    });
-  }
-
-  // 4) GIFs are pointers into the GIFs Q-App library, never re-uploads.
-  const gifTimestamp = Date.now();
-  const postGifs = gifs.map((gif) => ({
-    identifier: gif.identifier,
-    libraryGif: true,
-    mimeType: 'image/gif',
-    name: gif.name,
-    service: 'IMAGE',
-    timestamp: gifTimestamp,
-    ...(gif.description ? { description: gif.description } : {}),
-  }));
-
-  // 5) Compat links for Quitter readers: Torq post link, then media links.
-  let publishedText = needsTorqPostLink({
-    hasPoll: Boolean(poll),
-    imageCount: postImages.length,
-    gifCount: gifs.length,
-    attachmentCount: attachments.length,
-  })
-    ? appendLinkIfMissing(text, postLink)
-    : text;
-  const sourceUrls = [
-    ...gifs.map((gif) => buildTorqGifEmbed(gif, gifTimestamp)),
-    ...attachments.map(buildTorqAttachmentEmbed),
-  ];
-  for (const url of sourceUrls) {
-    publishedText = appendLinkIfMissing(publishedText, url);
-  }
-
-  const post = {
-    text: publishedText,
-    timestamp: Date.now(),
-    name: userName,
-    ...(postImages.length > 0 ? { images: postImages } : {}),
-    ...(postVideos.length > 0 ? { videos: postVideos } : {}),
-    ...(postGifs.length > 0 ? { gifs: postGifs } : {}),
-    ...(attachments.length > 0 ? { attachments } : {}),
-    ...(poll ? { poll } : {}),
-    ...(input.richText ? { richText: input.richText } : {}),
-  };
-
-  const mentionString = await firstMentionKeyword(text);
-  const keywordString = packTorqHashtagKeywords(text.match(/#\w+/g) ?? [], [
-    mentionString,
-  ]);
-  const postBase64 = String(await objectToBase64(post));
-  assertPostFitsQuitter(postBase64);
-  const postResource: Record<string, unknown> = {
-    identifier: postIdentifier,
-    service: 'DOCUMENT',
-    base64: postBase64,
-    name: userName,
-  };
-  const description = [keywordString, mentionString].filter(Boolean).join(',');
-  if (description) postResource.description = description;
-  resources.push(postResource);
-
-  throwIfAborted(signal);
-  onProgress?.(
-    t(video ? 'progress.publishing_video' : 'progress.publishing_post'),
-    video ? 35 : 70
-  );
-  const heavy = Boolean(video) || files.length > 0;
-  try {
+    const heavy = Boolean(video) || files.length > 0;
     const result = await publishMultipleResources(
       resources,
       signal,

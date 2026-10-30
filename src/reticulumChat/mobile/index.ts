@@ -1335,6 +1335,63 @@ function installMobileReticulumResources(): void {
       }
     },
 
+    // The in-app viewer takes the bytes, not a URL: no object URL is kept
+    // for a file only the viewer reads.
+    readBlob: async (
+      fileHash: string
+    ): Promise<{
+      success: boolean;
+      blob?: Blob;
+      manifest?: unknown;
+      error?: string;
+    }> => {
+      const hash = String(fileHash ?? '').trim();
+      if (!hash) return { success: false, error: 'Invalid file hash' };
+      // Already shown in chat (or being read for it): use that copy, as before.
+      if (blobUrls.has(hash) || pendingUrls.has(hash)) {
+        const resolved = await resources.getUrl(hash);
+        if (!resolved?.success || !resolved.url) {
+          return {
+            success: false,
+            error: resolved?.error || 'Resource unavailable',
+          };
+        }
+        const response = await fetch(resolved.url);
+        if (!response.ok) {
+          return { success: false, error: `Read failed (${response.status})` };
+        }
+        return {
+          success: true,
+          blob: await response.blob(),
+          manifest: resolved.manifest,
+        };
+      }
+      let res: {
+        success: boolean;
+        bytes?: Uint8Array;
+        manifest?: { mimeType?: string };
+        error?: string;
+      };
+      try {
+        res = (await rpc('resource:bytes', [hash])) as typeof res;
+      } catch (err) {
+        return {
+          success: false,
+          error: err instanceof Error ? err.message : 'Resource unavailable',
+        };
+      }
+      if (!res?.success || !res.bytes) {
+        return { success: false, error: res?.error || 'Resource unavailable' };
+      }
+      return {
+        success: true,
+        blob: new Blob([res.bytes as BlobPart], {
+          type: res.manifest?.mimeType || 'application/octet-stream',
+        }),
+        manifest: res.manifest,
+      };
+    },
+
     getStatus: (fileHash: string) => rpc('resource:getStatus', [fileHash]),
     getStorageStatus: () => rpc('resource:getStorageStatus', []),
     cleanupStorage: () => rpc('resource:cleanupStorage', []),

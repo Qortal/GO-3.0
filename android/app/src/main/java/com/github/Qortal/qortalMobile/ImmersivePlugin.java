@@ -231,6 +231,7 @@ public class ImmersivePlugin extends Plugin {
 
   @Override
   protected void handleOnDestroy() {
+    if (instance == this) instance = null;
     edgeHandler.removeCallbacks(edgeTick);
     edgeSampling = false;
     super.handleOnDestroy();
