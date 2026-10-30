@@ -120,7 +120,7 @@ import {
   readCard,
 } from '../../qortalCard/cardFlows';
 import { Base58, nacl } from '../../qortalCard/cryptoDeps';
-import { SimulatedCard } from '../../qortalCard/simulatedCard';
+import { SimulatedCard } from '../../qortalCard/testing/simulatedCard';
 import {
   decodeTapRequest,
   encodeTapRequest,

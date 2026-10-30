@@ -8,7 +8,7 @@
  * /tools/preview/home-reorder.html. Not a build input.
  */
 import { createRoot } from 'react-dom/client';
-import { useState } from 'react';
+import { useState, type ReactElement } from 'react';
 import { Box, Button, CssBaseline, Typography, useTheme } from '@mui/material';
 import AccountBalanceWalletRoundedIcon from '@mui/icons-material/AccountBalanceWalletRounded';
 import AppsRoundedIcon from '@mui/icons-material/AppsRounded';
@@ -36,7 +36,7 @@ import {
 import { dashboardPanelSx } from '../../src/components/Group/dashboardPanelEffects';
 import { HOME_WINDOW_ATTR } from '../../src/components/Group/HomeDesktop/HomeWindowStack';
 
-const META: Record<HomeWindowId, { label: string; icon: JSX.Element; height: number }> = {
+const META: Record<HomeWindowId, { label: string; icon: ReactElement; height: number }> = {
   workspace: { label: 'Hotkeys and Qortino', icon: <AppsRoundedIcon />, height: 485 },
   account: { label: 'Account Overview', icon: <PersonRoundedIcon />, height: 282 },
   composer: { label: 'Post to Torq', icon: <EditRoundedIcon />, height: 91 },

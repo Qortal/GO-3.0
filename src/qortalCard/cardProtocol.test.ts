@@ -16,7 +16,7 @@ import {
   signOnCard,
   type ApduTransport,
 } from './cardProtocol';
-import { SimulatedCard } from './simulatedCard';
+import { SimulatedCard } from './testing/simulatedCard';
 import { nacl } from './cryptoDeps';
 
 describe('buildApdu', () => {

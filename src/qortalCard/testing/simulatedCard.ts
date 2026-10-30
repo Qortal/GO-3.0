@@ -4,8 +4,8 @@ import {
   CARD_APPLETS,
   type ApduTransport,
   type CardAppletKind,
-} from './cardProtocol';
-import { nacl } from './cryptoDeps';
+} from '../cardProtocol';
+import { nacl } from '../cryptoDeps';
 
 /**
  * A card in software, for tests: Qortal's lab applet or Futako's TestEdDSA

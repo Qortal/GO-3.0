@@ -21,7 +21,7 @@ import {
 } from './cardFlows';
 import { readPublicKey, selectApplet } from './cardProtocol';
 import { verifyCardSignature } from './cardTx';
-import { SimulatedCard } from './simulatedCard';
+import { SimulatedCard } from './testing/simulatedCard';
 import { nacl } from './cryptoDeps';
 
 const MAIN = nacl.sign.keyPair().secretKey;
