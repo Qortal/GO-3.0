@@ -95,10 +95,14 @@ export const startMobilePersistentStatus = async (
   if (!isCapacitor()) return;
 
   installNativeLocalizedStrings();
+  const payload = buildPersistentStatusPayload(snapshot);
+  // The notification shows this text now (updates before the start are
+  // skipped natively), so later updates are compared and rate-limited
+  // against it. A queued update stays queued and may still replace it.
+  lastSentStatusJson = JSON.stringify(payload);
+  lastSentStatusAt = Date.now();
   try {
-    await QortalBackground.startPersistentStatus(
-      buildPersistentStatusPayload(snapshot)
-    );
+    await QortalBackground.startPersistentStatus(payload);
   } catch (error) {
     console.error('[mobileBackgroundService] Failed to start persistent status', error);
   }

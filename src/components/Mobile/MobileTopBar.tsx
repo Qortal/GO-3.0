@@ -1,8 +1,10 @@
 import {
+  forwardRef,
   useEffect,
   useRef,
   useState,
   useMemo,
+  type ComponentProps,
   type MouseEvent,
   type ReactNode,
 } from 'react';
@@ -159,6 +161,24 @@ const coreSynchronizingAtom = atom((get) =>
     (get(nodeInfosAtom) as { isSynchronizing?: boolean })?.isSynchronizing
   )
 );
+
+// The bell panel shows relative times ('a minute ago') and has no timer of
+// its own; it used to follow the bar's re-render on every node status push.
+// Re-render just the bell twice a minute instead (moment's first step is
+// 45 s), and only while the page is visible.
+const TickingGeneralNotifications = forwardRef<
+  GeneralNotificationsHandle,
+  ComponentProps<typeof GeneralNotifications>
+>(function TickingGeneralNotifications(props, ref) {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      if (document.visibilityState === 'visible') setTick((n) => n + 1);
+    }, 30_000);
+    return () => window.clearInterval(id);
+  }, []);
+  return <GeneralNotifications ref={ref} {...props} />;
+});
 
 /**
  * Slim mobile top bar.
@@ -893,7 +913,7 @@ export const MobileTopBar = ({
               )}
 
               {inAppTheme(
-                <GeneralNotifications
+                <TickingGeneralNotifications
                   ref={notifRef}
                   compact
                   hideTrigger
