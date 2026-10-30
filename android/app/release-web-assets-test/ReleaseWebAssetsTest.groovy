@@ -115,6 +115,7 @@ class ReleaseWebAssetsTest {
                 'public/index.html'                           : INDEX,
                 'public/favicon.ico'                          : 'ico',
                 'public/qortal.png'                           : 'png',
+                'public/qort-coin-blue.png'                   : 'png',
                 'public/qortino-debug.html'                   : QORTINO_DEBUG,
                 'public/audio-surface.html'                   : AUDIO_SURFACE,
                 'public/assets/main-AAA.js'                   :
@@ -140,8 +141,10 @@ class ReleaseWebAssetsTest {
                 'public/assets/recorder.worker-WWW.js.map'    : '{}',
                 'public/pdfjs/build/pdf.mjs'                  : 'export const version = "4";',
                 'public/pdfjs/build/pdf.worker.mjs'           : 'export {};',
+                'public/pdfjs/build/pdf.sandbox.mjs'          : 'export const QuickJSSandbox = () => {};',
                 'public/pdfjs/web/viewer.html'                : '<html><script src="viewer.mjs"></script></html>',
-                'public/pdfjs/web/viewer.mjs'                 : 'export {};',
+                'public/pdfjs/web/viewer.mjs'                 :
+                        'const o = {sandboxBundleSrc: "../build/pdf.sandbox.mjs"};',
                 'public/pdfjs/web/debugger.mjs'               : 'export {};',
                 'public/pdfjs/web/standard_fonts/FoxitSerif.pfb': 'font',
                 'public/worklets/capture-processor.js'        : 'registerProcessor("capture", class {});',
@@ -163,6 +166,8 @@ class ReleaseWebAssetsTest {
             'public/pdfjs/web/viewer.mjs',
             'public/pdfjs/web/debugger.mjs',
             'public/pdfjs/web/standard_fonts/FoxitSerif.pfb',
+            'public/pdfjs/build/pdf.sandbox.mjs',
+            'public/qort-coin-blue.png',
     ] as TreeSet
 
     File tree(Map<String, String> files) {
@@ -182,7 +187,7 @@ class ReleaseWebAssetsTest {
     // ---- what is left out -----------------------------------------------
 
     @Test
-    void leavesOutMapsDebugPagesTheirEntryChunksAndThePdfViewer() {
+    void leavesOutMapsDebugPagesTheirEntryChunksThePdfViewerAndTheSandbox() {
         assertEquals(BUNDLE_REMOVALS, plan(bundle()))
     }
 
@@ -386,9 +391,12 @@ class ReleaseWebAssetsTest {
         List<String> removed = policy.copyStripped(from, into)
         new File(into, 'public/assets/extra.js.map').text = '{}'
         new File(into, 'public/audio-surface.html').text = '<html></html>'
+        new File(into, 'public/pdfjs/build/pdf.sandbox.mjs').text = 'export {};'
         String message = verifyFailure(from, into, removed as Set)
         assertTrue(message, message.contains('source map still packaged: public/assets/extra.js.map'))
         assertTrue(message, message.contains('debug page still packaged: public/audio-surface.html'))
+        assertTrue(message, message.contains(
+                'unused file still packaged: public/pdfjs/build/pdf.sandbox.mjs'))
     }
 
     @Test
@@ -406,7 +414,7 @@ class ReleaseWebAssetsTest {
         File from = tree(bundle())
         String line = policy.describe(from, policy.planRemovals(from))
         assertEquals('left out 6 source maps (0.0 MB), 2 debug pages, 2 debug entry chunks, ' +
-                '4 pdf.js viewer files', line)
+                '4 pdf.js viewer files, 2 unused files', line)
     }
 
     static String verifyFailure(File from, File into, Set<String> removed) {
@@ -470,6 +478,42 @@ class ReleaseWebAssetsTest {
         policy.copyStripped(tree(files), tmp.newFolder())
     }
 
+    // ---- pdf.sandbox.mjs, which only the release APK lacks ---------------------
+
+    @Test
+    void checkFailsWhenAShippedFileNamesTheSandbox() {
+        Map<String, String> files = bundle()
+        files['public/pdfjs/build/pdf.mjs'] =
+                'const s = await import(base + "/pdf.sandbox.mjs");'
+        files['public/assets/index-BBB.js'] =
+                'getViewer({sandboxBundleSrc: "./pdfjs/build/pdf.sandbox.mjs"})'
+        String message = copyFailure(files)
+        assertTrue(message, message.contains(
+                "public/pdfjs/build/pdf.mjs names 'pdf.sandbox.mjs'"))
+        assertTrue(message, message.contains(
+                "public/assets/index-BBB.js names 'pdf.sandbox.mjs'"))
+    }
+
+    @Test
+    void theViewerAndTheDroppedMapsMayNameTheSandbox() {
+        Map<String, String> files = bundle()
+        files['public/assets/main-AAA.js.map'] = '{"sourcesContent":["pdf.sandbox.mjs"]}'
+        File into = tmp.newFolder()
+        List<String> removed = policy.copyStripped(tree(files), into)
+        assertTrue(removed.contains('public/pdfjs/build/pdf.sandbox.mjs'))
+        assertFalse(new File(into, 'public/pdfjs/build/pdf.sandbox.mjs').exists())
+        assertTrue(new File(into, 'public/pdfjs/build/pdf.mjs').isFile())
+        assertTrue(new File(into, 'public/pdfjs/build/pdf.worker.mjs').isFile())
+    }
+
+    @Test
+    void checkFailsWhenAShippedFileNamesTheCoinPicture() {
+        Map<String, String> files = bundle()
+        files['public/assets/index-CCC.css'] = '.coin{background:url(/qort-coin-blue.png)}'
+        assertTrue(copyFailure(files).contains(
+                "public/assets/index-CCC.css names 'qort-coin-blue.png'"))
+    }
+
     // ---- the packaged APK -----------------------------------------------------
 
     File zip(Map<String, String> entries) {
@@ -520,9 +564,13 @@ class ReleaseWebAssetsTest {
                 'app-release.apk: debug page packaged: assets/public/qortino-debug.html'))
         assertTrue(problems.toString(), problems.contains(
                 'app-release.apk: debug page packaged: assets/public/pdfjs/web/viewer.html'))
-        // 6 maps, 2 pages, 4 pdf.js viewer files; chaquopy/notes.map and
-        // res/raw/x.map are not web assets.
-        assertEquals(12, problems.size())
+        assertTrue(problems.toString(), problems.contains(
+                'app-release.apk: unused file packaged: assets/public/pdfjs/build/pdf.sandbox.mjs'))
+        assertTrue(problems.toString(), problems.contains(
+                'app-release.apk: unused file packaged: assets/public/qort-coin-blue.png'))
+        // 6 maps, 2 pages, 4 pdf.js viewer files, 2 unused files;
+        // chaquopy/notes.map and res/raw/x.map are not web assets.
+        assertEquals(14, problems.size())
         try {
             policy.verifyPackages([apk], apk.parentFile)
             fail('an unstripped APK passed')
@@ -711,7 +759,7 @@ class ReleaseWebAssetsTest {
     // ---- the bundle `npx cap sync` put in src/main/assets ---------------------
 
     @Test
-    void syncedBundleLosesOnlyMapsDebugPagesAndUnusedChunks() {
+    void syncedBundleLosesOnlyMapsDebugPagesUnusedChunksAndTheSandbox() {
         File assets = new File(System.getProperty('releaseWebAssets.syncedAssets', '../src/main/assets'))
         Assume.assumeTrue("no synced bundle at $assets", new File(assets, 'public/index.html').isFile())
 
@@ -735,8 +783,13 @@ class ReleaseWebAssetsTest {
             File html = new File(assets, 'public/' + page)
             if (html.isFile()) policy.pageScripts(html.getText('UTF-8')).each { entryChunks << 'public/' + it }
         }
+        policy.UNUSED_FILES.each { String file ->
+            String rel = 'public/' + file
+            if (all.contains(rel)) assertTrue(rel, removed.contains(rel))
+        }
         List<String> others = removed.findAll {
-            !policy.isSourceMap(it) && !policy.isDebugPage(it) && !policy.isInDebugFolder(it)
+            !policy.isSourceMap(it) && !policy.isDebugPage(it) && !policy.isInDebugFolder(it) &&
+                    !policy.isUnusedFile(it)
         }.toList()
         others.each { String chunk ->
             assertTrue("not a debug entry chunk: $chunk", entryChunks.contains(chunk))
@@ -832,6 +885,15 @@ class ReleaseWebAssetsTest {
         assertEquals(out, 1, code)
         assertTrue(out, out.contains('source maps:            1'))
         assertTrue(out, out.contains('debug pages and files:  1'))
+
+        entries = checkApkEntries()
+        entries['assets/public/pdfjs/build/pdf.sandbox.mjs'] = 'x'
+        entries['assets/public/qort-coin-blue.png'] = 'x'
+        (code, out) = runCheckApk(entries)
+        assertEquals(out, 1, code)
+        assertTrue(out, out.contains('debug pages and files:  2'))
+        assertTrue(out, out.contains('assets/public/pdfjs/build/pdf.sandbox.mjs'))
+        assertTrue(out, out.contains('assets/public/qort-coin-blue.png'))
 
         entries = checkApkEntries()
         entries.remove('assets/public/index.html')

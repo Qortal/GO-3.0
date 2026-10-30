@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Checks what a built APK packages from the web bundle (GO-40). Fails when a
-# release APK still holds source maps or debug pages, or when index.html or
-# any file it loads is missing. Release builds run the same map and debug-page
-# check themselves (task verifyReleaseApkWebAssets); this script is for an APK
-# from somewhere else, and also checks every file index.html loads.
+# release APK still holds source maps, debug pages or files GO never loads,
+# or when index.html or any file it loads is missing. Release builds run the
+# same checks themselves (task verifyReleaseApkWebAssets); this script is for
+# an APK from somewhere else, and also checks every file index.html loads.
 #
 #   android/app/release-web-assets-test/check-apk.sh app/build/outputs/apk/release/app-release.apk
 #
@@ -14,7 +14,7 @@ apk="${1:?usage: check-apk.sh path/to/app.apk}"
 listing="$(unzip -Z1 "$apk")"
 
 maps="$(grep -E '^assets/public/.*\.map$' <<<"$listing" || true)"
-debug="$(grep -E '^assets/public/(qortino-debug\.html|audio-surface\.html|pdfjs/web/)' <<<"$listing" || true)"
+debug="$(grep -E '^assets/public/(qortino-debug\.html|audio-surface\.html|pdfjs/web/|pdfjs/build/pdf\.sandbox\.mjs$|qort-coin-blue\.png$)' <<<"$listing" || true)"
 # The debug pages' entry chunks. The build keeps one when the app itself
 # names it, so this is only a warning.
 entry_chunks="$(grep -E '^assets/public/assets/(audioSurface|qortinoDebug)-[^/]*\.js$' <<<"$listing" || true)"

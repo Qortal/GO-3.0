@@ -24,7 +24,7 @@ import {
   matchResourceBySize,
   resourcePublishState,
 } from './qshareDiscovery';
-import { parseKnowledgePackJson, type KnowledgePack } from './rag';
+import { hashEmbed, parseKnowledgePackJson, type KnowledgePack } from './rag';
 import { saveInstallState, type QortinoInstallState } from './store';
 
 export type DownloadProgress = {
@@ -672,6 +672,14 @@ export async function loadKnowledgeFromInstall(
 
 let builtinKnowledgePromise: Promise<KnowledgePack> | null = null;
 
+/** The bundled pack ships without vectors (each is hashEmbed(text)); fill them once so retrieval is unchanged. */
+function withHashEmbeddings(pack: KnowledgePack): KnowledgePack {
+  for (const chunk of pack.chunks) {
+    if (!chunk.embedding?.length) chunk.embedding = hashEmbed(chunk.text);
+  }
+  return pack;
+}
+
 /**
  * Curated knowledge pack shipped in the app (your markdown docs, chunked).
  * QDN updates can replace this after download; until then RAG uses the bundle.
@@ -681,7 +689,7 @@ let builtinKnowledgePromise: Promise<KnowledgePack> | null = null;
 export function loadBuiltinKnowledge(): Promise<KnowledgePack> {
   if (!builtinKnowledgePromise) {
     builtinKnowledgePromise = import('./bundledKnowledge.json')
-      .then((m) => m.default as KnowledgePack)
+      .then((m) => withHashEmbeddings(m.default as KnowledgePack))
       .catch((e) => {
         builtinKnowledgePromise = null;
         throw e;

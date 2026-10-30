@@ -5,6 +5,10 @@
  * Usage:
  *   node tools/qortino-knowledge/build-pack.mjs
  *   node tools/qortino-knowledge/build-pack.mjs --docs ./my-docs --out ./dist/qortino-knowledge-v1.json --version v1
+ *   node tools/qortino-knowledge/build-pack.mjs --no-embeddings --out src/qortinoAgent/bundledKnowledge.json --version v2
+ *
+ * --no-embeddings is for the bundled in-app copy only: the app fills each
+ * vector with hashEmbed(text) when it loads that pack.
  *
  * Output JSON is suitable for QDN publish as FILE identifier qortino_knowledge_vN.
  * Chunks include hash embeddings so the phone can RAG without MiniLM.
@@ -25,12 +29,14 @@ function parseArgs(argv) {
     docs: path.join(__dirname, 'docs'),
     out: path.join(__dirname, 'dist', 'qortino-knowledge-v1.json'),
     version: 'v1',
+    noEmbeddings: false,
   };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--docs') out.docs = path.resolve(argv[++i]);
     else if (a === '--out') out.out = path.resolve(argv[++i]);
     else if (a === '--version') out.version = argv[++i];
+    else if (a === '--no-embeddings') out.noEmbeddings = true;
   }
   return out;
 }
@@ -160,6 +166,7 @@ function main() {
     const text = fs.readFileSync(file, 'utf8');
     chunks.push(...chunkText(text, rel));
   }
+  if (args.noEmbeddings) for (const c of chunks) delete c.embedding;
 
   const pack = {
     version: args.version,

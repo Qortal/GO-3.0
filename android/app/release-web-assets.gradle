@@ -14,13 +14,20 @@
  *     that still ships names it. A chunk the main app imports always stays.
  *   - pdfjs/web/: pdf.js's own viewer app and its debugger. GO loads pdf.js
  *     from pdfjs/build only (src/qortinoAgent/pdfJsLoader.ts).
+ *   - pdfjs/build/pdf.sandbox.mjs: pdf.js's sandbox for scripts inside PDFs.
+ *     Only the viewer app above imports it (sandboxBundleSrc in
+ *     web/viewer.mjs); pdf.mjs never does, and GO draws PDF pages to a canvas
+ *     with pdf.mjs and pdf.worker.mjs alone, so no script in a PDF ever runs.
+ *   - qort-coin-blue.png (1.8 MB): nothing in the app, the desktop app or
+ *     Android names it.
  *
  * How: an AGP variant-API transform of the merged ASSETS artifact, for the
  * release variant only. Task stripReleaseWebAssets copies the merged assets
  * without the files above, then checks its own output: index.html and
  * everything it loads are there, no map or debug page is left, and no file
- * that ships still points into pdfjs/web (that folder exists in debug and
- * desktop builds, so such a link would break only in the release APK).
+ * that ships still points into pdfjs/web or names pdf.sandbox.mjs (both exist
+ * in debug and desktop builds, so such a link would break only in the release
+ * APK).
  *
  * Then task verifyReleaseApkWebAssets opens the APK that was really packaged
  * and fails assembleRelease and installRelease when it still holds a map or a
@@ -31,9 +38,10 @@
  * Check a built APK:
  *   app/release-web-assets-test/check-apk.sh app/build/outputs/apk/release/app-release.apk
  * or by hand:
- *   unzip -l app-release.apk | grep -c '\.map$'                                  # 0
- *   unzip -l app-release.apk | grep -E 'qortino-debug|audio-surface|pdfjs/web/'  # nothing
- *   unzip -l app-release.apk | grep 'assets/public/index.html'                   # 1 line
+ *   unzip -l app-release.apk | grep -c '\.map$'                                    # 0
+ *   unzip -l app-release.apk |
+ *     grep -E 'qortino-debug|audio-surface|pdfjs/web/|pdf\.sandbox|qort-coin-blue'   # nothing
+ *   unzip -l app-release.apk | grep 'assets/public/index.html'                     # 1 line
  * The debug APK still lists the maps and the pages.
  *
  * Tests: app/release-web-assets-test/run.sh (plain Groovy and JUnit from the
@@ -81,6 +89,13 @@ class ReleaseWebAssets {
     static final List<String> DEBUG_FOLDER_LINKS =
             ['pdfjs/web/', 'web/standard_fonts', 'web/cmaps'].asImmutable()
 
+    /**
+     * Single files GO never loads: pdf.js's sandbox for scripts in PDFs, which
+     * only the viewer app in pdfjs/web imports, and a picture nothing names.
+     */
+    static final List<String> UNUSED_FILES =
+            ['pdfjs/build/pdf.sandbox.mjs', 'qort-coin-blue.png'].asImmutable()
+
     /** Where an APK keeps its assets. */
     static final String APK_ASSETS = 'assets/'
 
@@ -120,6 +135,10 @@ class ReleaseWebAssets {
 
     static boolean isInDebugFolder(String rel) {
         DEBUG_FOLDERS.any { rel.startsWith(WEB_ROOT + it) }
+    }
+
+    static boolean isUnusedFile(String rel) {
+        UNUSED_FILES.any { rel == WEB_ROOT + it }
     }
 
     static boolean isText(String rel) {
@@ -182,7 +201,7 @@ class ReleaseWebAssets {
         Set<String> present = new HashSet<>(files)
         Set<String> removed = new TreeSet<>()
         files.each { String rel ->
-            if (isSourceMap(rel) || isDebugPage(rel) || isInDebugFolder(rel)) {
+            if (isSourceMap(rel) || isDebugPage(rel) || isInDebugFolder(rel) || isUnusedFile(rel)) {
                 removed << rel
             }
         }
@@ -271,6 +290,7 @@ class ReleaseWebAssets {
             if (isDebugPage(rel) || isInDebugFolder(rel)) {
                 problems << "debug page still packaged: $rel".toString()
             }
+            if (isUnusedFile(rel)) problems << "unused file still packaged: $rel".toString()
             if (removed.contains(rel)) problems << "should have been left out: $rel".toString()
         }
         listFiles(from).each { String rel ->
@@ -296,6 +316,9 @@ class ReleaseWebAssets {
         }
         if (removed.any { isInDebugFolder(it) }) {
             problems.addAll(debugFolderLinks(into, shipped))
+        }
+        if (removed.any { isUnusedFile(it) }) {
+            problems.addAll(unusedFileLinks(into, shipped))
         }
         if (!problems.isEmpty()) {
             throw new IllegalStateException(
@@ -324,16 +347,37 @@ class ReleaseWebAssets {
         problems
     }
 
+    /**
+     * Shipped web files that name a left-out unused file. Like pdfjs/web, it
+     * is left out of release APKs only.
+     */
+    static List<String> unusedFileLinks(File root, Collection<String> shipped) {
+        List<String> problems = []
+        shipped.each { String rel ->
+            if (!rel.startsWith(WEB_ROOT) || !isText(rel)) return
+            String text = new String(
+                    Files.readAllBytes(new File(root, rel).toPath()), StandardCharsets.ISO_8859_1)
+            String name = UNUSED_FILES.collect { baseName(it) }.find { text.contains(it) }
+            if (name != null) {
+                problems << ("$rel names '$name', but release APKs leave it out: " +
+                        'stop leaving it out in release-web-assets.gradle').toString()
+            }
+        }
+        problems
+    }
+
     /** One log line: what was left out and how big the maps were. */
     static String describe(File from, Collection<String> removed) {
         List<String> maps = removed.findAll { isSourceMap(it) }.toList()
         long mapBytes = maps.sum(0L) { new File(from, it).length() } as long
         int pages = removed.count { isDebugPage(it) } as int
         int folderFiles = removed.count { isInDebugFolder(it) && !isSourceMap(it) } as int
-        int chunks = removed.size() - maps.size() - pages - folderFiles
+        int unused = removed.count { isUnusedFile(it) } as int
+        int chunks = removed.size() - maps.size() - pages - folderFiles - unused
         String mb = String.format(Locale.ROOT, '%.1f', mapBytes / 1048576d)
         "left out ${maps.size()} source maps (${mb} MB), ${pages} debug pages, " +
-                "${chunks} debug entry chunks, ${folderFiles} pdf.js viewer files"
+                "${chunks} debug entry chunks, ${folderFiles} pdf.js viewer files, " +
+                "${unused} unused files"
     }
 
     // ---- the packaged APK ----------------------------------------------------
@@ -348,6 +392,8 @@ class ReleaseWebAssets {
                 problems << "source map packaged: $entry".toString()
             } else if (isDebugPage(rel) || isInDebugFolder(rel)) {
                 problems << "debug page packaged: $entry".toString()
+            } else if (isUnusedFile(rel)) {
+                problems << "unused file packaged: $entry".toString()
             }
         }
         String index = APK_ASSETS + WEB_ROOT + 'index.html'

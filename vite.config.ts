@@ -8,6 +8,7 @@ import fixReactVirtualized from 'esbuild-plugin-react-virtualized';
 import wasm from 'vite-plugin-wasm';
 import topLevelAwait from 'vite-plugin-top-level-await';
 import { inlineResizeImageIconsPlugin } from './tools/vite/inlineResizeImageIcons';
+import { qortalLandWebpTwinsPlugin } from './tools/vite/qortalLandWebpTwins';
 
 /**
  * Swap the chat engine's Node worker-thread pools for the mobile inline pools.
@@ -218,6 +219,7 @@ export default defineConfig({
   plugins: [
     goPerfHookPlugin(),
     inlineResizeImageIconsPlugin(),
+    qortalLandWebpTwinsPlugin(),
     mobileChatWorkerPoolPlugin(),
     react(),
     wasm(),
