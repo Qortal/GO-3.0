@@ -48,7 +48,7 @@ function mimeForKind(kind: QdnMediaItem['kind']): string {
   }
 }
 
-export function mediaSaveFilename(item: QdnMediaItem, overrideExt?: string): string {
+function mediaSaveFilename(item: QdnMediaItem, overrideExt?: string): string {
   const ext = overrideExt || extForKind(item.kind);
   const base = normalizeFilename(item.title || item.identifier || 'qdn_media');
   return base.toLowerCase().endsWith(`.${ext}`) ? base : `${base}.${ext}`;

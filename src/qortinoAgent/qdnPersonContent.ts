@@ -8,13 +8,13 @@ import {
   formatThemeHintLine,
 } from './qdnCharacterPortrait';
 
-export type PersonPublishSnippet = {
+type PersonPublishSnippet = {
   source: string;
   title: string;
   excerpt?: string;
 };
 
-export type PersonChatSnippet = {
+type PersonChatSnippet = {
   channel: string;
   kind: 'group' | 'dm';
   text: string;
@@ -342,7 +342,7 @@ export async function fetchChatSnippets(
 }
 
 /** Local theme hints from titles/excerpts (feeds the LLM; not a replacement for it). */
-export function deriveThemeHints(publishes: PersonPublishSnippet[]): string {
+function deriveThemeHints(publishes: PersonPublishSnippet[]): string {
   if (!publishes.length) {
     return 'No clear public-publish themes in the sample.';
   }

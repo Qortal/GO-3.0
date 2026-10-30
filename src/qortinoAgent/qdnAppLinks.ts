@@ -38,7 +38,7 @@ export type QdnActivityKind =
   | 'metadata'
   | 'other';
 
-export type QdnActivityInfo = {
+type QdnActivityInfo = {
   kind: QdnActivityKind;
   /** Short human label, e.g. "Q-Tube video" / "Quitter like" */
   label: string;
@@ -666,7 +666,7 @@ export function openQortalDeepLink(link: string): void {
 }
 
 /** Compact id for display (small font) — never the main answer. */
-export function shortResourceId(identifier: string, max = 36): string {
+function shortResourceId(identifier: string, max = 36): string {
   const id = (identifier || '').trim();
   if (!id || id === 'default') return '';
   if (id.length <= max) return id;

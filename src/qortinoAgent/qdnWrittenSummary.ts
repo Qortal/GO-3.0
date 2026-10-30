@@ -82,7 +82,7 @@ export const CREATIVE_FORM_WORDS = [
   'summaries',
 ] as const;
 
-export type CreativeAboutPersonIntent = {
+type CreativeAboutPersonIntent = {
   form: string;
   /** Display label e.g. "poem" / "message" */
   formLabel: string;

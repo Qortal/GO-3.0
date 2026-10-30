@@ -17,7 +17,7 @@ export const walletHistoryUrl = (
     address
   )}&confirmationStatus=CONFIRMED&limit=${WALLET_HISTORY_PAGE_SIZE}&offset=${offset}&reverse=true`;
 
-export type WalletHistoryEntry = Omit<WalletActivityEntry, 'counterpartyLabel'>;
+type WalletHistoryEntry = Omit<WalletActivityEntry, 'counterpartyLabel'>;
 
 /**
  * A payment as the account saw it: in or out, the other side, the amount.

@@ -4,7 +4,7 @@
  */
 import { getBaseApiReact } from '../utils/globalApi';
 
-export type QortLtcPriceQuote = {
+type QortLtcPriceQuote = {
   /** LTC per 1 QORT (peer market estimate) */
   ltcPerQort: number;
   /** How the estimate was derived */

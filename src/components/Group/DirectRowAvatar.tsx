@@ -9,7 +9,7 @@ import {
 import { mergeAvatarSx } from './CachedAvatars';
 import { SavedMessagesLogo } from './SavedMessagesLogo';
 
-export type DirectRowAvatarProps = {
+type DirectRowAvatarProps = {
   /** Registered name of the DM partner, if any. */
   name?: string | null;
   /** Shown name (name or address): alt text and fallback letter. */

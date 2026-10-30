@@ -11,7 +11,7 @@
  * before two-pane existed.
  */
 
-export type ChatSideView = 'groups' | 'directs';
+type ChatSideView = 'groups' | 'directs';
 
 /** List column width while pinned beside the conversation. */
 export const CHAT_LIST_PANE_WIDTH = 'clamp(320px, 36%, 420px)';
@@ -32,7 +32,7 @@ export interface ChatPaneLayoutInput {
   mobileGroupPanelOpen: boolean;
 }
 
-export interface ChatPaneLayout {
+interface ChatPaneLayout {
   /** The list sits beside the conversation instead of sliding over it. */
   listPinned: boolean;
   /** The detail pane is laid out (else display: none). */

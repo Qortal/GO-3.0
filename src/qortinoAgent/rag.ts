@@ -4,7 +4,7 @@ import {
   wantsPlayingQortalMaterial,
 } from './persona';
 
-export type KnowledgeChunk = {
+type KnowledgeChunk = {
   id: string;
   text: string;
   source: string;
@@ -19,7 +19,7 @@ export type KnowledgePack = {
   chunks: KnowledgeChunk[];
 };
 
-export type RetrievedChunk = KnowledgeChunk & { score: number };
+type RetrievedChunk = KnowledgeChunk & { score: number };
 
 const HASH_DIM = 384;
 

@@ -6,7 +6,7 @@ import { Preferences } from '@capacitor/preferences';
 const SESSIONS_KEY = 'qortino_chat_sessions_v1';
 const ACTIVE_KEY = 'qortino_chat_active_v1';
 
-export type QortinoChatMode = 'offline' | 'qdn';
+type QortinoChatMode = 'offline' | 'qdn';
 
 /** Serializable bubble — mirrors chat UI fields we care to restore. */
 export type StoredChatBubble = {

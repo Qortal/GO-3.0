@@ -4,7 +4,7 @@
  */
 
 /** Rough on-device token estimate (English-ish). */
-export function estimateTokenCount(text: string): number {
+function estimateTokenCount(text: string): number {
   const t = text.trim();
   if (!t) return 0;
   const words = t.split(/\s+/).filter(Boolean).length;

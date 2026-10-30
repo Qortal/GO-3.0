@@ -63,7 +63,7 @@ function afterDelayWhenIdle(run: () => void, delayMs: number): () => void {
   };
 }
 
-export interface MobileChatListPagerProps {
+interface MobileChatListPagerProps {
   /** The full-screen home lists: pages side by side, swipe on. Off (the
    * list swiped in over a chat, or covered by one) only the list in `scope`
    * shows, exactly as without the pager. */

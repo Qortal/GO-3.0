@@ -17,7 +17,7 @@ import {
 import { findHorizontalOwner } from '../Mobile/sectionSwipe/sectionSwipe';
 
 /** How far left (share of the width) the list waits under the chat. */
-export const SWIPE_BACK_PARALLAX = 0.3;
+const SWIPE_BACK_PARALLAX = 0.3;
 const SPRING_BACK_MS = 220;
 const CLICK_GUARD_MS = 400;
 const shadowFor = (direction: SwipeDirection) =>
@@ -25,9 +25,9 @@ const shadowFor = (direction: SwipeDirection) =>
 
 /** 'back': finger to the right (the list on the left). 'forward': to the
  * left, to the list on the right. */
-export type SwipeDirection = 'back' | 'forward';
+type SwipeDirection = 'back' | 'forward';
 
-export interface SwipeBackToListOptions {
+interface SwipeBackToListOptions {
   enabled: boolean;
   /** Swiped right far enough: close the chat for its list. */
   onBack: () => void;

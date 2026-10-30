@@ -21,11 +21,11 @@ export const CHAT_SCOPE_SEGMENT_HEIGHT = CHAT_LIST_TOUCH_TARGET;
 export const CHAT_SCOPE_PILL_INSET = 2;
 export const CHAT_LIST_AVATAR_SIZE = 40;
 /** Width of the avatar column: a little wider than the avatar for badges. */
-export const CHAT_LIST_AVATAR_SLOT = 44;
+const CHAT_LIST_AVATAR_SLOT = 44;
 /** Horizontal padding of a row; row actions reach into it (see below). */
-export const CHAT_LIST_ROW_PADDING_X = 14;
+const CHAT_LIST_ROW_PADDING_X = 14;
 /** Space between the avatar, the text and the trailing column of a row. */
-export const CHAT_LIST_ROW_GAP = 20;
+const CHAT_LIST_ROW_GAP = 20;
 
 export const getChatListPanelSx = (theme: Theme) => ({
   background: theme.palette.background.default,

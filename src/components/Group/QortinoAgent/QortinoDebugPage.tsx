@@ -184,5 +184,3 @@ export function QortinoDebugPage() {
     </QORTAL_APP_CONTEXT.Provider>
   );
 }
-
-export default QortinoDebugPage;

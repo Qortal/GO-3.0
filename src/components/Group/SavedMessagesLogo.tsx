@@ -1,7 +1,7 @@
 import { Box } from '@mui/material';
 import qortalWhiteLogo from '../../assets/sidebar/qortal-logo-white.png';
 
-export type SavedMessagesLogoProps = {
+type SavedMessagesLogoProps = {
   /** Width and height of the logo inside its avatar circle. */
   size?: number;
 };

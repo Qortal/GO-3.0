@@ -36,13 +36,13 @@ export type QortinoCompleteOptions = {
   temperature?: number;
 };
 
-export type QortinoTokenEvent = {
+type QortinoTokenEvent = {
   token: string;
   done: boolean;
   error?: string;
 };
 
-export type QortinoProgressEvent = {
+type QortinoProgressEvent = {
   stage: string;
   detail: string;
   percent: number;

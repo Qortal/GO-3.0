@@ -29,14 +29,14 @@ type CachedAvatarCommonProps = Omit<AvatarProps, 'src'> & {
   sxWithImage?: (hasImage: boolean) => SxProps<Theme>;
 };
 
-export type CachedUserAvatarProps = CachedAvatarCommonProps & {
+type CachedUserAvatarProps = CachedAvatarCommonProps & {
   /** Registered name (user, Q-App or QDN website). */
   name?: string | null;
   /** QDN identifier; defaults to `qortal_avatar`. */
   identifier?: string | null;
 };
 
-export type CachedGroupAvatarProps = CachedAvatarCommonProps & {
+type CachedGroupAvatarProps = CachedAvatarCommonProps & {
   /** Name of the group owner, who publishes the group avatar. */
   ownerName?: string | null;
   groupId?: string | number | null;

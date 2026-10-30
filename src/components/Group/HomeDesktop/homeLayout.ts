@@ -21,7 +21,7 @@ export type HomeModuleId =
   | 'groupActivity'
   | 'feed';
 
-export const HOME_MODULE_IDS: readonly HomeModuleId[] = [
+const HOME_MODULE_IDS: readonly HomeModuleId[] = [
   'qortino',
   'featured',
   'status',
@@ -37,10 +37,10 @@ export const HOME_MODULE_STORAGE_KEYS: Record<HomeModuleId, string> = {
   feed: HOME_QUITTER_FEED_VISIBLE_STORAGE_KEY,
 };
 
-export type HomeModuleVisibility = Record<HomeModuleId, boolean>;
+type HomeModuleVisibility = Record<HomeModuleId, boolean>;
 
 /** Shown unless turned off: a missing or unreadable value means on. */
-export const readHomeModuleVisible = (id: HomeModuleId): boolean => {
+const readHomeModuleVisible = (id: HomeModuleId): boolean => {
   if (typeof window === 'undefined') return true;
   try {
     const raw = window.localStorage.getItem(HOME_MODULE_STORAGE_KEYS[id]);
@@ -129,8 +129,7 @@ export const HOME_WINDOW_ORDER_DEFAULT: readonly HomeWindowId[] = [
 ];
 
 export const HOME_WINDOW_ORDER_STORAGE_KEY = 'home-dashboard-window-order-v1';
-export const HOME_WINDOW_ORDER_CHANGE_EVENT =
-  'home-dashboard-window-order-change';
+const HOME_WINDOW_ORDER_CHANGE_EVENT = 'home-dashboard-window-order-change';
 
 const isHomeWindowId = (value: unknown): value is HomeWindowId =>
   typeof value === 'string' &&

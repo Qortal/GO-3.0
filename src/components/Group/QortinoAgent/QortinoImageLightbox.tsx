@@ -165,5 +165,3 @@ export function QortinoImageLightbox({
     </>
   );
 }
-
-export default QortinoImageLightbox;

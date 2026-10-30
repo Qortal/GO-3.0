@@ -8,7 +8,7 @@
 import { getBaseApiReact } from '../utils/globalApi';
 import type { QdnMediaItem } from './qdnMedia';
 
-export type QdnTopicHit = {
+type QdnTopicHit = {
   name: string;
   service: string;
   identifier: string;
@@ -149,7 +149,7 @@ export function detectTopicIntent(query: string): boolean {
   );
 }
 
-export function extractTopicTerms(query: string): string[] {
+function extractTopicTerms(query: string): string[] {
   const raw = query
     .toLowerCase()
     .replace(/[^\p{L}\p{N}\s_-]+/gu, ' ')
@@ -191,7 +191,7 @@ function stripCategory(desc?: string): string {
 }
 
 /** Parse `qortal://APP/Q-Tube/video/Name/id` or `qortal://VIDEO/Name/id`. */
-export function parseQortalLink(
+function parseQortalLink(
   link: string
 ): { service: string; name: string; identifier: string } | null {
   try {

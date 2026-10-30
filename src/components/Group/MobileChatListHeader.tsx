@@ -62,7 +62,7 @@ const iconLayerSx = {
   position: 'absolute',
 } as const;
 
-export interface MobileChatListHeaderProps {
+interface MobileChatListHeaderProps {
   ref?: Ref<MobileChatListHeaderHandle>;
   scope: ChatScope;
   onScopeChange: (scope: ChatScope) => void;

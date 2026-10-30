@@ -711,5 +711,3 @@ export function QortinoVideoPlayer({ item, onClose }: Props) {
     </Box>
   );
 }
-
-export default QortinoVideoPlayer;

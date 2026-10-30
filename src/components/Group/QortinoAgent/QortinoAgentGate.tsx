@@ -339,5 +339,3 @@ export function QortinoAgentGate({ onInstalled, onCancel }: Props) {
     </Box>
   );
 }
-
-export default QortinoAgentGate;

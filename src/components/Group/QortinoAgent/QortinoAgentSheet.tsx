@@ -160,5 +160,3 @@ export function QortinoAgentSheet({ open, onClose }: Props) {
     </Dialog>
   );
 }
-
-export default QortinoAgentSheet;

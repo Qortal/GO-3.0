@@ -4,7 +4,7 @@
 import { getBaseApiReact, getBaseApiReactForAvatar } from '../utils/globalApi';
 import type { QdnProfileCard } from './qdnLookup';
 
-export type RosterKind = 'minter-admins' | 'dev-admins' | 'qm-admins' | 'forum-admins';
+type RosterKind = 'minter-admins' | 'dev-admins' | 'qm-admins' | 'forum-admins';
 
 export type OwnedNameRow = {
   name: string;
@@ -14,7 +14,7 @@ export type OwnedNameRow = {
   avatarUrl: string;
 };
 
-export type GroupOwnerResult = {
+type GroupOwnerResult = {
   groupId: number;
   groupName: string;
   ownerAddress: string;
@@ -461,4 +461,4 @@ export async function fetchOwnedNamesDetailed(
   return { address, primaryName: primaryName || address, names, text };
 }
 
-export { formatRegistered, avatarUrlFor };
+export { formatRegistered };

@@ -7,12 +7,12 @@
 
 export type MemberAdminAction = 'make_admin' | 'remove_admin' | 'kick' | 'ban';
 
-export interface MemberActionTarget {
+interface MemberActionTarget {
   member?: string;
   isAdmin?: boolean;
 }
 
-export interface MemberActionContext {
+interface MemberActionContext {
   viewerAddress?: string | null;
   ownerAddress?: string | null;
   isOwner?: boolean;

@@ -40,7 +40,7 @@ export const OFFICIAL_QDN_GUIDES: OfficialResourceLink[] = [
   },
 ];
 
-export const OFFICIAL_WEB_LINKS: OfficialResourceLink[] = [
+const OFFICIAL_WEB_LINKS: OfficialResourceLink[] = [
   {
     id: 'dev-minting',
     label: 'qortal.dev — Minting',

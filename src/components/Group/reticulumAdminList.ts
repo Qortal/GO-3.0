@@ -14,7 +14,7 @@
 /** How long one admin-list fetch may take before it counts as failed. */
 export const RETICULUM_ADMIN_LIST_TIMEOUT_MS = 15_000;
 
-export type ReticulumGroupMembership = {
+type ReticulumGroupMembership = {
   groupId: number;
   isPrivate: boolean;
   isAdmin: boolean;

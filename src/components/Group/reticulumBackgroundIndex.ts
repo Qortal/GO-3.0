@@ -24,7 +24,7 @@ export type ReticulumBackgroundIndexEvent = {
   timestamp?: number;
 };
 
-export type ReticulumBackgroundEventTracker = {
+type ReticulumBackgroundEventTracker = {
   /** True when this caller should index the event (not indexed, not in flight). */
   claimIndex: (eventId: string) => boolean;
   /** Gives a claim back without indexing (not indexable yet, or it failed). */
@@ -144,7 +144,7 @@ export const createReticulumBackgroundEventTracker = ({
   };
 };
 
-export type ReticulumBackgroundIndexBridge = {
+type ReticulumBackgroundIndexBridge = {
   indexSearchText?: (eventId: string, text: string) => Promise<unknown>;
   replaceMentions?: (
     eventId: string,

@@ -4,7 +4,7 @@
  */
 import { getBaseApiReact } from '../utils/globalApi';
 
-export type QortalProfileLink = {
+type QortalProfileLink = {
   label: string;
   href: string;
 };
@@ -71,7 +71,7 @@ function collectLinks(customData: unknown): QortalProfileLink[] {
 }
 
 /** Fetch DOCUMENT/{name}/qortal_profile when published. */
-export async function fetchQortalUserProfile(
+async function fetchQortalUserProfile(
   name: string,
   signal?: AbortSignal
 ): Promise<QortalUserProfile | null> {

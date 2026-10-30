@@ -308,5 +308,3 @@ function renderBlock(
     </Typography>
   );
 }
-
-export default QortinoRichText;

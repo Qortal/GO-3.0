@@ -14,9 +14,9 @@ import {
   isQortalNetworkDefinitionQuery,
 } from './queryIntent';
 
-export type QAppService = 'APP' | 'WEBSITE';
+type QAppService = 'APP' | 'WEBSITE';
 
-export type QAppCatalogEntry = {
+type QAppCatalogEntry = {
   id: string;
   /** Canonical QDN name */
   name: string;
@@ -31,7 +31,7 @@ export type QAppCatalogEntry = {
 };
 
 /** Live publisher identity for a QDN APP/WEBSITE name. */
-export type QAppPublisherInfo = {
+type QAppPublisherInfo = {
   /** Name the APP/WEBSITE is published under */
   publishName: string;
   ownerAddress: string;
@@ -293,7 +293,7 @@ function isStrongAppLabel(c: string): boolean {
 }
 
 /** Extract a likely app name from questions like "what is q-assets". */
-export function extractQAppQueryName(query: string): string | null {
+function extractQAppQueryName(query: string): string | null {
   const t = normalize(query);
   const patterns = [
     /^(?:what is|what's|whats|explain|tell me about|open|launch)\s+(.+?)(?:\s+q-?app)?\??$/,

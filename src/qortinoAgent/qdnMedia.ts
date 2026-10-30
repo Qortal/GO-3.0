@@ -82,7 +82,7 @@ export function formatMediaBytes(size?: number): string {
 }
 
 /** Videos smaller than this are usually stubs / broken uploads — hide by default. */
-export const MIN_VIDEO_BYTES = 1024 * 1024;
+const MIN_VIDEO_BYTES = 1024 * 1024;
 
 /** Known size under 1 MB. Missing/unknown size is not treated as tiny. */
 export function isTinyVideo(item: QdnMediaItem): boolean {

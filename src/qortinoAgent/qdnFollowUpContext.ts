@@ -1,7 +1,7 @@
 /**
  * Resolve chat follow-ups like "that user" / "them" from recent QDN bubbles.
  */
-export type FollowUpBubble = {
+type FollowUpBubble = {
   role: 'user' | 'assistant';
   content: string;
   profiles?: Array<{ name: string }>;
@@ -9,7 +9,7 @@ export type FollowUpBubble = {
   ownedNames?: Array<{ name: string; isPrimary?: boolean }>;
 };
 
-export type FollowUpResolution = {
+type FollowUpResolution = {
   /** Query after pronoun/name rewrite */
   text: string;
   resolvedName?: string;

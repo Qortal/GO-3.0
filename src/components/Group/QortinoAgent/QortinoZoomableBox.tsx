@@ -540,5 +540,3 @@ export function QortinoZoomableBox({
     </Box>
   );
 }
-
-export default QortinoZoomableBox;

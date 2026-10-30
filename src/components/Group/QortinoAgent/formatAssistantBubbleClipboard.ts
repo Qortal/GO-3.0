@@ -10,7 +10,7 @@ import type { QdnProfileCard, QuitterPostCard } from '../../../qortinoAgent/qdnL
 import type { OwnedNameRow } from '../../../qortinoAgent/qdnRoster';
 import { formatRegistered } from '../../../qortinoAgent/qdnRoster';
 
-export type ClipboardBubble = {
+type ClipboardBubble = {
   content?: string;
   profiles?: QdnProfileCard[];
   ownedNames?: OwnedNameRow[];

@@ -5,7 +5,7 @@
  */
 
 /** Characters of `text` from `start` up to (not including) `end`. */
-export type MemberMatchRange = { start: number; end: number };
+type MemberMatchRange = { start: number; end: number };
 
 /** One piece of a line drawn with the matched letters picked out. */
 export type MemberTextSegment = { text: string; match: boolean };
@@ -16,7 +16,7 @@ type FoldedText = {
   map: number[];
 };
 
-export type MemberSearchEntry = {
+type MemberSearchEntry = {
   address: string;
   name: string;
   isAdmin: boolean;
@@ -45,7 +45,7 @@ const RANK = {
   addressContains: 4,
 } as const;
 
-export const MEMBER_SEARCH_LIMIT = 8;
+const MEMBER_SEARCH_LIMIT = 8;
 
 const COMBINING_MARKS = /[̀-ͯ]/g;
 const WORD_CHAR = /[\p{L}\p{N}]/u;

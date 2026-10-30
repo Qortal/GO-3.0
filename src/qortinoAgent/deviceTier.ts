@@ -4,7 +4,7 @@ import QortinoLlm, {
 } from '../plugins/QortinoLlm';
 import type { QortinoAgentManifest, QortinoPackId } from './manifest';
 
-export type DeviceTierDecision = {
+type DeviceTierDecision = {
   tier: QortinoDeviceTier;
   recommendedPack: QortinoPackId;
   allowedPacks: QortinoPackId[];

@@ -56,7 +56,7 @@ export type HomeWindow = {
 
 export const HOME_WINDOW_ATTR = 'data-home-window';
 /** Presses inside an element with this attribute never lift a window. */
-export const HOME_REORDER_IGNORE_ATTR = 'data-home-reorder-ignore';
+const HOME_REORDER_IGNORE_ATTR = 'data-home-reorder-ignore';
 
 export const HOME_WINDOW_LONG_PRESS_MS = 420;
 const MOVE_CANCEL_PX = 8;
@@ -102,7 +102,7 @@ const INTERACTIVE_SELECTOR = [
  * anything it uses itself (buttons, links, fields, and plain elements made
  * clickable, which show a pointer).
  */
-export const isWindowBackground = (target: Element, windowEl: Element) => {
+const isWindowBackground = (target: Element, windowEl: Element) => {
   const interactive = target.closest(INTERACTIVE_SELECTOR);
   if (interactive && windowEl.contains(interactive)) return false;
   let element: Element | null = target;

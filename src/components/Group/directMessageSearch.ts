@@ -3,7 +3,7 @@ import { reticulumVisibleSearchTextFromPayload } from './reticulumSearchText';
 /** Fewer letters than this find nothing (as in the engine's search). */
 export const DM_SEARCH_MIN_LENGTH = 2;
 /** At most this many results are shown. */
-export const DM_SEARCH_RESULT_LIMIT = 60;
+const DM_SEARCH_RESULT_LIMIT = 60;
 /**
  * Asked of the engine: more than are shown, since a few of its matches are
  * only in the message's markup (a link's address, a tag) and are dropped.

@@ -4,13 +4,13 @@
  */
 
 export const STRIP_HEIGHT_PX = 56;
-export const STRIP_MIN_HEIGHT_PX = 38;
+const STRIP_MIN_HEIGHT_PX = 38;
 export const STRIP_GAP_PX = 8;
 
 export const clampNumber = (value: number, min: number, max: number) =>
   Math.min(Math.max(value, min), Math.max(min, max));
 
-export type CompactStackLayout = {
+type CompactStackLayout = {
   tileHeight: number;
   pitch: number;
   stackTop: number;

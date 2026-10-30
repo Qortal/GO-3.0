@@ -6,7 +6,7 @@ export function normalizeQortCoinLanguage(text: string): string {
   return normalizeAssistantDisplayText(text);
 }
 
-export function normalizeAssistantDisplayText(text: string): string {
+function normalizeAssistantDisplayText(text: string): string {
   if (!text) return text;
   let t = text;
 

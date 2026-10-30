@@ -41,7 +41,7 @@ interface DirectListEntry {
   savedMessages?: boolean;
 }
 
-export interface DirectMessageSearchPanelProps {
+interface DirectMessageSearchPanelProps {
   open: boolean;
   onClose: () => void;
   myAddress: string;

@@ -4,7 +4,7 @@
  */
 import type { OfficialResourceLink } from './officialResources';
 
-export type ProfileOverride = {
+type ProfileOverride = {
   /** Displayed in the profile chip + preferred offline who-is blurb. */
   description: string;
   /** Extra tappable APP/WEBSITE / https chips for this person. */

@@ -1157,5 +1157,3 @@ export function QortinoMediaCards({ items, layout, onSearchUser }: Props) {
     </Box>
   );
 }
-
-export default QortinoMediaCards;

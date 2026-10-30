@@ -326,5 +326,3 @@ export function QortinoAudioPlayer({ item, onClose }: Props) {
     </Box>
   );
 }
-
-export default QortinoAudioPlayer;

@@ -15,7 +15,7 @@
 import { createEndpoint } from '../background/background';
 import { PUBLISHED_QSHARE_FILES, QORTINO_QDN_NAME } from './manifest';
 
-export type QshareFileEntry = {
+type QshareFileEntry = {
   filename: string;
   identifier: string;
   service: string;
@@ -23,7 +23,7 @@ export type QshareFileEntry = {
   mimetype?: string;
 };
 
-export type QdnResourceRow = {
+type QdnResourceRow = {
   identifier: string;
   service: string;
   size: number;
@@ -197,7 +197,7 @@ export async function discoverQortinoQshareFiles(options?: {
 }
 
 /** `packs/qortino-lite.zip` -> `qortino-lite.zip` */
-export function basenameOf(relativePath: string): string {
+function basenameOf(relativePath: string): string {
   const parts = String(relativePath || '').split('/');
   return (parts[parts.length - 1] || '').toLowerCase();
 }

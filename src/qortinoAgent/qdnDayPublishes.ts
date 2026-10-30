@@ -14,7 +14,7 @@ import {
 } from './qdnMedia';
 import type { QdnProfileCard } from './qdnLookup';
 
-export type DayPublishItem = {
+type DayPublishItem = {
   name: string;
   service: string;
   identifier: string;
@@ -30,7 +30,7 @@ export type DayPublishItem = {
   link: string | null;
 };
 
-export type DayPublishResult = {
+type DayPublishResult = {
   name: string;
   address: string;
   dayLabel: string;

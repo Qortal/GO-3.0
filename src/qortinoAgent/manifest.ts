@@ -12,10 +12,10 @@ export const QORTINO_QDN_NAME = 'Qortino AI';
 export const QORTINO_MANIFEST_SERVICE = 'DOCUMENT';
 export const QORTINO_MANIFEST_IDENTIFIER = 'qortino_agent_manifest';
 
-export const QORTINO_FILE_SERVICE = 'FILE';
+const QORTINO_FILE_SERVICE = 'FILE';
 
 /** Stable QDN identifiers for packaged binaries / packs. */
-export const QORTINO_QDN_IDS = {
+const QORTINO_QDN_IDS = {
   manifest: 'qortino_agent_manifest',
   packLite: 'qortino_pack_lite',
   packStandard: 'qortino_pack_standard',

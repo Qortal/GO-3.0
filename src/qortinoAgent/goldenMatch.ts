@@ -5,7 +5,7 @@
 import goldenAnswers from './goldenAnswers.json';
 import { isQortPriceQuery } from './queryIntent';
 
-export type GoldenEntry = {
+type GoldenEntry = {
   id: string;
   category: string;
   q: string;
@@ -14,7 +14,7 @@ export type GoldenEntry = {
   priority?: number;
 };
 
-export type GoldenMatch = {
+type GoldenMatch = {
   entry: GoldenEntry;
   score: number;
 };

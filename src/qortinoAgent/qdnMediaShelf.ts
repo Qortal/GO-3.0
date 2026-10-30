@@ -6,7 +6,7 @@ import type { QdnMediaItem } from './qdnMedia';
 
 const STORAGE_KEY = 'qortino.mediaShelves.v1';
 
-export type SavedMediaShelf = {
+type SavedMediaShelf = {
   id: string;
   title: string;
   savedAt: number;
@@ -55,7 +55,7 @@ export function saveMediaShelf(
   return shelf;
 }
 
-export function qortalLinkForItem(item: QdnMediaItem): string {
+function qortalLinkForItem(item: QdnMediaItem): string {
   return preferredQortalLink(item);
 }
 

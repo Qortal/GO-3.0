@@ -71,7 +71,7 @@ export async function clearInstallState(): Promise<void> {
   await Preferences.remove({ key: INSTALL_KEY });
 }
 
-export type QortinoRuntimeCache = {
+type QortinoRuntimeCache = {
   manifest: QortinoAgentManifest;
   knowledge: KnowledgePack | null;
   install: QortinoInstallState;

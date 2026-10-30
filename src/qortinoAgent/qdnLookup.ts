@@ -82,7 +82,6 @@ export type QdnProfileCard = {
   primaryName?: string;
 };
 
-export type { QdnPublishedSite };
 export type { QuitterPostCard };
 
 export type QdnDossier = {
@@ -1069,7 +1068,7 @@ export function orderedPersonExactLookupKeys(candidate: string): string[] {
 }
 
 /** Levenshtein distance for short name typo tolerance. */
-export function nameEditDistance(a: string, b: string): number {
+function nameEditDistance(a: string, b: string): number {
   const s = a.toLowerCase();
   const t = b.toLowerCase();
   if (s === t) return 0;
@@ -1315,10 +1314,10 @@ function activityLevel(count30d: number): string {
 
 export type QdnScanDepth = 'quick' | 'full';
 
-export type QdnScanProgress = (detail: string) => void;
+type QdnScanProgress = (detail: string) => void;
 
 /** Who-is / person lookup shape (name present) — depth choice needs a tx-count check too. */
-export function wantsQdnPersonDepthChoice(query: string): boolean {
+function wantsQdnPersonDepthChoice(query: string): boolean {
   const t = query.trim();
   if (!t) return false;
   if (detectTopicIntent(t) && !detectNominationIntent(t)) return false;
@@ -1734,7 +1733,7 @@ export async function fetchUserQdnDossier(
  * - person / nomination / media-by-name → name dossiers + media shelf
  * - how-to / topical questions → QDN index + content search across publishes
  */
-export type QdnOwnedNameCard = {
+type QdnOwnedNameCard = {
   name: string;
   address: string;
   isPrimary?: boolean;

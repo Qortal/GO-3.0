@@ -215,5 +215,3 @@ export function QortinoZoomableImage({ src, alt = '' }: Props) {
     </Box>
   );
 }
-
-export default QortinoZoomableImage;
