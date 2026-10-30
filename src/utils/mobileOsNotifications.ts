@@ -3,7 +3,7 @@ import { QortalBackground } from '../plugins/QortalBackground';
 import { isCapacitor } from './platform';
 import { fetchChatAvatarDataUrl } from './chatAvatarUrl';
 import { parseQdnThumbnailRef } from './qdnThumbnailRef';
-import { chatAlertIdFromKey, hashNotificationId } from './reticulumChatAlerts';
+import { hashNotificationId } from './reticulumChatAlerts';
 
 type OsNotificationOptions = {
   title: string;
@@ -138,17 +138,6 @@ export const showOsNotification = async ({
     const alertId = hashNotificationId(id || `${title}:${body}:${Date.now()}`);
 
     const resolvedIconUrl = await resolveNotificationIconUrl(iconUrl);
-    if (resolvedIconUrl !== iconUrl) {
-      console.log(
-        resolvedIconUrl
-          ? '[mobileOsNotifications] avatar inlined as data URL'
-          : '[mobileOsNotifications] no avatar published, default icon'
-      );
-    } else if (iconUrl && /^https?:\/\//i.test(iconUrl)) {
-      console.log(
-        '[mobileOsNotifications] avatar not inlined (size or fetch), using raw URL'
-      );
-    }
 
     await QortalBackground.showAlertNotification({
       alertId,
@@ -220,7 +209,7 @@ export const dismissChatOsNotification = async (
 
   try {
     await QortalBackground.dismissChatAlertNotification({
-      alertId: chatAlertIdFromKey(alertKey),
+      alertId: hashNotificationId(alertKey),
       alertTag: alertKey,
     });
   } catch (error) {

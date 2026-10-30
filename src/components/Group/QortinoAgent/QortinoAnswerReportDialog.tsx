@@ -25,6 +25,7 @@ import {
   humanLabelForSearchKind,
   type QdnSearchKind,
 } from '../../../qortinoAgent/qdnSearchKind';
+import { escapeHtml } from '../../../utils/escapeHtml';
 
 export const QORTINO_TEACHING_SUBJECT = 'Teaching Qortino AI';
 export const QORTINO_TEACHING_RECIPIENT = 'Qortino AI';
@@ -71,14 +72,6 @@ export function buildTeachingQmailBody(opts: {
     `Qortino's answer:\n${opts.answer.trim()}\n\n` +
     `What went wrong and how Qortino should answer next time:\n${opts.feedback.trim()}`
   );
-}
-
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
 }
 
 /** Q-Mail renders textContentV2 as HTML — paragraphs with <br> line breaks. */

@@ -16,6 +16,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from './shims/fs';
 import { warn } from './shims/logger';
 import { buildStagedResourcePath } from './stagedFileName';
+import { base64ToBytes, bytesToBase64 } from '../../utils/bytesBase64';
 
 /**
  * Reason the engine gets (as a 'failed' resource status) when received bytes
@@ -47,22 +48,6 @@ const STAGED_SEND_TTL_MS = 10 * 60_000;
 // dropped in session after twice the TTL (a running transfer keeps its open
 // file handle, so even a late delete does not cut it off).
 const STAGED_SEND_FORGET_MS = 2 * STAGED_SEND_TTL_MS;
-
-function toBase64(bytes: Uint8Array): string {
-  let binary = '';
-  const chunk = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunk) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
-  }
-  return btoa(binary);
-}
-
-function fromBase64(data: string): Uint8Array {
-  const binary = atob(data);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return bytes;
-}
 
 function baseName(p: string): string {
   const parts = String(p).split('/');
@@ -118,7 +103,7 @@ export class ReticulumResourceStaging {
     const nativePath = await this.allocate(baseName(opfsPath));
     await this.nativeFs('write', {
       path: nativePath,
-      dataBase64: toBase64(new Uint8Array(bytes)),
+      dataBase64: bytesToBase64(new Uint8Array(bytes)),
     });
     this.outbound.add(nativePath);
     if (transferId) this.noteOutboundTransfer(transferId, nativePath);
@@ -199,7 +184,7 @@ export class ReticulumResourceStaging {
       const dataBase64 = String(result?.dataBase64 ?? '');
       const dir = dirName(opfsPath);
       if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-      writeFileSync(opfsPath, fromBase64(dataBase64));
+      writeFileSync(opfsPath, base64ToBytes(dataBase64));
       return opfsPath;
     } catch (err) {
       const { code, message } = (err ?? {}) as {

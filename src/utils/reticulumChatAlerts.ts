@@ -28,9 +28,6 @@ export const hashNotificationId = (value: string): number => {
   return (hash % 90000) + 1000;
 };
 
-export const chatAlertIdFromKey = (key: string): number =>
-  hashNotificationId(key);
-
 const shownAlertKeys = new Set<string>();
 
 export const rememberShownAlert = (key: string): void => {

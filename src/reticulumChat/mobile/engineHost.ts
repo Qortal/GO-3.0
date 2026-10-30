@@ -68,6 +68,7 @@ import { MobileReticulumBridge } from './wireBridge';
 import type { ServingStats } from './wireBridge';
 import { ReticulumResourceStaging } from './resourceStaging';
 import type { NativeFsFn } from './resourceStaging';
+import { base64ToBytes } from '../../utils/bytesBase64';
 import {
   createLatencyStats,
   noteLatency,
@@ -2892,10 +2893,7 @@ function decodeBase64(base64: string): Uint8Array {
   const clean = base64.includes(',')
     ? base64.slice(base64.indexOf(',') + 1)
     : base64;
-  const bin = atob(clean.replace(/\s/g, ''));
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
+  return base64ToBytes(clean.replace(/\s/g, ''));
 }
 
 const resourceHandlers: Record<string, Handler> = {

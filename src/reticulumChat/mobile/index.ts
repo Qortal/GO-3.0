@@ -31,6 +31,7 @@ import { getBaseApiReact } from '../../App';
 import { Reticulum } from '../../plugins/Reticulum';
 import { preferHttpForLocalPrivateUrl } from '../../utils/helpers';
 import { getNativeBcryptRuntimeInfo } from '../../utils/nativeBcrypt';
+import { bytesToBase64 } from '../../utils/bytesBase64';
 import { startOwnPostDeliveryListener } from '../ownPostDeliveryStore';
 import {
   apiHostOf,
@@ -1215,14 +1216,6 @@ function installMobileReticulumResources(): void {
   const stagedFiles = new Map<string, File>();
   let stagedSequence = 0;
 
-  const encodeBase64 = (bytes: Uint8Array): string => {
-    let binary = '';
-    for (let i = 0; i < bytes.length; i += 0x8000) {
-      binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-    }
-    return btoa(binary);
-  };
-
   type BlobUrlResult = {
     success: boolean;
     url?: string;
@@ -1294,7 +1287,7 @@ function installMobileReticulumResources(): void {
           ...rest,
           fileName: rest.fileName || file.name || 'attachment.bin',
           mimeType: rest.mimeType || file.type || 'application/octet-stream',
-          base64: encodeBase64(bytes),
+          base64: bytesToBase64(bytes),
         },
       ])) as { success?: boolean } | null;
       if (result?.success) {

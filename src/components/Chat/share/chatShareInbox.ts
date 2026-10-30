@@ -11,6 +11,7 @@ import {
   subscribeToEvent,
   unsubscribeFromEvent,
 } from '../../../utils/events';
+import { escapeHtml } from '../../../utils/escapeHtml';
 
 export type ChatShareNotice =
   /** More files were shared; a message carries one. */
@@ -171,16 +172,10 @@ export function useChatShareInbox(
 
 /** Shared text as editor paragraphs (escaped; line breaks kept). */
 export function sharedTextToHtml(text: string): string {
-  const escape = (value: string) =>
-    value
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
   return String(text ?? '')
     .replace(/\r\n?/g, '\n')
     .split('\n')
-    .map((line) => `<p>${escape(line)}</p>`)
+    .map((line) => `<p>${escapeHtml(line)}</p>`)
     .join('');
 }
 

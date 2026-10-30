@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   CHAT_ALERT_MAX_CATCH_UP_MS,
   chatAlertFloor,
-  chatAlertIdFromKey,
   createChatAlertCoalescer,
   isChatAlertCatchUp,
   readChatAlertLastRunMark,
@@ -62,7 +61,7 @@ describe('reticulumChatAlerts keys and ids', () => {
     expect(reticulumMentionAlertKey('42')).toBe('reticulum-mention:42');
   });
 
-  it('keeps chatAlertIdFromKey identical to the legacy hash', () => {
+  it('keeps hashNotificationId identical to the legacy hash', () => {
     const samples = [
       'reticulum-dm:QabcPeer',
       'reticulum-mention:42',
@@ -72,17 +71,16 @@ describe('reticulumChatAlerts keys and ids', () => {
       'a'.repeat(200),
     ];
     for (const sample of samples) {
-      expect(chatAlertIdFromKey(sample)).toBe(legacyHashNotificationId(sample));
       expect(hashNotificationId(sample)).toBe(legacyHashNotificationId(sample));
     }
-    expect(chatAlertIdFromKey('reticulum-dm:QabcPeer')).toBe(
-      chatAlertIdFromKey('reticulum-dm:QabcPeer')
+    expect(hashNotificationId('reticulum-dm:QabcPeer')).toBe(
+      hashNotificationId('reticulum-dm:QabcPeer')
     );
   });
 
   it('keeps ids inside the 1000..90999 range', () => {
     for (const sample of ['x', 'reticulum-dm:Q1', 'reticulum-mention:99']) {
-      const id = chatAlertIdFromKey(sample);
+      const id = hashNotificationId(sample);
       expect(id).toBeGreaterThanOrEqual(1000);
       expect(id).toBeLessThan(91000);
       expect(Number.isInteger(id)).toBe(true);
@@ -218,7 +216,7 @@ describe('dismissShownAlert', () => {
     await Promise.resolve();
     expect(dismissChatAlertNotification).toHaveBeenCalledTimes(1);
     expect(dismissChatAlertNotification).toHaveBeenCalledWith({
-      alertId: chatAlertIdFromKey(key),
+      alertId: hashNotificationId(key),
       alertTag: key,
     });
   });

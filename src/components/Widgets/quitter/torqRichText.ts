@@ -7,6 +7,7 @@
  * paragraph gap, and one Enter in the editor is one paragraph, so paragraphs
  * become `\n\n` in `text`.
  */
+import { escapeHtml } from '../../../utils/escapeHtml';
 
 export type TorqDocNode = {
   type: string;
@@ -27,13 +28,6 @@ const MARK_TAGS: [string, string][] = [
   ['italic', 'i'],
   ['underline', 'u'],
 ];
-
-const escapeHtml = (value: string) =>
-  value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
 
 function inlineHtml(nodes: TorqDocNode[] = []): string {
   return nodes

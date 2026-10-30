@@ -14,6 +14,7 @@ import {
 } from '../bridge/capacitorBridge';
 import { QortalBackground } from '../plugins/QortalBackground';
 import { isCapacitor } from './platform';
+import { formatTransferBytes as formatBytes } from './qdnDownloadNotifications';
 
 type TransferDirection = 'send' | 'receive';
 
@@ -43,15 +44,6 @@ const asStr = (value: unknown): string =>
 const asNum = (value: unknown): number => {
   const n = Number(value);
   return Number.isFinite(n) ? n : 0;
-};
-
-const formatBytes = (bytes: number): string => {
-  if (bytes >= 1024 * 1024 * 1024) {
-    return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
-  }
-  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
-  return `${Math.max(0, Math.round(bytes))} B`;
 };
 
 const formatDuration = (ms: number): string => {

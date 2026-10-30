@@ -1,3 +1,5 @@
+import { sniffImageType } from '../lib/qdnAvatars/imageBytes';
+
 /** Drop `async=true` so the node blocks until the thumbnail is actually fetched. */
 function stripAvatarAsyncQuery(url: string): string {
   return url
@@ -26,44 +28,6 @@ export async function buildChatUserAvatarNotificationUrl(
   return url;
 }
 
-/**
- * The node serves avatar thumbnails as `application/octet-stream`, so the
- * declared MIME type is useless — sniff the magic bytes instead.
- */
-function looksLikeImageBytes(head: Uint8Array): boolean {
-  if (head.length < 4) return false;
-  // PNG
-  if (
-    head[0] === 0x89 &&
-    head[1] === 0x50 &&
-    head[2] === 0x4e &&
-    head[3] === 0x47
-  ) {
-    return true;
-  }
-  // JPEG
-  if (head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff) return true;
-  // GIF
-  if (head[0] === 0x47 && head[1] === 0x49 && head[2] === 0x46) return true;
-  // BMP
-  if (head[0] === 0x42 && head[1] === 0x4d) return true;
-  // WebP: RIFF....WEBP
-  if (
-    head.length >= 12 &&
-    head[0] === 0x52 &&
-    head[1] === 0x49 &&
-    head[2] === 0x46 &&
-    head[3] === 0x46 &&
-    head[8] === 0x57 &&
-    head[9] === 0x45 &&
-    head[10] === 0x42 &&
-    head[11] === 0x50
-  ) {
-    return true;
-  }
-  return false;
-}
-
 /** Fetch avatar bytes in JS (WebView) and return a data-URL for native notifications. */
 export async function fetchChatAvatarDataUrl(
   iconUrl: string
@@ -83,7 +47,9 @@ export async function fetchChatAvatarDataUrl(
       const blob = await response.blob();
       if (!blob.size) continue;
       const head = new Uint8Array(await blob.slice(0, 16).arrayBuffer());
-      if (!looksLikeImageBytes(head)) continue;
+      // The node serves thumbnails as octet-stream: trust the magic bytes.
+      const type = sniffImageType(head);
+      if (!type || type === 'image/avif') continue;
       const dataUrl = await new Promise<string | undefined>(
         (resolve, reject) => {
           const reader = new FileReader();
