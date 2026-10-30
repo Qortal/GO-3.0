@@ -40,7 +40,7 @@ import QortinoLlm, {
 } from '../../../plugins/QortinoLlm';
 import { isQortinoWebDebugEnabled } from '../../../qortinoAgent/webDebugLlm';
 import {
-  BUILTIN_SAMPLE_KNOWLEDGE,
+  loadBuiltinKnowledge,
   loadKnowledgeFromInstall,
 } from '../../../qortinoAgent/download';
 import {
@@ -974,10 +974,12 @@ export function QortinoAgentChat({ install, onClose }: Props) {
     (async () => {
       try {
         const pack =
-          (await loadKnowledgeFromInstall(install)) || BUILTIN_SAMPLE_KNOWLEDGE;
+          (await loadKnowledgeFromInstall(install)) ||
+          (await loadBuiltinKnowledge());
         if (!cancelled) setKnowledge(pack);
       } catch {
-        if (!cancelled) setKnowledge(BUILTIN_SAMPLE_KNOWLEDGE);
+        const pack = await loadBuiltinKnowledge().catch(() => null);
+        if (!cancelled && pack) setKnowledge(pack);
       }
     })();
     return () => {

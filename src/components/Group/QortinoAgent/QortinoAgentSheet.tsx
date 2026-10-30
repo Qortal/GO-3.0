@@ -1,24 +1,25 @@
 import { Box, Dialog, IconButton, useTheme } from '@mui/material';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import { useAtomValue } from 'jotai';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from 'react';
 import { qortinoAgentParkedAtom } from '../../../atoms/global';
 import { SAFE_AREA_BOTTOM, SAFE_AREA_TOP } from '../../../utils/mobileSafeArea';
 import {
-  BUILTIN_SAMPLE_KNOWLEDGE,
-  fetchQortinoManifest,
-  loadKnowledgeFromInstall,
-} from '../../../qortinoAgent/download';
-import type { QortinoAgentManifest } from '../../../qortinoAgent/manifest';
-import {
-  defaultRuntimeCache,
   loadInstallState,
   saveInstallState,
-  setRuntimeCache,
   type QortinoInstallState,
 } from '../../../qortinoAgent/store';
-import { QortinoAgentChat } from './QortinoAgentChat';
 import { QortinoAgentGate } from './QortinoAgentGate';
+
+const loadQortinoAgentChat = () => import('./QortinoAgentChat');
+const QortinoAgentChat = lazy(loadQortinoAgentChat);
 
 type Props = {
   open: boolean;
@@ -30,33 +31,19 @@ export function QortinoAgentSheet({ open, onClose }: Props) {
   const parked = useAtomValue(qortinoAgentParkedAtom);
   const [ready, setReady] = useState(false);
   const [install, setInstall] = useState<QortinoInstallState>({ installed: false });
-  const [manifest, setManifest] = useState<QortinoAgentManifest | null>(null);
   /** Once the chat session has been assembled, keep it across park/restore. */
   const sessionReadyRef = useRef(false);
   const refreshGenRef = useRef(0);
 
   const refresh = useCallback(async () => {
     const gen = ++refreshGenRef.current;
-    const [state, m] = await Promise.all([
-      loadInstallState(),
-      // Opening the sheet must not wait on QDN — identifier resolution keeps
-      // running in the background and the gate picks up the result.
-      fetchQortinoManifest({ timeoutMs: 2500 }),
-    ]);
+    const state = await loadInstallState();
     if (gen !== refreshGenRef.current) return;
 
     setInstall(state);
-    setManifest(m);
-    const knowledge =
-      (state.installed ? await loadKnowledgeFromInstall(state) : null) ||
-      BUILTIN_SAMPLE_KNOWLEDGE;
-    if (gen !== refreshGenRef.current) return;
-
-    setRuntimeCache({
-      ...defaultRuntimeCache(state),
-      manifest: m,
-      knowledge,
-    });
+    if (state.installed && state.llmPath) {
+      void loadQortinoAgentChat().catch(() => undefined);
+    }
     setReady(true);
     if (state.installed && state.llmPath) {
       sessionReadyRef.current = true;
@@ -66,7 +53,12 @@ export function QortinoAgentSheet({ open, onClose }: Props) {
   useEffect(() => {
     if (!open) return;
     // Park/restore: keep assembled chat + model without reloading.
-    if (sessionReadyRef.current && install.installed && install.llmPath && ready && manifest) {
+    if (
+      sessionReadyRef.current &&
+      install.installed &&
+      install.llmPath &&
+      ready
+    ) {
       return;
     }
     let cancelled = false;
@@ -82,23 +74,13 @@ export function QortinoAgentSheet({ open, onClose }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- see above
   }, [open, refresh]);
 
-  const handleInstalled = useCallback(
-    async (next: QortinoInstallState, m: QortinoAgentManifest) => {
-      setInstall(next);
-      setManifest(m);
-      const knowledge =
-        (await loadKnowledgeFromInstall(next)) || BUILTIN_SAMPLE_KNOWLEDGE;
-      setRuntimeCache({
-        ...defaultRuntimeCache(next),
-        manifest: m,
-        knowledge,
-      });
-      if (next.installed && next.llmPath) {
-        sessionReadyRef.current = true;
-      }
-    },
-    []
-  );
+  const handleInstalled = useCallback((next: QortinoInstallState) => {
+    setInstall(next);
+    if (next.installed && next.llmPath) {
+      void loadQortinoAgentChat().catch(() => undefined);
+      sessionReadyRef.current = true;
+    }
+  }, []);
 
   const handleClose = useCallback(async () => {
     if (install.installed) {
@@ -111,6 +93,16 @@ export function QortinoAgentSheet({ open, onClose }: Props) {
 
   // keepMounted while open OR parked so chat history + loaded model survive Q-App hops.
   const keepAlive = open || parked;
+
+  const closeButton = (
+    <IconButton
+      aria-label="Close"
+      onClick={() => void handleClose()}
+      sx={{ position: 'absolute', right: 8, top: 8, zIndex: 2 }}
+    >
+      <CloseRoundedIcon />
+    </IconButton>
+  );
 
   return (
     <Dialog
@@ -137,22 +129,18 @@ export function QortinoAgentSheet({ open, onClose }: Props) {
           position: 'relative',
         }}
       >
-        {!ready || !manifest ? (
-          <IconButton
-            aria-label="Close"
-            onClick={() => void handleClose()}
-            sx={{ position: 'absolute', right: 8, top: 8, zIndex: 2 }}
-          >
-            <CloseRoundedIcon />
-          </IconButton>
+        {!ready ? (
+          closeButton
         ) : install.installed && install.llmPath ? (
-          <QortinoAgentChat
-            install={install}
-            onClose={() => void handleClose()}
-          />
+          <Suspense fallback={closeButton}>
+            <QortinoAgentChat
+              install={install}
+              onClose={() => void handleClose()}
+            />
+          </Suspense>
         ) : (
           <QortinoAgentGate
-            onInstalled={(next, m) => void handleInstalled(next, m)}
+            onInstalled={(next) => handleInstalled(next)}
             onCancel={() => void handleClose()}
           />
         )}

@@ -15,7 +15,6 @@ import {
   type QortinoManifestFile,
   type QortinoPackId,
 } from './manifest';
-import bundledKnowledge from './bundledKnowledge.json';
 import {
   clearQortinoQshareCache,
   discoverQortinoQshareFiles,
@@ -671,9 +670,22 @@ export async function loadKnowledgeFromInstall(
   }
 }
 
+let builtinKnowledgePromise: Promise<KnowledgePack> | null = null;
+
 /**
  * Curated knowledge pack shipped in the app (your markdown docs, chunked).
  * QDN updates can replace this after download; until then RAG uses the bundle.
+ * Loaded on first use only: it is multi-MB of JSON and most sessions read the
+ * installed pack instead.
  */
-export const BUILTIN_SAMPLE_KNOWLEDGE: KnowledgePack =
-  bundledKnowledge as KnowledgePack;
+export function loadBuiltinKnowledge(): Promise<KnowledgePack> {
+  if (!builtinKnowledgePromise) {
+    builtinKnowledgePromise = import('./bundledKnowledge.json')
+      .then((m) => m.default as KnowledgePack)
+      .catch((e) => {
+        builtinKnowledgePromise = null;
+        throw e;
+      });
+  }
+  return builtinKnowledgePromise;
+}

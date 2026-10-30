@@ -2,12 +2,7 @@ import { Preferences } from '@capacitor/preferences';
 import QortinoLlm, {
   isQortinoLlmNativeAvailable,
 } from '../plugins/QortinoLlm';
-import {
-  DEFAULT_QORTINO_AGENT_MANIFEST,
-  type QortinoAgentManifest,
-  type QortinoPackId,
-} from './manifest';
-import type { KnowledgePack } from './rag';
+import type { QortinoPackId } from './manifest';
 
 const INSTALL_KEY = 'qortino_agent_install_v1';
 
@@ -65,32 +60,4 @@ export async function saveInstallState(state: QortinoInstallState): Promise<void
     key: INSTALL_KEY,
     value: JSON.stringify(state),
   });
-}
-
-export async function clearInstallState(): Promise<void> {
-  await Preferences.remove({ key: INSTALL_KEY });
-}
-
-type QortinoRuntimeCache = {
-  manifest: QortinoAgentManifest;
-  knowledge: KnowledgePack | null;
-  install: QortinoInstallState;
-};
-
-let runtimeCache: QortinoRuntimeCache | null = null;
-
-export function getRuntimeCache(): QortinoRuntimeCache | null {
-  return runtimeCache;
-}
-
-export function setRuntimeCache(cache: QortinoRuntimeCache): void {
-  runtimeCache = cache;
-}
-
-export function defaultRuntimeCache(install?: QortinoInstallState): QortinoRuntimeCache {
-  return {
-    manifest: DEFAULT_QORTINO_AGENT_MANIFEST,
-    knowledge: null,
-    install: install ?? { installed: false },
-  };
 }
