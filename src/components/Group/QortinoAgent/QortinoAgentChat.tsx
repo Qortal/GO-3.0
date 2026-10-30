@@ -899,6 +899,8 @@ export function QortinoAgentChat({ install, onClose }: Props) {
   const assistantIdRef = useRef<string | null>(null);
   const tipIndexRef = useRef(0);
   const loadedKeyRef = useRef<string>('');
+  /** Set on unmount so a load still in flight does not start the model. */
+  const unmountedRef = useRef(false);
   /** Only auto-stick to bottom when the user hasn't scrolled up to read. */
   const stickToBottomRef = useRef(true);
   /** After switching Offline → QDN, run this as the next send. */
@@ -929,6 +931,7 @@ export function QortinoAgentChat({ install, onClose }: Props) {
 
       // PC phone-frame debug: skip GGUF paths; web LLM / Ollama handles answers.
       if (isQortinoWebDebugEnabled()) {
+        if (unmountedRef.current) return;
         await QortinoLlm.loadModel({ path: 'web-debug', nCtx: 512 });
         loadedKeyRef.current = 'web-debug';
         setActiveModelLabel(mode === 'fast' ? 'PC · Fast' : 'PC · Max');
@@ -961,6 +964,7 @@ export function QortinoAgentChat({ install, onClose }: Props) {
       const key = `${path}|${nCtx}`;
       if (loadedKeyRef.current !== key) {
         await QortinoLlm.unload().catch(() => undefined);
+        if (unmountedRef.current) return;
         await QortinoLlm.loadModel({ path, nCtx });
         loadedKeyRef.current = key;
       }
@@ -1014,9 +1018,11 @@ export function QortinoAgentChat({ install, onClose }: Props) {
   }, [answerMode, loadForMode]);
 
   // Closing the sheet unmounts the chat (parking keeps it mounted). The next
-  // open reloads the model anyway, so free its memory now.
+  // open reloads the model anyway, so free its memory now. A load still
+  // waiting on its path checks the flag and never starts.
   useEffect(
     () => () => {
+      unmountedRef.current = true;
       void QortinoLlm.unload().catch(() => undefined);
     },
     []
