@@ -26,7 +26,6 @@ Kotlin lifecycle:
     pause_network()           # hub sockets down, bridge stays up (no GO screen)
     resume_network()          # redial the hubs after pause_network()
     refresh_network(reason)   # redial the hubs after a switch of default network
-    stop()                    # EOF the bridge and let main() unwind
 """
 
 import base64
@@ -87,9 +86,6 @@ class _StdinShim(io.TextIOBase):
 
     def feed(self, line):
         self._q.put(line)
-
-    def eof(self):
-        self._q.put(None)
 
     def readable(self):
         return True
@@ -2576,8 +2572,8 @@ def pause_network():
     """Take the hub sockets down while no GO screen needs the mesh.
 
     Kotlin calls this on the dataSync time-out, when GO is swiped from recents
-    and after logout. ``stop()`` is not enough there: it only ends the command
-    loop, while RNS keeps its hub sockets, links and keepalives running with
+    and after logout. Just ending the command loop is not enough there: RNS
+    would keep its hub sockets, links and keepalives running with
     nobody listening. RNS itself cannot be restarted inside this process (it
     is a singleton), so the bridge stays up and only the network goes: links
     are closed (peers get a LINKCLOSE instead of a timeout), the hub
@@ -2826,11 +2822,3 @@ def refresh_network(reason="network_change", since_switch_seconds=0.0):
         f"replaced={len(replaced)} links_closed={closed}"
     )
     return len(targets)
-
-
-def stop():
-    """Signal EOF so the bridge main loop unwinds cleanly."""
-    global _started
-    if _stdin_shim is not None:
-        _stdin_shim.eof()
-    _started = False
