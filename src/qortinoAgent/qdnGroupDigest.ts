@@ -1,7 +1,7 @@
 /**
  * Group activity digest — "what's new in Welcome to Qortal this week?"
  */
-import { getBaseApiReact } from '../utils/globalApi';
+import { apiGetJson } from './qdnApi';
 import { findGroupByName, formatRegistered } from './qdnRoster';
 import { parseTimeRange } from './qdnDayPublishes';
 import type { QdnProfileCard } from './qdnLookup';
@@ -72,19 +72,6 @@ export function extractGroupDigestQuery(query: string): {
     beforeMs: range.beforeMs,
     rangeLabel: range.dayLabel,
   };
-}
-
-async function apiGetJson<T>(path: string, signal?: AbortSignal): Promise<T | null> {
-  const base = getBaseApiReact().replace(/\/$/, '');
-  try {
-    const res = await fetch(`${base}${path.startsWith('/') ? path : `/${path}`}`, {
-      signal,
-    });
-    if (!res.ok) return null;
-    return (await res.json()) as T;
-  } catch {
-    return null;
-  }
 }
 
 function decodeSnippet(raw?: string): string {

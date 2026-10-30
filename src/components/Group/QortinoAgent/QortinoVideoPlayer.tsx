@@ -24,10 +24,11 @@ import PlayArrowRoundedIcon from '@mui/icons-material/PlayArrowRounded';
 import { Capacitor } from '@capacitor/core';
 import { ScreenOrientation } from '@capacitor/screen-orientation';
 import { useAtomValue } from 'jotai';
-import { QORTAL_APP_CONTEXT, getBaseApiReact } from '../../../App';
+import { QORTAL_APP_CONTEXT } from '../../../App';
 import { resourceKeySelector } from '../../../atoms/global';
 import type { QdnMediaItem } from '../../../qortinoAgent/qdnMedia';
 import {
+  buildMediaStreamUrl,
   fetchQtubePosterDataUrl,
   formatMediaBytes,
   formatMediaDate,
@@ -47,14 +48,6 @@ type Props = {
   item: QdnMediaItem;
   onClose: () => void;
 };
-
-function encodeSeg(value: string) {
-  try {
-    return encodeURIComponent(decodeURIComponent(value));
-  } catch {
-    return encodeURIComponent(value);
-  }
-}
 
 function fmtTime(sec: number): string {
   if (!Number.isFinite(sec) || sec < 0) return '0:00';
@@ -128,10 +121,10 @@ export function QortinoVideoPlayer({ item, onClose }: Props) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
 
-  const src = useMemo(() => {
-    const base = getBaseApiReact().replace(/\/$/, '');
-    return `${base}/arbitrary/${encodeSeg(item.service)}/${encodeSeg(item.name)}/${encodeSeg(item.identifier)}`;
-  }, [item.identifier, item.name, item.service]);
+  const src = useMemo(
+    () => buildMediaStreamUrl(item, false),
+    [item.identifier, item.name, item.service]
+  );
 
   const metaLine = [
     `by ${item.name}`,

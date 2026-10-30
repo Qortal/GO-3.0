@@ -1,7 +1,7 @@
 /**
  * QDN rosters: Minter/Dev admins, group owners, owned names with registration dates.
  */
-import { getBaseApiReact, getBaseApiReactForAvatar } from '../utils/globalApi';
+import { apiGetJson, avatarUrlFor } from './qdnApi';
 import type { QdnProfileCard } from './qdnLookup';
 
 type RosterKind = 'minter-admins' | 'dev-admins' | 'qm-admins' | 'forum-admins';
@@ -30,25 +30,6 @@ const GROUP_MINTERS = 694;
 const GROUP_DEV = 1;
 const GROUP_QM_ADMIN = 721;
 const GROUP_FORUM_ADMINS = 673;
-
-async function apiGetJson<T>(path: string, signal?: AbortSignal): Promise<T | null> {
-  const base = getBaseApiReact().replace(/\/$/, '');
-  const url = `${base}${path.startsWith('/') ? path : `/${path}`}`;
-  try {
-    const res = await fetch(url, { signal });
-    if (!res.ok) return null;
-    return (await res.json()) as T;
-  } catch {
-    return null;
-  }
-}
-
-function avatarUrlFor(name: string, address?: string): string {
-  const base = getBaseApiReactForAvatar().replace(/\/$/, '');
-  let url = `${base}/arbitrary/THUMBNAIL/${encodeURIComponent(name)}/qortal_avatar?async=true`;
-  if (address) url += `&_=${encodeURIComponent(address)}`;
-  return url;
-}
 
 function formatRegistered(ts?: number): string {
   if (!ts || !Number.isFinite(ts)) return 'date unknown';

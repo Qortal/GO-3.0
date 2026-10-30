@@ -3,6 +3,7 @@
  * Patterns mirror Q-Tube / EarBump / Q-Share (see Hub embeds + gitea Q-Apps).
  */
 import { getBaseApiReact, getBaseApiReactForAvatar } from '../utils/globalApi';
+import { apiGetJson } from './qdnApi';
 import { isAllowedMediaUrl } from '../utils/remoteContentPolicy';
 import { formatQdnResourceLine } from './qdnAppLinks';
 
@@ -128,21 +129,6 @@ const QTUBE_LIKE_QUERY_SUFFIX = 'qtube_like';
 const EARBUMP_PREFIX = 'earbump_song_';
 const ENJOYMUSIC_PREFIX = 'enjoymusic_song';
 const QSHARE_PREFIX = 'qshare_file_';
-
-async function apiGetJson<T>(
-  path: string,
-  signal?: AbortSignal
-): Promise<T | null> {
-  const base = getBaseApiReact().replace(/\/$/, '');
-  const url = `${base}${path.startsWith('/') ? path : `/${path}`}`;
-  try {
-    const res = await fetch(url, { signal });
-    if (!res.ok) return null;
-    return (await res.json()) as T;
-  } catch {
-    return null;
-  }
-}
 
 function encodeSeg(value: string): string {
   try {

@@ -2,7 +2,7 @@
  * MA-Helper–style published APP / WEBSITE roots for a Qortal account.
  * Status-probe per owned name (fast; avoids heavy resource search).
  */
-import { getBaseApiReact } from '../utils/globalApi';
+import { apiGetJson } from './qdnApi';
 import { qAppAvatarUrl } from './qAppCatalog';
 
 export type QdnPublishedSite = {
@@ -15,18 +15,6 @@ export type QdnPublishedSite = {
 type NameRow = { name?: string };
 
 const NAMES_PAGE = 100;
-
-async function apiGetJson<T>(path: string, signal?: AbortSignal): Promise<T | null> {
-  const base = getBaseApiReact().replace(/\/$/, '');
-  const url = `${base}${path.startsWith('/') ? path : `/${path}`}`;
-  try {
-    const res = await fetch(url, { signal });
-    if (!res.ok) return null;
-    return (await res.json()) as T;
-  } catch {
-    return null;
-  }
-}
 
 /** All registered names on an address (paginate — not capped at 50). */
 export async function fetchAllOwnedNames(

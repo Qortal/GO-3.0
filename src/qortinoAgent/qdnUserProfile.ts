@@ -2,7 +2,7 @@
  * Hub / Q-App user profile (DOCUMENT/qortal_profile) — bio, tagline, custom links.
  * Used to enrich who-is descriptions when the on-chain name data is empty.
  */
-import { getBaseApiReact } from '../utils/globalApi';
+import { apiGetJson } from './qdnApi';
 
 type QortalProfileLink = {
   label: string;
@@ -14,19 +14,6 @@ export type QortalUserProfile = {
   bio?: string;
   links: QortalProfileLink[];
 };
-
-async function apiGetJson<T>(path: string, signal?: AbortSignal): Promise<T | null> {
-  const base = getBaseApiReact().replace(/\/$/, '');
-  try {
-    const res = await fetch(`${base}${path.startsWith('/') ? path : `/${path}`}`, {
-      signal,
-    });
-    if (!res.ok) return null;
-    return (await res.json()) as T;
-  } catch {
-    return null;
-  }
-}
 
 function isHttpUrl(s: string): boolean {
   return /^https?:\/\//i.test(s.trim());

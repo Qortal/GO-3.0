@@ -1,7 +1,7 @@
 /**
  * QDN "what did X publish on <date>" — day-range resource search.
  */
-import { getBaseApiReact, getBaseApiReactForAvatar } from '../utils/globalApi';
+import { apiGetJson, avatarUrlFor } from './qdnApi';
 import {
   classifyQdnActivity,
   formatQdnResourceLine,
@@ -69,25 +69,6 @@ const MONTHS: Record<string, number> = {
   december: 12,
   dec: 12,
 };
-
-async function apiGetJson<T>(path: string, signal?: AbortSignal): Promise<T | null> {
-  const base = getBaseApiReact().replace(/\/$/, '');
-  const url = `${base}${path.startsWith('/') ? path : `/${path}`}`;
-  try {
-    const res = await fetch(url, { signal });
-    if (!res.ok) return null;
-    return (await res.json()) as T;
-  } catch {
-    return null;
-  }
-}
-
-function avatarUrlFor(name: string, address?: string): string {
-  const base = getBaseApiReactForAvatar().replace(/\/$/, '');
-  let url = `${base}/arbitrary/THUMBNAIL/${encodeURIComponent(name)}/qortal_avatar?async=true`;
-  if (address) url += `&_=${encodeURIComponent(address)}`;
-  return url;
-}
 
 const MS_DAY = 86_400_000;
 

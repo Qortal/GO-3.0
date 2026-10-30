@@ -3,6 +3,7 @@
  */
 import { executeEvent } from '../utils/events';
 import { getBaseApiReact } from '../utils/globalApi';
+import { apiGetJson } from './qdnApi';
 import { parkQortinoAgentSheet } from './qortinoSheetNav';
 
 export type QuitterPostCard = {
@@ -44,24 +45,11 @@ type SearchHit = {
   timestamp?: number;
 };
 
-async function apiGetJson<T>(path: string, signal?: AbortSignal): Promise<T | null> {
-  const base = getBaseApiReact().replace(/\/$/, '');
-  try {
-    const res = await fetch(`${base}${path.startsWith('/') ? path : `/${path}`}`, {
-      signal,
-    });
-    if (!res.ok) return null;
-    return (await res.json()) as T;
-  } catch {
-    return null;
-  }
-}
-
-function stripHtml(s: string): string {
+export function stripHtml(s: string): string {
   return s.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
-function isQuitterPostId(identifier: string): boolean {
+export function isQuitterPostId(identifier: string): boolean {
   const id = identifier.trim();
   if (!id.endsWith('-v1') || id.includes('_metadata')) return false;
   const parts = id.split('-');

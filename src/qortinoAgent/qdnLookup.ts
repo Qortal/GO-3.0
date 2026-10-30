@@ -2,7 +2,8 @@
  * Lightweight QDN / on-chain lookup for Qortino "QDN mode".
  * Inspired by MA-Helper portfolio + activity fetch — mobile-sized, not a full scan.
  */
-import { getBaseApiReact, getBaseApiReactForAvatar } from '../utils/globalApi';
+import { getBaseApiReact } from '../utils/globalApi';
+import { apiGetJson, avatarUrlFor } from './qdnApi';
 import {
   detectMediaIntent,
   fetchMediaForName,
@@ -468,18 +469,6 @@ const STOP_WORDS = new Set([
   'tokens',
 ]);
 
-async function apiGetJson<T>(path: string, signal?: AbortSignal): Promise<T | null> {
-  const base = getBaseApiReact().replace(/\/$/, '');
-  const url = `${base}${path.startsWith('/') ? path : `/${path}`}`;
-  try {
-    const res = await fetch(url, { signal });
-    if (!res.ok) return null;
-    return (await res.json()) as T;
-  } catch {
-    return null;
-  }
-}
-
 async function apiGetText(path: string, signal?: AbortSignal): Promise<string | null> {
   const base = getBaseApiReact().replace(/\/$/, '');
   const url = `${base}${path.startsWith('/') ? path : `/${path}`}`;
@@ -490,14 +479,6 @@ async function apiGetText(path: string, signal?: AbortSignal): Promise<string | 
   } catch {
     return null;
   }
-}
-
-function avatarUrlFor(name: string, address?: string): string {
-  // HTTP on local HTTPS so Capacitor WebView <img> avatars actually load.
-  const base = getBaseApiReactForAvatar().replace(/\/$/, '');
-  let url = `${base}/arbitrary/THUMBNAIL/${encodeURIComponent(name)}/qortal_avatar?async=true`;
-  if (address) url += `&_=${encodeURIComponent(address)}`;
-  return url;
 }
 
 function classifyApp(service: string, identifier: string): string {

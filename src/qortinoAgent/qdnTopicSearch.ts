@@ -5,7 +5,7 @@
  * Uses the node's index API (`/arbitrary/indices`) plus metadata-bearing
  * resource searches across blogs, docs, and videos.
  */
-import { getBaseApiReact } from '../utils/globalApi';
+import { apiGetJson } from './qdnApi';
 import type { QdnMediaItem } from './qdnMedia';
 
 type QdnTopicHit = {
@@ -101,18 +101,6 @@ const TOPIC_STOP = new Set([
   'qortal',
   'qdn',
 ]);
-
-async function apiGetJson<T>(path: string, signal?: AbortSignal): Promise<T | null> {
-  const base = getBaseApiReact().replace(/\/$/, '');
-  const url = `${base}${path.startsWith('/') ? path : `/${path}`}`;
-  try {
-    const res = await fetch(url, { signal });
-    if (!res.ok) return null;
-    return (await res.json()) as T;
-  } catch {
-    return null;
-  }
-}
 
 /** True for how-to / informational questions that should search QDN content. */
 export function detectTopicIntent(query: string): boolean {
