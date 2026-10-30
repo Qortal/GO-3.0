@@ -50,6 +50,7 @@ APP_HUBS = (
     ("Backbone Client Qortal Hub", "phantom.mobilefabrik.com", 4400),
     ("Crowetic Reticulum Hub", "reticulum.qortal.link", 4444),
     ("Crowetic Reticulum Hub 2", "reticulum2.qortal.link", 4444),
+    ("Crowetic Reticulum Hub 3", "reticulum3.qortal.link", 4444),
 )
 NETWORK_NAME = "qortal-hub"
 
