@@ -286,5 +286,3 @@ export const MobileBackgroundSetup = ({
     </>
   );
 };
-
-export default MobileBackgroundSetup;

@@ -428,5 +428,3 @@ export const MobileTabBar = ({
     </Box>
   );
 };
-
-export default MobileTabBar;

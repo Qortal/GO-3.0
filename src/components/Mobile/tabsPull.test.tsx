@@ -2,7 +2,6 @@ import { act, render } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SECTION_ATTR } from './sectionSwipe/sectionSwipe';
 import {
-  TABS_PULL_IGNORE_ATTR,
   setTabsPanelElement,
   useTabsPullDown,
   type TabsPullDownOptions,
@@ -27,9 +26,6 @@ const Harness = (props: Partial<TabsPullDownOptions>) => {
       <div {...{ [SECTION_ATTR]: 'home' }}>
         <div data-testid="list" style={{ overflowY: 'auto' }}>
           <div data-testid="row">row</div>
-          <div data-testid="handle" {...{ [TABS_PULL_IGNORE_ATTR]: '' }}>
-            handle
-          </div>
         </div>
       </div>
       <div {...{ [SECTION_ATTR]: 'apps' }}>
@@ -219,10 +215,9 @@ describe('useTabsPullDown', () => {
     expect(onPullStart).not.toHaveBeenCalled();
   });
 
-  it('pulls only in the given sections, when allowed, and not on marked parts', () => {
+  it('pulls only in the given sections, and when allowed', () => {
     const { getByTestId, rerender } = render(<Harness />);
     pull(getByTestId('apps-row'), 100, 400, { t0: 5000 });
-    pull(getByTestId('handle'), 100, 400, { t0: 6000 });
     rerender(<Harness canStart={false} />);
     pull(getByTestId('row'), 100, 400, { t0: 7000 });
     expect(onPullStart).not.toHaveBeenCalled();

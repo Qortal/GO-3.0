@@ -1,10 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  DEFAULT_IMMERSIVE_PILL_POSITION,
-  isImmersiveSurface,
-  normalizeImmersiveMode,
-  normalizeImmersivePillPosition,
-} from './immersiveMode';
+import { isImmersiveSurface, normalizeImmersiveMode } from './immersiveMode';
 
 describe('immersive mode settings', () => {
   it('reads anything unknown as the default, Auto', () => {
@@ -21,19 +16,5 @@ describe('immersive mode settings', () => {
     expect(isImmersiveSurface('dev')).toBe(true);
     expect(isImmersiveSurface('chat')).toBe(false);
     expect(isImmersiveSurface('wallet')).toBe(false);
-  });
-
-  it('keeps the button position on screen', () => {
-    expect(normalizeImmersivePillPosition({ side: 'left', y: 0.2 })).toEqual({
-      side: 'left',
-      y: 0.2,
-    });
-    expect(normalizeImmersivePillPosition({ side: 'up', y: 7 })).toEqual({
-      side: 'right',
-      y: 1,
-    });
-    expect(normalizeImmersivePillPosition(null)).toEqual(
-      DEFAULT_IMMERSIVE_PILL_POSITION
-    );
   });
 });

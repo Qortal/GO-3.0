@@ -232,5 +232,3 @@ export const WebViewJitNotice = () => {
     </AnimatePresence>
   );
 };
-
-export default WebViewJitNotice;

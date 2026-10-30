@@ -4,7 +4,7 @@ import ChatRoundedIcon from '@mui/icons-material/ChatRounded';
 import { useQdnAvatar } from '../../lib/qdnAvatars';
 import type { OpenTab } from './useOpenTabs';
 
-export const tabPalette = [
+const tabPalette = [
   '#5b8def',
   '#3ddc84',
   '#f5a623',
@@ -17,16 +17,6 @@ export const colorFor = (key: string) => {
   let h = 0;
   for (let i = 0; i < key.length; i += 1) h = (h * 31 + key.charCodeAt(i)) | 0;
   return tabPalette[Math.abs(h) % tabPalette.length];
-};
-
-/** Compact label for tab cards so long app/website names do not stretch the grid. */
-export const shortenTabDisplayTitle = (
-  title: string,
-  maxLength = 22
-): string => {
-  const normalized = title.replace(/\s+/g, ' ').trim();
-  if (normalized.length <= maxLength) return normalized;
-  return `${normalized.slice(0, Math.max(1, maxLength - 1)).trimEnd()}…`;
 };
 
 export const TabAvatar = ({

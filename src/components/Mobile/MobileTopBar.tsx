@@ -33,7 +33,6 @@ import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import NotificationsActiveRoundedIcon from '@mui/icons-material/NotificationsActiveRounded';
 import NotificationsRoundedIcon from '@mui/icons-material/NotificationsRounded';
 import ContactlessRoundedIcon from '@mui/icons-material/ContactlessRounded';
-import ChevronRightRoundedIcon from '@mui/icons-material/ChevronRightRounded';
 import SystemUpdateAltRoundedIcon from '@mui/icons-material/SystemUpdateAltRounded';
 import { useAtomValue, useSetAtom } from 'jotai';
 import {
@@ -437,10 +436,6 @@ export const MobileTopBar = ({
       window.removeEventListener('orientationchange', recompute);
     };
   }, [accountOpen]);
-  const run = (fn: () => void) => () => {
-    closeAccount();
-    fn();
-  };
 
   const handleMinting = () => {
     closeAccount();
@@ -1030,8 +1025,6 @@ export const MobileTopBar = ({
   );
   return barTheme ? <ThemeProvider theme={barTheme}>{bar}</ThemeProvider> : bar;
 };
-
-export default MobileTopBar;
 
 /** The bell badge catching a download card that flew into it. */
 const bellPopKeyframes = keyframes`

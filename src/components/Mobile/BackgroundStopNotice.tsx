@@ -547,5 +547,3 @@ export const BackgroundStopNotice = ({
     </AnimatePresence>
   );
 };
-
-export default BackgroundStopNotice;

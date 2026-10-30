@@ -21,8 +21,6 @@ import type { MobileSectionKey } from './useMobileTabNavigation';
  * only thing written per frame.
  */
 
-/** Touches starting inside an element with this attribute never pull. */
-export const TABS_PULL_IGNORE_ATTR = 'data-tabs-pull-ignore';
 /** Finger travel (px) before a downward drag counts as a pull. */
 export const TABS_PULL_SLOP_PX = 12;
 /** Let go past this share of the panel, it stays open. */
@@ -48,8 +46,6 @@ export const setTabsPanelElement = (element: HTMLElement | null) => {
     element.style.transform = 'translate3d(0, -100%, 0)';
   }
 };
-
-export const getTabsPanelElement = () => panelElement;
 
 const clearPanel = (panel: HTMLElement | null) => {
   if (!panel) return;
@@ -236,7 +232,6 @@ export function useTabsPullDown(options: TabsPullDownOptions): void {
       if (!optionsRef.current.canStart) return;
       const target = event.target instanceof Element ? event.target : null;
       if (!target || !sectionAllows(target)) return;
-      if (target.closest(`[${TABS_PULL_IGNORE_ATTR}]`)) return;
       // Open chats and full-screen panels keep their own gestures.
       if (target.closest('[data-section-swipe-ignore]')) return;
       const scrollers = verticalScrollersOf(

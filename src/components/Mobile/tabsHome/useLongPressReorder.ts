@@ -24,8 +24,6 @@ export type LongPressReorderOptions = {
   enabled?: boolean;
   /** False: a long press only opens the menu; moving after it cancels. */
   allowDrag?: boolean;
-  longPressMs?: number;
-  onLift?: (id: string) => void;
   onMenu: (id: string, element: HTMLElement) => void;
   onMove: (id: string, overId: string) => void;
   /**
@@ -43,6 +41,7 @@ export type LongPressReorderOptions = {
 
 export type LandingBox = Pick<DOMRect, 'left' | 'top' | 'width' | 'height'>;
 
+const LONG_PRESS_MS = 380;
 const MOVE_CANCEL_PX = 7;
 const DRAG_START_PX = 8;
 const REORDER_HYSTERESIS_PX = 14;
@@ -345,8 +344,7 @@ export function useLongPressReorder(options: LongPressReorderOptions): void {
         window.getSelection?.()?.removeAllRanges();
         navigator.vibrate?.(12);
         current.element.setAttribute('data-reorder-lifted', 'true');
-        optionsRef.current.onLift?.(current.id);
-      }, optionsRef.current.longPressMs ?? 380);
+      }, LONG_PRESS_MS);
       press = current;
     };
 

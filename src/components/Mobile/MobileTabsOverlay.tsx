@@ -73,11 +73,7 @@ import { MobileTabAppDetailsDialog } from './MobileTabAppDetailsDialog';
 import { MobileTabOptionsDialog } from './MobileTabOptionsDialog';
 import { getOpenTabKey, groupFoldersByRow, resolveFolderTab } from './mobileTabOrganization';
 import { useMobileTabOrganization } from './useMobileTabOrganization';
-import {
-  TabAvatar,
-  colorFor,
-  shortenTabDisplayTitle,
-} from './MobileTabsOverlay.shared';
+import { TabAvatar, colorFor } from './MobileTabsOverlay.shared';
 import {
   closeAllOpenTabs,
   closeOpenTab,
@@ -1255,23 +1251,6 @@ export const MobileTabsOverlay = ({
     userInfo?.name,
   ]);
 
-  const handleTrashTab = useCallback(
-    async (tabKey: string) => {
-      const tab = resolveTabByKey(tabKey);
-      if (!tab) return;
-      const title = org.getTabTitle(tab);
-      const savedOnly = String(tab.tabId || '').startsWith('saved:');
-      if (org.getFolderForTab(tab) || savedOnly) {
-        await org.removeTabFromFolder(tab);
-      }
-      if (!savedOnly) {
-        closeOpenTab(tab.tabId);
-      }
-      showRemovalSnack(`"${title}" removed`);
-    },
-    [org, resolveTabByKey, showRemovalSnack]
-  );
-
   const handleTrashFolder = useCallback(
     async (folderId: string) => {
       const folder = org.folders.find((item) => item.id === folderId);
@@ -2383,7 +2362,6 @@ export const MobileTabsOverlay = ({
       </Dialog>
 
       <CustomizedSnackbars
-        duration={3200}
         info={snackInfo}
         open={snackOpen}
         setInfo={setSnackInfo}
@@ -2392,5 +2370,3 @@ export const MobileTabsOverlay = ({
     </>
   );
 };
-
-export default MobileTabsOverlay;

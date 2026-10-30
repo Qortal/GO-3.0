@@ -88,10 +88,6 @@ type Gesture = {
   panelMoved: boolean;
 };
 
-/** Whether a list can scroll no further down (its end is showing). */
-export const listAtEnd = (list: HTMLElement): boolean =>
-  list.scrollTop + list.clientHeight >= list.scrollHeight - 1;
-
 const maxScrollOf = (list: HTMLElement): number =>
   Math.max(0, list.scrollHeight - list.clientHeight);
 

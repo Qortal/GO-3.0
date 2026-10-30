@@ -42,11 +42,3 @@ export function groupTabsIntoStacks(
       list[list.length - 1],
   }));
 }
-
-/** A page label for one tab of a stack: its path, or the app's start page. */
-export function tabPageLabel(tab: OpenTab): string {
-  const { path, identifier } = getTabAppIdentity(tab);
-  const page = String(path || '').replace(/^\/+/, '');
-  if (page) return `/${page}`;
-  return identifier ? String(identifier) : '/';
-}

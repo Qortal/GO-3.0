@@ -6,7 +6,7 @@
 
 /** A launcher-like ease: quick start, long soft landing. */
 export const FLIP_EASE = 'cubic-bezier(0.2, 0.9, 0.25, 1)';
-export const FLIP_ID = 'go-flip';
+const FLIP_ID = 'go-flip';
 
 type Box = Pick<DOMRect, 'left' | 'top' | 'width' | 'height'>;
 
@@ -21,7 +21,7 @@ const canAnimate = (element: Element): element is HTMLElement =>
  * The transform that draws an element laid out at `to` exactly over `from`,
  * for the default centre transform-origin.
  */
-export function transformBetween(from: Box, to: Box): string {
+function transformBetween(from: Box, to: Box): string {
   const dx = from.left + from.width / 2 - (to.left + to.width / 2);
   const dy = from.top + from.height / 2 - (to.top + to.height / 2);
   const sx = to.width > 0 ? from.width / to.width : 1;
@@ -31,7 +31,7 @@ export function transformBetween(from: Box, to: Box): string {
 }
 
 /** True when two boxes differ by less than half a pixel everywhere. */
-export function sameBox(a: Box, b: Box): boolean {
+function sameBox(a: Box, b: Box): boolean {
   return (
     Math.abs(a.left - b.left) < 0.5 &&
     Math.abs(a.top - b.top) < 0.5 &&
@@ -40,7 +40,7 @@ export function sameBox(a: Box, b: Box): boolean {
   );
 }
 
-export function cancelFlip(element: Element): void {
+function cancelFlip(element: Element): void {
   if (typeof (element as HTMLElement).getAnimations !== 'function') return;
   (element as HTMLElement).getAnimations().forEach((animation) => {
     if (animation.id === FLIP_ID) animation.cancel();
@@ -70,11 +70,7 @@ export function animateFromBox(
   from: Box,
   options: {
     duration?: number;
-    easing?: string;
-    delay?: number;
     fromOpacity?: number;
-    toOpacity?: number;
-    fill?: FillMode;
   } = {}
 ): Animation | null {
   if (!canAnimate(element) || prefersReducedMotion()) return null;
@@ -85,13 +81,13 @@ export function animateFromBox(
   const last: Keyframe = { transform: 'none' };
   if (options.fromOpacity != null) {
     first.opacity = options.fromOpacity;
-    last.opacity = options.toOpacity ?? 1;
+    last.opacity = 1;
   }
   const animation = element.animate([first, last], {
     duration: options.duration ?? 300,
-    easing: options.easing ?? FLIP_EASE,
-    delay: options.delay ?? 0,
-    fill: options.fill ?? 'backwards',
+    easing: FLIP_EASE,
+    delay: 0,
+    fill: 'backwards',
   });
   animation.id = FLIP_ID;
   return animation;
@@ -103,7 +99,6 @@ export function animateToBox(
   to: Box,
   options: {
     duration?: number;
-    easing?: string;
     toOpacity?: number;
   } = {}
 ): Animation | null {
@@ -117,7 +112,7 @@ export function animateToBox(
   }
   const animation = element.animate([first, last], {
     duration: options.duration ?? 260,
-    easing: options.easing ?? FLIP_EASE,
+    easing: FLIP_EASE,
     fill: 'forwards',
   });
   animation.id = FLIP_ID;
@@ -127,40 +122,20 @@ export function animateToBox(
 /**
  * The second half of a FLIP over a list: every `[attr]` element under `root`
  * that moved since `before` was measured glides from its old box to its new
- * one. Elements that are new fade and scale in when `enterNew` is set.
+ * one. Elements that are new are left as they are.
  */
 export function playFlip(
   root: ParentNode | null | undefined,
   attr: string,
   before: Map<string, DOMRect>,
-  options: {
-    duration?: number;
-    easing?: string;
-    skip?: (id: string) => boolean;
-    enterNew?: boolean;
-  } = {}
+  options: { duration?: number } = {}
 ): void {
   if (!root || prefersReducedMotion()) return;
   root.querySelectorAll<HTMLElement>(`[${attr}]`).forEach((element) => {
     const id = element.getAttribute(attr);
-    if (!id || options.skip?.(id)) return;
+    if (!id) return;
     const from = before.get(id);
-    if (!from) {
-      if (!options.enterNew || !canAnimate(element)) return;
-      cancelFlip(element);
-      const animation = element.animate(
-        [
-          { opacity: 0, transform: 'scale(0.86)' },
-          { opacity: 1, transform: 'none' },
-        ],
-        {
-          duration: options.duration ?? 280,
-          easing: options.easing ?? FLIP_EASE,
-        }
-      );
-      animation.id = FLIP_ID;
-      return;
-    }
+    if (!from) return;
     // Measured without the old animation, so the new one starts from where
     // the element was drawn and ends where it is laid out now.
     cancelFlip(element);
@@ -168,7 +143,7 @@ export function playFlip(
     if (sameBox(from, to)) return;
     const animation = element.animate(
       [{ transform: transformBetween(from, to) }, { transform: 'none' }],
-      { duration: options.duration ?? 300, easing: options.easing ?? FLIP_EASE }
+      { duration: options.duration ?? 300, easing: FLIP_EASE }
     );
     animation.id = FLIP_ID;
   });

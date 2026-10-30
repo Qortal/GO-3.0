@@ -334,5 +334,3 @@ export const MobileBackgroundSyncSetting = () => {
     </Box>
   );
 };
-
-export default MobileBackgroundSyncSetting;

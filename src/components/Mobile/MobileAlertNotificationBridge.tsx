@@ -86,5 +86,3 @@ export const MobileAlertNotificationBridge = () => {
 
   return null;
 };
-
-export default MobileAlertNotificationBridge;

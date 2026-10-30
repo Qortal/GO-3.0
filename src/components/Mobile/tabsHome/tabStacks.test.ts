@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { groupTabsIntoStacks, stackKeyFor, tabPageLabel } from './tabStacks';
+import { groupTabsIntoStacks, stackKeyFor } from './tabStacks';
 
 const tab = (
   tabId: string,
@@ -60,14 +60,5 @@ describe('groupTabsIntoStacks', () => {
       },
     });
     expect(stackKeyFor(a)).not.toBe(stackKeyFor(b));
-  });
-});
-
-describe('tabPageLabel', () => {
-  it('names the page a tab is on', () => {
-    expect(tabPageLabel(tab('1', 'Q-Tube', { path: 'video/abc' }))).toBe(
-      '/video/abc'
-    );
-    expect(tabPageLabel(tab('1', 'Q-Tube'))).toBe('/');
   });
 });

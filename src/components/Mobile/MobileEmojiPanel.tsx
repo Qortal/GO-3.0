@@ -145,5 +145,3 @@ export const MobileEmojiPanel = ({
     </Box>
   );
 };
-
-export default MobileEmojiPanel;

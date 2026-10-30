@@ -754,5 +754,3 @@ const AccountPanelButton = ({ action, onSelect }: AccountPanelButtonProps) => {
     </Box>
   );
 };
-
-export default MobileAccountPanel;

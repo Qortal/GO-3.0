@@ -4,7 +4,6 @@ import {
   BIG_SWIPE_RATIO,
   LIST_FLING_TIME_MS,
   bigSwipePx,
-  listAtEnd,
   listFlingDistance,
   splitListSwipe,
   swipeCloseOffset,
@@ -42,23 +41,6 @@ describe('swipeCloseShouldClose', () => {
   it('takes a shorter distance with a smaller ratio', () => {
     expect(swipeCloseShouldClose(-70, 0, 500, 0.12)).toBe(true);
     expect(swipeCloseShouldClose(-50, 0, 500, 0.12)).toBe(false);
-  });
-});
-
-describe('listAtEnd', () => {
-  const list = (
-    scrollTop: number,
-    clientHeight: number,
-    scrollHeight: number
-  ) => ({ scrollTop, clientHeight, scrollHeight }) as HTMLElement;
-
-  it('is true at the end and for a list that does not scroll', () => {
-    expect(listAtEnd(list(500, 300, 800))).toBe(true);
-    expect(listAtEnd(list(0, 300, 300))).toBe(true);
-  });
-
-  it('is false with more to scroll', () => {
-    expect(listAtEnd(list(100, 300, 800))).toBe(false);
   });
 });
 

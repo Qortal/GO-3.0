@@ -71,18 +71,6 @@ export const DEFAULT_IMMERSIVE_PILL_POSITION: ImmersivePillPosition = {
   y: 0.78,
 };
 
-export const normalizeImmersivePillPosition = (
-  value: unknown
-): ImmersivePillPosition => {
-  const raw = (value ?? {}) as Partial<ImmersivePillPosition>;
-  const side = raw.side === 'left' ? 'left' : 'right';
-  const y =
-    typeof raw.y === 'number' && Number.isFinite(raw.y)
-      ? Math.min(1, Math.max(0, raw.y))
-      : DEFAULT_IMMERSIVE_PILL_POSITION.y;
-  return { side, y };
-};
-
 export const immersivePillPositionAtom = atomWithStorage<ImmersivePillPosition>(
   IMMERSIVE_PILL_POSITION_STORAGE_KEY,
   DEFAULT_IMMERSIVE_PILL_POSITION,
