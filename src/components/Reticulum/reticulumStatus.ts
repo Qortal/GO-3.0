@@ -4,6 +4,19 @@ import type { ReticulumStatus } from '../../plugins/Reticulum';
 import { QortalBackground } from '../../plugins/QortalBackground';
 import { isCapacitor } from '../../utils/platform';
 import { onMobileReticulumStatus } from '../../bridge/capacitorBridge';
+import { atom, useAtomValue } from 'jotai';
+import { onlineAddressesAtom } from '../../atoms/presence';
+
+/**
+ * How many accounts are online. The set behind it is rebuilt on every
+ * status change; the count changes far less often, so its readers re-render
+ * only when it does.
+ */
+export const onlineCountAtom = atom((get) => get(onlineAddressesAtom).size);
+
+export function useOnlineCount(): number {
+  return useAtomValue(onlineCountAtom);
+}
 
 export type ReticulumPhase =
   | 'idle'

@@ -5,9 +5,9 @@ import {
   reticulumDisplayPhase,
   reticulumPhaseColor,
   useDeviceOnline,
+  useOnlineCount,
   useReticulumStatus,
 } from './reticulumStatus';
-import { useOnlineAddresses } from '../../hooks/usePresence';
 
 /**
  * Diagnostic overlay for the native Reticulum transport (desktop/web only).
@@ -18,7 +18,7 @@ import { useOnlineAddresses } from '../../hooks/usePresence';
  */
 const ReticulumStatusChip = () => {
   const { phase, status, error } = useReticulumStatus();
-  const onlineCount = useOnlineAddresses().size;
+  const onlineCount = useOnlineCount();
   const deviceOnline = useDeviceOnline();
   const displayPhase = reticulumDisplayPhase(phase, onlineCount, deviceOnline);
   const [expanded, setExpanded] = useState(false);

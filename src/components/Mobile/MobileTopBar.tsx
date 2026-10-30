@@ -34,7 +34,7 @@ import NotificationsActiveRoundedIcon from '@mui/icons-material/NotificationsAct
 import NotificationsRoundedIcon from '@mui/icons-material/NotificationsRounded';
 import ContactlessRoundedIcon from '@mui/icons-material/ContactlessRounded';
 import SystemUpdateAltRoundedIcon from '@mui/icons-material/SystemUpdateAltRounded';
-import { useAtomValue, useSetAtom } from 'jotai';
+import { atom, useAtomValue, useSetAtom } from 'jotai';
 import {
   openQortalCardWindow,
   qortalCardEnabledAtom,
@@ -149,6 +149,17 @@ type MobileTopBarProps = {
   collapsed?: boolean;
 };
 
+// The core dot needs only these two; nodeInfos is replaced on every status
+// push from the node, many times a minute.
+const coreSyncPercentAtom = atom(
+  (get) => (get(nodeInfosAtom) as { syncPercent?: number })?.syncPercent ?? 0
+);
+const coreSynchronizingAtom = atom((get) =>
+  Boolean(
+    (get(nodeInfosAtom) as { isSynchronizing?: boolean })?.isSynchronizing
+  )
+);
+
 /**
  * Slim mobile top bar.
  *
@@ -235,7 +246,6 @@ export const MobileTopBar = ({
   const showActiveTabUrl =
     desktopViewMode === 'apps' && Boolean(activeTabUrl) && !searchExpanded;
   const hideBrandCluster = searchExpanded || showActiveTabUrl;
-  const nodeInfos = useAtomValue(nodeInfosAtom);
   const selectedNode = useAtomValue(selectedNodeInfoAtom);
   const setP2pHealth = useSetAtom(p2pHealthAtom);
   const {
@@ -384,10 +394,8 @@ export const MobileTopBar = ({
     };
   }, [address, effectivePrimaryName, cachedAvatarEntry?.dataUrl]);
 
-  const syncPercent = (nodeInfos as { syncPercent?: number })?.syncPercent ?? 0;
-  const isSynchronizing = Boolean(
-    (nodeInfos as { isSynchronizing?: boolean })?.isSynchronizing
-  );
+  const syncPercent = useAtomValue(coreSyncPercentAtom);
+  const isSynchronizing = useAtomValue(coreSynchronizingAtom);
   const coreDotColor =
     syncPercent === 100 && !isSynchronizing
       ? theme.palette.success.main

@@ -136,7 +136,16 @@ export const updateMobilePersistentStatus = async (
 
   const payload = buildPersistentStatusPayload(snapshot);
   const payloadJson = JSON.stringify(payload);
-  if (payloadJson === lastSentStatusJson) return;
+  if (payloadJson === lastSentStatusJson) {
+    // Back to what the notification shows: a change still waiting for the
+    // rate limit is out of date now and must not be sent after it.
+    if (pendingStatusTimer) {
+      clearTimeout(pendingStatusTimer);
+      pendingStatusTimer = null;
+    }
+    pendingStatusPayload = null;
+    return;
+  }
 
   const elapsed = Date.now() - lastSentStatusAt;
   if (elapsed >= PERSISTENT_STATUS_MIN_INTERVAL_MS) {

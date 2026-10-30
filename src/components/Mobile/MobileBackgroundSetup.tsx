@@ -8,9 +8,8 @@ import {
   useTheme,
 } from '@mui/material';
 import { alpha } from '@mui/material/styles';
-import { useAtomValue } from 'jotai';
+import { atom, useAtomValue } from 'jotai';
 import { useTranslation } from 'react-i18next';
-import { onlineAddressesAtom } from '../../atoms/presence';
 import { nodeInfosAtom, selectedNodeInfoAtom } from '../../atoms/global';
 import { QortalBackground } from '../../plugins/QortalBackground';
 import {
@@ -32,6 +31,13 @@ import { isCapacitor } from '../../utils/platform';
 import { startVendorFreezeHintStore } from './vendorFreezeHintStore';
 import { startWebViewJitNoticeStore } from './webViewJitNoticeStore';
 import { dialogContentSx, getDialogPaperSx } from '../App/dialogSurface';
+import { onlineCountAtom } from '../Reticulum/reticulumStatus';
+
+// The status notification shows the online count and the sync label. Both
+// are read through atoms, so this component (and its battery dialog) only
+// re-renders when one of them changes, not on every presence heartbeat or
+// node status push.
+const syncLabelAtom = atom((get) => buildSyncLabel(get(nodeInfosAtom)));
 
 type MobileBackgroundSetupProps = {
   enabled: boolean;
@@ -48,18 +54,18 @@ export const MobileBackgroundSetup = ({
   const theme = useTheme();
   const isLight = theme.palette.mode === 'light';
   const { t } = useTranslation(['auth']);
-  const onlineAddresses = useAtomValue(onlineAddressesAtom);
+  const onlineCount = useAtomValue(onlineCountAtom);
   const selectedNode = useAtomValue(selectedNodeInfoAtom);
-  const nodeInfos = useAtomValue(nodeInfosAtom);
-  const onlineCountRef = useRef(onlineAddresses.size);
+  const syncLabel = useAtomValue(syncLabelAtom);
+  const onlineCountRef = useRef(onlineCount);
   const selectedNodeRef = useRef(selectedNode);
-  const nodeInfosRef = useRef(nodeInfos);
+  const syncLabelRef = useRef(syncLabel);
   const publishStatusRef = useRef<(() => void) | null>(null);
   const [batteryPromptOpen, setBatteryPromptOpen] = useState(false);
 
-  onlineCountRef.current = onlineAddresses.size;
+  onlineCountRef.current = onlineCount;
   selectedNodeRef.current = selectedNode;
-  nodeInfosRef.current = nodeInfos;
+  syncLabelRef.current = syncLabel;
 
   useEffect(() => {
     if (!enabled || !isCapacitor()) return undefined;
@@ -79,7 +85,7 @@ export const MobileBackgroundSetup = ({
         reticulumKind: 'starting',
         onlineCount: onlineCountRef.current,
         nodeLabel: buildNodeLabel(selectedNodeRef.current),
-        syncLabel: buildSyncLabel(nodeInfosRef.current),
+        syncLabel: syncLabelRef.current,
         peersLabel: buildPeersLabel(onlineCountRef.current),
       });
     };
@@ -90,7 +96,7 @@ export const MobileBackgroundSetup = ({
       () => ({
         onlineCount: onlineCountRef.current,
         nodeLabel: buildNodeLabel(selectedNodeRef.current),
-        syncLabel: buildSyncLabel(nodeInfosRef.current),
+        syncLabel: syncLabelRef.current,
         peersLabel: buildPeersLabel(onlineCountRef.current),
       }),
       (snapshot) => {
@@ -121,7 +127,7 @@ export const MobileBackgroundSetup = ({
   useEffect(() => {
     if (!enabled || !isCapacitor()) return;
     publishStatusRef.current?.();
-  }, [enabled, selectedNode, nodeInfos, onlineAddresses]);
+  }, [enabled, selectedNode, syncLabel, onlineCount]);
 
   // Vendor-freeze notice facts for the bell panel and the Background sync
   // settings (native Android only; a no-op elsewhere).

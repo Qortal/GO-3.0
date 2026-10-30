@@ -15,6 +15,7 @@ import {
   reticulumDisplayPhase,
   reticulumPhaseColor,
   useDeviceOnline,
+  useOnlineCount,
   useReticulumStatus,
 } from './reticulumStatus';
 import {
@@ -26,7 +27,6 @@ import {
   mobileSaveLocationLabelFor,
   saveTextToMobileDocuments,
 } from '../../utils/mobileFileSave';
-import { useOnlineAddresses } from '../../hooks/usePresence';
 import { useTranslation } from 'react-i18next';
 
 /**
@@ -197,7 +197,7 @@ const ReticulumTopBadge = () => {
   const reticulumState = useReticulumStatus();
   const { phase, status, error, bridgeError, bridgeWarning, chatEngineState } =
     reticulumState;
-  const onlineCount = useOnlineAddresses().size;
+  const onlineCount = useOnlineCount();
   const deviceOnline = useDeviceOnline();
   const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
   const [openStat, setOpenStat] = useState<StatKey | null>(null);
