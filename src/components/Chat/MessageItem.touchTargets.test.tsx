@@ -180,13 +180,6 @@ const tapRow = async (container: HTMLElement, clientX = 120, clientY = 300) => {
   await waitOutDoubleTap();
 };
 
-// jsdom does no layout, so a test gives the row the width a host would.
-const setRowWidth = (element: HTMLElement, width: number) =>
-  Object.defineProperty(element, 'clientWidth', {
-    configurable: true,
-    value: width,
-  });
-
 const fileOffer = () =>
   post({
     reticulumChat: undefined,

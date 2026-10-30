@@ -22,7 +22,6 @@ import {
   buildQshareDescription,
   buildTorqAttachmentEmbed,
   guessFileMime,
-  isTorqAudioFile,
   needsTorqPostLink,
   normalizeTorqPoll,
   packTorqHashtagKeywords,
@@ -113,8 +112,6 @@ describe('audio types', () => {
     expect(guessFileMime(file('notes.pdf'), 'notes.pdf')).toBe(
       'application/pdf'
     );
-    expect(isTorqAudioFile(file('voice.m4a'))).toBe(true);
-    expect(isTorqAudioFile(file('notes.pdf', 'application/pdf'))).toBe(false);
   });
 });
 

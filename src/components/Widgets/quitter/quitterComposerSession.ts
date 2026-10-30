@@ -6,12 +6,6 @@ import type {
 import type { LibraryGif } from '../../Chat/gifs/libraryGifs';
 import type { TorqDocNode } from './torqRichText';
 
-export {
-  readComposerTarget,
-  writeComposerTarget,
-  type ComposerTarget,
-} from './composerTarget';
-
 export type SessionImageDraft = {
   id: string;
   file: File;
@@ -86,7 +80,6 @@ const emptySession = (): QuitterComposerSession => ({
 });
 
 let session: QuitterComposerSession = emptySession();
-const listeners = new Set<() => void>();
 
 export function getQuitterComposerSession(): QuitterComposerSession {
   return session;
@@ -96,14 +89,6 @@ export function patchQuitterComposerSession(
   patch: Partial<QuitterComposerSession>
 ): void {
   session = { ...session, ...patch };
-  listeners.forEach((listener) => listener());
-}
-
-export function subscribeQuitterComposerSession(listener: () => void): () => void {
-  listeners.add(listener);
-  return () => {
-    listeners.delete(listener);
-  };
 }
 
 export function clearQuitterComposerSession(): void {
@@ -120,5 +105,4 @@ export function clearQuitterComposerSession(): void {
   }
   session.compressJob?.cancel();
   session = emptySession();
-  listeners.forEach((listener) => listener());
 }

@@ -259,14 +259,6 @@ export async function lookUpLatestPublishedBuild(): Promise<LatestBuildLookup> {
   return { reachable: true, release: null };
 }
 
-/**
- * Newest published .apk, or null when the name has never published one (or the
- * node cannot reach the data yet — a cold node is a "not now", never a "no").
- */
-export async function findLatestPublishedBuild(): Promise<AppRelease | null> {
-  return (await lookUpLatestPublishedBuild()).release;
-}
-
 /** Newest version first; the later publish wins between equal versions. */
 export const compareReleasesNewestFirst = (
   a: AppRelease,

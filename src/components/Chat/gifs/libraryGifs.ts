@@ -270,13 +270,11 @@ const fetchLibraryGifCatalog = async (): Promise<LibraryGif[]> => {
     .filter((gif) => !isModerated(gif, moderation));
 };
 
-export const getLibraryGifCatalog = (
-  force = false
-): Promise<LibraryGif[]> => {
-  if (!force && catalog && Date.now() - catalogFetchedAt < CATALOG_TTL_MS) {
+export const getLibraryGifCatalog = (): Promise<LibraryGif[]> => {
+  if (catalog && Date.now() - catalogFetchedAt < CATALOG_TTL_MS) {
     return Promise.resolve(catalog);
   }
-  if (!force && catalogPromise) return catalogPromise;
+  if (catalogPromise) return catalogPromise;
   catalogPromise = fetchLibraryGifCatalog()
     .then((rows) => {
       catalog = rows;
@@ -288,9 +286,6 @@ export const getLibraryGifCatalog = (
     });
   return catalogPromise;
 };
-
-export const searchLibraryGifs = async (query = ''): Promise<LibraryGif[]> =>
-  filterLibraryGifs(await getLibraryGifCatalog(), query);
 
 export const fetchLibraryGifFile = async (
   gif: LibraryGif

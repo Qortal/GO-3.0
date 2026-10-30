@@ -413,11 +413,6 @@ export const takeReactionLanding = (
   return flight;
 };
 
-/** Drops an emoji in the air (the reaction was taken back or failed). */
-export const cancelReactionLanding = (messageKey: string, emoji: string) => {
-  discard(pendingKey(messageKey, emoji));
-};
-
 /** The arc from the launch's end to the chip, as keyframes. */
 const flightKeyframes = (
   from: LaunchEnd,

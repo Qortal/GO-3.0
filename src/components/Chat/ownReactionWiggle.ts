@@ -162,6 +162,3 @@ export const registerOwnReaction = (node: HTMLElement): (() => void) => {
     }
   };
 };
-
-/** Test hook: how many chips are waiting for their turn. */
-export const ownReactionCountForTests = () => chips.size;

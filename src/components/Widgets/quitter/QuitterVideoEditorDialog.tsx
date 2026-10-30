@@ -97,8 +97,8 @@ export const QuitterVideoEditorDialog = ({
   const [hasStartedPlayback, setHasStartedPlayback] = useState(false);
 
   const presets = useMemo(
-    () => listCompressPresets(size, mimeType, fileName, duration || undefined),
-    [size, mimeType, fileName, duration]
+    () => listCompressPresets(size, duration || undefined),
+    [size, duration]
   );
   const plan = useMemo(
     () =>

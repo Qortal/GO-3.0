@@ -10,7 +10,6 @@ import {
   connectCard,
   loadWalletKey,
   makeKeyOnCard,
-  nextWalletKeyIndex,
   pickWalletKeyIndex,
   readCard,
   registerNameTx,
@@ -105,12 +104,6 @@ describe('connecting a card', () => {
     expect(await pickWalletKeyIndex(MAIN, [0], used)).toBe(2);
     expect(await pickWalletKeyIndex(MAIN, [0, 2, 3], used)).toBe(4);
     await expect(pickWalletKeyIndex(MAIN, [0], used, 1)).rejects.toThrow();
-  });
-
-  it('picks the first free wallet key index', () => {
-    expect(nextWalletKeyIndex([])).toBe(0);
-    expect(nextWalletKeyIndex([0, null, 2])).toBe(1);
-    expect(nextWalletKeyIndex([1, 0])).toBe(2);
   });
 });
 

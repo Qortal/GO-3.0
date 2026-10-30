@@ -371,14 +371,6 @@ export function signWithWalletCardKey(
   return signTxWithWalletKey(mainPrivateKey, index, paymentTx(request, deps));
 }
 
-/** The first wallet card-key index no linked card uses yet. */
-export function nextWalletKeyIndex(used: Array<number | null>): number {
-  const taken = new Set(used.filter((value) => value !== null));
-  let index = 0;
-  while (taken.has(index)) index++;
-  return index;
-}
-
 /**
  * A wallet card-key index for a new card: never one this phone handed out
  * before (a lost card keeps its key), and never one whose address already

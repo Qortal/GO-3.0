@@ -7,88 +7,6 @@ import {
 import { Box, SxProps, Theme } from '@mui/material';
 
 /**
- * Renders text on a single line, automatically shrinking the font size so the
- * whole string fits the available width (no truncation, no scrolling). Used to
- * always show a full Qortal address regardless of screen width.
- */
-export function AutoFitText({
-  text,
-  maxFontPx = 14,
-  minFontPx = 6,
-  sx,
-}: {
-  text: string;
-  maxFontPx?: number;
-  minFontPx?: number;
-  sx?: SxProps<Theme>;
-}) {
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const spanRef = useRef<HTMLSpanElement | null>(null);
-  const [fontPx, setFontPx] = useState(maxFontPx);
-
-  useLayoutEffect(() => {
-    let raf = 0;
-    const fit = () => {
-      const c = containerRef.current;
-      const s = spanRef.current;
-      if (!c || !s) return;
-      const avail = c.clientWidth;
-      if (avail <= 0) {
-        // Layout not ready yet (e.g. off-screen / first paint): retry next frame.
-        raf = requestAnimationFrame(fit);
-        return;
-      }
-      // Measure the natural width at the max font size.
-      s.style.fontSize = `${maxFontPx}px`;
-      const natural = s.scrollWidth;
-      if (natural <= 0) return;
-      let size = maxFontPx * (avail / natural);
-      size = Math.max(minFontPx, Math.min(maxFontPx, size));
-      // Small safety margin so it never clips at the edge.
-      setFontPx(Math.floor(size * 0.985 * 100) / 100);
-    };
-    fit();
-    let ro: ResizeObserver | null = null;
-    if (typeof ResizeObserver !== 'undefined' && containerRef.current) {
-      ro = new ResizeObserver(fit);
-      ro.observe(containerRef.current);
-    }
-    return () => {
-      if (raf) cancelAnimationFrame(raf);
-      ro?.disconnect();
-    };
-  }, [text, maxFontPx, minFontPx]);
-
-  return (
-    <Box
-      ref={containerRef}
-      sx={{
-        // minWidth:0 is essential: without it a flex parent gives this box its
-        // content's natural width, so avail === natural and the font never
-        // shrinks. With it the box shrinks to the available space and we scale.
-        minWidth: 0,
-        overflow: 'hidden',
-        width: '100%',
-        ...sx,
-      }}
-    >
-      <span
-        ref={spanRef}
-        style={{
-          display: 'inline-block',
-          whiteSpace: 'nowrap',
-          fontSize: `${fontPx}px`,
-          letterSpacing: '-0.02em',
-          lineHeight: 1.25,
-        }}
-      >
-        {text}
-      </span>
-    </Box>
-  );
-}
-
-/**
  * Single-line text that first shrinks its font to fit the available width (down
  * to `minFontPx`) and, if it still doesn't fit at that floor, truncates with an
  * ellipsis. Good for titles/names where you want them as large as possible but
@@ -143,7 +61,7 @@ let fitCanvas: HTMLCanvasElement | null = null;
 
 /**
  * Returns a px font size that makes `text` fit on one line within the referenced
- * container's current width. Unlike AutoFitText this doesn't render anything —
+ * container's current width. It renders nothing itself —
  * useful when the text is drawn by another component (e.g. the animated
  * DecryptedText address reveal) that just needs a fontSize to apply.
  */
@@ -199,7 +117,7 @@ export function useAutoFitFontPx(
 
 /**
  * Auto-shrinks the font size of a text input/textarea so its full value fits on
- * one line. Keeps the field fully editable (unlike AutoFitText which is static).
+ * one line. Keeps the field fully editable.
  */
 export function useAutoFitInputFont(
   inputRef: RefObject<HTMLInputElement | HTMLTextAreaElement | null>,

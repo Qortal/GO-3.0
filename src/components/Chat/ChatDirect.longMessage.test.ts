@@ -1,4 +1,4 @@
-import { Editor, getSchema } from '@tiptap/core';
+import { Editor } from '@tiptap/core';
 import { Color } from '@tiptap/extension-color';
 import Mention from '@tiptap/extension-mention';
 import TextStyle from '@tiptap/extension-text-style';
@@ -38,7 +38,6 @@ const composerExtensions = [
   StarterKit,
   Mention,
 ];
-const schema = getSchema(composerExtensions);
 
 const text = (value: string, marks?: ChatDocNode['marks']): ChatDocNode =>
   marks ? { type: 'text', text: value, marks } : { type: 'text', text: value };

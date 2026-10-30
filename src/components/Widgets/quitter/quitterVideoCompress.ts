@@ -60,8 +60,6 @@ export type VideoPrepareJob = {
   promise: Promise<PrepareVideoResult>;
   /** Stop native compression + progress listeners. */
   cancel: () => void;
-  /** @deprecated use cancel */
-  cancelProgress?: () => void;
   /**
    * Native compression only: follow the file the encoder is writing, so the
    * finished part can upload before the encode ends. Fires again with a new
@@ -130,8 +128,6 @@ function estimateCompressedBytes(
 /** User-facing High / Medium / Max options with soft size estimates. */
 export function listCompressPresets(
   fileSize: number,
-  mimeType?: string,
-  fileName?: string,
   durationSec?: number
 ): CompressPresetOption[] {
   const highAudio = 128_000;
@@ -247,7 +243,7 @@ export function planVideoCompression(
     };
   }
 
-  const presets = listCompressPresets(size, mimeType, fileName, durationSec);
+  const presets = listCompressPresets(size, durationSec);
   const preset = presets.find((item) => item.level === level) || presets[0];
 
   const labelByLevel: Record<Exclude<CompressLevel, 'none'>, string> = {
@@ -429,10 +425,7 @@ export type PrepareVideoOptions = {
   name: string;
   mimeType?: string;
   nativePath?: string;
-  /** Preferred. Replaces forceCompress. */
   compressLevel?: CompressLevel;
-  /** @deprecated use compressLevel */
-  forceCompress?: boolean;
   /** Clip length from the editor; keeps the bitrate matched to the estimate. */
   durationSec?: number;
   notificationTitle?: string;
@@ -440,10 +433,7 @@ export type PrepareVideoOptions = {
 };
 
 function resolveCompressLevel(options: PrepareVideoOptions): CompressLevel {
-  if (options.compressLevel) return options.compressLevel;
-  if (options.forceCompress === false) return 'none';
-  if (options.forceCompress === true) return 'high';
-  return 'high';
+  return options.compressLevel || 'high';
 }
 
 /**
@@ -693,7 +683,6 @@ export function startBackgroundVideoPrepare(
   return {
     promise,
     cancel,
-    cancelProgress: cancel,
     subscribeOutput: (listener) => {
       outputListeners.add(listener);
       return () => {
@@ -702,13 +691,6 @@ export function startBackgroundVideoPrepare(
     },
     getOutputPath: () => outputPath,
   };
-}
-
-/** Await helper used at publish time (also starts work if none was started). */
-export async function prepareVideoForQuitterPublish(
-  options: PrepareVideoOptions
-): Promise<PrepareVideoResult> {
-  return startBackgroundVideoPrepare(options).promise;
 }
 
 export function formatBytes(bytes: number): string {

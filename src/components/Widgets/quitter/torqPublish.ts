@@ -289,9 +289,6 @@ const AUDIO_MIME: Record<string, string> = {
 const fileExtension = (filename: string) =>
   /\.([^.]+)$/.exec(String(filename || ''))?.[1]?.toLowerCase() || '';
 
-export const isAudioExtension = (filename: string) =>
-  AUDIO_EXT.includes(fileExtension(filename));
-
 export function guessFileMime(file: File, filename: string): string {
   const type =
     typeof file.type === 'string' ? file.type.trim().toLowerCase() : '';
@@ -311,11 +308,6 @@ export function guessFileMime(file: File, filename: string): string {
     zip: 'application/zip',
   };
   return known[ext] || type || 'application/octet-stream';
-}
-
-/** True when Torq plays the file in its audio player, not as a file card. */
-export function isTorqAudioFile(file: File, filename = file.name): boolean {
-  return guessFileMime(file, filename).startsWith('audio/');
 }
 
 export const TORQ_THUMBNAIL_MAX_PX = 400;

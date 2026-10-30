@@ -143,9 +143,7 @@ function offerRelease(
  * Look for a newer build (the background check). A node that cannot answer is
  * a "not now", never a "no".
  */
-export async function checkForAppUpdate(options?: {
-  force?: boolean;
-}): Promise<AppRelease | null> {
+export async function checkForAppUpdate(): Promise<AppRelease | null> {
   if (!Capacitor.isNativePlatform()) return null;
   if (checkInFlight) return checkInFlight;
 
@@ -164,7 +162,7 @@ export async function checkForAppUpdate(options?: {
         });
         return null;
       }
-      const offered = offerRelease(release, installed, Boolean(options?.force));
+      const offered = offerRelease(release, installed, false);
       store.set(appUpdateCheckAtom, {
         checkedAt: Date.now(),
         status: isNewer(release, installed) ? 'available' : 'up-to-date',

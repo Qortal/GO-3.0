@@ -151,7 +151,6 @@ type Props = {
   /** Home's scroller: held still while a window is lifted. */
   scroller: HTMLElement | null;
   gap: number;
-  enabled?: boolean;
 };
 
 const translateY = (y: number) => `0 ${Math.round(y)}px`;
@@ -176,7 +175,6 @@ export const HomeWindowStack = ({
   onReorder,
   scroller,
   gap,
-  enabled = true,
 }: Props) => {
   const theme = useTheme();
   const savedOrder = useHomeWindowOrder();
@@ -524,7 +522,7 @@ export const HomeWindowStack = ({
   );
 
   useEffect(() => {
-    if (!container || !enabled) return;
+    if (!container) return;
     let press: Press | null = null;
     let lastTouchAt = 0;
     let swallowClickUntil = 0;
@@ -680,13 +678,8 @@ export const HomeWindowStack = ({
       cancelPress();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [container, enabled, drop, lift]);
+  }, [container, drop, lift]);
 
-  // Gone mid-drag (turned off): the page scrolls again.
-  useEffect(() => {
-    if (enabled) return;
-    if (live.current.session) finishSession();
-  }, [enabled, finishSession]);
   useEffect(
     () => () => {
       const state = live.current;

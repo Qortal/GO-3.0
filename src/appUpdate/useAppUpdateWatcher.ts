@@ -14,11 +14,11 @@ const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
  * six hours after that, and on the way back from the background when the last
  * look was long enough ago to be stale.
  */
-export const useAppUpdateWatcher = (enabled = true) => {
+export const useAppUpdateWatcher = () => {
   const lastCheckRef = useRef(0);
 
   useEffect(() => {
-    if (!enabled || !Capacitor.isNativePlatform()) return undefined;
+    if (!Capacitor.isNativePlatform()) return undefined;
 
     const check = () => {
       lastCheckRef.current = Date.now();
@@ -43,5 +43,5 @@ export const useAppUpdateWatcher = (enabled = true) => {
       window.clearInterval(interval);
       document.removeEventListener('visibilitychange', onVisible);
     };
-  }, [enabled]);
+  }, []);
 };

@@ -1,8 +1,7 @@
 import Compressor from 'compressorjs';
 import ShortUniqueId from 'short-unique-id';
-import { createNamedFile, nameBlob } from '../../../utils/namedFile';
+import { createNamedFile } from '../../../utils/namedFile';
 import {
-  blobToNamedImageFile,
   compressImageFile,
   ensureImageMetadataFree,
   stripImageFileMetadata,
@@ -78,11 +77,8 @@ export type QuitterPublishVideo = {
 export type QuitterPublishInput = {
   /**
    * Plain post body. Quitter renders with white-space: pre-wrap — do NOT send HTML.
-   * (`textHtml` kept as a deprecated alias.)
    */
   text?: string;
-  /** @deprecated use `text` (plain). HTML will be stripped to plain text. */
-  textHtml?: string;
   userName: string;
   images?: QuitterPublishImage[];
   video?: QuitterPublishVideo | null;
@@ -153,8 +149,6 @@ export const fileToRawBase64 = (file: Blob): Promise<string> =>
   });
 
 const IMAGE_COMPRESS_THRESHOLD_BYTES = 5 * 1024 * 1024;
-
-const blobToPublishFile = blobToNamedImageFile;
 
 /**
  * Only compress Quitter images above 5 MB. Smaller images keep their pixels
@@ -567,7 +561,7 @@ export async function publishQuitterPost(
   }
 
   // Quitter feed renders `text` as plain React children (pre-wrap) — never HTML.
-  const publishText = normalizePostText(input.text ?? input.textHtml ?? '');
+  const publishText = normalizePostText(input.text ?? '');
   if (!publishText && images.length === 0 && !video) {
     throw new Error(
       i18n.t('group:home_composer.error.empty_post', {
@@ -814,26 +808,6 @@ export async function encodeImageForPost(
     );
   }
   return base64;
-}
-
-/**
- * @deprecated Quitter expects plain text in `post.text`. Kept for any callers
- * that still format for display elsewhere.
- */
-export function plainTextToQuitterHtml(text: string): string {
-  const normalized = text.replace(/\r\n/g, '\n');
-  const paragraphs = normalized.split(/\n/);
-  if (paragraphs.length === 0) return '<p></p>';
-  return paragraphs
-    .map((line) => {
-      const escaped = line
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;');
-      if (!escaped.trim()) return '<p><br></p>';
-      return `<p>${escaped}</p>`;
-    })
-    .join('');
 }
 
 export const QUITTER_VIDEO_CATEGORIES = [

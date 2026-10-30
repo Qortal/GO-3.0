@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  cancelReactionLanding,
   planReveal,
   playReactionLanding,
   requestReactionLanding,
@@ -43,9 +42,6 @@ describe('reaction landing', () => {
     requestReactionLanding('sig-2', '🔥', { x: 0, y: 0, size: 28 });
     vi.advanceTimersByTime(5_000);
     expect(takeReactionLanding('sig-2', '🔥')).toBeNull();
-    requestReactionLanding('sig-3', '🔥', { x: 0, y: 0, size: 28 });
-    cancelReactionLanding('sig-3', '🔥');
-    expect(takeReactionLanding('sig-3', '🔥')).toBeNull();
   });
 
   it('never plans to scroll past the end of the chat', () => {
