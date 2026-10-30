@@ -2148,8 +2148,6 @@ def transport_status(detail=False):
     ``result["bridge"]`` from :func:`_bridge_detail`. It is a direct call,
     not a lane command: nothing is queued and no bridge lock is taken.
     """
-    import json
-
     result = {
         "started": bool(_started),
         "online": False,
@@ -2535,10 +2533,7 @@ def _drop_stale_socket(interface, sock):
             # A newer resume owns the interface and dials it next.
             interface.online = False
             interface.socket = None
-    try:
-        sock.close()
-    except Exception:
-        pass
+    _close_quietly(sock)
 
 
 def _emit_transport_state():

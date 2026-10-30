@@ -20,6 +20,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "..", "main", "python"))
 sys.dont_write_bytecode = True
 
+from _host_test_support import _wait_for  # noqa: E402
+
 calls = []
 _fd_counter = [500]
 
@@ -150,15 +152,6 @@ def _install_stubs():
     pb.maybe_emit_transport_state = lambda force=False: calls.append(("ts",))
     sys.modules["presence_bridge"] = pb
     return pb
-
-
-def _wait_for(condition, timeout=3.0):
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        if condition():
-            return True
-        time.sleep(0.01)
-    return condition()
 
 
 def _teardowns():

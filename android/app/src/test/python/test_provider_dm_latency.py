@@ -29,6 +29,7 @@ sys.dont_write_bytecode = True
 
 import presence_bridge as pb  # noqa: E402
 import RNS  # noqa: E402
+from _host_test_support import _wait_for  # noqa: E402
 
 CHAT_RT = pb._RETICULUM_CHAT_RESOURCE_TYPE
 DM = "reticulum_chat_dm_page"
@@ -102,15 +103,6 @@ def _install():
     pb._resource_session_fail_state = lambda *a, **k: None
     pb._destination_hash_for_identity = lambda identity: identity
     pb._resource_session_state_for_rns_link_id = lambda rid: LINKS.get(rid)
-
-
-def _wait_for(condition, timeout=3.0):
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        if condition():
-            return True
-        time.sleep(0.01)
-    return condition()
 
 
 def _auth_event(tid):

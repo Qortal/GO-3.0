@@ -202,11 +202,9 @@ _BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 _BASE58_MAP = {c: i for i, c in enumerate(_BASE58_ALPHABET)}
 
 # Lifecycle / path nudge (see reticulum presence plan).
-_PEER_STALE_SECONDS = 4 * 3600
 _PEER_TS_SEED_LEASE_SECONDS = 300
 _MAX_KNOWN_PEERS = 256
 _REQUEST_PATH_COOLDOWN_SECONDS = 30.0
-_MAX_PATH_NUDGES_PER_PUBLISH = 8
 # A phone with few verified neighbours used to re-announce to the whole mesh
 # every 2 min (7.5x the 15 min schedule); every peer verifies and caches each
 # announce to disk. 5 min still recovers discovery quickly after a reconnect.
@@ -256,7 +254,6 @@ _OVERLAY_OWN_DEVICE_SUPPRESS_MAX_SECONDS = 30.0
 _OVERLAY_LINK_FAILURE_RESET_SECONDS = 30 * 60.0
 _OVERLAY_ZERO_FANOUT_RECOVERY_COOLDOWN_SECONDS = 15.0
 _OVERLAY_REPLACE_UNUSABLE_ACTIVE_MIN_AGE_SECONDS = 2.0
-_OVERLAY_LINK_CLOSE_RECENT_ACTIVITY_GRACE_SECONDS = 30.0
 _OVERLAY_DIRECT_ACTIVITY_BACKFILL_SECONDS = 15 * 60.0
 _OVERLAY_MAX_TOTAL_LINKS = (
     _OVERLAY_MAX_OUTBOUND_NEIGHBORS
@@ -285,7 +282,6 @@ _OVERLAY_LINK_TEARDOWN_TIMEOUT_SECONDS = 1.5
 _LINK_PACKET_SEND_TIMEOUT_SECONDS = 2.5
 _LINK_TEARDOWN_TIMEOUT_SECONDS = 1.5
 _LINK_STATE_IDLE = "IDLE"
-_LINK_STATE_PATH_WAIT = "PATH_WAIT"
 _LINK_STATE_CONNECTING = "CONNECTING"
 _LINK_STATE_ESTABLISHED = "ESTABLISHED"
 _LINK_STATE_DEGRADED = "DEGRADED"
@@ -8308,16 +8304,6 @@ def _overlay_peer_is_admitted(peer_key: str) -> bool:
         return bool(state is not None and _overlay_link_is_fanout_usable(state))
 
 
-def _overlay_peer_is_outbound(peer_key: str) -> bool:
-    peer_key = str(peer_key or "").strip().lower()
-    return bool(peer_key and peer_key in _active_overlay_neighbors)
-
-
-def _overlay_peer_is_inbound(peer_key: str) -> bool:
-    peer_key = str(peer_key or "").strip().lower()
-    return bool(peer_key and peer_key in _inbound_overlay_neighbors)
-
-
 def _promote_recent_verified_overlay_neighbors(
     reason: str, exclude_hashes: Optional[Set[str]] = None
 ) -> int:
@@ -8447,35 +8433,6 @@ def _refresh_ts_seed_only(peer_key: str) -> None:
             "ts_seed_until": None,
         }
     _peer_lifecycle[peer_key]["ts_seed_until"] = now + _PEER_TS_SEED_LEASE_SECONDS
-
-
-def _maybe_prune_stale_peers() -> None:
-    """Remove peers with no recent activity and no active TS seed lease."""
-    global _known_peers, _peer_lifecycle
-    if _destination is None:
-        return
-    now = time.time()
-    local_hex = destination_hash_hex(_destination.hash)
-    to_drop: list[str] = []
-    for pk, st in list(_peer_lifecycle.items()):
-        if pk == local_hex:
-            continue
-        lease = st.get("ts_seed_until")
-        if isinstance(lease, (int, float)) and lease > now:
-            continue
-        last_in = st.get("last_seen_inbound")
-        last_ok = st.get("last_send_ok")
-        active = False
-        if isinstance(last_in, (int, float)) and (now - float(last_in)) <= _PEER_STALE_SECONDS:
-            active = True
-        if isinstance(last_ok, (int, float)) and (now - float(last_ok)) <= _PEER_STALE_SECONDS:
-            active = True
-        if not active:
-            to_drop.append(pk)
-    for pk in to_drop:
-        _known_peers.pop(pk, None)
-        _peer_lifecycle.pop(pk, None)
-        log(f"[presence_bridge] target=presence-reticulum peer_pruned_stale peer_hash={pk}")
 
 
 def _overlay_bootstrap_peer_sort_key(peer_key: str) -> tuple[int, float, str]:
@@ -8619,39 +8576,6 @@ def _recover_zero_overlay_fanout(reason: str) -> int:
         f"fanout_hashes={','.join(selected)}"
     )
     return len(selected)
-
-
-def _request_path_if_eligible(peer_key: str, h: bytes, nudge_budget: list[int]) -> None:
-    """Nudge Reticulum path discovery when appropriate (throttled)."""
-    if nudge_budget[0] <= 0:
-        return
-    st = _peer_lifecycle.get(peer_key) or {}
-    now = time.time()
-    last_rp = st.get("last_request_path_at")
-    if _epoch_timestamp_is_recent(last_rp, now, _REQUEST_PATH_COOLDOWN_SECONDS):
-        return
-    has_path = _reticulum_has_path(h)
-    last_ok = st.get("last_direct_link_send_at")
-    recently_sent = _epoch_timestamp_is_recent(last_ok, now, 180.0)
-    if has_path and recently_sent:
-        return
-    try:
-        RNS.Transport.request_path(h)
-        if peer_key not in _peer_lifecycle:
-            _peer_lifecycle[peer_key] = {
-                "last_seen_inbound": None,
-                "last_send_ok": None,
-                "last_request_path_at": None,
-                "ts_seed_until": None,
-            }
-        _peer_lifecycle[peer_key]["last_request_path_at"] = now
-        nudge_budget[0] -= 1
-        log(
-            f"[presence_bridge] target=presence-reticulum request_path peer={peer_key} "
-            f"has_path={has_path}"
-        )
-    except Exception as exc:
-        log(f"[presence_bridge] target=presence-reticulum request_path_failed peer={peer_key}: {exc}")
 
 
 def _reticulum_local_has_path(destination_hash: bytes) -> bool:
@@ -13351,36 +13275,6 @@ def _overlay_dedup_job(peer_key: str, reason: str = "dedup_same_peer") -> None:
     finally:
         with _state_lock:
             _overlay_dedup_pending_by_peer_hash.discard(peer_key)
-
-
-def _maybe_prune_stale_overlay_links() -> None:
-    now = time.time()
-    stale_ids = []
-    with _state_lock:
-        for link_id, state in list(_overlay_links_by_id.items()):
-            if state.get("established") is not True:
-                created_at = state.get("created_at")
-                if (
-                    isinstance(created_at, (int, float))
-                    and now - float(created_at) > _OVERLAY_UNESTABLISHED_LINK_TIMEOUT_SECONDS
-                ):
-                    stale_ids.append(link_id)
-                continue
-            last_rx = state.get("last_rx_at")
-            if not isinstance(last_rx, (int, float)):
-                last_rx = state.get("established_at") or state.get("created_at")
-            if not isinstance(last_rx, (int, float)):
-                continue
-            if now - float(last_rx) > _OVERLAY_LINK_RX_IDLE_TIMEOUT_SECONDS:
-                stale_ids.append(link_id)
-    for link_id in stale_ids:
-        state = get_overlay_link_state(link_id)
-        reason = (
-            "unestablished_timeout"
-            if state is not None and state.get("established") is not True
-            else "rx_idle_timeout"
-        )
-        _teardown_overlay_link_id(link_id, reason)
 
 
 def _register_active_overlay_for_peer(peer_key: str, link_id: str) -> Optional[Dict[str, Any]]:
@@ -19556,42 +19450,6 @@ def _rns_announce_on_auth_session_end() -> None:
     _cancel_rns_periodic_announce_timer()
 
 
-def send_presence_wire_to_peer(peer_hash: str, peer_identity, wire_bytes: bytes) -> None:
-    """Send presence wire; updates last_send_ok in _peer_lifecycle (TODO: failure vs no-path diagnostics)."""
-    now = time.time()
-    try:
-        outbound = build_outbound_destination(peer_identity)
-        result, _send_duration_ms = _send_packet_to_destination_bounded(
-            outbound,
-            wire_bytes,
-            f"target=presence-reticulum direct_presence_send peer={peer_hash}",
-        )
-        if peer_hash not in _peer_lifecycle:
-            _peer_lifecycle[peer_hash] = {
-                "last_seen_inbound": None,
-                "last_send_ok": None,
-                "last_request_path_at": None,
-                "ts_seed_until": None,
-            }
-        st = _peer_lifecycle[peer_hash]
-        if result is not True:
-            st["last_send_ok"] = None
-            verbose_presence_log(
-                f"[presence_bridge] target=presence-reticulum send_failed peer={peer_hash}"
-            )
-        else:
-            st["last_send_ok"] = now
-            verbose_presence_log(
-                f"[presence_bridge] target=presence-reticulum sent_presence peer={peer_hash}"
-            )
-    except Exception as exc:
-        if peer_hash in _peer_lifecycle:
-            _peer_lifecycle[peer_hash]["last_send_ok"] = None
-        verbose_presence_log(
-            f"[presence_bridge] target=presence-reticulum send_exception peer={peer_hash}: {exc}"
-        )
-
-
 def make_group_audio_wire(room_id: str, raw_audio: bytes) -> bytes:
     if _destination is None:
         raise RuntimeError("Local destination not initialised")
@@ -22896,7 +22754,7 @@ def handle_publish_presence(req_id: str, payload: Dict[str, Any]) -> None:
         env_addr = ""
         if isinstance(env_payload, dict) and isinstance(env_payload.get("address"), str):
             env_addr = str(env_payload.get("address"))
-        _provider_note_local_account_address(env_type, env_addr)
+        _provider_note_local_account_address(env_addr)
         verbose_presence_log(
             "[presence_bridge] target=presence-reticulum publish_fanout "
             f"peers={len(peer_hashes)} local_presence_hash={local_hex} "
@@ -26198,7 +26056,7 @@ def _resource_session_provider_auth_window_seconds(logical_resource_type: str) -
     return float(_RESOURCE_SESSION_PROVIDER_AUTH_TIMEOUT_SECONDS)
 
 
-def _provider_note_local_account_address(envelope_type: str, address: Any) -> None:
+def _provider_note_local_account_address(address: Any) -> None:
     """Remember this account's address from the presence it publishes.
 
     Every envelope type counts, PRESENCE_OFFLINE too: "Appear offline"
@@ -26208,7 +26066,6 @@ def _provider_note_local_account_address(envelope_type: str, address: Any) -> No
     address could only exempt that account's own data, which is harmless.
     """
     global _provider_local_account_address
-    del envelope_type  # kept for the call sites; the type no longer matters
     value = str(address or "").strip() if isinstance(address, str) else ""
     if value:
         _provider_local_account_address = value
@@ -27941,8 +27798,8 @@ def handle_fanout_reticulum_chat(req_id: str, payload: Dict[str, Any]) -> None:
         else []
     )
 
-    if any(_reticulum_chat_wire_is_stale(msg) for msg in messages):
-        stale = next(msg for msg in messages if _reticulum_chat_wire_is_stale(msg))
+    stale = next((msg for msg in messages if _reticulum_chat_wire_is_stale(msg)), None)
+    if stale is not None:
         _emit_stale_wire_resp(req_id, stale)
         return
 

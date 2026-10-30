@@ -194,7 +194,7 @@ def check_window_per_type():
 # ── 2. breaker rules on a fake clock ──────────────────────────────────────
 def check_breaker_rules():
     pb._provider_engine_breaker_reset()
-    pb._provider_note_local_account_address("PRESENCE_ANNOUNCE", OWN)
+    pb._provider_note_local_account_address(OWN)
     refuses = pb._provider_engine_breaker_refuses
     other_range = {"range": {"a": OTHER}}
     own_range = {"range": {"a": OWN}}
@@ -287,15 +287,15 @@ def check_breaker_rules():
     assert refuses(HISTORY, {"authorAddress": OWN}, now=3003.65)
     assert refuses("reticulum_chat_event_page", {"authorAddress": OWN}, now=3003.66)
     assert refuses(AUTHOR_RANGE, {"authorAddress": OTHER, "range": {"a": OTHER}}, now=3003.67)
-    pb._provider_note_local_account_address("PRESENCE_HEARTBEAT", "")
+    pb._provider_note_local_account_address("")
     assert pb._provider_local_account_address == OWN
-    pb._provider_note_local_account_address("PRESENCE_HEARTBEAT", None)
+    pb._provider_note_local_account_address(None)
     assert pb._provider_local_account_address == OWN
     # "Appear offline" publishes OFFLINE and stops heartbeats: the address
     # stays (from the envelope), so our own data still passes.
-    pb._provider_note_local_account_address("PRESENCE_OFFLINE", OWN)
+    pb._provider_note_local_account_address(OWN)
     assert pb._provider_local_account_address == OWN
-    pb._provider_note_local_account_address("PRESENCE_OFFLINE", "")
+    pb._provider_note_local_account_address("")
     assert pb._provider_local_account_address == OWN
     assert not refuses(AUTHOR_RANGE, own_range, now=3003.7)
     # Only a bridge stop forgets it.
@@ -309,7 +309,7 @@ def check_breaker_rules():
     assert "_provider_engine_breaker_reset()" in stop_src
     assert "_provider_forget_local_account_address()" in stop_src
     publish_src = inspect.getsource(pb.handle_publish_presence)
-    assert "_provider_note_local_account_address(env_type, env_addr)" in publish_src
+    assert "_provider_note_local_account_address(env_addr)" in publish_src
     pb._provider_engine_breaker_reset()
     assert pb._provider_engine_breaker_snapshot()["open"] is False
 
@@ -317,7 +317,7 @@ def check_breaker_rules():
 # ── 3. breaker through the provider path (scaled clock) ──────────────────
 def check_breaker_end_to_end():
     pb._provider_engine_breaker_reset()
-    pb._provider_note_local_account_address("PRESENCE_ANNOUNCE", OWN)
+    pb._provider_note_local_account_address(OWN)
     stalled_history = busy_kind_count("history:engine_stalled")
     stalled_other = busy_kind_count("other:engine_stalled")
     with scaled_clock():
