@@ -168,6 +168,30 @@ describe('mobile presence across devices of one account', () => {
     });
   });
 
+  it('does not repeat an account whose devices changed nothing', async () => {
+    inbound('PRESENCE_HEARTBEAT', 'QPeer', 'phone', OTHER_PHONE_HASH, 'online');
+    inbound('PRESENCE_HEARTBEAT', 'QPeer', 'phone', OTHER_PHONE_HASH, 'online');
+    inbound('PRESENCE_HEARTBEAT', 'QPeer', 'desktop', DESKTOP_HASH, 'idle');
+    expect(updates).toEqual([
+      { address: 'QPeer', online: true, status: 'online' },
+    ]);
+
+    inbound('PRESENCE_HEARTBEAT', 'QPeer', 'phone', OTHER_PHONE_HASH, 'busy');
+    expect(updates[updates.length - 1]).toEqual({
+      address: 'QPeer',
+      online: true,
+      status: 'busy',
+    });
+
+    // A reader that takes the whole list hears about every account again.
+    await window.presence!.getAllOnline();
+    updates = [];
+    inbound('PRESENCE_HEARTBEAT', 'QPeer', 'phone', OTHER_PHONE_HASH, 'busy');
+    expect(updates).toEqual([
+      { address: 'QPeer', online: true, status: 'busy' },
+    ]);
+  });
+
   it('reports expired devices as gone instead of keeping their last status', async () => {
     inbound('PRESENCE_HEARTBEAT', 'QPeer', 'desktop', DESKTOP_HASH, 'idle');
     updates = [];

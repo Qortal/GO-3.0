@@ -2199,11 +2199,24 @@ export function installReticulumBridges(): void {
     return best;
   };
 
+  // What the listeners were last told per account. Most packets are
+  // heartbeats that leave an account as it was; those are not sent again
+  // (each one rebuilt the online set and re-rendered its readers). Cleared
+  // whenever someone reads the whole list, so a fresh reader misses nothing.
+  const lastEmittedStatus = new Map<string, UserStatus | null>();
+
   const emitAggregates = (addresses: Iterable<string>): void => {
     const now = Date.now();
     const payloads: UpdatePayload[] = [];
     for (const address of addresses) {
       const status = aggregateStatus(address, now);
+      if (
+        lastEmittedStatus.has(address) &&
+        lastEmittedStatus.get(address) === status
+      ) {
+        continue;
+      }
+      lastEmittedStatus.set(address, status);
       payloads.push({ address, online: status !== null, status });
     }
     if (payloads.length === 0) return;
@@ -3108,7 +3121,10 @@ export function installReticulumBridges(): void {
     getOnlineAddresses: async () => [
       ...new Set(liveSessions().map((s) => s.address)),
     ],
-    getAllOnline: async () => liveSessions(),
+    getAllOnline: async () => {
+      lastEmittedStatus.clear();
+      return liveSessions();
+    },
     onUpdate: (cb) => {
       updateCbs.add(cb);
       return () => updateCbs.delete(cb);
