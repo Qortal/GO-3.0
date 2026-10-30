@@ -360,6 +360,26 @@ def test_task_labels_drop_ids():
     assert len(h._task_label("cmd:" + "a" * 60)) <= 48
 
 
+def test_stdout_shim_splits_frames_in_order():
+    h = _host()
+    while not h._out_queue.empty():
+        h._out_queue.get_nowait()
+    shim = h._StdoutShim()
+    assert shim.write("") == 0
+    assert shim.write('{"a":') == 5
+    assert h._out_queue.empty()
+    assert shim.write('1}\n{"b":2}\n\n{"c":3}\n{"d":') == 25
+    assert shim.write("4}") == 2
+    frames = []
+    while not h._out_queue.empty():
+        frames.append(h._out_queue.get_nowait())
+    assert frames == ['{"a":1}', '{"b":2}', '{"c":3}'], frames
+    assert shim._buf == '{"d":4}', shim._buf
+    shim.write("\n")
+    assert h._out_queue.get_nowait() == '{"d":4}'
+    assert shim._buf == ""
+
+
 if __name__ == "__main__":
     test_detail_reads_lanes_queues_and_transport_start()
     test_without_detail_the_badge_snapshot_is_unchanged()
@@ -370,4 +390,5 @@ if __name__ == "__main__":
     test_out_queue_counts_drops_at_the_cap()
     test_lane_names_its_slowest_task_without_ids()
     test_task_labels_drop_ids()
+    test_stdout_shim_splits_frames_in_order()
     print("ok")

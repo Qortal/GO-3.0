@@ -124,9 +124,11 @@ class _StdoutShim(io.TextIOBase):
     def write(self, s):
         if not s:
             return 0
-        self._buf += s
-        while "\n" in self._buf:
-            line, self._buf = self._buf.split("\n", 1)
+        if "\n" not in s:
+            self._buf += s
+            return len(s)
+        *lines, self._buf = (self._buf + s).split("\n")
+        for line in lines:
             if line:
                 _put_out_frame(line)
         return len(s)
@@ -2055,6 +2057,27 @@ def _json_audio_detail():
     return out
 
 
+def _remove_pid_log_files(config_dir):
+    """Delete RNS logs from earlier launches (logfile.bridge.<pid>[.1])."""
+    prefix = "logfile.bridge."
+    try:
+        names = os.listdir(config_dir)
+    except OSError:
+        return
+    for name in names:
+        if not name.startswith(prefix):
+            continue
+        rest = name[len(prefix):]
+        if rest.endswith(".1"):
+            rest = rest[:-2]
+        if not rest.isdigit():
+            continue
+        try:
+            os.remove(os.path.join(config_dir, name))
+        except OSError:
+            pass
+
+
 def start(config_dir):
     """Initialise stdio shims + RNS config and launch the bridge main loop."""
     global _started, _stdin_shim, _main_thread
@@ -2063,6 +2086,10 @@ def start(config_dir):
             return True
         _write_reticulum_config(config_dir)
         os.environ["QORTAL_RETICULUM_CONFIG_DIR"] = config_dir
+        os.environ.setdefault(
+            "QORTAL_RNS_LOG_FILE", os.path.join(config_dir, "logfile.bridge.go")
+        )
+        _remove_pid_log_files(config_dir)
         os.environ.setdefault("HOME", config_dir)
 
         _stdin_shim = _StdinShim()

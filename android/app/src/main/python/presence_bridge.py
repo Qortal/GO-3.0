@@ -890,7 +890,7 @@ _QCHAT_FILE_CHUNK_DIAG_MIN_DELTA = 0.05
 _STDOUT_RESP_BATCH_MAX = 32
 _STDOUT_EVENT_BATCH_MAX = 128
 _STDOUT_BATCH_MAX_BYTES = 1024 * 1024
-_STDOUT_IDLE_WAIT_SECONDS = 1.0
+_STDOUT_IDLE_WAIT_SECONDS = 10.0
 
 
 def _qchat_file_is_managed_resource_type(resource_type: str) -> bool:
@@ -7425,12 +7425,13 @@ def rns_callback_scheduler_monitor_loop() -> None:
     global _audio_rns_callback_scheduler_gap_over_1000_count
     interval = _AUDIO_RNS_CALLBACK_SCHEDULER_MONITOR_INTERVAL_SECONDS
     last_at = time.monotonic()
-    while True:
+    while not _shutdown.is_set():
         # This probe only measures GIL scheduling latency for live audio. With
         # no audio link it woke the CPU 20x a second for nothing; idle at the
         # slow cadence and rearm as soon as a call starts.
         if not _audio_links_by_id:
-            _shutdown.wait(_AUDIO_IDLE_MONITOR_INTERVAL_SECONDS)
+            if _shutdown.wait(_AUDIO_IDLE_MONITOR_INTERVAL_SECONDS):
+                return
             last_at = time.monotonic()
             continue
         time.sleep(interval)
