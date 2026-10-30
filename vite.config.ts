@@ -150,6 +150,9 @@ export default defineConfig({
     // Emit sourcemaps so runtime crashes inside the Android WebView can be
     // mapped back to exact source locations during the mobile bring-up.
     sourcemap: true,
+    // vite-plugin-top-level-await reads build.minify before Vite fills in its
+    // default, so leaving it unset makes it re-print every chunk unminified.
+    minify: 'esbuild',
     rollupOptions: {
       input: {
         main: resolve(__dirname, 'index.html'),
