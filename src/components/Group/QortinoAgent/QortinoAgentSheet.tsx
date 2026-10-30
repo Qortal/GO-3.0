@@ -148,7 +148,6 @@ export function QortinoAgentSheet({ open, onClose }: Props) {
         ) : install.installed && install.llmPath ? (
           <QortinoAgentChat
             install={install}
-            manifest={manifest}
             onClose={() => void handleClose()}
           />
         ) : (

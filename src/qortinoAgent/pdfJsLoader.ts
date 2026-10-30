@@ -1,6 +1,5 @@
 /**
- * Shared pdf.js loader (from /public/pdfjs) for the book reader and
- * first-page document thumbnails.
+ * Shared pdf.js loader (from /public/pdfjs) for the book reader.
  */
 
 export type PdfJsLib = {
@@ -52,17 +51,4 @@ export async function loadPdfJs(): Promise<PdfJsLib> {
     });
   }
   return pdfjsPromise;
-}
-
-/** Heuristic: title / identifier / mime looks like a PDF. */
-export function looksLikePdf(opts: {
-  kind?: string;
-  title?: string;
-  identifier?: string;
-  mime?: string;
-}): boolean {
-  if (opts.kind === 'pdf') return true;
-  if (opts.mime?.includes('pdf')) return true;
-  const blob = `${opts.title || ''} ${opts.identifier || ''}`;
-  return /\.pdf(\b|$)/i.test(blob) || /\bpdf\b/i.test(opts.identifier || '');
 }

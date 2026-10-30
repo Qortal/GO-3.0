@@ -237,14 +237,6 @@ export function stripStreamingCharacterSection(answer: string): string {
   return out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 
-/** @deprecated use withStreamingCharacterSection — kept for tests */
-export function injectCharacterIntoWhoIsAnswer(
-  answer: string,
-  characterSummary: string
-): string {
-  return withStreamingCharacterSection(answer, characterSummary);
-}
-
 type NameRecord = {
   name?: string;
   owner?: string;
@@ -1332,35 +1324,6 @@ export function wantsQdnPersonDepthChoice(query: string): boolean {
   if (detectTopicIntent(t) && !detectNominationIntent(t)) return false;
   if (detectTopicMediaIntent(t)) return false;
   return extractNameCandidates(t).length > 0;
-}
-
-/**
- * True when the address has more than `threshold` txs (probe one row at that offset).
- * Used so we only ask quick vs full on heavy accounts.
- */
-export async function addressHasMoreThanTxs(
-  address: string,
-  threshold = 1000,
-  signal?: AbortSignal
-): Promise<boolean> {
-  const page = await apiGetJson<TxRow[]>(
-    `/transactions/address/${encodeURIComponent(address)}?limit=1&offset=${threshold}&reverse=true`,
-    signal
-  );
-  return Array.isArray(page) && page.length > 0;
-}
-
-/** Offer quick/full only for person lookups on accounts with >1000 txs. */
-export async function shouldOfferQdnDepthChoice(
-  query: string,
-  signal?: AbortSignal
-): Promise<boolean> {
-  if (!wantsQdnPersonDepthChoice(query)) return false;
-  const candidates = extractNameCandidates(query);
-  if (!candidates.length) return false;
-  const resolved = await resolveName(candidates[0], signal);
-  if (!resolved?.address) return false;
-  return addressHasMoreThanTxs(resolved.address, 1000, signal);
 }
 
 async function fetchTxSample(

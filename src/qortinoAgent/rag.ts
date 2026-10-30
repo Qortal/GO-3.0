@@ -139,13 +139,6 @@ export async function retrieveKnowledge(
   return scored.filter((c) => c.score > 0.05).slice(0, topK);
 }
 
-export function formatContextForPrompt(chunks: RetrievedChunk[]): string {
-  if (!chunks.length) return '[]';
-  return chunks
-    .map((c, i) => `[${i + 1}] (${c.title || c.source})\n${c.text}`)
-    .join('\n\n');
-}
-
 export function parseKnowledgePackJson(raw: string): KnowledgePack {
   const parsed = JSON.parse(raw) as KnowledgePack;
   if (!parsed || !Array.isArray(parsed.chunks)) {

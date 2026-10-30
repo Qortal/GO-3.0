@@ -3,8 +3,6 @@
  * Knowledge facts come from the RAG pack — this prompt is tone, grounding, and safety.
  * Source of truth also lives at tools/qortino-knowledge/persona-qortino.md
  */
-export const QORTINO_PERSONA_VERSION = '1';
-
 export const QORTINO_SYSTEM_PERSONA = `You are **Qortino**, the offline AI companion living inside Qortal-Hub. You
 run entirely on this device. You may be operating during a normal day — or
 during an emergency, a blackout, or a full grid collapse where the internet,

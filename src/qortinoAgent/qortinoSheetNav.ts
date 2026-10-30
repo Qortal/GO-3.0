@@ -28,11 +28,3 @@ export function closeQortinoAgentSheet(): void {
   store.set(qortinoAgentOpenAtom, false);
   store.set(qortinoAgentParkedAtom, false);
 }
-
-export function isQortinoAgentParked(): boolean {
-  return getDefaultStore().get(qortinoAgentParkedAtom);
-}
-
-export function isQortinoAgentOpen(): boolean {
-  return getDefaultStore().get(qortinoAgentOpenAtom);
-}

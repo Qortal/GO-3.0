@@ -269,10 +269,7 @@ function classifyQTube(
   return null;
 }
 
-function classifySubwire(
-  service: string,
-  identifier: string
-): QdnActivityKind | null {
+function classifySubwire(identifier: string): QdnActivityKind | null {
   const id = (identifier || '').trim();
   const lower = id.toLowerCase();
   if (lower.startsWith('subwire') || lower.includes('subwire_')) {
@@ -348,7 +345,7 @@ export function classifyQdnActivity(
   const pub = (publisher || '').trim();
 
   // Prefix / fingerprint matches (same priority as MA Helper classifyResource)
-  const subwire = classifySubwire(service, id);
+  const subwire = classifySubwire(id);
   if (subwire && (qappCoreParts(id)?.[0] === SUBWIRE_ID.APP_HASH || idLower.includes('subwire'))) {
     return finalize(subwire, svc, id, pub);
   }
@@ -558,7 +555,6 @@ export function buildQdnAppLink(
 ): string | null {
   const pub = publisher.trim();
   const id = (identifier || '').trim();
-  const svc = (service || '').toUpperCase();
   if (!pub) return null;
 
   const kind =

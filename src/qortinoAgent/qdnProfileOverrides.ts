@@ -36,7 +36,3 @@ export function getProfileOverride(name: string): ProfileOverride | null {
   if (!key) return null;
   return OVERRIDES[key] || null;
 }
-
-export function playingQortalWebsiteName(): string {
-  return PLAYING_QORTAL_SITE;
-}

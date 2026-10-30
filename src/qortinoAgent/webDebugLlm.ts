@@ -8,7 +8,6 @@
  */
 import { WebPlugin } from '@capacitor/core';
 import type {
-  QortinoChatMessage,
   QortinoCompleteOptions,
   QortinoDeviceTier,
   QortinoLlmPlugin,

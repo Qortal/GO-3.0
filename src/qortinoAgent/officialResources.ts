@@ -170,11 +170,3 @@ export function suggestOfficialResources(query: string): OfficialResourceLink[] 
 
   return out.slice(0, 5);
 }
-
-/** Offline-safe sentence naming the guides (no URLs required). */
-export function officialGuidesMention(query: string): string | null {
-  const links = suggestOfficialResources(query).filter((l) => l.service && l.name);
-  if (!links.length) return null;
-  const names = links.map((l) => l.label).join(', ');
-  return `For a fuller walkthrough on QDN, open: ${names}.`;
-}

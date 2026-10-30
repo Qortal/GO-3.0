@@ -29,8 +29,6 @@ type Props = {
   fontSize?: string;
   fontWeight?: number;
   onSearchUser: (name: string) => void;
-  /** Stop parent click handlers (e.g. media card open) */
-  stopPropagation?: boolean;
   /**
    * When set, tapping the avatar opens this instead of the name menu
    * (e.g. fullscreen avatar viewer). Name label still opens Copy / Search.
@@ -51,7 +49,6 @@ export function QortinoNameAction({
   fontSize = '0.9rem',
   fontWeight = 700,
   onSearchUser,
-  stopPropagation = false,
   onAvatarClick,
 }: Props) {
   const theme = useTheme();
@@ -95,10 +92,6 @@ export function QortinoNameAction({
   }, [avatarHideIfMissing, showAvatar, src]);
 
   const handleOpen = (e: MouseEvent<HTMLElement>) => {
-    if (stopPropagation) {
-      e.preventDefault();
-      e.stopPropagation();
-    }
     setAnchor(e.currentTarget);
   };
 
@@ -147,10 +140,6 @@ export function QortinoNameAction({
                 : `Actions for ${name}`
             }
             onClick={(e: MouseEvent<HTMLElement>) => {
-              if (stopPropagation) {
-                e.preventDefault();
-                e.stopPropagation();
-              }
               if (avatarOpensLightbox) {
                 onAvatarClick?.(src);
                 return;
@@ -234,9 +223,6 @@ export function QortinoNameAction({
         onClose={handleClose}
         anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
         transformOrigin={{ vertical: 'top', horizontal: 'left' }}
-        onClick={(e) => {
-          if (stopPropagation) e.stopPropagation();
-        }}
         slotProps={{
           paper: {
             sx: {

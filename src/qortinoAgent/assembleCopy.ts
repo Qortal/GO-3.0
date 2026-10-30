@@ -84,13 +84,3 @@ export const STATUS_LINES = {
   qdnFullMedia: 'Full scan · verifying live media on the network…',
   qdnFullSites: 'Full scan · probing APP / WEBSITE roots…',
 };
-
-// Live progress (native / C++) — keep placeholders intact
-export const PROGRESS_LINES = {
-  readPrompt: 'Reading your question — carefully, twice…',
-  warmup: 'Warming local weights · {n} / {total} tokens',
-  compose: 'Weaving your notes into an answer…',
-  writing: 'Writing offline · {n} tokens and counting…',
-  ready: 'Ready — made on this phone, for you 🌱',
-  finished: 'Done. No cloud was harmed in the making of this reply.',
-};

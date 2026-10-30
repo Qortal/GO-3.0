@@ -55,10 +55,6 @@ export function saveMediaShelf(
   return shelf;
 }
 
-export function deleteSavedShelf(id: string): void {
-  writeAll(readAll().filter((s) => s.id !== id));
-}
-
 export function qortalLinkForItem(item: QdnMediaItem): string {
   return preferredQortalLink(item);
 }

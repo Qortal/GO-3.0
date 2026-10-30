@@ -12,10 +12,7 @@ import {
 } from '@mui/material';
 import { alpha } from '@mui/material/styles';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
-import {
-  SAFE_AREA_BOTTOM,
-  SAFE_AREA_TOP,
-} from '../../../utils/mobileSafeArea';
+import { SAFE_AREA_TOP } from '../../../utils/mobileSafeArea';
 import DownloadRoundedIcon from '@mui/icons-material/DownloadRounded';
 import PauseRoundedIcon from '@mui/icons-material/PauseRounded';
 import PlayArrowRoundedIcon from '@mui/icons-material/PlayArrowRounded';
@@ -220,7 +217,6 @@ export function QortinoAudioPlayer({ item, onClose }: Props) {
           flexDirection: 'column',
           gap: 2,
           justifyContent: 'center',
-          pb: `max(16px, ${SAFE_AREA_BOTTOM})`,
           px: 2.5,
           pb: 2,
         }}

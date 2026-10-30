@@ -21,21 +21,6 @@ export function isQortalNetworkDefinitionQuery(query: string): boolean {
 }
 
 /**
- * Live QDN intents that must beat app-catalog short-circuits
- * (group owner/digest, compare, rosters, etc. are checked by callers).
- */
-export function queryLooksLikeAppCatalogAsk(query: string): boolean {
-  const t = query.trim().toLowerCase();
-  if (!t) return false;
-  // Explicit app / open / launch phrasing
-  if (/\b(q-?app|open|launch)\b/.test(t)) return true;
-  // Hyphenated or Q-prefixed product names
-  if (/\bq-[a-z0-9][a-z0-9-]{1,40}\b/i.test(t)) return true;
-  if (/\bwelcome\s+to\s+qortal\b/.test(t)) return true;
-  return false;
-}
-
-/**
  * Concepts that share vocabulary with apps but are FAQ/how-to topics
  * unless the user names the app explicitly.
  */

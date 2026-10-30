@@ -361,7 +361,6 @@ function classifyKind(service: string, identifier: string): QdnMediaKind | 'othe
 
 function displayTitle(
   metadataTitle: string | undefined,
-  service: string,
   identifier: string,
   activityLabel: string
 ): string {
@@ -484,12 +483,7 @@ export async function fetchPublishesOnDay(
     const identifier = h.identifier || 'default';
     const activity = classifyQdnActivity(service, identifier, name);
     const kind = classifyKind(service, identifier);
-    const title = displayTitle(
-      h.metadata?.title,
-      service,
-      identifier,
-      activity.label
-    );
+    const title = displayTitle(h.metadata?.title, identifier, activity.label);
     return {
       name,
       service,
@@ -620,8 +614,4 @@ export async function fetchPublishesOnDay(
     text,
     answer,
   };
-}
-
-export function isDayPublishQuestion(query: string): boolean {
-  return !!extractDayPublishQuery(query);
 }

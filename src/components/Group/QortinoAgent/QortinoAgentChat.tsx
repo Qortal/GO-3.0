@@ -156,10 +156,7 @@ import {
   listSavedShelves,
 } from '../../../qortinoAgent/qdnMediaShelf';
 import type { QortinoInstallState } from '../../../qortinoAgent/store';
-import {
-  QORTINO_SAFETY_DISCLAIMER,
-  type QortinoAgentManifest,
-} from '../../../qortinoAgent/manifest';
+import { QORTINO_SAFETY_DISCLAIMER } from '../../../qortinoAgent/manifest';
 import qortinoHeadUrl from '../../../assets/svgs/QortinoHead.svg';
 import {
   ASSEMBLE_TIPS,
@@ -290,7 +287,6 @@ type DataSourceMode = 'offline' | 'qdn';
 
 type Props = {
   install: QortinoInstallState;
-  manifest: QortinoAgentManifest;
   onClose: () => void;
 };
 
@@ -690,7 +686,7 @@ async function revealTextWordByWord(
   return cleaned;
 }
 
-export function QortinoAgentChat({ install, manifest, onClose }: Props) {
+export function QortinoAgentChat({ install, onClose }: Props) {
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
   const userInfo = useAtomValue(userInfoAtom);
@@ -1041,8 +1037,6 @@ export function QortinoAgentChat({ install, manifest, onClose }: Props) {
           prev.includes('QDN notes in hand') ||
           prev.includes('Max path') ||
           prev.includes('Assembling Max') ||
-          prev.includes('Weaving your notes') ||
-          prev.includes('Warming local') ||
           prev.includes('Retrying with a lighter') ||
           prev.includes('Picking up where') ||
           prev.includes('Full scan') ||

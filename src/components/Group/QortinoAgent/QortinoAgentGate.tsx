@@ -32,22 +32,14 @@ import { executeEvent } from '../../../utils/events';
 type Props = {
   onInstalled: (install: QortinoInstallState, manifest: QortinoAgentManifest) => void;
   onCancel: () => void;
-  /** Prefill pack selection (e.g. Standard for QA). */
-  initialPackId?: QortinoPackId;
 };
 
-export function QortinoAgentGate({
-  onInstalled,
-  onCancel,
-  initialPackId,
-}: Props) {
+export function QortinoAgentGate({ onInstalled, onCancel }: Props) {
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
   const isPublicNode = useAtomValue(isRunningPublicNodeAtom);
   const [manifest, setManifest] = useState<QortinoAgentManifest | null>(null);
-  const [selectedPack, setSelectedPack] = useState<QortinoPackId>(
-    initialPackId ?? 'small'
-  );
+  const [selectedPack, setSelectedPack] = useState<QortinoPackId>('small');
   const [reason, setReason] = useState('');
   const [allowed, setAllowed] = useState<QortinoPackId[]>(['small']);
   const [loading, setLoading] = useState(true);
@@ -70,16 +62,8 @@ export function QortinoAgentGate({
         if (cancelled) return;
         setManifest(m);
         const decision = decidePackForDevice(tier, m);
-        const allowedPacks =
-          initialPackId && !decision.allowedPacks.includes(initialPackId)
-            ? [...decision.allowedPacks, initialPackId]
-            : decision.allowedPacks;
-        const preferred =
-          initialPackId && allowedPacks.includes(initialPackId)
-            ? initialPackId
-            : decision.recommendedPack;
-        setSelectedPack(preferred);
-        setAllowed(allowedPacks);
+        setSelectedPack(decision.recommendedPack);
+        setAllowed(decision.allowedPacks);
         setReason(decision.reason);
       } catch (e) {
         if (!cancelled) {
@@ -102,7 +86,7 @@ export function QortinoAgentGate({
       cancelled = true;
       abortRef.current?.abort();
     };
-  }, [initialPackId]);
+  }, []);
 
   const packMeta = useMemo(
     () => manifest?.packs.find((p) => p.id === selectedPack),

@@ -15,7 +15,6 @@ import { Provider as JotaiProvider } from 'jotai';
 import { QORTAL_APP_CONTEXT } from '../../../context/AppContext';
 import type { AppContextInterface } from '../../../context/AppContext';
 import { handleSetGlobalApikey } from '../../../utils/globalApi';
-import { DEFAULT_QORTINO_AGENT_MANIFEST } from '../../../qortinoAgent/manifest';
 import type { QortinoInstallState } from '../../../qortinoAgent/store';
 import { QortinoAgentChat } from './QortinoAgentChat';
 
@@ -161,7 +160,6 @@ export function QortinoDebugPage() {
                 <QortinoAgentChat
                   key={chatKey}
                   install={DEBUG_INSTALL}
-                  manifest={DEFAULT_QORTINO_AGENT_MANIFEST}
                   onClose={() => {
                     window.location.href = './';
                   }}
