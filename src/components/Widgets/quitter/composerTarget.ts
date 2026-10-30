@@ -26,7 +26,7 @@ export function readComposerTarget(): ComposerTarget {
   }
 }
 
-export function writeComposerTarget(target: ComposerTarget): void {
+function writeComposerTarget(target: ComposerTarget): void {
   try {
     localStorage.setItem(TARGET_STORAGE_KEY, target);
   } catch {

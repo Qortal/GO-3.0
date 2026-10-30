@@ -44,7 +44,6 @@ const files = vi.hoisted(() => ({
 }));
 
 vi.mock('../../qortalCard/qortalNfc', () => ({
-  canUseNfc: () => true,
   readNfcCapabilities: async () => ({ state: 'on', canRequest: true }),
   openNfcSettings: vi.fn(),
   waitForCard: async () => ({
