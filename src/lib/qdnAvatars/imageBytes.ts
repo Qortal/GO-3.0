@@ -6,20 +6,20 @@
 /** Largest avatar the cache downloads (bytes). */
 export const QDN_AVATAR_MAX_DOWNLOAD_BYTES = 1024 * 1024;
 /** Cached avatars are shrunk to fit this square (never enlarged). */
-export const QDN_AVATAR_MAX_DIMENSION = 128;
+const QDN_AVATAR_MAX_DIMENSION = 128;
 /**
  * Largest source image the cache decodes (pixels, and longest side). A small
  * file can declare huge dimensions and make the phone decode hundreds of MB;
  * anything larger is treated as "not an avatar". 16.7 MP still lets through
  * an unscaled phone photo.
  */
-export const QDN_AVATAR_MAX_SOURCE_PIXELS = 4096 * 4096;
-export const QDN_AVATAR_MAX_SOURCE_SIDE = 8192;
+const QDN_AVATAR_MAX_SOURCE_PIXELS = 4096 * 4096;
+const QDN_AVATAR_MAX_SOURCE_SIDE = 8192;
 /**
  * Animated GIF/WebP/PNG avatars up to this size are kept as published (still
  * animated) instead of being shrunk to their first frame.
  */
-export const QDN_AVATAR_MAX_ANIMATED_BYTES = 200 * 1024;
+const QDN_AVATAR_MAX_ANIMATED_BYTES = 200 * 1024;
 
 /** MIME type of an image file from its first bytes, or null. */
 export function sniffImageType(bytes: ArrayBuffer | Uint8Array): string | null {

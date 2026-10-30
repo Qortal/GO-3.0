@@ -18,7 +18,7 @@ import type { SocketEventQueueStats } from './socketEventPump';
 
 const MINUTE_MS = 60_000;
 /** Minutes the per-minute rates cover. */
-export const ENGINE_IO_WINDOW_MINUTES = 10;
+const ENGINE_IO_WINDOW_MINUTES = 10;
 
 /** A count since start plus one-minute slots for the last 10 minutes. */
 type RateCounter = {
@@ -169,7 +169,7 @@ export function installOpfsFlushProbe(scope: unknown = globalThis): boolean {
   return true;
 }
 
-export function noteOpfsFlush(ms: number, at = Date.now()): void {
+function noteOpfsFlush(ms: number, at = Date.now()): void {
   noteRate(flushRate, at);
   noteLatency(flushLatency, ms, at);
 }

@@ -17,7 +17,7 @@ import Compressor from 'compressorjs';
 import { createNamedFile, nameBlob } from './namedFile';
 import { IMAGE_CONTAINER_MIME, stripImageMetadata } from './stripImageMetadata';
 
-export interface ImageCompressorOptions {
+interface ImageCompressorOptions {
   quality: number;
   maxWidth: number;
   /** Also cap the height (tall screenshots); unlimited when omitted. */
@@ -27,7 +27,7 @@ export interface ImageCompressorOptions {
 
 /** Compressor.js wrapped in a promise that rejects (rather than silently
  *  resolving with the original) so callers can decide on a fallback. */
-export const runImageCompressor = (
+const runImageCompressor = (
   file: Blob,
   opts: ImageCompressorOptions
 ): Promise<Blob> =>
@@ -137,7 +137,7 @@ export async function stripImageFileMetadata(file: File): Promise<File> {
   );
 }
 
-export type MetadataFreeImage =
+type MetadataFreeImage =
   | { ok: true; file: Blob }
   | { ok: false; reason: 'unsupported' | 'malformed' | 'unreadable' };
 
@@ -178,7 +178,7 @@ export async function ensureImageMetadataFree(
   };
 }
 
-export interface CompressImageOptions {
+interface CompressImageOptions {
   /** Skip files at or below this size. Omit to always compress. */
   thresholdBytes?: number;
   first: ImageCompressorOptions;

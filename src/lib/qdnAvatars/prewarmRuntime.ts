@@ -158,7 +158,7 @@ export async function seedOwnQdnAvatarFromWalletCache(
   }
 }
 
-export type StartQdnAvatarPrewarmOptions = {
+type StartQdnAvatarPrewarmOptions = {
   store: QdnAvatarPrewarmStore;
   /** Signed-in wallet address. */
   account: string;

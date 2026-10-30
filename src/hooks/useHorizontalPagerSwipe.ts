@@ -35,7 +35,7 @@ export type TrackPositionListener = (
   easing: string
 ) => void;
 
-export interface HorizontalPagerSwipeOptions {
+interface HorizontalPagerSwipeOptions {
   /** Pages side by side and the swipe on. Off: the track is left alone. */
   enabled: boolean;
   /** The page showing (index from the left). */
@@ -74,12 +74,12 @@ export interface HorizontalPagerSwipeOptions {
 }
 
 /** Length of the slide when the page changes from a tap. */
-export const PAGER_PAGE_CHANGE_SLIDE_MS = 260;
+const PAGER_PAGE_CHANGE_SLIDE_MS = 260;
 /** How long a glide waits, at most, for the parent to take the page it
  * asked for before going back to the page the parent shows. */
 const PARENT_CATCH_UP_MS = 1500;
 
-export interface HorizontalPagerSwipeControls {
+interface HorizontalPagerSwipeControls {
   /**
    * Glide to `page` now, as a released swipe does, and tell the parent once
    * the glide is on screen (a tap on the Groups / DMs switch).
@@ -88,7 +88,7 @@ export interface HorizontalPagerSwipeControls {
 }
 /** After a horizontal drag, a click this soon belongs to the drag (longer
  * than any glide that follows it). */
-export const PAGER_CLICK_GUARD_MS = 400;
+const PAGER_CLICK_GUARD_MS = 400;
 
 interface Gesture {
   axis: PagerAxis | null;

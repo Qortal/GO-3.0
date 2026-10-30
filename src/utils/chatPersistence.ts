@@ -13,7 +13,7 @@ const DRAFTS_PREFIX = 'qortal-chat-drafts';
 // "DRAFT" marker) can refresh without polling localStorage.
 export const DRAFTS_CHANGED_EVENT = 'qortal-chat-drafts-changed';
 
-export type LastOpenChat =
+type LastOpenChat =
   | { kind: 'group'; id: string }
   | { kind: 'direct'; id: string };
 

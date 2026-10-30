@@ -43,28 +43,12 @@ import type {
   EngineSyncHealthSnapshot,
   ResourceSessionStats,
 } from './engineHost';
-import type { LatencySummary } from './latencyStats';
-import type { LoopLagSnapshot } from './loopLag';
-import type {
-  NativeRequestLabelStats,
-  NativeRequestSnapshot,
-} from './nativeRequestStats';
-import type { LogKeyCount } from './shims/logger';
-import type { ServingStats, ServingTypeStats } from './wireBridge';
 import { installPageLongTaskProbe } from './pageLongTasks';
 
 export type {
-  EngineSyncHealthSnapshot,
   GroupValidatorStats,
-  LatencySummary,
-  LogKeyCount,
-  LoopLagSnapshot,
   MembershipProbeResult,
-  NativeRequestLabelStats,
-  NativeRequestSnapshot,
   ResourceSessionStats,
-  ServingStats,
-  ServingTypeStats,
 };
 
 type ReadinessState = 'idle' | 'starting' | 'ready' | 'failed';

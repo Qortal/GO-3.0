@@ -20,7 +20,7 @@ export type NativeBcryptRuntimeInfo = {
   webViewVersion?: string;
 };
 
-export type NativeBcryptBatchResult = {
+type NativeBcryptBatchResult = {
   hashes: string[];
   /** Batch wall time in Java. */
   elapsedMs?: number;
@@ -28,7 +28,7 @@ export type NativeBcryptBatchResult = {
   debuggable?: boolean;
 };
 
-export interface NativeBcryptPlugin {
+interface NativeBcryptPlugin {
   hashPassword(options: {
     password: string;
     salt: string;

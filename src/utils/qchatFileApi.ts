@@ -19,14 +19,14 @@ import {
   onMobileQchatFileTransferEvent,
 } from '../bridge/capacitorBridge';
 
-export type QchatFileSelectResult = {
+type QchatFileSelectResult = {
   ok: boolean;
   canceled?: boolean;
   error?: string;
   file?: { path: string; name: string; size: number; sha256: string };
 };
 
-export type QchatFileApi = {
+type QchatFileApi = {
   qchatFileSelect: () => Promise<QchatFileSelectResult>;
   qchatFileChooseSavePath: (fileName: string) => Promise<{
     ok: boolean;

@@ -24,7 +24,7 @@ import { subscribeToEvent } from '../utils/events';
 /** Chats kept per kind. */
 export const CHAT_WARM_CACHE_LIMIT = 12;
 /** Bigger windows (a long scroll back) are not kept: the latest page is. */
-export const CHAT_WARM_CACHE_MAX_EVENTS = 600;
+const CHAT_WARM_CACHE_MAX_EVENTS = 600;
 /** Names kept (whole member lists go in; a name is a few bytes). */
 const NAME_LIMIT = 3000;
 
@@ -154,7 +154,7 @@ const newestTimestamp = (events: readonly unknown[]): number => {
  * usual way, so its unread marker and landing are right. No summary: the
  * copy is all there is to go on.
  */
-export function isWarmCopyCurrent(
+function isWarmCopyCurrent(
   events: readonly unknown[],
   latestTimestamp: number | null | undefined
 ): boolean {

@@ -34,22 +34,22 @@
 
 export const NOTIF_STATE_PREFIX = 'notif.';
 export const NOTIF_RULE_PREFIX = 'notif.rule.';
-export const NOTIF_PERM_PREFIX = 'notif.perm.';
-export const NOTIF_OSPUSH_PREFIX = 'notif.ospush.';
+const NOTIF_PERM_PREFIX = 'notif.perm.';
+const NOTIF_OSPUSH_PREFIX = 'notif.ospush.';
 export const NOTIF_MENTIONS_KEY = 'notif.mentions';
 export const NOTIF_SEENALL_KEY = 'notif.seenall';
-export const NOTIF_SEEN_PREFIX = 'notif.seen.';
+const NOTIF_SEEN_PREFIX = 'notif.seen.';
 
 /** Seen keys are only kept 3 days locally; the record outlives that slightly. */
 export const NOTIF_SEEN_TTL_MS = 4 * 24 * 60 * 60 * 1000;
 const NOTIF_SEEN_MIN_TTL_MS = 60_000;
 /** Engine limit for a device-state value (UTF-8 bytes). */
-export const NOTIF_MAX_VALUE_BYTES = 2048;
+const NOTIF_MAX_VALUE_BYTES = 2048;
 export const NOTIF_HASH_LENGTH = 24;
 
-export const RESOURCE_PUBLISHED_EVENT = 'RESOURCE_PUBLISHED';
+const RESOURCE_PUBLISHED_EVENT = 'RESOURCE_PUBLISHED';
 
-export type NotifStateKind =
+type NotifStateKind =
   | 'perm'
   | 'rule'
   | 'ospush'
@@ -58,7 +58,7 @@ export type NotifStateKind =
   | 'seen';
 
 /** Order in which remote records are applied (permissions gate rules). */
-export const NOTIF_APPLY_ORDER: NotifStateKind[] = [
+const NOTIF_APPLY_ORDER: NotifStateKind[] = [
   'perm',
   'rule',
   'ospush',
@@ -88,7 +88,7 @@ export type DeviceStateRecord = {
   expiresAt?: number | null;
 };
 
-export type DesiredEntry = { value: string; ttlMs?: number };
+type DesiredEntry = { value: string; ttlMs?: number };
 
 export type LocalSnapshot = {
   rules: SyncRule[];
@@ -102,7 +102,7 @@ export type LocalSnapshot = {
   seenKeyTimes: Record<string, number>;
 };
 
-export type RemoteApplyPlan = {
+type RemoteApplyPlan = {
   permissions: Array<{ appName: string; granted: boolean }>;
   ruleUpserts: SyncRule[];
   ruleRemovals: RuleRef[];
@@ -138,7 +138,7 @@ export async function hashForStateKey(input: string): Promise<string> {
   return hex.slice(0, NOTIF_HASH_LENGTH);
 }
 
-export function utf8ByteLength(value: string): number {
+function utf8ByteLength(value: string): number {
   return utf8Encoder.encode(value).length;
 }
 
@@ -152,7 +152,7 @@ export function normalizeAppName(appName: unknown): string {
     .toLowerCase();
 }
 
-export function normalizeRuleRef(ref: {
+function normalizeRuleRef(ref: {
   notificationId?: unknown;
   appName?: unknown;
   appService?: unknown;
@@ -298,9 +298,7 @@ export function serialiseMentions(enabled: boolean): string {
   return enabled ? '1' : '0';
 }
 
-export function parseMentionsValue(
-  value: string | null | undefined
-): boolean | null {
+function parseMentionsValue(value: string | null | undefined): boolean | null {
   if (value === '1') return true;
   if (value === '0') return false;
   return null;
@@ -310,9 +308,7 @@ export function serialiseSeenAll(ms: number): string {
   return String(Math.floor(ms));
 }
 
-export function parseSeenAllValue(
-  value: string | null | undefined
-): number | null {
+function parseSeenAllValue(value: string | null | undefined): number | null {
   if (typeof value !== 'string' || !/^\d{1,16}$/.test(value)) return null;
   const n = Number(value);
   return Number.isSafeInteger(n) && n > 0 ? n : null;
@@ -475,7 +471,7 @@ export function sortRecordsForApply<T extends { key: string }>(
     .map((x) => x.record);
 }
 
-export type PlanContext = {
+type PlanContext = {
   /** Rules currently stored locally, with their state keys. */
   localRules: Array<{ rule: SyncRule; key: string }>;
   localSeenAll: number | null;

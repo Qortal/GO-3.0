@@ -18,7 +18,7 @@ async function readRawMap(): Promise<StoredWalletAvatarMap> {
   return stored && typeof stored === 'object' ? stored : {};
 }
 
-export function normalizeWalletAvatarCacheEntry(
+function normalizeWalletAvatarCacheEntry(
   raw: unknown
 ): WalletAvatarCacheEntry | null {
   if (typeof raw === 'string' && raw.startsWith('data:')) {
@@ -66,7 +66,7 @@ export function buildQortalAvatarUrl(
 }
 
 /** True when the QDN has a published qortal_avatar thumbnail. null = check failed (unknown). */
-export async function checkQortalAvatarExists(
+async function checkQortalAvatarExists(
   primaryName: string
 ): Promise<boolean | null> {
   const name = primaryName.trim();

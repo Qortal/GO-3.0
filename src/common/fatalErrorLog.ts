@@ -8,7 +8,7 @@
 const STORAGE_KEY = 'qgo:fatal-errors';
 const MAX_ENTRIES = 8;
 
-export type FatalErrorKind = 'render' | 'error' | 'unhandledrejection';
+type FatalErrorKind = 'render' | 'error' | 'unhandledrejection';
 
 export type FatalErrorRecord = {
   at: string;

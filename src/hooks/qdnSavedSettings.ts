@@ -11,8 +11,8 @@ import {
   uint8ArrayToObject,
 } from '../encryption/encryption';
 
-export const EXT_SAVED_SETTINGS_SERVICE = 'DOCUMENT_PRIVATE';
-export const EXT_SAVED_SETTINGS_IDENTIFIER = 'ext_saved_settings';
+const EXT_SAVED_SETTINGS_SERVICE = 'DOCUMENT_PRIVATE';
+const EXT_SAVED_SETTINGS_IDENTIFIER = 'ext_saved_settings';
 
 export type SerializedPinnedApp = {
   name?: string;
@@ -29,7 +29,7 @@ export type SerializedPinnedApp = {
   };
 };
 
-export type QdnSavedSettings = {
+type QdnSavedSettings = {
   sortablePinnedApps?: SerializedPinnedApp[];
 };
 

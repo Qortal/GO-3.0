@@ -6,7 +6,7 @@
  * published by the group owner as `qortal_group_avatar_<groupId>`.
  */
 
-export const QDN_AVATAR_SERVICE = 'THUMBNAIL';
+const QDN_AVATAR_SERVICE = 'THUMBNAIL';
 export const QDN_AVATAR_DEFAULT_IDENTIFIER = 'qortal_avatar';
 
 /** Normalised cache key, e.g. `THUMBNAIL/q-tube/qortal_avatar`. */

@@ -17,7 +17,7 @@ export type UnlockTimingEvent = {
   detail?: string;
 };
 
-export type UnlockTimingSnapshot = {
+type UnlockTimingSnapshot = {
   events: UnlockTimingEvent[];
 };
 

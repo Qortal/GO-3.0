@@ -23,9 +23,9 @@ import { isCapacitor } from './platform';
  * as plain HTTP that is only private while Tailscale carries it, `https` to a
  * remote node over TLS.
  */
-export type ForeignKeyEgressRoute = 'loopback' | 'tailscale' | 'https';
+type ForeignKeyEgressRoute = 'loopback' | 'tailscale' | 'https';
 
-export type ForeignKeyEgress =
+type ForeignKeyEgress =
   | {
       allowed: true;
       host: string;

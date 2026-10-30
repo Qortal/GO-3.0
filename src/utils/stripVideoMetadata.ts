@@ -21,7 +21,7 @@
 
 import { nameBlob } from './namedFile';
 
-export type ScrubVideoResult =
+type ScrubVideoResult =
   | {
       ok: true;
       /** Same Blob as the input when nothing needed scrubbing. */

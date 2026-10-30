@@ -13,7 +13,7 @@ export type FetchLike = (
   init?: RequestInit
 ) => Promise<Response>;
 
-export type AvatarFetchOutcome =
+type AvatarFetchOutcome =
   /** The node sent an image. */
   | { kind: 'image'; image: AvatarImageBytes }
   /** The node says this name never published the avatar. */
@@ -37,7 +37,7 @@ const NOT_PUBLISHED_MESSAGE = /find PUT transaction/i;
 type TimerHandle = unknown;
 
 /** Timer functions, injectable so tests can drive timeouts with a fake clock. */
-export type AvatarFetchTimers = {
+type AvatarFetchTimers = {
   setTimer?: (fn: () => void, ms: number) => TimerHandle;
   clearTimer?: (handle: TimerHandle) => void;
 };
@@ -185,7 +185,7 @@ export async function fetchAvatarAttempt(
   }
 }
 
-export type AvatarPublishStatus = 'not_published' | 'published' | 'unknown';
+type AvatarPublishStatus = 'not_published' | 'published' | 'unknown';
 
 /**
  * Asks the node whether the avatar was ever published (resource status

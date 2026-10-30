@@ -41,7 +41,7 @@ const DECIMAL_TEXT = /^(?:\d+(?:\.\d*)?|\.\d+)$/;
  */
 export const MAX_VALUE_TRANSFER_FEE_QORT = '1';
 
-export type ParsedAmount = {
+type ParsedAmount = {
   /** Amount in 1e-8 units. */
   atomic: bigint;
   /** Normalised decimal text, without trailing zeros ("1.5", "0.00000001"). */

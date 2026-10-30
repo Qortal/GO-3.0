@@ -35,14 +35,14 @@ import {
  * opens the resource in the apps view (and gateway payment links open Send).
  */
 
-export type ParsedPaymentTarget =
+type ParsedPaymentTarget =
   | { kind: 'payment'; recipient: string; amount?: number }
   | { kind: 'appLink'; link: string }
   | { kind: 'joinGroup'; groupId: string }
   | { kind: 'none' };
 
 /** Parse qortal://use-group/action-join/groupid-<id> style action links. */
-export function parseUseGroupJoinLink(rawInput: string): string | null {
+function parseUseGroupJoinLink(rawInput: string): string | null {
   const input = (rawInput || '').trim();
   if (!input) return null;
   let rest = input;

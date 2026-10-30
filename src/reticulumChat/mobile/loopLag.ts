@@ -17,7 +17,7 @@ import {
 } from './latencyStats';
 
 /** A timer this late means the worker or page was frozen, not busy. */
-export const LOOP_SUSPEND_MS = 60_000;
+const LOOP_SUSPEND_MS = 60_000;
 
 export type LoopTaskKind = 'timer' | 'message' | 'socket';
 
@@ -58,7 +58,7 @@ const state = {
   suspendedMax: 0,
 };
 
-export function noteTimerLateness(lateMs: number, at = Date.now()): void {
+function noteTimerLateness(lateMs: number, at = Date.now()): void {
   if (!Number.isFinite(lateMs)) return;
   if (lateMs >= LOOP_SUSPEND_MS) {
     state.suspended += 1;
@@ -68,7 +68,7 @@ export function noteTimerLateness(lateMs: number, at = Date.now()): void {
   noteLatency(state.lag, Math.max(0, lateMs), at);
 }
 
-export function noteTaskDuration(
+function noteTaskDuration(
   kind: LoopTaskKind,
   ms: number,
   at = Date.now()

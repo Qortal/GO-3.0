@@ -59,7 +59,7 @@ export type QdnAvatarPrewarmTiming = {
   maxConsecutiveFailures: number;
 };
 
-export const DEFAULT_QDN_AVATAR_PREWARM_TIMING: QdnAvatarPrewarmTiming = {
+const DEFAULT_QDN_AVATAR_PREWARM_TIMING: QdnAvatarPrewarmTiming = {
   initialDelayMs: 12_000,
   followUpDelayMs: 3 * MINUTE,
   intervalMs: 3 * HOUR,
@@ -75,7 +75,7 @@ export const DEFAULT_QDN_AVATAR_PREWARM_TIMING: QdnAvatarPrewarmTiming = {
   maxConsecutiveFailures: 3,
 };
 
-export type QdnAvatarPrewarmOutcome =
+type QdnAvatarPrewarmOutcome =
   /** Every planned avatar was handled (or the run's budget was used). */
   | 'done'
   /** Too many failures in a row: the node is struggling. */
@@ -133,7 +133,7 @@ export type QdnAvatarPrewarmSchedulerDeps = {
   now?: () => number;
 };
 
-export type QdnAvatarPrewarmScheduler = {
+type QdnAvatarPrewarmScheduler = {
   start: () => void;
   stop: () => void;
   /** Tests: true while a run is in progress. */

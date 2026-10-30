@@ -46,7 +46,7 @@ export const APP_LOCK_SCREEN_Z_INDEX = 2147483600;
 /** A deep link that arrived before the wallet was unlocked expires after this. */
 export const PENDING_DEEP_LINK_TTL_MS = 10 * 60 * 1_000;
 
-export type AppLockLatch = {
+type AppLockLatch = {
   /** Wallet that was locked; null when unknown or unreadable. */
   address: string | null;
   lockedAt: number;
@@ -231,7 +231,7 @@ export function canResumeSessionAtBoot({
   return true;
 }
 
-export type LockScreenInput = {
+type LockScreenInput = {
   authenticated: boolean;
   mainWindow: boolean;
   /** The in-memory lock (`appLockedAtom`). */

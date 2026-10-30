@@ -10,7 +10,7 @@ import {
  * the endpoint the request type is meant for.
  */
 
-export type ForeignCoinTicker = 'BTC' | 'LTC' | 'DOGE' | 'DGB' | 'RVN' | 'ARRR';
+type ForeignCoinTicker = 'BTC' | 'LTC' | 'DOGE' | 'DGB' | 'RVN' | 'ARRR';
 
 const FOREIGN_COIN_TICKERS = new Map<string, ForeignCoinTicker>([
   ['BTC', 'BTC'],

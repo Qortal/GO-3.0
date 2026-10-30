@@ -17,7 +17,7 @@ import {
   type FatalErrorRecord,
 } from '../common/fatalErrorLog';
 
-export type AppErrorKind = 'caught' | 'uncaught' | 'recovered';
+type AppErrorKind = 'caught' | 'uncaught' | 'recovered';
 
 export type AppErrorEntry = {
   firstAt: number;
@@ -34,7 +34,7 @@ export type AppErrorEntry = {
   shape: string;
 };
 
-export type AppErrorInput = {
+type AppErrorInput = {
   kind: AppErrorKind;
   error: unknown;
   componentStack?: string | null;

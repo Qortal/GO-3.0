@@ -30,10 +30,10 @@ export const QAPP_PUBLISH_UI_RELEASE_DELAY_MS = 1_500;
 /** A publish window that opens this soon after "hide" is still hidden. */
 export const QAPP_PUBLISH_UI_WATCH_MS = 1_500;
 
-export type QappPublishUiCommand = 'hide' | 'release';
-export type QappPublishUiEvent = 'hidden' | 'none' | 'revealed' | 'gone';
+type QappPublishUiCommand = 'hide' | 'release';
+type QappPublishUiEvent = 'hidden' | 'none' | 'revealed' | 'gone';
 
-export type QappPublishUiReport = {
+type QappPublishUiReport = {
   event: QappPublishUiEvent;
   jobId: string;
   layers: number;

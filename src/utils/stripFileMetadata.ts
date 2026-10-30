@@ -15,7 +15,7 @@ import { stripImageFileMetadata } from './imageCompression';
 import { detectImageContainer } from './stripImageMetadata';
 import { scrubVideoFileMetadata } from './stripVideoMetadata';
 
-export type MediaKind = 'image' | 'video';
+type MediaKind = 'image' | 'video';
 
 /** Types that say nothing about the content, so the bytes decide. */
 const GENERIC_TYPES = new Set([

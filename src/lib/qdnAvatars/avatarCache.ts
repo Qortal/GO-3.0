@@ -93,7 +93,7 @@ export type QdnAvatarSnapshot = {
 
 export type QdnAvatarPriority = 'high' | 'normal' | 'low';
 
-export type QdnAvatarRequest = {
+type QdnAvatarRequest = {
   /** Name as the caller spells it; used in node URLs. */
   name?: string | null;
   identifier?: string | null;
@@ -152,7 +152,7 @@ export const qdnAvatarRefreshSpread = (key: string): number => {
   return (hash >>> 0) / 0x100000000;
 };
 
-export const DEFAULT_QDN_AVATAR_LIMITS: QdnAvatarLimits = {
+const DEFAULT_QDN_AVATAR_LIMITS: QdnAvatarLimits = {
   maxConcurrent: 3,
   maxBlocking: 2,
   maxQueue: 300,
@@ -284,7 +284,7 @@ const belowLimit = (limit: number) =>
   Math.max(0, limit - Math.floor(limit * 0.1));
 
 /** Short, non-reversible tag of a node URL (FNV-1a), stored with "missing". */
-export function qdnAvatarNodeTag(apiBase: string): string {
+function qdnAvatarNodeTag(apiBase: string): string {
   const text = (apiBase || '').trim().replace(/\/+$/, '').toLowerCase();
   if (!text) return '';
   let hash = 0x811c9dc5;

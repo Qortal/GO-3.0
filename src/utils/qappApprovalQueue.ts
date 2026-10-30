@@ -64,7 +64,7 @@ export function approvalDedupeKey(message: unknown): string | null {
   }
 }
 
-export type ApprovalMuteList = {
+type ApprovalMuteList = {
   /** Declines new requests of this group until `until`. */
   mute: (groupKey: string, until: number) => void;
   isMuted: (groupKey: string, now: number) => boolean;
@@ -88,7 +88,7 @@ export function createApprovalMuteList(): ApprovalMuteList {
 
 export type PermissionResult = { accepted: boolean; checkbox1?: boolean };
 
-export type ApprovalShow = (
+type ApprovalShow = (
   data: ApprovalDialogMessage,
   options: { dedupeKey: string | null; groupKey: string; maxPerGroup: number }
 ) => Promise<unknown>;

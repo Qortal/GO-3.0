@@ -28,7 +28,7 @@ export const QAPP_MESSAGES_ALLOWED_WHILE_LOCKED: ReadonlySet<string> = new Set([
   'NAVIGATION_SUCCESS',
 ]);
 
-export type QappRequestLockGateOptions = {
+type QappRequestLockGateOptions = {
   isLocked: () => boolean;
   doc?: Document;
   /** Error text the Q-App gets back. */

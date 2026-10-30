@@ -20,18 +20,18 @@
 /** Per-request budget; matches the engine's expectations for a slow node. */
 export const GROUP_VALIDATION_TIMEOUT_MS = 12_000;
 /** An abort timer this late found the worker stalled, not Core slow. */
-export const GROUP_VALIDATION_LATE_TIMER_MS = 1_000;
+const GROUP_VALIDATION_LATE_TIMER_MS = 1_000;
 /** One extra wait for a reply that may already sit behind that stall. */
-export const GROUP_VALIDATION_GRACE_MS = 1_500;
+const GROUP_VALIDATION_GRACE_MS = 1_500;
 /** How many recent answers keep their network / worker-wait times. */
-export const GROUP_VALIDATION_RECENT_TIMINGS = 32;
+const GROUP_VALIDATION_RECENT_TIMINGS = 32;
 /**
  * Most addresses one request carries. Core's validate endpoint takes a list
  * (`List<String>`, one IN query) and answers one row per address it was sent.
  */
 export const GROUP_VALIDATION_BATCH_MAX = 50;
 /** How many recent failures Copy diagnostics keeps (newest last). */
-export const GROUP_VALIDATION_RECENT_FAILURES = 8;
+const GROUP_VALIDATION_RECENT_FAILURES = 8;
 /** Core's ApiError.GROUP_UNKNOWN code (sent with HTTP 404). */
 const CORE_ERROR_GROUP_UNKNOWN = 1101;
 

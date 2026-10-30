@@ -15,7 +15,7 @@ import { useTheme } from '@mui/material/styles';
  * utils/platform.ts, which many tests mock wholesale.
  */
 
-export type GoWidthClass = 'compact' | 'medium' | 'expanded'; // <600 | 600–839 | ≥840
+type GoWidthClass = 'compact' | 'medium' | 'expanded'; // <600 | 600–839 | ≥840
 export type GoDeviceOrientation = 'portrait' | 'landscape';
 
 /** Pushed by native (P3) and returned by SafeArea.getInsets; CSS px, integers. */

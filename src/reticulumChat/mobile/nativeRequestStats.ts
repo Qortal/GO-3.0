@@ -156,5 +156,3 @@ export function createNativeRequestStats() {
     },
   };
 }
-
-export type NativeRequestStats = ReturnType<typeof createNativeRequestStats>;

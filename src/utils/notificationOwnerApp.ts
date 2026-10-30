@@ -31,7 +31,7 @@ type AppNotification = {
   data?: { name?: unknown; [key: string]: unknown } | null;
 };
 
-export type NotificationOwnerApp = { name: string; service: 'APP' | 'WEBSITE' };
+type NotificationOwnerApp = { name: string; service: 'APP' | 'WEBSITE' };
 
 const sameName = (a: string, b: string) =>
   decodeQdnName(a).toLowerCase() === decodeQdnName(b).toLowerCase();

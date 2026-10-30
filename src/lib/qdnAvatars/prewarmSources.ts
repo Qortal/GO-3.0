@@ -54,7 +54,7 @@ export type QdnAvatarPrewarmStore = {
   get: <Value>(atom: Atom<Value>) => Value;
 };
 
-export type QdnAvatarPrewarmSourceDeps = {
+type QdnAvatarPrewarmSourceDeps = {
   loadTabOrganization?: (address: string) => Promise<MobileTabOrganization>;
   loadAppOpenCounts?: (address: string) => Promise<AppOpenCounts>;
   /** The live open tabs (see useOpenTabs / `setTabsToNav`). */

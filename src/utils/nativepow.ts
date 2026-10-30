@@ -1,6 +1,6 @@
 import { registerPlugin } from '@capacitor/core';
 
-export interface NativePOWPlugin {
+interface NativePOWPlugin {
   computeProofOfWork(options: {
     chatBytes: unknown;
     difficulty: number;

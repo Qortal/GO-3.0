@@ -18,7 +18,7 @@ import {
   reportQappFetchProgress,
 } from './qdnDownloadNotifications';
 
-export const qappFetchTransferId = (message: QappFetchMessage): string =>
+const qappFetchTransferId = (message: QappFetchMessage): string =>
   `qapp-fetch:${message.id}`;
 
 /** Q-App frames are served by GO's node; reports from anywhere else are not ours. */
@@ -58,7 +58,7 @@ async function lookUpFilename(
   }
 }
 
-export function handleQappFetchMessage(message: QappFetchMessage): void {
+function handleQappFetchMessage(message: QappFetchMessage): void {
   const id = qappFetchTransferId(message);
   switch (message.phase) {
     case 'start':

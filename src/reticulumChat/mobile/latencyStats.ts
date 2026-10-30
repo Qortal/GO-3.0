@@ -7,7 +7,7 @@
  * postMessage) cross to the main thread; the raw stats never leave it.
  */
 
-export const LATENCY_BOUNDS_MS = [
+const LATENCY_BOUNDS_MS = [
   1, 2, 3, 5, 8, 12, 20, 30, 50, 80, 120, 200, 300, 500, 800, 1_200, 2_000,
   3_000, 5_000, 8_000, 12_000, 20_000, 30_000, 60_000,
 ] as const;

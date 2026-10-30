@@ -32,7 +32,7 @@ const canonicalizeForSigning = (data: Record<string, unknown>): Uint8Array => {
   return new TextEncoder().encode(JSON.stringify(sorted));
 };
 
-export const buildQchatFileLinkAuthSignedFields = (payload: {
+const buildQchatFileLinkAuthSignedFields = (payload: {
   transferId: string;
   senderAddress: string;
   downloaderAddress: string;

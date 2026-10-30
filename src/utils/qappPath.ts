@@ -12,7 +12,7 @@
  * still points inside the app it is labelled as.
  */
 
-export type QappTabTarget = {
+type QappTabTarget = {
   service: string;
   name: string;
   identifier?: string;

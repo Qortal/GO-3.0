@@ -2,7 +2,7 @@ import { QDN_AVATAR_DEFAULT_IDENTIFIER } from '../lib/qdnAvatars/keys';
 import { pinNotificationToOwnerApp } from './notificationOwnerApp';
 import { parseQdnThumbnailRef, type QdnThumbnailRef } from './qdnThumbnailRef';
 
-export type NotificationAppIcon = {
+type NotificationAppIcon = {
   /** QDN avatar to show from the device cache. */
   avatar: QdnThumbnailRef | null;
   /** Any other image: a node URL, a bundled asset or an inline image. */

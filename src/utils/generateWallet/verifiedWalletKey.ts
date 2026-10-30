@@ -23,17 +23,17 @@ import PhraseWallet from './phrase-wallet';
 type PhraseWalletInstance = any;
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
-export type WalletEntryForKeyCheck = {
+type WalletEntryForKeyCheck = {
   address0?: unknown;
   version?: unknown;
 };
 
-export type PhraseWalletOptions = {
+type PhraseWalletOptions = {
   /** Skip the BTC/LTC/… HD wallets; only the QORT key is derived. */
   qortOnly?: boolean;
 };
 
-export type VerifiedWalletKey = {
+type VerifiedWalletKey = {
   /** PhraseWallet whose address 0 is the entry's `address0`. */
   wallet: PhraseWalletInstance;
   /** The derivation that matched: 1 (raw seed) or 2 (SHA-512 chain). */

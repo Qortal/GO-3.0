@@ -25,9 +25,9 @@
  * nothing else survives.
  */
 
-export type ImageContainer = 'jpeg' | 'png' | 'webp';
+type ImageContainer = 'jpeg' | 'png' | 'webp';
 
-export type StripImageMetadataResult =
+type StripImageMetadataResult =
   | {
       ok: true;
       format: ImageContainer;

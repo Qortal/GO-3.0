@@ -46,7 +46,7 @@ export const wasAlertShown = (key: string): boolean => shownAlertKeys.has(key);
 
 export const listShownAlertKeys = (): string[] => Array.from(shownAlertKeys);
 
-export type AlertDismissHandlers = {
+type AlertDismissHandlers = {
   isNative: boolean;
   /** Cancel the Android tray entry for this key (best effort). */
   dismissNative: (alertKey: string) => void;
@@ -186,7 +186,7 @@ export const unreadDirectMessageCount = (
 // show as unread in GO. The one-shot timer is armed only while an alert
 // waits; nothing runs while idle.
 
-export const CHAT_ALERT_AUDIBLE_INTERVAL_MS = 60_000;
+const CHAT_ALERT_AUDIBLE_INTERVAL_MS = 60_000;
 /** How long a catch-up alert waits for a read sync from another device. */
 export const CHAT_ALERT_CATCH_UP_SETTLE_MS = 10_000;
 const CHAT_ALERT_MAX_PENDING = 32;
@@ -196,9 +196,7 @@ const CHAT_ALERT_MAX_PENDING = 32;
  * (read, being viewed). `isCancelled` turns true when the alert is cancelled
  * or the coalescer cleared while an async post is still checking.
  */
-export type ChatAlertPost = (
-  isCancelled: () => boolean
-) => boolean | Promise<boolean>;
+type ChatAlertPost = (isCancelled: () => boolean) => boolean | Promise<boolean>;
 
 export type ChatAlertCoalescer = {
   offer: (

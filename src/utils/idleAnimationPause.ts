@@ -82,7 +82,7 @@ const isAtEnd = (animation: Animation): boolean => {
  * finished animation would replay it. Ones left paused at their end show the
  * same last frame, and leaving idle resumes them without a rewind.
  */
-export function resumeFiniteAnimations(): void {
+function resumeFiniteAnimations(): void {
   if (typeof document.getAnimations !== 'function') return;
   for (const animation of document.getAnimations()) {
     if (animation.playState !== 'paused') continue;

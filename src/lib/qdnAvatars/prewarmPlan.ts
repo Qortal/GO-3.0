@@ -25,7 +25,7 @@ export const QDN_AVATAR_PREWARM_FEATURED_APPS: readonly string[] = [
 ];
 
 /** How many candidates each source may add to one run. */
-export type QdnAvatarPrewarmPlanLimits = {
+type QdnAvatarPrewarmPlanLimits = {
   openTabs: number;
   folderTabs: number;
   pinnedApps: number;
@@ -35,16 +35,15 @@ export type QdnAvatarPrewarmPlanLimits = {
   total: number;
 };
 
-export const DEFAULT_QDN_AVATAR_PREWARM_PLAN_LIMITS: QdnAvatarPrewarmPlanLimits =
-  {
-    openTabs: 12,
-    folderTabs: 24,
-    pinnedApps: 12,
-    recentApps: 12,
-    people: 30,
-    groups: 15,
-    total: 100,
-  };
+const DEFAULT_QDN_AVATAR_PREWARM_PLAN_LIMITS: QdnAvatarPrewarmPlanLimits = {
+  openTabs: 12,
+  folderTabs: 24,
+  pinnedApps: 12,
+  recentApps: 12,
+  people: 30,
+  groups: 15,
+  total: 100,
+};
 
 /** An open tab, a saved Tabs folder entry or a pinned app. */
 export type QdnAvatarPrewarmAppLike = {
@@ -56,7 +55,7 @@ export type QdnAvatarPrewarmAppLike = {
   [key: string]: unknown;
 };
 
-export type QdnAvatarPrewarmTabFolders = {
+type QdnAvatarPrewarmTabFolders = {
   folders?: Array<{
     tabKeys?: unknown;
     order?: unknown;

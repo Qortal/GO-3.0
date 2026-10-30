@@ -15,12 +15,12 @@ export type Matrix = [number, number, number, number, number, number];
 /** Canvas pixel box, right and bottom edges exclusive. */
 export type PixelRect = { x0: number; y0: number; x1: number; y1: number };
 
-export type PdfOperatorList = {
+type PdfOperatorList = {
   fnArray: ArrayLike<number>;
   argsArray: ArrayLike<unknown>;
 };
 
-export type ToneStats = {
+type ToneStats = {
   count: number;
   light: number;
   dark: number;
@@ -211,7 +211,7 @@ function inside(rects: PixelRect[], x: number, y: number): boolean {
 }
 
 /** Share of light, dark, mid-tone, and strongly coloured pixels in `rect`. */
-export function toneStats(
+function toneStats(
   data: Uint8ClampedArray,
   width: number,
   rect: PixelRect,
@@ -254,7 +254,7 @@ export function toneStats(
 }
 
 /** Drawn pages: turn the paper dark unless it already is. */
-export function shouldDarkenPaper(stats: ToneStats): boolean {
+function shouldDarkenPaper(stats: ToneStats): boolean {
   return stats.light >= 0.35 && stats.light > stats.dark;
 }
 
@@ -262,7 +262,7 @@ export function shouldDarkenPaper(stats: ToneStats): boolean {
  * Pictures: only a light page of mostly text, such as a screenshot or scan
  * of a document. Photos have too many mid-tones and colours to invert.
  */
-export function shouldDarkenPicture(stats: ToneStats): boolean {
+function shouldDarkenPicture(stats: ToneStats): boolean {
   return stats.light >= 0.45 && stats.mid <= 0.35 && stats.colorful <= 0.15;
 }
 
@@ -279,7 +279,7 @@ function isPhotoTile(stats: ToneStats): boolean {
  * most of their bounding box, as pasted pictures do. Text, even small grey
  * text, stays out because it sits on light paper.
  */
-export function photoAreas(
+function photoAreas(
   data: Uint8ClampedArray,
   width: number,
   rect: PixelRect

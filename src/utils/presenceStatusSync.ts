@@ -54,7 +54,7 @@ export type PresenceStatusSyncChat = {
   ) => () => void;
 };
 
-export type PresenceStatusSyncOptions = {
+type PresenceStatusSyncOptions = {
   address: string;
   chat: PresenceStatusSyncChat;
   getStatus: () => SelectableStatus;

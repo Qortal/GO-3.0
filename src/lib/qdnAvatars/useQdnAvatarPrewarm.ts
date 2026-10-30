@@ -17,7 +17,7 @@ import type { QdnAvatarPrewarmTiming } from './prewarmScheduler';
 
 type OpenTabsSnapshot = { account: string; tabs: QdnAvatarPrewarmAppLike[] };
 
-export type UseQdnAvatarPrewarmOptions = {
+type UseQdnAvatarPrewarmOptions = {
   /** Signed in, unlocked, main window. Nothing runs while false. */
   enabled: boolean;
   /** Signed-in wallet address. */

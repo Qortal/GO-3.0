@@ -13,7 +13,7 @@
  * shows the key warning.
  */
 
-export type ForeignKeyConsentScope = {
+type ForeignKeyConsentScope = {
   tabId: string;
   appName: string;
   address: string;

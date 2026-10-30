@@ -33,9 +33,9 @@ import {
 export type SocketEventFrame = Record<string, any>;
 
 /** Longest a slice keeps handing frames to the engine before it yields. */
-export const SOCKET_EVENT_SLICE_MS = 8;
+const SOCKET_EVENT_SLICE_MS = 8;
 /** Above this many waiting frames, queued digests are merged per origin. */
-export const SOCKET_EVENT_COALESCE_ABOVE = 200;
+const SOCKET_EVENT_COALESCE_ABOVE = 200;
 
 // The engine's own lifetimes (electron/src/reticulum-chat.ts): a frame past
 // them is ignored there anyway, so it is not worth the engine's time here.

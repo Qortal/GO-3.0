@@ -22,7 +22,7 @@ const CLICK_GUARD_MS = 400;
 const EASE_OUT = 'cubic-bezier(0.33, 1, 0.68, 1)';
 const EASE_IN = 'cubic-bezier(0.32, 0, 0.67, 0)';
 
-export interface SwipeBetweenTabsOptions {
+interface SwipeBetweenTabsOptions {
   enabled: boolean;
   /** The tab showing, by position in the strip. */
   index: number;

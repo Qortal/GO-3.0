@@ -1,4 +1,4 @@
-export type AltcoinKeyFields = {
+type AltcoinKeyFields = {
   ltcPrivateKey: string;
   ltcPublicKey: string;
   ltcAddress: string;

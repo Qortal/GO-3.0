@@ -53,7 +53,7 @@ export function isRefusedForOpen(options: {
 }
 
 /** The type every page-like file is handed to another app as. */
-export const PAGE_OPEN_MIME = 'text/plain';
+const PAGE_OPEN_MIME = 'text/plain';
 
 // Types a browser renders as a page that can run script: the list in
 // SavedFilePolicy.java and AppOriginGuardPolicy.java, plus the XML feed and

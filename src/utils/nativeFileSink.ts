@@ -31,13 +31,13 @@ type InjectedSink = {
   onmessage?: ((event: MessageEvent) => void) | null;
 };
 
-export type NativeFileSinkResult = {
+type NativeFileSinkResult = {
   path: string;
   uri: string;
   bytesWritten: number;
 };
 
-export type NativeFileSinkOptions = {
+type NativeFileSinkOptions = {
   /** Sort into Images / Videos / Audio / Documents / Apps / Qortino AI. */
   categorize?: boolean;
   mimeType?: string;
@@ -47,7 +47,7 @@ export type NativeFileSinkOptions = {
 export class NativeFileSinkUnavailableError extends Error {}
 
 /** Slice size for blobs: few messages, and little held at once. */
-export const NATIVE_FILE_SINK_CHUNK_BYTES = 4 * 1024 * 1024;
+const NATIVE_FILE_SINK_CHUNK_BYTES = 4 * 1024 * 1024;
 /** Small stream chunks are merged up to this before they are sent. */
 const MIN_MESSAGE_BYTES = 1024 * 1024;
 /** One chunk is written while the next crosses; more only costs memory. */

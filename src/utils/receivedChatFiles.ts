@@ -34,7 +34,7 @@ import { clearStagedShareFiles } from './mobileFileShare';
  * the viewer holds the whole file in memory, and the bytes cross the bridge
  * as base64 (a few seconds for this much on a mid-range phone).
  */
-export const RECEIVED_FILE_VIEWER_MAX_BYTES = 32 * 1024 * 1024;
+const RECEIVED_FILE_VIEWER_MAX_BYTES = 32 * 1024 * 1024;
 const READ_SLICE_BYTES = 512 * 1024;
 /** The viewer reads the blob url as soon as it is asked to open it. */
 const VIEWER_URL_LIFETIME_MS = 30_000;
@@ -50,7 +50,7 @@ export type ReceivedChatFile = {
 
 // Plain shapes rather than unions on `ok`: the project is not compiled with
 // strictNullChecks, which such a union needs to narrow.
-export type ReceivedFileOpenResult = {
+type ReceivedFileOpenResult = {
   ok: boolean;
   /** Set when ok: where the file opened. */
   via?: 'viewer' | 'app';
@@ -59,7 +59,7 @@ export type ReceivedFileOpenResult = {
   error?: string;
 };
 
-export type ReceivedFileSaveResult = {
+type ReceivedFileSaveResult = {
   ok: boolean;
   /** Set when ok: the saved name, and folder and name to show the user. */
   name?: string;

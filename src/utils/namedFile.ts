@@ -16,7 +16,7 @@
 let nativeFileUsable: boolean | null = null;
 
 /** True when the global `File` is the real DOM constructor. */
-export function isNativeFileConstructor(): boolean {
+function isNativeFileConstructor(): boolean {
   if (nativeFileUsable === null) {
     try {
       nativeFileUsable =

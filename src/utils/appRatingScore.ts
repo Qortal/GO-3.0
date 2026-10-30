@@ -5,11 +5,11 @@
  * (60 of the 111 rated apps in Sep 2026) scores 3.5, while 10 votes averaging
  * 5.0 score 4.5.
  */
-export const RATING_PRIOR_MEAN = 3;
-export const RATING_PRIOR_VOTES = 3;
+const RATING_PRIOR_MEAN = 3;
+const RATING_PRIOR_VOTES = 3;
 
 /** Fewest votes an app needs before it can be featured for its rating. */
-export const FEATURED_MIN_VOTES = 2;
+const FEATURED_MIN_VOTES = 2;
 /** How many apps a Featured carousel shows (Community, each category). */
 export const FEATURED_COUNT = 10;
 

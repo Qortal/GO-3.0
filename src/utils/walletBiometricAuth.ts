@@ -140,7 +140,7 @@ function readStoredPasswordSync(address: string): string | null {
   return null;
 }
 
-export function isBiometricUnlockConfiguredSync(address: string): boolean {
+function isBiometricUnlockConfiguredSync(address: string): boolean {
   const trimmed = normalizeAddress(address);
   if (!trimmed || !isCapacitor()) return false;
   // The password itself lives in SecureStorage (async); the non-secret
@@ -214,7 +214,7 @@ export function updateEarlyBiometricPromptForTopWallet(
   void setQortalBiometricAutoPrompt(enabled).catch(() => {});
 }
 
-export async function waitForNativeBiometricPrompt(): Promise<void> {
+async function waitForNativeBiometricPrompt(): Promise<void> {
   await new Promise<void>((resolve) => {
     window.requestAnimationFrame(() => resolve());
   });
@@ -618,9 +618,7 @@ let cachedSessionProbe: {
   checkedAt: number;
 } | null = null;
 
-export async function canResumeWalletSession(
-  address: string
-): Promise<boolean> {
+async function canResumeWalletSession(address: string): Promise<boolean> {
   const trimmed = normalizeAddress(address);
   if (!trimmed || !isCapacitor()) return false;
 
@@ -718,9 +716,7 @@ export async function biometricUnlockWallet(
   return password;
 }
 
-export function readBiometricUnlockPasswordSync(
-  address: string
-): string | null {
+function readBiometricUnlockPasswordSync(address: string): string | null {
   return readStoredPasswordSync(normalizeAddress(address));
 }
 
@@ -737,7 +733,7 @@ export async function readBiometricUnlockPassword(
 }
 
 /** Fired right before the native biometric prompt opens. */
-export const BIOMETRIC_VERIFY_START_EVENT = 'qortal-biometric-verify-start';
+const BIOMETRIC_VERIFY_START_EVENT = 'qortal-biometric-verify-start';
 
 export async function verifyBiometricUnlock(): Promise<void> {
   // Active media playback delays Vivo's under-display fingerprint overlay by

@@ -17,10 +17,10 @@
  * exact final bytes.
  */
 
-export const STREAM_HEAD_BYTES = 1024 * 1024;
-export const STREAM_BODY_BYTES = 5 * 1024 * 1024;
+const STREAM_HEAD_BYTES = 1024 * 1024;
+const STREAM_BODY_BYTES = 5 * 1024 * 1024;
 /** Stay this far behind the encoder's write position. */
-export const STREAM_LIVE_MARGIN_BYTES = 512 * 1024;
+const STREAM_LIVE_MARGIN_BYTES = 512 * 1024;
 
 export type GrowingFileSource = {
   /** Bytes on disk right now, or null when the file is gone. */
@@ -47,7 +47,7 @@ export type StreamedChunkUploadOptions = {
   onLiveProgress?: (sentBytes: number) => void;
 };
 
-export type CompleteStreamedUploadArgs = {
+type CompleteStreamedUploadArgs = {
   file: Blob;
   chunkPath: string;
   uploadChunk: (chunk: Blob, index: number) => Promise<void>;
@@ -89,7 +89,7 @@ const fnv1a = (bytes: Uint8Array): string => {
   return `fnv-${bytes.length}-${h1.toString(16)}-${h2.toString(16)}`;
 };
 
-export async function digestBytes(buffer: ArrayBuffer): Promise<string> {
+async function digestBytes(buffer: ArrayBuffer): Promise<string> {
   const subtle = globalThis.crypto?.subtle;
   if (subtle) {
     try {

@@ -12,7 +12,7 @@ import i18n from 'i18next';
  * signed bytes are sent again, which Core can accept at most once.
  */
 
-export type SignedTransaction = {
+type SignedTransaction = {
   /** Base58 of the full signed transaction bytes. */
   signedBytes58: string;
   /** Base58 of the transaction signature (the last 64 bytes). */
@@ -20,12 +20,12 @@ export type SignedTransaction = {
 };
 
 /** A node reply or lookup result for the transaction (TransactionData JSON). */
-export type TransactionRecord = {
+type TransactionRecord = {
   signature: string;
   [field: string]: unknown;
 };
 
-export type SignedSubmitDeps = {
+type SignedSubmitDeps = {
   /** Posts the signed bytes to the node; resolves with the node's reply. */
   submit: (signedBytes58: string) => Promise<unknown>;
   /** The node's record for this signature, or null when it does not know it. */
@@ -33,7 +33,7 @@ export type SignedSubmitDeps = {
   sleep?: (ms: number) => Promise<void>;
 };
 
-export type SignedSubmitOptions = {
+type SignedSubmitOptions = {
   /** Total number of sends of the same bytes (default 3). */
   attempts?: number;
   /** Wait between attempts in ms (default 10 s). */

@@ -209,7 +209,7 @@ export function approvalNeedsConfirm(message: unknown): boolean {
 }
 
 /** Whether the request shows its own checkbox (e.g. "always allow"). */
-export function approvalHasCheckbox1(message: unknown): boolean {
+function approvalHasCheckbox1(message: unknown): boolean {
   return Boolean(
     message &&
     typeof message === 'object' &&

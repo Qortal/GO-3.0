@@ -10,7 +10,7 @@ import { qdnResourcePath } from './qdnPath';
  * which watches it so the wait can be shown.
  */
 
-export type QdnGatherProgress = {
+type QdnGatherProgress = {
   /** SEARCHING, DOWNLOADING, BUILDING, READY … as reported by the node. */
   status: string;
   /** 0-100, or -1 while the node has not said anything useful yet. */
@@ -19,7 +19,7 @@ export type QdnGatherProgress = {
   totalChunkCount: number;
 };
 
-export type QdnResourceLocation = {
+type QdnResourceLocation = {
   service: string;
   name: string;
   identifier?: string;

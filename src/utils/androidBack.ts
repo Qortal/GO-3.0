@@ -18,7 +18,7 @@ import { ANDROID_BACK_EVENT } from '../bridge/capacitorBridge';
  */
 
 /** Return `true` to consume the back press and stop propagation. */
-export type AndroidBackHandler = () => boolean;
+type AndroidBackHandler = () => boolean;
 
 interface BackEntry {
   handler: AndroidBackHandler;

@@ -12,7 +12,7 @@
  */
 
 /** Events that open a Q-App tab, the apps view, a viewer or a dialog. */
-export const APP_LOCK_GATED_EVENTS = [
+const APP_LOCK_GATED_EVENTS = [
   'addTab',
   'open-apps-mode',
   'openPdf',
@@ -23,11 +23,11 @@ export const APP_LOCK_GATED_EVENTS = [
 ] as const;
 
 export const APP_LOCK_EVENT_TTL_MS = 5 * 60 * 1_000;
-export const APP_LOCK_EVENT_QUEUE_MAX = 8;
+const APP_LOCK_EVENT_QUEUE_MAX = 8;
 
 type HeldEvent = { name: string; detail: unknown; at: number };
 
-export type AppLockEventGateOptions = {
+type AppLockEventGateOptions = {
   isLocked: () => boolean;
   events?: readonly string[];
   ttlMs?: number;
@@ -108,7 +108,7 @@ export function createAppLockEventGate({
   };
 }
 
-export type BackButtonLockGateOptions = {
+type BackButtonLockGateOptions = {
   isLocked: () => boolean;
   /** The bridge's hardware-back event (`ANDROID_BACK_EVENT`). */
   eventName: string;

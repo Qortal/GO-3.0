@@ -15,9 +15,9 @@
 
 export const QAPP_FETCH_MIN_BYTES = 4 * 1024 * 1024;
 /** Marks the reporter's postMessages; nothing else in GO uses this key. */
-export const QAPP_FETCH_MESSAGE_KEY = '__goQdnFetch';
+const QAPP_FETCH_MESSAGE_KEY = '__goQdnFetch';
 
-export type QappFetchPhase =
+type QappFetchPhase =
   | 'start'
   | 'progress'
   | 'done'

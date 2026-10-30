@@ -12,7 +12,7 @@ import { getBaseApiReact } from '../utils/globalApi';
  */
 export const FULL_SIZE_AVATAR_MIN_PX = 64;
 
-export type FullSizeQdnAvatar = {
+type FullSizeQdnAvatar = {
   /** Full-size node image once loaded, else the cached copy or seed. */
   src: string | undefined;
   /** True once the full-size image has loaded and is returned. */

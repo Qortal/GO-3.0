@@ -31,7 +31,7 @@ const STREAM_WRITE_BUFFER_BYTES = 384 * 1024;
  * Per-type folders under Documents/Qortal Go. Mirrors SaveCategory.java —
  * keep both in sync so a file lands in the same place however it was saved.
  */
-export const SAVE_CATEGORY_FOLDERS = {
+const SAVE_CATEGORY_FOLDERS = {
   images: 'Images',
   videos: 'Videos',
   audio: 'Audio',
@@ -141,7 +141,7 @@ export function categorizeSaveFile(
 }
 
 /** User-facing location of saved files, for snackbars/dialogs. */
-export const MOBILE_SAVE_LOCATION_LABEL = `Documents/${QORTAL_DOCUMENTS_FOLDER}`;
+const MOBILE_SAVE_LOCATION_LABEL = `Documents/${QORTAL_DOCUMENTS_FOLDER}`;
 
 /** Where a specific file will end up, e.g. "Documents/Qortal Go/Images". */
 export function mobileSaveLocationLabelFor(

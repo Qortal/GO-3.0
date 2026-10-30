@@ -13,7 +13,7 @@ import {
   getPendingPaymentRequest,
 } from '../utils/paymentLink';
 
-export type SendQortOverlayRect = {
+type SendQortOverlayRect = {
   left: number;
   top: number;
   width: number;
@@ -21,7 +21,7 @@ export type SendQortOverlayRect = {
 } | null;
 
 /** What `openPaymentInternal` carries (deep links, profiles, chat). */
-export type OpenPaymentDetail = {
+type OpenPaymentDetail = {
   address?: string;
   name?: string;
   amount?: number | string;

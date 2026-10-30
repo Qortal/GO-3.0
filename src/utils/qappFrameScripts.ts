@@ -9,7 +9,7 @@ import { installNativeFrameScript } from '../plugins/FileWriter';
 import { buildQappFetchReporterScript } from './qappFetchReporter';
 import { buildQappPublishUiScript } from './qappPublishUi';
 
-export function buildQappFrameScript(topOrigin: string): string {
+function buildQappFrameScript(topOrigin: string): string {
   return [
     buildQappFetchReporterScript(topOrigin),
     buildQappPublishUiScript(topOrigin),

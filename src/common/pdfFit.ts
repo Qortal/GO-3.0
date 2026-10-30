@@ -10,9 +10,9 @@ const PAGE_MARGIN_Y = 12;
 /** A page is never drawn smaller than this when fitted to the width. */
 const MIN_WIDTH_FIT = 0.75;
 /** Drawn sharper than fit so pinch zoom stays crisp up to ~2.5×. */
-export const PDF_RENDER_OVERSAMPLE = 1.75;
+const PDF_RENDER_OVERSAMPLE = 1.75;
 
-export type PdfFitInput = {
+type PdfFitInput = {
   /** Width of the box the page is centred in (CSS px). */
   W: number;
   /** Height of the page area, padding included (CSS px). */
@@ -63,7 +63,7 @@ export function computePdfRenderScale(input: PdfFitInput): number {
   return pdfWidthFit(input.W, input.pageW) * PDF_RENDER_OVERSAMPLE;
 }
 
-export type ZoomLimits = { maxZoom: number; doubleTapScale: number };
+type ZoomLimits = { maxZoom: number; doubleTapScale: number };
 
 /**
  * How many times smaller than its width fit the page is shown: 1 when the

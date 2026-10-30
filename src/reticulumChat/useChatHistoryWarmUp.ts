@@ -43,7 +43,7 @@ import {
 } from './chatWarmCache';
 
 /** Chats of each kind kept warm. */
-export const CHAT_WARM_UP_COUNT = 6;
+const CHAT_WARM_UP_COUNT = 6;
 const GROUP_CHANNEL = 'general';
 const HISTORY_LIMIT = 200;
 const CALL_HISTORY_LIMIT = 100;
@@ -77,7 +77,7 @@ const taskKey = (task: WarmTask) =>
  * The chats to keep warm whose copy is missing or older than their latest
  * event, most recently active first.
  */
-export function planChatWarmUp(
+function planChatWarmUp(
   groupSummaries: Record<string, any>,
   directSummaries: Record<string, any>,
   count = CHAT_WARM_UP_COUNT

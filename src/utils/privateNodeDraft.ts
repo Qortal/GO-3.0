@@ -2,7 +2,7 @@ import { getData, storeData } from './chromeStorage';
 
 const STORAGE_KEY = 'qortalGoLastPrivateNode';
 
-export type PrivateNodeDraft = {
+type PrivateNodeDraft = {
   url: string;
   apikey: string;
 };

@@ -32,7 +32,7 @@ import { MAX_SPLIT_MESSAGE_PARTS } from '../../constants/constants';
 export { MAX_SPLIT_MESSAGE_PARTS };
 
 /** Structurally compatible with TipTap's `JSONContent`. */
-export type ChatDocMark = {
+type ChatDocMark = {
   type: string;
   attrs?: Record<string, any>;
   [key: string]: any;
@@ -50,11 +50,11 @@ export type ChatDocNode = {
 
 export type SplitChatDocumentError = 'too_many_parts' | 'unsplittable';
 
-export type SplitChatDocumentResult =
+type SplitChatDocumentResult =
   | { parts: ChatDocNode[]; error?: undefined }
   | { parts?: undefined; error: SplitChatDocumentError };
 
-export type SplitChatDocumentOptions = {
+type SplitChatDocumentOptions = {
   /** Most parts allowed. Defaults to MAX_SPLIT_MESSAGE_PARTS. */
   maxParts?: number;
 };

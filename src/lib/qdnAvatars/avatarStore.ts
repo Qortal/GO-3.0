@@ -8,7 +8,7 @@
  */
 import type { QdnAvatarKey } from './keys';
 
-export const QDN_AVATAR_DB_NAME = 'go-qdn-avatars';
+const QDN_AVATAR_DB_NAME = 'go-qdn-avatars';
 const DB_VERSION = 1;
 const META_STORE = 'meta';
 const IMAGE_STORE = 'images';
