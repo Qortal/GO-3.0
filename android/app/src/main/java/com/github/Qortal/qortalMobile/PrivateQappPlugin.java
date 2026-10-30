@@ -136,19 +136,6 @@ public class PrivateQappPlugin extends Plugin {
         });
     }
 
-    @PluginMethod
-    public void has(PluginCall call) {
-        JSObject result = new JSObject();
-        result.put("kept", PrivateQappStore.shared().has(call.getString("id")));
-        call.resolve(result);
-    }
-
-    @PluginMethod
-    public void release(PluginCall call) {
-        PrivateQappStore.shared().release(call.getString("id"));
-        call.resolve();
-    }
-
     /** Releases every app whose id is not listed (tabs closed), except ones just added. */
     @PluginMethod
     public void retain(PluginCall call) {

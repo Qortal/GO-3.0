@@ -22,11 +22,8 @@ namespace {
 std::mutex g_mutex;
 llama_model * g_model = nullptr;
 llama_context * g_ctx = nullptr;
-llama_model * g_embed_model = nullptr;
-llama_context * g_embed_ctx = nullptr;
 std::atomic<bool> g_cancel{false};
 std::string g_model_path;
-std::string g_embed_path;
 /** Tokens currently resident in the chat KV cache (prompt only, no reply). */
 std::vector<llama_token> g_prompt_cache;
 
@@ -190,18 +187,6 @@ void unload_chat_locked() {
     g_prompt_cache.clear();
 }
 
-void unload_embed_locked() {
-    if (g_embed_ctx != nullptr) {
-        llama_free(g_embed_ctx);
-        g_embed_ctx = nullptr;
-    }
-    if (g_embed_model != nullptr) {
-        llama_model_free(g_embed_model);
-        g_embed_model = nullptr;
-    }
-    g_embed_path.clear();
-}
-
 std::string jstring_to_string(JNIEnv * env, jstring value) {
     if (value == nullptr) {
         return {};
@@ -315,56 +300,11 @@ Java_com_github_Qortal_qortalMobile_QortinoLlmPlugin_nativeLoadModel(
     return nullptr;
 }
 
-extern "C" JNIEXPORT jstring JNICALL
-Java_com_github_Qortal_qortalMobile_QortinoLlmPlugin_nativeLoadEmbedder(
-    JNIEnv * env,
-    jobject,
-    jstring jPath,
-    jint nThreads
-) {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    const std::string path = jstring_to_string(env, jPath);
-    if (path.empty()) {
-        return env->NewStringUTF("Embedder path is empty");
-    }
-    if (g_embed_model != nullptr && g_embed_path == path && g_embed_ctx != nullptr) {
-        return nullptr;
-    }
-
-    unload_embed_locked();
-
-    llama_model_params model_params = llama_model_default_params();
-    model_params.n_gpu_layers = 0;
-
-    g_embed_model = llama_model_load_from_file(path.c_str(), model_params);
-    if (g_embed_model == nullptr) {
-        return env->NewStringUTF("Unable to load embedder GGUF");
-    }
-
-    llama_context_params ctx_params = llama_context_default_params();
-    ctx_params.n_ctx = 512;
-    ctx_params.n_batch = 512;
-    ctx_params.embeddings = true;
-    ctx_params.n_threads = nThreads > 0 ? nThreads : 2;
-    ctx_params.n_threads_batch = ctx_params.n_threads;
-
-    g_embed_ctx = llama_init_from_model(g_embed_model, ctx_params);
-    if (g_embed_ctx == nullptr) {
-        unload_embed_locked();
-        return env->NewStringUTF("Failed to create embedder context");
-    }
-
-    g_embed_path = path;
-    LOGI("Loaded embedder %s", path.c_str());
-    return nullptr;
-}
-
 extern "C" JNIEXPORT void JNICALL
 Java_com_github_Qortal_qortalMobile_QortinoLlmPlugin_nativeUnload(JNIEnv *, jobject) {
     std::lock_guard<std::mutex> lock(g_mutex);
     g_cancel.store(true);
     unload_chat_locked();
-    unload_embed_locked();
     release_listener_locked();
 }
 
@@ -402,9 +342,8 @@ Java_com_github_Qortal_qortalMobile_QortinoLlmPlugin_nativeComplete(
     }
 
     // Hold the lock for generation so unload cannot race. Unlock briefly when
-    // emitting tokens so the Capacitor bridge cannot deadlock on getStatus/etc.
+    // emitting tokens so the Capacitor bridge cannot deadlock on the lock.
     std::unique_lock<std::mutex> lock(g_mutex);
-    unload_embed_locked();
 
     llama_model * model = g_model;
     llama_context * ctx = g_ctx;
@@ -680,59 +619,6 @@ Java_com_github_Qortal_qortalMobile_QortinoLlmPlugin_nativeComplete(
     return new_jstring(env, reply);
 }
 
-extern "C" JNIEXPORT jfloatArray JNICALL
-Java_com_github_Qortal_qortalMobile_QortinoLlmPlugin_nativeEmbed(
-    JNIEnv * env,
-    jobject,
-    jstring jText
-) {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    if (g_embed_model == nullptr || g_embed_ctx == nullptr) {
-        return nullptr;
-    }
-
-    const std::string text = jstring_to_string(env, jText);
-    if (text.empty()) {
-        return nullptr;
-    }
-
-    const llama_vocab * vocab = llama_model_get_vocab(g_embed_model);
-    const int n_tokens = -llama_tokenize(vocab, text.c_str(), text.size(), nullptr, 0, true, true);
-    if (n_tokens <= 0) {
-        return nullptr;
-    }
-
-    std::vector<llama_token> tokens(static_cast<size_t>(n_tokens));
-    if (llama_tokenize(vocab, text.c_str(), text.size(), tokens.data(), tokens.size(), true, true) < 0) {
-        return nullptr;
-    }
-
-    llama_memory_clear(llama_get_memory(g_embed_ctx), true);
-    llama_batch batch = llama_batch_get_one(tokens.data(), static_cast<int32_t>(tokens.size()));
-    if (llama_decode(g_embed_ctx, batch) != 0) {
-        return nullptr;
-    }
-
-    const enum llama_pooling_type pooling = llama_pooling_type(g_embed_ctx);
-    float * embeddings = nullptr;
-    if (pooling == LLAMA_POOLING_TYPE_NONE) {
-        embeddings = llama_get_embeddings_ith(g_embed_ctx, tokens.size() - 1);
-    } else {
-        embeddings = llama_get_embeddings_seq(g_embed_ctx, 0);
-    }
-    if (embeddings == nullptr) {
-        return nullptr;
-    }
-
-    const int n_embd = llama_model_n_embd(g_embed_model);
-    jfloatArray out = env->NewFloatArray(n_embd);
-    if (out == nullptr) {
-        return nullptr;
-    }
-    env->SetFloatArrayRegion(out, 0, n_embd, embeddings);
-    return out;
-}
-
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_github_Qortal_qortalMobile_QortinoLlmPlugin_nativeApplyChatTemplate(
     JNIEnv * env,
@@ -839,16 +725,4 @@ Java_com_github_Qortal_qortalMobile_QortinoLlmPlugin_nativeApplyChatTemplate(
     }
     LOGI("Built chat prompt (%d bytes, %zu messages)", n, chat.size());
     return new_jstring(env, std::string(buf.data(), static_cast<size_t>(n)));
-}
-
-extern "C" JNIEXPORT jboolean JNICALL
-Java_com_github_Qortal_qortalMobile_QortinoLlmPlugin_nativeIsModelLoaded(JNIEnv *, jobject) {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    return g_model != nullptr && g_ctx != nullptr ? JNI_TRUE : JNI_FALSE;
-}
-
-extern "C" JNIEXPORT jboolean JNICALL
-Java_com_github_Qortal_qortalMobile_QortinoLlmPlugin_nativeIsEmbedderLoaded(JNIEnv *, jobject) {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    return g_embed_model != nullptr && g_embed_ctx != nullptr ? JNI_TRUE : JNI_FALSE;
 }

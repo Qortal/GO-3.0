@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const plugin = vi.hoisted(() => ({
-  hashPassword: vi.fn(),
   hashPasswordBatch: vi.fn(),
   runtimeInfo: vi.fn(),
 }));

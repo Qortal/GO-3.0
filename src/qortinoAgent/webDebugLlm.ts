@@ -11,14 +11,11 @@ import type {
   QortinoCompleteOptions,
   QortinoDeviceTier,
   QortinoLlmPlugin,
-  QortinoLlmStatus,
   QortinoStoragePaths,
 } from '../plugins/QortinoLlm';
 
 const OLLAMA_BASE = 'http://127.0.0.1:11434';
 
-let modelLoaded = false;
-let completing = false;
 let cancelRequested = false;
 
 function chunkText(c: string | { text: string }): string {
@@ -129,12 +126,16 @@ function synthesizeFromContext(options: QortinoCompleteOptions): string {
   const joined = context.join('\n\n');
   // Prefer MA Helper–style ready prose when present.
   const ready =
-    joined.match(
-      /\[READY-TO-USE (?:NOMINATION|PROFILE SUMMARY)[^\]]*\]\n[\s\S]*?\n\n([\s\S]+?)(?=\n\[QDN |\nPlayable QDN media|$)/i
-    )?.[1]?.trim() ||
-    joined.match(
-      /PORTFOLIO-STYLE PROFILE SUMMARY[\s\S]*?:\n([\s\S]+?)(?=\n\[QDN |\nPlayable QDN media|$)/i
-    )?.[1]?.trim();
+    joined
+      .match(
+        /\[READY-TO-USE (?:NOMINATION|PROFILE SUMMARY)[^\]]*\]\n[\s\S]*?\n\n([\s\S]+?)(?=\n\[QDN |\nPlayable QDN media|$)/i
+      )?.[1]
+      ?.trim() ||
+    joined
+      .match(
+        /PORTFOLIO-STYLE PROFILE SUMMARY[\s\S]*?:\n([\s\S]+?)(?=\n\[QDN |\nPlayable QDN media|$)/i
+      )?.[1]
+      ?.trim();
   if (ready && ready.length > 80) {
     return ready;
   }
@@ -143,15 +144,20 @@ function synthesizeFromContext(options: QortinoCompleteOptions): string {
     joined.match(/Role statement:\s*(.+)/i)?.[1]?.trim() ||
     joined.match(/^(.*(?:Founder|Minter|Admin|non-minter).+)$/im)?.[1]?.trim();
   const name =
-    joined.match(/QDN (?:dossier|user scan) for registered name "([^"]+)"/i)?.[1] ||
-    joined.match(/\[QDN user scan · ([^\]]+)\]/)?.[1];
+    joined.match(
+      /QDN (?:dossier|user scan) for registered name "([^"]+)"/i
+    )?.[1] || joined.match(/\[QDN user scan · ([^\]]+)\]/)?.[1];
   const level = joined.match(/Account level:\s*(\d+)/i)?.[1];
   const tags = joined.match(/Tags \/ roles:\s*(.+)/i)?.[1]?.trim();
-  const mediaLines = [...joined.matchAll(/^\d+\.\s*\[(video|audio|image|pdf|file)\]\s*(.+)$/gim)]
+  const mediaLines = [
+    ...joined.matchAll(/^\d+\.\s*\[(video|audio|image|pdf|file)\]\s*(.+)$/gim),
+  ]
     .slice(0, 6)
     .map((m) => `• ${m[1]}: ${m[2].trim()}`);
 
-  const publishBits = [...joined.matchAll(/^- \[(Q-Blog|Q-Tube|Quitter)\]\s*(.+)$/gim)]
+  const publishBits = [
+    ...joined.matchAll(/^- \[(Q-Blog|Q-Tube|Quitter)\]\s*(.+)$/gim),
+  ]
     .slice(0, 3)
     .map((m) => `• ${m[1]}: ${m[2].trim()}`);
 
@@ -201,17 +207,11 @@ export class QortinoLlmWebDebug extends WebPlugin implements QortinoLlmPlugin {
     };
   }
 
-  async writeChunk() {
-    throw new Error('writeChunk not used in PC debug');
-  }
   async fileExists() {
     return { exists: true, path: 'web-debug', size: 1 };
   }
   async readText() {
     throw new Error('readText not used in PC debug');
-  }
-  async deletePath() {
-    return { deleted: false };
   }
   async extractZip() {
     throw new Error('extractZip not used in PC debug');
@@ -219,46 +219,20 @@ export class QortinoLlmWebDebug extends WebPlugin implements QortinoLlmPlugin {
   async downloadUrl() {
     throw new Error('downloadUrl not used in PC debug');
   }
-  async copyFileIntoAgent() {
-    throw new Error('copyFileIntoAgent not used in PC debug');
-  }
   async cancelDownload() {}
 
   async loadModel() {
-    modelLoaded = true;
     return { loaded: true, path: 'web-debug' };
   }
 
-  async loadEmbedder() {
-    return { loaded: true, path: 'web-debug-embed' };
-  }
-
-  async unload() {
-    modelLoaded = false;
-  }
+  async unload() {}
 
   async cancel() {
     cancelRequested = true;
-    completing = false;
-  }
-
-  async getStatus(): Promise<QortinoLlmStatus> {
-    return {
-      modelLoaded,
-      embedderLoaded: false,
-      completing,
-      javaUsedMemoryBytes: 0,
-      javaMaxMemoryBytes: 0,
-    };
-  }
-
-  async embed() {
-    return { vector: [0], dimensions: 1 };
   }
 
   async complete(options: QortinoCompleteOptions) {
     cancelRequested = false;
-    completing = true;
     const emit = (token: string, done: boolean, error?: string) => {
       void this.notifyListeners('token', { token, done, error });
     };
@@ -293,8 +267,6 @@ export class QortinoLlmWebDebug extends WebPlugin implements QortinoLlmPlugin {
       const msg = e instanceof Error ? e.message : 'PC debug complete failed';
       emit('', true, msg);
       return { ok: false, text: msg };
-    } finally {
-      completing = false;
     }
   }
 }

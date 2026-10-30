@@ -14,8 +14,6 @@ const plugin = vi.hoisted(() => ({
     calls.push('finish');
     return { id: '8eTqYyGvDdPyprD1pJ1CbMr3eWwg3vN4VBuuwqsYtZd5', files: 2 };
   }),
-  has: vi.fn(async () => ({ kept: true })),
-  release: vi.fn(async () => undefined),
   retain: vi.fn(async ({ ids }: { ids: string[] }) => {
     calls.push(`retain:${ids.join(',')}`);
   }),

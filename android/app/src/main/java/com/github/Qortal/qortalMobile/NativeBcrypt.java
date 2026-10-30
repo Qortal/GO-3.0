@@ -48,34 +48,6 @@ public class NativeBcrypt extends Plugin {
     );
 
     @PluginMethod
-    public void hashPassword(PluginCall call) {
-        String password = call.getString("password");
-        String salt = call.getString("salt");
-
-        if (password == null || salt == null) {
-            call.reject("Password or salt is missing");
-            return;
-        }
-
-        executor.execute(() -> {
-            try {
-                // Perform bcrypt hashing
-                String hash = BCrypt.hashpw(password, salt);
-
-                // Prepare the result
-                JSObject result = new JSObject();
-                result.put("hash", hash);
-
-                // Resolve the call on the main thread
-                getActivity().runOnUiThread(() -> call.resolve(result));
-            } catch (Exception e) {
-                // Reject the call on the main thread in case of an error
-                getActivity().runOnUiThread(() -> call.reject("Hashing failed: " + e.getMessage()));
-            }
-        });
-    }
-
-    @PluginMethod
     public void hashPasswordBatch(PluginCall call) {
         JSArray jobs = call.getArray("jobs");
         if (jobs == null || jobs.length() == 0) {

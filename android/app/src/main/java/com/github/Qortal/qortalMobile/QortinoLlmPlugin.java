@@ -7,7 +7,6 @@ import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.StatFs;
-import android.util.Base64;
 import android.util.Log;
 
 import com.getcapacitor.JSArray;
@@ -42,7 +41,6 @@ import java.util.zip.ZipInputStream;
 @CapacitorPlugin(name = "QortinoLlm")
 public class QortinoLlmPlugin extends Plugin {
     private static final String TAG = "QortinoLlm";
-    private static final Object FILE_LOCK = new Object();
 
     static {
         try {
@@ -77,15 +75,11 @@ public class QortinoLlmPlugin extends Plugin {
 
     private native boolean nativeInitBackend();
     private native String nativeLoadModel(String path, int nCtx, int nThreads);
-    private native String nativeLoadEmbedder(String path, int nThreads);
     private native void nativeUnload();
     private native void nativeCancel();
     private native void nativeSetTokenListener(Object listener);
     private native String nativeComplete(String prompt, int maxTokens, float temperature);
-    private native float[] nativeEmbed(String text);
     private native String nativeApplyChatTemplate(String system, String messagesPacked, String contextJson);
-    private native boolean nativeIsModelLoaded();
-    private native boolean nativeIsEmbedderLoaded();
 
     /** Called from JNI on the worker thread. */
     @SuppressWarnings("unused")
@@ -378,120 +372,6 @@ public class QortinoLlmPlugin extends Plugin {
         call.resolve();
     }
 
-    /**
-     * Copy an on-device file (e.g. /sdcard/Download/Qortino-Standard.zip) into
-     * the agent directory. Used for QA staging and offline assemble without QDN.
-     */
-    @PluginMethod
-    public void copyFileIntoAgent(PluginCall call) {
-        String absoluteSource = call.getString("absoluteSource");
-        String relativeDest = call.getString("relativeDest");
-        if (absoluteSource == null || absoluteSource.isEmpty()) {
-            call.reject("absoluteSource is required");
-            return;
-        }
-        if (relativeDest == null || relativeDest.isEmpty() || relativeDest.contains("..")) {
-            call.reject("relativeDest is required");
-            return;
-        }
-        executor.execute(() -> {
-            File src = new File(absoluteSource);
-            if (!src.isFile()) {
-                // Common public Download aliases
-                File alt = new File("/storage/emulated/0/Download/" + src.getName());
-                if (alt.isFile()) {
-                    src = alt;
-                } else {
-                    call.reject("Source file not found: " + absoluteSource);
-                    return;
-                }
-            }
-            File target = new File(modelsRoot(), relativeDest);
-            File parent = target.getParentFile();
-            if (parent != null && !parent.exists() && !parent.mkdirs()) {
-                call.reject("Failed to create parent directory");
-                return;
-            }
-            long total = src.length();
-            long received = 0L;
-            byte[] buffer = new byte[256 * 1024];
-            try (InputStream in = new BufferedInputStream(new FileInputStream(src));
-                 FileOutputStream out = new FileOutputStream(target, false)) {
-                int read;
-                long lastEmit = 0L;
-                while ((read = in.read(buffer)) != -1) {
-                    out.write(buffer, 0, read);
-                    received += read;
-                    if (received - lastEmit >= 1024L * 1024L || received == total) {
-                        lastEmit = received;
-                        JSObject ev = new JSObject();
-                        ev.put("bytesReceived", received);
-                        ev.put("bytesTotal", total);
-                        ev.put("done", false);
-                        notifyListeners("downloadProgress", ev);
-                    }
-                }
-                out.flush();
-            } catch (Exception e) {
-                call.reject("copyFileIntoAgent failed: " + e.getMessage());
-                return;
-            }
-            JSObject ev = new JSObject();
-            ev.put("bytesReceived", received);
-            ev.put("bytesTotal", total);
-            ev.put("done", true);
-            notifyListeners("downloadProgress", ev);
-            JSObject ret = new JSObject();
-            ret.put("path", target.getAbsolutePath());
-            ret.put("bytesWritten", received);
-            call.resolve(ret);
-        });
-    }
-
-    @PluginMethod
-    public void writeChunk(PluginCall call) {
-        String relativePath = call.getString("relativePath");
-        String dataBase64 = call.getString("dataBase64");
-        boolean append = Boolean.TRUE.equals(call.getBoolean("append", false));
-
-        if (relativePath == null || relativePath.isEmpty()) {
-            call.reject("relativePath is required");
-            return;
-        }
-        if (dataBase64 == null) {
-            call.reject("dataBase64 is required");
-            return;
-        }
-        if (relativePath.contains("..")) {
-            call.reject("Invalid relativePath");
-            return;
-        }
-
-        try {
-            byte[] bytes = Base64.decode(dataBase64, Base64.NO_WRAP);
-            File target = new File(modelsRoot(), relativePath);
-            File parent = target.getParentFile();
-            if (parent != null && !parent.exists() && !parent.mkdirs()) {
-                call.reject("Failed to create parent directory");
-                return;
-            }
-            synchronized (FILE_LOCK) {
-                try (FileOutputStream fos = new FileOutputStream(target, append)) {
-                    fos.write(bytes);
-                    fos.flush();
-                }
-            }
-            JSObject ret = new JSObject();
-            ret.put("path", target.getAbsolutePath());
-            ret.put("bytesWritten", bytes.length);
-            call.resolve(ret);
-        } catch (IllegalArgumentException e) {
-            call.reject("Invalid Base64: " + e.getMessage());
-        } catch (IOException e) {
-            call.reject("Write failed: " + e.getMessage());
-        }
-    }
-
     @PluginMethod
     public void fileExists(PluginCall call) {
         String relativePath = call.getString("relativePath");
@@ -642,35 +522,6 @@ public class QortinoLlmPlugin extends Plugin {
     }
 
     @PluginMethod
-    public void deletePath(PluginCall call) {
-        String relativePath = call.getString("relativePath");
-        if (relativePath == null || relativePath.isEmpty() || relativePath.contains("..")) {
-            call.reject("relativePath is required");
-            return;
-        }
-        File target = new File(modelsRoot(), relativePath);
-        boolean deleted = deleteRecursive(target);
-        JSObject ret = new JSObject();
-        ret.put("deleted", deleted);
-        call.resolve(ret);
-    }
-
-    private boolean deleteRecursive(File file) {
-        if (file == null || !file.exists()) {
-            return true;
-        }
-        if (file.isDirectory()) {
-            File[] children = file.listFiles();
-            if (children != null) {
-                for (File child : children) {
-                    deleteRecursive(child);
-                }
-            }
-        }
-        return file.delete();
-    }
-
-    @PluginMethod
     public void loadModel(PluginCall call) {
         String path = call.getString("path");
         Integer nCtx = call.getInt("nCtx", 2048);
@@ -698,32 +549,6 @@ public class QortinoLlmPlugin extends Plugin {
     }
 
     @PluginMethod
-    public void loadEmbedder(PluginCall call) {
-        String path = call.getString("path");
-        Integer nThreads = call.getInt("nThreads", 2);
-        if (path == null || path.isEmpty()) {
-            call.reject("path is required");
-            return;
-        }
-        executor.execute(() -> {
-            try {
-                ensureBackend();
-                String err = nativeLoadEmbedder(path, nThreads != null ? nThreads : 2);
-                if (err != null) {
-                    call.reject(err);
-                    return;
-                }
-                JSObject ret = new JSObject();
-                ret.put("loaded", true);
-                ret.put("path", path);
-                call.resolve(ret);
-            } catch (Throwable t) {
-                call.reject("loadEmbedder failed: " + t.getMessage());
-            }
-        });
-    }
-
-    @PluginMethod
     public void unload(PluginCall call) {
         executor.execute(() -> {
             try {
@@ -743,23 +568,6 @@ public class QortinoLlmPlugin extends Plugin {
             call.resolve();
         } catch (Throwable t) {
             call.reject("cancel failed: " + t.getMessage());
-        }
-    }
-
-    @PluginMethod
-    public void getStatus(PluginCall call) {
-        try {
-            ensureBackend();
-            JSObject ret = new JSObject();
-            ret.put("modelLoaded", nativeIsModelLoaded());
-            ret.put("embedderLoaded", nativeIsEmbedderLoaded());
-            ret.put("completing", completing.get());
-            Runtime rt = Runtime.getRuntime();
-            ret.put("javaUsedMemoryBytes", rt.totalMemory() - rt.freeMemory());
-            ret.put("javaMaxMemoryBytes", rt.maxMemory());
-            call.resolve(ret);
-        } catch (Throwable t) {
-            call.reject("getStatus failed: " + t.getMessage());
         }
     }
 
@@ -836,35 +644,6 @@ public class QortinoLlmPlugin extends Plugin {
             } catch (Throwable t) {
                 completing.set(false);
                 call.reject("complete failed: " + t.getMessage());
-            }
-        });
-    }
-
-    @PluginMethod
-    public void embed(PluginCall call) {
-        String text = call.getString("text");
-        if (text == null || text.isEmpty()) {
-            call.reject("text is required");
-            return;
-        }
-        executor.execute(() -> {
-            try {
-                ensureBackend();
-                float[] vector = nativeEmbed(text);
-                if (vector == null) {
-                    call.reject("Embedder not loaded or embed failed");
-                    return;
-                }
-                JSArray arr = new JSArray();
-                for (float v : vector) {
-                    arr.put(v);
-                }
-                JSObject ret = new JSObject();
-                ret.put("vector", arr);
-                ret.put("dimensions", vector.length);
-                call.resolve(ret);
-            } catch (Throwable t) {
-                call.reject("embed failed: " + t.getMessage());
             }
         });
     }

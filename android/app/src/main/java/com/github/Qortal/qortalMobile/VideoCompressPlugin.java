@@ -305,39 +305,6 @@ public class VideoCompressPlugin extends Plugin {
     }
 
     /**
-     * Verify a file on disk and return a WebView-readable content URI + size.
-     * Used when JS fetch(convertFileSrc(cachePath)) returns a truncated/tiny blob.
-     */
-    @PluginMethod
-    public void makeWebReadable(PluginCall call) {
-        String path = call.getString("path");
-        if (path == null || path.isEmpty()) {
-            call.reject("path is required");
-            return;
-        }
-        Uri uri = resolveUri(path);
-        File file = fileFromUri(uri);
-        try {
-            if (file == null || !file.exists()) {
-                file = materializeSource(uri);
-                if (file == null || !file.exists()) {
-                    call.reject("File not found");
-                    return;
-                }
-                File readable = ensureWebReadableCopy(file);
-                //noinspection ResultOfMethodCallIgnored
-                file.delete();
-                call.resolve(readableResult(readable, false, readable.length() > 0));
-                return;
-            }
-            File readable = ensureWebReadableCopy(file);
-            call.resolve(readableResult(readable, false, file.length() > 0));
-        } catch (Exception e) {
-            call.reject(e.getMessage() != null ? e.getMessage() : "Failed to prepare readable file");
-        }
-    }
-
-    /**
      * Return size + path for a local file.
      */
     @PluginMethod

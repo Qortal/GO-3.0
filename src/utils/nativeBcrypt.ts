@@ -30,10 +30,6 @@ type NativeBcryptBatchResult = {
 };
 
 interface NativeBcryptPlugin {
-  hashPassword(options: {
-    password: string;
-    salt: string;
-  }): Promise<{ hash: string }>;
   hashPasswordBatch(options: {
     jobs: Array<{ password: string; salt: string }>;
   }): Promise<NativeBcryptBatchResult>;
@@ -44,14 +40,6 @@ const NativeBcrypt = registerPlugin<NativeBcryptPlugin>('NativeBcrypt');
 
 export function canUseNativeBcrypt(): boolean {
   return isAndroidApp();
-}
-
-export async function nativeBcryptHash(
-  password: string,
-  salt: string
-): Promise<string> {
-  const { hash } = await NativeBcrypt.hashPassword({ password, salt });
-  return hash;
 }
 
 export async function nativeBcryptHashBatch(

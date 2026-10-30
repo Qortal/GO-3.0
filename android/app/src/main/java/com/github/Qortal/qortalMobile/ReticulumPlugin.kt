@@ -224,12 +224,6 @@ class ReticulumPlugin : Plugin() {
         call.resolve(statusObject(detail))
     }
 
-    @PluginMethod
-    fun stop(call: PluginCall) {
-        started = false
-        call.resolve(JSObject().put("stopped", true))
-    }
-
     /**
      * Logout: nothing signed in needs the mesh, so close the hub sockets.
      * The default delay lets the offline presence notice sent just before
@@ -299,34 +293,6 @@ class ReticulumPlugin : Plugin() {
             } catch (t: Throwable) {
                 Log.e(TAG, "Presence bridge start failed", t)
                 call.reject("Presence bridge start failed: ${t.message}", t as? Exception)
-            }
-        }
-    }
-
-    @PluginMethod
-    fun publishPresence(call: PluginCall) {
-        val host = presenceHost
-        if (host == null || !presenceStarted) {
-            call.reject("Presence bridge not started")
-            return
-        }
-        val envelope = call.getObject("envelope")
-        if (envelope == null) {
-            call.reject("Missing envelope")
-            return
-        }
-        presenceWorker.execute {
-            try {
-                val cmd = JSONObject()
-                    .put("type", "cmd")
-                    .put("id", UUID.randomUUID().toString())
-                    .put("action", "publish_presence")
-                    .put("payload", JSONObject().put("envelope", JSONObject(envelope.toString())))
-                host.callAttr("feed", cmd.toString())
-                call.resolve(JSObject().put("ok", true))
-            } catch (t: Throwable) {
-                Log.e(TAG, "publishPresence failed", t)
-                call.reject("publishPresence failed: ${t.message}", t as? Exception)
             }
         }
     }
@@ -1079,20 +1045,6 @@ class ReticulumPlugin : Plugin() {
     private fun sanitizeFileName(name: String): String {
         if (name.isBlank()) return "shared-file"
         return SavedFilePolicy.cleanName(name)
-    }
-
-    @PluginMethod
-    fun presenceStop(call: PluginCall) {
-        presenceWorker.execute {
-            try {
-                presenceReaderRunning = false
-                presenceHost?.callAttr("stop")
-                presenceStarted = false
-                call.resolve(JSObject().put("stopped", true))
-            } catch (t: Throwable) {
-                call.reject("Presence bridge stop failed: ${t.message}", t as? Exception)
-            }
-        }
     }
 
     /** Drains JSON frames emitted by the Python bridge and relays them to JS. */

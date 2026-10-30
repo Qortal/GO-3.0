@@ -1,4 +1,3 @@
-import QortinoLlm, { isQortinoLlmNativeAvailable } from '../plugins/QortinoLlm';
 import {
   isPlayingQortalKnowledgeUnit,
   wantsPlayingQortalMaterial,
@@ -65,32 +64,6 @@ export function cosineSimilarity(a: number[], b: number[]): number {
   return denom === 0 ? 0 : dot / denom;
 }
 
-async function embedQuery(text: string): Promise<{ vector: number[]; method: string }> {
-  if (isQortinoLlmNativeAvailable()) {
-    try {
-      const status = await QortinoLlm.getStatus();
-      if (status.embedderLoaded) {
-        const result = await QortinoLlm.embed({ text });
-        return { vector: result.vector, method: 'minilm' };
-      }
-    } catch {
-      // fall through to hash embed
-    }
-  }
-  return { vector: hashEmbed(text), method: 'hash' };
-}
-
-function chunkVector(chunk: KnowledgeChunk, method: string): number[] {
-  if (chunk.embedding && chunk.embedding.length > 0 && method !== 'minilm') {
-    // Pack vectors from builder are hash embeddings unless marked otherwise.
-    return chunk.embedding;
-  }
-  if (chunk.embedding && chunk.embedding.length > 0 && method === 'hash') {
-    return chunk.embedding;
-  }
-  return hashEmbed(chunk.text);
-}
-
 export async function retrieveKnowledge(
   pack: KnowledgePack | null | undefined,
   query: string,
@@ -101,28 +74,16 @@ export async function retrieveKnowledge(
   }
 
   const allowPlaying = wantsPlayingQortalMaterial(query);
-  const { vector, method } = await embedQuery(query.trim());
+  const vector = hashEmbed(query.trim());
   const scored = pack.chunks
     .filter((chunk) => allowPlaying || !isPlayingQortalKnowledgeUnit(chunk))
     .map((chunk) => {
-      const cv =
-        method === 'hash' || !chunk.embedding?.length
-          ? chunkVector(chunk, 'hash')
-          : chunk.embedding;
-      // If query used MiniLM but chunks only have hash vectors, re-hash the query
-      // path is already handled: we only use minilm when embedder loaded AND we
-      // would need matching vectors — for v1, prefer hash when pack is hash-built.
-      const queryVec =
-        method === 'minilm' &&
-        chunk.embedding &&
-        chunk.embedding.length === vector.length
-          ? vector
-          : method === 'minilm'
-            ? hashEmbed(query)
-            : vector;
+      const cv = chunk.embedding?.length
+        ? chunk.embedding
+        : hashEmbed(chunk.text);
       let score = cosineSimilarity(
-        queryVec,
-        cv.length === queryVec.length ? cv : hashEmbed(chunk.text)
+        vector,
+        cv.length === vector.length ? cv : hashEmbed(chunk.text)
       );
       // Prefer curated FAQ units when scores are close — they carry full answers.
       if ((chunk.source || '').startsWith('faq/')) {

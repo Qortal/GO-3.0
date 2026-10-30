@@ -18,8 +18,6 @@ interface PrivateQappHostPlugin {
   begin(options: { nodeUrl: string }): Promise<{ upload: string }>;
   append(options: { upload: string; chunk: string }): Promise<void>;
   finish(options: { upload: string }): Promise<{ id: string; files: number }>;
-  has(options: { id: string }): Promise<{ kept: boolean }>;
-  release(options: { id: string }): Promise<void>;
   retain(options: { ids: string[] }): Promise<void>;
   clear(): Promise<void>;
 }

@@ -48,22 +48,9 @@ type QortinoProgressEvent = {
   percent: number;
 };
 
-export type QortinoLlmStatus = {
-  modelLoaded: boolean;
-  embedderLoaded: boolean;
-  completing: boolean;
-  javaUsedMemoryBytes: number;
-  javaMaxMemoryBytes: number;
-};
-
 export interface QortinoLlmPlugin {
   getDeviceTier(): Promise<QortinoDeviceTier>;
   getStoragePaths(): Promise<QortinoStoragePaths>;
-  writeChunk(options: {
-    relativePath: string;
-    dataBase64: string;
-    append?: boolean;
-  }): Promise<{ path: string; bytesWritten: number }>;
   fileExists(options: {
     relativePath?: string;
     absolutePath?: string;
@@ -72,7 +59,6 @@ export interface QortinoLlmPlugin {
     relativePath?: string;
     absolutePath?: string;
   }): Promise<{ text: string; path: string }>;
-  deletePath(options: { relativePath: string }): Promise<{ deleted: boolean }>;
   extractZip(options: {
     zipRelativePath?: string;
     zipAbsolutePath?: string;
@@ -86,10 +72,6 @@ export interface QortinoLlmPlugin {
     apiKey?: string;
     url: string;
     relativePath: string;
-  }): Promise<{ path: string; bytesWritten: number }>;
-  copyFileIntoAgent(options: {
-    absoluteSource: string;
-    relativeDest: string;
   }): Promise<{ path: string; bytesWritten: number }>;
   cancelDownload(): Promise<void>;
   addListener(
@@ -106,19 +88,11 @@ export interface QortinoLlmPlugin {
     nCtx?: number;
     nThreads?: number;
   }): Promise<{ loaded: boolean; path: string }>;
-  loadEmbedder(options: {
-    path: string;
-    nThreads?: number;
-  }): Promise<{ loaded: boolean; path: string }>;
   unload(): Promise<void>;
   cancel(): Promise<void>;
-  getStatus(): Promise<QortinoLlmStatus>;
   complete(
     options: QortinoCompleteOptions
   ): Promise<{ ok: boolean; text?: string }>;
-  embed(options: {
-    text: string;
-  }): Promise<{ vector: number[]; dimensions: number }>;
   addListener(
     eventName: 'token',
     listenerFunc: (event: QortinoTokenEvent) => void
@@ -153,17 +127,11 @@ const QortinoLlm = registerPlugin<QortinoLlmPlugin>('QortinoLlm', {
           knowledgeDir: '/tmp/qortino-agent/knowledge',
         };
       },
-      async writeChunk() {
-        throw new Error('QortinoLlm.writeChunk is only available on native');
-      },
       async fileExists() {
         return { exists: false, path: '', size: 0 };
       },
       async readText() {
         throw new Error('QortinoLlm.readText is only available on native');
-      },
-      async deletePath() {
-        return { deleted: false };
       },
       async extractZip() {
         throw new Error('QortinoLlm.extractZip is only available on native');
@@ -171,33 +139,13 @@ const QortinoLlm = registerPlugin<QortinoLlmPlugin>('QortinoLlm', {
       async downloadUrl() {
         throw new Error('QortinoLlm.downloadUrl is only available on native');
       },
-      async copyFileIntoAgent() {
-        throw new Error(
-          'QortinoLlm.copyFileIntoAgent is only available on native'
-        );
-      },
       async cancelDownload() {},
       async loadModel() {
         throw new Error('QortinoLlm is only available on the native app');
       },
-      async loadEmbedder() {
-        throw new Error('QortinoLlm is only available on the native app');
-      },
       async unload() {},
       async cancel() {},
-      async getStatus() {
-        return {
-          modelLoaded: false,
-          embedderLoaded: false,
-          completing: false,
-          javaUsedMemoryBytes: 0,
-          javaMaxMemoryBytes: 0,
-        };
-      },
       async complete() {
-        throw new Error('QortinoLlm is only available on the native app');
-      },
-      async embed() {
         throw new Error('QortinoLlm is only available on the native app');
       },
       async addListener() {

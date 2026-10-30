@@ -34,7 +34,6 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Downloads a new build of the app and hands it to Android's installer.
@@ -62,7 +61,6 @@ public class AppUpdatePlugin extends Plugin {
   private static final long PROGRESS_INTERVAL_MS = 250;
 
   private final ExecutorService worker = Executors.newSingleThreadExecutor();
-  private final AtomicBoolean cancelled = new AtomicBoolean(false);
 
   /** A refusal the JS side shows in the user's language, keyed by code. */
   private static final class UpdateRefused extends Exception {
@@ -95,7 +93,6 @@ public class AppUpdatePlugin extends Plugin {
       return;
     }
     final String safeName = AppUpdatePolicy.safeFileName(filename);
-    cancelled.set(false);
 
     worker.execute(() -> {
       HttpURLConnection connection = null;
@@ -127,11 +124,6 @@ public class AppUpdatePlugin extends Plugin {
         ) {
           int read;
           while ((read = in.read(buffer)) != -1) {
-            if (cancelled.get()) {
-              target.delete();
-              call.reject("cancelled");
-              return;
-            }
             out.write(buffer, 0, read);
             written += read;
             long now = System.currentTimeMillis();
@@ -162,12 +154,6 @@ public class AppUpdatePlugin extends Plugin {
         if (connection != null) connection.disconnect();
       }
     });
-  }
-
-  @PluginMethod
-  public void cancel(PluginCall call) {
-    cancelled.set(true);
-    call.resolve();
   }
 
   /** Whether Android will let this app ask to install a package at all. */

@@ -15,7 +15,6 @@ export interface QortalAppUpdatePlugin {
     listener: (progress: AppUpdateDownloadProgress) => void
   ): Promise<PluginListenerHandle>;
   canInstall(): Promise<{ allowed: boolean }>;
-  cancel(): Promise<void>;
   download(options: {
     filename: string;
     url: string;

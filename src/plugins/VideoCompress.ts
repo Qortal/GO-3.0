@@ -81,8 +81,6 @@ export type VideoExtractAudioResult = {
 export interface VideoCompressPlugin {
   compress(options: VideoCompressOptions): Promise<VideoCompressResult>;
   cancel(): Promise<void>;
-  /** Copy/expose a native file via FileProvider for reliable WebView reads. */
-  makeWebReadable(options: { path: string }): Promise<VideoCompressResult>;
   /** Native file size. */
   stat(options: { path: string }): Promise<VideoCompressStatResult>;
   /**
@@ -105,7 +103,8 @@ export interface VideoCompressPlugin {
   ): Promise<PluginListenerHandle>;
 }
 
-const VideoCompressNative = registerPlugin<VideoCompressPlugin>('VideoCompress');
+const VideoCompressNative =
+  registerPlugin<VideoCompressPlugin>('VideoCompress');
 
 export const isNativeVideoCompressAvailable = () => isAndroidApp();
 
@@ -121,14 +120,6 @@ export const VideoCompress = {
   cancel: async (): Promise<void> => {
     if (!isNativeVideoCompressAvailable()) return;
     await VideoCompressNative.cancel();
-  },
-  makeWebReadable: async (options: {
-    path: string;
-  }): Promise<VideoCompressResult> => {
-    if (!isNativeVideoCompressAvailable()) {
-      throw new Error('Native video compression is only available on Android');
-    }
-    return VideoCompressNative.makeWebReadable(options);
   },
   stat: async (options: { path: string }): Promise<VideoCompressStatResult> => {
     if (!isNativeVideoCompressAvailable()) {

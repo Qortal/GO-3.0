@@ -152,21 +152,11 @@ export interface ReticulumPlugin {
    */
   getStatus(options?: { detail?: boolean }): Promise<ReticulumStatusDetail>;
 
-  /** Stop the transport and release the network interfaces. */
-  stop(): Promise<{ stopped: boolean }>;
-
   /**
    * Start the native (Chaquopy) Qortal presence bridge: a standalone RNS
    * instance + presence destination on the Qortal hubs. Idempotent.
    */
   presenceStart(): Promise<{ started: boolean }>;
-
-  /**
-   * Publish a signed presence envelope (announce / heartbeat / offline) to the
-   * overlay. The envelope is produced and signed by the web layer
-   * (signPresenceMessage) and gossiped to Qortal peers over RNS links.
-   */
-  publishPresence(options: { envelope: unknown }): Promise<{ ok: boolean }>;
 
   /**
    * Generic command passthrough to presence_bridge.py. Used by the mobile
@@ -184,9 +174,6 @@ export interface ReticulumPlugin {
      */
     id?: string;
   }): Promise<{ ok: boolean; id?: string }>;
-
-  /** Stop the presence bridge. */
-  presenceStop(): Promise<{ stopped: boolean }>;
 
   /**
    * Logout: close the hub sockets while the Python bridge stays up. The
