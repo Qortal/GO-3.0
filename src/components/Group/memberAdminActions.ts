@@ -1,11 +1,52 @@
 // Which group-management actions a viewer can take on one member row, and
 // when a broadcast action has landed in the member list. Mirrors Qortal Core's
-// validation so the Members view never offers a transaction Core would reject:
-//   - ADD_GROUP_ADMIN / REMOVE_GROUP_ADMIN: only the group owner.
-//   - GROUP_KICK / GROUP_BAN: any admin, but only the owner may target an admin.
+// validation (GroupKickTransaction & co. since block 2,012,800) so the Members
+// view never offers a transaction Core would reject:
+//   - ADD_GROUP_ADMIN / REMOVE_GROUP_ADMIN, GROUP_KICK, GROUP_BAN and
+//     CANCEL_GROUP_BAN: only the group owner. Other admins get
+//     INVALID_GROUP_OWNER.
+//   - A group owned by Core's null account has no owner: each of these needs
+//     approval from the group's admins (the transaction's txGroupId is the
+//     group, then GROUP_APPROVALs). GO can't approve, so it offers none.
 //   - Nobody acts on the owner or on themselves.
 
 export type MemberAdminAction = 'make_admin' | 'remove_admin' | 'kick' | 'ban';
+
+/** Core's Group.NULL_OWNER_ADDRESS: a group it owns has no owner. */
+export const NULL_OWNER_ADDRESS = 'QdSnUy6sUiEnaN87dWmE92g1uQjrvPgrWG';
+
+export const isOwnerlessGroup = (ownerAddress?: string | null): boolean =>
+  ownerAddress === NULL_OWNER_ADDRESS;
+
+/**
+ * Why an admin gets no kick, ban or admin buttons: `owner_only` in a group
+ * with an owner, `needs_approval` in an ownerless group. Null for the owner,
+ * for regular members (who expect none) and while the owner is unknown.
+ */
+export type MemberActionsNotice = 'owner_only' | 'needs_approval';
+
+export const getMemberActionsNotice = ({
+  ownerAddress,
+  isOwner = false,
+  isAdmin = false,
+}: {
+  ownerAddress?: string | null;
+  isOwner?: boolean;
+  isAdmin?: boolean;
+}): MemberActionsNotice | null => {
+  if (!ownerAddress || !isAdmin) return null;
+  if (isOwnerlessGroup(ownerAddress)) return 'needs_approval';
+  return isOwner ? null : 'owner_only';
+};
+
+/** CANCEL_GROUP_BAN follows the GROUP_BAN rule: the owner only. */
+export const canLiftGroupBans = ({
+  ownerAddress,
+  isOwner = false,
+}: {
+  ownerAddress?: string | null;
+  isOwner?: boolean;
+}): boolean => Boolean(isOwner) && !isOwnerlessGroup(ownerAddress);
 
 interface MemberActionTarget {
   member?: string;
@@ -16,7 +57,6 @@ interface MemberActionContext {
   viewerAddress?: string | null;
   ownerAddress?: string | null;
   isOwner?: boolean;
-  isAdmin?: boolean;
   /** False for rows that only exist because of Qortal Land presence. */
   inGroup?: boolean;
 }
@@ -27,7 +67,6 @@ export const getAvailableMemberActions = (
     viewerAddress,
     ownerAddress,
     isOwner = false,
-    isAdmin = false,
     inGroup = true,
   }: MemberActionContext
 ): MemberAdminAction[] => {
@@ -35,15 +74,11 @@ export const getAvailableMemberActions = (
   if (!address || !inGroup) return [];
   if (viewerAddress && address === viewerAddress) return [];
   if (ownerAddress && address === ownerAddress) return [];
+  if (!isOwner || isOwnerlessGroup(ownerAddress)) return [];
 
-  const targetIsAdmin = Boolean(target?.isAdmin);
-  if (isOwner) {
-    return targetIsAdmin
-      ? ['remove_admin', 'kick', 'ban']
-      : ['make_admin', 'kick', 'ban'];
-  }
-  if (isAdmin && !targetIsAdmin) return ['kick', 'ban'];
-  return [];
+  return target?.isAdmin
+    ? ['remove_admin', 'kick', 'ban']
+    : ['make_admin', 'kick', 'ban'];
 };
 
 export interface PendingMemberAction {

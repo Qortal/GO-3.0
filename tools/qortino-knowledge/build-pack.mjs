@@ -5,7 +5,7 @@
  * Usage:
  *   node tools/qortino-knowledge/build-pack.mjs
  *   node tools/qortino-knowledge/build-pack.mjs --docs ./my-docs --out ./dist/qortino-knowledge-v1.json --version v1
- *   node tools/qortino-knowledge/build-pack.mjs --no-embeddings --out src/qortinoAgent/bundledKnowledge.json --version v2
+ *   node tools/qortino-knowledge/build-pack.mjs --no-embeddings --out tools/qortino-knowledge/dist/qortino-knowledge-v2.json --version v2
  *
  * --no-embeddings is for the bundled in-app copy only: the app fills each
  * vector with hashEmbed(text) when it loads that pack.

@@ -217,12 +217,15 @@ only, and no feature permissions:
 
 ### 1.9 Lifetime
 
-- GO loads widgets the first time the widgets screen is shown, not at start.
-- GO unloads them about **3 minutes** after the screen was last seen, and
-  loads them again when the user comes back. The user can also reload a
-  widget from its menu.
-- So **start fast** (show something within ~300 ms), and keep anything the
-  user set (a city, a choice) in `localStorage`.
+- GO loads widgets a few seconds after it starts, out of sight, so they are
+  ready when the user swipes to the widgets screen, and keeps them loaded
+  while GO runs. They load again when GO starts again, and the user can
+  reload a widget from its menu.
+- So a widget runs for hours while mostly unseen: **pause** while
+  `GO_WIDGET_VISIBILITY` says `false` (1.5), and when it says `true` again
+  refresh what you show without blanking what is already there.
+- **Start fast** anyway (show something within ~300 ms), and keep anything
+  the user set (a city, a choice) in `localStorage`.
 - **localStorage is shared** by every Q-App rendered from the same node.
   Prefix every key with your own name, e.g. `yourname.clock.hour12`.
 
@@ -414,9 +417,9 @@ text, never a blank frame or a spinner that never ends.
 | **A. A separate small widget beside your app** (recommended) | Your app is big, or a widget is a small slice of it | New folder, small page, publish as `APP / YourName / go-widget-<slug>`. Reuse your data code; don't reuse the whole UI. |
 | **B. A widget mode inside your app** | Your app is already small and fast | Keep one resource; when `goWidget=1` is in the address, render a compact view. Tag the app `go-widget`. |
 
-Approach A is better for almost everyone: GO loads the widget often (each
-visit after it was unloaded), so a small page starts fast and saves battery,
-and your main app stays exactly as it is.
+Approach A is better for almost everyone: GO keeps every widget loaded while
+it runs, so a small page costs the phone little memory and battery and
+starts fast, and your main app stays exactly as it is.
 
 ### 3.2 Approach A — step by step
 

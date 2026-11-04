@@ -23,7 +23,6 @@ export const ASSEMBLE_TIPS = [
   'Neurons firing at the speed of your phone…',
   'Squeezing wisdom out of a few gigabytes…',
   'Small model, big heart…',
-  'Thinking hard. Well — as hard as 3 billion parameters can…',
   // Qortal flavor
   'Minting an answer — payment accepted in kindness…',
   'This reply is free. A thank-you settles the bill…',
@@ -36,51 +35,3 @@ export const ASSEMBLE_TIPS = [
   'Pouring the thoughts before they get cold…',
   'Almost there. Patience is a survival skill too…',
 ];
-
-/** Rotating tips while Assembling… in QDN mode (no airplane / offline jokes). */
-export const QDN_ASSEMBLE_TIPS = [
-  'Knocking on the name registry… anybody home?',
-  'Following breadcrumbs across QDN…',
-  'Asking peers if they’ve seen that name lately…',
-  'Peeking into publishes without waking the whole chain…',
-  'Rummaging through Q-Tube / Q-Blog shelves…',
-  'Listening for public chat echoes…',
-  'Matching avatars to addresses — fashion first…',
-  'Polling the node for publish details…',
-  'Tracing levels, tags, and tribe footprints…',
-  'Hunting media that actually plays (fancy that)…',
-  'Combing recent activity like a gentle detective…',
-  'Decentralized gossip, but polite…',
-  'Weaving on-chain clues into a pocket-sized story…',
-  'Almost got the dossier — tying the last ribbon…',
-  'QDN is chatting back… slowly, on purpose…',
-  'Minting curiosity into a real answer…',
-  'Indexing the commons for practical know-how…',
-  'Asking QDN if anyone published that skill already…',
-];
-
-// One-shot status lines (JS, during send)
-export const STATUS_LINES = {
-  searchPack: 'Flipping through Qortino’s on-device knowledge…',
-  loadFast: 'Waking the Fast model — small, quick, caffeinated…',
-  loadMax: 'Waking the Max model — bigger brain, worth the stretch…',
-  quickScan: 'Quick skim of Qortino’s knowledge…',
-  deepSearch: 'Deep dive into Qortino’s knowledge — snorkel on…',
-  fastPath: 'Fast path — short complete answer…',
-  maxPath: 'Max path — assembling a complete answer…',
-  maxWriting: 'Assembling Max answer — finishing every section…',
-  qdnScan: 'Knocking on the QDN name registry…',
-  qdnActivity: 'Tracing their on-chain footprints…',
-  qdnMedia: 'Pulling a small shelf of their QDN media…',
-  qdnVoice: 'Skimming publishes and public chat echoes…',
-  qdnCharacter: 'Sketching their character from what they publish…',
-  qdnReady: 'QDN notes in hand — weaving the reply…',
-  qdnNomination: 'Drafting a convincing nomination from their portfolio…',
-  qdnTopic: 'Searching QDN publishes for that how-to…',
-  qdnQuick: 'Quick QDN look — recent activity and live publishes…',
-  qdnFull: 'Full history scan — paging older txs and publishes (patience)…',
-  qdnFullTx: 'Full scan · paging transaction history…',
-  qdnFullRes: 'Full scan · indexing QDN resources…',
-  qdnFullMedia: 'Full scan · verifying live media on the network…',
-  qdnFullSites: 'Full scan · probing APP / WEBSITE roots…',
-};

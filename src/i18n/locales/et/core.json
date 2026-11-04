@@ -1391,8 +1391,152 @@
     "testing_note": "Ainult testimiseks. Testkaartidel pole veel PIN-koodi, seega igaüks, kelle käes kaart on, saab sellega maksta. Hoia kaardil ainult natuke QORT-i.",
     "title": "Qortal Card"
   },
+  "qortino_agent": {
+    "aria": {
+      "close": "Sulge Qortino",
+      "copy": "Kopeeri kogu vastus",
+      "history": "Vestluste ajalugu",
+      "new_chat": "Uus vestlus",
+      "report": "Teata sellest vastusest, et Qortinot õpetada",
+      "send": "Saada",
+      "stop": "Peata"
+    },
+    "chat": {
+      "continue": "Jätka vastust →",
+      "copied": "Kogu vastus kopeeritud",
+      "copy_failed": "Kopeerimine ebaõnnestus",
+      "empty": "Küsi minult ükskõik mida: esmaabi ja tervis, ellujäämine ja valmisolek, aed ja toiduvalmistamine, Qortal, programmeerimine ja palju muud. Töötan täielikult selles telefonis, nii et mul pole internetti üldse vaja.",
+      "load_failed": "Qortino ei käivitunud: {{error}}",
+      "loading_model": "Äratan Qortinot…",
+      "loading_model_hint": "Mudel laaditakse mällu. Hiljem avaneb see palju kiiremini.",
+      "model_missing": "Mudeli failid puuduvad. Sulge Qortino ja pane see uuesti kokku.",
+      "needs_app": "Qortino töötab telefonirakenduses, mitte brauseris.",
+      "no_question": "(küsimust ei leitud)",
+      "no_reply": "Vastust ei tulnud. Proovi lühemat küsimust või sulge ja ava Qortino uuesti.",
+      "open_app": "Ava",
+      "placeholder": "Sõnum Qortinole…",
+      "published_as": "{{service}} · avaldatud nimega {{name}}",
+      "reply_failed": "Vabandust, ma ei saanud vastust kirjutada.",
+      "retry": "proovi uuesti",
+      "subtitle": "Võrguühenduseta · {{model}}"
+    },
+    "error": {
+      "cancelled": "Kokkupanek tühistati.",
+      "checksum": "Allalaaditud osa oli kahjustatud, seega see kustutati. Proovi uuesti.",
+      "detail": "Üksikasjad: {{detail}}",
+      "download": "Mudeli salvestamine sellesse telefoni ebaõnnestus. Kontrolli vaba ruumi ja ühendust oma sõlmega ning proovi siis uuesti.",
+      "generic": "Kokkupanek ebaõnnestus.",
+      "not_published": "Qortino mudelit pole veel QDN-is või sinu sõlm ei näe seda veel. Proovi veidi hiljem uuesti.",
+      "qdn_failed": "QDN ei saanud mudelit praegu edastada. Võib-olla hoiab seda liiga vähe partnereid. Proovi hiljem uuesti.",
+      "stalled": "Allalaadimine jäi seisma: praegu ei saada ükski partner ülejäänud osa. Proovi hiljem uuesti."
+    },
+    "gate": {
+      "assemble": "Pane Qortino kokku",
+      "background_hint": "Võid selle akna minimeerida: allalaadimine jätkub ja saad seda teavitustes jälgida.",
+      "cancel": "Tühista",
+      "checking": "Kontrollin seda telefoni…",
+      "disclaimer": "Qortino võib enesekindlalt eksida → kontrolli üle kõik oluline.",
+      "intro": "Sinu võrguühenduseta kaaslane esmaabiks ja terviseks, ellujäämiseks ja valmisolekuks, aiapidamiseks, toiduvalmistamiseks, Qortali jaoks ja paljuks muuks. Pannakse üks kord QDN-ist sellesse telefoni kokku ja töötab siis ilma internetita. Pilve pole, midagi ei lahku sinu telefonist.",
+      "low_ram": "Selles telefonis on {{ram}} mälu. Qortino töötab, kuid vastused võivad olla aeglased ja Android võib selle taustal sulgeda.",
+      "low_storage": "Vaba ruumi pole piisavalt: Qortino vajab {{needed}}, selles telefonis on vaba {{free}}.",
+      "minimize": "Minimeeri",
+      "model_blurb": "Üks nutikas mudel igapäevaküsimuste, hädaolukordade ja Qortali abi jaoks. Töötab täielikult selles telefonis.",
+      "model_size": "Allalaadimiseks {{size}} · {{license}}",
+      "new_model": "Qortinol on uus ja nutikam aju. Pane see üks kord kokku; vanad Lite- ja Standard-paketid kustutatakse, et ruumi vabastada.",
+      "not_now": "Mitte praegu",
+      "private_node_guide": "Vaata privaatse sõlme juhendit",
+      "public_node_body": "Avalik sõlm on jagatud ega ole {{size}} allalaadimiseks usaldusväärne: see võib poole pealt katkeda või juba toodud andmed kustutada. GO proovib ise edasi ja hoiab saabunu alles, kuid oma sõlmega on see palju kiirem ja stabiilsem.",
+      "public_node_title": "Privaatne sõlm on tungivalt soovitatav",
+      "retry_in_minutes": "Uus katse {{minutes}} min pärast.",
+      "retry_in_seconds": "Uus katse {{seconds}} s pärast.",
+      "retry_reason": {
+        "connection": "Ühendus katkes salvestamise ajal; järgmine katse jätkab sealt.",
+        "damaged": "Üks allalaaditud osa oli vigane, seega laaditakse see uuesti alla.",
+        "peers": "Praegu ei saada ükski partner ülejäänud osa."
+      },
+      "title": "Qortino AI",
+      "try_now": "Proovi kohe"
+    },
+    "history": {
+      "close": "Sulge vestluste ajalugu",
+      "delete_chat": "Kustuta vestlus",
+      "empty": "Salvestatud vestlusi veel pole. Alusta vestlust ja see ilmub siia.",
+      "pin": "Kinnita vestlus",
+      "rename": "Nimeta ümber",
+      "rename_chat": "Nimeta vestlus ümber",
+      "unpin": "Vabasta vestlus"
+    },
+    "name": "Qortino",
+    "notify": {
+      "background": "Qortino laadib edasi. Saad seda teavitustes jälgida.",
+      "open_hint": "Puuduta, et Qortino avada",
+      "panel_failed": "Peatus. Puuduta, et uuesti proovida.",
+      "ready": "Qortino on valmis.",
+      "retry": {
+        "connection": "Ühendus katkes, jätkub varsti…",
+        "damaged": "Üks osa oli vigane, laadin seda uuesti…",
+        "peers": "Ootan partnereid…"
+      }
+    },
+    "progress": {
+      "bytes": "{{done}} / {{total}}",
+      "fetch": "Osa {{part}}/{{count}} · sinu sõlm toob seda QDN-ist… {{percent}}%",
+      "finalizing": "Lõpetan…",
+      "locate": "Otsin Qortinot QDN-ist…",
+      "save": "Osa {{part}}/{{count}} · salvestan sellesse telefoni…",
+      "verify": "Osa {{part}}/{{count}} · kontrollin faili…"
+    },
+    "settings": {
+      "answer_length": {
+        "detailed": "Põhjalikud",
+        "hint": "Lühemad vastused valmivad kiiremini.",
+        "label": "Vastused",
+        "normal": "Tavalised",
+        "short": "Lühikesed"
+      },
+      "delete_chats": {
+        "button": "Kustuta kõik vestlused",
+        "confirm": "Kas kustutada kõik salvestatud vestlused? Seda ei saa tagasi võtta."
+      },
+      "enter_sends": {
+        "hint": "Väljas: Enter alustab uut rida.",
+        "label": "Enter-klahv saadab"
+      },
+      "keep_ready": {
+        "hint": "Valmis hoitud Qortino avaneb kohe, kuid hoiab kinni umbes 3 GB mälu. GO-st lahkudes vabastatakse see peagi.",
+        "label": "Hoia Qortino pärast sulgemist valmis",
+        "off": "Ei",
+        "open": "Kuni GO on avatud",
+        "short": "1½ min"
+      },
+      "remove": {
+        "button": "Eemalda Qortino sellest telefonist",
+        "confirm": "See kustutab Qortino mudeli ({{size}}) sellest telefonist. Sinu vestlused jäävad alles. Saad Qortino igal ajal uuesti alla laadida.",
+        "failed": "Qortinot ei õnnestunud eemaldada: {{reason}}",
+        "on_phone": "{{model}} · {{size}} selles telefonis",
+        "removing": "Eemaldamine…"
+      },
+      "text_size": {
+        "default": "Vaikimisi",
+        "label": "Teksti suurus",
+        "large": "Suur",
+        "small": "Väike"
+      },
+      "title": "Seaded"
+    },
+    "status": {
+      "assembling": "Panen kokku",
+      "getting_ready": "Valmistun…",
+      "reading": "Loen sinu küsimust…",
+      "reading_percent": "Loen sinu küsimust… {{percent}}%"
+    }
+  },
   "qortino_workspace": {
     "a11y_clear_hotkey_slot": "Clear slot {{n}}",
+    "composer": {
+      "placeholder": "Küsi Qortinolt…",
+      "send": "Küsi Qortinolt"
+    },
     "curated_badge": "[ CURATED ]",
     "dialog_hotkeys_subtitle": "Saved automatically for this account.",
     "dialog_hotkeys_title": "Select hotkeys",
@@ -1438,6 +1582,107 @@
     "music_syncing_library": "Syncing with EarBump library...",
     "music_track_load_failed": "This track could not finish loading on your node.",
     "onboarding_step_progress": "Step {{current}} / {{total}}",
+    "quip_open_hint": "Puuduta, et Qortino avada",
+    "quips": {
+      "fun": {
+        "antenna": "Mu antenn püüab head energiat. Ja plokke. Peamiselt plokke.",
+        "beep": "Piiks-piiks. Nali, ma ei piiksu üldse.",
+        "coffee": "Mul pole kohvi vaja. Täis aku teeb sama töö.",
+        "counting": "Proovisin kõik plokid üle lugeda. Siis tuli uus.",
+        "cross_chain": "Miks plokk ahela ületas? Et jõuda teise sõlmeni.",
+        "exercise": "Mu lemmiksport? Sõlme jooksutamine.",
+        "high_five": "Lööksin sinuga patsi, aga mu käed on veel allalaadimisel.",
+        "hydrated": "Joo vett! Mina töötan elektronidel, aga sulle teeb vesi head.",
+        "keys": "Huvitav fakt: ma ei kaota kunagi võtmeid. Mul pole taskuid.",
+        "knock_knock": "Kopp-kopp. Kes seal? Sõlm. Sina võid ka ühe käima panna!",
+        "looking_good": "Kas ainult mulle tundub, et avaleht näeb täna super välja?",
+        "mint_joke": "Proovisin nalja mintida, aga sellel oli vaja veel paar plokki.",
+        "round_blue": "Olen ümmargune, olen sinine ja olen sinu poolel.",
+        "sheep": "Kas robotid unistavad hajutatud lammastest?",
+        "syncing": "Ma ei maga, ma sünkroonin.",
+        "tickle": "Hoia hetkeks mu pead… kui julged."
+      },
+      "giggle": {
+        "eeek": "Iiih! Hahahaa!",
+        "hahaha": "Hahahaa!",
+        "hehe_stop": "Hehehee… lõpeta!",
+        "hihihi": "Hihihii!",
+        "hohoho": "Hohohoo, kõditab!",
+        "my_circuits": "Haha, mu vooluringid!",
+        "no_fair": "Haha, pole aus!",
+        "not_antenna": "Mitte antenni! Haha!",
+        "so_ticklish": "Olen nii kõditundlik! Hahahaa!",
+        "stop_stop": "Stopp, stopp… haha!"
+      },
+      "morning": {
+        "good_morning": "Tere hommikust, {{name}}! Valmis päeva esimeseks plokiks?",
+        "synced": "Hommikust! Sünkroonisin terve öö. Kas magasid hästi?"
+      },
+      "night": {
+        "late": "On hilja, {{name}}. Sõlmed ei maga kunagi, aga sina peaksid.",
+        "night_owl": "Öökull? Mina ka. Mu silmad helendavad, nii et ma ei komista.",
+        "rest": "Puhka natuke. Plokiahel on homme ka veel siin.",
+        "yawn": "Haigutus… mu vooluringid jäävad uniseks."
+      },
+      "promo": {
+        "ask_qortal": "Küsimusi Qortali kohta? Puuduta mu pead ja küsi julgelt.",
+        "brain_on_qdn": "Mu aju elab QDN-is. Puuduta mind ja ma toon selle sulle.",
+        "download_brain": "Laadi mu aju üks kord alla ja ma töötan otse sinu telefonis.",
+        "helper": "Ellujäämisnipid või Qortali vastused? Puuduta mind!",
+        "intro": "Tere, {{name}}! Olen Qortino, sinu Qortali kaaslane. Puuduta, et juttu ajada!",
+        "love_to_chat": "Ajame juttu, {{name}}? Puuduta mu pead ja laadi mind alla.",
+        "offline": "Vastan küsimustele täiesti ilma internetita. Puuduta, et mind seadistada!",
+        "own_ai": "Puuduta korra mu pead ja sul on oma privaatne tehisaru.",
+        "power_out": "Vool läinud? Internet maas? Kui olen alla laaditud, töötan ikka.",
+        "pretty_face": "Ma pole lihtsalt ilus nägu. Puuduta ja ärata minus peituv tehisaru!",
+        "private": "Pilve pole, jälgimist pole: mõtlen otse selles telefonis. Puuduta mind!",
+        "private_node": "Nipp: mu aju tuleb kõige kiiremini sinu enda Qortali sõlme kaudu.",
+        "skills": "Esmaabi, aiandus, kokkamine, Qortal… tean kõigest natuke. Puuduta mind!",
+        "tap_head": "Psst… puuduta mu pead ja ärkan ellu sinu internetita tehisaruna."
+      },
+      "ready": {
+        "all_ears": "Huvitab midagi? Olen kõrvad kikkis… õigemini antenn kikkis.",
+        "ask_anything": "Küsi mida tahes, kirjuta siia.",
+        "minting": "Küsi, kuidas mintimine käib. Mu lemmikteema!",
+        "no_internet": "Internetti pole vaja. Küsi minult midagi!",
+        "on_phone": "Kirjuta küsimus ja ma mõtlen selle üle otse sinu telefonis.",
+        "ready_intro": "Olen valmis, {{name}}! Kirjuta küsimus minu kõrvale ja ma vastan.",
+        "ready_when_you_are": "Olen valmis, kui sina oled. Mida täna välja uurime?",
+        "skills": "Esmaabi, retseptid, aiandus või Qortal: proovi mind!",
+        "stays_here": "Sinu küsimused jäävad sellesse telefoni. Küsi julgelt!",
+        "two_heads": "Jäid jänni? Kaks pead on ikka kaks pead. Minu oma on ümmargune."
+      },
+      "tickle": {
+        "antenna": "Ettevaatust, antenni juures olen väga kõditundlik.",
+        "cold_fingers": "Iih! Su sõrmed on külmad!",
+        "dont_stop": "Lõpeta… ei, oota, ära lõpeta!",
+        "favorite_button": "See on mu lemmiknupp. Ära kellelegi räägi.",
+        "found_spot": "Haa! Leidsid mu kõditundliku koha.",
+        "giggling_circuits": "Hihii! Mu vooluringid itsitavad.",
+        "hehe": "Hehe, see kõditab!",
+        "like_it": "Ohh, see kõditamine meeldib mulle!",
+        "sneeze": "Kõdita edasi ja ma võin ühe ploki välja aevastada.",
+        "tickle_minting": "Kas see on uus viis mintida? Kõdimintimine?"
+      },
+      "tickle_long": {
+        "give_up": "Olgu, olgu, ma annan alla! Sina võitsid!",
+        "mercy": "Halasta! Mu aku ei kannata enam itsitamist.",
+        "reboot": "Nii palju kõditamist… pean oma itsitamise taaskäivitama.",
+        "stamina": "Sul on rohkem vastupidavust kui täissõlmel!"
+      },
+      "tip": {
+        "backup": "Tee oma kontofailist varukoopia. Tuleviku-sina ütleb aitäh.",
+        "coin": "Kas teadsid? QORT on münt, mitte token.",
+        "hotkeys": "Kinnita oma lemmik-Q-Appid kiirklahvideks ja ava need ühe puudutusega.",
+        "minters": "Minterid teenivad QORT-i, hoides oma sõlme võrgus.",
+        "name": "Ilus nimi, {{name}}! See on Qortalis registreeritud, nii et päriselt sinu oma.",
+        "own_node": "Oma sõlm teeb Qortali tugevamaks ja GO töökindlamaks.",
+        "qdn_apps": "Q-Appid elavad QDN-is: pole poodi ega väravavahte.",
+        "reorder": "Vajuta avalehel aknale pikalt, et seda liigutada.",
+        "say_hi": "Q-Chat töötab P2P-põhiselt. Ütle täna kellelegi tere!",
+        "swipe": "Pühi külgsuunas: Avaleht, Rakendused ja Vestlus on kõrvuti."
+      }
+    },
     "reaction_avatar_flow": "Avatar flow ready. Let's give this place a face.",
     "reaction_hotkeys_ready": "Hotkeys panel ready.",
     "reaction_locked_track": "Locked on {{title}}.",
@@ -1456,6 +1701,16 @@
     "search_placeholder_qapps": "Search Q-Apps",
     "search_placeholder_tracks": "Search tracks or artists",
     "section_recommended": "Recommended",
+    "status": {
+      "chatty": "jutukas",
+      "grateful": "tänulik",
+      "happy": "rõõmus",
+      "helpful": "abivalmis",
+      "idle": "rahulik",
+      "listening": "kuulab",
+      "sleepy": "unine",
+      "ticklish": "kõditundlik"
+    },
     "track_meta_separator": "·",
     "workspace_add_app": "Add app",
     "workspace_empty_prompt": "Choose what lives above QORTINO.",

@@ -9,6 +9,9 @@ import {
   saveInstallState,
   type QortinoInstallState,
 } from '../../../qortinoAgent/store';
+import { QORTINO_MODEL } from '../../../qortinoAgent/manifest';
+import { ensureQortinoModel } from '../../../qortinoAgent/modelSession';
+import { clearPendingQortinoQuestion } from '../../../qortinoAgent/pendingQuestion';
 import { QortinoAgentGate } from './QortinoAgentGate';
 
 type ChatModule = typeof import('./QortinoAgentChat');
@@ -22,11 +25,25 @@ type Props = {
   onClose: () => void;
 };
 
+/**
+ * Start reading the model as soon as the sheet knows it is installed, in
+ * parallel with loading the chat code. The chat's own load joins this one.
+ */
+function preloadModel(install: QortinoInstallState): void {
+  if (!install.installed || !install.llmPath) return;
+  void ensureQortinoModel({
+    path: install.llmPath,
+    nCtx: QORTINO_MODEL.contextTokens,
+  }).catch(() => undefined);
+}
+
 export function QortinoAgentSheet({ open, onClose }: Props) {
   const theme = useTheme();
   const parked = useAtomValue(qortinoAgentParkedAtom);
   const [ready, setReady] = useState(false);
-  const [install, setInstall] = useState<QortinoInstallState>({ installed: false });
+  const [install, setInstall] = useState<QortinoInstallState>({
+    installed: false,
+  });
   // Held in state (not React.lazy) so the chat replaces the loading view or the
   // Gate in one render, without a Suspense fallback in between.
   const [chatModule, setChatModule] = useState<ChatModule | null>(null);
@@ -45,6 +62,7 @@ export function QortinoAgentSheet({ open, onClose }: Props) {
     if (gen !== refreshGenRef.current) return;
     // Keep the loading view until the chat code is in, so the chat shows at once.
     if (state.installed && state.llmPath) {
+      preloadModel(state);
       await loadChat();
       if (gen !== refreshGenRef.current) return;
     }
@@ -85,6 +103,8 @@ export function QortinoAgentSheet({ open, onClose }: Props) {
     (next: QortinoInstallState) => {
       setInstall(next);
       if (next.installed && next.llmPath) {
+        // The parts were just written, so they are still in the page cache.
+        preloadModel(next);
         // Normally already loaded when the assemble started.
         void loadChat();
         sessionReadyRef.current = true;
@@ -93,7 +113,15 @@ export function QortinoAgentSheet({ open, onClose }: Props) {
     [loadChat]
   );
 
+  // Settings → Remove Qortino from this phone: back to the download screen.
+  const handleRemoved = useCallback(() => {
+    sessionReadyRef.current = false;
+    setInstall({ installed: false });
+  }, []);
+
   const handleClose = useCallback(async () => {
+    // A question from Home the chat never took is not asked next time.
+    clearPendingQortinoQuestion();
     if (install.installed) {
       const next = { ...install, lastOpenedAt: Date.now() };
       await saveInstallState(next);
@@ -145,14 +173,18 @@ export function QortinoAgentSheet({ open, onClose }: Props) {
           closeButton
         ) : install.installed && install.llmPath ? (
           Chat ? (
-            <Chat install={install} onClose={() => void handleClose()} />
+            <Chat
+              install={install}
+              onClose={() => void handleClose()}
+              onRemoved={handleRemoved}
+            />
           ) : (
             closeButton
           )
         ) : (
           <QortinoAgentGate
             onAssembleStart={() => void loadChat()}
-            onInstalled={(next) => handleInstalled(next)}
+            onInstalled={handleInstalled}
             onCancel={() => void handleClose()}
           />
         )}

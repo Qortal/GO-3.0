@@ -872,6 +872,10 @@
   "member_actions": {
     "make_admin_named": "{{name}} zum Admin machen",
     "more_named": "weitere Aktionen für {{name}}",
+    "needs_approval_bans_notice": "diese Gruppe hat keinen Eigentümer. Eine Sperrung aufzuheben braucht daher die Zustimmung ihrer Admins, und das geht hier nicht.",
+    "needs_approval_notice": "diese Gruppe hat keinen Eigentümer. Entfernen, Verbannen und Admin-Änderungen brauchen daher die Zustimmung ihrer Admins, und das geht hier nicht.",
+    "owner_only_bans_notice": "nur der Eigentümer der Gruppe kann Sperrungen aufheben.",
+    "owner_only_notice": "nur der Eigentümer der Gruppe kann Mitglieder entfernen, verbannen oder Admins ändern.",
     "pending": "ausstehend",
     "pending_hint": "wartet auf die Bestätigung in der Blockchain. Das kann ein paar Minuten dauern.",
     "remove_admin_named": "{{name}} die Adminrechte entziehen"

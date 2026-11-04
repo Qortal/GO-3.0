@@ -48,9 +48,11 @@ import { MemberCategoryHeader } from './MemberCategoryHeader';
 import { executeEvent } from '../../utils/events';
 import { BACK_PRIORITY, useAndroidBack } from '../../utils/androidBack';
 import {
+  MemberActionsNotice,
   MemberAdminAction,
   PendingMemberAction,
   getAvailableMemberActions,
+  getMemberActionsNotice,
   prunePendingMemberActions,
 } from './memberAdminActions';
 import {
@@ -145,6 +147,11 @@ const MEMBER_ACTION_LABEL_KEY: Record<MemberAdminAction, string> = {
   remove_admin: 'group:action.remove_admin',
   kick: 'group:action.kick_member',
   ban: 'group:action.ban',
+};
+
+const MEMBER_ACTIONS_NOTICE_KEY: Record<MemberActionsNotice, string> = {
+  owner_only: 'group:member_actions.owner_only_notice',
+  needs_approval: 'group:member_actions.needs_approval_notice',
 };
 
 const MEMBER_ACTION_ICON: Record<MemberAdminAction, typeof BlockRoundedIcon> = {
@@ -582,9 +589,14 @@ const ListOfMembers = ({
       viewerAddress: currentAddress,
       ownerAddress,
       isOwner: Boolean(isOwner),
-      isAdmin: Boolean(isAdmin),
       inGroup: groupMemberAddresses.has(member?.member),
     });
+  // Admins who can't kick or ban get the reason instead of the buttons.
+  const actionsNotice = getMemberActionsNotice({
+    ownerAddress,
+    isOwner: Boolean(isOwner),
+    isAdmin: Boolean(isAdmin),
+  });
 
   const openActionMenu = (anchorEl: HTMLElement, member, label: string) => {
     const actions = getMemberActions(member);
@@ -1144,6 +1156,22 @@ const ListOfMembers = ({
             postProcess: 'capitalizeFirstChar',
           })}
         </p>
+      )}
+      {actionsNotice && (
+        <Typography
+          sx={{
+            color: 'text.secondary',
+            flexShrink: 0,
+            fontSize: 12,
+            lineHeight: 1.4,
+            px: 1.5,
+            py: 0.75,
+          }}
+        >
+          {t(MEMBER_ACTIONS_NOTICE_KEY[actionsNotice], {
+            postProcess: 'capitalizeFirstChar',
+          })}
+        </Typography>
       )}
       <div
         ref={listBoxRef}

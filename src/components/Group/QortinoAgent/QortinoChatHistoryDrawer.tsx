@@ -13,20 +13,29 @@ import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded';
 import PushPinRoundedIcon from '@mui/icons-material/PushPinRounded';
 import PushPinOutlinedIcon from '@mui/icons-material/PushPinOutlined';
 import { useRef, useState } from 'react';
-import type { QortinoChatSession } from '../../../qortinoAgent/chatHistoryStore';
+import { useTranslation } from 'react-i18next';
+import {
+  UNTITLED_CHAT_TITLE,
+  type QortinoChatSession,
+} from '../../../qortinoAgent/chatHistoryStore';
+import type { QortinoInstallState } from '../../../qortinoAgent/store';
 import { SAFE_AREA_TOP } from '../../../utils/mobileSafeArea';
+import { QortinoSettingsSection } from './QortinoSettingsSection';
 
 type Props = {
   open: boolean;
   onClose: () => void;
   sessions: QortinoChatSession[];
   activeId: string | null;
-  modeLabel: string;
   onNewChat: () => void;
   onSelect: (id: string) => void;
   onRename: (id: string, title: string) => void;
   onTogglePin: (id: string) => void;
   onDelete: (id: string) => void;
+  install: QortinoInstallState;
+  hasChats: boolean;
+  onDeleteAllChats: () => void | Promise<void>;
+  onRemoveQortino: () => Promise<void>;
 };
 
 const SWIPE_CLOSE_PX = 72;
@@ -36,14 +45,18 @@ export function QortinoChatHistoryDrawer({
   onClose,
   sessions,
   activeId,
-  modeLabel,
   onNewChat,
   onSelect,
   onRename,
   onTogglePin,
   onDelete,
+  install,
+  hasChats,
+  onDeleteAllChats,
+  onRemoveQortino,
 }: Props) {
   const theme = useTheme();
+  const { t } = useTranslation(['core']);
   const isDark = theme.palette.mode === 'dark';
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
@@ -55,6 +68,18 @@ export function QortinoChatHistoryDrawer({
     dragStartX.current = null;
     dragging.current = false;
     setDragX(0);
+  };
+
+  const titleOf = (session: QortinoChatSession) =>
+    !session.titleCustom && session.title === UNTITLED_CHAT_TITLE
+      ? t('core:qortino_agent.aria.new_chat')
+      : session.title;
+
+  /** An empty or unchanged name keeps the chat titled from its question. */
+  const finishRename = (session: QortinoChatSession) => {
+    const next = draft.trim();
+    if (next && next !== titleOf(session)) onRename(session.id, next);
+    setEditingId(null);
   };
 
   return (
@@ -99,9 +124,7 @@ export function QortinoChatHistoryDrawer({
           flexDirection: 'column',
           pt: SAFE_AREA_TOP,
           transform:
-            open && dragX
-              ? `translateX(${dragX}px) !important`
-              : undefined,
+            open && dragX ? `translateX(${dragX}px) !important` : undefined,
           transition: dragX ? 'none' : undefined,
           width: 'min(320px, 86vw)',
           zIndex: 10001,
@@ -120,19 +143,11 @@ export function QortinoChatHistoryDrawer({
       >
         <Box sx={{ flex: 1, minWidth: 0 }}>
           <Typography sx={{ fontSize: '1rem', fontWeight: 800 }}>
-            Chat history
-          </Typography>
-          <Typography
-            sx={{
-              color: alpha(theme.palette.text.primary, 0.55),
-              fontSize: '0.72rem',
-            }}
-          >
-            {modeLabel} chats
+            {t('core:qortino_agent.aria.history')}
           </Typography>
         </Box>
         <IconButton
-          aria-label="New chat"
+          aria-label={t('core:qortino_agent.aria.new_chat')}
           size="small"
           onClick={() => {
             onNewChat();
@@ -145,7 +160,11 @@ export function QortinoChatHistoryDrawer({
         >
           <AddRoundedIcon fontSize="small" />
         </IconButton>
-        <IconButton aria-label="Close history" size="small" onClick={onClose}>
+        <IconButton
+          aria-label={t('core:qortino_agent.history.close')}
+          size="small"
+          onClick={onClose}
+        >
           <CloseRoundedIcon fontSize="small" />
         </IconButton>
       </Box>
@@ -161,6 +180,12 @@ export function QortinoChatHistoryDrawer({
           p: 1,
         }}
       >
+        <QortinoSettingsSection
+          install={install}
+          hasChats={hasChats}
+          onDeleteAllChats={onDeleteAllChats}
+          onRemoveQortino={onRemoveQortino}
+        />
         {!sessions.length ? (
           <Typography
             sx={{
@@ -170,7 +195,7 @@ export function QortinoChatHistoryDrawer({
               py: 1.5,
             }}
           >
-            No saved chats yet. Start a conversation — it will appear here.
+            {t('core:qortino_agent.history.empty')}
           </Typography>
         ) : null}
         {sessions.map((s) => {
@@ -204,18 +229,12 @@ export function QortinoChatHistoryDrawer({
                   onChange={(e) => setDraft(e.target.value)}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') {
-                      const next = draft.trim() || 'New chat';
-                      onRename(s.id, next);
-                      setEditingId(null);
+                      finishRename(s);
                     } else if (e.key === 'Escape') {
                       setEditingId(null);
                     }
                   }}
-                  onBlur={() => {
-                    const next = draft.trim() || 'New chat';
-                    onRename(s.id, next);
-                    setEditingId(null);
-                  }}
+                  onBlur={() => finishRename(s)}
                   inputProps={{ maxLength: 80 }}
                 />
               ) : (
@@ -228,7 +247,7 @@ export function QortinoChatHistoryDrawer({
                   }}
                   onDoubleClick={() => {
                     setEditingId(s.id);
-                    setDraft(s.title);
+                    setDraft(titleOf(s));
                   }}
                   sx={{
                     appearance: 'none',
@@ -245,7 +264,7 @@ export function QortinoChatHistoryDrawer({
                   }}
                 >
                   {s.pinned ? '📌 ' : ''}
-                  {s.title}
+                  {titleOf(s)}
                 </Box>
               )}
               <Box
@@ -257,7 +276,11 @@ export function QortinoChatHistoryDrawer({
                 }}
               >
                 <IconButton
-                  aria-label={s.pinned ? 'Unpin chat' : 'Pin chat'}
+                  aria-label={t(
+                    s.pinned
+                      ? 'core:qortino_agent.history.unpin'
+                      : 'core:qortino_agent.history.pin'
+                  )}
                   size="small"
                   onClick={() => onTogglePin(s.id)}
                 >
@@ -268,20 +291,20 @@ export function QortinoChatHistoryDrawer({
                   )}
                 </IconButton>
                 <IconButton
-                  aria-label="Rename chat"
+                  aria-label={t('core:qortino_agent.history.rename_chat')}
                   size="small"
                   onClick={() => {
                     setEditingId(s.id);
-                    setDraft(s.title);
+                    setDraft(titleOf(s));
                   }}
                   sx={{ fontSize: '0.72rem', fontWeight: 700, borderRadius: 0 }}
                 >
                   <Typography sx={{ fontSize: '0.68rem', fontWeight: 800 }}>
-                    Rename
+                    {t('core:qortino_agent.history.rename')}
                   </Typography>
                 </IconButton>
                 <IconButton
-                  aria-label="Delete chat"
+                  aria-label={t('core:qortino_agent.history.delete_chat')}
                   size="small"
                   onClick={() => onDelete(s.id)}
                 >

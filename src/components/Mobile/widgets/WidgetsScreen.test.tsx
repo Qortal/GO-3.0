@@ -9,6 +9,7 @@ import {
 import { Provider, createStore } from 'jotai';
 import {
   afterAll,
+  afterEach,
   beforeAll,
   beforeEach,
   describe,
@@ -35,9 +36,28 @@ vi.mock('./GoWidgetFrame', () => ({
 vi.mock('../../Apps/AppThumbnailAvatar', () => ({
   AppThumbnailAvatar: () => <span />,
 }));
-vi.mock('../../../hooks/usePageVisible', () => ({
-  usePageVisible: () => true,
-}));
+// GO in the foreground or not, as usePageVisible tells it (a store).
+const page = vi.hoisted(() => {
+  const listeners = new Set<() => void>();
+  return {
+    visible: true,
+    subscribe: (onChange: () => void) => {
+      listeners.add(onChange);
+      return () => listeners.delete(onChange);
+    },
+    set(visible: boolean) {
+      this.visible = visible;
+      listeners.forEach((onChange) => onChange());
+    },
+  };
+});
+vi.mock('../../../hooks/usePageVisible', async () => {
+  const { useSyncExternalStore } = await import('react');
+  return {
+    usePageVisible: () =>
+      useSyncExternalStore(page.subscribe, () => page.visible),
+  };
+});
 vi.mock('../../../utils/globalApi', () => ({
   getBaseApiReact: () => 'http://node.test',
 }));
@@ -252,6 +272,28 @@ describe('WidgetsScreen', () => {
     expect([clock.w, clock.h, clock.sizedBy]).toEqual([2, 3, 'user']);
   });
 
+  it("while arranging, drags are the widgets': no Tabs pull or section swipe", async () => {
+    const { store } = setup();
+    await addFromPicker('Clock');
+    const section = document.querySelector(
+      '[data-go-section="widgets"]'
+    ) as HTMLElement;
+    expect(section.hasAttribute('data-section-swipe-ignore')).toBe(false);
+
+    await holdEmptySpot();
+    expect(store.get(goWidgetsEditingAtom)).toBe(true);
+    // tabsPull and the section swipe leave touches in here alone.
+    const handle = screen.getAllByRole('button', { name: 'Resize' })[0];
+    expect(handle.closest('[data-section-swipe-ignore]')).toBe(section);
+    // The handle shows a two-way arrow, not a dot.
+    expect(
+      within(handle).getByTestId('OpenInFullRoundedIcon')
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Done' }));
+    expect(section.hasAttribute('data-section-swipe-ignore')).toBe(false);
+  });
+
   it('a tap while arranging opens the widget menu; Remove takes it away', async () => {
     const { store } = setup();
     await addFromPicker('Clock');
@@ -358,14 +400,49 @@ describe('WidgetsScreen', () => {
     expect(store.get(goWidgetsEditingAtom)).toBe(false);
   });
 
-  it('loads nothing before the screen has been shown', () => {
-    window.localStorage.setItem(
-      GO_WIDGETS_STORAGE_KEY,
-      JSON.stringify([
-        { name: 'Clock', identifier: null, x: 0, y: 0, w: 4, h: 3 },
-      ])
-    );
-    setup(false);
-    expect(screen.queryByTestId('frame-Clock')).toBeNull();
+  describe('loading', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+      page.visible = true;
+      window.localStorage.setItem(
+        GO_WIDGETS_STORAGE_KEY,
+        JSON.stringify([
+          { name: 'Clock', identifier: null, x: 0, y: 0, w: 4, h: 3 },
+        ])
+      );
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+      page.visible = true;
+    });
+
+    it('loads the widgets soon after start, out of sight, and keeps them', () => {
+      const { rerender } = setup(false);
+      // Not in GO's own start.
+      expect(screen.queryByTestId('frame-Clock')).toBeNull();
+      act(() => vi.advanceTimersByTime(5_000));
+      // There before the first swipe to the screen.
+      expect(screen.getByTestId('frame-Clock')).toBeTruthy();
+      // Seen, then left for a long while: still loaded.
+      rerender(true);
+      rerender(false);
+      act(() => vi.advanceTimersByTime(30 * 60_000));
+      expect(screen.getByTestId('frame-Clock')).toBeTruthy();
+    });
+
+    it('loads at once when the screen shows first', () => {
+      setup(true);
+      expect(screen.getByTestId('frame-Clock')).toBeTruthy();
+    });
+
+    it('waits while GO is in the background', () => {
+      page.visible = false;
+      setup(false);
+      act(() => vi.advanceTimersByTime(60_000));
+      expect(screen.queryByTestId('frame-Clock')).toBeNull();
+      act(() => page.set(true));
+      act(() => vi.advanceTimersByTime(5_000));
+      expect(screen.getByTestId('frame-Clock')).toBeTruthy();
+    });
   });
 });

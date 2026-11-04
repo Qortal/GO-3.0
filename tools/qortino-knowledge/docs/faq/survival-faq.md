@@ -678,7 +678,7 @@ Also asked as: generator transfer switch pro · qualified electrician backup pow
 
 A: Layer it: (1) receive-only AM/FM/shortwave hand-crank radio for official news; (2) licence-free handhelds for family short range (PMR446 in Europe ~1–5 km real-world); (3) licensed amateur radio for regional/HF reach; (4) LoRa meshes (Meshtastic/Reticulum) for short encrypted texts without towers. Agree channels and check-in times before you need them.
 
-Also asked as: emergency communications layers · no internet how to communicate · family radio plan
+Also asked as: emergency communications layers · no internet how to communicate
 
 ## Q: What radio should everyone have for emergencies?
 
@@ -694,7 +694,7 @@ Also asked as: PMR446 range · walkie talkie emergency distance · FRS family ra
 
 ## Q: What are LoRa mesh networks like Meshtastic or Reticulum?
 
-A: LoRa mesh devices pass short text messages device-to-device over kilometres on licence-free bands at milliwatt power — no towers, no internet, optional encryption. Nodes are cheap, run days on small batteries, and can solar-repeat from rooftops. Reticulum is transport-agnostic (LoRa, packet radio, WiFi, serial). Qortal-Hub mobile ships with RNS support so a phone can join such a mesh.
+A: LoRa mesh devices pass short text messages device-to-device over kilometres on licence-free bands at milliwatt power — no towers, no internet, optional encryption. Nodes are cheap, run days on small batteries, and can solar-repeat from rooftops. Reticulum is transport-agnostic (LoRa, packet radio, WiFi, serial). Qortal Hub and Qortal GO use Reticulum for chat and calls, but they reach each other through Qortal's Reticulum hubs over the internet; they do not talk over LoRa radios themselves.
 
 Also asked as: Meshtastic explained · LoRa mesh emergency texts · Reticulum RNS Qortal
 
@@ -722,11 +722,11 @@ A: They pass short texts device-to-device on licence-free LoRa without towers or
 
 Also asked as: mesh text no cell towers · LoRa neighborhood messaging · off grid text network
 
-## Q: Can Qortal-Hub participate in a Reticulum mesh?
+## Q: Can Qortal Hub or GO talk over a Reticulum radio mesh?
 
-A: Qortal-Hub mobile ships with RNS (Reticulum) support, so a phone can participate in transport-agnostic meshes that may run over LoRa, packet radio, WiFi, or serial links. It is one layer in a wider plan that still includes receive-only broadcast radio and family handhelds.
+A: Not today. Qortal Hub and Qortal GO use Reticulum for Q-Chat and calls, but they reach each other through Qortal's Reticulum hubs over a normal internet connection. Neither talks over LoRa or packet radio by itself. For an off-grid radio mesh, plan on dedicated Reticulum or Meshtastic radios and apps alongside your other communications, such as receive-only broadcast radio and family handhelds.
 
-Also asked as: Qortal RNS mesh · phone Reticulum survival · Hub LoRa communication
+Also asked as: Qortal RNS mesh · qortal go lora mesh · phone Reticulum survival · Hub LoRa communication · can qortal work over lora
 
 ## Q: What licence-free radio options exist in Europe?
 
@@ -760,9 +760,9 @@ Also asked as: car survival kit · winter car kit · vehicle breakdown preps
 
 ## Q: What documents and cash should I keep ready?
 
-A: Keep ID, deeds, insurance, and prescription info in a waterproof folder plus an encrypted digital backup. Hold some cash in small notes — card networks fail in blackouts. Two to four weeks of expenses in small denominations is a serious household buffer. Agree an out-of-area contact for family.
+A: Keep ID, deeds, insurance, and prescription info in a waterproof folder plus an encrypted digital backup. Hold some cash in small notes — card networks fail in blackouts. Two to four weeks of expenses in small denominations is a serious household buffer. Keep paper maps of your region for when GNSS or mobile data fail. Agree an out-of-area contact for family.
 
-Also asked as: emergency document folder · cash for blackout · important papers waterproof
+Also asked as: emergency document folder · cash for blackout · documents for earth changes prep · what cash and documents should I keep for disruption scenarios · important papers waterproof
 
 ## Q: Why practice a grid-down weekend?
 
@@ -1135,6 +1135,12 @@ A: Point panels within about 30° of the sun and re-aim every couple of hours. E
 
 Also asked as: solar panel angle sun · shade kills solar output · reposition panels day
 
+## Q: What should go in a Faraday bin?
+
+A: Common spare set: a receive radio or spare handheld radio, a basic or spare phone, a small power bank and charge controller, USB cables, adapters and document sticks, LED lights or a headlamp, AA/AAA lithium batteries, and a note with your frequencies and channels. Insulate each item from the metal enclosure, label the bin and check the inventory yearly. Test your day-to-day gear often; sealed spares are insurance, not your only radio.
+
+Also asked as: what to store Faraday cage · EMP kit contents · faraday bin contents · what should be in a faraday bin for communications · spare electronics metal can
+
 ## Q: What is a realistic summer solar fridge setup?
 
 A: A roughly 400 W panel array plus a ~2 kWh station is a realistic summer setup to keep a fridge and communications running indefinitely if you manage loads and sun. Winter at high latitude needs far more panel or generator support. Do the watt-hour math for your own fridge.
@@ -1296,12 +1302,6 @@ Also asked as: gutless butchering mountains · quarter deer without gutting · b
 A: A fully enclosed metal container (galvanized bin, ammo can, or nested foil wraps) with no gaps, contents insulated from the metal, can shield spare radios, a basic phone, USB sticks, charge controllers, LEDs, and cables. Whether or not you expect severe solar storms, the cost is a bin and an afternoon. Keep day-to-day radios outside the bin so you can use them.
 
 Also asked as: Faraday cage EMP prep · metal bin electronics storage · spare radio Faraday
-
-## Q: What should go in a Faraday bin?
-
-A: Common spare set: receive radio, basic phone, USB document sticks, small charge controller, LED lights, and cables — each insulated from the metal enclosure. Test your day-to-day gear often; sealed spares are insurance, not your only radio.
-
-Also asked as: what to store Faraday cage · EMP kit contents · spare electronics metal can
 
 ## Q: How do surge protectors fit a power plan?
 

@@ -51,6 +51,21 @@ const GENERIC_CONCEPT_NEEDLES = new Set([
   'blog',
   'assets',
   'asset',
+  // Everyday words that are also Q-App names or aliases ("what is weather").
+  'weather',
+  'singularity',
+  'gif',
+  'gifs',
+  'meme',
+  'memes',
+  'map',
+  'maps',
+  'movie',
+  'movies',
+  'shop',
+  'shops',
+  'drive',
+  'notes',
 ]);
 
 export function isGenericConceptNeedle(name: string): boolean {

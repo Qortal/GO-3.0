@@ -215,6 +215,18 @@ describe('useTabsPullDown', () => {
     expect(onPullStart).not.toHaveBeenCalled();
   });
 
+  it('leaves drags that belong to something else alone (widgets being arranged)', () => {
+    const { getByTestId } = render(<Harness />);
+    const section = getByTestId('list').parentElement as HTMLElement;
+    section.setAttribute('data-section-swipe-ignore', '');
+    pull(getByTestId('row'), 100, 400, { t0: 9000 });
+    expect(onPullStart).not.toHaveBeenCalled();
+
+    section.removeAttribute('data-section-swipe-ignore');
+    pull(getByTestId('row'), 100, 400, { t0: 11000 });
+    expect(onPullStart).toHaveBeenCalledTimes(1);
+  });
+
   it('pulls only in the given sections, and when allowed', () => {
     const { getByTestId, rerender } = render(<Harness />);
     pull(getByTestId('apps-row'), 100, 400, { t0: 5000 });

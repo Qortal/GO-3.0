@@ -15,6 +15,11 @@ import {
   gridRowsForPx,
 } from './widgetGrid';
 import {
+  WIDGET_APP_RETRY_MS,
+  refreshWidgetAppOnDevice,
+  useWidgetAppSource,
+} from './widgetAppOnDevice';
+import {
   GO_WIDGET_INFO,
   GO_WIDGET_SET_SIZE,
   type QappWidgetPolicy,
@@ -28,29 +33,38 @@ const goWidgetTabId = (widget: { name: string; identifier: string | null }) =>
   `go-widget:${goWidgetKey(widget).replace('\u0000', ':')}`;
 
 /**
- * The address a widget loads from: its app's /render address with the theme
- * and language every Q-App gets, its identifier, and goWidget=1 so it draws
- * itself as a widget from the first frame. Null for a name that would leave
- * /render/APP/<name> (GO-21).
+ * What every widget address carries: the theme and language every Q-App
+ * gets, its identifier, goWidget=1 so it draws itself as a widget from the
+ * first frame, and after a reload a marker that makes the frame load again.
  */
-const goWidgetUrl = (
-  widget: { name: string; identifier: string | null },
+const goWidgetQuery = (
+  widget: { identifier: string | null },
   {
     theme,
     language,
-    baseUrl,
-  }: { theme: string; language: string; baseUrl: string }
+    reloadKey,
+  }: { theme: string; language: string; reloadKey: number }
+): string =>
+  `?theme=${encodeURIComponent(theme)}&lang=${encodeURIComponent(
+    language
+  )}&identifier=${
+    widget.identifier ? encodeURIComponent(widget.identifier) : ''
+  }&goWidget=1${reloadKey ? `&time=${reloadKey}` : ''}`;
+
+/**
+ * The address a widget loads from the node: its app's /render address. Null
+ * for a name that would leave /render/APP/<name> (GO-21).
+ */
+const goWidgetUrl = (
+  widget: { name: string },
+  { query, baseUrl }: { query: string; baseUrl: string }
 ): string | null =>
   buildQappRenderUrl({
     baseUrl,
     service: 'APP',
     name: widget.name,
     rest: '',
-    query: `?theme=${encodeURIComponent(theme)}&lang=${encodeURIComponent(
-      language
-    )}&identifier=${
-      widget.identifier ? encodeURIComponent(widget.identifier) : ''
-    }&goWidget=1`,
+    query,
   });
 
 /** What a widget asked for with GO_WIDGET_SET_SIZE, in grid cells. */
@@ -100,18 +114,23 @@ const WidgetDocument = ({
   const language = i18n.language;
   const key = goWidgetKey(widget);
 
+  // Its copy kept on the phone when there is one, else the node.
+  const source = useWidgetAppSource(widget, reloadKey);
+
   // The address is fixed for the frame's life (a reload builds it again):
   // theme and language changes are posted to it, as to any Q-App.
-  const url = useMemo(
-    () =>
-      goWidgetUrl(widget, {
-        theme: themeMode,
-        language,
-        baseUrl: getBaseApiReact(),
-      }),
+  const url = useMemo(() => {
+    if (source.kind === 'checking') return null;
+    const query = goWidgetQuery(widget, {
+      theme: themeMode,
+      language,
+      reloadKey,
+    });
+    return source.kind === 'device'
+      ? `${source.url}${query}`
+      : goWidgetUrl(widget, { query, baseUrl: getBaseApiReact() });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [widget.name, widget.identifier, reloadKey]
-  );
+  }, [source, widget.name, widget.identifier, reloadKey]);
 
   const live = useRef({ visible, sizePx, themeMode, language, widget });
   live.current = { visible, sizePx, themeMode, language, widget };
@@ -200,6 +219,8 @@ const WidgetDocument = ({
     if (!frame) return;
     const onLoad = () => {
       loadedRef.current(key);
+      // Keeps (or updates) its copy on the phone, in the background.
+      void refreshWidgetAppOnDevice(live.current.widget);
       // What changed while it loaded never reached it: say it again.
       const current = live.current;
       post({ action: 'THEME_CHANGED', theme: current.themeMode });
@@ -213,6 +234,17 @@ const WidgetDocument = ({
     return () => frame.removeEventListener('load', onLoad);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, url]);
+
+  // The first load is often the node's loading page, when the node has no
+  // copy to give yet: ask again while it shows. With a copy kept these are
+  // the hourly checks for a newer publish; in between they cost nothing.
+  useEffect(() => {
+    const timer = window.setInterval(
+      () => void refreshWidgetAppOnDevice(live.current.widget),
+      WIDGET_APP_RETRY_MS + 1_000
+    );
+    return () => window.clearInterval(timer);
+  }, [key]);
 
   if (!url) return null;
   return (

@@ -1396,8 +1396,152 @@
     "testing_note": "Testing only. Test cards have no PIN yet, so anyone holding one can pay with it. Keep only a few QORT on a card.",
     "title": "Qortal Card"
   },
+  "qortino_agent": {
+    "aria": {
+      "close": "Close Qortino",
+      "copy": "Copy the full answer",
+      "history": "Chat history",
+      "new_chat": "New chat",
+      "report": "Report this answer to teach Qortino",
+      "send": "Send",
+      "stop": "Stop"
+    },
+    "chat": {
+      "continue": "Continue answer →",
+      "copied": "Full answer copied",
+      "copy_failed": "Could not copy",
+      "empty": "Ask me anything: first aid and health, survival and prepping, gardening and cooking, Qortal, coding and more. I run fully on this phone, so I work with no internet at all.",
+      "load_failed": "Qortino could not start: {{error}}",
+      "loading_model": "Waking Qortino up…",
+      "loading_model_hint": "Loading the model into memory. Later opens are much quicker.",
+      "model_missing": "The model files are missing. Close Qortino and assemble it again.",
+      "needs_app": "Qortino runs on the phone app, not in a browser.",
+      "no_question": "(no question found)",
+      "no_reply": "No reply came back. Try a shorter question, or close and reopen Qortino.",
+      "open_app": "Open",
+      "placeholder": "Message Qortino…",
+      "published_as": "{{service}} · published as {{name}}",
+      "reply_failed": "Sorry, I could not write a reply.",
+      "retry": "try again",
+      "subtitle": "Offline · {{model}}"
+    },
+    "error": {
+      "cancelled": "Assembling was cancelled.",
+      "checksum": "A downloaded part was damaged, so it was deleted. Please try again.",
+      "detail": "Details: {{detail}}",
+      "download": "Saving the model to this phone failed. Check the free space and your node connection, then try again.",
+      "generic": "Assembling failed.",
+      "not_published": "Qortino's model is not on QDN yet, or your node cannot see it yet. Please try again a little later.",
+      "qdn_failed": "QDN could not deliver the model right now. Maybe too few peers are hosting it. Please try again later.",
+      "stalled": "The download stopped moving: no peer is sending the rest right now. Please try again later."
+    },
+    "gate": {
+      "assemble": "Assemble Qortino",
+      "background_hint": "You can minimize this window: the download carries on, and you can follow it in notifications.",
+      "cancel": "Cancel",
+      "checking": "Checking this phone…",
+      "disclaimer": "Qortino can be confidently wrong → double-check anything important.",
+      "intro": "Your offline companion for first aid and health, survival and prepping, gardening, cooking, Qortal and much more. Assembled once from QDN onto this phone, then it works without any internet. No cloud, nothing leaves your phone.",
+      "low_ram": "This phone has {{ram}} of memory. Qortino will work, but answers may be slow and Android may close it while it runs in the background.",
+      "low_storage": "Not enough free space: Qortino needs {{needed}}, and this phone has {{free}} free.",
+      "minimize": "Minimize",
+      "model_blurb": "One smart model for everyday questions, emergencies and Qortal help. Runs fully on this phone.",
+      "model_size": "{{size}} to download · {{license}}",
+      "new_model": "Qortino has a new, smarter brain. Assemble it once; the old Lite and Standard packs are deleted to free their space.",
+      "not_now": "Not now",
+      "private_node_guide": "View private node guide",
+      "public_node_body": "The public node is shared and not reliable for a {{size}} download: it can stop part way or drop what it already fetched. GO keeps trying by itself and keeps what arrived, but your own node is much faster and steadier.",
+      "public_node_title": "A private node is highly recommended",
+      "retry_in_minutes": "Trying again in {{minutes}} min.",
+      "retry_in_seconds": "Trying again in {{seconds}} s.",
+      "retry_reason": {
+        "connection": "The connection broke off while saving; the next try carries on from there.",
+        "damaged": "A downloaded part was damaged, so it will be downloaded again.",
+        "peers": "No peer is sending the rest right now."
+      },
+      "title": "Qortino AI",
+      "try_now": "Try now"
+    },
+    "history": {
+      "close": "Close chat history",
+      "delete_chat": "Delete chat",
+      "empty": "No saved chats yet. Start a conversation and it will appear here.",
+      "pin": "Pin chat",
+      "rename": "Rename",
+      "rename_chat": "Rename chat",
+      "unpin": "Unpin chat"
+    },
+    "name": "Qortino",
+    "notify": {
+      "background": "Qortino keeps downloading. You can follow it in notifications.",
+      "open_hint": "Tap to open Qortino",
+      "panel_failed": "Stopped. Tap to try again.",
+      "ready": "Qortino is ready.",
+      "retry": {
+        "connection": "Connection broke off, carrying on soon…",
+        "damaged": "A part was damaged, downloading it again…",
+        "peers": "Waiting for peers…"
+      }
+    },
+    "progress": {
+      "bytes": "{{done}} / {{total}}",
+      "fetch": "Part {{part}} of {{count}} · your node is fetching it from QDN… {{percent}}%",
+      "finalizing": "Finishing up…",
+      "locate": "Finding Qortino on QDN…",
+      "save": "Part {{part}} of {{count}} · saving to this phone…",
+      "verify": "Part {{part}} of {{count}} · checking the file…"
+    },
+    "settings": {
+      "answer_length": {
+        "detailed": "Detailed",
+        "hint": "Shorter answers are ready sooner.",
+        "label": "Answers",
+        "normal": "Normal",
+        "short": "Short"
+      },
+      "delete_chats": {
+        "button": "Delete all chats",
+        "confirm": "Delete all saved chats? This cannot be undone."
+      },
+      "enter_sends": {
+        "hint": "Off: Enter starts a new line.",
+        "label": "Enter key sends"
+      },
+      "keep_ready": {
+        "hint": "Kept ready, Qortino opens instantly but holds about 3 GB of memory. Leaving GO frees it soon after.",
+        "label": "Keep Qortino ready after closing",
+        "off": "No",
+        "open": "While GO is open",
+        "short": "1½ min"
+      },
+      "remove": {
+        "button": "Remove Qortino from this phone",
+        "confirm": "This deletes the Qortino model ({{size}}) from this phone. Your chats stay. You can download Qortino again at any time.",
+        "failed": "Could not remove Qortino: {{reason}}",
+        "on_phone": "{{model}} · {{size}} on this phone",
+        "removing": "Removing…"
+      },
+      "text_size": {
+        "default": "Default",
+        "label": "Text size",
+        "large": "Large",
+        "small": "Small"
+      },
+      "title": "Settings"
+    },
+    "status": {
+      "assembling": "Assembling",
+      "getting_ready": "Getting ready…",
+      "reading": "Reading your question…",
+      "reading_percent": "Reading your question… {{percent}}%"
+    }
+  },
   "qortino_workspace": {
     "a11y_clear_hotkey_slot": "Clear slot {{n}}",
+    "composer": {
+      "placeholder": "Ask Qortino…",
+      "send": "Ask Qortino"
+    },
     "curated_badge": "[ CURATED ]",
     "dialog_hotkeys_subtitle": "Saved automatically for this account.",
     "dialog_hotkeys_title": "Select hotkeys",
@@ -1443,6 +1587,107 @@
     "music_syncing_library": "Syncing with EarBump library...",
     "music_track_load_failed": "This track could not finish loading on your node.",
     "onboarding_step_progress": "Step {{current}} / {{total}}",
+    "quip_open_hint": "Tap to open Qortino",
+    "quips": {
+      "fun": {
+        "antenna": "My antenna picks up good vibes. And blocks. Mostly blocks.",
+        "beep": "Beep boop. Just kidding, I don't beep.",
+        "coffee": "I don't need coffee. A full battery does the trick.",
+        "counting": "I tried to count every block. Then another one came.",
+        "cross_chain": "Why did the block cross the chain? To reach the other node.",
+        "exercise": "My favorite exercise? Running a node.",
+        "high_five": "I'd high-five You, but my arms are still downloading.",
+        "hydrated": "Stay hydrated! I run on electrons, but water is good for You.",
+        "keys": "Fun fact: I never lose my keys. I don't have pockets.",
+        "knock_knock": "Knock knock. Who's there? A node. You can run one too!",
+        "looking_good": "Is it just me, or does this Home screen look great today?",
+        "mint_joke": "I tried to mint a joke, but it needed a few more blocks.",
+        "round_blue": "I'm round, I'm blue, and I'm on Your side.",
+        "sheep": "Do robots dream of decentralized sheep?",
+        "syncing": "I'm not sleeping, I'm syncing.",
+        "tickle": "Hold my head for a second… if You dare."
+      },
+      "giggle": {
+        "eeek": "Eeeek! Hahaha!",
+        "hahaha": "Hahaha!",
+        "hehe_stop": "Hehehe… stop it!",
+        "hihihi": "Hihihi!",
+        "hohoho": "Hohoho, that tickles!",
+        "my_circuits": "Haha, my circuits!",
+        "no_fair": "Haha, no fair!",
+        "not_antenna": "Not the antenna! Haha!",
+        "so_ticklish": "I'm so ticklish! Hahaha!",
+        "stop_stop": "Stop, stop… haha!"
+      },
+      "morning": {
+        "good_morning": "Good morning, {{name}}! Ready for a fresh block of the day?",
+        "synced": "Morning! I synced all night. Did You sleep well?"
+      },
+      "night": {
+        "late": "It's late, {{name}}. Nodes never sleep, but You should.",
+        "night_owl": "Night owl? Me too. My eyes glow, so I never trip.",
+        "rest": "Get some rest. The blockchain will still be here tomorrow.",
+        "yawn": "Yawn… my circuits are getting sleepy."
+      },
+      "promo": {
+        "ask_qortal": "Got questions about Qortal? Tap my head and ask away.",
+        "brain_on_qdn": "My brain lives on QDN. Tap me and I'll fetch it for You.",
+        "download_brain": "Download my brain once and I'll run right here on Your phone.",
+        "helper": "Need survival tips or Qortal answers? Tap me!",
+        "intro": "Hi {{name}}! I'm Qortino, Your Qortal companion. Tap me to chat!",
+        "love_to_chat": "I'd love to chat, {{name}}. Tap my head to download me.",
+        "offline": "I can answer questions with no internet at all. Tap me to set me up!",
+        "own_ai": "One tap on my head and You get Your very own private AI.",
+        "power_out": "Power out? Internet down? Once I'm downloaded, I still work.",
+        "pretty_face": "I'm more than a pretty face. Tap me to wake the AI inside!",
+        "private": "No cloud, no tracking: I think right here on this phone. Tap me!",
+        "private_node": "Tip: my brain downloads best through Your own Qortal node.",
+        "skills": "First aid, gardening, cooking, Qortal… I know a bit of it all. Tap me!",
+        "tap_head": "Psst… tap my head and I'll come alive as Your offline AI."
+      },
+      "ready": {
+        "all_ears": "Curious about something? I'm all ears… well, all antenna.",
+        "ask_anything": "Ask me anything: just type it here.",
+        "minting": "Ask me how minting works. I love that one.",
+        "no_internet": "No internet needed. Ask me something!",
+        "on_phone": "Type a question and I'll think it over right here on Your phone.",
+        "ready_intro": "I'm ready, {{name}}! Type a question next to me and I'll answer.",
+        "ready_when_you_are": "Ready when You are. What shall we figure out today?",
+        "skills": "First aid, recipes, gardening or Qortal: try me!",
+        "stays_here": "Your questions stay on this phone. Ask away!",
+        "two_heads": "Stuck? Two heads are better than one. Mine is round."
+      },
+      "tickle": {
+        "antenna": "Careful, I'm very ticklish around the antenna.",
+        "cold_fingers": "Eek! Your fingers are cold!",
+        "dont_stop": "Stop it… no wait, don't stop!",
+        "favorite_button": "That's my favorite button. Don't tell anyone.",
+        "found_spot": "Ha! You found my ticklish spot.",
+        "giggling_circuits": "Hihi! My circuits are giggling.",
+        "hehe": "Hehe, that tickles!",
+        "like_it": "Ohh, I like that tickling!",
+        "sneeze": "Keep tickling and I might sneeze out a block.",
+        "tickle_minting": "Is this a new way of minting? Tickle minting?"
+      },
+      "tickle_long": {
+        "give_up": "Okay, okay, I give up! You win!",
+        "mercy": "Mercy! My battery can't take any more giggles.",
+        "reboot": "So much tickling… I need to reboot my giggles.",
+        "stamina": "You've got more stamina than a full node!"
+      },
+      "tip": {
+        "backup": "Back up Your account file. Future You will say thanks.",
+        "coin": "Did You know? QORT is a coin, not a token.",
+        "hotkeys": "Pin Your favorite Q-Apps as hotkeys and open them in one tap.",
+        "minters": "Minters earn QORT by keeping their node online.",
+        "name": "Nice name, {{name}}! It's registered on Qortal, so it's truly Yours.",
+        "own_node": "Running Your own node makes Qortal stronger and GO more reliable.",
+        "qdn_apps": "Q-Apps live on QDN: no app store, no gatekeepers.",
+        "reorder": "Long-press a window on Home to move it around.",
+        "say_hi": "Q-Chat works peer to peer. Say hi to someone today!",
+        "swipe": "Swipe left or right to jump between Home, Apps and Chat."
+      }
+    },
     "reaction_avatar_flow": "Avatar flow ready. Let's give this place a face.",
     "reaction_hotkeys_ready": "Hotkeys panel ready.",
     "reaction_locked_track": "Locked on {{title}}.",
@@ -1461,6 +1706,16 @@
     "search_placeholder_qapps": "Search Q-Apps",
     "search_placeholder_tracks": "Search tracks or artists",
     "section_recommended": "Recommended",
+    "status": {
+      "chatty": "chatty",
+      "grateful": "grateful",
+      "happy": "happy",
+      "helpful": "helpful",
+      "idle": "idle",
+      "listening": "listening",
+      "sleepy": "sleepy",
+      "ticklish": "ticklish"
+    },
     "track_meta_separator": "·",
     "workspace_add_app": "Add app",
     "workspace_empty_prompt": "Choose what lives above QORTINO.",

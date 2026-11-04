@@ -1,6 +1,5 @@
 /**
  * Pinch / double-tap / wheel zoom for arbitrary content (PDF canvas, etc.).
- * Same gesture model as QortinoZoomableImage, applied to a wrapper Box.
  */
 import {
   useEffect,

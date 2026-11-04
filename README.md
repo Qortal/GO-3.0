@@ -8,7 +8,7 @@ Reticulum — plus a mobile-first UI, OS notifications, biometric login, and bat
 background behavior.
 
 **Repository:** https://gitea.qortal.link/simon/GO-3.0  
-**Current APK:** GO 3.0 **v0.0.19** (`versionName` 0.0.19, `versionCode` 22), a release (non-debuggable) build — shown in-app as **GO version** (Core & settings). Chat engine matches Hub v3.0.3.
+**Current APK:** GO 3.0 **v0.0.20** (`versionName` 0.0.20, `versionCode` 23), a release (non-debuggable) build — shown in-app as **GO version** (Core & settings). Chat engine matches Hub v3.0.3.
 
 > **For Hub developers**
 >
@@ -142,6 +142,7 @@ Every field build is published on Q-Share (Q-Share+ from v0.0.13) under the name
 | **v0.0.17** | Sync on slow phones: background gap bookkeeping cut to a few ms, no endless equal-head repairs, sends no longer wait on the node for Your own membership, retried sends no longer fail as "Invalid event", "Invalid Data" rows heal; delivery ticks for group posts, reply image thumbnails, channel pick when sharing, QDN publish bubble, private Q-Apps on public nodes, landscape and tablet layout; much richer Copy diagnostics |
 | **v0.0.18** | Qortal Card (testing, off by default): tap-to-pay with Qortal test cards and between two GO phones over NFC; Dev Mode for trying a Q-App .zip before publishing; drafts kept per channel, chats come back in their channel with their text; Home/Apps/Chat buttons step aside for the channel list and in-chat search; drag apps out of an open folder; no chat jump near group invites; no false "apikey invalid" on public nodes; Torq notifications open Torq. First build with a fixed Gitea download link |
 | **v0.0.19** | Voice calls work: 1:1 and group calls with Hubs and GO phones on the Hub's own call code, direct WebRTC with Reticulum fallback (never local addresses; "Private" keeps calls on Reticulum), ringing and lock-screen answer, earpiece, speaker and headsets; widgets screen left of Home; rearrange the Home/Apps/Chat buttons; "public node unavailable" window; Enter makes a new line in chats; channels keep loading after long use; crash-safe, faster chat database (WAL); faster start (no game engine at boot, no endless logo); bottom of lists tappable with 3-button navigation; sharing into GO with a window open; private nodes on the network ask for their API key |
+| **v0.0.20** | Qortino AI: new Qwen3 4B model (offline, works on older phones and 16 KB-page phones), about 5,000 curated answers, download on the public node too (resumes past 1 GB, runs in the background), settings, New chat, talks and an Ask box on Home; widgets kept on the phone and ready when you swipe to them; Q-Apps no longer stuck on the node loading page; smoother Tabs; Kick/Ban only for the group owner; muted groups stay quiet; GO also uses the `reticulum3` hub; other devices stop ringing when one answers a GO call; APK about a third smaller |
 
 ---
 

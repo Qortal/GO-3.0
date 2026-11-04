@@ -26,5 +26,5 @@ Each line:
 ```bash
 node tools/qortino-knowledge/import-golden.mjs
 node tools/qortino-knowledge/build-pack.mjs --out tools/qortino-knowledge/dist/qortino-knowledge-v2.json --version v2
-node tools/qortino-knowledge/build-pack.mjs --no-embeddings --out src/qortinoAgent/bundledKnowledge.json --version v2
+node tools/qortino-knowledge/build-pack.mjs --no-embeddings --out tools/qortino-knowledge/dist/qortino-knowledge-v2.json --version v2
 ```

@@ -559,6 +559,9 @@ export const ManageMembers = ({
               groupId={selectedGroup?.groupId}
               setOpenSnack={setOpenSnack}
               setInfoSnack={setInfoSnack}
+              isAdmin={isAdmin}
+              isOwner={isOwner}
+              ownerAddress={groupInfo?.owner}
             />
           )}
           {canManageMembers && value === 4 && (
@@ -813,6 +816,9 @@ export const ManageMembers = ({
               groupId={selectedGroup?.groupId}
               setOpenSnack={setOpenSnack}
               setInfoSnack={setInfoSnack}
+              isAdmin={isAdmin}
+              isOwner={isOwner}
+              ownerAddress={groupInfo?.owner}
             />
           </Box>
         )}

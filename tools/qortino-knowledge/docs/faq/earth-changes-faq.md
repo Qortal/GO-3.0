@@ -1,6 +1,6 @@
 # earth-changes — golden FAQ
 
-Curated offline Q&A for Qortino (200 entries). Prefer these answers when relevant.
+Curated offline Q&A for Qortino (198 entries). Prefer these answers when relevant.
 
 ## Q: Who is Ben Davidson and what is Suspicious0bservers?
 
@@ -572,12 +572,6 @@ A: No. Official forecast centers publish standardized alerts and indices; Davids
 
 Also asked as: s0 vs noaa · davidson vs official space weather
 
-## Q: What cash and documents should I keep for disruption scenarios?
-
-A: Keep some cash in small notes — card networks fail in blackouts. Store copies of ID, deeds, insurance, and prescriptions in a waterproof folder plus an encrypted offline digital backup. Paper maps of your region matter when GNSS or mobile data fail. These steps help in mundane outages and in severe space-weather disruption alike.
-
-Also asked as: cash for blackout · documents for earth changes prep
-
 ## Q: What heat and light preparations overlap with grid-down space-weather risk?
 
 A: Headlamps beat candles for safety; concentrate warmth in one room with wool blankets and sleeping bags; cook with ventilated camp/propane setups only. Know your fuel inventory. Severe space weather is one path to blackout; ice storms are another. Prepare for darkness and cold as mundane problems first.
@@ -588,7 +582,7 @@ Also asked as: heat light blackout earth changes · winter blackout prep solar s
 
 A: Grid failure can stop water and sewage pumps. Plan greywater reuse rules, stored water for hygiene, heavy-duty bags/buckets or a camping toilet, bleach for surfaces, and trash separation. Sanitation prevents disease in any prolonged outage — Carrington-class or ordinary. Keep supplies boring and practiced.
 
-Also asked as: sanitation grid down · toilet plan blackout
+Also asked as: sanitation plan grid down · toilet plan blackout
 
 ## Q: What medical preparedness overlaps with catastrophe worries?
 
@@ -703,12 +697,6 @@ Also asked as: financial prep disruption · cash savings emergency
 A: Water treatment, cooking from staples, first aid, gardening, food preservation, basic electrics, radio operation, conflict de-escalation, and community organizing. Gadgets fail; skills transfer. Learn one skill per month instead of buying another fear widget.
 
 Also asked as: skills over gear prep · which skills for resilience
-
-## Q: What should be in a Faraday bin for communications?
-
-A: Spare handheld radio, small power bank, USB cables/adapters, spare phone if affordable, headlamp, AA/AAA lithium batteries, USB LED light, and a note with frequencies/channels. Label and inventory yearly. This supports outages and surge events; it is not a complete EMP mythology kit.
-
-Also asked as: faraday bin contents · what to store faraday cage
 
 ## Q: What does build the better thing beside the old mean for prep?
 

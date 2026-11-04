@@ -1,5 +1,5 @@
 /**
- * Persisted Qortino chat sessions (Offline + QDN), with pin + rename.
+ * Persisted Qortino chat sessions, with pin + rename.
  */
 import { Preferences } from '@capacitor/preferences';
 
@@ -8,40 +8,19 @@ const ACTIVE_KEY = 'qortino_chat_active_v1';
 
 type QortinoChatMode = 'offline' | 'qdn';
 
-/** Serializable bubble — mirrors chat UI fields we care to restore. */
+/**
+ * Serializable bubble — mirrors chat UI fields we care to restore. Sessions
+ * saved by the old QDN chat carried more card fields; they stay in storage
+ * but only offline sessions are shown.
+ */
 export type StoredChatBubble = {
   id: string;
   role: 'user' | 'assistant';
   content: string;
-  profiles?: Array<{
-    name: string;
-    address: string;
-    level: number;
-    tags: string[];
-    avatarUrl: string;
-    description?: string;
-    characterSummary?: string;
-    nameRole?: 'primary' | 'secondary';
-    primaryName?: string;
-  }>;
-  media?: unknown[];
-  mediaLayout?: 'grid' | 'list';
+  /** Exactly what the model was given / wrote for this turn. */
+  modelContent?: string;
   links?: unknown[];
   apps?: unknown[];
-  publishedSites?: Array<{
-    service: 'APP' | 'WEBSITE';
-    name: string;
-    title: string;
-    avatarUrl: string;
-  }>;
-  quitterPosts?: Array<{
-    name: string;
-    identifier: string;
-    text: string;
-    created?: number;
-  }>;
-  ownedNames?: unknown[];
-  nudgeQdn?: boolean;
   canContinueAssemble?: boolean;
   continueQuery?: string;
 };
@@ -60,13 +39,16 @@ export type QortinoChatSession = {
 
 type ActiveMap = Partial<Record<QortinoChatMode, string>>;
 
+/** Title of a chat not named yet; shown translated (see the history panel). */
+export const UNTITLED_CHAT_TITLE = 'New chat';
+
 function newId(): string {
   return `qchat_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
 export function titleFromMessages(messages: StoredChatBubble[]): string {
   const firstUser = messages.find((m) => m.role === 'user' && m.content.trim());
-  if (!firstUser) return 'New chat';
+  if (!firstUser) return UNTITLED_CHAT_TITLE;
   const t = firstUser.content.replace(/\s+/g, ' ').trim();
   return t.length > 42 ? `${t.slice(0, 42)}…` : t;
 }
@@ -75,7 +57,7 @@ export function createEmptySession(mode: QortinoChatMode): QortinoChatSession {
   const now = Date.now();
   return {
     id: newId(),
-    title: 'New chat',
+    title: UNTITLED_CHAT_TITLE,
     pinned: false,
     mode,
     createdAt: now,

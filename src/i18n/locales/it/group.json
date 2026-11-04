@@ -872,6 +872,10 @@
   "member_actions": {
     "make_admin_named": "rendi {{name}} amministratore",
     "more_named": "altre azioni per {{name}}",
+    "needs_approval_bans_notice": "questo gruppo non ha un proprietario, quindi annullare un'esclusione richiede l'approvazione dei suoi amministratori, che qui non è possibile.",
+    "needs_approval_notice": "questo gruppo non ha un proprietario, quindi allontanamenti, esclusioni e cambi di amministratori richiedono l'approvazione dei suoi amministratori, che qui non è possibile.",
+    "owner_only_bans_notice": "solo il proprietario del gruppo può annullare le esclusioni.",
+    "owner_only_notice": "solo il proprietario del gruppo può allontanare o escludere membri e cambiare gli amministratori.",
     "pending": "in attesa",
     "pending_hint": "in attesa di conferma sulla blockchain. Può richiedere un paio di minuti.",
     "remove_admin_named": "rimuovi {{name}} da amministratore"

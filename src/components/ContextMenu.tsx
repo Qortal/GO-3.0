@@ -38,6 +38,7 @@ import {
   subscribePinnedGroups,
   togglePinnedGroup,
 } from '../utils/pinnedGroups';
+import { isGroupMuted, toggleGroupMute } from '../utils/mutedGroups';
 
 export const CustomStyledMenu = styled(Menu, {
   shouldForwardProp: (prop) => prop !== 'reticulumMenu',
@@ -127,7 +128,7 @@ export const ContextMenu = ({
     crypto.randomUUID?.() || `group-menu-${Math.random()}`
   );
   const theme = useTheme();
-  const [mutedGroups] = useAtom(mutedGroupsAtom);
+  const [mutedGroups, setMutedGroups] = useAtom(mutedGroupsAtom);
   const setTxList = useSetAtom(txListAtom);
   const { show } = useContext(QORTAL_APP_CONTEXT);
   const { t } = useTranslation(['core', 'group', 'reticulum']);
@@ -176,9 +177,10 @@ export const ContextMenu = ({
       );
   }, [isMenuOpen, menuArmed]);
 
-  const isMuted = useMemo(() => {
-    return mutedGroups.includes(groupId);
-  }, [mutedGroups, groupId]);
+  const isMuted = useMemo(
+    () => isGroupMuted(mutedGroups, groupId),
+    [mutedGroups, groupId]
+  );
 
   const [pinned, setPinned] = useState(() => isGroupPinned(groupId));
   useEffect(() => {
@@ -293,12 +295,10 @@ export const ContextMenu = ({
 
   const handleSetGroupMute = () => {
     try {
-      let value = [...mutedGroups];
-      if (isMuted) {
-        value = value.filter((group) => group !== groupId);
-      } else {
-        value.push(groupId);
-      }
+      const value = toggleGroupMute(mutedGroups, groupId);
+      // Alerts read this list: mute takes effect now, not after the reload
+      // below (which some callers skip).
+      setMutedGroups(value);
       window
         .sendMessage('addUserSettings', {
           keyValue: {
@@ -333,10 +333,7 @@ export const ContextMenu = ({
    * arrives before the user could plausibly have aimed at it.
    */
   const handleMenuClose = (event?, reason?: string) => {
-    if (
-      reason === 'backdropClick' &&
-      Date.now() - menuOpenedAt.current < 500
-    ) {
+    if (reason === 'backdropClick' && Date.now() - menuOpenedAt.current < 500) {
       return;
     }
     handleClose(event);

@@ -153,6 +153,7 @@ import {
   qortinoAgentOpenAtom,
 } from '../../atoms/global';
 import { closeQortinoAgentSheet } from '../../qortinoAgent/qortinoSheetNav';
+import { hasPendingQortinoInstall } from '../../qortinoAgent/installPending';
 /**
  * Qortino carries several megabytes of bundled knowledge and golden answers as
  * JSON. Importing it statically put that parse on the critical path of every
@@ -167,6 +168,7 @@ import { mergeDirectsWithFriends } from '../../lib/dm/mergeDirectsWithFriends';
 import { validateAddress } from '../../utils/validateAddress';
 import { sortArrayByTimestampAndGroupName } from '../../utils/time';
 import { dismissChatOsNotifications } from '../../utils/mobileOsNotifications';
+import { isGroupMuted } from '../../utils/mutedGroups';
 import {
   applyPinnedGroupOrder,
   loadPinnedGroupIds,
@@ -1039,6 +1041,14 @@ const GroupInner = ({
   const [isLoadingGroupMessage, setIsLoadingGroupMessage] = useState('');
   const setMutedGroups = useSetAtom(mutedGroupsAtom);
   const mutedGroups = useAtomValue(mutedGroupsAtom);
+  // Mention alerts read mute from these, not from a render's closure: an
+  // event can wait seconds for the member list, and the first ones after
+  // login can arrive before the stored list has loaded.
+  const mutedGroupsRef = useRef<unknown>(mutedGroups);
+  const mutedGroupsLoadedRef = useRef<Promise<unknown>>(Promise.resolve());
+  useEffect(() => {
+    mutedGroupsRef.current = mutedGroups;
+  }, [mutedGroups]);
   const memberGroupsForReticulum = useAtomValue(memberGroupsAtom);
   const memberGroupsWithReticulumActivity = useAtomValue(
     memberGroupsWithReticulumChatAtom
@@ -1274,6 +1284,14 @@ const GroupInner = ({
   useEffect(() => {
     if (qortinoAgentOpen) setQortinoEverOpened(true);
   }, [qortinoAgentOpen]);
+  // A Qortino download that GO closed half way carries on after sign-in.
+  const signedInAddress = userInfo?.address;
+  useEffect(() => {
+    if (!signedInAddress || !hasPendingQortinoInstall()) return;
+    void import('../../qortinoAgent/installJob')
+      .then((job) => job.resumeQortinoInstallIfPending())
+      .catch(() => undefined);
+  }, [signedInAddress]);
 
   const {
     roomState: gcallRoomState,
@@ -1593,6 +1611,7 @@ const GroupInner = ({
           })
           .then((response) => {
             if (!response?.error) {
+              mutedGroupsRef.current = response || [];
               setMutedGroups(response || []);
               res(response);
               return;
@@ -1614,7 +1633,7 @@ const GroupInner = ({
   }, [setMutedGroups]);
 
   useEffect(() => {
-    getUserSettings();
+    mutedGroupsLoadedRef.current = getUserSettings().catch(() => undefined);
   }, [getUserSettings]);
 
   const getTimestampEnterChat = useCallback(async () => {
@@ -2937,11 +2956,7 @@ const GroupInner = ({
         !eventId ||
         !myAddressRef.current ||
         event.authorAddress === myAddressRef.current ||
-        !mentionedAddresses.includes(myAddressRef.current) ||
-        (Array.isArray(mutedGroups) &&
-          mutedGroups.some(
-            (mutedGroupId) => String(mutedGroupId) === String(groupId)
-          ))
+        !mentionedAddresses.includes(myAddressRef.current)
       ) {
         return;
       }
@@ -2954,15 +2969,18 @@ const GroupInner = ({
       const channelId = String(event.channelId || 'general');
       const timestamp = Number(event.timestamp || Date.now());
 
-      executeEvent('q-chat-mention-notification', {
-        channelId,
-        eventId,
-        groupId,
-        groupName,
-        timestamp,
+      void mutedGroupsLoadedRef.current.then(() => {
+        if (isGroupMuted(mutedGroupsRef.current, groupId)) return;
+        executeEvent('q-chat-mention-notification', {
+          channelId,
+          eventId,
+          groupId,
+          groupName,
+          timestamp,
+        });
       });
     },
-    [mutedGroups]
+    []
   );
 
   const processReticulumBackgroundEvent = useCallback(

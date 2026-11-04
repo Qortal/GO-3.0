@@ -1,13 +1,9 @@
 /**
  * Curated Q-App / WEBSITE directory for Qortino.
  * Sources: Qortal GitHub/Gitea repos, QDN publish metadata, crowetic Gitea apps.
- * Offline answers use this catalog; QDN mode adds live avatars + open-in-tab.
+ * Qortino answers Q-App questions from this catalog and opens the app in a tab.
  */
 import { executeEvent } from '../utils/events';
-import {
-  getBaseApiReact,
-  getBaseApiReactForAvatar,
-} from '../utils/globalApi';
 import { parkQortinoAgentSheet } from './qortinoSheetNav';
 import {
   isGenericConceptNeedle,
@@ -76,8 +72,7 @@ export const Q_APP_CATALOG: QAppCatalogEntry[] = [
     service: 'APP',
     aliases: ['earbump', 'ear bump', 'music app'],
     title: 'Ear-Bump',
-    summary:
-      'Decentralized audio / music publishing and listening on Qortal.',
+    summary: 'Decentralized audio / music publishing and listening on Qortal.',
     tags: ['music', 'audio', 'listen'],
     repo: 'https://github.com/Qortal/Ear-Bump',
   },
@@ -190,14 +185,24 @@ export const Q_APP_CATALOG: QAppCatalogEntry[] = [
     tags: ['onboarding', 'beginner', 'start'],
   },
   {
+    id: 'torq',
+    name: 'Torq',
+    service: 'APP',
+    aliases: ['torq app', 'torq social'],
+    title: 'Torq',
+    summary:
+      'The social Q-App for posts, replies, polls, GIFs and Revs (photo and video stories). It uses the same QDN data as Quitter, so Quitter posts and follows carry over.',
+    tags: ['social', 'posts', 'feed', 'stories'],
+  },
+  {
     id: 'quitter',
     name: 'Quitter',
     service: 'APP',
     aliases: ['q-twitter', 'microblog'],
     title: 'Quitter',
     summary:
-      'Decentralized microblogging / short-post social Q-App on Qortal.',
-    tags: ['social', 'posts', 'feed'],
+      'The original short-post social Q-App. Torq is its newer version on the same QDN data, with Revs, polls and GIFs.',
+    tags: ['social', 'posts'],
     repo: 'https://github.com/Qortal/Quitter',
   },
   {
@@ -240,6 +245,151 @@ export const Q_APP_CATALOG: QAppCatalogEntry[] = [
     summary: 'Charts Q-App for reviewing QORT trade chart data on Qortal.',
     tags: ['charts', 'trade', 'price'],
     repo: 'https://gitea.qortal.org/crowetic/Q-Charts',
+  },
+  {
+    id: 'q-drive',
+    name: 'Q-Drive',
+    service: 'APP',
+    aliases: ['qdrive', 'q drive', 'q-drive notes'],
+    title: 'Q-Drive',
+    summary:
+      'A private drive for your files, encrypted on your device before anything goes to QDN, with folders, previews and sharing with one person, by Q-Mail or as a public Q-Share copy. It also has a Notes tab for encrypted notes and to-do lists.',
+    tags: ['drive', 'files', 'storage', 'encrypted', 'notes', 'share'],
+  },
+  {
+    id: 'subscreen',
+    name: 'Subscreen',
+    service: 'APP',
+    aliases: ['sub screen', 'subscreen movies', 'movies app', 'tv series app'],
+    title: 'Subscreen',
+    summary:
+      "Movies and TV series from the Qortal community: watch, rate out of 10, bookmark, add cast and crew, tip publishers and publish your own. It uses Q-Tube's format, so titles show in both apps.",
+    tags: ['movies', 'series', 'video', 'watch', 'q-tube'],
+  },
+  {
+    id: 'pos-plus',
+    name: 'POS+',
+    service: 'APP',
+    aliases: ['pos plus', 'pos', 'point of sale', 'cash register', 'till app'],
+    title: 'POS+',
+    summary:
+      'A point-of-sale app for shops and market stalls: card and cash sales, receipts, refunds, staff shifts, several locations and VAT reports. Store data is kept on QDN under your name, mostly encrypted.',
+    tags: ['business', 'sales', 'shop', 'receipts', 'vat'],
+  },
+  {
+    id: 'world-map',
+    name: 'World Map',
+    service: 'APP',
+    aliases: ['worldmap', 'world map app', 'map app', 'poi map'],
+    title: 'World Map',
+    summary:
+      "A map app for saving and sharing places and lists of places, browsing everyone's public places and posting to a World Feed, on map tiles stored on QDN.",
+    tags: ['map', 'places', 'poi', 'travel'],
+  },
+  {
+    id: 'thankq',
+    name: 'ThankQ',
+    service: 'APP',
+    aliases: ['thank q', 'thankq hospitality', 'meetups app'],
+    title: 'ThankQ',
+    summary:
+      'A hospitality app where people on Qortal offer stays, meetups, event trips and tools to lend, send requests and leave reviews. Listings, profiles and requests are public on QDN.',
+    tags: ['travel', 'hosting', 'meetup', 'borrow'],
+  },
+  {
+    id: 'q-weather',
+    name: 'Q-Weather',
+    service: 'APP',
+    aliases: ['qweather', 'q weather', 'weather app', 'weather forecast'],
+    title: 'Q-Weather',
+    summary:
+      'Weather forecasts for your places, with a meteogram chart, a list of days and a map with weather layers, delivered over QDN from ECMWF and regional models. It has three GO widgets: Weather Bars, Weather Chart and Weather Now.',
+    tags: ['weather', 'forecast', 'meteogram', 'map', 'widget'],
+  },
+  {
+    id: 'qortal-web',
+    name: 'Qortal Web',
+    service: 'APP',
+    aliases: [
+      'qortal web engine',
+      'qwb search',
+      'qortal web search',
+      'qwb websites directory',
+    ],
+    title: 'Qortal Web',
+    summary:
+      'A search engine and directory for everything published with Qortal Web Builder: websites, forums, polls, articles, media, folders and shops.',
+    tags: ['search', 'websites', 'directory', 'qwb'],
+  },
+  {
+    id: 'q-shops',
+    name: 'Q-Shops',
+    service: 'APP',
+    aliases: ['qshops', 'q shops', 'qwb marketplace', 'shops directory'],
+    title: 'Q-Shops',
+    summary:
+      'A marketplace that gathers the Q-Shop stores built with Qortal Web Builder into one directory, with a cart across shops, checkout through Hub and order history.',
+    tags: ['shop', 'marketplace', 'shopping', 'qwb'],
+  },
+  {
+    id: 'gifs',
+    name: 'GIFs',
+    service: 'APP',
+    aliases: ['gif library', 'gifs app', 'qortal gifs'],
+    title: 'GIFs',
+    summary:
+      'A community GIF library: add GIFs or short MP4s with search words, then copy them into chats. The same library feeds the GIF pickers in Q-Chat and Torq.',
+    tags: ['gif', 'chat', 'stickers'],
+  },
+  {
+    id: 'q-meme',
+    name: 'Q-MEME',
+    service: 'APP',
+    aliases: ['qmeme', 'q meme', 'meme maker', 'memes app'],
+    title: 'Q-MEME',
+    summary:
+      'A community meme app: put words on templates or your own pictures, share finished memes and publish templates, then save them or copy them into chats.',
+    tags: ['meme', 'gif', 'fun', 'create'],
+  },
+  {
+    id: 'singularity',
+    name: 'Singularity',
+    service: 'APP',
+    aliases: ['singularity game'],
+    title: 'Singularity',
+    summary:
+      'A small game: fly your Qortal avatar, mint blocks and dodge black holes, with a public leaderboard of verified scores.',
+    tags: ['game', 'play', 'leaderboard'],
+  },
+  {
+    id: 'q-fund',
+    name: 'Q-Fund',
+    service: 'APP',
+    aliases: ['qfund', 'q fund', 'crowdfund app', 'q-fund crowdfunding'],
+    title: 'Q-Fund',
+    summary:
+      'Crowdfunding in QORT: start a campaign with a goal and an end date, or donate to one. Donations go to the creator if the goal is met by the deadline; otherwise the funds are returned.',
+    tags: ['crowdfunding', 'donate', 'campaign'],
+  },
+  {
+    id: 'q-shop',
+    name: 'Q-Shop',
+    service: 'APP',
+    aliases: ['qshop', 'q shop', 'shop app', 'qortal store app'],
+    title: 'Q-Shop',
+    summary:
+      'Decentralised shops: sellers list products and buyers pay the seller directly in QORT or ARRR, with no platform fee. Orders are encrypted for the buyer and the seller.',
+    tags: ['shop', 'buy', 'sell'],
+  },
+  {
+    id: 'q-wallets',
+    name: 'Q-Wallets',
+    service: 'APP',
+    aliases: ['qwallets', 'q wallets', 'q-wallet'],
+    title: 'Q-Wallets',
+    summary:
+      "Qortal's official wallet app: balances, history, sending and receiving with QR codes for QORT, BTC, LTC, DOGE, DGB, RVN and ARRR. Hub or GO keep the keys and ask you to approve each send.",
+    tags: ['wallet', 'coins', 'send', 'receive'],
   },
 ];
 
@@ -308,7 +458,12 @@ function extractQAppQueryName(query: string): string | null {
         .trim();
       if (isGenericNetworkNeedle(name)) return null;
       // Generic concepts ("minting", "names", "trade") only when user said "… app".
-      if (isGenericConceptNeedle(name) && !/\bapp\b/.test(t) && !isStrongAppLabel(name)) {
+      if (
+        isGenericConceptNeedle(name) &&
+        !/\bapp\b/.test(t) &&
+        !/^(open|launch)\b/.test(t) &&
+        !isStrongAppLabel(name)
+      ) {
         return null;
       }
       return name;
@@ -348,6 +503,7 @@ export function matchQAppCatalog(query: string): MatchedQApp | null {
   if (
     isGenericConceptNeedle(needle) &&
     !/\bapp\b/.test(t) &&
+    !/^(open|launch)\b/.test(t) &&
     !isStrongAppLabel(needle) &&
     !needle.startsWith('q-')
   ) {
@@ -369,6 +525,10 @@ export function matchQAppCatalog(query: string): MatchedQApp | null {
     let local = 0;
     for (const c of strong) {
       if (!c) continue;
+      // "Q-Mail+" (a pre-release + version) is not the Q-Mail card, nor the
+      // other way round: the FAQ explains the + version and names the
+      // stable app to use.
+      if (needle.endsWith('+') !== c.endsWith('+')) continue;
       if (needle === c || t === c) {
         local = Math.max(local, 1);
         continue;
@@ -436,66 +596,6 @@ export function matchQAppCatalog(query: string): MatchedQApp | null {
   return best;
 }
 
-/** Resolve who published a QDN APP/WEBSITE name (owner address + primary name). */
-export function fetchQAppPublisher(
-  publishName: string,
-  signal?: AbortSignal
-): Promise<QAppPublisherInfo | null> {
-  const name = publishName.trim();
-  if (!name) return Promise.resolve(null);
-  const base = getBaseApiReact().replace(/\/$/, '');
-  return (async () => {
-    try {
-      const nameRes = await fetch(`${base}/names/${encodeURIComponent(name)}`, {
-        signal,
-      });
-      if (!nameRes.ok) return null;
-      const nameData = (await nameRes.json()) as { name?: string; owner?: string };
-      const ownerAddress = (nameData.owner || '').trim();
-      if (!ownerAddress) return null;
-
-      let primaryName = '';
-      try {
-        const primaryRes = await fetch(
-          `${base}/names/primary/${encodeURIComponent(ownerAddress)}`,
-          { signal }
-        );
-        if (primaryRes.ok) {
-          const primary = (await primaryRes.json()) as { name?: string };
-          primaryName = (primary.name || '').trim();
-        }
-      } catch {
-        // optional
-      }
-
-      let level = 0;
-      try {
-        const addrRes = await fetch(
-          `${base}/addresses/${encodeURIComponent(ownerAddress)}`,
-          { signal }
-        );
-        if (addrRes.ok) {
-          const addr = (await addrRes.json()) as { level?: number };
-          level = typeof addr.level === 'number' ? addr.level : 0;
-        }
-      } catch {
-        // optional
-      }
-
-      const displayName = primaryName || nameData.name || name;
-      return {
-        publishName: nameData.name || name,
-        ownerAddress,
-        primaryName: primaryName || displayName,
-        avatarUrl: qAppAvatarUrl(displayName),
-        level,
-      };
-    } catch {
-      return null;
-    }
-  })();
-}
-
 export function formatQAppAnswer(
   entry: QAppCatalogEntry,
   publisher?: QAppPublisherInfo | null
@@ -514,11 +614,6 @@ export function formatQAppAnswer(
       : ` Published under “${publisher.publishName}” by ${publisher.primaryName} (Level ${publisher.level}).`;
   }
   return `${entry.title}: ${entry.summary} ${where}${pub}`;
-}
-
-export function qAppAvatarUrl(name: string): string {
-  const base = getBaseApiReactForAvatar().replace(/\/$/, '');
-  return `${base}/arbitrary/AVATAR/${encodeURIComponent(name)}?async=true`;
 }
 
 export function openQAppInNewTab(opts: {

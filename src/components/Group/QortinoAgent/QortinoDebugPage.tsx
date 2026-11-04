@@ -1,15 +1,9 @@
 /**
  * Phone-framed Qortino chat for PC debugging (open qortino-debug.html).
- * Uses the real chat UI + QDN scanners; answers via web debug LLM / Ollama.
+ * Uses the real chat UI; answers via web debug LLM / Ollama.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import {
-  Box,
-  Button,
-  TextField,
-  Typography,
-  useTheme,
-} from '@mui/material';
+import { Box, Button, TextField, Typography, useTheme } from '@mui/material';
 import { alpha } from '@mui/material/styles';
 import { Provider as JotaiProvider } from 'jotai';
 import { QORTAL_APP_CONTEXT } from '../../../context/AppContext';
@@ -20,10 +14,8 @@ import { QortinoAgentChat } from './QortinoAgentChat';
 
 const DEBUG_INSTALL: QortinoInstallState = {
   installed: true,
-  packId: 'small',
+  modelId: 'web-debug',
   llmPath: 'web-debug',
-  embedderPath: 'web-debug-embed',
-  knowledgePath: undefined,
   installedAt: Date.now(),
   lastOpenedAt: Date.now(),
 };
@@ -93,8 +85,8 @@ export function QortinoDebugPage() {
                 mt: 0.4,
               }}
             >
-              Mobile-sized chat · real QDN lookups · answers via Ollama (if running)
-              or a grounded debug brain
+              Mobile-sized chat · answers via Ollama (if running) or a grounded
+              debug brain
             </Typography>
           </Box>
 
@@ -163,6 +155,8 @@ export function QortinoDebugPage() {
                   onClose={() => {
                     window.location.href = './';
                   }}
+                  // Nothing to delete on a PC: start the chat over.
+                  onRemoved={() => setChatKey((key) => key + 1)}
                 />
               </Box>
             </Box>
@@ -176,8 +170,7 @@ export function QortinoDebugPage() {
               textAlign: 'center',
             }}
           >
-            Tip: flip the chat to <strong>QDN</strong>, try “Simon James” or “who is
-            Crowetic”. Console logs show name candidates + full prompts.
+            Console logs show the full prompts.
           </Typography>
         </Box>
       </JotaiProvider>

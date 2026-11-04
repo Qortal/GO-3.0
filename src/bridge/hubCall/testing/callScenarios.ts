@@ -45,7 +45,11 @@ export function makePeer(
   network: FakePythonNetwork,
   name: string,
   seed: number,
-  destByte: number
+  destByte: number,
+  options: {
+    /** Sign GO's own call signals (fresh ringing cancel) with the wallet. */
+    signCallFieldsWithWallet?: boolean;
+  } = {}
 ): Peer {
   const wallet = new TestWallet(seed);
   const dest = hexDest(destByte);
@@ -55,6 +59,9 @@ export function makePeer(
   const stack = createHostedCallManagers({
     transport: node,
     presenceSource: { getEndpoints: (address) => endpoints.get(address) ?? [] },
+    signCallFields: options.signCallFieldsWithWallet
+      ? async (fields) => wallet.sign(fields)
+      : null,
     onCallHistory: (update) => {
       history.push(update);
     },

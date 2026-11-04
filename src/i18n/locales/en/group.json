@@ -876,6 +876,10 @@
   "member_actions": {
     "make_admin_named": "make {{name}} an admin",
     "more_named": "more actions for {{name}}",
+    "needs_approval_bans_notice": "this group has no owner, so lifting a ban needs approval from its admins, which can't be done here.",
+    "needs_approval_notice": "this group has no owner, so kicks, bans and admin changes need approval from its admins, which can't be done here.",
+    "owner_only_bans_notice": "only the group owner can lift bans.",
+    "owner_only_notice": "only the group owner can kick, ban or change admins.",
     "pending": "pending",
     "pending_hint": "waiting for the blockchain to confirm. This can take a couple of minutes.",
     "remove_admin_named": "remove {{name}} as admin"

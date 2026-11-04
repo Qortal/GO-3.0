@@ -872,6 +872,10 @@
   "member_actions": {
     "make_admin_named": "将{{name}}设为管理员",
     "more_named": "{{name}}的更多操作",
+    "needs_approval_bans_notice": "此群组没有所有者，取消封禁需要其管理员批准，这里无法完成。",
+    "needs_approval_notice": "此群组没有所有者，移除、封禁成员和更改管理员都需要其管理员批准，这里无法完成。",
+    "owner_only_bans_notice": "只有群组所有者可以取消封禁。",
+    "owner_only_notice": "只有群组所有者可以移除、封禁成员或更改管理员。",
     "pending": "待确认",
     "pending_hint": "正在等待区块链确认，可能需要几分钟。",
     "remove_admin_named": "取消{{name}}的管理员身份"

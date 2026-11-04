@@ -33,6 +33,19 @@ import { formatDate } from '../../utils/time';
 import { SwipeToDismiss } from '../common/SwipeToDismiss';
 import { isAndroidPackageFile } from '../../utils/androidPackageFiles';
 import { PANEL_TRANSFER_STAGES, transferStatusText } from './transferText';
+import qortinoHeadUrl from '../../assets/svgs/QortinoHead.svg';
+import {
+  dismissQortinoInstallRow,
+  getQortinoInstallJob,
+  isQortinoInstallJobActive,
+  qortinoInstallUnseen,
+  qortinoProgressRatio,
+  qortinoProgressText,
+  qortinoRetryCause,
+  subscribeQortinoInstallJob,
+  type QortinoInstallJobState,
+} from '../../qortinoAgent/installJobStore';
+import { openQortinoAgentSheet } from '../../qortinoAgent/qortinoSheetNav';
 
 const useTransfers = () =>
   useSyncExternalStore(subscribeQdnTransfers, getQdnTransfers, getQdnTransfers);
@@ -54,6 +67,12 @@ const anyTransferListedSnapshot = () =>
   getQdnTransfers().some((transfer) =>
     PANEL_TRANSFER_STAGES.has(transfer.stage)
   );
+const useQortinoInstallJob = () =>
+  useSyncExternalStore(
+    subscribeQortinoInstallJob,
+    getQortinoInstallJob,
+    getQortinoInstallJob
+  );
 
 /** What the downloads add to the bell: its badge count, and whether to list. */
 export const useQdnDownloadsBadge = () => {
@@ -72,9 +91,11 @@ export const useQdnDownloadsBadge = () => {
     anyTransferListedSnapshot,
     anyTransferListedSnapshot
   );
+  // Qortino's model download, while its window is closed.
+  const qortino = useQortinoInstallJob();
   return {
-    unseen,
-    hasAny: anyListed || panelSaved > 0,
+    unseen: unseen + qortinoInstallUnseen(qortino),
+    hasAny: anyListed || panelSaved > 0 || qortino.listed,
     /** Saved files the panel's Clear all would move to the history. */
     clearable: panelSaved,
   };
@@ -232,6 +253,118 @@ function DownloadRow({
   );
 }
 
+/**
+ * Qortino's model download. A tap opens Qortino, where it can be cancelled or
+ * tried again; a finished or stopped one can be dismissed here.
+ */
+function QortinoDownloadRow({
+  job,
+  onOpen,
+}: {
+  job: QortinoInstallJobState;
+  onOpen: () => void;
+}) {
+  const theme = useTheme();
+  const { t } = useTranslation(['core']);
+  const active = isQortinoInstallJobActive(job);
+  const failed = job.status === 'failed';
+  const done = job.status === 'done';
+  const accent = failed
+    ? theme.palette.error.main
+    : done
+      ? theme.palette.success.main
+      : theme.palette.primary.main;
+  const status = failed
+    ? t('core:qortino_agent.notify.panel_failed')
+    : done
+      ? t('core:qortino_agent.notify.ready')
+      : job.status === 'retrying'
+        ? t(`core:qortino_agent.notify.retry.${qortinoRetryCause(job.error)}`)
+        : qortinoProgressText(job.progress, t) ||
+          t('core:qortino_agent.progress.locate');
+  const measured = !!job.progress && job.progress.bytesTotal > 0;
+
+  return (
+    <Box
+      onClick={() => {
+        openQortinoAgentSheet();
+        onOpen();
+      }}
+      sx={{
+        ...rowSx(accent, theme.palette.mode === 'dark'),
+        cursor: 'pointer',
+      }}
+    >
+      <Box sx={{ alignItems: 'center', display: 'flex', gap: 1.15 }}>
+        <IconTile accent={accent}>
+          {failed ? (
+            <ErrorOutlineRoundedIcon sx={{ fontSize: 20 }} />
+          ) : done ? (
+            <CheckCircleRoundedIcon sx={{ fontSize: 20 }} />
+          ) : (
+            <Box
+              alt=""
+              component="img"
+              src={qortinoHeadUrl}
+              sx={{ height: 22, width: 22 }}
+            />
+          )}
+        </IconTile>
+        <Box sx={{ flex: 1, minWidth: 0 }}>
+          <Typography
+            noWrap
+            sx={{
+              color: theme.palette.text.primary,
+              fontSize: '0.9rem',
+              fontWeight: 700,
+              lineHeight: 1.3,
+            }}
+          >
+            {t('core:qortino_agent.name')}
+          </Typography>
+          <Typography
+            noWrap
+            sx={{
+              color: failed
+                ? theme.palette.error.light
+                : alpha(theme.palette.text.secondary, 0.9),
+              fontSize: '0.76rem',
+              lineHeight: 1.4,
+            }}
+          >
+            {status}
+          </Typography>
+        </Box>
+        {!active && (
+          <IconButton
+            aria-label={t('core:file_transfer.dismiss')}
+            onClick={(event) => {
+              event.stopPropagation();
+              dismissQortinoInstallRow();
+            }}
+            size="small"
+          >
+            <CloseRoundedIcon fontSize="small" />
+          </IconButton>
+        )}
+      </Box>
+      {active && (
+        <LinearProgress
+          aria-label={t('core:qortino_agent.name')}
+          value={qortinoProgressRatio(job.progress) * 100}
+          variant={measured ? 'determinate' : 'indeterminate'}
+          sx={{
+            backgroundColor: alpha(accent, 0.18),
+            borderRadius: 999,
+            height: 5,
+            '& .MuiLinearProgress-bar': { borderRadius: 999 },
+          }}
+        />
+      )}
+    </Box>
+  );
+}
+
 /** A saved file with its Open / Install button (also used by the history). */
 export function SavedQdnFileRow({
   file,
@@ -364,15 +497,21 @@ export function SavedQdnFileRow({
  */
 export const QdnDownloadsNotice = ({ onClose }: { onClose?: () => void }) => {
   const transfers = useTransfers();
+  const qortino = useQortinoInstallJob();
   // Files cleared from the panel stay in the notification history.
   const saved = getPanelSavedQdnFiles(useSavedFiles());
   const running = transfers.filter((transfer) =>
     PANEL_TRANSFER_STAGES.has(transfer.stage)
   );
-  if (running.length === 0 && saved.length === 0) return null;
+  if (!qortino.listed && running.length === 0 && saved.length === 0) {
+    return null;
+  }
 
   return (
     <>
+      {qortino.listed && (
+        <QortinoDownloadRow job={qortino} onOpen={() => onClose?.()} />
+      )}
       {running.map((transfer) => (
         <DownloadRow
           key={transfer.id}

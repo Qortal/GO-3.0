@@ -872,6 +872,10 @@
   "member_actions": {
     "make_admin_named": "{{name}}を管理者に設定",
     "more_named": "{{name}}のその他の操作",
+    "needs_approval_bans_notice": "このグループには所有者がいないため、禁止の解除には管理者による承認が必要です。ここでは行えません。",
+    "needs_approval_notice": "このグループには所有者がいないため、メンバーの削除・禁止や管理者の変更には管理者による承認が必要です。ここでは行えません。",
+    "owner_only_bans_notice": "禁止を解除できるのはグループの所有者だけです。",
+    "owner_only_notice": "メンバーの削除・禁止や管理者の変更ができるのはグループの所有者だけです。",
     "pending": "保留中",
     "pending_hint": "ブロックチェーンでの承認を待っています。数分かかる場合があります。",
     "remove_admin_named": "{{name}}を管理者から除外"

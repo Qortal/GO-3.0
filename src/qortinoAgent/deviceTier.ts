@@ -2,13 +2,22 @@ import QortinoLlm, {
   isQortinoLlmNativeAvailable,
   type QortinoDeviceTier,
 } from '../plugins/QortinoLlm';
-import type { QortinoAgentManifest, QortinoPackId } from './manifest';
+import {
+  modelTotalBytes,
+  QORTINO_MODEL,
+  type QortinoModelSpec,
+} from './manifest';
 
-type DeviceTierDecision = {
+/** Room kept free beside the model so the phone is not left at zero. */
+export const STORAGE_HEADROOM_BYTES = 300 * 1024 ** 2;
+
+export type DeviceCheck = {
   tier: QortinoDeviceTier;
-  recommendedPack: QortinoPackId;
-  allowedPacks: QortinoPackId[];
-  reason: string;
+  /** Bytes still to download (parts already saved are not counted). */
+  neededBytes: number;
+  enoughStorage: boolean;
+  /** Below the recommended RAM: the model runs, but slower and may be closed in the background. */
+  lowRam: boolean;
 };
 
 export async function readDeviceTier(): Promise<QortinoDeviceTier> {
@@ -18,59 +27,25 @@ export async function readDeviceTier(): Promise<QortinoDeviceTier> {
       availRamBytes: 4 * 1024 ** 3,
       availStorageBytes: 20 * 1024 ** 3,
       totalStorageBytes: 64 * 1024 ** 3,
-      recommendedPack: 'small',
       lowMemory: false,
     };
   }
   return QortinoLlm.getDeviceTier();
 }
 
-export function decidePackForDevice(
+export function checkDeviceForModel(
   tier: QortinoDeviceTier,
-  manifest: QortinoAgentManifest
-): DeviceTierDecision {
-  const small = manifest.packs.find((p) => p.id === 'small');
-  const medium = manifest.packs.find((p) => p.id === 'medium');
-  const allowed: QortinoPackId[] = [];
-
-  if (small && tier.totalRamBytes >= small.minRamBytes * 0.85) {
-    allowed.push('small');
-  }
-  if (
-    medium &&
-    tier.totalRamBytes >= medium.minRamBytes &&
-    tier.availStorageBytes >= medium.approxDownloadBytes + 500 * 1024 ** 2
-  ) {
-    allowed.push('medium');
-  }
-  if (allowed.length === 0) {
-    allowed.push('small');
-  }
-
-  let recommended: QortinoPackId =
-    tier.recommendedPack === 'medium' && allowed.includes('medium')
-      ? 'medium'
-      : 'small';
-
-  if (!allowed.includes(recommended)) {
-    recommended = allowed[0] ?? 'small';
-  }
-
-  let reason = 'Balanced for this device.';
-  if (recommended === 'small') {
-    if (tier.totalRamBytes < 7 * 1024 ** 3) {
-      reason = 'Lower RAM detected — Lite pack recommended.';
-    } else if (tier.availStorageBytes < 3 * 1024 ** 3) {
-      reason = 'Limited free storage — Lite pack recommended.';
-    }
-  } else {
-    reason = 'Enough RAM and storage for the Standard pack.';
-  }
-
+  alreadySavedBytes = 0,
+  model: QortinoModelSpec = QORTINO_MODEL
+): DeviceCheck {
+  const neededBytes = Math.max(0, modelTotalBytes(model) - alreadySavedBytes);
   return {
     tier,
-    recommendedPack: recommended,
-    allowedPacks: allowed,
-    reason,
+    neededBytes,
+    enoughStorage:
+      tier.availStorageBytes >= neededBytes + STORAGE_HEADROOM_BYTES,
+    lowRam:
+      tier.totalRamBytes > 0 &&
+      tier.totalRamBytes < model.recommendedRamBytes * 0.9,
   };
 }

@@ -1391,8 +1391,152 @@
     "testing_note": "テスト専用です。テストカードにはまだPINがないため、カードを持っている人は誰でも支払いができます。カードには少額のQORTだけを入れてください。",
     "title": "Qortal Card"
   },
+  "qortino_agent": {
+    "aria": {
+      "close": "Qortinoを閉じる",
+      "copy": "回答全体をコピー",
+      "history": "チャット履歴",
+      "new_chat": "新しいチャット",
+      "report": "この回答を報告してQortinoに教える",
+      "send": "送信",
+      "stop": "停止"
+    },
+    "chat": {
+      "continue": "回答の続きを書く →",
+      "copied": "回答全体をコピーしました",
+      "copy_failed": "コピーできませんでした",
+      "empty": "何でも聞いてください：応急手当と健康、サバイバルと備え、家庭菜園と料理、Qortal、プログラミングなど。この電話の中だけで動くので、インターネットはまったく必要ありません。",
+      "load_failed": "Qortinoを起動できませんでした：{{error}}",
+      "loading_model": "Qortinoを起こしています…",
+      "loading_model_hint": "モデルをメモリに読み込んでいます。次回からはずっと速く開きます。",
+      "model_missing": "モデルのファイルが見つかりません。Qortinoを閉じて、もう一度組み立ててください。",
+      "needs_app": "Qortinoはブラウザではなく、電話のアプリで動きます。",
+      "no_question": "（質問が見つかりません）",
+      "no_reply": "回答が届きませんでした。短い質問にするか、Qortinoを閉じて開き直してください。",
+      "open_app": "開く",
+      "placeholder": "Qortinoにメッセージ…",
+      "published_as": "{{service}} · {{name}} として公開",
+      "reply_failed": "すみません、回答を書けませんでした。",
+      "retry": "もう一度試す",
+      "subtitle": "オフライン · {{model}}"
+    },
+    "error": {
+      "cancelled": "組み立てをキャンセルしました。",
+      "checksum": "ダウンロードしたパーツが壊れていたため削除しました。もう一度お試しください。",
+      "detail": "詳細：{{detail}}",
+      "download": "この電話へのモデルの保存に失敗しました。空き容量とノードへの接続を確認してから、もう一度お試しください。",
+      "generic": "組み立てに失敗しました。",
+      "not_published": "QortinoのモデルはまだQDNにないか、ノードからまだ見えていません。少し時間をおいてもう一度お試しください。",
+      "qdn_failed": "QDNが今はモデルを届けられません。ホストしているピアが少なすぎるのかもしれません。後でもう一度お試しください。",
+      "stalled": "ダウンロードが進まなくなりました。残りを送っているピアが今はいません。後でもう一度お試しください。"
+    },
+    "gate": {
+      "assemble": "Qortinoを組み立てる",
+      "background_hint": "このウィンドウは最小化できます。ダウンロードは続き、通知で進み具合を確認できます。",
+      "cancel": "キャンセル",
+      "checking": "この電話を確認しています…",
+      "disclaimer": "Qortinoは自信満々に間違えることがあります → 大切なことは必ず確認してください。",
+      "intro": "応急手当と健康、サバイバルと備え、家庭菜園、料理、Qortalなどに役立つオフラインの相棒です。QDNからこの電話に一度組み立てれば、その後はインターネットなしで動きます。クラウドなし、電話の外には何も出ません。",
+      "low_ram": "この電話のメモリは{{ram}}です。Qortinoは動きますが、回答が遅くなったり、バックグラウンドでAndroidに終了されたりすることがあります。",
+      "low_storage": "空き容量が足りません：Qortinoには{{needed}}が必要ですが、この電話の空きは{{free}}です。",
+      "minimize": "最小化",
+      "model_blurb": "日常の質問、緊急時、Qortalのヘルプに使える賢いモデルがひとつ。すべてこの電話の中で動きます。",
+      "model_size": "ダウンロード {{size}} · {{license}}",
+      "new_model": "Qortinoの頭脳が新しく、賢くなりました。一度組み立ててください。古いLiteとStandardのパックは、空き容量を確保するため削除されます。",
+      "not_now": "今はしない",
+      "private_node_guide": "プライベートノードのガイドを見る",
+      "public_node_body": "公開ノードは共有されており、{{size}}のダウンロードには信頼できません。途中で止まったり、取得済みのデータを消したりすることがあります。GOは自動で再試行し、届いた分は保持しますが、自分のノードの方がずっと速く安定しています。",
+      "public_node_title": "プライベートノードを強くおすすめします",
+      "retry_in_minutes": "{{minutes}}分後にもう一度試します。",
+      "retry_in_seconds": "{{seconds}}秒後にもう一度試します。",
+      "retry_reason": {
+        "connection": "保存中に接続が切れました。次の試行はそこから続けます。",
+        "damaged": "ダウンロードした部分が壊れていたため、もう一度ダウンロードします。",
+        "peers": "残りを送っているピアが今はいません。"
+      },
+      "title": "Qortino AI",
+      "try_now": "今すぐ試す"
+    },
+    "history": {
+      "close": "チャット履歴を閉じる",
+      "delete_chat": "チャットを削除",
+      "empty": "保存されたチャットはまだありません。会話を始めると、ここに表示されます。",
+      "pin": "チャットを固定",
+      "rename": "名前を変更",
+      "rename_chat": "チャット名を変更",
+      "unpin": "チャットの固定を解除"
+    },
+    "name": "Qortino",
+    "notify": {
+      "background": "Qortinoのダウンロードは続いています。通知で進み具合を確認できます。",
+      "open_hint": "タップしてQortinoを開く",
+      "panel_failed": "停止しました。タップしてもう一度試してください。",
+      "ready": "Qortinoの準備ができました。",
+      "retry": {
+        "connection": "接続が切れました。まもなく続けます…",
+        "damaged": "壊れた部分をもう一度ダウンロードしています…",
+        "peers": "ピアを待っています…"
+      }
+    },
+    "progress": {
+      "bytes": "{{done}} / {{total}}",
+      "fetch": "パーツ {{part}}/{{count}} · ノードがQDNから取得中… {{percent}}%",
+      "finalizing": "仕上げています…",
+      "locate": "QDNでQortinoを探しています…",
+      "save": "パーツ {{part}}/{{count}} · この電話に保存中…",
+      "verify": "パーツ {{part}}/{{count}} · ファイルを確認中…"
+    },
+    "settings": {
+      "answer_length": {
+        "detailed": "詳しく",
+        "hint": "短い回答ほど早くできあがります。",
+        "label": "回答",
+        "normal": "標準",
+        "short": "短め"
+      },
+      "delete_chats": {
+        "button": "すべてのチャットを削除",
+        "confirm": "保存したチャットをすべて削除しますか？元に戻せません。"
+      },
+      "enter_sends": {
+        "hint": "オフ：Enter で改行します。",
+        "label": "Enter キーで送信"
+      },
+      "keep_ready": {
+        "hint": "準備しておくと Qortino はすぐに開きますが、約 3 GB のメモリを使います。GO を離れると、まもなく解放されます。",
+        "label": "閉じた後も Qortino を準備しておく",
+        "off": "しない",
+        "open": "GO を開いている間",
+        "short": "1分半"
+      },
+      "remove": {
+        "button": "この端末から Qortino を削除",
+        "confirm": "この端末から Qortino のモデル（{{size}}）を削除します。チャットは残ります。Qortino はいつでもダウンロードし直せます。",
+        "failed": "Qortino を削除できませんでした：{{reason}}",
+        "on_phone": "{{model}} · この端末に {{size}}",
+        "removing": "削除中…"
+      },
+      "text_size": {
+        "default": "標準",
+        "label": "文字の大きさ",
+        "large": "大",
+        "small": "小"
+      },
+      "title": "設定"
+    },
+    "status": {
+      "assembling": "組み立て中",
+      "getting_ready": "準備しています…",
+      "reading": "質問を読んでいます…",
+      "reading_percent": "質問を読んでいます… {{percent}}%"
+    }
+  },
   "qortino_workspace": {
     "a11y_clear_hotkey_slot": "Clear slot {{n}}",
+    "composer": {
+      "placeholder": "Qortinoに質問…",
+      "send": "Qortinoに聞く"
+    },
     "curated_badge": "[ CURATED ]",
     "dialog_hotkeys_subtitle": "Saved automatically for this account.",
     "dialog_hotkeys_title": "Select hotkeys",
@@ -1438,6 +1582,107 @@
     "music_syncing_library": "Syncing with EarBump library...",
     "music_track_load_failed": "This track could not finish loading on your node.",
     "onboarding_step_progress": "Step {{current}} / {{total}}",
+    "quip_open_hint": "タップしてQortinoを開く",
+    "quips": {
+      "fun": {
+        "antenna": "ボクのアンテナ、いいバイブスを受信中。あとブロックも。ほぼブロック。",
+        "beep": "ピコピコ。なーんてね、ボクは鳴らないよ。",
+        "coffee": "コーヒーはいらないよ。充電満タンなら元気いっぱい。",
+        "counting": "ブロックを全部数えようとしたら、また新しいのが来た。",
+        "cross_chain": "ブロックがチェーンを渡ったわけ？向こうのノードに会うためさ。",
+        "exercise": "好きな運動？ノードを走らせること。",
+        "high_five": "ハイタッチしたいけど、腕がまだダウンロード中なんだ。",
+        "hydrated": "水分補給してね！ボクは電子で動くけど、キミには水が大事。",
+        "keys": "豆知識：ボクは鍵をなくさない。ポケットがないからね。",
+        "knock_knock": "コンコン。どちらさま？ノードです。キミも動かせるよ！",
+        "looking_good": "気のせいかな、今日のホーム、すごくイケてない？",
+        "mint_joke": "ジョークをミントしようとしたけど、ブロックがあと少し足りなかった。",
+        "round_blue": "まるくて、青くて、いつでもキミの味方。",
+        "sheep": "ロボットは分散型の羊の夢を見るか？",
+        "syncing": "寝てないよ、同期してるの。",
+        "tickle": "頭をちょっと押さえててみて…勇気があるならね。"
+      },
+      "giggle": {
+        "eeek": "ひゃああっ！あははは！",
+        "hahaha": "あははは！",
+        "hehe_stop": "えへへ…やめてー！",
+        "hihihi": "うひゃひゃ！",
+        "hohoho": "わはは、くすぐったい！",
+        "my_circuits": "あはは、ボクの回路がー！",
+        "no_fair": "あはは、ずるい！",
+        "not_antenna": "アンテナはダメ！あはは！",
+        "so_ticklish": "くすぐったがりなんだ！あははは！",
+        "stop_stop": "ストップ、ストップ…あはは！"
+      },
+      "morning": {
+        "good_morning": "おはよう、{{name}}！今日の最初のブロック、準備はいい？",
+        "synced": "おはよう！ボクは一晩中同期してたよ。よく眠れた？"
+      },
+      "night": {
+        "late": "もう遅いよ、{{name}}。ノードは眠らないけど、キミは寝なきゃ。",
+        "night_owl": "夜ふかし？ボクもだよ。目が光るから、転ばないんだ。",
+        "rest": "ゆっくり休んでね。ブロックチェーンは明日もここにあるよ。",
+        "yawn": "ふあぁ…回路が眠くなってきた。"
+      },
+      "promo": {
+        "ask_qortal": "Qortalのこと、知りたい？ボクの頭をタップして聞いてね。",
+        "brain_on_qdn": "ボクの頭脳はQDNに住んでるんだ。タップしたら取ってくるね。",
+        "download_brain": "ボクの頭脳を一度ダウンロードすれば、キミのスマホで動くよ。",
+        "helper": "サバイバルのコツやQortalの答え、知りたい？タップしてね！",
+        "intro": "やあ、{{name}}！ボクはQortino、キミのQortal相棒だよ。タップして話そう！",
+        "love_to_chat": "{{name}}とおしゃべりしたいな。頭をタップしてダウンロードしてね。",
+        "offline": "ネットがなくても質問に答えられるよ。タップして準備しよう！",
+        "own_ai": "頭をワンタップすれば、キミだけのプライベートAIが手に入るよ。",
+        "power_out": "停電？ネットがつながらない？ダウンロード済みなら、ボクは動くよ。",
+        "pretty_face": "見た目だけじゃないよ。タップして中のAIを起こしてね！",
+        "private": "クラウドなし、追跡なし。このスマホの中で考えるよ。タップしてね！",
+        "private_node": "ヒント：ボクの頭脳は、自分のQortalノード経由だとダウンロードしやすいよ。",
+        "skills": "応急手当、家庭菜園、料理、Qortal…ひと通りわかるよ。タップしてね！",
+        "tap_head": "ねえねえ…ボクの頭をタップすると、オフラインAIとして目覚めるよ。"
+      },
+      "ready": {
+        "all_ears": "気になることある？耳を…じゃなくて、アンテナを立てて聞くよ。",
+        "ask_anything": "なんでも聞いて。ここに入力するだけ！",
+        "minting": "ミンティングの仕組み、聞いてみて。大好きな話なんだ。",
+        "no_internet": "ネットは不要。なにか聞いてみて！",
+        "on_phone": "質問を入力してね。キミのスマホの中でじっくり考えるよ。",
+        "ready_intro": "準備OKだよ、{{name}}！となりに質問を書いてくれたら答えるね。",
+        "ready_when_you_are": "キミが良ければいつでもOK。今日は何を調べる？",
+        "skills": "応急手当、レシピ、家庭菜園、Qortal。試してみて！",
+        "stays_here": "質問はこのスマホから出ないよ。気軽に聞いてね！",
+        "two_heads": "行き詰まった？頭はひとつより二つ。ボクのは丸いけどね。"
+      },
+      "tickle": {
+        "antenna": "気をつけて、アンテナのまわりはすごくくすぐったいんだ。",
+        "cold_fingers": "ひゃっ！キミの指、冷たい！",
+        "dont_stop": "やめて…あ、待って、やめないで！",
+        "favorite_button": "そこはボクのお気に入りボタン。誰にも内緒だよ。",
+        "found_spot": "あはっ！ボクの弱いところ、見つけちゃったね。",
+        "giggling_circuits": "いひひ！ボクの回路がクスクス笑ってる。",
+        "hehe": "えへへ、くすぐったい！",
+        "like_it": "おおっ、そのくすぐり、好きかも！",
+        "sneeze": "これ以上くすぐると、くしゃみでブロックが出ちゃうかも。",
+        "tickle_minting": "これって新しいミンティング？くすぐりミンティング？"
+      },
+      "tickle_long": {
+        "give_up": "わかった、わかった、降参！キミの勝ち！",
+        "mercy": "もう許して！これ以上笑ったらバッテリーがもたないよ。",
+        "reboot": "くすぐられすぎて…笑いを再起動しなきゃ。",
+        "stamina": "キミってフルノードよりスタミナあるね！"
+      },
+      "tip": {
+        "backup": "アカウントファイルをバックアップしてね。未来のキミが感謝するよ。",
+        "coin": "知ってた？QORTはトークンじゃなくてコインなんだ。",
+        "hotkeys": "お気に入りのQ-Appをホットキーに固定すれば、ワンタップで開けるよ。",
+        "minters": "ミンターはノードをオンラインに保ってQORTを稼いでるんだ。",
+        "name": "いい名前だね、{{name}}！Qortalに登録済みだから、本当にキミのものだよ。",
+        "own_node": "自分のノードを動かすと、Qortalは強く、GOはもっと安定するよ。",
+        "qdn_apps": "Q-AppはQDNに住んでる。アプリストアも門番もいないよ。",
+        "reorder": "ホームでウィンドウを長押しすると、移動できるよ。",
+        "say_hi": "Q-Chatはピアツーピア。今日は誰かに挨拶してみよう！",
+        "swipe": "左右にスワイプで、ホーム・アプリ・チャットを行き来できるよ。"
+      }
+    },
     "reaction_avatar_flow": "Avatar flow ready. Let's give this place a face.",
     "reaction_hotkeys_ready": "Hotkeys panel ready.",
     "reaction_locked_track": "Locked on {{title}}.",
@@ -1456,6 +1701,16 @@
     "search_placeholder_qapps": "Search Q-Apps",
     "search_placeholder_tracks": "Search tracks or artists",
     "section_recommended": "Recommended",
+    "status": {
+      "chatty": "おしゃべり",
+      "grateful": "感謝中",
+      "happy": "ごきげん",
+      "helpful": "お手伝い",
+      "idle": "のんびり",
+      "listening": "きいてる",
+      "sleepy": "おねむ",
+      "ticklish": "くすぐったい"
+    },
     "track_meta_separator": "·",
     "workspace_add_app": "Add app",
     "workspace_empty_prompt": "Choose what lives above QORTINO.",

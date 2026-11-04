@@ -17,6 +17,7 @@ import {
   notPublishedResponse,
 } from '../../lib/qdnAvatars/testHarness';
 import ListOfMembers from './ListOfMembers';
+import { NULL_OWNER_ADDRESS } from './memberAdminActions';
 
 vi.mock('../../App', () => ({
   getBaseApiReact: () => 'http://localhost:12391',
@@ -65,6 +66,7 @@ const renderList = ({
   onRefreshMembers = vi.fn(),
   list = members,
   groupId = 42,
+  ownerAddress = OWNER,
 } = {}) => {
   const store = createStore();
   store.set(userInfoAtom, { address: viewer });
@@ -80,7 +82,7 @@ const renderList = ({
         isOwner={isOwner}
         members={list}
         onRefreshMembers={onRefreshMembers}
-        ownerAddress={OWNER}
+        ownerAddress={ownerAddress}
         setInfoSnack={setInfoSnack}
         setOpenSnack={setOpenSnack}
         show={show}
@@ -132,18 +134,45 @@ describe('ListOfMembers admin actions', () => {
     ).not.toBeInTheDocument();
   });
 
-  it('lets a non-owner admin open kick and ban for a regular member', async () => {
-    renderList({ viewer: ADMIN, isOwner: false });
-    expect(
-      screen.queryByRole('button', { name: /an admin|as admin/ })
-    ).not.toBeInTheDocument();
+  it('lets the owner open kick and ban for a regular member', async () => {
+    renderList();
     fireEvent.click(
       screen.getByRole('button', { name: 'More actions for Member Name' })
     );
     const menu = await screen.findByRole('menu');
     expect(menu).toHaveTextContent('Kick member from group');
     expect(menu).toHaveTextContent('Ban member from group');
-    expect(menu).not.toHaveTextContent('Make an admin');
+    expect(
+      screen.queryByText('Only the group owner can kick, ban or change admins.')
+    ).not.toBeInTheDocument();
+  });
+
+  it('gives a non-owner admin no kick or ban, and says why', () => {
+    // Core refuses kicks and bans from admins (INVALID_GROUP_OWNER).
+    renderList({ viewer: ADMIN, isOwner: false });
+    expect(
+      screen.queryByRole('button', { name: /an admin|as admin|More actions/ })
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByText('Only the group owner can kick, ban or change admins.')
+    ).toBeInTheDocument();
+  });
+
+  it('gives admins of an ownerless group no actions, and says approval is needed', () => {
+    renderList({
+      viewer: ADMIN,
+      isOwner: false,
+      ownerAddress: NULL_OWNER_ADDRESS,
+    });
+    expect(
+      screen.queryByRole('button', { name: /an admin|as admin|More actions/ })
+    ).not.toBeInTheDocument();
+    expect(screen.getByText(/This group has no owner/)).toBeInTheDocument();
+  });
+
+  it('tells regular members nothing about admin actions', () => {
+    renderList({ viewer: MEMBER, isOwner: false, isAdmin: false });
+    expect(screen.queryByText(/group owner|no owner/)).not.toBeInTheDocument();
   });
 
   it('confirms the fee, sends makeAdmin and marks the row pending until the list shows the admin', async () => {

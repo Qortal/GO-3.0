@@ -11,6 +11,202 @@ desktop Hub. The format is based on
 
 ## [Unreleased]
 
+## [0.0.20] — 2026-11-04 (GO 3.0)
+
+### Added
+
+- **Qortino talks and listens on Home** _(mobile)_ — once a user has a
+  name and an avatar, Qortino now and then says something on Home: a little
+  puff leaves his mouth, a speech bubble grows out of it and the words type
+  out while his mouth moves. 56 lines in all, translated. Most invite the
+  user to Qortino AI (tap his head to download it, or type a question next
+  to him once it is on the phone); jokes, tips and late-night yawns fill the
+  rest. They come only while Home is on screen and the phone is in use: an
+  early line on some visits to Home, then one every two or three minutes at
+  most, six per run of GO. A tap on the bubble opens Qortino. With Qortino AI
+  on the phone, a small "Ask Qortino…" box sits next to him: whatever is
+  typed there opens Qortino in a new chat and is sent as soon as the model
+  is loaded. He has new moves too: he glances around, looks at the box and
+  lights up his antenna while the user types, hops with happy eyes when a
+  question is sent, winks after a joke, and dozes with drifting Zzz late at
+  night. His mood tag (idle, listening, chatty, sleepy…) is translated now.
+- **Qortino settings** _(mobile)_ — at the top of Qortino's chat history
+  panel, a Settings row opens: answer length (Short answers are ready
+  sooner, Detailed ones may run longer), text size, how long Qortino stays
+  ready after its window closes (free the memory at once, a minute and a
+  half as before, or while GO is open), whether Enter sends, Delete all
+  chats, and Remove Qortino from this phone, which shows the model's size
+  and, after a confirm, deletes its files (and any half-saved part) and goes
+  back to the download screen; the chats stay. Changing the answer length
+  re-reads only one line of Qortino's instructions. The history panel's
+  labels are translated now.
+- **New chat button in Qortino** _(mobile)_ — top right of Qortino's chat:
+  one tap starts a new chat with the cursor in the message box. The chat you
+  leave stays in the history. It is greyed out while Qortino is answering or
+  when the chat is still empty.
+- **Widgets kept on the phone** _(mobile)_ — a widget is a Q-App, and it
+  only opened while the node still had that app; the public node drops apps
+  within hours, so widgets often sat on the node's loading page. GO now
+  keeps each widget's own files (what its app published) on the phone after
+  the first load and opens the widget from there, at once, even when the node
+  no longer has the app. What the widget shows (its data) still comes from
+  QDN, live. Once an hour at most GO checks for a newer publish and fetches
+  it in the background; the copy it has stays until a whole new one is in.
+  Removing a widget removes its copy. Apps that list no files (some older
+  ones) load from the node as before. The widget menu's Reload now really
+  reloads the widget.
+
+### Changed
+
+- **A smaller, lighter GO** _(mobile)_ — code GO no longer used was removed
+  (about 3,600 lines fewer), rarely used parts load only when they are
+  needed, and screens subscribe only to what they show. The APK is about
+  a third smaller (111.6 MB → 75.9 MB), the phone reads about 40% less
+  JavaScript before the first screen, and GO sitting idle on Home redraws
+  about three quarters less often and uses a little less memory.
+  Attachments, viewer copies and the Qortino model are freed sooner. The
+  times in the open bell panel ("a minute ago") now update every 30 s.
+
+- **Qortino's download runs on its own** _(mobile)_ — the model download
+  no longer stops when the Qortino window closes: Minimize sends it to GO's
+  notifications, where a Qortino row shows each step with a progress bar
+  (tap it to open Qortino) and the bell counts it, and it also shows in the
+  Android notification. It picks up again after GO restarts. When peers stop sending the rest, GO asks the node
+  again after two minutes and, if it is still stuck, tries again by itself:
+  soon while each try gets further, giving up only after about 40 minutes
+  without any progress. Try now skips the wait, and a banner says when
+  Qortino is ready.
+- **Qortino downloads on the public node too** _(mobile)_ — getting
+  Qortino's model needed your own node. The public node can fetch it now, but
+  before the download GO says plainly that a private node is highly
+  recommended: the public node is shared, cuts long downloads near 1 GB and
+  can drop what it fetched. On the public node GO takes the model in three
+  parts under 1 GB (published as its own share), on your own node in the two
+  parts. A download already partly on the phone carries on in its own
+  layout, and if one layout is not on QDN GO uses the other.
+- **Qortino AI has a new brain** _(mobile)_ — one model instead of the Lite
+  and Standard packs: Qwen3 4B Instruct 2507 (Apache-2.0), 4-bit, 2.3 GB,
+  published on QDN in two parts because QDN takes at most 2 GiB per file.
+  Each part is checked by sha256 after download, and a retry keeps a part
+  that already arrived. Assembling deletes the old packs (up to ~4 GB). No
+  more Fast / Max switch and no QDN search window: Qortino answers offline,
+  from the model and its curated FAQ, with longer answers (4096-token
+  context). It opens faster: the model stays loaded for 90 s after Qortino
+  closes (45 s once GO is in the background), and its instructions are saved
+  after the first read, so later opens start answering at once. Follow-up
+  questions reuse what the phone already read instead of reading the whole
+  chat again, and when a long chat drops its oldest turns the phone moves
+  what it read instead of reading the rest again (that was ~40 s on a
+  vivo). The model now runs on a lasting thread pool held on the phone's
+  fast cores; it used to start new threads for every word, some landing on
+  the little cores (on a vivo: prompts read twice as fast, answers 2.0 →
+  3–5 tok/s). The app's looping animations pause while Qortino works.
+  Debug APKs now build llama.cpp optimised, like release ones.
+- **Qortino knows Qortal much better** _(mobile)_ — its curated answers grew
+  from about 1,600 to about 5,000, with some 3,400 new Qortal entries written
+  from Hub and GO code, Qortal Core, the Q-Apps built for Qortal, the Minter
+  Guide, Welcome to Qortal, qortal.org and qortal.dev: basics, minting,
+  nodes, QDN, names and groups, trading, security, Hub, GO, chat and calls,
+  Reticulum, Torq, the Q-Apps, building Q-Apps, hardware and troubleshooting.
+  The old answers were checked again (Torq instead of Quitter, Q-Chat over
+  Reticulum, current fees and levels), and Qortino recommends the stable
+  apps rather than their pre-release "+" versions. Matching is now BM25 over
+  each entry's phrasings and answer: the right entry comes first twice as
+  often, an answer is shown as-is only when one entry clearly fits, and
+  otherwise the closest one or two go to the model with the question. App
+  cards were added for Torq, Q-Wallets, Q-Drive, Subscreen, POS+, Q-Weather
+  and more; everyday words that are also app names ("weather", "a meme") no
+  longer bring up an app card.
+
+### Fixed
+
+- **Qortino AI no longer crashes on older phones** _(mobile)_ — the model's
+  maths was built for one processor generation (Armv8.6 with i8mm), so on
+  chips without it (Snapdragon 865/888, Tensor G1/G2 and older) GO closed
+  with an illegal instruction as soon as Qortino started answering. GO now
+  carries seven builds of that code, from plain Armv8.0 up to Armv9.2, and
+  loads the fastest one the phone's processor says it can run. Phones that
+  already worked keep the same speed (they get the i8mm build as before).
+- **Qortino's download no longer breaks at 1 GB** _(mobile)_ — the public
+  node ends every transfer near 1 GiB (its web server cuts the connection),
+  so saving the 1.3 GB first part failed and started over from zero, again
+  and again. GO now keeps the bytes it already has and asks for the rest; the
+  sha256 check still guards the whole part. While it waits to try again it
+  now says why (no peers, the connection broke off, or a damaged part)
+  instead of always blaming the peers.
+- **Qortino on phones with 16 KB memory pages** _(mobile)_ — Qortino's
+  native code was built for 4 KB memory pages, so it could not start on
+  phones booted with 16 KB pages (an option on Pixel 8 and later, and more
+  new phones over time). It is now built for 16 KB pages like the rest of
+  GO's native code; nothing changes on other phones.
+- **Kick and Ban only where they can work** _(mobile)_ — the Members panel
+  offered Kick and Ban to every admin, but Qortal Core takes them from the
+  group's owner only, so an admin confirmed the fee and then got an error.
+  Now only the owner gets Kick, Ban, the admin buttons and Cancel ban; other
+  admins see one line saying only the owner can. Groups owned by Core's null
+  account have no owner (MINTER, General Chat, Q-Chess (Public) and others):
+  there every such change needs approval from the group's admins, which GO
+  can't send, so GO shows no buttons and says that instead. The Bans list's
+  remove-ban X now shows on touch screens, and its label is translated.
+- **Muted groups stay quiet** _(mobile)_ — a Q-Chat mention alert used the
+  mute list from the moment the message arrived, and finding out who was
+  mentioned can take seconds, so a mention could still ring right after you
+  muted the group. The first mentions after login could also arrive before
+  the mute list had loaded. Alerts now check the current list, muting takes
+  effect at once, and new thread posts in a muted group no longer alert.
+- **Q-App and website icons in Qortino's answers** _(mobile)_ — the app
+  cards under an answer asked the node for an image that almost no app
+  publishes, so most cards showed only a letter. They now show the same
+  icons as the Apps library: the name's QDN avatar, kept on the phone, or the
+  icon GO ships for well-known apps, so they also show offline.
+- **Q-Apps no longer hang on the node's loading page** _(mobile)_ — on the
+  public node an app could sit on "Loading - Qortal Network" ("Downloading
+  from network…", "Waiting for data from peers…") until refresh was tapped,
+  though the node was already serving it. The node's loading page reloads
+  only when the node's status says READY, and the public node's status
+  lags: it answers from two copies that do not hold the same apps, and kept
+  saying 0/2 files for apps it served at the same moment. GO now checks the
+  app's page itself every 5 s while the loading page shows (every 15 s after
+  two minutes, none after 15) and opens the app as soon as the node serves
+  it, as refresh does. Nothing changes on any other page.
+- **Tabs no longer stutter with a loading Q-App behind** _(mobile)_ — the
+  node's loading page redraws its moving background on every frame, which
+  kept the phone's GPU fully busy wherever the page was on screen, under the
+  Tabs panel too: GO dropped to about 30 fps and dragging Tabs jumped. The
+  background now moves for a moment and then stays still (GPU 100% → 1%, GO
+  back at 60 fps on a vivo); the spinner, status and progress keep moving.
+  The Tabs panel also keeps its own layer while it is open: each drag used
+  to give it one at the start and take it away at the end, so the whole
+  panel was repainted and redrawn, a 50-117 ms stall in every drag. Drags
+  now run at 60 fps throughout.
+- **Resizing a widget no longer pulls Tabs down** _(mobile)_ — while widgets
+  are being arranged, a drag on the widgets screen moved or resized a widget
+  and also counted as a pull down for Tabs, so dragging a corner down
+  brought the Tabs window over the screen. Arranging now keeps its drags to
+  itself (no Tabs pull, no swipe to the next section). The resize corner is a
+  small square with a two-way arrow instead of a dot, so it reads as resize.
+- **Widgets are ready when you swipe to them** _(mobile)_ — the widgets
+  screen loaded its widgets only once it was opened, and let them go three
+  minutes after it was left, so most visits showed each widget's loading
+  card first. GO now loads them a few seconds after it starts, out of sight,
+  and keeps them loaded while it runs (each one pauses while nobody sees
+  it). They also keep their size while another screen shows, instead of
+  being laid out again on every visit.
+- **GO stays online when two Reticulum hubs drop it** _(mobile)_ — GO knew
+  only the hubs `reticulum` and `reticulum2` (plus one community hub), while
+  the desktop Hub also uses `reticulum3`. A hub can block a connection for a
+  while after many short reconnects (a phone restarting GO often, or several
+  devices behind one hotspot), and then GO was cut off: no chat, no
+  presence, while the desktop Hub on the same connection stayed online. GO
+  now connects to `reticulum3` too, like the desktop Hub.
+- **Your other devices stop ringing when one answers** _(mobile)_ — when
+  GO called an account signed in on more than one device (a phone and a
+  desktop Hub, say) and one of them answered, the others could keep ringing:
+  the "stop ringing" message Hub signs when the call starts is refused once
+  it is more than 30 s old. When a call placed from GO is answered, GO now
+  signs a fresh one and sends it to the callee's other devices only. Calls
+  placed from a desktop Hub still need the Hub-side fix.
+
 ## [0.0.19] — 2026-10-20 (GO 3.0)
 
 ### Added

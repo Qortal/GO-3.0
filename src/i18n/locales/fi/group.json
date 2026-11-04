@@ -872,6 +872,10 @@
   "member_actions": {
     "make_admin_named": "tee käyttäjästä {{name}} ylläpitäjä",
     "more_named": "lisää toimintoja: {{name}}",
+    "needs_approval_bans_notice": "tällä ryhmällä ei ole omistajaa, joten eston peruuttaminen tarvitsee sen ylläpitäjien hyväksynnän, eikä sitä voi tehdä täällä.",
+    "needs_approval_notice": "tällä ryhmällä ei ole omistajaa, joten jäsenten poistot, estot ja ylläpitäjien muutokset tarvitsevat sen ylläpitäjien hyväksynnän, eikä sitä voi tehdä täällä.",
+    "owner_only_bans_notice": "vain ryhmän omistaja voi peruuttaa estoja.",
+    "owner_only_notice": "vain ryhmän omistaja voi poistaa tai estää jäseniä tai vaihtaa ylläpitäjiä.",
     "pending": "odottaa",
     "pending_hint": "odottaa lohkoketjun vahvistusta. Tämä voi kestää pari minuuttia.",
     "remove_admin_named": "poista käyttäjän {{name}} ylläpitäjän oikeudet"

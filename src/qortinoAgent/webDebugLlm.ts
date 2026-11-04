@@ -194,7 +194,6 @@ export class QortinoLlmWebDebug extends WebPlugin implements QortinoLlmPlugin {
       availRamBytes: 8 * 1024 ** 3,
       availStorageBytes: 40 * 1024 ** 3,
       totalStorageBytes: 128 * 1024 ** 3,
-      recommendedPack: 'small',
       lowMemory: false,
     };
   }
@@ -210,19 +209,26 @@ export class QortinoLlmWebDebug extends WebPlugin implements QortinoLlmPlugin {
   async fileExists() {
     return { exists: true, path: 'web-debug', size: 1 };
   }
-  async readText() {
+  async readText(): Promise<{ text: string; path: string }> {
     throw new Error('readText not used in PC debug');
   }
-  async extractZip() {
-    throw new Error('extractZip not used in PC debug');
+  async sha256File(): Promise<{ sha256: string; size: number }> {
+    throw new Error('sha256File not used in PC debug');
   }
-  async downloadUrl() {
+  async cleanupStorage() {
+    return { deletedFiles: 0, freedBytes: 0 };
+  }
+  async downloadUrl(): Promise<{ path: string; bytesWritten: number }> {
     throw new Error('downloadUrl not used in PC debug');
   }
   async cancelDownload() {}
 
   async loadModel() {
     return { loaded: true, path: 'web-debug' };
+  }
+
+  async warmup() {
+    return {};
   }
 
   async unload() {}

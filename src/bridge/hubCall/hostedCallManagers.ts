@@ -18,7 +18,10 @@
  *   - a pending call that expires (Hub's silent 60 s timeout) emits
  *     `call:hangup` so the hook never stays "ringing"/"calling" (contract a.5);
  *   - Hub bug H1 neutralised per instance (gcSignatureCacheHardening.ts);
- *   - overlay relays dropped, pinned CALL_REQUEST copies (adapter options).
+ *   - overlay relays dropped, pinned CALL_REQUEST copies (adapter options);
+ *   - on accept of a call GO placed, a freshly signed cancel to the callee's
+ *     other devices (freshRingingCancel.ts: Hub's pre-signed one expires
+ *     after 30 s).
  *
  * `./nodeGlobals` must stay the first import (Buffer/setImmediate/base64url
  * before the managers' module bodies run).
@@ -46,6 +49,10 @@ import {
 } from './mobilePresenceAdapter';
 import type { HubCallPythonTransport } from './pythonTransport';
 import { hardenGroupCallSignatureCache } from './gcSignatureCacheHardening';
+import {
+  installFreshRingingCancel,
+  type CancelSigningFields,
+} from './freshRingingCancel';
 import {
   CALL_EVENT_CHANNELS,
   createWindowCallApi,
@@ -81,6 +88,14 @@ export type HostedCallManagersDeps = {
         localAddress: string,
         callId: string
       ) => string | null | undefined | Promise<string | null | undefined>);
+  /**
+   * Signs CALL_* field sets with the account key (Base58 signature), like the
+   * hook's signer. Default: the renderer wallet (`window.sendMessage
+   * ('signPresenceMessage')`). `null` turns the fresh ringing cancel off.
+   */
+  signCallFields?:
+    | null
+    | ((fields: CancelSigningFields) => Promise<string | null>);
   /** Optional periodic member-allowlist refresh for group rooms (plan 5.5). */
   fetchQortalGroupMemberAddresses?: (
     groupId: number
@@ -129,6 +144,8 @@ export type HostedCallStack = {
    */
   hasActiveDirectVoiceRoom(): boolean;
   readonly hardenedGcSignatureCache: boolean;
+  /** Answer on one callee device cancels the others with a fresh signature. */
+  readonly freshRingingCancel: boolean;
 };
 
 export type RelayTopologyView = {
@@ -312,6 +329,24 @@ export async function lookupLandCallPeerViaEngine(
   return DEST_HASH_RE.test(hash) ? hash : null;
 }
 
+type RendererSendMessage = (
+  action: string,
+  payload: unknown,
+  timeoutMs?: number
+) => Promise<unknown>;
+
+/** The renderer wallet signer the hook uses for call signals. */
+async function signWithRendererWallet(
+  fields: CancelSigningFields
+): Promise<string | null> {
+  const send = (globalThis as { sendMessage?: RendererSendMessage })
+    .sendMessage;
+  if (typeof send !== 'function') return null;
+  const result = await send('signPresenceMessage', fields, 10_000);
+  const signature = (result as { signature?: unknown } | null)?.signature;
+  return typeof signature === 'string' && signature ? signature : null;
+}
+
 /** Desktop IPC delivers `gcall:audio` data as a fresh Uint8Array. */
 function toRendererAudioPayload(payload: unknown): unknown {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
@@ -367,17 +402,17 @@ export function createHostedCallManagers(
     ...(deps.presenceMaxAgeMs ? { maxAgeMs: deps.presenceMaxAgeMs } : {}),
     getLocalDestinationHash: () => bridge.getLocalDestinationHash(),
   });
+  const reticulumEndpointsOf = (address: string): string[] =>
+    presence
+      .getRoutesForAddress(address)
+      .filter(
+        (route): route is Extract<typeof route, { kind: 'reticulum' }> =>
+          route.kind === 'reticulum'
+      )
+      .map((route) => route.destinationHash);
   if (deps.pinnedCallRequests !== false) {
     // Set after construction: the resolver needs the presence adapter.
-    bridge.setPinnedCallRequestEndpoints((targetAddress: string) =>
-      presence
-        .getRoutesForAddress(targetAddress)
-        .filter(
-          (route): route is Extract<typeof route, { kind: 'reticulum' }> =>
-            route.kind === 'reticulum'
-        )
-        .map((route) => route.destinationHash)
-    );
+    bridge.setPinnedCallRequestEndpoints(reticulumEndpointsOf);
   }
 
   const presenceForManagers = presence as unknown as PresenceManager;
@@ -392,6 +427,22 @@ export function createHostedCallManagers(
   if (!hardenedGcSignatureCache) {
     console.warn(
       '[GO call] GroupCallManager internals changed; H1 signature-cache fix is OFF'
+    );
+  }
+
+  const signCallFields =
+    deps.signCallFields === undefined
+      ? signWithRendererWallet
+      : deps.signCallFields;
+  const ringingCancel = signCallFields
+    ? installFreshRingingCancel(callManager, {
+        sign: signCallFields,
+        getEndpoints: reticulumEndpointsOf,
+      })
+    : null;
+  if (ringingCancel && !ringingCancel.installed) {
+    console.warn(
+      '[GO call] CallManager internals changed; fresh ringing cancel is OFF'
     );
   }
 
@@ -546,6 +597,7 @@ export function createHostedCallManagers(
     call,
     groupCall,
     hardenedGcSignatureCache,
+    freshRingingCancel: ringingCancel?.installed === true,
     clearLocalAccountState: () => {
       callManager.clearLocalAccountState();
       groupCallManager.clearLocalAccountState();
@@ -561,6 +613,7 @@ export function createHostedCallManagers(
       if (disposed) return;
       disposed = true;
       unsubscribeReady();
+      ringingCancel?.dispose();
       for (const timer of pendingTimers) clearTimeout(timer);
       pendingTimers.clear();
       groupCall.dispose();

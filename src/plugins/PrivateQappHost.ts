@@ -86,13 +86,33 @@ const quietly = (call: () => Promise<unknown>): void => {
   }
 };
 
+let tabAppIds: string[] = [];
+/** GO widgets the phone serves itself (widgetAppOnDevice); kept with the tabs' apps. */
+const widgetAppIds = new Set<string>();
+
+const sendRetain = () =>
+  quietly(() =>
+    PrivateQappHost.retain({ ids: [...tabAppIds, ...widgetAppIds] })
+  );
+
 /**
- * Lets the native side drop every app no open tab shows. Apps added in the
- * last minute stay, so a tab still opening keeps its app.
+ * Lets the native side drop every app no open tab (or widget) shows. Apps
+ * added in the last minute stay, so a tab still opening keeps its app.
  */
 export function retainPrivateAppsOnDevice(ids: string[]): void {
   if (!canBuildPrivateAppsOnDevice()) return;
-  quietly(() => PrivateQappHost.retain({ ids }));
+  tabAppIds = ids;
+  sendRetain();
+}
+
+/** A widget shows (true) or no longer needs (false) an app built on the phone. */
+export function keepWidgetAppOnDevice(id: string, keep: boolean): void {
+  if (!canBuildPrivateAppsOnDevice()) return;
+  if (keep) {
+    widgetAppIds.add(id);
+    return;
+  }
+  if (widgetAppIds.delete(id)) sendRetain();
 }
 
 /**

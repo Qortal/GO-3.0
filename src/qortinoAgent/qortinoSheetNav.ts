@@ -2,10 +2,7 @@
  * Park / restore Qortino when opening Q-Apps so the chat session is not remounted.
  */
 import { getDefaultStore } from 'jotai';
-import {
-  qortinoAgentOpenAtom,
-  qortinoAgentParkedAtom,
-} from '../atoms/global';
+import { qortinoAgentOpenAtom, qortinoAgentParkedAtom } from '../atoms/global';
 
 /** Hide the sheet but keep the React tree / LLM session (caller must keepMounted). */
 export function parkQortinoAgentSheet(): void {
@@ -21,6 +18,13 @@ export function restoreQortinoAgentSheet(): boolean {
   store.set(qortinoAgentParkedAtom, false);
   store.set(qortinoAgentOpenAtom, true);
   return true;
+}
+
+/** Open the Qortino window (from a banner or notification about it). */
+export function openQortinoAgentSheet(): void {
+  const store = getDefaultStore();
+  store.set(qortinoAgentParkedAtom, false);
+  store.set(qortinoAgentOpenAtom, true);
 }
 
 export function closeQortinoAgentSheet(): void {

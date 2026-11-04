@@ -1,24 +1,6 @@
 # programming — golden FAQ
 
-Curated offline Q&A for Qortino (200 entries). Prefer these answers when relevant.
-
-## Q: What is a Q-App?
-
-A: A Q-App is a static web app (HTML/JS/CSS) published on QDN, usually as a zip with index.html at the root, using service type APP. It runs inside Qortal Hub/Mobile/Extension, which injects qortalRequest for wallet, publish, encrypt, and payments. There is no private backend with secrets; identity is the wallet address plus optional registered name, and assets should ship in the zip for offline/CSP safety.
-
-Also asked as: what are q-apps · define q-app · qapp meaning · what is qapp
-
-## Q: What is QDN from a developer perspective?
-
-A: QDN (Qortal Data Network) stores resources indexed on-chain with payloads mostly off-chain and verified by SHA-256. Each resource is addressed by name, service, and optional identifier; for the same triple, the latest publish wins. Q-Apps and WEBSITEs are QDN resources that Hub can render.
-
-Also asked as: qortal data network · qdn for developers · qdn resource model
-
-## Q: What is the difference between WEBSITE and APP services?
-
-A: WEBSITE returns a real 404 for missing file paths and suits visitor-facing static or multi-page sites. APP falls through missing paths to index.html for SPA client routers and interactive apps. Rule of thumb: client-side router and app behaviour → APP; mostly static pages with real 404s → WEBSITE.
-
-Also asked as: website vs app · APP vs WEBSITE · when to use APP service · when to use WEBSITE
+Curated offline Q&A for Qortino (186 entries). Prefer these answers when relevant.
 
 ## Q: What are QDN coordinates?
 
@@ -32,12 +14,6 @@ A: Yes. Publishing from a Q-App requires the user to own a registered name; name
 
 Also asked as: publish without name · registered name required · name required to publish
 
-## Q: What is qortalRequest?
-
-A: qortalRequest is the bridge injected by Core/Hub into embedded Q-App pages. It returns a Promise for wallet, QDN read/write, encrypt, payments, navigation, and more. Always wrap calls in try/catch, resolve the function from window then parent then top in nested iframes, and never invent action names—verify against the user's Hub/Core version.
-
-Also asked as: what is qortal.request · qortalRequest bridge · how does qortalRequest work
-
 ## Q: How do I detect if qortalRequest is available?
 
 A: Resolve the bridge with window.qortalRequest ?? window.parent?.qortalRequest (and top if nested). If typeof req !== "function", the page is not inside Hub—show preview mode and refuse wallet/payment fakes. Example: async function qr(p){ const r=window.qortalRequest??window.parent?.qortalRequest; if(typeof r!=="function") throw new Error("Open inside Qortal Hub"); return r(p); }
@@ -46,7 +22,7 @@ Also asked as: feature detect qortalRequest · check if inside hub · preview mo
 
 ## Q: When should I use qortalRequest vs fetch?
 
-A: Use qortalRequest for wallet identity, signing, publish, encrypt, payments, and anything personalized. Use relative fetch("/names/foo") inside Hub for anonymous public Core REST reads. fetch cannot see the logged-in wallet; never hardcode http://127.0.0.1:12391 in shipped apps.
+A: Use qortalRequest for wallet identity, signing, publish, encrypt, payments, and anything personalized. Use relative fetch("/names/foo") inside Hub for anonymous public Core REST reads. fetch cannot see the logged-in wallet; never hardcode the local node address (127.0.0.1:12391) in shipped apps.
 
 Also asked as: fetch vs qortalRequest · relative fetch · when to use REST in q-app
 
@@ -98,23 +74,11 @@ A: Set Vite base: "./" so built asset URLs are relative. Absolute /assets/... pa
 
 Also asked as: vite base q-app · relative base vite
 
-## Q: Can I publish multi-file WEBSITE or APP from inside a Q-App via qortalRequest?
-
-A: In many Hub builds, publishing multi-file WEBSITE/APP from qortalRequest is limited or unavailable; use Hub UI for those zips. Single-file or data64 PUBLISH_QDN_RESOURCE is supported. Fetching multi-file resources with filepath is supported—verify your target Core/Hub version.
-
-Also asked as: publish multi-file from q-app · PUBLISH WEBSITE from code
-
 ## Q: What is the publish workflow after building?
 
 A: 1) npm run build → dist/ 2) (cd dist && zip -r ../MyApp.zip .) 3) Hub → load zip → Preview 4) Publish service APP (or WEBSITE via Hub) 5) Open qortal://APP/<Name> or qortal://WEBSITE/<Name>/. Always Preview before QDN publish.
 
 Also asked as: build and publish workflow · preview before publish
-
-## Q: Why must index.html be at the zip root?
-
-A: Hub expects the APP/WEBSITE entry at the root of the zip (manifest main: index.html). Wrapping files in a dist/ folder inside the zip makes Hub miss the entry and assets 404. Zip the contents of dist/, not dist itself.
-
-Also asked as: index.html zip root · wrong zip structure
 
 ## Q: What is the JSON service used for?
 
@@ -139,12 +103,6 @@ Also asked as: IMAGE service · THUMBNAIL service · avatar thumbnail
 A: FILE, VIDEO, and AUDIO hold binary payloads on QDN for downloads and media apps (e.g. Q-Share/Q-Tube patterns). Publish as single-file/data64 resources; fetch with FETCH_QDN_RESOURCE or resource URLs. Prefer SAVE_FILE on mobile instead of relying on blob anchor downloads.
 
 Also asked as: FILE service · VIDEO service · AUDIO service · binary qdn services
-
-## Q: What is DOCUMENT_PRIVATE?
-
-A: DOCUMENT_PRIVATE (numeric service 801 in some docs) stores encrypted documents for recipients. Decrypt with DECRYPT_DATA or group decrypt variants via the wallet. Keep private blobs in separate identifier namespaces from public metadata.
-
-Also asked as: DOCUMENT_PRIVATE · service 801 · encrypted document service
 
 ## Q: When is a resource single-file vs multi-file?
 
@@ -194,12 +152,6 @@ A: Call GET_USER_ACCOUNT from an explicit Connect/Authenticate button after a us
 
 Also asked as: GET_USER_ACCOUNT · connect wallet q-app · authenticate q-app · login q-app
 
-## Q: Why shouldn't I call GET_USER_ACCOUNT on page load?
-
-A: GET_USER_ACCOUNT is gesture-gated and shows a user approval popup. Auto-calling on load causes popup fatigue, failed approvals, and poor UX. Put it behind a Connect button, then fetch names and gate publish.
-
-Also asked as: auto connect bad · auth on load · gesture gated auth
-
 ## Q: What if my Q-App runs in a nested iframe and auth fails?
 
 A: Resolve qortalRequest from window → parent → top. Parent pages may need a message relay that forwards qortalRequest to Hub. If parent === top and only a stub exists, or inner auth still fails, open the target in a new Hub tab.
@@ -234,7 +186,7 @@ Also asked as: fetch logged in user · anonymous fetch limitation
 
 A: Use FETCH_QDN_RESOURCE with name, service, and optional identifier; add filepath for multi-file APP/WEBSITE; set encoding: "base64" when you need binary-safe data. Example: await qr({ action: "FETCH_QDN_RESOURCE", name, service: "JSON", identifier: id }).
 
-Also asked as: FETCH_QDN_RESOURCE · load qdn resource · fetch resource example
+Also asked as: FETCH_QDN_RESOURCE · load qdn resource · fetch resource example · download from QDN · get a qdn resource
 
 ## Q: How do I publish a JSON resource?
 
@@ -252,7 +204,7 @@ Also asked as: b64Utf8 · utf-8 base64 · btoa unicode bug
 
 A: Call SEARCH_QDN_RESOURCES with a minimal payload (service, optional name/identifier, prefix: true for prefixes). Normalize array-or-wrapper responses. If results are mysteriously empty, strip unknown optional keys—extra fields can yield [].
 
-Also asked as: SEARCH_QDN_RESOURCES · search qdn · normalize search results
+Also asked as: SEARCH_QDN_RESOURCES · normalize search results
 
 ## Q: How do I list QDN resources for a name?
 
@@ -296,17 +248,11 @@ A: Cores may return a bare array or an object with resources, results, entries, 
 
 Also asked as: normalize search array · search results wrapper
 
-## Q: How do qortal:// links work?
-
-A: Format: qortal://{service}/{name}/{identifier?}/{path?}. Examples: qortal://WEBSITE/MySite, qortal://WEBSITE/MySite/gallery, qortal://APP/MyQApp, qortal://THUMBNAIL/MyName/qortal_avatar. Use OPEN_NEW_TAB or LINK_TO_QDN_RESOURCE to open them in Hub.
-
-Also asked as: qortal:// protocol · qortal deep link · qortal url format
-
 ## Q: How do I open another QDN resource from my app?
 
 A: Prefer LINK_TO_QDN_RESOURCE or OPEN_NEW_TAB with a qortal:// URL. For Hub tab switches, postMessage SET_TAB with { action: 'SET_TAB', requestedHandler: 'UI', payload: { service, name, identifier?, path? } }. Avoid raw window.open to localhost.
 
-Also asked as: LINK_TO_QDN_RESOURCE · OPEN_NEW_TAB · SET_TAB · open qdn resource
+Also asked as: LINK_TO_QDN_RESOURCE · SET_TAB · open qdn resource
 
 ## Q: What is QDN_RESOURCE_DISPLAYED?
 
@@ -340,7 +286,7 @@ Also asked as: encrypted identifier namespace · private vs public identifiers
 
 ## Q: How do QORT amounts work in APIs?
 
-A: QORT values from GET_PRICE and many transactions are integers scaled by 1e8. Divide by 1e8 to display QORT, and multiply when constructing amounts. Confirm field names on your Hub/Core version before SEND_COIN.
+A: SEND_COIN takes the amount as plain QORT, for example 1.5, not multiplied by 1e8; Hub or GO shows it in the approval window. QORT has up to 8 decimal places. For other APIs, check how each response field is written before converting it.
 
 Also asked as: 1e8 qort · amount scale · GET_PRICE units
 
@@ -360,7 +306,7 @@ Also asked as: CREATE_POLL · VOTE_ON_POLL · pollOptions array
 
 A: Mobile WebViews often ignore anchor/blob downloads. Use SAVE_FILE with blob + filename, or /arbitrary/…?attachment=true on builds with a native download listener. Detect mobile via user-agent when choosing download strategy.
 
-Also asked as: SAVE_FILE · mobile download · attachment=true · qortal go download
+Also asked as: SAVE_FILE · mobile download · attachment=true
 
 ## Q: How should I handle data larger than the JSON 25 KB limit?
 
@@ -388,7 +334,7 @@ Also asked as: qortalRequest timeout · qortalRequestWithTimeout
 
 ## Q: How should I test a new Q-App?
 
-A: Test root URL, deep links, no-name wallet (publish gated), Connect gesture, publish then fetch after propagation delay, search normalization, and grey-screen asset loads. Use Hub Preview before QDN publish; local preview may be http://localhost:12391/render/APP/<Name>?preview=true when Core supports it.
+A: Test root URL, deep links, no-name wallet (publish gated), Connect gesture, publish then fetch after propagation delay, search normalization, and grey-screen asset loads. Use Hub Preview before QDN publish; when Core supports it, local preview is the node's /render/APP/<Name>?preview=true path on port 12391.
 
 Also asked as: test q-app · q-app testing checklist · preview=true
 
@@ -418,7 +364,7 @@ Also asked as: relative fetch hub · node api from q-app
 
 ## Q: Where are official Q-App docs?
 
-A: Authoritative qortalRequest reference: https://qortal.dev/docs/q-apps. Protocol: https://github.com/Qortal/qortal/blob/master/Q-Apps.md. Core implementation/timeouts: q-apps.js in Qortal/qortal. REST: api.qortal.org. Community code: gitea.qortal.link and GitHub qortal org.
+A: Authoritative qortalRequest reference: the Q-Apps docs on qortal.dev. Protocol: Q-Apps.md in the Qortal/qortal repository. Core implementation and timeouts: q-apps.js in Qortal/qortal. REST: api.qortal.org. Community code: gitea.qortal.link and the Qortal organisation on GitHub.
 
 Also asked as: qortal.dev q-apps · Q-Apps.md · official docs
 
@@ -640,7 +586,7 @@ Also asked as: offline safe q-app · csp safe assets
 
 ## Q: How do I verify action names before shipping?
 
-A: Check https://qortal.dev/docs/q-apps and Core q-apps.js for the user's Hub/Core version. Feature-detect optional actions. Do not invent parameters from memory—wrong keys can fail publishes or empty searches.
+A: Check the Q-Apps docs on qortal.dev and Core's q-apps.js for the user's Hub/Core version. Feature-detect optional actions. Do not invent parameters from memory—wrong keys can fail publishes or empty searches.
 
 Also asked as: verify actions before ship · do not invent parameters
 
@@ -752,17 +698,11 @@ A: APP multi-file zips are commonly limited around 50 MB (check your Core docs).
 
 Also asked as: APP size limit · 50mb app · q-app zip size
 
-## Q: What is CHAIN_COMMENT?
-
-A: CHAIN_COMMENT is a tiny on-chain payload service (documented around 239 bytes). Use it only for very small on-chain notes, not for app bundles or media. Prefer JSON/DOCUMENT/FILE for normal app data.
-
-Also asked as: CHAIN_COMMENT service · on-chain comment size
-
 ## Q: What are BLOG_POST, MAIL, and MESSAGE services?
 
 A: These are ecosystem-oriented QDN services used by apps like Q-Blog and Q-Mail (MAIL/MAIL_PRIVATE, MESSAGE, BLOG_POST). Follow each app's identifier conventions and validate payloads. Size and schema vary by app—study reference repos before publishing into those namespaces.
 
-Also asked as: BLOG_POST service · MAIL service · MESSAGE service
+Also asked as: MAIL service · MESSAGE service
 
 ## Q: What services do reference apps use?
 
@@ -788,24 +728,6 @@ A: Publish a WEBSITE for visitors, separate APP tools, and small JSON/DOCUMENT i
 
 Also asked as: multi-app ecosystem · inter-app integration · discovery json
 
-## Q: What host variables does Hub inject?
-
-A: Common host variables include window._qdnTheme ("light"|"dark") and window._qdnContext (e.g. "gateway"). Use them to theme UI and adapt behavior when running in gateway vs full Hub contexts.
-
-Also asked as: _qdnTheme · _qdnContext · hub host variables
-
-## Q: How do I open a peer profile?
-
-A: Use OPEN_PROFILE via qortalRequest to open a peer's Hub profile UI. Pass the identifiers your Hub version expects (verify docs). Prefer this over inventing custom profile routes when integrating social features.
-
-Also asked as: OPEN_PROFILE · open user profile hub
-
-## Q: What is SET_TAB_NOTIFICATIONS?
-
-A: SET_TAB_NOTIFICATIONS sets a badge count on the Hub tab for your app. Use sparingly for unread counts; clear when the user views items. Behavior is Hub-dependent—feature-detect and fail soft.
-
-Also asked as: SET_TAB_NOTIFICATIONS · tab badge
-
 ## Q: How do hash deep links work in Q-Apps?
 
 A: SPAs may use location.hash for anchors (e.g. #section-id). If you use multiple prefixes like #folder- and #folderdir-, parse longest match first—naive startsWith('folder-') breaks on substrings. Preserve hashes across history.replaceState cleanup.
@@ -830,12 +752,6 @@ A: Payment matching via SEARCH_TRANSACTIONS often lacks a reliable message field
 
 Also asked as: SEARCH_TRANSACTIONS · payment matching · transaction message missing
 
-## Q: What are Hub list actions?
-
-A: GET_LIST_ITEMS, ADD_LIST_ITEMS, and DELETE_LIST_ITEM manage per-user lists in Hub UI state—not global QDN. Use for bookmarks/favorites local to the user. Persist shared data on QDN JSON/FILE instead of lists when others must read it.
-
-Also asked as: GET_LIST_ITEMS · ADD_LIST_ITEMS · hub lists
-
 ## Q: How do I test auth edge cases?
 
 A: Cover: user cancels GET_USER_ACCOUNT; wallet with zero names; nested iframe without relay; opening index.html outside Hub (preview mode). Ensure publish buttons stay disabled without a name and errors are human-readable.
@@ -850,13 +766,13 @@ Also asked as: mode=ALL · mode=LATEST · qdn search mode
 
 ## Q: Where is the REST API documentation?
 
-A: Use https://api.qortal.org/api-documentation/ for node REST fields. Cross-check field names when debugging bridge vs REST mismatches. For qortalRequest actions, prefer https://qortal.dev/docs/q-apps and Core Q-Apps.md.
+A: Use the API documentation on api.qortal.org for node REST fields. Cross-check field names when debugging bridge vs REST mismatches. For qortalRequest actions, prefer the Q-Apps docs on qortal.dev and Core's Q-Apps.md.
 
 Also asked as: api.qortal.org · rest docs qortal
 
 ## Q: What GitHub repos should Q-App developers study?
 
-A: Qortal/qortal (Core, Q-Apps.md, q-apps.js), Qortal/Qortal-Hub, optional Qortal/qapp-core helpers, and reference apps q-mail, q-share, q-tube, q-shop. Community projects also live on https://gitea.qortal.link.
+A: Qortal/qortal (Core, Q-Apps.md, q-apps.js), Qortal/Qortal-Hub, optional Qortal/qapp-core helpers, and reference apps q-mail, q-share, q-tube, q-shop. Community projects also live on gitea.qortal.link.
 
 Also asked as: q-app github repos · qapp-core · gitea.qortal.link
 
@@ -922,7 +838,7 @@ Also asked as: website subpage link · qortal website path
 
 ## Q: What is local preview URL for an APP?
 
-A: When Core supports it: http://localhost:12391/render/APP/<Name>?preview=true (varies by version). Still prefer Hub Preview for realistic bridge behavior. Confirm assets load under the render path.
+A: When Core supports it: the node's /render/APP/<Name>?preview=true path on port 12391 (varies by version). Still prefer Hub Preview for realistic bridge behavior. Confirm assets load under the render path.
 
 Also asked as: local preview render · preview=true url
 
@@ -1158,7 +1074,7 @@ Also asked as: GET_FRIENDS_LIST · SET_PROFILE_DATA
 
 A: SEND_CHAT_MESSAGE (group) sends chat with user approval on supported Hubs. Do not use it as a reliable payment receipt channel. Confirm group context and permissions; handle cancel and rate limits.
 
-Also asked as: SEND_CHAT_MESSAGE · group chat message
+Also asked as: SEND_CHAT_MESSAGE qortalRequest · group chat message
 
 ## Q: What notifications permission actions exist?
 

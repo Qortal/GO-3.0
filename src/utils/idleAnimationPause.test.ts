@@ -148,6 +148,37 @@ describe('installIdleAnimationPause', () => {
     expect(entrance.play).not.toHaveBeenCalled();
   });
 
+  it('keeps loops frozen through input while held, then hands back to the idle timer', async () => {
+    const mod = await install();
+    mod.holdAnimationPause('qortino', true);
+    expect(document.documentElement.getAttribute(IDLE_ATTR)).toBe('on');
+    // Input, through this module only: earlier tests' copies still listen on window.
+    mod.noteIdlePauseActivity();
+    expect(document.documentElement.getAttribute(IDLE_ATTR)).toBe('on');
+    mod.holdAnimationPause('qortino', false);
+    expect(document.documentElement.getAttribute(IDLE_ATTR)).toBeNull();
+    vi.advanceTimersByTime(10_000);
+    expect(document.documentElement.getAttribute(IDLE_ATTR)).toBe('on');
+  });
+
+  it('stays paused when a hold ends while the user is idle anyway', async () => {
+    const mod = await install();
+    vi.advanceTimersByTime(10_000);
+    mod.holdAnimationPause('qortino', true);
+    mod.holdAnimationPause('qortino', false);
+    expect(document.documentElement.getAttribute(IDLE_ATTR)).toBe('on');
+  });
+
+  it('lets entrances finish when a hold starts', async () => {
+    const entrance = fakeAnimation({ iterations: 1, playState: 'paused' });
+    const loop = fakeAnimation({ iterations: Infinity, playState: 'paused' });
+    animations = [entrance, loop];
+    const mod = await install();
+    mod.holdAnimationPause('qortino', true);
+    expect(entrance.play).toHaveBeenCalledTimes(1);
+    expect(loop.play).not.toHaveBeenCalled();
+  });
+
   it('noteIdlePauseActivity counts as input', async () => {
     const mod = await install();
     vi.advanceTimersByTime(10_000);

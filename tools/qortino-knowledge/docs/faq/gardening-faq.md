@@ -372,7 +372,7 @@ Also asked as: aphid control · get rid of aphids · aphids on plants
 
 A: Patrol at evening, use boards as day shelters to collect them, try beer traps, copper edges, and iron-phosphate pellets rated for organic use. Reduce wet hiding places and dense ground cover near seedlings. Hand-picking after rain is highly effective.
 
-Also asked as: slug control garden · organic slug killer · beer trap slugs
+Also asked as: slug control garden · organic slug killer
 
 ## Q: How does row cover prevent insect damage?
 
@@ -654,7 +654,7 @@ Also asked as: grow mint · plant mint · mint herb garden · how to grow pepper
 
 A: Composting is controlled rotting of plant and kitchen scraps into humus-rich soil amendment. Mix browns (dry carbon: leaves, cardboard) with greens (nitrogen: food scraps, fresh cuttings), keep lightly moist and aerated, and avoid meat/dairy/oils in simple home piles. Finished compost feeds soil life and reduces landfill waste. Trench composting buries scraps directly in beds; hot piles heat when large and turned.
 
-Also asked as: define composting · compost basics · why compost
+Also asked as: define composting · compost basics · how does composting work · explain composting · why compost
 
 ## Q: What are signs of poor soil drainage?
 
@@ -726,7 +726,7 @@ Also asked as: compost moisture · how wet compost pile · water compost
 
 A: Trench composting means burying kitchen scraps directly in garden beds where they break down in place. It needs no bin and suits small spaces or apartments with a yard patch. Bury scraps deep enough that animals cannot dig them up, and plant over the area later.
 
-Also asked as: trench compost · bury kitchen scraps · compost in bed · what is composting · how does composting work · explain composting
+Also asked as: trench compost · bury kitchen scraps · compost in bed
 
 ## Q: Can I compost in an apartment?
 

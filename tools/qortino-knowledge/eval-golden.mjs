@@ -63,10 +63,9 @@ function loadGolden() {
 }
 
 function main() {
-  const packPath = path.resolve(
-    __dirname,
-    '../../src/qortinoAgent/bundledKnowledge.json'
-  );
+  // The app no longer bundles the chunk pack (Qortino answers from the model
+  // plus the golden FAQ); evaluate the pack build-pack.mjs writes to dist/.
+  const packPath = path.resolve(__dirname, 'dist/qortino-knowledge-v2.json');
   const pack = JSON.parse(fs.readFileSync(packPath, 'utf8'));
   const chunks = pack.chunks || [];
   const golden = loadGolden();

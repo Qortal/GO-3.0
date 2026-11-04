@@ -162,6 +162,7 @@ import {
   storeData,
 } from '../utils/chromeStorage';
 import TradeBotRespondRequest from '../transactions/TradeBotRespondRequest';
+import { isGroupMuted } from '../utils/mutedGroups';
 
 export let groupSecretkeys = {};
 
@@ -4008,6 +4009,7 @@ export const checkThreads = async (bringBack) => {
     const dataToBringBack = [];
     const threadActivity = await getThreadActivity();
     if (!threadActivity) return null;
+    const mutedGroups = (await getUserSettings({ key: 'mutedGroups' })) || [];
 
     const selectedThreads = [
       ...threadActivity.createdThreads.slice(0, 2),
@@ -4046,7 +4048,11 @@ export const checkThreads = async (bringBack) => {
           (!thread?.lastNotified || thread?.lastNotified < thread?.created)
         ) {
           tempData[thread.threadId] = latestMessage.created;
-          newAnnouncements.push(thread);
+          // A muted group ("Mute push notifications") gets no alert; the post
+          // still counts as notified, so unmuting replays nothing.
+          if (!isGroupMuted(mutedGroups, thread?.groupId)) {
+            newAnnouncements.push(thread);
+          }
         }
         if (latestMessage.created > thread?.lastVisited) {
           dataToBringBack.push(thread);

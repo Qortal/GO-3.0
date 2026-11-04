@@ -1,18 +1,18 @@
 # philosophy — golden FAQ
 
-Curated offline Q&A for Qortino (201 entries). Prefer these answers when relevant.
+Curated offline Q&A for Qortino (200 entries). Prefer these answers when relevant.
 
 ## Q: What is the Revolution of Values?
 
 A: In Playing Qortal, the Revolution of Values is a quiet change of heart: from greed for money and profit toward sharing without expecting return. Not weapons or governments. Your time is priceless; Qortal records it as QORT by keeping a computer on a shared network. When enough refuse to sell that time for money, kindness remains—#QQQ. Take what resonates; leave the rest.
 
-Also asked as: explain revolution of values · revolution of values meaning
+Also asked as: explain revolution of values · revolution of values meaning · Qortal philosophy · values revolution
 
-## Q: Is Qortal a video game?
+## Q: Why does Playing Qortal call Qortal a game?
 
 A: No. Qortal the network is not a video game—it is real decentralized software and community infrastructure. When Playing Qortal says "game," it is a metaphor for the Revolution of Values: voluntary participation, golden rules, winning together by valuing time and kindness over money. Ordinary life is the board—not a console title.
 
-Also asked as: is qortal a game · qortal video game · playing qortal gaming
+Also asked as: playing qortal game metaphor · is playing qortal about a game · why is qortal called a game in the book · playing qortal gaming
 
 ## Q: What does Playing Qortal mean?
 
@@ -20,11 +20,11 @@ A: An invitation to join a voluntary real network while practicing kinder values
 
 Also asked as: what is playing qortal · playing qortal meaning
 
-## Q: What is #QQQ?
+## Q: What is #QQQ in Playing Qortal?
 
 A: #QQQ is the book's real currency of New Earth: kind words and acts never billed—Here, this is for you; I'm sorry; I forgive you; Thank you; How are you? Everyone already mints it; widen the circle from family to the whole human family. Free software culture is proof it can work at scale.
 
-Also asked as: what does qqq mean · qqq currency · real currency qortal
+Also asked as: qqq in playing qortal · playing qortal real currency · qqq kind words currency · book meaning of qqq
 
 ## Q: Take what resonates—what does that mean?
 
@@ -110,11 +110,11 @@ A: No. Not one. Think metaphysics nonsense and still mint, hold keys, use an uns
 
 Also asked as: spiritual required · skeptic welcome
 
-## Q: Who is Simon James?
+## Q: Who is Simon James on Qortal?
 
-A: Simon James is a long established Qortal account. Self described as life-long learning, child-like curious scientist, traveller and guide. He has been a supporter and promoter of Qortal. Author of Playing Qortal Material — open WEBSITE “… Playing Qortal …” on QDN (qortal://WEBSITE/...%20Playing%20Qortal%20...) — and various Q-Apps and websites. In QDN chat, look up Simon James for live Level, publishes, and Quitter posts.
+A: Simon James is a long-time Qortal community member, supporter and promoter, known for his contributions to various Q-Apps and websites as well as Qortal GO, the Android app. Self-described lifelong learner, child-like curious scientist, traveller and guide, and author of Playing Qortal material — open WEBSITE “… Playing Qortal …” on QDN (qortal://WEBSITE/...%20Playing%20Qortal%20...). His live Level, publishes and Torq posts are on Qortal itself.
 
-Also asked as: who wrote playing qortal · is simon a guru · simon james · tell me about simon james
+Also asked as: is simon a guru · simon james · tell me about simon james
 
 ## Q: What about forgiveness?
 
@@ -186,7 +186,7 @@ Also asked as: third generation internet · decentralized internet
 
 A: Foundations unlocked—use, study, improve, pass on—for gratitude. Ideas are flame. Salk: patent the sun? Banting's dollar insulin vs later capture. Linux and the Web's gift are #QQQ at scale.
 
-Also asked as: open source qqq · patent the sun
+Also asked as: open source qqq
 
 ## Q: Love family children?
 
@@ -276,7 +276,7 @@ Also asked as: despair money · hopeless system
 
 A: Here you have—thank you—structural: minter card, Admins approve. Harder to game. Organic Proof of Humanity.
 
-Also asked as: nomination handshake
+Also asked as: philosophy of nomination
 
 ## Q: Portal to reality?
 
@@ -324,7 +324,7 @@ Also asked as: billionaire QORT · money no influence
 
 A: Bitcoin proved P2P then recentralized via work and pockets. Qortal: contribution, nomination, no ICO, no buyable minting. Design moneyed advantage out.
 
-Also asked as: bitcoin vs qortal · false decentralization
+Also asked as: false decentralization
 
 ## Q: CBDC warning?
 
@@ -450,7 +450,7 @@ Also asked as: trusted community
 
 A: Goal: children's future together. Enemy: divide and conquer.
 
-Also asked as: together we stand
+Also asked as: together we stand line · together we stand
 
 ## Q: Gardening and New Earth?
 
@@ -583,12 +583,6 @@ Also asked as: strategy build beside
 A: Cannot prove every piece. Navigation vision with humility inside hope.
 
 Also asked as: stars to steer by honesty
-
-## Q: Together we stand?
-
-A: Shared goal children's future; shared enemy divide and conquer.
-
-Also asked as: together we stand line
 
 ## Q: QORT priceless as time?
 

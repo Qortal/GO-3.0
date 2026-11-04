@@ -21,10 +21,6 @@ import { alpha } from '@mui/material/styles';
 import CheckCircleRoundedIcon from '@mui/icons-material/CheckCircleRounded';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import SendRoundedIcon from '@mui/icons-material/SendRounded';
-import {
-  humanLabelForSearchKind,
-  type QdnSearchKind,
-} from '../../../qortinoAgent/qdnSearchKind';
 import { escapeHtml } from '../../../utils/escapeHtml';
 
 export const QORTINO_TEACHING_SUBJECT = 'Teaching Qortino AI';
@@ -33,12 +29,8 @@ export const QORTINO_TEACHING_RECIPIENT = 'Qortino AI';
 export type AnswerReportPayload = {
   question: string;
   answer: string;
-  /** Offline vs live QDN chat window */
-  dataSource: 'offline' | 'qdn';
-  /** Fast vs Max depth / model */
-  answerMode: 'fast' | 'max';
-  /** Only meaningful when dataSource is qdn */
-  qdnSearchKind?: QdnSearchKind;
+  /** Model that wrote the answer, e.g. "Qwen3 4B Instruct 2507". */
+  model: string;
 };
 
 type Props = {
@@ -47,17 +39,8 @@ type Props = {
   onClose: () => void;
 };
 
-export function formatAnswerReportMode(opts: {
-  dataSource: 'offline' | 'qdn';
-  answerMode: 'fast' | 'max';
-  qdnSearchKind?: QdnSearchKind;
-}): string {
-  const depth = opts.answerMode === 'max' ? 'MAX' : 'FAST';
-  if (opts.dataSource === 'offline') {
-    return `OFFLINE · ${depth}`;
-  }
-  const kind = humanLabelForSearchKind(opts.qdnSearchKind || 'all');
-  return `QDN · ${depth} · ${kind}`;
+export function formatAnswerReportMode(opts: { model: string }): string {
+  return `OFFLINE · ${opts.model.trim()}`;
 }
 
 export function buildTeachingQmailBody(opts: {
@@ -92,14 +75,7 @@ export function QortinoAnswerReportDialog({ open, payload, onClose }: Props) {
   const [sendError, setSendError] = useState('');
 
   const modeLabel = useMemo(
-    () =>
-      payload
-        ? formatAnswerReportMode({
-            dataSource: payload.dataSource,
-            answerMode: payload.answerMode,
-            qdnSearchKind: payload.qdnSearchKind,
-          })
-        : '',
+    () => (payload ? formatAnswerReportMode({ model: payload.model }) : ''),
     [payload]
   );
 
@@ -124,11 +100,11 @@ export function QortinoAnswerReportDialog({ open, payload, onClose }: Props) {
         mode: modeLabel,
         feedback,
       });
-      const res = await window.sendMessage('sendPrivateQmail', {
+      const res = (await window.sendMessage('sendPrivateQmail', {
         recipientName: QORTINO_TEACHING_RECIPIENT,
         subject: QORTINO_TEACHING_SUBJECT,
         htmlBody: teachingBodyToHtml(body),
-      });
+      })) as { error?: string } | undefined;
       if (res?.error) throw new Error(res.error);
       setPhase('sent');
     } catch (error: any) {

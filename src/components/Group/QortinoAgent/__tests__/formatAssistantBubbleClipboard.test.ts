@@ -1,60 +1,33 @@
 import { describe, expect, it } from 'vitest';
 import { formatAssistantBubbleForClipboard } from '../formatAssistantBubbleClipboard';
+import { matchQAppCatalog } from '../../../../qortinoAgent/qAppCatalog';
 
 describe('formatAssistantBubbleForClipboard', () => {
-  it('includes profile names from admin / who-is cards, not only content', () => {
-    const text = formatAssistantBubbleForClipboard({
-      content: 'Minter Admins: 2 on-chain admin(s). Avatars below.',
-      profiles: [
-        {
-          name: 'Crowetic',
-          address: 'Qaddr1',
-          level: 8,
-          tags: ['Minter Admin'],
-          avatarUrl: '',
-          primaryName: 'Crowetic',
-          nameRole: 'primary',
-        },
-        {
-          name: 'the cat',
-          address: 'Qaddr2',
-          level: 5,
-          tags: ['Minter Admin'],
-          avatarUrl: '',
-          primaryName: 'the cat',
-          nameRole: 'primary',
-        },
-      ],
-    });
-    expect(text).toContain('1. Crowetic');
-    expect(text).toContain('2. the cat');
-    expect(text).toContain('Minter Admin');
-    expect(text).toContain('Minter Admins: 2 on-chain admin(s)');
+  it('copies the answer text', () => {
+    expect(
+      formatAssistantBubbleForClipboard({ content: '  Boil for one minute.  ' })
+    ).toBe('Boil for one minute.');
   });
 
-  it('includes owned names and media shelves', () => {
+  it('adds the Q-App cards and guide links shown under the answer', () => {
+    const app = matchQAppCatalog('what is Q-Assets');
+    expect(app).not.toBeNull();
     const text = formatAssistantBubbleForClipboard({
-      content: 'Names below.',
-      ownedNames: [
+      content: 'Q-Assets manages native assets.',
+      apps: [app!],
+      links: [
         {
-          name: 'Kitty',
-          address: 'Q1',
-          isPrimary: true,
-          registered: Date.UTC(2024, 0, 15),
-          avatarUrl: '',
+          id: 'guide',
+          label: 'Q-Minter Guide',
+          service: 'WEBSITE',
+          name: 'Q-Minter',
         },
-      ],
-      media: [
-        {
-          kind: 'video',
-          name: 'Kitty',
-          service: 'VIDEO',
-          identifier: 'vid1',
-          title: 'Hello',
-        },
+        { id: 'web', label: 'qortal.dev', href: 'https://qortal.dev' },
       ],
     });
-    expect(text).toContain('• Kitty (primary)');
-    expect(text).toContain('[video] Hello — Kitty');
+    expect(text).toContain('Q-Assets manages native assets.');
+    expect(text).toContain('Q-Apps:\n• Q-Assets');
+    expect(text).toContain('• Q-Minter Guide: qortal://WEBSITE/Q-Minter');
+    expect(text).toContain('• qortal.dev: https://qortal.dev');
   });
 });

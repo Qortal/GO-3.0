@@ -1,20 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { matchQAppCatalog } from '../qAppCatalog';
 import { matchGoldenAnswer } from '../goldenMatch';
-import { extractNameCandidates } from '../qdnLookup';
-import {
-  isMintingHowToQuery,
-  mintingGoldenSeedQuery,
-} from '../qdnMintingGuide';
-import { extractGroupOwnerQuery, isObviouslyQdnQuestion } from '../qdnRoster';
-import { extractGroupDigestQuery } from '../qdnGroupDigest';
+import goldenAnswers from '../goldenAnswers.json';
 import {
   isQortalNetworkDefinitionQuery,
   isGenericConceptNeedle,
   isQortPriceQuery,
 } from '../queryIntent';
 
-describe('query routing — network vs apps vs people', () => {
+describe('query routing — network vs apps', () => {
   it('recognizes network definition asks', () => {
     for (const q of [
       'what is qortal',
@@ -41,7 +35,6 @@ describe('query routing — network vs apps vs people', () => {
 
   it('does not steal concept FAQs into apps', () => {
     expect(matchQAppCatalog('what is minting')).toBeNull();
-    expect(isMintingHowToQuery('what is minting')).toBe(true);
     expect(matchGoldenAnswer('what is minting')?.entry.id).toBe('qortal-005');
 
     expect(matchQAppCatalog('what are qortal names')).toBeNull();
@@ -63,42 +56,39 @@ describe('query routing — network vs apps vs people', () => {
     expect(matchQAppCatalog('what is Q-Node')?.entry.id).toBe('q-node');
     expect(matchQAppCatalog('what is the Names app')?.entry.id).toBe('names');
     expect(matchQAppCatalog('explain Ear-Bump')?.entry.name).toBe('Ear-Bump');
-  });
-
-  it('keeps Welcome-group questions on QDN intents, not the Welcome app', () => {
-    const owner = 'who owns the Welcome to Qortal group';
-    expect(matchQAppCatalog(owner)).toBeNull();
-    expect(extractGroupOwnerQuery(owner)?.toLowerCase()).toContain('welcome');
-    expect(isObviouslyQdnQuestion(owner)).toBe(true);
-
-    const digest = "what's new in Welcome to Qortal this week";
-    expect(matchQAppCatalog(digest)).toBeNull();
-    expect(extractGroupDigestQuery(digest)?.groupName.toLowerCase()).toContain(
-      'welcome'
+    expect(matchQAppCatalog('what is Torq')?.entry.id).toBe('torq');
+    expect(matchQAppCatalog('open torq app')?.entry.id).toBe('torq');
+    expect(matchQAppCatalog('what is Quitter')?.entry.summary).toMatch(/Torq/);
+    expect(matchQAppCatalog('what is q-drive')?.entry.name).toBe('Q-Drive');
+    expect(matchQAppCatalog('open singularity')?.entry.name).toBe(
+      'Singularity'
     );
+    expect(matchQAppCatalog('open gifs')?.entry.name).toBe('GIFs');
   });
 
-  it('does not extract person-name junk from how-to questions', () => {
-    expect(extractNameCandidates('how does qortal work')).toEqual([]);
-    expect(extractNameCandidates('what is qortal')).toEqual([]);
-    expect(isGenericConceptNeedle('minting')).toBe(true);
+  it('leaves pre-release + versions to the FAQ, not the stable app card', () => {
+    expect(matchQAppCatalog('what is q-mail+')).toBeNull();
+    expect(matchQAppCatalog('open q-share+')).toBeNull();
+    expect(matchQAppCatalog('what is q-mail')?.entry.name).toBe('Q-Mail');
+    // POS+ is its own app, not a + version.
+    expect(matchQAppCatalog('what is pos+')?.entry.name).toBe('POS+');
   });
 
-  it('treats desire phrasing as a become-a-minter process ask', () => {
+  it('keeps everyday words that are also app names as questions', () => {
     for (const q of [
-      'I want to mint, how',
-      'i want to mint how do i do that',
-      'i wanna mint',
-      'I would like to start minting',
-      'help me mint qort',
+      'what is weather',
+      'what is the singularity',
+      'explain singularity',
+      'what is a gif',
+      'what are notes',
+      'what is an encrypted drive',
     ]) {
-      expect(isMintingHowToQuery(q), q).toBe(true);
-      expect(mintingGoldenSeedQuery(q), q).toBe('How do I become a minter?');
+      expect(matchQAppCatalog(q), q).toBeNull();
     }
-    // Definition asks still seed the definition FAQ.
-    expect(mintingGoldenSeedQuery('what is minting')).toBe(
-      'What is minting on Qortal?'
-    );
+  });
+
+  it('treats generic concepts as concepts, not names', () => {
+    expect(isGenericConceptNeedle('minting')).toBe(true);
   });
 
   it('matches inflections via stemming (mint vs minting)', () => {
@@ -106,6 +96,61 @@ describe('query routing — network vs apps vs people', () => {
     expect(m).not.toBeNull();
     expect(m!.entry.category).toBe('qortal');
     expect(`${m!.entry.q} ${m!.entry.a}`.toLowerCase()).toMatch(/mint/);
+  });
+
+  it('never puts a level floor on Minter Admins', () => {
+    // Any existing minter can be proposed (Q-Mintership's admin board);
+    // level 5+ is the rule for nominating new minters, not for admins.
+    for (const q of [
+      'who are minter admins',
+      'Who are the Minter Admins?',
+      'how do I become a minter admin',
+      'what does level 5 unlock',
+    ]) {
+      const m = matchGoldenAnswer(q);
+      expect(m, q).not.toBeNull();
+      expect(m!.entry.a, q).not.toMatch(
+        /only level 5\+? minters|eligible to become|admins come from level/i
+      );
+    }
+    const floors = goldenAnswers.entries.filter((e) =>
+      /only level 5\+? minters can become|admins come from level 5|eligible to become (a )?minter admin/i.test(
+        e.a
+      )
+    );
+    expect(floors.map((e) => e.id)).toEqual([]);
+  });
+
+  it('never says Qortino needs a private node to download', () => {
+    // The public node fetches the model too; a private node is recommended,
+    // never said to be required.
+    const claims = goldenAnswers.entries.filter((e) =>
+      e.a
+        .split(/(?<=[.!?])\s+/)
+        .some(
+          (sentence) =>
+            /qortino|model/i.test(sentence) &&
+            /public (gateway )?nodes? cannot|only be assembled from a private node|(needs|requires) (your own|a private) node/i.test(
+              sentence
+            )
+        )
+    );
+    expect(claims.map((e) => e.id)).toEqual([]);
+    expect(
+      matchGoldenAnswer("How do I download Qortino's model?")?.entry.a
+    ).toMatch(/public node/);
+  });
+
+  it('describes Simon James as a community member and GO contributor', () => {
+    for (const q of [
+      'who is simon james',
+      'Who is Simon James?',
+      'simon james',
+    ]) {
+      const m = matchGoldenAnswer(q);
+      expect(m?.entry.a, q).toMatch(/long-time Qortal community member/);
+      expect(m?.entry.a, q).toMatch(/Qortal GO/);
+    }
   });
 
   it('routes QORT price asks to the honesty FAQ', () => {

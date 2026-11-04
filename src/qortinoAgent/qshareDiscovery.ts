@@ -1,16 +1,15 @@
 /**
- * Resolve the real QDN identifiers for the Qortino AI resources.
+ * Resolve the real QDN identifiers for the Qortino AI model parts.
  *
- * The packs are published with Q-Share, which mints a random identifier per
- * file (e.g. `qshare_file_qortino-ai_hE3ZLM`) instead of the stable ids the
- * manifest declares (`qortino_pack_standard`). Three strategies are tried, so
- * a slow or cold node can still resolve the packs:
+ * The parts are published with Q-Share, which mints a random identifier per
+ * file (e.g. `qshare_file_qortino-ai_hE3ZLM`). Strategies, best first, so a
+ * slow or cold node can still find them:
  *
  *  1. Q-Share metadata DOCUMENT (`…_metadata`) — authoritative filename ->
  *     identifier map, but requires downloading that resource's content.
- *  2. Resource listing + size match — index-only, no content fetch, so it
- *     works instantly on a node that has never seen the data.
- *  3. The manifest's own identifier, verified against the resource status.
+ *  2. Resource listing + exact size match — index-only, no content fetch, so
+ *     it works instantly on a node that has never seen the data.
+ *  3. The identifiers of the current publish baked into this build.
  */
 import { createEndpoint } from '../background/background';
 import { PUBLISHED_QSHARE_FILES, QORTINO_QDN_NAME } from './manifest';
@@ -41,8 +40,12 @@ const QSHARE_METADATA_SUFFIX = '_metadata';
 const LIST_TIMEOUT_MS = 20_000;
 const CONTENT_TIMEOUT_MS = 90_000;
 
-/** A pack matches when its size is within this fraction of the expected size. */
-const SIZE_MATCH_TOLERANCE = 0.25;
+/**
+ * A part matches a listed resource when the sizes differ by at most this
+ * fraction. Q-Share stores a FILE as-is, so sizes agree to the byte bar a
+ * little container overhead; the two parts differ by far more than this.
+ */
+const SIZE_MATCH_TOLERANCE = 0.002;
 
 let cachedFiles: Map<string, QshareFileEntry> | null = null;
 let cachedFileRows: QdnResourceRow[] | null = null;
@@ -102,27 +105,22 @@ export async function listQortinoResources(
 }
 
 /**
- * Identifier for a manifest file from the publish baked into this build.
- * Last line of defence when the node can serve neither the Q-Share metadata
- * document nor a resource listing.
+ * Identifier for a part from the publish baked into this build. Last line of
+ * defence when the node can serve neither the Q-Share metadata document nor
+ * a resource listing.
  */
-export function knownPublishedEntry(opts: {
-  relativePath?: string;
-  id?: string;
-}): QshareFileEntry | undefined {
-  const keys = [basenameOf(opts.relativePath || ''), `${opts.id || ''}`.toLowerCase()];
-  for (const key of keys) {
-    const hit = key ? PUBLISHED_QSHARE_FILES[key] : undefined;
-    if (hit) {
-      return {
-        filename: key,
-        identifier: hit.identifier,
-        service: hit.service,
-        size: hit.sizeBytes,
-      };
-    }
-  }
-  return undefined;
+export function knownPublishedEntry(
+  filename: string
+): QshareFileEntry | undefined {
+  const key = filename.toLowerCase();
+  const hit = PUBLISHED_QSHARE_FILES[key];
+  if (!hit) return undefined;
+  return {
+    filename: key,
+    identifier: hit.identifier,
+    service: hit.service,
+    size: hit.sizeBytes,
+  };
 }
 
 /**
@@ -154,25 +152,39 @@ async function listQshareMetadataIdentifiers(): Promise<string[]> {
     .map((row) => row.identifier);
 }
 
+/** Metadata documents read before giving up on finding every wanted file. */
+const MAX_SHARES_SCANNED = 4;
+
 /**
- * Map of lowercased filename -> Q-Share file entry for the newest share
- * published under the Qortino AI name. Empty when the metadata document
- * cannot be read (cold node, offline peers) — callers fall back to size match.
+ * Map of lowercased filename -> Q-Share file entry, newest share first.
+ * Shares are read until every name in `want` is found (or a few shares have
+ * been read), so a later unrelated publish under the name does not hide the
+ * model. Empty when no metadata document can be read (cold node, offline
+ * peers) — callers fall back to size match.
  */
 export async function discoverQortinoQshareFiles(options?: {
   force?: boolean;
+  want?: string[];
 }): Promise<Map<string, QshareFileEntry>> {
-  if (cachedFiles && !options?.force) return cachedFiles;
+  const want = (options?.want || []).map((name) => name.toLowerCase());
+  const hasAll = (map: Map<string, QshareFileEntry>) =>
+    map.size > 0 && want.every((name) => map.has(name));
+  if (cachedFiles && !options?.force && (!want.length || hasAll(cachedFiles))) {
+    return cachedFiles;
+  }
 
   const result = new Map<string, QshareFileEntry>();
   const metadataIds = await listQshareMetadataIdentifiers();
+  let scanned = 0;
 
   for (const metadataId of metadataIds) {
+    if (scanned >= MAX_SHARES_SCANNED) break;
     const doc = await fetchJson<QshareMetadataDoc>(
       `/arbitrary/DOCUMENT/${encodedName()}/${encodeURIComponent(metadataId)}`,
       CONTENT_TIMEOUT_MS
     );
     if (!doc?.files?.length) continue;
+    scanned += 1;
     for (const file of doc.files) {
       const filename = String(file?.filename || '').trim();
       const identifier = String(file?.identifier || '').trim();
@@ -188,7 +200,7 @@ export async function discoverQortinoQshareFiles(options?: {
         mimetype: file?.mimetype,
       });
     }
-    if (result.size) break;
+    if (!want.length || hasAll(result)) break;
   }
 
   // Only cache a useful result, so a cold-node miss can be retried.
@@ -196,39 +208,15 @@ export async function discoverQortinoQshareFiles(options?: {
   return result;
 }
 
-/** `packs/qortino-lite.zip` -> `qortino-lite.zip` */
-function basenameOf(relativePath: string): string {
-  const parts = String(relativePath || '').split('/');
-  return (parts[parts.length - 1] || '').toLowerCase();
-}
-
-/**
- * Look up a Q-Share entry for a manifest file, matching on the relativePath
- * basename first (`qortino-lite.zip` == `Qortino-Lite.zip`) then the id.
- */
+/** Q-Share entry for a part, by filename (case-insensitive). */
 export function matchQshareEntry(
   files: Map<string, QshareFileEntry>,
-  opts: { relativePath?: string; id?: string; identifier?: string }
+  filename: string
 ): QshareFileEntry | undefined {
-  if (!files.size) return undefined;
-  const candidates = [
-    basenameOf(opts.relativePath || ''),
-    `${opts.id || ''}`.toLowerCase(),
-    `${opts.identifier || ''}`.toLowerCase(),
-  ].filter(Boolean);
-  for (const key of candidates) {
-    const hit = files.get(key);
-    if (hit) return hit;
-  }
-  return undefined;
+  return files.get(filename.toLowerCase());
 }
 
-/**
- * Pick the published resource whose size is closest to `expectedBytes`.
- * The Lite and Standard packs differ ~2x, so the nearest match is unambiguous
- * even against the bundled manifest's rounded sizes. Chunked storage adds a
- * little overhead, hence the tolerance rather than an exact comparison.
- */
+/** The listed resource whose size is closest to `expectedBytes`, if close enough. */
 export function matchResourceBySize(
   rows: QdnResourceRow[],
   expectedBytes: number,

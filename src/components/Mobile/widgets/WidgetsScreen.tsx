@@ -14,6 +14,7 @@ import AddRoundedIcon from '@mui/icons-material/AddRounded';
 import CheckRoundedIcon from '@mui/icons-material/CheckRounded';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded';
+import OpenInFullRoundedIcon from '@mui/icons-material/OpenInFullRounded';
 import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded';
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
@@ -38,6 +39,7 @@ import { GO_TAB_BAR_SPACE, withTabBarSpace } from '../mobileBarHeights';
 import {
   SECTION_ATTR,
   SECTION_SURFACE_TOUCH_ACTION,
+  SECTION_SWIPE_IGNORE_ATTR,
   SECTION_SWIPE_SURFACE_ATTR,
 } from '../sectionSwipe/sectionSwipe';
 import {
@@ -53,6 +55,7 @@ import {
   type SavedGoWidget,
 } from './goWidgets';
 import { GoWidgetFrame } from './GoWidgetFrame';
+import { pruneWidgetAppsOnDevice } from './widgetAppOnDevice';
 import {
   GRID_GAP_PX,
   GRID_MAX_H,
@@ -70,8 +73,12 @@ import {
 import { WidgetPicker } from './WidgetPicker';
 import { useWidgetSwipeZone, widgetHoldFeed } from './widgetSwipeZone';
 
-/** Widgets stay loaded this long after their screen was last seen. */
-const WIDGET_UNLOAD_AFTER_MS = 3 * 60_000;
+/**
+ * Widgets load this long after GO is up (then in idle time), out of sight,
+ * so they are there by the first swipe to their screen.
+ */
+const WIDGET_WARM_UP_MS = 3_000;
+const WIDGET_WARM_UP_IDLE_MS = 2_000;
 const LONG_PRESS_MS = 450;
 const MOVE_SLOP_PX = 8;
 const AUTO_SCROLL_EDGE_PX = 72;
@@ -138,8 +145,8 @@ type WidgetsScreenProps = {
  * The screen left of Home (phones, GO): the user's widgets on a grid
  * (widgetGrid), each a Q-App made for GO in a frame of its own
  * (GoWidgetFrame). Edit arranges them: drag a widget to move it, its corner
- * to resize it, × to take it away. Widgets load the first time the screen is
- * shown and are let go a few minutes after it was last seen.
+ * to resize it, × to take it away. Widgets load soon after GO starts, out of
+ * sight, and stay loaded while it runs (each pauses itself while unseen).
  */
 export const WidgetsScreen = memo(({ active }: WidgetsScreenProps) => {
   const theme = useTheme();
@@ -153,20 +160,41 @@ export const WidgetsScreen = memo(({ active }: WidgetsScreenProps) => {
   const pageVisible = usePageVisible();
   const live = active && pageVisible;
 
-  // Loaded the first time the screen shows; let go once it has been out of
-  // sight a while (each widget is a running Q-App).
+  // A widget taken away also leaves the phone (its kept app, see
+  // widgetAppOnDevice).
+  const widgetKeys = widgets.map(goWidgetKey).join('\n');
+  useEffect(() => {
+    void pruneWidgetAppsOnDevice(widgetKeys ? widgetKeys.split('\n') : []);
+  }, [widgetKeys]);
+
+  // Loaded soon after start, out of sight (at once should the screen show
+  // first), so they are there when the user swipes to them, then kept while
+  // GO runs: out of sight each is told so (GO_WIDGET_VISIBILITY) and pauses.
+  // Not started while GO is in the background: nobody is about to look.
   const [framesMounted, setFramesMounted] = useState(false);
   useEffect(() => {
+    if (framesMounted) return;
     if (live) {
       setFramesMounted(true);
       return;
     }
-    const id = window.setTimeout(
-      () => setFramesMounted(false),
-      WIDGET_UNLOAD_AFTER_MS
-    );
-    return () => window.clearTimeout(id);
-  }, [live]);
+    if (!pageVisible) return;
+    let idle: number | null = null;
+    const timer = window.setTimeout(() => {
+      const mount = () => setFramesMounted(true);
+      if (typeof window.requestIdleCallback === 'function') {
+        idle = window.requestIdleCallback(mount, {
+          timeout: WIDGET_WARM_UP_IDLE_MS,
+        });
+      } else {
+        mount();
+      }
+    }, WIDGET_WARM_UP_MS);
+    return () => {
+      window.clearTimeout(timer);
+      if (idle !== null) window.cancelIdleCallback?.(idle);
+    };
+  }, [framesMounted, live, pageVisible]);
 
   // Requests that ask or open something only while it is really in view.
   const onScreenRef = useRef(false);
@@ -188,12 +216,6 @@ export const WidgetsScreen = memo(({ active }: WidgetsScreenProps) => {
 
   const [loaded, setLoaded] = useState<Record<string, boolean>>({});
   const [reloadKeys, setReloadKeys] = useState<Record<string, number>>({});
-  useEffect(() => {
-    // Already empty (always so on mount): no second render.
-    if (!framesMounted) {
-      setLoaded((prev) => (Object.keys(prev).length === 0 ? prev : {}));
-    }
-  }, [framesMounted]);
   const onLoaded = useCallback(
     (key: string) => setLoaded((prev) => ({ ...prev, [key]: true })),
     []
@@ -211,7 +233,12 @@ export const WidgetsScreen = memo(({ active }: WidgetsScreenProps) => {
   useLayoutEffect(() => {
     const grid = gridRef.current;
     if (!grid) return;
-    const measure = () => setGridWidth(grid.clientWidth);
+    // Hidden (another section showing) it measures 0: the widgets keep their
+    // size instead, so they don't lay out again around every visit.
+    const measure = () => {
+      const width = grid.clientWidth;
+      if (width > 0) setGridWidth(width);
+    };
     measure();
     if (typeof ResizeObserver === 'undefined') return;
     const observer = new ResizeObserver(measure);
@@ -219,6 +246,9 @@ export const WidgetsScreen = memo(({ active }: WidgetsScreenProps) => {
     return () => observer.disconnect();
   }, [widgets.length > 0]);
   const columnPx = gridColumnPx(gridWidth || 1);
+  // Not before the screen was laid out once (parked beside its neighbour,
+  // see useSectionSwipe): a widget starts at its real size.
+  const framesReady = framesMounted && gridWidth > 0;
 
   // Horizontal swipes over the widgets switch sections natively (their
   // frames take every touch on them); not while arranging or picking.
@@ -587,6 +617,9 @@ export const WidgetsScreen = memo(({ active }: WidgetsScreenProps) => {
   return (
     <Box
       {...{ [SECTION_ATTR]: 'widgets' }}
+      // While arranging, a drag here moves or resizes a widget: no pull down
+      // for Tabs (tabsPull) and no swipe to the next section.
+      {...(editing ? { [SECTION_SWIPE_IGNORE_ATTR]: '' } : {})}
       // React's own hiding (the section swipe shows it beside the others).
       style={active ? undefined : { display: 'none' }}
       sx={{
@@ -735,7 +768,7 @@ export const WidgetsScreen = memo(({ active }: WidgetsScreenProps) => {
                               position: 'absolute',
                             }}
                           >
-                            {framesMounted ? (
+                            {framesReady ? (
                               <GoWidgetFrame
                                 widget={widget}
                                 visible={live && !pickerOpen}
@@ -749,7 +782,7 @@ export const WidgetsScreen = memo(({ active }: WidgetsScreenProps) => {
                             ) : null}
                             <WidgetPlaceholder
                               widget={widget}
-                              shown={!framesMounted || !loaded[key]}
+                              shown={!framesReady || !loaded[key]}
                             />
                           </Box>
                           {editing ? (
@@ -801,7 +834,8 @@ export const WidgetsScreen = memo(({ active }: WidgetsScreenProps) => {
                               >
                                 <CloseRoundedIcon sx={{ fontSize: 17 }} />
                               </ButtonBase>
-                              {/* Resize: the corner handle. */}
+                              {/* Resize: the corner handle, a two-way arrow
+                                  (not a dot) so it reads as resize. */}
                               <Box
                                 role="button"
                                 aria-label={tw('resize', 'Resize')}
@@ -822,21 +856,37 @@ export const WidgetsScreen = memo(({ active }: WidgetsScreenProps) => {
                                   touchAction: 'none',
                                   width: 36,
                                   zIndex: 2,
-                                  '&::after': {
+                                }}
+                              >
+                                <Box
+                                  aria-hidden
+                                  sx={{
+                                    alignItems: 'center',
                                     backgroundColor:
                                       theme.palette.background.paper,
                                     border: `2px solid ${theme.palette.primary.main}`,
-                                    borderRadius: '50%',
-                                    bottom: 8,
+                                    borderRadius: '8px',
+                                    bottom: 5,
                                     boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
-                                    content: '""',
-                                    height: 16,
+                                    color: 'primary.main',
+                                    display: 'flex',
+                                    height: 24,
+                                    justifyContent: 'center',
+                                    pointerEvents: 'none',
                                     position: 'absolute',
-                                    right: 8,
-                                    width: 16,
-                                  },
-                                }}
-                              />
+                                    right: 5,
+                                    width: 24,
+                                  }}
+                                >
+                                  {/* Its arrows point ↗↙; turned, ↖↘. */}
+                                  <OpenInFullRoundedIcon
+                                    sx={{
+                                      fontSize: 15,
+                                      transform: 'rotate(90deg)',
+                                    }}
+                                  />
+                                </Box>
+                              </Box>
                             </>
                           ) : null}
                         </Box>

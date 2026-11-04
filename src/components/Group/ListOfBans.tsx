@@ -8,6 +8,7 @@ import {
   ListItemText,
   Popover,
   Tooltip,
+  Typography,
 } from '@mui/material';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import {
@@ -23,6 +24,16 @@ import { getBaseApiReact } from '../../App';
 import { useTranslation } from 'react-i18next';
 import { hasInvisibleCharacters } from '../../utils/hasInvisibleCharacters';
 import { CachedUserAvatar } from './CachedAvatars';
+import {
+  MemberActionsNotice,
+  canLiftGroupBans,
+  getMemberActionsNotice,
+} from './memberAdminActions';
+
+const BANS_NOTICE_KEY: Record<MemberActionsNotice, string> = {
+  owner_only: 'group:member_actions.owner_only_bans_notice',
+  needs_approval: 'group:member_actions.needs_approval_bans_notice',
+};
 
 export const getMemberInvites = async (groupNumber) => {
   const response = await fetch(
@@ -60,6 +71,18 @@ export const ListOfBans = ({
   setOpenSnack,
   show,
   compact = false,
+  isOwner = false,
+  isAdmin = false,
+  ownerAddress = undefined,
+}: {
+  groupId: number | string;
+  setInfoSnack: (info: any) => void;
+  setOpenSnack: (open: boolean) => void;
+  show: (data: any) => Promise<unknown>;
+  compact?: boolean;
+  isOwner?: boolean;
+  isAdmin?: boolean;
+  ownerAddress?: string;
 }) => {
   const [bans, setBans] = useState([]);
   const [popoverAnchor, setPopoverAnchor] = useState(null); // Track which list item the popover is anchored to
@@ -67,6 +90,9 @@ export const ListOfBans = ({
   const listRef = useRef(null);
   const [isLoadingUnban, setIsLoadingUnban] = useState(false);
   const { t } = useTranslation(['auth', 'core', 'group', 'question']);
+  // Core takes CANCEL_GROUP_BAN from the owner only; admins get the reason.
+  const canLiftBans = canLiftGroupBans({ ownerAddress, isOwner });
+  const bansNotice = getMemberActionsNotice({ ownerAddress, isOwner, isAdmin });
 
   const getInvites = async (groupId) => {
     try {
@@ -175,7 +201,7 @@ export const ListOfBans = ({
         {({ measure }) => (
           <div style={style} onLoad={measure}>
             <ListItem disablePadding>
-              {!compact && (
+              {!compact && canLiftBans && (
                 <Popover
                   open={openPopoverIndex === index}
                   anchorEl={popoverAnchor}
@@ -217,7 +243,7 @@ export const ListOfBans = ({
 
               <ListItemButton
                 onClick={
-                  compact
+                  compact || !canLiftBans
                     ? undefined
                     : (event) => handlePopoverOpen(event, index)
                 }
@@ -234,6 +260,13 @@ export const ListOfBans = ({
                   '&:hover .compact-row-action': {
                     opacity: 1,
                     pointerEvents: 'auto',
+                  },
+                  // Touch screens have no hover to reveal it.
+                  '@media (hover: none)': {
+                    '& .compact-row-action': {
+                      opacity: 1,
+                      pointerEvents: 'auto',
+                    },
                   },
                 }}
               >
@@ -267,9 +300,16 @@ export const ListOfBans = ({
                     },
                   }}
                 />
-                {compact && (
-                  <Tooltip title="Cancel Ban">
+                {compact && canLiftBans && (
+                  <Tooltip
+                    title={t('group:action.cancel_ban', {
+                      postProcess: 'capitalizeFirstChar',
+                    })}
+                  >
                     <IconButton
+                      aria-label={t('group:action.cancel_ban', {
+                        postProcess: 'capitalizeFirstChar',
+                      })}
                       className="compact-row-action"
                       disabled={isLoadingUnban}
                       onClick={(event) => {
@@ -310,6 +350,22 @@ export const ListOfBans = ({
     >
       {!compact && (
         <p>{t('core:list.bans', { postProcess: 'capitalizeFirstChar' })}</p>
+      )}
+      {bansNotice && (
+        <Typography
+          sx={{
+            color: 'text.secondary',
+            flexShrink: 0,
+            fontSize: 12,
+            lineHeight: 1.4,
+            px: 1.5,
+            py: 0.75,
+          }}
+        >
+          {t(BANS_NOTICE_KEY[bansNotice], {
+            postProcess: 'capitalizeFirstChar',
+          })}
+        </Typography>
       )}
       <div
         style={{

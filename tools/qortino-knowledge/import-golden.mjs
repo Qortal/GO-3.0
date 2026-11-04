@@ -65,18 +65,30 @@ function toFaqMd(category, entries) {
   return lines.join('\n');
 }
 
+/** The category files first, then topic files (qortal-go.jsonl …) by name. */
+function goldenFiles() {
+  const known = CATEGORIES.map((cat) => `${cat}.jsonl`);
+  const topics = fs
+    .readdirSync(GOLDEN_DIR)
+    .filter((f) => f.endsWith('.jsonl') && !known.includes(f))
+    .sort();
+  return [...known, ...topics];
+}
+
 function main() {
   fs.mkdirSync(FAQ_DIR, { recursive: true });
   const all = [];
-  for (const cat of CATEGORIES) {
-    const file = path.join(GOLDEN_DIR, `${cat}.jsonl`);
+  for (const fileName of goldenFiles()) {
+    const cat = fileName.replace(/\.jsonl$/, '');
+    const file = path.join(GOLDEN_DIR, fileName);
     const entries = loadJsonl(file);
     if (!entries.length) {
-      console.warn(`skip empty/missing ${cat}.jsonl`);
+      console.warn(`skip empty/missing ${fileName}`);
       continue;
     }
     for (const e of entries) {
       if (!e.q || !e.a) throw new Error(`${cat}: missing q/a`);
+      // `source` stays in the JSONL for review; the app does not need it.
       all.push({
         id: e.id || `${cat}-${all.length + 1}`,
         category: e.category || cat,

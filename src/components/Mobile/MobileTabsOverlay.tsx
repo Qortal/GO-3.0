@@ -1660,6 +1660,12 @@ export const MobileTabsOverlay = ({
                 overflow: 'hidden',
                 pointerEvents: 'auto',
                 width: '100%',
+                // Its own layer while open: a pull or slide that gave it one
+                // only for the drag (tabsPull, tabsSwipeClose) had the whole
+                // panel repainted and redrawn as each drag began and ended,
+                // 50-117 ms stalls on a vivo. Their inline will-change
+                // falls back to this when cleared.
+                willChange: 'transform',
                 ...noTextSelectionSx,
                 '& input, & textarea, & [contenteditable="true"]': {
                   userSelect: 'text',

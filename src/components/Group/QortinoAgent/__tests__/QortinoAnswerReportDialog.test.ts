@@ -22,37 +22,20 @@ describe('Qortino answer report mail', () => {
     );
   });
 
-  it('formats Offline / qdn · fast / max · search kind', () => {
-    expect(
-      formatAnswerReportMode({
-        dataSource: 'offline',
-        answerMode: 'fast',
-      })
-    ).toBe('OFFLINE · FAST');
-    expect(
-      formatAnswerReportMode({
-        dataSource: 'qdn',
-        answerMode: 'max',
-        qdnSearchKind: 'users',
-      })
-    ).toBe('QDN · MAX · Users');
-    expect(
-      formatAnswerReportMode({
-        dataSource: 'qdn',
-        answerMode: 'fast',
-        qdnSearchKind: 'videos',
-      })
-    ).toBe('QDN · FAST · Videos');
+  it('labels the report with the offline model', () => {
+    expect(formatAnswerReportMode({ model: 'Qwen3 4B Instruct 2507' })).toBe(
+      'OFFLINE · Qwen3 4B Instruct 2507'
+    );
   });
 
   it('packs mode, question, answer, and single feedback field', () => {
     const body = buildTeachingQmailBody({
       question: 'who is Kitty',
       answer: 'Qortal Kitty is…',
-      mode: 'QDN · MAX · Users',
+      mode: 'OFFLINE · Qwen3 4B Instruct 2507',
       feedback: 'Wrong person — use exact Kitty next time',
     });
-    expect(body).toContain('Mode: QDN · MAX · Users');
+    expect(body).toContain('Mode: OFFLINE · Qwen3 4B Instruct 2507');
     expect(body).toContain('Question:\nwho is Kitty');
     expect(body).toContain("Qortino's answer:\nQortal Kitty is…");
     expect(body).toContain(

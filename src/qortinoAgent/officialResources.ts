@@ -1,6 +1,6 @@
 /**
- * Curated Qortal guides / official pages Qortino can recommend.
- * In QDN mode these become tappable links (new app tab / new browser tab).
+ * Curated Qortal guides / official pages Qortino can recommend, shown as
+ * tappable links under an answer (new app tab / new browser tab).
  */
 import { executeEvent } from '../utils/events';
 import { parkQortinoAgentSheet } from './qortinoSheetNav';
@@ -12,7 +12,7 @@ export type OfficialResourceLink = {
   blurb?: string;
   service?: 'APP' | 'WEBSITE';
   name?: string;
-  /** External https — only use in QDN mode when appropriate */
+  /** External https page */
   href?: string;
 };
 

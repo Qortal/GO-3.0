@@ -11,9 +11,9 @@ import {
 export type QortinoDeviceTier = {
   totalRamBytes: number;
   availRamBytes: number;
+  /** Free space on the volume the model is saved to. */
   availStorageBytes: number;
   totalStorageBytes: number;
-  recommendedPack: 'small' | 'medium' | string;
   lowMemory: boolean;
 };
 
@@ -28,12 +28,21 @@ export type QortinoChatMessage = {
   content: string;
 };
 
-export type QortinoCompleteOptions = {
+/** Sampler settings; the native side defaults to Qwen3 Instruct's own. */
+export type QortinoSamplingOptions = {
+  temperature?: number;
+  topK?: number;
+  topP?: number;
+  minP?: number;
+  repeatPenalty?: number;
+  presencePenalty?: number;
+};
+
+export type QortinoCompleteOptions = QortinoSamplingOptions & {
   system?: string;
   messages: QortinoChatMessage[];
   contextChunks?: Array<string | { text: string }>;
   maxTokens?: number;
-  temperature?: number;
 };
 
 type QortinoTokenEvent = {
@@ -59,11 +68,14 @@ export interface QortinoLlmPlugin {
     relativePath?: string;
     absolutePath?: string;
   }): Promise<{ text: string; path: string }>;
-  extractZip(options: {
-    zipRelativePath?: string;
-    zipAbsolutePath?: string;
-    destRelativePath?: string;
-  }): Promise<{ extractedFiles: number; destDir: string }>;
+  /** SHA-256 (lowercase hex) of a file under the Qortino storage root. */
+  sha256File(options: {
+    relativePath: string;
+  }): Promise<{ sha256: string; size: number }>;
+  /** Delete everything under the storage root except `keep` (relative paths). */
+  cleanupStorage(options: {
+    keep: string[];
+  }): Promise<{ deletedFiles: number; freedBytes: number }>;
   /**
    * `url` must not carry the node API key: pass it as `apiKey`, which the
    * native side sends as an X-API-KEY header (native HTTP has no CORS).
@@ -83,11 +95,27 @@ export interface QortinoLlmPlugin {
       error?: string;
     }) => void
   ): Promise<PluginListenerHandle>;
+  addListener(
+    eventName: 'verifyProgress',
+    listenerFunc: (event: { bytesRead: number; bytesTotal: number }) => void
+  ): Promise<PluginListenerHandle>;
+  /**
+   * Load a GGUF (for a split model, its first part). Thread and batch counts
+   * default to what the native side picks for this phone.
+   */
   loadModel(options: {
     path: string;
     nCtx?: number;
     nThreads?: number;
-  }): Promise<{ loaded: boolean; path: string }>;
+    /** Threads for reading prompts; defaults to nThreads. */
+    nThreadsBatch?: number;
+    nBatch?: number;
+    nUbatch?: number;
+  }): Promise<{ loaded: boolean; path: string; loadMs?: number }>;
+  /** Read the system prompt into the KV cache ahead of the first question. */
+  warmup(options: {
+    system: string;
+  }): Promise<{ ok?: boolean; warmMs?: number }>;
   unload(): Promise<void>;
   cancel(): Promise<void>;
   complete(
@@ -116,7 +144,6 @@ const QortinoLlm = registerPlugin<QortinoLlmPlugin>('QortinoLlm', {
           availRamBytes: 4 * 1024 ** 3,
           availStorageBytes: 20 * 1024 ** 3,
           totalStorageBytes: 64 * 1024 ** 3,
-          recommendedPack: 'small',
           lowMemory: false,
         };
       },
@@ -133,8 +160,11 @@ const QortinoLlm = registerPlugin<QortinoLlmPlugin>('QortinoLlm', {
       async readText() {
         throw new Error('QortinoLlm.readText is only available on native');
       },
-      async extractZip() {
-        throw new Error('QortinoLlm.extractZip is only available on native');
+      async sha256File() {
+        throw new Error('QortinoLlm.sha256File is only available on native');
+      },
+      async cleanupStorage() {
+        return { deletedFiles: 0, freedBytes: 0 };
       },
       async downloadUrl() {
         throw new Error('QortinoLlm.downloadUrl is only available on native');
@@ -142,6 +172,9 @@ const QortinoLlm = registerPlugin<QortinoLlmPlugin>('QortinoLlm', {
       async cancelDownload() {},
       async loadModel() {
         throw new Error('QortinoLlm is only available on the native app');
+      },
+      async warmup() {
+        return {};
       },
       async unload() {},
       async cancel() {},

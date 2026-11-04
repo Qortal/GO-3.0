@@ -872,6 +872,10 @@
   "member_actions": {
     "make_admin_named": "tee {{name}} administraatoriks",
     "more_named": "rohkem toiminguid: {{name}}",
+    "needs_approval_bans_notice": "sellel rühmal pole omanikku, seega vajab keelu tühistamine selle administraatorite heakskiitu, mida siin teha ei saa.",
+    "needs_approval_notice": "sellel rühmal pole omanikku, seega vajavad väljaviskamised, keelud ja administraatorite muutused selle administraatorite heakskiitu, mida siin teha ei saa.",
+    "owner_only_bans_notice": "ainult rühma omanik saab keelde tühistada.",
+    "owner_only_notice": "ainult rühma omanik saab liikmeid välja visata, keelata või administraatoreid muuta.",
     "pending": "ootel",
     "pending_hint": "ootab plokiahela kinnitust. See võib võtta paar minutit.",
     "remove_admin_named": "eemalda kasutaja {{name}} administraatori staatus"

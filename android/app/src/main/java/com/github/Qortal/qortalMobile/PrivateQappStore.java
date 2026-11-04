@@ -23,12 +23,13 @@ import java.util.Set;
  *
  * <p>An id is 32 random bytes in Base58, like the node's own preview hashes;
  * only the frame showing the app knows it. Apps go when the page releases
- * them (their tab closed), and the least recently used go first past
- * {@link #MAX_APPS} apps or {@link #MAX_TOTAL_BYTES}. No Android types, so
- * the JVM unit tests can check it.
+ * them (their tab closed, their widget removed), and the least recently used
+ * go first past {@link #MAX_APPS} apps or {@link #MAX_TOTAL_BYTES}. No
+ * Android types, so the JVM unit tests can check it.
  */
 public final class PrivateQappStore {
-    static final int MAX_APPS = 8;
+    /** Private app tabs and GO widgets (up to 12 of them) share the store. */
+    static final int MAX_APPS = 24;
     static final long MAX_TOTAL_BYTES = 320L * 1024 * 1024;
     /** An app just added is kept through a release-all while its tab opens. */
     static final long NEW_APP_GRACE_MS = 60_000;

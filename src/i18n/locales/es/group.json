@@ -872,6 +872,10 @@
   "member_actions": {
     "make_admin_named": "hacer administrador a {{name}}",
     "more_named": "más acciones para {{name}}",
+    "needs_approval_bans_notice": "este grupo no tiene propietario, así que cancelar una expulsión necesita la aprobación de sus administradores, y eso no se puede hacer aquí.",
+    "needs_approval_notice": "este grupo no tiene propietario, así que eliminar o expulsar miembros y cambiar administradores necesita la aprobación de sus administradores, y eso no se puede hacer aquí.",
+    "owner_only_bans_notice": "solo el propietario del grupo puede cancelar expulsiones.",
+    "owner_only_notice": "solo el propietario del grupo puede eliminar o expulsar miembros, o cambiar los administradores.",
     "pending": "pendiente",
     "pending_hint": "esperando la confirmación de la blockchain. Puede tardar un par de minutos.",
     "remove_admin_named": "quitar a {{name}} como administrador"

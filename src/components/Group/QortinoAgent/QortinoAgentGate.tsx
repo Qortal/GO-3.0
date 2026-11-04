@@ -7,32 +7,54 @@ import {
   useTheme,
 } from '@mui/material';
 import { alpha } from '@mui/material/styles';
+import KeyboardArrowDownRoundedIcon from '@mui/icons-material/KeyboardArrowDownRounded';
 import { useAtomValue } from 'jotai';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from 'react';
+import { useTranslation } from 'react-i18next';
 import { isRunningPublicNodeAtom } from '../../../atoms/global';
 import {
-  decidePackForDevice,
+  checkDeviceForModel,
   readDeviceTier,
+  type DeviceCheck,
 } from '../../../qortinoAgent/deviceTier';
+import { savedModelBytes } from '../../../qortinoAgent/download';
 import {
-  fetchQortinoManifest,
-  filesForPack,
-  installQortinoPack,
-  type DownloadProgress,
-} from '../../../qortinoAgent/download';
+  announceQortinoBackgroundDownload,
+  cancelQortinoInstallJob,
+  retryQortinoInstallNow,
+  startQortinoInstallJob,
+} from '../../../qortinoAgent/installJob';
+import {
+  attachQortinoInstallView,
+  getQortinoInstallJob,
+  isQortinoInstallJobActive,
+  qortinoInstallErrorText,
+  qortinoProgressRatio,
+  qortinoProgressText,
+  qortinoRetryCause,
+  subscribeQortinoInstallJob,
+} from '../../../qortinoAgent/installJobStore';
 import {
   formatBytes,
-  QORTINO_SAFETY_DISCLAIMER,
-  type QortinoAgentManifest,
-  type QortinoPackId,
+  modelTotalBytes,
+  QORTINO_MODEL,
 } from '../../../qortinoAgent/manifest';
-import type { QortinoInstallState } from '../../../qortinoAgent/store';
-import { executeEvent } from '../../../utils/events';
+import {
+  hasLegacyInstall,
+  type QortinoInstallState,
+} from '../../../qortinoAgent/store';
+import { openCustomNodeGuideWebsite } from '../../../utils/openCustomNodeGuideWebsite';
 
 type Props = {
   /** Called as an assemble starts, so the sheet can load the chat code meanwhile. */
   onAssembleStart?: () => void;
-  onInstalled: (install: QortinoInstallState, manifest: QortinoAgentManifest) => void;
+  onInstalled: (install: QortinoInstallState) => void;
   onCancel: () => void;
 };
 
@@ -42,130 +64,104 @@ export function QortinoAgentGate({
   onCancel,
 }: Props) {
   const theme = useTheme();
+  const { t } = useTranslation(['core']);
   const isDark = theme.palette.mode === 'dark';
   const isPublicNode = useAtomValue(isRunningPublicNodeAtom);
-  const [manifest, setManifest] = useState<QortinoAgentManifest | null>(null);
-  const [selectedPack, setSelectedPack] = useState<QortinoPackId>('small');
-  const [reason, setReason] = useState('');
-  const [allowed, setAllowed] = useState<QortinoPackId[]>(['small']);
+  const [device, setDevice] = useState<DeviceCheck | null>(null);
+  const [legacy, setLegacy] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [installing, setInstalling] = useState(false);
-  const [progress, setProgress] = useState<DownloadProgress | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const abortRef = useRef<AbortController | null>(null);
-  // Assemble pulls multi-GB QDN resources — only a private node can serve them.
-  const blockPublicNode = isPublicNode;
+  // The download is a job of its own (installJob.ts): it keeps going when this
+  // window closes and retries by itself; the window only shows it.
+  const job = useSyncExternalStore(
+    subscribeQortinoInstallJob,
+    getQortinoInstallJob
+  );
+  const installing = isQortinoInstallJobActive(job);
+  const retrying = job.status === 'retrying';
+  const progress = installing ? job.progress : null;
+  const error =
+    job.status === 'failed' && job.error
+      ? {
+          message: qortinoInstallErrorText(job.error, t),
+          detail:
+            job.error.code === 'low_storage' ? undefined : job.error.detail,
+        }
+      : null;
+  const [now, setNow] = useState(() => Date.now());
+  const reportedInstallRef = useRef<QortinoInstallState | null>(null);
+  const totalBytes = modelTotalBytes();
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       setLoading(true);
       try {
-        const [m, tier] = await Promise.all([
-          fetchQortinoManifest({ timeoutMs: 4000 }),
+        const [tier, hadLegacy, saved] = await Promise.all([
           readDeviceTier(),
+          hasLegacyInstall(),
+          savedModelBytes(),
         ]);
         if (cancelled) return;
-        setManifest(m);
-        const decision = decidePackForDevice(tier, m);
-        setSelectedPack(decision.recommendedPack);
-        setAllowed(decision.allowedPacks);
-        setReason(decision.reason);
-      } catch (e) {
-        if (!cancelled) {
-          setError(e instanceof Error ? e.message : 'Failed to prepare assemble');
-        }
+        setDevice(checkDeviceForModel(tier, saved));
+        setLegacy(hadLegacy);
+      } catch {
+        // The check is advisory; assemble still verifies as it goes.
       } finally {
         if (!cancelled) setLoading(false);
-      }
-
-      // The fast path may have returned the bundled manifest; adopt the QDN
-      // one as soon as it lands so pack sizes and labels stay current.
-      try {
-        const full = await fetchQortinoManifest({ timeoutMs: 0 });
-        if (!cancelled) setManifest(full);
-      } catch {
-        // Bundled manifest already on screen.
       }
     })();
     return () => {
       cancelled = true;
-      abortRef.current?.abort();
     };
   }, []);
 
-  const packMeta = useMemo(
-    () => manifest?.packs.find((p) => p.id === selectedPack),
-    [manifest, selectedPack]
-  );
-
-  const downloadEstimate = useMemo(() => {
-    if (!manifest || !packMeta) return 0;
-    return filesForPack(manifest, selectedPack).reduce((sum, f) => sum + (f.sizeBytes || 0), 0);
-  }, [manifest, packMeta, selectedPack]);
-
-  const notifyPublicNodeBlocked = useCallback(() => {
-    executeEvent('openGlobalSnackBar', {
-      actionEvent: 'openCustomNodeGuideWebsite',
-      actionLabel: 'View guide',
-      dismissible: true,
-      duration: 14000,
-      message:
-        'Qortino can only be assembled from a private node. Connect your own node, then try again.',
-      type: 'warning',
-    });
+  // Closing the window leaves the download running; say so once.
+  useEffect(() => {
+    const detach = attachQortinoInstallView();
+    return () => {
+      detach();
+      announceQortinoBackgroundDownload();
+    };
   }, []);
 
-  const startInstall = useCallback(async () => {
-    if (!manifest) return;
-    if (blockPublicNode) {
-      notifyPublicNodeBlocked();
-      setError(
-        'Assemble needs a private node — public gateway nodes cannot fetch the Qortino pack.'
-      );
-      return;
-    }
-    onAssembleStart?.();
-    setInstalling(true);
-    setError(null);
-    abortRef.current?.abort();
-    const controller = new AbortController();
-    abortRef.current = controller;
-    try {
-      const install = await installQortinoPack({
-        manifest,
-        packId: selectedPack,
-        signal: controller.signal,
-        onProgress: setProgress,
-      });
-      onInstalled(install, manifest);
-    } catch (e) {
-      const msg =
-        e instanceof Error
-          ? e.message
-          : e && typeof e === 'object' && 'errorMessage' in e
-            ? String((e as { errorMessage?: string }).errorMessage)
-            : 'Assemble failed';
-      setError(msg);
-      setProgress(null);
-    } finally {
-      setInstalling(false);
-    }
-  }, [
-    blockPublicNode,
-    manifest,
-    notifyPublicNodeBlocked,
-    onAssembleStart,
-    onInstalled,
-    selectedPack,
-  ]);
+  useEffect(() => {
+    if (job.status !== 'done' || !job.install) return;
+    if (reportedInstallRef.current === job.install) return;
+    reportedInstallRef.current = job.install;
+    onInstalled(job.install);
+  }, [job.status, job.install, onInstalled]);
 
-  const progressRatio =
-    progress && progress.bytesTotal > 0
-      ? Math.min(1, progress.bytesReceived / progress.bytesTotal)
-      : progress?.phase === 'done'
-        ? 1
-        : 0;
+  // Count down to the next try.
+  useEffect(() => {
+    if (!retrying) return;
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [retrying]);
+
+  const startInstall = useCallback(() => {
+    onAssembleStart?.();
+    startQortinoInstallJob();
+  }, [onAssembleStart]);
+
+  const progressRatio = qortinoProgressRatio(progress);
+  const progressLabel = qortinoProgressText(progress, t);
+  const retrySeconds =
+    retrying && job.retryAt
+      ? Math.max(0, Math.ceil((job.retryAt - now) / 1_000))
+      : 0;
+  // Why it waits, then when it tries again: two sentences.
+  const retryLabel = `${t(
+    `core:qortino_agent.gate.retry_reason.${qortinoRetryCause(job.error)}`
+  )} ${
+    retrySeconds >= 60
+      ? t('core:qortino_agent.gate.retry_in_minutes', {
+          minutes: Math.ceil(retrySeconds / 60),
+        })
+      : t('core:qortino_agent.gate.retry_in_seconds', {
+          seconds: retrySeconds,
+        })
+  }`;
 
   return (
     <Box
@@ -181,7 +177,7 @@ export function QortinoAgentGate({
       }}
     >
       <Typography sx={{ fontWeight: 800, fontSize: '1.15rem' }}>
-        Qortino Offline Agent
+        {t('core:qortino_agent.gate.title')}
       </Typography>
       <Typography
         sx={{
@@ -190,13 +186,29 @@ export function QortinoAgentGate({
           lineHeight: 1.5,
         }}
       >
-        Your off-grid co-conspirator. Qortal tricks, Q-App hacking patterns,
-        bushcraft, water, power, and grid-down survival — assembled from QDN onto
-        this device, then it stays awake when the rest of the world goes quiet.
-        No cloud. No leash. Apocalypse-ready companion mode.
+        {t('core:qortino_agent.gate.intro')}
       </Typography>
 
-      {blockPublicNode && (
+      {legacy && (
+        <Typography
+          sx={{
+            background: alpha('#4A7FD4', isDark ? 0.2 : 0.1),
+            border: `1px solid ${alpha('#4A7FD4', 0.45)}`,
+            borderRadius: '12px',
+            fontSize: '0.84rem',
+            lineHeight: 1.45,
+            px: 1.25,
+            py: 1,
+          }}
+        >
+          {t('core:qortino_agent.gate.new_model')}
+        </Typography>
+      )}
+
+      {/* The public node can fetch the model, but it is shared, cuts long
+          transfers and drops what it fetched: recommend a private node
+          before a multi-GB download rather than refusing it. */}
+      {isPublicNode && (
         <Box
           sx={{
             background: alpha(theme.palette.warning.main, isDark ? 0.16 : 0.12),
@@ -207,7 +219,7 @@ export function QortinoAgentGate({
           }}
         >
           <Typography sx={{ fontSize: '0.88rem', fontWeight: 700, mb: 0.35 }}>
-            Private node required
+            {t('core:qortino_agent.gate.public_node_title')}
           </Typography>
           <Typography
             sx={{
@@ -216,139 +228,179 @@ export function QortinoAgentGate({
               lineHeight: 1.45,
             }}
           >
-            Qortino can only be assembled from a private node. Public gateway
-            nodes cannot pull the pack. Connect your own node, then assemble.
+            {t('core:qortino_agent.gate.public_node_body', {
+              size: formatBytes(totalBytes),
+            })}
           </Typography>
           <Button
             size="small"
             sx={{ mt: 0.75, textTransform: 'none' }}
-            onClick={notifyPublicNodeBlocked}
+            onClick={openCustomNodeGuideWebsite}
           >
-            View private node guide
+            {t('core:qortino_agent.gate.private_node_guide')}
           </Button>
         </Box>
       )}
 
-      {loading && (
+      {loading ? (
         <Box sx={{ alignItems: 'center', display: 'flex', gap: 1 }}>
           <CircularProgress size={18} />
-          <Typography sx={{ fontSize: '0.85rem' }}>Scanning device & kit list…</Typography>
-        </Box>
-      )}
-
-      {!loading && manifest && (
-        <>
-          <Typography sx={{ fontSize: '0.82rem', color: alpha(theme.palette.text.primary, 0.7) }}>
-            {reason}
+          <Typography sx={{ fontSize: '0.85rem' }}>
+            {t('core:qortino_agent.gate.checking')}
           </Typography>
-          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-            {manifest.packs.map((pack) => {
-              const disabled = !allowed.includes(pack.id) || installing;
-              const selected = selectedPack === pack.id;
-              return (
-                <Box
-                  key={pack.id}
-                  component="button"
-                  type="button"
-                  disabled={disabled}
-                  onClick={() => setSelectedPack(pack.id)}
-                  sx={{
-                    background: selected
-                      ? alpha('#4A7FD4', isDark ? 0.28 : 0.14)
-                      : alpha(theme.palette.background.paper, isDark ? 0.35 : 0.7),
-                    border: `1px solid ${
-                      selected
-                        ? alpha('#4A7FD4', 0.7)
-                        : alpha(theme.palette.divider, 0.6)
-                    }`,
-                    borderRadius: '12px',
-                    color: 'inherit',
-                    cursor: disabled ? 'not-allowed' : 'pointer',
-                    opacity: disabled ? 0.45 : 1,
-                    p: 1.25,
-                    textAlign: 'left',
-                  }}
-                >
-                  <Typography sx={{ fontWeight: 700 }}>{pack.label}</Typography>
-                  <Typography sx={{ fontSize: '0.8rem', mt: 0.35, opacity: 0.8 }}>
-                    {pack.description}
-                  </Typography>
-                  <Typography sx={{ fontSize: '0.75rem', mt: 0.5, opacity: 0.7 }}>
-                    ~{formatBytes(pack.approxDownloadBytes)} to assemble
-                  </Typography>
-                </Box>
-              );
-            })}
+        </Box>
+      ) : (
+        <>
+          <Box
+            sx={{
+              background: alpha('#4A7FD4', isDark ? 0.28 : 0.14),
+              border: `1px solid ${alpha('#4A7FD4', 0.7)}`,
+              borderRadius: '12px',
+              p: 1.25,
+            }}
+          >
+            <Typography sx={{ fontWeight: 700 }}>
+              {QORTINO_MODEL.label}
+            </Typography>
+            <Typography sx={{ fontSize: '0.8rem', mt: 0.35, opacity: 0.8 }}>
+              {t('core:qortino_agent.gate.model_blurb')}
+            </Typography>
+            <Typography sx={{ fontSize: '0.75rem', mt: 0.5, opacity: 0.7 }}>
+              {t('core:qortino_agent.gate.model_size', {
+                size: formatBytes(totalBytes),
+                license: QORTINO_MODEL.license,
+              })}
+            </Typography>
           </Box>
 
-          {packMeta && (
-            <Typography sx={{ fontSize: '0.8rem', opacity: 0.75 }}>
-              Selected kit ≈ {formatBytes(downloadEstimate || packMeta.approxDownloadBytes)}
-              {manifest.licenses?.llm ? ` · ${manifest.licenses.llm}` : ''}
+          {device?.lowRam && (
+            <Typography
+              sx={{ color: theme.palette.warning.main, fontSize: '0.8rem' }}
+            >
+              {t('core:qortino_agent.gate.low_ram', {
+                ram: formatBytes(device.tier.totalRamBytes),
+              })}
+            </Typography>
+          )}
+          {device && !device.enoughStorage && !legacy && (
+            <Typography
+              sx={{ color: theme.palette.warning.main, fontSize: '0.8rem' }}
+            >
+              {t('core:qortino_agent.gate.low_storage', {
+                needed: formatBytes(device.neededBytes),
+                free: formatBytes(device.tier.availStorageBytes),
+              })}
             </Typography>
           )}
 
-          <Typography sx={{ fontSize: '0.75rem', opacity: 0.65, lineHeight: 1.4 }}>
-            {QORTINO_SAFETY_DISCLAIMER}
+          <Typography
+            sx={{ fontSize: '0.75rem', opacity: 0.65, lineHeight: 1.4 }}
+          >
+            {t('core:qortino_agent.gate.disclaimer')}
           </Typography>
         </>
       )}
 
       {installing && progress && (
         <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.6 }}>
-          <Typography sx={{ fontSize: '0.85rem' }}>
-            {progress.label}
-            {progress.fileCount > 0
-              ? ` (${progress.fileIndex}/${progress.fileCount})`
-              : ''}
-          </Typography>
+          <Typography sx={{ fontSize: '0.85rem' }}>{progressLabel}</Typography>
           <LinearProgress
             variant={progress.bytesTotal > 0 ? 'determinate' : 'indeterminate'}
             value={progressRatio * 100}
           />
-          {progress.bytesTotal > 0 && (
+          {progress.bytesTotal > 0 && progress.phase === 'save' && (
             <Typography sx={{ fontSize: '0.75rem', opacity: 0.7 }}>
-              {formatBytes(progress.bytesReceived)} / {formatBytes(progress.bytesTotal)}
+              {t('core:qortino_agent.progress.bytes', {
+                done: formatBytes(progress.bytesDone),
+                total: formatBytes(progress.bytesTotal),
+              })}
             </Typography>
           )}
         </Box>
       )}
 
-      {error && (
-        <Typography sx={{ color: theme.palette.error.main, fontSize: '0.85rem' }}>
-          {error}
+      {retrying && (
+        <Box sx={{ alignItems: 'center', display: 'flex', gap: 1 }}>
+          <Typography
+            sx={{
+              color: theme.palette.warning.main,
+              flex: 1,
+              fontSize: '0.82rem',
+            }}
+          >
+            {retryLabel}
+          </Typography>
+          <Button
+            onClick={retryQortinoInstallNow}
+            size="small"
+            sx={{ flexShrink: 0, textTransform: 'none' }}
+          >
+            {t('core:qortino_agent.gate.try_now')}
+          </Button>
+        </Box>
+      )}
+
+      {installing && (
+        <Typography sx={{ fontSize: '0.75rem', opacity: 0.7, lineHeight: 1.4 }}>
+          {t('core:qortino_agent.gate.background_hint')}
         </Typography>
+      )}
+
+      {error && (
+        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.35 }}>
+          <Typography
+            sx={{ color: theme.palette.error.main, fontSize: '0.85rem' }}
+          >
+            {error.message}
+          </Typography>
+          {error.detail ? (
+            <Typography
+              sx={{
+                color: alpha(theme.palette.text.primary, 0.55),
+                fontSize: '0.7rem',
+                wordBreak: 'break-word',
+              }}
+            >
+              {t('core:qortino_agent.error.detail', { detail: error.detail })}
+            </Typography>
+          ) : null}
+        </Box>
       )}
 
       <Box sx={{ display: 'flex', gap: 1, mt: 'auto', pt: 1 }}>
         <Button
           variant="outlined"
           onClick={() => {
-            abortRef.current?.abort();
+            cancelQortinoInstallJob();
             onCancel();
           }}
           disabled={installing && progress?.phase === 'finalizing'}
         >
-          {installing ? 'Cancel' : 'Not now'}
-        </Button>
-        <Button
-          variant="contained"
-          disabled={loading || installing || !manifest || blockPublicNode}
-          onClick={() => {
-            if (blockPublicNode) {
-              notifyPublicNodeBlocked();
-              return;
-            }
-            void startInstall();
-          }}
-          sx={{ flex: 1 }}
-        >
           {installing
-            ? 'Assembling…'
-            : blockPublicNode
-              ? 'Needs private node'
-              : 'Assemble Qortino Agent'}
+            ? t('core:qortino_agent.gate.cancel')
+            : t('core:qortino_agent.gate.not_now')}
         </Button>
+        {installing ? (
+          // Closes the window only: the download goes on, in GO's
+          // notifications and the Android notification bar.
+          <Button
+            variant="contained"
+            onClick={onCancel}
+            startIcon={<KeyboardArrowDownRoundedIcon />}
+            sx={{ flex: 1 }}
+          >
+            {t('core:qortino_agent.gate.minimize')}
+          </Button>
+        ) : (
+          <Button
+            variant="contained"
+            disabled={loading}
+            onClick={startInstall}
+            sx={{ flex: 1 }}
+          >
+            {t('core:qortino_agent.gate.assemble')}
+          </Button>
+        )}
       </Box>
     </Box>
   );

@@ -1391,8 +1391,152 @@
     "testing_note": "Solo per test. Le carte di test non hanno ancora un PIN, quindi chiunque ne abbia una può pagare con essa. Tieni solo pochi QORT su una carta.",
     "title": "Qortal Card"
   },
+  "qortino_agent": {
+    "aria": {
+      "close": "Chiudi Qortino",
+      "copy": "Copia tutta la risposta",
+      "history": "Cronologia chat",
+      "new_chat": "Nuova chat",
+      "report": "Segnala questa risposta per insegnare a Qortino",
+      "send": "Invia",
+      "stop": "Ferma"
+    },
+    "chat": {
+      "continue": "Continua la risposta →",
+      "copied": "Risposta completa copiata",
+      "copy_failed": "Impossibile copiare",
+      "empty": "Chiedimi qualsiasi cosa: primo soccorso e salute, sopravvivenza e preparazione, orto e cucina, Qortal, programmazione e altro. Funziono interamente su questo telefono, quindi lavoro senza alcuna connessione internet.",
+      "load_failed": "Qortino non è riuscito ad avviarsi: {{error}}",
+      "loading_model": "Sveglio Qortino…",
+      "loading_model_hint": "Caricamento del modello in memoria. Le aperture successive sono molto più veloci.",
+      "model_missing": "Mancano i file del modello. Chiudi Qortino e assemblalo di nuovo.",
+      "needs_app": "Qortino funziona nell'app del telefono, non in un browser.",
+      "no_question": "(nessuna domanda trovata)",
+      "no_reply": "Non è arrivata nessuna risposta. Prova con una domanda più breve, oppure chiudi e riapri Qortino.",
+      "open_app": "Apri",
+      "placeholder": "Scrivi a Qortino…",
+      "published_as": "{{service}} · pubblicato come {{name}}",
+      "reply_failed": "Scusa, non sono riuscito a scrivere una risposta.",
+      "retry": "riprova",
+      "subtitle": "Offline · {{model}}"
+    },
+    "error": {
+      "cancelled": "Assemblaggio annullato.",
+      "checksum": "Una parte scaricata era danneggiata, quindi è stata eliminata. Riprova.",
+      "detail": "Dettagli: {{detail}}",
+      "download": "Il salvataggio del modello su questo telefono non è riuscito. Controlla lo spazio libero e la connessione al tuo nodo, poi riprova.",
+      "generic": "Assemblaggio non riuscito.",
+      "not_published": "Il modello di Qortino non è ancora su QDN, oppure il tuo nodo non lo vede ancora. Riprova un po' più tardi.",
+      "qdn_failed": "QDN non è riuscito a fornire il modello in questo momento. Forse troppo pochi peer lo ospitano. Riprova più tardi.",
+      "stalled": "Il download si è fermato: al momento nessun peer invia il resto. Riprova più tardi."
+    },
+    "gate": {
+      "assemble": "Assembla Qortino",
+      "background_hint": "Puoi ridurre questa finestra: il download continua e puoi seguirlo nelle notifiche.",
+      "cancel": "Annulla",
+      "checking": "Controllo di questo telefono…",
+      "disclaimer": "Qortino può sbagliare con sicurezza → verifica tutto ciò che è importante.",
+      "intro": "Il tuo compagno offline per primo soccorso e salute, sopravvivenza e preparazione, orto, cucina, Qortal e molto altro. Assemblato una volta da QDN su questo telefono, poi funziona senza internet. Niente cloud, nulla lascia il tuo telefono.",
+      "low_ram": "Questo telefono ha {{ram}} di memoria. Qortino funzionerà, ma le risposte potrebbero essere lente e Android potrebbe chiuderlo in background.",
+      "low_storage": "Spazio libero insufficiente: Qortino ha bisogno di {{needed}} e questo telefono ha {{free}} liberi.",
+      "minimize": "Riduci",
+      "model_blurb": "Un modello intelligente per domande quotidiane, emergenze e aiuto su Qortal. Funziona interamente su questo telefono.",
+      "model_size": "{{size}} da scaricare · {{license}}",
+      "new_model": "Qortino ha un cervello nuovo e più intelligente. Assemblalo una volta; i vecchi pacchetti Lite e Standard vengono eliminati per liberare spazio.",
+      "not_now": "Non ora",
+      "private_node_guide": "Vedi la guida al nodo privato",
+      "public_node_body": "Il nodo pubblico è condiviso e non è affidabile per un download di {{size}}: può interrompersi a metà o eliminare ciò che aveva già scaricato. GO riprova da solo e conserva ciò che è arrivato, ma con il tuo nodo è molto più veloce e stabile.",
+      "public_node_title": "Un nodo privato è fortemente consigliato",
+      "retry_in_minutes": "Nuovo tentativo tra {{minutes}} min.",
+      "retry_in_seconds": "Nuovo tentativo tra {{seconds}} s.",
+      "retry_reason": {
+        "connection": "La connessione si è interrotta durante il salvataggio; il prossimo tentativo riprende da lì.",
+        "damaged": "Una parte scaricata era danneggiata, quindi verrà scaricata di nuovo.",
+        "peers": "Al momento nessun peer invia il resto."
+      },
+      "title": "Qortino AI",
+      "try_now": "Riprova ora"
+    },
+    "history": {
+      "close": "Chiudi la cronologia chat",
+      "delete_chat": "Elimina chat",
+      "empty": "Ancora nessuna chat salvata. Inizia una conversazione e comparirà qui.",
+      "pin": "Fissa chat",
+      "rename": "Rinomina",
+      "rename_chat": "Rinomina chat",
+      "unpin": "Sblocca chat"
+    },
+    "name": "Qortino",
+    "notify": {
+      "background": "Qortino continua a scaricarsi. Puoi seguirlo nelle notifiche.",
+      "open_hint": "Tocca per aprire Qortino",
+      "panel_failed": "Interrotto. Tocca per riprovare.",
+      "ready": "Qortino è pronto.",
+      "retry": {
+        "connection": "Connessione interrotta, si riprende a breve…",
+        "damaged": "Una parte era danneggiata, la riscarico…",
+        "peers": "In attesa di peer…"
+      }
+    },
+    "progress": {
+      "bytes": "{{done}} / {{total}}",
+      "fetch": "Parte {{part}} di {{count}} · il tuo nodo la sta prendendo da QDN… {{percent}}%",
+      "finalizing": "Completamento…",
+      "locate": "Ricerca di Qortino su QDN…",
+      "save": "Parte {{part}} di {{count}} · salvataggio su questo telefono…",
+      "verify": "Parte {{part}} di {{count}} · controllo del file…"
+    },
+    "settings": {
+      "answer_length": {
+        "detailed": "Dettagliate",
+        "hint": "Le risposte più brevi sono pronte prima.",
+        "label": "Risposte",
+        "normal": "Normali",
+        "short": "Brevi"
+      },
+      "delete_chats": {
+        "button": "Elimina tutte le chat",
+        "confirm": "Eliminare tutte le chat salvate? Non si può annullare."
+      },
+      "enter_sends": {
+        "hint": "Disattivato: Invio inizia una nuova riga.",
+        "label": "Il tasto Invio invia"
+      },
+      "keep_ready": {
+        "hint": "Tenuto pronto, Qortino si apre subito ma occupa circa 3 GB di memoria. Uscendo da GO viene liberata poco dopo.",
+        "label": "Tieni Qortino pronto dopo la chiusura",
+        "off": "No",
+        "open": "Finché GO è aperto",
+        "short": "1½ min"
+      },
+      "remove": {
+        "button": "Rimuovi Qortino da questo telefono",
+        "confirm": "Questo elimina il modello di Qortino ({{size}}) da questo telefono. Le tue chat restano. Puoi scaricare di nuovo Qortino in qualsiasi momento.",
+        "failed": "Impossibile rimuovere Qortino: {{reason}}",
+        "on_phone": "{{model}} · {{size}} su questo telefono",
+        "removing": "Rimozione…"
+      },
+      "text_size": {
+        "default": "Predefinita",
+        "label": "Dimensione del testo",
+        "large": "Grande",
+        "small": "Piccola"
+      },
+      "title": "Impostazioni"
+    },
+    "status": {
+      "assembling": "Assemblaggio",
+      "getting_ready": "Preparazione…",
+      "reading": "Leggo la tua domanda…",
+      "reading_percent": "Leggo la tua domanda… {{percent}}%"
+    }
+  },
   "qortino_workspace": {
     "a11y_clear_hotkey_slot": "Svuota slot {{n}}",
+    "composer": {
+      "placeholder": "Chiedi a Qortino…",
+      "send": "Chiedi a Qortino"
+    },
     "curated_badge": "[ CURATO ]",
     "dialog_hotkeys_subtitle": "Salvato automaticamente per questo account.",
     "dialog_hotkeys_title": "Seleziona scorciatoie",
@@ -1438,6 +1582,107 @@
     "music_syncing_library": "Sincronizzazione con la libreria EarBump...",
     "music_track_load_failed": "Questo brano non ha potuto caricarsi completamente sul tuo nodo.",
     "onboarding_step_progress": "Passo {{current}} / {{total}}",
+    "quip_open_hint": "Tocca per aprire Qortino",
+    "quips": {
+      "fun": {
+        "antenna": "La mia antenna capta buone vibrazioni. E blocchi. Soprattutto blocchi.",
+        "beep": "Bip bup. Scherzo, io non faccio bip.",
+        "coffee": "Non mi serve il caffè. Basta una batteria carica.",
+        "counting": "Volevo contare tutti i blocchi. Poi ne è arrivato un altro.",
+        "cross_chain": "Perché il blocco ha attraversato la catena? Per arrivare all'altro nodo.",
+        "exercise": "Il mio sport? Far girare un nodo, giro dopo giro!",
+        "high_five": "Ti darei il cinque, ma le braccia sono ancora in download.",
+        "hydrated": "Bevi acqua! Io vado a elettroni, ma a te l'acqua fa bene.",
+        "keys": "Curiosità: non perdo mai le chiavi. Non ho tasche.",
+        "knock_knock": "Toc toc. Chi è? Un nodo. Puoi farne girare uno anche tu!",
+        "looking_good": "È una mia impressione, o la Home oggi è bellissima?",
+        "mint_joke": "Ho provato a coniare una battuta, ma servivano altri blocchi.",
+        "round_blue": "Sono rotondo, sono blu e sto dalla tua parte.",
+        "sheep": "I robot sognano pecore decentralizzate?",
+        "syncing": "Non dormo: sincronizzo.",
+        "tickle": "Tienimi la testa un secondo… se hai il coraggio."
+      },
+      "giggle": {
+        "eeek": "Iiih! Ahahah!",
+        "hahaha": "Ahahah!",
+        "hehe_stop": "Eheheh… smettila!",
+        "hihihi": "Ihihih!",
+        "hohoho": "Ohohoh, fa il solletico!",
+        "my_circuits": "Ahah, i miei circuiti!",
+        "no_fair": "Ahah, non vale!",
+        "not_antenna": "L'antenna no! Ahah!",
+        "so_ticklish": "Soffro tanto il solletico! Ahahah!",
+        "stop_stop": "Basta, basta… ahah!"
+      },
+      "morning": {
+        "good_morning": "Buongiorno, {{name}}! Si parte con il primo blocco della giornata?",
+        "synced": "Buongiorno! Ho sincronizzato tutta la notte. Dormito bene?"
+      },
+      "night": {
+        "late": "È tardi, {{name}}. I nodi non dormono mai, ma tu dovresti.",
+        "night_owl": "Ore piccole? Anch'io. Ho gli occhi luminosi: mai un inciampo.",
+        "rest": "Riposati un po'. La blockchain sarà ancora qui domani.",
+        "yawn": "Uaaah… i miei circuiti hanno sonno."
+      },
+      "promo": {
+        "ask_qortal": "Domande su Qortal? Toccami la testa e chiedi pure.",
+        "brain_on_qdn": "Il mio cervello vive su QDN. Toccami e vado a prenderlo per te.",
+        "download_brain": "Scarica il mio cervello una volta e girerò qui, sul tuo telefono.",
+        "helper": "Consigli di sopravvivenza o risposte su Qortal? Toccami!",
+        "intro": "Ciao {{name}}! Sono Qortino, il tuo amico Qortal. Toccami per parlare!",
+        "love_to_chat": "Chiacchieriamo, {{name}}? Toccami la testa per scaricarmi.",
+        "offline": "Rispondo alle domande anche senza internet. Toccami per configurarmi!",
+        "own_ai": "Un tocco sulla mia testa e avrai la tua IA privata tutta per te.",
+        "power_out": "Niente corrente? Internet giù? Una volta scaricato, funziono lo stesso.",
+        "pretty_face": "Non sono solo un bel faccino. Toccami per svegliare l'IA che c'è in me!",
+        "private": "Niente cloud, niente tracciamento: penso qui, su questo telefono. Toccami!",
+        "private_node": "Consiglio: il mio cervello si scarica meglio dal tuo nodo Qortal.",
+        "skills": "Primo soccorso, orto, cucina, Qortal… so un po' di tutto. Toccami!",
+        "tap_head": "Psst… toccami la testa e prendo vita come la tua IA offline."
+      },
+      "ready": {
+        "all_ears": "Curiosità? Sono tutt'orecchi… anzi, tutt'antenna.",
+        "ask_anything": "Chiedimi qualsiasi cosa: scrivila qui.",
+        "minting": "Chiedimi come funziona il minting. Lo adoro!",
+        "no_internet": "Internet non serve. Chiedimi qualcosa!",
+        "on_phone": "Scrivi una domanda e ci penso qui, sul tuo telefono.",
+        "ready_intro": "Sono pronto, {{name}}! Scrivi una domanda qui accanto e ti rispondo.",
+        "ready_when_you_are": "Pronto quando vuoi tu. Cosa scopriamo oggi?",
+        "skills": "Primo soccorso, ricette, orto o Qortal: mettimi alla prova!",
+        "stays_here": "Le tue domande restano su questo telefono. Chiedi pure!",
+        "two_heads": "Serve una mano? Due teste sono meglio di una. La mia è rotonda."
+      },
+      "tickle": {
+        "antenna": "Occhio, vicino all'antenna soffro tanto il solletico.",
+        "cold_fingers": "Iih! Hai le dita gelate!",
+        "dont_stop": "Smettila… no, aspetta, non smettere!",
+        "favorite_button": "È il mio pulsante preferito. Non dirlo a nessuno.",
+        "found_spot": "Ah! Hai trovato il mio punto debole.",
+        "giggling_circuits": "Ihih! I miei circuiti ridacchiano.",
+        "hehe": "Eheh, che solletico!",
+        "like_it": "Ohh, mi piace questo solletico!",
+        "sneeze": "Continua col solletico e potrei starnutire un blocco.",
+        "tickle_minting": "È un nuovo modo di fare minting? Il minting a solletico?"
+      },
+      "tickle_long": {
+        "give_up": "Va bene, va bene, mi arrendo! Hai vinto tu!",
+        "mercy": "Pietà! La mia batteria non regge altre risate.",
+        "reboot": "Quanto solletico… devo riavviare le mie risatine.",
+        "stamina": "Hai più resistenza di un nodo completo!"
+      },
+      "tip": {
+        "backup": "Fai un backup del file dell'account. Il te del futuro ringrazierà.",
+        "coin": "Lo sapevi? QORT è una moneta, non un token.",
+        "hotkeys": "Fissa le tue Q-App preferite come scorciatoie e aprile con un tocco.",
+        "minters": "I minter guadagnano QORT tenendo il proprio nodo online.",
+        "name": "Bel nome, {{name}}! È registrato su Qortal, quindi è davvero tuo.",
+        "own_node": "Un nodo tutto tuo rende Qortal più forte e GO più affidabile.",
+        "qdn_apps": "Le Q-App vivono su QDN: niente app store, niente guardiani.",
+        "reorder": "Tieni premuta una finestra nella Home per spostarla.",
+        "say_hi": "Q-Chat funziona peer to peer. Saluta qualcuno oggi!",
+        "swipe": "Scorri a sinistra o a destra per passare tra Home, App e Chat."
+      }
+    },
     "reaction_avatar_flow": "Flusso avatar pronto. Diamo un volto a questo spazio.",
     "reaction_hotkeys_ready": "Pannello scorciatoie pronto.",
     "reaction_locked_track": "Bloccato su {{title}}.",
@@ -1456,6 +1701,16 @@
     "search_placeholder_qapps": "Cerca Q-App",
     "search_placeholder_tracks": "Cerca brani o artisti",
     "section_recommended": "Consigliati",
+    "status": {
+      "chatty": "loquace",
+      "grateful": "grato",
+      "happy": "felice",
+      "helpful": "premuroso",
+      "idle": "tranquillo",
+      "listening": "in ascolto",
+      "sleepy": "assonnato",
+      "ticklish": "solleticato"
+    },
     "track_meta_separator": "·",
     "workspace_add_app": "Aggiungi app",
     "workspace_empty_prompt": "Scegli cosa appare sopra QORTINO.",

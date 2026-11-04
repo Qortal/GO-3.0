@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  NULL_OWNER_ADDRESS,
   PENDING_MEMBER_ACTION_TTL_MS,
+  canLiftGroupBans,
   getAvailableMemberActions,
+  getMemberActionsNotice,
+  isOwnerlessGroup,
   isPendingMemberActionSettled,
   prunePendingMemberActions,
 } from './memberAdminActions';
@@ -48,13 +52,30 @@ describe('getAvailableMemberActions', () => {
     ).toEqual([]);
   });
 
-  it('lets a non-owner admin kick and ban regular members only', () => {
-    expect(getAvailableMemberActions({ member: MEMBER }, adminView)).toEqual([
-      'kick',
-      'ban',
-    ]);
+  it('gives a non-owner admin nothing: Core takes kicks and bans from the owner only', () => {
+    expect(getAvailableMemberActions({ member: MEMBER }, adminView)).toEqual(
+      []
+    );
     expect(
       getAvailableMemberActions({ member: 'Qother', isAdmin: true }, adminView)
+    ).toEqual([]);
+  });
+
+  it('offers nothing in an ownerless group, where every change needs approval', () => {
+    const ownerlessAdminView = {
+      viewerAddress: ADMIN,
+      ownerAddress: NULL_OWNER_ADDRESS,
+      isOwner: false,
+    };
+    expect(
+      getAvailableMemberActions({ member: MEMBER }, ownerlessAdminView)
+    ).toEqual([]);
+    // Even a stray owner flag can't make the null account's group ownable.
+    expect(
+      getAvailableMemberActions(
+        { member: MEMBER },
+        { ...ownerlessAdminView, isOwner: true }
+      )
     ).toEqual([]);
   });
 
@@ -145,5 +166,60 @@ describe('prunePendingMemberActions', () => {
         now + PENDING_MEMBER_ACTION_TTL_MS + 1
       )
     ).toEqual({});
+  });
+});
+
+describe('isOwnerlessGroup', () => {
+  it('is true only for the null owner', () => {
+    expect(isOwnerlessGroup(NULL_OWNER_ADDRESS)).toBe(true);
+    expect(isOwnerlessGroup(OWNER)).toBe(false);
+    expect(isOwnerlessGroup(undefined)).toBe(false);
+  });
+});
+
+describe('getMemberActionsNotice', () => {
+  it('tells a non-owner admin that only the owner can act', () => {
+    expect(getMemberActionsNotice({ ownerAddress: OWNER, isAdmin: true })).toBe(
+      'owner_only'
+    );
+  });
+
+  it('tells admins of an ownerless group that approval is needed', () => {
+    expect(
+      getMemberActionsNotice({
+        ownerAddress: NULL_OWNER_ADDRESS,
+        isAdmin: true,
+      })
+    ).toBe('needs_approval');
+  });
+
+  it('says nothing to the owner, to members, or before the owner is known', () => {
+    expect(
+      getMemberActionsNotice({
+        ownerAddress: OWNER,
+        isOwner: true,
+        isAdmin: true,
+      })
+    ).toBeNull();
+    expect(getMemberActionsNotice({ ownerAddress: OWNER })).toBeNull();
+    expect(
+      getMemberActionsNotice({
+        ownerAddress: NULL_OWNER_ADDRESS,
+        isAdmin: false,
+      })
+    ).toBeNull();
+    expect(getMemberActionsNotice({ isAdmin: true })).toBeNull();
+  });
+});
+
+describe('canLiftGroupBans', () => {
+  it('lets only the owner of a group with an owner lift bans', () => {
+    expect(canLiftGroupBans({ ownerAddress: OWNER, isOwner: true })).toBe(true);
+    expect(canLiftGroupBans({ ownerAddress: OWNER, isOwner: false })).toBe(
+      false
+    );
+    expect(
+      canLiftGroupBans({ ownerAddress: NULL_OWNER_ADDRESS, isOwner: true })
+    ).toBe(false);
   });
 });

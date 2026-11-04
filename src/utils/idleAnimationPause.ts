@@ -94,6 +94,8 @@ function resumeFiniteAnimations(): void {
 
 let installed = false;
 let noteActivity: (() => void) | null = null;
+let syncPaused: (() => void) | null = null;
+const holds = new Set<string>();
 
 /**
  * Count something that is not DOM input as user activity, e.g. a completed
@@ -101,6 +103,18 @@ let noteActivity: (() => void) | null = null;
  */
 export function noteIdlePauseActivity(): void {
   noteActivity?.();
+}
+
+/**
+ * Keep the loops frozen while `key` holds, input or not. Qortino writing an
+ * answer needs every fast core, and the loops' 60 frames a second keep most
+ * of one busy (RenderThread at ~70 % on a vivo). No-op when the pause is not
+ * installed.
+ */
+export function holdAnimationPause(key: string, on: boolean): void {
+  if (on) holds.add(key);
+  else holds.delete(key);
+  syncPaused?.();
 }
 
 export function installIdleAnimationPause(): void {
@@ -115,10 +129,12 @@ export function installIdleAnimationPause(): void {
   const root = document.documentElement;
   let timer: number | null = null;
   let idle = false;
+  let paused = false;
 
-  const setIdle = (next: boolean) => {
-    if (idle === next) return;
-    idle = next;
+  const sync = () => {
+    const next = idle || holds.size > 0;
+    if (paused === next) return;
+    paused = next;
     if (next) {
       root.setAttribute(IDLE_ATTR, 'on');
       // getAnimations() flushes style, so the rule above has already paused
@@ -128,6 +144,12 @@ export function installIdleAnimationPause(): void {
       root.removeAttribute(IDLE_ATTR);
     }
   };
+  syncPaused = sync;
+
+  const setIdle = (next: boolean) => {
+    idle = next;
+    sync();
+  };
 
   // One pass per frame no matter how many entrances start together.
   let resumeQueued = false;
@@ -136,7 +158,7 @@ export function installIdleAnimationPause(): void {
     resumeQueued = true;
     const run = () => {
       resumeQueued = false;
-      if (idle) resumeFiniteAnimations();
+      if (paused) resumeFiniteAnimations();
     };
     if (typeof window.requestAnimationFrame === 'function') {
       window.requestAnimationFrame(run);
@@ -149,7 +171,7 @@ export function installIdleAnimationPause(): void {
   document.addEventListener(
     'animationstart',
     () => {
-      if (idle) queueResume();
+      if (paused) queueResume();
     },
     { passive: true, capture: true }
   );

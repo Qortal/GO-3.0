@@ -13,8 +13,8 @@ android {
         // The in-app updater reads the version out of that filename and compares
         // it with versionName here, and Android refuses an install whose
         // versionCode is not higher — so both go up with every published build.
-        versionCode 22
-        versionName "0.0.19"
+        versionCode 23
+        versionName "0.0.20"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         // Chaquopy ships the CPython interpreter as native code, so the app must
         // declare which ABIs to package. arm64 = real devices, x86_64 = emulator.
@@ -25,7 +25,14 @@ android {
         externalNativeBuild {
             cmake {
                 cppFlags "-O3 -DNDEBUG -fvisibility=hidden"
-                arguments "-DANDROID_STL=c++_static"
+                // Release flags for debug APKs too: AGP builds the debug
+                // variant with CMAKE_BUILD_TYPE=Debug, which compiles ggml's
+                // C kernels at -O0 and makes the model many times slower.
+                // FLEXIBLE_PAGE_SIZES links every library with 16 KB ELF
+                // alignment (NDK 27 still defaults to 4 KB), so Qortino also
+                // loads on phones booted with 16 KB memory pages.
+                arguments "-DANDROID_STL=c++_static", "-DCMAKE_BUILD_TYPE=Release",
+                    "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON"
             }
         }
     }
