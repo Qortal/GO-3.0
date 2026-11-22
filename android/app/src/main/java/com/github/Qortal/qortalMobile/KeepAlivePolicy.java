@@ -91,6 +91,18 @@ public final class KeepAlivePolicy {
         public boolean callActive;
         /** An incoming call rings (native ring or the page's own). */
         public boolean callRinging;
+        /**
+         * Audio or video plays and the user lets it play off screen
+         * (GoMediaHub, background player settings).
+         */
+        public boolean mediaPlaying;
+        /**
+         * A background player button was pressed a moment ago: the page,
+         * maybe frozen while paused, must run to get it (GoMediaHub).
+         */
+        public boolean mediaWake;
+        /** GO's WebView is attached (a page exists, signed in or not). */
+        public boolean pageAttached;
     }
 
     /**
@@ -100,6 +112,16 @@ public final class KeepAlivePolicy {
      */
     public static boolean callNeedsPage(Inputs in) {
         return in != null && (in.callActive || in.callRinging);
+    }
+
+    /**
+     * Media playing off screen needs the page in every mode, even "off" and
+     * during GO's battery pause: the user chose to keep it playing, and
+     * Chromium would freeze the page (and its media) 60 s after GO leaves
+     * the screen. A pressed player button wakes it for a moment too.
+     */
+    public static boolean mediaNeedsPage(Inputs in) {
+        return in != null && in.pageAttached && (in.mediaPlaying || in.mediaWake);
     }
 
     /** Within the 3-minute window for own messages that still wait to leave. */
@@ -114,10 +136,13 @@ public final class KeepAlivePolicy {
      * Keep the WebView visible to Chromium while GO is off screen:
      * mode always, or mode charging while charging, or own messages pending
      * within {@link #OUTBOX_WINDOW_MS} of leaving the screen (any mode but off),
-     * or a call rings or runs (any mode, see {@link #callNeedsPage}).
+     * or a call rings or runs (any mode, see {@link #callNeedsPage}), or
+     * media plays off screen (any mode, see {@link #mediaNeedsPage}).
      */
     public static boolean shouldKeepVisible(Inputs in) {
-        if (in == null || !in.activityStopped || !in.sessionActive || in.suspended) return false;
+        if (in == null || !in.activityStopped) return false;
+        if (mediaNeedsPage(in)) return true;
+        if (!in.sessionActive || in.suspended) return false;
         if (callNeedsPage(in)) return true;
         String mode = modeOrDefault(in.mode);
         if (MODE_ALWAYS.equals(mode)) return true;

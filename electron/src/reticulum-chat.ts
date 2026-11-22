@@ -3825,6 +3825,11 @@ const RETICULUM_CHAT_OWN_DEVICE_REPUSH_MAX_CONVERSATIONS = 8;
 const RETICULUM_CHAT_OWN_DEVICE_PUSH_UNANSWERED_MAX = 3;
 const RETICULUM_CHAT_OWN_DEVICE_PUSH_STATE_MAX = 512;
 const RETICULUM_CHAT_OWN_DEVICE_PEER_STATE_MAX = 64;
+// DMs other accounts sent us are handed to own devices too (same m:0 push,
+// own coalescing slot), but only fresh ones: a history or look-back page
+// does not make own devices pull old conversations again.
+const RETICULUM_CHAT_OWN_DEVICE_RECEIVED_PUSH_MAX_AGE_MS = 7 * 24 * 60 * 60_000;
+const RETICULUM_CHAT_READ_SYNC_CATCHUP_STATE_MAX = 512;
 // Last-chance flush when the app leaves the foreground (JS is frozen about
 // 60 s later on Android). Signing may run on a JIT-less main thread, so the
 // flush is capped in signatures and time.
@@ -9291,6 +9296,13 @@ export class ReticulumChatManager extends EventEmitter {
   >();
   /** Conversation id -> newest timestamp an own device is known to hold. */
   private ownDevicePulledUpTo = new Map<string, number>();
+  /** Conversation id -> newest own-device read watermark already pulled for. */
+  private readSyncCatchupWatermarks = new Map<string, number>();
+  /** `in:` push slot -> one-shot timer paying its owed received-DM push. */
+  private owedReceivedPushTimers = new Map<
+    string,
+    ReturnType<typeof setTimeout>
+  >();
   private lastOwnDmPublishAt = 0;
   private lastBackgroundFlushAt = 0;
   private backgroundFlushInFlight = false;
@@ -23328,7 +23340,14 @@ export class ReticulumChatManager extends EventEmitter {
     // ACK valid duplicates as well as newly applied state. The sender may have
     // missed an earlier ACK and must be able to stop replaying it.
     void this.sendReadSyncAck(state, sourcePeer);
-    if (!changed) return;
+    if (!changed) {
+      // A replayed watermark: its catch-up may not have run (no own link
+      // then). One pull per watermark either way.
+      if (state.scopeType === 'dm') {
+        this.catchUpDirectFromOwnReadSync(state, sourcePeer);
+      }
+      return;
+    }
     this.readSyncLastSignedAt.set(
       state.ownerAddress,
       Math.max(
@@ -23356,6 +23375,84 @@ export class ReticulumChatManager extends EventEmitter {
     this.emit('directSummaryChanged', {
       conversationId: state.conversationId,
       peerAddress: state.peerAddress,
+    });
+    this.catchUpDirectFromOwnReadSync(state, sourcePeer);
+  }
+
+  /**
+   * An own device read a DM conversation up to a point newer than anything
+   * this device holds: a DM that only reached that device, or one written
+   * there. Pull the conversation from that device now instead of waiting
+   * for the next probe cycle (works with Hub 3.0.3, which sends DM read_sync
+   * and serves DM pages to the account's own devices). The pull starts at
+   * the newest event held here from the other participant, so it also
+   * brings own events written on that device. The watermark is applied
+   * first, so pulled events at or below it arrive read (no alert). At most
+   * one pull per watermark; an older or equal watermark never pulls.
+   */
+  private catchUpDirectFromOwnReadSync(
+    state: ReticulumChatDeviceReadState,
+    sourcePeer: string
+  ): void {
+    if (this.isClosed) return;
+    const conversationId = String(state.conversationId || '');
+    const ownerAddress = String(state.ownerAddress || '');
+    const peerAddress = String(state.peerAddress || '');
+    const upTo = Math.floor(Number(state.upToTimestamp) || 0);
+    if (
+      !conversationId ||
+      !peerAddress ||
+      peerAddress === ownerAddress ||
+      upTo <= 0 ||
+      !this.localDmAddresses.has(ownerAddress) ||
+      reticulumDmConversationId(ownerAddress, peerAddress) !== conversationId
+    ) {
+      return;
+    }
+    if ((this.readSyncCatchupWatermarks.get(conversationId) ?? 0) >= upTo) {
+      return;
+    }
+    let latest: ReticulumDmEvent | null = null;
+    try {
+      latest = this.db.getDirectLatestEvent(conversationId);
+    } catch {
+      return;
+    }
+    if (latest && Number(latest.timestamp) >= upTo) return;
+    const source = this.normalizeResourcePeerHash(sourcePeer);
+    if (!source || !this.ownDevicePeerHashesForCatchup().includes(source)) {
+      return;
+    }
+    this.readSyncCatchupWatermarks.delete(conversationId);
+    this.readSyncCatchupWatermarks.set(conversationId, upTo);
+    while (
+      this.readSyncCatchupWatermarks.size >
+      RETICULUM_CHAT_READ_SYNC_CATCHUP_STATE_MAX
+    ) {
+      const oldest = this.readSyncCatchupWatermarks.keys().next().value as
+        | string
+        | undefined;
+      if (!oldest) break;
+      this.readSyncCatchupWatermarks.delete(oldest);
+    }
+    // Shares the open-chat catch-up's spacing, but is not gated by it: the
+    // sender of a read_sync stops replaying it once acknowledged, so a
+    // skipped watermark would never come back.
+    this.lastOwnDeviceCatchupAt.set(conversationId, this.now());
+    this.countDelivery('readSyncCatchup');
+    loggerLog(
+      `[ReticulumChat] dm_read_sync_catchup conversation=${conversationId.slice(0, 16)} source=${source.slice(0, 16)} up_to=${upTo} local_latest=${latest ? Number(latest.timestamp) : 'none'}`
+    );
+    this.queueDirectMissingEvents({
+      conversationId,
+      // The other participant's cursor: everything after the newest event
+      // held here from them, including own events written on that device.
+      addressA: peerAddress,
+      addressB: ownerAddress,
+      sourcePeerHash: source,
+      remoteEventId: 'cursor:own-read-sync',
+      remoteTimestamp: Number.MAX_SAFE_INTEGER,
+      requestId: nodeCrypto.randomBytes(8).toString('hex'),
     });
   }
 
@@ -32780,6 +32877,7 @@ export class ReticulumChatManager extends EventEmitter {
         this.startDmPendingDeliverySweep(true);
       } else if (!ownEvent) {
         this.noteDmPeerSpoke(event);
+        this.pushReceivedDirectEventToOwnDevices(event);
       }
       if (ownEvent) this.scheduleOwnOutboxStateRefresh();
       if (ownEvent) this.startOwnSelfDmPostDelivery(event);
@@ -35605,6 +35703,11 @@ export class ReticulumChatManager extends EventEmitter {
     this.ownDevicePushConversations.clear();
     this.ownDevicePeerPushStates.clear();
     this.ownDevicePulledUpTo.clear();
+    this.readSyncCatchupWatermarks.clear();
+    for (const timer of this.owedReceivedPushTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.owedReceivedPushTimers.clear();
     this.lastOwnDmPublishAt = 0;
     this.lastBackgroundFlushAt = 0;
     this.lastNetworkRegainAt = 0;
@@ -36329,6 +36432,10 @@ export class ReticulumChatManager extends EventEmitter {
    *   10 s), only to device sessions with fewer than 3 unanswered pushes.
    * - flush: like repush but spaced by 10 s only (last chance before the
    *   app is frozen).
+   *
+   * An event another account sent to one of ours (received here) is pushed
+   * the same way, signed by the local participant, in a coalescing slot of
+   * its own so it never delays the copy of an own send.
    */
   private async pushDirectEventToOwnDevices(
     event: ReticulumDmEvent,
@@ -36341,22 +36448,24 @@ export class ReticulumChatManager extends EventEmitter {
     const mode = options.mode ?? 'send';
     if (this.isClosed || !this.signLocalFields) return false;
     const sender = String(event?.senderAddress || '');
-    if (
-      !sender ||
-      sender === event.recipientAddress ||
-      !this.localDmAddresses.has(sender) ||
-      !event.conversationId
-    ) {
+    const recipient = String(event?.recipientAddress || '');
+    const owner = this.localDmAddresses.has(sender)
+      ? sender
+      : this.localDmAddresses.has(recipient)
+        ? recipient
+        : '';
+    if (!sender || !owner || sender === recipient || !event.conversationId) {
       return false;
     }
-    const peers = this.ownDevicePushTargets(sender, {
+    const received = owner !== sender;
+    const peers = this.ownDevicePushTargets(owner, {
       maxPeers: options.maxPeers,
       skipUnanswered: mode !== 'send',
     });
     if (peers.length === 0) return false;
     const now = this.now();
-    const conversationId = event.conversationId;
-    const previous = this.ownDevicePushConversations.get(conversationId);
+    const slotKey = this.ownDevicePushKey(event);
+    const previous = this.ownDevicePushConversations.get(slotKey);
     if (previous) {
       const minGap =
         mode === 'repush' && !previous.owed
@@ -36371,6 +36480,14 @@ export class ReticulumChatManager extends EventEmitter {
           ) {
             previous.owedEvent = event;
           }
+          // No own pending event keeps a sweep running for received ones:
+          // pay it once the window ends.
+          if (received) {
+            this.scheduleOwedReceivedPush(
+              slotKey,
+              previous.lastPushAt + minGap - now
+            );
+          }
         }
         return false;
       }
@@ -36380,8 +36497,8 @@ export class ReticulumChatManager extends EventEmitter {
     }
     // Claim the slot before the (possibly slow) signature, so concurrent
     // callers coalesce instead of signing twice.
-    this.ownDevicePushConversations.delete(conversationId);
-    this.ownDevicePushConversations.set(conversationId, {
+    this.ownDevicePushConversations.delete(slotKey);
+    this.ownDevicePushConversations.set(slotKey, {
       lastPushAt: now,
       owed: false,
     });
@@ -36429,6 +36546,7 @@ export class ReticulumChatManager extends EventEmitter {
             return;
           }
           this.countDelivery('ownDevicePushSent');
+          if (received) this.countDelivery('ownDevicePushReceived');
           const pushState = this.ownDevicePeerPushState(peer);
           pushState.unanswered += 1;
           // This device just stopped being a re-push target.
@@ -36443,6 +36561,104 @@ export class ReticulumChatManager extends EventEmitter {
       );
     }
     return true;
+  }
+
+  /**
+   * Coalescing slot of an own-device push: the conversation id for events
+   * an own account wrote, a separate `in:` slot for events received here.
+   */
+  private ownDevicePushKey(event: ReticulumDmEvent): string {
+    return this.localDmAddresses.has(String(event?.senderAddress || ''))
+      ? event.conversationId
+      : `in:${event.conversationId}`;
+  }
+
+  /** One timer per slot; it pushes the slot's owed received event, if any. */
+  private scheduleOwedReceivedPush(slotKey: string, delayMs: number): void {
+    if (this.isClosed || this.owedReceivedPushTimers.has(slotKey)) return;
+    const accountGeneration = this.localAccountGeneration;
+    const timer = setTimeout(
+      () => {
+        this.owedReceivedPushTimers.delete(slotKey);
+        if (
+          this.isClosed ||
+          accountGeneration !== this.localAccountGeneration
+        ) {
+          return;
+        }
+        const state = this.ownDevicePushConversations.get(slotKey);
+        const owed = state?.owedEvent;
+        if (!state || !owed) return;
+        delete state.owedEvent;
+        state.owed = false;
+        if (
+          owed.timestamp <=
+          (this.ownDevicePulledUpTo.get(owed.conversationId) ?? 0)
+        ) {
+          return;
+        }
+        void this.pushDirectEventToOwnDevices(owed, { mode: 'send' }).catch(
+          () => undefined
+        );
+      },
+      Math.max(0, Math.ceil(delayMs))
+    );
+    timer.unref?.();
+    this.owedReceivedPushTimers.set(slotKey, timer);
+  }
+
+  /**
+   * A DM another account sent to one of ours was stored here. Hand it to
+   * linked own devices (a home Hub) right away, so it is there too even if
+   * the sender never reaches that device and this app is frozen before the
+   * device's next probe. Not for events an own device served us (it holds
+   * them), nor for old ones (history and look-back pages). Nothing is read
+   * or signed without an admitted own-device link.
+   */
+  private pushReceivedDirectEventToOwnDevices(event: ReticulumDmEvent): void {
+    if (this.isClosed || !this.signLocalFields) return;
+    const sender = String(event?.senderAddress || '');
+    const recipient = String(event?.recipientAddress || '');
+    if (
+      !sender ||
+      sender === recipient ||
+      this.localDmAddresses.has(sender) ||
+      !this.localDmAddresses.has(recipient)
+    ) {
+      return;
+    }
+    const now = this.now();
+    const timestamp = Number(event.timestamp) || 0;
+    if (now - timestamp > RETICULUM_CHAT_OWN_DEVICE_RECEIVED_PUSH_MAX_AGE_MS) {
+      return;
+    }
+    if (
+      timestamp <= (this.ownDevicePulledUpTo.get(event.conversationId) ?? 0)
+    ) {
+      return;
+    }
+    const targets = this.ownDevicePushTargets(recipient);
+    if (targets.length === 0) return;
+    const sources = this.eventSourcePeers.get(event.eventId)?.peers;
+    if (sources) {
+      for (const source of sources) {
+        const normalized = this.normalizeResourcePeerHash(source) ?? source;
+        if (
+          targets.includes(normalized) ||
+          this.selfDmPeerHashes(recipient).includes(normalized)
+        ) {
+          this.countDelivery('ownDevicePushReceivedFromOwnDevice');
+          return;
+        }
+      }
+    }
+    void this.pushDirectEventToOwnDevices(event, { mode: 'send' }).catch(
+      (err) => {
+        loggerWarn(
+          `[ReticulumChat] own_device_push_received_failed event=${event.eventId.slice(0, 12)} reason=${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    );
   }
 
   /**
@@ -36492,7 +36708,9 @@ export class ReticulumChatManager extends EventEmitter {
       if (options.budget && !this.outboundSignBudgetAllows(options.budget)) {
         return pushed;
       }
-      const state = this.ownDevicePushConversations.get(event.conversationId);
+      const state = this.ownDevicePushConversations.get(
+        this.ownDevicePushKey(event)
+      );
       if (state?.owedEvent !== event) continue;
       delete state.owedEvent;
       if (

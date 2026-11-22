@@ -84,6 +84,15 @@ type TorqFileInput = {
   thumbnail?: File | null;
 };
 
+/**
+ * What publishTorqPost published: the post's identifier and the DOCUMENT it
+ * wrote there, so Home's feed can show the post before the node lists it.
+ */
+export type PublishedTorqPost = {
+  postIdentifier: string;
+  post: Record<string, unknown>;
+};
+
 type TorqPublishInput = {
   /** Plain body; paragraphs separated by blank lines. */
   text: string;
@@ -173,9 +182,13 @@ export function packTorqHashtagKeywords(
     if (!clipped) continue;
     const key = clipped.toLowerCase();
     if (seen.has(key)) continue;
-    const description = [[...chosen, clipped].map(wrap).join(','), ...reserved]
-      .join(',');
-    if (new TextEncoder().encode(description).length > QDN_DESCRIPTION_MAX_BYTES) {
+    const description = [
+      [...chosen, clipped].map(wrap).join(','),
+      ...reserved,
+    ].join(',');
+    if (
+      new TextEncoder().encode(description).length > QDN_DESCRIPTION_MAX_BYTES
+    ) {
       break;
     }
     seen.add(key);
@@ -202,7 +215,9 @@ function buildTorqGifEmbed(gif: LibraryGif, timestamp: number): string {
   return `qortal://use-embed/IMAGE?${params.toString()}`;
 }
 
-export function buildTorqAttachmentEmbed(attachment: TorqPostAttachment): string {
+export function buildTorqAttachmentEmbed(
+  attachment: TorqPostAttachment
+): string {
   const params = new URLSearchParams({
     name: attachment.name,
     service: attachment.service,
@@ -395,7 +410,7 @@ const throwIfAborted = (signal?: AbortSignal) => {
 
 export async function publishTorqPost(
   input: TorqPublishInput
-): Promise<{ postIdentifier: string }> {
+): Promise<PublishedTorqPost> {
   const { userName, onProgress, signal } = input;
   const images = input.images || [];
   const gifs = input.gifs || [];
@@ -667,7 +682,7 @@ export async function publishTorqPost(
     onProgress?.(t('progress.finalizing'), 95);
     throwIfVideoPublishFailed(result, videoParts?.videoIdentifier || null);
     throwIfAborted(signal);
-    return { postIdentifier };
+    return { postIdentifier, post };
   } catch (err) {
     stashedIds.forEach(discardPublishFile);
     if (videoParts) discardPublishFile(videoParts.stashedFileId);

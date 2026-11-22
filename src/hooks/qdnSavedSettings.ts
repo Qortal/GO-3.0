@@ -1,7 +1,4 @@
-import {
-  getArbitraryEndpointReact,
-  getBaseApiReact,
-} from '../utils/globalApi';
+import { getArbitraryEndpointReact, getBaseApiReact } from '../utils/globalApi';
 // Import from the small util module, not Group.tsx: this hook is in the eager
 // pre-login bundle and a Group.tsx import would drag the whole authenticated
 // tree into it.
@@ -29,8 +26,19 @@ export type SerializedPinnedApp = {
   };
 };
 
-type QdnSavedSettings = {
+/**
+ * The account's settings on QDN. Next to the pins, the desktop Hub saves the
+ * pins, folders and bookmarks item by item (`savedApps`, see
+ * docs/saved-apps.md) and, for clients that don't know that field, the
+ * bookmarks, the folders and the order of the saved apps; also Home's layout
+ * and the side panel, which GO keeps as they are.
+ */
+export type QdnSavedSettings = {
   sortablePinnedApps?: SerializedPinnedApp[];
+  appBookmarks?: unknown;
+  launcherOrder?: unknown;
+  savedApps?: unknown;
+  [field: string]: unknown;
 };
 
 export async function getExtSavedSettingsRecord(myName: string): Promise<{

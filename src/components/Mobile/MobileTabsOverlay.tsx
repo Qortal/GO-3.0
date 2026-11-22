@@ -28,7 +28,6 @@ import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import AddRoundedIcon from '@mui/icons-material/AddRounded';
 import RemoveRoundedIcon from '@mui/icons-material/RemoveRounded';
 import AppsRoundedIcon from '@mui/icons-material/AppsRounded';
-import CloudDownloadRoundedIcon from '@mui/icons-material/CloudDownloadRounded';
 import CreateNewFolderRoundedIcon from '@mui/icons-material/CreateNewFolderRounded';
 import TuneRoundedIcon from '@mui/icons-material/TuneRounded';
 import ArrowBackRoundedIcon from '@mui/icons-material/ArrowBackRounded';
@@ -59,18 +58,16 @@ import {
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { alpha } from '@mui/material/styles';
-import { useAtomValue } from 'jotai';
-import { userInfoAtom } from '../../atoms/global';
-import {
-  getExtSavedSettings,
-  getExtSavedSettingsRecord,
-} from '../../hooks/qdnSavedSettings';
 import { extractComponents } from '../Chat/MessageDisplay';
 import { CustomizedSnackbars } from '../Snackbar/Snackbar';
 import { FolderCompositeAvatar } from './FolderCompositeAvatar';
 import { MobileTabAppDetailsDialog } from './MobileTabAppDetailsDialog';
 import { MobileTabOptionsDialog } from './MobileTabOptionsDialog';
-import { getOpenTabKey, groupFoldersByRow, resolveFolderTab } from './mobileTabOrganization';
+import {
+  getOpenTabKey,
+  groupFoldersByRow,
+  resolveFolderTab,
+} from './mobileTabOrganization';
 import { useMobileTabOrganization } from './useMobileTabOrganization';
 import { TabAvatar, colorFor } from './MobileTabsOverlay.shared';
 import {
@@ -91,7 +88,10 @@ import { useShownWindows } from './tabsHome/useShownWindows';
 import { groupTabsIntoStacks, type TabStack } from './tabsHome/tabStacks';
 import { measureBoxes, playFlip } from './tabsHome/flip';
 import { BACK_PRIORITY, useAndroidBack } from '../../utils/androidBack';
-import { filterAppTabsForMobile, isQChatOpenTab } from '../../utils/openQChatTab';
+import {
+  filterAppTabsForMobile,
+  isQChatOpenTab,
+} from '../../utils/openQChatTab';
 import {
   MOBILE_TAB_BAR_HEIGHT_PX,
   MOBILE_TOP_BAR_HEIGHT_PX,
@@ -150,7 +150,9 @@ type TabDropTarget = { type: 'folder'; folderId: string };
 
 const parseTabDragId = (id: string | number) => {
   const value = String(id);
-  return value.startsWith(TAB_DRAG_PREFIX) ? value.slice(TAB_DRAG_PREFIX.length) : null;
+  return value.startsWith(TAB_DRAG_PREFIX)
+    ? value.slice(TAB_DRAG_PREFIX.length)
+    : null;
 };
 
 const parseFolderDragId = (id: string | number) => {
@@ -261,7 +263,9 @@ const FolderDragPreview = ({
     }}
   >
     <FolderCompositeAvatar getTitle={getTitle} size={40} tabs={tabs} />
-    <Typography sx={{ fontSize: 11, fontWeight: 600, maxWidth: 76, textAlign: 'center' }}>
+    <Typography
+      sx={{ fontSize: 11, fontWeight: 600, maxWidth: 76, textAlign: 'center' }}
+    >
       {name}
     </Typography>
   </Box>
@@ -375,7 +379,9 @@ const FolderRowAddButton = ({ onClick }: { onClick: () => void }) => {
         },
       }}
     >
-      <AddRoundedIcon sx={{ color: theme.palette.primary.main, fontSize: 22 }} />
+      <AddRoundedIcon
+        sx={{ color: theme.palette.primary.main, fontSize: 22 }}
+      />
     </Box>
   );
 };
@@ -415,7 +421,9 @@ const FolderRowRemoveButton = ({ onClick }: { onClick: () => void }) => {
         },
       }}
     >
-      <RemoveRoundedIcon sx={{ color: theme.palette.error.main, fontSize: 22 }} />
+      <RemoveRoundedIcon
+        sx={{ color: theme.palette.error.main, fontSize: 22 }}
+      />
     </Box>
   );
 };
@@ -479,7 +487,9 @@ const SortableFolderChip = memo(function SortableFolderChip({
   };
 
   const isTabDropTarget =
-    isOver && active?.id != null && String(active.id).startsWith(TAB_DRAG_PREFIX);
+    isOver &&
+    active?.id != null &&
+    String(active.id).startsWith(TAB_DRAG_PREFIX);
 
   return (
     <Box
@@ -826,7 +836,6 @@ export const MobileTabsOverlay = ({
     [rawSelectedTab]
   );
   const org = useMobileTabOrganization();
-  const userInfo = useAtomValue(userInfoAtom);
   const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
   const [tabOptionsOpen, setTabOptionsOpen] = useState(false);
   const [actionTab, setActionTab] = useState<OpenTab | null>(null);
@@ -847,7 +856,6 @@ export const MobileTabsOverlay = ({
   const [folderHeaderName, setFolderHeaderName] = useState('');
   const [folderNameEditing, setFolderNameEditing] = useState(false);
   const [tabsEditMode, setTabsEditMode] = useState(false);
-  const [importingHubDashboard, setImportingHubDashboard] = useState(false);
   const [folderPendingDelete, setFolderPendingDelete] = useState<{
     id: string;
     name: string;
@@ -858,7 +866,8 @@ export const MobileTabsOverlay = ({
   if (folderPendingDelete) {
     lastFolderPendingDeleteRef.current = folderPendingDelete;
   }
-  const folderDeleteText = folderPendingDelete ?? lastFolderPendingDeleteRef.current;
+  const folderDeleteText =
+    folderPendingDelete ?? lastFolderPendingDeleteRef.current;
   const [overlayMounted, setOverlayMounted] = useState(false);
   const folderHeaderInputRef = useRef<HTMLInputElement>(null);
   const skipFolderBlurCommitRef = useRef(false);
@@ -891,7 +900,8 @@ export const MobileTabsOverlay = ({
 
   const canDragTabs = tabsEditMode && org.folders.length > 0;
   const canReorderFolderTabs = tabsEditMode && Boolean(selectedFolderId);
-  const tabEditMode = tabsEditMode && (Boolean(selectedFolderId) || org.folders.length > 0);
+  const tabEditMode =
+    tabsEditMode && (Boolean(selectedFolderId) || org.folders.length > 0);
 
   const selectedFolder = useMemo(
     () => org.folders.find((folder) => folder.id === selectedFolderId) ?? null,
@@ -927,7 +937,7 @@ export const MobileTabsOverlay = ({
   // order, open ones live and closed ones as saved shells.
   const visibleTabs = useMemo(
     () =>
-      selectedFolder ? folderTabsMap.get(selectedFolder.id) ?? [] : tabs,
+      selectedFolder ? (folderTabsMap.get(selectedFolder.id) ?? []) : tabs,
     [folderTabsMap, selectedFolder, tabs]
   );
 
@@ -1010,14 +1020,17 @@ export const MobileTabsOverlay = ({
     [focusInput]
   );
 
-  const dismissFolderNameEdit = useCallback((revert = false) => {
-    skipFolderBlurCommitRef.current = true;
-    setFolderNameEditing(false);
-    if (revert && selectedFolder) {
-      setFolderHeaderName(selectedFolder.name);
-    }
-    folderHeaderInputRef.current?.blur();
-  }, [selectedFolder]);
+  const dismissFolderNameEdit = useCallback(
+    (revert = false) => {
+      skipFolderBlurCommitRef.current = true;
+      setFolderNameEditing(false);
+      if (revert && selectedFolder) {
+        setFolderHeaderName(selectedFolder.name);
+      }
+      folderHeaderInputRef.current?.blur();
+    },
+    [selectedFolder]
+  );
 
   const commitFolderHeaderName = useCallback(async () => {
     if (!selectedFolderId || !selectedFolder) return;
@@ -1073,8 +1086,7 @@ export const MobileTabsOverlay = ({
     if (tabsEditMode) return;
 
     const isInsideTabsPanel = (target: EventTarget | null) =>
-      target instanceof Node &&
-      Boolean(tabsPanelRef.current?.contains(target));
+      target instanceof Node && Boolean(tabsPanelRef.current?.contains(target));
 
     const isInsideModal = (target: EventTarget | null) =>
       target instanceof Element &&
@@ -1162,10 +1174,13 @@ export const MobileTabsOverlay = ({
   // An urgent update on purpose: a folder holds at most a few dozen cards,
   // and a transition here left the tap without any visible response whenever
   // other work kept the transition lanes waiting.
-  const selectFolder = useCallback((folderId: string | null) => {
-    dismissFolderNameEdit(true);
-    setSelectedFolderId(folderId);
-  }, [dismissFolderNameEdit]);
+  const selectFolder = useCallback(
+    (folderId: string | null) => {
+      dismissFolderNameEdit(true);
+      setSelectedFolderId(folderId);
+    },
+    [dismissFolderNameEdit]
+  );
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 10 } }),
@@ -1178,73 +1193,6 @@ export const MobileTabsOverlay = ({
     setSnackInfo({ type: 'success', message, duration: 3200 });
     setSnackOpen(true);
   }, []);
-
-  const showSnack = useCallback((type: string, message: string) => {
-    setSnackInfo({ type, message, duration: 3200 });
-    setSnackOpen(true);
-  }, []);
-
-  const handleImportHubDashboard = useCallback(async () => {
-    if (importingHubDashboard) return;
-    const myName = String(userInfo?.name || '').trim();
-    if (!myName) {
-      showSnack(
-        'error',
-        'This account has no registered name, so a Hub dashboard cannot be imported.'
-      );
-      return;
-    }
-
-    setImportingHubDashboard(true);
-    try {
-      const { hasPublishRecord } = await getExtSavedSettingsRecord(myName);
-      if (!hasPublishRecord) {
-        showSnack('error', 'No Hub dashboard is saved for this account.');
-        return;
-      }
-      const settings = await getExtSavedSettings(myName);
-      const pins = Array.isArray(settings?.sortablePinnedApps)
-        ? settings.sortablePinnedApps
-        : null;
-      if (!settings || !pins) {
-        showSnack('error', 'Could not read the Hub dashboard for this account.');
-        return;
-      }
-
-      const { folderId, imported, skipped } =
-        org.importPinnedAppsToHubFolder(pins);
-      if (folderId) {
-        selectFolder(folderId);
-      }
-
-      if (imported === 0 && skipped === 0) {
-        showSnack('error', 'The Hub dashboard has no pinned apps to import.');
-        return;
-      }
-
-      if (skipped > 0) {
-        showSnack(
-          'success',
-          `Imported ${imported} pinned app${imported === 1 ? '' : 's'} into Hub. ${skipped} already in other folders.`
-        );
-        return;
-      }
-      showSnack(
-        'success',
-        `Imported ${imported} pinned app${imported === 1 ? '' : 's'} into Hub.`
-      );
-    } catch {
-      showSnack('error', 'Could not read the Hub dashboard for this account.');
-    } finally {
-      setImportingHubDashboard(false);
-    }
-  }, [
-    importingHubDashboard,
-    org,
-    selectFolder,
-    showSnack,
-    userInfo?.name,
-  ]);
 
   const handleTrashFolder = useCallback(
     async (folderId: string) => {
@@ -1259,8 +1207,8 @@ export const MobileTabsOverlay = ({
     [org, selectedFolderId, showRemovalSnack]
   );
 
-  // A folder with apps in it asks first: deleting it also forgets the saved
-  // apps inside, and the × sits on a small corner of a draggable chip.
+  // A folder with apps in it asks first: the × sits on a small corner of a
+  // draggable chip. Its apps stay, on the Pinned tab, as on Hub.
   const requestTrashFolder = useCallback(
     (folderId: string) => {
       const folder = org.folders.find((item) => item.id === folderId);
@@ -1336,11 +1284,15 @@ export const MobileTabsOverlay = ({
     if (activeFolderId) {
       const overFolderId = parseFolderDragId(over.id);
       const rowDrop = parseRowDropId(over.id);
-      const activeFolder = org.folders.find((folder) => folder.id === activeFolderId);
+      const activeFolder = org.folders.find(
+        (folder) => folder.id === activeFolderId
+      );
       if (!activeFolder) return;
 
       if (overFolderId) {
-        const overFolder = org.folders.find((folder) => folder.id === overFolderId);
+        const overFolder = org.folders.find(
+          (folder) => folder.id === overFolderId
+        );
         if (!overFolder) return;
 
         if ((activeFolder.row ?? 0) !== (overFolder.row ?? 0)) {
@@ -1453,7 +1405,9 @@ export const MobileTabsOverlay = ({
   useEffect(() => {
     if (!detailsOpen) return;
     clearNativeTextSelection();
-    const frame = window.requestAnimationFrame(() => clearNativeTextSelection());
+    const frame = window.requestAnimationFrame(() =>
+      clearNativeTextSelection()
+    );
     return () => window.cancelAnimationFrame(frame);
   }, [detailsOpen]);
 
@@ -1488,33 +1442,33 @@ export const MobileTabsOverlay = ({
     }
 
     return {
-    onContextMenu: (e: React.MouseEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
-      clearNativeTextSelection();
-      longPressTriggeredRef.current = true;
-      openTabDetails(tab);
-    },
-    onSelectStart: (e: React.SyntheticEvent) => {
-      e.preventDefault();
-    },
-    onTouchStart: () => {
-      longPressTriggeredRef.current = false;
-      clearNativeTextSelection();
-      longPressRef.current = setTimeout(() => {
-        longPressTriggeredRef.current = true;
+      onContextMenu: (e: React.MouseEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
         clearNativeTextSelection();
+        longPressTriggeredRef.current = true;
         openTabDetails(tab);
-      }, LONG_PRESS_MS);
-    },
-    onTouchMove: () => {
-      if (longPressRef.current) clearTimeout(longPressRef.current);
-      clearNativeTextSelection();
-    },
-    onTouchEnd: () => {
-      if (longPressRef.current) clearTimeout(longPressRef.current);
-    },
-  };
+      },
+      onSelectStart: (e: React.SyntheticEvent) => {
+        e.preventDefault();
+      },
+      onTouchStart: () => {
+        longPressTriggeredRef.current = false;
+        clearNativeTextSelection();
+        longPressRef.current = setTimeout(() => {
+          longPressTriggeredRef.current = true;
+          clearNativeTextSelection();
+          openTabDetails(tab);
+        }, LONG_PRESS_MS);
+      },
+      onTouchMove: () => {
+        if (longPressRef.current) clearTimeout(longPressRef.current);
+        clearNativeTextSelection();
+      },
+      onTouchEnd: () => {
+        if (longPressRef.current) clearTimeout(longPressRef.current);
+      },
+    };
   };
 
   const handleCreateFolder = async () => {
@@ -1612,593 +1566,636 @@ export const MobileTabsOverlay = ({
   return (
     <>
       {overlayMounted ? (
-      <Box
-        sx={{
-          bottom: 0,
-          left: 0,
-          pointerEvents: open ? 'auto' : 'none',
-          position: 'fixed',
-          right: 0,
-          top: tabsPanelTop,
-          zIndex: MOBILE_TABS_OVERLAY_Z,
-        }}
-      >
-        <Slide
-          direction="down"
-          in={open}
-          // A pull moves the panel itself.
-          timeout={pulling ? 0 : undefined}
-          mountOnEnter
-          unmountOnExit
-          onExited={() => setOverlayMounted(false)}
+        <Box
+          sx={{
+            bottom: 0,
+            left: 0,
+            pointerEvents: open ? 'auto' : 'none',
+            position: 'fixed',
+            right: 0,
+            top: tabsPanelTop,
+            zIndex: MOBILE_TABS_OVERLAY_Z,
+          }}
         >
-          <Box
-            sx={{
-              display: 'flex',
-              flexDirection: 'column',
-              height: '100%',
-              pointerEvents: 'none',
-            }}
+          <Slide
+            direction="down"
+            in={open}
+            // A pull moves the panel itself.
+            timeout={pulling ? 0 : undefined}
+            mountOnEnter
+            unmountOnExit
+            onExited={() => setOverlayMounted(false)}
           >
             <Box
-              ref={setTabsPanel}
               sx={{
-                backgroundColor:
-                  theme.palette.mode === 'dark'
-                    ? 'rgb(28, 30, 36)'
-                    : theme.palette.background.paper,
-                borderBottom: `1px solid ${theme.palette.divider}`,
-                borderBottomLeftRadius: 18,
-                borderBottomRightRadius: 18,
-                boxShadow:
-                  theme.palette.mode === 'dark'
-                    ? '0 14px 36px rgba(0,0,0,0.45)'
-                    : '0 14px 36px rgba(15,20,30,0.18)',
                 display: 'flex',
                 flexDirection: 'column',
-                maxHeight: tabsPanelMaxHeight,
-                overflow: 'hidden',
-                pointerEvents: 'auto',
-                width: '100%',
-                // Its own layer while open: a pull or slide that gave it one
-                // only for the drag (tabsPull, tabsSwipeClose) had the whole
-                // panel repainted and redrawn as each drag began and ended,
-                // 50-117 ms stalls on a vivo. Their inline will-change
-                // falls back to this when cleared.
-                willChange: 'transform',
-                ...noTextSelectionSx,
-                '& input, & textarea, & [contenteditable="true"]': {
-                  userSelect: 'text',
-                  WebkitUserSelect: 'text',
-                },
+                height: '100%',
+                pointerEvents: 'none',
               }}
             >
-          <Box
-            sx={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              gap: 1,
-              px: 2,
-              py: 1.25,
-              borderBottom: `1px solid ${theme.palette.divider}`,
-              flexShrink: 0,
-            }}
-          >
-            {selectedFolder ? (
               <Box
+                ref={setTabsPanel}
                 sx={{
-                  alignItems: 'center',
+                  backgroundColor:
+                    theme.palette.mode === 'dark'
+                      ? 'rgb(28, 30, 36)'
+                      : theme.palette.background.paper,
+                  borderBottom: `1px solid ${theme.palette.divider}`,
+                  borderBottomLeftRadius: 18,
+                  borderBottomRightRadius: 18,
+                  boxShadow:
+                    theme.palette.mode === 'dark'
+                      ? '0 14px 36px rgba(0,0,0,0.45)'
+                      : '0 14px 36px rgba(15,20,30,0.18)',
                   display: 'flex',
-                  flex: 1,
-                  gap: 0.75,
-                  minWidth: 0,
+                  flexDirection: 'column',
+                  maxHeight: tabsPanelMaxHeight,
+                  overflow: 'hidden',
+                  pointerEvents: 'auto',
+                  width: '100%',
+                  // Its own layer while open: a pull or slide that gave it one
+                  // only for the drag (tabsPull, tabsSwipeClose) had the whole
+                  // panel repainted and redrawn as each drag began and ended,
+                  // 50-117 ms stalls on a vivo. Their inline will-change
+                  // falls back to this when cleared.
+                  willChange: 'transform',
+                  ...noTextSelectionSx,
+                  '& input, & textarea, & [contenteditable="true"]': {
+                    userSelect: 'text',
+                    WebkitUserSelect: 'text',
+                  },
                 }}
               >
-                <IconButton
-                  size="small"
-                  aria-label="Back to all tabs"
-                  onClick={() => selectFolder(null)}
-                >
-                  <ArrowBackRoundedIcon sx={{ fontSize: 20 }} />
-                </IconButton>
-                <FolderCompositeAvatar
-                  getTitle={org.getTabTitle}
-                  size={34}
-                  tabs={folderTabsMap.get(selectedFolder.id) || []}
-                />
-                {folderNameEditing ? (
-                  <>
-                    <TextField
-                      inputRef={folderHeaderInputRef}
-                      size="small"
-                      value={folderHeaderName}
-                      onChange={(e) => setFolderHeaderName(e.target.value)}
-                      onBlur={() => {
-                        if (skipFolderBlurCommitRef.current) {
-                          skipFolderBlurCommitRef.current = false;
-                          return;
-                        }
-                        void commitFolderHeaderName();
-                      }}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          e.preventDefault();
-                          saveFolderHeaderName();
-                        }
-                        if (e.key === 'Escape') {
-                          dismissFolderNameEdit(true);
-                        }
-                      }}
-                      inputProps={{
-                        enterKeyHint: 'done',
-                        inputMode: 'text',
-                      }}
-                      sx={{
-                        flex: 1,
-                        minWidth: 0,
-                        '& .MuiInputBase-input': {
-                          fontSize: 16,
-                          fontWeight: 700,
-                          py: 0.75,
-                        },
-                      }}
-                    />
-                    <IconButton
-                      size="small"
-                      aria-label="Save folder name"
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={saveFolderHeaderName}
-                    >
-                      <CheckRoundedIcon sx={{ fontSize: 20 }} />
-                    </IconButton>
-                  </>
-                ) : (
-                  <>
-                    <Typography
-                      onClick={tabsEditMode ? startFolderHeaderEdit : undefined}
-                      sx={{
-                        flex: 1,
-                        fontSize: 16,
-                        fontWeight: 700,
-                        minWidth: 0,
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap',
-                        cursor: tabsEditMode ? 'text' : 'default',
-                      }}
-                    >
-                      {selectedFolder.name}
-                    </Typography>
-                    {tabsEditButton}
-                  </>
-                )}
-              </Box>
-            ) : (
-              <Typography sx={{ fontSize: 16, fontWeight: 700, flex: 1 }}>
-                Tabs{tabs.length ? ` (${tabs.length})` : ''}
-              </Typography>
-            )}
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexShrink: 0 }}>
-              {tabs.length > 0 && !selectedFolder ? (
-                <ButtonBase
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    closeAllOpenTabs();
-                    onClose();
-                  }}
-                  sx={{
-                    alignItems: 'center',
-                    borderRadius: '999px',
-                    color: theme.palette.error.main,
-                    display: 'inline-flex',
-                    fontSize: 13,
-                    fontWeight: 600,
-                    gap: 0.35,
-                    px: 1,
-                    py: 0.45,
-                    '&:active': {
-                      backgroundColor: alpha(theme.palette.error.main, 0.12),
-                    },
-                  }}
-                >
-                  <ClearAllRoundedIcon sx={{ fontSize: 18 }} />
-                  {t('core:tabs_home.close_all', {
-                    postProcess: 'capitalizeFirstChar',
-                  })}
-                </ButtonBase>
-              ) : null}
-              {!selectedFolder ? tabsEditButton : null}
-              {tabsEditMode ? (
-                <>
-                  <IconButton
-                    size="small"
-                    aria-label="New folder"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      void org.createFolder('New folder').then((id) => selectFolder(id));
-                    }}
-                  >
-                    <CreateNewFolderRoundedIcon />
-                  </IconButton>
-                  <IconButton
-                    size="small"
-                    aria-label="Import Hub dashboard"
-                    disabled={importingHubDashboard}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      void handleImportHubDashboard();
-                    }}
-                  >
-                    <CloudDownloadRoundedIcon />
-                  </IconButton>
-                </>
-              ) : null}
-            </Box>
-          </Box>
-
-          <Box
-            sx={{
-              display: 'flex',
-              flex: 1,
-              flexDirection: 'column',
-              minHeight: 0,
-              overflow: 'hidden',
-            }}
-          >
-          <DndContext
-            sensors={sensors}
-            collisionDetection={tabGridCollisionDetection}
-            onDragCancel={handleDragCancel}
-            onDragEnd={handleDragEnd}
-            onDragStart={handleDragStart}
-          >
-          <Box
-            sx={{
-              display: 'flex',
-              flex: 1,
-              flexDirection: 'column',
-              minHeight: 0,
-              overflow: 'hidden',
-            }}
-          >
-          {org.folders.length > 0 && (
-            <Box
-              sx={{
-                borderBottom: `1px solid ${theme.palette.divider}`,
-                display: 'flex',
-                flexDirection: 'column',
-                flexShrink: 0,
-                gap: 0.85,
-                px: 1.5,
-                py: 1.25,
-              }}
-            >
-              {folderRows.map((rowFolders, rowIndex) => (
                 <Box
-                  key={`folder-row-${rowIndex}`}
                   sx={{
-                    overflowX: 'auto',
-                    scrollbarWidth: 'none',
-                    touchAction: 'pan-x',
-                    WebkitOverflowScrolling: 'touch',
-                    width: '100%',
-                    '&::-webkit-scrollbar': { display: 'none' },
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: 1,
+                    px: 2,
+                    py: 1.25,
+                    borderBottom: `1px solid ${theme.palette.divider}`,
+                    flexShrink: 0,
                   }}
                 >
-                  <SortableContext
-                    items={rowFolders.map((folder) => folderDragId(folder.id))}
-                    strategy={horizontalListSortingStrategy}
+                  {selectedFolder ? (
+                    <Box
+                      sx={{
+                        alignItems: 'center',
+                        display: 'flex',
+                        flex: 1,
+                        gap: 0.75,
+                        minWidth: 0,
+                      }}
+                    >
+                      <IconButton
+                        size="small"
+                        aria-label="Back to all tabs"
+                        onClick={() => selectFolder(null)}
+                      >
+                        <ArrowBackRoundedIcon sx={{ fontSize: 20 }} />
+                      </IconButton>
+                      <FolderCompositeAvatar
+                        getTitle={org.getTabTitle}
+                        size={34}
+                        tabs={folderTabsMap.get(selectedFolder.id) || []}
+                      />
+                      {folderNameEditing ? (
+                        <>
+                          <TextField
+                            inputRef={folderHeaderInputRef}
+                            size="small"
+                            value={folderHeaderName}
+                            onChange={(e) =>
+                              setFolderHeaderName(e.target.value)
+                            }
+                            onBlur={() => {
+                              if (skipFolderBlurCommitRef.current) {
+                                skipFolderBlurCommitRef.current = false;
+                                return;
+                              }
+                              void commitFolderHeaderName();
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault();
+                                saveFolderHeaderName();
+                              }
+                              if (e.key === 'Escape') {
+                                dismissFolderNameEdit(true);
+                              }
+                            }}
+                            inputProps={{
+                              enterKeyHint: 'done',
+                              inputMode: 'text',
+                            }}
+                            sx={{
+                              flex: 1,
+                              minWidth: 0,
+                              '& .MuiInputBase-input': {
+                                fontSize: 16,
+                                fontWeight: 700,
+                                py: 0.75,
+                              },
+                            }}
+                          />
+                          <IconButton
+                            size="small"
+                            aria-label="Save folder name"
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={saveFolderHeaderName}
+                          >
+                            <CheckRoundedIcon sx={{ fontSize: 20 }} />
+                          </IconButton>
+                        </>
+                      ) : (
+                        <>
+                          <Typography
+                            onClick={
+                              tabsEditMode ? startFolderHeaderEdit : undefined
+                            }
+                            sx={{
+                              flex: 1,
+                              fontSize: 16,
+                              fontWeight: 700,
+                              minWidth: 0,
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
+                              cursor: tabsEditMode ? 'text' : 'default',
+                            }}
+                          >
+                            {selectedFolder.name}
+                          </Typography>
+                          {tabsEditButton}
+                        </>
+                      )}
+                    </Box>
+                  ) : (
+                    <Typography sx={{ fontSize: 16, fontWeight: 700, flex: 1 }}>
+                      Tabs{tabs.length ? ` (${tabs.length})` : ''}
+                    </Typography>
+                  )}
+                  <Box
+                    sx={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 0.5,
+                      flexShrink: 0,
+                    }}
+                  >
+                    {tabs.length > 0 && !selectedFolder ? (
+                      <ButtonBase
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          closeAllOpenTabs();
+                          onClose();
+                        }}
+                        sx={{
+                          alignItems: 'center',
+                          borderRadius: '999px',
+                          color: theme.palette.error.main,
+                          display: 'inline-flex',
+                          fontSize: 13,
+                          fontWeight: 600,
+                          gap: 0.35,
+                          px: 1,
+                          py: 0.45,
+                          '&:active': {
+                            backgroundColor: alpha(
+                              theme.palette.error.main,
+                              0.12
+                            ),
+                          },
+                        }}
+                      >
+                        <ClearAllRoundedIcon sx={{ fontSize: 18 }} />
+                        {t('core:tabs_home.close_all', {
+                          postProcess: 'capitalizeFirstChar',
+                        })}
+                      </ButtonBase>
+                    ) : null}
+                    {!selectedFolder ? tabsEditButton : null}
+                    {tabsEditMode ? (
+                      <IconButton
+                        size="small"
+                        aria-label={t('core:tabs_home.new_folder', {
+                          postProcess: 'capitalizeFirstChar',
+                        })}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void org
+                            .createFolder(
+                              t('core:tabs_home.new_folder_name', {
+                                postProcess: 'capitalizeFirstChar',
+                              })
+                            )
+                            .then((id) => {
+                              if (id) selectFolder(id);
+                            });
+                        }}
+                      >
+                        <CreateNewFolderRoundedIcon />
+                      </IconButton>
+                    ) : null}
+                  </Box>
+                </Box>
+
+                <Box
+                  sx={{
+                    display: 'flex',
+                    flex: 1,
+                    flexDirection: 'column',
+                    minHeight: 0,
+                    overflow: 'hidden',
+                  }}
+                >
+                  <DndContext
+                    sensors={sensors}
+                    collisionDetection={tabGridCollisionDetection}
+                    onDragCancel={handleDragCancel}
+                    onDragEnd={handleDragEnd}
+                    onDragStart={handleDragStart}
                   >
                     <Box
                       sx={{
                         display: 'flex',
-                        gap: 1,
-                        minWidth: 'min-content',
-                        pr: 0.5,
-                        width: 'max-content',
+                        flex: 1,
+                        flexDirection: 'column',
+                        minHeight: 0,
+                        overflow: 'hidden',
                       }}
                     >
-                      {rowFolders.map((folder) => (
-                        <SortableFolderChip
-                          key={folder.id}
-                          editMode={tabsEditMode}
-                          folderId={folder.id}
-                          getTitle={org.getTabTitle}
-                          name={folder.name}
-                          onRemove={() => requestTrashFolder(folder.id)}
-                          onSelect={() => {
-                            if (dragEndedRef.current) return;
-                            // Tapping the open folder again goes back to all tabs.
-                            selectFolder(
-                              selectedFolder?.id === folder.id ? null : folder.id
-                            );
+                      {org.folders.length > 0 && (
+                        <Box
+                          sx={{
+                            borderBottom: `1px solid ${theme.palette.divider}`,
+                            display: 'flex',
+                            flexDirection: 'column',
+                            flexShrink: 0,
+                            gap: 0.85,
+                            px: 1.5,
+                            py: 1.25,
                           }}
-                          selected={selectedFolderId === folder.id}
-                          tabs={folderTabsMap.get(folder.id) || []}
-                        />
-                      ))}
-                      {tabsEditMode && rowFolders.length === 0 ? (
-                        <FolderRowDropZone rowIndex={rowIndex} />
-                      ) : null}
-                      {tabsEditMode && rowFolders.length > 0 ? (
-                        <FolderRowEndDropZone rowIndex={rowIndex} />
-                      ) : null}
-                      {tabsEditMode ? (
-                        <>
-                          {rowFolders.length === 0 && folderRowCount > 1 ? (
-                            <FolderRowRemoveButton
-                              onClick={() => void org.removeFolderRow(rowIndex)}
-                            />
-                          ) : null}
-                          <FolderRowAddButton
-                            onClick={() => void org.insertFolderRowAfter(rowIndex)}
-                          />
-                        </>
-                      ) : null}
+                        >
+                          {folderRows.map((rowFolders, rowIndex) => (
+                            <Box
+                              key={`folder-row-${rowIndex}`}
+                              sx={{
+                                overflowX: 'auto',
+                                scrollbarWidth: 'none',
+                                touchAction: 'pan-x',
+                                WebkitOverflowScrolling: 'touch',
+                                width: '100%',
+                                '&::-webkit-scrollbar': { display: 'none' },
+                              }}
+                            >
+                              <SortableContext
+                                items={rowFolders.map((folder) =>
+                                  folderDragId(folder.id)
+                                )}
+                                strategy={horizontalListSortingStrategy}
+                              >
+                                <Box
+                                  sx={{
+                                    display: 'flex',
+                                    gap: 1,
+                                    minWidth: 'min-content',
+                                    pr: 0.5,
+                                    width: 'max-content',
+                                  }}
+                                >
+                                  {rowFolders.map((folder) => (
+                                    <SortableFolderChip
+                                      key={folder.id}
+                                      editMode={tabsEditMode}
+                                      folderId={folder.id}
+                                      getTitle={org.getTabTitle}
+                                      name={folder.name}
+                                      onRemove={() =>
+                                        requestTrashFolder(folder.id)
+                                      }
+                                      onSelect={() => {
+                                        if (dragEndedRef.current) return;
+                                        // Tapping the open folder again goes back to all tabs.
+                                        selectFolder(
+                                          selectedFolder?.id === folder.id
+                                            ? null
+                                            : folder.id
+                                        );
+                                      }}
+                                      selected={selectedFolderId === folder.id}
+                                      tabs={folderTabsMap.get(folder.id) || []}
+                                    />
+                                  ))}
+                                  {tabsEditMode && rowFolders.length === 0 ? (
+                                    <FolderRowDropZone rowIndex={rowIndex} />
+                                  ) : null}
+                                  {tabsEditMode && rowFolders.length > 0 ? (
+                                    <FolderRowEndDropZone rowIndex={rowIndex} />
+                                  ) : null}
+                                  {tabsEditMode ? (
+                                    <>
+                                      {rowFolders.length === 0 &&
+                                      folderRowCount > 1 ? (
+                                        <FolderRowRemoveButton
+                                          onClick={() =>
+                                            void org.removeFolderRow(rowIndex)
+                                          }
+                                        />
+                                      ) : null}
+                                      <FolderRowAddButton
+                                        onClick={() =>
+                                          void org.insertFolderRowAfter(
+                                            rowIndex
+                                          )
+                                        }
+                                      />
+                                    </>
+                                  ) : null}
+                                </Box>
+                              </SortableContext>
+                            </Box>
+                          ))}
+                        </Box>
+                      )}
+
+                      <Box
+                        ref={tabsListRef}
+                        sx={{
+                          flex: 1,
+                          minHeight: 0,
+                          overflowX: 'hidden',
+                          overflowY: 'auto',
+                          overscrollBehavior: 'contain',
+                          p: 2,
+                          WebkitOverflowScrolling: 'touch',
+                        }}
+                      >
+                        {tabsEditMode &&
+                        canDragTabs &&
+                        visibleTabs.length > 0 ? (
+                          <Typography
+                            sx={{
+                              fontSize: 12,
+                              mb: 1.25,
+                              opacity: 0.65,
+                              textAlign: 'center',
+                            }}
+                          >
+                            {canReorderFolderTabs
+                              ? t('core:tabs_overlay.edit_hint_folder', {
+                                  postProcess: 'capitalizeFirstChar',
+                                })
+                              : t('core:tabs_overlay.edit_hint_root', {
+                                  postProcess: 'capitalizeFirstChar',
+                                })}
+                          </Typography>
+                        ) : null}
+                        {visibleTabs.length === 0 ? (
+                          selectedFolder ? (
+                            <Box
+                              sx={{
+                                alignItems: 'center',
+                                display: 'flex',
+                                flexDirection: 'column',
+                                gap: 0.75,
+                                opacity: 0.7,
+                                px: 2,
+                                py: 2.5,
+                                textAlign: 'center',
+                              }}
+                            >
+                              <Typography sx={{ fontSize: 14 }}>
+                                {t('core:tabs_overlay.folder_empty', {
+                                  postProcess: 'capitalizeFirstChar',
+                                })}
+                              </Typography>
+                              <Typography sx={{ fontSize: 12, opacity: 0.8 }}>
+                                {t('core:tabs_overlay.folder_empty_hint', {
+                                  postProcess: 'capitalizeFirstChar',
+                                })}
+                              </Typography>
+                            </Box>
+                          ) : org.folders.length > 0 ? (
+                            // Folders are right above: a big "nothing here" would read as
+                            // if the saved apps were gone.
+                            <Typography
+                              sx={{
+                                fontSize: 13,
+                                opacity: 0.65,
+                                px: 2,
+                                py: 1.5,
+                                textAlign: 'center',
+                              }}
+                            >
+                              {t(
+                                'core:tabs_overlay.no_open_tabs_with_folders',
+                                {
+                                  postProcess: 'capitalizeFirstChar',
+                                }
+                              )}
+                            </Typography>
+                          ) : (
+                            <Box
+                              sx={{
+                                display: 'flex',
+                                flexDirection: 'column',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                gap: 1,
+                                opacity: 0.7,
+                                py: 2.5,
+                              }}
+                            >
+                              <AppsRoundedIcon sx={{ fontSize: 48 }} />
+                              <Typography sx={{ fontSize: 14 }}>
+                                {t('core:tabs_overlay.no_open_tabs', {
+                                  postProcess: 'capitalizeFirstChar',
+                                })}
+                              </Typography>
+                            </Box>
+                          )
+                        ) : (
+                          <SortableContext
+                            items={sortableTabIds}
+                            strategy={rectSortingStrategy}
+                          >
+                            {selectedFolder ? (
+                              <Box
+                                sx={{
+                                  columnGap: 1,
+                                  display: 'grid',
+                                  gridTemplateColumns:
+                                    tabsFolderIconColumnsTemplate(
+                                      goGrid,
+                                      isLandscape
+                                    ),
+                                  minWidth: 0,
+                                  rowGap: 1.25,
+                                  width: '100%',
+                                }}
+                              >
+                                {visibleTabs.map((tab) => {
+                                  const key = getOpenTabKey(tab);
+                                  return (
+                                    <SortableFolderAppIcon
+                                      key={tab.tabId || key}
+                                      editMode={tabEditMode}
+                                      isActive={
+                                        selectedTab?.tabId === tab.tabId
+                                      }
+                                      isOpen={!isSavedOnlyTab(tab)}
+                                      longPressProps={bindLongPress(tab)}
+                                      onRemove={(e) => handleClose(e, tab)}
+                                      onSelect={() => handleLaunch(tab)}
+                                      removeLabel={t(
+                                        'core:tabs_home.remove_from_folder',
+                                        {
+                                          postProcess: 'capitalizeFirstChar',
+                                        }
+                                      )}
+                                      tab={tab}
+                                      title={org.getTabTitle(tab)}
+                                    />
+                                  );
+                                })}
+                              </Box>
+                            ) : (
+                              <Box
+                                ref={cardsGridRef}
+                                sx={{
+                                  display: 'grid',
+                                  gap: '10px',
+                                  gridTemplateColumns: tabsCardColumnsTemplate(
+                                    goGrid,
+                                    isLandscape
+                                  ),
+                                  minWidth: 0,
+                                  width: '100%',
+                                }}
+                              >
+                                {rootStacks.map((stack, index) => {
+                                  const shown = shownFor(stack);
+                                  return (
+                                    <SortableTabPreview
+                                      key={stack.key}
+                                      closeLabel={t(
+                                        'core:tabs_home.close_tab',
+                                        {
+                                          postProcess: 'capitalizeFirstChar',
+                                        }
+                                      )}
+                                      closing={closingStackKeys.has(stack.key)}
+                                      editMode={tabEditMode}
+                                      index={index}
+                                      isActive={
+                                        selectedTab?.tabId === shown.tabId
+                                      }
+                                      longPressProps={bindLongPress(shown)}
+                                      onClose={(e) => {
+                                        e.stopPropagation();
+                                        closeStackAnimated(stack);
+                                      }}
+                                      onSelect={() => handleSelect(shown)}
+                                      stackKey={stack.key}
+                                      tab={shown}
+                                      title={org.getTabTitle(shown)}
+                                      windowProps={{
+                                        activeWindowId: selectedTab?.tabId
+                                          ? String(selectedTab.tabId)
+                                          : null,
+                                        colorKey: org.getTabTitle(stack.lead),
+                                        onPickWindow: (tab) =>
+                                          pick(stack.key, tab),
+                                        windowLabel: (position) =>
+                                          t('core:tabs_home.window_n', {
+                                            amount: position,
+                                            postProcess: 'capitalizeFirstChar',
+                                          }),
+                                        windows: stack.tabs,
+                                      }}
+                                    />
+                                  );
+                                })}
+                              </Box>
+                            )}
+                          </SortableContext>
+                        )}
+                      </Box>
                     </Box>
-                  </SortableContext>
-                </Box>
-              ))}
-            </Box>
-          )}
 
-          <Box
-            ref={tabsListRef}
-            sx={{
-              flex: 1,
-              minHeight: 0,
-              overflowX: 'hidden',
-              overflowY: 'auto',
-              overscrollBehavior: 'contain',
-              p: 2,
-              WebkitOverflowScrolling: 'touch',
-            }}
-          >
-            {tabsEditMode && canDragTabs && visibleTabs.length > 0 ? (
-              <Typography
-                sx={{
-                  fontSize: 12,
-                  mb: 1.25,
-                  opacity: 0.65,
-                  textAlign: 'center',
-                }}
-              >
-                {canReorderFolderTabs
-                  ? t('core:tabs_overlay.edit_hint_folder', {
-                      postProcess: 'capitalizeFirstChar',
-                    })
-                  : t('core:tabs_overlay.edit_hint_root', {
-                      postProcess: 'capitalizeFirstChar',
-                    })}
-              </Typography>
-            ) : null}
-            {visibleTabs.length === 0 ? (
-              selectedFolder ? (
-                <Box
-                  sx={{
-                    alignItems: 'center',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: 0.75,
-                    opacity: 0.7,
-                    px: 2,
-                    py: 2.5,
-                    textAlign: 'center',
-                  }}
-                >
-                  <Typography sx={{ fontSize: 14 }}>
-                    {t('core:tabs_overlay.folder_empty', {
-                      postProcess: 'capitalizeFirstChar',
-                    })}
-                  </Typography>
-                  <Typography sx={{ fontSize: 12, opacity: 0.8 }}>
-                    {t('core:tabs_overlay.folder_empty_hint', {
-                      postProcess: 'capitalizeFirstChar',
-                    })}
-                  </Typography>
-                </Box>
-              ) : org.folders.length > 0 ? (
-                // Folders are right above: a big "nothing here" would read as
-                // if the saved apps were gone.
-                <Typography
-                  sx={{
-                    fontSize: 13,
-                    opacity: 0.65,
-                    px: 2,
-                    py: 1.5,
-                    textAlign: 'center',
-                  }}
-                >
-                  {t('core:tabs_overlay.no_open_tabs_with_folders', {
-                    postProcess: 'capitalizeFirstChar',
-                  })}
-                </Typography>
-              ) : (
-                <Box
-                  sx={{
-                    display: 'flex',
-                    flexDirection: 'column',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: 1,
-                    opacity: 0.7,
-                    py: 2.5,
-                  }}
-                >
-                  <AppsRoundedIcon sx={{ fontSize: 48 }} />
-                  <Typography sx={{ fontSize: 14 }}>
-                    {t('core:tabs_overlay.no_open_tabs', {
-                      postProcess: 'capitalizeFirstChar',
-                    })}
-                  </Typography>
-                </Box>
-              )
-            ) : (
-              <SortableContext
-                items={sortableTabIds}
-                strategy={rectSortingStrategy}
-              >
-                {selectedFolder ? (
-                  <Box
-                    sx={{
-                      columnGap: 1,
-                      display: 'grid',
-                      gridTemplateColumns: tabsFolderIconColumnsTemplate(
-                        goGrid,
-                        isLandscape
-                      ),
-                      minWidth: 0,
-                      rowGap: 1.25,
-                      width: '100%',
-                    }}
-                  >
-                    {visibleTabs.map((tab) => {
-                      const key = getOpenTabKey(tab);
-                      return (
-                        <SortableFolderAppIcon
-                          key={tab.tabId || key}
-                          editMode={tabEditMode}
-                          isActive={selectedTab?.tabId === tab.tabId}
-                          isOpen={!isSavedOnlyTab(tab)}
-                          longPressProps={bindLongPress(tab)}
-                          onRemove={(e) => handleClose(e, tab)}
-                          onSelect={() => handleLaunch(tab)}
-                          removeLabel={t('core:tabs_home.remove_from_folder', {
-                            postProcess: 'capitalizeFirstChar',
-                          })}
-                          tab={tab}
-                          title={org.getTabTitle(tab)}
+                    <DragOverlay
+                      dropAnimation={{
+                        duration: 220,
+                        easing: 'cubic-bezier(0.18, 0.67, 0.6, 1.22)',
+                      }}
+                    >
+                      {draggedTab ? (
+                        <TabDragAvatarPreview
+                          color={colorFor(org.getTabTitle(draggedTab))}
+                          tab={draggedTab}
+                          title={org.getTabTitle(draggedTab)}
                         />
-                      );
-                    })}
-                  </Box>
-                ) : (
-                  <Box
-                    ref={cardsGridRef}
-                    sx={{
-                      display: 'grid',
-                      gap: '10px',
-                      gridTemplateColumns: tabsCardColumnsTemplate(
-                        goGrid,
-                        isLandscape
-                      ),
-                      minWidth: 0,
-                      width: '100%',
-                    }}
-                  >
-                    {rootStacks.map((stack, index) => {
-                      const shown = shownFor(stack);
-                      return (
-                        <SortableTabPreview
-                          key={stack.key}
-                          closeLabel={t('core:tabs_home.close_tab', {
-                            postProcess: 'capitalizeFirstChar',
-                          })}
-                          closing={closingStackKeys.has(stack.key)}
-                          editMode={tabEditMode}
-                          index={index}
-                          isActive={selectedTab?.tabId === shown.tabId}
-                          longPressProps={bindLongPress(shown)}
-                          onClose={(e) => {
-                            e.stopPropagation();
-                            closeStackAnimated(stack);
-                          }}
-                          onSelect={() => handleSelect(shown)}
-                          stackKey={stack.key}
-                          tab={shown}
-                          title={org.getTabTitle(shown)}
-                          windowProps={{
-                            activeWindowId: selectedTab?.tabId
-                              ? String(selectedTab.tabId)
-                              : null,
-                            colorKey: org.getTabTitle(stack.lead),
-                            onPickWindow: (tab) => pick(stack.key, tab),
-                            windowLabel: (position) =>
-                              t('core:tabs_home.window_n', {
-                                amount: position,
-                                postProcess: 'capitalizeFirstChar',
-                              }),
-                            windows: stack.tabs,
-                          }}
-                        />
-                      );
-                    })}
-                  </Box>
-                )}
-              </SortableContext>
-            )}
-          </Box>
-          </Box>
-
-          <DragOverlay
-            dropAnimation={{
-              duration: 220,
-              easing: 'cubic-bezier(0.18, 0.67, 0.6, 1.22)',
-            }}
-          >
-            {draggedTab ? (
-              <TabDragAvatarPreview
-                color={colorFor(org.getTabTitle(draggedTab))}
-                tab={draggedTab}
-                title={org.getTabTitle(draggedTab)}
-              />
-            ) : draggedFolderId ? (
-              (() => {
-                const folder = org.folders.find((item) => item.id === draggedFolderId);
-                if (!folder) return null;
-                return (
-                  <FolderDragPreview
-                    getTitle={org.getTabTitle}
-                    name={folder.name}
-                    tabs={folderTabsMap.get(folder.id) || []}
-                  />
-                );
-              })()
-            ) : null}
-          </DragOverlay>
-          </DndContext>
-          </Box>
-          {/* Slide up here (or on the header) to close; on the list a big
+                      ) : draggedFolderId ? (
+                        (() => {
+                          const folder = org.folders.find(
+                            (item) => item.id === draggedFolderId
+                          );
+                          if (!folder) return null;
+                          return (
+                            <FolderDragPreview
+                              getTitle={org.getTabTitle}
+                              name={folder.name}
+                              tabs={folderTabsMap.get(folder.id) || []}
+                            />
+                          );
+                        })()
+                      ) : null}
+                    </DragOverlay>
+                  </DndContext>
+                </Box>
+                {/* Slide up here (or on the header) to close; on the list a big
               swipe closes and a small one scrolls (useTabsSwipeClose). */}
-          <Box
-            aria-hidden
-            sx={{
-              display: 'flex',
-              flexShrink: 0,
-              justifyContent: 'center',
-              pb: 1,
-              pt: 0.75,
-              touchAction: 'none',
-            }}
-          >
-            <Box
-              sx={{
-                backgroundColor: alpha(theme.palette.text.primary, 0.28),
-                borderRadius: 999,
-                height: 4,
-                width: 38,
-              }}
-            />
-          </Box>
-            </Box>
-            {/* Over a long list a swipe here is one on the list (a small one
+                <Box
+                  aria-hidden
+                  sx={{
+                    display: 'flex',
+                    flexShrink: 0,
+                    justifyContent: 'center',
+                    pb: 1,
+                    pt: 0.75,
+                    touchAction: 'none',
+                  }}
+                >
+                  <Box
+                    sx={{
+                      backgroundColor: alpha(theme.palette.text.primary, 0.28),
+                      borderRadius: 999,
+                      height: 4,
+                      width: 38,
+                    }}
+                  />
+                </Box>
+              </Box>
+              {/* Over a long list a swipe here is one on the list (a small one
                 scrolls it, a big one closes); otherwise the document
                 listeners above close on any swipe. A tap closes. */}
-            <Box
-              ref={setTabsBelowEl}
-              aria-label="Close tabs"
-              onClick={onClose}
-              sx={{
-                flex: 1,
-                minHeight: 0,
-                pointerEvents: 'auto',
-                touchAction: 'none',
-              }}
-            />
-          </Box>
-        </Slide>
-      </Box>
+              <Box
+                ref={setTabsBelowEl}
+                aria-label="Close tabs"
+                onClick={onClose}
+                sx={{
+                  flex: 1,
+                  minHeight: 0,
+                  pointerEvents: 'auto',
+                  touchAction: 'none',
+                }}
+              />
+            </Box>
+          </Slide>
+        </Box>
       ) : null}
 
       <MobileTabAppDetailsDialog
@@ -2214,13 +2211,14 @@ export const MobileTabsOverlay = ({
 
       <MobileTabOptionsDialog
         currentFolderId={
-          actionTab ? org.getFolderForTab(actionTab)?.id ?? null : null
+          actionTab ? (org.getFolderForTab(actionTab)?.id ?? null) : null
         }
         folders={org.folders}
         hasCustomLabel={
           actionTab
             ? Boolean(
-                org.organization.tabOverrides[getOpenTabKey(actionTab)]?.customLabel
+                org.organization.tabOverrides[getOpenTabKey(actionTab)]
+                  ?.customLabel
               )
             : false
         }
@@ -2261,8 +2259,7 @@ export const MobileTabsOverlay = ({
         </DialogTitle>
         <DialogContent>
           <Typography sx={{ fontSize: 14, opacity: 0.8 }}>
-            {t('core:tabs_overlay.delete_folder_body', {
-              count: folderDeleteText?.count ?? 0,
+            {t('core:tabs_home.delete_folder_keeps', {
               postProcess: 'capitalizeFirstChar',
             })}
           </Typography>
@@ -2350,7 +2347,9 @@ export const MobileTabsOverlay = ({
           <Button
             onClick={() => {
               if (!actionTab) return;
-              const parsed = extractComponents(normalizeQortalInput(addressValue));
+              const parsed = extractComponents(
+                normalizeQortalInput(addressValue)
+              );
               if (!parsed) return;
               void org.updateTabAddress(actionTab, parsed);
               setAddressOpen(false);

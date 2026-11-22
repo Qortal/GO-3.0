@@ -4,7 +4,6 @@ import ForumRoundedIcon from '@mui/icons-material/ForumRounded';
 import AccountBalanceWalletRoundedIcon from '@mui/icons-material/AccountBalanceWalletRounded';
 import AppsRoundedIcon from '@mui/icons-material/AppsRounded';
 import DynamicFeedRoundedIcon from '@mui/icons-material/DynamicFeedRounded';
-import EditRoundedIcon from '@mui/icons-material/EditRounded';
 import MonitorHeartRoundedIcon from '@mui/icons-material/MonitorHeartRounded';
 import PersonRoundedIcon from '@mui/icons-material/PersonRounded';
 import StarRoundedIcon from '@mui/icons-material/StarRounded';
@@ -30,8 +29,8 @@ import { GETTING_STARTED_LS_KEY } from '../gettingStartedStorage';
 import { HomeQortinoWorkspaceCard } from '../HomeQortinoWorkspaceCard';
 import { HomeQuickToolsPad } from '../HomeQuickToolsPad';
 import { HomeFeaturedApps } from '../HomeFeaturedApps';
-import { HomeQuitterComposer } from '../../Widgets/quitter/HomeQuitterComposer';
 import { useTranslation } from 'react-i18next';
+import { useAtomValue } from 'jotai';
 import {
   LazyMotion,
   domAnimation,
@@ -47,7 +46,7 @@ import {
 } from '../dashboardPanelEffects';
 import { DashboardWidgetFrame } from '../../Widgets/DashboardWidgetFrame';
 import { GroupsWidget } from '../../Widgets/GroupsWidget';
-import { QuitterFeedWidget } from '../../Widgets/QuitterFeedWidget';
+import { TorqFeedWindow } from '../../Widgets/TorqFeedWindow';
 import { InfoPreviewPanel } from './InfoPreviewPanel';
 import { HomeDesktopWalletActivity } from './HomeDesktopWalletActivity';
 import {
@@ -83,10 +82,8 @@ import {
   parseHomeCustomizableCardsLayout,
 } from './utils';
 import { returnToQChat } from './homeNavigation';
-import {
-  composerAppName,
-  useComposerTarget,
-} from '../../Widgets/quitter/composerTarget';
+import { HOME_POST_APP } from '../../Widgets/quitter/composerTarget';
+import { homeComposerOpenAtom } from '../../Widgets/quitter/quitterComposerSession';
 import {
   HOME_WINDOW_ORDER_DEFAULT,
   type HomeWindowId,
@@ -149,8 +146,11 @@ const HomeDesktopInner = ({
     [t]
   );
   const theme = useTheme();
-  // The feed shows the app the Home composer posts to: Quitter or Torq.
-  const feedApp = composerAppName(useComposerTarget());
+  // Posting to Torq sits at the top of the Torq feed window. With the feed
+  // turned off, the window still shows while the composer is open (a share
+  // from another app opens it), with the composer alone.
+  const isHomeComposerOpen = useAtomValue(homeComposerOpenAtom);
+  const isTorqWindowVisible = isQuitterFeedModuleVisible || isHomeComposerOpen;
   const isSplitDashboardLayout = useMediaQuery(theme.breakpoints.up('md'));
   const isWideDashboardLayout = useMediaQuery(
     theme.breakpoints.up(HOME_WIDE_DASHBOARD_MIN_WIDTH_PX)
@@ -489,9 +489,9 @@ const HomeDesktopInner = ({
     setDesktopViewMode('apps');
   }, [setDesktopViewMode]);
   const handleOpenEmbeddedQuitter = useCallback(() => {
-    executeEvent('addTab', { data: { service: 'APP', name: feedApp } });
+    executeEvent('addTab', { data: { service: 'APP', name: HOME_POST_APP } });
     executeEvent('open-apps-mode', {});
-  }, [feedApp]);
+  }, []);
   const handleOpenQChatPanel = useCallback(() => {
     returnToQChat(setGroupSection, openQChatTab);
   }, [setGroupSection]);
@@ -581,9 +581,6 @@ const HomeDesktopInner = ({
     </ErrorBoundary>
   );
   const profileCard = <HomeProfileCard onOpenReceive={handleOpenReceiveQort} />;
-  const composerCard = (
-    <HomeQuitterComposer onPublished={handleRefreshQuitterWidget} />
-  );
   const quickToolsCard = (
     <HomeQuickToolsPad
       fillHeight={false}
@@ -641,14 +638,27 @@ const HomeDesktopInner = ({
       />
     </DashboardWidgetFrame>
   );
-  const feedTitle =
-    feedApp === 'Torq'
-      ? td('torq_feed', 'Torq Feed')
-      : td('quitter_feed', 'Quitter Feed');
+  // Without the feed (a share while it is off) the window is just "Torq":
+  // the composer in it says "Post to Torq" itself.
+  const feedTitle = isQuitterFeedModuleVisible
+    ? td('torq_feed', 'Torq Feed')
+    : HOME_POST_APP;
   const feedCard = (
-    <DashboardWidgetFrame
+    <TorqFeedWindow
       actionIcon={<OpenInNewRoundedIcon sx={{ fontSize: '0.86rem' }} />}
       actionLabel={td('open_in_q_apps', 'Open in Q-Apps')}
+      feed={
+        isQuitterFeedModuleVisible
+          ? {
+              batchSize: quitterWidgetLoadMoreBatchSize,
+              displayMode: HOME_DASHBOARD_WIDGET_DISPLAY_MODE,
+              initialBatchSize: quitterWidgetInitialBatchSize,
+              onRefreshStateChange: setIsQuitterWidgetRefreshing,
+              refreshToken: quitterWidgetRefreshToken,
+              searchLimit: quitterWidgetSearchLimit,
+            }
+          : null
+      }
       height={dashboardWidgetHeightPx}
       onAction={handleOpenEmbeddedQuitter}
       onRefresh={handleRefreshQuitterWidget}
@@ -662,16 +672,7 @@ const HomeDesktopInner = ({
       refreshing={isQuitterWidgetRefreshing}
       title={feedTitle}
       widgetId="quitter"
-    >
-      <QuitterFeedWidget
-        batchSize={quitterWidgetLoadMoreBatchSize}
-        displayMode={HOME_DASHBOARD_WIDGET_DISPLAY_MODE}
-        initialBatchSize={quitterWidgetInitialBatchSize}
-        onRefreshStateChange={setIsQuitterWidgetRefreshing}
-        refreshToken={quitterWidgetRefreshToken}
-        searchLimit={quitterWidgetSearchLimit}
-      />
-    </DashboardWidgetFrame>
+    />
   );
 
   const phoneWindows: HomeWindow[] = [];
@@ -688,13 +689,6 @@ const HomeDesktopInner = ({
         icon: <PersonRoundedIcon fontSize="small" />,
         label: td('account_overview', 'Account Overview'),
         node: profileCard,
-      },
-      composer: {
-        icon: <EditRoundedIcon fontSize="small" />,
-        label: td('home_window_composer', 'Post to {{app}}', {
-          app: feedApp,
-        }),
-        node: composerCard,
       },
       tools: {
         icon: <WidgetsRoundedIcon fontSize="small" />,
@@ -737,7 +731,7 @@ const HomeDesktopInner = ({
             node: groupActivityCard,
           }
         : undefined,
-      feed: isQuitterFeedModuleVisible
+      feed: isTorqWindowVisible
         ? {
             icon: <DynamicFeedRoundedIcon fontSize="small" />,
             label: feedTitle,
@@ -910,17 +904,6 @@ const HomeDesktopInner = ({
                           >
                             {profileCard}
                           </Box>
-                          <Box
-                            sx={{
-                              display: 'block',
-                              minWidth: 0,
-                              position: 'relative',
-                              width: '100%',
-                              '& > *': { width: '100%' },
-                            }}
-                          >
-                            {composerCard}
-                          </Box>
                           {isFeaturedAppsVisible ? (
                             <Box ref={featuredAppsDebugRef} sx={featuredAppsSx}>
                               <HomeFeaturedApps />
@@ -976,17 +959,6 @@ const HomeDesktopInner = ({
                             width: '100%',
                           }}
                         >
-                          <Box
-                            sx={{
-                              display: 'block',
-                              minWidth: 0,
-                              position: 'relative',
-                              width: '100%',
-                              '& > *': { width: '100%' },
-                            }}
-                          >
-                            {composerCard}
-                          </Box>
                           <Box
                             sx={{
                               display: 'grid',
@@ -1079,7 +1051,7 @@ const HomeDesktopInner = ({
                 </Box>
               </Box>
 
-              {isGroupActivityModuleVisible || isQuitterFeedModuleVisible ? (
+              {isGroupActivityModuleVisible || isTorqWindowVisible ? (
                 <Box
                   sx={{
                     alignItems: 'start',
@@ -1095,7 +1067,7 @@ const HomeDesktopInner = ({
                   }}
                 >
                   {isGroupActivityModuleVisible ? groupActivityCard : null}
-                  {isQuitterFeedModuleVisible ? feedCard : null}
+                  {isTorqWindowVisible ? feedCard : null}
                 </Box>
               ) : null}
             </>

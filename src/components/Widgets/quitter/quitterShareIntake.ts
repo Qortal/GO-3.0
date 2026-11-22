@@ -1,9 +1,9 @@
 /**
- * "Share to Quitter / Torq" intake: photos/videos shared from other Android
- * apps arrive via the native ShareReceiver plugin (the share-sheet entry is
- * named after the app the composer posts to). This module drains the native
- * queue, converts the items into composer-ready media, navigates Home and
- * hands them to HomeQuitterComposer.
+ * "Share to Torq" intake: photos/videos shared from other Android apps
+ * arrive via the native ShareReceiver plugin (the "Torq" share-sheet entry).
+ * This module drains the native queue, converts the items into
+ * composer-ready media, opens the composer at the top of Home's Torq feed
+ * window and hands them to HomeQuitterComposer.
  */
 import { Capacitor } from '@capacitor/core';
 import {
@@ -14,9 +14,8 @@ import {
 import { executeEvent } from '../../../utils/events';
 import { createNamedFile } from '../../../utils/namedFile';
 import { stripImageFileMetadata } from '../../../utils/imageCompression';
-import { getDefaultStore } from 'jotai';
-import { composerTargetAtom, syncComposerShareTarget } from './composerTarget';
-import { QUITTER_MAX_IMAGES } from './quitterPublish';
+import { syncComposerShareTarget } from './composerTarget';
+import { setHomeComposerOpen } from './quitterComposerSession';
 import { TORQ_MAX_IMAGES } from './torqPublish';
 import { drainRevShare } from './torqRevShare';
 
@@ -82,14 +81,10 @@ async function drainNativeQueue(): Promise<void> {
   const items = await ShareReceiver.getPendingShare();
   if (!items.length) return;
 
-  // Quitter posts take up to 2 images, Torq posts 10; one video either way.
-  const maxImages =
-    getDefaultStore().get(composerTargetAtom) === 'torq'
-      ? TORQ_MAX_IMAGES
-      : QUITTER_MAX_IMAGES;
+  // A Torq post takes up to 10 images and one video.
   const imageItems = items
     .filter((i) => i.mimeType?.startsWith('image/'))
-    .slice(0, maxImages);
+    .slice(0, TORQ_MAX_IMAGES);
   const videoItem = items.find((i) => i.mimeType?.startsWith('video/')) || null;
 
   const images = (
@@ -106,8 +101,11 @@ async function drainNativeQueue(): Promise<void> {
   if (!images.length && !video) return;
 
   pending = { images, video };
-  // Composer lives on the Home dashboard — navigate there, then notify a
-  // mounted composer (a freshly mounting one pulls takePendingQuitterShare).
+  // The composer sits at the top of Home's Torq feed window. Open it first:
+  // Home then shows the window even with the feed turned off. Go to Home,
+  // then notify a mounted composer (a freshly mounting one pulls
+  // takePendingQuitterShare).
+  setHomeComposerOpen(true);
   executeEvent('open-home-mode', {});
   executeEvent(QUITTER_SHARED_MEDIA_EVENT, {});
 }

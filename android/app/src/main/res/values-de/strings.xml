@@ -24,4 +24,16 @@
     <string name="call_status_group">Gruppenanruf</string>
     <string name="call_status_muted">Stumm</string>
     <string name="call_unknown_caller">Unbekannter Anrufer</string>
+    <string name="media_channel_name">Medienwiedergabe</string>
+    <string name="media_channel_description">Zeigt, was in GO läuft, mit Steuerung in der Benachrichtigung und auf dem Sperrbildschirm.</string>
+    <string name="media_action_play">Abspielen</string>
+    <string name="media_action_pause">Pause</string>
+    <string name="media_action_previous">Vorheriger</string>
+    <string name="media_action_next">Nächster</string>
+    <string name="media_action_back">%1$d s zurück</string>
+    <string name="media_action_forward">%1$d s vor</string>
+    <string name="media_action_settings">Player-Einstellungen</string>
+    <string name="media_title_audio">Audio</string>
+    <string name="media_title_video">Video</string>
+    <string name="media_settings_hint">Tippe auf den Player, um seine Einstellungen zu öffnen</string>
 </resources>

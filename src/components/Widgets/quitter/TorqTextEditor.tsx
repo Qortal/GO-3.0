@@ -17,6 +17,8 @@ type TorqTextEditorProps = {
   /** Read once on mount; later changes flow out through onChange. */
   initialDoc: TorqDocNode;
   disabled?: boolean;
+  /** Put the cursor at the end of the text as soon as the editor is ready. */
+  autoFocus?: boolean;
   onChange: (doc: TorqDocNode) => void;
 };
 
@@ -27,6 +29,7 @@ type TorqTextEditorProps = {
 export const TorqTextEditor = ({
   initialDoc,
   disabled = false,
+  autoFocus = false,
   onChange,
 }: TorqTextEditorProps) => {
   const theme = useTheme();
@@ -35,6 +38,7 @@ export const TorqTextEditor = ({
   onChangeRef.current = onChange;
 
   const editor = useEditor({
+    autofocus: autoFocus && !disabled ? 'end' : false,
     content: initialDoc,
     editable: !disabled,
     extensions: [

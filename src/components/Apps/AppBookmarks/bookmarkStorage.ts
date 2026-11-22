@@ -1,4 +1,7 @@
 import { QORTAL_PROTOCOL } from '../../../constants/constants';
+import { getData, storeData } from '../../../utils/chromeStorage';
+import { executeEvent } from '../../../utils/events';
+import { isGoApp } from '../../../utils/platform';
 import { extractComponents } from '../../Chat/MessageDisplay';
 import type {
   AppBookmark,
@@ -9,6 +12,8 @@ import type {
 } from './bookmarkTypes';
 
 export const APP_BOOKMARKS_STORAGE_KEY = 'qortal_app_bookmarks_by_address';
+/** Fired after an account's bookmarks were saved, with `{ address }`. */
+export const APP_BOOKMARKS_CHANGED_EVENT = 'appBookmarksChanged';
 
 const INTERNAL_TAB_SERVICE = 'INTERNAL';
 
@@ -23,10 +28,38 @@ function asBookmarksByAddress(value: unknown): AppBookmarksByAddress {
   return value as AppBookmarksByAddress;
 }
 
-function appStorage() {
+type BookmarkStore = {
+  get: (key: string) => Promise<unknown>;
+  set: (key: string, value: unknown) => Promise<unknown>;
+};
+
+/** GO's own storage on the phone, encrypted like its other saved data. */
+const phoneStore: BookmarkStore = {
+  get: (key) => getData(key),
+  set: (key, value) => storeData(key, value),
+};
+
+/**
+ * Where the bookmarks are kept: the desktop app's storage, or GO's on a
+ * phone, which has no desktop storage. The QDN settings carry them between
+ * the two.
+ */
+function appStorage(): BookmarkStore | undefined {
   if (typeof window === 'undefined') return undefined;
-  return window.appStorage;
+  if (window.appStorage) return window.appStorage;
+  return isGoApp() ? phoneStore : undefined;
 }
+
+/** Whether this device keeps bookmarks: the desktop app does, and GO on a phone. */
+export const hasBookmarkStore = (): boolean => !!appStorage();
+
+/**
+ * Whether the bookmarks are kept in GO's encrypted storage on a phone. What a
+ * phone records of the account's saved apps (their names and pages) is kept
+ * there too.
+ */
+export const keepsBookmarksOnPhone = (): boolean =>
+  typeof window !== 'undefined' && !window.appStorage && isGoApp();
 
 export function normalizeBookmarkPath(path?: string): string {
   const raw = (path || '').trim();
@@ -119,6 +152,14 @@ export function findBookmarkForCandidate(
   return bookmarks.find((bookmark) => getBookmarkKey(bookmark) === key) || null;
 }
 
+const bookmarksEntry = (
+  data: AppBookmarksByAddress[string] | undefined
+): AppBookmarksForAddress => ({
+  folders: Array.isArray(data?.folders) ? data.folders : [],
+  bookmarks: Array.isArray(data?.bookmarks) ? data.bookmarks : [],
+  updatedAt: typeof data?.updatedAt === 'number' ? data.updatedAt : Date.now(),
+});
+
 export async function loadBookmarksForAddress(
   address: string
 ): Promise<AppBookmarksForAddress> {
@@ -127,13 +168,24 @@ export async function loadBookmarksForAddress(
 
   const raw = await storage.get(APP_BOOKMARKS_STORAGE_KEY);
   const byAddress = asBookmarksByAddress(raw);
-  const data = byAddress[address];
+  return bookmarksEntry(byAddress[address]);
+}
 
-  return {
-    folders: Array.isArray(data?.folders) ? data.folders : [],
-    bookmarks: Array.isArray(data?.bookmarks) ? data.bookmarks : [],
-    updatedAt: typeof data?.updatedAt === 'number' ? data.updatedAt : Date.now(),
-  };
+/**
+ * The account's bookmarks as stored, or null when this device keeps none for
+ * it (unlike `loadBookmarksForAddress`, which answers an empty list then).
+ */
+export async function findBookmarksForAddress(
+  address: string
+): Promise<AppBookmarksForAddress | null> {
+  const storage = appStorage();
+  if (!storage || !address) return null;
+  const byAddress = asBookmarksByAddress(
+    await storage.get(APP_BOOKMARKS_STORAGE_KEY)
+  );
+  return Object.prototype.hasOwnProperty.call(byAddress, address)
+    ? bookmarksEntry(byAddress[address])
+    : null;
 }
 
 export async function saveBookmarksForAddress(
@@ -155,6 +207,8 @@ export async function saveBookmarksForAddress(
     ...byAddress,
     [address]: nextData,
   });
+  // Everything that shows the bookmarks reads them again.
+  executeEvent(APP_BOOKMARKS_CHANGED_EVENT, { address });
 
   return nextData;
 }
@@ -165,7 +219,8 @@ export function upsertBookmark(
 ): AppBookmarksForAddress {
   const key = getBookmarkKey(bookmark);
   const index = data.bookmarks.findIndex(
-    (existing) => getBookmarkKey(existing) === key || existing.id === bookmark.id
+    (existing) =>
+      getBookmarkKey(existing) === key || existing.id === bookmark.id
   );
   const bookmarks = [...data.bookmarks];
 
@@ -221,9 +276,10 @@ export function removeFolder(
     ...data,
     folders: data.folders.filter((folder) => folder.id !== folderId),
     bookmarks: data.bookmarks.map((bookmark) =>
-      bookmark.folderId === folderId ? { ...bookmark, folderId: null } : bookmark
+      bookmark.folderId === folderId
+        ? { ...bookmark, folderId: null }
+        : bookmark
     ),
     updatedAt: Date.now(),
   };
 }
-

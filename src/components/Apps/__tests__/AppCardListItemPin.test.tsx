@@ -53,14 +53,8 @@ i18n.init({
         action: {
           pin: 'Pin',
           unpin: 'Unpin',
-          pin_to_tabs: 'Pin to Tabs',
-          unpin_from_tabs: 'Unpin from Tabs',
         },
         app_detail: { by_developer: 'by @{{developer}}' },
-        tabs_overlay: {
-          pinned_to_folder: 'Pinned to {{folder}} in Tabs',
-          unpinned_from_folder: 'Removed from {{folder}} in Tabs',
-        },
       },
     },
   },
@@ -120,33 +114,23 @@ describe('AppCardListItem pin', () => {
     setQdnAvatarCacheForTests(null);
   });
 
-  it('pins into the Tabs Library folder on phones', async () => {
+  it('pins on phones as the desktop Hub does, not into a Tabs folder', async () => {
     mockViewport(true);
     const store = renderRow();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Pin to Tabs' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Pin' }));
 
-    await screen.findByRole('button', { name: 'Unpin from Tabs' });
-    await waitFor(() => {
-      const saved = storage.get(STORAGE_KEY) as any;
-      expect(saved?.folders).toEqual([
-        expect.objectContaining({ name: 'Library', tabKeys: ['APP|Q-Blog'] }),
-      ]);
-    });
-    expect(executeEvent).toHaveBeenCalledWith('openGlobalSnackBar', {
-      message: 'Pinned to Library in Tabs',
-      type: 'success',
-      duration: 2400,
-    });
+    await screen.findByRole('button', { name: 'Unpin' });
+    expect(store.get(sortablePinnedAppsAtom)).toEqual([
+      { name: 'Q-Blog', service: 'APP' },
+    ]);
+    // The pin list is what the QDN settings carry; no Tabs folder is made.
+    expect(storage.has(STORAGE_KEY)).toBe(false);
+    expect(executeEvent).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Unpin' }));
+    await screen.findByRole('button', { name: 'Pin' });
     expect(store.get(sortablePinnedAppsAtom)).toEqual([]);
-
-    fireEvent.click(screen.getByRole('button', { name: 'Unpin from Tabs' }));
-    await screen.findByRole('button', { name: 'Pin to Tabs' });
-    expect(executeEvent).toHaveBeenLastCalledWith('openGlobalSnackBar', {
-      message: 'Removed from Library in Tabs',
-      type: 'success',
-      duration: 2400,
-    });
   });
 
   it('keeps pinning to the dashboard on wide screens', async () => {

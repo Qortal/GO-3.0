@@ -104,11 +104,15 @@ export function useHomeModuleVisibility(): HomeModuleVisibility {
   return visibility;
 }
 
-/** The windows of Home on a phone, one under the other. */
+/**
+ * The windows of Home on a phone, one under the other. 'feed' is the Torq
+ * window: posting at its top, the feed under it. Posting had a window of
+ * its own, 'composer', until November 2026; an order saved with it still
+ * reads fine, since ids no longer known are dropped (completeHomeWindowOrder).
+ */
 export type HomeWindowId =
   | 'workspace'
   | 'account'
-  | 'composer'
   | 'tools'
   | 'featured'
   | 'status'
@@ -119,7 +123,6 @@ export type HomeWindowId =
 export const HOME_WINDOW_ORDER_DEFAULT: readonly HomeWindowId[] = [
   'workspace',
   'account',
-  'composer',
   'tools',
   'featured',
   'status',

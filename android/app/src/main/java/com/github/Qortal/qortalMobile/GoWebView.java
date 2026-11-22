@@ -40,6 +40,22 @@ public class GoWebView extends CapacitorWebView {
     super(context, attrs);
   }
 
+  /**
+   * Background player: while audio or video plays off screen and the user
+   * lets it (GoMediaHub), Chromium never sees GO's window hide. Otherwise
+   * it would for the half second before BackgroundKeepAlive shows it again,
+   * and players that pause on visibilitychange (some Q-App video players)
+   * would stop. Every other time, visibility passes through unchanged.
+   */
+  @Override
+  protected void onWindowVisibilityChanged(int visibility) {
+    if (visibility != VISIBLE && BackgroundKeepAlive.get(getContext()).mediaHoldsPage()) {
+      super.onWindowVisibilityChanged(VISIBLE);
+      return;
+    }
+    super.onWindowVisibilityChanged(visibility);
+  }
+
   @Override
   public boolean dispatchTouchEvent(MotionEvent event) {
     ImmersivePlugin.onWebViewTouch(this, event);

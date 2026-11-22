@@ -13,12 +13,11 @@ import type { QuitterFeedItem } from './quitterFeedTypes';
 import { useQdnAvatar } from '../../../lib/qdnAvatars';
 import { GifImage } from '../../Chat/gifs/GifImage';
 import { libraryGifKey } from '../../Chat/gifs/libraryGifs';
-import type { ComposerAppName } from './composerTarget';
 import { visibleTorqPostText } from './torqFeedText';
 
 type QuitterFeedCardProps = {
   /** Torq shows its GIFs, files and polls and hides the links for Quitter. */
-  app?: ComposerAppName;
+  app?: 'Quitter' | 'Torq';
   displayMode?: WidgetDisplayMode;
   item: QuitterFeedItem;
   onOpen?: () => void;
@@ -65,13 +64,7 @@ export const QuitterFeedCard = ({
     attachments.length > 0 ||
     pollOptions.length > 0;
   const isCompact = displayMode === 'compact';
-  const collapsedLineCount = hasMedia
-    ? isCompact
-      ? 2
-      : 3
-    : isCompact
-      ? 3
-      : 4;
+  const collapsedLineCount = hasMedia ? (isCompact ? 2 : 3) : isCompact ? 3 : 4;
   const cardGap = isCompact ? '10px' : '12px';
   const imageHeight =
     imageCount > 1 ? (isCompact ? 118 : 142) : isCompact ? 172 : 204;
@@ -358,7 +351,8 @@ export const QuitterFeedCard = ({
               theme.palette.mode === 'dark'
                 ? `inset 0 1px 0 ${alpha(theme.palette.common.white, 0.045)}`
                 : `inset 0 1px 0 ${alpha(theme.palette.common.white, 0.64)}`,
-            minHeight: imageCount > 0 ? (isCompact ? 88 : 100) : isCompact ? 104 : 120,
+            minHeight:
+              imageCount > 0 ? (isCompact ? 88 : 100) : isCompact ? 104 : 120,
             overflow: 'hidden',
             position: 'relative',
             px: isCompact ? 1.2 : 1.35,
@@ -549,7 +543,14 @@ export const QuitterFeedCard = ({
                   theme.palette.mode === 'dark' ? 0.24 : 0.12
                 )}`,
                 borderRadius: '8px',
-                height: gifs.length > 1 ? (isCompact ? 118 : 142) : isCompact ? 172 : 204,
+                height:
+                  gifs.length > 1
+                    ? isCompact
+                      ? 118
+                      : 142
+                    : isCompact
+                      ? 172
+                      : 204,
                 overflow: 'hidden',
               }}
             >

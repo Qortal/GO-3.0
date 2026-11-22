@@ -1,18 +1,10 @@
 import { atom, type useStore } from 'jotai';
-import { atomFamily } from 'jotai/utils';
 import {
-  addTabToNamedFolder,
-  createFolderId,
   emptyOrganization,
-  findFolderForTabKey,
-  getOpenTabKey,
-  LIBRARY_FOLDER_NAME,
   loadMobileTabOrganization,
-  removeTabKeyFromFolders,
   saveMobileTabOrganization,
   type MobileTabOrganization,
 } from './mobileTabOrganization';
-import type { OpenTab } from './useOpenTabs';
 
 type JotaiStore = ReturnType<typeof useStore>;
 
@@ -23,23 +15,15 @@ type MobileTabOrganizationState = {
 };
 
 /**
- * The Tabs overlay folders for the signed-in wallet. Shared so screens outside
- * the overlay (the Q-Apps library pin) edit the same copy the overlay shows.
+ * What GO keeps about its Tabs for the signed-in wallet, on the phone only:
+ * renamed tabs, the folder rows and sizes, and the Tabs folders from before
+ * they became bookmark folders. Shared, so every screen edits one copy.
  */
 export const mobileTabOrganizationStateAtom = atom<MobileTabOrganizationState>({
   walletAddress: '',
   organization: emptyOrganization(),
   ready: false,
 });
-
-/** Name of the folder holding this tab key, or null. Each row subscribes only to its own key. */
-export const tabKeyFolderNameAtomFamily = atomFamily((tabKey: string) =>
-  atom((get) => {
-    const { organization, ready } = get(mobileTabOrganizationStateAtom);
-    if (!ready || !tabKey) return null;
-    return findFolderForTabKey(organization, tabKey)?.name ?? null;
-  })
-);
 
 const pendingLoads = new WeakMap<
   JotaiStore,
@@ -110,35 +94,4 @@ export function updateMobileTabOrganization(
     void saveMobileTabOrganization(walletAddress, next);
   }
   return next;
-}
-
-/**
- * The Q-Apps library pin on phones. An app already in any Tabs folder is
- * removed from it; otherwise it goes into the Library folder, which is
- * created on first use.
- */
-export async function toggleLibraryFolderPin(
-  store: JotaiStore,
-  walletAddress: string,
-  tab: OpenTab
-): Promise<{ pinned: boolean; folderName: string }> {
-  await ensureMobileTabOrganizationLoaded(store, walletAddress);
-  const tabKey = getOpenTabKey(tab);
-  let result = { pinned: false, folderName: LIBRARY_FOLDER_NAME };
-  updateMobileTabOrganization(store, walletAddress, (prev) => {
-    const current = findFolderForTabKey(prev, tabKey);
-    if (current) {
-      result = { pinned: false, folderName: current.name };
-      return removeTabKeyFromFolders(prev, tabKey);
-    }
-    const added = addTabToNamedFolder(
-      prev,
-      tab,
-      LIBRARY_FOLDER_NAME,
-      createFolderId()
-    );
-    result = { pinned: true, folderName: added.folder.name };
-    return added.organization;
-  });
-  return result;
 }

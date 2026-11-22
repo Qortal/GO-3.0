@@ -52,10 +52,11 @@
         "label": "en tu otro dispositivo"
       },
       "only_on_this_device": {
+        "hint": "Aún no se ha enviado. No hay buzón: se envía cuando el destinatario está en línea al mismo tiempo que este dispositivo o tu otro dispositivo. Se reintenta hasta 7 días mientras la aplicación está en ejecución.",
         "label": "solo en este dispositivo"
       },
       "only_on_this_phone": {
-        "hint": "Aún no se ha enviado. Se reintentará automáticamente.",
+        "hint": "Aún no se ha enviado. No hay buzón: se envía cuando el destinatario está en línea al mismo tiempo que este teléfono o tu otro dispositivo. GO lo reintenta hasta 7 días mientras está en ejecución.",
         "label": "solo en este teléfono"
       },
       "sending": {

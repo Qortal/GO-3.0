@@ -277,6 +277,21 @@
             android:exported="false"
             android:foregroundServiceType="dataSync|remoteMessaging|microphone" />
 
+        <!-- Background player: audio and video playing in GO (Q-Apps,
+             websites, GO itself) with the player notification and lock
+             screen controls. Runs only while something plays (GoMediaHub). -->
+        <service
+            android:name=".QortalMediaService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
+
+        <!-- The player notification's buttons (Android 12 and older) and its
+             swipe-away. Not exported: only GO's own PendingIntents reach it. -->
+        <receiver
+            android:name=".QortalMediaActionReceiver"
+            android:exported="false" />
+
         <!-- Decline / Hang up / Mute on the call notifications. Not exported:
              only GO's own PendingIntents (explicit component) reach it. -->
         <receiver
@@ -372,6 +387,9 @@
     <!-- Voice calls (Android 14+): the status service adds the microphone
          type while a call runs, so the mic keeps working off screen. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <!-- Background player (Android 14+): audio and video keep playing with GO
+         off screen, with the player notification (QortalMediaService). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />

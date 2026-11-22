@@ -24,4 +24,16 @@
     <string name="call_status_group">Групповой звонок</string>
     <string name="call_status_muted">Микрофон выключен</string>
     <string name="call_unknown_caller">Неизвестный абонент</string>
+    <string name="media_channel_name">Воспроизведение медиа</string>
+    <string name="media_channel_description">Показывает, что играет в GO, с управлением в уведомлении и на экране блокировки.</string>
+    <string name="media_action_play">Воспроизвести</string>
+    <string name="media_action_pause">Пауза</string>
+    <string name="media_action_previous">Предыдущий</string>
+    <string name="media_action_next">Следующий</string>
+    <string name="media_action_back">Назад на %1$d с</string>
+    <string name="media_action_forward">Вперёд на %1$d с</string>
+    <string name="media_action_settings">Настройки плеера</string>
+    <string name="media_title_audio">Аудио</string>
+    <string name="media_title_video">Видео</string>
+    <string name="media_settings_hint">Нажмите на плеер, чтобы открыть его настройки</string>
 </resources>

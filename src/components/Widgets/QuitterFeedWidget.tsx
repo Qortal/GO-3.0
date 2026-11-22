@@ -18,7 +18,10 @@ import {
   useState,
 } from 'react';
 import { useTranslation } from 'react-i18next';
-import { quitterDashboardFeedCacheAtom, userInfoAtom } from '../../atoms/global';
+import {
+  quitterDashboardFeedCacheAtom,
+  userInfoAtom,
+} from '../../atoms/global';
 import { executeEvent } from '../../utils/events';
 import type { WidgetDisplayMode } from './DashboardWidgetFrame';
 import {
@@ -26,14 +29,8 @@ import {
   QAppWidgetStatePanel,
 } from './QAppWidgetContainer';
 import { QuitterFeedCard } from './quitter/QuitterFeedCard';
-import {
-  composerAppName,
-  useComposerTarget,
-} from './quitter/composerTarget';
-import {
-  fetchTorqHiddenUsers,
-  hiddenUserKey,
-} from './quitter/torqHiddenUsers';
+import { HOME_POST_APP } from './quitter/composerTarget';
+import { fetchTorqHiddenUsers, hiddenUserKey } from './quitter/torqHiddenUsers';
 import {
   fetchQuitterFeedPage,
   fetchQuitterFollowedNames,
@@ -51,6 +48,12 @@ type QuitterFeedWidgetProps = {
   displayMode?: WidgetDisplayMode;
   initialBatchSize?: number;
   onRefreshStateChange?: (refreshing: boolean) => void;
+  /**
+   * A post this account just published from Home's composer. It goes to the
+   * top of the feed at once, in either tab: the node lists a new post only
+   * once a block takes it, and Following leaves out the account's own posts.
+   */
+  ownPost?: QuitterFeedItem | null;
   refreshToken?: number;
   searchLimit?: number;
 };
@@ -178,6 +181,7 @@ export const QuitterFeedWidget = ({
   displayMode = 'compact',
   initialBatchSize = 6,
   onRefreshStateChange,
+  ownPost = null,
   refreshToken = 0,
   searchLimit = 8,
 }: QuitterFeedWidgetProps) => {
@@ -186,7 +190,7 @@ export const QuitterFeedWidget = ({
   const userInfo = useAtomValue(userInfoAtom);
   const [feedCache, setFeedCache] = useAtom(quitterDashboardFeedCacheAtom);
   // Torq posts are Quitter posts: same feed, shown and opened in Torq.
-  const app = composerAppName(useComposerTarget());
+  const app = HOME_POST_APP;
   const isCompact = displayMode === 'compact';
   const currentUserName =
     typeof userInfo?.name === 'string' && userInfo.name.trim().length > 0
@@ -225,7 +229,9 @@ export const QuitterFeedWidget = ({
   const cacheMatches = feedCache?.feedKey === feedKey;
   const items = cacheMatches ? feedCache.items : [];
   const pendingItems = cacheMatches ? feedCache.pendingItems : [];
-  const followingEmptyReason = cacheMatches ? feedCache.followingEmptyReason : null;
+  const followingEmptyReason = cacheMatches
+    ? feedCache.followingEmptyReason
+    : null;
   const initialFeedState: QuitterDashboardInitialFeedState = cacheMatches
     ? feedCache.initialFeedState
     : 'loading';
@@ -278,31 +284,37 @@ export const QuitterFeedWidget = ({
     setFeedMode(readQuitterFeedMode(feedModeStorageKey));
   }, [feedModeStorageKey]);
 
-  const commitVisibleItems = useCallback((nextItems: QuitterFeedItem[]) => {
-    itemsRef.current = nextItems;
-    setFeedCache((prev) => {
-      const key = feedKeyRef.current;
-      const next: QuitterDashboardFeedCache =
-        prev?.feedKey === key
-          ? { ...prev, items: nextItems }
-          : { ...emptyCacheForKey(key), items: nextItems };
-      feedCacheRef.current = next;
-      return next;
-    });
-  }, [setFeedCache]);
+  const commitVisibleItems = useCallback(
+    (nextItems: QuitterFeedItem[]) => {
+      itemsRef.current = nextItems;
+      setFeedCache((prev) => {
+        const key = feedKeyRef.current;
+        const next: QuitterDashboardFeedCache =
+          prev?.feedKey === key
+            ? { ...prev, items: nextItems }
+            : { ...emptyCacheForKey(key), items: nextItems };
+        feedCacheRef.current = next;
+        return next;
+      });
+    },
+    [setFeedCache]
+  );
 
-  const commitPendingItems = useCallback((nextItems: QuitterFeedItem[]) => {
-    pendingItemsRef.current = nextItems;
-    setFeedCache((prev) => {
-      const key = feedKeyRef.current;
-      const next: QuitterDashboardFeedCache =
-        prev?.feedKey === key
-          ? { ...prev, pendingItems: nextItems }
-          : { ...emptyCacheForKey(key), pendingItems: nextItems };
-      feedCacheRef.current = next;
-      return next;
-    });
-  }, [setFeedCache]);
+  const commitPendingItems = useCallback(
+    (nextItems: QuitterFeedItem[]) => {
+      pendingItemsRef.current = nextItems;
+      setFeedCache((prev) => {
+        const key = feedKeyRef.current;
+        const next: QuitterDashboardFeedCache =
+          prev?.feedKey === key
+            ? { ...prev, pendingItems: nextItems }
+            : { ...emptyCacheForKey(key), pendingItems: nextItems };
+        feedCacheRef.current = next;
+        return next;
+      });
+    },
+    [setFeedCache]
+  );
 
   useEffect(() => {
     onRefreshStateChange?.(isRefreshing);
@@ -797,6 +809,31 @@ export const QuitterFeedWidget = ({
   useEffect(() => {
     setTorqHiddenKeys((prev) => (prev.size === 0 ? prev : new Set()));
   }, [currentUserName, isTorqFeed]);
+
+  // A post just published from Home goes to the top once per feed (tab and
+  // account), as soon as that feed has loaded, and the list scrolls up to it.
+  const shownOwnPostsRef = useRef(new Set<string>());
+  useEffect(() => {
+    if (!ownPost || initialFeedState !== 'success') return;
+    const shownKey = `${feedKey}|${ownPost.id}`;
+    if (shownOwnPostsRef.current.has(shownKey)) return;
+    shownOwnPostsRef.current.add(shownKey);
+    if (pendingItemsRef.current.some((item) => item.id === ownPost.id)) {
+      commitPendingItems(
+        pendingItemsRef.current.filter((item) => item.id !== ownPost.id)
+      );
+    }
+    if (itemsRef.current.some((item) => item.id === ownPost.id)) return;
+    commitVisibleItems(prependUniqueFeedItems([ownPost], itemsRef.current));
+    setRevealedItemIds([ownPost.id]);
+    if (scrollerRef.current) scrollerRef.current.scrollTop = 0;
+  }, [
+    commitPendingItems,
+    commitVisibleItems,
+    feedKey,
+    initialFeedState,
+    ownPost,
+  ]);
 
   const handleOpenPost = useCallback(
     (item: QuitterFeedItem) => {

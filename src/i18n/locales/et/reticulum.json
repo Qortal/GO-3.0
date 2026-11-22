@@ -52,10 +52,11 @@
         "label": "sinu teises seadmes"
       },
       "only_on_this_device": {
+        "hint": "Pole veel saadetud. Postkasti pole: sõnum läheb teele, kui saaja on võrgus samal ajal selle seadme või sinu teise seadmega. Saatmist proovitakse uuesti kuni 7 päeva, seni kuni rakendus töötab.",
         "label": "ainult selles seadmes"
       },
       "only_on_this_phone": {
-        "hint": "Pole veel saadetud. Saatmist proovitakse automaatselt uuesti.",
+        "hint": "Pole veel saadetud. Postkasti pole: sõnum läheb teele, kui saaja on võrgus samal ajal selle telefoni või sinu teise seadmega. GO proovib uuesti kuni 7 päeva, seni kuni see töötab.",
         "label": "ainult selles telefonis"
       },
       "sending": {

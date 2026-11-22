@@ -67,8 +67,14 @@ export class SimulatedCard implements ApduTransport {
           applet.aid.length === data.length &&
           applet.aid.every((byte, i) => byte === data[i])
       );
-      this.selected = found ? found.kind : null;
-      return sw(found ? 0x9000 : 0x6a82);
+      if (found) {
+        this.selected = found.kind;
+        return sw(0x9000);
+      }
+      // As on the real cards: Java Card hands a SELECT that matches no applet
+      // to the applet already selected, as an ordinary command. With none
+      // selected, the card manager answers "not found".
+      if (!this.selected) return sw(0x6a82);
     }
     if (this.selected === 'qortal-lab') return this.lab(cla, ins, data);
     if (this.selected === 'futako-test') return this.futako(ins, p1, data);

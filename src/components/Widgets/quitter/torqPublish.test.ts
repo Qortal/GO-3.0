@@ -12,10 +12,12 @@ vi.mock('./quitterIdentity', async (importOriginal) => ({
 
 vi.mock('./quitterPublish', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./quitterPublish')>()),
-  publishMultipleResources: vi.fn(async (resources: Record<string, unknown>[]) => {
-    published.push(resources);
-    return {};
-  }),
+  publishMultipleResources: vi.fn(
+    async (resources: Record<string, unknown>[]) => {
+      published.push(resources);
+      return {};
+    }
+  ),
 }));
 
 import {
@@ -30,7 +32,11 @@ import {
 } from './torqPublish';
 
 const decode = (base64: string) =>
-  JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(base64), (c) => c.charCodeAt(0))));
+  JSON.parse(
+    new TextDecoder().decode(
+      Uint8Array.from(atob(base64), (c) => c.charCodeAt(0))
+    )
+  );
 
 beforeEach(() => {
   published.length = 0;
@@ -51,9 +57,9 @@ describe('Torq helpers', () => {
   });
 
   it('packs every hashtag that fits the 240-byte description', () => {
-    expect(packTorqHashtagKeywords(['#Qortal', '#qortal', '#Torq'], ['~@x~'])).toBe(
-      '~#qortal~,~#torq~'
-    );
+    expect(
+      packTorqHashtagKeywords(['#Qortal', '#qortal', '#Torq'], ['~@x~'])
+    ).toBe('~#qortal~,~#torq~');
     const many = Array.from({ length: 60 }, (_, i) => `#tag${i}`);
     const packed = packTorqHashtagKeywords(many);
     expect(new TextEncoder().encode(packed).length).toBeLessThanOrEqual(240);
@@ -71,7 +77,12 @@ describe('Torq helpers', () => {
   });
 
   it('adds the Torq link when Quitter cannot show everything (Torq 1.2 rule)', () => {
-    const base = { hasPoll: false, imageCount: 0, gifCount: 0, attachmentCount: 0 };
+    const base = {
+      hasPoll: false,
+      imageCount: 0,
+      gifCount: 0,
+      attachmentCount: 0,
+    };
     expect(needsTorqPostLink(base)).toBe(false);
     expect(needsTorqPostLink({ ...base, imageCount: 4 })).toBe(false);
     expect(needsTorqPostLink({ ...base, imageCount: 5 })).toBe(true);
@@ -81,9 +92,15 @@ describe('Torq helpers', () => {
   });
 
   it('rejects GIFs, videos and 2 GB files as attachments', () => {
-    expect(torqFileRejection(new File(['x'], 'a.gif', { type: 'image/gif' }))).toBeTruthy();
-    expect(torqFileRejection(new File(['x'], 'a.mp4', { type: 'video/mp4' }))).toBeTruthy();
-    expect(torqFileRejection(new File(['x'], 'a.pdf', { type: 'application/pdf' }))).toBeNull();
+    expect(
+      torqFileRejection(new File(['x'], 'a.gif', { type: 'image/gif' }))
+    ).toBeTruthy();
+    expect(
+      torqFileRejection(new File(['x'], 'a.mp4', { type: 'video/mp4' }))
+    ).toBeTruthy();
+    expect(
+      torqFileRejection(new File(['x'], 'a.pdf', { type: 'application/pdf' }))
+    ).toBeNull();
   });
 });
 
@@ -101,10 +118,7 @@ describe('audio types', () => {
     expect(guessFileMime(file('memo.opus'), 'memo.opus')).toBe('audio/ogg');
     // A generic type from the picker still comes out as audio.
     expect(
-      guessFileMime(
-        file('song.flac', 'application/octet-stream'),
-        'song.flac'
-      )
+      guessFileMime(file('song.flac', 'application/octet-stream'), 'song.flac')
     ).toBe('audio/flac');
     expect(guessFileMime(file('song.mp3', 'audio/mpeg'), 'song.mp3')).toBe(
       'audio/mpeg'
@@ -123,7 +137,12 @@ describe('publishTorqPost', () => {
       text: 'Listen',
       userName: 'Alice',
       files: [
-        { file: audio, title: 'My song', filename: 'my-song.m4a', thumbnail: cover },
+        {
+          file: audio,
+          title: 'My song',
+          filename: 'my-song.m4a',
+          thumbnail: cover,
+        },
       ],
     });
 
@@ -157,7 +176,6 @@ describe('publishTorqPost', () => {
     );
   });
 
-
   it('publishes Quitter-compatible JSON with Torq extras and compat links', async () => {
     const file = new File(['hello'], 'notes.pdf', { type: 'application/pdf' });
     await publishTorqPost({
@@ -170,11 +188,19 @@ describe('publishTorqPost', () => {
     });
 
     const resources = published[0];
-    expect(resources.map((r) => r.service)).toEqual(['FILE', 'DOCUMENT', 'DOCUMENT']);
+    expect(resources.map((r) => r.service)).toEqual([
+      'FILE',
+      'DOCUMENT',
+      'DOCUMENT',
+    ]);
     const [fileResource, catalog, postResource] = resources;
-    expect(String(fileResource.identifier)).toMatch(/^qshare_file_notespdf_[\w-]{6}$/);
+    expect(String(fileResource.identifier)).toMatch(
+      /^qshare_file_notespdf_[\w-]{6}$/
+    );
     expect(fileResource.tag1).toBe('qshare_file_');
-    expect(String(catalog.identifier)).toMatch(/^qshare_file_notespdf_[\w-]{6}_metadata$/);
+    expect(String(catalog.identifier)).toMatch(
+      /^qshare_file_notespdf_[\w-]{6}_metadata$/
+    );
     expect(postResource.identifier).toBe(
       'MhNiRYdzkaP9dz-kX47dT-XrFXaYetyErMdF-abcdefghijklmno-v1'
     );
@@ -186,7 +212,9 @@ describe('publishTorqPost', () => {
     const [lead, pollLink, gifLink, fileLink] = post.text.split('\n\n');
     expect(lead).toBe('Vote! #Qortal @Bob');
     expect(pollLink).toBe(postLink);
-    expect(gifLink).toMatch(/^qortal:\/\/use-embed\/IMAGE\?name=Carol&identifier=gif-cat&service=IMAGE&mimeType=image%2Fgif&timestamp=\d+$/);
+    expect(gifLink).toMatch(
+      /^qortal:\/\/use-embed\/IMAGE\?name=Carol&identifier=gif-cat&service=IMAGE&mimeType=image%2Fgif&timestamp=\d+$/
+    );
     expect(fileLink).toBe(buildTorqAttachmentEmbed(post.attachments[0]));
     expect(post.poll).toEqual({
       options: [
@@ -216,6 +244,23 @@ describe('publishTorqPost', () => {
     expect(post.name).toBe('Alice');
   });
 
+  it('returns the post it published, for Home to show at once', async () => {
+    const result = await publishTorqPost({
+      text: 'Hello Torq',
+      richText: '<p>Hello <b>Torq</b></p>',
+      userName: 'Alice',
+    });
+    const resources = published[published.length - 1];
+    const postResource = resources[resources.length - 1];
+    expect(postResource.identifier).toBe(result.postIdentifier);
+    expect(result.post).toEqual(decode(String(postResource.base64)));
+    expect(result.post).toMatchObject({
+      name: 'Alice',
+      richText: '<p>Hello <b>Torq</b></p>',
+      text: 'Hello Torq',
+    });
+  });
+
   it('links GIF-only posts back to Torq, but not plain text posts', async () => {
     await publishTorqPost({
       text: 'Look',
@@ -226,11 +271,15 @@ describe('publishTorqPost', () => {
     const [gifPost, textPost] = published.map((resources) =>
       decode(String(resources[resources.length - 1].base64))
     );
-    expect(gifPost.text.split('\n\n')[1]).toMatch(/^qortal:\/\/APP\/Torq\/post\/Alice\//);
+    expect(gifPost.text.split('\n\n')[1]).toMatch(
+      /^qortal:\/\/APP\/Torq\/post\/Alice\//
+    );
     expect(textPost.text).toBe('Just words');
   });
 
   it('refuses an empty post', async () => {
-    await expect(publishTorqPost({ text: '  ', userName: 'Alice' })).rejects.toThrow();
+    await expect(
+      publishTorqPost({ text: '  ', userName: 'Alice' })
+    ).rejects.toThrow();
   });
 });

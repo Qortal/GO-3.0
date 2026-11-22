@@ -55,6 +55,7 @@ import { WidgetsScreenSetting } from '../Mobile/widgets/WidgetsScreenSetting';
 import { GoCallPrivacySetting } from '../Mobile/call/GoCallPrivacySetting';
 import { QortalCardSetting } from '../QortalCard/QortalCardSetting';
 import { DevModeSetting } from '../Mobile/devMode/DevModeSetting';
+import { BackgroundPlayerSetting } from '../Mobile/backgroundPlayer/BackgroundPlayerSetting';
 import { canOpenDevZips } from '../Mobile/devMode/devModeApp';
 import { BACK_PRIORITY, useAndroidBack } from '../../utils/androidBack';
 import { useCloseWithGoWindows } from '../../utils/closeGoWindows';
@@ -134,10 +135,6 @@ import {
   writeAutoLockTimeoutToStorage,
 } from '../../lib/autoLock';
 import { requestHubOnboardingRestart } from '../Onboarding/hubOnboarding';
-import {
-  composerAppName,
-  useComposerTarget,
-} from '../Widgets/quitter/composerTarget';
 
 type HomeProfileCardProps = {
   onOpenReceive?: (anchorEl: HTMLElement) => void;
@@ -492,7 +489,6 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
       t(`group:dashboard.${key}`, { defaultValue, ...options }),
     [t]
   );
-  const feedApp = composerAppName(useComposerTarget());
   const homeModuleRows = useMemo(
     (): Array<{ id: HomeModuleId; title: string; description: string }> => [
       {
@@ -528,21 +524,16 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
         ),
       },
       {
+        // Posting to Torq is at the top of this window, so it goes too.
         id: 'feed',
-        title:
-          feedApp === 'Torq'
-            ? td('torq_feed', 'Torq Feed')
-            : td('quitter_feed_module', 'Quitter Feed'),
+        title: td('torq_feed', 'Torq Feed'),
         description: td(
-          'home_module_feed_desc',
-          'The newest posts on {{app}}.',
-          {
-            app: feedApp,
-          }
+          'home_module_torq_feed_desc',
+          'The newest posts on Torq, with a box at the top to post your own.'
         ),
       },
     ],
-    [feedApp, td]
+    [td]
   );
   const accountSettingsTabs = useMemo(
     () =>
@@ -4819,6 +4810,15 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                           }}
                         />
                         <ImmersiveModeSetting />
+                        <Box
+                          sx={{
+                            borderTop: `1px solid ${avatarSectionDivider}`,
+                            mx: 1.35,
+                          }}
+                        />
+                        {/* Audio and video off screen, the notification
+                            and lock screen player. */}
+                        <BackgroundPlayerSetting />
                         <Box
                           sx={{
                             borderTop: `1px solid ${avatarSectionDivider}`,

@@ -102,8 +102,14 @@ export const CARD_APPLETS: readonly CardApplet[] = [
 
 const SW_OK = 0x9000;
 const SW_UNCAUGHT = 0x6f00;
-/** SELECT answers that mean "no such applet here" (not found, refused). */
-const SW_NOT_HERE = new Set([0x6a82, 0x6999]);
+/**
+ * SELECT answers that mean "no such applet here": not found, refused, and
+ * the answers our two applets give to someone else's SELECT. Java Card hands
+ * a SELECT that matches no applet to the applet already selected, which
+ * answers it as an ordinary command: ours with 6E00, Futako's with 6D00. An
+ * applet that is on the card never answers its own SELECT with these.
+ */
+const SW_NOT_HERE = new Set([0x6a82, 0x6999, 0x6e00, 0x6d00]);
 
 const EMPTY = new Uint8Array(0);
 

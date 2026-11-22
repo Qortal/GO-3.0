@@ -36,10 +36,13 @@ import {
   type AppOpenCounts,
 } from '../../components/Mobile/mobileAppOpenCounts';
 import {
+  emptyOrganization,
   loadMobileTabOrganization,
   type MobileTabOrganization,
 } from '../../components/Mobile/mobileTabOrganization';
 import { mobileTabOrganizationStateAtom } from '../../components/Mobile/mobileTabOrganizationStore';
+import { goBookmarksStateAtom } from '../../components/Mobile/goLauncher/goLauncherStore';
+import { bookmarksAsSavedTabs } from '../../components/Mobile/goLauncher/goLauncherOps';
 import type { QdnAvatarPrewarmEntry } from './avatarCache';
 import {
   buildQdnAvatarPrewarmPlan,
@@ -150,6 +153,24 @@ export async function readQdnAvatarPrewarmInput(
     } catch {
       tabFolders = null;
     }
+  }
+
+  // The folders are bookmark folders now: their apps are the bookmarks.
+  if (tabFolders?.movedToBookmarks) {
+    const bookmarks = safeGet<any>(store, goBookmarksStateAtom, null);
+    const saved =
+      bookmarks?.address === address && bookmarks.data
+        ? bookmarksAsSavedTabs(bookmarks.data)
+        : null;
+    tabFolders = saved
+      ? {
+          ...emptyOrganization(),
+          folders: [
+            { id: 'bookmarks', name: '', order: 0, tabKeys: saved.tabKeys },
+          ],
+          savedTabs: saved.savedTabs,
+        }
+      : null;
   }
 
   let appOpenCounts: AppOpenCounts = {};

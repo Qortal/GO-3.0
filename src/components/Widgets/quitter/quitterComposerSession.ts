@@ -1,3 +1,4 @@
+import { atom, getDefaultStore } from 'jotai';
 import type {
   PrepareVideoResult,
   VideoPrepareJob,
@@ -42,17 +43,15 @@ export type SessionVideoDraft = {
 };
 
 type QuitterComposerSession = {
-  text: string;
   images: SessionImageDraft[];
   video: SessionVideoDraft | null;
   preparedVideo: PrepareVideoResult | null;
   compressPercent: number | null;
   compressLabel: string;
-  expanded: boolean;
   status: string;
   error: string;
   compressJob: VideoPrepareJob | null;
-  /** Torq body; null until the user first switches to Torq. */
+  /** The post's body; null while nothing was written. */
   torqDoc: TorqDocNode | null;
   gifs: LibraryGif[];
   /** Null when the post has no poll. */
@@ -62,13 +61,11 @@ type QuitterComposerSession = {
 };
 
 const emptySession = (): QuitterComposerSession => ({
-  text: '',
   images: [],
   video: null,
   preparedVideo: null,
   compressPercent: null,
   compressLabel: '',
-  expanded: false,
   status: '',
   error: '',
   compressJob: null,
@@ -80,6 +77,18 @@ const emptySession = (): QuitterComposerSession => ({
 });
 
 let session: QuitterComposerSession = emptySession();
+
+/**
+ * Whether the Home composer is open (unfolded at the top of the Torq feed
+ * window). Kept outside the composer, like the draft, so it survives a
+ * remount, and so Home can show the window for a share while the feed is
+ * turned off (the share intake opens it before the composer mounts).
+ */
+export const homeComposerOpenAtom = atom(false);
+
+export function setHomeComposerOpen(open: boolean): void {
+  getDefaultStore().set(homeComposerOpenAtom, open);
+}
 
 export function getQuitterComposerSession(): QuitterComposerSession {
   return session;
@@ -105,4 +114,5 @@ export function clearQuitterComposerSession(): void {
   }
   session.compressJob?.cancel();
   session = emptySession();
+  setHomeComposerOpen(false);
 }

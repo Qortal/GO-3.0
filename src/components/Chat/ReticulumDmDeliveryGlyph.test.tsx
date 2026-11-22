@@ -262,9 +262,12 @@ describe('ReticulumDmDeliveryGlyph', () => {
           myAddress={ME}
         />
       );
-      expect(
-        screen.getByRole('img', { name: 'Only on this phone' })
-      ).toBeInTheDocument();
+      const glyph = screen.getByRole('img', { name: 'Only on this phone' });
+      expect(glyph).toBeInTheDocument();
+      // No mailbox: says who must be online, and for how long GO retries.
+      expect(glyph).toHaveAccessibleDescription(
+        'Not sent yet. There is no mailbox: it goes out when the recipient is online at the same time as this phone or your other device. GO retries it for up to 7 days while it is running.'
+      );
     } finally {
       delete win.Capacitor;
     }
@@ -283,7 +286,7 @@ describe('ReticulumDmDeliveryGlyph', () => {
     const glyph = screen.getByRole('img', { name: 'Only on this device' });
     expect(glyph).toHaveAttribute('tabindex', '0');
     expect(glyph).toHaveAccessibleDescription(
-      'Not sent yet. It will be retried automatically.'
+      'Not sent yet. There is no mailbox: it goes out when the recipient is online at the same time as this device or your other device. It is retried for up to 7 days while the app is running.'
     );
     fireEvent.click(glyph);
     expect(onRowClick).not.toHaveBeenCalled();

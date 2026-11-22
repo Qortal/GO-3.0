@@ -183,6 +183,10 @@ public final class BackgroundKeepAlive {
     /** A call dials or runs / an incoming call rings (CallSession). */
     private boolean callActive;
     private boolean callRinging;
+    /** The background player plays and may go on off screen (GoMediaHub). */
+    private boolean mediaPlaying;
+    /** elapsedRealtime until which a player button keeps the page running, or 0. */
+    private long mediaWakeUntilMs;
     private boolean sessionActive;
     private boolean suspended;
     private boolean serviceRunning;
@@ -342,6 +346,43 @@ public final class BackgroundKeepAlive {
         }
         Log.i(TAG, "Call state for keep-alive: active=" + active + " ringing=" + ringing);
         requestEvaluate();
+    }
+
+    /**
+     * The background player plays something the user lets play off screen
+     * (GoMediaHub): keeps the page running in every mode
+     * (KeepAlivePolicy.mediaNeedsPage).
+     */
+    public void setMediaPlaying(boolean playing) {
+        synchronized (this) {
+            if (mediaPlaying == playing) return;
+            mediaPlaying = playing;
+        }
+        Log.i(TAG, "Media for keep-alive: playing=" + playing);
+        requestEvaluate();
+    }
+
+    /**
+     * A background player button was pressed while GO is off screen: the
+     * page may be frozen (paused for over a minute), so let it run for
+     * {@code ms} to take the command.
+     */
+    public void wakePageForMedia(long ms) {
+        long until = SystemClock.elapsedRealtime() + Math.max(0L, ms);
+        synchronized (this) {
+            if (until <= mediaWakeUntilMs) return;
+            mediaWakeUntilMs = until;
+        }
+        requestEvaluate();
+    }
+
+    /**
+     * Off screen with media playing: GoWebView keeps Chromium from seeing
+     * the window hide at all, so pages that pause on visibilitychange (some
+     * video players do) keep playing.
+     */
+    public synchronized boolean mediaHoldsPage() {
+        return activityStopped && mediaPlaying;
     }
 
     /** Kept for older pages; harmless (the flag is never set any more). */
@@ -533,6 +574,9 @@ public final class BackgroundKeepAlive {
             in.suspended = suspended;
             in.callActive = callActive;
             in.callRinging = callRinging;
+            in.mediaPlaying = mediaPlaying;
+            in.mediaWake = mediaWakeUntilMs > now;
+            in.pageAttached = webView != null;
             keep = KeepAlivePolicy.shouldKeepVisible(in);
             holdLock = serviceRunning && KeepAlivePolicy.shouldHoldWakeLock(in);
             stopped = activityStopped;
@@ -545,6 +589,9 @@ public final class BackgroundKeepAlive {
             long outboxEnd = KeepAlivePolicy.msUntilOutboxWindowEnds(in);
             long relayDue = relayTracker.msUntilFull(now);
             nextDeadline = minPositive(outboxEnd, relayDue);
+            if (mediaWakeUntilMs > now) {
+                nextDeadline = minPositive(nextDeadline, mediaWakeUntilMs - now);
+            }
             currentListener = listener;
         }
 

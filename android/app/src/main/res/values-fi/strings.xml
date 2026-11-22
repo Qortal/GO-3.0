@@ -24,4 +24,16 @@
     <string name="call_status_group">Ryhmäpuhelu</string>
     <string name="call_status_muted">Mykistetty</string>
     <string name="call_unknown_caller">Tuntematon soittaja</string>
+    <string name="media_channel_name">Median toisto</string>
+    <string name="media_channel_description">Näyttää, mitä GO:ssa soi, ja säätimet ilmoituksessa ja lukitusnäytöllä.</string>
+    <string name="media_action_play">Toista</string>
+    <string name="media_action_pause">Tauko</string>
+    <string name="media_action_previous">Edellinen</string>
+    <string name="media_action_next">Seuraava</string>
+    <string name="media_action_back">Taaksepäin %1$d s</string>
+    <string name="media_action_forward">Eteenpäin %1$d s</string>
+    <string name="media_action_settings">Soittimen asetukset</string>
+    <string name="media_title_audio">Ääni</string>
+    <string name="media_title_video">Video</string>
+    <string name="media_settings_hint">Napauta soitinta avataksesi sen asetukset</string>
 </resources>

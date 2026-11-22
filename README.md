@@ -1,7 +1,7 @@
 # GO 3.0 — Native Mobile Qortal Client
 
 **GO 3.0** (Qortal GO) is the native Android port of [Qortal Hub](https://github.com/Qortal/Qortal-Hub)
-(this repo tracks Hub with the mobile shell on branch `feature/chat-v2-merge`). It wraps the Hub's
+(GO's work happens on branch `develop`; released versions are on `main`). It wraps the Hub's
 React UI in a Capacitor/Android shell and adds a **native Reticulum (RNS) stack on the phone**, giving
 mobile users the Hub 2.0 P2P feature set: presence, voice calls, and direct file transfer over
 Reticulum — plus a mobile-first UI, OS notifications, biometric login, and battery-conscious
@@ -46,11 +46,14 @@ background behavior.
 
 ## Building the Android app
 
-Prerequisites: Node 20+, Android SDK (API 34), JDK 17.
+Prerequisites: Node 22, JDK 21, Android SDK 36 with NDK 27.2.12479018 and CMake 3.22.1,
+Python 3.13 on `PATH`. The full list, the branch rules and how to send a pull request are in
+[`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ```bash
-npm install
-npx vite build && npx cap copy android
+npm ci
+android/app/src/main/cpp/fetch-llama.sh   # once: pinned llama.cpp for Qortino
+npm run build && npx cap sync android
 cd android && ./gradlew assembleDebug
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```

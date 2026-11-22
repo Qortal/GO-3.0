@@ -134,6 +134,7 @@ import { useAppMessageHandler } from './hooks/useAppMessageHandler';
 import { QortinoNotificationHost } from './components/Snackbar/QortinoNotificationHost';
 import { SavedFileActionsSheet } from './components/Mobile/SavedFileActionsSheet';
 import { AppUpdateWindow } from './components/AppUpdate/AppUpdateWindow';
+import { BackgroundPlayerHost } from './components/Mobile/backgroundPlayer/BackgroundPlayerHost';
 import { QortalCardWindow } from './components/QortalCard/QortalCardWindow';
 import { useAppUpdateWatcher } from './appUpdate/useAppUpdateWatcher';
 import { getWallets, storeWallets } from './background/background.ts';
@@ -870,7 +871,11 @@ function App() {
   const [creationStep, setCreationStep] = useState(1);
   const getIndividualUserInfo = useHandleUserInfo();
   useRetrieveDataLocalStorage(userInfo?.address);
-  useQortalGetSaveSettings(userInfo?.name, extState === 'authenticated');
+  useQortalGetSaveSettings(
+    userInfo?.name,
+    extState === 'authenticated',
+    userInfo?.address
+  );
   const setEnableAuthWhenSyncing = useSetAtom(enableAuthWhenSyncingAtom);
 
   const [isOpenMinting, setIsOpenMinting] = useState(false);
@@ -2747,6 +2752,12 @@ function App() {
         <SavedFileActionsSheet />
 
         <AppUpdateWindow />
+
+        {/* Background player: notification + lock screen media controls,
+            opened from Settings → System or the notification's gear. */}
+        {isGoApp() && (
+          <BackgroundPlayerHost ready={isAuthenticated && !isAppLocked} />
+        )}
 
         {/* Qortal Card (testing): opened from the avatar menu. */}
         {isGoApp() && isAuthenticated && address && (

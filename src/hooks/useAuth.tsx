@@ -5,7 +5,6 @@ import {
   HTTP_LOCALHOST_12391,
   HTTPS_EXT_NODE_QORTAL_LINK,
   isLocalNodeUrl,
-  isLoopbackNodeUrl,
   TIME_MINUTES_2_IN_MILLISECONDS,
   TIME_SECONDS_40_IN_MILLISECONDS,
 } from '../constants/constants';
@@ -345,17 +344,12 @@ export const useAuth = () => {
 
         let isValid = false;
 
+        // Asked first so a node that stopped answering ends here, with no
+        // key test and no dialog. Its answer no longer decides anything.
         const url = `${baseUrl}/admin/settings/localAuthBypassEnabled`;
-        let data: string;
         try {
-          // Assuming the response is in plain text and will be 'true' or 'false'
-          const bypass = await fetchTextWithTimeout(
-            url,
-            ADMIN_AUTH_FETCH_TIMEOUT_MS
-          );
-          data = bypass.ok ? bypass.text : '';
+          await fetchTextWithTimeout(url, ADMIN_AUTH_FETCH_TIMEOUT_MS);
         } catch (error) {
-          // The node stopped answering: no key test and no dialog.
           return {
             isValid: false,
             validatedNodeInfo,
@@ -365,28 +359,26 @@ export const useAuth = () => {
         // False when the key test got no answer (network error, timeout, or
         // an error page instead of Core's answer).
         let keyTestAnswered = false;
-        // Core skips the key only for requests from a loopback address. A
-        // node on the LAN or further away that has the bypass on still
-        // refuses keyless writes (a QDN publish), so its key is tested.
-        const bypassCoversUs = isLoopbackNodeUrl(validatedNodeInfo?.url);
-        if (bypassCoversUs && data === 'true') {
-          isValid = true;
-        } else {
-          try {
-            const url2 = `${baseUrl}/admin/apikey/test?apiKey=${encodeURIComponent(validatedNodeInfo?.apikey)}`;
-            const keyTest = await fetchTextWithTimeout(
-              url2,
-              ADMIN_AUTH_FETCH_TIMEOUT_MS
-            );
-            if (keyTest.ok && keyTest.text === 'true') {
-              isValid = true;
-              keyTestAnswered = true;
-            } else if (isKeyRefusal(keyTest)) {
-              keyTestAnswered = true;
-            }
-          } catch (error) {
-            // Network error or timeout: the key stays untested (isValid false).
+        // Always asked, bypass or not. Core's local auth bypass skips the key
+        // only when the request reaches Core from a loopback address, and a
+        // 127.0.0.1 URL does not say that: an SSH tunnel that ends on the
+        // server's LAN address, or a Core in Docker, still needs the key for a
+        // QDN publish. apikey/test runs the same check as a publish (key, or
+        // bypass from loopback as Core sees it), so it answers for both.
+        try {
+          const url2 = `${baseUrl}/admin/apikey/test?apiKey=${encodeURIComponent(validatedNodeInfo?.apikey)}`;
+          const keyTest = await fetchTextWithTimeout(
+            url2,
+            ADMIN_AUTH_FETCH_TIMEOUT_MS
+          );
+          if (keyTest.ok && keyTest.text === 'true') {
+            isValid = true;
+            keyTestAnswered = true;
+          } else if (isKeyRefusal(keyTest)) {
+            keyTestAnswered = true;
           }
+        } catch (error) {
+          // Network error or timeout: the key stays untested (isValid false).
         }
         if (!isValid && !keyTestAnswered && goApp) {
           // GO: the key was never tested, so no key dialog.

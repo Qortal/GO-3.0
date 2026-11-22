@@ -52,10 +52,11 @@
         "label": "no seu outro dispositivo"
       },
       "only_on_this_device": {
+        "hint": "Ainda não enviada. Não há caixa de correio: ela é enviada quando o destinatário estiver online ao mesmo tempo que este dispositivo ou seu outro dispositivo. O envio é repetido por até 7 dias enquanto o aplicativo estiver em execução.",
         "label": "apenas neste dispositivo"
       },
       "only_on_this_phone": {
-        "hint": "Ainda não enviada. O envio será repetido automaticamente.",
+        "hint": "Ainda não enviada. Não há caixa de correio: ela é enviada quando o destinatário estiver online ao mesmo tempo que este telefone ou seu outro dispositivo. O GO tenta novamente por até 7 dias enquanto estiver em execução.",
         "label": "apenas neste telefone"
       },
       "sending": {

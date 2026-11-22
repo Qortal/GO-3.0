@@ -52,10 +52,11 @@
         "label": "sur votre autre appareil"
       },
       "only_on_this_device": {
+        "hint": "Pas encore envoyé. Il n'y a pas de boîte aux lettres : le message part quand le destinataire est en ligne en même temps que cet appareil ou votre autre appareil. L'envoi est retenté pendant 7 jours au maximum tant que l'application est ouverte.",
         "label": "uniquement sur cet appareil"
       },
       "only_on_this_phone": {
-        "hint": "Pas encore envoyé. L'envoi sera retenté automatiquement.",
+        "hint": "Pas encore envoyé. Il n'y a pas de boîte aux lettres : le message part quand le destinataire est en ligne en même temps que ce téléphone ou votre autre appareil. GO réessaie pendant 7 jours au maximum tant qu'il est ouvert.",
         "label": "uniquement sur ce téléphone"
       },
       "sending": {

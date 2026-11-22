@@ -18,10 +18,17 @@ import {
 
 export type WidgetDisplayMode = 'compact' | 'expanded';
 
+/**
+ * What the frame itself takes of `height`: its padding (8 + 10), the title
+ * row (28, its buttons' height) and the gap under it (8).
+ */
+export const DASHBOARD_WIDGET_FRAME_CHROME_PX = 54;
+
 type DashboardWidgetFrameProps = {
   actionIcon?: ReactNode;
   actionLabel?: string;
-  children: ReactNode;
+  /** Null for a frame with only a title and `top`. */
+  children?: ReactNode;
   contentBackground?: ReactNode;
   contentBorderRadius?: number | string;
   height: number;
@@ -33,13 +40,19 @@ type DashboardWidgetFrameProps = {
   refreshing?: boolean;
   subtitle?: string;
   title: string;
+  /**
+   * Shown under the title, above the content, as tall as it is (Home's
+   * composer above the Torq feed). The frame grows by it and the content
+   * keeps the room it has without it.
+   */
+  top?: ReactNode;
   widgetId?: string;
 };
 
 export const DashboardWidgetFrame = ({
   actionIcon,
   actionLabel,
-  children,
+  children = null,
   contentBackground = null,
   contentBorderRadius = 5,
   height,
@@ -51,9 +64,16 @@ export const DashboardWidgetFrame = ({
   refreshing = false,
   subtitle,
   title,
+  top = null,
   widgetId,
 }: DashboardWidgetFrameProps) => {
   const theme = useTheme();
+  // With something on top the frame follows its height; the content keeps a
+  // fixed one, so a list in it still scrolls inside.
+  const growsWithTop = top != null;
+  const contentHeightPx = growsWithTop
+    ? Math.max(0, height - DASHBOARD_WIDGET_FRAME_CHROME_PX)
+    : null;
 
   return (
     <Box
@@ -65,8 +85,8 @@ export const DashboardWidgetFrame = ({
         display: 'flex',
         flexDirection: 'column',
         gap: '8px',
-        height: `${height}px`,
-        minHeight: `${height}px`,
+        height: growsWithTop ? 'auto' : `${height}px`,
+        minHeight: growsWithTop ? undefined : `${height}px`,
         minWidth: 0,
         order,
         overflow: 'hidden',
@@ -244,24 +264,48 @@ export const DashboardWidgetFrame = ({
         </Box>
       </Box>
 
-      <Box
-        sx={{
-          borderTop: `1px solid ${alpha(
-            theme.palette.border.main,
-            theme.palette.mode === 'dark' ? 0.12 : 0.08
-          )}`,
-          display: 'flex',
-          flex: '1 1 auto',
-          minHeight: 0,
-          overflow: 'hidden',
-          position: 'relative',
-          pt: '8px',
-          width: '100%',
-        }}
-      >
-        {contentBackground}
-        {children}
-      </Box>
+      {top != null ? (
+        <Box
+          data-widget-top=""
+          sx={{
+            borderTop: `1px solid ${alpha(
+              theme.palette.border.main,
+              theme.palette.mode === 'dark' ? 0.12 : 0.08
+            )}`,
+            flexShrink: 0,
+            minWidth: 0,
+            position: 'relative',
+            pt: '8px',
+            width: '100%',
+          }}
+        >
+          {top}
+        </Box>
+      ) : null}
+
+      {children != null ? (
+        <Box
+          sx={{
+            borderTop: `1px solid ${alpha(
+              theme.palette.border.main,
+              theme.palette.mode === 'dark' ? 0.12 : 0.08
+            )}`,
+            boxSizing: 'border-box',
+            display: 'flex',
+            flex: contentHeightPx != null ? '0 0 auto' : '1 1 auto',
+            height:
+              contentHeightPx != null ? `${contentHeightPx}px` : undefined,
+            minHeight: 0,
+            overflow: 'hidden',
+            position: 'relative',
+            pt: '8px',
+            width: '100%',
+          }}
+        >
+          {contentBackground}
+          {children}
+        </Box>
+      ) : null}
     </Box>
   );
 };

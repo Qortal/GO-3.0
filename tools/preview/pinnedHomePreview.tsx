@@ -1,7 +1,8 @@
 /**
- * Dev-only preview of the Q-Apps library's Pinned home (phone-style folders,
- * open folder animation, tab cards) and the Tabs overlay, with made-up
- * folders and open tabs. Opening an app only logs. Run `npm run dev` and open
+ * Dev-only preview of the Q-Apps library's Pinned home (the desktop Hub's
+ * launcher laid out like a phone: pinned apps, bookmarks, folders, the open
+ * folder animation, tab cards) and the Tabs overlay, with made-up folders,
+ * bookmarks and open tabs. Opening an app only logs. Run `npm run dev` and open
  * /tools/preview/pinned-home.html (add ?overlay=1 for the Tabs overlay,
  * ?devmode=1 for the Dev Mode button: the page then passes for the Android
  * app, without its native side, so a picked zip ends in the build error).
@@ -17,7 +18,12 @@ import {
   ThemeProvider,
   useThemeContext,
 } from '../../src/components/Theme/ThemeContext';
-import { userInfoAtom } from '../../src/atoms/global';
+import {
+  isUsingImportExportSettingsAtom,
+  settingsQDNLastUpdatedAtom,
+  userInfoAtom,
+} from '../../src/atoms/global';
+import { savedAppsStateAtom } from '../../src/components/Apps/AppsLauncher/savedAppsSync';
 import { mobileTabOrganizationStateAtom } from '../../src/components/Mobile/mobileTabOrganizationStore';
 import {
   emptyOrganization,
@@ -41,6 +47,62 @@ if (new URLSearchParams(location.search).has('devmode')) {
   store.set(goDevModeEnabledAtom, true);
 }
 store.set(userInfoAtom, { address: WALLET, name: 'preview' } as never);
+
+// What the desktop Hub saved for this account and the phone took in: a
+// bookmark of a page in the row and a bookmark folder. GO's own folders
+// below are moved in next to them on first start, as on a phone.
+const hubBookmarks = {
+  [WALLET]: {
+    folders: [{ id: 'hub-media', name: 'Media', createdAt: 1, updatedAt: 1 }],
+    bookmarks: [
+      {
+        id: 'hub-b1',
+        name: 'Q-Tube',
+        service: 'APP',
+        appName: 'Q-Tube',
+        path: '',
+        link: 'qortal://APP/Q-Tube',
+        folderId: 'hub-media',
+        createdAt: 1,
+        updatedAt: 1,
+      },
+      {
+        id: 'hub-b2',
+        name: 'Playlists',
+        service: 'APP',
+        appName: 'Q-Tube',
+        path: 'playlists',
+        link: 'qortal://APP/Q-Tube/playlists',
+        folderId: null,
+        createdAt: 1,
+        updatedAt: 1,
+      },
+    ],
+    updatedAt: 1,
+  },
+};
+// The account's settings on QDN were read and hold no launcher yet: a change
+// brings up the window that offers to save it there (saving only logs here).
+store.set(isUsingImportExportSettingsAtom, false as never);
+store.set(settingsQDNLastUpdatedAtom, 0 as never);
+store.set(savedAppsStateAtom, {
+  address: WALLET,
+  status: 'read',
+  saved: { pins: [], data: { folders: [], bookmarks: [] }, order: [] },
+  hasCopy: false,
+});
+const previewStorage = new Map<string, unknown>([
+  ['qortal_app_bookmarks_by_address', hubBookmarks],
+]);
+(window as unknown as { appStorage?: unknown }).appStorage = {
+  get: async (key: string) => structuredClone(previewStorage.get(key)),
+  set: async (key: string, value: unknown) => {
+    previewStorage.set(key, structuredClone(value));
+  },
+  delete: async (key: string) => {
+    previewStorage.delete(key);
+  },
+};
 
 const apps = (names: string[]) =>
   names.map((name) => ({ key: `APP|${name}`, name }));

@@ -783,16 +783,19 @@ describe('useAuth', () => {
       expect(store.get(isOpenDialogCustomApikey)).toBe(false);
     });
 
+    // Core's bypass passes apikey/test with any key (or none) when the
+    // request reaches it from loopback, so a keyless tunnel still works.
     it.each([
       ['an SSH tunnel on 127.0.0.1', 'http://127.0.0.1:12398'],
       ['localhost', 'http://localhost:12391'],
       ['::1', 'http://[::1]:12391'],
     ])(
-      'still trusts the bypass on %s, with no key test',
+      'accepts %s with no key when Core lets the bypass cover it',
       async (_label, url) => {
         const fetchMock = stubFetch({
           '/admin/status': '{}',
           '/admin/settings/localAuthBypassEnabled': 'true',
+          '/admin/apikey/test': 'true',
         });
         const node = { url, apikey: '' };
         const { result, store } = renderUseAuth(undefined, node);
@@ -800,10 +803,33 @@ describe('useAuth', () => {
         await expect(
           result.current.validateApiKey({ ...node })
         ).resolves.toMatchObject({ isValid: true });
-        expect(fetchedPaths(fetchMock)).not.toContain('/admin/apikey/test');
+        expect(fetchedPaths(fetchMock)).toContain('/admin/apikey/test');
         expect(store.get(isOpenDialogCustomApikey)).toBe(false);
       }
     );
+
+    // A tunnel to 127.0.0.1 on the phone that ends on the server's LAN
+    // address (ssh -L 24992:192.168.x.y:12391), or a Core in Docker: the
+    // bypass is on, but Core does not see loopback and refuses keyless
+    // publishes. GO used to trust the bypass from the URL alone, never asked
+    // for the key, and every Q-App publish failed.
+    it('asks for the key on a 127.0.0.1 tunnel whose Core refuses keyless calls despite the bypass', async () => {
+      runAsGo();
+      const fetchMock = stubFetch({
+        '/admin/status': '{}',
+        '/admin/settings/localAuthBypassEnabled': 'true',
+        '/admin/apikey/test': KEY_MISSING,
+      });
+      const sendMessage = stubSendMessage({ decryptWallet: true });
+      const tunnel = { url: 'http://127.0.0.1:24992', apikey: '' };
+      const { result, store } = renderUseAuth({ address0: 'Qtest' }, tunnel);
+
+      expect(await passwordUnlock(result)).toBe(false);
+
+      expect(fetchedPaths(fetchMock)).toContain('/admin/apikey/test');
+      expect(store.get(isOpenDialogCustomApikey)).toBe(true);
+      expect(sendMessage).not.toHaveBeenCalled();
+    });
 
     it('never asks for a key on the public node, bypass or not', async () => {
       runAsGo();

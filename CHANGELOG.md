@@ -11,6 +11,99 @@ desktop Hub. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- **Qortino gets ready while You type on Home** _(mobile)_ — the first
+  letter typed in the "Ask Qortino…" box next to him starts loading the model
+  and reading his system prompt in the background (12-15 s on a phone), so
+  the answer can start as soon as the question is sent: his chat joins the
+  load already running instead of starting its own. A question left unsent
+  (keyboard closed without sending, or Home gone) frees the memory again as
+  his "Keep ready" setting says for a closed window: after a minute and a
+  half, after 15 s when it is off (time left to tap send), or not while GO is
+  open. Never under an open or parked Qortino window; leaving GO frees it as
+  before.
+- **Background player** _(mobile)_ — audio and video playing anywhere in GO
+  (Q-Apps, QDN websites, GO itself: voice messages, Home videos) now show in
+  Android's media controls: the notification, the lock screen, headset and
+  Bluetooth buttons. The player shows the title and artist (from the page's
+  media session when it sets one, else the file name or the page title), the
+  Q-App or site it comes from, a seek bar, Play / Pause, Back and Forward
+  (Previous / Next when the Q-App has a playlist), and a settings gear. The
+  cover is the media's own picture, a video's poster or a frame of the video,
+  else the Q-App's icon, with a small Qortal logo in its bottom-right corner;
+  GO's own cover (the logo on dark blue) when there is none. Tapping the
+  player opens GO on the tab that plays. Audio and video keep playing when GO
+  is minimized or the screen turns off (default): a mediaPlayback foreground
+  service, a wake lock while it plays, and the page kept running (Chromium
+  would freeze it a minute after GO leaves the screen). A paused player off
+  screen lets the page sleep; Play wakes it again.
+- **Background player settings** _(mobile)_ — Settings → System →
+  Background player, or the gear in the player: Now playing with Play /
+  Pause, keep audio playing / keep video playing when GO is minimized
+  (both on), pause when the screen locks, play again on return to GO, show
+  on the lock screen, the Qortal logo on the cover, the Back / Forward step
+  (5, 10 or 30 s), when a paused player leaves the notification (5 min to
+  never, 30 min by default), pause when headphones disconnect, and a sleep
+  timer (15 min to 90 min, or at the end of the track). Calls and other apps
+  pause GO's sound and it plays again after short interruptions (Chromium's
+  own audio focus). In 12 languages. With GO off screen, Android does not let
+  the gear open GO by itself; the player's second line then says to tap it,
+  and for 30 s a tap opens GO on the settings.
+
+- **Pinned apps, folders and bookmarks shared with the desktop Hub**
+  _(mobile)_ — the Pinned tab is the desktop Hub's launcher: the same pinned
+  apps, bookmarks, bookmark folders and order, from the account's encrypted
+  settings on QDN, and an offer to save them there after a change on the
+  phone. GO's old Tabs folders become bookmark folders once. Each pin, folder
+  and bookmark keeps the time it last changed, and a removal stays as one, so
+  GO and the Hub merge their changes item by item: a save on one no longer
+  undoes what was done on the other. A save from GO keeps the Home layout and
+  side panel the desktop Hub saved. Revert puts back the pins, folders and
+  bookmarks as they are saved. What the phone records of them stays in GO's
+  encrypted storage; if that storage can't be read, the phone takes them from
+  QDN again instead of removing them everywhere.
+
+### Changed
+
+- **Widget list shows only current widgets** _(mobile)_ — the Add a widget
+  list now takes only APPs tagged `go-widget`; the `go-widget…` identifier
+  stays the fast way to find them. A widget republished without the tag (a
+  "moved" notice, like the old Weather Now / Bars / Chart and Forecast ones)
+  leaves the list, but keeps loading for everyone who already added it. The
+  widgets guide and the list's hint for Q-App developers (12 languages) say
+  so.
+- **DMs reach Your Hub and GO faster** _(shared)_ — two gaps when one
+  account runs on GO and a Hub at the same time:
+  - **Read on the Hub, missing in GO:** when the Hub says "read up to here"
+    in a DM chat and GO has nothing that new (a DM that only reached the
+    Hub, or a reply written there), GO now pulls that chat from the Hub right
+    away instead of waiting for the next 5-minute probe. It also works for a
+    chat GO has never seen, and with an unchanged Hub 3.0.3. Pulled messages
+    arrive already read. At most one pull per read point.
+  - **Received on GO, missing on the Hub:** DMs other people send are now
+    handed to Your linked Hub the same way GO already hands over the DMs You
+    write (direct only, never forwarded, at most one signature per chat per
+    10 s, nothing without a linked own device). Not for messages the Hub
+    itself gave GO, or older than 7 days. A reply You send right after is
+    never held back by it.
+- **"Only on this phone" explains why** _(shared)_ — the hint now says there
+  is no mailbox: the message goes out when the recipient is online at the
+  same time as this phone or Your other device, retried for up to 7 days
+  while GO runs. The desktop gets its own wording ("this device"). In 12
+  languages.
+
+### Fixed
+
+- **Q-App publishes on a private node over an SSH tunnel** _(shared)_ — GO
+  took Core's local auth bypass on trust for any 127.0.0.1 node and never
+  asked for its API key. But Core skips the key only when the request reaches
+  it from loopback; a tunnel that ends on the server's LAN address, or a Core
+  in Docker, still needs the key, so every publish (SubWire, Quitter, Q-Share)
+  failed while reading worked. GO now always asks Core's own key test, which
+  runs the same check as a publish, and asks for the key when Core would
+  refuse it. A tunnel Core does see as loopback still works with no key.
+
 ## [0.0.20] — 2026-11-04 (GO 3.0)
 
 ### Added

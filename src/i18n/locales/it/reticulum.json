@@ -52,10 +52,11 @@
         "label": "sul tuo altro dispositivo"
       },
       "only_on_this_device": {
+        "hint": "Non ancora inviato. Non c'è una casella di posta: parte quando il destinatario è online nello stesso momento di questo dispositivo o del tuo altro dispositivo. L'invio viene ritentato per un massimo di 7 giorni finché l'app è in esecuzione.",
         "label": "solo su questo dispositivo"
       },
       "only_on_this_phone": {
-        "hint": "Non ancora inviato. L'invio verrà ritentato automaticamente.",
+        "hint": "Non ancora inviato. Non c'è una casella di posta: parte quando il destinatario è online nello stesso momento di questo telefono o del tuo altro dispositivo. GO riprova per un massimo di 7 giorni finché è in esecuzione.",
         "label": "solo su questo telefono"
       },
       "sending": {

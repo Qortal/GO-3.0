@@ -52,10 +52,11 @@
         "label": "auf deinem anderen Gerät"
       },
       "only_on_this_device": {
+        "hint": "Noch nicht gesendet. Es gibt kein Postfach: Die Nachricht geht raus, wenn der Empfänger gleichzeitig mit diesem Gerät oder deinem anderen Gerät online ist. Solange die App läuft, wird es bis zu 7 Tage lang erneut versucht.",
         "label": "nur auf diesem Gerät"
       },
       "only_on_this_phone": {
-        "hint": "Noch nicht gesendet. Das Senden wird automatisch wiederholt.",
+        "hint": "Noch nicht gesendet. Es gibt kein Postfach: Die Nachricht geht raus, wenn der Empfänger gleichzeitig mit diesem Handy oder deinem anderen Gerät online ist. GO versucht es bis zu 7 Tage lang erneut, solange es läuft.",
         "label": "nur auf diesem Handy"
       },
       "sending": {

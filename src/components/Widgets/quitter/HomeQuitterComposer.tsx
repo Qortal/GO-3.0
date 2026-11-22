@@ -9,9 +9,6 @@ import {
   DialogTitle,
   IconButton,
   LinearProgress,
-  TextField,
-  ToggleButton,
-  ToggleButtonGroup,
   Typography,
   useTheme,
 } from '@mui/material';
@@ -20,7 +17,7 @@ import ImageOutlinedIcon from '@mui/icons-material/ImageOutlined';
 import VideocamOutlinedIcon from '@mui/icons-material/VideocamOutlined';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import SendRoundedIcon from '@mui/icons-material/SendRounded';
-import ExpandMoreRoundedIcon from '@mui/icons-material/ExpandMoreRounded';
+import ExpandLessRoundedIcon from '@mui/icons-material/ExpandLessRounded';
 import AddCircleOutlineRoundedIcon from '@mui/icons-material/AddCircleOutlineRounded';
 import EditRoundedIcon from '@mui/icons-material/EditRounded';
 import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded';
@@ -28,14 +25,11 @@ import GifBoxOutlinedIcon from '@mui/icons-material/GifBoxOutlined';
 import PollOutlinedIcon from '@mui/icons-material/PollOutlined';
 import AttachFileRoundedIcon from '@mui/icons-material/AttachFileRounded';
 import PlayCircleFilledRoundedIcon from '@mui/icons-material/PlayCircleFilledRounded';
-import AutoAwesomeRoundedIcon from '@mui/icons-material/AutoAwesomeRounded';
-import { useAtomValue } from 'jotai';
+import { useAtom, useAtomValue } from 'jotai';
 import { Capacitor } from '@capacitor/core';
 import { useTranslation } from 'react-i18next';
 import { userInfoAtom } from '../../../atoms/global';
-import { dashboardPanelSx } from '../../Group/dashboardPanelEffects';
 import { AppThumbnailAvatar } from '../../Apps/AppThumbnailAvatar';
-import { useQdnAvatar } from '../../../lib/qdnAvatars';
 import {
   executeEvent,
   subscribeToEvent,
@@ -47,8 +41,6 @@ import { ChatGifPicker } from '../../Chat/gifs/ChatGifPicker';
 import { libraryGifKey, type LibraryGif } from '../../Chat/gifs/libraryGifs';
 import {
   buildQtubeVideoIdentifier,
-  publishQuitterPost,
-  QUITTER_MAX_IMAGES,
   QuitterPublishCancelledError,
   quitterThumbSrc,
 } from './quitterPublish';
@@ -59,6 +51,7 @@ import {
   TORQ_MAX_GIFS,
   TORQ_MAX_IMAGES,
   TORQ_MIN_POLL_OPTIONS,
+  type PublishedTorqPost,
 } from './torqPublish';
 import {
   plainTextToTorqDoc,
@@ -72,13 +65,7 @@ import {
   QuitterVideoEditorDialog,
   type QuitterVideoEditorValue,
 } from './QuitterVideoEditorDialog';
-import {
-  composerAppName,
-  composerTargetOrder,
-  setComposerTarget,
-  useComposerTarget,
-  type ComposerTarget,
-} from './composerTarget';
+import { HOME_POST_APP } from './composerTarget';
 import {
   ComposerAttachmentCards,
   ComposerAttachmentEditDialog,
@@ -88,6 +75,7 @@ import {
 import {
   clearQuitterComposerSession,
   getQuitterComposerSession,
+  homeComposerOpenAtom,
   patchQuitterComposerSession,
   type SessionFileDraft,
   type SessionImageDraft,
@@ -109,8 +97,11 @@ import {
   type SharedComposerMedia,
 } from './quitterShareIntake';
 
+/** A post the composer just published, with the DOCUMENT it wrote. */
+export type HomeComposerPublished = PublishedTorqPost & { author: string };
+
 type HomeQuitterComposerProps = {
-  onPublished?: () => void;
+  onPublished?: (published: HomeComposerPublished) => void;
 };
 
 type ImageDraft = SessionImageDraft;
@@ -126,7 +117,6 @@ type PendingVideoPick = {
 };
 
 type LastPublishedPost = {
-  app: 'Quitter' | 'Torq';
   author: string;
   postIdentifier: string;
 };
@@ -144,12 +134,12 @@ const revokeBlobUrl = (url?: string) => {
   if (url?.startsWith('blob:')) URL.revokeObjectURL(url);
 };
 
-/** Open Quitter or Torq in a Q-Apps tab (optionally at one of its pages). */
-const openComposerApp = (app: string, path?: string) => {
+/** Open Torq in a Q-Apps tab (optionally at one of its pages). */
+const openComposerApp = (path?: string) => {
   executeEvent('addTab', {
     data: {
       identifier: '',
-      name: app,
+      name: HOME_POST_APP,
       ...(path ? { path } : {}),
       service: 'APP',
     },
@@ -157,6 +147,12 @@ const openComposerApp = (app: string, path?: string) => {
   executeEvent('open-apps-mode', {});
 };
 
+/**
+ * Posting to Torq from Home, at the top of the Torq feed window: folded, a
+ * one-line "Post to Torq" entry; open, the whole composer (text, images,
+ * GIFs, a video, files, a poll). It folds away again after a post or a
+ * Cancel, keeping an unfinished draft for next time.
+ */
 export const HomeQuitterComposer = ({
   onPublished,
 }: HomeQuitterComposerProps) => {
@@ -175,13 +171,12 @@ export const HomeQuitterComposer = ({
   const hasName = Boolean(userName);
 
   const session = getQuitterComposerSession();
-  const target = useComposerTarget();
-  const isTorq = target === 'torq';
-  const appName = composerAppName(target);
-  const [expanded, setExpanded] = useState(session.expanded);
-  const [text, setText] = useState(session.text);
+  const appName = HOME_POST_APP;
+  const [expanded, setExpanded] = useAtom(homeComposerOpenAtom);
+  // The editor takes the focus when the entry opens it, not on a remount.
+  const [focusEditor, setFocusEditor] = useState(false);
   const [torqDoc, setTorqDoc] = useState<TorqDocNode>(
-    () => session.torqDoc || plainTextToTorqDoc(session.text)
+    () => session.torqDoc || plainTextToTorqDoc('')
   );
   // Bumped to remount the editor when its content is replaced from outside.
   const [editorKey, setEditorKey] = useState(0);
@@ -213,6 +208,9 @@ export const HomeQuitterComposer = ({
   const [lastPublished, setLastPublished] = useState<LastPublishedPost | null>(
     null
   );
+  const rootRef = useRef<HTMLDivElement>(null);
+  const editorBoxRef = useRef<HTMLDivElement>(null);
+  const [editorFocused, setEditorFocused] = useState(false);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const videoInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -231,13 +229,11 @@ export const HomeQuitterComposer = ({
       return;
     }
     patchQuitterComposerSession({
-      text,
       images,
       video,
       preparedVideo,
       compressPercent,
       compressLabel,
-      expanded,
       status,
       error,
       compressJob: compressJobRef.current,
@@ -248,13 +244,11 @@ export const HomeQuitterComposer = ({
       files,
     });
   }, [
-    text,
     images,
     video,
     preparedVideo,
     compressPercent,
     compressLabel,
-    expanded,
     status,
     error,
     torqDoc,
@@ -335,7 +329,6 @@ export const HomeQuitterComposer = ({
     setPendingVideo(null);
     setEditorOpen(false);
     setPublishing(false);
-    setText('');
     setTorqDoc(plainTextToTorqDoc(''));
     setEditorKey((key) => key + 1);
     setImages([]);
@@ -352,31 +345,33 @@ export const HomeQuitterComposer = ({
     setStatus('');
     setError('');
     setExpanded(false);
+    setFocusEditor(false);
+    setEditorFocused(false);
     clearQuitterComposerSession();
-  }, [pendingVideo, video, images, files]);
+  }, [pendingVideo, video, images, files, setExpanded]);
 
   const openPublishedPost = useCallback((post: LastPublishedPost) => {
     openComposerApp(
-      post.app,
       `post/${encodeURIComponent(post.author)}/${encodeURIComponent(post.postIdentifier)}`
     );
   }, []);
 
-  const handleTargetChange = (next: ComposerTarget | null) => {
-    if (!next || next === target || publishing) return;
-    if (next === 'torq') {
-      setTorqDoc(plainTextToTorqDoc(text));
-      setEditorKey((key) => key + 1);
-    } else {
-      // Formatting has no Quitter equivalent; lists stay as "• " lines.
-      setText(torqDocToPostBody(torqDoc).text);
-    }
-    // Home's feed, Featured Q-Apps and the share sheet follow this choice.
-    setComposerTarget(next);
-    setError('');
+  /** The entry opens the composer and puts the cursor in it. */
+  const openComposer = () => {
+    setLastPublished(null);
+    setStatus('');
+    setFocusEditor(true);
+    setExpanded(true);
   };
 
-  const maxImages = isTorq ? TORQ_MAX_IMAGES : QUITTER_MAX_IMAGES;
+  /** Fold it away; an unfinished draft stays for next time. */
+  const foldComposer = () => {
+    setFocusEditor(false);
+    setEditorFocused(false);
+    setExpanded(false);
+  };
+
+  const maxImages = TORQ_MAX_IMAGES;
 
   /**
    * Resolve an image mime type without trusting `file.type` — files handed over
@@ -525,7 +520,7 @@ export const HomeQuitterComposer = ({
     setEditorOpen(true);
   };
 
-  // Media shared from other apps via the Android "Quitter" share target:
+  // Media shared from other apps via the Android "Torq" share target:
   // expand the composer and pre-attach the photo(s) / video.
   const applySharedMediaRef = useRef<
     (media: SharedComposerMedia | null) => void
@@ -549,15 +544,48 @@ export const HomeQuitterComposer = ({
     }
   };
   useEffect(() => {
-    const handler = () =>
-      applySharedMediaRef.current(takePendingQuitterShare());
+    let scrollTimer: number | undefined;
+    const handler = () => {
+      const media = takePendingQuitterShare();
+      if (!media) return;
+      applySharedMediaRef.current(media);
+      // The Torq window can be far down Home: once Home is on screen, bring
+      // the composer with the shared media to the top.
+      window.clearTimeout(scrollTimer);
+      scrollTimer = window.setTimeout(() => {
+        rootRef.current?.scrollIntoView?.({
+          behavior: 'smooth',
+          block: 'start',
+        });
+      }, 400);
+    };
     // Media may have arrived before this composer mounted (cold launch).
     handler();
     subscribeToEvent(QUITTER_SHARED_MEDIA_EVENT, handler);
     return () => {
+      window.clearTimeout(scrollTimer);
       unsubscribeFromEvent(QUITTER_SHARED_MEDIA_EVENT, handler);
     };
   }, []);
+
+  // The keyboard opens over the bottom of Home, where the tab bar stays:
+  // once it is up, bring the editor to the middle of what is left (as
+  // Qortino's box on Home does).
+  useEffect(() => {
+    if (!editorFocused) return;
+    const bringIntoView = () =>
+      editorBoxRef.current?.scrollIntoView?.({
+        behavior: 'smooth',
+        block: 'center',
+      });
+    const viewport = window.visualViewport;
+    viewport?.addEventListener('resize', bringIntoView);
+    const timer = window.setTimeout(bringIntoView, 450);
+    return () => {
+      viewport?.removeEventListener('resize', bringIntoView);
+      window.clearTimeout(timer);
+    };
+  }, [editorFocused]);
 
   const handlePickVideoAndroid = async () => {
     try {
@@ -821,26 +849,18 @@ export const HomeQuitterComposer = ({
     () => (pollChoices ? normalizeTorqPoll(pollChoices) : null),
     [pollChoices]
   );
-  const torqOnlyContent =
-    gifs.length > 0 || files.length > 0 || pollChoices != null;
-  const quitterBlockedReason = isTorq
-    ? ''
-    : torqOnlyContent
-      ? tc('torq_only_content')
-      : images.length > QUITTER_MAX_IMAGES
-        ? tc('quitter_image_limit', { count: QUITTER_MAX_IMAGES })
-        : '';
-  const pollInvalid = isTorq && pollChoices != null && !normalizedPoll;
-  const hasBody = isTorq ? torqBody.text.length > 0 : text.trim().length > 0;
+  const pollInvalid = pollChoices != null && !normalizedPoll;
+  const hasBody = torqBody.text.length > 0;
   const hasMedia =
     images.length > 0 ||
     video != null ||
-    (isTorq && (gifs.length > 0 || files.length > 0 || normalizedPoll != null));
+    gifs.length > 0 ||
+    files.length > 0 ||
+    normalizedPoll != null;
 
   const canPublish =
     hasName &&
     !publishing &&
-    !quitterBlockedReason &&
     !pollInvalid &&
     (hasBody || hasMedia) &&
     (!video || (video.title.trim().length > 0 && video.category > 0));
@@ -850,7 +870,6 @@ export const HomeQuitterComposer = ({
     publishAbortRef.current?.abort();
     const abort = new AbortController();
     publishAbortRef.current = abort;
-    const publishTarget = target;
     setPublishing(true);
     setError('');
     setLiveSentBytes(0);
@@ -955,40 +974,29 @@ export const HomeQuitterComposer = ({
         }
       };
 
-      let published: { postIdentifier: string } | undefined;
+      let published: PublishedTorqPost | undefined;
       try {
-        published =
-          publishTarget === 'torq'
-            ? await publishTorqPost({
-                text: torqBody.text,
-                richText: torqBody.richText,
-                userName,
-                images: images.map((item) => ({ file: item.file })),
-                video: videoInput,
-                gifs,
-                poll: pollChoices
-                  ? normalizeTorqPoll(pollChoices, {
-                      anonymous: pollAnonymous,
-                    })
-                  : null,
-                files: files.map((item) => ({
-                  file: item.file,
-                  title: item.title,
-                  filename: item.filename,
-                  thumbnail: item.thumbnail,
-                })),
-                onProgress,
-                signal: abort.signal,
+        published = await publishTorqPost({
+          text: torqBody.text,
+          richText: torqBody.richText,
+          userName,
+          images: images.map((item) => ({ file: item.file })),
+          video: videoInput,
+          gifs,
+          poll: pollChoices
+            ? normalizeTorqPoll(pollChoices, {
+                anonymous: pollAnonymous,
               })
-            : await publishQuitterPost({
-                // Quitter stores/renders plain text (pre-wrap) — never HTML tags.
-                text,
-                userName,
-                images: images.map((item) => ({ file: item.file })),
-                video: videoInput,
-                onProgress,
-                signal: abort.signal,
-              });
+            : null,
+          files: files.map((item) => ({
+            file: item.file,
+            title: item.title,
+            filename: item.filename,
+            thumbnail: item.thumbnail,
+          })),
+          onProgress,
+          signal: abort.signal,
+        });
       } finally {
         unsubscribeFromEvent('receiveChunks', onChunkProgress);
       }
@@ -998,16 +1006,14 @@ export const HomeQuitterComposer = ({
       }
 
       const nextPublished: LastPublishedPost | null = published?.postIdentifier
-        ? {
-            app: publishTarget === 'torq' ? 'Torq' : 'Quitter',
-            author: userName,
-            postIdentifier: published.postIdentifier,
-          }
+        ? { author: userName, postIdentifier: published.postIdentifier }
         : null;
       resetDraft();
       setLastPublished(nextPublished);
       setStatus(tc('status.published'));
-      onPublished?.();
+      if (published?.postIdentifier) {
+        onPublished?.({ ...published, author: userName });
+      }
     } catch (err: any) {
       if (isCancelError(err)) {
         setStatus(tc('status.cancelled'));
@@ -1034,261 +1040,176 @@ export const HomeQuitterComposer = ({
   };
 
   const isDark = theme.palette.mode === 'dark';
-  const hazeAccent = '#7EB6FF';
-  const hazeWarm = '#E8D5C4';
-  // Quitter and Torq ship bundled icons, so this is set even on a slow node.
-  const { src: appLogoUrl } = useQdnAvatar(appName, { countUse: false });
+  // Folded, the entry shows the draft's first line: a draft is never hidden.
+  const draftPreview =
+    torqBody.text.split('\n').find((line) => line.trim().length > 0) || '';
+  const busy = publishing || videoCompressing;
+  const postToLabel = tc('post_to', { app: appName });
+
+  const torqLogoButton = (
+    <ButtonBase
+      aria-label={tc('open_app', { app: appName })}
+      onClick={() => openComposerApp()}
+      sx={{
+        borderRadius: '50%',
+        flexShrink: 0,
+        transition: 'transform 140ms ease',
+        '&:active': { transform: 'scale(0.94)' },
+        '&:focus-visible': {
+          outline: `2px solid ${alpha(theme.palette.primary.main, 0.6)}`,
+          outlineOffset: 2,
+        },
+      }}
+    >
+      <AppThumbnailAvatar
+        appName={appName}
+        fallbackSize={20}
+        sx={{
+          bgcolor: alpha(theme.palette.common.black, isDark ? 0.25 : 0.06),
+          border: `1px solid ${alpha(theme.palette.common.white, isDark ? 0.12 : 0.5)}`,
+          height: 34,
+          width: 34,
+          '& img': { objectFit: 'cover' },
+        }}
+      />
+    </ButtonBase>
+  );
+
+  const revButton = (
+    // Torq's own Rev editor (torqRevShare).
+    <Button
+      size="small"
+      variant="outlined"
+      aria-label={tc('rev_aria')}
+      startIcon={<AddCircleOutlineRoundedIcon />}
+      onClick={() => void openTorqRevComposer()}
+      sx={{
+        borderRadius: '10px',
+        flexShrink: 0,
+        fontWeight: 600,
+        minWidth: 0,
+        px: 1.1,
+        textTransform: 'none',
+        '& .MuiButton-startIcon': { mr: 0.5 },
+      }}
+    >
+      {tc('action_rev')}
+    </Button>
+  );
 
   return (
     <Box
+      ref={rootRef}
+      data-home-composer={expanded ? 'open' : 'folded'}
       sx={{
-        ...dashboardPanelSx(theme, 'base'),
-        // Contain decoration — dashboardPanelSx sets overflow:visible by default.
-        borderRadius: '12px',
         display: 'flex',
         flexDirection: 'column',
-        gap: 1.25,
-        isolation: 'isolate',
+        gap: 1,
         minWidth: 0,
-        overflow: 'hidden',
-        padding: expanded ? '16px 18px 18px' : '14px 18px',
-        position: 'relative',
         width: '100%',
-        // Soft tint stays inside the card only.
-        backgroundImage: isDark
-          ? `radial-gradient(90% 120% at 12% 30%, ${alpha(hazeAccent, 0.12)} 0%, transparent 55%), radial-gradient(80% 100% at 88% 70%, ${alpha(hazeWarm, 0.08)} 0%, transparent 50%), linear-gradient(180deg, rgba(255,255,255,0.018) 0%, rgba(255,255,255,0.008) 22%, rgba(255,255,255,0) 100%)`
-          : `radial-gradient(90% 120% at 12% 30%, ${alpha(hazeAccent, 0.1)} 0%, transparent 55%), radial-gradient(80% 100% at 88% 70%, ${alpha(hazeWarm, 0.14)} 0%, transparent 50%), linear-gradient(180deg, rgba(255,255,255,0.62) 0%, rgba(255,255,255,0.22) 22%, rgba(255,255,255,0) 100%)`,
-        '@keyframes quitterLogoFloat0': {
-          '0%, 100%': { transform: 'translate3d(0, 0, 0) rotate(-6deg)' },
-          '50%': { transform: 'translate3d(10px, -8px, 0) rotate(4deg)' },
-        },
-        '@keyframes quitterLogoFloat1': {
-          '0%, 100%': { transform: 'translate3d(0, 0, 0) rotate(8deg)' },
-          '50%': { transform: 'translate3d(-12px, 10px, 0) rotate(-4deg)' },
-        },
-        '@keyframes quitterLogoFloat2': {
-          '0%, 100%': {
-            transform: 'translate3d(0, 0, 0) scale(1) rotate(-3deg)',
-          },
-          '50%': {
-            transform: 'translate3d(8px, 12px, 0) scale(1.06) rotate(6deg)',
-          },
-        },
-        '@keyframes quitterLogoFloat3': {
-          '0%, 100%': { transform: 'translate3d(0, 0, 0) rotate(5deg)' },
-          '50%': { transform: 'translate3d(-8px, -10px, 0) rotate(-8deg)' },
-        },
-        // Kill the panel's external top glow so it can't spill onto the page.
-        '&::after': { display: 'none' },
       }}
     >
-      {/* Floating faded logos — must use dashboard-panel-decoration so
-          dashboardPanelSx does not force position:relative (which blew up the layout). */}
-      <Box
-        aria-hidden
-        className="dashboard-panel-decoration"
-        sx={{
-          borderRadius: 'inherit',
-          inset: 0,
-          overflow: 'hidden',
-          pointerEvents: 'none',
-          position: 'absolute',
-          zIndex: 0,
-        }}
-      >
-        {[
-          {
-            top: '8%',
-            left: '72%',
-            size: 56,
-            anim: 0,
-            dur: '11s',
-            opacity: 0.14,
-          },
-          {
-            top: '42%',
-            left: '78%',
-            size: 40,
-            anim: 1,
-            dur: '15s',
-            opacity: 0.1,
-          },
-          {
-            top: '18%',
-            left: '58%',
-            size: 34,
-            anim: 2,
-            dur: '13s',
-            opacity: 0.08,
-          },
-          {
-            top: '62%',
-            left: '64%',
-            size: 48,
-            anim: 3,
-            dur: '17s',
-            opacity: 0.11,
-          },
-        ].map((logo) => (
-          <Box
-            key={logo.anim}
-            component="img"
-            alt=""
-            src={appLogoUrl}
-            sx={{
-              animation: `quitterLogoFloat${logo.anim} ${logo.dur} ease-in-out infinite`,
-              borderRadius: '14px',
-              filter: isDark
-                ? 'saturate(0.8) brightness(1.05)'
-                : 'saturate(0.85)',
-              height: logo.size,
-              left: logo.left,
-              objectFit: 'cover',
-              opacity: logo.opacity,
-              position: 'absolute',
-              top: logo.top,
-              width: logo.size,
-              willChange: 'transform',
-            }}
-          />
-        ))}
-      </Box>
-
       <Box
         sx={{
           alignItems: 'center',
           display: 'flex',
-          gap: 1.1,
-          justifyContent: 'space-between',
+          gap: 1,
           minWidth: 0,
-          position: 'relative',
-          zIndex: 1,
         }}
       >
-        <Box
-          sx={{
-            alignItems: 'center',
-            display: 'flex',
-            gap: 1.1,
-            minWidth: 0,
-          }}
-        >
-          <ButtonBase
-            aria-label={tc('open_app', { app: appName })}
-            onClick={() => openComposerApp(appName)}
+        {torqLogoButton}
+        {expanded ? (
+          <Typography
+            noWrap
             sx={{
-              borderRadius: '50%',
-              flexShrink: 0,
-              transition: 'transform 140ms ease',
-              '&:active': { transform: 'scale(0.94)' },
+              color: theme.palette.text.primary,
+              flex: 1,
+              fontSize: '0.95rem',
+              fontWeight: 650,
+              minWidth: 0,
+            }}
+          >
+            {postToLabel}
+          </Typography>
+        ) : (
+          <ButtonBase
+            aria-label={postToLabel}
+            onClick={openComposer}
+            sx={{
+              alignItems: 'center',
+              backgroundColor: isDark
+                ? alpha(theme.palette.common.white, 0.04)
+                : alpha(theme.palette.common.black, 0.03),
+              border: `1px solid ${alpha(theme.palette.text.primary, isDark ? 0.2 : 0.16)}`,
+              borderRadius: '999px',
+              display: 'flex',
+              flex: 1,
+              gap: 1,
+              height: 40,
+              justifyContent: 'flex-start',
+              minWidth: 0,
+              px: 1.5,
+              transition:
+                'background-color 140ms ease, border-color 140ms ease',
+              '&:hover': {
+                backgroundColor: alpha(theme.palette.primary.main, 0.06),
+                borderColor: alpha(theme.palette.primary.main, 0.4),
+              },
               '&:focus-visible': {
                 outline: `2px solid ${alpha(theme.palette.primary.main, 0.6)}`,
                 outlineOffset: 2,
               },
             }}
           >
-            <AppThumbnailAvatar
-              key={appName}
-              appName={appName}
-              fallbackSize={22}
-              sx={{
-                bgcolor: alpha(
-                  theme.palette.common.black,
-                  isDark ? 0.25 : 0.06
-                ),
-                border: `1px solid ${alpha(theme.palette.common.white, isDark ? 0.12 : 0.5)}`,
-                boxShadow: `0 4px 14px ${alpha(hazeAccent, 0.18)}`,
-                height: 36,
-                width: 36,
-                '& img': { objectFit: 'cover' },
-              }}
-            />
-          </ButtonBase>
-          <Box sx={{ minWidth: 0 }}>
-            <Typography
-              sx={{
-                color: theme.palette.text.primary,
-                fontSize: '1rem',
-                fontWeight: 650,
-                letterSpacing: '0.01em',
-              }}
-            >
-              {tc('post_to', { app: appName })}
-            </Typography>
-            <Typography
+            <EditRoundedIcon
               sx={{
                 color: theme.palette.text.secondary,
-                fontSize: '0.78rem',
-                lineHeight: 1.45,
-                mt: 0.15,
-              }}
-            >
-              {isTorq ? tc('subtitle_torq') : tc('subtitle_quitter')}
-            </Typography>
-          </Box>
-        </Box>
-        <Box
-          // Rev above Compose, the same width.
-          sx={{
-            alignItems: 'stretch',
-            display: 'flex',
-            flexDirection: 'column',
-            flexShrink: 0,
-            gap: 0.5,
-          }}
-        >
-          {isTorq ? (
-            // Torq's own Rev editor (torqRevShare).
-            <Button
-              size="small"
-              variant="outlined"
-              aria-label={tc('rev_aria')}
-              startIcon={<AddCircleOutlineRoundedIcon />}
-              onClick={() => void openTorqRevComposer()}
-              sx={{
-                borderRadius: '10px',
                 flexShrink: 0,
-                fontWeight: 600,
+                fontSize: 17,
+              }}
+            />
+            <Typography
+              noWrap
+              sx={{
+                color:
+                  draftPreview && !busy
+                    ? theme.palette.text.primary
+                    : theme.palette.text.secondary,
+                fontSize: 14,
                 minWidth: 0,
-                px: 1.1,
-                textTransform: 'none',
-                '& .MuiButton-startIcon': { mr: 0.5 },
               }}
             >
-              {tc('action_rev')}
-            </Button>
-          ) : null}
-          <Button
+              {busy ? status || compressLabel : draftPreview || postToLabel}
+            </Typography>
+          </ButtonBase>
+        )}
+        {revButton}
+        {expanded ? (
+          <IconButton
             size="small"
-            endIcon={
-              <ExpandMoreRoundedIcon
-                sx={{
-                  transform: expanded ? 'rotate(180deg)' : 'none',
-                  transition: 'transform 160ms ease',
-                }}
-              />
-            }
-            onClick={() => {
-              setLastPublished(null);
-              setStatus('');
-              setExpanded((v) => !v);
-            }}
-            sx={{
-              borderRadius: '10px',
-              flexShrink: 0,
-              fontWeight: 600,
-              px: 1.25,
-              textTransform: 'none',
-            }}
+            aria-label={t('core:action.hide', {
+              postProcess: 'capitalizeFirstChar',
+            })}
+            onClick={foldComposer}
           >
-            {expanded
-              ? t('core:action.hide', { postProcess: 'capitalizeFirstChar' })
-              : tc('action_compose')}
-          </Button>
-        </Box>
+            <ExpandLessRoundedIcon />
+          </IconButton>
+        ) : null}
       </Box>
 
-      {lastPublished ? (
+      {!expanded && busy ? (
+        <LinearProgress
+          variant={
+            compressPercent == null || compressPercent < 0
+              ? 'indeterminate'
+              : 'determinate'
+          }
+          value={Math.max(0, compressPercent ?? 0)}
+          sx={{ borderRadius: 999, height: 3 }}
+        />
+      ) : null}
+
+      {lastPublished && !expanded ? (
         <Box
           sx={{
             alignItems: 'center',
@@ -1299,10 +1220,8 @@ export const HomeQuitterComposer = ({
             flexWrap: 'wrap',
             gap: 1,
             justifyContent: 'space-between',
-            position: 'relative',
             px: 1.25,
-            py: 1,
-            zIndex: 1,
+            py: 0.75,
           }}
         >
           <Typography
@@ -1313,7 +1232,7 @@ export const HomeQuitterComposer = ({
               minWidth: 0,
             }}
           >
-            {tc('published_to', { app: lastPublished.app })}
+            {tc('published_to', { app: appName })}
           </Typography>
           <Button
             size="small"
@@ -1338,99 +1257,8 @@ export const HomeQuitterComposer = ({
             display: 'flex',
             flexDirection: 'column',
             gap: 1.25,
-            position: 'relative',
-            zIndex: 1,
           }}
         >
-          <Box
-            sx={{
-              alignItems: 'center',
-              display: 'flex',
-              flexWrap: 'wrap',
-              gap: 1,
-            }}
-          >
-            <ToggleButtonGroup
-              exclusive
-              size="small"
-              value={target}
-              disabled={publishing}
-              aria-label={tc('target_label')}
-              onChange={(_event, next) => handleTargetChange(next)}
-              sx={{
-                '& .MuiToggleButton-root': {
-                  borderRadius: '999px',
-                  fontSize: 12.5,
-                  fontWeight: 650,
-                  gap: 0.75,
-                  lineHeight: 1.2,
-                  px: 1.5,
-                  py: 0.5,
-                  textTransform: 'none',
-                },
-                '& .MuiToggleButtonGroup-grouped:not(:first-of-type)': {
-                  ml: 0.5,
-                  borderLeft: `1px solid ${theme.palette.divider}`,
-                },
-              }}
-            >
-              {composerTargetOrder(target).map((option) => {
-                const optionApp = composerAppName(option);
-                return (
-                  <ToggleButton key={option} value={option}>
-                    <AppThumbnailAvatar
-                      appName={optionApp}
-                      fallbackSize={12}
-                      sx={{
-                        height: 18,
-                        width: 18,
-                        '& img': { objectFit: 'cover' },
-                      }}
-                    />
-                    {optionApp}
-                  </ToggleButton>
-                );
-              })}
-            </ToggleButtonGroup>
-            {!isTorq ? (
-              <Box
-                sx={{
-                  alignItems: 'center',
-                  color: theme.palette.text.secondary,
-                  display: 'flex',
-                  flex: '1 1 180px',
-                  gap: 0.5,
-                  minWidth: 0,
-                }}
-              >
-                <AutoAwesomeRoundedIcon
-                  sx={{ color: theme.palette.primary.main, fontSize: 15 }}
-                />
-                <Typography sx={{ fontSize: 12, lineHeight: 1.35 }}>
-                  {tc('try_torq')}{' '}
-                  <Box
-                    component="button"
-                    type="button"
-                    disabled={publishing}
-                    onClick={() => handleTargetChange('torq')}
-                    sx={{
-                      background: 'none',
-                      border: 0,
-                      color: theme.palette.primary.main,
-                      cursor: 'pointer',
-                      font: 'inherit',
-                      fontWeight: 650,
-                      p: 0,
-                      textDecoration: 'underline',
-                    }}
-                  >
-                    {tc('switch_to_torq')}
-                  </Box>
-                </Typography>
-              </Box>
-            ) : null}
-          </Box>
-
           {!hasName ? (
             <Typography
               sx={{
@@ -1447,36 +1275,23 @@ export const HomeQuitterComposer = ({
             </Typography>
           ) : null}
 
-          {isTorq ? (
+          <Box
+            ref={editorBoxRef}
+            onFocus={() => setEditorFocused(true)}
+            onBlur={(event) => {
+              if (!event.currentTarget.contains(event.relatedTarget as Node)) {
+                setEditorFocused(false);
+              }
+            }}
+          >
             <TorqTextEditor
               key={editorKey}
               initialDoc={torqDoc}
+              autoFocus={focusEditor && hasName}
               disabled={!hasName || publishing}
               onChange={setTorqDoc}
             />
-          ) : (
-            <TextField
-              multiline
-              minRows={4}
-              maxRows={10}
-              fullWidth
-              disabled={!hasName || publishing}
-              placeholder={tc('quitter_placeholder')}
-              value={text}
-              onChange={(event) => setText(event.target.value)}
-              sx={{
-                '& .MuiOutlinedInput-root': {
-                  backgroundColor:
-                    theme.palette.mode === 'dark'
-                      ? 'rgba(255,255,255,0.03)'
-                      : alpha(theme.palette.common.black, 0.02),
-                  borderRadius: '12px',
-                  fontSize: 14,
-                  lineHeight: 1.55,
-                },
-              }}
-            />
-          )}
+          </Box>
 
           {/* Attachments in the order the post shows them. */}
           <ComposerGifStack
@@ -1504,7 +1319,7 @@ export const HomeQuitterComposer = ({
             }
           />
 
-          {isTorq && pollChoices ? (
+          {pollChoices ? (
             <TorqPollEditor
               choices={pollChoices}
               anonymous={pollAnonymous}
@@ -1695,17 +1510,15 @@ export const HomeQuitterComposer = ({
               >
                 <ImageOutlinedIcon />
               </IconButton>
-              {isTorq ? (
-                <IconButton
-                  aria-label={tc('add_gif')}
-                  disabled={
-                    !hasName || publishing || gifs.length >= TORQ_MAX_GIFS
-                  }
-                  onClick={() => setGifDialogOpen(true)}
-                >
-                  <GifBoxOutlinedIcon />
-                </IconButton>
-              ) : null}
+              <IconButton
+                aria-label={tc('add_gif')}
+                disabled={
+                  !hasName || publishing || gifs.length >= TORQ_MAX_GIFS
+                }
+                onClick={() => setGifDialogOpen(true)}
+              >
+                <GifBoxOutlinedIcon />
+              </IconButton>
               <IconButton
                 aria-label={tc('add_video')}
                 disabled={!hasName || publishing || Boolean(video)}
@@ -1719,67 +1532,60 @@ export const HomeQuitterComposer = ({
               >
                 <VideocamOutlinedIcon />
               </IconButton>
-              {isTorq ? (
-                <>
-                  <IconButton
-                    aria-label={tc('add_files')}
-                    disabled={!hasName || publishing}
-                    onClick={() => fileInputRef.current?.click()}
-                  >
-                    <AttachFileRoundedIcon />
-                  </IconButton>
-                  <IconButton
-                    aria-label={tc('add_poll')}
-                    aria-pressed={pollChoices != null}
-                    disabled={!hasName || publishing}
-                    onClick={() => {
-                      if (pollChoices) {
-                        setPollChoices(null);
-                        setPollAnonymous(false);
-                      } else {
-                        setPollChoices(
-                          Array.from(
-                            { length: TORQ_MIN_POLL_OPTIONS },
-                            () => ''
-                          )
-                        );
+              <IconButton
+                aria-label={tc('add_files')}
+                disabled={!hasName || publishing}
+                onClick={() => fileInputRef.current?.click()}
+              >
+                <AttachFileRoundedIcon />
+              </IconButton>
+              <IconButton
+                aria-label={tc('add_poll')}
+                aria-pressed={pollChoices != null}
+                disabled={!hasName || publishing}
+                onClick={() => {
+                  if (pollChoices) {
+                    setPollChoices(null);
+                    setPollAnonymous(false);
+                  } else {
+                    setPollChoices(
+                      Array.from({ length: TORQ_MIN_POLL_OPTIONS }, () => '')
+                    );
+                  }
+                }}
+                sx={
+                  pollChoices
+                    ? {
+                        backgroundColor: alpha(
+                          theme.palette.primary.main,
+                          0.12
+                        ),
+                        color: theme.palette.primary.main,
                       }
-                    }}
-                    sx={
-                      pollChoices
-                        ? {
-                            backgroundColor: alpha(
-                              theme.palette.primary.main,
-                              0.12
-                            ),
-                            color: theme.palette.primary.main,
-                          }
-                        : undefined
-                    }
-                  >
-                    <PollOutlinedIcon />
-                  </IconButton>
-                </>
-              ) : null}
+                    : undefined
+                }
+              >
+                <PollOutlinedIcon />
+              </IconButton>
             </Box>
-            <Box sx={{ display: 'flex', gap: 0.75 }}>
-              {publishing || videoCompressing ? (
-                <Button
-                  variant="outlined"
-                  color="inherit"
-                  onClick={handleCancelPublish}
-                  sx={{
-                    borderRadius: '999px',
-                    fontWeight: 650,
-                    px: 1.75,
-                    textTransform: 'none',
-                  }}
-                >
-                  {t('core:action.cancel', {
-                    postProcess: 'capitalizeFirstChar',
-                  })}
-                </Button>
-              ) : null}
+            <Box sx={{ display: 'flex', gap: 0.75, ml: 'auto' }}>
+              <Button
+                variant="outlined"
+                color="inherit"
+                // Stops a publish or a compression that is running; with
+                // nothing running it folds the composer, keeping the draft.
+                onClick={busy ? handleCancelPublish : foldComposer}
+                sx={{
+                  borderRadius: '999px',
+                  fontWeight: 650,
+                  px: 1.75,
+                  textTransform: 'none',
+                }}
+              >
+                {t('core:action.cancel', {
+                  postProcess: 'capitalizeFirstChar',
+                })}
+              </Button>
               <Button
                 variant="contained"
                 disabled={!canPublish}
@@ -1809,13 +1615,6 @@ export const HomeQuitterComposer = ({
             </Box>
           </Box>
 
-          {quitterBlockedReason ? (
-            <Typography
-              sx={{ color: theme.palette.warning.main, fontSize: 12.5 }}
-            >
-              {quitterBlockedReason}
-            </Typography>
-          ) : null}
           {pollInvalid ? (
             <Typography
               sx={{ color: theme.palette.text.secondary, fontSize: 12 }}

@@ -24,4 +24,16 @@
     <string name="call_status_group">Chamada em grupo</string>
     <string name="call_status_muted">Silenciado</string>
     <string name="call_unknown_caller">Chamador desconhecido</string>
+    <string name="media_channel_name">Reprodução de mídia</string>
+    <string name="media_channel_description">Mostra o que está tocando no GO, com controles na notificação e na tela de bloqueio.</string>
+    <string name="media_action_play">Reproduzir</string>
+    <string name="media_action_pause">Pausar</string>
+    <string name="media_action_previous">Anterior</string>
+    <string name="media_action_next">Próximo</string>
+    <string name="media_action_back">Voltar %1$d s</string>
+    <string name="media_action_forward">Avançar %1$d s</string>
+    <string name="media_action_settings">Configurações do player</string>
+    <string name="media_title_audio">Áudio</string>
+    <string name="media_title_video">Vídeo</string>
+    <string name="media_settings_hint">Toque no player para abrir as configurações</string>
 </resources>

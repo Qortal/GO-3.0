@@ -401,6 +401,8 @@ export const NotAuthenticated = ({
     }
 
     const audio = introAudioRef.current ?? new Audio(authIntroAudioSrc);
+    // A sound effect, not media: never in the background player.
+    audio.setAttribute('data-go-no-media-session', '');
     introAudioRef.current = audio;
 
     audio.pause();
@@ -490,6 +492,7 @@ export const NotAuthenticated = ({
     if (!isAuthStartupAudioEnabled()) return undefined;
 
     const audio = new Audio(authIntroAudioSrc);
+    audio.setAttribute('data-go-no-media-session', '');
     audio.preload = 'auto';
     audio.volume = AUTH_INTRO_AUDIO_VOLUME;
     introAudioRef.current = audio;

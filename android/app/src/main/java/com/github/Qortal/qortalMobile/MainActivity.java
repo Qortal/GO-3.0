@@ -79,6 +79,9 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(QortalNfcPlugin.class);
         // Voice calls: ringing, call notification buttons, lock screen.
         registerPlugin(QortalCallPlugin.class);
+        // Background player: notification + lock screen controls for audio
+        // and video playing in GO, its settings (GoMediaHub).
+        registerPlugin(QortalMediaPlugin.class);
         super.onCreate(savedInstanceState);
         // Voice calls: show over the lock screen while a call rings or runs,
         // and Accept / a call notification tap that started GO (cold start).
@@ -88,6 +91,8 @@ public class MainActivity extends BridgeActivity {
         WebViewProxyBypass.start(this);
         // "Share to Quitter": photos/videos shared from other apps (cold start).
         ShareReceiverPlugin.handleSendIntent(this, getIntent());
+        // The background player's gear or notification opened GO.
+        if (savedInstanceState == null) GoMediaHub.get(this).handleLaunchIntent(getIntent());
         // Edge-to-edge: WebView draws under system bars; CSS safe-area vars pad content.
         WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
 
@@ -166,6 +171,8 @@ public class MainActivity extends BridgeActivity {
                     // is over; its microphone service, call notification and
                     // call audio must not outlive it.
                     CallSession.get(MainActivity.this).onPageGone("page-started");
+                    // Its frames, and the media playing in them, are gone too.
+                    GoMediaHub.get(MainActivity.this).onPageGone();
                     // The new document has no metrics yet; the next push must
                     // not be skipped as a repeat (SafeArea.getInsets also
                     // hands them over at boot).
@@ -201,11 +208,15 @@ public class MainActivity extends BridgeActivity {
         ShareReceiverPlugin.handleSendIntent(this, intent);
         // Accept / a call notification tap while GO runs.
         CallSession.get(this).onLaunchIntent(intent);
+        // The background player's gear or notification.
+        GoMediaHub.get(this).handleLaunchIntent(intent);
     }
 
     @Override
     public void onStart() {
         super.onStart();
+        // Plays again what leaving GO paused (when the user wants that).
+        GoMediaHub.get(this).onActivityStart();
         BackgroundKeepAlive.get(this).onActivityStart();
         // A ring moves from the tray to the page's own call screen.
         CallSession.get(this).onActivityVisibility(true);
@@ -214,6 +225,10 @@ public class MainActivity extends BridgeActivity {
     @Override
     public void onStop() {
         super.onStop();
+        // First: pauses what should not play off screen, and tells the
+        // keep-alive whether media keeps the page running (before the
+        // framework hides the window, see GoWebView).
+        GoMediaHub.get(this).onActivityStop();
         BackgroundKeepAlive.get(this).onActivityStop();
         // A ring the page showed moves to the tray (ringtone, lock screen).
         CallSession.get(this).onActivityVisibility(false);
@@ -225,6 +240,8 @@ public class MainActivity extends BridgeActivity {
             BackgroundKeepAlive.get(this).detachWebView(this.bridge.getWebView());
         }
         CallSession.get(this).detachActivity(this);
+        // The WebView goes with the activity, and with it every player.
+        GoMediaHub.get(this).onPageGone();
         if (isFinishing()) WebViewProxyBypass.stop(this);
         super.onDestroy();
     }

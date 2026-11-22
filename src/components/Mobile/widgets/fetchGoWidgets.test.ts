@@ -12,7 +12,21 @@ const ok = (body: unknown) =>
   Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
 
 const byIdentifier = [
-  { name: 'Torq', service: 'APP', identifier: 'go-widget-news', updated: 30 },
+  {
+    name: 'Torq',
+    service: 'APP',
+    identifier: 'go-widget-news',
+    metadata: { tags: ['go-widget'] },
+    updated: 30,
+  },
+  // A retired widget: still under its identifier, no longer tagged.
+  {
+    name: 'Old',
+    service: 'APP',
+    identifier: 'go-widget-old',
+    metadata: { title: 'Moved', tags: ['weather'] },
+    updated: 40,
+  },
 ];
 const all = [
   { name: 'Q-Blog', service: 'APP', metadata: { tags: ['blog'] }, updated: 99 },
@@ -23,7 +37,13 @@ const all = [
     updated: 10,
   },
   // The same widget the identifier search found, older copy.
-  { name: 'Torq', service: 'APP', identifier: 'go-widget-news', updated: 20 },
+  {
+    name: 'Torq',
+    service: 'APP',
+    identifier: 'go-widget-news',
+    metadata: { tags: ['go-widget'] },
+    updated: 20,
+  },
 ];
 
 describe('fetchGoWidgets', () => {

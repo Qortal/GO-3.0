@@ -52,9 +52,14 @@ vi.mock('../../../plugins/ShareReceiver', () => {
 vi.mock('../../../utils/events', () => ({ executeEvent: vi.fn() }));
 
 import { getDefaultStore } from 'jotai';
-import { composerTargetAtom } from './composerTarget';
+import { executeEvent } from '../../../utils/events';
+import {
+  homeComposerOpenAtom,
+  setHomeComposerOpen,
+} from './quitterComposerSession';
 import {
   initQuitterShareIntake,
+  QUITTER_SHARED_MEDIA_EVENT,
   takePendingQuitterShare,
 } from './quitterShareIntake';
 
@@ -71,7 +76,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe('Share to Quitter / Torq intake', () => {
+describe('Share to Torq intake', () => {
   it('hands the composer shared photos without their GPS/camera metadata', async () => {
     vi.stubGlobal(
       'fetch',
@@ -95,12 +100,38 @@ describe('Share to Quitter / Torq intake', () => {
     const body = await readText(image.file);
     expect(body).not.toContain('GPSSECRET');
     expect(body).not.toContain('PrivateModel');
-    // The share-sheet entry is renamed after the composer's app at boot.
-    // Torq unless Quitter was chosen.
+    // At boot the share-sheet entry is set to Torq, whatever was chosen.
     expect(share.setShareTarget).toHaveBeenCalledWith('torq');
+    expect(share.setShareTarget).not.toHaveBeenCalledWith('quitter');
   });
 
-  it('takes up to 10 shared photos for Torq, 2 for Quitter', async () => {
+  it('opens the composer in the Torq window, on Home', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: true,
+        blob: async () => new Blob([photoBytes], { type: 'image/jpeg' }),
+      }))
+    );
+    setHomeComposerOpen(false);
+    vi.mocked(executeEvent).mockClear();
+    share.pending = [sharedPhoto(0)];
+    share.listener!();
+    await vi.waitFor(() => {
+      if (!vi.mocked(executeEvent).mock.calls.length) {
+        throw new Error('share not drained yet');
+      }
+    });
+    // Open before Home looks: the window shows even with the feed off.
+    expect(getDefaultStore().get(homeComposerOpenAtom)).toBe(true);
+    expect(vi.mocked(executeEvent).mock.calls.map(([name]) => name)).toEqual([
+      'open-home-mode',
+      QUITTER_SHARED_MEDIA_EVENT,
+    ]);
+    expect(takePendingQuitterShare()?.images).toHaveLength(1);
+  });
+
+  it('takes up to 10 shared photos, as a Torq post does', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => ({
@@ -118,12 +149,10 @@ describe('Share to Quitter / Torq intake', () => {
       return media!;
     };
 
-    getDefaultStore().set(composerTargetAtom, 'torq');
     share.pending = Array.from({ length: 5 }, (_, i) => sharedPhoto(i));
     expect((await drain()).images).toHaveLength(5);
 
-    getDefaultStore().set(composerTargetAtom, 'quitter');
-    share.pending = Array.from({ length: 5 }, (_, i) => sharedPhoto(i));
-    expect((await drain()).images).toHaveLength(2);
+    share.pending = Array.from({ length: 12 }, (_, i) => sharedPhoto(i));
+    expect((await drain()).images).toHaveLength(10);
   });
 });

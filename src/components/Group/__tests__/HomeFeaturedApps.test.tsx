@@ -77,12 +77,10 @@ import {
   HUB_ONBOARDING_QCHAT_CARD_LOCK_ATTRIBUTE,
   HUB_ONBOARDING_QCHAT_CARD_LOCK_EVENT,
 } from '../../Onboarding/hubOnboarding';
-import { getDefaultStore } from 'jotai';
-import { composerTargetAtom } from '../../Widgets/quitter/composerTarget';
 
 const FEATURED_APP_NAMES = [
   'Q-Tube',
-  'Quitter',
+  'Torq',
   'Q-Mail',
   'SubWire',
   'Q-Trade',
@@ -115,7 +113,6 @@ describe('HomeFeaturedApps', () => {
     window.localStorage.clear();
     window.sessionStorage.clear();
     document.body.removeAttribute(HUB_ONBOARDING_QCHAT_CARD_LOCK_ATTRIBUTE);
-    getDefaultStore().set(composerTargetAtom, 'quitter');
   });
 
   afterEach(() => {
@@ -136,8 +133,7 @@ describe('HomeFeaturedApps', () => {
     expect(screen.queryByText('Q-Blog')).not.toBeInTheDocument();
   });
 
-  it('shows Torq in place of Quitter when the composer posts to Torq', () => {
-    getDefaultStore().set(composerTargetAtom, 'torq');
+  it('shows Torq, where Home posts, in place of Quitter', () => {
     renderComponent();
     expect(screen.getByRole('button', { name: 'Torq' })).toBeInTheDocument();
     expect(

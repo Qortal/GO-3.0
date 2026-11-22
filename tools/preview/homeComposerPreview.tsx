@@ -1,32 +1,36 @@
 /**
- * Dev-only preview of the Home composer (Quitter / Torq), its post-style
- * attachment preview, a Torq feed card and Featured Q-Apps at phone widths.
- * Run `npm run dev` and open /tools/preview/home-composer.html. Not a build
- * input, so it never ships.
+ * Dev-only preview of Home's Torq window (the composer at the top of the
+ * Torq feed), the composer's post-style attachment preview, a Torq feed card
+ * and Featured Q-Apps at phone widths. The feed shows sample posts from its
+ * cache, so no node is needed. Run `npm run dev` and open
+ * /tools/preview/home-composer.html. Not a build input, so it never ships.
  */
 import { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { CssBaseline } from '@mui/material';
-import { getDefaultStore, useAtomValue } from 'jotai';
+import { getDefaultStore } from 'jotai';
 import '../../src/i18n/i18n';
 import '../../src/styles/index.css';
 import {
   ThemeProvider,
   useThemeContext,
 } from '../../src/components/Theme/ThemeContext';
-import { userInfoAtom } from '../../src/atoms/global';
+import {
+  quitterDashboardFeedCacheAtom,
+  userInfoAtom,
+} from '../../src/atoms/global';
 import { HomeFeaturedApps } from '../../src/components/Group/HomeFeaturedApps';
-import { HomeQuitterComposer } from '../../src/components/Widgets/quitter/HomeQuitterComposer';
+import { TorqFeedWindow } from '../../src/components/Widgets/TorqFeedWindow';
 import { QuitterFeedCard } from '../../src/components/Widgets/quitter/QuitterFeedCard';
 import {
-  composerAppName,
-  composerTargetAtom,
-  setComposerTarget,
-} from '../../src/components/Widgets/quitter/composerTarget';
-import { patchQuitterComposerSession } from '../../src/components/Widgets/quitter/quitterComposerSession';
+  clearQuitterComposerSession,
+  patchQuitterComposerSession,
+  setHomeComposerOpen,
+} from '../../src/components/Widgets/quitter/quitterComposerSession';
 import type { QuitterFeedItem } from '../../src/components/Widgets/quitter/quitterFeedTypes';
 
 const WIDTHS = [340, 360, 412, 520];
+const USER = 'Simon James';
 
 const picture = (hue: number, label: string, w = 900, h = 600) =>
   new Promise<File>((resolve) => {
@@ -67,69 +71,101 @@ const toneWav = () => {
   text(36, 'data');
   view.setUint32(40, samples * 2, true);
   for (let i = 0; i < samples; i += 1) {
-    view.setInt16(44 + i * 2, Math.sin((i / rate) * 440 * 2 * Math.PI) * 8000, true);
+    view.setInt16(
+      44 + i * 2,
+      Math.sin((i / rate) * 440 * 2 * Math.PI) * 8000,
+      true
+    );
   }
   return new File([buffer], 'Morning walk.wav', { type: '' });
 };
 
-const feedItem = (images: string[]): QuitterFeedItem => ({
-  author: 'Simon James',
+const feedItem = (images: string[], n = 1): QuitterFeedItem => ({
+  author: n === 1 ? USER : `Torq friend ${n}`,
   avatarUrl: '',
   hasVideo: false,
-  id: 'Simon James:post-1',
-  identifier: 'post-1',
+  id: `${USER}:post-${n}`,
+  identifier: `post-${n}`,
   images: images.map((src, i) => ({ alt: `image ${i}`, src })),
   latestSignature: 'sig',
-  publishedAt: Date.now() - 60_000,
+  publishedAt: Date.now() - n * 60_000,
   searchCreatedAt: Date.now(),
   service: 'DOCUMENT',
-  text: 'Which cover should the next mix use?\n\nqortal://APP/Torq/post/Simon%20James/post-1\n\nqortal://use-embed/ATTACHMENT?name=Simon&service=FILE&identifier=qshare_file_x',
-  attachments: [{ title: 'Morning walk', isAudio: true }],
-  pollOptions: ['The blue one', 'The green one'],
+  text:
+    n === 1
+      ? 'Which cover should the next mix use?\n\nqortal://APP/Torq/post/Simon%20James/post-1\n\nqortal://use-embed/ATTACHMENT?name=Simon&service=FILE&identifier=qshare_file_x'
+      : `Post number ${n} in the Torq feed.`,
+  ...(n === 1
+    ? {
+        attachments: [{ title: 'Morning walk', isAudio: true }],
+        pollOptions: ['The blue one', 'The green one'],
+      }
+    : {}),
 });
+
+/** A draft with three photos, an audio file and a PDF, composer open. */
+const loadSampleDraft = async () => {
+  const photos = await Promise.all([
+    picture(210, 'One'),
+    picture(140, 'Two'),
+    picture(30, 'Three'),
+  ]);
+  const pdf = new File(['%PDF-1.4\n'.repeat(400)], 'Tour dates 2026.pdf', {
+    type: 'application/pdf',
+  });
+  clearQuitterComposerSession();
+  patchQuitterComposerSession({
+    images: photos.map((file, i) => ({
+      id: `photo-${i}`,
+      file,
+      previewUrl: URL.createObjectURL(file),
+    })),
+    files: [
+      { id: 'audio-1', file: toneWav() },
+      { id: 'pdf-1', file: pdf },
+    ],
+  });
+  setHomeComposerOpen(true);
+};
 
 function Preview() {
   const { themeMode, toggleTheme } = useThemeContext();
-  const target = useAtomValue(composerTargetAtom);
   const [width, setWidth] = useState(360);
   const [ready, setReady] = useState(false);
+  const [feedOn, setFeedOn] = useState(true);
+  // Bumped to remount the window after the draft is replaced.
+  const [windowKey, setWindowKey] = useState(0);
   const [feedImages, setFeedImages] = useState<string[]>([]);
 
   useEffect(() => {
-    getDefaultStore().set(userInfoAtom, { name: 'Simon James' } as never);
-    setComposerTarget('torq');
+    getDefaultStore().set(userInfoAtom, { name: USER } as never);
     void (async () => {
-      const photos = await Promise.all([
-        picture(210, 'One'),
-        picture(140, 'Two'),
-        picture(30, 'Three'),
-      ]);
-      const pdf = new File(['%PDF-1.4\n'.repeat(400)], 'Tour dates 2026.pdf', {
-        type: 'application/pdf',
+      const images = (
+        await Promise.all(
+          [210, 140, 30, 300, 90, 0].map((h, i) => picture(h, `${i + 1}`))
+        )
+      ).map((file) => URL.createObjectURL(file));
+      setFeedImages(images);
+      // The window's feed shows these from its cache: no node needed.
+      getDefaultStore().set(quitterDashboardFeedCacheAtom, {
+        error: null,
+        feedKey: `following:Torq:${USER}`,
+        followingEmptyReason: null,
+        initialFeedState: 'success',
+        items: [feedItem(images, 1), feedItem([], 2), feedItem([], 3)],
+        lastFullFetchAt: Date.now(),
+        lastPollAt: Date.now(),
+        pendingItems: [],
       });
-      patchQuitterComposerSession({
-        expanded: true,
-        images: photos.map((file, i) => ({
-          id: `photo-${i}`,
-          file,
-          previewUrl: URL.createObjectURL(file),
-        })),
-        files: [
-          { id: 'audio-1', file: toneWav() },
-          { id: 'pdf-1', file: pdf },
-        ],
-      });
-      setFeedImages(
-        (await Promise.all([210, 140, 30, 300, 90, 0].map((h, i) => picture(h, `${i + 1}`))))
-          .map((file) => URL.createObjectURL(file))
-      );
       setReady(true);
     })();
   }, []);
 
   return (
     <div style={{ padding: 8 }}>
-      <div style={{ display: 'flex', gap: 4, marginBottom: 8, flexWrap: 'wrap' }}>
+      <div
+        style={{ display: 'flex', gap: 4, marginBottom: 8, flexWrap: 'wrap' }}
+      >
         {WIDTHS.map((w) => (
           <button
             key={w}
@@ -140,18 +176,40 @@ function Preview() {
           </button>
         ))}
         <button onClick={toggleTheme}>{themeMode}</button>
+        <button onClick={() => setFeedOn((on) => !on)}>
+          feed: {feedOn ? 'on' : 'off'}
+        </button>
         <button
           onClick={() =>
-            setComposerTarget(target === 'torq' ? 'quitter' : 'torq')
+            void loadSampleDraft().then(() => setWindowKey((key) => key + 1))
           }
         >
-          target: {target}
+          sample draft
+        </button>
+        <button
+          onClick={() => {
+            clearQuitterComposerSession();
+            setWindowKey((key) => key + 1);
+          }}
+        >
+          empty draft
         </button>
       </div>
       {ready ? (
-        <div style={{ width, display: 'flex', flexDirection: 'column', gap: 16 }}>
-          <HomeQuitterComposer />
-          <QuitterFeedCard app={composerAppName(target)} item={feedItem(feedImages)} />
+        <div
+          style={{ width, display: 'flex', flexDirection: 'column', gap: 16 }}
+        >
+          <TorqFeedWindow
+            key={windowKey}
+            actionLabel="Open in Q-Apps"
+            feed={feedOn ? { displayMode: 'compact' } : null}
+            height={612}
+            onAction={() => undefined}
+            onRefresh={() => undefined}
+            title={feedOn ? 'Torq Feed' : 'Torq'}
+            widgetId="quitter"
+          />
+          <QuitterFeedCard app="Torq" item={feedItem(feedImages)} />
           <HomeFeaturedApps />
         </div>
       ) : null}

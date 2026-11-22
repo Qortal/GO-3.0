@@ -74,7 +74,6 @@ describe('Home window order', () => {
       'groupActivity',
       'feed',
       'account',
-      'composer',
       'tools',
       'featured',
     ]);
@@ -111,13 +110,61 @@ describe('Home window order', () => {
       'wallet',
       'workspace',
       'account',
-      'composer',
       'featured',
       'status',
       'tools',
       'groupActivity',
       'feed',
     ]);
+  });
+
+  it('reads an order saved with the old composer window', () => {
+    // Posting had a window of its own before it moved into the Torq window.
+    localStorage.setItem(
+      HOME_WINDOW_ORDER_STORAGE_KEY,
+      JSON.stringify([
+        'composer',
+        'feed',
+        'workspace',
+        'account',
+        'tools',
+        'featured',
+        'status',
+        'wallet',
+        'groupActivity',
+      ])
+    );
+    expect(readHomeWindowOrder()).toEqual([
+      'feed',
+      'workspace',
+      'account',
+      'tools',
+      'featured',
+      'status',
+      'wallet',
+      'groupActivity',
+    ]);
+
+    // The old default order is today's default without it.
+    localStorage.setItem(
+      HOME_WINDOW_ORDER_STORAGE_KEY,
+      JSON.stringify([
+        'workspace',
+        'account',
+        'composer',
+        'tools',
+        'featured',
+        'status',
+        'wallet',
+        'groupActivity',
+        'feed',
+      ])
+    );
+    expect(readHomeWindowOrder()).toEqual([...HOME_WINDOW_ORDER_DEFAULT]);
+    expect(isDefaultHomeWindowOrder(readHomeWindowOrder())).toBe(true);
+    expect(HOME_WINDOW_ORDER_DEFAULT as readonly string[]).not.toContain(
+      'composer'
+    );
   });
 
   it('shows the shown windows in the saved order, new ones last', () => {

@@ -24,4 +24,16 @@
     <string name="call_status_group">群组通话</string>
     <string name="call_status_muted">已静音</string>
     <string name="call_unknown_caller">未知来电者</string>
+    <string name="media_channel_name">媒体播放</string>
+    <string name="media_channel_description">显示 GO 中正在播放的内容，并在通知和锁屏上提供控制按钮。</string>
+    <string name="media_action_play">播放</string>
+    <string name="media_action_pause">暂停</string>
+    <string name="media_action_previous">上一个</string>
+    <string name="media_action_next">下一个</string>
+    <string name="media_action_back">后退 %1$d 秒</string>
+    <string name="media_action_forward">快进 %1$d 秒</string>
+    <string name="media_action_settings">播放器设置</string>
+    <string name="media_title_audio">音频</string>
+    <string name="media_title_video">视频</string>
+    <string name="media_settings_hint">点按播放器即可打开其设置</string>
 </resources>

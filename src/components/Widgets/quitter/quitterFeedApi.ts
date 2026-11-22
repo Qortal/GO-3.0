@@ -283,6 +283,30 @@ const mapDocumentToFeedItem = (
   };
 };
 
+/**
+ * A post this account just published, as a feed item built from the DOCUMENT
+ * it wrote. Home's feed shows it at once: the node lists a new post only once
+ * a block takes it, and Following leaves out the account's own posts.
+ */
+export const feedItemFromPublishedPost = (
+  author: string,
+  identifier: string,
+  post: unknown
+): QuitterFeedItem | null =>
+  isQuitterDocument(post)
+    ? mapDocumentToFeedItem(
+        {
+          created: post.timestamp,
+          identifier,
+          latestSignature: '',
+          name: author,
+          service: 'DOCUMENT',
+          size: 0,
+        },
+        post
+      )
+    : null;
+
 const getFollowedNameFromDocument = (document: unknown) => {
   if (!isRecord(document)) {
     return null;

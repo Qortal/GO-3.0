@@ -41,8 +41,8 @@ type LoadState =
   | { phase: 'ready'; widgets: GoWidgetListing[] };
 
 /**
- * The widgets published on QDN (tagged go-widget, or with a go-widget…
- * identifier), to add to the widgets screen. Nothing runs from here: a
+ * The widgets published on QDN (APPs tagged go-widget), to add to the
+ * widgets screen. Nothing runs from here: a
  * widget only loads once it is on the screen.
  */
 export const WidgetPicker = ({
@@ -234,7 +234,7 @@ export const WidgetPicker = ({
               >
                 {tw(
                   'picker_developers',
-                  'Q-App developers: publish a widget as an APP with the tag go-widget, or with an identifier starting with go-widget.'
+                  'Q-App developers: publish a widget as an APP with the tag go-widget, ideally with an identifier starting with go-widget.'
                 )}
               </Typography>
             ) : null}

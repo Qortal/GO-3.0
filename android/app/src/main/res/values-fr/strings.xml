@@ -24,4 +24,16 @@
     <string name="call_status_group">Appel de groupe</string>
     <string name="call_status_muted">Micro coupé</string>
     <string name="call_unknown_caller">Appelant inconnu</string>
+    <string name="media_channel_name">Lecture multimédia</string>
+    <string name="media_channel_description">Affiche ce qui est lu dans GO, avec les commandes dans la notification et sur l\'écran de verrouillage.</string>
+    <string name="media_action_play">Lire</string>
+    <string name="media_action_pause">Pause</string>
+    <string name="media_action_previous">Précédent</string>
+    <string name="media_action_next">Suivant</string>
+    <string name="media_action_back">Reculer de %1$d s</string>
+    <string name="media_action_forward">Avancer de %1$d s</string>
+    <string name="media_action_settings">Réglages du lecteur</string>
+    <string name="media_title_audio">Audio</string>
+    <string name="media_title_video">Vidéo</string>
+    <string name="media_settings_hint">Touche le lecteur pour ouvrir ses réglages</string>
 </resources>

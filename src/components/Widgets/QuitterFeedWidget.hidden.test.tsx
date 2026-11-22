@@ -29,7 +29,6 @@ import {
   quitterDashboardFeedCacheAtom,
   userInfoAtom,
 } from '../../atoms/global';
-import { composerTargetAtom } from './quitter/composerTarget';
 import { QuitterFeedWidget } from './QuitterFeedWidget';
 import type { QuitterFeedItem } from './quitter/quitterFeedTypes';
 
@@ -75,7 +74,6 @@ beforeEach(() => {
 
 describe('QuitterFeedWidget and Torq hidden users', () => {
   it('leaves Torq hidden users out of the Torq feed', async () => {
-    getDefaultStore().set(composerTargetAtom, 'torq');
     renderWidget();
     await waitFor(() => expect(api.fetchQuitterFeedPage).toHaveBeenCalled());
     expect(api.fetchTorqHiddenUsers).toHaveBeenCalledWith(
@@ -88,16 +86,7 @@ describe('QuitterFeedWidget and Torq hidden users', () => {
     });
   });
 
-  it('keeps the Quitter feed as it was', async () => {
-    getDefaultStore().set(composerTargetAtom, 'quitter');
-    renderWidget();
-    await waitFor(() => expect(api.fetchQuitterFeedPage).toHaveBeenCalled());
-    expect(api.fetchTorqHiddenUsers).not.toHaveBeenCalled();
-    expect(api.fetchQuitterFeedPage.mock.calls[0][0].hiddenAuthors).toEqual([]);
-  });
-
   it('drops a hidden account from a feed shown from cache', async () => {
-    getDefaultStore().set(composerTargetAtom, 'torq');
     getDefaultStore().set(quitterDashboardFeedCacheAtom, {
       error: null,
       feedKey: 'following:Torq:Alice',

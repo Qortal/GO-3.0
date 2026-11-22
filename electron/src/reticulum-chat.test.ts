@@ -57,6 +57,7 @@ import {
   verifyReticulumDmResourceReceipt,
   verifyReticulumMetadataSnapshotRequest,
   verifyReticulumChatReadSyncWire,
+  buildReticulumChatReadSyncSignedFields,
   buildReticulumChatDeviceStateSignedFields,
   buildReticulumChatDeviceStateWires,
   reticulumChatDeviceStateChunkCapacity,
@@ -41187,6 +41188,282 @@ describe('reticulum chat own-device copy of outbound DMs', () => {
       expect(
         t.manager.getDeliveryCounters().dmPendingRedeliverEarly
       ).toBeGreaterThan(0);
+    } finally {
+      t.cleanup();
+    }
+  });
+
+  const dmReadSyncWire = (
+    owner: ReturnType<typeof createDmIdentity>,
+    peerAddress: string,
+    upToTimestamp: number,
+    signedAt: number
+  ): Extract<ReticulumChatWire, { k: 'read_sync' }> => {
+    const fields = {
+      ...buildReticulumChatReadSyncSignedFields({
+        scopeType: 'dm',
+        ownerAddress: owner.address,
+        conversationId: reticulumDmConversationId(owner.address, peerAddress),
+        peerAddress,
+        upToTimestamp,
+        signedAt,
+      }),
+      authorAddress: owner.address,
+      authorPublicKey: owner.publicKey,
+    };
+    return {
+      t: 'RCHAT',
+      k: 'read_sync',
+      w: {
+        y: 'd',
+        q: peerAddress,
+        u: upToTimestamp,
+        n: signedAt,
+        p: owner.publicKey,
+        z: base58Encode(
+          nacl.sign.detached(
+            new Uint8Array(canonicalizeForSigning(fields)),
+            owner.secretKey
+          )
+        ),
+      },
+    } as Extract<ReticulumChatWire, { k: 'read_sync' }>;
+  };
+
+  it('pulls a DM conversation from the own device whose read watermark is newer than anything held here, once per watermark', async () => {
+    const t = setup();
+    try {
+      t.manager.setLocalDmAddresses([t.owner.address]);
+      await flushAsyncWork();
+      const conversationId = reticulumDmConversationId(
+        t.owner.address,
+        t.recipient.address
+      );
+      const received = signedDmEvent({
+        sender: t.recipient,
+        recipient: t.owner,
+        eventId: 'read-sync-held',
+        senderSeq: 1,
+        timestamp: t.now() - 60_000,
+      });
+      let latest: ReticulumDmEvent | null = received;
+      t.db.getDirectLatestEvent = () => latest;
+      let stored = true;
+      const upsert = vi.fn(() => stored);
+      t.db.upsertDeviceReadState = upsert;
+      const markRead = vi.fn();
+      t.db.markDirectRead = markRead;
+      const queue = vi
+        .spyOn(t.manager as any, 'queueDirectMissingEvents')
+        .mockImplementation(() => undefined);
+
+      // The Hub read a message this phone never got.
+      const upTo = t.now() - 1_000;
+      (t.manager as any).handleReadSync(
+        dmReadSyncWire(t.owner, t.recipient.address, upTo, t.now()),
+        OWN_DEVICE_PEER
+      );
+      expect(markRead).toHaveBeenCalledWith(
+        conversationId,
+        t.owner.address,
+        upTo
+      );
+      expect(queue).toHaveBeenCalledTimes(1);
+      expect(queue.mock.calls[0][0]).toMatchObject({
+        conversationId,
+        // The other participant's cursor, so own events written on the Hub
+        // after their newest message come along too.
+        addressA: t.recipient.address,
+        addressB: t.owner.address,
+        sourcePeerHash: OWN_DEVICE_PEER,
+        remoteEventId: 'cursor:own-read-sync',
+        remoteTimestamp: Number.MAX_SAFE_INTEGER,
+      });
+      // The watermark is stored before the pull is queued: pulled events at
+      // or below it arrive read.
+      expect(markRead.mock.invocationCallOrder[0]).toBeLessThan(
+        queue.mock.invocationCallOrder[0]
+      );
+      expect(t.manager.getDeliveryCounters().readSyncCatchup).toBe(1);
+
+      // A replay of the same watermark does not pull again.
+      stored = false;
+      t.advance(60_000);
+      (t.manager as any).handleReadSync(
+        dmReadSyncWire(t.owner, t.recipient.address, upTo, t.now()),
+        OWN_DEVICE_PEER
+      );
+      expect(queue).toHaveBeenCalledTimes(1);
+
+      // Nothing missing: the newest event held here is at the watermark.
+      stored = true;
+      latest = { ...received, timestamp: upTo + 5_000 };
+      (t.manager as any).handleReadSync(
+        dmReadSyncWire(t.owner, t.recipient.address, upTo + 5_000, t.now()),
+        OWN_DEVICE_PEER
+      );
+      expect(queue).toHaveBeenCalledTimes(1);
+
+      // A newer watermark pulls again, even within the open-chat catch-up
+      // spacing (the sender stops replaying an acknowledged read_sync).
+      (t.manager as any).lastOwnDeviceCatchupAt.set(conversationId, t.now());
+      (t.manager as any).handleReadSync(
+        dmReadSyncWire(t.owner, t.recipient.address, upTo + 9_000, t.now()),
+        OWN_DEVICE_PEER
+      );
+      expect(queue).toHaveBeenCalledTimes(2);
+
+      // An unknown conversation (no event here at all) pulls too.
+      const other = createDmIdentity();
+      latest = null;
+      (t.manager as any).handleReadSync(
+        dmReadSyncWire(t.owner, other.address, upTo, t.now()),
+        OWN_DEVICE_PEER
+      );
+      expect(queue).toHaveBeenCalledTimes(3);
+      expect(queue.mock.calls[2][0]).toMatchObject({
+        addressA: other.address,
+        sourcePeerHash: OWN_DEVICE_PEER,
+      });
+      expect(upsert).toHaveBeenCalledTimes(5);
+
+      // Not from a verified own device: dropped before anything is read.
+      (t.manager as any).handleReadSync(
+        dmReadSyncWire(t.owner, t.recipient.address, upTo + 20_000, t.now()),
+        RECIPIENT_PEER
+      );
+      expect(upsert).toHaveBeenCalledTimes(5);
+      expect(queue).toHaveBeenCalledTimes(3);
+    } finally {
+      t.cleanup();
+    }
+  });
+
+  it('hands a received DM to an own device with an admitted link, in its own coalescing slot', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const t = setup({ admitted: true });
+    try {
+      t.manager.setLocalDmAddresses([t.owner.address]);
+      await flushAsyncWork();
+      t.db.listUncopiedPendingOwnDirectEvents = vi.fn(() => []);
+      const conversationId = reticulumDmConversationId(
+        t.owner.address,
+        t.recipient.address
+      );
+      const incoming = (eventId: string, senderSeq: number, age = 0) =>
+        signedDmEvent({
+          sender: t.recipient,
+          recipient: t.owner,
+          eventId,
+          senderSeq,
+          timestamp: t.now() - age,
+        });
+
+      expect(
+        (t.manager as any).acceptDirectEvent(incoming('recv-first', 1), false)
+      ).toBe(true);
+      await flushAsyncWork();
+      const pushes = t.notifiesTo(OWN_DEVICE_PEER);
+      expect(pushes).toHaveLength(1);
+      // Signed by the local participant, never forwarded, never tracked.
+      expect(pushes[0].d.m).toBe(0);
+      expect(pushes[0].d.b).toBe(t.recipient.address);
+      expect(verifyReticulumDmNotify(pushes[0].d, t.now())).toBe(true);
+      expect(
+        (t.manager as any).pendingDmNotifyDeliveries.has(pushes[0].d.q)
+      ).toBe(false);
+      expect(t.notifiesTo(RECIPIENT_PEER)).toHaveLength(0);
+      expect(t.manager.getDeliveryCounters().ownDevicePushReceived).toBe(1);
+
+      // A second received DM within 10 s is owed, not signed now...
+      t.advance(2_000);
+      const signaturesBefore = t.notifySignatures().length;
+      expect(
+        (t.manager as any).acceptDirectEvent(incoming('recv-second', 2), false)
+      ).toBe(true);
+      await flushAsyncWork();
+      expect(t.notifySignatures()).toHaveLength(signaturesBefore);
+
+      // ...and an own reply in the same conversation is not held back by it.
+      t.advance(1_000);
+      const reply = t.pendingEvent('own-reply-after-received', 1);
+      await t.manager.publishDirectEvent(reply);
+      await flushAsyncWork();
+      expect(t.notifiesTo(OWN_DEVICE_PEER)).toHaveLength(2);
+
+      // The owed received push goes out when its window ends (8 s after
+      // it was owed).
+      t.advance(7_000);
+      await vi.advanceTimersByTimeAsync(8_000);
+      await flushAsyncWork();
+      expect(t.notifiesTo(OWN_DEVICE_PEER)).toHaveLength(3);
+      expect(t.manager.getDeliveryCounters().ownDevicePushReceived).toBe(2);
+
+      // An event an own device served us is not handed back to it.
+      t.advance(20_000);
+      const served = incoming('recv-from-hub', 3);
+      (t.manager as any).noteEventSourcePeer(served.eventId, OWN_DEVICE_PEER);
+      expect((t.manager as any).acceptDirectEvent(served, false)).toBe(true);
+      await flushAsyncWork();
+      expect(t.notifiesTo(OWN_DEVICE_PEER)).toHaveLength(3);
+      expect(
+        t.manager.getDeliveryCounters().ownDevicePushReceivedFromOwnDevice
+      ).toBe(1);
+
+      // Old history (a look-back page) is not pushed.
+      expect(
+        (t.manager as any).acceptDirectEvent(
+          incoming('recv-old', 4, 8 * 24 * 60 * 60_000),
+          false
+        )
+      ).toBe(true);
+      await flushAsyncWork();
+      expect(t.notifiesTo(OWN_DEVICE_PEER)).toHaveLength(3);
+
+      // An own device that already pulled past it gets no push either.
+      (t.manager as any).noteOwnDevicePulledUpTo(conversationId, t.now() + 1);
+      expect(
+        (t.manager as any).acceptDirectEvent(incoming('recv-pulled', 5), false)
+      ).toBe(true);
+      await flushAsyncWork();
+      expect(t.notifiesTo(OWN_DEVICE_PEER)).toHaveLength(3);
+    } finally {
+      t.cleanup();
+      vi.useRealTimers();
+    }
+  });
+
+  it('signs nothing for a received DM without an admitted own-device link', async () => {
+    const t = setup();
+    try {
+      t.manager.setLocalDmAddresses([t.owner.address]);
+      await flushAsyncWork();
+      const incoming = (eventId: string, senderSeq: number) =>
+        signedDmEvent({
+          sender: t.recipient,
+          recipient: t.owner,
+          eventId,
+          senderSeq,
+          timestamp: t.now(),
+        });
+      // No link at all, then a link that is not admitted.
+      expect(
+        (t.manager as any).acceptDirectEvent(incoming('recv-no-link', 1), false)
+      ).toBe(true);
+      t.setAdmitted(false);
+      t.advance(1);
+      expect(
+        (t.manager as any).acceptDirectEvent(
+          incoming('recv-not-admitted', 2),
+          false
+        )
+      ).toBe(true);
+      await flushAsyncWork();
+      expect(t.notifySignatures()).toHaveLength(0);
+      expect(t.sent).toEqual([]);
+      expect(t.manager.getDeliveryCounters().ownDevicePushReceived ?? 0).toBe(
+        0
+      );
     } finally {
       t.cleanup();
     }

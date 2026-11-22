@@ -1,0 +1,71 @@
+/**
+ * Get Qortino ready while a question is typed next to him on Home.
+ *
+ * Reading the model takes 12-15 s on a phone, and the system prompt has to be
+ * read after that. Both start with the first letter typed in the Home box, so
+ * by the time the question is sent the chat finds the model loaded (its own
+ * load joins this one) and the answer can start at once.
+ *
+ * A question left unsent frees the memory again, as Qortino's "Keep ready"
+ * setting says for a closed window. Leaving GO frees it in any case (see
+ * modelSession).
+ */
+import { getDefaultStore } from 'jotai';
+import { qortinoAgentOpenAtom, qortinoAgentParkedAtom } from '../atoms/global';
+import { isQortinoLlmInferenceAvailable } from '../plugins/QortinoLlm';
+import { QORTINO_MODEL } from './manifest';
+import {
+  RELEASE_AFTER_CLOSE_MS,
+  ensureQortinoModel,
+  releaseQortinoModelSoon,
+  warmQortinoSystemPrompt,
+} from './modelSession';
+import { buildSystemPrompt } from './persona';
+import { getQortinoSettings } from './settings';
+import { loadInstallState } from './store';
+
+/**
+ * A draft left with "Keep ready" off: still time to tap send after the
+ * keyboard closes, or to look away for a moment and come back.
+ */
+export const RELEASE_HOME_DRAFT_OFF_MS = 15_000;
+
+/** The Qortino window is open or parked: its chat holds the model. */
+function qortinoChatMounted(): boolean {
+  const store = getDefaultStore();
+  return Boolean(
+    store.get(qortinoAgentOpenAtom) || store.get(qortinoAgentParkedAtom)
+  );
+}
+
+/**
+ * Load the model and read the system prompt in the background. Safe to call
+ * again: a load or read already running is joined, not started twice, and a
+ * release scheduled by an earlier draft is cancelled.
+ */
+export async function warmQortinoForHomeDraft(): Promise<void> {
+  if (!isQortinoLlmInferenceAvailable()) return;
+  try {
+    const install = await loadInstallState();
+    if (!install.installed || !install.llmPath) return;
+    await ensureQortinoModel({
+      path: install.llmPath,
+      nCtx: QORTINO_MODEL.contextTokens,
+    });
+    await warmQortinoSystemPrompt(
+      buildSystemPrompt(getQortinoSettings().answerLength)
+    );
+  } catch {
+    // The chat loads again when it opens and shows what went wrong there.
+  }
+}
+
+/** The draft was left without sending: free the model as the settings say. */
+export function releaseQortinoAfterHomeDraft(): void {
+  if (qortinoChatMounted()) return;
+  const { keepReady } = getQortinoSettings();
+  if (keepReady === 'open') return;
+  releaseQortinoModelSoon(
+    keepReady === 'off' ? RELEASE_HOME_DRAFT_OFF_MS : RELEASE_AFTER_CLOSE_MS
+  );
+}

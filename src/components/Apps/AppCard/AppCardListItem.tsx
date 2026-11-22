@@ -104,11 +104,7 @@ const AppCardListItemInner = ({
   const nodeStatus = useAppNodeStatus(app);
   const isInstalled = nodeStatus.availability === 'ready';
 
-  const {
-    isPinned: isSelectedAppPinned,
-    target: pinTarget,
-    togglePin,
-  } = useLibraryAppPin(app);
+  const { isPinned: isSelectedAppPinned, togglePin } = useLibraryAppPin(app);
 
   const handleCardClick = useCallback(() => {
     if (isFromCategory) {
@@ -178,13 +174,7 @@ const AppCardListItemInner = ({
               : theme.palette.text.secondary,
           }}
           aria-label={t(
-            pinTarget === 'tabs'
-              ? isSelectedAppPinned
-                ? 'core:action.unpin_from_tabs'
-                : 'core:action.pin_to_tabs'
-              : isSelectedAppPinned
-                ? 'core:action.unpin'
-                : 'core:action.pin',
+            isSelectedAppPinned ? 'core:action.unpin' : 'core:action.pin',
             { postProcess: 'capitalizeFirstChar' }
           )}
         >

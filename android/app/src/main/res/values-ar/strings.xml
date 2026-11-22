@@ -24,4 +24,16 @@
     <string name="call_status_group">مكالمة جماعية</string>
     <string name="call_status_muted">الصوت مكتوم</string>
     <string name="call_unknown_caller">متصل غير معروف</string>
+    <string name="media_channel_name">تشغيل الوسائط</string>
+    <string name="media_channel_description">يعرض ما يتم تشغيله في GO مع أزرار التحكم في الإشعار وعلى شاشة القفل.</string>
+    <string name="media_action_play">تشغيل</string>
+    <string name="media_action_pause">إيقاف مؤقت</string>
+    <string name="media_action_previous">السابق</string>
+    <string name="media_action_next">التالي</string>
+    <string name="media_action_back">رجوع %1$d ث</string>
+    <string name="media_action_forward">تقديم %1$d ث</string>
+    <string name="media_action_settings">إعدادات المشغل</string>
+    <string name="media_title_audio">صوت</string>
+    <string name="media_title_video">فيديو</string>
+    <string name="media_settings_hint">اضغط على المشغل لفتح إعداداته</string>
 </resources>

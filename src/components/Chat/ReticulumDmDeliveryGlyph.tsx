@@ -73,7 +73,7 @@ export const ReticulumDmDeliveryGlyph = ({ message, myAddress }: Props) => {
   const label = t(`reticulum:dm.delivery.${labelState}.label`, {
     postProcess: 'capitalizeFirstChar',
   });
-  const hint = t(`reticulum:dm.delivery.${state}.hint`, {
+  const hint = t(`reticulum:dm.delivery.${labelState}.hint`, {
     postProcess: 'capitalizeFirstChar',
   });
   const color =

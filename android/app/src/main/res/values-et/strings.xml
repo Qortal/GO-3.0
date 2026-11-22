@@ -24,4 +24,16 @@
     <string name="call_status_group">Grupikõne</string>
     <string name="call_status_muted">Vaigistatud</string>
     <string name="call_unknown_caller">Tundmatu helistaja</string>
+    <string name="media_channel_name">Meedia esitamine</string>
+    <string name="media_channel_description">Näitab, mis GO-s mängib, koos nuppudega teavituses ja lukustuskuval.</string>
+    <string name="media_action_play">Esita</string>
+    <string name="media_action_pause">Paus</string>
+    <string name="media_action_previous">Eelmine</string>
+    <string name="media_action_next">Järgmine</string>
+    <string name="media_action_back">%1$d s tagasi</string>
+    <string name="media_action_forward">%1$d s edasi</string>
+    <string name="media_action_settings">Mängija seaded</string>
+    <string name="media_title_audio">Heli</string>
+    <string name="media_title_video">Video</string>
+    <string name="media_settings_hint">Puuduta mängijat, et avada selle seaded</string>
 </resources>

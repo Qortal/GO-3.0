@@ -48,4 +48,19 @@
     <string name="call_status_group">Group call</string>
     <string name="call_status_muted">Muted</string>
     <string name="call_unknown_caller">Unknown caller</string>
+    <!-- Background player (GoMediaHub): the player notification and its buttons.
+         The page may send GO's own language for the media_action_* and media_title_*
+         texts (QortalMedia.setStrings). -->
+    <string name="media_channel_name">Media playback</string>
+    <string name="media_channel_description">Shows what plays in GO, with controls in the notification and on the lock screen.</string>
+    <string name="media_action_play">Play</string>
+    <string name="media_action_pause">Pause</string>
+    <string name="media_action_previous">Previous</string>
+    <string name="media_action_next">Next</string>
+    <string name="media_action_back">Back %1$d s</string>
+    <string name="media_action_forward">Forward %1$d s</string>
+    <string name="media_action_settings">Player settings</string>
+    <string name="media_title_audio">Audio</string>
+    <string name="media_title_video">Video</string>
+    <string name="media_settings_hint">Tap the player to open its settings</string>
 </resources>

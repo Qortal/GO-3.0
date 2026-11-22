@@ -37,6 +37,24 @@ type LongPressReorderOptions = {
    * somewhere else (it left the grid): no reordering or edge scrolling here.
    */
   onDragFrame?: (id: string, x: number, y: number) => boolean | void;
+  /**
+   * The item the dragged one would go into rather than next to (a folder,
+   * or another app to make a folder with), from the item under the finger.
+   * While there is one, the others do not make room.
+   */
+  mergeTargetAt?: (
+    id: string,
+    overId: string | null,
+    x: number,
+    y: number
+  ) => string | null;
+  /** The item the dragged one would go into changed (null: none). */
+  onMergeOver?: (id: string, targetId: string | null) => void;
+  /**
+   * How long the finger rests over an item before the others make room, so
+   * a drag on its way into an item does not push it away first.
+   */
+  settleMs?: number;
 };
 
 export type LandingBox = Pick<DOMRect, 'left' | 'top' | 'width' | 'height'>;
@@ -84,6 +102,11 @@ type Press = {
   lastMoveX: number;
   lastMoveY: number;
   lastOver: string | null;
+  /** The item the finger rests over, and since when. */
+  settleId: string | null;
+  settleSince: number;
+  /** The item the dragged one would go into. */
+  mergeId: string | null;
   frame: number | null;
   scrollerOverflow: string | null;
 };
@@ -257,11 +280,35 @@ export function useLongPressReorder(options: LongPressReorderOptions): void {
         rect: layoutBox(element, container),
       }));
       const overId = hitTestSlot(items, current.x, current.y, current.id);
+      const options = optionsRef.current;
+      const mergeId =
+        options.mergeTargetAt?.(current.id, overId, current.x, current.y) ??
+        null;
+      if (mergeId !== current.mergeId) {
+        current.mergeId = mergeId;
+        options.onMergeOver?.(current.id, mergeId);
+      }
+      if (mergeId) {
+        current.lastOver = null;
+        current.settleId = null;
+        return;
+      }
       if (!overId) {
         current.lastOver = null;
+        current.settleId = null;
         return;
       }
       if (overId === current.lastOver) return;
+      const settleMs = options.settleMs ?? 0;
+      if (settleMs > 0) {
+        const now = performance.now();
+        if (current.settleId !== overId) {
+          current.settleId = overId;
+          current.settleSince = now;
+          return;
+        }
+        if (now - current.settleSince < settleMs) return;
+      }
       const moved = Math.hypot(
         current.x - current.lastMoveX,
         current.y - current.lastMoveY
@@ -296,8 +343,14 @@ export function useLongPressReorder(options: LongPressReorderOptions): void {
           );
           if (step !== 0) scroller.scrollTop += step;
         }
-        if (away) current.lastOver = null;
-        else hitTest(current);
+        if (away) {
+          current.lastOver = null;
+          current.settleId = null;
+          if (current.mergeId !== null) {
+            current.mergeId = null;
+            optionsRef.current.onMergeOver?.(current.id, null);
+          }
+        } else hitTest(current);
         tick(current);
       });
     };
@@ -328,6 +381,9 @@ export function useLongPressReorder(options: LongPressReorderOptions): void {
         lastMoveX: x,
         lastMoveY: y,
         lastOver: null,
+        settleId: null,
+        settleSince: 0,
+        mergeId: null,
         frame: null,
         scrollerOverflow: null,
       };

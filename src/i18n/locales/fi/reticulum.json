@@ -52,10 +52,11 @@
         "label": "toisessa laitteessasi"
       },
       "only_on_this_device": {
+        "hint": "Ei vielä lähetetty. Postilaatikkoa ei ole: viesti lähtee, kun vastaanottaja on verkossa samaan aikaan kuin tämä laite tai toinen laitteesi. Lähetystä yritetään uudelleen enintään 7 päivän ajan, kun sovellus on käynnissä.",
         "label": "vain tässä laitteessa"
       },
       "only_on_this_phone": {
-        "hint": "Ei vielä lähetetty. Lähetystä yritetään automaattisesti uudelleen.",
+        "hint": "Ei vielä lähetetty. Postilaatikkoa ei ole: viesti lähtee, kun vastaanottaja on verkossa samaan aikaan kuin tämä puhelin tai toinen laitteesi. GO yrittää uudelleen enintään 7 päivän ajan, kun se on käynnissä.",
         "label": "vain tässä puhelimessa"
       },
       "sending": {

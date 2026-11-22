@@ -3,7 +3,6 @@ import {
   useEffect,
   useEffectEvent,
   useLayoutEffect,
-  useMemo,
   useRef,
   useState,
 } from 'react';
@@ -42,10 +41,6 @@ import {
   GROUP_ACTIVITY_BLUE,
   getBlueAmbientLineBackground,
 } from './groupActivityColorSystem';
-import {
-  substituteComposerApp,
-  useComposerTarget,
-} from '../Widgets/quitter/composerTarget';
 
 export const FEATURED_PREVIEW_EXPAND_DELAY_MS = 200;
 export const FEATURED_INITIAL_PREVIEW_DURATION_MS = 3500;
@@ -88,9 +83,10 @@ const FEATURED_PREVIEW_CONFIG = {
   },
 } as const;
 type PreviewAppName = keyof typeof FEATURED_PREVIEW_CONFIG;
+// Torq, the app Home posts to, has Quitter's old place.
 const FEATURED_APP_GRID = [
   Q_TUBE_APP_NAME,
-  'Quitter',
+  'Torq',
   'Q-Mail',
   SUBWIRE_APP_NAME,
   'Q-Trade',
@@ -127,12 +123,6 @@ const openAppsLibrary = () => {
 
 export const HomeFeaturedApps = ({ panelBoxRef = undefined }) => {
   const theme = useTheme();
-  // Torq takes Quitter's tile once the Home composer posts to Torq.
-  const composerTarget = useComposerTarget();
-  const featuredAppGrid = useMemo(
-    () => substituteComposerApp(FEATURED_APP_GRID, composerTarget),
-    [composerTarget]
-  );
   const { t } = useTranslation(['group']);
   const panelRef = useDashboardPanelMouseLight<HTMLDivElement>();
   const assignPanelNode = (node) => {
@@ -568,7 +558,7 @@ export const HomeFeaturedApps = ({ panelBoxRef = undefined }) => {
               zIndex: 1,
             }}
           >
-            {featuredAppGrid.map((appName, index) =>
+            {FEATURED_APP_GRID.map((appName, index) =>
               appName ? (
                 <AppTile
                   key={appName}

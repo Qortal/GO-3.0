@@ -524,6 +524,8 @@ export const AppViewer = forwardRef<HTMLIFrameElement, AppViewerProps>(
             width: '100%',
           }}
           id="browser-iframe"
+          // Lets a background player notification tap find this tab.
+          data-tab-id={app?.tabId}
           tabIndex={-1}
           src={defaultUrl}
           sandbox="allow-scripts allow-same-origin allow-forms allow-downloads allow-modals"

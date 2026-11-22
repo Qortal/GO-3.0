@@ -4,6 +4,10 @@ import ArrowUpwardRoundedIcon from '@mui/icons-material/ArrowUpwardRounded';
 import { motion, useReducedMotion } from 'framer-motion';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import {
+  releaseQortinoAfterHomeDraft,
+  warmQortinoForHomeDraft,
+} from '../../../qortinoAgent/homeDraftWarmup';
 import { useQortinoSettings } from '../../../qortinoAgent/settings';
 
 type Props = {
@@ -14,6 +18,8 @@ type Props = {
 /**
  * The little box next to Qortino on Home, once Qortino AI is on the phone:
  * a question typed here opens Qortino in a new chat and is sent there.
+ * Qortino starts loading with the first letter typed, so he is ready by the
+ * time the question is sent.
  */
 export function QortinoHomeComposer({ onFocusChange, onSend }: Props) {
   const theme = useTheme();
@@ -26,6 +32,30 @@ export function QortinoHomeComposer({ onFocusChange, onSend }: Props) {
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const formRef = useRef<HTMLFormElement | null>(null);
   const canSend = text.trim().length > 0;
+  /** This draft started loading Qortino and has not let him go yet. */
+  const warmedRef = useRef(false);
+  /** The draft went to Qortino's chat, which keeps the model from here on. */
+  const sentRef = useRef(false);
+
+  const warmUp = () => {
+    warmedRef.current = true;
+    sentRef.current = false;
+    void warmQortinoForHomeDraft();
+  };
+
+  const letGo = () => {
+    if (sentRef.current || !warmedRef.current) return;
+    warmedRef.current = false;
+    releaseQortinoAfterHomeDraft();
+  };
+
+  // Home went away with an unsent draft (blur does not always fire then).
+  useEffect(
+    () => () => {
+      if (warmedRef.current && !sentRef.current) releaseQortinoAfterHomeDraft();
+    },
+    []
+  );
 
   // The keyboard opens over the bottom of Home, where the tab bar stays:
   // once it is up, bring the box to the middle of what is left.
@@ -45,6 +75,11 @@ export function QortinoHomeComposer({ onFocusChange, onSend }: Props) {
   const submit = () => {
     const question = text.trim();
     if (!question) return;
+    // Tapping send closes the keyboard first, and that blur already let
+    // Qortino go: hold on to him again until his chat takes over.
+    sentRef.current = true;
+    warmedRef.current = false;
+    void warmQortinoForHomeDraft();
     setText('');
     inputRef.current?.blur();
     onSend(question);
@@ -93,11 +128,18 @@ export function QortinoHomeComposer({ onFocusChange, onSend }: Props) {
           onBlur={() => {
             setFocused(false);
             onFocusChange(false);
+            letGo();
           }}
-          onChange={(event) => setText(event.target.value)}
+          onChange={(event) => {
+            const next = event.target.value;
+            if (!text.trim() && next.trim()) warmUp();
+            setText(next);
+          }}
           onFocus={() => {
             setFocused(true);
             onFocusChange(true);
+            // Back to a question typed earlier.
+            if (text.trim()) warmUp();
           }}
           onKeyDown={(event) => {
             if (event.key === 'Enter' && !event.shiftKey && enterSends) {

@@ -33,11 +33,16 @@ import FolderOpenRoundedIcon from '@mui/icons-material/FolderOpenRounded';
 import GridViewRoundedIcon from '@mui/icons-material/GridViewRounded';
 import PushPinRoundedIcon from '@mui/icons-material/PushPinRounded';
 import ViewModuleRoundedIcon from '@mui/icons-material/ViewModuleRounded';
+import { userInfoAtom } from '../../../atoms/global';
 import {
   filterAppTabsForMobile,
   isQChatOpenTab,
 } from '../../../utils/openQChatTab';
-import { MobileTabOptionsDialog } from '../MobileTabOptionsDialog';
+import {
+  folderItemKey,
+  type LauncherItem,
+} from '../../Apps/AppsLauncher/launcherItems';
+import { LauncherSaveWindow } from '../../Apps/AppsLauncher/LauncherSaveWindow';
 import {
   getFolderSize,
   getOpenTabKey,
@@ -53,39 +58,47 @@ import {
   useOpenTabs,
   type OpenTab,
 } from '../useOpenTabs';
+import { MobileTabOptionsDialog } from '../MobileTabOptionsDialog';
 import { MOBILE_TABS_DIALOG_Z } from '../mobileLayout';
+import { GO_TAB_BAR_SPACE } from '../mobileBarHeights';
+import { shellOfBookmark, shellOfPin } from '../goLauncher/goLauncherOps';
 import {
   FOLDER_TILE_ATTR,
   FolderTile,
   LIFT_CLASS,
   folderTileSurface,
 } from './FolderTile';
+import { AppTile, TILE_ICON_ATTR } from './AppTile';
 import { FolderOpenOverlay } from './FolderOpenOverlay';
+import {
+  PinnedTileMenu,
+  type PinnedLeaf,
+  type PinnedTileMenuTarget,
+} from './PinnedTileMenu';
 import { TabPreviewCard } from './TabPreviewCard';
 import { useShownWindows } from './useShownWindows';
 import { groupTabsIntoStacks, type TabStack } from './tabStacks';
 import { measureBoxes, playFlip } from './flip';
-import {
-  hitTestSlot,
-  homeGridMetrics,
-  moveId,
-  rowPlacementForFlatOrder,
-} from './homeGrid';
+import { hitTestSlot, homeGridMetrics, moveId } from './homeGrid';
 import { edgeScrollStep, useLongPressReorder } from './useLongPressReorder';
 import { DevModeButton } from '../devMode/DevModeButton';
 import { canOpenDevZips, goDevModeEnabledAtom } from '../devMode/devModeApp';
 
-const FOLDER_ATTR = 'data-home-folder';
+const TILE_ATTR = 'data-home-tile';
 const FLIP_STALE_MS = 700;
 const CARD_ATTR = 'data-home-tab';
-const CARRY_OVER_ATTR = 'data-carry-over';
-/** A carried app counts as over a folder this far around its tile. */
+const DROP_OVER_ATTR = 'data-carry-over';
+/** A carried app counts as over a tile this far around it. */
 const CARRY_HIT_SLOP_PX = 10;
+/** How far inside a picture a dragged app drops into it (share of its side). */
+const DROP_INTO_INSET = 0.2;
+/** How long a dragged app rests over a tile before the others make room. */
+const SETTLE_MS = 170;
 
 type PinnedHomeProps = {
   /** The library and this tab are on screen. */
   isVisible: boolean;
-  /** The library's scroller, locked while a folder is dragged. */
+  /** The library's scroller, locked while a tile is dragged. */
   scrollParent: HTMLElement | null;
   /** Leaves for the Official apps tab (empty state). */
   onBrowseApps: () => void;
@@ -95,12 +108,27 @@ type PinnedHomeProps = {
 type OpenFolderState = { id: string; open: boolean; carried?: boolean } | null;
 /** An app dragged out of an open folder, still under the finger. */
 type CarryState = { tabKey: string; fromId: string } | null;
+type Renaming =
+  | { kind: 'folder'; id: string; value: string }
+  | { kind: 'bookmark'; id: string; value: string }
+  | { kind: 'tab'; tab: OpenTab; value: string };
+
+const isLeaf = (item: LauncherItem | undefined): item is PinnedLeaf =>
+  !!item && item.type !== 'folder';
+
+const isPrivateLeaf = (item: LauncherItem | undefined) =>
+  item?.type === 'app' && !!item.pin.app.isPrivate;
 
 /**
- * The Q-Apps library's first tab on phones: the Tabs folders full screen,
- * laid out like a phone's home screen (small folders take a cell, large ones
- * two by two), and the open tabs as cards with a picture of each page. It is
- * the same data as the Tabs overlay, so a change in one shows in the other.
+ * The Q-Apps library's first tab on phones: the desktop Hub's launcher, laid
+ * out like a phone's home screen. The pinned apps and the bookmarks are app
+ * tiles, the bookmark folders are folder tiles (small ones take a cell,
+ * large ones two by two), all in the order the launcher keeps, and the open
+ * tabs are cards with a picture of each page under them.
+ *
+ * Long-press a tile to move it, or let go for its options. Dropping an app
+ * on another one makes a folder of the two, onto a folder puts it there.
+ * Every change is offered to be saved to QDN, so the Hub shows it too.
  */
 export function PinnedHome({
   isVisible,
@@ -110,6 +138,8 @@ export function PinnedHome({
   const theme = useTheme();
   const { t } = useTranslation(['core']);
   const org = useMobileTabOrganization();
+  const launcher = org.launcher;
+  const myName: string = useAtomValue(userInfoAtom)?.name || '';
   const { tabs: rawTabs, selectedTab: rawSelectedTab } = useOpenTabs();
   const tabs = useMemo(() => filterAppTabsForMobile(rawTabs), [rawTabs]);
   const selectedTab =
@@ -119,7 +149,7 @@ export function PinnedHome({
   const rootRef = useRef<HTMLDivElement | null>(null);
   const gridRef = useRef<HTMLDivElement | null>(null);
   const cardsRef = useRef<HTMLDivElement | null>(null);
-  // Elements too: the grids come and go (first folder, first open tab) and
+  // Elements too: the grids come and go (first tile, first open tab) and
   // the long-press listeners must follow them.
   const [gridEl, setGridEl] = useState<HTMLDivElement | null>(null);
   const [cardsEl, setCardsEl] = useState<HTMLDivElement | null>(null);
@@ -151,11 +181,9 @@ export function PinnedHome({
     id: string;
     anchor: HTMLElement;
   } | null>(null);
-  const [renaming, setRenaming] = useState<
-    | { kind: 'folder'; id: string; value: string }
-    | { kind: 'tab'; tab: OpenTab; value: string }
-    | null
-  >(null);
+  const [tileMenu, setTileMenu] = useState<PinnedTileMenuTarget | null>(null);
+  const [optionsTab, setOptionsTab] = useState<OpenTab | null>(null);
+  const [renaming, setRenaming] = useState<Renaming | null>(null);
   const [pendingDelete, setPendingDelete] = useState<{
     id: string;
     name: string;
@@ -163,15 +191,15 @@ export function PinnedHome({
   } | null>(null);
   const lastPendingDelete = useRef(pendingDelete);
   if (pendingDelete) lastPendingDelete.current = pendingDelete;
-  const [optionsTab, setOptionsTab] = useState<OpenTab | null>(null);
   const [closingStackKeys, setClosingStackKeys] = useState<Set<string>>(
     () => new Set()
   );
   const [carry, setCarry] = useState<CarryState>(null);
-  const [carryOverId, setCarryOverId] = useState<string | null>(null);
+  // The tile a dragged or carried app would drop into.
+  const [dropOverKey, setDropOverKey] = useState<string | null>(null);
   // Refs as well: the drag reports every frame, before a render catches up.
   const carryRef = useRef<CarryState>(null);
-  const carryOverRef = useRef<string | null>(null);
+  const dropOverRef = useRef<string | null>(null);
 
   useLayoutEffect(() => {
     const node = rootRef.current;
@@ -198,6 +226,34 @@ export function PinnedHome({
   );
   const { shownFor, pick } = useShownWindows(isVisible);
 
+  const { items } = launcher;
+  const itemsByKey = useMemo(
+    () => new Map(items.map((item) => [item.key, item])),
+    [items]
+  );
+  const foldersById = useMemo(
+    () => new Map(org.folders.map((folder) => [folder.id, folder])),
+    [org.folders]
+  );
+
+  const pinLabelFallback = t('core:app_private', {
+    postProcess: 'capitalizeFirstChar',
+  });
+  /** An app or a bookmark of the row, as a saved tab. */
+  const shellsByKey = useMemo(() => {
+    const map = new Map<string, OpenTab>();
+    for (const item of items) {
+      if (item.type === 'bookmark') {
+        map.set(item.key, shellOfBookmark(item.bookmark));
+      } else if (item.type === 'app') {
+        const shell = shellOfPin(item.pin, pinLabelFallback);
+        if (shell) map.set(item.key, shell);
+      }
+    }
+    return map;
+  }, [items, pinLabelFallback]);
+
+  // A folder shows its apps live when they are open, saved otherwise.
   const folderTabsMap = useMemo(() => {
     const map = new Map<string, OpenTab[]>();
     org.folders.forEach((folder) => {
@@ -217,24 +273,20 @@ export function PinnedHome({
     return map;
   }, [org.folders, org.organization.savedTabs, tabsByKey]);
 
-  const foldersById = useMemo(
-    () => new Map(org.folders.map((folder) => [folder.id, folder])),
-    [org.folders]
-  );
-  const folderIds = useMemo(
-    () => dragOrder ?? org.folders.map((folder) => folder.id),
-    [dragOrder, org.folders]
+  const rowKeys = useMemo(
+    () => dragOrder ?? items.map((item) => item.key),
+    [dragOrder, items]
   );
 
-  // Any change in the folders' order or sizes glides into place.
-  const layoutKey = `${folderIds.join('|')}#${org.folders
+  // Any change in the tiles' order or sizes glides into place.
+  const layoutKey = `${rowKeys.join('|')}#${org.folders
     .map((folder) => `${folder.id}:${getFolderSize(folder)}`)
     .join('|')}#${width}`;
   useLayoutEffect(() => {
     const before = pendingFlip.current;
     pendingFlip.current = null;
     if (!before || performance.now() - before.at > FLIP_STALE_MS) return;
-    playFlip(gridRef.current, FOLDER_ATTR, before.boxes, { duration: 300 });
+    playFlip(gridRef.current, TILE_ATTR, before.boxes, { duration: 300 });
   }, [layoutKey]);
 
   const tabsKey = tabs.map((tab) => tab.tabId).join('|');
@@ -254,10 +306,10 @@ export function PinnedHome({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tabsKey]);
 
-  const captureFolderLayout = () => {
+  const captureLayout = () => {
     pendingFlip.current = {
       at: performance.now(),
-      boxes: measureBoxes(gridRef.current, FOLDER_ATTR),
+      boxes: measureBoxes(gridRef.current, TILE_ATTR),
     };
   };
 
@@ -267,37 +319,130 @@ export function PinnedHome({
     if (!isVisible && openFolder) setOpenFolder(null);
   }, [isVisible, openFolder]);
   useEffect(() => {
-    // Deleted (here or in the Tabs overlay) while open.
+    // Deleted (here, in the Tabs overlay or by a save from Hub) while open.
     if (openFolder && !foldersById.has(openFolder.id)) setOpenFolder(null);
   }, [foldersById, openFolder]);
 
-  const getFolderElement = useCallback(
-    (folderId: string) =>
+  const getTileElement = useCallback(
+    (key: string) =>
       gridRef.current?.querySelector<HTMLElement>(
-        `[${FOLDER_ATTR}="${CSS.escape(folderId)}"]`
+        `[${TILE_ATTR}="${CSS.escape(key)}"]`
       ) ?? null,
     []
+  );
+  /** The picture of a tile: the part that lifts, and that apps drop into. */
+  const getTilePicture = useCallback(
+    (key: string) => {
+      const tile = getTileElement(key);
+      return (
+        tile?.querySelector<HTMLElement>(`.${LIFT_CLASS}`) ??
+        tile?.querySelector<HTMLElement>(`[${FOLDER_TILE_ATTR}]`) ??
+        tile
+      );
+    },
+    [getTileElement]
+  );
+  const getFolderTile = useCallback(
+    (folderId: string) =>
+      getTileElement(folderItemKey(folderId))?.querySelector<HTMLElement>(
+        `[${FOLDER_TILE_ATTR}]`
+      ) ?? null,
+    [getTileElement]
   );
 
   const handleOpenFolder = useCallback((folderId: string) => {
     setOpenFolder({ id: folderId, open: true });
   }, []);
 
+  // An app icon launches the app, again in a new window when it is open
+  // already; a page inside an app opens there.
   const handleOpenApp = useCallback((tab: OpenTab) => {
     setOpenFolder(null);
     launchAppWindow(tab);
   }, []);
-
-  const getFolderTile = useCallback(
-    (folderId: string) =>
-      getFolderElement(folderId)?.querySelector<HTMLElement>(
-        `[${FOLDER_TILE_ATTR}]`
-      ) ?? null,
-    [getFolderElement]
+  const openShell = useCallback(
+    (shell: OpenTab) => {
+      const live = shell.path ? null : tabsByKey.get(getOpenTabKey(shell));
+      handleOpenApp(live ?? shell);
+    },
+    [handleOpenApp, tabsByKey]
   );
+  const openLeaf = (item: PinnedLeaf) => {
+    const shell =
+      item.type === 'bookmark'
+        ? shellOfBookmark(item.bookmark)
+        : shellOfPin(item.pin, pinLabelFallback);
+    if (shell) openShell(shell);
+  };
+
+  const newFolderName = t('core:bookmarks.new_folder', {
+    postProcess: 'capitalizeFirstChar',
+  });
+  /** A folder just made by a drop or the menu asks for its name. */
+  const askFolderName = (folderId: string | null | undefined) => {
+    if (folderId) {
+      setRenaming({ kind: 'folder', id: folderId, value: newFolderName });
+    }
+  };
+
+  /** What a dragged tile at `x`,`y` over `overKey` would drop into. */
+  const dropTargetAt = (
+    draggedKey: string,
+    overKey: string | null,
+    x: number,
+    y: number
+  ): string | null => {
+    if (!overKey) return null;
+    const dragged = itemsByKey.get(draggedKey);
+    const target = itemsByKey.get(overKey);
+    // A folder only moves along the row; a private app has no bookmark, so
+    // no folder takes it.
+    if (!isLeaf(dragged) || isPrivateLeaf(dragged)) return null;
+    if (!target || isPrivateLeaf(target)) return null;
+    const picture = getTilePicture(overKey);
+    if (!picture) return null;
+    const box = picture.getBoundingClientRect();
+    const inset = Math.min(box.width, box.height) * DROP_INTO_INSET;
+    return x >= box.left + inset &&
+      x <= box.right - inset &&
+      y >= box.top + inset &&
+      y <= box.bottom - inset
+      ? overKey
+      : null;
+  };
+
+  const setDropOver = (key: string | null) => {
+    if (key === dropOverRef.current) return;
+    dropOverRef.current = key;
+    setDropOverKey(key);
+    if (key) navigator.vibrate?.(6);
+  };
+
+  /** A dragged tile let go: into a tile, or where the row made room. */
+  const dropTile = (key: string) => {
+    const into = dropOverRef.current;
+    if (into) {
+      const box = getTilePicture(into)?.getBoundingClientRect() ?? null;
+      captureLayout();
+      askFolderName(
+        launcher.drop(key, { kind: 'merge', key: into })?.madeFolderId
+      );
+      return box ?? undefined;
+    }
+    if (!dragOrder) return;
+    const index = dragOrder.indexOf(key);
+    const next = dragOrder[index + 1];
+    const previous = dragOrder[index - 1];
+    if (next) {
+      launcher.drop(key, { kind: 'insert', key: next, side: 'before' });
+    } else if (previous) {
+      launcher.drop(key, { kind: 'insert', key: previous, side: 'after' });
+    }
+  };
 
   // An app dragged out of an open folder: the folder fades, the home grid
-  // shows, and the app goes into whichever folder it is let go over.
+  // shows, and the app goes into the tile it is let go over, or into the row
+  // when it is let go over nothing.
   const startCarry = (tabKey: string) => {
     if (!openFolder) return;
     const next = { tabKey, fromId: openFolder.id };
@@ -316,66 +461,87 @@ export function PinnedHome({
       if (step !== 0) scrollParent.scrollTop += step;
     }
     const tiles = Array.from(
-      gridRef.current?.querySelectorAll<HTMLElement>(`[${FOLDER_ATTR}]`) ?? []
-    ).map((element) => ({
-      id: element.getAttribute(FOLDER_ATTR) || '',
-      rect: (
-        element.querySelector(`[${FOLDER_TILE_ATTR}]`) ?? element
-      ).getBoundingClientRect(),
-    }));
-    const overId = hitTestSlot(tiles, x, y, current.fromId, -CARRY_HIT_SLOP_PX);
-    if (overId !== carryOverRef.current) {
-      carryOverRef.current = overId;
-      setCarryOverId(overId);
-      if (overId) navigator.vibrate?.(6);
-    }
+      gridRef.current?.querySelectorAll<HTMLElement>(`[${TILE_ATTR}]`) ?? []
+    ).map((element) => {
+      const id = element.getAttribute(TILE_ATTR) || '';
+      return {
+        id,
+        rect: (getTilePicture(id) ?? element).getBoundingClientRect(),
+      };
+    });
+    const overKey = hitTestSlot(
+      tiles,
+      x,
+      y,
+      folderItemKey(current.fromId),
+      -CARRY_HIT_SLOP_PX
+    );
+    setDropOver(
+      overKey && !isPrivateLeaf(itemsByKey.get(overKey)) ? overKey : null
+    );
   };
 
   const dropCarry = (tabKey: string) => {
     const current = carryRef.current;
     if (!current) return null;
-    const targetId = carryOverRef.current;
-    const tab = folderTabsMap
-      .get(current.fromId)
-      ?.find((item) => getOpenTabKey(item) === tabKey);
-    if (targetId && tab && foldersById.has(targetId)) {
-      void org.addTabToFolder(tab, targetId);
-      return getFolderTile(targetId)?.getBoundingClientRect() ?? null;
+    const home = getFolderTile(current.fromId)?.getBoundingClientRect() ?? null;
+    const child = launcher.goFolders.children.get(tabKey);
+    if (!child) return home;
+    const into = dropOverRef.current;
+    captureLayout();
+    if (into) {
+      const box = getTilePicture(into)?.getBoundingClientRect() ?? null;
+      const target = itemsByKey.get(into);
+      if (target?.type === 'folder') {
+        launcher.moveToFolder(child.item.key, target.folder.id);
+      } else {
+        askFolderName(
+          launcher.drop(child.item.key, { kind: 'merge', key: into })
+            ?.madeFolderId
+        );
+      }
+      return box;
     }
-    // Let go over nothing: back into its own folder.
-    return getFolderTile(current.fromId)?.getBoundingClientRect() ?? null;
+    // Let go over nothing: out of the folder, into the row after it.
+    launcher.takeOutOfFolder(child.item.key);
+    return home;
   };
 
   const endCarry = () => {
     carryRef.current = null;
-    carryOverRef.current = null;
     setCarry(null);
-    setCarryOverId(null);
+    setDropOver(null);
   };
 
   useLongPressReorder({
     container: gridEl,
     scroller: scrollParent,
-    itemAttr: FOLDER_ATTR,
-    enabled: isVisible && !openFolder,
-    onMenu: (id, element) => {
-      const tile = element.querySelector<HTMLElement>(`.${LIFT_CLASS}`);
-      setFolderMenu({ id, anchor: tile ?? element });
-    },
-    onMove: (id, overId) => {
-      const current = dragOrder ?? org.folders.map((folder) => folder.id);
-      const next = moveId(current, id, current.indexOf(overId));
-      captureFolderLayout();
-      setDragOrder(next);
-    },
-    onDrop: (id) => {
-      if (!dragOrder) return;
-      const placement = rowPlacementForFlatOrder(org.folders, dragOrder, id);
-      if (placement) {
-        void org.moveFolderToRow(id, placement.row, placement.beforeFolderId);
+    itemAttr: TILE_ATTR,
+    enabled: isVisible && !openFolder && launcher.ready,
+    settleMs: SETTLE_MS,
+    onMenu: (key, element) => {
+      const item = itemsByKey.get(key);
+      const anchor =
+        element.querySelector<HTMLElement>(`.${LIFT_CLASS}`) ?? element;
+      if (item?.type === 'folder') {
+        setFolderMenu({ id: item.folder.id, anchor });
+      } else if (item) {
+        setTileMenu({ item, folderId: null, anchor });
       }
     },
-    onEnd: () => setDragOrder(null),
+    mergeTargetAt: dropTargetAt,
+    onMergeOver: (_key, target) => setDropOver(target),
+    onMove: (key, overKey) => {
+      const current = dragOrder ?? items.map((item) => item.key);
+      const next = moveId(current, key, current.indexOf(overKey));
+      captureLayout();
+      setDragOrder(next);
+    },
+    onDrop: dropTile,
+    onEnd: () => {
+      setDragOrder(null);
+      setDropOver(null);
+    },
   });
 
   useLongPressReorder({
@@ -418,7 +584,7 @@ export function PinnedHome({
   };
 
   const setSize = (folderId: string, size: FolderSize) => {
-    captureFolderLayout();
+    captureLayout();
     org.setFolderSize(folderId, size);
   };
 
@@ -427,19 +593,19 @@ export function PinnedHome({
     if (!folder) return;
     const count = folderTabsMap.get(folderId)?.length ?? 0;
     if (count === 0) {
-      captureFolderLayout();
+      captureLayout();
       void org.deleteFolder(folderId);
       return;
     }
     setPendingDelete({ id: folderId, name: folder.name, count });
   };
 
-  const createFolder = async () => {
-    captureFolderLayout();
+  const createFolder = () => {
+    captureLayout();
     const name = t('core:tabs_home.new_folder_name', {
       postProcess: 'capitalizeFirstChar',
     });
-    const id = await org.createFolder(name);
+    const id = launcher.createFolder(name);
     if (id) setRenaming({ kind: 'folder', id, value: name });
   };
 
@@ -449,14 +615,29 @@ export function PinnedHome({
     if (!current || !current.value.trim()) return;
     if (current.kind === 'folder') {
       void org.renameFolder(current.id, current.value);
+    } else if (current.kind === 'bookmark') {
+      launcher.renameBookmark(current.id, current.value);
     } else {
       void org.renameTab(current.tab, current.value);
     }
   };
 
+  /** The menu of an app in the open folder, from its icon in the panel. */
+  const openChildMenu = (tab: OpenTab) => {
+    const child = launcher.goFolders.children.get(getOpenTabKey(tab));
+    if (!child) return;
+    const anchor =
+      document.querySelector<HTMLElement>(
+        `[data-folder-app="${CSS.escape(getOpenTabKey(tab))}"]`
+      ) ?? rootRef.current;
+    if (!anchor) return;
+    setTileMenu({ item: child.item, folderId: child.folderId, anchor });
+  };
+
   const openFolderData = openFolder ? foldersById.get(openFolder.id) : null;
   const menuFolder = folderMenu ? foldersById.get(folderMenu.id) : null;
   const deleteText = pendingDelete ?? lastPendingDelete.current;
+  const hasTiles = items.length > 0;
   const hasFolders = org.folders.length > 0;
   const showDevMode = useAtomValue(goDevModeEnabledAtom) && canOpenDevZips();
   const pillSx = {
@@ -481,20 +662,22 @@ export function PinnedHome({
       sx={{
         position: 'relative',
         pt: 0.5,
-        // The lift of a long-pressed folder.
+        // The lift of a long-pressed tile.
         [`[data-reorder-lifted] .${LIFT_CLASS}`]: {
           transform: 'scale(1.08)',
         },
-        // The folder a carried app would go into.
-        [`[${CARRY_OVER_ATTR}] .${LIFT_CLASS}`]: {
+        // The tile a dragged or carried app would go into.
+        [`[${DROP_OVER_ATTR}] .${LIFT_CLASS}`]: {
           transform: 'scale(1.1)',
         },
-        [`[${CARRY_OVER_ATTR}] [${FOLDER_TILE_ATTR}]`]: {
-          boxShadow: `0 0 0 2.5px ${theme.palette.primary.main}`,
-        },
+        [`[${DROP_OVER_ATTR}] [${FOLDER_TILE_ATTR}], [${DROP_OVER_ATTR}] [${TILE_ICON_ATTR}]`]:
+          {
+            borderRadius: `${metrics.smallRadius}px`,
+            boxShadow: `0 0 0 2.5px ${theme.palette.primary.main}`,
+          },
       }}
     >
-      {hasFolders ? (
+      {hasTiles ? (
         <Box
           ref={bindGrid}
           sx={{
@@ -509,41 +692,67 @@ export function PinnedHome({
           }}
         >
           {width > 0 &&
-            folderIds.map((id) => {
-              const folder = foldersById.get(id);
-              if (!folder) return null;
-              const size = getFolderSize(folder);
-              const span = size === 'large' ? 2 : 1;
-              const folderTabs = folderTabsMap.get(id) || [];
+            rowKeys.map((key) => {
+              const item = itemsByKey.get(key);
+              if (!item) return null;
+              const dropOver =
+                dropOverKey === key ? { [DROP_OVER_ATTR]: 'true' } : {};
+              if (item.type === 'folder') {
+                const id = item.folder.id;
+                const folder = foldersById.get(id);
+                const size = folder ? getFolderSize(folder) : 'large';
+                const span = size === 'large' ? 2 : 1;
+                const folderTabs = folderTabsMap.get(id) || [];
+                return (
+                  <Box
+                    key={key}
+                    {...{ [TILE_ATTR]: key }}
+                    {...dropOver}
+                    sx={{
+                      display: 'flex',
+                      gridColumn: `span ${span}`,
+                      gridRow: `span ${span}`,
+                      justifyContent: 'center',
+                    }}
+                  >
+                    <FolderTile
+                      folderId={id}
+                      getTitle={org.getTabTitle}
+                      hidden={openFolder?.id === id && !openFolder.carried}
+                      metrics={metrics}
+                      name={item.folder.name}
+                      onOpenApp={handleOpenApp}
+                      onOpenFolder={handleOpenFolder}
+                      openKeys={openKeys}
+                      size={size}
+                      tabs={
+                        carry?.fromId === id
+                          ? folderTabs.filter(
+                              (tab) => getOpenTabKey(tab) !== carry.tabKey
+                            )
+                          : folderTabs
+                      }
+                    />
+                  </Box>
+                );
+              }
+              const shell = shellsByKey.get(key);
+              if (!shell) return null;
+              const title = String(shell.label || shell.name || '');
               return (
                 <Box
-                  key={id}
-                  {...{ [FOLDER_ATTR]: id }}
-                  {...(carryOverId === id ? { [CARRY_OVER_ATTR]: 'true' } : {})}
-                  sx={{
-                    display: 'flex',
-                    gridColumn: `span ${span}`,
-                    gridRow: `span ${span}`,
-                    justifyContent: 'center',
-                  }}
+                  key={key}
+                  {...{ [TILE_ATTR]: key }}
+                  {...dropOver}
+                  sx={{ display: 'flex', justifyContent: 'center' }}
                 >
-                  <FolderTile
-                    folderId={id}
-                    getTitle={org.getTabTitle}
-                    hidden={openFolder?.id === id && !openFolder.carried}
+                  <AppTile
+                    isBookmark={item.type === 'bookmark'}
+                    isOpen={openKeys.has(getOpenTabKey(shell))}
                     metrics={metrics}
-                    name={folder.name}
-                    onOpenApp={handleOpenApp}
-                    onOpenFolder={handleOpenFolder}
-                    openKeys={openKeys}
-                    size={size}
-                    tabs={
-                      carry?.fromId === id
-                        ? folderTabs.filter(
-                            (tab) => getOpenTabKey(tab) !== carry.tabKey
-                          )
-                        : folderTabs
-                    }
+                    onOpen={openShell}
+                    tab={shell}
+                    title={title}
                   />
                 </Box>
               );
@@ -551,11 +760,13 @@ export function PinnedHome({
         </Box>
       ) : (
         <Box ref={bindGrid}>
-          {org.ready ? <PinnedEmptyState onBrowseApps={onBrowseApps} /> : null}
+          {launcher.ready ? (
+            <PinnedEmptyState onBrowseApps={onBrowseApps} />
+          ) : null}
         </Box>
       )}
 
-      {hasFolders || showDevMode ? (
+      {hasTiles || showDevMode ? (
         <Box
           sx={{
             display: 'flex',
@@ -566,8 +777,8 @@ export function PinnedHome({
             mt: 0.5,
           }}
         >
-          {hasFolders ? (
-            <ButtonBase onClick={() => void createFolder()} sx={pillSx}>
+          {hasTiles ? (
+            <ButtonBase onClick={createFolder} sx={pillSx}>
               <AddRoundedIcon sx={{ fontSize: 18 }} />
               {t('core:tabs_home.new_folder', {
                 postProcess: 'capitalizeFirstChar',
@@ -580,7 +791,7 @@ export function PinnedHome({
       ) : null}
 
       {tabs.length > 0 ? (
-        <Box sx={{ mt: hasFolders ? 2.5 : 1 }}>
+        <Box sx={{ mt: hasTiles ? 2.5 : 1 }}>
           <Box
             sx={{
               alignItems: 'center',
@@ -694,7 +905,7 @@ export function PinnedHome({
           getSourceTile={() => getFolderTile(openFolder.id)}
           getTitle={org.getTabTitle}
           name={openFolderData.name}
-          onAppMenu={(tab) => setOptionsTab(tab)}
+          onAppMenu={openChildMenu}
           onCarryDrop={dropCarry}
           onCarryEnd={endCarry}
           onCarryMove={(_key, x, y) => moveCarry(x, y)}
@@ -714,6 +925,36 @@ export function PinnedHome({
           tabs={folderTabsMap.get(openFolder.id) || []}
         />
       ) : null}
+
+      <PinnedTileMenu
+        folders={org.folders}
+        onClose={() => setTileMenu(null)}
+        onMoveToFolder={(item, folderId) => {
+          captureLayout();
+          launcher.moveToFolder(item.key, folderId);
+        }}
+        onNewFolder={(item) => {
+          captureLayout();
+          askFolderName(launcher.newFolderWith(item.key)?.madeFolderId);
+        }}
+        onOpen={openLeaf}
+        onRemove={(item) => {
+          captureLayout();
+          launcher.remove(item.key);
+        }}
+        onRemoveFromFolder={(item) => {
+          captureLayout();
+          launcher.takeOutOfFolder(item.key);
+        }}
+        onRename={(item) =>
+          setRenaming({
+            kind: 'bookmark',
+            id: item.bookmark.id,
+            value: item.bookmark.name || item.bookmark.appName,
+          })
+        }
+        target={tileMenu}
+      />
 
       <Menu
         anchorEl={folderMenu?.anchor ?? null}
@@ -813,7 +1054,7 @@ export function PinnedHome({
         sx={{ zIndex: MOBILE_TABS_DIALOG_Z }}
       >
         <DialogTitle>
-          {renaming?.kind === 'tab'
+          {renaming?.kind === 'bookmark' || renaming?.kind === 'tab'
             ? t('core:tabs_home.rename_app', {
                 postProcess: 'capitalizeFirstChar',
               })
@@ -826,7 +1067,7 @@ export function PinnedHome({
             autoFocus
             fullWidth
             label={
-              renaming?.kind === 'tab'
+              renaming?.kind === 'bookmark' || renaming?.kind === 'tab'
                 ? t('core:tabs_home.app_name', {
                     postProcess: 'capitalizeFirstChar',
                   })
@@ -872,8 +1113,7 @@ export function PinnedHome({
         </DialogTitle>
         <DialogContent>
           <Typography sx={{ fontSize: 14, opacity: 0.8 }}>
-            {t('core:tabs_overlay.delete_folder_body', {
-              count: deleteText?.count ?? 0,
+            {t('core:tabs_home.delete_folder_keeps', {
               postProcess: 'capitalizeFirstChar',
             })}
           </Typography>
@@ -893,7 +1133,7 @@ export function PinnedHome({
                   prev ? { ...prev, open: false } : prev
                 );
               }
-              captureFolderLayout();
+              captureLayout();
               void org.deleteFolder(pending.id);
             }}
           >
@@ -917,7 +1157,7 @@ export function PinnedHome({
         }
         onAddToFolder={(folderId) => {
           if (optionsTab) {
-            captureFolderLayout();
+            captureLayout();
             void org.addTabToFolder(optionsTab, folderId);
           }
           setOptionsTab(null);
@@ -927,7 +1167,7 @@ export function PinnedHome({
           const tab = optionsTab;
           setOptionsTab(null);
           if (!tab) return;
-          captureFolderLayout();
+          captureLayout();
           const name = t('core:tabs_home.new_folder_name', {
             postProcess: 'capitalizeFirstChar',
           });
@@ -957,6 +1197,26 @@ export function PinnedHome({
         tab={optionsTab}
         tabTitle={optionsTab ? org.getTabTitle(optionsTab) : ''}
       />
+
+      {/* After a change: offer to save the arrangement to QDN, for Hub. */}
+      {isVisible ? (
+        <Box
+          sx={{
+            bottom: `calc(${GO_TAB_BAR_SPACE} + 8px)`,
+            height: 0,
+            left: 0,
+            position: 'fixed',
+            right: 0,
+            zIndex: 1100,
+          }}
+        >
+          <LauncherSaveWindow
+            bookmarks={launcher.bookmarks}
+            myAddress={launcher.address}
+            myName={myName}
+          />
+        </Box>
+      ) : null}
     </Box>
   );
 }

@@ -146,6 +146,20 @@ describe('picking the applet', () => {
     expect((await selectApplet(futakoOnly)).kind).toBe('futako-test');
   });
 
+  it('reads cards that have only one of the two applets', async () => {
+    // The sold collector cards have only ours. A SELECT for Futako's goes to
+    // our applet, which answers 6E00; it used to stop the connect.
+    const labOnly = new SimulatedCard(['qortal-lab']);
+    await selectApplet(labOnly, 'qortal-lab');
+    await expect(selectApplet(labOnly, 'futako-test')).rejects.toThrow(
+      'NO_APPLET'
+    );
+    // Futako's applet answers someone else's SELECT with 6D00.
+    const futakoOnly = new SimulatedCard(['futako-test']);
+    await selectApplet(futakoOnly, 'futako-test');
+    expect((await selectApplet(futakoOnly)).kind).toBe('futako-test');
+  });
+
   it('selects the applet asked for', async () => {
     const card = new SimulatedCard(['qortal-lab', 'futako-test']);
     expect((await selectApplet(card, 'futako-test')).kind).toBe('futako-test');

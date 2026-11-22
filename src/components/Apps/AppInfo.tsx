@@ -338,10 +338,10 @@ export const AppInfo = ({ app, myName }) => {
             >
               <AppButtonText>
                 {t(
-                  pinTarget === 'tabs'
+                  pinTarget === 'pinned'
                     ? isSelectedAppPinned
-                      ? 'core:action.unpin_from_tabs'
-                      : 'core:action.pin_to_tabs'
+                      ? 'core:action.unpin'
+                      : 'core:action.pin'
                     : isSelectedAppPinned
                       ? 'core:action.unpin_from_dashboard'
                       : 'core:action.pin_to_dashboard',
