@@ -7,7 +7,7 @@ mobile users the Hub 2.0 P2P feature set: presence, voice calls, and direct file
 Reticulum — plus a mobile-first UI, OS notifications, biometric login, and battery-conscious
 background behavior.
 
-**Repository:** https://gitea.qortal.link/simon/GO-3.0  
+**Repository:** https://github.com/SJQortal/GO-3.0 (pull requests to `develop`), mirrored at https://gitea.qortal.link/simon/GO-3.0 (APK downloads)  
 **Current APK:** GO 3.0 **v0.0.20** (`versionName` 0.0.20, `versionCode` 23), a release (non-debuggable) build — shown in-app as **GO version** (Core & settings). Chat engine matches Hub v3.0.3.
 
 > **For Hub developers**
