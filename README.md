@@ -8,20 +8,19 @@ Reticulum — plus a mobile-first UI, OS notifications, biometric login, and bat
 background behavior.
 
 **Repository:** https://github.com/SJQortal/GO-3.0 (pull requests to `develop`), mirrored at https://gitea.qortal.link/simon/GO-3.0 (APK downloads)  
-**Current APK:** GO 3.0 **v0.0.20** (`versionName` 0.0.20, `versionCode` 23), a release (non-debuggable) build — shown in-app as **GO version** (Core & settings). Chat engine matches Hub v3.0.3.
+**Current APK:** GO 3.0 **v0.0.20** (`versionName` 0.0.20, `versionCode` 23), a release (non-debuggable) build — shown in-app as **GO version** (Core & settings). Chat engine based on Hub v3.0.3 and wire-compatible with it.
 
 > **For Hub developers**
 >
 > 1. **Chat GIF picker** — copy `src/components/Chat/gifs/` and wire it as described in
 >    [`HUB_GIF_PICKER.md`](docs/go/hub-notes/HUB_GIF_PICKER.md). Same QDN pointers GO
 >    already sends; Hub should display and send them the same way.
-> 2. **Voice + file-transfer interop** — two small Hub-side changes, still required.
->    See [Required Hub changes](#required-hub-changes).
+> 2. **Voice calls need nothing more from the Hub.** What GO still asks for, and what has
+>    shipped, is under [Hub changes](#hub-changes).
 >
-> Everything else is wire-compatible with the existing Hub.
->
-> Hub v3.0.1 added WebRTC audio (Reticulum fallback), dedicated event links, and
-> status/expiry UI. This tree ports those pieces onto the GO mobile shell.
+> Everything else is wire-compatible with Hub v3.0.3. Since GO v0.0.19 calls run the Hub's own
+> call code: `electron/src/call.ts`, `group-call.ts` and `presence.ts` are the Hub's files,
+> unchanged.
 
 ---
 
@@ -30,6 +29,7 @@ background behavior.
 | Path | What it is |
 |---|---|
 | `src/` | Shared React UI (same codebase as desktop Hub, with mobile components added) |
+| `src/bridge/hubCall/` | Adapters that run the Hub's own `CallManager` and `GroupCallManager` inside the WebView |
 | `src/bridge/capacitorBridge.ts` | The mobile equivalent of Electron's main-process bridges: installs `window.presence` / `window.call` / `window.groupCall`, presence overlay coordinator, Q-Chat file transfer sender logic |
 | `src/plugins/Reticulum.ts` | Capacitor plugin typings for the native Reticulum bridge |
 | `src/utils/qchatFileApi.ts` | Unified desktop/mobile Q-Chat file transfer API (desktop → `electronAPI`, mobile → Capacitor) |
@@ -39,8 +39,8 @@ background behavior.
 | `android/` | Capacitor Android project |
 | `android/app/src/main/java/.../ReticulumPlugin.kt` | Native plugin: Kotlin RNS transport (reticulum-kt) + Chaquopy host for the Python bridge + file staging helpers |
 | `android/app/src/main/java/.../QortalForegroundService.java` | Foreground service: persistent status notification, alert/call notifications |
-| `android/app/src/main/python/presence_bridge.py` | The full Reticulum protocol bridge (presence, calls, group audio, file transfer) — **shared with desktop**, runs under Chaquopy on Android |
-| `electron/resources/presence_bridge.py` | The **desktop copy** of the same bridge — kept in sync |
+| `android/app/src/main/python/presence_bridge.py` | The full Reticulum protocol bridge (presence, calls, group audio, file transfer) — the Hub's bridge plus GO's changes for phones, runs under Chaquopy on Android |
+| `electron/resources/presence_bridge.py` | The **desktop copy** of the bridge, unchanged from Hub v3.0.3 |
 | `electron/` | Desktop Electron shell |
 | `docs/go/` | GO's own docs (widgets guide, app links, payment QR codes); `docs/go/hub-notes/` holds the notes for Hub developers |
 
@@ -95,7 +95,7 @@ on-device Python setup is needed.
 
 The WebView runs the same renderer as desktop Hub. Where desktop talks to Electron's main process
 (`window.electronAPI`, IPC to `reticulum-daemon.ts`), mobile installs equivalent bridges from
-`capacitorBridge.ts` that talk to `ReticulumPlugin.kt`, which hosts the *identical*
+`capacitorBridge.ts` that talk to `ReticulumPlugin.kt`, which hosts GO's copy of the Hub's
 `presence_bridge.py` in an embedded CPython (Chaquopy). Commands flow as JSON frames
 (`presenceCommand` with request/response correlation); events stream back over a single `presence`
 listener. The result: the phone speaks the exact same RNS wire protocol as the Hub — same presence
@@ -104,18 +104,38 @@ transfer Resources.
 
 ## Feature status (mobile ↔ Hub interop)
 
+Last checked on 2026-11-24 against Hub v3.0.3 (the current release) and Hub `develop`. Rows
+without a Hub version hold for both.
+
 | Feature | Status |
 |---|---|
 | Presence (announce/heartbeat over RNS overlay) | ✅ Works both ways |
-| Q-Chat (blockchain chat) | ✅ Works |
-| Voice calls **Hub → mobile** | ✅ Works — two-way audio over verified RNS link |
-| Voice calls **mobile → Hub** | ⚠️ Blocked by a Hub-side ordering precondition — see [Hub change #1](#1-voice-calls-admit-verified-link-auth-joins) |
-| Q-Chat file transfer **mobile → Hub** | ✅ Works (mobile sender has the robustness fixes) |
-| Q-Chat file transfer **Hub → mobile**, large files | ⚠️ Reliable only after the Hub ships [Hub change #2](#2-file-transfer-ship-the-updated-presence_bridgepy) |
-| OS notifications (PM summary + sender avatar), biometric login, mobile tabs/folders | ✅ Mobile-only features |
-| Chat GIF library (QDN `gif-` IMAGE pointers) | ✅ Works on GO. Hub: copy picker + send/render — [`HUB_GIF_PICKER.md`](docs/go/hub-notes/HUB_GIF_PICKER.md) |
+| Group chats and DMs over Reticulum | ✅ Work both ways. Core's own chat is used only while Reticulum chat is off |
+| Read state between your own devices (`read_sync_v2`) | ✅ GO and Hub both speak it |
+| Voice calls 1:1, **Hub → mobile** and **mobile → Hub** | ✅ Work both ways: WebRTC direct, or Reticulum when that isn't possible. The two accounts must be DM friends, as on the Hub |
+| Group voice calls | ✅ Work with Hubs; tested in the lab, less on real phones |
+| Ringing stops when another device answers | ⚠️ Not when a Hub is the caller and the call is answered after 30 s — see [still open](#still-open) |
+| Q-Chat file transfer **mobile → Hub** | ✅ Works |
+| Q-Chat file transfer **Hub → mobile**, large files | ⚠️ Lost chunks are sent again since Hub v3.0.0; an interrupted transfer starts over. Large files have not been re-tested since — see [shipped](#shipped-in-the-hub) |
+| DMs delivered by your own Hub while the phone sleeps | ⚠️ Works with Hub v3.0.3, but not reliably — see [still open](#still-open) |
+| Chat GIF library (QDN `gif-` IMAGE pointers) | ✅ Works on GO. The Hub shows GO's GIFs as image embeds and has no picker — [`HUB_GIF_PICKER.md`](docs/go/hub-notes/HUB_GIF_PICKER.md) |
+| Notification settings and seen state (`ds1`) | ⚠️ Between GO devices only; the Hub doesn't speak it yet — [`HUB_NOTIFICATION_SYNC.md`](docs/go/hub-notes/HUB_NOTIFICATION_SYNC.md) |
+| Pinned apps, folders and bookmarks (account settings on QDN) | ⚠️ Shared both ways in GO `develop`, not released yet. v0.0.20 only reads the pins |
+| OS notifications (PM summary + sender avatar), biometric login, mobile tabs | ✅ Mobile-only features |
 | In-app APK updates from Q-Share | ✅ Mobile-only (checks `GO 3.0` on QDN) |
 | GO version in Core & settings | ✅ Matches `versionName` / this APK |
+
+### What the next Hub release changes for GO
+
+Hub `develop` and the open Q-Chat pull request
+([Qortal/Qortal-Hub#426](https://github.com/Qortal/Qortal-Hub/pull/426)) change no call code, and
+nothing in them stops GO's chat. GO v0.0.20 will differ in these points until it catches up:
+
+| Change | On GO v0.0.20 |
+|---|---|
+| Posts with "No expiry" (#426) | GO still deletes them when the channel's own expiry is reached (General: 30 days) |
+| Compact DM attachment receipts (`develop`) | GO ignores them, so it thinks its sent attachments have no copy on the other side. Chat itself is not affected |
+| New wire kind `read_cov` (#426) | GO drops it, with no protocol violation |
 
 ---
 
@@ -149,66 +169,34 @@ Every field build is published on Q-Share (Q-Share+ from v0.0.13) under the name
 
 ---
 
-## Required Hub changes
+## Hub changes
 
-### 1. Voice calls: admit verified link-auth joins
+### Shipped in the Hub
 
-*(See `docs/go/hub-notes/MOBILE_VOICE_HUB_DEV_NOTE.md` in this repo for the full write-up.)*
+1. **Voice calls: verified link-auth joins are admitted** (since Hub v2.0.0). The Hub used to close
+   the audio link of a call placed from a phone (`link-auth-no-participant`), because the phone's
+   signed `GC_JOIN` arrived before the Hub had registered the caller.
+   `applyVerifiedReticulumLinkAuthJoin` in `electron/src/group-call.ts` now adds the participant
+   from a verified join that is bound to that link.
+   [`MOBILE_VOICE_HUB_DEV_NOTE.md`](docs/go/hub-notes/MOBILE_VOICE_HUB_DEV_NOTE.md) is the old
+   write-up, kept for history.
+2. **File transfer: lost chunks are sent again** (since Hub v3.0.0). In `presence_bridge.py`, an ACK
+   timeout puts the chunk back in the queue (`retry_chunks`) instead of failing the whole transfer.
+   GO runs the same file-transfer code. Two parts of GO's old proposal are in neither app today:
+   the receiver doesn't replace an established link that closes, and accepting a transfer again
+   starts from zero.
+3. **Old history is accepted** (Hub `develop`, after v3.0.3). Hub v3.0.3 refuses events older than
+   30 days on history pages and counts them against the peer that served them. GO therefore serves
+   no history older than 29 days, and keeps doing so while v3.0.3 Hubs are in use.
 
-**Symptom:** Hub → mobile calls connect with clean two-way audio. Mobile → Hub calls stay on
-"connecting…" on the Hub and drop after a few seconds — even though the phone sends the exact same
-signed link auth the Hub accepts in the other direction.
+### Still open
 
-**Root cause (traced in `electron/src/group-call.ts`):** it is *not* a protocol or signature
-problem — the `GC_JOIN` verifies. It's an ordering precondition:
-
-- The audio-link owner is chosen by address ordering (`isLocalAddressReticulumAudioLinkOwner`),
-  not by who placed the call.
-- Inbound link audio is dropped unless the link is marked verified (`audio-unverified-address`).
-- `applyVerifiedReticulumLinkAuthJoin` only marks a link verified **if the sender is already in
-  `room.participants`** at that instant.
-
-When the phone initiates, its verified link-auth `GC_JOIN` arrives *before* the Hub has registered
-the caller as a participant, so the Hub closes the link (`link-auth-no-participant`), drops the
-audio, and never leaves "connecting". In the Hub-initiated direction the participant state is
-already in place, so the identical handshake succeeds.
-
-**The change:** in `applyVerifiedReticulumLinkAuthJoin`, when the signed `GC_JOIN` **verifies** and
-the sender is a valid Qortal member of the call, **admit the participant from the verified join**
-instead of bailing with `link-auth-no-participant`. The verified join is itself authenticated proof
-of membership (Ed25519 over `buildGcJoinSignedFields`, already checked), so this removes the race
-without weakening security. No changes to wire format, audio framing, signing, key delivery, or the
-link-owner rule; Hub-initiated calls are unaffected.
-
-### 2. File transfer: ship the updated `presence_bridge.py`
-
-**Symptom:** large transfers (e.g. ~80 MB Hub → mobile) stall at exactly the first window of
-parallel chunks (8 × 1 MB) and the retry restarts from zero.
-
-**Root cause:** the per-chunk `QCHAT_FILE_CHUNK_ACK` is a single link packet with no retry. Under
-congestion a lost ACK caused:
-
-1. the sender's 90 s ACK timeout to **fail the whole transfer** — and the un-ACKed chunk was never
-   re-queued (`next_chunk_index` had already advanced → permanent hole in the file);
-2. dead links were never replaced, so the 8-link pool only shrank;
-3. re-accepting restarted the download from byte 0 (and could never fill the holes anyway).
-
-**The change (already implemented in this repo's `electron/resources/presence_bridge.py`,
-mirrored in the Android copy):**
-
-- **`retry_chunks` queue** on the send root — an ACK timeout or mid-chunk link failure re-queues
-  the chunk (consumed with priority by `_start_qchat_file_resource_for_state`) and emits
-  `retrying` instead of `failed`; only the suspect link is torn down.
-- **Receiver link reopen** — `on_qchat_file_link_closed` opens a replacement link while a receive
-  is pending (the receiver is the link initiator; bounded by
-  `_QCHAT_FILE_RECEIVER_MAX_LINK_REOPENS = 64`).
-- **Resume** — the receiver persists a `<savePath>.part.meta` ledger (transferId, size, sha256,
-  completed chunks) per chunk; a re-accept preloads it and resumes instead of restarting. The meta
-  is removed on completion, and both `.part` and meta are discarded on a final hash mismatch.
-
-**What to do:** include this file in the next Hub release — nothing else changes. No new packet
-types; fully wire-compatible with old peers. The sender-side re-queue is the critical half, so
-Hub → mobile transfers of large files only become reliable once the Hub ships it.
+| Asked for | Why | Details |
+|---|---|---|
+| Stop ringing on the account's other devices | A calling Hub signs the cancellation when the call starts, and receivers refuse signatures older than 30 s. A call answered later keeps ringing elsewhere until its 60 s timeout | `cancellationTimestamp` in `src/hooks/useVoiceCall.ts` |
+| Own-device DM delivery | The Hub refuses the phone's pull of a DM the Hub just sent (`dm_notification_request_mismatch`) | [`HUB_OWN_DEVICE_DELIVERY.md`](docs/go/hub-notes/HUB_OWN_DEVICE_DELIVERY.md), P1 first |
+| Notification sync (`ds1`) | Settings and seen state don't cross between Hub and GO | [`HUB_NOTIFICATION_SYNC.md`](docs/go/hub-notes/HUB_NOTIFICATION_SYNC.md) |
+| Chat GIF picker | The Hub shows GO's GIFs but can't pick one | [`HUB_GIF_PICKER.md`](docs/go/hub-notes/HUB_GIF_PICKER.md) |
 
 ---
 
