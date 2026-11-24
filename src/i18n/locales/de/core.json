@@ -513,8 +513,10 @@
   "devmode_apps": "Dev -Modus -Apps",
   "directory": "Verzeichnis",
   "dm_friend_events": {
+    "they_added": "{{name}} hat dich als Freund hinzugefügt.",
     "they_added_available": "{{name}} hat dich als Freund hinzugefügt. Anrufe sind jetzt verfügbar.",
     "they_added_pending": "{{name}} hat dich als Freund hinzugefügt. Füge diese Person ebenfalls hinzu, um Anrufe zu aktivieren.",
+    "you_added": "Du hast {{name}} als Freund hinzugefügt.",
     "you_added_available": "Du hast {{name}} als Freund hinzugefügt. Anrufe sind jetzt verfügbar.",
     "you_added_pending": "Du hast {{name}} als Freund hinzugefügt. Anrufe werden verfügbar, sobald diese Person dich ebenfalls hinzufügt."
   },
@@ -626,6 +628,8 @@
     "locked_note": "GO bleibt gesperrt. Nur dieser Anruf wird angezeigt.",
     "message": "Nachricht",
     "minimize": "Anruf minimieren",
+    "missed_call_body": "Tippe, um den Chat zu öffnen.",
+    "missed_call_title": "Verpasster Anruf von {{name}}",
     "mute": "Stumm",
     "muted": "Stummgeschaltet",
     "ongoing_call": "Laufender Anruf",
@@ -1937,6 +1941,7 @@
   "video_fetching": "Video wird aus dem Qortal-Netzwerk abgerufen...",
   "voice_call": {
     "failed": "sprachanruf fehlgeschlagen",
+    "no_answer": "Keine Antwort von {{name}}.",
     "rejected_declined": "Die andere Person hat den Anruf abgelehnt.",
     "rejected_media": "Der Anruf wurde beendet — das Mikrofon ist möglicherweise nicht verfügbar.",
     "rejected_not_friend": "Anruf abgelehnt — {{name}} hat dich nicht als Freund."

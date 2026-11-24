@@ -254,6 +254,10 @@ public final class BackgroundKeepAlive {
             sessionActive = false;
             outboxPending = false;
         }
+        // The page that signed heartbeats in advance is gone (renderer death,
+        // Activity destroyed): nothing may keep publishing them.
+        ReticulumPlugin.feedPresenceFrame(
+            KeepAlivePolicy.CANCEL_SIGNED_HEARTBEATS_FRAME, "page detached");
         requestEvaluate();
     }
 

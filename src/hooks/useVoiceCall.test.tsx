@@ -1,7 +1,7 @@
 import React from 'react';
 import { Provider, createStore } from 'jotai';
 import { renderHook, act, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   blockedAddressesAtom,
   callAudioDevicesAtom,
@@ -177,6 +177,257 @@ describe('useVoiceCall', () => {
 
     expect((window as any).call.initiate).toHaveBeenCalled();
     expect(resume).toHaveBeenCalled();
+  });
+
+  describe('GO call glare (both call each other at once)', () => {
+    const myAddr = 'Qme';
+    const peerAddr = 'Qpeer';
+    const chatId = buildDirectVoiceCallChatId(myAddr, peerAddr);
+
+    const setup = (ourCallId: string) => {
+      let eventHandler:
+        | ((event: string, payload: unknown) => void | Promise<void>)
+        | null = null;
+      const callApi = {
+        onEvent: vi.fn(
+          (cb: (event: string, payload: unknown) => void | Promise<void>) => {
+            eventHandler = cb;
+            return vi.fn();
+          }
+        ),
+        setLocalAddresses: vi.fn(async () => ({ success: true })),
+        initiate: vi.fn(async () => ({ success: true })),
+        hangup: vi.fn(async () => ({ success: true })),
+        accept: vi.fn(async () => ({ success: true })),
+        reject: vi.fn(async () => ({ success: true })),
+      };
+      Object.assign(window as any, {
+        Capacitor: { isNativePlatform: () => true },
+        call: callApi,
+        groupCall: {
+          onEvent: vi.fn(() => vi.fn()),
+          join: vi.fn(async () => ({ success: false, error: 'test-stop' })),
+          leave: vi.fn(async () => ({ success: true })),
+          setLocalAddresses: vi.fn(async () => {}),
+        },
+        electronAPI: electronApiWithGoodReadiness(),
+        sendMessage: vi.fn(async () => ({ signature: 'sig' })),
+      });
+      const store = createStore();
+      store.set(userInfoAtom, { address: myAddr, publicKey: 'pub' });
+      store.set(blockedAddressesAtom, {});
+      store.set(dmFriendsByAddressAtom, {
+        [peerAddr]: { publicKey: 'pk', addedAt: 1 },
+      });
+      const wrapper = ({ children }: { children: React.ReactNode }) => (
+        <Provider store={store}>{children}</Provider>
+      );
+      const hook = renderHook(
+        () =>
+          useVoiceCall({
+            createCallId: () => ourCallId,
+            skipSystemReadiness: true,
+          }),
+        { wrapper }
+      );
+      return {
+        callApi,
+        hook,
+        store,
+        emit: (event: string, payload: unknown) =>
+          eventHandler?.(event, payload),
+      };
+    };
+
+    afterEach(() => {
+      delete (window as any).Capacitor;
+    });
+
+    it('the side whose call has the larger id cancels it and answers the other', async () => {
+      const { callApi, hook, emit } = setup('M-ours');
+      await act(async () => {
+        await hook.result.current.initiateCall(peerAddr, chatId, async () => ({
+          signature: 'sig',
+          publicKey: 'pub',
+        }));
+      });
+      expect(hook.result.current.callState).toBe('calling');
+      await act(async () => {
+        await emit('call:incoming', {
+          callId: 'A-theirs',
+          fromAddress: peerAddr,
+          chatId,
+        });
+      });
+      await waitFor(() =>
+        expect(callApi.accept).toHaveBeenCalledWith(
+          'A-theirs',
+          'sig',
+          'pub',
+          expect.any(Number)
+        )
+      );
+      expect(callApi.hangup).toHaveBeenCalledWith(
+        'M-ours',
+        'sig',
+        'pub',
+        expect.any(Number)
+      );
+      expect(callApi.reject).not.toHaveBeenCalled();
+    });
+
+    it('the side whose call has the smaller id waits; the other cancelling clears it', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        const { callApi, hook, emit } = setup('A-ours');
+        await act(async () => {
+          await hook.result.current.initiateCall(
+            peerAddr,
+            chatId,
+            async () => ({ signature: 'sig', publicKey: 'pub' })
+          );
+        });
+        await act(async () => {
+          await emit('call:incoming', {
+            callId: 'M-theirs',
+            fromAddress: peerAddr,
+            chatId,
+          });
+        });
+        expect(callApi.accept).not.toHaveBeenCalled();
+        expect(callApi.hangup).not.toHaveBeenCalled();
+        // The other phone yields: its call is cancelled here.
+        await act(async () => {
+          await emit('call:hangup', { callId: 'M-theirs' });
+        });
+        expect(hook.result.current.callState).toBe('calling');
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(16_000);
+        });
+        expect(callApi.accept).not.toHaveBeenCalled();
+        expect(callApi.hangup).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('a kept call that is not answered (desktop Hub peer) yields after the fallback', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        const { callApi, hook, emit } = setup('A-ours');
+        await act(async () => {
+          await hook.result.current.initiateCall(
+            peerAddr,
+            chatId,
+            async () => ({ signature: 'sig', publicKey: 'pub' })
+          );
+        });
+        await act(async () => {
+          await emit('call:incoming', {
+            callId: 'M-theirs',
+            fromAddress: peerAddr,
+            chatId,
+          });
+        });
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(16_000);
+        });
+        await waitFor(() =>
+          expect(callApi.accept).toHaveBeenCalledWith(
+            'M-theirs',
+            'sig',
+            'pub',
+            expect.any(Number)
+          )
+        );
+        expect(callApi.hangup).toHaveBeenCalledWith(
+          'A-ours',
+          'sig',
+          'pub',
+          expect.any(Number)
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('a call that rings out tells the caller there was no answer', async () => {
+      const { hook, emit, store } = setup('M-ours');
+      await act(async () => {
+        await hook.result.current.initiateCall(peerAddr, chatId, async () => ({
+          signature: 'sig',
+          publicKey: 'pub',
+        }));
+      });
+      await act(async () => {
+        await emit('call:hangup', { callId: 'M-ours', reason: 'timeout' });
+      });
+      expect(['ended', 'idle']).toContain(hook.result.current.callState);
+      expect(String(store.get(infoSnackGlobalAtom)?.message || '')).toMatch(
+        /No answer/
+      );
+    });
+
+    it('cancelling our own call during the wait offers theirs instead', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        const { callApi, hook, emit } = setup('A-ours');
+        await act(async () => {
+          await hook.result.current.initiateCall(
+            peerAddr,
+            chatId,
+            async () => ({ signature: 'sig', publicKey: 'pub' })
+          );
+        });
+        await act(async () => {
+          await emit('call:incoming', {
+            callId: 'M-theirs',
+            fromAddress: peerAddr,
+            chatId,
+          });
+        });
+        // The user gives up on their own call before the other side yields.
+        await act(async () => {
+          await hook.result.current.hangUp();
+        });
+        expect(callApi.hangup).toHaveBeenCalledWith(
+          'A-ours',
+          'sig',
+          'pub',
+          expect.any(Number)
+        );
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(2_000);
+        });
+        expect(hook.result.current.callState).toBe('ringing');
+        expect(hook.result.current.incomingCall?.callId).toBe('M-theirs');
+        // Not auto-answered: the user decides.
+        expect(callApi.accept).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('a call from someone else while calling is still ignored', async () => {
+      const { callApi, hook, emit } = setup('M-ours');
+      await act(async () => {
+        await hook.result.current.initiateCall(peerAddr, chatId, async () => ({
+          signature: 'sig',
+          publicKey: 'pub',
+        }));
+      });
+      const otherChat = buildDirectVoiceCallChatId(myAddr, 'Qother');
+      await act(async () => {
+        await emit('call:incoming', {
+          callId: 'A-other',
+          fromAddress: 'Qother',
+          chatId: otherChat,
+        });
+      });
+      expect(callApi.accept).not.toHaveBeenCalled();
+      expect(callApi.hangup).not.toHaveBeenCalled();
+      expect(hook.result.current.callState).toBe('calling');
+    });
   });
 
   it('lets an endpoint-bound custom call API own signaling signatures', async () => {
@@ -676,6 +927,177 @@ describe('useVoiceCall', () => {
     expect(result.current.incomingCall).toBeNull();
   });
 
+  it('rings and saves the friend when the account added the caller on another device', async () => {
+    let eventHandler:
+      | ((event: string, payload: unknown) => void | Promise<void>)
+      | null = null;
+    const callApi = {
+      onEvent: vi.fn(
+        (cb: (event: string, payload: unknown) => void | Promise<void>) => {
+          eventHandler = cb;
+          return vi.fn();
+        }
+      ),
+      setLocalAddresses: vi.fn(async () => ({ success: true })),
+      reject: vi.fn(async () => ({ success: true })),
+    };
+    const myAddr = 'Qme';
+    const peerAddr = 'Qfriend-elsewhere';
+    // The account's own signed "added as a friend" event (written on the
+    // Hub) and one message from the peer, as the chat engine returns them.
+    const getDirectHistory = vi.fn(async () => [
+      {
+        eventId: 'own-add',
+        senderAddress: myAddr,
+        recipientAddress: peerAddr,
+        senderPublicKey: 'pub',
+        eventType: 'message',
+        timestamp: 1_000,
+        payload: JSON.stringify({
+          messageText: 'Me added Friend as a friend.',
+          otherData: {
+            type: 'dm_friend_added',
+            dmFriendEvent: {
+              actorAddress: myAddr,
+              targetAddress: peerAddr,
+              targetName: 'Friend',
+            },
+          },
+        }),
+      },
+      {
+        eventId: 'peer-msg',
+        senderAddress: peerAddr,
+        recipientAddress: myAddr,
+        senderPublicKey: 'peer-pub',
+        eventType: 'message',
+        timestamp: 2_000,
+        payload: JSON.stringify({ messageText: 'hi' }),
+      },
+    ]);
+
+    Object.assign(window as any, {
+      hub: {
+        getBootstrapIceServers: () => [{ urls: 'stun:mock:3478' }],
+        getIceServers: vi.fn(async () => [{ urls: 'stun:mock:3478' }]),
+        reportStunCallOutcome: vi.fn(async () => ({})),
+      },
+      call: callApi,
+      sendMessage: vi.fn(async () => ({ signature: 'sig' })),
+      reticulumChat: { getDirectHistory },
+    });
+
+    const store = createStore();
+    store.set(userInfoAtom, { address: myAddr, publicKey: 'pub' });
+    store.set(blockedAddressesAtom, {});
+    store.set(dmFriendsByAddressAtom, {});
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <Provider store={store}>{children}</Provider>
+    );
+
+    try {
+      const { result } = renderHook(() => useVoiceCall(), { wrapper });
+
+      await act(async () => {
+        await eventHandler?.('call:incoming', {
+          callId: 'call-restored',
+          fromAddress: peerAddr,
+          chatId: buildDirectVoiceCallChatId(myAddr, peerAddr),
+        });
+      });
+
+      expect(getDirectHistory).toHaveBeenCalledWith(myAddr, peerAddr, 1000);
+      expect(callApi.reject).not.toHaveBeenCalled();
+      expect(result.current.callState).toBe('ringing');
+      expect(store.get(dmFriendsByAddressAtom)[peerAddr]).toEqual({
+        publicKey: 'peer-pub',
+        name: 'Friend',
+        addedAt: 1_000,
+        eventId: 'own-add',
+      });
+    } finally {
+      delete (window as any).reticulumChat;
+    }
+  });
+
+  it('still declines when the only friend event is the caller’s own', async () => {
+    let eventHandler:
+      | ((event: string, payload: unknown) => void | Promise<void>)
+      | null = null;
+    const callApi = {
+      onEvent: vi.fn(
+        (cb: (event: string, payload: unknown) => void | Promise<void>) => {
+          eventHandler = cb;
+          return vi.fn();
+        }
+      ),
+      setLocalAddresses: vi.fn(async () => ({ success: true })),
+      reject: vi.fn(async () => ({ success: true })),
+    };
+    const myAddr = 'Qme';
+    const peerAddr = 'Qstranger';
+    Object.assign(window as any, {
+      hub: {
+        getBootstrapIceServers: () => [{ urls: 'stun:mock:3478' }],
+        getIceServers: vi.fn(async () => [{ urls: 'stun:mock:3478' }]),
+        reportStunCallOutcome: vi.fn(async () => ({})),
+      },
+      call: callApi,
+      sendMessage: vi.fn(async () => ({ signature: 'sig' })),
+      reticulumChat: {
+        getDirectHistory: vi.fn(async () => [
+          {
+            eventId: 'their-add',
+            senderAddress: peerAddr,
+            recipientAddress: myAddr,
+            senderPublicKey: 'peer-pub',
+            eventType: 'message',
+            timestamp: 1_000,
+            payload: JSON.stringify({
+              otherData: {
+                type: 'dm_friend_added',
+                dmFriendEvent: {
+                  actorAddress: peerAddr,
+                  targetAddress: myAddr,
+                },
+              },
+            }),
+          },
+        ]),
+      },
+    });
+    const store = createStore();
+    store.set(userInfoAtom, { address: myAddr, publicKey: 'pub' });
+    store.set(blockedAddressesAtom, {});
+    store.set(dmFriendsByAddressAtom, {});
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <Provider store={store}>{children}</Provider>
+    );
+
+    try {
+      const { result } = renderHook(() => useVoiceCall(), { wrapper });
+      await act(async () => {
+        await eventHandler?.('call:incoming', {
+          callId: 'call-stranger',
+          fromAddress: peerAddr,
+          chatId: buildDirectVoiceCallChatId(myAddr, peerAddr),
+        });
+      });
+      expect(callApi.reject).toHaveBeenCalledWith(
+        'call-stranger',
+        'not_friend',
+        'sig',
+        'pub',
+        expect.any(Number),
+        'sig'
+      );
+      expect(result.current.callState).toBe('idle');
+      expect(store.get(dmFriendsByAddressAtom)[peerAddr]).toBeUndefined();
+    } finally {
+      delete (window as any).reticulumChat;
+    }
+  });
+
   it('allows direct call:incoming when caller is in persisted DM friends', async () => {
     let eventHandler:
       | ((event: string, payload: unknown) => void | Promise<void>)
@@ -1047,6 +1469,115 @@ describe('useVoiceCall', () => {
         'dm-peer-joined'
       )
     );
+  });
+
+  it('ends an accepted call when the caller never sends the room key', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let callEventHandler:
+        | ((event: string, payload: unknown) => void | Promise<void>)
+        | null = null;
+      const callApi = {
+        onEvent: vi.fn(
+          (cb: (event: string, payload: unknown) => void | Promise<void>) => {
+            callEventHandler = cb;
+            return vi.fn();
+          }
+        ),
+        setLocalAddresses: vi.fn(async () => ({ success: true })),
+        accept: vi.fn(async () => ({ success: true })),
+        hangup: vi.fn(async () => ({ success: true })),
+      };
+      const sendKeyRequest = vi.fn(async () => ({ success: true }));
+      Object.assign(window as any, {
+        AudioContext: class MockAudioContext {
+          state: AudioContextState = 'running';
+          sampleRate = 48_000;
+          baseLatency = 0;
+          currentTime = 0;
+          destination = {};
+          constructor(_: AudioContextOptions) {}
+          createGain = vi.fn(mockAudioGain);
+          createOscillator = vi.fn(mockAudioOscillator);
+          resume = vi.fn(async () => {});
+          close = vi.fn(async () => {
+            this.state = 'closed';
+          });
+        },
+        call: callApi,
+        groupCall: {
+          onEvent: vi.fn(() => vi.fn()),
+          join: vi.fn(async () => ({
+            success: true,
+            callSessionId: 'call-session',
+            mediaSessionGeneration: 1,
+          })),
+          leave: vi.fn(async () => ({ success: true })),
+          setLocalAddresses: vi.fn(async () => {}),
+          requestPeerMediaRecovery: vi.fn(async () => ({ success: true })),
+          sendKeyRequest,
+        },
+        electronAPI: {
+          ...electronApiWithGoodReadiness(),
+          reticulumGetLocalDestinationHash: vi.fn(async () => ({
+            destinationHash: 'a'.repeat(32),
+          })),
+          reticulumGetLocalIdentityPublicKeyBase64: vi.fn(async () => ({
+            publicKeyBase64: 'cmV0aWN1bHVtLWlkZW50aXR5',
+          })),
+        },
+        sendMessage: vi.fn(async () => ({ signature: 'sig' })),
+      });
+
+      const myAddr = 'Qme';
+      const peerAddr = 'Qbuddy';
+      const chatId = buildDirectVoiceCallChatId(myAddr, peerAddr);
+      const store = createStore();
+      store.set(userInfoAtom, { address: myAddr, publicKey: 'pub' });
+      store.set(blockedAddressesAtom, {});
+      store.set(dmFriendsByAddressAtom, {
+        [peerAddr]: { publicKey: 'pk', addedAt: 1 },
+      });
+      const wrapper = ({ children }: { children: React.ReactNode }) => (
+        <Provider store={store}>{children}</Provider>
+      );
+      const { result } = renderHook(() => useVoiceCall(), { wrapper });
+
+      await act(async () => {
+        await callEventHandler?.('call:incoming', {
+          callId: 'call-no-key',
+          fromAddress: peerAddr,
+          chatId,
+        });
+      });
+      await act(async () => {
+        await result.current.acceptCall();
+      });
+      await waitFor(() => expect(sendKeyRequest).toHaveBeenCalled());
+      expect(result.current.callState).toBe('connected');
+
+      // Still waiting well inside the window: nothing ends.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30_000);
+      });
+      expect(callApi.hangup).not.toHaveBeenCalled();
+      expect(result.current.callState).toBe('connected');
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(40_000);
+      });
+      await waitFor(() =>
+        expect(callApi.hangup).toHaveBeenCalledWith(
+          'call-no-key',
+          'sig',
+          'pub',
+          expect.any(Number)
+        )
+      );
+      expect(['ended', 'idle']).toContain(result.current.callState);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('does not hang up a connected call when teardown dependencies refresh', async () => {

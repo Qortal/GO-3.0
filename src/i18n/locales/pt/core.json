@@ -513,8 +513,10 @@
   "devmode_apps": "Apps Modo desenvolvedor",
   "directory": "diretório",
   "dm_friend_events": {
+    "they_added": "{{name}} adicionou você como amigo.",
     "they_added_available": "{{name}} adicionou-te como amigo. As chamadas estão agora disponíveis.",
     "they_added_pending": "{{name}} adicionou-te como amigo. Adiciona essa pessoa também para ativar as chamadas.",
+    "you_added": "Você adicionou {{name}} como amigo.",
     "you_added_available": "Adicionaste {{name}} como amigo. As chamadas estão agora disponíveis.",
     "you_added_pending": "Adicionaste {{name}} como amigo. As chamadas ficam disponíveis quando essa pessoa também te adicionar."
   },
@@ -626,6 +628,8 @@
     "locked_note": "O GO continua bloqueado. Só esta chamada é mostrada.",
     "message": "Mensagem",
     "minimize": "Minimizar chamada",
+    "missed_call_body": "Toque para abrir a conversa.",
+    "missed_call_title": "Chamada perdida de {{name}}",
     "mute": "Silenciar",
     "muted": "Silenciado",
     "ongoing_call": "Chamada em andamento",
@@ -1937,6 +1941,7 @@
   "video_fetching": "buscando vídeo na Rede Qortal...",
   "voice_call": {
     "failed": "a chamada de voz falhou",
+    "no_answer": "{{name}} não atendeu.",
     "rejected_declined": "A outra pessoa recusou a chamada.",
     "rejected_media": "A chamada terminou — o microfone dela pode estar indisponível.",
     "rejected_not_friend": "Chamada recusada — {{name}} não te tem como amigo."

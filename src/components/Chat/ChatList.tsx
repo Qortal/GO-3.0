@@ -381,6 +381,18 @@ export const ChatList = ({
     setPositionedReticulumScrollTargetKey,
   ] = useState('');
 
+  // DM friend banners: who has an "added as a friend" event in this chat,
+  // so an old "add them back" banner reads plainly once both did.
+  const dmFriendEventActors = useMemo(() => {
+    const actors = new Set<string>();
+    if (!Array.isArray(initialMessages)) return actors;
+    for (const message of initialMessages) {
+      const actor = String(message?.dmFriendEvent?.actorAddress || '');
+      if (actor) actors.add(actor);
+    }
+    return actors;
+  }, [initialMessages]);
+
   const chatIdentity = useMemo(() => {
     if (chatId != null) {
       if (typeof chatId === 'object') {
@@ -2369,6 +2381,11 @@ export const ChatList = ({
                           <DirectFriendEventRow
                             message={message}
                             myAddress={myAddress}
+                            mutual={dmFriendEventActors.has(
+                              String(
+                                message?.dmFriendEvent?.targetAddress || ''
+                              )
+                            )}
                           />
                         ) : (
                           <MessageItem

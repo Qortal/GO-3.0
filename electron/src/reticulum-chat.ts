@@ -12513,6 +12513,24 @@ export class ReticulumChatManager extends EventEmitter {
     );
   }
 
+  /**
+   * GO friend restore: `myAddress`'s own friend events with `peerAddress`
+   * (reticulum-chat-db getOwnDirectFriendEvents). Every stored DM event was
+   * signature-checked when it was accepted.
+   */
+  getOwnDirectFriendEvents(
+    myAddress: string,
+    peerAddress: string
+  ): ReticulumDmEvent[] {
+    const me = String(myAddress || '').trim();
+    const peer = String(peerAddress || '').trim();
+    if (!me || !peer || me === peer) return [];
+    return this.db.getOwnDirectFriendEvents(
+      reticulumDmConversationId(me, peer),
+      me
+    );
+  }
+
   /** Only Saved Messages with tracked own posts are mapped (GO). */
   private directRowsForRenderer(
     myAddress: string,

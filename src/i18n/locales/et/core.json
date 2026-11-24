@@ -513,8 +513,10 @@
   "devmode_apps": "arendusrežiimi rakendused",
   "directory": "kataloog",
   "dm_friend_events": {
+    "they_added": "{{name}} lisas sind sõbraks.",
     "they_added_available": "{{name}} lisas sind sõbraks. Helistamine on nüüd saadaval.",
     "they_added_pending": "{{name}} lisas sind sõbraks. Kõnede lubamiseks lisa ta samuti sõbraks.",
+    "you_added": "Lisasid {{name}} sõbraks.",
     "you_added_available": "Lisasid kasutaja {{name}} sõbraks. Helistamine on nüüd saadaval.",
     "you_added_pending": "Lisasid kasutaja {{name}} sõbraks. Kõned avanevad, kui ta lisab ka sinu."
   },
@@ -626,6 +628,8 @@
     "locked_note": "GO jääb lukku. Näidatakse ainult seda kõnet.",
     "message": "Sõnum",
     "minimize": "Minimeeri kõne",
+    "missed_call_body": "Puuduta vestluse avamiseks.",
+    "missed_call_title": "Vastamata kõne: {{name}}",
     "mute": "Vaigista",
     "muted": "Vaigistatud",
     "ongoing_call": "Käimasolev kõne",
@@ -1937,6 +1941,7 @@
   "video_fetching": "video toomine Qortali võrgustikust...",
   "voice_call": {
     "failed": "kõne ebaõnnestus",
+    "no_answer": "{{name}} ei vasta.",
     "rejected_declined": "Teine osapool keeldus kõnest.",
     "rejected_media": "Kõne lõppes — tema mikrofon ei pruugi olla saadaval.",
     "rejected_not_friend": "Kõnest keelduti — {{name}} ei ole sind sõbraks lisanud."

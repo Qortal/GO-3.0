@@ -591,6 +591,23 @@ declare global {
       startHeartbeatScheduler?: () => Promise<{ success: boolean }>;
       /** Stop the main-process heartbeat scheduler. */
       stopHeartbeatScheduler?: () => Promise<{ success: boolean }>;
+      /**
+       * GO: heartbeats signed in advance, published by Python at their own
+       * times while GO is off screen (hooks/presenceHeartbeatPlan.ts).
+       */
+      scheduleSignedHeartbeats?: (
+        address: string,
+        envelopes: PresenceEnvelope[],
+        /** Add to the heartbeats already handed over (same account). */
+        append?: boolean
+      ) => Promise<{ success: boolean; scheduled?: number }>;
+      /** GO: drop the heartbeats signed in advance. */
+      cancelSignedHeartbeats?: () => Promise<{ success: boolean }>;
+      /**
+       * GO: when any of the account's other devices was last heard (ms), or
+       * null. Kept up to an hour; a sign-out (PRESENCE_OFFLINE) removes it.
+       */
+      getCallEndpointLastSeen?: (address: string) => number | null;
       /** Announce that the local user is going offline. */
       offline: (envelope: PresenceEnvelope) => Promise<{ success: boolean }>;
       /** Check whether an address currently has an active session. */
@@ -904,6 +921,11 @@ declare global {
         myAddress: string,
         peerAddress: string,
         limit?: number
+      ) => Promise<unknown[]>;
+      /** GO: the account's own friend events in one DM (friend restore). */
+      getOwnDirectFriendEvents?: (
+        myAddress: string,
+        peerAddress: string
       ) => Promise<unknown[]>;
       /** GO: a DM conversation from one message on (a search result). */
       getDirectHistoryFrom?: (

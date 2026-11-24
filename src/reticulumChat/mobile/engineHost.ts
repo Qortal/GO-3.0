@@ -2302,6 +2302,11 @@ const handlers: Record<string, Handler> = {
   },
   getDirectHistory: (myAddress, peerAddress, limit) =>
     manager()?.getDirectHistory(myAddress, peerAddress, limit) ?? [],
+  getOwnDirectFriendEvents: (myAddress, peerAddress) =>
+    manager()?.getOwnDirectFriendEvents(
+      String(myAddress || '').trim(),
+      String(peerAddress || '').trim()
+    ) ?? [],
   getDirectHistoryFrom: (myAddress, peerAddress, fromEventId, limit) =>
     manager()?.getDirectHistoryFrom(
       String(myAddress || '').trim(),

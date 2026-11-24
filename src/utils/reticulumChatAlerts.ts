@@ -12,6 +12,10 @@
 export const reticulumDmAlertKey = (peerAddress: string): string =>
   `reticulum-dm:${peerAddress}`;
 
+/** Tray entry for a call from `peerAddress` that was missed (GO). */
+export const reticulumDmMissedCallAlertKey = (peerAddress: string): string =>
+  `reticulum-dm-missed-call:${peerAddress}`;
+
 export const reticulumMentionAlertKey = (groupId: number | string): string =>
   `reticulum-mention:${groupId}`;
 

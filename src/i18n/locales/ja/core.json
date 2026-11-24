@@ -513,8 +513,10 @@
   "devmode_apps": "開発モードアプリ",
   "directory": "ディレクトリ",
   "dm_friend_events": {
+    "they_added": "{{name}}があなたを友達に追加しました。",
     "they_added_available": "{{name}}があなたを友達に追加しました。通話が利用可能になりました。",
     "they_added_pending": "{{name}}があなたを友達に追加しました。相手を追加すると通話が有効になります。",
+    "you_added": "{{name}}を友達に追加しました。",
     "you_added_available": "{{name}}を友達に追加しました。通話が利用可能になりました。",
     "you_added_pending": "{{name}}を友達に追加しました。相手もあなたを追加すると通話が利用できます。"
   },
@@ -626,6 +628,8 @@
     "locked_note": "GOはロックされたままです。この通話だけが表示されます。",
     "message": "メッセージ",
     "minimize": "通話を最小化",
+    "missed_call_body": "タップしてチャットを開きます。",
+    "missed_call_title": "{{name}}からの不在着信",
     "mute": "ミュート",
     "muted": "ミュート中",
     "ongoing_call": "通話中",
@@ -1937,6 +1941,7 @@
   "video_fetching": "Qortalネットワークから動画を取得しています...",
   "voice_call": {
     "failed": "音声通話に失敗しました",
+    "no_answer": "{{name}}は応答しませんでした。",
     "rejected_declined": "相手が通話を拒否しました。",
     "rejected_media": "通話が終了しました — 相手のマイクを利用できない可能性があります。",
     "rejected_not_friend": "通話が拒否されました — {{name}} はあなたを友だちに追加していません。"

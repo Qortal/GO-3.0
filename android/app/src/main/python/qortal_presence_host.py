@@ -662,6 +662,225 @@ def _install_overlay_profile_command(pb):
     pb.handle_command = handle_command
 
 
+# Pre-signed presence heartbeats (GO only, wire-neutral).
+#
+# GO signs presence with the account key in the WebView page. Off screen on
+# battery Chromium freezes that page, so heartbeats stop and after ~90 s every
+# other device shows the phone offline: friends cannot call it any more,
+# although a call request would still reach Python and ring natively. When GO
+# goes off screen the page signs the coming heartbeats in advance (ordinary
+# PRESENCE_HEARTBEAT envelopes, one per 25 s) and hands them over with
+# ``schedule_presence_heartbeats``. This scheduler publishes each one at its
+# own timestamp through the normal ``publish_presence`` command, so receivers
+# see a normal, fresh, correctly signed heartbeat (desktop Hubs accept a
+# heartbeat up to 60 s old / 30 s ahead). Nothing is published while the page
+# still sends its own heartbeats, while the network is paused, or once the
+# page cancels (back on screen, sign-out, status change). A PRESENCE_OFFLINE
+# publish also clears the schedule.
+_SCHEDULED_HEARTBEAT_ID_PREFIX = "go-scheduled-heartbeat:"
+_SCHEDULED_HEARTBEAT_MAX = 400
+_SCHEDULED_HEARTBEAT_MAX_BYTES = 4096
+# A live heartbeat this recent makes a scheduled one redundant. Longer than
+# the page's own 25-30 s heartbeat spacing, so a pre-signed (idle) heartbeat
+# never slips in between two live ones while the page still runs off screen.
+_SCHEDULED_HEARTBEAT_LIVE_GRACE_SECONDS = 35.0
+# A scheduled heartbeat more than this late is dropped (desktops refuse
+# heartbeats older than 60 s; keep a margin for transit).
+_SCHEDULED_HEARTBEAT_MAX_LATE_SECONDS = 20.0
+# Not accepted further ahead than this (2 h of heartbeats plus slack).
+_SCHEDULED_HEARTBEAT_MAX_AHEAD_SECONDS = 3 * 60 * 60
+
+_scheduled_heartbeat_cond = threading.Condition()
+_scheduled_heartbeats = []  # [(timestamp_seconds, envelope)] sorted
+_scheduled_heartbeat_generation = 0
+_scheduled_heartbeat_thread = None
+_scheduled_heartbeat_seq = 0
+_last_live_presence_publish_at = 0.0
+_scheduled_heartbeat_stats = {"sent": 0, "skippedLive": 0, "skippedLate": 0, "skippedPaused": 0}
+
+
+def _validate_scheduled_heartbeats(envelopes, address=None, now=None):
+    """The envelopes to keep, sorted by time; raises ValueError on bad input."""
+    if not isinstance(envelopes, list):
+        raise ValueError("envelopes must be a list")
+    if len(envelopes) > _SCHEDULED_HEARTBEAT_MAX:
+        raise ValueError("too many envelopes")
+    now = time.time() if now is None else now
+    kept = []
+    sender = None
+    for env in envelopes:
+        if not isinstance(env, dict) or env.get("type") != "PRESENCE_HEARTBEAT":
+            raise ValueError("only PRESENCE_HEARTBEAT envelopes can be scheduled")
+        if len(json.dumps(env, separators=(",", ":"))) > _SCHEDULED_HEARTBEAT_MAX_BYTES:
+            raise ValueError("envelope too large")
+        ts = env.get("timestamp")
+        if not isinstance(ts, (int, float)) or isinstance(ts, bool) or not math.isfinite(ts):
+            raise ValueError("envelope timestamp missing")
+        payload = env.get("payload")
+        env_sender = payload.get("address") if isinstance(payload, dict) else None
+        if not isinstance(env_sender, str) or not env_sender:
+            raise ValueError("envelope address missing")
+        if sender is None:
+            sender = env_sender
+        elif env_sender != sender:
+            raise ValueError("envelopes of more than one account")
+        if address and env_sender != address:
+            raise ValueError("envelope address does not match")
+        if not isinstance(env.get("signature"), str) or not env.get("signature"):
+            raise ValueError("envelope signature missing")
+        seconds = float(ts) / 1000.0
+        if seconds < now - _SCHEDULED_HEARTBEAT_MAX_LATE_SECONDS:
+            continue
+        if seconds > now + _SCHEDULED_HEARTBEAT_MAX_AHEAD_SECONDS:
+            continue
+        kept.append((seconds, env))
+    kept.sort(key=lambda item: item[0])
+    return kept
+
+
+def _replace_scheduled_heartbeats(items):
+    global _scheduled_heartbeat_generation
+    with _scheduled_heartbeat_cond:
+        _scheduled_heartbeats[:] = items
+        _scheduled_heartbeat_generation += 1
+        _scheduled_heartbeat_cond.notify_all()
+
+
+def _scheduled_heartbeat_loop(pb):
+    global _scheduled_heartbeat_seq
+    while True:
+        with _scheduled_heartbeat_cond:
+            while not _scheduled_heartbeats:
+                _scheduled_heartbeat_cond.wait()
+            due_at, env = _scheduled_heartbeats[0]
+            delay = due_at - time.time()
+            if delay > 0:
+                _scheduled_heartbeat_cond.wait(timeout=min(delay, 30.0))
+                continue
+            _scheduled_heartbeats.pop(0)
+        now = time.time()
+        if now - due_at > _SCHEDULED_HEARTBEAT_MAX_LATE_SECONDS:
+            _scheduled_heartbeat_stats["skippedLate"] += 1
+            continue
+        if now - _last_live_presence_publish_at < _SCHEDULED_HEARTBEAT_LIVE_GRACE_SECONDS:
+            _scheduled_heartbeat_stats["skippedLive"] += 1
+            continue
+        if _network_paused or _stdin_shim is None:
+            _scheduled_heartbeat_stats["skippedPaused"] += 1
+            continue
+        _scheduled_heartbeat_seq += 1
+        frame = {
+            "type": "cmd",
+            "id": f"{_SCHEDULED_HEARTBEAT_ID_PREFIX}{_scheduled_heartbeat_seq}",
+            "action": "publish_presence",
+            "payload": {"envelope": env},
+        }
+        try:
+            _stdin_shim.feed(json.dumps(frame, separators=(",", ":")))
+            _scheduled_heartbeat_stats["sent"] += 1
+        except Exception as exc:  # noqa: BLE001 - never kill the scheduler
+            _log_host(f"scheduled heartbeat feed failed: {str(exc)[:120]}")
+
+
+def _install_scheduled_presence_heartbeats(pb):
+    """Commands ``schedule_presence_heartbeats`` {envelopes, address} and
+    ``cancel_presence_heartbeats``; see the comment above. Idempotent."""
+    global _scheduled_heartbeat_thread
+    original = getattr(pb, "handle_command", None)
+    if original is None or getattr(original, "_qortal_scheduled_heartbeats", False):
+        return
+    original_emit_resp = pb.emit_resp
+
+    def emit_resp(req_id, *args, **kwargs):
+        # Answers to our own scheduled publishes are not for the page.
+        if isinstance(req_id, str) and req_id.startswith(_SCHEDULED_HEARTBEAT_ID_PREFIX):
+            return None
+        return original_emit_resp(req_id, *args, **kwargs)
+
+    emit_resp.__wrapped__ = original_emit_resp
+    pb.emit_resp = emit_resp
+
+    def handle_command(message):
+        global _last_live_presence_publish_at
+        if not isinstance(message, dict):
+            return original(message)
+        action = message.get("action")
+        req_id = str(message.get("id") or "")
+        payload = message.get("payload") if isinstance(message.get("payload"), dict) else {}
+        if action == "publish_presence" and not req_id.startswith(_SCHEDULED_HEARTBEAT_ID_PREFIX):
+            env = payload.get("envelope") if isinstance(payload.get("envelope"), dict) else {}
+            env_type = env.get("type")
+            if env_type == "PRESENCE_OFFLINE":
+                _replace_scheduled_heartbeats([])
+            elif env_type in ("PRESENCE_HEARTBEAT", "PRESENCE_ANNOUNCE"):
+                _last_live_presence_publish_at = time.time()
+            return original(message)
+        if action == "schedule_presence_heartbeats":
+            try:
+                address = payload.get("address")
+                items = _validate_scheduled_heartbeats(
+                    payload.get("envelopes"),
+                    address if isinstance(address, str) else None,
+                )
+            except ValueError as exc:
+                if req_id:
+                    pb.emit_resp(req_id, False, error=str(exc))
+                return None
+            if payload.get("append") is True:
+                with _scheduled_heartbeat_cond:
+                    current = list(_scheduled_heartbeats)
+                senders = {
+                    (env.get("payload") or {}).get("address") for _, env in current
+                }
+                if current and senders != {(items[0][1].get("payload") or {}).get("address")} and items:
+                    if req_id:
+                        pb.emit_resp(req_id, False, error="append for another account")
+                    return None
+                seen = {env.get("timestamp") for _, env in current}
+                merged = current + [item for item in items if item[1].get("timestamp") not in seen]
+                if len(merged) > _SCHEDULED_HEARTBEAT_MAX:
+                    if req_id:
+                        pb.emit_resp(req_id, False, error="too many envelopes")
+                    return None
+                merged.sort(key=lambda item: item[0])
+                items = merged
+            _replace_scheduled_heartbeats(items)
+            _log_host(
+                "scheduled %d presence heartbeats (until %s)"
+                % (
+                    len(items),
+                    time.strftime("%H:%M:%S", time.localtime(items[-1][0])) if items else "-",
+                )
+            )
+            if req_id:
+                pb.emit_resp(req_id, True, payload={"scheduled": len(items)})
+            return None
+        if action == "cancel_presence_heartbeats":
+            with _scheduled_heartbeat_cond:
+                dropped = len(_scheduled_heartbeats)
+            _replace_scheduled_heartbeats([])
+            if req_id:
+                pb.emit_resp(
+                    req_id,
+                    True,
+                    payload={"dropped": dropped, "stats": dict(_scheduled_heartbeat_stats)},
+                )
+            return None
+        return original(message)
+
+    handle_command._qortal_scheduled_heartbeats = True
+    handle_command.__wrapped__ = original
+    pb.handle_command = handle_command
+    if _scheduled_heartbeat_thread is None:
+        _scheduled_heartbeat_thread = threading.Thread(
+            target=_scheduled_heartbeat_loop,
+            args=(pb,),
+            name="go-scheduled-heartbeats",
+            daemon=True,
+        )
+        _scheduled_heartbeat_thread.start()
+
+
 def _install_network_pause_gates(pb):
     """Skip the bridge's own periodic dialling and announcing while paused.
 
@@ -2113,6 +2332,7 @@ def start(config_dir):
         _run_gcall_control_self_check(pb)
         _apply_mobile_overlay_limits(pb)
         _install_overlay_profile_command(pb)
+        _install_scheduled_presence_heartbeats(pb)
         _install_network_pause_gates(pb)
         _install_community_stun_query_throttle(pb)
 
@@ -2585,6 +2805,11 @@ def pause_network():
             return False
         _network_paused = True
         _network_generation += 1
+
+    # Swipe-away, logout or the background time-out: the page that signed
+    # heartbeats in advance is not coming back as it was (the next login
+    # signs its own), so none of them may go out after a resume.
+    _replace_scheduled_heartbeats([])
 
     import RNS
     import presence_bridge as pb

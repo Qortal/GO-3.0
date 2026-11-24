@@ -4824,6 +4824,57 @@ export class ReticulumChatDatabase {
   }
 
   /**
+   * GO friend restore: the account's own `dm_friend_added` events in one DM
+   * and its own deletes of them, oldest first, however much was said since
+   * (getDirectHistory only returns the newest 500). Local read; nothing on
+   * the wire changes.
+   */
+  getOwnDirectFriendEvents(
+    conversationId: string,
+    senderAddress: string,
+    limit = 50
+  ): ReticulumDmEvent[] {
+    const normalized = normalizeReticulumDmConversationId(conversationId);
+    const sender = String(senderAddress || '').trim();
+    if (!normalized || !sender) return [];
+    const now = Date.now();
+    const safeLimit = Math.max(1, Math.min(200, Math.floor(limit)));
+    const adds = this.db
+      .prepare(
+        `
+        SELECT * FROM rchat_dm_events
+        WHERE conversation_id = ?
+          AND sender_address = ?
+          AND event_type = 'message'
+          AND payload LIKE '%dm_friend_added%'
+          AND (expires_at IS NULL OR expires_at > ?)
+        ORDER BY timestamp DESC, event_id DESC
+        LIMIT ?
+      `
+      )
+      .all(normalized, sender, now, safeLimit) as DirectEventRow[];
+    if (adds.length === 0) return [];
+    const addIds = adds.map((row) => row.event_id);
+    const deletes = this.db
+      .prepare(
+        `
+        SELECT * FROM rchat_dm_events
+        WHERE conversation_id = ?
+          AND sender_address = ?
+          AND event_type = 'delete'
+          AND target_event_id IN (${addIds.map(() => '?').join(', ')})
+      `
+      )
+      .all(normalized, sender, ...addIds) as DirectEventRow[];
+    return [...adds, ...deletes]
+      .map(rowToDirectEvent)
+      .sort(
+        (a, b) =>
+          a.timestamp - b.timestamp || a.eventId.localeCompare(b.eventId)
+      );
+  }
+
+  /**
    * A DM conversation from the event `fromEventId` on, oldest first (at most
    * `limit` events), after up to `before` events just ahead of it for
    * context: what a search result older than the loaded history opens at.

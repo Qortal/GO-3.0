@@ -100,6 +100,11 @@ import { validateAddress } from '../../utils/validateAddress';
 import { getQchatFileApi } from '../../utils/qchatFileApi';
 import { resolveDirectTarget } from '../../lib/dm/resolveDirectTarget';
 import {
+  isOwnFriendAddDeleted,
+  restoreDmFriendFromHistory,
+} from '../../lib/dm/dmFriendRestore';
+import { useCallReachable } from '../../lib/call/recentCallEndpoint';
+import {
   MAX_SIZE_MESSAGE,
   MAX_SPLIT_MESSAGE_PARTS,
   MESSAGE_LIMIT_WARNING,
@@ -669,6 +674,9 @@ export const ChatDirect = ({
   const { confirmCallSwitch } = useCallSwitchGuard();
 
   const peerOnline = useIsOnline(selectedDirect?.address);
+  // GO: a friend heard within the hour can be rung even while shown
+  // offline (their phone may just be asleep); lib/call/recentCallEndpoint.
+  const peerCallable = useCallReachable(selectedDirect?.address, peerOnline);
   const isSelfDirect = Boolean(
     myAddress && selectedDirect?.address === myAddress
   );
@@ -725,7 +733,7 @@ export const ChatDirect = ({
   const handleStartDirectVoiceCall = useCallback(async () => {
     if (!directVoiceChatId || !selectedDirect?.address) return;
     if (callMatchesThisDirect) return;
-    if (!peerOnline) return;
+    if (!peerCallable) return;
     if (directVoiceBlockedByP2p) return;
     if (directVoiceBlockedByFriend) return;
     const confirmed = await confirmCallSwitch({
@@ -748,7 +756,7 @@ export const ChatDirect = ({
     directVoiceBlockedByFriend,
     directVoiceBlockedByP2p,
     initiateVoiceCall,
-    peerOnline,
+    peerCallable,
     selectedDirect?.address,
     selectedDirect?.name,
     signCallRequest,
@@ -893,6 +901,104 @@ export const ChatDirect = ({
     sendTyping: sendReticulumDirectTyping,
     loadHistoryFrom: loadReticulumDirectHistoryFrom,
   } = useReticulumDirectChat(myAddress, selectedDirect?.address);
+  // Friends are stored per device. When this device has no entry for the
+  // open DM but the account's own signed "added as a friend" event is in the
+  // DM history (added on another device of the account), restore it, so the
+  // call button and the friend icon match (lib/dm/dmFriendRestore). Re-runs
+  // when such an event arrives with the history.
+  const directPeerAddress = selectedDirect?.address ?? '';
+  const directPeerIsLocalFriend = Boolean(
+    directPeerAddress && dmFriendsByAddress[directPeerAddress]
+  );
+  const ownDmFriendEventCount = useMemo(
+    () =>
+      myAddress && directPeerAddress && !directPeerIsLocalFriend
+        ? reticulumDirectMessages.filter(
+            (message: any) =>
+              String(message?.dmFriendEvent?.actorAddress || '') ===
+                myAddress &&
+              String(message?.dmFriendEvent?.targetAddress || '') ===
+                directPeerAddress
+          ).length
+        : 0,
+    [
+      myAddress,
+      directPeerAddress,
+      directPeerIsLocalFriend,
+      reticulumDirectMessages,
+    ]
+  );
+  // The other half: a stored friend whose add event this account deleted
+  // (removed on another device) stops being a friend when the DM opens.
+  const directPeerFriendEventId = directPeerAddress
+    ? String(dmFriendsByAddress[directPeerAddress]?.eventId || '')
+    : '';
+  useEffect(() => {
+    if (!myAddress || !directPeerAddress || !directPeerFriendEventId) return;
+    let cancelled = false;
+    void isOwnFriendAddDeleted(
+      myAddress,
+      directPeerAddress,
+      directPeerFriendEventId
+    ).then((deleted) => {
+      if (cancelled || !deleted) return;
+      setDmFriendsByAddress((prev) => {
+        if (prev[directPeerAddress]?.eventId !== directPeerFriendEventId) {
+          return prev;
+        }
+        const next = { ...prev };
+        delete next[directPeerAddress];
+        return next;
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    myAddress,
+    directPeerAddress,
+    directPeerFriendEventId,
+    setDmFriendsByAddress,
+  ]);
+  useEffect(() => {
+    if (!myAddress || !directPeerAddress) return;
+    if (directPeerAddress === myAddress || directPeerIsLocalFriend) return;
+    // GO's engine finds an own add however old (one small local query); with
+    // no such query only an add in the loaded messages can be restored.
+    const ownEventsReadable =
+      typeof window.reticulumChat?.getOwnDirectFriendEvents === 'function';
+    if (ownDmFriendEventCount === 0 && !ownEventsReadable) return;
+    let cancelled = false;
+    void restoreDmFriendFromHistory(myAddress, directPeerAddress, {
+      // No add in the loaded window: skip the long history read.
+      ...(ownDmFriendEventCount === 0 ? { getDirectHistory: null } : {}),
+      lookupPublicKey: (address) => getPublicKey(address),
+    }).then((restored) => {
+      if (cancelled || !restored) return;
+      setDmFriendsByAddress((prev) =>
+        prev[directPeerAddress]
+          ? prev
+          : {
+              ...prev,
+              [directPeerAddress]: {
+                publicKey: restored.publicKey,
+                ...(restored.name ? { name: restored.name } : {}),
+                addedAt: restored.addedAt,
+                eventId: restored.eventId,
+              },
+            }
+      );
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    myAddress,
+    directPeerAddress,
+    directPeerIsLocalFriend,
+    ownDmFriendEventCount,
+    setDmFriendsByAddress,
+  ]);
   // A message search result opened this chat: scroll to that message,
   // loading the conversation from it on when it is older than the history
   // the chat loads.
@@ -3870,6 +3976,7 @@ export const ChatDirect = ({
           }}
           call={{
             enabled: reticulumEnabled,
+            peerCallable,
             connected: callMatchesThisDirect && callState === 'connected',
             ringing: callMatchesThisDirect && callState === 'calling',
             blockedByFriend: directVoiceBlockedByFriend,
