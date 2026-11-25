@@ -141,6 +141,22 @@ desktop Hub. The format is based on
   just closing. In 12 languages.
 - **Friend rows in DMs** _(shared)_ — they no longer say "Add them back to
   enable calls" once both added each other. In 12 languages.
+- **Calls survive a network switch** _(mobile)_ — switching between Wi-Fi and
+  mobile data in a call cut the sound on both sides for minutes, and a hang-up
+  could get lost. Sound is back after 3-4 s and the hang-up arrives.
+- **Calls on slow phones** _(mobile)_ — on an older phone a call without the
+  direct link ran behind the phone's other traffic: rings and hang-ups came up
+  to 18 s late, and voice lagged by seconds. Call signals now go first, voice
+  that is too old to be heard is dropped instead of queued, and Reticulum
+  packets cost far less processor time (backport of RNS 1.5.5, same bytes on
+  the wire).
+- **Calls that never went Direct** _(mobile)_ — while a call started, GO marked
+  its own working audio link as down for moments, and a WebRTC message refused
+  then was lost. GO now leaves a working link alone and sends a refused
+  message again.
+- **GO closing by itself after hours in the background** _(mobile)_ — the
+  Reticulum service's two-minute thread report could release a Java reference
+  on the wrong thread, which Android answers by ending the app.
 
 ## [0.0.20] — 2026-11-04 (GO 3.0)
 
