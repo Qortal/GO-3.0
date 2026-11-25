@@ -1048,41 +1048,65 @@ class Transport:
     def handle_outgoing_announces(outgoing):
         for packet in sorted(outgoing, key=lambda p: p.hops): packet.send()
 
+    # Qortal patch (backport of RNS 1.5.5): the mask is applied with one
+    # bignum XOR instead of a Python loop over every byte. Same bytes on the
+    # wire; the loop cost a slow phone about 1-3 ms per packet each way.
+    @staticmethod
+    def handle_outgoing_ifac(interface, raw):
+        # Calculate packet access code
+        ifac_size = interface.ifac_size
+        ifac = interface.ifac_identity.sign(raw)[-ifac_size:]
+
+        # Generate mask
+        mask = RNS.Cryptography.hkdf(length=len(raw)+ifac_size,
+                                     derive_from=ifac,
+                                     salt=interface.ifac_key,
+                                     context=None)
+
+        # Set IFAC flag and assemble new payload with IFAC
+        new_raw = bytes([raw[0] | 0x80, raw[1]])+ifac+raw[2:]
+
+        # Mask header bytes and payload with a single bignum XOR, leaving
+        # the IFAC itself untouched, then make sure the IFAC flag is set
+        n = len(new_raw)
+        x = int.from_bytes(new_raw, "big") ^ int.from_bytes(mask, "big")
+        x ^= int.from_bytes(mask[2:2+ifac_size], "big") << (8*(n-2-ifac_size))
+        x |= 1 << (8*n-1)
+        return x.to_bytes(n, "big")
+
+    # Returns the packet without its IFAC, or None if the IFAC is not valid
+    @staticmethod
+    def handle_ifac(raw, interface):
+        # Extract IFAC
+        ifac_size = interface.ifac_size
+        ifac = raw[2:2+ifac_size]
+
+        # Generate mask
+        mask = RNS.Cryptography.hkdf(length=len(raw),
+                                     derive_from=ifac,
+                                     salt=interface.ifac_key,
+                                     context=None)
+
+        # Unmask header bytes and payload with a single bignum XOR, leaving
+        # the IFAC itself untouched
+        n = len(raw)
+        x = int.from_bytes(raw, "big") ^ int.from_bytes(mask, "big")
+        x ^= int.from_bytes(mask[2:2+ifac_size], "big") << (8*(n-2-ifac_size))
+        unmasked = x.to_bytes(n, "big")
+
+        # Unset IFAC flag and re-assemble packet
+        new_raw = bytes([unmasked[0] & 0x7f, unmasked[1]])+unmasked[2+ifac_size:]
+
+        # Calculate expected IFAC and check it
+        expected_ifac = interface.ifac_identity.sign(new_raw)[-ifac_size:]
+        return new_raw if ifac == expected_ifac else None
+
     @staticmethod
     def transmit(interface, raw):
         try:
             if hasattr(interface, "ifac_identity") and interface.ifac_identity != None:
-                # Calculate packet access code
-                ifac = interface.ifac_identity.sign(raw)[-interface.ifac_size:]
-
-                # Generate mask
-                mask = RNS.Cryptography.hkdf(length=len(raw)+interface.ifac_size,
-                                             derive_from=ifac,
-                                             salt=interface.ifac_key,
-                                             context=None)
-                # Set IFAC flag
-                new_header = bytes([raw[0] | 0x80, raw[1]])
-
-                # Assemble new payload with IFAC
-                new_raw    = new_header+ifac+raw[2:]
-                
-                # Mask payload
-                i = 0; masked_raw = b""
-                for byte in new_raw:
-                    # Mask first header byte, but make sure the
-                    # IFAC flag is still set
-                    if i == 0: masked_raw += bytes([byte ^ mask[i] | 0x80])
-                    
-                    # Mask second header byte and payload
-                    elif i == 1 or i > interface.ifac_size+1: masked_raw += bytes([byte ^ mask[i]])
-                    
-                    # Don't mask the IFAC itself
-                    else: masked_raw += bytes([byte])
-                    
-                    i += 1
-
                 # Send it
-                interface.process_outgoing(masked_raw)
+                interface.process_outgoing(Transport.handle_outgoing_ifac(interface, raw))
 
             else: interface.process_outgoing(raw)
 
@@ -1402,37 +1426,9 @@ class Transport:
                 # Check that IFAC flag is set
                 if raw[0] & 0x80 == 0x80:
                     if len(raw) > 2+interface.ifac_size:
-                        # Extract IFAC
-                        ifac = raw[2:2+interface.ifac_size]
-
-                        # Generate mask
-                        mask = RNS.Cryptography.hkdf(length=len(raw),
-                                                     derive_from=ifac,
-                                                     salt=interface.ifac_key,
-                                                     context=None)
-                        # Unmask payload
-                        i = 0; unmasked_raw = b""
-                        for byte in raw:
-                            # Unmask header bytes and payload
-                            if i <= 1 or i > interface.ifac_size+1: unmasked_raw += bytes([byte ^ mask[i]])
-                            # Don't unmask IFAC itself
-                            else: unmasked_raw += bytes([byte])
-                            i += 1
-                        
-                        raw = unmasked_raw
-
-                        # Unset IFAC flag
-                        new_header = bytes([raw[0] & 0x7f, raw[1]])
-
-                        # Re-assemble packet
-                        new_raw = new_header+raw[2+interface.ifac_size:]
-
-                        # Calculate expected IFAC
-                        expected_ifac = interface.ifac_identity.sign(new_raw)[-interface.ifac_size:]
-
-                        # Check it
-                        if ifac == expected_ifac: raw = new_raw
-                        else:                     return
+                        # Unmask the packet and check its IFAC
+                        raw = Transport.handle_ifac(raw, interface)
+                        if raw == None: return
 
                     else: return
 

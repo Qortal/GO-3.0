@@ -35,11 +35,19 @@ import json
 import math
 import os
 import queue
+import struct
 import sys
 import threading
 import time
 import traceback
 import zlib
+from collections import deque
+
+try:
+    import fcntl
+    import termios
+except ImportError:  # only _hub_reader_backlog_bytes needs them
+    fcntl = termios = None
 
 # Must mirror the desktop Hub's BackboneInterface hub set (electron
 # DEFAULT_RETICULUM_HUBS) so mobile joins the SAME Reticulum mesh. The desktop
@@ -1572,6 +1580,557 @@ def _install_call_heartbeat_lane(pb):
 
 
 # ---------------------------------------------------------------------------
+# Calls on a slow phone: signalling first, live audio stays live
+#
+# Measured on a Galaxy S8+ (2026-11-24) with a call on Reticulum audio: the
+# bridge had no Python time left, so every queue below filled up and the call
+# ran behind it.
+#   * ``send_call`` (ring, accept, hang-up) shares ``control-send`` with every
+#     chat send and relay. 120-250 commands were waiting there (dwell up to
+#     9 s), so a hang-up left the phone seconds late or was refused ("lane is
+#     full"). Call signals get a lane of their own, all on one so a hang-up
+#     can never pass its own ring.
+#   * ``audio-send-N`` holds 64 tasks of one 20 ms frame and does not look at
+#     the live deadline again once a frame is queued. At ~100 ms a frame that
+#     is 6 s of audio nobody can use, with the link's own control frames
+#     (link-auth, room key, the WebRTC/hang-up fallback) inside the same
+#     line, or evicted by ``drop_oldest``. Frames now wait per route: link
+#     control goes first and is never dropped for audio, and media that
+#     waited too long is thrown away unsent.
+#   * ``rns-realtime-callback-N`` (256) is the same on the way in: link-auth,
+#     room keys, heartbeats, RTT probes and the control-channel handshake
+#     waited behind up to 256 voice frames and could be evicted by them.
+#     They get a lane of their own and late media is dropped before it costs
+#     a JSON event and a decode.
+#   * ``rns-overlay-callback-N`` (1024) carries the ring, accept and hang-up of
+#     the other side among all relayed chat gossip: up to 150 packets were
+#     waiting there. Call signals from an admitted peer go to that same lane.
+#   * Before any lane there is the hub's TCP stream, one for everything, read
+#     by one thread. With a dozen lane threads wanting the GIL it fell up to
+#     560 KB behind, and no lane can reorder that. While a call is up and the
+#     reader is behind, the background lanes take turns instead of all
+#     running at once, and Python switches threads sooner: the reader gives
+#     the GIL away several times a packet and waits its turn each time.
+# Nothing changes on the wire, and a phone that keeps up drops nothing.
+# presence_bridge.py stays the upstream copy; the hooks are skipped (and say
+# so in logcat and Copy diagnostics) when its names or shapes change.
+# ---------------------------------------------------------------------------
+
+_CALL_SIGNAL_LANE = "call-signal"
+_CALL_SIGNAL_ACTIONS = frozenset(
+    (
+        "send_call",
+        "fanout_call",
+        "send_group_call",
+        "fanout_group_call",
+        # WebRTC setup waits for it; it answers from a cache.
+        "get_community_stun_endpoints",
+    )
+)
+_CALL_RX_CONTROL_LANE = "call-rx-control"
+# The 1:1 call signals of call.ts (CALL_WIRE_*); the group-call ones are the
+# bridge's own _GROUP_CALL_WIRE_TYPES.
+_CALL_WIRE_TYPES = frozenset(("CR", "CA", "CX", "CH", "RS", "RH", "RP", "RA", "RR"))
+_WIRE_TYPE_MARKER = b'"t":"'
+_CALL_LANE_QUEUE_MAX = 256
+# How long a live frame may wait here. The bridge's own deadline (320 ms
+# since capture) still applies on top, now also when the frame's turn comes.
+_AUDIO_SEND_MAX_DWELL_SECONDS = 0.2
+_AUDIO_RECEIVE_MAX_DWELL_SECONDS = 0.25
+# Once behind, jump to the newest frames instead of staying at the limit.
+_AUDIO_SEND_CATCH_UP_FRAMES = 3
+# Frames per lane turn: enough to share the lane's overhead, few enough that
+# link control and the shard's other routes get in between.
+_AUDIO_SEND_FRAMES_PER_TURN = 2
+# Bounds for memory only: the bridge's lane held 64 frames.
+_AUDIO_SEND_MEDIA_MAX = 64
+_AUDIO_SEND_CONTROL_MAX = 256
+# Lanes that step aside while the hub reader is behind during a call: chat
+# sends and relays, overlay gossip and upkeep, presence. Nothing a call or a
+# file/DM transfer waits for, and nothing that blocks for long by design.
+_CALL_BACKGROUND_LANES = (
+    "control-send",
+    "overlay-control",
+    "rns-overlay-callback-",
+    "presence-fanout-",
+    "land-state-forward-",
+)
+# About 20 packets unread on one hub socket; a reader that keeps up is at 0.
+_CALL_READER_BEHIND_BYTES = 8 * 1024
+_CALL_READER_SAMPLE_SECONDS = 0.1
+# Stay in turns this long after the last sample that was behind.
+_CALL_READER_HOLD_SECONDS = 0.5
+# A background task waits at most this long for its turn, then runs anyway:
+# one that blocks (a dead link) must not hold up the others.
+_CALL_BACKGROUND_TURN_SECONDS = 0.25
+_CALL_BACKGROUND_YIELD_SECONDS = 0.005
+_CALL_GIL_SWITCH_INTERVAL_SECONDS = 0.0005
+_CALL_PRIORITY_HOOK_FLAG = "_qortal_call_priority"
+_CALL_PRIORITY_REQUIRED_ATTRS = (
+    "_SCHEDULER_QUEUE_MAX_BY_LANE",
+    "_scheduler_lane_for_command",
+    "_enqueue_scheduler_task",
+    "_enqueue_audio_send_batch",
+    "_audio_scheduler_lane_for_route",
+    "_process_audio_batch",
+    "_filter_outbound_audio_deadline",
+    "_dispatch_bounded_rns_packet_callback",
+    "_run_bounded_rns_packet_callback",
+    "_rns_callback_lane",
+    "_decode_group_audio_wire",
+    "_GROUP_CALL_WIRE_TYPES",
+    "_overlay_links_by_id",
+    "_audio_links_by_id",
+    "_audio_link_receive_probe_by_packet_id",
+    "_mark_audio_queue_state_dirty",
+    "_audio_stale_drops",
+)
+
+_audio_send_lock = threading.Lock()
+_audio_send_routes = {}  # route key -> _AudioSendRoute, while anything waits
+_call_priority_stats = {
+    "txMediaSent": 0,
+    "txMediaDropped": 0,
+    "txControlSent": 0,
+    "txControlRejected": 0,
+    "rxMediaDropped": 0,
+    "rxControl": 0,
+    "rxCallSignals": 0,
+    "backgroundTurns": 0,
+    "readerBehindMaxBytes": 0,
+}
+_call_background_turn = threading.Lock()
+_call_reader_sampled_at = 0.0
+_call_reader_behind_until = 0.0
+_call_switch_interval_lock = threading.Lock()
+_call_previous_switch_interval = None  # while it is changed
+_call_priority_self_check = None  # {"ok": bool, "problems": [...]} after start()
+
+
+class _AudioSendRoute:
+    """Frames waiting for one audio route (a link or a packet peer)."""
+
+    __slots__ = ("control", "media", "scheduled")
+
+    def __init__(self):
+        self.control = deque()
+        self.media = deque()  # (queued at, frame), oldest first
+        self.scheduled = False
+
+
+def _is_link_control(raw):
+    return bytes(raw[: len(_GC_LINK_CONTROL_MAGIC)]) == _GC_LINK_CONTROL_MAGIC
+
+
+def _note_audio_send_drops(pb, count):
+    if count <= 0:
+        return
+    _call_priority_stats["txMediaDropped"] += count
+    pb._audio_stale_drops += count
+    pb._mark_audio_queue_state_dirty()
+
+
+def _schedule_audio_route(pb, route_key):
+    """Queue a lane turn for a route marked scheduled; unmark it on failure."""
+    if pb._enqueue_scheduler_task(
+        pb._audio_scheduler_lane_for_route(route_key),
+        f"audio-send:{route_key}",
+        _drain_audio_route,
+        pb,
+        route_key,
+    ):
+        return True
+    with _audio_send_lock:
+        route = _audio_send_routes.get(route_key)
+        if route is not None:
+            route.scheduled = False
+    return False
+
+
+def _enqueue_audio_frames(pb, route_key, batch):
+    """``_enqueue_audio_send_batch`` replacement: wait per route."""
+    if not batch:
+        return False
+    now = time.monotonic()
+    dropped = rejected = 0
+    with _audio_send_lock:
+        route = _audio_send_routes.get(route_key)
+        if route is None:
+            route = _audio_send_routes[route_key] = _AudioSendRoute()
+        for frame in batch:
+            if _is_link_control(frame[5]):
+                if len(route.control) >= _AUDIO_SEND_CONTROL_MAX:
+                    rejected += 1
+                else:
+                    route.control.append(frame)
+                continue
+            if len(route.media) >= _AUDIO_SEND_MEDIA_MAX:
+                route.media.popleft()
+                dropped += 1
+            route.media.append((now, frame))
+        schedule = not route.scheduled
+        route.scheduled = True
+    _note_audio_send_drops(pb, dropped)
+    if rejected:
+        _call_priority_stats["txControlRejected"] += rejected
+    if schedule and not _schedule_audio_route(pb, route_key):
+        return False
+    return rejected < len(batch)
+
+
+def _take_audio_frames(pb, route, now):
+    """The frames for one lane turn and how many stale ones were dropped."""
+    frames = list(route.control)
+    route.control.clear()
+    media = route.media
+    dropped = 0
+    while media and now - media[0][0] > _AUDIO_SEND_MAX_DWELL_SECONDS:
+        media.popleft()
+        dropped += 1
+    if dropped:
+        while len(media) > _AUDIO_SEND_CATCH_UP_FRAMES:
+            media.popleft()
+            dropped += 1
+    taken = 0
+    while media and taken < _AUDIO_SEND_FRAMES_PER_TURN:
+        fresh, late = pb._filter_outbound_audio_deadline([media.popleft()[1]])
+        dropped += late
+        frames.extend(fresh)
+        taken += len(fresh)
+    return frames, taken, dropped
+
+
+def _drain_audio_route(pb, route_key):
+    """One lane turn of a route: its link control, then a little fresh media."""
+    with _audio_send_lock:
+        route = _audio_send_routes.get(route_key)
+        if route is None:
+            return
+        frames, media, dropped = _take_audio_frames(pb, route, time.monotonic())
+    _note_audio_send_drops(pb, dropped)
+    try:
+        if frames:
+            pb._process_audio_batch(frames)
+            _call_priority_stats["txMediaSent"] += media
+            _call_priority_stats["txControlSent"] += len(frames) - media
+    finally:
+        with _audio_send_lock:
+            more = bool(route.control or route.media)
+            if not more:
+                route.scheduled = False
+                _audio_send_routes.pop(route_key, None)
+        if more:
+            _schedule_audio_route(pb, route_key)
+
+
+def _is_inbound_call_control(pb, message):
+    """Anything on an audio link but a voice frame.
+
+    That is: link-control frames (link-auth, room key, signal fragments)
+    and the JSON packets (heartbeat, RTT probe, control-channel handshake).
+    """
+    decoded = pb._decode_group_audio_wire(message)
+    return decoded is None or _is_link_control(decoded[2])
+
+
+def _run_inbound_media(pb, queued_at, callback, message, packet):
+    """A voice frame's turn on the realtime lane; a late one is dropped."""
+    if time.monotonic() - queued_at > _AUDIO_RECEIVE_MAX_DWELL_SECONDS:
+        # The callback takes the receive probe; dropped packets must not
+        # leave theirs to a later packet with the same id().
+        pb._audio_link_receive_probe_by_packet_id.pop(id(packet), None)
+        _call_priority_stats["rxMediaDropped"] += 1
+        pb._audio_stale_drops += 1
+        pb._mark_audio_queue_state_dirty()
+        return
+    pb._run_bounded_rns_packet_callback("audio", callback, message, packet, "")
+
+
+def _dispatch_audio_link_packet(pb, original, link_id, callback, message, packet):
+    """Queue one audio-link packet: call control apart from voice."""
+    message = bytes(message or b"")
+    stable_link_id = str(
+        link_id
+        or getattr(getattr(packet, "link", None), "link_id", "")
+        or id(getattr(packet, "link", None) or packet)
+    )
+    if _is_inbound_call_control(pb, message):
+        if pb._enqueue_scheduler_task(
+            _CALL_RX_CONTROL_LANE,
+            f"rns-packet:audio-control:{stable_link_id[:16]}",
+            pb._run_bounded_rns_packet_callback,
+            "audio",
+            callback,
+            message,
+            packet,
+            "",
+        ):
+            _call_priority_stats["rxControl"] += 1
+            return
+        original("audio", link_id, callback, message, packet)
+        return
+    pb._enqueue_scheduler_task(
+        pb._rns_callback_lane("audio", stable_link_id),
+        f"rns-packet:audio:{stable_link_id[:16]}",
+        _run_inbound_media,
+        pb,
+        time.monotonic(),
+        callback,
+        message,
+        packet,
+        drop_oldest=True,
+    )
+
+
+def _is_call_signal_wire(pb, message):
+    """An overlay packet that is a 1:1 or group call signal.
+
+    Reads the first ``"t"`` of the compact JSON only: this runs on the RNS
+    reader thread for every overlay packet. A wrong guess just runs the same
+    handler on the other lane.
+    """
+    if message[:1] != b"{":
+        return False
+    start = message.find(_WIRE_TYPE_MARKER)
+    if start < 0:
+        return False
+    start += len(_WIRE_TYPE_MARKER)
+    end = message.find(b'"', start, start + 8)
+    if end < 0:
+        return False
+    wire_type = message[start:end].decode("latin-1")
+    return wire_type in _CALL_WIRE_TYPES or wire_type in pb._GROUP_CALL_WIRE_TYPES
+
+
+def _dispatch_overlay_call_signal(pb, link_id, callback, message, packet):
+    """Queue a call signal ahead of overlay gossip; False leaves it to the bridge."""
+    message = bytes(message or b"")
+    if not _is_call_signal_wire(pb, message):
+        return False
+    # Before admission the overlay handshake must stay in order with it. Read
+    # without _state_lock: the reader thread must not wait for maintenance.
+    state = pb._overlay_links_by_id.get(str(link_id or ""))
+    if not state or state.get("overlay_transport_admitted") is not True:
+        return False
+    if not pb._enqueue_scheduler_task(
+        _CALL_RX_CONTROL_LANE,
+        f"rns-packet:call-signal:{str(link_id)[:16]}",
+        pb._run_bounded_rns_packet_callback,
+        "overlay",
+        callback,
+        message,
+        packet,
+        "",
+    ):
+        return False
+    _call_priority_stats["rxCallSignals"] += 1
+    return True
+
+
+def _hub_reader_backlog_bytes():
+    """Unread bytes in the hub socket that is furthest behind."""
+    rns = sys.modules.get("RNS")
+    transport = getattr(rns, "Transport", None) if rns else None
+    worst = 0
+    if fcntl is None:
+        return worst
+    for interface in list(getattr(transport, "interfaces", None) or ()):
+        try:
+            fd = interface.socket.fileno()
+            if fd >= 0:
+                raw = fcntl.ioctl(fd, termios.FIONREAD, b"\0\0\0\0")
+                worst = max(worst, struct.unpack("i", raw)[0])
+        except (AttributeError, OSError, ValueError, TypeError, struct.error):
+            continue  # no socket right now
+    return worst
+
+
+def _set_fast_switching(fast):
+    """Switch threads sooner while the reader is behind; undo it afterwards.
+
+    Not for a whole call: on a slow phone every switch costs, and a reader
+    that keeps up gains nothing from it.
+    """
+    global _call_previous_switch_interval
+    with _call_switch_interval_lock:
+        previous = _call_previous_switch_interval
+        if fast and previous is None:
+            _call_previous_switch_interval = previous = sys.getswitchinterval()
+            sys.setswitchinterval(min(previous, _CALL_GIL_SWITCH_INTERVAL_SECONDS))
+        elif not fast and previous is not None:
+            sys.setswitchinterval(previous)
+            _call_previous_switch_interval = None
+
+
+def _call_reader_behind(pb):
+    """Is a call up while the hub reader cannot keep up?
+
+    Asked before every background task (several a second on a quiet phone),
+    so it samples the sockets at most every _CALL_READER_SAMPLE_SECONDS and
+    takes no lock: two threads sampling at once only do it twice.
+    """
+    global _call_reader_sampled_at, _call_reader_behind_until
+    behind = False
+    if pb._audio_links_by_id:
+        now = time.monotonic()
+        if now - _call_reader_sampled_at >= _CALL_READER_SAMPLE_SECONDS:
+            _call_reader_sampled_at = now
+            backlog = _hub_reader_backlog_bytes()
+            if backlog >= _CALL_READER_BEHIND_BYTES:
+                _call_reader_behind_until = now + _CALL_READER_HOLD_SECONDS
+                if backlog > _call_priority_stats["readerBehindMaxBytes"]:
+                    _call_priority_stats["readerBehindMaxBytes"] = backlog
+        behind = now < _call_reader_behind_until
+    if behind != (_call_previous_switch_interval is not None):
+        _set_fast_switching(behind)
+    return behind
+
+
+def _run_background_task(pb, fn, *args, **kwargs):
+    """A background lane's task; in turns while a call's reader is behind."""
+    if not _call_reader_behind(pb):
+        return fn(*args, **kwargs)
+    _call_priority_stats["backgroundTurns"] += 1
+    mine = _call_background_turn.acquire(timeout=_CALL_BACKGROUND_TURN_SECONDS)
+    try:
+        time.sleep(_CALL_BACKGROUND_YIELD_SECONDS)
+        return fn(*args, **kwargs)
+    finally:
+        if mine:
+            _call_background_turn.release()
+
+
+def _call_priority_problems(pb):
+    """Why the hooks cannot wrap this bridge safely (empty = ok)."""
+    problems = [
+        f"presence_bridge.{name} missing"
+        for name in _CALL_PRIORITY_REQUIRED_ATTRS
+        if not hasattr(pb, name)
+    ]
+    if problems:
+        return problems
+    for name, params in (
+        ("_enqueue_scheduler_task", ["lane", "name", "fn"]),
+        ("_scheduler_lane_for_command", ["action", "message"]),
+        ("_enqueue_audio_send_batch", ["route_key", "batch"]),
+        ("_process_audio_batch", ["frames"]),
+        (
+            "_dispatch_bounded_rns_packet_callback",
+            ["kind", "link_id", "callback", "message", "packet"],
+        ),
+        (
+            "_run_bounded_rns_packet_callback",
+            ["kind", "callback", "message", "packet", "pending_key"],
+        ),
+    ):
+        fn = getattr(pb, name)
+        while getattr(fn, "__wrapped__", None) is not None:
+            fn = fn.__wrapped__
+        if _gcall_param_names(fn) != params:
+            problems.append(f"{name} signature changed")
+    sample = [("link", "room", "", "", 1, b"x")]
+    try:
+        if pb._filter_outbound_audio_deadline(sample) != ([], 1):
+            problems.append("_filter_outbound_audio_deadline keeps stale audio")
+    except Exception as exc:  # noqa: BLE001 - reported, not raised
+        problems.append(f"_filter_outbound_audio_deadline failed: {exc}")
+    return problems
+
+
+def _install_call_priority(pb):
+    """Call signalling first, live audio live (see above). Idempotent.
+
+    Must run before the bridge starts its scheduler workers, which is when
+    the lanes in ``_SCHEDULER_QUEUE_MAX_BY_LANE`` get their threads.
+    """
+    if getattr(getattr(pb, "_enqueue_audio_send_batch", None), _CALL_PRIORITY_HOOK_FLAG, False):
+        return True
+    problems = _call_priority_problems(pb)
+    if problems:
+        _log_host("call priority hooks skipped: " + "; ".join(problems[:6]))
+        return False
+    orig_lane = pb._scheduler_lane_for_command
+    orig_dispatch = pb._dispatch_bounded_rns_packet_callback
+    orig_task = pb._enqueue_scheduler_task
+    orig_enqueue = pb._enqueue_audio_send_batch
+    for lane in (_CALL_SIGNAL_LANE, _CALL_RX_CONTROL_LANE):
+        pb._SCHEDULER_QUEUE_MAX_BY_LANE.setdefault(lane, _CALL_LANE_QUEUE_MAX)
+
+    def _scheduler_lane_for_command(action, message=None):
+        if str(action or "") in _CALL_SIGNAL_ACTIONS:
+            return _CALL_SIGNAL_LANE
+        return orig_lane(action, message)
+
+    def _dispatch_bounded_rns_packet_callback(kind, link_id, callback, message, packet):
+        normalized_kind = str(kind or "").strip().lower()
+        if normalized_kind == "audio":
+            return _dispatch_audio_link_packet(
+                pb, orig_dispatch, link_id, callback, message, packet
+            )
+        if normalized_kind == "overlay" and _dispatch_overlay_call_signal(
+            pb, link_id, callback, message, packet
+        ):
+            return None
+        return orig_dispatch(kind, link_id, callback, message, packet)
+
+    def _enqueue_scheduler_task(lane, name, fn, *args, **kwargs):
+        if str(lane).startswith(_CALL_BACKGROUND_LANES):
+            return orig_task(lane, name, _run_background_task, pb, fn, *args, **kwargs)
+        return orig_task(lane, name, fn, *args, **kwargs)
+
+    def _enqueue_audio_send_batch(route_key, batch):
+        return _enqueue_audio_frames(pb, route_key, batch)
+
+    # Keep the markers of hooks already on these names.
+    for key, value in vars(orig_lane).items():
+        if key != "__wrapped__":
+            setattr(_scheduler_lane_for_command, key, value)
+    for name, wrapper, original in (
+        ("_scheduler_lane_for_command", _scheduler_lane_for_command, orig_lane),
+        (
+            "_dispatch_bounded_rns_packet_callback",
+            _dispatch_bounded_rns_packet_callback,
+            orig_dispatch,
+        ),
+        ("_enqueue_scheduler_task", _enqueue_scheduler_task, orig_task),
+        # Last: it is the "already installed" marker above.
+        ("_enqueue_audio_send_batch", _enqueue_audio_send_batch, orig_enqueue),
+    ):
+        setattr(wrapper, _CALL_PRIORITY_HOOK_FLAG, True)
+        wrapper.__wrapped__ = original
+        setattr(pb, name, wrapper)
+    return True
+
+
+def _run_call_priority_self_check(pb):
+    global _call_priority_self_check
+    problems = _call_priority_problems(pb)
+    for name in (
+        "_scheduler_lane_for_command",
+        "_dispatch_bounded_rns_packet_callback",
+        "_enqueue_scheduler_task",
+        "_enqueue_audio_send_batch",
+    ):
+        if not getattr(getattr(pb, name, None), _CALL_PRIORITY_HOOK_FLAG, False):
+            problems.append(f"{name} not hooked")
+    _call_priority_self_check = {"ok": not problems, "problems": problems[:8]}
+    if problems:
+        _log_host("CALL PRIORITY SELF-CHECK FAILED: " + "; ".join(problems[:6]))
+    else:
+        _log_host("call priority hooks ready (call-signal lane, live audio only)")
+    return not problems
+
+
+def _call_priority_detail():
+    out = dict(_call_priority_stats)
+    if _call_priority_self_check is not None:
+        out["selfCheckOk"] = bool(_call_priority_self_check.get("ok"))
+        if _call_priority_self_check.get("problems"):
+            out["selfCheckProblems"] = list(_call_priority_self_check["problems"])
+    return out
+
+
+# ---------------------------------------------------------------------------
 # WebRTC signalling over a slow mobile uplink (gcall control channel)
 #
 # Every WebRTC signal of a call (capability, offer, answer, candidates, ack,
@@ -2504,6 +3063,9 @@ def start(config_dir):
         _install_json_audio_io(pb)
         _install_call_heartbeat_lane(pb)
         _run_json_audio_self_check(pb)
+        # Call signalling ahead of chat, no queue of stale voice frames.
+        _install_call_priority(pb)
+        _run_call_priority_self_check(pb)
         # WebRTC signalling that survives a slow mobile uplink.
         _install_gcall_control_window_floor(pb)
         _install_gcall_control_bundles(pb)
@@ -2732,6 +3294,7 @@ def _bridge_detail():
         }
     out["jsonOutDrops"] = int(getattr(pb, "_audio_drops_json_out", 0) or 0)
     out["callAudioIo"] = _json_audio_detail()
+    out["callPriority"] = _call_priority_detail()
     out["gcallControl"] = _gcall_control_detail()
     _bridge_detail_process(out, pb, rns)
     return out
