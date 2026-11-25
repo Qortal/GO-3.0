@@ -655,6 +655,8 @@ def _install_reconnect_backoff(client_cls):
                     "Connection attempt for " + str(self) + " failed: " + str(exc),
                     RNS.LOG_DEBUG,
                 )
+            if not self.online:
+                _after_failed_dial(self, generation)
             wait = min(wait * 2.0, float(_RECONNECT_BACKOFF_MAX_SECONDS))
 
         if not self.online:
@@ -673,7 +675,9 @@ def _install_reconnect_backoff(client_cls):
         if not self.never_connected:
             RNS.log("Reconnected socket for " + str(self) + ".", RNS.LOG_INFO)
         self.reconnecting = False
-        RNS.Transport.synthesize_tunnel(self)
+        closed = _after_redial(self)
+        if closed:
+            _after_network_resumed(generation, closed)
 
     client_cls.reconnect = reconnect
 
@@ -3062,6 +3066,8 @@ def start(config_dir):
         # Route call audio over base64 JSON events/commands instead of FD3/FD4.
         _install_json_audio_io(pb)
         _install_call_heartbeat_lane(pb)
+        _install_call_end_resend(pb)
+        _install_crossed_audio_link_rule(pb)
         _run_json_audio_self_check(pb)
         # Call signalling ahead of chat, no queue of stale voice frames.
         _install_call_priority(pb)
@@ -3476,6 +3482,9 @@ def _connect_current(interface, generation, initial=False):
         if _network_paused or generation != _network_generation:
             _drop_stale_socket(interface, sock)
             return None
+        # No link can have come up over the new connection yet.
+        interface._qortal_dead_links = _links_over(interface)
+        interface._qortal_dial_failed = False
         return sock
 
 
@@ -3517,6 +3526,409 @@ def _drop_stale_socket(interface, sock):
             interface.online = False
             interface.socket = None
     _close_quietly(sock)
+
+
+def _hub_interfaces():
+    import RNS
+
+    return [
+        interface
+        for interface in list(getattr(RNS.Transport, "interfaces", []) or [])
+        if getattr(interface, "initiator", False)
+    ]
+
+
+def _links_over(interface, unrouted=True):
+    """The RNS links, open or still being asked for, that use ``interface``.
+
+    A link this phone asked for has no interface until its proof is back; the
+    request left on the one its path uses. With no path it went out on all of
+    them, so it counts for each (with ``unrouted``).
+    """
+    import RNS
+
+    links = list(getattr(RNS.Transport, "active_links", []) or [])
+    links += list(getattr(RNS.Transport, "pending_links", []) or [])
+    found = []
+    for link in links:
+        over = getattr(link, "attached_interface", None)
+        if over is None:
+            try:
+                over = RNS.Transport.next_hop_interface(link.destination.hash)
+            except Exception:  # noqa: BLE001 - no destination: as without a path
+                over = None
+        if over is interface or (over is None and unrouted):
+            found.append(link)
+    return found
+
+
+def _tell_peers_link_closes(links):
+    """Send LINKCLOSE on ``links`` while their old connection still may work.
+
+    Only the packet: the links stay open on this phone until their hub is
+    back (see _close_dead_links), so nothing asks for new ones too early.
+    """
+    import RNS
+
+    told = 0
+    for link in links:
+        send = getattr(link, "_Link__teardown_packet", None)
+        if send is None or getattr(link, "status", None) in (
+            RNS.Link.PENDING,
+            RNS.Link.CLOSED,
+        ):
+            continue
+        try:
+            send()
+            told += 1
+        except Exception:
+            pass
+    return told
+
+
+def _close_dead_links(links):
+    """Close ``links`` on this phone: their hub connection is gone.
+
+    A hub forwards link traffic only between the exact two connections the
+    link was set up on, so a link dies with the socket it came in on. RNS
+    does not see that: it sends the link's packets into whatever socket the
+    interface has now and calls the link up until its keepalives time out,
+    minutes later on a slow path. A call kept talking into such a link, and
+    opening a new one got the dead one back ("already established").
+
+    Nothing is sent: no hub would forward a LINKCLOSE either. The reason is
+    the one of a local close for links of both directions: the bridge counts
+    a "destination closed" as the neighbour failing and stays away from it
+    for 15 s, which would also hold up a hang-up.
+    """
+    import RNS
+
+    inbound = _inbound_overlay_peers(links)
+    closed = 0
+    for link in links:
+        if getattr(link, "status", None) == RNS.Link.CLOSED:
+            continue
+        try:
+            link._qortal_dead = True  # _watch_call_end
+            link.status = RNS.Link.CLOSED
+            link.teardown_reason = RNS.Link.INITIATOR_CLOSED
+            link.link_closed()
+            closed += 1
+        except Exception as exc:  # noqa: BLE001 - the others must still close
+            _log_host(f"closing a dead link failed: {exc}")
+    _free_inbound_overlay_slots(inbound)
+    return closed
+
+
+def _inbound_overlay_peers(links):
+    """Peers whose overlay link came in over one of ``links``."""
+    try:
+        import presence_bridge as pb
+
+        wanted = {id(link) for link in links}
+        return [
+            str(state.get("peerPresenceHash") or "").strip().lower()
+            for state in list(pb._overlay_links_by_id.values())
+            if state.get("incoming") is True and id(state.get("link")) in wanted
+        ]
+    except Exception:  # noqa: BLE001 - bookkeeping only
+        return []
+
+
+def _free_inbound_overlay_slots(peers):
+    """A neighbour that has no link left must not keep an inbound slot."""
+    if not peers:
+        return
+    try:
+        import presence_bridge as pb
+
+        with pb._state_lock:
+            for peer in peers:
+                if peer and not pb._active_overlay_link_id_by_peer_hash.get(peer):
+                    pb._inbound_overlay_neighbors.pop(peer, None)
+    except Exception:  # noqa: BLE001 - bookkeeping only
+        pass
+
+
+def _after_redial(interface):
+    """``interface`` has a new connection: restore its tunnel, end old links.
+
+    In this order, and only now, because the bridge asks for a new link at
+    once when one closes, and a request sent into a hub that is still being
+    dialled is lost and costs the 12 s establish time-out. Returns how many
+    links were closed.
+    """
+    import RNS
+
+    RNS.Transport.synthesize_tunnel(interface)
+    links = getattr(interface, "_qortal_dead_links", None) or []
+    interface._qortal_dead_links = []
+    closed = 0
+    try:
+        closed = _close_dead_links(links)
+        if closed:
+            _log_host(f"redialled {interface}, dead links closed={closed}")
+        for other in _hub_interfaces():
+            # Hubs that cannot be dialled from here: this one takes over now.
+            if other is not interface and getattr(other, "_qortal_dial_failed", False):
+                closed += _give_up_links_over(other)
+    except Exception as exc:  # noqa: BLE001 - the dial itself went through
+        _log_host(f"closing dead links failed: {exc}")
+    return closed
+
+
+def _after_failed_dial(interface, generation):
+    """``interface`` cannot be reached now: move its links to another hub."""
+    interface._qortal_dial_failed = True
+    closed = 0
+    try:
+        if any(
+            other is not interface and getattr(other, "online", False)
+            for other in _hub_interfaces()
+        ):
+            closed = _give_up_links_over(interface)
+    except Exception as exc:  # noqa: BLE001 - the reconnect loop must go on
+        _log_host(f"closing dead links failed: {exc}")
+    if closed:
+        _after_network_resumed(generation, closed)
+
+
+def _give_up_links_over(interface):
+    """Close the links over an unreachable hub, and forget their paths over it.
+
+    With the path kept, the new link request would go to the same hub again.
+    """
+    import RNS
+    import presence_bridge as pb
+
+    if getattr(interface, "online", False):
+        return 0
+    links = _links_over(interface, unrouted=False)
+    if not links:
+        return 0
+    wanted = {id(link) for link in links}
+    peers = set()
+    for link in links:
+        if getattr(link, "initiator", False):
+            peers.add(getattr(getattr(link, "destination", None), "hash", None))
+    for table in ("_audio_links_by_id", "_overlay_links_by_id"):
+        # The peer of a link that came in; RNS knows only its identity.
+        for state in list((getattr(pb, table, None) or {}).values()):
+            if id(state.get("link")) in wanted:
+                try:
+                    peers.add(bytes.fromhex(str(state.get("peerPresenceHash") or "")))
+                except ValueError:
+                    pass
+    for peer in peers:
+        if not peer:
+            continue
+        try:
+            if RNS.Transport.next_hop_interface(peer) is interface:
+                with RNS.Transport.path_table_lock:
+                    RNS.Transport.path_table.pop(peer, None)
+                pb._invalidate_reticulum_path_availability(peer)
+        except Exception as exc:  # noqa: BLE001 - the retry refreshes the path
+            _log_host(f"forgetting a path failed: {exc}")
+    closed = _close_dead_links(links)
+    if closed:
+        _log_host(f"{interface} unreachable, dead links closed={closed}")
+    return closed
+
+
+# ---------------------------------------------------------------------------
+# Call endings that went into a dead link
+#
+# ``send_call`` reports success as soon as the packet is handed to the overlay
+# link. Between a network switch and the redial that link is dead, and nobody
+# knows yet: the hang-up is lost, the page never repeats it, and the other
+# phone stays in the call. So a hang-up or a reject is sent once more when its
+# overlay link has been replaced within the next seconds. The other side's
+# network may have switched as well; then it opens the new link. A copy that
+# did arrive is harmless: both are signed for one call id, and the Hub ignores
+# them for a call that has ended.
+# ---------------------------------------------------------------------------
+_CALL_END_WIRE_TYPES = frozenset(("CH", "CX"))  # electron/src/call.ts
+_CALL_END_WATCH_SECONDS = 20.0
+_CALL_END_WATCH_INTERVAL_SECONDS = 0.5
+_CALL_END_MAX_RESENDS = 3
+_CALL_END_HOOK_FLAG = "_qortal_call_end_resend"
+
+
+def _active_overlay_link(pb, peer):
+    """The overlay link ``send_call`` would use for ``peer`` now, or None."""
+    with pb._state_lock:
+        link_id = pb._active_overlay_link_id_by_peer_hash.get(peer)
+        state = pb._overlay_links_by_id.get(link_id) if link_id else None
+        if state is None or not pb._overlay_link_is_fanout_usable(state):
+            return None
+        return state.get("link")
+
+
+def _open_overlay_link_now(pb, peer):
+    """Ask for ``peer``'s overlay link on this thread.
+
+    The bridge hands that to one of two queues whose jobs wait for paths and
+    for slow teardowns. Right after a switch they are full: on real phones the
+    link was asked for up to 6 s late, and was up 0.2 s after that. A link
+    that the queue opens meanwhile is found and used, and the other way round
+    (_install_one_overlay_open_per_peer).
+    """
+    pb.ensure_known_peer_from_recall(peer, "ts_seed")
+    pb._ensure_overlay_link(peer, True, "call_signal_prepare")
+
+
+def _install_one_overlay_open_per_peer(pb):
+    """Let one thread at a time open the overlay link to a peer. Idempotent.
+
+    A peer's queue did that by itself, but _open_overlay_link_now works beside
+    it. Two links asked for at the same moment end with each side keeping a
+    different one, and the last of them falls 2 s later.
+    """
+    original = getattr(pb, "_ensure_overlay_link", None)
+    if original is None or getattr(original, _CALL_END_HOOK_FLAG, False):
+        return
+    guard = threading.Lock()
+    opening = {}  # peer -> [lock, threads that use it]
+
+    def _ensure_overlay_link(peer_hash, *args, **kwargs):
+        peer = str(peer_hash or "").strip().lower()
+        with guard:
+            entry = opening.setdefault(peer, [threading.RLock(), 0])
+            entry[1] += 1
+        try:
+            with entry[0]:
+                return original(peer_hash, *args, **kwargs)
+        finally:
+            with guard:
+                entry[1] -= 1
+                if not entry[1]:
+                    opening.pop(peer, None)
+
+    setattr(_ensure_overlay_link, _CALL_END_HOOK_FLAG, True)
+    _ensure_overlay_link.__wrapped__ = original
+    _ensure_overlay_link.opening = opening
+    pb._ensure_overlay_link = _ensure_overlay_link
+
+
+def _watch_call_end(pb, peer, message, link):
+    resends = 0
+    deadline = time.monotonic() + _CALL_END_WATCH_SECONDS
+    while time.monotonic() < deadline and resends < _CALL_END_MAX_RESENDS:
+        time.sleep(_CALL_END_WATCH_INTERVAL_SECONDS)
+        if _network_paused:
+            return  # signed out or swiped away
+        try:
+            current = _active_overlay_link(pb, peer)
+            if current is link:
+                continue
+            if current is None:
+                # Ask for a new one only if the old one died under us; a link
+                # closed in the ordinary way took the message along.
+                if getattr(link, "_qortal_dead", False):
+                    _open_overlay_link_now(pb, peer)
+                continue
+            encoded = pb._encode_call_signal_wire(message)
+            if not encoded.get("ok"):
+                return
+            if pb._send_call_signal_wire_to_peer(peer, encoded["wire_bytes"]) is None:
+                resends += 1
+                link = current
+                _log_host(f"call end sent again type={message.get('t')} peer={peer[:8]}")
+        except Exception as exc:  # noqa: BLE001 - the first copy was sent
+            _log_host(f"call end resend failed: {exc}")
+            return
+
+
+def _install_call_end_resend(pb):
+    """Hook ``send_call`` for hang-ups and rejects (see above). Idempotent."""
+    _install_one_overlay_open_per_peer(pb)
+    original = getattr(pb, "handle_send_call", None)
+    if original is None or getattr(original, _CALL_END_HOOK_FLAG, False):
+        return
+
+    def handle_send_call(req_id, payload, *args, **kwargs):
+        message = payload.get("message") if isinstance(payload, dict) else None
+        ends_call = (
+            isinstance(message, dict) and message.get("t") in _CALL_END_WIRE_TYPES
+        )
+        peer = ""
+        link = None
+        try:
+            if ends_call:
+                peer = str(payload.get("peerPresenceHash") or "").strip().lower()
+                # None: the send fails, and the page repeats it by itself.
+                link = _active_overlay_link(pb, peer)
+        except Exception as exc:  # noqa: BLE001 - never fail the send itself
+            _log_host(f"call end watch failed: {exc}")
+        result = original(req_id, payload, *args, **kwargs)
+        try:
+            if link is not None:
+                threading.Thread(
+                    target=_watch_call_end,
+                    args=(pb, peer, dict(message), link),
+                    name="presence-host-call-end",
+                    daemon=True,
+                ).start()
+        except Exception as exc:  # noqa: BLE001 - never fail the send itself
+            _log_host(f"call end watch failed: {exc}")
+        return result
+
+    setattr(handle_send_call, _CALL_END_HOOK_FLAG, True)
+    handle_send_call.__wrapped__ = original
+    pb.handle_send_call = handle_send_call
+
+
+# ---------------------------------------------------------------------------
+# Two audio links that cross
+#
+# Two phones on one Wi-Fi lose it together, and both open the call's link
+# again at the same moment. The bridge keeps the one of the two with the
+# latest activity, which is on each phone the one that just came in: both drop
+# their own, both links are gone, and both open again in step, for ever.
+# Between two links that both just came up in opposite directions the hashes
+# decide (the rule the bridge has for a tie), so both phones keep the same
+# one. An unmodified peer keeps the one that came in: no worse than without.
+# ---------------------------------------------------------------------------
+_CROSSED_AUDIO_LINK_SECONDS = 3.0
+_CROSSED_AUDIO_LINK_HOOK_FLAG = "_qortal_crossed_audio_links"
+
+
+def _install_crossed_audio_link_rule(pb):
+    """Hook the choice between two audio links to one peer. Idempotent."""
+    original = getattr(pb, "_audio_link_pick_keep", None)
+    if original is None or getattr(original, _CROSSED_AUDIO_LINK_HOOK_FLAG, False):
+        return
+
+    def just_established(state, now):
+        at = state.get("established_at")
+        return (
+            state.get("established") is True
+            and state.get("closing") is not True
+            and isinstance(at, (int, float))
+            and 0.0 <= now - at <= _CROSSED_AUDIO_LINK_SECONDS
+        )
+
+    def _audio_link_pick_keep(peer_key, link_id_a, state_a, link_id_b, state_b):
+        try:
+            now = time.time()
+            incoming_a = state_a.get("incoming") is True
+            incoming_b = state_b.get("incoming") is True
+            if (
+                incoming_a != incoming_b
+                and just_established(state_a, now)
+                and just_established(state_b, now)
+            ):
+                local = pb._local_presence_hash_hex()
+                if local and pb._valid_presence_destination_hash_hex(peer_key):
+                    keep_a = incoming_a == (local > peer_key)
+                    return (link_id_a, link_id_b) if keep_a else (link_id_b, link_id_a)
+        except Exception as exc:  # noqa: BLE001 - the bridge's own rule then
+            _log_host(f"crossed audio link rule failed: {exc}")
+        return original(peer_key, link_id_a, state_a, link_id_b, state_b)
+
+    setattr(_audio_link_pick_keep, _CROSSED_AUDIO_LINK_HOOK_FLAG, True)
+    _audio_link_pick_keep.__wrapped__ = original
+    pb._audio_link_pick_keep = _audio_link_pick_keep
 
 
 def _emit_transport_state():
@@ -3592,13 +4004,14 @@ def pause_network():
     return True
 
 
-def _after_network_resumed(generation):
-    """First hub back after a resume: dial overlay neighbours right away."""
+def _after_network_resumed(generation, links_closed=0):
+    """Dial overlay neighbours right away: first hub back after a resume, or
+    ``links_closed`` links ended with their old connection."""
     global _resume_kick_generation
     with _lock:
         if _network_paused or generation != _network_generation:
             return
-        if _resume_kick_generation == generation:
+        if _resume_kick_generation == generation and not links_closed:
             return
         _resume_kick_generation = generation
     _emit_transport_state()
@@ -3611,8 +4024,6 @@ def _after_network_resumed(generation):
 
 
 def _reattach_interface(interface, generation, after_first_dial=None):
-    import RNS
-
     sock = None
     try:
         sock = _connect_current(interface, generation, initial=True)
@@ -3626,14 +4037,16 @@ def _reattach_interface(interface, generation, after_first_dial=None):
             with _interface_lock(interface):
                 _drop_stale_socket(interface, sock)
         return
+    closed = 0
     if sock is not None:
-        RNS.Transport.synthesize_tunnel(interface)
+        closed = _after_redial(interface)
     else:
+        _after_failed_dial(interface, generation)
         # Backoff loop from _install_reconnect_backoff; it gives up on its own
         # when the network is paused again.
         interface.reconnect()
     if getattr(interface, "online", False):
-        _after_network_resumed(generation)
+        _after_network_resumed(generation, closed)
 
 
 def resume_network():
@@ -3720,12 +4133,12 @@ def refresh_network(reason="network_change", since_switch_seconds=0.0):
     default network has settled.
 
     Hub sockets dialled after the switch are on the new network already and
-    are left alone. Every RNS link through a hub that is redialled is torn
-    down first: a hub only forwards link traffic that arrives on the exact
-    connection the link came in on, so those links are dead even though the
-    phone still counts them as up. The overlay maintenance that follows the
-    first hub back dials the neighbours again at once. Hubs that are offline
-    (waiting in their backoff) are dialled now as well.
+    are left alone. Hubs that are offline are dialled now as well; that is the
+    usual case when Wi-Fi goes, because Android takes the sockets of a lost
+    network down itself. Every RNS link over a redialled hub is closed once
+    that hub is back (see _after_redial), which makes the bridge open the
+    call's audio link and the overlay links again. Where the old socket is
+    still up, the other sides are told first.
 
     The dials run on one thread per hub, so a dial stuck in DNS never blocks
     the caller. Returns how many hubs are being redialled.
@@ -3757,21 +4170,14 @@ def refresh_network(reason="network_change", since_switch_seconds=0.0):
         _network_generation += 1
         generation = _network_generation
 
-    closed = 0
+    told = 0
     if replaced:
-        replaced_ids = {id(interface) for interface in replaced}
-        links = list(getattr(RNS.Transport, "active_links", []) or [])
-        links += list(getattr(RNS.Transport, "pending_links", []) or [])
-        for link in links:
-            attached = getattr(link, "attached_interface", None)
-            if attached is not None and id(attached) not in replaced_ids:
-                continue
-            try:
-                link.teardown()
-                closed += 1
-            except Exception:
-                pass
-        if closed:
+        leaving = {}
+        for interface in replaced:
+            for link in _links_over(interface):
+                leaving[id(link)] = link
+        told = _tell_peers_link_closes(leaving.values())
+        if told:
             # Same window pause_network() gives teardown packets.
             time.sleep(0.15)
 
@@ -3784,6 +4190,6 @@ def refresh_network(reason="network_change", since_switch_seconds=0.0):
         ).start()
     _log_host(
         f"network refresh reason={reason} interfaces={len(targets)} "
-        f"replaced={len(replaced)} links_closed={closed}"
+        f"replaced={len(replaced)} links_told={told}"
     )
     return len(targets)

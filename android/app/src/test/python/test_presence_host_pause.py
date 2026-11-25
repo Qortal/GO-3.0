@@ -52,10 +52,14 @@ class BackboneInterface:
 
 
 class Link:
+    ACTIVE, CLOSED = 2, 4
+
     def __init__(self, n):
         self.n = n
+        self.status = Link.ACTIVE
 
     def teardown(self):
+        self.status = Link.CLOSED
         calls.append(("teardown", self.n))
 
 
@@ -122,6 +126,7 @@ class Transport:
 def _install_stubs():
     rns = types.ModuleType("RNS")
     rns.Transport = Transport
+    rns.Link = Link
     rns.log = lambda *a, **k: None
     rns.LOG_ERROR = rns.LOG_WARNING = rns.LOG_DEBUG = rns.LOG_INFO = 0
     interfaces_pkg = types.ModuleType("RNS.Interfaces")
