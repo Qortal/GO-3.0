@@ -111,6 +111,38 @@ export function directVoiceCapabilityRetryDelaysMs(
     : DIRECT_VOICE_CAPABILITY_RETRY_DELAYS_MS;
 }
 
+// GO only: waits before a WebRTC signal (offer, answer, candidates, ICE
+// refresh request) the call manager refused or threw on is sent again. The
+// audio link counts as not ready for moments while a call starts; capability
+// adverts repeat anyway, but these are sent once and WebRTC has no other copy
+// (a lost candidate batch alone keeps the call off Direct).
+const GO_DIRECT_VOICE_RTC_SIGNAL_RETRY_DELAYS_MS: readonly number[] = [
+  250, 400, 600, 900, 1_300, 1_800, 2_500, 3_000,
+];
+// A send that only fails after a long bridge timeout must not stretch the
+// waits above: no resend starts later than this after the first attempt.
+const GO_DIRECT_VOICE_RTC_SIGNAL_RETRY_WINDOW_MS = 20_000;
+const GO_DIRECT_VOICE_RTC_SIGNAL_RETRY_SLICE_MS = 250;
+// Refusals that the same signal cannot get past, however often it is sent.
+const DIRECT_VOICE_RTC_SIGNAL_FINAL_ERRORS: ReadonlySet<string> = new Set([
+  'payload-hash-mismatch',
+  'room-not-found',
+  'rtc-signal-too-large',
+  'sender-not-local',
+  'sender-public-key-mismatch',
+  'unsupported-on-legacy-call-port',
+]);
+
+/** Waits before each resend of a refused WebRTC signal (desktop: none). */
+export function directVoiceRtcSignalRetryDelaysMs(
+  go: boolean
+): readonly number[] {
+  return go ? GO_DIRECT_VOICE_RTC_SIGNAL_RETRY_DELAYS_MS : [];
+}
+
+/** 'retry': not sent, but the same signal may get through a moment later. */
+type DirectVoiceRtcSendOutcome = 'sent' | 'retry' | 'drop';
+
 const DM_MEDIA_RECOVERY_REQUEST_COOLDOWN_MS = 4_000;
 const DM_ROOM_KEY_REPLAY_RETRY_MS = 750;
 const DM_ROOM_KEY_REPLAY_MAX_ATTEMPTS = 6;
@@ -702,6 +734,8 @@ export function useVoiceCall(
     acknowledged: boolean;
   } | null>(null);
   const dmRtcSignalSendChainRef = useRef<Promise<void>>(Promise.resolve());
+  /** The newest WebRTC signal the audio surface made (resend guard). */
+  const dmRtcLocalSignalRef = useRef({ generation: '', descriptions: 0 });
   const screenShareTransportRef =
     useRef<DirectScreenShareWebRtcTransport | null>(null);
   const screenShareStateRef = useRef<DirectScreenShareState>('idle');
@@ -1086,7 +1120,8 @@ export function useVoiceCall(
     []
   );
 
-  const sendAuthenticatedDirectVoiceRtcPayload = useCallback(
+  /** One freshly signed attempt; the timestamp is taken here, every time. */
+  const trySendAuthenticatedDirectVoiceRtcPayload = useCallback(
     async (input: {
       generation: string;
       signalType:
@@ -1097,7 +1132,7 @@ export function useVoiceCall(
         | 'ack'
         | 'reconnect';
       payload: string;
-    }): Promise<boolean> => {
+    }): Promise<DirectVoiceRtcSendOutcome> => {
       const callId = callIdRef.current;
       const roomId = dmRoomIdRef.current;
       const callSessionId = callSessionIdRef.current;
@@ -1114,7 +1149,7 @@ export function useVoiceCall(
         !api?.sendRtcSignal ||
         isReticulumCallEnabled
       ) {
-        return false;
+        return 'drop';
       }
       const payloadHash = await sha256HexUtf8(input.payload);
       const signalId = crypto.randomUUID();
@@ -1152,7 +1187,7 @@ export function useVoiceCall(
           callTrunc: callId.slice(0, 8),
           error: error instanceof Error ? error.message : String(error),
         });
-        return false;
+        return 'retry';
       }
       const publicKey = userInfo?.publicKey ?? '';
       if (
@@ -1162,7 +1197,9 @@ export function useVoiceCall(
         mediaGenRef.current >>> 0 !== mediaSessionGeneration ||
         peerAddressRef.current?.trim() !== toAddress
       ) {
-        return false;
+        // Signed for a session that is gone. A resend signs for the current
+        // one, unless its caller finds the call itself changed.
+        return 'retry';
       }
       if (!signature || !publicKey) {
         pushDirectVoiceUiLog('warn', 'WebRTC signal signing failed', {
@@ -1170,7 +1207,7 @@ export function useVoiceCall(
           callTrunc: callId.slice(0, 8),
           error: !signature ? 'missing-signature' : 'missing-public-key',
         });
-        return false;
+        return 'drop';
       }
       let result: { success: boolean; error?: string };
       try {
@@ -1195,7 +1232,7 @@ export function useVoiceCall(
           callTrunc: callId.slice(0, 8),
           error: error instanceof Error ? error.message : String(error),
         });
-        return false;
+        return 'retry';
       }
       if (!result.success) {
         pushDirectVoiceUiLog('warn', 'WebRTC signal send rejected', {
@@ -1203,7 +1240,9 @@ export function useVoiceCall(
           callTrunc: callId.slice(0, 8),
           error: result.error ?? 'unknown',
         });
-        return false;
+        return DIRECT_VOICE_RTC_SIGNAL_FINAL_ERRORS.has(result.error ?? '')
+          ? 'drop'
+          : 'retry';
       }
       if (input.signalType !== 'candidate') {
         pushDirectVoiceUiLog('log', 'WebRTC signal queued', {
@@ -1211,9 +1250,17 @@ export function useVoiceCall(
           callTrunc: callId.slice(0, 8),
         });
       }
-      return true;
+      return 'sent';
     },
     [userInfo?.address, userInfo?.publicKey]
+  );
+
+  const sendAuthenticatedDirectVoiceRtcPayload = useCallback(
+    async (
+      input: Parameters<typeof trySendAuthenticatedDirectVoiceRtcPayload>[0]
+    ): Promise<boolean> =>
+      (await trySendAuthenticatedDirectVoiceRtcPayload(input)) === 'sent',
+    [trySendAuthenticatedDirectVoiceRtcPayload]
   );
 
   const announceDirectVoiceNativeAudioCapability = useCallback(async () => {
@@ -1820,13 +1867,38 @@ export function useVoiceCall(
       ) {
         return;
       }
-      lastDmPeerMediaRecoveryRequestAtRef.current = now;
-      pushDirectVoiceUiLog('log', 'requestPeerMediaRecovery', {
-        roomTrunc: roomId.slice(0, 24),
-        peerTrunc: peer.slice(0, 8),
-        reason,
-      });
-      void gc.requestPeerMediaRecovery(roomId, peer, reason).catch(() => {});
+      const request = (): void => {
+        lastDmPeerMediaRecoveryRequestAtRef.current = now;
+        pushDirectVoiceUiLog('log', 'requestPeerMediaRecovery', {
+          roomTrunc: roomId.slice(0, 24),
+          peerTrunc: peer.slice(0, 8),
+          reason,
+        });
+        void gc.requestPeerMediaRecovery(roomId, peer, reason).catch(() => {});
+      };
+      if (!isCapacitor() || typeof gc.getLinkStats !== 'function') {
+        request();
+        return;
+      }
+      // GO: a recovery request makes the manager forget an audio link that
+      // is up, so only ask when there is none (see
+      // waitForDmPeerMediaReadiness).
+      void Promise.resolve()
+        .then(() => gc.getLinkStats(roomId))
+        .then(
+          (response) => response?.stats?.establishedLinks > 0,
+          () => false
+        )
+        .then((linkUp) => {
+          if (
+            linkUp ||
+            dmRoomIdRef.current !== roomId ||
+            peerAddressRef.current !== peer
+          ) {
+            return;
+          }
+          request();
+        });
     },
     []
   );
@@ -1869,17 +1941,27 @@ export function useVoiceCall(
 
         const now = Date.now();
         deadlineReached = now >= deadline;
-        if (
-          !deadlineReached &&
-          now - lastWarmupAt >= DM_MEDIA_READINESS_WARMUP_MS
-        ) {
+        const warmUpIfDue = (): void => {
+          if (
+            deadlineReached ||
+            now - lastWarmupAt < DM_MEDIA_READINESS_WARMUP_MS
+          ) {
+            return;
+          }
           lastWarmupAt = now;
           if (typeof gc?.requestPeerMediaRecovery === 'function') {
             void gc
               .requestPeerMediaRecovery(roomId, peer, `dm-readiness:${reason}`)
               .catch(() => {});
           }
-        }
+        };
+        // The manager answers a recovery request by marking the link unready
+        // until the next packet on it. GO therefore looks first: the room key
+        // is applied 5-8 times while a call starts, and each one used to take
+        // a link that was up down for about half a second, refusing the
+        // WebRTC signals sent meanwhile.
+        const looksFirst = isCapacitor();
+        if (!looksFirst) warmUpIfDue();
 
         let peerInRoom = false;
         let participantCount = 0;
@@ -1928,6 +2010,11 @@ export function useVoiceCall(
             establishedLinks,
           });
           return true;
+        }
+
+        if (looksFirst) {
+          if (options?.cancelled?.()) return false;
+          if (!routeReady) warmUpIfDue();
         }
 
         // The query above is the final readiness check at the deadline. This
@@ -3444,29 +3531,78 @@ export function useVoiceCall(
       const expectedCallId = callIdRef.current;
       const expectedRoomId = dmRoomIdRef.current;
       const expectedPeerAddress = peerAddressRef.current;
+      const expectedMediaGeneration = mediaGenRef.current >>> 0;
+      const rtcSession = dmMediaSessionTokenRef.current;
+      const signal = event.signal;
+      const description = signal.kind === 'description';
+      // Signals arrive here in the order the transport made them, so this is
+      // its newest ICE generation and its newest offer/answer.
+      dmRtcLocalSignalRef.current = {
+        generation: signal.generation,
+        descriptions:
+          dmRtcLocalSignalRef.current.descriptions + (description ? 1 : 0),
+      };
+      const descriptionNumber = dmRtcLocalSignalRef.current.descriptions;
+      const callChanged = (): boolean =>
+        lifecycleGeneration !== dmRtcLifecycleGenerationRef.current ||
+        expectedCallId !== callIdRef.current ||
+        expectedRoomId !== dmRoomIdRef.current ||
+        expectedPeerAddress !== peerAddressRef.current;
+      // Resends stop as soon as the call ends, WebRTC is up, or the transport
+      // moved on: another ICE generation, or a newer offer/answer.
+      const resendIsStale = (): boolean =>
+        callChanged() ||
+        callStateRef.current !== 'connected' ||
+        (rtcSession?.callId === expectedCallId &&
+          isGoDmMediaSessionEnding(rtcSession)) ||
+        expectedMediaGeneration !== mediaGenRef.current >>> 0 ||
+        dmRtcOpenRef.current ||
+        signal.generation !== dmRtcLocalSignalRef.current.generation ||
+        (description &&
+          descriptionNumber !== dmRtcLocalSignalRef.current.descriptions);
       const sendTask = dmRtcSignalSendChainRef.current.then(async () => {
-        if (
-          lifecycleGeneration !== dmRtcLifecycleGenerationRef.current ||
-          expectedCallId !== callIdRef.current ||
-          expectedRoomId !== dmRoomIdRef.current ||
-          expectedPeerAddress !== peerAddressRef.current
-        ) {
-          return;
-        }
-        const payload = JSON.stringify(event.signal);
+        if (callChanged()) return;
+        const payload = JSON.stringify(signal);
         const signalType =
-          event.signal.kind === 'ice' || event.signal.kind === 'ice-candidates'
+          signal.kind === 'ice' || signal.kind === 'ice-candidates'
             ? 'candidate'
-            : event.signal.kind === 'ice-refresh-request'
+            : signal.kind === 'ice-refresh-request'
               ? 'reconnect'
-              : event.signal.description.type === 'offer'
+              : signal.description.type === 'offer'
                 ? 'offer'
                 : 'answer';
-        await sendAuthenticatedDirectVoiceRtcPayload({
-          generation: event.signal.generation,
-          signalType,
-          payload,
-        });
+        const retryDelaysMs = directVoiceRtcSignalRetryDelaysMs(isCapacitor());
+        const resendDeadline =
+          Date.now() + GO_DIRECT_VOICE_RTC_SIGNAL_RETRY_WINDOW_MS;
+        // Later signals wait in the chain behind this one, so candidates
+        // never pass the offer/answer they belong to.
+        for (let attempt = 0; ; attempt += 1) {
+          const outcome = await trySendAuthenticatedDirectVoiceRtcPayload({
+            generation: signal.generation,
+            signalType,
+            payload,
+          });
+          if (outcome === 'sent' && attempt > 0) {
+            pushDirectVoiceUiLog('log', 'WebRTC signal resent', {
+              signalType,
+              callTrunc: String(expectedCallId).slice(0, 8),
+              attempt: attempt + 1,
+            });
+          }
+          if (outcome !== 'retry' || attempt >= retryDelaysMs.length) return;
+          // In slices, so that a newer offer/answer waiting in the chain does
+          // not sit out the rest of an old one's wait.
+          const resendAt = Date.now() + retryDelaysMs[attempt];
+          if (resendAt > resendDeadline) return;
+          while (!resendIsStale() && Date.now() < resendAt) {
+            const sliceMs = Math.min(
+              resendAt - Date.now(),
+              GO_DIRECT_VOICE_RTC_SIGNAL_RETRY_SLICE_MS
+            );
+            await new Promise((resolve) => setTimeout(resolve, sliceMs));
+          }
+          if (resendIsStale()) return;
+        }
       });
       dmRtcSignalSendChainRef.current = sendTask.catch(() => {});
       void sendTask.catch((error) => {
@@ -3475,7 +3611,7 @@ export function useVoiceCall(
         });
       });
     });
-  }, [sendAuthenticatedDirectVoiceRtcPayload]);
+  }, [isGoDmMediaSessionEnding, trySendAuthenticatedDirectVoiceRtcPayload]);
 
   const startDurationTimer = useCallback(() => {
     setCallDuration(0);
