@@ -283,6 +283,182 @@ def _patch_rns_no_exit():
     RNS.exit = _safe_exit
 
 
+# ---------------------------------------------------------------------------
+# Thread stacks without frame references
+#
+# ``sys._current_frames()`` returns the live frame objects of every thread,
+# the Kotlin-owned ones that are inside ``callAttr`` included. While Chaquopy
+# converts their arguments, Python code on that thread
+# (``WeakValueDictionary.get``) has a JNI *local* reference in its ``key``.
+# Once such a function has returned, the frame we hold is the last owner of
+# its locals, so dropping it runs ``LocalRef.__dealloc__`` here: a
+# ``DeleteLocalRef`` with the other thread's JNIEnv, which JNI forbids.
+# CheckJNI (debuggable builds) aborts GO for it; without CheckJNI, ART changes
+# the state of a thread that is running and edits its reference table
+# unlocked. The bridge takes frames for its two-minute thread report (five
+# times, over 0.6 s) and for stall dumps, and the S8+ aborted there four times
+# on 2026-11-24.
+#
+# So Python code never gets to see the frames: one C-level iterator chain
+# takes them, copies (code, position) of each and lets them go again. No
+# bytecode runs in between, so the interpreter cannot switch threads, no frame
+# can end while it is held, and giving it back is a plain reference count.
+# What callers get are stand-ins with the attributes ``traceback`` reads. They
+# carry no locals and, deliberately, no globals.
+#
+# That no thread switch is possible inside the chain was checked for CPython
+# 3.13 with a GIL. Anywhere else the stacks are left out (the counts and CPU
+# numbers of the report do not need them) until the stress test
+# (test_presence_host_thread_stacks.py) has passed there.
+# ---------------------------------------------------------------------------
+_THREAD_STACK_PYTHON_VERSIONS = ((3, 13),)
+# Innermost frames kept per thread. The bridge prints 14 at most.
+_THREAD_STACK_MAX_FRAMES = 16
+_real_current_frames = None
+
+
+class _DetachedFrame:
+    """What ``traceback`` needs of a frame, and nothing it could keep alive.
+
+    Everything is worked out when asked for: of some 130 threads, the report
+    prints a dozen. Decoding all their line numbers and building all their
+    frames first cost 9 ms of CPU per snapshot on the S8+.
+    """
+
+    __slots__ = ("_stack", "_depth")
+    f_globals = {}
+    f_locals = {}
+
+    def __init__(self, stack, depth=0):
+        self._stack = stack  # ((code, lasti), ...innermost first)
+        self._depth = depth
+
+    @property
+    def f_code(self):
+        return self._stack[self._depth][0]
+
+    @property
+    def f_lineno(self):
+        code, lasti = self._stack[self._depth]
+        if lasti < 0:
+            return code.co_firstlineno
+        for start, end, line in code.co_lines():
+            if start <= lasti < end:
+                return line
+        return None
+
+    @property
+    def f_back(self):
+        depth = self._depth + 1
+        return _DetachedFrame(self._stack, depth) if depth < len(self._stack) else None
+
+
+def _thread_stack_support_problem():
+    """Why stacks cannot be taken safely on this interpreter ("" = they can)."""
+    if sys.implementation.name != "cpython":
+        return f"unchecked interpreter {sys.implementation.name}"
+    if tuple(sys.version_info[:2]) not in _THREAD_STACK_PYTHON_VERSIONS:
+        return "unchecked Python %d.%d" % tuple(sys.version_info[:2])
+    if not getattr(sys, "_is_gil_enabled", lambda: True)():
+        return "Python without a GIL"
+    try:
+        # The C versions: operator falls back to Python ones.
+        from _operator import attrgetter, truth  # noqa: F401
+    except ImportError:
+        return "no C operator module"
+    return ""
+
+
+def _thread_stack_rows(current_frames):
+    """Iterator of (((code, lasti), ...innermost first), thread ident).
+
+    Nothing is taken before the first item is asked for. Must be drained by
+    one C call that holds the only reference to it, ``list(...)``: that call
+    takes the frames, walks them and frees them without running bytecode.
+    Do not add a Python function, a lambda or a local variable to it.
+    """
+    from _operator import attrgetter, truth
+    from itertools import accumulate, chain, islice, repeat, takewhile, tee
+
+    for_values, for_idents = tee(islice(iter(current_frames, None), 1))
+    frames = chain.from_iterable(map(dict.values, for_values))
+    # Per frame: frame, getattr(frame, "f_back"), getattr(that, "f_back") ...
+    # until None (or the cap).
+    backs = ("f_back",) * (_THREAD_STACK_MAX_FRAMES - 1)
+    walks = map(
+        takewhile,
+        repeat(truth),
+        map(accumulate, map(chain, zip(frames), repeat(backs)), repeat(getattr)),
+    )
+    positions = map(map, repeat(attrgetter("f_code", "f_lasti")), walks)
+    return zip(map(tuple, positions), chain.from_iterable(for_idents))
+
+
+def _detached_current_frames():
+    """``sys._current_frames()`` for GO: stand-ins, no frame references."""
+    rows = list(_thread_stack_rows(_real_current_frames))
+    own = threading.get_ident()
+    out = {}
+    for stack, ident in rows:
+        # The caller's frame comes first, as with the original.
+        innermost = 1 if ident == own else 0
+        if len(stack) > innermost:
+            out[ident] = _DetachedFrame(stack, innermost)
+    return out
+
+
+def _no_current_frames():
+    """Stands in where stacks cannot be taken safely: reports go without."""
+    return {}
+
+
+def _patch_current_frames():
+    """No Python code in GO gets frames of other threads. Idempotent."""
+    global _real_current_frames
+    if sys._current_frames in (_detached_current_frames, _no_current_frames):
+        return
+    _real_current_frames = sys._current_frames
+    sys._current_frames = (
+        _no_current_frames if _thread_stack_support_problem() else _detached_current_frames
+    )
+
+
+def _thread_stack_problems(pb):
+    """Why a thread report could still hold frames, or lacks its stacks."""
+    problems = []
+    current = getattr(sys, "_current_frames", None)
+    if current not in (_detached_current_frames, _no_current_frames):
+        problems.append("sys._current_frames is not GO's")
+    if getattr(pb, "sys", sys) is not sys or hasattr(pb, "_current_frames"):
+        problems.append("presence_bridge does not use sys._current_frames")
+    unsupported = _thread_stack_support_problem()
+    if unsupported:
+        problems.append(f"stacks left out: {unsupported}")
+    if problems or current is not _detached_current_frames:
+        return problems
+    frame = sys._getframe()
+    before = sys.getrefcount(frame)
+    snapshot = current()
+    if sys.getrefcount(frame) != before:
+        problems.append("a frame is still referenced after the snapshot")
+    own = snapshot.get(threading.get_ident())
+    if own is None or own.f_code is not frame.f_code:
+        problems.append("the snapshot misses the calling thread")
+    return problems
+
+
+def _run_thread_stack_self_check(pb):
+    try:
+        problems = _thread_stack_problems(pb)
+    except Exception as exc:  # noqa: BLE001 - diagnostics must not stop GO
+        problems = [f"self-check failed: {str(exc)[:120]}"]
+    if problems:
+        _log_host("THREAD STACK SELF-CHECK FAILED: " + "; ".join(problems[:6]))
+    else:
+        _log_host("thread stacks ready (no frame references)")
+    return not problems
+
+
 # RNS 1.4.2's value. The vendored 1.3.4 ships Resource.REJECTED = 0x00,
 # the same value as Resource.NONE.
 _RNS_RESOURCE_REJECTED = 0x09
@@ -2311,6 +2487,7 @@ def start(config_dir):
         sys.stdout = _StdoutShim()
         sys.argv = ["presence_bridge"]
 
+        _patch_current_frames()
         _patch_signal_main_thread_safe()
         _patch_rns_standalone()
         _patch_rns_no_exit()
@@ -2321,6 +2498,7 @@ def start(config_dir):
             sys.stderr.write(f"[presence_bridge] packet mix counters skipped: {exc}\n")
         import presence_bridge as pb
 
+        _run_thread_stack_self_check(pb)
         _disable_audio_fd_threads(pb)
         # Route call audio over base64 JSON events/commands instead of FD3/FD4.
         _install_json_audio_io(pb)
