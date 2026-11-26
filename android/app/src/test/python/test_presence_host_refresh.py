@@ -216,6 +216,8 @@ def test_refresh_network():
     # ── nothing happens before the bridge, and RNS, are up ──
     assert h.refresh_network("early") == 0
     h._started = True
+    # Connections count as old and settled at once (that has its own checks).
+    h._HUB_YOUNG_SECONDS = h._SETTLE_MIN_SECONDS = h._SETTLE_MAX_SECONDS = 0.0
     assert h.refresh_network("rns-booting") == 0
     assert a.dials == 1 and b.dials == 1
     Transport.ready = True

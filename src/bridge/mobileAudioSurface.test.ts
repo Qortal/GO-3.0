@@ -91,6 +91,17 @@ const h = vi.hoisted(() => {
     /** Track A's GO-only methods (feature-detected by the surface). */
     retryUnansweredOffer?: ReturnType<typeof vi.fn>;
     resendCurrentAnswer?: ReturnType<typeof vi.fn>;
+    /** Age of the newest RTP packet (null: the browser does not say). */
+    rtpAge: number | null = null;
+    inboundAudioAgeMs = vi.fn((): number | null => this.rtpAge);
+    peerHeardAgain = vi.fn((): boolean => true);
+    /** Like the real transport: an open one stops being open at once. */
+    suspectPath = vi.fn((_reason: string): boolean => {
+      if (!this.isOpen()) return false;
+      this.open = false;
+      this.options.onState?.('recovering');
+      return true;
+    });
     constructor(options: TransportOptions) {
       this.options = options;
       this.retryUnansweredOffer = vi.fn(() => true);
@@ -282,8 +293,12 @@ const h = vi.hoisted(() => {
     stunProbe: boolean;
   }> = [];
 
+  /** The surface's listeners for a switch of default network. */
+  const networkListeners = new Set<() => void>();
+
   return {
     state,
+    networkListeners,
     FakeTrack,
     FakeMediaStream,
     FakeTransport,
@@ -297,6 +312,12 @@ const h = vi.hoisted(() => {
 
 vi.mock('../plugins/AudioRouting', () => ({ AudioRouting: h.routing }));
 vi.mock('../utils/platform', () => ({ isCapacitor: () => h.state.native }));
+vi.mock('./defaultNetworkChange', () => ({
+  subscribeDefaultNetworkChanged: (listener: () => void) => {
+    h.networkListeners.add(listener);
+    return () => h.networkListeners.delete(listener);
+  },
+}));
 vi.mock('../lib/call/directVoiceWebRtcTransport', () => ({
   DirectVoiceWebRtcTransport: h.FakeTransport,
 }));
@@ -2606,6 +2627,351 @@ describe('failed control bundles (go-gcall-control-bundle-result)', () => {
         (l) =>
           l.includes('control-bundle-failed') && l.includes('"acted":false')
       )
+    ).toBe(true);
+  });
+});
+
+describe('lost path of the WebRTC leg', () => {
+  const networkChanged = () =>
+    [...h.networkListeners].forEach((listener) => listener());
+  const decoded = () =>
+    FakeAudioDecoder.instances.reduce((n, d) => n + d.decoded, 0);
+  const playedAfter = async (deliver: () => void) => {
+    const before = decoded();
+    deliver();
+    await tick(20);
+    return decoded() - before;
+  };
+  /** Open for longer than the grace, with RTP arriving. */
+  const startSettledCall = async () => {
+    const t = await startFullCall();
+    t.rtpAge = 20;
+    await tick(3_000);
+    return t;
+  };
+
+  beforeEach(() => {
+    useFakeClock();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('a switch of network puts the call on Reticulum at once', async () => {
+    const t = await startSettledCall();
+    captureFrame();
+    await tick(0);
+    expect(sendAudio).not.toHaveBeenCalled();
+
+    networkChanged();
+    expect(t.suspectPath.mock.calls).toEqual([['network-changed']]);
+    expect(last(ofType('direct-voice-rtc-state'))?.state).toBe('connecting');
+    captureFrame();
+    await tick(0);
+    expect(sendAudio).toHaveBeenCalledTimes(1);
+    expect(
+      logLines().some((l) => l.includes('network-changed {"acted":true}'))
+    ).toBe(true);
+
+    // The transport found a path: WebRTC carries the call again.
+    t.open = true;
+    t.options.onState?.('open');
+    expect(last(ofType('direct-voice-rtc-state'))?.state).toBe('open');
+    captureFrame();
+    await tick(0);
+    expect(sendAudio).toHaveBeenCalledTimes(1);
+  });
+
+  it('a switch of network without a WebRTC leg changes nothing', async () => {
+    networkChanged();
+    await send(mediaCommand());
+    networkChanged();
+    expect(h.FakeTransport.instances).toHaveLength(0);
+    captureFrame();
+    await tick(0);
+    expect(sendAudio).toHaveBeenCalledTimes(1);
+  });
+
+  it('plays RTP while it arrives and Reticulum when it does not', async () => {
+    const t = await startSettledCall();
+    let seq = 1;
+    const frame = () => deliverPeerPacket((seq += 1));
+
+    // After a switch to Wi-Fi the peer's RTP still comes over mobile data,
+    // and the peer sends on both: its voice must not be doubled.
+    networkChanged();
+    expect(t.isOpen()).toBe(false);
+    expect(await playedAfter(frame)).toBe(0);
+    t.rtpAge = 399;
+    await tick(100);
+    expect(await playedAfter(frame)).toBe(0);
+    // Then mobile data goes.
+    t.rtpAge = 400;
+    await tick(100);
+    expect(await playedAfter(frame)).toBe(1);
+    t.rtpAge = Infinity;
+    await tick(100);
+    expect(await playedAfter(frame)).toBe(1);
+
+    // Open again, with RTP.
+    t.open = true;
+    t.options.onState?.('open');
+    t.rtpAge = 30;
+    await tick(100);
+    expect(await playedAfter(frame)).toBe(0);
+  });
+
+  it('goes by the connection state where the browser does not tell', async () => {
+    const t = await startSettledCall();
+    t.rtpAge = null;
+    await tick(100);
+    expect(await playedAfter(() => deliverPeerPacket(2))).toBe(0);
+    t.inboundAudioAgeMs.mockImplementation(() => {
+      throw new Error('closed');
+    });
+    await tick(100);
+    expect(await playedAfter(() => deliverPeerPacket(3))).toBe(0);
+    t.open = false;
+    t.options.onState?.('recovering');
+    expect(await playedAfter(() => deliverPeerPacket(4))).toBe(1);
+    expect(t.suspectPath).not.toHaveBeenCalled();
+  });
+
+  it('plays Reticulum until the remote element plays what arrives as RTP', async () => {
+    await send(rtcCommand());
+    await send(mediaCommand());
+    const t = lastTransport();
+    t.open = true;
+    t.options.onState?.('open');
+    t.rtpAge = 10;
+    expect(await playedAfter(() => deliverPeerPacket(2))).toBe(1);
+    // Late audio as well: nothing else is heard yet.
+    const late = encodeAudioPacketV2(
+      PEER,
+      true,
+      20,
+      (Date.now() - 1_900) >>> 0,
+      new Uint8Array([1, 2, 3, 4]),
+      KEY
+    );
+    expect(
+      await playedAfter(() =>
+        gcListeners.forEach((cb) =>
+          cb('gcall:audio', { roomId: ROOM, data: late })
+        )
+      )
+    ).toBe(1);
+    await playRemote();
+    await tick(100);
+    expect(await playedAfter(() => deliverPeerPacket(3))).toBe(0);
+    expect(t.suspectPath).not.toHaveBeenCalled();
+  });
+
+  it('plays the peer at the start of a call until its RTP arrives', async () => {
+    const t = await startFullCall();
+    t.rtpAge = Infinity; // open, remote element playing, no packet yet
+    expect(await playedAfter(() => deliverPeerPacket(2))).toBe(1);
+    t.rtpAge = 10;
+    await tick(100);
+    expect(await playedAfter(() => deliverPeerPacket(3))).toBe(0);
+    // The peer is on Reticulum a moment longer, and RTP stutters.
+    t.rtpAge = 600;
+    await tick(100);
+    expect(await playedAfter(() => deliverPeerPacket(4))).toBe(1);
+    expect(t.suspectPath).not.toHaveBeenCalled();
+  });
+
+  it('follows a peer that has left WebRTC', async () => {
+    const t = await startSettledCall();
+    // Its frames alone say nothing while its RTP arrives.
+    deliverPeerPacket(2);
+    await tick(20);
+    expect(t.suspectPath).not.toHaveBeenCalled();
+
+    t.rtpAge = 450;
+    await tick(100);
+    // Not the peer's: the key does not fit.
+    for (const cb of gcListeners) {
+      cb('gcall:audio', {
+        roomId: ROOM,
+        data: encodeAudioPacketV2(
+          PEER,
+          true,
+          3,
+          Date.now() >>> 0,
+          new Uint8Array([1, 2, 3, 4]),
+          new Uint8Array(32).fill(9)
+        ),
+      });
+    }
+    await tick(20);
+    expect(t.suspectPath).not.toHaveBeenCalled();
+
+    expect(await playedAfter(() => deliverPeerPacket(4))).toBe(1);
+    expect(t.suspectPath.mock.calls).toEqual([['peer-on-reticulum']]);
+    captureFrame();
+    await tick(0);
+    expect(sendAudio).toHaveBeenCalledTimes(1);
+    // One frame is enough.
+    deliverPeerPacket(5);
+    deliverPeerPacket(6);
+    expect(t.suspectPath).toHaveBeenCalledTimes(1);
+  });
+
+  it('suspects a leg whose RTP stops, also when the peer is muted', async () => {
+    const t = await startSettledCall();
+    t.rtpAge = 1_999;
+    await tick(1_000);
+    expect(t.suspectPath).not.toHaveBeenCalled();
+    t.rtpAge = 2_000;
+    await tick(250);
+    expect(t.suspectPath.mock.calls).toEqual([['rtp-silent']]);
+
+    // The path answers checks, but the peer sends no RTP (no microphone):
+    // not again until RTP has been there.
+    t.open = true;
+    t.options.onState?.('open');
+    t.rtpAge = 9_000;
+    await tick(30_000);
+    expect(t.suspectPath).toHaveBeenCalledTimes(1);
+    t.rtpAge = 10;
+    await tick(250);
+    t.rtpAge = 2_000;
+    await tick(250);
+    expect(t.suspectPath).toHaveBeenCalledTimes(2);
+  });
+
+  it('leaves out Reticulum audio from before the leg opened', async () => {
+    const t = await startSettledCall();
+    const frame = (seq: number, sentAgoMs: number) => {
+      const packet = encodeAudioPacketV2(
+        PEER,
+        true,
+        seq,
+        (Date.now() - sentAgoMs) >>> 0,
+        new Uint8Array([1, 2, 3, 4]),
+        KEY
+      );
+      for (const cb of gcListeners) {
+        cb('gcall:audio', { roomId: ROOM, data: packet });
+      }
+    };
+    t.open = false;
+    t.options.onState?.('recovering');
+    t.rtpAge = 5_000;
+    await tick(100);
+    expect(await playedAfter(() => frame(2, 300))).toBe(1);
+    // Not open: late audio is better than none.
+    expect(await playedAfter(() => frame(3, 1_900))).toBe(1);
+
+    t.open = true;
+    t.options.onState?.('open');
+    t.rtpAge = 10;
+    await tick(3_000);
+    t.rtpAge = 600; // RTP stutters while old frames come out of a queue
+    await tick(100);
+    expect(await playedAfter(() => frame(4, 1_900))).toBe(0);
+    expect(t.suspectPath).not.toHaveBeenCalled();
+    expect(
+      mas.getMobileCallAudioDiagnostics().direct?.reticulum?.rx.skippedForWebRtc
+    ).toBeGreaterThan(0);
+    // One that is on time says that the peer has left WebRTC.
+    expect(await playedAfter(() => frame(5, 1_700))).toBe(1);
+    expect(t.suspectPath.mock.calls).toEqual([['peer-on-reticulum']]);
+  });
+
+  it('tells the transport when the peer is heard after an outage', async () => {
+    const t = await startSettledCall();
+    // Open: its Reticulum audio says nothing of that kind.
+    t.rtpAge = 450;
+    await tick(100);
+    deliverPeerPacket(2);
+    expect(t.peerHeardAgain).not.toHaveBeenCalled();
+    expect(t.isOpen()).toBe(false);
+
+    // The first of the fallback, and then it goes on without a gap.
+    for (let i = 0; i < 20; i += 1) {
+      deliverPeerPacket(3 + i);
+      await tick(200);
+    }
+    expect(t.peerHeardAgain).toHaveBeenCalledTimes(1);
+    await tick(1_700);
+    deliverPeerPacket(30);
+    expect(t.peerHeardAgain).toHaveBeenCalledTimes(1);
+
+    // No network for a while.
+    await tick(2_000);
+    expect(await playedAfter(() => deliverPeerPacket(31))).toBe(1);
+    expect(t.peerHeardAgain).toHaveBeenCalledTimes(2);
+    deliverPeerPacket(32);
+    expect(t.peerHeardAgain).toHaveBeenCalledTimes(2);
+    // A clock that was set back does not hide it.
+    vi.setSystemTime(Date.now() - 600_000);
+    deliverPeerPacket(33);
+    expect(t.peerHeardAgain).toHaveBeenCalledTimes(3);
+
+    // An error there costs no audio.
+    t.peerHeardAgain.mockImplementation(() => {
+      throw new Error('gone');
+    });
+    await tick(2_500);
+    expect(await playedAfter(() => deliverPeerPacket(40))).toBe(1);
+    expect(logLines().some((l) => l.includes('restart-failed'))).toBe(true);
+  });
+
+  it('does not look at a leg that is not open, or over', async () => {
+    const timers = vi.getTimerCount();
+    const t = await startSettledCall();
+    t.open = false;
+    t.options.onState?.('recovering');
+    t.inboundAudioAgeMs.mockClear();
+    await tick(5_000);
+    expect(t.inboundAudioAgeMs).not.toHaveBeenCalled();
+    t.open = true;
+    t.options.onState?.('open');
+    await tick(500);
+    expect(t.inboundAudioAgeMs).toHaveBeenCalled();
+
+    await send({ type: 'stop-direct-voice-rtc', ownerId: OWNER });
+    t.inboundAudioAgeMs.mockClear();
+    t.closed = false;
+    await tick(5_000);
+    expect(t.inboundAudioAgeMs).not.toHaveBeenCalled();
+    networkChanged();
+    expect(t.suspectPath).not.toHaveBeenCalled();
+    await send({ type: 'stop-direct-voice-media', ownerId: OWNER });
+    await tick(60_000);
+    expect(vi.getTimerCount()).toBe(timers);
+
+    expect(h.networkListeners.size).toBe(1);
+    mas.__resetMobileAudioSurfaceForTests();
+    expect(h.networkListeners.size).toBe(0);
+  });
+
+  it('reads the age of the RTP at most ten times a second', async () => {
+    const t = await startSettledCall();
+    t.open = false;
+    t.options.onState?.('recovering');
+    await tick(100);
+    t.inboundAudioAgeMs.mockClear();
+    for (let i = 0; i < 50; i += 1) {
+      deliverPeerPacket(10 + i);
+      await vi.advanceTimersByTimeAsync(20);
+    }
+    const reads = t.inboundAudioAgeMs.mock.calls.length;
+    expect(reads).toBeGreaterThanOrEqual(9);
+    expect(reads).toBeLessThanOrEqual(11);
+  });
+
+  it('a transport that cannot suspect its path keeps the call as it is', async () => {
+    const t = await startSettledCall();
+    t.suspectPath.mockImplementation(() => {
+      throw new Error('gone');
+    });
+    expect(networkChanged).not.toThrow();
+    expect(t.isOpen()).toBe(true);
+    expect(
+      logLines().some((l) => l.includes('network-changed {"acted":false}'))
     ).toBe(true);
   });
 });

@@ -161,10 +161,11 @@ class ReticulumPlugin : Plugin() {
          * redial the hub sockets now instead of waiting for TCP keepalive
          * and the reconnect backoff (up to about two minutes). A no-op while
          * paused or before the bridge runs; Python dials on its own threads,
-         * so presenceWorker is not held.
+         * so presenceWorker is not held. [inCall]: every second without the
+         * hubs is silence, so Python retries faster.
          */
         @JvmStatic
-        fun refreshNetwork(reason: String, sinceSwitchMs: Long) {
+        fun refreshNetwork(reason: String, sinceSwitchMs: Long, inCall: Boolean) {
             presenceWorker.execute {
                 val host = presenceHost
                 if (host == null || !presenceStarted || networkPaused) return@execute
@@ -174,9 +175,14 @@ class ReticulumPlugin : Plugin() {
                     val hubs = host.callAttr(
                         "refresh_network",
                         reason,
-                        sinceSwitchMs / 1000.0
+                        sinceSwitchMs / 1000.0,
+                        inCall
                     )?.toInt() ?: 0
-                    Log.i(TAG, "Presence network refreshed ($reason, $hubs hubs)")
+                    Log.i(
+                        TAG,
+                        "Presence network refreshed ($reason, $hubs hubs, " +
+                            "$sinceSwitchMs ms after the switch, call=$inCall)"
+                    )
                 } catch (t: Throwable) {
                     Log.e(TAG, "Presence network refresh failed ($reason)", t)
                 }

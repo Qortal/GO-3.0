@@ -20,7 +20,8 @@
  * DirectVoiceWebRtcTransport when the peer supports it, with the Reticulum Opus
  * path above armed as the automatic fallback. One microphone capture feeds both;
  * while WebRTC is open and its remote audio plays, Reticulum frames are neither
- * sent nor played. Every DM command is owner-scoped (`ownerId`) like desktop.
+ * sent nor played. A path that breaks is left before WebRTC notices (see "Lost
+ * path"). Every DM command is owner-scoped (`ownerId`) like desktop.
  * When a headset comes or goes mid-call, or the capture ends, the surface
  * reopens the microphone and moves both legs to it (see "Mic restart").
  * GO's WebRTC neither signals local addresses nor runs ICE checks that would
@@ -48,6 +49,7 @@ import {
 } from '../lib/group-call/groupCallAudioProfile';
 import {
   DirectVoiceWebRtcTransport,
+  type DirectVoicePathSuspicion,
   type DirectVoiceRtcSignal,
   type DirectVoiceRtcState,
 } from '../lib/call/directVoiceWebRtcTransport';
@@ -57,6 +59,7 @@ import {
   getCallTransportPreference,
   subscribeCallTransportPreference,
 } from './callTransportPreference';
+import { subscribeDefaultNetworkChanged } from './defaultNetworkChange';
 import {
   getWebRtcPrivacyStats,
   installWebRtcPrivacyGuard,
@@ -474,6 +477,22 @@ const GCALL_CONTROL_BUNDLE_RESULT_EVENT = 'go-gcall-control-bundle-result';
 const CONTROL_BUNDLE_RETRY_MIN_GAP_MS = 3_000;
 const CONTROL_BUNDLE_RETRY_MAX_PER_LEG = 5;
 
+// ── 1:1 WebRTC leg: lost path (see rtpArrives in installMobileAudioSurface) ──
+/** RTP from the peer counts as arriving while its newest packet is younger. */
+const RTP_ARRIVES_MAX_AGE_MS = 400;
+/** Read again at most this often (Reticulum frames come 50 times a second). */
+const RTP_AGE_CACHE_MS = 100;
+/** An open leg is looked at this often… */
+const RTP_WATCH_INTERVAL_MS = 250;
+/** …and its path is suspected after this long without RTP. */
+const RTP_SILENT_MS = 2_000;
+/** The peer may still be on Reticulum for this long after the leg opened. */
+const RTP_OPEN_GRACE_MS = 2_000;
+/** Reticulum audio this far behind waited in a queue: from before the leg opened. */
+const RETICULUM_STALE_MS = 1_500;
+/** Without Reticulum audio for this long, the next says the network is back. */
+const PEER_AWAY_MS = 2_000;
+
 /**
  * GO's opt-in options for the shared DirectVoiceWebRtcTransport (desktop
  * passes none). Spread into the options so a transport build without them
@@ -677,8 +696,15 @@ type MobileVoiceSessionOptions = {
    *  track this session owns and stops, plus an idempotent release; without
    *  it the session opens its own getUserMedia. */
   acquireMicTrack?: () => Promise<MicHandle>;
-  /** True while native WebRTC carries the call: no Reticulum send/playout. */
+  /** True while native WebRTC carries the call: no Reticulum send. */
   shouldSuppressReticulum?: () => boolean;
+  /** True while the peer's voice is heard as RTP: no Reticulum playout. */
+  shouldSuppressPlayout?: () => boolean;
+  /**
+   * Inbound packets of the peer would go to playout (not suppressed), `lateMs`
+   * behind the quickest ones of this call. False: not these.
+   */
+  onPeerAudio?: (lateMs: number) => boolean;
   /** Called for every decoded inbound frame (drives media-ready). */
   onDecodedFrame?: () => void;
 };
@@ -726,6 +752,8 @@ class MobileVoiceSession {
   private profile: GroupCallAudioQualityProfile;
   private readonly acquireMicTrack?: () => Promise<MicHandle>;
   private readonly shouldSuppressReticulum?: () => boolean;
+  private readonly shouldSuppressPlayout?: () => boolean;
+  private readonly onPeerAudio?: (lateMs: number) => boolean;
   private readonly onDecodedFrame?: () => void;
   private micHandle: MicHandle | null = null;
   private encoderBuild: Promise<void> | null = null;
@@ -810,6 +838,8 @@ class MobileVoiceSession {
     this.profile = opts.profile ?? 'low-latency';
     this.acquireMicTrack = opts.acquireMicTrack;
     this.shouldSuppressReticulum = opts.shouldSuppressReticulum;
+    this.shouldSuppressPlayout = opts.shouldSuppressPlayout;
+    this.onPeerAudio = opts.onPeerAudio;
     this.onDecodedFrame = opts.onDecodedFrame;
   }
 
@@ -1105,7 +1135,7 @@ class MobileVoiceSession {
     if (payload.roomId !== this.roomId || this.disposed) return;
     // Once native RTP plays, ignore fallback frames still in flight so the two
     // playback paths never double the same voice (desktop RT:6660-6668).
-    if (this.shouldSuppressReticulum?.()) {
+    if (this.shouldSuppressPlayout?.()) {
       this.rxSuppressedByRtc += 1;
       return;
     }
@@ -1121,6 +1151,14 @@ class MobileVoiceSession {
     if (packets.length === 0) return;
 
     const nowMs = Date.now();
+    const lateMs =
+      nowMs -
+      packets[0].timestampMs -
+      Math.min(this.rxOffsetBaseline, nowMs - packets[0].timestampMs);
+    if (this.onPeerAudio?.(lateMs) === false) {
+      this.rxSuppressedByRtc += 1;
+      return;
+    }
     for (const pkt of packets) {
       const offset = nowMs - pkt.timestampMs;
       if (offset < this.rxOffsetBaseline) this.rxOffsetBaseline = offset;
@@ -1665,6 +1703,15 @@ type DirectVoiceRtc = {
   statsPolls: number;
   statsMisses: number;
   txStats: (RtcTxStats & { at: number }) | null;
+  /** Lost path: the age of the newest RTP packet and when it was read. */
+  rtpAge: number | null;
+  rtpAgeAt: number;
+  /** Since when the leg is open (0 = not), and whether RTP has arrived then. */
+  openSince: number;
+  rtpSeen: boolean;
+  rtpWatchTimer: ReturnType<typeof setInterval> | null;
+  /** When the peer was last heard over Reticulum with the leg not open. */
+  peerHeardAt: number;
   /** Re-offers / answer re-sends after Python reported a failed bundle. */
   controlRetries: Record<'offer' | 'answer', { count: number; lastAt: number }>;
 };
@@ -2754,6 +2801,130 @@ export function installMobileAudioSurface(): void {
   const rtcCarriesAudio = (): boolean =>
     !!rtc && rtc.mediaReadyEmitted && rtc.transport.isOpen();
 
+  // ── Lost path ────────────────────────────────────────────────────────────
+  //
+  // WebRTC needs about 6 s to call a connection lost. Nothing is said about it
+  // on the wire, so each side finds out by itself, sooner:
+  //  - this phone's default network is replaced: its RTP goes nowhere from
+  //    then on, so the Reticulum leg takes over at once;
+  //  - the peer speaks over Reticulum again while its RTP has stopped: its
+  //    side has found out, and may not hear this phone's RTP either;
+  //  - RTP has stopped for 2 s (a peer that is muted sends no Reticulum
+  //    audio, but RTP it does).
+  // The transport then stops being open and checks by itself when a path
+  // works again (suspectPath). After a switch to Wi-Fi the peer's RTP can go
+  // on coming over mobile data for a while, so what is played is decided by
+  // the packets, not by the connection's state: RTP while it arrives.
+  const readRtpAge = (entry: DirectVoiceRtc): number | null => {
+    const now = Date.now();
+    if (Math.abs(now - entry.rtpAgeAt) >= RTP_AGE_CACHE_MS) {
+      entry.rtpAgeAt = now;
+      try {
+        entry.rtpAge = entry.transport.inboundAudioAgeMs();
+      } catch {
+        entry.rtpAge = null;
+      }
+    }
+    return entry.rtpAge;
+  };
+
+  /** The peer's voice is heard as RTP: its Reticulum copy is not played. */
+  const rtpArrives = (): boolean => {
+    const entry = rtc;
+    if (!entry || !entry.mediaReadyEmitted) return false;
+    const age = readRtpAge(entry);
+    if (age === null) return entry.transport.isOpen();
+    return age < RTP_ARRIVES_MAX_AGE_MS;
+  };
+
+  const suspectRtcPath = (
+    entry: DirectVoiceRtc,
+    reason: DirectVoicePathSuspicion
+  ): boolean => {
+    try {
+      return entry.transport.suspectPath(reason) === true;
+    } catch (error) {
+      logRtc('path-suspicion-failed', { reason, error: errorMessage(error) });
+      return false;
+    }
+  };
+
+  /** The leg is not open (any more): its next RTP begins a new time. */
+  const forgetRtp = (entry: DirectVoiceRtc): void => {
+    entry.openSince = 0;
+    entry.rtpSeen = false;
+  };
+
+  const watchRtp = (entry: DirectVoiceRtc): void => {
+    if (rtc !== entry) return;
+    if (!entry.mediaReadyEmitted || !entry.transport.isOpen()) {
+      forgetRtp(entry);
+      return;
+    }
+    if (!entry.openSince) entry.openSince = Date.now();
+    const age = readRtpAge(entry);
+    if (age === null) return;
+    if (age < RTP_ARRIVES_MAX_AGE_MS) entry.rtpSeen = true;
+    // Only once RTP has arrived over this open leg: one whose peer sends none
+    // at all (its microphone is gone) would be suspected for ever.
+    else if (entry.rtpSeen && age >= RTP_SILENT_MS) {
+      suspectRtcPath(entry, 'rtp-silent');
+    }
+  };
+
+  /** Heard again after an outage: WebRTC need not wait to try again. */
+  const notePeerHeard = (entry: DirectVoiceRtc): void => {
+    const now = Date.now();
+    const away = now - entry.peerHeardAt;
+    entry.peerHeardAt = now;
+    if (away >= 0 && away < PEER_AWAY_MS) return;
+    try {
+      entry.transport.peerHeardAgain();
+    } catch (error) {
+      logRtc('restart-failed', { error: errorMessage(error) });
+    }
+  };
+
+  /**
+   * The peer's Reticulum audio is about to be played: its RTP has not arrived
+   * just now. False when it is too old to be heard in an open leg.
+   */
+  const notePeerReticulumAudio = (lateMs: number): boolean => {
+    const entry = rtc;
+    if (!entry) return true;
+    if (!entry.transport.isOpen()) {
+      notePeerHeard(entry);
+      return true;
+    }
+    if (!entry.mediaReadyEmitted) return true;
+    if (lateMs > RETICULUM_STALE_MS) return false;
+    if (entry.rtpSeen && Date.now() - entry.openSince >= RTP_OPEN_GRACE_MS) {
+      suspectRtcPath(entry, 'peer-on-reticulum');
+    }
+    return true;
+  };
+
+  const startRtpWatch = (entry: DirectVoiceRtc): void => {
+    if (entry.rtpWatchTimer) return;
+    entry.rtpWatchTimer = setInterval(
+      () => watchRtp(entry),
+      RTP_WATCH_INTERVAL_MS
+    );
+  };
+
+  const stopRtpWatch = (entry: DirectVoiceRtc): void => {
+    if (entry.rtpWatchTimer) clearInterval(entry.rtpWatchTimer);
+    entry.rtpWatchTimer = null;
+  };
+
+  const unsubscribeDefaultNetwork = subscribeDefaultNetworkChanged(() => {
+    const entry = rtc;
+    if (!entry) return;
+    logRtc('network-changed', {
+      acted: suspectRtcPath(entry, 'network-changed'),
+    });
+  });
+
   const hasActiveDirectVoiceSession = (): boolean =>
     Boolean(rtc || session || dmRoomId || dmPeerAddress || dmLocalAddress);
 
@@ -2870,6 +3041,8 @@ export function installMobileAudioSurface(): void {
       profile: opts.profile,
       acquireMicTrack: async () => (await acquireMic()).handle,
       shouldSuppressReticulum: rtcCarriesAudio,
+      shouldSuppressPlayout: rtpArrives,
+      onPeerAudio: notePeerReticulumAudio,
       // Desktop emits media-ready on the first decoded inbound frame
       // (RT:6688-6700), not when capture starts.
       onDecodedFrame: () => {
@@ -3055,6 +3228,7 @@ export function installMobileAudioSurface(): void {
     rtc = null;
     if (!entry) return;
     stopRtcTxStats(entry);
+    stopRtpWatch(entry);
     logRtc('closed', { reason, privacy: getWebRtcPrivacyStats() });
     try {
       entry.transport.close();
@@ -3412,6 +3586,12 @@ export function installMobileAudioSurface(): void {
         statsPolls: 0,
         statsMisses: 0,
         txStats: null,
+        rtpAge: null,
+        rtpAgeAt: -Infinity,
+        openSince: 0,
+        rtpSeen: false,
+        rtpWatchTimer: null,
+        peerHeardAt: 0,
         controlRetries: {
           offer: { count: 0, lastAt: 0 },
           answer: { count: 0, lastAt: 0 },
@@ -3474,6 +3654,7 @@ export function installMobileAudioSurface(): void {
           );
           entry.transportState = state;
           entry.projectedState = projected;
+          if (state !== 'open') forgetRtp(entry);
           logRtc('state', { transport: state, projected });
           emit({
             type: 'direct-voice-rtc-state',
@@ -3510,6 +3691,7 @@ export function installMobileAudioSurface(): void {
       };
       rtc = entry;
       startRtcTxStats(entry);
+      startRtpWatch(entry);
       if (micOpened) {
         // getUserMedia's echo-canceller grabs the communication device.
         await reassertCallAudioRoute();
@@ -4047,7 +4229,11 @@ export function installMobileAudioSurface(): void {
     } catch {
       /* ignore */
     }
-    if (rtc) stopRtcTxStats(rtc);
+    unsubscribeDefaultNetwork();
+    if (rtc) {
+      stopRtcTxStats(rtc);
+      stopRtpWatch(rtc);
+    }
     for (const timer of [micRestartTimer, micRestartWatchdog, micResyncTimer]) {
       if (timer) clearTimeout(timer);
     }
