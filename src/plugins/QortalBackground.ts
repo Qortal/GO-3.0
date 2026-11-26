@@ -229,6 +229,12 @@ export interface QortalBackgroundPlugin {
     listenerFunc: (event: { online: boolean }) => void
   ): Promise<PluginListenerHandle>;
 
+  /** GO's default network was replaced; `at` is the phone's clock then. */
+  addListener(
+    eventName: 'defaultNetworkChanged',
+    listenerFunc: (event: { at: number }) => void
+  ): Promise<PluginListenerHandle>;
+
   addListener(
     eventName: 'relayProfileChanged',
     listenerFunc: (event: { profile: RelayProfile }) => void

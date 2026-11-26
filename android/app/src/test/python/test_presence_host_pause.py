@@ -198,6 +198,16 @@ def test_pause_resume():
     h.resume_network()
     assert _wait_for(lambda: a.online and b.online)
 
+    # ── two hubs are back: the neighbours are dialled once ──
+    for _ in range(2):
+        h.pause_network()
+        del calls[:]
+        h.resume_network()
+        assert _wait_for(lambda: _tunnels("a") == 1 and _tunnels("b") == 1)
+        time.sleep(0.1)
+        assert a.online and b.online
+        assert calls.count(("maint", "network_resume")) == 1
+
     # ── overlapping resumes: a stale dial must not hijack the new one ──
     h.pause_network()
     tunnels_before = _tunnels("a")

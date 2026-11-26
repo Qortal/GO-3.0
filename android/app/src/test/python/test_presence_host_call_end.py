@@ -27,12 +27,33 @@ PEER = "ab" * 16
 
 
 class Link:
-    pass
+    TIMEOUT, INITIATOR_CLOSED, DESTINATION_CLOSED = 1, 2, 3  # as in RNS
+
+
+class Transport:
+    """No path known: nothing to wait for before a link is asked for."""
+
+    asked = []
+    interfaces = []
+
+    @staticmethod
+    def next_hop_interface(destination_hash):
+        Transport.asked.append(destination_hash)
+        return None
+
+
+rns = types.ModuleType("RNS")
+rns.Transport = Transport
+rns.Link = Link
+sys.modules["RNS"] = rns
 
 
 def _stub_bridge():
     pb = types.ModuleType("presence_bridge")
+    sys.modules["presence_bridge"] = pb
     pb._state_lock = threading.RLock()
+    pb._audio_links_by_id = {}  # no call
+    pb._audio_link_desired_by_peer_hash = {}
     pb._overlay_links_by_id = {}
     pb._active_overlay_link_id_by_peer_hash = {}
     pb._overlay_link_is_fanout_usable = lambda state: state.get("usable", True)
@@ -54,12 +75,16 @@ def _stub_bridge():
     pb._encode_call_signal_wire = lambda msg: {"ok": True, "wire_bytes": msg["t"]}
     pb._send_call_signal_wire_to_peer = send_wire
     pb.known = []
+    pb.cleared = []
+    pb._overlay_clear_no_path = pb.cleared.append
     pb.ensure_known_peer_from_recall = lambda peer, source: pb.known.append(peer)
 
     def ensure_overlay_link(peer, await_path, open_reason):
         # On the watch's own thread: the bridge's queues may be busy.
         assert threading.current_thread().name == "presence-host-call-end"
         assert pb.known and await_path and open_reason == "call_signal_prepare"
+        # The bridge may have looked for a path while no hub was up.
+        assert pb.cleared.pop() == PEER and not pb.cleared
         pb.opened.append(peer)
 
     pb._ensure_overlay_link = ensure_overlay_link
@@ -127,6 +152,7 @@ def test_call_end_resend():
         old._qortal_dead = True  # _close_dead_links
         assert _wait_for(lambda: len(pb.opened) >= 2), "asked again until one is up"
         assert set(pb.opened) == {PEER}
+        assert set(Transport.asked) == {bytes.fromhex(PEER)}, "its path was looked at"
         _use(pb, new, usable=False)
         time.sleep(0.05)
         assert not _again(pb)
@@ -146,15 +172,34 @@ def test_call_end_resend():
     settle()
     assert not pb.opened
 
-    # Closed in the ordinary way: no link is opened only to repeat it.
+    # Closed in the ordinary way, by either phone: no link is opened only to
+    # repeat it.
+    for reason in (None, Link.INITIATOR_CLOSED, Link.DESTINATION_CLOSED):
+        del pb.sent[:], pb.opened[:]
+        old = Link()
+        _use(pb, old)
+        send("CH")
+        old.teardown_reason = reason
+        _use(pb, None)
+        time.sleep(0.1)
+        assert _watchers(), "the other phone may open one"
+        settle()
+        assert not pb.opened and not _again(pb)
+
+    # RNS noticed by itself that it was dead.
     del pb.sent[:], pb.opened[:]
-    _use(pb, Link())
+    old, new = Link(), Link()
+    _use(pb, old)
     send("CH")
+    old.teardown_reason = Link.TIMEOUT
     _use(pb, None)
+    assert _wait_for(lambda: len(pb.opened) >= 2)
+    _use(pb, new)
+    assert _wait_for(lambda: _again(pb) == [("again", "CH", new)])
     settle()
-    assert not pb.opened and not _again(pb)
 
     # No usable link: the send failed, and the page repeats it by itself.
+    _use(pb, None)
     send("CH")
     assert not _watchers()
 
@@ -167,6 +212,114 @@ def test_call_end_resend():
         time.sleep(0.03)
     settle()
     assert 1 <= len(_again(pb)) <= h._CALL_END_MAX_RESENDS
+
+    # One phone was without network for a while: the watch goes on, but looks
+    # less often, and ends.
+    looks = []
+    real = h._active_overlay_link
+    h._active_overlay_link = lambda pb, peer: looks.append(time.monotonic()) or real(pb, peer)
+    h._CALL_END_WATCH_SECONDS = 0.6
+    h._CALL_END_WATCH_FAST_SECONDS = 0.1
+    h._CALL_END_WATCH_SLOW_INTERVAL_SECONDS = 0.08
+    for replaced in (True, False):
+        del pb.sent[:], looks[:]
+        old, new = Link(), Link()
+        _use(pb, old)
+        began = time.monotonic()
+        send("CH")
+        time.sleep(0.3)
+        assert not _again(pb) and _watchers()
+        if replaced:
+            _use(pb, new)
+            assert _wait_for(lambda: _again(pb) == [("again", "CH", new)])
+        settle()
+        assert len(_again(pb)) == (1 if replaced else 0)
+        assert 0.55 < time.monotonic() - began < 0.9, "until the end of the watch"
+        soon = [at - began for at in looks if at - began < 0.1]
+        late = [at - began for at in looks if at - began > 0.2]
+        assert len(soon) >= 5
+        quick = [q for p, q in zip(late, late[1:]) if q - p < 0.07]
+        assert len(quick) <= (1 if replaced else 0), late  # right after the new link
+
+    # Once the link has gone it looks often again: the new one is near.
+    del pb.sent[:], pb.opened[:], looks[:]
+    old, new = Link(), Link()
+    _use(pb, old)
+    began = time.monotonic()
+    send("CH")
+    time.sleep(0.25)
+    old._qortal_dead = True
+    _use(pb, None)
+    time.sleep(0.15)
+    assert len([at for at in looks if 0.35 < at - began < 0.41]) >= 3, "every 0.01 s"
+    assert len(pb.opened) >= 3
+    _use(pb, new)
+    assert _wait_for(lambda: _again(pb) == [("again", "CH", new)], 0.1)
+    settle()
+    h._active_overlay_link = real
+    h._CALL_END_WATCH_SECONDS = 0.4
+
+    # The peer is heard over the link well after the message: it arrived.
+    h._CALL_END_HEARD_SECONDS = 0.1
+    h._CALL_END_WATCH_SECONDS = 5.0
+    states = []
+    real_state = h._connection_state
+    h._connection_state = lambda sock: states.append(sock) or owes[0]
+    hub = types.SimpleNamespace(socket="sock")
+    for attached, owes, ends in (
+        (None, [(9, 0, 0)], True),
+        (hub, [(0, 0, 0)], True),
+        (hub, [None], True),
+        (hub, [(1, 0, 0)], False),  # the hub has not even answered this phone
+    ):
+        link = Link()
+        link.attached_interface = attached
+        _use(pb, link)
+        began = time.monotonic()
+        send("CH")
+        link.last_inbound = time.time() + 0.05  # too soon to tell
+        time.sleep(0.1)
+        assert _watchers()
+        link.last_inbound = time.time() + 0.1
+        if ends:
+            assert _wait_for(lambda: not _watchers(), 2.0)
+            assert time.monotonic() - began < 2.5, "not after the whole time"
+        else:
+            time.sleep(0.3)
+            assert _watchers() and set(states) == {"sock"}
+            owes[0] = (0, 0, 0)
+            settle()
+        assert not _again(pb)[-1:] or _again(pb)[-1][2] is not link
+    # After it was sent again that counts for the new link.
+    del pb.sent[:]
+    old, new = Link(), Link()
+    _use(pb, old)
+    send("CH")
+    old.last_inbound = new.last_inbound = time.time()
+    time.sleep(0.15)
+    _use(pb, new)
+    assert _wait_for(lambda: _again(pb) == [("again", "CH", new)])
+    new.last_inbound = time.time() + 0.05
+    time.sleep(0.1)
+    assert _watchers()
+    new.last_inbound = time.time() + 0.2
+    settle()
+    h._connection_state = real_state
+    h._CALL_END_WATCH_SECONDS = 0.4
+
+    # Until it is over the call counts as running: the hub connections are
+    # watched, and a hub that is lost is dialled again soon.
+    started = []
+    real_start = h._start_call_watch
+    h._start_call_watch = lambda: started.append(True)
+    assert h._call_ends_waiting == 0 and not h._in_call()
+    _use(pb, Link())
+    send("CH")
+    send("CH")
+    assert _wait_for(lambda: h._call_ends_waiting == 2) and h._in_call()
+    settle()
+    assert h._call_ends_waiting == 0 and not h._in_call() and started == [True, True]
+    h._start_call_watch = real_start
 
     # Signed out or swiped away meanwhile.
     del pb.sent[:]

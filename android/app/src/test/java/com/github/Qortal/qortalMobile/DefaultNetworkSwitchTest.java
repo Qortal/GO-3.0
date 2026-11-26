@@ -21,7 +21,7 @@ public class DefaultNetworkSwitchTest {
         tracker.onAvailable(WIFI);
         assertFalse(tracker.onAvailable(WIFI));
         // Losing some other network does not touch the default one.
-        tracker.onLost(MOBILE);
+        assertFalse(tracker.onLost(MOBILE));
         assertFalse(tracker.onAvailable(WIFI));
     }
 
@@ -31,7 +31,7 @@ public class DefaultNetworkSwitchTest {
         tracker.onAvailable(WIFI);
         // The new default often arrives before the old one is reported lost.
         assertTrue(tracker.onAvailable(MOBILE));
-        tracker.onLost(WIFI);
+        assertFalse(tracker.onLost(WIFI));
         assertFalse(tracker.onAvailable(MOBILE));
         assertTrue(tracker.onAvailable(WIFI + 1));
     }
@@ -55,8 +55,9 @@ public class DefaultNetworkSwitchTest {
     @Test
     public void theSameNetworkBackAfterItWasLostIsASwitch() {
         DefaultNetworkSwitch tracker = new DefaultNetworkSwitch();
+        assertFalse(tracker.onLost(WIFI));
         tracker.onAvailable(WIFI);
-        tracker.onLost(WIFI);
+        assertTrue(tracker.onLost(WIFI));
         assertTrue(tracker.onAvailable(WIFI));
         assertFalse(tracker.onAvailable(WIFI));
     }

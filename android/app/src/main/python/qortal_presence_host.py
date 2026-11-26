@@ -39,6 +39,7 @@ import sys
 import threading
 import time
 import traceback
+import types
 import zlib
 
 # Must mirror the desktop Hub's BackboneInterface hub set (electron
@@ -72,11 +73,14 @@ _out_queue_drops = 0
 _process_cpu_prev = None
 
 # Network pause (see pause_network). The generation changes on every pause and
-# resume so a reconnect loop from an earlier phase notices it is stale.
+# resume so a reconnect loop from an earlier phase notices it is stale; a redial
+# of one hub does the same for that hub (_generation_of). Each resume, and each
+# refresh that redials a hub, begins a round.
 _network_paused = False
 _network_generation = 0
+_dial_round = 0
 _paused_interfaces = []  # [(interface, IN, OUT)]; None = leave as is
-_resume_kick_generation = 0
+_resume_kick_round = 0
 
 
 class _StdinShim(io.TextIOBase):
@@ -336,13 +340,17 @@ def _tune_rns_for_battery():
     _patch_rns_resource_rejected()
     try:
         import RNS
-        from RNS.Interfaces.BackboneInterface import BackboneClientInterface
+        from RNS.Interfaces.BackboneInterface import (
+            BackboneClientInterface,
+            BackboneInterface,
+        )
 
         BackboneClientInterface.TCP_PROBE_AFTER = 45
         BackboneClientInterface.TCP_PROBE_INTERVAL = 15
         BackboneClientInterface.TCP_PROBES = 4
         BackboneClientInterface.TCP_USER_TIMEOUT = 120
         _install_reconnect_backoff(BackboneClientInterface)
+        _install_hub_socket_guards(BackboneInterface, BackboneClientInterface)
         RNS.Transport.job_interval = 1.0
         RNS.Link.WATCHDOG_MAX_SLEEP = 30
     except Exception as exc:  # noqa: BLE001 - tuning is best effort
@@ -420,6 +428,74 @@ def _install_packet_mix_counters():
     RNS.Transport.outbound = staticmethod(outbound)
 
 
+def _install_inbound_guard():
+    """A packet that cannot be handled must not cost the hub its connection.
+
+    The hub interface takes an exception as an error of its own and redials.
+    Transport.inbound raises one, for instance, when a path is forgotten
+    (_forget_path_over) while an announce for it is being handled. Idempotent.
+    """
+    import RNS
+
+    original = RNS.Transport.inbound
+    if getattr(original, "_qortal_inbound_guard", False):
+        return
+    seen = [0]
+
+    def inbound(raw, interface=None):
+        try:
+            return original(raw, interface)
+        except Exception as exc:  # noqa: BLE001 - this packet only
+            seen[0] += 1
+            if seen[0] <= 20 or seen[0] % 1000 == 0:
+                _log_host(f"packet from {interface} not handled ({seen[0]}): {exc!r}")
+            return None
+
+    inbound._qortal_inbound_guard = True
+    inbound.__wrapped__ = original
+    RNS.Transport.inbound = staticmethod(inbound)
+
+
+class _HubSockets(dict):
+    """Socket number -> hub, as the Backbone I/O loop keeps it."""
+
+    def pop(self, fileno, *default):
+        interface = self.get(fileno)
+        sock = getattr(interface, "socket", None)
+        if not default and not _is_closed(sock) and sock.fileno() == fileno:
+            return interface  # a new connection has the number already
+        return super().pop(fileno, *default)
+
+
+def _install_hub_socket_guards(backbone_cls, client_cls):
+    """Keep the Backbone I/O loop from taking a new connection for an old one.
+
+    The loop closes a socket that has ended, and only then takes its number
+    out of its table and tells the hub. A dial on another thread may get that
+    very number in between. Its connection was taken out instead: the hub
+    counted as online for good, nobody read from it, and the loop went round
+    and round, as epoll goes on reporting it. Idempotent.
+    """
+    if not isinstance(backbone_cls.spawned_interface_filenos, _HubSockets):
+        backbone_cls.spawned_interface_filenos = _HubSockets(
+            backbone_cls.spawned_interface_filenos
+        )
+    original = client_cls.receive
+    if getattr(original, "_qortal_socket_guard", False):
+        return
+
+    def receive(self, data_in):
+        # Empty: a connection has ended, and its socket is closed. An open one
+        # is the next connection.
+        if len(data_in) == 0 and self.initiator and not _is_closed(self.socket):
+            return
+        original(self, data_in)
+
+    receive._qortal_socket_guard = True
+    receive.__wrapped__ = original
+    client_cls.receive = receive
+
+
 def _install_reconnect_backoff(client_cls):
     """Back off reconnect attempts to a hub that stays down.
 
@@ -433,6 +509,11 @@ def _install_reconnect_backoff(client_cls):
     The loop also ends when the network is paused (see pause_network) or a
     later pause/resume made it stale, so a sleeping retry never reopens a hub
     socket behind a pause or races the redial of resume_network.
+
+    In a call, and right after a redial in one, _CALL_RETRY_WAITS come before
+    that backoff, and no wait is longer than _CALL_REDIAL_SECONDS. A hub whose
+    connections keep ending young is left alone for longer each time, as long
+    as another one is up.
     """
     import RNS
 
@@ -443,57 +524,86 @@ def _install_reconnect_backoff(client_cls):
                 RNS.LOG_ERROR,
             )
             raise IOError("Attempt to reconnect on a non-initiator TCP interface")
-        if self.reconnecting:
-            return
-        self.reconnecting = True
-        generation = _network_generation
+        with _lock:
+            if self.reconnecting:
+                return
+            self.reconnecting = True
+            generation = _generation_of(self)
         attempts = 0
         wait = float(client_cls.RECONNECT_WAIT)
-        sock = None
-        while not self.online and not self.detached:
-            time.sleep(wait)
-            if _network_paused or generation != _network_generation:
-                return
-            if self.online:
-                # A refresh or resume dialled meanwhile (and tunnelled):
-                # dialling again would leave two sockets on one interface.
-                self.reconnecting = False
-                return
-            attempts += 1
-            if self.max_reconnect_tries is not None and attempts > self.max_reconnect_tries:
-                RNS.log("Max reconnection attempts reached for " + str(self), RNS.LOG_WARNING)
-                self.teardown()
-                break
-            try:
-                sock = _connect_current(self, generation) or sock
-            except Exception as exc:  # noqa: BLE001 - mirrors upstream
-                RNS.log(
-                    "Connection attempt for " + str(self) + " failed: " + str(exc),
-                    RNS.LOG_DEBUG,
-                )
-            if not self.online:
+        first_waits = []
+        young_ends = _note_connection_end(self)
+        patience = 0.0
+        if young_ends > 1 and _another_is_up(self):
+            # One after the other did not last, and it is not the network: no
+            # hurry (_HUB_YOUNG_SECONDS). Its links do not wait for that.
+            patience = _HUB_YOUNG_SECONDS * 2.0 ** min(young_ends - 2, 8)
+            patience = max(wait, min(patience, float(_RECONNECT_BACKOFF_MAX_SECONDS)))
+            _after_failed_dial(self, generation)
+        elif _call_redial_is_recent(self) or _in_call():
+            first_waits = list(_CALL_RETRY_WAITS)[max(0, young_ends - 1):]
+        if _call_redial_is_recent(self):
+            self._qortal_call_drops = getattr(self, "_qortal_call_drops", 0) + 1
+            if self._qortal_call_drops > 1:
+                # Gone again: the call does not wait for this hub any longer.
                 _after_failed_dial(self, generation)
-            wait = min(wait * 2.0, float(_RECONNECT_BACKOFF_MAX_SECONDS))
+        sock = None
+        while True:
+            while not self.online and not self.detached:
+                urgent = bool(first_waits)
+                if urgent:
+                    time.sleep(first_waits.pop(0))
+                elif patience:
+                    _wait_while_another_is_up(self, patience, generation)
+                    patience = 0.0
+                    urgent = _in_call()
+                else:
+                    urgent = _wait_for_next_dial(wait)
+                if _is_stale(self, generation):
+                    return
+                if self.online:
+                    # A refresh or resume dialled meanwhile (and tunnelled):
+                    # dialling again would leave two sockets on one interface.
+                    if _end_reconnect(self):
+                        return
+                    continue
+                attempts += 1
+                if self.max_reconnect_tries is not None and attempts > self.max_reconnect_tries:
+                    RNS.log("Max reconnection attempts reached for " + str(self), RNS.LOG_WARNING)
+                    self.teardown()
+                    return
+                try:
+                    sock = _connect_current(self, generation, urgent=urgent) or sock
+                except Exception as exc:  # noqa: BLE001 - mirrors upstream
+                    RNS.log(
+                        "Connection attempt for " + str(self) + " failed: " + str(exc),
+                        RNS.LOG_DEBUG,
+                    )
+                if not self.online:
+                    _after_failed_dial(self, generation)
+                if not urgent:
+                    wait = min(wait * 2.0, float(_RECONNECT_BACKOFF_MAX_SECONDS))
 
-        if not self.online:
-            return
-        if _network_paused or generation != _network_generation:
-            # Connected while a pause was applied or a newer resume took
-            # over: close only what this loop opened.
-            with _interface_lock(self):
-                if sock is not None:
-                    _drop_stale_socket(self, sock)
-                elif _network_paused:
-                    _detach_for_pause(self)
-            if _network_paused:
-                self.reconnecting = False
-            return
+            if not self.online and self.detached:
+                return
+            if _is_stale(self, generation):
+                # Connected while a pause was applied or a newer resume took
+                # over: close only what this loop opened.
+                with _interface_lock(self):
+                    if sock is not None:
+                        _drop_stale_socket(self, sock)
+                    elif _network_paused:
+                        _detach_for_pause(self)
+                if _network_paused:
+                    self.reconnecting = False
+                return
+            if _end_reconnect(self):
+                break
         if not self.never_connected:
             RNS.log("Reconnected socket for " + str(self) + ".", RNS.LOG_INFO)
-        self.reconnecting = False
         closed = _after_redial(self)
         if closed:
-            _after_network_resumed(generation, closed)
+            _after_network_resumed(closed)
 
     client_cls.reconnect = reconnect
 
@@ -501,7 +611,8 @@ def _install_reconnect_backoff(client_cls):
         # RNS creates the hub interfaces while it boots; a pause that landed
         # first must keep them closed until resume_network().
         with _lock:
-            generation = _network_generation
+            generation = _generation_of(self)
+            dial_round = _dial_round
             if _network_paused:
                 self.detached = True
                 _paused_interfaces.append((self, None, None))
@@ -525,10 +636,13 @@ def _install_reconnect_backoff(client_cls):
                 if not any(item[0] is self for item in _paused_interfaces):
                     _paused_interfaces.append((self, None, None))
             return
-        if generation != _network_generation:
+        if dial_round != _dial_round:
             # A refresh (or a pause and resume) landed during the dial;
             # neither knew this interface yet. Dial for the current one.
-            generation = _network_generation
+            if sock is not None:
+                with _interface_lock(self):
+                    _drop_stale_socket(self, sock)
+            generation = _generation_of(self)
             try:
                 sock = _connect_current(self, generation, initial=True)
             except Exception as exc:  # noqa: BLE001 - as above
@@ -2323,6 +2437,7 @@ def start(config_dir):
             _install_packet_mix_counters()
         except Exception as exc:  # noqa: BLE001 - diagnostics are best effort
             sys.stderr.write(f"[presence_bridge] packet mix counters skipped: {exc}\n")
+        _install_inbound_guard()
         import presence_bridge as pb
 
         _disable_audio_fd_threads(pb)
@@ -2330,7 +2445,8 @@ def start(config_dir):
         _install_json_audio_io(pb)
         _install_call_heartbeat_lane(pb)
         _install_call_end_resend(pb)
-        _install_crossed_audio_link_rule(pb)
+        _install_audio_link_choice(pb)
+        _install_call_link_opening(pb)
         _run_json_audio_self_check(pb)
         # WebRTC signalling that survives a slow mobile uplink.
         _install_gcall_control_window_floor(pb)
@@ -2711,6 +2827,24 @@ def _detach_for_pause(interface):
         _log_host(f"detach failed for {interface}: {exc}")
 
 
+def _generation_of(interface):
+    """What a dial of ``interface`` belongs to. A pause or resume ends those of
+    every hub, a redial only those of its own: a hub that was left alone must
+    not lose the connection that just came up, as nobody would dial it again.
+    """
+    return _network_generation, getattr(interface, "_qortal_redials", 0)
+
+
+def _is_stale(interface, generation):
+    return _network_paused or generation != _generation_of(interface)
+
+
+def _begin_redial(interface):
+    """Make every dial of ``interface`` under way stale; hold _lock."""
+    interface._qortal_redials = getattr(interface, "_qortal_redials", 0) + 1
+    return _generation_of(interface)
+
+
 def _interface_lock(interface):
     """Per-interface lock that keeps one hub dial at a time."""
     with _lock:
@@ -2721,7 +2855,94 @@ def _interface_lock(interface):
         return lock
 
 
-def _connect_current(interface, generation, initial=False):
+def _note_connection_end(interface, replaced=False):
+    """A hub connection has ended. Returns how many in a row have ended young,
+    this one included (0: it did not, or none had come up).
+
+    ``_qortal_refused``: those that ended before anything came in. A hub does
+    that to addresses it has had enough of (_HUB_YOUNG_SECONDS). ``replaced``:
+    GO itself ends this one, which says nothing about the hub.
+    """
+    connected_at = getattr(interface, "_qortal_connected_at", None)
+    interface._qortal_connected_at = None
+    if connected_at is None:
+        return 0
+    if getattr(interface, "rxb", 0) != getattr(interface, "_qortal_connected_rxb", 0):
+        interface._qortal_refused = 0
+    elif not replaced:
+        interface._qortal_refused = getattr(interface, "_qortal_refused", 0) + 1
+    if time.monotonic() - connected_at >= _HUB_YOUNG_SECONDS:
+        interface._qortal_young_ends = 0
+    elif not replaced:
+        interface._qortal_young_ends = getattr(interface, "_qortal_young_ends", 0) + 1
+        return interface._qortal_young_ends
+    return 0
+
+
+def _settle_seconds(interface):
+    """How long a new connection has to last before others are given up for it.
+
+    A network that is not quite up, a proxy on the way, or a hub that has had
+    enough takes a connection and drops it: a round trip later that is known.
+    """
+    dial_seconds = getattr(interface, "_qortal_dial_seconds", 0.0)
+    return min(_SETTLE_MAX_SECONDS, max(_SETTLE_MIN_SECONDS, 1.5 * dial_seconds))
+
+
+def _is_settled(interface):
+    if not getattr(interface, "online", False):
+        return False
+    since = getattr(interface, "_qortal_connected_at", None)
+    if since is None:
+        return getattr(interface, "_qortal_dialling", None) is None
+    if getattr(interface, "rxb", 0) != getattr(interface, "_qortal_connected_rxb", 0):
+        return True
+    return time.monotonic() - since >= _settle_seconds(interface)
+
+
+def _any_is_online():
+    return any(getattr(hub, "online", False) for hub in _hub_interfaces())
+
+
+def _another_is_up(interface):
+    """Whether GO has a hub besides ``interface``, and not only for a moment."""
+    return any(
+        other is not interface and _is_settled(other) for other in _hub_interfaces()
+    )
+
+
+def _wait_while_another_is_up(interface, seconds, generation):
+    """Leave a hub alone for a while, unless GO needs it."""
+    until = time.monotonic() + seconds
+    while not _is_stale(interface, generation) and _another_is_up(interface):
+        left = until - time.monotonic()
+        if left <= 0.0 or interface.online or interface.detached:
+            return
+        time.sleep(min(left, _PATIENCE_STEP_SECONDS))
+
+
+def _end_reconnect(interface):
+    """End a reconnect loop, unless its connection is gone again already.
+
+    The I/O loop asks for a reconnect when a connection closes, but not while
+    one is under way. So the one under way goes on, or nobody would dial this
+    hub until the next switch of network.
+    """
+    with _lock:
+        if not interface.online:
+            return False
+        interface.reconnecting = False
+        return True
+
+
+def _is_closed(sock):
+    try:
+        return sock is None or sock.fileno() < 0
+    except Exception:  # noqa: BLE001 - not a socket that can tell
+        return False
+
+
+def _connect_current(interface, generation, initial=False, urgent=False, ready=None):
     """Dial ``interface`` for ``generation``; returns its socket or None.
 
     A reattach thread or reconnect loop from an earlier pause/resume can still
@@ -2729,22 +2950,254 @@ def _connect_current(interface, generation, initial=False):
     and connect() overwrites interface.socket. The lock keeps one dial at a
     time, and a dial that finishes stale closes only the socket it opened, so
     it can neither leak the newer socket nor detach the live connection.
-    Raises like connect() when ``initial`` is False.
+    Raises like connect() when ``initial`` is False. ``urgent``: a call waits
+    for it, see _dial_for_call. ``ready``: a new connection to the hub that is
+    up already, and when its dial began.
     """
     with _interface_lock(interface):
-        if _network_paused or generation != _network_generation:
+        if _is_stale(interface, generation):
+            _close_ready(ready)
             return None
-        if not interface.connect(initial=initial):
+        if getattr(interface, "online", False) and not _is_closed(interface.socket):
+            # Another dial was quicker.
+            _close_ready(ready)
+            return interface.socket
+        # A socket stays on the network it was dialled on, so it counts when
+        # the dial began: a switch may have come while it was under way.
+        began = time.monotonic()
+        interface._qortal_dialling = began
+        try:
+            return _dial(interface, generation, initial, urgent, began, ready)
+        finally:
+            interface._qortal_dialling = None
+
+
+def _close_ready(ready):
+    if ready is not None:
+        _close_when_old(ready[0], time.monotonic())
+
+
+def _dial(interface, generation, initial, urgent, began, ready=None):
+    """The dial of _connect_current, which holds the interface lock."""
+    dialled = None  # connect() has to do it
+    if ready is not None:
+        began = ready[1]
+        dialled = _adopt(interface, ready[0])
+    if urgent and not dialled:
+        dialled = _dial_for_call(interface, lambda: _is_stale(interface, generation))
+    if dialled is False:
+        return None
+    if dialled is None:
+        if _is_stale(interface, generation):
             return None
-        sock = interface.socket
-        interface._qortal_dialed_at = time.monotonic()
-        if _network_paused or generation != _network_generation:
-            _drop_stale_socket(interface, sock)
-            return None
-        # No link can have come up over the new connection yet.
-        interface._qortal_dead_links = _links_over(interface)
-        interface._qortal_dial_failed = False
-        return sock
+        try:
+            if not interface.connect(initial=initial):
+                return None
+        except Exception:
+            # Also when the I/O loop closed the new connection under the
+            # last steps of connect(), which leave it ``online``.
+            if _is_closed(interface.socket):
+                interface.online = False
+            raise
+    sock = interface.socket
+    interface._qortal_dialed_at = began
+    if _is_stale(interface, generation):
+        _drop_stale_socket(interface, sock)
+        return None
+    if _is_closed(sock):
+        # Gone already: the I/O loop closed it, and connect() can set
+        # ``online`` after that.
+        interface.online = False
+        return None
+    _never_block(sock)
+    _remember_address(interface, sock)
+    interface._qortal_connected_at = time.monotonic()
+    interface._qortal_connected_rxb = getattr(interface, "rxb", 0)
+    interface._qortal_dial_seconds = interface._qortal_connected_at - began
+    if urgent:
+        _log_host(
+            f"dialled {interface} in {interface._qortal_dial_seconds * 1000:.0f} ms "
+            f"how={dialled or 'connect'}"
+        )
+    # No link can have come up over the new connection yet.
+    interface._qortal_dead_links = _links_over(interface)
+    interface._qortal_dial_failed = False
+    return sock
+
+
+def _never_block(sock):
+    """One I/O thread serves every hub: a send that waits, for a hub that takes
+    no more data, would stop them all."""
+    try:
+        sock.setblocking(False)
+    except Exception:  # noqa: BLE001 - closed
+        pass
+
+
+def _being_dialled(interface):
+    """Whether a dial of ``interface`` is under way and may still end soon."""
+    began = getattr(interface, "_qortal_dialling", None)
+    return began is not None and time.monotonic() - began < _CALL_SLOW_DIAL_SECONDS
+
+
+def _remember_address(interface, sock):
+    try:
+        interface._qortal_address = (sock.family, sock.getpeername())
+    except Exception:  # noqa: BLE001 - the next dial asks DNS, as always
+        pass
+
+
+def _dial_for_call(interface, overtaken):
+    """Dial a hub while a call waits for it; returns how, False, or None for a
+    hub without a name (connect() has to do it).
+
+    First where it was last reached, without DNS: Android repeats an unanswered
+    DNS query after 5 s, and strict private DNS first has to reach its own
+    server, so one lost packet on a network that just came up would keep the
+    call silent that long. Then with DNS, which is not waited for long either:
+    a dial holds the interface lock, and the next switch of network could not
+    dial until it is over. It gives up when ``overtaken``.
+    """
+    known = getattr(interface, "_qortal_address", None)
+    if known is not None and _dial_address(
+        interface, *known, _KNOWN_ADDRESS_TIMEOUT_SECONDS, overtaken
+    ):
+        return "known"
+    if not getattr(interface, "target_ip", None):
+        return None
+    found = _look_up(interface, overtaken)
+    if not found:
+        return False
+    import socket
+
+    family = socket.AF_INET6 if getattr(interface, "prefer_ipv6", False) else socket.AF_INET
+    entry = next((entry for entry in found if entry[0] == family), found[0])
+    if _dial_address(interface, entry[0], entry[4], _CALL_CONNECT_SECONDS, overtaken):
+        return "dns"
+    return False
+
+
+def _dial_address(interface, family, address, seconds, overtaken):
+    try:
+        sock = _connect_asking_again(
+            family, address, seconds=seconds, overtaken=overtaken
+        )
+    except Exception as exc:  # noqa: BLE001 - no answer
+        _log_host(f"{interface} does not answer at {address[0]}: {exc}")
+        return False
+    return _adopt(interface, sock)
+
+
+def _adopt(interface, sock):
+    """The steps of BackboneClientInterface.connect() with a connected socket."""
+    try:
+        from RNS.Interfaces.BackboneInterface import BackboneInterface
+
+        interface.socket = sock
+        interface.set_timeouts_linux()
+        BackboneInterface.add_client_socket(sock, interface)
+        interface.online = True
+        interface.never_connected = False
+        return "ready"
+    except Exception as exc:  # noqa: BLE001 - gone again already
+        _log_host(f"new connection of {interface} is gone: {exc}")
+        _forget_socket(interface, sock)
+        interface.online = False
+        if interface.socket is sock:
+            interface.socket = None
+        _close_quietly(sock)
+        return None
+
+
+def _connect_asking_again(family, address, starts=None, seconds=None, overtaken=None):
+    """A connected socket; raises when there is none in time.
+
+    A network that just came up often loses the first packet, and TCP repeats
+    it only after 1 s. So it is asked again a little later, on a socket of its
+    own, and the first one that connects is used.
+    """
+    import select
+    import socket
+
+    began = time.monotonic()
+    starts = list(starts or _KNOWN_ADDRESS_STARTS)
+    seconds = seconds or _KNOWN_ADDRESS_TIMEOUT_SECONDS
+    poller = select.poll()
+    asked = {}
+    error = None
+    try:
+        while True:
+            if overtaken is not None and overtaken():
+                raise InterruptedError("a newer dial takes over")
+            elapsed = time.monotonic() - began
+            if elapsed >= seconds:
+                raise error or socket.timeout("timed out")
+            if starts and elapsed >= starts[0]:
+                starts.pop(0)
+                sock = socket.socket(family, socket.SOCK_STREAM)
+                asked[sock.fileno()] = sock
+                sock.setblocking(False)
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                poller.register(sock, select.POLLOUT)
+                try:
+                    sock.connect(address)
+                except BlockingIOError:
+                    pass
+            wait = max(0.0, min(starts[0] if starts else seconds, seconds) - elapsed)
+            if overtaken is not None:
+                wait = min(wait, _OVERTAKEN_SECONDS)
+            for fileno, _event in poller.poll(wait * 1000):
+                sock = asked.pop(fileno)
+                poller.unregister(fileno)
+                code = sock.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
+                if code == 0:
+                    return sock
+                sock.close()
+                error = OSError(code, os.strerror(code))
+            if error is not None and not asked:
+                raise error  # refused: no use in asking again at once
+    finally:
+        for sock in asked.values():
+            if _is_connected(sock):
+                _close_when_old(sock, time.monotonic())
+            else:
+                _close_quietly(sock)  # the hub never gets to see it
+
+
+def _is_connected(sock):
+    import socket
+
+    try:
+        return sock.getsockopt(socket.IPPROTO_TCP, socket.TCP_INFO, 1)[0] == 1
+    except Exception:  # noqa: BLE001 - closed, or not a socket that can tell
+        return False
+
+
+def _look_up(interface, overtaken):
+    """What DNS says about ``interface``'s hub, without waiting long for it."""
+    found = []
+
+    def ask():
+        import socket
+
+        try:
+            found.extend(
+                socket.getaddrinfo(
+                    interface.target_ip, interface.target_port, proto=socket.IPPROTO_TCP
+                )
+            )
+        except Exception:  # noqa: BLE001 - not found
+            pass
+
+    lookup = threading.Thread(target=ask, name="presence-host-dns", daemon=True)
+    lookup.start()
+    until = time.monotonic() + _CALL_DNS_SECONDS
+    while lookup.is_alive() and not overtaken():
+        left = until - time.monotonic()
+        if left <= 0.0:
+            break
+        lookup.join(min(left, _OVERTAKEN_SECONDS))
+    return [] if overtaken() else list(found)
 
 
 def _forget_socket(interface, sock):
@@ -2772,6 +3225,48 @@ def _close_quietly(sock):
         pass
 
 
+# RNS hubs (1.5, BackboneInterface.FAST_FLAP_*) count the connections of an
+# address that end within 20 s, and after the sixth they take no more from it
+# for 12 hours. On mobile data many phones share one address. So a connection
+# that GO replaces is not closed before it is this old, and a hub that ends one
+# after the other is dialled less and less (reconnect).
+_HUB_YOUNG_SECONDS = 22.0
+_PATIENCE_STEP_SECONDS = 2.0
+_SETTLE_MIN_SECONDS = 0.1
+_SETTLE_MAX_SECONDS = 0.3
+
+
+def _close_when_old(sock, connected_at, drop=False):
+    """Close a hub connection that is not used any more; a young one later.
+
+    ``drop``: what is still to be sent is not: it is old voice by now, and would
+    go out first when the network is back.
+    """
+    if sock is None:
+        return
+    close = _drop_quietly if drop else _close_quietly
+    left = 0.0
+    if connected_at is not None and not _network_paused:
+        left = connected_at + _HUB_YOUNG_SECONDS - time.monotonic()
+    if left <= 0.0:
+        close(sock)
+        return
+    timer = threading.Timer(left, close, args=(sock,))
+    timer.daemon = True
+    timer.start()
+
+
+def _drop_quietly(sock):
+    import socket
+    import struct
+
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+    except Exception:  # noqa: BLE001 - closed already
+        pass
+    _close_quietly(sock)
+
+
 def _drop_stale_socket(interface, sock):
     """Close ``sock``, which a stale dial opened; hold the interface lock."""
     if sock is None:
@@ -2784,7 +3279,7 @@ def _drop_stale_socket(interface, sock):
             # A newer resume owns the interface and dials it next.
             interface.online = False
             interface.socket = None
-    _close_quietly(sock)
+    _close_when_old(sock, time.monotonic())
 
 
 def _hub_interfaces():
@@ -2795,6 +3290,191 @@ def _hub_interfaces():
         for interface in list(getattr(RNS.Transport, "interfaces", []) or [])
         if getattr(interface, "initiator", False)
     ]
+
+
+def _ready_path(destination_hash):
+    """Before a link to ``destination_hash`` is asked for in a call.
+
+    The request leaves on the hub that the path uses, which need not be the hub
+    of the link before; RNS drops it without a word when that hub is offline,
+    and the link costs its 12 s establish time-out. So wait for a hub that is
+    being dialled, and forget a path over one that is not: the bridge then
+    asks the other hubs for one.
+    """
+    import RNS
+
+    interface = RNS.Transport.next_hop_interface(destination_hash)
+    if interface is None or not getattr(interface, "initiator", False):
+        return
+    deadline = time.monotonic() + _PATH_HUB_WAIT_SECONDS
+    while time.monotonic() < deadline:
+        if not _being_dialled(interface):
+            if getattr(interface, "online", False):
+                return
+            if _another_is_up(interface) or not _any_is_online():
+                break
+        time.sleep(0.02)
+    if not getattr(interface, "online", False) and _another_is_up(interface):
+        _forget_path_over(interface, destination_hash)
+        _log_host(f"path over {interface}, which is offline: asking for another")
+
+
+def _take_any_hops(state):
+    """Let a link that was just asked for be answered over any number of hops.
+
+    RNS ignores an answer that took another number of hops than the path says.
+    While this phone was without network the peer has announced itself again,
+    and its hub may reach it over another hub now: the request arrives, and
+    so does the answer, for nothing. It is signed by the peer either way.
+    """
+    import RNS
+
+    link = state.get("link") if isinstance(state, dict) else None
+    if link is not None and getattr(link, "initiator", False):
+        link.expected_hops = RNS.Transport.PATHFINDER_M
+
+
+def _install_call_link_opening(pb):
+    """Hook how the bridge opens the audio link of a call. Idempotent."""
+    path = getattr(pb, "_ensure_call_media_path", None)
+    if path is not None and not getattr(path, _CALL_LINK_HOOK_FLAG, False):
+
+        def _ensure_call_media_path(peer_hash, destination_hash, *args, **kwargs):
+            # Not for the audio frames that go without a link: they never wait.
+            if kwargs.get("allow_wait", True):
+                try:
+                    _ready_path(destination_hash)
+                except Exception as exc:  # noqa: BLE001 - as without the hook
+                    _log_host(f"path check failed: {exc}")
+            return path(peer_hash, destination_hash, *args, **kwargs)
+
+        setattr(_ensure_call_media_path, _CALL_LINK_HOOK_FLAG, True)
+        _ensure_call_media_path.__wrapped__ = path
+        pb._ensure_call_media_path = _ensure_call_media_path
+
+    configure = getattr(pb, "configure_audio_link", None)
+    if configure is not None and not getattr(configure, _CALL_LINK_HOOK_FLAG, False):
+
+        def configure_audio_link(link, link_id, *args, **kwargs):
+            result = configure(link, link_id, *args, **kwargs)
+            try:
+                _start_call_watch()
+            except Exception as exc:  # noqa: BLE001 - the link itself is up
+                _log_host(f"watching the hub connections failed: {exc}")
+            return result
+
+        setattr(configure_audio_link, _CALL_LINK_HOOK_FLAG, True)
+        configure_audio_link.__wrapped__ = configure
+        pb.configure_audio_link = configure_audio_link
+
+    timeout = getattr(pb, "_schedule_audio_link_establish_timeout", None)
+    if timeout is not None and not getattr(timeout, _CALL_LINK_HOOK_FLAG, False):
+
+        def _schedule_audio_link_establish_timeout(link_id):
+            timeout(link_id)
+            try:
+                _take_any_hops(pb.get_audio_link_state(link_id))
+                _start_call_watch()
+                _ask_again_soon(pb, link_id)
+            except Exception as exc:  # noqa: BLE001 - the 12 s time-out is set
+                _log_host(f"link retry failed: {exc}")
+
+        setattr(_schedule_audio_link_establish_timeout, _CALL_LINK_HOOK_FLAG, True)
+        _schedule_audio_link_establish_timeout.__wrapped__ = timeout
+        pb._schedule_audio_link_establish_timeout = _schedule_audio_link_establish_timeout
+
+
+def _ask_again_soon(pb, link_id):
+    """Right after a switch, do not wait 12 s for a link request that got lost.
+
+    How long the answer may take grows with each try and with the time the hub
+    took to answer on this network.
+    """
+    import RNS
+
+    state = pb.get_audio_link_state(link_id)
+    if state is None or state.get("incoming") is True:
+        return
+    peer = bytes.fromhex(str(state.get("peerPresenceHash") or ""))
+    interface = RNS.Transport.next_hop_interface(peer)
+    # Or any other: a path may lead over one that is still stuck from before.
+    if interface is None or not any(
+        _call_redial_is_recent(hub) for hub in [interface] + _hub_interfaces()
+    ):
+        return
+    attempt = max(1, int(state.get("open_attempt") or 1))
+    wait = attempt * max(
+        _CALL_LINK_SECONDS,
+        _CALL_LINK_DIALS * getattr(interface, "_qortal_dial_seconds", 0.0),
+    )
+    if wait >= pb._AUDIO_LINK_ESTABLISH_TIMEOUT_SECONDS:
+        return
+
+    def unanswered():
+        current = pb.get_audio_link_state(link_id)
+        return (
+            current is not None
+            and current.get("established") is not True
+            and getattr(current.get("link"), "status", None) == RNS.Link.PENDING
+        )
+
+    def give_up():
+        if not unanswered():
+            return
+        _log_host(f"no answer to a link request in {wait:.1f} s, asking again")
+        # RNS expires the path of a link that never came up as well, but only
+        # after the next request has left on it.
+        _forget_path_over(interface, peer)
+        key = state["peerPresenceHash"]
+        pb._handle_audio_link_establish_timeout(link_id)  # as its own timer does
+        pb._cancel_audio_link_retry_timer(key)
+        pb._schedule_audio_link_retry(key, "network_back", immediate=True)
+
+    def fire():
+        if unanswered():
+            pb._enqueue_scheduler_task(
+                "audio-control", "audio-link-establish-timeout", give_up
+            )
+
+    timer = threading.Timer(wait, fire)
+    timer.daemon = True
+    timer.start()
+
+
+def _ask_for_path(interface, peer):
+    """Whoever waits for a path (up to 3 s) asked for it once, maybe while no
+    hub was up."""
+    import RNS
+
+    try:
+        if not RNS.Transport.has_path(peer):
+            RNS.Transport.request_path(peer, on_interface=interface)
+    except Exception as exc:  # noqa: BLE001 - the next open asks as well
+        _log_host(f"asking for a path failed: {exc}")
+
+
+def _ask_for_call_links(interface):
+    """``interface`` is back: the tries made without a hub do not count.
+
+    The bridge gives up after four and waits 1-20 s between them; after a
+    longer outage a call would stay silent on a network that works.
+    """
+    try:
+        import presence_bridge as pb
+
+        for peer in _call_peers():
+            _ask_for_path(interface, bytes.fromhex(peer))
+            with pb._state_lock:
+                desired = pb._audio_link_desired_by_peer_hash.get(peer)
+                if desired is not None:
+                    desired["attempts"] = 0
+                    desired["retry_delay"] = pb._AUDIO_LINK_RETRY_MIN_SECONDS
+                    desired["max_attempts_emitted"] = False
+            # Not when the page wants none, or one is up or under way.
+            pb._cancel_audio_link_retry_timer(peer)
+            pb._schedule_audio_link_retry(peer, "network_back", immediate=True)
+    except Exception as exc:  # noqa: BLE001 - the bridge's own tries go on
+        _log_host(f"asking for a call's link failed: {exc}")
 
 
 def _links_over(interface, unrouted=True):
@@ -2862,7 +3542,8 @@ def _close_dead_links(links):
     """
     import RNS
 
-    inbound = _inbound_overlay_peers(links)
+    inbound = _overlay_peers_over(links, incoming_only=True)
+    in_call = _call_peers_over(links)
     closed = 0
     for link in links:
         if getattr(link, "status", None) == RNS.Link.CLOSED:
@@ -2876,11 +3557,18 @@ def _close_dead_links(links):
         except Exception as exc:  # noqa: BLE001 - the others must still close
             _log_host(f"closing a dead link failed: {exc}")
     _free_inbound_overlay_slots(inbound)
+    for peer in in_call:
+        threading.Thread(
+            target=_reopen_call_overlay_link,
+            args=(peer,),
+            name="presence-host-call-overlay",
+            daemon=True,
+        ).start()
     return closed
 
 
-def _inbound_overlay_peers(links):
-    """Peers whose overlay link came in over one of ``links``."""
+def _overlay_peers_over(links, incoming_only=False):
+    """Peers whose overlay link is (or came in) over one of ``links``."""
     try:
         import presence_bridge as pb
 
@@ -2888,10 +3576,80 @@ def _inbound_overlay_peers(links):
         return [
             str(state.get("peerPresenceHash") or "").strip().lower()
             for state in list(pb._overlay_links_by_id.values())
-            if state.get("incoming") is True and id(state.get("link")) in wanted
+            if id(state.get("link")) in wanted
+            and (state.get("incoming") is True or not incoming_only)
         ]
     except Exception:  # noqa: BLE001 - bookkeeping only
         return []
+
+
+def _call_peers():
+    """Peers this phone is in a call with: audio links exist only for calls.
+
+    One that it has, or that the page wants (of which the bridge knows only
+    when it opened one itself).
+    """
+    try:
+        import presence_bridge as pb
+
+        now = time.time()
+        with pb._state_lock:
+            peers = {
+                str(state.get("peerPresenceHash") or "").strip().lower()
+                for state in pb._audio_links_by_id.values()
+                if state.get("closing") is not True
+            }
+            for peer, desired in pb._audio_link_desired_by_peer_hash.items():
+                asked = float(desired.get("last_open_attempt_at") or 0.0)
+                if desired.get("desired") is True and now - asked < _CALL_WANTED_SECONDS:
+                    peers.add(peer)
+        peers.discard("")
+        return peers
+    except Exception:  # noqa: BLE001 - as without a call
+        return set()
+
+
+def _in_call():
+    """Whether a call runs, or its hang-up still waits for the network. The
+    peer of a link that just came in is not known yet, so any audio link
+    counts."""
+    if _call_ends_waiting:
+        return True
+    try:
+        import presence_bridge as pb
+
+        with pb._state_lock:
+            if any(
+                state.get("closing") is not True
+                for state in pb._audio_links_by_id.values()
+            ):
+                return True
+    except Exception:  # noqa: BLE001 - as without a call
+        return False
+    return bool(_call_peers())
+
+
+def _call_peers_over(links):
+    """Of _overlay_peers_over, those this phone is in a call with."""
+    over = _overlay_peers_over(links)
+    in_call = _call_peers() if over else ()
+    return [peer for peer in dict.fromkeys(over) if peer in in_call]
+
+
+def _reopen_call_overlay_link(peer):
+    """Open the overlay link to a call's peer before those of the neighbours.
+
+    The peer's hang-up comes over it; one that was lost while this phone was
+    offline is sent again as soon as the link is back (_watch_call_end).
+    """
+    if _network_paused:
+        return
+    try:
+        import presence_bridge as pb
+
+        _open_overlay_link_now(pb, peer)
+    except Exception as exc:  # noqa: BLE001 - the queue opens it a little later
+        _log_host(f"opening a call's overlay link failed: {exc}")
 
 
 def _free_inbound_overlay_slots(peers):
@@ -2920,6 +3678,8 @@ def _after_redial(interface):
     import RNS
 
     RNS.Transport.synthesize_tunnel(interface)
+    if not getattr(interface, "online", False):
+        return 0  # gone again already: its next redial ends the links
     links = getattr(interface, "_qortal_dead_links", None) or []
     interface._qortal_dead_links = []
     closed = 0
@@ -2927,10 +3687,21 @@ def _after_redial(interface):
         closed = _close_dead_links(links)
         if closed:
             _log_host(f"redialled {interface}, dead links closed={closed}")
+        _ask_for_call_links(interface)
+        waiting, failed = [], []
         for other in _hub_interfaces():
             # Hubs that cannot be dialled from here: this one takes over now.
-            if other is not interface and getattr(other, "_qortal_dial_failed", False):
-                closed += _give_up_links_over(other)
+            if other is interface or not getattr(other, "_qortal_dial_failed", False):
+                continue
+            if _call_redial_is_recent(other) and _being_dialled(other):
+                # Most likely up a moment later, with its paths still good.
+                waiting.append(other)
+            else:
+                failed.append(other)
+        if failed:
+            _watch_slow_hubs(failed, _settle_seconds(interface))
+        if waiting:
+            _watch_slow_hubs(waiting)
     except Exception as exc:  # noqa: BLE001 - the dial itself went through
         _log_host(f"closing dead links failed: {exc}")
     return closed
@@ -2938,18 +3709,50 @@ def _after_redial(interface):
 
 def _after_failed_dial(interface, generation):
     """``interface`` cannot be reached now: move its links to another hub."""
+    if _is_stale(interface, generation):
+        return  # a dial on the network before
+    closed = _move_links_off(interface)
+    if closed:
+        _after_network_resumed(closed)
+
+
+def _move_links_off(interface):
     interface._qortal_dial_failed = True
-    closed = 0
     try:
-        if any(
-            other is not interface and getattr(other, "online", False)
-            for other in _hub_interfaces()
-        ):
-            closed = _give_up_links_over(interface)
+        if _another_is_up(interface):
+            return _give_up_links_over(interface)
+        if _any_is_online():
+            _watch_slow_hubs([interface], _SETTLE_MAX_SECONDS)
     except Exception as exc:  # noqa: BLE001 - the reconnect loop must go on
         _log_host(f"closing dead links failed: {exc}")
+    return 0
+
+
+def _move_links_off_slow_hubs(hubs, seconds):
+    """Do not wait for a hub that is slow to answer, or does not at all.
+
+    Its dial goes on. With no other hub up yet, the first one that comes up
+    takes the links over (_after_redial).
+    """
+    time.sleep(seconds)
+    closed = 0
+    for interface, generation in hubs:
+        if not _is_stale(interface, generation) and not getattr(interface, "online", False):
+            closed += _move_links_off(interface)
     if closed:
-        _after_network_resumed(generation, closed)
+        _after_network_resumed(closed)
+
+
+def _watch_slow_hubs(interfaces, seconds=None):
+    threading.Thread(
+        target=_move_links_off_slow_hubs,
+        args=(
+            [(interface, _generation_of(interface)) for interface in interfaces],
+            _CALL_SLOW_DIAL_SECONDS if seconds is None else seconds,
+        ),
+        name="presence-host-slow-hubs",
+        daemon=True,
+    ).start()
 
 
 def _give_up_links_over(interface):
@@ -2957,7 +3760,6 @@ def _give_up_links_over(interface):
 
     With the path kept, the new link request would go to the same hub again.
     """
-    import RNS
     import presence_bridge as pb
 
     if getattr(interface, "online", False):
@@ -2979,19 +3781,26 @@ def _give_up_links_over(interface):
                 except ValueError:
                     pass
     for peer in peers:
-        if not peer:
-            continue
-        try:
-            if RNS.Transport.next_hop_interface(peer) is interface:
-                with RNS.Transport.path_table_lock:
-                    RNS.Transport.path_table.pop(peer, None)
-                pb._invalidate_reticulum_path_availability(peer)
-        except Exception as exc:  # noqa: BLE001 - the retry refreshes the path
-            _log_host(f"forgetting a path failed: {exc}")
+        if peer:
+            _forget_path_over(interface, peer)
     closed = _close_dead_links(links)
     if closed:
         _log_host(f"{interface} unreachable, dead links closed={closed}")
     return closed
+
+
+def _forget_path_over(interface, peer):
+    """Forget the path to ``peer`` (bytes) if it goes over ``interface``."""
+    import RNS
+    import presence_bridge as pb
+
+    try:
+        if RNS.Transport.next_hop_interface(peer) is interface:
+            with RNS.Transport.path_table_lock:
+                RNS.Transport.path_table.pop(peer, None)
+            pb._invalidate_reticulum_path_availability(peer)
+    except Exception as exc:  # noqa: BLE001 - the retry refreshes the path
+        _log_host(f"forgetting a path failed: {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -3001,15 +3810,23 @@ def _give_up_links_over(interface):
 # link. Between a network switch and the redial that link is dead, and nobody
 # knows yet: the hang-up is lost, the page never repeats it, and the other
 # phone stays in the call. So a hang-up or a reject is sent once more when its
-# overlay link has been replaced within the next seconds. The other side's
-# network may have switched as well; then it opens the new link. A copy that
-# did arrive is harmless: both are signed for one call id, and the Hub ignores
-# them for a call that has ended.
+# overlay link has been replaced within the next minutes: one of the phones may
+# have been without network for a while. The other side's network may have
+# switched as well; then it opens the new link. A copy that did arrive is
+# harmless: both are signed for one call id, and the Hub ignores them for a
+# call that has ended. The watch ends when the peer is heard over the link
+# again, which it is within half a minute (heartbeats).
 # ---------------------------------------------------------------------------
 _CALL_END_WIRE_TYPES = frozenset(("CH", "CX"))  # electron/src/call.ts
-_CALL_END_WATCH_SECONDS = 20.0
+_CALL_END_WATCH_SECONDS = 300.0
 _CALL_END_WATCH_INTERVAL_SECONDS = 0.5
+# Later on, until the link goes: one of the phones is without network.
+_CALL_END_WATCH_FAST_SECONDS = 20.0
+_CALL_END_WATCH_SLOW_INTERVAL_SECONDS = 1.0
 _CALL_END_MAX_RESENDS = 3
+# The link it went into is fine when the peer is heard over it this much later.
+_CALL_END_HEARD_SECONDS = 5.0
+_call_ends_waiting = 0
 _CALL_END_HOOK_FLAG = "_qortal_call_end_resend"
 
 
@@ -3033,7 +3850,9 @@ def _open_overlay_link_now(pb, peer):
     (_install_one_overlay_open_per_peer).
     """
     pb.ensure_known_peer_from_recall(peer, "ts_seed")
-    pb._ensure_overlay_link(peer, True, "call_signal_prepare")
+    _ready_path(bytes.fromhex(peer))
+    pb._overlay_clear_no_path(peer)  # it looked for one without a hub
+    _take_any_hops(pb._ensure_overlay_link(peer, True, "call_signal_prepare"))
 
 
 def _install_one_overlay_open_per_peer(pb):
@@ -3070,20 +3889,63 @@ def _install_one_overlay_open_per_peer(pb):
 
 
 def _watch_call_end(pb, peer, message, link):
+    """Repeat a hang-up that got lost; the call counts as running until then."""
+    global _call_ends_waiting
+    with _lock:
+        _call_ends_waiting += 1
+    try:
+        _start_call_watch()
+        _repeat_call_end(pb, peer, message, link)
+    finally:
+        with _lock:
+            _call_ends_waiting -= 1
+
+
+def _died(link):
+    import RNS
+
+    return getattr(link, "_qortal_dead", False) or (
+        getattr(link, "teardown_reason", None) == RNS.Link.TIMEOUT
+    )
+
+
+def _call_end_arrived(link, sent_at):
+    """Whether the peer was heard over ``link`` well after what was sent on it."""
+    if getattr(link, "last_inbound", 0.0) < sent_at + _CALL_END_HEARD_SECONDS:
+        return False
+    sock = getattr(getattr(link, "attached_interface", None), "socket", None)
+    state = _connection_state(sock) if sock is not None else None
+    return state is None or state[0] == 0
+
+
+def _repeat_call_end(pb, peer, message, link):
     resends = 0
-    deadline = time.monotonic() + _CALL_END_WATCH_SECONDS
-    while time.monotonic() < deadline and resends < _CALL_END_MAX_RESENDS:
-        time.sleep(_CALL_END_WATCH_INTERVAL_SECONDS)
+    changing = False
+    sent_at = time.time()
+    began = time.monotonic()
+    while resends < _CALL_END_MAX_RESENDS:
+        elapsed = time.monotonic() - began
+        if elapsed >= _CALL_END_WATCH_SECONDS:
+            return
+        time.sleep(
+            _CALL_END_WATCH_INTERVAL_SECONDS
+            if changing or elapsed < _CALL_END_WATCH_FAST_SECONDS
+            else _CALL_END_WATCH_SLOW_INTERVAL_SECONDS
+        )
         if _network_paused:
             return  # signed out or swiped away
         try:
             current = _active_overlay_link(pb, peer)
-            if current is link:
+            changing = current is not link
+            if not changing:
+                if _call_end_arrived(link, sent_at):
+                    return
                 continue
             if current is None:
-                # Ask for a new one only if the old one died under us; a link
-                # closed in the ordinary way took the message along.
-                if getattr(link, "_qortal_dead", False):
+                # Ask for a new one only if the old one died under us, which
+                # RNS finds out by itself after some minutes; a link closed in
+                # the ordinary way took the message along.
+                if _died(link):
                     _open_overlay_link_now(pb, peer)
                 continue
             encoded = pb._encode_call_signal_wire(message)
@@ -3092,6 +3954,7 @@ def _watch_call_end(pb, peer, message, link):
             if pb._send_call_signal_wire_to_peer(peer, encoded["wire_bytes"]) is None:
                 resends += 1
                 link = current
+                sent_at = time.time()
                 _log_host(f"call end sent again type={message.get('t')} peer={peer[:8]}")
         except Exception as exc:  # noqa: BLE001 - the first copy was sent
             _log_host(f"call end resend failed: {exc}")
@@ -3138,54 +4001,74 @@ def _install_call_end_resend(pb):
 
 
 # ---------------------------------------------------------------------------
-# Two audio links that cross
+# Which of two audio links to one peer stays
 #
-# Two phones on one Wi-Fi lose it together, and both open the call's link
-# again at the same moment. The bridge keeps the one of the two with the
-# latest activity, which is on each phone the one that just came in: both drop
-# their own, both links are gone, and both open again in step, for ever.
-# Between two links that both just came up in opposite directions the hashes
-# decide (the rule the bridge has for a tie), so both phones keep the same
-# one. An unmodified peer keeps the one that came in: no worse than without.
+# The bridge keeps the one with the latest activity, and what this phone sends
+# counts as activity. Around a network switch that goes wrong in two ways:
+#
+# - The other phone switched and opened a new link. Until that is up, this one
+#   talks into the dead link. So it sometimes kept that one and closed the new
+#   one: silence for another 2-3 s, until the other phone had opened the next.
+# - Two phones on one Wi-Fi lose it together and both open a link. Each keeps
+#   the one that came in and drops its own: both are gone, and both open again
+#   in step, for ever.
+#
+# A phone opens a link only when it has none left, so the one that came up
+# later stays. Between two in opposite directions that came up at about the
+# same time the hashes decide (the rule the bridge has for a tie), so that both
+# phones keep the same one. An unmodified peer keeps one by the old rule: no
+# worse than without.
 # ---------------------------------------------------------------------------
 _CROSSED_AUDIO_LINK_SECONDS = 3.0
-_CROSSED_AUDIO_LINK_HOOK_FLAG = "_qortal_crossed_audio_links"
+_AUDIO_LINK_CHOICE_HOOK_FLAG = "_qortal_audio_link_choice"
 
 
-def _install_crossed_audio_link_rule(pb):
+def _audio_link_up_since(state, now):
+    """When the audio link of ``state`` came up; None: it is not up."""
+    if state.get("established") is not True or state.get("closing") is True:
+        return None
+    # RNS's own time: the bridge notes an incoming link only when its first
+    # packet is handled, on a busy phone much later.
+    at = getattr(state.get("link"), "activated_at", None)
+    if not isinstance(at, (int, float)):
+        at = state.get("established_at")
+    if not isinstance(at, (int, float)):
+        return None
+    # Later than now: from before the clock was set back.
+    return float(at) if at <= now + 1.0 else 0.0
+
+
+def _install_audio_link_choice(pb):
     """Hook the choice between two audio links to one peer. Idempotent."""
     original = getattr(pb, "_audio_link_pick_keep", None)
-    if original is None or getattr(original, _CROSSED_AUDIO_LINK_HOOK_FLAG, False):
+    if original is None or getattr(original, _AUDIO_LINK_CHOICE_HOOK_FLAG, False):
         return
 
-    def just_established(state, now):
-        at = state.get("established_at")
-        return (
-            state.get("established") is True
-            and state.get("closing") is not True
-            and isinstance(at, (int, float))
-            and 0.0 <= now - at <= _CROSSED_AUDIO_LINK_SECONDS
-        )
+    def keeps_a(peer_key, state_a, state_b):
+        now = time.time()
+        up_a = _audio_link_up_since(state_a, now)
+        up_b = _audio_link_up_since(state_b, now)
+        if up_a is None or up_b is None:
+            return None
+        incoming_a = state_a.get("incoming") is True
+        incoming_b = state_b.get("incoming") is True
+        if incoming_a != incoming_b and abs(up_a - up_b) <= _CROSSED_AUDIO_LINK_SECONDS:
+            local = pb._local_presence_hash_hex()
+            if not local or not pb._valid_presence_destination_hash_hex(peer_key):
+                return None
+            return incoming_a == (local > peer_key)
+        return None if up_a == up_b else up_a > up_b
 
     def _audio_link_pick_keep(peer_key, link_id_a, state_a, link_id_b, state_b):
         try:
-            now = time.time()
-            incoming_a = state_a.get("incoming") is True
-            incoming_b = state_b.get("incoming") is True
-            if (
-                incoming_a != incoming_b
-                and just_established(state_a, now)
-                and just_established(state_b, now)
-            ):
-                local = pb._local_presence_hash_hex()
-                if local and pb._valid_presence_destination_hash_hex(peer_key):
-                    keep_a = incoming_a == (local > peer_key)
-                    return (link_id_a, link_id_b) if keep_a else (link_id_b, link_id_a)
+            keep_a = keeps_a(peer_key, state_a, state_b)
+            if keep_a is not None:
+                return (link_id_a, link_id_b) if keep_a else (link_id_b, link_id_a)
         except Exception as exc:  # noqa: BLE001 - the bridge's own rule then
-            _log_host(f"crossed audio link rule failed: {exc}")
+            _log_host(f"audio link choice failed: {exc}")
         return original(peer_key, link_id_a, state_a, link_id_b, state_b)
 
-    setattr(_audio_link_pick_keep, _CROSSED_AUDIO_LINK_HOOK_FLAG, True)
+    setattr(_audio_link_pick_keep, _AUDIO_LINK_CHOICE_HOOK_FLAG, True)
     _audio_link_pick_keep.__wrapped__ = original
     pb._audio_link_pick_keep = _audio_link_pick_keep
 
@@ -3263,16 +4146,16 @@ def pause_network():
     return True
 
 
-def _after_network_resumed(generation, links_closed=0):
-    """Dial overlay neighbours right away: first hub back after a resume, or
+def _after_network_resumed(links_closed=0):
+    """Dial overlay neighbours right away: first hub back in a round, or
     ``links_closed`` links ended with their old connection."""
-    global _resume_kick_generation
+    global _resume_kick_round
     with _lock:
-        if _network_paused or generation != _network_generation:
+        if _network_paused:
             return
-        if _resume_kick_generation == generation and not links_closed:
+        if _resume_kick_round == _dial_round and not links_closed:
             return
-        _resume_kick_generation = generation
+        _resume_kick_round = _dial_round
     _emit_transport_state()
     try:
         import presence_bridge as pb
@@ -3282,16 +4165,31 @@ def _after_network_resumed(generation, links_closed=0):
         _log_host(f"overlay maintenance after resume failed: {exc}")
 
 
-def _reattach_interface(interface, generation, after_first_dial=None):
+def _refuses(interface):
+    """Whether it has kept none of the last connections (_note_connection_end)."""
+    return getattr(interface, "_qortal_refused", 0) > 1
+
+
+def _reattach_interface(
+    interface, generation, after_first_dial=None, urgent=False, ready=None
+):
+    if urgent and ready is None and _refuses(interface):
+        if any(
+            getattr(other, "_qortal_address", None) is not None and not _refuses(other)
+            for other in _hub_interfaces()
+        ):
+            time.sleep(_CALL_REFUSED_SECONDS)  # the others come first
     sock = None
     try:
-        sock = _connect_current(interface, generation, initial=True)
+        sock = _connect_current(
+            interface, generation, initial=True, urgent=urgent, ready=ready
+        )
     except Exception as exc:  # noqa: BLE001 - falls back to the retry loop
         _log_host(f"reconnect failed for {interface}: {exc}")
     finally:
         if after_first_dial is not None:
             after_first_dial()
-    if _network_paused or generation != _network_generation:
+    if _is_stale(interface, generation):
         if sock is not None:
             with _interface_lock(interface):
                 _drop_stale_socket(interface, sock)
@@ -3305,18 +4203,18 @@ def _reattach_interface(interface, generation, after_first_dial=None):
         # when the network is paused again.
         interface.reconnect()
     if getattr(interface, "online", False):
-        _after_network_resumed(generation, closed)
+        _after_network_resumed(closed)
 
 
 def resume_network():
     """Redial the hub interfaces closed by pause_network()."""
-    global _network_paused, _network_generation
+    global _network_paused, _network_generation, _dial_round
     with _lock:
         if not _network_paused:
             return False
         _network_paused = False
         _network_generation += 1
-        generation = _network_generation
+        _dial_round += 1
         paused = list(_paused_interfaces)
         del _paused_interfaces[:]
 
@@ -3345,7 +4243,7 @@ def resume_network():
         interface.detached = False
         threading.Thread(
             target=_reattach_interface,
-            args=(interface, generation),
+            args=(interface, _generation_of(interface)),
             name="presence-host-reattach",
             daemon=True,
         ).start()
@@ -3353,11 +4251,344 @@ def resume_network():
     return True
 
 
-def _refresh_interface(interface, generation):
-    """Close one hub socket and dial it again at once (see refresh_network)."""
-    with _interface_lock(interface):
-        if _network_paused or generation != _network_generation:
+# ---------------------------------------------------------------------------
+# Hub connections that stall while a call runs
+#
+# In a dead spot (lift, tunnel, the edge of a Wi-Fi) Android keeps the network
+# for a good while, so there is no switch to act on. TCP repeats what got lost
+# after ever longer waits: after 20 s without reception the next try can be
+# 20 s away, and a connection that is given up (24 s) is dialled again only
+# after its own waits. Likewise for a hub that is gone without a word.
+#
+# So while a call runs the kernel is asked how its hub connections are doing.
+# When one gets no answers, the hub is dialled beside it, again and again. The
+# first dial that gets through shows that the network is back: the connections
+# that are still stuck are replaced then. That includes those that get answers
+# again but have seconds of old voice to send first (_STUCK_BYTES). After a
+# dead spot of some seconds all of them are replaced, as after a switch of
+# network: the hubs' own sides wait ever longer before they send again, and a
+# link request answered over such a connection is answered late. A hub that
+# does not answer while others do loses its links to them. A connection that is
+# up is always kept for a while, used or not (_HUB_YOUNG_SECONDS).
+# ---------------------------------------------------------------------------
+_STALL_WATCH_SECONDS = 0.5
+_STALLED_SECONDS = 2.0
+_STALLED_TRIES = 1
+# Worth a new connection (which costs the call about a second): no answer for
+# this long, or about four seconds of a call's voice still to send first.
+_STUCK_SECONDS = 4.0
+_STUCK_BYTES = 32768
+# A new connection beside a stalled one shows for this long that the network
+# works; in that time no other is made.
+_SPARE_SECONDS = 4.0
+# Seen to stall this long ago (and owed answers for 2 s before that): a dead spot.
+_DEAD_SPOT_SECONDS = _STUCK_SECONDS - _STALLED_SECONDS
+_STALL_PROBE_SECONDS = 2.0
+_STALL_PROBE_STARTS = (0.0, 0.5, 1.0, 1.5)
+_HUB_GONE_SECONDS = 2.0
+_call_watch = None
+_call_watch_asked = False
+_call_began = threading.Event()
+
+
+def _connection_state(sock):
+    """(tries without an answer, ms since the last answer, ms since the last
+    data came, ms since data last went out) of a connected socket, from the
+    kernel; None when it does not say."""
+    import socket
+    import struct
+
+    try:
+        raw = sock.getsockopt(socket.IPPROTO_TCP, socket.TCP_INFO, 104)
+        info = struct.unpack("8B13I", raw[:60])  # struct tcp_info
+    except Exception:  # noqa: BLE001 - closed, or another kernel
+        return None
+    tries, unanswered = info[2], info[12]
+    sent_ms, data_ms, answer_ms = info[17], info[19], info[20]
+    return (tries if unanswered else 0), answer_ms, data_ms, sent_ms
+
+
+def _backlog(hub, sock):
+    """Bytes ``hub`` has yet to get across: in the kernel, sent or not, and
+    those it has not taken yet."""
+    import fcntl
+    import struct
+
+    try:
+        raw = fcntl.ioctl(sock.fileno(), _TIOCOUTQ, b"\0\0\0\0")
+        queued = struct.unpack("i", raw)[0]
+    except Exception:  # noqa: BLE001 - closed, or not a socket that can tell
+        queued = 0
+    return queued + len(getattr(hub, "transmit_buffer", b"") or b"")
+
+
+_TIOCOUTQ = 0x5411  # SIOCOUTQ, Linux
+
+
+def _is_stuck(hub, sock, worth_replacing=False, state=None):
+    """Still owed an answer, or still old data to send first.
+
+    Owed: data went out and was not answered, or it cannot even go out (when
+    Android blocks GO's network, the kernel keeps it unsent and does not count
+    tries). ``worth_replacing``: for long enough that a new connection is
+    quicker; a short gap fills itself.
+    """
+    state = state or _connection_state(sock)
+    if state is None:
+        return False
+    backlog = _backlog(hub, sock)
+    if backlog > _STUCK_BYTES:
+        return True
+    tries, answer_ms, _data_ms, sent_ms = state
+    owes = tries >= _STALLED_TRIES or (
+        backlog > 0 and sent_ms >= _STALLED_SECONDS * 1000
+    )
+    if worth_replacing:
+        return owes and answer_ms >= _STUCK_SECONDS * 1000
+    return owes
+
+
+def _start_call_watch():
+    """Watch the hub connections until no call is left. Cheap when it runs."""
+    global _call_watch, _call_watch_asked
+    with _lock:
+        _call_watch_asked = True
+        _call_began.set()  # _wait_for_next_dial
+        if _call_watch is not None and _call_watch.is_alive():
             return
+        _call_watch = threading.Thread(
+            target=_watch_call_hubs, name="presence-host-call-watch", daemon=True
+        )
+        _call_watch.start()
+
+
+def _watch_call_hubs():
+    global _call_watch, _call_watch_asked
+    # stalled: hub -> (its socket, when that was first seen); spares: hub ->
+    # a new connection beside it that was not needed yet (_dial_beside)
+    watch = types.SimpleNamespace(stalled={}, spares={})
+    while True:
+        while not _network_paused and _in_call():
+            time.sleep(_STALL_WATCH_SECONDS)
+            try:
+                _look_at_call_hubs(watch)
+            except Exception as exc:  # noqa: BLE001 - the next look may work
+                _log_host(f"watching the hub connections failed: {exc}")
+        with _lock:
+            if not _call_watch_asked:
+                _call_watch = None
+                _call_began.clear()
+                break
+            _call_watch_asked = False  # for a call that began just now?
+    for spare in watch.spares.values():
+        _close_ready(spare)
+
+
+def _look_at_call_hubs(watch):
+    stalled, spares = watch.stalled, watch.spares
+    fine = []
+    began = time.monotonic()
+    for hub in _hub_interfaces():
+        sock = getattr(hub, "socket", None)
+        state = None
+        if getattr(hub, "online", False) and sock is not None:
+            state = _connection_state(sock)
+        if state is None:
+            stalled.pop(hub, None)
+        else:
+            answer_ms = state[1]
+            if hub in stalled and stalled[hub][0] is sock:
+                if not _is_stuck(hub, sock, state=state):
+                    stalled.pop(hub)
+            elif answer_ms >= _STALLED_SECONDS * 1000 and _is_stuck(hub, sock, state=state):
+                stalled[hub] = (sock, began)
+                _log_host(f"{hub} does not answer ({answer_ms / 1000.0:.1f} s)")
+            else:
+                stalled.pop(hub, None)
+        if hub not in stalled:
+            _close_ready(spares.pop(hub, None))
+            if state is not None:
+                fine.append(hub)
+    # Seen twice: it has been owed an answer for a while, not only been idle.
+    again = [hub for hub, (_sock, since) in stalled.items() if since < began]
+    if not again or _network_paused:
+        return
+    # A dead spot, or only those hubs? Something the others have to answer. A
+    # new connection made a moment ago says enough already.
+    _make_hubs_answer(fine)
+    ready = {}
+    for hub in again:
+        spare = spares.pop(hub, None)
+        if spare is not None and began - spare[1] < _SPARE_SECONDS:
+            ready[hub] = spare
+        else:
+            _close_ready(spare)
+    ready.update(_dial_beside_all([hub for hub in again if hub not in ready]))
+    targets = again
+    dead_spot = bool(ready) and any(
+        began - stalled[hub][1] >= _DEAD_SPOT_SECONDS for hub in again
+    )
+    if dead_spot:
+        for hub in _hub_interfaces():
+            sock = getattr(hub, "socket", None)
+            if hub not in targets and getattr(hub, "online", False) and sock is not None:
+                stalled.setdefault(hub, (sock, began))
+                targets.append(hub)
+    if not ready:
+        now = time.monotonic()
+        waited_ms = max(1000.0, (now - began) * 1000)
+        if not any(_answered_within(hub, waited_ms) for hub in fine):
+            return
+        targets = [hub for hub in again if now - stalled[hub][1] >= _HUB_GONE_SECONDS]
+    for hub in targets:
+        sock, since = stalled[hub]
+        use = ready.pop(hub, None)
+        if not dead_spot and not _is_stuck(hub, sock, worth_replacing=True):
+            # It gets across again, or soon will: keep the new one for a while.
+            if use is not None:
+                spares[hub] = use
+            continue
+        del stalled[hub]
+        _log_host(f"{hub} replaced, stuck since {time.monotonic() - since:.1f} s")
+        threading.Thread(
+            target=_replace_connection,
+            args=(hub, sock, use),
+            name="presence-host-refresh",
+            daemon=True,
+        ).start()
+    for hub, use in ready.items():
+        spares[hub] = use  # not needed now: kept for the next look
+
+
+def _dial_beside_all(hubs):
+    """_dial_beside for each of ``hubs`` at once: hub -> what it gave."""
+    found = {}
+
+    def dial(hub):
+        ready = _dial_beside(hub)
+        if ready is not None:
+            found[hub] = ready
+
+    dials = [
+        threading.Thread(target=dial, args=(hub,), name="presence-host-probe", daemon=True)
+        for hub in hubs
+    ]
+    for thread in dials:
+        thread.start()
+    for thread in dials:
+        thread.join()
+    return found
+
+
+def _dial_beside(hub):
+    """A new connection to ``hub`` beside the one it has, and when its dial
+    began; None when it does not answer."""
+    known = getattr(hub, "_qortal_address", None)
+    if known is None:
+        return None
+    began = time.monotonic()
+    try:
+        return (
+            _connect_asking_again(
+                *known, starts=_STALL_PROBE_STARTS, seconds=_STALL_PROBE_SECONDS
+            ),
+            began,
+        )
+    except Exception:  # noqa: BLE001 - no answer
+        return None
+
+
+def _make_hubs_answer(hubs):
+    """Send ``hubs`` something: what their kernels answer shows they are there."""
+    try:
+        import RNS
+
+        for peer in list(_call_peers())[:1]:
+            for hub in hubs:
+                RNS.Transport.request_path(bytes.fromhex(peer), on_interface=hub)
+    except Exception as exc:  # noqa: BLE001 - other traffic has to do
+        _log_host(f"asking the other hubs failed: {exc}")
+
+
+def _answered_within(hub, ms):
+    state = _connection_state(hub.socket) if hub.socket is not None else None
+    return state is not None and min(state[1], state[2]) < ms
+
+
+# A redial while a call rings or runs (refresh_network with ``in_call``): the
+# call is silent until a hub is back. A dial that fails at once, as on a network
+# that is not quite up yet, or a connection that is gone again right away, is
+# repeated after these waits before the usual backoff (5 s and up) begins. A hub
+# that takes longer than the slow dial time (TCP repeats a lost first packet
+# after 1 s) loses its links to another one.
+_CALL_RETRY_WAITS = (0.5, 1.0, 1.5, 2.0)
+_CALL_RETRY_WINDOW_SECONDS = 10.0
+_CALL_SLOW_DIAL_SECONDS = 1.5
+_CALL_DNS_SECONDS = 2.0
+_KNOWN_ADDRESS_TIMEOUT_SECONDS = 2.0
+_KNOWN_ADDRESS_STARTS = (0.0, 0.35, 0.9)
+_CALL_CONNECT_SECONDS = 5.0
+_OVERTAKEN_SECONDS = 0.1
+_CALL_REDIAL_SECONDS = 3.0
+_CALL_REFUSED_SECONDS = 3.0
+_CALL_WANTED_SECONDS = 120.0
+_PATH_HUB_WAIT_SECONDS = 0.5
+_CALL_LINK_SECONDS = 4.0
+_CALL_LINK_DIALS = 8.0
+_CALL_LINK_HOOK_FLAG = "_qortal_call_link"
+
+
+def _call_redial_is_recent(interface):
+    return time.monotonic() < getattr(interface, "_qortal_call_redial_until", 0.0)
+
+
+def _wait_for_next_dial(seconds):
+    """The wait between two dials of a hub; only a short one while a call runs.
+
+    Returns whether one does.
+    """
+    if not _in_call():
+        if not _call_began.wait(seconds):
+            return False
+        if _in_call():
+            return True
+    time.sleep(min(seconds, _CALL_REDIAL_SECONDS))
+    return _in_call()
+
+
+def _replace_connection(interface, sock, ready=None):
+    """The stall watch: take ``sock`` out, if the hub still uses it. ``ready``:
+    the connection to use instead, else it is dialled."""
+    with _interface_lock(interface):  # no dial is under way
+        with _lock:
+            if _network_paused or interface.socket is not sock:
+                generation = None
+            else:
+                generation = _begin_redial(interface)
+    if generation is None:
+        _close_ready(ready)
+        return
+    _watch_slow_hubs([interface])
+    _refresh_interface(interface, generation, urgent=True, drop=True, ready=ready)
+
+
+def _refresh_interface(interface, generation, urgent=False, drop=False, ready=None):
+    """Close one hub socket and dial it again at once (see refresh_network).
+
+    ``drop``: what the old socket has not sent yet is not to be sent.
+    ``ready``: the connection to use instead of a dial (_connect_current).
+    """
+    with _interface_lock(interface):
+        if _is_stale(interface, generation):
+            _close_ready(ready)
+            return
+        connected_at = getattr(interface, "_qortal_connected_at", None)
+        _note_connection_end(interface, replaced=True)
+        interface._qortal_young_ends = 0  # on the network before
+        interface._qortal_call_redial_until = (
+            time.monotonic() + _CALL_RETRY_WINDOW_SECONDS if urgent else 0.0
+        )
+        interface._qortal_call_drops = 0
         # Offline first, so nothing queues data for the old socket; then out
         # of the Backbone I/O loop, so the loop starts no backed-off redial of
         # its own. The old socket stays open until the new one is dialled:
@@ -3377,11 +4608,15 @@ def _refresh_interface(interface, generation):
         interface.IN = True
         interface.OUT = True
     _reattach_interface(
-        interface, generation, after_first_dial=lambda: _close_quietly(old_socket)
+        interface,
+        generation,
+        after_first_dial=lambda: _close_when_old(old_socket, connected_at, drop),
+        urgent=urgent,
+        ready=ready,
     )
 
 
-def refresh_network(reason="network_change", since_switch_seconds=0.0):
+def refresh_network(reason="network_change", since_switch_seconds=0.0, in_call=False):
     """Redial the hub sockets now, after the phone switched networks.
 
     Moving between Wi-Fi and mobile data leaves the hub sockets on a network
@@ -3399,10 +4634,13 @@ def refresh_network(reason="network_change", since_switch_seconds=0.0):
     call's audio link and the overlay links again. Where the old socket is
     still up, the other sides are told first.
 
+    ``in_call``: Kotlin comes 0.5 s after the switch instead of 2 s, so the
+    network may not be quite usable yet (see _CALL_RETRY_WAITS).
+
     The dials run on one thread per hub, so a dial stuck in DNS never blocks
     the caller. Returns how many hubs are being redialled.
     """
-    global _network_generation
+    global _dial_round
     import RNS
 
     with _lock:
@@ -3426,8 +4664,8 @@ def refresh_network(reason="network_change", since_switch_seconds=0.0):
             targets.append(interface)
         if not targets:
             return 0
-        _network_generation += 1
-        generation = _network_generation
+        _dial_round += 1
+        generations = [_begin_redial(interface) for interface in targets]
 
     told = 0
     if replaced:
@@ -3440,15 +4678,22 @@ def refresh_network(reason="network_change", since_switch_seconds=0.0):
             # Same window pause_network() gives teardown packets.
             time.sleep(0.15)
 
-    for interface in targets:
+    urgent = bool(in_call)
+    if urgent:
+        # What failed on the network before says nothing about this one.
+        for interface in targets:
+            interface._qortal_dial_failed = False
+    for interface, generation in zip(targets, generations):
         threading.Thread(
             target=_refresh_interface,
-            args=(interface, generation),
+            args=(interface, generation, urgent),
             name="presence-host-refresh",
             daemon=True,
         ).start()
+    if urgent:
+        _watch_slow_hubs(targets)
     _log_host(
         f"network refresh reason={reason} interfaces={len(targets)} "
-        f"replaced={len(replaced)} links_told={told}"
+        f"replaced={len(replaced)} links_told={told} call={'yes' if urgent else 'no'}"
     )
     return len(targets)

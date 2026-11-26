@@ -78,6 +78,9 @@ public final class BackgroundKeepAlive {
 
         /** {@code entry} is the freeze just appended to the log (entry.at = lastAt). */
         void onVendorFreezeDetected(int count, VendorFreezeLog.Entry entry, String manufacturer);
+
+        /** GO's default network was replaced (Wi-Fi and mobile data, a new Wi-Fi). Any thread. */
+        void onDefaultNetworkChanged();
     }
 
     /** Snapshot for getBackgroundSyncState(). */
@@ -157,10 +160,9 @@ public final class BackgroundKeepAlive {
     private final Runnable deadlineRunnable = this::evaluate;
     private final DefaultNetworkSwitch defaultNetworkSwitch = new DefaultNetworkSwitch();
     private final NetworkRefreshPacer networkRefreshPacer = new NetworkRefreshPacer();
-    private final Runnable networkRefreshRunnable = () -> ReticulumPlugin.refreshNetwork(
-        "default_network_changed",
-        networkRefreshPacer.onRun(SystemClock.elapsedRealtime())
-    );
+    /** Keeps a wait and its posting together (network callback and main thread). */
+    private final Object networkRefreshLock = new Object();
+    private final Runnable networkRefreshRunnable = this::runNetworkRefresh;
     private final Runnable batteryPauseCheckRunnable = this::checkBatteryPause;
     /**
      * The immediate evaluate after onStop runs before the framework's hide
@@ -343,13 +345,16 @@ public final class BackgroundKeepAlive {
      * GO's battery pause (KeepAlivePolicy.callNeedsPage).
      */
     public void setCallState(boolean active, boolean ringing) {
+        boolean callBegan;
         synchronized (this) {
             if (callActive == active && callRinging == ringing) return;
+            callBegan = !(callActive || callRinging) && (active || ringing);
             callActive = active;
             callRinging = ringing;
         }
         Log.i(TAG, "Call state for keep-alive: active=" + active + " ringing=" + ringing);
         requestEvaluate();
+        if (callBegan) hastenNetworkRefresh();
     }
 
     /**
@@ -947,6 +952,56 @@ public final class BackgroundKeepAlive {
         requestEvaluate();
     }
 
+    private synchronized boolean inCall() {
+        return callActive || callRinging;
+    }
+
+    /** Redial the hubs once the new network has settled, and tell the page. */
+    private void onDefaultNetworkSwitched() {
+        boolean inCall = inCall();
+        long wait;
+        synchronized (networkRefreshLock) {
+            wait = networkRefreshPacer.onSwitch(SystemClock.elapsedRealtime(), inCall);
+            postNetworkRefresh(wait);
+        }
+        Log.i(TAG, "Default network changed; hubs redialled in " + wait + " ms"
+            + (inCall ? " (call)" : ""));
+        Listener currentListener;
+        synchronized (this) {
+            currentListener = listener;
+        }
+        if (currentListener == null) return;
+        try {
+            currentListener.onDefaultNetworkChanged();
+        } catch (RuntimeException error) {
+            Log.w(TAG, "defaultNetworkChanged listener failed", error);
+        }
+    }
+
+    /** A call begins: a redial that waits its turn must not keep it silent. */
+    private void hastenNetworkRefresh() {
+        synchronized (networkRefreshLock) {
+            long wait = networkRefreshPacer.onCallStart(SystemClock.elapsedRealtime());
+            if (wait < 0) return;
+            postNetworkRefresh(wait);
+            Log.i(TAG, "Call begins; hubs redialled in " + wait + " ms");
+        }
+    }
+
+    /** Caller holds {@link #networkRefreshLock}. */
+    private void postNetworkRefresh(long wait) {
+        mainHandler.removeCallbacks(networkRefreshRunnable);
+        mainHandler.postDelayed(networkRefreshRunnable, wait);
+    }
+
+    private void runNetworkRefresh() {
+        ReticulumPlugin.refreshNetwork(
+            "default_network_changed",
+            networkRefreshPacer.onRun(SystemClock.elapsedRealtime()),
+            inCall()
+        );
+    }
+
     private void registerNetworkCallback() {
         ConnectivityManager cm = appContext.getSystemService(ConnectivityManager.class);
         if (cm == null) return;
@@ -957,9 +1012,7 @@ public final class BackgroundKeepAlive {
                 // nothing else notices that the hub sockets sit on the old
                 // network: redial them on the new one.
                 if (defaultNetworkSwitch.onAvailable(network.getNetworkHandle())) {
-                    long wait = networkRefreshPacer.onSwitch(SystemClock.elapsedRealtime());
-                    mainHandler.removeCallbacks(networkRefreshRunnable);
-                    mainHandler.postDelayed(networkRefreshRunnable, wait);
+                    onDefaultNetworkSwitched();
                 }
             }
 
@@ -972,7 +1025,10 @@ public final class BackgroundKeepAlive {
             public void onLost(Network network) {
                 // The next default network reports its own capabilities.
                 setUnmetered(false);
-                defaultNetworkSwitch.onLost(network.getNetworkHandle());
+                if (defaultNetworkSwitch.onLost(network.getNetworkHandle())) {
+                    networkRefreshPacer.onLost(SystemClock.elapsedRealtime());
+                    Log.i(TAG, "Default network lost");
+                }
             }
         };
         try {
