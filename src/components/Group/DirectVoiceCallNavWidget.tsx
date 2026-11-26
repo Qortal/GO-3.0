@@ -55,6 +55,7 @@ import {
   shortAddr,
   useQortalAvatarThumbnailSrc,
 } from './qortalGroupCallParticipantUi';
+import { isRecentlyReachableForCall } from '../../lib/call/recentCallEndpoint';
 
 const DANGER = '#f23f42';
 const VOICE_CONNECTED = '#3d9142';
@@ -113,7 +114,12 @@ export function DirectVoiceCallNavWidget() {
         showCallError(`Add ${targetLabel} as a friend before calling.`);
         return;
       }
-      if (!onlineAddresses.has(targetAddress)) {
+      if (
+        !onlineAddresses.has(targetAddress) &&
+        // GO: a friend heard within the hour may just be asleep and still
+        // rings (lib/call/recentCallEndpoint).
+        !isRecentlyReachableForCall(targetAddress)
+      ) {
         showCallError(`${targetLabel} is offline and cannot receive a call.`);
         return;
       }

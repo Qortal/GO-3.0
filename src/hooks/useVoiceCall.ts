@@ -16,6 +16,14 @@ import {
   userInfoAtom,
 } from '../atoms/global';
 import { isDirectVoiceCallChatId } from '../lib/call/directVoiceCallChatId';
+import { restoreDmFriendFromHistory } from '../lib/dm/dmFriendRestore';
+import { rememberGlareCallId } from '../lib/call/glareCallIds';
+import { nextCalleeWatchdogStep } from '../lib/call/calleeRoomKeyWatchdog';
+import {
+  noteIncomingRing,
+  noteUserAttention,
+} from '../utils/ringWakeAttention';
+import { getPublicKey } from '../background/background.ts';
 import {
   buildDmVoiceRoomId,
   fetchLocalReticulumDestinationHash,
@@ -104,6 +112,38 @@ export function directVoiceCapabilityRetryDelaysMs(
     : DIRECT_VOICE_CAPABILITY_RETRY_DELAYS_MS;
 }
 
+// GO only: waits before a WebRTC signal (offer, answer, candidates, ICE
+// refresh request) the call manager refused or threw on is sent again. The
+// audio link counts as not ready for moments while a call starts; capability
+// adverts repeat anyway, but these are sent once and WebRTC has no other copy
+// (a lost candidate batch alone keeps the call off Direct).
+const GO_DIRECT_VOICE_RTC_SIGNAL_RETRY_DELAYS_MS: readonly number[] = [
+  250, 400, 600, 900, 1_300, 1_800, 2_500, 3_000,
+];
+// A send that only fails after a long bridge timeout must not stretch the
+// waits above: no resend starts later than this after the first attempt.
+const GO_DIRECT_VOICE_RTC_SIGNAL_RETRY_WINDOW_MS = 20_000;
+const GO_DIRECT_VOICE_RTC_SIGNAL_RETRY_SLICE_MS = 250;
+// Refusals that the same signal cannot get past, however often it is sent.
+const DIRECT_VOICE_RTC_SIGNAL_FINAL_ERRORS: ReadonlySet<string> = new Set([
+  'payload-hash-mismatch',
+  'room-not-found',
+  'rtc-signal-too-large',
+  'sender-not-local',
+  'sender-public-key-mismatch',
+  'unsupported-on-legacy-call-port',
+]);
+
+/** Waits before each resend of a refused WebRTC signal (desktop: none). */
+export function directVoiceRtcSignalRetryDelaysMs(
+  go: boolean
+): readonly number[] {
+  return go ? GO_DIRECT_VOICE_RTC_SIGNAL_RETRY_DELAYS_MS : [];
+}
+
+/** 'retry': not sent, but the same signal may get through a moment later. */
+type DirectVoiceRtcSendOutcome = 'sent' | 'retry' | 'drop';
+
 const DM_MEDIA_RECOVERY_REQUEST_COOLDOWN_MS = 4_000;
 const DM_ROOM_KEY_REPLAY_RETRY_MS = 750;
 const DM_ROOM_KEY_REPLAY_MAX_ATTEMPTS = 6;
@@ -112,6 +152,23 @@ const DM_ROOM_KEY_REQUEST_MAX_ATTEMPTS = 30;
 // The callee-owned Reticulum link can use four 12-second establish attempts
 // plus retry backoff. Do not let the renderer abandon the call first.
 const DM_MEDIA_READINESS_TIMEOUT_MS = 60_000;
+/**
+ * Callee: how long to wait for the caller's room key after accepting. The
+ * caller ends its side after DM_MEDIA_READINESS_TIMEOUT_MS without media, and
+ * its hang-up may not arrive, so the callee must not stay "connected" without
+ * audio forever.
+ */
+const DM_CALLEE_ROOM_KEY_WAIT_MS = DM_MEDIA_READINESS_TIMEOUT_MS + 5_000;
+/**
+ * GO, call glare (both people call each other at the same moment): both
+ * phones pick the call with the smaller callId; the other side cancels its
+ * own call and answers that one. A GO whose call "won" answers the other call
+ * itself after this long if that call is still waiting (the other side is a
+ * desktop Hub, which does not resolve glare), so both never ring out for 60 s.
+ */
+const CALL_GLARE_FALLBACK_YIELD_MS = 15_000;
+/** A deferred glare call older than this is not offered any more. */
+const CALL_GLARE_HANDOVER_MAX_AGE_MS = 55_000;
 const DM_MEDIA_READINESS_POLL_MS = 500;
 const DM_MEDIA_READINESS_WARMUP_MS = 1_000;
 const CALL_LOCAL_ADDRESS_REASSERT_MS = 2_500;
@@ -526,6 +583,23 @@ export function useVoiceCall(
   );
 
   const callIdRef = useRef<string | null>(null);
+  /** Latest endCall, for timers created before it is defined. */
+  const endCallRef = useRef<((sendHangup?: boolean) => Promise<void>) | null>(
+    null
+  );
+  /** GO call glare: the other side's call we are waiting to answer. */
+  const glareIncomingRef = useRef<
+    (IncomingCall & { arrivedAt: number }) | null
+  >(null);
+  /**
+   * Calls the remote side ended (hang-up / cancel), kept briefly: a call
+   * whose cancel lands while call:incoming still awaits the friend restore
+   * must not start ringing afterwards.
+   */
+  const remoteEndedCallIdsRef = useRef<Map<string, number>>(new Map());
+  /** The signed-in address now (the handler closure can be a render old). */
+  const currentUserAddressRef = useRef<string>('');
+  currentUserAddressRef.current = userInfo?.address?.trim() ?? '';
   const directVoiceOwnerCallIdRef = useRef<string | null>(null);
   const directVoiceOwnerIdRef = useRef<string | null>(null);
   const callStateRef = useRef<CallState>('idle');
@@ -534,6 +608,7 @@ export function useVoiceCall(
   blockedAddressesRef.current = blockedAddresses;
   const dmFriendsByAddressRef = useRef(dmFriendsByAddress);
   dmFriendsByAddressRef.current = dmFriendsByAddress;
+  const setDmFriendsByAddress = useSetAtom(dmFriendsByAddressAtom);
 
   const publicKeyRef = useRef(userInfo?.publicKey ?? '');
   useEffect(() => {
@@ -642,6 +717,8 @@ export function useVoiceCall(
   const dmReceiveOnAudioSurfaceRef = useRef(false);
   const dmRtcOnAudioSurfaceRef = useRef(false);
   const dmRtcOpenRef = useRef(false);
+  /** When the Direct leg was last seen open in this call (ms), 0 if never. */
+  const dmRtcLastOpenAtRef = useRef(0);
   const dmRtcOpenWaitersRef = useRef(new Set<(ready: boolean) => void>());
   const dmRtcLifecycleGenerationRef = useRef(0);
   // GO race guard: endCall (and the unmount cleanup) bumps this synchronously
@@ -660,6 +737,8 @@ export function useVoiceCall(
     acknowledged: boolean;
   } | null>(null);
   const dmRtcSignalSendChainRef = useRef<Promise<void>>(Promise.resolve());
+  /** The newest WebRTC signal the audio surface made (resend guard). */
+  const dmRtcLocalSignalRef = useRef({ generation: '', descriptions: 0 });
   const screenShareTransportRef =
     useRef<DirectScreenShareWebRtcTransport | null>(null);
   const screenShareStateRef = useRef<DirectScreenShareState>('idle');
@@ -959,6 +1038,7 @@ export function useVoiceCall(
       if (!window.audioSurface || !ownerId || !roomId || !peer) return false;
       const lifecycleGeneration = dmRtcLifecycleGenerationRef.current;
       dmRtcOpenRef.current = false;
+      dmRtcLastOpenAtRef.current = 0;
       let iceServers: RTCIceServer[] = [];
       try {
         const discovered = await (window as any).hub?.getIceServers?.();
@@ -1034,6 +1114,7 @@ export function useVoiceCall(
       dmRtcLocalCapabilityRef.current = null;
       dmRtcOnAudioSurfaceRef.current = false;
       dmRtcOpenRef.current = false;
+      dmRtcLastOpenAtRef.current = 0;
       for (const resolve of dmRtcOpenWaitersRef.current) resolve(false);
       dmRtcOpenWaitersRef.current.clear();
       if (!window.audioSurface || !ownerId) return;
@@ -1044,7 +1125,8 @@ export function useVoiceCall(
     []
   );
 
-  const sendAuthenticatedDirectVoiceRtcPayload = useCallback(
+  /** One freshly signed attempt; the timestamp is taken here, every time. */
+  const trySendAuthenticatedDirectVoiceRtcPayload = useCallback(
     async (input: {
       generation: string;
       signalType:
@@ -1055,7 +1137,7 @@ export function useVoiceCall(
         | 'ack'
         | 'reconnect';
       payload: string;
-    }): Promise<boolean> => {
+    }): Promise<DirectVoiceRtcSendOutcome> => {
       const callId = callIdRef.current;
       const roomId = dmRoomIdRef.current;
       const callSessionId = callSessionIdRef.current;
@@ -1072,7 +1154,7 @@ export function useVoiceCall(
         !api?.sendRtcSignal ||
         isReticulumCallEnabled
       ) {
-        return false;
+        return 'drop';
       }
       const payloadHash = await sha256HexUtf8(input.payload);
       const signalId = crypto.randomUUID();
@@ -1110,7 +1192,7 @@ export function useVoiceCall(
           callTrunc: callId.slice(0, 8),
           error: error instanceof Error ? error.message : String(error),
         });
-        return false;
+        return 'retry';
       }
       const publicKey = userInfo?.publicKey ?? '';
       if (
@@ -1120,7 +1202,9 @@ export function useVoiceCall(
         mediaGenRef.current >>> 0 !== mediaSessionGeneration ||
         peerAddressRef.current?.trim() !== toAddress
       ) {
-        return false;
+        // Signed for a session that is gone. A resend signs for the current
+        // one, unless its caller finds the call itself changed.
+        return 'retry';
       }
       if (!signature || !publicKey) {
         pushDirectVoiceUiLog('warn', 'WebRTC signal signing failed', {
@@ -1128,7 +1212,7 @@ export function useVoiceCall(
           callTrunc: callId.slice(0, 8),
           error: !signature ? 'missing-signature' : 'missing-public-key',
         });
-        return false;
+        return 'drop';
       }
       let result: { success: boolean; error?: string };
       try {
@@ -1153,7 +1237,7 @@ export function useVoiceCall(
           callTrunc: callId.slice(0, 8),
           error: error instanceof Error ? error.message : String(error),
         });
-        return false;
+        return 'retry';
       }
       if (!result.success) {
         pushDirectVoiceUiLog('warn', 'WebRTC signal send rejected', {
@@ -1161,7 +1245,9 @@ export function useVoiceCall(
           callTrunc: callId.slice(0, 8),
           error: result.error ?? 'unknown',
         });
-        return false;
+        return DIRECT_VOICE_RTC_SIGNAL_FINAL_ERRORS.has(result.error ?? '')
+          ? 'drop'
+          : 'retry';
       }
       if (input.signalType !== 'candidate') {
         pushDirectVoiceUiLog('log', 'WebRTC signal queued', {
@@ -1169,9 +1255,17 @@ export function useVoiceCall(
           callTrunc: callId.slice(0, 8),
         });
       }
-      return true;
+      return 'sent';
     },
     [userInfo?.address, userInfo?.publicKey]
+  );
+
+  const sendAuthenticatedDirectVoiceRtcPayload = useCallback(
+    async (
+      input: Parameters<typeof trySendAuthenticatedDirectVoiceRtcPayload>[0]
+    ): Promise<boolean> =>
+      (await trySendAuthenticatedDirectVoiceRtcPayload(input)) === 'sent',
+    [trySendAuthenticatedDirectVoiceRtcPayload]
   );
 
   const announceDirectVoiceNativeAudioCapability = useCallback(async () => {
@@ -1778,13 +1872,38 @@ export function useVoiceCall(
       ) {
         return;
       }
-      lastDmPeerMediaRecoveryRequestAtRef.current = now;
-      pushDirectVoiceUiLog('log', 'requestPeerMediaRecovery', {
-        roomTrunc: roomId.slice(0, 24),
-        peerTrunc: peer.slice(0, 8),
-        reason,
-      });
-      void gc.requestPeerMediaRecovery(roomId, peer, reason).catch(() => {});
+      const request = (): void => {
+        lastDmPeerMediaRecoveryRequestAtRef.current = now;
+        pushDirectVoiceUiLog('log', 'requestPeerMediaRecovery', {
+          roomTrunc: roomId.slice(0, 24),
+          peerTrunc: peer.slice(0, 8),
+          reason,
+        });
+        void gc.requestPeerMediaRecovery(roomId, peer, reason).catch(() => {});
+      };
+      if (!isCapacitor() || typeof gc.getLinkStats !== 'function') {
+        request();
+        return;
+      }
+      // GO: a recovery request makes the manager forget an audio link that
+      // is up, so only ask when there is none (see
+      // waitForDmPeerMediaReadiness).
+      void Promise.resolve()
+        .then(() => gc.getLinkStats(roomId))
+        .then(
+          (response) => response?.stats?.establishedLinks > 0,
+          () => false
+        )
+        .then((linkUp) => {
+          if (
+            linkUp ||
+            dmRoomIdRef.current !== roomId ||
+            peerAddressRef.current !== peer
+          ) {
+            return;
+          }
+          request();
+        });
     },
     []
   );
@@ -1827,17 +1946,27 @@ export function useVoiceCall(
 
         const now = Date.now();
         deadlineReached = now >= deadline;
-        if (
-          !deadlineReached &&
-          now - lastWarmupAt >= DM_MEDIA_READINESS_WARMUP_MS
-        ) {
+        const warmUpIfDue = (): void => {
+          if (
+            deadlineReached ||
+            now - lastWarmupAt < DM_MEDIA_READINESS_WARMUP_MS
+          ) {
+            return;
+          }
           lastWarmupAt = now;
           if (typeof gc?.requestPeerMediaRecovery === 'function') {
             void gc
               .requestPeerMediaRecovery(roomId, peer, `dm-readiness:${reason}`)
               .catch(() => {});
           }
-        }
+        };
+        // The manager answers a recovery request by marking the link unready
+        // until the next packet on it. GO therefore looks first: the room key
+        // is applied 5-8 times while a call starts, and each one used to take
+        // a link that was up down for about half a second, refusing the
+        // WebRTC signals sent meanwhile.
+        const looksFirst = isCapacitor();
+        if (!looksFirst) warmUpIfDue();
 
         let peerInRoom = false;
         let participantCount = 0;
@@ -1886,6 +2015,11 @@ export function useVoiceCall(
             establishedLinks,
           });
           return true;
+        }
+
+        if (looksFirst) {
+          if (options?.cancelled?.()) return false;
+          if (!routeReady) warmUpIfDue();
         }
 
         // The query above is the final readiness check at the deadline. This
@@ -1988,8 +2122,32 @@ export function useVoiceCall(
         dmFriendsByAddressRef.current[peer]?.publicKey,
         optionsRef.current.getPeerPublicKey?.(peer),
       ].filter((pk): pk is string => typeof pk === 'string' && !!pk);
-      const friendPk =
+      let friendPk =
         candidates.find((pk) => publicKeyBelongsToAddress(pk, peer)) ?? '';
+      if (!friendPk && candidates.length === 0) {
+        // A friend restored on this device without a provable key (no own
+        // event of theirs in the history yet): look it up now and keep it.
+        const looked = await getPublicKey(peer).catch(() => '');
+        if (
+          typeof looked === 'string' &&
+          looked &&
+          publicKeyBelongsToAddress(looked, peer)
+        ) {
+          friendPk = looked;
+          const current = dmFriendsByAddressRef.current[peer];
+          if (current && !current.publicKey) {
+            dmFriendsByAddressRef.current = {
+              ...dmFriendsByAddressRef.current,
+              [peer]: { ...current, publicKey: looked },
+            };
+            setDmFriendsByAddress((prev) =>
+              prev[peer] && !prev[peer].publicKey
+                ? { ...prev, [peer]: { ...prev[peer], publicKey: looked } }
+                : prev
+            );
+          }
+        }
+      }
       if (!friendPk && candidates.length > 0) {
         pushDirectVoiceUiLog(
           'warn',
@@ -2029,7 +2187,7 @@ export function useVoiceCall(
       );
       return ok;
     },
-    [userInfo?.address, userInfo?.publicKey]
+    [setDmFriendsByAddress, userInfo?.address, userInfo?.publicKey]
   );
 
   const scheduleDmRoomKeyReplays = useCallback(
@@ -2106,8 +2264,56 @@ export function useVoiceCall(
         }, attempt * DM_ROOM_KEY_REQUEST_RETRY_MS);
         dmRoomKeyRequestTimersRef.current.add(timer);
       }
+      const watchedCallId = callIdRef.current;
+      const armWatchdog = (delayMs = DM_CALLEE_ROOM_KEY_WAIT_MS) => {
+        const watchdog = setTimeout(() => {
+          dmRoomKeyRequestTimersRef.current.delete(watchdog);
+          if (
+            roomKeyRef.current ||
+            callStateRef.current !== 'connected' ||
+            !watchedCallId ||
+            callIdRef.current !== watchedCallId
+          ) {
+            return;
+          }
+          // WebRTC carries the audio without the room key: keep the call
+          // and look again later. A leg that was open moments ago may only
+          // be re-checking its path (network change, short RTP gap): look
+          // again shortly instead of ending the call.
+          const step = nextCalleeWatchdogStep({
+            rtcOpen: dmRtcOpenRef.current,
+            rtcLastOpenAt: dmRtcLastOpenAtRef.current,
+            now: Date.now(),
+            waitMs: DM_CALLEE_ROOM_KEY_WAIT_MS,
+          });
+          if (!step.end) {
+            armWatchdog(step.againInMs);
+            return;
+          }
+          onCalleeRoomKeyTimeout();
+        }, delayMs);
+        dmRoomKeyRequestTimersRef.current.add(watchdog);
+      };
+      const onCalleeRoomKeyTimeout = () => {
+        pushDirectVoiceUiLog(
+          'warn',
+          'callee: no room key from the caller; ending the call',
+          { reason, waitedMs: DM_CALLEE_ROOM_KEY_WAIT_MS }
+        );
+        showGlobalCallSnack(
+          'info',
+          i18n.t('core:voice_call.failed') ??
+            'Voice call failed (Reticulum route not ready)'
+        );
+        void endCallRef.current?.(true);
+      };
+      armWatchdog();
     },
-    [clearDmRoomKeyRequestTimers, sendCurrentDmRoomKeyRequest]
+    [
+      clearDmRoomKeyRequestTimers,
+      sendCurrentDmRoomKeyRequest,
+      showGlobalCallSnack,
+    ]
   );
 
   const clearDurationTimer = useCallback(() => {
@@ -2242,6 +2448,10 @@ export function useVoiceCall(
       const id = callIdRef.current;
       clearDurationTimer();
 
+      // A call the other side placed during glare, still waiting while ours
+      // ends (we cancelled before they gave way): offer it once we are idle.
+      const glarePending = glareIncomingRef.current;
+      glareIncomingRef.current = null;
       const applyLocalCallEnd = () => {
         callIdRef.current = null;
         isOutboundCallRef.current = false;
@@ -2256,7 +2466,20 @@ export function useVoiceCall(
         updateIncomingCall(null);
         inputSwapSeededRef.current = false;
         prevInputPrefRef.current = undefined;
-        setTimeout(() => updateCallState('idle'), 1_500);
+        setTimeout(() => {
+          updateCallState('idle');
+          if (
+            glarePending &&
+            !remoteEndedCallIdsRef.current.has(glarePending.callId) &&
+            callStateRef.current === 'idle' &&
+            Date.now() - glarePending.arrivedAt < CALL_GLARE_HANDOVER_MAX_AGE_MS
+          ) {
+            const { arrivedAt, ...incoming } = glarePending;
+            updateIncomingCall(incoming);
+            updateCallState('ringing');
+            noteIncomingRing(arrivedAt);
+          }
+        }, 1_500);
       };
 
       /**
@@ -2298,6 +2521,7 @@ export function useVoiceCall(
       updateIncomingCall,
     ]
   );
+  endCallRef.current = endCall;
 
   const pushDecodedDmAudioPackets = useCallback(
     async (packets: DecodedAudioPacket[], fromAddress: string) => {
@@ -3290,7 +3514,11 @@ export function useVoiceCall(
         return;
       }
       if (event.type === 'direct-voice-rtc-state') {
+        const wasOpen = dmRtcOpenRef.current;
         dmRtcOpenRef.current = event.state === 'open';
+        if (wasOpen || dmRtcOpenRef.current) {
+          dmRtcLastOpenAtRef.current = Date.now();
+        }
         pushDirectVoiceUiLog(
           event.state === 'failed' ? 'warn' : 'log',
           'WebRTC transport state',
@@ -3320,29 +3548,78 @@ export function useVoiceCall(
       const expectedCallId = callIdRef.current;
       const expectedRoomId = dmRoomIdRef.current;
       const expectedPeerAddress = peerAddressRef.current;
+      const expectedMediaGeneration = mediaGenRef.current >>> 0;
+      const rtcSession = dmMediaSessionTokenRef.current;
+      const signal = event.signal;
+      const description = signal.kind === 'description';
+      // Signals arrive here in the order the transport made them, so this is
+      // its newest ICE generation and its newest offer/answer.
+      dmRtcLocalSignalRef.current = {
+        generation: signal.generation,
+        descriptions:
+          dmRtcLocalSignalRef.current.descriptions + (description ? 1 : 0),
+      };
+      const descriptionNumber = dmRtcLocalSignalRef.current.descriptions;
+      const callChanged = (): boolean =>
+        lifecycleGeneration !== dmRtcLifecycleGenerationRef.current ||
+        expectedCallId !== callIdRef.current ||
+        expectedRoomId !== dmRoomIdRef.current ||
+        expectedPeerAddress !== peerAddressRef.current;
+      // Resends stop as soon as the call ends, WebRTC is up, or the transport
+      // moved on: another ICE generation, or a newer offer/answer.
+      const resendIsStale = (): boolean =>
+        callChanged() ||
+        callStateRef.current !== 'connected' ||
+        (rtcSession?.callId === expectedCallId &&
+          isGoDmMediaSessionEnding(rtcSession)) ||
+        expectedMediaGeneration !== mediaGenRef.current >>> 0 ||
+        dmRtcOpenRef.current ||
+        signal.generation !== dmRtcLocalSignalRef.current.generation ||
+        (description &&
+          descriptionNumber !== dmRtcLocalSignalRef.current.descriptions);
       const sendTask = dmRtcSignalSendChainRef.current.then(async () => {
-        if (
-          lifecycleGeneration !== dmRtcLifecycleGenerationRef.current ||
-          expectedCallId !== callIdRef.current ||
-          expectedRoomId !== dmRoomIdRef.current ||
-          expectedPeerAddress !== peerAddressRef.current
-        ) {
-          return;
-        }
-        const payload = JSON.stringify(event.signal);
+        if (callChanged()) return;
+        const payload = JSON.stringify(signal);
         const signalType =
-          event.signal.kind === 'ice' || event.signal.kind === 'ice-candidates'
+          signal.kind === 'ice' || signal.kind === 'ice-candidates'
             ? 'candidate'
-            : event.signal.kind === 'ice-refresh-request'
+            : signal.kind === 'ice-refresh-request'
               ? 'reconnect'
-              : event.signal.description.type === 'offer'
+              : signal.description.type === 'offer'
                 ? 'offer'
                 : 'answer';
-        await sendAuthenticatedDirectVoiceRtcPayload({
-          generation: event.signal.generation,
-          signalType,
-          payload,
-        });
+        const retryDelaysMs = directVoiceRtcSignalRetryDelaysMs(isCapacitor());
+        const resendDeadline =
+          Date.now() + GO_DIRECT_VOICE_RTC_SIGNAL_RETRY_WINDOW_MS;
+        // Later signals wait in the chain behind this one, so candidates
+        // never pass the offer/answer they belong to.
+        for (let attempt = 0; ; attempt += 1) {
+          const outcome = await trySendAuthenticatedDirectVoiceRtcPayload({
+            generation: signal.generation,
+            signalType,
+            payload,
+          });
+          if (outcome === 'sent' && attempt > 0) {
+            pushDirectVoiceUiLog('log', 'WebRTC signal resent', {
+              signalType,
+              callTrunc: String(expectedCallId).slice(0, 8),
+              attempt: attempt + 1,
+            });
+          }
+          if (outcome !== 'retry' || attempt >= retryDelaysMs.length) return;
+          // In slices, so that a newer offer/answer waiting in the chain does
+          // not sit out the rest of an old one's wait.
+          const resendAt = Date.now() + retryDelaysMs[attempt];
+          if (resendAt > resendDeadline) return;
+          while (!resendIsStale() && Date.now() < resendAt) {
+            const sliceMs = Math.min(
+              resendAt - Date.now(),
+              GO_DIRECT_VOICE_RTC_SIGNAL_RETRY_SLICE_MS
+            );
+            await new Promise((resolve) => setTimeout(resolve, sliceMs));
+          }
+          if (resendIsStale()) return;
+        }
       });
       dmRtcSignalSendChainRef.current = sendTask.catch(() => {});
       void sendTask.catch((error) => {
@@ -3351,7 +3628,7 @@ export function useVoiceCall(
         });
       });
     });
-  }, [sendAuthenticatedDirectVoiceRtcPayload]);
+  }, [isGoDmMediaSessionEnding, trySendAuthenticatedDirectVoiceRtcPayload]);
 
   const startDurationTimer = useCallback(() => {
     setCallDuration(0);
@@ -3360,6 +3637,109 @@ export function useVoiceCall(
       1_000
     );
   }, []);
+
+  /**
+   * Friends are stored per device, so an account signed in on a second device
+   * (a new phone, GO next to the Hub where the friend was added) has none and
+   * would decline every 1:1 call. Before declining, rebuild the friend from
+   * the account's own signed `dm_friend_added` event in the DM history and
+   * save it on this device (lib/dm/dmFriendRestore).
+   */
+  const restoreDmFriendForIncomingCall = async (
+    peer: string
+  ): Promise<boolean> => {
+    const me = userInfo?.address?.trim() ?? '';
+    if (!me || !peer) return false;
+    const restored = await restoreDmFriendFromHistory(me, peer, {
+      lookupPublicKey: (address) => getPublicKey(address),
+    });
+    if (!restored) return false;
+    // Signed out or switched account while reading: not this account's.
+    if (currentUserAddressRef.current !== me) return false;
+    const entry = {
+      publicKey: restored.publicKey,
+      ...(restored.name ? { name: restored.name } : {}),
+      addedAt: restored.addedAt,
+      eventId: restored.eventId,
+    };
+    dmFriendsByAddressRef.current = {
+      ...dmFriendsByAddressRef.current,
+      [peer]: dmFriendsByAddressRef.current[peer] ?? entry,
+    };
+    setDmFriendsByAddress((prev) =>
+      prev[peer] ? prev : { ...prev, [peer]: entry }
+    );
+    pushDirectVoiceUiLog('log', 'friend restored from DM history for a call', {
+      peerTrunc: peer.slice(0, 8),
+    });
+    return true;
+  };
+
+  /**
+   * GO: we are calling `incoming.fromAddress` and they are calling us at the
+   * same moment. Both phones keep the call with the smaller callId: the side
+   * whose own call is the larger one cancels it (signed hang-up, like the
+   * user cancelling) and answers the other. See CALL_GLARE_FALLBACK_YIELD_MS.
+   */
+  const yieldToGlareCall = async (incoming: IncomingCall, ours: string) => {
+    if (callIdRef.current !== ours || callStateRef.current !== 'calling') {
+      return;
+    }
+    glareIncomingRef.current = null;
+    pushDirectVoiceUiLog('log', 'call glare: answering their call', {
+      oursTrunc: ours.slice(0, 8),
+      theirsTrunc: incoming.callId.slice(0, 8),
+    });
+    const timestamp = Date.now();
+    try {
+      const { signature, publicKey } = await authorizeCallSignal({
+        type: 'CALL_HANGUP',
+        callId: ours,
+        timestamp,
+      });
+      // Their call ended meanwhile, or ours was answered: keep ours.
+      if (
+        remoteEndedCallIdsRef.current.has(incoming.callId) ||
+        callIdRef.current !== ours ||
+        callStateRef.current !== 'calling'
+      ) {
+        return;
+      }
+      await callApiRef.current?.hangup?.(ours, signature, publicKey, timestamp);
+    } catch {
+      // Their side drops our request after 60 s anyway.
+    }
+    if (callIdRef.current !== ours || callStateRef.current !== 'calling') {
+      return;
+    }
+    // Straight from "calling" to "connected": refs only, so the call screen
+    // and the native call session never see an in-between ended state.
+    isOutboundCallRef.current = false;
+    callIdRef.current = null;
+    incomingCallRef.current = incoming;
+    callStateRef.current = 'ringing';
+    await acceptCall();
+  };
+
+  const handleCallGlare = (incoming: IncomingCall) => {
+    const ours = callIdRef.current;
+    if (!ours) return;
+    if (incoming.callId < ours) {
+      void yieldToGlareCall(incoming, ours);
+      return;
+    }
+    glareIncomingRef.current = { ...incoming, arrivedAt: Date.now() };
+    // They will cancel theirs and answer ours: not a missed call.
+    rememberGlareCallId(incoming.callId);
+    pushDirectVoiceUiLog('log', 'call glare: ours is kept; waiting', {
+      oursTrunc: ours.slice(0, 8),
+      theirsTrunc: incoming.callId.slice(0, 8),
+    });
+    window.setTimeout(() => {
+      if (glareIncomingRef.current?.callId !== incoming.callId) return;
+      void yieldToGlareCall(incoming, ours);
+    }, CALL_GLARE_FALLBACK_YIELD_MS);
+  };
 
   callIpcHandlerRef.current = async (event: string, payload: unknown) => {
     const p = payload as Record<string, unknown>;
@@ -3459,6 +3839,7 @@ export function useVoiceCall(
         const incCallId = p.callId as string;
         const incFrom = p.fromAddress as string;
         const incChatId = p.chatId as string;
+        const incArrivedAt = Date.now();
 
         const rejectIncoming = async (reason: string) => {
           const rejectTs = Date.now();
@@ -3490,24 +3871,49 @@ export function useVoiceCall(
           }
           if (
             optionsRef.current.skipDirectFriendValidation !== true &&
-            !dmFriendsByAddressRef.current[incFrom]
+            !dmFriendsByAddressRef.current[incFrom] &&
+            !(await restoreDmFriendForIncomingCall(incFrom))
           ) {
             await rejectIncoming('not_friend');
             break;
           }
         }
 
-        if (callStateRef.current !== 'idle') break;
+        // Cancelled (or answered elsewhere) while the friend restore read
+        // the history: nothing to ring.
+        if (remoteEndedCallIdsRef.current.has(incCallId)) break;
+        if (callStateRef.current !== 'idle') {
+          if (
+            isCapacitor() &&
+            isDirectVoiceCallChatId(incChatId) &&
+            callStateRef.current === 'calling' &&
+            isOutboundCallRef.current &&
+            peerAddressRef.current === incFrom &&
+            activeCallChatIdRef.current === incChatId &&
+            callIdRef.current &&
+            callIdRef.current !== incCallId
+          ) {
+            handleCallGlare({
+              callId: incCallId,
+              fromAddress: incFrom,
+              chatId: incChatId,
+            });
+          }
+          break;
+        }
         updateIncomingCall({
           callId: incCallId,
           fromAddress: incFrom,
           chatId: incChatId,
         });
         updateCallState('ringing');
+        // GO: a ring that woke the screen is not the user looking at GO.
+        noteIncomingRing(incArrivedAt);
         break;
       }
 
       case 'call:accepted': {
+        if (callIdRef.current === p.callId) glareIncomingRef.current = null;
         if (
           callIdRef.current !== p.callId ||
           callStateRef.current !== 'calling'
@@ -3579,11 +3985,40 @@ export function useVoiceCall(
 
       case 'call:hangup': {
         const hid = p.callId as string;
+        if (glareIncomingRef.current?.callId === hid) {
+          glareIncomingRef.current = null;
+        }
+        if (hid) {
+          const ended = remoteEndedCallIdsRef.current;
+          const now = Date.now();
+          ended.set(hid, now);
+          if (ended.size > 64) {
+            for (const [id, at] of ended) {
+              if (now - at > 120_000 || ended.size > 64) ended.delete(id);
+            }
+          }
+        }
         const matchesOutboundOrActive = callIdRef.current === hid;
         const matchesRingingIncoming =
           callStateRef.current === 'ringing' &&
           incomingCallRef.current?.callId === hid;
         if (!matchesOutboundOrActive && !matchesRingingIncoming) break;
+        if (
+          p.reason === 'timeout' &&
+          matchesOutboundOrActive &&
+          callStateRef.current === 'calling' &&
+          isOutboundCallRef.current
+        ) {
+          // Rang out for 60 s: say so instead of just closing the screen.
+          showGlobalCallSnack(
+            'info',
+            i18n.t('core:voice_call.no_answer', {
+              name:
+                peerDisplayNameRef.current ||
+                shortenCallPeerAddress(peerAddressRef.current),
+            })
+          );
+        }
         endCall(false);
         break;
       }
@@ -3841,6 +4276,7 @@ export function useVoiceCall(
   const acceptCall = useCallback(async () => {
     const incoming = incomingCallRef.current;
     if (!incoming || callStateRef.current !== 'ringing') return;
+    noteUserAttention();
     if (
       optionsRef.current.skipSystemReadiness !== true &&
       !(await isSystemReadyForCall(showSystemNotReadyForCall))
@@ -3921,6 +4357,7 @@ export function useVoiceCall(
   ]);
 
   const rejectCall = useCallback(async () => {
+    noteUserAttention();
     const incoming = incomingCallRef.current;
     if (!incoming) return;
 

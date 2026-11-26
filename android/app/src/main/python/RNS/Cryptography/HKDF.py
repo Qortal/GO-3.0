@@ -32,11 +32,19 @@ import hashlib
 from math import ceil
 from RNS.Cryptography import HMAC
 
+# Precomputed byte-permutation tables used to key the inner
+# and outer hashing states of the HMAC construction
+trans_5C = bytes((x ^ 0x5C) for x in range(256))
+trans_36 = bytes((x ^ 0x36) for x in range(256))
+
+# Precomputed HKDF counter bytes
+_counters = [bytes([(i + 1) % 0x100]) for i in range(0x100)]
+
+# Qortal patch (backport of RNS 1.5.5): keys the HMAC once per derivation
+# instead of building a new HMAC object for every 32 bytes of output.
 def hkdf(length=None, derive_from=None, salt=None, context=None):
     hash_len = 32
-
-    def hmac_sha256(key, data):
-        return HMAC.new(key, data).digest()
+    hash_block_size = 64
 
     if length == None or length < 1:
         raise ValueError("Invalid output key length")
@@ -50,13 +58,24 @@ def hkdf(length=None, derive_from=None, salt=None, context=None):
     if context == None:
         context = b""
 
-    pseudorandom_key = hmac_sha256(salt, derive_from)
+    # The pseudorandom key is always a 32-byte digest, so it never needs the
+    # long-key branch of the HMAC key schedule
+    pseudorandom_key = HMAC.new(salt, derive_from).digest()
+    key = pseudorandom_key.ljust(hash_block_size, b"\x00")
+    inner_state = hashlib.sha256(key.translate(trans_36))
+    outer_state = hashlib.sha256(key.translate(trans_5C))
 
     block = b""
-    derived = b""
+    derived = bytearray()
 
     for i in range(ceil(length / hash_len)):
-        block = hmac_sha256(pseudorandom_key, block + context + bytes([(i + 1)%(0xFF+1)]))
+        inner = inner_state.copy()
+        inner.update(block + context + _counters[i & 0xFF])
+
+        outer = outer_state.copy()
+        outer.update(inner.digest())
+
+        block = outer.digest()
         derived += block
 
-    return derived[:length]
+    return bytes(derived[:length])

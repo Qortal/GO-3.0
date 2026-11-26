@@ -387,6 +387,7 @@ describe('GO call port against a Hub 3.0.3 peer', () => {
         endpoint('c.example', now + 50 * 60_000),
         endpoint('d.example', now + 30 * 60_000),
       ]);
+      // Only two known: the call waits (briefly) for Python's fresh list.
       const servers = await hub().getIceServers();
       const expected = [
         'stun:c.example:3478',
@@ -431,6 +432,24 @@ describe('GO call port against a Hub 3.0.3 peer', () => {
       ]);
     });
 
+    it('with three or more servers known, a call does not wait for python', async () => {
+      announce('a.example');
+      announce('b.example');
+      announce('c.example');
+      vi.advanceTimersByTime(1_000);
+      replyWith([endpoint('fresh.example', Date.now() + 60 * 60_000)]);
+      // A busy phone answers the pull seconds later: the call goes on with
+      // what it knows.
+      const first = await hub().getIceServers();
+      expect(first.map((server) => server.urls).sort()).toEqual([
+        'stun:a.example:3478',
+        'stun:b.example:3478',
+        'stun:c.example:3478',
+      ]);
+      await vi.advanceTimersByTimeAsync(10);
+      expect(urls()).toEqual(['stun:fresh.example:3478']);
+    });
+
     it('keeps a server announced while the reply was on its way', async () => {
       announce('stale.example');
       vi.advanceTimersByTime(1_000);
@@ -438,6 +457,7 @@ describe('GO call port against a Hub 3.0.3 peer', () => {
       const pending = hub().getIceServers();
       announce('late.example');
       await pending;
+      await vi.advanceTimersByTimeAsync(10);
       expect(urls()).toEqual(['stun:late.example:3478', 'stun:c.example:3478']);
     });
 

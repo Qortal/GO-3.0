@@ -13,9 +13,15 @@ const compactIdentity = (value: unknown) => {
 export const DirectFriendEventRow = ({
   message,
   myAddress,
+  mutual = false,
 }: {
   message: any;
   myAddress: string;
+  /**
+   * The other side added back too (its event is in this chat): an old
+   * "calls unlock when they add you back" no longer applies.
+   */
+  mutual?: boolean;
 }) => {
   const theme = useTheme();
   const { t } = useTranslation('core');
@@ -28,10 +34,14 @@ export const DirectFriendEventRow = ({
     actorIsMe
       ? event?.callsAvailable
         ? 'dm_friend_events.you_added_available'
-        : 'dm_friend_events.you_added_pending'
+        : mutual
+          ? 'dm_friend_events.you_added'
+          : 'dm_friend_events.you_added_pending'
       : event?.callsAvailable
         ? 'dm_friend_events.they_added_available'
-        : 'dm_friend_events.they_added_pending',
+        : mutual
+          ? 'dm_friend_events.they_added'
+          : 'dm_friend_events.they_added_pending',
     { name: actorIsMe ? target : actor }
   );
 

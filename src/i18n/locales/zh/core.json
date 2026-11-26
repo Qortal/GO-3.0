@@ -513,8 +513,10 @@
   "devmode_apps": "开发模式应用程序",
   "directory": "目录",
   "dm_friend_events": {
+    "they_added": "{{name}} 已将你添加为好友。",
     "they_added_available": "{{name}} 已将你添加为好友。现在可以通话了。",
     "they_added_pending": "{{name}} 已将你添加为好友。将对方也添加为好友即可启用通话。",
+    "you_added": "你已将 {{name}} 添加为好友。",
     "you_added_available": "你已将 {{name}} 添加为好友。现在可以通话了。",
     "you_added_pending": "你已将 {{name}} 添加为好友。对方也添加你后即可通话。"
   },
@@ -626,6 +628,8 @@
     "locked_note": "GO 仍保持锁定，只显示此通话。",
     "message": "消息",
     "minimize": "最小化通话",
+    "missed_call_body": "点按打开聊天。",
+    "missed_call_title": "来自 {{name}} 的未接来电",
     "mute": "静音",
     "muted": "已静音",
     "ongoing_call": "正在通话",
@@ -1937,6 +1941,7 @@
   "video_fetching": "正在从 Qortal 网络获取视频...",
   "voice_call": {
     "failed": "语音通话失败",
+    "no_answer": "{{name}} 无人接听。",
     "rejected_declined": "对方拒绝了通话。",
     "rejected_media": "通话已结束 — 对方的麦克风可能不可用。",
     "rejected_not_friend": "通话被拒绝 — {{name}} 未将你加为好友。"

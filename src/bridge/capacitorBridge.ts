@@ -1188,6 +1188,10 @@ const communityStunCache = createCommunityStunCache({
 const COMMUNITY_STUN_EMPTY_POOL_WAIT_MS = 1_600;
 /** get_community_stun_endpoints from a call: python answers from memory. */
 const COMMUNITY_STUN_PULL_TIMEOUT_MS = 5_000;
+/** This many known servers: a call does not wait for Python's fresh list. */
+const COMMUNITY_STUN_NO_WAIT_MIN_SERVERS = 3;
+/** Fewer known: wait this long at most for the fresh list. */
+const COMMUNITY_STUN_SHORT_PULL_WAIT_MS = 1_500;
 
 /** Live announced servers first, then probe-verified cached ones; at most 6. */
 const communityIceServersForCalls = (): { urls: string }[] => {
@@ -3109,6 +3113,47 @@ export function installReticulumBridges(): void {
     announce: publish,
     heartbeat: publish,
     offline: publish,
+    scheduleSignedHeartbeats: async (address, envelopes, append) => {
+      try {
+        const resp = await presenceCommandWithResult(
+          'schedule_presence_heartbeats',
+          { address, envelopes, ...(append ? { append: true } : {}) },
+          20_000
+        );
+        const scheduled = Number(asObject(resp.payload)?.scheduled);
+        return {
+          success: resp.ok !== false,
+          ...(Number.isFinite(scheduled) ? { scheduled } : {}),
+        };
+      } catch {
+        return { success: false };
+      }
+    },
+    getCallEndpointLastSeen: (address: string) => {
+      const endpoints = accountEndpoints.get(String(address || '').trim());
+      if (!endpoints) return null;
+      const localHash = (
+        getMobileReticulumInfo().destinationHash || ''
+      ).toLowerCase();
+      let latest = 0;
+      for (const [hash, entry] of endpoints) {
+        if (hash === localHash) continue;
+        latest = Math.max(latest, Number(entry.lastSeen) || 0);
+      }
+      return latest > 0 ? latest : null;
+    },
+    cancelSignedHeartbeats: async () => {
+      try {
+        const resp = await presenceCommandWithResult(
+          'cancel_presence_heartbeats',
+          {},
+          10_000
+        );
+        return { success: resp.ok !== false };
+      } catch {
+        return { success: false };
+      }
+    },
     getStatus: async (address: string) => {
       const sessions = liveSessions().filter((s) => s.address === address);
       const lastSeen = sessions.reduce((m, s) => Math.max(m, s.lastSeen), 0);
@@ -3153,11 +3198,31 @@ export function installReticulumBridges(): void {
   window.hub = {
     getBootstrapIceServers: () => communityIceServersForCalls(),
     getIceServers: async () => {
-      try {
-        await pullCommunityStunEndpoints(COMMUNITY_STUN_PULL_TIMEOUT_MS);
-      } catch {
+      const pull = pullCommunityStunEndpoints(
+        COMMUNITY_STUN_PULL_TIMEOUT_MS
+      ).catch(() => {
         // Cached community servers (if any) still let WebRTC try; Reticulum
         // remains the media fallback when ICE is empty.
+      });
+      // With enough servers already known, WebRTC starts with them at once
+      // and the pull refreshes the list for the next call: on a busy phone
+      // Python answers the pull only after its queue (seen ~6 s on a Galaxy
+      // S8+), and the call's audio stays on Reticulum until WebRTC is up.
+      // With only one or two known (just after a restart), one dead server
+      // means no srflx candidate and a failed ICE: wait a little for the
+      // fresh list. With none, wait for it as before.
+      const known = communityIceServersForCalls().length;
+      if (known === 0) {
+        await pull;
+      } else if (known < COMMUNITY_STUN_NO_WAIT_MIN_SERVERS) {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        await Promise.race([
+          pull,
+          new Promise<void>((resolve) => {
+            timer = setTimeout(resolve, COMMUNITY_STUN_SHORT_PULL_WAIT_MS);
+          }),
+        ]);
+        if (timer !== undefined) clearTimeout(timer);
       }
       return communityIceServersWithProbing();
     },

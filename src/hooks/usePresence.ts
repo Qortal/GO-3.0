@@ -20,6 +20,12 @@ import {
   createRouteBoundId,
   routeBoundIdMatchesDestination,
 } from '../lib/reticulum/routeBoundId';
+import {
+  isSignedHeartbeatHandover,
+  planSignedHeartbeats,
+  SIGNED_HEARTBEAT_HIDE_DELAY_MS,
+} from './presenceHeartbeatPlan';
+import { readAutoLockTimeoutFromStorage } from '../lib/autoLock';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -647,6 +653,113 @@ export function usePresence(): {
       }
     };
   }, [isAuthenticated, sendHeartbeat, setIsIdle]);
+
+  // ── Heartbeats signed in advance while GO is off screen (Android) ─────────
+  //
+  // Off screen on battery the page freezes and stops heartbeating, so after
+  // ~90 s friends see the phone offline and cannot call it. When GO leaves
+  // the screen, sign the next ~2 h of heartbeats and let Python publish each
+  // at its time; back on screen (or signed out) they are dropped. See
+  // presenceHeartbeatPlan.ts and qortal_presence_host.py.
+  useEffect(() => {
+    if (!isAuthenticated || !isCapacitor()) return undefined;
+    let generation = 0;
+    const cancelSigned = () => {
+      generation += 1;
+      void window.presence?.cancelSignedHeartbeats?.().catch(() => {});
+    };
+    const scheduleSigned = async () => {
+      const mine = ++generation;
+      const schedule = window.presence?.scheduleSignedHeartbeats;
+      if (!schedule || !hasAnnouncedRef.current) return;
+      const ui = userInfoRef.current;
+      if (!ui?.address || !ui?.publicKey) return;
+      const status = getEffectiveStatus();
+      // GO's auto-lock forces Idle when it fires; the signed ones follow it.
+      const lockMinutes = readAutoLockTimeoutFromStorage();
+      const plan = planSignedHeartbeats({
+        now: Date.now(),
+        lastActivityAt: lastActivityRef.current,
+        status,
+        idleAfterMs:
+          lockMinutes > 0
+            ? Math.min(IDLE_TIMEOUT_MS, lockMinutes * 60_000)
+            : IDLE_TIMEOUT_MS,
+      });
+      if (plan.length === 0) {
+        cancelSigned();
+        return;
+      }
+      const sessionId = await ensureRouteBoundSessionId();
+      if (!sessionId || mine !== generation) return;
+      const envelopes: PresenceEnvelope[] = [];
+      let handedOver = 0;
+      const handOver = async () => {
+        const fresh = envelopes.slice(handedOver);
+        if (fresh.length === 0 || mine !== generation) return;
+        const append = handedOver > 0;
+        handedOver = envelopes.length;
+        await schedule(ui.address, fresh, append).catch(() => ({
+          success: false,
+        }));
+      };
+      for (const planned of plan) {
+        if (mine !== generation || !document.hidden) return;
+        const payload: PresenceHeartbeatPayload = {
+          address: ui.address,
+          publicKey: ui.publicKey,
+          sessionId,
+          status: planned.status,
+        };
+        let signature: string;
+        try {
+          signature = await signPresenceFields({
+            ...payload,
+            timestamp: planned.timestamp,
+            type: 'PRESENCE_HEARTBEAT',
+          });
+        } catch {
+          break;
+        }
+        envelopes.push(
+          buildEnvelope(
+            'PRESENCE_HEARTBEAT',
+            payload,
+            planned.timestamp,
+            signature
+          )
+        );
+        if (isSignedHeartbeatHandover(envelopes.length, plan.length)) {
+          await handOver();
+        }
+      }
+      // Signing stopped early: hand over what was signed.
+      await handOver();
+    };
+    // A quick switch to another app and back signs nothing.
+    let hideTimer: ReturnType<typeof setTimeout> | null = null;
+    const clearHideTimer = () => {
+      if (hideTimer) clearTimeout(hideTimer);
+      hideTimer = null;
+    };
+    const onVisibilityChange = () => {
+      clearHideTimer();
+      if (document.hidden) {
+        hideTimer = setTimeout(() => {
+          hideTimer = null;
+          if (document.hidden) void scheduleSigned();
+        }, SIGNED_HEARTBEAT_HIDE_DELAY_MS);
+      } else {
+        cancelSigned();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      clearHideTimer();
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      cancelSigned();
+    };
+  }, [isAuthenticated, ensureRouteBoundSessionId, getEffectiveStatus]);
 
   // ── Native presence tick (Android) ────────────────────────────────────────
   //

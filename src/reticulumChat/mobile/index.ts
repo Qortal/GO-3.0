@@ -96,6 +96,8 @@ const INVOKE_METHODS = [
   'setCalendarReminder',
   'sendDirectTyping',
   'getDirectHistory',
+  // GO friend restore (lib/dm/dmFriendRestore).
+  'getOwnDirectFriendEvents',
   'searchDirectMessages',
   'getDirectHistoryFrom',
   'getDirectSummaries',

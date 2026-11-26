@@ -62,6 +62,11 @@ export type DirectChatHeaderCall = {
   connected: boolean;
   /** A call with this partner is ringing out. */
   ringing: boolean;
+  /**
+   * GO: the partner can be rung although shown offline (their GO was heard
+   * within the hour; lib/call/recentCallEndpoint). Defaults to peerOnline.
+   */
+  peerCallable?: boolean;
   blockedByFriend: boolean;
   blockedByP2p: boolean;
   /** Why a bad peer-to-peer connection blocks the call. */
@@ -227,15 +232,19 @@ export function DirectChatHeader({
   const showActions = !isNewChat && Boolean(partnerAddress) && !isSelfDirect;
 
   const callBusy = call.connected || call.ringing;
+  const peerCallable = call.peerCallable ?? peerOnline;
   const callDisabled = !(
-    (peerOnline && !callBusy && !call.blockedByFriend && !call.blockedByP2p) ||
+    (peerCallable &&
+      !callBusy &&
+      !call.blockedByFriend &&
+      !call.blockedByP2p) ||
     call.connected
   );
   const callTooltip = call.connected
     ? t('group:dm.end_call', { postProcess: 'capitalizeFirstChar' })
     : call.ringing
       ? ''
-      : !peerOnline
+      : !peerCallable
         ? t('core:presence.call_offline_tooltip')
         : call.blockedByFriend
           ? t('group:dm.add_friend_before_calling')
@@ -257,7 +266,7 @@ export function DirectChatHeader({
           // Warming up (peers receiving, not steady yet): "try again
           // shortly". No receiving peers at all: the Hub's own reason.
           showCallHint(
-            peerOnline &&
+            peerCallable &&
               !call.blockedByFriend &&
               call.blockedByP2p &&
               isCallNetworkWarmingUp()

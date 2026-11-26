@@ -26,6 +26,15 @@ export type DirectVoiceRtcState =
   | 'recovering'
   | 'closed';
 
+/** Why a connection WebRTC still calls connected may be gone (suspectPath). */
+export type DirectVoicePathSuspicion =
+  /** This phone's default network was replaced. */
+  | 'network-changed'
+  /** The peer's voice comes over Reticulum again, and no longer as RTP. */
+  | 'peer-on-reticulum'
+  /** No RTP from the peer for a while (it sends some even when muted). */
+  | 'rtp-silent';
+
 type DirectVoiceWebRtcTransportOptions = {
   offerer: boolean;
   getIceServers: () => Promise<RTCIceServer[]>;
@@ -71,6 +80,10 @@ const UNANSWERED_OFFER_EVENT_MAX_RETRIES = 5;
 const UNANSWERED_OFFER_MIN_DELAY_MS = 1_000;
 const SIGNAL_RESEND_MIN_INTERVAL_MS = 2_000;
 const ANSWER_RESEND_MAX_PER_GENERATION = 4;
+// How often a suspected path is looked at (suspectPath), and how long answers
+// to checks sent before that may still come in.
+const PATH_CHECK_INTERVAL_MS = 500;
+const PATH_CHECK_SETTLE_MS = 1_000;
 
 function nextGeneration(): string {
   return crypto.randomUUID();
@@ -127,6 +140,13 @@ export class DirectVoiceWebRtcTransport {
   private answerResends = 0;
   private answerResendTimer: ReturnType<typeof setTimeout> | null = null;
   private answerResendTimerGeneration = '';
+  private everOpen = false;
+  // suspectPath: since when (0 = not suspected), and the answered checks per
+  // candidate pair that say nothing about the path since then.
+  private pathSuspectedAt = 0;
+  private pathKnownResponses: Map<string, number> | null = null;
+  private pathKnownAt = 0;
+  private pathCheckTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private readonly options: DirectVoiceWebRtcTransportOptions) {}
 
@@ -136,6 +156,77 @@ export class DirectVoiceWebRtcTransport {
 
   isOpen(): boolean {
     return this.state === 'open' && this.pc?.connectionState === 'connected';
+  }
+
+  /**
+   * How long ago the newest audio packet from the peer was played, in ms.
+   * Infinity when none was in the last 10 s, null when the browser does not
+   * say. Cheap (no stats report).
+   */
+  inboundAudioAgeMs(): number | null {
+    const receiver = this.pc
+      ?.getReceivers?.()
+      .find((entry) => entry.track?.kind === 'audio');
+    if (typeof receiver?.getSynchronizationSources !== 'function') return null;
+    let newest = -Infinity;
+    for (const source of receiver.getSynchronizationSources()) {
+      if (source.timestamp > newest) newest = source.timestamp;
+    }
+    if (newest === -Infinity) return Infinity;
+    const age = performance.timeOrigin + performance.now() - newest;
+    // Sources older than 10 s are not listed: another clock than expected.
+    if (!Number.isFinite(age) || age < -1_000 || age > 11_000) return null;
+    return Math.max(0, age);
+  }
+
+  /**
+   * The connection may be gone before WebRTC can tell: it needs about 6 s to
+   * call one lost. Stops being open now, so the Reticulum fallback carries the
+   * audio at once, and restarts ICE 3 s later like after a lost connection.
+   * Opens again as soon as ICE shows that a path works: a new one was selected
+   * or the old one answered a check again. WebRTC fires no event for either
+   * while it still calls the connection connected.
+   *
+   * After 'network-changed' a recovery that is already under way starts over:
+   * its attempts were for another network. Returns whether anything changed.
+   * A restart made before WebRTC notices is an extra one (handleConnectionState
+   * starts the usual ones afresh), so none is missing later, when the peer may
+   * be reachable again.
+   */
+  suspectPath(reason: DirectVoicePathSuspicion): boolean {
+    const pc = this.pc;
+    if (this.closed || !this.everOpen || !pc) return false;
+    if (typeof pc.getStats !== 'function') return false;
+    const wasOpen = this.isOpen();
+    if (!wasOpen && reason !== 'network-changed') return false;
+    this.emitDiagnostic('path-suspected', { reason, wasOpen });
+    if (wasOpen || this.pathSuspectedAt) {
+      this.endPathSuspicion();
+      this.pathSuspectedAt = Date.now();
+      void this.checkSuspectedPath();
+    }
+    this.restartAttempts = 0;
+    if (reason === 'network-changed') this.lastRestartAt = 0;
+    this.clearDisconnectTimer();
+    this.scheduleRecovery();
+    return true;
+  }
+
+  /**
+   * The peer is heard over Reticulum again after a while without: one of the
+   * two had no network. The restarts made meanwhile reached nobody, so they no
+   * longer count, and the next one does not wait for their cooldown. Returns
+   * whether there were any (none on the answerer's side: its peer restarts).
+   */
+  peerHeardAgain(): boolean {
+    if (this.closed || !this.everOpen || this.restartAttempts === 0) {
+      return false;
+    }
+    this.emitDiagnostic('peer-heard-again', { attempts: this.restartAttempts });
+    this.restartAttempts = 0;
+    this.clearDisconnectTimer();
+    void this.tryRestart();
+    return true;
   }
 
   async start(): Promise<void> {
@@ -500,6 +591,8 @@ export class DirectVoiceWebRtcTransport {
   private handleConnectionState(): void {
     const state = this.pc?.connectionState;
     if (state === 'connected') {
+      // Still the state from before: checkSuspectedPath() decides.
+      if (this.pathSuspectedAt) return;
       this.restartAttempts = 0;
       this.clearDisconnectTimer();
       this.clearIceServerRefreshTimer();
@@ -508,9 +601,101 @@ export class DirectVoiceWebRtcTransport {
       this.setState(this.remoteAudioTrackSeen ? 'open' : 'connecting');
       return;
     }
+    // WebRTC has noticed by itself; its own states are enough again.
+    const suspectedAt = this.pathSuspectedAt;
+    this.endPathSuspicion();
     if (state === 'failed' || state === 'disconnected') {
+      if (suspectedAt && this.lastRestartAt >= suspectedAt) {
+        this.restartAttempts = 0;
+        this.lastRestartAt = 0;
+        this.clearDisconnectTimer();
+      }
       this.scheduleRecovery();
     }
+  }
+
+  private async checkSuspectedPath(): Promise<void> {
+    const pc = this.pc;
+    const since = this.pathSuspectedAt;
+    if (!pc || !since || this.closed) return;
+    let pairs: Awaited<ReturnType<typeof this.readCandidatePairs>> = null;
+    try {
+      pairs = await this.readCandidatePairs(pc);
+    } catch {
+      // Looked at again below.
+    }
+    if (this.pc !== pc || this.pathSuspectedAt !== since || this.closed) return;
+    if (pairs) {
+      const { selectedId, responses } = pairs;
+      const known = this.pathKnownResponses;
+      const settled = this.pathKnownAt - since >= PATH_CHECK_SETTLE_MS;
+      if (known && selectedId && pc.connectionState === 'connected') {
+        const answered = responses.get(selectedId) ?? 0;
+        const before = known.get(selectedId);
+        const works =
+          before === undefined ? answered > 0 : settled && answered > before;
+        if (works) {
+          this.endPathSuspicion();
+          this.emitDiagnostic('path-works', {
+            afterMs: Date.now() - since,
+            newPath: before === undefined,
+          });
+          this.handleConnectionState();
+          return;
+        }
+      }
+      if (!known) {
+        this.pathKnownResponses = responses;
+        this.pathKnownAt = Date.now();
+      } else if (!settled) {
+        for (const [id, answered] of responses) {
+          if (known.has(id)) known.set(id, answered);
+        }
+        this.pathKnownAt = Date.now();
+      }
+    }
+    this.clearPathCheckTimer();
+    this.pathCheckTimer = setTimeout(() => {
+      this.pathCheckTimer = null;
+      void this.checkSuspectedPath();
+    }, PATH_CHECK_INTERVAL_MS);
+  }
+
+  /** Answered connectivity checks per candidate pair, and the pair in use. */
+  private async readCandidatePairs(
+    pc: RTCPeerConnection
+  ): Promise<{ selectedId: string; responses: Map<string, number> } | null> {
+    const report = await pc.getStats();
+    let selectedId = '';
+    const responses = new Map<string, number>();
+    report.forEach((raw) => {
+      const stat = raw as unknown as Record<string, unknown>;
+      if (stat.type === 'transport') {
+        if (typeof stat.selectedCandidatePairId === 'string') {
+          selectedId = stat.selectedCandidatePairId;
+        }
+      } else if (
+        stat.type === 'candidate-pair' &&
+        typeof stat.id === 'string'
+      ) {
+        const count = Number(stat.responsesReceived);
+        responses.set(stat.id, Number.isFinite(count) ? count : 0);
+      }
+    });
+    return responses.size > 0 ? { selectedId, responses } : null;
+  }
+
+  private endPathSuspicion(): void {
+    this.pathSuspectedAt = 0;
+    this.pathKnownResponses = null;
+    this.pathKnownAt = 0;
+    this.clearPathCheckTimer();
+  }
+
+  private clearPathCheckTimer(): void {
+    if (!this.pathCheckTimer) return;
+    clearTimeout(this.pathCheckTimer);
+    this.pathCheckTimer = null;
   }
 
   private scheduleRecovery(): void {
@@ -589,6 +774,7 @@ export class DirectVoiceWebRtcTransport {
     this.clearLocalCandidateBatch();
     this.clearUnansweredOfferTimer();
     this.clearAnswerResendTimer();
+    this.endPathSuspicion();
     if (pc) {
       pc.ontrack = null;
       pc.onicecandidate = null;
@@ -962,9 +1148,11 @@ export class DirectVoiceWebRtcTransport {
       !this.isOpen() &&
       pc.signalingState === 'stable' &&
       pc.localDescription?.type === 'answer' &&
-      pc.connectionState !== 'connected' &&
-      pc.iceConnectionState !== 'connected' &&
-      pc.iceConnectionState !== 'completed'
+      // Suspected: "connected" is the old path.
+      (this.pathSuspectedAt > 0 ||
+        (pc.connectionState !== 'connected' &&
+          pc.iceConnectionState !== 'connected' &&
+          pc.iceConnectionState !== 'completed'))
     );
   }
 
@@ -1166,6 +1354,7 @@ export class DirectVoiceWebRtcTransport {
   }
 
   private setState(state: DirectVoiceRtcState): void {
+    if (state === 'open') this.everOpen = true;
     if (this.state === state) return;
     this.state = state;
     this.options.onState?.(state);

@@ -162,6 +162,10 @@ public class MainActivity extends BridgeActivity {
                     // A reload or navigation starts a signed-out page; login
                     // marks the session again (status service / presence).
                     BackgroundKeepAlive.get(MainActivity.this).setSessionActive(false);
+                    // Heartbeats the old page signed in advance would keep a
+                    // signed-out account looking online: drop them.
+                    ReticulumPlugin.feedPresenceFrame(
+                        KeepAlivePolicy.CANCEL_SIGNED_HEARTBEATS_FRAME, "page started");
                     // The screens that held FLAG_SECURE are gone with the old
                     // page; the new page asks again for what it shows (GO-37).
                     ScreenSecurityPlugin.onPageStarted(MainActivity.this.bridge);

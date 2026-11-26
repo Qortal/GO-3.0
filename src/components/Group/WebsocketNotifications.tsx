@@ -24,6 +24,7 @@ import {
   readChatAlertLastRunMark,
   rememberShownAlert,
   reticulumDmAlertKey,
+  reticulumDmMissedCallAlertKey,
   reticulumMentionAlertKey,
   unreadDirectMessageCount,
   wasAlertShown,
@@ -31,6 +32,7 @@ import {
   type ChatAlertCoalescer,
 } from '../../utils/reticulumChatAlerts';
 import { isCapacitor } from '../../utils/platform';
+import { isGlareCallId } from '../../lib/call/glareCallIds';
 import {
   getNotificationPermissionKey,
   getPermission,
@@ -74,6 +76,10 @@ const NOTIFICATION_AGE_MS = 3 * 24 * 60 * 60 * 1000;
 const QCHAT_MENTION_OS_NOTIFICATION_MAX_TRACKED = 500;
 const RETICULUM_DM_OS_NOTIFICATION_MAX_TRACKED = 500;
 const RETICULUM_DM_ALERT_DISMISS_DEBOUNCE_MS = 250;
+/** A missed call reported later than this after it ended stays in the bell only. */
+const MISSED_CALL_OS_ALERT_MAX_AGE_MS = 2 * 60 * 1000;
+/** Wait this long before a missed-call tray alert (answered elsewhere, seen). */
+const MISSED_CALL_OS_ALERT_SETTLE_MS = 4_000;
 
 const getNotificationCreatorTimestamp = (notification: {
   data?: { created?: number; timestamp?: number };
@@ -163,6 +169,7 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
   const initWebsocketRef = useRef<(() => Promise<void>) | null>(null);
   const qChatMentionOsNotifiedEventIdsRef = useRef<Set<string>>(new Set());
   const reticulumDmOsNotifiedEventIdsRef = useRef<Set<string>>(new Set());
+  const missedCallOsNotifiedRef = useRef<Set<string>>(new Set());
   // Catch-up DM and mention tray alerts (phone only) share one coalescer: at
   // most one sounding alert per 60 s, however many messages a catch-up
   // delivers at once. Live alerts post at once, as before.
@@ -344,7 +351,51 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
       );
     };
 
-    const addMissedCallNotification = (record: any) => {
+    const missedCallAlertTimers = new Set<number>();
+    const postMissedCallAlert = async (callId: string, peerAddress: string) => {
+      const unread = await Promise.resolve(
+        window.reticulumChat?.getDirectCallHistory?.(
+          myAddress,
+          peerAddress,
+          10,
+          true
+        )
+      ).catch(() => null);
+      const stillMissed =
+        Array.isArray(unread) &&
+        unread.some(
+          (item: any) =>
+            item?.callId === callId &&
+            item?.outcome === 'missed' &&
+            !(item?.readAt > 0)
+        );
+      if (!stillMissed || isHubBeingViewed()) return;
+      const friend = dmFriendsByAddressRef.current[peerAddress];
+      const senderName = friend?.name?.trim() || peerAddress;
+      void fireOsNotificationPayment(
+        {
+          appName: 'Q-Chat',
+          appService: 'INTERNAL',
+          event: 'RETICULUM_DM_MISSED_CALL',
+        },
+        i18n.t('core:go_call.missed_call_title', { name: senderName }),
+        i18n.t('core:go_call.missed_call_body'),
+        LogoSelected,
+        undefined,
+        {
+          from: peerAddress,
+          name: friend?.name,
+          reticulumDirectMessage: true,
+        },
+        {
+          alertKey: reticulumDmMissedCallAlertKey(peerAddress),
+          fromAddress: peerAddress,
+          notificationType: 'direct',
+        }
+      );
+    };
+
+    const addMissedCallNotification = (record: any, live = false) => {
       if (
         record?.ownerAddress !== myAddress ||
         record?.direction !== 'incoming' ||
@@ -357,6 +408,26 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
       if (!callId || !peerAddress) return;
       const friend = dmFriendsByAddressRef.current[peerAddress];
       const senderName = friend?.name?.trim() || peerAddress;
+      // GO: a call missed just now also goes to the phone's tray (once per
+      // call), like a phone's missed call; tapping it opens the DM. Older
+      // missed calls found at start only show in the bell.
+      const endedAt = Number(record.endedAt || 0);
+      if (
+        live &&
+        isCapacitor() &&
+        !missedCallOsNotifiedRef.current.has(callId) &&
+        endedAt > 0 &&
+        Date.now() - endedAt <= MISSED_CALL_OS_ALERT_MAX_AGE_MS
+      ) {
+        missedCallOsNotifiedRef.current.add(callId);
+        // Settle first: a call answered on another device of the account
+        // (its history syncs here) or seen meanwhile is not missed.
+        const timer = window.setTimeout(() => {
+          missedCallAlertTimers.delete(timer);
+          void postMissedCallAlert(callId, peerAddress);
+        }, MISSED_CALL_OS_ALERT_SETTLE_MS);
+        missedCallAlertTimers.add(timer);
+      }
       setPaymentNotifications((previous) => [
         ...previous.filter((item) => item?.data?.reticulumDmCallId !== callId),
         {
@@ -379,13 +450,17 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
     };
     void window.reticulumChat
       ?.getDirectCallHistory(myAddress, undefined, 50, true)
-      .then((records) => records.forEach(addMissedCallNotification))
+      .then((records) =>
+        records.forEach((record) => addMissedCallNotification(record))
+      )
       .catch(() => undefined);
     const offCalls = window.reticulumChat?.onDirectCallHistory?.(
       ({ record }: any) => {
         if (record?.ownerAddress !== myAddress) return;
         if (record?.outcome === 'missed') {
-          addMissedCallNotification(record);
+          // Call glare: they cancelled theirs to answer ours; not missed.
+          if (isGlareCallId(String(record?.callId || ''))) return;
+          addMissedCallNotification(record, true);
           return;
         }
         const callId = String(record?.callId || '');
@@ -404,6 +479,7 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
           ?.getDirectCallHistory(myAddress, peer, 1, true)
           .then((records) => {
             if (records.length > 0) return;
+            dismissOsNotificationByKey(reticulumDmMissedCallAlertKey(peer));
             setPaymentNotifications((previous) =>
               previous.filter(
                 (item) =>
@@ -422,6 +498,8 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
       off?.();
       offCalls?.();
       offCallSummary?.();
+      missedCallAlertTimers.forEach((timer) => window.clearTimeout(timer));
+      missedCallAlertTimers.clear();
       dmAlertDismissTimers.forEach((timer) => window.clearTimeout(timer));
       dmAlertDismissTimers.clear();
       // Chat turned off or account changed: waiting alerts are stale.

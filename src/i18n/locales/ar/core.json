@@ -537,8 +537,10 @@
   "devmode_apps": "تطبيقات وضع المطور",
   "directory": "دليل",
   "dm_friend_events": {
+    "they_added": "أضافك {{name}} كصديق.",
     "they_added_available": "أضافك {{name}} كصديق. أصبحت المكالمات متاحة الآن.",
     "they_added_pending": "أضافك {{name}} كصديق. أضفه أيضًا لتفعيل المكالمات.",
+    "you_added": "لقد أضفت {{name}} كصديق.",
     "you_added_available": "لقد أضفت {{name}} كصديق. أصبحت المكالمات متاحة الآن.",
     "you_added_pending": "لقد أضفت {{name}} كصديق. ستتاح المكالمات عندما يضيفك أيضًا."
   },
@@ -650,6 +652,8 @@
     "locked_note": "يبقى GO مقفلًا. تظهر هذه المكالمة فقط.",
     "message": "رسالة",
     "minimize": "تصغير المكالمة",
+    "missed_call_body": "انقر لفتح المحادثة.",
+    "missed_call_title": "مكالمة فائتة من {{name}}",
     "mute": "كتم",
     "muted": "مكتوم",
     "ongoing_call": "مكالمة جارية",
@@ -1977,6 +1981,7 @@
   "video_fetching": "جارٍ جلب الفيديو من شبكة كورتال...",
   "voice_call": {
     "failed": "فشلت المكالمة الصوتية",
+    "no_answer": "لا رد من {{name}}.",
     "rejected_declined": "رفض الشخص الآخر المكالمة.",
     "rejected_media": "انتهت المكالمة — قد يكون الميكروفون لديه غير متاح.",
     "rejected_not_friend": "تم رفض المكالمة — {{name}} لا يضيفك كصديق."

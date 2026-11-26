@@ -74,6 +74,61 @@ describe('hosted call managers: GO wiring', () => {
     expect(bob.history.map((h) => h.outcome)).toEqual(['missed']);
   });
 
+  it('a friend heard 10 min ago (shown offline) still rings; one heard over an hour ago does not', async () => {
+    const network = new FakePythonNetwork();
+    const alice = makePeer(network, 'alice', 31, 0x7a);
+    const bob = makePeer(network, 'bob', 32, 0x7b);
+    knowEachOther(alice, bob);
+    await registerLocal(alice);
+    await registerLocal(bob);
+    // Bob's phone stopped heartbeating 10 minutes ago (page frozen off
+    // screen): presence calls him offline, but the call still goes out.
+    alice.endpoints.set(bob.wallet.address, [
+      { destinationHash: bob.dest, lastSeen: Date.now() - 10 * 60_000 },
+    ]);
+    expect(
+      alice.stack.presence.getRoutesForAddress(bob.wallet.address)
+    ).toEqual([]);
+    const { callId } = await placeCall(alice, bob);
+    await vi.waitFor(
+      () =>
+        expect(eventsOf(bob.callEvents, 'call:incoming')).toEqual([
+          expect.objectContaining({ callId }),
+        ]),
+      WAIT
+    );
+
+    // An endpoint older than the call window is not a route.
+    const carol = makePeer(network, 'carol', 33, 0x7c);
+    await registerLocal(carol);
+    alice.endpoints.set(carol.wallet.address, [
+      { destinationHash: carol.dest, lastSeen: Date.now() - 61 * 60_000 },
+    ]);
+    await expect(placeCall(alice, carol)).rejects.toThrow();
+    await new Promise((r) => setTimeout(r, 30));
+    expect(eventsOf(carol.callEvents, 'call:incoming')).toEqual([]);
+  });
+
+  it('call routes: fresh endpoints only when there are any; the hour-old ones only as a fallback', async () => {
+    const network = new FakePythonNetwork();
+    const alice = makePeer(network, 'alice', 34, 0x7d);
+    const bob = makePeer(network, 'bob', 35, 0x7e);
+    await registerLocal(alice);
+    await registerLocal(bob);
+    const staleDest = 'ab'.repeat(16);
+    alice.endpoints.set(bob.wallet.address, [
+      { destinationHash: bob.dest, lastSeen: Date.now() },
+      { destinationHash: staleDest, lastSeen: Date.now() - 20 * 60_000 },
+    ]);
+    const { callId } = await placeCall(alice, bob);
+    const record = (
+      alice.stack.callManager as unknown as {
+        activeCalls: Map<string, { invitedReticulumPeerHashes?: Set<string> }>;
+      }
+    ).activeCalls.get(callId);
+    expect([...(record?.invitedReticulumPeerHashes ?? [])]).toEqual([bob.dest]);
+  });
+
   it('cancel before answer: callee gets one remote hang-up, caller none', async () => {
     const network = new FakePythonNetwork();
     const alice = makePeer(network, 'alice', 13, 0x2a);

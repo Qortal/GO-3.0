@@ -25,9 +25,14 @@ final class DefaultNetworkSwitch {
         return switched;
     }
 
-    /** {@code handle} went away; only the current default network counts. */
-    synchronized void onLost(long handle) {
-        if (hasCurrent && handle == current) currentLost = true;
+    /**
+     * {@code handle} went away; only the current default network counts.
+     * Returns whether it was that one.
+     */
+    synchronized boolean onLost(long handle) {
+        if (!hasCurrent || handle != current) return false;
+        currentLost = true;
+        return true;
     }
 
     /**

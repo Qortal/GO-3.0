@@ -3,6 +3,7 @@ import {
   CHAT_ALERT_CLOCK_SKEW_MS,
   chatAlertFloor,
 } from './reticulumChatAlerts';
+import { isRingWakeUnattended } from './ringWakeAttention';
 
 export const RETICULUM_DM_NOTIFICATION_CLOCK_SKEW_MS = CHAT_ALERT_CLOCK_SKEW_MS;
 
@@ -15,8 +16,16 @@ type ReticulumDmNotificationEvent = {
   readByOwner?: unknown;
 };
 
+/**
+ * True while the user is looking at GO/Hub. A screen woken by an incoming
+ * call that nobody has touched yet does not count (utils/ringWakeAttention).
+ */
 export function isHubBeingViewed(): boolean {
-  return document.visibilityState === 'visible' && document.hasFocus();
+  return (
+    document.visibilityState === 'visible' &&
+    document.hasFocus() &&
+    !isRingWakeUnattended()
+  );
 }
 
 export function shouldNotifyForReticulumDm({

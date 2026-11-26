@@ -52,10 +52,14 @@ class BackboneInterface:
 
 
 class Link:
+    ACTIVE, CLOSED = 2, 4
+
     def __init__(self, n):
         self.n = n
+        self.status = Link.ACTIVE
 
     def teardown(self):
+        self.status = Link.CLOSED
         calls.append(("teardown", self.n))
 
 
@@ -122,6 +126,7 @@ class Transport:
 def _install_stubs():
     rns = types.ModuleType("RNS")
     rns.Transport = Transport
+    rns.Link = Link
     rns.log = lambda *a, **k: None
     rns.LOG_ERROR = rns.LOG_WARNING = rns.LOG_DEBUG = rns.LOG_INFO = 0
     interfaces_pkg = types.ModuleType("RNS.Interfaces")
@@ -192,6 +197,16 @@ def test_pause_resume():
     assert not b.online, "reconnect loop must stop while paused"
     h.resume_network()
     assert _wait_for(lambda: a.online and b.online)
+
+    # ── two hubs are back: the neighbours are dialled once ──
+    for _ in range(2):
+        h.pause_network()
+        del calls[:]
+        h.resume_network()
+        assert _wait_for(lambda: _tunnels("a") == 1 and _tunnels("b") == 1)
+        time.sleep(0.1)
+        assert a.online and b.online
+        assert calls.count(("maint", "network_resume")) == 1
 
     # ── overlapping resumes: a stale dial must not hijack the new one ──
     h.pause_network()

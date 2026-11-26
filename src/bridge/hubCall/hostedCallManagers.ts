@@ -67,6 +67,9 @@ import {
 
 export type { DirectCallHistoryUpdate } from '../../../electron/src/call';
 
+/** See HostedCallManagersDeps.callRouteMaxAgeMs. */
+export const DEFAULT_CALL_ROUTE_MAX_AGE_MS = 60 * 60 * 1_000;
+
 export type HostedCallManagersDeps = {
   transport: HubCallPythonTransport;
   presenceSource: MobilePresenceSource;
@@ -108,6 +111,14 @@ export type HostedCallManagersDeps = {
   audioDataPlane?: boolean;
   /** Presence endpoint freshness for routes (default 90 s). */
   presenceMaxAgeMs?: number;
+  /**
+   * How old an endpoint may be for CallManager's call routes (who a call
+   * request goes to). Default 1 h: a phone off screen on battery stops
+   * heartbeating but still receives a call request and rings natively
+   * (lib/call/recentCallEndpoint). The group/media side keeps
+   * presenceMaxAgeMs. 0 = same as presenceMaxAgeMs.
+   */
+  callRouteMaxAgeMs?: number;
   /** Adapter command timeout (tests). */
   commandTimeoutMs?: number;
 };
@@ -402,8 +413,35 @@ export function createHostedCallManagers(
     ...(deps.presenceMaxAgeMs ? { maxAgeMs: deps.presenceMaxAgeMs } : {}),
     getLocalDestinationHash: () => bridge.getLocalDestinationHash(),
   });
+  const callRouteMaxAgeMs =
+    deps.callRouteMaxAgeMs === undefined
+      ? DEFAULT_CALL_ROUTE_MAX_AGE_MS
+      : deps.callRouteMaxAgeMs;
+  // Fresh routes when there are any (a decline from the live device then
+  // ends the call: CallManager waits for every invited endpoint); the older
+  // ones only when nothing fresh exists (a phone asleep off screen).
+  const recentPresence =
+    callRouteMaxAgeMs > 0
+      ? new MobilePresenceAdapter(deps.presenceSource, {
+          maxAgeMs: callRouteMaxAgeMs,
+          getLocalDestinationHash: () => bridge.getLocalDestinationHash(),
+        })
+      : null;
+  const callPresence = recentPresence
+    ? {
+        getRoutesForAddress: (address: string) => {
+          const fresh = presence.getRoutesForAddress(address);
+          return fresh.length > 0
+            ? fresh
+            : recentPresence.getRoutesForAddress(address);
+        },
+        getRouteForAddress(address: string) {
+          return this.getRoutesForAddress(address)[0] ?? null;
+        },
+      }
+    : presence;
   const reticulumEndpointsOf = (address: string): string[] =>
-    presence
+    callPresence
       .getRoutesForAddress(address)
       .filter(
         (route): route is Extract<typeof route, { kind: 'reticulum' }> =>
@@ -417,7 +455,10 @@ export function createHostedCallManagers(
 
   const presenceForManagers = presence as unknown as PresenceManager;
   const bridgeForManagers = bridge as unknown as ReticulumBridge;
-  const callManager = new CallManager(presenceForManagers, bridgeForManagers);
+  const callManager = new CallManager(
+    callPresence as unknown as PresenceManager,
+    bridgeForManagers
+  );
   const groupCallManager = new GroupCallManager(
     presenceForManagers,
     bridgeForManagers

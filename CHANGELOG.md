@@ -63,6 +63,21 @@ desktop Hub. The format is based on
   bookmarks as they are saved. What the phone records of them stays in GO's
   encrypted storage; if that storage can't be read, the phone takes them from
   QDN again instead of removing them everywhere.
+- **Friends can call You while GO is in Your pocket** _(mobile)_ — off screen
+  on battery Android freezes GO's page, so its presence stopped and other
+  devices showed the phone offline about 2 minutes later, with the call
+  button off. When GO leaves the screen it now signs the next 2 hours of
+  normal presence messages, and the Reticulum service sends each at its time
+  ("idle" after 30 minutes, or sooner at auto-lock). Dropped when GO comes
+  back, signs out or is swiped away; none while You are invisible. Hubs see
+  ordinary, fresh presence.
+- **Call a friend who was just online** _(mobile)_ — a friend who shows
+  offline can still be called if their device was heard within the last
+  hour. The dot stays grey, a fresh route is always used first, and a friend
+  who signed out can't be called.
+- **Missed-call notification** _(mobile)_ — a 1:1 call missed while You aren't
+  looking at GO posts "Missed call from …" in Android; tapping it opens the
+  chat. It goes away once the missed call is read. In 12 languages.
 
 ### Changed
 
@@ -103,6 +118,49 @@ desktop Hub. The format is based on
   failed while reading worked. GO now always asks Core's own key test, which
   runs the same check as a publish, and asks for the key when Core would
   refuse it. A tunnel Core does see as loopback still works with no key.
+- **GO-to-GO calls declined as "not a friend"** _(shared)_ — friends are kept
+  on each device, so a GO signed in later (a new phone, or a friend added on
+  another device) declined every incoming 1:1 call and kept its own call
+  button off. The friend is now restored from the account's own signed
+  "added as a friend" message in that DM. A friend deleted on another device
+  is removed here too _(mobile)_.
+- **Calling each other at the same moment** _(mobile)_ — both phones stayed on
+  "Calling…" for 60 s. Now one phone drops its own call and answers the
+  other's. With a desktop Hub, when the Hub's call should give way, GO waits
+  15 s for it and then gives way itself.
+- **Missed calls and messages marked as read by the ring** _(mobile)_ — a ring
+  that woke the screen counted as You looking at the open chat. It now counts
+  only after a touch.
+- **Answered call stuck on "connected" with no sound** _(shared)_ — when the
+  caller's audio key never arrived, the call stayed open with the microphone
+  on. It now ends after 65 s, unless the direct link carries the audio.
+- **Calls switch to Direct sooner** _(mobile)_ — a call waited for Python's
+  STUN server list first (about 6 s on an older phone). It now starts with
+  the servers GO knows, waiting at most 1.5 s when it knows only one or two.
+- **"No answer from …"** _(shared)_ — a call that rings out says so instead of
+  just closing. In 12 languages.
+- **Friend rows in DMs** _(shared)_ — they no longer say "Add them back to
+  enable calls" once both added each other. In 12 languages.
+- **Calls survive network trouble** _(mobile)_ — switching between Wi-Fi and
+  mobile data in a call cut the sound on both sides for minutes, and a hang-up
+  could get lost. Now the sound is back after about 1.5 s, a Direct call falls
+  back to Reticulum at once, and calls come back after airplane mode, mobile
+  data off and dead spots. A hang-up made meanwhile arrives when the network is
+  back within 30 s.
+- **Calls on slow phones** _(mobile)_ — on an older phone a call without the
+  direct link ran behind the phone's other traffic: rings and hang-ups came up
+  to 18 s late, and voice lagged by seconds. Call signals now go first, voice
+  that is too old to be heard is dropped instead of queued, and Reticulum
+  packets cost less processor time (RNS 1.5.5's packet code backported, same
+  bytes on the wire).
+- **Calls that never went Direct** _(mobile)_ — while a call started, GO marked
+  its own working audio link as down for moments, and a WebRTC message refused
+  then was lost. GO now leaves a working link alone and sends a refused
+  message again.
+- **GO closing by itself on a busy phone** _(mobile)_ — the Reticulum
+  service's two-minute thread report could release a Java reference on the
+  wrong thread, which Android answers by ending the app (on the Galaxy S8+ at
+  full relay load about once in 3 hours).
 
 ## [0.0.20] — 2026-11-04 (GO 3.0)
 

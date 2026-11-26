@@ -365,6 +365,15 @@ public final class KeepAlivePolicy {
      * desktop-sized caps would keep running on battery. "full" stays with the
      * page, as before. No id, so the bridge sends no reply.
      */
+    /**
+     * Drops the presence heartbeats the page signed in advance for its time
+     * off screen (qortal_presence_host.py schedule_presence_heartbeats): sent
+     * when that page is gone (reload, renderer death, Activity rebuild), so a
+     * signed-out phone does not keep looking online for up to 2 h.
+     */
+    public static final String CANCEL_SIGNED_HEARTBEATS_FRAME =
+        "{\"type\":\"cmd\",\"action\":\"cancel_presence_heartbeats\",\"payload\":{}}";
+
     public static String nativeOverlayProfileFrame(String profileChange) {
         if (!PROFILE_LEAF.equals(profileChange)) return null;
         return "{\"type\":\"cmd\",\"action\":\"configure_overlay_profile\","

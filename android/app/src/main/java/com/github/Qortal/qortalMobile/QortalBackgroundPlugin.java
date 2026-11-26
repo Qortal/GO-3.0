@@ -92,6 +92,13 @@ public class QortalBackgroundPlugin extends Plugin {
                     toJSObject(VendorFreezeLog.eventFields(count, entry, manufacturer))
                 );
             }
+
+            @Override
+            public void onDefaultNetworkChanged() {
+                JSObject payload = new JSObject();
+                payload.put("at", System.currentTimeMillis());
+                notifyListeners("defaultNetworkChanged", payload);
+            }
         };
         BackgroundKeepAlive.get(getContext()).setListener(keepAliveListener);
 
