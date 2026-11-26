@@ -4630,16 +4630,26 @@ def _install_one_overlay_open_per_peer(pb):
 
 
 def _watch_call_end(pb, peer, message, link):
-    """Repeat a hang-up that got lost; the call counts as running until then."""
+    """Repeat a hang-up that got lost; the call counts as running until then,
+    or until its link was closed in the ordinary way (the hang-up went along).
+    """
     global _call_ends_waiting
+    counted = [True]
+
+    def release():
+        global _call_ends_waiting
+        with _lock:
+            if counted[0]:
+                counted[0] = False
+                _call_ends_waiting -= 1
+
     with _lock:
         _call_ends_waiting += 1
     try:
         _start_call_watch()
-        _repeat_call_end(pb, peer, message, link)
+        _repeat_call_end(pb, peer, message, link, release)
     finally:
-        with _lock:
-            _call_ends_waiting -= 1
+        release()
 
 
 def _died(link):
@@ -4648,6 +4658,23 @@ def _died(link):
     return getattr(link, "_qortal_dead", False) or (
         getattr(link, "teardown_reason", None) == RNS.Link.TIMEOUT
     )
+
+
+def _closed_by_peer(link):
+    """The other phone closed it (its LINKCLOSE arrived): it was reachable and
+    is done with the link, so what was sent on it went along. A close by this
+    phone's own bridge (a link that went quiet, was pruned or replaced) leaves
+    the other reason, and may well be a dead link."""
+    import RNS
+
+    if _died(link):
+        return False
+    by_peer = (
+        RNS.Link.DESTINATION_CLOSED
+        if getattr(link, "initiator", False)
+        else RNS.Link.INITIATOR_CLOSED
+    )
+    return getattr(link, "teardown_reason", None) == by_peer
 
 
 def _call_end_arrived(link, sent_at):
@@ -4659,7 +4686,7 @@ def _call_end_arrived(link, sent_at):
     return state is None or state[0] == 0
 
 
-def _repeat_call_end(pb, peer, message, link):
+def _repeat_call_end(pb, peer, message, link, release=None):
     resends = 0
     changing = False
     sent_at = time.time()
@@ -4688,6 +4715,13 @@ def _repeat_call_end(pb, peer, message, link):
                 # the ordinary way took the message along.
                 if _died(link):
                     _open_overlay_link_now(pb, peer)
+                elif release is not None and _closed_by_peer(link):
+                    # The other phone was reachable and closed the link:
+                    # nothing waits for the network any more, so no call
+                    # watch and no call-time redials for minutes without a
+                    # call (a hub that keeps dropping would be dialled every
+                    # 3 s). A link the other phone opens still gets a copy.
+                    release()
                 continue
             encoded = pb._encode_call_signal_wire(message)
             if not encoded.get("ok"):

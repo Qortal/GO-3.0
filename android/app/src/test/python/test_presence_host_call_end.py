@@ -174,15 +174,31 @@ def test_call_end_resend():
 
     # Closed in the ordinary way, by either phone: no link is opened only to
     # repeat it.
-    for reason in (None, Link.INITIATOR_CLOSED, Link.DESTINATION_CLOSED):
+    # Only a close by the other phone (its LINKCLOSE arrived) shows that the
+    # hang-up went along: no call is running any more, so no call watch and
+    # no call-time redials until the watch ends. A close by this phone's own
+    # bridge (a link that went quiet, pruned, replaced) may be a dead link,
+    # and one without a reason is not closed yet: both still count.
+    for initiator, reason, by_peer in (
+        (False, None, False),
+        (True, Link.DESTINATION_CLOSED, True),
+        (False, Link.INITIATOR_CLOSED, True),
+        (True, Link.INITIATOR_CLOSED, False),
+        (False, Link.DESTINATION_CLOSED, False),
+    ):
         del pb.sent[:], pb.opened[:]
         old = Link()
+        old.initiator = initiator
         _use(pb, old)
         send("CH")
         old.teardown_reason = reason
         _use(pb, None)
         time.sleep(0.1)
         assert _watchers(), "the other phone may open one"
+        if by_peer:
+            assert h._call_ends_waiting == 0 and not h._in_call()
+        else:
+            assert h._call_ends_waiting == 1 and h._in_call()
         settle()
         assert not pb.opened and not _again(pb)
 
