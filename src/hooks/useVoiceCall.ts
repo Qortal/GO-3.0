@@ -18,6 +18,7 @@ import {
 import { isDirectVoiceCallChatId } from '../lib/call/directVoiceCallChatId';
 import { restoreDmFriendFromHistory } from '../lib/dm/dmFriendRestore';
 import { rememberGlareCallId } from '../lib/call/glareCallIds';
+import { nextCalleeWatchdogStep } from '../lib/call/calleeRoomKeyWatchdog';
 import {
   noteIncomingRing,
   noteUserAttention,
@@ -716,6 +717,8 @@ export function useVoiceCall(
   const dmReceiveOnAudioSurfaceRef = useRef(false);
   const dmRtcOnAudioSurfaceRef = useRef(false);
   const dmRtcOpenRef = useRef(false);
+  /** When the Direct leg was last seen open in this call (ms), 0 if never. */
+  const dmRtcLastOpenAtRef = useRef(0);
   const dmRtcOpenWaitersRef = useRef(new Set<(ready: boolean) => void>());
   const dmRtcLifecycleGenerationRef = useRef(0);
   // GO race guard: endCall (and the unmount cleanup) bumps this synchronously
@@ -1035,6 +1038,7 @@ export function useVoiceCall(
       if (!window.audioSurface || !ownerId || !roomId || !peer) return false;
       const lifecycleGeneration = dmRtcLifecycleGenerationRef.current;
       dmRtcOpenRef.current = false;
+      dmRtcLastOpenAtRef.current = 0;
       let iceServers: RTCIceServer[] = [];
       try {
         const discovered = await (window as any).hub?.getIceServers?.();
@@ -1110,6 +1114,7 @@ export function useVoiceCall(
       dmRtcLocalCapabilityRef.current = null;
       dmRtcOnAudioSurfaceRef.current = false;
       dmRtcOpenRef.current = false;
+      dmRtcLastOpenAtRef.current = 0;
       for (const resolve of dmRtcOpenWaitersRef.current) resolve(false);
       dmRtcOpenWaitersRef.current.clear();
       if (!window.audioSurface || !ownerId) return;
@@ -2260,7 +2265,7 @@ export function useVoiceCall(
         dmRoomKeyRequestTimersRef.current.add(timer);
       }
       const watchedCallId = callIdRef.current;
-      const armWatchdog = () => {
+      const armWatchdog = (delayMs = DM_CALLEE_ROOM_KEY_WAIT_MS) => {
         const watchdog = setTimeout(() => {
           dmRoomKeyRequestTimersRef.current.delete(watchdog);
           if (
@@ -2272,13 +2277,21 @@ export function useVoiceCall(
             return;
           }
           // WebRTC carries the audio without the room key: keep the call
-          // and look again later.
-          if (dmRtcOpenRef.current) {
-            armWatchdog();
+          // and look again later. A leg that was open moments ago may only
+          // be re-checking its path (network change, short RTP gap): look
+          // again shortly instead of ending the call.
+          const step = nextCalleeWatchdogStep({
+            rtcOpen: dmRtcOpenRef.current,
+            rtcLastOpenAt: dmRtcLastOpenAtRef.current,
+            now: Date.now(),
+            waitMs: DM_CALLEE_ROOM_KEY_WAIT_MS,
+          });
+          if (!step.end) {
+            armWatchdog(step.againInMs);
             return;
           }
           onCalleeRoomKeyTimeout();
-        }, DM_CALLEE_ROOM_KEY_WAIT_MS);
+        }, delayMs);
         dmRoomKeyRequestTimersRef.current.add(watchdog);
       };
       const onCalleeRoomKeyTimeout = () => {
@@ -3501,7 +3514,11 @@ export function useVoiceCall(
         return;
       }
       if (event.type === 'direct-voice-rtc-state') {
+        const wasOpen = dmRtcOpenRef.current;
         dmRtcOpenRef.current = event.state === 'open';
+        if (wasOpen || dmRtcOpenRef.current) {
+          dmRtcLastOpenAtRef.current = Date.now();
+        }
         pushDirectVoiceUiLog(
           event.state === 'failed' ? 'warn' : 'log',
           'WebRTC transport state',
