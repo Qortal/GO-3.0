@@ -151,15 +151,16 @@ desktop Hub. The format is based on
   direct link ran behind the phone's other traffic: rings and hang-ups came up
   to 18 s late, and voice lagged by seconds. Call signals now go first, voice
   that is too old to be heard is dropped instead of queued, and Reticulum
-  packets cost far less processor time (backport of RNS 1.5.5, same bytes on
-  the wire).
+  packets cost less processor time (RNS 1.5.5's packet code backported, same
+  bytes on the wire).
 - **Calls that never went Direct** _(mobile)_ — while a call started, GO marked
   its own working audio link as down for moments, and a WebRTC message refused
   then was lost. GO now leaves a working link alone and sends a refused
   message again.
-- **GO closing by itself after hours in the background** _(mobile)_ — the
-  Reticulum service's two-minute thread report could release a Java reference
-  on the wrong thread, which Android answers by ending the app.
+- **GO closing by itself on a busy phone** _(mobile)_ — the Reticulum
+  service's two-minute thread report could release a Java reference on the
+  wrong thread, which Android answers by ending the app (on the Galaxy S8+ at
+  full relay load about once in 3 hours).
 
 ## [0.0.20] — 2026-11-04 (GO 3.0)
 
