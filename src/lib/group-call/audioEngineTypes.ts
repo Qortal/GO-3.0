@@ -28,6 +28,12 @@ export interface AudioEngineJoinOptions {
   memberGateGroupId?: number;
   memberGateGroupName?: string;
   memberGateAddresses?: string[];
+  /**
+   * People the group's call badge showed in this call before joining. When it
+   * is above 0 the engine waits for the incumbent root before it may elect
+   * itself (see groupCallJoinAuthority.ts). Local only, never sent.
+   */
+  occupiedRoomParticipantHint?: number;
 }
 
 export type GroupCallStartupStage =

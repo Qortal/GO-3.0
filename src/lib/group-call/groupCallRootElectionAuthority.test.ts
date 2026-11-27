@@ -35,6 +35,26 @@ describe('group-call local root election authority', () => {
     ).toBe(true);
   });
 
+  it('marks a self-only Qortal group election provisional (an incumbent may not have reached us yet)', () => {
+    const alone = runtime();
+    alone.snapshot = {
+      roomId: 'gcall-qortal-659',
+      participants: [{ address: 'Q-local' }],
+    };
+    expect(alone.shouldMarkLocalRootProvisional('', ['Q-local'])).toBe(true);
+  });
+
+  it('keeps an established self-only root authoritative on later elections', () => {
+    const alone = runtime();
+    alone.snapshot = {
+      roomId: 'gcall-qortal-659',
+      participants: [{ address: 'Q-local' }],
+    };
+    expect(alone.shouldMarkLocalRootProvisional('Q-local', ['Q-local'])).toBe(
+      false
+    );
+  });
+
   it('marks a conflicting election provisional while the prior root remains', () => {
     expect(
       runtime().shouldMarkLocalRootProvisional('Q-peer', ['Q-local', 'Q-peer'])

@@ -9,6 +9,7 @@ import android.util.Log
 import com.chaquo.python.PyObject
 import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
+import com.getcapacitor.JSArray
 import com.getcapacitor.JSObject
 import com.getcapacitor.Plugin
 import com.getcapacitor.PluginCall
@@ -1073,19 +1074,31 @@ class ReticulumPlugin : Plugin() {
                     // meant four JNI/GIL hops per idle second; 2 s was 0.5 Hz.
                     // 5 s is 0.2 Hz when the queue is empty and still wakes
                     // immediately when a frame arrives.
-                    val frame = host.callAttr("poll", 5000).toString()
-                    if (frame.isNotEmpty()) {
-                        // The worker's direct socket gets the frame first: it is
-                        // a queue hand-off, whereas notifyListeners posts to the
-                        // (possibly saturated) WebView main thread. Call audio
-                        // frames skip the worker (it never reads them); the
-                        // page's call code still gets them below.
-                        if (BridgeWorkerFrames.forWorker(frame)) bridgeSocket?.broadcast(frame)
-                        activePlugin?.deliverPresenceFrame(frame)
-                        // Incoming call while the page is frozen: native
-                        // rings and wakes the page (cheap substring check;
-                        // only call_message frames go further).
-                        CallSession.sniffPresenceFrame(frame)
+                    // poll_batch returns one frame, or several call-audio
+                    // frames joined by "\n" (single-line JSON each): in a
+                    // group call that is one page event per batch instead of
+                    // one per voice frame per speaker.
+                    val batch = host.callAttr("poll_batch", 5000, 32, 12).toString()
+                    if (batch.isNotEmpty()) {
+                        val frames =
+                            if (batch.indexOf('\n') < 0) listOf(batch)
+                            else batch.split('\n').filter { it.isNotEmpty() }
+                        for (frame in frames) {
+                            // The worker's direct socket gets the frame first: it is
+                            // a queue hand-off, whereas notifyListeners posts to the
+                            // (possibly saturated) WebView main thread. Call audio
+                            // frames skip the worker (it never reads them); the
+                            // page's call code still gets them below.
+                            if (BridgeWorkerFrames.forWorker(frame)) bridgeSocket?.broadcast(frame)
+                        }
+                        if (frames.size == 1) activePlugin?.deliverPresenceFrame(frames[0])
+                        else activePlugin?.deliverPresenceFrames(frames)
+                        for (frame in frames) {
+                            // Incoming call while the page is frozen: native
+                            // rings and wakes the page (cheap substring check;
+                            // only call_message frames go further).
+                            CallSession.sniffPresenceFrame(frame)
+                        }
                     }
                 } catch (t: Throwable) {
                     Log.e(TAG, "Presence reader error", t)
@@ -1097,6 +1110,11 @@ class ReticulumPlugin : Plugin() {
 
     private fun deliverPresenceFrame(frame: String) {
         notifyListeners("presence", JSObject().put("frame", frame))
+    }
+
+    /** Several frames in one page event (call audio, see poll_batch). */
+    private fun deliverPresenceFrames(frames: List<String>) {
+        notifyListeners("presence", JSObject().put("frames", JSArray(frames)))
     }
 
     /**

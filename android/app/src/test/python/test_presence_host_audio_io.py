@@ -316,6 +316,58 @@ def test_send_group_audio_skips_the_stdin_queue():
         assert len(calls) == 2
 
 
+def test_send_group_audio_batch_queues_each_frame_like_a_single_send():
+    calls = []
+    responses = []
+    shim = h._StdinShim()
+
+    def record(frames, queued_at):
+        calls.append(list(frames))
+        return True
+
+    with real_bridge_module(), patched(h, _stdin_shim=shim), patched(
+        pb,
+        _process_audio_input_frames=record,
+        emit_resp=lambda *a, **k: responses.append((a, k)),
+    ):
+        before = dict(h._json_audio_stats)
+        frames = [
+            _send_payload(CONTROL),
+            _send_payload(MEDIA, 7),
+            _send_payload(MEDIA, 9, linkId="e" * 32),
+        ]
+        h.feed(_command_line("send_group_audio_batch", {"frames": frames}))
+        assert calls == [
+            [(LINK, ROOM, PEER, DEST, 0, CONTROL)],
+            [(LINK, ROOM, PEER, DEST, 7, MEDIA)],
+            [("e" * 32, ROOM, PEER, DEST, 9, MEDIA)],
+        ], calls
+        assert shim._q.qsize() == 0, "the batch must not queue behind chat"
+        assert responses == [], "no resp per voice frame"
+        assert h._json_audio_stats["txFrames"] - before["txFrames"] == 3
+        assert h._json_audio_stats["txControl"] - before["txControl"] == 1
+
+        # A bad frame is rejected on its own; the others still go out.
+        h.feed(
+            _command_line(
+                "send_group_audio_batch",
+                {"frames": [{"roomId": ROOM}, _send_payload(MEDIA, 11)]},
+            )
+        )
+        assert calls[-1] == [(LINK, ROOM, PEER, DEST, 11, MEDIA)]
+        # No frames list: rejected, never handed to the bridge's dispatcher.
+        rejected = h._json_audio_stats["txRejected"]
+        h.feed(_command_line("send_group_audio_batch", {"frames": "x"}))
+        assert h._json_audio_stats["txRejected"] == rejected + 1
+        assert shim._q.qsize() == 0
+        # More than the cap: the rest is rejected, not queued.
+        many = [_send_payload(MEDIA, 13)] * (h._SEND_GROUP_AUDIO_BATCH_MAX + 5)
+        n_before = len(calls)
+        h.feed(_command_line("send_group_audio_batch", {"frames": many}))
+        assert len(calls) - n_before == h._SEND_GROUP_AUDIO_BATCH_MAX
+        assert h._json_audio_stats["txRejected"] == rejected + 1 + 5
+
+
 def test_send_group_audio_rejects_bad_frames():
     calls = []
     responses = []
