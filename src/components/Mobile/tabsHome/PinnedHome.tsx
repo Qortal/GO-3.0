@@ -43,6 +43,7 @@ import {
   type LauncherItem,
 } from '../../Apps/AppsLauncher/launcherItems';
 import { LauncherSaveWindow } from '../../Apps/AppsLauncher/LauncherSaveWindow';
+import { useOfferUnsavedLauncher } from '../goLauncher/useOfferUnsavedLauncher';
 import {
   getFolderSize,
   getOpenTabKey,
@@ -139,6 +140,8 @@ export function PinnedHome({
   const { t } = useTranslation(['core']);
   const org = useMobileTabOrganization();
   const launcher = org.launcher;
+  // Changes left unsaved when GO last closed are offered for saving again.
+  useOfferUnsavedLauncher(launcher.address, launcher.bookmarks);
   const myName: string = useAtomValue(userInfoAtom)?.name || '';
   const { tabs: rawTabs, selectedTab: rawSelectedTab } = useOpenTabs();
   const tabs = useMemo(() => filterAppTabsForMobile(rawTabs), [rawTabs]);

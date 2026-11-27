@@ -102,6 +102,13 @@ desktop Hub. The format is based on
 
 ### Fixed
 
+- **Unsaved pins offered again after a restart** _(mobile)_ — the Pinned
+  page offers to save pins, folders and bookmarks to QDN after changes made
+  in the same run of GO, and a phone has no other Save. Changes left unsaved
+  when GO was closed or crashed stayed on the phone until the next change.
+  Now, once the account's settings on QDN are read, a launcher that still
+  differs from them is offered for saving, as the desktop Hub's Save button
+  shows unsaved pins at every start.
 - **Q-App publishes on a private node over an SSH tunnel** _(shared)_ — GO
   took Core's local auth bypass on trust for any 127.0.0.1 node and never
   asked for its API key. But Core skips the key only when the request reaches
