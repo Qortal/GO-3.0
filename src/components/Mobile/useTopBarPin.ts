@@ -1,4 +1,7 @@
 import { useCallback, useMemo } from 'react';
+import { useAtomValue } from 'jotai';
+import { userInfoAtom } from '../../atoms/global';
+import { useCountLauncherEdit } from '../Apps/AppsLauncher/launcherQdnSync';
 import { extractComponents } from '../Chat/MessageDisplay';
 import {
   isPinnedApp,
@@ -20,6 +23,10 @@ export type TopBarPin = {
  * private app pins as its tab says; any other app as the address on screen
  * names it, so a link followed inside a tab pins the app it went to. Null
  * when there is nothing to pin (no tab, a GO page of its own).
+ *
+ * Each pin or unpin counts as a change to the launcher, so the Pinned page
+ * offers to save it to QDN for the account's other devices, as the desktop
+ * Hub's Save button shows it unsaved.
  */
 export function useTopBarPin(
   tab: OpenTab | null,
@@ -27,6 +34,8 @@ export function useTopBarPin(
 ): TopBarPin | null {
   const pinnedApps = usePinnedAppsList();
   const togglePinnedApp = useTogglePinnedApp();
+  const address: string = useAtomValue(userInfoAtom)?.address || '';
+  const countEdit = useCountLauncherEdit(address || null);
   const candidate = useMemo(() => {
     if (!tab) return null;
     if (isPrivateAppTab(tab)) return pinnedAppOfTab(tab);
@@ -36,10 +45,10 @@ export function useTopBarPin(
     );
   }, [tab, url]);
   const pinned = isPinnedApp(pinnedApps, candidate);
-  const toggle = useCallback(
-    () => togglePinnedApp(candidate),
-    [candidate, togglePinnedApp]
-  );
+  const toggle = useCallback(() => {
+    togglePinnedApp(candidate);
+    countEdit();
+  }, [candidate, countEdit, togglePinnedApp]);
   return useMemo(
     () => (candidate ? { pinned, toggle } : null),
     [candidate, pinned, toggle]

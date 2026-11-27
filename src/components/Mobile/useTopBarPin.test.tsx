@@ -5,7 +5,9 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   settingsLocalLastUpdatedAtom,
   sortablePinnedAppsAtom,
+  userInfoAtom,
 } from '../../atoms/global';
+import { launcherEditsAtom } from '../Apps/AppsLauncher/launcherQdnSync';
 import { useTopBarPin } from './useTopBarPin';
 import type { OpenTab } from './useOpenTabs';
 
@@ -17,6 +19,7 @@ const setup = (
   const store = createStore();
   store.set(sortablePinnedAppsAtom, pinned);
   store.set(settingsLocalLastUpdatedAtom, 0);
+  store.set(userInfoAtom, { address: 'QAlice', name: 'Alice' });
   const wrapper = ({ children }: { children: ReactNode }) => (
     <Provider store={store}>{children}</Provider>
   );
@@ -56,6 +59,23 @@ describe('useTopBarPin', () => {
       { name: 'Q-Tube', service: 'APP' },
     ]);
     expect(hook.result.current?.pinned).toBe(false);
+  });
+
+  it('counts each pin and unpin as a launcher change, to offer a save', () => {
+    const tab = { tabId: 't1', name: 'Q-Blog', service: 'APP' };
+    const { store, hook } = setup(tab, 'qortal://APP/Q-Blog');
+    expect(store.get(launcherEditsAtom).count).toBe(0);
+
+    act(() => hook.result.current!.toggle());
+    expect(store.get(launcherEditsAtom)).toEqual({
+      address: 'QAlice',
+      count: 1,
+    });
+    act(() => hook.result.current!.toggle());
+    expect(store.get(launcherEditsAtom)).toEqual({
+      address: 'QAlice',
+      count: 2,
+    });
   });
 
   it('knows a pinned app whatever the case of its name', () => {
