@@ -26,6 +26,7 @@ import AppsRoundedIcon from '@mui/icons-material/AppsRounded';
 import ShareRoundedIcon from '@mui/icons-material/ShareRounded';
 import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded';
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded';
+import PushPinRoundedIcon from '@mui/icons-material/PushPinRounded';
 import { Capacitor } from '@capacitor/core';
 import { Share } from '@capacitor/share';
 import { useAtom, useAtomValue } from 'jotai';
@@ -40,6 +41,7 @@ import { useSoftKeyboardInset } from '../../hooks/useSoftKeyboardInset';
 import { isGoLayout, useGoLayout } from '../../layout/goLayout';
 import { computeSearchResultsMaxHeight } from './goShellLayout';
 import { MOBILE_TABS_OVERLAY_Z } from './mobileLayout';
+import type { TopBarPin } from './useTopBarPin';
 import {
   SAFE_AREA_LEFT,
   SAFE_AREA_RIGHT,
@@ -76,6 +78,9 @@ type MobileTopBarSearchProps = {
   expanded: boolean;
   onExpandedChange: (expanded: boolean) => void;
   showActiveTabUrl?: boolean;
+  /** Pins the app on screen to the pinned apps and bookmarks, as the
+   * desktop Hub's search bar does; shown with the address. */
+  pin?: TopBarPin | null;
   tabsOverlayOpen?: boolean;
   /** The bar floats see-through on a page's own colour (immersive mode):
    * the field is a neutral tint of it, not GO's paper. */
@@ -90,6 +95,7 @@ export const MobileTopBarSearch = ({
   expanded,
   onExpandedChange,
   showActiveTabUrl = false,
+  pin = null,
   tabsOverlayOpen = false,
   floating = false,
 }: MobileTopBarSearchProps) => {
@@ -446,6 +452,52 @@ export const MobileTopBarSearch = ({
     [collapse, dropdownOpen, handleSubmit, suggestions.length]
   );
 
+  const pinLabel = pin
+    ? t(pin.pinned ? 'core:action.unpin' : 'core:action.pin', {
+        postProcess: 'capitalizeFirstChar',
+      })
+    : '';
+  const pinButton =
+    pin && showActiveTabUrl && !expanded ? (
+      <ButtonBase
+        aria-label={pinLabel}
+        aria-pressed={pin.pinned}
+        title={pinLabel}
+        // The address opens for editing on a tap; the pin is a tap of its own.
+        onClick={(event) => {
+          event.stopPropagation();
+          pin.toggle();
+        }}
+        onMouseDown={(event) => event.stopPropagation()}
+        sx={{
+          alignItems: 'center',
+          borderRadius: '50%',
+          color: pin.pinned
+            ? theme.palette.primary.main
+            : theme.palette.text.secondary,
+          display: 'flex',
+          flexShrink: 0,
+          height: 28,
+          justifyContent: 'center',
+          // Into the bar's right padding: a 28 px target that doesn't take
+          // room from the address.
+          mr: -0.75,
+          width: 28,
+          '&:active': {
+            backgroundColor: alpha(theme.palette.text.primary, 0.08),
+          },
+        }}
+      >
+        <PushPinRoundedIcon
+          sx={{
+            fontSize: 17,
+            transform: pin.pinned ? 'rotate(-18deg)' : 'rotate(0deg)',
+            transition: 'transform 140ms ease',
+          }}
+        />
+      </ButtonBase>
+    ) : null;
+
   const searchField = (
     <Paper
       elevation={0}
@@ -540,6 +592,7 @@ export const MobileTopBarSearch = ({
           },
         }}
       />
+      {pinButton}
       {expanded && query ? (
         <ButtonBase
           onClick={() => {

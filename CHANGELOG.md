@@ -13,6 +13,13 @@ desktop Hub. The format is based on
 
 ### Added
 
+- **Pin in the search bar** _(mobile)_ — the address of the Q-App or website
+  on screen ends in a pin, as in the desktop Hub's search bar. A tap pins
+  that app to Home's saved apps (the pinned apps and bookmarks the Hub
+  keeps), or unpins it; a pinned app's pin is coloured and tilted. A link
+  followed inside a tab pins the app it went to; a private app pins as its
+  tab says. The change is offered for saving to QDN like any other launcher
+  change. Tapping the rest of the address still opens it for editing.
 - **Qortino gets ready while You type on Home** _(mobile)_ — the first
   letter typed in the "Ask Qortino…" box next to him starts loading the model
   and reading his system prompt in the background (12-15 s on a phone), so
@@ -95,6 +102,13 @@ desktop Hub. The format is based on
 
 ### Fixed
 
+- **Unsaved pins offered again after a restart** _(mobile)_ — the Pinned
+  page offers to save pins, folders and bookmarks to QDN after changes made
+  in the same run of GO, and a phone has no other Save. Changes left unsaved
+  when GO was closed or crashed stayed on the phone until the next change.
+  Now, once the account's settings on QDN are read, a launcher that still
+  differs from them is offered for saving, as the desktop Hub's Save button
+  shows unsaved pins at every start.
 - **Q-App publishes on a private node over an SSH tunnel** _(shared)_ — GO
   took Core's local auth bypass on trust for any 127.0.0.1 node and never
   asked for its API key. But Core skips the key only when the request reaches
