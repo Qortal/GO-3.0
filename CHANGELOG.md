@@ -13,6 +13,13 @@ desktop Hub. The format is based on
 
 ### Added
 
+- **Pin in the search bar** _(mobile)_ — the address of the Q-App or website
+  on screen ends in a pin, as in the desktop Hub's search bar. A tap pins
+  that app to Home's saved apps (the pinned apps and bookmarks the Hub
+  keeps), or unpins it; a pinned app's pin is coloured and tilted. A link
+  followed inside a tab pins the app it went to; a private app pins as its
+  tab says. The change is offered for saving to QDN like any other launcher
+  change. Tapping the rest of the address still opens it for editing.
 - **Qortino gets ready while You type on Home** _(mobile)_ — the first
   letter typed in the "Ask Qortino…" box next to him starts loading the model
   and reading his system prompt in the background (12-15 s on a phone), so

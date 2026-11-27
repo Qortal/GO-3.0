@@ -56,6 +56,7 @@ vi.mock('./useOpenTabs', () => ({
   useOpenTabs: () => ({ tabs: [], selectedTab: null }),
 }));
 vi.mock('./tabQortalLink', () => ({ liveTabQortalUrl: () => '' }));
+vi.mock('./useTopBarPin', () => ({ useTopBarPin: () => null }));
 vi.mock('../QortalUserAvatar', () => ({ QortalUserAvatar: () => null }));
 vi.mock('../Transfers/QdnDownloadsNotice', () => ({
   useQdnDownloadsBadge: () => ({ unseen: 0 }),

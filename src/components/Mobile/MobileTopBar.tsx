@@ -93,6 +93,7 @@ import { HTTPS_EXT_NODE_QORTAL_LINK } from '../../constants/constants';
 import { MintingPublicNodeDialog } from './MintingPublicNodeDialog';
 import { MobileAccountPanel, type AccountAction } from './MobileAccountPanel';
 import { MobileTopBarSearch } from './MobileTopBarSearch';
+import { useTopBarPin } from './useTopBarPin';
 import { MobileTabBar } from './MobileTabBar';
 import { dialogContentSx, getDialogPaperSx } from '../App/dialogSurface';
 import { MOBILE_CHAT_TOOLBAR_SLOT_ID } from './mobileChatCompose';
@@ -265,6 +266,10 @@ export const MobileTopBar = ({
   }, [activeAppTab, navigationController]);
   const showActiveTabUrl =
     desktopViewMode === 'apps' && Boolean(activeTabUrl) && !searchExpanded;
+  const topBarPin = useTopBarPin(
+    desktopViewMode === 'apps' ? activeAppTab : null,
+    activeTabUrl
+  );
   const hideBrandCluster = searchExpanded || showActiveTabUrl;
   const selectedNode = useAtomValue(selectedNodeInfoAtom);
   const setP2pHealth = useSetAtom(p2pHealthAtom);
@@ -711,6 +716,7 @@ export const MobileTopBar = ({
             expanded={searchExpanded}
             onExpandedChange={setSearchExpanded}
             showActiveTabUrl={showActiveTabUrl}
+            pin={topBarPin}
             tabsOverlayOpen={tabsOverlayOpen}
             floating={floating}
           />
