@@ -110,6 +110,21 @@ desktop Hub. The format is based on
 
 ### Fixed
 
+- **Joining a group call already in progress made a second call** _(shared)_ —
+  the newcomer could make itself the call's host with its own key while the
+  people already in the call kept theirs: You heard nobody and nobody heard
+  You, for minutes or until someone left and joined again. GO now waits for
+  the call's host (up to 30 s when the group already shows the call), and a
+  host it chose while it still heard nobody gives way to the real one.
+- **Group call audio on slower phones** _(mobile)_ — every voice frame was its
+  own message between the page, Android and the network code, and was
+  decrypted on the page's busiest thread. Frames now travel in small batches
+  and are decrypted in the background: a Galaxy S8+ no longer throws away half
+  of its outgoing voice for arriving late, and a desktop Hub reaches a
+  mid-range phone in about 0.35 s instead of 0.8 s.
+- **Audio output left open after a group call** _(shared)_ — after leaving a
+  group call, GO kept the phone's audio output running (silent) for as long as
+  it ran. It now rests until the next call.
 - **Q-App publishes on a private node over an SSH tunnel** _(shared)_ — GO
   took Core's local auth bypass on trust for any 127.0.0.1 node and never
   asked for its API key. But Core skips the key only when the request reaches
