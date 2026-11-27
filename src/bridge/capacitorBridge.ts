@@ -2959,6 +2959,15 @@ export function installReticulumBridges(): void {
         frameListenerAttached = true;
         try {
           await Reticulum.addListener('presence', (event) => {
+            // Native hands call audio over in batches (poll_batch): one event
+            // for several voice frames instead of one each.
+            const frames = (event as { frames?: unknown }).frames;
+            if (Array.isArray(frames)) {
+              for (const frame of frames) {
+                if (typeof frame === 'string') handleFrame(frame);
+              }
+              return;
+            }
             handleFrame(event.frame);
           });
         } catch (err) {
@@ -3284,6 +3293,17 @@ export function installReticulumBridges(): void {
     // `cmd-` ids, so no resp frame comes back per frame.
     command: (action, payload) =>
       Reticulum.presenceCommand({ action, payload }).then(() => undefined),
+    // The voice frames one page task produced (a root's fan-out, a flush
+    // after a stall) in one native call; qortal_presence_host.py queues each
+    // exactly like its own send_group_audio.
+    sendAudioFrames: (frames) => {
+      if (frames.length === 0) return true;
+      Reticulum.presenceCommand({
+        action: 'send_group_audio_batch',
+        payload: { frames },
+      }).catch(() => undefined);
+      return true;
+    },
     // Taps get the frame handleFrame already parsed (one JSON.parse per frame).
     onEvent: (cb) => {
       const deliver = (frame: Record<string, unknown>): void =>

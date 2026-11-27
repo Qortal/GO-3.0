@@ -1619,6 +1619,42 @@ def _handle_send_group_audio(pb, message):
             pb.emit_resp(req_id, True, payload={"queued": queued})
 
 
+# Several outbound audio-link frames in one command: the frames one page task
+# produced (a root's fan-out, a flush after a stall). One JNI call and one GIL
+# hand-off instead of one per frame; each frame is queued exactly as a
+# send_group_audio of its own would be (same deadline, same counters).
+_SEND_GROUP_AUDIO_BATCH_ACTION = "send_group_audio_batch"
+_SEND_GROUP_AUDIO_BATCH_MARKER = '"' + _SEND_GROUP_AUDIO_BATCH_ACTION + '"'
+_SEND_GROUP_AUDIO_BATCH_MAX = 64
+
+
+def _feed_send_group_audio_batch(line):
+    """Answer a send_group_audio_batch command line; False leaves it to the bridge."""
+    pb = sys.modules.get("presence_bridge")
+    if pb is None:
+        return False
+    try:
+        message = json.loads(line)
+    except ValueError:
+        return False
+    if (
+        not isinstance(message, dict)
+        or message.get("action") != _SEND_GROUP_AUDIO_BATCH_ACTION
+    ):
+        return False
+    payload = message.get("payload")
+    frames = payload.get("frames") if isinstance(payload, dict) else None
+    if not isinstance(frames, list):
+        _json_audio_stats["txRejected"] += 1
+        return True
+    for frame in frames[:_SEND_GROUP_AUDIO_BATCH_MAX]:
+        _handle_send_group_audio(pb, {"payload": frame})
+    extra = len(frames) - _SEND_GROUP_AUDIO_BATCH_MAX
+    if extra > 0:
+        _json_audio_stats["txRejected"] += extra
+    return True
+
+
 def _feed_send_group_audio(line):
     """Answer a send_group_audio command line; False leaves it to the bridge."""
     pb = sys.modules.get("presence_bridge")
@@ -3222,9 +3258,12 @@ def feed(line):
     """Submit one command frame (JSON string) to the bridge's stdin.
 
     ``send_group_audio`` (call audio and link control, up to 50 frames a
-    second each way) is queued for the RNS executor right here instead.
+    second each way) and ``send_group_audio_batch`` (several of those in one
+    command) are queued for the RNS executor right here instead.
     """
     if _stdin_shim is None:
+        return
+    if _SEND_GROUP_AUDIO_BATCH_MARKER in line and _feed_send_group_audio_batch(line):
         return
     if _SEND_GROUP_AUDIO_MARKER in line and _feed_send_group_audio(line):
         return
@@ -3237,6 +3276,45 @@ def poll(timeout_ms=250):
         return _out_queue.get(timeout=max(0, timeout_ms) / 1000.0)
     except queue.Empty:
         return ""
+
+
+# A call-audio frame for the page (one per received voice frame per speaker).
+_POLL_BATCH_AUDIO_MARKER = '"' + "group_audio_packet" + '"'
+
+
+def poll_batch(timeout_ms=250, max_frames=32, linger_ms=12):
+    """Like :func:`poll`, but hand several call-audio frames over at once.
+
+    In a group call the page gets one ``group_audio_packet`` per voice frame
+    per speaker: about 150 a second in a 4-way call. Each one used to be a
+    JNI hop here plus a separate WebView event on the page's main thread.
+    After an audio frame this waits up to ``linger_ms`` for more audio frames
+    (they come every few ms while people talk) and returns them all, joined
+    by "\n" (frames are single-line JSON). Any other frame is returned at
+    once, alone or as the last of a batch, so the order never changes and
+    control traffic is not held back. Returns "" on timeout, like poll().
+    """
+    try:
+        first = _out_queue.get(timeout=max(0, timeout_ms) / 1000.0)
+    except queue.Empty:
+        return ""
+    if _POLL_BATCH_AUDIO_MARKER not in first:
+        return first
+    frames = [first]
+    deadline = time.monotonic() + max(0, linger_ms) / 1000.0
+    while len(frames) < max(1, int(max_frames)):
+        remaining = deadline - time.monotonic()
+        try:
+            if remaining > 0:
+                nxt = _out_queue.get(timeout=remaining)
+            else:
+                nxt = _out_queue.get_nowait()
+        except queue.Empty:
+            break
+        frames.append(nxt)
+        if _POLL_BATCH_AUDIO_MARKER not in nxt:
+            break
+    return "\n".join(frames)
 
 
 def transport_status(detail=False):

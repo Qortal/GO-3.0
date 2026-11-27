@@ -1396,6 +1396,14 @@ export class GroupCallAudioReceiveEngine {
     );
     this.packetDecodeSelectedCounts.clear();
     this.resumeAudioContextPromise = null;
+    // No source plays any more: let the playback context sleep. Kept alive it
+    // holds the device's audio output open after the call (an AAudio stream
+    // on Android, rendering silence for as long as the app runs). The next
+    // source's createPlayout() -> ensureAudioContext() resumes it.
+    const idleContext = this.audioContext;
+    if (idleContext && idleContext.state === 'running') {
+      void idleContext.suspend?.().catch(() => {});
+    }
     this.clearMetricsEmitTimer();
     this.metrics = new GroupCallPerformanceTracker();
     this.metricsRef.current = this.metrics;

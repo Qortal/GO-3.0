@@ -149,6 +149,8 @@ import {
   userInfoAtom,
   qortalGroupVoiceCallMinimizedAtom,
   qortalGroupCallPrimaryNamesAtom,
+  qortalGroupMeshCallActiveAtom,
+  qortalGroupMeshCallParticipantCountAtom,
   dmFriendsByAddressAtom,
   qortinoAgentOpenAtom,
 } from '../../atoms/global';
@@ -1302,6 +1304,10 @@ const GroupInner = ({
   const { confirmCallSwitch } = useCallSwitchGuard();
   const setQcallMinimized = useSetAtom(qortalGroupVoiceCallMinimizedAtom);
   const setQcallPrimaryNames = useSetAtom(qortalGroupCallPrimaryNamesAtom);
+  const meshCallActiveByGroupId = useAtomValue(qortalGroupMeshCallActiveAtom);
+  const meshCallParticipantCountByGroupId = useAtomValue(
+    qortalGroupMeshCallParticipantCountAtom
+  );
 
   const gcallGroupNumericId = useMemo(() => {
     const id = selectedGroup?.groupId;
@@ -1394,10 +1400,17 @@ const GroupInner = ({
       setQcallPrimaryNames({});
       return;
     }
+    // The group row's call badge: people already in this call. The engine
+    // then waits for their root instead of electing itself after a second.
+    const gcallBadgeKey = String(gcallGroupNumericId);
+    const occupiedRoomParticipantHint = meshCallActiveByGroupId[gcallBadgeKey]
+      ? Math.max(1, meshCallParticipantCountByGroupId[gcallBadgeKey] ?? 0)
+      : 0;
     await joinGroupCall(gcallRoomIdForGroup, `group:${gcallGroupNumericId}`, {
       memberGateGroupId: gcallGroupNumericId,
       memberGateGroupName: selectedGroup?.groupName,
       memberGateAddresses,
+      occupiedRoomParticipantHint,
     });
   }, [
     desktopViewMode,
@@ -1407,6 +1420,8 @@ const GroupInner = ({
     confirmCallSwitch,
     joinGroupCall,
     leaveGroupCall,
+    meshCallActiveByGroupId,
+    meshCallParticipantCountByGroupId,
     selectedGroup?.groupName,
     setQcallMinimized,
     setQcallPrimaryNames,

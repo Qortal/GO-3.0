@@ -69,6 +69,8 @@ const native = vi.hoisted(() => ({
   /** presenceCommand actions with / without a correlation id. */
   correlated: [] as string[],
   fireAndForget: [] as string[],
+  /** Voice frames that went out inside send_group_audio_batch commands. */
+  batchedAudioFrames: 0,
   ringAddresses: [] as string[][],
   /** While set, `call_message` frames from GO's python are held here. */
   heldCallFrames: null as Array<Record<string, unknown>> | null,
@@ -103,6 +105,18 @@ vi.mock('../../plugins/Reticulum', () => ({
             if (!node) throw new Error('Presence bridge not started');
             if (typeof id === 'string') native.correlated.push(action);
             else native.fireAndForget.push(action);
+            if (action === 'send_group_audio_batch') {
+              // qortal_presence_host.py: each frame is queued exactly like
+              // its own send_group_audio; no resp frame.
+              const frames = Array.isArray(payload?.frames)
+                ? (payload.frames as Array<Record<string, unknown>>)
+                : [];
+              native.batchedAudioFrames += frames.length;
+              for (const frame of frames) {
+                void node.commandWithResult('send_group_audio', frame, 10_000);
+              }
+              return { ok: true, id };
+            }
             const resp = node.commandWithResult(action, payload ?? {}, 10_000);
             if (typeof id === 'string') {
               void resp.then((frame) =>
@@ -350,8 +364,13 @@ describe('capacitorBridge wiring of the hosted Hub call managers', () => {
     // Voice and link-control frames are fire-and-forget (Kotlin's UUID id:
     // no resp frame per frame); the call commands whose result matters are
     // correlated (`cmd-` ids, presenceCommandWithResult).
-    expect(native.fireAndForget).toContain('send_group_audio');
+    expect(
+      native.fireAndForget.some(
+        (a) => a === 'send_group_audio' || a === 'send_group_audio_batch'
+      )
+    ).toBe(true);
     expect(native.correlated).not.toContain('send_group_audio');
+    expect(native.correlated).not.toContain('send_group_audio_batch');
     for (const action of [
       'fanout_call',
       'send_call',
@@ -365,7 +384,7 @@ describe('capacitorBridge wiring of the hosted Hub call managers', () => {
     expect(goDevice.history.length).toBeGreaterThanOrEqual(1);
   }, 60_000);
 
-  it('voice hot path: one JSON.parse and no log line per inbound frame, one uncorrelated command per outbound frame', async () => {
+  it('voice hot path: one JSON.parse and no log line per inbound frame, outbound frames uncorrelated and batched per task', async () => {
     const network = new FakePythonNetwork();
     goDevice = await installGo(network);
     const go = goDevice.peer;
@@ -405,9 +424,15 @@ describe('capacitorBridge wiring of the hosted Hub call managers', () => {
         );
         expect(log.mock.calls.length + warn.mock.calls.length).toBe(logsBefore);
         // ── outbound: window.groupCall.sendAudio → presenceCommand
-        const sentBefore = native.fireAndForget.filter(
-          (a) => a === 'send_group_audio'
-        ).length;
+        const audioCalls = (): number =>
+          native.fireAndForget.filter(
+            (a) => a === 'send_group_audio' || a === 'send_group_audio_batch'
+          ).length;
+        const audioFrames = (): number =>
+          native.fireAndForget.filter((a) => a === 'send_group_audio').length +
+          native.batchedAudioFrames;
+        const sentBefore = audioFrames();
+        const callsBefore = audioCalls();
         const correlatedBefore = native.correlated.length;
         const frame = new Uint8Array(90).fill(7);
         const t1 = performance.now();
@@ -419,13 +444,11 @@ describe('capacitorBridge wiring of the hosted Hub call managers', () => {
           )
         );
         await vi.waitFor(
-          () =>
-            expect(
-              native.fireAndForget.filter((a) => a === 'send_group_audio')
-                .length - sentBefore
-            ).toBe(N),
+          () => expect(audioFrames() - sentBefore).toBe(N),
           WAIT
         );
+        // Frames queued in the same task go to native together.
+        expect(audioCalls() - callsBefore).toBeLessThan(N);
         timings.outboundMsPerFrame = (performance.now() - t1) / N;
         expect(results.every((r) => r.success)).toBe(true);
         expect(native.correlated.length).toBe(correlatedBefore);

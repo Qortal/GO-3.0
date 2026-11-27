@@ -187,6 +187,44 @@ describe('GroupCallAudioReceiveEngine', () => {
     expect(ctx.state).toBe('running');
   });
 
+  it('suspends the playback AudioContext when the call is reset, and resumes it for the next source', async () => {
+    const suspend = vi.fn(async function (this: { state: string }) {
+      this.state = 'suspended';
+    });
+    const resume = vi.fn(async function (this: { state: string }) {
+      this.state = 'running';
+    });
+    vi.stubGlobal(
+      'AudioContext',
+      class {
+        sampleRate = 48_000;
+        state = 'running';
+        destination = {};
+        suspend = suspend;
+        resume = resume;
+        createGain() {
+          return {
+            gain: { value: 0 },
+            connect: vi.fn(),
+            disconnect: vi.fn(),
+          };
+        }
+      }
+    );
+    const engine = new GroupCallAudioReceiveEngine(() => {});
+    const ctx = await (engine as any).ensureAudioContext();
+    expect(ctx.state).toBe('running');
+
+    await engine.reset();
+    expect(suspend).toHaveBeenCalledTimes(1);
+    expect(ctx.state).toBe('suspended');
+
+    const again = await (engine as any).ensureAudioContext();
+    expect(again).toBe(ctx);
+    expect(resume).toHaveBeenCalled();
+    expect(ctx.state).toBe('running');
+  });
+
   it('retries resuming the hidden playback AudioContext when late playout readiness appears', async () => {
     const contexts: Array<{ state: string; resume: ReturnType<typeof vi.fn> }> =
       [];

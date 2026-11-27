@@ -102,6 +102,17 @@ import {
   getTrustedRootForRejoinElection,
 } from './groupCallSessionKeyPolicy';
 import { buildStandbyRootFailoverTopology } from './groupCallTopologyLifecycle';
+import {
+  NEWCOMER_ROOT_CONTACT_GRACE_MS,
+  OCCUPIED_HINT_SELF_ELECTION_WAIT_MS,
+  isSelfOnlyGroupRootElection,
+  resolveProvisionalLocalRootMs,
+  resolveSelfOnlyElectionWaitMs,
+  sanitizeOccupiedRoomParticipantHint,
+  shouldKeepProvisionalLocalRoot,
+  shouldSuppressNewcomerStandbyFailover,
+} from './groupCallJoinAuthority';
+import { toOwnedAudioArrayBuffer } from './groupCallAudioPayload';
 import AudioDecryptWorker from '../../workers/audio-decrypt.worker?worker';
 import nacl from '../../encryption/nacl-fast';
 import ed2curve from '../../encryption/ed2curve';
@@ -819,7 +830,6 @@ function buildEmptyRootPeerLivenessRecord(): RootPeerLivenessRecord {
     lastAnyRootEvidenceAt: 0,
   };
 }
-const GROUP_CALL_SELF_ONLY_JOIN_ELECTION_WAIT_MS = 1_000;
 const OCCUPIED_JOIN_AUTHORITY_WAIT_MS = TOPOLOGY_HEARTBEAT_MS + 250;
 // Give a live incumbent one complete failover window to identify itself before
 // a returning participant is allowed to self-elect.
@@ -1152,6 +1162,8 @@ export class GroupCallAudioEngineRuntime {
   private authoritySettleUntilMs = 0;
   private topologyElectionDelayUntilMs = 0;
   private startupOccupiedRoomEvidence = false;
+  /** People the group's call badge showed in this call when we joined (0 = unknown/none). */
+  private joinOccupiedRoomParticipantHint = 0;
   private startupPreexistingOccupiedRoomEvidence = false;
   private startupHydratedRemoteCount = 0;
   private startupBootstrapHasTopology = false;
@@ -3331,8 +3343,17 @@ export class GroupCallAudioEngineRuntime {
     ) {
       return false;
     }
+    const remoteParticipantCount = this.countRemoteParticipants();
     return (
-      this.countRemoteParticipants() > 0 || this.startupHydratedRemoteCount > 0
+      remoteParticipantCount > 0 ||
+      this.startupHydratedRemoteCount > 0 ||
+      // Elected while seeing no one: an incumbent may not have reached us yet.
+      isSelfOnlyGroupRootElection({
+        roomId: this.snapshot?.roomId ?? '',
+        previousRoot,
+        remoteParticipantCount,
+        hydratedRemoteCount: this.startupHydratedRemoteCount,
+      })
     );
   }
 
@@ -3342,15 +3363,19 @@ export class GroupCallAudioEngineRuntime {
       this.startupHydratedRemoteCount
     );
     this.provisionalLocalRootElectionAtMs = nowMs;
-    this.provisionalLocalRootUntilMs =
-      nowMs + PROVISIONAL_LOCAL_ROOT_RECONCILE_MS;
+    const reconcileMs = resolveProvisionalLocalRootMs({
+      selfOnly: remoteParticipantCount <= 0,
+      occupiedRoomHint: this.joinOccupiedRoomParticipantHint > 0,
+      defaultMs: PROVISIONAL_LOCAL_ROOT_RECONCILE_MS,
+    });
+    this.provisionalLocalRootUntilMs = nowMs + reconcileMs;
     this.provisionalLocalRootReason = reason;
     this.provisionalLocalRootRemoteCount = remoteParticipantCount;
     this.recordDiagEvent('provisional-local-root-armed', {
       roomId: this.snapshot.roomId,
       reason,
       remoteParticipantCount,
-      reconcileMs: PROVISIONAL_LOCAL_ROOT_RECONCILE_MS,
+      reconcileMs,
       startupOccupiedRoomEvidence: this.startupOccupiedRoomEvidence,
       startupHydratedRemoteCount: this.startupHydratedRemoteCount,
     });
@@ -3527,9 +3552,16 @@ export class GroupCallAudioEngineRuntime {
     if (remoteParticipantCount <= 0 || !this.startupOccupiedRoomEvidence) {
       return false;
     }
+    const discoveryWaitMs =
+      this.joinOccupiedRoomParticipantHint > 0
+        ? Math.max(
+            OCCUPIED_HINT_SELF_ELECTION_WAIT_MS,
+            OCCUPIED_JOIN_ROOT_DISCOVERY_WAIT_MS
+          )
+        : OCCUPIED_JOIN_ROOT_DISCOVERY_WAIT_MS;
     const suppressUntilMs =
       this.lastJoinSuccessAtMs > 0
-        ? this.lastJoinSuccessAtMs + OCCUPIED_JOIN_ROOT_DISCOVERY_WAIT_MS
+        ? this.lastJoinSuccessAtMs + discoveryWaitMs
         : 0;
     if (suppressUntilMs <= nowMs) return false;
     this.topologyElectionDelayUntilMs = Math.max(
@@ -5252,6 +5284,9 @@ export class GroupCallAudioEngineRuntime {
       Number.isFinite(options.memberGateGroupId)
         ? Math.floor(Number(options.memberGateGroupId))
         : null;
+    this.joinOccupiedRoomParticipantHint = sanitizeOccupiedRoomParticipantHint(
+      options?.occupiedRoomParticipantHint
+    );
     this.electionDigestCache.clear();
     this.stopTopologyHeartbeat();
     this.clearRootFailoverTimer();
@@ -5570,6 +5605,7 @@ export class GroupCallAudioEngineRuntime {
     this.topologyElectionDelayUntilMs = 0;
     this.startupOccupiedRoomEvidence = false;
     this.startupPreexistingOccupiedRoomEvidence = false;
+    this.joinOccupiedRoomParticipantHint = 0;
     this.startupHydratedRemoteCount = 0;
     this.startupBootstrapHasTopology = false;
     this.seq = 0;
@@ -5942,7 +5978,7 @@ export class GroupCallAudioEngineRuntime {
       return;
     }
     if (event === 'gcall:audio') {
-      const audioPayload = this.recordAudioStageIngress(
+      let audioPayload = this.recordAudioStageIngress(
         payload as GroupCallAudioReceivePayload
       );
       if (
@@ -5951,6 +5987,13 @@ export class GroupCallAudioEngineRuntime {
       ) {
         await this.processDirectVoiceAudioPayload(audioPayload);
         return;
+      }
+      // GO hands Reticulum frames over as a Uint8Array: make it an ArrayBuffer
+      // so they go to the decrypt workers (not the main thread) and can be
+      // held while the room key is pending, as on the desktop.
+      if (audioPayload && !(audioPayload.data instanceof ArrayBuffer)) {
+        const owned = toOwnedAudioArrayBuffer(audioPayload.data);
+        if (owned) audioPayload = { ...audioPayload, data: owned };
       }
       if (audioPayload?.roomId !== this.snapshot.roomId) {
         traceGcallAudioSurface(
@@ -7319,18 +7362,33 @@ export class GroupCallAudioEngineRuntime {
         staleAfterMs: TRUSTED_REMOTE_ROOT_STICKY_REJOIN_MS,
         rosterAddresses: participantMap.keys(),
       });
-      const occupiedRoomEvidence = hasOccupiedRoomEvidenceForJoin({
-        sameRoomRejoin: true,
-        hydratedRemoteParticipantCount: remoteParticipantCount,
-        bootstrapParticipantCount: bootstrap?.participants?.length ?? 0,
-        bootstrapTopologyEpoch:
-          bootstrapTopology?.topologyEpoch ?? bootstrap?.topologyEpoch ?? 0,
-        bootstrapHasTopology: Boolean(bootstrapTopology?.rootForwarder),
-        lastObservedEpoch: this.lastObservedTopologyEpoch,
-        trustedRemoteRoot: trustedElectionRoot,
-        bootstrapCallSessionId: bootstrap?.callSessionId,
-        bootstrapMediaSessionGeneration: bootstrap?.mediaSessionGeneration ?? 0,
-      });
+      const occupiedRoomHintFromBadge =
+        this.joinOccupiedRoomParticipantHint > 0;
+      const occupiedRoomEvidence =
+        hasOccupiedRoomEvidenceForJoin({
+          sameRoomRejoin: true,
+          hydratedRemoteParticipantCount: remoteParticipantCount,
+          bootstrapParticipantCount: bootstrap?.participants?.length ?? 0,
+          bootstrapTopologyEpoch:
+            bootstrapTopology?.topologyEpoch ?? bootstrap?.topologyEpoch ?? 0,
+          bootstrapHasTopology: Boolean(bootstrapTopology?.rootForwarder),
+          lastObservedEpoch: this.lastObservedTopologyEpoch,
+          trustedRemoteRoot: trustedElectionRoot,
+          bootstrapCallSessionId: bootstrap?.callSessionId,
+          bootstrapMediaSessionGeneration:
+            bootstrap?.mediaSessionGeneration ?? 0,
+        }) || occupiedRoomHintFromBadge;
+      if (occupiedRoomHintFromBadge) {
+        // The group's call badge already showed people in this call: give the
+        // incumbent root up to OCCUPIED_HINT_SELF_ELECTION_WAIT_MS to reach us
+        // before we may elect ourselves (Reticulum peers usually show up 1-3 s
+        // after a join, but a freshly started phone once heard nobody for 38 s).
+        this.recordDiagEvent('occupied-room-hint-applied', {
+          roomId,
+          participantHint: this.joinOccupiedRoomParticipantHint,
+          hydratedRemoteParticipantCount: remoteParticipantCount,
+        });
+      }
       this.startupOccupiedRoomEvidence =
         this.startupOccupiedRoomEvidence || occupiedRoomEvidence;
       this.startupPreexistingOccupiedRoomEvidence =
@@ -7343,9 +7401,11 @@ export class GroupCallAudioEngineRuntime {
         this.startupBootstrapHasTopology ||
         Boolean(bootstrapTopology?.rootForwarder);
       if (roomId.startsWith('gcall-qortal-') && remoteParticipantCount === 0) {
-        const selfOnlyDelayMs = occupiedRoomEvidence
-          ? ROOT_HEARTBEAT_FAILOVER_TIMEOUT_MS
-          : GROUP_CALL_SELF_ONLY_JOIN_ELECTION_WAIT_MS;
+        const selfOnlyDelayMs = resolveSelfOnlyElectionWaitMs({
+          occupiedRoomHint: occupiedRoomHintFromBadge,
+          occupiedRoomEvidence,
+          failoverTimeoutMs: ROOT_HEARTBEAT_FAILOVER_TIMEOUT_MS,
+        });
         this.topologyElectionDelayUntilMs = Math.max(
           this.topologyElectionDelayUntilMs,
           Date.now() + selfOnlyDelayMs
@@ -7913,14 +7973,35 @@ export class GroupCallAudioEngineRuntime {
     ) {
       return;
     }
+    // Re-electing ourselves while our root is still provisional (typically
+    // when the first peers show up right after a self-only election) keeps
+    // the original provisional window: the incumbent's topology may still be
+    // on its way and must be able to demote us.
+    const keepProvisionalLocalRoot = shouldKeepProvisionalLocalRoot({
+      myAddress,
+      previousRoot: currentRoot,
+      electedRoot: topology.rootForwarder ?? '',
+      provisionalActive: this.isProvisionalLocalRootActive(nowMs),
+    });
     const shouldArmProvisionalLocalRoot =
+      !keepProvisionalLocalRoot &&
       topology.rootForwarder === myAddress &&
       this.shouldMarkLocalRootProvisional(currentRoot, addresses);
     // Set this before applyTopology(): becoming root starts an immediate
     // topology heartbeat, and main must receive the correct authority state
     // on that first IPC rather than briefly treating a speculative root as
     // established.
-    if (shouldArmProvisionalLocalRoot) {
+    if (keepProvisionalLocalRoot) {
+      this.recordDiagEvent('provisional-local-root-kept', {
+        roomId,
+        reason,
+        participantCount: sorted.length,
+        provisionalRemainingMs: Math.max(
+          0,
+          this.provisionalLocalRootUntilMs - nowMs
+        ),
+      });
+    } else if (shouldArmProvisionalLocalRoot) {
       this.markProvisionalLocalRoot(reason, nowMs);
     } else {
       this.clearProvisionalLocalRoot();
@@ -8858,6 +8939,40 @@ export class GroupCallAudioEngineRuntime {
       return;
     }
     const rootLiveness = this.getRootPeerLivenessSnapshot(nowMs);
+    if (
+      shouldSuppressNewcomerStandbyFailover({
+        hasRoomKey: Boolean(this.roomKey),
+        lastVerifiedKeyAt: rootLiveness.lastVerifiedKeyAt,
+        lastDecodedMediaAt: rootLiveness.lastDecodedMediaAt,
+        lastSpeakerActivityAt: rootLiveness.lastSpeakerActivityAt,
+        lastJoinSuccessAtMs: this.lastJoinSuccessAtMs,
+        nowMs,
+      })
+    ) {
+      // We joined recently and never got the key or any audio from this root:
+      // we cannot tell a dead root from one we have not reached yet, and the
+      // others may hear it fine. Taking over would start a second root with a
+      // second key (seen on phones: the newcomer then heard nobody and nobody
+      // could decrypt it). Keep asking for the key instead.
+      this.recordDiagEvent(
+        'root-heartbeat-timeout-suppressed-newcomer-never-reached-root',
+        {
+          roomId,
+          currentRoot,
+          heartbeatSilentMs,
+          joinAgeMs: nowMs - this.lastJoinSuccessAtMs,
+          rootLivenessState: rootLiveness.state,
+        }
+      );
+      this.requestRetainedKeyReplay('newcomer-never-reached-root');
+      this.scheduleRootFailoverWatchForDeadline(
+        Math.min(
+          nowMs + ROOT_HEARTBEAT_FAILOVER_TIMEOUT_MS,
+          this.lastJoinSuccessAtMs + NEWCOMER_ROOT_CONTACT_GRACE_MS + 250
+        )
+      );
+      return;
+    }
     const rootPeerRequiresReconnect = rootLiveness.rootPeerRequiresReconnect;
     const lastNonHeartbeatRootEvidenceAt = Math.max(
       0,
